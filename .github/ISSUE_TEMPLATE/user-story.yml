@@ -1,0 +1,25 @@
+name: User Story
+description: User-facing functionality
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: story
+    attributes:
+      label: User Story
+      description: "As a [role], I can [action] so that [benefit]"
+      placeholder: "As a user, I can ..."
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance Criteria
+      description: What must be true for this to be done?
+      placeholder: |
+        - [ ] ...
+        - [ ] ...
+  - type: textarea
+    id: notes
+    attributes:
+      label: Notes
+      description: Technical notes, dependencies, or context

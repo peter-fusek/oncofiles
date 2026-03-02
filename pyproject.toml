@@ -1,0 +1,45 @@
+[project]
+name = "erika-files-mcp"
+version = "0.1.0"
+description = "MCP server for persistent medical document management via Anthropic Files API"
+requires-python = ">=3.12"
+dependencies = [
+    "fastmcp>=3.0.0",
+    "anthropic>=0.43.0",
+    "pydantic>=2.0",
+    "python-dotenv>=1.0.0",
+    "aiosqlite>=0.20.0",
+]
+
+[project.optional-dependencies]
+gdrive = [
+    "google-api-python-client>=2.100.0",
+    "google-auth-httplib2>=0.1.1",
+    "google-auth-oauthlib>=1.1.0",
+]
+cloud = [
+    "libsql-experimental>=0.0.50",
+]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.8.0",
+]
+
+[project.scripts]
+erika-mcp = "erika_files_mcp.server:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "UP", "B", "SIM"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
