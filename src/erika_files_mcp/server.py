@@ -9,18 +9,44 @@ from contextlib import asynccontextmanager
 from datetime import date
 
 from fastmcp import Context, FastMCP
+from starlette.requests import Request
+from starlette.responses import JSONResponse
 
-from erika_files_mcp.config import DATABASE_PATH
+from erika_files_mcp.config import (
+    DATABASE_PATH,
+    MCP_BEARER_TOKEN,
+    MCP_HOST,
+    MCP_PORT,
+    MCP_TRANSPORT,
+    TURSO_AUTH_TOKEN,
+    TURSO_DATABASE_URL,
+)
 from erika_files_mcp.database import Database
 from erika_files_mcp.filename_parser import parse_filename
 from erika_files_mcp.files_api import FilesClient
 from erika_files_mcp.models import Document, DocumentCategory, SearchQuery
 
+# ── Auth ──────────────────────────────────────────────────────────────────────
+
+auth = None
+if MCP_BEARER_TOKEN:
+    from fastmcp.server.auth import StaticTokenVerifier
+
+    auth = StaticTokenVerifier(
+        tokens={MCP_BEARER_TOKEN: {"client_id": "claude-ai", "scopes": []}},
+    )
+
+
+# ── Lifespan ──────────────────────────────────────────────────────────────────
+
 
 @asynccontextmanager
 async def lifespan(server: FastMCP) -> AsyncIterator[dict]:
     """Initialize database and Files API client on startup."""
-    db = Database(DATABASE_PATH)
+    if TURSO_DATABASE_URL:
+        db = Database(turso_url=TURSO_DATABASE_URL, turso_token=TURSO_AUTH_TOKEN)
+    else:
+        db = Database(DATABASE_PATH)
     await db.connect()
     await db.migrate()
     files = FilesClient()
@@ -34,7 +60,16 @@ mcp = FastMCP(
     "Erika Files",
     description="Medical document management via Anthropic Files API",
     lifespan=lifespan,
+    auth=auth,
 )
+
+
+# ── Health check ──────────────────────────────────────────────────────────────
+
+
+@mcp.custom_route("/health", methods=["GET"])
+async def health(request: Request) -> JSONResponse:
+    return JSONResponse({"status": "ok", "version": "0.4.0"})
 
 
 def _get_db(ctx: Context) -> Database:
@@ -268,7 +303,10 @@ async def latest_labs(ctx: Context) -> str:
 
 
 def main() -> None:
-    mcp.run()
+    if MCP_TRANSPORT == "stdio":
+        mcp.run()
+    else:
+        mcp.run(transport=MCP_TRANSPORT, host=MCP_HOST, port=MCP_PORT)
 
 
 if __name__ == "__main__":
