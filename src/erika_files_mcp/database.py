@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import date, datetime
 from pathlib import Path
+from typing import Any
 
 import aiosqlite
 
@@ -12,18 +14,125 @@ from erika_files_mcp.models import Document, DocumentCategory, SearchQuery
 MIGRATIONS_DIR = Path(__file__).parent.parent.parent / "migrations"
 
 
-class Database:
-    """Async SQLite database for document metadata."""
+# ── Turso async wrappers ──────────────────────────────────────────────────────
 
-    def __init__(self, path: str | Path = ":memory:") -> None:
-        self.path = str(path)
-        self._db: aiosqlite.Connection | None = None
+
+class _TursoCursor:
+    """Async-compatible wrapper around sync libsql cursor.
+
+    Converts tuple rows to dicts using cursor.description so that
+    row["column_name"] access works identically to aiosqlite.Row.
+    """
+
+    def __init__(self, cursor: Any) -> None:
+        self._cursor = cursor
+
+    @property
+    def lastrowid(self) -> int | None:
+        return self._cursor.lastrowid
+
+    @property
+    def rowcount(self) -> int:
+        return self._cursor.rowcount
+
+    def _to_dict(self, row: tuple | None) -> dict | None:
+        if row is None:
+            return None
+        cols = [d[0] for d in self._cursor.description]
+        return dict(zip(cols, row))
+
+    async def fetchone(self) -> dict | None:
+        return self._to_dict(self._cursor.fetchone())
+
+    async def fetchall(self) -> list[dict]:
+        return [self._to_dict(r) for r in self._cursor.fetchall()]
+
+    async def __aenter__(self) -> _TursoCursor:
+        return self
+
+    async def __aexit__(self, *args: Any) -> None:
+        pass
+
+
+class _TursoExecProxy:
+    """Awaitable + async-context-manager proxy matching aiosqlite.execute()."""
+
+    def __init__(self, conn: Any, sql: str, params: tuple) -> None:
+        self._conn = conn
+        self._sql = sql
+        self._params = params
+
+    async def _run(self) -> _TursoCursor:
+        cursor = await asyncio.to_thread(self._conn.execute, self._sql, self._params)
+        return _TursoCursor(cursor)
+
+    def __await__(self):  # noqa: ANN204
+        return self._run().__await__()
+
+    async def __aenter__(self) -> _TursoCursor:
+        return await self._run()
+
+    async def __aexit__(self, *args: Any) -> None:
+        pass
+
+
+class _TursoConnection:
+    """Async wrapper around sync libsql connection matching aiosqlite interface."""
+
+    def __init__(self, url: str, auth_token: str) -> None:
+        self._url = url
+        self._auth_token = auth_token
+        self._conn: Any = None
 
     async def connect(self) -> None:
-        self._db = await aiosqlite.connect(self.path)
-        self._db.row_factory = aiosqlite.Row
-        await self._db.execute("PRAGMA journal_mode=WAL")
-        await self._db.execute("PRAGMA foreign_keys=ON")
+        import libsql_experimental as libsql
+
+        self._conn = libsql.connect(self._url, auth_token=self._auth_token)
+
+    def execute(self, sql: str, params: tuple = ()) -> _TursoExecProxy:
+        return _TursoExecProxy(self._conn, sql, params)
+
+    async def executescript(self, sql: str) -> None:
+        await asyncio.to_thread(self._conn.executescript, sql)
+
+    async def commit(self) -> None:
+        await asyncio.to_thread(self._conn.commit)
+
+    async def close(self) -> None:
+        if self._conn:
+            self._conn.close()
+            self._conn = None
+
+
+# ── Database ──────────────────────────────────────────────────────────────────
+
+
+class Database:
+    """Async database for document metadata. Uses aiosqlite locally, Turso in cloud."""
+
+    def __init__(
+        self,
+        path: str | Path = ":memory:",
+        *,
+        turso_url: str = "",
+        turso_token: str = "",
+    ) -> None:
+        self.path = str(path)
+        self._turso_url = turso_url
+        self._turso_token = turso_token
+        self._use_turso = bool(turso_url)
+        self._db: aiosqlite.Connection | _TursoConnection | None = None
+
+    async def connect(self) -> None:
+        if self._use_turso:
+            conn = _TursoConnection(self._turso_url, self._turso_token)
+            await conn.connect()
+            self._db = conn
+        else:
+            self._db = await aiosqlite.connect(self.path)
+            self._db.row_factory = aiosqlite.Row
+            await self._db.execute("PRAGMA journal_mode=WAL")
+            await self._db.execute("PRAGMA foreign_keys=ON")
 
     async def close(self) -> None:
         if self._db:
@@ -31,7 +140,7 @@ class Database:
             self._db = None
 
     @property
-    def db(self) -> aiosqlite.Connection:
+    def db(self) -> aiosqlite.Connection | _TursoConnection:
         if self._db is None:
             raise RuntimeError("Database not connected. Call connect() first.")
         return self._db
