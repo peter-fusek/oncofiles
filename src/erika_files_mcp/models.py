@@ -1,0 +1,75 @@
+"""Pydantic data models for document metadata."""
+
+from __future__ import annotations
+
+from datetime import date, datetime
+from enum import StrEnum
+
+from pydantic import BaseModel, Field
+
+
+class DocumentCategory(StrEnum):
+    """Medical document categories."""
+
+    LABS = "labs"
+    REPORT = "report"
+    IMAGING = "imaging"
+    PATHOLOGY = "pathology"
+    SURGERY = "surgery"
+    PRESCRIPTION = "prescription"
+    REFERRAL = "referral"
+    DISCHARGE = "discharge"
+    OTHER = "other"
+
+
+class Document(BaseModel):
+    """A medical document stored in the Files API with local metadata."""
+
+    id: int | None = None
+    file_id: str = Field(description="Anthropic Files API file_id")
+    filename: str = Field(description="Canonical filename (YYYYMMDD convention)")
+    original_filename: str = Field(description="Original filename before normalization")
+    document_date: date | None = Field(default=None, description="Date from filename")
+    institution: str | None = Field(default=None, description="Medical institution code")
+    category: DocumentCategory = DocumentCategory.OTHER
+    description: str | None = Field(default=None, description="Human-readable description")
+    mime_type: str = "application/pdf"
+    size_bytes: int = 0
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+    gdrive_id: str | None = Field(default=None, description="Google Drive file ID")
+    gdrive_modified_time: datetime | None = None
+
+    @property
+    def content_block(self) -> dict:
+        """Return the MCP/API content block to reference this file."""
+        if self.mime_type.startswith("image/"):
+            return {
+                "type": "image",
+                "source": {"type": "file", "file_id": self.file_id},
+            }
+        return {
+            "type": "document",
+            "source": {"type": "file", "file_id": self.file_id},
+        }
+
+
+class ParsedFilename(BaseModel):
+    """Result of parsing a YYYYMMDD_institution_category_description.ext filename."""
+
+    document_date: date | None = None
+    institution: str | None = None
+    category: DocumentCategory = DocumentCategory.OTHER
+    description: str | None = None
+    extension: str = ""
+
+
+class SearchQuery(BaseModel):
+    """Search parameters for document lookup."""
+
+    text: str | None = Field(default=None, description="Full-text search query")
+    institution: str | None = None
+    category: DocumentCategory | None = None
+    date_from: date | None = None
+    date_to: date | None = None
+    limit: int = Field(default=50, ge=1, le=200)
