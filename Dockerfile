@@ -8,12 +8,15 @@ WORKDIR /app
 # Copy dependency files first for layer caching
 COPY pyproject.toml uv.lock ./
 
-# Install dependencies (cloud extras for Turso)
-RUN uv sync --frozen --no-dev --extra cloud
+# Install dependencies only (skip local package for caching)
+RUN uv sync --frozen --no-dev --extra cloud --no-install-project
 
 # Copy application code
 COPY src/ src/
 COPY migrations/ migrations/
+
+# Install the local package itself
+RUN uv sync --frozen --no-dev --extra cloud
 
 # Railway injects PORT; defaults handled in config.py
 ENV MCP_TRANSPORT=streamable-http
