@@ -1,11 +1,13 @@
-"""Parse medical document filenames following the YYYYMMDD convention.
+"""Parse medical document filenames following the real naming convention.
 
-Expected format: YYYYMMDD_institution_category_description.ext
+Primary format: YYYYMMDD ErikaFusekova-Institution-DescriptionDoctor.ext
 Examples:
-    20240115_NOUonko_labs_krvnyObraz.pdf
-    20240220_OUSA_report_kontrola.pdf
-    20231005_UNB_imaging_CT-abdomen.pdf
-    nenazvany_dokument.pdf  (unparseable → best-effort)
+    20260227 ErikaFusekova-NOU-LabVysledkyPred2chemoMudrPorsok.pdf
+    20260122 ErikaFusekova-BoryNemocnica-LekarskaPrepustaciaSpravaOperacia.pdf
+    20260127 ErikaFusekova-BoryNemocnica-BiopsiaMudrRychly.JPG
+    202602xx ErikaFusekova-BoryNemocnica-PNkaPreSocialnaPoistovnaOprava.pdf
+
+Legacy format (still supported): YYYYMMDD_institution_category_description.ext
 """
 
 from __future__ import annotations
@@ -19,6 +21,12 @@ from erika_files_mcp.models import DocumentCategory, ParsedFilename
 
 # Known institution codes (expandable)
 KNOWN_INSTITUTIONS = {
+    # Real institutions from Google Drive
+    "NOU",
+    "BoryNemocnica",
+    "SocialnaPoistovna",
+    "MinnesotaUniversity",
+    # Legacy / planned
     "NOUonko",
     "OUSA",
     "UNB",
@@ -34,7 +42,30 @@ KNOWN_INSTITUTIONS = {
     "BIOPTIKA",
 }
 
-# Map filename tokens to categories (case-insensitive matching)
+# Category inference from CamelCase description keywords.
+# Order matters — more specific matches first.
+_CATEGORY_KEYWORDS: list[tuple[list[str], DocumentCategory]] = [
+    # Pathology / genetic testing (before report — genetic reports are pathology)
+    (["biopsia", "biopsii", "genetic", "genetick", "genetik"], DocumentCategory.PATHOLOGY),
+    # Labs / blood work (before report — lab results may contain "vysledky")
+    (["labvysledky", "lab vysledky", "krvpred", "krvny"], DocumentCategory.LABS),
+    # Imaging
+    (["usg", "sono"], DocumentCategory.IMAGING),
+    # Discharge summaries (before report — they contain "sprava")
+    (["prepustaci", "prepusten", "epikryza"], DocumentCategory.DISCHARGE),
+    # Report (broad — many things are reports)
+    (
+        ["sprava", "anamneza", "kontrola", "vysetren", "prijem", "konzultaci", "priebezn"],
+        DocumentCategory.REPORT,
+    ),
+    # Prescription / referral
+    (["recept", "prescription"], DocumentCategory.PRESCRIPTION),
+    (["odporucanie", "ziadanka", "referral"], DocumentCategory.REFERRAL),
+    # Surgery
+    (["operacia"], DocumentCategory.SURGERY),
+]
+
+# Legacy: map explicit category tokens to categories (underscore-separated format)
 CATEGORY_ALIASES: dict[str, DocumentCategory] = {
     "labs": DocumentCategory.LABS,
     "lab": DocumentCategory.LABS,
@@ -66,25 +97,120 @@ CATEGORY_ALIASES: dict[str, DocumentCategory] = {
 }
 
 _DATE_RE = re.compile(r"^(\d{4})(\d{2})(\d{2})")
+_DATE_XX_RE = re.compile(r"^(\d{4})(\d{2})(xx)", re.IGNORECASE)
+_PATIENT_PREFIX_RE = re.compile(r"^ErikaFusekova[-]?", re.IGNORECASE)
+
+
+def _infer_category(description: str) -> DocumentCategory:
+    """Infer document category from description keywords."""
+    lower = description.lower()
+
+    # Check if description starts with lab/krv prefix
+    if lower.startswith("lab") or lower.startswith("krv"):
+        return DocumentCategory.LABS
+
+    # Check if description starts with imaging prefix
+    if lower.startswith("ct") or lower.startswith("mri") or lower.startswith("pet"):
+        return DocumentCategory.IMAGING
+    if lower.startswith("rtg"):
+        return DocumentCategory.IMAGING
+
+    # Check keyword groups in priority order
+    for keywords, category in _CATEGORY_KEYWORDS:
+        if any(kw in lower for kw in keywords):
+            return category
+
+    return DocumentCategory.OTHER
+
+
+def _parse_new_format(stem: str, ext: str) -> ParsedFilename | None:
+    """Try to parse as: YYYYMMDD ErikaFusekova-Institution-Description."""
+    result = ParsedFilename(extension=ext)
+
+    # Extract date
+    date_match = _DATE_RE.match(stem)
+    xx_match = _DATE_XX_RE.match(stem) if not date_match else None
+
+    if date_match:
+        with contextlib.suppress(ValueError):
+            result.document_date = date(
+                int(date_match.group(1)), int(date_match.group(2)), int(date_match.group(3))
+            )
+        remaining = stem[8:].lstrip(" ")
+    elif xx_match:
+        # Handle dates like 202602xx — use first of month
+        with contextlib.suppress(ValueError):
+            result.document_date = date(int(xx_match.group(1)), int(xx_match.group(2)), 1)
+        remaining = stem[8:].lstrip(" ")  # YYYYMMXX = 8 chars
+    else:
+        return None  # No date prefix → not new format
+
+    # Strip patient prefix
+    remaining = _PATIENT_PREFIX_RE.sub("", remaining).lstrip("-")
+
+    if not remaining:
+        return result
+
+    # Split on first dash to get institution, then description on second dash
+    parts = remaining.split("-", 2)
+
+    if len(parts) >= 2:
+        # Check if first part is a known institution
+        inst_candidate = parts[0]
+        for inst in KNOWN_INSTITUTIONS:
+            if inst_candidate.lower() == inst.lower():
+                result.institution = inst
+                break
+        if not result.institution:
+            # Accept unknown institutions too — just store what we found
+            result.institution = inst_candidate
+
+        if len(parts) >= 3:
+            desc = parts[2]
+        elif len(parts) == 2:
+            desc = parts[1]
+        else:
+            desc = ""
+
+        if desc:
+            result.description = desc
+            result.category = _infer_category(desc)
+    else:
+        result.description = parts[0]
+        result.category = _infer_category(parts[0])
+
+    return result
 
 
 def parse_filename(filename: str) -> ParsedFilename:
     """Parse a filename into structured metadata.
 
-    Handles both convention-compliant filenames and best-effort parsing of
-    non-standard names.
+    Handles both the real naming convention (space-separated, ErikaFusekova prefix)
+    and the legacy underscore-separated format.
     """
     stem = PurePosixPath(filename).stem
     ext = PurePosixPath(filename).suffix.lstrip(".")
 
+    # Try new format first: YYYYMMDD ErikaFusekova-Institution-Description
+    if " " in stem and "ErikaFusekova" in stem:
+        result = _parse_new_format(stem, ext)
+        if result:
+            return result
+
+    # Legacy format: YYYYMMDD_institution_category_description.ext
     result = ParsedFilename(extension=ext)
 
     # Try to extract leading YYYYMMDD date
     m = _DATE_RE.match(stem)
+    xx = _DATE_XX_RE.match(stem) if not m else None
     if m:
         with contextlib.suppress(ValueError):
             result.document_date = date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
         stem = stem[8:].lstrip("_- ")
+    elif xx:
+        with contextlib.suppress(ValueError):
+            result.document_date = date(int(xx.group(1)), int(xx.group(2)), 1)
+        stem = stem[8:].lstrip("_- ")  # YYYYMMXX = 8 chars
 
     # Split remaining parts on underscores and hyphens
     parts = [p for p in re.split(r"[_\-]+", stem) if p]

@@ -86,6 +86,14 @@ class Database:
             row = await cursor.fetchone()
             return _row_to_document(row) if row else None
 
+    async def get_document_by_original_filename(self, original_filename: str) -> Document | None:
+        """Get a document by its original filename (for idempotent imports)."""
+        async with self.db.execute(
+            "SELECT * FROM documents WHERE original_filename = ?", (original_filename,)
+        ) as cursor:
+            row = await cursor.fetchone()
+            return _row_to_document(row) if row else None
+
     async def list_documents(
         self,
         limit: int = 50,
