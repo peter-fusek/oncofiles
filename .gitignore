@@ -11,8 +11,7 @@ build/
 .venv/
 venv/
 
-# uv
-uv.lock
+# uv (uv.lock is committed for reproducible builds)
 
 # Environment
 .env
