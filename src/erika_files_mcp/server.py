@@ -58,7 +58,7 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict]:
 
 mcp = FastMCP(
     "Erika Files",
-    description="Medical document management via Anthropic Files API",
+    instructions="Medical document management via Anthropic Files API",
     lifespan=lifespan,
     auth=auth,
 )
