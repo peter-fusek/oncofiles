@@ -340,12 +340,15 @@ def _try_download(
     files: FilesClient,
     doc: Document,
     gdrive: GDriveClient | None = None,
-) -> tuple[bool, list[str | Image]]:
-    """Try to download file content. Falls back to Google Drive if available."""
+) -> tuple[bool, list[str | Image], bytes | None]:
+    """Try to download file content. Falls back to Google Drive if available.
+
+    Returns (success, content_items, raw_bytes).
+    """
     # 1. Try Files API
     try:
         content_bytes = files.download(doc.file_id)
-        return True, _inline_content(doc, content_bytes)
+        return True, _inline_content(doc, content_bytes), content_bytes
     except Exception:
         pass
 
@@ -353,19 +356,67 @@ def _try_download(
     if gdrive and doc.gdrive_id:
         try:
             content_bytes = gdrive.download(doc.gdrive_id)
-            return True, _inline_content(doc, content_bytes)
+            return True, _inline_content(doc, content_bytes), content_bytes
         except Exception as e:
-            return False, [f"[GDrive download also failed: {e}]"]
+            return False, [f"[GDrive download also failed: {e}]"], None
 
     if not doc.gdrive_id:
-        return False, ["[Not downloadable. No gdrive_id for fallback — see #35]"]
-    return False, ["[Not downloadable. GDrive client not configured — see #35]"]
+        return False, ["[Not downloadable. No gdrive_id for fallback — see #35]"], None
+    return False, ["[Not downloadable. GDrive client not configured — see #35]"], None
+
+
+def _extract_pdf_text(content_bytes: bytes) -> list[str] | None:
+    """Try to extract embedded text from a PDF using pymupdf.
+
+    Returns list of per-page text if PDF has substantial embedded text,
+    or None if the PDF appears to be scanned (no text).
+    """
+    import pymupdf
+
+    doc = pymupdf.open(stream=content_bytes, filetype="pdf")
+    try:
+        texts = []
+        pages_with_text = 0
+        for page in doc:
+            text = page.get_text().strip()
+            texts.append(text)
+            if len(text) > 50:  # non-trivial text content
+                pages_with_text += 1
+        # If majority of pages have text, it's a text PDF
+        if pages_with_text > len(texts) / 2:
+            return texts
+        return None
+    finally:
+        doc.close()
+
+
+def _resize_image_if_needed(image: Image, max_b64_bytes: int = 5_200_000) -> Image:
+    """Resize image if its base64 encoding would exceed API limit (5MB).
+
+    JPEG recompression bloats sizes, so we scale aggressively to stay under limit.
+    """
+    import base64
+
+    if len(base64.b64encode(image.data)) <= max_b64_bytes:
+        return image
+    import pymupdf
+
+    pix = pymupdf.Pixmap(image.data)
+    # Target 3MB raw JPEG (well under 5MB b64 even after recompression bloat)
+    scale = min(0.7, (3_000_000 / len(image.data)) ** 0.5)
+    new_w = int(pix.width * scale)
+    new_h = int(pix.height * scale)
+    pix2 = pymupdf.Pixmap(pix, new_w, new_h)
+    return Image(data=pix2.tobytes("jpeg"), format="jpeg")
 
 
 async def _ensure_ocr_text(
-    db: Database, doc: Document, content_items: list[str | Image]
+    db: Database,
+    doc: Document,
+    content_items: list[str | Image],
+    content_bytes: bytes | None = None,
 ) -> list[str]:
-    """Get OCR text for a document, extracting from images if not cached.
+    """Get text for a document: cache → PDF native text → Vision OCR.
 
     Returns a list of extracted text strings (one per page).
     """
@@ -374,14 +425,23 @@ async def _ensure_ocr_text(
         pages = await db.get_ocr_pages(doc.id)
         return [p["extracted_text"] for p in pages]
 
-    # 2. Extract from images in content_items
+    # 2. For PDFs, try native text extraction first (free, fast)
+    if doc.mime_type == "application/pdf" and content_bytes:
+        pdf_texts = _extract_pdf_text(content_bytes)
+        if pdf_texts:
+            for page_num, text in enumerate(pdf_texts, start=1):
+                await db.save_ocr_page(doc.id, page_num, text, "pymupdf-native")
+            return pdf_texts
+
+    # 3. Fall back to Vision OCR for scanned docs / images
     images = [item for item in content_items if isinstance(item, Image)]
     if not images:
         return []
 
     texts = []
     for page_num, image in enumerate(images, start=1):
-        text = extract_text_from_image(image)
+        resized = _resize_image_if_needed(image)
+        text = extract_text_from_image(resized)
         await db.save_ocr_page(doc.id, page_num, text, OCR_MODEL)
         texts.append(text)
 
@@ -408,12 +468,12 @@ async def view_document(ctx: Context, file_id: str) -> list:
     if not doc:
         return [f"Document not found: {file_id}"]
 
-    ok, content = _try_download(files, doc, gdrive)
+    ok, content, raw_bytes = _try_download(files, doc, gdrive)
     if not ok:
         return [_doc_header(doc), *content]
 
     # Extract/cache OCR text and return text before images
-    texts = await _ensure_ocr_text(db, doc, content)
+    texts = await _ensure_ocr_text(db, doc, content, raw_bytes)
     result: list = [_doc_header(doc)]
     if texts:
         result.append("--- Extracted Text ---")
@@ -460,12 +520,12 @@ async def analyze_labs(
     download_errors = 0
     for doc in labs:
         result.append(_doc_header(doc))
-        ok, content = _try_download(files, doc, gdrive)
+        ok, content, raw_bytes = _try_download(files, doc, gdrive)
         if not ok:
             download_errors += 1
             result.extend(content)
         else:
-            texts = await _ensure_ocr_text(db, doc, content)
+            texts = await _ensure_ocr_text(db, doc, content, raw_bytes)
             if texts:
                 result.append("--- Extracted Text ---")
                 result.extend(texts)
@@ -548,12 +608,12 @@ async def compare_labs(
     download_errors = 0
     for doc in labs:
         result.append(_doc_header(doc))
-        ok, content = _try_download(files, doc, gdrive)
+        ok, content, raw_bytes = _try_download(files, doc, gdrive)
         if not ok:
             download_errors += 1
             result.extend(content)
         else:
-            texts = await _ensure_ocr_text(db, doc, content)
+            texts = await _ensure_ocr_text(db, doc, content, raw_bytes)
             if texts:
                 result.append("--- Extracted Text ---")
                 result.extend(texts)
