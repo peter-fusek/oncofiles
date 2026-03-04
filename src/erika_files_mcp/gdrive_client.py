@@ -91,23 +91,16 @@ def create_gdrive_client() -> GDriveClient | None:
     """Create a GDriveClient if credentials are available, else return None."""
     if GOOGLE_CREDENTIALS_BASE64:
         val = GOOGLE_CREDENTIALS_BASE64
-        logger.info(
-            "Initializing GDrive client from base64 credentials "
-            "(len=%d, start=%s, end=%s)",
-            len(val), val[:20], val[-20:],
-        )
-        # Debug: verify base64 decodes to valid JSON with private_key
+        # Debug: print to stdout (logger.info not visible on Railway)
+        print(f"[GDRIVE DEBUG] base64 len={len(val)}, start={val[:20]}, end={val[-20:]}", flush=True)
         try:
             import base64 as _b64
             raw = _b64.b64decode(val)
             parsed = json.loads(raw)
             pk = parsed.get("private_key", "")
-            logger.info(
-                "Decoded JSON OK: private_key len=%d, starts=%s",
-                len(pk), repr(pk[:40]),
-            )
+            print(f"[GDRIVE DEBUG] Decoded JSON OK: private_key len={len(pk)}, starts={repr(pk[:40])}", flush=True)
         except Exception as e:
-            logger.error("Base64 decode/parse failed: %s", e)
+            print(f"[GDRIVE DEBUG] Base64 decode/parse FAILED: {e}", flush=True)
         return GDriveClient(credentials_base64=GOOGLE_CREDENTIALS_BASE64)
     if GOOGLE_APPLICATION_CREDENTIALS:
         logger.info("Initializing GDrive client from file: %s", GOOGLE_APPLICATION_CREDENTIALS)
