@@ -44,6 +44,11 @@ class FilesClient:
         """Get metadata for a specific file."""
         return self._client.beta.files.retrieve_metadata(file_id)
 
+    def download(self, file_id: str) -> bytes:
+        """Download file content as raw bytes."""
+        response = self._client.beta.files.download(file_id)
+        return response.read()
+
     def delete(self, file_id: str) -> bool:
         """Delete a file. Returns True if successfully deleted."""
         result = self._client.beta.files.delete(file_id)

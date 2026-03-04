@@ -9,6 +9,7 @@ from contextlib import asynccontextmanager
 from datetime import date
 
 from fastmcp import Context, FastMCP
+from fastmcp.utilities.types import File, Image
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
@@ -69,7 +70,7 @@ mcp = FastMCP(
 
 @mcp.custom_route("/health", methods=["GET"])
 async def health(request: Request) -> JSONResponse:
-    return JSONResponse({"status": "ok", "version": "0.4.0"})
+    return JSONResponse({"status": "ok", "version": "0.5.0"})
 
 
 def _get_db(ctx: Context) -> Database:
@@ -264,6 +265,186 @@ async def delete_document(ctx: Context, file_id: str) -> str:
     return json.dumps({"deleted": deleted, "file_id": file_id})
 
 
+# ── Patient context ──────────────────────────────────────────────────────────
+
+PATIENT_CONTEXT = {
+    "name": "Erika Fusekova",
+    "diagnosis": "Oncology patient — colorectal cancer (mCRC)",
+    "note": (
+        "Lab values should be interpreted considering active chemotherapy. "
+        "Key markers: CEA, CA 19-9, liver (ALT, AST, bilirubin), "
+        "renal (creatinine, urea), blood counts (WBC, neutrophils, Hb, platelets)."
+    ),
+}
+
+
+def _patient_context_text() -> str:
+    return (
+        f"**Patient:** {PATIENT_CONTEXT['name']}\n"
+        f"**Diagnosis:** {PATIENT_CONTEXT['diagnosis']}\n"
+        f"**Note:** {PATIENT_CONTEXT['note']}"
+    )
+
+
+def _doc_header(doc: Document) -> str:
+    date_str = doc.document_date.isoformat() if doc.document_date else "unknown"
+    return (
+        f"**{doc.filename}** | {doc.category.value} | "
+        f"{date_str} | {doc.institution or 'unknown'}"
+    )
+
+
+def _inline_content(doc: Document, content_bytes: bytes) -> str | Image | File:
+    """Return the appropriate inline content type for a document."""
+    if doc.mime_type and doc.mime_type.startswith("image/"):
+        fmt = doc.mime_type.split("/")[1]  # jpeg, png, etc.
+        return Image(data=content_bytes, format=fmt)
+    elif doc.mime_type == "application/pdf":
+        return File(data=content_bytes, format="pdf", name=doc.filename)
+    else:
+        return content_bytes.decode("utf-8", errors="replace")
+
+
+# ── Analysis tools ───────────────────────────────────────────────────────────
+
+
+@mcp.tool()
+async def view_document(ctx: Context, file_id: str) -> list:
+    """Download a document and return its content for Claude to read.
+
+    Returns the actual file content (image or PDF) inline so Claude
+    can see and analyze it directly.
+
+    Args:
+        file_id: The Anthropic Files API file_id.
+    """
+    db = _get_db(ctx)
+    files = _get_files(ctx)
+    doc = await db.get_document_by_file_id(file_id)
+    if not doc:
+        return [f"Document not found: {file_id}"]
+
+    content_bytes = files.download(file_id)
+    return [_doc_header(doc), _inline_content(doc, content_bytes)]
+
+
+@mcp.tool()
+async def analyze_labs(
+    ctx: Context,
+    file_id: str | None = None,
+    limit: int = 3,
+) -> list:
+    """Analyze recent lab results with oncology context.
+
+    Downloads lab documents and returns them inline for Claude to read,
+    along with patient context for interpreting results under chemotherapy.
+
+    Note: Each lab document is 100KB–2MB. Keep limit low to avoid large responses.
+
+    Args:
+        file_id: Specific lab file_id to analyze. If omitted, fetches the most recent labs.
+        limit: Maximum number of lab documents to include (default 3).
+    """
+    db = _get_db(ctx)
+    files = _get_files(ctx)
+
+    if file_id:
+        doc = await db.get_document_by_file_id(file_id)
+        if not doc:
+            return [f"Document not found: {file_id}"]
+        if doc.category != DocumentCategory.LABS:
+            return [f"Document {file_id} is not a lab result (category: {doc.category.value})"]
+        labs = [doc]
+    else:
+        labs = await db.get_latest_labs(limit=limit)
+        if not labs:
+            return ["No lab results found."]
+
+    result: list = [_patient_context_text()]
+    for doc in labs:
+        content_bytes = files.download(doc.file_id)
+        result.append(_doc_header(doc))
+        result.append(_inline_content(doc, content_bytes))
+
+    result.append(
+        "**Instructions:** Focus on out-of-range values, chemotherapy side effects "
+        "(myelosuppression, hepatotoxicity, nephrotoxicity), and tumor markers (CEA, CA 19-9). "
+        "Flag any critical values requiring immediate attention."
+    )
+    return result
+
+
+@mcp.tool()
+async def compare_labs(
+    ctx: Context,
+    file_id_a: str | None = None,
+    file_id_b: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    limit: int = 10,
+) -> list:
+    """Compare lab results over time to identify trends.
+
+    Two modes:
+    - Specific: provide file_id_a and file_id_b to compare two specific lab sets.
+    - Date range: provide date_from/date_to to compare all labs in a period.
+
+    Note: Each lab document is 100KB–2MB. Keep limit reasonable.
+
+    Args:
+        file_id_a: First lab file_id (optional).
+        file_id_b: Second lab file_id (optional).
+        date_from: Start date for range query (YYYY-MM-DD).
+        date_to: End date for range query (YYYY-MM-DD).
+        limit: Maximum number of lab documents to include (default 10).
+    """
+    db = _get_db(ctx)
+    files = _get_files(ctx)
+
+    if file_id_a or file_id_b:
+        # Specific file_ids mode
+        labs = []
+        for fid in [file_id_a, file_id_b]:
+            if fid:
+                doc = await db.get_document_by_file_id(fid)
+                if not doc:
+                    return [f"Document not found: {fid}"]
+                labs.append(doc)
+    elif date_from or date_to:
+        # Date range mode
+        query = SearchQuery(
+            category=DocumentCategory.LABS,
+            date_from=date.fromisoformat(date_from) if date_from else None,
+            date_to=date.fromisoformat(date_to) if date_to else None,
+            limit=limit,
+        )
+        labs = await db.search_documents(query)
+        if not labs:
+            return ["No lab results found in the specified date range."]
+    else:
+        # Default: latest labs
+        labs = await db.get_latest_labs(limit=limit)
+        if not labs:
+            return ["No lab results found."]
+
+    # Sort chronologically (oldest → newest)
+    labs.sort(key=lambda d: d.document_date or date.min)
+
+    result: list = [_patient_context_text()]
+    for doc in labs:
+        content_bytes = files.download(doc.file_id)
+        result.append(_doc_header(doc))
+        result.append(_inline_content(doc, content_bytes))
+
+    result.append(
+        "**Instructions:** Compare values across these lab results chronologically. "
+        "Identify trends (improving/worsening), highlight significant changes, "
+        "and flag any values that crossed normal/abnormal thresholds. "
+        "Pay special attention to tumor markers and chemotherapy toxicity indicators."
+    )
+    return result
+
+
 # ── Resources ────────────────────────────────────────────────────────────────
 
 
@@ -295,6 +476,31 @@ async def latest_labs(ctx: Context) -> str:
         date_str = d.document_date.isoformat() if d.document_date else "unknown"
         lines.append(
             f"- **{d.filename}** ({date_str}, {d.institution or 'unknown'}) file_id: `{d.file_id}`"
+        )
+    return "\n".join(lines)
+
+
+@mcp.resource(
+    "files://treatment-timeline",
+    description="Chronological timeline of all treatment documents",
+)
+async def treatment_timeline(ctx: Context) -> str:
+    """Return a chronological markdown timeline of treatment documents (metadata only)."""
+    db = _get_db(ctx)
+    docs = await db.get_treatment_timeline()
+    if not docs:
+        return "No treatment documents found."
+
+    lines = [f"# Treatment Timeline ({len(docs)} documents)\n"]
+    current_date = None
+    for d in docs:
+        date_str = d.document_date.isoformat() if d.document_date else "unknown"
+        if date_str != current_date:
+            current_date = date_str
+            lines.append(f"\n## {current_date}\n")
+        lines.append(
+            f"- [{d.category.value}] **{d.filename}** "
+            f"({d.institution or 'unknown'}) file_id: `{d.file_id}`"
         )
     return "\n".join(lines)
 

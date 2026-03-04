@@ -261,6 +261,25 @@ class Database:
         await self.db.commit()
         return cursor.rowcount > 0
 
+    async def get_treatment_timeline(self, limit: int = 200) -> list[Document]:
+        """Get treatment documents in chronological (ASC) order."""
+        treatment_categories = (
+            "surgery", "discharge", "report", "pathology",
+            "labs", "imaging", "prescription", "referral",
+        )
+        placeholders = ", ".join("?" for _ in treatment_categories)
+        async with self.db.execute(
+            f"""
+            SELECT * FROM documents
+            WHERE category IN ({placeholders})
+            ORDER BY document_date ASC, created_at ASC
+            LIMIT ?
+            """,
+            (*treatment_categories, limit),
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return [_row_to_document(r) for r in rows]
+
     async def get_latest_labs(self, limit: int = 5) -> list[Document]:
         """Get the most recent lab result documents."""
         async with self.db.execute(
