@@ -9,7 +9,13 @@ from typing import Any
 
 import aiosqlite
 
-from erika_files_mcp.models import Document, DocumentCategory, SearchQuery
+from erika_files_mcp.models import (
+    ConversationEntry,
+    ConversationQuery,
+    Document,
+    DocumentCategory,
+    SearchQuery,
+)
 
 MIGRATIONS_DIR = Path(__file__).parent.parent.parent / "migrations"
 
@@ -346,6 +352,153 @@ class Database:
         ) as cursor:
             rows = await cursor.fetchall()
             return [_row_to_document(r) for r in rows]
+
+    # ── Conversation archive (#37) ────────────────────────────────────────
+
+    async def insert_conversation_entry(self, entry: ConversationEntry) -> ConversationEntry:
+        """Insert a conversation entry and return it with the generated ID."""
+        import json
+
+        cursor = await self.db.execute(
+            """
+            INSERT INTO conversation_entries
+                (entry_date, entry_type, title, content, participant,
+                 session_id, tags, document_ids, source, source_ref)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                entry.entry_date.isoformat(),
+                entry.entry_type,
+                entry.title,
+                entry.content,
+                entry.participant,
+                entry.session_id,
+                json.dumps(entry.tags) if entry.tags else None,
+                json.dumps(entry.document_ids) if entry.document_ids else None,
+                entry.source,
+                entry.source_ref,
+            ),
+        )
+        await self.db.commit()
+        entry.id = cursor.lastrowid
+        return entry
+
+    async def get_conversation_entry(self, entry_id: int) -> ConversationEntry | None:
+        """Get a conversation entry by ID."""
+        async with self.db.execute(
+            "SELECT * FROM conversation_entries WHERE id = ?", (entry_id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+            return _row_to_conversation_entry(row) if row else None
+
+    async def search_conversation_entries(
+        self, query: ConversationQuery
+    ) -> list[ConversationEntry]:
+        """Search conversation entries using FTS5 and/or filters."""
+        conditions: list[str] = []
+        params: list[str | int] = []
+
+        if query.text:
+            conditions.append(
+                "id IN (SELECT rowid FROM conversation_entries_fts "
+                "WHERE conversation_entries_fts MATCH ?)"
+            )
+            params.append(query.text)
+
+        if query.entry_type:
+            conditions.append("entry_type = ?")
+            params.append(query.entry_type)
+
+        if query.participant:
+            conditions.append("participant = ?")
+            params.append(query.participant)
+
+        if query.date_from:
+            conditions.append("entry_date >= ?")
+            params.append(query.date_from.isoformat())
+
+        if query.date_to:
+            conditions.append("entry_date <= ?")
+            params.append(query.date_to.isoformat())
+
+        if query.tags:
+            for tag in query.tags:
+                conditions.append("tags LIKE ?")
+                params.append(f'%"{tag}"%')
+
+        where = " AND ".join(conditions) if conditions else "1=1"
+        sql = (
+            f"SELECT * FROM conversation_entries WHERE {where} "
+            f"ORDER BY entry_date DESC, created_at DESC LIMIT ? OFFSET ?"
+        )
+        params.extend([query.limit, query.offset])
+
+        async with self.db.execute(sql, params) as cursor:
+            rows = await cursor.fetchall()
+            return [_row_to_conversation_entry(r) for r in rows]
+
+    async def get_conversation_timeline(
+        self,
+        date_from: date | None = None,
+        date_to: date | None = None,
+        limit: int = 100,
+    ) -> list[ConversationEntry]:
+        """Get conversation entries in chronological (ASC) order."""
+        conditions: list[str] = []
+        params: list[str | int] = []
+
+        if date_from:
+            conditions.append("entry_date >= ?")
+            params.append(date_from.isoformat())
+        if date_to:
+            conditions.append("entry_date <= ?")
+            params.append(date_to.isoformat())
+
+        where = " AND ".join(conditions) if conditions else "1=1"
+        sql = (
+            f"SELECT * FROM conversation_entries WHERE {where} "
+            f"ORDER BY entry_date ASC, created_at ASC LIMIT ?"
+        )
+        params.append(limit)
+
+        async with self.db.execute(sql, params) as cursor:
+            rows = await cursor.fetchall()
+            return [_row_to_conversation_entry(r) for r in rows]
+
+    async def delete_conversation_entry(self, entry_id: int) -> bool:
+        """Delete a conversation entry by ID. Returns True if deleted."""
+        cursor = await self.db.execute("DELETE FROM conversation_entries WHERE id = ?", (entry_id,))
+        await self.db.commit()
+        return cursor.rowcount > 0
+
+    async def get_entry_by_source_ref(self, source_ref: str) -> ConversationEntry | None:
+        """Get a conversation entry by source_ref (for idempotent imports)."""
+        async with self.db.execute(
+            "SELECT * FROM conversation_entries WHERE source_ref = ?", (source_ref,)
+        ) as cursor:
+            row = await cursor.fetchone()
+            return _row_to_conversation_entry(row) if row else None
+
+
+def _row_to_conversation_entry(row: aiosqlite.Row) -> ConversationEntry:
+    """Convert a database row to a ConversationEntry model."""
+    import json
+
+    return ConversationEntry(
+        id=row["id"],
+        entry_date=date.fromisoformat(row["entry_date"]),
+        entry_type=row["entry_type"],
+        title=row["title"],
+        content=row["content"],
+        participant=row["participant"],
+        session_id=row["session_id"],
+        tags=json.loads(row["tags"]) if row["tags"] else None,
+        document_ids=json.loads(row["document_ids"]) if row["document_ids"] else None,
+        source=row["source"],
+        source_ref=row["source_ref"],
+        created_at=datetime.fromisoformat(row["created_at"]) if row["created_at"] else None,
+        updated_at=datetime.fromisoformat(row["updated_at"]) if row["updated_at"] else None,
+    )
 
 
 def _row_to_document(row: aiosqlite.Row) -> Document:
