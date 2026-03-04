@@ -55,10 +55,9 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict]:
     try:
         gdrive = create_gdrive_client()
     except Exception as e:
-        import traceback
+        import logging
 
-        print(f"[GDRIVE DEBUG] Init failed: {type(e).__name__}: {e}", flush=True)
-        print(f"[GDRIVE DEBUG] Traceback:\n{traceback.format_exc()}", flush=True)
+        logging.getLogger(__name__).warning("GDrive client init failed: %s — fallback disabled", e)
         gdrive = None
     try:
         yield {"db": db, "files": files, "gdrive": gdrive}
