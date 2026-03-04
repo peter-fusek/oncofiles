@@ -92,6 +92,13 @@ def create_gdrive_client() -> GDriveClient | None:
     if GOOGLE_CREDENTIALS_BASE64:
         val = GOOGLE_CREDENTIALS_BASE64
         # Debug: print to stdout (logger.info not visible on Railway)
+        import google.auth as _ga
+        try:
+            import cryptography as _cry
+            cry_ver = _cry.__version__
+        except ImportError:
+            cry_ver = "NOT INSTALLED"
+        print(f"[GDRIVE DEBUG] google-auth={_ga.__version__}, cryptography={cry_ver}", flush=True)
         print(f"[GDRIVE DEBUG] base64 len={len(val)}, start={val[:20]}, end={val[-20:]}", flush=True)
         try:
             import base64 as _b64
