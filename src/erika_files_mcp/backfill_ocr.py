@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import functools
 
 from erika_files_mcp.config import (
     DATABASE_PATH,
@@ -22,7 +23,10 @@ from erika_files_mcp.config import (
 from erika_files_mcp.database import Database
 from erika_files_mcp.files_api import FilesClient
 from erika_files_mcp.ocr import OCR_MODEL, extract_text_from_image
-from erika_files_mcp.server import _inline_content
+from erika_files_mcp.server import _extract_pdf_text, _inline_content, _resize_image_if_needed
+
+# Ensure all output is flushed immediately for progress visibility
+print = functools.partial(print, flush=True)  # noqa: A001
 
 
 async def backfill(dry_run: bool = False) -> dict[str, int]:
@@ -83,7 +87,17 @@ async def backfill(dry_run: bool = False) -> dict[str, int]:
                 stats["errors"] += 1
                 continue
 
-        # Convert to images
+        # 1. For PDFs, try native text extraction first (free, fast)
+        if doc.mime_type == "application/pdf":
+            pdf_texts = _extract_pdf_text(content_bytes)
+            if pdf_texts:
+                for page_num, text in enumerate(pdf_texts, start=1):
+                    await db.save_ocr_page(doc.id, page_num, text, "pymupdf-native")
+                print(f"  TEXT  {doc.original_filename} ({len(pdf_texts)} pages, native)")
+                stats["processed"] += 1
+                continue
+
+        # 2. Fall back to Vision OCR for scanned docs / images
         content_items = _inline_content(doc, content_bytes)
         from fastmcp.utilities.types import Image
 
@@ -93,10 +107,10 @@ async def backfill(dry_run: bool = False) -> dict[str, int]:
             stats["skipped"] += 1
             continue
 
-        # OCR each page
         try:
             for page_num, image in enumerate(images, start=1):
-                text = extract_text_from_image(image)
+                resized = _resize_image_if_needed(image)
+                text = extract_text_from_image(resized)
                 await db.save_ocr_page(doc.id, page_num, text, OCR_MODEL)
             print(f"  OCR   {doc.original_filename} ({len(images)} pages)")
             stats["processed"] += 1
