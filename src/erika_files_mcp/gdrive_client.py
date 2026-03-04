@@ -90,7 +90,24 @@ class GDriveClient:
 def create_gdrive_client() -> GDriveClient | None:
     """Create a GDriveClient if credentials are available, else return None."""
     if GOOGLE_CREDENTIALS_BASE64:
-        logger.info("Initializing GDrive client from base64 credentials")
+        val = GOOGLE_CREDENTIALS_BASE64
+        logger.info(
+            "Initializing GDrive client from base64 credentials "
+            "(len=%d, start=%s, end=%s)",
+            len(val), val[:20], val[-20:],
+        )
+        # Debug: verify base64 decodes to valid JSON with private_key
+        try:
+            import base64 as _b64
+            raw = _b64.b64decode(val)
+            parsed = json.loads(raw)
+            pk = parsed.get("private_key", "")
+            logger.info(
+                "Decoded JSON OK: private_key len=%d, starts=%s",
+                len(pk), repr(pk[:40]),
+            )
+        except Exception as e:
+            logger.error("Base64 decode/parse failed: %s", e)
         return GDriveClient(credentials_base64=GOOGLE_CREDENTIALS_BASE64)
     if GOOGLE_APPLICATION_CREDENTIALS:
         logger.info("Initializing GDrive client from file: %s", GOOGLE_APPLICATION_CREDENTIALS)
