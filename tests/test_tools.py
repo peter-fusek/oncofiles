@@ -155,3 +155,32 @@ async def test_compare_labs_not_found(db: Database):
     ctx = _mock_ctx(db)
     result = await compare_labs(ctx, file_id_a="file_nope")
     assert "not found" in result[0].lower()
+
+
+# ── download failure handling ────────────────────────────────────────────────
+
+
+async def test_view_document_download_fails(db: Database):
+    await db.insert_document(make_doc(file_id="file_fail"))
+
+    mock_files = MagicMock()
+    mock_files.download.side_effect = Exception("not_found_error: file not found")
+    ctx = _mock_ctx(db, mock_files)
+
+    result = await view_document(ctx, file_id="file_fail")
+    assert len(result) == 2
+    assert "deleted or expired" in result[1].lower()
+
+
+async def test_analyze_labs_all_downloads_fail(db: Database):
+    await db.insert_document(make_doc(
+        file_id="file_lab_fail", category=DocumentCategory.LABS,
+    ))
+
+    mock_files = MagicMock()
+    mock_files.download.side_effect = Exception("not downloadable")
+    ctx = _mock_ctx(db, mock_files)
+
+    result = await analyze_labs(ctx)
+    assert any("error" in item.lower() for item in result if isinstance(item, str))
+    assert any("re-imported" in item.lower() for item in result if isinstance(item, str))

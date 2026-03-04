@@ -305,6 +305,24 @@ def _inline_content(doc: Document, content_bytes: bytes) -> str | Image | File:
         return content_bytes.decode("utf-8", errors="replace")
 
 
+def _try_download(files: FilesClient, doc: Document) -> tuple[bool, str | Image | File]:
+    """Try to download file content. Returns (success, content_or_error)."""
+    try:
+        content_bytes = files.download(doc.file_id)
+        return True, _inline_content(doc, content_bytes)
+    except Exception as e:
+        error_msg = str(e)
+        if "not_found" in error_msg.lower() or "404" in error_msg:
+            return False, f"[File deleted or expired: {doc.file_id}]"
+        if "downloadable" in error_msg.lower() or "not downloadable" in error_msg.lower():
+            return False, (
+                f"[File not downloadable: {doc.file_id}. "
+                f"Files API does not allow downloading user-uploaded files. "
+                f"Re-upload needed — see issue #35]"
+            )
+        return False, f"[Download failed for {doc.file_id}: {error_msg}]"
+
+
 # ── Analysis tools ───────────────────────────────────────────────────────────
 
 
@@ -324,8 +342,10 @@ async def view_document(ctx: Context, file_id: str) -> list:
     if not doc:
         return [f"Document not found: {file_id}"]
 
-    content_bytes = files.download(file_id)
-    return [_doc_header(doc), _inline_content(doc, content_bytes)]
+    ok, content = _try_download(files, doc)
+    if not ok:
+        return [_doc_header(doc), content]
+    return [_doc_header(doc), content]
 
 
 @mcp.tool()
@@ -361,16 +381,26 @@ async def analyze_labs(
             return ["No lab results found."]
 
     result: list = [_patient_context_text()]
+    download_errors = 0
     for doc in labs:
-        content_bytes = files.download(doc.file_id)
         result.append(_doc_header(doc))
-        result.append(_inline_content(doc, content_bytes))
+        ok, content = _try_download(files, doc)
+        if not ok:
+            download_errors += 1
+        result.append(content)
 
-    result.append(
-        "**Instructions:** Focus on out-of-range values, chemotherapy side effects "
-        "(myelosuppression, hepatotoxicity, nephrotoxicity), and tumor markers (CEA, CA 19-9). "
-        "Flag any critical values requiring immediate attention."
-    )
+    if download_errors == len(labs):
+        result.append(
+            "**Error:** All file downloads failed. Files uploaded via the Anthropic Files API "
+            "cannot be downloaded back (see issue #35). Documents need to be re-imported "
+            "with a content store that supports retrieval."
+        )
+    else:
+        result.append(
+            "**Instructions:** Focus on out-of-range values, chemotherapy side effects "
+            "(myelosuppression, hepatotoxicity, nephrotoxicity), and tumor markers "
+            "(CEA, CA 19-9). Flag any critical values requiring immediate attention."
+        )
     return result
 
 
@@ -431,17 +461,27 @@ async def compare_labs(
     labs.sort(key=lambda d: d.document_date or date.min)
 
     result: list = [_patient_context_text()]
+    download_errors = 0
     for doc in labs:
-        content_bytes = files.download(doc.file_id)
         result.append(_doc_header(doc))
-        result.append(_inline_content(doc, content_bytes))
+        ok, content = _try_download(files, doc)
+        if not ok:
+            download_errors += 1
+        result.append(content)
 
-    result.append(
-        "**Instructions:** Compare values across these lab results chronologically. "
-        "Identify trends (improving/worsening), highlight significant changes, "
-        "and flag any values that crossed normal/abnormal thresholds. "
-        "Pay special attention to tumor markers and chemotherapy toxicity indicators."
-    )
+    if download_errors == len(labs):
+        result.append(
+            "**Error:** All file downloads failed. Files uploaded via the Anthropic Files API "
+            "cannot be downloaded back (see issue #35). Documents need to be re-imported "
+            "with a content store that supports retrieval."
+        )
+    else:
+        result.append(
+            "**Instructions:** Compare values across these lab results chronologically. "
+            "Identify trends (improving/worsening), highlight significant changes, "
+            "and flag any values that crossed normal/abnormal thresholds. "
+            "Pay special attention to tumor markers and chemotherapy toxicity indicators."
+        )
     return result
 
 
