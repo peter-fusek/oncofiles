@@ -27,6 +27,7 @@ from erika_files_mcp.filename_parser import parse_filename
 from erika_files_mcp.files_api import FilesClient
 from erika_files_mcp.gdrive_client import GDriveClient, create_gdrive_client
 from erika_files_mcp.models import Document, DocumentCategory, SearchQuery
+from erika_files_mcp.ocr import OCR_MODEL, extract_text_from_image
 
 # ── Auth ──────────────────────────────────────────────────────────────────────
 
@@ -78,7 +79,7 @@ mcp = FastMCP(
 
 @mcp.custom_route("/health", methods=["GET"])
 async def health(request: Request) -> JSONResponse:
-    return JSONResponse({"status": "ok", "version": "0.6.0"})
+    return JSONResponse({"status": "ok", "version": "0.6.1"})
 
 
 def _get_db(ctx: Context) -> Database:
@@ -362,6 +363,32 @@ def _try_download(
     return False, ["[Not downloadable. GDrive client not configured — see #35]"]
 
 
+async def _ensure_ocr_text(
+    db: Database, doc: Document, content_items: list[str | Image]
+) -> list[str]:
+    """Get OCR text for a document, extracting from images if not cached.
+
+    Returns a list of extracted text strings (one per page).
+    """
+    # 1. Check cache
+    if await db.has_ocr_text(doc.id):
+        pages = await db.get_ocr_pages(doc.id)
+        return [p["extracted_text"] for p in pages]
+
+    # 2. Extract from images in content_items
+    images = [item for item in content_items if isinstance(item, Image)]
+    if not images:
+        return []
+
+    texts = []
+    for page_num, image in enumerate(images, start=1):
+        text = extract_text_from_image(image)
+        await db.save_ocr_page(doc.id, page_num, text, OCR_MODEL)
+        texts.append(text)
+
+    return texts
+
+
 # ── Analysis tools ───────────────────────────────────────────────────────────
 
 
@@ -383,7 +410,18 @@ async def view_document(ctx: Context, file_id: str) -> list:
         return [f"Document not found: {file_id}"]
 
     ok, content = _try_download(files, doc, gdrive)
-    return [_doc_header(doc), *content]
+    if not ok:
+        return [_doc_header(doc), *content]
+
+    # Extract/cache OCR text and return text before images
+    texts = await _ensure_ocr_text(db, doc, content)
+    result: list = [_doc_header(doc)]
+    if texts:
+        result.append("--- Extracted Text ---")
+        result.extend(texts)
+        result.append("--- Document Images ---")
+    result.extend(content)
+    return result
 
 
 @mcp.tool(output_schema=None)
@@ -426,7 +464,14 @@ async def analyze_labs(
         ok, content = _try_download(files, doc, gdrive)
         if not ok:
             download_errors += 1
-        result.extend(content)
+            result.extend(content)
+        else:
+            texts = await _ensure_ocr_text(db, doc, content)
+            if texts:
+                result.append("--- Extracted Text ---")
+                result.extend(texts)
+                result.append("--- Document Images ---")
+            result.extend(content)
 
     if download_errors == len(labs):
         result.append(
@@ -507,7 +552,14 @@ async def compare_labs(
         ok, content = _try_download(files, doc, gdrive)
         if not ok:
             download_errors += 1
-        result.extend(content)
+            result.extend(content)
+        else:
+            texts = await _ensure_ocr_text(db, doc, content)
+            if texts:
+                result.append("--- Extracted Text ---")
+                result.extend(texts)
+                result.append("--- Document Images ---")
+            result.extend(content)
 
     if download_errors == len(labs):
         result.append(

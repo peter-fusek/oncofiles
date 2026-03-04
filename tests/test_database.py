@@ -191,3 +191,61 @@ async def test_get_treatment_timeline_limit(db: Database):
 
     timeline = await db.get_treatment_timeline(limit=3)
     assert len(timeline) == 3
+
+
+# ── OCR cache ───────────────────────────────────────────────────────────────
+
+
+async def test_save_and_get_ocr_pages(db: Database):
+    doc = await db.insert_document(make_doc())
+    await db.save_ocr_page(doc.id, 1, "Page 1 text", "claude-haiku-4-5-20251001")
+    await db.save_ocr_page(doc.id, 2, "Page 2 text", "claude-haiku-4-5-20251001")
+
+    pages = await db.get_ocr_pages(doc.id)
+    assert len(pages) == 2
+    assert pages[0]["page_number"] == 1
+    assert pages[0]["extracted_text"] == "Page 1 text"
+    assert pages[1]["page_number"] == 2
+    assert pages[1]["extracted_text"] == "Page 2 text"
+
+
+async def test_has_ocr_text(db: Database):
+    doc = await db.insert_document(make_doc())
+    assert await db.has_ocr_text(doc.id) is False
+
+    await db.save_ocr_page(doc.id, 1, "Some text", "claude-haiku-4-5-20251001")
+    assert await db.has_ocr_text(doc.id) is True
+
+
+async def test_delete_ocr_pages(db: Database):
+    doc = await db.insert_document(make_doc())
+    await db.save_ocr_page(doc.id, 1, "Text", "claude-haiku-4-5-20251001")
+    assert await db.has_ocr_text(doc.id) is True
+
+    deleted = await db.delete_ocr_pages(doc.id)
+    assert deleted is True
+    assert await db.has_ocr_text(doc.id) is False
+
+
+async def test_delete_ocr_pages_nonexistent(db: Database):
+    assert await db.delete_ocr_pages(999) is False
+
+
+async def test_save_ocr_page_replace(db: Database):
+    """INSERT OR REPLACE should update existing page text."""
+    doc = await db.insert_document(make_doc())
+    await db.save_ocr_page(doc.id, 1, "Old text", "claude-haiku-4-5-20251001")
+    await db.save_ocr_page(doc.id, 1, "New text", "claude-haiku-4-5-20251001")
+
+    pages = await db.get_ocr_pages(doc.id)
+    assert len(pages) == 1
+    assert pages[0]["extracted_text"] == "New text"
+
+
+async def test_ocr_cascade_delete(db: Database):
+    """Deleting a document should cascade-delete its OCR pages."""
+    doc = await db.insert_document(make_doc())
+    await db.save_ocr_page(doc.id, 1, "Text", "claude-haiku-4-5-20251001")
+
+    await db.delete_document(doc.id)
+    assert await db.has_ocr_text(doc.id) is False

@@ -1,15 +1,23 @@
 """Tests for analysis tools (view_document, analyze_labs, compare_labs)."""
 
 from datetime import date
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pymupdf
+import pytest
 from fastmcp.utilities.types import Image
 
 from erika_files_mcp.database import Database
 from erika_files_mcp.models import DocumentCategory
 from erika_files_mcp.server import analyze_labs, compare_labs, view_document
 from tests.helpers import make_doc
+
+
+@pytest.fixture(autouse=True)
+def _mock_ocr():
+    """Auto-mock OCR extraction for all tool tests (avoid real API calls)."""
+    with patch("erika_files_mcp.server.extract_text_from_image", return_value="OCR text") as m:
+        yield m
 
 
 def _make_test_pdf() -> bytes:
@@ -48,9 +56,10 @@ async def test_view_document_image(db: Database):
     ctx = _mock_ctx(db, mock_files)
 
     result = await view_document(ctx, file_id="file_img")
-    assert len(result) == 2
     assert "file_img" not in result[0]  # header uses filename, not file_id
-    assert isinstance(result[1], Image)
+    assert any(isinstance(item, Image) for item in result)
+    assert "--- Extracted Text ---" in result  # OCR text section
+    assert "--- Document Images ---" in result
     mock_files.download.assert_called_once_with("file_img")
 
 
@@ -63,8 +72,8 @@ async def test_view_document_pdf(db: Database):
     ctx = _mock_ctx(db, mock_files)
 
     result = await view_document(ctx, file_id="file_pdf")
-    assert len(result) >= 2  # header + at least 1 page image
-    assert isinstance(result[1], Image)  # PDF pages converted to JPEG images
+    assert any(isinstance(item, Image) for item in result)  # PDF pages as images
+    assert "--- Extracted Text ---" in result  # OCR text section
 
 
 async def test_view_document_not_found(db: Database):
@@ -90,10 +99,9 @@ async def test_analyze_labs_returns_content(db: Database):
     ctx = _mock_ctx(db, mock_files)
 
     result = await analyze_labs(ctx)
-    # patient context + (header + content) * 2 + instructions
-    assert len(result) == 6
     assert "Erika Fusekova" in result[0]
     assert "Instructions" in result[-1]
+    assert any("--- Extracted Text ---" in str(item) for item in result)
     assert mock_files.download.call_count == 2
 
 
@@ -107,8 +115,8 @@ async def test_analyze_labs_specific_file_id(db: Database):
     ctx = _mock_ctx(db, mock_files)
 
     result = await analyze_labs(ctx, file_id="file_lab_x")
-    # patient context + header + content + instructions
-    assert len(result) == 4
+    assert "Instructions" in result[-1]
+    assert "--- Extracted Text ---" in result
     mock_files.download.assert_called_once_with("file_lab_x")
 
 
@@ -137,9 +145,8 @@ async def test_compare_labs_specific_ids(db: Database):
     ctx = _mock_ctx(db, mock_files)
 
     result = await compare_labs(ctx, file_id_a="file_a", file_id_b="file_b")
-    # patient context + (header + content) * 2 + instructions
-    assert len(result) == 6
     assert "Instructions" in result[-1]
+    assert any("--- Extracted Text ---" in str(item) for item in result)
     assert mock_files.download.call_count == 2
 
 
@@ -159,11 +166,14 @@ async def test_compare_labs_date_range(db: Database):
     ctx = _mock_ctx(db, mock_files)
 
     result = await compare_labs(ctx, date_from="2024-01-01", date_to="2024-07-01")
-    # patient context + (header + content) * 2 + instructions (jan + jun, dec excluded)
-    assert len(result) == 6
-    # Verify chronological order (oldest first in headers)
-    assert "2024-01-15" in result[1]
-    assert "2024-06-15" in result[3]
+    # Verify chronological order — find headers by date substring
+    str_items = [item for item in result if isinstance(item, str)]
+    header_indices = [i for i, s in enumerate(str_items) if "2024-01" in s or "2024-06" in s]
+    assert len(header_indices) == 2
+    # Jan header before Jun header
+    jan_idx = next(i for i, s in enumerate(str_items) if "2024-01-15" in s)
+    jun_idx = next(i for i, s in enumerate(str_items) if "2024-06-15" in s)
+    assert jan_idx < jun_idx
 
 
 async def test_compare_labs_not_found(db: Database):
@@ -217,8 +227,8 @@ async def test_fallback_files_api_fails_gdrive_succeeds(db: Database):
     ctx = _mock_ctx(db, mock_files, mock_gdrive)
 
     result = await view_document(ctx, file_id="file_fb1")
-    assert len(result) >= 2
-    assert isinstance(result[1], Image)  # PDF pages converted to images
+    assert any(isinstance(item, Image) for item in result)  # PDF pages as images
+    assert "--- Extracted Text ---" in result  # OCR text present
     mock_gdrive.download.assert_called_once_with("gdrive_abc123")
 
 
@@ -284,3 +294,67 @@ async def test_analyze_labs_gdrive_fallback(db: Database):
     assert len(result) >= 4
     assert "Instructions" in result[-1]
     mock_gdrive.download.assert_called_once_with("gdrive_lab1")
+
+
+# ── OCR integration ──────────────────────────────────────────────────────────
+
+
+async def test_view_document_includes_ocr_text(db: Database):
+    """view_document should include extracted OCR text before images."""
+    doc = make_doc(file_id="file_ocr1", mime_type="application/pdf")
+    await db.insert_document(doc)
+
+    mock_files = MagicMock()
+    mock_files.download.return_value = _make_test_pdf()
+    ctx = _mock_ctx(db, mock_files)
+
+    with patch("erika_files_mcp.server.extract_text_from_image") as mock_ocr:
+        mock_ocr.return_value = "Hemoglobín: 135 g/L"
+        result = await view_document(ctx, file_id="file_ocr1")
+
+    # header + "--- Extracted Text ---" + text + "--- Document Images ---" + image(s)
+    assert "--- Extracted Text ---" in result
+    assert "Hemoglobín: 135 g/L" in result
+    assert "--- Document Images ---" in result
+    assert any(isinstance(item, Image) for item in result)
+    mock_ocr.assert_called_once()
+
+
+async def test_view_document_ocr_cache_hit(db: Database):
+    """Second call should use cached OCR text, not call extract again."""
+    doc = make_doc(file_id="file_ocr2", mime_type="application/pdf")
+    inserted = await db.insert_document(doc)
+
+    # Pre-populate cache
+    await db.save_ocr_page(inserted.id, 1, "Cached text", "claude-haiku-4-5-20251001")
+
+    mock_files = MagicMock()
+    mock_files.download.return_value = _make_test_pdf()
+    ctx = _mock_ctx(db, mock_files)
+
+    with patch("erika_files_mcp.server.extract_text_from_image") as mock_ocr:
+        result = await view_document(ctx, file_id="file_ocr2")
+
+    # Should NOT call OCR (cache hit)
+    mock_ocr.assert_not_called()
+    assert "Cached text" in result
+    assert "--- Extracted Text ---" in result
+
+
+async def test_analyze_labs_includes_ocr_text(db: Database):
+    """analyze_labs should include OCR text for each lab."""
+    await db.insert_document(make_doc(
+        file_id="file_lab_ocr", category=DocumentCategory.LABS,
+    ))
+
+    mock_files = MagicMock()
+    mock_files.download.return_value = _make_test_pdf()
+    ctx = _mock_ctx(db, mock_files)
+
+    with patch("erika_files_mcp.server.extract_text_from_image") as mock_ocr:
+        mock_ocr.return_value = "WBC: 5.2 x10^9/L"
+        result = await analyze_labs(ctx)
+
+    assert "--- Extracted Text ---" in result
+    assert "WBC: 5.2 x10^9/L" in result
+    assert "Instructions" in result[-1]
