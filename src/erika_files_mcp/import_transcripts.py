@@ -49,44 +49,57 @@ def _parse_jsonl(path: Path) -> list[dict]:
     return messages
 
 
+def _extract_text(content: str | list | dict) -> str:
+    """Extract plain text from Claude Code message content (string or content blocks)."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for block in content:
+            if isinstance(block, str):
+                parts.append(block)
+            elif isinstance(block, dict) and block.get("type") == "text":
+                parts.append(block.get("text", ""))
+        return "\n".join(parts)
+    return ""
+
+
 def _extract_session_summary(messages: list[dict], filename: str) -> dict | None:
-    """Extract a summary from a JSONL session transcript.
+    """Extract a summary from a Claude Code JSONL session transcript.
+
+    Claude Code JSONL format: each line is a dict with top-level `type` field
+    ("user" or "assistant") and nested `message.role` + `message.content`.
 
     Returns dict with: title, content, entry_date, or None if empty.
     """
     user_messages = []
     assistant_messages = []
 
-    for msg in messages:
-        role = msg.get("role")
-        # Handle both flat text and content blocks
-        content = msg.get("content", "")
-        if isinstance(content, list):
-            # Extract text from content blocks
-            text_parts = []
-            for block in content:
-                if isinstance(block, dict) and block.get("type") == "text":
-                    text_parts.append(block.get("text", ""))
-                elif isinstance(block, str):
-                    text_parts.append(block)
-            content = "\n".join(text_parts)
+    for record in messages:
+        record_type = record.get("type")
+        inner_msg = record.get("message", {})
+        role = inner_msg.get("role") or record_type
+        raw_content = inner_msg.get("content", "")
+        text = _extract_text(raw_content)
 
-        if not content or not isinstance(content, str):
+        if not text.strip():
             continue
 
         if role == "user":
-            user_messages.append(content)
+            user_messages.append(text)
         elif role == "assistant":
-            assistant_messages.append(content)
+            assistant_messages.append(text)
 
     if not user_messages and not assistant_messages:
         return None
 
-    # Title from first user message (truncated)
-    first_user = user_messages[0] if user_messages else "Session transcript"
-    title = first_user[:120].split("\n")[0].strip()
-    if len(title) < 5:
-        title = f"Session: {filename}"
+    # Title from first substantial user message (skip interruptions/short noise)
+    title = f"Session: {filename}"
+    for msg in user_messages:
+        line = msg.strip().split("\n")[0][:120].strip()
+        if len(line) > 10 and not line.startswith("[Request interrupted"):
+            title = line
+            break
 
     # Build markdown content
     content_parts = []
