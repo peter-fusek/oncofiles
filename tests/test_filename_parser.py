@@ -45,9 +45,7 @@ class TestNewFormat:
         assert r.category == DocumentCategory.IMAGING
 
     def test_imaging_ct(self):
-        r = parse_filename(
-            "20260130 ErikaFusekova-NOU-CTobjednavkaMudrPorsokPrimarOnkolog.pdf"
-        )
+        r = parse_filename("20260130 ErikaFusekova-NOU-CTobjednavkaMudrPorsokPrimarOnkolog.pdf")
         assert r.document_date == date(2026, 1, 30)
         assert r.institution == "NOU"
         assert r.category == DocumentCategory.IMAGING
@@ -73,9 +71,7 @@ class TestNewFormat:
         assert r.category == DocumentCategory.PATHOLOGY
 
     def test_genetic_report_is_pathology(self):
-        r = parse_filename(
-            "20260212 ErikaFusekova-NOU-SpravaZgenetickehoVysetreniaMudrCernak.JPG"
-        )
+        r = parse_filename("20260212 ErikaFusekova-NOU-SpravaZgenetickehoVysetreniaMudrCernak.JPG")
         assert r.category == DocumentCategory.PATHOLOGY
 
     def test_blood_krv_is_labs(self):
@@ -83,15 +79,11 @@ class TestNewFormat:
         assert r.category == DocumentCategory.LABS
 
     def test_krv_page_labs(self):
-        r = parse_filename(
-            "20260227 ErikaFusekova-NOU-KRV1z2SpravaPredChemoMudrPazderkova.JPG"
-        )
+        r = parse_filename("20260227 ErikaFusekova-NOU-KRV1z2SpravaPredChemoMudrPazderkova.JPG")
         assert r.category == DocumentCategory.LABS
 
     def test_priebezna_sprava_report(self):
-        r = parse_filename(
-            "20260216 ErikaFusekova-NOU-PriebeznaSpravaZhospitalizaciePo1chemo.pdf"
-        )
+        r = parse_filename("20260216 ErikaFusekova-NOU-PriebeznaSpravaZhospitalizaciePo1chemo.pdf")
         assert r.category == DocumentCategory.REPORT
 
     def test_prijem_report(self):
@@ -99,9 +91,7 @@ class TestNewFormat:
         assert r.category == DocumentCategory.REPORT
 
     def test_konzultacia_report(self):
-        r = parse_filename(
-            "20260220 ErikaFusekova-NOU-KonzultaciaBioLiecbyPo1chemoMudrPorsok.JPG"
-        )
+        r = parse_filename("20260220 ErikaFusekova-NOU-KonzultaciaBioLiecbyPo1chemoMudrPorsok.JPG")
         assert r.category == DocumentCategory.REPORT
 
     def test_socialna_poistovna(self):
@@ -115,9 +105,7 @@ class TestNewFormat:
         assert r.extension == "gdoc"
 
     def test_pn_admin_is_other(self):
-        r = parse_filename(
-            "20260128 ErikaFusekova-BoryNemocnica-UkonceniePapierovejPNChirurg.JPG"
-        )
+        r = parse_filename("20260128 ErikaFusekova-BoryNemocnica-UkonceniePapierovejPNChirurg.JPG")
         assert r.category == DocumentCategory.OTHER
 
     def test_xx_date(self):
@@ -141,9 +129,7 @@ class TestNewFormat:
         assert r.category == DocumentCategory.DISCHARGE
 
     def test_vysetrenie_report(self):
-        r = parse_filename(
-            "20260129 ErikaFusekova-BoryNemocnica-PooperacneVysetrenieChirurg.pdf"
-        )
+        r = parse_filename("20260129 ErikaFusekova-BoryNemocnica-PooperacneVysetrenieChirurg.pdf")
         assert r.category == DocumentCategory.REPORT
 
 
@@ -212,8 +198,6 @@ class TestSubdirFilenames:
         assert r.extension == "jpg"
 
     def test_analyzy_strategic_plan(self):
-        r = parse_filename(
-            "20260217 Erika_Strategicky_Rozhodovaci_Plan_mCRC_20260217_220735.pdf"
-        )
+        r = parse_filename("20260217 Erika_Strategicky_Rozhodovaci_Plan_mCRC_20260217_220735.pdf")
         assert r.document_date == date(2026, 2, 17)
         assert r.extension == "pdf"

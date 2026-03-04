@@ -264,8 +264,14 @@ class Database:
     async def get_treatment_timeline(self, limit: int = 200) -> list[Document]:
         """Get treatment documents in chronological (ASC) order."""
         treatment_categories = (
-            "surgery", "discharge", "report", "pathology",
-            "labs", "imaging", "prescription", "referral",
+            "surgery",
+            "discharge",
+            "report",
+            "pathology",
+            "labs",
+            "imaging",
+            "prescription",
+            "referral",
         )
         placeholders = ", ".join("?" for _ in treatment_categories)
         async with self.db.execute(
@@ -280,9 +286,7 @@ class Database:
             rows = await cursor.fetchall()
             return [_row_to_document(r) for r in rows]
 
-    async def update_gdrive_id(
-        self, doc_id: int, gdrive_id: str, modified_time: str
-    ) -> None:
+    async def update_gdrive_id(self, doc_id: int, gdrive_id: str, modified_time: str) -> None:
         """Set the Google Drive file ID and modified time for a document."""
         await self.db.execute(
             "UPDATE documents SET gdrive_id = ?, gdrive_modified_time = ? WHERE id = ?",
