@@ -90,38 +90,7 @@ class GDriveClient:
 def create_gdrive_client() -> GDriveClient | None:
     """Create a GDriveClient if credentials are available, else return None."""
     if GOOGLE_CREDENTIALS_BASE64:
-        val = GOOGLE_CREDENTIALS_BASE64
-        # Debug: print to stdout (logger.info not visible on Railway)
-        import google.auth as _ga
-        try:
-            import cryptography as _cry
-            cry_ver = _cry.__version__
-        except ImportError:
-            cry_ver = "NOT INSTALLED"
-        print(f"[GDRIVE DEBUG] google-auth={_ga.__version__}, cryptography={cry_ver}", flush=True)
-        print(f"[GDRIVE DEBUG] base64 len={len(val)}, start={val[:20]}, end={val[-20:]}", flush=True)
-        try:
-            import base64 as _b64
-            import hashlib
-            import ssl
-            raw = _b64.b64decode(val)
-            parsed = json.loads(raw)
-            pk = parsed.get("private_key", "")
-            pk_hash = hashlib.sha256(pk.encode()).hexdigest()[:16]
-            pk_bytes = pk.encode("utf-8")
-            print(f"[GDRIVE DEBUG] OpenSSL: {ssl.OPENSSL_VERSION}", flush=True)
-            print(f"[GDRIVE DEBUG] private_key len={len(pk)}, sha256={pk_hash}", flush=True)
-            print(f"[GDRIVE DEBUG] pk bytes[:50] hex={pk_bytes[:50].hex()}", flush=True)
-            print(f"[GDRIVE DEBUG] pk bytes[-50:] hex={pk_bytes[-50:].hex()}", flush=True)
-            # Try loading PEM directly
-            from cryptography.hazmat.primitives.serialization import load_pem_private_key
-            try:
-                load_pem_private_key(pk_bytes, password=None)
-                print("[GDRIVE DEBUG] load_pem_private_key SUCCEEDED", flush=True)
-            except Exception as e2:
-                print(f"[GDRIVE DEBUG] load_pem_private_key FAILED: {type(e2).__name__}: {e2}", flush=True)
-        except Exception as e:
-            print(f"[GDRIVE DEBUG] Base64 decode/parse FAILED: {e}", flush=True)
+        logger.info("Initializing GDrive client from base64 credentials")
         return GDriveClient(credentials_base64=GOOGLE_CREDENTIALS_BASE64)
     if GOOGLE_APPLICATION_CREDENTIALS:
         logger.info("Initializing GDrive client from file: %s", GOOGLE_APPLICATION_CREDENTIALS)
