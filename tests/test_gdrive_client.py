@@ -25,9 +25,7 @@ def _make_client():
         from erika_files_mcp.gdrive_client import GDriveClient
 
         # {"type": "service_account"} base64-encoded
-        client = GDriveClient(
-            credentials_base64="eyJ0eXBlIjogInNlcnZpY2VfYWNjb3VudCJ9"
-        )
+        client = GDriveClient(credentials_base64="eyJ0eXBlIjogInNlcnZpY2VfYWNjb3VudCJ9")
         return client, service
 
 
@@ -44,9 +42,7 @@ def test_download():
 
         result = client.download("file123")
         assert isinstance(result, bytes)
-        service.files.return_value.get_media.assert_called_once_with(
-            fileId="file123"
-        )
+        service.files.return_value.get_media.assert_called_once_with(fileId="file123")
 
 
 def test_list_folder():
@@ -55,10 +51,18 @@ def test_list_folder():
 
     service.files.return_value.list.return_value.execute.return_value = {
         "files": [
-            {"id": "f1", "name": "doc1.pdf", "mimeType": MT_PDF,
-             "modifiedTime": "2024-01-01T00:00:00Z"},
-            {"id": "f2", "name": "doc2.pdf", "mimeType": MT_PDF,
-             "modifiedTime": "2024-02-01T00:00:00Z"},
+            {
+                "id": "f1",
+                "name": "doc1.pdf",
+                "mimeType": MT_PDF,
+                "modifiedTime": "2024-01-01T00:00:00Z",
+            },
+            {
+                "id": "f2",
+                "name": "doc2.pdf",
+                "mimeType": MT_PDF,
+                "modifiedTime": "2024-02-01T00:00:00Z",
+            },
         ],
     }
 
@@ -80,17 +84,23 @@ def test_list_folder_recursive():
         if call_count == 1:
             return {
                 "files": [
-                    {"id": "sub1", "name": "Subfolder",
-                     "mimeType": MT_FOLDER},
-                    {"id": "f1", "name": "root.pdf",
-                     "mimeType": MT_PDF,
-                     "modifiedTime": "2024-01-01T00:00:00Z"},
+                    {"id": "sub1", "name": "Subfolder", "mimeType": MT_FOLDER},
+                    {
+                        "id": "f1",
+                        "name": "root.pdf",
+                        "mimeType": MT_PDF,
+                        "modifiedTime": "2024-01-01T00:00:00Z",
+                    },
                 ],
             }
         return {
             "files": [
-                {"id": "f2", "name": "sub.pdf", "mimeType": MT_PDF,
-                 "modifiedTime": "2024-02-01T00:00:00Z"},
+                {
+                    "id": "f2",
+                    "name": "sub.pdf",
+                    "mimeType": MT_PDF,
+                    "modifiedTime": "2024-02-01T00:00:00Z",
+                },
             ],
         }
 

@@ -87,12 +87,20 @@ async def test_view_document_not_found(db: Database):
 
 
 async def test_analyze_labs_returns_content(db: Database):
-    await db.insert_document(make_doc(
-        file_id="file_lab1", category=DocumentCategory.LABS, document_date=date(2024, 6, 1),
-    ))
-    await db.insert_document(make_doc(
-        file_id="file_lab2", category=DocumentCategory.LABS, document_date=date(2024, 7, 1),
-    ))
+    await db.insert_document(
+        make_doc(
+            file_id="file_lab1",
+            category=DocumentCategory.LABS,
+            document_date=date(2024, 6, 1),
+        )
+    )
+    await db.insert_document(
+        make_doc(
+            file_id="file_lab2",
+            category=DocumentCategory.LABS,
+            document_date=date(2024, 7, 1),
+        )
+    )
 
     mock_files = MagicMock()
     mock_files.download.return_value = _make_test_pdf()
@@ -106,9 +114,7 @@ async def test_analyze_labs_returns_content(db: Database):
 
 
 async def test_analyze_labs_specific_file_id(db: Database):
-    await db.insert_document(
-        make_doc(file_id="file_lab_x", category=DocumentCategory.LABS)
-    )
+    await db.insert_document(make_doc(file_id="file_lab_x", category=DocumentCategory.LABS))
 
     mock_files = MagicMock()
     mock_files.download.return_value = _make_test_pdf()
@@ -121,9 +127,7 @@ async def test_analyze_labs_specific_file_id(db: Database):
 
 
 async def test_analyze_labs_wrong_category(db: Database):
-    await db.insert_document(
-        make_doc(file_id="file_img", category=DocumentCategory.IMAGING)
-    )
+    await db.insert_document(make_doc(file_id="file_img", category=DocumentCategory.IMAGING))
     ctx = _mock_ctx(db)
     result = await analyze_labs(ctx, file_id="file_img")
     assert "not a lab result" in result[0].lower()
@@ -151,15 +155,27 @@ async def test_compare_labs_specific_ids(db: Database):
 
 
 async def test_compare_labs_date_range(db: Database):
-    await db.insert_document(make_doc(
-        file_id="file_jan", category=DocumentCategory.LABS, document_date=date(2024, 1, 15),
-    ))
-    await db.insert_document(make_doc(
-        file_id="file_jun", category=DocumentCategory.LABS, document_date=date(2024, 6, 15),
-    ))
-    await db.insert_document(make_doc(
-        file_id="file_dec", category=DocumentCategory.LABS, document_date=date(2024, 12, 1),
-    ))
+    await db.insert_document(
+        make_doc(
+            file_id="file_jan",
+            category=DocumentCategory.LABS,
+            document_date=date(2024, 1, 15),
+        )
+    )
+    await db.insert_document(
+        make_doc(
+            file_id="file_jun",
+            category=DocumentCategory.LABS,
+            document_date=date(2024, 6, 15),
+        )
+    )
+    await db.insert_document(
+        make_doc(
+            file_id="file_dec",
+            category=DocumentCategory.LABS,
+            document_date=date(2024, 12, 1),
+        )
+    )
 
     mock_files = MagicMock()
     mock_files.download.return_value = _make_test_pdf()
@@ -198,9 +214,12 @@ async def test_view_document_download_fails(db: Database):
 
 
 async def test_analyze_labs_all_downloads_fail(db: Database):
-    await db.insert_document(make_doc(
-        file_id="file_lab_fail", category=DocumentCategory.LABS,
-    ))
+    await db.insert_document(
+        make_doc(
+            file_id="file_lab_fail",
+            category=DocumentCategory.LABS,
+        )
+    )
 
     mock_files = MagicMock()
     mock_files.download.side_effect = Exception("not downloadable")
@@ -216,9 +235,7 @@ async def test_analyze_labs_all_downloads_fail(db: Database):
 
 async def test_fallback_files_api_fails_gdrive_succeeds(db: Database):
     """When Files API fails but GDrive works, content should be returned."""
-    await db.insert_document(
-        make_doc(file_id="file_fb1", gdrive_id="gdrive_abc123")
-    )
+    await db.insert_document(make_doc(file_id="file_fb1", gdrive_id="gdrive_abc123"))
 
     mock_files = MagicMock()
     mock_files.download.side_effect = Exception("not downloadable")
@@ -234,9 +251,7 @@ async def test_fallback_files_api_fails_gdrive_succeeds(db: Database):
 
 async def test_fallback_both_fail(db: Database):
     """When both Files API and GDrive fail, error message should be returned."""
-    await db.insert_document(
-        make_doc(file_id="file_fb2", gdrive_id="gdrive_fail")
-    )
+    await db.insert_document(make_doc(file_id="file_fb2", gdrive_id="gdrive_fail"))
 
     mock_files = MagicMock()
     mock_files.download.side_effect = Exception("not downloadable")
@@ -264,9 +279,7 @@ async def test_fallback_no_gdrive_id(db: Database):
 
 async def test_fallback_no_gdrive_client(db: Database):
     """When Files API fails, gdrive_id exists, but no GDrive client configured."""
-    await db.insert_document(
-        make_doc(file_id="file_fb4", gdrive_id="gdrive_xyz")
-    )
+    await db.insert_document(make_doc(file_id="file_fb4", gdrive_id="gdrive_xyz"))
 
     mock_files = MagicMock()
     mock_files.download.side_effect = Exception("not downloadable")
@@ -279,9 +292,13 @@ async def test_fallback_no_gdrive_client(db: Database):
 
 async def test_analyze_labs_gdrive_fallback(db: Database):
     """analyze_labs should use GDrive fallback when Files API fails."""
-    await db.insert_document(make_doc(
-        file_id="file_lab_fb", category=DocumentCategory.LABS, gdrive_id="gdrive_lab1",
-    ))
+    await db.insert_document(
+        make_doc(
+            file_id="file_lab_fb",
+            category=DocumentCategory.LABS,
+            gdrive_id="gdrive_lab1",
+        )
+    )
 
     mock_files = MagicMock()
     mock_files.download.side_effect = Exception("not downloadable")
@@ -343,9 +360,12 @@ async def test_view_document_ocr_cache_hit(db: Database):
 
 async def test_analyze_labs_includes_ocr_text(db: Database):
     """analyze_labs should include OCR text for each lab."""
-    await db.insert_document(make_doc(
-        file_id="file_lab_ocr", category=DocumentCategory.LABS,
-    ))
+    await db.insert_document(
+        make_doc(
+            file_id="file_lab_ocr",
+            category=DocumentCategory.LABS,
+        )
+    )
 
     mock_files = MagicMock()
     mock_files.download.return_value = _make_test_pdf()

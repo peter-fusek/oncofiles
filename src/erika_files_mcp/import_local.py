@@ -24,8 +24,7 @@ from erika_files_mcp.gdrive_client import create_gdrive_client
 from erika_files_mcp.models import Document
 
 DEFAULT_SOURCE = Path.home() / (
-    "Library/CloudStorage/GoogleDrive-peterfusek1980@gmail.com"
-    "/My Drive/Zdravie/Erika"
+    "Library/CloudStorage/GoogleDrive-peterfusek1980@gmail.com/My Drive/Zdravie/Erika"
 )
 
 SUPPORTED_EXTENSIONS = {".pdf", ".jpg", ".jpeg", ".png"}

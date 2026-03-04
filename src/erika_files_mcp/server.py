@@ -302,8 +302,7 @@ def _patient_context_text() -> str:
 def _doc_header(doc: Document) -> str:
     date_str = doc.document_date.isoformat() if doc.document_date else "unknown"
     return (
-        f"**{doc.filename}** | {doc.category.value} | "
-        f"{date_str} | {doc.institution or 'unknown'}"
+        f"**{doc.filename}** | {doc.category.value} | {date_str} | {doc.institution or 'unknown'}"
     )
 
 

@@ -60,9 +60,7 @@ class GDriveClient:
         self._list_folder_recursive(folder_id, results, recursive)
         return results
 
-    def _list_folder_recursive(
-        self, folder_id: str, results: list[dict], recursive: bool
-    ) -> None:
+    def _list_folder_recursive(self, folder_id: str, results: list[dict], recursive: bool) -> None:
         page_token = None
         while True:
             response = (
