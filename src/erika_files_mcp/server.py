@@ -9,7 +9,7 @@ from contextlib import asynccontextmanager
 from datetime import date
 
 from fastmcp import Context, FastMCP
-from fastmcp.utilities.types import File, Image
+from fastmcp.utilities.types import Image
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
@@ -306,22 +306,41 @@ def _doc_header(doc: Document) -> str:
     )
 
 
-def _inline_content(doc: Document, content_bytes: bytes) -> str | Image | File:
-    """Return the appropriate inline content type for a document."""
+def _pdf_to_images(content_bytes: bytes) -> list[Image]:
+    """Convert PDF pages to JPEG images using pymupdf."""
+    import pymupdf
+
+    images = []
+    doc = pymupdf.open(stream=content_bytes, filetype="pdf")
+    try:
+        for page in doc:
+            pix = page.get_pixmap(dpi=200)
+            images.append(Image(data=pix.tobytes("jpeg"), format="jpeg"))
+    finally:
+        doc.close()
+    return images
+
+
+def _inline_content(doc: Document, content_bytes: bytes) -> list[str | Image]:
+    """Return the appropriate inline content for a document.
+
+    Returns a list of content items. PDFs are converted to per-page JPEG images
+    since Claude.ai connectors don't support EmbeddedResource (PDF) content.
+    """
     if doc.mime_type and doc.mime_type.startswith("image/"):
         fmt = doc.mime_type.split("/")[1]  # jpeg, png, etc.
-        return Image(data=content_bytes, format=fmt)
+        return [Image(data=content_bytes, format=fmt)]
     elif doc.mime_type == "application/pdf":
-        return File(data=content_bytes, format="pdf", name=doc.filename)
+        return _pdf_to_images(content_bytes)
     else:
-        return content_bytes.decode("utf-8", errors="replace")
+        return [content_bytes.decode("utf-8", errors="replace")]
 
 
 def _try_download(
     files: FilesClient,
     doc: Document,
     gdrive: GDriveClient | None = None,
-) -> tuple[bool, str | Image | File]:
+) -> tuple[bool, list[str | Image]]:
     """Try to download file content. Falls back to Google Drive if available."""
     # 1. Try Files API
     try:
@@ -336,11 +355,11 @@ def _try_download(
             content_bytes = gdrive.download(doc.gdrive_id)
             return True, _inline_content(doc, content_bytes)
         except Exception as e:
-            return False, f"[GDrive download also failed: {e}]"
+            return False, [f"[GDrive download also failed: {e}]"]
 
     if not doc.gdrive_id:
-        return False, "[Not downloadable. No gdrive_id for fallback — see #35]"
-    return False, "[Not downloadable. GDrive client not configured — see #35]"
+        return False, ["[Not downloadable. No gdrive_id for fallback — see #35]"]
+    return False, ["[Not downloadable. GDrive client not configured — see #35]"]
 
 
 # ── Analysis tools ───────────────────────────────────────────────────────────
@@ -364,9 +383,7 @@ async def view_document(ctx: Context, file_id: str) -> list:
         return [f"Document not found: {file_id}"]
 
     ok, content = _try_download(files, doc, gdrive)
-    if not ok:
-        return [_doc_header(doc), content]
-    return [_doc_header(doc), content]
+    return [_doc_header(doc), *content]
 
 
 @mcp.tool(output_schema=None)
@@ -409,7 +426,7 @@ async def analyze_labs(
         ok, content = _try_download(files, doc, gdrive)
         if not ok:
             download_errors += 1
-        result.append(content)
+        result.extend(content)
 
     if download_errors == len(labs):
         result.append(
@@ -490,7 +507,7 @@ async def compare_labs(
         ok, content = _try_download(files, doc, gdrive)
         if not ok:
             download_errors += 1
-        result.append(content)
+        result.extend(content)
 
     if download_errors == len(labs):
         result.append(

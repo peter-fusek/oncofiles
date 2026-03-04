@@ -3,12 +3,23 @@
 from datetime import date
 from unittest.mock import MagicMock
 
-from fastmcp.utilities.types import File, Image
+import pymupdf
+from fastmcp.utilities.types import Image
 
 from erika_files_mcp.database import Database
 from erika_files_mcp.models import DocumentCategory
 from erika_files_mcp.server import analyze_labs, compare_labs, view_document
 from tests.helpers import make_doc
+
+
+def _make_test_pdf() -> bytes:
+    """Create a minimal valid PDF for testing."""
+    doc = pymupdf.open()
+    page = doc.new_page(width=200, height=100)
+    page.insert_text((10, 50), "Test")
+    pdf_bytes = doc.tobytes()
+    doc.close()
+    return pdf_bytes
 
 
 def _mock_ctx(
@@ -48,12 +59,12 @@ async def test_view_document_pdf(db: Database):
     await db.insert_document(doc)
 
     mock_files = MagicMock()
-    mock_files.download.return_value = b"fake-pdf-bytes"
+    mock_files.download.return_value = _make_test_pdf()
     ctx = _mock_ctx(db, mock_files)
 
     result = await view_document(ctx, file_id="file_pdf")
-    assert len(result) == 2
-    assert isinstance(result[1], File)
+    assert len(result) >= 2  # header + at least 1 page image
+    assert isinstance(result[1], Image)  # PDF pages converted to JPEG images
 
 
 async def test_view_document_not_found(db: Database):
@@ -75,7 +86,7 @@ async def test_analyze_labs_returns_content(db: Database):
     ))
 
     mock_files = MagicMock()
-    mock_files.download.return_value = b"fake-pdf-bytes"
+    mock_files.download.return_value = _make_test_pdf()
     ctx = _mock_ctx(db, mock_files)
 
     result = await analyze_labs(ctx)
@@ -92,7 +103,7 @@ async def test_analyze_labs_specific_file_id(db: Database):
     )
 
     mock_files = MagicMock()
-    mock_files.download.return_value = b"fake-pdf-bytes"
+    mock_files.download.return_value = _make_test_pdf()
     ctx = _mock_ctx(db, mock_files)
 
     result = await analyze_labs(ctx, file_id="file_lab_x")
@@ -122,7 +133,7 @@ async def test_compare_labs_specific_ids(db: Database):
     )
 
     mock_files = MagicMock()
-    mock_files.download.return_value = b"fake-pdf-bytes"
+    mock_files.download.return_value = _make_test_pdf()
     ctx = _mock_ctx(db, mock_files)
 
     result = await compare_labs(ctx, file_id_a="file_a", file_id_b="file_b")
@@ -144,7 +155,7 @@ async def test_compare_labs_date_range(db: Database):
     ))
 
     mock_files = MagicMock()
-    mock_files.download.return_value = b"fake-pdf-bytes"
+    mock_files.download.return_value = _make_test_pdf()
     ctx = _mock_ctx(db, mock_files)
 
     result = await compare_labs(ctx, date_from="2024-01-01", date_to="2024-07-01")
@@ -202,12 +213,12 @@ async def test_fallback_files_api_fails_gdrive_succeeds(db: Database):
     mock_files = MagicMock()
     mock_files.download.side_effect = Exception("not downloadable")
     mock_gdrive = MagicMock()
-    mock_gdrive.download.return_value = b"fake-gdrive-bytes"
+    mock_gdrive.download.return_value = _make_test_pdf()
     ctx = _mock_ctx(db, mock_files, mock_gdrive)
 
     result = await view_document(ctx, file_id="file_fb1")
-    assert len(result) == 2
-    assert isinstance(result[1], File)
+    assert len(result) >= 2
+    assert isinstance(result[1], Image)  # PDF pages converted to images
     mock_gdrive.download.assert_called_once_with("gdrive_abc123")
 
 
@@ -224,7 +235,7 @@ async def test_fallback_both_fail(db: Database):
     ctx = _mock_ctx(db, mock_files, mock_gdrive)
 
     result = await view_document(ctx, file_id="file_fb2")
-    assert len(result) == 2
+    assert len(result) >= 2
     assert "gdrive download also failed" in result[1].lower()
 
 
@@ -237,7 +248,7 @@ async def test_fallback_no_gdrive_id(db: Database):
     ctx = _mock_ctx(db, mock_files)
 
     result = await view_document(ctx, file_id="file_fb3")
-    assert len(result) == 2
+    assert len(result) >= 2
     assert "no gdrive_id" in result[1].lower()
 
 
@@ -252,7 +263,7 @@ async def test_fallback_no_gdrive_client(db: Database):
     ctx = _mock_ctx(db, mock_files, gdrive=None)
 
     result = await view_document(ctx, file_id="file_fb4")
-    assert len(result) == 2
+    assert len(result) >= 2
     assert "not configured" in result[1].lower()
 
 
@@ -265,11 +276,11 @@ async def test_analyze_labs_gdrive_fallback(db: Database):
     mock_files = MagicMock()
     mock_files.download.side_effect = Exception("not downloadable")
     mock_gdrive = MagicMock()
-    mock_gdrive.download.return_value = b"fake-gdrive-bytes"
+    mock_gdrive.download.return_value = _make_test_pdf()
     ctx = _mock_ctx(db, mock_files, mock_gdrive)
 
     result = await analyze_labs(ctx)
-    # patient context + header + content + instructions (no error)
-    assert len(result) == 4
+    # patient context + header + page image(s) + instructions (no error)
+    assert len(result) >= 4
     assert "Instructions" in result[-1]
     mock_gdrive.download.assert_called_once_with("gdrive_lab1")
