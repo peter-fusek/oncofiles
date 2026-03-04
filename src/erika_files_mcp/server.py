@@ -346,7 +346,7 @@ def _try_download(
 # ── Analysis tools ───────────────────────────────────────────────────────────
 
 
-@mcp.tool()
+@mcp.tool(output_schema=None)
 async def view_document(ctx: Context, file_id: str) -> list:
     """Download a document and return its content for Claude to read.
 
@@ -369,7 +369,7 @@ async def view_document(ctx: Context, file_id: str) -> list:
     return [_doc_header(doc), content]
 
 
-@mcp.tool()
+@mcp.tool(output_schema=None)
 async def analyze_labs(
     ctx: Context,
     file_id: str | None = None,
@@ -426,7 +426,7 @@ async def analyze_labs(
     return result
 
 
-@mcp.tool()
+@mcp.tool(output_schema=None)
 async def compare_labs(
     ctx: Context,
     file_id_a: str | None = None,
