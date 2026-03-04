@@ -13,12 +13,14 @@ import argparse
 import asyncio
 import mimetypes
 import sys
+from datetime import datetime
 from pathlib import Path
 
-from erika_files_mcp.config import DATABASE_PATH
+from erika_files_mcp.config import DATABASE_PATH, GOOGLE_DRIVE_FOLDER_ID
 from erika_files_mcp.database import Database
 from erika_files_mcp.filename_parser import parse_filename
 from erika_files_mcp.files_api import FilesClient
+from erika_files_mcp.gdrive_client import create_gdrive_client
 from erika_files_mcp.models import Document
 
 DEFAULT_SOURCE = Path.home() / (
@@ -84,6 +86,15 @@ async def import_documents(
     await db.migrate()
     client = FilesClient()
 
+    # Build GDrive filename → file info lookup for gdrive_id resolution
+    gdrive_lookup: dict[str, dict] = {}
+    gdrive = create_gdrive_client()
+    if gdrive and GOOGLE_DRIVE_FOLDER_ID:
+        print("Building GDrive filename lookup...")
+        for gf in gdrive.list_folder(GOOGLE_DRIVE_FOLDER_ID):
+            gdrive_lookup[gf["name"]] = gf
+        print(f"  {len(gdrive_lookup)} files indexed from Google Drive.\n")
+
     stats = {"total": len(files), "imported": 0, "skipped": 0, "errors": 0}
 
     for i, filepath in enumerate(files, 1):
@@ -107,6 +118,16 @@ async def import_documents(
             parsed = parse_filename(name)
             mime = mimetypes.guess_type(name)[0] or "application/octet-stream"
 
+            # Resolve GDrive file ID if available
+            gf = gdrive_lookup.get(name)
+            gdrive_id = gf["id"] if gf else None
+            gdrive_modified_str = gf.get("modifiedTime") if gf else None
+            gdrive_modified = (
+                datetime.fromisoformat(gdrive_modified_str.replace("Z", "+00:00"))
+                if gdrive_modified_str
+                else None
+            )
+
             doc = Document(
                 file_id=metadata.id,
                 filename=name,
@@ -117,6 +138,8 @@ async def import_documents(
                 description=parsed.description,
                 mime_type=mime,
                 size_bytes=filepath.stat().st_size,
+                gdrive_id=gdrive_id,
+                gdrive_modified_time=gdrive_modified,
             )
 
             await db.insert_document(doc)

@@ -18,6 +18,8 @@ DATABASE_PATH: Path = Path(os.environ.get("DATABASE_PATH", str(DATA_DIR / "erika
 
 # Google Drive (v0.2)
 GOOGLE_DRIVE_FOLDER_ID: str = os.environ.get("GOOGLE_DRIVE_FOLDER_ID", "")
+GOOGLE_CREDENTIALS_BASE64: str = os.environ.get("GOOGLE_CREDENTIALS_BASE64", "")
+GOOGLE_APPLICATION_CREDENTIALS: str = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", "")
 
 # Turso (v0.4)
 TURSO_DATABASE_URL: str = os.environ.get("TURSO_DATABASE_URL", "")

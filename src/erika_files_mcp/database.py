@@ -39,7 +39,7 @@ class _TursoCursor:
         if row is None:
             return None
         cols = [d[0] for d in self._cursor.description]
-        return dict(zip(cols, row))
+        return dict(zip(cols, row, strict=True))
 
     async def fetchone(self) -> dict | None:
         return self._to_dict(self._cursor.fetchone())
@@ -279,6 +279,16 @@ class Database:
         ) as cursor:
             rows = await cursor.fetchall()
             return [_row_to_document(r) for r in rows]
+
+    async def update_gdrive_id(
+        self, doc_id: int, gdrive_id: str, modified_time: str
+    ) -> None:
+        """Set the Google Drive file ID and modified time for a document."""
+        await self.db.execute(
+            "UPDATE documents SET gdrive_id = ?, gdrive_modified_time = ? WHERE id = ?",
+            (gdrive_id, modified_time, doc_id),
+        )
+        await self.db.commit()
 
     async def get_latest_labs(self, limit: int = 5) -> list[Document]:
         """Get the most recent lab result documents."""

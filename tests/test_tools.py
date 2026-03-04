@@ -11,13 +11,17 @@ from erika_files_mcp.server import analyze_labs, compare_labs, view_document
 from tests.helpers import make_doc
 
 
-def _mock_ctx(db: Database, files: MagicMock | None = None) -> MagicMock:
-    """Create a mock Context with db and files in lifespan_context."""
+def _mock_ctx(
+    db: Database,
+    files: MagicMock | None = None,
+    gdrive: MagicMock | None = None,
+) -> MagicMock:
+    """Create a mock Context with db, files, and gdrive in lifespan_context."""
     if files is None:
         files = MagicMock()
         files.download.return_value = b"fake-file-bytes"
     ctx = MagicMock()
-    ctx.request_context.lifespan_context = {"db": db, "files": files}
+    ctx.request_context.lifespan_context = {"db": db, "files": files, "gdrive": gdrive}
     return ctx
 
 
@@ -169,7 +173,7 @@ async def test_view_document_download_fails(db: Database):
 
     result = await view_document(ctx, file_id="file_fail")
     assert len(result) == 2
-    assert "deleted or expired" in result[1].lower()
+    assert "not downloadable" in result[1].lower()
 
 
 async def test_analyze_labs_all_downloads_fail(db: Database):
@@ -184,3 +188,88 @@ async def test_analyze_labs_all_downloads_fail(db: Database):
     result = await analyze_labs(ctx)
     assert any("error" in item.lower() for item in result if isinstance(item, str))
     assert any("re-imported" in item.lower() for item in result if isinstance(item, str))
+
+
+# ── GDrive fallback chain ─────────────────────────────────────────────────
+
+
+async def test_fallback_files_api_fails_gdrive_succeeds(db: Database):
+    """When Files API fails but GDrive works, content should be returned."""
+    await db.insert_document(
+        make_doc(file_id="file_fb1", gdrive_id="gdrive_abc123")
+    )
+
+    mock_files = MagicMock()
+    mock_files.download.side_effect = Exception("not downloadable")
+    mock_gdrive = MagicMock()
+    mock_gdrive.download.return_value = b"fake-gdrive-bytes"
+    ctx = _mock_ctx(db, mock_files, mock_gdrive)
+
+    result = await view_document(ctx, file_id="file_fb1")
+    assert len(result) == 2
+    assert isinstance(result[1], File)
+    mock_gdrive.download.assert_called_once_with("gdrive_abc123")
+
+
+async def test_fallback_both_fail(db: Database):
+    """When both Files API and GDrive fail, error message should be returned."""
+    await db.insert_document(
+        make_doc(file_id="file_fb2", gdrive_id="gdrive_fail")
+    )
+
+    mock_files = MagicMock()
+    mock_files.download.side_effect = Exception("not downloadable")
+    mock_gdrive = MagicMock()
+    mock_gdrive.download.side_effect = Exception("GDrive 403 forbidden")
+    ctx = _mock_ctx(db, mock_files, mock_gdrive)
+
+    result = await view_document(ctx, file_id="file_fb2")
+    assert len(result) == 2
+    assert "gdrive download also failed" in result[1].lower()
+
+
+async def test_fallback_no_gdrive_id(db: Database):
+    """When Files API fails and doc has no gdrive_id, show appropriate error."""
+    await db.insert_document(make_doc(file_id="file_fb3"))  # no gdrive_id
+
+    mock_files = MagicMock()
+    mock_files.download.side_effect = Exception("not downloadable")
+    ctx = _mock_ctx(db, mock_files)
+
+    result = await view_document(ctx, file_id="file_fb3")
+    assert len(result) == 2
+    assert "no gdrive_id" in result[1].lower()
+
+
+async def test_fallback_no_gdrive_client(db: Database):
+    """When Files API fails, gdrive_id exists, but no GDrive client configured."""
+    await db.insert_document(
+        make_doc(file_id="file_fb4", gdrive_id="gdrive_xyz")
+    )
+
+    mock_files = MagicMock()
+    mock_files.download.side_effect = Exception("not downloadable")
+    ctx = _mock_ctx(db, mock_files, gdrive=None)
+
+    result = await view_document(ctx, file_id="file_fb4")
+    assert len(result) == 2
+    assert "not configured" in result[1].lower()
+
+
+async def test_analyze_labs_gdrive_fallback(db: Database):
+    """analyze_labs should use GDrive fallback when Files API fails."""
+    await db.insert_document(make_doc(
+        file_id="file_lab_fb", category=DocumentCategory.LABS, gdrive_id="gdrive_lab1",
+    ))
+
+    mock_files = MagicMock()
+    mock_files.download.side_effect = Exception("not downloadable")
+    mock_gdrive = MagicMock()
+    mock_gdrive.download.return_value = b"fake-gdrive-bytes"
+    ctx = _mock_ctx(db, mock_files, mock_gdrive)
+
+    result = await analyze_labs(ctx)
+    # patient context + header + content + instructions (no error)
+    assert len(result) == 4
+    assert "Instructions" in result[-1]
+    mock_gdrive.download.assert_called_once_with("gdrive_lab1")

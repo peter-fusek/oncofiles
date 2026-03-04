@@ -25,6 +25,7 @@ from erika_files_mcp.config import (
 from erika_files_mcp.database import Database
 from erika_files_mcp.filename_parser import parse_filename
 from erika_files_mcp.files_api import FilesClient
+from erika_files_mcp.gdrive_client import GDriveClient, create_gdrive_client
 from erika_files_mcp.models import Document, DocumentCategory, SearchQuery
 
 # ── Auth ──────────────────────────────────────────────────────────────────────
@@ -51,8 +52,9 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict]:
     await db.connect()
     await db.migrate()
     files = FilesClient()
+    gdrive = create_gdrive_client()
     try:
-        yield {"db": db, "files": files}
+        yield {"db": db, "files": files, "gdrive": gdrive}
     finally:
         await db.close()
 
@@ -70,7 +72,7 @@ mcp = FastMCP(
 
 @mcp.custom_route("/health", methods=["GET"])
 async def health(request: Request) -> JSONResponse:
-    return JSONResponse({"status": "ok", "version": "0.5.0"})
+    return JSONResponse({"status": "ok", "version": "0.6.0"})
 
 
 def _get_db(ctx: Context) -> Database:
@@ -79,6 +81,10 @@ def _get_db(ctx: Context) -> Database:
 
 def _get_files(ctx: Context) -> FilesClient:
     return ctx.request_context.lifespan_context["files"]
+
+
+def _get_gdrive(ctx: Context) -> GDriveClient | None:
+    return ctx.request_context.lifespan_context.get("gdrive")
 
 
 # ── Tools ────────────────────────────────────────────────────────────────────
@@ -305,22 +311,30 @@ def _inline_content(doc: Document, content_bytes: bytes) -> str | Image | File:
         return content_bytes.decode("utf-8", errors="replace")
 
 
-def _try_download(files: FilesClient, doc: Document) -> tuple[bool, str | Image | File]:
-    """Try to download file content. Returns (success, content_or_error)."""
+def _try_download(
+    files: FilesClient,
+    doc: Document,
+    gdrive: GDriveClient | None = None,
+) -> tuple[bool, str | Image | File]:
+    """Try to download file content. Falls back to Google Drive if available."""
+    # 1. Try Files API
     try:
         content_bytes = files.download(doc.file_id)
         return True, _inline_content(doc, content_bytes)
-    except Exception as e:
-        error_msg = str(e)
-        if "not_found" in error_msg.lower() or "404" in error_msg:
-            return False, f"[File deleted or expired: {doc.file_id}]"
-        if "downloadable" in error_msg.lower() or "not downloadable" in error_msg.lower():
-            return False, (
-                f"[File not downloadable: {doc.file_id}. "
-                f"Files API does not allow downloading user-uploaded files. "
-                f"Re-upload needed — see issue #35]"
-            )
-        return False, f"[Download failed for {doc.file_id}: {error_msg}]"
+    except Exception:
+        pass
+
+    # 2. Fallback: Google Drive
+    if gdrive and doc.gdrive_id:
+        try:
+            content_bytes = gdrive.download(doc.gdrive_id)
+            return True, _inline_content(doc, content_bytes)
+        except Exception as e:
+            return False, f"[GDrive download also failed: {e}]"
+
+    if not doc.gdrive_id:
+        return False, "[Not downloadable. No gdrive_id for fallback — see #35]"
+    return False, "[Not downloadable. GDrive client not configured — see #35]"
 
 
 # ── Analysis tools ───────────────────────────────────────────────────────────
@@ -338,11 +352,12 @@ async def view_document(ctx: Context, file_id: str) -> list:
     """
     db = _get_db(ctx)
     files = _get_files(ctx)
+    gdrive = _get_gdrive(ctx)
     doc = await db.get_document_by_file_id(file_id)
     if not doc:
         return [f"Document not found: {file_id}"]
 
-    ok, content = _try_download(files, doc)
+    ok, content = _try_download(files, doc, gdrive)
     if not ok:
         return [_doc_header(doc), content]
     return [_doc_header(doc), content]
@@ -367,6 +382,7 @@ async def analyze_labs(
     """
     db = _get_db(ctx)
     files = _get_files(ctx)
+    gdrive = _get_gdrive(ctx)
 
     if file_id:
         doc = await db.get_document_by_file_id(file_id)
@@ -384,7 +400,7 @@ async def analyze_labs(
     download_errors = 0
     for doc in labs:
         result.append(_doc_header(doc))
-        ok, content = _try_download(files, doc)
+        ok, content = _try_download(files, doc, gdrive)
         if not ok:
             download_errors += 1
         result.append(content)
@@ -430,6 +446,7 @@ async def compare_labs(
     """
     db = _get_db(ctx)
     files = _get_files(ctx)
+    gdrive = _get_gdrive(ctx)
 
     if file_id_a or file_id_b:
         # Specific file_ids mode
@@ -464,7 +481,7 @@ async def compare_labs(
     download_errors = 0
     for doc in labs:
         result.append(_doc_header(doc))
-        ok, content = _try_download(files, doc)
+        ok, content = _try_download(files, doc, gdrive)
         if not ok:
             download_errors += 1
         result.append(content)

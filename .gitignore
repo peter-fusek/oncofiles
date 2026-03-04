@@ -17,6 +17,7 @@ venv/
 .env
 credentials.json
 token.json
+*-sa-key.json
 
 # Local data
 data/
