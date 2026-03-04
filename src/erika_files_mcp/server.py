@@ -52,7 +52,13 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict]:
     await db.connect()
     await db.migrate()
     files = FilesClient()
-    gdrive = create_gdrive_client()
+    try:
+        gdrive = create_gdrive_client()
+    except Exception as e:
+        import logging
+
+        logging.getLogger(__name__).warning("GDrive client init failed: %s — fallback disabled", e)
+        gdrive = None
     try:
         yield {"db": db, "files": files, "gdrive": gdrive}
     finally:
