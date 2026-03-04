@@ -73,3 +73,47 @@ class SearchQuery(BaseModel):
     date_from: date | None = None
     date_to: date | None = None
     limit: int = Field(default=50, ge=1, le=200)
+
+
+# ── Conversation archive (#37) ───────────────────────────────────────────────
+
+
+class EntryType(StrEnum):
+    """Conversation entry types (soft convention, not a strict enum)."""
+
+    SUMMARY = "summary"
+    DECISION = "decision"
+    PROGRESS = "progress"
+    QUESTION = "question"
+    NOTE = "note"
+
+
+class ConversationEntry(BaseModel):
+    """A diary/worklog entry in the conversation archive."""
+
+    id: int | None = None
+    entry_date: date
+    entry_type: str = "note"
+    title: str
+    content: str
+    participant: str = "claude.ai"
+    session_id: str | None = None
+    tags: list[str] | None = None
+    document_ids: list[int] | None = None
+    source: str | None = None
+    source_ref: str | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class ConversationQuery(BaseModel):
+    """Search parameters for conversation entries."""
+
+    text: str | None = None
+    entry_type: str | None = None
+    participant: str | None = None
+    date_from: date | None = None
+    date_to: date | None = None
+    tags: list[str] | None = None
+    limit: int = Field(default=50, ge=1, le=200)
+    offset: int = Field(default=0, ge=0)

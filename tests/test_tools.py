@@ -9,7 +9,15 @@ from fastmcp.utilities.types import Image
 
 from erika_files_mcp.database import Database
 from erika_files_mcp.models import DocumentCategory
-from erika_files_mcp.server import analyze_labs, compare_labs, view_document
+from erika_files_mcp.server import (
+    analyze_labs,
+    compare_labs,
+    get_conversation,
+    get_journey_timeline,
+    log_conversation,
+    search_conversations,
+    view_document,
+)
 from tests.helpers import make_doc
 
 
@@ -378,3 +386,99 @@ async def test_analyze_labs_includes_ocr_text(db: Database):
     assert "--- Extracted Text ---" in result
     assert "WBC: 5.2 x10^9/L" in result
     assert "Instructions" in result[-1]
+
+
+# ── Conversation archive tools (#37) ────────────────────────────────────────
+
+
+async def test_log_conversation(db: Database):
+    ctx = _mock_ctx(db)
+    # Mock session_id access
+    ctx.session_id = "test-session-123"
+
+    result = await log_conversation(
+        ctx,
+        title="FOLFOX cycle 3 started",
+        content="Started FOLFOX cycle 3 today. Nausea managed well.",
+        entry_date="2025-03-01",
+        entry_type="progress",
+        tags="chemo,FOLFOX",
+    )
+    import json
+
+    data = json.loads(result)
+    assert data["id"] is not None
+    assert data["title"] == "FOLFOX cycle 3 started"
+    assert data["entry_type"] == "progress"
+    assert data["tags"] == ["chemo", "FOLFOX"]
+
+
+async def test_search_conversations(db: Database):
+    ctx = _mock_ctx(db)
+    ctx.session_id = None
+
+    # Create two entries
+    await log_conversation(
+        ctx,
+        title="Lab review discussion",
+        content="Discussed blood counts with oncologist.",
+        entry_date="2025-03-01",
+    )
+    await log_conversation(
+        ctx,
+        title="FOLFOX decision",
+        content="Decided to continue FOLFOX protocol.",
+        entry_date="2025-03-02",
+        entry_type="decision",
+    )
+
+    result = await search_conversations(ctx, text="FOLFOX")
+    import json
+
+    data = json.loads(result)
+    assert len(data) == 1
+    assert "FOLFOX" in data[0]["title"]
+
+
+async def test_get_conversation(db: Database):
+    ctx = _mock_ctx(db)
+    ctx.session_id = None
+
+    result = await log_conversation(
+        ctx,
+        title="Test entry",
+        content="Full content here with lots of detail.",
+    )
+    import json
+
+    entry_id = json.loads(result)["id"]
+
+    full = await get_conversation(ctx, entry_id=entry_id)
+    data = json.loads(full)
+    assert data["content"] == "Full content here with lots of detail."
+    assert data["source"] == "live"
+
+
+async def test_get_journey_timeline(db: Database):
+    ctx = _mock_ctx(db)
+    ctx.session_id = None
+
+    # Create a document + a conversation entry
+    await db.insert_document(make_doc(file_id="file_timeline", document_date=date(2025, 2, 1)))
+    await log_conversation(
+        ctx,
+        title="Treatment discussion",
+        content="Discussed treatment plan.",
+        entry_date="2025-02-15",
+    )
+
+    result = await get_journey_timeline(ctx)
+    import json
+
+    timeline = json.loads(result)
+    assert len(timeline) == 2
+    # Check chronological order
+    assert timeline[0]["date"] <= timeline[1]["date"]
+    types = {item["type"] for item in timeline}
+    assert "document" in types
+    assert "conversation" in types
