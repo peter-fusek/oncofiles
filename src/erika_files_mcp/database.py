@@ -290,6 +290,45 @@ class Database:
         )
         await self.db.commit()
 
+    # ── OCR cache ─────────────────────────────────────────────────────────
+
+    async def has_ocr_text(self, document_id: int) -> bool:
+        """Check if OCR text is cached for a document."""
+        async with self.db.execute(
+            "SELECT 1 FROM document_pages WHERE document_id = ? LIMIT 1",
+            (document_id,),
+        ) as cursor:
+            return await cursor.fetchone() is not None
+
+    async def get_ocr_pages(self, document_id: int) -> list[dict]:
+        """Get cached OCR text for a document, ordered by page number."""
+        async with self.db.execute(
+            "SELECT page_number, extracted_text, model FROM document_pages "
+            "WHERE document_id = ? ORDER BY page_number",
+            (document_id,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return [dict(r) for r in rows]
+
+    async def save_ocr_page(
+        self, document_id: int, page_number: int, text: str, model: str
+    ) -> None:
+        """Save or update OCR text for a single page."""
+        await self.db.execute(
+            "INSERT OR REPLACE INTO document_pages "
+            "(document_id, page_number, extracted_text, model) VALUES (?, ?, ?, ?)",
+            (document_id, page_number, text, model),
+        )
+        await self.db.commit()
+
+    async def delete_ocr_pages(self, document_id: int) -> bool:
+        """Delete all cached OCR pages for a document. Returns True if any deleted."""
+        cursor = await self.db.execute(
+            "DELETE FROM document_pages WHERE document_id = ?", (document_id,)
+        )
+        await self.db.commit()
+        return cursor.rowcount > 0
+
     async def get_latest_labs(self, limit: int = 5) -> list[Document]:
         """Get the most recent lab result documents."""
         async with self.db.execute(
