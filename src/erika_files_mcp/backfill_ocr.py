@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import functools
+import logging
 
 from erika_files_mcp.config import (
     DATABASE_PATH,
@@ -25,8 +25,7 @@ from erika_files_mcp.files_api import FilesClient
 from erika_files_mcp.ocr import OCR_MODEL, extract_text_from_image
 from erika_files_mcp.server import _extract_pdf_text, _inline_content, _resize_image_if_needed
 
-# Ensure all output is flushed immediately for progress visibility
-print = functools.partial(print, flush=True)  # noqa: A001
+logger = logging.getLogger(__name__)
 
 
 async def backfill(dry_run: bool = False) -> dict[str, int]:
@@ -51,22 +50,22 @@ async def backfill(dry_run: bool = False) -> dict[str, int]:
 
             gdrive = create_gdrive_client()
         except Exception as e:
-            print(f"Warning: GDrive client init failed: {e}")
+            logger.warning("GDrive client init failed: %s", e)
 
     docs = await db.list_documents(limit=500)
-    print(f"Found {len(docs)} documents in database.\n")
+    logger.info("Found %d documents in database.", len(docs))
 
     stats = {"total": len(docs), "skipped": 0, "processed": 0, "errors": 0}
 
     for doc in docs:
         # Check if already cached
         if await db.has_ocr_text(doc.id):
-            print(f"  SKIP  {doc.original_filename} (already has OCR text)")
+            logger.debug("  SKIP  %s (already has OCR text)", doc.original_filename)
             stats["skipped"] += 1
             continue
 
         if dry_run:
-            print(f"  WOULD {doc.original_filename}")
+            logger.info("  WOULD %s", doc.original_filename)
             stats["processed"] += 1
             continue
 
@@ -79,11 +78,11 @@ async def backfill(dry_run: bool = False) -> dict[str, int]:
                 try:
                     content_bytes = gdrive.download(doc.gdrive_id)
                 except Exception as e:
-                    print(f"  ERROR {doc.original_filename} — download failed: {e}")
+                    logger.error("  ERROR %s — download failed: %s", doc.original_filename, e)
                     stats["errors"] += 1
                     continue
             else:
-                print(f"  ERROR {doc.original_filename} — not downloadable")
+                logger.error("  ERROR %s — not downloadable", doc.original_filename)
                 stats["errors"] += 1
                 continue
 
@@ -93,7 +92,7 @@ async def backfill(dry_run: bool = False) -> dict[str, int]:
             if pdf_texts:
                 for page_num, text in enumerate(pdf_texts, start=1):
                     await db.save_ocr_page(doc.id, page_num, text, "pymupdf-native")
-                print(f"  TEXT  {doc.original_filename} ({len(pdf_texts)} pages, native)")
+                logger.info("  TEXT  %s (%d pages, native)", doc.original_filename, len(pdf_texts))
                 stats["processed"] += 1
                 continue
 
@@ -103,7 +102,7 @@ async def backfill(dry_run: bool = False) -> dict[str, int]:
 
         images = [item for item in content_items if isinstance(item, Image)]
         if not images:
-            print(f"  SKIP  {doc.original_filename} (no images to OCR)")
+            logger.info("  SKIP  %s (no images to OCR)", doc.original_filename)
             stats["skipped"] += 1
             continue
 
@@ -112,24 +111,28 @@ async def backfill(dry_run: bool = False) -> dict[str, int]:
                 resized = _resize_image_if_needed(image)
                 text = extract_text_from_image(resized)
                 await db.save_ocr_page(doc.id, page_num, text, OCR_MODEL)
-            print(f"  OCR   {doc.original_filename} ({len(images)} pages)")
+            logger.info("  OCR   %s (%d pages)", doc.original_filename, len(images))
             stats["processed"] += 1
         except Exception as e:
-            print(f"  ERROR {doc.original_filename} — OCR failed: {e}")
+            logger.error("  ERROR %s — OCR failed: %s", doc.original_filename, e)
             stats["errors"] += 1
 
     await db.close()
 
-    print(f"\n{'Dry run — no changes made.' if dry_run else 'Backfill complete.'}")
-    print(f"  Total:     {stats['total']}")
-    print(f"  Processed: {stats['processed']}")
-    print(f"  Skipped:   {stats['skipped']}")
-    print(f"  Errors:    {stats['errors']}")
+    logger.info(
+        "%s — total=%d processed=%d skipped=%d errors=%d",
+        "Dry run" if dry_run else "Backfill complete",
+        stats["total"],
+        stats["processed"],
+        stats["skipped"],
+        stats["errors"],
+    )
 
     return stats
 
 
 def main() -> None:
+    logging.basicConfig(level=logging.INFO, format="%(levelname)-8s %(message)s")
     parser = argparse.ArgumentParser(description="Backfill OCR text for existing documents")
     parser.add_argument("--dry-run", action="store_true", help="Preview without running OCR")
     args = parser.parse_args()

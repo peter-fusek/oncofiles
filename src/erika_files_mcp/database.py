@@ -241,9 +241,10 @@ class Database:
             like_param = f"%{query.text}%"
             conditions.append(
                 "(filename LIKE ? OR original_filename LIKE ? "
-                "OR institution LIKE ? OR description LIKE ?)"
+                "OR institution LIKE ? OR description LIKE ? "
+                "OR ai_summary LIKE ? OR ai_tags LIKE ?)"
             )
-            params.extend([like_param, like_param, like_param, like_param])
+            params.extend([like_param, like_param, like_param, like_param, like_param, like_param])
 
         if query.institution:
             conditions.append("institution = ?")
@@ -302,6 +303,43 @@ class Database:
             LIMIT ?
             """,
             (*treatment_categories, limit),
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return [_row_to_document(r) for r in rows]
+
+    async def get_document_by_gdrive_id(self, gdrive_id: str) -> Document | None:
+        """Get a document by its Google Drive file ID."""
+        async with self.db.execute(
+            "SELECT * FROM documents WHERE gdrive_id = ?", (gdrive_id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+            return _row_to_document(row) if row else None
+
+    async def update_document_file_id(self, doc_id: int, file_id: str, size_bytes: int) -> None:
+        """Update the Anthropic file_id and size for a re-uploaded document."""
+        await self.db.execute(
+            "UPDATE documents SET file_id = ?, size_bytes = ?, "
+            "updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = ?",
+            (file_id, size_bytes, doc_id),
+        )
+        await self.db.commit()
+
+    async def update_document_ai_metadata(self, doc_id: int, ai_summary: str, ai_tags: str) -> None:
+        """Update AI-generated summary and tags for a document."""
+        await self.db.execute(
+            "UPDATE documents SET ai_summary = ?, ai_tags = ?, "
+            "ai_processed_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now'), "
+            "updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = ?",
+            (ai_summary, ai_tags, doc_id),
+        )
+        await self.db.commit()
+
+    async def get_documents_without_ai(self, limit: int = 100) -> list[Document]:
+        """Get documents that haven't been AI-processed yet."""
+        async with self.db.execute(
+            "SELECT * FROM documents WHERE ai_processed_at IS NULL "
+            "ORDER BY document_date DESC LIMIT ?",
+            (limit,),
         ) as cursor:
             rows = await cursor.fetchall()
             return [_row_to_document(r) for r in rows]
@@ -879,5 +917,10 @@ def _row_to_document(row: aiosqlite.Row) -> Document:
             datetime.fromisoformat(row["gdrive_modified_time"])
             if row["gdrive_modified_time"]
             else None
+        ),
+        ai_summary=row["ai_summary"],
+        ai_tags=row["ai_tags"],
+        ai_processed_at=(
+            datetime.fromisoformat(row["ai_processed_at"]) if row["ai_processed_at"] else None
         ),
     )

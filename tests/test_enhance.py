@@ -1,0 +1,191 @@
+"""Tests for AI enhancement layer (#v0.9)."""
+
+from __future__ import annotations
+
+from unittest.mock import MagicMock, patch
+
+from erika_files_mcp.database import Database
+from erika_files_mcp.enhance import enhance_document_text
+from erika_files_mcp.sync import enhance_documents
+from tests.helpers import make_doc
+
+# ── enhance_document_text ───────────────────────────────────────────────────
+
+
+def test_enhance_empty_text():
+    """Empty text returns empty summary and empty tags."""
+    summary, tags = enhance_document_text("")
+    assert summary == ""
+    assert tags == "[]"
+
+
+def test_enhance_whitespace_text():
+    """Whitespace-only text returns empty results."""
+    summary, tags = enhance_document_text("   \n  ")
+    assert summary == ""
+    assert tags == "[]"
+
+
+def test_enhance_valid_response():
+    """Valid JSON response from Claude is parsed correctly."""
+    mock_response = MagicMock()
+    mock_response.content = [
+        MagicMock(
+            text=(
+                '{"summary": "Lab results showing elevated CEA.",'
+                ' "tags": ["labs", "CEA", "oncology"]}'
+            )
+        )
+    ]
+
+    with patch("erika_files_mcp.enhance.anthropic") as mock_anthropic:
+        mock_anthropic.Anthropic.return_value.messages.create.return_value = mock_response
+        summary, tags = enhance_document_text("CEA: 15.2 ng/mL (ref <5.0)")
+
+    assert summary == "Lab results showing elevated CEA."
+    assert tags == '["labs", "CEA", "oncology"]'
+
+
+def test_enhance_invalid_json():
+    """Non-JSON response falls back gracefully."""
+    mock_response = MagicMock()
+    mock_response.content = [MagicMock(text="This is not JSON")]
+
+    with patch("erika_files_mcp.enhance.anthropic") as mock_anthropic:
+        mock_anthropic.Anthropic.return_value.messages.create.return_value = mock_response
+        summary, tags = enhance_document_text("some text")
+
+    assert summary == "This is not JSON"
+    assert tags == "[]"
+
+
+def test_enhance_missing_keys():
+    """JSON response missing expected keys returns defaults."""
+    mock_response = MagicMock()
+    mock_response.content = [MagicMock(text='{"other": "data"}')]
+
+    with patch("erika_files_mcp.enhance.anthropic") as mock_anthropic:
+        mock_anthropic.Anthropic.return_value.messages.create.return_value = mock_response
+        summary, tags = enhance_document_text("some text")
+
+    assert summary == ""
+    assert tags == "[]"
+
+
+# ── enhance_documents (integration) ────────────────────────────────────────
+
+
+async def test_enhance_documents_all_unprocessed(db: Database):
+    """Enhances all documents without AI metadata."""
+    doc = make_doc()
+    doc = await db.insert_document(doc)
+
+    # Seed OCR text so enhancement has something to work with
+    await db.save_ocr_page(doc.id, 1, "CEA: 15.2 ng/mL", "pymupdf-native")
+
+    files = MagicMock()
+    with patch(
+        "erika_files_mcp.sync.enhance_document_text",
+        return_value=("AI summary", '["labs"]'),
+    ):
+        stats = await enhance_documents(db, files, None)
+
+    assert stats["processed"] == 1
+    assert stats["errors"] == 0
+
+    # Verify metadata was saved
+    updated = await db.get_document(doc.id)
+    assert updated.ai_summary == "AI summary"
+    assert updated.ai_tags == '["labs"]'
+    assert updated.ai_processed_at is not None
+
+
+async def test_enhance_documents_specific_ids(db: Database):
+    """Enhances only specified document IDs."""
+    doc1 = await db.insert_document(make_doc(file_id="f1"))
+    doc2 = await db.insert_document(
+        make_doc(file_id="f2", filename="other.pdf", original_filename="other.pdf")
+    )
+
+    # Seed OCR text for both
+    await db.save_ocr_page(doc1.id, 1, "Text 1", "pymupdf-native")
+    await db.save_ocr_page(doc2.id, 1, "Text 2", "pymupdf-native")
+
+    files = MagicMock()
+    with patch(
+        "erika_files_mcp.sync.enhance_document_text",
+        return_value=("summary", '["tag"]'),
+    ):
+        stats = await enhance_documents(db, files, None, document_ids=[doc1.id])
+
+    assert stats["processed"] == 1
+
+    # Only doc1 should be enhanced
+    d1 = await db.get_document(doc1.id)
+    d2 = await db.get_document(doc2.id)
+    assert d1.ai_summary == "summary"
+    assert d2.ai_summary is None
+
+
+async def test_enhance_skips_no_text(db: Database):
+    """Documents with no OCR text are skipped (not errors)."""
+    doc = make_doc()
+    doc = await db.insert_document(doc)
+
+    files = MagicMock()
+    files.download.side_effect = Exception("not downloadable")
+
+    stats = await enhance_documents(db, files, None, document_ids=[doc.id])
+
+    # Should skip gracefully (no text available)
+    assert stats["processed"] == 0
+    # The enhance function logs a warning but doesn't count it as error
+    # since it's expected for some docs
+
+
+# ── Database AI metadata methods ────────────────────────────────────────────
+
+
+async def test_update_document_ai_metadata(db: Database):
+    """AI metadata is stored and retrievable."""
+    doc = make_doc()
+    doc = await db.insert_document(doc)
+
+    await db.update_document_ai_metadata(doc.id, "Test summary", '["test"]')
+
+    updated = await db.get_document(doc.id)
+    assert updated.ai_summary == "Test summary"
+    assert updated.ai_tags == '["test"]'
+    assert updated.ai_processed_at is not None
+
+
+async def test_get_documents_without_ai(db: Database):
+    """Only returns documents without AI processing."""
+    doc1 = await db.insert_document(make_doc(file_id="f1"))
+    doc2 = await db.insert_document(
+        make_doc(file_id="f2", filename="other.pdf", original_filename="other.pdf")
+    )
+
+    # Process doc1 only
+    await db.update_document_ai_metadata(doc1.id, "summary", "[]")
+
+    unprocessed = await db.get_documents_without_ai()
+    assert len(unprocessed) == 1
+    assert unprocessed[0].id == doc2.id
+
+
+async def test_search_documents_includes_ai_fields(db: Database):
+    """Search finds documents by AI summary and tags content."""
+    from erika_files_mcp.models import SearchQuery
+
+    doc = await db.insert_document(make_doc())
+    await db.update_document_ai_metadata(doc.id, "Elevated CEA tumor marker", '["tumor-marker"]')
+
+    # Search by AI summary content
+    results = await db.search_documents(SearchQuery(text="tumor marker"))
+    assert len(results) == 1
+    assert results[0].id == doc.id
+
+    # Search by AI tag content
+    results = await db.search_documents(SearchQuery(text="tumor-marker"))
+    assert len(results) == 1

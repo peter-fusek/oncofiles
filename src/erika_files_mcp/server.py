@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import io
 import json
+import logging
+import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import date
@@ -15,6 +17,8 @@ from starlette.responses import JSONResponse
 
 from erika_files_mcp.config import (
     DATABASE_PATH,
+    GOOGLE_DRIVE_FOLDER_ID,
+    LOG_LEVEL,
     MCP_BEARER_TOKEN,
     MCP_HOST,
     MCP_PORT,
@@ -42,6 +46,8 @@ from erika_files_mcp.models import (
 )
 from erika_files_mcp.ocr import OCR_MODEL, extract_text_from_image
 
+logger = logging.getLogger(__name__)
+
 # ── Auth ──────────────────────────────────────────────────────────────────────
 
 auth = None
@@ -56,9 +62,24 @@ if MCP_BEARER_TOKEN:
 # ── Lifespan ──────────────────────────────────────────────────────────────────
 
 
+def _setup_logging() -> None:
+    """Configure structured logging based on transport and LOG_LEVEL."""
+    level = getattr(logging, LOG_LEVEL.upper(), logging.INFO)
+    if MCP_TRANSPORT == "streamable-http":
+        # JSON format for Railway / cloud
+        fmt = (
+            '{"time":"%(asctime)s","level":"%(levelname)s","logger":"%(name)s","msg":"%(message)s"}'
+        )
+    else:
+        fmt = "%(asctime)s %(levelname)-8s %(name)s — %(message)s"
+    logging.basicConfig(level=level, format=fmt, stream=sys.stderr, force=True)
+
+
 @asynccontextmanager
 async def lifespan(server: FastMCP) -> AsyncIterator[dict]:
     """Initialize database and Files API client on startup."""
+    _setup_logging()
+    logger.info("Starting Erika Files MCP server (transport=%s)", MCP_TRANSPORT)
     if TURSO_DATABASE_URL:
         db = Database(turso_url=TURSO_DATABASE_URL, turso_token=TURSO_AUTH_TOKEN)
     else:
@@ -69,9 +90,7 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict]:
     try:
         gdrive = create_gdrive_client()
     except Exception as e:
-        import logging
-
-        logging.getLogger(__name__).warning("GDrive client init failed: %s — fallback disabled", e)
+        logger.warning("GDrive client init failed: %s — fallback disabled", e)
         gdrive = None
     try:
         yield {"db": db, "files": files, "gdrive": gdrive}
@@ -92,7 +111,7 @@ mcp = FastMCP(
 
 @mcp.custom_route("/health", methods=["GET"])
 async def health(request: Request) -> JSONResponse:
-    return JSONResponse({"status": "ok", "version": "0.8.0"})
+    return JSONResponse({"status": "ok", "version": "0.9.0"})
 
 
 def _get_db(ctx: Context) -> Database:
@@ -105,6 +124,24 @@ def _get_files(ctx: Context) -> FilesClient:
 
 def _get_gdrive(ctx: Context) -> GDriveClient | None:
     return ctx.request_context.lifespan_context.get("gdrive")
+
+
+def _doc_to_dict(d: Document) -> dict:
+    """Convert a Document to a JSON-serializable dict for tool output."""
+    result = {
+        "id": d.id,
+        "file_id": d.file_id,
+        "filename": d.filename,
+        "document_date": d.document_date.isoformat() if d.document_date else None,
+        "institution": d.institution,
+        "category": d.category.value,
+        "description": d.description,
+    }
+    if d.ai_summary:
+        result["ai_summary"] = d.ai_summary
+    if d.ai_tags:
+        result["ai_tags"] = d.ai_tags
+    return result
 
 
 # ── Tools ────────────────────────────────────────────────────────────────────
@@ -178,20 +215,7 @@ async def list_documents(
     """
     db = _get_db(ctx)
     docs = await db.list_documents(limit=limit, offset=offset)
-    return json.dumps(
-        [
-            {
-                "id": d.id,
-                "file_id": d.file_id,
-                "filename": d.filename,
-                "document_date": d.document_date.isoformat() if d.document_date else None,
-                "institution": d.institution,
-                "category": d.category.value,
-                "description": d.description,
-            }
-            for d in docs
-        ]
-    )
+    return json.dumps([_doc_to_dict(d) for d in docs])
 
 
 @mcp.tool()
@@ -225,20 +249,7 @@ async def search_documents(
         limit=limit,
     )
     docs = await db.search_documents(query)
-    return json.dumps(
-        [
-            {
-                "id": d.id,
-                "file_id": d.file_id,
-                "filename": d.filename,
-                "document_date": d.document_date.isoformat() if d.document_date else None,
-                "institution": d.institution,
-                "category": d.category.value,
-                "description": d.description,
-            }
-            for d in docs
-        ]
-    )
+    return json.dumps([_doc_to_dict(d) for d in docs])
 
 
 @mcp.tool()
@@ -1282,6 +1293,103 @@ async def get_activity_stats(
         date_from=date.fromisoformat(date_from) if date_from else None,
         date_to=date.fromisoformat(date_to) if date_to else None,
     )
+    return json.dumps(stats)
+
+
+# ── Sync tools (#v0.9) ───────────────────────────────────────────────────────
+
+
+@mcp.tool()
+async def sync_from_gdrive(
+    ctx: Context,
+    dry_run: bool = False,
+    enhance: bool = True,
+) -> str:
+    """Sync files from Google Drive into oncofiles.
+
+    Detects new files and changed files (by modifiedTime), downloads them,
+    uploads to Files API, and stores metadata. Optionally runs AI enhancement.
+
+    Args:
+        dry_run: Preview changes without importing.
+        enhance: Run AI summary/tag generation on new/changed files (default True).
+    """
+    from erika_files_mcp.sync import sync_from_gdrive as _sync_from_gdrive
+
+    db = _get_db(ctx)
+    files = _get_files(ctx)
+    gdrive = _get_gdrive(ctx)
+    if not gdrive:
+        return json.dumps({"error": "GDrive client not configured"})
+    if not GOOGLE_DRIVE_FOLDER_ID:
+        return json.dumps({"error": "GOOGLE_DRIVE_FOLDER_ID not set"})
+
+    stats = await _sync_from_gdrive(
+        db,
+        files,
+        gdrive,
+        GOOGLE_DRIVE_FOLDER_ID,
+        dry_run=dry_run,
+        enhance=enhance,
+    )
+    return json.dumps(stats)
+
+
+@mcp.tool()
+async def sync_to_gdrive(
+    ctx: Context,
+    dry_run: bool = False,
+) -> str:
+    """Export documents from oncofiles to Google Drive.
+
+    Uploads documents that don't have a gdrive_id (not yet on GDrive).
+
+    Args:
+        dry_run: Preview changes without exporting.
+    """
+    from erika_files_mcp.sync import sync_to_gdrive as _sync_to_gdrive
+
+    db = _get_db(ctx)
+    files = _get_files(ctx)
+    gdrive = _get_gdrive(ctx)
+    if not gdrive:
+        return json.dumps({"error": "GDrive client not configured"})
+    if not GOOGLE_DRIVE_FOLDER_ID:
+        return json.dumps({"error": "GOOGLE_DRIVE_FOLDER_ID not set"})
+
+    stats = await _sync_to_gdrive(
+        db,
+        files,
+        gdrive,
+        GOOGLE_DRIVE_FOLDER_ID,
+        dry_run=dry_run,
+    )
+    return json.dumps(stats)
+
+
+@mcp.tool()
+async def enhance_documents(
+    ctx: Context,
+    document_ids: str | None = None,
+) -> str:
+    """Run AI enhancement (summary + tags) on documents.
+
+    If document_ids is omitted, processes all documents that haven't been enhanced yet.
+
+    Args:
+        document_ids: Comma-separated document IDs to enhance. If omitted, enhances all unprocessed.
+    """
+    from erika_files_mcp.sync import enhance_documents as _enhance_documents
+
+    db = _get_db(ctx)
+    files = _get_files(ctx)
+    gdrive = _get_gdrive(ctx)
+
+    parsed_ids = (
+        [int(d.strip()) for d in document_ids.split(",") if d.strip()] if document_ids else None
+    )
+
+    stats = await _enhance_documents(db, files, gdrive, document_ids=parsed_ids)
     return json.dumps(stats)
 
 

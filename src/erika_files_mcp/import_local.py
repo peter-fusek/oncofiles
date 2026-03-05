@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import logging
 import mimetypes
 import sys
 from datetime import datetime
@@ -22,6 +23,8 @@ from erika_files_mcp.filename_parser import parse_filename
 from erika_files_mcp.files_api import FilesClient
 from erika_files_mcp.gdrive_client import create_gdrive_client
 from erika_files_mcp.models import Document
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_SOURCE = Path.home() / (
     "Library/CloudStorage/GoogleDrive-peterfusek1980@gmail.com/My Drive/Zdravie/Erika"
@@ -63,11 +66,11 @@ async def import_documents(
     Returns summary dict with counts: total, imported, skipped, errors.
     """
     if not source_dir.exists():
-        print(f"Source directory not found: {source_dir}")
+        logger.error("Source directory not found: %s", source_dir)
         sys.exit(1)
 
     files = _collect_files(source_dir)
-    print(f"Found {len(files)} importable files in {source_dir}\n")
+    logger.info("Found %d importable files in %s", len(files), source_dir)
 
     if dry_run:
         for f in files:
@@ -76,8 +79,8 @@ async def import_documents(
             cat = parsed.category.value
             inst = parsed.institution or "?"
             date_s = parsed.document_date.isoformat() if parsed.document_date else "????"
-            print(f"  [{date_s}] {inst:20s} {cat:12s} {rel}")
-        print(f"\nDry run: {len(files)} files would be imported.")
+            logger.info("  [%s] %-20s %-12s %s", date_s, inst, cat, rel)
+        logger.info("Dry run: %d files would be imported.", len(files))
         return {"total": len(files), "imported": 0, "skipped": 0, "errors": 0}
 
     db = Database(DATABASE_PATH)
@@ -89,10 +92,10 @@ async def import_documents(
     gdrive_lookup: dict[str, dict] = {}
     gdrive = create_gdrive_client()
     if gdrive and GOOGLE_DRIVE_FOLDER_ID:
-        print("Building GDrive filename lookup...")
+        logger.info("Building GDrive filename lookup...")
         for gf in gdrive.list_folder(GOOGLE_DRIVE_FOLDER_ID):
             gdrive_lookup[gf["name"]] = gf
-        print(f"  {len(gdrive_lookup)} files indexed from Google Drive.\n")
+        logger.info("  %d files indexed from Google Drive.", len(gdrive_lookup))
 
     stats = {"total": len(files), "imported": 0, "skipped": 0, "errors": 0}
 
@@ -103,15 +106,15 @@ async def import_documents(
         # Idempotency check
         existing = await db.get_document_by_original_filename(name)
         if existing:
-            print(f"  [{i}/{len(files)}] SKIP (exists) {rel}")
+            logger.info("  [%d/%d] SKIP (exists) %s", i, len(files), rel)
             stats["skipped"] += 1
             continue
 
         try:
             # Upload to Files API
-            print(f"  [{i}/{len(files)}] Uploading {rel}...", end=" ", flush=True)
+            logger.info("  [%d/%d] Uploading %s...", i, len(files), rel)
             metadata = client.upload_path(filepath)
-            print(f"→ {metadata.id}")
+            logger.info("  → %s", metadata.id)
 
             # Parse filename for metadata
             parsed = parse_filename(name)
@@ -145,21 +148,24 @@ async def import_documents(
             stats["imported"] += 1
 
         except Exception as e:
-            print(f"ERROR: {e}")
+            logger.error("  ERROR: %s", e)
             stats["errors"] += 1
 
     await db.close()
 
-    print("\nImport complete:")
-    print(f"  Total files:  {stats['total']}")
-    print(f"  Imported:     {stats['imported']}")
-    print(f"  Skipped:      {stats['skipped']}")
-    print(f"  Errors:       {stats['errors']}")
+    logger.info(
+        "Import complete: total=%d imported=%d skipped=%d errors=%d",
+        stats["total"],
+        stats["imported"],
+        stats["skipped"],
+        stats["errors"],
+    )
 
     return stats
 
 
 def main() -> None:
+    logging.basicConfig(level=logging.INFO, format="%(levelname)-8s %(message)s")
     parser = argparse.ArgumentParser(description="Import local medical documents")
     parser.add_argument("--dry-run", action="store_true", help="Preview without uploading")
     parser.add_argument("--path", type=Path, default=DEFAULT_SOURCE, help="Source directory")

@@ -39,6 +39,9 @@ class Document(BaseModel):
     updated_at: datetime | None = None
     gdrive_id: str | None = Field(default=None, description="Google Drive file ID")
     gdrive_modified_time: datetime | None = None
+    ai_summary: str | None = Field(default=None, description="AI-generated document summary")
+    ai_tags: str | None = Field(default=None, description="JSON array of AI-generated tags")
+    ai_processed_at: datetime | None = None
 
     @property
     def content_block(self) -> dict:

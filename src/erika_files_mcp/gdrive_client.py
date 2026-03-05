@@ -11,7 +11,7 @@ from erika_files_mcp.config import GOOGLE_APPLICATION_CREDENTIALS, GOOGLE_CREDEN
 
 logger = logging.getLogger(__name__)
 
-SCOPES = ["https://www.googleapis.com/auth/drive.readonly"]
+SCOPES = ["https://www.googleapis.com/auth/drive"]
 
 
 class GDriveClient:
@@ -50,6 +50,50 @@ class GDriveClient:
             _, done = downloader.next_chunk()
 
         return buf.getvalue()
+
+    def upload(
+        self,
+        filename: str,
+        content_bytes: bytes,
+        mime_type: str = "application/octet-stream",
+        folder_id: str | None = None,
+    ) -> dict:
+        """Upload a file to Google Drive. Returns file metadata dict with id, modifiedTime."""
+        from googleapiclient.http import MediaInMemoryUpload
+
+        file_metadata: dict = {"name": filename}
+        if folder_id:
+            file_metadata["parents"] = [folder_id]
+
+        media = MediaInMemoryUpload(content_bytes, mimetype=mime_type)
+        result = (
+            self._service.files()
+            .create(
+                body=file_metadata,
+                media_body=media,
+                fields="id, name, modifiedTime",
+            )
+            .execute()
+        )
+        logger.info("Uploaded %s to GDrive: %s", filename, result.get("id"))
+        return result
+
+    def update(self, gdrive_id: str, content_bytes: bytes, mime_type: str) -> dict:
+        """Update an existing file's content on Google Drive."""
+        from googleapiclient.http import MediaInMemoryUpload
+
+        media = MediaInMemoryUpload(content_bytes, mimetype=mime_type)
+        result = (
+            self._service.files()
+            .update(
+                fileId=gdrive_id,
+                media_body=media,
+                fields="id, name, modifiedTime",
+            )
+            .execute()
+        )
+        logger.info("Updated GDrive file %s", gdrive_id)
+        return result
 
     def list_folder(self, folder_id: str, recursive: bool = True) -> list[dict]:
         """List all files in a Google Drive folder.
