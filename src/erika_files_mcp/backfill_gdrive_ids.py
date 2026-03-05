@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import logging
 import sys
 
 from erika_files_mcp.config import (
@@ -23,6 +24,8 @@ from erika_files_mcp.config import (
 from erika_files_mcp.database import Database
 from erika_files_mcp.gdrive_client import create_gdrive_client
 
+logger = logging.getLogger(__name__)
+
 
 async def backfill(dry_run: bool = False, folder_id: str = "") -> dict[str, int]:
     """Match GDrive files to DB documents and update gdrive_id.
@@ -31,17 +34,17 @@ async def backfill(dry_run: bool = False, folder_id: str = "") -> dict[str, int]
     """
     folder_id = folder_id or GOOGLE_DRIVE_FOLDER_ID
     if not folder_id:
-        print("Error: GOOGLE_DRIVE_FOLDER_ID not set. Pass --folder-id or set env var.")
+        logger.error("GOOGLE_DRIVE_FOLDER_ID not set. Pass --folder-id or set env var.")
         sys.exit(1)
 
     gdrive = create_gdrive_client()
     if not gdrive:
-        print("Error: No GDrive credentials configured.")
+        logger.error("No GDrive credentials configured.")
         sys.exit(1)
 
-    print(f"Listing files in GDrive folder {folder_id}...")
+    logger.info("Listing files in GDrive folder %s...", folder_id)
     gdrive_files = gdrive.list_folder(folder_id)
-    print(f"Found {len(gdrive_files)} files in Google Drive.\n")
+    logger.info("Found %d files in Google Drive.", len(gdrive_files))
 
     # Build lookup: filename → gdrive file info
     gdrive_by_name: dict[str, dict] = {}
@@ -56,42 +59,46 @@ async def backfill(dry_run: bool = False, folder_id: str = "") -> dict[str, int]
     await db.migrate()
 
     docs = await db.list_documents(limit=500)
-    print(f"Found {len(docs)} documents in database.\n")
+    logger.info("Found %d documents in database.", len(docs))
 
     stats = {"total_gdrive": len(gdrive_files), "matched": 0, "already_set": 0, "not_found": 0}
 
     for doc in docs:
         gf = gdrive_by_name.get(doc.original_filename)
         if not gf:
-            print(f"  MISS  {doc.original_filename}")
+            logger.info("  MISS  %s", doc.original_filename)
             stats["not_found"] += 1
             continue
 
         if doc.gdrive_id:
-            print(f"  SKIP  {doc.original_filename} (already has gdrive_id)")
+            logger.info("  SKIP  %s (already has gdrive_id)", doc.original_filename)
             stats["already_set"] += 1
             continue
 
         modified_time = gf.get("modifiedTime", "")
         if dry_run:
-            print(f"  MATCH {doc.original_filename} → {gf['id']}")
+            logger.info("  MATCH %s -> %s", doc.original_filename, gf["id"])
         else:
             await db.update_gdrive_id(doc.id, gf["id"], modified_time)
-            print(f"  SET   {doc.original_filename} → {gf['id']}")
+            logger.info("  SET   %s -> %s", doc.original_filename, gf["id"])
         stats["matched"] += 1
 
     await db.close()
 
-    print(f"\n{'Dry run — no changes made.' if dry_run else 'Backfill complete.'}")
-    print(f"  GDrive files:  {stats['total_gdrive']}")
-    print(f"  Matched:       {stats['matched']}")
-    print(f"  Already set:   {stats['already_set']}")
-    print(f"  Not found:     {stats['not_found']}")
+    logger.info(
+        "%s — gdrive=%d matched=%d already=%d not_found=%d",
+        "Dry run" if dry_run else "Backfill complete",
+        stats["total_gdrive"],
+        stats["matched"],
+        stats["already_set"],
+        stats["not_found"],
+    )
 
     return stats
 
 
 def main() -> None:
+    logging.basicConfig(level=logging.INFO, format="%(levelname)-8s %(message)s")
     parser = argparse.ArgumentParser(description="Backfill gdrive_id for existing documents")
     parser.add_argument("--dry-run", action="store_true", help="Preview without writing")
     parser.add_argument("--folder-id", default="", help="GDrive folder ID (overrides env)")

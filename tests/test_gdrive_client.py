@@ -112,6 +112,36 @@ def test_list_folder_recursive():
     assert names == {"root.pdf", "sub.pdf"}
 
 
+def test_upload():
+    """Test uploading a file to GDrive."""
+    client, service = _make_client()
+
+    service.files.return_value.create.return_value.execute.return_value = {
+        "id": "new_file_id",
+        "name": "test.pdf",
+        "modifiedTime": "2026-03-01T00:00:00Z",
+    }
+
+    result = client.upload("test.pdf", b"pdf-content", "application/pdf", "folder123")
+    assert result["id"] == "new_file_id"
+    service.files.return_value.create.assert_called_once()
+
+
+def test_update():
+    """Test updating an existing file on GDrive."""
+    client, service = _make_client()
+
+    service.files.return_value.update.return_value.execute.return_value = {
+        "id": "existing_id",
+        "name": "test.pdf",
+        "modifiedTime": "2026-03-01T00:00:00Z",
+    }
+
+    result = client.update("existing_id", b"new-content", "application/pdf")
+    assert result["id"] == "existing_id"
+    service.files.return_value.update.assert_called_once()
+
+
 def test_create_gdrive_client_no_credentials():
     """Returns None when no credentials are set."""
     with (
