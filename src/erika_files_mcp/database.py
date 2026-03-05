@@ -95,8 +95,8 @@ class _TursoConnection:
 
         self._conn = libsql.connect(self._url, auth_token=self._auth_token)
 
-    def execute(self, sql: str, params: tuple = ()) -> _TursoExecProxy:
-        return _TursoExecProxy(self._conn, sql, params)
+    def execute(self, sql: str, params: tuple | list = ()) -> _TursoExecProxy:
+        return _TursoExecProxy(self._conn, sql, tuple(params))
 
     async def executescript(self, sql: str) -> None:
         await asyncio.to_thread(self._conn.executescript, sql)
