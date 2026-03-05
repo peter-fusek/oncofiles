@@ -228,8 +228,15 @@ class Database:
         params: list[str | int] = []
 
         if query.text:
-            conditions.append("id IN (SELECT rowid FROM documents_fts WHERE documents_fts MATCH ?)")
-            params.append(query.text)
+            # Use LIKE for substring matching — works reliably on both SQLite
+            # and Turso/libSQL (FTS5 content-sync triggers are unreliable on
+            # Turso and FTS5 tokenization misses CamelCase substrings).
+            like_param = f"%{query.text}%"
+            conditions.append(
+                "(filename LIKE ? OR original_filename LIKE ? "
+                "OR institution LIKE ? OR description LIKE ?)"
+            )
+            params.extend([like_param, like_param, like_param, like_param])
 
         if query.institution:
             conditions.append("institution = ?")

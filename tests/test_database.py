@@ -79,15 +79,64 @@ async def test_delete_nonexistent(db: Database):
 
 async def test_search_by_text(db: Database):
     await db.insert_document(
-        make_doc(file_id="file_1", description="krvny obraz", institution="NOUonko")
+        make_doc(
+            file_id="file_1",
+            filename="20240115_NOUonko_labs_krvnyObraz.pdf",
+            description="krvny obraz",
+            institution="NOUonko",
+        )
     )
     await db.insert_document(
-        make_doc(file_id="file_2", description="CT abdomen", institution="UNB")
+        make_doc(
+            file_id="file_2",
+            filename="20240301_UNB_imaging_CTabdomen.pdf",
+            original_filename="20240301_UNB_imaging_CTabdomen.pdf",
+            description="CT abdomen",
+            institution="UNB",
+        )
     )
 
     results = await db.search_documents(SearchQuery(text="krvny"))
     assert len(results) == 1
     assert results[0].file_id == "file_1"
+
+
+async def test_search_by_text_substring_in_filename(db: Database):
+    """Text search matches substrings inside CamelCase filenames (#40)."""
+    await db.insert_document(
+        make_doc(
+            file_id="file_genetika",
+            filename="20240301_NOU_pathology_GenetikaMudrMalejcikova.pdf",
+            original_filename="20240301 ErikaFusekova-NOU-GenetikaMudrMalejcikova.pdf",
+            description="GenetikaMudrMalejcikova",
+        )
+    )
+    await db.insert_document(
+        make_doc(file_id="file_other", description="CT abdomen")
+    )
+
+    # Substring in filename
+    results = await db.search_documents(SearchQuery(text="genetik"))
+    assert len(results) == 1
+    assert results[0].file_id == "file_genetika"
+
+    # Case-insensitive
+    results = await db.search_documents(SearchQuery(text="GENETIK"))
+    assert len(results) == 1
+    assert results[0].file_id == "file_genetika"
+
+    # Substring in original_filename
+    results = await db.search_documents(SearchQuery(text="Malejcik"))
+    assert len(results) == 1
+    assert results[0].file_id == "file_genetika"
+
+
+async def test_search_by_text_no_match(db: Database):
+    """Text search returns empty when nothing matches."""
+    await db.insert_document(make_doc(file_id="file_1", description="krvny obraz"))
+
+    results = await db.search_documents(SearchQuery(text="nonexistent"))
+    assert len(results) == 0
 
 
 async def test_search_by_institution(db: Database):
