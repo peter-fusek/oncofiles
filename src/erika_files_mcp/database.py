@@ -10,11 +10,18 @@ from typing import Any
 import aiosqlite
 
 from erika_files_mcp.models import (
+    ActivityLogEntry,
+    ActivityLogQuery,
+    AgentState,
     ConversationEntry,
     ConversationQuery,
     Document,
     DocumentCategory,
+    ResearchEntry,
+    ResearchQuery,
     SearchQuery,
+    TreatmentEvent,
+    TreatmentEventQuery,
 )
 
 MIGRATIONS_DIR = Path(__file__).parent.parent.parent / "migrations"
@@ -485,6 +492,350 @@ class Database:
         ) as cursor:
             row = await cursor.fetchone()
             return _row_to_conversation_entry(row) if row else None
+
+    # ── Agent state (#32) ────────────────────────────────────────────────
+
+    async def set_agent_state(self, state: AgentState) -> AgentState:
+        """Upsert an agent state key-value pair. Returns the saved state."""
+        await self.db.execute(
+            """
+            INSERT INTO agent_state (agent_id, key, value, updated_at)
+            VALUES (?, ?, ?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+            ON CONFLICT(agent_id, key) DO UPDATE SET
+                value = excluded.value,
+                updated_at = excluded.updated_at
+            """,
+            (state.agent_id, state.key, state.value),
+        )
+        await self.db.commit()
+        # Re-fetch (lastrowid unreliable on upsert)
+        async with self.db.execute(
+            "SELECT * FROM agent_state WHERE agent_id = ? AND key = ?",
+            (state.agent_id, state.key),
+        ) as cursor:
+            row = await cursor.fetchone()
+            return _row_to_agent_state(row)
+
+    async def get_agent_state(self, key: str, agent_id: str = "oncoteam") -> AgentState | None:
+        """Get a single agent state value by key."""
+        async with self.db.execute(
+            "SELECT * FROM agent_state WHERE agent_id = ? AND key = ?",
+            (agent_id, key),
+        ) as cursor:
+            row = await cursor.fetchone()
+            return _row_to_agent_state(row) if row else None
+
+    async def list_agent_states(self, agent_id: str = "oncoteam") -> list[AgentState]:
+        """List all state keys for an agent."""
+        async with self.db.execute(
+            "SELECT * FROM agent_state WHERE agent_id = ? ORDER BY key",
+            (agent_id,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return [_row_to_agent_state(r) for r in rows]
+
+    # ── Treatment events (#34) ───────────────────────────────────────────
+
+    async def insert_treatment_event(self, event: TreatmentEvent) -> TreatmentEvent:
+        """Insert a treatment event and return it with the generated ID."""
+        cursor = await self.db.execute(
+            """
+            INSERT INTO treatment_events (event_date, event_type, title, notes, metadata)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                event.event_date.isoformat(),
+                event.event_type,
+                event.title,
+                event.notes,
+                event.metadata,
+            ),
+        )
+        await self.db.commit()
+        event.id = cursor.lastrowid
+        return event
+
+    async def get_treatment_event(self, event_id: int) -> TreatmentEvent | None:
+        """Get a treatment event by ID."""
+        async with self.db.execute(
+            "SELECT * FROM treatment_events WHERE id = ?", (event_id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+            return _row_to_treatment_event(row) if row else None
+
+    async def list_treatment_events(self, query: TreatmentEventQuery) -> list[TreatmentEvent]:
+        """List treatment events with optional filters."""
+        conditions: list[str] = []
+        params: list[str | int] = []
+
+        if query.event_type:
+            conditions.append("event_type = ?")
+            params.append(query.event_type)
+        if query.date_from:
+            conditions.append("event_date >= ?")
+            params.append(query.date_from.isoformat())
+        if query.date_to:
+            conditions.append("event_date <= ?")
+            params.append(query.date_to.isoformat())
+
+        where = " AND ".join(conditions) if conditions else "1=1"
+        sql = f"SELECT * FROM treatment_events WHERE {where} ORDER BY event_date DESC LIMIT ?"
+        params.append(query.limit)
+
+        async with self.db.execute(sql, params) as cursor:
+            rows = await cursor.fetchall()
+            return [_row_to_treatment_event(r) for r in rows]
+
+    async def get_treatment_events_timeline(self, limit: int = 200) -> list[TreatmentEvent]:
+        """Get treatment events in chronological (ASC) order."""
+        async with self.db.execute(
+            "SELECT * FROM treatment_events ORDER BY event_date ASC, created_at ASC LIMIT ?",
+            (limit,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return [_row_to_treatment_event(r) for r in rows]
+
+    # ── Research entries (#33) ───────────────────────────────────────────
+
+    async def insert_research_entry(self, entry: ResearchEntry) -> ResearchEntry:
+        """Insert a research entry. Ignores duplicates (source+external_id)."""
+        cursor = await self.db.execute(
+            """
+            INSERT OR IGNORE INTO research_entries
+                (source, external_id, title, summary, tags, raw_data)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                entry.source,
+                entry.external_id,
+                entry.title,
+                entry.summary,
+                entry.tags,
+                entry.raw_data,
+            ),
+        )
+        await self.db.commit()
+
+        if cursor.rowcount > 0:
+            entry.id = cursor.lastrowid
+            return entry
+
+        # Duplicate (INSERT OR IGNORE skipped) — return existing row
+        async with self.db.execute(
+            "SELECT * FROM research_entries WHERE source = ? AND external_id = ?",
+            (entry.source, entry.external_id),
+        ) as cur:
+            row = await cur.fetchone()
+            return _row_to_research_entry(row)
+
+    async def search_research_entries(self, query: ResearchQuery) -> list[ResearchEntry]:
+        """Search research entries using LIKE on title/summary/tags."""
+        conditions: list[str] = []
+        params: list[str | int] = []
+
+        if query.text:
+            like_param = f"%{query.text}%"
+            conditions.append("(title LIKE ? OR summary LIKE ? OR tags LIKE ?)")
+            params.extend([like_param, like_param, like_param])
+        if query.source:
+            conditions.append("source = ?")
+            params.append(query.source)
+
+        where = " AND ".join(conditions) if conditions else "1=1"
+        sql = f"SELECT * FROM research_entries WHERE {where} ORDER BY created_at DESC LIMIT ?"
+        params.append(query.limit)
+
+        async with self.db.execute(sql, params) as cursor:
+            rows = await cursor.fetchall()
+            return [_row_to_research_entry(r) for r in rows]
+
+    async def list_research_entries(
+        self, source: str | None = None, limit: int = 50
+    ) -> list[ResearchEntry]:
+        """List research entries, optionally filtered by source."""
+        if source:
+            async with self.db.execute(
+                "SELECT * FROM research_entries WHERE source = ? ORDER BY created_at DESC LIMIT ?",
+                (source, limit),
+            ) as cursor:
+                rows = await cursor.fetchall()
+        else:
+            async with self.db.execute(
+                "SELECT * FROM research_entries ORDER BY created_at DESC LIMIT ?",
+                (limit,),
+            ) as cursor:
+                rows = await cursor.fetchall()
+        return [_row_to_research_entry(r) for r in rows]
+
+    # ── Activity log (#38) ──────────────────────────────────────────────
+
+    async def insert_activity_log(self, entry: ActivityLogEntry) -> ActivityLogEntry:
+        """Append an activity log entry (immutable)."""
+        cursor = await self.db.execute(
+            """
+            INSERT INTO activity_log
+                (session_id, agent_id, tool_name, input_summary, output_summary,
+                 duration_ms, status, error_message, tags)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                entry.session_id,
+                entry.agent_id,
+                entry.tool_name,
+                entry.input_summary,
+                entry.output_summary,
+                entry.duration_ms,
+                entry.status,
+                entry.error_message,
+                entry.tags,
+            ),
+        )
+        await self.db.commit()
+        entry.id = cursor.lastrowid
+        return entry
+
+    async def search_activity_log(self, query: ActivityLogQuery) -> list[ActivityLogEntry]:
+        """Search activity log with filters."""
+        conditions: list[str] = []
+        params: list[str | int] = []
+
+        if query.session_id:
+            conditions.append("session_id = ?")
+            params.append(query.session_id)
+        if query.agent_id:
+            conditions.append("agent_id = ?")
+            params.append(query.agent_id)
+        if query.tool_name:
+            conditions.append("tool_name = ?")
+            params.append(query.tool_name)
+        if query.status:
+            conditions.append("status = ?")
+            params.append(query.status)
+        if query.date_from:
+            conditions.append("created_at >= ?")
+            params.append(query.date_from.isoformat())
+        if query.date_to:
+            conditions.append("created_at <= ?")
+            params.append(query.date_to.isoformat() + "T23:59:59Z")
+        if query.text:
+            like_param = f"%{query.text}%"
+            conditions.append("(input_summary LIKE ? OR output_summary LIKE ?)")
+            params.extend([like_param, like_param])
+
+        where = " AND ".join(conditions) if conditions else "1=1"
+        sql = f"SELECT * FROM activity_log WHERE {where} ORDER BY created_at DESC LIMIT ?"
+        params.append(query.limit)
+
+        async with self.db.execute(sql, params) as cursor:
+            rows = await cursor.fetchall()
+            return [_row_to_activity_log(r) for r in rows]
+
+    async def get_activity_stats(
+        self,
+        session_id: str | None = None,
+        agent_id: str | None = None,
+        date_from: date | None = None,
+        date_to: date | None = None,
+    ) -> list[dict]:
+        """Get aggregated activity counts grouped by tool_name and status."""
+        conditions: list[str] = []
+        params: list[str | int] = []
+
+        if session_id:
+            conditions.append("session_id = ?")
+            params.append(session_id)
+        if agent_id:
+            conditions.append("agent_id = ?")
+            params.append(agent_id)
+        if date_from:
+            conditions.append("created_at >= ?")
+            params.append(date_from.isoformat())
+        if date_to:
+            conditions.append("created_at <= ?")
+            params.append(date_to.isoformat() + "T23:59:59Z")
+
+        where = " AND ".join(conditions) if conditions else "1=1"
+        sql = (
+            f"SELECT tool_name, status, COUNT(*) as count, "
+            f"AVG(duration_ms) as avg_duration_ms "
+            f"FROM activity_log WHERE {where} "
+            f"GROUP BY tool_name, status ORDER BY count DESC"
+        )
+
+        async with self.db.execute(sql, params) as cursor:
+            rows = await cursor.fetchall()
+            return [dict(r) for r in rows]
+
+    async def get_activity_timeline(self, hours: int = 24) -> list[ActivityLogEntry]:
+        """Get recent activity log entries (last N hours)."""
+        async with self.db.execute(
+            """
+            SELECT * FROM activity_log
+            WHERE created_at >= strftime('%Y-%m-%dT%H:%M:%SZ', 'now', ?)
+            ORDER BY created_at DESC LIMIT 200
+            """,
+            (f"-{hours} hours",),
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return [_row_to_activity_log(r) for r in rows]
+
+
+def _row_to_agent_state(row: aiosqlite.Row) -> AgentState:
+    """Convert a database row to an AgentState model."""
+    return AgentState(
+        id=row["id"],
+        agent_id=row["agent_id"],
+        key=row["key"],
+        value=row["value"],
+        created_at=datetime.fromisoformat(row["created_at"]) if row["created_at"] else None,
+        updated_at=datetime.fromisoformat(row["updated_at"]) if row["updated_at"] else None,
+    )
+
+
+def _row_to_treatment_event(row: aiosqlite.Row) -> TreatmentEvent:
+    """Convert a database row to a TreatmentEvent model."""
+    return TreatmentEvent(
+        id=row["id"],
+        event_date=date.fromisoformat(row["event_date"]),
+        event_type=row["event_type"],
+        title=row["title"],
+        notes=row["notes"],
+        metadata=row["metadata"],
+        created_at=datetime.fromisoformat(row["created_at"]) if row["created_at"] else None,
+        updated_at=datetime.fromisoformat(row["updated_at"]) if row["updated_at"] else None,
+    )
+
+
+def _row_to_research_entry(row: aiosqlite.Row) -> ResearchEntry:
+    """Convert a database row to a ResearchEntry model."""
+    return ResearchEntry(
+        id=row["id"],
+        source=row["source"],
+        external_id=row["external_id"],
+        title=row["title"],
+        summary=row["summary"],
+        tags=row["tags"],
+        raw_data=row["raw_data"],
+        created_at=datetime.fromisoformat(row["created_at"]) if row["created_at"] else None,
+        updated_at=datetime.fromisoformat(row["updated_at"]) if row["updated_at"] else None,
+    )
+
+
+def _row_to_activity_log(row: aiosqlite.Row) -> ActivityLogEntry:
+    """Convert a database row to an ActivityLogEntry model."""
+    return ActivityLogEntry(
+        id=row["id"],
+        session_id=row["session_id"],
+        agent_id=row["agent_id"],
+        tool_name=row["tool_name"],
+        input_summary=row["input_summary"],
+        output_summary=row["output_summary"],
+        duration_ms=row["duration_ms"],
+        status=row["status"],
+        error_message=row["error_message"],
+        tags=row["tags"],
+        created_at=datetime.fromisoformat(row["created_at"]) if row["created_at"] else None,
+    )
 
 
 def _row_to_conversation_entry(row: aiosqlite.Row) -> ConversationEntry:
