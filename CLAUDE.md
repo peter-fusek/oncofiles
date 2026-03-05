@@ -31,3 +31,9 @@ uv run ruff check
 - `uv run pytest` — run tests
 - `uv run ruff check --fix` — lint and auto-fix
 - `uv run ruff format` — format code
+
+## Deployment
+
+- **Railway**: `aware-kindness-production.up.railway.app` (streamable-http at /mcp)
+- Push to `main` auto-deploys via Railway
+- 97 tests, CI green
