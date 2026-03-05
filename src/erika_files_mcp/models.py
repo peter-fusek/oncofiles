@@ -117,3 +117,99 @@ class ConversationQuery(BaseModel):
     tags: list[str] | None = None
     limit: int = Field(default=50, ge=1, le=200)
     offset: int = Field(default=0, ge=0)
+
+
+# ── Agent state (#32) ────────────────────────────────────────────────────────
+
+
+class AgentState(BaseModel):
+    """A key-value pair persisted by an agent across sessions."""
+
+    id: int | None = None
+    agent_id: str = "oncoteam"
+    key: str
+    value: str = "{}"
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+# ── Treatment events (#34) ───────────────────────────────────────────────────
+
+
+class TreatmentEvent(BaseModel):
+    """A structured treatment milestone (chemo cycle, surgery, scan, etc.)."""
+
+    id: int | None = None
+    event_date: date
+    event_type: str
+    title: str
+    notes: str = ""
+    metadata: str = "{}"
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class TreatmentEventQuery(BaseModel):
+    """Search parameters for treatment events."""
+
+    event_type: str | None = None
+    date_from: date | None = None
+    date_to: date | None = None
+    limit: int = Field(default=50, ge=1, le=200)
+
+
+# ── Research entries (#33) ───────────────────────────────────────────────────
+
+
+class ResearchEntry(BaseModel):
+    """A research article or clinical trial saved by an agent."""
+
+    id: int | None = None
+    source: str
+    external_id: str = ""
+    title: str
+    summary: str = ""
+    tags: str = "[]"
+    raw_data: str = ""
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class ResearchQuery(BaseModel):
+    """Search parameters for research entries."""
+
+    text: str | None = None
+    source: str | None = None
+    limit: int = Field(default=20, ge=1, le=200)
+
+
+# ── Activity log (#38) ──────────────────────────────────────────────────────
+
+
+class ActivityLogEntry(BaseModel):
+    """An immutable record of an agent tool call."""
+
+    id: int | None = None
+    session_id: str
+    agent_id: str
+    tool_name: str
+    input_summary: str = ""
+    output_summary: str = ""
+    duration_ms: int | None = None
+    status: str = "ok"
+    error_message: str | None = None
+    tags: str = "[]"
+    created_at: datetime | None = None
+
+
+class ActivityLogQuery(BaseModel):
+    """Search parameters for activity log entries."""
+
+    session_id: str | None = None
+    agent_id: str | None = None
+    tool_name: str | None = None
+    status: str | None = None
+    date_from: date | None = None
+    date_to: date | None = None
+    text: str | None = None
+    limit: int = Field(default=50, ge=1, le=200)

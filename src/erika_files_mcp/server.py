@@ -27,11 +27,18 @@ from erika_files_mcp.filename_parser import parse_filename
 from erika_files_mcp.files_api import FilesClient
 from erika_files_mcp.gdrive_client import GDriveClient, create_gdrive_client
 from erika_files_mcp.models import (
+    ActivityLogEntry,
+    ActivityLogQuery,
+    AgentState,
     ConversationEntry,
     ConversationQuery,
     Document,
     DocumentCategory,
+    ResearchEntry,
+    ResearchQuery,
     SearchQuery,
+    TreatmentEvent,
+    TreatmentEventQuery,
 )
 from erika_files_mcp.ocr import OCR_MODEL, extract_text_from_image
 
@@ -85,7 +92,7 @@ mcp = FastMCP(
 
 @mcp.custom_route("/health", methods=["GET"])
 async def health(request: Request) -> JSONResponse:
-    return JSONResponse({"status": "ok", "version": "0.7.0"})
+    return JSONResponse({"status": "ok", "version": "0.8.0"})
 
 
 def _get_db(ctx: Context) -> Database:
@@ -857,6 +864,427 @@ async def get_journey_timeline(
     return json.dumps(timeline)
 
 
+# ── Agent state tools (#32) ──────────────────────────────────────────────────
+
+
+@mcp.tool()
+async def set_agent_state(
+    ctx: Context,
+    key: str,
+    value: str,
+    agent_id: str = "oncoteam",
+) -> str:
+    """Set a persistent key-value pair for an agent.
+
+    Upserts: creates the key if new, updates if it already exists.
+
+    Args:
+        key: State key name (e.g. "last_briefing_date", "treatment_protocol").
+        value: JSON string value to store.
+        agent_id: Agent identifier (default: oncoteam).
+    """
+    db = _get_db(ctx)
+    state = AgentState(agent_id=agent_id, key=key, value=value)
+    saved = await db.set_agent_state(state)
+    return json.dumps(
+        {
+            "id": saved.id,
+            "agent_id": saved.agent_id,
+            "key": saved.key,
+            "value": saved.value,
+            "updated_at": saved.updated_at.isoformat() if saved.updated_at else None,
+        }
+    )
+
+
+@mcp.tool()
+async def get_agent_state(
+    ctx: Context,
+    key: str,
+    agent_id: str = "oncoteam",
+) -> str:
+    """Get a persistent state value by key.
+
+    Returns {value: null} if the key does not exist.
+
+    Args:
+        key: State key name.
+        agent_id: Agent identifier (default: oncoteam).
+    """
+    db = _get_db(ctx)
+    state = await db.get_agent_state(key, agent_id)
+    if not state:
+        return json.dumps({"key": key, "agent_id": agent_id, "value": None})
+    return json.dumps(
+        {
+            "id": state.id,
+            "agent_id": state.agent_id,
+            "key": state.key,
+            "value": state.value,
+            "updated_at": state.updated_at.isoformat() if state.updated_at else None,
+        }
+    )
+
+
+@mcp.tool()
+async def list_agent_states(
+    ctx: Context,
+    agent_id: str = "oncoteam",
+) -> str:
+    """List all persistent state keys for an agent.
+
+    Args:
+        agent_id: Agent identifier (default: oncoteam).
+    """
+    db = _get_db(ctx)
+    states = await db.list_agent_states(agent_id)
+    return json.dumps(
+        [
+            {
+                "key": s.key,
+                "value": s.value,
+                "updated_at": s.updated_at.isoformat() if s.updated_at else None,
+            }
+            for s in states
+        ]
+    )
+
+
+# ── Treatment event tools (#34) ─────────────────────────────────────────────
+
+
+@mcp.tool()
+async def add_treatment_event(
+    ctx: Context,
+    event_date: str,
+    event_type: str,
+    title: str,
+    notes: str = "",
+    metadata: str = "{}",
+) -> str:
+    """Record a treatment milestone (chemo cycle, surgery, scan result, etc.).
+
+    Args:
+        event_date: Date of the event (YYYY-MM-DD).
+        event_type: Type of event (e.g. chemo, surgery, scan, consult, side_effect).
+        title: Short title for the event.
+        notes: Optional longer description or notes.
+        metadata: Optional JSON string with extra structured data.
+    """
+    db = _get_db(ctx)
+    event = TreatmentEvent(
+        event_date=date.fromisoformat(event_date),
+        event_type=event_type,
+        title=title,
+        notes=notes,
+        metadata=metadata,
+    )
+    saved = await db.insert_treatment_event(event)
+    return json.dumps(
+        {
+            "id": saved.id,
+            "event_date": saved.event_date.isoformat(),
+            "event_type": saved.event_type,
+            "title": saved.title,
+        }
+    )
+
+
+@mcp.tool()
+async def list_treatment_events(
+    ctx: Context,
+    event_type: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    limit: int = 50,
+) -> str:
+    """List treatment events, optionally filtered by type and date range.
+
+    Returns events in reverse chronological order.
+
+    Args:
+        event_type: Filter by event type (e.g. chemo, surgery).
+        date_from: Filter from this date (YYYY-MM-DD).
+        date_to: Filter to this date (YYYY-MM-DD).
+        limit: Maximum results to return.
+    """
+    db = _get_db(ctx)
+    query = TreatmentEventQuery(
+        event_type=event_type,
+        date_from=date.fromisoformat(date_from) if date_from else None,
+        date_to=date.fromisoformat(date_to) if date_to else None,
+        limit=limit,
+    )
+    events = await db.list_treatment_events(query)
+    return json.dumps(
+        [
+            {
+                "id": e.id,
+                "event_date": e.event_date.isoformat(),
+                "event_type": e.event_type,
+                "title": e.title,
+                "notes": e.notes,
+                "metadata": e.metadata,
+            }
+            for e in events
+        ]
+    )
+
+
+@mcp.tool()
+async def get_treatment_event(ctx: Context, event_id: int) -> str:
+    """Get full details of a treatment event by ID.
+
+    Args:
+        event_id: The treatment event ID.
+    """
+    db = _get_db(ctx)
+    event = await db.get_treatment_event(event_id)
+    if not event:
+        return json.dumps({"error": f"Treatment event not found: {event_id}"})
+    return json.dumps(
+        {
+            "id": event.id,
+            "event_date": event.event_date.isoformat(),
+            "event_type": event.event_type,
+            "title": event.title,
+            "notes": event.notes,
+            "metadata": event.metadata,
+            "created_at": event.created_at.isoformat() if event.created_at else None,
+        }
+    )
+
+
+# ── Research entry tools (#33) ──────────────────────────────────────────────
+
+
+@mcp.tool()
+async def add_research_entry(
+    ctx: Context,
+    source: str,
+    external_id: str,
+    title: str,
+    summary: str = "",
+    tags: str = "[]",
+    raw_data: str = "",
+) -> str:
+    """Save a research article or clinical trial found by an agent.
+
+    Deduplicates by source+external_id — if a duplicate is found, returns
+    the existing entry without error.
+
+    Args:
+        source: Source name (e.g. pubmed, clinicaltrials).
+        external_id: External identifier (e.g. PMID, NCT number).
+        title: Article or trial title.
+        summary: Brief summary or abstract excerpt.
+        tags: JSON array of tags (e.g. '["FOLFOX","mCRC"]').
+        raw_data: Full raw data (abstract, JSON, etc.) for reference.
+    """
+    db = _get_db(ctx)
+    entry = ResearchEntry(
+        source=source,
+        external_id=external_id,
+        title=title,
+        summary=summary,
+        tags=tags,
+        raw_data=raw_data,
+    )
+    saved = await db.insert_research_entry(entry)
+    return json.dumps(
+        {
+            "id": saved.id,
+            "source": saved.source,
+            "external_id": saved.external_id,
+            "title": saved.title,
+        }
+    )
+
+
+@mcp.tool()
+async def search_research(
+    ctx: Context,
+    text: str | None = None,
+    source: str | None = None,
+    limit: int = 20,
+) -> str:
+    """Search saved research entries by text and/or source.
+
+    Args:
+        text: Search in title, summary, and tags.
+        source: Filter by source (e.g. pubmed, clinicaltrials).
+        limit: Maximum results to return.
+    """
+    db = _get_db(ctx)
+    query = ResearchQuery(text=text, source=source, limit=limit)
+    entries = await db.search_research_entries(query)
+    return json.dumps(
+        [
+            {
+                "id": e.id,
+                "source": e.source,
+                "external_id": e.external_id,
+                "title": e.title,
+                "summary": e.summary[:500] + ("..." if len(e.summary) > 500 else ""),
+                "tags": e.tags,
+            }
+            for e in entries
+        ]
+    )
+
+
+@mcp.tool()
+async def list_research_entries(
+    ctx: Context,
+    source: str | None = None,
+    limit: int = 50,
+) -> str:
+    """List saved research entries, optionally filtered by source.
+
+    Args:
+        source: Filter by source (e.g. pubmed, clinicaltrials).
+        limit: Maximum results to return.
+    """
+    db = _get_db(ctx)
+    entries = await db.list_research_entries(source=source, limit=limit)
+    return json.dumps(
+        [
+            {
+                "id": e.id,
+                "source": e.source,
+                "external_id": e.external_id,
+                "title": e.title,
+                "summary": e.summary[:200] + ("..." if len(e.summary) > 200 else ""),
+                "tags": e.tags,
+            }
+            for e in entries
+        ]
+    )
+
+
+# ── Activity log tools (#38) ────────────────────────────────────────────────
+
+
+@mcp.tool()
+async def add_activity_log(
+    ctx: Context,
+    session_id: str,
+    agent_id: str,
+    tool_name: str,
+    input_summary: str = "",
+    output_summary: str = "",
+    duration_ms: int | None = None,
+    status: str = "ok",
+    error_message: str | None = None,
+    tags: str = "[]",
+) -> str:
+    """Log an agent tool call to the activity audit trail (append-only).
+
+    Args:
+        session_id: Session identifier.
+        agent_id: Agent that made the call (e.g. oncoteam).
+        tool_name: Name of the tool that was called.
+        input_summary: Brief summary of the input parameters.
+        output_summary: Brief summary of the output.
+        duration_ms: How long the call took in milliseconds.
+        status: Result status (ok, error, timeout).
+        error_message: Error details if status is not ok.
+        tags: JSON array of tags (e.g. '["research","pubmed"]').
+    """
+    db = _get_db(ctx)
+    entry = ActivityLogEntry(
+        session_id=session_id,
+        agent_id=agent_id,
+        tool_name=tool_name,
+        input_summary=input_summary,
+        output_summary=output_summary,
+        duration_ms=duration_ms,
+        status=status,
+        error_message=error_message,
+        tags=tags,
+    )
+    saved = await db.insert_activity_log(entry)
+    return json.dumps({"id": saved.id, "status": saved.status})
+
+
+@mcp.tool()
+async def search_activity_log(
+    ctx: Context,
+    session_id: str | None = None,
+    agent_id: str | None = None,
+    tool_name: str | None = None,
+    status: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    text: str | None = None,
+    limit: int = 50,
+) -> str:
+    """Search the activity log with filters.
+
+    Args:
+        session_id: Filter by session.
+        agent_id: Filter by agent.
+        tool_name: Filter by tool name.
+        status: Filter by status (ok, error, timeout).
+        date_from: Filter from this date (YYYY-MM-DD).
+        date_to: Filter to this date (YYYY-MM-DD).
+        text: Search in input/output summaries.
+        limit: Maximum results to return.
+    """
+    db = _get_db(ctx)
+    query = ActivityLogQuery(
+        session_id=session_id,
+        agent_id=agent_id,
+        tool_name=tool_name,
+        status=status,
+        date_from=date.fromisoformat(date_from) if date_from else None,
+        date_to=date.fromisoformat(date_to) if date_to else None,
+        text=text,
+        limit=limit,
+    )
+    entries = await db.search_activity_log(query)
+    return json.dumps(
+        [
+            {
+                "id": e.id,
+                "session_id": e.session_id,
+                "agent_id": e.agent_id,
+                "tool_name": e.tool_name,
+                "status": e.status,
+                "duration_ms": e.duration_ms,
+                "created_at": e.created_at.isoformat() if e.created_at else None,
+            }
+            for e in entries
+        ]
+    )
+
+
+@mcp.tool()
+async def get_activity_stats(
+    ctx: Context,
+    session_id: str | None = None,
+    agent_id: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+) -> str:
+    """Get aggregated activity statistics by tool and status.
+
+    Args:
+        session_id: Filter by session.
+        agent_id: Filter by agent.
+        date_from: Filter from this date (YYYY-MM-DD).
+        date_to: Filter to this date (YYYY-MM-DD).
+    """
+    db = _get_db(ctx)
+    stats = await db.get_activity_stats(
+        session_id=session_id,
+        agent_id=agent_id,
+        date_from=date.fromisoformat(date_from) if date_from else None,
+        date_to=date.fromisoformat(date_to) if date_to else None,
+    )
+    return json.dumps(stats)
+
+
 # ── Resources ────────────────────────────────────────────────────────────────
 
 
@@ -894,26 +1322,46 @@ async def latest_labs(ctx: Context) -> str:
 
 @mcp.resource(
     "files://treatment-timeline",
-    description="Chronological timeline of all treatment documents",
+    description="Chronological timeline of treatment documents and events",
 )
 async def treatment_timeline(ctx: Context) -> str:
-    """Return a chronological markdown timeline of treatment documents (metadata only)."""
+    """Return a chronological markdown timeline merging documents and treatment events."""
     db = _get_db(ctx)
     docs = await db.get_treatment_timeline()
-    if not docs:
-        return "No treatment documents found."
+    events = await db.get_treatment_events_timeline()
 
-    lines = [f"# Treatment Timeline ({len(docs)} documents)\n"]
-    current_date = None
+    if not docs and not events:
+        return "No treatment documents or events found."
+
+    # Build unified timeline items
+    items: list[tuple[str, str]] = []
     for d in docs:
         date_str = d.document_date.isoformat() if d.document_date else "unknown"
+        line = (
+            f"- [doc/{d.category.value}] **{d.filename}** "
+            f"({d.institution or 'unknown'}) file_id: `{d.file_id}`"
+        )
+        items.append((date_str, line))
+    for e in events:
+        date_str = e.event_date.isoformat()
+        if len(e.notes) > 100:
+            notes_preview = f" — {e.notes[:100]}..."
+        elif e.notes:
+            notes_preview = f" — {e.notes}"
+        else:
+            notes_preview = ""
+        line = f"- [event/{e.event_type}] **{e.title}**{notes_preview}"
+        items.append((date_str, line))
+
+    items.sort(key=lambda x: x[0])
+    total = len(docs) + len(events)
+    lines = [f"# Treatment Timeline ({total} items: {len(docs)} docs, {len(events)} events)\n"]
+    current_date = None
+    for date_str, line in items:
         if date_str != current_date:
             current_date = date_str
             lines.append(f"\n## {current_date}\n")
-        lines.append(
-            f"- [{d.category.value}] **{d.filename}** "
-            f"({d.institution or 'unknown'}) file_id: `{d.file_id}`"
-        )
+        lines.append(line)
     return "\n".join(lines)
 
 
@@ -942,6 +1390,30 @@ async def conversation_archive(ctx: Context) -> str:
         lines.append(f"### [{e.entry_type}] {e.title}{tag_str}\n")
         lines.append(e.content)
         lines.append("")
+    return "\n".join(lines)
+
+
+@mcp.resource(
+    "files://activity-timeline",
+    description="Last 24 hours of agent tool calls",
+)
+async def activity_timeline(ctx: Context) -> str:
+    """Return the last 24 hours of agent activity as markdown."""
+    db = _get_db(ctx)
+    entries = await db.get_activity_timeline(hours=24)
+    if not entries:
+        return "No agent activity in the last 24 hours."
+
+    lines = [f"# Activity Timeline (last 24h, {len(entries)} calls)\n"]
+    for e in entries:
+        ts = e.created_at.strftime("%H:%M:%S") if e.created_at else "?"
+        status_icon = "x" if e.status != "ok" else "v"
+        duration = f" ({e.duration_ms}ms)" if e.duration_ms else ""
+        lines.append(f"- [{ts}] [{status_icon}] {e.agent_id}/{e.tool_name}{duration}")
+        if e.input_summary:
+            lines.append(f"  in: {e.input_summary[:100]}")
+        if e.error_message:
+            lines.append(f"  err: {e.error_message[:200]}")
     return "\n".join(lines)
 
 

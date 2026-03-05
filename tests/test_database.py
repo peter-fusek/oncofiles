@@ -111,9 +111,7 @@ async def test_search_by_text_substring_in_filename(db: Database):
             description="GenetikaMudrMalejcikova",
         )
     )
-    await db.insert_document(
-        make_doc(file_id="file_other", description="CT abdomen")
-    )
+    await db.insert_document(make_doc(file_id="file_other", description="CT abdomen"))
 
     # Substring in filename
     results = await db.search_documents(SearchQuery(text="genetik"))
