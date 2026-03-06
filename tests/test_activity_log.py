@@ -1,7 +1,7 @@
 """Tests for activity log (#38)."""
 
-from erika_files_mcp.database import Database
-from erika_files_mcp.models import ActivityLogQuery
+from oncofiles.database import Database
+from oncofiles.models import ActivityLogQuery
 
 from .helpers import make_activity_log
 

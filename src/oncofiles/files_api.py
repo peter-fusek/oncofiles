@@ -8,7 +8,7 @@ from typing import BinaryIO
 
 import anthropic
 
-from erika_files_mcp.config import ANTHROPIC_API_KEY
+from oncofiles.config import ANTHROPIC_API_KEY
 
 
 class FilesClient:

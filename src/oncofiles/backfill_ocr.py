@@ -4,8 +4,8 @@ Downloads each document, converts to images, runs Claude Vision OCR,
 and stores extracted text in the document_pages table.
 
 Usage:
-    uv run python -m erika_files_mcp.backfill_ocr --dry-run
-    uv run python -m erika_files_mcp.backfill_ocr
+    uv run python -m oncofiles.backfill_ocr --dry-run
+    uv run python -m oncofiles.backfill_ocr
 """
 
 from __future__ import annotations
@@ -14,16 +14,16 @@ import argparse
 import asyncio
 import logging
 
-from erika_files_mcp.config import (
+from oncofiles.config import (
     DATABASE_PATH,
     GOOGLE_DRIVE_FOLDER_ID,
     TURSO_AUTH_TOKEN,
     TURSO_DATABASE_URL,
 )
-from erika_files_mcp.database import Database
-from erika_files_mcp.files_api import FilesClient
-from erika_files_mcp.ocr import OCR_MODEL, extract_text_from_image
-from erika_files_mcp.server import _extract_pdf_text, _inline_content, _resize_image_if_needed
+from oncofiles.database import Database
+from oncofiles.files_api import FilesClient
+from oncofiles.ocr import OCR_MODEL, extract_text_from_image
+from oncofiles.server import _extract_pdf_text, _inline_content, _resize_image_if_needed
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +46,7 @@ async def backfill(dry_run: bool = False) -> dict[str, int]:
     gdrive = None
     if GOOGLE_DRIVE_FOLDER_ID:
         try:
-            from erika_files_mcp.gdrive_client import create_gdrive_client
+            from oncofiles.gdrive_client import create_gdrive_client
 
             gdrive = create_gdrive_client()
         except Exception as e:

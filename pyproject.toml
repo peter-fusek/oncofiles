@@ -1,5 +1,5 @@
 [project]
-name = "erika-files-mcp"
+name = "oncofiles"
 version = "0.9.0"
 description = "MCP server for persistent medical document management via Anthropic Files API"
 requires-python = ">=3.12"
@@ -28,7 +28,7 @@ dev = [
 ]
 
 [project.scripts]
-erika-mcp = "erika_files_mcp.server:main"
+oncofiles-mcp = "oncofiles.server:main"
 
 [build-system]
 requires = ["hatchling"]

@@ -2,8 +2,8 @@
 
 from datetime import date
 
-from erika_files_mcp.database import Database
-from erika_files_mcp.models import DocumentCategory, SearchQuery
+from oncofiles.database import Database
+from oncofiles.models import DocumentCategory, SearchQuery
 from tests.helpers import make_doc
 
 

@@ -1,6 +1,6 @@
 """Tests for agent state key-value store (#32)."""
 
-from erika_files_mcp.database import Database
+from oncofiles.database import Database
 
 from .helpers import make_agent_state
 

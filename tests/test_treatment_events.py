@@ -2,8 +2,8 @@
 
 from datetime import date
 
-from erika_files_mcp.database import Database
-from erika_files_mcp.models import TreatmentEventQuery
+from oncofiles.database import Database
+from oncofiles.models import TreatmentEventQuery
 
 from .helpers import make_treatment_event
 

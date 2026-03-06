@@ -1,4 +1,4 @@
--- Initial schema for erika-files-mcp
+-- Initial schema for oncofiles
 -- Compatible with both SQLite (local) and Turso libSQL (cloud)
 
 CREATE TABLE IF NOT EXISTS documents (

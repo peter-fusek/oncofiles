@@ -4,7 +4,7 @@ Walks the Google Drive sync folder recursively, uploads each PDF/JPG/PNG
 to the Anthropic Files API, parses the filename, and stores metadata in SQLite.
 
 Usage:
-    uv run python -m erika_files_mcp.import_local [--dry-run] [--path PATH]
+    uv run python -m oncofiles.import_local [--dry-run] [--path PATH]
 """
 
 from __future__ import annotations
@@ -17,12 +17,12 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-from erika_files_mcp.config import DATABASE_PATH, GOOGLE_DRIVE_FOLDER_ID
-from erika_files_mcp.database import Database
-from erika_files_mcp.filename_parser import parse_filename
-from erika_files_mcp.files_api import FilesClient
-from erika_files_mcp.gdrive_client import create_gdrive_client
-from erika_files_mcp.models import Document
+from oncofiles.config import DATABASE_PATH, GOOGLE_DRIVE_FOLDER_ID
+from oncofiles.database import Database
+from oncofiles.filename_parser import parse_filename
+from oncofiles.files_api import FilesClient
+from oncofiles.gdrive_client import create_gdrive_client
+from oncofiles.models import Document
 
 logger = logging.getLogger(__name__)
 

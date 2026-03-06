@@ -7,7 +7,7 @@ import base64
 import anthropic
 from fastmcp.utilities.types import Image
 
-from erika_files_mcp.config import ANTHROPIC_API_KEY
+from oncofiles.config import ANTHROPIC_API_KEY
 
 OCR_MODEL = "claude-haiku-4-5-20251001"
 

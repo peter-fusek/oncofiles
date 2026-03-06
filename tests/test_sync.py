@@ -5,8 +5,8 @@ from __future__ import annotations
 from datetime import datetime
 from unittest.mock import MagicMock, patch
 
-from erika_files_mcp.database import Database
-from erika_files_mcp.sync import sync_from_gdrive, sync_to_gdrive
+from oncofiles.database import Database
+from oncofiles.sync import sync_from_gdrive, sync_to_gdrive
 from tests.helpers import make_doc
 
 
@@ -46,7 +46,7 @@ async def test_sync_from_gdrive_new_file(db: Database):
         ]
     )
 
-    with patch("erika_files_mcp.sync.enhance_document_text", return_value=("summary", '["labs"]')):
+    with patch("oncofiles.sync.enhance_document_text", return_value=("summary", '["labs"]')):
         stats = await sync_from_gdrive(db, files, gdrive, "folder123")
 
     assert stats["new"] == 1
@@ -99,7 +99,7 @@ async def test_sync_from_gdrive_updated(db: Database):
         ]
     )
 
-    with patch("erika_files_mcp.sync.enhance_document_text", return_value=("summary", '["labs"]')):
+    with patch("oncofiles.sync.enhance_document_text", return_value=("summary", '["labs"]')):
         stats = await sync_from_gdrive(db, files, gdrive, "folder123")
 
     assert stats["updated"] == 1

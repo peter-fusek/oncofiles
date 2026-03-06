@@ -1,7 +1,7 @@
 """Tests for research entries (#33)."""
 
-from erika_files_mcp.database import Database
-from erika_files_mcp.models import ResearchQuery
+from oncofiles.database import Database
+from oncofiles.models import ResearchQuery
 
 from .helpers import make_research_entry
 

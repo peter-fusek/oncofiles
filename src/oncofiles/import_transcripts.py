@@ -4,9 +4,9 @@ Parses each JSONL file, extracts user prompts + assistant responses,
 and creates a summary conversation entry per session.
 
 Usage:
-    uv run python -m erika_files_mcp.import_transcripts --dry-run
-    uv run python -m erika_files_mcp.import_transcripts
-    uv run python -m erika_files_mcp.import_transcripts --path /custom/path
+    uv run python -m oncofiles.import_transcripts --dry-run
+    uv run python -m oncofiles.import_transcripts
+    uv run python -m oncofiles.import_transcripts --path /custom/path
 """
 
 from __future__ import annotations
@@ -18,13 +18,13 @@ import json
 from datetime import date, datetime
 from pathlib import Path
 
-from erika_files_mcp.config import (
+from oncofiles.config import (
     DATABASE_PATH,
     TURSO_AUTH_TOKEN,
     TURSO_DATABASE_URL,
 )
-from erika_files_mcp.database import Database
-from erika_files_mcp.models import ConversationEntry
+from oncofiles.database import Database
+from oncofiles.models import ConversationEntry
 
 # Ensure all output is flushed immediately for progress visibility
 print = functools.partial(print, flush=True)  # noqa: A001

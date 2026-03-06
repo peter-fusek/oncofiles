@@ -7,7 +7,7 @@ import io
 import json
 import logging
 
-from erika_files_mcp.config import GOOGLE_APPLICATION_CREDENTIALS, GOOGLE_CREDENTIALS_BASE64
+from oncofiles.config import GOOGLE_APPLICATION_CREDENTIALS, GOOGLE_CREDENTIALS_BASE64
 
 logger = logging.getLogger(__name__)
 

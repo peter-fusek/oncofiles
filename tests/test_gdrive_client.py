@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from erika_files_mcp.gdrive_client import create_gdrive_client
+from oncofiles.gdrive_client import create_gdrive_client
 
 MT_PDF = "application/pdf"
 MT_FOLDER = "application/vnd.google-apps.folder"
@@ -22,7 +22,7 @@ def _make_client():
         service = MagicMock()
         mock_build.return_value = service
 
-        from erika_files_mcp.gdrive_client import GDriveClient
+        from oncofiles.gdrive_client import GDriveClient
 
         # {"type": "service_account"} base64-encoded
         client = GDriveClient(credentials_base64="eyJ0eXBlIjogInNlcnZpY2VfYWNjb3VudCJ9")
@@ -145,9 +145,9 @@ def test_update():
 def test_create_gdrive_client_no_credentials():
     """Returns None when no credentials are set."""
     with (
-        patch("erika_files_mcp.gdrive_client.GOOGLE_CREDENTIALS_BASE64", ""),
+        patch("oncofiles.gdrive_client.GOOGLE_CREDENTIALS_BASE64", ""),
         patch(
-            "erika_files_mcp.gdrive_client.GOOGLE_APPLICATION_CREDENTIALS",
+            "oncofiles.gdrive_client.GOOGLE_APPLICATION_CREDENTIALS",
             "",
         ),
     ):
@@ -160,7 +160,7 @@ def test_gdrive_client_requires_credentials():
         patch("google.oauth2.service_account.Credentials"),
         patch("googleapiclient.discovery.build"),
     ):
-        from erika_files_mcp.gdrive_client import GDriveClient
+        from oncofiles.gdrive_client import GDriveClient
 
         with pytest.raises(
             ValueError,

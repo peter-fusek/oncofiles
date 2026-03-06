@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-from erika_files_mcp.database import Database
-from erika_files_mcp.enhance import enhance_document_text
-from erika_files_mcp.sync import enhance_documents
+from oncofiles.database import Database
+from oncofiles.enhance import enhance_document_text
+from oncofiles.sync import enhance_documents
 from tests.helpers import make_doc
 
 # ── enhance_document_text ───────────────────────────────────────────────────
@@ -38,7 +38,7 @@ def test_enhance_valid_response():
         )
     ]
 
-    with patch("erika_files_mcp.enhance.anthropic") as mock_anthropic:
+    with patch("oncofiles.enhance.anthropic") as mock_anthropic:
         mock_anthropic.Anthropic.return_value.messages.create.return_value = mock_response
         summary, tags = enhance_document_text("CEA: 15.2 ng/mL (ref <5.0)")
 
@@ -51,7 +51,7 @@ def test_enhance_invalid_json():
     mock_response = MagicMock()
     mock_response.content = [MagicMock(text="This is not JSON")]
 
-    with patch("erika_files_mcp.enhance.anthropic") as mock_anthropic:
+    with patch("oncofiles.enhance.anthropic") as mock_anthropic:
         mock_anthropic.Anthropic.return_value.messages.create.return_value = mock_response
         summary, tags = enhance_document_text("some text")
 
@@ -64,7 +64,7 @@ def test_enhance_missing_keys():
     mock_response = MagicMock()
     mock_response.content = [MagicMock(text='{"other": "data"}')]
 
-    with patch("erika_files_mcp.enhance.anthropic") as mock_anthropic:
+    with patch("oncofiles.enhance.anthropic") as mock_anthropic:
         mock_anthropic.Anthropic.return_value.messages.create.return_value = mock_response
         summary, tags = enhance_document_text("some text")
 
@@ -85,7 +85,7 @@ async def test_enhance_documents_all_unprocessed(db: Database):
 
     files = MagicMock()
     with patch(
-        "erika_files_mcp.sync.enhance_document_text",
+        "oncofiles.sync.enhance_document_text",
         return_value=("AI summary", '["labs"]'),
     ):
         stats = await enhance_documents(db, files, None)
@@ -113,7 +113,7 @@ async def test_enhance_documents_specific_ids(db: Database):
 
     files = MagicMock()
     with patch(
-        "erika_files_mcp.sync.enhance_document_text",
+        "oncofiles.sync.enhance_document_text",
         return_value=("summary", '["tag"]'),
     ):
         stats = await enhance_documents(db, files, None, document_ids=[doc1.id])
@@ -176,7 +176,7 @@ async def test_get_documents_without_ai(db: Database):
 
 async def test_search_documents_includes_ai_fields(db: Database):
     """Search finds documents by AI summary and tags content."""
-    from erika_files_mcp.models import SearchQuery
+    from oncofiles.models import SearchQuery
 
     doc = await db.insert_document(make_doc())
     await db.update_document_ai_metadata(doc.id, "Elevated CEA tumor marker", '["tumor-marker"]')

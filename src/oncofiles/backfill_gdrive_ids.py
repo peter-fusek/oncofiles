@@ -4,8 +4,8 @@ Lists all files in the Google Drive Erika folder, matches them to DB documents
 by original_filename, and updates the gdrive_id + gdrive_modified_time columns.
 
 Usage:
-    uv run python -m erika_files_mcp.backfill_gdrive_ids --dry-run
-    uv run python -m erika_files_mcp.backfill_gdrive_ids
+    uv run python -m oncofiles.backfill_gdrive_ids --dry-run
+    uv run python -m oncofiles.backfill_gdrive_ids
 """
 
 from __future__ import annotations
@@ -15,14 +15,14 @@ import asyncio
 import logging
 import sys
 
-from erika_files_mcp.config import (
+from oncofiles.config import (
     DATABASE_PATH,
     GOOGLE_DRIVE_FOLDER_ID,
     TURSO_AUTH_TOKEN,
     TURSO_DATABASE_URL,
 )
-from erika_files_mcp.database import Database
-from erika_files_mcp.gdrive_client import create_gdrive_client
+from oncofiles.database import Database
+from oncofiles.gdrive_client import create_gdrive_client
 
 logger = logging.getLogger(__name__)
 

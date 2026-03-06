@@ -17,7 +17,7 @@ import re
 from datetime import date
 from pathlib import PurePosixPath
 
-from erika_files_mcp.models import DocumentCategory, ParsedFilename
+from oncofiles.models import DocumentCategory, ParsedFilename
 
 # Known institution codes (expandable)
 KNOWN_INSTITUTIONS = {
