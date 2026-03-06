@@ -1,4 +1,4 @@
-"""Bulk import of local medical documents into the Erika Files MCP system.
+"""Bulk import of local medical documents into the Oncofiles MCP system.
 
 Walks the Google Drive sync folder recursively, uploads each PDF/JPG/PNG
 to the Anthropic Files API, parses the filename, and stores metadata in SQLite.
