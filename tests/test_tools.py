@@ -436,8 +436,9 @@ async def test_search_conversations(db: Database):
     import json
 
     data = json.loads(result)
-    assert len(data) == 1
-    assert "FOLFOX" in data[0]["title"]
+    assert "entries" in data
+    assert data["total"] == 1
+    assert "FOLFOX" in data["entries"][0]["title"]
 
 
 async def test_get_conversation(db: Database):
