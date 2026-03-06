@@ -15,7 +15,7 @@ from fastmcp.utilities.types import Image
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
-from erika_files_mcp.config import (
+from oncofiles.config import (
     DATABASE_PATH,
     GOOGLE_DRIVE_FOLDER_ID,
     LOG_LEVEL,
@@ -26,11 +26,11 @@ from erika_files_mcp.config import (
     TURSO_AUTH_TOKEN,
     TURSO_DATABASE_URL,
 )
-from erika_files_mcp.database import Database
-from erika_files_mcp.filename_parser import parse_filename
-from erika_files_mcp.files_api import FilesClient
-from erika_files_mcp.gdrive_client import GDriveClient, create_gdrive_client
-from erika_files_mcp.models import (
+from oncofiles.database import Database
+from oncofiles.filename_parser import parse_filename
+from oncofiles.files_api import FilesClient
+from oncofiles.gdrive_client import GDriveClient, create_gdrive_client
+from oncofiles.models import (
     ActivityLogEntry,
     ActivityLogQuery,
     AgentState,
@@ -44,7 +44,7 @@ from erika_files_mcp.models import (
     TreatmentEvent,
     TreatmentEventQuery,
 )
-from erika_files_mcp.ocr import OCR_MODEL, extract_text_from_image
+from oncofiles.ocr import OCR_MODEL, extract_text_from_image
 
 logger = logging.getLogger(__name__)
 
@@ -1415,7 +1415,7 @@ async def sync_from_gdrive(
         dry_run: Preview changes without importing.
         enhance: Run AI summary/tag generation on new/changed files (default True).
     """
-    from erika_files_mcp.sync import sync_from_gdrive as _sync_from_gdrive
+    from oncofiles.sync import sync_from_gdrive as _sync_from_gdrive
 
     db = _get_db(ctx)
     files = _get_files(ctx)
@@ -1448,7 +1448,7 @@ async def sync_to_gdrive(
     Args:
         dry_run: Preview changes without exporting.
     """
-    from erika_files_mcp.sync import sync_to_gdrive as _sync_to_gdrive
+    from oncofiles.sync import sync_to_gdrive as _sync_to_gdrive
 
     db = _get_db(ctx)
     files = _get_files(ctx)
@@ -1480,7 +1480,7 @@ async def enhance_documents(
     Args:
         document_ids: Comma-separated document IDs to enhance. If omitted, enhances all unprocessed.
     """
-    from erika_files_mcp.sync import enhance_documents as _enhance_documents
+    from oncofiles.sync import enhance_documents as _enhance_documents
 
     db = _get_db(ctx)
     files = _get_files(ctx)

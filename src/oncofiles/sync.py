@@ -7,12 +7,12 @@ import logging
 import mimetypes
 from datetime import datetime
 
-from erika_files_mcp.database import Database
-from erika_files_mcp.enhance import enhance_document_text
-from erika_files_mcp.filename_parser import parse_filename
-from erika_files_mcp.files_api import FilesClient
-from erika_files_mcp.gdrive_client import GDriveClient
-from erika_files_mcp.models import Document
+from oncofiles.database import Database
+from oncofiles.enhance import enhance_document_text
+from oncofiles.filename_parser import parse_filename
+from oncofiles.files_api import FilesClient
+from oncofiles.gdrive_client import GDriveClient
+from oncofiles.models import Document
 
 logger = logging.getLogger(__name__)
 
@@ -253,7 +253,7 @@ async def _enhance_document(
         # Try to get text by downloading the document
         import contextlib
 
-        from erika_files_mcp.server import _extract_pdf_text
+        from oncofiles.server import _extract_pdf_text
 
         content_bytes = None
         try:

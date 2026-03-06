@@ -1,4 +1,4 @@
-# erika-files-mcp
+# oncofiles
 
 MCP server for persistent medical document management via Anthropic Files API.
 
@@ -12,7 +12,7 @@ uv run ruff check
 
 ## Project structure
 
-- `src/erika_files_mcp/` — main package
+- `src/oncofiles/` — main package
 - `tests/` — pytest tests
 - `migrations/` — SQL schema migrations
 - `data/` — local dev SQLite database (gitignored)
@@ -27,7 +27,7 @@ uv run ruff check
 
 ## Key commands
 
-- `uv run erika-mcp` — run MCP server (stdio)
+- `uv run oncofiles-mcp` — run MCP server (stdio)
 - `uv run pytest` — run tests
 - `uv run ruff check --fix` — lint and auto-fix
 - `uv run ruff format` — format code

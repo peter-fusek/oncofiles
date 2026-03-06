@@ -6,8 +6,8 @@ import asyncio
 import os
 import sys
 
-from erika_files_mcp.config import DATABASE_PATH, TURSO_AUTH_TOKEN, TURSO_DATABASE_URL
-from erika_files_mcp.database import Database
+from oncofiles.config import DATABASE_PATH, TURSO_AUTH_TOKEN, TURSO_DATABASE_URL
+from oncofiles.database import Database
 
 
 async def migrate() -> None:

@@ -390,7 +390,7 @@ wheels = [
 ]
 
 [[package]]
-name = "erika-files-mcp"
+name = "oncofiles"
 version = "0.9.0"
 source = { editable = "." }
 dependencies = [

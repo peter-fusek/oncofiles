@@ -7,9 +7,9 @@ import pymupdf
 import pytest
 from fastmcp.utilities.types import Image
 
-from erika_files_mcp.database import Database
-from erika_files_mcp.models import DocumentCategory
-from erika_files_mcp.server import (
+from oncofiles.database import Database
+from oncofiles.models import DocumentCategory
+from oncofiles.server import (
     analyze_labs,
     compare_labs,
     get_conversation,
@@ -24,7 +24,7 @@ from tests.helpers import make_doc
 @pytest.fixture(autouse=True)
 def _mock_ocr():
     """Auto-mock OCR extraction for all tool tests (avoid real API calls)."""
-    with patch("erika_files_mcp.server.extract_text_from_image", return_value="OCR text") as m:
+    with patch("oncofiles.server.extract_text_from_image", return_value="OCR text") as m:
         yield m
 
 
@@ -333,7 +333,7 @@ async def test_view_document_includes_ocr_text(db: Database):
     mock_files.download.return_value = _make_test_pdf()
     ctx = _mock_ctx(db, mock_files)
 
-    with patch("erika_files_mcp.server.extract_text_from_image") as mock_ocr:
+    with patch("oncofiles.server.extract_text_from_image") as mock_ocr:
         mock_ocr.return_value = "Hemoglobín: 135 g/L"
         result = await view_document(ctx, file_id="file_ocr1")
 
@@ -357,7 +357,7 @@ async def test_view_document_ocr_cache_hit(db: Database):
     mock_files.download.return_value = _make_test_pdf()
     ctx = _mock_ctx(db, mock_files)
 
-    with patch("erika_files_mcp.server.extract_text_from_image") as mock_ocr:
+    with patch("oncofiles.server.extract_text_from_image") as mock_ocr:
         result = await view_document(ctx, file_id="file_ocr2")
 
     # Should NOT call OCR (cache hit)
@@ -379,7 +379,7 @@ async def test_analyze_labs_includes_ocr_text(db: Database):
     mock_files.download.return_value = _make_test_pdf()
     ctx = _mock_ctx(db, mock_files)
 
-    with patch("erika_files_mcp.server.extract_text_from_image") as mock_ocr:
+    with patch("oncofiles.server.extract_text_from_image") as mock_ocr:
         mock_ocr.return_value = "WBC: 5.2 x10^9/L"
         result = await analyze_labs(ctx)
 

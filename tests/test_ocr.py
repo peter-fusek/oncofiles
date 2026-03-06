@@ -4,7 +4,7 @@ from unittest.mock import MagicMock, patch
 
 from fastmcp.utilities.types import Image
 
-from erika_files_mcp.ocr import OCR_MODEL, OCR_SYSTEM_PROMPT, extract_text_from_image
+from oncofiles.ocr import OCR_MODEL, OCR_SYSTEM_PROMPT, extract_text_from_image
 
 
 def test_extract_text_from_image():
@@ -14,7 +14,7 @@ def test_extract_text_from_image():
     mock_response = MagicMock()
     mock_response.content = [MagicMock(text="Hemoglobín: 135 g/L\nLeukocyty: 5.2")]
 
-    with patch("erika_files_mcp.ocr.anthropic.Anthropic") as mock_cls:
+    with patch("oncofiles.ocr.anthropic.Anthropic") as mock_cls:
         mock_client = MagicMock()
         mock_cls.return_value = mock_client
         mock_client.messages.create.return_value = mock_response
@@ -43,7 +43,7 @@ def test_extract_text_empty_response():
     mock_response = MagicMock()
     mock_response.content = []
 
-    with patch("erika_files_mcp.ocr.anthropic.Anthropic") as mock_cls:
+    with patch("oncofiles.ocr.anthropic.Anthropic") as mock_cls:
         mock_client = MagicMock()
         mock_cls.return_value = mock_client
         mock_client.messages.create.return_value = mock_response
@@ -60,7 +60,7 @@ def test_extract_text_png_format():
     mock_response = MagicMock()
     mock_response.content = [MagicMock(text="Test text")]
 
-    with patch("erika_files_mcp.ocr.anthropic.Anthropic") as mock_cls:
+    with patch("oncofiles.ocr.anthropic.Anthropic") as mock_cls:
         mock_client = MagicMock()
         mock_cls.return_value = mock_client
         mock_client.messages.create.return_value = mock_response

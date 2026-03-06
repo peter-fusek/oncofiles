@@ -21,4 +21,4 @@ RUN uv sync --frozen --no-dev --extra cloud --extra gdrive
 # Railway injects PORT; defaults handled in config.py
 ENV MCP_TRANSPORT=streamable-http
 
-CMD ["uv", "run", "erika-mcp"]
+CMD ["uv", "run", "oncofiles-mcp"]

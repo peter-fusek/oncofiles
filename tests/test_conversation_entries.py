@@ -2,8 +2,8 @@
 
 from datetime import date
 
-from erika_files_mcp.database import Database
-from erika_files_mcp.models import ConversationEntry, ConversationQuery
+from oncofiles.database import Database
+from oncofiles.models import ConversationEntry, ConversationQuery
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 

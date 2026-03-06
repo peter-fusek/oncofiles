@@ -5,8 +5,8 @@ Real format: YYYYMMDD ErikaFusekova-Institution-DescriptionDoctor.ext
 
 from datetime import date
 
-from erika_files_mcp.filename_parser import parse_filename
-from erika_files_mcp.models import DocumentCategory
+from oncofiles.filename_parser import parse_filename
+from oncofiles.models import DocumentCategory
 
 # ── Real filenames from Google Drive ─────────────────────────────────────────
 
