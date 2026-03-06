@@ -51,12 +51,13 @@ logger = logging.getLogger(__name__)
 # ── Auth ──────────────────────────────────────────────────────────────────────
 
 auth = None
-if MCP_BEARER_TOKEN:
-    from fastmcp.server.auth import StaticTokenVerifier
-
-    auth = StaticTokenVerifier(
-        tokens={MCP_BEARER_TOKEN: {"client_id": "claude-ai", "scopes": []}},
-    )
+# TEMP: auth disabled for connector rename — restore after adding Oncofiles connector
+# if MCP_BEARER_TOKEN:
+#     from fastmcp.server.auth import StaticTokenVerifier
+#
+#     auth = StaticTokenVerifier(
+#         tokens={MCP_BEARER_TOKEN: {"client_id": "claude-ai", "scopes": []}},
+#     )
 
 
 # ── Lifespan ──────────────────────────────────────────────────────────────────
