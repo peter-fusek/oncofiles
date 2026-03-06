@@ -1,6 +1,6 @@
 """Backfill gdrive_id for existing documents by matching filenames.
 
-Lists all files in the Google Drive Erika folder, matches them to DB documents
+Lists all files in the Google Drive medical folder, matches them to DB documents
 by original_filename, and updates the gdrive_id + gdrive_modified_time columns.
 
 Usage:

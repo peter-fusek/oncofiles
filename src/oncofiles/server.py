@@ -1,4 +1,4 @@
-"""FastMCP server for Erika's medical document management."""
+"""FastMCP server for Oncofiles medical document management."""
 
 from __future__ import annotations
 
@@ -79,7 +79,7 @@ def _setup_logging() -> None:
 async def lifespan(server: FastMCP) -> AsyncIterator[dict]:
     """Initialize database and Files API client on startup."""
     _setup_logging()
-    logger.info("Starting Erika Files MCP server (transport=%s)", MCP_TRANSPORT)
+    logger.info("Starting Oncofiles MCP server (transport=%s)", MCP_TRANSPORT)
     if TURSO_DATABASE_URL:
         db = Database(turso_url=TURSO_DATABASE_URL, turso_token=TURSO_AUTH_TOKEN)
     else:
@@ -99,7 +99,7 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict]:
 
 
 mcp = FastMCP(
-    "Erika Files",
+    "Oncofiles",
     instructions="Medical document management via Anthropic Files API",
     lifespan=lifespan,
     auth=auth,

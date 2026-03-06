@@ -30,7 +30,7 @@ from oncofiles.models import ConversationEntry
 print = functools.partial(print, flush=True)  # noqa: A001
 
 DEFAULT_TRANSCRIPTS_PATH = (
-    Path.home() / ".claude" / "projects" / "-Users-peterfusek1980gmail-com-Projects-Erika"
+    Path.home() / ".claude" / "projects" / "-Users-peterfusek1980gmail-com-Projects-oncofiles"
 )
 
 
