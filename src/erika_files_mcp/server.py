@@ -630,9 +630,31 @@ async def analyze_labs(
         )
     else:
         result.append(
-            "**Instructions:** Focus on out-of-range values, chemotherapy side effects "
-            "(myelosuppression, hepatotoxicity, nephrotoxicity), and tumor markers "
-            "(CEA, CA 19-9). Flag any critical values requiring immediate attention."
+            "**Instructions:** Analyze these lab results using the following protocol:\n\n"
+            "1. **CRITICAL VALUES** — Flag immediately: ANC <1.0, PLT <75 or >400 with active VTE, "
+            "Cr >1.5x baseline, K+ <3.0 or >5.5, any value requiring urgent intervention.\n\n"
+            "2. **SII (Systemic Immune-Inflammation Index)** = (abs_NEUT x PLT) / abs_LYMPH\n"
+            "   - >1800 = high inflammatory burden\n"
+            "   - >30% decline after C1 = favorable response signal\n"
+            "   - Calculate and report the value.\n\n"
+            "3. **Ne/Ly ratio** = abs_NEUT / abs_LYMPH\n"
+            "   - >3.0 = poor prognosis indicator\n"
+            "   - <2.5 = improving\n\n"
+            "4. **CBC delta table**: "
+            "[Parameter | Baseline | Current | Change% | Reference | Status]\n"
+            "   - If pre-treatment baseline is missing, "
+            "FLAG: 'Baseline labs needed for trend analysis'\n\n"
+            "5. **Liver enzyme pattern**: hepatocellular (ALT/AST up) vs cholestatic (GMT/ALP up) "
+            "vs mixed — relate to known [CLINICAL_REDACTED] ([CODE_REDACTED]).\n\n"
+            "6. **PLT + thrombosis cross-check**: Patient has active [CLINICAL_REDACTED] on [MEDICATION_REDACTED]. "
+            "If PLT elevated (>400), FLAG IMMEDIATELY as high-risk for thromboembolic event.\n\n"
+            "7. **Tumor markers**: CEA, CA 19-9 trends. "
+            "Note if baseline pre-treatment values missing.\n\n"
+            "8. **Chemotherapy toxicity**: myelosuppression (ANC, PLT, Hgb), "
+            "nephrotoxicity (Cr, eGFR), "
+            "hepatotoxicity (ALT, AST, bilirubin), neurotoxicity indicators.\n\n"
+            "**Output sections:** Critical / Watch / Stable / Inflammatory Markers (SII, Ne/Ly) / "
+            "Tumor Markers / Questions for Oncologist (2-4 specific questions)"
         )
     return result
 
@@ -718,10 +740,23 @@ async def compare_labs(
         )
     else:
         result.append(
-            "**Instructions:** Compare values across these lab results chronologically. "
-            "Identify trends (improving/worsening), highlight significant changes, "
-            "and flag any values that crossed normal/abnormal thresholds. "
-            "Pay special attention to tumor markers and chemotherapy toxicity indicators."
+            "**Instructions:** Compare these lab results chronologically using this protocol:\n\n"
+            "1. **CBC delta table**: [Parameter | Date1 | Date2 | ... | Change% | Trend | Status]\n"
+            "   - If pre-treatment baseline is missing, FLAG: 'Baseline labs needed'\n\n"
+            "2. **SII trend** = (abs_NEUT x PLT) / abs_LYMPH — calculate for each date.\n"
+            "   - >30% decline post-C1 = favorable response\n\n"
+            "3. **Ne/Ly ratio trend** = abs_NEUT / abs_LYMPH — calculate for each date.\n"
+            "   - Crossing 3.0 threshold in either direction is significant.\n\n"
+            "4. **PLT + thrombosis cross-check**: Patient has active [CLINICAL_REDACTED] on [MEDICATION_REDACTED]. "
+            "If PLT trending up or >400, FLAG IMMEDIATELY.\n\n"
+            "5. **Liver enzyme pattern**: track hepatocellular vs cholestatic pattern changes "
+            "across dates — relate to [CLINICAL_REDACTED] ([CODE_REDACTED]).\n\n"
+            "6. **Tumor markers**: CEA, CA 19-9 direction and velocity of change.\n\n"
+            "7. **Threshold crossings**: Flag any value that crossed normal/abnormal boundary.\n\n"
+            "8. **Chemotherapy toxicity trends**: "
+            "cumulative myelosuppression, renal/hepatic function.\n\n"
+            "**Output sections:** Critical Trends / Improving / Worsening / Stable / "
+            "Inflammatory Markers (SII, Ne/Ly) / Tumor Markers / Questions for Oncologist"
         )
     return result
 
