@@ -215,7 +215,7 @@ async def list_documents(
     """
     db = _get_db(ctx)
     docs = await db.list_documents(limit=limit, offset=offset)
-    return json.dumps([_doc_to_dict(d) for d in docs])
+    return json.dumps({"documents": [_doc_to_dict(d) for d in docs], "total": len(docs)})
 
 
 @mcp.tool()
@@ -249,7 +249,7 @@ async def search_documents(
         limit=limit,
     )
     docs = await db.search_documents(query)
-    return json.dumps([_doc_to_dict(d) for d in docs])
+    return json.dumps({"documents": [_doc_to_dict(d) for d in docs], "total": len(docs)})
 
 
 @mcp.tool()
@@ -860,20 +860,20 @@ async def search_conversations(
         limit=limit,
     )
     entries = await db.search_conversation_entries(query)
-    return json.dumps(
-        [
-            {
-                "id": e.id,
-                "entry_date": e.entry_date.isoformat(),
-                "entry_type": e.entry_type,
-                "title": e.title,
-                "content": e.content[:500] + ("..." if len(e.content) > 500 else ""),
-                "participant": e.participant,
-                "tags": e.tags,
-            }
-            for e in entries
-        ]
-    )
+    items = [
+        {
+            "id": e.id,
+            "entry_date": e.entry_date.isoformat(),
+            "entry_type": e.entry_type,
+            "title": e.title,
+            "content": e.content[:500] + ("..." if len(e.content) > 500 else ""),
+            "participant": e.participant,
+            "tags": e.tags,
+            "created_at": e.created_at.isoformat() if e.created_at else None,
+        }
+        for e in entries
+    ]
+    return json.dumps({"entries": items, "total": len(items)})
 
 
 @mcp.tool()
@@ -1128,19 +1128,19 @@ async def list_treatment_events(
         limit=limit,
     )
     events = await db.list_treatment_events(query)
-    return json.dumps(
-        [
-            {
-                "id": e.id,
-                "event_date": e.event_date.isoformat(),
-                "event_type": e.event_type,
-                "title": e.title,
-                "notes": e.notes,
-                "metadata": e.metadata,
-            }
-            for e in events
-        ]
-    )
+    items = [
+        {
+            "id": e.id,
+            "event_date": e.event_date.isoformat(),
+            "event_type": e.event_type,
+            "title": e.title,
+            "notes": e.notes,
+            "metadata": e.metadata,
+            "created_at": e.created_at.isoformat() if e.created_at else None,
+        }
+        for e in events
+    ]
+    return json.dumps({"events": items, "total": len(items)})
 
 
 @mcp.tool()
@@ -1230,18 +1230,19 @@ async def search_research(
     db = _get_db(ctx)
     query = ResearchQuery(text=text, source=source, limit=limit)
     entries = await db.search_research_entries(query)
-    return json.dumps(
-        [
-            {
-                "id": e.id,
-                "source": e.source,
-                "external_id": e.external_id,
-                "title": e.title,
-                "summary": e.summary[:500] + ("..." if len(e.summary) > 500 else ""),
-                "tags": e.tags,
-            }
-            for e in entries
-        ]
+    items = [
+        {
+            "id": e.id,
+            "source": e.source,
+            "external_id": e.external_id,
+            "title": e.title,
+            "summary": e.summary[:500] + ("..." if len(e.summary) > 500 else ""),
+            "tags": e.tags,
+            "created_at": e.created_at.isoformat() if e.created_at else None,
+        }
+        for e in entries
+    ]
+    return json.dumps({"entries": items, "total": len(items)}
     )
 
 
@@ -1259,19 +1260,19 @@ async def list_research_entries(
     """
     db = _get_db(ctx)
     entries = await db.list_research_entries(source=source, limit=limit)
-    return json.dumps(
-        [
-            {
-                "id": e.id,
-                "source": e.source,
-                "external_id": e.external_id,
-                "title": e.title,
-                "summary": e.summary[:200] + ("..." if len(e.summary) > 200 else ""),
-                "tags": e.tags,
-            }
-            for e in entries
-        ]
-    )
+    items = [
+        {
+            "id": e.id,
+            "source": e.source,
+            "external_id": e.external_id,
+            "title": e.title,
+            "summary": e.summary[:200] + ("..." if len(e.summary) > 200 else ""),
+            "tags": e.tags,
+            "created_at": e.created_at.isoformat() if e.created_at else None,
+        }
+        for e in entries
+    ]
+    return json.dumps({"entries": items, "total": len(items)})
 
 
 # ── Activity log tools (#38) ────────────────────────────────────────────────
@@ -1355,20 +1356,22 @@ async def search_activity_log(
         limit=limit,
     )
     entries = await db.search_activity_log(query)
-    return json.dumps(
-        [
-            {
-                "id": e.id,
-                "session_id": e.session_id,
-                "agent_id": e.agent_id,
-                "tool_name": e.tool_name,
-                "status": e.status,
-                "duration_ms": e.duration_ms,
-                "created_at": e.created_at.isoformat() if e.created_at else None,
-            }
-            for e in entries
-        ]
-    )
+    items = [
+        {
+            "id": e.id,
+            "session_id": e.session_id,
+            "agent_id": e.agent_id,
+            "tool_name": e.tool_name,
+            "input_summary": e.input_summary,
+            "output_summary": e.output_summary,
+            "status": e.status,
+            "duration_ms": e.duration_ms,
+            "error_message": e.error_message,
+            "created_at": e.created_at.isoformat() if e.created_at else None,
+        }
+        for e in entries
+    ]
+    return json.dumps({"entries": items, "total": len(items)})
 
 
 @mcp.tool()
@@ -1394,7 +1397,8 @@ async def get_activity_stats(
         date_from=date.fromisoformat(date_from) if date_from else None,
         date_to=date.fromisoformat(date_to) if date_to else None,
     )
-    return json.dumps(stats)
+    total_calls = sum(s["count"] for s in stats)
+    return json.dumps({"stats": stats, "total_calls": total_calls})
 
 
 # ── Sync tools (#v0.9) ───────────────────────────────────────────────────────
