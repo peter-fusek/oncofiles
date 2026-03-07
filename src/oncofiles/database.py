@@ -27,6 +27,12 @@ from oncofiles.models import (
 
 MIGRATIONS_DIR = Path(__file__).parent.parent.parent / "migrations"
 
+# "key" is a reserved word — always quote it in SQL and use aliased SELECT
+_AGENT_STATE_SELECT = (
+    'SELECT id, agent_id, "key" AS state_key, value, created_at, updated_at'
+    " FROM agent_state"
+)
+
 
 # ── Turso async wrappers ──────────────────────────────────────────────────────
 
@@ -547,9 +553,9 @@ class Database:
         """Upsert an agent state key-value pair. Returns the saved state."""
         await self.db.execute(
             """
-            INSERT INTO agent_state (agent_id, key, value, updated_at)
+            INSERT INTO agent_state (agent_id, "key", value, updated_at)
             VALUES (?, ?, ?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
-            ON CONFLICT(agent_id, key) DO UPDATE SET
+            ON CONFLICT(agent_id, "key") DO UPDATE SET
                 value = excluded.value,
                 updated_at = excluded.updated_at
             """,
@@ -558,7 +564,7 @@ class Database:
         await self.db.commit()
         # Re-fetch (lastrowid unreliable on upsert)
         async with self.db.execute(
-            "SELECT * FROM agent_state WHERE agent_id = ? AND key = ?",
+            _AGENT_STATE_SELECT + ' WHERE agent_id = ? AND "key" = ?',
             (state.agent_id, state.key),
         ) as cursor:
             row = await cursor.fetchone()
@@ -567,7 +573,7 @@ class Database:
     async def get_agent_state(self, key: str, agent_id: str = "oncoteam") -> AgentState | None:
         """Get a single agent state value by key."""
         async with self.db.execute(
-            "SELECT * FROM agent_state WHERE agent_id = ? AND key = ?",
+            _AGENT_STATE_SELECT + ' WHERE agent_id = ? AND "key" = ?',
             (agent_id, key),
         ) as cursor:
             row = await cursor.fetchone()
@@ -576,7 +582,7 @@ class Database:
     async def list_agent_states(self, agent_id: str = "oncoteam") -> list[AgentState]:
         """List all state keys for an agent."""
         async with self.db.execute(
-            "SELECT * FROM agent_state WHERE agent_id = ? ORDER BY key",
+            _AGENT_STATE_SELECT + ' WHERE agent_id = ? ORDER BY "key"',
             (agent_id,),
         ) as cursor:
             rows = await cursor.fetchall()
@@ -936,12 +942,15 @@ def _row_to_oauth_token(row: aiosqlite.Row) -> OAuthToken:
 
 
 def _row_to_agent_state(row: aiosqlite.Row) -> AgentState:
-    """Convert a database row to an AgentState model."""
+    """Convert a database row to an AgentState model.
+
+    Uses aliased column 'state_key' to avoid reserved-word issues with Turso.
+    """
     d = dict(row)
     return AgentState(
         id=d["id"],
         agent_id=d["agent_id"],
-        key=d["key"],
+        key=d["state_key"],
         value=d["value"],
         created_at=datetime.fromisoformat(d["created_at"]) if d["created_at"] else None,
         updated_at=datetime.fromisoformat(d["updated_at"]) if d["updated_at"] else None,
