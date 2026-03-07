@@ -937,13 +937,14 @@ def _row_to_oauth_token(row: aiosqlite.Row) -> OAuthToken:
 
 def _row_to_agent_state(row: aiosqlite.Row) -> AgentState:
     """Convert a database row to an AgentState model."""
+    d = dict(row)
     return AgentState(
-        id=row["id"],
-        agent_id=row["agent_id"],
-        key=row["key"],
-        value=row["value"],
-        created_at=datetime.fromisoformat(row["created_at"]) if row["created_at"] else None,
-        updated_at=datetime.fromisoformat(row["updated_at"]) if row["updated_at"] else None,
+        id=d["id"],
+        agent_id=d["agent_id"],
+        key=d["key"],
+        value=d["value"],
+        created_at=datetime.fromisoformat(d["created_at"]) if d["created_at"] else None,
+        updated_at=datetime.fromisoformat(d["updated_at"]) if d["updated_at"] else None,
     )
 
 
