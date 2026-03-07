@@ -25,6 +25,8 @@ from oncofiles.config import (
     MCP_HOST,
     MCP_PORT,
     MCP_TRANSPORT,
+    SYNC_ENABLED,
+    SYNC_INTERVAL_MINUTES,
     TURSO_AUTH_TOKEN,
     TURSO_DATABASE_URL,
 )
@@ -128,10 +130,55 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict]:
         except Exception as e:
             logger.warning("OAuth GDrive init failed: %s", e)
 
+    # Start background sync scheduler
+    scheduler = None
+    if SYNC_ENABLED and gdrive:
+        scheduler = _start_sync_scheduler(db, files, gdrive, oauth_folder_id)
+
     try:
         yield {"db": db, "files": files, "gdrive": gdrive, "oauth_folder_id": oauth_folder_id}
     finally:
+        if scheduler:
+            scheduler.shutdown(wait=False)
+            logger.info("Sync scheduler stopped")
         await db.close()
+
+
+def _start_sync_scheduler(db, files, gdrive, oauth_folder_id):
+    """Start APScheduler for periodic GDrive sync."""
+    from apscheduler.schedulers.asyncio import AsyncIOScheduler
+    from apscheduler.triggers.interval import IntervalTrigger
+
+    from oncofiles.sync import sync
+
+    async def _run_sync():
+        folder_id = _get_sync_folder_id_from(oauth_folder_id)
+        if not folder_id:
+            logger.debug("Scheduled sync skipped — no folder ID")
+            return
+        try:
+            stats = await sync(db, files, gdrive, folder_id)
+            logger.info("Scheduled sync complete: %s", stats)
+        except Exception:
+            logger.exception("Scheduled sync failed")
+
+    scheduler = AsyncIOScheduler()
+    scheduler.add_job(
+        _run_sync,
+        IntervalTrigger(minutes=SYNC_INTERVAL_MINUTES),
+        id="gdrive_sync",
+        max_instances=1,
+    )
+    scheduler.start()
+    logger.info(
+        "Sync scheduler started — every %d min", SYNC_INTERVAL_MINUTES
+    )
+    return scheduler
+
+
+def _get_sync_folder_id_from(oauth_folder_id: str) -> str:
+    """Resolve GDrive folder ID from config or OAuth."""
+    return GOOGLE_DRIVE_FOLDER_ID or oauth_folder_id
 
 
 mcp = FastMCP(
