@@ -65,3 +65,81 @@ def enhance_document_text(text: str) -> tuple[str, str]:
     except json.JSONDecodeError:
         logger.warning("Failed to parse AI enhancement response: %s", raw[:200])
         return raw[:500], "[]"
+
+
+METADATA_SYSTEM_PROMPT = (
+    "You are a medical document analyst. Given the extracted text of a medical document, "
+    "produce a JSON object with exactly these keys:\n"
+    '- "document_type": detected type (one of: lab_report, discharge_summary, pathology, '
+    "imaging, surgical_report, prescription, referral, "
+    "genetics, chemo_sheet, consultation, other)\n"
+    '- "findings": array of key findings as short strings (max 10)\n'
+    '- "diagnoses": array of objects with "name" and optional "icd_code" keys\n'
+    '- "medications": array of medication names mentioned\n'
+    '- "dates_mentioned": array of dates found in document (YYYY-MM-DD format when possible)\n'
+    '- "providers": array of healthcare provider/institution names\n'
+    '- "plain_summary": 3-sentence patient-friendly summary in English\n\n'
+    "Respond ONLY with the JSON object, no markdown fencing or extra text."
+)
+
+
+def extract_structured_metadata(text: str) -> dict:
+    """Extract structured medical metadata from document text.
+
+    Args:
+        text: Extracted text from the document.
+
+    Returns:
+        Dict with structured metadata fields.
+    """
+    if not text.strip():
+        return {
+            "document_type": "other",
+            "findings": [],
+            "diagnoses": [],
+            "medications": [],
+            "dates_mentioned": [],
+            "providers": [],
+            "plain_summary": "",
+        }
+
+    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+    truncated = text[:8000]
+
+    response = client.messages.create(
+        model=ENHANCE_MODEL,
+        max_tokens=1024,
+        system=METADATA_SYSTEM_PROMPT,
+        messages=[
+            {
+                "role": "user",
+                "content": f"Document text:\n\n{truncated}",
+            }
+        ],
+    )
+
+    raw = response.content[0].text if response.content else "{}"
+
+    try:
+        parsed = json.loads(raw)
+        # Validate expected keys with defaults
+        return {
+            "document_type": parsed.get("document_type", "other"),
+            "findings": parsed.get("findings", []),
+            "diagnoses": parsed.get("diagnoses", []),
+            "medications": parsed.get("medications", []),
+            "dates_mentioned": parsed.get("dates_mentioned", []),
+            "providers": parsed.get("providers", []),
+            "plain_summary": parsed.get("plain_summary", ""),
+        }
+    except json.JSONDecodeError:
+        logger.warning("Failed to parse metadata response: %s", raw[:200])
+        return {
+            "document_type": "other",
+            "findings": [],
+            "diagnoses": [],
+            "medications": [],
+            "dates_mentioned": [],
+            "providers": [],
+            "plain_summary": "",
+        }

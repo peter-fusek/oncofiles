@@ -259,6 +259,8 @@ def _doc_to_dict(d: Document) -> dict:
         result["ai_summary"] = d.ai_summary
     if d.ai_tags:
         result["ai_tags"] = d.ai_tags
+    if d.structured_metadata:
+        result["structured_metadata"] = json.loads(d.structured_metadata)
     return result
 
 
@@ -351,8 +353,9 @@ async def search_documents(
     Args:
         text: Full-text search query (searches filename, institution, description).
         institution: Filter by institution code (e.g. NOUonko, OUSA).
-        category: Filter by category (labs, report, imaging, pathology, surgery,
-                  prescription, referral, discharge, other).
+        category: Filter by category (labs, report, imaging, imaging_ct, imaging_us,
+                  pathology, genetics, surgery, surgical_report, prescription,
+                  referral, discharge, discharge_summary, chemo_sheet, other).
         date_from: Filter from this date (YYYY-MM-DD).
         date_to: Filter to this date (YYYY-MM-DD).
         limit: Maximum results to return.
@@ -656,6 +659,33 @@ async def _ensure_ocr_text(
     return texts
 
 
+# ── Analysis helpers ─────────────────────────────────────────────────────────
+
+
+async def _check_baseline_labs(db: Database) -> str | None:
+    """Check if pre-treatment baseline labs exist. Returns warning if missing."""
+    from oncofiles.models import TreatmentEventQuery
+
+    events = await db.list_treatment_events(TreatmentEventQuery(event_type="chemo", limit=1))
+    if not events:
+        return None
+
+    # Get earliest chemo event date
+    all_chemo = await db.list_treatment_events(TreatmentEventQuery(event_type="chemo", limit=200))
+    if not all_chemo:
+        return None
+
+    earliest = min(e.event_date for e in all_chemo)
+    baseline_labs = await db.get_labs_before_date(earliest.isoformat())
+    if not baseline_labs:
+        return (
+            f"**WARNING: BASELINE LABS MISSING** — No pre-treatment lab results found "
+            f"before first chemo cycle ({earliest.isoformat()}). Baseline values are "
+            f"essential for trend analysis and toxicity grading."
+        )
+    return None
+
+
 # ── Analysis tools ───────────────────────────────────────────────────────────
 
 
@@ -725,6 +755,11 @@ async def analyze_labs(
             return ["No lab results found."]
 
     result: list = [_patient_context_text()]
+
+    # Baseline labs availability check
+    baseline_warning = await _check_baseline_labs(db)
+    if baseline_warning:
+        result.append(baseline_warning)
     download_errors = 0
     for doc in labs:
         result.append(_doc_header(doc))
@@ -1772,6 +1807,189 @@ async def enhance_documents(
 
     stats = await _enhance_documents(db, files, gdrive, document_ids=parsed_ids)
     return json.dumps(stats)
+
+
+# ── Structured metadata extraction (#Phase 2) ─────────────────────────────────
+
+
+@mcp.tool()
+async def extract_document_metadata(
+    ctx: Context,
+    document_id: int,
+) -> str:
+    """Extract and store structured medical metadata from a document.
+
+    Uses AI to analyze the document text and extract findings, diagnoses,
+    medications, providers, and a patient-friendly summary. Results are
+    persisted in the structured_metadata column.
+
+    Args:
+        document_id: The local document ID to extract metadata from.
+    """
+    from oncofiles.enhance import extract_structured_metadata
+
+    db = _get_db(ctx)
+    files = _get_files(ctx)
+    gdrive = _get_gdrive(ctx)
+
+    doc = await db.get_document(document_id)
+    if not doc:
+        return json.dumps({"error": f"Document not found: {document_id}"})
+
+    # Get document text
+    ok, content, raw_bytes = _try_download(files, doc, gdrive)
+    if not ok:
+        return json.dumps({"error": "Cannot download document for text extraction"})
+
+    texts = await _ensure_ocr_text(db, doc, content, raw_bytes)
+    if not texts:
+        return json.dumps({"error": "No text could be extracted from document"})
+
+    full_text = "\n\n".join(texts)
+    metadata = extract_structured_metadata(full_text)
+    metadata_json = json.dumps(metadata)
+
+    await db.update_structured_metadata(document_id, metadata_json)
+
+    return json.dumps(
+        {
+            "document_id": document_id,
+            "filename": doc.filename,
+            "structured_metadata": metadata,
+        }
+    )
+
+
+# ── Clinical trials (#Phase 3) ──────────────────────────────────────────────
+
+
+@mcp.tool()
+async def fetch_clinical_trials(
+    ctx: Context,
+    condition: str,
+    keywords: str | None = None,
+    status: str = "RECRUITING",
+    location_country: str | None = None,
+    phase: str | None = None,
+    limit: int = 20,
+) -> str:
+    """Fetch clinical trials from ClinicalTrials.gov and store in research_entries.
+
+    Searches the ClinicalTrials.gov API v2 for matching studies and saves
+    them to the research_entries table (deduplicates by NCT number).
+
+    Args:
+        condition: Medical condition to search for (e.g. "colorectal cancer").
+        keywords: Additional search terms (e.g. "FOLFOX", "immunotherapy").
+        status: Trial status filter (RECRUITING, ACTIVE_NOT_RECRUITING, COMPLETED).
+        location_country: Country filter (e.g. "United States", "Slovakia").
+        phase: Phase filter (PHASE1, PHASE2, PHASE3, PHASE4).
+        limit: Maximum number of trials to fetch (default 20).
+    """
+    from oncofiles.clinical_trials import search_trials, trial_to_research_entry
+
+    try:
+        trials = search_trials(
+            condition=condition,
+            keywords=keywords,
+            status=status,
+            location_country=location_country,
+            phase=phase,
+            page_size=limit,
+        )
+    except Exception as e:
+        return json.dumps({"error": f"ClinicalTrials.gov API error: {e}"})
+
+    db = _get_db(ctx)
+    stored = []
+    for trial in trials:
+        entry_data = trial_to_research_entry(trial)
+        entry = ResearchEntry(**entry_data)
+        saved = await db.insert_research_entry(entry)
+        stored.append(
+            {
+                "id": saved.id,
+                "nct_id": trial["nct_id"],
+                "title": trial["title"],
+                "status": trial["status"],
+                "phase": trial["phase"],
+            }
+        )
+
+    return json.dumps(
+        {
+            "fetched": len(trials),
+            "stored": len(stored),
+            "trials": stored,
+        }
+    )
+
+
+# ── Document export package (#Phase 4) ───────────────────────────────────────
+
+
+@mcp.tool()
+async def export_document_package(
+    ctx: Context,
+    include_metadata: bool = True,
+    include_timeline: bool = True,
+) -> str:
+    """Export a structured document package for consultations or second opinions.
+
+    Assembles all documents grouped by category with metadata, treatment
+    events timeline, and structured metadata. Returns JSON that Oncoteam
+    can render as PDF, email, or share link.
+
+    Args:
+        include_metadata: Include AI summaries and structured metadata (default True).
+        include_timeline: Include treatment events timeline (default True).
+    """
+    db = _get_db(ctx)
+
+    # Get all documents grouped by category
+    docs = await db.list_documents(limit=200)
+
+    # Group by category
+    by_category: dict[str, list[dict]] = {}
+    for d in docs:
+        cat = d.category.value
+        if cat not in by_category:
+            by_category[cat] = []
+        entry = {
+            "id": d.id,
+            "file_id": d.file_id,
+            "filename": d.filename,
+            "document_date": d.document_date.isoformat() if d.document_date else None,
+            "institution": d.institution,
+            "description": d.description,
+        }
+        if include_metadata:
+            if d.ai_summary:
+                entry["ai_summary"] = d.ai_summary
+            if d.structured_metadata:
+                entry["structured_metadata"] = json.loads(d.structured_metadata)
+        by_category[cat].append(entry)
+
+    result: dict = {
+        "patient": PATIENT_CONTEXT,
+        "total_documents": len(docs),
+        "documents_by_category": by_category,
+    }
+
+    if include_timeline:
+        events = await db.get_treatment_events_timeline()
+        result["treatment_timeline"] = [
+            {
+                "id": e.id,
+                "event_date": e.event_date.isoformat(),
+                "event_type": e.event_type,
+                "title": e.title,
+                "notes": e.notes,
+            }
+            for e in events
+        ]
+
+    return json.dumps(result)
 
 
 # ── Resources ────────────────────────────────────────────────────────────────

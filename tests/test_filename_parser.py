@@ -42,13 +42,13 @@ class TestNewFormat:
         r = parse_filename("20260129 ErikaFusekova-BoryNemocnica-USGMudrTulenkova.pdf")
         assert r.document_date == date(2026, 1, 29)
         assert r.institution == "BoryNemocnica"
-        assert r.category == DocumentCategory.IMAGING
+        assert r.category == DocumentCategory.IMAGING_US
 
     def test_imaging_ct(self):
         r = parse_filename("20260130 ErikaFusekova-NOU-CTobjednavkaMudrPorsokPrimarOnkolog.pdf")
         assert r.document_date == date(2026, 1, 30)
         assert r.institution == "NOU"
-        assert r.category == DocumentCategory.IMAGING
+        assert r.category == DocumentCategory.IMAGING_CT
 
     def test_report_sprava(self):
         r = parse_filename("20260130 ErikaFusekova-NOU-SpravaMudrPorsokPrimarOnkolog.pdf")
@@ -68,11 +68,11 @@ class TestNewFormat:
         r = parse_filename("20260226 ErikaFusekova-NOU-GenetikaMudrMalejcikova1z2.JPG")
         assert r.document_date == date(2026, 2, 26)
         assert r.institution == "NOU"
-        assert r.category == DocumentCategory.PATHOLOGY
+        assert r.category == DocumentCategory.GENETICS
 
-    def test_genetic_report_is_pathology(self):
+    def test_genetic_report_is_genetics(self):
         r = parse_filename("20260212 ErikaFusekova-NOU-SpravaZgenetickehoVysetreniaMudrCernak.JPG")
-        assert r.category == DocumentCategory.PATHOLOGY
+        assert r.category == DocumentCategory.GENETICS
 
     def test_blood_krv_is_labs(self):
         r = parse_filename("20260213 ErikaFusekova-NOU-KrvPredChemoMudrPittichova.JPG")
@@ -119,7 +119,7 @@ class TestNewFormat:
         r = parse_filename("20260227 ErikaFusekova-NOU-GenetickeVysetrenie")
         assert r.document_date == date(2026, 2, 27)
         assert r.institution == "NOU"
-        assert r.category == DocumentCategory.PATHOLOGY
+        assert r.category == DocumentCategory.GENETICS
         assert r.extension == ""
 
     def test_nursing_discharge(self):
@@ -131,6 +131,32 @@ class TestNewFormat:
     def test_vysetrenie_report(self):
         r = parse_filename("20260129 ErikaFusekova-BoryNemocnica-PooperacneVysetrenieChirurg.pdf")
         assert r.category == DocumentCategory.REPORT
+
+    def test_chemo_sheet(self):
+        r = parse_filename("20260213 ErikaFusekova-NOU-ChemoterapeutickyProtokolFOLFOX.pdf")
+        assert r.category == DocumentCategory.CHEMO_SHEET
+
+    def test_discharge_summary_legacy_alias(self):
+        # Legacy parser splits on _ so "discharge_summary" → token "discharge" matched first
+        r = parse_filename("20260122_BoryNemocnica_discharge_summary_operacia.pdf")
+        assert r.category == DocumentCategory.DISCHARGE
+
+    def test_surgical_report_alias(self):
+        # Legacy parser splits on _ so tokens "surgical" + "report" (REPORT)
+        r = parse_filename("20260118_BoryNemocnica_surgical_report_resection.pdf")
+        assert r.category == DocumentCategory.REPORT
+
+    def test_genetics_alias(self):
+        r = parse_filename("20260226_NOU_genetics_KRAS.pdf")
+        assert r.category == DocumentCategory.GENETICS
+
+    def test_imaging_ct_alias(self):
+        r = parse_filename("20260130_NOU_ct_abdomen.pdf")
+        assert r.category == DocumentCategory.IMAGING_CT
+
+    def test_imaging_us_alias(self):
+        r = parse_filename("20260129_BoryNemocnica_usg_abdomen.pdf")
+        assert r.category == DocumentCategory.IMAGING_US
 
 
 # ── Legacy format tests ──────────────────────────────────────────────────────

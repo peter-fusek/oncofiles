@@ -303,11 +303,17 @@ class Database:
         """Get treatment documents in chronological (ASC) order."""
         treatment_categories = (
             "surgery",
+            "surgical_report",
             "discharge",
+            "discharge_summary",
             "report",
             "pathology",
+            "genetics",
             "labs",
             "imaging",
+            "imaging_ct",
+            "imaging_us",
+            "chemo_sheet",
             "prescription",
             "referral",
         )
@@ -407,6 +413,25 @@ class Database:
         )
         await self.db.commit()
         return cursor.rowcount > 0
+
+    async def update_structured_metadata(self, doc_id: int, metadata_json: str) -> None:
+        """Update the structured_metadata JSON for a document."""
+        await self.db.execute(
+            "UPDATE documents SET structured_metadata = ?, "
+            "updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = ?",
+            (metadata_json, doc_id),
+        )
+        await self.db.commit()
+
+    async def get_labs_before_date(self, before_date: str) -> list[Document]:
+        """Get lab documents dated before a given date."""
+        async with self.db.execute(
+            "SELECT * FROM documents WHERE category = 'labs' AND document_date < ? "
+            "ORDER BY document_date DESC",
+            (before_date,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return [_row_to_document(r) for r in rows]
 
     async def get_latest_labs(self, limit: int = 5) -> list[Document]:
         """Get the most recent lab result documents."""
@@ -1055,4 +1080,5 @@ def _row_to_document(row: aiosqlite.Row) -> Document:
         ai_processed_at=(
             datetime.fromisoformat(row["ai_processed_at"]) if row["ai_processed_at"] else None
         ),
+        structured_metadata=row_dict.get("structured_metadata"),
     )
