@@ -82,15 +82,9 @@ def test_render_conversation_month():
 
 def test_group_conversations_by_month():
     entries = [
-        ConversationEntry(
-            entry_date=date(2026, 2, 15), entry_type="note", title="A", content="a"
-        ),
-        ConversationEntry(
-            entry_date=date(2026, 3, 1), entry_type="note", title="B", content="b"
-        ),
-        ConversationEntry(
-            entry_date=date(2026, 3, 20), entry_type="note", title="C", content="c"
-        ),
+        ConversationEntry(entry_date=date(2026, 2, 15), entry_type="note", title="A", content="a"),
+        ConversationEntry(entry_date=date(2026, 3, 1), entry_type="note", title="B", content="b"),
+        ConversationEntry(entry_date=date(2026, 3, 20), entry_type="note", title="C", content="c"),
     ]
     by_month = group_conversations_by_month(entries)
     assert "2026-02" in by_month

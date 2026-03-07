@@ -29,8 +29,7 @@ MIGRATIONS_DIR = Path(__file__).parent.parent.parent / "migrations"
 
 # "key" is a reserved word — always quote it in SQL and use aliased SELECT
 _AGENT_STATE_SELECT = (
-    'SELECT id, agent_id, "key" AS state_key, value, created_at, updated_at'
-    " FROM agent_state"
+    'SELECT id, agent_id, "key" AS state_key, value, created_at, updated_at FROM agent_state'
 )
 
 
@@ -172,8 +171,10 @@ class Database:
             if sql.strip():
                 await self.db.executescript(sql)
         # Add sync_state columns if missing (ALTER TABLE can't use IF NOT EXISTS)
-        for col, typedef in [("sync_state", "TEXT NOT NULL DEFAULT 'synced'"),
-                             ("last_synced_at", "TEXT")]:
+        for col, typedef in [
+            ("sync_state", "TEXT NOT NULL DEFAULT 'synced'"),
+            ("last_synced_at", "TEXT"),
+        ]:
             try:
                 await self.db.execute(f"ALTER TABLE documents ADD COLUMN {col} {typedef}")
                 await self.db.commit()
@@ -860,9 +861,7 @@ class Database:
             row = await cursor.fetchone()
             return _row_to_oauth_token(row) if row else None
 
-    async def update_oauth_folder(
-        self, user_id: str, provider: str, folder_id: str
-    ) -> None:
+    async def update_oauth_folder(self, user_id: str, provider: str, folder_id: str) -> None:
         """Set the GDrive folder ID for a user's OAuth token."""
         await self.db.execute(
             "UPDATE oauth_tokens SET gdrive_folder_id = ?, "
@@ -932,9 +931,7 @@ def _row_to_oauth_token(row: aiosqlite.Row) -> OAuthToken:
         provider=row["provider"],
         access_token=row["access_token"],
         refresh_token=row["refresh_token"],
-        token_expiry=(
-            datetime.fromisoformat(row["token_expiry"]) if row["token_expiry"] else None
-        ),
+        token_expiry=(datetime.fromisoformat(row["token_expiry"]) if row["token_expiry"] else None),
         gdrive_folder_id=row["gdrive_folder_id"],
         created_at=datetime.fromisoformat(row["created_at"]) if row["created_at"] else None,
         updated_at=datetime.fromisoformat(row["updated_at"]) if row["updated_at"] else None,

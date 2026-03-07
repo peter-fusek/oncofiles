@@ -164,9 +164,7 @@ async def sync_from_gdrive(
                 # Try to detect category from folder structure
                 detected_category = _detect_category_from_parents(gf, folder_map)
                 category = (
-                    DocumentCategory(detected_category)
-                    if detected_category
-                    else parsed.category
+                    DocumentCategory(detected_category) if detected_category else parsed.category
                 )
 
                 now_str = datetime.now(UTC).isoformat()
@@ -332,8 +330,11 @@ async def _export_metadata(
     manifest = await export_manifest(db)
     manifest_json = render_manifest_json(manifest)
     _upload_or_update_text(
-        gdrive, "_manifest.json", manifest_json,
-        root_folder_id, "application/json",
+        gdrive,
+        "_manifest.json",
+        manifest_json,
+        root_folder_id,
+        "application/json",
     )
 
     # 2. Export conversation monthly logs
@@ -345,8 +346,11 @@ async def _export_metadata(
             md_content = render_conversation_month(month_entries)
             filename = f"{month_key}-conversation-log.md"
             _upload_or_update_text(
-                gdrive, filename, md_content,
-                conversations_folder, "text/markdown",
+                gdrive,
+                filename,
+                md_content,
+                conversations_folder,
+                "text/markdown",
             )
 
     # 3. Export treatment timeline
@@ -355,8 +359,11 @@ async def _export_metadata(
         events = await db.get_treatment_events_timeline(limit=1000)
         md_content = render_treatment_timeline(events)
         _upload_or_update_text(
-            gdrive, "treatment-timeline.md", md_content,
-            treatment_folder, "text/markdown",
+            gdrive,
+            "treatment-timeline.md",
+            md_content,
+            treatment_folder,
+            "text/markdown",
         )
 
     # 4. Export research library
@@ -365,8 +372,11 @@ async def _export_metadata(
         entries = await db.list_research_entries(limit=1000)
         md_content = render_research_library(entries)
         _upload_or_update_text(
-            gdrive, "research-library.md", md_content,
-            research_folder, "text/markdown",
+            gdrive,
+            "research-library.md",
+            md_content,
+            research_folder,
+            "text/markdown",
         )
 
 
@@ -417,9 +427,7 @@ async def sync(
     from_stats = await sync_from_gdrive(
         db, files, gdrive, folder_id, dry_run=dry_run, enhance=enhance
     )
-    to_stats = await sync_to_gdrive(
-        db, files, gdrive, folder_id, dry_run=dry_run
-    )
+    to_stats = await sync_to_gdrive(db, files, gdrive, folder_id, dry_run=dry_run)
 
     combined = {
         "from_gdrive": from_stats,
@@ -536,9 +544,7 @@ def _parse_gdrive_time(time_str: str) -> datetime | None:
         return None
 
 
-def _detect_category_from_parents(
-    file_info: dict, folder_map: dict[str, str]
-) -> str | None:
+def _detect_category_from_parents(file_info: dict, folder_map: dict[str, str]) -> str | None:
     """Detect document category from its parent folder name in GDrive.
 
     Returns category string if parent folder matches a known category, else None.
