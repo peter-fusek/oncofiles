@@ -143,41 +143,42 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict]:
     except Exception:
         pass
 
+    # Prefer OAuth (user's storage quota) over service account (no upload quota)
+    gdrive = None
     try:
-        gdrive = create_gdrive_client(owner_email=owner_email)
-    except Exception as e:
-        logger.warning("GDrive client init failed: %s — fallback disabled", e)
-        gdrive = None
+        if token and GOOGLE_OAUTH_CLIENT_ID:
+            from oncofiles.oauth import is_token_expired, refresh_access_token
 
-    # Try OAuth tokens if no service account
+            access_token = token.access_token
+            if is_token_expired(token.token_expiry.isoformat() if token.token_expiry else None):
+                refreshed = refresh_access_token(token.refresh_token)
+                access_token = refreshed["access_token"]
+                from datetime import datetime, timedelta
+
+                new_expiry = datetime.now(UTC) + timedelta(
+                    seconds=refreshed.get("expires_in", 3600)
+                )
+                token.access_token = access_token
+                token.token_expiry = new_expiry
+                await db.upsert_oauth_token(token)
+
+            gdrive = GDriveClient.from_oauth(
+                access_token=access_token,
+                refresh_token=token.refresh_token,
+                client_id=GOOGLE_OAUTH_CLIENT_ID,
+                client_secret=GOOGLE_OAUTH_CLIENT_SECRET,
+                owner_email=owner_email,
+            )
+            logger.info("GDrive client initialized from OAuth tokens")
+    except Exception as e:
+        logger.warning("OAuth GDrive init failed: %s", e)
+
+    # Fall back to service account if OAuth not available
     if not gdrive:
         try:
-            if token and GOOGLE_OAUTH_CLIENT_ID:
-                from oncofiles.oauth import is_token_expired, refresh_access_token
-
-                access_token = token.access_token
-                if is_token_expired(token.token_expiry.isoformat() if token.token_expiry else None):
-                    refreshed = refresh_access_token(token.refresh_token)
-                    access_token = refreshed["access_token"]
-                    from datetime import datetime, timedelta
-
-                    new_expiry = datetime.now(UTC) + timedelta(
-                        seconds=refreshed.get("expires_in", 3600)
-                    )
-                    token.access_token = access_token
-                    token.token_expiry = new_expiry
-                    await db.upsert_oauth_token(token)
-
-                gdrive = GDriveClient.from_oauth(
-                    access_token=access_token,
-                    refresh_token=token.refresh_token,
-                    client_id=GOOGLE_OAUTH_CLIENT_ID,
-                    client_secret=GOOGLE_OAUTH_CLIENT_SECRET,
-                    owner_email=owner_email,
-                )
-                logger.info("GDrive client initialized from OAuth tokens")
+            gdrive = create_gdrive_client(owner_email=owner_email)
         except Exception as e:
-            logger.warning("OAuth GDrive init failed: %s", e)
+            logger.warning("GDrive client init failed: %s — fallback disabled", e)
 
     # Start background sync scheduler
     scheduler = None
