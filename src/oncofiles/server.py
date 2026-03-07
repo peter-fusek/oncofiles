@@ -63,10 +63,12 @@ def _create_auth():
     - otherwise: None (no auth)
     """
     if MCP_TRANSPORT == "streamable-http":
+        from fastmcp.server.auth.auth import ClientRegistrationOptions
         from fastmcp.server.auth.providers.in_memory import InMemoryOAuthProvider
 
         return InMemoryOAuthProvider(
             base_url="https://aware-kindness-production.up.railway.app",
+            client_registration_options=ClientRegistrationOptions(enabled=True),
         )
 
     if MCP_BEARER_TOKEN:
