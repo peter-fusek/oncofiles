@@ -290,17 +290,32 @@ async def sync_to_gdrive(
 
             stats["exported"] += 1
 
-        except Exception:
-            logger.exception("sync_to_gdrive: error exporting %s", doc.filename)
-            stats["errors"] += 1
+        except Exception as e:
+            err_str = str(e)
+            if "not downloadable" in err_str.lower():
+                logger.warning(
+                    "sync_to_gdrive: skipped %s — not downloadable from Files API",
+                    doc.filename,
+                )
+                stats["skipped"] += 1
+            else:
+                logger.exception("sync_to_gdrive: error exporting %s", doc.filename)
+                stats["errors"] += 1
 
-    # Export metadata files
+    # Export metadata files (may fail with service account — no storage quota)
     try:
         await _export_metadata(db, gdrive, folder_id, folder_map)
         stats["metadata_exported"] += 1
-    except Exception:
-        logger.exception("sync_to_gdrive: error exporting metadata")
-        stats["errors"] += 1
+    except Exception as e:
+        err_str = str(e)
+        if "storage" in err_str.lower() or "403" in err_str:
+            logger.warning(
+                "sync_to_gdrive: metadata export skipped — %s",
+                "service account has no storage quota (use OAuth)",
+            )
+        else:
+            logger.exception("sync_to_gdrive: error exporting metadata")
+            stats["errors"] += 1
 
     logger.info("sync_to_gdrive: done — %s", stats)
     return stats
