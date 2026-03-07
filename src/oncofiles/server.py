@@ -112,17 +112,26 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict]:
     await db.connect()
     await db.migrate()
     files = FilesClient()
+    # Load owner_email from OAuth tokens (needed for service account permission sharing)
+    oauth_folder_id = ""
+    owner_email = ""
     try:
-        gdrive = create_gdrive_client()
+        token = await db.get_oauth_token()
+        if token:
+            oauth_folder_id = token.gdrive_folder_id or ""
+            owner_email = token.owner_email or ""
+    except Exception:
+        pass
+
+    try:
+        gdrive = create_gdrive_client(owner_email=owner_email)
     except Exception as e:
         logger.warning("GDrive client init failed: %s — fallback disabled", e)
         gdrive = None
 
     # Try OAuth tokens if no service account
-    oauth_folder_id = ""
     if not gdrive:
         try:
-            token = await db.get_oauth_token()
             if token and GOOGLE_OAUTH_CLIENT_ID:
                 from oncofiles.oauth import is_token_expired, refresh_access_token
 
@@ -144,8 +153,8 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict]:
                     refresh_token=token.refresh_token,
                     client_id=GOOGLE_OAUTH_CLIENT_ID,
                     client_secret=GOOGLE_OAUTH_CLIENT_SECRET,
+                    owner_email=owner_email,
                 )
-                oauth_folder_id = token.gdrive_folder_id or ""
                 logger.info("GDrive client initialized from OAuth tokens")
         except Exception as e:
             logger.warning("OAuth GDrive init failed: %s", e)
@@ -1786,6 +1795,10 @@ async def gdrive_auth_status(ctx: Context) -> str:
 async def gdrive_set_folder(ctx: Context, folder_id: str) -> str:
     """Set the Google Drive folder to sync with.
 
+    Detects the folder owner's email and stores it for automatic permission
+    sharing. When the service account creates files/folders, it grants writer
+    access to the original folder owner so they can see the files.
+
     Args:
         folder_id: The Google Drive folder ID to use as the sync root.
     """
@@ -1795,7 +1808,29 @@ async def gdrive_set_folder(ctx: Context, folder_id: str) -> str:
         return json.dumps({"error": "No OAuth tokens found. Connect Google Drive first."})
 
     await db.update_oauth_folder(token.user_id, token.provider, folder_id)
-    return json.dumps({"status": "ok", "folder_id": folder_id})
+
+    # Detect folder owner and store for permission sharing
+    gdrive = _get_gdrive(ctx)
+    owner_email = None
+    if gdrive:
+        owner_email = gdrive.get_folder_owner(folder_id)
+        if owner_email:
+            await db.update_oauth_owner_email(token.user_id, token.provider, owner_email)
+            gdrive.owner_email = owner_email
+            logger.info("Detected folder owner: %s", owner_email)
+
+    result = {"status": "ok", "folder_id": folder_id}
+    if owner_email:
+        result["owner_email"] = owner_email
+        result["message"] = (
+            f"Folder set. Owner '{owner_email}' will get writer access on all new files."
+        )
+    else:
+        result["message"] = (
+            "Folder set. Could not detect owner — run gdrive_fix_permissions "
+            "with an explicit email to grant access."
+        )
+    return json.dumps(result)
 
 
 # ── Sync tools (#v1.0) ───────────────────────────────────────────────────────
@@ -1912,6 +1947,55 @@ async def sync_to_gdrive(
         dry_run=dry_run,
     )
     return json.dumps(stats)
+
+
+@mcp.tool()
+async def gdrive_fix_permissions(
+    ctx: Context,
+    email: str | None = None,
+) -> str:
+    """Grant writer access to all files/folders in the sync root (one-off fix).
+
+    Use this after initial sync when files were created by the service account
+    and are invisible to the folder owner. Also updates the stored owner_email
+    for automatic sharing on future uploads.
+
+    Args:
+        email: Email to grant access to. If omitted, detects from folder owner.
+    """
+    db = _get_db(ctx)
+    gdrive = _get_gdrive(ctx)
+    if not gdrive:
+        return json.dumps({"error": "GDrive client not configured."})
+
+    folder_id = _get_sync_folder_id(ctx)
+    if not folder_id:
+        return json.dumps({"error": "No sync folder set."})
+
+    # Resolve email
+    target_email = email
+    if not target_email:
+        target_email = gdrive.get_folder_owner(folder_id)
+    if not target_email:
+        return json.dumps({"error": "Could not detect folder owner. Pass email explicitly."})
+
+    # Store owner_email for future auto-sharing
+    token = await db.get_oauth_token()
+    if token:
+        await db.update_oauth_owner_email(token.user_id, token.provider, target_email)
+    gdrive.owner_email = target_email
+
+    # Grant access recursively
+    count = gdrive.grant_access_recursive(folder_id, target_email)
+
+    return json.dumps(
+        {
+            "status": "ok",
+            "email": target_email,
+            "files_shared": count,
+            "message": f"Granted writer access to {target_email} on {count} files/folders.",
+        }
+    )
 
 
 @mcp.tool()

@@ -21,6 +21,7 @@ class GDriveClient:
         self,
         credentials_base64: str = "",
         credentials_path: str = "",
+        owner_email: str | None = None,
     ) -> None:
         from google.oauth2 import service_account
         from googleapiclient.discovery import build
@@ -36,6 +37,7 @@ class GDriveClient:
             raise ValueError("Either credentials_base64 or credentials_path must be provided")
 
         self._service = build("drive", "v3", credentials=creds)
+        self.owner_email = owner_email
 
     @classmethod
     def from_oauth(
@@ -45,6 +47,7 @@ class GDriveClient:
         client_id: str,
         client_secret: str,
         token_expiry: str | None = None,
+        owner_email: str | None = None,
     ) -> GDriveClient:
         """Create a GDriveClient from OAuth 2.0 user credentials."""
         from google.oauth2.credentials import Credentials
@@ -60,7 +63,67 @@ class GDriveClient:
         )
         instance = cls.__new__(cls)
         instance._service = build("drive", "v3", credentials=creds)
+        instance.owner_email = owner_email
         return instance
+
+    def get_folder_owner(self, folder_id: str) -> str | None:
+        """Get the email of the folder owner. Returns None if not detectable."""
+        try:
+            result = (
+                self._service.files().get(fileId=folder_id, fields="owners(emailAddress)").execute()
+            )
+            owners = result.get("owners", [])
+            if owners:
+                return owners[0].get("emailAddress")
+        except Exception as e:
+            logger.warning("Could not detect folder owner: %s", e)
+        return None
+
+    def grant_access(self, file_id: str, email: str, role: str = "writer") -> None:
+        """Grant access to a file or folder. Idempotent — skips if already shared."""
+        try:
+            self._service.permissions().create(
+                fileId=file_id,
+                body={"type": "user", "role": role, "emailAddress": email},
+                sendNotificationEmail=False,
+            ).execute()
+            logger.debug("Granted %s access to %s on %s", role, email, file_id)
+        except Exception as e:
+            # 400 = already has access, skip silently
+            if "already" in str(e).lower() or "400" in str(e):
+                logger.debug("Already shared %s with %s", file_id, email)
+            else:
+                logger.warning("Failed to share %s with %s: %s", file_id, email, e)
+
+    def _auto_share(self, file_id: str) -> None:
+        """Share with owner_email if set (service account created files)."""
+        if self.owner_email:
+            self.grant_access(file_id, self.owner_email)
+
+    def grant_access_recursive(self, folder_id: str, email: str, role: str = "writer") -> int:
+        """Grant access to all files and subfolders recursively. Returns count."""
+        count = 0
+        page_token = None
+        while True:
+            response = (
+                self._service.files()
+                .list(
+                    q=f"'{folder_id}' in parents and trashed = false",
+                    fields="nextPageToken, files(id, mimeType)",
+                    pageSize=100,
+                    pageToken=page_token,
+                )
+                .execute()
+            )
+            for item in response.get("files", []):
+                self.grant_access(item["id"], email, role)
+                count += 1
+                if item["mimeType"] == "application/vnd.google-apps.folder":
+                    count += self.grant_access_recursive(item["id"], email, role)
+            page_token = response.get("nextPageToken")
+            if not page_token:
+                break
+        return count
 
     def download(self, gdrive_id: str) -> bytes:
         """Download a file's content by its Google Drive file ID."""
@@ -104,6 +167,7 @@ class GDriveClient:
             .execute()
         )
         logger.info("Uploaded %s to GDrive: %s", filename, result.get("id"))
+        self._auto_share(result["id"])
         return result
 
     def update(self, gdrive_id: str, content_bytes: bytes, mime_type: str) -> dict:
@@ -208,6 +272,7 @@ class GDriveClient:
         }
         result = self._service.files().create(body=file_metadata, fields="id").execute()
         logger.info("Created folder '%s' in %s: %s", name, parent_id, result["id"])
+        self._auto_share(result["id"])
         return result["id"]
 
     def find_folder(self, name: str, parent_id: str) -> str | None:
@@ -248,13 +313,19 @@ class GDriveClient:
         ).execute()
 
 
-def create_gdrive_client() -> GDriveClient | None:
+def create_gdrive_client(owner_email: str = "") -> GDriveClient | None:
     """Create a GDriveClient if credentials are available, else return None."""
     if GOOGLE_CREDENTIALS_BASE64:
         logger.info("Initializing GDrive client from base64 credentials")
-        return GDriveClient(credentials_base64=GOOGLE_CREDENTIALS_BASE64)
+        return GDriveClient(
+            credentials_base64=GOOGLE_CREDENTIALS_BASE64,
+            owner_email=owner_email or None,
+        )
     if GOOGLE_APPLICATION_CREDENTIALS:
         logger.info("Initializing GDrive client from file: %s", GOOGLE_APPLICATION_CREDENTIALS)
-        return GDriveClient(credentials_path=GOOGLE_APPLICATION_CREDENTIALS)
+        return GDriveClient(
+            credentials_path=GOOGLE_APPLICATION_CREDENTIALS,
+            owner_email=owner_email or None,
+        )
     logger.info("No GDrive credentials found — GDrive fallback disabled")
     return None
