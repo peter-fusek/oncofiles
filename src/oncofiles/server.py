@@ -58,15 +58,35 @@ logger = logging.getLogger(__name__)
 def _create_auth():
     """Create auth provider based on environment.
 
-    - streamable-http: InMemoryOAuthProvider (full OAuth2 flow for Claude.ai)
-    - MCP_BEARER_TOKEN set: StaticTokenVerifier (for dev/testing)
+    - streamable-http + MCP_BEARER_TOKEN: OAuth + static bearer (dual auth)
+    - streamable-http: InMemoryOAuthProvider (OAuth2 for Claude.ai)
+    - MCP_BEARER_TOKEN set: StaticTokenVerifier (dev/testing)
     - otherwise: None (no auth)
     """
     if MCP_TRANSPORT == "streamable-http":
-        from fastmcp.server.auth.auth import ClientRegistrationOptions
+        from fastmcp.server.auth.auth import AccessToken, ClientRegistrationOptions
         from fastmcp.server.auth.providers.in_memory import InMemoryOAuthProvider
 
-        return InMemoryOAuthProvider(
+        class DualAuthProvider(InMemoryOAuthProvider):
+            """OAuth + static bearer token for server-to-server auth."""
+
+            def __init__(self, bearer_token: str | None = None, **kwargs):
+                super().__init__(**kwargs)
+                self._bearer_token = bearer_token
+
+            async def verify_token(self, token: str) -> AccessToken | None:
+                # Check static bearer token first (server-to-server)
+                if self._bearer_token and token == self._bearer_token:
+                    return AccessToken(
+                        token=token,
+                        client_id="oncoteam",
+                        scopes=[],
+                    )
+                # Fall back to OAuth token verification
+                return await super().verify_token(token)
+
+        return DualAuthProvider(
+            bearer_token=MCP_BEARER_TOKEN or None,
             base_url="https://aware-kindness-production.up.railway.app",
             client_registration_options=ClientRegistrationOptions(enabled=True),
         )
