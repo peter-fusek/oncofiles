@@ -155,6 +155,7 @@ def _doc_to_manifest(doc) -> dict:
         "gdrive_id": doc.gdrive_id,
         "ai_summary": doc.ai_summary,
         "ai_tags": doc.ai_tags,
+        "structured_metadata": doc.structured_metadata,
         "created_at": doc.created_at.isoformat() if doc.created_at else None,
     }
 

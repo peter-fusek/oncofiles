@@ -7,12 +7,13 @@ manifest export, and metadata rendering.
 from __future__ import annotations
 
 import io
+import json
 import logging
 import mimetypes
 from datetime import UTC, datetime
 
 from oncofiles.database import Database
-from oncofiles.enhance import enhance_document_text
+from oncofiles.enhance import enhance_document_text, extract_structured_metadata
 from oncofiles.filename_parser import parse_filename
 from oncofiles.files_api import FilesClient
 from oncofiles.gdrive_client import GDriveClient
@@ -521,6 +522,19 @@ async def _enhance_document(
     full_text = "\n\n".join(text_parts)
     summary, tags_json = enhance_document_text(full_text)
     await db.update_document_ai_metadata(doc.id, summary, tags_json)
+
+    # Extract structured metadata (diagnoses, medications, findings, etc.)
+    try:
+        metadata = extract_structured_metadata(full_text)
+        await db.update_structured_metadata(doc.id, json.dumps(metadata, ensure_ascii=False))
+        logger.info("enhance: doc %d (%s) — structured metadata extracted", doc.id, doc.filename)
+    except Exception:
+        logger.warning(
+            "enhance: doc %d (%s) — structured metadata extraction failed",
+            doc.id,
+            doc.filename,
+        )
+
     logger.info(
         "enhance: doc %d (%s) — summary=%d chars, tags=%s",
         doc.id,

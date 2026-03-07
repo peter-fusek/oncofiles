@@ -52,7 +52,10 @@ async def test_sync_from_gdrive_new_file(db: Database):
         ]
     )
 
-    with patch("oncofiles.sync.enhance_document_text", return_value=("summary", '["labs"]')):
+    with (
+        patch("oncofiles.sync.enhance_document_text", return_value=("summary", '["labs"]')),
+        patch("oncofiles.sync.extract_structured_metadata", return_value={"diagnoses": []}),
+    ):
         stats = await sync_from_gdrive(db, files, gdrive, "folder123")
 
     assert stats["new"] == 1
@@ -110,7 +113,10 @@ async def test_sync_from_gdrive_updated(db: Database):
         ]
     )
 
-    with patch("oncofiles.sync.enhance_document_text", return_value=("summary", '["labs"]')):
+    with (
+        patch("oncofiles.sync.enhance_document_text", return_value=("summary", '["labs"]')),
+        patch("oncofiles.sync.extract_structured_metadata", return_value={"diagnoses": []}),
+    ):
         stats = await sync_from_gdrive(db, files, gdrive, "folder123")
 
     assert stats["updated"] == 1
@@ -272,7 +278,10 @@ async def test_sync_from_gdrive_detects_category_from_folder(db: Database):
         folder_map=folder_map,
     )
 
-    with patch("oncofiles.sync.enhance_document_text", return_value=("summary", '["labs"]')):
+    with (
+        patch("oncofiles.sync.enhance_document_text", return_value=("summary", '["labs"]')),
+        patch("oncofiles.sync.extract_structured_metadata", return_value={"diagnoses": []}),
+    ):
         stats = await sync_from_gdrive(db, files, gdrive, "folder123")
 
     assert stats["updated"] == 1
@@ -373,3 +382,32 @@ async def test_sync_bidirectional(db: Database):
     assert "from_gdrive" in stats
     assert "to_gdrive" in stats
     assert stats["to_gdrive"]["exported"] == 1
+
+
+async def test_sync_from_gdrive_extracts_structured_metadata(db: Database):
+    """Structured metadata is extracted during sync enhancement."""
+    from oncofiles.sync import _enhance_document
+
+    # Insert a doc and pre-populate OCR text so _enhance_document has text to work with
+    doc = make_doc()
+    doc = await db.insert_document(doc)
+    await db.save_ocr_page(doc.id, 1, "Patient diagnosed with CRC. Rx: FOLFOX.", "test")
+
+    files = _mock_files()
+    gdrive = _mock_gdrive()
+
+    test_metadata = {"diagnoses": ["CRC"], "medications": ["FOLFOX"], "findings": []}
+    with (
+        patch("oncofiles.sync.enhance_document_text", return_value=("summary", '["labs"]')),
+        patch("oncofiles.sync.extract_structured_metadata", return_value=test_metadata),
+    ):
+        result = await _enhance_document(db, doc, files, gdrive)
+
+    assert result is True
+    updated = await db.get_document(doc.id)
+    assert updated.structured_metadata is not None
+    import json
+
+    parsed = json.loads(updated.structured_metadata)
+    assert parsed["diagnoses"] == ["CRC"]
+    assert parsed["medications"] == ["FOLFOX"]
