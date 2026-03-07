@@ -219,7 +219,7 @@ async def oauth_callback(request: Request) -> JSONResponse:
         token_expiry=expiry,
     )
 
-    db = request.app.state.lifespan_context["db"]
+    db = request.app.state.fastmcp_server._lifespan_result["db"]
     await db.upsert_oauth_token(oauth_token)
 
     return JSONResponse(
