@@ -230,6 +230,7 @@ class OAuthToken(BaseModel):
     refresh_token: str
     token_expiry: datetime | None = None
     gdrive_folder_id: str | None = None
+    owner_email: str | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
 

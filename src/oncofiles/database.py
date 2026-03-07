@@ -899,13 +899,14 @@ class Database:
             """
             INSERT INTO oauth_tokens
                 (user_id, provider, access_token, refresh_token, token_expiry,
-                 gdrive_folder_id, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+                 gdrive_folder_id, owner_email, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
             ON CONFLICT(user_id, provider) DO UPDATE SET
                 access_token = excluded.access_token,
                 refresh_token = excluded.refresh_token,
                 token_expiry = excluded.token_expiry,
                 gdrive_folder_id = excluded.gdrive_folder_id,
+                owner_email = COALESCE(excluded.owner_email, oauth_tokens.owner_email),
                 updated_at = excluded.updated_at
             """,
             (
@@ -915,6 +916,7 @@ class Database:
                 token.refresh_token,
                 token.token_expiry.isoformat() if token.token_expiry else None,
                 token.gdrive_folder_id,
+                token.owner_email,
             ),
         )
         await self.db.commit()
@@ -938,6 +940,16 @@ class Database:
             "updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') "
             "WHERE user_id = ? AND provider = ?",
             (folder_id, user_id, provider),
+        )
+        await self.db.commit()
+
+    async def update_oauth_owner_email(self, user_id: str, provider: str, owner_email: str) -> None:
+        """Store the GDrive folder owner's email for permission sharing."""
+        await self.db.execute(
+            "UPDATE oauth_tokens SET owner_email = ?, "
+            "updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') "
+            "WHERE user_id = ? AND provider = ?",
+            (owner_email, user_id, provider),
         )
         await self.db.commit()
 
@@ -993,6 +1005,14 @@ class Database:
             return [_row_to_activity_log(r) for r in rows]
 
 
+def _safe_get(row: aiosqlite.Row, key: str, default=None):
+    """Get a column value from a row, returning default if column doesn't exist."""
+    try:
+        return row[key]
+    except (IndexError, KeyError):
+        return default
+
+
 def _row_to_oauth_token(row: aiosqlite.Row) -> OAuthToken:
     """Convert a database row to an OAuthToken model."""
     return OAuthToken(
@@ -1003,6 +1023,7 @@ def _row_to_oauth_token(row: aiosqlite.Row) -> OAuthToken:
         refresh_token=row["refresh_token"],
         token_expiry=(datetime.fromisoformat(row["token_expiry"]) if row["token_expiry"] else None),
         gdrive_folder_id=row["gdrive_folder_id"],
+        owner_email=_safe_get(row, "owner_email"),
         created_at=datetime.fromisoformat(row["created_at"]) if row["created_at"] else None,
         updated_at=datetime.fromisoformat(row["updated_at"]) if row["updated_at"] else None,
     )
