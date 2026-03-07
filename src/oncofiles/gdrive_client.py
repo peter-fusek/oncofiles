@@ -300,6 +300,15 @@ class GDriveClient:
             body={"appProperties": properties},
         ).execute()
 
+    def get_file_parents(self, file_id: str) -> list[str]:
+        """Get the parent folder IDs of a file."""
+        try:
+            result = self._service.files().get(fileId=file_id, fields="parents").execute()
+            return result.get("parents", [])
+        except Exception as e:
+            logger.warning("Could not get parents for %s: %s", file_id, e)
+            return []
+
     def move_file(self, file_id: str, new_parent_id: str) -> None:
         """Move a file to a new parent folder."""
         # Get current parents

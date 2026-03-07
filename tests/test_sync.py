@@ -30,6 +30,7 @@ def _mock_gdrive(gdrive_files: list[dict] | None = None, folder_map: dict | None
     gdrive.find_folder.return_value = None
     gdrive.create_folder.side_effect = lambda name, parent: f"folder_{name}"
     gdrive.update.return_value = {"id": "updated_id", "modifiedTime": "2026-03-01T00:00:00Z"}
+    gdrive.get_file_parents.return_value = ["some_unorganized_folder"]
     return gdrive
 
 
@@ -312,17 +313,36 @@ async def test_sync_to_gdrive_exports_new(db: Database):
     assert updated_doc.sync_state == "synced"
 
 
-async def test_sync_to_gdrive_skips_existing(db: Database):
-    """Documents with gdrive_id are skipped."""
+async def test_sync_to_gdrive_organizes_existing(db: Database):
+    """Documents with gdrive_id in unorganized folders get moved."""
     doc = make_doc(gdrive_id="existing_gd_id")
     await db.insert_document(doc)
 
     files = _mock_files()
     gdrive = _mock_gdrive()
+    # File is in an unorganized folder (not matching any category folder)
+    gdrive.get_file_parents.return_value = ["some_random_folder"]
+
+    stats = await sync_to_gdrive(db, files, gdrive, "folder123")
+    assert stats["organized"] == 1
+    assert stats["exported"] == 0
+    gdrive.move_file.assert_called_once()
+
+
+async def test_sync_to_gdrive_skips_already_organized(db: Database):
+    """Documents already in correct organized folder are skipped."""
+    doc = make_doc(gdrive_id="existing_gd_id")
+    await db.insert_document(doc)
+
+    files = _mock_files()
+    gdrive = _mock_gdrive()
+    # File is already in an organized category folder
+    gdrive.get_file_parents.return_value = ["folder_report"]
 
     stats = await sync_to_gdrive(db, files, gdrive, "folder123")
     assert stats["skipped"] == 1
-    assert stats["exported"] == 0
+    assert stats["organized"] == 0
+    gdrive.move_file.assert_not_called()
 
 
 async def test_sync_to_gdrive_dry_run(db: Database):

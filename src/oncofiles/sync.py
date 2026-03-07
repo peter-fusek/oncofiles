@@ -237,10 +237,10 @@ async def sync_to_gdrive(
     """
     logger.info("sync_to_gdrive: starting (dry_run=%s)", dry_run)
 
-    stats = {"exported": 0, "skipped": 0, "metadata_exported": 0, "errors": 0}
+    stats = {"exported": 0, "organized": 0, "skipped": 0, "metadata_exported": 0, "errors": 0}
 
     if dry_run:
-        # Count what would be exported
+        # Count what would be exported/organized
         docs = await db.list_documents(limit=500)
         for doc in docs:
             if doc.gdrive_id:
@@ -253,11 +253,21 @@ async def sync_to_gdrive(
     # Ensure folder structure
     folder_map = ensure_folder_structure(gdrive, folder_id)
 
+    # Collect all organized folder IDs (category folders + their year-month subfolders)
+    organized_folder_ids = set(folder_map.values())
+
     # Export documents
     docs = await db.list_documents(limit=500)
     for doc in docs:
         if doc.gdrive_id:
-            stats["skipped"] += 1
+            # File already on GDrive — check if it needs to be moved to organized folder
+            try:
+                _move_to_organized_folder(
+                    gdrive, doc, folder_id, folder_map, organized_folder_ids, stats
+                )
+            except Exception:
+                logger.exception("sync_to_gdrive: error organizing %s", doc.filename)
+                stats["errors"] += 1
             continue
 
         try:
@@ -318,6 +328,52 @@ async def sync_to_gdrive(
 
     logger.info("sync_to_gdrive: done — %s", stats)
     return stats
+
+
+def _move_to_organized_folder(
+    gdrive: GDriveClient,
+    doc: Document,
+    root_folder_id: str,
+    folder_map: dict[str, str],
+    organized_folder_ids: set[str],
+    stats: dict,
+) -> None:
+    """Move a GDrive file into the correct category/year-month folder if needed.
+
+    Checks if the file is already under an organized folder. If not, moves it
+    to the correct category/year-month subfolder.
+    """
+    # Get current parents
+    parents = gdrive.get_file_parents(doc.gdrive_id)
+    if not parents:
+        logger.warning("sync_to_gdrive: cannot get parents for %s — skipping", doc.filename)
+        stats["skipped"] += 1
+        return
+
+    # Check if already in an organized folder (category folder or year-month subfolder)
+    if any(p in organized_folder_ids for p in parents):
+        stats["skipped"] += 1
+        return
+
+    # Determine target folder
+    cat_name, year_month = get_category_folder_path(
+        doc.category.value,
+        doc.document_date.isoformat() if doc.document_date else None,
+    )
+    target_folder = folder_map.get(cat_name, root_folder_id)
+    if year_month:
+        target_folder = ensure_year_month_folder(gdrive, target_folder, year_month + "-01")
+        # Track new year-month folder as organized
+        organized_folder_ids.add(target_folder)
+
+    logger.info(
+        "sync_to_gdrive: moving %s to %s/%s",
+        doc.filename,
+        cat_name,
+        year_month or "",
+    )
+    gdrive.move_file(doc.gdrive_id, target_folder)
+    stats["organized"] += 1
 
 
 async def _export_metadata(
