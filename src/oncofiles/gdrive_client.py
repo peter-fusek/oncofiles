@@ -206,11 +206,7 @@ class GDriveClient:
             "mimeType": "application/vnd.google-apps.folder",
             "parents": [parent_id],
         }
-        result = (
-            self._service.files()
-            .create(body=file_metadata, fields="id")
-            .execute()
-        )
+        result = self._service.files().create(body=file_metadata, fields="id").execute()
         logger.info("Created folder '%s' in %s: %s", name, parent_id, result["id"])
         return result["id"]
 
@@ -242,9 +238,7 @@ class GDriveClient:
     def move_file(self, file_id: str, new_parent_id: str) -> None:
         """Move a file to a new parent folder."""
         # Get current parents
-        file_info = self._service.files().get(
-            fileId=file_id, fields="parents"
-        ).execute()
+        file_info = self._service.files().get(fileId=file_id, fields="parents").execute()
         previous_parents = ",".join(file_info.get("parents", []))
         self._service.files().update(
             fileId=file_id,

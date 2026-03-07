@@ -111,7 +111,6 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict]:
                     access_token = refreshed["access_token"]
                     from datetime import datetime, timedelta
 
-
                     new_expiry = datetime.now(UTC) + timedelta(
                         seconds=refreshed.get("expires_in", 3600)
                     )
@@ -170,9 +169,7 @@ def _start_sync_scheduler(db, files, gdrive, oauth_folder_id):
         max_instances=1,
     )
     scheduler.start()
-    logger.info(
-        "Sync scheduler started — every %d min", SYNC_INTERVAL_MINUTES
-    )
+    logger.info("Sync scheduler started — every %d min", SYNC_INTERVAL_MINUTES)
     return scheduler
 
 
@@ -225,13 +222,14 @@ async def oauth_callback(request: Request) -> JSONResponse:
     db = request.app.state.lifespan_context["db"]
     await db.upsert_oauth_token(oauth_token)
 
-    return JSONResponse({
-        "status": "ok",
-        "message": (
-            "Google Drive connected successfully."
-            " Use gdrive_set_folder to pick a sync folder."
-        ),
-    })
+    return JSONResponse(
+        {
+            "status": "ok",
+            "message": (
+                "Google Drive connected successfully. Use gdrive_set_folder to pick a sync folder."
+            ),
+        }
+    )
 
 
 def _get_db(ctx: Context) -> Database:
@@ -1362,8 +1360,7 @@ async def search_research(
         }
         for e in entries
     ]
-    return json.dumps({"entries": items, "total": len(items)}
-    )
+    return json.dumps({"entries": items, "total": len(items)})
 
 
 @mcp.tool()
@@ -1538,10 +1535,12 @@ async def gdrive_auth_url(ctx: Context) -> str:
         return json.dumps({"error": "GOOGLE_OAUTH_CLIENT_ID not configured"})
 
     url = get_auth_url()
-    return json.dumps({
-        "auth_url": url,
-        "instructions": "Open this URL in your browser to connect Google Drive.",
-    })
+    return json.dumps(
+        {
+            "auth_url": url,
+            "instructions": "Open this URL in your browser to connect Google Drive.",
+        }
+    )
 
 
 @mcp.tool()
@@ -1590,15 +1589,16 @@ async def gdrive_auth_status(ctx: Context) -> str:
         return json.dumps({"connected": False, "message": msg})
 
     expired = is_token_expired(token.token_expiry.isoformat() if token.token_expiry else None)
-    return json.dumps({
-        "connected": True,
-        "expired": expired,
-        "gdrive_folder_id": token.gdrive_folder_id,
-        "message": (
-            "Connected" if not expired
-            else "Token expired — will auto-refresh on next sync."
-        ),
-    })
+    return json.dumps(
+        {
+            "connected": True,
+            "expired": expired,
+            "gdrive_folder_id": token.gdrive_folder_id,
+            "message": (
+                "Connected" if not expired else "Token expired — will auto-refresh on next sync."
+            ),
+        }
+    )
 
 
 @mcp.tool()
@@ -1688,7 +1688,12 @@ async def sync_from_gdrive(
         return json.dumps({"error": "No sync folder set"})
 
     stats = await _sync_from_gdrive(
-        db, files, gdrive, folder_id, dry_run=dry_run, enhance=enhance,
+        db,
+        files,
+        gdrive,
+        folder_id,
+        dry_run=dry_run,
+        enhance=enhance,
     )
     return json.dumps(stats)
 
@@ -1719,7 +1724,11 @@ async def sync_to_gdrive(
         return json.dumps({"error": "No sync folder set"})
 
     stats = await _sync_to_gdrive(
-        db, files, gdrive, folder_id, dry_run=dry_run,
+        db,
+        files,
+        gdrive,
+        folder_id,
+        dry_run=dry_run,
     )
     return json.dumps(stats)
 
