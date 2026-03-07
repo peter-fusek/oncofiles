@@ -14,11 +14,17 @@ class DocumentCategory(StrEnum):
     LABS = "labs"
     REPORT = "report"
     IMAGING = "imaging"
+    IMAGING_CT = "imaging_ct"
+    IMAGING_US = "imaging_us"
     PATHOLOGY = "pathology"
+    GENETICS = "genetics"
     SURGERY = "surgery"
+    SURGICAL_REPORT = "surgical_report"
     PRESCRIPTION = "prescription"
     REFERRAL = "referral"
     DISCHARGE = "discharge"
+    DISCHARGE_SUMMARY = "discharge_summary"
+    CHEMO_SHEET = "chemo_sheet"
     OTHER = "other"
 
 
@@ -44,6 +50,9 @@ class Document(BaseModel):
     ai_summary: str | None = Field(default=None, description="AI-generated document summary")
     ai_tags: str | None = Field(default=None, description="JSON array of AI-generated tags")
     ai_processed_at: datetime | None = None
+    structured_metadata: str | None = Field(
+        default=None, description="JSON object with structured medical metadata"
+    )
 
     @property
     def content_block(self) -> dict:

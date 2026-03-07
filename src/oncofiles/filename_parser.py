@@ -45,14 +45,23 @@ KNOWN_INSTITUTIONS = {
 # Category inference from CamelCase description keywords.
 # Order matters — more specific matches first.
 _CATEGORY_KEYWORDS: list[tuple[list[str], DocumentCategory]] = [
-    # Pathology / genetic testing (before report — genetic reports are pathology)
-    (["biopsia", "biopsii", "genetic", "genetick", "genetik"], DocumentCategory.PATHOLOGY),
+    # Genetics (before pathology — genetics is a separate category)
+    (["genetick", "genetik", "geneticke"], DocumentCategory.GENETICS),
+    # Pathology / biopsy
+    (["biopsia", "biopsii"], DocumentCategory.PATHOLOGY),
+    # Chemo sheets
+    (
+        ["chemoterapeuticky", "chemosheet", "chemo_sheet", "protokol chemo"],
+        DocumentCategory.CHEMO_SHEET,
+    ),
     # Labs / blood work (before report — lab results may contain "vysledky")
     (["labvysledky", "lab vysledky", "krvpred", "krvny"], DocumentCategory.LABS),
-    # Imaging
-    (["usg", "sono"], DocumentCategory.IMAGING),
+    # Imaging subtypes (before generic imaging)
+    (["usg", "sono", "ultrazvuk"], DocumentCategory.IMAGING_US),
     # Discharge summaries (before report — they contain "sprava")
     (["prepustaci", "prepusten", "epikryza"], DocumentCategory.DISCHARGE),
+    # Surgical reports (before generic surgery)
+    (["operacna sprava", "operacnyprotokol"], DocumentCategory.SURGICAL_REPORT),
     # Report (broad — many things are reports)
     (
         ["sprava", "anamneza", "kontrola", "vysetren", "prijem", "konzultaci", "priebezn"],
@@ -75,25 +84,32 @@ CATEGORY_ALIASES: dict[str, DocumentCategory] = {
     "sprava": DocumentCategory.REPORT,
     "kontrola": DocumentCategory.REPORT,
     "imaging": DocumentCategory.IMAGING,
-    "ct": DocumentCategory.IMAGING,
+    "imaging_ct": DocumentCategory.IMAGING_CT,
+    "ct": DocumentCategory.IMAGING_CT,
+    "imaging_us": DocumentCategory.IMAGING_US,
     "mri": DocumentCategory.IMAGING,
     "pet": DocumentCategory.IMAGING,
     "rtg": DocumentCategory.IMAGING,
-    "usg": DocumentCategory.IMAGING,
-    "sono": DocumentCategory.IMAGING,
+    "usg": DocumentCategory.IMAGING_US,
+    "sono": DocumentCategory.IMAGING_US,
     "pathology": DocumentCategory.PATHOLOGY,
     "histo": DocumentCategory.PATHOLOGY,
     "biopsia": DocumentCategory.PATHOLOGY,
+    "genetics": DocumentCategory.GENETICS,
+    "genetika": DocumentCategory.GENETICS,
     "surgery": DocumentCategory.SURGERY,
     "operacia": DocumentCategory.SURGERY,
+    "surgical_report": DocumentCategory.SURGICAL_REPORT,
     "prescription": DocumentCategory.PRESCRIPTION,
     "recept": DocumentCategory.PRESCRIPTION,
     "referral": DocumentCategory.REFERRAL,
     "odporucanie": DocumentCategory.REFERRAL,
     "ziadanka": DocumentCategory.REFERRAL,
     "discharge": DocumentCategory.DISCHARGE,
+    "discharge_summary": DocumentCategory.DISCHARGE_SUMMARY,
     "prepustenie": DocumentCategory.DISCHARGE,
     "epikryza": DocumentCategory.DISCHARGE,
+    "chemo_sheet": DocumentCategory.CHEMO_SHEET,
 }
 
 _DATE_RE = re.compile(r"^(\d{4})(\d{2})(\d{2})")
@@ -110,7 +126,9 @@ def _infer_category(description: str) -> DocumentCategory:
         return DocumentCategory.LABS
 
     # Check if description starts with imaging prefix
-    if lower.startswith("ct") or lower.startswith("mri") or lower.startswith("pet"):
+    if lower.startswith("ct"):
+        return DocumentCategory.IMAGING_CT
+    if lower.startswith("mri") or lower.startswith("pet"):
         return DocumentCategory.IMAGING
     if lower.startswith("rtg"):
         return DocumentCategory.IMAGING
