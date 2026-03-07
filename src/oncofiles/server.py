@@ -54,13 +54,32 @@ logger = logging.getLogger(__name__)
 
 # ── Auth ──────────────────────────────────────────────────────────────────────
 
-auth = None
-if MCP_BEARER_TOKEN:
-    from fastmcp.server.auth import StaticTokenVerifier
 
-    auth = StaticTokenVerifier(
-        tokens={MCP_BEARER_TOKEN: {"client_id": "claude-ai", "scopes": []}},
-    )
+def _create_auth():
+    """Create auth provider based on environment.
+
+    - streamable-http: InMemoryOAuthProvider (full OAuth2 flow for Claude.ai)
+    - MCP_BEARER_TOKEN set: StaticTokenVerifier (for dev/testing)
+    - otherwise: None (no auth)
+    """
+    if MCP_TRANSPORT == "streamable-http":
+        from fastmcp.server.auth.providers.in_memory import InMemoryOAuthProvider
+
+        return InMemoryOAuthProvider(
+            base_url="https://aware-kindness-production.up.railway.app",
+        )
+
+    if MCP_BEARER_TOKEN:
+        from fastmcp.server.auth import StaticTokenVerifier
+
+        return StaticTokenVerifier(
+            tokens={MCP_BEARER_TOKEN: {"client_id": "claude-ai", "scopes": []}},
+        )
+
+    return None
+
+
+auth = _create_auth()
 
 
 # ── Lifespan ──────────────────────────────────────────────────────────────────
