@@ -318,8 +318,7 @@ async def sync_to_gdrive(
     except Exception as e:
         err_str = str(e)
         logger.warning("sync_to_gdrive: metadata export failed — %s", err_str)
-        if "storage" not in err_str.lower() and "403" not in err_str:
-            stats["errors"] += 1
+        stats["metadata_error"] = err_str[:200]
 
     logger.info("sync_to_gdrive: done — %s", stats)
     return stats
