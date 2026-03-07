@@ -135,6 +135,7 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict]:
     # Load owner_email from OAuth tokens (needed for service account permission sharing)
     oauth_folder_id = ""
     owner_email = ""
+    token = None
     try:
         token = await db.get_oauth_token()
         if token:
