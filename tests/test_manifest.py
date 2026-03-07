@@ -54,6 +54,26 @@ async def test_manifest_roundtrip(db: Database):
     assert parsed["documents"][0]["filename"] == manifest["documents"][0]["filename"]
 
 
+async def test_manifest_includes_structured_metadata(db: Database):
+    """Manifest export includes structured_metadata for documents that have it."""
+    doc = make_doc()
+    doc = await db.insert_document(doc)
+    metadata_json = '{"diagnoses": ["CRC"], "medications": ["FOLFOX"]}'
+    await db.update_structured_metadata(doc.id, metadata_json)
+
+    manifest = await export_manifest(db)
+    assert len(manifest["documents"]) == 1
+    assert manifest["documents"][0]["structured_metadata"] == metadata_json
+
+
+async def test_manifest_structured_metadata_none_when_absent(db: Database):
+    """Manifest export has null structured_metadata when not set."""
+    await db.insert_document(make_doc())
+
+    manifest = await export_manifest(db)
+    assert manifest["documents"][0]["structured_metadata"] is None
+
+
 # ── Conversation rendering ──────────────────────────────────────────────
 
 
