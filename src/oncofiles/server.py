@@ -191,7 +191,16 @@ mcp = FastMCP(
 
 @mcp.custom_route("/health", methods=["GET"])
 async def health(request: Request) -> JSONResponse:
-    return JSONResponse({"status": "ok", "version": "1.0.0"})
+    try:
+        db: Database = request.app.state.fastmcp_server._lifespan_result["db"]
+        doc_count = await db.count_documents()
+        return JSONResponse(
+            {"status": "ok", "database": "connected", "documents": doc_count, "version": "3.0.2"}
+        )
+    except Exception as e:
+        return JSONResponse(
+            {"status": "degraded", "database": f"error: {e}", "version": "3.0.2"}, status_code=503
+        )
 
 
 @mcp.custom_route("/oauth/callback", methods=["GET"])
@@ -244,6 +253,21 @@ def _get_gdrive(ctx: Context) -> GDriveClient | None:
     return ctx.request_context.lifespan_context.get("gdrive")
 
 
+def _parse_date(value: str | None) -> date | None:
+    """Parse a YYYY-MM-DD date string, raising ValueError with a friendly message."""
+    if not value:
+        return None
+    try:
+        return date.fromisoformat(value)
+    except ValueError:
+        raise ValueError(f"Invalid date format: '{value}'. Expected YYYY-MM-DD.") from None
+
+
+def _clamp_limit(limit: int, max_val: int = 200) -> int:
+    """Clamp limit to [1, max_val]."""
+    return min(max(limit, 1), max_val)
+
+
 def _doc_to_dict(d: Document) -> dict:
     """Convert a Document to a JSON-serializable dict for tool output."""
     result = {
@@ -286,7 +310,10 @@ async def upload_document(
     """
     import base64
 
-    file_bytes = base64.b64decode(content)
+    try:
+        file_bytes = base64.b64decode(content)
+    except Exception:
+        return json.dumps({"error": "Invalid base64 content. Ensure the file is properly encoded."})
 
     db = _get_db(ctx)
     files = _get_files(ctx)
@@ -358,19 +385,22 @@ async def search_documents(
                   referral, discharge, discharge_summary, chemo_sheet, other).
         date_from: Filter from this date (YYYY-MM-DD).
         date_to: Filter to this date (YYYY-MM-DD).
-        limit: Maximum results to return.
+        limit: Maximum results to return (max 200).
     """
-    db = _get_db(ctx)
-    query = SearchQuery(
-        text=text,
-        institution=institution,
-        category=DocumentCategory(category) if category else None,
-        date_from=date.fromisoformat(date_from) if date_from else None,
-        date_to=date.fromisoformat(date_to) if date_to else None,
-        limit=limit,
-    )
-    docs = await db.search_documents(query)
-    return json.dumps({"documents": [_doc_to_dict(d) for d in docs], "total": len(docs)})
+    try:
+        db = _get_db(ctx)
+        query = SearchQuery(
+            text=text,
+            institution=institution,
+            category=DocumentCategory(category) if category else None,
+            date_from=_parse_date(date_from),
+            date_to=_parse_date(date_to),
+            limit=_clamp_limit(limit),
+        )
+        docs = await db.search_documents(query)
+        return json.dumps({"documents": [_doc_to_dict(d) for d in docs], "total": len(docs)})
+    except ValueError as e:
+        return json.dumps({"error": str(e)})
 
 
 @mcp.tool()
@@ -404,7 +434,10 @@ async def get_document(ctx: Context, file_id: str) -> str:
 
 @mcp.tool()
 async def delete_document(ctx: Context, file_id: str) -> str:
-    """Delete a document from both the Files API and local database.
+    """Soft-delete a document (moves to trash, recoverable for 30 days).
+
+    The document is hidden from all listings and searches but can be restored
+    using restore_document. Files API copy is also deleted.
 
     Args:
         file_id: The Anthropic Files API file_id to delete.
@@ -418,9 +451,72 @@ async def delete_document(ctx: Context, file_id: str) -> str:
     except Exception as e:
         await ctx.warning(f"Files API deletion failed (may already be deleted): {e}")
 
-    # Delete from local database
+    # Soft-delete in local database
     deleted = await db.delete_document_by_file_id(file_id)
-    return json.dumps({"deleted": deleted, "file_id": file_id})
+    return json.dumps(
+        {
+            "deleted": deleted,
+            "file_id": file_id,
+            "message": "Moved to trash. Recoverable for 30 days via restore_document."
+            if deleted
+            else "Document not found or already deleted.",
+        }
+    )
+
+
+@mcp.tool()
+async def restore_document(ctx: Context, doc_id: int) -> str:
+    """Restore a soft-deleted document from trash.
+
+    Args:
+        doc_id: The local document ID to restore.
+    """
+    db = _get_db(ctx)
+    restored = await db.restore_document(doc_id)
+    if restored:
+        doc = await db.get_document(doc_id)
+        return json.dumps(
+            {
+                "restored": True,
+                "doc_id": doc_id,
+                "filename": doc.filename if doc else None,
+                "message": "Document restored from trash.",
+            }
+        )
+    return json.dumps(
+        {
+            "restored": False,
+            "doc_id": doc_id,
+            "message": "Document not found in trash.",
+        }
+    )
+
+
+@mcp.tool()
+async def list_trash(ctx: Context, limit: int = 50) -> str:
+    """List soft-deleted documents in trash.
+
+    Args:
+        limit: Maximum results to return (default 50, max 200).
+    """
+    db = _get_db(ctx)
+    limit = min(max(limit, 1), 200)
+    docs = await db.list_trash(limit=limit)
+    return json.dumps(
+        {
+            "trash": [
+                {
+                    "id": d.id,
+                    "file_id": d.file_id,
+                    "filename": d.filename,
+                    "category": d.category.value,
+                    "deleted_at": d.deleted_at.isoformat() if d.deleted_at else None,
+                }
+                for d in docs
+            ],
+            "total": len(docs),
+        }
+    )
 
 
 # ── Patient context ──────────────────────────────────────────────────────────
@@ -851,10 +947,15 @@ async def compare_labs(
                 labs.append(doc)
     elif date_from or date_to:
         # Date range mode
+        try:
+            parsed_from = _parse_date(date_from)
+            parsed_to = _parse_date(date_to)
+        except ValueError as e:
+            return [str(e)]
         query = SearchQuery(
             category=DocumentCategory.LABS,
-            date_from=date.fromisoformat(date_from) if date_from else None,
-            date_to=date.fromisoformat(date_to) if date_to else None,
+            date_from=parsed_from,
+            date_to=parsed_to,
             limit=limit,
         )
         labs = await db.search_documents(query)
@@ -942,13 +1043,17 @@ async def log_conversation(
         document_ids: Comma-separated document IDs referenced (e.g. "3,15").
         participant: Who created this: claude.ai, claude-code, oncoteam.
     """
+    try:
+        parsed_date = _parse_date(entry_date) or date.today()
+    except ValueError as e:
+        return json.dumps({"error": str(e)})
+
     db = _get_db(ctx)
 
     parsed_tags = [t.strip() for t in tags.split(",") if t.strip()] if tags else None
     parsed_doc_ids = (
         [int(d.strip()) for d in document_ids.split(",") if d.strip()] if document_ids else None
     )
-    parsed_date = date.fromisoformat(entry_date) if entry_date else date.today()
 
     # Try to capture session_id from context
     session_id = getattr(ctx, "session_id", None)
@@ -1001,18 +1106,21 @@ async def search_conversations(
         tags: Comma-separated tags to filter by (all must match).
         limit: Maximum results to return.
     """
-    db = _get_db(ctx)
-    parsed_tags = [t.strip() for t in tags.split(",") if t.strip()] if tags else None
-    query = ConversationQuery(
-        text=text,
-        entry_type=entry_type,
-        participant=participant,
-        date_from=date.fromisoformat(date_from) if date_from else None,
-        date_to=date.fromisoformat(date_to) if date_to else None,
-        tags=parsed_tags,
-        limit=limit,
-    )
-    entries = await db.search_conversation_entries(query)
+    try:
+        db = _get_db(ctx)
+        parsed_tags = [t.strip() for t in tags.split(",") if t.strip()] if tags else None
+        query = ConversationQuery(
+            text=text,
+            entry_type=entry_type,
+            participant=participant,
+            date_from=_parse_date(date_from),
+            date_to=_parse_date(date_to),
+            tags=parsed_tags,
+            limit=_clamp_limit(limit),
+        )
+        entries = await db.search_conversation_entries(query)
+    except ValueError as e:
+        return json.dumps({"error": str(e)})
     items = [
         {
             "id": e.id,
@@ -1074,9 +1182,12 @@ async def get_journey_timeline(
         date_to: End date (YYYY-MM-DD).
         limit: Maximum items per type (default 200).
     """
+    try:
+        parsed_from = _parse_date(date_from)
+        parsed_to = _parse_date(date_to)
+    except ValueError as e:
+        return json.dumps({"error": str(e)})
     db = _get_db(ctx)
-    parsed_from = date.fromisoformat(date_from) if date_from else None
-    parsed_to = date.fromisoformat(date_to) if date_to else None
 
     # Fetch documents
     doc_conditions: list[str] = []
@@ -1087,7 +1198,8 @@ async def get_journey_timeline(
     if parsed_to:
         doc_conditions.append("document_date <= ?")
         doc_params.append(parsed_to.isoformat())
-    doc_where = " AND ".join(doc_conditions) if doc_conditions else "1=1"
+    doc_conditions.append("deleted_at IS NULL")
+    doc_where = " AND ".join(doc_conditions)
     async with db.db.execute(
         f"SELECT * FROM documents WHERE {doc_where} ORDER BY document_date ASC LIMIT ?",
         (*doc_params, limit),
@@ -1236,9 +1348,13 @@ async def add_treatment_event(
         notes: Optional longer description or notes.
         metadata: Optional JSON string with extra structured data.
     """
+    try:
+        parsed_event_date = _parse_date(event_date)
+    except ValueError as e:
+        return json.dumps({"error": str(e)})
     db = _get_db(ctx)
     event = TreatmentEvent(
-        event_date=date.fromisoformat(event_date),
+        event_date=parsed_event_date,
         event_type=event_type,
         title=title,
         notes=notes,
@@ -1273,14 +1389,17 @@ async def list_treatment_events(
         date_to: Filter to this date (YYYY-MM-DD).
         limit: Maximum results to return.
     """
-    db = _get_db(ctx)
-    query = TreatmentEventQuery(
-        event_type=event_type,
-        date_from=date.fromisoformat(date_from) if date_from else None,
-        date_to=date.fromisoformat(date_to) if date_to else None,
-        limit=limit,
-    )
-    events = await db.list_treatment_events(query)
+    try:
+        db = _get_db(ctx)
+        query = TreatmentEventQuery(
+            event_type=event_type,
+            date_from=_parse_date(date_from),
+            date_to=_parse_date(date_to),
+            limit=_clamp_limit(limit),
+        )
+        events = await db.list_treatment_events(query)
+    except ValueError as e:
+        return json.dumps({"error": str(e)})
     items = [
         {
             "id": e.id,
@@ -1496,18 +1615,21 @@ async def search_activity_log(
         text: Search in input/output summaries.
         limit: Maximum results to return.
     """
-    db = _get_db(ctx)
-    query = ActivityLogQuery(
-        session_id=session_id,
-        agent_id=agent_id,
-        tool_name=tool_name,
-        status=status,
-        date_from=date.fromisoformat(date_from) if date_from else None,
-        date_to=date.fromisoformat(date_to) if date_to else None,
-        text=text,
-        limit=limit,
-    )
-    entries = await db.search_activity_log(query)
+    try:
+        db = _get_db(ctx)
+        query = ActivityLogQuery(
+            session_id=session_id,
+            agent_id=agent_id,
+            tool_name=tool_name,
+            status=status,
+            date_from=_parse_date(date_from),
+            date_to=_parse_date(date_to),
+            text=text,
+            limit=_clamp_limit(limit),
+        )
+        entries = await db.search_activity_log(query)
+    except ValueError as e:
+        return json.dumps({"error": str(e)})
     items = [
         {
             "id": e.id,
@@ -1542,13 +1664,16 @@ async def get_activity_stats(
         date_from: Filter from this date (YYYY-MM-DD).
         date_to: Filter to this date (YYYY-MM-DD).
     """
-    db = _get_db(ctx)
-    stats = await db.get_activity_stats(
-        session_id=session_id,
-        agent_id=agent_id,
-        date_from=date.fromisoformat(date_from) if date_from else None,
-        date_to=date.fromisoformat(date_to) if date_to else None,
-    )
+    try:
+        db = _get_db(ctx)
+        stats = await db.get_activity_stats(
+            session_id=session_id,
+            agent_id=agent_id,
+            date_from=_parse_date(date_from),
+            date_to=_parse_date(date_to),
+        )
+    except ValueError as e:
+        return json.dumps({"error": str(e)})
     total_calls = sum(s["count"] for s in stats)
     return json.dumps({"stats": stats, "total_calls": total_calls})
 
