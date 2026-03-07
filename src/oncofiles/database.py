@@ -170,16 +170,25 @@ class Database:
             sql = sql_file.read_text()
             if sql.strip():
                 await self.db.executescript(sql)
-        # Add sync_state columns if missing (ALTER TABLE can't use IF NOT EXISTS)
+        # Add columns if missing (ALTER TABLE can't use IF NOT EXISTS)
         for col, typedef in [
             ("sync_state", "TEXT NOT NULL DEFAULT 'synced'"),
             ("last_synced_at", "TEXT"),
+            ("deleted_at", "TEXT"),
         ]:
             try:
                 await self.db.execute(f"ALTER TABLE documents ADD COLUMN {col} {typedef}")
                 await self.db.commit()
             except Exception:
                 pass  # Column already exists
+        # Create indexes (safe with IF NOT EXISTS)
+        for idx_sql in [
+            "CREATE INDEX IF NOT EXISTS idx_documents_deleted_at ON documents(deleted_at)",
+            "CREATE INDEX IF NOT EXISTS idx_documents_ai_processed_at"
+            " ON documents(ai_processed_at)",
+        ]:
+            await self.db.execute(idx_sql)
+            await self.db.commit()
 
     # ── CRUD ──────────────────────────────────────────────────────────────
 
@@ -240,7 +249,8 @@ class Database:
     ) -> list[Document]:
         """List documents ordered by date descending."""
         async with self.db.execute(
-            "SELECT * FROM documents ORDER BY document_date DESC, created_at DESC LIMIT ? OFFSET ?",
+            "SELECT * FROM documents WHERE deleted_at IS NULL "
+            "ORDER BY document_date DESC, created_at DESC LIMIT ? OFFSET ?",
             (limit, offset),
         ) as cursor:
             rows = await cursor.fetchall()
@@ -279,7 +289,8 @@ class Database:
             conditions.append("document_date <= ?")
             params.append(query.date_to.isoformat())
 
-        where = " AND ".join(conditions) if conditions else "1=1"
+        conditions.append("deleted_at IS NULL")
+        where = " AND ".join(conditions)
         sql = f"SELECT * FROM documents WHERE {where} ORDER BY document_date DESC LIMIT ?"
         params.append(query.limit)
 
@@ -288,16 +299,50 @@ class Database:
             return [_row_to_document(r) for r in rows]
 
     async def delete_document(self, doc_id: int) -> bool:
-        """Delete a document by local ID. Returns True if deleted."""
-        cursor = await self.db.execute("DELETE FROM documents WHERE id = ?", (doc_id,))
+        """Soft-delete a document by local ID. Returns True if updated."""
+        cursor = await self.db.execute(
+            "UPDATE documents SET deleted_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') "
+            "WHERE id = ? AND deleted_at IS NULL",
+            (doc_id,),
+        )
         await self.db.commit()
         return cursor.rowcount > 0
 
     async def delete_document_by_file_id(self, file_id: str) -> bool:
-        """Delete a document by Anthropic file_id. Returns True if deleted."""
-        cursor = await self.db.execute("DELETE FROM documents WHERE file_id = ?", (file_id,))
+        """Soft-delete a document by Anthropic file_id. Returns True if updated."""
+        cursor = await self.db.execute(
+            "UPDATE documents SET deleted_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') "
+            "WHERE file_id = ? AND deleted_at IS NULL",
+            (file_id,),
+        )
         await self.db.commit()
         return cursor.rowcount > 0
+
+    async def restore_document(self, doc_id: int) -> bool:
+        """Restore a soft-deleted document. Returns True if restored."""
+        cursor = await self.db.execute(
+            "UPDATE documents SET deleted_at = NULL WHERE id = ? AND deleted_at IS NOT NULL",
+            (doc_id,),
+        )
+        await self.db.commit()
+        return cursor.rowcount > 0
+
+    async def list_trash(self, limit: int = 50) -> list[Document]:
+        """List soft-deleted documents ordered by deletion time descending."""
+        async with self.db.execute(
+            "SELECT * FROM documents WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC LIMIT ?",
+            (limit,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return [_row_to_document(r) for r in rows]
+
+    async def count_documents(self) -> int:
+        """Count active (non-deleted) documents."""
+        async with self.db.execute(
+            "SELECT COUNT(*) as cnt FROM documents WHERE deleted_at IS NULL"
+        ) as cursor:
+            row = await cursor.fetchone()
+            return row["cnt"] if row else 0
 
     async def get_treatment_timeline(self, limit: int = 200) -> list[Document]:
         """Get treatment documents in chronological (ASC) order."""
@@ -321,7 +366,7 @@ class Database:
         async with self.db.execute(
             f"""
             SELECT * FROM documents
-            WHERE category IN ({placeholders})
+            WHERE category IN ({placeholders}) AND deleted_at IS NULL
             ORDER BY document_date ASC, created_at ASC
             LIMIT ?
             """,
@@ -360,7 +405,7 @@ class Database:
     async def get_documents_without_ai(self, limit: int = 100) -> list[Document]:
         """Get documents that haven't been AI-processed yet."""
         async with self.db.execute(
-            "SELECT * FROM documents WHERE ai_processed_at IS NULL "
+            "SELECT * FROM documents WHERE ai_processed_at IS NULL AND deleted_at IS NULL "
             "ORDER BY document_date DESC LIMIT ?",
             (limit,),
         ) as cursor:
@@ -427,7 +472,7 @@ class Database:
         """Get lab documents dated before a given date."""
         async with self.db.execute(
             "SELECT * FROM documents WHERE category = 'labs' AND document_date < ? "
-            "ORDER BY document_date DESC",
+            "AND deleted_at IS NULL ORDER BY document_date DESC",
             (before_date,),
         ) as cursor:
             rows = await cursor.fetchall()
@@ -438,7 +483,7 @@ class Database:
         async with self.db.execute(
             """
             SELECT * FROM documents
-            WHERE category = 'labs'
+            WHERE category = 'labs' AND deleted_at IS NULL
             ORDER BY document_date DESC, created_at DESC
             LIMIT ?
             """,
@@ -919,8 +964,8 @@ class Database:
     async def get_pending_sync_documents(self) -> list[Document]:
         """Get documents that need syncing (no gdrive_id or pending state)."""
         async with self.db.execute(
-            "SELECT * FROM documents WHERE gdrive_id IS NULL OR sync_state = 'pending' "
-            "ORDER BY document_date DESC",
+            "SELECT * FROM documents WHERE (gdrive_id IS NULL OR sync_state = 'pending') "
+            "AND deleted_at IS NULL ORDER BY document_date DESC",
         ) as cursor:
             rows = await cursor.fetchall()
             return [_row_to_document(r) for r in rows]
@@ -1081,4 +1126,7 @@ def _row_to_document(row: aiosqlite.Row) -> Document:
             datetime.fromisoformat(row["ai_processed_at"]) if row["ai_processed_at"] else None
         ),
         structured_metadata=row_dict.get("structured_metadata"),
+        deleted_at=(
+            datetime.fromisoformat(row_dict["deleted_at"]) if row_dict.get("deleted_at") else None
+        ),
     )

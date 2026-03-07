@@ -53,6 +53,7 @@ class Document(BaseModel):
     structured_metadata: str | None = Field(
         default=None, description="JSON object with structured medical metadata"
     )
+    deleted_at: datetime | None = Field(default=None, description="Soft-delete timestamp")
 
     @property
     def content_block(self) -> dict:
