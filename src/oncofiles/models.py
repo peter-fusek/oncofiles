@@ -39,6 +39,8 @@ class Document(BaseModel):
     updated_at: datetime | None = None
     gdrive_id: str | None = Field(default=None, description="Google Drive file ID")
     gdrive_modified_time: datetime | None = None
+    sync_state: str = Field(default="synced", description="Sync state: synced, pending, conflict")
+    last_synced_at: datetime | None = None
     ai_summary: str | None = Field(default=None, description="AI-generated document summary")
     ai_tags: str | None = Field(default=None, description="JSON array of AI-generated tags")
     ai_processed_at: datetime | None = None
@@ -203,6 +205,23 @@ class ActivityLogEntry(BaseModel):
     error_message: str | None = None
     tags: str = "[]"
     created_at: datetime | None = None
+
+
+# ── OAuth tokens (#12) ────────────────────────────────────────────────────
+
+
+class OAuthToken(BaseModel):
+    """OAuth token pair for a user's Google Drive access."""
+
+    id: int | None = None
+    user_id: str = "default"
+    provider: str = "google"
+    access_token: str
+    refresh_token: str
+    token_expiry: datetime | None = None
+    gdrive_folder_id: str | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
 
 
 class ActivityLogQuery(BaseModel):

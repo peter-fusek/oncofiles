@@ -15,7 +15,7 @@ SCOPES = ["https://www.googleapis.com/auth/drive"]
 
 
 class GDriveClient:
-    """Download files from Google Drive using a service account."""
+    """Download/upload files from Google Drive using service account or OAuth."""
 
     def __init__(
         self,
@@ -37,6 +37,31 @@ class GDriveClient:
 
         self._service = build("drive", "v3", credentials=creds)
 
+    @classmethod
+    def from_oauth(
+        cls,
+        access_token: str,
+        refresh_token: str,
+        client_id: str,
+        client_secret: str,
+        token_expiry: str | None = None,
+    ) -> GDriveClient:
+        """Create a GDriveClient from OAuth 2.0 user credentials."""
+        from google.oauth2.credentials import Credentials
+        from googleapiclient.discovery import build
+
+        creds = Credentials(
+            token=access_token,
+            refresh_token=refresh_token,
+            token_uri="https://oauth2.googleapis.com/token",
+            client_id=client_id,
+            client_secret=client_secret,
+            scopes=SCOPES,
+        )
+        instance = cls.__new__(cls)
+        instance._service = build("drive", "v3", credentials=creds)
+        return instance
+
     def download(self, gdrive_id: str) -> bytes:
         """Download a file's content by its Google Drive file ID."""
         from googleapiclient.http import MediaIoBaseDownload
@@ -57,6 +82,7 @@ class GDriveClient:
         content_bytes: bytes,
         mime_type: str = "application/octet-stream",
         folder_id: str | None = None,
+        app_properties: dict | None = None,
     ) -> dict:
         """Upload a file to Google Drive. Returns file metadata dict with id, modifiedTime."""
         from googleapiclient.http import MediaInMemoryUpload
@@ -64,6 +90,8 @@ class GDriveClient:
         file_metadata: dict = {"name": filename}
         if folder_id:
             file_metadata["parents"] = [folder_id]
+        if app_properties:
+            file_metadata["appProperties"] = app_properties
 
         media = MediaInMemoryUpload(content_bytes, mimetype=mime_type)
         result = (
@@ -71,7 +99,7 @@ class GDriveClient:
             .create(
                 body=file_metadata,
                 media_body=media,
-                fields="id, name, modifiedTime",
+                fields="id, name, modifiedTime, appProperties",
             )
             .execute()
         )
@@ -98,7 +126,7 @@ class GDriveClient:
     def list_folder(self, folder_id: str, recursive: bool = True) -> list[dict]:
         """List all files in a Google Drive folder.
 
-        Returns list of dicts with keys: id, name, mimeType, modifiedTime.
+        Returns list of dicts with keys: id, name, mimeType, modifiedTime, appProperties, parents.
         """
         results: list[dict] = []
         self._list_folder_recursive(folder_id, results, recursive)
@@ -111,7 +139,10 @@ class GDriveClient:
                 self._service.files()
                 .list(
                     q=f"'{folder_id}' in parents and trashed = false",
-                    fields="nextPageToken, files(id, name, mimeType, modifiedTime)",
+                    fields=(
+                        "nextPageToken, files(id, name, mimeType,"
+                        " modifiedTime, appProperties, parents)"
+                    ),
                     pageSize=100,
                     pageToken=page_token,
                 )
@@ -127,6 +158,100 @@ class GDriveClient:
             page_token = response.get("nextPageToken")
             if not page_token:
                 break
+
+    def list_folder_with_structure(self, folder_id: str) -> tuple[list[dict], dict[str, str]]:
+        """List all files and build a folder_id → name map for category detection.
+
+        Returns:
+            (files, folder_map) where folder_map is {folder_id: folder_name}.
+        """
+        files: list[dict] = []
+        folder_map: dict[str, str] = {}
+        self._list_with_structure(folder_id, files, folder_map)
+        return files, folder_map
+
+    def _list_with_structure(
+        self, folder_id: str, files: list[dict], folder_map: dict[str, str]
+    ) -> None:
+        page_token = None
+        while True:
+            response = (
+                self._service.files()
+                .list(
+                    q=f"'{folder_id}' in parents and trashed = false",
+                    fields=(
+                        "nextPageToken, files(id, name, mimeType,"
+                        " modifiedTime, appProperties, parents)"
+                    ),
+                    pageSize=100,
+                    pageToken=page_token,
+                )
+                .execute()
+            )
+            for item in response.get("files", []):
+                if item["mimeType"] == "application/vnd.google-apps.folder":
+                    folder_map[item["id"]] = item["name"]
+                    self._list_with_structure(item["id"], files, folder_map)
+                else:
+                    files.append(item)
+
+            page_token = response.get("nextPageToken")
+            if not page_token:
+                break
+
+    def create_folder(self, name: str, parent_id: str) -> str:
+        """Create a folder on Google Drive. Returns the folder ID."""
+        file_metadata = {
+            "name": name,
+            "mimeType": "application/vnd.google-apps.folder",
+            "parents": [parent_id],
+        }
+        result = (
+            self._service.files()
+            .create(body=file_metadata, fields="id")
+            .execute()
+        )
+        logger.info("Created folder '%s' in %s: %s", name, parent_id, result["id"])
+        return result["id"]
+
+    def find_folder(self, name: str, parent_id: str) -> str | None:
+        """Find a folder by name under a parent. Returns folder ID or None."""
+        response = (
+            self._service.files()
+            .list(
+                q=(
+                    f"'{parent_id}' in parents and name = '{name}' "
+                    f"and mimeType = 'application/vnd.google-apps.folder' "
+                    f"and trashed = false"
+                ),
+                fields="files(id)",
+                pageSize=1,
+            )
+            .execute()
+        )
+        files = response.get("files", [])
+        return files[0]["id"] if files else None
+
+    def set_app_properties(self, file_id: str, properties: dict) -> None:
+        """Set appProperties on a file for metadata tracking."""
+        self._service.files().update(
+            fileId=file_id,
+            body={"appProperties": properties},
+        ).execute()
+
+    def move_file(self, file_id: str, new_parent_id: str) -> None:
+        """Move a file to a new parent folder."""
+        # Get current parents
+        file_info = self._service.files().get(
+            fileId=file_id, fields="parents"
+        ).execute()
+        previous_parents = ",".join(file_info.get("parents", []))
+        self._service.files().update(
+            fileId=file_id,
+            addParents=new_parent_id,
+            removeParents=previous_parents,
+            fields="id, parents",
+        ).execute()
 
 
 def create_gdrive_client() -> GDriveClient | None:

@@ -17,6 +17,7 @@ from oncofiles.models import (
     ConversationQuery,
     Document,
     DocumentCategory,
+    OAuthToken,
     ResearchEntry,
     ResearchQuery,
     SearchQuery,
@@ -162,7 +163,16 @@ class Database:
         """Run SQL migration files in order."""
         for sql_file in sorted(MIGRATIONS_DIR.glob("*.sql")):
             sql = sql_file.read_text()
-            await self.db.executescript(sql)
+            if sql.strip():
+                await self.db.executescript(sql)
+        # Add sync_state columns if missing (ALTER TABLE can't use IF NOT EXISTS)
+        for col, typedef in [("sync_state", "TEXT NOT NULL DEFAULT 'synced'"),
+                             ("last_synced_at", "TEXT")]:
+            try:
+                await self.db.execute(f"ALTER TABLE documents ADD COLUMN {col} {typedef}")
+                await self.db.commit()
+            except Exception:
+                pass  # Column already exists
 
     # ── CRUD ──────────────────────────────────────────────────────────────
 
@@ -804,6 +814,96 @@ class Database:
             rows = await cursor.fetchall()
             return [dict(r) for r in rows]
 
+    # ── OAuth tokens (#12) ─────────────────────────────────────────────
+
+    async def upsert_oauth_token(self, token: OAuthToken) -> OAuthToken:
+        """Insert or update OAuth tokens for a user/provider pair."""
+        await self.db.execute(
+            """
+            INSERT INTO oauth_tokens
+                (user_id, provider, access_token, refresh_token, token_expiry,
+                 gdrive_folder_id, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+            ON CONFLICT(user_id, provider) DO UPDATE SET
+                access_token = excluded.access_token,
+                refresh_token = excluded.refresh_token,
+                token_expiry = excluded.token_expiry,
+                gdrive_folder_id = excluded.gdrive_folder_id,
+                updated_at = excluded.updated_at
+            """,
+            (
+                token.user_id,
+                token.provider,
+                token.access_token,
+                token.refresh_token,
+                token.token_expiry.isoformat() if token.token_expiry else None,
+                token.gdrive_folder_id,
+            ),
+        )
+        await self.db.commit()
+        return await self.get_oauth_token(token.user_id, token.provider)
+
+    async def get_oauth_token(
+        self, user_id: str = "default", provider: str = "google"
+    ) -> OAuthToken | None:
+        """Get OAuth tokens for a user/provider pair."""
+        async with self.db.execute(
+            "SELECT * FROM oauth_tokens WHERE user_id = ? AND provider = ?",
+            (user_id, provider),
+        ) as cursor:
+            row = await cursor.fetchone()
+            return _row_to_oauth_token(row) if row else None
+
+    async def update_oauth_folder(
+        self, user_id: str, provider: str, folder_id: str
+    ) -> None:
+        """Set the GDrive folder ID for a user's OAuth token."""
+        await self.db.execute(
+            "UPDATE oauth_tokens SET gdrive_folder_id = ?, "
+            "updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') "
+            "WHERE user_id = ? AND provider = ?",
+            (folder_id, user_id, provider),
+        )
+        await self.db.commit()
+
+    # ── Sync state ───────────────────────────────────────────────────────
+
+    async def update_sync_state(
+        self, doc_id: int, sync_state: str, last_synced_at: str | None = None
+    ) -> None:
+        """Update the sync state of a document."""
+        if last_synced_at:
+            await self.db.execute(
+                "UPDATE documents SET sync_state = ?, last_synced_at = ?, "
+                "updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = ?",
+                (sync_state, last_synced_at, doc_id),
+            )
+        else:
+            await self.db.execute(
+                "UPDATE documents SET sync_state = ?, "
+                "updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = ?",
+                (sync_state, doc_id),
+            )
+        await self.db.commit()
+
+    async def get_pending_sync_documents(self) -> list[Document]:
+        """Get documents that need syncing (no gdrive_id or pending state)."""
+        async with self.db.execute(
+            "SELECT * FROM documents WHERE gdrive_id IS NULL OR sync_state = 'pending' "
+            "ORDER BY document_date DESC",
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return [_row_to_document(r) for r in rows]
+
+    async def update_document_category(self, doc_id: int, category: str) -> None:
+        """Update the category of a document (e.g. when moved on GDrive)."""
+        await self.db.execute(
+            "UPDATE documents SET category = ?, "
+            "updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = ?",
+            (category, doc_id),
+        )
+        await self.db.commit()
+
     async def get_activity_timeline(self, hours: int = 24) -> list[ActivityLogEntry]:
         """Get recent activity log entries (last N hours)."""
         async with self.db.execute(
@@ -816,6 +916,23 @@ class Database:
         ) as cursor:
             rows = await cursor.fetchall()
             return [_row_to_activity_log(r) for r in rows]
+
+
+def _row_to_oauth_token(row: aiosqlite.Row) -> OAuthToken:
+    """Convert a database row to an OAuthToken model."""
+    return OAuthToken(
+        id=row["id"],
+        user_id=row["user_id"],
+        provider=row["provider"],
+        access_token=row["access_token"],
+        refresh_token=row["refresh_token"],
+        token_expiry=(
+            datetime.fromisoformat(row["token_expiry"]) if row["token_expiry"] else None
+        ),
+        gdrive_folder_id=row["gdrive_folder_id"],
+        created_at=datetime.fromisoformat(row["created_at"]) if row["created_at"] else None,
+        updated_at=datetime.fromisoformat(row["updated_at"]) if row["updated_at"] else None,
+    )
 
 
 def _row_to_agent_state(row: aiosqlite.Row) -> AgentState:
@@ -899,6 +1016,8 @@ def _row_to_conversation_entry(row: aiosqlite.Row) -> ConversationEntry:
 
 def _row_to_document(row: aiosqlite.Row) -> Document:
     """Convert a database row to a Document model."""
+    # Handle sync_state/last_synced_at which may not exist in older schemas
+    row_dict = dict(row)
     return Document(
         id=row["id"],
         file_id=row["file_id"],
@@ -916,6 +1035,12 @@ def _row_to_document(row: aiosqlite.Row) -> Document:
         gdrive_modified_time=(
             datetime.fromisoformat(row["gdrive_modified_time"])
             if row["gdrive_modified_time"]
+            else None
+        ),
+        sync_state=row_dict.get("sync_state", "synced") or "synced",
+        last_synced_at=(
+            datetime.fromisoformat(row_dict["last_synced_at"])
+            if row_dict.get("last_synced_at")
             else None
         ),
         ai_summary=row["ai_summary"],

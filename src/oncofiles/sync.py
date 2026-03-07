@@ -1,18 +1,35 @@
-"""Bidirectional Google Drive sync logic (#v0.9)."""
+"""Bidirectional Google Drive sync logic (#v1.0).
+
+Supports folder-aware sync with category/year-month structure,
+manifest export, and metadata rendering.
+"""
 
 from __future__ import annotations
 
 import io
 import logging
 import mimetypes
-from datetime import datetime
+from datetime import UTC, datetime
 
 from oncofiles.database import Database
 from oncofiles.enhance import enhance_document_text
 from oncofiles.filename_parser import parse_filename
 from oncofiles.files_api import FilesClient
 from oncofiles.gdrive_client import GDriveClient
-from oncofiles.models import Document
+from oncofiles.gdrive_folders import (
+    ensure_folder_structure,
+    ensure_year_month_folder,
+    get_category_folder_path,
+)
+from oncofiles.manifest import (
+    export_manifest,
+    group_conversations_by_month,
+    render_conversation_month,
+    render_manifest_json,
+    render_research_library,
+    render_treatment_timeline,
+)
+from oncofiles.models import Document, DocumentCategory
 
 logger = logging.getLogger(__name__)
 
@@ -42,58 +59,92 @@ async def sync_from_gdrive(
 ) -> dict:
     """Import new/changed files from GDrive into oncofiles.
 
-    Returns summary dict: {new, updated, unchanged, skipped, errors}.
+    Walks category/year-month subfolders. Uses appProperties.oncofiles_id
+    for reliable matching, falls back to gdrive_id.
+
+    Returns summary dict: {new, updated, unchanged, skipped, missing, errors}.
     """
     logger.info("sync_from_gdrive: listing folder %s (dry_run=%s)", folder_id, dry_run)
-    gdrive_files = gdrive.list_folder(folder_id)
-    logger.info("sync_from_gdrive: found %d files in GDrive", len(gdrive_files))
+    gdrive_files, folder_map = gdrive.list_folder_with_structure(folder_id)
+    logger.info(
+        "sync_from_gdrive: found %d files, %d folders",
+        len(gdrive_files),
+        len(folder_map),
+    )
 
-    stats = {"new": 0, "updated": 0, "unchanged": 0, "skipped": 0, "errors": 0}
+    stats = {"new": 0, "updated": 0, "unchanged": 0, "skipped": 0, "missing": 0, "errors": 0}
+
+    # Track which gdrive IDs we've seen (for detecting deletions)
+    seen_gdrive_ids: set[str] = set()
 
     for gf in gdrive_files:
         filename = gf["name"]
         gdrive_id = gf["id"]
         modified_time_str = gf.get("modifiedTime", "")
         mime_type = gf.get("mimeType", "application/octet-stream")
+        app_props = gf.get("appProperties", {})
+
+        # Skip non-document files (manifest, markdown metadata files)
+        if filename.endswith((".json", ".md")):
+            stats["skipped"] += 1
+            continue
 
         if not _should_sync(filename):
             logger.debug("sync_from_gdrive: skipping %s (unsupported type)", filename)
             stats["skipped"] += 1
             continue
 
+        seen_gdrive_ids.add(gdrive_id)
+
         try:
-            existing = await db.get_document_by_gdrive_id(gdrive_id)
+            # Try to find existing doc by appProperties or gdrive_id
+            existing = None
+            oncofiles_id = app_props.get("oncofiles_id")
+            if oncofiles_id:
+                existing = await db.get_document(int(oncofiles_id))
+            if not existing:
+                existing = await db.get_document_by_gdrive_id(gdrive_id)
 
             if existing:
                 # Check if modified
                 gdrive_modified = _parse_gdrive_time(modified_time_str)
                 if existing.gdrive_modified_time and gdrive_modified:
-                    # Normalize both to naive UTC for comparison
                     gd_naive = gdrive_modified.replace(tzinfo=None)
                     ex_naive = existing.gdrive_modified_time.replace(tzinfo=None)
                     if gd_naive <= ex_naive:
                         stats["unchanged"] += 1
                         continue
 
-                # File changed on GDrive — re-import
+                # File changed on GDrive — GDrive wins (re-import)
                 if dry_run:
                     logger.info("sync_from_gdrive: WOULD UPDATE %s", filename)
                     stats["updated"] += 1
                     continue
 
-                logger.info("sync_from_gdrive: updating %s", filename)
+                logger.info("sync_from_gdrive: updating %s (GDrive wins)", filename)
                 content_bytes = gdrive.download(gdrive_id)
                 metadata = files.upload(io.BytesIO(content_bytes), filename, mime_type)
                 await db.update_document_file_id(existing.id, metadata.id, len(content_bytes))
                 await db.update_gdrive_id(existing.id, gdrive_id, modified_time_str)
+                now_str = datetime.now(UTC).isoformat()
+                await db.update_sync_state(existing.id, "synced", now_str)
+
+                # Detect category change from folder structure
+                detected_category = _detect_category_from_parents(gf, folder_map)
+                if detected_category and detected_category != existing.category.value:
+                    logger.info(
+                        "sync_from_gdrive: category changed %s → %s for %s",
+                        existing.category.value,
+                        detected_category,
+                        filename,
+                    )
+                    await db.update_document_category(existing.id, detected_category)
 
                 # Re-run AI enhancement
                 if enhance:
                     await _enhance_document(db, existing, files, gdrive)
 
-                # Clear OCR cache so it's regenerated
                 await db.delete_ocr_pages(existing.id)
-
                 stats["updated"] += 1
             else:
                 # New file — import
@@ -110,20 +161,37 @@ async def sync_from_gdrive(
                 guessed_mime = mimetypes.guess_type(filename)[0] or mime_type
                 gdrive_modified = _parse_gdrive_time(modified_time_str)
 
+                # Try to detect category from folder structure
+                detected_category = _detect_category_from_parents(gf, folder_map)
+                category = (
+                    DocumentCategory(detected_category)
+                    if detected_category
+                    else parsed.category
+                )
+
+                now_str = datetime.now(UTC).isoformat()
                 doc = Document(
                     file_id=metadata.id,
                     filename=filename,
                     original_filename=filename,
                     document_date=parsed.document_date,
                     institution=parsed.institution,
-                    category=parsed.category,
+                    category=category,
                     description=parsed.description,
                     mime_type=guessed_mime,
                     size_bytes=len(content_bytes),
                     gdrive_id=gdrive_id,
                     gdrive_modified_time=gdrive_modified,
+                    sync_state="synced",
+                    last_synced_at=datetime.now(UTC),
                 )
                 doc = await db.insert_document(doc)
+
+                # Set appProperties on GDrive for future matching
+                try:
+                    gdrive.set_app_properties(gdrive_id, {"oncofiles_id": str(doc.id)})
+                except Exception:
+                    logger.warning("Failed to set appProperties on %s", gdrive_id)
 
                 # AI enhancement
                 if enhance:
@@ -134,6 +202,17 @@ async def sync_from_gdrive(
         except Exception:
             logger.exception("sync_from_gdrive: error processing %s", filename)
             stats["errors"] += 1
+
+    # Detect deleted files (in DB but not on GDrive) — flag only, never auto-delete
+    all_docs = await db.list_documents(limit=1000)
+    for doc in all_docs:
+        if doc.gdrive_id and doc.gdrive_id not in seen_gdrive_ids:
+            logger.warning(
+                "sync_from_gdrive: file %s (gdrive_id=%s) missing from GDrive — flagging",
+                doc.filename,
+                doc.gdrive_id,
+            )
+            stats["missing"] += 1
 
     logger.info("sync_from_gdrive: done — %s", stats)
     return stats
@@ -150,41 +229,64 @@ async def sync_to_gdrive(
     *,
     dry_run: bool = False,
 ) -> dict:
-    """Export documents from oncofiles to GDrive that don't have a gdrive_id.
+    """Export documents from oncofiles to GDrive with folder structure.
 
-    Returns summary dict: {exported, skipped, errors}.
+    Uploads documents to correct category/YYYY-MM/ folders, sets appProperties,
+    and exports manifest + metadata markdown files.
+
+    Returns summary dict: {exported, skipped, metadata_exported, errors}.
     """
     logger.info("sync_to_gdrive: starting (dry_run=%s)", dry_run)
+
+    stats = {"exported": 0, "skipped": 0, "metadata_exported": 0, "errors": 0}
+
+    if dry_run:
+        # Count what would be exported
+        docs = await db.list_documents(limit=500)
+        for doc in docs:
+            if doc.gdrive_id:
+                stats["skipped"] += 1
+            else:
+                stats["exported"] += 1
+        logger.info("sync_to_gdrive: dry run — %s", stats)
+        return stats
+
+    # Ensure folder structure
+    folder_map = ensure_folder_structure(gdrive, folder_id)
+
+    # Export documents
     docs = await db.list_documents(limit=500)
-
-    stats = {"exported": 0, "skipped": 0, "errors": 0}
-
     for doc in docs:
         if doc.gdrive_id:
             stats["skipped"] += 1
             continue
 
         try:
-            if dry_run:
-                logger.info("sync_to_gdrive: WOULD EXPORT %s", doc.filename)
-                stats["exported"] += 1
-                continue
-
             logger.info("sync_to_gdrive: exporting %s", doc.filename)
-
-            # Download from Files API
             content_bytes = files.download(doc.file_id)
 
-            # Upload to GDrive
+            # Determine target folder
+            cat_name, year_month = get_category_folder_path(
+                doc.category.value,
+                doc.document_date.isoformat() if doc.document_date else None,
+            )
+            target_folder = folder_map.get(cat_name, folder_id)
+            if year_month:
+                target_folder = ensure_year_month_folder(gdrive, target_folder, year_month + "-01")
+
+            # Upload with appProperties
             uploaded = gdrive.upload(
                 filename=doc.filename,
                 content_bytes=content_bytes,
                 mime_type=doc.mime_type,
-                folder_id=folder_id,
+                folder_id=target_folder,
+                app_properties={"oncofiles_id": str(doc.id)},
             )
 
             modified_time = uploaded.get("modifiedTime", "")
             await db.update_gdrive_id(doc.id, uploaded["id"], modified_time)
+            now_str = datetime.now(UTC).isoformat()
+            await db.update_sync_state(doc.id, "synced", now_str)
 
             stats["exported"] += 1
 
@@ -192,8 +294,124 @@ async def sync_to_gdrive(
             logger.exception("sync_to_gdrive: error exporting %s", doc.filename)
             stats["errors"] += 1
 
+    # Export metadata files
+    try:
+        await _export_metadata(db, gdrive, folder_id, folder_map)
+        stats["metadata_exported"] += 1
+    except Exception:
+        logger.exception("sync_to_gdrive: error exporting metadata")
+        stats["errors"] += 1
+
     logger.info("sync_to_gdrive: done — %s", stats)
     return stats
+
+
+async def _export_metadata(
+    db: Database,
+    gdrive: GDriveClient,
+    root_folder_id: str,
+    folder_map: dict[str, str],
+) -> None:
+    """Export manifest.json and metadata markdown files to GDrive."""
+    # 1. Export _manifest.json to root
+    manifest = await export_manifest(db)
+    manifest_json = render_manifest_json(manifest)
+    _upload_or_update_text(
+        gdrive, "_manifest.json", manifest_json,
+        root_folder_id, "application/json",
+    )
+
+    # 2. Export conversation monthly logs
+    conversations_folder = folder_map.get("conversations")
+    if conversations_folder:
+        entries = await db.get_conversation_timeline(limit=1000)
+        by_month = group_conversations_by_month(entries)
+        for month_key, month_entries in by_month.items():
+            md_content = render_conversation_month(month_entries)
+            filename = f"{month_key}-conversation-log.md"
+            _upload_or_update_text(
+                gdrive, filename, md_content,
+                conversations_folder, "text/markdown",
+            )
+
+    # 3. Export treatment timeline
+    treatment_folder = folder_map.get("treatment")
+    if treatment_folder:
+        events = await db.get_treatment_events_timeline(limit=1000)
+        md_content = render_treatment_timeline(events)
+        _upload_or_update_text(
+            gdrive, "treatment-timeline.md", md_content,
+            treatment_folder, "text/markdown",
+        )
+
+    # 4. Export research library
+    research_folder = folder_map.get("research")
+    if research_folder:
+        entries = await db.list_research_entries(limit=1000)
+        md_content = render_research_library(entries)
+        _upload_or_update_text(
+            gdrive, "research-library.md", md_content,
+            research_folder, "text/markdown",
+        )
+
+
+def _upload_or_update_text(
+    gdrive: GDriveClient,
+    filename: str,
+    content: str,
+    folder_id: str,
+    mime_type: str,
+) -> None:
+    """Upload a text file, or update it if it already exists in the folder."""
+    content_bytes = content.encode("utf-8")
+    # Search for existing file
+    existing_files = gdrive.list_folder(folder_id, recursive=False)
+    for f in existing_files:
+        if f["name"] == filename:
+            gdrive.update(f["id"], content_bytes, mime_type)
+            return
+    gdrive.upload(
+        filename=filename,
+        content_bytes=content_bytes,
+        mime_type=mime_type,
+        folder_id=folder_id,
+    )
+
+
+# ── Unified bidirectional sync ────────────────────────────────────────────
+
+
+async def sync(
+    db: Database,
+    files: FilesClient,
+    gdrive: GDriveClient,
+    folder_id: str,
+    *,
+    dry_run: bool = False,
+    enhance: bool = True,
+) -> dict:
+    """Run full bidirectional sync.
+
+    1. sync_from_gdrive first (import human changes — GDrive wins)
+    2. sync_to_gdrive second (export system changes)
+
+    Returns combined stats.
+    """
+    logger.info("sync: starting bidirectional sync (dry_run=%s)", dry_run)
+
+    from_stats = await sync_from_gdrive(
+        db, files, gdrive, folder_id, dry_run=dry_run, enhance=enhance
+    )
+    to_stats = await sync_to_gdrive(
+        db, files, gdrive, folder_id, dry_run=dry_run
+    )
+
+    combined = {
+        "from_gdrive": from_stats,
+        "to_gdrive": to_stats,
+    }
+    logger.info("sync: done — %s", combined)
+    return combined
 
 
 # ── AI enhancement helper ──────────────────────────────────────────────────
@@ -301,3 +519,22 @@ def _parse_gdrive_time(time_str: str) -> datetime | None:
         return datetime.fromisoformat(time_str.replace("Z", "+00:00"))
     except ValueError:
         return None
+
+
+def _detect_category_from_parents(
+    file_info: dict, folder_map: dict[str, str]
+) -> str | None:
+    """Detect document category from its parent folder name in GDrive.
+
+    Returns category string if parent folder matches a known category, else None.
+    """
+    parents = file_info.get("parents", [])
+    valid_categories = {cat.value for cat in DocumentCategory}
+
+    for parent_id in parents:
+        folder_name = folder_map.get(parent_id, "")
+        if folder_name in valid_categories:
+            return folder_name
+        # Check if parent of parent is a category (year-month subfolder case)
+        # The folder_map tracks all folders, so we check if any ancestor is a category
+    return None

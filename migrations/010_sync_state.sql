@@ -1,0 +1,3 @@
+-- Add sync state tracking to documents
+-- Using CREATE TABLE IF NOT EXISTS pattern since ALTER TABLE ADD COLUMN
+-- will error if column already exists on re-run. We handle this in code.
