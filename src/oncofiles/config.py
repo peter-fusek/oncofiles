@@ -21,6 +21,13 @@ GOOGLE_DRIVE_FOLDER_ID: str = os.environ.get("GOOGLE_DRIVE_FOLDER_ID", "")
 GOOGLE_CREDENTIALS_BASE64: str = os.environ.get("GOOGLE_CREDENTIALS_BASE64", "")
 GOOGLE_APPLICATION_CREDENTIALS: str = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", "")
 
+# Google OAuth 2.0 (v1.0)
+GOOGLE_OAUTH_CLIENT_ID: str = os.environ.get("GOOGLE_OAUTH_CLIENT_ID", "")
+GOOGLE_OAUTH_CLIENT_SECRET: str = os.environ.get("GOOGLE_OAUTH_CLIENT_SECRET", "")
+GOOGLE_OAUTH_REDIRECT_URI: str = os.environ.get(
+    "GOOGLE_OAUTH_REDIRECT_URI", "https://aware-kindness-production.up.railway.app/oauth/callback"
+)
+
 # Turso (v0.4)
 TURSO_DATABASE_URL: str = os.environ.get("TURSO_DATABASE_URL", "")
 TURSO_AUTH_TOKEN: str = os.environ.get("TURSO_AUTH_TOKEN", "")

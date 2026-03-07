@@ -8,7 +8,7 @@ import logging
 import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from datetime import date
+from datetime import UTC, date
 
 from fastmcp import Context, FastMCP
 from fastmcp.utilities.types import Image
@@ -18,6 +18,8 @@ from starlette.responses import JSONResponse
 from oncofiles.config import (
     DATABASE_PATH,
     GOOGLE_DRIVE_FOLDER_ID,
+    GOOGLE_OAUTH_CLIENT_ID,
+    GOOGLE_OAUTH_CLIENT_SECRET,
     LOG_LEVEL,
     MCP_BEARER_TOKEN,
     MCP_HOST,
@@ -92,8 +94,42 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict]:
     except Exception as e:
         logger.warning("GDrive client init failed: %s — fallback disabled", e)
         gdrive = None
+
+    # Try OAuth tokens if no service account
+    oauth_folder_id = ""
+    if not gdrive:
+        try:
+            token = await db.get_oauth_token()
+            if token and GOOGLE_OAUTH_CLIENT_ID:
+                from oncofiles.oauth import is_token_expired, refresh_access_token
+
+                access_token = token.access_token
+                if is_token_expired(token.token_expiry.isoformat() if token.token_expiry else None):
+                    refreshed = refresh_access_token(token.refresh_token)
+                    access_token = refreshed["access_token"]
+                    from datetime import datetime, timedelta
+
+
+                    new_expiry = datetime.now(UTC) + timedelta(
+                        seconds=refreshed.get("expires_in", 3600)
+                    )
+                    token.access_token = access_token
+                    token.token_expiry = new_expiry
+                    await db.upsert_oauth_token(token)
+
+                gdrive = GDriveClient.from_oauth(
+                    access_token=access_token,
+                    refresh_token=token.refresh_token,
+                    client_id=GOOGLE_OAUTH_CLIENT_ID,
+                    client_secret=GOOGLE_OAUTH_CLIENT_SECRET,
+                )
+                oauth_folder_id = token.gdrive_folder_id or ""
+                logger.info("GDrive client initialized from OAuth tokens")
+        except Exception as e:
+            logger.warning("OAuth GDrive init failed: %s", e)
+
     try:
-        yield {"db": db, "files": files, "gdrive": gdrive}
+        yield {"db": db, "files": files, "gdrive": gdrive, "oauth_folder_id": oauth_folder_id}
     finally:
         await db.close()
 
@@ -111,7 +147,44 @@ mcp = FastMCP(
 
 @mcp.custom_route("/health", methods=["GET"])
 async def health(request: Request) -> JSONResponse:
-    return JSONResponse({"status": "ok", "version": "0.9.0"})
+    return JSONResponse({"status": "ok", "version": "1.0.0"})
+
+
+@mcp.custom_route("/oauth/callback", methods=["GET"])
+async def oauth_callback(request: Request) -> JSONResponse:
+    """Handle Google OAuth 2.0 redirect callback."""
+    from datetime import datetime, timedelta
+
+    from oncofiles.models import OAuthToken
+    from oncofiles.oauth import exchange_code
+
+    code = request.query_params.get("code")
+    if not code:
+        return JSONResponse({"error": "Missing authorization code"}, status_code=400)
+
+    try:
+        tokens = exchange_code(code)
+    except Exception as e:
+        logger.exception("OAuth token exchange failed")
+        return JSONResponse({"error": f"Token exchange failed: {e}"}, status_code=500)
+
+    expiry = datetime.now(UTC) + timedelta(seconds=tokens.get("expires_in", 3600))
+    oauth_token = OAuthToken(
+        access_token=tokens["access_token"],
+        refresh_token=tokens.get("refresh_token", ""),
+        token_expiry=expiry,
+    )
+
+    db = request.app.state.lifespan_context["db"]
+    await db.upsert_oauth_token(oauth_token)
+
+    return JSONResponse({
+        "status": "ok",
+        "message": (
+            "Google Drive connected successfully."
+            " Use gdrive_set_folder to pick a sync folder."
+        ),
+    })
 
 
 def _get_db(ctx: Context) -> Database:
@@ -1401,7 +1474,143 @@ async def get_activity_stats(
     return json.dumps({"stats": stats, "total_calls": total_calls})
 
 
-# ── Sync tools (#v0.9) ───────────────────────────────────────────────────────
+# ── OAuth tools (#12) ─────────────────────────────────────────────────────
+
+
+@mcp.tool()
+async def gdrive_auth_url(ctx: Context) -> str:
+    """Get the Google OAuth authorization URL for the user to visit.
+
+    Returns a URL that the user should open in their browser to authorize
+    Google Drive access. After authorization, Google redirects to the callback
+    URL which stores the tokens automatically.
+    """
+    from oncofiles.oauth import get_auth_url
+
+    if not GOOGLE_OAUTH_CLIENT_ID:
+        return json.dumps({"error": "GOOGLE_OAUTH_CLIENT_ID not configured"})
+
+    url = get_auth_url()
+    return json.dumps({
+        "auth_url": url,
+        "instructions": "Open this URL in your browser to connect Google Drive.",
+    })
+
+
+@mcp.tool()
+async def gdrive_auth_callback(ctx: Context, code: str) -> str:
+    """Exchange an OAuth authorization code for tokens and store them.
+
+    Args:
+        code: The authorization code from the Google OAuth redirect.
+    """
+    from datetime import datetime, timedelta
+
+    from oncofiles.models import OAuthToken
+    from oncofiles.oauth import exchange_code
+
+    if not GOOGLE_OAUTH_CLIENT_ID:
+        return json.dumps({"error": "GOOGLE_OAUTH_CLIENT_ID not configured"})
+
+    try:
+        tokens = exchange_code(code)
+    except Exception as e:
+        return json.dumps({"error": f"Token exchange failed: {e}"})
+
+    expiry = datetime.now(UTC) + timedelta(seconds=tokens.get("expires_in", 3600))
+    oauth_token = OAuthToken(
+        access_token=tokens["access_token"],
+        refresh_token=tokens.get("refresh_token", ""),
+        token_expiry=expiry,
+    )
+
+    db = _get_db(ctx)
+    await db.upsert_oauth_token(oauth_token)
+    msg = "Google Drive connected. Use gdrive_set_folder to pick a sync folder."
+    return json.dumps({"status": "ok", "message": msg})
+
+
+@mcp.tool()
+async def gdrive_auth_status(ctx: Context) -> str:
+    """Check if the user has valid Google Drive OAuth tokens."""
+    from oncofiles.oauth import is_token_expired
+
+    db = _get_db(ctx)
+    token = await db.get_oauth_token()
+
+    if not token:
+        msg = "No OAuth tokens found. Use gdrive_auth_url to connect."
+        return json.dumps({"connected": False, "message": msg})
+
+    expired = is_token_expired(token.token_expiry.isoformat() if token.token_expiry else None)
+    return json.dumps({
+        "connected": True,
+        "expired": expired,
+        "gdrive_folder_id": token.gdrive_folder_id,
+        "message": (
+            "Connected" if not expired
+            else "Token expired — will auto-refresh on next sync."
+        ),
+    })
+
+
+@mcp.tool()
+async def gdrive_set_folder(ctx: Context, folder_id: str) -> str:
+    """Set the Google Drive folder to sync with.
+
+    Args:
+        folder_id: The Google Drive folder ID to use as the sync root.
+    """
+    db = _get_db(ctx)
+    token = await db.get_oauth_token()
+    if not token:
+        return json.dumps({"error": "No OAuth tokens found. Connect Google Drive first."})
+
+    await db.update_oauth_folder(token.user_id, token.provider, folder_id)
+    return json.dumps({"status": "ok", "folder_id": folder_id})
+
+
+# ── Sync tools (#v1.0) ───────────────────────────────────────────────────────
+
+
+def _get_sync_folder_id(ctx: Context) -> str:
+    """Get the GDrive folder ID from config or OAuth tokens."""
+    if GOOGLE_DRIVE_FOLDER_ID:
+        return GOOGLE_DRIVE_FOLDER_ID
+    return ctx.request_context.lifespan_context.get("oauth_folder_id", "")
+
+
+@mcp.tool()
+async def gdrive_sync(
+    ctx: Context,
+    dry_run: bool = False,
+    enhance: bool = True,
+) -> str:
+    """Run full bidirectional Google Drive sync.
+
+    1. Imports new/changed files from GDrive (GDrive wins on conflicts)
+    2. Exports documents to organized category/year-month folders
+    3. Exports manifest + metadata markdown files
+
+    Args:
+        dry_run: Preview changes without syncing.
+        enhance: Run AI summary/tag generation on new files (default True).
+    """
+    from oncofiles.sync import sync as _sync
+
+    db = _get_db(ctx)
+    files = _get_files(ctx)
+    gdrive = _get_gdrive(ctx)
+    if not gdrive:
+        msg = "GDrive client not configured. Use gdrive_auth_url to connect."
+        return json.dumps({"error": msg})
+
+    folder_id = _get_sync_folder_id(ctx)
+    if not folder_id:
+        return json.dumps({"error": "No sync folder set. Use gdrive_set_folder to pick one."})
+
+    stats = await _sync(db, files, gdrive, folder_id, dry_run=dry_run, enhance=enhance)
+    return json.dumps(stats)
 
 
 @mcp.tool()
@@ -1410,10 +1619,10 @@ async def sync_from_gdrive(
     dry_run: bool = False,
     enhance: bool = True,
 ) -> str:
-    """Sync files from Google Drive into oncofiles.
+    """Import files from Google Drive into oncofiles.
 
-    Detects new files and changed files (by modifiedTime), downloads them,
-    uploads to Files API, and stores metadata. Optionally runs AI enhancement.
+    Walks category/year-month subfolders, detects new and changed files,
+    downloads them, uploads to Files API, and stores metadata.
 
     Args:
         dry_run: Preview changes without importing.
@@ -1426,16 +1635,13 @@ async def sync_from_gdrive(
     gdrive = _get_gdrive(ctx)
     if not gdrive:
         return json.dumps({"error": "GDrive client not configured"})
-    if not GOOGLE_DRIVE_FOLDER_ID:
-        return json.dumps({"error": "GOOGLE_DRIVE_FOLDER_ID not set"})
+
+    folder_id = _get_sync_folder_id(ctx)
+    if not folder_id:
+        return json.dumps({"error": "No sync folder set"})
 
     stats = await _sync_from_gdrive(
-        db,
-        files,
-        gdrive,
-        GOOGLE_DRIVE_FOLDER_ID,
-        dry_run=dry_run,
-        enhance=enhance,
+        db, files, gdrive, folder_id, dry_run=dry_run, enhance=enhance,
     )
     return json.dumps(stats)
 
@@ -1447,7 +1653,8 @@ async def sync_to_gdrive(
 ) -> str:
     """Export documents from oncofiles to Google Drive.
 
-    Uploads documents that don't have a gdrive_id (not yet on GDrive).
+    Uploads documents to organized category/year-month folders with
+    manifest and metadata markdown files.
 
     Args:
         dry_run: Preview changes without exporting.
@@ -1459,17 +1666,30 @@ async def sync_to_gdrive(
     gdrive = _get_gdrive(ctx)
     if not gdrive:
         return json.dumps({"error": "GDrive client not configured"})
-    if not GOOGLE_DRIVE_FOLDER_ID:
-        return json.dumps({"error": "GOOGLE_DRIVE_FOLDER_ID not set"})
+
+    folder_id = _get_sync_folder_id(ctx)
+    if not folder_id:
+        return json.dumps({"error": "No sync folder set"})
 
     stats = await _sync_to_gdrive(
-        db,
-        files,
-        gdrive,
-        GOOGLE_DRIVE_FOLDER_ID,
-        dry_run=dry_run,
+        db, files, gdrive, folder_id, dry_run=dry_run,
     )
     return json.dumps(stats)
+
+
+@mcp.tool()
+async def export_manifest(ctx: Context) -> str:
+    """Export the full database as a JSON manifest (on-demand).
+
+    Returns the manifest JSON with all documents, conversations,
+    treatment events, research entries, and agent state.
+    """
+    from oncofiles.manifest import export_manifest as _export_manifest
+    from oncofiles.manifest import render_manifest_json
+
+    db = _get_db(ctx)
+    manifest = await _export_manifest(db)
+    return render_manifest_json(manifest)
 
 
 @mcp.tool()
