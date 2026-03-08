@@ -401,9 +401,7 @@ async def test_sync_to_gdrive_exports_ocr_companion(db: Database):
     assert stats["ocr_exported"] == 1
 
     # Verify the OCR text was uploaded to the same parent folder
-    upload_calls = [
-        c for c in gdrive.upload.call_args_list if "_OCR.txt" in str(c)
-    ]
+    upload_calls = [c for c in gdrive.upload.call_args_list if "_OCR.txt" in str(c)]
     assert len(upload_calls) >= 1
     call_kwargs = upload_calls[0]
     # Check filename ends with _OCR.txt
