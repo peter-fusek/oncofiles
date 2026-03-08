@@ -411,17 +411,23 @@ async def test_sync_to_gdrive_exports_ocr_companion(db: Database):
     assert call_args["mime_type"] == "text/plain"
 
 
-async def test_sync_to_gdrive_skips_ocr_without_text(db: Database):
-    """Documents without OCR text don't get companion files."""
-    doc = make_doc(gdrive_id="gd_no_ocr")
-    await db.insert_document(doc)
+async def test_sync_to_gdrive_extracts_ocr_for_pdf(db: Database):
+    """PDFs without OCR text get auto-extracted during sync."""
+    doc = make_doc(gdrive_id="gd_pdf", mime_type="application/pdf")
+    doc = await db.insert_document(doc)
 
     files = _mock_files()
     gdrive = _mock_gdrive()
+    gdrive.get_file_parents.return_value = ["parent_folder_id"]
 
-    stats = await sync_to_gdrive(db, files, gdrive, "folder123")
-    assert stats["ocr_skipped"] == 1
-    assert stats.get("ocr_exported", 0) == 0
+    # Patch _extract_pdf_text to return some text
+    with patch("oncofiles.tools._helpers._extract_pdf_text", return_value=["Page 1 text from PDF"]):
+        stats = await sync_to_gdrive(db, files, gdrive, "folder123")
+
+    assert stats.get("ocr_extracted", 0) == 1
+    assert stats["ocr_exported"] == 1
+    # Verify OCR was cached in DB
+    assert await db.has_ocr_text(doc.id)
 
 
 async def test_sync_from_gdrive_skips_ocr_txt(db: Database):
