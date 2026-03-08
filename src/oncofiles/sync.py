@@ -85,8 +85,8 @@ async def sync_from_gdrive(
         mime_type = gf.get("mimeType", "application/octet-stream")
         app_props = gf.get("appProperties", {})
 
-        # Skip non-document files (manifest, markdown metadata files)
-        if filename.endswith((".json", ".md")):
+        # Skip non-document files (manifest, markdown metadata, OCR companions)
+        if filename.endswith((".json", ".md", "_OCR.txt")):
             stats["skipped"] += 1
             continue
 
@@ -311,6 +311,14 @@ async def sync_to_gdrive(
                 logger.exception("sync_to_gdrive: error exporting %s", doc.filename)
                 stats["errors"] += 1
 
+    # Export OCR companion text files alongside originals
+    try:
+        ocr_stats = await _export_ocr_texts(db, gdrive)
+        stats["ocr_exported"] = ocr_stats["exported"]
+        stats["ocr_skipped"] = ocr_stats["skipped"]
+    except Exception as e:
+        logger.warning("sync_to_gdrive: OCR text export failed — %s", str(e)[:200])
+
     # Export metadata files (may fail with service account — no storage quota)
     try:
         await _export_metadata(db, gdrive, folder_id, folder_map)
@@ -368,6 +376,64 @@ def _move_to_organized_folder(
     )
     gdrive.move_file(doc.gdrive_id, target_folder)
     stats["organized"] += 1
+
+
+async def _export_ocr_texts(
+    db: Database,
+    gdrive: GDriveClient,
+) -> dict:
+    """Export OCR text as companion _OCR.txt files alongside originals in GDrive.
+
+    For each document that has OCR text and a gdrive_id, creates/updates a
+    companion text file in the same GDrive folder. The file is named
+    {original_stem}_OCR.txt and contains the concatenated OCR page text.
+
+    Returns: {exported, skipped, errors}.
+    """
+    stats = {"exported": 0, "skipped": 0, "errors": 0}
+
+    docs = await db.list_documents(limit=500)
+    for doc in docs:
+        if not doc.gdrive_id:
+            continue
+        if not await db.has_ocr_text(doc.id):
+            stats["skipped"] += 1
+            continue
+
+        try:
+            # Build OCR text content
+            pages = await db.get_ocr_pages(doc.id)
+            text_parts = [p["extracted_text"] for p in pages if p["extracted_text"]]
+            if not text_parts:
+                stats["skipped"] += 1
+                continue
+
+            full_text = "\n\n--- Page Break ---\n\n".join(text_parts)
+
+            # Determine companion filename
+            stem = doc.filename.rsplit(".", 1)[0] if "." in doc.filename else doc.filename
+            ocr_filename = f"{stem}_OCR.txt"
+
+            # Get parent folder of original file
+            parents = gdrive.get_file_parents(doc.gdrive_id)
+            if not parents:
+                logger.warning("_export_ocr_texts: no parent folder for %s", doc.filename)
+                stats["errors"] += 1
+                continue
+            parent_folder = parents[0]
+
+            # Upload or update the companion file
+            _upload_or_update_text(
+                gdrive, ocr_filename, full_text, parent_folder, "text/plain"
+            )
+            stats["exported"] += 1
+
+        except Exception:
+            logger.exception("_export_ocr_texts: error for doc %d (%s)", doc.id, doc.filename)
+            stats["errors"] += 1
+
+    logger.info("_export_ocr_texts: done — %s", stats)
+    return stats
 
 
 async def _export_metadata(

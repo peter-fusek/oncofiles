@@ -386,6 +386,67 @@ async def test_sync_to_gdrive_exports_metadata(db: Database):
     assert stats["metadata_exported"] == 1
 
 
+async def test_sync_to_gdrive_exports_ocr_companion(db: Database):
+    """OCR text is exported as companion _OCR.txt alongside the original."""
+    doc = make_doc(gdrive_id="gd_existing")
+    doc = await db.insert_document(doc)
+    await db.save_ocr_page(doc.id, 1, "Page 1 OCR text here", "test-model")
+    await db.save_ocr_page(doc.id, 2, "Page 2 OCR text here", "test-model")
+
+    files = _mock_files()
+    gdrive = _mock_gdrive()
+    gdrive.get_file_parents.return_value = ["parent_folder_id"]
+
+    stats = await sync_to_gdrive(db, files, gdrive, "folder123")
+    assert stats["ocr_exported"] == 1
+
+    # Verify the OCR text was uploaded to the same parent folder
+    upload_calls = [
+        c for c in gdrive.upload.call_args_list if "_OCR.txt" in str(c)
+    ]
+    assert len(upload_calls) >= 1
+    call_kwargs = upload_calls[0]
+    # Check filename ends with _OCR.txt
+    call_args = call_kwargs[1] if call_kwargs[1] else call_kwargs[0]
+    assert call_args["filename"].endswith("_OCR.txt")
+    assert call_args["folder_id"] == "parent_folder_id"
+    assert call_args["mime_type"] == "text/plain"
+
+
+async def test_sync_to_gdrive_skips_ocr_without_text(db: Database):
+    """Documents without OCR text don't get companion files."""
+    doc = make_doc(gdrive_id="gd_no_ocr")
+    await db.insert_document(doc)
+
+    files = _mock_files()
+    gdrive = _mock_gdrive()
+
+    stats = await sync_to_gdrive(db, files, gdrive, "folder123")
+    assert stats["ocr_skipped"] == 1
+    assert stats.get("ocr_exported", 0) == 0
+
+
+async def test_sync_from_gdrive_skips_ocr_txt(db: Database):
+    """OCR companion files are skipped during import."""
+    files = _mock_files()
+    gdrive = _mock_gdrive(
+        [
+            {
+                "id": "gd_ocr",
+                "name": "20260301 ErikaFusekova-NOU-LabVysledky_OCR.txt",
+                "mimeType": "text/plain",
+                "modifiedTime": "2026-03-01T10:00:00Z",
+                "appProperties": {},
+                "parents": ["root"],
+            }
+        ]
+    )
+
+    stats = await sync_from_gdrive(db, files, gdrive, "folder123", enhance=False)
+    assert stats["skipped"] == 1
+    assert stats["new"] == 0
+
+
 # ── Unified sync ────────────────────────────────────────────────────────
 
 
