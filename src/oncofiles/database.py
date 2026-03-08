@@ -165,7 +165,13 @@ class Database:
         return self._db
 
     async def migrate(self) -> None:
-        """Run SQL migration files in order."""
+        """Run numbered SQL migration files from migrations/ directory.
+
+        Pattern: migrations/001_description.sql, 002_description.sql, etc.
+        Migrations are idempotent (CREATE TABLE IF NOT EXISTS, etc.) and run
+        in sorted filename order on every startup. Add new migrations by
+        creating the next numbered .sql file.
+        """
         for sql_file in sorted(MIGRATIONS_DIR.glob("*.sql")):
             sql = sql_file.read_text()
             if sql.strip():
