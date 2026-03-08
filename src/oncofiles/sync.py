@@ -313,8 +313,9 @@ async def sync_to_gdrive(
 
     # Export OCR companion text files alongside originals
     try:
-        ocr_stats = await _export_ocr_texts(db, gdrive)
+        ocr_stats = await _export_ocr_texts(db, gdrive, files)
         stats["ocr_exported"] = ocr_stats["exported"]
+        stats["ocr_extracted"] = ocr_stats.get("extracted", 0)
         stats["ocr_skipped"] = ocr_stats["skipped"]
     except Exception as e:
         logger.warning("sync_to_gdrive: OCR text export failed — %s", str(e)[:200])
@@ -381,27 +382,83 @@ def _move_to_organized_folder(
 async def _export_ocr_texts(
     db: Database,
     gdrive: GDriveClient,
+    files: FilesClient,
 ) -> dict:
     """Export OCR text as companion _OCR.txt files alongside originals in GDrive.
 
-    For each document that has OCR text and a gdrive_id, creates/updates a
-    companion text file in the same GDrive folder. The file is named
-    {original_stem}_OCR.txt and contains the concatenated OCR page text.
+    For each document with a gdrive_id:
+    1. If OCR text is missing, extract it (PDF native text or Vision OCR)
+    2. Create/update a companion {stem}_OCR.txt in the same GDrive folder
 
-    Returns: {exported, skipped, errors}.
+    Returns: {exported, extracted, skipped, errors}.
     """
-    stats = {"exported": 0, "skipped": 0, "errors": 0}
+    from oncofiles.ocr import OCR_MODEL, extract_text_from_image
+    from oncofiles.tools._helpers import _extract_pdf_text, _resize_image_if_needed
+
+    stats = {"exported": 0, "extracted": 0, "skipped": 0, "errors": 0}
 
     docs = await db.list_documents(limit=500)
     for doc in docs:
         if not doc.gdrive_id:
             continue
-        if not await db.has_ocr_text(doc.id):
-            stats["skipped"] += 1
-            continue
 
         try:
-            # Build OCR text content
+            # Step 1: Ensure OCR text exists
+            if not await db.has_ocr_text(doc.id):
+                # Download content and extract text
+                content_bytes = None
+                try:
+                    content_bytes = files.download(doc.file_id)
+                except Exception:
+                    try:
+                        content_bytes = gdrive.download(doc.gdrive_id)
+                    except Exception:
+                        logger.warning(
+                            "_export_ocr_texts: cannot download %s — skipping",
+                            doc.filename,
+                        )
+                        stats["skipped"] += 1
+                        continue
+
+                # PDF: try native text extraction first
+                if doc.mime_type == "application/pdf":
+                    pdf_texts = _extract_pdf_text(content_bytes)
+                    if pdf_texts:
+                        for page_num, text in enumerate(pdf_texts, start=1):
+                            await db.save_ocr_page(doc.id, page_num, text, "pymupdf-native")
+                        stats["extracted"] += 1
+                    else:
+                        # Scanned PDF — convert to images and OCR
+                        import pymupdf
+                        from fastmcp.utilities.types import Image as MImage
+
+                        pdf_doc = pymupdf.open(stream=content_bytes, filetype="pdf")
+                        try:
+                            for page_num, page in enumerate(pdf_doc, start=1):
+                                pix = page.get_pixmap(dpi=200)
+                                img = MImage(data=pix.tobytes("jpeg"), format="jpeg")
+                                img = _resize_image_if_needed(img)
+                                text = extract_text_from_image(img)
+                                await db.save_ocr_page(doc.id, page_num, text, OCR_MODEL)
+                        finally:
+                            pdf_doc.close()
+                        stats["extracted"] += 1
+
+                # Image: Vision OCR
+                elif doc.mime_type and doc.mime_type.startswith("image/"):
+                    from fastmcp.utilities.types import Image as MImage
+
+                    fmt = doc.mime_type.split("/")[1]
+                    img = MImage(data=content_bytes, format=fmt)
+                    img = _resize_image_if_needed(img)
+                    text = extract_text_from_image(img)
+                    await db.save_ocr_page(doc.id, 1, text, OCR_MODEL)
+                    stats["extracted"] += 1
+                else:
+                    stats["skipped"] += 1
+                    continue
+
+            # Step 2: Export OCR text to GDrive
             pages = await db.get_ocr_pages(doc.id)
             text_parts = [p["extracted_text"] for p in pages if p["extracted_text"]]
             if not text_parts:
