@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib.metadata
 import os
 from pathlib import Path
 
@@ -44,3 +45,9 @@ SYNC_ENABLED: bool = os.environ.get("SYNC_ENABLED", "true").lower() in ("true", 
 
 # Logging
 LOG_LEVEL: str = os.environ.get("LOG_LEVEL", "INFO")
+
+# Version (single source of truth from pyproject.toml)
+try:
+    VERSION: str = importlib.metadata.version("oncofiles")
+except importlib.metadata.PackageNotFoundError:
+    VERSION = "0.0.0-dev"
