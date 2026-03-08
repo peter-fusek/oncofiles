@@ -423,9 +423,7 @@ async def _export_ocr_texts(
             parent_folder = parents[0]
 
             # Upload or update the companion file
-            _upload_or_update_text(
-                gdrive, ocr_filename, full_text, parent_folder, "text/plain"
-            )
+            _upload_or_update_text(gdrive, ocr_filename, full_text, parent_folder, "text/plain")
             stats["exported"] += 1
 
         except Exception:
