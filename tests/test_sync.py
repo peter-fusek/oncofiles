@@ -541,9 +541,7 @@ async def test_sync_to_gdrive_idempotent_double_run(db: Database):
     assert stats2.get("renamed", 0) == 0
     # rename_file should only be called for OCR companion (not for doc itself)
     # since doc is already bilingual
-    doc_rename_calls = [
-        c for c in gdrive.rename_file.call_args_list if "_OCR.txt" not in str(c)
-    ]
+    doc_rename_calls = [c for c in gdrive.rename_file.call_args_list if "_OCR.txt" not in str(c)]
     assert len(doc_rename_calls) == 0
 
 

@@ -3,15 +3,51 @@
 from __future__ import annotations
 
 import base64
+import functools
 import io
 import json
 import logging
+import time
 
 from oncofiles.config import GOOGLE_APPLICATION_CREDENTIALS, GOOGLE_CREDENTIALS_BASE64
 
 logger = logging.getLogger(__name__)
 
 SCOPES = ["https://www.googleapis.com/auth/drive"]
+
+# Retry status codes for transient GDrive API failures
+_RETRYABLE_STATUS_CODES = {429, 500, 502, 503}
+_MAX_RETRIES = 3
+_INITIAL_BACKOFF = 1.0  # seconds
+
+
+def _retry_on_transient(func):
+    """Retry decorator for transient Google API errors (429/5xx)."""
+
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        last_exc = None
+        for attempt in range(_MAX_RETRIES):
+            try:
+                return func(*args, **kwargs)
+            except Exception as e:
+                status = getattr(getattr(e, "resp", None), "status", None)
+                if status not in _RETRYABLE_STATUS_CODES:
+                    raise
+                last_exc = e
+                backoff = _INITIAL_BACKOFF * (2**attempt)
+                logger.warning(
+                    "GDrive API %s failed (HTTP %s), retry %d/%d in %.1fs",
+                    func.__name__,
+                    status,
+                    attempt + 1,
+                    _MAX_RETRIES,
+                    backoff,
+                )
+                time.sleep(backoff)
+        raise last_exc  # type: ignore[misc]
+
+    return wrapper
 
 
 class GDriveClient:
@@ -124,14 +160,13 @@ class GDriveClient:
                 self.grant_access(item["id"], email, role)
                 count += 1
                 if item["mimeType"] == "application/vnd.google-apps.folder":
-                    count += self.grant_access_recursive(
-                        item["id"], email, role, _depth=_depth + 1
-                    )
+                    count += self.grant_access_recursive(item["id"], email, role, _depth=_depth + 1)
             page_token = response.get("nextPageToken")
             if not page_token:
                 break
         return count
 
+    @_retry_on_transient
     def download(self, gdrive_id: str) -> bytes:
         """Download a file's content by its Google Drive file ID."""
         from googleapiclient.http import MediaIoBaseDownload
@@ -146,6 +181,7 @@ class GDriveClient:
 
         return buf.getvalue()
 
+    @_retry_on_transient
     def upload(
         self,
         filename: str,
@@ -335,6 +371,7 @@ class GDriveClient:
         ).execute()
         logger.info("Trashed GDrive file %s", file_id)
 
+    @_retry_on_transient
     def move_file(self, file_id: str, new_parent_id: str) -> None:
         """Move a file to a new parent folder."""
         # Get current parents

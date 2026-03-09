@@ -125,10 +125,7 @@ class ClinicalMixin:
             params.append(query.source)
 
         where = " AND ".join(conditions) if conditions else "1=1"
-        sql = (
-            f"SELECT * FROM research_entries WHERE {where} "
-            f"ORDER BY created_at DESC LIMIT ?"
-        )
+        sql = f"SELECT * FROM research_entries WHERE {where} ORDER BY created_at DESC LIMIT ?"
         params.append(query.limit)
 
         async with self.db.execute(sql, params) as cursor:
@@ -141,8 +138,7 @@ class ClinicalMixin:
         """List research entries, optionally filtered by source."""
         if source:
             async with self.db.execute(
-                "SELECT * FROM research_entries WHERE source = ? "
-                "ORDER BY created_at DESC LIMIT ?",
+                "SELECT * FROM research_entries WHERE source = ? ORDER BY created_at DESC LIMIT ?",
                 (source, limit),
             ) as cursor:
                 rows = await cursor.fetchall()
@@ -198,10 +194,7 @@ class ClinicalMixin:
             params.append(query.date_to.isoformat())
 
         where = " AND ".join(conditions) if conditions else "1=1"
-        sql = (
-            f"SELECT * FROM lab_values WHERE {where} "
-            f"ORDER BY lab_date ASC, parameter ASC LIMIT ?"
-        )
+        sql = f"SELECT * FROM lab_values WHERE {where} ORDER BY lab_date ASC, parameter ASC LIMIT ?"
         params.append(query.limit)
 
         async with self.db.execute(sql, params) as cursor:

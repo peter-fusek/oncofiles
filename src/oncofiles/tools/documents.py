@@ -49,7 +49,10 @@ async def upload_document(
 
     # Upload to Files API
     await ctx.info(f"Uploading {filename} ({len(file_bytes)} bytes)...")
-    metadata = files.upload(io.BytesIO(file_bytes), filename, mime_type)
+    try:
+        metadata = files.upload(io.BytesIO(file_bytes), filename, mime_type)
+    except Exception as e:
+        return json.dumps({"error": f"Files API upload failed: {e}"})
 
     # Parse filename for structured metadata
     parsed = parse_filename(filename)
@@ -261,22 +264,24 @@ async def find_duplicates(ctx: Context) -> str:
     groups = await db.find_duplicates()
     result = []
     for group in groups:
-        result.append({
-            "original_filename": group[0].original_filename,
-            "size_bytes": group[0].size_bytes,
-            "count": len(group),
-            "documents": [
-                {
-                    "id": d.id,
-                    "file_id": d.file_id,
-                    "filename": d.filename,
-                    "document_date": d.document_date.isoformat() if d.document_date else None,
-                    "gdrive_id": d.gdrive_id or "",
-                    "created_at": d.created_at.isoformat() if d.created_at else None,
-                }
-                for d in group
-            ],
-        })
+        result.append(
+            {
+                "original_filename": group[0].original_filename,
+                "size_bytes": group[0].size_bytes,
+                "count": len(group),
+                "documents": [
+                    {
+                        "id": d.id,
+                        "file_id": d.file_id,
+                        "filename": d.filename,
+                        "document_date": d.document_date.isoformat() if d.document_date else None,
+                        "gdrive_id": d.gdrive_id or "",
+                        "created_at": d.created_at.isoformat() if d.created_at else None,
+                    }
+                    for d in group
+                ],
+            }
+        )
     return json.dumps({"duplicate_groups": result, "total_groups": len(result)})
 
 

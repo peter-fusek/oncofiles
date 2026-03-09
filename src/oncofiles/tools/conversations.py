@@ -43,9 +43,14 @@ async def log_conversation(
     db = _get_db(ctx)
 
     parsed_tags = [t.strip() for t in tags.split(",") if t.strip()] if tags else None
-    parsed_doc_ids = (
-        [int(d.strip()) for d in document_ids.split(",") if d.strip()] if document_ids else None
-    )
+    try:
+        parsed_doc_ids = (
+            [int(d.strip()) for d in document_ids.split(",") if d.strip()] if document_ids else None
+        )
+    except ValueError:
+        return json.dumps(
+            {"error": f"Invalid document_ids: {document_ids!r}. Expected comma-separated integers."}
+        )
 
     # Try to capture session_id from context
     session_id = getattr(ctx, "session_id", None)

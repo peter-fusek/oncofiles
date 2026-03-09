@@ -227,9 +227,7 @@ class OperationalMixin:
         )
         await self.db.commit()
 
-    async def update_oauth_owner_email(
-        self, user_id: str, provider: str, owner_email: str
-    ) -> None:
+    async def update_oauth_owner_email(self, user_id: str, provider: str, owner_email: str) -> None:
         """Store the GDrive folder owner's email for permission sharing."""
         await self.db.execute(
             "UPDATE oauth_tokens SET owner_email = ?, "

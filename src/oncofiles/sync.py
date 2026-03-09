@@ -6,6 +6,7 @@ manifest export, and metadata rendering.
 
 from __future__ import annotations
 
+import asyncio
 import io
 import json
 import logging
@@ -33,6 +34,9 @@ from oncofiles.manifest import (
 from oncofiles.models import Document, DocumentCategory
 
 logger = logging.getLogger(__name__)
+
+# Module-level lock to prevent concurrent sync operations
+_sync_lock = asyncio.Lock()
 
 SUPPORTED_EXTENSIONS = {".pdf", ".jpg", ".jpeg", ".png"}
 SKIP_EXTENSIONS = {".gdoc", ".xlsx", ".xls", ".ds_store"}
@@ -728,8 +732,26 @@ async def sync(
     1. sync_from_gdrive first (import human changes — GDrive wins)
     2. sync_to_gdrive second (export system changes)
 
-    Returns combined stats.
+    Returns combined stats. Uses a module-level lock to prevent concurrent execution.
     """
+    if _sync_lock.locked():
+        logger.info("sync: already in progress — skipping")
+        return {"skipped": True, "message": "Sync already in progress"}
+
+    async with _sync_lock:
+        return await _sync_inner(db, files, gdrive, folder_id, dry_run=dry_run, enhance=enhance)
+
+
+async def _sync_inner(
+    db: Database,
+    files: FilesClient,
+    gdrive: GDriveClient,
+    folder_id: str,
+    *,
+    dry_run: bool = False,
+    enhance: bool = True,
+) -> dict:
+    """Inner sync logic (called under lock)."""
     logger.info("sync: starting bidirectional sync (dry_run=%s)", dry_run)
 
     from_stats = await sync_from_gdrive(

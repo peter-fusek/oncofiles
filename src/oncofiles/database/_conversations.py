@@ -123,9 +123,7 @@ class ConversationMixin:
 
     async def delete_conversation_entry(self, entry_id: int) -> bool:
         """Delete a conversation entry by ID. Returns True if deleted."""
-        cursor = await self.db.execute(
-            "DELETE FROM conversation_entries WHERE id = ?", (entry_id,)
-        )
+        cursor = await self.db.execute("DELETE FROM conversation_entries WHERE id = ?", (entry_id,))
         await self.db.commit()
         return cursor.rowcount > 0
 
