@@ -6,7 +6,7 @@ from datetime import datetime
 from unittest.mock import MagicMock, patch
 
 from oncofiles.database import Database
-from oncofiles.sync import sync, sync_from_gdrive, sync_to_gdrive
+from oncofiles.sync import _sync_lock, sync, sync_from_gdrive, sync_to_gdrive
 from tests.helpers import make_doc
 
 
@@ -605,3 +605,33 @@ async def test_sync_from_gdrive_extracts_structured_metadata(db: Database):
     parsed = json.loads(updated.structured_metadata)
     assert parsed["diagnoses"] == ["CRC"]
     assert parsed["medications"] == ["FOLFOX"]
+
+
+# ── Sync mutex ──────────────────────────────────────────────────────────
+
+
+async def test_sync_mutex_prevents_concurrent(db: Database):
+    """Second sync call returns 'already in progress' if lock is held."""
+    files = _mock_files()
+    gdrive = _mock_gdrive()
+
+    # Manually acquire the lock to simulate ongoing sync
+    await _sync_lock.acquire()
+    try:
+        result = await sync(db, files, gdrive, "folder123", enhance=False)
+        assert result.get("skipped") is True
+        assert "already in progress" in result.get("message", "").lower()
+    finally:
+        _sync_lock.release()
+
+
+async def test_sync_mutex_allows_sequential(db: Database):
+    """Sequential sync calls both succeed (lock is released between them)."""
+    files = _mock_files()
+    gdrive = _mock_gdrive()
+
+    stats1 = await sync(db, files, gdrive, "folder123", enhance=False)
+    assert "from_gdrive" in stats1
+
+    stats2 = await sync(db, files, gdrive, "folder123", enhance=False)
+    assert "from_gdrive" in stats2
