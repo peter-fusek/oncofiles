@@ -1,0 +1,240 @@
+"""Operational: agent state, activity log, OAuth tokens."""
+
+from __future__ import annotations
+
+from datetime import date
+
+from oncofiles.models import (
+    ActivityLogEntry,
+    ActivityLogQuery,
+    AgentState,
+    OAuthToken,
+)
+
+from ._converters import _row_to_activity_log, _row_to_agent_state, _row_to_oauth_token
+
+# "key" is a reserved word — always quote it in SQL and use aliased SELECT
+_AGENT_STATE_SELECT = (
+    'SELECT id, agent_id, "key" AS state_key, value, created_at, updated_at FROM agent_state'
+)
+
+
+class OperationalMixin:
+    """Agent state, activity log, and OAuth token operations."""
+
+    # ── Agent state (#32) ────────────────────────────────────────────────
+
+    async def set_agent_state(self, state: AgentState) -> AgentState:
+        """Upsert an agent state key-value pair. Returns the saved state."""
+        await self.db.execute(
+            """
+            INSERT INTO agent_state (agent_id, "key", value, updated_at)
+            VALUES (?, ?, ?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+            ON CONFLICT(agent_id, "key") DO UPDATE SET
+                value = excluded.value,
+                updated_at = excluded.updated_at
+            """,
+            (state.agent_id, state.key, state.value),
+        )
+        await self.db.commit()
+        # Re-fetch (lastrowid unreliable on upsert)
+        async with self.db.execute(
+            _AGENT_STATE_SELECT + ' WHERE agent_id = ? AND "key" = ?',
+            (state.agent_id, state.key),
+        ) as cursor:
+            row = await cursor.fetchone()
+            return _row_to_agent_state(row)
+
+    async def get_agent_state(self, key: str, agent_id: str = "oncoteam") -> AgentState | None:
+        """Get a single agent state value by key."""
+        async with self.db.execute(
+            _AGENT_STATE_SELECT + ' WHERE agent_id = ? AND "key" = ?',
+            (agent_id, key),
+        ) as cursor:
+            row = await cursor.fetchone()
+            return _row_to_agent_state(row) if row else None
+
+    async def list_agent_states(self, agent_id: str = "oncoteam") -> list[AgentState]:
+        """List all state keys for an agent."""
+        async with self.db.execute(
+            _AGENT_STATE_SELECT + ' WHERE agent_id = ? ORDER BY "key"',
+            (agent_id,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return [_row_to_agent_state(r) for r in rows]
+
+    # ── Activity log (#38) ──────────────────────────────────────────────
+
+    async def insert_activity_log(self, entry: ActivityLogEntry) -> ActivityLogEntry:
+        """Append an activity log entry (immutable)."""
+        cursor = await self.db.execute(
+            """
+            INSERT INTO activity_log
+                (session_id, agent_id, tool_name, input_summary, output_summary,
+                 duration_ms, status, error_message, tags)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                entry.session_id,
+                entry.agent_id,
+                entry.tool_name,
+                entry.input_summary,
+                entry.output_summary,
+                entry.duration_ms,
+                entry.status,
+                entry.error_message,
+                entry.tags,
+            ),
+        )
+        await self.db.commit()
+        entry.id = cursor.lastrowid
+        return entry
+
+    async def search_activity_log(self, query: ActivityLogQuery) -> list[ActivityLogEntry]:
+        """Search activity log with filters."""
+        conditions: list[str] = []
+        params: list[str | int] = []
+
+        if query.session_id:
+            conditions.append("session_id = ?")
+            params.append(query.session_id)
+        if query.agent_id:
+            conditions.append("agent_id = ?")
+            params.append(query.agent_id)
+        if query.tool_name:
+            conditions.append("tool_name = ?")
+            params.append(query.tool_name)
+        if query.status:
+            conditions.append("status = ?")
+            params.append(query.status)
+        if query.date_from:
+            conditions.append("created_at >= ?")
+            params.append(query.date_from.isoformat())
+        if query.date_to:
+            conditions.append("created_at <= ?")
+            params.append(query.date_to.isoformat() + "T23:59:59Z")
+        if query.text:
+            like_param = f"%{query.text}%"
+            conditions.append("(input_summary LIKE ? OR output_summary LIKE ?)")
+            params.extend([like_param, like_param])
+
+        where = " AND ".join(conditions) if conditions else "1=1"
+        sql = f"SELECT * FROM activity_log WHERE {where} ORDER BY created_at DESC LIMIT ?"
+        params.append(query.limit)
+
+        async with self.db.execute(sql, params) as cursor:
+            rows = await cursor.fetchall()
+            return [_row_to_activity_log(r) for r in rows]
+
+    async def get_activity_stats(
+        self,
+        session_id: str | None = None,
+        agent_id: str | None = None,
+        date_from: date | None = None,
+        date_to: date | None = None,
+    ) -> list[dict]:
+        """Get aggregated activity counts grouped by tool_name and status."""
+        conditions: list[str] = []
+        params: list[str | int] = []
+
+        if session_id:
+            conditions.append("session_id = ?")
+            params.append(session_id)
+        if agent_id:
+            conditions.append("agent_id = ?")
+            params.append(agent_id)
+        if date_from:
+            conditions.append("created_at >= ?")
+            params.append(date_from.isoformat())
+        if date_to:
+            conditions.append("created_at <= ?")
+            params.append(date_to.isoformat() + "T23:59:59Z")
+
+        where = " AND ".join(conditions) if conditions else "1=1"
+        sql = (
+            f"SELECT tool_name, status, COUNT(*) as count, "
+            f"AVG(duration_ms) as avg_duration_ms "
+            f"FROM activity_log WHERE {where} "
+            f"GROUP BY tool_name, status ORDER BY count DESC"
+        )
+
+        async with self.db.execute(sql, params) as cursor:
+            rows = await cursor.fetchall()
+            return [dict(r) for r in rows]
+
+    async def get_activity_timeline(self, hours: int = 24) -> list[ActivityLogEntry]:
+        """Get recent activity log entries (last N hours)."""
+        async with self.db.execute(
+            """
+            SELECT * FROM activity_log
+            WHERE created_at >= strftime('%Y-%m-%dT%H:%M:%SZ', 'now', ?)
+            ORDER BY created_at DESC LIMIT 200
+            """,
+            (f"-{hours} hours",),
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return [_row_to_activity_log(r) for r in rows]
+
+    # ── OAuth tokens (#12) ─────────────────────────────────────────────
+
+    async def upsert_oauth_token(self, token: OAuthToken) -> OAuthToken:
+        """Insert or update OAuth tokens for a user/provider pair."""
+        await self.db.execute(
+            """
+            INSERT INTO oauth_tokens
+                (user_id, provider, access_token, refresh_token, token_expiry,
+                 gdrive_folder_id, owner_email, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+            ON CONFLICT(user_id, provider) DO UPDATE SET
+                access_token = excluded.access_token,
+                refresh_token = excluded.refresh_token,
+                token_expiry = excluded.token_expiry,
+                gdrive_folder_id = excluded.gdrive_folder_id,
+                owner_email = COALESCE(excluded.owner_email, oauth_tokens.owner_email),
+                updated_at = excluded.updated_at
+            """,
+            (
+                token.user_id,
+                token.provider,
+                token.access_token,
+                token.refresh_token,
+                token.token_expiry.isoformat() if token.token_expiry else None,
+                token.gdrive_folder_id,
+                token.owner_email,
+            ),
+        )
+        await self.db.commit()
+        return await self.get_oauth_token(token.user_id, token.provider)
+
+    async def get_oauth_token(
+        self, user_id: str = "default", provider: str = "google"
+    ) -> OAuthToken | None:
+        """Get OAuth tokens for a user/provider pair."""
+        async with self.db.execute(
+            "SELECT * FROM oauth_tokens WHERE user_id = ? AND provider = ?",
+            (user_id, provider),
+        ) as cursor:
+            row = await cursor.fetchone()
+            return _row_to_oauth_token(row) if row else None
+
+    async def update_oauth_folder(self, user_id: str, provider: str, folder_id: str) -> None:
+        """Set the GDrive folder ID for a user's OAuth token."""
+        await self.db.execute(
+            "UPDATE oauth_tokens SET gdrive_folder_id = ?, "
+            "updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') "
+            "WHERE user_id = ? AND provider = ?",
+            (folder_id, user_id, provider),
+        )
+        await self.db.commit()
+
+    async def update_oauth_owner_email(
+        self, user_id: str, provider: str, owner_email: str
+    ) -> None:
+        """Store the GDrive folder owner's email for permission sharing."""
+        await self.db.execute(
+            "UPDATE oauth_tokens SET owner_email = ?, "
+            "updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') "
+            "WHERE user_id = ? AND provider = ?",
+            (owner_email, user_id, provider),
+        )
+        await self.db.commit()

@@ -1,0 +1,180 @@
+"""Row-to-model conversion functions for all database entities."""
+
+from __future__ import annotations
+
+import json
+from datetime import date, datetime
+from typing import Any
+
+from oncofiles.models import (
+    ActivityLogEntry,
+    AgentState,
+    ConversationEntry,
+    Document,
+    DocumentCategory,
+    LabValue,
+    OAuthToken,
+    ResearchEntry,
+    TreatmentEvent,
+)
+
+
+def _safe_get(row: Any, key: str, default=None):
+    """Get a column value from a row, returning default if column doesn't exist."""
+    try:
+        return row[key]
+    except (IndexError, KeyError):
+        return default
+
+
+def _row_to_oauth_token(row: Any) -> OAuthToken:
+    """Convert a database row to an OAuthToken model."""
+    return OAuthToken(
+        id=row["id"],
+        user_id=row["user_id"],
+        provider=row["provider"],
+        access_token=row["access_token"],
+        refresh_token=row["refresh_token"],
+        token_expiry=(datetime.fromisoformat(row["token_expiry"]) if row["token_expiry"] else None),
+        gdrive_folder_id=row["gdrive_folder_id"],
+        owner_email=_safe_get(row, "owner_email"),
+        created_at=datetime.fromisoformat(row["created_at"]) if row["created_at"] else None,
+        updated_at=datetime.fromisoformat(row["updated_at"]) if row["updated_at"] else None,
+    )
+
+
+def _row_to_agent_state(row: Any) -> AgentState:
+    """Convert a database row to an AgentState model.
+
+    Uses aliased column 'state_key' to avoid reserved-word issues with Turso.
+    """
+    d = dict(row)
+    return AgentState(
+        id=d["id"],
+        agent_id=d["agent_id"],
+        key=d["state_key"],
+        value=d["value"],
+        created_at=datetime.fromisoformat(d["created_at"]) if d["created_at"] else None,
+        updated_at=datetime.fromisoformat(d["updated_at"]) if d["updated_at"] else None,
+    )
+
+
+def _row_to_treatment_event(row: Any) -> TreatmentEvent:
+    """Convert a database row to a TreatmentEvent model."""
+    return TreatmentEvent(
+        id=row["id"],
+        event_date=date.fromisoformat(row["event_date"]),
+        event_type=row["event_type"],
+        title=row["title"],
+        notes=row["notes"],
+        metadata=row["metadata"],
+        created_at=datetime.fromisoformat(row["created_at"]) if row["created_at"] else None,
+        updated_at=datetime.fromisoformat(row["updated_at"]) if row["updated_at"] else None,
+    )
+
+
+def _row_to_research_entry(row: Any) -> ResearchEntry:
+    """Convert a database row to a ResearchEntry model."""
+    return ResearchEntry(
+        id=row["id"],
+        source=row["source"],
+        external_id=row["external_id"],
+        title=row["title"],
+        summary=row["summary"],
+        tags=row["tags"],
+        raw_data=row["raw_data"],
+        created_at=datetime.fromisoformat(row["created_at"]) if row["created_at"] else None,
+        updated_at=datetime.fromisoformat(row["updated_at"]) if row["updated_at"] else None,
+    )
+
+
+def _row_to_activity_log(row: Any) -> ActivityLogEntry:
+    """Convert a database row to an ActivityLogEntry model."""
+    return ActivityLogEntry(
+        id=row["id"],
+        session_id=row["session_id"],
+        agent_id=row["agent_id"],
+        tool_name=row["tool_name"],
+        input_summary=row["input_summary"],
+        output_summary=row["output_summary"],
+        duration_ms=row["duration_ms"],
+        status=row["status"],
+        error_message=row["error_message"],
+        tags=row["tags"],
+        created_at=datetime.fromisoformat(row["created_at"]) if row["created_at"] else None,
+    )
+
+
+def _row_to_conversation_entry(row: Any) -> ConversationEntry:
+    """Convert a database row to a ConversationEntry model."""
+    return ConversationEntry(
+        id=row["id"],
+        entry_date=date.fromisoformat(row["entry_date"]),
+        entry_type=row["entry_type"],
+        title=row["title"],
+        content=row["content"],
+        participant=row["participant"],
+        session_id=row["session_id"],
+        tags=json.loads(row["tags"]) if row["tags"] else None,
+        document_ids=json.loads(row["document_ids"]) if row["document_ids"] else None,
+        source=row["source"],
+        source_ref=row["source_ref"],
+        created_at=datetime.fromisoformat(row["created_at"]) if row["created_at"] else None,
+        updated_at=datetime.fromisoformat(row["updated_at"]) if row["updated_at"] else None,
+    )
+
+
+def _row_to_lab_value(row: Any) -> LabValue:
+    """Convert a database row to a LabValue model."""
+    return LabValue(
+        id=row["id"],
+        document_id=row["document_id"],
+        lab_date=date.fromisoformat(row["lab_date"]),
+        parameter=row["parameter"],
+        value=row["value"],
+        unit=row["unit"],
+        reference_low=row["reference_low"],
+        reference_high=row["reference_high"],
+        flag=row["flag"],
+        created_at=datetime.fromisoformat(row["created_at"]) if row["created_at"] else None,
+    )
+
+
+def _row_to_document(row: Any) -> Document:
+    """Convert a database row to a Document model."""
+    row_dict = dict(row)
+    return Document(
+        id=row["id"],
+        file_id=row["file_id"],
+        filename=row["filename"],
+        original_filename=row["original_filename"],
+        document_date=date.fromisoformat(row["document_date"]) if row["document_date"] else None,
+        institution=row["institution"],
+        category=DocumentCategory(row["category"]),
+        description=row["description"],
+        mime_type=row["mime_type"],
+        size_bytes=row["size_bytes"],
+        created_at=datetime.fromisoformat(row["created_at"]) if row["created_at"] else None,
+        updated_at=datetime.fromisoformat(row["updated_at"]) if row["updated_at"] else None,
+        gdrive_id=row["gdrive_id"],
+        gdrive_modified_time=(
+            datetime.fromisoformat(row["gdrive_modified_time"])
+            if row["gdrive_modified_time"]
+            else None
+        ),
+        sync_state=row_dict.get("sync_state", "synced") or "synced",
+        last_synced_at=(
+            datetime.fromisoformat(row_dict["last_synced_at"])
+            if row_dict.get("last_synced_at")
+            else None
+        ),
+        ai_summary=row["ai_summary"],
+        ai_tags=row["ai_tags"],
+        ai_processed_at=(
+            datetime.fromisoformat(row["ai_processed_at"]) if row["ai_processed_at"] else None
+        ),
+        structured_metadata=row_dict.get("structured_metadata"),
+        deleted_at=(
+            datetime.fromisoformat(row_dict["deleted_at"]) if row_dict.get("deleted_at") else None
+        ),
+    )
