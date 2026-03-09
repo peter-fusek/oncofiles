@@ -32,6 +32,7 @@ FOLDER_SK: dict[str, str] = {
     "discharge_summary": "epikrízy",
     "chemo_sheet": "chemoterapeutické protokoly",
     "genetics": "genetické vyšetrenia",
+    "reference": "referenčné materiály",
     "other": "ostatné",
     "conversations": "záznamy rozhovorov",
     "treatment": "priebeh liečby",

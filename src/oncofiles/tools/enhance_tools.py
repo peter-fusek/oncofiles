@@ -87,6 +87,24 @@ async def extract_document_metadata(
     )
 
 
+async def extract_all_metadata(ctx: Context) -> str:
+    """Backfill structured_metadata for all documents that have AI summaries but no metadata.
+
+    Scans for documents where ai_processed_at is set but structured_metadata is empty,
+    then extracts structured metadata from cached OCR text. Useful after adding the
+    structured_metadata column to an existing database.
+    """
+    from oncofiles.sync import extract_all_metadata as _extract_all_metadata
+
+    db = _get_db(ctx)
+    files = _get_files(ctx)
+    gdrive = _get_gdrive(ctx)
+
+    stats = await _extract_all_metadata(db, files, gdrive)
+    return json.dumps(stats)
+
+
 def register(mcp):
     mcp.tool()(enhance_documents)
     mcp.tool()(extract_document_metadata)
+    mcp.tool()(extract_all_metadata)

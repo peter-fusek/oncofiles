@@ -808,6 +808,57 @@ async def enhance_documents(
     return stats
 
 
+async def extract_all_metadata(
+    db: Database,
+    files: FilesClient,
+    gdrive: GDriveClient | None = None,
+) -> dict:
+    """Backfill structured_metadata for documents that have AI summaries but no metadata.
+
+    Returns summary dict: {processed, skipped, errors}.
+    """
+    docs = await db.get_documents_without_metadata()
+    logger.info("extract_all_metadata: %d documents to process", len(docs))
+    stats = {"processed": 0, "skipped": 0, "errors": 0}
+
+    for doc in docs:
+        try:
+            # Get text from OCR cache
+            text_parts = []
+            if await db.has_ocr_text(doc.id):
+                pages = await db.get_ocr_pages(doc.id)
+                text_parts = [p["extracted_text"] for p in pages]
+
+            if not text_parts:
+                logger.warning(
+                    "extract_all_metadata: no text for doc %d (%s) — skipping",
+                    doc.id,
+                    doc.filename,
+                )
+                stats["skipped"] += 1
+                continue
+
+            full_text = "\n\n".join(text_parts)
+            metadata = extract_structured_metadata(full_text)
+            await db.update_structured_metadata(
+                doc.id, json.dumps(metadata, ensure_ascii=False)
+            )
+            logger.info(
+                "extract_all_metadata: doc %d (%s) — metadata extracted",
+                doc.id,
+                doc.filename,
+            )
+            stats["processed"] += 1
+        except Exception:
+            logger.exception(
+                "extract_all_metadata: error on doc %d (%s)", doc.id, doc.filename
+            )
+            stats["errors"] += 1
+
+    logger.info("extract_all_metadata: done — %s", stats)
+    return stats
+
+
 async def _enhance_document(
     db: Database,
     doc: Document,

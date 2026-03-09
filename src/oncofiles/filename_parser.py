@@ -72,6 +72,8 @@ _CATEGORY_KEYWORDS: list[tuple[list[str], DocumentCategory]] = [
     (["odporucanie", "ziadanka", "referral"], DocumentCategory.REFERRAL),
     # Surgery
     (["operacia"], DocumentCategory.SURGERY),
+    # Reference materials
+    (["referencn", "informacn"], DocumentCategory.REFERENCE),
 ]
 
 # Legacy: map explicit category tokens to categories (underscore-separated format)
@@ -110,6 +112,8 @@ CATEGORY_ALIASES: dict[str, DocumentCategory] = {
     "prepustenie": DocumentCategory.DISCHARGE,
     "epikryza": DocumentCategory.DISCHARGE,
     "chemo_sheet": DocumentCategory.CHEMO_SHEET,
+    "reference": DocumentCategory.REFERENCE,
+    "referencne": DocumentCategory.REFERENCE,
 }
 
 _DATE_RE = re.compile(r"^(\d{4})(\d{2})(\d{2})")
@@ -120,7 +124,7 @@ _PATIENT_PREFIX_RE = re.compile(r"^ErikaFusekova[-]?", re.IGNORECASE)
 _BILINGUAL_PREFIX_RE = re.compile(
     r"^(labs|report|pathology|imaging_ct|imaging_us|imaging|genetics|surgery|"
     r"surgical_report|prescription|referral|discharge_summary|discharge|"
-    r"chemo_sheet|other)-",
+    r"chemo_sheet|reference|other)-",
     re.IGNORECASE,
 )
 
