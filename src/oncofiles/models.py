@@ -88,6 +88,7 @@ class SearchQuery(BaseModel):
     date_from: date | None = None
     date_to: date | None = None
     limit: int = Field(default=50, ge=1, le=200)
+    offset: int = Field(default=0, ge=0)
 
 
 # ── Conversation archive (#37) ───────────────────────────────────────────────

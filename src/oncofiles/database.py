@@ -265,21 +265,49 @@ class Database:
             return [_row_to_document(r) for r in rows]
 
     async def search_documents(self, query: SearchQuery) -> list[Document]:
-        """Search documents using FTS5 and/or filters."""
+        """Search documents with relevance scoring and multi-term matching.
+
+        When text is provided, terms are split on whitespace and ALL must
+        match somewhere across the searchable fields (AND semantics).
+        Results are ranked by field weight: filename/description (3),
+        ai_summary (2), ai_tags/structured_metadata (1).
+        """
         conditions: list[str] = []
         params: list[str | int] = []
+        score_parts: list[str] = []
+
+        # Searchable fields with weights (higher = more relevant)
+        search_fields = [
+            ("filename", 3),
+            ("original_filename", 3),
+            ("institution", 3),
+            ("description", 3),
+            ("ai_summary", 2),
+            ("ai_tags", 1),
+            ("structured_metadata", 1),
+        ]
 
         if query.text:
+            # Split into terms — all must match somewhere (AND semantics).
             # Use LIKE for substring matching — works reliably on both SQLite
             # and Turso/libSQL (FTS5 content-sync triggers are unreliable on
             # Turso and FTS5 tokenization misses CamelCase substrings).
-            like_param = f"%{query.text}%"
-            conditions.append(
-                "(filename LIKE ? OR original_filename LIKE ? "
-                "OR institution LIKE ? OR description LIKE ? "
-                "OR ai_summary LIKE ? OR ai_tags LIKE ?)"
-            )
-            params.extend([like_param, like_param, like_param, like_param, like_param, like_param])
+            terms = query.text.split()
+            for term in terms:
+                like_param = f"%{term}%"
+                field_checks = " OR ".join(f"{f} LIKE ?" for f, _ in search_fields)
+                conditions.append(f"({field_checks})")
+                params.extend([like_param] * len(search_fields))
+
+            # Relevance score: sum of weights for each field that matches
+            # any term. Higher score = more relevant.
+            for field, weight in search_fields:
+                term_cases = " OR ".join(
+                    f"{field} LIKE ?" for _ in terms
+                )
+                score_parts.append(f"(CASE WHEN ({term_cases}) THEN {weight} ELSE 0 END)")
+                params_for_score = [f"%{t}%" for t in terms]
+                params.extend(params_for_score)
 
         if query.institution:
             conditions.append("institution = ?")
@@ -299,8 +327,23 @@ class Database:
 
         conditions.append("deleted_at IS NULL")
         where = " AND ".join(conditions)
-        sql = f"SELECT * FROM documents WHERE {where} ORDER BY document_date DESC LIMIT ?"
+
+        if score_parts:
+            score_expr = " + ".join(score_parts)
+            sql = (
+                f"SELECT *, ({score_expr}) AS _relevance "
+                f"FROM documents WHERE {where} "
+                f"ORDER BY _relevance DESC, document_date DESC "
+                f"LIMIT ? OFFSET ?"
+            )
+        else:
+            sql = (
+                f"SELECT * FROM documents WHERE {where} "
+                f"ORDER BY document_date DESC LIMIT ? OFFSET ?"
+            )
+
         params.append(query.limit)
+        params.append(query.offset)
 
         async with self.db.execute(sql, params) as cursor:
             rows = await cursor.fetchall()

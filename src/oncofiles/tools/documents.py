@@ -93,11 +93,18 @@ async def search_documents(
     date_from: str | None = None,
     date_to: str | None = None,
     limit: int = 50,
+    offset: int = 0,
 ) -> str:
     """Search medical documents by text, institution, category, or date range.
 
+    Multi-term queries (e.g. "CEA labs") use AND semantics — all terms must
+    match somewhere. Results are ranked by relevance when text is provided:
+    filename/description matches rank highest, then AI summaries, then tags.
+
     Args:
-        text: Full-text search query (searches filename, institution, description).
+        text: Search query (searches filename, institution, description,
+              AI summary, tags, and structured metadata). Multiple words
+              are AND-ed together.
         institution: Filter by institution code (e.g. NOUonko, OUSA).
         category: Filter by category (labs, report, imaging, imaging_ct, imaging_us,
                   pathology, genetics, surgery, surgical_report, prescription,
@@ -105,6 +112,7 @@ async def search_documents(
         date_from: Filter from this date (YYYY-MM-DD).
         date_to: Filter to this date (YYYY-MM-DD).
         limit: Maximum results to return (max 200).
+        offset: Skip this many results (for pagination).
     """
     try:
         db = _get_db(ctx)
@@ -115,6 +123,7 @@ async def search_documents(
             date_from=_parse_date(date_from),
             date_to=_parse_date(date_to),
             limit=_clamp_limit(limit),
+            offset=max(0, offset),
         )
         docs = await db.search_documents(query)
         return json.dumps({"documents": [_doc_to_dict(d) for d in docs], "total": len(docs)})
