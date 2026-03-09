@@ -318,6 +318,15 @@ class GDriveClient:
         ).execute()
         logger.info("Renamed GDrive file %s → '%s'", file_id, new_name)
 
+    def trash_file(self, file_id: str) -> None:
+        """Move a file to trash on Google Drive (soft delete)."""
+        self._service.files().update(
+            fileId=file_id,
+            body={"trashed": True},
+            fields="id, name",
+        ).execute()
+        logger.info("Trashed GDrive file %s", file_id)
+
     def move_file(self, file_id: str, new_parent_id: str) -> None:
         """Move a file to a new parent folder."""
         # Get current parents
