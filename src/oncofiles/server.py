@@ -175,7 +175,13 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict]:
         scheduler = _start_sync_scheduler(db, files, gdrive, oauth_folder_id)
 
     try:
-        yield {"db": db, "files": files, "gdrive": gdrive, "oauth_folder_id": oauth_folder_id}
+        yield {
+            "db": db,
+            "files": files,
+            "gdrive": gdrive,
+            "oauth_folder_id": oauth_folder_id,
+            "gdrive_folder_id": _get_sync_folder_id_from(oauth_folder_id),
+        }
     finally:
         if scheduler:
             scheduler.shutdown(wait=False)
@@ -188,7 +194,7 @@ def _start_sync_scheduler(db, files, gdrive, oauth_folder_id):
     from apscheduler.schedulers.asyncio import AsyncIOScheduler
     from apscheduler.triggers.interval import IntervalTrigger
 
-    from oncofiles.sync import sync
+    from oncofiles.sync import extract_all_metadata, sync
 
     async def _run_sync():
         folder_id = _get_sync_folder_id_from(oauth_folder_id)
@@ -200,6 +206,14 @@ def _start_sync_scheduler(db, files, gdrive, oauth_folder_id):
             logger.info("Scheduled sync complete: %s", stats)
         except Exception:
             logger.exception("Scheduled sync failed")
+
+    async def _run_metadata_extraction():
+        try:
+            stats = await extract_all_metadata(db, files, gdrive)
+            if stats["processed"] > 0:
+                logger.info("Metadata extraction: %s", stats)
+        except Exception:
+            logger.exception("Metadata extraction failed")
 
     async def _run_trash_cleanup():
         try:
@@ -216,6 +230,18 @@ def _start_sync_scheduler(db, files, gdrive, oauth_folder_id):
         _run_sync,
         IntervalTrigger(minutes=SYNC_INTERVAL_MINUTES),
         id="gdrive_sync",
+        max_instances=1,
+    )
+    scheduler.add_job(
+        _run_metadata_extraction,
+        CronTrigger(hour=3, minute=30),  # daily at 3:30 AM (after trash cleanup)
+        id="metadata_extraction",
+        max_instances=1,
+    )
+    scheduler.add_job(
+        _run_metadata_extraction,
+        "date",  # run once at startup for initial backfill
+        id="metadata_extraction_startup",
         max_instances=1,
     )
     scheduler.add_job(
