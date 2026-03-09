@@ -116,6 +116,14 @@ _DATE_RE = re.compile(r"^(\d{4})(\d{2})(\d{2})")
 _DATE_XX_RE = re.compile(r"^(\d{4})(\d{2})(xx)", re.IGNORECASE)
 _PATIENT_PREFIX_RE = re.compile(r"^ErikaFusekova[-]?", re.IGNORECASE)
 
+# Bilingual format: EN category prefix already present
+_BILINGUAL_PREFIX_RE = re.compile(
+    r"^(labs|report|pathology|imaging_ct|imaging_us|imaging|genetics|surgery|"
+    r"surgical_report|prescription|referral|discharge_summary|discharge|"
+    r"chemo_sheet|other)-",
+    re.IGNORECASE,
+)
+
 
 def _infer_category(description: str) -> DocumentCategory:
     """Infer document category from description keywords."""
@@ -262,3 +270,68 @@ def parse_filename(filename: str) -> ParsedFilename:
         result.description = " ".join(parts)
 
     return result
+
+
+def rename_to_bilingual(filename: str, category: DocumentCategory | str | None = None) -> str:
+    """Add EN category prefix to a filename for bilingual display.
+
+    Transforms:
+        20260227 ErikaFusekova-NOU-LabVysledkyPred2chemoMudrPorsok.pdf
+    →   20260227 ErikaFusekova-NOU-Labs-LabVysledkyPred2chemoMudrPorsok.pdf
+
+    If the filename already has a bilingual prefix, returns it unchanged.
+    If category is not provided, infers it from the filename.
+
+    Returns the new filename (or unchanged if already bilingual or can't be parsed).
+    """
+    path = PurePosixPath(filename)
+    stem = path.stem
+    ext = path.suffix  # includes the dot
+
+    # Already has bilingual prefix?
+    if _BILINGUAL_PREFIX_RE.search(stem.split("-")[-1] if "-" in stem else stem):
+        # Check the description part after institution
+        parsed = parse_filename(filename)
+        if parsed.description and _BILINGUAL_PREFIX_RE.match(parsed.description):
+            return filename
+
+    # Parse to get components
+    parsed = parse_filename(filename)
+    cat = DocumentCategory(category) if category else parsed.category
+
+    # Can't add prefix to files without a description
+    if not parsed.description:
+        return filename
+
+    # Check if description already starts with the category prefix
+    cat_prefix = cat.value.capitalize()
+    if cat.value == "imaging_ct":
+        cat_prefix = "CT"
+    elif cat.value == "imaging_us":
+        cat_prefix = "USG"
+    elif cat.value == "surgical_report":
+        cat_prefix = "SurgicalReport"
+    elif cat.value == "discharge_summary":
+        cat_prefix = "DischargeSummary"
+    elif cat.value == "chemo_sheet":
+        cat_prefix = "ChemoSheet"
+
+    if parsed.description.lower().startswith(cat_prefix.lower() + "-"):
+        return filename
+
+    # Build new filename
+    new_desc = f"{cat_prefix}-{parsed.description}"
+
+    # Reconstruct: YYYYMMDD ErikaFusekova-Institution-Category-Description.ext
+    parts = []
+    if parsed.document_date:
+        parts.append(parsed.document_date.strftime("%Y%m%d"))
+
+    name_parts = []
+    if parsed.institution:
+        name_parts.append(f"ErikaFusekova-{parsed.institution}-{new_desc}")
+    else:
+        name_parts.append(f"ErikaFusekova-{new_desc}")
+
+    new_stem = f"{parts[0]} {name_parts[0]}" if parts else name_parts[0]
+    return f"{new_stem}{ext}"

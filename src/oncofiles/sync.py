@@ -14,7 +14,7 @@ from datetime import UTC, datetime
 
 from oncofiles.database import Database
 from oncofiles.enhance import enhance_document_text, extract_structured_metadata
-from oncofiles.filename_parser import parse_filename
+from oncofiles.filename_parser import parse_filename, rename_to_bilingual
 from oncofiles.files_api import FilesClient
 from oncofiles.gdrive_client import GDriveClient
 from oncofiles.gdrive_folders import (
@@ -86,7 +86,7 @@ async def sync_from_gdrive(
         app_props = gf.get("appProperties", {})
 
         # Skip non-document files (manifest, markdown metadata, OCR companions)
-        if filename.endswith((".json", ".md", "_OCR.txt", "_OCR_SK.txt")):
+        if filename.endswith((".json", ".md", "_OCR.txt")):
             stats["skipped"] += 1
             continue
 
@@ -311,6 +311,13 @@ async def sync_to_gdrive(
                 logger.exception("sync_to_gdrive: error exporting %s", doc.filename)
                 stats["errors"] += 1
 
+    # Rename files to bilingual format (EN category prefix + SK description)
+    try:
+        rename_stats = await _rename_to_bilingual(db, gdrive)
+        stats["renamed"] = rename_stats["renamed"]
+    except Exception as e:
+        logger.warning("sync_to_gdrive: bilingual rename failed — %s", str(e)[:200])
+
     # Export OCR companion text files alongside originals
     try:
         ocr_stats = await _export_ocr_texts(db, gdrive, files)
@@ -377,6 +384,45 @@ def _move_to_organized_folder(
     )
     gdrive.move_file(doc.gdrive_id, target_folder)
     stats["organized"] += 1
+
+
+async def _rename_to_bilingual(db: Database, gdrive: GDriveClient) -> dict:
+    """Rename GDrive files to bilingual format (EN category prefix + SK description).
+
+    For each document: checks if filename already has bilingual prefix.
+    If not, renames on GDrive and updates DB filename.
+    Stores original_filename before rename for reversibility.
+
+    Returns: {renamed, skipped, errors}.
+    """
+    stats = {"renamed": 0, "skipped": 0, "errors": 0}
+    docs = await db.list_documents(limit=500)
+
+    for doc in docs:
+        if not doc.gdrive_id:
+            stats["skipped"] += 1
+            continue
+
+        try:
+            new_name = rename_to_bilingual(doc.filename, category=doc.category.value)
+            if new_name == doc.filename:
+                stats["skipped"] += 1
+                continue
+
+            # Rename on GDrive
+            gdrive.rename_file(doc.gdrive_id, new_name)
+
+            # Update DB filename (keep original_filename for reversibility)
+            await db.update_document_filename(doc.id, new_name)
+            logger.info("Renamed '%s' → '%s' (doc %d)", doc.filename, new_name, doc.id)
+            stats["renamed"] += 1
+
+        except Exception:
+            logger.exception("_rename_to_bilingual: error for doc %d (%s)", doc.id, doc.filename)
+            stats["errors"] += 1
+
+    logger.info("_rename_to_bilingual: done — %s", stats)
+    return stats
 
 
 async def _export_ocr_texts(
@@ -458,9 +504,9 @@ async def _export_ocr_texts(
                     stats["skipped"] += 1
                     continue
 
-            # Step 2: Export OCR text to GDrive (EN primary + preferred lang secondary)
-            from oncofiles.i18n import needs_secondary, preferred_lang, t
-
+            # Step 2: Export OCR text to GDrive — single file, faithful word-by-word
+            # OCR is the source of truth in the document's original language.
+            # No translation — just the raw extraction.
             pages = await db.get_ocr_pages(doc.id)
             text_parts = [p["extracted_text"] for p in pages if p["extracted_text"]]
             if not text_parts:
@@ -477,22 +523,10 @@ async def _export_ocr_texts(
                 continue
             parent_folder = parents[0]
 
-            # Export EN version (primary)
-            en_text = f"\n\n{t('page_break', 'en')}\n\n".join(text_parts)
-            _upload_or_update_text(gdrive, f"{stem}_OCR.txt", en_text, parent_folder, "text/plain")
-
-            # Export preferred language version (secondary)
-            if needs_secondary():
-                lang = preferred_lang()
-                lang_text = f"\n\n{t('page_break', lang)}\n\n".join(text_parts)
-                _upload_or_update_text(
-                    gdrive,
-                    f"{stem}_OCR_{lang.upper()}.txt",
-                    lang_text,
-                    parent_folder,
-                    "text/plain",
-                )
-
+            full_text = "\n\n---\n\n".join(text_parts)
+            _upload_or_update_text(
+                gdrive, f"{stem}_OCR.txt", full_text, parent_folder, "text/plain"
+            )
             stats["exported"] += 1
 
         except Exception:

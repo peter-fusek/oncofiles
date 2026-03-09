@@ -470,6 +470,50 @@ async def test_sync_bidirectional(db: Database):
     assert stats["to_gdrive"]["exported"] == 1
 
 
+async def test_sync_to_gdrive_renames_to_bilingual(db: Database):
+    """Files on GDrive get renamed to bilingual format (EN category prefix)."""
+    doc = make_doc(
+        gdrive_id="gd_existing",
+        filename="20260227 ErikaFusekova-NOU-LabVysledkyPred2chemoMudrPorsok.pdf",
+        category="labs",
+    )
+    doc = await db.insert_document(doc)
+
+    files = _mock_files()
+    gdrive = _mock_gdrive()
+    gdrive.get_file_parents.return_value = ["folder_labs — laboratórne výsledky"]
+
+    stats = await sync_to_gdrive(db, files, gdrive, "folder123")
+    assert stats.get("renamed", 0) == 1
+
+    # Verify GDrive rename was called
+    gdrive.rename_file.assert_any_call(
+        "gd_existing",
+        "20260227 ErikaFusekova-NOU-Labs-LabVysledkyPred2chemoMudrPorsok.pdf",
+    )
+
+    # Verify DB filename updated
+    updated = await db.get_document(doc.id)
+    assert "Labs-" in updated.filename
+
+
+async def test_sync_to_gdrive_skips_already_bilingual(db: Database):
+    """Files already with bilingual prefix are not renamed again."""
+    doc = make_doc(
+        gdrive_id="gd_existing",
+        filename="20260227 ErikaFusekova-NOU-Labs-LabVysledkyPred2chemoMudrPorsok.pdf",
+        category="labs",
+    )
+    await db.insert_document(doc)
+
+    files = _mock_files()
+    gdrive = _mock_gdrive()
+    gdrive.get_file_parents.return_value = ["folder_labs — laboratórne výsledky"]
+
+    stats = await sync_to_gdrive(db, files, gdrive, "folder123")
+    assert stats.get("renamed", 0) == 0
+
+
 async def test_sync_from_gdrive_extracts_structured_metadata(db: Database):
     """Structured metadata is extracted during sync enhancement."""
     from oncofiles.sync import _enhance_document
