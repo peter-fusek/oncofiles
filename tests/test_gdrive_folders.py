@@ -36,7 +36,7 @@ def test_ensure_folder_structure_creates_all():
     assert "conversations" in result
     assert "treatment" in result
     assert "research" in result
-    assert len(result) >= 12  # 15 categories + 3 metadata
+    assert len(result) >= 12  # 17 categories + 3 metadata
 
     # Folders are created with bilingual names
     created_names = [call[0][0] for call in gdrive.create_folder.call_args_list]
@@ -121,6 +121,7 @@ def test_get_category_folder_path_without_date():
 def test_bilingual_name():
     assert bilingual_name("labs") == "labs — laboratórne výsledky"
     assert bilingual_name("treatment") == "treatment — priebeh liečby"
+    assert bilingual_name("advocate") == "advocate — záznamy advokáta pacienta"
     assert bilingual_name("unknown") == "unknown"
 
 
