@@ -167,3 +167,59 @@ def test_gdrive_client_requires_credentials():
             match="Either credentials_base64 or credentials_path",
         ):
             GDriveClient()
+
+
+# ── Retry decorator ─────────────────────────────────────────────────────
+
+
+def test_retry_on_transient_retries_429(monkeypatch):
+    """Retry decorator retries on 429 status code."""
+    from oncofiles.gdrive_client import _retry_on_transient
+
+    monkeypatch.setattr("oncofiles.gdrive_client._INITIAL_BACKOFF", 0.01)
+
+    call_count = 0
+
+    @_retry_on_transient
+    def flaky_func():
+        nonlocal call_count
+        call_count += 1
+        if call_count < 3:
+            exc = Exception("rate limited")
+            exc.resp = MagicMock(status=429)
+            raise exc
+        return "success"
+
+    result = flaky_func()
+    assert result == "success"
+    assert call_count == 3
+
+
+def test_retry_on_transient_no_retry_on_404():
+    """Retry decorator does not retry on non-transient errors."""
+    from oncofiles.gdrive_client import _retry_on_transient
+
+    @_retry_on_transient
+    def not_found():
+        exc = Exception("not found")
+        exc.resp = MagicMock(status=404)
+        raise exc
+
+    with pytest.raises(Exception, match="not found"):
+        not_found()
+
+
+def test_retry_on_transient_exhausts_retries(monkeypatch):
+    """Retry decorator raises after max retries."""
+    from oncofiles.gdrive_client import _retry_on_transient
+
+    monkeypatch.setattr("oncofiles.gdrive_client._INITIAL_BACKOFF", 0.01)
+
+    @_retry_on_transient
+    def always_fails():
+        exc = Exception("server error")
+        exc.resp = MagicMock(status=500)
+        raise exc
+
+    with pytest.raises(Exception, match="server error"):
+        always_fails()

@@ -226,3 +226,72 @@ async def test_get_lab_trends_empty(db: Database):
     result = json.loads(await get_lab_trends(ctx))
     assert result["total"] == 0
     assert result["values"] == []
+
+
+# ── Edge cases ───────────────────────────────────────────────────────────
+
+
+async def test_store_lab_values_invalid_json(db: Database):
+    """store_lab_values returns error on invalid JSON."""
+    import json
+
+    from oncofiles.tools.lab_trends import store_lab_values
+
+    ctx = _mock_ctx(db)
+    doc = make_doc()
+    doc = await db.insert_document(doc)
+
+    result = json.loads(await store_lab_values(ctx, doc.id, "2026-02-27", "not json"))
+    assert "error" in result
+    assert "Invalid JSON" in result["error"]
+
+
+async def test_store_lab_values_empty_array(db: Database):
+    """store_lab_values returns error on empty values array."""
+    import json
+
+    from oncofiles.tools.lab_trends import store_lab_values
+
+    ctx = _mock_ctx(db)
+    doc = make_doc()
+    doc = await db.insert_document(doc)
+
+    result = json.loads(await store_lab_values(ctx, doc.id, "2026-02-27", "[]"))
+    assert "error" in result
+    assert "No valid lab values" in result["error"]
+
+
+async def test_store_lab_values_not_array(db: Database):
+    """store_lab_values returns error when values is not an array."""
+    import json
+
+    from oncofiles.tools.lab_trends import store_lab_values
+
+    ctx = _mock_ctx(db)
+    doc = make_doc()
+    doc = await db.insert_document(doc)
+
+    result = json.loads(await store_lab_values(ctx, doc.id, "2026-02-27", '{"parameter": "WBC"}'))
+    assert "error" in result
+    assert "JSON array" in result["error"]
+
+
+async def test_store_lab_values_duplicate_document_upsert(db: Database):
+    """Storing values twice for same document replaces them (idempotent)."""
+    import json
+
+    from oncofiles.tools.lab_trends import get_lab_trends, store_lab_values
+
+    ctx = _mock_ctx(db)
+    doc = make_doc()
+    doc = await db.insert_document(doc)
+
+    values_v1 = json.dumps([{"parameter": "CEA", "value": 100.0, "unit": "ug/L"}])
+    await store_lab_values(ctx, doc.id, "2026-02-27", values_v1)
+
+    values_v2 = json.dumps([{"parameter": "CEA", "value": 200.0, "unit": "ug/L"}])
+    await store_lab_values(ctx, doc.id, "2026-02-27", values_v2)
+
+    result = json.loads(await get_lab_trends(ctx, parameter="CEA"))
+    assert result["total"] == 1
+    assert result["values"][0]["value"] == 200.0

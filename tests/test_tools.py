@@ -1,7 +1,8 @@
 """Tests for analysis tools (view_document, analyze_labs, compare_labs)."""
 
+import json
 from datetime import date
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pymupdf
 import pytest
@@ -484,3 +485,107 @@ async def test_get_journey_timeline(db: Database):
     types = {item["type"] for item in timeline}
     assert "document" in types
     assert "conversation" in types
+
+
+# ── find_duplicates tool (#v3.2.0) ───────────────────────────────────────
+
+
+async def test_find_duplicates_no_dupes(db: Database):
+    ctx = _mock_ctx(db)
+    await db.insert_document(make_doc(file_id="file_a", filename="20240115_labs.pdf"))
+    result = json.loads(await find_duplicates(ctx))
+    assert result["total_groups"] == 0
+
+
+async def test_find_duplicates_with_dupes(db: Database):
+    ctx = _mock_ctx(db)
+    await db.insert_document(
+        make_doc(file_id="file_a", filename="dup.pdf", original_filename="orig.pdf", size_bytes=100)
+    )
+    await db.insert_document(
+        make_doc(
+            file_id="file_b", filename="dup2.pdf", original_filename="orig.pdf", size_bytes=100
+        )
+    )
+    result = json.loads(await find_duplicates(ctx))
+    assert result["total_groups"] == 1
+    assert result["duplicate_groups"][0]["count"] == 2
+
+
+# ── restore_document tool (#v3.2.0) ─────────────────────────────────────
+
+
+async def test_restore_document_success(db: Database):
+    ctx = _mock_ctx(db)
+    doc = await db.insert_document(make_doc(file_id="file_del"))
+    await db.delete_document_by_file_id("file_del")
+
+    result = json.loads(await restore_document(ctx, doc_id=doc.id))
+    assert result["restored"] is True
+    assert result["doc_id"] == doc.id
+
+
+async def test_restore_document_not_found(db: Database):
+    ctx = _mock_ctx(db)
+    result = json.loads(await restore_document(ctx, doc_id=9999))
+    assert result["restored"] is False
+
+
+# ── list_trash tool (#v3.2.0) ────────────────────────────────────────────
+
+
+async def test_list_trash_empty(db: Database):
+    ctx = _mock_ctx(db)
+    result = json.loads(await list_trash(ctx))
+    assert result["total"] == 0
+    assert result["trash"] == []
+
+
+async def test_list_trash_with_items(db: Database):
+    ctx = _mock_ctx(db)
+    await db.insert_document(make_doc(file_id="file_trash1"))
+    await db.delete_document_by_file_id("file_trash1")
+
+    result = json.loads(await list_trash(ctx))
+    assert result["total"] == 1
+    assert result["trash"][0]["file_id"] == "file_trash1"
+
+
+# ── upload_document Files API error ──────────────────────────────────────
+
+
+async def test_upload_document_files_api_error(db: Database):
+    """upload_document returns JSON error when Files API fails."""
+    import base64
+
+    from oncofiles.tools.documents import upload_document
+
+    mock_files = MagicMock()
+    mock_files.upload.side_effect = Exception("Files API 500 error")
+    ctx = _mock_ctx(db, mock_files)
+    ctx.info = AsyncMock()
+
+    content = base64.b64encode(b"fake pdf content").decode()
+    result = json.loads(await upload_document(ctx, content=content, filename="test.pdf"))
+    assert "error" in result
+    assert "Files API upload failed" in result["error"]
+
+
+# ── log_conversation invalid document_ids ────────────────────────────────
+
+
+async def test_log_conversation_invalid_document_ids(db: Database):
+    """log_conversation returns error on non-numeric document_ids."""
+    ctx = _mock_ctx(db)
+    ctx.session_id = None
+
+    result = json.loads(
+        await log_conversation(
+            ctx,
+            title="Test",
+            content="Test content",
+            document_ids="abc,xyz",
+        )
+    )
+    assert "error" in result
+    assert "Invalid document_ids" in result["error"]
