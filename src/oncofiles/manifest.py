@@ -72,12 +72,14 @@ def render_conversation_month(entries: list) -> str:
     return "\n".join(lines)
 
 
-def render_treatment_timeline(events: list) -> str:
+def render_treatment_timeline(events: list, lang: str = "en") -> str:
     """Render treatment events as a chronological markdown timeline."""
-    if not events:
-        return "# Treatment Timeline\n\nNo treatment events recorded.\n"
+    from oncofiles.i18n import t
 
-    lines = ["# Treatment Timeline", ""]
+    if not events:
+        return f"{t('treatment_timeline', lang)}\n\n{t('no_treatment_events', lang)}\n"
+
+    lines = [t("treatment_timeline", lang), ""]
     current_date = None
 
     for event in events:
@@ -96,16 +98,18 @@ def render_treatment_timeline(events: list) -> str:
     return "\n".join(lines)
 
 
-def render_research_library(entries: list) -> str:
+def render_research_library(entries: list, lang: str = "en") -> str:
     """Render research entries as markdown grouped by source."""
+    from oncofiles.i18n import t
+
     if not entries:
-        return "# Research Library\n\nNo research entries saved.\n"
+        return f"{t('research_library', lang)}\n\n{t('no_research_entries', lang)}\n"
 
     by_source: dict[str, list] = defaultdict(list)
     for entry in entries:
         by_source[entry.source].append(entry)
 
-    lines = ["# Research Library", ""]
+    lines = [t("research_library", lang), ""]
 
     for source, source_entries in sorted(by_source.items()):
         lines.append(f"## {source}")
@@ -120,7 +124,7 @@ def render_research_library(entries: list) -> str:
             if entry.tags and entry.tags != "[]":
                 try:
                     tag_list = json.loads(entry.tags)
-                    lines.append(f"\nTags: {', '.join(tag_list)}")
+                    lines.append(f"\n{t('tags', lang)}: {', '.join(tag_list)}")
                 except json.JSONDecodeError:
                     pass
             lines.append("")

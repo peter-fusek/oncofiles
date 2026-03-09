@@ -175,3 +175,40 @@ def test_render_research_library():
     assert "### FOLFOX efficacy" in result
     assert "FOLFOX, mCRC" in result
     assert "## clinicaltrials" in result
+
+
+# ── Bilingual rendering (#56, #58) ──────────────────────────────────────
+
+
+def test_render_treatment_timeline_sk():
+    """Slovak version uses translated header."""
+    result = render_treatment_timeline([], lang="sk")
+    assert "# Priebeh liečby" in result
+    assert "Žiadne zaznamenané" in result
+
+
+def test_render_treatment_timeline_en_default():
+    """Default (EN) version uses English header."""
+    result = render_treatment_timeline([])
+    assert "# Treatment Timeline" in result
+
+
+def test_render_research_library_sk():
+    """Slovak version uses translated header and tags label."""
+    entries = [
+        ResearchEntry(
+            source="pubmed",
+            external_id="PMID12345",
+            title="Test",
+            summary="Summary",
+            tags='["tag1"]',
+        ),
+    ]
+    result = render_research_library(entries, lang="sk")
+    assert "# Výskumná knižnica" in result
+    assert "Štítky:" in result
+
+
+def test_render_research_library_empty_sk():
+    result = render_research_library([], lang="sk")
+    assert "Žiadne uložené" in result

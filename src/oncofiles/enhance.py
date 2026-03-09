@@ -15,9 +15,10 @@ ENHANCE_MODEL = "claude-haiku-4-5-20251001"
 
 ENHANCE_SYSTEM_PROMPT = (
     "You are a medical document analyst. Given the extracted text of a medical document, "
-    "produce a JSON object with exactly two keys:\n"
+    "produce a JSON object with exactly these keys:\n"
     '- "summary": A 2-3 sentence summary of the document in English. Include key findings, '
     "diagnoses, or results.\n"
+    '- "summary_sk": The same summary translated to Slovak (slovenčina).\n'
     '- "tags": An array of 3-8 lowercase tags describing the document content '
     '(e.g. ["labs", "blood-count", "oncology", "NOU", "chemotherapy"]).\n\n'
     "Respond ONLY with the JSON object, no markdown fencing or extra text."
@@ -78,7 +79,8 @@ METADATA_SYSTEM_PROMPT = (
     '- "medications": array of medication names mentioned\n'
     '- "dates_mentioned": array of dates found in document (YYYY-MM-DD format when possible)\n'
     '- "providers": array of healthcare provider/institution names\n'
-    '- "plain_summary": 3-sentence patient-friendly summary in English\n\n'
+    '- "plain_summary": 3-sentence patient-friendly summary in English\n'
+    '- "plain_summary_sk": The same patient-friendly summary in Slovak (slovenčina)\n\n'
     "Respond ONLY with the JSON object, no markdown fencing or extra text."
 )
 
@@ -101,6 +103,7 @@ def extract_structured_metadata(text: str) -> dict:
             "dates_mentioned": [],
             "providers": [],
             "plain_summary": "",
+            "plain_summary_sk": "",
         }
 
     client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
@@ -131,6 +134,7 @@ def extract_structured_metadata(text: str) -> dict:
             "dates_mentioned": parsed.get("dates_mentioned", []),
             "providers": parsed.get("providers", []),
             "plain_summary": parsed.get("plain_summary", ""),
+            "plain_summary_sk": parsed.get("plain_summary_sk", ""),
         }
     except json.JSONDecodeError:
         logger.warning("Failed to parse metadata response: %s", raw[:200])
@@ -142,4 +146,5 @@ def extract_structured_metadata(text: str) -> dict:
             "dates_mentioned": [],
             "providers": [],
             "plain_summary": "",
+            "plain_summary_sk": "",
         }

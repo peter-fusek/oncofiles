@@ -29,6 +29,7 @@ def _mock_gdrive(gdrive_files: list[dict] | None = None, folder_map: dict | None
     gdrive.upload.return_value = {"id": "gdrive_new_id", "modifiedTime": "2026-03-01T00:00:00Z"}
     gdrive.find_folder.return_value = None
     gdrive.create_folder.side_effect = lambda name, parent: f"folder_{name}"
+    gdrive.rename_file.return_value = None
     gdrive.update.return_value = {"id": "updated_id", "modifiedTime": "2026-03-01T00:00:00Z"}
     gdrive.get_file_parents.return_value = ["some_unorganized_folder"]
     return gdrive
@@ -264,7 +265,7 @@ async def test_sync_from_gdrive_detects_category_from_folder(db: Database):
     await db.insert_document(doc)
 
     files = _mock_files()
-    folder_map = {"folder_labs": "labs"}
+    folder_map = {"folder_labs": "labs — laboratórne výsledky"}
     gdrive = _mock_gdrive(
         [
             {
@@ -336,8 +337,8 @@ async def test_sync_to_gdrive_skips_already_organized(db: Database):
 
     files = _mock_files()
     gdrive = _mock_gdrive()
-    # File is already in an organized category folder
-    gdrive.get_file_parents.return_value = ["folder_report"]
+    # File is already in an organized category folder (bilingual name)
+    gdrive.get_file_parents.return_value = ["folder_report — lekárske správy"]
 
     stats = await sync_to_gdrive(db, files, gdrive, "folder123")
     assert stats["skipped"] == 1

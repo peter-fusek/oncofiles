@@ -309,6 +309,15 @@ class GDriveClient:
             logger.warning("Could not get parents for %s: %s", file_id, e)
             return []
 
+    def rename_file(self, file_id: str, new_name: str) -> None:
+        """Rename a file or folder on Google Drive."""
+        self._service.files().update(
+            fileId=file_id,
+            body={"name": new_name},
+            fields="id, name",
+        ).execute()
+        logger.info("Renamed GDrive file %s → '%s'", file_id, new_name)
+
     def move_file(self, file_id: str, new_parent_id: str) -> None:
         """Move a file to a new parent folder."""
         # Get current parents
