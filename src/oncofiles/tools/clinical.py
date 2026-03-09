@@ -41,7 +41,7 @@ async def fetch_clinical_trials(
             status=status,
             location_country=location_country,
             phase=phase,
-            page_size=limit,
+            page_size=min(max(limit, 1), 100),
         )
     except Exception as e:
         return json.dumps({"error": f"ClinicalTrials.gov API error: {e}"})

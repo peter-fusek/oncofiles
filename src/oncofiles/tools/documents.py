@@ -11,6 +11,8 @@ from oncofiles.filename_parser import parse_filename
 from oncofiles.models import Document, DocumentCategory, SearchQuery
 from oncofiles.tools._helpers import _clamp_limit, _doc_to_dict, _get_db, _get_files, _parse_date
 
+MAX_UPLOAD_SIZE = 100 * 1024 * 1024  # 100 MB
+
 
 async def upload_document(
     ctx: Context,
@@ -31,10 +33,16 @@ async def upload_document(
     import base64
     import binascii
 
+    if len(content) > MAX_UPLOAD_SIZE * 4 // 3 + 4:
+        return json.dumps({"error": "File exceeds 100 MB limit."})
+
     try:
         file_bytes = base64.b64decode(content)
     except binascii.Error:
         return json.dumps({"error": "Invalid base64 content. Ensure the file is properly encoded."})
+
+    if len(file_bytes) > MAX_UPLOAD_SIZE:
+        return json.dumps({"error": "File exceeds 100 MB limit."})
 
     db = _get_db(ctx)
     files = _get_files(ctx)

@@ -84,6 +84,11 @@ def _create_auth():
 
 auth = _create_auth()
 
+if auth is None and MCP_TRANSPORT != "stdio":
+    logging.getLogger(__name__).warning(
+        "No authentication configured for transport=%s. Set MCP_BEARER_TOKEN.", MCP_TRANSPORT
+    )
+
 
 # ── Lifespan ──────────────────────────────────────────────────────────────────
 
@@ -270,9 +275,9 @@ async def oauth_callback(request: Request) -> JSONResponse:
 
     try:
         tokens = exchange_code(code)
-    except Exception as e:
+    except Exception:
         logger.exception("OAuth token exchange failed")
-        return JSONResponse({"error": f"Token exchange failed: {e}"}, status_code=500)
+        return JSONResponse({"error": "Token exchange failed. Please try again."}, status_code=500)
 
     expiry = datetime.now(UTC) + timedelta(seconds=tokens.get("expires_in", 3600))
     oauth_token = OAuthToken(
