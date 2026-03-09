@@ -100,8 +100,13 @@ class GDriveClient:
         if self.owner_email:
             self.grant_access(file_id, self.owner_email)
 
-    def grant_access_recursive(self, folder_id: str, email: str, role: str = "writer") -> int:
+    def grant_access_recursive(
+        self, folder_id: str, email: str, role: str = "writer", *, _depth: int = 0
+    ) -> int:
         """Grant access to all files and subfolders recursively. Returns count."""
+        if _depth > 10:
+            logger.warning("grant_access_recursive: max depth exceeded at %s", folder_id)
+            return 0
         count = 0
         page_token = None
         while True:
@@ -119,7 +124,9 @@ class GDriveClient:
                 self.grant_access(item["id"], email, role)
                 count += 1
                 if item["mimeType"] == "application/vnd.google-apps.folder":
-                    count += self.grant_access_recursive(item["id"], email, role)
+                    count += self.grant_access_recursive(
+                        item["id"], email, role, _depth=_depth + 1
+                    )
             page_token = response.get("nextPageToken")
             if not page_token:
                 break
@@ -277,11 +284,12 @@ class GDriveClient:
 
     def find_folder(self, name: str, parent_id: str) -> str | None:
         """Find a folder by name under a parent. Returns folder ID or None."""
+        safe_name = name.replace("\\", "\\\\").replace("'", "\\'")
         response = (
             self._service.files()
             .list(
                 q=(
-                    f"'{parent_id}' in parents and name = '{name}' "
+                    f"'{parent_id}' in parents and name = '{safe_name}' "
                     f"and mimeType = 'application/vnd.google-apps.folder' "
                     f"and trashed = false"
                 ),
