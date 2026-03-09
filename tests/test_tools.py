@@ -18,6 +18,7 @@ from oncofiles.server import (
     search_conversations,
     view_document,
 )
+from oncofiles.tools.documents import find_duplicates, list_trash, restore_document
 from tests.helpers import make_doc
 
 

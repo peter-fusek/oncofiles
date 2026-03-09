@@ -123,9 +123,7 @@ class DocumentMixin:
             # any term. Higher score = more relevant.
             for field, weight in search_fields:
                 term_cases = " OR ".join(f"{field} LIKE ?" for _ in terms)
-                score_parts.append(
-                    f"(CASE WHEN ({term_cases}) THEN {weight} ELSE 0 END)"
-                )
+                score_parts.append(f"(CASE WHEN ({term_cases}) THEN {weight} ELSE 0 END)")
                 params.extend(f"%{t}%" for t in terms)
 
         if query.institution:
@@ -200,8 +198,7 @@ class DocumentMixin:
     async def list_trash(self, limit: int = 50) -> list[Document]:
         """List soft-deleted documents (recoverable within 30 days)."""
         async with self.db.execute(
-            "SELECT * FROM documents WHERE deleted_at IS NOT NULL "
-            "ORDER BY deleted_at DESC LIMIT ?",
+            "SELECT * FROM documents WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC LIMIT ?",
             (limit,),
         ) as cursor:
             rows = await cursor.fetchall()
@@ -291,9 +288,7 @@ class DocumentMixin:
 
     # ── Document metadata ─────────────────────────────────────────────────
 
-    async def update_document_file_id(
-        self, doc_id: int, file_id: str, size_bytes: int
-    ) -> None:
+    async def update_document_file_id(self, doc_id: int, file_id: str, size_bytes: int) -> None:
         """Set the Anthropic Files API file_id and size for a document."""
         await self.db.execute(
             "UPDATE documents SET file_id = ?, size_bytes = ?, "
@@ -302,9 +297,7 @@ class DocumentMixin:
         )
         await self.db.commit()
 
-    async def update_document_ai_metadata(
-        self, doc_id: int, ai_summary: str, ai_tags: str
-    ) -> None:
+    async def update_document_ai_metadata(self, doc_id: int, ai_summary: str, ai_tags: str) -> None:
         """Update AI-generated summary and tags for a document."""
         await self.db.execute(
             "UPDATE documents SET ai_summary = ?, ai_tags = ?, "

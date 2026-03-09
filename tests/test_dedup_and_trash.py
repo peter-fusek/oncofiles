@@ -19,16 +19,10 @@ async def test_find_duplicates_none(db: Database):
 
 async def test_find_duplicates_by_filename_and_size(db: Database):
     """Documents with same original_filename + size_bytes are grouped."""
-    await db.insert_document(
-        make_doc(file_id="f1", original_filename="scan.pdf", size_bytes=5000)
-    )
-    await db.insert_document(
-        make_doc(file_id="f2", original_filename="scan.pdf", size_bytes=5000)
-    )
+    await db.insert_document(make_doc(file_id="f1", original_filename="scan.pdf", size_bytes=5000))
+    await db.insert_document(make_doc(file_id="f2", original_filename="scan.pdf", size_bytes=5000))
     # Different size — not a duplicate
-    await db.insert_document(
-        make_doc(file_id="f3", original_filename="scan.pdf", size_bytes=9999)
-    )
+    await db.insert_document(make_doc(file_id="f3", original_filename="scan.pdf", size_bytes=9999))
 
     groups = await db.find_duplicates()
     assert len(groups) == 1
@@ -39,12 +33,8 @@ async def test_find_duplicates_by_filename_and_size(db: Database):
 
 async def test_find_duplicates_excludes_deleted(db: Database):
     """Soft-deleted documents are excluded from duplicate detection."""
-    doc1 = await db.insert_document(
-        make_doc(file_id="f1", original_filename="dup.pdf")
-    )
-    await db.insert_document(
-        make_doc(file_id="f2", original_filename="dup.pdf")
-    )
+    doc1 = await db.insert_document(make_doc(file_id="f1", original_filename="dup.pdf"))
+    await db.insert_document(make_doc(file_id="f2", original_filename="dup.pdf"))
     # Delete one — no longer a duplicate pair
     await db.delete_document(doc1.id)
 
@@ -123,9 +113,11 @@ async def test_purge_cleans_lab_values(db: Database):
     from tests.helpers import make_lab_value
 
     doc = await db.insert_document(make_doc(file_id="f1"))
-    await db.insert_lab_values([
-        make_lab_value(document_id=doc.id, parameter="WBC", value=6.8),
-    ])
+    await db.insert_lab_values(
+        [
+            make_lab_value(document_id=doc.id, parameter="WBC", value=6.8),
+        ]
+    )
 
     # Set deleted 31 days ago
     await db.db.execute(
