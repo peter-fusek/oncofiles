@@ -243,6 +243,35 @@ async def list_trash(ctx: Context, limit: int = 50) -> str:
     )
 
 
+async def find_duplicates(ctx: Context) -> str:
+    """Detect potential duplicate documents based on original filename and file size.
+
+    Returns groups of documents that share the same original_filename + size_bytes.
+    Each group contains 2+ documents. Useful for cleanup after repeated imports.
+    """
+    db = _get_db(ctx)
+    groups = await db.find_duplicates()
+    result = []
+    for group in groups:
+        result.append({
+            "original_filename": group[0].original_filename,
+            "size_bytes": group[0].size_bytes,
+            "count": len(group),
+            "documents": [
+                {
+                    "id": d.id,
+                    "file_id": d.file_id,
+                    "filename": d.filename,
+                    "document_date": d.document_date.isoformat() if d.document_date else None,
+                    "gdrive_id": d.gdrive_id or "",
+                    "created_at": d.created_at.isoformat() if d.created_at else None,
+                }
+                for d in group
+            ],
+        })
+    return json.dumps({"duplicate_groups": result, "total_groups": len(result)})
+
+
 def register(mcp):
     mcp.tool()(upload_document)
     mcp.tool()(list_documents)
@@ -251,3 +280,4 @@ def register(mcp):
     mcp.tool()(delete_document)
     mcp.tool()(restore_document)
     mcp.tool()(list_trash)
+    mcp.tool()(find_duplicates)

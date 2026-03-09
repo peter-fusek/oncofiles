@@ -207,6 +207,80 @@ class DocumentMixin:
             rows = await cursor.fetchall()
             return [_row_to_document(r) for r in rows]
 
+    async def find_duplicates(self) -> list[list[Document]]:
+        """Find potential duplicate documents based on original_filename + size_bytes.
+
+        Returns groups of documents that share the same original filename and
+        file size. Each group has 2+ documents. Only active (non-deleted) docs.
+        """
+        async with self.db.execute(
+            """
+            SELECT original_filename, size_bytes, COUNT(*) as cnt
+            FROM documents
+            WHERE deleted_at IS NULL
+            GROUP BY original_filename, size_bytes
+            HAVING cnt > 1
+            ORDER BY cnt DESC
+            """,
+        ) as cursor:
+            groups = await cursor.fetchall()
+
+        result = []
+        for g in groups:
+            async with self.db.execute(
+                "SELECT * FROM documents WHERE original_filename = ? "
+                "AND size_bytes = ? AND deleted_at IS NULL "
+                "ORDER BY created_at ASC",
+                (g["original_filename"], g["size_bytes"]),
+            ) as cursor:
+                rows = await cursor.fetchall()
+                result.append([_row_to_document(r) for r in rows])
+        return result
+
+    async def purge_expired_trash(self, days: int = 30) -> int:
+        """Permanently delete documents that have been in trash for over N days.
+
+        Also deletes associated OCR pages. Returns count of purged documents.
+        """
+        # Find expired documents
+        async with self.db.execute(
+            """
+            SELECT id FROM documents
+            WHERE deleted_at IS NOT NULL
+            AND deleted_at < strftime('%Y-%m-%dT%H:%M:%SZ', 'now', ?)
+            """,
+            (f"-{days} days",),
+        ) as cursor:
+            rows = await cursor.fetchall()
+
+        if not rows:
+            return 0
+
+        doc_ids = [r["id"] for r in rows]
+
+        # Delete OCR pages for expired documents
+        for doc_id in doc_ids:
+            await self.db.execute(
+                "DELETE FROM document_pages WHERE document_id = ?",
+                (doc_id,),
+            )
+
+        # Delete lab values for expired documents
+        for doc_id in doc_ids:
+            await self.db.execute(
+                "DELETE FROM lab_values WHERE document_id = ?",
+                (doc_id,),
+            )
+
+        # Permanently delete documents
+        placeholders = ", ".join("?" for _ in doc_ids)
+        await self.db.execute(
+            f"DELETE FROM documents WHERE id IN ({placeholders})",
+            doc_ids,
+        )
+        await self.db.commit()
+        return len(doc_ids)
+
     async def count_documents(self) -> int:
         """Count all active (non-deleted) documents."""
         async with self.db.execute(
