@@ -7,6 +7,7 @@ from oncofiles.models import (
     AgentState,
     Document,
     DocumentCategory,
+    LabValue,
     ResearchEntry,
     TreatmentEvent,
 )
@@ -61,6 +62,21 @@ def make_research_entry(**overrides) -> ResearchEntry:
     }
     defaults.update(overrides)
     return ResearchEntry(**defaults)
+
+
+def make_lab_value(**overrides) -> LabValue:
+    defaults = {
+        "document_id": 1,
+        "lab_date": date(2026, 2, 27),
+        "parameter": "WBC",
+        "value": 6.8,
+        "unit": "10^9/L",
+        "reference_low": 4.0,
+        "reference_high": 10.0,
+        "flag": "",
+    }
+    defaults.update(overrides)
+    return LabValue(**defaults)
 
 
 def make_activity_log(**overrides) -> ActivityLogEntry:

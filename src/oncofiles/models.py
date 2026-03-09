@@ -246,3 +246,27 @@ class ActivityLogQuery(BaseModel):
     date_to: date | None = None
     text: str | None = None
     limit: int = Field(default=50, ge=1, le=200)
+
+
+class LabValue(BaseModel):
+    """A single lab parameter value linked to a source document."""
+
+    id: int | None = None
+    document_id: int
+    lab_date: date
+    parameter: str
+    value: float
+    unit: str = ""
+    reference_low: float | None = None
+    reference_high: float | None = None
+    flag: str = ""
+    created_at: datetime | None = None
+
+
+class LabTrendQuery(BaseModel):
+    """Query parameters for lab trend retrieval."""
+
+    parameter: str | None = None
+    date_from: date | None = None
+    date_to: date | None = None
+    limit: int = Field(default=50, ge=1, le=200)

@@ -17,6 +17,8 @@ from oncofiles.models import (
     ConversationQuery,
     Document,
     DocumentCategory,
+    LabTrendQuery,
+    LabValue,
     OAuthToken,
     ResearchEntry,
     ResearchQuery,
@@ -1020,6 +1022,76 @@ class Database:
             return [_row_to_activity_log(r) for r in rows]
 
 
+    # ── Lab values (#59) ──────────────────────────────────────────────
+
+    async def insert_lab_values(self, values: list[LabValue]) -> int:
+        """Bulk insert lab values. Uses INSERT OR REPLACE for idempotency."""
+        count = 0
+        for v in values:
+            await self.db.execute(
+                """
+                INSERT OR REPLACE INTO lab_values
+                    (document_id, lab_date, parameter, value, unit,
+                     reference_low, reference_high, flag)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    v.document_id,
+                    v.lab_date.isoformat(),
+                    v.parameter,
+                    v.value,
+                    v.unit,
+                    v.reference_low,
+                    v.reference_high,
+                    v.flag,
+                ),
+            )
+            count += 1
+        await self.db.commit()
+        return count
+
+    async def get_lab_trends(self, query: LabTrendQuery) -> list[LabValue]:
+        """Get lab values filtered by parameter and date range, chronological order."""
+        conditions: list[str] = []
+        params: list[str | int | float] = []
+
+        if query.parameter:
+            conditions.append("parameter = ?")
+            params.append(query.parameter)
+        if query.date_from:
+            conditions.append("lab_date >= ?")
+            params.append(query.date_from.isoformat())
+        if query.date_to:
+            conditions.append("lab_date <= ?")
+            params.append(query.date_to.isoformat())
+
+        where = " AND ".join(conditions) if conditions else "1=1"
+        sql = f"SELECT * FROM lab_values WHERE {where} ORDER BY lab_date ASC, parameter ASC LIMIT ?"
+        params.append(query.limit)
+
+        async with self.db.execute(sql, params) as cursor:
+            rows = await cursor.fetchall()
+            return [_row_to_lab_value(r) for r in rows]
+
+    async def get_lab_snapshot(self, document_id: int) -> list[LabValue]:
+        """Get all lab values from a specific document."""
+        async with self.db.execute(
+            "SELECT * FROM lab_values WHERE document_id = ? ORDER BY parameter",
+            (document_id,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return [_row_to_lab_value(r) for r in rows]
+
+    async def get_latest_lab_value(self, parameter: str) -> LabValue | None:
+        """Get the most recent value for a given parameter."""
+        async with self.db.execute(
+            "SELECT * FROM lab_values WHERE parameter = ? ORDER BY lab_date DESC LIMIT 1",
+            (parameter,),
+        ) as cursor:
+            row = await cursor.fetchone()
+            return _row_to_lab_value(row) if row else None
+
+
 def _safe_get(row: aiosqlite.Row, key: str, default=None):
     """Get a column value from a row, returning default if column doesn't exist."""
     try:
@@ -1124,6 +1196,22 @@ def _row_to_conversation_entry(row: aiosqlite.Row) -> ConversationEntry:
         source_ref=row["source_ref"],
         created_at=datetime.fromisoformat(row["created_at"]) if row["created_at"] else None,
         updated_at=datetime.fromisoformat(row["updated_at"]) if row["updated_at"] else None,
+    )
+
+
+def _row_to_lab_value(row: aiosqlite.Row) -> LabValue:
+    """Convert a database row to a LabValue model."""
+    return LabValue(
+        id=row["id"],
+        document_id=row["document_id"],
+        lab_date=date.fromisoformat(row["lab_date"]),
+        parameter=row["parameter"],
+        value=row["value"],
+        unit=row["unit"],
+        reference_low=row["reference_low"],
+        reference_high=row["reference_high"],
+        flag=row["flag"],
+        created_at=datetime.fromisoformat(row["created_at"]) if row["created_at"] else None,
     )
 
 
