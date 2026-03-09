@@ -308,10 +308,16 @@ class DocumentMixin:
         await self.db.commit()
 
     async def get_documents_without_metadata(self, limit: int = 100) -> list[Document]:
-        """Get documents that have AI summaries but no structured_metadata."""
+        """Get documents that have AI summaries but no useful structured_metadata.
+
+        Matches documents where structured_metadata is NULL, empty string,
+        or contains only empty-default values (no findings/diagnoses extracted).
+        """
         async with self.db.execute(
             "SELECT * FROM documents WHERE ai_processed_at IS NOT NULL "
-            "AND (structured_metadata IS NULL OR structured_metadata = '') "
+            "AND (structured_metadata IS NULL OR structured_metadata = '' "
+            "  OR (structured_metadata NOT LIKE '%\"findings\": [\"%%' "
+            "      AND structured_metadata NOT LIKE '%\"diagnoses\": [{%%')) "
             "AND deleted_at IS NULL "
             "ORDER BY document_date DESC LIMIT ?",
             (limit,),

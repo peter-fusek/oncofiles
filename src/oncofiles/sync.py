@@ -823,11 +823,37 @@ async def extract_all_metadata(
 
     for doc in docs:
         try:
-            # Get text from OCR cache
+            # Get text from OCR cache first
             text_parts = []
             if await db.has_ocr_text(doc.id):
                 pages = await db.get_ocr_pages(doc.id)
                 text_parts = [p["extracted_text"] for p in pages]
+
+            # Fall back to downloading and extracting text
+            if not text_parts:
+                import contextlib
+
+                from oncofiles.tools._helpers import _extract_pdf_text
+
+                content_bytes = None
+                try:
+                    content_bytes = files.download(doc.file_id)
+                except Exception:
+                    if gdrive and doc.gdrive_id:
+                        with contextlib.suppress(Exception):
+                            content_bytes = gdrive.download(doc.gdrive_id)
+
+                if content_bytes and doc.mime_type == "application/pdf":
+                    try:
+                        pdf_texts = _extract_pdf_text(content_bytes)
+                    except Exception:
+                        pdf_texts = None
+                    if pdf_texts:
+                        for page_num, text in enumerate(pdf_texts, start=1):
+                            await db.save_ocr_page(
+                                doc.id, page_num, text, "pymupdf-native"
+                            )
+                        text_parts = pdf_texts
 
             if not text_parts:
                 logger.warning(
