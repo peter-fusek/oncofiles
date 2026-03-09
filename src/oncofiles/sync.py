@@ -318,6 +318,13 @@ async def sync_to_gdrive(
     except Exception as e:
         logger.warning("sync_to_gdrive: bilingual rename failed — %s", str(e)[:200])
 
+    # Clean up orphaned OCR files (old names from before bilingual rename)
+    try:
+        cleanup_stats = await _cleanup_orphan_ocr(db, gdrive)
+        stats["ocr_cleaned"] = cleanup_stats["deleted"]
+    except Exception as e:
+        logger.warning("sync_to_gdrive: OCR cleanup failed — %s", str(e)[:200])
+
     # Export OCR companion text files alongside originals
     try:
         ocr_stats = await _export_ocr_texts(db, gdrive, files)
@@ -412,6 +419,23 @@ async def _rename_to_bilingual(db: Database, gdrive: GDriveClient) -> dict:
             # Rename on GDrive
             gdrive.rename_file(doc.gdrive_id, new_name)
 
+            # Also rename the OCR companion file if it exists
+            old_stem = doc.filename.rsplit(".", 1)[0] if "." in doc.filename else doc.filename
+            new_stem = new_name.rsplit(".", 1)[0] if "." in new_name else new_name
+            old_ocr_name = f"{old_stem}_OCR.txt"
+            new_ocr_name = f"{new_stem}_OCR.txt"
+            try:
+                parents = gdrive.get_file_parents(doc.gdrive_id)
+                if parents:
+                    siblings = gdrive.list_folder(parents[0], recursive=False)
+                    for sib in siblings:
+                        if sib["name"] == old_ocr_name:
+                            gdrive.rename_file(sib["id"], new_ocr_name)
+                            logger.info("Renamed OCR '%s' → '%s'", old_ocr_name, new_ocr_name)
+                            break
+            except Exception:
+                logger.warning("_rename_to_bilingual: OCR rename failed for %s", old_ocr_name)
+
             # Update DB filename (keep original_filename for reversibility)
             await db.update_document_filename(doc.id, new_name)
             logger.info("Renamed '%s' → '%s' (doc %d)", doc.filename, new_name, doc.id)
@@ -422,6 +446,70 @@ async def _rename_to_bilingual(db: Database, gdrive: GDriveClient) -> dict:
             stats["errors"] += 1
 
     logger.info("_rename_to_bilingual: done — %s", stats)
+    return stats
+
+
+async def _cleanup_orphan_ocr(db: Database, gdrive: GDriveClient) -> dict:
+    """Delete orphaned OCR files whose names don't match any current document.
+
+    After bilingual rename, old OCR files (pre-rename names) remain as duplicates.
+    This finds _OCR.txt files in document folders and deletes those that don't
+    correspond to any current document filename.
+
+    Returns: {deleted, skipped, errors}.
+    """
+    stats = {"deleted": 0, "skipped": 0, "errors": 0}
+
+    # Build set of expected OCR filenames from current documents
+    docs = await db.list_documents(limit=500)
+    expected_ocr_names: set[str] = set()
+    doc_gdrive_ids: set[str] = set()
+
+    for doc in docs:
+        if not doc.gdrive_id:
+            continue
+        doc_gdrive_ids.add(doc.gdrive_id)
+        stem = doc.filename.rsplit(".", 1)[0] if "." in doc.filename else doc.filename
+        expected_ocr_names.add(f"{stem}_OCR.txt")
+
+    # For each doc, check siblings for orphaned OCR files
+    checked_folders: set[str] = set()
+    for doc in docs:
+        if not doc.gdrive_id:
+            continue
+
+        try:
+            parents = gdrive.get_file_parents(doc.gdrive_id)
+            if not parents:
+                continue
+
+            parent_folder = parents[0]
+            if parent_folder in checked_folders:
+                continue
+            checked_folders.add(parent_folder)
+
+            siblings = gdrive.list_folder(parent_folder, recursive=False)
+            for sib in siblings:
+                name = sib["name"]
+                if not name.endswith("_OCR.txt"):
+                    continue
+                if name in expected_ocr_names:
+                    stats["skipped"] += 1
+                    continue
+                # Orphan — trash it (soft delete)
+                try:
+                    gdrive.trash_file(sib["id"])
+                    logger.info("_cleanup_orphan_ocr: trashed '%s'", name)
+                    stats["deleted"] += 1
+                except Exception:
+                    logger.warning("_cleanup_orphan_ocr: failed to trash '%s'", name)
+                    stats["errors"] += 1
+
+        except Exception:
+            logger.exception("_cleanup_orphan_ocr: error checking folder for doc %d", doc.id)
+            stats["errors"] += 1
+
+    logger.info("_cleanup_orphan_ocr: done — %s", stats)
     return stats
 
 
