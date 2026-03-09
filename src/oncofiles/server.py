@@ -196,11 +196,27 @@ def _start_sync_scheduler(db, files, gdrive, oauth_folder_id):
         except Exception:
             logger.exception("Scheduled sync failed")
 
+    async def _run_trash_cleanup():
+        try:
+            purged = await db.purge_expired_trash(days=30)
+            if purged:
+                logger.info("Trash cleanup: purged %d expired documents", purged)
+        except Exception:
+            logger.exception("Trash cleanup failed")
+
+    from apscheduler.triggers.cron import CronTrigger
+
     scheduler = AsyncIOScheduler()
     scheduler.add_job(
         _run_sync,
         IntervalTrigger(minutes=SYNC_INTERVAL_MINUTES),
         id="gdrive_sync",
+        max_instances=1,
+    )
+    scheduler.add_job(
+        _run_trash_cleanup,
+        CronTrigger(hour=3, minute=0),  # daily at 3 AM
+        id="trash_cleanup",
         max_instances=1,
     )
     scheduler.start()
