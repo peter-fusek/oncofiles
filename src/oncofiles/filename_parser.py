@@ -75,6 +75,8 @@ _CATEGORY_KEYWORDS: list[tuple[list[str], DocumentCategory]] = [
     (["operacia"], DocumentCategory.SURGERY),
     # Reference materials
     (["referencn", "informacn"], DocumentCategory.REFERENCE),
+    # Patient advocate notes
+    (["advokat", "advocate", "pacientadvokat"], DocumentCategory.ADVOCATE),
 ]
 
 # Legacy: map explicit category tokens to categories (underscore-separated format)
@@ -115,6 +117,8 @@ CATEGORY_ALIASES: dict[str, DocumentCategory] = {
     "chemo_sheet": DocumentCategory.CHEMO_SHEET,
     "reference": DocumentCategory.REFERENCE,
     "referencne": DocumentCategory.REFERENCE,
+    "advocate": DocumentCategory.ADVOCATE,
+    "advokat": DocumentCategory.ADVOCATE,
 }
 
 _DATE_RE = re.compile(r"^(\d{4})(\d{2})(\d{2})")
@@ -125,7 +129,7 @@ _PATIENT_PREFIX_RE = re.compile(r"^ErikaFusekova[-]?", re.IGNORECASE)
 _BILINGUAL_PREFIX_RE = re.compile(
     r"^(labs|report|pathology|imaging_ct|imaging_us|imaging|genetics|surgery|"
     r"surgical_report|prescription|referral|discharge_summary|discharge|"
-    r"chemo_sheet|reference|other)-",
+    r"chemo_sheet|reference|advocate|other)-",
     re.IGNORECASE,
 )
 
@@ -320,6 +324,8 @@ def rename_to_bilingual(filename: str, category: DocumentCategory | str | None =
         cat_prefix = "DischargeSummary"
     elif cat.value == "chemo_sheet":
         cat_prefix = "ChemoSheet"
+    elif cat.value == "advocate":
+        cat_prefix = "Advocate"
 
     if parsed.description.lower().startswith(cat_prefix.lower() + "-"):
         return filename

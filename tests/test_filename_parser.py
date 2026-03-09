@@ -94,6 +94,13 @@ class TestNewFormat:
         r = parse_filename("20260220 ErikaFusekova-NOU-KonzultaciaBioLiecbyPo1chemoMudrPorsok.JPG")
         assert r.category == DocumentCategory.REPORT
 
+    def test_advocate_institution(self):
+        r = parse_filename(
+            "20250127 ErikaFusekova-PacientAdvokat-Other-SumarPrepustacejSpravyPoOperacii.md"
+        )
+        assert r.institution == "PacientAdvokat"
+        assert r.document_date == date(2025, 1, 27)
+
     def test_socialna_poistovna(self):
         r = parse_filename("20260209 ErikaFusekova-SocialnaPoistovna-UznanieNemocenskeho.pdf")
         assert r.institution == "SocialnaPoistovna"
@@ -311,6 +318,13 @@ class TestBilingualRename:
             category="reference",
         )
         assert "Reference-" in result
+
+    def test_advocate_category(self):
+        result = rename_to_bilingual(
+            "20250127 ErikaFusekova-PacientAdvokat-Other-SumarPrepustacejSpravyPoOperacii.md",
+            category="advocate",
+        )
+        assert "Advocate-" in result
 
     def test_no_description_unchanged(self):
         """Files without parseable description stay unchanged."""

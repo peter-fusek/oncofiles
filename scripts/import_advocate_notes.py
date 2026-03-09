@@ -140,7 +140,7 @@ async def import_notes(
 
         if dry_run:
             parsed = parse_filename(target_name)
-            parsed.category = DocumentCategory.OTHER  # advocate notes are always "other"
+            parsed.category = DocumentCategory.ADVOCATE  # advocate notes are always "other"
             logger.info(
                 "[%d/%d] DRY RUN: %s → %s (date=%s, inst=%s, cat=%s, %d bytes text)",
                 i, len(FILE_MAP), src_name, target_name,
@@ -157,7 +157,7 @@ async def import_notes(
 
             # Parse filename for metadata — force "other" for advocate notes
             parsed = parse_filename(target_name)
-            parsed.category = DocumentCategory.OTHER
+            parsed.category = DocumentCategory.ADVOCATE
 
             doc = Document(
                 file_id=metadata.id,
