@@ -26,6 +26,7 @@ KNOWN_INSTITUTIONS = {
     "BoryNemocnica",
     "SocialnaPoistovna",
     "MinnesotaUniversity",
+    "PacientAdvokat",
     # Legacy / planned
     "NOUonko",
     "OUSA",
