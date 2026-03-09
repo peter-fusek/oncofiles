@@ -86,7 +86,7 @@ async def sync_from_gdrive(
         app_props = gf.get("appProperties", {})
 
         # Skip non-document files (manifest, markdown metadata, OCR companions)
-        if filename.endswith((".json", ".md", "_OCR.txt")):
+        if filename.endswith((".json", ".md", "_OCR.txt", "_OCR_SK.txt")):
             stats["skipped"] += 1
             continue
 
@@ -458,18 +458,16 @@ async def _export_ocr_texts(
                     stats["skipped"] += 1
                     continue
 
-            # Step 2: Export OCR text to GDrive
+            # Step 2: Export OCR text to GDrive (EN primary + preferred lang secondary)
+            from oncofiles.i18n import needs_secondary, preferred_lang, t
+
             pages = await db.get_ocr_pages(doc.id)
             text_parts = [p["extracted_text"] for p in pages if p["extracted_text"]]
             if not text_parts:
                 stats["skipped"] += 1
                 continue
 
-            full_text = "\n\n--- Page Break ---\n\n".join(text_parts)
-
-            # Determine companion filename
             stem = doc.filename.rsplit(".", 1)[0] if "." in doc.filename else doc.filename
-            ocr_filename = f"{stem}_OCR.txt"
 
             # Get parent folder of original file
             parents = gdrive.get_file_parents(doc.gdrive_id)
@@ -479,8 +477,22 @@ async def _export_ocr_texts(
                 continue
             parent_folder = parents[0]
 
-            # Upload or update the companion file
-            _upload_or_update_text(gdrive, ocr_filename, full_text, parent_folder, "text/plain")
+            # Export EN version (primary)
+            en_text = f"\n\n{t('page_break', 'en')}\n\n".join(text_parts)
+            _upload_or_update_text(gdrive, f"{stem}_OCR.txt", en_text, parent_folder, "text/plain")
+
+            # Export preferred language version (secondary)
+            if needs_secondary():
+                lang = preferred_lang()
+                lang_text = f"\n\n{t('page_break', lang)}\n\n".join(text_parts)
+                _upload_or_update_text(
+                    gdrive,
+                    f"{stem}_OCR_{lang.upper()}.txt",
+                    lang_text,
+                    parent_folder,
+                    "text/plain",
+                )
+
             stats["exported"] += 1
 
         except Exception:
@@ -497,7 +509,17 @@ async def _export_metadata(
     root_folder_id: str,
     folder_map: dict[str, str],
 ) -> None:
-    """Export manifest.json and metadata markdown files to GDrive."""
+    """Export manifest.json and metadata markdown files to GDrive.
+
+    Exports EN (primary) and preferred language (secondary) versions of all
+    markdown files. If preferred lang is EN, only one file is created.
+    """
+    from oncofiles.i18n import needs_secondary, preferred_lang
+
+    langs = ["en"]
+    if needs_secondary():
+        langs.append(preferred_lang())
+
     # 1. Export _manifest.json to root
     manifest = await export_manifest(db)
     manifest_json = render_manifest_json(manifest)
@@ -516,40 +538,32 @@ async def _export_metadata(
         by_month = group_conversations_by_month(entries)
         for month_key, month_entries in by_month.items():
             md_content = render_conversation_month(month_entries)
-            filename = f"{month_key}-conversation-log.md"
-            _upload_or_update_text(
-                gdrive,
-                filename,
-                md_content,
-                conversations_folder,
-                "text/markdown",
-            )
+            for lang in langs:
+                suffix = f"_{lang.upper()}" if lang != "en" else ""
+                filename = f"{month_key}-conversation-log{suffix}.md"
+                _upload_or_update_text(
+                    gdrive, filename, md_content, conversations_folder, "text/markdown"
+                )
 
     # 3. Export treatment timeline
     treatment_folder = folder_map.get("treatment")
     if treatment_folder:
         events = await db.get_treatment_events_timeline(limit=1000)
-        md_content = render_treatment_timeline(events)
-        _upload_or_update_text(
-            gdrive,
-            "treatment-timeline.md",
-            md_content,
-            treatment_folder,
-            "text/markdown",
-        )
+        for lang in langs:
+            md_content = render_treatment_timeline(events, lang=lang)
+            suffix = f"_{lang.upper()}" if lang != "en" else ""
+            filename = f"treatment-timeline{suffix}.md"
+            _upload_or_update_text(gdrive, filename, md_content, treatment_folder, "text/markdown")
 
     # 4. Export research library
     research_folder = folder_map.get("research")
     if research_folder:
         entries = await db.list_research_entries(limit=1000)
-        md_content = render_research_library(entries)
-        _upload_or_update_text(
-            gdrive,
-            "research-library.md",
-            md_content,
-            research_folder,
-            "text/markdown",
-        )
+        for lang in langs:
+            md_content = render_research_library(entries, lang=lang)
+            suffix = f"_{lang.upper()}" if lang != "en" else ""
+            filename = f"research-library{suffix}.md"
+            _upload_or_update_text(gdrive, filename, md_content, research_folder, "text/markdown")
 
 
 def _upload_or_update_text(
@@ -732,15 +746,23 @@ def _parse_gdrive_time(time_str: str) -> datetime | None:
 def _detect_category_from_parents(file_info: dict, folder_map: dict[str, str]) -> str | None:
     """Detect document category from its parent folder name in GDrive.
 
+    Handles both legacy EN-only names ('labs') and bilingual names
+    ('labs — laboratórne výsledky').
+
     Returns category string if parent folder matches a known category, else None.
     """
+    from oncofiles.gdrive_folders import en_key_from_folder_name
+
     parents = file_info.get("parents", [])
     valid_categories = {cat.value for cat in DocumentCategory}
 
     for parent_id in parents:
         folder_name = folder_map.get(parent_id, "")
+        # Direct match (legacy EN-only)
         if folder_name in valid_categories:
             return folder_name
-        # Check if parent of parent is a category (year-month subfolder case)
-        # The folder_map tracks all folders, so we check if any ancestor is a category
+        # Bilingual name: extract EN key
+        en_key = en_key_from_folder_name(folder_name)
+        if en_key and en_key in valid_categories:
+            return en_key
     return None

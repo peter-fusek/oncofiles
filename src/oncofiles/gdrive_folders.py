@@ -16,18 +16,82 @@ METADATA_FOLDERS = ["conversations", "treatment", "research"]
 
 ALL_FOLDERS = CATEGORY_FOLDERS + METADATA_FOLDERS
 
+# Bilingual display names: EN key → SK translation (for GDrive folder display)
+FOLDER_SK: dict[str, str] = {
+    "labs": "laboratórne výsledky",
+    "report": "lekárske správy",
+    "pathology": "patológia",
+    "imaging": "zobrazovanie",
+    "imaging_ct": "CT vyšetrenia",
+    "imaging_us": "USG vyšetrenia",
+    "surgery": "operácie",
+    "surgical_report": "operačné protokoly",
+    "prescription": "recepty",
+    "referral": "odporúčania",
+    "discharge": "prepúšťacie správy",
+    "discharge_summary": "epikrízy",
+    "chemo_sheet": "chemoterapeutické protokoly",
+    "genetics": "genetické vyšetrenia",
+    "other": "ostatné",
+    "conversations": "záznamy rozhovorov",
+    "treatment": "priebeh liečby",
+    "research": "výskum",
+}
+
+
+def bilingual_name(en_key: str) -> str:
+    """Return bilingual folder display name: 'en_key — SK translation'."""
+    sk = FOLDER_SK.get(en_key)
+    if sk:
+        return f"{en_key} — {sk}"
+    return en_key
+
+
+def en_key_from_folder_name(folder_name: str) -> str | None:
+    """Extract the EN category key from a folder name (bilingual or legacy).
+
+    Handles both 'labs — laboratórne výsledky' and plain 'labs'.
+    Returns None if not a known category/metadata folder.
+    """
+    # Bilingual format: take everything before ' — '
+    candidate = folder_name.split(" — ", 1)[0] if " — " in folder_name else folder_name
+    if candidate in ALL_FOLDERS:
+        return candidate
+    return None
+
 
 def ensure_folder_structure(gdrive, root_folder_id: str) -> dict[str, str]:
-    """Create category + metadata folders under root. Returns {name: folder_id} map.
+    """Create category + metadata folders under root. Returns {en_key: folder_id} map.
 
-    Idempotent — finds existing folders or creates new ones.
+    Uses bilingual display names. Finds existing folders by either old (EN-only)
+    or new (bilingual) name, renames old folders to bilingual format.
+    Idempotent.
     """
     folder_map: dict[str, str] = {}
     for name in ALL_FOLDERS:
-        folder_id = find_or_create_folder(gdrive, name, root_folder_id)
+        display = bilingual_name(name)
+        folder_id = _find_or_create_bilingual(gdrive, name, display, root_folder_id)
         folder_map[name] = folder_id
-        logger.debug("Folder '%s' → %s", name, folder_id)
+        logger.debug("Folder '%s' → %s", display, folder_id)
     return folder_map
+
+
+def _find_or_create_bilingual(gdrive, en_key: str, bilingual: str, parent_id: str) -> str:
+    """Find by bilingual name, fall back to old EN name (and rename), or create new."""
+    # Try bilingual name first
+    existing = gdrive.find_folder(bilingual, parent_id)
+    if existing:
+        return existing
+
+    # Try old EN-only name and rename it
+    old = gdrive.find_folder(en_key, parent_id)
+    if old:
+        gdrive.rename_file(old, bilingual)
+        logger.info("Renamed folder '%s' → '%s' (%s)", en_key, bilingual, old)
+        return old
+
+    # Create new with bilingual name
+    return gdrive.create_folder(bilingual, parent_id)
 
 
 def ensure_year_month_folder(gdrive, category_folder_id: str, date_str: str) -> str:

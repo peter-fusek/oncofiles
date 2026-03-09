@@ -43,6 +43,9 @@ MCP_BEARER_TOKEN: str = os.environ.get("MCP_BEARER_TOKEN", "")
 SYNC_INTERVAL_MINUTES: int = int(os.environ.get("SYNC_INTERVAL_MINUTES", "30"))
 SYNC_ENABLED: bool = os.environ.get("SYNC_ENABLED", "true").lower() in ("true", "1", "yes")
 
+# Localization
+PREFERRED_LANG: str = os.environ.get("ONCOFILES_PREFERRED_LANG", "sk")
+
 # Logging
 LOG_LEVEL: str = os.environ.get("LOG_LEVEL", "INFO")
 
