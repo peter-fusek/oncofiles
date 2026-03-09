@@ -589,3 +589,91 @@ async def test_log_conversation_invalid_document_ids(db: Database):
     )
     assert "error" in result
     assert "Invalid document_ids" in result["error"]
+
+
+# ── extract_all_metadata ──────────────────────────────────────────────────
+
+
+async def test_extract_all_metadata(db: Database):
+    """extract_all_metadata tool calls sync function and returns stats."""
+    from oncofiles.tools.enhance_tools import extract_all_metadata
+
+    ctx = _mock_ctx(db)
+
+    with patch(
+        "oncofiles.sync.extract_all_metadata",
+        new_callable=AsyncMock,
+        return_value={"processed": 3, "skipped": 1, "errors": 0},
+    ) as mock_fn:
+        result = json.loads(await extract_all_metadata(ctx))
+        assert result == {"processed": 3, "skipped": 1, "errors": 0}
+        mock_fn.assert_called_once()
+
+
+# ── upload_document auto-sync to GDrive ──────────────────────────────────
+
+
+async def test_upload_document_auto_syncs_to_gdrive(db: Database):
+    """upload_document auto-syncs to GDrive when client is available."""
+    import base64
+
+    from oncofiles.tools.documents import upload_document
+
+    mock_files = MagicMock()
+    mock_files.upload.return_value = MagicMock(
+        id="file_123", mime_type="application/pdf", size_bytes=100
+    )
+
+    mock_gdrive = MagicMock()
+    mock_gdrive.upload.return_value = {"id": "gdrive_456", "modifiedTime": "2026-03-09T10:00:00Z"}
+
+    ctx = _mock_ctx(db, mock_files, mock_gdrive)
+    ctx.request_context.lifespan_context["gdrive_folder_id"] = "root_folder"
+    ctx.info = AsyncMock()
+
+    # Mock ensure_folder_structure to return a simple map
+    with patch(
+        "oncofiles.tools.documents.ensure_folder_structure",
+        return_value={"other": "other_folder_id"},
+    ):
+        content = base64.b64encode(b"fake pdf content").decode()
+        result = json.loads(
+            await upload_document(ctx, content=content, filename="20260301_test.pdf")
+        )
+
+    assert result["id"] is not None
+    assert result["gdrive_id"] == "gdrive_456"
+    mock_gdrive.upload.assert_called_once()
+
+
+async def test_upload_document_gdrive_failure_nonfatal(db: Database):
+    """upload_document succeeds even when GDrive sync fails."""
+    import base64
+
+    from oncofiles.tools.documents import upload_document
+
+    mock_files = MagicMock()
+    mock_files.upload.return_value = MagicMock(
+        id="file_789", mime_type="application/pdf", size_bytes=100
+    )
+
+    mock_gdrive = MagicMock()
+    mock_gdrive.upload.side_effect = Exception("GDrive API error")
+
+    ctx = _mock_ctx(db, mock_files, mock_gdrive)
+    ctx.request_context.lifespan_context["gdrive_folder_id"] = "root_folder"
+    ctx.info = AsyncMock()
+
+    with patch(
+        "oncofiles.tools.documents.ensure_folder_structure",
+        return_value={"other": "other_folder_id"},
+    ):
+        content = base64.b64encode(b"fake pdf content").decode()
+        result = json.loads(
+            await upload_document(ctx, content=content, filename="20260301_test.pdf")
+        )
+
+    # Upload still succeeded despite GDrive failure
+    assert result["id"] is not None
+    assert "gdrive_id" not in result
+    assert "error" not in result

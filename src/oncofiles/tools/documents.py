@@ -4,12 +4,23 @@ from __future__ import annotations
 
 import io
 import json
+import logging
 
 from fastmcp import Context
 
 from oncofiles.filename_parser import parse_filename
+from oncofiles.gdrive_folders import ensure_folder_structure, ensure_year_month_folder
 from oncofiles.models import Document, DocumentCategory, SearchQuery
-from oncofiles.tools._helpers import _clamp_limit, _doc_to_dict, _get_db, _get_files, _parse_date
+from oncofiles.tools._helpers import (
+    _clamp_limit,
+    _doc_to_dict,
+    _get_db,
+    _get_files,
+    _get_gdrive,
+    _parse_date,
+)
+
+logger = logging.getLogger(__name__)
 
 MAX_UPLOAD_SIZE = 100 * 1024 * 1024  # 100 MB
 
@@ -70,16 +81,50 @@ async def upload_document(
     )
 
     doc = await db.insert_document(doc)
-    return json.dumps(
-        {
-            "id": doc.id,
-            "file_id": doc.file_id,
-            "filename": doc.filename,
-            "document_date": doc.document_date.isoformat() if doc.document_date else None,
-            "institution": doc.institution,
-            "category": doc.category.value,
-        }
-    )
+
+    # Auto-sync to GDrive if available
+    gdrive_id = None
+    gdrive = _get_gdrive(ctx)
+    if gdrive:
+        try:
+            folder_id = ctx.request_context.lifespan_context.get("gdrive_folder_id")
+            if folder_id:
+                folder_map = ensure_folder_structure(gdrive, folder_id)
+                cat_folder = folder_map.get(doc.category.value, folder_id)
+                target_folder = cat_folder
+                if doc.document_date:
+                    date_str = doc.document_date.isoformat()
+                    target_folder = ensure_year_month_folder(
+                        gdrive, cat_folder, date_str
+                    )
+                uploaded = gdrive.upload(
+                    filename=doc.filename,
+                    content_bytes=file_bytes,
+                    mime_type=doc.mime_type,
+                    folder_id=target_folder,
+                    app_properties={"oncofiles_id": str(doc.id)},
+                )
+                gdrive_id = uploaded["id"]
+                modified_time = uploaded.get("modifiedTime", "")
+                await db.update_gdrive_id(doc.id, gdrive_id, modified_time)
+        except Exception:
+            logger.warning(
+                "upload_document: GDrive auto-sync failed for %s — continuing",
+                doc.filename,
+                exc_info=True,
+            )
+
+    result = {
+        "id": doc.id,
+        "file_id": doc.file_id,
+        "filename": doc.filename,
+        "document_date": doc.document_date.isoformat() if doc.document_date else None,
+        "institution": doc.institution,
+        "category": doc.category.value,
+    }
+    if gdrive_id:
+        result["gdrive_id"] = gdrive_id
+    return json.dumps(result)
 
 
 async def list_documents(

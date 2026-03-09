@@ -25,6 +25,7 @@ class DocumentCategory(StrEnum):
     DISCHARGE = "discharge"
     DISCHARGE_SUMMARY = "discharge_summary"
     CHEMO_SHEET = "chemo_sheet"
+    REFERENCE = "reference"
     OTHER = "other"
 
 

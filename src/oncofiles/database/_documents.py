@@ -307,6 +307,18 @@ class DocumentMixin:
         )
         await self.db.commit()
 
+    async def get_documents_without_metadata(self, limit: int = 100) -> list[Document]:
+        """Get documents that have AI summaries but no structured_metadata."""
+        async with self.db.execute(
+            "SELECT * FROM documents WHERE ai_processed_at IS NOT NULL "
+            "AND (structured_metadata IS NULL OR structured_metadata = '') "
+            "AND deleted_at IS NULL "
+            "ORDER BY document_date DESC LIMIT ?",
+            (limit,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return [_row_to_document(r) for r in rows]
+
     async def get_documents_without_ai(self, limit: int = 100) -> list[Document]:
         """Get documents that haven't been AI-processed yet."""
         async with self.db.execute(

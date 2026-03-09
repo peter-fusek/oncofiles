@@ -158,6 +158,14 @@ class TestNewFormat:
         r = parse_filename("20260129_BoryNemocnica_usg_abdomen.pdf")
         assert r.category == DocumentCategory.IMAGING_US
 
+    def test_reference_alias(self):
+        r = parse_filename("20260301_NOU_reference_guidelines.pdf")
+        assert r.category == DocumentCategory.REFERENCE
+
+    def test_reference_keyword_infer(self):
+        r = parse_filename("20260301 ErikaFusekova-NOU-ReferencneMaterialyKRAS.pdf")
+        assert r.category == DocumentCategory.REFERENCE
+
 
 # ── Legacy format tests ──────────────────────────────────────────────────────
 
@@ -296,6 +304,13 @@ class TestBilingualRename:
             category="referral",
         )
         assert "Referral-" in result
+
+    def test_reference_category(self):
+        result = rename_to_bilingual(
+            "20260301 ErikaFusekova-NOU-ReferencneMaterialyKRAS.pdf",
+            category="reference",
+        )
+        assert "Reference-" in result
 
     def test_no_description_unchanged(self):
         """Files without parseable description stay unchanged."""
