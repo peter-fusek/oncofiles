@@ -124,7 +124,7 @@ def extract_structured_metadata(text: str) -> dict:
 
     response = client.messages.create(
         model=ENHANCE_MODEL,
-        max_tokens=1024,
+        max_tokens=2048,
         system=METADATA_SYSTEM_PROMPT,
         messages=[
             {
