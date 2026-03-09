@@ -13,6 +13,19 @@ logger = logging.getLogger(__name__)
 
 ENHANCE_MODEL = "claude-haiku-4-5-20251001"
 
+
+def _strip_markdown_fencing(text: str) -> str:
+    """Strip markdown code fencing (```json ... ```) from AI responses."""
+    stripped = text.strip()
+    if stripped.startswith("```"):
+        # Remove opening fence (```json or ```)
+        first_newline = stripped.index("\n") if "\n" in stripped else len(stripped)
+        stripped = stripped[first_newline + 1 :]
+        # Remove closing fence
+        if stripped.rstrip().endswith("```"):
+            stripped = stripped.rstrip()[:-3].rstrip()
+    return stripped
+
 ENHANCE_SYSTEM_PROMPT = (
     "You are a medical document analyst. Given the extracted text of a medical document, "
     "produce a JSON object with exactly these keys:\n"
@@ -57,7 +70,7 @@ def enhance_document_text(text: str) -> tuple[str, str]:
     raw = response.content[0].text if response.content else "{}"
 
     try:
-        parsed = json.loads(raw)
+        parsed = json.loads(_strip_markdown_fencing(raw))
         summary = parsed.get("summary", "")
         tags = parsed.get("tags", [])
         if not isinstance(tags, list):
@@ -124,7 +137,7 @@ def extract_structured_metadata(text: str) -> dict:
     raw = response.content[0].text if response.content else "{}"
 
     try:
-        parsed = json.loads(raw)
+        parsed = json.loads(_strip_markdown_fencing(raw))
         # Validate expected keys with defaults
         return {
             "document_type": parsed.get("document_type", "other"),
