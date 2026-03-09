@@ -514,6 +514,72 @@ async def test_sync_to_gdrive_skips_already_bilingual(db: Database):
     assert stats.get("renamed", 0) == 0
 
 
+async def test_sync_to_gdrive_idempotent_double_run(db: Database):
+    """Running sync_to_gdrive twice produces no changes on second run."""
+    doc = make_doc(
+        gdrive_id="gd_existing",
+        filename="20260227 ErikaFusekova-NOU-LabVysledkyPred2chemoMudrPorsok.pdf",
+        category="labs",
+    )
+    await db.insert_document(doc)
+    # Pre-populate OCR so export doesn't try to extract
+    await db.save_ocr_page(doc.id, 1, "Page 1 text", "test")
+
+    files = _mock_files()
+    gdrive = _mock_gdrive()
+    gdrive.get_file_parents.return_value = ["folder_labs — laboratórne výsledky"]
+
+    # First run — renames file
+    stats1 = await sync_to_gdrive(db, files, gdrive, "folder123")
+    assert stats1.get("renamed", 0) == 1
+
+    # Reset mock call counts but keep behavior
+    gdrive.rename_file.reset_mock()
+
+    # Second run — should skip (already renamed)
+    stats2 = await sync_to_gdrive(db, files, gdrive, "folder123")
+    assert stats2.get("renamed", 0) == 0
+    # rename_file should only be called for OCR companion (not for doc itself)
+    # since doc is already bilingual
+    doc_rename_calls = [
+        c for c in gdrive.rename_file.call_args_list if "_OCR.txt" not in str(c)
+    ]
+    assert len(doc_rename_calls) == 0
+
+
+async def test_sync_to_gdrive_cleanup_orphan_ocr(db: Database):
+    """Orphaned OCR files (old names) get trashed during sync."""
+    doc = make_doc(
+        gdrive_id="gd_existing",
+        filename="20260227 ErikaFusekova-NOU-Labs-LabVysledkyPred2chemoMudrPorsok.pdf",
+        category="labs",
+    )
+    await db.insert_document(doc)
+    await db.save_ocr_page(doc.id, 1, "Page 1 text", "test")
+
+    files = _mock_files()
+    gdrive = _mock_gdrive()
+    gdrive.get_file_parents.return_value = ["parent_folder"]
+
+    # Simulate orphaned OCR file (old name without Labs- prefix) in folder
+    orphan_ocr = {
+        "id": "orphan_id",
+        "name": "20260227 ErikaFusekova-NOU-LabVysledkyPred2chemoMudrPorsok_OCR.txt",
+        "mimeType": "text/plain",
+    }
+    expected_ocr = {
+        "id": "expected_id",
+        "name": "20260227 ErikaFusekova-NOU-Labs-LabVysledkyPred2chemoMudrPorsok_OCR.txt",
+        "mimeType": "text/plain",
+    }
+    gdrive.list_folder.return_value = [orphan_ocr, expected_ocr]
+    gdrive.trash_file.return_value = None
+
+    stats = await sync_to_gdrive(db, files, gdrive, "folder123")
+    assert stats.get("ocr_cleaned", 0) == 1
+    gdrive.trash_file.assert_called_once_with("orphan_id")
+
+
 async def test_sync_from_gdrive_extracts_structured_metadata(db: Database):
     """Structured metadata is extracted during sync enhancement."""
     from oncofiles.sync import _enhance_document
