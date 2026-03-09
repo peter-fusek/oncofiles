@@ -988,6 +988,15 @@ class Database:
             rows = await cursor.fetchall()
             return [_row_to_document(r) for r in rows]
 
+    async def update_document_filename(self, doc_id: int, new_filename: str) -> None:
+        """Update the display filename of a document (bilingual rename)."""
+        await self.db.execute(
+            "UPDATE documents SET filename = ?, "
+            "updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = ?",
+            (new_filename, doc_id),
+        )
+        await self.db.commit()
+
     async def update_document_category(self, doc_id: int, category: str) -> None:
         """Update the category of a document (e.g. when moved on GDrive)."""
         await self.db.execute(

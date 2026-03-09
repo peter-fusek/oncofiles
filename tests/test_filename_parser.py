@@ -5,7 +5,7 @@ Real format: YYYYMMDD ErikaFusekova-Institution-DescriptionDoctor.ext
 
 from datetime import date
 
-from oncofiles.filename_parser import parse_filename
+from oncofiles.filename_parser import parse_filename, rename_to_bilingual
 from oncofiles.models import DocumentCategory
 
 # ── Real filenames from Google Drive ─────────────────────────────────────────
@@ -227,3 +227,76 @@ class TestSubdirFilenames:
         r = parse_filename("20260217 Erika_Strategicky_Rozhodovaci_Plan_mCRC_20260217_220735.pdf")
         assert r.document_date == date(2026, 2, 17)
         assert r.extension == "pdf"
+
+
+# ── Bilingual rename (#57) ──────────────────────────────────────────────────
+
+
+class TestBilingualRename:
+    """Tests for rename_to_bilingual — adding EN category prefix."""
+
+    def test_lab_results(self):
+        result = rename_to_bilingual(
+            "20260227 ErikaFusekova-NOU-LabVysledkyPred2chemo[PHYSICIAN_REDACTED].pdf"
+        )
+        assert result == "20260227 ErikaFusekova-NOU-Labs-LabVysledkyPred2chemo[PHYSICIAN_REDACTED].pdf"
+
+    def test_discharge_summary(self):
+        result = rename_to_bilingual(
+            "20260122 ErikaFusekova-BoryNemocnica-LekarskaPrepustaciaSpravaOperacia.pdf"
+        )
+        assert result == (
+            "20260122 ErikaFusekova-BoryNemocnica-Discharge-LekarskaPrepustaciaSpravaOperacia.pdf"
+        )
+
+    def test_biopsy(self):
+        result = rename_to_bilingual("20260127 ErikaFusekova-BoryNemocnica-BiopsiaMudrRychly.JPG")
+        assert result == "20260127 ErikaFusekova-BoryNemocnica-Pathology-BiopsiaMudrRychly.JPG"
+
+    def test_genetics(self):
+        result = rename_to_bilingual("20260226 ErikaFusekova-NOU-GenetikaMudrMalejcikova1z2.JPG")
+        assert result == "20260226 ErikaFusekova-NOU-Genetics-GenetikaMudrMalejcikova1z2.JPG"
+
+    def test_imaging_ct(self):
+        result = rename_to_bilingual(
+            "20260130 ErikaFusekova-NOU-CTobjednavka[PHYSICIAN_REDACTED]PrimarOnkolog.pdf"
+        )
+        assert result == ("20260130 ErikaFusekova-NOU-CT-CTobjednavka[PHYSICIAN_REDACTED]PrimarOnkolog.pdf")
+
+    def test_imaging_usg(self):
+        result = rename_to_bilingual("20260129 ErikaFusekova-BoryNemocnica-USGMudrTulenkova.pdf")
+        assert result == "20260129 ErikaFusekova-BoryNemocnica-USG-USGMudrTulenkova.pdf"
+
+    def test_chemo_sheet(self):
+        result = rename_to_bilingual(
+            "20260213 ErikaFusekova-NOU-ChemoterapeutickyProtokolFOLFOX.pdf"
+        )
+        assert result == (
+            "20260213 ErikaFusekova-NOU-ChemoSheet-ChemoterapeutickyProtokolFOLFOX.pdf"
+        )
+
+    def test_report(self):
+        result = rename_to_bilingual("20260130 ErikaFusekova-NOU-Sprava[PHYSICIAN_REDACTED]PrimarOnkolog.pdf")
+        assert result == ("20260130 ErikaFusekova-NOU-Report-Sprava[PHYSICIAN_REDACTED]PrimarOnkolog.pdf")
+
+    def test_other_category(self):
+        result = rename_to_bilingual(
+            "20260209 ErikaFusekova-SocialnaPoistovna-UznanieNemocenskeho.pdf"
+        )
+        assert result == ("20260209 ErikaFusekova-SocialnaPoistovna-Other-UznanieNemocenskeho.pdf")
+
+    def test_already_bilingual_unchanged(self):
+        """Already-renamed files should not be double-prefixed."""
+        fn = "20260227 ErikaFusekova-NOU-Labs-LabVysledkyPred2chemo[PHYSICIAN_REDACTED].pdf"
+        assert rename_to_bilingual(fn) == fn
+
+    def test_explicit_category_override(self):
+        result = rename_to_bilingual(
+            "20260209 ErikaFusekova-SocialnaPoistovna-UznanieNemocenskeho.pdf",
+            category="referral",
+        )
+        assert "Referral-" in result
+
+    def test_no_description_unchanged(self):
+        """Files without parseable description stay unchanged."""
+        assert rename_to_bilingual("20240115.pdf") == "20240115.pdf"
