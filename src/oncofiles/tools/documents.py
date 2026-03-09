@@ -215,6 +215,34 @@ async def get_document(ctx: Context, file_id: str) -> str:
     )
 
 
+async def get_document_by_id(ctx: Context, doc_id: int) -> str:
+    """Get a document's metadata by its integer database ID.
+
+    Use this when you have the numeric document ID (e.g. from search results or lab values).
+
+    Args:
+        doc_id: The integer database ID of the document.
+    """
+    db = _get_db(ctx)
+    doc = await db.get_document(doc_id)
+    if not doc:
+        return json.dumps({"error": f"Document not found: {doc_id}"})
+    return json.dumps(
+        {
+            "id": doc.id,
+            "file_id": doc.file_id,
+            "filename": doc.filename,
+            "document_date": doc.document_date.isoformat() if doc.document_date else None,
+            "institution": doc.institution,
+            "category": doc.category.value,
+            "description": doc.description,
+            "mime_type": doc.mime_type,
+            "size_bytes": doc.size_bytes,
+            "content_block": doc.content_block,
+        }
+    )
+
+
 async def delete_document(ctx: Context, file_id: str) -> str:
     """Soft-delete a document (moves to trash, recoverable for 30 days).
 
@@ -335,6 +363,7 @@ def register(mcp):
     mcp.tool()(list_documents)
     mcp.tool()(search_documents)
     mcp.tool()(get_document)
+    mcp.tool()(get_document_by_id)
     mcp.tool()(delete_document)
     mcp.tool()(restore_document)
     mcp.tool()(list_trash)
