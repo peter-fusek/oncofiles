@@ -145,7 +145,10 @@ async def create_links(dry_run: bool = False) -> None:
         if dry_run:
             logger.info(
                 "DRY RUN: %s [%s] %s (docs: %s)",
-                entry_date, entry_type, title, doc_ids,
+                entry_date,
+                entry_type,
+                title,
+                doc_ids,
             )
             continue
 

@@ -77,9 +77,7 @@ class PersistentOAuthProvider(InMemoryOAuthProvider):
             for row in await cursor.fetchall():
                 try:
                     client_id = row["client_id"]
-                    info = OAuthClientInformationFull.model_validate_json(
-                        row["client_info_json"]
-                    )
+                    info = OAuthClientInformationFull.model_validate_json(row["client_info_json"])
                     self.clients[client_id] = info
                     clients_loaded += 1
                 except Exception:

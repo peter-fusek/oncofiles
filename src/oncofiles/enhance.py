@@ -26,6 +26,7 @@ def _strip_markdown_fencing(text: str) -> str:
             stripped = stripped.rstrip()[:-3].rstrip()
     return stripped
 
+
 ENHANCE_SYSTEM_PROMPT = (
     "You are a medical document analyst. Given the extracted text of a medical document, "
     "produce a JSON object with exactly these keys:\n"

@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from pathlib import Path
 from typing import Any
 
 import aiosqlite
+
+logger = logging.getLogger(__name__)
 
 MIGRATIONS_DIR = Path(__file__).parent.parent.parent.parent / "migrations"
 
@@ -54,13 +57,13 @@ class _TursoCursor:
 class _TursoExecProxy:
     """Awaitable + async-context-manager proxy matching aiosqlite.execute()."""
 
-    def __init__(self, conn: Any, sql: str, params: tuple) -> None:
-        self._conn = conn
+    def __init__(self, turso_conn: _TursoConnection, sql: str, params: tuple) -> None:
+        self._turso_conn = turso_conn
         self._sql = sql
         self._params = params
 
     async def _run(self) -> _TursoCursor:
-        cursor = await asyncio.to_thread(self._conn.execute, self._sql, self._params)
+        cursor = await self._turso_conn._execute_raw(self._sql, self._params)
         return _TursoCursor(cursor)
 
     def __await__(self):  # noqa: ANN204
@@ -73,8 +76,17 @@ class _TursoExecProxy:
         pass
 
 
+def _is_stale_stream_error(exc: Exception) -> bool:
+    """Check if an exception is a Turso/Hrana stale stream error."""
+    msg = str(exc).lower()
+    return "stream not found" in msg or "stream expired" in msg
+
+
 class _TursoConnection:
-    """Async wrapper around sync libsql connection matching aiosqlite interface."""
+    """Async wrapper around sync libsql connection matching aiosqlite interface.
+
+    Auto-reconnects on stale Hrana stream errors (e.g. after Railway cold start).
+    """
 
     def __init__(self, url: str, auth_token: str) -> None:
         self._url = url
@@ -86,14 +98,49 @@ class _TursoConnection:
 
         self._conn = libsql.connect(self._url, auth_token=self._auth_token)
 
+    async def reconnect(self) -> None:
+        """Close stale connection and create a fresh one."""
+        logger.warning("Reconnecting to Turso (stale stream detected)")
+        try:
+            if self._conn:
+                self._conn.close()
+        except Exception:
+            pass
+        self._conn = None
+        await self.connect()
+
     def execute(self, sql: str, params: tuple | list = ()) -> _TursoExecProxy:
-        return _TursoExecProxy(self._conn, sql, tuple(params))
+        return _TursoExecProxy(self, sql, tuple(params))
+
+    async def _execute_raw(self, sql: str, params: tuple) -> Any:
+        """Execute SQL, auto-reconnecting on stale stream errors."""
+        try:
+            return await asyncio.to_thread(self._conn.execute, sql, params)
+        except Exception as exc:
+            if _is_stale_stream_error(exc):
+                await self.reconnect()
+                return await asyncio.to_thread(self._conn.execute, sql, params)
+            raise
 
     async def executescript(self, sql: str) -> None:
-        await asyncio.to_thread(self._conn.executescript, sql)
+        try:
+            await asyncio.to_thread(self._conn.executescript, sql)
+        except Exception as exc:
+            if _is_stale_stream_error(exc):
+                await self.reconnect()
+                await asyncio.to_thread(self._conn.executescript, sql)
+            else:
+                raise
 
     async def commit(self) -> None:
-        await asyncio.to_thread(self._conn.commit)
+        try:
+            await asyncio.to_thread(self._conn.commit)
+        except Exception as exc:
+            if _is_stale_stream_error(exc):
+                await self.reconnect()
+                await asyncio.to_thread(self._conn.commit)
+            else:
+                raise
 
     async def close(self) -> None:
         if self._conn:
@@ -135,6 +182,19 @@ class DatabaseBase:
         if self._db:
             await self._db.close()
             self._db = None
+
+    async def reconnect_if_stale(self) -> bool:
+        """Reconnect Turso connection if stale. Returns True if reconnected."""
+        if self._use_turso and isinstance(self._db, _TursoConnection):
+            try:
+                await self._db._execute_raw("SELECT 1", ())
+            except Exception as exc:
+                if _is_stale_stream_error(exc):
+                    # reconnect() was already called by _execute_raw, verify it worked
+                    await self._db._execute_raw("SELECT 1", ())
+                    return True
+                raise
+        return False
 
     @property
     def db(self) -> aiosqlite.Connection | _TursoConnection:

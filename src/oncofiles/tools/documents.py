@@ -94,9 +94,7 @@ async def upload_document(
                 target_folder = cat_folder
                 if doc.document_date:
                     date_str = doc.document_date.isoformat()
-                    target_folder = ensure_year_month_folder(
-                        gdrive, cat_folder, date_str
-                    )
+                    target_folder = ensure_year_month_folder(gdrive, cat_folder, date_str)
                 uploaded = gdrive.upload(
                     filename=doc.filename,
                     content_bytes=file_bytes,

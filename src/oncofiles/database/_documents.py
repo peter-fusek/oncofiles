@@ -316,7 +316,7 @@ class DocumentMixin:
         async with self.db.execute(
             "SELECT * FROM documents WHERE ai_processed_at IS NOT NULL "
             "AND (structured_metadata IS NULL OR structured_metadata = '' "
-            "  OR (structured_metadata NOT LIKE '%\"findings\": [\"%%' "
+            '  OR (structured_metadata NOT LIKE \'%"findings": ["%%\' '
             "      AND structured_metadata NOT LIKE '%\"diagnoses\": [{%%')) "
             "AND deleted_at IS NULL "
             "ORDER BY document_date DESC LIMIT ?",

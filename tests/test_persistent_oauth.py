@@ -125,8 +125,12 @@ async def test_refresh_token_exchange_persisted(db, provider):
     await provider.register_client(client)
 
     params = AuthorizationParams(
-        state="s", scopes=[], code_challenge="c", code_challenge_method="S256",
-        redirect_uri="http://localhost:3000/callback", redirect_uri_provided_explicitly=True,
+        state="s",
+        scopes=[],
+        code_challenge="c",
+        code_challenge_method="S256",
+        redirect_uri="http://localhost:3000/callback",
+        redirect_uri_provided_explicitly=True,
     )
     redirect_uri = await provider.authorize(client, params)
     from urllib.parse import parse_qs, urlparse
@@ -163,8 +167,12 @@ async def test_revoke_removes_from_db(db, provider):
     await provider.register_client(client)
 
     params = AuthorizationParams(
-        state="s", scopes=[], code_challenge="c", code_challenge_method="S256",
-        redirect_uri="http://localhost:3000/callback", redirect_uri_provided_explicitly=True,
+        state="s",
+        scopes=[],
+        code_challenge="c",
+        code_challenge_method="S256",
+        redirect_uri="http://localhost:3000/callback",
+        redirect_uri_provided_explicitly=True,
     )
     redirect_uri = await provider.authorize(client, params)
     from urllib.parse import parse_qs, urlparse
@@ -223,8 +231,12 @@ async def test_expired_tokens_cleaned_on_verify(db, provider):
     await provider.register_client(client)
 
     params = AuthorizationParams(
-        state="s", scopes=[], code_challenge="c", code_challenge_method="S256",
-        redirect_uri="http://localhost:3000/callback", redirect_uri_provided_explicitly=True,
+        state="s",
+        scopes=[],
+        code_challenge="c",
+        code_challenge_method="S256",
+        redirect_uri="http://localhost:3000/callback",
+        redirect_uri_provided_explicitly=True,
     )
     redirect_uri = await provider.authorize(client, params)
     from urllib.parse import parse_qs, urlparse

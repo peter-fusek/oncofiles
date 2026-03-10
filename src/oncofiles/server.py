@@ -271,10 +271,17 @@ mcp.add_middleware(AuditMiddleware())
 async def health(request: Request) -> JSONResponse:
     try:
         db: Database = request.app.state.fastmcp_server._lifespan_result["db"]
+        reconnected = await db.reconnect_if_stale()
         doc_count = await db.count_documents()
-        return JSONResponse(
-            {"status": "ok", "database": "connected", "documents": doc_count, "version": VERSION}
-        )
+        result = {
+            "status": "ok",
+            "database": "connected",
+            "documents": doc_count,
+            "version": VERSION,
+        }
+        if reconnected:
+            result["reconnected"] = True
+        return JSONResponse(result)
     except Exception as e:
         return JSONResponse(
             {"status": "degraded", "database": f"error: {e}", "version": VERSION}, status_code=503

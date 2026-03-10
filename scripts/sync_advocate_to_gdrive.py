@@ -40,16 +40,13 @@ from import_advocate_notes import FILE_MAP  # noqa: E402
 _LOCAL_FILES: dict[str, Path] = {}
 for src_name, target_name in FILE_MAP:
     _LOCAL_FILES[target_name] = ARCHIVE_DIR / src_name
-_LOCAL_FILES[
-    "20260212 ErikaFusekova-PacientAdvokat-Other-SumarOchorenia.pdf"
-] = PDF_PATH
+_LOCAL_FILES["20260212 ErikaFusekova-PacientAdvokat-Other-SumarOchorenia.pdf"] = PDF_PATH
 
 
 async def _get_oauth_gdrive(db: Database) -> GDriveClient | None:
     """Create GDrive client from user OAuth tokens stored in prod DB."""
     async with db.db.execute(
-        "SELECT access_token, refresh_token, owner_email "
-        "FROM oauth_tokens ORDER BY id DESC LIMIT 1"
+        "SELECT access_token, refresh_token, owner_email FROM oauth_tokens ORDER BY id DESC LIMIT 1"
     ) as c:
         row = await c.fetchone()
         if not row:
@@ -132,7 +129,9 @@ async def sync_to_gdrive(dry_run: bool = False) -> None:
         if dry_run:
             logger.info(
                 "DRY RUN: would upload doc %d (%s) to folder %s",
-                doc.id, doc.filename, target_folder,
+                doc.id,
+                doc.filename,
+                target_folder,
             )
             continue
 

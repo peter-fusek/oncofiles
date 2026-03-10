@@ -850,9 +850,7 @@ async def extract_all_metadata(
                         pdf_texts = None
                     if pdf_texts:
                         for page_num, text in enumerate(pdf_texts, start=1):
-                            await db.save_ocr_page(
-                                doc.id, page_num, text, "pymupdf-native"
-                            )
+                            await db.save_ocr_page(doc.id, page_num, text, "pymupdf-native")
                         text_parts = pdf_texts
 
             if not text_parts:
@@ -866,9 +864,7 @@ async def extract_all_metadata(
 
             full_text = "\n\n".join(text_parts)
             metadata = extract_structured_metadata(full_text)
-            await db.update_structured_metadata(
-                doc.id, json.dumps(metadata, ensure_ascii=False)
-            )
+            await db.update_structured_metadata(doc.id, json.dumps(metadata, ensure_ascii=False))
             logger.info(
                 "extract_all_metadata: doc %d (%s) — metadata extracted",
                 doc.id,
@@ -876,9 +872,7 @@ async def extract_all_metadata(
             )
             stats["processed"] += 1
         except Exception:
-            logger.exception(
-                "extract_all_metadata: error on doc %d (%s)", doc.id, doc.filename
-            )
+            logger.exception("extract_all_metadata: error on doc %d (%s)", doc.id, doc.filename)
             stats["errors"] += 1
 
     logger.info("extract_all_metadata: done — %s", stats)
