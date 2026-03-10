@@ -1,0 +1,15 @@
+services:
+  oncofiles:
+    build: .
+    ports:
+      - "${MCP_PORT:-8000}:${MCP_PORT:-8000}"
+    env_file:
+      - .env
+    environment:
+      - MCP_TRANSPORT=streamable-http
+      - MCP_PORT=${MCP_PORT:-8000}
+    volumes:
+      - oncofiles-data:/app/data
+
+volumes:
+  oncofiles-data:

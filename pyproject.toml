@@ -1,6 +1,6 @@
 [project]
 name = "oncofiles"
-version = "3.6.0"
+version = "3.7.0"
 description = "MCP server for persistent medical document management via Anthropic Files API"
 requires-python = ">=3.12"
 dependencies = [
