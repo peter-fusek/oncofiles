@@ -207,7 +207,7 @@ async def sync_from_gdrive(
             stats["errors"] += 1
 
     # Detect deleted files (in DB but not on GDrive) — flag only, never auto-delete
-    all_docs = await db.list_documents(limit=1000)
+    all_docs = await db.list_documents(limit=200)
     for doc in all_docs:
         if doc.gdrive_id and doc.gdrive_id not in seen_gdrive_ids:
             logger.warning(
@@ -660,7 +660,7 @@ async def _export_metadata(
     # 2. Export conversation monthly logs
     conversations_folder = folder_map.get("conversations")
     if conversations_folder:
-        entries = await db.get_conversation_timeline(limit=1000)
+        entries = await db.get_conversation_timeline(limit=200)
         by_month = group_conversations_by_month(entries)
         for month_key, month_entries in by_month.items():
             md_content = render_conversation_month(month_entries)
@@ -674,7 +674,7 @@ async def _export_metadata(
     # 3. Export treatment timeline
     treatment_folder = folder_map.get("treatment")
     if treatment_folder:
-        events = await db.get_treatment_events_timeline(limit=1000)
+        events = await db.get_treatment_events_timeline(limit=200)
         for lang in langs:
             md_content = render_treatment_timeline(events, lang=lang)
             suffix = f"_{lang.upper()}" if lang != "en" else ""
@@ -684,7 +684,7 @@ async def _export_metadata(
     # 4. Export research library
     research_folder = folder_map.get("research")
     if research_folder:
-        entries = await db.list_research_entries(limit=1000)
+        entries = await db.list_research_entries(limit=200)
         for lang in langs:
             md_content = render_research_library(entries, lang=lang)
             suffix = f"_{lang.upper()}" if lang != "en" else ""
@@ -818,11 +818,22 @@ async def extract_all_metadata(
     Returns summary dict: {processed, skipped, errors}.
     """
     docs = await db.get_documents_without_metadata()
+    docs = docs[:5]  # Process max 5 per run to limit memory
     logger.info("extract_all_metadata: %d documents to process", len(docs))
     stats = {"processed": 0, "skipped": 0, "errors": 0}
 
     for doc in docs:
         try:
+            # Skip documents larger than 10MB to avoid OOM
+            if doc.size_bytes and doc.size_bytes > 10_000_000:
+                logger.warning(
+                    "extract_all_metadata: doc %d too large (%d bytes) — skipping",
+                    doc.id,
+                    doc.size_bytes,
+                )
+                stats["skipped"] += 1
+                continue
+
             # Get text from OCR cache first
             text_parts = []
             if await db.has_ocr_text(doc.id):
@@ -830,12 +841,12 @@ async def extract_all_metadata(
                 text_parts = [p["extracted_text"] for p in pages]
 
             # Fall back to downloading and extracting text
+            content_bytes = None
             if not text_parts:
                 import contextlib
 
                 from oncofiles.tools._helpers import _extract_pdf_text
 
-                content_bytes = None
                 try:
                     content_bytes = files.download(doc.file_id)
                 except Exception:
@@ -871,6 +882,11 @@ async def extract_all_metadata(
                 doc.filename,
             )
             stats["processed"] += 1
+
+            # Free memory between documents
+            del full_text, text_parts
+            if content_bytes is not None:
+                del content_bytes
         except Exception:
             logger.exception("extract_all_metadata: error on doc %d (%s)", doc.id, doc.filename)
             stats["errors"] += 1
