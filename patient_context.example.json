@@ -1,0 +1,25 @@
+{
+  "name": "Jane Doe",
+  "diagnosis": "Example diagnosis (ICD code)",
+  "staging": "Stage information",
+  "histology": "Histology details",
+  "tumor_site": "Primary tumor site",
+  "diagnosis_date": "2025-01-01",
+  "biomarkers": {
+    "example_marker": "status"
+  },
+  "treatment": {
+    "regimen": "Treatment regimen",
+    "current_cycle": 1,
+    "institution": "Hospital name"
+  },
+  "metastases": [],
+  "comorbidities": [],
+  "surgeries": [],
+  "physicians": {
+    "treating": "Dr. Name — Institution",
+    "admitting": "Dr. Name — Institution"
+  },
+  "excluded_therapies": [],
+  "note": "Additional clinical notes for AI context."
+}

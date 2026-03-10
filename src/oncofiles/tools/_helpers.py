@@ -9,6 +9,7 @@ from datetime import date
 from fastmcp import Context
 from fastmcp.utilities.types import Image
 
+from oncofiles import patient_context
 from oncofiles.database import Database
 from oncofiles.files_api import FilesClient
 from oncofiles.gdrive_client import GDriveClient
@@ -17,91 +18,14 @@ from oncofiles.ocr import OCR_MODEL, extract_text_from_image
 
 logger = logging.getLogger(__name__)
 
-# ── Patient context ──────────────────────────────────────────────────────────
+# ── Patient context (delegated to patient_context module) ────────────────────
 
-PATIENT_CONTEXT = {
-    "name": "Erika Fusekova",
-    "diagnosis": "AdenoCa colon sigmoideum, G3, mCRC (C18.7)",
-    "staging": "IV (liver mets, peritoneal carcinomatosis, LN, Krukenberg tumor l.dx.)",
-    "histology": "Adenocarcinoma Grade 3",
-    "tumor_site": "Sigmoid colon (left-sided)",
-    "diagnosis_date": "2025-12-01",
-    "biomarkers": {
-        "KRAS": "mutant G12S (c.34G>A, p.(Gly12Ser))",
-        "KRAS_G12C": False,
-        "NRAS": "wild-type",
-        "BRAF_V600E": "wild-type",
-        "HER2": "negative (FISH ratio 1.3, avg copy 3)",
-        "MSI": "pMMR / MSS",
-        "anti_EGFR_eligible": False,
-    },
-    "treatment": {
-        "regimen": "mFOLFOX6 90%",
-        "current_cycle": 2,
-        "institution": "NOU (Narodny onkologicky ustav), Bratislava",
-    },
-    "metastases": [
-        "liver (C78.7)",
-        "peritoneum (C78.6)",
-        "retroperitoneum",
-        "Krukenberg (ovary l.dx., C79.6)",
-        "mediastinal LN",
-        "hilar LN",
-        "retrocrural LN",
-        "portal LN (C77.8)",
-        "pulmonary nodules (<=5mm, monitor)",
-    ],
-    "comorbidities": ["VJI thrombosis (active, Clexane 0.6ml SC 2x/day)"],
-    "surgeries": [
-        {
-            "date": "2026-01-18",
-            "institution": "Bory Nemocnica",
-            "type": "palliative resection",
-            "result": "AdenoCa G3",
-        }
-    ],
-    "physicians": {
-        "treating": "MUDr. Stefan Porsok, PhD., MPH — primar OKO G, NOU Bratislava",
-        "admitting": "MUDr. Natalia Pazderova — NOU Bratislava",
-    },
-    "excluded_therapies": [
-        "anti-EGFR (cetuximab, panitumumab) — KRAS G12S",
-        "checkpoint monotherapy (pembrolizumab, nivolumab) — pMMR/MSS",
-        "HER2-targeted (trastuzumab, pertuzumab) — HER2 negative",
-        "BRAF inhibitors (encorafenib) — BRAF wild-type",
-        "KRAS G12C-specific (sotorasib, adagrasib) — patient has G12S, not G12C",
-    ],
-    "note": (
-        "Lab values should be interpreted considering active chemotherapy. "
-        "Key markers: CEA, CA 19-9, liver (ALT, AST, bilirubin), "
-        "renal (creatinine, urea), blood counts (WBC, neutrophils, Hb, platelets). "
-        "Active VJI thrombosis on Clexane — bevacizumab is HIGH RISK."
-    ),
-}
+# Backward-compatible alias — returns the live context dict
+PATIENT_CONTEXT = patient_context.get_context()
 
 
 def _patient_context_text() -> str:
-    bio = PATIENT_CONTEXT["biomarkers"]
-    biomarkers = "\n".join(f"  - {k}: {v}" for k, v in bio.items())
-    mets = ", ".join(PATIENT_CONTEXT["metastases"])
-    comorb = ", ".join(PATIENT_CONTEXT["comorbidities"])
-    excluded = "\n".join(f"  - {t}" for t in PATIENT_CONTEXT["excluded_therapies"])
-    tx = PATIENT_CONTEXT["treatment"]
-    phys = PATIENT_CONTEXT["physicians"]
-    return (
-        f"**Patient:** {PATIENT_CONTEXT['name']}\n"
-        f"**Diagnosis:** {PATIENT_CONTEXT['diagnosis']}\n"
-        f"**Staging:** {PATIENT_CONTEXT['staging']}\n"
-        f"**Histology:** {PATIENT_CONTEXT['histology']}\n"
-        f"**Tumor site:** {PATIENT_CONTEXT['tumor_site']}\n"
-        f"**Biomarkers:**\n{biomarkers}\n"
-        f"**Treatment:** {tx['regimen']} (cycle {tx['current_cycle']}) at {tx['institution']}\n"
-        f"**Metastases:** {mets}\n"
-        f"**Comorbidities:** {comorb}\n"
-        f"**Physicians:** {phys['treating']}; {phys['admitting']}\n"
-        f"**Excluded therapies:**\n{excluded}\n"
-        f"**Note:** {PATIENT_CONTEXT['note']}"
-    )
+    return patient_context.format_context_text()
 
 
 # ── Context accessors ────────────────────────────────────────────────────────

@@ -123,7 +123,18 @@ CATEGORY_ALIASES: dict[str, DocumentCategory] = {
 
 _DATE_RE = re.compile(r"^(\d{4})(\d{2})(\d{2})")
 _DATE_XX_RE = re.compile(r"^(\d{4})(\d{2})(xx)", re.IGNORECASE)
-_PATIENT_PREFIX_RE = re.compile(r"^ErikaFusekova[-]?", re.IGNORECASE)
+
+
+def _patient_prefix_re() -> re.Pattern:
+    """Build patient prefix regex from patient context name."""
+    from oncofiles.patient_context import get_patient_name
+
+    name = get_patient_name()
+    if name:
+        # "Erika Fusekova" → "ErikaFusekova" (no space, case-insensitive)
+        compact = name.replace(" ", "")
+        return re.compile(rf"^{re.escape(compact)}[-]?", re.IGNORECASE)
+    return re.compile(r"^ErikaFusekova[-]?", re.IGNORECASE)
 
 # Bilingual format: EN category prefix already present
 _BILINGUAL_PREFIX_RE = re.compile(
@@ -181,7 +192,7 @@ def _parse_new_format(stem: str, ext: str) -> ParsedFilename | None:
         return None  # No date prefix → not new format
 
     # Strip patient prefix
-    remaining = _PATIENT_PREFIX_RE.sub("", remaining).lstrip("-")
+    remaining = _patient_prefix_re().sub("", remaining).lstrip("-")
 
     if not remaining:
         return result
@@ -226,8 +237,11 @@ def parse_filename(filename: str) -> ParsedFilename:
     stem = PurePosixPath(filename).stem
     ext = PurePosixPath(filename).suffix.lstrip(".")
 
-    # Try new format first: YYYYMMDD ErikaFusekova-Institution-Description
-    if " " in stem and "ErikaFusekova" in stem:
+    # Try new format first: YYYYMMDD PatientName-Institution-Description
+    from oncofiles.patient_context import get_patient_name
+
+    patient_name_compact = get_patient_name().replace(" ", "") or "ErikaFusekova"
+    if " " in stem and patient_name_compact.lower() in stem.lower():
         result = _parse_new_format(stem, ext)
         if result:
             return result
@@ -333,16 +347,19 @@ def rename_to_bilingual(filename: str, category: DocumentCategory | str | None =
     # Build new filename
     new_desc = f"{cat_prefix}-{parsed.description}"
 
-    # Reconstruct: YYYYMMDD ErikaFusekova-Institution-Category-Description.ext
+    # Reconstruct: YYYYMMDD PatientName-Institution-Category-Description.ext
+    from oncofiles.patient_context import get_patient_name
+
+    patient_compact = get_patient_name().replace(" ", "") or "ErikaFusekova"
     parts = []
     if parsed.document_date:
         parts.append(parsed.document_date.strftime("%Y%m%d"))
 
     name_parts = []
     if parsed.institution:
-        name_parts.append(f"ErikaFusekova-{parsed.institution}-{new_desc}")
+        name_parts.append(f"{patient_compact}-{parsed.institution}-{new_desc}")
     else:
-        name_parts.append(f"ErikaFusekova-{new_desc}")
+        name_parts.append(f"{patient_compact}-{new_desc}")
 
     new_stem = f"{parts[0]} {name_parts[0]}" if parts else name_parts[0]
     return f"{new_stem}{ext}"
