@@ -100,9 +100,7 @@ FILE_MAP: list[tuple[str, str]] = [
 MIN_TEXT_FOR_AI = 100
 
 
-async def import_notes(
-    dry_run: bool = False, skip_ai: bool = False, prod: bool = False
-) -> None:
+async def import_notes(dry_run: bool = False, skip_ai: bool = False, prod: bool = False) -> None:
     """Import advocate notes into oncofiles."""
     if prod:
         if not TURSO_DATABASE_URL:
@@ -143,8 +141,13 @@ async def import_notes(
             parsed.category = DocumentCategory.ADVOCATE  # advocate notes are always "other"
             logger.info(
                 "[%d/%d] DRY RUN: %s → %s (date=%s, inst=%s, cat=%s, %d bytes text)",
-                i, len(FILE_MAP), src_name, target_name,
-                parsed.document_date, parsed.institution, parsed.category.value,
+                i,
+                len(FILE_MAP),
+                src_name,
+                target_name,
+                parsed.document_date,
+                parsed.institution,
+                parsed.category.value,
                 len(text_content),
             )
             continue
@@ -152,6 +155,7 @@ async def import_notes(
         try:
             # Upload to Anthropic Files API
             import io
+
             metadata = client.upload(io.BytesIO(file_bytes), target_name, "text/markdown")
             logger.info("[%d/%d] Uploaded %s → %s", i, len(FILE_MAP), target_name, metadata.id)
 
@@ -188,9 +192,11 @@ async def import_notes(
 
                     struct_meta = extract_structured_metadata(text_content)
                     await db.update_structured_metadata(doc.id, json.dumps(struct_meta))
-                    logger.info("  → Structured metadata: %d findings, %d diagnoses",
-                                len(struct_meta.get("findings", [])),
-                                len(struct_meta.get("diagnoses", [])))
+                    logger.info(
+                        "  → Structured metadata: %d findings, %d diagnoses",
+                        len(struct_meta.get("findings", [])),
+                        len(struct_meta.get("diagnoses", [])),
+                    )
                     stats["ai_processed"] += 1
                 except Exception as e:
                     logger.warning("  → AI enhancement failed: %s", e)
@@ -211,11 +217,16 @@ async def import_notes(
             logger.info("[PDF] SKIP (exists id=%d): %s", existing.id, pdf_target)
             stats["skipped"] += 1
         elif dry_run:
-            logger.info("[PDF] DRY RUN: %s → %s (%.1f MB)", PDF_PATH.name, pdf_target,
-                        PDF_PATH.stat().st_size / 1024 / 1024)
+            logger.info(
+                "[PDF] DRY RUN: %s → %s (%.1f MB)",
+                PDF_PATH.name,
+                pdf_target,
+                PDF_PATH.stat().st_size / 1024 / 1024,
+            )
         else:
             try:
                 import io
+
                 pdf_bytes = PDF_PATH.read_bytes()
                 metadata = client.upload(io.BytesIO(pdf_bytes), pdf_target, "application/pdf")
                 logger.info("[PDF] Uploaded %s → %s", pdf_target, metadata.id)
@@ -246,7 +257,10 @@ async def import_notes(
 
     logger.info(
         "Import complete: imported=%d, skipped=%d, errors=%d, ai_processed=%d",
-        stats["imported"], stats["skipped"], stats["errors"], stats["ai_processed"],
+        stats["imported"],
+        stats["skipped"],
+        stats["errors"],
+        stats["ai_processed"],
     )
 
 

@@ -45,11 +45,13 @@ async def update_patient_context(
     db = _get_db(ctx)
     await patient_context.save_to_db(db.db, updated)
 
-    return json.dumps({
-        "status": "updated",
-        "updated_fields": list(updates.keys()),
-        "patient_name": updated.get("name", ""),
-    })
+    return json.dumps(
+        {
+            "status": "updated",
+            "updated_fields": list(updates.keys()),
+            "patient_name": updated.get("name", ""),
+        }
+    )
 
 
 def register(mcp):

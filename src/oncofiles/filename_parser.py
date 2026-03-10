@@ -136,6 +136,7 @@ def _patient_prefix_re() -> re.Pattern:
         return re.compile(rf"^{re.escape(compact)}[-]?", re.IGNORECASE)
     return re.compile(r"^ErikaFusekova[-]?", re.IGNORECASE)
 
+
 # Bilingual format: EN category prefix already present
 _BILINGUAL_PREFIX_RE = re.compile(
     r"^(labs|report|pathology|imaging_ct|imaging_us|imaging|genetics|surgery|"
