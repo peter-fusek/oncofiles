@@ -7,6 +7,23 @@ from oncofiles.models import DocumentCategory, SearchQuery
 from tests.helpers import make_doc
 
 
+async def test_idempotent_migrate():
+    """migrate() can be called twice without crashing (already-migrated DB)."""
+    database = Database(":memory:")
+    await database.connect()
+    await database.migrate()
+    # Second call should not raise
+    await database.migrate()
+
+    # Verify schema_migrations table has entries
+    async with database.db.execute("SELECT COUNT(*) FROM schema_migrations") as cursor:
+        row = await cursor.fetchone()
+        count = row["COUNT(*)"] if isinstance(row, dict) else row[0]
+        assert count >= 16  # at least 16 migration files
+
+    await database.close()
+
+
 async def test_insert_and_get(db: Database):
     doc = make_doc()
     result = await db.insert_document(doc)

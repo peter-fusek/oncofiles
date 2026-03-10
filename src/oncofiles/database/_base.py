@@ -146,30 +146,45 @@ class DatabaseBase:
         """Run numbered SQL migration files from migrations/ directory.
 
         Pattern: migrations/001_description.sql, 002_description.sql, etc.
-        Migrations are idempotent (CREATE TABLE IF NOT EXISTS, etc.) and run
-        in sorted filename order on every startup. Add new migrations by
-        creating the next numbered .sql file.
+        Uses a schema_migrations table to track applied migrations and skip
+        already-applied ones. Safe to call on already-migrated databases.
         """
+        # Ensure tracking table exists (must run before checking applied)
+        await self.db.executescript(
+            "CREATE TABLE IF NOT EXISTS schema_migrations ("
+            "  version TEXT PRIMARY KEY,"
+            "  applied_at TEXT NOT NULL DEFAULT (datetime('now'))"
+            ");"
+        )
+
+        # Get already-applied migrations
+        async with self.db.execute("SELECT version FROM schema_migrations") as cursor:
+            rows = await cursor.fetchall()
+        applied = {row["version"] if isinstance(row, dict) else row[0] for row in rows}
+
+        # Run pending migrations in order
         for sql_file in sorted(MIGRATIONS_DIR.glob("*.sql")):
+            version = sql_file.stem  # e.g. "001_initial_schema"
+            if version in applied:
+                continue
             sql = sql_file.read_text()
             if sql.strip():
-                await self.db.executescript(sql)
-        # Add columns if missing (ALTER TABLE can't use IF NOT EXISTS)
-        for col, typedef in [
-            ("sync_state", "TEXT NOT NULL DEFAULT 'synced'"),
-            ("last_synced_at", "TEXT"),
-            ("deleted_at", "TEXT"),
-        ]:
-            try:
-                await self.db.execute(f"ALTER TABLE documents ADD COLUMN {col} {typedef}")
-                await self.db.commit()
-            except Exception:
-                pass  # Column already exists
-        # Create indexes (safe with IF NOT EXISTS)
-        for idx_sql in [
-            "CREATE INDEX IF NOT EXISTS idx_documents_deleted_at ON documents(deleted_at)",
-            "CREATE INDEX IF NOT EXISTS idx_documents_ai_processed_at"
-            " ON documents(ai_processed_at)",
-        ]:
-            await self.db.execute(idx_sql)
+                try:
+                    await self.db.executescript(sql)
+                except Exception:
+                    # On partially-tracked DBs, ALTER TABLE may fail with
+                    # "duplicate column". Run each statement best-effort.
+                    for stmt in sql.split(";"):
+                        stmt = stmt.strip()
+                        if not stmt or stmt.startswith("--"):
+                            continue
+                        try:
+                            await self.db.execute(stmt)
+                            await self.db.commit()
+                        except Exception:
+                            pass
+            await self.db.execute(
+                "INSERT OR IGNORE INTO schema_migrations (version) VALUES (?)",
+                (version,),
+            )
             await self.db.commit()

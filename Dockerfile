@@ -18,7 +18,7 @@ COPY migrations/ migrations/
 # Install the local package itself
 RUN uv sync --frozen --no-dev --extra cloud --extra gdrive
 
-# Railway injects PORT; defaults handled in config.py
+# Default to streamable-http for cloud; override with MCP_TRANSPORT=stdio for local
 ENV MCP_TRANSPORT=streamable-http
 
 CMD ["uv", "run", "oncofiles-mcp"]
