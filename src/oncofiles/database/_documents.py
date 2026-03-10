@@ -19,8 +19,8 @@ class DocumentMixin:
             INSERT INTO documents
                 (file_id, filename, original_filename, document_date,
                  institution, category, description, mime_type, size_bytes,
-                 gdrive_id, gdrive_modified_time)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 gdrive_id, gdrive_modified_time, version, previous_version_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 doc.file_id,
@@ -34,6 +34,8 @@ class DocumentMixin:
                 doc.size_bytes,
                 doc.gdrive_id,
                 doc.gdrive_modified_time.isoformat() if doc.gdrive_modified_time else None,
+                doc.version,
+                doc.previous_version_id,
             ),
         )
         await self.db.commit()
@@ -454,6 +456,51 @@ class DocumentMixin:
                 (sync_state, doc_id),
             )
         await self.db.commit()
+
+    # ── Versioning ─────────────────────────────────────────────────────
+
+    async def get_active_document_by_filename(self, original_filename: str) -> Document | None:
+        """Get an active (non-deleted) document by its original filename."""
+        async with self.db.execute(
+            "SELECT * FROM documents WHERE original_filename = ? AND deleted_at IS NULL "
+            "ORDER BY version DESC LIMIT 1",
+            (original_filename,),
+        ) as cursor:
+            row = await cursor.fetchone()
+            return _row_to_document(row) if row else None
+
+    async def get_document_version_chain(self, doc_id: int) -> list[Document]:
+        """Walk the version chain for a document, newest first.
+
+        Starting from the given document, finds the latest version (if any
+        newer version points back to it), then walks previous_version_id
+        backwards to build the full chain.
+        """
+        # First, find the latest version that traces back through this doc
+        # by walking forward: find any doc whose previous_version_id = doc_id
+        current_id = doc_id
+        while True:
+            async with self.db.execute(
+                "SELECT id FROM documents WHERE previous_version_id = ?",
+                (current_id,),
+            ) as cursor:
+                row = await cursor.fetchone()
+                if row:
+                    current_id = row["id"]
+                else:
+                    break
+
+        # Now walk backwards from the latest version
+        chain: list[Document] = []
+        visited: set[int] = set()
+        while current_id and current_id not in visited:
+            visited.add(current_id)
+            doc = await self.get_document(current_id)
+            if not doc:
+                break
+            chain.append(doc)
+            current_id = doc.previous_version_id
+        return chain
 
     async def get_pending_sync_documents(self) -> list[Document]:
         """Get documents that need syncing (no gdrive_id or pending state)."""

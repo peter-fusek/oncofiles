@@ -56,6 +56,10 @@ class Document(BaseModel):
         default=None, description="JSON object with structured medical metadata"
     )
     deleted_at: datetime | None = Field(default=None, description="Soft-delete timestamp")
+    version: int = Field(default=1, description="Document version number")
+    previous_version_id: int | None = Field(
+        default=None, description="ID of the previous version (soft-deleted)"
+    )
 
     @property
     def content_block(self) -> dict:
