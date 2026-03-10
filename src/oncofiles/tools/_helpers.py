@@ -69,6 +69,10 @@ def _doc_to_dict(d: Document) -> dict:
         "category": d.category.value,
         "description": d.description,
     }
+    if d.version > 1:
+        result["version"] = d.version
+    if d.previous_version_id:
+        result["previous_version_id"] = d.previous_version_id
     if d.ai_summary:
         result["ai_summary"] = d.ai_summary
     if d.ai_tags:

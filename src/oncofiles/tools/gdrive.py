@@ -290,6 +290,62 @@ async def gdrive_fix_permissions(
     )
 
 
+async def setup_gdrive(ctx: Context, root_folder_id: str) -> str:
+    """Create the full folder structure (17 categories + 3 metadata) in a GDrive root folder.
+
+    Idempotent: checks for existing folders by name before creating.
+    Handles both bilingual and legacy EN-only folder names (renames old to bilingual).
+
+    Args:
+        root_folder_id: The Google Drive folder ID to create subfolders in.
+    """
+    from oncofiles.gdrive_folders import ALL_FOLDERS, bilingual_name
+
+    gdrive = _get_gdrive(ctx)
+    if not gdrive:
+        msg = "GDrive client not configured. Use gdrive_auth_url to connect."
+        return json.dumps({"error": msg})
+
+    created: list[str] = []
+    skipped: list[str] = []
+    renamed: list[str] = []
+
+    for en_key in ALL_FOLDERS:
+        display = bilingual_name(en_key)
+
+        # Check bilingual name first
+        existing = gdrive.find_folder(display, root_folder_id)
+        if existing:
+            skipped.append(display)
+            continue
+
+        # Check old EN-only name and rename
+        old = gdrive.find_folder(en_key, root_folder_id)
+        if old:
+            gdrive.rename_file(old, display)
+            renamed.append(f"{en_key} → {display}")
+            continue
+
+        # Create new folder
+        gdrive.create_folder(display, root_folder_id)
+        created.append(display)
+
+    return json.dumps(
+        {
+            "status": "ok",
+            "root_folder_id": root_folder_id,
+            "total_folders": len(ALL_FOLDERS),
+            "created": created,
+            "skipped": skipped,
+            "renamed": renamed,
+            "summary": (
+                f"Created {len(created)}, skipped {len(skipped)}, "
+                f"renamed {len(renamed)} of {len(ALL_FOLDERS)} folders."
+            ),
+        }
+    )
+
+
 async def export_manifest(ctx: Context) -> str:
     """Export the full database as a JSON manifest (on-demand).
 
@@ -313,4 +369,5 @@ def register(mcp):
     mcp.tool()(sync_from_gdrive)
     mcp.tool()(sync_to_gdrive)
     mcp.tool()(gdrive_fix_permissions)
+    mcp.tool()(setup_gdrive)
     mcp.tool()(export_manifest)

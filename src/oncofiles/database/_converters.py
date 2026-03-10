@@ -177,4 +177,6 @@ def _row_to_document(row: Any) -> Document:
         deleted_at=(
             datetime.fromisoformat(row_dict["deleted_at"]) if row_dict.get("deleted_at") else None
         ),
+        version=row_dict.get("version", 1) or 1,
+        previous_version_id=row_dict.get("previous_version_id"),
     )

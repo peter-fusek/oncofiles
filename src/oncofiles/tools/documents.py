@@ -68,6 +68,18 @@ async def upload_document(
     # Parse filename for structured metadata
     parsed = parse_filename(filename)
 
+    # Check for existing active document with the same filename (re-upload / new version)
+    existing = await db.get_active_document_by_filename(filename)
+    version = 1
+    previous_version_id = None
+    if existing:
+        version = existing.version + 1
+        previous_version_id = existing.id
+        await db.delete_document(existing.id)
+        await ctx.info(
+            f"Superseded version {existing.version} (doc #{existing.id}) → new version {version}"
+        )
+
     doc = Document(
         file_id=metadata.id,
         filename=filename,
@@ -78,6 +90,8 @@ async def upload_document(
         description=parsed.description,
         mime_type=metadata.mime_type,
         size_bytes=metadata.size_bytes,
+        version=version,
+        previous_version_id=previous_version_id,
     )
 
     doc = await db.insert_document(doc)
@@ -119,7 +133,10 @@ async def upload_document(
         "document_date": doc.document_date.isoformat() if doc.document_date else None,
         "institution": doc.institution,
         "category": doc.category.value,
+        "version": doc.version,
     }
+    if doc.previous_version_id:
+        result["previous_version_id"] = doc.previous_version_id
     if gdrive_id:
         result["gdrive_id"] = gdrive_id
     return json.dumps(result)
@@ -356,6 +373,42 @@ async def find_duplicates(ctx: Context) -> str:
     return json.dumps({"duplicate_groups": result, "total_groups": len(result)})
 
 
+async def get_document_versions(ctx: Context, doc_id: int) -> str:
+    """Get the version history chain for a document.
+
+    Returns all versions (current and previous) ordered newest first.
+    Works with any document ID in the chain — will find the full history.
+
+    Args:
+        doc_id: The integer database ID of any document in the version chain.
+    """
+    db = _get_db(ctx)
+    doc = await db.get_document(doc_id)
+    if not doc:
+        return json.dumps({"error": f"Document not found: {doc_id}"})
+
+    chain = await db.get_document_version_chain(doc_id)
+    return json.dumps(
+        {
+            "versions": [
+                {
+                    "id": d.id,
+                    "file_id": d.file_id,
+                    "filename": d.filename,
+                    "version": d.version,
+                    "previous_version_id": d.previous_version_id,
+                    "document_date": d.document_date.isoformat() if d.document_date else None,
+                    "size_bytes": d.size_bytes,
+                    "created_at": d.created_at.isoformat() if d.created_at else None,
+                    "deleted_at": d.deleted_at.isoformat() if d.deleted_at else None,
+                }
+                for d in chain
+            ],
+            "total_versions": len(chain),
+        }
+    )
+
+
 def register(mcp):
     mcp.tool()(upload_document)
     mcp.tool()(list_documents)
@@ -366,3 +419,4 @@ def register(mcp):
     mcp.tool()(restore_document)
     mcp.tool()(list_trash)
     mcp.tool()(find_duplicates)
+    mcp.tool()(get_document_versions)
