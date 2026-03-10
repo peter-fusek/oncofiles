@@ -6,7 +6,8 @@ import json
 
 from fastmcp import Context
 
-from oncofiles.tools._helpers import PATIENT_CONTEXT, _get_db
+from oncofiles.patient_context import get_context as _get_patient_context
+from oncofiles.tools._helpers import _get_db
 
 
 async def export_document_package(
@@ -51,7 +52,7 @@ async def export_document_package(
         by_category[cat].append(entry)
 
     result: dict = {
-        "patient": PATIENT_CONTEXT,
+        "patient": _get_patient_context(),
         "total_documents": len(docs),
         "documents_by_category": by_category,
     }

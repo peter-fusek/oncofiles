@@ -22,6 +22,7 @@ from oncofiles.config import (
     MCP_HOST,
     MCP_PORT,
     MCP_TRANSPORT,
+    PATIENT_CONTEXT_PATH,
     SYNC_ENABLED,
     SYNC_INTERVAL_MINUTES,
     TURSO_AUTH_TOKEN,
@@ -101,6 +102,10 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict]:
         db = Database(DATABASE_PATH)
     await db.connect()
     await db.migrate()
+    # Load patient context (DB → JSON file → hardcoded default)
+    from oncofiles import patient_context
+
+    await patient_context.initialize(db.db, PATIENT_CONTEXT_PATH)
     files = FilesClient()
     # Restore MCP OAuth sessions from DB (survive deploys)
     if hasattr(auth, "set_db"):
@@ -248,12 +253,15 @@ def _get_sync_folder_id_from(oauth_folder_id: str) -> str:
 
 # ── MCP server ────────────────────────────────────────────────────────────────
 
+from oncofiles.audit_middleware import AuditMiddleware  # noqa: E402
+
 mcp = FastMCP(
     "Oncofiles",
     instructions="Medical document management via Anthropic Files API",
     lifespan=lifespan,
     auth=auth,
 )
+mcp.add_middleware(AuditMiddleware())
 
 
 # ── Health check ──────────────────────────────────────────────────────────────
@@ -325,6 +333,7 @@ from oncofiles.tools import (  # noqa: E402
     export,
     gdrive,
     lab_trends,
+    patient,
     research,
     treatment,
 )
@@ -341,6 +350,7 @@ enhance_tools.register(mcp)
 clinical.register(mcp)
 lab_trends.register(mcp)
 export.register(mcp)
+patient.register(mcp)
 resources.register(mcp)
 
 # ── Backward-compatible re-exports for tests ─────────────────────────────────
