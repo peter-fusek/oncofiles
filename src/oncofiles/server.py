@@ -230,12 +230,6 @@ def _start_sync_scheduler(db, files, gdrive, oauth_folder_id):
         max_instances=1,
     )
     scheduler.add_job(
-        _run_metadata_extraction,
-        "date",  # run once at startup for initial backfill
-        id="metadata_extraction_startup",
-        max_instances=1,
-    )
-    scheduler.add_job(
         _run_trash_cleanup,
         CronTrigger(hour=3, minute=0),  # daily at 3 AM
         id="trash_cleanup",
