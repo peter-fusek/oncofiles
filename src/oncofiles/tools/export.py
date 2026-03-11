@@ -7,7 +7,7 @@ import json
 from fastmcp import Context
 
 from oncofiles.patient_context import get_context as _get_patient_context
-from oncofiles.tools._helpers import _get_db
+from oncofiles.tools._helpers import _gdrive_url, _get_db
 
 
 async def export_document_package(
@@ -43,6 +43,7 @@ async def export_document_package(
             "document_date": d.document_date.isoformat() if d.document_date else None,
             "institution": d.institution,
             "description": d.description,
+            "gdrive_url": _gdrive_url(d.gdrive_id),
         }
         if include_metadata:
             if d.ai_summary:

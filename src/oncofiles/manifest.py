@@ -8,6 +8,7 @@ from collections import defaultdict
 from datetime import UTC, datetime
 
 from oncofiles.database import Database
+from oncofiles.tools._helpers import _gdrive_url, _research_source_url
 
 logger = logging.getLogger(__name__)
 
@@ -117,7 +118,11 @@ def render_research_library(entries: list, lang: str = "en") -> str:
         for entry in source_entries:
             lines.append(f"### {entry.title}")
             if entry.external_id:
-                lines.append(f"*ID: {entry.external_id}*")
+                url = _research_source_url(entry.source, entry.external_id)
+                if url:
+                    lines.append(f"*[{entry.external_id}]({url})*")
+                else:
+                    lines.append(f"*ID: {entry.external_id}*")
             if entry.summary:
                 lines.append("")
                 lines.append(entry.summary)
@@ -157,6 +162,7 @@ def _doc_to_manifest(doc) -> dict:
         "mime_type": doc.mime_type,
         "size_bytes": doc.size_bytes,
         "gdrive_id": doc.gdrive_id,
+        "gdrive_url": _gdrive_url(doc.gdrive_id),
         "ai_summary": doc.ai_summary,
         "ai_tags": doc.ai_tags,
         "structured_metadata": doc.structured_metadata,
@@ -199,6 +205,7 @@ def _research_to_manifest(entry) -> dict:
         "title": entry.title,
         "summary": entry.summary,
         "tags": entry.tags,
+        "url": _research_source_url(entry.source, entry.external_id),
     }
 
 

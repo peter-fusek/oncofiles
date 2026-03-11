@@ -6,7 +6,7 @@ from datetime import date
 
 from fastmcp import Context
 
-from oncofiles.tools._helpers import _get_db
+from oncofiles.tools._helpers import _gdrive_url, _get_db
 
 
 def register(mcp):
@@ -18,10 +18,11 @@ def register(mcp):
         lines = [f"# Document Catalog ({len(docs)} documents)\n"]
         for d in docs:
             date_str = d.document_date.isoformat() if d.document_date else "unknown"
+            gdrive_link = f" [GDrive]({_gdrive_url(d.gdrive_id)})" if d.gdrive_id else ""
             lines.append(
                 f"- **{d.filename}** [{d.category.value}] "
                 f"({date_str}, {d.institution or 'unknown'}) "
-                f"file_id: `{d.file_id}`"
+                f"file_id: `{d.file_id}`{gdrive_link}"
             )
         return "\n".join(lines)
 
@@ -35,9 +36,10 @@ def register(mcp):
         lines = ["# Latest Lab Results\n"]
         for d in labs:
             date_str = d.document_date.isoformat() if d.document_date else "unknown"
+            gdrive_link = f" [GDrive]({_gdrive_url(d.gdrive_id)})" if d.gdrive_id else ""
             lines.append(
                 f"- **{d.filename}** ({date_str}, {d.institution or 'unknown'}) "
-                f"file_id: `{d.file_id}`"
+                f"file_id: `{d.file_id}`{gdrive_link}"
             )
         return "\n".join(lines)
 
@@ -58,9 +60,10 @@ def register(mcp):
         items: list[tuple[str, str]] = []
         for d in docs:
             date_str = d.document_date.isoformat() if d.document_date else "unknown"
+            gdrive_link = f" [GDrive]({_gdrive_url(d.gdrive_id)})" if d.gdrive_id else ""
             line = (
                 f"- [doc/{d.category.value}] **{d.filename}** "
-                f"({d.institution or 'unknown'}) file_id: `{d.file_id}`"
+                f"({d.institution or 'unknown'}) file_id: `{d.file_id}`{gdrive_link}"
             )
             items.append((date_str, line))
         for e in events:

@@ -642,7 +642,7 @@ async def test_upload_document_auto_syncs_to_gdrive(db: Database):
         )
 
     assert result["id"] is not None
-    assert result["gdrive_id"] == "gdrive_456"
+    assert result["gdrive_url"] == "https://drive.google.com/file/d/gdrive_456/view"
     mock_gdrive.upload.assert_called_once()
 
 

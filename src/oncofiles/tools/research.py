@@ -7,7 +7,7 @@ import json
 from fastmcp import Context
 
 from oncofiles.models import ResearchEntry, ResearchQuery
-from oncofiles.tools._helpers import _get_db
+from oncofiles.tools._helpers import _get_db, _research_source_url
 
 
 async def add_research_entry(
@@ -48,6 +48,7 @@ async def add_research_entry(
             "source": saved.source,
             "external_id": saved.external_id,
             "title": saved.title,
+            "url": _research_source_url(saved.source, saved.external_id),
         }
     )
 
@@ -76,6 +77,7 @@ async def search_research(
             "title": e.title,
             "summary": e.summary[:500] + ("..." if len(e.summary) > 500 else ""),
             "tags": e.tags,
+            "url": _research_source_url(e.source, e.external_id),
             "created_at": e.created_at.isoformat() if e.created_at else None,
         }
         for e in entries
@@ -104,6 +106,7 @@ async def list_research_entries(
             "title": e.title,
             "summary": e.summary[:200] + ("..." if len(e.summary) > 200 else ""),
             "tags": e.tags,
+            "url": _research_source_url(e.source, e.external_id),
             "created_at": e.created_at.isoformat() if e.created_at else None,
         }
         for e in entries

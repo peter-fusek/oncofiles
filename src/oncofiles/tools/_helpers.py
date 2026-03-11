@@ -18,6 +18,38 @@ from oncofiles.ocr import OCR_MODEL, extract_text_from_image
 
 logger = logging.getLogger(__name__)
 
+GDRIVE_FILE_URL = "https://drive.google.com/file/d/{}/view"
+GDRIVE_FOLDER_URL = "https://drive.google.com/drive/folders/{}"
+PUBMED_URL = "https://pubmed.ncbi.nlm.nih.gov/{}/"
+CLINICALTRIALS_URL = "https://clinicaltrials.gov/study/{}"
+
+
+# ── Source attribution helpers ───────────────────────────────────────────────
+
+
+def _gdrive_url(gdrive_id: str | None) -> str | None:
+    """Build a Google Drive view URL from a file ID."""
+    return GDRIVE_FILE_URL.format(gdrive_id) if gdrive_id else None
+
+
+def _research_source_url(source: str, external_id: str) -> str | None:
+    """Build an external URL for a research entry based on source type."""
+    if not external_id:
+        return None
+    source_lower = source.lower()
+    if source_lower == "pubmed":
+        # external_id may be "PMID:12345" or just "12345"
+        numeric = external_id.replace("PMID:", "").replace("PMID", "").strip()
+        if numeric.isdigit():
+            return PUBMED_URL.format(numeric)
+    elif source_lower in ("clinicaltrials", "clinicaltrials.gov"):
+        # external_id is typically "NCT04123456"
+        eid = external_id.strip()
+        if eid.upper().startswith("NCT"):
+            return CLINICALTRIALS_URL.format(eid)
+    return None
+
+
 # ── Patient context (delegated to patient_context module) ────────────────────
 
 # Backward-compatible alias — returns the live context dict
@@ -68,6 +100,7 @@ def _doc_to_dict(d: Document) -> dict:
         "institution": d.institution,
         "category": d.category.value,
         "description": d.description,
+        "gdrive_url": _gdrive_url(d.gdrive_id),
     }
     if d.version > 1:
         result["version"] = d.version
