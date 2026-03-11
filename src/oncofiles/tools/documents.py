@@ -450,6 +450,39 @@ async def get_related_documents(ctx: Context, doc_id: int) -> str:
     return json.dumps({"document_id": doc_id, "related": items, "total": len(items)})
 
 
+async def update_document_category(ctx: Context, doc_id: int, category: str) -> str:
+    """Update the category of a document.
+
+    Use this to recategorize documents (e.g. from 'other' to 'reference').
+
+    Args:
+        doc_id: The integer database ID of the document.
+        category: New category (labs, report, imaging, imaging_ct, imaging_us,
+                  pathology, genetics, surgery, surgical_report, prescription,
+                  referral, discharge, discharge_summary, chemo_sheet,
+                  reference, advocate, other).
+    """
+    try:
+        valid_category = DocumentCategory(category)
+    except ValueError:
+        valid_values = [c.value for c in DocumentCategory]
+        return json.dumps({"error": f"Invalid category '{category}'. Valid: {valid_values}"})
+
+    db = _get_db(ctx)
+    doc = await db.get_document(doc_id)
+    if not doc:
+        return json.dumps({"error": f"Document not found: {doc_id}"})
+
+    old_category = doc.category.value
+    await db.update_document_category(doc_id, valid_category.value)
+    return json.dumps({
+        "id": doc_id,
+        "old_category": old_category,
+        "new_category": valid_category.value,
+        "filename": doc.filename,
+    })
+
+
 def register(mcp):
     mcp.tool()(upload_document)
     mcp.tool()(list_documents)
@@ -462,3 +495,4 @@ def register(mcp):
     mcp.tool()(find_duplicates)
     mcp.tool()(get_document_versions)
     mcp.tool()(get_related_documents)
+    mcp.tool()(update_document_category)

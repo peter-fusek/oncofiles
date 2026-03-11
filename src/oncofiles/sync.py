@@ -979,6 +979,14 @@ async def _enhance_document(
                 for page_num, text in enumerate(pdf_texts, start=1):
                     await db.save_ocr_page(doc.id, page_num, text, "pymupdf-native")
                 text_parts = pdf_texts
+        elif content_bytes and doc.mime_type and doc.mime_type.startswith("text/"):
+            try:
+                text_content = content_bytes.decode("utf-8")
+            except UnicodeDecodeError:
+                text_content = content_bytes.decode("latin-1")
+            if text_content.strip():
+                await db.save_ocr_page(doc.id, 1, text_content, "text-decode")
+                text_parts = [text_content]
 
     if not text_parts:
         logger.warning("enhance: no text available for doc %d (%s)", doc.id, doc.filename)
