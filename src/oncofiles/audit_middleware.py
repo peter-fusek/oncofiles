@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from typing import Any
@@ -12,11 +13,38 @@ from fastmcp.tools.tool import ToolResult
 logger = logging.getLogger(__name__)
 
 
+async def _write_audit_log(
+    db, session_id, tool_name, input_summary, duration_ms, status, error_message,
+):
+    """Write audit log entry in background — never blocks tool response."""
+    try:
+        await db.db.execute(
+            """
+            INSERT INTO activity_log
+                (session_id, agent_id, tool_name, input_summary,
+                 duration_ms, status, error_message)
+            VALUES (?, 'auto', ?, ?, ?, ?, ?)
+            """,
+            (
+                session_id,
+                tool_name,
+                input_summary,
+                duration_ms,
+                status,
+                error_message,
+            ),
+        )
+        await db.db.commit()
+    except Exception:
+        logger.debug("Audit log write failed for %s", tool_name, exc_info=True)
+
+
 class AuditMiddleware(Middleware):
     """Automatically logs every tool call to the activity_log table.
 
     Captures tool name, duration, status, and error details without
     requiring manual logging from Oncoteam or other agents.
+    Uses fire-and-forget to avoid blocking tool responses.
     """
 
     async def on_call_tool(
@@ -39,32 +67,22 @@ class AuditMiddleware(Middleware):
         finally:
             duration_ms = int((time.perf_counter() - start) * 1000)
 
-            # Get DB from lifespan context (if available)
+            # Fire-and-forget: audit log write runs in background
             try:
                 fastmcp_ctx = context.fastmcp_context
                 if fastmcp_ctx and hasattr(fastmcp_ctx, "request_context"):
                     db = fastmcp_ctx.request_context.lifespan_context.get("db")
                     if db:
                         session_id = _get_session_id(context)
-                        await db.db.execute(
-                            """
-                            INSERT INTO activity_log
-                                (session_id, agent_id, tool_name, input_summary,
-                                 duration_ms, status, error_message)
-                            VALUES (?, 'auto', ?, ?, ?, ?, ?)
-                            """,
-                            (
-                                session_id,
-                                tool_name,
-                                _summarize_input(context.message),
-                                duration_ms,
-                                status,
-                                error_message,
-                            ),
+                        input_summary = _summarize_input(context.message)
+                        asyncio.create_task(
+                            _write_audit_log(
+                                db, session_id, tool_name, input_summary,
+                                duration_ms, status, error_message,
+                            )
                         )
-                        await db.db.commit()
             except Exception:
-                logger.debug("Audit log write failed for %s", tool_name, exc_info=True)
+                logger.debug("Audit log dispatch failed for %s", tool_name, exc_info=True)
 
 
 def _get_session_id(context: MiddlewareContext[Any]) -> str:
