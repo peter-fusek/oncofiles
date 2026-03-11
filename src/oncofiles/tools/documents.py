@@ -63,8 +63,9 @@ async def upload_document(
     await ctx.info(f"Uploading {filename} ({len(file_bytes)} bytes)...")
     try:
         metadata = files.upload(io.BytesIO(file_bytes), filename, mime_type)
-    except Exception as e:
-        return json.dumps({"error": f"Files API upload failed: {e}"})
+    except Exception:
+        logger.exception("Files API upload failed for %s", filename)
+        return json.dumps({"error": "Files API upload failed. Check server logs."})
 
     # Parse filename for structured metadata
     parsed = parse_filename(filename)
