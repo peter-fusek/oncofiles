@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Oncofiles — Patient-side medical document management</title>
+  <meta name="description" content="MCP server for persistent medical document management. Your medical records, organized and accessible through AI.">
+  <style>
+    :root {
+      --bg: #0f172a;
+      --surface: #1e293b;
+      --border: #334155;
+      --text: #e2e8f0;
+      --text-muted: #94a3b8;
+      --accent: #8b5cf6;
+      --accent-light: #a78bfa;
+    }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.6;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+    .container { max-width: 800px; margin: 0 auto; padding: 0 1.5rem; }
+    header { padding: 2rem 0; border-bottom: 1px solid var(--border); }
+    header .container { display: flex; align-items: center; justify-content: space-between; }
+    .logo { font-size: 1.5rem; font-weight: 700; letter-spacing: -0.02em; }
+    .logo span { color: var(--accent); }
+    nav a {
+      color: var(--text-muted);
+      text-decoration: none;
+      font-size: 0.875rem;
+      margin-left: 1.5rem;
+      transition: color 0.2s;
+    }
+    nav a:hover { color: var(--accent-light); }
+
+    .hero {
+      padding: 5rem 0 4rem;
+      text-align: center;
+    }
+    .hero h1 {
+      font-size: 2.5rem;
+      font-weight: 800;
+      letter-spacing: -0.03em;
+      line-height: 1.2;
+      margin-bottom: 1rem;
+    }
+    .hero p {
+      font-size: 1.125rem;
+      color: var(--text-muted);
+      max-width: 560px;
+      margin: 0 auto 2rem;
+    }
+    .badge {
+      display: inline-block;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 9999px;
+      padding: 0.25rem 0.875rem;
+      font-size: 0.75rem;
+      color: var(--accent-light);
+      margin-bottom: 1.5rem;
+    }
+
+    .features {
+      padding: 3rem 0;
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 1.5rem;
+    }
+    .feature {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 0.75rem;
+      padding: 1.5rem;
+    }
+    .feature h3 {
+      font-size: 1rem;
+      font-weight: 600;
+      margin-bottom: 0.5rem;
+    }
+    .feature p {
+      font-size: 0.875rem;
+      color: var(--text-muted);
+    }
+
+    .stats {
+      padding: 2rem 0 3rem;
+      display: flex;
+      justify-content: center;
+      gap: 3rem;
+      flex-wrap: wrap;
+    }
+    .stat { text-align: center; }
+    .stat .number {
+      font-size: 2rem;
+      font-weight: 800;
+      color: var(--accent);
+    }
+    .stat .label {
+      font-size: 0.75rem;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    .cta {
+      text-align: center;
+      padding: 3rem 0;
+      border-top: 1px solid var(--border);
+    }
+    .cta a {
+      display: inline-block;
+      background: var(--accent);
+      color: white;
+      text-decoration: none;
+      padding: 0.75rem 1.75rem;
+      border-radius: 0.5rem;
+      font-weight: 600;
+      font-size: 0.9375rem;
+      transition: background 0.2s;
+    }
+    .cta a:hover { background: var(--accent-light); }
+    .cta p {
+      margin-top: 0.75rem;
+      font-size: 0.8125rem;
+      color: var(--text-muted);
+    }
+
+    footer {
+      margin-top: auto;
+      padding: 2rem 0;
+      border-top: 1px solid var(--border);
+      text-align: center;
+      font-size: 0.8125rem;
+      color: var(--text-muted);
+    }
+    footer a { color: var(--text-muted); text-decoration: none; }
+    footer a:hover { color: var(--accent-light); }
+
+    @media (max-width: 640px) {
+      .hero h1 { font-size: 1.75rem; }
+      .hero { padding: 3rem 0 2rem; }
+      .stats { gap: 2rem; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="container">
+      <div class="logo">onco<span>files</span></div>
+      <nav>
+        <a href="https://github.com/instarea-sk/oncofiles">GitHub</a>
+        <a href="/health">Status</a>
+        <a href="/mcp">MCP</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <section class="hero">
+      <div class="container">
+        <div class="badge">Open Source &middot; MCP Protocol</div>
+        <h1>Your medical records,<br>organized by AI</h1>
+        <p>Patient-side MCP server for persistent medical document management. Connect your AI assistant to your health data.</p>
+      </div>
+    </section>
+
+    <section class="container features">
+      <div class="feature">
+        <h3>Document Management</h3>
+        <p>17 medical categories. Upload, organize, version, and search your records with full metadata.</p>
+      </div>
+      <div class="feature">
+        <h3>Lab Tracking</h3>
+        <p>Store lab values, track trends over time, and get pre-cycle safety checks for treatment protocols.</p>
+      </div>
+      <div class="feature">
+        <h3>Google Drive Sync</h3>
+        <p>Bidirectional sync with Google Drive. Your documents backed up and accessible everywhere.</p>
+      </div>
+      <div class="feature">
+        <h3>AI-Ready via MCP</h3>
+        <p>Works with Claude, ChatGPT, and any MCP-compatible client. Your data stays yours.</p>
+      </div>
+      <div class="feature">
+        <h3>Clinical Research</h3>
+        <p>Search PubMed and ClinicalTrials.gov. Track treatment events and research decisions.</p>
+      </div>
+      <div class="feature">
+        <h3>Privacy First</h3>
+        <p>Self-hosted. Single-patient design. No data leaves your infrastructure without your consent.</p>
+      </div>
+    </section>
+
+    <section class="stats" id="stats">
+      <div class="stat">
+        <div class="number" data-stat="tools">47</div>
+        <div class="label">MCP Tools</div>
+      </div>
+      <div class="stat">
+        <div class="number" data-stat="categories">17</div>
+        <div class="label">Doc Categories</div>
+      </div>
+      <div class="stat">
+        <div class="number" data-stat="tests">380</div>
+        <div class="label">Tests</div>
+      </div>
+      <div class="stat">
+        <div class="number" data-stat="version">v3.10</div>
+        <div class="label">Current</div>
+      </div>
+    </section>
+
+    <section class="cta">
+      <div class="container">
+        <a href="https://github.com/instarea-sk/oncofiles">View on GitHub</a>
+        <p>MIT License &middot; Built with FastMCP &middot; Python 3.12+</p>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <div class="container">
+      &copy; 2025-2026 <a href="https://github.com/instarea-sk">Instarea</a> &middot;
+      <a href="/health">Health</a> &middot;
+      <a href="/metrics">Metrics</a>
+    </div>
+  </footer>
+</body>
+</html>

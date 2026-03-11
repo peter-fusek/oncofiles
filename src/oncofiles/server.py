@@ -10,7 +10,7 @@ from datetime import UTC
 
 from fastmcp import FastMCP
 from starlette.requests import Request
-from starlette.responses import JSONResponse
+from starlette.responses import HTMLResponse, JSONResponse
 
 from oncofiles.config import (
     DATABASE_PATH,
@@ -300,6 +300,26 @@ mcp = FastMCP(
     auth=auth,
 )
 mcp.add_middleware(AuditMiddleware())
+
+
+# ── Landing page ─────────────────────────────────────────────────────────────
+
+_LANDING_HTML: str | None = None
+
+
+def _load_landing_html() -> str:
+    global _LANDING_HTML  # noqa: PLW0603
+    if _LANDING_HTML is None:
+        from pathlib import Path
+
+        html_path = Path(__file__).parent / "landing.html"
+        _LANDING_HTML = html_path.read_text()
+    return _LANDING_HTML
+
+
+@mcp.custom_route("/", methods=["GET"])
+async def landing(request: Request) -> HTMLResponse:
+    return HTMLResponse(_load_landing_html())
 
 
 # ── Health check ──────────────────────────────────────────────────────────────
