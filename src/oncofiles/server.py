@@ -52,7 +52,7 @@ def _create_auth():
         return PersistentOAuthProvider(
             bearer_token=MCP_BEARER_TOKEN or None,
             base_url="https://aware-kindness-production.up.railway.app",
-            client_registration_options=ClientRegistrationOptions(enabled=True),
+            client_registration_options=ClientRegistrationOptions(enabled=False),
         )
 
     if MCP_BEARER_TOKEN:
@@ -330,28 +330,28 @@ async def health(request: Request) -> JSONResponse:
     try:
         db: Database = request.app.state.fastmcp_server._lifespan_result["db"]
         reconnected = await db.reconnect_if_stale()
-        doc_count = await db.count_documents()
-        result = {
-            "status": "ok",
-            "database": "connected",
-            "documents": doc_count,
-            "version": VERSION,
-        }
+        result = {"status": "ok", "version": VERSION}
         if reconnected:
             result["reconnected"] = True
         return JSONResponse(result)
-    except Exception as e:
-        return JSONResponse(
-            {"status": "degraded", "database": f"error: {e}", "version": VERSION}, status_code=503
-        )
+    except Exception:
+        return JSONResponse({"status": "degraded", "version": VERSION}, status_code=503)
 
 
 @mcp.custom_route("/metrics", methods=["GET"])
 async def metrics(request: Request) -> JSONResponse:
-    """Return server metrics: memory, uptime, document count, sync status."""
+    """Return server metrics. Requires bearer token authentication."""
     import os
     import resource
     import time
+
+    # Require bearer token for metrics
+    auth_header = request.headers.get("authorization", "")
+    if not MCP_BEARER_TOKEN or not auth_header.startswith("Bearer "):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    token = auth_header.removeprefix("Bearer ").strip()
+    if token != MCP_BEARER_TOKEN:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
 
     try:
         db: Database = request.app.state.fastmcp_server._lifespan_result["db"]
