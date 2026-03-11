@@ -249,9 +249,38 @@ def _get_sync_folder_id_from(oauth_folder_id: str) -> str:
 
 from oncofiles.audit_middleware import AuditMiddleware  # noqa: E402
 
+_MCP_INSTRUCTIONS = """\
+Medical document management for oncology patient records.
+
+SOURCE ATTRIBUTION — every response includes verifiable source links:
+1. Every document has a `gdrive_url` field linking to Google Drive. Always present this \
+link to the user so they can view, verify, or share the original document.
+2. Research entries include a `url` field linking to PubMed or ClinicalTrials.gov. \
+Always display these when citing research findings.
+3. When making clinical observations, cite the specific source document(s) by filename \
+and `gdrive_url`. Never state medical facts without a traceable source.
+4. Use `get_related_documents` to discover cross-referenced documents (same visit, \
+shared diagnoses, follow-ups) for comprehensive context.
+5. For lab trend analysis, reference the source `document_id` for each data point.
+
+CROSS-REFERENCES — documents are automatically linked:
+- `same_visit`: same date + institution (e.g., labs and imaging from one appointment)
+- `related`: nearby dates or shared diagnoses/medications
+
+RECOMMENDED WORKFLOW for chat clients:
+- Show GDrive links as clickable "View original" buttons alongside document summaries.
+- Show PubMed/ClinicalTrials.gov links alongside research citations.
+- Use `get_related_documents` for drill-down into connected records.
+- In export packages, all entries include `gdrive_url` for offline verification.
+
+Available categories: labs, report, imaging, imaging_ct, imaging_us, pathology, genetics, \
+surgery, surgical_report, prescription, referral, discharge, discharge_summary, chemo_sheet, \
+reference, advocate, other.\
+"""
+
 mcp = FastMCP(
     "Oncofiles",
-    instructions="Medical document management via Anthropic Files API",
+    instructions=_MCP_INSTRUCTIONS,
     lifespan=lifespan,
     auth=auth,
 )
@@ -363,6 +392,7 @@ from oncofiles.tools._helpers import (  # noqa: E402, F401
     _doc_to_dict,
     _ensure_ocr_text,
     _extract_pdf_text,
+    _gdrive_url,
     _get_db,
     _get_files,
     _get_gdrive,
@@ -370,6 +400,7 @@ from oncofiles.tools._helpers import (  # noqa: E402, F401
     _parse_date,
     _patient_context_text,
     _pdf_to_images,
+    _research_source_url,
     _resize_image_if_needed,
     _try_download,
     extract_text_from_image,

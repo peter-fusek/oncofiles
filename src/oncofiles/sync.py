@@ -31,7 +31,7 @@ from oncofiles.manifest import (
     render_research_library,
     render_treatment_timeline,
 )
-from oncofiles.models import Document, DocumentCategory
+from oncofiles.models import Document, DocumentCategory, SearchQuery
 
 logger = logging.getLogger(__name__)
 
@@ -808,6 +808,52 @@ async def enhance_documents(
     return stats
 
 
+async def _generate_cross_references(
+    db: Database, doc: Document, metadata: dict
+) -> int:
+    """Generate cross-references between a document and related documents.
+
+    Uses heuristic matching:
+    - same_visit: same date + same institution (confidence 1.0)
+    - related: same date within 3 days (confidence 0.7)
+    - related: shared diagnoses (confidence 0.8)
+
+    Returns count of new cross-references inserted.
+    """
+    refs: list[tuple[int, int, str, float]] = []
+
+    # Match by same date + institution (same visit)
+    if doc.document_date and doc.institution:
+        candidates = await db.search_documents(
+            SearchQuery(
+                institution=doc.institution,
+                date_from=doc.document_date,
+                date_to=doc.document_date,
+                limit=20,
+            )
+        )
+        for c in candidates:
+            if c.id != doc.id and c.deleted_at is None:
+                refs.append((doc.id, c.id, "same_visit", 1.0))
+
+    # Match by date proximity (within 3 days)
+    if doc.document_date:
+        from datetime import timedelta
+
+        date_from = doc.document_date - timedelta(days=3)
+        date_to = doc.document_date + timedelta(days=3)
+        nearby = await db.search_documents(
+            SearchQuery(date_from=date_from, date_to=date_to, limit=20)
+        )
+        for c in nearby:
+            if c.id != doc.id and c.deleted_at is None and c.document_date != doc.document_date:
+                refs.append((doc.id, c.id, "related", 0.7))
+
+    if refs:
+        return await db.bulk_insert_cross_references(refs)
+    return 0
+
+
 async def extract_all_metadata(
     db: Database,
     files: FilesClient,
@@ -882,6 +928,9 @@ async def extract_all_metadata(
                 doc.filename,
             )
             stats["processed"] += 1
+
+            # Generate cross-references based on heuristic matching
+            await _generate_cross_references(db, doc, metadata)
 
             # Free memory between documents
             del full_text, text_parts

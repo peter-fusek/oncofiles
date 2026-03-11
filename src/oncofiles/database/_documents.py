@@ -502,6 +502,54 @@ class DocumentMixin:
             current_id = doc.previous_version_id
         return chain
 
+    # ── Cross-references ─────────────────────────────────────────────────
+
+    async def insert_cross_reference(
+        self,
+        source_id: int,
+        target_id: int,
+        relationship: str = "related",
+        confidence: float = 1.0,
+    ) -> None:
+        """Insert a cross-reference between two documents (idempotent)."""
+        await self.db.execute(
+            "INSERT OR IGNORE INTO document_cross_references "
+            "(source_document_id, target_document_id, relationship, confidence) "
+            "VALUES (?, ?, ?, ?)",
+            (source_id, target_id, relationship, confidence),
+        )
+        await self.db.commit()
+
+    async def bulk_insert_cross_references(
+        self, refs: list[tuple[int, int, str, float]]
+    ) -> int:
+        """Bulk insert cross-references. Tuples: (src_id, tgt_id, rel, conf).
+
+        Returns count of inserted rows.
+        """
+        count = 0
+        for source_id, target_id, relationship, confidence in refs:
+            cursor = await self.db.execute(
+                "INSERT OR IGNORE INTO document_cross_references "
+                "(source_document_id, target_document_id, relationship, confidence) "
+                "VALUES (?, ?, ?, ?)",
+                (source_id, target_id, relationship, confidence),
+            )
+            count += cursor.rowcount
+        await self.db.commit()
+        return count
+
+    async def get_cross_references(self, doc_id: int) -> list[dict]:
+        """Get all cross-references involving a document (both directions)."""
+        async with self.db.execute(
+            "SELECT * FROM document_cross_references "
+            "WHERE source_document_id = ? OR target_document_id = ? "
+            "ORDER BY confidence DESC",
+            (doc_id, doc_id),
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return [dict(r) for r in rows]
+
     async def get_pending_sync_documents(self) -> list[Document]:
         """Get documents that need syncing (no gdrive_id or pending state)."""
         async with self.db.execute(

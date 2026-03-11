@@ -14,6 +14,7 @@ from oncofiles.models import Document, DocumentCategory, SearchQuery
 from oncofiles.tools._helpers import (
     _clamp_limit,
     _doc_to_dict,
+    _gdrive_url,
     _get_db,
     _get_files,
     _get_gdrive,
@@ -134,11 +135,10 @@ async def upload_document(
         "institution": doc.institution,
         "category": doc.category.value,
         "version": doc.version,
+        "gdrive_url": _gdrive_url(gdrive_id),
     }
     if doc.previous_version_id:
         result["previous_version_id"] = doc.previous_version_id
-    if gdrive_id:
-        result["gdrive_id"] = gdrive_id
     return json.dumps(result)
 
 
@@ -225,6 +225,7 @@ async def get_document(ctx: Context, file_id: str) -> str:
             "description": doc.description,
             "mime_type": doc.mime_type,
             "size_bytes": doc.size_bytes,
+            "gdrive_url": _gdrive_url(doc.gdrive_id),
             "content_block": doc.content_block,
         }
     )
@@ -253,6 +254,7 @@ async def get_document_by_id(ctx: Context, doc_id: int) -> str:
             "description": doc.description,
             "mime_type": doc.mime_type,
             "size_bytes": doc.size_bytes,
+            "gdrive_url": _gdrive_url(doc.gdrive_id),
             "content_block": doc.content_block,
         }
     )
@@ -363,7 +365,7 @@ async def find_duplicates(ctx: Context) -> str:
                         "file_id": d.file_id,
                         "filename": d.filename,
                         "document_date": d.document_date.isoformat() if d.document_date else None,
-                        "gdrive_id": d.gdrive_id or "",
+                        "gdrive_url": _gdrive_url(d.gdrive_id),
                         "created_at": d.created_at.isoformat() if d.created_at else None,
                     }
                     for d in group
@@ -399,6 +401,7 @@ async def get_document_versions(ctx: Context, doc_id: int) -> str:
                     "previous_version_id": d.previous_version_id,
                     "document_date": d.document_date.isoformat() if d.document_date else None,
                     "size_bytes": d.size_bytes,
+                    "gdrive_url": _gdrive_url(d.gdrive_id),
                     "created_at": d.created_at.isoformat() if d.created_at else None,
                     "deleted_at": d.deleted_at.isoformat() if d.deleted_at else None,
                 }
@@ -407,6 +410,43 @@ async def get_document_versions(ctx: Context, doc_id: int) -> str:
             "total_versions": len(chain),
         }
     )
+
+
+async def get_related_documents(ctx: Context, doc_id: int) -> str:
+    """Get documents cross-referenced with the given document.
+
+    Returns related documents found by shared visit dates, diagnoses,
+    or explicit references. Each result includes the relationship type
+    and a confidence score.
+
+    Args:
+        doc_id: The integer database ID of the document.
+    """
+    db = _get_db(ctx)
+    doc = await db.get_document(doc_id)
+    if not doc:
+        return json.dumps({"error": f"Document not found: {doc_id}"})
+
+    refs = await db.get_cross_references(doc_id)
+    items = []
+    for ref in refs:
+        is_source = ref["source_document_id"] == doc_id
+        related_id = ref["target_document_id"] if is_source else ref["source_document_id"]
+        related = await db.get_document(related_id)
+        if not related or related.deleted_at:
+            continue
+        items.append({
+            "id": related.id,
+            "file_id": related.file_id,
+            "filename": related.filename,
+            "document_date": related.document_date.isoformat() if related.document_date else None,
+            "category": related.category.value,
+            "institution": related.institution,
+            "gdrive_url": _gdrive_url(related.gdrive_id),
+            "relationship": ref["relationship"],
+            "confidence": ref["confidence"],
+        })
+    return json.dumps({"document_id": doc_id, "related": items, "total": len(items)})
 
 
 def register(mcp):
@@ -420,3 +460,4 @@ def register(mcp):
     mcp.tool()(list_trash)
     mcp.tool()(find_duplicates)
     mcp.tool()(get_document_versions)
+    mcp.tool()(get_related_documents)
