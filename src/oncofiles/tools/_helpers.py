@@ -19,7 +19,6 @@ from oncofiles.ocr import OCR_MODEL, extract_text_from_image
 logger = logging.getLogger(__name__)
 
 GDRIVE_FILE_URL = "https://drive.google.com/file/d/{}/view"
-GDRIVE_FOLDER_URL = "https://drive.google.com/drive/folders/{}"
 PUBMED_URL = "https://pubmed.ncbi.nlm.nih.gov/{}/"
 CLINICALTRIALS_URL = "https://clinicaltrials.gov/study/{}"
 
