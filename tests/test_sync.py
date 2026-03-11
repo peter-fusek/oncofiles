@@ -635,3 +635,47 @@ async def test_sync_mutex_allows_sequential(db: Database):
 
     stats2 = await sync(db, files, gdrive, "folder123", enhance=False)
     assert "from_gdrive" in stats2
+
+
+# ── Text file sync via OCR cache ───────────────────────────────────────────
+
+
+async def test_sync_to_gdrive_text_file_uses_ocr_cache(db: Database):
+    """Text/markdown docs use OCR cache instead of Files API download."""
+    doc = make_doc(gdrive_id=None, mime_type="text/markdown")
+    doc = await db.insert_document(doc)
+    await db.save_ocr_page(doc.id, 1, "# Chapter 40\n\nContent here.", "text-decode")
+
+    files = _mock_files()
+    gdrive = _mock_gdrive()
+
+    stats = await sync_to_gdrive(db, files, gdrive, "folder123")
+    assert stats["exported"] == 1
+
+    # Files API download should NOT have been called (text/* uses OCR cache)
+    files.download.assert_not_called()
+
+    # First gdrive.upload call should be the doc with OCR text bytes
+    first_upload = gdrive.upload.call_args_list[0]
+    content = first_upload[1]["content_bytes"]
+    assert b"# Chapter 40" in content
+
+    # Doc should now have gdrive_id
+    updated = await db.get_document(doc.id)
+    assert updated.gdrive_id == "gdrive_new_id"
+
+
+async def test_sync_to_gdrive_text_file_no_ocr_skipped(db: Database):
+    """Text files without OCR cache are skipped."""
+    doc = make_doc(gdrive_id=None, mime_type="text/markdown")
+    await db.insert_document(doc)
+
+    files = _mock_files()
+    gdrive = _mock_gdrive()
+
+    stats = await sync_to_gdrive(db, files, gdrive, "folder123")
+    assert stats["skipped"] == 1
+    assert stats["exported"] == 0
+
+    # Files API download should not have been called for this doc
+    files.download.assert_not_called()

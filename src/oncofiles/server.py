@@ -498,7 +498,10 @@ def main() -> None:
     if MCP_TRANSPORT == "stdio":
         mcp.run()
     else:
-        mcp.run(transport=MCP_TRANSPORT, host=MCP_HOST, port=MCP_PORT)
+        mcp.run(
+            transport=MCP_TRANSPORT, host=MCP_HOST, port=MCP_PORT,
+            uvicorn_config={"timeout_keep_alive": 120},
+        )
 
 
 if __name__ == "__main__":

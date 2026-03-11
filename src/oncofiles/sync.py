@@ -276,7 +276,22 @@ async def sync_to_gdrive(
 
         try:
             logger.info("sync_to_gdrive: exporting %s", doc.filename)
-            content_bytes = files.download(doc.file_id)
+
+            # Text files can't be downloaded from Anthropic Files API — use OCR cache
+            if doc.mime_type and doc.mime_type.startswith("text/"):
+                if await db.has_ocr_text(doc.id):
+                    pages = await db.get_ocr_pages(doc.id)
+                    text = "\n\n".join(p["extracted_text"] for p in pages)
+                    content_bytes = text.encode("utf-8")
+                else:
+                    logger.warning(
+                        "sync_to_gdrive: skipped %s — text file with no OCR cache",
+                        doc.filename,
+                    )
+                    stats["skipped"] += 1
+                    continue
+            else:
+                content_bytes = files.download(doc.file_id)
 
             # Determine target folder
             cat_name, year_month = get_category_folder_path(
