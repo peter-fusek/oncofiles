@@ -19,7 +19,12 @@ from oncofiles.server import (
     search_conversations,
     view_document,
 )
-from oncofiles.tools.documents import find_duplicates, list_trash, restore_document
+from oncofiles.tools.documents import (
+    find_duplicates,
+    list_trash,
+    restore_document,
+    update_document_category,
+)
 from tests.helpers import make_doc
 
 
@@ -677,3 +682,39 @@ async def test_upload_document_gdrive_failure_nonfatal(db: Database):
     assert result["id"] is not None
     assert "gdrive_id" not in result
     assert "error" not in result
+
+
+# ── update_document_category tool ─────────────────────────────────────────
+
+
+async def test_update_document_category_success(db: Database):
+    """update_document_category changes category and returns old/new."""
+    ctx = _mock_ctx(db)
+    doc = await db.insert_document(make_doc(file_id="file_cat", category=DocumentCategory.OTHER))
+
+    result = json.loads(await update_document_category(ctx, doc_id=doc.id, category="reference"))
+    assert result["old_category"] == "other"
+    assert result["new_category"] == "reference"
+    assert result["id"] == doc.id
+
+    # Verify persisted
+    updated = await db.get_document(doc.id)
+    assert updated.category == DocumentCategory.REFERENCE
+
+
+async def test_update_document_category_invalid(db: Database):
+    """update_document_category rejects invalid category."""
+    ctx = _mock_ctx(db)
+    doc = await db.insert_document(make_doc(file_id="file_cat2"))
+
+    result = json.loads(await update_document_category(ctx, doc_id=doc.id, category="bogus"))
+    assert "error" in result
+    assert "Invalid category" in result["error"]
+
+
+async def test_update_document_category_not_found(db: Database):
+    """update_document_category returns error for missing doc."""
+    ctx = _mock_ctx(db)
+    result = json.loads(await update_document_category(ctx, doc_id=9999, category="reference"))
+    assert "error" in result
+    assert "not found" in result["error"]

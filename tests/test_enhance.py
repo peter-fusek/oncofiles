@@ -189,3 +189,34 @@ async def test_search_documents_includes_ai_fields(db: Database):
     # Search by AI tag content
     results = await db.search_documents(SearchQuery(text="tumor-marker"))
     assert len(results) == 1
+
+
+# ── text/* enhancement path ───────────────────────────────────────────────
+
+
+async def test_enhance_text_document(db: Database):
+    """Text documents (text/markdown, text/plain) get enhanced via UTF-8 decode."""
+    doc = make_doc(
+        file_id="f_md",
+        filename="20260311_DeVita_reference_Ch40.md",
+        original_filename="chapter_40_full.md",
+        mime_type="text/markdown",
+    )
+    doc = await db.insert_document(doc)
+
+    files = MagicMock()
+    files.download.return_value = b"# Chapter 40\n\nColon cancer treatment overview."
+
+    with patch(
+        "oncofiles.sync.enhance_document_text",
+        return_value=("DeVita Ch 40 summary", '["mCRC", "DeVita"]'),
+    ):
+        stats = await enhance_documents(db, files, None, document_ids=[doc.id])
+
+    assert stats["processed"] == 1
+
+    updated = await db.get_document(doc.id)
+    assert updated.ai_summary == "DeVita Ch 40 summary"
+
+    # Verify OCR cache was populated
+    assert await db.has_ocr_text(doc.id)
