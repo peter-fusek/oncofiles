@@ -165,6 +165,13 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict]:
     if SYNC_ENABLED and gdrive:
         scheduler = _start_sync_scheduler(db, files, gdrive, oauth_folder_id)
 
+    # Log memory usage after initialization
+    import resource
+
+    rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    rss_mb = rss / (1024 * 1024) if sys.platform == "darwin" else rss / 1024
+    logger.info("Startup complete — RSS: %.1f MB", rss_mb)
+
     try:
         yield {
             "db": db,
@@ -188,6 +195,8 @@ def _start_sync_scheduler(db, files, gdrive, oauth_folder_id):
     from oncofiles.sync import extract_all_metadata, sync
 
     async def _run_sync():
+        import gc
+
         folder_id = _get_sync_folder_id_from(oauth_folder_id)
         if not folder_id:
             logger.debug("Scheduled sync skipped — no folder ID")
@@ -197,14 +206,20 @@ def _start_sync_scheduler(db, files, gdrive, oauth_folder_id):
             logger.info("Scheduled sync complete: %s", stats)
         except Exception:
             logger.exception("Scheduled sync failed")
+        finally:
+            gc.collect()
 
     async def _run_metadata_extraction():
+        import gc
+
         try:
             stats = await extract_all_metadata(db, files, gdrive)
             if stats["processed"] > 0:
                 logger.info("Metadata extraction: %s", stats)
         except Exception:
             logger.exception("Metadata extraction failed")
+        finally:
+            gc.collect()
 
     async def _run_trash_cleanup():
         try:
@@ -309,6 +324,42 @@ async def health(request: Request) -> JSONResponse:
         return JSONResponse(
             {"status": "degraded", "database": f"error: {e}", "version": VERSION}, status_code=503
         )
+
+
+@mcp.custom_route("/metrics", methods=["GET"])
+async def metrics(request: Request) -> JSONResponse:
+    """Return server metrics: memory, uptime, document count, sync status."""
+    import os
+    import resource
+    import time
+
+    try:
+        db: Database = request.app.state.fastmcp_server._lifespan_result["db"]
+        doc_count = await db.count_documents()
+
+        # Memory usage (RSS in MB)
+        rusage = resource.getrusage(resource.RUSAGE_SELF)
+        rss_mb = rusage.ru_maxrss / (1024 * 1024)  # macOS reports bytes
+        if sys.platform == "linux":
+            rss_mb = rusage.ru_maxrss / 1024  # Linux reports KB
+
+        # Process uptime
+        pid = os.getpid()
+        try:
+            create_time = os.path.getctime(f"/proc/{pid}")
+            uptime_s = int(time.time() - create_time)
+        except (OSError, FileNotFoundError):
+            uptime_s = None
+
+        return JSONResponse({
+            "memory_rss_mb": round(rss_mb, 1),
+            "documents": doc_count,
+            "version": VERSION,
+            "pid": pid,
+            "uptime_seconds": uptime_s,
+        })
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
 
 
 @mcp.custom_route("/oauth/callback", methods=["GET"])
