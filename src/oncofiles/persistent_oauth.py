@@ -6,6 +6,7 @@ Auth codes are ephemeral (5 min) and not persisted.
 
 from __future__ import annotations
 
+import hmac
 import json
 import logging
 from typing import TYPE_CHECKING
@@ -55,7 +56,9 @@ class PersistentOAuthProvider(InMemoryOAuthProvider):
     # ── Bearer token support (server-to-server) ─────────────────────────
 
     async def verify_token(self, token: str) -> AccessToken | None:
-        if self._bearer_token and token == self._bearer_token:
+        if self._bearer_token and hmac.compare_digest(
+            token.encode(), self._bearer_token.encode()
+        ):
             return AccessToken(token=token, client_id="oncoteam", scopes=[])
         return await super().verify_token(token)
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hmac
 import logging
 import sys
 from collections.abc import AsyncIterator
@@ -350,7 +351,7 @@ async def metrics(request: Request) -> JSONResponse:
     if not MCP_BEARER_TOKEN or not auth_header.startswith("Bearer "):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     token = auth_header.removeprefix("Bearer ").strip()
-    if token != MCP_BEARER_TOKEN:
+    if not hmac.compare_digest(token.encode(), MCP_BEARER_TOKEN.encode()):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
 
     try:
@@ -378,8 +379,9 @@ async def metrics(request: Request) -> JSONResponse:
             "pid": pid,
             "uptime_seconds": uptime_s,
         })
-    except Exception as e:
-        return JSONResponse({"error": str(e)}, status_code=500)
+    except Exception:
+        logger.exception("Metrics endpoint error")
+        return JSONResponse({"error": "internal error"}, status_code=500)
 
 
 @mcp.custom_route("/oauth/callback", methods=["GET"])
@@ -388,7 +390,12 @@ async def oauth_callback(request: Request) -> JSONResponse:
     from datetime import datetime, timedelta
 
     from oncofiles.models import OAuthToken
-    from oncofiles.oauth import exchange_code
+    from oncofiles.oauth import exchange_code, verify_state_token
+
+    # Validate CSRF state parameter
+    state = request.query_params.get("state", "")
+    if not verify_state_token(state):
+        return JSONResponse({"error": "Invalid or expired state parameter."}, status_code=400)
 
     code = request.query_params.get("code")
     if not code:

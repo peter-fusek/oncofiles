@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import logging
+import time
 from datetime import UTC, datetime
 
 from oncofiles.config import (
     GOOGLE_OAUTH_CLIENT_ID,
     GOOGLE_OAUTH_CLIENT_SECRET,
     GOOGLE_OAUTH_REDIRECT_URI,
+    MCP_BEARER_TOKEN,
 )
 
 logger = logging.getLogger(__name__)
@@ -17,10 +21,49 @@ SCOPES = ["https://www.googleapis.com/auth/drive"]
 AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 TOKEN_URL = "https://oauth2.googleapis.com/token"
 
+# State token validity window (seconds)
+_STATE_MAX_AGE = 600  # 10 minutes
+
+
+def _make_state_token() -> str:
+    """Generate an HMAC-signed state token with embedded timestamp."""
+    ts = str(int(time.time()))
+    key = (MCP_BEARER_TOKEN or "oncofiles-oauth-state").encode()
+    sig = hmac.new(key, ts.encode(), hashlib.sha256).hexdigest()[:32]
+    return f"{ts}.{sig}"
+
+
+def verify_state_token(state: str) -> bool:
+    """Verify an HMAC-signed state token. Returns True if valid and not expired."""
+    if not state or "." not in state:
+        return False
+    parts = state.split(".", 1)
+    if len(parts) != 2:
+        return False
+    ts_str, sig = parts
+    try:
+        ts = int(ts_str)
+    except ValueError:
+        return False
+    # Check expiry
+    if time.time() - ts > _STATE_MAX_AGE:
+        return False
+    # Verify signature
+    key = (MCP_BEARER_TOKEN or "oncofiles-oauth-state").encode()
+    expected = hmac.new(key, ts_str.encode(), hashlib.sha256).hexdigest()[:32]
+    return hmac.compare_digest(sig, expected)
+
 
 def get_auth_url(state: str = "") -> str:
-    """Generate the Google OAuth 2.0 authorization URL for the user to visit."""
+    """Generate the Google OAuth 2.0 authorization URL for the user to visit.
+
+    If no state is provided, an HMAC-signed state token is generated automatically
+    for CSRF protection.
+    """
     from urllib.parse import urlencode
+
+    if not state:
+        state = _make_state_token()
 
     params = {
         "client_id": GOOGLE_OAUTH_CLIENT_ID,
@@ -29,9 +72,8 @@ def get_auth_url(state: str = "") -> str:
         "scope": " ".join(SCOPES),
         "access_type": "offline",
         "prompt": "consent",
+        "state": state,
     }
-    if state:
-        params["state"] = state
     return f"{AUTH_URL}?{urlencode(params)}"
 
 
