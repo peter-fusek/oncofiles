@@ -434,13 +434,15 @@ async def metrics(request: Request) -> JSONResponse:
         except (OSError, FileNotFoundError):
             uptime_s = None
 
-        return JSONResponse({
-            "memory_rss_mb": round(rss_mb, 1),
-            "documents": doc_count,
-            "version": VERSION,
-            "pid": pid,
-            "uptime_seconds": uptime_s,
-        })
+        return JSONResponse(
+            {
+                "memory_rss_mb": round(rss_mb, 1),
+                "documents": doc_count,
+                "version": VERSION,
+                "pid": pid,
+                "uptime_seconds": uptime_s,
+            }
+        )
     except Exception:
         logger.exception("Metrics endpoint error")
         return JSONResponse({"error": "internal error"}, status_code=500)
@@ -561,7 +563,9 @@ def main() -> None:
         mcp.run()
     else:
         mcp.run(
-            transport=MCP_TRANSPORT, host=MCP_HOST, port=MCP_PORT,
+            transport=MCP_TRANSPORT,
+            host=MCP_HOST,
+            port=MCP_PORT,
             uvicorn_config={
                 "timeout_keep_alive": 120,
                 "limit_concurrency": 50,
