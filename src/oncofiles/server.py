@@ -53,7 +53,7 @@ def _create_auth():
         return PersistentOAuthProvider(
             bearer_token=MCP_BEARER_TOKEN or None,
             base_url="https://aware-kindness-production.up.railway.app",
-            client_registration_options=ClientRegistrationOptions(enabled=True),
+            client_registration_options=ClientRegistrationOptions(enabled=False),
         )
 
     if MCP_BEARER_TOKEN:
