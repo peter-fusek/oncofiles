@@ -489,8 +489,253 @@ async def get_precycle_checklist(ctx: Context, cycle_number: int = 3) -> str:
     )
 
 
+async def get_lab_time_series(
+    ctx: Context,
+    parameters: str,
+    date_from: str | None = None,
+    date_to: str | None = None,
+) -> str:
+    """Get structured time series data for one or more lab parameters.
+
+    Returns chronological values with reference ranges, units, and computed
+    deltas (absolute change and % change between consecutive measurements).
+    Designed for Oncoteam and MCP clients to build trend charts and analysis.
+
+    Args:
+        parameters: Comma-separated parameter names (e.g. "CEA,CA19_9" or "PLT").
+        date_from: Start date filter (YYYY-MM-DD). Optional.
+        date_to: End date filter (YYYY-MM-DD). Optional.
+    """
+    db = _get_db(ctx)
+    param_list = [p.strip() for p in parameters.split(",") if p.strip()]
+    if not param_list:
+        return json.dumps({"error": "No parameters specified"})
+
+    try:
+        parsed_from = _parse_date(date_from)
+        parsed_to = _parse_date(date_to)
+    except ValueError as e:
+        return json.dumps({"error": str(e)})
+
+    result: dict = {"parameters": {}}
+    for param in param_list:
+        query = LabTrendQuery(parameter=param, date_from=parsed_from, date_to=parsed_to, limit=200)
+        values = await db.get_lab_trends(query)
+        series = []
+        prev_value = None
+        for v in values:
+            point: dict = {
+                "date": v.lab_date.isoformat(),
+                "value": v.value,
+                "unit": v.unit,
+                "reference_low": v.reference_low,
+                "reference_high": v.reference_high,
+                "flag": v.flag,
+                "document_id": v.document_id,
+            }
+            if prev_value is not None:
+                point["delta"] = round(v.value - prev_value, 4)
+                if prev_value != 0:
+                    point["delta_pct"] = round((v.value - prev_value) / abs(prev_value) * 100, 1)
+            prev_value = v.value
+            series.append(point)
+
+        result["parameters"][param] = {
+            "count": len(series),
+            "series": series,
+        }
+
+    return json.dumps(result)
+
+
+async def compare_lab_panels(
+    ctx: Context,
+    date_a: str,
+    date_b: str,
+) -> str:
+    """Compare lab values between two dates side-by-side.
+
+    Returns all parameters measured on both dates with change direction,
+    absolute delta, percentage change, and out-of-range flags.
+
+    Args:
+        date_a: First date (YYYY-MM-DD), typically the earlier measurement.
+        date_b: Second date (YYYY-MM-DD), typically the later measurement.
+    """
+    db = _get_db(ctx)
+    try:
+        _parse_date(date_a)
+        _parse_date(date_b)
+    except ValueError as e:
+        return json.dumps({"error": str(e)})
+
+    values_a = await db.get_lab_values_by_date(date_a)
+    values_b = await db.get_lab_values_by_date(date_b)
+
+    map_a = {v.parameter: v for v in values_a}
+    map_b = {v.parameter: v for v in values_b}
+    all_params = sorted(set(map_a.keys()) | set(map_b.keys()))
+
+    comparisons = []
+    for param in all_params:
+        entry: dict = {"parameter": param}
+        va = map_a.get(param)
+        vb = map_b.get(param)
+
+        if va:
+            entry["date_a"] = {
+                "date": date_a,
+                "value": va.value,
+                "unit": va.unit,
+                "reference_low": va.reference_low,
+                "reference_high": va.reference_high,
+            }
+        if vb:
+            entry["date_b"] = {
+                "date": date_b,
+                "value": vb.value,
+                "unit": vb.unit,
+                "reference_low": vb.reference_low,
+                "reference_high": vb.reference_high,
+            }
+
+        if va and vb:
+            delta = round(vb.value - va.value, 4)
+            entry["delta"] = delta
+            if va.value != 0:
+                entry["delta_pct"] = round(delta / abs(va.value) * 100, 1)
+            entry["direction"] = "rising" if delta > 0 else "falling" if delta < 0 else "stable"
+            # Flag if moved out of range
+            ref_hi = vb.reference_high
+            ref_lo = vb.reference_low
+            if ref_hi is not None and vb.value > ref_hi:
+                entry["status"] = "above_range"
+            elif ref_lo is not None and vb.value < ref_lo:
+                entry["status"] = "below_range"
+            else:
+                entry["status"] = "in_range"
+        else:
+            entry["status"] = "only_one_date"
+
+        comparisons.append(entry)
+
+    return json.dumps(
+        {
+            "date_a": date_a,
+            "date_b": date_b,
+            "parameters": comparisons,
+            "total": len(comparisons),
+            "available_dates": await db.get_distinct_lab_dates(),
+        }
+    )
+
+
+async def get_lab_summary(ctx: Context) -> str:
+    """Get a summary of the latest value for every tracked lab parameter.
+
+    Returns status (normal/high/low), trend direction (rising/falling/stable),
+    days since last measurement, and computed indices (SII, Ne/Ly ratio).
+    Designed as a quick overview for clinical decision support.
+    """
+    from datetime import date as date_type
+
+    db = _get_db(ctx)
+    latest_values = await db.get_all_latest_lab_values()
+
+    today = date_type.today()
+    summaries = []
+
+    for v in latest_values:
+        entry: dict = {
+            "parameter": v.parameter,
+            "value": v.value,
+            "unit": v.unit,
+            "date": v.lab_date.isoformat(),
+            "days_ago": (today - v.lab_date).days,
+            "document_id": v.document_id,
+            "reference_low": v.reference_low,
+            "reference_high": v.reference_high,
+        }
+
+        # Status based on reference range
+        if v.reference_high is not None and v.value > v.reference_high:
+            entry["status"] = "high"
+        elif v.reference_low is not None and v.value < v.reference_low:
+            entry["status"] = "low"
+        elif v.reference_low is not None or v.reference_high is not None:
+            entry["status"] = "normal"
+        else:
+            entry["status"] = "no_range"
+
+        # Trend: compare with previous value
+        query = LabTrendQuery(parameter=v.parameter, limit=2)
+        history = await db.get_lab_trends(query)
+        if len(history) >= 2:
+            prev = history[-2].value
+            curr = history[-1].value
+            if curr > prev * 1.05:
+                entry["trend"] = "rising"
+            elif curr < prev * 0.95:
+                entry["trend"] = "falling"
+            else:
+                entry["trend"] = "stable"
+        else:
+            entry["trend"] = "insufficient_data"
+
+        summaries.append(entry)
+
+    # Compute derived indices from latest values
+    param_map = {v.parameter: v.value for v in latest_values}
+    computed = []
+    neut = param_map.get("ABS_NEUT")
+    lymph = param_map.get("ABS_LYMPH")
+    plt = param_map.get("PLT")
+
+    if neut is not None and lymph is not None and plt is not None and lymph > 0:
+        sii = round((neut * plt) / lymph, 1)
+        computed.append(
+            {
+                "parameter": "SII",
+                "value": sii,
+                "formula": "(ABS_NEUT × PLT) / ABS_LYMPH",
+                "interpretation": "high" if sii > 1800 else "normal",
+                "threshold": 1800,
+            }
+        )
+
+    if neut is not None and lymph is not None and lymph > 0:
+        ne_ly = round(neut / lymph, 2)
+        computed.append(
+            {
+                "parameter": "NE_LY_RATIO",
+                "value": ne_ly,
+                "formula": "ABS_NEUT / ABS_LYMPH",
+                "interpretation": (
+                    "poor_prognosis"
+                    if ne_ly > 3.0
+                    else "improving"
+                    if ne_ly < 2.5
+                    else "borderline"
+                ),
+                "thresholds": {"poor": 3.0, "improving": 2.5},
+            }
+        )
+
+    return json.dumps(
+        {
+            "parameters": summaries,
+            "computed_indices": computed,
+            "total_parameters": len(summaries),
+            "available_dates": await db.get_distinct_lab_dates(),
+        }
+    )
+
+
 def register(mcp):
     mcp.tool()(store_lab_values)
     mcp.tool()(get_lab_trends)
     mcp.tool()(get_lab_safety_check)
     mcp.tool()(get_precycle_checklist)
+    mcp.tool()(get_lab_time_series)
+    mcp.tool()(compare_lab_panels)
+    mcp.tool()(get_lab_summary)
