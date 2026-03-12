@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hmac
 import logging
+import os
 import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -394,6 +395,9 @@ async def health(request: Request) -> JSONResponse:
         db: Database = request.app.state.fastmcp_server._lifespan_result["db"]
         reconnected = await db.reconnect_if_stale()
         result = {"status": "ok", "version": VERSION}
+        commit = os.environ.get("RAILWAY_GIT_COMMIT_SHA", "")[:7]
+        if commit:
+            result["commit"] = commit
         if reconnected:
             result["reconnected"] = True
         return JSONResponse(result)
@@ -404,7 +408,6 @@ async def health(request: Request) -> JSONResponse:
 @mcp.custom_route("/metrics", methods=["GET"])
 async def metrics(request: Request) -> JSONResponse:
     """Return server metrics. Requires bearer token authentication."""
-    import os
     import resource
     import time
 
@@ -569,7 +572,6 @@ def main() -> None:
             uvicorn_config={
                 "timeout_keep_alive": 120,
                 "limit_concurrency": 50,
-                "limit_max_requests": 10000,
             },
         )
 
