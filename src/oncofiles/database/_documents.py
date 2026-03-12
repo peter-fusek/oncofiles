@@ -520,9 +520,7 @@ class DocumentMixin:
         )
         await self.db.commit()
 
-    async def bulk_insert_cross_references(
-        self, refs: list[tuple[int, int, str, float]]
-    ) -> int:
+    async def bulk_insert_cross_references(self, refs: list[tuple[int, int, str, float]]) -> int:
         """Bulk insert cross-references. Tuples: (src_id, tgt_id, rel, conf).
 
         Returns count of inserted rows.

@@ -436,17 +436,21 @@ async def get_related_documents(ctx: Context, doc_id: int) -> str:
         related = await db.get_document(related_id)
         if not related or related.deleted_at:
             continue
-        items.append({
-            "id": related.id,
-            "file_id": related.file_id,
-            "filename": related.filename,
-            "document_date": related.document_date.isoformat() if related.document_date else None,
-            "category": related.category.value,
-            "institution": related.institution,
-            "gdrive_url": _gdrive_url(related.gdrive_id),
-            "relationship": ref["relationship"],
-            "confidence": ref["confidence"],
-        })
+        items.append(
+            {
+                "id": related.id,
+                "file_id": related.file_id,
+                "filename": related.filename,
+                "document_date": related.document_date.isoformat()
+                if related.document_date
+                else None,
+                "category": related.category.value,
+                "institution": related.institution,
+                "gdrive_url": _gdrive_url(related.gdrive_id),
+                "relationship": ref["relationship"],
+                "confidence": ref["confidence"],
+            }
+        )
     return json.dumps({"document_id": doc_id, "related": items, "total": len(items)})
 
 
@@ -475,12 +479,14 @@ async def update_document_category(ctx: Context, doc_id: int, category: str) -> 
 
     old_category = doc.category.value
     await db.update_document_category(doc_id, valid_category.value)
-    return json.dumps({
-        "id": doc_id,
-        "old_category": old_category,
-        "new_category": valid_category.value,
-        "filename": doc.filename,
-    })
+    return json.dumps(
+        {
+            "id": doc_id,
+            "old_category": old_category,
+            "new_category": valid_category.value,
+            "filename": doc.filename,
+        }
+    )
 
 
 def register(mcp):

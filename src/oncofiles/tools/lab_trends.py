@@ -273,12 +273,14 @@ async def get_lab_safety_check(ctx: Context) -> str:
     }
     safe = summary["red"] == 0 and summary["missing"] == 0
 
-    return json.dumps({
-        "protocol": "mFOLFOX6",
-        "cycle_safe": safe,
-        "summary": summary,
-        "parameters": results,
-    })
+    return json.dumps(
+        {
+            "protocol": "mFOLFOX6",
+            "cycle_safe": safe,
+            "summary": summary,
+            "parameters": results,
+        }
+    )
 
 
 # Full pre-cycle checklist: labs + toxicity + VTE + general
@@ -466,23 +468,25 @@ async def get_precycle_checklist(ctx: Context, cycle_number: int = 3) -> str:
                     entry["last_document_id"] = latest.document_id
                     doc = await db.get_document(latest.document_id)
                     if doc:
-                        entry["last_document_gdrive_url"] = _gdrive_url(
-                            doc.gdrive_id
-                        )
+                        entry["last_document_gdrive_url"] = _gdrive_url(doc.gdrive_id)
 
             items.append(entry)
 
-        sections.append({
-            "section": section_key,
-            "title": section["title"],
-            "items": items,
-        })
+        sections.append(
+            {
+                "section": section_key,
+                "title": section["title"],
+                "items": items,
+            }
+        )
 
-    return json.dumps({
-        "protocol": "mFOLFOX6",
-        "cycle": cycle_number,
-        "sections": sections,
-    })
+    return json.dumps(
+        {
+            "protocol": "mFOLFOX6",
+            "cycle": cycle_number,
+            "sections": sections,
+        }
+    )
 
 
 def register(mcp):
