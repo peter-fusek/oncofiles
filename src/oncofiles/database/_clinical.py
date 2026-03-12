@@ -218,3 +218,36 @@ class ClinicalMixin:
         ) as cursor:
             row = await cursor.fetchone()
             return _row_to_lab_value(row) if row else None
+
+    async def get_all_latest_lab_values(self) -> list[LabValue]:
+        """Get the most recent value for every tracked parameter."""
+        async with self.db.execute(
+            """
+            SELECT lv.* FROM lab_values lv
+            INNER JOIN (
+                SELECT parameter, MAX(lab_date) AS max_date
+                FROM lab_values GROUP BY parameter
+            ) latest ON lv.parameter = latest.parameter
+                AND lv.lab_date = latest.max_date
+            ORDER BY lv.parameter
+            """,
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return [_row_to_lab_value(r) for r in rows]
+
+    async def get_lab_values_by_date(self, lab_date: str) -> list[LabValue]:
+        """Get all lab values for a specific date."""
+        async with self.db.execute(
+            "SELECT * FROM lab_values WHERE lab_date = ? ORDER BY parameter",
+            (lab_date,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return [_row_to_lab_value(r) for r in rows]
+
+    async def get_distinct_lab_dates(self) -> list[str]:
+        """Get all distinct lab dates, most recent first."""
+        async with self.db.execute(
+            "SELECT DISTINCT lab_date FROM lab_values ORDER BY lab_date DESC",
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return [row["lab_date"] if isinstance(row, dict) else row[0] for row in rows]
