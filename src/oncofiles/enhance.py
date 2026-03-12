@@ -13,6 +13,10 @@ logger = logging.getLogger(__name__)
 
 ENHANCE_MODEL = "claude-haiku-4-5-20251001"
 
+def _get_client() -> anthropic.Anthropic:
+    """Create Anthropic client. Kept as a function for testability."""
+    return anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+
 
 def _strip_markdown_fencing(text: str) -> str:
     """Strip markdown code fencing (```json ... ```) from AI responses."""
@@ -51,7 +55,7 @@ def enhance_document_text(text: str) -> tuple[str, str]:
     if not text.strip():
         return "", "[]"
 
-    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+    client = _get_client()
 
     # Truncate to ~8k chars to stay within Haiku context cheaply
     truncated = text[:8000]
@@ -120,7 +124,7 @@ def extract_structured_metadata(text: str) -> dict:
             "plain_summary_sk": "",
         }
 
-    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+    client = _get_client()
     truncated = text[:8000]
 
     response = client.messages.create(

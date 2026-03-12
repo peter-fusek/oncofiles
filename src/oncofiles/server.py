@@ -166,6 +166,16 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict]:
     if SYNC_ENABLED and gdrive:
         scheduler = _start_sync_scheduler(db, files, gdrive, oauth_folder_id)
 
+    # Warmup: ping Turso to ensure connection is fresh before accepting requests
+    try:
+        await db.reconnect_if_stale()
+        logger.info("Startup warmup: DB connection verified")
+    except Exception:
+        logger.warning(
+            "Startup warmup: DB ping failed, will reconnect on first request",
+            exc_info=True,
+        )
+
     # Log memory usage after initialization
     import resource
 
@@ -230,6 +240,20 @@ def _start_sync_scheduler(db, files, gdrive, oauth_folder_id):
         except Exception:
             logger.exception("Trash cleanup failed")
 
+    async def _run_oauth_token_cleanup():
+        """Remove expired MCP OAuth tokens older than 30 days."""
+        try:
+            async with db.db.execute(
+                "DELETE FROM mcp_oauth_tokens WHERE expires_at IS NOT NULL "
+                "AND expires_at < datetime('now', '-30 days')"
+            ) as cursor:
+                deleted = cursor.rowcount
+            await db.db.commit()
+            if deleted:
+                logger.info("OAuth cleanup: removed %d expired tokens", deleted)
+        except Exception:
+            logger.exception("OAuth token cleanup failed")
+
     from apscheduler.triggers.cron import CronTrigger
 
     scheduler = AsyncIOScheduler()
@@ -251,6 +275,29 @@ def _start_sync_scheduler(db, files, gdrive, oauth_folder_id):
         id="trash_cleanup",
         max_instances=1,
     )
+    scheduler.add_job(
+        _run_oauth_token_cleanup,
+        CronTrigger(hour=4, minute=0),  # daily at 4 AM
+        id="oauth_token_cleanup",
+        max_instances=1,
+    )
+
+    # Log scheduler job outcomes for observability
+    def _job_executed(event):
+        logger.info("Scheduler job completed: %s", event.job_id)
+
+    def _job_error(event):
+        logger.error("Scheduler job failed: %s — %s", event.job_id, event.exception)
+
+    def _job_missed(event):
+        logger.warning("Scheduler job missed (previous still running): %s", event.job_id)
+
+    from apscheduler.events import EVENT_JOB_ERROR, EVENT_JOB_EXECUTED, EVENT_JOB_MISSED
+
+    scheduler.add_listener(_job_executed, EVENT_JOB_EXECUTED)
+    scheduler.add_listener(_job_error, EVENT_JOB_ERROR)
+    scheduler.add_listener(_job_missed, EVENT_JOB_MISSED)
+
     scheduler.start()
     logger.info("Sync scheduler started — every %d min", SYNC_INTERVAL_MINUTES)
     return scheduler
@@ -500,7 +547,11 @@ def main() -> None:
     else:
         mcp.run(
             transport=MCP_TRANSPORT, host=MCP_HOST, port=MCP_PORT,
-            uvicorn_config={"timeout_keep_alive": 120},
+            uvicorn_config={
+                "timeout_keep_alive": 120,
+                "limit_concurrency": 50,
+                "limit_max_requests": 10000,
+            },
         )
 
 

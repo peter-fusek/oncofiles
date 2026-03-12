@@ -12,6 +12,11 @@ from fastmcp.tools.tool import ToolResult
 
 logger = logging.getLogger(__name__)
 
+# Bounded set of in-flight audit tasks to prevent accumulation
+_MAX_AUDIT_TASKS = 100
+_AUDIT_TIMEOUT = 5.0  # seconds per audit write
+_audit_tasks: set[asyncio.Task] = set()
+
 
 async def _write_audit_log(
     db, session_id, tool_name, input_summary, duration_ms, status, error_message,
@@ -75,12 +80,31 @@ class AuditMiddleware(Middleware):
                     if db:
                         session_id = _get_session_id(context)
                         input_summary = _summarize_input(context.message)
-                        asyncio.create_task(
-                            _write_audit_log(
-                                db, session_id, tool_name, input_summary,
-                                duration_ms, status, error_message,
+                        # Bounded fire-and-forget: drop oldest if at capacity
+                        if len(_audit_tasks) >= _MAX_AUDIT_TASKS:
+                            logger.warning(
+                                "Audit task limit reached (%d), dropping oldest",
+                                _MAX_AUDIT_TASKS,
                             )
-                        )
+                            oldest = next(iter(_audit_tasks))
+                            oldest.cancel()
+                            _audit_tasks.discard(oldest)
+
+                        async def _timed_audit():
+                            try:
+                                await asyncio.wait_for(
+                                    _write_audit_log(
+                                        db, session_id, tool_name, input_summary,
+                                        duration_ms, status, error_message,
+                                    ),
+                                    timeout=_AUDIT_TIMEOUT,
+                                )
+                            except TimeoutError:
+                                logger.debug("Audit write timed out for %s", tool_name)
+
+                        task = asyncio.create_task(_timed_audit())
+                        _audit_tasks.add(task)
+                        task.add_done_callback(_audit_tasks.discard)
             except Exception:
                 logger.debug("Audit log dispatch failed for %s", tool_name, exc_info=True)
 
