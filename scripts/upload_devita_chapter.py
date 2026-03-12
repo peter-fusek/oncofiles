@@ -42,12 +42,22 @@ async def main(dry_run: bool = False, skip_ai: bool = False) -> None:
 
     content = SOURCE_PATH.read_bytes()
     text_content = content.decode("utf-8")
-    logger.info("Read %d bytes (%d chars) from %s", len(content), len(text_content), SOURCE_PATH.name)
+    logger.info(
+        "Read %d bytes (%d chars) from %s",
+        len(content),
+        len(text_content),
+        SOURCE_PATH.name,
+    )
 
     if dry_run:
         parsed = parse_filename(TARGET_FILENAME)
         logger.info("[DRY RUN] Would upload as: %s", TARGET_FILENAME)
-        logger.info("[DRY RUN] Parsed: date=%s, institution=%s, category=%s", parsed.document_date, parsed.institution, parsed.category)
+        logger.info(
+            "[DRY RUN] Parsed: date=%s, institution=%s, category=%s",
+            parsed.document_date,
+            parsed.institution,
+            parsed.category,
+        )
         return
 
     # Connect to DB
@@ -57,7 +67,11 @@ async def main(dry_run: bool = False, skip_ai: bool = False) -> None:
     # Check for existing document with same filename
     existing = await db.get_active_document_by_filename(TARGET_FILENAME)
     if existing:
-        logger.warning("Document already exists: id=%d, file_id=%s — skipping upload", existing.id, existing.file_id)
+        logger.warning(
+            "Document already exists: id=%d, file_id=%s — skipping upload",
+            existing.id,
+            existing.file_id,
+        )
         logger.info("To re-upload, delete the existing document first.")
         await db.close()
         return
@@ -66,6 +80,7 @@ async def main(dry_run: bool = False, skip_ai: bool = False) -> None:
     files = FilesClient()
     logger.info("Uploading to Files API...")
     import io
+
     metadata = files.upload(io.BytesIO(content), TARGET_FILENAME, MIME_TYPE)
     logger.info("Files API: id=%s, size=%d", metadata.id, metadata.size_bytes)
 

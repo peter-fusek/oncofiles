@@ -129,9 +129,15 @@ def combine(directory: str) -> None:
         sys.exit(1)
 
     output = ["# DeVita Chapter 40: Cancer of the Colon\n"]
-    output.append("**Source**: DeVita, Hellman, and Rosenberg's Cancer: Principles & Practice of Oncology, 12th Edition\n")
+    output.append(
+        "**Source**: DeVita, Hellman, and Rosenberg's Cancer:"
+        " Principles & Practice of Oncology, 12th Edition\n"
+    )
     output.append("**Pages**: 618–677\n")
-    output.append("**Authors**: Steven K. Libutti, Leonard B. Saltz, Christopher G. Willett, Rebecca A. Levine\n\n---\n")
+    output.append(
+        "**Authors**: Steven K. Libutti, Leonard B. Saltz,"
+        " Christopher G. Willett, Rebecca A. Levine\n\n---\n"
+    )
 
     current_range = None
     for txt_file in txt_files:
