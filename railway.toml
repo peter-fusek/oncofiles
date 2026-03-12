@@ -1,0 +1,6 @@
+[deploy]
+startCommand = "uv run oncofiles-mcp"
+healthcheckPath = "/health"
+healthcheckTimeout = 10
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 5

@@ -112,14 +112,25 @@ class _TursoConnection:
     def execute(self, sql: str, params: tuple | list = ()) -> _TursoExecProxy:
         return _TursoExecProxy(self, sql, tuple(params))
 
+    _QUERY_TIMEOUT = 30.0  # seconds
+
     async def _execute_raw(self, sql: str, params: tuple) -> Any:
-        """Execute SQL, auto-reconnecting on stale stream errors."""
+        """Execute SQL, auto-reconnecting on stale stream errors. 30s timeout."""
         try:
-            return await asyncio.to_thread(self._conn.execute, sql, params)
+            return await asyncio.wait_for(
+                asyncio.to_thread(self._conn.execute, sql, params),
+                timeout=self._QUERY_TIMEOUT,
+            )
+        except TimeoutError:
+            logger.error("Query timed out after %.0fs: %s", self._QUERY_TIMEOUT, sql[:200])
+            raise
         except Exception as exc:
             if _is_stale_stream_error(exc):
                 await self.reconnect()
-                return await asyncio.to_thread(self._conn.execute, sql, params)
+                return await asyncio.wait_for(
+                    asyncio.to_thread(self._conn.execute, sql, params),
+                    timeout=self._QUERY_TIMEOUT,
+                )
             raise
 
     async def executescript(self, sql: str) -> None:
