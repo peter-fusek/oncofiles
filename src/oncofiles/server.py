@@ -206,7 +206,7 @@ def _start_sync_scheduler(db, files, gdrive, oauth_folder_id):
 
     from oncofiles.sync import extract_all_metadata, sync
 
-    SYNC_TIMEOUT = 300  # 5 minutes max for scheduled sync
+    sync_timeout = 300  # 5 minutes max for scheduled sync
 
     async def _run_sync():
         import gc
@@ -218,17 +218,17 @@ def _start_sync_scheduler(db, files, gdrive, oauth_folder_id):
         try:
             stats = await asyncio.wait_for(
                 sync(db, files, gdrive, folder_id),
-                timeout=SYNC_TIMEOUT,
+                timeout=sync_timeout,
             )
             logger.info("Scheduled sync complete: %s", stats)
         except TimeoutError:
-            logger.error("Scheduled sync timed out after %ds", SYNC_TIMEOUT)
+            logger.error("Scheduled sync timed out after %ds", sync_timeout)
         except Exception:
             logger.exception("Scheduled sync failed")
         finally:
             gc.collect()
 
-    METADATA_TIMEOUT = 600  # 10 minutes max for metadata extraction
+    metadata_timeout = 600  # 10 minutes max for metadata extraction
 
     async def _run_metadata_extraction():
         import gc
@@ -236,12 +236,12 @@ def _start_sync_scheduler(db, files, gdrive, oauth_folder_id):
         try:
             stats = await asyncio.wait_for(
                 extract_all_metadata(db, files, gdrive),
-                timeout=METADATA_TIMEOUT,
+                timeout=metadata_timeout,
             )
             if stats["processed"] > 0:
                 logger.info("Metadata extraction: %s", stats)
         except TimeoutError:
-            logger.error("Metadata extraction timed out after %ds", METADATA_TIMEOUT)
+            logger.error("Metadata extraction timed out after %ds", metadata_timeout)
         except Exception:
             logger.exception("Metadata extraction failed")
         finally:
