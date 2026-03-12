@@ -9,7 +9,7 @@ import os
 import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from datetime import UTC
+from datetime import UTC, datetime, timedelta
 
 from fastmcp import FastMCP
 from starlette.requests import Request
@@ -98,7 +98,15 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict]:
     from oncofiles.files_api import FilesClient
 
     _setup_logging()
-    logger.info("Starting Oncofiles MCP server (transport=%s)", MCP_TRANSPORT)
+    started_at = datetime.now(UTC)
+    deploy_id = os.environ.get("RAILWAY_DEPLOYMENT_ID", "")
+    git_sha = os.environ.get("RAILWAY_GIT_COMMIT_SHA", "")
+    logger.info(
+        "Starting Oncofiles MCP server (transport=%s, deploy=%s, commit=%s)",
+        MCP_TRANSPORT,
+        deploy_id[:12] or "local",
+        git_sha[:7] or "dev",
+    )
     if TURSO_DATABASE_URL:
         db = Database(turso_url=TURSO_DATABASE_URL, turso_token=TURSO_AUTH_TOKEN)
     else:
@@ -136,8 +144,6 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict]:
             if is_token_expired(token.token_expiry.isoformat() if token.token_expiry else None):
                 refreshed = refresh_access_token(token.refresh_token)
                 access_token = refreshed["access_token"]
-                from datetime import datetime, timedelta
-
                 new_expiry = datetime.now(UTC) + timedelta(
                     seconds=refreshed.get("expires_in", 3600)
                 )
@@ -192,6 +198,7 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict]:
             "gdrive": gdrive,
             "oauth_folder_id": oauth_folder_id,
             "gdrive_folder_id": _get_sync_folder_id_from(oauth_folder_id),
+            "started_at": started_at,
         }
     finally:
         if scheduler:
@@ -270,6 +277,13 @@ def _start_sync_scheduler(db, files, gdrive, oauth_folder_id):
         except Exception:
             logger.exception("OAuth token cleanup failed")
 
+    async def _log_rss():
+        import resource
+
+        rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        rss_mb = rss / (1024 * 1024) if sys.platform == "darwin" else rss / 1024
+        logger.info("Periodic RSS check: %.1f MB", rss_mb)
+
     from apscheduler.triggers.cron import CronTrigger
 
     scheduler = AsyncIOScheduler()
@@ -295,6 +309,12 @@ def _start_sync_scheduler(db, files, gdrive, oauth_folder_id):
         _run_oauth_token_cleanup,
         CronTrigger(hour=4, minute=0),  # daily at 4 AM
         id="oauth_token_cleanup",
+        max_instances=1,
+    )
+    scheduler.add_job(
+        _log_rss,
+        CronTrigger(hour="*/6", minute=15),  # every 6 hours at :15
+        id="rss_monitor",
         max_instances=1,
     )
 
@@ -392,12 +412,16 @@ async def landing(request: Request) -> HTMLResponse:
 @mcp.custom_route("/health", methods=["GET"])
 async def health(request: Request) -> JSONResponse:
     try:
-        db: Database = request.app.state.fastmcp_server._lifespan_result["db"]
+        lifespan_ctx = request.app.state.fastmcp_server._lifespan_result
+        db: Database = lifespan_ctx["db"]
         reconnected = await db.reconnect_if_stale()
         result = {"status": "ok", "version": VERSION}
         commit = os.environ.get("RAILWAY_GIT_COMMIT_SHA", "")[:7]
         if commit:
             result["commit"] = commit
+        started_at = lifespan_ctx.get("started_at")
+        if started_at:
+            result["uptime_s"] = int((datetime.now(UTC) - started_at).total_seconds())
         if reconnected:
             result["reconnected"] = True
         return JSONResponse(result)
@@ -454,8 +478,6 @@ async def metrics(request: Request) -> JSONResponse:
 @mcp.custom_route("/oauth/callback", methods=["GET"])
 async def oauth_callback(request: Request) -> JSONResponse:
     """Handle Google OAuth 2.0 redirect callback."""
-    from datetime import datetime, timedelta
-
     from oncofiles.models import OAuthToken
     from oncofiles.oauth import exchange_code, verify_state_token
 
