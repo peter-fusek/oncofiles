@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import io
 import json
 import logging
@@ -105,13 +106,16 @@ async def upload_document(
         try:
             folder_id = ctx.request_context.lifespan_context.get("gdrive_folder_id")
             if folder_id:
-                folder_map = ensure_folder_structure(gdrive, folder_id)
+                folder_map = await asyncio.to_thread(ensure_folder_structure, gdrive, folder_id)
                 cat_folder = folder_map.get(doc.category.value, folder_id)
                 target_folder = cat_folder
                 if doc.document_date:
                     date_str = doc.document_date.isoformat()
-                    target_folder = ensure_year_month_folder(gdrive, cat_folder, date_str)
-                uploaded = gdrive.upload(
+                    target_folder = await asyncio.to_thread(
+                        ensure_year_month_folder, gdrive, cat_folder, date_str
+                    )
+                uploaded = await asyncio.to_thread(
+                    gdrive.upload,
                     filename=doc.filename,
                     content_bytes=file_bytes,
                     mime_type=doc.mime_type,

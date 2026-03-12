@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from datetime import UTC
@@ -119,7 +120,7 @@ async def gdrive_set_folder(ctx: Context, folder_id: str) -> str:
     gdrive = _get_gdrive(ctx)
     owner_email = None
     if gdrive:
-        owner_email = gdrive.get_folder_owner(folder_id)
+        owner_email = await asyncio.to_thread(gdrive.get_folder_owner, folder_id)
         if owner_email:
             await db.update_oauth_owner_email(token.user_id, token.provider, owner_email)
             gdrive.owner_email = owner_email
@@ -267,7 +268,7 @@ async def gdrive_fix_permissions(
     # Resolve email
     target_email = email
     if not target_email:
-        target_email = gdrive.get_folder_owner(folder_id)
+        target_email = await asyncio.to_thread(gdrive.get_folder_owner, folder_id)
     if not target_email:
         return json.dumps({"error": "Could not detect folder owner. Pass email explicitly."})
 
@@ -278,7 +279,7 @@ async def gdrive_fix_permissions(
     gdrive.owner_email = target_email
 
     # Grant access recursively
-    count = gdrive.grant_access_recursive(folder_id, target_email)
+    count = await asyncio.to_thread(gdrive.grant_access_recursive, folder_id, target_email)
 
     return json.dumps(
         {
@@ -314,20 +315,20 @@ async def setup_gdrive(ctx: Context, root_folder_id: str) -> str:
         display = bilingual_name(en_key)
 
         # Check bilingual name first
-        existing = gdrive.find_folder(display, root_folder_id)
+        existing = await asyncio.to_thread(gdrive.find_folder, display, root_folder_id)
         if existing:
             skipped.append(display)
             continue
 
         # Check old EN-only name and rename
-        old = gdrive.find_folder(en_key, root_folder_id)
+        old = await asyncio.to_thread(gdrive.find_folder, en_key, root_folder_id)
         if old:
-            gdrive.rename_file(old, display)
+            await asyncio.to_thread(gdrive.rename_file, old, display)
             renamed.append(f"{en_key} → {display}")
             continue
 
         # Create new folder
-        gdrive.create_folder(display, root_folder_id)
+        await asyncio.to_thread(gdrive.create_folder, display, root_folder_id)
         created.append(display)
 
     return json.dumps(

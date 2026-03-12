@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from datetime import date
@@ -151,7 +152,7 @@ def _inline_content(doc: Document, content_bytes: bytes) -> list[str | Image]:
         return [content_bytes.decode("utf-8", errors="replace")]
 
 
-def _try_download(
+async def _try_download(
     files: FilesClient,
     doc: Document,
     gdrive: GDriveClient | None = None,
@@ -170,7 +171,7 @@ def _try_download(
     # 2. Fallback: Google Drive
     if gdrive and doc.gdrive_id:
         try:
-            content_bytes = gdrive.download(doc.gdrive_id)
+            content_bytes = await asyncio.to_thread(gdrive.download, doc.gdrive_id)
             return True, _inline_content(doc, content_bytes), content_bytes
         except Exception as e:
             return False, [f"[GDrive download also failed: {e}]"], None
