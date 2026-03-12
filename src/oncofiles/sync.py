@@ -70,7 +70,7 @@ async def sync_from_gdrive(
     Returns summary dict: {new, updated, unchanged, skipped, missing, errors}.
     """
     logger.info("sync_from_gdrive: listing folder %s (dry_run=%s)", folder_id, dry_run)
-    gdrive_files, folder_map = gdrive.list_folder_with_structure(folder_id)
+    gdrive_files, folder_map = await asyncio.to_thread(gdrive.list_folder_with_structure, folder_id)
     logger.info(
         "sync_from_gdrive: found %d files, %d folders",
         len(gdrive_files),
@@ -127,7 +127,7 @@ async def sync_from_gdrive(
                     continue
 
                 logger.info("sync_from_gdrive: updating %s (GDrive wins)", filename)
-                content_bytes = gdrive.download(gdrive_id)
+                content_bytes = await asyncio.to_thread(gdrive.download, gdrive_id)
                 metadata = files.upload(io.BytesIO(content_bytes), filename, mime_type)
                 await db.update_document_file_id(existing.id, metadata.id, len(content_bytes))
                 await db.update_gdrive_id(existing.id, gdrive_id, modified_time_str)
@@ -159,7 +159,7 @@ async def sync_from_gdrive(
                     continue
 
                 logger.info("sync_from_gdrive: importing %s", filename)
-                content_bytes = gdrive.download(gdrive_id)
+                content_bytes = await asyncio.to_thread(gdrive.download, gdrive_id)
                 metadata = files.upload(io.BytesIO(content_bytes), filename, mime_type)
 
                 parsed = parse_filename(filename)
@@ -192,7 +192,9 @@ async def sync_from_gdrive(
 
                 # Set appProperties on GDrive for future matching
                 try:
-                    gdrive.set_app_properties(gdrive_id, {"oncofiles_id": str(doc.id)})
+                    await asyncio.to_thread(
+                        gdrive.set_app_properties, gdrive_id, {"oncofiles_id": str(doc.id)}
+                    )
                 except Exception:
                     logger.warning("Failed to set appProperties on %s", gdrive_id)
 
@@ -255,7 +257,7 @@ async def sync_to_gdrive(
         return stats
 
     # Ensure folder structure
-    folder_map = ensure_folder_structure(gdrive, folder_id)
+    folder_map = await asyncio.to_thread(ensure_folder_structure, gdrive, folder_id)
 
     # Collect all organized folder IDs (category folders + their year-month subfolders)
     organized_folder_ids = set(folder_map.values())
@@ -266,8 +268,14 @@ async def sync_to_gdrive(
         if doc.gdrive_id:
             # File already on GDrive — check if it needs to be moved to organized folder
             try:
-                _move_to_organized_folder(
-                    gdrive, doc, folder_id, folder_map, organized_folder_ids, stats
+                await asyncio.to_thread(
+                    _move_to_organized_folder,
+                    gdrive,
+                    doc,
+                    folder_id,
+                    folder_map,
+                    organized_folder_ids,
+                    stats,
                 )
             except Exception:
                 logger.exception("sync_to_gdrive: error organizing %s", doc.filename)
@@ -300,10 +308,13 @@ async def sync_to_gdrive(
             )
             target_folder = folder_map.get(cat_name, folder_id)
             if year_month:
-                target_folder = ensure_year_month_folder(gdrive, target_folder, year_month + "-01")
+                target_folder = await asyncio.to_thread(
+                    ensure_year_month_folder, gdrive, target_folder, year_month + "-01"
+                )
 
             # Upload with appProperties
-            uploaded = gdrive.upload(
+            uploaded = await asyncio.to_thread(
+                gdrive.upload,
                 filename=doc.filename,
                 content_bytes=content_bytes,
                 mime_type=doc.mime_type,
@@ -436,7 +447,7 @@ async def _rename_to_bilingual(db: Database, gdrive: GDriveClient) -> dict:
                 continue
 
             # Rename on GDrive
-            gdrive.rename_file(doc.gdrive_id, new_name)
+            await asyncio.to_thread(gdrive.rename_file, doc.gdrive_id, new_name)
 
             # Also rename the OCR companion file if it exists
             old_stem = doc.filename.rsplit(".", 1)[0] if "." in doc.filename else doc.filename
@@ -444,12 +455,14 @@ async def _rename_to_bilingual(db: Database, gdrive: GDriveClient) -> dict:
             old_ocr_name = f"{old_stem}_OCR.txt"
             new_ocr_name = f"{new_stem}_OCR.txt"
             try:
-                parents = gdrive.get_file_parents(doc.gdrive_id)
+                parents = await asyncio.to_thread(gdrive.get_file_parents, doc.gdrive_id)
                 if parents:
-                    siblings = gdrive.list_folder(parents[0], recursive=False)
+                    siblings = await asyncio.to_thread(
+                        gdrive.list_folder, parents[0], recursive=False
+                    )
                     for sib in siblings:
                         if sib["name"] == old_ocr_name:
-                            gdrive.rename_file(sib["id"], new_ocr_name)
+                            await asyncio.to_thread(gdrive.rename_file, sib["id"], new_ocr_name)
                             logger.info("Renamed OCR '%s' → '%s'", old_ocr_name, new_ocr_name)
                             break
             except Exception:
@@ -498,7 +511,7 @@ async def _cleanup_orphan_ocr(db: Database, gdrive: GDriveClient) -> dict:
             continue
 
         try:
-            parents = gdrive.get_file_parents(doc.gdrive_id)
+            parents = await asyncio.to_thread(gdrive.get_file_parents, doc.gdrive_id)
             if not parents:
                 continue
 
@@ -507,7 +520,7 @@ async def _cleanup_orphan_ocr(db: Database, gdrive: GDriveClient) -> dict:
                 continue
             checked_folders.add(parent_folder)
 
-            siblings = gdrive.list_folder(parent_folder, recursive=False)
+            siblings = await asyncio.to_thread(gdrive.list_folder, parent_folder, recursive=False)
             for sib in siblings:
                 name = sib["name"]
                 if not name.endswith("_OCR.txt"):
@@ -517,7 +530,7 @@ async def _cleanup_orphan_ocr(db: Database, gdrive: GDriveClient) -> dict:
                     continue
                 # Orphan — trash it (soft delete)
                 try:
-                    gdrive.trash_file(sib["id"])
+                    await asyncio.to_thread(gdrive.trash_file, sib["id"])
                     logger.info("_cleanup_orphan_ocr: trashed '%s'", name)
                     stats["deleted"] += 1
                 except Exception:
@@ -564,7 +577,7 @@ async def _export_ocr_texts(
                     content_bytes = files.download(doc.file_id)
                 except Exception:
                     try:
-                        content_bytes = gdrive.download(doc.gdrive_id)
+                        content_bytes = await asyncio.to_thread(gdrive.download, doc.gdrive_id)
                     except Exception:
                         logger.warning(
                             "_export_ocr_texts: cannot download %s — skipping",
@@ -623,7 +636,7 @@ async def _export_ocr_texts(
             stem = doc.filename.rsplit(".", 1)[0] if "." in doc.filename else doc.filename
 
             # Get parent folder of original file
-            parents = gdrive.get_file_parents(doc.gdrive_id)
+            parents = await asyncio.to_thread(gdrive.get_file_parents, doc.gdrive_id)
             if not parents:
                 logger.warning("_export_ocr_texts: no parent folder for %s", doc.filename)
                 stats["errors"] += 1
@@ -631,8 +644,13 @@ async def _export_ocr_texts(
             parent_folder = parents[0]
 
             full_text = "\n\n---\n\n".join(text_parts)
-            _upload_or_update_text(
-                gdrive, f"{stem}_OCR.txt", full_text, parent_folder, "text/plain"
+            await asyncio.to_thread(
+                _upload_or_update_text,
+                gdrive,
+                f"{stem}_OCR.txt",
+                full_text,
+                parent_folder,
+                "text/plain",
             )
             stats["exported"] += 1
 
@@ -664,7 +682,8 @@ async def _export_metadata(
     # 1. Export _manifest.json to root
     manifest = await export_manifest(db)
     manifest_json = render_manifest_json(manifest)
-    _upload_or_update_text(
+    await asyncio.to_thread(
+        _upload_or_update_text,
         gdrive,
         "_manifest.json",
         manifest_json,
@@ -682,8 +701,13 @@ async def _export_metadata(
             for lang in langs:
                 suffix = f"_{lang.upper()}" if lang != "en" else ""
                 filename = f"{month_key}-conversation-log{suffix}.md"
-                _upload_or_update_text(
-                    gdrive, filename, md_content, conversations_folder, "text/markdown"
+                await asyncio.to_thread(
+                    _upload_or_update_text,
+                    gdrive,
+                    filename,
+                    md_content,
+                    conversations_folder,
+                    "text/markdown",
                 )
 
     # 3. Export treatment timeline
@@ -694,7 +718,14 @@ async def _export_metadata(
             md_content = render_treatment_timeline(events, lang=lang)
             suffix = f"_{lang.upper()}" if lang != "en" else ""
             filename = f"treatment-timeline{suffix}.md"
-            _upload_or_update_text(gdrive, filename, md_content, treatment_folder, "text/markdown")
+            await asyncio.to_thread(
+                _upload_or_update_text,
+                gdrive,
+                filename,
+                md_content,
+                treatment_folder,
+                "text/markdown",
+            )
 
     # 4. Export research library
     research_folder = folder_map.get("research")
@@ -704,7 +735,14 @@ async def _export_metadata(
             md_content = render_research_library(entries, lang=lang)
             suffix = f"_{lang.upper()}" if lang != "en" else ""
             filename = f"research-library{suffix}.md"
-            _upload_or_update_text(gdrive, filename, md_content, research_folder, "text/markdown")
+            await asyncio.to_thread(
+                _upload_or_update_text,
+                gdrive,
+                filename,
+                md_content,
+                research_folder,
+                "text/markdown",
+            )
 
 
 def _upload_or_update_text(
@@ -911,7 +949,7 @@ async def extract_all_metadata(
                 except Exception:
                     if gdrive and doc.gdrive_id:
                         with contextlib.suppress(Exception):
-                            content_bytes = gdrive.download(doc.gdrive_id)
+                            content_bytes = await asyncio.to_thread(gdrive.download, doc.gdrive_id)
 
                 if content_bytes and doc.mime_type == "application/pdf":
                     try:
@@ -981,7 +1019,7 @@ async def _enhance_document(
         except Exception:
             if gdrive and doc.gdrive_id:
                 with contextlib.suppress(Exception):
-                    content_bytes = gdrive.download(doc.gdrive_id)
+                    content_bytes = await asyncio.to_thread(gdrive.download, doc.gdrive_id)
 
         if content_bytes and doc.mime_type == "application/pdf":
             try:

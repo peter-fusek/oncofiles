@@ -64,7 +64,7 @@ async def extract_document_metadata(
         return json.dumps({"error": f"Document not found: {document_id}"})
 
     # Get document text
-    ok, content, raw_bytes = _try_download(files, doc, gdrive)
+    ok, content, raw_bytes = await _try_download(files, doc, gdrive)
     if not ok:
         return json.dumps({"error": "Cannot download document for text extraction"})
 

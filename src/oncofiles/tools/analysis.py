@@ -36,7 +36,7 @@ async def view_document(ctx: Context, file_id: str) -> list:
     if not doc:
         return [f"Document not found: {file_id}"]
 
-    ok, content, raw_bytes = _try_download(files, doc, gdrive)
+    ok, content, raw_bytes = await _try_download(files, doc, gdrive)
     if not ok:
         return [_doc_header(doc), *content]
 
@@ -92,7 +92,7 @@ async def analyze_labs(
     download_errors = 0
     for doc in labs:
         result.append(_doc_header(doc))
-        ok, content, raw_bytes = _try_download(files, doc, gdrive)
+        ok, content, raw_bytes = await _try_download(files, doc, gdrive)
         if not ok:
             download_errors += 1
             result.extend(content)
@@ -206,7 +206,7 @@ async def compare_labs(
     download_errors = 0
     for doc in labs:
         result.append(_doc_header(doc))
-        ok, content, raw_bytes = _try_download(files, doc, gdrive)
+        ok, content, raw_bytes = await _try_download(files, doc, gdrive)
         if not ok:
             download_errors += 1
             result.extend(content)
