@@ -823,9 +823,7 @@ async def enhance_documents(
     return stats
 
 
-async def _generate_cross_references(
-    db: Database, doc: Document, metadata: dict
-) -> int:
+async def _generate_cross_references(db: Database, doc: Document, metadata: dict) -> int:
     """Generate cross-references between a document and related documents.
 
     Uses heuristic matching:

@@ -34,14 +34,12 @@ class TestResearchSourceUrl:
 
     def test_pubmed_prefixed(self):
         assert (
-            _research_source_url("pubmed", "PMID:67890")
-            == "https://pubmed.ncbi.nlm.nih.gov/67890/"
+            _research_source_url("pubmed", "PMID:67890") == "https://pubmed.ncbi.nlm.nih.gov/67890/"
         )
 
     def test_pubmed_pmid_no_colon(self):
         assert (
-            _research_source_url("pubmed", "PMID12345")
-            == "https://pubmed.ncbi.nlm.nih.gov/12345/"
+            _research_source_url("pubmed", "PMID12345") == "https://pubmed.ncbi.nlm.nih.gov/12345/"
         )
 
     def test_clinicaltrials(self):
@@ -186,11 +184,13 @@ async def test_bulk_insert_cross_references(db):
         )
         docs.append(d)
 
-    count = await db.bulk_insert_cross_references([
-        (docs[0].id, docs[1].id, "same_visit", 1.0),
-        (docs[0].id, docs[2].id, "related", 0.7),
-        (docs[1].id, docs[2].id, "related", 0.8),
-    ])
+    count = await db.bulk_insert_cross_references(
+        [
+            (docs[0].id, docs[1].id, "same_visit", 1.0),
+            (docs[0].id, docs[2].id, "related", 0.7),
+            (docs[1].id, docs[2].id, "related", 0.8),
+        ]
+    )
     assert count == 3
 
     refs = await db.get_cross_references(docs[0].id)

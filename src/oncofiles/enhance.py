@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 
 ENHANCE_MODEL = "claude-haiku-4-5-20251001"
 
+
 def _get_client() -> anthropic.Anthropic:
     """Create Anthropic client. Kept as a function for testability."""
     return anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)

@@ -175,7 +175,10 @@ async def test_precycle_checklist_structure(db: Database):
 
     section_keys = [s["section"] for s in result["sections"]]
     assert section_keys == [
-        "lab_safety", "toxicity_assessment", "vte_monitoring", "general_assessment",
+        "lab_safety",
+        "toxicity_assessment",
+        "vte_monitoring",
+        "general_assessment",
     ]
 
     # Each section has title and items

@@ -19,7 +19,13 @@ _audit_tasks: set[asyncio.Task] = set()
 
 
 async def _write_audit_log(
-    db, session_id, tool_name, input_summary, duration_ms, status, error_message,
+    db,
+    session_id,
+    tool_name,
+    input_summary,
+    duration_ms,
+    status,
+    error_message,
 ):
     """Write audit log entry in background — never blocks tool response."""
     try:
@@ -94,8 +100,13 @@ class AuditMiddleware(Middleware):
                             try:
                                 await asyncio.wait_for(
                                     _write_audit_log(
-                                        db, session_id, tool_name, input_summary,
-                                        duration_ms, status, error_message,
+                                        db,
+                                        session_id,
+                                        tool_name,
+                                        input_summary,
+                                        duration_ms,
+                                        status,
+                                        error_message,
                                     ),
                                     timeout=_AUDIT_TIMEOUT,
                                 )
