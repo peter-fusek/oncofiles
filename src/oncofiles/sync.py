@@ -7,6 +7,7 @@ manifest export, and metadata rendering.
 from __future__ import annotations
 
 import asyncio
+import gc
 import io
 import json
 import logging
@@ -130,6 +131,7 @@ async def sync_from_gdrive(
                 content_bytes = await asyncio.to_thread(gdrive.download, gdrive_id)
                 metadata = files.upload(io.BytesIO(content_bytes), filename, mime_type)
                 await db.update_document_file_id(existing.id, metadata.id, len(content_bytes))
+                del content_bytes  # Free large buffer immediately
                 await db.update_gdrive_id(existing.id, gdrive_id, modified_time_str)
                 now_str = datetime.now(UTC).isoformat()
                 await db.update_sync_state(existing.id, "synced", now_str)
@@ -172,6 +174,9 @@ async def sync_from_gdrive(
                     DocumentCategory(detected_category) if detected_category else parsed.category
                 )
 
+                size = len(content_bytes)
+                del content_bytes  # Free large buffer immediately
+
                 now_str = datetime.now(UTC).isoformat()
                 doc = Document(
                     file_id=metadata.id,
@@ -182,7 +187,7 @@ async def sync_from_gdrive(
                     category=category,
                     description=parsed.description,
                     mime_type=guessed_mime,
-                    size_bytes=len(content_bytes),
+                    size_bytes=size,
                     gdrive_id=gdrive_id,
                     gdrive_modified_time=gdrive_modified,
                     sync_state="synced",
@@ -207,6 +212,11 @@ async def sync_from_gdrive(
         except Exception:
             logger.exception("sync_from_gdrive: error processing %s", filename)
             stats["errors"] += 1
+
+        # Periodic GC to keep memory in check (every 10 documents)
+        processed = stats["new"] + stats["updated"] + stats["unchanged"] + stats["errors"]
+        if processed > 0 and processed % 10 == 0:
+            gc.collect()
 
     # Detect deleted files (in DB but not on GDrive) — flag only, never auto-delete
     all_docs = await db.list_documents(limit=200)
@@ -321,6 +331,8 @@ async def sync_to_gdrive(
                 folder_id=target_folder,
                 app_properties={"oncofiles_id": str(doc.id)},
             )
+
+            del content_bytes  # Free large buffer immediately
 
             modified_time = uploaded.get("modifiedTime", "")
             await db.update_gdrive_id(doc.id, uploaded["id"], modified_time)
@@ -602,10 +614,13 @@ async def _export_ocr_texts(
                         try:
                             for page_num, page in enumerate(pdf_doc, start=1):
                                 pix = page.get_pixmap(dpi=200)
-                                img = MImage(data=pix.tobytes("jpeg"), format="jpeg")
-                                img = _resize_image_if_needed(img)
-                                text = extract_text_from_image(img)
-                                await db.save_ocr_page(doc.id, page_num, text, OCR_MODEL)
+                                try:
+                                    img = MImage(data=pix.tobytes("jpeg"), format="jpeg")
+                                    img = _resize_image_if_needed(img)
+                                    text = extract_text_from_image(img)
+                                    await db.save_ocr_page(doc.id, page_num, text, OCR_MODEL)
+                                finally:
+                                    del pix  # Free large pixmap buffer
                         finally:
                             pdf_doc.close()
                         stats["extracted"] += 1
@@ -623,6 +638,10 @@ async def _export_ocr_texts(
                 else:
                     stats["skipped"] += 1
                     continue
+
+                # Free downloaded content after extraction
+                del content_bytes
+                gc.collect()
 
             # Step 2: Export OCR text to GDrive — single file, faithful word-by-word
             # OCR is the source of truth in the document's original language.

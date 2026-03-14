@@ -218,6 +218,15 @@ def _start_sync_scheduler(db, files, gdrive, oauth_folder_id):
 
     async def _run_sync():
         import gc
+        import resource
+
+        # Memory guard: skip sync if RSS too high (prevents OOM spiral)
+        rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        rss_mb = rss / (1024 * 1024) if sys.platform == "darwin" else rss / 1024
+        if rss_mb > 500:
+            logger.warning("Skipping sync — RSS %.1f MB exceeds 500 MB threshold", rss_mb)
+            gc.collect()
+            return
 
         folder_id = _get_sync_folder_id_from(oauth_folder_id)
         if not folder_id:

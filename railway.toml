@@ -2,4 +2,3 @@
 healthcheckPath = "/health"
 healthcheckTimeout = 60
 restartPolicyType = "ALWAYS"
-restartPolicyMaxRetries = 5
