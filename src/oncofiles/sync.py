@@ -12,6 +12,7 @@ import io
 import json
 import logging
 import mimetypes
+import time
 from datetime import UTC, datetime
 
 from oncofiles.database import Database
@@ -36,8 +37,11 @@ from oncofiles.models import Document, DocumentCategory, SearchQuery
 
 logger = logging.getLogger(__name__)
 
-# Module-level lock to prevent concurrent sync operations
+# Module-level lock to prevent concurrent sync operations.
+# Uses a timestamp-based approach to auto-expire stale locks after 10 minutes.
 _sync_lock = asyncio.Lock()
+_sync_lock_acquired_at: float = 0.0
+_SYNC_LOCK_TIMEOUT = 600  # 10 minutes
 
 SUPPORTED_EXTENSIONS = {".pdf", ".jpg", ".jpeg", ".png"}
 SKIP_EXTENSIONS = {".gdoc", ".xlsx", ".xls", ".ds_store"}
@@ -806,12 +810,27 @@ async def sync(
 
     Returns combined stats. Uses a module-level lock to prevent concurrent execution.
     """
+    global _sync_lock_acquired_at  # noqa: PLW0603
+
     if _sync_lock.locked():
-        logger.info("sync: already in progress — skipping")
-        return {"skipped": True, "message": "Sync already in progress"}
+        elapsed = time.monotonic() - _sync_lock_acquired_at if _sync_lock_acquired_at > 0 else 0.0
+        if elapsed < _SYNC_LOCK_TIMEOUT:
+            logger.info("sync: already in progress (%.0fs) — skipping", elapsed)
+            return {"skipped": True, "message": "Sync already in progress"}
+        # Stale lock — force release so we can re-acquire
+        logger.warning(
+            "sync: stale lock detected (%.0fs > %ds) — force releasing",
+            elapsed,
+            _SYNC_LOCK_TIMEOUT,
+        )
+        _sync_lock.release()
 
     async with _sync_lock:
-        return await _sync_inner(db, files, gdrive, folder_id, dry_run=dry_run, enhance=enhance)
+        _sync_lock_acquired_at = time.monotonic()
+        try:
+            return await _sync_inner(db, files, gdrive, folder_id, dry_run=dry_run, enhance=enhance)
+        finally:
+            _sync_lock_acquired_at = 0.0
 
 
 async def _sync_inner(
