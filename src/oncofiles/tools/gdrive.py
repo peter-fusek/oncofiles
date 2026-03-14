@@ -168,7 +168,11 @@ async def gdrive_sync(
     if not folder_id:
         return json.dumps({"error": "No sync folder set. Use gdrive_set_folder to pick one."})
 
-    stats = await _sync(db, files, gdrive, folder_id, dry_run=dry_run, enhance=enhance)
+    try:
+        stats = await _sync(db, files, gdrive, folder_id, dry_run=dry_run, enhance=enhance)
+    except Exception:
+        logger.exception("gdrive_sync tool failed")
+        return json.dumps({"error": "Sync failed — check server logs for details"})
     return json.dumps(stats)
 
 
