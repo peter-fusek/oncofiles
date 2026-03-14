@@ -43,6 +43,11 @@ _sync_lock = asyncio.Lock()
 _sync_lock_acquired_at: float = 0.0
 _SYNC_LOCK_TIMEOUT = 600  # 10 minutes
 
+# Last sync result — stored so callers can check status after background sync.
+_last_sync_result: dict | None = None
+_last_sync_error: str | None = None
+_last_sync_time: float = 0.0
+
 SUPPORTED_EXTENSIONS = {".pdf", ".jpg", ".jpeg", ".png"}
 SKIP_EXTENSIONS = {".gdoc", ".xlsx", ".xls", ".ds_store"}
 
@@ -829,6 +834,10 @@ async def sync(
         _sync_lock_acquired_at = time.monotonic()
         try:
             return await _sync_inner(db, files, gdrive, folder_id, dry_run=dry_run, enhance=enhance)
+        except Exception:
+            global _last_sync_error  # noqa: PLW0603
+            _last_sync_error = "Sync failed — check server logs"
+            raise
         finally:
             _sync_lock_acquired_at = 0.0
 
@@ -843,7 +852,10 @@ async def _sync_inner(
     enhance: bool = True,
 ) -> dict:
     """Inner sync logic (called under lock)."""
+    global _last_sync_result, _last_sync_error, _last_sync_time  # noqa: PLW0603
+
     logger.info("sync: starting bidirectional sync (dry_run=%s)", dry_run)
+    _last_sync_error = None
 
     from_stats = await sync_from_gdrive(
         db, files, gdrive, folder_id, dry_run=dry_run, enhance=enhance
@@ -854,8 +866,30 @@ async def _sync_inner(
         "from_gdrive": from_stats,
         "to_gdrive": to_stats,
     }
+    _last_sync_result = combined
+    _last_sync_time = time.monotonic()
     logger.info("sync: done — %s", combined)
     return combined
+
+
+def get_sync_status() -> dict:
+    """Return current sync status (running/idle) and last result."""
+    running = _sync_lock.locked()
+    elapsed = time.monotonic() - _sync_lock_acquired_at if _sync_lock_acquired_at > 0 else 0.0
+
+    status: dict = {"running": running}
+    if running:
+        status["elapsed_s"] = round(elapsed, 1)
+
+    if _last_sync_result is not None:
+        status["last_result"] = _last_sync_result
+        age = time.monotonic() - _last_sync_time if _last_sync_time > 0 else 0.0
+        status["last_sync_age_s"] = round(age, 1)
+
+    if _last_sync_error is not None:
+        status["last_error"] = _last_sync_error
+
+    return status
 
 
 # ── AI enhancement helper ──────────────────────────────────────────────────

@@ -145,7 +145,10 @@ async def gdrive_sync(
     dry_run: bool = False,
     enhance: bool = True,
 ) -> str:
-    """Run full bidirectional Google Drive sync.
+    """Run full bidirectional Google Drive sync (runs in background).
+
+    Returns immediately with status. Use gdrive_sync_status to check progress
+    and get the result when done.
 
     1. Imports new/changed files from GDrive (GDrive wins on conflicts)
     2. Exports documents to organized category/year-month folders
@@ -155,6 +158,7 @@ async def gdrive_sync(
         dry_run: Preview changes without syncing.
         enhance: Run AI summary/tag generation on new files (default True).
     """
+    from oncofiles.sync import get_sync_status
     from oncofiles.sync import sync as _sync
 
     db = _get_db(ctx)
@@ -168,12 +172,52 @@ async def gdrive_sync(
     if not folder_id:
         return json.dumps({"error": "No sync folder set. Use gdrive_set_folder to pick one."})
 
-    try:
-        stats = await _sync(db, files, gdrive, folder_id, dry_run=dry_run, enhance=enhance)
-    except Exception:
-        logger.exception("gdrive_sync tool failed")
-        return json.dumps({"error": "Sync failed — check server logs for details"})
-    return json.dumps(stats)
+    # Dry run executes inline (fast)
+    if dry_run:
+        try:
+            stats = await _sync(db, files, gdrive, folder_id, dry_run=True, enhance=enhance)
+        except Exception:
+            logger.exception("gdrive_sync dry_run failed")
+            return json.dumps({"error": "Sync dry run failed — check server logs"})
+        return json.dumps(stats)
+
+    # Check if already running
+    status = get_sync_status()
+    if status["running"]:
+        return json.dumps(
+            {
+                "status": "already_running",
+                "elapsed_s": status.get("elapsed_s", 0),
+                "message": "Sync already in progress. Use gdrive_sync_status to check.",
+            }
+        )
+
+    # Fire-and-forget: launch sync as background task
+    async def _background_sync() -> None:
+        try:
+            await _sync(db, files, gdrive, folder_id, dry_run=False, enhance=enhance)
+        except Exception:
+            logger.exception("Background sync failed")
+
+    asyncio.create_task(_background_sync())
+
+    return json.dumps(
+        {
+            "status": "started",
+            "message": "Sync started in background. Use gdrive_sync_status to check progress.",
+        }
+    )
+
+
+async def gdrive_sync_status(ctx: Context) -> str:
+    """Check the status of the last or current GDrive sync.
+
+    Returns whether a sync is currently running, and the result of the last
+    completed sync (if any).
+    """
+    from oncofiles.sync import get_sync_status
+
+    return json.dumps(get_sync_status())
 
 
 async def sync_from_gdrive(
@@ -371,6 +415,7 @@ def register(mcp):
     mcp.tool()(gdrive_auth_status)
     mcp.tool()(gdrive_set_folder)
     mcp.tool()(gdrive_sync)
+    mcp.tool()(gdrive_sync_status)
     mcp.tool()(sync_from_gdrive)
     mcp.tool()(sync_to_gdrive)
     mcp.tool()(gdrive_fix_permissions)
