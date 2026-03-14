@@ -124,17 +124,25 @@ CATEGORY_ALIASES: dict[str, DocumentCategory] = {
 _DATE_RE = re.compile(r"^(\d{4})(\d{2})(\d{2})")
 _DATE_XX_RE = re.compile(r"^(\d{4})(\d{2})(xx)", re.IGNORECASE)
 
+_cached_patient_re: re.Pattern | None = None
+
 
 def _patient_prefix_re() -> re.Pattern:
-    """Build patient prefix regex from patient context name."""
+    """Build patient prefix regex from patient context name (cached)."""
+    global _cached_patient_re  # noqa: PLW0603
+    if _cached_patient_re is not None:
+        return _cached_patient_re
+
     from oncofiles.patient_context import get_patient_name
 
     name = get_patient_name()
     if name:
         # "Erika Fusekova" → "ErikaFusekova" (no space, case-insensitive)
         compact = name.replace(" ", "")
-        return re.compile(rf"^{re.escape(compact)}[-]?", re.IGNORECASE)
-    return re.compile(r"^ErikaFusekova[-]?", re.IGNORECASE)
+        _cached_patient_re = re.compile(rf"^{re.escape(compact)}[-]?", re.IGNORECASE)
+    else:
+        _cached_patient_re = re.compile(r"^ErikaFusekova[-]?", re.IGNORECASE)
+    return _cached_patient_re
 
 
 # Bilingual format: EN category prefix already present

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import mimetypes
 from pathlib import Path
 from typing import BinaryIO
@@ -9,6 +10,8 @@ from typing import BinaryIO
 import anthropic
 
 from oncofiles.config import ANTHROPIC_API_KEY
+
+logger = logging.getLogger(__name__)
 
 
 class FilesClient:
@@ -24,6 +27,10 @@ class FilesClient:
         mime_type: str | None = None,
     ) -> anthropic.types.beta.FileMetadata:
         """Upload a file and return its metadata."""
+        if len(filename) > 255:
+            _, _, ext = filename.rpartition(".")
+            filename = filename[: 255 - len(ext) - 1] + "." + ext if ext else filename[:255]
+            logger.warning("Truncated filename to 255 chars: %s...", filename[:50])
         if mime_type is None:
             mime_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
         return self._client.beta.files.upload(file=(filename, file, mime_type))
