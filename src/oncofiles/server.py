@@ -608,6 +608,7 @@ from oncofiles.tools import (  # noqa: E402
     analysis,
     clinical,
     conversations,
+    db_query,
     documents,
     enhance_tools,
     export,
@@ -635,6 +636,7 @@ export.register(mcp)
 naming.register(mcp)
 patient.register(mcp)
 hygiene.register(mcp)
+db_query.register(mcp)
 resources.register(mcp)
 
 # ── Backward-compatible re-exports for tests ─────────────────────────────────
