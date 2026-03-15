@@ -487,10 +487,7 @@ async def test_sync_to_gdrive_renames_to_standard(db: Database):
     assert stats.get("renamed", 0) == 1
 
     # Verify GDrive rename was called with standard format
-    expected = (
-        "20260227_ErikaFusekova_NOU_Labs_"
-        "LabVysledkyPred2chemoMudrPorsok.pdf"
-    )
+    expected = "20260227_ErikaFusekova_NOU_Labs_LabVysledkyPred2chemoMudrPorsok.pdf"
     gdrive.rename_file.assert_any_call("gd_existing", expected)
 
     # Verify DB filename updated

@@ -477,7 +477,7 @@ def is_standard_format(filename: str) -> bool:
         return False
 
     # Check that there's a valid category token
-    after_patient = remaining[len(f"_{patient_name_compact}_"):]
+    after_patient = remaining[len(f"_{patient_name_compact}_") :]
     parts = after_patient.split("_", 2)  # institution, category, description
     if len(parts) < 2:
         return False
