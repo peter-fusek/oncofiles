@@ -238,6 +238,17 @@ def _start_sync_scheduler(db, files, gdrive, oauth_folder_id):
                 timeout=sync_timeout,
             )
             logger.info("Scheduled sync complete: %s", stats)
+            # Auto-enhance new docs after sync (if any were imported)
+            if stats.get("new", 0) > 0 or stats.get("updated", 0) > 0:
+                try:
+                    e_stats = await asyncio.wait_for(
+                        extract_all_metadata(db, files, gdrive),
+                        timeout=metadata_timeout,
+                    )
+                    if e_stats["processed"] > 0:
+                        logger.info("Post-sync enhance: %s", e_stats)
+                except Exception:
+                    logger.warning("Post-sync enhance failed", exc_info=True)
         except TimeoutError:
             logger.error("Scheduled sync timed out after %ds", sync_timeout)
         except Exception:
@@ -371,17 +382,24 @@ def _start_sync_scheduler(db, files, gdrive, oauth_folder_id):
         max_instances=1,
     )
 
-    # Startup sync: run once 60s after boot to catch up after redeploy
+    # Startup: full sync + enhance + category validation 60s after boot
     from apscheduler.triggers.date import DateTrigger
+
+    async def _startup_catchup():
+        """Run full sync, then enhance + validate to catch up after redeploy."""
+        await _run_sync()
+        await _run_metadata_extraction()
+        await _run_category_validation()
+        logger.info("Startup catchup complete: sync + enhance + validate")
 
     startup_time = datetime.now() + timedelta(seconds=60)
     scheduler.add_job(
-        _run_sync,
+        _startup_catchup,
         DateTrigger(run_date=startup_time),
-        id="startup_sync",
+        id="startup_catchup",
         max_instances=1,
     )
-    logger.info("Startup sync scheduled for %s", startup_time.strftime("%H:%M:%S"))
+    logger.info("Startup catchup scheduled for %s", startup_time.strftime("%H:%M:%S"))
 
     # Log scheduler job outcomes for observability
     def _job_executed(event):
