@@ -440,6 +440,125 @@ async def _move_doc_to_correct_folder(
     )
 
 
+async def qa_analysis(
+    ctx: Context,
+    days: int = 7,
+) -> str:
+    """Analyze activity logs for errors, slow tools, and improvement opportunities.
+
+    Scans the audit trail for patterns: recurring errors, slow operations,
+    failed storage, and usage trends. Returns actionable findings that can
+    be used to create GitHub improvement issues.
+
+    Args:
+        days: Number of days to analyze (default 7).
+    """
+    from datetime import date, timedelta
+
+    db = _get_db(ctx)
+
+    date_from = date.today() - timedelta(days=days)
+    date_to = date.today()
+
+    # Get stats
+    stats = await db.get_activity_stats(date_from=date_from, date_to=date_to)
+
+    # Get errors
+    from oncofiles.models import ActivityLogQuery
+
+    error_query = ActivityLogQuery(
+        status="error",
+        date_from=date_from,
+        date_to=date_to,
+        limit=50,
+    )
+    errors = await db.search_activity_log(error_query)
+
+    # Get slow operations (>10s)
+    timeout_query = ActivityLogQuery(
+        status="timeout",
+        date_from=date_from,
+        date_to=date_to,
+        limit=50,
+    )
+    timeouts = await db.search_activity_log(timeout_query)
+
+    # Analyze patterns
+    findings: list[dict] = []
+
+    # 1. Error patterns
+    error_tools: dict[str, int] = {}
+    error_messages: dict[str, int] = {}
+    for e in errors:
+        error_tools[e.tool_name] = error_tools.get(e.tool_name, 0) + 1
+        if e.error_message:
+            msg = e.error_message[:100]
+            error_messages[msg] = error_messages.get(msg, 0) + 1
+
+    for tool, count in sorted(error_tools.items(), key=lambda x: -x[1]):
+        if count >= 2:
+            findings.append(
+                {
+                    "type": "recurring_error",
+                    "severity": "high" if count >= 5 else "medium",
+                    "tool": tool,
+                    "count": count,
+                    "suggestion": f"Investigate {tool} — {count} errors in {days} days",
+                }
+            )
+
+    # 2. Timeout patterns
+    if timeouts:
+        findings.append(
+            {
+                "type": "timeouts",
+                "severity": "medium",
+                "count": len(timeouts),
+                "tools": list({t.tool_name for t in timeouts}),
+                "suggestion": "Operations timing out — check server resources or optimize",
+            }
+        )
+
+    # 3. Slow tools (avg >5s)
+    for s in stats:
+        avg_ms = s.get("avg_duration_ms", 0)
+        if avg_ms and avg_ms > 5000 and s.get("count", 0) >= 3:
+            findings.append(
+                {
+                    "type": "slow_tool",
+                    "severity": "low",
+                    "tool": s["tool_name"],
+                    "avg_ms": round(avg_ms),
+                    "count": s["count"],
+                    "suggestion": (
+                        f"{s['tool_name']} averages "
+                        f"{avg_ms / 1000:.1f}s — consider optimization"
+                    ),
+                }
+            )
+
+    # 4. Usage summary
+    total_calls = sum(s.get("count", 0) for s in stats)
+    total_errors = sum(s.get("count", 0) for s in stats if s.get("status") == "error")
+    error_rate = (total_errors / total_calls * 100) if total_calls > 0 else 0
+
+    result = {
+        "period": f"{date_from.isoformat()} to {date_to.isoformat()}",
+        "summary": {
+            "total_calls": total_calls,
+            "total_errors": total_errors,
+            "error_rate_pct": round(error_rate, 1),
+            "total_timeouts": len(timeouts),
+            "unique_tools": len(stats),
+        },
+        "findings": findings,
+        "top_tools": sorted(stats, key=lambda s: -s.get("count", 0))[:10],
+    }
+
+    return json.dumps(result)
+
+
 def register(mcp):
     mcp.tool()(reconcile_gdrive)
     mcp.tool()(validate_categories)
+    mcp.tool()(qa_analysis)

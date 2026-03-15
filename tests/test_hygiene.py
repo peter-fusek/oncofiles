@@ -8,6 +8,7 @@ from oncofiles.models import DocumentCategory
 from oncofiles.tools.hygiene import (
     _DOCTYPE_TO_CATEGORY,
     _UNMANAGED_FOLDER_MAP,
+    qa_analysis,
     reconcile_gdrive,
     validate_categories,
 )
@@ -223,6 +224,38 @@ async def test_validate_corrects_genetics(db: Database):
 
     updated = await db.get_document(doc.id)
     assert updated.category == DocumentCategory.GENETICS
+
+
+# ── qa_analysis ───────────────────────────────────────────────────────────────
+
+
+async def test_qa_analysis_empty(db: Database):
+    """Empty activity log returns zero findings."""
+    ctx = _mock_ctx(db)
+    result = json.loads(await qa_analysis(ctx, days=7))
+    assert result["summary"]["total_calls"] == 0
+    assert result["findings"] == []
+
+
+async def test_qa_analysis_with_errors(db: Database):
+    """Errors in activity log produce findings."""
+    from oncofiles.models import ActivityLogEntry
+
+    for _i in range(3):
+        await db.insert_activity_log(
+            ActivityLogEntry(
+                session_id="test-session",
+                agent_id="auto",
+                tool_name="broken_tool",
+                status="error",
+                error_message="Connection failed",
+            )
+        )
+
+    ctx = _mock_ctx(db)
+    result = json.loads(await qa_analysis(ctx, days=7))
+    assert result["summary"]["total_errors"] >= 3
+    assert any(f["type"] == "recurring_error" for f in result["findings"])
 
 
 # ── Constants ─────────────────────────────────────────────────────────────────
