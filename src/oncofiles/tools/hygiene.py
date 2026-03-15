@@ -531,8 +531,7 @@ async def qa_analysis(
                     "avg_ms": round(avg_ms),
                     "count": s["count"],
                     "suggestion": (
-                        f"{s['tool_name']} averages "
-                        f"{avg_ms / 1000:.1f}s — consider optimization"
+                        f"{s['tool_name']} averages {avg_ms / 1000:.1f}s — consider optimization"
                     ),
                 }
             )
