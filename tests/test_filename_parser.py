@@ -8,6 +8,7 @@ Legacy format: YYYYMMDD_institution_category_description.ext
 from datetime import date
 
 from oncofiles.filename_parser import (
+    is_corrupted_filename,
     is_standard_format,
     parse_filename,
     rename_to_bilingual,
@@ -524,3 +525,34 @@ class TestRenameToStandard:
         )
         # When no institution parsed, uses "Unknown"
         assert "_Unknown_" in result or "_Reference_" in result
+
+
+class TestCorruptedFilename:
+    """Tests for is_corrupted_filename — detecting broken filenames."""
+
+    def test_normal_filename_not_corrupted(self):
+        assert is_corrupted_filename("20260227_ErikaFusekova_NOU_Labs_Blood.pdf") is False
+
+    def test_repeating_pattern_corrupted(self):
+        """3+ repetitions of patient name = corrupted."""
+        fn = "ErikaFusekova-Report-" + "ErikaFusekova " * 50 + "CRC.pdf"
+        assert is_corrupted_filename(fn) is True
+
+    def test_excessive_length_corrupted(self):
+        """Filenames > 255 chars are corrupted."""
+        fn = "20260227_" + "A" * 250 + ".pdf"
+        assert is_corrupted_filename(fn) is True
+
+    def test_two_repetitions_not_corrupted(self):
+        """Only 2 occurrences is okay (filename + description)."""
+        fn = "20260227_ErikaFusekova_NOU_Report_ErikaFusekovaConsult.pdf"
+        assert is_corrupted_filename(fn) is False
+
+    def test_real_corrupted_filename(self):
+        """Real corrupted filename from production."""
+        fn = (
+            "ErikaFusekova-Report-ErikaFusekova ErikaFusekova "
+            "ErikaFusekova ErikaFusekova ErikaFusekova Erika "
+            "Fusekova CRC Baseline 2026.pdf"
+        )
+        assert is_corrupted_filename(fn) is True

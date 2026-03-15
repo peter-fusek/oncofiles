@@ -485,6 +485,25 @@ def is_standard_format(filename: str) -> bool:
     return parts[1].lower() in _TOKEN_TO_CATEGORY
 
 
+def is_corrupted_filename(filename: str) -> bool:
+    """Detect corrupted filenames (repeating patterns, excessive length).
+
+    Catches the known GDrive sync bug that produces filenames with
+    repeated "ErikaFusekova" patterns spanning 1,300–3,100+ characters.
+    """
+    stem = PurePosixPath(filename).stem
+
+    # Excessive length
+    if len(filename) > 255:
+        return True
+
+    # Repeating patient name pattern (3+ consecutive occurrences)
+    from oncofiles.patient_context import get_patient_name
+
+    patient = get_patient_name().replace(" ", "") or "ErikaFusekova"
+    return stem.count(patient) >= 3
+
+
 def rename_to_bilingual(filename: str, category: DocumentCategory | str | None = None) -> str:
     """Add EN category prefix to a filename for bilingual display.
 

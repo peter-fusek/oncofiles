@@ -8,7 +8,7 @@ import logging
 
 from fastmcp import Context
 
-from oncofiles.filename_parser import is_standard_format, rename_to_standard
+from oncofiles.filename_parser import is_corrupted_filename, is_standard_format, rename_to_standard
 from oncofiles.tools._helpers import _get_db, _get_gdrive
 
 logger = logging.getLogger(__name__)
@@ -58,11 +58,31 @@ async def rename_documents_to_standard(
             continue
 
         en_desc = desc_map.get(doc.id)
-        new_name = rename_to_standard(
-            doc.filename,
-            category=doc.category.value,
-            en_description=en_desc,
-        )
+
+        # Handle corrupted filenames using DB metadata
+        if is_corrupted_filename(doc.filename):
+            if not doc.document_date:
+                stats["skipped"] += 1
+                continue
+            import re
+
+            from oncofiles.filename_parser import CATEGORY_FILENAME_TOKENS
+            from oncofiles.patient_context import get_patient_name
+
+            patient = get_patient_name().replace(" ", "") or "ErikaFusekova"
+            cat_token = CATEGORY_FILENAME_TOKENS.get(doc.category, "Other")
+            date_str = doc.document_date.strftime("%Y%m%d")
+            inst = doc.institution or "Unknown"
+            desc = en_desc or doc.description or "Document"
+            desc = re.sub(r"[^a-zA-Z0-9]", "", desc)[:60]
+            ext = "." + doc.filename.rsplit(".", 1)[-1] if "." in doc.filename else ".pdf"
+            new_name = f"{date_str}_{patient}_{inst}_{cat_token}_{desc}{ext}"
+        else:
+            new_name = rename_to_standard(
+                doc.filename,
+                category=doc.category.value,
+                en_description=en_desc,
+            )
 
         if new_name == doc.filename:
             stats["skipped"] += 1

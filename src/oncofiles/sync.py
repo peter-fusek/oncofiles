@@ -17,7 +17,12 @@ from datetime import UTC, datetime
 
 from oncofiles.database import Database
 from oncofiles.enhance import enhance_document_text, extract_structured_metadata
-from oncofiles.filename_parser import is_standard_format, parse_filename, rename_to_standard
+from oncofiles.filename_parser import (
+    is_corrupted_filename,
+    is_standard_format,
+    parse_filename,
+    rename_to_standard,
+)
 from oncofiles.files_api import FilesClient
 from oncofiles.gdrive_client import GDriveClient
 from oncofiles.gdrive_folders import (
@@ -467,7 +472,38 @@ async def _rename_to_standard(db: Database, gdrive: GDriveClient) -> dict:
             continue
 
         try:
-            new_name = rename_to_standard(doc.filename, category=doc.category.value)
+            # Handle corrupted filenames: use DB metadata instead of parsing
+            if is_corrupted_filename(doc.filename):
+                if not doc.document_date:
+                    logger.warning(
+                        "_rename_to_standard: corrupted filename but no date for doc %d",
+                        doc.id,
+                    )
+                    stats["skipped"] += 1
+                    continue
+                from oncofiles.filename_parser import CATEGORY_FILENAME_TOKENS
+                from oncofiles.patient_context import get_patient_name
+
+                patient = get_patient_name().replace(" ", "") or "ErikaFusekova"
+                cat_token = CATEGORY_FILENAME_TOKENS.get(doc.category, "Other")
+                date_str = doc.document_date.strftime("%Y%m%d")
+                inst = doc.institution or "Unknown"
+                desc = doc.description or "Document"
+                # Clean description for filename
+                import re
+
+                desc = re.sub(r"[^a-zA-Z0-9]", "", desc)[:60]
+                ext = "." + doc.filename.rsplit(".", 1)[-1] if "." in doc.filename else ".pdf"
+                new_name = f"{date_str}_{patient}_{inst}_{cat_token}_{desc}{ext}"
+                logger.info(
+                    "Fixing corrupted filename doc %d: %d chars → '%s'",
+                    doc.id,
+                    len(doc.filename),
+                    new_name,
+                )
+            else:
+                new_name = rename_to_standard(doc.filename, category=doc.category.value)
+
             if new_name == doc.filename:
                 stats["skipped"] += 1
                 continue
