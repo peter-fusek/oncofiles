@@ -371,6 +371,18 @@ def _start_sync_scheduler(db, files, gdrive, oauth_folder_id):
         max_instances=1,
     )
 
+    # Startup sync: run once 60s after boot to catch up after redeploy
+    from apscheduler.triggers.date import DateTrigger
+
+    startup_time = datetime.now() + timedelta(seconds=60)
+    scheduler.add_job(
+        _run_sync,
+        DateTrigger(run_date=startup_time),
+        id="startup_sync",
+        max_instances=1,
+    )
+    logger.info("Startup sync scheduled for %s", startup_time.strftime("%H:%M:%S"))
+
     # Log scheduler job outcomes for observability
     def _job_executed(event):
         logger.info("Scheduler job completed: %s", event.job_id)
