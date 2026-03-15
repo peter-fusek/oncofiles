@@ -61,9 +61,6 @@ async def rename_documents_to_standard(
 
         # Handle corrupted filenames using DB metadata
         if is_corrupted_filename(doc.filename):
-            if not doc.document_date:
-                stats["skipped"] += 1
-                continue
             import re
 
             from oncofiles.filename_parser import CATEGORY_FILENAME_TOKENS
@@ -71,7 +68,12 @@ async def rename_documents_to_standard(
 
             patient = get_patient_name().replace(" ", "") or "ErikaFusekova"
             cat_token = CATEGORY_FILENAME_TOKENS.get(doc.category, "Other")
-            date_str = doc.document_date.strftime("%Y%m%d")
+            if doc.document_date:
+                date_str = doc.document_date.strftime("%Y%m%d")
+            elif doc.created_at:
+                date_str = doc.created_at.strftime("%Y%m%d")
+            else:
+                date_str = "20260201"
             inst = doc.institution or "Unknown"
             desc = en_desc or doc.description or "Document"
             desc = re.sub(r"[^a-zA-Z0-9]", "", desc)[:60]

@@ -579,19 +579,18 @@ async def _rename_to_standard(db: Database, gdrive: GDriveClient) -> dict:
         try:
             # Handle corrupted filenames: use DB metadata instead of parsing
             if is_corrupted_filename(doc.filename):
-                if not doc.document_date:
-                    logger.warning(
-                        "_rename_to_standard: corrupted filename but no date for doc %d",
-                        doc.id,
-                    )
-                    stats["skipped"] += 1
-                    continue
                 from oncofiles.filename_parser import CATEGORY_FILENAME_TOKENS
                 from oncofiles.patient_context import get_patient_name
 
                 patient = get_patient_name().replace(" ", "") or "ErikaFusekova"
                 cat_token = CATEGORY_FILENAME_TOKENS.get(doc.category, "Other")
-                date_str = doc.document_date.strftime("%Y%m%d")
+                # Use document_date or created_at or fallback
+                if doc.document_date:
+                    date_str = doc.document_date.strftime("%Y%m%d")
+                elif doc.created_at:
+                    date_str = doc.created_at.strftime("%Y%m%d")
+                else:
+                    date_str = "20260201"
                 inst = doc.institution or "Unknown"
                 desc = doc.description or "Document"
                 # Clean description for filename
