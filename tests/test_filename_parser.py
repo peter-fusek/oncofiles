@@ -1,11 +1,18 @@
-"""Tests for filename parser — real naming convention.
+"""Tests for filename parser — all naming conventions.
 
-Real format: YYYYMMDD ErikaFusekova-Institution-DescriptionDoctor.ext
+Standard format (v3.15+): YYYYMMDD_ErikaFusekova_Institution_Category_DescriptionEN.ext
+Bilingual format (v3.5-3.14): YYYYMMDD ErikaFusekova-Institution-Category-SKDescription.ext
+Legacy format: YYYYMMDD_institution_category_description.ext
 """
 
 from datetime import date
 
-from oncofiles.filename_parser import parse_filename, rename_to_bilingual
+from oncofiles.filename_parser import (
+    is_standard_format,
+    parse_filename,
+    rename_to_bilingual,
+    rename_to_standard,
+)
 from oncofiles.models import DocumentCategory
 
 # ── Real filenames from Google Drive ─────────────────────────────────────────
@@ -329,3 +336,203 @@ class TestBilingualRename:
     def test_no_description_unchanged(self):
         """Files without parseable description stay unchanged."""
         assert rename_to_bilingual("20240115.pdf") == "20240115.pdf"
+
+
+# ── Standard format tests (v3.15+) ──────────────────────────────────────────
+
+
+class TestStandardFormat:
+    """Tests for YYYYMMDD_ErikaFusekova_Institution_Category_Description format."""
+
+    def test_full_standard(self):
+        r = parse_filename("20260227_ErikaFusekova_NOU_Labs_BloodResultsBeforeCycle2DrPorsok.pdf")
+        assert r.document_date == date(2026, 2, 27)
+        assert r.institution == "NOU"
+        assert r.category == DocumentCategory.LABS
+        assert r.description == "BloodResultsBeforeCycle2DrPorsok"
+        assert r.extension == "pdf"
+
+    def test_discharge(self):
+        r = parse_filename(
+            "20260122_ErikaFusekova_BoryNemocnica_Discharge_DischargeSummaryAfterSurgery.pdf"
+        )
+        assert r.document_date == date(2026, 1, 22)
+        assert r.institution == "BoryNemocnica"
+        assert r.category == DocumentCategory.DISCHARGE
+
+    def test_pathology(self):
+        r = parse_filename("20260127_ErikaFusekova_BoryNemocnica_Pathology_BiopsyDrRychly.JPG")
+        assert r.document_date == date(2026, 1, 27)
+        assert r.institution == "BoryNemocnica"
+        assert r.category == DocumentCategory.PATHOLOGY
+        assert r.extension == "JPG"
+
+    def test_genetics(self):
+        r = parse_filename("20260226_ErikaFusekova_NOU_Genetics_KRASMutationAnalysis.JPG")
+        assert r.document_date == date(2026, 2, 26)
+        assert r.institution == "NOU"
+        assert r.category == DocumentCategory.GENETICS
+
+    def test_imaging_ct(self):
+        r = parse_filename("20260130_ErikaFusekova_NOU_CT_AbdomenScanDrPorsok.pdf")
+        assert r.document_date == date(2026, 1, 30)
+        assert r.institution == "NOU"
+        assert r.category == DocumentCategory.IMAGING_CT
+
+    def test_imaging_usg(self):
+        r = parse_filename("20260129_ErikaFusekova_BoryNemocnica_USG_AbdomenDrTulenkova.pdf")
+        assert r.category == DocumentCategory.IMAGING_US
+
+    def test_chemo_sheet(self):
+        r = parse_filename("20260213_ErikaFusekova_NOU_ChemoSheet_FOLFOXProtocol.pdf")
+        assert r.category == DocumentCategory.CHEMO_SHEET
+
+    def test_surgical_report(self):
+        r = parse_filename("20260118_ErikaFusekova_BoryNemocnica_SurgicalReport_ColonResection.pdf")
+        assert r.category == DocumentCategory.SURGICAL_REPORT
+
+    def test_reference(self):
+        r = parse_filename("20260301_ErikaFusekova_NOU_Reference_DeVitaCh40ColorectalCancer.pdf")
+        assert r.category == DocumentCategory.REFERENCE
+
+    def test_advocate(self):
+        r = parse_filename("20250127_ErikaFusekova_PacientAdvokat_Advocate_SummaryAfterSurgery.md")
+        assert r.institution == "PacientAdvokat"
+        assert r.category == DocumentCategory.ADVOCATE
+
+    def test_discharge_summary(self):
+        r = parse_filename(
+            "20260122_ErikaFusekova_BoryNemocnica_DischargeSummary_PostOpCare.pdf"
+        )
+        assert r.category == DocumentCategory.DISCHARGE_SUMMARY
+
+    def test_description_with_underscores(self):
+        r = parse_filename(
+            "20260227_ErikaFusekova_NOU_Labs_Blood_Results_Cycle2.pdf"
+        )
+        assert r.category == DocumentCategory.LABS
+        assert r.description == "Blood_Results_Cycle2"
+
+    def test_no_description(self):
+        r = parse_filename("20260227_ErikaFusekova_NOU_Labs.pdf")
+        assert r.category == DocumentCategory.LABS
+        assert r.institution == "NOU"
+        assert r.description is None
+
+    def test_unknown_category_token_infers(self):
+        """If category token is not recognized, fall back to inference."""
+        r = parse_filename("20260227_ErikaFusekova_NOU_LabVysledkyPred2chemo.pdf")
+        assert r.category == DocumentCategory.LABS
+        assert r.description == "LabVysledkyPred2chemo"
+
+    def test_other_category(self):
+        r = parse_filename(
+            "20260209_ErikaFusekova_SocialnaPoistovna_Other_SickLeaveConfirmation.pdf"
+        )
+        assert r.category == DocumentCategory.OTHER
+        assert r.institution == "SocialnaPoistovna"
+
+
+class TestIsStandardFormat:
+    """Tests for is_standard_format() detection."""
+
+    def test_standard_format(self):
+        assert is_standard_format(
+            "20260227_ErikaFusekova_NOU_Labs_BloodResults.pdf"
+        ) is True
+
+    def test_bilingual_format_not_standard(self):
+        assert is_standard_format(
+            "20260227 ErikaFusekova-NOU-Labs-LabVysledky.pdf"
+        ) is False
+
+    def test_legacy_format_not_standard(self):
+        assert is_standard_format("20260227_NOU_labs_krvnyObraz.pdf") is False
+
+    def test_no_date_not_standard(self):
+        assert is_standard_format("ErikaFusekova_NOU_Labs_Blood.pdf") is False
+
+
+class TestRenameToStandard:
+    """Tests for rename_to_standard — converting to standard format."""
+
+    def test_from_bilingual(self):
+        result = rename_to_standard(
+            "20260227 ErikaFusekova-NOU-LabVysledkyPred2chemo[PHYSICIAN_REDACTED].pdf"
+        )
+        assert result == "20260227_ErikaFusekova_NOU_Labs_LabVysledkyPred2chemo[PHYSICIAN_REDACTED].pdf"
+
+    def test_from_bilingual_with_en_description(self):
+        result = rename_to_standard(
+            "20260227 ErikaFusekova-NOU-LabVysledkyPred2chemo[PHYSICIAN_REDACTED].pdf",
+            en_description="BloodResultsBeforeCycle2DrPorsok",
+        )
+        assert result == "20260227_ErikaFusekova_NOU_Labs_BloodResultsBeforeCycle2DrPorsok.pdf"
+
+    def test_from_bilingual_with_category_override(self):
+        result = rename_to_standard(
+            "20260209 ErikaFusekova-SocialnaPoistovna-UznanieNemocenskeho.pdf",
+            category="referral",
+            en_description="SickLeaveConfirmation",
+        )
+        assert result == (
+            "20260209_ErikaFusekova_SocialnaPoistovna_Referral_SickLeaveConfirmation.pdf"
+        )
+
+    def test_already_standard_unchanged(self):
+        fn = "20260227_ErikaFusekova_NOU_Labs_BloodResultsBeforeCycle2DrPorsok.pdf"
+        assert rename_to_standard(fn) == fn
+
+    def test_from_bilingual_with_prefix(self):
+        """Bilingual files with category prefix should strip it."""
+        result = rename_to_standard(
+            "20260227 ErikaFusekova-NOU-Labs-LabVysledkyPred2chemo.pdf"
+        )
+        assert result == "20260227_ErikaFusekova_NOU_Labs_LabVysledkyPred2chemo.pdf"
+
+    def test_no_date_unchanged(self):
+        assert rename_to_standard("random_document.pdf") == "random_document.pdf"
+
+    def test_ct_category_token(self):
+        result = rename_to_standard(
+            "20260130 ErikaFusekova-NOU-CTobjednavka[PHYSICIAN_REDACTED]PrimarOnkolog.pdf",
+            en_description="AbdomenScanOrderDrPorsok",
+        )
+        assert result == "20260130_ErikaFusekova_NOU_CT_AbdomenScanOrderDrPorsok.pdf"
+
+    def test_usg_category_token(self):
+        result = rename_to_standard(
+            "20260129 ErikaFusekova-BoryNemocnica-USGMudrTulenkova.pdf",
+            en_description="AbdomenUltrasoundDrTulenkova",
+        )
+        assert result == "20260129_ErikaFusekova_BoryNemocnica_USG_AbdomenUltrasoundDrTulenkova.pdf"
+
+    def test_discharge(self):
+        result = rename_to_standard(
+            "20260122 ErikaFusekova-BoryNemocnica-LekarskaPrepustaciaSpravaOperacia.pdf",
+            en_description="DischargeSummaryAfterSurgery",
+        )
+        assert result == (
+            "20260122_ErikaFusekova_BoryNemocnica_Discharge_DischargeSummaryAfterSurgery.pdf"
+        )
+
+    def test_keeps_original_description_if_no_en(self):
+        result = rename_to_standard(
+            "20260226 ErikaFusekova-NOU-GenetikaMudrMalejcikova1z2.JPG"
+        )
+        assert result == "20260226_ErikaFusekova_NOU_Genetics_GenetikaMudrMalejcikova1z2.JPG"
+
+    def test_chemo_sheet(self):
+        result = rename_to_standard(
+            "20260213 ErikaFusekova-NOU-ChemoterapeutickyProtokolFOLFOX.pdf",
+            en_description="FOLFOXChemotherapyProtocol",
+        )
+        assert result == "20260213_ErikaFusekova_NOU_ChemoSheet_FOLFOXChemotherapyProtocol.pdf"
+
+    def test_no_institution_uses_unknown(self):
+        result = rename_to_standard(
+            "20260301 ErikaFusekova-ReferencneMaterialyKRAS.pdf",
+            en_description="KRASReferenceMaterials",
+        )
+        # When no institution parsed, uses "Unknown"
+        assert "_Unknown_" in result or "_Reference_" in result

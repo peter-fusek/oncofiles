@@ -167,3 +167,54 @@ def extract_structured_metadata(text: str) -> dict:
             "plain_summary": "",
             "plain_summary_sk": "",
         }
+
+
+FILENAME_DESC_SYSTEM_PROMPT = (
+    "You are a medical document analyst. Given the extracted text of a medical document, "
+    "generate a short CamelCase English description suitable for a filename.\n\n"
+    "Rules:\n"
+    "- No spaces, no special characters (only letters and digits)\n"
+    "- CamelCase format (e.g., BloodResultsBeforeCycle2DrPorsok)\n"
+    "- Include key content: document type, procedure/test, doctor name if present\n"
+    "- Maximum 60 characters\n"
+    "- If the text is in Slovak, translate the key concepts to English\n\n"
+    "Respond ONLY with the CamelCase description, no quotes or extra text."
+)
+
+
+def generate_filename_description(text: str) -> str:
+    """Generate a short CamelCase English description for a medical document filename.
+
+    Args:
+        text: Extracted text from the document (OCR or native PDF).
+
+    Returns:
+        CamelCase English description, max 60 chars (e.g. "BloodResultsBeforeCycle2DrPorsok").
+    """
+    if not text.strip():
+        return ""
+
+    client = _get_client()
+    truncated = text[:4000]
+
+    response = client.messages.create(
+        model=ENHANCE_MODEL,
+        max_tokens=100,
+        system=FILENAME_DESC_SYSTEM_PROMPT,
+        messages=[
+            {
+                "role": "user",
+                "content": f"Document text:\n\n{truncated}",
+            }
+        ],
+    )
+
+    raw = response.content[0].text.strip() if response.content else ""
+
+    # Clean: remove quotes, spaces, special chars
+    import re
+
+    cleaned = re.sub(r"[^a-zA-Z0-9]", "", raw)
+
+    # Truncate to 60 chars
+    return cleaned[:60]

@@ -1,12 +1,11 @@
-"""Parse medical document filenames following the real naming convention.
+"""Parse medical document filenames following the naming convention.
 
-Primary format: YYYYMMDD ErikaFusekova-Institution-DescriptionDoctor.ext
+Standard format (v3.15+): YYYYMMDD_ErikaFusekova_Institution_Category_DescriptionEN.ext
 Examples:
-    20260227 ErikaFusekova-NOU-LabVysledkyPred2chemo[PHYSICIAN_REDACTED].pdf
-    20260122 ErikaFusekova-BoryNemocnica-LekarskaPrepustaciaSpravaOperacia.pdf
-    20260127 ErikaFusekova-BoryNemocnica-BiopsiaMudrRychly.JPG
-    202602xx ErikaFusekova-BoryNemocnica-PNkaPreSocialnaPoistovnaOprava.pdf
+    20260227_ErikaFusekova_NOU_Labs_BloodResultsBeforeCycle2DrPorsok.pdf
+    20260122_ErikaFusekova_BoryNemocnica_Discharge_DischargeSummaryAfterSurgery.pdf
 
+Bilingual format (v3.5-3.14): YYYYMMDD ErikaFusekova-Institution-Category-SKDescription.ext
 Legacy format (still supported): YYYYMMDD_institution_category_description.ext
 """
 
@@ -41,6 +40,32 @@ KNOWN_INSTITUTIONS = {
     "Synlab",
     "Cytopathos",
     "BIOPTIKA",
+}
+
+# Standard format: category → filename token (CamelCase, no spaces)
+CATEGORY_FILENAME_TOKENS: dict[DocumentCategory, str] = {
+    DocumentCategory.LABS: "Labs",
+    DocumentCategory.REPORT: "Report",
+    DocumentCategory.PATHOLOGY: "Pathology",
+    DocumentCategory.IMAGING: "Imaging",
+    DocumentCategory.IMAGING_CT: "CT",
+    DocumentCategory.IMAGING_US: "USG",
+    DocumentCategory.GENETICS: "Genetics",
+    DocumentCategory.SURGERY: "Surgery",
+    DocumentCategory.SURGICAL_REPORT: "SurgicalReport",
+    DocumentCategory.PRESCRIPTION: "Prescription",
+    DocumentCategory.REFERRAL: "Referral",
+    DocumentCategory.DISCHARGE: "Discharge",
+    DocumentCategory.DISCHARGE_SUMMARY: "DischargeSummary",
+    DocumentCategory.CHEMO_SHEET: "ChemoSheet",
+    DocumentCategory.REFERENCE: "Reference",
+    DocumentCategory.ADVOCATE: "Advocate",
+    DocumentCategory.OTHER: "Other",
+}
+
+# Reverse lookup: filename token (lowercase) → category
+_TOKEN_TO_CATEGORY: dict[str, DocumentCategory] = {
+    token.lower(): cat for cat, token in CATEGORY_FILENAME_TOKENS.items()
 }
 
 # Category inference from CamelCase description keywords.
@@ -178,6 +203,70 @@ def _infer_category(description: str) -> DocumentCategory:
     return DocumentCategory.OTHER
 
 
+def _parse_standard_format(stem: str, ext: str) -> ParsedFilename | None:
+    """Try to parse as: YYYYMMDD_PatientName_Institution_Category_Description."""
+    result = ParsedFilename(extension=ext)
+
+    # Extract date
+    date_match = _DATE_RE.match(stem)
+    if not date_match:
+        return None
+
+    with contextlib.suppress(ValueError):
+        result.document_date = date(
+            int(date_match.group(1)), int(date_match.group(2)), int(date_match.group(3))
+        )
+
+    remaining = stem[8:].lstrip("_")
+
+    if not remaining:
+        return result
+
+    # Split on underscores
+    parts = remaining.split("_")
+    if len(parts) < 2:
+        return None  # Need at least patient name + something
+
+    # First part should be patient name (e.g. "ErikaFusekova")
+    from oncofiles.patient_context import get_patient_name
+
+    patient_name_compact = get_patient_name().replace(" ", "") or "ErikaFusekova"
+    if parts[0].lower() != patient_name_compact.lower():
+        return None  # Not standard format
+
+    if len(parts) < 3:
+        return result
+
+    # Second part: institution
+    result.institution = parts[1]
+
+    if len(parts) == 3:
+        # YYYYMMDD_Patient_Institution_X — X could be category token or description
+        token = parts[2].lower()
+        cat = _TOKEN_TO_CATEGORY.get(token)
+        if cat:
+            result.category = cat
+        else:
+            result.description = parts[2]
+            result.category = _infer_category(parts[2])
+        return result
+
+    # Third part: category token
+    cat_token = parts[2].lower()
+    cat = _TOKEN_TO_CATEGORY.get(cat_token)
+    if cat:
+        result.category = cat
+        # Everything after category is the description
+        if len(parts) > 3:
+            result.description = "_".join(parts[3:])
+    else:
+        # Third part is not a known category token — treat as part of description
+        result.description = "_".join(parts[2:])
+        result.category = _infer_category(result.description)
+
+    return result
+
+
 def _parse_new_format(stem: str, ext: str) -> ParsedFilename | None:
     """Try to parse as: YYYYMMDD ErikaFusekova-Institution-Description."""
     result = ParsedFilename(extension=ext)
@@ -240,16 +329,25 @@ def _parse_new_format(stem: str, ext: str) -> ParsedFilename | None:
 def parse_filename(filename: str) -> ParsedFilename:
     """Parse a filename into structured metadata.
 
-    Handles both the real naming convention (space-separated, ErikaFusekova prefix)
-    and the legacy underscore-separated format.
+    Tries formats in order:
+    1. Standard (v3.15+): YYYYMMDD_PatientName_Institution_Category_Description
+    2. Bilingual (v3.5-3.14): YYYYMMDD PatientName-Institution-Description
+    3. Legacy: YYYYMMDD_institution_category_description
     """
     stem = PurePosixPath(filename).stem
     ext = PurePosixPath(filename).suffix.lstrip(".")
 
-    # Try new format first: YYYYMMDD PatientName-Institution-Description
     from oncofiles.patient_context import get_patient_name
 
     patient_name_compact = get_patient_name().replace(" ", "") or "ErikaFusekova"
+
+    # Try standard format first: YYYYMMDD_PatientName_Institution_Category_Description
+    if f"_{patient_name_compact}_" in stem or stem.startswith(f"{patient_name_compact}_"):
+        result = _parse_standard_format(stem, ext)
+        if result:
+            return result
+
+    # Try bilingual format: YYYYMMDD PatientName-Institution-Description
     if " " in stem and patient_name_compact.lower() in stem.lower():
         result = _parse_new_format(stem, ext)
         if result:
@@ -304,8 +402,94 @@ def parse_filename(filename: str) -> ParsedFilename:
     return result
 
 
+def rename_to_standard(
+    filename: str,
+    category: DocumentCategory | str | None = None,
+    en_description: str | None = None,
+) -> str:
+    """Rename a filename to the standard format.
+
+    Transforms any format to: YYYYMMDD_PatientName_Institution_Category_Description.ext
+
+    Args:
+        filename: Current filename in any supported format.
+        category: Category override. If None, infers from filename.
+        en_description: English CamelCase description. If None, keeps existing description.
+
+    Returns the new filename in standard format (or unchanged if can't be parsed).
+    """
+    path = PurePosixPath(filename)
+    ext = path.suffix  # includes the dot
+
+    parsed = parse_filename(filename)
+    cat = DocumentCategory(category) if category else parsed.category
+    cat_token = CATEGORY_FILENAME_TOKENS.get(cat, "Other")
+
+    # Can't rename without at least a date
+    if not parsed.document_date:
+        return filename
+
+    from oncofiles.patient_context import get_patient_name
+
+    patient_compact = get_patient_name().replace(" ", "") or "ErikaFusekova"
+
+    # Use provided EN description, or fall back to existing description
+    desc = en_description or parsed.description or ""
+
+    # Clean description: remove bilingual prefix if present
+    # e.g. "Labs-LabVysledky..." → "LabVysledky..."
+    if desc and "-" in desc:
+        prefix_part = desc.split("-", 1)[0].lower()
+        if prefix_part in _TOKEN_TO_CATEGORY:
+            desc = desc.split("-", 1)[1]
+
+    # Build standard filename
+    date_str = parsed.document_date.strftime("%Y%m%d")
+    institution = parsed.institution or "Unknown"
+
+    parts = [date_str, patient_compact, institution, cat_token]
+    if desc:
+        parts.append(desc)
+
+    new_stem = "_".join(parts)
+
+    # Check if already in standard format with same components
+    existing_standard = f"{new_stem}{ext}"
+    if filename == existing_standard:
+        return filename
+
+    return f"{new_stem}{ext}"
+
+
+def is_standard_format(filename: str) -> bool:
+    """Check if a filename is already in the standard format."""
+    stem = PurePosixPath(filename).stem
+    from oncofiles.patient_context import get_patient_name
+
+    patient_name_compact = get_patient_name().replace(" ", "") or "ErikaFusekova"
+
+    # Standard format: YYYYMMDD_PatientName_Institution_CategoryToken_Description
+    if not _DATE_RE.match(stem):
+        return False
+
+    remaining = stem[8:]
+    if not remaining.startswith(f"_{patient_name_compact}_"):
+        return False
+
+    # Check that there's a valid category token
+    after_patient = remaining[len(f"_{patient_name_compact}_"):]
+    parts = after_patient.split("_", 2)  # institution, category, description
+    if len(parts) < 2:
+        return False
+
+    return parts[1].lower() in _TOKEN_TO_CATEGORY
+
+
 def rename_to_bilingual(filename: str, category: DocumentCategory | str | None = None) -> str:
     """Add EN category prefix to a filename for bilingual display.
+
+    .. deprecated:: 3.15.0
+        Use :func:`rename_to_standard` instead.
 
     Transforms:
         20260227 ErikaFusekova-NOU-LabVysledkyPred2chemo[PHYSICIAN_REDACTED].pdf
@@ -336,19 +520,7 @@ def rename_to_bilingual(filename: str, category: DocumentCategory | str | None =
         return filename
 
     # Check if description already starts with the category prefix
-    cat_prefix = cat.value.capitalize()
-    if cat.value == "imaging_ct":
-        cat_prefix = "CT"
-    elif cat.value == "imaging_us":
-        cat_prefix = "USG"
-    elif cat.value == "surgical_report":
-        cat_prefix = "SurgicalReport"
-    elif cat.value == "discharge_summary":
-        cat_prefix = "DischargeSummary"
-    elif cat.value == "chemo_sheet":
-        cat_prefix = "ChemoSheet"
-    elif cat.value == "advocate":
-        cat_prefix = "Advocate"
+    cat_prefix = CATEGORY_FILENAME_TOKENS.get(cat, cat.value.capitalize())
 
     if parsed.description.lower().startswith(cat_prefix.lower() + "-"):
         return filename

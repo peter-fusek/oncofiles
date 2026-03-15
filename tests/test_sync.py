@@ -470,8 +470,8 @@ async def test_sync_bidirectional(db: Database):
     assert stats["to_gdrive"]["exported"] == 1
 
 
-async def test_sync_to_gdrive_renames_to_bilingual(db: Database):
-    """Files on GDrive get renamed to bilingual format (EN category prefix)."""
+async def test_sync_to_gdrive_renames_to_standard(db: Database):
+    """Files on GDrive get renamed to standard format (underscore-separated)."""
     doc = make_doc(
         gdrive_id="gd_existing",
         filename="20260227 ErikaFusekova-NOU-LabVysledkyPred2chemo[PHYSICIAN_REDACTED].pdf",
@@ -486,22 +486,23 @@ async def test_sync_to_gdrive_renames_to_bilingual(db: Database):
     stats = await sync_to_gdrive(db, files, gdrive, "folder123")
     assert stats.get("renamed", 0) == 1
 
-    # Verify GDrive rename was called
-    gdrive.rename_file.assert_any_call(
-        "gd_existing",
-        "20260227 ErikaFusekova-NOU-Labs-LabVysledkyPred2chemo[PHYSICIAN_REDACTED].pdf",
+    # Verify GDrive rename was called with standard format
+    expected = (
+        "20260227_ErikaFusekova_NOU_Labs_"
+        "LabVysledkyPred2chemo[PHYSICIAN_REDACTED].pdf"
     )
+    gdrive.rename_file.assert_any_call("gd_existing", expected)
 
     # Verify DB filename updated
     updated = await db.get_document(doc.id)
-    assert "Labs-" in updated.filename
+    assert "_Labs_" in updated.filename
 
 
-async def test_sync_to_gdrive_skips_already_bilingual(db: Database):
-    """Files already with bilingual prefix are not renamed again."""
+async def test_sync_to_gdrive_skips_already_standard(db: Database):
+    """Files already in standard format are not renamed again."""
     doc = make_doc(
         gdrive_id="gd_existing",
-        filename="20260227 ErikaFusekova-NOU-Labs-LabVysledkyPred2chemo[PHYSICIAN_REDACTED].pdf",
+        filename="20260227_ErikaFusekova_NOU_Labs_BloodResults.pdf",
         category="labs",
     )
     await db.insert_document(doc)
@@ -540,7 +541,7 @@ async def test_sync_to_gdrive_idempotent_double_run(db: Database):
     stats2 = await sync_to_gdrive(db, files, gdrive, "folder123")
     assert stats2.get("renamed", 0) == 0
     # rename_file should only be called for OCR companion (not for doc itself)
-    # since doc is already bilingual
+    # since doc is already in standard format
     doc_rename_calls = [c for c in gdrive.rename_file.call_args_list if "_OCR.txt" not in str(c)]
     assert len(doc_rename_calls) == 0
 
@@ -549,7 +550,7 @@ async def test_sync_to_gdrive_cleanup_orphan_ocr(db: Database):
     """Orphaned OCR files (old names) get trashed during sync."""
     doc = make_doc(
         gdrive_id="gd_existing",
-        filename="20260227 ErikaFusekova-NOU-Labs-LabVysledkyPred2chemo[PHYSICIAN_REDACTED].pdf",
+        filename="20260227_ErikaFusekova_NOU_Labs_BloodResults.pdf",
         category="labs",
     )
     await db.insert_document(doc)
@@ -559,15 +560,15 @@ async def test_sync_to_gdrive_cleanup_orphan_ocr(db: Database):
     gdrive = _mock_gdrive()
     gdrive.get_file_parents.return_value = ["parent_folder"]
 
-    # Simulate orphaned OCR file (old name without Labs- prefix) in folder
+    # Simulate orphaned OCR file (old bilingual name) in folder
     orphan_ocr = {
         "id": "orphan_id",
-        "name": "20260227 ErikaFusekova-NOU-LabVysledkyPred2chemo[PHYSICIAN_REDACTED]_OCR.txt",
+        "name": "20260227 ErikaFusekova-NOU-Labs-LabVysledky_OCR.txt",
         "mimeType": "text/plain",
     }
     expected_ocr = {
         "id": "expected_id",
-        "name": "20260227 ErikaFusekova-NOU-Labs-LabVysledkyPred2chemo[PHYSICIAN_REDACTED]_OCR.txt",
+        "name": "20260227_ErikaFusekova_NOU_Labs_BloodResults_OCR.txt",
         "mimeType": "text/plain",
     }
     gdrive.list_folder.return_value = [orphan_ocr, expected_ocr]

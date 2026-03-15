@@ -23,7 +23,11 @@ uv run ruff check
 - FastMCP 3.0+ for MCP server
 - Pydantic for data models
 - ruff for linting/formatting
-- Filenames follow YYYYMMDD convention: `YYYYMMDD_institution_category_description.ext`
+- Filenames follow standard convention: `YYYYMMDD_ErikaFusekova_Institution_Category_DescriptionEN.ext`
+  - Separators: underscores only
+  - Description: English, CamelCase, max 60 chars
+  - Category tokens: Labs, Report, Pathology, CT, USG, Genetics, Surgery, SurgicalReport, Prescription, Referral, Discharge, DischargeSummary, ChemoSheet, Reference, Advocate, Other
+  - Legacy formats (space+dash, underscore-separated) still parsed for backward compat
 
 ## Key commands
 

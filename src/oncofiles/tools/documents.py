@@ -35,12 +35,16 @@ async def upload_document(
 ) -> str:
     """Upload a medical document to persistent storage.
 
-    The filename should follow the YYYYMMDD_institution_category_description.ext
-    convention for automatic metadata extraction.
+    The filename should follow the standard convention:
+    YYYYMMDD_ErikaFusekova_Institution_Category_DescriptionEN.ext
+    (e.g. 20260227_ErikaFusekova_NOU_Labs_BloodResultsBeforeCycle2.pdf)
+
+    Legacy formats (space+dash, underscore-separated) are also accepted and
+    auto-parsed. Separators: underscores only. Description: English, CamelCase.
 
     Args:
         content: Base64-encoded file content.
-        filename: Document filename (e.g. 20240115_NOUonko_labs_krvnyObraz.pdf).
+        filename: Document filename in standard or legacy format.
         mime_type: MIME type of the document.
     """
     import base64
