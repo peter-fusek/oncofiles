@@ -48,8 +48,6 @@ CATEGORY_FILENAME_TOKENS: dict[DocumentCategory, str] = {
     DocumentCategory.REPORT: "Report",
     DocumentCategory.PATHOLOGY: "Pathology",
     DocumentCategory.IMAGING: "Imaging",
-    DocumentCategory.IMAGING_CT: "CT",
-    DocumentCategory.IMAGING_US: "USG",
     DocumentCategory.GENETICS: "Genetics",
     DocumentCategory.SURGERY: "Surgery",
     DocumentCategory.SURGICAL_REPORT: "SurgicalReport",
@@ -67,6 +65,9 @@ CATEGORY_FILENAME_TOKENS: dict[DocumentCategory, str] = {
 _TOKEN_TO_CATEGORY: dict[str, DocumentCategory] = {
     token.lower(): cat for cat, token in CATEGORY_FILENAME_TOKENS.items()
 }
+# Legacy tokens that still parse to imaging (backward compat for existing filenames)
+_TOKEN_TO_CATEGORY["ct"] = DocumentCategory.IMAGING
+_TOKEN_TO_CATEGORY["usg"] = DocumentCategory.IMAGING
 
 # Category inference from CamelCase description keywords.
 # Order matters — more specific matches first.
@@ -82,8 +83,8 @@ _CATEGORY_KEYWORDS: list[tuple[list[str], DocumentCategory]] = [
     ),
     # Labs / blood work (before report — lab results may contain "vysledky")
     (["labvysledky", "lab vysledky", "krvpred", "krvny"], DocumentCategory.LABS),
-    # Imaging subtypes (before generic imaging)
-    (["usg", "sono", "ultrazvuk"], DocumentCategory.IMAGING_US),
+    # Imaging subtypes (all route to generic imaging)
+    (["usg", "sono", "ultrazvuk"], DocumentCategory.IMAGING),
     # Discharge summaries (before report — they contain "sprava")
     (["prepustaci", "prepusten", "epikryza"], DocumentCategory.DISCHARGE),
     # Surgical reports (before generic surgery)
@@ -114,14 +115,14 @@ CATEGORY_ALIASES: dict[str, DocumentCategory] = {
     "sprava": DocumentCategory.REPORT,
     "kontrola": DocumentCategory.REPORT,
     "imaging": DocumentCategory.IMAGING,
-    "imaging_ct": DocumentCategory.IMAGING_CT,
-    "ct": DocumentCategory.IMAGING_CT,
-    "imaging_us": DocumentCategory.IMAGING_US,
+    "imaging_ct": DocumentCategory.IMAGING,
+    "ct": DocumentCategory.IMAGING,
+    "imaging_us": DocumentCategory.IMAGING,
     "mri": DocumentCategory.IMAGING,
     "pet": DocumentCategory.IMAGING,
     "rtg": DocumentCategory.IMAGING,
-    "usg": DocumentCategory.IMAGING_US,
-    "sono": DocumentCategory.IMAGING_US,
+    "usg": DocumentCategory.IMAGING,
+    "sono": DocumentCategory.IMAGING,
     "pathology": DocumentCategory.PATHOLOGY,
     "histo": DocumentCategory.PATHOLOGY,
     "biopsia": DocumentCategory.PATHOLOGY,
@@ -172,7 +173,7 @@ def _patient_prefix_re() -> re.Pattern:
 
 # Bilingual format: EN category prefix already present
 _BILINGUAL_PREFIX_RE = re.compile(
-    r"^(labs|report|pathology|imaging_ct|imaging_us|imaging|genetics|surgery|"
+    r"^(labs|report|pathology|imaging|genetics|surgery|"
     r"surgical_report|prescription|referral|discharge_summary|discharge|"
     r"chemo_sheet|reference|advocate|other)-",
     re.IGNORECASE,
@@ -189,7 +190,7 @@ def _infer_category(description: str) -> DocumentCategory:
 
     # Check if description starts with imaging prefix
     if lower.startswith("ct"):
-        return DocumentCategory.IMAGING_CT
+        return DocumentCategory.IMAGING
     if lower.startswith("mri") or lower.startswith("pet"):
         return DocumentCategory.IMAGING
     if lower.startswith("rtg"):

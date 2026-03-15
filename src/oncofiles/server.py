@@ -425,7 +425,7 @@ RECOMMENDED WORKFLOW for chat clients:
 - Use `get_related_documents` for drill-down into connected records.
 - In export packages, all entries include `gdrive_url` for offline verification.
 
-Available categories: labs, report, imaging, imaging_ct, imaging_us, pathology, genetics, \
+Available categories: labs, report, imaging, pathology, genetics, \
 surgery, surgical_report, prescription, referral, discharge, discharge_summary, chemo_sheet, \
 reference, advocate, other.\
 """

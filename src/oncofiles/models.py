@@ -14,8 +14,6 @@ class DocumentCategory(StrEnum):
     LABS = "labs"
     REPORT = "report"
     IMAGING = "imaging"
-    IMAGING_CT = "imaging_ct"
-    IMAGING_US = "imaging_us"
     PATHOLOGY = "pathology"
     GENETICS = "genetics"
     SURGERY = "surgery"

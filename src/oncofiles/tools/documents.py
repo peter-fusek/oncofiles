@@ -186,7 +186,7 @@ async def search_documents(
               AI summary, tags, and structured metadata). Multiple words
               are AND-ed together.
         institution: Filter by institution code (e.g. NOUonko, OUSA).
-        category: Filter by category (labs, report, imaging, imaging_ct, imaging_us,
+        category: Filter by category (labs, report, imaging,
                   pathology, genetics, surgery, surgical_report, prescription,
                   referral, discharge, discharge_summary, chemo_sheet, other).
         date_from: Filter from this date (YYYY-MM-DD).
@@ -469,7 +469,7 @@ async def update_document_category(ctx: Context, doc_id: int, category: str) -> 
 
     Args:
         doc_id: The integer database ID of the document.
-        category: New category (labs, report, imaging, imaging_ct, imaging_us,
+        category: New category (labs, report, imaging,
                   pathology, genetics, surgery, surgical_report, prescription,
                   referral, discharge, discharge_summary, chemo_sheet,
                   reference, advocate, other).

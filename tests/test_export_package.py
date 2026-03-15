@@ -85,8 +85,7 @@ class TestExportDocumentPackage:
         from oncofiles.models import DocumentCategory
 
         for cat in [
-            DocumentCategory.IMAGING_CT,
-            DocumentCategory.IMAGING_US,
+            DocumentCategory.IMAGING,
             DocumentCategory.GENETICS,
             DocumentCategory.CHEMO_SHEET,
             DocumentCategory.SURGICAL_REPORT,
@@ -98,8 +97,7 @@ class TestExportDocumentPackage:
 
         docs = await db.list_documents(limit=200)
         categories = {d.category.value for d in docs}
-        assert "imaging_ct" in categories
-        assert "imaging_us" in categories
+        assert "imaging" in categories
         assert "genetics" in categories
         assert "chemo_sheet" in categories
         assert "surgical_report" in categories

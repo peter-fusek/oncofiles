@@ -50,13 +50,13 @@ class TestNewFormat:
         r = parse_filename("20260129 ErikaFusekova-BoryNemocnica-USGMudrTulenkova.pdf")
         assert r.document_date == date(2026, 1, 29)
         assert r.institution == "BoryNemocnica"
-        assert r.category == DocumentCategory.IMAGING_US
+        assert r.category == DocumentCategory.IMAGING
 
     def test_imaging_ct(self):
         r = parse_filename("20260130 ErikaFusekova-NOU-CTobjednavka[PHYSICIAN_REDACTED]PrimarOnkolog.pdf")
         assert r.document_date == date(2026, 1, 30)
         assert r.institution == "NOU"
-        assert r.category == DocumentCategory.IMAGING_CT
+        assert r.category == DocumentCategory.IMAGING
 
     def test_report_sprava(self):
         r = parse_filename("20260130 ErikaFusekova-NOU-Sprava[PHYSICIAN_REDACTED]PrimarOnkolog.pdf")
@@ -167,11 +167,11 @@ class TestNewFormat:
 
     def test_imaging_ct_alias(self):
         r = parse_filename("20260130_NOU_ct_abdomen.pdf")
-        assert r.category == DocumentCategory.IMAGING_CT
+        assert r.category == DocumentCategory.IMAGING
 
     def test_imaging_us_alias(self):
         r = parse_filename("20260129_BoryNemocnica_usg_abdomen.pdf")
-        assert r.category == DocumentCategory.IMAGING_US
+        assert r.category == DocumentCategory.IMAGING
 
     def test_reference_alias(self):
         r = parse_filename("20260301_NOU_reference_guidelines.pdf")
@@ -284,11 +284,15 @@ class TestBilingualRename:
         result = rename_to_bilingual(
             "20260130 ErikaFusekova-NOU-CTobjednavka[PHYSICIAN_REDACTED]PrimarOnkolog.pdf"
         )
-        assert result == ("20260130 ErikaFusekova-NOU-CT-CTobjednavka[PHYSICIAN_REDACTED]PrimarOnkolog.pdf")
+        assert result == (
+            "20260130 ErikaFusekova-NOU-Imaging-CTobjednavka[PHYSICIAN_REDACTED]PrimarOnkolog.pdf"
+        )
 
     def test_imaging_usg(self):
         result = rename_to_bilingual("20260129 ErikaFusekova-BoryNemocnica-USGMudrTulenkova.pdf")
-        assert result == "20260129 ErikaFusekova-BoryNemocnica-USG-USGMudrTulenkova.pdf"
+        assert result == (
+            "20260129 ErikaFusekova-BoryNemocnica-Imaging-USGMudrTulenkova.pdf"
+        )
 
     def test_chemo_sheet(self):
         result = rename_to_bilingual(
@@ -378,11 +382,11 @@ class TestStandardFormat:
         r = parse_filename("20260130_ErikaFusekova_NOU_CT_AbdomenScanDrPorsok.pdf")
         assert r.document_date == date(2026, 1, 30)
         assert r.institution == "NOU"
-        assert r.category == DocumentCategory.IMAGING_CT
+        assert r.category == DocumentCategory.IMAGING
 
     def test_imaging_usg(self):
         r = parse_filename("20260129_ErikaFusekova_BoryNemocnica_USG_AbdomenDrTulenkova.pdf")
-        assert r.category == DocumentCategory.IMAGING_US
+        assert r.category == DocumentCategory.IMAGING
 
     def test_chemo_sheet(self):
         r = parse_filename("20260213_ErikaFusekova_NOU_ChemoSheet_FOLFOXProtocol.pdf")
@@ -489,14 +493,16 @@ class TestRenameToStandard:
             "20260130 ErikaFusekova-NOU-CTobjednavka[PHYSICIAN_REDACTED]PrimarOnkolog.pdf",
             en_description="AbdomenScanOrderDrPorsok",
         )
-        assert result == "20260130_ErikaFusekova_NOU_CT_AbdomenScanOrderDrPorsok.pdf"
+        assert result == "20260130_ErikaFusekova_NOU_Imaging_AbdomenScanOrderDrPorsok.pdf"
 
     def test_usg_category_token(self):
         result = rename_to_standard(
             "20260129 ErikaFusekova-BoryNemocnica-USGMudrTulenkova.pdf",
             en_description="AbdomenUltrasoundDrTulenkova",
         )
-        assert result == "20260129_ErikaFusekova_BoryNemocnica_USG_AbdomenUltrasoundDrTulenkova.pdf"
+        assert result == (
+            "20260129_ErikaFusekova_BoryNemocnica_Imaging_AbdomenUltrasoundDrTulenkova.pdf"
+        )
 
     def test_discharge(self):
         result = rename_to_standard(

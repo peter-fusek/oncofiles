@@ -569,8 +569,6 @@ class DocumentMixin:
             "genetics",
             "labs",
             "imaging",
-            "imaging_ct",
-            "imaging_us",
             "chemo_sheet",
             "prescription",
             "referral",

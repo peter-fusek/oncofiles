@@ -22,8 +22,6 @@ FOLDER_SK: dict[str, str] = {
     "report": "lekárske správy",
     "pathology": "patológia",
     "imaging": "zobrazovanie",
-    "imaging_ct": "CT vyšetrenia",
-    "imaging_us": "USG vyšetrenia",
     "surgery": "operácie",
     "surgical_report": "operačné protokoly",
     "prescription": "recepty",
