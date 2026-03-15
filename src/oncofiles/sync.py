@@ -1247,6 +1247,12 @@ async def _enhance_document(
             if gdrive and doc.gdrive_id:
                 with contextlib.suppress(Exception):
                     content_bytes = await asyncio.to_thread(gdrive.download, doc.gdrive_id)
+                # Google Docs fallback: export as PDF
+                if not content_bytes:
+                    with contextlib.suppress(Exception):
+                        content_bytes = await asyncio.to_thread(
+                            gdrive.export_google_doc, doc.gdrive_id, "application/pdf"
+                        )
 
         if content_bytes and doc.mime_type == "application/pdf":
             try:
