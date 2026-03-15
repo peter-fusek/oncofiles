@@ -401,15 +401,11 @@ class TestStandardFormat:
         assert r.category == DocumentCategory.ADVOCATE
 
     def test_discharge_summary(self):
-        r = parse_filename(
-            "20260122_ErikaFusekova_BoryNemocnica_DischargeSummary_PostOpCare.pdf"
-        )
+        r = parse_filename("20260122_ErikaFusekova_BoryNemocnica_DischargeSummary_PostOpCare.pdf")
         assert r.category == DocumentCategory.DISCHARGE_SUMMARY
 
     def test_description_with_underscores(self):
-        r = parse_filename(
-            "20260227_ErikaFusekova_NOU_Labs_Blood_Results_Cycle2.pdf"
-        )
+        r = parse_filename("20260227_ErikaFusekova_NOU_Labs_Blood_Results_Cycle2.pdf")
         assert r.category == DocumentCategory.LABS
         assert r.description == "Blood_Results_Cycle2"
 
@@ -437,14 +433,10 @@ class TestIsStandardFormat:
     """Tests for is_standard_format() detection."""
 
     def test_standard_format(self):
-        assert is_standard_format(
-            "20260227_ErikaFusekova_NOU_Labs_BloodResults.pdf"
-        ) is True
+        assert is_standard_format("20260227_ErikaFusekova_NOU_Labs_BloodResults.pdf") is True
 
     def test_bilingual_format_not_standard(self):
-        assert is_standard_format(
-            "20260227 ErikaFusekova-NOU-Labs-LabVysledky.pdf"
-        ) is False
+        assert is_standard_format("20260227 ErikaFusekova-NOU-Labs-LabVysledky.pdf") is False
 
     def test_legacy_format_not_standard(self):
         assert is_standard_format("20260227_NOU_labs_krvnyObraz.pdf") is False
@@ -485,9 +477,7 @@ class TestRenameToStandard:
 
     def test_from_bilingual_with_prefix(self):
         """Bilingual files with category prefix should strip it."""
-        result = rename_to_standard(
-            "20260227 ErikaFusekova-NOU-Labs-LabVysledkyPred2chemo.pdf"
-        )
+        result = rename_to_standard("20260227 ErikaFusekova-NOU-Labs-LabVysledkyPred2chemo.pdf")
         assert result == "20260227_ErikaFusekova_NOU_Labs_LabVysledkyPred2chemo.pdf"
 
     def test_no_date_unchanged(self):
@@ -517,9 +507,7 @@ class TestRenameToStandard:
         )
 
     def test_keeps_original_description_if_no_en(self):
-        result = rename_to_standard(
-            "20260226 ErikaFusekova-NOU-GenetikaMudrMalejcikova1z2.JPG"
-        )
+        result = rename_to_standard("20260226 ErikaFusekova-NOU-GenetikaMudrMalejcikova1z2.JPG")
         assert result == "20260226_ErikaFusekova_NOU_Genetics_GenetikaMudrMalejcikova1z2.JPG"
 
     def test_chemo_sheet(self):

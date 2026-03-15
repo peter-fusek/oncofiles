@@ -68,20 +68,24 @@ async def rename_documents_to_standard(
             stats["skipped"] += 1
             continue
 
-        renames.append({
-            "id": doc.id,
-            "old": doc.filename,
-            "new": new_name,
-            "category": doc.category.value,
-            "has_gdrive": bool(doc.gdrive_id),
-        })
+        renames.append(
+            {
+                "id": doc.id,
+                "old": doc.filename,
+                "new": new_name,
+                "category": doc.category.value,
+                "has_gdrive": bool(doc.gdrive_id),
+            }
+        )
 
     if dry_run:
-        return json.dumps({
-            "dry_run": True,
-            "stats": stats | {"would_rename": len(renames)},
-            "renames": renames,
-        })
+        return json.dumps(
+            {
+                "dry_run": True,
+                "stats": stats | {"would_rename": len(renames)},
+                "renames": renames,
+            }
+        )
 
     # Execute renames — acquire sync lock to prevent concurrent sync
     lock_acquired = False
@@ -97,9 +101,9 @@ async def rename_documents_to_standard(
             await asyncio.wait_for(_sync_lock.acquire(), timeout=30)
             lock_acquired = True
         except TimeoutError:
-            return json.dumps({
-                "error": "Could not acquire sync lock — sync in progress. Try later."
-            })
+            return json.dumps(
+                {"error": "Could not acquire sync lock — sync in progress. Try later."}
+            )
 
         await ctx.info(f"Renaming {len(renames)} documents to standard format...")
 
@@ -150,14 +154,16 @@ async def rename_documents_to_standard(
         if lock_acquired:
             _sync_lock.release()
 
-    return json.dumps({
-        "dry_run": False,
-        "stats": stats,
-        "renames": [
-            {"id": r["id"], "old": r["old"], "new": r["new"]}
-            for r in renames[:50]  # Limit output size
-        ],
-    })
+    return json.dumps(
+        {
+            "dry_run": False,
+            "stats": stats,
+            "renames": [
+                {"id": r["id"], "old": r["old"], "new": r["new"]}
+                for r in renames[:50]  # Limit output size
+            ],
+        }
+    )
 
 
 def register(mcp):
