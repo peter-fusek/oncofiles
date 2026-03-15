@@ -327,6 +327,50 @@ def _start_sync_scheduler(db, files, gdrive, oauth_folder_id):
         max_instances=1,
     )
 
+    async def _run_category_validation():
+        """Auto-correct document categories after metadata extraction."""
+        try:
+            from oncofiles.models import DocumentCategory as _DocCat  # noqa: N814
+            from oncofiles.tools.hygiene import _DOCTYPE_TO_CATEGORY
+
+            docs = await db.list_documents(limit=500)
+            import json as _json
+
+            corrected = 0
+            for doc in docs:
+                if not doc.structured_metadata or doc.category.value in ("advocate", "reference"):
+                    continue
+                try:
+                    meta = _json.loads(doc.structured_metadata)
+                except (ValueError, TypeError):
+                    continue
+                doc_type = meta.get("document_type")
+                if not doc_type:
+                    continue
+                expected = _DOCTYPE_TO_CATEGORY.get(doc_type)
+                if not expected and doc_type in {c.value for c in _DocCat}:
+                    expected = doc_type
+                if expected and doc.category.value != expected:
+                    await db.update_document_category(doc.id, expected)
+                    corrected += 1
+                    logger.info(
+                        "Category auto-corrected: %s %s → %s",
+                        doc.filename,
+                        doc.category.value,
+                        expected,
+                    )
+            if corrected:
+                logger.info("Category validation: corrected %d documents", corrected)
+        except Exception:
+            logger.exception("Category validation failed")
+
+    scheduler.add_job(
+        _run_category_validation,
+        CronTrigger(hour=3, minute=45),  # daily at 3:45 AM (after metadata extraction)
+        id="category_validation",
+        max_instances=1,
+    )
+
     # Log scheduler job outcomes for observability
     def _job_executed(event):
         logger.info("Scheduler job completed: %s", event.job_id)
@@ -538,6 +582,7 @@ from oncofiles.tools import (  # noqa: E402
     enhance_tools,
     export,
     gdrive,
+    hygiene,
     lab_trends,
     naming,
     patient,
@@ -559,6 +604,7 @@ lab_trends.register(mcp)
 export.register(mcp)
 naming.register(mcp)
 patient.register(mcp)
+hygiene.register(mcp)
 resources.register(mcp)
 
 # ── Backward-compatible re-exports for tests ─────────────────────────────────
