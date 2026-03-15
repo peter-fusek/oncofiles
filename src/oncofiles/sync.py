@@ -17,7 +17,7 @@ from datetime import UTC, datetime
 
 from oncofiles.database import Database
 from oncofiles.enhance import enhance_document_text, extract_structured_metadata
-from oncofiles.filename_parser import parse_filename, rename_to_bilingual
+from oncofiles.filename_parser import is_standard_format, parse_filename, rename_to_standard
 from oncofiles.files_api import FilesClient
 from oncofiles.gdrive_client import GDriveClient
 from oncofiles.gdrive_folders import (
@@ -362,12 +362,12 @@ async def sync_to_gdrive(
                 logger.exception("sync_to_gdrive: error exporting %s", doc.filename)
                 stats["errors"] += 1
 
-    # Rename files to bilingual format (EN category prefix + SK description)
+    # Rename files to standard format (underscore-separated, EN description)
     try:
-        rename_stats = await _rename_to_bilingual(db, gdrive)
+        rename_stats = await _rename_to_standard(db, gdrive)
         stats["renamed"] = rename_stats["renamed"]
     except Exception as e:
-        logger.warning("sync_to_gdrive: bilingual rename failed — %s", str(e)[:200])
+        logger.warning("sync_to_gdrive: standard rename failed — %s", str(e)[:200])
 
     # Clean up orphaned OCR files (old names from before bilingual rename)
     try:
@@ -444,10 +444,10 @@ def _move_to_organized_folder(
     stats["organized"] += 1
 
 
-async def _rename_to_bilingual(db: Database, gdrive: GDriveClient) -> dict:
-    """Rename GDrive files to bilingual format (EN category prefix + SK description).
+async def _rename_to_standard(db: Database, gdrive: GDriveClient) -> dict:
+    """Rename GDrive files to standard format (underscore-separated, EN description).
 
-    For each document: checks if filename already has bilingual prefix.
+    For each document: checks if filename is already in standard format.
     If not, renames on GDrive and updates DB filename.
     Stores original_filename before rename for reversibility.
 
@@ -461,8 +461,13 @@ async def _rename_to_bilingual(db: Database, gdrive: GDriveClient) -> dict:
             stats["skipped"] += 1
             continue
 
+        # Skip if already in standard format
+        if is_standard_format(doc.filename):
+            stats["skipped"] += 1
+            continue
+
         try:
-            new_name = rename_to_bilingual(doc.filename, category=doc.category.value)
+            new_name = rename_to_standard(doc.filename, category=doc.category.value)
             if new_name == doc.filename:
                 stats["skipped"] += 1
                 continue
@@ -487,7 +492,7 @@ async def _rename_to_bilingual(db: Database, gdrive: GDriveClient) -> dict:
                             logger.info("Renamed OCR '%s' → '%s'", old_ocr_name, new_ocr_name)
                             break
             except Exception:
-                logger.warning("_rename_to_bilingual: OCR rename failed for %s", old_ocr_name)
+                logger.warning("_rename_to_standard: OCR rename failed for %s", old_ocr_name)
 
             # Update DB filename (keep original_filename for reversibility)
             await db.update_document_filename(doc.id, new_name)
@@ -495,10 +500,10 @@ async def _rename_to_bilingual(db: Database, gdrive: GDriveClient) -> dict:
             stats["renamed"] += 1
 
         except Exception:
-            logger.exception("_rename_to_bilingual: error for doc %d (%s)", doc.id, doc.filename)
+            logger.exception("_rename_to_standard: error for doc %d (%s)", doc.id, doc.filename)
             stats["errors"] += 1
 
-    logger.info("_rename_to_bilingual: done — %s", stats)
+    logger.info("_rename_to_standard: done — %s", stats)
     return stats
 
 

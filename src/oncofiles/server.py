@@ -539,6 +539,7 @@ from oncofiles.tools import (  # noqa: E402
     export,
     gdrive,
     lab_trends,
+    naming,
     patient,
     research,
     treatment,
@@ -556,6 +557,7 @@ enhance_tools.register(mcp)
 clinical.register(mcp)
 lab_trends.register(mcp)
 export.register(mcp)
+naming.register(mcp)
 patient.register(mcp)
 resources.register(mcp)
 
