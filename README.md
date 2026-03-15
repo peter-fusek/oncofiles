@@ -1,6 +1,6 @@
 # oncofiles
 
-[![Tests](https://img.shields.io/badge/tests-392%20passed-brightgreen)]()
+[![Tests](https://img.shields.io/badge/tests-458%20passed-brightgreen)]()
 [![Python](https://img.shields.io/badge/python-3.12+-blue)]()
 [![MCP](https://img.shields.io/badge/protocol-MCP-purple)]()
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
@@ -15,7 +15,7 @@ Oncofiles is a self-hosted [Model Context Protocol](https://modelcontextprotocol
 
 ## Features
 
-- **47 MCP tools** across 13 modules for comprehensive medical data management
+- **55 MCP tools** across 14 modules for comprehensive medical data management
 - **17 document categories** — labs, pathology, imaging, genetics, surgery, prescriptions, and more
 - **Lab value tracking** — store values, track trends, pre-cycle safety checks for chemo protocols
 - **Google Drive sync** — bidirectional sync with automatic OCR companion files
@@ -117,7 +117,7 @@ Live instance: [oncofiles.com](https://oncofiles.com)
 src/oncofiles/
 ├── server.py           # FastMCP server, auth, routes
 ├── database/           # Mixin-based DB layer (SQLite/Turso)
-├── tools/              # 13 tool modules (47 tools)
+├── tools/              # 14 tool modules (55 tools)
 │   ├── documents.py    # CRUD, search, view, versioning
 │   ├── lab_trends.py   # Lab values, trends, safety checks
 │   ├── clinical.py     # Treatment events, research log
