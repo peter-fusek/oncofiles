@@ -290,9 +290,7 @@ class TestBilingualRename:
 
     def test_imaging_usg(self):
         result = rename_to_bilingual("20260129 ErikaFusekova-BoryNemocnica-USGMudrTulenkova.pdf")
-        assert result == (
-            "20260129 ErikaFusekova-BoryNemocnica-Imaging-USGMudrTulenkova.pdf"
-        )
+        assert result == ("20260129 ErikaFusekova-BoryNemocnica-Imaging-USGMudrTulenkova.pdf")
 
     def test_chemo_sheet(self):
         result = rename_to_bilingual(
