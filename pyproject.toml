@@ -1,6 +1,6 @@
 [project]
 name = "oncofiles"
-version = "3.15.0"
+version = "3.16.0"
 description = "MCP server for persistent medical document management via Anthropic Files API"
 license = "MIT"
 requires-python = ">=3.12"

@@ -28,14 +28,16 @@ Google Drive (documents, images, OCR)
    └── Oncoteam agents (lab analysis, PubMed, ClinicalTrials.gov)
 ```
 
-## Current State (v3.7.0)
+## Current State (v3.16.0)
 
-- 43 MCP tools, 17 document categories
-- 59 active documents, 9 treatment events, 43 conversation entries
+- 55 MCP tools across 14 modules, 17 document categories
+- 90 active documents, 9 treatment events, 43 conversation entries
+- Standard filename convention: `YYYYMMDD_Patient_Inst_Cat_DescEN.ext`
 - Bidirectional GDrive sync with OCR companion files
 - AI summaries + structured metadata extraction (Claude Haiku)
-- Lab values storage with trend analysis
-- Bilingual metadata (EN + SK)
+- Lab values storage with trend analysis and pre-cycle safety checks
+- Source attribution and document cross-references
+- Custom domain: oncofiles.com
 - Deployed on Railway (streamable-http)
 
 ## Roadmap
