@@ -55,6 +55,11 @@ _last_sync_time: float = 0.0
 
 SUPPORTED_EXTENSIONS = {".pdf", ".jpg", ".jpeg", ".png"}
 SKIP_EXTENSIONS = {".gdoc", ".xlsx", ".xls", ".ds_store"}
+GOOGLE_DOCS_MIMETYPES = {
+    "application/vnd.google-apps.document",
+    "application/vnd.google-apps.spreadsheet",
+    "application/vnd.google-apps.presentation",
+}
 
 
 def _should_sync(filename: str) -> bool:
@@ -109,7 +114,10 @@ async def sync_from_gdrive(
             stats["skipped"] += 1
             continue
 
-        if not _should_sync(filename):
+        # Google Docs: export as PDF instead of download
+        is_google_doc = mime_type in GOOGLE_DOCS_MIMETYPES
+
+        if not is_google_doc and not _should_sync(filename):
             logger.debug("sync_from_gdrive: skipping %s (unsupported type)", filename)
             stats["skipped"] += 1
             continue
@@ -142,8 +150,17 @@ async def sync_from_gdrive(
                     continue
 
                 logger.info("sync_from_gdrive: updating %s (GDrive wins)", filename)
-                content_bytes = await asyncio.to_thread(gdrive.download, gdrive_id)
-                metadata = files.upload(io.BytesIO(content_bytes), filename, mime_type)
+                if is_google_doc:
+                    content_bytes = await asyncio.to_thread(
+                        gdrive.export_google_doc, gdrive_id, "application/pdf"
+                    )
+                else:
+                    content_bytes = await asyncio.to_thread(gdrive.download, gdrive_id)
+                upload_mime = "application/pdf" if is_google_doc else mime_type
+                upload_name = filename
+                if is_google_doc and "." not in filename:
+                    upload_name = f"{filename}.pdf"
+                metadata = files.upload(io.BytesIO(content_bytes), upload_name, upload_mime)
                 await db.update_document_file_id(existing.id, metadata.id, len(content_bytes))
                 del content_bytes  # Free large buffer immediately
                 await db.update_gdrive_id(existing.id, gdrive_id, modified_time_str)
@@ -175,11 +192,21 @@ async def sync_from_gdrive(
                     continue
 
                 logger.info("sync_from_gdrive: importing %s", filename)
-                content_bytes = await asyncio.to_thread(gdrive.download, gdrive_id)
-                metadata = files.upload(io.BytesIO(content_bytes), filename, mime_type)
+                if is_google_doc:
+                    content_bytes = await asyncio.to_thread(
+                        gdrive.export_google_doc, gdrive_id, "application/pdf"
+                    )
+                    # Google Docs: export as PDF, fix filename and mime
+                    import_filename = f"{filename}.pdf" if "." not in filename else filename
+                    import_mime = "application/pdf"
+                else:
+                    content_bytes = await asyncio.to_thread(gdrive.download, gdrive_id)
+                    import_filename = filename
+                    import_mime = mime_type
+                metadata = files.upload(io.BytesIO(content_bytes), import_filename, import_mime)
 
-                parsed = parse_filename(filename)
-                guessed_mime = mimetypes.guess_type(filename)[0] or mime_type
+                parsed = parse_filename(import_filename)
+                guessed_mime = mimetypes.guess_type(import_filename)[0] or import_mime
                 gdrive_modified = _parse_gdrive_time(modified_time_str)
 
                 # Try to detect category from folder structure
@@ -194,7 +221,7 @@ async def sync_from_gdrive(
                 now_str = datetime.now(UTC).isoformat()
                 doc = Document(
                     file_id=metadata.id,
-                    filename=filename,
+                    filename=import_filename,
                     original_filename=filename,
                     document_date=parsed.document_date,
                     institution=parsed.institution,

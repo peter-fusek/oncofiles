@@ -384,6 +384,26 @@ class GDriveClient:
             fields="id, parents",
         ).execute()
 
+    @_retry_on_transient
+    def export_google_doc(self, file_id: str, mime_type: str = "application/pdf") -> bytes:
+        """Export a Google Docs/Sheets/Slides file to a downloadable format.
+
+        Args:
+            file_id: Google Drive file ID of the Google Docs file.
+            mime_type: Target MIME type (default: application/pdf).
+
+        Returns the exported file content as bytes.
+        """
+        request = self._service.files().export_media(fileId=file_id, mimeType=mime_type)
+        buf = io.BytesIO()
+        from googleapiclient.http import MediaIoBaseDownload
+
+        downloader = MediaIoBaseDownload(buf, request)
+        done = False
+        while not done:
+            _, done = downloader.next_chunk()
+        return buf.getvalue()
+
     # ── Batch operations ───────────────────────────────────────────────────
 
     def batch_get_parents(self, file_ids: list[str]) -> dict[str, list[str]]:
