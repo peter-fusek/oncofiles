@@ -384,6 +384,111 @@ class GDriveClient:
             fields="id, parents",
         ).execute()
 
+    # ── Batch operations ───────────────────────────────────────────────────
+
+    def batch_get_parents(self, file_ids: list[str]) -> dict[str, list[str]]:
+        """Get parent folder IDs for multiple files in batched requests.
+
+        Returns {file_id: [parent_ids]} mapping.
+        Uses batches of 100 (Google API limit).
+        """
+        results: dict[str, list[str]] = {}
+        if not file_ids:
+            return results
+
+        for chunk_start in range(0, len(file_ids), 100):
+            chunk = file_ids[chunk_start : chunk_start + 100]
+            batch = self._service.new_batch_http_request()
+            for fid in chunk:
+
+                def _callback(request_id, response, exception, _fid=fid):
+                    if exception:
+                        logger.warning("batch_get_parents: error for %s: %s", _fid, exception)
+                        results[_fid] = []
+                    else:
+                        results[_fid] = response.get("parents", [])
+
+                batch.add(
+                    self._service.files().get(fileId=fid, fields="parents"),
+                    callback=_callback,
+                )
+            batch.execute()
+
+        return results
+
+    def batch_rename(self, renames: dict[str, str]) -> dict[str, bool]:
+        """Rename multiple files in batched requests.
+
+        Args:
+            renames: {file_id: new_name} mapping.
+
+        Returns {file_id: success} mapping.
+        """
+        results: dict[str, bool] = {}
+        if not renames:
+            return results
+
+        items = list(renames.items())
+        for chunk_start in range(0, len(items), 100):
+            chunk = items[chunk_start : chunk_start + 100]
+            batch = self._service.new_batch_http_request()
+            for fid, new_name in chunk:
+
+                def _callback(request_id, response, exception, _fid=fid):
+                    if exception:
+                        logger.warning("batch_rename: error for %s: %s", _fid, exception)
+                        results[_fid] = False
+                    else:
+                        results[_fid] = True
+
+                batch.add(
+                    self._service.files().update(
+                        fileId=fid, body={"name": new_name}, fields="id, name"
+                    ),
+                    callback=_callback,
+                )
+            batch.execute()
+
+        return results
+
+    def batch_move(self, moves: dict[str, tuple[str, str]]) -> dict[str, bool]:
+        """Move multiple files to new parent folders in batched requests.
+
+        Args:
+            moves: {file_id: (new_parent_id, old_parents_csv)} mapping.
+
+        Returns {file_id: success} mapping.
+        """
+        results: dict[str, bool] = {}
+        if not moves:
+            return results
+
+        items = list(moves.items())
+        for chunk_start in range(0, len(items), 100):
+            chunk = items[chunk_start : chunk_start + 100]
+            batch = self._service.new_batch_http_request()
+            for fid, (new_parent, old_parents) in chunk:
+
+                def _callback(request_id, response, exception, _fid=fid):
+                    if exception:
+                        logger.warning("batch_move: error for %s: %s", _fid, exception)
+                        results[_fid] = False
+                    else:
+                        results[_fid] = True
+
+                batch.add(
+                    self._service.files().update(
+                        fileId=fid,
+                        addParents=new_parent,
+                        removeParents=old_parents,
+                        fields="id, parents",
+                    ),
+                    callback=_callback,
+                )
+            batch.execute()
+
+        return results
+
 
 def create_gdrive_client(owner_email: str = "") -> GDriveClient | None:
     """Create a GDriveClient if credentials are available, else return None."""

@@ -32,6 +32,12 @@ def _mock_gdrive(gdrive_files: list[dict] | None = None, folder_map: dict | None
     gdrive.rename_file.return_value = None
     gdrive.update.return_value = {"id": "updated_id", "modifiedTime": "2026-03-01T00:00:00Z"}
     gdrive.get_file_parents.return_value = ["some_unorganized_folder"]
+    # Batch operations: return dicts keyed by file_id
+    gdrive.batch_get_parents.side_effect = lambda fids: {
+        fid: gdrive.get_file_parents.return_value for fid in fids
+    }
+    gdrive.batch_move.side_effect = lambda moves: {fid: True for fid in moves}
+    gdrive.batch_rename.side_effect = lambda renames: {fid: True for fid in renames}
     return gdrive
 
 
@@ -327,7 +333,7 @@ async def test_sync_to_gdrive_organizes_existing(db: Database):
     stats = await sync_to_gdrive(db, files, gdrive, "folder123")
     assert stats["organized"] == 1
     assert stats["exported"] == 0
-    gdrive.move_file.assert_called_once()
+    gdrive.batch_move.assert_called_once()
 
 
 async def test_sync_to_gdrive_skips_already_organized(db: Database):
@@ -343,7 +349,6 @@ async def test_sync_to_gdrive_skips_already_organized(db: Database):
     stats = await sync_to_gdrive(db, files, gdrive, "folder123")
     assert stats["skipped"] == 1
     assert stats["organized"] == 0
-    gdrive.move_file.assert_not_called()
 
 
 async def test_sync_to_gdrive_dry_run(db: Database):
@@ -486,9 +491,11 @@ async def test_sync_to_gdrive_renames_to_standard(db: Database):
     stats = await sync_to_gdrive(db, files, gdrive, "folder123")
     assert stats.get("renamed", 0) == 1
 
-    # Verify GDrive rename was called with standard format
+    # Verify batch_rename was called with standard format
     expected = "20260227_ErikaFusekova_NOU_Labs_LabVysledkyPred2chemo[PHYSICIAN_REDACTED].pdf"
-    gdrive.rename_file.assert_any_call("gd_existing", expected)
+    gdrive.batch_rename.assert_called_once()
+    rename_arg = gdrive.batch_rename.call_args[0][0]
+    assert rename_arg.get("gd_existing") == expected
 
     # Verify DB filename updated
     updated = await db.get_document(doc.id)

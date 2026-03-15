@@ -288,24 +288,42 @@ async def sync_to_gdrive(
 
     # Export documents
     docs = await db.list_documents(limit=500)
-    for doc in docs:
-        if doc.gdrive_id:
-            # File already on GDrive — check if it needs to be moved to organized folder
-            try:
-                await asyncio.to_thread(
-                    _move_to_organized_folder,
-                    gdrive,
-                    doc,
-                    folder_id,
-                    folder_map,
-                    organized_folder_ids,
-                    stats,
-                )
-            except Exception:
-                logger.exception("sync_to_gdrive: error organizing %s", doc.filename)
-                stats["errors"] += 1
-            continue
 
+    # Phase 1: Batch-organize existing GDrive files
+    docs_to_organize = [d for d in docs if d.gdrive_id]
+    docs_to_export = [d for d in docs if not d.gdrive_id]
+
+    if docs_to_organize:
+        try:
+            await asyncio.to_thread(
+                _batch_organize_files,
+                gdrive,
+                docs_to_organize,
+                folder_id,
+                folder_map,
+                organized_folder_ids,
+                stats,
+            )
+        except Exception:
+            logger.exception("sync_to_gdrive: batch organize failed, falling back")
+            # Fallback to sequential
+            for doc in docs_to_organize:
+                try:
+                    await asyncio.to_thread(
+                        _move_to_organized_folder,
+                        gdrive,
+                        doc,
+                        folder_id,
+                        folder_map,
+                        organized_folder_ids,
+                        stats,
+                    )
+                except Exception:
+                    logger.exception("sync_to_gdrive: error organizing %s", doc.filename)
+                    stats["errors"] += 1
+
+    # Phase 2: Export new documents
+    for doc in docs_to_export:
         try:
             logger.info("sync_to_gdrive: exporting %s", doc.filename)
 
@@ -449,6 +467,65 @@ def _move_to_organized_folder(
     stats["organized"] += 1
 
 
+def _batch_organize_files(
+    gdrive: GDriveClient,
+    docs: list,
+    root_folder_id: str,
+    folder_map: dict[str, str],
+    organized_folder_ids: set[str],
+    stats: dict,
+) -> None:
+    """Batch-organize GDrive files into correct category/year-month folders.
+
+    Uses batch API to fetch all parents at once, then batch-moves files
+    that are not yet in organized folders. Falls back to sequential on error.
+    """
+    # Step 1: Batch-fetch parents for all docs
+    file_ids = [d.gdrive_id for d in docs if d.gdrive_id]
+    if not file_ids:
+        return
+
+    parents_map = gdrive.batch_get_parents(file_ids)
+
+    # Step 2: Determine which docs need moving
+    moves: dict[str, tuple[str, str]] = {}  # file_id -> (new_parent, old_parents_csv)
+    for doc in docs:
+        if not doc.gdrive_id:
+            continue
+        parents = parents_map.get(doc.gdrive_id, [])
+        if not parents:
+            stats["skipped"] += 1
+            continue
+        if any(p in organized_folder_ids for p in parents):
+            stats["skipped"] += 1
+            continue
+
+        # Determine target folder
+        cat_name, year_month = get_category_folder_path(
+            doc.category.value,
+            doc.document_date.isoformat() if doc.document_date else None,
+        )
+        target_folder = folder_map.get(cat_name, root_folder_id)
+        if year_month:
+            target_folder = ensure_year_month_folder(gdrive, target_folder, year_month + "-01")
+            organized_folder_ids.add(target_folder)
+
+        old_parents_csv = ",".join(parents)
+        moves[doc.gdrive_id] = (target_folder, old_parents_csv)
+
+    if not moves:
+        return
+
+    # Step 3: Batch-move all files
+    logger.info("sync_to_gdrive: batch-moving %d files to organized folders", len(moves))
+    results = gdrive.batch_move(moves)
+    for _fid, success in results.items():
+        if success:
+            stats["organized"] += 1
+        else:
+            stats["errors"] += 1
+
+
 async def _rename_to_standard(db: Database, gdrive: GDriveClient) -> dict:
     """Rename GDrive files to standard format (underscore-separated, EN description).
 
@@ -460,6 +537,7 @@ async def _rename_to_standard(db: Database, gdrive: GDriveClient) -> dict:
     """
     stats = {"renamed": 0, "skipped": 0, "errors": 0}
     docs = await db.list_documents(limit=500)
+    pending_renames: list[tuple] = []
 
     for doc in docs:
         if not doc.gdrive_id:
@@ -508,10 +586,24 @@ async def _rename_to_standard(db: Database, gdrive: GDriveClient) -> dict:
                 stats["skipped"] += 1
                 continue
 
-            # Rename on GDrive
-            await asyncio.to_thread(gdrive.rename_file, doc.gdrive_id, new_name)
+            # Collect rename for batch execution below
+            pending_renames.append((doc, new_name))
 
-            # Also rename the OCR companion file if it exists
+        except Exception:
+            logger.exception("_rename_to_standard: error for doc %d (%s)", doc.id, doc.filename)
+            stats["errors"] += 1
+
+    # Batch-rename all collected files on GDrive
+    if pending_renames:
+        gdrive_renames = {doc.gdrive_id: new_name for doc, new_name in pending_renames}
+        rename_results = await asyncio.to_thread(gdrive.batch_rename, gdrive_renames)
+
+        # Also handle OCR companion renames (sequential — rare, small count)
+        for doc, new_name in pending_renames:
+            if not rename_results.get(doc.gdrive_id, False):
+                stats["errors"] += 1
+                continue
+
             old_stem = doc.filename.rsplit(".", 1)[0] if "." in doc.filename else doc.filename
             new_stem = new_name.rsplit(".", 1)[0] if "." in new_name else new_name
             old_ocr_name = f"{old_stem}_OCR.txt"
@@ -534,10 +626,6 @@ async def _rename_to_standard(db: Database, gdrive: GDriveClient) -> dict:
             await db.update_document_filename(doc.id, new_name)
             logger.info("Renamed '%s' → '%s' (doc %d)", doc.filename, new_name, doc.id)
             stats["renamed"] += 1
-
-        except Exception:
-            logger.exception("_rename_to_standard: error for doc %d (%s)", doc.id, doc.filename)
-            stats["errors"] += 1
 
     logger.info("_rename_to_standard: done — %s", stats)
     return stats
