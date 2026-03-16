@@ -241,7 +241,7 @@ class OperationalMixin:
 
     async def insert_sync_history(self, trigger: str = "scheduled") -> int:
         """Start a sync history record. Returns the row ID."""
-        cursor = await self.db.execute(
+        await self.db.execute(
             """
             INSERT INTO sync_history (started_at, trigger, status)
             VALUES (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'), ?, 'running')
@@ -249,7 +249,12 @@ class OperationalMixin:
             (trigger,),
         )
         await self.db.commit()
-        return cursor.lastrowid
+        # lastrowid is unreliable on Turso — fetch the ID explicitly
+        async with self.db.execute(
+            "SELECT id FROM sync_history ORDER BY id DESC LIMIT 1"
+        ) as cursor:
+            row = await cursor.fetchone()
+            return row["id"] if isinstance(row, dict) else row[0]
 
     async def complete_sync_history(
         self,
