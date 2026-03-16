@@ -803,9 +803,7 @@ async def test_sync_stats_summary(db: Database):
         sid1, status="completed", duration_s=10.5, from_new=3, from_errors=1
     )
     sid2 = await db.insert_sync_history(trigger="manual")
-    await db.complete_sync_history(
-        sid2, status="completed", duration_s=5.0, from_new=1
-    )
+    await db.complete_sync_history(sid2, status="completed", duration_s=5.0, from_new=1)
 
     stats = await db.get_sync_stats_summary()
     assert stats["total_syncs"] == 2

@@ -995,8 +995,13 @@ async def sync(
         _sync_lock_acquired_at = time.monotonic()
         try:
             return await _sync_inner(
-                db, files, gdrive, folder_id,
-                dry_run=dry_run, enhance=enhance, trigger=trigger,
+                db,
+                files,
+                gdrive,
+                folder_id,
+                dry_run=dry_run,
+                enhance=enhance,
+                trigger=trigger,
             )
         except Exception:
             global _last_sync_error  # noqa: PLW0603

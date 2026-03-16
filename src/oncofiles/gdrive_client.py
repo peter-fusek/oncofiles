@@ -32,8 +32,7 @@ def _is_connection_error(exc: Exception) -> bool:
     # httplib2 wraps SSL errors in ServerNotFoundError or similar
     msg = str(exc).lower()
     return any(
-        s in msg
-        for s in ("ssl", "record layer", "broken pipe", "connection reset", "eof occurred")
+        s in msg for s in ("ssl", "record layer", "broken pipe", "connection reset", "eof occurred")
     )
 
 

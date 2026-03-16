@@ -534,38 +534,38 @@ async def status(request: Request) -> JSONResponse:
 
         # Uptime
         started_at = lifespan_ctx.get("started_at")
-        uptime_s = (
-            int((datetime.now(UTC) - started_at).total_seconds()) if started_at else None
-        )
+        uptime_s = int((datetime.now(UTC) - started_at).total_seconds()) if started_at else None
 
-        return JSONResponse({
-            "status": "ok",
-            "version": VERSION,
-            "uptime_s": uptime_s,
-            "documents": doc_count,
-            "memory_rss_mb": round(rss_mb, 1),
-            "sync_7d": {
-                "total": sync_stats.get("total_syncs", 0),
-                "successful": sync_stats.get("successful", 0),
-                "failed": sync_stats.get("failed", 0),
-                "avg_duration_s": sync_stats.get("avg_duration_s"),
-                "total_imported": sync_stats.get("total_imported", 0),
-                "total_errors": sync_stats.get("total_errors", 0),
-                "last_sync_at": sync_stats.get("last_sync_at"),
-            },
-            "recent_syncs": [
-                {
-                    "started_at": s.get("started_at"),
-                    "status": s.get("status"),
-                    "trigger": s.get("trigger"),
-                    "duration_s": s.get("duration_s"),
-                    "new": s.get("from_gdrive_new", 0),
-                    "errors": (s.get("from_gdrive_errors", 0) or 0)
-                    + (s.get("to_gdrive_errors", 0) or 0),
-                }
-                for s in recent_syncs
-            ],
-        })
+        return JSONResponse(
+            {
+                "status": "ok",
+                "version": VERSION,
+                "uptime_s": uptime_s,
+                "documents": doc_count,
+                "memory_rss_mb": round(rss_mb, 1),
+                "sync_7d": {
+                    "total": sync_stats.get("total_syncs", 0),
+                    "successful": sync_stats.get("successful", 0),
+                    "failed": sync_stats.get("failed", 0),
+                    "avg_duration_s": sync_stats.get("avg_duration_s"),
+                    "total_imported": sync_stats.get("total_imported", 0),
+                    "total_errors": sync_stats.get("total_errors", 0),
+                    "last_sync_at": sync_stats.get("last_sync_at"),
+                },
+                "recent_syncs": [
+                    {
+                        "started_at": s.get("started_at"),
+                        "status": s.get("status"),
+                        "trigger": s.get("trigger"),
+                        "duration_s": s.get("duration_s"),
+                        "new": s.get("from_gdrive_new", 0),
+                        "errors": (s.get("from_gdrive_errors", 0) or 0)
+                        + (s.get("to_gdrive_errors", 0) or 0),
+                    }
+                    for s in recent_syncs
+                ],
+            }
+        )
     except Exception:
         logger.exception("Status endpoint error")
         return JSONResponse({"status": "error", "version": VERSION}, status_code=500)

@@ -239,9 +239,7 @@ class OperationalMixin:
 
     # ── Sync history ──────────────────────────────────────────────────────
 
-    async def insert_sync_history(
-        self, trigger: str = "scheduled"
-    ) -> int:
+    async def insert_sync_history(self, trigger: str = "scheduled") -> int:
         """Start a sync history record. Returns the row ID."""
         cursor = await self.db.execute(
             """
@@ -288,10 +286,18 @@ class OperationalMixin:
             WHERE id = ?
             """,
             (
-                status, duration_s,
-                from_new, from_updated, from_errors,
-                to_exported, to_organized, to_renamed, to_errors,
-                error_message, stats_json, sync_id,
+                status,
+                duration_s,
+                from_new,
+                from_updated,
+                from_errors,
+                to_exported,
+                to_organized,
+                to_renamed,
+                to_errors,
+                error_message,
+                stats_json,
+                sync_id,
             ),
         )
         await self.db.commit()
