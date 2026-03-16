@@ -239,8 +239,32 @@ class OperationalMixin:
 
     # ── Sync history ──────────────────────────────────────────────────────
 
+    async def close_stale_syncs(self) -> int:
+        """Mark any stuck 'running' sync records as timed out.
+
+        Called before starting a new sync to clean up stale records from
+        previous syncs that were killed by timeouts or crashes.
+        """
+        cursor = await self.db.execute(
+            """
+            UPDATE sync_history SET
+                status = 'timeout',
+                finished_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now'),
+                error_message = 'Marked as timed out (stale running record)'
+            WHERE status = 'running'
+            """
+        )
+        await self.db.commit()
+        return cursor.rowcount
+
     async def insert_sync_history(self, trigger: str = "scheduled") -> int:
         """Start a sync history record. Returns the row ID."""
+        # Clean up any stale 'running' records first
+        stale = await self.close_stale_syncs()
+        if stale:
+            import logging
+
+            logging.getLogger(__name__).info("sync_history: closed %d stale running records", stale)
         await self.db.execute(
             """
             INSERT INTO sync_history (started_at, sync_trigger, status)
