@@ -301,15 +301,20 @@ async def sync_to_gdrive(
     folder_id: str,
     *,
     dry_run: bool = False,
+    full: bool = True,
 ) -> dict:
     """Export documents from oncofiles to GDrive with folder structure.
 
     Uploads documents to correct category/YYYY-MM/ folders, sets appProperties,
     and exports manifest + metadata markdown files.
 
+    When full=False (no import changes), skips expensive batch operations
+    (organize, rename, OCR cleanup) that scan all docs. Only exports new
+    docs without gdrive_id and updates metadata.
+
     Returns summary dict: {exported, skipped, metadata_exported, errors}.
     """
-    logger.info("sync_to_gdrive: starting (dry_run=%s)", dry_run)
+    logger.info("sync_to_gdrive: starting (dry_run=%s, full=%s)", dry_run, full)
 
     stats = {"exported": 0, "organized": 0, "skipped": 0, "metadata_exported": 0, "errors": 0}
 
@@ -333,8 +338,8 @@ async def sync_to_gdrive(
     # Export documents
     docs = await db.list_documents(limit=500)
 
-    # Phase 1: Batch-organize existing GDrive files
-    docs_to_organize = [d for d in docs if d.gdrive_id]
+    # Phase 1: Batch-organize existing GDrive files (skip if no changes)
+    docs_to_organize = [d for d in docs if d.gdrive_id] if full else []
     docs_to_export = [d for d in docs if not d.gdrive_id]
 
     if docs_to_organize:
@@ -429,28 +434,32 @@ async def sync_to_gdrive(
                 logger.exception("sync_to_gdrive: error exporting %s", doc.filename)
                 stats["errors"] += 1
 
-    # Rename files to standard format (underscore-separated, EN description)
-    try:
-        rename_stats = await _rename_to_standard(db, gdrive)
-        stats["renamed"] = rename_stats["renamed"]
-    except Exception as e:
-        logger.warning("sync_to_gdrive: standard rename failed — %s", str(e)[:200])
+    # Heavy phases: only run when imports changed (full=True)
+    if full:
+        # Rename files to standard format (underscore-separated, EN description)
+        try:
+            rename_stats = await _rename_to_standard(db, gdrive)
+            stats["renamed"] = rename_stats["renamed"]
+        except Exception as e:
+            logger.warning("sync_to_gdrive: standard rename failed — %s", str(e)[:200])
 
-    # Clean up orphaned OCR files (old names from before bilingual rename)
-    try:
-        cleanup_stats = await _cleanup_orphan_ocr(db, gdrive)
-        stats["ocr_cleaned"] = cleanup_stats["deleted"]
-    except Exception as e:
-        logger.warning("sync_to_gdrive: OCR cleanup failed — %s", str(e)[:200])
+        # Clean up orphaned OCR files (old names from before bilingual rename)
+        try:
+            cleanup_stats = await _cleanup_orphan_ocr(db, gdrive)
+            stats["ocr_cleaned"] = cleanup_stats["deleted"]
+        except Exception as e:
+            logger.warning("sync_to_gdrive: OCR cleanup failed — %s", str(e)[:200])
 
-    # Export OCR companion text files alongside originals
-    try:
-        ocr_stats = await _export_ocr_texts(db, gdrive, files)
-        stats["ocr_exported"] = ocr_stats["exported"]
-        stats["ocr_extracted"] = ocr_stats.get("extracted", 0)
-        stats["ocr_skipped"] = ocr_stats["skipped"]
-    except Exception as e:
-        logger.warning("sync_to_gdrive: OCR text export failed — %s", str(e)[:200])
+        # Export OCR companion text files alongside originals
+        try:
+            ocr_stats = await _export_ocr_texts(db, gdrive, files)
+            stats["ocr_exported"] = ocr_stats["exported"]
+            stats["ocr_extracted"] = ocr_stats.get("extracted", 0)
+            stats["ocr_skipped"] = ocr_stats["skipped"]
+        except Exception as e:
+            logger.warning("sync_to_gdrive: OCR text export failed — %s", str(e)[:200])
+    else:
+        logger.info("sync_to_gdrive: skipping heavy phases (no import changes)")
 
     # Export metadata files (may fail with service account — no storage quota)
     try:
@@ -1052,7 +1061,11 @@ async def _sync_inner(
         from_stats = await sync_from_gdrive(
             db, files, gdrive, folder_id, dry_run=dry_run, enhance=enhance
         )
-        to_stats = await sync_to_gdrive(db, files, gdrive, folder_id, dry_run=dry_run)
+        # Skip heavy export phases if nothing changed during import
+        has_changes = from_stats.get("new", 0) > 0 or from_stats.get("updated", 0) > 0
+        to_stats = await sync_to_gdrive(
+            db, files, gdrive, folder_id, dry_run=dry_run, full=has_changes
+        )
 
         combined = {
             "from_gdrive": from_stats,
