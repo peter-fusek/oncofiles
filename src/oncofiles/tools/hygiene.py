@@ -617,7 +617,7 @@ async def system_health(ctx: Context) -> str:
             {
                 "started_at": s.get("started_at"),
                 "status": s.get("status"),
-                "trigger": s.get("trigger"),
+                "trigger": s.get("sync_trigger"),
                 "duration_s": s.get("duration_s"),
                 "new": s.get("from_gdrive_new", 0),
                 "errors": (s.get("from_gdrive_errors", 0) or 0)

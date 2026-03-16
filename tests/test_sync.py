@@ -770,7 +770,7 @@ async def test_sync_records_history(db: Database):
     history = await db.get_sync_history(limit=1)
     assert len(history) == 1
     assert history[0]["status"] == "completed"
-    assert history[0]["trigger"] == "test"
+    assert history[0]["sync_trigger"] == "test"
     assert history[0]["duration_s"] is not None
     assert history[0]["from_gdrive_new"] == 1
 

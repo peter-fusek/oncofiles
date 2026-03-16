@@ -243,7 +243,7 @@ class OperationalMixin:
         """Start a sync history record. Returns the row ID."""
         await self.db.execute(
             """
-            INSERT INTO sync_history (started_at, "trigger", status)
+            INSERT INTO sync_history (started_at, sync_trigger, status)
             VALUES (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'), ?, 'running')
             """,
             (trigger,),
