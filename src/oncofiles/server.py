@@ -386,11 +386,64 @@ def _start_sync_scheduler(db, files, gdrive, oauth_folder_id):
     from apscheduler.triggers.date import DateTrigger
 
     async def _startup_catchup():
-        """Run full sync, then enhance + validate to catch up after redeploy."""
-        await _run_sync(trigger="startup")
-        await _run_metadata_extraction()
+        """Lightweight startup: import-only sync + category validation.
+
+        Skips the heavy export phase (rename, organize, OCR export) to avoid
+        blocking the event loop and causing health check timeouts. The regular
+        30-min scheduled sync handles exports.
+        """
+        from oncofiles.sync import sync_from_gdrive as _sync_from
+
+        folder_id = _get_sync_folder_id_from(oauth_folder_id)
+        if not folder_id:
+            logger.debug("Startup catchup skipped — no folder ID")
+            return
+
+        import contextlib
+        import time as _time
+
+        sync_id = None
+        start = _time.monotonic()
+        with contextlib.suppress(Exception):
+            sync_id = await db.insert_sync_history(trigger="startup")
+
+        try:
+            import_stats = await asyncio.wait_for(
+                _sync_from(db, files, gdrive, folder_id, enhance=True),
+                timeout=180,  # 3 min max for import
+            )
+            logger.info("Startup import: %s", import_stats)
+            if sync_id:
+                await db.complete_sync_history(
+                    sync_id,
+                    status="completed",
+                    duration_s=round(_time.monotonic() - start, 1),
+                    from_new=import_stats.get("new", 0),
+                    from_updated=import_stats.get("updated", 0),
+                    from_errors=import_stats.get("errors", 0),
+                    stats_json=str(import_stats),
+                )
+        except TimeoutError:
+            logger.warning("Startup import timed out after 180s")
+            if sync_id:
+                await db.complete_sync_history(
+                    sync_id,
+                    status="failed",
+                    duration_s=round(_time.monotonic() - start, 1),
+                    error_message="Startup import timed out after 180s",
+                )
+        except Exception as exc:
+            logger.exception("Startup import failed")
+            if sync_id:
+                await db.complete_sync_history(
+                    sync_id,
+                    status="failed",
+                    duration_s=round(_time.monotonic() - start, 1),
+                    error_message=str(exc)[:500],
+                )
+
         await _run_category_validation()
-        logger.info("Startup catchup complete: sync + enhance + validate")
+        logger.info("Startup catchup complete: import + validate")
 
     startup_time = datetime.now() + timedelta(seconds=60)
     scheduler.add_job(
