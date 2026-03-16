@@ -737,3 +737,79 @@ async def test_sync_import_nonstandard_filename_backfills_metadata(db: Database)
     assert doc.description == "PathologyKrasResults"
     assert doc.category.value == "pathology"
     assert doc.ai_summary == "AI summary"
+
+
+# ── Sync history ──────────────────────────────────────────────────────────
+
+
+async def test_sync_records_history(db: Database):
+    """Sync records start/completion in sync_history table."""
+    files = _mock_files()
+    gdrive = _mock_gdrive(
+        [
+            {
+                "id": "gd_hist",
+                "name": "20260301 ErikaFusekova-NOU-LabVysledky.pdf",
+                "mimeType": "application/pdf",
+                "modifiedTime": "2026-03-01T10:00:00Z",
+                "appProperties": {},
+                "parents": [],
+            },
+        ]
+    )
+
+    with (
+        patch("oncofiles.sync.enhance_document_text", return_value=("summary", '["labs"]')),
+        patch("oncofiles.sync.extract_structured_metadata", return_value={"diagnoses": []}),
+    ):
+        stats = await sync(db, files, gdrive, "folder123", trigger="test")
+
+    assert stats.get("skipped") is not True
+
+    # Verify sync history was recorded
+    history = await db.get_sync_history(limit=1)
+    assert len(history) == 1
+    assert history[0]["status"] == "completed"
+    assert history[0]["trigger"] == "test"
+    assert history[0]["duration_s"] is not None
+    assert history[0]["from_gdrive_new"] == 1
+
+
+async def test_sync_history_records_failure(db: Database):
+    """Failed sync is recorded in history with error message."""
+    files = _mock_files()
+    gdrive = _mock_gdrive([])
+    gdrive.list_folder_with_structure.side_effect = Exception("SSL error")
+
+    import contextlib
+
+    with contextlib.suppress(Exception):
+        await sync(db, files, gdrive, "folder123", trigger="test_fail")
+
+    history = await db.get_sync_history(limit=1)
+    assert len(history) == 1
+    assert history[0]["status"] == "failed"
+    assert "SSL error" in (history[0]["error_message"] or "")
+
+
+# ── Sync history DB methods ──────────────────────────────────────────────
+
+
+async def test_sync_stats_summary(db: Database):
+    """Sync stats summary aggregates correctly."""
+    # Insert two completed syncs
+    sid1 = await db.insert_sync_history(trigger="scheduled")
+    await db.complete_sync_history(
+        sid1, status="completed", duration_s=10.5, from_new=3, from_errors=1
+    )
+    sid2 = await db.insert_sync_history(trigger="manual")
+    await db.complete_sync_history(
+        sid2, status="completed", duration_s=5.0, from_new=1
+    )
+
+    stats = await db.get_sync_stats_summary()
+    assert stats["total_syncs"] == 2
+    assert stats["successful"] == 2
+    assert stats["failed"] == 0
+    assert stats["total_imported"] == 4
+    assert stats["total_errors"] == 1

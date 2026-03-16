@@ -967,6 +967,7 @@ async def sync(
     *,
     dry_run: bool = False,
     enhance: bool = True,
+    trigger: str = "manual",
 ) -> dict:
     """Run full bidirectional sync.
 
@@ -993,7 +994,10 @@ async def sync(
     async with _sync_lock:
         _sync_lock_acquired_at = time.monotonic()
         try:
-            return await _sync_inner(db, files, gdrive, folder_id, dry_run=dry_run, enhance=enhance)
+            return await _sync_inner(
+                db, files, gdrive, folder_id,
+                dry_run=dry_run, enhance=enhance, trigger=trigger,
+            )
         except Exception:
             global _last_sync_error  # noqa: PLW0603
             _last_sync_error = "Sync failed — check server logs"
@@ -1010,6 +1014,7 @@ async def _sync_inner(
     *,
     dry_run: bool = False,
     enhance: bool = True,
+    trigger: str = "manual",
 ) -> dict:
     """Inner sync logic (called under lock)."""
     global _last_sync_result, _last_sync_error, _last_sync_time  # noqa: PLW0603
@@ -1017,19 +1022,65 @@ async def _sync_inner(
     logger.info("sync: starting bidirectional sync (dry_run=%s)", dry_run)
     _last_sync_error = None
 
-    from_stats = await sync_from_gdrive(
-        db, files, gdrive, folder_id, dry_run=dry_run, enhance=enhance
-    )
-    to_stats = await sync_to_gdrive(db, files, gdrive, folder_id, dry_run=dry_run)
+    # Record sync start in history (skip for dry runs)
+    sync_id = None
+    start_mono = time.monotonic()
+    if not dry_run:
+        try:
+            sync_id = await db.insert_sync_history(trigger=trigger)
+        except Exception:
+            logger.warning("sync: failed to record sync start", exc_info=True)
 
-    combined = {
-        "from_gdrive": from_stats,
-        "to_gdrive": to_stats,
-    }
-    _last_sync_result = combined
-    _last_sync_time = time.monotonic()
-    logger.info("sync: done — %s", combined)
-    return combined
+    try:
+        from_stats = await sync_from_gdrive(
+            db, files, gdrive, folder_id, dry_run=dry_run, enhance=enhance
+        )
+        to_stats = await sync_to_gdrive(db, files, gdrive, folder_id, dry_run=dry_run)
+
+        combined = {
+            "from_gdrive": from_stats,
+            "to_gdrive": to_stats,
+        }
+        _last_sync_result = combined
+        _last_sync_time = time.monotonic()
+
+        # Record sync completion
+        if sync_id is not None:
+            duration = time.monotonic() - start_mono
+            try:
+                await db.complete_sync_history(
+                    sync_id,
+                    status="completed",
+                    duration_s=round(duration, 1),
+                    from_new=from_stats.get("new", 0),
+                    from_updated=from_stats.get("updated", 0),
+                    from_errors=from_stats.get("errors", 0),
+                    to_exported=to_stats.get("exported", 0),
+                    to_organized=to_stats.get("organized", 0),
+                    to_renamed=to_stats.get("renamed", 0),
+                    to_errors=to_stats.get("errors", 0),
+                    stats_json=json.dumps(combined, ensure_ascii=False),
+                )
+            except Exception:
+                logger.warning("sync: failed to record sync completion", exc_info=True)
+
+        logger.info("sync: done — %s", combined)
+        return combined
+
+    except Exception as exc:
+        # Record sync failure
+        if sync_id is not None:
+            duration = time.monotonic() - start_mono
+            try:
+                await db.complete_sync_history(
+                    sync_id,
+                    status="failed",
+                    duration_s=round(duration, 1),
+                    error_message=str(exc)[:500],
+                )
+            except Exception:
+                logger.warning("sync: failed to record sync failure", exc_info=True)
+        raise
 
 
 def get_sync_status() -> dict:

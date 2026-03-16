@@ -236,3 +236,90 @@ class OperationalMixin:
             (owner_email, user_id, provider),
         )
         await self.db.commit()
+
+    # ── Sync history ──────────────────────────────────────────────────────
+
+    async def insert_sync_history(
+        self, trigger: str = "scheduled"
+    ) -> int:
+        """Start a sync history record. Returns the row ID."""
+        cursor = await self.db.execute(
+            """
+            INSERT INTO sync_history (started_at, trigger, status)
+            VALUES (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'), ?, 'running')
+            """,
+            (trigger,),
+        )
+        await self.db.commit()
+        return cursor.lastrowid
+
+    async def complete_sync_history(
+        self,
+        sync_id: int,
+        *,
+        status: str = "completed",
+        duration_s: float = 0.0,
+        from_new: int = 0,
+        from_updated: int = 0,
+        from_errors: int = 0,
+        to_exported: int = 0,
+        to_organized: int = 0,
+        to_renamed: int = 0,
+        to_errors: int = 0,
+        error_message: str | None = None,
+        stats_json: str | None = None,
+    ) -> None:
+        """Complete a sync history record with results."""
+        await self.db.execute(
+            """
+            UPDATE sync_history SET
+                finished_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now'),
+                status = ?,
+                duration_s = ?,
+                from_gdrive_new = ?,
+                from_gdrive_updated = ?,
+                from_gdrive_errors = ?,
+                to_gdrive_exported = ?,
+                to_gdrive_organized = ?,
+                to_gdrive_renamed = ?,
+                to_gdrive_errors = ?,
+                error_message = ?,
+                stats_json = ?
+            WHERE id = ?
+            """,
+            (
+                status, duration_s,
+                from_new, from_updated, from_errors,
+                to_exported, to_organized, to_renamed, to_errors,
+                error_message, stats_json, sync_id,
+            ),
+        )
+        await self.db.commit()
+
+    async def get_sync_history(self, limit: int = 20) -> list[dict]:
+        """Get recent sync history entries."""
+        async with self.db.execute(
+            "SELECT * FROM sync_history ORDER BY started_at DESC LIMIT ?",
+            (limit,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return [dict(r) for r in rows]
+
+    async def get_sync_stats_summary(self) -> dict:
+        """Get aggregate sync statistics for system_health."""
+        async with self.db.execute(
+            """
+            SELECT
+                COUNT(*) as total_syncs,
+                SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as successful,
+                SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed,
+                ROUND(AVG(duration_s), 1) as avg_duration_s,
+                MAX(started_at) as last_sync_at,
+                SUM(from_gdrive_new) as total_imported,
+                SUM(from_gdrive_errors + to_gdrive_errors) as total_errors
+            FROM sync_history
+            WHERE started_at >= strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-7 days')
+            """
+        ) as cursor:
+            row = await cursor.fetchone()
+            return dict(row) if row else {}

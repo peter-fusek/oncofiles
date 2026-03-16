@@ -557,7 +557,82 @@ async def qa_analysis(
     return json.dumps(result)
 
 
+async def system_health(ctx: Context) -> str:
+    """Get system health overview: sync history, document counts, resource usage, and errors.
+
+    Returns a comprehensive status report useful for monitoring and debugging.
+    Includes 7-day sync statistics, recent sync runs, memory usage, and document counts.
+    """
+    import resource
+    import sys
+
+    from oncofiles.config import VERSION
+    from oncofiles.sync import get_sync_status
+
+    db = _get_db(ctx)
+
+    # Document stats
+    doc_count = await db.count_documents()
+    unprocessed = await db.get_documents_without_ai()
+
+    # Sync stats
+    sync_stats = await db.get_sync_stats_summary()
+    recent_syncs = await db.get_sync_history(limit=10)
+    current_sync = get_sync_status()
+
+    # Memory
+    rusage = resource.getrusage(resource.RUSAGE_SELF)
+    if sys.platform == "darwin":
+        rss_mb = rusage.ru_maxrss / (1024 * 1024)
+    else:
+        rss_mb = rusage.ru_maxrss / 1024
+
+    # Uptime
+    started_at = ctx.request_context.lifespan_context.get("started_at")
+    uptime_s = None
+    if started_at:
+        from datetime import UTC, datetime
+
+        uptime_s = int((datetime.now(UTC) - started_at).total_seconds())
+
+    result = {
+        "version": VERSION,
+        "uptime_s": uptime_s,
+        "memory_rss_mb": round(rss_mb, 1),
+        "documents": {
+            "total": doc_count,
+            "unenhanced": len(unprocessed),
+        },
+        "sync_current": current_sync,
+        "sync_7d_summary": {
+            "total": sync_stats.get("total_syncs", 0),
+            "successful": sync_stats.get("successful", 0),
+            "failed": sync_stats.get("failed", 0),
+            "avg_duration_s": sync_stats.get("avg_duration_s"),
+            "total_imported": sync_stats.get("total_imported", 0),
+            "total_errors": sync_stats.get("total_errors", 0),
+            "last_sync_at": sync_stats.get("last_sync_at"),
+        },
+        "recent_syncs": [
+            {
+                "started_at": s.get("started_at"),
+                "status": s.get("status"),
+                "trigger": s.get("trigger"),
+                "duration_s": s.get("duration_s"),
+                "new": s.get("from_gdrive_new", 0),
+                "errors": (s.get("from_gdrive_errors", 0) or 0)
+                + (s.get("to_gdrive_errors", 0) or 0),
+                "error_message": s.get("error_message"),
+            }
+            for s in recent_syncs
+        ],
+    }
+
+    return json.dumps(result)
+
+
 def register(mcp):
     mcp.tool()(reconcile_gdrive)
     mcp.tool()(validate_categories)
     mcp.tool()(qa_analysis)
+    mcp.tool()(system_health)

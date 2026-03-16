@@ -175,7 +175,9 @@ async def gdrive_sync(
     # Dry run executes inline (fast)
     if dry_run:
         try:
-            stats = await _sync(db, files, gdrive, folder_id, dry_run=True, enhance=enhance)
+            stats = await _sync(
+                db, files, gdrive, folder_id, dry_run=True, enhance=enhance, trigger="manual"
+            )
         except Exception:
             logger.exception("gdrive_sync dry_run failed")
             return json.dumps({"error": "Sync dry run failed — check server logs"})
@@ -195,7 +197,9 @@ async def gdrive_sync(
     # Fire-and-forget: launch sync as background task
     async def _background_sync() -> None:
         try:
-            await _sync(db, files, gdrive, folder_id, dry_run=False, enhance=enhance)
+            await _sync(
+                db, files, gdrive, folder_id, dry_run=False, enhance=enhance, trigger="manual"
+            )
         except Exception:
             logger.exception("Background sync failed")
 
