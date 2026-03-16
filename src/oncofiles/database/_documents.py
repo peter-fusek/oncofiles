@@ -372,6 +372,44 @@ class DocumentMixin:
         )
         await self.db.commit()
 
+    async def backfill_document_fields(
+        self,
+        doc_id: int,
+        *,
+        document_date: str | None = None,
+        institution: str | None = None,
+        description: str | None = None,
+        force_description: bool = False,
+    ) -> None:
+        """Backfill top-level fields from structured metadata.
+
+        Date and institution only update NULL values (COALESCE).
+        Description updates NULL by default; set force_description=True
+        to overwrite existing (e.g. replacing a Slovak description with
+        an English CamelCase one for non-standard filenames).
+        """
+        sets = []
+        params: list = []
+        if document_date is not None:
+            sets.append("document_date = COALESCE(document_date, ?)")
+            params.append(document_date)
+        if institution is not None:
+            sets.append("institution = COALESCE(institution, ?)")
+            params.append(institution)
+        if description is not None:
+            if force_description:
+                sets.append("description = ?")
+            else:
+                sets.append("description = COALESCE(description, ?)")
+            params.append(description)
+        if not sets:
+            return
+        sets.append("updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')")
+        params.append(doc_id)
+        sql = f"UPDATE documents SET {', '.join(sets)} WHERE id = ?"
+        await self.db.execute(sql, tuple(params))
+        await self.db.commit()
+
     # ── OCR cache ─────────────────────────────────────────────────────────
 
     async def has_ocr_text(self, document_id: int) -> bool:

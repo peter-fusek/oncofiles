@@ -684,3 +684,56 @@ async def test_sync_to_gdrive_text_file_no_ocr_skipped(db: Database):
 
     # Files API download should not have been called for this doc
     files.download.assert_not_called()
+
+
+# ── Backfill integration: non-standard filename gets fields from AI ──────
+
+
+async def test_sync_import_nonstandard_filename_backfills_metadata(db: Database):
+    """New file with non-standard name gets date/institution/description from AI metadata."""
+    files = _mock_files()
+    gdrive = _mock_gdrive(
+        [
+            {
+                "id": "gd_nonstandard",
+                "name": "Dodatok histológia p. Fuseková.pdf",
+                "mimeType": "application/pdf",
+                "modifiedTime": "2026-03-16T10:00:00Z",
+                "appProperties": {},
+                "parents": ["pathology_folder_id"],
+            },
+        ],
+        folder_map={"pathology_folder_id": "pathology"},
+    )
+
+    metadata = {
+        "document_type": "pathology",
+        "findings": ["[BIOMARKER_REDACTED]"],
+        "diagnoses": [{"name": "Adenocarcinoma", "icd_code": "C18.7"}],
+        "medications": [],
+        "dates_mentioned": ["2026-02-23"],
+        "providers": ["MUDr. Rychlý Boris, PhD.", "Nemocnica Bory"],
+        "plain_summary": "Pathology report.",
+        "plain_summary_sk": "Patologická správa.",
+    }
+
+    with (
+        patch("oncofiles.sync.enhance_document_text", return_value=("AI summary", '["pathology"]')),
+        patch("oncofiles.sync.extract_structured_metadata", return_value=metadata),
+        patch("oncofiles.sync.generate_filename_description", return_value="PathologyKrasResults"),
+        patch("oncofiles.server._extract_pdf_text", return_value=["Pathology report text"]),
+    ):
+        stats = await sync_from_gdrive(db, files, gdrive, "folder123")
+
+    assert stats["new"] == 1
+    assert stats["errors"] == 0
+
+    docs = await db.list_documents()
+    assert len(docs) == 1
+    doc = docs[0]
+    # Verify backfilled fields
+    assert str(doc.document_date) == "2026-02-23"
+    assert doc.institution == "BoryNemocnica"
+    assert doc.description == "PathologyKrasResults"
+    assert doc.category.value == "pathology"
+    assert doc.ai_summary == "AI summary"

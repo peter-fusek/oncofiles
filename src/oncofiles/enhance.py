@@ -13,6 +13,36 @@ logger = logging.getLogger(__name__)
 
 ENHANCE_MODEL = "claude-haiku-4-5-20251001"
 
+# Provider name fragments → institution code (case-insensitive matching)
+PROVIDER_TO_INSTITUTION: list[tuple[list[str], str]] = [
+    (["nou", "narodny onkologicky", "klenova", "porsok", "pazderova"], "NOU"),
+    (["bory", "rychly", "rychlý", "stefanik", "štefánik", "nemocnica bory"], "BoryNemocnica"),
+    (["ousa", "onkologicky ustav"], "OUSA"),
+    (["unb", "univerzitna nemocnica"], "UNB"),
+    (["medirex"], "Medirex"),
+    (["alpha", "alpha medical"], "Alpha"),
+    (["synlab"], "Synlab"),
+    (["cytopathos"], "Cytopathos"),
+    (["bioptika"], "BIOPTIKA"),
+    (["agel"], "Agel"),
+    (["minnesota"], "MinnesotaUniversity"),
+    (["socialna poistovna", "socialnapoistovna"], "SocialnaPoistovna"),
+]
+
+
+def infer_institution_from_providers(providers: list[str]) -> str | None:
+    """Map provider/institution names from structured metadata to a known institution code.
+
+    Returns the first matching institution code, or None if no match.
+    """
+    if not providers:
+        return None
+    combined = " ".join(providers).lower()
+    for keywords, institution in PROVIDER_TO_INSTITUTION:
+        if any(kw in combined for kw in keywords):
+            return institution
+    return None
+
 
 def _get_client() -> anthropic.Anthropic:
     """Create Anthropic client. Kept as a function for testability."""

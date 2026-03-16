@@ -5,7 +5,7 @@ from __future__ import annotations
 from unittest.mock import MagicMock, patch
 
 from oncofiles.database import Database
-from oncofiles.enhance import enhance_document_text
+from oncofiles.enhance import enhance_document_text, infer_institution_from_providers
 from oncofiles.sync import enhance_documents
 from tests.helpers import make_doc
 
@@ -220,3 +220,146 @@ async def test_enhance_text_document(db: Database):
 
     # Verify OCR cache was populated
     assert await db.has_ocr_text(doc.id)
+
+
+# ── infer_institution_from_providers ──────────────────────────────────────
+
+
+def test_infer_institution_nou():
+    """NOU matched from provider names."""
+    assert infer_institution_from_providers(["MUDr. Stefan Porsok, PhD."]) == "NOU"
+    assert infer_institution_from_providers(["NOU Klenova"]) == "NOU"
+    assert infer_institution_from_providers(["MUDr. Natalia Pazderova"]) == "NOU"
+
+
+def test_infer_institution_bory():
+    """Bory Nemocnica matched from provider names."""
+    assert infer_institution_from_providers(["MUDr. Rychlý Boris, PhD."]) == "BoryNemocnica"
+    assert infer_institution_from_providers(["Nemocnica Bory"]) == "BoryNemocnica"
+    assert infer_institution_from_providers(["MUDr. Peter Štefánik"]) == "BoryNemocnica"
+
+
+def test_infer_institution_medirex():
+    """Medirex matched."""
+    assert infer_institution_from_providers(["Medirex a.s."]) == "Medirex"
+
+
+def test_infer_institution_none():
+    """No match returns None."""
+    assert infer_institution_from_providers([]) is None
+    assert infer_institution_from_providers(["Unknown Doctor"]) is None
+
+
+# ── backfill fields from structured metadata ──────────────────────────────
+
+
+async def test_enhance_backfills_null_date_and_institution(db: Database):
+    """Enhancement backfills document_date and institution from structured metadata."""
+    doc = make_doc(
+        file_id="f_backfill",
+        filename="Dodatok histológia p. Fuseková.pdf",
+        original_filename="Dodatok histológia p. Fuseková.pdf",
+        document_date=None,
+        institution=None,
+        description="Dodatok histológia p. Fuseková",
+    )
+    doc = await db.insert_document(doc)
+
+    # Seed OCR text
+    await db.save_ocr_page(doc.id, 1, "Pathology report from Nemocnica Bory", "pymupdf-native")
+
+    files = MagicMock()
+    metadata = {
+        "document_type": "pathology",
+        "findings": ["[BIOMARKER_REDACTED]"],
+        "diagnoses": [],
+        "medications": [],
+        "dates_mentioned": ["2026-02-23"],
+        "providers": ["MUDr. Rychlý Boris, PhD.", "Nemocnica Bory"],
+        "plain_summary": "Pathology report.",
+        "plain_summary_sk": "Patologická správa.",
+    }
+
+    with (
+        patch("oncofiles.sync.enhance_document_text", return_value=("AI summary", '["pathology"]')),
+        patch("oncofiles.sync.extract_structured_metadata", return_value=metadata),
+        patch("oncofiles.sync.generate_filename_description", return_value="GeneticsKrasResults"),
+    ):
+        stats = await enhance_documents(db, files, None, document_ids=[doc.id])
+
+    assert stats["processed"] == 1
+
+    updated = await db.get_document(doc.id)
+    assert updated.document_date is not None
+    assert str(updated.document_date) == "2026-02-23"
+    assert updated.institution == "BoryNemocnica"
+    assert updated.description == "GeneticsKrasResults"
+
+
+async def test_enhance_does_not_overwrite_existing_fields(db: Database):
+    """Enhancement does not overwrite already-set date/institution/description."""
+    from datetime import date
+
+    doc = make_doc(
+        file_id="f_no_overwrite",
+        filename="20260227_ErikaFusekova_NOU_Labs_BloodResults.pdf",
+        original_filename="20260227_ErikaFusekova_NOU_Labs_BloodResults.pdf",
+        document_date=date(2026, 2, 27),
+        institution="NOU",
+        description="BloodResults",
+    )
+    doc = await db.insert_document(doc)
+
+    await db.save_ocr_page(doc.id, 1, "Lab results from NOU", "pymupdf-native")
+
+    files = MagicMock()
+    metadata = {
+        "document_type": "lab_report",
+        "findings": [],
+        "diagnoses": [],
+        "medications": [],
+        "dates_mentioned": ["2026-03-01"],
+        "providers": ["Nemocnica Bory"],
+        "plain_summary": "",
+        "plain_summary_sk": "",
+    }
+
+    with (
+        patch("oncofiles.sync.enhance_document_text", return_value=("summary", '["labs"]')),
+        patch("oncofiles.sync.extract_structured_metadata", return_value=metadata),
+    ):
+        await enhance_documents(db, files, None, document_ids=[doc.id])
+
+    updated = await db.get_document(doc.id)
+    # Original values preserved — NOT overwritten by metadata
+    assert str(updated.document_date) == "2026-02-27"
+    assert updated.institution == "NOU"
+    assert updated.description == "BloodResults"
+
+
+# ── backfill_document_fields DB method ────────────────────────────────────
+
+
+async def test_backfill_document_fields_coalesce(db: Database):
+    """backfill_document_fields only fills NULL fields, doesn't overwrite."""
+    doc = make_doc(
+        file_id="f_coalesce",
+        filename="test.pdf",
+        original_filename="test.pdf",
+        document_date=None,
+        institution="NOU",  # Already set
+        description=None,
+    )
+    doc = await db.insert_document(doc)
+
+    await db.backfill_document_fields(
+        doc.id,
+        document_date="2026-03-01",
+        institution="BoryNemocnica",  # Should NOT overwrite existing NOU
+        description="TestDescription",
+    )
+
+    updated = await db.get_document(doc.id)
+    assert str(updated.document_date) == "2026-03-01"
+    assert updated.institution == "NOU"  # Preserved, not overwritten
+    assert updated.description == "TestDescription"

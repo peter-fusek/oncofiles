@@ -16,7 +16,12 @@ import time
 from datetime import UTC, datetime
 
 from oncofiles.database import Database
-from oncofiles.enhance import enhance_document_text, extract_structured_metadata
+from oncofiles.enhance import (
+    enhance_document_text,
+    extract_structured_metadata,
+    generate_filename_description,
+    infer_institution_from_providers,
+)
 from oncofiles.filename_parser import (
     is_corrupted_filename,
     is_standard_format,
@@ -1281,6 +1286,7 @@ async def _enhance_document(
     await db.update_document_ai_metadata(doc.id, summary, tags_json)
 
     # Extract structured metadata (diagnoses, medications, findings, etc.)
+    metadata = None
     try:
         metadata = extract_structured_metadata(full_text)
         await db.update_structured_metadata(doc.id, json.dumps(metadata, ensure_ascii=False))
@@ -1291,6 +1297,53 @@ async def _enhance_document(
             doc.id,
             doc.filename,
         )
+
+    # ── Backfill null top-level fields from structured metadata ──────────
+    if metadata:
+        backfill_date = None
+        backfill_institution = None
+        backfill_description = None
+
+        # Date: use first date from structured metadata
+        if not doc.document_date:
+            dates = metadata.get("dates_mentioned", [])
+            if dates:
+                backfill_date = dates[0]  # Already YYYY-MM-DD from AI
+                logger.info("enhance: doc %d — backfill date=%s", doc.id, backfill_date)
+
+        # Institution: map providers to known institution codes
+        if not doc.institution:
+            providers = metadata.get("providers", [])
+            inst = infer_institution_from_providers(providers)
+            if inst:
+                backfill_institution = inst
+                logger.info("enhance: doc %d — backfill institution=%s", doc.id, inst)
+
+        # Description: generate English CamelCase description if filename is non-standard
+        if not is_standard_format(doc.filename):
+            try:
+                desc = generate_filename_description(full_text)
+                if desc:
+                    backfill_description = desc
+                    logger.info("enhance: doc %d — backfill description=%s", doc.id, desc)
+            except Exception:
+                logger.warning("enhance: doc %d — description generation failed", doc.id)
+
+        if backfill_date or backfill_institution or backfill_description:
+            await db.backfill_document_fields(
+                doc.id,
+                document_date=backfill_date,
+                institution=backfill_institution,
+                description=backfill_description,
+                force_description=not is_standard_format(doc.filename),
+            )
+            logger.info(
+                "enhance: doc %d — backfilled fields (date=%s, inst=%s, desc=%s)",
+                doc.id,
+                backfill_date,
+                backfill_institution,
+                backfill_description is not None,
+            )
 
     logger.info(
         "enhance: doc %d (%s) — summary=%d chars, tags=%s",
