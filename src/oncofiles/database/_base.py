@@ -35,6 +35,10 @@ class _TursoCursor:
     def rowcount(self) -> int:
         return self._cursor.rowcount
 
+    @property
+    def description(self):
+        return self._cursor.description
+
     def _to_dict(self, row: tuple | None) -> dict | None:
         if row is None:
             return None
