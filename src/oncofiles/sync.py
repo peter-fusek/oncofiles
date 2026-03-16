@@ -185,7 +185,13 @@ async def sync_from_gdrive(
 
                 # Re-run AI enhancement
                 if enhance:
-                    await _enhance_document(db, existing, files, gdrive)
+                    try:
+                        await asyncio.wait_for(
+                            _enhance_document(db, existing, files, gdrive),
+                            timeout=60.0,
+                        )
+                    except TimeoutError:
+                        logger.warning("sync: enhance timed out for doc %d", existing.id)
 
                 await db.delete_ocr_pages(existing.id)
                 stats["updated"] += 1
@@ -251,7 +257,13 @@ async def sync_from_gdrive(
 
                 # AI enhancement
                 if enhance:
-                    await _enhance_document(db, doc, files, gdrive)
+                    try:
+                        await asyncio.wait_for(
+                            _enhance_document(db, doc, files, gdrive),
+                            timeout=60.0,
+                        )
+                    except TimeoutError:
+                        logger.warning("sync: enhance timed out for doc %d", doc.id)
 
                 stats["new"] += 1
 
@@ -1136,11 +1148,21 @@ async def enhance_documents(
 
     for doc in docs:
         try:
-            enhanced = await _enhance_document(db, doc, files, gdrive)
+            enhanced = await asyncio.wait_for(
+                _enhance_document(db, doc, files, gdrive),
+                timeout=60.0,
+            )
             if enhanced:
                 stats["processed"] += 1
             else:
                 stats["skipped"] += 1
+        except TimeoutError:
+            logger.warning(
+                "enhance_documents: doc %d (%s) timed out after 60s — skipping",
+                doc.id,
+                doc.filename,
+            )
+            stats["errors"] += 1
         except Exception:
             logger.exception("enhance_documents: error on doc %d (%s)", doc.id, doc.filename)
             stats["errors"] += 1
