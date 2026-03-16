@@ -7,6 +7,7 @@ import functools
 import io
 import json
 import logging
+import ssl
 import time
 
 from oncofiles.config import GOOGLE_APPLICATION_CREDENTIALS, GOOGLE_CREDENTIALS_BASE64
@@ -20,9 +21,24 @@ _RETRYABLE_STATUS_CODES = {429, 500, 502, 503}
 _MAX_RETRIES = 3
 _INITIAL_BACKOFF = 1.0  # seconds
 
+# SSL/connection errors that indicate a stale connection pool
+_CONNECTION_ERRORS = (ssl.SSLError, ConnectionError, OSError, BrokenPipeError, TimeoutError)
+
+
+def _is_connection_error(exc: Exception) -> bool:
+    """Check if an exception is a retryable SSL/connection error."""
+    if isinstance(exc, _CONNECTION_ERRORS):
+        return True
+    # httplib2 wraps SSL errors in ServerNotFoundError or similar
+    msg = str(exc).lower()
+    return any(
+        s in msg
+        for s in ("ssl", "record layer", "broken pipe", "connection reset", "eof occurred")
+    )
+
 
 def _retry_on_transient(func):
-    """Retry decorator for transient Google API errors (429/5xx)."""
+    """Retry decorator for transient Google API errors (429/5xx) and SSL errors."""
 
     @functools.wraps(func)
     def wrapper(*args, **kwargs):
@@ -31,19 +47,35 @@ def _retry_on_transient(func):
             try:
                 return func(*args, **kwargs)
             except Exception as e:
+                # Check HTTP status code errors (429, 5xx)
                 status = getattr(getattr(e, "resp", None), "status", None)
-                if status not in _RETRYABLE_STATUS_CODES:
+                is_http_transient = status in _RETRYABLE_STATUS_CODES
+                is_conn_error = _is_connection_error(e)
+
+                if not is_http_transient and not is_conn_error:
                     raise
+
                 last_exc = e
                 backoff = _INITIAL_BACKOFF * (2**attempt)
+                error_type = f"HTTP {status}" if is_http_transient else "connection"
                 logger.warning(
-                    "GDrive API %s failed (HTTP %s), retry %d/%d in %.1fs",
+                    "GDrive API %s failed (%s: %s), retry %d/%d in %.1fs",
                     func.__name__,
-                    status,
+                    error_type,
+                    str(e)[:120],
                     attempt + 1,
                     _MAX_RETRIES,
                     backoff,
                 )
+
+                # Reset connection pool on SSL/connection errors
+                if is_conn_error and args and hasattr(args[0], "_rebuild_service"):
+                    try:
+                        args[0]._rebuild_service()
+                        logger.info("GDrive: rebuilt service after %s error", error_type)
+                    except Exception:
+                        logger.warning("GDrive: failed to rebuild service")
+
                 time.sleep(backoff)
         raise last_exc  # type: ignore[misc]
 
@@ -72,8 +104,19 @@ class GDriveClient:
         else:
             raise ValueError("Either credentials_base64 or credentials_path must be provided")
 
+        self._creds = creds
         self._service = build("drive", "v3", credentials=creds)
         self.owner_email = owner_email
+
+    def _rebuild_service(self) -> None:
+        """Rebuild the Drive service with a fresh HTTP connection pool.
+
+        Called automatically by the retry decorator after SSL/connection errors
+        to recover from stale httplib2 connections.
+        """
+        from googleapiclient.discovery import build
+
+        self._service = build("drive", "v3", credentials=self._creds)
 
     @classmethod
     def from_oauth(
@@ -98,6 +141,7 @@ class GDriveClient:
             scopes=SCOPES,
         )
         instance = cls.__new__(cls)
+        instance._creds = creds
         instance._service = build("drive", "v3", credentials=creds)
         instance.owner_email = owner_email
         return instance
@@ -213,6 +257,7 @@ class GDriveClient:
         self._auto_share(result["id"])
         return result
 
+    @_retry_on_transient
     def update(self, gdrive_id: str, content_bytes: bytes, mime_type: str) -> dict:
         """Update an existing file's content on Google Drive."""
         from googleapiclient.http import MediaInMemoryUpload
@@ -230,6 +275,7 @@ class GDriveClient:
         logger.info("Updated GDrive file %s", gdrive_id)
         return result
 
+    @_retry_on_transient
     def list_folder(self, folder_id: str, recursive: bool = True) -> list[dict]:
         """List all files in a Google Drive folder.
 
@@ -266,6 +312,7 @@ class GDriveClient:
             if not page_token:
                 break
 
+    @_retry_on_transient
     def list_folder_with_structure(self, folder_id: str) -> tuple[list[dict], dict[str, str]]:
         """List all files and build a folder_id → name map for category detection.
 
@@ -306,6 +353,7 @@ class GDriveClient:
             if not page_token:
                 break
 
+    @_retry_on_transient
     def create_folder(self, name: str, parent_id: str) -> str:
         """Create a folder on Google Drive. Returns the folder ID."""
         file_metadata = {
@@ -318,6 +366,7 @@ class GDriveClient:
         self._auto_share(result["id"])
         return result["id"]
 
+    @_retry_on_transient
     def find_folder(self, name: str, parent_id: str) -> str | None:
         """Find a folder by name under a parent. Returns folder ID or None."""
         safe_name = name.replace("\\", "\\\\").replace("'", "\\'")
@@ -337,6 +386,7 @@ class GDriveClient:
         files = response.get("files", [])
         return files[0]["id"] if files else None
 
+    @_retry_on_transient
     def set_app_properties(self, file_id: str, properties: dict) -> None:
         """Set appProperties on a file for metadata tracking."""
         self._service.files().update(
@@ -344,6 +394,7 @@ class GDriveClient:
             body={"appProperties": properties},
         ).execute()
 
+    @_retry_on_transient
     def get_file_parents(self, file_id: str) -> list[str]:
         """Get the parent folder IDs of a file."""
         try:
@@ -353,6 +404,7 @@ class GDriveClient:
             logger.warning("Could not get parents for %s: %s", file_id, e)
             return []
 
+    @_retry_on_transient
     def rename_file(self, file_id: str, new_name: str) -> None:
         """Rename a file or folder on Google Drive."""
         self._service.files().update(
@@ -362,6 +414,7 @@ class GDriveClient:
         ).execute()
         logger.info("Renamed GDrive file %s → '%s'", file_id, new_name)
 
+    @_retry_on_transient
     def trash_file(self, file_id: str) -> None:
         """Move a file to trash on Google Drive (soft delete)."""
         self._service.files().update(
@@ -406,6 +459,7 @@ class GDriveClient:
 
     # ── Batch operations ───────────────────────────────────────────────────
 
+    @_retry_on_transient
     def batch_get_parents(self, file_ids: list[str]) -> dict[str, list[str]]:
         """Get parent folder IDs for multiple files in batched requests.
 
@@ -436,6 +490,7 @@ class GDriveClient:
 
         return results
 
+    @_retry_on_transient
     def batch_rename(self, renames: dict[str, str]) -> dict[str, bool]:
         """Rename multiple files in batched requests.
 
@@ -471,6 +526,7 @@ class GDriveClient:
 
         return results
 
+    @_retry_on_transient
     def batch_move(self, moves: dict[str, tuple[str, str]]) -> dict[str, bool]:
         """Move multiple files to new parent folders in batched requests.
 

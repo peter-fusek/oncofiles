@@ -223,3 +223,125 @@ def test_retry_on_transient_exhausts_retries(monkeypatch):
 
     with pytest.raises(Exception, match="server error"):
         always_fails()
+
+
+# ── SSL / connection error retry ───────────────────────────────────────
+
+
+def test_retry_on_ssl_error(monkeypatch):
+    """Retry decorator retries on SSL record layer failure."""
+    import ssl
+
+    from oncofiles.gdrive_client import _retry_on_transient
+
+    monkeypatch.setattr("oncofiles.gdrive_client._INITIAL_BACKOFF", 0.01)
+
+    call_count = 0
+
+    @_retry_on_transient
+    def ssl_flaky():
+        nonlocal call_count
+        call_count += 1
+        if call_count < 2:
+            raise ssl.SSLError(1, "[SSL] record layer failure (_ssl.c:2580)")
+        return "recovered"
+
+    result = ssl_flaky()
+    assert result == "recovered"
+    assert call_count == 2
+
+
+def test_retry_on_connection_reset(monkeypatch):
+    """Retry decorator retries on ConnectionResetError."""
+    from oncofiles.gdrive_client import _retry_on_transient
+
+    monkeypatch.setattr("oncofiles.gdrive_client._INITIAL_BACKOFF", 0.01)
+
+    call_count = 0
+
+    @_retry_on_transient
+    def conn_flaky():
+        nonlocal call_count
+        call_count += 1
+        if call_count < 2:
+            raise ConnectionResetError("Connection reset by peer")
+        return "recovered"
+
+    result = conn_flaky()
+    assert result == "recovered"
+    assert call_count == 2
+
+
+def test_retry_on_broken_pipe(monkeypatch):
+    """Retry decorator retries on BrokenPipeError."""
+    from oncofiles.gdrive_client import _retry_on_transient
+
+    monkeypatch.setattr("oncofiles.gdrive_client._INITIAL_BACKOFF", 0.01)
+
+    call_count = 0
+
+    @_retry_on_transient
+    def pipe_flaky():
+        nonlocal call_count
+        call_count += 1
+        if call_count < 2:
+            raise BrokenPipeError("Broken pipe")
+        return "recovered"
+
+    result = pipe_flaky()
+    assert result == "recovered"
+    assert call_count == 2
+
+
+def test_retry_does_not_catch_value_error():
+    """Non-transient, non-SSL errors are not retried."""
+    from oncofiles.gdrive_client import _retry_on_transient
+
+    @_retry_on_transient
+    def bad_input():
+        raise ValueError("bad argument")
+
+    with pytest.raises(ValueError, match="bad argument"):
+        bad_input()
+
+
+def test_retry_rebuilds_service_on_ssl(monkeypatch):
+    """SSL error triggers _rebuild_service on the GDriveClient instance."""
+    import ssl
+
+    from oncofiles.gdrive_client import _retry_on_transient
+
+    monkeypatch.setattr("oncofiles.gdrive_client._INITIAL_BACKOFF", 0.01)
+
+    rebuild_called = False
+
+    class FakeClient:
+        def _rebuild_service(self):
+            nonlocal rebuild_called
+            rebuild_called = True
+
+    client = FakeClient()
+    call_count = 0
+
+    @_retry_on_transient
+    def method(self):
+        nonlocal call_count
+        call_count += 1
+        if call_count < 2:
+            raise ssl.SSLError(1, "[SSL] record layer failure")
+        return "ok"
+
+    result = method(client)
+    assert result == "ok"
+    assert rebuild_called
+
+
+def test_is_connection_error_detects_ssl_in_message():
+    """_is_connection_error catches SSL-related error messages."""
+    from oncofiles.gdrive_client import _is_connection_error
+
+    assert _is_connection_error(Exception("[SSL] record layer failure (_ssl.c:2580)"))
+    assert _is_connection_error(Exception("EOF occurred in violation of protocol"))
+    assert _is_connection_error(ConnectionResetError("reset"))
+    assert not _is_connection_error(ValueError("bad value"))
+    assert not _is_connection_error(Exception("file not found"))
