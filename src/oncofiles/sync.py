@@ -1064,7 +1064,18 @@ async def _sync_inner(
             db, files, gdrive, folder_id, dry_run=dry_run, enhance=enhance
         )
         # Skip heavy export phases if nothing changed during import
+        # AND all docs are already standard-named (no pending renames)
         has_changes = from_stats.get("new", 0) > 0 or from_stats.get("updated", 0) > 0
+        if not has_changes and not dry_run:
+            # Check if any docs still need renaming (e.g., after backfill added dates)
+            all_docs = await db.list_documents(limit=500)
+            needs_rename = any(not is_standard_format(d.filename) for d in all_docs if d.gdrive_id)
+            if needs_rename:
+                has_changes = True
+                logger.info(
+                    "sync: forcing full export — %d docs need rename",
+                    sum(1 for d in all_docs if d.gdrive_id and not is_standard_format(d.filename)),
+                )
         to_stats = await sync_to_gdrive(
             db, files, gdrive, folder_id, dry_run=dry_run, full=has_changes
         )
