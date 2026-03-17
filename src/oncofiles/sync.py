@@ -636,6 +636,34 @@ async def _rename_to_standard(db: Database, gdrive: GDriveClient) -> dict:
             else:
                 new_name = rename_to_standard(doc.filename, category=doc.category.value)
 
+            # If rename_to_standard couldn't parse (returned unchanged),
+            # build from DB metadata like we do for corrupted filenames
+            if new_name == doc.filename and (doc.document_date or doc.created_at):
+                from oncofiles.filename_parser import CATEGORY_FILENAME_TOKENS
+                from oncofiles.patient_context import get_patient_name
+
+                patient = get_patient_name().replace(" ", "") or "ErikaFusekova"
+                cat_token = CATEGORY_FILENAME_TOKENS.get(doc.category, "Other")
+                if doc.document_date:
+                    date_str = doc.document_date.strftime("%Y%m%d")
+                elif doc.created_at:
+                    date_str = doc.created_at.strftime("%Y%m%d")
+                else:
+                    date_str = "20260101"
+                inst = doc.institution or "Unknown"
+                desc = doc.description or "Document"
+                import re
+
+                desc = re.sub(r"[^a-zA-Z0-9]", "", desc)[:60]
+                ext = "." + doc.filename.rsplit(".", 1)[-1] if "." in doc.filename else ".pdf"
+                new_name = f"{date_str}_{patient}_{inst}_{cat_token}_{desc}{ext}"
+                logger.info(
+                    "Renaming unparseable doc %d: '%s' → '%s'",
+                    doc.id,
+                    doc.filename[:40],
+                    new_name,
+                )
+
             if new_name == doc.filename:
                 stats["skipped"] += 1
                 continue
