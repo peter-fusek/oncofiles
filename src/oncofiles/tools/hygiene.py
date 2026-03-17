@@ -631,8 +631,262 @@ async def system_health(ctx: Context) -> str:
     return json.dumps(result)
 
 
+async def get_document_status_matrix(
+    ctx: Context,
+    filter: str = "all",
+    limit: int = 100,
+) -> str:
+    """Get per-document status matrix showing OCR, AI, metadata, sync, and rename state.
+
+    Returns a table of documents with their processing status at each pipeline stage.
+    Use filters to find documents that need attention.
+
+    Args:
+        filter: Filter documents — 'all', 'missing_ocr', 'missing_ai', 'missing_metadata',
+                'not_synced', 'not_renamed', 'incomplete' (any gap).
+        limit: Maximum documents to return (max 200).
+    """
+    from oncofiles.filename_parser import is_standard_format
+
+    db = _get_db(ctx)
+    limit = min(limit, 200)
+
+    docs = await db.list_documents(limit=500)
+    rows = []
+
+    for doc in docs:
+        has_ocr = await db.has_ocr_text(doc.id)
+        has_ai = doc.ai_summary is not None
+        has_metadata = doc.structured_metadata is not None and doc.structured_metadata != ""
+        is_synced = doc.gdrive_id is not None
+        is_standard = is_standard_format(doc.filename)
+        has_date = doc.document_date is not None
+        has_institution = doc.institution is not None
+
+        row = {
+            "id": doc.id,
+            "filename": doc.filename[:60],
+            "category": doc.category.value,
+            "date": str(doc.document_date) if doc.document_date else None,
+            "institution": doc.institution,
+            "has_ocr": has_ocr,
+            "has_ai": has_ai,
+            "has_metadata": has_metadata,
+            "has_date": has_date,
+            "has_institution": has_institution,
+            "is_synced": is_synced,
+            "is_standard_name": is_standard,
+        }
+
+        # Apply filter — skip documents that don't match
+        skip = (
+            (filter == "missing_ocr" and has_ocr)
+            or (filter == "missing_ai" and has_ai)
+            or (filter == "missing_metadata" and has_metadata)
+            or (filter == "not_synced" and is_synced)
+            or (filter == "not_renamed" and is_standard)
+            or (
+                filter == "incomplete"
+                and all(
+                    [
+                        has_ocr,
+                        has_ai,
+                        has_metadata,
+                        is_synced,
+                        is_standard,
+                        has_date,
+                        has_institution,
+                    ]
+                )
+            )
+        )
+        if skip:
+            continue
+
+        rows.append(row)
+        if len(rows) >= limit:
+            break
+
+    # Summary counts
+    all_docs = await db.list_documents(limit=500)
+    total = len(all_docs)
+    summary = {
+        "total": total,
+        "with_ocr": sum(1 for d in all_docs if d.ai_processed_at),
+        "with_ai": sum(1 for d in all_docs if d.ai_summary),
+        "with_metadata": sum(
+            1 for d in all_docs if d.structured_metadata and d.structured_metadata != ""
+        ),
+        "synced": sum(1 for d in all_docs if d.gdrive_id),
+        "standard_named": sum(1 for d in all_docs if is_standard_format(d.filename)),
+        "with_date": sum(1 for d in all_docs if d.document_date),
+        "with_institution": sum(1 for d in all_docs if d.institution),
+    }
+
+    return json.dumps(
+        {
+            "filter": filter,
+            "matched": len(rows),
+            "summary": summary,
+            "documents": rows,
+        }
+    )
+
+
+async def get_pipeline_status(ctx: Context) -> str:
+    """Get pipeline operations status: scheduled jobs, stage counts, and sync history.
+
+    Shows which automated processes run, their schedule, last results,
+    and how many documents are at each pipeline stage (OCR → AI → metadata → sync → rename).
+    """
+    import resource
+    import sys
+
+    from oncofiles.config import SYNC_INTERVAL_MINUTES, VERSION
+    from oncofiles.filename_parser import is_standard_format
+    from oncofiles.sync import get_sync_status
+
+    db = _get_db(ctx)
+
+    # Pipeline stage counts
+    docs = await db.list_documents(limit=500)
+    total = len(docs)
+    with_ai = sum(1 for d in docs if d.ai_summary)
+    with_metadata = sum(1 for d in docs if d.structured_metadata and d.structured_metadata != "")
+    synced = sum(1 for d in docs if d.gdrive_id)
+    standard = sum(1 for d in docs if is_standard_format(d.filename))
+    with_date = sum(1 for d in docs if d.document_date)
+    with_institution = sum(1 for d in docs if d.institution)
+
+    # Sync state
+    sync_stats = await db.get_sync_stats_summary()
+    recent_syncs = await db.get_sync_history(limit=5)
+    current_sync = get_sync_status()
+
+    # Memory
+    rusage = resource.getrusage(resource.RUSAGE_SELF)
+    if sys.platform == "darwin":
+        rss_mb = rusage.ru_maxrss / (1024 * 1024)
+    else:
+        rss_mb = rusage.ru_maxrss / 1024
+
+    result = {
+        "version": VERSION,
+        "memory_rss_mb": round(rss_mb, 1),
+        "pipeline_stages": {
+            "total_documents": total,
+            "with_ai_summary": with_ai,
+            "with_structured_metadata": with_metadata,
+            "with_date": with_date,
+            "with_institution": with_institution,
+            "synced_to_gdrive": synced,
+            "standard_filename": standard,
+            "fully_complete": sum(
+                1
+                for d in docs
+                if d.ai_summary
+                and d.structured_metadata
+                and d.gdrive_id
+                and d.document_date
+                and d.institution
+                and is_standard_format(d.filename)
+            ),
+        },
+        "scheduled_jobs": [
+            {
+                "name": "startup_catchup",
+                "trigger": "60s after boot",
+                "description": "Import-only sync + category validation",
+            },
+            {
+                "name": "gdrive_sync",
+                "trigger": f"every {SYNC_INTERVAL_MINUTES} min",
+                "description": "Full bidirectional sync (incremental export if no changes)",
+            },
+            {
+                "name": "trash_cleanup",
+                "trigger": "daily 3:00 AM",
+                "description": "Purge soft-deleted docs older than 30 days",
+            },
+            {
+                "name": "metadata_extraction",
+                "trigger": "daily 3:30 AM",
+                "description": "Backfill structured metadata (max 5 docs)",
+            },
+            {
+                "name": "category_validation",
+                "trigger": "daily 3:45 AM",
+                "description": "Auto-correct categories from AI document_type",
+            },
+            {
+                "name": "oauth_cleanup",
+                "trigger": "daily 4:00 AM",
+                "description": "Remove expired MCP OAuth tokens",
+            },
+            {
+                "name": "rss_monitor",
+                "trigger": "every 6h",
+                "description": "Log RSS memory usage",
+            },
+        ],
+        "sync_current": current_sync,
+        "sync_7d": {
+            "total": sync_stats.get("total_syncs", 0),
+            "successful": sync_stats.get("successful", 0),
+            "failed": sync_stats.get("failed", 0),
+            "avg_duration_s": sync_stats.get("avg_duration_s"),
+        },
+        "recent_syncs": [
+            {
+                "started_at": s.get("started_at"),
+                "trigger": s.get("sync_trigger"),
+                "status": s.get("status"),
+                "duration_s": s.get("duration_s"),
+            }
+            for s in recent_syncs
+        ],
+    }
+
+    return json.dumps(result)
+
+
+async def list_tool_definitions(ctx: Context) -> str:
+    """List all registered MCP tools with their descriptions and parameter schemas.
+
+    Returns the complete tool inventory for discovery and documentation.
+    Useful for agents to understand available capabilities.
+    """
+    mcp_server = ctx.fastmcp
+    tools = await mcp_server.list_tools()
+
+    tool_list = []
+    for t in sorted(tools, key=lambda x: x.name):
+        entry = {
+            "name": t.name,
+            "description": (t.description or "")[:200],
+        }
+        if hasattr(t, "parameters") and t.parameters:
+            params = t.parameters
+            if isinstance(params, dict):
+                props = params.get("properties", {})
+                entry["parameters"] = list(props.keys()) if props else []
+            else:
+                entry["parameters"] = []
+        tool_list.append(entry)
+
+    return json.dumps(
+        {
+            "total_tools": len(tool_list),
+            "tools": tool_list,
+        }
+    )
+
+
 def register(mcp):
     mcp.tool()(reconcile_gdrive)
     mcp.tool()(validate_categories)
     mcp.tool()(qa_analysis)
     mcp.tool()(system_health)
+    mcp.tool()(get_document_status_matrix)
+    mcp.tool()(get_pipeline_status)
+    mcp.tool()(list_tool_definitions)

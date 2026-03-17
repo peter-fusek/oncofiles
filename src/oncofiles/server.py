@@ -574,9 +574,25 @@ async def status(request: Request) -> JSONResponse:
         lifespan_ctx = request.app.state.fastmcp_server._lifespan_result
         db: Database = lifespan_ctx["db"]
 
+        from oncofiles.filename_parser import is_standard_format
+
         doc_count = await db.count_documents()
         sync_stats = await db.get_sync_stats_summary()
         recent_syncs = await db.get_sync_history(limit=5)
+
+        # Document health summary
+        all_docs = await db.list_documents(limit=500)
+        doc_health = {
+            "total": len(all_docs),
+            "with_ai": sum(1 for d in all_docs if d.ai_summary),
+            "with_metadata": sum(
+                1 for d in all_docs if d.structured_metadata and d.structured_metadata != ""
+            ),
+            "with_date": sum(1 for d in all_docs if d.document_date),
+            "with_institution": sum(1 for d in all_docs if d.institution),
+            "synced": sum(1 for d in all_docs if d.gdrive_id),
+            "standard_named": sum(1 for d in all_docs if is_standard_format(d.filename)),
+        }
 
         # Memory
         rusage = resource.getrusage(resource.RUSAGE_SELF)
@@ -595,6 +611,7 @@ async def status(request: Request) -> JSONResponse:
                 "version": VERSION,
                 "uptime_s": uptime_s,
                 "documents": doc_count,
+                "document_health": doc_health,
                 "memory_rss_mb": round(rss_mb, 1),
                 "sync_7d": {
                     "total": sync_stats.get("total_syncs", 0),
