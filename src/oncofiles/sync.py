@@ -638,7 +638,7 @@ async def _rename_to_standard(db: Database, gdrive: GDriveClient) -> dict:
 
             # If rename_to_standard couldn't parse (returned unchanged),
             # build from DB metadata like we do for corrupted filenames
-            if new_name == doc.filename and (doc.document_date or doc.created_at):
+            if new_name == doc.filename:
                 from oncofiles.filename_parser import CATEGORY_FILENAME_TOKENS
                 from oncofiles.patient_context import get_patient_name
 
@@ -646,6 +646,8 @@ async def _rename_to_standard(db: Database, gdrive: GDriveClient) -> dict:
                 cat_token = CATEGORY_FILENAME_TOKENS.get(doc.category, "Other")
                 if doc.document_date:
                     date_str = doc.document_date.strftime("%Y%m%d")
+                elif doc.gdrive_modified_time:
+                    date_str = doc.gdrive_modified_time.strftime("%Y%m%d")
                 elif doc.created_at:
                     date_str = doc.created_at.strftime("%Y%m%d")
                 else:
