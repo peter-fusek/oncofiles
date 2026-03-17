@@ -192,6 +192,7 @@ async def sync_from_gdrive(
                         )
                     except TimeoutError:
                         logger.warning("sync: enhance timed out for doc %d", existing.id)
+                        stats["errors"] = stats.get("errors", 0) + 1
 
                 await db.delete_ocr_pages(existing.id)
                 stats["updated"] += 1
@@ -264,6 +265,7 @@ async def sync_from_gdrive(
                         )
                     except TimeoutError:
                         logger.warning("sync: enhance timed out for doc %d", doc.id)
+                        stats["errors"] = stats.get("errors", 0) + 1
 
                 stats["new"] += 1
 

@@ -55,11 +55,16 @@ class ConversationMixin:
         params: list[str | int] = []
 
         if query.text:
-            conditions.append(
-                "id IN (SELECT rowid FROM conversation_entries_fts "
-                "WHERE conversation_entries_fts MATCH ?)"
-            )
-            params.append(query.text)
+            # Sanitize FTS5 input: quote as a phrase to prevent FTS5 syntax injection
+            import re
+
+            safe_text = re.sub(r"[^\w\s-]", "", query.text)
+            if safe_text.strip():
+                conditions.append(
+                    "id IN (SELECT rowid FROM conversation_entries_fts "
+                    "WHERE conversation_entries_fts MATCH ?)"
+                )
+                params.append(f'"{safe_text}"')
 
         if query.entry_type:
             conditions.append("entry_type = ?")

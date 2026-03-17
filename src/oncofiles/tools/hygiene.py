@@ -652,10 +652,11 @@ async def get_document_status_matrix(
     limit = min(limit, 200)
 
     docs = await db.list_documents(limit=500)
+    ocr_ids = await db.get_ocr_document_ids()
     rows = []
 
     for doc in docs:
-        has_ocr = await db.has_ocr_text(doc.id)
+        has_ocr = doc.id in ocr_ids
         has_ai = doc.ai_summary is not None
         has_metadata = doc.structured_metadata is not None and doc.structured_metadata != ""
         is_synced = doc.gdrive_id is not None

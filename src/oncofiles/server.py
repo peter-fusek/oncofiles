@@ -399,13 +399,14 @@ def _start_sync_scheduler(db, files, gdrive, oauth_folder_id):
             logger.debug("Startup catchup skipped — no folder ID")
             return
 
-        import contextlib
         import time as _time
 
         sync_id = None
         start = _time.monotonic()
-        with contextlib.suppress(Exception):
+        try:
             sync_id = await db.insert_sync_history(trigger="startup")
+        except Exception:
+            logger.warning("startup: failed to record sync history", exc_info=True)
 
         try:
             import_stats = await asyncio.wait_for(
@@ -567,8 +568,20 @@ async def health(request: Request) -> JSONResponse:
 
 @mcp.custom_route("/status", methods=["GET"])
 async def status(request: Request) -> JSONResponse:
-    """System status with sync history, doc counts, and resource usage."""
+    """System status with sync history, doc counts, and resource usage.
+
+    Requires bearer token authentication (same as /metrics).
+    """
     import resource
+
+    # Require bearer token
+    auth_header = request.headers.get("authorization", "")
+    if MCP_BEARER_TOKEN:
+        if not auth_header.startswith("Bearer "):
+            return JSONResponse({"error": "unauthorized"}, status_code=401)
+        token = auth_header.removeprefix("Bearer ").strip()
+        if not hmac.compare_digest(token.encode(), MCP_BEARER_TOKEN.encode()):
+            return JSONResponse({"error": "unauthorized"}, status_code=401)
 
     try:
         lifespan_ctx = request.app.state.fastmcp_server._lifespan_result

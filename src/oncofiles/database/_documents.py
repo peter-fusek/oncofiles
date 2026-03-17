@@ -420,6 +420,12 @@ class DocumentMixin:
         ) as cursor:
             return await cursor.fetchone() is not None
 
+    async def get_ocr_document_ids(self) -> set[int]:
+        """Get all document IDs that have OCR text cached (batch query)."""
+        async with self.db.execute("SELECT DISTINCT document_id FROM document_pages") as cursor:
+            rows = await cursor.fetchall()
+            return {(r["document_id"] if isinstance(r, dict) else r[0]) for r in rows}
+
     async def get_ocr_pages(self, document_id: int) -> list[dict]:
         """Get cached OCR text for a document, ordered by page number."""
         async with self.db.execute(
