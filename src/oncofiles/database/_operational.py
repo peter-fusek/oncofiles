@@ -259,12 +259,19 @@ class OperationalMixin:
 
     async def insert_sync_history(self, trigger: str = "scheduled") -> int:
         """Start a sync history record. Returns the row ID."""
-        # Clean up any stale 'running' records first
-        stale = await self.close_stale_syncs()
-        if stale:
-            import logging
+        # Clean up any stale 'running' records first (isolated — don't block insert)
+        import logging
 
-            logging.getLogger(__name__).info("sync_history: closed %d stale running records", stale)
+        try:
+            stale = await self.close_stale_syncs()
+            if stale:
+                logging.getLogger(__name__).info(
+                    "sync_history: closed %d stale running records", stale
+                )
+        except Exception:
+            logging.getLogger(__name__).warning(
+                "sync_history: failed to close stale records", exc_info=True
+            )
         await self.db.execute(
             """
             INSERT INTO sync_history (started_at, sync_trigger, status)

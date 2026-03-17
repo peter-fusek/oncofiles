@@ -1397,12 +1397,20 @@ async def _enhance_document(
         backfill_institution = None
         backfill_description = None
 
-        # Date: use first date from structured metadata
+        # Date: use first date from structured metadata, fallback to GDrive/created time
         if not doc.document_date:
             dates = metadata.get("dates_mentioned", [])
             if dates:
                 backfill_date = dates[0]  # Already YYYY-MM-DD from AI
-                logger.info("enhance: doc %d — backfill date=%s", doc.id, backfill_date)
+                logger.info("enhance: doc %d — backfill date=%s (from AI)", doc.id, backfill_date)
+            elif doc.gdrive_modified_time:
+                backfill_date = doc.gdrive_modified_time.strftime("%Y-%m-%d")
+                logger.info("enhance: doc %d — backfill date=%s (GDrive)", doc.id, backfill_date)
+            elif doc.created_at:
+                backfill_date = doc.created_at.strftime("%Y-%m-%d")
+                logger.info(
+                    "enhance: doc %d — backfill date=%s (created_at)", doc.id, backfill_date
+                )
 
         # Institution: map providers to known institution codes
         if not doc.institution:

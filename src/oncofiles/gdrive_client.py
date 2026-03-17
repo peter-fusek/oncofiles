@@ -73,7 +73,7 @@ def _retry_on_transient(func):
                         args[0]._rebuild_service()
                         logger.info("GDrive: rebuilt service after %s error", error_type)
                     except Exception:
-                        logger.warning("GDrive: failed to rebuild service")
+                        logger.warning("GDrive: failed to rebuild service", exc_info=True)
 
                 time.sleep(backoff)
         raise last_exc  # type: ignore[misc]
@@ -396,12 +396,8 @@ class GDriveClient:
     @_retry_on_transient
     def get_file_parents(self, file_id: str) -> list[str]:
         """Get the parent folder IDs of a file."""
-        try:
-            result = self._service.files().get(fileId=file_id, fields="parents").execute()
-            return result.get("parents", [])
-        except Exception as e:
-            logger.warning("Could not get parents for %s: %s", file_id, e)
-            return []
+        result = self._service.files().get(fileId=file_id, fields="parents").execute()
+        return result.get("parents", [])
 
     @_retry_on_transient
     def rename_file(self, file_id: str, new_name: str) -> None:

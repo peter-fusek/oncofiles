@@ -69,6 +69,40 @@ class ClinicalMixin:
             rows = await cursor.fetchall()
             return [_row_to_treatment_event(r) for r in rows]
 
+    async def delete_treatment_event(self, event_id: int) -> bool:
+        """Delete a treatment event by ID. Returns True if deleted."""
+        cursor = await self.db.execute("DELETE FROM treatment_events WHERE id = ?", (event_id,))
+        await self.db.commit()
+        return cursor.rowcount > 0
+
+    async def update_treatment_event(
+        self,
+        event_id: int,
+        title: str | None = None,
+        notes: str | None = None,
+        metadata: str | None = None,
+    ) -> TreatmentEvent | None:
+        """Update a treatment event's title, notes, or metadata."""
+        updates: list[str] = []
+        params: list = []
+        if title is not None:
+            updates.append("title = ?")
+            params.append(title)
+        if notes is not None:
+            updates.append("notes = ?")
+            params.append(notes)
+        if metadata is not None:
+            updates.append("metadata = ?")
+            params.append(metadata)
+        if not updates:
+            return await self.get_treatment_event(event_id)
+        params.append(event_id)
+        await self.db.execute(
+            f"UPDATE treatment_events SET {', '.join(updates)} WHERE id = ?", params
+        )
+        await self.db.commit()
+        return await self.get_treatment_event(event_id)
+
     async def get_treatment_events_timeline(self, limit: int = 200) -> list[TreatmentEvent]:
         """Get treatment events in chronological (ASC) order."""
         async with self.db.execute(

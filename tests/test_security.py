@@ -3,16 +3,31 @@
 from __future__ import annotations
 
 import time
+from unittest.mock import patch
 
 from oncofiles.oauth import _make_state_token, verify_state_token
 
 # ── OAuth state token (V3) ───────────────────────────────────────────
 
+_TEST_TOKEN = "test-bearer-token-for-hmac"
+
 
 def test_state_token_roundtrip():
     """Valid state token passes verification."""
-    token = _make_state_token()
-    assert verify_state_token(token) is True
+    with patch("oncofiles.oauth.MCP_BEARER_TOKEN", _TEST_TOKEN):
+        token = _make_state_token()
+        assert verify_state_token(token) is True
+
+
+def test_state_token_requires_bearer_token():
+    """State token creation fails without MCP_BEARER_TOKEN."""
+    import pytest
+
+    with (
+        patch("oncofiles.oauth.MCP_BEARER_TOKEN", ""),
+        pytest.raises(RuntimeError, match="MCP_BEARER_TOKEN must be set"),
+    ):
+        _make_state_token()
 
 
 def test_state_token_rejects_empty():
@@ -26,21 +41,23 @@ def test_state_token_rejects_garbage():
 
 
 def test_state_token_rejects_tampered():
-    token = _make_state_token()
-    ts, sig = token.split(".", 1)
-    tampered = f"{ts}.{'a' * 32}"
-    assert verify_state_token(tampered) is False
+    with patch("oncofiles.oauth.MCP_BEARER_TOKEN", _TEST_TOKEN):
+        token = _make_state_token()
+        ts, sig = token.split(".", 1)
+        tampered = f"{ts}.{'a' * 32}"
+        assert verify_state_token(tampered) is False
 
 
 def test_state_token_rejects_expired(monkeypatch):
     """Tokens older than 10 minutes are rejected."""
-    token = _make_state_token()
-    # Fast-forward time by 11 minutes
-    real_time = time.time()
-    import oncofiles.oauth as oauth_mod
+    with patch("oncofiles.oauth.MCP_BEARER_TOKEN", _TEST_TOKEN):
+        token = _make_state_token()
+        # Fast-forward time by 11 minutes
+        real_time = time.time()
+        import oncofiles.oauth as oauth_mod
 
-    monkeypatch.setattr(oauth_mod.time, "time", lambda: real_time + 700)
-    assert verify_state_token(token) is False
+        monkeypatch.setattr(oauth_mod.time, "time", lambda: real_time + 700)
+        assert verify_state_token(token) is False
 
 
 def test_state_token_rejects_no_dot():

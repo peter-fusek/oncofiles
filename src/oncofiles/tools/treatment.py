@@ -116,7 +116,51 @@ async def get_treatment_event(ctx: Context, event_id: int) -> str:
     )
 
 
+async def delete_treatment_event(ctx: Context, event_id: int) -> str:
+    """Delete a treatment event by ID. Use for removing contaminated/test data.
+
+    Args:
+        event_id: The treatment event ID to delete.
+    """
+    db = _get_db(ctx)
+    deleted = await db.delete_treatment_event(event_id)
+    if not deleted:
+        return json.dumps({"error": f"Treatment event {event_id} not found"})
+    return json.dumps({"deleted": True, "event_id": event_id})
+
+
+async def update_treatment_event(
+    ctx: Context,
+    event_id: int,
+    title: str | None = None,
+    notes: str | None = None,
+    metadata: str | None = None,
+) -> str:
+    """Update a treatment event's title, notes, or metadata.
+
+    Args:
+        event_id: The treatment event ID to update.
+        title: New title (optional).
+        notes: New notes (optional).
+        metadata: New metadata JSON string (optional).
+    """
+    db = _get_db(ctx)
+    updated = await db.update_treatment_event(event_id, title=title, notes=notes, metadata=metadata)
+    if not updated:
+        return json.dumps({"error": f"Treatment event {event_id} not found"})
+    return json.dumps(
+        {
+            "id": updated.id,
+            "event_date": updated.event_date.isoformat(),
+            "event_type": updated.event_type,
+            "title": updated.title,
+        }
+    )
+
+
 def register(mcp):
     mcp.tool()(add_treatment_event)
     mcp.tool()(list_treatment_events)
     mcp.tool()(get_treatment_event)
+    mcp.tool()(delete_treatment_event)
+    mcp.tool()(update_treatment_event)

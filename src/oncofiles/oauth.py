@@ -28,7 +28,12 @@ _STATE_MAX_AGE = 600  # 10 minutes
 def _make_state_token() -> str:
     """Generate an HMAC-signed state token with embedded timestamp."""
     ts = str(int(time.time()))
-    key = (MCP_BEARER_TOKEN or "oncofiles-oauth-state").encode()
+    if not MCP_BEARER_TOKEN:
+        raise RuntimeError(
+            "MCP_BEARER_TOKEN must be set when OAuth is configured — "
+            "it is used as the HMAC signing key for state tokens."
+        )
+    key = MCP_BEARER_TOKEN.encode()
     sig = hmac.new(key, ts.encode(), hashlib.sha256).hexdigest()[:32]
     return f"{ts}.{sig}"
 
@@ -49,7 +54,9 @@ def verify_state_token(state: str) -> bool:
     if time.time() - ts > _STATE_MAX_AGE:
         return False
     # Verify signature
-    key = (MCP_BEARER_TOKEN or "oncofiles-oauth-state").encode()
+    if not MCP_BEARER_TOKEN:
+        return False
+    key = MCP_BEARER_TOKEN.encode()
     expected = hmac.new(key, ts_str.encode(), hashlib.sha256).hexdigest()[:32]
     return hmac.compare_digest(sig, expected)
 
