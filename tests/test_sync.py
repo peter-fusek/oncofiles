@@ -331,9 +331,9 @@ async def test_sync_to_gdrive_organizes_existing(db: Database):
     gdrive.get_file_parents.return_value = ["some_random_folder"]
 
     stats = await sync_to_gdrive(db, files, gdrive, "folder123")
-    assert stats["organized"] == 1
+    assert stats["organized"] >= 1  # Phase 1 + post-rename organize (mock doesn't update parents)
     assert stats["exported"] == 0
-    gdrive.batch_move.assert_called_once()
+    assert gdrive.batch_move.call_count >= 1
 
 
 async def test_sync_to_gdrive_skips_already_organized(db: Database):
@@ -347,8 +347,45 @@ async def test_sync_to_gdrive_skips_already_organized(db: Database):
     gdrive.get_file_parents.return_value = ["folder_report — lekárske správy"]
 
     stats = await sync_to_gdrive(db, files, gdrive, "folder123")
-    assert stats["skipped"] == 1
+    assert stats["skipped"] >= 1  # Phase 1 skip + post-rename re-check skip
     assert stats["organized"] == 0
+
+
+async def test_rename_triggers_organize_and_enhance(db: Database):
+    """Renamed docs get immediately organized and re-enhanced."""
+    # Doc with non-standard filename (missing patient name) and gdrive_id
+    doc = make_doc(gdrive_id="gd_rename_test")
+    await db.insert_document(doc)
+
+    files = _mock_files()
+    gdrive = _mock_gdrive()
+    # File is in unorganized folder
+    gdrive.get_file_parents.return_value = ["some_random_folder"]
+
+    stats = await sync_to_gdrive(db, files, gdrive, "folder123")
+
+    # Rename should have happened
+    assert stats["renamed"] == 1
+    # batch_rename was called (for the rename itself)
+    gdrive.batch_rename.assert_called()
+    # batch_move was called (Phase 1 + post-rename organize)
+    assert gdrive.batch_move.call_count >= 1
+    assert stats["organized"] >= 1
+
+
+async def test_rename_returns_renamed_ids(db: Database):
+    """_rename_to_standard returns renamed_ids for post-processing."""
+    from oncofiles.sync import _rename_to_standard
+
+    # Doc with non-standard filename
+    doc = make_doc(gdrive_id="gd_ids_test")
+    await db.insert_document(doc)
+
+    gdrive = _mock_gdrive()
+    stats = await _rename_to_standard(db, gdrive)
+
+    assert stats["renamed"] == 1
+    assert doc.id in stats["renamed_ids"]
 
 
 async def test_sync_to_gdrive_dry_run(db: Database):

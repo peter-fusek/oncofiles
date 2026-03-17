@@ -444,6 +444,71 @@ async def sync_to_gdrive(
             stats["renamed"] = rename_stats["renamed"]
         except Exception as e:
             logger.warning("sync_to_gdrive: standard rename failed — %s", str(e)[:200])
+            rename_stats = {"renamed": 0, "renamed_ids": []}
+
+        # Post-rename: immediately organize renamed docs into correct folders
+        if rename_stats.get("renamed_ids"):
+            renamed_set = set(rename_stats["renamed_ids"])
+            renamed_docs = [d for d in docs if d.id in renamed_set]
+            # Refresh docs from DB to get updated filenames/dates
+            refreshed = []
+            for d in renamed_docs:
+                try:
+                    refreshed.append(await db.get_document(d.id))
+                except Exception:
+                    refreshed.append(d)
+            if refreshed:
+                try:
+                    await asyncio.to_thread(
+                        _batch_organize_files,
+                        gdrive,
+                        refreshed,
+                        folder_id,
+                        folder_map,
+                        organized_folder_ids,
+                        stats,
+                    )
+                    logger.info(
+                        "sync_to_gdrive: post-rename organized %d docs",
+                        len(refreshed),
+                    )
+                except Exception:
+                    logger.exception("sync_to_gdrive: post-rename organize failed")
+
+            # Post-rename: re-enhance renamed docs (metadata/FTS reflect new name)
+            for doc_id in rename_stats["renamed_ids"]:
+                try:
+                    doc = await db.get_document(doc_id)
+                    await asyncio.wait_for(
+                        _enhance_document(db, doc, files, gdrive),
+                        timeout=60.0,
+                    )
+                    logger.info(
+                        "sync_to_gdrive: post-rename enhanced doc %d", doc_id
+                    )
+                except TimeoutError:
+                    logger.warning(
+                        "sync_to_gdrive: post-rename enhance timed out for doc %d",
+                        doc_id,
+                    )
+                except Exception:
+                    logger.exception(
+                        "sync_to_gdrive: post-rename enhance failed for doc %d",
+                        doc_id,
+                    )
+
+            # Post-rename: verify full pipeline for each renamed doc
+            all_gaps = []
+            for doc_id in rename_stats["renamed_ids"]:
+                gaps = await _assert_doc_pipeline_complete(
+                    db, doc_id, gdrive=gdrive, organized_folder_ids=organized_folder_ids
+                )
+                all_gaps.extend(gaps)
+            if all_gaps:
+                stats["pipeline_gaps"] = all_gaps
+                logger.warning(
+                    "sync_to_gdrive: %d pipeline gaps after rename", len(all_gaps)
+                )
 
         # Clean up orphaned OCR files (old names from before bilingual rename)
         try:
@@ -581,6 +646,48 @@ def _batch_organize_files(
             stats["errors"] += 1
 
 
+async def _assert_doc_pipeline_complete(
+    db: Database,
+    doc_id: int,
+    gdrive: GDriveClient | None = None,
+    organized_folder_ids: set[str] | None = None,
+) -> list[str]:
+    """Check that a document has completed the full pipeline.
+
+    Returns a list of gap descriptions (empty = fully complete).
+    Gaps are logged as warnings for monitoring via /status.
+    """
+    gaps: list[str] = []
+    try:
+        doc = await db.get_document(doc_id)
+    except Exception:
+        return [f"doc {doc_id}: not found in DB"]
+
+    if not is_standard_format(doc.filename):
+        gaps.append(f"doc {doc_id}: filename not in standard format ({doc.filename})")
+    if not doc.gdrive_id:
+        gaps.append(f"doc {doc_id}: no gdrive_id (not exported)")
+    if not doc.ai_summary:
+        gaps.append(f"doc {doc_id}: no AI summary (enhance incomplete)")
+    if not await db.has_ocr_text(doc.id):
+        gaps.append(f"doc {doc_id}: no OCR text (extraction incomplete)")
+
+    if gdrive and organized_folder_ids and doc.gdrive_id:
+        try:
+            parents = await asyncio.to_thread(gdrive.get_file_parents, doc.gdrive_id)
+            if not any(p in organized_folder_ids for p in parents):
+                gaps.append(
+                    f"doc {doc_id}: not in organized folder "
+                    f"(parents={parents}, filename={doc.filename})"
+                )
+        except Exception:
+            logger.warning("pipeline assert: could not fetch parents for doc %d", doc_id)
+
+    for gap in gaps:
+        logger.warning("pipeline gap: %s", gap)
+    return gaps
+
+
 async def _rename_to_standard(db: Database, gdrive: GDriveClient) -> dict:
     """Rename GDrive files to standard format (underscore-separated, EN description).
 
@@ -588,9 +695,9 @@ async def _rename_to_standard(db: Database, gdrive: GDriveClient) -> dict:
     If not, renames on GDrive and updates DB filename.
     Stores original_filename before rename for reversibility.
 
-    Returns: {renamed, skipped, errors}.
+    Returns: {renamed, skipped, errors, renamed_ids}.
     """
-    stats = {"renamed": 0, "skipped": 0, "errors": 0}
+    stats: dict = {"renamed": 0, "skipped": 0, "errors": 0, "renamed_ids": []}
     docs = await db.list_documents(limit=500)
     pending_renames: list[tuple] = []
 
@@ -710,6 +817,7 @@ async def _rename_to_standard(db: Database, gdrive: GDriveClient) -> dict:
             await db.update_document_filename(doc.id, new_name)
             logger.info("Renamed '%s' → '%s' (doc %d)", doc.filename, new_name, doc.id)
             stats["renamed"] += 1
+            stats["renamed_ids"].append(doc.id)
 
     logger.info("_rename_to_standard: done — %s", stats)
     return stats
