@@ -6,10 +6,28 @@
   <title>Oncofiles — Patient-side medical document management</title>
   <meta name="description" content="Open-source MCP server for oncology document management. AI-powered OCR, lab tracking, Google Drive sync. Self-hosted, privacy-first.">
   <meta property="og:title" content="Oncofiles — Patient-side medical document management">
-  <meta property="og:description" content="Open-source MCP server for oncology document management. 63 AI tools, 15 medical categories, Google Drive sync.">
+  <meta property="og:description" content="Open-source MCP server for oncology document management. 63 AI tools, pipeline dashboard, Google Drive sync. Self-hosted, privacy-first.">
   <meta property="og:type" content="website">
   <meta property="og:url" content="https://oncofiles.com">
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="Oncofiles — Patient-side medical document management">
+  <meta name="twitter:description" content="Open-source MCP server for oncology. AI-powered OCR, lab tracking, pipeline dashboard, Google Drive sync.">
   <link rel="canonical" href="https://oncofiles.com">
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "SoftwareApplication",
+    "name": "Oncofiles",
+    "description": "Open-source MCP server for patient-side oncology document management with AI enhancement, lab tracking, and Google Drive sync.",
+    "applicationCategory": "HealthApplication",
+    "operatingSystem": "Any",
+    "url": "https://oncofiles.com",
+    "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
+    "license": "https://opensource.org/licenses/MIT",
+    "softwareVersion": "3.20.0",
+    "codeRepository": "https://github.com/instarea-sk/oncofiles"
+  }
+  </script>
   <style>
     :root {
       --bg: #0f172a;
@@ -160,7 +178,8 @@
     <div class="container">
       <div class="logo">onco<span>files</span></div>
       <nav>
-        <a href="https://github.com/instarea-sk/oncofiles">GitHub</a>
+        <a href="/dashboard">Dashboard</a>
+        <a href="https://github.com/instarea-sk/oncofiles" rel="noreferrer noopener">GitHub</a>
         <a href="/health">Health</a>
       </nav>
     </div>
@@ -193,8 +212,8 @@
         <p>Store lab values, track trends over time, and get pre-cycle safety checks for treatment protocols.</p>
       </div>
       <div class="feature">
-        <h3>System Health</h3>
-        <p>Built-in monitoring with sync history, error tracking, pipeline observability, and document health checks.</p>
+        <h3>Pipeline Dashboard</h3>
+        <p>Visual dashboard with document status matrix, pipeline funnel, sync history, and remediation guidance. Google Sign-In.</p>
       </div>
       <div class="feature">
         <h3>Privacy First</h3>
@@ -212,7 +231,7 @@
         <div class="label">Doc Categories</div>
       </div>
       <div class="stat">
-        <div class="number" data-stat="tests">504</div>
+        <div class="number" data-stat="tests">529</div>
         <div class="label">Tests</div>
       </div>
       <div class="stat">
@@ -223,7 +242,7 @@
 
     <section class="cta">
       <div class="container">
-        <a href="https://github.com/instarea-sk/oncofiles">View on GitHub</a>
+        <a href="https://github.com/instarea-sk/oncofiles" rel="noreferrer noopener">View on GitHub</a>
         <p>MIT License &middot; Built with FastMCP &middot; Python 3.12+</p>
       </div>
     </section>
@@ -231,7 +250,8 @@
 
   <footer>
     <div class="container">
-      &copy; 2025-2026 <a href="https://github.com/instarea-sk">Instarea</a> &middot;
+      &copy; 2025-2026 <a href="https://github.com/instarea-sk" rel="noreferrer noopener">Instarea</a> &middot;
+      <a href="/dashboard">Dashboard</a> &middot;
       <a href="/health">Health</a>
     </div>
   </footer>
