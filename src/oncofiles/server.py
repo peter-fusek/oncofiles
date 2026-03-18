@@ -589,8 +589,33 @@ async def favicon_ico(request: Request) -> HTMLResponse:
 @mcp.custom_route("/robots.txt", methods=["GET"])
 async def robots_txt(request: Request) -> HTMLResponse:
     return HTMLResponse(
-        "User-agent: *\nAllow: /\nDisallow: /mcp\nDisallow: /api/\n"
-        "Disallow: /dashboard/verify\nDisallow: /status\nDisallow: /metrics\n\n"
+        "User-agent: *\n"
+        "Allow: /\n"
+        "Disallow: /mcp\n"
+        "Disallow: /api/\n"
+        "Disallow: /dashboard/verify\n"
+        "Disallow: /status\n"
+        "Disallow: /metrics\n"
+        "\n"
+        "# LLM crawlers — allow landing + llms.txt, block private endpoints\n"
+        "User-agent: GPTBot\n"
+        "Allow: /\n"
+        "Allow: /llms.txt\n"
+        "Disallow: /mcp\n"
+        "Disallow: /api/\n"
+        "Disallow: /dashboard/verify\n"
+        "\n"
+        "User-agent: ClaudeBot\n"
+        "Allow: /\n"
+        "Allow: /llms.txt\n"
+        "Disallow: /mcp\n"
+        "Disallow: /api/\n"
+        "Disallow: /dashboard/verify\n"
+        "\n"
+        "User-agent: PerplexityBot\n"
+        "Allow: /\n"
+        "Allow: /llms.txt\n"
+        "\n"
         "Sitemap: https://oncofiles.com/sitemap.xml\n",
         media_type="text/plain",
     )
@@ -598,14 +623,62 @@ async def robots_txt(request: Request) -> HTMLResponse:
 
 @mcp.custom_route("/sitemap.xml", methods=["GET"])
 async def sitemap_xml(request: Request) -> HTMLResponse:
+    today = datetime.now(UTC).strftime("%Y-%m-%d")
     return HTMLResponse(
         '<?xml version="1.0" encoding="UTF-8"?>\n'
         '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
-        "  <url><loc>https://oncofiles.com/</loc><changefreq>weekly</changefreq></url>\n"
-        "  <url><loc>https://oncofiles.com/dashboard</loc><changefreq>daily</changefreq></url>\n"
-        "  <url><loc>https://oncofiles.com/health</loc><changefreq>always</changefreq></url>\n"
+        f"  <url><loc>https://oncofiles.com/</loc><lastmod>{today}</lastmod>"
+        "<priority>1.0</priority><changefreq>weekly</changefreq></url>\n"
+        f"  <url><loc>https://oncofiles.com/dashboard</loc><lastmod>{today}</lastmod>"
+        "<priority>0.8</priority><changefreq>daily</changefreq></url>\n"
+        f"  <url><loc>https://oncofiles.com/health</loc><lastmod>{today}</lastmod>"
+        "<priority>0.3</priority><changefreq>always</changefreq></url>\n"
         "</urlset>\n",
         media_type="application/xml",
+    )
+
+
+@mcp.custom_route("/llms.txt", methods=["GET"])
+async def llms_txt(request: Request) -> HTMLResponse:
+    """LLM-readable site description following the llms.txt standard."""
+    return HTMLResponse(
+        f"# Oncofiles\n"
+        f"> Patient-side MCP server for oncology document management\n"
+        f"\n"
+        f"## About\n"
+        f"Oncofiles is an open-source MCP (Model Context Protocol) server that helps\n"
+        f"cancer patients and caregivers organize, search, and understand their medical\n"
+        f"documents using AI. It provides 63 tools for document management, lab tracking,\n"
+        f"clinical trial search, and treatment event logging.\n"
+        f"\n"
+        f"## Key Features\n"
+        f"- 15 medical document categories (labs, imaging, pathology, genetics, etc.)\n"
+        f"- AI-powered OCR, summaries, tags, and structured metadata extraction\n"
+        f"- Bidirectional Google Drive sync with auto-rename and folder organization\n"
+        f"- Lab value tracking with trends, reference ranges, and pre-cycle safety checks\n"
+        f"- Pipeline dashboard with Google Sign-In authentication\n"
+        f"- PubMed and ClinicalTrials.gov search integration\n"
+        f"- Treatment event and research entry management\n"
+        f"\n"
+        f"## Technical Details\n"
+        f"- Version: {VERSION}\n"
+        f"- Protocol: MCP (Model Context Protocol) via FastMCP\n"
+        f"- Language: Python 3.12+\n"
+        f"- Database: SQLite / Turso\n"
+        f"- License: MIT\n"
+        f"- Repository: https://github.com/instarea-sk/oncofiles\n"
+        f"\n"
+        f"## Integration\n"
+        f"Oncofiles works with Claude and any MCP-compatible AI assistant.\n"
+        f"Connect via streamable-http transport at the /mcp endpoint.\n"
+        f"Authentication requires a bearer token (MCP_BEARER_TOKEN).\n"
+        f"\n"
+        f"## Links\n"
+        f"- Homepage: https://oncofiles.com\n"
+        f"- Dashboard: https://oncofiles.com/dashboard\n"
+        f"- Health: https://oncofiles.com/health\n"
+        f"- GitHub: https://github.com/instarea-sk/oncofiles\n",
+        media_type="text/plain; charset=utf-8",
     )
 
 
