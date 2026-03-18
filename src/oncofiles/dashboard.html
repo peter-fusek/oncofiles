@@ -425,7 +425,7 @@
       </div>
 
       <footer>
-        <a href="/">Oncofiles</a> &middot; <a href="/health">Health</a> &middot; <a href="https://github.com/instarea-sk/oncofiles">GitHub</a>
+        <a href="/">Oncofiles</a> &middot; <a href="/health">Health</a> &middot; <a href="https://github.com/instarea-sk/oncofiles" rel="noreferrer noopener">GitHub</a>
       </footer>
     </div>
   </div>
@@ -504,7 +504,8 @@
             showAuthError('Google OAuth not configured on server');
             return;
           }
-          // Wait for GSI library to load
+          // Wait for GSI library to load (max 10 seconds)
+          var gsiRetries = 0;
           function tryInit() {
             if (typeof google !== 'undefined' && google.accounts) {
               google.accounts.id.initialize({
@@ -515,8 +516,10 @@
                 document.getElementById('g_id_signin'),
                 { theme: 'filled_black', size: 'large', text: 'signin_with', shape: 'rectangular' }
               );
-            } else {
+            } else if (gsiRetries++ < 50) {
               setTimeout(tryInit, 200);
+            } else {
+              showAuthError('Google Sign-In library failed to load. Check your network connection.');
             }
           }
           tryInit();

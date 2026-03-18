@@ -147,7 +147,10 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict]:
             oauth_folder_id = token.gdrive_folder_id or ""
             owner_email = token.owner_email or ""
     except Exception:
-        logger.debug("Failed to load OAuth token at startup", exc_info=True)
+        logger.warning(
+            "Failed to load OAuth token at startup — GDrive OAuth unavailable",
+            exc_info=True,
+        )
 
     # Prefer OAuth (user has storage quota for uploads; service account does not)
     gdrive = None
@@ -175,7 +178,7 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict]:
             )
             logger.info("GDrive client initialized from OAuth tokens")
     except Exception as e:
-        logger.warning("OAuth GDrive init failed: %s", e)
+        logger.warning("OAuth GDrive init failed: %s", e, exc_info=True)
 
     # Fall back to service account if no OAuth
     if not gdrive:
@@ -578,6 +581,7 @@ async def health(request: Request) -> JSONResponse:
             result["reconnected"] = True
         return JSONResponse(result)
     except Exception:
+        logger.exception("Health check failed")
         return JSONResponse({"status": "degraded", "version": VERSION}, status_code=503)
 
 
@@ -733,6 +737,8 @@ def _make_session_token(email: str) -> str:
     import hashlib
     import time
 
+    if not MCP_BEARER_TOKEN:
+        raise ValueError("Cannot create session token: MCP_BEARER_TOKEN not configured")
     expiry = str(int(time.time()) + _SESSION_MAX_AGE)
     key = MCP_BEARER_TOKEN.encode()
     payload = f"{email}.{expiry}"
@@ -818,7 +824,7 @@ async def dashboard_verify(request: Request) -> JSONResponse:
     try:
         from urllib.parse import quote
 
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.get(
                 f"https://oauth2.googleapis.com/tokeninfo?id_token={quote(credential, safe='')}"
             )
@@ -870,7 +876,10 @@ async def api_documents(request: Request) -> JSONResponse:
 
         db: Database = request.app.state.fastmcp_server._lifespan_result["db"]
         filter_param = request.query_params.get("filter", "all")
-        limit = min(int(request.query_params.get("limit", "200")), 200)
+        try:
+            limit = min(int(request.query_params.get("limit", "200")), 200)
+        except (ValueError, TypeError):
+            limit = 200
         result = await _build_document_matrix(db, filter_param=filter_param, limit=limit)
         return JSONResponse(result)
     except Exception:
