@@ -173,6 +173,17 @@
     }
     .pill:hover { border-color: var(--accent); color: var(--text); }
     .pill.active { background: var(--accent); color: white; border-color: var(--accent); }
+    .pill-count {
+      display: inline-block;
+      background: rgba(255,255,255,0.15);
+      border-radius: 9999px;
+      padding: 0 0.375rem;
+      font-size: 0.625rem;
+      margin-left: 0.25rem;
+      min-width: 1rem;
+      text-align: center;
+    }
+    .pill.active .pill-count { background: rgba(255,255,255,0.25); }
 
     /* Document table */
     .table-wrap {
@@ -339,6 +350,27 @@
       font-size: 0.75rem;
     }
     .logout-btn:hover { border-color: var(--red); color: var(--red); }
+    .connection-dot {
+      display: inline-block;
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--green);
+      margin-right: 0.375rem;
+      vertical-align: middle;
+    }
+    .connection-dot.offline { background: var(--red); }
+    .connection-dot.loading { background: var(--amber); animation: pulse 1s infinite; }
+    @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+    .skeleton {
+      background: linear-gradient(90deg, var(--surface) 25%, rgba(51,65,85,0.5) 50%, var(--surface) 75%);
+      background-size: 200% 100%;
+      animation: shimmer 1.5s infinite;
+      border-radius: 0.375rem;
+    }
+    @keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+    .card .value.skeleton { height: 2rem; width: 3rem; margin: 0 auto; }
+    .funnel-row.skeleton .funnel-bar { background: var(--surface); }
     .auth-error {
       color: var(--red);
       font-size: 0.8125rem;
@@ -364,6 +396,7 @@
       <header>
         <div class="logo">onco<span>files</span> <span style="color:var(--text-muted);font-weight:400;font-size:0.9375rem">dashboard</span></div>
         <div class="header-right">
+          <span id="connection-dot" class="connection-dot loading" title="Connecting..."></span>
           <span class="version" id="version-label"></span>
           <span class="user-info" id="user-info"></span>
           <button class="logout-btn" onclick="logout()">Sign out</button>
@@ -628,16 +661,42 @@
       return resp.json();
     }
 
+    function setConnectionState(state) {
+      var dot = document.getElementById('connection-dot');
+      dot.className = 'connection-dot ' + (state === 'ok' ? '' : state);
+      dot.title = state === 'ok' ? 'Connected' : state === 'loading' ? 'Loading...' : 'Offline';
+    }
+
+    function showSkeletons() {
+      ['card-total','card-complete','card-gaps','card-synced','card-rss'].forEach(function(id) {
+        var el = document.getElementById(id);
+        el.textContent = '';
+        el.className = 'value skeleton';
+      });
+    }
+
+    function hideSkeletons() {
+      ['card-total','card-complete','card-gaps','card-synced','card-rss'].forEach(function(id) {
+        document.getElementById(id).className = 'value';
+      });
+    }
+
     async function refresh() {
       hideError();
+      setConnectionState('loading');
+      showSkeletons();
       try {
         const [status, docs] = await Promise.all([
           apiFetch('/status'),
           apiFetch('/api/documents?filter=' + encodeURIComponent(currentFilter) + '&limit=200')
         ]);
+        setConnectionState('ok');
+        hideSkeletons();
         renderStatus(status);
         renderDocs(docs);
       } catch (e) {
+        setConnectionState('offline');
+        hideSkeletons();
         if (e.message !== 'Unauthorized') {
           showError('Failed to load data: ' + e.message);
         }
@@ -752,6 +811,7 @@
       docsData = data.documents || [];
       renderTable();
       renderRemedies(summary);
+      updateFilterCounts(summary);
     }
 
     function renderTable() {
@@ -870,6 +930,33 @@
         row.appendChild(act);
 
         rowsEl.appendChild(row);
+      });
+    }
+
+    function updateFilterCounts(summary) {
+      var total = summary.total || 0;
+      var counts = {
+        'all': total,
+        'incomplete': total - (summary.fully_complete || 0),
+        'missing_ocr': total - (summary.with_ocr || 0),
+        'missing_ai': total - (summary.with_ai || 0),
+        'missing_metadata': total - (summary.with_metadata || 0),
+        'not_synced': total - (summary.synced || 0),
+        'not_renamed': total - (summary.standard_named || 0),
+      };
+      document.querySelectorAll('.pill').forEach(function(pill) {
+        var filter = pill.dataset.filter;
+        var count = counts[filter];
+        // Remove existing count badge
+        var existing = pill.querySelector('.pill-count');
+        if (existing) pill.removeChild(existing);
+        // Add count badge
+        if (count !== undefined) {
+          var badge = document.createElement('span');
+          badge.className = 'pill-count';
+          badge.textContent = count;
+          pill.appendChild(badge);
+        }
       });
     }
 
