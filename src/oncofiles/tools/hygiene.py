@@ -631,6 +631,100 @@ async def system_health(ctx: Context) -> str:
     return json.dumps(result)
 
 
+async def _build_document_matrix(db, filter_param: str = "all", limit: int = 200) -> dict:
+    """Build document status matrix — shared by MCP tool and HTTP API.
+
+    Returns: {"filter", "matched", "summary", "documents": [...]}
+    """
+    from oncofiles.filename_parser import is_standard_format
+
+    limit = min(limit, 200)
+
+    docs = await db.list_documents(limit=500)
+    ocr_ids = await db.get_ocr_document_ids()
+    rows = []
+
+    for doc in docs:
+        has_ocr = doc.id in ocr_ids
+        has_ai = doc.ai_summary is not None
+        has_metadata = doc.structured_metadata is not None and doc.structured_metadata != ""
+        is_synced = doc.gdrive_id is not None
+        is_standard = is_standard_format(doc.filename)
+        has_date = doc.document_date is not None
+        has_institution = doc.institution is not None
+        fully_complete = all(
+            [has_ocr, has_ai, has_metadata, is_synced, is_standard, has_date, has_institution]
+        )
+
+        row = {
+            "id": doc.id,
+            "filename": doc.filename[:60],
+            "category": doc.category.value,
+            "date": str(doc.document_date) if doc.document_date else None,
+            "institution": doc.institution,
+            "gdrive_id": doc.gdrive_id,
+            "has_ocr": has_ocr,
+            "has_ai": has_ai,
+            "has_metadata": has_metadata,
+            "has_date": has_date,
+            "has_institution": has_institution,
+            "is_synced": is_synced,
+            "is_standard_name": is_standard,
+            "fully_complete": fully_complete,
+        }
+
+        # Apply filter — skip documents that don't match
+        skip = (
+            (filter_param == "missing_ocr" and has_ocr)
+            or (filter_param == "missing_ai" and has_ai)
+            or (filter_param == "missing_metadata" and has_metadata)
+            or (filter_param == "not_synced" and is_synced)
+            or (filter_param == "not_renamed" and is_standard)
+            or (filter_param == "incomplete" and fully_complete)
+        )
+        if skip:
+            continue
+
+        rows.append(row)
+        if len(rows) >= limit:
+            break
+
+    # Summary counts
+    total = len(docs)
+    fully_complete_count = sum(
+        1
+        for d in docs
+        if d.id in ocr_ids
+        and d.ai_summary
+        and d.structured_metadata
+        and d.structured_metadata != ""
+        and d.gdrive_id
+        and is_standard_format(d.filename)
+        and d.document_date
+        and d.institution
+    )
+    summary = {
+        "total": total,
+        "with_ocr": sum(1 for d in docs if d.id in ocr_ids),
+        "with_ai": sum(1 for d in docs if d.ai_summary),
+        "with_metadata": sum(
+            1 for d in docs if d.structured_metadata and d.structured_metadata != ""
+        ),
+        "synced": sum(1 for d in docs if d.gdrive_id),
+        "standard_named": sum(1 for d in docs if is_standard_format(d.filename)),
+        "with_date": sum(1 for d in docs if d.document_date),
+        "with_institution": sum(1 for d in docs if d.institution),
+        "fully_complete": fully_complete_count,
+    }
+
+    return {
+        "filter": filter_param,
+        "matched": len(rows),
+        "summary": summary,
+        "documents": rows,
+    }
+
+
 async def get_document_status_matrix(
     ctx: Context,
     filter: str = "all",
@@ -646,92 +740,9 @@ async def get_document_status_matrix(
                 'not_synced', 'not_renamed', 'incomplete' (any gap).
         limit: Maximum documents to return (max 200).
     """
-    from oncofiles.filename_parser import is_standard_format
-
     db = _get_db(ctx)
-    limit = min(limit, 200)
-
-    docs = await db.list_documents(limit=500)
-    ocr_ids = await db.get_ocr_document_ids()
-    rows = []
-
-    for doc in docs:
-        has_ocr = doc.id in ocr_ids
-        has_ai = doc.ai_summary is not None
-        has_metadata = doc.structured_metadata is not None and doc.structured_metadata != ""
-        is_synced = doc.gdrive_id is not None
-        is_standard = is_standard_format(doc.filename)
-        has_date = doc.document_date is not None
-        has_institution = doc.institution is not None
-
-        row = {
-            "id": doc.id,
-            "filename": doc.filename[:60],
-            "category": doc.category.value,
-            "date": str(doc.document_date) if doc.document_date else None,
-            "institution": doc.institution,
-            "has_ocr": has_ocr,
-            "has_ai": has_ai,
-            "has_metadata": has_metadata,
-            "has_date": has_date,
-            "has_institution": has_institution,
-            "is_synced": is_synced,
-            "is_standard_name": is_standard,
-        }
-
-        # Apply filter — skip documents that don't match
-        skip = (
-            (filter == "missing_ocr" and has_ocr)
-            or (filter == "missing_ai" and has_ai)
-            or (filter == "missing_metadata" and has_metadata)
-            or (filter == "not_synced" and is_synced)
-            or (filter == "not_renamed" and is_standard)
-            or (
-                filter == "incomplete"
-                and all(
-                    [
-                        has_ocr,
-                        has_ai,
-                        has_metadata,
-                        is_synced,
-                        is_standard,
-                        has_date,
-                        has_institution,
-                    ]
-                )
-            )
-        )
-        if skip:
-            continue
-
-        rows.append(row)
-        if len(rows) >= limit:
-            break
-
-    # Summary counts
-    all_docs = await db.list_documents(limit=500)
-    total = len(all_docs)
-    summary = {
-        "total": total,
-        "with_ocr": sum(1 for d in all_docs if d.ai_processed_at),
-        "with_ai": sum(1 for d in all_docs if d.ai_summary),
-        "with_metadata": sum(
-            1 for d in all_docs if d.structured_metadata and d.structured_metadata != ""
-        ),
-        "synced": sum(1 for d in all_docs if d.gdrive_id),
-        "standard_named": sum(1 for d in all_docs if is_standard_format(d.filename)),
-        "with_date": sum(1 for d in all_docs if d.document_date),
-        "with_institution": sum(1 for d in all_docs if d.institution),
-    }
-
-    return json.dumps(
-        {
-            "filter": filter,
-            "matched": len(rows),
-            "summary": summary,
-            "documents": rows,
-        }
-    )
+    result = await _build_document_matrix(db, filter_param=filter, limit=limit)
+    return json.dumps(result)
 
 
 async def get_pipeline_status(ctx: Context) -> str:

@@ -37,6 +37,20 @@ from oncofiles.gdrive_client import GDriveClient, create_gdrive_client
 
 logger = logging.getLogger(__name__)
 
+
+def _check_bearer(request: Request) -> JSONResponse | None:
+    """Validate bearer token from Authorization header. Returns error response or None if OK."""
+    if not MCP_BEARER_TOKEN:
+        return None
+    auth_header = request.headers.get("authorization", "")
+    if not auth_header.startswith("Bearer "):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    token = auth_header.removeprefix("Bearer ").strip()
+    if not hmac.compare_digest(token.encode(), MCP_BEARER_TOKEN.encode()):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    return None
+
+
 # ── Auth ──────────────────────────────────────────────────────────────────────
 
 
@@ -575,13 +589,9 @@ async def status(request: Request) -> JSONResponse:
     import resource
 
     # Require bearer token
-    auth_header = request.headers.get("authorization", "")
-    if MCP_BEARER_TOKEN:
-        if not auth_header.startswith("Bearer "):
-            return JSONResponse({"error": "unauthorized"}, status_code=401)
-        token = auth_header.removeprefix("Bearer ").strip()
-        if not hmac.compare_digest(token.encode(), MCP_BEARER_TOKEN.encode()):
-            return JSONResponse({"error": "unauthorized"}, status_code=401)
+    err = _check_bearer(request)
+    if err:
+        return err
 
     try:
         lifespan_ctx = request.app.state.fastmcp_server._lifespan_result
@@ -661,11 +671,10 @@ async def metrics(request: Request) -> JSONResponse:
     import time
 
     # Require bearer token for metrics
-    auth_header = request.headers.get("authorization", "")
-    if not MCP_BEARER_TOKEN or not auth_header.startswith("Bearer "):
-        return JSONResponse({"error": "unauthorized"}, status_code=401)
-    token = auth_header.removeprefix("Bearer ").strip()
-    if not hmac.compare_digest(token.encode(), MCP_BEARER_TOKEN.encode()):
+    err = _check_bearer(request)
+    if err:
+        return err
+    if not MCP_BEARER_TOKEN:
         return JSONResponse({"error": "unauthorized"}, status_code=401)
 
     try:
@@ -697,6 +706,60 @@ async def metrics(request: Request) -> JSONResponse:
         )
     except Exception:
         logger.exception("Metrics endpoint error")
+        return JSONResponse({"error": "internal error"}, status_code=500)
+
+
+# ── Dashboard ─────────────────────────────────────────────────────────────────
+
+_DASHBOARD_HTML: str | None = None
+
+
+def _load_dashboard_html() -> str:
+    global _DASHBOARD_HTML  # noqa: PLW0603
+    if _DASHBOARD_HTML is None:
+        from pathlib import Path
+
+        html_path = Path(__file__).parent / "dashboard.html"
+        _DASHBOARD_HTML = html_path.read_text()
+    return _DASHBOARD_HTML
+
+
+@mcp.custom_route("/dashboard", methods=["GET"])
+async def dashboard(request: Request) -> HTMLResponse:
+    """Dashboard page. Requires ?token= query parameter for auth."""
+    token = request.query_params.get("token", "")
+    if MCP_BEARER_TOKEN and (
+        not token or not hmac.compare_digest(token.encode(), MCP_BEARER_TOKEN.encode())
+    ):
+        return HTMLResponse(
+            "<html><body style='background:#0f172a;color:#e2e8f0;font-family:sans-serif;"
+            "display:flex;align-items:center;justify-content:center;height:100vh'>"
+            "<p>Unauthorized. Append <code>?token=YOUR_TOKEN</code> to the URL.</p>"
+            "</body></html>",
+            status_code=401,
+        )
+    return HTMLResponse(_load_dashboard_html())
+
+
+@mcp.custom_route("/api/documents", methods=["GET"])
+async def api_documents(request: Request) -> JSONResponse:
+    """Document status matrix API. Requires bearer token authentication."""
+    err = _check_bearer(request)
+    if err:
+        return err
+    if not MCP_BEARER_TOKEN:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+
+    try:
+        from oncofiles.tools.hygiene import _build_document_matrix
+
+        db: Database = request.app.state.fastmcp_server._lifespan_result["db"]
+        filter_param = request.query_params.get("filter", "all")
+        limit = min(int(request.query_params.get("limit", "200")), 200)
+        result = await _build_document_matrix(db, filter_param=filter_param, limit=limit)
+        return JSONResponse(result)
+    except Exception:
+        logger.exception("API documents endpoint error")
         return JSONResponse({"error": "internal error"}, status_code=500)
 
 

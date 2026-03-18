@@ -1,0 +1,770 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Oncofiles Dashboard</title>
+  <style>
+    :root {
+      --bg: #0f172a;
+      --surface: #1e293b;
+      --border: #334155;
+      --text: #e2e8f0;
+      --text-muted: #94a3b8;
+      --accent: #14b8a6;
+      --accent-light: #2dd4bf;
+      --green: #22c55e;
+      --amber: #f59e0b;
+      --red: #ef4444;
+    }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+      min-height: 100vh;
+    }
+    .container { max-width: 1200px; margin: 0 auto; padding: 0 1rem; }
+
+    /* Header */
+    header {
+      padding: 1rem 0;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .logo { font-size: 1.25rem; font-weight: 700; letter-spacing: -0.02em; }
+    .logo span { color: var(--accent); }
+    .header-right { display: flex; align-items: center; gap: 1rem; }
+    .version { font-size: 0.75rem; color: var(--text-muted); }
+    .refresh-btn {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 0.375rem 0.75rem;
+      border-radius: 0.375rem;
+      cursor: pointer;
+      font-size: 0.8125rem;
+    }
+    .refresh-btn:hover { border-color: var(--accent); color: var(--accent); }
+
+    /* Auth gate */
+    .auth-gate {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      height: 80vh;
+      flex-direction: column;
+      gap: 1rem;
+    }
+    .auth-gate input {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 0.5rem 1rem;
+      border-radius: 0.375rem;
+      width: 300px;
+      font-size: 0.875rem;
+    }
+    .auth-gate button {
+      background: var(--accent);
+      color: white;
+      border: none;
+      padding: 0.5rem 1.5rem;
+      border-radius: 0.375rem;
+      cursor: pointer;
+      font-weight: 600;
+    }
+
+    /* Error banner */
+    .error-banner {
+      background: rgba(239, 68, 68, 0.15);
+      border: 1px solid var(--red);
+      border-radius: 0.5rem;
+      padding: 0.75rem 1rem;
+      margin: 1rem 0;
+      display: none;
+      font-size: 0.875rem;
+    }
+    .error-banner.visible { display: flex; align-items: center; justify-content: space-between; }
+
+    /* Summary cards */
+    .cards {
+      display: grid;
+      grid-template-columns: repeat(5, 1fr);
+      gap: 0.75rem;
+      margin: 1.25rem 0;
+    }
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 0.625rem;
+      padding: 1rem;
+      text-align: center;
+    }
+    .card .value {
+      font-size: 1.75rem;
+      font-weight: 800;
+      color: var(--accent);
+    }
+    .card .label {
+      font-size: 0.6875rem;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      margin-top: 0.125rem;
+    }
+    .card.warning .value { color: var(--amber); }
+    .card.danger .value { color: var(--red); }
+
+    /* Pipeline funnel */
+    .funnel {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 0.625rem;
+      padding: 1.25rem;
+      margin-bottom: 1.25rem;
+    }
+    .funnel h2 { font-size: 0.9375rem; font-weight: 600; margin-bottom: 0.75rem; }
+    .funnel-row {
+      display: flex;
+      align-items: center;
+      margin-bottom: 0.5rem;
+      font-size: 0.8125rem;
+    }
+    .funnel-label { width: 100px; color: var(--text-muted); flex-shrink: 0; }
+    .funnel-bar-bg {
+      flex: 1;
+      height: 22px;
+      background: rgba(255,255,255,0.05);
+      border-radius: 4px;
+      overflow: hidden;
+      margin: 0 0.75rem;
+    }
+    .funnel-bar {
+      height: 100%;
+      border-radius: 4px;
+      transition: width 0.4s ease;
+      background: var(--accent);
+    }
+    .funnel-bar.complete { background: var(--green); }
+    .funnel-count { width: 36px; text-align: right; font-weight: 600; font-size: 0.8125rem; }
+
+    /* Filter pills */
+    .filters {
+      display: flex;
+      gap: 0.5rem;
+      flex-wrap: wrap;
+      margin-bottom: 1rem;
+    }
+    .pill {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      color: var(--text-muted);
+      padding: 0.3rem 0.75rem;
+      border-radius: 9999px;
+      font-size: 0.75rem;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    .pill:hover { border-color: var(--accent); color: var(--text); }
+    .pill.active { background: var(--accent); color: white; border-color: var(--accent); }
+
+    /* Document table */
+    .table-wrap {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 0.625rem;
+      overflow-x: auto;
+      margin-bottom: 1.25rem;
+    }
+    table { width: 100%; border-collapse: collapse; font-size: 0.8125rem; }
+    th {
+      text-align: left;
+      padding: 0.625rem 0.75rem;
+      border-bottom: 1px solid var(--border);
+      color: var(--text-muted);
+      font-weight: 600;
+      font-size: 0.6875rem;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      cursor: pointer;
+      user-select: none;
+      white-space: nowrap;
+    }
+    th:hover { color: var(--accent); }
+    th .sort-arrow { margin-left: 0.25rem; font-size: 0.625rem; }
+    td {
+      padding: 0.5rem 0.75rem;
+      border-bottom: 1px solid rgba(51,65,85,0.5);
+      white-space: nowrap;
+    }
+    tr:last-child td { border-bottom: none; }
+    tr:hover td { background: rgba(20,184,166,0.04); }
+    .dot {
+      display: inline-block;
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      vertical-align: middle;
+    }
+    .dot.green { background: var(--green); }
+    .dot.red { background: var(--red); }
+    .dot.amber { background: var(--amber); }
+    .filename { max-width: 260px; overflow: hidden; text-overflow: ellipsis; }
+    .filename a { color: var(--text); text-decoration: none; }
+    .filename a:hover { color: var(--accent-light); text-decoration: underline; }
+    .category-badge {
+      display: inline-block;
+      background: rgba(20,184,166,0.12);
+      color: var(--accent-light);
+      padding: 0.125rem 0.5rem;
+      border-radius: 9999px;
+      font-size: 0.6875rem;
+    }
+    .table-empty {
+      text-align: center;
+      padding: 2rem;
+      color: var(--text-muted);
+      font-size: 0.875rem;
+    }
+
+    /* Remedies panel */
+    .remedies {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 0.625rem;
+      padding: 1.25rem;
+      margin-bottom: 1.25rem;
+    }
+    .remedies h2 { font-size: 0.9375rem; font-weight: 600; margin-bottom: 0.75rem; }
+    .remedy-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0.5rem 0;
+      border-bottom: 1px solid rgba(51,65,85,0.3);
+      font-size: 0.8125rem;
+    }
+    .remedy-row:last-child { border-bottom: none; }
+    .remedy-label { color: var(--text-muted); }
+    .remedy-count { font-weight: 600; color: var(--amber); margin: 0 0.5rem; }
+    .remedy-action {
+      font-family: 'SF Mono', 'Fira Code', monospace;
+      font-size: 0.75rem;
+      background: rgba(255,255,255,0.05);
+      padding: 0.125rem 0.5rem;
+      border-radius: 0.25rem;
+      color: var(--text-muted);
+    }
+
+    /* Sync history */
+    .sync-history {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 0.625rem;
+      padding: 1.25rem;
+      margin-bottom: 2rem;
+    }
+    .sync-history h2 { font-size: 0.9375rem; font-weight: 600; margin-bottom: 0.75rem; }
+    .sync-row {
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+      padding: 0.375rem 0;
+      font-size: 0.8125rem;
+      border-bottom: 1px solid rgba(51,65,85,0.3);
+    }
+    .sync-row:last-child { border-bottom: none; }
+    .sync-time { color: var(--text-muted); width: 150px; flex-shrink: 0; font-size: 0.75rem; }
+    .sync-status { width: 70px; flex-shrink: 0; font-weight: 600; }
+    .sync-status.ok { color: var(--green); }
+    .sync-status.fail { color: var(--red); }
+    .sync-trigger { color: var(--text-muted); font-size: 0.75rem; }
+    .sync-dur { color: var(--text-muted); font-size: 0.75rem; }
+
+    /* Footer */
+    footer {
+      padding: 1rem 0;
+      border-top: 1px solid var(--border);
+      text-align: center;
+      font-size: 0.75rem;
+      color: var(--text-muted);
+    }
+    footer a { color: var(--text-muted); text-decoration: none; }
+    footer a:hover { color: var(--accent-light); }
+
+    /* Responsive */
+    @media (max-width: 768px) {
+      .cards { grid-template-columns: repeat(2, 1fr); }
+      .funnel-label { width: 70px; font-size: 0.75rem; }
+      .filename { max-width: 140px; }
+    }
+    @media (max-width: 480px) {
+      .cards { grid-template-columns: 1fr 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <!-- Auth gate (shown if no token) -->
+    <div id="auth-gate" class="auth-gate" style="display:none">
+      <div class="logo">onco<span>files</span> dashboard</div>
+      <p style="color:var(--text-muted);font-size:0.875rem">Enter your bearer token to continue</p>
+      <input id="token-input" type="password" placeholder="Bearer token">
+      <button onclick="submitToken()">Connect</button>
+    </div>
+
+    <!-- Main dashboard (shown when authenticated) -->
+    <div id="dashboard" style="display:none">
+      <header>
+        <div class="logo">onco<span>files</span> <span style="color:var(--text-muted);font-weight:400;font-size:0.9375rem">dashboard</span></div>
+        <div class="header-right">
+          <span class="version" id="version-label"></span>
+          <button class="refresh-btn" onclick="refresh()">Refresh</button>
+        </div>
+      </header>
+
+      <div id="error-banner" class="error-banner">
+        <span id="error-text"></span>
+        <button class="refresh-btn" onclick="refresh()" style="margin-left:1rem">Retry</button>
+      </div>
+
+      <!-- Summary cards -->
+      <div class="cards" id="summary-cards">
+        <div class="card"><div class="value" id="card-total">-</div><div class="label">Total</div></div>
+        <div class="card"><div class="value" id="card-complete">-</div><div class="label">Complete</div></div>
+        <div class="card warning"><div class="value" id="card-gaps">-</div><div class="label">With Gaps</div></div>
+        <div class="card"><div class="value" id="card-synced">-</div><div class="label">Synced</div></div>
+        <div class="card"><div class="value" id="card-rss">-</div><div class="label">RSS MB</div></div>
+      </div>
+
+      <!-- Pipeline funnel -->
+      <div class="funnel" id="funnel">
+        <h2>Pipeline Funnel</h2>
+        <div id="funnel-rows"></div>
+      </div>
+
+      <!-- Filters -->
+      <div class="filters" id="filters">
+        <span class="pill active" data-filter="all">All</span>
+        <span class="pill" data-filter="incomplete">Incomplete</span>
+        <span class="pill" data-filter="missing_ocr">Missing OCR</span>
+        <span class="pill" data-filter="missing_ai">Missing AI</span>
+        <span class="pill" data-filter="missing_metadata">Missing Meta</span>
+        <span class="pill" data-filter="not_synced">Not Synced</span>
+        <span class="pill" data-filter="not_renamed">Not Renamed</span>
+      </div>
+
+      <!-- Document table -->
+      <div class="table-wrap">
+        <table id="doc-table">
+          <thead>
+            <tr>
+              <th data-sort="filename">Filename <span class="sort-arrow"></span></th>
+              <th data-sort="category">Category <span class="sort-arrow"></span></th>
+              <th data-sort="date">Date <span class="sort-arrow"></span></th>
+              <th>OCR</th>
+              <th>AI</th>
+              <th>Meta</th>
+              <th>Sync</th>
+              <th>Name</th>
+            </tr>
+          </thead>
+          <tbody id="doc-tbody">
+            <tr><td colspan="8" class="table-empty">Loading...</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <!-- Remedies -->
+      <div class="remedies" id="remedies-panel" style="display:none">
+        <h2>Errors &amp; Remedies</h2>
+        <div id="remedies-rows"></div>
+      </div>
+
+      <!-- Sync history -->
+      <div class="sync-history">
+        <h2>Recent Syncs</h2>
+        <div id="sync-rows"><div style="padding:0.5rem 0;color:var(--text-muted);font-size:0.8125rem">Loading...</div></div>
+      </div>
+
+      <footer>
+        <a href="/">Oncofiles</a> &middot; <a href="/health">Health</a> &middot; <a href="https://github.com/instarea-sk/oncofiles">GitHub</a>
+      </footer>
+    </div>
+  </div>
+
+  <script>
+    /* All data rendered via safe DOM methods — textContent for strings, createElement for structure.
+       The esc() helper is used only as a safety net for the few cases where we build HTML strings
+       from our own authenticated API responses (numeric/boolean fields). */
+
+    let TOKEN = '';
+    let currentFilter = 'all';
+    let sortCol = 'filename';
+    let sortAsc = true;
+    let docsData = [];
+    let autoRefreshTimer = null;
+
+    // ── Helpers ──────────────────────────────────────────────────────────
+
+    /** HTML-escape a string (safety net for API data rendered in HTML context). */
+    function esc(s) {
+      const d = document.createElement('div');
+      d.textContent = s || '';
+      return d.innerHTML;
+    }
+
+    /** Create a status dot element. */
+    function makeDot(value) {
+      const span = document.createElement('span');
+      span.className = 'dot ' + (value ? 'green' : 'red');
+      return span;
+    }
+
+    /** Clear all children of an element. */
+    function clearEl(el) {
+      while (el.firstChild) el.removeChild(el.firstChild);
+    }
+
+    // ── Init ─────────────────────────────────────────────────────────────
+
+    (function init() {
+      const params = new URLSearchParams(window.location.search);
+      const urlToken = params.get('token');
+      if (urlToken) {
+        TOKEN = urlToken;
+        sessionStorage.setItem('oncofiles_token', urlToken);
+        window.history.replaceState({}, '', window.location.pathname);
+      } else {
+        TOKEN = sessionStorage.getItem('oncofiles_token') || '';
+      }
+      if (TOKEN) {
+        showDashboard();
+      } else {
+        document.getElementById('auth-gate').style.display = 'flex';
+      }
+    })();
+
+    function submitToken() {
+      const input = document.getElementById('token-input');
+      TOKEN = input.value.trim();
+      if (!TOKEN) return;
+      sessionStorage.setItem('oncofiles_token', TOKEN);
+      showDashboard();
+    }
+
+    function showDashboard() {
+      document.getElementById('auth-gate').style.display = 'none';
+      document.getElementById('dashboard').style.display = 'block';
+      refresh();
+      if (autoRefreshTimer) clearInterval(autoRefreshTimer);
+      autoRefreshTimer = setInterval(refresh, 60000);
+    }
+
+    function showError(msg) {
+      const banner = document.getElementById('error-banner');
+      document.getElementById('error-text').textContent = msg;
+      banner.classList.add('visible');
+    }
+
+    function hideError() {
+      document.getElementById('error-banner').classList.remove('visible');
+    }
+
+    // ── API ──────────────────────────────────────────────────────────────
+
+    async function apiFetch(url) {
+      const resp = await fetch(url, {
+        headers: { 'Authorization': 'Bearer ' + TOKEN }
+      });
+      if (resp.status === 401) {
+        sessionStorage.removeItem('oncofiles_token');
+        TOKEN = '';
+        document.getElementById('dashboard').style.display = 'none';
+        document.getElementById('auth-gate').style.display = 'flex';
+        throw new Error('Unauthorized');
+      }
+      if (!resp.ok) throw new Error('HTTP ' + resp.status);
+      return resp.json();
+    }
+
+    async function refresh() {
+      hideError();
+      try {
+        const [status, docs] = await Promise.all([
+          apiFetch('/status'),
+          apiFetch('/api/documents?filter=' + encodeURIComponent(currentFilter) + '&limit=200')
+        ]);
+        renderStatus(status);
+        renderDocs(docs);
+      } catch (e) {
+        if (e.message !== 'Unauthorized') {
+          showError('Failed to load data: ' + e.message);
+        }
+      }
+    }
+
+    // ── Renderers ────────────────────────────────────────────────────────
+
+    function renderStatus(s) {
+      document.getElementById('version-label').textContent = 'v' + (s.version || '?');
+      const h = s.document_health || {};
+      document.getElementById('card-total').textContent = h.total || 0;
+      document.getElementById('card-synced').textContent = h.synced || 0;
+      document.getElementById('card-rss').textContent = s.memory_rss_mb || '-';
+
+      // Sync history
+      const syncEl = document.getElementById('sync-rows');
+      clearEl(syncEl);
+      const syncs = s.recent_syncs || [];
+      if (syncs.length === 0) {
+        const empty = document.createElement('div');
+        empty.style.cssText = 'padding:0.5rem 0;color:var(--text-muted);font-size:0.8125rem';
+        empty.textContent = 'No recent syncs';
+        syncEl.appendChild(empty);
+      } else {
+        syncs.forEach(function(sc) {
+          const row = document.createElement('div');
+          row.className = 'sync-row';
+
+          const time = document.createElement('span');
+          time.className = 'sync-time';
+          var ts = sc.started_at || '';
+          if (ts && !ts.endsWith('Z') && !ts.includes('+')) ts += 'Z';
+          time.textContent = ts ? new Date(ts).toLocaleString() : '-';
+          row.appendChild(time);
+
+          const status = document.createElement('span');
+          status.className = 'sync-status ' + (sc.status === 'completed' ? 'ok' : 'fail');
+          status.textContent = sc.status || '-';
+          row.appendChild(status);
+
+          const trigger = document.createElement('span');
+          trigger.className = 'sync-trigger';
+          trigger.textContent = sc.trigger || '-';
+          row.appendChild(trigger);
+
+          const dur = document.createElement('span');
+          dur.className = 'sync-dur';
+          dur.textContent = sc.duration_s ? sc.duration_s + 's' : '-';
+          row.appendChild(dur);
+
+          if (sc.errors) {
+            const err = document.createElement('span');
+            err.style.cssText = 'color:var(--red);font-size:0.75rem';
+            err.textContent = sc.errors + ' err';
+            row.appendChild(err);
+          }
+
+          syncEl.appendChild(row);
+        });
+      }
+    }
+
+    function renderDocs(data) {
+      const summary = data.summary || {};
+      const total = summary.total || 0;
+      const fc = summary.fully_complete || 0;
+      const gaps = total - fc;
+
+      document.getElementById('card-complete').textContent = fc;
+      document.getElementById('card-gaps').textContent = gaps;
+
+      // Pipeline funnel
+      var stages = [
+        { label: 'Total', count: total },
+        { label: 'OCR', count: summary.with_ocr || 0 },
+        { label: 'AI Summary', count: summary.with_ai || 0 },
+        { label: 'Metadata', count: summary.with_metadata || 0 },
+        { label: 'Synced', count: summary.synced || 0 },
+        { label: 'Named', count: summary.standard_named || 0 },
+        { label: 'Complete', count: fc, complete: true }
+      ];
+      var funnelEl = document.getElementById('funnel-rows');
+      clearEl(funnelEl);
+      stages.forEach(function(st) {
+        var pct = total > 0 ? (st.count / total * 100) : 0;
+        var row = document.createElement('div');
+        row.className = 'funnel-row';
+
+        var label = document.createElement('span');
+        label.className = 'funnel-label';
+        label.textContent = st.label;
+        row.appendChild(label);
+
+        var barBg = document.createElement('div');
+        barBg.className = 'funnel-bar-bg';
+        var bar = document.createElement('div');
+        bar.className = st.complete ? 'funnel-bar complete' : 'funnel-bar';
+        bar.style.width = pct + '%';
+        barBg.appendChild(bar);
+        row.appendChild(barBg);
+
+        var count = document.createElement('span');
+        count.className = 'funnel-count';
+        count.textContent = st.count;
+        row.appendChild(count);
+
+        funnelEl.appendChild(row);
+      });
+
+      // Store for sorting
+      docsData = data.documents || [];
+      renderTable();
+      renderRemedies(summary);
+    }
+
+    function renderTable() {
+      var tbody = document.getElementById('doc-tbody');
+      clearEl(tbody);
+
+      if (docsData.length === 0) {
+        var emptyRow = document.createElement('tr');
+        var emptyTd = document.createElement('td');
+        emptyTd.setAttribute('colspan', '8');
+        emptyTd.className = 'table-empty';
+        emptyTd.textContent = 'No documents match this filter';
+        emptyRow.appendChild(emptyTd);
+        tbody.appendChild(emptyRow);
+        return;
+      }
+
+      // Sort
+      var sorted = docsData.slice().sort(function(a, b) {
+        var va = a[sortCol] || '';
+        var vb = b[sortCol] || '';
+        if (typeof va === 'string') va = va.toLowerCase();
+        if (typeof vb === 'string') vb = vb.toLowerCase();
+        if (va < vb) return sortAsc ? -1 : 1;
+        if (va > vb) return sortAsc ? 1 : -1;
+        return 0;
+      });
+
+      sorted.forEach(function(d) {
+        var tr = document.createElement('tr');
+
+        // Filename
+        var tdFn = document.createElement('td');
+        tdFn.className = 'filename';
+        if (d.gdrive_id) {
+          var a = document.createElement('a');
+          a.href = 'https://drive.google.com/file/d/' + encodeURIComponent(d.gdrive_id) + '/view';
+          a.target = '_blank';
+          a.rel = 'noopener';
+          a.textContent = d.filename || '';
+          tdFn.appendChild(a);
+        } else {
+          tdFn.textContent = d.filename || '';
+        }
+        tr.appendChild(tdFn);
+
+        // Category
+        var tdCat = document.createElement('td');
+        var badge = document.createElement('span');
+        badge.className = 'category-badge';
+        badge.textContent = d.category || '';
+        tdCat.appendChild(badge);
+        tr.appendChild(tdCat);
+
+        // Date
+        var tdDate = document.createElement('td');
+        tdDate.textContent = d.date || '-';
+        tr.appendChild(tdDate);
+
+        // Status dots: OCR, AI, Meta, Sync, Name
+        var fields = ['has_ocr', 'has_ai', 'has_metadata', 'is_synced', 'is_standard_name'];
+        fields.forEach(function(f) {
+          var td = document.createElement('td');
+          td.appendChild(makeDot(d[f]));
+          tr.appendChild(td);
+        });
+
+        tbody.appendChild(tr);
+      });
+    }
+
+    function renderRemedies(summary) {
+      var panel = document.getElementById('remedies-panel');
+      var rowsEl = document.getElementById('remedies-rows');
+      clearEl(rowsEl);
+
+      var total = summary.total || 0;
+      var gaps = [];
+
+      function check(label, count, tool) {
+        var missing = total - (count || 0);
+        if (missing > 0) gaps.push({ label: label, missing: missing, tool: tool });
+      }
+
+      check('Missing OCR', summary.with_ocr, 'enhance_documents');
+      check('Missing AI Summary', summary.with_ai, 'enhance_documents');
+      check('Missing Metadata', summary.with_metadata, 'extract_all_metadata');
+      check('Not Synced', summary.synced, 'gdrive_sync');
+      check('Not Standard Named', summary.standard_named, 'rename_documents_to_standard');
+      check('Missing Date', summary.with_date, 'extract_document_metadata');
+      check('Missing Institution', summary.with_institution, 'extract_document_metadata');
+
+      if (gaps.length === 0) {
+        panel.style.display = 'none';
+        return;
+      }
+
+      panel.style.display = 'block';
+      gaps.forEach(function(g) {
+        var row = document.createElement('div');
+        row.className = 'remedy-row';
+
+        var lbl = document.createElement('span');
+        lbl.className = 'remedy-label';
+        lbl.textContent = g.label;
+        row.appendChild(lbl);
+
+        var cnt = document.createElement('span');
+        cnt.className = 'remedy-count';
+        cnt.textContent = g.missing;
+        row.appendChild(cnt);
+
+        var act = document.createElement('span');
+        act.className = 'remedy-action';
+        act.textContent = g.tool;
+        row.appendChild(act);
+
+        rowsEl.appendChild(row);
+      });
+    }
+
+    // ── Event Listeners ──────────────────────────────────────────────────
+
+    document.getElementById('filters').addEventListener('click', function(e) {
+      if (!e.target.classList.contains('pill')) return;
+      document.querySelectorAll('.pill').forEach(function(p) { p.classList.remove('active'); });
+      e.target.classList.add('active');
+      currentFilter = e.target.dataset.filter;
+      refresh();
+    });
+
+    document.querySelectorAll('th[data-sort]').forEach(function(th) {
+      th.addEventListener('click', function() {
+        var col = th.dataset.sort;
+        if (sortCol === col) {
+          sortAsc = !sortAsc;
+        } else {
+          sortCol = col;
+          sortAsc = true;
+        }
+        document.querySelectorAll('th .sort-arrow').forEach(function(a) { a.textContent = ''; });
+        th.querySelector('.sort-arrow').textContent = sortAsc ? '\u25B2' : '\u25BC';
+        renderTable();
+      });
+    });
+
+    document.getElementById('token-input').addEventListener('keydown', function(e) {
+      if (e.key === 'Enter') submitToken();
+    });
+  </script>
+</body>
+</html>
