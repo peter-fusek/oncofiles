@@ -102,7 +102,7 @@
       border-radius: 0.75rem;
       padding: 1.5rem;
     }
-    .feature h3 {
+    .feature h2 {
       font-size: 1rem;
       font-weight: 600;
       margin-bottom: 0.5rem;
@@ -170,6 +170,14 @@
       .hero h1 { font-size: 1.75rem; }
       .hero { padding: 3rem 0 2rem; }
       .stats { gap: 2rem; }
+      header .container { flex-wrap: wrap; gap: 0.5rem; }
+      nav a { margin-left: 1rem; font-size: 0.8125rem; }
+    }
+    @media (max-width: 400px) {
+      .hero h1 { font-size: 1.5rem; }
+      .stats { gap: 1.5rem; }
+      .stat .number { font-size: 1.5rem; }
+      nav a { margin-left: 0.75rem; }
     }
   </style>
 </head>
@@ -196,27 +204,27 @@
 
     <section class="container features">
       <div class="feature">
-        <h3>Document Management</h3>
+        <h2>Document Management</h2>
         <p>15 medical categories. Upload, organize, version, and search your records with AI-extracted metadata.</p>
       </div>
       <div class="feature">
-        <h3>AI Enhancement</h3>
+        <h2>AI Enhancement</h2>
         <p>Every document gets automatic OCR, summaries, tags, diagnoses, and structured metadata extraction.</p>
       </div>
       <div class="feature">
-        <h3>Google Drive Sync</h3>
+        <h2>Google Drive Sync</h2>
         <p>Bidirectional sync with auto-rename, folder organization, and incremental updates every 30 minutes.</p>
       </div>
       <div class="feature">
-        <h3>Lab Tracking</h3>
+        <h2>Lab Tracking</h2>
         <p>Store lab values, track trends over time, and get pre-cycle safety checks for treatment protocols.</p>
       </div>
       <div class="feature">
-        <h3>Pipeline Dashboard</h3>
+        <h2>Pipeline Dashboard</h2>
         <p>Visual dashboard with document status matrix, pipeline funnel, sync history, and remediation guidance. Google Sign-In.</p>
       </div>
       <div class="feature">
-        <h3>Privacy First</h3>
+        <h2>Privacy First</h2>
         <p>Self-hosted MCP server. Works with Claude and any MCP client. Your data stays on your infrastructure.</p>
       </div>
     </section>
