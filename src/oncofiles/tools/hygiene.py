@@ -657,15 +657,17 @@ async def _build_document_matrix(db, filter_param: str = "all", limit: int = 200
             "has_date": doc.document_date is not None,
             "has_institution": doc.institution is not None,
         }
-        status["fully_complete"] = all([
-            status["has_ocr"],
-            status["has_ai"],
-            status["has_metadata"],
-            status["is_synced"],
-            status["is_standard"],
-            status["has_date"],
-            status["has_institution"],
-        ])
+        status["fully_complete"] = all(
+            [
+                status["has_ocr"],
+                status["has_ai"],
+                status["has_metadata"],
+                status["is_synced"],
+                status["is_standard"],
+                status["has_date"],
+                status["has_institution"],
+            ]
+        )
         doc_statuses.append(status)
 
     for s in doc_statuses:
@@ -683,22 +685,24 @@ async def _build_document_matrix(db, filter_param: str = "all", limit: int = 200
         if skip:
             continue
 
-        rows.append({
-            "id": doc.id,
-            "filename": doc.filename[:60],
-            "category": doc.category.value,
-            "date": str(doc.document_date) if doc.document_date else None,
-            "institution": doc.institution,
-            "gdrive_id": doc.gdrive_id,
-            "has_ocr": s["has_ocr"],
-            "has_ai": s["has_ai"],
-            "has_metadata": s["has_metadata"],
-            "has_date": s["has_date"],
-            "has_institution": s["has_institution"],
-            "is_synced": s["is_synced"],
-            "is_standard_name": s["is_standard"],
-            "fully_complete": s["fully_complete"],
-        })
+        rows.append(
+            {
+                "id": doc.id,
+                "filename": doc.filename[:60],
+                "category": doc.category.value,
+                "date": str(doc.document_date) if doc.document_date else None,
+                "institution": doc.institution,
+                "gdrive_id": doc.gdrive_id,
+                "has_ocr": s["has_ocr"],
+                "has_ai": s["has_ai"],
+                "has_metadata": s["has_metadata"],
+                "has_date": s["has_date"],
+                "has_institution": s["has_institution"],
+                "is_synced": s["is_synced"],
+                "is_standard_name": s["is_standard"],
+                "fully_complete": s["fully_complete"],
+            }
+        )
         if len(rows) >= limit:
             break
 
