@@ -483,9 +483,7 @@ async def sync_to_gdrive(
                         _enhance_document(db, doc, files, gdrive),
                         timeout=60.0,
                     )
-                    logger.info(
-                        "sync_to_gdrive: post-rename enhanced doc %d", doc_id
-                    )
+                    logger.info("sync_to_gdrive: post-rename enhanced doc %d", doc_id)
                 except TimeoutError:
                     logger.warning(
                         "sync_to_gdrive: post-rename enhance timed out for doc %d",
@@ -506,9 +504,7 @@ async def sync_to_gdrive(
                 all_gaps.extend(gaps)
             if all_gaps:
                 stats["pipeline_gaps"] = all_gaps
-                logger.warning(
-                    "sync_to_gdrive: %d pipeline gaps after rename", len(all_gaps)
-                )
+                logger.warning("sync_to_gdrive: %d pipeline gaps after rename", len(all_gaps))
 
         # Clean up orphaned OCR files (old names from before bilingual rename)
         try:
