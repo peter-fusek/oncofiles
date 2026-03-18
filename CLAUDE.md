@@ -32,6 +32,7 @@ uv run ruff check
 ## Key commands
 
 - `uv run oncofiles-mcp` — run MCP server (stdio)
+- `MCP_BEARER_TOKEN=test MCP_TRANSPORT=streamable-http uv run oncofiles-mcp` — run HTTP server locally
 - `uv run pytest` — run tests
 - `uv run ruff check --fix` — lint and auto-fix
 - `uv run ruff format` — format code
