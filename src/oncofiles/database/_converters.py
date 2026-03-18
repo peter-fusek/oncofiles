@@ -14,6 +14,8 @@ from oncofiles.models import (
     DocumentCategory,
     LabValue,
     OAuthToken,
+    PromptCallType,
+    PromptLogEntry,
     ResearchEntry,
     TreatmentEvent,
 )
@@ -179,4 +181,24 @@ def _row_to_document(row: Any) -> Document:
         ),
         version=row_dict.get("version", 1) or 1,
         previous_version_id=row_dict.get("previous_version_id"),
+    )
+
+
+def _row_to_prompt_log(row: Any) -> PromptLogEntry:
+    """Convert a database row to a PromptLogEntry."""
+    return PromptLogEntry(
+        id=row["id"],
+        call_type=PromptCallType(row["call_type"]),
+        document_id=row["document_id"],
+        model=row["model"],
+        system_prompt=row["system_prompt"],
+        user_prompt=row["user_prompt"],
+        raw_response=row["raw_response"],
+        input_tokens=row["input_tokens"],
+        output_tokens=row["output_tokens"],
+        duration_ms=row["duration_ms"],
+        result_summary=row["result_summary"],
+        status=row["status"],
+        error_message=row["error_message"],
+        created_at=(datetime.fromisoformat(row["created_at"]) if row["created_at"] else None),
     )

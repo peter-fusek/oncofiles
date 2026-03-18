@@ -275,3 +275,46 @@ class LabTrendQuery(BaseModel):
     date_from: date | None = None
     date_to: date | None = None
     limit: int = Field(default=50, ge=1, le=200)
+
+
+# ── Prompt observability ─────────────────────────────────────────────────────
+
+
+class PromptCallType(StrEnum):
+    """Types of AI calls made during document processing."""
+
+    OCR = "ocr"
+    SUMMARY_TAGS = "summary_tags"
+    STRUCTURED_METADATA = "structured_metadata"
+    FILENAME_DESCRIPTION = "filename_description"
+
+
+class PromptLogEntry(BaseModel):
+    """A single logged AI prompt call."""
+
+    id: int | None = None
+    call_type: PromptCallType
+    document_id: int | None = None
+    model: str
+    system_prompt: str = ""
+    user_prompt: str = ""
+    raw_response: str = ""
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    duration_ms: int | None = None
+    result_summary: str = ""
+    status: str = "ok"
+    error_message: str | None = None
+    created_at: datetime | None = None
+
+
+class PromptLogQuery(BaseModel):
+    """Query parameters for prompt log search."""
+
+    call_type: str | None = None
+    document_id: int | None = None
+    status: str | None = None
+    date_from: date | None = None
+    date_to: date | None = None
+    text: str | None = None
+    limit: int = Field(default=50, ge=1, le=200)

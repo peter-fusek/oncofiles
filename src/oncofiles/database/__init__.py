@@ -10,6 +10,7 @@ from ._clinical import ClinicalMixin
 from ._conversations import ConversationMixin
 from ._documents import DocumentMixin
 from ._operational import OperationalMixin
+from ._prompt_log import PromptLogMixin
 
 
 class Database(
@@ -17,6 +18,7 @@ class Database(
     ConversationMixin,
     ClinicalMixin,
     OperationalMixin,
+    PromptLogMixin,
     DatabaseBase,
 ):
     """Async database for document metadata. Uses aiosqlite locally, Turso in cloud."""

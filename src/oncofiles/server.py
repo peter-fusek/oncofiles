@@ -1012,6 +1012,55 @@ async def api_documents(request: Request) -> JSONResponse:
         return JSONResponse({"error": "internal error"}, status_code=500)
 
 
+@mcp.custom_route("/api/prompt-log", methods=["GET"])
+async def api_prompt_log(request: Request) -> JSONResponse:
+    """Prompt observability API. Returns prompt log entries and stats."""
+    err = _check_dashboard_auth(request)
+    if err:
+        return err
+
+    try:
+        from oncofiles.models import PromptLogQuery
+
+        db_inst: Database = request.app.state.fastmcp_server._lifespan_result["db"]
+        query = PromptLogQuery(
+            call_type=request.query_params.get("call_type"),
+            document_id=(
+                int(request.query_params["document_id"])
+                if "document_id" in request.query_params
+                else None
+            ),
+            text=request.query_params.get("text"),
+        )
+        try:
+            query.limit = min(int(request.query_params.get("limit", "100")), 200)
+        except (ValueError, TypeError):
+            query.limit = 100
+
+        entries = await db_inst.search_prompt_log(query)
+        stats = await db_inst.get_prompt_log_stats()
+
+        items = [
+            {
+                "id": e.id,
+                "call_type": e.call_type.value,
+                "document_id": e.document_id,
+                "model": e.model,
+                "input_tokens": e.input_tokens,
+                "output_tokens": e.output_tokens,
+                "duration_ms": e.duration_ms,
+                "result_summary": e.result_summary,
+                "status": e.status,
+                "created_at": e.created_at.isoformat() if e.created_at else None,
+            }
+            for e in entries
+        ]
+        return JSONResponse({"entries": items, "stats": stats})
+    except Exception:
+        logger.exception("API prompt-log endpoint error")
+        return JSONResponse({"error": "internal error"}, status_code=500)
+
+
 @mcp.custom_route("/oauth/callback", methods=["GET"])
 async def oauth_callback(request: Request) -> JSONResponse:
     """Handle Google OAuth 2.0 redirect callback."""
@@ -1071,6 +1120,7 @@ from oncofiles.tools import (  # noqa: E402
     lab_trends,
     naming,
     patient,
+    prompt_log,
     research,
     treatment,
 )
@@ -1091,6 +1141,7 @@ naming.register(mcp)
 patient.register(mcp)
 hygiene.register(mcp)
 db_query.register(mcp)
+prompt_log.register(mcp)
 resources.register(mcp)
 
 # ── Backward-compatible re-exports for tests ─────────────────────────────────

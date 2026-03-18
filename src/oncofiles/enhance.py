@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import json
 import logging
+import re
+import time
 
 import anthropic
 
 from oncofiles.config import ANTHROPIC_API_KEY
+from oncofiles.prompt_logger import log_ai_call
 
 logger = logging.getLogger(__name__)
 
@@ -74,11 +77,18 @@ ENHANCE_SYSTEM_PROMPT = (
 )
 
 
-def enhance_document_text(text: str) -> tuple[str, str]:
+def enhance_document_text(
+    text: str,
+    *,
+    db=None,
+    document_id: int | None = None,
+) -> tuple[str, str]:
     """Generate AI summary and tags from document text.
 
     Args:
         text: Extracted text from the document (OCR or native PDF).
+        db: Database instance for prompt logging (optional).
+        document_id: Document ID for prompt logging (optional).
 
     Returns:
         Tuple of (summary, tags_json).
@@ -87,23 +97,32 @@ def enhance_document_text(text: str) -> tuple[str, str]:
         return "", "[]"
 
     client = _get_client()
-
-    # Truncate to ~8k chars to stay within Haiku context cheaply
     truncated = text[:8000]
+    user_prompt = f"Document text:\n\n{truncated}"
 
+    start = time.perf_counter()
     response = client.messages.create(
         model=ENHANCE_MODEL,
         max_tokens=512,
         system=ENHANCE_SYSTEM_PROMPT,
-        messages=[
-            {
-                "role": "user",
-                "content": f"Document text:\n\n{truncated}",
-            }
-        ],
+        messages=[{"role": "user", "content": user_prompt}],
     )
+    duration_ms = int((time.perf_counter() - start) * 1000)
 
     raw = response.content[0].text if response.content else "{}"
+
+    log_ai_call(
+        db,
+        call_type="summary_tags",
+        document_id=document_id,
+        model=ENHANCE_MODEL,
+        system_prompt=ENHANCE_SYSTEM_PROMPT,
+        user_prompt=user_prompt,
+        raw_response=raw,
+        input_tokens=getattr(response.usage, "input_tokens", None),
+        output_tokens=getattr(response.usage, "output_tokens", None),
+        duration_ms=duration_ms,
+    )
 
     try:
         parsed = json.loads(_strip_markdown_fencing(raw))
@@ -134,11 +153,18 @@ METADATA_SYSTEM_PROMPT = (
 )
 
 
-def extract_structured_metadata(text: str) -> dict:
+def extract_structured_metadata(
+    text: str,
+    *,
+    db=None,
+    document_id: int | None = None,
+) -> dict:
     """Extract structured medical metadata from document text.
 
     Args:
         text: Extracted text from the document.
+        db: Database instance for prompt logging (optional).
+        document_id: Document ID for prompt logging (optional).
 
     Returns:
         Dict with structured metadata fields.
@@ -157,24 +183,34 @@ def extract_structured_metadata(text: str) -> dict:
 
     client = _get_client()
     truncated = text[:8000]
+    user_prompt = f"Document text:\n\n{truncated}"
 
+    start = time.perf_counter()
     response = client.messages.create(
         model=ENHANCE_MODEL,
         max_tokens=2048,
         system=METADATA_SYSTEM_PROMPT,
-        messages=[
-            {
-                "role": "user",
-                "content": f"Document text:\n\n{truncated}",
-            }
-        ],
+        messages=[{"role": "user", "content": user_prompt}],
     )
+    duration_ms = int((time.perf_counter() - start) * 1000)
 
     raw = response.content[0].text if response.content else "{}"
 
+    log_ai_call(
+        db,
+        call_type="structured_metadata",
+        document_id=document_id,
+        model=ENHANCE_MODEL,
+        system_prompt=METADATA_SYSTEM_PROMPT,
+        user_prompt=user_prompt,
+        raw_response=raw,
+        input_tokens=getattr(response.usage, "input_tokens", None),
+        output_tokens=getattr(response.usage, "output_tokens", None),
+        duration_ms=duration_ms,
+    )
+
     try:
         parsed = json.loads(_strip_markdown_fencing(raw))
-        # Validate expected keys with defaults
         return {
             "document_type": parsed.get("document_type", "other"),
             "findings": parsed.get("findings", []),
@@ -212,39 +248,52 @@ FILENAME_DESC_SYSTEM_PROMPT = (
 )
 
 
-def generate_filename_description(text: str) -> str:
+def generate_filename_description(
+    text: str,
+    *,
+    db=None,
+    document_id: int | None = None,
+) -> str:
     """Generate a short CamelCase English description for a medical document filename.
 
     Args:
         text: Extracted text from the document (OCR or native PDF).
+        db: Database instance for prompt logging (optional).
+        document_id: Document ID for prompt logging (optional).
 
     Returns:
-        CamelCase English description, max 60 chars (e.g. "BloodResultsBeforeCycle2DrPorsok").
+        CamelCase English description, max 60 chars.
     """
     if not text.strip():
         return ""
 
     client = _get_client()
     truncated = text[:4000]
+    user_prompt = f"Document text:\n\n{truncated}"
 
+    start = time.perf_counter()
     response = client.messages.create(
         model=ENHANCE_MODEL,
         max_tokens=100,
         system=FILENAME_DESC_SYSTEM_PROMPT,
-        messages=[
-            {
-                "role": "user",
-                "content": f"Document text:\n\n{truncated}",
-            }
-        ],
+        messages=[{"role": "user", "content": user_prompt}],
     )
+    duration_ms = int((time.perf_counter() - start) * 1000)
 
     raw = response.content[0].text.strip() if response.content else ""
 
-    # Clean: remove quotes, spaces, special chars
-    import re
+    log_ai_call(
+        db,
+        call_type="filename_description",
+        document_id=document_id,
+        model=ENHANCE_MODEL,
+        system_prompt=FILENAME_DESC_SYSTEM_PROMPT,
+        user_prompt=user_prompt,
+        raw_response=raw,
+        input_tokens=getattr(response.usage, "input_tokens", None),
+        output_tokens=getattr(response.usage, "output_tokens", None),
+        duration_ms=duration_ms,
+    )
 
     cleaned = re.sub(r"[^a-zA-Z0-9]", "", raw)
-
-    # Truncate to 60 chars
     return cleaned[:60]

@@ -943,7 +943,7 @@ async def _export_ocr_texts(
                                 try:
                                     img = MImage(data=pix.tobytes("jpeg"), format="jpeg")
                                     img = _resize_image_if_needed(img)
-                                    text = extract_text_from_image(img)
+                                    text = extract_text_from_image(img, db=db, document_id=doc.id)
                                     await db.save_ocr_page(doc.id, page_num, text, OCR_MODEL)
                                 finally:
                                     del pix  # Free large pixmap buffer
@@ -958,7 +958,7 @@ async def _export_ocr_texts(
                     fmt = doc.mime_type.split("/")[1]
                     img = MImage(data=content_bytes, format=fmt)
                     img = _resize_image_if_needed(img)
-                    text = extract_text_from_image(img)
+                    text = extract_text_from_image(img, db=db, document_id=doc.id)
                     await db.save_ocr_page(doc.id, 1, text, OCR_MODEL)
                     stats["extracted"] += 1
                 else:
@@ -1441,7 +1441,7 @@ async def extract_all_metadata(
                 continue
 
             full_text = "\n\n".join(text_parts)
-            metadata = extract_structured_metadata(full_text)
+            metadata = extract_structured_metadata(full_text, db=db, document_id=doc.id)
             await db.update_structured_metadata(doc.id, json.dumps(metadata, ensure_ascii=False))
             logger.info(
                 "extract_all_metadata: doc %d (%s) — metadata extracted",
@@ -1520,13 +1520,13 @@ async def _enhance_document(
         return False
 
     full_text = "\n\n".join(text_parts)
-    summary, tags_json = enhance_document_text(full_text)
+    summary, tags_json = enhance_document_text(full_text, db=db, document_id=doc.id)
     await db.update_document_ai_metadata(doc.id, summary, tags_json)
 
     # Extract structured metadata (diagnoses, medications, findings, etc.)
     metadata = None
     try:
-        metadata = extract_structured_metadata(full_text)
+        metadata = extract_structured_metadata(full_text, db=db, document_id=doc.id)
         await db.update_structured_metadata(doc.id, json.dumps(metadata, ensure_ascii=False))
         logger.info("enhance: doc %d (%s) — structured metadata extracted", doc.id, doc.filename)
     except Exception:
@@ -1568,7 +1568,7 @@ async def _enhance_document(
         # Description: generate English CamelCase description if filename is non-standard
         if not is_standard_format(doc.filename):
             try:
-                desc = generate_filename_description(full_text)
+                desc = generate_filename_description(full_text, db=db, document_id=doc.id)
                 if desc:
                     backfill_description = desc
                     logger.info("enhance: doc %d — backfill description=%s", doc.id, desc)

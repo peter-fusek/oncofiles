@@ -257,7 +257,7 @@ async def _ensure_ocr_text(
     texts = []
     for page_num, image in enumerate(images, start=1):
         resized = _resize_image_if_needed(image)
-        text = extract_text_from_image(resized)
+        text = extract_text_from_image(resized, db=db, document_id=doc.id)
         await db.save_ocr_page(doc.id, page_num, text, OCR_MODEL)
         texts.append(text)
 

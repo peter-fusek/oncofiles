@@ -468,6 +468,13 @@
         <div id="sync-rows"><div style="padding:0.5rem 0;color:var(--text-muted);font-size:0.8125rem">Loading...</div></div>
       </div>
 
+      <!-- Prompt Log -->
+      <div class="sync-history" id="prompt-log-section">
+        <h2>AI Prompt Log</h2>
+        <div id="prompt-stats" style="display:flex;gap:1rem;flex-wrap:wrap;margin-bottom:0.75rem"></div>
+        <div id="prompt-log-rows"><div style="padding:0.5rem 0;color:var(--text-muted);font-size:0.8125rem">Loading...</div></div>
+      </div>
+
       <footer>
         <a href="/">Oncofiles</a> &middot; <a href="/health">Health</a> &middot; <a href="https://github.com/instarea-sk/oncofiles" rel="noreferrer noopener">GitHub</a>
       </footer>
@@ -686,14 +693,16 @@
       setConnectionState('loading');
       showSkeletons();
       try {
-        const [status, docs] = await Promise.all([
+        const [status, docs, prompts] = await Promise.all([
           apiFetch('/status'),
-          apiFetch('/api/documents?filter=' + encodeURIComponent(currentFilter) + '&limit=200')
+          apiFetch('/api/documents?filter=' + encodeURIComponent(currentFilter) + '&limit=200'),
+          apiFetch('/api/prompt-log?limit=50')
         ]);
         setConnectionState('ok');
         hideSkeletons();
         renderStatus(status);
         renderDocs(docs);
+        renderPromptLog(prompts);
       } catch (e) {
         setConnectionState('offline');
         hideSkeletons();
@@ -957,6 +966,93 @@
           badge.textContent = count;
           pill.appendChild(badge);
         }
+      });
+    }
+
+    function renderPromptLog(data) {
+      var statsEl = document.getElementById('prompt-stats');
+      var rowsEl = document.getElementById('prompt-log-rows');
+      clearEl(statsEl);
+      clearEl(rowsEl);
+
+      // Stats cards
+      var stats = data.stats || {};
+      var totalCalls = 0;
+      var totalIn = 0;
+      var totalOut = 0;
+      Object.keys(stats).forEach(function(ct) {
+        var s = stats[ct];
+        totalCalls += s.count || 0;
+        totalIn += s.total_input_tokens || 0;
+        totalOut += s.total_output_tokens || 0;
+      });
+
+      var statItems = [
+        { label: 'Total Calls', value: totalCalls },
+        { label: 'Input Tokens', value: totalIn.toLocaleString() },
+        { label: 'Output Tokens', value: totalOut.toLocaleString() },
+      ];
+      statItems.forEach(function(si) {
+        var card = document.createElement('span');
+        card.style.cssText = 'font-size:0.75rem;color:var(--text-muted)';
+        var val = document.createElement('strong');
+        val.style.color = 'var(--accent)';
+        val.textContent = si.value;
+        card.appendChild(val);
+        card.appendChild(document.createTextNode(' ' + si.label));
+        statsEl.appendChild(card);
+      });
+
+      // Entry rows
+      var entries = data.entries || [];
+      if (entries.length === 0) {
+        var empty = document.createElement('div');
+        empty.style.cssText = 'padding:0.5rem 0;color:var(--text-muted);font-size:0.8125rem';
+        empty.textContent = 'No prompt log entries yet';
+        rowsEl.appendChild(empty);
+        return;
+      }
+
+      entries.forEach(function(e) {
+        var row = document.createElement('div');
+        row.className = 'sync-row';
+        row.style.cursor = 'pointer';
+
+        var time = document.createElement('span');
+        time.className = 'sync-time';
+        var ts = e.created_at || '';
+        if (ts && !ts.endsWith('Z') && !ts.includes('+')) ts += 'Z';
+        time.textContent = ts ? new Date(ts).toLocaleString() : '-';
+        row.appendChild(time);
+
+        var type = document.createElement('span');
+        type.style.cssText = 'width:120px;flex-shrink:0;font-size:0.75rem';
+        type.textContent = e.call_type || '-';
+        row.appendChild(type);
+
+        var tokens = document.createElement('span');
+        tokens.style.cssText = 'width:80px;flex-shrink:0;font-size:0.75rem;color:var(--text-muted)';
+        tokens.textContent = (e.input_tokens || 0) + '/' + (e.output_tokens || 0) + 't';
+        row.appendChild(tokens);
+
+        var dur = document.createElement('span');
+        dur.className = 'sync-dur';
+        dur.textContent = e.duration_ms ? e.duration_ms + 'ms' : '-';
+        row.appendChild(dur);
+
+        var summary = document.createElement('span');
+        summary.style.cssText = 'flex:1;font-size:0.75rem;color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
+        summary.textContent = e.result_summary || '';
+        row.appendChild(summary);
+
+        if (e.status === 'error') {
+          var err = document.createElement('span');
+          err.style.cssText = 'color:var(--red);font-size:0.75rem';
+          err.textContent = 'ERR';
+          row.appendChild(err);
+        }
+
+        rowsEl.appendChild(row);
       });
     }
 
