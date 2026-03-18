@@ -811,11 +811,16 @@ async def dashboard_verify(request: Request) -> JSONResponse:
     if not MCP_BEARER_TOKEN:
         return JSONResponse({"error": "server not configured for auth"}, status_code=500)
 
+    if not GOOGLE_OAUTH_CLIENT_ID:
+        return JSONResponse({"error": "Google OAuth not configured"}, status_code=500)
+
     # Verify the ID token with Google
     try:
+        from urllib.parse import quote
+
         async with httpx.AsyncClient() as client:
             resp = await client.get(
-                f"https://oauth2.googleapis.com/tokeninfo?id_token={credential}"
+                f"https://oauth2.googleapis.com/tokeninfo?id_token={quote(credential, safe='')}"
             )
         if resp.status_code != 200:
             logger.warning("Google tokeninfo returned %d", resp.status_code)
@@ -825,9 +830,9 @@ async def dashboard_verify(request: Request) -> JSONResponse:
         logger.exception("Google token verification failed")
         return JSONResponse({"error": "token verification failed"}, status_code=500)
 
-    # Check audience matches our client ID
+    # Check audience matches our client ID (mandatory — prevents token from other apps)
     aud = token_info.get("aud", "")
-    if GOOGLE_OAUTH_CLIENT_ID and aud != GOOGLE_OAUTH_CLIENT_ID:
+    if aud != GOOGLE_OAUTH_CLIENT_ID:
         logger.warning("Token audience mismatch: %s != %s", aud, GOOGLE_OAUTH_CLIENT_ID)
         return JSONResponse({"error": "invalid token audience"}, status_code=401)
 
