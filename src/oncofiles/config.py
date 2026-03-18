@@ -48,6 +48,16 @@ PATIENT_CONTEXT_PATH: str = os.environ.get(
     "PATIENT_CONTEXT_PATH", str(DATA_DIR / "patient_context.json")
 )
 
+# Dashboard auth — comma-separated list of allowed Google emails
+DASHBOARD_ALLOWED_EMAILS: list[str] = [
+    e.strip().lower()
+    for e in os.environ.get(
+        "DASHBOARD_ALLOWED_EMAILS",
+        "peterfusek1980@gmail.com,peter.fusek@instarea.sk",
+    ).split(",")
+    if e.strip()
+]
+
 # Localization
 PREFERRED_LANG: str = os.environ.get("ONCOFILES_PREFERRED_LANG", "sk")
 

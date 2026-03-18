@@ -171,7 +171,6 @@ def test_dashboard_route_exists():
 
     assert callable(dashboard)
     source = inspect.getsource(dashboard)
-    assert "token" in source
     assert "HTMLResponse" in source
 
 
@@ -183,8 +182,20 @@ def test_api_documents_route_exists():
 
     assert callable(api_documents)
     source = inspect.getsource(api_documents)
-    assert "_check_bearer" in source
+    assert "_check_dashboard_auth" in source
     assert "_build_document_matrix" in source
+
+
+def test_dashboard_verify_route_exists():
+    """Dashboard verify route is registered on the MCP server."""
+    import inspect
+
+    from oncofiles.server import dashboard_verify
+
+    assert callable(dashboard_verify)
+    source = inspect.getsource(dashboard_verify)
+    assert "tokeninfo" in source
+    assert "DASHBOARD_ALLOWED_EMAILS" in source
 
 
 def test_dashboard_html_exists():
@@ -196,5 +207,78 @@ def test_dashboard_html_exists():
     content = html_path.read_text()
     assert "Oncofiles Dashboard" in content
     assert "pipeline" in content.lower() or "funnel" in content.lower()
-    assert "Bearer" in content
+    assert "google" in content.lower()
     assert "sessionStorage" in content
+
+
+# ── Session tokens ───────────────────────────────────────────────────
+
+
+def test_make_and_verify_session_token():
+    """Session token roundtrip works."""
+    from oncofiles.server import _make_session_token, _verify_session_token
+
+    with patch("oncofiles.server.MCP_BEARER_TOKEN", "test-secret"):
+        token = _make_session_token("user@example.com")
+        email = _verify_session_token(token)
+        assert email == "user@example.com"
+
+
+def test_session_token_rejects_tampered():
+    """Tampered session token is rejected."""
+    from oncofiles.server import _make_session_token, _verify_session_token
+
+    with patch("oncofiles.server.MCP_BEARER_TOKEN", "test-secret"):
+        token = _make_session_token("user@example.com")
+        parts = token.rsplit(".", 1)
+        tampered = parts[0] + "." + "a" * 32
+        assert _verify_session_token(tampered) is None
+
+
+def test_session_token_rejects_expired():
+    """Expired session token is rejected."""
+    from oncofiles.server import _verify_session_token
+
+    with patch("oncofiles.server.MCP_BEARER_TOKEN", "test-secret"):
+        # Craft a token with expiry in the past
+        import hashlib
+        import hmac as _hmac
+
+        email = "user@example.com"
+        expiry = "1000000000"  # year 2001 — definitely expired
+        key = b"test-secret"
+        payload = f"{email}.{expiry}"
+        sig = _hmac.new(key, payload.encode(), hashlib.sha256).hexdigest()[:32]
+        token = f"{payload}.{sig}"
+        assert _verify_session_token(token) is None
+
+
+def test_check_dashboard_auth_accepts_session():
+    """_check_dashboard_auth accepts valid session tokens."""
+    from oncofiles.server import _check_dashboard_auth, _make_session_token
+
+    with patch("oncofiles.server.MCP_BEARER_TOKEN", "test-secret"):
+        session = _make_session_token("user@example.com")
+        request = _make_request("Bearer session:" + session)
+        result = _check_dashboard_auth(request)
+        assert result is None  # No error = allowed
+
+
+def test_check_dashboard_auth_rejects_invalid():
+    """_check_dashboard_auth rejects invalid tokens."""
+    from oncofiles.server import _check_dashboard_auth
+
+    with patch("oncofiles.server.MCP_BEARER_TOKEN", "test-secret"):
+        request = _make_request("Bearer session:garbage")
+        result = _check_dashboard_auth(request)
+        assert result is not None
+        assert result.status_code == 401
+
+
+def test_dashboard_allowed_emails_config():
+    """DASHBOARD_ALLOWED_EMAILS is properly configured."""
+    from oncofiles.config import DASHBOARD_ALLOWED_EMAILS
+
+    assert isinstance(DASHBOARD_ALLOWED_EMAILS, list)
+    assert "peterfusek1980@gmail.com" in DASHBOARD_ALLOWED_EMAILS
+    assert "peter.fusek@instarea.sk" in DASHBOARD_ALLOWED_EMAILS

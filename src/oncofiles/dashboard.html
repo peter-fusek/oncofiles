@@ -305,16 +305,47 @@
     @media (max-width: 480px) {
       .cards { grid-template-columns: 1fr 1fr; }
     }
+
+    .user-info {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      font-size: 0.8125rem;
+      color: var(--text-muted);
+    }
+    .user-info img {
+      width: 24px;
+      height: 24px;
+      border-radius: 50%;
+    }
+    .logout-btn {
+      background: none;
+      border: 1px solid var(--border);
+      color: var(--text-muted);
+      padding: 0.25rem 0.5rem;
+      border-radius: 0.375rem;
+      cursor: pointer;
+      font-size: 0.75rem;
+    }
+    .logout-btn:hover { border-color: var(--red); color: var(--red); }
+    .auth-error {
+      color: var(--red);
+      font-size: 0.8125rem;
+      margin-top: 0.75rem;
+      display: none;
+    }
+    #g_id_signin { margin-top: 1rem; }
   </style>
+  <script src="https://accounts.google.com/gsi/client" async defer></script>
 </head>
 <body>
   <div class="container">
-    <!-- Auth gate (shown if no token) -->
+    <!-- Auth gate (shown if no session) -->
     <div id="auth-gate" class="auth-gate" style="display:none">
       <div class="logo">onco<span>files</span> dashboard</div>
-      <p style="color:var(--text-muted);font-size:0.875rem">Enter your bearer token to continue</p>
-      <input id="token-input" type="password" placeholder="Bearer token">
-      <button onclick="submitToken()">Connect</button>
+      <p style="color:var(--text-muted);font-size:0.875rem">Sign in to view your document pipeline</p>
+      <div id="g_id_signin"></div>
+      <div id="auth-error" class="auth-error"></div>
     </div>
 
     <!-- Main dashboard (shown when authenticated) -->
@@ -323,6 +354,8 @@
         <div class="logo">onco<span>files</span> <span style="color:var(--text-muted);font-weight:400;font-size:0.9375rem">dashboard</span></div>
         <div class="header-right">
           <span class="version" id="version-label"></span>
+          <span class="user-info" id="user-info"></span>
+          <button class="logout-btn" onclick="logout()">Sign out</button>
           <button class="refresh-btn" onclick="refresh()">Refresh</button>
         </div>
       </header>
@@ -402,7 +435,8 @@
        The esc() helper is used only as a safety net for the few cases where we build HTML strings
        from our own authenticated API responses (numeric/boolean fields). */
 
-    let TOKEN = '';
+    let authMode = '';  // 'bearer' or 'session'
+    let TOKEN = '';     // bearer token or session token
     let currentFilter = 'all';
     let sortCol = 'filename';
     let sortAsc = true;
@@ -430,39 +464,130 @@
       while (el.firstChild) el.removeChild(el.firstChild);
     }
 
+    /** Get the Authorization header value based on auth mode. */
+    function authHeader() {
+      if (authMode === 'session') return 'Bearer session:' + TOKEN;
+      return 'Bearer ' + TOKEN;
+    }
+
     // ── Init ─────────────────────────────────────────────────────────────
 
     (function init() {
-      const params = new URLSearchParams(window.location.search);
-      const urlToken = params.get('token');
+      // Check URL ?token= param (backward compat)
+      var params = new URLSearchParams(window.location.search);
+      var urlToken = params.get('token');
       if (urlToken) {
         TOKEN = urlToken;
+        authMode = 'bearer';
         sessionStorage.setItem('oncofiles_token', urlToken);
+        sessionStorage.setItem('oncofiles_auth_mode', 'bearer');
         window.history.replaceState({}, '', window.location.pathname);
       } else {
         TOKEN = sessionStorage.getItem('oncofiles_token') || '';
+        authMode = sessionStorage.getItem('oncofiles_auth_mode') || '';
       }
-      if (TOKEN) {
+
+      if (TOKEN && authMode) {
         showDashboard();
       } else {
-        document.getElementById('auth-gate').style.display = 'flex';
+        initGoogleSignIn();
       }
     })();
 
-    function submitToken() {
-      const input = document.getElementById('token-input');
-      TOKEN = input.value.trim();
-      if (!TOKEN) return;
-      sessionStorage.setItem('oncofiles_token', TOKEN);
-      showDashboard();
+    function initGoogleSignIn() {
+      document.getElementById('auth-gate').style.display = 'flex';
+      // Fetch client_id from server config
+      fetch('/dashboard/config')
+        .then(function(r) { return r.json(); })
+        .then(function(cfg) {
+          if (!cfg.client_id) {
+            showAuthError('Google OAuth not configured on server');
+            return;
+          }
+          // Wait for GSI library to load
+          function tryInit() {
+            if (typeof google !== 'undefined' && google.accounts) {
+              google.accounts.id.initialize({
+                client_id: cfg.client_id,
+                callback: handleGoogleCredential
+              });
+              google.accounts.id.renderButton(
+                document.getElementById('g_id_signin'),
+                { theme: 'filled_black', size: 'large', text: 'signin_with', shape: 'rectangular' }
+              );
+            } else {
+              setTimeout(tryInit, 200);
+            }
+          }
+          tryInit();
+        })
+        .catch(function(e) {
+          showAuthError('Failed to load config: ' + e.message);
+        });
+    }
+
+    function handleGoogleCredential(response) {
+      // Send credential to server for verification
+      fetch('/dashboard/verify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ credential: response.credential })
+      })
+        .then(function(r) {
+          if (r.status === 403) throw new Error('Access denied — your email is not authorized');
+          if (r.status === 401) throw new Error('Invalid Google token — please try again');
+          if (!r.ok) throw new Error('Server error (' + r.status + ')');
+          return r.json();
+        })
+        .then(function(data) {
+          TOKEN = data.session_token;
+          authMode = 'session';
+          sessionStorage.setItem('oncofiles_token', TOKEN);
+          sessionStorage.setItem('oncofiles_auth_mode', 'session');
+          sessionStorage.setItem('oncofiles_email', data.email || '');
+          sessionStorage.setItem('oncofiles_name', data.name || '');
+          showDashboard();
+        })
+        .catch(function(e) {
+          showAuthError(e.message);
+        });
+    }
+
+    function showAuthError(msg) {
+      var el = document.getElementById('auth-error');
+      el.textContent = msg;
+      el.style.display = 'block';
     }
 
     function showDashboard() {
       document.getElementById('auth-gate').style.display = 'none';
       document.getElementById('dashboard').style.display = 'block';
+      // Show user info
+      var email = sessionStorage.getItem('oncofiles_email') || '';
+      var name = sessionStorage.getItem('oncofiles_name') || '';
+      if (email) {
+        var userEl = document.getElementById('user-info');
+        userEl.textContent = name || email;
+      }
       refresh();
       if (autoRefreshTimer) clearInterval(autoRefreshTimer);
       autoRefreshTimer = setInterval(refresh, 60000);
+    }
+
+    function logout() {
+      sessionStorage.removeItem('oncofiles_token');
+      sessionStorage.removeItem('oncofiles_auth_mode');
+      sessionStorage.removeItem('oncofiles_email');
+      sessionStorage.removeItem('oncofiles_name');
+      TOKEN = '';
+      authMode = '';
+      if (autoRefreshTimer) clearInterval(autoRefreshTimer);
+      document.getElementById('dashboard').style.display = 'none';
+      // Revoke Google session
+      if (typeof google !== 'undefined' && google.accounts) {
+        google.accounts.id.disableAutoSelect();
+      }
+      initGoogleSignIn();
     }
 
     function showError(msg) {
@@ -478,14 +603,11 @@
     // ── API ──────────────────────────────────────────────────────────────
 
     async function apiFetch(url) {
-      const resp = await fetch(url, {
-        headers: { 'Authorization': 'Bearer ' + TOKEN }
+      var resp = await fetch(url, {
+        headers: { 'Authorization': authHeader() }
       });
       if (resp.status === 401) {
-        sessionStorage.removeItem('oncofiles_token');
-        TOKEN = '';
-        document.getElementById('dashboard').style.display = 'none';
-        document.getElementById('auth-gate').style.display = 'flex';
+        logout();
         throw new Error('Unauthorized');
       }
       if (!resp.ok) throw new Error('HTTP ' + resp.status);
@@ -762,9 +884,6 @@
       });
     });
 
-    document.getElementById('token-input').addEventListener('keydown', function(e) {
-      if (e.key === 'Enter') submitToken();
-    });
   </script>
 </body>
 </html>

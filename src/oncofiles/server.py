@@ -16,6 +16,7 @@ from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse
 
 from oncofiles.config import (
+    DASHBOARD_ALLOWED_EMAILS,
     DATABASE_PATH,
     GOOGLE_DRIVE_FOLDER_ID,
     GOOGLE_OAUTH_CLIENT_ID,
@@ -584,12 +585,12 @@ async def health(request: Request) -> JSONResponse:
 async def status(request: Request) -> JSONResponse:
     """System status with sync history, doc counts, and resource usage.
 
-    Requires bearer token authentication (same as /metrics).
+    Requires bearer token or dashboard session authentication.
     """
     import resource
 
-    # Require bearer token
-    err = _check_bearer(request)
+    # Require bearer or dashboard session token
+    err = _check_dashboard_auth(request)
     if err:
         return err
 
@@ -713,6 +714,9 @@ async def metrics(request: Request) -> JSONResponse:
 
 _DASHBOARD_HTML: str | None = None
 
+# Session token validity (24 hours)
+_SESSION_MAX_AGE = 86400
+
 
 def _load_dashboard_html() -> str:
     global _DASHBOARD_HTML  # noqa: PLW0603
@@ -724,31 +728,137 @@ def _load_dashboard_html() -> str:
     return _DASHBOARD_HTML
 
 
+def _make_session_token(email: str) -> str:
+    """Create an HMAC-signed session token: email.expiry.signature."""
+    import hashlib
+    import time
+
+    expiry = str(int(time.time()) + _SESSION_MAX_AGE)
+    key = MCP_BEARER_TOKEN.encode()
+    payload = f"{email}.{expiry}"
+    sig = hmac.new(key, payload.encode(), hashlib.sha256).hexdigest()[:32]
+    return f"{payload}.{sig}"
+
+
+def _verify_session_token(token: str) -> str | None:
+    """Verify a session token. Returns email if valid, None otherwise."""
+    import hashlib
+    import time
+
+    if not token or not MCP_BEARER_TOKEN:
+        return None
+    parts = token.rsplit(".", 2)
+    if len(parts) != 3:
+        return None
+    email, expiry_str, sig = parts
+    try:
+        expiry = int(expiry_str)
+    except ValueError:
+        return None
+    if time.time() > expiry:
+        return None
+    key = MCP_BEARER_TOKEN.encode()
+    expected = hmac.new(key, f"{email}.{expiry_str}".encode(), hashlib.sha256).hexdigest()[:32]
+    if not hmac.compare_digest(sig, expected):
+        return None
+    return email
+
+
+def _check_dashboard_auth(request: Request) -> JSONResponse | None:
+    """Check bearer token OR dashboard session token. Returns error response or None."""
+    # Try standard bearer token first
+    if _check_bearer(request) is None:
+        return None
+    # Try dashboard session token (Bearer session:xxx)
+    auth_header = request.headers.get("authorization", "")
+    if auth_header.startswith("Bearer session:"):
+        session_token = auth_header.removeprefix("Bearer session:").strip()
+        if _verify_session_token(session_token):
+            return None
+    return JSONResponse({"error": "unauthorized"}, status_code=401)
+
+
 @mcp.custom_route("/dashboard", methods=["GET"])
 async def dashboard(request: Request) -> HTMLResponse:
-    """Dashboard page. Requires ?token= query parameter for auth."""
-    token = request.query_params.get("token", "")
-    if MCP_BEARER_TOKEN and (
-        not token or not hmac.compare_digest(token.encode(), MCP_BEARER_TOKEN.encode())
-    ):
-        return HTMLResponse(
-            "<html><body style='background:#0f172a;color:#e2e8f0;font-family:sans-serif;"
-            "display:flex;align-items:center;justify-content:center;height:100vh'>"
-            "<p>Unauthorized. Append <code>?token=YOUR_TOKEN</code> to the URL.</p>"
-            "</body></html>",
-            status_code=401,
-        )
+    """Dashboard page. Open to all — auth happens client-side via Google Sign-In."""
     return HTMLResponse(_load_dashboard_html())
+
+
+@mcp.custom_route("/dashboard/config", methods=["GET"])
+async def dashboard_config(request: Request) -> JSONResponse:
+    """Return public config needed by dashboard (Google OAuth client ID)."""
+    return JSONResponse({"client_id": GOOGLE_OAUTH_CLIENT_ID or ""})
+
+
+@mcp.custom_route("/dashboard/verify", methods=["POST"])
+async def dashboard_verify(request: Request) -> JSONResponse:
+    """Verify a Google ID token and return a dashboard session token.
+
+    Expects JSON body: {"credential": "google_id_token_jwt"}
+    Returns: {"session_token": "...", "email": "..."} or 401/403.
+    """
+    import httpx
+
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid request body"}, status_code=400)
+
+    credential = body.get("credential", "")
+    if not credential:
+        return JSONResponse({"error": "missing credential"}, status_code=400)
+
+    if not MCP_BEARER_TOKEN:
+        return JSONResponse({"error": "server not configured for auth"}, status_code=500)
+
+    # Verify the ID token with Google
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(
+                f"https://oauth2.googleapis.com/tokeninfo?id_token={credential}"
+            )
+        if resp.status_code != 200:
+            logger.warning("Google tokeninfo returned %d", resp.status_code)
+            return JSONResponse({"error": "invalid Google token"}, status_code=401)
+        token_info = resp.json()
+    except Exception:
+        logger.exception("Google token verification failed")
+        return JSONResponse({"error": "token verification failed"}, status_code=500)
+
+    # Check audience matches our client ID
+    aud = token_info.get("aud", "")
+    if GOOGLE_OAUTH_CLIENT_ID and aud != GOOGLE_OAUTH_CLIENT_ID:
+        logger.warning("Token audience mismatch: %s != %s", aud, GOOGLE_OAUTH_CLIENT_ID)
+        return JSONResponse({"error": "invalid token audience"}, status_code=401)
+
+    # Check email is in allowed list
+    email = token_info.get("email", "").lower()
+    email_verified = token_info.get("email_verified", "false")
+    if email_verified not in ("true", True):
+        return JSONResponse({"error": "email not verified"}, status_code=401)
+
+    if email not in DASHBOARD_ALLOWED_EMAILS:
+        logger.warning("Dashboard login denied for: %s", email)
+        return JSONResponse({"error": "access denied for this email"}, status_code=403)
+
+    # Issue session token
+    session_token = _make_session_token(email)
+    logger.info("Dashboard session issued for: %s", email)
+    return JSONResponse(
+        {
+            "session_token": session_token,
+            "email": email,
+            "name": token_info.get("name", ""),
+        }
+    )
 
 
 @mcp.custom_route("/api/documents", methods=["GET"])
 async def api_documents(request: Request) -> JSONResponse:
-    """Document status matrix API. Requires bearer token authentication."""
-    err = _check_bearer(request)
+    """Document status matrix API. Requires bearer or dashboard session auth."""
+    err = _check_dashboard_auth(request)
     if err:
         return err
-    if not MCP_BEARER_TOKEN:
-        return JSONResponse({"error": "unauthorized"}, status_code=401)
 
     try:
         from oncofiles.tools.hygiene import _build_document_matrix
