@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -12,7 +13,10 @@ from oncofiles.tools._helpers import _get_db
 
 logger = logging.getLogger(__name__)
 
-# Only allow read-only SQL
+# Only allow read-only SQL — whitelist approach
+_ALLOWED_PREFIX = re.compile(r"^\s*(SELECT|WITH)\b", re.IGNORECASE)
+
+# Block known mutation keywords as defense-in-depth
 _FORBIDDEN_KEYWORDS = re.compile(
     r"\b(INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|TRUNCATE|REPLACE|ATTACH|DETACH"
     r"|PRAGMA\s+\w+\s*=|VACUUM|REINDEX)\b",
@@ -20,6 +24,7 @@ _FORBIDDEN_KEYWORDS = re.compile(
 )
 
 MAX_ROWS = 200
+QUERY_TIMEOUT_S = 10
 
 
 async def query_db(
@@ -38,7 +43,11 @@ async def query_db(
              document_pages, agent_state, patient_context, schema_migrations.
         limit: Max rows to return (default 50, max 200).
     """
-    # Block mutations
+    # Whitelist: must start with SELECT or WITH
+    if not _ALLOWED_PREFIX.match(sql):
+        return json.dumps({"error": "Only SELECT/WITH queries are allowed."})
+
+    # Defense-in-depth: block mutation keywords anywhere in query
     if _FORBIDDEN_KEYWORDS.search(sql):
         return json.dumps({"error": "Only read-only (SELECT) queries are allowed."})
 
@@ -50,35 +59,44 @@ async def query_db(
 
     db = _get_db(ctx)
     try:
-        async with db.db.execute(query) as cursor:
-            columns = [d[0] for d in cursor.description] if cursor.description else []
-            rows = await cursor.fetchall()
-
-        # Convert to list of dicts
-        results = []
-        for row in rows[:row_limit]:
-            record = {}
-            for i, col in enumerate(columns):
-                val = row[i]
-                # Handle non-JSON-serializable types
-                if isinstance(val, bytes):
-                    val = f"<bytes:{len(val)}>"
-                elif val is not None and not isinstance(val, (str, int, float, bool)):
-                    val = str(val)
-                record[col] = val
-            results.append(record)
-
-        return json.dumps(
-            {
-                "columns": columns,
-                "rows": results,
-                "row_count": len(results),
-                "truncated": len(rows) > row_limit,
-            }
+        result = await asyncio.wait_for(
+            _execute_query(db, query, row_limit),
+            timeout=QUERY_TIMEOUT_S,
         )
-
+        return result
+    except TimeoutError:
+        return json.dumps({"error": f"Query timed out after {QUERY_TIMEOUT_S}s"})
     except Exception as e:
+        logger.warning("query_db error: %s", e)
         return json.dumps({"error": str(e)})
+
+
+async def _execute_query(db, query: str, row_limit: int) -> str:
+    """Execute a read-only query and return JSON result."""
+    async with db.db.execute(query) as cursor:
+        columns = [d[0] for d in cursor.description] if cursor.description else []
+        rows = await cursor.fetchall()
+
+    results = []
+    for row in rows[:row_limit]:
+        record = {}
+        for i, col in enumerate(columns):
+            val = row[i]
+            if isinstance(val, bytes):
+                val = f"<bytes:{len(val)}>"
+            elif val is not None and not isinstance(val, (str, int, float, bool)):
+                val = str(val)
+            record[col] = val
+        results.append(record)
+
+    return json.dumps(
+        {
+            "columns": columns,
+            "rows": results,
+            "row_count": len(results),
+            "truncated": len(rows) > row_limit,
+        }
+    )
 
 
 def register(mcp):

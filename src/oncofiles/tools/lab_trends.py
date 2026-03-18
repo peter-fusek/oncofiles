@@ -113,12 +113,12 @@ async def get_lab_trends(
     except ValueError as e:
         return json.dumps({"error": str(e)})
 
-    # Batch-fetch gdrive_urls for all source documents
+    # Batch-fetch gdrive_urls for all source documents (single query)
     doc_ids = {v.document_id for v in values}
-    doc_urls: dict[int, str | None] = {}
-    for did in doc_ids:
-        doc = await db.get_document(did)
-        doc_urls[did] = _gdrive_url(doc.gdrive_id) if doc else None
+    docs_map = await db.get_documents_by_ids(doc_ids)
+    doc_urls: dict[int, str | None] = {
+        did: _gdrive_url(doc.gdrive_id) if doc else None for did, doc in docs_map.items()
+    }
 
     items = [
         {
@@ -641,6 +641,8 @@ async def get_lab_summary(ctx: Context) -> str:
 
     db = _get_db(ctx)
     latest_values = await db.get_all_latest_lab_values()
+    # Batch-fetch previous values for trend calculation (single query instead of N)
+    previous_values = await db.get_previous_lab_values()
 
     today = date_type.today()
     summaries = []
@@ -667,15 +669,12 @@ async def get_lab_summary(ctx: Context) -> str:
         else:
             entry["status"] = "no_range"
 
-        # Trend: compare with previous value
-        query = LabTrendQuery(parameter=v.parameter, limit=2)
-        history = await db.get_lab_trends(query)
-        if len(history) >= 2:
-            prev = history[-2].value
-            curr = history[-1].value
-            if curr > prev * 1.05:
+        # Trend: compare with previous value (from batch-fetched data)
+        prev_val = previous_values.get(v.parameter)
+        if prev_val:
+            if v.value > prev_val.value * 1.05:
                 entry["trend"] = "rising"
-            elif curr < prev * 0.95:
+            elif v.value < prev_val.value * 0.95:
                 entry["trend"] = "falling"
             else:
                 entry["trend"] = "stable"

@@ -48,6 +48,18 @@ class DocumentMixin:
             row = await cursor.fetchone()
             return _row_to_document(row) if row else None
 
+    async def get_documents_by_ids(self, doc_ids: set[int]) -> dict[int, Document]:
+        """Get multiple documents by their IDs in a single query. Returns {id: Document}."""
+        if not doc_ids:
+            return {}
+        placeholders = ",".join("?" for _ in doc_ids)
+        async with self.db.execute(
+            f"SELECT * FROM documents WHERE id IN ({placeholders})",
+            tuple(doc_ids),
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return {doc.id: doc for row in rows if (doc := _row_to_document(row))}
+
     async def get_document_by_file_id(self, file_id: str) -> Document | None:
         """Get a document by its Anthropic Files API file_id."""
         async with self.db.execute(

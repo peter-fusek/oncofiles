@@ -437,11 +437,19 @@ async def get_related_documents(ctx: Context, doc_id: int) -> str:
         return json.dumps({"error": f"Document not found: {doc_id}"})
 
     refs = await db.get_cross_references(doc_id)
+
+    # Batch-fetch all related documents in a single query
+    related_ids = set()
+    for ref in refs:
+        is_source = ref["source_document_id"] == doc_id
+        related_ids.add(ref["target_document_id"] if is_source else ref["source_document_id"])
+    related_docs = await db.get_documents_by_ids(related_ids)
+
     items = []
     for ref in refs:
         is_source = ref["source_document_id"] == doc_id
         related_id = ref["target_document_id"] if is_source else ref["source_document_id"]
-        related = await db.get_document(related_id)
+        related = related_docs.get(related_id)
         if not related or related.deleted_at:
             continue
         items.append(

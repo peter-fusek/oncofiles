@@ -25,7 +25,7 @@ async def test_blocks_insert(db: Database):
     ctx = _mock_ctx(db)
     result = json.loads(await query_db(ctx, "INSERT INTO documents (id) VALUES (999)"))
     assert "error" in result
-    assert "read-only" in result["error"].lower()
+    assert "select" in result["error"].lower() or "read-only" in result["error"].lower()
 
 
 async def test_blocks_delete(db: Database):

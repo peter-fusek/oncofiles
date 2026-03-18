@@ -269,6 +269,29 @@ class ClinicalMixin:
             rows = await cursor.fetchall()
             return [_row_to_lab_value(r) for r in rows]
 
+    async def get_previous_lab_values(self) -> dict[str, LabValue]:
+        """Get the second-most-recent value for every parameter (for trend calculation).
+
+        Returns {parameter: LabValue} for the value just before the latest.
+        """
+        async with self.db.execute(
+            """
+            SELECT lv.* FROM lab_values lv
+            INNER JOIN (
+                SELECT parameter, MAX(lab_date) AS max_date
+                FROM lab_values GROUP BY parameter
+            ) latest ON lv.parameter = latest.parameter
+            WHERE lv.lab_date < latest.max_date
+            AND lv.lab_date = (
+                SELECT MAX(lv2.lab_date) FROM lab_values lv2
+                WHERE lv2.parameter = lv.parameter AND lv2.lab_date < latest.max_date
+            )
+            ORDER BY lv.parameter
+            """,
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return {v.parameter: v for r in rows if (v := _row_to_lab_value(r))}
+
     async def get_lab_values_by_date(self, lab_date: str) -> list[LabValue]:
         """Get all lab values for a specific date."""
         async with self.db.execute(
