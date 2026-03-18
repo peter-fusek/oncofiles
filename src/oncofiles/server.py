@@ -565,6 +565,65 @@ async def landing(request: Request) -> HTMLResponse:
     return HTMLResponse(_load_landing_html())
 
 
+# ── Static assets ─────────────────────────────────────────────────────────────
+
+_FAVICON_SVG: str | None = None
+
+
+@mcp.custom_route("/favicon.svg", methods=["GET"])
+async def favicon_svg(request: Request) -> HTMLResponse:
+    global _FAVICON_SVG  # noqa: PLW0603
+    if _FAVICON_SVG is None:
+        _FAVICON_SVG = (Path(__file__).parent / "favicon.svg").read_text()
+    return HTMLResponse(_FAVICON_SVG, media_type="image/svg+xml")
+
+
+@mcp.custom_route("/favicon.ico", methods=["GET"])
+async def favicon_ico(request: Request) -> HTMLResponse:
+    """Redirect favicon.ico to SVG (avoids 404 in browser tabs)."""
+    from starlette.responses import RedirectResponse
+
+    return RedirectResponse("/favicon.svg", status_code=301)
+
+
+@mcp.custom_route("/robots.txt", methods=["GET"])
+async def robots_txt(request: Request) -> HTMLResponse:
+    return HTMLResponse(
+        "User-agent: *\nAllow: /\nDisallow: /mcp\nDisallow: /api/\n"
+        "Disallow: /dashboard/verify\nDisallow: /status\nDisallow: /metrics\n\n"
+        "Sitemap: https://oncofiles.com/sitemap.xml\n",
+        media_type="text/plain",
+    )
+
+
+@mcp.custom_route("/sitemap.xml", methods=["GET"])
+async def sitemap_xml(request: Request) -> HTMLResponse:
+    return HTMLResponse(
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
+        "  <url><loc>https://oncofiles.com/</loc><changefreq>weekly</changefreq></url>\n"
+        "  <url><loc>https://oncofiles.com/dashboard</loc><changefreq>daily</changefreq></url>\n"
+        "  <url><loc>https://oncofiles.com/health</loc><changefreq>always</changefreq></url>\n"
+        "</urlset>\n",
+        media_type="application/xml",
+    )
+
+
+@mcp.custom_route("/manifest.json", methods=["GET"])
+async def manifest_json(request: Request) -> JSONResponse:
+    return JSONResponse(
+        {
+            "name": "Oncofiles Dashboard",
+            "short_name": "Oncofiles",
+            "start_url": "/dashboard",
+            "display": "standalone",
+            "background_color": "#0f172a",
+            "theme_color": "#14b8a6",
+            "icons": [{"src": "/favicon.svg", "sizes": "any", "type": "image/svg+xml"}],
+        }
+    )
+
+
 # ── Health check ──────────────────────────────────────────────────────────────
 
 
