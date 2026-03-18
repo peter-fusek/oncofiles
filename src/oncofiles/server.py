@@ -270,7 +270,7 @@ def _start_sync_scheduler(db, files, gdrive, oauth_folder_id):
                     if e_stats["processed"] > 0:
                         logger.info("Post-sync enhance: %s", e_stats)
                 except Exception:
-                    logger.warning("Post-sync enhance failed", exc_info=True)
+                    logger.error("Post-sync enhance failed", exc_info=True)
         except TimeoutError:
             logger.error("Scheduled sync timed out after %ds", sync_timeout)
         except Exception:
@@ -376,6 +376,11 @@ def _start_sync_scheduler(db, files, gdrive, oauth_folder_id):
                 try:
                     meta = _json.loads(doc.structured_metadata)
                 except (ValueError, TypeError):
+                    logger.info(
+                        "Category validation: unparseable metadata for doc %d (%s)",
+                        doc.id,
+                        doc.filename,
+                    )
                     continue
                 doc_type = meta.get("document_type")
                 if not doc_type:
@@ -889,10 +894,12 @@ def _verify_session_token(token: str) -> str | None:
     except ValueError:
         return None
     if time.time() > expiry:
+        logger.warning("Session token expired for %s", email)
         return None
     key = MCP_BEARER_TOKEN.encode()
     expected = hmac.new(key, f"{email}.{expiry_str}".encode(), hashlib.sha256).hexdigest()[:32]
     if not hmac.compare_digest(sig, expected):
+        logger.warning("Session token signature mismatch for %s", email)
         return None
     return email
 

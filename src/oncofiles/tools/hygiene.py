@@ -194,6 +194,9 @@ async def validate_categories(
         try:
             meta = json.loads(doc.structured_metadata)
         except (json.JSONDecodeError, TypeError):
+            logger.info(
+                "validate_categories: unparseable metadata for doc %d (%s)", doc.id, doc.filename
+            )
             continue
 
         doc_type = meta.get("document_type")

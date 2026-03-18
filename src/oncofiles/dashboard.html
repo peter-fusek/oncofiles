@@ -400,6 +400,7 @@
           <span class="version" id="version-label"></span>
           <span class="user-info" id="user-info"></span>
           <button class="logout-btn" onclick="logout()">Sign out</button>
+          <span id="last-refreshed" style="font-size:0.6875rem;color:var(--text-muted)"></span>
           <button class="refresh-btn" onclick="refresh()">Refresh</button>
         </div>
       </header>
@@ -703,6 +704,7 @@
         renderStatus(status);
         renderDocs(docs);
         renderPromptLog(prompts);
+        updateLastRefreshed();
       } catch (e) {
         setConnectionState('offline');
         hideSkeletons();
@@ -967,6 +969,11 @@
           pill.appendChild(badge);
         }
       });
+    }
+
+    function updateLastRefreshed() {
+      var el = document.getElementById('last-refreshed');
+      el.textContent = new Date().toLocaleTimeString();
     }
 
     function renderPromptLog(data) {
