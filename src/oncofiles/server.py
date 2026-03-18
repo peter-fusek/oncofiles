@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import hmac
 import logging
 import os
 import sys
+import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from urllib.parse import quote
 
 from fastmcp import FastMCP
 from starlette.requests import Request
@@ -725,18 +729,12 @@ _SESSION_MAX_AGE = 86400
 def _load_dashboard_html() -> str:
     global _DASHBOARD_HTML  # noqa: PLW0603
     if _DASHBOARD_HTML is None:
-        from pathlib import Path
-
-        html_path = Path(__file__).parent / "dashboard.html"
-        _DASHBOARD_HTML = html_path.read_text()
+        _DASHBOARD_HTML = (Path(__file__).parent / "dashboard.html").read_text()
     return _DASHBOARD_HTML
 
 
 def _make_session_token(email: str) -> str:
     """Create an HMAC-signed session token: email.expiry.signature."""
-    import hashlib
-    import time
-
     if not MCP_BEARER_TOKEN:
         raise ValueError("Cannot create session token: MCP_BEARER_TOKEN not configured")
     expiry = str(int(time.time()) + _SESSION_MAX_AGE)
@@ -748,9 +746,6 @@ def _make_session_token(email: str) -> str:
 
 def _verify_session_token(token: str) -> str | None:
     """Verify a session token. Returns email if valid, None otherwise."""
-    import hashlib
-    import time
-
     if not token or not MCP_BEARER_TOKEN:
         return None
     parts = token.rsplit(".", 2)
@@ -822,8 +817,6 @@ async def dashboard_verify(request: Request) -> JSONResponse:
 
     # Verify the ID token with Google
     try:
-        from urllib.parse import quote
-
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.get(
                 f"https://oauth2.googleapis.com/tokeninfo?id_token={quote(credential, safe='')}"
