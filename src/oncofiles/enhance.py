@@ -33,14 +33,23 @@ PROVIDER_TO_INSTITUTION: list[tuple[list[str], str]] = [
 ]
 
 
+def _strip_diacritics(text: str) -> str:
+    """Strip diacritics from text for fuzzy matching (ščťžýáíé → sctzyaie)."""
+    import unicodedata
+
+    nfkd = unicodedata.normalize("NFKD", text)
+    return "".join(c for c in nfkd if not unicodedata.combining(c))
+
+
 def infer_institution_from_providers(providers: list[str]) -> str | None:
     """Map provider/institution names from structured metadata to a known institution code.
 
     Returns the first matching institution code, or None if no match.
+    Uses diacritic-insensitive matching for Slovak/Czech names.
     """
     if not providers:
         return None
-    combined = " ".join(providers).lower()
+    combined = _strip_diacritics(" ".join(providers).lower())
     for keywords, institution in PROVIDER_TO_INSTITUTION:
         if any(kw in combined for kw in keywords):
             return institution

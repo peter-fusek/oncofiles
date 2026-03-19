@@ -1553,12 +1553,31 @@ async def _enhance_document(
         backfill_institution = None
         backfill_description = None
 
-        # Date: use first date from structured metadata, fallback to GDrive/created time
+        # Date: prefer filename YYYYMMDD prefix, then AI dates, then GDrive/created time
         if not doc.document_date:
-            dates = metadata.get("dates_mentioned", [])
-            if dates:
-                backfill_date = dates[0]  # Already YYYY-MM-DD from AI
-                logger.info("enhance: doc %d — backfill date=%s (from AI)", doc.id, backfill_date)
+            # Trust filename date prefix first (avoids AI extracting DOB as document date)
+            import re as _re
+
+            fn_match = _re.match(r"^(\d{4})(\d{2})(\d{2})_", doc.filename)
+            if fn_match:
+                y, m, d = fn_match.groups()
+                fn_date = f"{y}-{m}-{d}"
+                # Sanity check: year should be 2020-2030 range
+                if 2020 <= int(y) <= 2030:
+                    backfill_date = fn_date
+                    logger.info(
+                        "enhance: doc %d — backfill date=%s (from filename)", doc.id, backfill_date
+                    )
+            if not backfill_date:
+                dates = metadata.get("dates_mentioned", [])
+                if dates:
+                    # Filter out obvious DOB dates (before 2020)
+                    valid_dates = [d for d in dates if d >= "2020-"]
+                    if valid_dates:
+                        backfill_date = valid_dates[0]
+                        logger.info(
+                            "enhance: doc %d — backfill date=%s (from AI)", doc.id, backfill_date
+                        )
             elif doc.gdrive_modified_time:
                 backfill_date = doc.gdrive_modified_time.strftime("%Y-%m-%d")
                 logger.info("enhance: doc %d — backfill date=%s (GDrive)", doc.id, backfill_date)
