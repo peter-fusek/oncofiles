@@ -140,10 +140,12 @@ class _TursoConnection:
                         timeout=self._QUERY_TIMEOUT,
                     )
                 except BaseException as retry_exc:
-                    # Convert PanicException to RuntimeError so except Exception catches it
-                    raise RuntimeError(
-                        f"DB driver panic after reconnect: {retry_exc}"
-                    ) from retry_exc
+                    if "PanicException" in type(retry_exc).__name__:
+                        # Wrap so callers' except Exception catches it
+                        raise RuntimeError(
+                            f"DB driver panic after reconnect: {retry_exc}"
+                        ) from retry_exc
+                    raise
             raise
 
     async def executescript(self, sql: str) -> None:

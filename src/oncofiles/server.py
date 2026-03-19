@@ -896,7 +896,7 @@ async def status(request: Request) -> JSONResponse:
                 ],
             }
         )
-    except BaseException:
+    except Exception:
         logger.exception("Status endpoint error")
         return JSONResponse({"status": "error", "version": VERSION}, status_code=500)
 
@@ -1154,7 +1154,7 @@ async def api_prompt_log(request: Request) -> JSONResponse:
             for e in entries
         ]
         return JSONResponse({"entries": items, "stats": stats})
-    except BaseException:
+    except Exception:
         logger.exception("API prompt-log endpoint error")
         return JSONResponse({"error": "internal error"}, status_code=500)
 

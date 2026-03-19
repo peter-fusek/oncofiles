@@ -104,6 +104,18 @@ async def sync_from_gdrive(
 
     stats = {"new": 0, "updated": 0, "unchanged": 0, "skipped": 0, "missing": 0, "errors": 0}
 
+    async def _sync_category_from_folder(gf: dict, existing: Document, filename: str) -> None:
+        """Update document category if GDrive folder structure implies a different one."""
+        detected = _detect_category_from_parents(gf, folder_map)
+        if detected and detected != existing.category.value:
+            logger.info(
+                "sync_from_gdrive: category changed %s → %s for %s",
+                existing.category.value,
+                detected,
+                filename,
+            )
+            await db.update_document_category(existing.id, detected)
+
     # Track which gdrive IDs we've seen (for detecting deletions)
     seen_gdrive_ids: set[str] = set()
 
@@ -148,13 +160,12 @@ async def sync_from_gdrive(
                         stats["unchanged"] += 1
                         continue
 
-                # Check if content actually changed (md5Checksum) vs metadata-only
-                # change (e.g. rename). GDrive modifiedTime changes on rename,
-                # but md5Checksum stays the same — skip expensive re-import.
+                # md5Checksum detects content vs metadata-only changes (e.g. rename).
+                # GDrive modifiedTime changes on rename, but md5 stays the same.
                 gdrive_md5 = gf.get("md5Checksum")
-                content_changed = True
-                if gdrive_md5 and existing.gdrive_md5 and gdrive_md5 == existing.gdrive_md5:
-                    content_changed = False
+                content_changed = not (
+                    gdrive_md5 and existing.gdrive_md5 and gdrive_md5 == existing.gdrive_md5
+                )
 
                 if not content_changed:
                     # Metadata-only change (rename, move) — just update timestamp
@@ -166,16 +177,7 @@ async def sync_from_gdrive(
                     now_str = datetime.now(UTC).isoformat()
                     await db.update_sync_state(existing.id, "synced", now_str)
 
-                    # Detect category change from folder structure
-                    detected_category = _detect_category_from_parents(gf, folder_map)
-                    if detected_category and detected_category != existing.category.value:
-                        logger.info(
-                            "sync_from_gdrive: category changed %s → %s for %s",
-                            existing.category.value,
-                            detected_category,
-                            filename,
-                        )
-                        await db.update_document_category(existing.id, detected_category)
+                    await _sync_category_from_folder(gf, existing, filename)
 
                     stats["unchanged"] += 1
                     continue
@@ -210,16 +212,7 @@ async def sync_from_gdrive(
                 now_str = datetime.now(UTC).isoformat()
                 await db.update_sync_state(existing.id, "synced", now_str)
 
-                # Detect category change from folder structure
-                detected_category = _detect_category_from_parents(gf, folder_map)
-                if detected_category and detected_category != existing.category.value:
-                    logger.info(
-                        "sync_from_gdrive: category changed %s → %s for %s",
-                        existing.category.value,
-                        detected_category,
-                        filename,
-                    )
-                    await db.update_document_category(existing.id, detected_category)
+                await _sync_category_from_folder(gf, existing, filename)
 
                 # Re-run AI enhancement (will re-extract OCR)
                 if enhance:
