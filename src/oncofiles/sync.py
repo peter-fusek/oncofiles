@@ -148,13 +148,49 @@ async def sync_from_gdrive(
                         stats["unchanged"] += 1
                         continue
 
-                # File changed on GDrive — GDrive wins (re-import)
+                # Check if content actually changed (md5Checksum) vs metadata-only
+                # change (e.g. rename). GDrive modifiedTime changes on rename,
+                # but md5Checksum stays the same — skip expensive re-import.
+                gdrive_md5 = gf.get("md5Checksum")
+                content_changed = True
+                if gdrive_md5 and existing.gdrive_md5 and gdrive_md5 == existing.gdrive_md5:
+                    content_changed = False
+
+                if not content_changed:
+                    # Metadata-only change (rename, move) — just update timestamp
+                    logger.info(
+                        "sync_from_gdrive: metadata-only change for %s (md5 unchanged)",
+                        filename,
+                    )
+                    await db.update_gdrive_id(existing.id, gdrive_id, modified_time_str)
+                    now_str = datetime.now(UTC).isoformat()
+                    await db.update_sync_state(existing.id, "synced", now_str)
+
+                    # Detect category change from folder structure
+                    detected_category = _detect_category_from_parents(gf, folder_map)
+                    if detected_category and detected_category != existing.category.value:
+                        logger.info(
+                            "sync_from_gdrive: category changed %s → %s for %s",
+                            existing.category.value,
+                            detected_category,
+                            filename,
+                        )
+                        await db.update_document_category(existing.id, detected_category)
+
+                    stats["unchanged"] += 1
+                    continue
+
+                # File content changed on GDrive — GDrive wins (re-import)
                 if dry_run:
                     logger.info("sync_from_gdrive: WOULD UPDATE %s", filename)
                     stats["updated"] += 1
                     continue
 
                 logger.info("sync_from_gdrive: updating %s (GDrive wins)", filename)
+
+                # Clear old OCR before re-import (will be re-extracted by enhance)
+                await db.delete_ocr_pages(existing.id)
+
                 if is_google_doc:
                     content_bytes = await asyncio.to_thread(
                         gdrive.export_google_doc, gdrive_id, "application/pdf"
@@ -169,6 +205,8 @@ async def sync_from_gdrive(
                 await db.update_document_file_id(existing.id, metadata.id, len(content_bytes))
                 del content_bytes  # Free large buffer immediately
                 await db.update_gdrive_id(existing.id, gdrive_id, modified_time_str)
+                if gdrive_md5:
+                    await db.update_gdrive_md5(existing.id, gdrive_md5)
                 now_str = datetime.now(UTC).isoformat()
                 await db.update_sync_state(existing.id, "synced", now_str)
 
@@ -183,7 +221,7 @@ async def sync_from_gdrive(
                     )
                     await db.update_document_category(existing.id, detected_category)
 
-                # Re-run AI enhancement
+                # Re-run AI enhancement (will re-extract OCR)
                 if enhance:
                     try:
                         await asyncio.wait_for(
@@ -194,7 +232,6 @@ async def sync_from_gdrive(
                         logger.warning("sync: enhance timed out for doc %d", existing.id)
                         stats["errors"] = stats.get("errors", 0) + 1
 
-                await db.delete_ocr_pages(existing.id)
                 stats["updated"] += 1
             else:
                 # New file — import
@@ -243,6 +280,7 @@ async def sync_from_gdrive(
                     size_bytes=size,
                     gdrive_id=gdrive_id,
                     gdrive_modified_time=gdrive_modified,
+                    gdrive_md5=gf.get("md5Checksum"),
                     sync_state="synced",
                     last_synced_at=datetime.now(UTC),
                 )

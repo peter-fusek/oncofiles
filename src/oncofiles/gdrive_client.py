@@ -316,7 +316,8 @@ class GDriveClient:
                     q=f"'{folder_id}' in parents and trashed = false",
                     fields=(
                         "nextPageToken, files(id, name, mimeType,"
-                        " modifiedTime, appProperties, parents)"
+                        " modifiedTime, appProperties, parents,"
+                        " md5Checksum, size)"
                     ),
                     pageSize=100,
                     pageToken=page_token,
@@ -357,7 +358,8 @@ class GDriveClient:
                     q=f"'{folder_id}' in parents and trashed = false",
                     fields=(
                         "nextPageToken, files(id, name, mimeType,"
-                        " modifiedTime, appProperties, parents)"
+                        " modifiedTime, appProperties, parents,"
+                        " md5Checksum, size)"
                     ),
                     pageSize=100,
                     pageToken=page_token,

@@ -19,8 +19,9 @@ class DocumentMixin:
             INSERT INTO documents
                 (file_id, filename, original_filename, document_date,
                  institution, category, description, mime_type, size_bytes,
-                 gdrive_id, gdrive_modified_time, version, previous_version_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 gdrive_id, gdrive_modified_time, gdrive_md5,
+                 version, previous_version_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 doc.file_id,
@@ -34,6 +35,7 @@ class DocumentMixin:
                 doc.size_bytes,
                 doc.gdrive_id,
                 doc.gdrive_modified_time.isoformat() if doc.gdrive_modified_time else None,
+                doc.gdrive_md5,
                 doc.version,
                 doc.previous_version_id,
             ),
@@ -354,6 +356,14 @@ class DocumentMixin:
         await self.db.execute(
             "UPDATE documents SET gdrive_id = ?, gdrive_modified_time = ? WHERE id = ?",
             (gdrive_id, modified_time, doc_id),
+        )
+        await self.db.commit()
+
+    async def update_gdrive_md5(self, doc_id: int, md5: str) -> None:
+        """Set the Google Drive md5Checksum for content change detection."""
+        await self.db.execute(
+            "UPDATE documents SET gdrive_md5 = ? WHERE id = ?",
+            (md5, doc_id),
         )
         await self.db.commit()
 

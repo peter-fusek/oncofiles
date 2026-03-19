@@ -164,6 +164,7 @@ def _row_to_document(row: Any) -> Document:
             if row["gdrive_modified_time"]
             else None
         ),
+        gdrive_md5=row_dict.get("gdrive_md5"),
         sync_state=row_dict.get("sync_state", "synced") or "synced",
         last_synced_at=(
             datetime.fromisoformat(row_dict["last_synced_at"])

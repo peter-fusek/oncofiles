@@ -45,6 +45,9 @@ class Document(BaseModel):
     updated_at: datetime | None = None
     gdrive_id: str | None = Field(default=None, description="Google Drive file ID")
     gdrive_modified_time: datetime | None = None
+    gdrive_md5: str | None = Field(
+        default=None, description="GDrive md5Checksum for content change detection"
+    )
     sync_state: str = Field(default="synced", description="Sync state: synced, pending, conflict")
     last_synced_at: datetime | None = None
     ai_summary: str | None = Field(default=None, description="AI-generated document summary")

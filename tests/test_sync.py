@@ -130,6 +130,77 @@ async def test_sync_from_gdrive_updated(db: Database):
     assert stats["updated"] == 1
 
 
+async def test_sync_from_gdrive_metadata_only_change(db: Database):
+    """Rename-only change (same md5) skips re-import and preserves OCR."""
+    doc = make_doc(gdrive_id="gd_1", gdrive_modified_time=datetime(2026, 1, 1))
+    doc.gdrive_md5 = "abc123md5"
+    doc = await db.insert_document(doc)
+
+    # Simulate existing OCR cache
+    await db.save_ocr_page(doc.id, 1, "Extracted OCR text page 1", "pymupdf-native")
+    assert await db.has_ocr_text(doc.id)
+
+    files = _mock_files()
+    gdrive = _mock_gdrive(
+        [
+            {
+                "id": "gd_1",
+                "name": "20260301_ErikaFusekova_NOU_Labs_RenamedFile.pdf",
+                "mimeType": "application/pdf",
+                "modifiedTime": "2026-03-01T10:00:00Z",  # newer than doc
+                "md5Checksum": "abc123md5",  # same content
+                "appProperties": {},
+                "parents": [],
+            },
+        ]
+    )
+
+    stats = await sync_from_gdrive(db, files, gdrive, "folder123", enhance=False)
+
+    # Should be counted as unchanged (metadata-only), not updated
+    assert stats["unchanged"] == 1
+    assert stats["updated"] == 0
+    # OCR should be preserved
+    assert await db.has_ocr_text(doc.id)
+    # No download should have happened
+    gdrive.download.assert_not_called()
+
+
+async def test_sync_from_gdrive_content_changed(db: Database):
+    """Content change (different md5) triggers full re-import."""
+    doc = make_doc(gdrive_id="gd_1", gdrive_modified_time=datetime(2026, 1, 1))
+    doc.gdrive_md5 = "old_md5"
+    doc = await db.insert_document(doc)
+
+    # Simulate existing OCR cache
+    await db.save_ocr_page(doc.id, 1, "Old OCR text", "pymupdf-native")
+
+    files = _mock_files()
+    gdrive = _mock_gdrive(
+        [
+            {
+                "id": "gd_1",
+                "name": doc.filename,
+                "mimeType": "application/pdf",
+                "modifiedTime": "2026-03-01T10:00:00Z",
+                "md5Checksum": "new_md5",  # content changed
+                "appProperties": {},
+                "parents": [],
+            },
+        ]
+    )
+
+    with (
+        patch("oncofiles.sync.enhance_document_text", return_value=("summary", '["labs"]')),
+        patch("oncofiles.sync.extract_structured_metadata", return_value={"diagnoses": []}),
+    ):
+        stats = await sync_from_gdrive(db, files, gdrive, "folder123")
+
+    assert stats["updated"] == 1
+    # Download should have happened
+    gdrive.download.assert_called_once()
+
+
 async def test_sync_from_gdrive_dry_run(db: Database):
     """Dry run counts files but doesn't create them."""
     files = _mock_files()
