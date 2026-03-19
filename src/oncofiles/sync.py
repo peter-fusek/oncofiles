@@ -586,7 +586,18 @@ def _move_to_organized_folder(
         year_month or "",
     )
     gdrive.move_file(doc.gdrive_id, target_folder)
-    stats["organized"] += 1
+    # Verify move succeeded
+    new_parents = gdrive.get_file_parents(doc.gdrive_id)
+    if new_parents and any(p == target_folder for p in new_parents):
+        stats["organized"] += 1
+    else:
+        logger.error(
+            "sync_to_gdrive: move verification FAILED for %s (expected parent %s, got %s)",
+            doc.filename,
+            target_folder,
+            new_parents,
+        )
+        stats["errors"] = stats.get("errors", 0) + 1
 
 
 def _batch_organize_files(

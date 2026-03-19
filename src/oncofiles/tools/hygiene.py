@@ -263,9 +263,23 @@ async def validate_categories(
         if doc.category.value != "other":
             continue
         fn = doc.filename.lower()
-        if any(
-            kw in fn for kw in ("devita", "nccn", "modra_kniha", "modrá_kniha", "esmo", "guideline")
-        ):
+        # Check filename + AI metadata for reference material patterns
+        meta_str = (doc.structured_metadata or "").lower()
+        ai_str = (doc.ai_summary or "").lower()
+        combined = fn + " " + meta_str + " " + ai_str
+        ref_keywords = (
+            "devita",
+            "nccn",
+            "modra_kniha",
+            "modrá_kniha",
+            "modrakniha",
+            "esmo",
+            "guideline",
+            "clinical practice guideline",
+            "treatment protocol",
+            "national comprehensive cancer",
+        )
+        if any(kw in combined for kw in ref_keywords):
             entry = {
                 "doc_id": doc.id,
                 "filename": doc.filename,

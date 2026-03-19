@@ -397,6 +397,18 @@ def _start_sync_scheduler(db, files, gdrive, oauth_folder_id):
                         doc.category.value,
                         expected,
                     )
+            # Also auto-detect reference materials in "other" category
+            ref_keywords = ("devita", "nccn", "modra_kniha", "modrakniha", "esmo", "guideline")
+            for doc in docs:
+                if doc.category.value != "other":
+                    continue
+                fn = doc.filename.lower()
+                combined = fn + " " + (doc.ai_summary or "").lower()
+                if any(kw in combined for kw in ref_keywords):
+                    await db.update_document_category(doc.id, "reference")
+                    corrected += 1
+                    logger.info("Reference auto-detected: %s other → reference", doc.filename)
+
             if corrected:
                 logger.info("Category validation: corrected %d documents", corrected)
         except Exception:
