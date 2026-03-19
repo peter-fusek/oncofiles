@@ -3,3 +3,4 @@ startCommand = "uv run oncofiles-mcp"
 healthcheckPath = "/health"
 healthcheckTimeout = 60
 restartPolicyType = "ALWAYS"
+overlapSeconds = 15
