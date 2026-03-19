@@ -513,14 +513,8 @@ async def sync_to_gdrive(
         except Exception as e:
             logger.warning("sync_to_gdrive: OCR cleanup failed — %s", str(e)[:200])
 
-        # Export OCR companion text files alongside originals
-        try:
-            ocr_stats = await _export_ocr_texts(db, gdrive, files)
-            stats["ocr_exported"] = ocr_stats["exported"]
-            stats["ocr_extracted"] = ocr_stats.get("extracted", 0)
-            stats["ocr_skipped"] = ocr_stats["skipped"]
-        except Exception as e:
-            logger.warning("sync_to_gdrive: OCR text export failed — %s", str(e)[:200])
+        # OCR companion files (_OCR.txt) disabled — text is cached in DB document_pages
+        # and accessible via MCP tools. Companion files caused orphan accumulation (#114).
     else:
         logger.info("sync_to_gdrive: skipping heavy phases (no import changes)")
 
