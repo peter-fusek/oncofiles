@@ -128,8 +128,11 @@ class _TursoConnection:
         except TimeoutError:
             logger.error("Query timed out after %.0fs: %s", self._QUERY_TIMEOUT, sql[:200])
             raise
-        except Exception as exc:
-            if _is_stale_stream_error(exc):
+        except BaseException as exc:
+            if _is_stale_stream_error(exc) or "PanicException" in type(exc).__name__:
+                logger.warning(
+                    "DB driver error (%s), reconnecting: %s", type(exc).__name__, sql[:100]
+                )
                 await self.reconnect()
                 return await asyncio.wait_for(
                     asyncio.to_thread(self._conn.execute, sql, params),

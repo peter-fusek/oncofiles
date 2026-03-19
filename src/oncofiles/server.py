@@ -896,7 +896,7 @@ async def status(request: Request) -> JSONResponse:
                 ],
             }
         )
-    except Exception:
+    except BaseException:
         logger.exception("Status endpoint error")
         return JSONResponse({"status": "error", "version": VERSION}, status_code=500)
 
@@ -1105,7 +1105,7 @@ async def api_documents(request: Request) -> JSONResponse:
             limit = 200
         result = await _build_document_matrix(db, filter_param=filter_param, limit=limit)
         return JSONResponse(result)
-    except Exception:
+    except BaseException:
         logger.exception("API documents endpoint error")
         return JSONResponse({"error": "internal error"}, status_code=500)
 
@@ -1154,7 +1154,7 @@ async def api_prompt_log(request: Request) -> JSONResponse:
             for e in entries
         ]
         return JSONResponse({"entries": items, "stats": stats})
-    except Exception:
+    except BaseException:
         logger.exception("API prompt-log endpoint error")
         return JSONResponse({"error": "internal error"}, status_code=500)
 
