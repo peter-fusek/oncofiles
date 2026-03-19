@@ -442,7 +442,7 @@ async def test_sync_to_gdrive_no_ocr_companion_export(db: Database):
     gdrive.get_file_parents.return_value = ["folder_2024-01"]
     gdrive.find_folder.return_value = "folder_2024-01"
 
-    stats = await sync_to_gdrive(db, files, gdrive, "folder123")
+    await sync_to_gdrive(db, files, gdrive, "folder123")
     # No OCR export — companion files disabled (#114)
     upload_calls = [c for c in gdrive.upload.call_args_list if "_OCR.txt" in str(c)]
     assert len(upload_calls) == 0
