@@ -1589,6 +1589,23 @@ async def _enhance_document(
                         )
                 except Exception:
                     logger.warning("enhance: Vision OCR failed for doc %d", doc.id, exc_info=True)
+        elif content_bytes and doc.mime_type and doc.mime_type.startswith("image/"):
+            # Image files: Vision OCR
+            from fastmcp.utilities.types import Image as MImage
+
+            from oncofiles.ocr import OCR_MODEL, extract_text_from_image
+            from oncofiles.tools._helpers import _resize_image_if_needed
+
+            try:
+                fmt = doc.mime_type.split("/")[1]
+                img = MImage(data=content_bytes, format=fmt)
+                img = _resize_image_if_needed(img)
+                text = extract_text_from_image(img, db=db, document_id=doc.id)
+                await db.save_ocr_page(doc.id, 1, text, OCR_MODEL)
+                text_parts = [text]
+                logger.info("enhance: Vision OCR for image doc %d (%d chars)", doc.id, len(text))
+            except Exception:
+                logger.warning("enhance: Vision OCR failed for image doc %d", doc.id, exc_info=True)
         elif content_bytes and doc.mime_type and doc.mime_type.startswith("text/"):
             try:
                 text_content = content_bytes.decode("utf-8")
