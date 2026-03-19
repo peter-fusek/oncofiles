@@ -466,13 +466,24 @@ def _start_sync_scheduler(db, files, gdrive, oauth_folder_id):
                         expected,
                     )
             # Also auto-detect reference materials in "other" category
-            ref_keywords = ("devita", "nccn", "modra_kniha", "modrakniha", "esmo", "guideline")
+            ref_keywords = (
+                "devita",
+                "nccn",
+                "modra_kniha",
+                "modrakniha",
+                "esmo",
+                "guideline",
+            )
             for doc in docs:
                 if doc.category.value != "other":
                     continue
                 fn = doc.filename.lower()
                 combined = fn + " " + (doc.ai_summary or "").lower()
-                if any(kw in combined for kw in ref_keywords):
+                # Match by keywords OR by VitalSource institution (DeVita page splits)
+                is_reference = any(kw in combined for kw in ref_keywords) or (
+                    doc.institution == "VitalSource"
+                )
+                if is_reference:
                     await db.update_document_category(doc.id, "reference")
                     corrected += 1
                     logger.info("Reference auto-detected: %s other → reference", doc.filename)

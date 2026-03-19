@@ -279,7 +279,10 @@ async def validate_categories(
             "treatment protocol",
             "national comprehensive cancer",
         )
-        if any(kw in combined for kw in ref_keywords):
+        is_reference = any(kw in combined for kw in ref_keywords) or (
+            doc.institution == "VitalSource"
+        )
+        if is_reference:
             entry = {
                 "doc_id": doc.id,
                 "filename": doc.filename,
