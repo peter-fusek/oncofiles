@@ -718,32 +718,10 @@ async def _rename_to_standard(db: Database, gdrive: GDriveClient) -> dict:
             stats["skipped"] += 1
             continue
 
-        # Skip if already in standard format AND filename matches DB metadata
+        # Skip if already in standard format
         if is_standard_format(doc.filename):
-            # Check if filename institution/category matches DB values
-            parts = doc.filename.split("_", 4)  # YYYYMMDD_Patient_Inst_Cat_Desc
-            if len(parts) >= 4:
-                fn_inst = parts[2]
-                fn_cat = parts[3]
-                db_inst = doc.institution or "Unknown"
-                from oncofiles.filename_parser import CATEGORY_FILENAME_TOKENS
-
-                db_cat = CATEGORY_FILENAME_TOKENS.get(doc.category, "Other")
-                if fn_inst != db_inst or fn_cat != db_cat:
-                    logger.info(
-                        "sync_to_gdrive: re-rename %s (fn=%s/%s db=%s/%s)",
-                        doc.filename[:40],
-                        fn_inst,
-                        fn_cat,
-                        db_inst,
-                        db_cat,
-                    )
-                else:
-                    stats["skipped"] += 1
-                    continue
-            else:
-                stats["skipped"] += 1
-                continue
+            stats["skipped"] += 1
+            continue
 
         try:
             # Handle corrupted filenames: use DB metadata instead of parsing
