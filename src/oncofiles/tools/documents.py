@@ -495,12 +495,35 @@ async def update_document_category(ctx: Context, doc_id: int, category: str) -> 
 
     old_category = doc.category.value
     await db.update_document_category(doc_id, valid_category.value)
+
+    # Immediately move file in GDrive to match new category
+    gdrive_moved = False
+    gdrive = _get_gdrive(ctx)
+    if gdrive and doc.gdrive_id and old_category != valid_category.value:
+        try:
+            folder_id = ctx.request_context.lifespan_context.get("gdrive_folder_id", "")
+            if folder_id:
+                # Refresh doc with new category for folder path calculation
+                updated_doc = await db.get_document(doc_id)
+                if updated_doc:
+                    from oncofiles.tools.hygiene import _move_doc_to_correct_folder
+
+                    await _move_doc_to_correct_folder(
+                        gdrive, updated_doc, valid_category.value, folder_id
+                    )
+                    gdrive_moved = True
+        except Exception:
+            logger.warning(
+                "Category changed but GDrive move failed for %s", doc.filename, exc_info=True
+            )
+
     return json.dumps(
         {
             "id": doc_id,
             "old_category": old_category,
             "new_category": valid_category.value,
             "filename": doc.filename,
+            "gdrive_moved": gdrive_moved,
         }
     )
 
