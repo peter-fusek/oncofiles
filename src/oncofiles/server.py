@@ -322,6 +322,51 @@ def _start_sync_scheduler(db, files, gdrive, oauth_folder_id):
         except Exception:
             logger.exception("Trash cleanup failed")
 
+    async def _run_pipeline_integrity_check():
+        """Scheduled check: find and fix any docs stuck in incomplete pipeline state."""
+        try:
+            all_docs = await db.list_documents(limit=500)
+            ocr_ids = await db.get_ocr_document_ids()
+            gaps = []
+
+            for doc in all_docs:
+                doc_gaps = []
+                if doc.id not in ocr_ids:
+                    doc_gaps.append("no_ocr")
+                if not doc.ai_summary:
+                    doc_gaps.append("no_ai")
+                if not doc.structured_metadata:
+                    doc_gaps.append("no_metadata")
+                if not doc.document_date:
+                    doc_gaps.append("no_date")
+                if not doc.gdrive_id:
+                    doc_gaps.append("no_gdrive")
+                if doc_gaps:
+                    gaps.append((doc, doc_gaps))
+
+            if gaps:
+                logger.warning(
+                    "Pipeline integrity: %d docs with gaps: %s",
+                    len(gaps),
+                    ", ".join(f"#{d.id}({'+'.join(g)})" for d, g in gaps[:10]),
+                )
+                # Auto-fix: trigger enhance for docs missing AI/metadata
+                fixable = [d for d, g in gaps if "no_ai" in g or "no_metadata" in g]
+                if fixable and gdrive:
+                    try:
+                        e_stats = await asyncio.wait_for(
+                            extract_all_metadata(db, files, gdrive),
+                            timeout=metadata_timeout,
+                        )
+                        if e_stats["processed"] > 0:
+                            logger.info("Pipeline integrity auto-fix: %s", e_stats)
+                    except Exception:
+                        logger.warning("Pipeline integrity auto-fix failed", exc_info=True)
+            else:
+                logger.info("Pipeline integrity: all %d docs complete", len(all_docs))
+        except Exception:
+            logger.exception("Pipeline integrity check failed")
+
     async def _run_oauth_token_cleanup():
         """Remove expired MCP OAuth tokens older than 30 days."""
         try:
@@ -374,6 +419,12 @@ def _start_sync_scheduler(db, files, gdrive, oauth_folder_id):
         _log_rss,
         CronTrigger(hour="*/6", minute=15),  # every 6 hours at :15
         id="rss_monitor",
+        max_instances=1,
+    )
+    scheduler.add_job(
+        _run_pipeline_integrity_check,
+        CronTrigger(hour="*/6", minute=30),  # every 6 hours at :30
+        id="pipeline_integrity",
         max_instances=1,
     )
 
