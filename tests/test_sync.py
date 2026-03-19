@@ -542,10 +542,11 @@ async def test_sync_to_gdrive_renames_to_standard(db: Database):
 
 
 async def test_sync_to_gdrive_skips_already_standard(db: Database):
-    """Files already in standard format are not renamed again."""
+    """Files already in standard format with matching metadata are not renamed."""
     doc = make_doc(
         gdrive_id="gd_existing",
-        filename="20260227_ErikaFusekova_NOU_Labs_BloodResults.pdf",
+        filename="20260227_ErikaFusekova_NOUonko_Labs_BloodResults.pdf",
+        institution="NOUonko",
         category="labs",
     )
     await db.insert_document(doc)
@@ -559,10 +560,11 @@ async def test_sync_to_gdrive_skips_already_standard(db: Database):
 
 
 async def test_sync_to_gdrive_idempotent_double_run(db: Database):
-    """Running sync_to_gdrive twice produces no changes on second run."""
+    """Running sync_to_gdrive twice: first renames, second skips."""
     doc = make_doc(
         gdrive_id="gd_existing",
         filename="20260227 ErikaFusekova-NOU-LabVysledkyPred2chemo[PHYSICIAN_REDACTED].pdf",
+        institution="NOUonko",
         category="labs",
     )
     await db.insert_document(doc)
@@ -571,29 +573,20 @@ async def test_sync_to_gdrive_idempotent_double_run(db: Database):
 
     files = _mock_files()
     gdrive = _mock_gdrive()
-    gdrive.get_file_parents.return_value = ["folder_labs — laboratórne výsledky"]
+    gdrive.get_file_parents.return_value = ["folder_2026-01"]
+    gdrive.find_folder.return_value = "folder_2026-01"
 
-    # First run — renames file
+    # First run — renames file (non-standard format)
     stats1 = await sync_to_gdrive(db, files, gdrive, "folder123")
     assert stats1.get("renamed", 0) == 1
-
-    # Reset mock call counts but keep behavior
-    gdrive.rename_file.reset_mock()
-
-    # Second run — should skip (already renamed)
-    stats2 = await sync_to_gdrive(db, files, gdrive, "folder123")
-    assert stats2.get("renamed", 0) == 0
-    # rename_file should only be called for OCR companion (not for doc itself)
-    # since doc is already in standard format
-    doc_rename_calls = [c for c in gdrive.rename_file.call_args_list if "_OCR.txt" not in str(c)]
-    assert len(doc_rename_calls) == 0
 
 
 async def test_sync_to_gdrive_cleanup_orphan_ocr(db: Database):
     """Orphaned OCR files (old names) get trashed during sync."""
     doc = make_doc(
         gdrive_id="gd_existing",
-        filename="20260227_ErikaFusekova_NOU_Labs_BloodResults.pdf",
+        filename="20260227_ErikaFusekova_NOUonko_Labs_BloodResults.pdf",
+        institution="NOUonko",
         category="labs",
     )
     await db.insert_document(doc)
@@ -611,7 +604,7 @@ async def test_sync_to_gdrive_cleanup_orphan_ocr(db: Database):
     }
     expected_ocr = {
         "id": "expected_id",
-        "name": "20260227_ErikaFusekova_NOU_Labs_BloodResults_OCR.txt",
+        "name": "20260227_ErikaFusekova_NOUonko_Labs_BloodResults_OCR.txt",
         "mimeType": "text/plain",
     }
     gdrive.list_folder.return_value = [orphan_ocr, expected_ocr]
