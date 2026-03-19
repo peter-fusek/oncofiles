@@ -1517,6 +1517,35 @@ async def _enhance_document(
                 for page_num, text in enumerate(pdf_texts, start=1):
                     await db.save_ocr_page(doc.id, page_num, text, "pymupdf-native")
                 text_parts = pdf_texts
+            else:
+                # Scanned PDF: fall back to Vision OCR
+                import fitz
+                from fastmcp.utilities.types import Image as MImage
+
+                from oncofiles.ocr import OCR_MODEL, extract_text_from_image
+                from oncofiles.tools._helpers import _resize_image_if_needed
+
+                try:
+                    pdf_doc = fitz.open(stream=content_bytes, filetype="pdf")
+                    for page_num, page in enumerate(pdf_doc, start=1):
+                        pix = page.get_pixmap(dpi=200)
+                        try:
+                            img = MImage(data=pix.tobytes("jpeg"), format="jpeg")
+                            img = _resize_image_if_needed(img)
+                            text = extract_text_from_image(img, db=db, document_id=doc.id)
+                            await db.save_ocr_page(doc.id, page_num, text, OCR_MODEL)
+                            text_parts.append(text)
+                        finally:
+                            del pix
+                    pdf_doc.close()
+                    if text_parts:
+                        logger.info(
+                            "enhance: Vision OCR for doc %d (%d pages)",
+                            doc.id,
+                            len(text_parts),
+                        )
+                except Exception:
+                    logger.warning("enhance: Vision OCR failed for doc %d", doc.id, exc_info=True)
         elif content_bytes and doc.mime_type and doc.mime_type.startswith("text/"):
             try:
                 text_content = content_bytes.decode("utf-8")
