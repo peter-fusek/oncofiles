@@ -337,17 +337,19 @@ async def test_sync_to_gdrive_organizes_existing(db: Database):
 
 
 async def test_sync_to_gdrive_skips_already_organized(db: Database):
-    """Documents already in correct organized folder are skipped."""
+    """Documents already in correct year-month folder are skipped."""
     doc = make_doc(gdrive_id="existing_gd_id")
     await db.insert_document(doc)
 
     files = _mock_files()
     gdrive = _mock_gdrive()
-    # File is already in an organized category folder (bilingual name)
-    gdrive.get_file_parents.return_value = ["folder_report — lekárske správy"]
+    # File is already in the correct year-month folder (2024-01 for date 2024-01-15)
+    gdrive.get_file_parents.return_value = ["folder_2024-01"]
+    # find_folder returns the folder ID to indicate it already exists
+    gdrive.find_folder.return_value = "folder_2024-01"
 
     stats = await sync_to_gdrive(db, files, gdrive, "folder123")
-    assert stats["skipped"] >= 1  # Phase 1 skip + post-rename re-check skip
+    assert stats["skipped"] >= 1
     assert stats["organized"] == 0
 
 

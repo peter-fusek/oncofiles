@@ -557,11 +557,6 @@ def _move_to_organized_folder(
         stats["skipped"] += 1
         return
 
-    # Check if already in an organized folder (category folder or year-month subfolder)
-    if any(p in organized_folder_ids for p in parents):
-        stats["skipped"] += 1
-        return
-
     # Determine target folder
     cat_name, year_month = get_category_folder_path(
         doc.category.value,
@@ -572,6 +567,17 @@ def _move_to_organized_folder(
         target_folder = ensure_year_month_folder(gdrive, target_folder, year_month + "-01")
         # Track new year-month folder as organized
         organized_folder_ids.add(target_folder)
+
+    # Check if already in the correct target folder
+    if any(p == target_folder for p in parents):
+        stats["skipped"] += 1
+        return
+
+    # Skip if no date and already in any organized folder
+    if year_month is None and any(p in organized_folder_ids for p in parents):
+        # No date → category folder is fine
+        stats["skipped"] += 1
+        return
 
     logger.info(
         "sync_to_gdrive: moving %s to %s/%s",
@@ -612,10 +618,6 @@ def _batch_organize_files(
         if not parents:
             stats["skipped"] += 1
             continue
-        if any(p in organized_folder_ids for p in parents):
-            stats["skipped"] += 1
-            continue
-
         # Determine target folder
         cat_name, year_month = get_category_folder_path(
             doc.category.value,
@@ -625,6 +627,15 @@ def _batch_organize_files(
         if year_month:
             target_folder = ensure_year_month_folder(gdrive, target_folder, year_month + "-01")
             organized_folder_ids.add(target_folder)
+
+        # Skip if already in the correct target folder
+        if any(p == target_folder for p in parents):
+            stats["skipped"] += 1
+            continue
+        # Skip if no date and already in any organized folder
+        if year_month is None and any(p in organized_folder_ids for p in parents):
+            stats["skipped"] += 1
+            continue
 
         old_parents_csv = ",".join(parents)
         moves[doc.gdrive_id] = (target_folder, old_parents_csv)
