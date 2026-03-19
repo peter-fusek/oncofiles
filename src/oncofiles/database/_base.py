@@ -134,10 +134,16 @@ class _TursoConnection:
                     "DB driver error (%s), reconnecting: %s", type(exc).__name__, sql[:100]
                 )
                 await self.reconnect()
-                return await asyncio.wait_for(
-                    asyncio.to_thread(self._conn.execute, sql, params),
-                    timeout=self._QUERY_TIMEOUT,
-                )
+                try:
+                    return await asyncio.wait_for(
+                        asyncio.to_thread(self._conn.execute, sql, params),
+                        timeout=self._QUERY_TIMEOUT,
+                    )
+                except BaseException as retry_exc:
+                    # Convert PanicException to RuntimeError so except Exception catches it
+                    raise RuntimeError(
+                        f"DB driver panic after reconnect: {retry_exc}"
+                    ) from retry_exc
             raise
 
     async def executescript(self, sql: str) -> None:

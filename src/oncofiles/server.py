@@ -1105,7 +1105,7 @@ async def api_documents(request: Request) -> JSONResponse:
             limit = 200
         result = await _build_document_matrix(db, filter_param=filter_param, limit=limit)
         return JSONResponse(result)
-    except BaseException:
+    except Exception:
         logger.exception("API documents endpoint error")
         return JSONResponse({"error": "internal error"}, status_code=500)
 
