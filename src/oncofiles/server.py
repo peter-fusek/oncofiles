@@ -238,7 +238,10 @@ def _start_sync_scheduler(db, files, gdrive, oauth_folder_id):
 
     sync_timeout = 300  # 5 minutes max for scheduled sync
 
+    _last_sync_time: str | None = None
+
     async def _run_sync(trigger: str = "scheduled"):
+        nonlocal _last_sync_time
         import gc
         import resource
 
@@ -254,11 +257,25 @@ def _start_sync_scheduler(db, files, gdrive, oauth_folder_id):
         if not folder_id:
             logger.debug("Scheduled sync skipped — no folder ID")
             return
+
+        # Lightweight pre-check: skip heavy sync if no GDrive changes
+        if _last_sync_time and trigger == "scheduled" and gdrive:
+            try:
+                has_changes = await asyncio.to_thread(
+                    gdrive.has_changes_since, folder_id, _last_sync_time
+                )
+                if not has_changes:
+                    logger.debug("Sync skipped — no GDrive changes since %s", _last_sync_time)
+                    return
+            except Exception:
+                pass  # On error, proceed with full sync
+
         try:
             stats = await asyncio.wait_for(
                 sync(db, files, gdrive, folder_id, trigger=trigger),
                 timeout=sync_timeout,
             )
+            _last_sync_time = datetime.now(UTC).isoformat()
             logger.info("Scheduled sync complete: %s", stats)
             # Auto-enhance new docs after sync (if any were imported)
             if stats.get("new", 0) > 0 or stats.get("updated", 0) > 0:

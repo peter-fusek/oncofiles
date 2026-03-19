@@ -275,6 +275,29 @@ class GDriveClient:
         return result
 
     @_retry_on_transient
+    def has_changes_since(self, folder_id: str, since_iso: str) -> bool:
+        """Quick check: are there any files modified since the given ISO timestamp?
+
+        Only checks the root folder (non-recursive) for speed. Single API call.
+        """
+        try:
+            response = (
+                self._service.files()
+                .list(
+                    q=(
+                        f"'{folder_id}' in parents and trashed = false"
+                        f" and modifiedTime > '{since_iso}'"
+                    ),
+                    fields="files(id)",
+                    pageSize=1,
+                )
+                .execute()
+            )
+            return len(response.get("files", [])) > 0
+        except Exception:
+            # On error, assume changes exist (fail open)
+            return True
+
     def list_folder(self, folder_id: str, recursive: bool = True) -> list[dict]:
         """List all files in a Google Drive folder.
 
