@@ -274,6 +274,9 @@
       color: var(--text-muted);
       font-size: 0.875rem;
     }
+    .doc-detail-row td {
+      border-bottom: 1px solid var(--border) !important;
+    }
 
     /* Remedies panel */
     .remedies {
@@ -877,6 +880,33 @@
         count.textContent = st.count;
         row.appendChild(count);
 
+        row.style.cursor = 'pointer';
+        row.title = 'Click for details';
+        row.onclick = (function(stage) { return function() {
+          var info = {
+            'Total': 'Total documents imported from Google Drive. Triggered by: scheduled GDrive sync (every 5 min) or manual upload.',
+            'OCR': 'Text extraction from scanned PDFs and images. Triggered by: new document import. Uses: Claude Haiku vision model for scanned docs, PyMuPDF for text PDFs.',
+            'AI Summary': 'AI-generated summary and tags. Triggered by: after OCR completion. Uses: Claude Haiku with system prompt asking for medical document summary, key findings, diagnoses.',
+            'Metadata': 'Structured data extraction (document_type, findings, diagnoses, medications, providers). Triggered by: after AI summary. Uses: Claude Haiku with JSON schema prompt.',
+            'Synced': 'Bidirectional Google Drive sync. Files exported to organized category/year-month folders with standard naming.',
+            'Named': 'Standard filename format: YYYYMMDD_ErikaFusekova_Institution_Category_Description.ext. Auto-renamed during sync.',
+            'Complete': 'All pipeline stages passed: OCR + AI Summary + Metadata + Synced + Named. The document is fully processed.'
+          };
+          var existing = document.getElementById('funnel-tooltip');
+          if (existing) { existing.remove(); if (existing.dataset.stage === stage.label) return; }
+          var tip = document.createElement('div');
+          tip.id = 'funnel-tooltip';
+          tip.dataset.stage = stage.label;
+          tip.style.cssText = 'background:var(--surface);border:1px solid var(--border);border-radius:0.5rem;padding:1rem;margin:0.75rem 0;font-size:0.8125rem;color:var(--text-muted);line-height:1.6';
+          var title = document.createElement('strong');
+          title.style.color = 'var(--accent)';
+          title.textContent = stage.label;
+          tip.appendChild(title);
+          tip.appendChild(document.createElement('br'));
+          tip.appendChild(document.createTextNode(info[stage.label] || 'Pipeline stage'));
+          funnelEl.appendChild(tip);
+        }; })(st);
+
         funnelEl.appendChild(row);
       });
 
@@ -951,6 +981,50 @@
           td.appendChild(makeDot(d[f]));
           tr.appendChild(td);
         });
+
+        tr.style.cursor = 'pointer';
+        tr.onclick = (function(doc) { return function() {
+          var existingDetail = tr.nextElementSibling;
+          if (existingDetail && existingDetail.className === 'doc-detail-row') {
+            existingDetail.remove();
+            return;
+          }
+          document.querySelectorAll('.doc-detail-row').forEach(function(el) { el.remove(); });
+
+          var detailRow = document.createElement('tr');
+          detailRow.className = 'doc-detail-row';
+          var detailTd = document.createElement('td');
+          detailTd.setAttribute('colspan', '8');
+          detailTd.style.cssText = 'padding:1rem;background:rgba(20,184,166,0.04);font-size:0.8125rem;line-height:1.6';
+
+          var lines = [];
+          lines.push('ID: #' + doc.id);
+          if (doc.gdrive_id) lines.push('GDrive: https://drive.google.com/file/d/' + doc.gdrive_id + '/view');
+          lines.push('Category: ' + (doc.category || '-'));
+          lines.push('Date: ' + (doc.date || '-'));
+          lines.push('OCR: ' + (doc.has_ocr ? 'Yes' : 'No'));
+          lines.push('AI Summary: ' + (doc.has_ai ? 'Yes' : 'No'));
+          lines.push('Metadata: ' + (doc.has_metadata ? 'Yes' : 'No'));
+          lines.push('Synced: ' + (doc.is_synced ? 'Yes' : 'No'));
+          lines.push('Standard Name: ' + (doc.is_standard_name ? 'Yes' : 'No'));
+
+          detailTd.textContent = lines.join('\n');
+          detailTd.style.whiteSpace = 'pre-line';
+
+          if (doc.gdrive_id) {
+            var link = document.createElement('a');
+            link.href = 'https://drive.google.com/file/d/' + encodeURIComponent(doc.gdrive_id) + '/view';
+            link.target = '_blank';
+            link.rel = 'noopener';
+            link.style.cssText = 'display:inline-block;margin-top:0.5rem;padding:0.25rem 0.75rem;background:var(--accent);color:var(--bg);border-radius:0.375rem;font-size:0.75rem;font-weight:600;text-decoration:none;margin-right:0.5rem';
+            link.textContent = 'Open on GDrive';
+            detailTd.appendChild(document.createElement('br'));
+            detailTd.appendChild(link);
+          }
+
+          detailRow.appendChild(detailTd);
+          tr.parentNode.insertBefore(detailRow, tr.nextSibling);
+        }; })(d);
 
         tbody.appendChild(tr);
       });
