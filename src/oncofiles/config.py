@@ -51,6 +51,10 @@ CALENDAR_ENABLED: bool = os.environ.get("CALENDAR_ENABLED", "false").lower() in 
     "yes",
 )
 
+# Oncoteam webhook (real-time document processing)
+ONCOTEAM_WEBHOOK_URL: str = os.environ.get("ONCOTEAM_WEBHOOK_URL", "")
+ONCOTEAM_WEBHOOK_TOKEN: str = os.environ.get("ONCOTEAM_WEBHOOK_TOKEN", "")
+
 # Patient context
 PATIENT_CONTEXT_PATH: str = os.environ.get(
     "PATIENT_CONTEXT_PATH", str(DATA_DIR / "patient_context.json")

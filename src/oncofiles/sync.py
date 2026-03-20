@@ -279,6 +279,11 @@ async def sync_from_gdrive(
                 )
                 doc = await db.insert_document(doc)
 
+                # Notify oncoteam of new document (fire-and-forget)
+                from oncofiles.webhook import notify_oncoteam
+
+                notify_oncoteam(doc.id, doc.filename, doc.category.value)
+
                 # Set appProperties on GDrive for future matching
                 try:
                     await asyncio.to_thread(

@@ -103,6 +103,11 @@ async def upload_document(
 
     doc = await db.insert_document(doc)
 
+    # Notify oncoteam of new document (fire-and-forget)
+    from oncofiles.webhook import notify_oncoteam
+
+    notify_oncoteam(doc.id, doc.filename, doc.category.value)
+
     # Auto-sync to GDrive if available
     gdrive_id = None
     gdrive = _get_gdrive(ctx)
