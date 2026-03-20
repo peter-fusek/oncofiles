@@ -363,6 +363,7 @@ class PromptCallType(StrEnum):
     SUMMARY_TAGS = "summary_tags"
     STRUCTURED_METADATA = "structured_metadata"
     FILENAME_DESCRIPTION = "filename_description"
+    EMAIL_CLASSIFY = "email_classify"
 
 
 class PromptLogEntry(BaseModel):

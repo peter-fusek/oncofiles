@@ -229,7 +229,7 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict]:
     # Start background sync scheduler
     scheduler = None
     if SYNC_ENABLED and gdrive:
-        scheduler = _start_sync_scheduler(db, files, gdrive, oauth_folder_id)
+        scheduler = _start_sync_scheduler(db, files, gdrive, oauth_folder_id, gmail_client)
 
     # Warmup: ping Turso to ensure connection is fresh before accepting requests
     try:
@@ -266,8 +266,8 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict]:
         await db.close()
 
 
-def _start_sync_scheduler(db, files, gdrive, oauth_folder_id):
-    """Start APScheduler for periodic GDrive sync."""
+def _start_sync_scheduler(db, files, gdrive, oauth_folder_id, gmail_client=None):
+    """Start APScheduler for periodic GDrive sync and Gmail sync."""
     from apscheduler.schedulers.asyncio import AsyncIOScheduler
     from apscheduler.triggers.interval import IntervalTrigger
 
@@ -628,6 +628,72 @@ def _start_sync_scheduler(db, files, gdrive, oauth_folder_id):
         max_instances=1,
     )
     logger.info("Startup catchup scheduled for %s", startup_time.strftime("%H:%M:%S"))
+
+    # ── Gmail sync jobs ───────────────────────────────────────────────────
+    gmail_sync_timeout = 300  # 5 minutes max
+
+    async def _run_gmail_sync(trigger: str = "scheduled"):
+        if not gmail_client:
+            return
+        import gc
+
+        from oncofiles.gmail_sync import gmail_sync as _gmail_sync
+
+        try:
+            stats = await asyncio.wait_for(
+                _gmail_sync(db, files, gmail_client, initial=False),
+                timeout=gmail_sync_timeout,
+            )
+            if not stats.get("skipped"):
+                logger.info("Gmail sync (%s): %s", trigger, stats)
+        except TimeoutError:
+            logger.error("Gmail sync timed out after %ds", gmail_sync_timeout)
+        except Exception:
+            logger.exception("Gmail sync failed")
+        finally:
+            gc.collect()
+
+    async def _startup_gmail_sync():
+        if not gmail_client:
+            return
+        import gc
+
+        from oncofiles.gmail_sync import gmail_sync as _gmail_sync
+
+        try:
+            stats = await asyncio.wait_for(
+                _gmail_sync(db, files, gmail_client, initial=True),
+                timeout=gmail_sync_timeout,
+            )
+            logger.info("Gmail initial sync: %s", stats)
+        except TimeoutError:
+            logger.error("Gmail initial sync timed out after %ds", gmail_sync_timeout)
+        except Exception:
+            logger.exception("Gmail initial sync failed")
+        finally:
+            gc.collect()
+
+    if gmail_client:
+        scheduler.add_job(
+            _run_gmail_sync,
+            IntervalTrigger(
+                minutes=SYNC_INTERVAL_MINUTES, start_date=datetime.now() + timedelta(minutes=2)
+            ),
+            id="gmail_sync",
+            max_instances=1,
+        )
+        gmail_startup_time = datetime.now() + timedelta(seconds=90)
+        scheduler.add_job(
+            _startup_gmail_sync,
+            DateTrigger(run_date=gmail_startup_time),
+            id="gmail_startup_sync",
+            max_instances=1,
+        )
+        logger.info(
+            "Gmail sync scheduled — every %d min (offset +2m), startup at %s",
+            SYNC_INTERVAL_MINUTES,
+            gmail_startup_time.strftime("%H:%M:%S"),
+        )
 
     # Log scheduler job outcomes for observability
     def _job_executed(event):
