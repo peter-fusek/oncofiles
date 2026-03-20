@@ -32,7 +32,7 @@ AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 TOKEN_URL = "https://oauth2.googleapis.com/token"
 
 # State token validity window (seconds)
-_STATE_MAX_AGE = 600  # 10 minutes
+_STATE_MAX_AGE = 1800  # 30 minutes
 
 
 def _make_state_token() -> str:
