@@ -560,6 +560,111 @@ def _start_sync_scheduler(
         max_instances=1,
     )
 
+    async def _run_empty_folder_cleanup():
+        """Remove empty year-month subfolders and merge duplicates from GDrive."""
+        if not gdrive:
+            return
+        try:
+            folder_id = _get_sync_folder_id_from(oauth_folder_id)
+            if not folder_id:
+                return
+
+            cleaned = 0
+            merged = 0
+
+            # Get category folder structure
+            _, folder_map = await asyncio.to_thread(gdrive.list_folder_with_structure, folder_id)
+
+            # For each category folder, check subfolders
+            for cat_folder_id, cat_name in folder_map.items():
+                try:
+                    sub_folders_raw = await asyncio.to_thread(
+                        lambda fid=cat_folder_id: (
+                            gdrive._service.files()
+                            .list(
+                                q=(
+                                    f"'{fid}' in parents"
+                                    f" and mimeType = 'application/vnd.google-apps.folder'"
+                                    f" and trashed = false"
+                                ),
+                                fields="files(id, name)",
+                                pageSize=100,
+                            )
+                            .execute()
+                        )
+                    )
+                    sub_folders = sub_folders_raw.get("files", [])
+
+                    # Check for duplicates (same name)
+                    by_name: dict[str, list[str]] = {}
+                    for sf in sub_folders:
+                        by_name.setdefault(sf["name"], []).append(sf["id"])
+
+                    for name, ids in by_name.items():
+                        if len(ids) > 1:
+                            # Merge: keep first, trash empty duplicates
+                            keep = ids[0]
+                            for dup in ids[1:]:
+                                contents = await asyncio.to_thread(
+                                    lambda did=dup: (
+                                        gdrive._service.files()
+                                        .list(
+                                            q=f"'{did}' in parents and trashed = false",
+                                            fields="files(id)",
+                                            pageSize=1,
+                                        )
+                                        .execute()
+                                    )
+                                )
+                                if not contents.get("files"):
+                                    await asyncio.to_thread(gdrive.trash_file, dup)
+                                    merged += 1
+                                    logger.info(
+                                        "Merged duplicate folder '%s/%s' (%s), keeping %s",
+                                        cat_name,
+                                        name,
+                                        dup,
+                                        keep,
+                                    )
+
+                    # Check for empty folders
+                    for sf in sub_folders:
+                        contents = await asyncio.to_thread(
+                            lambda sid=sf["id"]: (
+                                gdrive._service.files()
+                                .list(
+                                    q=f"'{sid}' in parents and trashed = false",
+                                    fields="files(id)",
+                                    pageSize=1,
+                                )
+                                .execute()
+                            )
+                        )
+                        if not contents.get("files"):
+                            await asyncio.to_thread(gdrive.trash_file, sf["id"])
+                            cleaned += 1
+                            logger.info("Trashed empty folder '%s/%s'", cat_name, sf["name"])
+
+                except Exception:
+                    logger.warning("Empty folder check failed for %s", cat_name, exc_info=True)
+
+            if cleaned or merged:
+                logger.info(
+                    "Folder cleanup: %d empty trashed, %d duplicates merged", cleaned, merged
+                )
+            else:
+                logger.info("Folder cleanup: all folders OK")
+
+        except Exception:
+            logger.exception("Empty folder cleanup failed")
+
+    scheduler.add_job(
+        _run_empty_folder_cleanup,
+        CronTrigger(hour=3, minute=15),  # daily at 3:15 AM (between trash and metadata)
+        id="empty_folder_cleanup",
+        max_instances=1,
+    )
+
     # Startup: full sync + enhance + category validation 60s after boot
     from apscheduler.triggers.date import DateTrigger
 

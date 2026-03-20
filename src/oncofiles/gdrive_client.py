@@ -411,6 +411,26 @@ class GDriveClient:
         return files[0]["id"] if files else None
 
     @_retry_on_transient
+    def find_all_folders(self, name: str, parent_id: str) -> list[str]:
+        """Find ALL folders with given name under parent. Returns list of folder IDs."""
+        safe_name = name.replace("\\", "\\\\").replace("'", "\\'")
+        response = (
+            self._service.files()
+            .list(
+                q=(
+                    f"'{parent_id}' in parents and name = '{safe_name}' "
+                    f"and mimeType = 'application/vnd.google-apps.folder' "
+                    f"and trashed = false"
+                ),
+                fields="files(id, createdTime)",
+                orderBy="createdTime",
+                pageSize=10,
+            )
+            .execute()
+        )
+        return [f["id"] for f in response.get("files", [])]
+
+    @_retry_on_transient
     def set_app_properties(self, file_id: str, properties: dict) -> None:
         """Set appProperties on a file for metadata tracking."""
         self._service.files().update(

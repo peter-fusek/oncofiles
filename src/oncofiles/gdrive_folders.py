@@ -108,11 +108,37 @@ def ensure_year_month_folder(gdrive, category_folder_id: str, date_str: str) -> 
 
 
 def find_or_create_folder(gdrive, name: str, parent_id: str) -> str:
-    """Find an existing folder or create a new one. Returns folder ID."""
+    """Find an existing folder or create a new one. Returns folder ID.
+
+    Handles race conditions: if a duplicate is created concurrently,
+    detects it and returns the first one found.
+    """
     existing = gdrive.find_folder(name, parent_id)
     if existing:
         return existing
-    return gdrive.create_folder(name, parent_id)
+    new_id = gdrive.create_folder(name, parent_id)
+    # Race condition check: see if another folder was created concurrently
+    # by listing all matching folders
+    try:
+        import time
+
+        time.sleep(0.5)  # brief delay for eventual consistency
+        all_matching = gdrive.find_all_folders(name, parent_id)
+        if len(all_matching) > 1:
+            # Keep the first (oldest), trash duplicates
+            keep = all_matching[0]
+            for dup_id in all_matching[1:]:
+                try:
+                    gdrive.trash_file(dup_id)
+                    logger.warning(
+                        "Trashed duplicate folder '%s' (%s), keeping %s", name, dup_id, keep
+                    )
+                except Exception:
+                    pass
+            return keep
+    except Exception:
+        pass
+    return new_id
 
 
 def get_category_folder_path(
