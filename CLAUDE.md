@@ -41,4 +41,4 @@ uv run ruff check
 
 - **Railway**: `aware-kindness-production.up.railway.app` (streamable-http at /mcp)
 - Push to `main` auto-deploys via Railway
-- 552 tests, CI green
+- 584 tests, CI green

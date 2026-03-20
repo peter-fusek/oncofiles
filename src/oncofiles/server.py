@@ -44,7 +44,7 @@ from oncofiles.gdrive_client import GDriveClient, create_gdrive_client
 logger = logging.getLogger(__name__)
 
 # Stats constants (single source of truth for values that can't be computed at runtime)
-TESTS_COUNT = 580
+TESTS_COUNT = 584
 
 
 def _check_bearer(request: Request) -> JSONResponse | None:
