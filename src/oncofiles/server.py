@@ -1504,6 +1504,35 @@ async def api_prompt_log(request: Request) -> JSONResponse:
         return JSONResponse({"error": "internal error"}, status_code=500)
 
 
+@mcp.custom_route("/oauth/authorize/{service}", methods=["GET"])
+async def oauth_authorize(request: Request) -> Response:
+    """Redirect to Google OAuth for a specific service (drive, gmail, calendar)."""
+    from starlette.responses import RedirectResponse
+
+    from oncofiles.config import GOOGLE_OAUTH_CLIENT_ID
+    from oncofiles.oauth import (
+        ALL_SCOPES,
+        CALENDAR_SCOPES,
+        GMAIL_SCOPES,
+        SCOPES,
+        get_auth_url_for_scopes,
+    )
+
+    if not GOOGLE_OAUTH_CLIENT_ID:
+        return JSONResponse({"error": "OAuth not configured"}, status_code=500)
+
+    service = request.path_params.get("service", "drive")
+    scope_map = {
+        "drive": SCOPES,
+        "gmail": GMAIL_SCOPES,
+        "calendar": CALENDAR_SCOPES,
+        "all": ALL_SCOPES,
+    }
+    scopes = scope_map.get(service, SCOPES)
+    auth_url = get_auth_url_for_scopes(scopes)
+    return RedirectResponse(auth_url)
+
+
 @mcp.custom_route("/oauth/callback", methods=["GET"])
 async def oauth_callback(request: Request) -> JSONResponse:
     """Handle Google OAuth 2.0 redirect callback."""
