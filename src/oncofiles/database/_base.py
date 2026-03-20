@@ -4,12 +4,74 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from pathlib import Path
 from typing import Any
 
 import aiosqlite
 
 logger = logging.getLogger(__name__)
+
+
+# ── Circuit breaker ──────────────────────────────────────────────────────────
+
+
+class _CircuitBreaker:
+    """Prevents tight reconnect loops when Turso driver panics repeatedly.
+
+    States: CLOSED (normal) → OPEN (failing, reject fast) → HALF_OPEN (probe).
+    After ``max_failures`` consecutive failures within ``window`` seconds,
+    opens the circuit for ``cooldown`` seconds.
+    """
+
+    CLOSED = "closed"
+    OPEN = "open"
+    HALF_OPEN = "half_open"
+
+    def __init__(
+        self,
+        max_failures: int = 3,
+        window: float = 60.0,
+        cooldown: float = 30.0,
+    ) -> None:
+        self.max_failures = max_failures
+        self.window = window
+        self.cooldown = cooldown
+        self._state = self.CLOSED
+        self._failure_times: list[float] = []
+        self._opened_at: float = 0.0
+
+    @property
+    def state(self) -> str:
+        if self._state == self.OPEN and time.monotonic() - self._opened_at >= self.cooldown:
+            self._state = self.HALF_OPEN
+        return self._state
+
+    def record_success(self) -> None:
+        self._failure_times.clear()
+        self._state = self.CLOSED
+
+    def record_failure(self) -> None:
+        now = time.monotonic()
+        self._failure_times = [t for t in self._failure_times if now - t < self.window]
+        self._failure_times.append(now)
+        if len(self._failure_times) >= self.max_failures:
+            self._state = self.OPEN
+            self._opened_at = now
+            logger.error(
+                "Circuit breaker OPEN: %d failures in %.0fs, cooling down %.0fs",
+                len(self._failure_times),
+                self.window,
+                self.cooldown,
+            )
+
+    def check(self) -> None:
+        """Raise if circuit is open."""
+        state = self.state
+        if state == self.OPEN:
+            wait = self.cooldown - (time.monotonic() - self._opened_at)
+            raise RuntimeError(f"Circuit breaker open — DB unavailable, retry in {wait:.0f}s")
+
 
 MIGRATIONS_DIR = Path(__file__).parent.parent.parent.parent / "migrations"
 
@@ -96,6 +158,7 @@ class _TursoConnection:
         self._url = url
         self._auth_token = auth_token
         self._conn: Any = None
+        self._breaker = _CircuitBreaker()
 
     async def connect(self) -> None:
         import libsql_experimental as libsql
@@ -119,29 +182,41 @@ class _TursoConnection:
     _QUERY_TIMEOUT = 30.0  # seconds
 
     async def _execute_raw(self, sql: str, params: tuple) -> Any:
-        """Execute SQL, auto-reconnecting on stale stream errors. 30s timeout."""
+        """Execute SQL, auto-reconnecting on stale stream errors. 30s timeout.
+
+        Uses a circuit breaker to prevent tight reconnect loops when the
+        Turso driver panics repeatedly (e.g. overnight stale connections).
+        """
+        self._breaker.check()
         try:
-            return await asyncio.wait_for(
+            result = await asyncio.wait_for(
                 asyncio.to_thread(self._conn.execute, sql, params),
                 timeout=self._QUERY_TIMEOUT,
             )
+            self._breaker.record_success()
+            return result
         except TimeoutError:
             logger.error("Query timed out after %.0fs: %s", self._QUERY_TIMEOUT, sql[:200])
+            self._breaker.record_failure()
             raise
         except BaseException as exc:
             if _is_stale_stream_error(exc) or "PanicException" in type(exc).__name__:
+                self._breaker.record_failure()
+                self._breaker.check()  # bail early if breaker just opened
                 logger.warning(
                     "DB driver error (%s), reconnecting: %s", type(exc).__name__, sql[:100]
                 )
                 await self.reconnect()
                 try:
-                    return await asyncio.wait_for(
+                    result = await asyncio.wait_for(
                         asyncio.to_thread(self._conn.execute, sql, params),
                         timeout=self._QUERY_TIMEOUT,
                     )
+                    self._breaker.record_success()
+                    return result
                 except BaseException as retry_exc:
+                    self._breaker.record_failure()
                     if "PanicException" in type(retry_exc).__name__:
-                        # Wrap so callers' except Exception catches it
                         raise RuntimeError(
                             f"DB driver panic after reconnect: {retry_exc}"
                         ) from retry_exc

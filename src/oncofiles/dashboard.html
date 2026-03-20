@@ -434,6 +434,7 @@
         <span class="pill" data-filter="missing_metadata">Missing Meta</span>
         <span class="pill" data-filter="not_synced">Not Synced</span>
         <span class="pill" data-filter="not_renamed">Not Renamed</span>
+        <button onclick="runReconciliation()" style="margin-left:auto;padding:0.25rem 0.75rem;background:var(--surface);border:1px solid var(--border);border-radius:0.375rem;color:var(--text-muted);cursor:pointer;font-size:0.75rem" onmouseover="this.style.borderColor='var(--accent)'" onmouseout="this.style.borderColor='var(--border)'">Reconcile</button>
       </div>
 
       <!-- Document table -->
@@ -461,6 +462,13 @@
       <div class="remedies" id="remedies-panel" style="display:none">
         <h2>Errors &amp; Remedies</h2>
         <div id="remedies-rows"></div>
+      </div>
+
+      <!-- Reconciliation -->
+      <div class="panel" id="recon-panel" style="display:none">
+        <div class="panel-title">DB vs GDrive Reconciliation</div>
+        <div id="recon-summary" style="display:flex;gap:1.5rem;margin-bottom:0.75rem;font-size:0.8125rem;color:var(--text-muted)"></div>
+        <div id="recon-issues"></div>
       </div>
 
       <!-- Sync history -->
@@ -1061,6 +1069,71 @@
 
         rowsEl.appendChild(row);
       });
+    }
+
+    // ── Reconciliation ───────────────────────────────────────────────────
+
+    var reconLoaded = false;
+
+    async function runReconciliation() {
+      var panel = document.getElementById('recon-panel');
+      panel.style.display = 'block';
+      var summaryEl = document.getElementById('recon-summary');
+      var issuesEl = document.getElementById('recon-issues');
+      summaryEl.textContent = 'Loading...';
+      clearEl(issuesEl);
+      try {
+        var data = await apiFetch('/api/reconciliation');
+        reconLoaded = true;
+        clearEl(summaryEl);
+
+        var items = [
+          { label: 'DB docs', value: data.db_count },
+          { label: 'GDrive files', value: data.gdrive_count },
+        ];
+        items.forEach(function(it) {
+          var s = document.createElement('span');
+          var v = document.createElement('strong');
+          v.style.color = 'var(--accent)';
+          v.textContent = it.value;
+          s.appendChild(v);
+          s.appendChild(document.createTextNode(' ' + it.label));
+          summaryEl.appendChild(s);
+        });
+
+        if (data.healthy) {
+          var ok = document.createElement('span');
+          ok.style.color = 'var(--green)';
+          ok.textContent = 'All synced';
+          summaryEl.appendChild(ok);
+        }
+
+        function addIssueSection(title, items, cols) {
+          if (!items || items.length === 0) return;
+          var h = document.createElement('div');
+          h.style.cssText = 'font-size:0.8125rem;font-weight:600;margin:0.75rem 0 0.25rem;color:var(--red)';
+          h.textContent = title + ' (' + items.length + ')';
+          issuesEl.appendChild(h);
+          items.forEach(function(item) {
+            var row = document.createElement('div');
+            row.className = 'sync-row';
+            cols.forEach(function(col) {
+              var sp = document.createElement('span');
+              sp.style.cssText = 'font-size:0.75rem;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
+              sp.textContent = item[col] || '-';
+              row.appendChild(sp);
+            });
+            issuesEl.appendChild(row);
+          });
+        }
+
+        addIssueSection('In DB but missing from GDrive', data.in_db_not_gdrive, ['filename', 'gdrive_id']);
+        addIssueSection('In GDrive but not in DB (orphans)', data.in_gdrive_not_db, ['name', 'gdrive_id']);
+        addIssueSection('Filename mismatch', data.filename_mismatch, ['db_filename', 'gdrive_filename']);
+
+      } catch (e) {
+        summaryEl.textContent = 'Error: ' + e.message;
+      }
     }
 
     // ── Event Listeners ──────────────────────────────────────────────────

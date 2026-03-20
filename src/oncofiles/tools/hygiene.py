@@ -917,6 +917,74 @@ async def list_tool_definitions(ctx: Context) -> str:
     )
 
 
+async def _build_reconciliation_report(db, gdrive, folder_id: str) -> dict:
+    """Build DB vs GDrive reconciliation report — shared by API endpoint.
+
+    Compares documents in DB against files in GDrive to find:
+    - docs in DB whose gdrive_id doesn't exist in GDrive
+    - files in GDrive not tracked in DB (orphans)
+    - filename mismatches between DB and GDrive
+    """
+    # Fetch both sides
+    gdrive_files = await asyncio.to_thread(gdrive.list_folder, folder_id)
+    db_docs = await db.list_documents(limit=500)
+
+    # Build lookup maps
+    # GDrive: id -> file dict (exclude metadata JSON files)
+    gdrive_by_id: dict[str, dict] = {}
+    for f in gdrive_files:
+        if f["name"].endswith(".metadata.json"):
+            continue
+        gdrive_by_id[f["id"]] = f
+
+    # DB: gdrive_id -> doc (only docs that have a gdrive_id)
+    db_by_gdrive_id: dict[str, object] = {}
+    for doc in db_docs:
+        if doc.gdrive_id:
+            db_by_gdrive_id[doc.gdrive_id] = doc
+
+    # In DB but not in GDrive
+    in_db_not_gdrive = []
+    for doc in db_docs:
+        if doc.gdrive_id and doc.gdrive_id not in gdrive_by_id:
+            in_db_not_gdrive.append(
+                {"id": doc.id, "filename": doc.filename, "gdrive_id": doc.gdrive_id}
+            )
+
+    # In GDrive but not in DB (orphans)
+    in_gdrive_not_db = []
+    for gid, gfile in gdrive_by_id.items():
+        if gid not in db_by_gdrive_id:
+            in_gdrive_not_db.append({"gdrive_id": gid, "name": gfile["name"]})
+
+    # Filename mismatches (docs that exist in both)
+    filename_mismatch = []
+    for gid, doc in db_by_gdrive_id.items():
+        gfile = gdrive_by_id.get(gid)
+        if gfile and doc.filename != gfile["name"]:
+            filename_mismatch.append(
+                {
+                    "id": doc.id,
+                    "db_filename": doc.filename,
+                    "gdrive_filename": gfile["name"],
+                    "gdrive_id": gid,
+                }
+            )
+
+    return {
+        "db_count": len(db_docs),
+        "gdrive_count": len(gdrive_by_id),
+        "in_db_not_gdrive": in_db_not_gdrive,
+        "in_gdrive_not_db": in_gdrive_not_db,
+        "filename_mismatch": filename_mismatch,
+        "healthy": (
+            len(in_db_not_gdrive) == 0
+            and len(in_gdrive_not_db) == 0
+            and len(filename_mismatch) == 0
+        ),
+    }
+
+
 def register(mcp):
     mcp.tool()(reconcile_gdrive)
     mcp.tool()(validate_categories)

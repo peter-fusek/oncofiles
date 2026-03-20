@@ -42,6 +42,9 @@ from oncofiles.gdrive_client import GDriveClient, create_gdrive_client
 
 logger = logging.getLogger(__name__)
 
+# Stats constants (single source of truth for values that can't be computed at runtime)
+TESTS_COUNT = 558
+
 
 def _check_bearer(request: Request) -> JSONResponse | None:
     """Validate bearer token from Authorization header. Returns error response or None if OK."""
@@ -737,6 +740,7 @@ async def sitemap_xml(request: Request) -> HTMLResponse:
 @mcp.custom_route("/llms.txt", methods=["GET"])
 async def llms_txt(request: Request) -> HTMLResponse:
     """LLM-readable site description following the llms.txt standard."""
+    tools_count = _count_tools()
     return HTMLResponse(
         f"# Oncofiles\n"
         f"> Patient-side MCP server for oncology document management\n"
@@ -744,7 +748,8 @@ async def llms_txt(request: Request) -> HTMLResponse:
         f"## About\n"
         f"Oncofiles is an open-source MCP (Model Context Protocol) server that helps\n"
         f"cancer patients and caregivers organize, search, and understand their medical\n"
-        f"documents using AI. It provides 63 tools for document management, lab tracking,\n"
+        f"documents using AI. It provides {tools_count} tools for document "
+        f"management, lab tracking,\n"
         f"clinical trial search, and treatment event logging.\n"
         f"\n"
         f"## Key Features\n"
@@ -815,6 +820,29 @@ async def health(request: Request) -> JSONResponse:
     except Exception:
         logger.exception("Health check failed")
         return JSONResponse({"status": "degraded", "version": VERSION}, status_code=503)
+
+
+def _count_tools() -> int:
+    """Count registered MCP tools dynamically."""
+    try:
+        return sum(1 for k in mcp._local_provider._components if k.startswith("tool:"))
+    except Exception:
+        return 65  # fallback
+
+
+@mcp.custom_route("/api/stats", methods=["GET"])
+async def api_stats(request: Request) -> JSONResponse:
+    """Public project stats for landing page and llms.txt."""
+    from oncofiles.models import DocumentCategory
+
+    return JSONResponse(
+        {
+            "tools": _count_tools(),
+            "categories": len(DocumentCategory),
+            "tests": TESTS_COUNT,
+            "version": VERSION,
+        }
+    )
 
 
 @mcp.custom_route("/status", methods=["GET"])
@@ -1107,6 +1135,29 @@ async def api_documents(request: Request) -> JSONResponse:
         return JSONResponse(result)
     except Exception:
         logger.exception("API documents endpoint error")
+        return JSONResponse({"error": "internal error"}, status_code=500)
+
+
+@mcp.custom_route("/api/reconciliation", methods=["GET"])
+async def api_reconciliation(request: Request) -> JSONResponse:
+    """DB vs GDrive reconciliation report. Requires bearer or dashboard session auth."""
+    err = _check_dashboard_auth(request)
+    if err:
+        return err
+
+    try:
+        from oncofiles.tools.hygiene import _build_reconciliation_report
+
+        lifespan_ctx = request.app.state.fastmcp_server._lifespan_result
+        db: Database = lifespan_ctx["db"]
+        gdrive = lifespan_ctx.get("gdrive")
+        folder_id = lifespan_ctx.get("gdrive_folder_id", "")
+        if not gdrive or not folder_id:
+            return JSONResponse({"error": "GDrive not configured"}, status_code=503)
+        result = await _build_reconciliation_report(db, gdrive, folder_id)
+        return JSONResponse(result)
+    except Exception:
+        logger.exception("API reconciliation endpoint error")
         return JSONResponse({"error": "internal error"}, status_code=500)
 
 

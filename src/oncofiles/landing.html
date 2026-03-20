@@ -6,7 +6,7 @@
   <title>Oncofiles — Patient-side medical document management</title>
   <meta name="description" content="Open-source MCP server for oncology document management. AI-powered OCR, lab tracking, Google Drive sync. Self-hosted, privacy-first.">
   <meta property="og:title" content="Oncofiles — Patient-side medical document management">
-  <meta property="og:description" content="Open-source MCP server for oncology document management. 63 AI tools, pipeline dashboard, Google Drive sync. Self-hosted, privacy-first.">
+  <meta property="og:description" content="Open-source MCP server for oncology document management. AI-powered tools, pipeline dashboard, Google Drive sync. Self-hosted, privacy-first.">
   <meta property="og:type" content="website">
   <meta property="og:url" content="https://oncofiles.com">
   <meta name="twitter:card" content="summary">
@@ -26,7 +26,7 @@
     "url": "https://oncofiles.com",
     "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
     "license": "https://opensource.org/licenses/MIT",
-    "softwareVersion": "3.21.0",
+    "softwareVersion": "3.20.0",
     "codeRepository": "https://github.com/instarea-sk/oncofiles"
   }
   </script>
@@ -265,5 +265,14 @@
       <a href="/health">Health</a>
     </div>
   </footer>
+  <script>
+    fetch('/api/stats').then(function(r){return r.json()}).then(function(d){
+      var m = {'tools': d.tools, 'categories': d.categories, 'tests': d.tests, 'version': 'v'+d.version};
+      Object.keys(m).forEach(function(k){
+        var el = document.querySelector('[data-stat="'+k+'"]');
+        if(el) el.textContent = m[k];
+      });
+    }).catch(function(){});
+  </script>
 </body>
 </html>
