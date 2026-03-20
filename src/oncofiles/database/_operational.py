@@ -183,14 +183,15 @@ class OperationalMixin:
             """
             INSERT INTO oauth_tokens
                 (user_id, provider, access_token, refresh_token, token_expiry,
-                 gdrive_folder_id, owner_email, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+                 gdrive_folder_id, owner_email, granted_scopes, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
             ON CONFLICT(user_id, provider) DO UPDATE SET
                 access_token = excluded.access_token,
                 refresh_token = excluded.refresh_token,
                 token_expiry = excluded.token_expiry,
                 gdrive_folder_id = excluded.gdrive_folder_id,
                 owner_email = COALESCE(excluded.owner_email, oauth_tokens.owner_email),
+                granted_scopes = excluded.granted_scopes,
                 updated_at = excluded.updated_at
             """,
             (
@@ -201,6 +202,7 @@ class OperationalMixin:
                 token.token_expiry.isoformat() if token.token_expiry else None,
                 token.gdrive_folder_id,
                 token.owner_email,
+                token.granted_scopes,
             ),
         )
         await self.db.commit()

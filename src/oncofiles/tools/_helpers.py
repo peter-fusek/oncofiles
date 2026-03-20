@@ -75,6 +75,16 @@ def _get_gdrive(ctx: Context) -> GDriveClient | None:
     return ctx.request_context.lifespan_context.get("gdrive")
 
 
+def _get_gmail_client(ctx: Context):
+    """Get Gmail client from lifespan context (None if not configured)."""
+    return ctx.request_context.lifespan_context.get("gmail_client")
+
+
+def _get_calendar_client(ctx: Context):
+    """Get Calendar client from lifespan context (None if not configured)."""
+    return ctx.request_context.lifespan_context.get("calendar_client")
+
+
 def _parse_date(value: str | None) -> date | None:
     """Parse a YYYY-MM-DD date string, raising ValueError with a friendly message."""
     if not value:

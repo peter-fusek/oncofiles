@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import hmac
+import json
 import logging
 import os
 import sys
@@ -43,7 +44,7 @@ from oncofiles.gdrive_client import GDriveClient, create_gdrive_client
 logger = logging.getLogger(__name__)
 
 # Stats constants (single source of truth for values that can't be computed at runtime)
-TESTS_COUNT = 558
+TESTS_COUNT = 580
 
 
 def _check_bearer(request: Request) -> JSONResponse | None:
@@ -161,6 +162,8 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict]:
 
     # Prefer OAuth (user has storage quota for uploads; service account does not)
     gdrive = None
+    gmail_client = None
+    calendar_client = None
     try:
         if token and GOOGLE_OAUTH_CLIENT_ID:
             from oncofiles.oauth import is_token_expired, refresh_access_token
@@ -186,6 +189,35 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict]:
             logger.info("GDrive client initialized from OAuth tokens")
     except Exception as e:
         logger.warning("OAuth GDrive init failed: %s", e, exc_info=True)
+
+    # Build Gmail/Calendar clients if scopes granted
+    if token and GOOGLE_OAUTH_CLIENT_ID:
+        try:
+            granted = json.loads(token.granted_scopes) if token.granted_scopes else []
+            from oncofiles.oauth import SCOPE_CALENDAR, SCOPE_GMAIL
+
+            if SCOPE_GMAIL in granted:
+                from oncofiles.gmail_client import GmailClient
+
+                gmail_client = GmailClient.from_oauth(
+                    access_token=access_token,
+                    refresh_token=token.refresh_token,
+                    client_id=GOOGLE_OAUTH_CLIENT_ID,
+                    client_secret=GOOGLE_OAUTH_CLIENT_SECRET,
+                )
+                logger.info("Gmail client initialized from OAuth tokens")
+            if SCOPE_CALENDAR in granted:
+                from oncofiles.calendar_client import CalendarClient
+
+                calendar_client = CalendarClient.from_oauth(
+                    access_token=access_token,
+                    refresh_token=token.refresh_token,
+                    client_id=GOOGLE_OAUTH_CLIENT_ID,
+                    client_secret=GOOGLE_OAUTH_CLIENT_SECRET,
+                )
+                logger.info("Calendar client initialized from OAuth tokens")
+        except Exception:
+            logger.warning("Gmail/Calendar client init failed", exc_info=True)
 
     # Fall back to service account if no OAuth
     if not gdrive:
@@ -224,6 +256,8 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict]:
             "oauth_folder_id": oauth_folder_id,
             "gdrive_folder_id": _get_sync_folder_id_from(oauth_folder_id),
             "started_at": started_at,
+            "gmail_client": gmail_client,
+            "calendar_client": calendar_client,
         }
     finally:
         if scheduler:
@@ -1250,11 +1284,15 @@ async def oauth_callback(request: Request) -> JSONResponse:
         logger.exception("OAuth token exchange failed")
         return JSONResponse({"error": "Token exchange failed. Please try again."}, status_code=500)
 
+    from oncofiles.oauth import parse_granted_scopes
+
     expiry = datetime.now(UTC) + timedelta(seconds=tokens.get("expires_in", 3600))
+    granted_scopes = parse_granted_scopes(tokens)
     oauth_token = OAuthToken(
         access_token=tokens["access_token"],
         refresh_token=tokens.get("refresh_token", ""),
         token_expiry=expiry,
+        granted_scopes=json.dumps(granted_scopes),
     )
 
     db = request.app.state.fastmcp_server._lifespan_result["db"]
@@ -1285,6 +1323,7 @@ from oncofiles.tools import (  # noqa: E402
     export,
     gdrive,
     hygiene,
+    integrations,
     lab_trends,
     naming,
     patient,
@@ -1310,6 +1349,7 @@ patient.register(mcp)
 hygiene.register(mcp)
 db_query.register(mcp)
 prompt_log.register(mcp)
+integrations.register(mcp)
 resources.register(mcp)
 
 # ── Backward-compatible re-exports for tests ─────────────────────────────────

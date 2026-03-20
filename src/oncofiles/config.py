@@ -43,6 +43,14 @@ MCP_BEARER_TOKEN: str = os.environ.get("MCP_BEARER_TOKEN", "")
 SYNC_INTERVAL_MINUTES: int = int(os.environ.get("SYNC_INTERVAL_MINUTES", "5"))
 SYNC_ENABLED: bool = os.environ.get("SYNC_ENABLED", "true").lower() in ("true", "1", "yes")
 
+# Gmail + Calendar integration (#104)
+GMAIL_ENABLED: bool = os.environ.get("GMAIL_ENABLED", "false").lower() in ("true", "1", "yes")
+CALENDAR_ENABLED: bool = os.environ.get("CALENDAR_ENABLED", "false").lower() in (
+    "true",
+    "1",
+    "yes",
+)
+
 # Patient context
 PATIENT_CONTEXT_PATH: str = os.environ.get(
     "PATIENT_CONTEXT_PATH", str(DATA_DIR / "patient_context.json")

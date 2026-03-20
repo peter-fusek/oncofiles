@@ -239,8 +239,81 @@ class OAuthToken(BaseModel):
     token_expiry: datetime | None = None
     gdrive_folder_id: str | None = None
     owner_email: str | None = None
+    granted_scopes: str = "[]"
     created_at: datetime | None = None
     updated_at: datetime | None = None
+
+
+# ── Email entries (#104) ─────────────────────────────────────────────────
+
+
+class EmailEntry(BaseModel):
+    """A Gmail email entry stored for medical record tracking."""
+
+    id: int | None = None
+    user_id: str = "default"
+    gmail_message_id: str
+    thread_id: str = ""
+    subject: str = ""
+    sender: str = ""
+    recipients: str = "[]"
+    date: datetime
+    body_snippet: str = ""
+    body_text: str = ""
+    labels: str = "[]"
+    has_attachments: bool = False
+    ai_summary: str | None = None
+    ai_relevance_score: float | None = None
+    structured_metadata: str | None = None
+    linked_document_ids: str = "[]"
+    is_medical: bool = False
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class EmailQuery(BaseModel):
+    """Search parameters for email entries."""
+
+    text: str | None = None
+    date_from: date | None = None
+    date_to: date | None = None
+    is_medical: bool | None = None
+    sender: str | None = None
+    limit: int = Field(default=50, ge=1, le=200)
+
+
+# ── Calendar entries (#104) ──────────────────────────────────────────────
+
+
+class CalendarEntry(BaseModel):
+    """A Google Calendar event stored for medical record tracking."""
+
+    id: int | None = None
+    user_id: str = "default"
+    google_event_id: str
+    summary: str = ""
+    description: str = ""
+    start_time: datetime
+    end_time: datetime | None = None
+    location: str | None = None
+    attendees: str = "[]"
+    recurrence: str | None = None
+    status: str = "confirmed"
+    ai_summary: str | None = None
+    treatment_event_id: int | None = None
+    is_medical: bool = False
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class CalendarQuery(BaseModel):
+    """Search parameters for calendar entries."""
+
+    text: str | None = None
+    date_from: date | None = None
+    date_to: date | None = None
+    is_medical: bool | None = None
+    limit: int = Field(default=50, ge=1, le=200)
 
 
 class ActivityLogQuery(BaseModel):

@@ -9,9 +9,11 @@ from typing import Any
 from oncofiles.models import (
     ActivityLogEntry,
     AgentState,
+    CalendarEntry,
     ConversationEntry,
     Document,
     DocumentCategory,
+    EmailEntry,
     LabValue,
     OAuthToken,
     PromptCallType,
@@ -40,6 +42,7 @@ def _row_to_oauth_token(row: Any) -> OAuthToken:
         token_expiry=(datetime.fromisoformat(row["token_expiry"]) if row["token_expiry"] else None),
         gdrive_folder_id=row["gdrive_folder_id"],
         owner_email=_safe_get(row, "owner_email"),
+        granted_scopes=_safe_get(row, "granted_scopes", "[]"),
         created_at=datetime.fromisoformat(row["created_at"]) if row["created_at"] else None,
         updated_at=datetime.fromisoformat(row["updated_at"]) if row["updated_at"] else None,
     )
@@ -202,4 +205,51 @@ def _row_to_prompt_log(row: Any) -> PromptLogEntry:
         status=row["status"],
         error_message=row["error_message"],
         created_at=(datetime.fromisoformat(row["created_at"]) if row["created_at"] else None),
+    )
+
+
+def _row_to_email_entry(row: Any) -> EmailEntry:
+    """Convert a database row to an EmailEntry model."""
+    return EmailEntry(
+        id=row["id"],
+        user_id=row["user_id"],
+        gmail_message_id=row["gmail_message_id"],
+        thread_id=row["thread_id"],
+        subject=row["subject"],
+        sender=row["sender"],
+        recipients=row["recipients"],
+        date=datetime.fromisoformat(row["date"]),
+        body_snippet=row["body_snippet"],
+        body_text=row["body_text"],
+        labels=row["labels"],
+        has_attachments=bool(row["has_attachments"]),
+        ai_summary=row["ai_summary"],
+        ai_relevance_score=row["ai_relevance_score"],
+        structured_metadata=row["structured_metadata"],
+        linked_document_ids=row["linked_document_ids"],
+        is_medical=bool(row["is_medical"]),
+        created_at=datetime.fromisoformat(row["created_at"]) if row["created_at"] else None,
+        updated_at=datetime.fromisoformat(row["updated_at"]) if row["updated_at"] else None,
+    )
+
+
+def _row_to_calendar_entry(row: Any) -> CalendarEntry:
+    """Convert a database row to a CalendarEntry model."""
+    return CalendarEntry(
+        id=row["id"],
+        user_id=row["user_id"],
+        google_event_id=row["google_event_id"],
+        summary=row["summary"],
+        description=row["description"],
+        start_time=datetime.fromisoformat(row["start_time"]),
+        end_time=datetime.fromisoformat(row["end_time"]) if row["end_time"] else None,
+        location=row["location"],
+        attendees=row["attendees"],
+        recurrence=row["recurrence"],
+        status=row["status"],
+        ai_summary=row["ai_summary"],
+        treatment_event_id=row["treatment_event_id"],
+        is_medical=bool(row["is_medical"]),
+        created_at=datetime.fromisoformat(row["created_at"]) if row["created_at"] else None,
+        updated_at=datetime.fromisoformat(row["updated_at"]) if row["updated_at"] else None,
     )

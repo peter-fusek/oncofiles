@@ -18,6 +18,16 @@ from oncofiles.config import (
 logger = logging.getLogger(__name__)
 
 SCOPES = ["https://www.googleapis.com/auth/drive"]
+
+# Per-service scope constants
+SCOPE_DRIVE = "https://www.googleapis.com/auth/drive"
+SCOPE_GMAIL = "https://www.googleapis.com/auth/gmail.readonly"
+SCOPE_CALENDAR = "https://www.googleapis.com/auth/calendar.readonly"
+
+# Cumulative scope sets for incremental authorization
+GMAIL_SCOPES = [SCOPE_DRIVE, SCOPE_GMAIL]
+CALENDAR_SCOPES = [SCOPE_DRIVE, SCOPE_CALENDAR]
+ALL_SCOPES = [SCOPE_DRIVE, SCOPE_GMAIL, SCOPE_CALENDAR]
 AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 TOKEN_URL = "https://oauth2.googleapis.com/token"
 
@@ -82,6 +92,35 @@ def get_auth_url(state: str = "") -> str:
         "state": state,
     }
     return f"{AUTH_URL}?{urlencode(params)}"
+
+
+def get_auth_url_for_scopes(scopes: list[str], state: str = "") -> str:
+    """Generate auth URL requesting specific scopes with incremental consent.
+
+    Uses include_granted_scopes=true so existing grants are preserved.
+    """
+    from urllib.parse import urlencode
+
+    if not state:
+        state = _make_state_token()
+
+    params = {
+        "client_id": GOOGLE_OAUTH_CLIENT_ID,
+        "redirect_uri": GOOGLE_OAUTH_REDIRECT_URI,
+        "response_type": "code",
+        "scope": " ".join(scopes),
+        "access_type": "offline",
+        "prompt": "consent",
+        "include_granted_scopes": "true",
+        "state": state,
+    }
+    return f"{AUTH_URL}?{urlencode(params)}"
+
+
+def parse_granted_scopes(token_response: dict) -> list[str]:
+    """Extract granted scope strings from a token exchange response."""
+    scope_str = token_response.get("scope", "")
+    return [s for s in scope_str.split() if s]
 
 
 def exchange_code(code: str) -> dict:
