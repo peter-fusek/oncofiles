@@ -229,7 +229,9 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict]:
     # Start background sync scheduler
     scheduler = None
     if SYNC_ENABLED and gdrive:
-        scheduler = _start_sync_scheduler(db, files, gdrive, oauth_folder_id, gmail_client)
+        scheduler = _start_sync_scheduler(
+            db, files, gdrive, oauth_folder_id, gmail_client, calendar_client
+        )
 
     # Warmup: ping Turso to ensure connection is fresh before accepting requests
     try:
@@ -266,8 +268,10 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict]:
         await db.close()
 
 
-def _start_sync_scheduler(db, files, gdrive, oauth_folder_id, gmail_client=None):
-    """Start APScheduler for periodic GDrive sync and Gmail sync."""
+def _start_sync_scheduler(
+    db, files, gdrive, oauth_folder_id, gmail_client=None, calendar_client=None
+):
+    """Start APScheduler for periodic GDrive sync, Gmail sync, and Calendar sync."""
     from apscheduler.schedulers.asyncio import AsyncIOScheduler
     from apscheduler.triggers.interval import IntervalTrigger
 
@@ -693,6 +697,72 @@ def _start_sync_scheduler(db, files, gdrive, oauth_folder_id, gmail_client=None)
             "Gmail sync scheduled — every %d min (offset +2m), startup at %s",
             SYNC_INTERVAL_MINUTES,
             gmail_startup_time.strftime("%H:%M:%S"),
+        )
+
+    # ── Calendar sync jobs ─────────────────────────────────────────────────
+    calendar_sync_timeout = 300  # 5 minutes max
+
+    async def _run_calendar_sync(trigger: str = "scheduled"):
+        if not calendar_client:
+            return
+        import gc
+
+        from oncofiles.calendar_sync import calendar_sync as _calendar_sync
+
+        try:
+            stats = await asyncio.wait_for(
+                _calendar_sync(db, calendar_client, initial=False),
+                timeout=calendar_sync_timeout,
+            )
+            if not stats.get("skipped"):
+                logger.info("Calendar sync (%s): %s", trigger, stats)
+        except TimeoutError:
+            logger.error("Calendar sync timed out after %ds", calendar_sync_timeout)
+        except Exception:
+            logger.exception("Calendar sync failed")
+        finally:
+            gc.collect()
+
+    async def _startup_calendar_sync():
+        if not calendar_client:
+            return
+        import gc
+
+        from oncofiles.calendar_sync import calendar_sync as _calendar_sync
+
+        try:
+            stats = await asyncio.wait_for(
+                _calendar_sync(db, calendar_client, initial=True),
+                timeout=calendar_sync_timeout,
+            )
+            logger.info("Calendar initial sync: %s", stats)
+        except TimeoutError:
+            logger.error("Calendar initial sync timed out after %ds", calendar_sync_timeout)
+        except Exception:
+            logger.exception("Calendar initial sync failed")
+        finally:
+            gc.collect()
+
+    if calendar_client:
+        scheduler.add_job(
+            _run_calendar_sync,
+            IntervalTrigger(
+                minutes=SYNC_INTERVAL_MINUTES, start_date=datetime.now() + timedelta(minutes=3)
+            ),
+            id="calendar_sync",
+            max_instances=1,
+        )
+        calendar_startup_time = datetime.now() + timedelta(seconds=120)
+        scheduler.add_job(
+            _startup_calendar_sync,
+            DateTrigger(run_date=calendar_startup_time),
+            id="calendar_startup_sync",
+            max_instances=1,
+        )
+        logger.info(
+            "Calendar sync scheduled — every %d min (offset +3m), startup at %s",
+            SYNC_INTERVAL_MINUTES,
+            calendar_startup_time.strftime("%H:%M:%S"),
         )
 
     # Log scheduler job outcomes for observability
