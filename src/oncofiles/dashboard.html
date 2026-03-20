@@ -409,6 +409,19 @@
       display: none;
     }
     #g_id_signin { margin-top: 1rem; }
+    .prompt-detail {
+      font-family: 'DM Sans', monospace;
+      color: var(--text-muted);
+      line-height: 1.5;
+    }
+    .sync-row .sync-new {
+      color: var(--green);
+      font-size: 0.75rem;
+      font-weight: 600;
+    }
+    #next-sync {
+      font-style: italic;
+    }
   </style>
   <script src="https://accounts.google.com/gsi/client" async defer></script>
 </head>
@@ -465,7 +478,6 @@
         <span class="pill" data-filter="missing_metadata">Missing Meta</span>
         <span class="pill" data-filter="not_synced">Not Synced</span>
         <span class="pill" data-filter="not_renamed">Not Renamed</span>
-        <button onclick="runReconciliation()" style="margin-left:auto;padding:0.25rem 0.75rem;background:var(--surface);border:1px solid var(--border);border-radius:0.375rem;color:var(--text-muted);cursor:pointer;font-size:0.75rem" onmouseover="this.style.borderColor='var(--accent)'" onmouseout="this.style.borderColor='var(--border)'">Reconcile</button>
       </div>
 
       <!-- Document table -->
@@ -505,6 +517,7 @@
       <!-- Sync history -->
       <div class="sync-history">
         <h2>Recent Syncs</h2>
+        <div id="next-sync" style="font-size:0.75rem;color:var(--text-muted);margin-bottom:0.5rem"></div>
         <div id="sync-rows"><div style="padding:0.5rem 0;color:var(--text-muted);font-size:0.8125rem">Loading...</div></div>
       </div>
 
@@ -733,17 +746,20 @@
       setConnectionState('loading');
       showSkeletons();
       try {
-        const [status, docs, prompts] = await Promise.all([
+        const [status, docs, prompts, recon] = await Promise.all([
           apiFetch('/status'),
           apiFetch('/api/documents?filter=' + encodeURIComponent(currentFilter) + '&limit=200'),
-          apiFetch('/api/prompt-log?limit=50')
+          apiFetch('/api/prompt-log?limit=50'),
+          apiFetch('/api/reconciliation').catch(function(){ return null; })
         ]);
         setConnectionState('ok');
         hideSkeletons();
         renderStatus(status);
         renderDocs(docs);
         renderPromptLog(prompts);
+        if (recon) renderReconciliation(recon);
         updateLastRefreshed();
+        setTimeout(function(){ document.getElementById('next-sync').textContent = 'Next sync: ~' + (5 - Math.floor(((Date.now()/1000) % 300) / 60)) + ' min'; }, 100);
       } catch (e) {
         setConnectionState('offline');
         hideSkeletons();
@@ -797,6 +813,13 @@
           dur.className = 'sync-dur';
           dur.textContent = sc.duration_s ? sc.duration_s + 's' : '-';
           row.appendChild(dur);
+
+          if (sc.new > 0) {
+            const newSpan = document.createElement('span');
+            newSpan.className = 'sync-new';
+            newSpan.textContent = sc.new + ' new';
+            row.appendChild(newSpan);
+          }
 
           if (sc.errors) {
             const err = document.createElement('span');
@@ -1098,73 +1121,94 @@
           row.appendChild(err);
         }
 
+        row.onclick = (function(entry) { return function() {
+          var existing = this.nextElementSibling;
+          if (existing && existing.className === 'prompt-detail') {
+            existing.remove();
+            return;
+          }
+          var detail = document.createElement('div');
+          detail.className = 'prompt-detail';
+          detail.style.cssText = 'padding:0.75rem;background:rgba(20,184,166,0.05);border-radius:0.375rem;margin:0.25rem 0 0.5rem;font-size:0.75rem;white-space:pre-wrap;word-break:break-all;max-height:300px;overflow-y:auto';
+          var content = '';
+          if (entry.call_type) content += 'Type: ' + entry.call_type + '\n';
+          if (entry.model) content += 'Model: ' + entry.model + '\n';
+          if (entry.document_id) content += 'Document: #' + entry.document_id + '\n';
+          content += 'Tokens: ' + (entry.input_tokens||0) + ' in / ' + (entry.output_tokens||0) + ' out\n';
+          if (entry.duration_ms) content += 'Duration: ' + entry.duration_ms + 'ms\n';
+          content += '\n--- Result ---\n' + (entry.result_summary || 'N/A');
+          detail.textContent = content;
+          this.parentNode.insertBefore(detail, this.nextSibling);
+        }; })(e);
+
         rowsEl.appendChild(row);
       });
     }
 
     // ── Reconciliation ───────────────────────────────────────────────────
 
-    var reconLoaded = false;
-
-    async function runReconciliation() {
+    function renderReconciliation(data) {
       var panel = document.getElementById('recon-panel');
-      panel.style.display = 'block';
       var summaryEl = document.getElementById('recon-summary');
       var issuesEl = document.getElementById('recon-issues');
-      summaryEl.textContent = 'Loading...';
+      clearEl(summaryEl);
       clearEl(issuesEl);
-      try {
-        var data = await apiFetch('/api/reconciliation');
-        reconLoaded = true;
-        clearEl(summaryEl);
 
-        var items = [
-          { label: 'DB docs', value: data.db_count },
-          { label: 'GDrive files', value: data.gdrive_count },
-        ];
-        items.forEach(function(it) {
-          var s = document.createElement('span');
-          var v = document.createElement('strong');
-          v.style.color = 'var(--accent)';
-          v.textContent = it.value;
-          s.appendChild(v);
-          s.appendChild(document.createTextNode(' ' + it.label));
-          summaryEl.appendChild(s);
-        });
+      var hasIssues = !data.healthy ||
+        (data.in_db_not_gdrive && data.in_db_not_gdrive.length > 0) ||
+        (data.in_gdrive_not_db && data.in_gdrive_not_db.length > 0) ||
+        (data.filename_mismatch && data.filename_mismatch.length > 0);
 
-        if (data.healthy) {
-          var ok = document.createElement('span');
-          ok.style.color = 'var(--green)';
-          ok.textContent = 'All synced';
-          summaryEl.appendChild(ok);
-        }
-
-        function addIssueSection(title, items, cols) {
-          if (!items || items.length === 0) return;
-          var h = document.createElement('div');
-          h.style.cssText = 'font-size:0.8125rem;font-weight:600;margin:0.75rem 0 0.25rem;color:var(--red)';
-          h.textContent = title + ' (' + items.length + ')';
-          issuesEl.appendChild(h);
-          items.forEach(function(item) {
-            var row = document.createElement('div');
-            row.className = 'sync-row';
-            cols.forEach(function(col) {
-              var sp = document.createElement('span');
-              sp.style.cssText = 'font-size:0.75rem;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
-              sp.textContent = item[col] || '-';
-              row.appendChild(sp);
-            });
-            issuesEl.appendChild(row);
-          });
-        }
-
-        addIssueSection('In DB but missing from GDrive', data.in_db_not_gdrive, ['filename', 'gdrive_id']);
-        addIssueSection('In GDrive but not in DB (orphans)', data.in_gdrive_not_db, ['name', 'gdrive_id']);
-        addIssueSection('Filename mismatch', data.filename_mismatch, ['db_filename', 'gdrive_filename']);
-
-      } catch (e) {
-        summaryEl.textContent = 'Error: ' + e.message;
+      if (!hasIssues) {
+        panel.style.display = 'none';
+        return;
       }
+
+      panel.style.display = 'block';
+
+      var items = [
+        { label: 'DB docs', value: data.db_count },
+        { label: 'GDrive files', value: data.gdrive_count },
+      ];
+      items.forEach(function(it) {
+        var s = document.createElement('span');
+        var v = document.createElement('strong');
+        v.style.color = 'var(--accent)';
+        v.textContent = it.value;
+        s.appendChild(v);
+        s.appendChild(document.createTextNode(' ' + it.label));
+        summaryEl.appendChild(s);
+      });
+
+      if (data.healthy) {
+        var ok = document.createElement('span');
+        ok.style.color = 'var(--green)';
+        ok.textContent = 'All synced';
+        summaryEl.appendChild(ok);
+      }
+
+      function addIssueSection(title, items, cols) {
+        if (!items || items.length === 0) return;
+        var h = document.createElement('div');
+        h.style.cssText = 'font-size:0.8125rem;font-weight:600;margin:0.75rem 0 0.25rem;color:var(--red)';
+        h.textContent = title + ' (' + items.length + ')';
+        issuesEl.appendChild(h);
+        items.forEach(function(item) {
+          var row = document.createElement('div');
+          row.className = 'sync-row';
+          cols.forEach(function(col) {
+            var sp = document.createElement('span');
+            sp.style.cssText = 'font-size:0.75rem;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
+            sp.textContent = item[col] || '-';
+            row.appendChild(sp);
+          });
+          issuesEl.appendChild(row);
+        });
+      }
+
+      addIssueSection('In DB but missing from GDrive', data.in_db_not_gdrive, ['filename', 'gdrive_id']);
+      addIssueSection('In GDrive but not in DB (orphans)', data.in_gdrive_not_db, ['name', 'gdrive_id']);
+      addIssueSection('Filename mismatch', data.filename_mismatch, ['db_filename', 'gdrive_filename']);
     }
 
     // ── Event Listeners ──────────────────────────────────────────────────
