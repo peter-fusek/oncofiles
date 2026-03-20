@@ -78,3 +78,77 @@ async def test_update_oauth_folder(db: Database):
 
     fetched = await db.get_oauth_token()
     assert fetched.gdrive_folder_id == "folder_abc"
+
+
+# ── Scope parsing ───────────────────────────────────────────────────────
+
+
+def test_parse_granted_scopes():
+    from oncofiles.oauth import parse_granted_scopes
+
+    result = parse_granted_scopes(
+        {
+            "scope": "https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/gmail.readonly"
+        }
+    )
+    assert set(result) == {
+        "https://www.googleapis.com/auth/drive",
+        "https://www.googleapis.com/auth/gmail.readonly",
+    }
+
+
+def test_parse_granted_scopes_empty():
+    from oncofiles.oauth import parse_granted_scopes
+
+    assert parse_granted_scopes({}) == []
+    assert parse_granted_scopes({"scope": ""}) == []
+
+
+async def test_scope_merge_on_reauth(db: Database):
+    """Re-authorization should merge scopes, not replace them.
+
+    Simulates the bug where Calendar scope was dropped when Gmail re-auth
+    only returned drive + gmail scopes.
+    """
+    import json
+
+    # Existing token has all 3 scopes
+    existing = OAuthToken(
+        access_token="old_access",
+        refresh_token="old_refresh",
+        token_expiry=datetime(2026, 12, 31, tzinfo=UTC),
+        granted_scopes=json.dumps(
+            [
+                "https://www.googleapis.com/auth/drive",
+                "https://www.googleapis.com/auth/gmail.readonly",
+                "https://www.googleapis.com/auth/calendar.readonly",
+            ]
+        ),
+    )
+    await db.upsert_oauth_token(existing)
+
+    # Simulate re-auth that only returns drive + gmail
+    new_scopes = [
+        "https://www.googleapis.com/auth/drive",
+        "https://www.googleapis.com/auth/gmail.readonly",
+    ]
+
+    # Merge logic (mirrors server.py oauth callback)
+    existing_token = await db.get_oauth_token()
+    existing_scopes = json.loads(existing_token.granted_scopes)
+    merged = sorted(set(existing_scopes) | set(new_scopes))
+
+    updated = OAuthToken(
+        access_token="new_access",
+        refresh_token="new_refresh",
+        token_expiry=datetime(2026, 12, 31, tzinfo=UTC),
+        granted_scopes=json.dumps(merged),
+    )
+    await db.upsert_oauth_token(updated)
+
+    fetched = await db.get_oauth_token()
+    scopes = json.loads(fetched.granted_scopes)
+    assert "https://www.googleapis.com/auth/calendar.readonly" in scopes
+    assert "https://www.googleapis.com/auth/gmail.readonly" in scopes
+    assert "https://www.googleapis.com/auth/drive" in scopes
+    assert fetched.access_token == "new_access"

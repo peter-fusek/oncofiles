@@ -1528,15 +1528,24 @@ async def oauth_callback(request: Request) -> JSONResponse:
     from oncofiles.oauth import parse_granted_scopes
 
     expiry = datetime.now(UTC) + timedelta(seconds=tokens.get("expires_in", 3600))
-    granted_scopes = parse_granted_scopes(tokens)
+    new_scopes = parse_granted_scopes(tokens)
+
+    # Merge with existing scopes so incremental auth doesn't drop prior grants
+    db = request.app.state.fastmcp_server._lifespan_result["db"]
+    existing_token = await db.get_oauth_token()
+    if existing_token and existing_token.granted_scopes:
+        existing_scopes = json.loads(existing_token.granted_scopes)
+        merged_scopes = sorted(set(existing_scopes) | set(new_scopes))
+    else:
+        merged_scopes = new_scopes
+
     oauth_token = OAuthToken(
         access_token=tokens["access_token"],
         refresh_token=tokens.get("refresh_token", ""),
         token_expiry=expiry,
-        granted_scopes=json.dumps(granted_scopes),
+        granted_scopes=json.dumps(merged_scopes),
     )
 
-    db = request.app.state.fastmcp_server._lifespan_result["db"]
     await db.upsert_oauth_token(oauth_token)
 
     return JSONResponse(
