@@ -384,6 +384,19 @@ def _start_sync_scheduler(db, files, gdrive, oauth_folder_id):
         except Exception:
             logger.exception("OAuth token cleanup failed")
 
+    async def _run_prompt_log_cleanup():
+        """Remove prompt log entries older than 90 days to control DB size."""
+        try:
+            async with db.db.execute(
+                "DELETE FROM prompt_log WHERE created_at < datetime('now', '-90 days')"
+            ) as cursor:
+                deleted = cursor.rowcount
+            await db.db.commit()
+            if deleted:
+                logger.info("Prompt log cleanup: removed %d entries older than 90 days", deleted)
+        except Exception:
+            logger.exception("Prompt log cleanup failed")
+
     async def _log_rss():
         import resource
 
@@ -416,6 +429,12 @@ def _start_sync_scheduler(db, files, gdrive, oauth_folder_id):
         _run_oauth_token_cleanup,
         CronTrigger(hour=4, minute=0),  # daily at 4 AM
         id="oauth_token_cleanup",
+        max_instances=1,
+    )
+    scheduler.add_job(
+        _run_prompt_log_cleanup,
+        CronTrigger(hour=4, minute=15),  # daily at 4:15 AM (after OAuth cleanup)
+        id="prompt_log_cleanup",
         max_instances=1,
     )
     scheduler.add_job(
