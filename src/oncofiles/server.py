@@ -1505,7 +1505,7 @@ async def api_prompt_log(request: Request) -> JSONResponse:
 
 
 @mcp.custom_route("/oauth/authorize/{service}", methods=["GET"])
-async def oauth_authorize(request: Request) -> Response:
+async def oauth_authorize(request: Request) -> JSONResponse:
     """Redirect to Google OAuth for a specific service (drive, gmail, calendar)."""
     from starlette.responses import RedirectResponse
 

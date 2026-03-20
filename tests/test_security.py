@@ -49,14 +49,14 @@ def test_state_token_rejects_tampered():
 
 
 def test_state_token_rejects_expired(monkeypatch):
-    """Tokens older than 10 minutes are rejected."""
+    """Tokens older than 30 minutes are rejected."""
     with patch("oncofiles.oauth.MCP_BEARER_TOKEN", _TEST_TOKEN):
         token = _make_state_token()
-        # Fast-forward time by 11 minutes
+        # Fast-forward time by 31 minutes
         real_time = time.time()
         import oncofiles.oauth as oauth_mod
 
-        monkeypatch.setattr(oauth_mod.time, "time", lambda: real_time + 700)
+        monkeypatch.setattr(oauth_mod.time, "time", lambda: real_time + 1900)
         assert verify_state_token(token) is False
 
 
