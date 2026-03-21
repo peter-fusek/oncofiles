@@ -40,35 +40,15 @@ from oncofiles.config import (
 )
 from oncofiles.database import Database
 from oncofiles.gdrive_client import GDriveClient, create_gdrive_client
+from oncofiles.memory import get_rss_mb, is_memory_pressure
 
 logger = logging.getLogger(__name__)
 
 # Stats constants (single source of truth for values that can't be computed at runtime)
 TESTS_COUNT = 584
 
-# Memory threshold (MB) — skip heavy operations when current RSS exceeds this
-_MEMORY_THRESHOLD_MB = 450
-
 # Global sync semaphore — limits concurrent sync operations (GDrive + Gmail + Calendar)
 _sync_semaphore = asyncio.Semaphore(2)
-
-
-def _get_rss_mb() -> float:
-    """Return current RSS in MB (not peak).
-
-    On Linux (Railway): reads /proc/self/statm for live RSS.
-    On macOS (dev): falls back to ru_maxrss (peak, but acceptable for dev).
-    """
-    try:
-        with open("/proc/self/statm") as f:
-            parts = f.read().split()
-        # Field 1 = resident pages; multiply by page size (4096)
-        return int(parts[1]) * 4096 / (1024 * 1024)
-    except (FileNotFoundError, IndexError, ValueError):
-        import resource
-
-        rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-        return rss / (1024 * 1024) if sys.platform == "darwin" else rss / 1024
 
 
 def _check_bearer(request: Request) -> JSONResponse | None:
@@ -269,7 +249,7 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict]:
         )
 
     # Log memory usage after initialization
-    logger.info("Startup complete — RSS: %.1f MB", _get_rss_mb())
+    logger.info("Startup complete — RSS: %.1f MB", get_rss_mb())
 
     try:
         yield {
@@ -307,15 +287,7 @@ def _start_sync_scheduler(
         nonlocal _last_sync_time
         import gc
 
-        # Memory guard: skip sync if current RSS too high (prevents OOM spiral)
-        rss_mb = _get_rss_mb()
-        if rss_mb > _MEMORY_THRESHOLD_MB:
-            logger.warning(
-                "Skipping sync — RSS %.1f MB exceeds %d MB threshold",
-                rss_mb,
-                _MEMORY_THRESHOLD_MB,
-            )
-            gc.collect()
+        if is_memory_pressure("sync"):
             return
 
         folder_id = _get_sync_folder_id_from(oauth_folder_id)
@@ -342,7 +314,7 @@ def _start_sync_scheduler(
                     timeout=sync_timeout,
                 )
                 _last_sync_time = datetime.now(UTC).isoformat()
-                logger.info("Scheduled sync complete: %s (RSS: %.1f MB)", stats, _get_rss_mb())
+                logger.info("Scheduled sync complete: %s (RSS: %.1f MB)", stats, get_rss_mb())
                 # Auto-enhance new docs after sync (if any were imported)
                 if stats.get("new", 0) > 0 or stats.get("updated", 0) > 0:
                     try:
@@ -471,7 +443,7 @@ def _start_sync_scheduler(
             logger.exception("Prompt log cleanup failed")
 
     async def _log_rss():
-        rss_mb = _get_rss_mb()
+        rss_mb = get_rss_mb()
         logger.info(
             "Periodic RSS check: %.1f MB (semaphore available: %d/2)",
             rss_mb,
@@ -776,7 +748,7 @@ def _start_sync_scheduler(
                 )
 
         await _run_category_validation()
-        logger.info("Startup catchup complete: import + validate (RSS: %.1f MB)", _get_rss_mb())
+        logger.info("Startup catchup complete: import + validate (RSS: %.1f MB)", get_rss_mb())
 
     startup_time = datetime.now() + timedelta(seconds=60)
     scheduler.add_job(
@@ -795,10 +767,7 @@ def _start_sync_scheduler(
             return
         import gc
 
-        rss_mb = _get_rss_mb()
-        if rss_mb > _MEMORY_THRESHOLD_MB:
-            logger.warning("Skipping Gmail sync — RSS %.1f MB exceeds threshold", rss_mb)
-            gc.collect()
+        if is_memory_pressure("Gmail sync"):
             return
 
         from oncofiles.gmail_sync import gmail_sync as _gmail_sync
@@ -831,7 +800,7 @@ def _start_sync_scheduler(
                     _gmail_sync(db, files, gmail_client, initial=True),
                     timeout=gmail_sync_timeout,
                 )
-                logger.info("Gmail initial sync: %s (RSS: %.1f MB)", stats, _get_rss_mb())
+                logger.info("Gmail initial sync: %s (RSS: %.1f MB)", stats, get_rss_mb())
             except TimeoutError:
                 logger.error("Gmail initial sync timed out after %ds", gmail_sync_timeout)
             except Exception:
@@ -869,10 +838,7 @@ def _start_sync_scheduler(
             return
         import gc
 
-        rss_mb = _get_rss_mb()
-        if rss_mb > _MEMORY_THRESHOLD_MB:
-            logger.warning("Skipping Calendar sync — RSS %.1f MB exceeds threshold", rss_mb)
-            gc.collect()
+        if is_memory_pressure("Calendar sync"):
             return
 
         from oncofiles.calendar_sync import calendar_sync as _calendar_sync
@@ -905,7 +871,7 @@ def _start_sync_scheduler(
                     _calendar_sync(db, calendar_client, initial=True),
                     timeout=calendar_sync_timeout,
                 )
-                logger.info("Calendar initial sync: %s (RSS: %.1f MB)", stats, _get_rss_mb())
+                logger.info("Calendar initial sync: %s (RSS: %.1f MB)", stats, get_rss_mb())
             except TimeoutError:
                 logger.error("Calendar initial sync timed out after %ds", calendar_sync_timeout)
             except Exception:
@@ -1212,7 +1178,7 @@ async def health(request: Request) -> JSONResponse:
             result["uptime_s"] = int((datetime.now(UTC) - started_at).total_seconds())
         if reconnected:
             result["reconnected"] = True
-        result["memory_rss_mb"] = round(_get_rss_mb(), 1)
+        result["memory_rss_mb"] = round(get_rss_mb(), 1)
         # Scheduler job status (lightweight summary)
         tracker = lifespan_ctx.get("job_tracker", {})
         if tracker:

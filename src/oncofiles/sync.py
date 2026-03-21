@@ -43,6 +43,7 @@ from oncofiles.manifest import (
     render_research_library,
     render_treatment_timeline,
 )
+from oncofiles.memory import get_rss_mb
 from oncofiles.models import Document, DocumentCategory, SearchQuery
 
 logger = logging.getLogger(__name__)
@@ -119,28 +120,18 @@ async def sync_from_gdrive(
 
     # Track which gdrive IDs we've seen (for detecting deletions)
     seen_gdrive_ids: set[str] = set()
-    _processed_in_batch = 0
+    files_processed = 0
 
     for gf in gdrive_files:
         # Batch memory management: gc.collect + RSS log every batch_size files
-        _processed_in_batch += 1
-        if _processed_in_batch % batch_size == 0:
+        files_processed += 1
+        if files_processed % batch_size == 0:
             gc.collect()
-            try:
-                with open("/proc/self/statm") as _f:
-                    _parts = _f.read().split()
-                _rss_mb = int(_parts[1]) * 4096 / (1024 * 1024)
-            except (FileNotFoundError, IndexError, ValueError):
-                import resource as _res
-                import sys as _sys
-
-                _rss_raw = _res.getrusage(_res.RUSAGE_SELF).ru_maxrss
-                _rss_mb = _rss_raw / (1024 * 1024) if _sys.platform == "darwin" else _rss_raw / 1024
             logger.info(
                 "sync_from_gdrive: batch %d/%d — RSS: %.1f MB",
-                _processed_in_batch,
+                files_processed,
                 len(gdrive_files),
-                _rss_mb,
+                get_rss_mb(),
             )
         filename = gf["name"]
         gdrive_id = gf["id"]
@@ -330,11 +321,6 @@ async def sync_from_gdrive(
         except Exception:
             logger.exception("sync_from_gdrive: error processing %s", filename)
             stats["errors"] += 1
-
-        # Periodic GC to keep memory in check (every 10 documents)
-        processed = stats["new"] + stats["updated"] + stats["unchanged"] + stats["errors"]
-        if processed > 0 and processed % 10 == 0:
-            gc.collect()
 
     # Detect deleted files (in DB but not on GDrive) — flag only, never auto-delete
     all_docs = await db.list_documents(limit=200)
