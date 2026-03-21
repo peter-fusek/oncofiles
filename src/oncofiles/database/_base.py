@@ -163,7 +163,7 @@ class _TursoConnection:
     _CONNECT_TIMEOUT = 15.0  # seconds — prevents indefinite hangs on stale Turso
 
     async def connect(self) -> None:
-        import libsql_experimental as libsql
+        import libsql
 
         self._conn = await asyncio.wait_for(
             asyncio.to_thread(libsql.connect, self._url, auth_token=self._auth_token),
