@@ -57,9 +57,10 @@ async def _seed_prompt_log(db, count=5, call_type="summary_tags", status="ok"):
     for i in range(count):
         await db.db.execute(
             """
-            INSERT INTO prompt_log (call_type, model, input_tokens, output_tokens,
-                                     duration_ms, status, created_at)
-            VALUES (?, 'claude-haiku-4-5-20251001', ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+            INSERT INTO prompt_log (call_type, model, input_tokens,
+                output_tokens, duration_ms, status, created_at)
+            VALUES (?, 'haiku-4-5', ?, ?, ?, ?,
+                strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
             """,
             (call_type, 1000 + i * 100, 400 + i * 50, 3000 + i * 500, status),
         )
