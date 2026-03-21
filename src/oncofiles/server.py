@@ -228,8 +228,9 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict]:
 
     # Start background sync scheduler
     scheduler = None
+    job_tracker: dict[str, dict] = {}
     if SYNC_ENABLED and gdrive:
-        scheduler = _start_sync_scheduler(
+        scheduler, job_tracker = _start_sync_scheduler(
             db, files, gdrive, oauth_folder_id, gmail_client, calendar_client
         )
 
@@ -260,6 +261,7 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict]:
             "started_at": started_at,
             "gmail_client": gmail_client,
             "calendar_client": calendar_client,
+            "job_tracker": job_tracker,
         }
     finally:
         if scheduler:
@@ -355,11 +357,17 @@ def _start_sync_scheduler(
         finally:
             gc.collect()
 
+    housekeeping_timeout = 120  # 2 minutes max for lightweight housekeeping jobs
+
     async def _run_trash_cleanup():
         try:
-            purged = await db.purge_expired_trash(days=30)
+            purged = await asyncio.wait_for(
+                db.purge_expired_trash(days=30), timeout=housekeeping_timeout
+            )
             if purged:
                 logger.info("Trash cleanup: purged %d expired documents", purged)
+        except TimeoutError:
+            logger.error("Trash cleanup timed out after %ds", housekeeping_timeout)
         except Exception:
             logger.exception("Trash cleanup failed")
 
@@ -419,6 +427,8 @@ def _start_sync_scheduler(
             await db.db.commit()
             if deleted:
                 logger.info("OAuth cleanup: removed %d expired tokens", deleted)
+        except TimeoutError:
+            logger.error("OAuth token cleanup timed out")
         except Exception:
             logger.exception("OAuth token cleanup failed")
 
@@ -432,6 +442,8 @@ def _start_sync_scheduler(
             await db.db.commit()
             if deleted:
                 logger.info("Prompt log cleanup: removed %d entries older than 90 days", deleted)
+        except TimeoutError:
+            logger.error("Prompt log cleanup timed out")
         except Exception:
             logger.exception("Prompt log cleanup failed")
 
@@ -490,7 +502,8 @@ def _start_sync_scheduler(
 
     async def _run_category_validation():
         """Auto-correct document categories after metadata extraction."""
-        try:
+
+        async def _do_category_validation():
             from oncofiles.models import DocumentCategory as _DocCat  # noqa: N814
             from oncofiles.tools.hygiene import _DOCTYPE_TO_CATEGORY
 
@@ -550,6 +563,11 @@ def _start_sync_scheduler(
 
             if corrected:
                 logger.info("Category validation: corrected %d documents", corrected)
+
+        try:
+            await asyncio.wait_for(_do_category_validation(), timeout=metadata_timeout)
+        except TimeoutError:
+            logger.error("Category validation timed out after %ds", metadata_timeout)
         except Exception:
             logger.exception("Category validation failed")
 
@@ -560,11 +578,14 @@ def _start_sync_scheduler(
         max_instances=1,
     )
 
+    folder_cleanup_timeout = 300  # 5 minutes max for GDrive folder operations
+
     async def _run_empty_folder_cleanup():
         """Remove empty year-month subfolders and merge duplicates from GDrive."""
         if not gdrive:
             return
-        try:
+
+        async def _do_folder_cleanup():
             folder_id = _get_sync_folder_id_from(oauth_folder_id)
             if not folder_id:
                 return
@@ -655,6 +676,10 @@ def _start_sync_scheduler(
             else:
                 logger.info("Folder cleanup: all folders OK")
 
+        try:
+            await asyncio.wait_for(_do_folder_cleanup(), timeout=folder_cleanup_timeout)
+        except TimeoutError:
+            logger.error("Folder cleanup timed out after %ds", folder_cleanup_timeout)
         except Exception:
             logger.exception("Empty folder cleanup failed")
 
@@ -870,25 +895,62 @@ def _start_sync_scheduler(
             calendar_startup_time.strftime("%H:%M:%S"),
         )
 
-    # Log scheduler job outcomes for observability
+    # ── Job tracking for /health endpoint ────────────────────────────────
+    job_tracker: dict[str, dict] = {}
+
+    def _job_started(event):
+        job_tracker[event.job_id] = {
+            **job_tracker.get(event.job_id, {}),
+            "started_at": datetime.now(UTC).isoformat(),
+            "running": True,
+        }
+
     def _job_executed(event):
+        entry = job_tracker.get(event.job_id, {})
+        entry.update(
+            last_ok=datetime.now(UTC).isoformat(),
+            running=False,
+            last_error=None,
+        )
+        # Calculate duration if we have start time
+        started = entry.get("started_at")
+        if started:
+            start_dt = datetime.fromisoformat(started)
+            entry["last_duration_s"] = round((datetime.now(UTC) - start_dt).total_seconds(), 1)
+        job_tracker[event.job_id] = entry
         logger.info("Scheduler job completed: %s", event.job_id)
 
     def _job_error(event):
+        entry = job_tracker.get(event.job_id, {})
+        entry.update(
+            last_error=datetime.now(UTC).isoformat(),
+            last_error_msg=str(event.exception)[:200],
+            running=False,
+        )
+        job_tracker[event.job_id] = entry
         logger.error("Scheduler job failed: %s — %s", event.job_id, event.exception)
 
     def _job_missed(event):
+        entry = job_tracker.get(event.job_id, {})
+        entry["last_missed"] = datetime.now(UTC).isoformat()
+        job_tracker[event.job_id] = entry
         logger.warning("Scheduler job missed (previous still running): %s", event.job_id)
 
-    from apscheduler.events import EVENT_JOB_ERROR, EVENT_JOB_EXECUTED, EVENT_JOB_MISSED
+    from apscheduler.events import (
+        EVENT_JOB_ERROR,
+        EVENT_JOB_EXECUTED,
+        EVENT_JOB_MISSED,
+        EVENT_JOB_SUBMITTED,
+    )
 
+    scheduler.add_listener(_job_started, EVENT_JOB_SUBMITTED)
     scheduler.add_listener(_job_executed, EVENT_JOB_EXECUTED)
     scheduler.add_listener(_job_error, EVENT_JOB_ERROR)
     scheduler.add_listener(_job_missed, EVENT_JOB_MISSED)
 
     scheduler.start()
     logger.info("Sync scheduler started — every %d min", SYNC_INTERVAL_MINUTES)
-    return scheduler
+    return scheduler, job_tracker
 
 
 def _get_sync_folder_id_from(oauth_folder_id: str) -> str:
@@ -1101,7 +1163,7 @@ async def health(request: Request) -> JSONResponse:
         lifespan_ctx = request.app.state.fastmcp_server._lifespan_result
         db: Database = lifespan_ctx["db"]
         reconnected = await db.reconnect_if_stale()
-        result = {"status": "ok", "version": VERSION}
+        result: dict = {"status": "ok", "version": VERSION}
         commit = os.environ.get("RAILWAY_GIT_COMMIT_SHA", "")[:7]
         if commit:
             result["commit"] = commit
@@ -1110,6 +1172,22 @@ async def health(request: Request) -> JSONResponse:
             result["uptime_s"] = int((datetime.now(UTC) - started_at).total_seconds())
         if reconnected:
             result["reconnected"] = True
+        # Scheduler job status (lightweight summary)
+        tracker = lifespan_ctx.get("job_tracker", {})
+        if tracker:
+            jobs: dict = {}
+            for job_id, info in tracker.items():
+                entry: dict = {}
+                if info.get("last_ok"):
+                    entry["last_ok"] = info["last_ok"]
+                if info.get("last_error"):
+                    entry["last_error"] = info["last_error"]
+                if info.get("running"):
+                    entry["running"] = True
+                if entry:
+                    jobs[job_id] = entry
+            if jobs:
+                result["jobs"] = jobs
         return JSONResponse(result)
     except Exception:
         logger.exception("Health check failed")
