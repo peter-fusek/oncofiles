@@ -531,6 +531,31 @@
         <div id="prompt-log-rows"><div style="padding:0.5rem 0;color:var(--text-muted);font-size:0.8125rem">Loading...</div></div>
       </div>
 
+      <!-- Usage Analytics -->
+      <div class="sync-history" id="analytics-section">
+        <h2>Usage Analytics</h2>
+        <div class="cards" id="analytics-cards" style="grid-template-columns:repeat(4,1fr);margin-bottom:1rem">
+          <div class="card"><div class="value" id="ana-calls">-</div><div class="label">AI Calls (30d)</div></div>
+          <div class="card"><div class="value" id="ana-tokens">-</div><div class="label">Tokens (K)</div></div>
+          <div class="card"><div class="value" id="ana-cost">-</div><div class="label">Cost USD</div></div>
+          <div class="card" id="ana-error-card"><div class="value" id="ana-errors">-</div><div class="label">Error Rate</div></div>
+        </div>
+        <div style="display:flex;gap:1rem;flex-wrap:wrap;margin-bottom:1rem">
+          <div style="flex:1;min-width:280px">
+            <div style="font-size:0.75rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.04em;margin-bottom:0.5rem">Top Tools (30d)</div>
+            <div id="ana-top-tools" style="font-size:0.8125rem"></div>
+          </div>
+          <div style="flex:1;min-width:280px">
+            <div style="font-size:0.75rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.04em;margin-bottom:0.5rem">Pipeline</div>
+            <div id="ana-pipeline" style="font-size:0.8125rem"></div>
+          </div>
+          <div style="flex:1;min-width:280px">
+            <div style="font-size:0.75rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.04em;margin-bottom:0.5rem">Latency (p50 / p95)</div>
+            <div id="ana-latency" style="font-size:0.8125rem"></div>
+          </div>
+        </div>
+      </div>
+
       <footer>
         <a href="/">Oncofiles</a> &middot; <a href="/health">Health</a> &middot; <a href="https://github.com/instarea-sk/oncofiles" rel="noreferrer noopener">GitHub</a>
       </footer>
@@ -749,11 +774,12 @@
       setConnectionState('loading');
       showSkeletons();
       try {
-        const [status, docs, prompts, recon] = await Promise.all([
+        const [status, docs, prompts, recon, analytics] = await Promise.all([
           apiFetch('/status'),
           apiFetch('/api/documents?filter=' + encodeURIComponent(currentFilter) + '&limit=200'),
           apiFetch('/api/prompt-log?limit=50'),
-          apiFetch('/api/reconciliation').catch(function(){ return null; })
+          apiFetch('/api/reconciliation').catch(function(){ return null; }),
+          apiFetch('/api/usage-analytics').catch(function(){ return null; })
         ]);
         setConnectionState('ok');
         hideSkeletons();
@@ -761,6 +787,7 @@
         renderDocs(docs);
         renderPromptLog(prompts);
         if (recon) renderReconciliation(recon);
+        if (analytics) renderAnalytics(analytics);
         updateLastRefreshed();
         setTimeout(function(){ document.getElementById('next-sync').textContent = 'Next sync: ~' + (5 - Math.floor(((Date.now()/1000) % 300) / 60)) + ' min'; }, 100);
       } catch (e) {
@@ -1283,6 +1310,115 @@
       addIssueSection('In DB but missing from GDrive', data.in_db_not_gdrive, ['filename', 'gdrive_id']);
       addIssueSection('In GDrive but not in DB (orphans)', data.in_gdrive_not_db, ['name', 'gdrive_id']);
       addIssueSection('Filename mismatch', data.filename_mismatch, ['db_filename', 'gdrive_filename']);
+    }
+
+    // ── Analytics renderer ─────────────────────────────────────────────
+
+    function renderAnalytics(data) {
+      var p = data.prompts || {};
+      var t = data.tools || {};
+      var pipe = data.pipeline || {};
+      var lat = data.latency || {};
+
+      // Mini-cards
+      document.getElementById('ana-calls').textContent = p.total_calls || 0;
+      var totalTok = ((p.total_input_tokens || 0) + (p.total_output_tokens || 0)) / 1000;
+      document.getElementById('ana-tokens').textContent = totalTok < 10 ? totalTok.toFixed(1) : Math.round(totalTok);
+      document.getElementById('ana-cost').textContent = '$' + (p.estimated_cost_usd || 0).toFixed(2);
+      var errPct = ((p.error_rate || 0) * 100).toFixed(1) + '%';
+      document.getElementById('ana-errors').textContent = errPct;
+      var errCard = document.getElementById('ana-error-card');
+      errCard.className = 'card' + (p.error_rate > 0.05 ? ' danger' : p.error_rate > 0 ? ' warning' : '');
+
+      // Top tools bar chart
+      var toolsEl = document.getElementById('ana-top-tools');
+      clearEl(toolsEl);
+      var tools = (t.top_tools || []).slice(0, 8);
+      var maxCount = tools.length > 0 ? tools[0].count : 1;
+      tools.forEach(function(tt) {
+        var row = document.createElement('div');
+        row.style.cssText = 'display:flex;align-items:center;gap:0.5rem;margin-bottom:0.25rem';
+        var name = document.createElement('span');
+        name.style.cssText = 'width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:0.75rem;color:var(--text-muted)';
+        name.textContent = tt.tool;
+        row.appendChild(name);
+        var barWrap = document.createElement('div');
+        barWrap.style.cssText = 'flex:1;height:14px;background:var(--border);border-radius:3px;overflow:hidden';
+        var bar = document.createElement('div');
+        bar.style.cssText = 'height:100%;background:var(--accent);border-radius:3px;width:' + Math.round(tt.count / maxCount * 100) + '%';
+        barWrap.appendChild(bar);
+        row.appendChild(barWrap);
+        var cnt = document.createElement('span');
+        cnt.style.cssText = 'font-size:0.75rem;color:var(--text-muted);width:40px;text-align:right';
+        cnt.textContent = tt.count;
+        row.appendChild(cnt);
+        toolsEl.appendChild(row);
+      });
+      if (tools.length === 0) {
+        toolsEl.textContent = 'No data';
+        toolsEl.style.color = 'var(--text-muted)';
+      }
+
+      // Pipeline stats
+      var pipeEl = document.getElementById('ana-pipeline');
+      clearEl(pipeEl);
+      var pipeItems = [
+        ['Syncs', pipe.total_syncs, null],
+        ['Success', pipe.successful_syncs, 'var(--green)'],
+        ['Failed', pipe.failed_syncs, pipe.failed_syncs > 0 ? 'var(--red)' : null],
+        ['Imported', pipe.total_docs_imported, null],
+        ['Enhanced', pipe.docs_enhanced, 'var(--green)'],
+        ['Pending', pipe.docs_pending, pipe.docs_pending > 0 ? 'var(--amber)' : null],
+        ['Avg sync', (pipe.avg_sync_duration_s || 0).toFixed(1) + 's', null],
+      ];
+      pipeItems.forEach(function(it) {
+        var row = document.createElement('div');
+        row.style.cssText = 'display:flex;justify-content:space-between;padding:0.125rem 0;font-size:0.8125rem';
+        var lbl = document.createElement('span');
+        lbl.style.color = 'var(--text-muted)';
+        lbl.textContent = it[0];
+        row.appendChild(lbl);
+        var val = document.createElement('span');
+        if (it[2]) val.style.color = it[2];
+        val.textContent = it[1];
+        row.appendChild(val);
+        pipeEl.appendChild(row);
+      });
+
+      // Latency
+      var latEl = document.getElementById('ana-latency');
+      clearEl(latEl);
+      Object.keys(lat).forEach(function(ct) {
+        if (ct === '_overall') return;
+        var l = lat[ct];
+        var row = document.createElement('div');
+        row.style.cssText = 'display:flex;justify-content:space-between;padding:0.125rem 0;font-size:0.8125rem';
+        var lbl = document.createElement('span');
+        lbl.style.color = 'var(--text-muted)';
+        lbl.textContent = ct;
+        row.appendChild(lbl);
+        var val = document.createElement('span');
+        val.textContent = (l.p50_ms / 1000).toFixed(1) + 's / ' + (l.p95_ms / 1000).toFixed(1) + 's';
+        row.appendChild(val);
+        latEl.appendChild(row);
+      });
+      if (lat._overall) {
+        var ov = document.createElement('div');
+        ov.style.cssText = 'display:flex;justify-content:space-between;padding:0.25rem 0 0;font-size:0.8125rem;border-top:1px solid var(--border);margin-top:0.25rem';
+        var lbl = document.createElement('span');
+        lbl.style.cssText = 'color:var(--text);font-weight:600';
+        lbl.textContent = 'Overall';
+        ov.appendChild(lbl);
+        var val = document.createElement('span');
+        val.style.fontWeight = '600';
+        val.textContent = (lat._overall.p50_ms / 1000).toFixed(1) + 's / ' + (lat._overall.p95_ms / 1000).toFixed(1) + 's';
+        ov.appendChild(val);
+        latEl.appendChild(ov);
+      }
+      if (Object.keys(lat).length === 0) {
+        latEl.textContent = 'No data';
+        latEl.style.color = 'var(--text-muted)';
+      }
     }
 
     // ── Event Listeners ──────────────────────────────────────────────────

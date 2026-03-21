@@ -209,8 +209,10 @@ class AnalyticsMixin:
         async with self.db.execute(
             """
             SELECT
-                SUM(CASE WHEN ai_summary IS NOT NULL AND ai_summary != '' THEN 1 ELSE 0 END) as done,
-                SUM(CASE WHEN ai_summary IS NULL OR ai_summary = '' THEN 1 ELSE 0 END) as pending
+                SUM(CASE WHEN ai_summary IS NOT NULL
+                    AND ai_summary != '' THEN 1 ELSE 0 END) as done,
+                SUM(CASE WHEN ai_summary IS NULL
+                    OR ai_summary = '' THEN 1 ELSE 0 END) as pending
             FROM documents
             WHERE deleted_at IS NULL
             """

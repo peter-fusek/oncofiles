@@ -1582,6 +1582,40 @@ async def api_prompt_log(request: Request) -> JSONResponse:
         return JSONResponse({"error": "internal error"}, status_code=500)
 
 
+@mcp.custom_route("/api/usage-analytics", methods=["GET"])
+async def api_usage_analytics(request: Request) -> JSONResponse:
+    """Usage analytics: prompt stats, tool usage, pipeline health, latency."""
+    err = _check_dashboard_auth(request)
+    if err:
+        return err
+
+    try:
+        db_inst: Database = request.app.state.fastmcp_server._lifespan_result["db"]
+        days = min(int(request.query_params.get("days", "30")), 90)
+
+        prompt_stats, tool_stats, pipeline_stats, latency = await asyncio.gather(
+            db_inst.get_prompt_stats(days=days),
+            db_inst.get_tool_usage_stats(days=days),
+            db_inst.get_pipeline_stats(),
+            db_inst.get_prompt_latency_percentiles(days=days),
+        )
+
+        from dataclasses import asdict
+
+        return JSONResponse(
+            {
+                "days": days,
+                "prompts": asdict(prompt_stats),
+                "tools": asdict(tool_stats),
+                "pipeline": asdict(pipeline_stats),
+                "latency": latency,
+            }
+        )
+    except Exception:
+        logger.exception("API usage-analytics endpoint error")
+        return JSONResponse({"error": "internal error"}, status_code=500)
+
+
 @mcp.custom_route("/oauth/authorize/{service}", methods=["GET"])
 async def oauth_authorize(request: Request) -> JSONResponse:
     """Redirect to Google OAuth for a specific service (drive, gmail, calendar)."""
