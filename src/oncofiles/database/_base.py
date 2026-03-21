@@ -160,10 +160,15 @@ class _TursoConnection:
         self._conn: Any = None
         self._breaker = _CircuitBreaker()
 
+    _CONNECT_TIMEOUT = 15.0  # seconds — prevents indefinite hangs on stale Turso
+
     async def connect(self) -> None:
         import libsql_experimental as libsql
 
-        self._conn = libsql.connect(self._url, auth_token=self._auth_token)
+        self._conn = await asyncio.wait_for(
+            asyncio.to_thread(libsql.connect, self._url, auth_token=self._auth_token),
+            timeout=self._CONNECT_TIMEOUT,
+        )
 
     async def reconnect(self) -> None:
         """Close stale connection and create a fresh one."""
@@ -174,7 +179,12 @@ class _TursoConnection:
         except Exception:
             pass
         self._conn = None
-        await self.connect()
+        try:
+            await self.connect()
+        except TimeoutError:
+            logger.error("Turso reconnect timed out after %.0fs", self._CONNECT_TIMEOUT)
+            self._breaker.record_failure()
+            raise RuntimeError("Turso reconnect timed out") from None
 
     def execute(self, sql: str, params: tuple | list = ()) -> _TursoExecProxy:
         return _TursoExecProxy(self, sql, tuple(params))
@@ -225,21 +235,33 @@ class _TursoConnection:
 
     async def executescript(self, sql: str) -> None:
         try:
-            await asyncio.to_thread(self._conn.executescript, sql)
+            await asyncio.wait_for(
+                asyncio.to_thread(self._conn.executescript, sql),
+                timeout=self._QUERY_TIMEOUT,
+            )
         except Exception as exc:
             if _is_stale_stream_error(exc):
                 await self.reconnect()
-                await asyncio.to_thread(self._conn.executescript, sql)
+                await asyncio.wait_for(
+                    asyncio.to_thread(self._conn.executescript, sql),
+                    timeout=self._QUERY_TIMEOUT,
+                )
             else:
                 raise
 
     async def commit(self) -> None:
         try:
-            await asyncio.to_thread(self._conn.commit)
+            await asyncio.wait_for(
+                asyncio.to_thread(self._conn.commit),
+                timeout=self._QUERY_TIMEOUT,
+            )
         except Exception as exc:
             if _is_stale_stream_error(exc):
                 await self.reconnect()
-                await asyncio.to_thread(self._conn.commit)
+                await asyncio.wait_for(
+                    asyncio.to_thread(self._conn.commit),
+                    timeout=self._QUERY_TIMEOUT,
+                )
             else:
                 raise
 
