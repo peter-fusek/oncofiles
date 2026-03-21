@@ -103,6 +103,7 @@ async def sync_from_gdrive(
     )
 
     stats = {"new": 0, "updated": 0, "unchanged": 0, "skipped": 0, "missing": 0, "errors": 0}
+    batch_size = 10  # Process files in batches, gc.collect between batches
 
     async def _sync_category_from_folder(gf: dict, existing: Document, filename: str) -> None:
         """Update document category if GDrive folder structure implies a different one."""
@@ -118,8 +119,29 @@ async def sync_from_gdrive(
 
     # Track which gdrive IDs we've seen (for detecting deletions)
     seen_gdrive_ids: set[str] = set()
+    _processed_in_batch = 0
 
     for gf in gdrive_files:
+        # Batch memory management: gc.collect + RSS log every batch_size files
+        _processed_in_batch += 1
+        if _processed_in_batch % batch_size == 0:
+            gc.collect()
+            try:
+                with open("/proc/self/statm") as _f:
+                    _parts = _f.read().split()
+                _rss_mb = int(_parts[1]) * 4096 / (1024 * 1024)
+            except (FileNotFoundError, IndexError, ValueError):
+                import resource as _res
+                import sys as _sys
+
+                _rss_raw = _res.getrusage(_res.RUSAGE_SELF).ru_maxrss
+                _rss_mb = _rss_raw / (1024 * 1024) if _sys.platform == "darwin" else _rss_raw / 1024
+            logger.info(
+                "sync_from_gdrive: batch %d/%d — RSS: %.1f MB",
+                _processed_in_batch,
+                len(gdrive_files),
+                _rss_mb,
+            )
         filename = gf["name"]
         gdrive_id = gf["id"]
         modified_time_str = gf.get("modifiedTime", "")
