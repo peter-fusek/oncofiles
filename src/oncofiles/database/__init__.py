@@ -5,6 +5,7 @@ Usage unchanged: ``from oncofiles.database import Database``
 
 from __future__ import annotations
 
+from ._analytics import AnalyticsMixin
 from ._base import DatabaseBase
 from ._calendar import CalendarMixin
 from ._clinical import ClinicalMixin
@@ -23,6 +24,7 @@ class Database(
     CalendarMixin,
     OperationalMixin,
     PromptLogMixin,
+    AnalyticsMixin,
     DatabaseBase,
 ):
     """Async database for document metadata. Uses aiosqlite locally, Turso in cloud."""
