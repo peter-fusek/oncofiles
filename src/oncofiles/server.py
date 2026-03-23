@@ -45,7 +45,7 @@ from oncofiles.memory import get_rss_mb, is_memory_pressure
 logger = logging.getLogger(__name__)
 
 # Stats constants (single source of truth for values that can't be computed at runtime)
-TESTS_COUNT = 584
+TESTS_COUNT = 606
 
 # Global sync semaphore — limits concurrent sync operations (GDrive + Gmail + Calendar)
 _sync_semaphore = asyncio.Semaphore(2)
@@ -705,6 +705,63 @@ def _start_sync_scheduler(
         _run_empty_folder_cleanup,
         CronTrigger(hour=3, minute=15),  # daily at 3:15 AM (between trash and metadata)
         id="empty_folder_cleanup",
+        max_instances=1,
+    )
+
+    # ── Weekly analytics aggregation ────────────────────────────────────
+    async def _run_weekly_analytics():
+        """Aggregate weekly usage stats and persist to agent_state."""
+        import json
+
+        try:
+            prompt_stats, tool_stats, pipeline_stats = await asyncio.gather(
+                db.get_prompt_stats(days=7),
+                db.get_tool_usage_stats(days=7),
+                db.get_pipeline_stats(),
+            )
+            summary = {
+                "week_ending": datetime.now(UTC).strftime("%Y-%m-%d"),
+                "prompts": {
+                    "total_calls": prompt_stats.total_calls,
+                    "total_input_tokens": prompt_stats.total_input_tokens,
+                    "total_output_tokens": prompt_stats.total_output_tokens,
+                    "error_rate": prompt_stats.error_rate,
+                },
+                "tools": {
+                    "unique_tools": tool_stats.unique_tools_used,
+                    "total_calls": tool_stats.total_tool_calls,
+                    "top_3": [
+                        {"name": t.tool_name, "calls": t.call_count}
+                        for t in tool_stats.top_tools[:3]
+                    ],
+                },
+                "pipeline": {
+                    "total_syncs": pipeline_stats.total_syncs,
+                    "success_rate": (
+                        round(pipeline_stats.successful_syncs / pipeline_stats.total_syncs, 2)
+                        if pipeline_stats.total_syncs > 0
+                        else 0
+                    ),
+                    "docs_imported": pipeline_stats.documents_imported,
+                },
+            }
+            from oncofiles.models import AgentState
+
+            await db.set_agent_state(
+                AgentState(
+                    agent_id="oncofiles",
+                    key="analytics_weekly_summary",
+                    value=json.dumps(summary),
+                )
+            )
+            logger.info("Weekly analytics: %s", json.dumps(summary, indent=None)[:200])
+        except Exception:
+            logger.exception("Weekly analytics aggregation failed")
+
+    scheduler.add_job(
+        _run_weekly_analytics,
+        CronTrigger(day_of_week="sun", hour=5, minute=0),  # Sunday 5:00 AM
+        id="weekly_analytics",
         max_instances=1,
     )
 

@@ -15,8 +15,8 @@ Oncofiles is a self-hosted [Model Context Protocol](https://modelcontextprotocol
 
 ## Features
 
-- **55 MCP tools** across 14 modules for comprehensive medical data management
-- **17 document categories** — labs, pathology, imaging, genetics, surgery, prescriptions, and more
+- **76 MCP tools** across 14 modules for comprehensive medical data management
+- **15 document categories** — labs, pathology, imaging, genetics, surgery, prescriptions, and more
 - **Lab value tracking** — store values, track trends, pre-cycle safety checks for chemo protocols
 - **Google Drive sync** — bidirectional sync with automatic OCR companion files
 - **Clinical research** — search PubMed and ClinicalTrials.gov, log research decisions
@@ -117,7 +117,7 @@ Live instance: [oncofiles.com](https://oncofiles.com)
 src/oncofiles/
 ├── server.py           # FastMCP server, auth, routes
 ├── database/           # Mixin-based DB layer (SQLite/Turso)
-├── tools/              # 14 tool modules (55 tools)
+├── tools/              # 14 tool modules (76 tools)
 │   ├── documents.py    # CRUD, search, view, versioning
 │   ├── lab_trends.py   # Lab values, trends, safety checks
 │   ├── clinical.py     # Treatment events, research log
