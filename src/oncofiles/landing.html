@@ -341,43 +341,69 @@
 
     /* ── Works with ───────────────────────────────── */
     .works-with {
-      padding: 4rem 0;
+      padding: 5rem 0;
       border-top: 1px solid var(--border);
-      text-align: center;
     }
     .platforms {
-      display: flex;
-      justify-content: center;
-      gap: 2rem;
-      flex-wrap: wrap;
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 1rem;
       margin-top: 2rem;
     }
-    .platform {
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      gap: 0.5rem;
-      min-width: 100px;
-    }
-    .platform-icon {
-      width: 3rem;
-      height: 3rem;
-      display: flex;
-      align-items: center;
-      justify-content: center;
+    .platform-card {
       background: var(--surface);
       border: 1px solid var(--border);
       border-radius: 0.75rem;
-      font-size: 1.25rem;
+      padding: 1.75rem;
+      transition: border-color 0.2s;
     }
+    .platform-card:hover { border-color: var(--border-light); }
+    .platform-header {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      margin-bottom: 0.75rem;
+    }
+    .platform-logo {
+      width: 2.5rem;
+      height: 2.5rem;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 0.625rem;
+      flex-shrink: 0;
+    }
+    .platform-logo svg { width: 1.5rem; height: 1.5rem; }
     .platform-name {
-      font-size: 0.8125rem;
-      font-weight: 500;
+      font-size: 1rem;
+      font-weight: 600;
     }
     .platform-tag {
       font-size: 0.6875rem;
       color: var(--warm);
       font-weight: 500;
+      margin-left: 0.375rem;
+    }
+    .platform-steps {
+      font-size: 0.75rem;
+      color: var(--text-muted);
+      line-height: 1.7;
+      padding-left: 0;
+      list-style: none;
+      counter-reset: pstep;
+    }
+    .platform-steps li {
+      counter-increment: pstep;
+      padding-left: 1.25rem;
+      position: relative;
+    }
+    .platform-steps li::before {
+      content: counter(pstep);
+      position: absolute;
+      left: 0;
+      color: var(--accent);
+      font-weight: 700;
+      font-size: 0.6875rem;
     }
 
     /* ── Founder story ────────────────────────────── */
@@ -494,7 +520,7 @@
       .features { grid-template-columns: 1fr; }
       .story-card { padding: 1.75rem; }
       .story-quote { font-size: 1.125rem; }
-      .platforms { gap: 1.5rem; }
+      .platforms { grid-template-columns: 1fr; }
     }
     @media (max-width: 480px) {
       .hero h1 { font-size: 1.875rem; }
@@ -676,22 +702,64 @@
         <div class="section-label" data-sk="Kompatibilné s" data-en="Compatible with">Kompatibilné s</div>
         <h2 class="section-title" data-sk="Funguje s vaším obľúbeným AI" data-en="Works with your favorite AI">Funguje s vaším obľúbeným AI</h2>
         <div class="platforms">
-          <div class="platform">
-            <div class="platform-icon">&#9672;</div>
-            <span class="platform-name">Claude</span>
+          <!-- Claude -->
+          <div class="platform-card">
+            <div class="platform-header">
+              <div class="platform-logo" style="background:#d97757">
+                <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M16.1 4.2c-.2-.1-.5 0-.6.2l-6.8 12.4c-.1.2 0 .5.2.6.2.1.5 0 .6-.2l6.8-12.4c.1-.2 0-.5-.2-.6zm-3.2 1.5c-.2-.1-.5 0-.6.2L6.1 17c-.1.2 0 .5.2.6.2.1.5 0 .6-.2l6.2-11.1c.1-.2 0-.5-.2-.6zM9.8 7c-.2-.1-.5 0-.6.2L4.7 15.8c-.1.2 0 .5.2.6.2.1.5 0 .6-.2L10 7.6c.1-.2 0-.5-.2-.6zm10 1.6c-.2-.1-.5 0-.6.2l-4.6 8.3c-.1.2 0 .5.2.6.2.1.5 0 .6-.2l4.6-8.3c.1-.2 0-.5-.2-.6z" fill="white"/></svg>
+              </div>
+              <span class="platform-name">Claude</span>
+            </div>
+            <ol class="platform-steps">
+              <li data-sk="Otvorte Claude.ai &rarr; Project Settings" data-en="Open Claude.ai &rarr; Project Settings">Otvorte Claude.ai &rarr; Project Settings</li>
+              <li data-sk="Kliknite Connectors &rarr; Add MCP server" data-en="Click Connectors &rarr; Add MCP server">Kliknite Connectors &rarr; Add MCP server</li>
+              <li data-sk="Vložte URL a Bearer token z dashboardu" data-en="Paste URL and Bearer token from dashboard">Vložte URL a Bearer token z dashboardu</li>
+            </ol>
           </div>
-          <div class="platform">
-            <div class="platform-icon">&#9670;</div>
-            <span class="platform-name">ChatGPT</span>
+
+          <!-- ChatGPT -->
+          <div class="platform-card">
+            <div class="platform-header">
+              <div class="platform-logo" style="background:#10a37f">
+                <svg viewBox="0 0 24 24" fill="white" xmlns="http://www.w3.org/2000/svg"><path d="M22.282 9.821a5.985 5.985 0 0 0-.516-4.91 6.046 6.046 0 0 0-6.51-2.9A6.065 6.065 0 0 0 4.981 4.18a5.985 5.985 0 0 0-3.998 2.9 6.046 6.046 0 0 0 .743 7.097 5.98 5.98 0 0 0 .51 4.911 6.051 6.051 0 0 0 6.515 2.9A5.985 5.985 0 0 0 13.26 24a6.056 6.056 0 0 0 5.772-4.206 5.99 5.99 0 0 0 3.997-2.9 6.056 6.056 0 0 0-.747-7.073zM13.26 22.43a4.476 4.476 0 0 1-2.876-1.04l.141-.081 4.779-2.758a.795.795 0 0 0 .392-.681v-6.737l2.02 1.168a.071.071 0 0 1 .038.052v5.583a4.504 4.504 0 0 1-4.494 4.494zM3.6 18.304a4.47 4.47 0 0 1-.535-3.014l.142.085 4.783 2.759a.771.771 0 0 0 .78 0l5.843-3.369v2.332a.08.08 0 0 1-.033.062L9.74 19.95a4.5 4.5 0 0 1-6.14-1.646zM2.34 7.896a4.485 4.485 0 0 1 2.366-1.973V11.6a.766.766 0 0 0 .388.676l5.815 3.355-2.02 1.168a.076.076 0 0 1-.071 0l-4.83-2.786A4.504 4.504 0 0 1 2.34 7.872zm16.597 3.855l-5.833-3.387L15.119 7.2a.076.076 0 0 1 .071 0l4.83 2.791a4.494 4.494 0 0 1-.676 8.105v-5.678a.79.79 0 0 0-.407-.667zm2.01-3.023l-.141-.085-4.774-2.782a.776.776 0 0 0-.785 0L9.409 9.23V6.897a.066.066 0 0 1 .028-.061l4.83-2.787a4.5 4.5 0 0 1 6.68 4.66zm-12.64 4.135l-2.02-1.164a.08.08 0 0 1-.038-.057V6.075a4.5 4.5 0 0 1 7.375-3.453l-.142.08L8.704 5.46a.795.795 0 0 0-.393.681zm1.097-2.365l2.602-1.5 2.607 1.5v2.999l-2.597 1.5-2.607-1.5z"/></svg>
+              </div>
+              <span class="platform-name">ChatGPT</span>
+            </div>
+            <ol class="platform-steps">
+              <li data-sk="Otvorte ChatGPT Settings &rarr; zapnite Developer Mode" data-en="Open ChatGPT Settings &rarr; enable Developer Mode">Otvorte ChatGPT Settings &rarr; zapnite Developer Mode</li>
+              <li data-sk="MCP &rarr; Add server" data-en="MCP &rarr; Add server">MCP &rarr; Add server</li>
+              <li data-sk="Vložte URL a Bearer token z dashboardu" data-en="Paste URL and Bearer token from dashboard">Vložte URL a Bearer token z dashboardu</li>
+            </ol>
           </div>
-          <div class="platform">
-            <div class="platform-icon">&#9687;</div>
-            <span class="platform-name" data-sk="Akýkoľvek MCP klient" data-en="Any MCP client">Akýkoľvek MCP klient</span>
+
+          <!-- Claude Desktop -->
+          <div class="platform-card">
+            <div class="platform-header">
+              <div class="platform-logo" style="background:var(--surface);border:1px solid var(--border)">
+                <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><rect x="2" y="3" width="20" height="14" rx="2" stroke="var(--accent)" stroke-width="1.5"/><path d="M8 21h8M12 17v4" stroke="var(--accent)" stroke-width="1.5" stroke-linecap="round"/></svg>
+              </div>
+              <span class="platform-name">Claude Desktop</span>
+            </div>
+            <ol class="platform-steps">
+              <li data-sk="Otvorte config súbor (claude_desktop_config.json)" data-en="Open config file (claude_desktop_config.json)">Otvorte config súbor (claude_desktop_config.json)</li>
+              <li data-sk="Pridajte 'oncofiles' do mcpServers" data-en="Add 'oncofiles' to mcpServers">Pridajte 'oncofiles' do mcpServers</li>
+              <li data-sk="Vložte URL + token — reštartujte" data-en="Paste URL + token — restart">Vložte URL + token — reštartujte</li>
+            </ol>
           </div>
-          <div class="platform">
-            <div class="platform-icon">&#9993;</div>
-            <span class="platform-name">WhatsApp</span>
-            <span class="platform-tag" data-sk="čoskoro" data-en="coming soon">čoskoro</span>
+
+          <!-- Claude Code / Any MCP -->
+          <div class="platform-card">
+            <div class="platform-header">
+              <div class="platform-logo" style="background:var(--surface);border:1px solid var(--border)">
+                <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M8 7l-5 5 5 5M16 7l5 5-5 5" stroke="var(--accent)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              </div>
+              <span class="platform-name" data-sk="Claude Code / MCP klient" data-en="Claude Code / MCP client">Claude Code / MCP klient</span>
+            </div>
+            <ol class="platform-steps">
+              <li data-sk="Spustite: claude mcp add oncofiles [URL]" data-en="Run: claude mcp add oncofiles [URL]">Spustite: claude mcp add oncofiles [URL]</li>
+              <li data-sk="Pridajte --header s Bearer tokenom" data-en="Add --header with Bearer token">Pridajte --header s Bearer tokenom</li>
+              <li data-sk="Hotovo — 76 nástrojov k dispozícii" data-en="Done — 76 tools available">Hotovo — 76 nástrojov k dispozícii</li>
+            </ol>
           </div>
         </div>
       </div>
