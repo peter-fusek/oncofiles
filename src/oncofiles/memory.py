@@ -1,11 +1,12 @@
-"""Memory monitoring utilities for Oncofiles.
+"""Memory and concurrency utilities for Oncofiles.
 
-Provides RSS measurement and memory pressure checks used by the sync
-scheduler (server.py) and the GDrive sync loop (sync.py).
+Provides RSS measurement, memory pressure checks, and query concurrency
+limits used by the sync scheduler, GDrive sync loop, and MCP tools.
 """
 
 from __future__ import annotations
 
+import asyncio
 import gc
 import logging
 import sys
@@ -14,6 +15,22 @@ logger = logging.getLogger(__name__)
 
 # Skip heavy operations when current RSS exceeds this threshold (MB)
 MEMORY_THRESHOLD_MB = 450
+
+# Limit concurrent heavy DB queries (search_conversations, search_documents)
+# to prevent memory spikes from parallel Oncoteam agent requests.
+_query_semaphore = asyncio.Semaphore(3)
+
+
+async def acquire_query_slot(label: str) -> None:
+    """Acquire a slot for a heavy query. Logs when queuing occurs."""
+    if _query_semaphore._value == 0:
+        logger.info("Query queued — all 3 slots busy: %s", label)
+    await _query_semaphore.acquire()
+
+
+def release_query_slot() -> None:
+    """Release a heavy query slot."""
+    _query_semaphore.release()
 
 
 def get_rss_mb() -> float:

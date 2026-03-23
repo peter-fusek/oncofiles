@@ -48,9 +48,15 @@ class ConversationMixin:
             return _row_to_conversation_entry(row) if row else None
 
     async def search_conversation_entries(
-        self, query: ConversationQuery
+        self, query: ConversationQuery, *, max_content_length: int = 510
     ) -> list[ConversationEntry]:
-        """Search conversation entries using FTS5 and/or filters."""
+        """Search conversation entries using FTS5 and/or filters.
+
+        Args:
+            query: Search parameters.
+            max_content_length: Truncate content to this length in the query
+                to reduce memory usage. Use 0 for full content.
+        """
         conditions: list[str] = []
         params: list[str | int] = []
 
@@ -88,8 +94,17 @@ class ConversationMixin:
                 params.append(f'%"{tag}"%')
 
         where = " AND ".join(conditions) if conditions else "1=1"
+        # Truncate content at SQL level to avoid loading full text into memory
+        content_col = (
+            f"SUBSTR(content, 1, {max_content_length}) AS content"
+            if max_content_length > 0
+            else "content"
+        )
         sql = (
-            f"SELECT * FROM conversation_entries WHERE {where} "
+            f"SELECT id, entry_date, entry_type, title, {content_col}, "
+            f"participant, session_id, tags, document_ids, source, source_ref, "
+            f"created_at, updated_at "
+            f"FROM conversation_entries WHERE {where} "
             f"ORDER BY entry_date DESC, created_at DESC LIMIT ? OFFSET ?"
         )
         params.extend([query.limit, query.offset])

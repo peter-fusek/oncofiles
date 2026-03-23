@@ -43,7 +43,7 @@ from oncofiles.manifest import (
     render_research_library,
     render_treatment_timeline,
 )
-from oncofiles.memory import get_rss_mb
+from oncofiles.memory import MEMORY_THRESHOLD_MB, get_rss_mb
 from oncofiles.models import Document, DocumentCategory, SearchQuery
 
 logger = logging.getLogger(__name__)
@@ -127,12 +127,24 @@ async def sync_from_gdrive(
         files_processed += 1
         if files_processed % batch_size == 0:
             gc.collect()
+            rss = get_rss_mb()
             logger.info(
                 "sync_from_gdrive: batch %d/%d — RSS: %.1f MB",
                 files_processed,
                 len(gdrive_files),
-                get_rss_mb(),
+                rss,
             )
+            # Abort early if memory pressure — return partial results
+            if rss > MEMORY_THRESHOLD_MB:
+                logger.warning(
+                    "sync_from_gdrive: aborting at %d/%d — RSS %.1f MB exceeds %d MB",
+                    files_processed,
+                    len(gdrive_files),
+                    rss,
+                    MEMORY_THRESHOLD_MB,
+                )
+                stats["skipped"] += len(gdrive_files) - files_processed
+                break
         filename = gf["name"]
         gdrive_id = gf["id"]
         modified_time_str = gf.get("modifiedTime", "")
