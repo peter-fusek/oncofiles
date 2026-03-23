@@ -10,6 +10,8 @@ import asyncio
 import gc
 import logging
 import sys
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +33,16 @@ async def acquire_query_slot(label: str) -> None:
 def release_query_slot() -> None:
     """Release a heavy query slot."""
     _query_semaphore.release()
+
+
+@asynccontextmanager
+async def query_slot(label: str) -> AsyncIterator[None]:
+    """Async context manager for heavy query concurrency control."""
+    await acquire_query_slot(label)
+    try:
+        yield
+    finally:
+        release_query_slot()
 
 
 def get_rss_mb() -> float:
@@ -106,6 +118,5 @@ def is_memory_pressure(label: str) -> bool:
         rss_mb,
         MEMORY_THRESHOLD_MB,
     )
-    gc.collect()
-    malloc_trim()
+    reclaim_memory(label)
     return True

@@ -102,7 +102,7 @@ async def search_conversations(
         tags: Comma-separated tags to filter by (all must match).
         limit: Maximum results to return.
     """
-    from oncofiles.memory import acquire_query_slot, release_query_slot
+    from oncofiles.memory import query_slot
 
     try:
         db = _get_db(ctx)
@@ -116,11 +116,8 @@ async def search_conversations(
             tags=parsed_tags,
             limit=_clamp_limit(limit),
         )
-        await acquire_query_slot("search_conversations")
-        try:
+        async with query_slot("search_conversations"):
             entries = await db.search_conversation_entries(query)
-        finally:
-            release_query_slot()
     except ValueError as e:
         return json.dumps({"error": str(e)})
     items = [

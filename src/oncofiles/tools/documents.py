@@ -199,7 +199,7 @@ async def search_documents(
         limit: Maximum results to return (max 200).
         offset: Skip this many results (for pagination).
     """
-    from oncofiles.memory import acquire_query_slot, release_query_slot
+    from oncofiles.memory import query_slot
 
     try:
         db = _get_db(ctx)
@@ -212,11 +212,8 @@ async def search_documents(
             limit=_clamp_limit(limit),
             offset=max(0, offset),
         )
-        await acquire_query_slot("search_documents")
-        try:
+        async with query_slot("search_documents"):
             docs = await db.search_documents(query)
-        finally:
-            release_query_slot()
         return json.dumps({"documents": [_doc_to_dict(d) for d in docs], "total": len(docs)})
     except ValueError as e:
         return json.dumps({"error": str(e)})
