@@ -51,6 +51,43 @@ def get_rss_mb() -> float:
         return rss / (1024 * 1024) if sys.platform == "darwin" else rss / 1024
 
 
+def malloc_trim() -> None:
+    """Return freed memory pages to the OS (Linux only).
+
+    CPython's arena allocator doesn't return freed pages to the OS by default,
+    causing RSS to grow monotonically even after gc.collect(). malloc_trim()
+    forces glibc to release unused heap pages back to the kernel.
+
+    No-op on macOS (dev) — only effective on Linux (Railway).
+    """
+    if sys.platform != "linux":
+        return
+    try:
+        import ctypes
+
+        libc = ctypes.CDLL("libc.so.6")
+        libc.malloc_trim(0)
+    except (OSError, AttributeError):
+        pass  # Not available — silently skip
+
+
+def reclaim_memory(label: str) -> float:
+    """Run gc.collect() + malloc_trim() and return current RSS.
+
+    Call this after heavy operations (sync, search, enhance) to aggressively
+    return memory to the OS.
+    """
+    gc.collect()
+    malloc_trim()
+    rss = get_rss_mb()
+    logger.info("Memory reclaimed after %s — RSS: %.1f MB", label, rss)
+    return rss
+
+
+# RSS threshold for graceful self-restart (below OOM but above normal)
+RESTART_THRESHOLD_MB = 400
+
+
 def is_memory_pressure(label: str) -> bool:
     """Check if RSS exceeds threshold; if so, log a warning, run gc, and return True.
 
@@ -70,4 +107,5 @@ def is_memory_pressure(label: str) -> bool:
         MEMORY_THRESHOLD_MB,
     )
     gc.collect()
+    malloc_trim()
     return True

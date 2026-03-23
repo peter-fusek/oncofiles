@@ -285,7 +285,6 @@ def _start_sync_scheduler(
 
     async def _run_sync(trigger: str = "scheduled"):
         nonlocal _last_sync_time
-        import gc
 
         if is_memory_pressure("sync"):
             return
@@ -331,12 +330,20 @@ def _start_sync_scheduler(
             except Exception:
                 logger.exception("Scheduled sync failed")
             finally:
-                gc.collect()
+                from oncofiles.memory import RESTART_THRESHOLD_MB, reclaim_memory
+
+                rss = reclaim_memory("gdrive_sync")
+                # Graceful restart if memory is stuck high after reclaim
+                if rss > RESTART_THRESHOLD_MB and _sync_semaphore._value >= 1:
+                    logger.warning(
+                        "Graceful restart: RSS %.1f MB after sync — exiting for Railway restart",
+                        rss,
+                    )
+                    sys.exit(0)
 
     metadata_timeout = 600  # 10 minutes max for metadata extraction
 
     async def _run_metadata_extraction():
-        import gc
 
         try:
             stats = await asyncio.wait_for(
@@ -350,7 +357,9 @@ def _start_sync_scheduler(
         except Exception:
             logger.exception("Metadata extraction failed")
         finally:
-            gc.collect()
+            from oncofiles.memory import reclaim_memory
+
+            reclaim_memory("metadata_extraction")
 
     housekeeping_timeout = 120  # 2 minutes max for lightweight housekeeping jobs
 
@@ -443,12 +452,25 @@ def _start_sync_scheduler(
             logger.exception("Prompt log cleanup failed")
 
     async def _log_rss():
+        from oncofiles.memory import RESTART_THRESHOLD_MB, reclaim_memory
+
         rss_mb = get_rss_mb()
         logger.info(
             "Periodic RSS check: %.1f MB (semaphore available: %d/2)",
             rss_mb,
             _sync_semaphore._value,
         )
+        # If RSS is elevated, try to reclaim first
+        if rss_mb > RESTART_THRESHOLD_MB:
+            rss_mb = reclaim_memory("periodic_rss_check")
+        # If RSS is still high after reclaim and no syncs are running, restart
+        if rss_mb > RESTART_THRESHOLD_MB and _sync_semaphore._value == 2:
+            logger.warning(
+                "Graceful restart: RSS %.1f MB > %d MB after reclaim — exiting",
+                rss_mb,
+                RESTART_THRESHOLD_MB,
+            )
+            sys.exit(0)
 
     from apscheduler.triggers.cron import CronTrigger
 
@@ -765,7 +787,6 @@ def _start_sync_scheduler(
     async def _run_gmail_sync(trigger: str = "scheduled"):
         if not gmail_client:
             return
-        import gc
 
         if is_memory_pressure("Gmail sync"):
             return
@@ -785,12 +806,13 @@ def _start_sync_scheduler(
             except Exception:
                 logger.exception("Gmail sync failed")
             finally:
-                gc.collect()
+                from oncofiles.memory import reclaim_memory
+
+                reclaim_memory("gmail_sync")
 
     async def _startup_gmail_sync():
         if not gmail_client:
             return
-        import gc
 
         from oncofiles.gmail_sync import gmail_sync as _gmail_sync
 
@@ -806,7 +828,9 @@ def _start_sync_scheduler(
             except Exception:
                 logger.exception("Gmail initial sync failed")
             finally:
-                gc.collect()
+                from oncofiles.memory import reclaim_memory
+
+                reclaim_memory("gmail_startup_sync")
 
     if gmail_client:
         scheduler.add_job(
@@ -832,14 +856,29 @@ def _start_sync_scheduler(
 
     # ── Calendar sync jobs ─────────────────────────────────────────────────
     calendar_sync_timeout = 300  # 5 minutes max
+    _last_calendar_sync_time: str | None = None
 
     async def _run_calendar_sync(trigger: str = "scheduled"):
+        nonlocal _last_calendar_sync_time
         if not calendar_client:
             return
-        import gc
 
         if is_memory_pressure("Calendar sync"):
             return
+
+        # Lightweight pre-check: skip if no calendar changes since last sync
+        if _last_calendar_sync_time and trigger == "scheduled":
+            try:
+                has_changes = await asyncio.to_thread(
+                    calendar_client.has_changes_since, _last_calendar_sync_time
+                )
+                if not has_changes:
+                    logger.debug(
+                        "Calendar sync skipped — no changes since %s", _last_calendar_sync_time
+                    )
+                    return
+            except Exception:
+                pass  # On error, proceed with full sync
 
         from oncofiles.calendar_sync import calendar_sync as _calendar_sync
 
@@ -851,17 +890,19 @@ def _start_sync_scheduler(
                 )
                 if not stats.get("skipped"):
                     logger.info("Calendar sync (%s): %s", trigger, stats)
+                _last_calendar_sync_time = datetime.now(UTC).isoformat()
             except TimeoutError:
                 logger.error("Calendar sync timed out after %ds", calendar_sync_timeout)
             except Exception:
                 logger.exception("Calendar sync failed")
             finally:
-                gc.collect()
+                from oncofiles.memory import reclaim_memory
+
+                reclaim_memory("calendar_sync")
 
     async def _startup_calendar_sync():
         if not calendar_client:
             return
-        import gc
 
         from oncofiles.calendar_sync import calendar_sync as _calendar_sync
 
@@ -877,7 +918,9 @@ def _start_sync_scheduler(
             except Exception:
                 logger.exception("Calendar initial sync failed")
             finally:
-                gc.collect()
+                from oncofiles.memory import reclaim_memory
+
+                reclaim_memory("calendar_startup_sync")
 
     if calendar_client:
         scheduler.add_job(

@@ -126,6 +126,30 @@ class CalendarClient:
         return self._service.events().list(**params).execute()
 
     @_retry_on_transient
+    def has_changes_since(
+        self,
+        updated_min: str,
+        calendar_id: str = "primary",
+    ) -> bool:
+        """Check if any events were updated since the given RFC3339 timestamp.
+
+        Uses maxResults=1 to minimize data transfer — we only care whether
+        at least one event changed, not how many.
+        """
+        result = (
+            self._service.events()
+            .list(
+                calendarId=calendar_id,
+                updatedMin=updated_min,
+                maxResults=1,
+                singleEvents=False,
+                showDeleted=True,
+            )
+            .execute()
+        )
+        return len(result.get("items", [])) > 0
+
+    @_retry_on_transient
     def get_event(self, event_id: str, calendar_id: str = "primary") -> dict:
         """Get a calendar event by ID."""
         return self._service.events().get(calendarId=calendar_id, eventId=event_id).execute()
