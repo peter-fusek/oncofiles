@@ -1845,6 +1845,131 @@ Fix file: `src/oncofiles/dashboard.html`
         return JSONResponse({"error": "internal error"}, status_code=500)
 
 
+@mcp.custom_route("/api/patients", methods=["GET"])
+async def api_list_patients(request: Request) -> JSONResponse:
+    """List all patients. Requires bearer or dashboard session auth."""
+    err = _check_dashboard_auth(request)
+    if err:
+        return err
+    try:
+        db_inst: Database = request.app.state.fastmcp_server._lifespan_result["db"]
+        patients = await db_inst.list_patients(active_only=False)
+        return JSONResponse(
+            [
+                {
+                    "patient_id": p.patient_id,
+                    "display_name": p.display_name,
+                    "caregiver_email": p.caregiver_email,
+                    "diagnosis_summary": p.diagnosis_summary,
+                    "is_active": p.is_active,
+                    "preferred_lang": p.preferred_lang,
+                    "created_at": p.created_at.isoformat() if p.created_at else None,
+                }
+                for p in patients
+            ]
+        )
+    except Exception:
+        logger.exception("API list-patients error")
+        return JSONResponse({"error": "internal error"}, status_code=500)
+
+
+@mcp.custom_route("/api/patients", methods=["POST"])
+async def api_create_patient(request: Request) -> JSONResponse:
+    """Create a new patient. Requires bearer or dashboard session auth.
+
+    Body: {patient_id, display_name, caregiver_email?, diagnosis_summary?, preferred_lang?}
+    Returns the created patient + a generated bearer token (shown once).
+    """
+    from oncofiles.models import Patient
+
+    err = _check_dashboard_auth(request)
+    if err:
+        return err
+    try:
+        db_inst: Database = request.app.state.fastmcp_server._lifespan_result["db"]
+        body = await request.json()
+        patient_id = body.get("patient_id", "").strip().lower()
+        if not patient_id or len(patient_id) < 2:
+            return JSONResponse({"error": "patient_id required (min 2 chars)"}, status_code=400)
+        # Slug-safe check
+        import re
+
+        if not re.match(r"^[a-z0-9][a-z0-9_-]{1,49}$", patient_id):
+            return JSONResponse(
+                {"error": "patient_id must be lowercase alphanumeric with - or _ (2-50 chars)"},
+                status_code=400,
+            )
+        existing = await db_inst.get_patient(patient_id)
+        if existing:
+            return JSONResponse(
+                {"error": f"Patient '{patient_id}' already exists"}, status_code=409
+            )
+
+        patient = Patient(
+            patient_id=patient_id,
+            display_name=body.get("display_name", patient_id),
+            caregiver_email=body.get("caregiver_email"),
+            diagnosis_summary=body.get("diagnosis_summary"),
+            preferred_lang=body.get("preferred_lang", "sk"),
+        )
+        created = await db_inst.insert_patient(patient)
+        # Generate initial bearer token
+        token = await db_inst.create_patient_token(patient_id, label="initial")
+        logger.info("New patient created: %s", patient_id)
+        return JSONResponse(
+            {
+                "patient": {
+                    "patient_id": created.patient_id,
+                    "display_name": created.display_name,
+                    "caregiver_email": created.caregiver_email,
+                    "diagnosis_summary": created.diagnosis_summary,
+                    "preferred_lang": created.preferred_lang,
+                },
+                "bearer_token": token,
+                "warning": "Save this token — it will not be shown again.",
+            },
+            status_code=201,
+        )
+    except Exception:
+        logger.exception("API create-patient error")
+        return JSONResponse({"error": "internal error"}, status_code=500)
+
+
+@mcp.custom_route("/api/patient-tokens", methods=["POST"])
+async def api_create_patient_token(request: Request) -> JSONResponse:
+    """Generate a new bearer token for a patient. Requires bearer or dashboard session auth.
+
+    Body: {patient_id, label?}
+    Returns the plaintext token (shown once).
+    """
+    err = _check_dashboard_auth(request)
+    if err:
+        return err
+    try:
+        db_inst: Database = request.app.state.fastmcp_server._lifespan_result["db"]
+        body = await request.json()
+        patient_id = body.get("patient_id", "").strip()
+        if not patient_id:
+            return JSONResponse({"error": "patient_id required"}, status_code=400)
+        patient = await db_inst.get_patient(patient_id)
+        if not patient:
+            return JSONResponse({"error": f"Patient '{patient_id}' not found"}, status_code=404)
+        label = body.get("label", "")
+        token = await db_inst.create_patient_token(patient_id, label=label)
+        return JSONResponse(
+            {
+                "patient_id": patient_id,
+                "bearer_token": token,
+                "label": label,
+                "warning": "Save this token — it will not be shown again.",
+            },
+            status_code=201,
+        )
+    except Exception:
+        logger.exception("API create-patient-token error")
+        return JSONResponse({"error": "internal error"}, status_code=500)
+
+
 @mcp.custom_route("/oauth/authorize/{service}", methods=["GET"])
 async def oauth_authorize(request: Request) -> JSONResponse:
     """Redirect to Google OAuth for a specific service (drive, gmail, calendar)."""
