@@ -48,7 +48,7 @@ Oncofiles is a self-hosted [Model Context Protocol](https://modelcontextprotocol
 
 ```bash
 # Clone and install
-git clone https://github.com/instarea-sk/oncofiles.git
+git clone https://github.com/peter-fusek/oncofiles.git
 cd oncofiles
 uv sync --extra dev
 

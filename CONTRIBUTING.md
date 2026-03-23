@@ -5,7 +5,7 @@ Thanks for your interest in contributing!
 ## Development setup
 
 ```bash
-git clone https://github.com/instarea-sk/oncofiles.git
+git clone https://github.com/peter-fusek/oncofiles.git
 cd oncofiles
 uv sync --extra dev
 ```
@@ -34,7 +34,7 @@ uv run ruff format --check
 
 ## Reporting issues
 
-Open an issue on [GitHub](https://github.com/instarea-sk/oncofiles/issues) with:
+Open an issue on [GitHub](https://github.com/peter-fusek/oncofiles/issues) with:
 - Steps to reproduce
 - Expected vs actual behavior
 - Python version and OS

@@ -1172,7 +1172,7 @@ async def llms_txt(request: Request) -> HTMLResponse:
         f"- Language: Python 3.12+\n"
         f"- Database: SQLite / Turso\n"
         f"- License: MIT\n"
-        f"- Repository: https://github.com/instarea-sk/oncofiles\n"
+        f"- Repository: https://github.com/peter-fusek/oncofiles\n"
         f"\n"
         f"## Integration\n"
         f"Oncofiles works with Claude and any MCP-compatible AI assistant.\n"
@@ -1183,7 +1183,7 @@ async def llms_txt(request: Request) -> HTMLResponse:
         f"- Homepage: https://oncofiles.com\n"
         f"- Dashboard: https://oncofiles.com/dashboard\n"
         f"- Health: https://oncofiles.com/health\n"
-        f"- GitHub: https://github.com/instarea-sk/oncofiles\n",
+        f"- GitHub: https://github.com/peter-fusek/oncofiles\n",
         media_type="text/plain; charset=utf-8",
     )
 
