@@ -1723,6 +1723,126 @@ async def api_usage_analytics(request: Request) -> JSONResponse:
         return JSONResponse({"error": "internal error"}, status_code=500)
 
 
+@mcp.custom_route("/api/bug-report", methods=["POST"])
+async def api_bug_report(request: Request) -> JSONResponse:
+    """Create a GitHub issue from dashboard bug report with full context."""
+    from oncofiles.config import GITHUB_REPO, GITHUB_TOKEN
+
+    err = _check_dashboard_auth(request)
+    if err:
+        return err
+
+    if not GITHUB_TOKEN:
+        return JSONResponse({"error": "GITHUB_TOKEN not configured"}, status_code=503)
+
+    try:
+        body = await request.json()
+        title = body.get("title", "Dashboard bug report")[:120]
+        description = body.get("description", "")[:1000]
+        page_url = body.get("page_url", "")
+        page_section = body.get("page_section", "")
+        page_state = body.get("page_state", "")[:5000]
+        console_errors = body.get("console_errors", "")[:2000]
+        screenshot_b64 = body.get("screenshot", "")
+        user_agent = body.get("user_agent", "")
+
+        # Build structured issue body for Claude Code
+        issue_body = f"""## Bug Report (Dashboard)
+
+**Description**: {description}
+
+### Context
+| Field | Value |
+|-------|-------|
+| Page | `{page_url}` |
+| Section | `{page_section}` |
+| User Agent | `{user_agent[:100]}` |
+| Reported | {datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC")} |
+
+### Page State
+```json
+{page_state}
+```
+
+### Console Errors
+```
+{console_errors or "None"}
+```
+"""
+        # Upload screenshot if provided
+        screenshot_url = ""
+        if screenshot_b64 and len(screenshot_b64) < 5_000_000:
+
+            ts = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
+            img_path = f".github/screenshots/bug_{ts}.png"
+            try:
+                import httpx
+
+                async with httpx.AsyncClient(timeout=15.0) as client:
+                    resp = await client.put(
+                        f"https://api.github.com/repos/{GITHUB_REPO}/contents/{img_path}",
+                        headers={
+                            "Authorization": f"Bearer {GITHUB_TOKEN}",
+                            "Accept": "application/vnd.github+json",
+                        },
+                        json={
+                            "message": f"Bug screenshot {ts}",
+                            "content": screenshot_b64,
+                            "branch": "main",
+                        },
+                    )
+                    if resp.status_code in (200, 201):
+                        dl = resp.json().get("content", {}).get("download_url", "")
+                        if dl:
+                            screenshot_url = dl
+            except Exception:
+                logger.warning("Failed to upload bug screenshot", exc_info=True)
+
+        if screenshot_url:
+            issue_body += f"\n### Screenshot\n![screenshot]({screenshot_url})\n"
+
+        issue_body += """
+### For Claude Code
+Fix file: `src/oncofiles/dashboard.html`
+- Check the Page State JSON for the data that was displayed
+- Check Console Errors for JS exceptions
+- Reproduce by navigating to the reported Page/Section
+"""
+
+        # Create GitHub issue
+        import httpx
+
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.post(
+                f"https://api.github.com/repos/{GITHUB_REPO}/issues",
+                headers={
+                    "Authorization": f"Bearer {GITHUB_TOKEN}",
+                    "Accept": "application/vnd.github+json",
+                },
+                json={
+                    "title": f"[Dashboard Bug] {title}",
+                    "body": issue_body,
+                    "labels": ["bug", "dashboard"],
+                },
+            )
+            if resp.status_code == 201:
+                issue_url = resp.json().get("html_url", "")
+                logger.info("Bug report created: %s", issue_url)
+                return JSONResponse({"ok": True, "issue_url": issue_url})
+            else:
+                logger.error(
+                    "GitHub issue creation failed: %d %s", resp.status_code, resp.text[:200]
+                )
+                return JSONResponse(
+                    {"error": f"GitHub API error: {resp.status_code}"},
+                    status_code=502,
+                )
+
+    except Exception:
+        logger.exception("Bug report endpoint error")
+        return JSONResponse({"error": "internal error"}, status_code=500)
+
+
 @mcp.custom_route("/oauth/authorize/{service}", methods=["GET"])
 async def oauth_authorize(request: Request) -> JSONResponse:
     """Redirect to Google OAuth for a specific service (drive, gmail, calendar)."""

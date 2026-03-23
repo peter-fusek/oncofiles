@@ -55,6 +55,10 @@ CALENDAR_ENABLED: bool = os.environ.get("CALENDAR_ENABLED", "false").lower() in 
 ONCOTEAM_WEBHOOK_URL: str = os.environ.get("ONCOTEAM_WEBHOOK_URL", "")
 ONCOTEAM_WEBHOOK_TOKEN: str = os.environ.get("ONCOTEAM_WEBHOOK_TOKEN", "")
 
+# GitHub bug reporting
+GITHUB_TOKEN: str = os.environ.get("GITHUB_TOKEN", "")
+GITHUB_REPO: str = os.environ.get("GITHUB_REPO", "peter-fusek/oncofiles")
+
 # Patient context
 PATIENT_CONTEXT_PATH: str = os.environ.get(
     "PATIENT_CONTEXT_PATH", str(DATA_DIR / "patient_context.json")

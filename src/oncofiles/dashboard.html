@@ -578,6 +578,24 @@
     </div>
   </div>
 
+  <!-- Bug Report FAB + Modal -->
+  <button id="bug-fab" title="Report a bug" style="position:fixed;bottom:1.5rem;right:1.5rem;width:48px;height:48px;border-radius:50%;background:var(--red);color:white;border:none;cursor:pointer;font-size:1.25rem;box-shadow:0 4px 12px rgba(0,0,0,0.4);z-index:1000;display:flex;align-items:center;justify-content:center;transition:transform 0.15s">&#128027;</button>
+  <div id="bug-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:1001;align-items:center;justify-content:center">
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;max-width:560px;width:90%;padding:1.5rem;max-height:90vh;overflow-y:auto">
+      <h3 style="margin-bottom:1rem;font-size:1.1rem">Report a Bug</h3>
+      <img id="bug-screenshot" style="width:100%;border-radius:6px;border:1px solid var(--border);margin-bottom:1rem;display:none" alt="screenshot">
+      <p id="bug-capturing" style="color:var(--text-muted);font-size:0.875rem;margin-bottom:1rem">Capturing screenshot...</p>
+      <input id="bug-title" type="text" placeholder="What went wrong? (one-liner)" maxlength="120" style="width:100%;padding:0.625rem;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:6px;font-size:0.9375rem;margin-bottom:0.75rem">
+      <textarea id="bug-desc" placeholder="Additional details (optional)" rows="3" style="width:100%;padding:0.625rem;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:6px;font-size:0.875rem;margin-bottom:1rem;resize:vertical"></textarea>
+      <div style="display:flex;gap:0.75rem;justify-content:flex-end">
+        <button id="bug-cancel" style="padding:0.5rem 1rem;background:transparent;color:var(--text-muted);border:1px solid var(--border);border-radius:6px;cursor:pointer">Cancel</button>
+        <button id="bug-submit" disabled style="padding:0.5rem 1.25rem;background:var(--red);color:white;border:none;border-radius:6px;cursor:pointer;font-weight:600">Submit Bug</button>
+      </div>
+      <p id="bug-status" style="margin-top:0.75rem;font-size:0.8125rem;color:var(--text-muted);display:none"></p>
+    </div>
+  </div>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js" defer></script>
+
   <script>
     /* All data rendered via safe DOM methods — textContent for strings, createElement for structure.
        The esc() helper is used only as a safety net for the few cases where we build HTML strings
@@ -1461,6 +1479,141 @@
         renderTable();
       });
     });
+
+    /* ── Bug Report ──────────────────────────────────────────────────── */
+    (function() {
+      var fab = document.getElementById('bug-fab');
+      var overlay = document.getElementById('bug-overlay');
+      var screenshot = document.getElementById('bug-screenshot');
+      var capturing = document.getElementById('bug-capturing');
+      var titleInput = document.getElementById('bug-title');
+      var descInput = document.getElementById('bug-desc');
+      var submitBtn = document.getElementById('bug-submit');
+      var cancelBtn = document.getElementById('bug-cancel');
+      var statusEl = document.getElementById('bug-status');
+      var screenshotB64 = '';
+      var consoleErrors = [];
+
+      var origError = console.error;
+      console.error = function() {
+        consoleErrors.push(Array.prototype.slice.call(arguments).join(' '));
+        if (consoleErrors.length > 20) consoleErrors.shift();
+        origError.apply(console, arguments);
+      };
+      window.addEventListener('error', function(e) {
+        consoleErrors.push(e.message + ' at ' + e.filename + ':' + e.lineno);
+      });
+
+      function collectPageState() {
+        var state = {};
+        document.querySelectorAll('.card').forEach(function(c) {
+          var label = (c.querySelector('.card-label') || {}).textContent || '';
+          var value = (c.querySelector('.card-value') || {}).textContent || '';
+          if (label) state['card_' + label.replace(/\s+/g, '_')] = value;
+        });
+        state.sync_history_rows = document.querySelectorAll('.sync-history tr').length;
+        state.document_rows = document.querySelectorAll('#doc-table-body tr').length;
+        state.current_filter = typeof currentFilter !== 'undefined' ? currentFilter : '';
+        return JSON.stringify(state, null, 2);
+      }
+
+      fab.addEventListener('click', function() {
+        overlay.style.display = 'flex';
+        screenshot.style.display = 'none';
+        capturing.style.display = 'block';
+        capturing.textContent = 'Capturing screenshot...';
+        titleInput.value = '';
+        descInput.value = '';
+        statusEl.style.display = 'none';
+        submitBtn.disabled = true;
+        screenshotB64 = '';
+
+        fab.style.display = 'none';
+        overlay.style.display = 'none';
+        setTimeout(function() {
+          if (typeof html2canvas === 'function') {
+            html2canvas(document.body, { scale: 0.5, useCORS: true, logging: false }).then(function(canvas) {
+              screenshotB64 = canvas.toDataURL('image/png').split(',')[1];
+              screenshot.src = canvas.toDataURL('image/png');
+              screenshot.style.display = 'block';
+              capturing.style.display = 'none';
+              submitBtn.disabled = false;
+              fab.style.display = 'flex';
+              overlay.style.display = 'flex';
+            }).catch(function() {
+              capturing.textContent = 'Screenshot failed — you can still submit.';
+              submitBtn.disabled = false;
+              fab.style.display = 'flex';
+              overlay.style.display = 'flex';
+            });
+          } else {
+            capturing.textContent = 'html2canvas not loaded — submitting without screenshot.';
+            submitBtn.disabled = false;
+            fab.style.display = 'flex';
+            overlay.style.display = 'flex';
+          }
+        }, 100);
+      });
+
+      cancelBtn.addEventListener('click', function() { overlay.style.display = 'none'; });
+      overlay.addEventListener('click', function(e) { if (e.target === overlay) overlay.style.display = 'none'; });
+
+      function showStatus(text, color) {
+        statusEl.textContent = text;
+        statusEl.style.color = color;
+        statusEl.style.display = 'block';
+      }
+
+      submitBtn.addEventListener('click', function() {
+        var title = titleInput.value.trim();
+        if (!title) { titleInput.focus(); return; }
+        submitBtn.disabled = true;
+        submitBtn.textContent = 'Submitting...';
+        showStatus('Creating GitHub issue...', 'var(--text-muted)');
+
+        var payload = {
+          title: title,
+          description: descInput.value.trim(),
+          page_url: location.href,
+          page_section: location.hash || 'dashboard',
+          page_state: collectPageState(),
+          console_errors: consoleErrors.join('\n'),
+          screenshot: screenshotB64,
+          user_agent: navigator.userAgent
+        };
+
+        var headers = { 'Content-Type': 'application/json' };
+        if (authMode === 'bearer') headers['Authorization'] = 'Bearer ' + TOKEN;
+        else if (TOKEN) headers['X-Dashboard-Token'] = TOKEN;
+
+        fetch('/api/bug-report', { method: 'POST', headers: headers, body: JSON.stringify(payload) })
+          .then(function(r) { return r.json(); })
+          .then(function(data) {
+            if (data.ok && data.issue_url) {
+              statusEl.textContent = '';
+              statusEl.style.color = 'var(--green)';
+              statusEl.appendChild(document.createTextNode('Bug reported! '));
+              var link = document.createElement('a');
+              link.href = data.issue_url;
+              link.target = '_blank';
+              link.rel = 'noreferrer';
+              link.style.color = 'var(--accent)';
+              link.textContent = 'View issue';
+              statusEl.appendChild(link);
+              submitBtn.textContent = 'Done';
+            } else {
+              showStatus('Error: ' + (data.error || 'Unknown error'), 'var(--red)');
+              submitBtn.textContent = 'Submit Bug';
+              submitBtn.disabled = false;
+            }
+          })
+          .catch(function(e) {
+            showStatus('Network error: ' + e.message, 'var(--red)');
+            submitBtn.textContent = 'Submit Bug';
+            submitBtn.disabled = false;
+          });
+      });
+    })();
 
   </script>
 </body>
