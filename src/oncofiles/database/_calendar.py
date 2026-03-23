@@ -14,12 +14,12 @@ class CalendarMixin:
         async with self.db.execute(
             """
             INSERT INTO calendar_entries
-                (user_id, google_event_id, summary, description, start_time,
+                (patient_id, google_event_id, summary, description, start_time,
                  end_time, location, attendees, recurrence, status,
                  ai_summary, treatment_event_id, is_medical, updated_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                     strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
-            ON CONFLICT(user_id, google_event_id) DO UPDATE SET
+            ON CONFLICT(patient_id, google_event_id) DO UPDATE SET
                 summary = excluded.summary,
                 description = excluded.description,
                 start_time = excluded.start_time,
@@ -35,7 +35,7 @@ class CalendarMixin:
                 updated_at = excluded.updated_at
             """,
             (
-                entry.user_id,
+                entry.patient_id,
                 entry.google_event_id,
                 entry.summary,
                 entry.description,
@@ -56,7 +56,7 @@ class CalendarMixin:
             result = await self.get_calendar_entry(last_id)
             if result:
                 return result
-        return await self.get_calendar_entry_by_google_id(entry.google_event_id, entry.user_id)
+        return await self.get_calendar_entry_by_google_id(entry.google_event_id, entry.patient_id)
 
     async def get_calendar_entry(self, entry_id: int) -> CalendarEntry | None:
         """Get a calendar entry by internal ID."""
@@ -67,22 +67,22 @@ class CalendarMixin:
             return _row_to_calendar_entry(row) if row else None
 
     async def get_calendar_entry_by_google_id(
-        self, google_event_id: str, user_id: str = "default"
+        self, google_event_id: str, patient_id: str = "erika"
     ) -> CalendarEntry | None:
         """Get a calendar entry by Google event ID."""
         async with self.db.execute(
-            "SELECT * FROM calendar_entries WHERE user_id = ? AND google_event_id = ?",
-            (user_id, google_event_id),
+            "SELECT * FROM calendar_entries WHERE patient_id = ? AND google_event_id = ?",
+            (patient_id, google_event_id),
         ) as cursor:
             row = await cursor.fetchone()
             return _row_to_calendar_entry(row) if row else None
 
     async def search_calendar_entries(
-        self, query: CalendarQuery, user_id: str = "default"
+        self, query: CalendarQuery, patient_id: str = "erika"
     ) -> list[CalendarEntry]:
         """Search calendar entries with text, date, and medical filters."""
-        conditions = ["user_id = ?"]
-        params: list = [user_id]
+        conditions = ["patient_id = ?"]
+        params: list = [patient_id]
         if query.text:
             like = f"%{query.text}%"
             conditions.append("(summary LIKE ? OR description LIKE ?)")
@@ -104,20 +104,20 @@ class CalendarMixin:
             return [_row_to_calendar_entry(r) for r in rows]
 
     async def list_calendar_entries(
-        self, user_id: str = "default", limit: int = 50
+        self, patient_id: str = "erika", limit: int = 50
     ) -> list[CalendarEntry]:
         """List recent calendar entries."""
         async with self.db.execute(
-            "SELECT * FROM calendar_entries WHERE user_id = ? ORDER BY start_time DESC LIMIT ?",
-            (user_id, min(limit, 200)),
+            "SELECT * FROM calendar_entries WHERE patient_id = ? ORDER BY start_time DESC LIMIT ?",
+            (patient_id, min(limit, 200)),
         ) as cursor:
             rows = await cursor.fetchall()
             return [_row_to_calendar_entry(r) for r in rows]
 
-    async def count_calendar_entries(self, user_id: str = "default") -> int:
+    async def count_calendar_entries(self, patient_id: str = "erika") -> int:
         """Count calendar entries for a user."""
         async with self.db.execute(
-            "SELECT COUNT(*) FROM calendar_entries WHERE user_id = ?", (user_id,)
+            "SELECT COUNT(*) FROM calendar_entries WHERE patient_id = ?", (patient_id,)
         ) as cursor:
             row = await cursor.fetchone()
             return row["COUNT(*)"] if isinstance(row, dict) else row[0]

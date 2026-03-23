@@ -13,6 +13,7 @@ from ._conversations import ConversationMixin
 from ._documents import DocumentMixin
 from ._gmail import GmailMixin
 from ._operational import OperationalMixin
+from ._patients import PatientsMixin
 from ._prompt_log import PromptLogMixin
 
 
@@ -23,6 +24,7 @@ class Database(
     GmailMixin,
     CalendarMixin,
     OperationalMixin,
+    PatientsMixin,
     PromptLogMixin,
     AnalyticsMixin,
     DatabaseBase,

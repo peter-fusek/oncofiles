@@ -42,7 +42,7 @@ async def test_upsert_and_get_oauth_token(db: Database):
     saved = await db.upsert_oauth_token(token)
     assert saved.access_token == "access_123"
     assert saved.refresh_token == "refresh_456"
-    assert saved.user_id == "default"
+    assert saved.patient_id == "erika"
 
     # Retrieve
     fetched = await db.get_oauth_token()
@@ -74,7 +74,7 @@ async def test_update_oauth_folder(db: Database):
     token = OAuthToken(access_token="a", refresh_token="r")
     await db.upsert_oauth_token(token)
 
-    await db.update_oauth_folder("default", "google", "folder_abc")
+    await db.update_oauth_folder("erika", "google", "folder_abc")
 
     fetched = await db.get_oauth_token()
     assert fetched.gdrive_folder_id == "folder_abc"

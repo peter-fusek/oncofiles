@@ -182,10 +182,10 @@ class OperationalMixin:
         await self.db.execute(
             """
             INSERT INTO oauth_tokens
-                (user_id, provider, access_token, refresh_token, token_expiry,
+                (patient_id, provider, access_token, refresh_token, token_expiry,
                  gdrive_folder_id, owner_email, granted_scopes, updated_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
-            ON CONFLICT(user_id, provider) DO UPDATE SET
+            ON CONFLICT(patient_id, provider) DO UPDATE SET
                 access_token = excluded.access_token,
                 refresh_token = excluded.refresh_token,
                 token_expiry = excluded.token_expiry,
@@ -195,7 +195,7 @@ class OperationalMixin:
                 updated_at = excluded.updated_at
             """,
             (
-                token.user_id,
+                token.patient_id,
                 token.provider,
                 token.access_token,
                 token.refresh_token,
@@ -206,36 +206,38 @@ class OperationalMixin:
             ),
         )
         await self.db.commit()
-        return await self.get_oauth_token(token.user_id, token.provider)
+        return await self.get_oauth_token(token.patient_id, token.provider)
 
     async def get_oauth_token(
-        self, user_id: str = "default", provider: str = "google"
+        self, patient_id: str = "erika", provider: str = "google"
     ) -> OAuthToken | None:
         """Get OAuth tokens for a user/provider pair."""
         async with self.db.execute(
-            "SELECT * FROM oauth_tokens WHERE user_id = ? AND provider = ?",
-            (user_id, provider),
+            "SELECT * FROM oauth_tokens WHERE patient_id = ? AND provider = ?",
+            (patient_id, provider),
         ) as cursor:
             row = await cursor.fetchone()
             return _row_to_oauth_token(row) if row else None
 
-    async def update_oauth_folder(self, user_id: str, provider: str, folder_id: str) -> None:
+    async def update_oauth_folder(self, patient_id: str, provider: str, folder_id: str) -> None:
         """Set the GDrive folder ID for a user's OAuth token."""
         await self.db.execute(
             "UPDATE oauth_tokens SET gdrive_folder_id = ?, "
             "updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') "
-            "WHERE user_id = ? AND provider = ?",
-            (folder_id, user_id, provider),
+            "WHERE patient_id = ? AND provider = ?",
+            (folder_id, patient_id, provider),
         )
         await self.db.commit()
 
-    async def update_oauth_owner_email(self, user_id: str, provider: str, owner_email: str) -> None:
+    async def update_oauth_owner_email(
+        self, patient_id: str, provider: str, owner_email: str
+    ) -> None:
         """Store the GDrive folder owner's email for permission sharing."""
         await self.db.execute(
             "UPDATE oauth_tokens SET owner_email = ?, "
             "updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') "
-            "WHERE user_id = ? AND provider = ?",
-            (owner_email, user_id, provider),
+            "WHERE patient_id = ? AND provider = ?",
+            (owner_email, patient_id, provider),
         )
         await self.db.commit()
 

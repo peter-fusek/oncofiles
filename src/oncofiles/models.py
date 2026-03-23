@@ -142,6 +142,22 @@ class ConversationQuery(BaseModel):
     offset: int = Field(default=0, ge=0)
 
 
+# ── Patients (#134) ──────────────────────────────────────────────────────────
+
+
+class Patient(BaseModel):
+    """A patient managed by this oncofiles instance."""
+
+    patient_id: str
+    display_name: str
+    caregiver_email: str | None = None
+    diagnosis_summary: str | None = None
+    is_active: bool = True
+    preferred_lang: str = "sk"
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
 # ── Agent state (#32) ────────────────────────────────────────────────────────
 
 
@@ -232,7 +248,7 @@ class OAuthToken(BaseModel):
     """OAuth token pair for a user's Google Drive access."""
 
     id: int | None = None
-    user_id: str = "default"
+    patient_id: str = "erika"
     provider: str = "google"
     access_token: str
     refresh_token: str
@@ -251,7 +267,7 @@ class EmailEntry(BaseModel):
     """A Gmail email entry stored for medical record tracking."""
 
     id: int | None = None
-    user_id: str = "default"
+    patient_id: str = "erika"
     gmail_message_id: str
     thread_id: str = ""
     subject: str = ""
@@ -289,7 +305,7 @@ class CalendarEntry(BaseModel):
     """A Google Calendar event stored for medical record tracking."""
 
     id: int | None = None
-    user_id: str = "default"
+    patient_id: str = "erika"
     google_event_id: str
     summary: str = ""
     description: str = ""

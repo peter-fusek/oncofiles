@@ -35,7 +35,7 @@ def _row_to_oauth_token(row: Any) -> OAuthToken:
     """Convert a database row to an OAuthToken model."""
     return OAuthToken(
         id=row["id"],
-        user_id=row["user_id"],
+        patient_id=row["patient_id"],
         provider=row["provider"],
         access_token=row["access_token"],
         refresh_token=row["refresh_token"],
@@ -212,7 +212,7 @@ def _row_to_email_entry(row: Any) -> EmailEntry:
     """Convert a database row to an EmailEntry model."""
     return EmailEntry(
         id=row["id"],
-        user_id=row["user_id"],
+        patient_id=row["patient_id"],
         gmail_message_id=row["gmail_message_id"],
         thread_id=row["thread_id"],
         subject=row["subject"],
@@ -237,7 +237,7 @@ def _row_to_calendar_entry(row: Any) -> CalendarEntry:
     """Convert a database row to a CalendarEntry model."""
     return CalendarEntry(
         id=row["id"],
-        user_id=row["user_id"],
+        patient_id=row["patient_id"],
         google_event_id=row["google_event_id"],
         summary=row["summary"],
         description=row["description"],

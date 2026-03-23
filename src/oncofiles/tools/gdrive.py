@@ -114,7 +114,7 @@ async def gdrive_set_folder(ctx: Context, folder_id: str) -> str:
     if not token:
         return json.dumps({"error": "No OAuth tokens found. Connect Google Drive first."})
 
-    await db.update_oauth_folder(token.user_id, token.provider, folder_id)
+    await db.update_oauth_folder(token.patient_id, token.provider, folder_id)
 
     # Detect folder owner and store for permission sharing
     gdrive = _get_gdrive(ctx)
@@ -122,7 +122,7 @@ async def gdrive_set_folder(ctx: Context, folder_id: str) -> str:
     if gdrive:
         owner_email = await asyncio.to_thread(gdrive.get_folder_owner, folder_id)
         if owner_email:
-            await db.update_oauth_owner_email(token.user_id, token.provider, owner_email)
+            await db.update_oauth_owner_email(token.patient_id, token.provider, owner_email)
             gdrive.owner_email = owner_email
             logger.info("Detected folder owner: %s", owner_email)
 
@@ -327,7 +327,7 @@ async def gdrive_fix_permissions(
     # Store owner_email for future auto-sharing
     token = await db.get_oauth_token()
     if token:
-        await db.update_oauth_owner_email(token.user_id, token.provider, target_email)
+        await db.update_oauth_owner_email(token.patient_id, token.provider, target_email)
     gdrive.owner_email = target_email
 
     # Grant access recursively

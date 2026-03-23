@@ -14,13 +14,13 @@ class GmailMixin:
         async with self.db.execute(
             """
             INSERT INTO email_entries
-                (user_id, gmail_message_id, thread_id, subject, sender, recipients,
+                (patient_id, gmail_message_id, thread_id, subject, sender, recipients,
                  date, body_snippet, body_text, labels, has_attachments,
                  ai_summary, ai_relevance_score, structured_metadata,
                  linked_document_ids, is_medical, updated_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                     strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
-            ON CONFLICT(user_id, gmail_message_id) DO UPDATE SET
+            ON CONFLICT(patient_id, gmail_message_id) DO UPDATE SET
                 thread_id = excluded.thread_id,
                 subject = excluded.subject,
                 sender = excluded.sender,
@@ -40,7 +40,7 @@ class GmailMixin:
                 updated_at = excluded.updated_at
             """,
             (
-                entry.user_id,
+                entry.patient_id,
                 entry.gmail_message_id,
                 entry.thread_id,
                 entry.subject,
@@ -66,7 +66,7 @@ class GmailMixin:
             if result:
                 return result
         # Fallback: fetch by gmail_message_id
-        return await self.get_email_entry_by_gmail_id(entry.gmail_message_id, entry.user_id)
+        return await self.get_email_entry_by_gmail_id(entry.gmail_message_id, entry.patient_id)
 
     async def get_email_entry(self, entry_id: int) -> EmailEntry | None:
         """Get an email entry by internal ID."""
@@ -77,22 +77,22 @@ class GmailMixin:
             return _row_to_email_entry(row) if row else None
 
     async def get_email_entry_by_gmail_id(
-        self, gmail_message_id: str, user_id: str = "default"
+        self, gmail_message_id: str, patient_id: str = "erika"
     ) -> EmailEntry | None:
         """Get an email entry by Gmail message ID."""
         async with self.db.execute(
-            "SELECT * FROM email_entries WHERE user_id = ? AND gmail_message_id = ?",
-            (user_id, gmail_message_id),
+            "SELECT * FROM email_entries WHERE patient_id = ? AND gmail_message_id = ?",
+            (patient_id, gmail_message_id),
         ) as cursor:
             row = await cursor.fetchone()
             return _row_to_email_entry(row) if row else None
 
     async def search_email_entries(
-        self, query: EmailQuery, user_id: str = "default"
+        self, query: EmailQuery, patient_id: str = "erika"
     ) -> list[EmailEntry]:
         """Search email entries with text, date, and medical filters."""
-        conditions = ["user_id = ?"]
-        params: list = [user_id]
+        conditions = ["patient_id = ?"]
+        params: list = [patient_id]
         if query.text:
             like = f"%{query.text}%"
             conditions.append("(subject LIKE ? OR body_snippet LIKE ? OR sender LIKE ?)")
@@ -117,20 +117,20 @@ class GmailMixin:
             return [_row_to_email_entry(r) for r in rows]
 
     async def list_email_entries(
-        self, user_id: str = "default", limit: int = 50
+        self, patient_id: str = "erika", limit: int = 50
     ) -> list[EmailEntry]:
         """List recent email entries."""
         async with self.db.execute(
-            "SELECT * FROM email_entries WHERE user_id = ? ORDER BY date DESC LIMIT ?",
-            (user_id, min(limit, 200)),
+            "SELECT * FROM email_entries WHERE patient_id = ? ORDER BY date DESC LIMIT ?",
+            (patient_id, min(limit, 200)),
         ) as cursor:
             rows = await cursor.fetchall()
             return [_row_to_email_entry(r) for r in rows]
 
-    async def count_email_entries(self, user_id: str = "default") -> int:
+    async def count_email_entries(self, patient_id: str = "erika") -> int:
         """Count email entries for a user."""
         async with self.db.execute(
-            "SELECT COUNT(*) FROM email_entries WHERE user_id = ?", (user_id,)
+            "SELECT COUNT(*) FROM email_entries WHERE patient_id = ?", (patient_id,)
         ) as cursor:
             row = await cursor.fetchone()
             return row["COUNT(*)"] if isinstance(row, dict) else row[0]
