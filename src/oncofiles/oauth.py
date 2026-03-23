@@ -35,8 +35,11 @@ TOKEN_URL = "https://oauth2.googleapis.com/token"
 _STATE_MAX_AGE = 1800  # 30 minutes
 
 
-def _make_state_token() -> str:
-    """Generate an HMAC-signed state token with embedded timestamp."""
+def _make_state_token(patient_id: str = "erika") -> str:
+    """Generate an HMAC-signed state token with embedded timestamp and patient_id.
+
+    Format: {patient_id}:{timestamp}.{hmac} — HMAC covers "{patient_id}:{timestamp}".
+    """
     ts = str(int(time.time()))
     if not MCP_BEARER_TOKEN:
         raise RuntimeError(
@@ -44,31 +47,48 @@ def _make_state_token() -> str:
             "it is used as the HMAC signing key for state tokens."
         )
     key = MCP_BEARER_TOKEN.encode()
-    sig = hmac.new(key, ts.encode(), hashlib.sha256).hexdigest()[:32]
-    return f"{ts}.{sig}"
+    payload = f"{patient_id}:{ts}"
+    sig = hmac.new(key, payload.encode(), hashlib.sha256).hexdigest()[:32]
+    return f"{patient_id}:{ts}.{sig}"
 
 
-def verify_state_token(state: str) -> bool:
-    """Verify an HMAC-signed state token. Returns True if valid and not expired."""
+def verify_state_token(state: str) -> tuple[bool, str]:
+    """Verify an HMAC-signed state token. Returns (valid, patient_id).
+
+    Supports both new format ({patient_id}:{ts}.{sig}) and legacy ({ts}.{sig}).
+    """
     if not state or "." not in state:
-        return False
-    parts = state.split(".", 1)
-    if len(parts) != 2:
-        return False
-    ts_str, sig = parts
+        return False, "erika"
+
+    # Split signature from the rest: everything after last "."
+    dot_idx = state.rfind(".")
+    prefix, sig = state[:dot_idx], state[dot_idx + 1 :]
+
+    # Parse patient_id and timestamp from prefix
+    if ":" in prefix:
+        # New format: {patient_id}:{timestamp}
+        colon_idx = prefix.rfind(":")
+        patient_id = prefix[:colon_idx]
+        ts_str = prefix[colon_idx + 1 :]
+    else:
+        # Legacy format: {timestamp} only
+        patient_id = "erika"
+        ts_str = prefix
+
     try:
         ts = int(ts_str)
     except ValueError:
-        return False
+        return False, "erika"
     # Check expiry
     if time.time() - ts > _STATE_MAX_AGE:
-        return False
+        return False, patient_id
     # Verify signature
     if not MCP_BEARER_TOKEN:
-        return False
+        return False, patient_id
     key = MCP_BEARER_TOKEN.encode()
-    expected = hmac.new(key, ts_str.encode(), hashlib.sha256).hexdigest()[:32]
-    return hmac.compare_digest(sig, expected)
+    # HMAC covers the full prefix (patient_id:ts or just ts for legacy)
+    expected = hmac.new(key, prefix.encode(), hashlib.sha256).hexdigest()[:32]
+    return hmac.compare_digest(sig, expected), patient_id
 
 
 def get_auth_url(state: str = "") -> str:

@@ -1343,15 +1343,16 @@ async def status(request: Request) -> JSONResponse:
     try:
         lifespan_ctx = request.app.state.fastmcp_server._lifespan_result
         db: Database = lifespan_ctx["db"]
+        patient_id = _get_dashboard_patient_id(request)
 
         from oncofiles.filename_parser import is_standard_format
 
-        doc_count = await db.count_documents()
+        doc_count = await db.count_documents(patient_id=patient_id)
         sync_stats = await db.get_sync_stats_summary()
         recent_syncs = await db.get_sync_history(limit=5)
 
         # Document health summary
-        all_docs = await db.list_documents(limit=500)
+        all_docs = await db.list_documents(limit=500, patient_id=patient_id)
         doc_health = {
             "total": len(all_docs),
             "with_ai": sum(1 for d in all_docs if d.ai_summary),
@@ -1519,6 +1520,11 @@ def _check_dashboard_auth(request: Request) -> JSONResponse | None:
     return JSONResponse({"error": "unauthorized"}, status_code=401)
 
 
+def _get_dashboard_patient_id(request: Request) -> str:
+    """Extract patient_id from query params for dashboard endpoints."""
+    return request.query_params.get("patient_id", "erika").strip().lower()
+
+
 @mcp.custom_route("/dashboard", methods=["GET"])
 async def dashboard(request: Request) -> HTMLResponse:
     """Dashboard page. Open to all — auth happens client-side via Google Sign-In."""
@@ -1608,12 +1614,15 @@ async def api_documents(request: Request) -> JSONResponse:
         from oncofiles.tools.hygiene import _build_document_matrix
 
         db: Database = request.app.state.fastmcp_server._lifespan_result["db"]
+        patient_id = _get_dashboard_patient_id(request)
         filter_param = request.query_params.get("filter", "all")
         try:
             limit = min(int(request.query_params.get("limit", "200")), 200)
         except (ValueError, TypeError):
             limit = 200
-        result = await _build_document_matrix(db, filter_param=filter_param, limit=limit)
+        result = await _build_document_matrix(
+            db, filter_param=filter_param, limit=limit, patient_id=patient_id
+        )
         return JSONResponse(result)
     except Exception:
         logger.exception("API documents endpoint error")
@@ -1634,9 +1643,10 @@ async def api_reconciliation(request: Request) -> JSONResponse:
         db: Database = lifespan_ctx["db"]
         gdrive = lifespan_ctx.get("gdrive")
         folder_id = lifespan_ctx.get("gdrive_folder_id", "")
+        patient_id = _get_dashboard_patient_id(request)
         if not gdrive or not folder_id:
             return JSONResponse({"error": "GDrive not configured"}, status_code=503)
-        result = await _build_reconciliation_report(db, gdrive, folder_id)
+        result = await _build_reconciliation_report(db, gdrive, folder_id, patient_id=patient_id)
         return JSONResponse(result)
     except Exception:
         logger.exception("API reconciliation endpoint error")
@@ -1970,6 +1980,85 @@ async def api_create_patient_token(request: Request) -> JSONResponse:
         return JSONResponse({"error": "internal error"}, status_code=500)
 
 
+@mcp.custom_route("/api/sync-trigger", methods=["POST"])
+async def api_sync_trigger(request: Request) -> JSONResponse:
+    """Trigger a GDrive sync for a specific patient. Requires dashboard auth.
+
+    Body: {"patient_id": "..."}
+    Returns sync stats on success.
+    """
+    err = _check_dashboard_auth(request)
+    if err:
+        return err
+
+    try:
+        body = await request.json()
+        patient_id = body.get("patient_id", "").strip().lower()
+        if not patient_id:
+            return JSONResponse({"error": "patient_id required"}, status_code=400)
+
+        lifespan_ctx = request.app.state.fastmcp_server._lifespan_result
+        db_inst: Database = lifespan_ctx["db"]
+        files = lifespan_ctx["files"]
+
+        # Verify patient exists
+        patient = await db_inst.get_patient(patient_id)
+        if not patient:
+            return JSONResponse({"error": f"Patient '{patient_id}' not found"}, status_code=404)
+
+        # Load patient's OAuth token
+        token = await db_inst.get_oauth_token(patient_id=patient_id)
+        if not token:
+            return JSONResponse(
+                {
+                    "error": (
+                        f"No OAuth token for patient '{patient_id}'. Connect Google Drive first."
+                    )
+                },
+                status_code=400,
+            )
+
+        folder_id = token.gdrive_folder_id
+        if not folder_id:
+            return JSONResponse(
+                {"error": "No GDrive folder configured. Use gdrive_set_folder first."},
+                status_code=400,
+            )
+
+        # Create GDrive client from patient's OAuth token
+        from oncofiles.oauth import is_token_expired, refresh_access_token
+
+        access_token = token.access_token
+        if is_token_expired(token.token_expiry.isoformat() if token.token_expiry else None):
+            refreshed = refresh_access_token(token.refresh_token)
+            access_token = refreshed["access_token"]
+            new_expiry = datetime.now(UTC) + timedelta(seconds=refreshed.get("expires_in", 3600))
+            token.access_token = access_token
+            token.token_expiry = new_expiry
+            await db_inst.upsert_oauth_token(token)
+
+        gdrive = GDriveClient.from_oauth(
+            access_token=access_token,
+            refresh_token=token.refresh_token,
+            client_id=GOOGLE_OAUTH_CLIENT_ID,
+            client_secret=GOOGLE_OAUTH_CLIENT_SECRET,
+        )
+
+        from oncofiles.sync import sync
+
+        stats = await asyncio.wait_for(
+            sync(db_inst, files, gdrive, folder_id, trigger="manual", patient_id=patient_id),
+            timeout=120,
+        )
+
+        return JSONResponse({"status": "ok", "patient_id": patient_id, "stats": stats})
+    except TimeoutError:
+        return JSONResponse({"error": "Sync timed out after 120s"}, status_code=504)
+    except Exception:
+        logger.exception("API sync-trigger error")
+        return JSONResponse({"error": "internal error"}, status_code=500)
+
+
 @mcp.custom_route("/oauth/authorize/{service}", methods=["GET"])
 async def oauth_authorize(request: Request) -> JSONResponse:
     """Redirect to Google OAuth for a specific service (drive, gmail, calendar)."""
@@ -1988,6 +2077,7 @@ async def oauth_authorize(request: Request) -> JSONResponse:
         return JSONResponse({"error": "OAuth not configured"}, status_code=500)
 
     service = request.path_params.get("service", "drive")
+    patient_id = request.query_params.get("patient_id", "erika").strip().lower()
     scope_map = {
         "drive": SCOPES,
         "gmail": GMAIL_SCOPES,
@@ -1995,7 +2085,11 @@ async def oauth_authorize(request: Request) -> JSONResponse:
         "all": ALL_SCOPES,
     }
     scopes = scope_map.get(service, SCOPES)
-    auth_url = get_auth_url_for_scopes(scopes)
+
+    from oncofiles.oauth import _make_state_token
+
+    state = _make_state_token(patient_id=patient_id)
+    auth_url = get_auth_url_for_scopes(scopes, state=state)
     return RedirectResponse(auth_url)
 
 
@@ -2005,9 +2099,10 @@ async def oauth_callback(request: Request) -> JSONResponse:
     from oncofiles.models import OAuthToken
     from oncofiles.oauth import exchange_code, verify_state_token
 
-    # Validate CSRF state parameter
+    # Validate CSRF state parameter and extract patient_id
     state = request.query_params.get("state", "")
-    if not verify_state_token(state):
+    valid, patient_id = verify_state_token(state)
+    if not valid:
         return JSONResponse({"error": "Invalid or expired state parameter."}, status_code=400)
 
     code = request.query_params.get("code")
@@ -2027,7 +2122,7 @@ async def oauth_callback(request: Request) -> JSONResponse:
 
     # Merge with existing scopes so incremental auth doesn't drop prior grants
     db = request.app.state.fastmcp_server._lifespan_result["db"]
-    existing_token = await db.get_oauth_token()
+    existing_token = await db.get_oauth_token(patient_id=patient_id)
     if existing_token and existing_token.granted_scopes:
         existing_scopes = json.loads(existing_token.granted_scopes)
         merged_scopes = sorted(set(existing_scopes) | set(new_scopes))
@@ -2035,6 +2130,7 @@ async def oauth_callback(request: Request) -> JSONResponse:
         merged_scopes = new_scopes
 
     oauth_token = OAuthToken(
+        patient_id=patient_id,
         access_token=tokens["access_token"],
         refresh_token=tokens.get("refresh_token", ""),
         token_expiry=expiry,

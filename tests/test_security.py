@@ -16,7 +16,18 @@ def test_state_token_roundtrip():
     """Valid state token passes verification."""
     with patch("oncofiles.oauth.MCP_BEARER_TOKEN", _TEST_TOKEN):
         token = _make_state_token()
-        assert verify_state_token(token) is True
+        valid, patient_id = verify_state_token(token)
+        assert valid is True
+        assert patient_id == "erika"
+
+
+def test_state_token_roundtrip_with_patient_id():
+    """State token embeds and recovers patient_id."""
+    with patch("oncofiles.oauth.MCP_BEARER_TOKEN", _TEST_TOKEN):
+        token = _make_state_token(patient_id="jan-novak")
+        valid, patient_id = verify_state_token(token)
+        assert valid is True
+        assert patient_id == "jan-novak"
 
 
 def test_state_token_requires_bearer_token():
@@ -31,21 +42,27 @@ def test_state_token_requires_bearer_token():
 
 
 def test_state_token_rejects_empty():
-    assert verify_state_token("") is False
-    assert verify_state_token(None) is False
+    valid, _ = verify_state_token("")
+    assert valid is False
+    valid, _ = verify_state_token(None)
+    assert valid is False
 
 
 def test_state_token_rejects_garbage():
-    assert verify_state_token("not-a-valid-token") is False
-    assert verify_state_token("abc.def") is False
+    valid, _ = verify_state_token("not-a-valid-token")
+    assert valid is False
+    valid, _ = verify_state_token("abc.def")
+    assert valid is False
 
 
 def test_state_token_rejects_tampered():
     with patch("oncofiles.oauth.MCP_BEARER_TOKEN", _TEST_TOKEN):
         token = _make_state_token()
-        ts, sig = token.split(".", 1)
-        tampered = f"{ts}.{'a' * 32}"
-        assert verify_state_token(tampered) is False
+        # Replace signature with garbage
+        dot_idx = token.rfind(".")
+        tampered = f"{token[:dot_idx]}.{'a' * 32}"
+        valid, _ = verify_state_token(tampered)
+        assert valid is False
 
 
 def test_state_token_rejects_expired(monkeypatch):
@@ -57,11 +74,13 @@ def test_state_token_rejects_expired(monkeypatch):
         import oncofiles.oauth as oauth_mod
 
         monkeypatch.setattr(oauth_mod.time, "time", lambda: real_time + 1900)
-        assert verify_state_token(token) is False
+        valid, _ = verify_state_token(token)
+        assert valid is False
 
 
 def test_state_token_rejects_no_dot():
-    assert verify_state_token("1234567890") is False
+    valid, _ = verify_state_token("1234567890")
+    assert valid is False
 
 
 # ── Constant-time comparison (V1 + V4) ──────────────────────────────

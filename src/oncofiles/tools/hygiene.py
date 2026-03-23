@@ -651,7 +651,9 @@ async def system_health(ctx: Context) -> str:
     return json.dumps(result)
 
 
-async def _build_document_matrix(db, filter_param: str = "all", limit: int = 200) -> dict:
+async def _build_document_matrix(
+    db, filter_param: str = "all", limit: int = 200, patient_id: str | None = None
+) -> dict:
     """Build document status matrix — shared by MCP tool and HTTP API.
 
     Returns: {"filter", "matched", "summary", "documents": [...]}
@@ -659,8 +661,9 @@ async def _build_document_matrix(db, filter_param: str = "all", limit: int = 200
     from oncofiles.filename_parser import is_standard_format
 
     limit = min(limit, 200)
+    pid = patient_id if patient_id is not None else _get_patient_id()
 
-    docs = await db.list_documents(limit=500, patient_id=_get_patient_id())
+    docs = await db.list_documents(limit=500, patient_id=pid)
     ocr_ids = await db.get_ocr_document_ids()
     rows = []
 
@@ -917,7 +920,9 @@ async def list_tool_definitions(ctx: Context) -> str:
     )
 
 
-async def _build_reconciliation_report(db, gdrive, folder_id: str) -> dict:
+async def _build_reconciliation_report(
+    db, gdrive, folder_id: str, patient_id: str | None = None
+) -> dict:
     """Build DB vs GDrive reconciliation report — shared by API endpoint.
 
     Compares documents in DB against files in GDrive to find:
@@ -927,7 +932,8 @@ async def _build_reconciliation_report(db, gdrive, folder_id: str) -> dict:
     """
     # Fetch both sides
     gdrive_files = await asyncio.to_thread(gdrive.list_folder, folder_id)
-    db_docs = await db.list_documents(limit=500, patient_id=_get_patient_id())
+    pid = patient_id if patient_id is not None else _get_patient_id()
+    db_docs = await db.list_documents(limit=500, patient_id=pid)
 
     # Build lookup maps
     # GDrive: id -> file dict (exclude metadata JSON files)

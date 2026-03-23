@@ -4,9 +4,9 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Oncofiles — Rozprávajte sa o svojich zdravotných záznamoch</title>
-  <meta name="description" content="Vaše zdravotné záznamy sú roztrúsené v Gmaili a Google Drive. Oncofiles ich prečíta, zorganizuje a sprístupní cez AI — pýtajte sa prirodzene v Claude alebo ChatGPT.">
+  <meta name="description" content="Dostali ste diagnózu a neviete, kde začať? Oncofiles zorganizuje vaše zdravotné záznamy z GDrive, Gmailu a kalendára — a sprístupní ich cez AI, aby ste sa mohli pýtať prirodzene.">
   <meta property="og:title" content="Oncofiles — Pre pacientov a opatrovateľov">
-  <meta property="og:description" content="Prepojte GDrive a Gmail. AI prečíta vaše vyšetrenia, laboratórne výsledky a správy. Pýtajte sa v Claude alebo ChatGPT. Vytvoril opatrovateľ, pre opatrovateľov.">
+  <meta property="og:description" content="Zdravotné záznamy roztrúsené v Gmaili a Google Drive? Oncofiles ich prečíta, zorganizuje a sprístupní cez AI. Pýtajte sa prirodzene v Claude alebo ChatGPT.">
   <meta property="og:type" content="website">
   <meta property="og:url" content="https://oncofiles.com">
   <meta property="og:locale" content="sk_SK">
@@ -22,13 +22,13 @@
     "@context": "https://schema.org",
     "@type": "SoftwareApplication",
     "name": "Oncofiles",
-    "description": "AI-powered medical document management for patients and caregivers. Connects Google Drive and Gmail to your AI chat for natural-language access to health records.",
+    "description": "AI-powered medical document management for cancer patients and caregivers. Connects Google Drive, Gmail, and Calendar to your AI chat for natural-language access to health records.",
     "applicationCategory": "HealthApplication",
     "operatingSystem": "Any",
     "url": "https://oncofiles.com",
     "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
     "license": "https://opensource.org/licenses/MIT",
-    "softwareVersion": "4.0.0",
+    "softwareVersion": "4.1.0",
     "codeRepository": "https://github.com/peter-fusek/oncofiles"
   }
   </script>
@@ -148,7 +148,7 @@
     .hero .subtitle {
       font-size: 1.125rem;
       color: var(--text-muted);
-      max-width: 520px;
+      max-width: 560px;
       margin: 0 auto 2.5rem;
       line-height: 1.7;
     }
@@ -469,11 +469,11 @@
     <section class="hero">
       <div class="container">
         <div class="hero-badge"><span class="dot"></span> <span data-sk="Open source &middot; Funguje s Claude &amp; ChatGPT" data-en="Open source &middot; Works with Claude &amp; ChatGPT">Open source &middot; Funguje s Claude &amp; ChatGPT</span></div>
-        <h1><span data-sk="Rozprávajte sa o svojich" data-en="Chat with your">Rozprávajte sa o svojich</span><br><em data-sk="zdravotných záznamoch" data-en="medical records">zdravotných záznamoch</em></h1>
-        <p class="subtitle" data-sk="Vaše zdravotné záznamy sú roztrúsené v Google Drive a Gmaili. Oncofiles ich prečíta, zorganizuje a sprístupní cez AI — aby ste sa mohli pýtať prirodzene v Claude alebo ChatGPT." data-en="Your GDrive and Gmail are full of scans, lab results, and doctor letters. Oncofiles reads them all, enhances them with AI, and makes them available in your favorite chat.">Vaše zdravotné záznamy sú roztrúsené v Google Drive a Gmaili. Oncofiles ich prečíta, zorganizuje a sprístupní cez AI — aby ste sa mohli pýtať prirodzene v Claude alebo ChatGPT.</p>
+        <h1><span data-sk="Vaše zdravotné záznamy," data-en="Your medical records,">Vaše zdravotné záznamy,</span><br><em data-sk="konečne na jednom mieste" data-en="finally in one place">konečne na jednom mieste</em></h1>
+        <p class="subtitle" data-sk="Dostali ste diagnózu a neviete, kde začať? Výsledky v Gmaili, skeny na Google Drive, termíny v kalendári. Oncofiles všetko prečíta, zorganizuje a sprístupní cez AI — pýtajte sa prirodzene v Claude alebo ChatGPT." data-en="Just got a diagnosis and don't know where to start? Lab results in Gmail, scans on Google Drive, appointments in Calendar. Oncofiles reads everything, organizes it, and makes it available through AI — ask naturally in Claude or ChatGPT.">Dostali ste diagnózu a neviete, kde začať? Výsledky v Gmaili, skeny na Google Drive, termíny v kalendári. Oncofiles všetko prečíta, zorganizuje a sprístupní cez AI — pýtajte sa prirodzene v Claude alebo ChatGPT.</p>
         <div class="hero-cta">
-          <a href="https://github.com/peter-fusek/oncofiles" class="btn btn-primary" rel="noreferrer noopener" data-sk="Začať" data-en="Get started">Začať</a>
-          <a href="/dashboard" class="btn btn-secondary" data-sk="Otvoriť dashboard" data-en="Open dashboard">Otvoriť dashboard</a>
+          <a href="/dashboard" class="btn btn-primary" data-sk="Začať zadarmo" data-en="Start for free">Začať zadarmo</a>
+          <a href="https://github.com/peter-fusek/oncofiles" class="btn btn-secondary" rel="noreferrer noopener" data-sk="Zobraziť na GitHub" data-en="View on GitHub">Zobraziť na GitHub</a>
         </div>
       </div>
     </section>
@@ -482,22 +482,22 @@
     <section class="how">
       <div class="container">
         <div class="section-label" data-sk="Ako to funguje" data-en="How it works">Ako to funguje</div>
-        <h2 class="section-title" data-sk="Od roztrúsených súborov k okamžitým odpovediam" data-en="From scattered files to instant answers">Od roztrúsených súborov k okamžitým odpovediam</h2>
+        <h2 class="section-title" data-sk="Prepojte, a hotovo. Oncofiles pracuje za vás." data-en="Connect once. Oncofiles does the rest.">Prepojte, a hotovo. Oncofiles pracuje za vás.</h2>
         <div class="steps">
           <div class="step">
             <div class="step-num">1</div>
-            <h3 data-sk="Prepojte svoje súbory" data-en="Connect your files">Prepojte svoje súbory</h3>
-            <p data-sk="Prepojte Google Drive priečinok, Gmail alebo Kalendár. Oncofiles automaticky sleduje nové zdravotné dokumenty." data-en="Link your Google Drive folder, Gmail inbox, or Calendar. Oncofiles watches for new medical files automatically.">Prepojte Google Drive priečinok, Gmail alebo Kalendár. Oncofiles automaticky sleduje nové zdravotné dokumenty.</p>
+            <h3 data-sk="Autorizujte Google" data-en="Authorize Google">Autorizujte Google</h3>
+            <p data-sk="Vyberte GDrive priečinok, Gmail alebo Kalendár. Stačí jedno kliknutie cez Google prihlásenie — žiadne heslá, žiadne nastavovanie." data-en="Pick a GDrive folder, Gmail, or Calendar. One click via Google sign-in — no passwords, no setup hassle.">Vyberte GDrive priečinok, Gmail alebo Kalendár. Stačí jedno kliknutie cez Google prihlásenie — žiadne heslá, žiadne nastavovanie.</p>
           </div>
           <div class="step">
             <div class="step-num">2</div>
-            <h3 data-sk="AI prečíta všetko" data-en="AI reads everything">AI prečíta všetko</h3>
-            <p data-sk="Každý dokument dostane OCR, zhrnutie, diagnózy a štruktúrované metadáta. Naskenované dokumenty sa stanú prehľadávateľným textom za minúty." data-en="Every document gets OCR, summaries, tags, diagnoses, and structured metadata. Scans become searchable text in minutes.">Každý dokument dostane OCR, zhrnutie, diagnózy a štruktúrované metadáta. Naskenované dokumenty sa stanú prehľadávateľným textom za minúty.</p>
+            <h3 data-sk="Oncofiles číta a organizuje" data-en="Oncofiles reads and organizes">Oncofiles číta a organizuje</h3>
+            <p data-sk="Každý dokument dostane OCR, zhrnutie a diagnózy. Súbory sa premenujú, zoradia do priečinkov podľa typu a dátumu — všetko automaticky." data-en="Every document gets OCR, summaries, and diagnoses. Files are renamed, sorted into folders by type and date — all automatically.">Každý dokument dostane OCR, zhrnutie a diagnózy. Súbory sa premenujú, zoradia do priečinkov podľa typu a dátumu — všetko automaticky.</p>
           </div>
           <div class="step">
             <div class="step-num">3</div>
-            <h3 data-sk="Pýtajte sa prirodzene" data-en="Ask naturally">Pýtajte sa prirodzene</h3>
-            <p data-sk="V Claude alebo ChatGPT sa jednoducho opýtajte: 'Čo ukázali moje posledné odbery?' Vaše AI má plný kontext zo všetkých záznamov." data-en="In Claude or ChatGPT, just ask: 'What did my last blood test show?' Your AI has full context from all your records.">V Claude alebo ChatGPT sa jednoducho opýtajte: &bdquo;Čo ukázali moje posledné odbery?&ldquo; Vaše AI má plný kontext zo všetkých záznamov.</p>
+            <h3 data-sk="Pýtajte sa svojho AI" data-en="Ask your AI">Pýtajte sa svojho AI</h3>
+            <p data-sk="Otvorte Claude alebo ChatGPT a opýtajte sa: &bdquo;Čo ukázali moje posledné odbery?&ldquo; AI má kontext zo všetkých záznamov — odpovie v ľudskej aj lekárskej reči." data-en="Open Claude or ChatGPT and ask: 'What did my last blood test show?' AI has context from all your records — answers in plain language and medical terms.">Otvorte Claude alebo ChatGPT a opýtajte sa: &bdquo;Čo ukázali moje posledné odbery?&ldquo; AI má kontext zo všetkých záznamov — odpovie v ľudskej aj lekárskej reči.</p>
           </div>
         </div>
       </div>
@@ -506,38 +506,38 @@
     <!-- Features -->
     <section class="features-section">
       <div class="container">
-        <div class="section-label">What it does</div>
-        <h2 class="section-title">Your medical files, finally understood</h2>
+        <div class="section-label" data-sk="Čo to robí" data-en="What it does">Čo to robí</div>
+        <h2 class="section-title" data-sk="Žiadne hľadanie súborov. Žiadne prepisovanie. Len odpovede." data-en="No searching for files. No retyping. Just answers.">Žiadne hľadanie súborov. Žiadne prepisovanie. Len odpovede.</h2>
         <div class="features">
           <div class="feature">
             <div class="feature-icon">&#128196;</div>
-            <h3>Reads every format</h3>
-            <p>PDFs, scanned images, photos of documents. AI extracts text from anything and organizes it into 15 medical categories.</p>
+            <h3 data-sk="Prečíta akýkoľvek formát" data-en="Reads any format">Prečíta akýkoľvek formát</h3>
+            <p data-sk="PDF, sken, fotka z mobilu. AI extrahuje text a zaradí dokument do 15 medicínskych kategórií — laboratórne výsledky, patológia, zobrazovacie vyšetrenia, genetika a ďalšie." data-en="PDFs, scans, phone photos. AI extracts text and sorts documents into 15 medical categories — labs, pathology, imaging, genetics, and more.">PDF, sken, fotka z mobilu. AI extrahuje text a zaradí dokument do 15 medicínskych kategórií — laboratórne výsledky, patológia, zobrazovacie vyšetrenia, genetika a ďalšie.</p>
           </div>
           <div class="feature">
             <div class="feature-icon">&#128300;</div>
-            <h3>Tracks your labs</h3>
-            <p>Lab values are parsed, stored, and tracked over time. Get trends, safety checks before chemo cycles, and alerts on abnormal results.</p>
-          </div>
-          <div class="feature">
-            <div class="feature-icon">&#128197;</div>
-            <h3>Reads your Calendar</h3>
-            <p>Google Calendar appointments are scanned and classified. Chemo cycles, lab visits, and consults become treatment events with full context.</p>
-          </div>
-          <div class="feature">
-            <div class="feature-icon">&#128274;</div>
-            <h3>Your data, your control</h3>
-            <p>Self-hosted. Nothing leaves your infrastructure. No third-party cloud, no data sharing. Privacy by architecture.</p>
+            <h3 data-sk="Sleduje vaše laboratórne hodnoty" data-en="Tracks your lab values">Sleduje vaše laboratórne hodnoty</h3>
+            <p data-sk="Výsledky odberov sa automaticky parsujú a sledujú v čase. Trendy, bezpečnostné kontroly pred chemo cyklami, upozornenia pri abnormálnych hodnotách." data-en="Lab results are automatically parsed and tracked over time. Trends, safety checks before chemo cycles, alerts on abnormal values.">Výsledky odberov sa automaticky parsujú a sledujú v čase. Trendy, bezpečnostné kontroly pred chemo cyklami, upozornenia pri abnormálnych hodnotách.</p>
           </div>
           <div class="feature">
             <div class="feature-icon">&#9993;</div>
-            <h3>Scans Gmail too</h3>
-            <p>Medical emails from doctors, labs, and hospitals are automatically detected, classified, and linked to your documents.</p>
+            <h3 data-sk="Skenuje Gmail aj Kalendár" data-en="Scans Gmail and Calendar">Skenuje Gmail aj Kalendár</h3>
+            <p data-sk="Medicínske emaily od lekárov a nemocníc sa automaticky rozpoznajú a zaradia. Termíny z kalendára sa klasifikujú ako chemo, vyšetrenia alebo konzultácie." data-en="Medical emails from doctors and hospitals are auto-detected and classified. Calendar events are tagged as chemo, scans, or consultations.">Medicínske emaily od lekárov a nemocníc sa automaticky rozpoznajú a zaradia. Termíny z kalendára sa klasifikujú ako chemo, vyšetrenia alebo konzultácie.</p>
           </div>
           <div class="feature">
             <div class="feature-icon">&#128260;</div>
-            <h3>Always in sync</h3>
-            <p>Bidirectional Google Drive sync every 5 minutes. New files are processed, renamed, and organized without lifting a finger.</p>
+            <h3 data-sk="Stále synchronizované" data-en="Always in sync">Stále synchronizované</h3>
+            <p data-sk="Obojsmerná synchronizácia s Google Drive každých 5 minút. Nové súbory sa spracujú, premenujú a zorganizujú — bez jediného kliknutia." data-en="Bidirectional Google Drive sync every 5 minutes. New files are processed, renamed, and organized — without a single click.">Obojsmerná synchronizácia s Google Drive každých 5 minút. Nové súbory sa spracujú, premenujú a zorganizujú — bez jediného kliknutia.</p>
+          </div>
+          <div class="feature">
+            <div class="feature-icon">&#128274;</div>
+            <h3 data-sk="Vaše dáta, vaša kontrola" data-en="Your data, your control">Vaše dáta, vaša kontrola</h3>
+            <p data-sk="Žiadne zdieľanie dát s tretími stranami. Všetko zostáva vo vašom Google Drive. Kedykoľvek môžete Oncofiles odpojiť — vaše súbory sú stále vaše." data-en="No data sharing with third parties. Everything stays in your Google Drive. You can disconnect Oncofiles anytime — your files are always yours.">Žiadne zdieľanie dát s tretími stranami. Všetko zostáva vo vašom Google Drive. Kedykoľvek môžete Oncofiles odpojiť — vaše súbory sú stále vaše.</p>
+          </div>
+          <div class="feature">
+            <div class="feature-icon">&#128101;</div>
+            <h3 data-sk="Pre celú rodinu" data-en="For the whole family">Pre celú rodinu</h3>
+            <p data-sk="Spravujte záznamy pre viacerých pacientov. Každý člen rodiny má vlastný bezpečný prístup. Zdieľajte token s opatrovateľom alebo ošetrujúcim lekárom." data-en="Manage records for multiple patients. Each family member gets their own secure access. Share a token with a caregiver or treating physician.">Spravujte záznamy pre viacerých pacientov. Každý člen rodiny má vlastný bezpečný prístup. Zdieľajte token s opatrovateľom alebo ošetrujúcim lekárom.</p>
           </div>
         </div>
       </div>
@@ -546,8 +546,8 @@
     <!-- Works with -->
     <section class="works-with">
       <div class="container">
-        <div class="section-label">Compatible with</div>
-        <h2 class="section-title">Works with your AI</h2>
+        <div class="section-label" data-sk="Kompatibilné s" data-en="Compatible with">Kompatibilné s</div>
+        <h2 class="section-title" data-sk="Funguje s vaším obľúbeným AI" data-en="Works with your favorite AI">Funguje s vaším obľúbeným AI</h2>
         <div class="platforms">
           <div class="platform">
             <div class="platform-icon">&#9672;</div>
@@ -559,12 +559,12 @@
           </div>
           <div class="platform">
             <div class="platform-icon">&#9687;</div>
-            <span class="platform-name">Any MCP client</span>
+            <span class="platform-name" data-sk="Akýkoľvek MCP klient" data-en="Any MCP client">Akýkoľvek MCP klient</span>
           </div>
           <div class="platform">
             <div class="platform-icon">&#9993;</div>
             <span class="platform-name">WhatsApp</span>
-            <span class="platform-tag">coming soon</span>
+            <span class="platform-tag" data-sk="čoskoro" data-en="coming soon">čoskoro</span>
           </div>
         </div>
       </div>
@@ -574,8 +574,8 @@
     <section class="story">
       <div class="container">
         <div class="story-card">
-          <p class="story-quote" data-sk="Oncofiles som vytvoril, aby som spravoval zdravotné záznamy mojej manželky počas liečby rakoviny. Ako jej <em>pacientsky advokát</em> som potreboval okamžitý prístup k výsledkom, skenám a liečebným plánom — a potreboval som, aby ho mala aj ona, v zrozumiteľnom jazyku, bez bariér medicínskych termínov." data-en="I built Oncofiles to manage my wife's cancer treatment records. As her <em>patient advocate</em>, I needed instant access to labs, scans, and treatment plans — and I needed her to have that access too, in plain language, without medical jargon barriers.">Oncofiles som vytvoril, aby som spravoval zdravotné záznamy mojej manželky počas liečby rakoviny. Ako jej <em>pacientsky advokát</em> som potreboval okamžitý prístup k výsledkom, skenám a liečebným plánom — a potreboval som, aby ho mala aj ona, v zrozumiteľnom jazyku, bez bariér medicínskych termínov.</p>
-          <p class="story-attribution" data-sk="<strong>Peter Fusek</strong> — zakladateľ, opatrovateľ, pacientsky advokát pre svoju manželku Eriku (mCRC). Oncofiles je nástroj, ktorý si prial, keď začali túto cestu." data-en="<strong>Peter Fusek</strong> — founder, caregiver, patient advocate for his wife Erika (mCRC). Oncofiles is the tool he wished existed when they started this journey."><strong>Peter Fusek</strong> — zakladateľ, opatrovateľ, pacientsky advokát pre svoju manželku Eriku (mCRC). Oncofiles je nástroj, ktorý si prial, keď začali túto cestu.</p>
+          <p class="story-quote" data-sk="Keď mojej manželke Erike diagnostikovali metastatický kolorektálny karcinóm, zrazu som mal stovky dokumentov — laboratórne výsledky v Gmaili, CT skeny na Drive, termíny chemoterapií v kalendári. Ako jej <em>pacientsky advokát</em> som potreboval mať všetko na jednom mieste a rozumieť tomu. Tak vznikol Oncofiles — organizuje súbory, a jeho sesterský projekt <em>Oncoteam</em> ich analyzuje: sleduje trendy odberov, hľadá klinické štúdie a pripravuje otázky pre onkológa. Oba nástroje som postavil aby sme sa mohli sústrediť na liečbu, nie na hľadanie papierov." data-en="When my wife Erika was diagnosed with metastatic colorectal cancer, I suddenly had hundreds of documents — lab results in Gmail, CT scans on Drive, chemo appointments in Calendar. As her <em>patient advocate</em>, I needed everything in one place and to understand it. That's how Oncofiles was born — it organizes files, and its sister project <em>Oncoteam</em> analyzes them: tracking lab trends, searching clinical trials, and preparing questions for the oncologist. I built both tools so we could focus on treatment, not on finding papers.">Keď mojej manželke Erike diagnostikovali metastatický kolorektálny karcinóm, zrazu som mal stovky dokumentov — laboratórne výsledky v Gmaili, CT skeny na Drive, termíny chemoterapií v kalendári. Ako jej <em>pacientsky advokát</em> som potreboval mať všetko na jednom mieste a rozumieť tomu. Tak vznikol Oncofiles — organizuje súbory, a jeho sesterský projekt <em>Oncoteam</em> ich analyzuje: sleduje trendy odberov, hľadá klinické štúdie a pripravuje otázky pre onkológa. Oba nástroje som postavil aby sme sa mohli sústrediť na liečbu, nie na hľadanie papierov.</p>
+          <p class="story-attribution" data-sk="<strong><a href='https://www.linkedin.com/in/peterfusek/' style='color:var(--text);text-decoration:none'>Peter Fusek</a></strong> — CEO @ <a href='https://instarea.com' style='color:var(--accent)'>Instarea</a>, zakladateľ, opatrovateľ a pacientsky advokát pre svoju manželku Eriku. Oncofiles organizuje záznamy, <a href='https://github.com/peter-fusek/oncoteam' style='color:var(--accent)'>Oncoteam</a> ich analyzuje a vysvetľuje." data-en="<strong><a href='https://www.linkedin.com/in/peterfusek/' style='color:var(--text);text-decoration:none'>Peter Fusek</a></strong> — CEO @ <a href='https://instarea.com' style='color:var(--accent)'>Instarea</a>, founder, caregiver, and patient advocate for his wife Erika. Oncofiles organizes records, <a href='https://github.com/peter-fusek/oncoteam' style='color:var(--accent)'>Oncoteam</a> analyzes and explains them."><strong><a href="https://www.linkedin.com/in/peterfusek/" style="color:var(--text);text-decoration:none">Peter Fusek</a></strong> — CEO @ <a href="https://instarea.com" style="color:var(--accent)">Instarea</a>, zakladateľ, opatrovateľ a pacientsky advokát pre svoju manželku Eriku. Oncofiles organizuje záznamy, <a href="https://github.com/peter-fusek/oncoteam" style="color:var(--accent)">Oncoteam</a> ich analyzuje a vysvetľuje.</p>
         </div>
       </div>
     </section>
@@ -584,41 +584,42 @@
     <section class="stats" id="stats">
       <div class="stat">
         <div class="number" data-stat="tools">76</div>
-        <div class="label">AI Tools</div>
+        <div class="label" data-sk="AI nástrojov" data-en="AI Tools">AI nástrojov</div>
       </div>
       <div class="stat">
         <div class="number" data-stat="categories">15</div>
-        <div class="label">Doc Categories</div>
+        <div class="label" data-sk="Kategórií dokumentov" data-en="Doc Categories">Kategórií dokumentov</div>
       </div>
       <div class="stat">
-        <div class="number" data-stat="tests">580</div>
-        <div class="label">Tests Passing</div>
+        <div class="number" data-stat="tests">607</div>
+        <div class="label" data-sk="Testov prechádza" data-en="Tests Passing">Testov prechádza</div>
       </div>
       <div class="stat">
-        <div class="number" data-stat="version">v3.20.0</div>
-        <div class="label">Current</div>
+        <div class="number" data-stat="version">v4.1.0</div>
+        <div class="label" data-sk="Aktuálna verzia" data-en="Current Version">Aktuálna verzia</div>
       </div>
     </section>
 
     <!-- CTA -->
     <section class="cta">
       <div class="container">
-        <h2 data-sk="Pripravení rozumieť svojim záznamom?" data-en="Ready to understand your records?">Pripravení rozumieť svojim záznamom?</h2>
-        <p class="subtitle" data-sk="Open source, navždy zadarmo. Nastavenie za 10 minút." data-en="Open source, free forever. Set up in 10 minutes.">Open source, navždy zadarmo. Nastavenie za 10 minút.</p>
+        <h2 data-sk="Pripravení mať poriadok vo svojich záznamoch?" data-en="Ready to get organized?">Pripravení mať poriadok vo svojich záznamoch?</h2>
+        <p class="subtitle" data-sk="Open source, navždy zadarmo. Stačí prepojit Google Drive a začať sa pýtať." data-en="Open source, free forever. Just connect Google Drive and start asking.">Open source, navždy zadarmo. Stačí prepojit Google Drive a začať sa pýtať.</p>
         <div class="cta-links">
-          <a href="https://github.com/peter-fusek/oncofiles" class="btn btn-primary" rel="noreferrer noopener" data-sk="Zobraziť na GitHub" data-en="View on GitHub">Zobraziť na GitHub</a>
-          <a href="/dashboard" class="btn btn-secondary" data-sk="Vyskúšať dashboard" data-en="Try the dashboard">Vyskúšať dashboard</a>
+          <a href="/dashboard" class="btn btn-primary" data-sk="Otvoriť dashboard" data-en="Open dashboard">Otvoriť dashboard</a>
+          <a href="https://github.com/peter-fusek/oncofiles" class="btn btn-secondary" rel="noreferrer noopener" data-sk="Zobraziť na GitHub" data-en="View on GitHub">Zobraziť na GitHub</a>
         </div>
-        <p class="cta-note" data-sk="MIT Licencia &middot; Python 3.12+ &middot; FastMCP &middot; Pre pacientov a opatrovateľov na Slovensku" data-en="MIT License &middot; Python 3.12+ &middot; FastMCP &middot; Works with any MCP-compatible AI">MIT Licencia &middot; Python 3.12+ &middot; FastMCP &middot; Pre pacientov a opatrovateľov na Slovensku</p>
+        <p class="cta-note" data-sk="MIT Licencia &middot; Python 3.12+ &middot; FastMCP &middot; Pre pacientov a opatrovateľov" data-en="MIT License &middot; Python 3.12+ &middot; FastMCP &middot; For patients and caregivers">MIT Licencia &middot; Python 3.12+ &middot; FastMCP &middot; Pre pacientov a opatrovateľov</p>
       </div>
     </section>
   </main>
 
   <footer>
     <div class="container">
-      &copy; 2025-2026 <a href="https://github.com/peter-fusek" rel="noreferrer noopener">Peter Fusek</a> &middot;
+      &copy; 2025-2026 <a href="https://www.linkedin.com/in/peterfusek/" rel="noreferrer noopener">Peter Fusek</a> &middot;
       <a href="/dashboard">Dashboard</a> &middot;
       <a href="/health">Status</a> &middot;
+      <a href="https://github.com/peter-fusek/oncofiles/issues/new" rel="noreferrer noopener" data-sk="Nahlásiť chybu" data-en="Report a bug">Nahlásiť chybu</a> &middot;
       <a href="/llms.txt">llms.txt</a>
     </div>
   </footer>
@@ -643,8 +644,8 @@
         document.documentElement.lang = l;
         document.querySelectorAll('[data-' + l + ']').forEach(function(el) {
           var val = el.getAttribute('data-' + l);
-          if (el.tagName === 'A' || el.tagName === 'BUTTON' || el.tagName === 'SPAN' || el.tagName === 'EM') {
-            el.textContent = val;
+          if (el.tagName === 'META') {
+            el.setAttribute('content', val);
           } else {
             el.textContent = val;
           }

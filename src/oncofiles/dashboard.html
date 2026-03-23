@@ -68,6 +68,168 @@
     }
     .refresh-btn:hover { border-color: var(--accent); color: var(--accent); }
 
+    /* Patient selector */
+    .patient-controls { display: flex; align-items: center; gap: 0.5rem; }
+    .patient-select {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 0.375rem 0.75rem;
+      border-radius: 0.375rem;
+      font-size: 0.8125rem;
+      font-family: inherit;
+      cursor: pointer;
+      min-width: 10rem;
+    }
+    .patient-select:hover { border-color: var(--accent); }
+    .patient-select:focus { outline: none; border-color: var(--accent); }
+    .add-patient-btn {
+      background: var(--accent);
+      border: none;
+      color: var(--bg);
+      padding: 0.375rem 0.75rem;
+      border-radius: 0.375rem;
+      cursor: pointer;
+      font-size: 0.8125rem;
+      font-weight: 600;
+      white-space: nowrap;
+    }
+    .add-patient-btn:hover { background: var(--accent-light); }
+
+    /* Onboarding wizard modal */
+    .wizard-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      z-index: 100;
+      background: rgba(0, 0, 0, 0.7);
+      backdrop-filter: blur(4px);
+      align-items: center;
+      justify-content: center;
+    }
+    .wizard-overlay.active { display: flex; }
+    .wizard-panel {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 0.75rem;
+      padding: 2rem;
+      width: 100%;
+      max-width: 32rem;
+      max-height: 90vh;
+      overflow-y: auto;
+    }
+    .wizard-panel h2 {
+      font-family: 'DM Serif Display', Georgia, serif;
+      font-size: 1.25rem;
+      margin-bottom: 1.5rem;
+    }
+    .wizard-steps {
+      display: flex;
+      gap: 0.5rem;
+      margin-bottom: 1.5rem;
+    }
+    .wizard-step-dot {
+      width: 2rem;
+      height: 0.25rem;
+      border-radius: 0.125rem;
+      background: var(--border);
+    }
+    .wizard-step-dot.active { background: var(--accent); }
+    .wizard-step-dot.done { background: var(--green); }
+    .wizard-field { margin-bottom: 1rem; }
+    .wizard-field label {
+      display: block;
+      font-size: 0.8125rem;
+      color: var(--text-muted);
+      margin-bottom: 0.25rem;
+    }
+    .wizard-field input,
+    .wizard-field textarea,
+    .wizard-field select {
+      width: 100%;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 0.5rem 0.75rem;
+      border-radius: 0.375rem;
+      font-size: 0.875rem;
+      font-family: inherit;
+    }
+    .wizard-field textarea { resize: vertical; min-height: 3rem; }
+    .wizard-field input:focus,
+    .wizard-field textarea:focus,
+    .wizard-field select:focus {
+      outline: none;
+      border-color: var(--accent);
+    }
+    .wizard-actions { display: flex; gap: 0.75rem; margin-top: 1.5rem; }
+    .wizard-btn-primary {
+      background: var(--accent);
+      border: none;
+      color: var(--bg);
+      padding: 0.5rem 1.25rem;
+      border-radius: 0.375rem;
+      font-size: 0.875rem;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .wizard-btn-primary:hover { background: var(--accent-light); }
+    .wizard-btn-primary:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+    .wizard-btn-secondary {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 0.5rem 1.25rem;
+      border-radius: 0.375rem;
+      font-size: 0.875rem;
+      cursor: pointer;
+    }
+    .wizard-btn-secondary:hover { border-color: var(--accent); }
+    .wizard-token-box {
+      background: var(--bg);
+      border: 1px solid var(--amber);
+      border-radius: 0.375rem;
+      padding: 0.75rem;
+      margin: 1rem 0;
+      font-family: monospace;
+      font-size: 0.75rem;
+      word-break: break-all;
+      color: var(--amber);
+    }
+    .wizard-success {
+      text-align: center;
+      padding: 1rem 0;
+    }
+    .wizard-success .check {
+      font-size: 3rem;
+      color: var(--green);
+      margin-bottom: 0.75rem;
+    }
+    .wizard-spinner {
+      display: inline-block;
+      width: 1.25rem;
+      height: 1.25rem;
+      border: 2px solid var(--border);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+      vertical-align: middle;
+      margin-right: 0.5rem;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .patient-diagnosis {
+      font-size: 0.6875rem;
+      color: var(--text-muted);
+      max-width: 12rem;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
     /* Auth gate */
     .auth-gate {
       display: flex;
@@ -442,6 +604,13 @@
     <div id="dashboard" style="display:none">
       <header>
         <div class="logo">onco<span>files</span> <span style="color:var(--text-muted);font-weight:400;font-size:0.9375rem">dashboard</span></div>
+        <div class="patient-controls">
+          <select id="patient-select" onchange="switchPatient(this.value)">
+            <option value="">Loading...</option>
+          </select>
+          <span id="patient-diagnosis" class="patient-diagnosis"></span>
+          <button class="add-patient-btn" onclick="showOnboarding()">+ New Patient</button>
+        </div>
         <div class="header-right">
           <span id="connection-dot" class="connection-dot loading" title="Connecting..."></span>
           <span class="version" id="version-label"></span>
@@ -596,6 +765,96 @@
   </div>
   <!-- No third-party DOM capture libraries — screenshot via paste/upload only -->
 
+  <!-- Onboarding Wizard Modal -->
+  <div id="wizard-overlay" class="wizard-overlay">
+    <div class="wizard-panel">
+      <div class="wizard-steps">
+        <div id="wiz-dot-1" class="wizard-step-dot active"></div>
+        <div id="wiz-dot-2" class="wizard-step-dot"></div>
+        <div id="wiz-dot-3" class="wizard-step-dot"></div>
+        <div id="wiz-dot-4" class="wizard-step-dot"></div>
+      </div>
+
+      <!-- Step 1: Create patient -->
+      <div id="wiz-step-1">
+        <h2>Create Patient</h2>
+        <div class="wizard-field">
+          <label for="wiz-name">Patient name *</label>
+          <input type="text" id="wiz-name" placeholder="e.g. Erika Fusekova" required>
+        </div>
+        <div class="wizard-field">
+          <label for="wiz-id">Patient ID (slug) *</label>
+          <input type="text" id="wiz-id" placeholder="e.g. erika-fusekova" pattern="[a-z0-9_-]+">
+        </div>
+        <div class="wizard-field">
+          <label for="wiz-diagnosis">Diagnosis / cancer type</label>
+          <textarea id="wiz-diagnosis" placeholder="e.g. CRC, stage IV"></textarea>
+        </div>
+        <div class="wizard-field">
+          <label for="wiz-email">Caregiver email</label>
+          <input type="email" id="wiz-email" placeholder="caregiver@example.com">
+        </div>
+        <div class="wizard-field">
+          <label for="wiz-lang">Preferred language</label>
+          <select id="wiz-lang">
+            <option value="sk" selected>Slovak</option>
+            <option value="en">English</option>
+          </select>
+        </div>
+        <div class="wizard-actions">
+          <button class="wizard-btn-secondary" onclick="hideOnboarding()">Cancel</button>
+          <button class="wizard-btn-primary" id="wiz-create-btn" onclick="wizardStep1Submit()">Create Patient</button>
+        </div>
+        <p id="wiz-step1-error" style="color:var(--red);font-size:0.8125rem;margin-top:0.75rem;display:none"></p>
+      </div>
+
+      <!-- Step 2: Connect Google Drive -->
+      <div id="wiz-step-2" style="display:none">
+        <h2>Connect Google Drive</h2>
+        <p style="color:var(--text-muted);font-size:0.875rem;margin-bottom:1rem">
+          Authorize access to the patient's Google Drive folder for document sync.
+        </p>
+        <div class="wizard-token-box" id="wiz-token-display"></div>
+        <p style="color:var(--amber);font-size:0.75rem;margin-bottom:1rem">
+          Save this bearer token now — it will not be shown again.
+        </p>
+        <div class="wizard-actions">
+          <button class="wizard-btn-secondary" onclick="wizardSkipToEnd()">Skip for now</button>
+          <button class="wizard-btn-primary" onclick="wizardStep2Auth()">Authorize Google Drive</button>
+        </div>
+        <p id="wiz-step2-status" style="color:var(--text-muted);font-size:0.8125rem;margin-top:0.75rem;display:none"></p>
+        <div class="wizard-actions" id="wiz-step2-continue" style="display:none">
+          <button class="wizard-btn-primary" onclick="wizardGoToStep(3)">Continue</button>
+        </div>
+      </div>
+
+      <!-- Step 3: First sync -->
+      <div id="wiz-step-3" style="display:none">
+        <h2>First Sync</h2>
+        <p style="color:var(--text-muted);font-size:0.875rem;margin-bottom:1rem">
+          Trigger the first document sync from Google Drive.
+        </p>
+        <div class="wizard-actions">
+          <button class="wizard-btn-secondary" onclick="wizardSkipToEnd()">Skip</button>
+          <button class="wizard-btn-primary" id="wiz-sync-btn" onclick="wizardStep3Sync()">Start First Sync</button>
+        </div>
+        <p id="wiz-step3-status" style="color:var(--text-muted);font-size:0.8125rem;margin-top:0.75rem;display:none"></p>
+      </div>
+
+      <!-- Step 4: Success -->
+      <div id="wiz-step-4" style="display:none">
+        <div class="wizard-success">
+          <div class="check">&#10003;</div>
+          <h2>Patient Created</h2>
+          <p id="wiz-success-summary" style="color:var(--text-muted);font-size:0.875rem;margin-top:0.5rem"></p>
+        </div>
+        <div class="wizard-actions" style="justify-content:center">
+          <button class="wizard-btn-primary" onclick="wizardFinish()">Go to Dashboard</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <script>
     /* All data rendered via safe DOM methods — textContent for strings, createElement for structure.
        The esc() helper is used only as a safety net for the few cases where we build HTML strings
@@ -635,6 +894,10 @@
       if (authMode === 'session') return 'Bearer session:' + TOKEN;
       return 'Bearer ' + TOKEN;
     }
+
+    // ── Patient state ─────────────────────────────────────────────────
+    var currentPatientId = localStorage.getItem('oncofiles_patient_id') || '';
+    var patientsCache = [];
 
     // ── Init ─────────────────────────────────────────────────────────────
 
@@ -738,7 +1001,7 @@
         var userEl = document.getElementById('user-info');
         userEl.textContent = name || email;
       }
-      refresh();
+      loadPatients().then(function() { refresh(); });
       if (autoRefreshTimer) clearInterval(autoRefreshTimer);
       autoRefreshTimer = setInterval(refresh, 60000);
     }
@@ -772,6 +1035,10 @@
     // ── API ──────────────────────────────────────────────────────────────
 
     async function apiFetch(url) {
+      if (currentPatientId) {
+        var sep = url.includes('?') ? '&' : '?';
+        url = url + sep + 'patient_id=' + encodeURIComponent(currentPatientId);
+      }
       var resp = await fetch(url, {
         headers: { 'Authorization': authHeader() }
       });
@@ -781,6 +1048,247 @@
       }
       if (!resp.ok) throw new Error('HTTP ' + resp.status);
       return resp.json();
+    }
+
+    // ── Patient selector ────────────────────────────────────────────────
+
+    async function loadPatients() {
+      try {
+        // Fetch without patient_id filter (admin endpoint lists all)
+        var resp = await fetch('/api/patients', {
+          headers: { 'Authorization': authHeader() }
+        });
+        if (!resp.ok) return;
+        patientsCache = await resp.json();
+        var select = document.getElementById('patient-select');
+        clearEl(select);
+        if (patientsCache.length === 0) {
+          var emptyOpt = document.createElement('option');
+          emptyOpt.value = '';
+          emptyOpt.textContent = 'No patients';
+          select.appendChild(emptyOpt);
+          return;
+        }
+        patientsCache.forEach(function(p) {
+          var opt = document.createElement('option');
+          opt.value = p.patient_id;
+          opt.textContent = p.display_name + (p.is_active ? '' : ' (archived)');
+          select.appendChild(opt);
+        });
+        // Restore selection from localStorage or default to first
+        if (currentPatientId && patientsCache.some(function(p) {
+          return p.patient_id === currentPatientId;
+        })) {
+          select.value = currentPatientId;
+        } else {
+          currentPatientId = patientsCache[0].patient_id;
+          select.value = currentPatientId;
+          localStorage.setItem('oncofiles_patient_id', currentPatientId);
+        }
+        updatePatientDiagnosis();
+      } catch (e) {
+        console.warn('Failed to load patients:', e);
+      }
+    }
+
+    function switchPatient(patientId) {
+      currentPatientId = patientId;
+      localStorage.setItem('oncofiles_patient_id', patientId);
+      updatePatientDiagnosis();
+      refresh();
+    }
+
+    function updatePatientDiagnosis() {
+      var el = document.getElementById('patient-diagnosis');
+      var p = patientsCache.find(function(p) {
+        return p.patient_id === currentPatientId;
+      });
+      el.textContent = p && p.diagnosis_summary ? p.diagnosis_summary : '';
+      el.title = el.textContent;
+    }
+
+    // ── Onboarding wizard ───────────────────────────────────────────────
+
+    var wizardPatientId = '';
+    var wizardBearerToken = '';
+    var wizardCurrentStep = 1;
+
+    function showOnboarding() {
+      wizardPatientId = '';
+      wizardBearerToken = '';
+      wizardCurrentStep = 1;
+      // Reset form fields
+      document.getElementById('wiz-name').value = '';
+      document.getElementById('wiz-id').value = '';
+      document.getElementById('wiz-diagnosis').value = '';
+      document.getElementById('wiz-email').value = '';
+      document.getElementById('wiz-lang').value = 'sk';
+      document.getElementById('wiz-step1-error').style.display = 'none';
+      // Show step 1, hide others
+      for (var i = 1; i <= 4; i++) {
+        document.getElementById('wiz-step-' + i).style.display = i === 1 ? 'block' : 'none';
+      }
+      updateWizardDots();
+      document.getElementById('wizard-overlay').classList.add('active');
+    }
+
+    function hideOnboarding() {
+      document.getElementById('wizard-overlay').classList.remove('active');
+    }
+
+    function updateWizardDots() {
+      for (var i = 1; i <= 4; i++) {
+        var dot = document.getElementById('wiz-dot-' + i);
+        dot.className = 'wizard-step-dot';
+        if (i < wizardCurrentStep) dot.className += ' done';
+        else if (i === wizardCurrentStep) dot.className += ' active';
+      }
+    }
+
+    function wizardGoToStep(step) {
+      for (var i = 1; i <= 4; i++) {
+        document.getElementById('wiz-step-' + i).style.display = i === step ? 'block' : 'none';
+      }
+      wizardCurrentStep = step;
+      updateWizardDots();
+    }
+
+    // Auto-generate slug from display name
+    document.addEventListener('DOMContentLoaded', function() {
+      var nameInput = document.getElementById('wiz-name');
+      var idInput = document.getElementById('wiz-id');
+      if (nameInput) {
+        nameInput.addEventListener('input', function() {
+          if (!idInput.dataset.manual) {
+            idInput.value = nameInput.value.toLowerCase()
+              .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+              .replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+          }
+        });
+        idInput.addEventListener('input', function() {
+          idInput.dataset.manual = 'true';
+        });
+      }
+    });
+
+    async function wizardStep1Submit() {
+      var btn = document.getElementById('wiz-create-btn');
+      var errEl = document.getElementById('wiz-step1-error');
+      errEl.style.display = 'none';
+      btn.disabled = true;
+      btn.textContent = 'Creating...';
+
+      var name = document.getElementById('wiz-name').value.trim();
+      var pid = document.getElementById('wiz-id').value.trim().toLowerCase();
+      if (!name || !pid) {
+        errEl.textContent = 'Patient name and ID are required.';
+        errEl.style.display = 'block';
+        btn.disabled = false;
+        btn.textContent = 'Create Patient';
+        return;
+      }
+
+      try {
+        var resp = await fetch('/api/patients', {
+          method: 'POST',
+          headers: {
+            'Authorization': authHeader(),
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            patient_id: pid,
+            display_name: name,
+            diagnosis_summary: document.getElementById('wiz-diagnosis').value.trim() || null,
+            caregiver_email: document.getElementById('wiz-email').value.trim() || null,
+            preferred_lang: document.getElementById('wiz-lang').value
+          })
+        });
+        var data = await resp.json();
+        if (!resp.ok) {
+          errEl.textContent = data.error || 'Failed to create patient';
+          errEl.style.display = 'block';
+          btn.disabled = false;
+          btn.textContent = 'Create Patient';
+          return;
+        }
+        wizardPatientId = pid;
+        wizardBearerToken = data.bearer_token || '';
+        // Show token in step 2
+        document.getElementById('wiz-token-display').textContent = wizardBearerToken;
+        wizardGoToStep(2);
+      } catch (e) {
+        errEl.textContent = 'Network error: ' + e.message;
+        errEl.style.display = 'block';
+      }
+      btn.disabled = false;
+      btn.textContent = 'Create Patient';
+    }
+
+    function wizardStep2Auth() {
+      var url = '/oauth/authorize/drive?patient_id=' + encodeURIComponent(wizardPatientId);
+      window.open(url, '_blank');
+      // Show "continue" button after opening OAuth
+      var statusEl = document.getElementById('wiz-step2-status');
+      statusEl.textContent = 'Complete the authorization in the new tab, then click Continue.';
+      statusEl.style.display = 'block';
+      document.getElementById('wiz-step2-continue').style.display = 'flex';
+    }
+
+    async function wizardStep3Sync() {
+      var btn = document.getElementById('wiz-sync-btn');
+      var statusEl = document.getElementById('wiz-step3-status');
+      btn.disabled = true;
+      statusEl.textContent = 'Syncing...';
+      statusEl.style.display = 'block';
+
+      try {
+        var resp = await fetch('/api/sync-trigger', {
+          method: 'POST',
+          headers: {
+            'Authorization': authHeader(),
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({ patient_id: wizardPatientId })
+        });
+        var data = await resp.json();
+        if (!resp.ok) {
+          statusEl.textContent = 'Sync issue: ' + (data.error || 'unknown error');
+          statusEl.style.color = 'var(--amber)';
+          btn.disabled = false;
+          // Still allow proceeding
+          setTimeout(function() { wizardGoToStep(4); showWizardSummary(null); }, 2000);
+          return;
+        }
+        showWizardSummary(data.stats);
+        wizardGoToStep(4);
+      } catch (e) {
+        statusEl.textContent = 'Error: ' + e.message;
+        btn.disabled = false;
+      }
+    }
+
+    function wizardSkipToEnd() {
+      showWizardSummary(null);
+      wizardGoToStep(4);
+    }
+
+    function showWizardSummary(stats) {
+      var el = document.getElementById('wiz-success-summary');
+      var parts = ['Patient "' + esc(wizardPatientId) + '" created successfully.'];
+      if (stats && stats.new > 0) {
+        parts.push(stats.new + ' documents imported.');
+      }
+      el.textContent = parts.join(' ');
+    }
+
+    async function wizardFinish() {
+      hideOnboarding();
+      // Switch to new patient and reload
+      currentPatientId = wizardPatientId;
+      localStorage.setItem('oncofiles_patient_id', currentPatientId);
+      await loadPatients();
+      document.getElementById('patient-select').value = currentPatientId;
+      refresh();
     }
 
     function setConnectionState(state) {

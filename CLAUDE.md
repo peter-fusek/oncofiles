@@ -1,6 +1,6 @@
 # oncofiles
 
-MCP server for persistent medical document management via Anthropic Files API.
+AI-powered medical document management for cancer patients and caregivers. Connects Google Drive, Gmail, and Calendar to Claude, ChatGPT, and any MCP client.
 
 ## Quick start
 
@@ -41,4 +41,4 @@ uv run ruff check
 
 - **Railway**: `aware-kindness-production.up.railway.app` (streamable-http at /mcp)
 - Push to `main` auto-deploys via Railway
-- 606 tests, CI green
+- 607 tests, CI green
