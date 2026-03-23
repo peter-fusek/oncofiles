@@ -7,7 +7,7 @@ import json
 from fastmcp import Context
 
 from oncofiles.models import ResearchEntry, ResearchQuery
-from oncofiles.tools._helpers import _get_db, _research_source_url
+from oncofiles.tools._helpers import _get_db, _get_patient_id, _research_source_url
 
 
 async def add_research_entry(
@@ -41,7 +41,7 @@ async def add_research_entry(
         tags=tags,
         raw_data=raw_data,
     )
-    saved = await db.insert_research_entry(entry)
+    saved = await db.insert_research_entry(entry, patient_id=_get_patient_id())
     return json.dumps(
         {
             "id": saved.id,
@@ -68,7 +68,7 @@ async def search_research(
     """
     db = _get_db(ctx)
     query = ResearchQuery(text=text, source=source, limit=limit)
-    entries = await db.search_research_entries(query)
+    entries = await db.search_research_entries(query, patient_id=_get_patient_id())
     items = [
         {
             "id": e.id,
@@ -97,7 +97,9 @@ async def list_research_entries(
         limit: Maximum results to return.
     """
     db = _get_db(ctx)
-    entries = await db.list_research_entries(source=source, limit=limit)
+    entries = await db.list_research_entries(
+        source=source, limit=limit, patient_id=_get_patient_id()
+    )
     items = [
         {
             "id": e.id,

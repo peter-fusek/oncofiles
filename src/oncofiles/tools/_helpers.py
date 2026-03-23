@@ -285,17 +285,22 @@ async def _check_baseline_labs(db: Database) -> str | None:
     """Check if pre-treatment baseline labs exist. Returns warning if missing."""
     from oncofiles.models import TreatmentEventQuery
 
-    events = await db.list_treatment_events(TreatmentEventQuery(event_type="chemo", limit=1))
+    pid = _get_patient_id()
+    events = await db.list_treatment_events(
+        TreatmentEventQuery(event_type="chemo", limit=1), patient_id=pid
+    )
     if not events:
         return None
 
     # Get earliest chemo event date
-    all_chemo = await db.list_treatment_events(TreatmentEventQuery(event_type="chemo", limit=200))
+    all_chemo = await db.list_treatment_events(
+        TreatmentEventQuery(event_type="chemo", limit=200), patient_id=pid
+    )
     if not all_chemo:
         return None
 
     earliest = min(e.event_date for e in all_chemo)
-    baseline_labs = await db.get_labs_before_date(earliest.isoformat())
+    baseline_labs = await db.get_labs_before_date(earliest.isoformat(), patient_id=pid)
     if not baseline_labs:
         return (
             f"**WARNING: BASELINE LABS MISSING** — No pre-treatment lab results found "

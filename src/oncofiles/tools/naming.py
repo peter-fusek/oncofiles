@@ -9,7 +9,7 @@ import logging
 from fastmcp import Context
 
 from oncofiles.filename_parser import is_corrupted_filename, is_standard_format, rename_to_standard
-from oncofiles.tools._helpers import _get_db, _get_gdrive
+from oncofiles.tools._helpers import _get_db, _get_gdrive, _get_patient_id
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +47,7 @@ async def rename_documents_to_standard(
         except (json.JSONDecodeError, ValueError) as e:
             return json.dumps({"error": f"Invalid en_descriptions JSON: {e}"})
 
-    docs = await db.list_documents(limit=500)
+    docs = await db.list_documents(limit=500, patient_id=_get_patient_id())
 
     stats = {"total": len(docs), "already_standard": 0, "renamed": 0, "skipped": 0, "errors": 0}
     renames = []

@@ -7,7 +7,7 @@ import json
 from fastmcp import Context
 
 from oncofiles.models import TreatmentEvent, TreatmentEventQuery
-from oncofiles.tools._helpers import _clamp_limit, _get_db, _parse_date
+from oncofiles.tools._helpers import _clamp_limit, _get_db, _get_patient_id, _parse_date
 
 
 async def add_treatment_event(
@@ -39,7 +39,7 @@ async def add_treatment_event(
         notes=notes,
         metadata=metadata,
     )
-    saved = await db.insert_treatment_event(event)
+    saved = await db.insert_treatment_event(event, patient_id=_get_patient_id())
     return json.dumps(
         {
             "id": saved.id,
@@ -75,7 +75,7 @@ async def list_treatment_events(
             date_to=_parse_date(date_to),
             limit=_clamp_limit(limit),
         )
-        events = await db.list_treatment_events(query)
+        events = await db.list_treatment_events(query, patient_id=_get_patient_id())
     except ValueError as e:
         return json.dumps({"error": str(e)})
     items = [

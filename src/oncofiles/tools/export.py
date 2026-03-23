@@ -7,7 +7,7 @@ import json
 from fastmcp import Context
 
 from oncofiles.patient_context import get_context as _get_patient_context
-from oncofiles.tools._helpers import _gdrive_url, _get_db
+from oncofiles.tools._helpers import _gdrive_url, _get_db, _get_patient_id
 
 
 async def export_document_package(
@@ -28,7 +28,7 @@ async def export_document_package(
     db = _get_db(ctx)
 
     # Get all documents grouped by category
-    docs = await db.list_documents(limit=200)
+    docs = await db.list_documents(limit=200, patient_id=_get_patient_id())
 
     # Group by category
     by_category: dict[str, list[dict]] = {}
@@ -59,7 +59,7 @@ async def export_document_package(
     }
 
     if include_timeline:
-        events = await db.get_treatment_events_timeline()
+        events = await db.get_treatment_events_timeline(patient_id=_get_patient_id())
         result["treatment_timeline"] = [
             {
                 "id": e.id,

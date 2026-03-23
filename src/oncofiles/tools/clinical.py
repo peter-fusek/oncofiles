@@ -7,7 +7,7 @@ import json
 from fastmcp import Context
 
 from oncofiles.models import ResearchEntry
-from oncofiles.tools._helpers import _get_db
+from oncofiles.tools._helpers import _get_db, _get_patient_id
 
 
 async def fetch_clinical_trials(
@@ -51,7 +51,7 @@ async def fetch_clinical_trials(
     for trial in trials:
         entry_data = trial_to_research_entry(trial)
         entry = ResearchEntry(**entry_data)
-        saved = await db.insert_research_entry(entry)
+        saved = await db.insert_research_entry(entry, patient_id=_get_patient_id())
         stored.append(
             {
                 "id": saved.id,

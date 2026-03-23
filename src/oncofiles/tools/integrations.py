@@ -7,7 +7,7 @@ import json
 from fastmcp import Context
 
 from oncofiles.models import CalendarQuery, EmailQuery
-from oncofiles.tools._helpers import _clamp_limit, _get_db, _parse_date
+from oncofiles.tools._helpers import _clamp_limit, _get_db, _get_patient_id, _parse_date
 
 
 async def integration_status(ctx: Context) -> str:
@@ -17,7 +17,7 @@ async def integration_status(ctx: Context) -> str:
     including whether each is authorized and how many entries are stored.
     """
     db = _get_db(ctx)
-    token = await db.get_oauth_token()
+    token = await db.get_oauth_token(patient_id=_get_patient_id())
     granted = json.loads(token.granted_scopes) if token else []
 
     from oncofiles.oauth import SCOPE_CALENDAR, SCOPE_DRIVE, SCOPE_GMAIL
@@ -25,9 +25,9 @@ async def integration_status(ctx: Context) -> str:
     gmail_count = None
     cal_count = None
     if SCOPE_GMAIL in granted:
-        gmail_count = await db.count_email_entries()
+        gmail_count = await db.count_email_entries(patient_id=_get_patient_id())
     if SCOPE_CALENDAR in granted:
-        cal_count = await db.count_calendar_entries()
+        cal_count = await db.count_calendar_entries(patient_id=_get_patient_id())
 
     return json.dumps(
         {
@@ -65,7 +65,7 @@ async def gmail_auth_enable(ctx: Context) -> str:
         return json.dumps({"error": "OAuth not configured. Set GOOGLE_OAUTH_CLIENT_ID."})
 
     db = _get_db(ctx)
-    token = await db.get_oauth_token()
+    token = await db.get_oauth_token(patient_id=_get_patient_id())
     if token:
         granted = json.loads(token.granted_scopes)
         if SCOPE_GMAIL in granted:
@@ -101,7 +101,7 @@ async def calendar_auth_enable(ctx: Context) -> str:
         return json.dumps({"error": "OAuth not configured. Set GOOGLE_OAUTH_CLIENT_ID."})
 
     db = _get_db(ctx)
-    token = await db.get_oauth_token()
+    token = await db.get_oauth_token(patient_id=_get_patient_id())
     if token:
         granted = json.loads(token.granted_scopes)
         if SCOPE_CALENDAR in granted:
@@ -151,7 +151,7 @@ async def search_emails(
             is_medical=is_medical,
             limit=_clamp_limit(limit),
         )
-        entries = await db.search_email_entries(eq)
+        entries = await db.search_email_entries(eq, patient_id=_get_patient_id())
     except ValueError as e:
         return json.dumps({"error": str(e)})
     items = [
@@ -231,7 +231,7 @@ async def search_calendar_events(
             is_medical=is_medical,
             limit=_clamp_limit(limit),
         )
-        entries = await db.search_calendar_entries(cq)
+        entries = await db.search_calendar_entries(cq, patient_id=_get_patient_id())
     except ValueError as e:
         return json.dumps({"error": str(e)})
     items = [

@@ -10,7 +10,7 @@ from fastmcp import Context
 
 from oncofiles.gdrive_folders import bilingual_name, en_key_from_folder_name
 from oncofiles.models import DocumentCategory
-from oncofiles.tools._helpers import _gdrive_url, _get_db, _get_gdrive
+from oncofiles.tools._helpers import _gdrive_url, _get_db, _get_gdrive, _get_patient_id
 
 logger = logging.getLogger(__name__)
 
@@ -180,7 +180,7 @@ async def validate_categories(
     db = _get_db(ctx)
     gdrive = _get_gdrive(ctx)
 
-    docs = await db.list_documents(limit=500)
+    docs = await db.list_documents(limit=500, patient_id=_get_patient_id())
     valid_categories = {c.value for c in DocumentCategory}
 
     mismatches: list[dict] = []
@@ -592,8 +592,8 @@ async def system_health(ctx: Context) -> str:
     db = _get_db(ctx)
 
     # Document stats
-    doc_count = await db.count_documents()
-    unprocessed = await db.get_documents_without_ai()
+    doc_count = await db.count_documents(patient_id=_get_patient_id())
+    unprocessed = await db.get_documents_without_ai(patient_id=_get_patient_id())
 
     # Sync stats
     sync_stats = await db.get_sync_stats_summary()
@@ -660,7 +660,7 @@ async def _build_document_matrix(db, filter_param: str = "all", limit: int = 200
 
     limit = min(limit, 200)
 
-    docs = await db.list_documents(limit=500)
+    docs = await db.list_documents(limit=500, patient_id=_get_patient_id())
     ocr_ids = await db.get_ocr_document_ids()
     rows = []
 
@@ -784,7 +784,7 @@ async def get_pipeline_status(ctx: Context) -> str:
     db = _get_db(ctx)
 
     # Pipeline stage counts
-    docs = await db.list_documents(limit=500)
+    docs = await db.list_documents(limit=500, patient_id=_get_patient_id())
     total = len(docs)
     with_ai = sum(1 for d in docs if d.ai_summary)
     with_metadata = sum(1 for d in docs if d.structured_metadata and d.structured_metadata != "")
@@ -927,7 +927,7 @@ async def _build_reconciliation_report(db, gdrive, folder_id: str) -> dict:
     """
     # Fetch both sides
     gdrive_files = await asyncio.to_thread(gdrive.list_folder, folder_id)
-    db_docs = await db.list_documents(limit=500)
+    db_docs = await db.list_documents(limit=500, patient_id=_get_patient_id())
 
     # Build lookup maps
     # GDrive: id -> file dict (exclude metadata JSON files)

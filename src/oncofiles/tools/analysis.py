@@ -14,6 +14,7 @@ from oncofiles.tools._helpers import (
     _get_db,
     _get_files,
     _get_gdrive,
+    _get_patient_id,
     _parse_date,
     _patient_context_text,
     _try_download,
@@ -32,7 +33,7 @@ async def view_document(ctx: Context, file_id: str) -> list:
     db = _get_db(ctx)
     files = _get_files(ctx)
     gdrive = _get_gdrive(ctx)
-    doc = await db.get_document_by_file_id(file_id)
+    doc = await db.get_document_by_file_id(file_id, patient_id=_get_patient_id())
     if not doc:
         return [f"Document not found: {file_id}"]
 
@@ -72,14 +73,14 @@ async def analyze_labs(
     gdrive = _get_gdrive(ctx)
 
     if file_id:
-        doc = await db.get_document_by_file_id(file_id)
+        doc = await db.get_document_by_file_id(file_id, patient_id=_get_patient_id())
         if not doc:
             return [f"Document not found: {file_id}"]
         if doc.category != DocumentCategory.LABS:
             return [f"Document {file_id} is not a lab result (category: {doc.category.value})"]
         labs = [doc]
     else:
-        labs = await db.get_latest_labs(limit=limit)
+        labs = await db.get_latest_labs(limit=limit, patient_id=_get_patient_id())
         if not labs:
             return ["No lab results found."]
 
@@ -167,13 +168,14 @@ async def compare_labs(
     db = _get_db(ctx)
     files = _get_files(ctx)
     gdrive = _get_gdrive(ctx)
+    pid = _get_patient_id()
 
     if file_id_a or file_id_b:
         # Specific file_ids mode
         labs = []
         for fid in [file_id_a, file_id_b]:
             if fid:
-                doc = await db.get_document_by_file_id(fid)
+                doc = await db.get_document_by_file_id(fid, patient_id=pid)
                 if not doc:
                     return [f"Document not found: {fid}"]
                 labs.append(doc)
@@ -190,12 +192,12 @@ async def compare_labs(
             date_to=parsed_to,
             limit=limit,
         )
-        labs = await db.search_documents(query)
+        labs = await db.search_documents(query, patient_id=pid)
         if not labs:
             return ["No lab results found in the specified date range."]
     else:
         # Default: latest labs
-        labs = await db.get_latest_labs(limit=limit)
+        labs = await db.get_latest_labs(limit=limit, patient_id=pid)
         if not labs:
             return ["No lab results found."]
 

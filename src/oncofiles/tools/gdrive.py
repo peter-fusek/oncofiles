@@ -10,7 +10,7 @@ from datetime import UTC
 from fastmcp import Context
 
 from oncofiles.config import GOOGLE_DRIVE_FOLDER_ID, GOOGLE_OAUTH_CLIENT_ID
-from oncofiles.tools._helpers import _get_db, _get_files, _get_gdrive
+from oncofiles.tools._helpers import _get_db, _get_files, _get_gdrive, _get_patient_id
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +64,7 @@ async def gdrive_auth_callback(ctx: Context, code: str) -> str:
 
     expiry = datetime.now(UTC) + timedelta(seconds=tokens.get("expires_in", 3600))
     oauth_token = OAuthToken(
+        patient_id=_get_patient_id(),
         access_token=tokens["access_token"],
         refresh_token=tokens.get("refresh_token", ""),
         token_expiry=expiry,
@@ -80,7 +81,7 @@ async def gdrive_auth_status(ctx: Context) -> str:
     from oncofiles.oauth import is_token_expired
 
     db = _get_db(ctx)
-    token = await db.get_oauth_token()
+    token = await db.get_oauth_token(patient_id=_get_patient_id())
 
     if not token:
         msg = "No OAuth tokens found. Use gdrive_auth_url to connect."
@@ -110,11 +111,12 @@ async def gdrive_set_folder(ctx: Context, folder_id: str) -> str:
         folder_id: The Google Drive folder ID to use as the sync root.
     """
     db = _get_db(ctx)
-    token = await db.get_oauth_token()
+    pid = _get_patient_id()
+    token = await db.get_oauth_token(patient_id=pid)
     if not token:
         return json.dumps({"error": "No OAuth tokens found. Connect Google Drive first."})
 
-    await db.update_oauth_folder(token.patient_id, token.provider, folder_id)
+    await db.update_oauth_folder(pid, token.provider, folder_id)
 
     # Detect folder owner and store for permission sharing
     gdrive = _get_gdrive(ctx)
@@ -122,7 +124,7 @@ async def gdrive_set_folder(ctx: Context, folder_id: str) -> str:
     if gdrive:
         owner_email = await asyncio.to_thread(gdrive.get_folder_owner, folder_id)
         if owner_email:
-            await db.update_oauth_owner_email(token.patient_id, token.provider, owner_email)
+            await db.update_oauth_owner_email(pid, token.provider, owner_email)
             gdrive.owner_email = owner_email
             logger.info("Detected folder owner: %s", owner_email)
 
@@ -325,9 +327,10 @@ async def gdrive_fix_permissions(
         return json.dumps({"error": "Could not detect folder owner. Pass email explicitly."})
 
     # Store owner_email for future auto-sharing
-    token = await db.get_oauth_token()
+    pid = _get_patient_id()
+    token = await db.get_oauth_token(patient_id=pid)
     if token:
-        await db.update_oauth_owner_email(token.patient_id, token.provider, target_email)
+        await db.update_oauth_owner_email(pid, token.provider, target_email)
     gdrive.owner_email = target_email
 
     # Grant access recursively

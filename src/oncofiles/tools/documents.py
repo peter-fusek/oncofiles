@@ -19,6 +19,7 @@ from oncofiles.tools._helpers import (
     _get_db,
     _get_files,
     _get_gdrive,
+    _get_patient_id,
     _parse_date,
 )
 
@@ -76,7 +77,7 @@ async def upload_document(
     parsed = parse_filename(filename)
 
     # Check for existing active document with the same filename (re-upload / new version)
-    existing = await db.get_active_document_by_filename(filename)
+    existing = await db.get_active_document_by_filename(filename, patient_id=_get_patient_id())
     version = 1
     previous_version_id = None
     if existing:
@@ -101,7 +102,7 @@ async def upload_document(
         previous_version_id=previous_version_id,
     )
 
-    doc = await db.insert_document(doc)
+    doc = await db.insert_document(doc, patient_id=_get_patient_id())
 
     # Notify oncoteam of new document (fire-and-forget)
     from oncofiles.webhook import notify_oncoteam
@@ -166,7 +167,7 @@ async def list_documents(
     Returns documents ordered by date (newest first).
     """
     db = _get_db(ctx)
-    docs = await db.list_documents(limit=limit, offset=offset)
+    docs = await db.list_documents(limit=limit, offset=offset, patient_id=_get_patient_id())
     return json.dumps({"documents": [_doc_to_dict(d) for d in docs], "total": len(docs)})
 
 
@@ -213,7 +214,7 @@ async def search_documents(
             offset=max(0, offset),
         )
         async with query_slot("search_documents"):
-            docs = await db.search_documents(query)
+            docs = await db.search_documents(query, patient_id=_get_patient_id())
         return json.dumps({"documents": [_doc_to_dict(d) for d in docs], "total": len(docs)})
     except ValueError as e:
         return json.dumps({"error": str(e)})
@@ -228,7 +229,7 @@ async def get_document(ctx: Context, file_id: str) -> str:
         file_id: The Anthropic Files API file_id.
     """
     db = _get_db(ctx)
-    doc = await db.get_document_by_file_id(file_id)
+    doc = await db.get_document_by_file_id(file_id, patient_id=_get_patient_id())
     if not doc:
         return json.dumps({"error": f"Document not found: {file_id}"})
     return json.dumps(
@@ -296,7 +297,7 @@ async def delete_document(ctx: Context, file_id: str) -> str:
         await ctx.warning(f"Files API deletion failed (may already be deleted): {e}")
 
     # Soft-delete in local database
-    deleted = await db.delete_document_by_file_id(file_id)
+    deleted = await db.delete_document_by_file_id(file_id, patient_id=_get_patient_id())
     return json.dumps(
         {
             "deleted": deleted,
@@ -343,7 +344,7 @@ async def list_trash(ctx: Context, limit: int = 50) -> str:
     """
     db = _get_db(ctx)
     limit = min(max(limit, 1), 200)
-    docs = await db.list_trash(limit=limit)
+    docs = await db.list_trash(limit=limit, patient_id=_get_patient_id())
     return json.dumps(
         {
             "trash": [
@@ -368,7 +369,7 @@ async def find_duplicates(ctx: Context) -> str:
     Each group contains 2+ documents. Useful for cleanup after repeated imports.
     """
     db = _get_db(ctx)
-    groups = await db.find_duplicates()
+    groups = await db.find_duplicates(patient_id=_get_patient_id())
     result = []
     for group in groups:
         result.append(

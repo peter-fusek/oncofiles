@@ -8,7 +8,7 @@ from datetime import date
 from fastmcp import Context
 
 from oncofiles.models import ConversationEntry, ConversationQuery
-from oncofiles.tools._helpers import _clamp_limit, _get_db, _parse_date
+from oncofiles.tools._helpers import _clamp_limit, _get_db, _get_patient_id, _parse_date
 
 
 async def log_conversation(
@@ -66,7 +66,7 @@ async def log_conversation(
         document_ids=parsed_doc_ids,
         source="live",
     )
-    entry = await db.insert_conversation_entry(entry)
+    entry = await db.insert_conversation_entry(entry, patient_id=_get_patient_id())
     return json.dumps(
         {
             "id": entry.id,
@@ -117,7 +117,7 @@ async def search_conversations(
             limit=_clamp_limit(limit),
         )
         async with query_slot("search_conversations"):
-            entries = await db.search_conversation_entries(query)
+            entries = await db.search_conversation_entries(query, patient_id=_get_patient_id())
     except ValueError as e:
         return json.dumps({"error": str(e)})
     items = [
@@ -196,6 +196,8 @@ async def get_journey_timeline(
         doc_conditions.append("document_date <= ?")
         doc_params.append(parsed_to.isoformat())
     doc_conditions.append("deleted_at IS NULL")
+    doc_conditions.append("patient_id = ?")
+    doc_params.append(_get_patient_id())
     doc_where = " AND ".join(doc_conditions)
     async with db.db.execute(
         f"SELECT * FROM documents WHERE {doc_where} ORDER BY document_date ASC LIMIT ?",
@@ -205,7 +207,10 @@ async def get_journey_timeline(
 
     # Fetch conversation entries
     entries = await db.get_conversation_timeline(
-        date_from=parsed_from, date_to=parsed_to, limit=limit
+        date_from=parsed_from,
+        date_to=parsed_to,
+        limit=limit,
+        patient_id=_get_patient_id(),
     )
 
     # Merge into unified timeline
