@@ -1772,7 +1772,6 @@ async def api_bug_report(request: Request) -> JSONResponse:
         # Upload screenshot if provided
         screenshot_url = ""
         if screenshot_b64 and len(screenshot_b64) < 5_000_000:
-
             ts = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
             img_path = f".github/screenshots/bug_{ts}.png"
             try:
