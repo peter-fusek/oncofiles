@@ -13,6 +13,7 @@ async def test_multi_term_and_semantics(db: Database):
     doc2 = make_doc(
         file_id="f2",
         filename="20260213_OUSA_labs_CBC.pdf",
+        original_filename="20260213_OUSA_labs_CBC.pdf",
         institution="OUSA",
     )
     await db.insert_document(doc1)

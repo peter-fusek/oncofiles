@@ -19,12 +19,15 @@ class ClinicalMixin:
 
     # ── Treatment events (#34) ───────────────────────────────────────────
 
-    async def insert_treatment_event(self, event: TreatmentEvent) -> TreatmentEvent:
+    async def insert_treatment_event(
+        self, event: TreatmentEvent, *, patient_id: str = "erika"
+    ) -> TreatmentEvent:
         """Insert a treatment event and return it with the generated ID."""
         cursor = await self.db.execute(
             """
-            INSERT INTO treatment_events (event_date, event_type, title, notes, metadata)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO treatment_events
+                (event_date, event_type, title, notes, metadata, patient_id)
+            VALUES (?, ?, ?, ?, ?, ?)
             """,
             (
                 event.event_date.isoformat(),
@@ -32,6 +35,7 @@ class ClinicalMixin:
                 event.title,
                 event.notes,
                 event.metadata,
+                patient_id,
             ),
         )
         await self.db.commit()
@@ -46,10 +50,12 @@ class ClinicalMixin:
             row = await cursor.fetchone()
             return _row_to_treatment_event(row) if row else None
 
-    async def list_treatment_events(self, query: TreatmentEventQuery) -> list[TreatmentEvent]:
+    async def list_treatment_events(
+        self, query: TreatmentEventQuery, *, patient_id: str = "erika"
+    ) -> list[TreatmentEvent]:
         """List treatment events with optional filters."""
-        conditions: list[str] = []
-        params: list[str | int] = []
+        conditions: list[str] = ["patient_id = ?"]
+        params: list[str | int] = [patient_id]
 
         if query.event_type:
             conditions.append("event_type = ?")
@@ -61,7 +67,7 @@ class ClinicalMixin:
             conditions.append("event_date <= ?")
             params.append(query.date_to.isoformat())
 
-        where = " AND ".join(conditions) if conditions else "1=1"
+        where = " AND ".join(conditions)
         sql = f"SELECT * FROM treatment_events WHERE {where} ORDER BY event_date DESC LIMIT ?"
         params.append(query.limit)
 
@@ -103,24 +109,29 @@ class ClinicalMixin:
         await self.db.commit()
         return await self.get_treatment_event(event_id)
 
-    async def get_treatment_events_timeline(self, limit: int = 200) -> list[TreatmentEvent]:
+    async def get_treatment_events_timeline(
+        self, limit: int = 200, *, patient_id: str = "erika"
+    ) -> list[TreatmentEvent]:
         """Get treatment events in chronological (ASC) order."""
         async with self.db.execute(
-            "SELECT * FROM treatment_events ORDER BY event_date ASC, created_at ASC LIMIT ?",
-            (limit,),
+            "SELECT * FROM treatment_events WHERE patient_id = ? "
+            "ORDER BY event_date ASC, created_at ASC LIMIT ?",
+            (patient_id, limit),
         ) as cursor:
             rows = await cursor.fetchall()
             return [_row_to_treatment_event(r) for r in rows]
 
     # ── Research entries (#33) ───────────────────────────────────────────
 
-    async def insert_research_entry(self, entry: ResearchEntry) -> ResearchEntry:
+    async def insert_research_entry(
+        self, entry: ResearchEntry, *, patient_id: str = "erika"
+    ) -> ResearchEntry:
         """Insert a research entry. Ignores duplicates (source+external_id)."""
         cursor = await self.db.execute(
             """
             INSERT OR IGNORE INTO research_entries
-                (source, external_id, title, summary, tags, raw_data)
-            VALUES (?, ?, ?, ?, ?, ?)
+                (source, external_id, title, summary, tags, raw_data, patient_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 entry.source,
@@ -129,6 +140,7 @@ class ClinicalMixin:
                 entry.summary,
                 entry.tags,
                 entry.raw_data,
+                patient_id,
             ),
         )
         await self.db.commit()
@@ -139,16 +151,19 @@ class ClinicalMixin:
 
         # Duplicate (INSERT OR IGNORE skipped) — return existing row
         async with self.db.execute(
-            "SELECT * FROM research_entries WHERE source = ? AND external_id = ?",
-            (entry.source, entry.external_id),
+            "SELECT * FROM research_entries WHERE source = ? AND external_id = ? "
+            "AND patient_id = ?",
+            (entry.source, entry.external_id, patient_id),
         ) as cur:
             row = await cur.fetchone()
             return _row_to_research_entry(row)
 
-    async def search_research_entries(self, query: ResearchQuery) -> list[ResearchEntry]:
+    async def search_research_entries(
+        self, query: ResearchQuery, *, patient_id: str = "erika"
+    ) -> list[ResearchEntry]:
         """Search research entries using LIKE on title/summary/tags."""
-        conditions: list[str] = []
-        params: list[str | int] = []
+        conditions: list[str] = ["patient_id = ?"]
+        params: list[str | int] = [patient_id]
 
         if query.text:
             like_param = f"%{query.text}%"
@@ -158,7 +173,7 @@ class ClinicalMixin:
             conditions.append("source = ?")
             params.append(query.source)
 
-        where = " AND ".join(conditions) if conditions else "1=1"
+        where = " AND ".join(conditions)
         sql = f"SELECT * FROM research_entries WHERE {where} ORDER BY created_at DESC LIMIT ?"
         params.append(query.limit)
 
@@ -167,19 +182,21 @@ class ClinicalMixin:
             return [_row_to_research_entry(r) for r in rows]
 
     async def list_research_entries(
-        self, source: str | None = None, limit: int = 50
+        self, source: str | None = None, limit: int = 50, *, patient_id: str = "erika"
     ) -> list[ResearchEntry]:
         """List research entries, optionally filtered by source."""
         if source:
             async with self.db.execute(
-                "SELECT * FROM research_entries WHERE source = ? ORDER BY created_at DESC LIMIT ?",
-                (source, limit),
+                "SELECT * FROM research_entries WHERE source = ? AND patient_id = ? "
+                "ORDER BY created_at DESC LIMIT ?",
+                (source, patient_id, limit),
             ) as cursor:
                 rows = await cursor.fetchall()
         else:
             async with self.db.execute(
-                "SELECT * FROM research_entries ORDER BY created_at DESC LIMIT ?",
-                (limit,),
+                "SELECT * FROM research_entries WHERE patient_id = ? "
+                "ORDER BY created_at DESC LIMIT ?",
+                (patient_id, limit),
             ) as cursor:
                 rows = await cursor.fetchall()
         return [_row_to_research_entry(r) for r in rows]

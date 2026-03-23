@@ -13,14 +13,16 @@ from ._converters import _row_to_conversation_entry
 class ConversationMixin:
     """Conversation entry database operations."""
 
-    async def insert_conversation_entry(self, entry: ConversationEntry) -> ConversationEntry:
+    async def insert_conversation_entry(
+        self, entry: ConversationEntry, *, patient_id: str = "erika"
+    ) -> ConversationEntry:
         """Insert a conversation entry and return it with the generated ID."""
         cursor = await self.db.execute(
             """
             INSERT INTO conversation_entries
                 (entry_date, entry_type, title, content, participant,
-                 session_id, tags, document_ids, source, source_ref)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 session_id, tags, document_ids, source, source_ref, patient_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 entry.entry_date.isoformat(),
@@ -33,6 +35,7 @@ class ConversationMixin:
                 json.dumps(entry.document_ids) if entry.document_ids else None,
                 entry.source,
                 entry.source_ref,
+                patient_id,
             ),
         )
         await self.db.commit()
@@ -48,7 +51,7 @@ class ConversationMixin:
             return _row_to_conversation_entry(row) if row else None
 
     async def search_conversation_entries(
-        self, query: ConversationQuery, *, max_content_length: int = 510
+        self, query: ConversationQuery, *, max_content_length: int = 510, patient_id: str = "erika"
     ) -> list[ConversationEntry]:
         """Search conversation entries using FTS5 and/or filters.
 
@@ -57,8 +60,8 @@ class ConversationMixin:
             max_content_length: Truncate content to this length in the query
                 to reduce memory usage. Use 0 for full content.
         """
-        conditions: list[str] = []
-        params: list[str | int] = []
+        conditions: list[str] = ["patient_id = ?"]
+        params: list[str | int] = [patient_id]
 
         if query.text:
             # Sanitize FTS5 input: quote as a phrase to prevent FTS5 syntax injection
@@ -118,10 +121,12 @@ class ConversationMixin:
         date_from: date | None = None,
         date_to: date | None = None,
         limit: int = 100,
+        *,
+        patient_id: str = "erika",
     ) -> list[ConversationEntry]:
         """Get conversation entries in chronological (ASC) order."""
-        conditions: list[str] = []
-        params: list[str | int] = []
+        conditions: list[str] = ["patient_id = ?"]
+        params: list[str | int] = [patient_id]
 
         if date_from:
             conditions.append("entry_date >= ?")
@@ -130,7 +135,7 @@ class ConversationMixin:
             conditions.append("entry_date <= ?")
             params.append(date_to.isoformat())
 
-        where = " AND ".join(conditions) if conditions else "1=1"
+        where = " AND ".join(conditions)
         sql = (
             f"SELECT * FROM conversation_entries WHERE {where} "
             f"ORDER BY entry_date ASC, created_at ASC LIMIT ?"
@@ -147,10 +152,13 @@ class ConversationMixin:
         await self.db.commit()
         return cursor.rowcount > 0
 
-    async def get_entry_by_source_ref(self, source_ref: str) -> ConversationEntry | None:
+    async def get_entry_by_source_ref(
+        self, source_ref: str, *, patient_id: str = "erika"
+    ) -> ConversationEntry | None:
         """Get a conversation entry by source_ref (for idempotent imports)."""
         async with self.db.execute(
-            "SELECT * FROM conversation_entries WHERE source_ref = ?", (source_ref,)
+            "SELECT * FROM conversation_entries WHERE source_ref = ? AND patient_id = ?",
+            (source_ref, patient_id),
         ) as cursor:
             row = await cursor.fetchone()
             return _row_to_conversation_entry(row) if row else None
