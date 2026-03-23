@@ -1103,7 +1103,10 @@ mcp = FastMCP(
     lifespan=lifespan,
     auth=auth,
 )
+from oncofiles.patient_middleware import PatientResolutionMiddleware  # noqa: E402
+
 mcp.add_middleware(AuditMiddleware())
+mcp.add_middleware(PatientResolutionMiddleware())
 
 
 # ── Landing page ─────────────────────────────────────────────────────────────

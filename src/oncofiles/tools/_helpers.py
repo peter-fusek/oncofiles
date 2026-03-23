@@ -63,6 +63,13 @@ def _patient_context_text() -> str:
 # ── Context accessors ────────────────────────────────────────────────────────
 
 
+def _get_patient_id() -> str:
+    """Get the current patient_id (set by PatientResolutionMiddleware)."""
+    from oncofiles.patient_middleware import get_current_patient_id
+
+    return get_current_patient_id()
+
+
 def _get_db(ctx: Context) -> Database:
     return ctx.request_context.lifespan_context["db"]
 
