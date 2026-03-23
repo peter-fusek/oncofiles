@@ -45,10 +45,13 @@ from oncofiles.memory import get_rss_mb, is_memory_pressure
 logger = logging.getLogger(__name__)
 
 # Stats constants (single source of truth for values that can't be computed at runtime)
-TESTS_COUNT = 606
+TESTS_COUNT = 607
 
 # Global sync semaphore — limits concurrent sync operations (GDrive + Gmail + Calendar)
 _sync_semaphore = asyncio.Semaphore(2)
+
+# In-memory share codes: {code: {patient_id, bearer_token, patient_name, created_at}}
+_share_codes: dict[str, dict] = {}
 
 
 def _check_bearer(request: Request) -> JSONResponse | None:
@@ -2057,6 +2060,263 @@ async def api_sync_trigger(request: Request) -> JSONResponse:
     except Exception:
         logger.exception("API sync-trigger error")
         return JSONResponse({"error": "internal error"}, status_code=500)
+
+
+@mcp.custom_route("/api/gdrive-folders", methods=["GET"])
+async def api_gdrive_folders(request: Request) -> JSONResponse:
+    """List Google Drive root folders for a patient. Requires dashboard auth."""
+    err = _check_dashboard_auth(request)
+    if err:
+        return err
+
+    try:
+        patient_id = _get_dashboard_patient_id(request)
+        db_inst: Database = request.app.state.fastmcp_server._lifespan_result["db"]
+
+        token = await db_inst.get_oauth_token(patient_id=patient_id)
+        if not token:
+            return JSONResponse(
+                {"error": "No OAuth token. Connect Google Drive first."},
+                status_code=400,
+            )
+
+        from oncofiles.oauth import is_token_expired, refresh_access_token
+
+        access_token = token.access_token
+        if is_token_expired(token.token_expiry.isoformat() if token.token_expiry else None):
+            refreshed = refresh_access_token(token.refresh_token)
+            access_token = refreshed["access_token"]
+            new_expiry = datetime.now(UTC) + timedelta(seconds=refreshed.get("expires_in", 3600))
+            token.access_token = access_token
+            token.token_expiry = new_expiry
+            await db_inst.upsert_oauth_token(token)
+
+        gdrive = GDriveClient.from_oauth(
+            access_token=access_token,
+            refresh_token=token.refresh_token,
+            client_id=GOOGLE_OAUTH_CLIENT_ID,
+            client_secret=GOOGLE_OAUTH_CLIENT_SECRET,
+        )
+
+        folders = await asyncio.to_thread(gdrive.list_root_folders)
+        return JSONResponse(
+            {
+                "folders": folders,
+                "current_folder_id": token.gdrive_folder_id,
+            }
+        )
+    except Exception:
+        logger.exception("API gdrive-folders error")
+        return JSONResponse({"error": "internal error"}, status_code=500)
+
+
+@mcp.custom_route("/api/gdrive-set-folder", methods=["POST"])
+async def api_gdrive_set_folder(request: Request) -> JSONResponse:
+    """Set or create a GDrive sync folder for a patient. Requires dashboard auth.
+
+    Body: {patient_id, folder_id?} or {patient_id, folder_name?}
+    If folder_name given without folder_id, creates a new folder in root.
+    """
+    err = _check_dashboard_auth(request)
+    if err:
+        return err
+
+    try:
+        body = await request.json()
+        patient_id = body.get("patient_id", "").strip().lower()
+        folder_id = body.get("folder_id", "").strip()
+        folder_name = body.get("folder_name", "").strip()
+
+        if not patient_id:
+            return JSONResponse({"error": "patient_id required"}, status_code=400)
+        if not folder_id and not folder_name:
+            return JSONResponse(
+                {"error": "folder_id or folder_name required"},
+                status_code=400,
+            )
+
+        db_inst: Database = request.app.state.fastmcp_server._lifespan_result["db"]
+        token = await db_inst.get_oauth_token(patient_id=patient_id)
+        if not token:
+            return JSONResponse(
+                {"error": "No OAuth token. Connect Google Drive first."},
+                status_code=400,
+            )
+
+        from oncofiles.oauth import is_token_expired, refresh_access_token
+
+        access_token = token.access_token
+        if is_token_expired(token.token_expiry.isoformat() if token.token_expiry else None):
+            refreshed = refresh_access_token(token.refresh_token)
+            access_token = refreshed["access_token"]
+            new_expiry = datetime.now(UTC) + timedelta(seconds=refreshed.get("expires_in", 3600))
+            token.access_token = access_token
+            token.token_expiry = new_expiry
+            await db_inst.upsert_oauth_token(token)
+
+        gdrive = GDriveClient.from_oauth(
+            access_token=access_token,
+            refresh_token=token.refresh_token,
+            client_id=GOOGLE_OAUTH_CLIENT_ID,
+            client_secret=GOOGLE_OAUTH_CLIENT_SECRET,
+        )
+
+        # Create new folder if needed
+        if not folder_id and folder_name:
+            folder_id = await asyncio.to_thread(gdrive.create_folder, folder_name, "root")
+
+        # Persist folder choice
+        await db_inst.update_oauth_folder(patient_id, "google", folder_id)
+
+        # Detect owner email
+        owner_email = await asyncio.to_thread(gdrive.get_folder_owner, folder_id)
+        if owner_email:
+            await db_inst.update_oauth_owner_email(patient_id, "google", owner_email)
+            gdrive.owner_email = owner_email
+
+        # Create category subfolders
+        from oncofiles.gdrive_folders import ALL_FOLDERS, bilingual_name
+
+        created = []
+        skipped = []
+        for en_key in ALL_FOLDERS:
+            display = bilingual_name(en_key)
+            existing = await asyncio.to_thread(gdrive.find_folder, display, folder_id)
+            if existing:
+                skipped.append(display)
+                continue
+            await asyncio.to_thread(gdrive.create_folder, display, folder_id)
+            created.append(display)
+
+        return JSONResponse(
+            {
+                "status": "ok",
+                "folder_id": folder_id,
+                "owner_email": owner_email,
+                "subfolders_created": len(created),
+                "subfolders_skipped": len(skipped),
+            }
+        )
+    except Exception:
+        logger.exception("API gdrive-set-folder error")
+        return JSONResponse({"error": "internal error"}, status_code=500)
+
+
+_SHARE_CODE_EXPIRY = 600  # 10 minutes
+
+
+@mcp.custom_route("/api/share-link", methods=["POST"])
+async def api_create_share_link(request: Request) -> JSONResponse:
+    """Generate a one-time setup code for sharing MCP connection info.
+
+    Body: {patient_id}
+    Returns: {code, expires_in}
+    """
+    err = _check_dashboard_auth(request)
+    if err:
+        return err
+
+    try:
+        body = await request.json()
+        patient_id = body.get("patient_id", "").strip().lower()
+        if not patient_id:
+            return JSONResponse({"error": "patient_id required"}, status_code=400)
+
+        db_inst: Database = request.app.state.fastmcp_server._lifespan_result["db"]
+        patient = await db_inst.get_patient(patient_id)
+        if not patient:
+            return JSONResponse(
+                {"error": f"Patient '{patient_id}' not found"},
+                status_code=404,
+            )
+
+        # Get the latest active token for this patient
+        tokens = await db_inst.list_patient_tokens(patient_id)
+        if not tokens:
+            return JSONResponse(
+                {"error": "No tokens for this patient. Create one first."},
+                status_code=400,
+            )
+
+        # Generate a fresh token so we can share the plaintext
+        bearer_token = await db_inst.create_patient_token(patient_id, label="share-link")
+
+        # Generate 6-char uppercase code
+        import secrets
+
+        code = secrets.token_hex(3).upper()  # 6 hex chars
+
+        # Purge expired codes
+        now = time.time()
+        expired = [k for k, v in _share_codes.items() if now - v["created_at"] > _SHARE_CODE_EXPIRY]
+        for k in expired:
+            del _share_codes[k]
+
+        _share_codes[code] = {
+            "patient_id": patient_id,
+            "bearer_token": bearer_token,
+            "patient_name": patient.display_name,
+            "created_at": now,
+        }
+
+        return JSONResponse(
+            {
+                "code": code,
+                "expires_in": _SHARE_CODE_EXPIRY,
+            }
+        )
+    except Exception:
+        logger.exception("API share-link create error")
+        return JSONResponse({"error": "internal error"}, status_code=500)
+
+
+@mcp.custom_route("/api/share-link/{code}", methods=["GET"])
+async def api_redeem_share_link(request: Request) -> JSONResponse:
+    """Redeem a one-time setup code. Public (no auth). Returns connection info."""
+    code = request.path_params.get("code", "").upper()
+    if not code or code not in _share_codes:
+        return JSONResponse({"error": "Invalid or expired setup code."}, status_code=404)
+
+    entry = _share_codes[code]
+    if time.time() - entry["created_at"] > _SHARE_CODE_EXPIRY:
+        del _share_codes[code]
+        return JSONResponse({"error": "Setup code has expired."}, status_code=410)
+
+    # One-time use: delete after redemption
+    del _share_codes[code]
+
+    # Determine MCP URL
+    mcp_url = "https://oncofiles.com/mcp"
+
+    return JSONResponse(
+        {
+            "patient_name": entry["patient_name"],
+            "mcp_url": mcp_url,
+            "bearer_token": entry["bearer_token"],
+            "instructions": {
+                "claude_ai": (
+                    "In Claude.ai: Project Settings > Connectors > "
+                    "Add MCP server > paste the URL and token above."
+                ),
+                "chatgpt": (
+                    "In ChatGPT: Settings > Developer Mode > MCP > "
+                    "Add server > paste the URL and token above."
+                ),
+                "claude_desktop": {
+                    "mcpServers": {
+                        "oncofiles": {
+                            "url": mcp_url,
+                            "headers": {"Authorization": (f"Bearer {entry['bearer_token']}")},
+                        }
+                    }
+                },
+                "claude_code": (
+                    f"claude mcp add oncofiles {mcp_url} "
+                    f"--header 'Authorization: Bearer {entry['bearer_token']}'"
+                ),
+            },
+        }
+    )
 
 
 @mcp.custom_route("/oauth/authorize/{service}", methods=["GET"])

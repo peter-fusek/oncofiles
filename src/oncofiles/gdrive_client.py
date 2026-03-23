@@ -391,6 +391,33 @@ class GDriveClient:
         return result["id"]
 
     @_retry_on_transient
+    def list_root_folders(self) -> list[dict]:
+        """List folders in My Drive root. Returns [{id, name}]."""
+        folders: list[dict] = []
+        page_token = None
+        while True:
+            response = (
+                self._service.files()
+                .list(
+                    q=(
+                        "'root' in parents "
+                        "and mimeType = 'application/vnd.google-apps.folder' "
+                        "and trashed = false"
+                    ),
+                    fields="nextPageToken, files(id, name)",
+                    pageSize=100,
+                    pageToken=page_token,
+                    orderBy="name",
+                )
+                .execute()
+            )
+            folders.extend(response.get("files", []))
+            page_token = response.get("nextPageToken")
+            if not page_token:
+                break
+        return folders
+
+    @_retry_on_transient
     def find_folder(self, name: str, parent_id: str) -> str | None:
         """Find a folder by name under a parent. Returns folder ID or None."""
         safe_name = name.replace("\\", "\\\\").replace("'", "\\'")

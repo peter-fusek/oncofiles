@@ -221,6 +221,75 @@
     }
     @keyframes spin { to { transform: rotate(360deg); } }
 
+    /* Share modal */
+    .share-btn {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      color: var(--text-muted);
+      padding: 0.375rem 0.75rem;
+      border-radius: 0.375rem;
+      cursor: pointer;
+      font-size: 0.8125rem;
+    }
+    .share-btn:hover { border-color: var(--accent); color: var(--accent); }
+    .share-tabs { display: flex; gap: 0; margin-bottom: 1rem; }
+    .share-tab {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      color: var(--text-muted);
+      padding: 0.375rem 0.75rem;
+      cursor: pointer;
+      font-size: 0.75rem;
+      border-right: none;
+    }
+    .share-tab:last-child { border-right: 1px solid var(--border); }
+    .share-tab:first-child { border-radius: 0.375rem 0 0 0.375rem; }
+    .share-tab:last-child { border-radius: 0 0.375rem 0.375rem 0; }
+    .share-tab.active {
+      background: var(--accent);
+      color: var(--bg);
+      border-color: var(--accent);
+      font-weight: 600;
+    }
+    .share-code-display {
+      background: var(--bg);
+      border: 2px solid var(--accent);
+      border-radius: 0.5rem;
+      padding: 1rem;
+      text-align: center;
+      font-family: monospace;
+      font-size: 1.75rem;
+      letter-spacing: 0.3em;
+      color: var(--accent);
+      margin: 1rem 0;
+    }
+    .share-field {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 0.375rem;
+      padding: 0.5rem 0.75rem;
+      font-family: monospace;
+      font-size: 0.75rem;
+      color: var(--text);
+      word-break: break-all;
+      margin: 0.5rem 0;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+    .share-field span { flex: 1; }
+    .copy-btn {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      color: var(--text-muted);
+      padding: 0.25rem 0.5rem;
+      border-radius: 0.25rem;
+      cursor: pointer;
+      font-size: 0.6875rem;
+      white-space: nowrap;
+    }
+    .copy-btn:hover { color: var(--accent); border-color: var(--accent); }
+
     .patient-diagnosis {
       font-size: 0.6875rem;
       color: var(--text-muted);
@@ -609,6 +678,7 @@
             <option value="">Loading...</option>
           </select>
           <span id="patient-diagnosis" class="patient-diagnosis"></span>
+          <button class="share-btn" onclick="showShareModal()">Share</button>
           <button class="add-patient-btn" onclick="showOnboarding()">+ New Patient</button>
         </div>
         <div class="header-right">
@@ -811,20 +881,46 @@
       <!-- Step 2: Connect Google Drive -->
       <div id="wiz-step-2" style="display:none">
         <h2>Connect Google Drive</h2>
-        <p style="color:var(--text-muted);font-size:0.875rem;margin-bottom:1rem">
-          Authorize access to the patient's Google Drive folder for document sync.
-        </p>
         <div class="wizard-token-box" id="wiz-token-display"></div>
         <p style="color:var(--amber);font-size:0.75rem;margin-bottom:1rem">
           Save this bearer token now — it will not be shown again.
         </p>
-        <div class="wizard-actions">
-          <button class="wizard-btn-secondary" onclick="wizardSkipToEnd()">Skip for now</button>
-          <button class="wizard-btn-primary" onclick="wizardStep2Auth()">Authorize Google Drive</button>
+
+        <!-- Phase A: Authorize -->
+        <div id="wiz-step2-auth">
+          <p style="color:var(--text-muted);font-size:0.875rem;margin-bottom:1rem">
+            Step 1: Authorize Google Drive access.
+          </p>
+          <div class="wizard-actions">
+            <button class="wizard-btn-secondary" onclick="wizardSkipToEnd()">Skip for now</button>
+            <button class="wizard-btn-primary" onclick="wizardStep2Auth()">Authorize Google Drive</button>
+          </div>
+          <p id="wiz-step2-status" style="color:var(--text-muted);font-size:0.8125rem;margin-top:0.75rem;display:none"></p>
+          <div class="wizard-actions" id="wiz-step2-auth-done" style="display:none">
+            <button class="wizard-btn-primary" onclick="wizardStep2LoadFolders()">Done, choose folder</button>
+          </div>
         </div>
-        <p id="wiz-step2-status" style="color:var(--text-muted);font-size:0.8125rem;margin-top:0.75rem;display:none"></p>
-        <div class="wizard-actions" id="wiz-step2-continue" style="display:none">
-          <button class="wizard-btn-primary" onclick="wizardGoToStep(3)">Continue</button>
+
+        <!-- Phase B: Folder picker (shown after OAuth) -->
+        <div id="wiz-step2-folder" style="display:none">
+          <p style="color:var(--text-muted);font-size:0.875rem;margin-bottom:1rem">
+            Step 2: Choose a Google Drive folder for documents.
+          </p>
+          <div class="wizard-field">
+            <label for="wiz-folder-select">Select folder</label>
+            <select id="wiz-folder-select" onchange="wizardFolderChanged()">
+              <option value="">Loading folders...</option>
+            </select>
+          </div>
+          <div id="wiz-folder-new" class="wizard-field" style="display:none">
+            <label for="wiz-folder-name">New folder name</label>
+            <input type="text" id="wiz-folder-name" placeholder="Oncofiles - Patient Name">
+          </div>
+          <div class="wizard-actions">
+            <button class="wizard-btn-secondary" onclick="wizardSkipToEnd()">Skip</button>
+            <button class="wizard-btn-primary" id="wiz-folder-btn" onclick="wizardStep2SetFolder()">Set folder &amp; continue</button>
+          </div>
+          <p id="wiz-step2-folder-status" style="color:var(--text-muted);font-size:0.8125rem;margin-top:0.75rem;display:none"></p>
         </div>
       </div>
 
@@ -851,6 +947,74 @@
         <div class="wizard-actions" style="justify-content:center">
           <button class="wizard-btn-primary" onclick="wizardFinish()">Go to Dashboard</button>
         </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Share Access Modal -->
+  <div id="share-overlay" class="wizard-overlay">
+    <div class="wizard-panel" style="max-width:36rem">
+      <h2 style="margin-bottom:0.5rem">Share Access</h2>
+      <p style="color:var(--text-muted);font-size:0.8125rem;margin-bottom:1.5rem">
+        Share connection info so a caregiver, family member, or AI tool can access this patient's records.
+      </p>
+
+      <!-- Connection info -->
+      <div style="margin-bottom:1.5rem">
+        <label style="font-size:0.75rem;color:var(--text-muted)">MCP Server URL</label>
+        <div class="share-field">
+          <span id="share-url">https://oncofiles.com/mcp</span>
+          <button class="copy-btn" onclick="copyText('share-url')">Copy</button>
+        </div>
+        <label style="font-size:0.75rem;color:var(--text-muted)">Bearer Token</label>
+        <div class="share-field">
+          <span id="share-token" style="font-size:0.6875rem">Generate a setup code or create a new token</span>
+        </div>
+      </div>
+
+      <!-- Setup code -->
+      <div style="margin-bottom:1.5rem">
+        <button class="wizard-btn-primary" id="share-gen-btn" onclick="generateShareCode()" style="width:100%">Generate One-Time Setup Code</button>
+        <div id="share-code-box" style="display:none">
+          <div class="share-code-display" id="share-code-value"></div>
+          <p style="font-size:0.75rem;color:var(--text-muted);text-align:center">
+            This code expires in 10 minutes and can only be used once.
+          </p>
+        </div>
+      </div>
+
+      <!-- Tabbed instructions -->
+      <div style="margin-bottom:1rem">
+        <div class="share-tabs">
+          <button class="share-tab active" onclick="switchShareTab('claude-ai',this)">Claude.ai</button>
+          <button class="share-tab" onclick="switchShareTab('chatgpt',this)">ChatGPT</button>
+          <button class="share-tab" onclick="switchShareTab('claude-desktop',this)">Desktop</button>
+          <button class="share-tab" onclick="switchShareTab('claude-code',this)">Code</button>
+        </div>
+        <div id="share-tab-claude-ai" class="share-tab-content" style="font-size:0.8125rem;color:var(--text-muted);line-height:1.7">
+          1. Open your Claude.ai project<br>
+          2. Go to Project Settings &rarr; Connectors<br>
+          3. Click "Add MCP server"<br>
+          4. Paste the URL and Bearer Token above
+        </div>
+        <div id="share-tab-chatgpt" class="share-tab-content" style="display:none;font-size:0.8125rem;color:var(--text-muted);line-height:1.7">
+          1. Open ChatGPT Settings<br>
+          2. Enable Developer Mode &rarr; MCP<br>
+          3. Click "Add server"<br>
+          4. Paste the URL and Bearer Token above
+        </div>
+        <div id="share-tab-claude-desktop" class="share-tab-content" style="display:none;font-size:0.8125rem;color:var(--text-muted);line-height:1.7">
+          Add to <code style="background:var(--bg);padding:0.125rem 0.375rem;border-radius:0.25rem">claude_desktop_config.json</code>:
+          <pre id="share-desktop-config" style="background:var(--bg);border:1px solid var(--border);border-radius:0.375rem;padding:0.75rem;margin-top:0.5rem;font-size:0.6875rem;overflow-x:auto;white-space:pre-wrap"></pre>
+        </div>
+        <div id="share-tab-claude-code" class="share-tab-content" style="display:none;font-size:0.8125rem;color:var(--text-muted);line-height:1.7">
+          Run in terminal:
+          <pre id="share-code-cmd" style="background:var(--bg);border:1px solid var(--border);border-radius:0.375rem;padding:0.75rem;margin-top:0.5rem;font-size:0.6875rem;overflow-x:auto"></pre>
+        </div>
+      </div>
+
+      <div class="wizard-actions" style="justify-content:flex-end">
+        <button class="wizard-btn-secondary" onclick="hideShareModal()">Close</button>
       </div>
     </div>
   </div>
@@ -1227,11 +1391,96 @@
     function wizardStep2Auth() {
       var url = '/oauth/authorize/drive?patient_id=' + encodeURIComponent(wizardPatientId);
       window.open(url, '_blank');
-      // Show "continue" button after opening OAuth
       var statusEl = document.getElementById('wiz-step2-status');
-      statusEl.textContent = 'Complete the authorization in the new tab, then click Continue.';
+      statusEl.textContent = 'Complete the authorization in the new tab, then click below.';
       statusEl.style.display = 'block';
-      document.getElementById('wiz-step2-continue').style.display = 'flex';
+      document.getElementById('wiz-step2-auth-done').style.display = 'flex';
+    }
+
+    async function wizardStep2LoadFolders() {
+      document.getElementById('wiz-step2-auth').style.display = 'none';
+      document.getElementById('wiz-step2-folder').style.display = 'block';
+
+      try {
+        var resp = await fetch(
+          '/api/gdrive-folders?patient_id=' + encodeURIComponent(wizardPatientId),
+          { headers: { 'Authorization': authHeader() } }
+        );
+        if (!resp.ok) {
+          var err = await resp.json();
+          var statusEl = document.getElementById('wiz-step2-folder-status');
+          statusEl.textContent = err.error || 'Failed to load folders';
+          statusEl.style.display = 'block';
+          return;
+        }
+        var data = await resp.json();
+        var select = document.getElementById('wiz-folder-select');
+        clearEl(select);
+
+        // "Create new" option first
+        var newOpt = document.createElement('option');
+        newOpt.value = '__new__';
+        newOpt.textContent = '+ Create new folder';
+        select.appendChild(newOpt);
+
+        // Existing folders
+        (data.folders || []).forEach(function(f) {
+          var opt = document.createElement('option');
+          opt.value = f.id;
+          opt.textContent = f.name;
+          select.appendChild(opt);
+        });
+
+        // Default new folder name
+        var patientName = document.getElementById('wiz-name').value.trim();
+        document.getElementById('wiz-folder-name').value = 'Oncofiles - ' + patientName;
+        wizardFolderChanged();
+      } catch (e) {
+        var statusEl = document.getElementById('wiz-step2-folder-status');
+        statusEl.textContent = 'Error: ' + e.message;
+        statusEl.style.display = 'block';
+      }
+    }
+
+    function wizardFolderChanged() {
+      var val = document.getElementById('wiz-folder-select').value;
+      document.getElementById('wiz-folder-new').style.display = val === '__new__' ? 'block' : 'none';
+    }
+
+    async function wizardStep2SetFolder() {
+      var btn = document.getElementById('wiz-folder-btn');
+      var statusEl = document.getElementById('wiz-step2-folder-status');
+      btn.disabled = true;
+      statusEl.textContent = 'Setting up folder structure...';
+      statusEl.style.display = 'block';
+
+      var selectVal = document.getElementById('wiz-folder-select').value;
+      var body = { patient_id: wizardPatientId };
+      if (selectVal === '__new__') {
+        body.folder_name = document.getElementById('wiz-folder-name').value.trim() || 'Oncofiles';
+      } else {
+        body.folder_id = selectVal;
+      }
+
+      try {
+        var resp = await fetch('/api/gdrive-set-folder', {
+          method: 'POST',
+          headers: { 'Authorization': authHeader(), 'Content-Type': 'application/json' },
+          body: JSON.stringify(body)
+        });
+        var data = await resp.json();
+        if (!resp.ok) {
+          statusEl.textContent = data.error || 'Failed to set folder';
+          btn.disabled = false;
+          return;
+        }
+        statusEl.textContent = 'Folder ready! ' + data.subfolders_created + ' category folders created.';
+        statusEl.style.color = 'var(--green)';
+        setTimeout(function() { wizardGoToStep(3); }, 1000);
+      } catch (e) {
+        statusEl.textContent = 'Error: ' + e.message;
+        btn.disabled = false;
+      }
     }
 
     async function wizardStep3Sync() {
@@ -1289,6 +1538,93 @@
       await loadPatients();
       document.getElementById('patient-select').value = currentPatientId;
       refresh();
+    }
+
+    // ── Share modal ─────────────────────────────────────────────────────
+
+    var MCP_URL = 'https://oncofiles.com/mcp';
+
+    function showShareModal() {
+      document.getElementById('share-code-box').style.display = 'none';
+      document.getElementById('share-gen-btn').disabled = false;
+      document.getElementById('share-gen-btn').textContent = 'Generate One-Time Setup Code';
+      document.getElementById('share-token').textContent = 'Generate a setup code or create a new token';
+      updateShareInstructions('');
+      document.getElementById('share-overlay').classList.add('active');
+    }
+
+    function hideShareModal() {
+      document.getElementById('share-overlay').classList.remove('active');
+    }
+
+    function copyText(elementId) {
+      var text = document.getElementById(elementId).textContent;
+      navigator.clipboard.writeText(text).then(function() {
+        // Brief visual feedback
+        var btn = document.getElementById(elementId).parentNode.querySelector('.copy-btn');
+        if (btn) { btn.textContent = 'Copied!'; setTimeout(function() { btn.textContent = 'Copy'; }, 1500); }
+      });
+    }
+
+    async function generateShareCode() {
+      var btn = document.getElementById('share-gen-btn');
+      btn.disabled = true;
+      btn.textContent = 'Generating...';
+
+      try {
+        var resp = await fetch('/api/share-link', {
+          method: 'POST',
+          headers: { 'Authorization': authHeader(), 'Content-Type': 'application/json' },
+          body: JSON.stringify({ patient_id: currentPatientId })
+        });
+        var data = await resp.json();
+        if (!resp.ok) {
+          btn.textContent = data.error || 'Error';
+          btn.disabled = false;
+          return;
+        }
+
+        // Show the code
+        document.getElementById('share-code-value').textContent = data.code;
+        document.getElementById('share-code-box').style.display = 'block';
+        btn.textContent = 'Code generated (10 min)';
+
+        // Now redeem it immediately to get the token for display
+        var redeemResp = await fetch('/api/share-link/' + data.code);
+        if (redeemResp.ok) {
+          var info = await redeemResp.json();
+          document.getElementById('share-token').textContent = info.bearer_token;
+          updateShareInstructions(info.bearer_token);
+        }
+      } catch (e) {
+        btn.textContent = 'Error: ' + e.message;
+        btn.disabled = false;
+      }
+    }
+
+    function updateShareInstructions(token) {
+      // Desktop config
+      var config = {
+        mcpServers: {
+          oncofiles: { url: MCP_URL }
+        }
+      };
+      if (token) {
+        config.mcpServers.oncofiles.headers = { Authorization: 'Bearer ' + token };
+      }
+      document.getElementById('share-desktop-config').textContent = JSON.stringify(config, null, 2);
+
+      // Claude Code command
+      var cmd = 'claude mcp add oncofiles ' + MCP_URL;
+      if (token) cmd += " --header 'Authorization: Bearer " + token + "'";
+      document.getElementById('share-code-cmd').textContent = cmd;
+    }
+
+    function switchShareTab(tabId, btn) {
+      document.querySelectorAll('.share-tab-content').forEach(function(el) { el.style.display = 'none'; });
+      document.querySelectorAll('.share-tab').forEach(function(el) { el.classList.remove('active'); });
+      document.getElementById('share-tab-' + tabId).style.display = 'block';
+      if (btn) btn.classList.add('active');
     }
 
     function setConnectionState(state) {
