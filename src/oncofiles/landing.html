@@ -234,6 +234,70 @@
       color: var(--text-muted);
       line-height: 1.6;
     }
+    .step-preview {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 0.5rem;
+      padding: 0.75rem;
+      margin-top: 1.25rem;
+      font-size: 0.6875rem;
+      color: var(--text-dim);
+      line-height: 1.5;
+      overflow: hidden;
+    }
+    .step-preview .mockup-bar {
+      display: flex;
+      align-items: center;
+      gap: 0.375rem;
+      padding: 0.375rem 0.5rem;
+      background: var(--surface);
+      border-radius: 0.25rem;
+      margin-bottom: 0.5rem;
+      font-size: 0.625rem;
+    }
+    .mockup-dot { width: 5px; height: 5px; border-radius: 50%; }
+    .mockup-dot.red { background: #ef4444; }
+    .mockup-dot.yellow { background: #f59e0b; }
+    .mockup-dot.green { background: #22c55e; }
+    .step-preview .file-row {
+      display: flex;
+      align-items: center;
+      gap: 0.375rem;
+      padding: 0.25rem 0.375rem;
+      border-radius: 0.25rem;
+      font-size: 0.625rem;
+      color: var(--text-muted);
+    }
+    .step-preview .file-row:hover { background: var(--surface); }
+    .step-preview .file-icon { opacity: 0.6; }
+    .step-preview .file-name { flex: 1; }
+    .step-preview .file-badge {
+      background: var(--accent-glow);
+      color: var(--accent);
+      padding: 0.0625rem 0.3125rem;
+      border-radius: 0.1875rem;
+      font-size: 0.5625rem;
+      font-weight: 600;
+    }
+    .step-preview .chat-bubble {
+      padding: 0.5rem 0.625rem;
+      border-radius: 0.5rem;
+      margin-bottom: 0.375rem;
+      font-size: 0.625rem;
+      line-height: 1.5;
+      max-width: 90%;
+    }
+    .chat-user {
+      background: var(--accent);
+      color: var(--bg);
+      margin-left: auto;
+      border-bottom-right-radius: 0.125rem;
+    }
+    .chat-ai {
+      background: var(--surface);
+      color: var(--text);
+      border-bottom-left-radius: 0.125rem;
+    }
 
     /* ── Features ──────────────────────────────────── */
     .features-section {
@@ -489,16 +553,78 @@
             <div class="step-num">1</div>
             <h3 data-sk="Autorizujte Google" data-en="Authorize Google">Autorizujte Google</h3>
             <p data-sk="Vyberte GDrive priečinok, Gmail alebo Kalendár. Stačí jedno kliknutie cez Google prihlásenie — žiadne heslá, žiadne nastavovanie." data-en="Pick a GDrive folder, Gmail, or Calendar. One click via Google sign-in — no passwords, no setup hassle.">Vyberte GDrive priečinok, Gmail alebo Kalendár. Stačí jedno kliknutie cez Google prihlásenie — žiadne heslá, žiadne nastavovanie.</p>
+            <div class="step-preview">
+              <div class="mockup-bar">
+                <span class="mockup-dot red"></span>
+                <span class="mockup-dot yellow"></span>
+                <span class="mockup-dot green"></span>
+                <span style="flex:1;text-align:center;color:var(--text-dim)">accounts.google.com</span>
+              </div>
+              <div style="text-align:center;padding:0.5rem 0">
+                <div style="font-size:1rem;margin-bottom:0.375rem">G</div>
+                <div style="font-size:0.6875rem;color:var(--text-muted);margin-bottom:0.5rem">Sign in with Google</div>
+                <div style="display:flex;flex-direction:column;gap:0.25rem;align-items:center">
+                  <span style="display:inline-flex;align-items:center;gap:0.25rem;background:var(--surface);padding:0.25rem 0.75rem;border-radius:0.25rem;font-size:0.5625rem"><span style="color:var(--green)">&#10003;</span> Google Drive</span>
+                  <span style="display:inline-flex;align-items:center;gap:0.25rem;background:var(--surface);padding:0.25rem 0.75rem;border-radius:0.25rem;font-size:0.5625rem"><span style="color:var(--green)">&#10003;</span> Gmail (read-only)</span>
+                  <span style="display:inline-flex;align-items:center;gap:0.25rem;background:var(--surface);padding:0.25rem 0.75rem;border-radius:0.25rem;font-size:0.5625rem"><span style="color:var(--green)">&#10003;</span> Calendar (read-only)</span>
+                </div>
+                <div style="margin-top:0.5rem;background:var(--accent);color:var(--bg);padding:0.25rem 1rem;border-radius:0.25rem;display:inline-block;font-size:0.625rem;font-weight:600">Allow</div>
+              </div>
+            </div>
           </div>
           <div class="step">
             <div class="step-num">2</div>
             <h3 data-sk="Oncofiles číta a organizuje" data-en="Oncofiles reads and organizes">Oncofiles číta a organizuje</h3>
             <p data-sk="Každý dokument dostane OCR, zhrnutie a diagnózy. Súbory sa premenujú, zoradia do priečinkov podľa typu a dátumu — všetko automaticky." data-en="Every document gets OCR, summaries, and diagnoses. Files are renamed, sorted into folders by type and date — all automatically.">Každý dokument dostane OCR, zhrnutie a diagnózy. Súbory sa premenujú, zoradia do priečinkov podľa typu a dátumu — všetko automaticky.</p>
+            <div class="step-preview">
+              <div style="padding:0.25rem 0;font-size:0.625rem;color:var(--text-dim);margin-bottom:0.25rem">&#128193; Oncofiles - Patient</div>
+              <div class="file-row" style="padding-left:1rem">
+                <span class="file-icon">&#128193;</span>
+                <span class="file-name">Labs / Laboratóriá</span>
+                <span style="color:var(--text-dim)">24</span>
+              </div>
+              <div class="file-row" style="padding-left:1.75rem">
+                <span class="file-icon">&#128196;</span>
+                <span class="file-name">20260315_Labs_BloodCount.pdf</span>
+                <span class="file-badge">OCR</span>
+                <span class="file-badge">AI</span>
+              </div>
+              <div class="file-row" style="padding-left:1rem">
+                <span class="file-icon">&#128193;</span>
+                <span class="file-name">CT / CT vyšetrenia</span>
+                <span style="color:var(--text-dim)">8</span>
+              </div>
+              <div class="file-row" style="padding-left:1rem">
+                <span class="file-icon">&#128193;</span>
+                <span class="file-name">Pathology / Patológia</span>
+                <span style="color:var(--text-dim)">5</span>
+              </div>
+              <div class="file-row" style="padding-left:1rem">
+                <span class="file-icon">&#128193;</span>
+                <span class="file-name">Genetics / Genetika</span>
+                <span style="color:var(--text-dim)">3</span>
+              </div>
+              <div style="padding:0.25rem 0 0 1rem;font-size:0.5625rem;color:var(--text-dim)">+ 12 more folders...</div>
+            </div>
           </div>
           <div class="step">
             <div class="step-num">3</div>
             <h3 data-sk="Pýtajte sa svojho AI" data-en="Ask your AI">Pýtajte sa svojho AI</h3>
             <p data-sk="Otvorte Claude alebo ChatGPT a opýtajte sa: &bdquo;Čo ukázali moje posledné odbery?&ldquo; AI má kontext zo všetkých záznamov — odpovie v ľudskej aj lekárskej reči." data-en="Open Claude or ChatGPT and ask: 'What did my last blood test show?' AI has context from all your records — answers in plain language and medical terms.">Otvorte Claude alebo ChatGPT a opýtajte sa: &bdquo;Čo ukázali moje posledné odbery?&ldquo; AI má kontext zo všetkých záznamov — odpovie v ľudskej aj lekárskej reči.</p>
+            <div class="step-preview">
+              <div class="mockup-bar">
+                <span class="mockup-dot red"></span>
+                <span class="mockup-dot yellow"></span>
+                <span class="mockup-dot green"></span>
+                <span style="flex:1;text-align:center;color:var(--text-dim)">Claude.ai</span>
+              </div>
+              <div style="display:flex;flex-direction:column;gap:0.375rem">
+                <div class="chat-bubble chat-user" data-sk="Aké boli moje posledné odbery?" data-en="What did my last blood tests show?">Aké boli moje posledné odbery?</div>
+                <div class="chat-bubble chat-ai" data-sk="Vaše odbery z 15.3. ukazujú: WBC 5.2 (norma), Hgb 118 (mierne nízky), PLT 245. CEA kleslo z 12.4 na 8.1 — dobrý trend po 3. cykle FOLFOX." data-en="Your labs from Mar 15 show: WBC 5.2 (normal), Hgb 118 (slightly low), PLT 245. CEA dropped from 12.4 to 8.1 — good trend after 3rd FOLFOX cycle.">Vaše odbery z 15.3. ukazujú: WBC 5.2 (norma), Hgb 118 (mierne nízky), PLT 245. CEA kleslo z 12.4 na 8.1 — dobrý trend po 3. cykle FOLFOX.</div>
+                <div class="chat-bubble chat-user" data-sk="Je to bezpečné pre ďalší cyklus?" data-en="Is it safe for the next cycle?">Je to bezpečné pre ďalší cyklus?</div>
+                <div class="chat-bubble chat-ai" data-sk="Áno — všetky hodnoty sú v bezpečnom rozsahu pre FOLFOX. Odporúčam overiť s onkológom." data-en="Yes — all values are within safe range for FOLFOX. I recommend confirming with the oncologist.">Áno — všetky hodnoty sú v bezpečnom rozsahu pre FOLFOX. Odporúčam overiť s onkológom.</div>
+              </div>
+            </div>
           </div>
         </div>
       </div>
