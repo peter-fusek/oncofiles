@@ -283,6 +283,8 @@ async def gmail_sync(
     files: FilesClient,
     gmail: GmailClient,
     initial: bool = False,
+    *,
+    patient_id: str = "erika",
 ) -> dict:
     """Sync medical emails from Gmail.
 
@@ -306,7 +308,7 @@ async def gmail_sync(
 
     async with _gmail_sync_lock:
         _gmail_sync_lock_acquired_at = time.monotonic()
-        return await _gmail_sync_inner(db, files, gmail, initial)
+        return await _gmail_sync_inner(db, files, gmail, initial, patient_id=patient_id)
 
 
 async def _gmail_sync_inner(
@@ -314,6 +316,8 @@ async def _gmail_sync_inner(
     files: FilesClient,
     gmail: GmailClient,
     initial: bool,
+    *,
+    patient_id: str = "erika",
 ) -> dict:
     """Inner sync logic."""
     stats: dict = {
@@ -373,7 +377,7 @@ async def _gmail_sync_inner(
     for msg_id in all_message_ids:
         try:
             # Dedup: skip if already in DB
-            existing = await db.get_email_entry_by_gmail_id(msg_id)
+            existing = await db.get_email_entry_by_gmail_id(msg_id, patient_id=patient_id)
             if existing:
                 stats["already_stored"] += 1
                 continue
@@ -408,6 +412,7 @@ async def _gmail_sync_inner(
                 is_medical=is_medical,
                 ai_relevance_score=confidence,
             )
+            entry.patient_id = patient_id
             entry = await db.upsert_email_entry(entry)
 
             # Process attachments for medical emails

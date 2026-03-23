@@ -185,6 +185,8 @@ async def calendar_sync(
     db: Database,
     calendar: CalendarClient,
     initial: bool = False,
+    *,
+    patient_id: str = "erika",
 ) -> dict:
     """Sync medical events from Google Calendar.
 
@@ -207,13 +209,15 @@ async def calendar_sync(
 
     async with _calendar_sync_lock:
         _calendar_sync_lock_acquired_at = time.monotonic()
-        return await _calendar_sync_inner(db, calendar, initial)
+        return await _calendar_sync_inner(db, calendar, initial, patient_id=patient_id)
 
 
 async def _calendar_sync_inner(
     db: Database,
     calendar: CalendarClient,
     initial: bool,
+    *,
+    patient_id: str = "erika",
 ) -> dict:
     """Inner sync logic."""
     stats: dict = {
@@ -273,7 +277,7 @@ async def _calendar_sync_inner(
                 continue
 
             # Dedup: skip if already in DB
-            existing = await db.get_calendar_entry_by_google_id(event_id)
+            existing = await db.get_calendar_entry_by_google_id(event_id, patient_id=patient_id)
             if existing:
                 stats["already_stored"] += 1
                 continue
@@ -328,6 +332,7 @@ async def _calendar_sync_inner(
                 is_medical=is_medical,
                 ai_summary=None,
             )
+            entry.patient_id = patient_id
             entry = await db.upsert_calendar_entry(entry)
 
             # Auto-create treatment event for medical appointments

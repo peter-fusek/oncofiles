@@ -309,7 +309,7 @@ def _start_sync_scheduler(
         async with _sync_semaphore:
             try:
                 stats = await asyncio.wait_for(
-                    sync(db, files, gdrive, folder_id, trigger=trigger),
+                    sync(db, files, gdrive, folder_id, trigger=trigger, patient_id="erika"),
                     timeout=sync_timeout,
                 )
                 _last_sync_time = datetime.now(UTC).isoformat()
@@ -318,7 +318,7 @@ def _start_sync_scheduler(
                 if stats.get("new", 0) > 0 or stats.get("updated", 0) > 0:
                     try:
                         e_stats = await asyncio.wait_for(
-                            extract_all_metadata(db, files, gdrive),
+                            extract_all_metadata(db, files, gdrive, patient_id="erika"),
                             timeout=metadata_timeout,
                         )
                         if e_stats["processed"] > 0:
@@ -347,7 +347,7 @@ def _start_sync_scheduler(
 
         try:
             stats = await asyncio.wait_for(
-                extract_all_metadata(db, files, gdrive),
+                extract_all_metadata(db, files, gdrive, patient_id="erika"),
                 timeout=metadata_timeout,
             )
             if stats["processed"] > 0:
@@ -408,7 +408,7 @@ def _start_sync_scheduler(
                 if fixable and gdrive:
                     try:
                         e_stats = await asyncio.wait_for(
-                            extract_all_metadata(db, files, gdrive),
+                            extract_all_metadata(db, files, gdrive, patient_id="erika"),
                             timeout=metadata_timeout,
                         )
                         if e_stats["processed"] > 0:
@@ -793,7 +793,7 @@ def _start_sync_scheduler(
 
         try:
             import_stats = await asyncio.wait_for(
-                _sync_from(db, files, gdrive, folder_id, enhance=True),
+                _sync_from(db, files, gdrive, folder_id, enhance=True, patient_id="erika"),
                 timeout=180,  # 3 min max for import
             )
             logger.info("Startup import: %s", import_stats)
@@ -853,7 +853,7 @@ def _start_sync_scheduler(
         async with _sync_semaphore:
             try:
                 stats = await asyncio.wait_for(
-                    _gmail_sync(db, files, gmail_client, initial=False),
+                    _gmail_sync(db, files, gmail_client, initial=False, patient_id="erika"),
                     timeout=gmail_sync_timeout,
                 )
                 if not stats.get("skipped"):
@@ -876,7 +876,7 @@ def _start_sync_scheduler(
         async with _sync_semaphore:
             try:
                 stats = await asyncio.wait_for(
-                    _gmail_sync(db, files, gmail_client, initial=True),
+                    _gmail_sync(db, files, gmail_client, initial=True, patient_id="erika"),
                     timeout=gmail_sync_timeout,
                 )
                 logger.info("Gmail initial sync: %s (RSS: %.1f MB)", stats, get_rss_mb())
@@ -942,7 +942,7 @@ def _start_sync_scheduler(
         async with _sync_semaphore:
             try:
                 stats = await asyncio.wait_for(
-                    _calendar_sync(db, calendar_client, initial=False),
+                    _calendar_sync(db, calendar_client, initial=False, patient_id="erika"),
                     timeout=calendar_sync_timeout,
                 )
                 if not stats.get("skipped"):
@@ -966,7 +966,7 @@ def _start_sync_scheduler(
         async with _sync_semaphore:
             try:
                 stats = await asyncio.wait_for(
-                    _calendar_sync(db, calendar_client, initial=True),
+                    _calendar_sync(db, calendar_client, initial=True, patient_id="erika"),
                     timeout=calendar_sync_timeout,
                 )
                 logger.info("Calendar initial sync: %s (RSS: %.1f MB)", stats, get_rss_mb())

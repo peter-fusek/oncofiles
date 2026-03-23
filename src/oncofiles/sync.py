@@ -87,6 +87,7 @@ async def sync_from_gdrive(
     *,
     dry_run: bool = False,
     enhance: bool = True,
+    patient_id: str = "erika",
 ) -> dict:
     """Import new/changed files from GDrive into oncofiles.
 
@@ -173,7 +174,7 @@ async def sync_from_gdrive(
             if oncofiles_id:
                 existing = await db.get_document(int(oncofiles_id))
             if not existing:
-                existing = await db.get_document_by_gdrive_id(gdrive_id)
+                existing = await db.get_document_by_gdrive_id(gdrive_id, patient_id=patient_id)
 
             if existing:
                 # Check if modified
@@ -302,7 +303,7 @@ async def sync_from_gdrive(
                     sync_state="synced",
                     last_synced_at=datetime.now(UTC),
                 )
-                doc = await db.insert_document(doc)
+                doc = await db.insert_document(doc, patient_id=patient_id)
 
                 # Notify oncoteam of new document (fire-and-forget)
                 from oncofiles.webhook import notify_oncoteam
@@ -335,7 +336,7 @@ async def sync_from_gdrive(
             stats["errors"] += 1
 
     # Detect deleted files (in DB but not on GDrive) — flag only, never auto-delete
-    all_docs = await db.list_documents(limit=200)
+    all_docs = await db.list_documents(limit=200, patient_id=patient_id)
     for doc in all_docs:
         if doc.gdrive_id and doc.gdrive_id not in seen_gdrive_ids:
             logger.warning(
@@ -360,6 +361,7 @@ async def sync_to_gdrive(
     *,
     dry_run: bool = False,
     full: bool = True,
+    patient_id: str = "erika",
 ) -> dict:
     """Export documents from oncofiles to GDrive with folder structure.
 
@@ -378,7 +380,7 @@ async def sync_to_gdrive(
 
     if dry_run:
         # Count what would be exported/organized
-        docs = await db.list_documents(limit=500)
+        docs = await db.list_documents(limit=500, patient_id=patient_id)
         for doc in docs:
             if doc.gdrive_id:
                 stats["skipped"] += 1
@@ -394,7 +396,7 @@ async def sync_to_gdrive(
     organized_folder_ids = set(folder_map.values())
 
     # Export documents
-    docs = await db.list_documents(limit=500)
+    docs = await db.list_documents(limit=500, patient_id=patient_id)
 
     # Phase 1: Batch-organize existing GDrive files (skip if no changes)
     docs_to_organize = [d for d in docs if d.gdrive_id] if full else []
@@ -576,7 +578,7 @@ async def sync_to_gdrive(
 
     # Export metadata files (may fail with service account — no storage quota)
     try:
-        await _export_metadata(db, gdrive, folder_id, folder_map)
+        await _export_metadata(db, gdrive, folder_id, folder_map, patient_id=patient_id)
         stats["metadata_exported"] += 1
     except Exception as e:
         err_str = str(e)
@@ -960,6 +962,8 @@ async def _export_metadata(
     gdrive: GDriveClient,
     root_folder_id: str,
     folder_map: dict[str, str],
+    *,
+    patient_id: str = "erika",
 ) -> None:
     """Export manifest.json and metadata markdown files to GDrive.
 
@@ -987,7 +991,7 @@ async def _export_metadata(
     # 2. Export conversation monthly logs
     conversations_folder = folder_map.get("conversations")
     if conversations_folder:
-        entries = await db.get_conversation_timeline(limit=200)
+        entries = await db.get_conversation_timeline(limit=200, patient_id=patient_id)
         by_month = group_conversations_by_month(entries)
         for month_key, month_entries in by_month.items():
             md_content = render_conversation_month(month_entries)
@@ -1006,7 +1010,7 @@ async def _export_metadata(
     # 3. Export treatment timeline
     treatment_folder = folder_map.get("treatment")
     if treatment_folder:
-        events = await db.get_treatment_events_timeline(limit=200)
+        events = await db.get_treatment_events_timeline(limit=200, patient_id=patient_id)
         for lang in langs:
             md_content = render_treatment_timeline(events, lang=lang)
             suffix = f"_{lang.upper()}" if lang != "en" else ""
@@ -1023,7 +1027,7 @@ async def _export_metadata(
     # 4. Export research library
     research_folder = folder_map.get("research")
     if research_folder:
-        entries = await db.list_research_entries(limit=200)
+        entries = await db.list_research_entries(limit=200, patient_id=patient_id)
         for lang in langs:
             md_content = render_research_library(entries, lang=lang)
             suffix = f"_{lang.upper()}" if lang != "en" else ""
@@ -1073,6 +1077,7 @@ async def sync(
     dry_run: bool = False,
     enhance: bool = True,
     trigger: str = "manual",
+    patient_id: str = "erika",
 ) -> dict:
     """Run full bidirectional sync.
 
@@ -1107,6 +1112,7 @@ async def sync(
                 dry_run=dry_run,
                 enhance=enhance,
                 trigger=trigger,
+                patient_id=patient_id,
             )
         except Exception:
             global _last_sync_error  # noqa: PLW0603
@@ -1125,6 +1131,7 @@ async def _sync_inner(
     dry_run: bool = False,
     enhance: bool = True,
     trigger: str = "manual",
+    patient_id: str = "erika",
 ) -> dict:
     """Inner sync logic (called under lock)."""
     global _last_sync_result, _last_sync_error, _last_sync_time  # noqa: PLW0603
@@ -1143,14 +1150,14 @@ async def _sync_inner(
 
     try:
         from_stats = await sync_from_gdrive(
-            db, files, gdrive, folder_id, dry_run=dry_run, enhance=enhance
+            db, files, gdrive, folder_id, dry_run=dry_run, enhance=enhance, patient_id=patient_id
         )
         # Skip heavy export phases if nothing changed during import
         # AND all docs are already standard-named (no pending renames)
         has_changes = from_stats.get("new", 0) > 0 or from_stats.get("updated", 0) > 0
         if not has_changes and not dry_run:
             # Check if any docs still need renaming (e.g., after backfill added dates)
-            all_docs = await db.list_documents(limit=500)
+            all_docs = await db.list_documents(limit=500, patient_id=patient_id)
             needs_rename = any(not is_standard_format(d.filename) for d in all_docs if d.gdrive_id)
             if needs_rename:
                 has_changes = True
@@ -1159,7 +1166,7 @@ async def _sync_inner(
                     sum(1 for d in all_docs if d.gdrive_id and not is_standard_format(d.filename)),
                 )
         to_stats = await sync_to_gdrive(
-            db, files, gdrive, folder_id, dry_run=dry_run, full=has_changes
+            db, files, gdrive, folder_id, dry_run=dry_run, full=has_changes, patient_id=patient_id
         )
 
         combined = {
@@ -1327,12 +1334,14 @@ async def extract_all_metadata(
     db: Database,
     files: FilesClient,
     gdrive: GDriveClient | None = None,
+    *,
+    patient_id: str = "erika",
 ) -> dict:
     """Backfill structured_metadata for documents that have AI summaries but no metadata.
 
     Returns summary dict: {processed, skipped, errors}.
     """
-    docs = await db.get_documents_without_metadata()
+    docs = await db.get_documents_without_metadata(patient_id=patient_id)
     docs = docs[:5]  # Process max 5 per run to limit memory
     logger.info("extract_all_metadata: %d documents to process", len(docs))
     stats = {"processed": 0, "skipped": 0, "errors": 0}
