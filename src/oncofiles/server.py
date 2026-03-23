@@ -53,6 +53,33 @@ _sync_semaphore = asyncio.Semaphore(2)
 # In-memory share codes: {code: {patient_id, bearer_token, patient_name, created_at}}
 _share_codes: dict[str, dict] = {}
 
+# Rate limiter: {endpoint_key: [timestamp, ...]}
+_rate_limits: dict[str, list[float]] = {}
+_RATE_WINDOW = 60  # 1 minute window
+_RATE_LIMITS = {
+    "share-link": 5,  # max 5 share codes per minute
+    "patient-tokens": 10,  # max 10 token creations per minute
+    "patients": 5,  # max 5 patient creations per minute
+    "share-redeem": 20,  # max 20 redemption attempts per minute (brute-force protection)
+}
+
+
+def _check_rate_limit(key: str) -> JSONResponse | None:
+    """Check rate limit for a given key. Returns error response or None if OK."""
+    limit = _RATE_LIMITS.get(key, 60)
+    now = time.time()
+    if key not in _rate_limits:
+        _rate_limits[key] = []
+    # Prune old entries
+    _rate_limits[key] = [t for t in _rate_limits[key] if now - t < _RATE_WINDOW]
+    if len(_rate_limits[key]) >= limit:
+        return JSONResponse(
+            {"error": "Rate limit exceeded. Try again in a minute."},
+            status_code=429,
+        )
+    _rate_limits[key].append(now)
+    return None
+
 
 def _check_bearer(request: Request) -> JSONResponse | None:
     """Validate bearer token from Authorization header. Returns error response or None if OK."""
@@ -1534,6 +1561,197 @@ async def dashboard(request: Request) -> HTMLResponse:
     return HTMLResponse(_load_dashboard_html())
 
 
+@mcp.custom_route("/demo", methods=["GET"])
+async def demo_dashboard(request: Request) -> HTMLResponse:
+    """Public demo dashboard with masked sample data. No auth required."""
+    html = _load_dashboard_html()
+    # Inject demo mode flag before </script>
+    demo_inject = """
+    <script>
+      window.DEMO_MODE = true;
+    </script>
+    """
+    html = html.replace("</body>", demo_inject + "</body>")
+    return HTMLResponse(html)
+
+
+@mcp.custom_route("/api/demo-data", methods=["GET"])
+async def api_demo_data(request: Request) -> JSONResponse:
+    """Return masked sample data for demo dashboard. Public, no auth."""
+    return JSONResponse(
+        {
+            "status": {
+                "version": VERSION,
+                "uptime_seconds": 86400,
+                "rss_mb": 145.2,
+                "doc_count": 100,
+                "doc_health": {
+                    "total": 100,
+                    "with_ai": 92,
+                    "with_metadata": 88,
+                    "with_date": 95,
+                    "with_institution": 78,
+                    "synced": 100,
+                    "standard_named": 96,
+                },
+                "sync_stats": {"total_syncs": 1247, "last_sync": "2 min ago"},
+                "recent_syncs": [
+                    {
+                        "timestamp": "2026-03-23T14:30:00Z",
+                        "status": "ok",
+                        "trigger": "scheduled",
+                        "duration_s": 12,
+                        "new_count": 0,
+                        "errors": 0,
+                    },
+                    {
+                        "timestamp": "2026-03-23T14:25:00Z",
+                        "status": "ok",
+                        "trigger": "scheduled",
+                        "duration_s": 8,
+                        "new_count": 1,
+                        "errors": 0,
+                    },
+                ],
+            },
+            "documents": {
+                "filter": "all",
+                "matched": 15,
+                "summary": {
+                    "total": 100,
+                    "with_ai": 92,
+                    "with_metadata": 88,
+                    "synced": 100,
+                    "standard_named": 96,
+                    "fully_complete": 85,
+                },
+                "documents": [
+                    {
+                        "id": 1,
+                        "filename": "20260315_Patient_NOU_Labs_BloodCount.pdf",
+                        "category": "Labs",
+                        "date": "2026-03-15",
+                        "has_ocr": True,
+                        "has_ai": True,
+                        "has_metadata": True,
+                        "is_synced": True,
+                        "is_standard_name": True,
+                        "gdrive_id": "demo",
+                    },
+                    {
+                        "id": 2,
+                        "filename": "20260310_Patient_FNsP_CT_AbdomenPelvis.pdf",
+                        "category": "CT",
+                        "date": "2026-03-10",
+                        "has_ocr": True,
+                        "has_ai": True,
+                        "has_metadata": True,
+                        "is_synced": True,
+                        "is_standard_name": True,
+                        "gdrive_id": "demo",
+                    },
+                    {
+                        "id": 3,
+                        "filename": "20260301_Patient_NOU_Pathology_ColonBiopsy.pdf",
+                        "category": "Pathology",
+                        "date": "2026-03-01",
+                        "has_ocr": True,
+                        "has_ai": True,
+                        "has_metadata": True,
+                        "is_synced": True,
+                        "is_standard_name": True,
+                        "gdrive_id": "demo",
+                    },
+                    {
+                        "id": 4,
+                        "filename": "20260225_Patient_Medirex_Labs_TumorMarkers.pdf",
+                        "category": "Labs",
+                        "date": "2026-02-25",
+                        "has_ocr": True,
+                        "has_ai": True,
+                        "has_metadata": True,
+                        "is_synced": True,
+                        "is_standard_name": True,
+                        "gdrive_id": "demo",
+                    },
+                    {
+                        "id": 5,
+                        "filename": "20260220_Patient_NOU_Genetics_KRASPanel.pdf",
+                        "category": "Genetics",
+                        "date": "2026-02-20",
+                        "has_ocr": True,
+                        "has_ai": True,
+                        "has_metadata": True,
+                        "is_synced": True,
+                        "is_standard_name": True,
+                        "gdrive_id": "demo",
+                    },
+                    {
+                        "id": 6,
+                        "filename": "20260215_Patient_NOU_ChemoSheet_FOLFOX_C3.pdf",
+                        "category": "ChemoSheet",
+                        "date": "2026-02-15",
+                        "has_ocr": True,
+                        "has_ai": True,
+                        "has_metadata": False,
+                        "is_synced": True,
+                        "is_standard_name": True,
+                        "gdrive_id": "demo",
+                    },
+                    {
+                        "id": 7,
+                        "filename": "20260210_Patient_FNsP_USG_Liver.pdf",
+                        "category": "USG",
+                        "date": "2026-02-10",
+                        "has_ocr": True,
+                        "has_ai": True,
+                        "has_metadata": True,
+                        "is_synced": True,
+                        "is_standard_name": True,
+                        "gdrive_id": "demo",
+                    },
+                    {
+                        "id": 8,
+                        "filename": "20260205_Patient_NOU_Prescription_[MEDICATION_REDACTED].pdf",
+                        "category": "Prescription",
+                        "date": "2026-02-05",
+                        "has_ocr": True,
+                        "has_ai": False,
+                        "has_metadata": True,
+                        "is_synced": True,
+                        "is_standard_name": True,
+                        "gdrive_id": "demo",
+                    },
+                    {
+                        "id": 9,
+                        "filename": "20260130_Patient_NOU_DischargeSummary_Chemo.pdf",
+                        "category": "DischargeSummary",
+                        "date": "2026-01-30",
+                        "has_ocr": True,
+                        "has_ai": True,
+                        "has_metadata": True,
+                        "is_synced": True,
+                        "is_standard_name": True,
+                        "gdrive_id": "demo",
+                    },
+                    {
+                        "id": 10,
+                        "filename": "20260125_Patient_GP_Referral_Oncology.pdf",
+                        "category": "Referral",
+                        "date": "2026-01-25",
+                        "has_ocr": True,
+                        "has_ai": True,
+                        "has_metadata": True,
+                        "is_synced": True,
+                        "is_standard_name": True,
+                        "gdrive_id": "demo",
+                    },
+                ],
+            },
+        }
+    )
+
+
 @mcp.custom_route("/dashboard/config", methods=["GET"])
 async def dashboard_config(request: Request) -> JSONResponse:
     """Return public config needed by dashboard (Google OAuth client ID)."""
@@ -1898,6 +2116,9 @@ async def api_create_patient(request: Request) -> JSONResponse:
     err = _check_dashboard_auth(request)
     if err:
         return err
+    rate_err = _check_rate_limit("patients")
+    if rate_err:
+        return rate_err
     try:
         db_inst: Database = request.app.state.fastmcp_server._lifespan_result["db"]
         body = await request.json()
@@ -1958,6 +2179,9 @@ async def api_create_patient_token(request: Request) -> JSONResponse:
     err = _check_dashboard_auth(request)
     if err:
         return err
+    rate_err = _check_rate_limit("patient-tokens")
+    if rate_err:
+        return rate_err
     try:
         db_inst: Database = request.app.state.fastmcp_server._lifespan_result["db"]
         body = await request.json()
@@ -2215,6 +2439,9 @@ async def api_create_share_link(request: Request) -> JSONResponse:
     err = _check_dashboard_auth(request)
     if err:
         return err
+    rate_err = _check_rate_limit("share-link")
+    if rate_err:
+        return rate_err
 
     try:
         body = await request.json()
@@ -2273,6 +2500,9 @@ async def api_create_share_link(request: Request) -> JSONResponse:
 @mcp.custom_route("/api/share-link/{code}", methods=["GET"])
 async def api_redeem_share_link(request: Request) -> JSONResponse:
     """Redeem a one-time setup code. Public (no auth). Returns connection info."""
+    rate_err = _check_rate_limit("share-redeem")
+    if rate_err:
+        return rate_err
     code = request.path_params.get("code", "").upper()
     if not code or code not in _share_codes:
         return JSONResponse({"error": "Invalid or expired setup code."}, status_code=404)

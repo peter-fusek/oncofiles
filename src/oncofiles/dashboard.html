@@ -1066,6 +1066,21 @@
     // ── Init ─────────────────────────────────────────────────────────────
 
     (function init() {
+      // Demo mode: skip auth, load sample data
+      if (window.DEMO_MODE) {
+        document.getElementById('auth-gate').style.display = 'none';
+        document.getElementById('dashboard').style.display = 'block';
+        // Hide patient controls and auth-related UI in demo
+        var patientControls = document.querySelector('.patient-controls');
+        if (patientControls) patientControls.style.display = 'none';
+        var userInfo = document.getElementById('user-info');
+        if (userInfo) userInfo.textContent = 'Demo Mode';
+        var logoutBtn = document.querySelector('.logout-btn');
+        if (logoutBtn) logoutBtn.style.display = 'none';
+        loadDemoData();
+        return;
+      }
+
       // Check URL ?token= param (backward compat)
       var params = new URLSearchParams(window.location.search);
       var urlToken = params.get('token');
@@ -1086,6 +1101,23 @@
         initGoogleSignIn();
       }
     })();
+
+    async function loadDemoData() {
+      setConnectionState('loading');
+      showSkeletons();
+      try {
+        var resp = await fetch('/api/demo-data');
+        var data = await resp.json();
+        renderStatus(data.status);
+        renderDocs(data.documents);
+        setConnectionState('ok');
+        hideSkeletons();
+        document.getElementById('version-label').textContent = 'v' + data.status.version + ' demo';
+      } catch (e) {
+        setConnectionState('error');
+        showError('Failed to load demo data');
+      }
+    }
 
     function initGoogleSignIn() {
       document.getElementById('auth-gate').style.display = 'flex';
