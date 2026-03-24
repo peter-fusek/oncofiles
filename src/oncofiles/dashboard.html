@@ -1617,11 +1617,17 @@
       btn.textContent = 'Generating...';
 
       try {
-        var resp = await fetch('/api/share-link', {
+        var fetchOpts = {
           method: 'POST',
           headers: { 'Authorization': authHeader(), 'Content-Type': 'application/json' },
           body: JSON.stringify({ patient_id: currentPatientId })
-        });
+        };
+        var resp = await fetch('/api/share-link', fetchOpts);
+        // Retry once on 500 (Turso contention during startup)
+        if (resp.status === 500) {
+          await new Promise(function(r){ setTimeout(r, 2000); });
+          resp = await fetch('/api/share-link', fetchOpts);
+        }
         var data = await resp.json();
         if (!resp.ok) {
           btn.textContent = data.error || 'Error';
