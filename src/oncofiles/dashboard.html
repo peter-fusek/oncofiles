@@ -846,10 +846,10 @@
       <div class="sync-history" id="analytics-section">
         <h2>Usage Analytics</h2>
         <div class="cards" id="analytics-cards" style="grid-template-columns:repeat(4,1fr);margin-bottom:1rem">
-          <div class="card"><div class="value" id="ana-calls">-</div><div class="label">AI Calls (30d)</div></div>
-          <div class="card"><div class="value" id="ana-tokens">-</div><div class="label">Tokens (K)</div></div>
-          <div class="card"><div class="value" id="ana-cost">-</div><div class="label">Cost USD</div></div>
-          <div class="card" id="ana-error-card"><div class="value" id="ana-errors">-</div><div class="label">Error Rate</div></div>
+          <div class="card" title="OCR + document enhancement + email/calendar classification"><div class="value" id="ana-calls">-</div><div class="label">AI Calls (30d)</div></div>
+          <div class="card" title="Total input + output tokens sent to Claude Haiku"><div class="value" id="ana-tokens">-</div><div class="label">Tokens (K)</div></div>
+          <div class="card" title="Estimated cost based on Claude Haiku pricing"><div class="value" id="ana-cost">-</div><div class="label">Cost USD</div></div>
+          <div class="card" id="ana-error-card" title="Percentage of AI calls that returned errors"><div class="value" id="ana-errors">-</div><div class="label">Error Rate</div></div>
         </div>
         <div style="display:flex;gap:1rem;flex-wrap:wrap;margin-bottom:1rem">
           <div style="flex:1;min-width:280px">
@@ -2354,7 +2354,19 @@
         row.style.cssText = 'display:flex;align-items:center;gap:0.5rem;margin-bottom:0.25rem';
         var name = document.createElement('span');
         name.style.cssText = 'width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:0.75rem;color:var(--text-muted)';
-        name.textContent = tt.tool;
+        var toolNames = {
+          'search_documents': 'Search Docs',
+          'get_patient_context': 'Patient Context',
+          'analyze_labs': 'Lab Analysis',
+          'search_conversations': 'Search Notes',
+          'get_lab_trends': 'Lab Trends',
+          'compare_labs': 'Lab Compare',
+          'view_document': 'View Document',
+          'store_lab_values': 'Store Labs',
+          'search_research_entries': 'Research Search',
+          'get_clinical_protocol': 'Protocol',
+        };
+        name.textContent = toolNames[tt.tool] || tt.tool;
         row.appendChild(name);
         var barWrap = document.createElement('div');
         barWrap.style.cssText = 'flex:1;height:14px;background:var(--border);border-radius:3px;overflow:hidden';
@@ -2399,12 +2411,17 @@
         pipeEl.appendChild(row);
       });
 
-      // Latency
+      // Latency (handles both p50/p95 and p50_ms/p95_ms formats)
       var latEl = document.getElementById('ana-latency');
       clearEl(latEl);
-      Object.keys(lat).forEach(function(ct) {
-        if (ct === '_overall') return;
-        var l = lat[ct];
+      function fmtLat(l) {
+        if (!l) return '— / —';
+        var p50 = l.p50_ms || l.p50 || 0;
+        var p95 = l.p95_ms || l.p95 || 0;
+        return (p50 / 1000).toFixed(1) + 's / ' + (p95 / 1000).toFixed(1) + 's';
+      }
+      var byType = lat.by_type || {};
+      Object.keys(byType).forEach(function(ct) {
         var row = document.createElement('div');
         row.style.cssText = 'display:flex;justify-content:space-between;padding:0.125rem 0;font-size:0.8125rem';
         var lbl = document.createElement('span');
@@ -2412,11 +2429,12 @@
         lbl.textContent = ct;
         row.appendChild(lbl);
         var val = document.createElement('span');
-        val.textContent = (l.p50_ms / 1000).toFixed(1) + 's / ' + (l.p95_ms / 1000).toFixed(1) + 's';
+        val.textContent = fmtLat(byType[ct]);
         row.appendChild(val);
         latEl.appendChild(row);
       });
-      if (lat._overall) {
+      var overall = lat._overall || lat.overall;
+      if (overall) {
         var ov = document.createElement('div');
         ov.style.cssText = 'display:flex;justify-content:space-between;padding:0.25rem 0 0;font-size:0.8125rem;border-top:1px solid var(--border);margin-top:0.25rem';
         var lbl = document.createElement('span');
@@ -2425,7 +2443,7 @@
         ov.appendChild(lbl);
         var val = document.createElement('span');
         val.style.fontWeight = '600';
-        val.textContent = (lat._overall.p50_ms / 1000).toFixed(1) + 's / ' + (lat._overall.p95_ms / 1000).toFixed(1) + 's';
+        val.textContent = fmtLat(overall);
         ov.appendChild(val);
         latEl.appendChild(ov);
       }
