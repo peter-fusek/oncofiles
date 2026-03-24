@@ -1238,7 +1238,7 @@
 
     // ── API ──────────────────────────────────────────────────────────────
 
-    async function apiFetch(url) {
+    async function apiFetch(url, _retry) {
       if (currentPatientId) {
         var sep = url.includes('?') ? '&' : '?';
         url = url + sep + 'patient_id=' + encodeURIComponent(currentPatientId);
@@ -1249,6 +1249,11 @@
       if (resp.status === 401) {
         logout();
         throw new Error('Unauthorized');
+      }
+      // Retry once on 500 (Turso contention during startup syncs)
+      if (resp.status === 500 && !_retry) {
+        await new Promise(function(r){ setTimeout(r, 2000); });
+        return apiFetch(url, true);
       }
       if (!resp.ok) throw new Error('HTTP ' + resp.status);
       return resp.json();
