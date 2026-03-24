@@ -276,9 +276,7 @@ def test_check_dashboard_auth_rejects_invalid():
 
 
 def test_dashboard_allowed_emails_config():
-    """DASHBOARD_ALLOWED_EMAILS is properly configured."""
+    """DASHBOARD_ALLOWED_EMAILS defaults to empty (set via env var in prod)."""
     from oncofiles.config import DASHBOARD_ALLOWED_EMAILS
 
     assert isinstance(DASHBOARD_ALLOWED_EMAILS, list)
-    assert "peterfusek1980@gmail.com" in DASHBOARD_ALLOWED_EMAILS
-    assert "peter.fusek@instarea.sk" in DASHBOARD_ALLOWED_EMAILS

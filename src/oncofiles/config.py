@@ -69,7 +69,7 @@ DASHBOARD_ALLOWED_EMAILS: list[str] = [
     e.strip().lower()
     for e in os.environ.get(
         "DASHBOARD_ALLOWED_EMAILS",
-        "peterfusek1980@gmail.com,peter.fusek@instarea.sk",
+        "",  # Set DASHBOARD_ALLOWED_EMAILS env var in production
     ).split(",")
     if e.strip()
 ]

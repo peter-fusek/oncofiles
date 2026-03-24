@@ -8,64 +8,28 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
 
-# Hardcoded default (the original patient data — used as fallback only)
+# Minimal fallback — real clinical data is loaded from DB or JSON file at runtime.
+# NEVER commit diagnosis, biomarkers, physicians, or treatment data to this public repo.
 _DEFAULT_CONTEXT: dict[str, Any] = {
-    "name": "Erika Fusekova",
-    "diagnosis": "AdenoCa colon sigmoideum, G3, mCRC (C18.7)",
-    "staging": "IV (liver mets, peritoneal carcinomatosis, LN, Krukenberg tumor l.dx.)",
-    "histology": "Adenocarcinoma Grade 3",
-    "tumor_site": "Sigmoid colon (left-sided)",
-    "diagnosis_date": "2025-12-01",
-    "biomarkers": {
-        "KRAS": "mutant G12S (c.34G>A, p.(Gly12Ser))",
-        "KRAS_G12C": False,
-        "NRAS": "wild-type",
-        "BRAF_V600E": "wild-type",
-        "HER2": "negative (FISH ratio 1.3, avg copy 3)",
-        "MSI": "pMMR / MSS",
-        "anti_EGFR_eligible": False,
-    },
-    "treatment": {
-        "regimen": "mFOLFOX6 90%",
-        "current_cycle": 2,
-        "institution": "NOU (Narodny onkologicky ustav), Bratislava",
-    },
-    "metastases": [
-        "liver ([CODE_REDACTED])",
-        "peritoneum (C78.6)",
-        "retroperitoneum",
-        "Krukenberg (ovary l.dx., C79.6)",
-        "mediastinal LN",
-        "hilar LN",
-        "retrocrural LN",
-        "portal LN (C77.8)",
-        "pulmonary nodules (<=5mm, monitor)",
-    ],
-    "comorbidities": ["[CLINICAL_REDACTED] (active, [MEDICATION_REDACTED] 0.6ml SC 2x/day)"],
-    "surgeries": [
-        {
-            "date": "2026-01-18",
-            "institution": "Bory Nemocnica",
-            "type": "palliative resection",
-            "result": "AdenoCa G3",
-        }
-    ],
-    "physicians": {
-        "treating": "MUDr. Stefan Porsok, PhD., MPH — primar OKO G, NOU Bratislava",
-        "admitting": "MUDr. Natalia Pazderova — NOU Bratislava",
-    },
-    "excluded_therapies": [
-        "anti-EGFR (cetuximab, panitumumab) — [BIOMARKER_REDACTED]",
-        "checkpoint monotherapy (pembrolizumab, nivolumab) — [BIOMARKER_REDACTED]",
-        "HER2-targeted (trastuzumab, pertuzumab) — [BIOMARKER_REDACTED]",
-        "BRAF inhibitors (encorafenib) — BRAF wild-type",
-        "KRAS G12C-specific (sotorasib, adagrasib) — patient has G12S, not G12C",
-    ],
+    "name": os.environ.get("PATIENT_NAME", "Erika Fusekova"),
+    "diagnosis": "",
+    "staging": "",
+    "histology": "",
+    "tumor_site": "",
+    "diagnosis_date": "",
+    "biomarkers": {},
+    "treatment": {},
+    "metastases": [],
+    "comorbidities": [],
+    "surgeries": [],
+    "physicians": {},
+    "excluded_therapies": [],
     "note": (
         "Lab values should be interpreted considering active chemotherapy. "
         "Key markers: CEA, CA 19-9, liver (ALT, AST, bilirubin), "

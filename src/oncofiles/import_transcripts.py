@@ -15,6 +15,7 @@ import argparse
 import asyncio
 import functools
 import json
+import os
 from datetime import date, datetime
 from pathlib import Path
 
@@ -29,8 +30,8 @@ from oncofiles.models import ConversationEntry
 # Ensure all output is flushed immediately for progress visibility
 print = functools.partial(print, flush=True)  # noqa: A001
 
-DEFAULT_TRANSCRIPTS_PATH = (
-    Path.home() / ".claude" / "projects" / "-Users-peterfusek1980gmail-com-Projects-oncofiles"
+DEFAULT_TRANSCRIPTS_PATH = Path(
+    os.environ.get("IMPORT_TRANSCRIPTS_PATH", str(Path.home() / ".claude" / "projects"))
 )
 
 

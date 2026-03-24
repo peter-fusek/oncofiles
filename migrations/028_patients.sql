@@ -22,6 +22,6 @@ CREATE TABLE IF NOT EXISTS patient_tokens (
 CREATE INDEX IF NOT EXISTS idx_patient_tokens_hash ON patient_tokens(token_hash);
 CREATE INDEX IF NOT EXISTS idx_patient_tokens_patient ON patient_tokens(patient_id);
 
--- Seed Erika as the first patient (idempotent)
-INSERT OR IGNORE INTO patients (patient_id, display_name, caregiver_email, diagnosis_summary)
-VALUES ('erika', 'Erika Fusekova', 'peterfusek1980@gmail.com', 'CRC, [BIOMARKER_REDACTED], [BIOMARKER_REDACTED], HER2 neg');
+-- Seed default patient (idempotent). Real data set via dashboard or env vars.
+INSERT OR IGNORE INTO patients (patient_id, display_name)
+VALUES ('erika', 'Patient');

@@ -13,6 +13,7 @@ import argparse
 import asyncio
 import logging
 import mimetypes
+import os
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -26,8 +27,8 @@ from oncofiles.models import Document
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_SOURCE = Path.home() / (
-    "Library/CloudStorage/GoogleDrive-peterfusek1980@gmail.com/My Drive/Zdravie/Erika"
+DEFAULT_SOURCE = Path(
+    os.environ.get("IMPORT_LOCAL_SOURCE", str(Path.home() / "Documents" / "oncofiles"))
 )
 
 SUPPORTED_EXTENSIONS = {".pdf", ".jpg", ".jpeg", ".png"}

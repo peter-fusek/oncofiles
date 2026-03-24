@@ -23,7 +23,8 @@ async def test_initialize_default():
 
     ctx = await initialize(db.db)
     assert ctx["name"] == "Erika Fusekova"
-    assert ctx["biomarkers"]["KRAS"] == "mutant G12S (c.34G>A, p.(Gly12Ser))"
+    # Clinical data is empty in defaults (loaded from DB/JSON at runtime)
+    assert ctx["biomarkers"] == {}
     await db.close()
 
 
@@ -67,12 +68,12 @@ async def test_update_context_merges():
     from oncofiles import patient_context
 
     patient_context._context.clear()
-    patient_context._context.update(_DEFAULT_CONTEXT.copy())
+    patient_context._context.update({**_DEFAULT_CONTEXT, "treatment": {"regimen": "test"}})
 
     updated = update_context({"treatment": {"current_cycle": 5}})
     assert updated["treatment"]["current_cycle"] == 5
     # Original fields preserved
-    assert updated["treatment"]["regimen"] == "mFOLFOX6 90%"
+    assert updated["treatment"]["regimen"] == "test"
     assert updated["name"] == "Erika Fusekova"
 
 
@@ -91,8 +92,6 @@ def test_format_context_text():
     """format_context_text returns a readable string."""
     text = format_context_text()
     assert "**Patient:**" in text
-    assert "**Diagnosis:**" in text
-    assert "**Biomarkers:**" in text
 
 
 def test_get_context_returns_default_when_empty():
