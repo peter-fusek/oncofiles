@@ -1500,6 +1500,12 @@ async def status(request: Request) -> JSONResponse:
         db: Database = lifespan_ctx["db"]
         patient_id = _get_dashboard_patient_id(request)
 
+        # Ensure DB connection is fresh before running dashboard queries
+        import contextlib
+
+        with contextlib.suppress(Exception):
+            await db.reconnect_if_stale(timeout=5.0)
+
         from oncofiles.filename_parser import is_standard_format
 
         doc_count = await db.count_documents(patient_id=patient_id)
