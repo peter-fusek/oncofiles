@@ -310,7 +310,7 @@ class DatabaseBase:
         """Reconnect Turso connection if stale. Returns True if reconnected.
 
         Overall *timeout* (default 10s) caps the total time spent probing +
-        reconnecting so that callers like /health never block for 30-105s.
+        reconnecting so that callers never block for 30-105s.
         """
         if self._use_turso and isinstance(self._db, _TursoConnection):
             try:

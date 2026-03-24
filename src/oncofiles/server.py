@@ -543,7 +543,7 @@ def _start_sync_scheduler(
     async def _db_keepalive():
         """Ping Turso every 4 min to keep the Hrana stream alive."""
         try:
-            await asyncio.wait_for(db.reconnect_if_stale(timeout=10.0), timeout=10.0)
+            await db.reconnect_if_stale(timeout=10.0)
         except Exception:
             logger.debug("DB keepalive ping failed — will reconnect on next query")
 
@@ -1334,7 +1334,7 @@ async def readiness(request: Request) -> JSONResponse:
     try:
         lifespan_ctx = request.app.state.fastmcp_server._lifespan_result
         db: Database = lifespan_ctx["db"]
-        reconnected = await asyncio.wait_for(db.reconnect_if_stale(), timeout=5.0)
+        reconnected = await db.reconnect_if_stale(timeout=5.0)
         result: dict = {"status": "ok", "version": VERSION, "db": "connected"}
         if reconnected:
             result["reconnected"] = True
