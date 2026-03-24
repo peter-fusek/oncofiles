@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#0f172a"/>
+      <stop offset="100%" style="stop-color:#1e293b"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#14b8a6"/>
+      <stop offset="100%" style="stop-color:#8b5cf6"/>
+    </linearGradient>
+  </defs>
+  <rect width="1200" height="630" fill="url(#bg)"/>
+  <!-- Top accent line -->
+  <rect x="0" y="0" width="1200" height="4" fill="url(#accent)"/>
+  <!-- Logo -->
+  <text x="100" y="200" font-family="system-ui, -apple-system, sans-serif" font-size="72" font-weight="300" fill="#e2e8f0">onco<tspan fill="#14b8a6" font-weight="700">files</tspan></text>
+  <!-- Tagline -->
+  <text x="100" y="280" font-family="system-ui, -apple-system, sans-serif" font-size="36" fill="#94a3b8">Your medical records, finally in one place</text>
+  <!-- Features -->
+  <text x="100" y="370" font-family="system-ui, -apple-system, sans-serif" font-size="24" fill="#64748b">Google Drive + Gmail + Calendar</text>
+  <text x="100" y="410" font-family="system-ui, -apple-system, sans-serif" font-size="24" fill="#64748b">Claude + ChatGPT + any MCP client</text>
+  <text x="100" y="450" font-family="system-ui, -apple-system, sans-serif" font-size="24" fill="#64748b">OCR + AI Summary + Organized by category</text>
+  <!-- URL -->
+  <text x="100" y="550" font-family="system-ui, -apple-system, sans-serif" font-size="28" fill="#14b8a6">oncofiles.com</text>
+  <!-- Badge -->
+  <rect x="880" y="160" width="220" height="40" rx="20" fill="#14b8a6" opacity="0.15"/>
+  <text x="990" y="186" font-family="system-ui, -apple-system, sans-serif" font-size="16" fill="#14b8a6" text-anchor="middle" font-weight="600">Open Source</text>
+  <rect x="880" y="220" width="220" height="40" rx="20" fill="#8b5cf6" opacity="0.15"/>
+  <text x="990" y="246" font-family="system-ui, -apple-system, sans-serif" font-size="16" fill="#8b5cf6" text-anchor="middle" font-weight="600">MCP Native</text>
+  <rect x="880" y="280" width="220" height="40" rx="20" fill="#f59e0b" opacity="0.15"/>
+  <text x="990" y="306" font-family="system-ui, -apple-system, sans-serif" font-size="16" fill="#f59e0b" text-anchor="middle" font-weight="600">Patient-Owned</text>
+</svg>

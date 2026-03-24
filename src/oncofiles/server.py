@@ -1404,6 +1404,17 @@ async def favicon_svg(request: Request) -> HTMLResponse:
     return HTMLResponse(_FAVICON_SVG, media_type="image/svg+xml")
 
 
+_OG_IMAGE_SVG: str | None = None
+
+
+@mcp.custom_route("/og-image.svg", methods=["GET"])
+async def og_image_svg(request: Request) -> HTMLResponse:
+    global _OG_IMAGE_SVG  # noqa: PLW0603
+    if _OG_IMAGE_SVG is None:
+        _OG_IMAGE_SVG = (Path(__file__).parent / "og-image.svg").read_text()
+    return HTMLResponse(_OG_IMAGE_SVG, media_type="image/svg+xml")
+
+
 @mcp.custom_route("/favicon.ico", methods=["GET"])
 async def favicon_ico(request: Request) -> HTMLResponse:
     """Redirect favicon.ico to SVG (avoids 404 in browser tabs)."""
