@@ -73,7 +73,34 @@ class ClinicalMixin:
 
         async with self.db.execute(sql, params) as cursor:
             rows = await cursor.fetchall()
-            return [_row_to_treatment_event(r) for r in rows]
+            events = [_row_to_treatment_event(r) for r in rows]
+
+        # Enrich lab_result events with lab values from lab_values table
+        for event in events:
+            if event.event_type == "lab_result" and (not event.metadata or event.metadata == "{}"):
+                try:
+                    async with self.db.execute(
+                        "SELECT parameter, value, unit, flag FROM lab_values "
+                        "WHERE lab_date = ? ORDER BY parameter LIMIT 20",
+                        (event.event_date.isoformat(),),
+                    ) as lv_cursor:
+                        lv_rows = await lv_cursor.fetchall()
+                        if lv_rows:
+                            import json
+
+                            lab_data = {
+                                r["parameter"]: {
+                                    "value": r["value"],
+                                    "unit": r["unit"] or "",
+                                    "flag": r["flag"] or "",
+                                }
+                                for r in lv_rows
+                            }
+                            event.metadata = json.dumps(lab_data)
+                except Exception:
+                    pass  # Don't break listing if enrichment fails
+
+        return events
 
     async def delete_treatment_event(self, event_id: int) -> bool:
         """Delete a treatment event by ID. Returns True if deleted."""
