@@ -2,12 +2,14 @@
 
 Uses a Python contextvars.ContextVar to propagate the resolved patient_id
 to tool functions without modifying the shared lifespan context.
+Also enforces per-token rate limiting to prevent API abuse (#147).
 """
 
 from __future__ import annotations
 
 import contextvars
 import logging
+import time
 from typing import Any
 
 from fastmcp.server.middleware.middleware import CallNext, Middleware, MiddlewareContext
@@ -19,6 +21,11 @@ logger = logging.getLogger(__name__)
 _current_patient_id: contextvars.ContextVar[str] = contextvars.ContextVar(
     "patient_id", default="erika"
 )
+
+# Per-token rate limiting: {token_prefix: [timestamps]} — prevents credit depletion
+_tool_call_times: dict[str, list[float]] = {}
+_TOOL_RATE_LIMIT = 120  # max tool calls per minute per token
+_TOOL_RATE_WINDOW = 60  # 1 minute window
 
 
 def get_current_patient_id() -> str:
@@ -41,6 +48,7 @@ class PatientResolutionMiddleware(Middleware):
         call_next: CallNext[Any, ToolResult],
     ) -> ToolResult:
         patient_id = "erika"  # default
+        token_key = "default"  # for rate limiting
 
         try:
             fastmcp_ctx = context.fastmcp_context
@@ -50,17 +58,36 @@ class PatientResolutionMiddleware(Middleware):
                     # Try to resolve from patient_tokens table
                     session = getattr(fastmcp_ctx, "_session", None)
                     if session and hasattr(session, "_access_token"):
-                        token = session._access_token
-                        if token:
-                            resolved = await db.resolve_patient_from_token(token)
+                        raw_token = session._access_token
+                        if raw_token:
+                            token_key = raw_token[:16]  # prefix for rate limiting
+                            resolved = await db.resolve_patient_from_token(raw_token)
                             if resolved:
                                 patient_id = resolved
         except Exception:
             logger.debug("Patient resolution failed, defaulting to 'erika'", exc_info=True)
 
+        # Rate limit: prevent token abuse / credit depletion (#147)
+        now = time.time()
+        if token_key not in _tool_call_times:
+            _tool_call_times[token_key] = []
+        calls = _tool_call_times[token_key]
+        _tool_call_times[token_key] = [t for t in calls if now - t < _TOOL_RATE_WINDOW]
+        if len(_tool_call_times[token_key]) >= _TOOL_RATE_LIMIT:
+            logger.warning(
+                "Rate limit exceeded for token %s... (%d/%d)",
+                token_key[:8],
+                len(calls),
+                _TOOL_RATE_LIMIT,
+            )
+            return ToolResult(
+                content=f"Rate limit exceeded ({_TOOL_RATE_LIMIT} calls/min). Try again shortly."
+            )
+        _tool_call_times[token_key].append(now)
+
         # Set the contextvar for this request
-        token = _current_patient_id.set(patient_id)
+        ctx_token = _current_patient_id.set(patient_id)
         try:
             return await call_next(context)
         finally:
-            _current_patient_id.reset(token)
+            _current_patient_id.reset(ctx_token)
