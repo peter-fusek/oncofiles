@@ -151,7 +151,7 @@ async def test_validate_corrects_surgical_report(db: Database):
     assert result["summary"]["corrected"] >= 1
 
     updated = await db.get_document(doc.id)
-    assert updated.category == DocumentCategory.SURGICAL_REPORT
+    assert updated.category == DocumentCategory.SURGERY
 
 
 async def test_validate_skips_advocate(db: Database):

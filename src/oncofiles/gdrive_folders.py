@@ -110,28 +110,42 @@ def ensure_year_month_folder(gdrive, category_folder_id: str, date_str: str) -> 
 def find_or_create_folder(gdrive, name: str, parent_id: str) -> str:
     """Find an existing folder or create a new one. Returns folder ID.
 
-    Handles race conditions: if a duplicate is created concurrently,
-    detects it and returns the first one found.
+    Handles race conditions: after creating, re-lists all matching folders
+    and trashes any duplicates (keeps the oldest by createdTime).
     """
     existing = gdrive.find_folder(name, parent_id)
     if existing:
         return existing
     new_id = gdrive.create_folder(name, parent_id)
-    # Race condition check: see if another folder was created concurrently
-    # by listing all matching folders
+    # Race condition check: GDrive eventual consistency needs ~2s
     try:
         import time
 
-        time.sleep(0.5)  # brief delay for eventual consistency
-        all_matching = gdrive.find_all_folders(name, parent_id)
+        time.sleep(2)
+        # List ALL matching folders (not just the first) via direct API query
+        all_matching = (
+            gdrive._service.files()
+            .list(
+                q=(
+                    f"'{parent_id}' in parents"
+                    f" and name = '{name}'"
+                    f" and mimeType = 'application/vnd.google-apps.folder'"
+                    f" and trashed = false"
+                ),
+                fields="files(id, createdTime)",
+                orderBy="createdTime",
+                pageSize=10,
+            )
+            .execute()
+            .get("files", [])
+        )
         if len(all_matching) > 1:
-            # Keep the first (oldest), trash duplicates
-            keep = all_matching[0]
-            for dup_id in all_matching[1:]:
+            keep = all_matching[0]["id"]  # oldest by createdTime
+            for dup in all_matching[1:]:
                 try:
-                    gdrive.trash_file(dup_id)
+                    gdrive.trash_file(dup["id"])
                     logger.warning(
-                        "Trashed duplicate folder '%s' (%s), keeping %s", name, dup_id, keep
+                        "Trashed duplicate folder '%s' (%s), keeping %s", name, dup["id"], keep
                     )
                 except Exception:
                     pass

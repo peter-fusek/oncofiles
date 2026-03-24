@@ -27,7 +27,7 @@ _DOCTYPE_TO_CATEGORY: dict[str, str] = {
     "discharge_summary": "discharge_summary",
     "pathology": "pathology",
     "imaging": "imaging",
-    "surgical_report": "surgical_report",
+    "surgical_report": "surgery",
     "genetics": "genetics",
     "consultation": "report",
     "referral": "referral",

@@ -711,6 +711,15 @@ def _start_sync_scheduler(
             import json as _json
 
             corrected = 0
+
+            # Phase 0: Remap deprecated categories (#140)
+            for doc in docs:
+                if doc.category.value == "surgical_report":
+                    await db.update_document_category(doc.id, "surgery")
+                    corrected += 1
+                    logger.info("Category remap: %s surgical_report → surgery", doc.filename)
+
+            # Phase 1: AI metadata-based category correction
             for doc in docs:
                 if not doc.structured_metadata or doc.category.value in ("advocate", "reference"):
                     continue
@@ -760,6 +769,17 @@ def _start_sync_scheduler(
                     await db.update_document_category(doc.id, "reference")
                     corrected += 1
                     logger.info("Reference auto-detected: %s other → reference", doc.filename)
+
+            # Phase 3: Auto-detect advocate files in "other" category (#141)
+            advocate_keywords = ("advokat", "advocate", "pacientadvokat", "patient_advocate")
+            for doc in docs:
+                if doc.category.value != "other":
+                    continue
+                combined = doc.filename.lower() + " " + (doc.ai_summary or "").lower()
+                if any(kw in combined for kw in advocate_keywords):
+                    await db.update_document_category(doc.id, "advocate")
+                    corrected += 1
+                    logger.info("Advocate auto-detected: %s other → advocate", doc.filename)
 
             if corrected:
                 logger.info("Category validation: corrected %d documents", corrected)
@@ -826,30 +846,46 @@ def _start_sync_scheduler(
 
                     for name, ids in by_name.items():
                         if len(ids) > 1:
-                            # Merge: keep first, trash empty duplicates
+                            # Merge: move files from duplicates → keep, then trash
                             keep = ids[0]
                             for dup in ids[1:]:
-                                contents = await asyncio.to_thread(
+                                # List ALL files in the duplicate folder
+                                dup_contents = await asyncio.to_thread(
                                     lambda did=dup: (
                                         p_gdrive._service.files()
                                         .list(
                                             q=f"'{did}' in parents and trashed = false",
-                                            fields="files(id)",
-                                            pageSize=1,
+                                            fields="files(id, name)",
+                                            pageSize=200,
                                         )
                                         .execute()
                                     )
                                 )
-                                if not contents.get("files"):
-                                    await asyncio.to_thread(p_gdrive.trash_file, dup)
-                                    merged += 1
-                                    logger.info(
-                                        "Merged duplicate folder '%s/%s' (%s), keeping %s",
-                                        cat_name,
-                                        name,
-                                        dup,
-                                        keep,
-                                    )
+                                dup_files = dup_contents.get("files", [])
+                                # Move files from duplicate to keep folder
+                                for df in dup_files:
+                                    try:
+                                        await asyncio.to_thread(p_gdrive.move_file, df["id"], keep)
+                                        logger.info(
+                                            "Moved '%s' from dup %s → %s", df["name"], dup, keep
+                                        )
+                                    except Exception:
+                                        logger.warning(
+                                            "Failed to move '%s' from dup folder",
+                                            df["name"],
+                                            exc_info=True,
+                                        )
+                                # Trash the now-empty duplicate
+                                await asyncio.to_thread(p_gdrive.trash_file, dup)
+                                merged += 1
+                                logger.info(
+                                    "Merged duplicate folder '%s/%s' (%s → %s, %d files moved)",
+                                    cat_name,
+                                    name,
+                                    dup,
+                                    keep,
+                                    len(dup_files),
+                                )
 
                     # Check for empty folders
                     for sf in sub_folders:
