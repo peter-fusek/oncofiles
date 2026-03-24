@@ -39,3 +39,5 @@ htmlcov/
 oncofiles-prod*
 .claude/settings.local.json
 .claude/worktrees/
+.mcpregistry_github_token
+.mcpregistry_registry_token
