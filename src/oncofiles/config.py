@@ -32,6 +32,9 @@ GOOGLE_OAUTH_REDIRECT_URI: str = os.environ.get(
 # Turso (v0.4)
 TURSO_DATABASE_URL: str = os.environ.get("TURSO_DATABASE_URL", "")
 TURSO_AUTH_TOKEN: str = os.environ.get("TURSO_AUTH_TOKEN", "")
+TURSO_REPLICA_PATH: str = os.environ.get(
+    "TURSO_REPLICA_PATH", ""
+)  # local file for embedded replica
 
 # Cloud transport (v0.4)
 MCP_TRANSPORT: str = os.environ.get("MCP_TRANSPORT", "stdio")

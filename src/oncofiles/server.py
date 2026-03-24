@@ -165,7 +165,13 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict]:
         git_sha[:7] or "dev",
     )
     if TURSO_DATABASE_URL:
-        db = Database(turso_url=TURSO_DATABASE_URL, turso_token=TURSO_AUTH_TOKEN)
+        from oncofiles.config import TURSO_REPLICA_PATH
+
+        db = Database(
+            turso_url=TURSO_DATABASE_URL,
+            turso_token=TURSO_AUTH_TOKEN,
+            turso_replica_path=TURSO_REPLICA_PATH,
+        )
     else:
         db = Database(DATABASE_PATH)
     await db.connect()
@@ -680,14 +686,17 @@ def _start_sync_scheduler(
         max_instances=1,
     )
 
-    # ── DB keepalive (prevents Turso stream expiry during idle periods) ──
+    # ── DB keepalive / replica sync ──
 
     async def _db_keepalive():
-        """Ping Turso every 4 min to keep the Hrana stream alive."""
+        """Ping Turso every 4 min to keep connection alive, or sync embedded replica."""
         try:
-            await db.reconnect_if_stale(timeout=10.0)
+            if db.is_replica:
+                await db.sync_replica()
+            else:
+                await db.reconnect_if_stale(timeout=10.0)
         except Exception:
-            logger.debug("DB keepalive ping failed — will reconnect on next query")
+            logger.debug("DB keepalive/sync failed — will recover on next query")
 
     scheduler.add_job(
         _db_keepalive,

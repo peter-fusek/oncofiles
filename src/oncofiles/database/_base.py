@@ -152,23 +152,54 @@ class _TursoConnection:
     """Async wrapper around sync libsql connection matching aiosqlite interface.
 
     Auto-reconnects on stale Hrana stream errors (e.g. after Railway cold start).
+
+    When ``replica_path`` is set, uses an embedded replica: a local SQLite file
+    that syncs from the Turso primary.  Reads are served locally (~0.3 ms vs
+    ~100 ms remote); writes go through to the primary.
     """
 
-    def __init__(self, url: str, auth_token: str) -> None:
+    def __init__(self, url: str, auth_token: str, *, replica_path: str = "") -> None:
         self._url = url
         self._auth_token = auth_token
+        self._replica_path = replica_path
         self._conn: Any = None
         self._breaker = _CircuitBreaker()
 
     _CONNECT_TIMEOUT = 15.0  # seconds — prevents indefinite hangs on stale Turso
 
+    @property
+    def is_replica(self) -> bool:
+        return bool(self._replica_path)
+
     async def connect(self) -> None:
         import libsql
 
-        self._conn = await asyncio.wait_for(
-            asyncio.to_thread(libsql.connect, self._url, auth_token=self._auth_token),
-            timeout=self._CONNECT_TIMEOUT,
-        )
+        if self._replica_path:
+            sync_url = self._url.replace("libsql://", "https://")
+            self._conn = await asyncio.wait_for(
+                asyncio.to_thread(
+                    libsql.connect,
+                    self._replica_path,
+                    sync_url=sync_url,
+                    auth_token=self._auth_token,
+                ),
+                timeout=self._CONNECT_TIMEOUT,
+            )
+            await asyncio.wait_for(
+                asyncio.to_thread(self._conn.sync),
+                timeout=self._CONNECT_TIMEOUT,
+            )
+            logger.info("Embedded replica connected: %s", self._replica_path)
+        else:
+            self._conn = await asyncio.wait_for(
+                asyncio.to_thread(libsql.connect, self._url, auth_token=self._auth_token),
+                timeout=self._CONNECT_TIMEOUT,
+            )
+
+    async def sync(self) -> None:
+        """Sync embedded replica from Turso primary. No-op for direct connections."""
+        if self._replica_path and self._conn:
+            await asyncio.to_thread(self._conn.sync)
 
     async def reconnect(self) -> None:
         """Close stale connection and create a fresh one."""
@@ -283,16 +314,20 @@ class DatabaseBase:
         *,
         turso_url: str = "",
         turso_token: str = "",
+        turso_replica_path: str = "",
     ) -> None:
         self.path = str(path)
         self._turso_url = turso_url
         self._turso_token = turso_token
+        self._turso_replica_path = turso_replica_path
         self._use_turso = bool(turso_url)
         self._db: aiosqlite.Connection | _TursoConnection | None = None
 
     async def connect(self) -> None:
         if self._use_turso:
-            conn = _TursoConnection(self._turso_url, self._turso_token)
+            conn = _TursoConnection(
+                self._turso_url, self._turso_token, replica_path=self._turso_replica_path
+            )
             await conn.connect()
             self._db = conn
         else:
@@ -305,6 +340,16 @@ class DatabaseBase:
         if self._db:
             await self._db.close()
             self._db = None
+
+    @property
+    def is_replica(self) -> bool:
+        """True if using an embedded replica (local SQLite syncing from Turso)."""
+        return isinstance(self._db, _TursoConnection) and self._db.is_replica
+
+    async def sync_replica(self) -> None:
+        """Pull latest changes from Turso primary into local replica. No-op if not a replica."""
+        if isinstance(self._db, _TursoConnection):
+            await self._db.sync()
 
     async def reconnect_if_stale(self, timeout: float = 10.0) -> bool:
         """Reconnect Turso connection if stale. Returns True if reconnected.
