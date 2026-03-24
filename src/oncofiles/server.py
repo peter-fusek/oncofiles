@@ -587,20 +587,30 @@ def _start_sync_scheduler(
                                     exc_info=True,
                                 )
 
-                    # Auto-trash unrecoverable docs: no content in Files API AND no GDrive backup
+                    # Auto-trash unrecoverable docs: Files API returns 400/404 AND no GDrive backup
                     for doc, g in gaps:
                         if "no_ocr" in g and "no_ai" in g and not doc.gdrive_id:
                             try:
                                 files.download(doc.file_id)
-                            except Exception:
-                                logger.warning(
-                                    "Pipeline integrity [%s]: trashing unrecoverable doc #%d (%s) "
-                                    "— no Files API content, no GDrive backup",
-                                    pid,
-                                    doc.id,
-                                    doc.filename,
-                                )
-                                await db.delete_document(doc.id)
+                            except Exception as dl_err:
+                                err_msg = str(dl_err).lower()
+                                if "not downloadable" in err_msg or "404" in err_msg:
+                                    logger.warning(
+                                        "Pipeline integrity [%s]: trashing doc #%d (%s) "
+                                        "— content gone, no GDrive backup",
+                                        pid,
+                                        doc.id,
+                                        doc.filename,
+                                    )
+                                    await db.delete_document(doc.id)
+                                else:
+                                    logger.info(
+                                        "Pipeline integrity [%s]: doc #%d download check failed "
+                                        "(transient?) — NOT deleting: %s",
+                                        pid,
+                                        doc.id,
+                                        dl_err,
+                                    )
                 else:
                     logger.info("Pipeline integrity [%s]: all %d docs complete", pid, len(all_docs))
         except Exception:
@@ -1820,21 +1830,23 @@ def _load_dashboard_html() -> str:
 
 
 def _make_session_token(email: str) -> str:
-    """Create an HMAC-signed session token: email.expiry.signature."""
+    """Create an HMAC-signed session token: email|expiry|signature."""
     if not MCP_BEARER_TOKEN:
         raise ValueError("Cannot create session token: MCP_BEARER_TOKEN not configured")
     expiry = str(int(time.time()) + _SESSION_MAX_AGE)
     key = MCP_BEARER_TOKEN.encode()
-    payload = f"{email}.{expiry}"
+    payload = f"{email}|{expiry}"
     sig = hmac.new(key, payload.encode(), hashlib.sha256).hexdigest()[:32]
-    return f"{payload}.{sig}"
+    return f"{payload}|{sig}"
 
 
 def _verify_session_token(token: str) -> str | None:
     """Verify a session token. Returns email if valid, None otherwise."""
     if not token or not MCP_BEARER_TOKEN:
         return None
-    parts = token.rsplit(".", 2)
+    # Support both new "|" and legacy "." separators
+    sep = "|" if "|" in token else "."
+    parts = token.rsplit(sep, 2)
     if len(parts) != 3:
         return None
     email, expiry_str, sig = parts
@@ -1846,7 +1858,7 @@ def _verify_session_token(token: str) -> str | None:
         logger.warning("Session token expired for %s", email)
         return None
     key = MCP_BEARER_TOKEN.encode()
-    expected = hmac.new(key, f"{email}.{expiry_str}".encode(), hashlib.sha256).hexdigest()[:32]
+    expected = hmac.new(key, f"{email}{sep}{expiry_str}".encode(), hashlib.sha256).hexdigest()[:32]
     if not hmac.compare_digest(sig, expected):
         logger.warning("Session token signature mismatch for %s", email)
         return None
@@ -3133,7 +3145,12 @@ def main() -> None:
             middleware=[
                 Middleware(
                     CORSMiddleware,
-                    allow_origins=["*"],
+                    allow_origins=[
+                        "https://oncofiles.com",
+                        "https://claude.ai",
+                        "https://chatgpt.com",
+                        "https://oncoteam.cloud",
+                    ],
                     allow_credentials=True,
                     allow_methods=["GET", "POST", "OPTIONS", "DELETE"],
                     allow_headers=["Authorization", "Content-Type", "mcp-protocol-version"],

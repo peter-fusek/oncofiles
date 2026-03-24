@@ -208,7 +208,7 @@ class _TursoConnection:
             if self._conn:
                 self._conn.close()
         except Exception:
-            pass
+            logger.warning("Turso close() failed during reconnect", exc_info=True)
         self._conn = None
         try:
             await self.connect()
