@@ -1188,6 +1188,8 @@
         var data = await resp.json();
         renderStatus(data.status);
         renderDocs(data.documents);
+        if (data.prompt_log) renderPromptLog(data.prompt_log);
+        if (data.analytics) renderAnalytics(data.analytics);
         setConnectionState('ok');
         hideSkeletons();
         document.getElementById('version-label').textContent = 'v' + data.status.version + ' demo';
