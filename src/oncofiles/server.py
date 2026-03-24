@@ -67,20 +67,24 @@ _RATE_LIMITS = {
 }
 
 
-def _check_rate_limit(key: str) -> JSONResponse | None:
-    """Check rate limit for a given key. Returns error response or None if OK."""
+def _check_rate_limit(key: str, *, request: Request | None = None) -> JSONResponse | None:
+    """Check rate limit for a given key. Per-IP for share-redeem, global otherwise."""
     limit = _RATE_LIMITS.get(key, 60)
+    # Per-IP scoping for brute-force-sensitive endpoints
+    rate_key = key
+    if request and key == "share-redeem":
+        client_ip = request.client.host if request.client else "unknown"
+        rate_key = f"{key}:{client_ip}"
     now = time.time()
-    if key not in _rate_limits:
-        _rate_limits[key] = []
-    # Prune old entries
-    _rate_limits[key] = [t for t in _rate_limits[key] if now - t < _RATE_WINDOW]
-    if len(_rate_limits[key]) >= limit:
+    if rate_key not in _rate_limits:
+        _rate_limits[rate_key] = []
+    _rate_limits[rate_key] = [t for t in _rate_limits[rate_key] if now - t < _RATE_WINDOW]
+    if len(_rate_limits[rate_key]) >= limit:
         return JSONResponse(
             {"error": "Rate limit exceeded. Try again in a minute."},
             status_code=429,
         )
-    _rate_limits[key].append(now)
+    _rate_limits[rate_key].append(now)
     return None
 
 
@@ -2419,17 +2423,24 @@ async def api_bug_report(request: Request) -> JSONResponse:
         screenshot_b64 = body.get("screenshot", "")
         user_agent = body.get("user_agent", "")
 
+        # Sanitize user inputs for markdown (prevent injection)
+        def _esc(s: str) -> str:
+            return s.replace("|", "\\|").replace("`", "\\`")
+
         # Build structured issue body for Claude Code
         issue_body = f"""## Bug Report (Dashboard)
 
-**Description**: {description}
+### Description
+```
+{description}
+```
 
 ### Context
 | Field | Value |
 |-------|-------|
-| Page | `{page_url}` |
-| Section | `{page_section}` |
-| User Agent | `{user_agent[:100]}` |
+| Page | `{_esc(page_url)}` |
+| Section | `{_esc(page_section)}` |
+| User Agent | `{_esc(user_agent[:100])}` |
 | Reported | {datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC")} |
 
 ### Page State
@@ -2915,7 +2926,7 @@ async def api_create_share_link(request: Request) -> JSONResponse:
 @mcp.custom_route("/api/share-link/{code}", methods=["GET"])
 async def api_redeem_share_link(request: Request) -> JSONResponse:
     """Redeem a one-time setup code. Public (no auth). Returns connection info."""
-    rate_err = _check_rate_limit("share-redeem")
+    rate_err = _check_rate_limit("share-redeem", request=request)
     if rate_err:
         return rate_err
     code = request.path_params.get("code", "").upper()

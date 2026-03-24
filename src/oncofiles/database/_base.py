@@ -421,8 +421,13 @@ class DatabaseBase:
                         try:
                             await self.db.execute(stmt)
                             await self.db.commit()
-                        except Exception:
-                            pass
+                        except Exception as stmt_err:
+                            logger.warning(
+                                "Migration %s: statement failed (best-effort): %s — %s",
+                                version,
+                                stmt[:80],
+                                stmt_err,
+                            )
             await self.db.execute(
                 "INSERT OR IGNORE INTO schema_migrations (version) VALUES (?)",
                 (version,),
