@@ -42,3 +42,11 @@ uv run ruff check
 - **Railway**: `aware-kindness-production.up.railway.app` (streamable-http at /mcp)
 - Push to `main` auto-deploys via Railway
 - 607 tests, CI green
+
+## Infrastructure gotchas
+
+- `/health` is a **liveness probe only** — NO DB calls, NO blocking I/O (Railway kills process at 120s)
+- `/readiness` is the DB connectivity check (5s timeout) — use for dashboards, not healthchecks
+- `reconnect_if_stale(timeout=10.0)` — always pass a timeout; unbounded reconnect cascades up to 105s
+- Turso Hrana streams expire during idle — DB keepalive job pings every 4 min to prevent stale connections
+- `railway.toml`: healthcheckTimeout=120, overlapSeconds=30 — do not lower these
