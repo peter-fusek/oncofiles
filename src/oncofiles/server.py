@@ -1851,10 +1851,10 @@ async def api_demo_data(request: Request) -> JSONResponse:
         {
             "status": {
                 "version": VERSION,
-                "uptime_seconds": 86400,
-                "rss_mb": 145.2,
-                "doc_count": 100,
-                "doc_health": {
+                "uptime_s": 86400,
+                "memory_rss_mb": 145.2,
+                "documents": 100,
+                "document_health": {
                     "total": 100,
                     "with_ocr": 98,
                     "with_ai": 96,
