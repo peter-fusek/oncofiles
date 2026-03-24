@@ -586,6 +586,21 @@ def _start_sync_scheduler(
                                     pid,
                                     exc_info=True,
                                 )
+
+                    # Auto-trash unrecoverable docs: no content in Files API AND no GDrive backup
+                    for doc, g in gaps:
+                        if "no_ocr" in g and "no_ai" in g and not doc.gdrive_id:
+                            try:
+                                files.download(doc.file_id)
+                            except Exception:
+                                logger.warning(
+                                    "Pipeline integrity [%s]: trashing unrecoverable doc #%d (%s) "
+                                    "— no Files API content, no GDrive backup",
+                                    pid,
+                                    doc.id,
+                                    doc.filename,
+                                )
+                                await db.delete_document(doc.id)
                 else:
                     logger.info("Pipeline integrity [%s]: all %d docs complete", pid, len(all_docs))
         except Exception:
