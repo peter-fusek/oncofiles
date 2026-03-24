@@ -56,9 +56,22 @@ class PersistentOAuthProvider(InMemoryOAuthProvider):
     # ── Bearer token support (server-to-server) ─────────────────────────
 
     async def verify_token(self, token: str) -> AccessToken | None:
+        # 1. Static bearer token (Oncoteam, dev)
         if self._bearer_token and hmac.compare_digest(token.encode(), self._bearer_token.encode()):
             return AccessToken(token=token, client_id="oncoteam", scopes=[])
-        return await super().verify_token(token)
+        # 2. MCP OAuth tokens (in-memory, restored from DB on startup)
+        result = await super().verify_token(token)
+        if result:
+            return result
+        # 3. Patient bearer tokens (DB lookup — survives restarts without restore)
+        if self._db:
+            try:
+                patient_id = await self._db.resolve_patient_from_token(token)
+                if patient_id:
+                    return AccessToken(token=token, client_id=f"patient:{patient_id}", scopes=[])
+            except Exception:
+                logger.debug("Patient token lookup failed", exc_info=True)
+        return None
 
     # ── Restore from DB on startup ──────────────────────────────────────
 
