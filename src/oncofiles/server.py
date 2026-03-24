@@ -3055,13 +3055,36 @@ async def oauth_callback(request: Request) -> JSONResponse:
 
     await db.upsert_oauth_token(oauth_token)
 
-    return JSONResponse(
-        {
-            "status": "ok",
-            "message": (
-                "Google Drive connected successfully. Use gdrive_set_folder to pick a sync folder."
-            ),
-        }
+    return HTMLResponse(
+        """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Connected — Oncofiles</title>
+<style>
+  body { font-family: system-ui, sans-serif; background: #0f172a; color: #e2e8f0;
+         display: flex; align-items: center; justify-content: center; min-height: 100vh;
+         margin: 0; }
+  .card { text-align: center; max-width: 420px; padding: 2.5rem; }
+  .icon { font-size: 3rem; margin-bottom: 1rem; }
+  h1 { color: #14b8a6; font-size: 1.5rem; margin: 0 0 0.75rem; }
+  p { color: #94a3b8; line-height: 1.6; margin: 0 0 1.5rem; }
+  a { color: #14b8a6; text-decoration: none; padding: 0.6rem 1.5rem;
+      border: 1px solid #14b8a6; border-radius: 6px; display: inline-block; }
+  a:hover { background: #14b8a6; color: #0f172a; }
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="icon">&#x2705;</div>
+  <h1>Google Drive Connected</h1>
+  <p>Your account is linked. You can close this tab and return to your AI chat
+     or WhatsApp conversation.</p>
+  <a href="/dashboard">Open Dashboard</a>
+</div>
+</body>
+</html>"""
     )
 
 
