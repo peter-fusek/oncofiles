@@ -997,7 +997,7 @@ def _start_sync_scheduler(
         await _run_category_validation()
         logger.info("Startup catchup complete: import + validate (RSS: %.1f MB)", get_rss_mb())
 
-    startup_time = datetime.now() + timedelta(seconds=60)
+    startup_time = datetime.now() + timedelta(seconds=90)
     scheduler.add_job(
         _startup_catchup,
         DateTrigger(run_date=startup_time),
@@ -1048,7 +1048,7 @@ def _start_sync_scheduler(
         id="gmail_sync",
         max_instances=1,
     )
-    gmail_startup_time = datetime.now() + timedelta(seconds=90)
+    gmail_startup_time = datetime.now() + timedelta(seconds=150)
     scheduler.add_job(
         lambda: _run_gmail_sync("startup", initial=True),
         DateTrigger(run_date=gmail_startup_time),
@@ -1119,7 +1119,7 @@ def _start_sync_scheduler(
         id="calendar_sync",
         max_instances=1,
     )
-    calendar_startup_time = datetime.now() + timedelta(seconds=120)
+    calendar_startup_time = datetime.now() + timedelta(seconds=210)
     scheduler.add_job(
         lambda: _run_calendar_sync("startup", initial=True),
         DateTrigger(run_date=calendar_startup_time),
