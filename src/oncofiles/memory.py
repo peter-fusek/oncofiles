@@ -22,6 +22,12 @@ MEMORY_THRESHOLD_MB = 450
 # to prevent memory spikes from parallel Oncoteam agent requests.
 _query_semaphore = asyncio.Semaphore(3)
 
+# Priority-aware DB concurrency — prevents dashboard 500s during sync.
+# Background (sync) and express (dashboard) get independent lanes so sync
+# operations can never starve dashboard queries.
+_db_background = asyncio.Semaphore(2)  # sync / background operations
+_db_express = asyncio.Semaphore(2)  # dashboard / priority operations
+
 
 async def acquire_query_slot(label: str) -> None:
     """Acquire a slot for a heavy query. Logs when queuing occurs."""
@@ -43,6 +49,24 @@ async def query_slot(label: str) -> AsyncIterator[None]:
         yield
     finally:
         release_query_slot()
+
+
+@asynccontextmanager
+async def db_slot(label: str, *, priority: bool = False) -> AsyncIterator[None]:
+    """Acquire a DB concurrency slot.
+
+    priority=True  → express lane (dashboard, /status)
+    priority=False → background lane (sync, housekeeping)
+    """
+    sem = _db_express if priority else _db_background
+    lane = "express" if priority else "background"
+    if sem._value == 0:
+        logger.info("DB slot queued — %s lane full: %s", lane, label)
+    await sem.acquire()
+    try:
+        yield
+    finally:
+        sem.release()
 
 
 def get_rss_mb() -> float:

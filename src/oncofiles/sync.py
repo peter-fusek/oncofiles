@@ -1144,7 +1144,10 @@ async def _sync_inner(
     start_mono = time.monotonic()
     if not dry_run:
         try:
-            sync_id = await db.insert_sync_history(trigger=trigger)
+            from oncofiles.memory import db_slot
+
+            async with db_slot("insert_sync_history", priority=False):
+                sync_id = await db.insert_sync_history(trigger=trigger)
         except Exception:
             logger.warning("sync: failed to record sync start", exc_info=True)
 
@@ -1180,19 +1183,22 @@ async def _sync_inner(
         if sync_id is not None:
             duration = time.monotonic() - start_mono
             try:
-                await db.complete_sync_history(
-                    sync_id,
-                    status="completed",
-                    duration_s=round(duration, 1),
-                    from_new=from_stats.get("new", 0),
-                    from_updated=from_stats.get("updated", 0),
-                    from_errors=from_stats.get("errors", 0),
-                    to_exported=to_stats.get("exported", 0),
-                    to_organized=to_stats.get("organized", 0),
-                    to_renamed=to_stats.get("renamed", 0),
-                    to_errors=to_stats.get("errors", 0),
-                    stats_json=json.dumps(combined, ensure_ascii=False),
-                )
+                from oncofiles.memory import db_slot
+
+                async with db_slot("complete_sync_history", priority=False):
+                    await db.complete_sync_history(
+                        sync_id,
+                        status="completed",
+                        duration_s=round(duration, 1),
+                        from_new=from_stats.get("new", 0),
+                        from_updated=from_stats.get("updated", 0),
+                        from_errors=from_stats.get("errors", 0),
+                        to_exported=to_stats.get("exported", 0),
+                        to_organized=to_stats.get("organized", 0),
+                        to_renamed=to_stats.get("renamed", 0),
+                        to_errors=to_stats.get("errors", 0),
+                        stats_json=json.dumps(combined, ensure_ascii=False),
+                    )
             except Exception:
                 logger.warning("sync: failed to record sync completion", exc_info=True)
 
@@ -1204,12 +1210,15 @@ async def _sync_inner(
         if sync_id is not None:
             duration = time.monotonic() - start_mono
             try:
-                await db.complete_sync_history(
-                    sync_id,
-                    status="failed",
-                    duration_s=round(duration, 1),
-                    error_message=str(exc)[:500],
-                )
+                from oncofiles.memory import db_slot
+
+                async with db_slot("complete_sync_history_fail", priority=False):
+                    await db.complete_sync_history(
+                        sync_id,
+                        status="failed",
+                        duration_s=round(duration, 1),
+                        error_message=str(exc)[:500],
+                    )
             except Exception:
                 logger.warning("sync: failed to record sync failure", exc_info=True)
         raise

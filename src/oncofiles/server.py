@@ -1072,9 +1072,11 @@ def _start_sync_scheduler(
         Skips the heavy export phase (rename, organize, OCR export) to avoid
         blocking the event loop and causing health check timeouts. The regular
         5-min scheduled sync handles exports.
+
         """
         import time as _time
 
+        from oncofiles.memory import db_slot
         from oncofiles.sync import sync_from_gdrive as _sync_from
 
         patients = await db.list_patients(active_only=True)
@@ -1088,7 +1090,8 @@ def _start_sync_scheduler(
             sync_id = None
             start = _time.monotonic()
             try:
-                sync_id = await db.insert_sync_history(trigger="startup")
+                async with db_slot("startup_insert_sync", priority=False):
+                    sync_id = await db.insert_sync_history(trigger="startup")
             except Exception:
                 logger.warning("startup: failed to record sync history", exc_info=True)
 
@@ -1099,33 +1102,36 @@ def _start_sync_scheduler(
                 )
                 logger.info("Startup import [%s]: %s", pid, import_stats)
                 if sync_id:
-                    await db.complete_sync_history(
-                        sync_id,
-                        status="completed",
-                        duration_s=round(_time.monotonic() - start, 1),
-                        from_new=import_stats.get("new", 0),
-                        from_updated=import_stats.get("updated", 0),
-                        from_errors=import_stats.get("errors", 0),
-                        stats_json=str(import_stats),
-                    )
+                    async with db_slot("startup_complete_sync", priority=False):
+                        await db.complete_sync_history(
+                            sync_id,
+                            status="completed",
+                            duration_s=round(_time.monotonic() - start, 1),
+                            from_new=import_stats.get("new", 0),
+                            from_updated=import_stats.get("updated", 0),
+                            from_errors=import_stats.get("errors", 0),
+                            stats_json=str(import_stats),
+                        )
             except TimeoutError:
                 logger.warning("Startup import [%s] timed out after 180s", pid)
                 if sync_id:
-                    await db.complete_sync_history(
-                        sync_id,
-                        status="failed",
-                        duration_s=round(_time.monotonic() - start, 1),
-                        error_message="Startup import timed out after 180s",
-                    )
+                    async with db_slot("startup_complete_sync_timeout", priority=False):
+                        await db.complete_sync_history(
+                            sync_id,
+                            status="failed",
+                            duration_s=round(_time.monotonic() - start, 1),
+                            error_message="Startup import timed out after 180s",
+                        )
             except Exception as exc:
                 logger.exception("Startup import [%s] failed", pid)
                 if sync_id:
-                    await db.complete_sync_history(
-                        sync_id,
-                        status="failed",
-                        duration_s=round(_time.monotonic() - start, 1),
-                        error_message=str(exc)[:500],
-                    )
+                    async with db_slot("startup_complete_sync_fail", priority=False):
+                        await db.complete_sync_history(
+                            sync_id,
+                            status="failed",
+                            duration_s=round(_time.monotonic() - start, 1),
+                            error_message=str(exc)[:500],
+                        )
 
         await _run_category_validation()
         logger.info("Startup catchup complete: import + validate (RSS: %.1f MB)", get_rss_mb())
@@ -1642,31 +1648,34 @@ async def status(request: Request) -> JSONResponse:
         db: Database = lifespan_ctx["db"]
         patient_id = _get_dashboard_patient_id(request)
 
-        # Ensure DB connection is fresh before running dashboard queries
-        import contextlib
+        from oncofiles.memory import db_slot
 
-        with contextlib.suppress(Exception):
-            await db.reconnect_if_stale(timeout=5.0)
+        async with db_slot("status", priority=True):
+            # Ensure DB connection is fresh before running dashboard queries
+            import contextlib
 
-        from oncofiles.filename_parser import is_standard_format
+            with contextlib.suppress(Exception):
+                await db.reconnect_if_stale(timeout=2.0)
 
-        doc_count = await db.count_documents(patient_id=patient_id)
-        sync_stats = await db.get_sync_stats_summary()
-        recent_syncs = await db.get_sync_history(limit=5)
+            from oncofiles.filename_parser import is_standard_format
 
-        # Document health summary
-        all_docs = await db.list_documents(limit=500, patient_id=patient_id)
-        doc_health = {
-            "total": len(all_docs),
-            "with_ai": sum(1 for d in all_docs if d.ai_summary),
-            "with_metadata": sum(
-                1 for d in all_docs if d.structured_metadata and d.structured_metadata != ""
-            ),
-            "with_date": sum(1 for d in all_docs if d.document_date),
-            "with_institution": sum(1 for d in all_docs if d.institution),
-            "synced": sum(1 for d in all_docs if d.gdrive_id),
-            "standard_named": sum(1 for d in all_docs if is_standard_format(d.filename)),
-        }
+            doc_count = await db.count_documents(patient_id=patient_id)
+            sync_stats = await db.get_sync_stats_summary()
+            recent_syncs = await db.get_sync_history(limit=5)
+
+            # Document health summary
+            all_docs = await db.list_documents(limit=500, patient_id=patient_id)
+            doc_health = {
+                "total": len(all_docs),
+                "with_ai": sum(1 for d in all_docs if d.ai_summary),
+                "with_metadata": sum(
+                    1 for d in all_docs if d.structured_metadata and d.structured_metadata != ""
+                ),
+                "with_date": sum(1 for d in all_docs if d.document_date),
+                "with_institution": sum(1 for d in all_docs if d.institution),
+                "synced": sum(1 for d in all_docs if d.gdrive_id),
+                "standard_named": sum(1 for d in all_docs if is_standard_format(d.filename)),
+            }
 
         # Memory
         rusage = resource.getrusage(resource.RUSAGE_SELF)
