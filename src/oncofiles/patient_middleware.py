@@ -65,7 +65,7 @@ class PatientResolutionMiddleware(Middleware):
                             if resolved:
                                 patient_id = resolved
         except Exception:
-            logger.debug("Patient resolution failed, defaulting to 'erika'", exc_info=True)
+            logger.warning("Patient resolution failed, defaulting to 'erika'", exc_info=True)
 
         # Rate limit: prevent token abuse / credit depletion (#147)
         now = time.time()

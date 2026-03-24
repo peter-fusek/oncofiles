@@ -26,6 +26,12 @@ _FORBIDDEN_KEYWORDS = re.compile(
 MAX_ROWS = 200
 QUERY_TIMEOUT_S = 10
 
+# Tables containing secrets or credentials — block from query_db
+_BLOCKED_TABLES = re.compile(
+    r"\b(oauth_tokens|mcp_oauth_clients|mcp_oauth_tokens|patient_tokens)\b",
+    re.IGNORECASE,
+)
+
 
 async def query_db(
     ctx: Context,
@@ -50,6 +56,10 @@ async def query_db(
     # Defense-in-depth: block mutation keywords anywhere in query
     if _FORBIDDEN_KEYWORDS.search(sql):
         return json.dumps({"error": "Only read-only (SELECT) queries are allowed."})
+
+    # Block access to tables containing secrets/credentials
+    if _BLOCKED_TABLES.search(sql):
+        return json.dumps({"error": "Access to credential tables is not allowed."})
 
     # Enforce limit
     row_limit = min(max(1, limit), MAX_ROWS)

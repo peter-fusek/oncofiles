@@ -724,7 +724,7 @@ def _start_sync_scheduler(
             else:
                 await db.reconnect_if_stale(timeout=10.0)
         except Exception:
-            logger.debug("DB keepalive/sync failed — will recover on next query")
+            logger.warning("DB keepalive/sync failed — will recover on next query")
 
     scheduler.add_job(
         _db_keepalive,

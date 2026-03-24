@@ -70,7 +70,7 @@ class PersistentOAuthProvider(InMemoryOAuthProvider):
                 if patient_id:
                     return AccessToken(token=token, client_id=f"patient:{patient_id}", scopes=[])
             except Exception:
-                logger.debug("Patient token lookup failed", exc_info=True)
+                logger.warning("Patient token lookup failed", exc_info=True)
         return None
 
     # ── Restore from DB on startup ──────────────────────────────────────
