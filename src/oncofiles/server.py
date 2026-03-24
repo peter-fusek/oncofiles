@@ -290,6 +290,12 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict]:
         await db.close()
 
 
+# Cache of per-patient API clients — avoids re-creating HTTP pools every 5 min.
+# Key: patient_id, Value: (gdrive, gmail, calendar, folder_id, created_at)
+_patient_clients_cache: dict[str, tuple] = {}
+_CLIENT_CACHE_TTL = 1800  # 30 min — refresh token changes invalidate sooner
+
+
 async def _create_patient_clients(
     db,
     patient_id: str,
@@ -298,8 +304,16 @@ async def _create_patient_clients(
 
     Returns ``(gdrive, gmail_client, calendar_client, folder_id)`` or
     ``None`` if the patient has no OAuth token or no folder configured.
+    Caches clients for 30 min to avoid rebuilding HTTP pools every sync cycle.
     """
+    import time as _time
+
     from oncofiles.oauth import SCOPE_CALENDAR, SCOPE_GMAIL, is_token_expired, refresh_access_token
+
+    # Check cache first
+    cached = _patient_clients_cache.get(patient_id)
+    if cached and (_time.monotonic() - cached[4]) < _CLIENT_CACHE_TTL:
+        return cached[:4]
 
     token = await db.get_oauth_token(patient_id=patient_id)
     if not token or not token.gdrive_folder_id:
@@ -349,6 +363,15 @@ async def _create_patient_clients(
             client_id=GOOGLE_OAUTH_CLIENT_ID,
             client_secret=GOOGLE_OAUTH_CLIENT_SECRET,
         )
+
+    # Cache the clients
+    _patient_clients_cache[patient_id] = (
+        p_gdrive,
+        p_gmail,
+        p_calendar,
+        token.gdrive_folder_id,
+        _time.monotonic(),
+    )
 
     return (p_gdrive, p_gmail, p_calendar, token.gdrive_folder_id)
 
