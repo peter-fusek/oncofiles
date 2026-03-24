@@ -50,3 +50,4 @@ uv run ruff check
 - `reconnect_if_stale(timeout=10.0)` — always pass a timeout; unbounded reconnect cascades up to 105s
 - Turso Hrana streams expire during idle — DB keepalive job pings every 4 min to prevent stale connections
 - `railway.toml`: healthcheckTimeout=120, overlapSeconds=30 — do not lower these
+- **Turso single-connection**: NEVER use `asyncio.gather` for concurrent DB queries — serialize them. Dashboard fetches must also be sequential (no `Promise.all`). The single libsql connection blocks under concurrent access.
