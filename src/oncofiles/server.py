@@ -27,6 +27,7 @@ from oncofiles.config import (
     GOOGLE_OAUTH_CLIENT_ID,
     GOOGLE_OAUTH_CLIENT_SECRET,
     LOG_LEVEL,
+    MAX_DOCUMENTS_PER_PATIENT,
     MCP_BEARER_TOKEN,
     MCP_HOST,
     MCP_PORT,
@@ -43,6 +44,8 @@ from oncofiles.gdrive_client import GDriveClient, create_gdrive_client
 from oncofiles.memory import get_rss_mb, is_memory_pressure
 
 logger = logging.getLogger(__name__)
+
+CONF_MAX_DOCS = MAX_DOCUMENTS_PER_PATIENT
 
 # Stats constants (single source of truth for values that can't be computed at runtime)
 TESTS_COUNT = 607
@@ -1710,6 +1713,7 @@ async def status(request: Request) -> JSONResponse:
                 "version": VERSION,
                 "uptime_s": uptime_s,
                 "documents": doc_count,
+                "document_limit": CONF_MAX_DOCS,
                 "document_health": doc_health,
                 "memory_rss_mb": round(rss_mb, 1),
                 "sync_7d": {

@@ -42,6 +42,9 @@ MCP_HOST: str = os.environ.get("MCP_HOST", "0.0.0.0")
 MCP_PORT: int = int(os.environ.get("MCP_PORT", os.environ.get("PORT", "8000")))
 MCP_BEARER_TOKEN: str = os.environ.get("MCP_BEARER_TOKEN", "")
 
+# Fair Use Policy (FUP) — free tier document limit per patient
+MAX_DOCUMENTS_PER_PATIENT: int = int(os.environ.get("MAX_DOCUMENTS_PER_PATIENT", "200"))
+
 # Sync scheduler (v1.0)
 SYNC_INTERVAL_MINUTES: int = int(os.environ.get("SYNC_INTERVAL_MINUTES", "5"))
 SYNC_ENABLED: bool = os.environ.get("SYNC_ENABLED", "true").lower() in ("true", "1", "yes")

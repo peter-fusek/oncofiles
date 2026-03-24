@@ -119,6 +119,12 @@ async def sync_from_gdrive(
             )
             await db.update_document_category(existing.id, detected)
 
+    # FUP: check document limit before syncing new files
+    from oncofiles.config import MAX_DOCUMENTS_PER_PATIENT
+
+    current_doc_count = await db.count_documents(patient_id=patient_id)
+    fup_reached = current_doc_count >= MAX_DOCUMENTS_PER_PATIENT
+
     # Track which gdrive IDs we've seen (for detecting deletions)
     seen_gdrive_ids: set[str] = set()
     files_processed = 0
@@ -254,6 +260,15 @@ async def sync_from_gdrive(
                 stats["updated"] += 1
             else:
                 # New file — import
+                if fup_reached:
+                    logger.info(
+                        "sync_from_gdrive: FUP limit (%d) — skipping new file %s",
+                        MAX_DOCUMENTS_PER_PATIENT,
+                        filename,
+                    )
+                    stats["skipped"] = stats.get("skipped", 0) + 1
+                    continue
+
                 if dry_run:
                     logger.info("sync_from_gdrive: WOULD IMPORT %s", filename)
                     stats["new"] += 1
@@ -330,6 +345,9 @@ async def sync_from_gdrive(
                         stats["errors"] = stats.get("errors", 0) + 1
 
                 stats["new"] += 1
+                current_doc_count += 1
+                if current_doc_count >= MAX_DOCUMENTS_PER_PATIENT:
+                    fup_reached = True
 
         except Exception:
             logger.exception("sync_from_gdrive: error processing %s", filename)

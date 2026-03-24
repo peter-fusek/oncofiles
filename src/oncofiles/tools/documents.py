@@ -65,6 +65,21 @@ async def upload_document(
     db = _get_db(ctx)
     files = _get_files(ctx)
 
+    # FUP: check document limit per patient
+    from oncofiles.config import MAX_DOCUMENTS_PER_PATIENT
+
+    patient_id = _get_patient_id()
+    doc_count = await db.count_documents(patient_id=patient_id)
+    if doc_count >= MAX_DOCUMENTS_PER_PATIENT:
+        return json.dumps(
+            {
+                "error": f"Document limit reached ({MAX_DOCUMENTS_PER_PATIENT} files). "
+                "Contact support to increase your limit.",
+                "current_count": doc_count,
+                "limit": MAX_DOCUMENTS_PER_PATIENT,
+            }
+        )
+
     # Upload to Files API
     await ctx.info(f"Uploading {filename} ({len(file_bytes)} bytes)...")
     try:
