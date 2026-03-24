@@ -391,6 +391,29 @@ def _start_sync_scheduler(
     _last_sync_times: dict[str, str] = {}
     _last_calendar_sync_times: dict[str, str] = {}
 
+    async def _get_patient_gdrive(pid: str) -> tuple | None:
+        """Get GDrive client + folder_id for a patient. Uses shared lifespan clients for erika."""
+        if pid == "erika" and gdrive and oauth_folder_id:
+            return (gdrive, _get_sync_folder_id_from(oauth_folder_id))
+        clients = await _create_patient_clients(db, pid)
+        if not clients:
+            return None
+        return (clients[0], clients[3])
+
+    async def _get_patient_gmail(pid: str):
+        """Get Gmail client for a patient. Uses shared lifespan clients for erika."""
+        if pid == "erika" and gmail_client:
+            return gmail_client
+        clients = await _create_patient_clients(db, pid)
+        return clients[1] if clients else None
+
+    async def _get_patient_calendar(pid: str):
+        """Get Calendar client for a patient. Uses shared lifespan clients for erika."""
+        if pid == "erika" and calendar_client:
+            return calendar_client
+        clients = await _create_patient_clients(db, pid)
+        return clients[2] if clients else None
+
     async def _run_sync(trigger: str = "scheduled"):
         if is_memory_pressure("sync"):
             return
@@ -401,10 +424,10 @@ def _start_sync_scheduler(
             if is_memory_pressure(f"sync:{pid}"):
                 break
 
-            clients = await _create_patient_clients(db, pid)
-            if not clients:
+            gc = await _get_patient_gdrive(pid)
+            if not gc:
                 continue
-            p_gdrive, _, _, folder_id = clients
+            p_gdrive, folder_id = gc
 
             # Lightweight pre-check: skip heavy sync if no GDrive changes
             last_sync = _last_sync_times.get(pid)
@@ -465,10 +488,10 @@ def _start_sync_scheduler(
         try:
             patients = await db.list_patients(active_only=True)
             for p in patients:
-                clients = await _create_patient_clients(db, p.patient_id)
-                if not clients:
+                gc = await _get_patient_gdrive(p.patient_id)
+                if not gc:
                     continue
-                p_gdrive, _, _, _ = clients
+                p_gdrive, _ = gc
                 stats = await asyncio.wait_for(
                     extract_all_metadata(db, files, p_gdrive, patient_id=p.patient_id),
                     timeout=metadata_timeout,
@@ -537,11 +560,11 @@ def _start_sync_scheduler(
                     )
                     fixable = [d for d, g in gaps if "no_ai" in g or "no_metadata" in g]
                     if fixable:
-                        clients = await _create_patient_clients(db, pid)
-                        if clients:
+                        gc = await _get_patient_gdrive(pid)
+                        if gc:
                             try:
                                 e_stats = await asyncio.wait_for(
-                                    extract_all_metadata(db, files, clients[0], patient_id=pid),
+                                    extract_all_metadata(db, files, gc[0], patient_id=pid),
                                     timeout=metadata_timeout,
                                 )
                                 if e_stats["processed"] > 0:
@@ -763,10 +786,10 @@ def _start_sync_scheduler(
         async def _do_folder_cleanup():
             patients = await db.list_patients(active_only=True)
             for p in patients:
-                clients = await _create_patient_clients(db, p.patient_id)
-                if not clients:
+                gc = await _get_patient_gdrive(p.patient_id)
+                if not gc:
                     continue
-                p_gdrive, _, _, folder_id = clients
+                p_gdrive, folder_id = gc
                 await _cleanup_folders_for(p_gdrive, folder_id, p.patient_id)
 
         async def _cleanup_folders_for(p_gdrive, folder_id, pid):
@@ -947,10 +970,10 @@ def _start_sync_scheduler(
         patients = await db.list_patients(active_only=True)
         for p in patients:
             pid = p.patient_id
-            clients = await _create_patient_clients(db, pid)
-            if not clients:
+            gc = await _get_patient_gdrive(pid)
+            if not gc:
                 continue
-            p_gdrive, _, _, folder_id = clients
+            p_gdrive, folder_id = gc
 
             sync_id = None
             start = _time.monotonic()
@@ -1018,10 +1041,9 @@ def _start_sync_scheduler(
         patients = await db.list_patients(active_only=True)
         for p in patients:
             pid = p.patient_id
-            clients = await _create_patient_clients(db, pid)
-            if not clients or not clients[1]:  # no Gmail client / scope
+            p_gmail = await _get_patient_gmail(pid)
+            if not p_gmail:
                 continue
-            _, p_gmail, _, _ = clients
 
             async with _sync_semaphore:
                 try:
@@ -1073,10 +1095,9 @@ def _start_sync_scheduler(
         patients = await db.list_patients(active_only=True)
         for p in patients:
             pid = p.patient_id
-            clients = await _create_patient_clients(db, pid)
-            if not clients or not clients[2]:  # no Calendar client / scope
+            p_calendar = await _get_patient_calendar(pid)
+            if not p_calendar:
                 continue
-            _, _, p_calendar, _ = clients
 
             # Per-patient skip-if-unchanged optimization
             last_cal = _last_calendar_sync_times.get(pid)
