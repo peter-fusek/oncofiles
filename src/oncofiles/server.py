@@ -111,7 +111,7 @@ def _create_auth():
 
         return PersistentOAuthProvider(
             bearer_token=MCP_BEARER_TOKEN or None,
-            base_url="https://aware-kindness-production.up.railway.app",
+            base_url="https://oncofiles.com",
             client_registration_options=ClientRegistrationOptions(enabled=True),
         )
 
@@ -3095,10 +3095,22 @@ def main() -> None:
     if MCP_TRANSPORT == "stdio":
         mcp.run()
     else:
+        from starlette.middleware import Middleware
+        from starlette.middleware.cors import CORSMiddleware
+
         mcp.run(
             transport=MCP_TRANSPORT,
             host=MCP_HOST,
             port=MCP_PORT,
+            middleware=[
+                Middleware(
+                    CORSMiddleware,
+                    allow_origins=["*"],
+                    allow_credentials=True,
+                    allow_methods=["GET", "POST", "OPTIONS", "DELETE"],
+                    allow_headers=["Authorization", "Content-Type", "mcp-protocol-version"],
+                ),
+            ],
             uvicorn_config={
                 "timeout_keep_alive": 120,
                 "limit_concurrency": 50,
