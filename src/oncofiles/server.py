@@ -902,11 +902,10 @@ def _start_sync_scheduler(
         import json
 
         try:
-            prompt_stats, tool_stats, pipeline_stats = await asyncio.gather(
-                db.get_prompt_stats(days=7),
-                db.get_tool_usage_stats(days=7),
-                db.get_pipeline_stats(),
-            )
+            # Sequential — Turso single-connection can't handle concurrent queries
+            prompt_stats = await db.get_prompt_stats(days=7)
+            tool_stats = await db.get_tool_usage_stats(days=7)
+            pipeline_stats = await db.get_pipeline_stats()
             summary = {
                 "week_ending": datetime.now(UTC).strftime("%Y-%m-%d"),
                 "prompts": {
@@ -2082,12 +2081,11 @@ async def api_usage_analytics(request: Request) -> JSONResponse:
         db_inst: Database = request.app.state.fastmcp_server._lifespan_result["db"]
         days = min(int(request.query_params.get("days", "30")), 90)
 
-        prompt_stats, tool_stats, pipeline_stats, latency = await asyncio.gather(
-            db_inst.get_prompt_stats(days=days),
-            db_inst.get_tool_usage_stats(days=days),
-            db_inst.get_pipeline_stats(),
-            db_inst.get_prompt_latency_percentiles(days=days),
-        )
+        # Sequential — Turso single-connection can't handle concurrent queries
+        prompt_stats = await db_inst.get_prompt_stats(days=days)
+        tool_stats = await db_inst.get_tool_usage_stats(days=days)
+        pipeline_stats = await db_inst.get_pipeline_stats()
+        latency = await db_inst.get_prompt_latency_percentiles(days=days)
 
         from dataclasses import asdict
 
