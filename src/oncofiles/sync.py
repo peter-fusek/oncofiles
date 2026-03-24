@@ -1139,13 +1139,13 @@ async def _sync_inner(
     logger.info("sync: starting bidirectional sync (dry_run=%s)", dry_run)
     _last_sync_error = None
 
+    from oncofiles.memory import db_slot
+
     # Record sync start in history (skip for dry runs)
     sync_id = None
     start_mono = time.monotonic()
     if not dry_run:
         try:
-            from oncofiles.memory import db_slot
-
             async with db_slot("insert_sync_history", priority=False):
                 sync_id = await db.insert_sync_history(trigger=trigger)
         except Exception:
@@ -1183,8 +1183,6 @@ async def _sync_inner(
         if sync_id is not None:
             duration = time.monotonic() - start_mono
             try:
-                from oncofiles.memory import db_slot
-
                 async with db_slot("complete_sync_history", priority=False):
                     await db.complete_sync_history(
                         sync_id,
@@ -1210,8 +1208,6 @@ async def _sync_inner(
         if sync_id is not None:
             duration = time.monotonic() - start_mono
             try:
-                from oncofiles.memory import db_slot
-
                 async with db_slot("complete_sync_history_fail", priority=False):
                     await db.complete_sync_history(
                         sync_id,

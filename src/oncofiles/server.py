@@ -11,7 +11,7 @@ import os
 import sys
 import time
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from urllib.parse import quote
@@ -1102,36 +1102,45 @@ def _start_sync_scheduler(
                 )
                 logger.info("Startup import [%s]: %s", pid, import_stats)
                 if sync_id:
-                    async with db_slot("startup_complete_sync", priority=False):
-                        await db.complete_sync_history(
-                            sync_id,
-                            status="completed",
-                            duration_s=round(_time.monotonic() - start, 1),
-                            from_new=import_stats.get("new", 0),
-                            from_updated=import_stats.get("updated", 0),
-                            from_errors=import_stats.get("errors", 0),
-                            stats_json=str(import_stats),
-                        )
+                    try:
+                        async with db_slot("startup_complete_sync", priority=False):
+                            await db.complete_sync_history(
+                                sync_id,
+                                status="completed",
+                                duration_s=round(_time.monotonic() - start, 1),
+                                from_new=import_stats.get("new", 0),
+                                from_updated=import_stats.get("updated", 0),
+                                from_errors=import_stats.get("errors", 0),
+                                stats_json=str(import_stats),
+                            )
+                    except Exception:
+                        logger.warning("startup: failed to record sync completion", exc_info=True)
             except TimeoutError:
                 logger.warning("Startup import [%s] timed out after 180s", pid)
                 if sync_id:
-                    async with db_slot("startup_complete_sync_timeout", priority=False):
-                        await db.complete_sync_history(
-                            sync_id,
-                            status="failed",
-                            duration_s=round(_time.monotonic() - start, 1),
-                            error_message="Startup import timed out after 180s",
-                        )
+                    try:
+                        async with db_slot("startup_complete_sync_timeout", priority=False):
+                            await db.complete_sync_history(
+                                sync_id,
+                                status="failed",
+                                duration_s=round(_time.monotonic() - start, 1),
+                                error_message="Startup import timed out after 180s",
+                            )
+                    except Exception:
+                        logger.warning("startup: failed to record sync timeout", exc_info=True)
             except Exception as exc:
                 logger.exception("Startup import [%s] failed", pid)
                 if sync_id:
-                    async with db_slot("startup_complete_sync_fail", priority=False):
-                        await db.complete_sync_history(
-                            sync_id,
-                            status="failed",
-                            duration_s=round(_time.monotonic() - start, 1),
-                            error_message=str(exc)[:500],
-                        )
+                    try:
+                        async with db_slot("startup_complete_sync_fail", priority=False):
+                            await db.complete_sync_history(
+                                sync_id,
+                                status="failed",
+                                duration_s=round(_time.monotonic() - start, 1),
+                                error_message=str(exc)[:500],
+                            )
+                    except Exception:
+                        logger.warning("startup: failed to record sync failure", exc_info=True)
 
         await _run_category_validation()
         logger.info("Startup catchup complete: import + validate (RSS: %.1f MB)", get_rss_mb())
@@ -1652,9 +1661,7 @@ async def status(request: Request) -> JSONResponse:
 
         async with db_slot("status", priority=True):
             # Ensure DB connection is fresh before running dashboard queries
-            import contextlib
-
-            with contextlib.suppress(Exception):
+            with suppress(Exception):
                 await db.reconnect_if_stale(timeout=2.0)
 
             from oncofiles.filename_parser import is_standard_format
