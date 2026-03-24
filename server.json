@@ -1,0 +1,40 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.peter-fusek/oncofiles",
+  "title": "Oncofiles",
+  "description": "AI-powered medical document management for cancer patients and caregivers. Connects Google Drive, Gmail, and Calendar to Claude, ChatGPT, and any MCP client.",
+  "repository": {
+    "url": "https://github.com/peter-fusek/oncofiles",
+    "source": "github"
+  },
+  "version_detail": {
+    "version": "4.4.0"
+  },
+  "remotes": [
+    {
+      "transport_type": "streamable-http",
+      "url": "https://oncofiles.com/mcp"
+    }
+  ],
+  "packages": [
+    {
+      "registry_name": "pypi",
+      "name": "oncofiles",
+      "version": "4.4.0",
+      "runtime": "python",
+      "runtime_arguments": ["-m", "oncofiles"],
+      "environment_variables": [
+        {
+          "name": "TURSO_DATABASE_URL",
+          "description": "Turso database URL for cloud storage",
+          "required": false
+        },
+        {
+          "name": "MCP_BEARER_TOKEN",
+          "description": "Bearer token for MCP authentication",
+          "required": false
+        }
+      ]
+    }
+  ]
+}
