@@ -306,17 +306,29 @@ class DatabaseBase:
             await self._db.close()
             self._db = None
 
-    async def reconnect_if_stale(self) -> bool:
-        """Reconnect Turso connection if stale. Returns True if reconnected."""
+    async def reconnect_if_stale(self, timeout: float = 10.0) -> bool:
+        """Reconnect Turso connection if stale. Returns True if reconnected.
+
+        Overall *timeout* (default 10s) caps the total time spent probing +
+        reconnecting so that callers like /health never block for 30-105s.
+        """
         if self._use_turso and isinstance(self._db, _TursoConnection):
             try:
-                await self._db._execute_raw("SELECT 1", ())
-            except Exception as exc:
-                if _is_stale_stream_error(exc):
-                    # reconnect() was already called by _execute_raw, verify it worked
-                    await self._db._execute_raw("SELECT 1", ())
-                    return True
+                return await asyncio.wait_for(self._reconnect_if_stale_inner(), timeout=timeout)
+            except TimeoutError:
+                logger.warning("reconnect_if_stale timed out after %.1fs", timeout)
                 raise
+        return False
+
+    async def _reconnect_if_stale_inner(self) -> bool:
+        try:
+            await self._db._execute_raw("SELECT 1", ())
+        except Exception as exc:
+            if _is_stale_stream_error(exc):
+                # reconnect() was already called by _execute_raw, verify it worked
+                await self._db._execute_raw("SELECT 1", ())
+                return True
+            raise
         return False
 
     @property

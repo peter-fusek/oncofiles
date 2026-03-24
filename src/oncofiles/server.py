@@ -268,16 +268,6 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict]:
             db, files, gdrive, oauth_folder_id, gmail_client, calendar_client
         )
 
-    # Warmup: ping Turso to ensure connection is fresh before accepting requests
-    try:
-        await db.reconnect_if_stale()
-        logger.info("Startup warmup: DB connection verified")
-    except Exception:
-        logger.warning(
-            "Startup warmup: DB ping failed, will reconnect on first request",
-            exc_info=True,
-        )
-
     # Log memory usage after initialization
     logger.info("Startup complete — RSS: %.1f MB", get_rss_mb())
 
@@ -545,6 +535,22 @@ def _start_sync_scheduler(
         _run_pipeline_integrity_check,
         CronTrigger(hour="*/6", minute=30),  # every 6 hours at :30
         id="pipeline_integrity",
+        max_instances=1,
+    )
+
+    # ── DB keepalive (prevents Turso stream expiry during idle periods) ──
+
+    async def _db_keepalive():
+        """Ping Turso every 4 min to keep the Hrana stream alive."""
+        try:
+            await asyncio.wait_for(db.reconnect_if_stale(timeout=10.0), timeout=10.0)
+        except Exception:
+            logger.debug("DB keepalive ping failed — will reconnect on next query")
+
+    scheduler.add_job(
+        _db_keepalive,
+        IntervalTrigger(minutes=4),
+        id="db_keepalive",
         max_instances=1,
     )
 
@@ -1298,17 +1304,38 @@ async def manifest_json(request: Request) -> JSONResponse:
 
 @mcp.custom_route("/health", methods=["GET"])
 async def health(request: Request) -> JSONResponse:
+    """Liveness probe — instant response, no DB dependency.
+
+    Used by Railway healthcheck and UptimeRobot.  Must never block on
+    external I/O so the process is not killed during Turso reconnects.
+    """
+    result: dict = {"status": "ok", "version": VERSION}
+    commit = os.environ.get("RAILWAY_GIT_COMMIT_SHA", "")[:7]
+    if commit:
+        result["commit"] = commit
     try:
         lifespan_ctx = request.app.state.fastmcp_server._lifespan_result
-        db: Database = lifespan_ctx["db"]
-        reconnected = await db.reconnect_if_stale()
-        result: dict = {"status": "ok", "version": VERSION}
-        commit = os.environ.get("RAILWAY_GIT_COMMIT_SHA", "")[:7]
-        if commit:
-            result["commit"] = commit
         started_at = lifespan_ctx.get("started_at")
         if started_at:
             result["uptime_s"] = int((datetime.now(UTC) - started_at).total_seconds())
+        result["memory_rss_mb"] = round(get_rss_mb(), 1)
+    except Exception:
+        pass  # still return 200 even if lifespan context unavailable during startup
+    return JSONResponse(result)
+
+
+@mcp.custom_route("/readiness", methods=["GET"])
+async def readiness(request: Request) -> JSONResponse:
+    """Readiness probe — checks DB connectivity with a 5 s timeout.
+
+    Suitable for dashboards and deeper monitoring; NOT used as Railway
+    healthcheck so a slow Turso reconnect won't kill the process.
+    """
+    try:
+        lifespan_ctx = request.app.state.fastmcp_server._lifespan_result
+        db: Database = lifespan_ctx["db"]
+        reconnected = await asyncio.wait_for(db.reconnect_if_stale(), timeout=5.0)
+        result: dict = {"status": "ok", "version": VERSION, "db": "connected"}
         if reconnected:
             result["reconnected"] = True
         result["memory_rss_mb"] = round(get_rss_mb(), 1)
@@ -1330,8 +1357,11 @@ async def health(request: Request) -> JSONResponse:
                 result["jobs"] = jobs
         return JSONResponse(result)
     except Exception:
-        logger.exception("Health check failed")
-        return JSONResponse({"status": "degraded", "version": VERSION}, status_code=503)
+        logger.exception("Readiness check failed")
+        return JSONResponse(
+            {"status": "degraded", "version": VERSION, "db": "unavailable"},
+            status_code=503,
+        )
 
 
 def _count_tools() -> int:
