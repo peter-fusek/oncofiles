@@ -781,8 +781,83 @@ def _start_sync_scheduler(
                     corrected += 1
                     logger.info("Advocate auto-detected: %s other → advocate", doc.filename)
 
-            if corrected:
-                logger.info("Category validation: corrected %d documents", corrected)
+            # Phase 4: Dedup scan — soft-delete duplicate files (#144)
+            deduped = 0
+            from collections import defaultdict
+
+            groups: dict[tuple, list] = defaultdict(list)
+            for doc in docs:
+                if doc.deleted_at:
+                    continue
+                key = (doc.category.value, str(doc.document_date) if doc.document_date else "none")
+                groups[key].append(doc)
+
+            for _key, group_docs in groups.items():
+                if len(group_docs) < 2:
+                    continue
+                # Within group, find docs with matching gdrive_md5
+                by_md5: dict[str, list] = defaultdict(list)
+                for doc in group_docs:
+                    if doc.gdrive_md5:
+                        by_md5[doc.gdrive_md5].append(doc)
+                for md5, dups in by_md5.items():
+                    if len(dups) < 2:
+                        continue
+                    # Keep oldest (lowest id), soft-delete rest
+                    dups.sort(key=lambda d: d.id)
+                    for dup in dups[1:]:
+                        await db.delete_document(dup.id)
+                        deduped += 1
+                        logger.info(
+                            "Dedup: soft-deleted #%d (%s) — duplicate of #%d (md5=%s)",
+                            dup.id,
+                            dup.filename,
+                            dups[0].id,
+                            md5[:12],
+                        )
+
+            if deduped:
+                logger.info("Dedup scan: soft-deleted %d duplicates", deduped)
+
+            # Phase 5: Flag undated docs for date extraction (#143)
+            undated = 0
+            for doc in docs:
+                if doc.document_date or doc.deleted_at:
+                    continue
+                # Try to extract date from filename (YYYYMMDD prefix)
+                import re as _re
+
+                date_match = _re.match(r"(\d{8})", doc.filename)
+                if date_match:
+                    try:
+                        from datetime import date as _date
+
+                        extracted = _date(
+                            int(date_match.group(1)[:4]),
+                            int(date_match.group(1)[4:6]),
+                            int(date_match.group(1)[6:8]),
+                        )
+                        await db.db.execute(
+                            "UPDATE documents SET document_date = ?, "
+                            "updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') "
+                            "WHERE id = ?",
+                            (extracted.isoformat(), doc.id),
+                        )
+                        await db.db.commit()
+                        undated += 1
+                        logger.info("Date extracted: %s → %s", doc.filename, extracted.isoformat())
+                    except (ValueError, IndexError):
+                        pass
+            if undated:
+                logger.info("Undated fix: extracted dates for %d documents", undated)
+
+            if corrected or deduped or undated:
+                logger.info(
+                    "Category validation total: %d corrected, %d deduped, %d dates extracted",
+                    corrected,
+                    deduped,
+                    undated,
+                )
 
         try:
             await asyncio.wait_for(_do_category_validation(), timeout=metadata_timeout)
