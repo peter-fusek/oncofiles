@@ -263,7 +263,7 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict]:
     # Start background sync scheduler
     scheduler = None
     job_tracker: dict[str, dict] = {}
-    if SYNC_ENABLED and gdrive:
+    if SYNC_ENABLED:
         scheduler, job_tracker = _start_sync_scheduler(
             db, files, gdrive, oauth_folder_id, gmail_client, calendar_client
         )
@@ -290,6 +290,69 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict]:
         await db.close()
 
 
+async def _create_patient_clients(
+    db,
+    patient_id: str,
+) -> tuple | None:
+    """Load OAuth token, refresh if needed, create API clients for a patient.
+
+    Returns ``(gdrive, gmail_client, calendar_client, folder_id)`` or
+    ``None`` if the patient has no OAuth token or no folder configured.
+    """
+    from oncofiles.oauth import SCOPE_CALENDAR, SCOPE_GMAIL, is_token_expired, refresh_access_token
+
+    token = await db.get_oauth_token(patient_id=patient_id)
+    if not token or not token.gdrive_folder_id:
+        return None
+
+    access_token = token.access_token
+    if is_token_expired(token.token_expiry.isoformat() if token.token_expiry else None):
+        try:
+            refreshed = refresh_access_token(token.refresh_token)
+            access_token = refreshed["access_token"]
+            new_expiry = datetime.now(UTC) + timedelta(seconds=refreshed.get("expires_in", 3600))
+            token.access_token = access_token
+            token.token_expiry = new_expiry
+            await db.upsert_oauth_token(token)
+        except Exception:
+            logger.warning("Token refresh failed for patient %s", patient_id, exc_info=True)
+            return None
+
+    p_gdrive = GDriveClient.from_oauth(
+        access_token=access_token,
+        refresh_token=token.refresh_token,
+        client_id=GOOGLE_OAUTH_CLIENT_ID,
+        client_secret=GOOGLE_OAUTH_CLIENT_SECRET,
+        owner_email=token.owner_email or "",
+    )
+
+    granted = json.loads(token.granted_scopes) if token.granted_scopes else []
+
+    p_gmail = None
+    if SCOPE_GMAIL in granted:
+        from oncofiles.gmail_client import GmailClient
+
+        p_gmail = GmailClient.from_oauth(
+            access_token=access_token,
+            refresh_token=token.refresh_token,
+            client_id=GOOGLE_OAUTH_CLIENT_ID,
+            client_secret=GOOGLE_OAUTH_CLIENT_SECRET,
+        )
+
+    p_calendar = None
+    if SCOPE_CALENDAR in granted:
+        from oncofiles.calendar_client import CalendarClient
+
+        p_calendar = CalendarClient.from_oauth(
+            access_token=access_token,
+            refresh_token=token.refresh_token,
+            client_id=GOOGLE_OAUTH_CLIENT_ID,
+            client_secret=GOOGLE_OAUTH_CLIENT_SECRET,
+        )
+
+    return (p_gdrive, p_gmail, p_calendar, token.gdrive_folder_id)
+
+
 def _start_sync_scheduler(
     db, files, gdrive, oauth_folder_id, gmail_client=None, calendar_client=None
 ):
@@ -301,77 +364,94 @@ def _start_sync_scheduler(
 
     sync_timeout = 300  # 5 minutes max for scheduled sync
 
-    _last_sync_time: str | None = None
+    # Per-patient last-sync timestamps (skip-if-unchanged optimization)
+    _last_sync_times: dict[str, str] = {}
+    _last_calendar_sync_times: dict[str, str] = {}
 
     async def _run_sync(trigger: str = "scheduled"):
-        nonlocal _last_sync_time
-
         if is_memory_pressure("sync"):
             return
 
-        folder_id = _get_sync_folder_id_from(oauth_folder_id)
-        if not folder_id:
-            logger.debug("Scheduled sync skipped — no folder ID")
-            return
+        patients = await db.list_patients(active_only=True)
+        for p in patients:
+            pid = p.patient_id
+            if is_memory_pressure(f"sync:{pid}"):
+                break
 
-        # Lightweight pre-check: skip heavy sync if no GDrive changes
-        if _last_sync_time and trigger == "scheduled" and gdrive:
-            try:
-                has_changes = await asyncio.to_thread(
-                    gdrive.has_changes_since, folder_id, _last_sync_time
-                )
-                if not has_changes:
-                    logger.debug("Sync skipped — no GDrive changes since %s", _last_sync_time)
-                    return
-            except Exception:
-                pass  # On error, proceed with full sync
+            clients = await _create_patient_clients(db, pid)
+            if not clients:
+                continue
+            p_gdrive, _, _, folder_id = clients
 
-        async with _sync_semaphore:
-            try:
-                stats = await asyncio.wait_for(
-                    sync(db, files, gdrive, folder_id, trigger=trigger, patient_id="erika"),
-                    timeout=sync_timeout,
-                )
-                _last_sync_time = datetime.now(UTC).isoformat()
-                logger.info("Scheduled sync complete: %s (RSS: %.1f MB)", stats, get_rss_mb())
-                # Auto-enhance new docs after sync (if any were imported)
-                if stats.get("new", 0) > 0 or stats.get("updated", 0) > 0:
-                    try:
-                        e_stats = await asyncio.wait_for(
-                            extract_all_metadata(db, files, gdrive, patient_id="erika"),
-                            timeout=metadata_timeout,
-                        )
-                        if e_stats["processed"] > 0:
-                            logger.info("Post-sync enhance: %s", e_stats)
-                    except Exception:
-                        logger.error("Post-sync enhance failed", exc_info=True)
-            except TimeoutError:
-                logger.error("Scheduled sync timed out after %ds", sync_timeout)
-            except Exception:
-                logger.exception("Scheduled sync failed")
-            finally:
-                from oncofiles.memory import RESTART_THRESHOLD_MB, reclaim_memory
-
-                rss = reclaim_memory("gdrive_sync")
-                # Graceful restart if memory is stuck high after reclaim
-                if rss > RESTART_THRESHOLD_MB and _sync_semaphore._value >= 1:
-                    logger.warning(
-                        "Graceful restart: RSS %.1f MB after sync — exiting for Railway restart",
-                        rss,
+            # Lightweight pre-check: skip heavy sync if no GDrive changes
+            last_sync = _last_sync_times.get(pid)
+            if last_sync and trigger == "scheduled":
+                try:
+                    has_changes = await asyncio.to_thread(
+                        p_gdrive.has_changes_since, folder_id, last_sync
                     )
-                    sys.exit(0)
+                    if not has_changes:
+                        logger.debug("Sync skipped for %s — no changes since %s", pid, last_sync)
+                        continue
+                except Exception:
+                    pass  # On error, proceed with full sync
+
+            async with _sync_semaphore:
+                try:
+                    stats = await asyncio.wait_for(
+                        sync(db, files, p_gdrive, folder_id, trigger=trigger, patient_id=pid),
+                        timeout=sync_timeout,
+                    )
+                    _last_sync_times[pid] = datetime.now(UTC).isoformat()
+                    logger.info("Sync [%s]: %s (RSS: %.1f MB)", pid, stats, get_rss_mb())
+                    # Auto-enhance new docs after sync
+                    if stats.get("new", 0) > 0 or stats.get("updated", 0) > 0:
+                        try:
+                            e_stats = await asyncio.wait_for(
+                                extract_all_metadata(db, files, p_gdrive, patient_id=pid),
+                                timeout=metadata_timeout,
+                            )
+                            if e_stats["processed"] > 0:
+                                logger.info("Post-sync enhance [%s]: %s", pid, e_stats)
+                        except Exception:
+                            logger.error("Post-sync enhance [%s] failed", pid, exc_info=True)
+                except TimeoutError:
+                    logger.error("Sync [%s] timed out after %ds", pid, sync_timeout)
+                except Exception:
+                    logger.exception("Sync [%s] failed", pid)
+                finally:
+                    from oncofiles.memory import reclaim_memory
+
+                    reclaim_memory(f"gdrive_sync:{pid}")
+
+        # Graceful restart check after all patients processed
+        from oncofiles.memory import RESTART_THRESHOLD_MB
+        from oncofiles.memory import reclaim_memory as _reclaim
+
+        rss = _reclaim("gdrive_sync_all")
+        if rss > RESTART_THRESHOLD_MB and _sync_semaphore._value >= 1:
+            logger.warning(
+                "Graceful restart: RSS %.1f MB after sync — exiting for Railway restart",
+                rss,
+            )
+            sys.exit(0)
 
     metadata_timeout = 600  # 10 minutes max for metadata extraction
 
     async def _run_metadata_extraction():
-
         try:
-            stats = await asyncio.wait_for(
-                extract_all_metadata(db, files, gdrive, patient_id="erika"),
-                timeout=metadata_timeout,
-            )
-            if stats["processed"] > 0:
-                logger.info("Metadata extraction: %s", stats)
+            patients = await db.list_patients(active_only=True)
+            for p in patients:
+                clients = await _create_patient_clients(db, p.patient_id)
+                if not clients:
+                    continue
+                p_gdrive, _, _, _ = clients
+                stats = await asyncio.wait_for(
+                    extract_all_metadata(db, files, p_gdrive, patient_id=p.patient_id),
+                    timeout=metadata_timeout,
+                )
+                if stats["processed"] > 0:
+                    logger.info("Metadata extraction [%s]: %s", p.patient_id, stats)
         except TimeoutError:
             logger.error("Metadata extraction timed out after %ds", metadata_timeout)
         except Exception:
@@ -385,11 +465,16 @@ def _start_sync_scheduler(
 
     async def _run_trash_cleanup():
         try:
-            purged = await asyncio.wait_for(
-                db.purge_expired_trash(days=30), timeout=housekeeping_timeout
-            )
-            if purged:
-                logger.info("Trash cleanup: purged %d expired documents", purged)
+            patients = await db.list_patients(active_only=True)
+            total_purged = 0
+            for p in patients:
+                purged = await asyncio.wait_for(
+                    db.purge_expired_trash(days=30, patient_id=p.patient_id),
+                    timeout=housekeeping_timeout,
+                )
+                total_purged += purged
+            if total_purged:
+                logger.info("Trash cleanup: purged %d expired documents", total_purged)
         except TimeoutError:
             logger.error("Trash cleanup timed out after %ds", housekeeping_timeout)
         except Exception:
@@ -398,45 +483,56 @@ def _start_sync_scheduler(
     async def _run_pipeline_integrity_check():
         """Scheduled check: find and fix any docs stuck in incomplete pipeline state."""
         try:
-            all_docs = await db.list_documents(limit=500)
-            ocr_ids = await db.get_ocr_document_ids()
-            gaps = []
+            patients = await db.list_patients(active_only=True)
+            for p in patients:
+                pid = p.patient_id
+                all_docs = await db.list_documents(limit=500, patient_id=pid)
+                ocr_ids = await db.get_ocr_document_ids()
+                gaps = []
 
-            for doc in all_docs:
-                doc_gaps = []
-                if doc.id not in ocr_ids:
-                    doc_gaps.append("no_ocr")
-                if not doc.ai_summary:
-                    doc_gaps.append("no_ai")
-                if not doc.structured_metadata:
-                    doc_gaps.append("no_metadata")
-                if not doc.document_date:
-                    doc_gaps.append("no_date")
-                if not doc.gdrive_id:
-                    doc_gaps.append("no_gdrive")
-                if doc_gaps:
-                    gaps.append((doc, doc_gaps))
+                for doc in all_docs:
+                    doc_gaps = []
+                    if doc.id not in ocr_ids:
+                        doc_gaps.append("no_ocr")
+                    if not doc.ai_summary:
+                        doc_gaps.append("no_ai")
+                    if not doc.structured_metadata:
+                        doc_gaps.append("no_metadata")
+                    if not doc.document_date:
+                        doc_gaps.append("no_date")
+                    if not doc.gdrive_id:
+                        doc_gaps.append("no_gdrive")
+                    if doc_gaps:
+                        gaps.append((doc, doc_gaps))
 
-            if gaps:
-                logger.warning(
-                    "Pipeline integrity: %d docs with gaps: %s",
-                    len(gaps),
-                    ", ".join(f"#{d.id}({'+'.join(g)})" for d, g in gaps[:10]),
-                )
-                # Auto-fix: trigger enhance for docs missing AI/metadata
-                fixable = [d for d, g in gaps if "no_ai" in g or "no_metadata" in g]
-                if fixable and gdrive:
-                    try:
-                        e_stats = await asyncio.wait_for(
-                            extract_all_metadata(db, files, gdrive, patient_id="erika"),
-                            timeout=metadata_timeout,
-                        )
-                        if e_stats["processed"] > 0:
-                            logger.info("Pipeline integrity auto-fix: %s", e_stats)
-                    except Exception:
-                        logger.warning("Pipeline integrity auto-fix failed", exc_info=True)
-            else:
-                logger.info("Pipeline integrity: all %d docs complete", len(all_docs))
+                if gaps:
+                    logger.warning(
+                        "Pipeline integrity [%s]: %d docs with gaps: %s",
+                        pid,
+                        len(gaps),
+                        ", ".join(f"#{d.id}({'+'.join(g)})" for d, g in gaps[:10]),
+                    )
+                    fixable = [d for d, g in gaps if "no_ai" in g or "no_metadata" in g]
+                    if fixable:
+                        clients = await _create_patient_clients(db, pid)
+                        if clients:
+                            try:
+                                e_stats = await asyncio.wait_for(
+                                    extract_all_metadata(db, files, clients[0], patient_id=pid),
+                                    timeout=metadata_timeout,
+                                )
+                                if e_stats["processed"] > 0:
+                                    logger.info(
+                                        "Pipeline integrity auto-fix [%s]: %s", pid, e_stats
+                                    )
+                            except Exception:
+                                logger.warning(
+                                    "Pipeline integrity auto-fix [%s] failed",
+                                    pid,
+                                    exc_info=True,
+                                )
+                else:
+                    logger.info("Pipeline integrity [%s]: all %d docs complete", pid, len(all_docs))
         except Exception:
             logger.exception("Pipeline integrity check failed")
 
@@ -561,7 +657,11 @@ def _start_sync_scheduler(
             from oncofiles.models import DocumentCategory as _DocCat  # noqa: N814
             from oncofiles.tools.hygiene import _DOCTYPE_TO_CATEGORY
 
-            docs = await db.list_documents(limit=500)
+            patients = await db.list_patients(active_only=True)
+            all_docs = []
+            for p in patients:
+                all_docs.extend(await db.list_documents(limit=500, patient_id=p.patient_id))
+            docs = all_docs
             import json as _json
 
             corrected = 0
@@ -636,26 +736,29 @@ def _start_sync_scheduler(
 
     async def _run_empty_folder_cleanup():
         """Remove empty year-month subfolders and merge duplicates from GDrive."""
-        if not gdrive:
-            return
 
         async def _do_folder_cleanup():
-            folder_id = _get_sync_folder_id_from(oauth_folder_id)
-            if not folder_id:
-                return
+            patients = await db.list_patients(active_only=True)
+            for p in patients:
+                clients = await _create_patient_clients(db, p.patient_id)
+                if not clients:
+                    continue
+                p_gdrive, _, _, folder_id = clients
+                await _cleanup_folders_for(p_gdrive, folder_id, p.patient_id)
 
+        async def _cleanup_folders_for(p_gdrive, folder_id, pid):
             cleaned = 0
             merged = 0
 
             # Get category folder structure
-            _, folder_map = await asyncio.to_thread(gdrive.list_folder_with_structure, folder_id)
+            _, folder_map = await asyncio.to_thread(p_gdrive.list_folder_with_structure, folder_id)
 
             # For each category folder, check subfolders
             for cat_folder_id, cat_name in folder_map.items():
                 try:
                     sub_folders_raw = await asyncio.to_thread(
                         lambda fid=cat_folder_id: (
-                            gdrive._service.files()
+                            p_gdrive._service.files()
                             .list(
                                 q=(
                                     f"'{fid}' in parents"
@@ -682,7 +785,7 @@ def _start_sync_scheduler(
                             for dup in ids[1:]:
                                 contents = await asyncio.to_thread(
                                     lambda did=dup: (
-                                        gdrive._service.files()
+                                        p_gdrive._service.files()
                                         .list(
                                             q=f"'{did}' in parents and trashed = false",
                                             fields="files(id)",
@@ -692,7 +795,7 @@ def _start_sync_scheduler(
                                     )
                                 )
                                 if not contents.get("files"):
-                                    await asyncio.to_thread(gdrive.trash_file, dup)
+                                    await asyncio.to_thread(p_gdrive.trash_file, dup)
                                     merged += 1
                                     logger.info(
                                         "Merged duplicate folder '%s/%s' (%s), keeping %s",
@@ -706,7 +809,7 @@ def _start_sync_scheduler(
                     for sf in sub_folders:
                         contents = await asyncio.to_thread(
                             lambda sid=sf["id"]: (
-                                gdrive._service.files()
+                                p_gdrive._service.files()
                                 .list(
                                     q=f"'{sid}' in parents and trashed = false",
                                     fields="files(id)",
@@ -716,7 +819,7 @@ def _start_sync_scheduler(
                             )
                         )
                         if not contents.get("files"):
-                            await asyncio.to_thread(gdrive.trash_file, sf["id"])
+                            await asyncio.to_thread(p_gdrive.trash_file, sf["id"])
                             cleaned += 1
                             logger.info("Trashed empty folder '%s/%s'", cat_name, sf["name"])
 
@@ -725,10 +828,13 @@ def _start_sync_scheduler(
 
             if cleaned or merged:
                 logger.info(
-                    "Folder cleanup: %d empty trashed, %d duplicates merged", cleaned, merged
+                    "Folder cleanup [%s]: %d empty trashed, %d duplicates merged",
+                    pid,
+                    cleaned,
+                    merged,
                 )
             else:
-                logger.info("Folder cleanup: all folders OK")
+                logger.info("Folder cleanup [%s]: all folders OK", pid)
 
         try:
             await asyncio.wait_for(_do_folder_cleanup(), timeout=folder_cleanup_timeout)
@@ -805,62 +911,65 @@ def _start_sync_scheduler(
     from apscheduler.triggers.date import DateTrigger
 
     async def _startup_catchup():
-        """Lightweight startup: import-only sync + category validation.
+        """Lightweight startup: import-only sync + category validation for all patients.
 
         Skips the heavy export phase (rename, organize, OCR export) to avoid
         blocking the event loop and causing health check timeouts. The regular
-        30-min scheduled sync handles exports.
+        5-min scheduled sync handles exports.
         """
-        from oncofiles.sync import sync_from_gdrive as _sync_from
-
-        folder_id = _get_sync_folder_id_from(oauth_folder_id)
-        if not folder_id:
-            logger.debug("Startup catchup skipped — no folder ID")
-            return
-
         import time as _time
 
-        sync_id = None
-        start = _time.monotonic()
-        try:
-            sync_id = await db.insert_sync_history(trigger="startup")
-        except Exception:
-            logger.warning("startup: failed to record sync history", exc_info=True)
+        from oncofiles.sync import sync_from_gdrive as _sync_from
 
-        try:
-            import_stats = await asyncio.wait_for(
-                _sync_from(db, files, gdrive, folder_id, enhance=True, patient_id="erika"),
-                timeout=180,  # 3 min max for import
-            )
-            logger.info("Startup import: %s", import_stats)
-            if sync_id:
-                await db.complete_sync_history(
-                    sync_id,
-                    status="completed",
-                    duration_s=round(_time.monotonic() - start, 1),
-                    from_new=import_stats.get("new", 0),
-                    from_updated=import_stats.get("updated", 0),
-                    from_errors=import_stats.get("errors", 0),
-                    stats_json=str(import_stats),
+        patients = await db.list_patients(active_only=True)
+        for p in patients:
+            pid = p.patient_id
+            clients = await _create_patient_clients(db, pid)
+            if not clients:
+                continue
+            p_gdrive, _, _, folder_id = clients
+
+            sync_id = None
+            start = _time.monotonic()
+            try:
+                sync_id = await db.insert_sync_history(trigger="startup")
+            except Exception:
+                logger.warning("startup: failed to record sync history", exc_info=True)
+
+            try:
+                import_stats = await asyncio.wait_for(
+                    _sync_from(db, files, p_gdrive, folder_id, enhance=True, patient_id=pid),
+                    timeout=180,  # 3 min max for import
                 )
-        except TimeoutError:
-            logger.warning("Startup import timed out after 180s")
-            if sync_id:
-                await db.complete_sync_history(
-                    sync_id,
-                    status="failed",
-                    duration_s=round(_time.monotonic() - start, 1),
-                    error_message="Startup import timed out after 180s",
-                )
-        except Exception as exc:
-            logger.exception("Startup import failed")
-            if sync_id:
-                await db.complete_sync_history(
-                    sync_id,
-                    status="failed",
-                    duration_s=round(_time.monotonic() - start, 1),
-                    error_message=str(exc)[:500],
-                )
+                logger.info("Startup import [%s]: %s", pid, import_stats)
+                if sync_id:
+                    await db.complete_sync_history(
+                        sync_id,
+                        status="completed",
+                        duration_s=round(_time.monotonic() - start, 1),
+                        from_new=import_stats.get("new", 0),
+                        from_updated=import_stats.get("updated", 0),
+                        from_errors=import_stats.get("errors", 0),
+                        stats_json=str(import_stats),
+                    )
+            except TimeoutError:
+                logger.warning("Startup import [%s] timed out after 180s", pid)
+                if sync_id:
+                    await db.complete_sync_history(
+                        sync_id,
+                        status="failed",
+                        duration_s=round(_time.monotonic() - start, 1),
+                        error_message="Startup import timed out after 180s",
+                    )
+            except Exception as exc:
+                logger.exception("Startup import [%s] failed", pid)
+                if sync_id:
+                    await db.complete_sync_history(
+                        sync_id,
+                        status="failed",
+                        duration_s=round(_time.monotonic() - start, 1),
+                        error_message=str(exc)[:500],
+                    )
 
         await _run_category_validation()
         logger.info("Startup catchup complete: import + validate (RSS: %.1f MB)", get_rss_mb())
@@ -877,165 +986,128 @@ def _start_sync_scheduler(
     # ── Gmail sync jobs ───────────────────────────────────────────────────
     gmail_sync_timeout = 300  # 5 minutes max
 
-    async def _run_gmail_sync(trigger: str = "scheduled"):
-        if not gmail_client:
-            return
-
+    async def _run_gmail_sync(trigger: str = "scheduled", *, initial: bool = False):
         if is_memory_pressure("Gmail sync"):
             return
 
         from oncofiles.gmail_sync import gmail_sync as _gmail_sync
 
-        async with _sync_semaphore:
-            try:
-                stats = await asyncio.wait_for(
-                    _gmail_sync(db, files, gmail_client, initial=False, patient_id="erika"),
-                    timeout=gmail_sync_timeout,
-                )
-                if not stats.get("skipped"):
-                    logger.info("Gmail sync (%s): %s", trigger, stats)
-            except TimeoutError:
-                logger.error("Gmail sync timed out after %ds", gmail_sync_timeout)
-            except Exception:
-                logger.exception("Gmail sync failed")
-            finally:
-                from oncofiles.memory import reclaim_memory
+        patients = await db.list_patients(active_only=True)
+        for p in patients:
+            pid = p.patient_id
+            clients = await _create_patient_clients(db, pid)
+            if not clients or not clients[1]:  # no Gmail client / scope
+                continue
+            _, p_gmail, _, _ = clients
 
-                reclaim_memory("gmail_sync")
+            async with _sync_semaphore:
+                try:
+                    stats = await asyncio.wait_for(
+                        _gmail_sync(db, files, p_gmail, initial=initial, patient_id=pid),
+                        timeout=gmail_sync_timeout,
+                    )
+                    if not stats.get("skipped"):
+                        logger.info("Gmail sync [%s] (%s): %s", pid, trigger, stats)
+                except TimeoutError:
+                    logger.error("Gmail sync [%s] timed out after %ds", pid, gmail_sync_timeout)
+                except Exception:
+                    logger.exception("Gmail sync [%s] failed", pid)
+                finally:
+                    from oncofiles.memory import reclaim_memory
 
-    async def _startup_gmail_sync():
-        if not gmail_client:
-            return
+                    reclaim_memory(f"gmail_sync:{pid}")
 
-        from oncofiles.gmail_sync import gmail_sync as _gmail_sync
-
-        async with _sync_semaphore:
-            try:
-                stats = await asyncio.wait_for(
-                    _gmail_sync(db, files, gmail_client, initial=True, patient_id="erika"),
-                    timeout=gmail_sync_timeout,
-                )
-                logger.info("Gmail initial sync: %s (RSS: %.1f MB)", stats, get_rss_mb())
-            except TimeoutError:
-                logger.error("Gmail initial sync timed out after %ds", gmail_sync_timeout)
-            except Exception:
-                logger.exception("Gmail initial sync failed")
-            finally:
-                from oncofiles.memory import reclaim_memory
-
-                reclaim_memory("gmail_startup_sync")
-
-    if gmail_client:
-        scheduler.add_job(
-            _run_gmail_sync,
-            IntervalTrigger(
-                minutes=SYNC_INTERVAL_MINUTES, start_date=datetime.now() + timedelta(minutes=2)
-            ),
-            id="gmail_sync",
-            max_instances=1,
-        )
-        gmail_startup_time = datetime.now() + timedelta(seconds=90)
-        scheduler.add_job(
-            _startup_gmail_sync,
-            DateTrigger(run_date=gmail_startup_time),
-            id="gmail_startup_sync",
-            max_instances=1,
-        )
-        logger.info(
-            "Gmail sync scheduled — every %d min (offset +2m), startup at %s",
-            SYNC_INTERVAL_MINUTES,
-            gmail_startup_time.strftime("%H:%M:%S"),
-        )
+    scheduler.add_job(
+        _run_gmail_sync,
+        IntervalTrigger(
+            minutes=SYNC_INTERVAL_MINUTES, start_date=datetime.now() + timedelta(minutes=2)
+        ),
+        id="gmail_sync",
+        max_instances=1,
+    )
+    gmail_startup_time = datetime.now() + timedelta(seconds=90)
+    scheduler.add_job(
+        lambda: _run_gmail_sync("startup", initial=True),
+        DateTrigger(run_date=gmail_startup_time),
+        id="gmail_startup_sync",
+        max_instances=1,
+    )
+    logger.info(
+        "Gmail sync scheduled — every %d min (offset +2m), startup at %s",
+        SYNC_INTERVAL_MINUTES,
+        gmail_startup_time.strftime("%H:%M:%S"),
+    )
 
     # ── Calendar sync jobs ─────────────────────────────────────────────────
     calendar_sync_timeout = 300  # 5 minutes max
-    _last_calendar_sync_time: str | None = None
 
-    async def _run_calendar_sync(trigger: str = "scheduled"):
-        nonlocal _last_calendar_sync_time
-        if not calendar_client:
-            return
-
+    async def _run_calendar_sync(trigger: str = "scheduled", *, initial: bool = False):
         if is_memory_pressure("Calendar sync"):
             return
 
-        # Lightweight pre-check: skip if no calendar changes since last sync
-        if _last_calendar_sync_time and trigger == "scheduled":
-            try:
-                has_changes = await asyncio.to_thread(
-                    calendar_client.has_changes_since, _last_calendar_sync_time
-                )
-                if not has_changes:
-                    logger.debug(
-                        "Calendar sync skipped — no changes since %s", _last_calendar_sync_time
+        from oncofiles.calendar_sync import calendar_sync as _calendar_sync
+
+        patients = await db.list_patients(active_only=True)
+        for p in patients:
+            pid = p.patient_id
+            clients = await _create_patient_clients(db, pid)
+            if not clients or not clients[2]:  # no Calendar client / scope
+                continue
+            _, _, p_calendar, _ = clients
+
+            # Per-patient skip-if-unchanged optimization
+            last_cal = _last_calendar_sync_times.get(pid)
+            if last_cal and trigger == "scheduled":
+                try:
+                    has_changes = await asyncio.to_thread(p_calendar.has_changes_since, last_cal)
+                    if not has_changes:
+                        logger.debug(
+                            "Calendar sync [%s] skipped — no changes since %s", pid, last_cal
+                        )
+                        continue
+                except Exception:
+                    pass  # On error, proceed with full sync
+
+            async with _sync_semaphore:
+                try:
+                    stats = await asyncio.wait_for(
+                        _calendar_sync(db, p_calendar, initial=initial, patient_id=pid),
+                        timeout=calendar_sync_timeout,
                     )
-                    return
-            except Exception:
-                pass  # On error, proceed with full sync
+                    if not stats.get("skipped"):
+                        logger.info("Calendar sync [%s] (%s): %s", pid, trigger, stats)
+                    _last_calendar_sync_times[pid] = datetime.now(UTC).isoformat()
+                except TimeoutError:
+                    logger.error(
+                        "Calendar sync [%s] timed out after %ds", pid, calendar_sync_timeout
+                    )
+                except Exception:
+                    logger.exception("Calendar sync [%s] failed", pid)
+                finally:
+                    from oncofiles.memory import reclaim_memory
 
-        from oncofiles.calendar_sync import calendar_sync as _calendar_sync
+                    reclaim_memory(f"calendar_sync:{pid}")
 
-        async with _sync_semaphore:
-            try:
-                stats = await asyncio.wait_for(
-                    _calendar_sync(db, calendar_client, initial=False, patient_id="erika"),
-                    timeout=calendar_sync_timeout,
-                )
-                if not stats.get("skipped"):
-                    logger.info("Calendar sync (%s): %s", trigger, stats)
-                _last_calendar_sync_time = datetime.now(UTC).isoformat()
-            except TimeoutError:
-                logger.error("Calendar sync timed out after %ds", calendar_sync_timeout)
-            except Exception:
-                logger.exception("Calendar sync failed")
-            finally:
-                from oncofiles.memory import reclaim_memory
-
-                reclaim_memory("calendar_sync")
-
-    async def _startup_calendar_sync():
-        if not calendar_client:
-            return
-
-        from oncofiles.calendar_sync import calendar_sync as _calendar_sync
-
-        async with _sync_semaphore:
-            try:
-                stats = await asyncio.wait_for(
-                    _calendar_sync(db, calendar_client, initial=True, patient_id="erika"),
-                    timeout=calendar_sync_timeout,
-                )
-                logger.info("Calendar initial sync: %s (RSS: %.1f MB)", stats, get_rss_mb())
-            except TimeoutError:
-                logger.error("Calendar initial sync timed out after %ds", calendar_sync_timeout)
-            except Exception:
-                logger.exception("Calendar initial sync failed")
-            finally:
-                from oncofiles.memory import reclaim_memory
-
-                reclaim_memory("calendar_startup_sync")
-
-    if calendar_client:
-        scheduler.add_job(
-            _run_calendar_sync,
-            IntervalTrigger(
-                minutes=SYNC_INTERVAL_MINUTES, start_date=datetime.now() + timedelta(minutes=3)
-            ),
-            id="calendar_sync",
-            max_instances=1,
-        )
-        calendar_startup_time = datetime.now() + timedelta(seconds=120)
-        scheduler.add_job(
-            _startup_calendar_sync,
-            DateTrigger(run_date=calendar_startup_time),
-            id="calendar_startup_sync",
-            max_instances=1,
-        )
-        logger.info(
-            "Calendar sync scheduled — every %d min (offset +3m), startup at %s",
-            SYNC_INTERVAL_MINUTES,
-            calendar_startup_time.strftime("%H:%M:%S"),
-        )
+    scheduler.add_job(
+        _run_calendar_sync,
+        IntervalTrigger(
+            minutes=SYNC_INTERVAL_MINUTES, start_date=datetime.now() + timedelta(minutes=3)
+        ),
+        id="calendar_sync",
+        max_instances=1,
+    )
+    calendar_startup_time = datetime.now() + timedelta(seconds=120)
+    scheduler.add_job(
+        lambda: _run_calendar_sync("startup", initial=True),
+        DateTrigger(run_date=calendar_startup_time),
+        id="calendar_startup_sync",
+        max_instances=1,
+    )
+    logger.info(
+        "Calendar sync scheduled — every %d min (offset +3m), startup at %s",
+        SYNC_INTERVAL_MINUTES,
+        calendar_startup_time.strftime("%H:%M:%S"),
+    )
 
     # ── Job tracking for /health endpoint ────────────────────────────────
     job_tracker: dict[str, dict] = {}
@@ -2259,52 +2331,28 @@ async def api_sync_trigger(request: Request) -> JSONResponse:
         files = lifespan_ctx["files"]
 
         # Verify patient exists
-        patient = await db_inst.get_patient(patient_id)
-        if not patient:
+        pat = await db_inst.get_patient(patient_id)
+        if not pat:
             return JSONResponse({"error": f"Patient '{patient_id}' not found"}, status_code=404)
 
-        # Load patient's OAuth token
-        token = await db_inst.get_oauth_token(patient_id=patient_id)
-        if not token:
+        # Create GDrive client from patient's OAuth token
+        clients = await _create_patient_clients(db_inst, patient_id)
+        if not clients:
             return JSONResponse(
                 {
                     "error": (
-                        f"No OAuth token for patient '{patient_id}'. Connect Google Drive first."
+                        f"No OAuth token or folder for patient '{patient_id}'. "
+                        "Connect Google Drive first."
                     )
                 },
                 status_code=400,
             )
-
-        folder_id = token.gdrive_folder_id
-        if not folder_id:
-            return JSONResponse(
-                {"error": "No GDrive folder configured. Use gdrive_set_folder first."},
-                status_code=400,
-            )
-
-        # Create GDrive client from patient's OAuth token
-        from oncofiles.oauth import is_token_expired, refresh_access_token
-
-        access_token = token.access_token
-        if is_token_expired(token.token_expiry.isoformat() if token.token_expiry else None):
-            refreshed = refresh_access_token(token.refresh_token)
-            access_token = refreshed["access_token"]
-            new_expiry = datetime.now(UTC) + timedelta(seconds=refreshed.get("expires_in", 3600))
-            token.access_token = access_token
-            token.token_expiry = new_expiry
-            await db_inst.upsert_oauth_token(token)
-
-        gdrive = GDriveClient.from_oauth(
-            access_token=access_token,
-            refresh_token=token.refresh_token,
-            client_id=GOOGLE_OAUTH_CLIENT_ID,
-            client_secret=GOOGLE_OAUTH_CLIENT_SECRET,
-        )
+        p_gdrive, _, _, folder_id = clients
 
         from oncofiles.sync import sync
 
         stats = await asyncio.wait_for(
-            sync(db_inst, files, gdrive, folder_id, trigger="manual", patient_id=patient_id),
+            sync(db_inst, files, p_gdrive, folder_id, trigger="manual", patient_id=patient_id),
             timeout=120,
         )
 
