@@ -359,6 +359,26 @@
     }
     .error-banner.visible { display: flex; align-items: center; justify-content: space-between; }
 
+    /* MCP connection bar */
+    .mcp-bar {
+      display: flex;
+      align-items: center;
+      gap: 1.5rem;
+      padding: 0.5rem 1rem;
+      background: rgba(20, 184, 166, 0.05);
+      border: 1px solid rgba(20, 184, 166, 0.15);
+      border-radius: 8px;
+      margin: 0.75rem 0;
+      font-size: 0.75rem;
+      flex-wrap: wrap;
+    }
+    .mcp-bar-item { display: flex; align-items: center; gap: 0.5rem; }
+    .mcp-bar-label { color: var(--text-muted); font-weight: 600; text-transform: uppercase; font-size: 0.625rem; letter-spacing: 0.08em; }
+    .mcp-bar code { background: var(--surface); padding: 0.2rem 0.5rem; border-radius: 4px; font-size: 0.6875rem; color: var(--accent); }
+    .copy-btn { background: none; border: 1px solid var(--border); color: var(--text-muted); padding: 0.15rem 0.5rem; border-radius: 4px; cursor: pointer; font-size: 0.625rem; }
+    .copy-btn:hover { border-color: var(--accent); color: var(--accent); }
+    @media (max-width: 768px) { .mcp-bar { flex-direction: column; align-items: flex-start; gap: 0.5rem; } }
+
     /* Summary cards */
     .cards {
       display: grid;
@@ -702,6 +722,22 @@
       <div id="error-banner" class="error-banner">
         <span id="error-text"></span>
         <button class="refresh-btn" onclick="refresh()" style="margin-left:1rem">Retry</button>
+      </div>
+
+      <!-- MCP Connection bar (hidden in demo mode) -->
+      <div id="mcp-connection-bar" class="mcp-bar" style="display:none">
+        <div class="mcp-bar-item">
+          <span class="mcp-bar-label">MCP URL</span>
+          <code id="mcp-url-display">https://oncofiles.com/mcp</code>
+          <button class="copy-btn" onclick="navigator.clipboard.writeText(document.getElementById('mcp-url-display').textContent)">Copy</button>
+        </div>
+        <div class="mcp-bar-item">
+          <span class="mcp-bar-label">Bearer Token</span>
+          <code id="mcp-token-display" style="max-width:180px;overflow:hidden;text-overflow:ellipsis">—</code>
+          <button class="copy-btn" id="mcp-token-copy" onclick="navigator.clipboard.writeText(document.getElementById('mcp-token-display').textContent)" style="display:none">Copy</button>
+          <button class="copy-btn" id="mcp-token-gen" onclick="showShareModal()">Generate</button>
+        </div>
+        <button class="copy-btn" onclick="showShareModal()" style="margin-left:auto">Setup Guide</button>
       </div>
 
       <!-- Summary cards -->
@@ -1198,6 +1234,10 @@
     function showDashboard() {
       document.getElementById('auth-gate').style.display = 'none';
       document.getElementById('dashboard').style.display = 'block';
+      // Show MCP connection bar (not in demo mode)
+      if (!window.DEMO_MODE) {
+        document.getElementById('mcp-connection-bar').style.display = 'flex';
+      }
       // Show user info
       var email = sessionStorage.getItem('oncofiles_email') || '';
       var name = sessionStorage.getItem('oncofiles_name') || '';
@@ -1646,6 +1686,10 @@
           var info = await redeemResp.json();
           document.getElementById('share-token').textContent = info.bearer_token;
           updateShareInstructions(info.bearer_token);
+          // Also update the MCP connection bar
+          document.getElementById('mcp-token-display').textContent = info.bearer_token;
+          document.getElementById('mcp-token-copy').style.display = '';
+          document.getElementById('mcp-token-gen').style.display = 'none';
         }
       } catch (e) {
         btn.textContent = 'Error: ' + e.message;
