@@ -1692,13 +1692,12 @@
       setConnectionState('loading');
       showSkeletons();
       try {
-        const [status, docs, prompts, recon, analytics] = await Promise.all([
-          apiFetch('/status'),
-          apiFetch('/api/documents?filter=' + encodeURIComponent(currentFilter) + '&limit=200'),
-          apiFetch('/api/prompt-log?limit=50'),
-          apiFetch('/api/reconciliation').catch(function(){ return null; }),
-          apiFetch('/api/usage-analytics').catch(function(){ return null; })
-        ]);
+        // Sequential fetches — Turso single-connection can't handle parallel queries
+        var status = await apiFetch('/status');
+        var docs = await apiFetch('/api/documents?filter=' + encodeURIComponent(currentFilter) + '&limit=200');
+        var prompts = await apiFetch('/api/prompt-log?limit=50');
+        var recon = await apiFetch('/api/reconciliation').catch(function(){ return null; });
+        var analytics = await apiFetch('/api/usage-analytics').catch(function(){ return null; });
         setConnectionState('ok');
         hideSkeletons();
         renderStatus(status);
