@@ -133,17 +133,38 @@
     }
     .wizard-steps {
       display: flex;
-      gap: 0.5rem;
-      margin-bottom: 1.5rem;
+      gap: 0.75rem;
+      margin-bottom: 0.25rem;
+      justify-content: center;
     }
     .wizard-step-dot {
       width: 2rem;
-      height: 0.25rem;
-      border-radius: 0.125rem;
+      height: 2rem;
+      border-radius: 50%;
       background: var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 0.6875rem;
+      font-weight: 700;
+      color: var(--text-muted);
     }
-    .wizard-step-dot.active { background: var(--accent); }
-    .wizard-step-dot.done { background: var(--green); }
+    .wizard-step-dot.active { background: var(--accent); color: white; }
+    .wizard-step-dot.done { background: var(--green); color: white; }
+    .wizard-step-labels {
+      display: flex;
+      gap: 0.75rem;
+      justify-content: center;
+      margin-bottom: 1.5rem;
+    }
+    .wizard-step-labels span {
+      width: 2rem;
+      text-align: center;
+      font-size: 0.5625rem;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
     .wizard-field { margin-bottom: 1rem; }
     .wizard-field label {
       display: block;
@@ -883,10 +904,13 @@
   <div id="wizard-overlay" class="wizard-overlay">
     <div class="wizard-panel">
       <div class="wizard-steps">
-        <div id="wiz-dot-1" class="wizard-step-dot active"></div>
-        <div id="wiz-dot-2" class="wizard-step-dot"></div>
-        <div id="wiz-dot-3" class="wizard-step-dot"></div>
-        <div id="wiz-dot-4" class="wizard-step-dot"></div>
+        <div id="wiz-dot-1" class="wizard-step-dot active" title="Create Patient">1</div>
+        <div id="wiz-dot-2" class="wizard-step-dot" title="Connect Drive">2</div>
+        <div id="wiz-dot-3" class="wizard-step-dot" title="First Sync">3</div>
+        <div id="wiz-dot-4" class="wizard-step-dot" title="Done">&#10003;</div>
+      </div>
+      <div class="wizard-step-labels">
+        <span>Create</span><span>Connect</span><span>Sync</span><span>Done</span>
       </div>
 
       <!-- Step 1: Create patient -->
@@ -932,8 +956,11 @@
 
         <!-- Phase A: Authorize -->
         <div id="wiz-step2-auth">
-          <p style="color:var(--text-muted);font-size:0.875rem;margin-bottom:1rem">
-            Step 1: Authorize Google Drive access.
+          <p style="color:var(--text-muted);font-size:0.875rem;margin-bottom:0.5rem">
+            Authorize read-only access to your Google Drive.
+          </p>
+          <p style="color:var(--text-muted);font-size:0.75rem;margin-bottom:1rem;opacity:0.7">
+            Oncofiles will read files from your chosen folder, organize them by category and date, and make them searchable via AI. Your files stay on your Drive — we only read, rename, and organize.
           </p>
           <div class="wizard-actions">
             <button class="wizard-btn-secondary" onclick="wizardSkipToEnd()">Skip for now</button>
@@ -947,8 +974,11 @@
 
         <!-- Phase B: Folder picker (shown after OAuth) -->
         <div id="wiz-step2-folder" style="display:none">
-          <p style="color:var(--text-muted);font-size:0.875rem;margin-bottom:1rem">
-            Step 2: Choose a Google Drive folder for documents.
+          <p style="color:var(--text-muted);font-size:0.875rem;margin-bottom:0.5rem">
+            Choose a folder for medical documents.
+          </p>
+          <p style="color:var(--text-muted);font-size:0.75rem;margin-bottom:1rem;opacity:0.7">
+            Pick an existing folder or create a new one. Oncofiles will create subfolders for each document category (Labs, Imaging, Pathology, etc.) inside it.
           </p>
           <div class="wizard-field">
             <label for="wiz-folder-select">Select folder</label>
@@ -971,8 +1001,11 @@
       <!-- Step 3: First sync -->
       <div id="wiz-step-3" style="display:none">
         <h2>First Sync</h2>
-        <p style="color:var(--text-muted);font-size:0.875rem;margin-bottom:1rem">
-          Trigger the first document sync from Google Drive.
+        <p style="color:var(--text-muted);font-size:0.875rem;margin-bottom:0.5rem">
+          Import documents from your Google Drive folder.
+        </p>
+        <p style="color:var(--text-muted);font-size:0.75rem;margin-bottom:1rem;opacity:0.7">
+          This reads your files, runs OCR on scans, generates AI summaries, and organizes everything by date and category. After this, syncs run automatically every 5 minutes.
         </p>
         <div class="wizard-actions">
           <button class="wizard-btn-secondary" onclick="wizardSkipToEnd()">Skip</button>
