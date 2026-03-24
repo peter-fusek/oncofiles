@@ -457,6 +457,77 @@
     }
 
     /* ── Founder story ────────────────────────────── */
+    /* ── Chat preview ─────────────────────────────── */
+    .chat-preview {
+      padding: 4rem 0;
+      border-top: 1px solid var(--border);
+    }
+    .chat-window {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 0.75rem;
+      overflow: hidden;
+      max-width: 640px;
+      margin: 2rem auto 0;
+    }
+    .chat-header {
+      padding: 0.75rem 1rem;
+      border-bottom: 1px solid var(--border);
+      font-size: 0.75rem;
+      color: var(--text-muted);
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+    .chat-header .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); }
+    .chat-messages { padding: 1.25rem; display: flex; flex-direction: column; gap: 1rem; }
+    .chat-msg {
+      max-width: 85%;
+      padding: 0.75rem 1rem;
+      border-radius: 0.75rem;
+      font-size: 0.8125rem;
+      line-height: 1.5;
+    }
+    .chat-msg.user {
+      align-self: flex-end;
+      background: rgba(20, 184, 166, 0.15);
+      border: 1px solid rgba(20, 184, 166, 0.25);
+      color: var(--text);
+    }
+    .chat-msg.assistant {
+      align-self: flex-start;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      color: var(--text);
+    }
+    .chat-tool {
+      font-size: 0.6875rem;
+      padding: 0.5rem 0.75rem;
+      background: rgba(139, 92, 246, 0.08);
+      border: 1px solid rgba(139, 92, 246, 0.2);
+      border-radius: 0.5rem;
+      margin: 0.25rem 0;
+      color: var(--purple);
+      font-family: 'DM Mono', monospace;
+    }
+    .chat-tabs { display: flex; gap: 0; border-bottom: 1px solid var(--border); }
+    .chat-tab {
+      padding: 0.5rem 1rem;
+      font-size: 0.75rem;
+      color: var(--text-muted);
+      cursor: pointer;
+      border-bottom: 2px solid transparent;
+      background: none;
+      border-top: none;
+      border-left: none;
+      border-right: none;
+    }
+    .chat-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+    @media (max-width: 768px) {
+      .chat-window { margin: 1.5rem 0 0; }
+      .chat-msg { max-width: 95%; font-size: 0.75rem; }
+    }
+
     .story {
       padding: 5rem 0;
       border-top: 1px solid var(--border);
@@ -872,6 +943,40 @@
       </div>
     </section>
 
+    <!-- Chat preview -->
+    <section class="chat-preview">
+      <div class="container">
+        <div class="section-label" data-sk="Ako to vyzerá v praxi" data-en="See it in action">Ako to vyzerá v praxi</div>
+        <h2 class="section-title" data-sk="Pýtajte sa prirodzene, dostanete odpovede z vašich záznamov" data-en="Ask naturally, get answers from your records">Pýtajte sa prirodzene, dostanete odpovede z vašich záznamov</h2>
+        <div class="chat-window">
+          <div class="chat-tabs">
+            <button class="chat-tab active" onclick="switchChatTab('claude',this)" data-sk="Claude.ai" data-en="Claude.ai">Claude.ai</button>
+            <button class="chat-tab" onclick="switchChatTab('chatgpt',this)" data-sk="ChatGPT" data-en="ChatGPT">ChatGPT</button>
+            <button class="chat-tab" onclick="switchChatTab('code',this)" data-sk="Claude Code" data-en="Claude Code">Claude Code</button>
+          </div>
+          <div id="chat-claude" class="chat-messages">
+            <div class="chat-msg user" data-sk="Aké boli moje posledné výsledky krvi? Zmenilo sa niečo oproti minulému odberu?" data-en="What were my latest blood results? Did anything change since last time?">Aké boli moje posledné výsledky krvi? Zmenilo sa niečo oproti minulému odberu?</div>
+            <div class="chat-tool">oncofiles: search_documents("labs march")</div>
+            <div class="chat-tool">oncofiles: get_lab_trends("WBC, HGB, PLT")</div>
+            <div class="chat-msg assistant" data-html data-sk="Podľa vašich laboratórnych výsledkov z 19. marca (NOU):<br><br><strong>WBC:</strong> 4.2 → 3.8 (pokles 9.5%, v norme)<br><strong>HGB:</strong> 118 → 112 g/L (mierny pokles, sledovať)<br><strong>PLT:</strong> 245 → 268 (v norme, ale stúpajúci trend pri aktívnej VTE)<br><br>Neutrofily sú stabilné, ale hemoglobín klesá — odporúčam spýtať sa onkológa na prípadnú suplementáciu železa." data-en="Based on your lab results from March 19 (NOU):<br><br><strong>WBC:</strong> 4.2 → 3.8 (9.5% decrease, within range)<br><strong>HGB:</strong> 118 → 112 g/L (slight decrease, monitor)<br><strong>PLT:</strong> 245 → 268 (normal, but rising trend with active VTE)<br><br>Neutrophils are stable, but hemoglobin is declining — recommend asking your oncologist about iron supplementation.">Podľa vašich laboratórnych výsledkov z 19. marca (NOU):<br><br><strong>WBC:</strong> 4.2 → 3.8 (pokles 9.5%, v norme)<br><strong>HGB:</strong> 118 → 112 g/L (mierny pokles, sledovať)<br><strong>PLT:</strong> 245 → 268 (v norme, ale stúpajúci trend pri aktívnej VTE)<br><br>Neutrofily sú stabilné, ale hemoglobín klesá — odporúčam spýtať sa onkológa na prípadnú suplementáciu železa.</div>
+          </div>
+          <div id="chat-chatgpt" class="chat-messages" style="display:none">
+            <div class="chat-msg user" data-sk="Kedy mám ďalšiu chemoterapiu a čo potrebujem pred ňou?" data-en="When is my next chemo and what do I need before it?">Kedy mám ďalšiu chemoterapiu a čo potrebujem pred ňou?</div>
+            <div class="chat-tool">oncofiles: search_calendar("chemo")</div>
+            <div class="chat-tool">oncofiles: get_precycle_checklist()</div>
+            <div class="chat-msg assistant" data-html data-sk="Váš ďalší cyklus FOLFOX je naplánovaný na <strong>28. marca</strong> v NOU.<br><br>Pred cyklom potrebujete:<br>✅ Krvný obraz (posledný: 19.3. — OK)<br>⚠️ Pečeňové testy (posledné: 12.3. — potrebná aktualizácia)<br>✅ Koagulácia ([MEDICATION_REDACTED] — bez zmeny)<br><br>Odporúčam objednať odber krvi aspoň 3 dni pred cyklom." data-en="Your next FOLFOX cycle is scheduled for <strong>March 28</strong> at NOU.<br><br>Pre-cycle requirements:<br>✅ CBC (last: Mar 19 — OK)<br>⚠️ Liver panel (last: Mar 12 — needs update)<br>✅ Coagulation ([MEDICATION_REDACTED] — unchanged)<br><br>Recommend scheduling blood draw at least 3 days before cycle.">Váš ďalší cyklus FOLFOX je naplánovaný na <strong>28. marca</strong> v NOU.<br><br>Pred cyklom potrebujete:<br>✅ Krvný obraz (posledný: 19.3. — OK)<br>⚠️ Pečeňové testy (posledné: 12.3. — potrebná aktualizácia)<br>✅ Koagulácia ([MEDICATION_REDACTED] — bez zmeny)<br><br>Odporúčam objednať odber krvi aspoň 3 dni pred cyklom.</div>
+          </div>
+          <div id="chat-code" class="chat-messages" style="display:none">
+            <div class="chat-msg user" data-sk="nájdi všetky patologické výsledky a porovnaj diagnózy" data-en="find all pathology results and compare diagnoses">nájdi všetky patologické výsledky a porovnaj diagnózy</div>
+            <div class="chat-tool">oncofiles: search_documents(text="pathology", category="pathology")</div>
+            <div class="chat-tool">oncofiles: view_document(doc_id=23)</div>
+            <div class="chat-tool">oncofiles: view_document(doc_id=47)</div>
+            <div class="chat-msg assistant" data-html data-sk="Našiel som 3 patologické správy:<br><br>1. <strong>18.1.2026</strong> — Bory: AdenoCa G3, colon sigmoideum<br>2. <strong>15.2.2026</strong> — NOU: potvrdzuje mCRC, [BIOMARKER_REDACTED]<br>3. <strong>5.3.2026</strong> — NOU: restagingový CT — stabilné ochorenie<br><br>Diagnóza je konzistentná naprieč všetkými správami. [BIOMARKER_REDACTED] potvrdený v dvoch nezávislých vyšetreniach." data-en="Found 3 pathology reports:<br><br>1. <strong>Jan 18, 2026</strong> — Bory: AdenoCa G3, sigmoid colon<br>2. <strong>Feb 15, 2026</strong> — NOU: confirms mCRC, [BIOMARKER_REDACTED]<br>3. <strong>Mar 5, 2026</strong> — NOU: restaging CT — stable disease<br><br>Diagnosis is consistent across all reports. [BIOMARKER_REDACTED] confirmed by two independent tests.">Našiel som 3 patologické správy:<br><br>1. <strong>18.1.2026</strong> — Bory: AdenoCa G3, colon sigmoideum<br>2. <strong>15.2.2026</strong> — NOU: potvrdzuje mCRC, [BIOMARKER_REDACTED]<br>3. <strong>5.3.2026</strong> — NOU: restagingový CT — stabilné ochorenie<br><br>Diagnóza je konzistentná naprieč všetkými správami. [BIOMARKER_REDACTED] potvrdený v dvoch nezávislých vyšetreniach.</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
     <!-- Founder story -->
     <section class="story">
       <div class="container">
@@ -958,6 +1063,14 @@
       btn.addEventListener('click', function() { apply(lang === 'sk' ? 'en' : 'sk'); });
       if (lang === 'en') apply('en');
     })();
+
+    // Chat preview tab switching
+    function switchChatTab(tab, btn) {
+      document.querySelectorAll('.chat-messages').forEach(function(el) { el.style.display = 'none'; });
+      document.querySelectorAll('.chat-tab').forEach(function(el) { el.classList.remove('active'); });
+      document.getElementById('chat-' + tab).style.display = 'flex';
+      if (btn) btn.classList.add('active');
+    }
   </script>
 </body>
 </html>
