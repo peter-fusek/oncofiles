@@ -1667,13 +1667,9 @@ async def dashboard(request: Request) -> HTMLResponse:
 async def demo_dashboard(request: Request) -> HTMLResponse:
     """Public demo dashboard with masked sample data. No auth required."""
     html = _load_dashboard_html()
-    # Inject demo mode flag before </script>
-    demo_inject = """
-    <script>
-      window.DEMO_MODE = true;
-    </script>
-    """
-    html = html.replace("</body>", demo_inject + "</body>")
+    # Inject demo mode flag BEFORE the main dashboard script so init() sees it
+    demo_inject = "<script>window.DEMO_MODE=true;</script>\n"
+    html = html.replace("<script>", demo_inject + "<script>", 1)
     return HTMLResponse(html)
 
 
