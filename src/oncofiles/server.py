@@ -1461,6 +1461,183 @@ async def landing(request: Request) -> HTMLResponse:
     return HTMLResponse(_load_landing_html())
 
 
+# ── Legal pages (required for Google OAuth verification) ─────────────────────
+
+
+def _legal_page(title: str, body_html: str) -> str:
+    return f"""<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{title} — Oncofiles</title>
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<style>
+body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  max-width: 720px; margin: 2rem auto; padding: 0 1.5rem; line-height: 1.7; color: #1a1a1a; }}
+h1 {{ font-size: 1.8rem; margin-bottom: 0.5rem; }}
+h2 {{ font-size: 1.3rem; margin-top: 2rem; }}
+.meta {{ color: #666; font-size: 0.9rem; margin-bottom: 2rem; }}
+a {{ color: #2563eb; }}
+footer {{ margin-top: 3rem; padding-top: 1rem; border-top: 1px solid #e5e5e5;
+  font-size: 0.85rem; color: #666; }}
+</style></head><body>
+<h1>{title}</h1>
+{body_html}
+<footer><a href="/">← Oncofiles</a> · <a href="mailto:peter.fusek@instarea.sk">Contact</a>
+ · Built by <a href="https://www.instarea.com">Instarea</a></footer>
+</body></html>"""
+
+
+_PRIVACY_HTML: str | None = None
+
+
+@mcp.custom_route("/privacy", methods=["GET"])
+async def privacy_policy(request: Request) -> HTMLResponse:
+    global _PRIVACY_HTML  # noqa: PLW0603
+    if _PRIVACY_HTML is None:
+        _PRIVACY_HTML = _legal_page(
+            "Privacy Policy",
+            """
+<p class="meta">Effective: March 25, 2026 · Last updated: March 25, 2026</p>
+
+<p>Oncofiles is operated by <strong>Instarea s.r.o.</strong> ("we", "us").
+This policy describes how we handle your data when you use Oncofiles
+(<a href="https://oncofiles.com">oncofiles.com</a>).</p>
+
+<h2>1. What Data We Access</h2>
+<p>When you connect your Google account, Oncofiles accesses:</p>
+<ul>
+<li><strong>Google Drive</strong> — files in your designated medical documents folder only</li>
+<li><strong>Gmail</strong> (read-only) — emails matching medical keywords
+to detect appointments and results</li>
+<li><strong>Google Calendar</strong> (read-only) — events to identify medical appointments</li>
+</ul>
+<p>We only access data you explicitly authorize through Google's OAuth consent screen.
+You can revoke access at any time via
+<a href="https://myaccount.google.com/permissions">Google Account Permissions</a>.</p>
+
+<h2>2. How We Use Your Data</h2>
+<p>Your data is used exclusively to:</p>
+<ul>
+<li>Organize and categorize your medical documents</li>
+<li>Extract metadata (dates, institutions, categories) using AI</li>
+<li>Make your records searchable through AI chat (Claude, ChatGPT)</li>
+<li>Track lab values and treatment timelines</li>
+</ul>
+<p>We do <strong>not</strong> use your data for advertising, profiling, or any purpose
+unrelated to your medical document management.</p>
+
+<h2>3. Where Data Is Stored</h2>
+<ul>
+<li><strong>Document metadata</strong> — stored in a Turso database
+(SQLite-compatible, hosted in EU)</li>
+<li><strong>Original files</strong> — remain in your Google Drive;
+we do not copy them to separate storage</li>
+<li><strong>OCR text</strong> — stored as companion files in your Google Drive folder</li>
+<li><strong>AI-generated metadata</strong> — stored in the database alongside document records</li>
+</ul>
+
+<h2>4. Data Sharing</h2>
+<p>We do <strong>not</strong> sell, share, or transfer your personal data
+to third parties, except:</p>
+<ul>
+<li><strong>AI providers</strong> — document content may be sent to Anthropic (Claude) for metadata
+extraction. This is governed by Anthropic's data processing terms.</li>
+<li><strong>Infrastructure</strong> — Railway (hosting), Turso (database). Both process data
+under their respective privacy policies and data processing agreements.</li>
+</ul>
+
+<h2>5. Data Retention</h2>
+<p>Your data is retained as long as your account is active. You can request deletion
+of all stored data by contacting us. Original files in Google Drive are never deleted
+by Oncofiles — only metadata in our database.</p>
+
+<h2>6. Your Rights (GDPR)</h2>
+<p>If you are in the EU/EEA, you have the right to:</p>
+<ul>
+<li>Access your personal data</li>
+<li>Request correction or deletion</li>
+<li>Data portability (export your data)</li>
+<li>Withdraw consent at any time</li>
+<li>Lodge a complaint with your supervisory authority</li>
+</ul>
+
+<h2>7. Google API Services Disclosure</h2>
+<p>Oncofiles' use and transfer of information received from Google APIs adheres to the
+<a href="https://developers.google.com/terms/api-services-user-data-policy">Google API
+Services User Data Policy</a>, including the Limited Use requirements.</p>
+
+<h2>8. Contact</h2>
+<p>For privacy questions: <a href="mailto:peter.fusek@instarea.sk">peter.fusek@instarea.sk</a></p>
+<p>Instarea s.r.o. · Bratislava, Slovakia</p>
+""",
+        )
+    return HTMLResponse(_PRIVACY_HTML)
+
+
+_TERMS_HTML: str | None = None
+
+
+@mcp.custom_route("/terms", methods=["GET"])
+async def terms_of_service(request: Request) -> HTMLResponse:
+    global _TERMS_HTML  # noqa: PLW0603
+    if _TERMS_HTML is None:
+        _TERMS_HTML = _legal_page(
+            "Terms of Service",
+            """
+<p class="meta">Effective: March 25, 2026 · Last updated: March 25, 2026</p>
+
+<p>These terms govern your use of Oncofiles (<a href="https://oncofiles.com">oncofiles.com</a>),
+operated by <strong>Instarea s.r.o.</strong> ("we", "us").</p>
+
+<h2>1. Service Description</h2>
+<p>Oncofiles is a medical document management tool that connects to your Google Drive,
+Gmail, and Calendar to organize health records and make them accessible through AI chat.
+It is designed for cancer patients and their caregivers.</p>
+
+<h2>2. Not Medical Advice</h2>
+<p><strong>Oncofiles is not a medical device and does not provide medical advice.</strong>
+It organizes and presents your existing medical documents. All medical decisions should be
+made with your healthcare providers. AI-generated summaries and analyses are for
+informational purposes only.</p>
+
+<h2>3. Your Data</h2>
+<p>You retain full ownership of your medical documents and data. Oncofiles accesses your
+Google services only with your explicit consent, which you can revoke at any time.
+See our <a href="/privacy">Privacy Policy</a> for details.</p>
+
+<h2>4. Account and Access</h2>
+<ul>
+<li>You must have a Google account to use Oncofiles</li>
+<li>You are responsible for maintaining the security of your bearer tokens and credentials</li>
+<li>Free tier: up to 200 documents per patient</li>
+</ul>
+
+<h2>5. Acceptable Use</h2>
+<p>You agree not to:</p>
+<ul>
+<li>Use Oncofiles for purposes other than personal medical document management</li>
+<li>Attempt to access other users' data</li>
+<li>Reverse engineer or abuse the API</li>
+<li>Use the service for commercial medical data processing without authorization</li>
+</ul>
+
+<h2>6. Availability</h2>
+<p>We aim for high availability but do not guarantee uninterrupted service. Oncofiles
+is provided "as is" without warranties of any kind. We are not liable for data loss
+beyond what is stored in your Google Drive (which we do not modify or delete).</p>
+
+<h2>7. Changes</h2>
+<p>We may update these terms. Continued use after changes constitutes acceptance.
+Material changes will be communicated via the dashboard or email.</p>
+
+<h2>8. Contact</h2>
+<p><a href="mailto:peter.fusek@instarea.sk">peter.fusek@instarea.sk</a></p>
+<p>Instarea s.r.o. · Bratislava, Slovakia</p>
+""",
+        )
+    return HTMLResponse(_TERMS_HTML)
+
+
 # ── Static assets ─────────────────────────────────────────────────────────────
 
 _FAVICON_SVG: str | None = None
@@ -1540,6 +1717,10 @@ async def sitemap_xml(request: Request) -> HTMLResponse:
         "<priority>0.8</priority><changefreq>daily</changefreq></url>\n"
         f"  <url><loc>https://oncofiles.com/health</loc><lastmod>{today}</lastmod>"
         "<priority>0.3</priority><changefreq>always</changefreq></url>\n"
+        f"  <url><loc>https://oncofiles.com/privacy</loc><lastmod>{today}</lastmod>"
+        "<priority>0.5</priority><changefreq>monthly</changefreq></url>\n"
+        f"  <url><loc>https://oncofiles.com/terms</loc><lastmod>{today}</lastmod>"
+        "<priority>0.5</priority><changefreq>monthly</changefreq></url>\n"
         "</urlset>\n",
         media_type="application/xml",
     )
