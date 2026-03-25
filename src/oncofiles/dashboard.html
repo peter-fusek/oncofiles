@@ -2336,6 +2336,8 @@
           if (entry.document_id) content += 'Document: #' + entry.document_id + '\n';
           content += 'Tokens: ' + (entry.input_tokens||0) + ' in / ' + (entry.output_tokens||0) + ' out\n';
           if (entry.duration_ms) content += 'Duration: ' + entry.duration_ms + 'ms\n';
+          if (entry.system_prompt) content += '\n--- System Prompt ---\n' + entry.system_prompt;
+          if (entry.user_prompt) content += '\n--- Input ---\n' + entry.user_prompt;
           content += '\n--- Result ---\n' + (entry.result_summary || 'N/A');
           detail.textContent = content;
           this.parentNode.insertBefore(detail, this.nextSibling);

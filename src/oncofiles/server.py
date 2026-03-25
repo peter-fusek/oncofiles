@@ -2774,6 +2774,8 @@ async def api_prompt_log(request: Request) -> JSONResponse:
                 "output_tokens": e.output_tokens,
                 "duration_ms": e.duration_ms,
                 "result_summary": e.result_summary,
+                "system_prompt": e.system_prompt,
+                "user_prompt": e.user_prompt,
                 "status": e.status,
                 "created_at": e.created_at.isoformat() if e.created_at else None,
             }
