@@ -23,7 +23,8 @@ class TestNewFormat:
     """Tests for the real YYYYMMDD ErikaFusekova-... naming convention."""
 
     def test_lab_results(self):
-        r = parse_filename("20260227 ErikaFusekova-NOU-LabVysledkyPred2chemo[PHYSICIAN_REDACTED].pdf")
+        fn = "20260227 ErikaFusekova-NOU-LabVysledkyPred2chemo[PHYSICIAN_REDACTED].pdf"
+        r = parse_filename(fn)
         assert r.document_date == date(2026, 2, 27)
         assert r.institution == "NOU"
         assert r.category == DocumentCategory.LABS
@@ -53,7 +54,9 @@ class TestNewFormat:
         assert r.category == DocumentCategory.IMAGING
 
     def test_imaging_ct(self):
-        r = parse_filename("20260130 ErikaFusekova-NOU-CTobjednavka[PHYSICIAN_REDACTED]PrimarOnkolog.pdf")
+        r = parse_filename(
+            "20260130 ErikaFusekova-NOU-CTobjednavka[PHYSICIAN_REDACTED]PrimarOnkolog.pdf"
+        )
         assert r.document_date == date(2026, 1, 30)
         assert r.institution == "NOU"
         assert r.category == DocumentCategory.IMAGING
@@ -87,7 +90,9 @@ class TestNewFormat:
         assert r.category == DocumentCategory.LABS
 
     def test_krv_page_labs(self):
-        r = parse_filename("20260227 ErikaFusekova-NOU-KRV1z2SpravaPredChemo[PHYSICIAN_REDACTED].JPG")
+        r = parse_filename(
+            "20260227 ErikaFusekova-NOU-KRV1z2SpravaPredChemo[PHYSICIAN_REDACTED].JPG"
+        )
         assert r.category == DocumentCategory.LABS
 
     def test_priebezna_sprava_report(self):
@@ -99,7 +104,9 @@ class TestNewFormat:
         assert r.category == DocumentCategory.CONSULTATION
 
     def test_konzultacia_consultation(self):
-        r = parse_filename("20260220 ErikaFusekova-NOU-KonzultaciaBioLiecbyPo1chemo[PHYSICIAN_REDACTED].JPG")
+        r = parse_filename(
+            "20260220 ErikaFusekova-NOU-KonzultaciaBioLiecbyPo1chemo[PHYSICIAN_REDACTED].JPG"
+        )
         assert r.category == DocumentCategory.CONSULTATION
 
     def test_advocate_institution(self):
@@ -262,7 +269,10 @@ class TestBilingualRename:
         result = rename_to_bilingual(
             "20260227 ErikaFusekova-NOU-LabVysledkyPred2chemo[PHYSICIAN_REDACTED].pdf"
         )
-        assert result == "20260227 ErikaFusekova-NOU-Labs-LabVysledkyPred2chemo[PHYSICIAN_REDACTED].pdf"
+        assert (
+            result
+            == "20260227 ErikaFusekova-NOU-Labs-LabVysledkyPred2chemo[PHYSICIAN_REDACTED].pdf"
+        )
 
     def test_discharge_summary(self):
         result = rename_to_bilingual(
@@ -301,8 +311,12 @@ class TestBilingualRename:
         )
 
     def test_report(self):
-        result = rename_to_bilingual("20260130 ErikaFusekova-NOU-Sprava[PHYSICIAN_REDACTED]PrimarOnkolog.pdf")
-        assert result == ("20260130 ErikaFusekova-NOU-Report-Sprava[PHYSICIAN_REDACTED]PrimarOnkolog.pdf")
+        result = rename_to_bilingual(
+            "20260130 ErikaFusekova-NOU-Sprava[PHYSICIAN_REDACTED]PrimarOnkolog.pdf"
+        )
+        assert result == (
+            "20260130 ErikaFusekova-NOU-Report-Sprava[PHYSICIAN_REDACTED]PrimarOnkolog.pdf"
+        )
 
     def test_other_category(self):
         result = rename_to_bilingual(
@@ -455,7 +469,10 @@ class TestRenameToStandard:
         result = rename_to_standard(
             "20260227 ErikaFusekova-NOU-LabVysledkyPred2chemo[PHYSICIAN_REDACTED].pdf"
         )
-        assert result == "20260227_ErikaFusekova_NOU_Labs_LabVysledkyPred2chemo[PHYSICIAN_REDACTED].pdf"
+        assert (
+            result
+            == "20260227_ErikaFusekova_NOU_Labs_LabVysledkyPred2chemo[PHYSICIAN_REDACTED].pdf"
+        )
 
     def test_from_bilingual_with_en_description(self):
         result = rename_to_standard(
