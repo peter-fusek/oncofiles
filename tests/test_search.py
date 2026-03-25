@@ -69,11 +69,11 @@ async def test_search_structured_metadata(db: Database):
     doc = await db.insert_document(doc)
     await db.db.execute(
         "UPDATE documents SET structured_metadata = ? WHERE id = ?",
-        ('{"biomarkers": ["[BIOMARKER_REDACTED]", "pMMR"]}', doc.id),
+        ('{"biomarkers": ["EGFR", "pMMR"]}', doc.id),
     )
     await db.db.commit()
 
-    results = await db.search_documents(SearchQuery(text="KRAS"))
+    results = await db.search_documents(SearchQuery(text="EGFR"))
     assert len(results) == 1
     assert results[0].file_id == "f1"
 

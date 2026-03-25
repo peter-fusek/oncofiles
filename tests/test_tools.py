@@ -122,7 +122,7 @@ async def test_analyze_labs_returns_content(db: Database):
     ctx = _mock_ctx(db, mock_files)
 
     result = await analyze_labs(ctx)
-    assert "Erika Fusekova" in result[0]
+    assert "Patient" in result[0]  # patient context header
     assert "Instructions" in result[-1]
     assert any("--- Extracted Text ---" in str(item) for item in result)
     assert mock_files.download.call_count == 2

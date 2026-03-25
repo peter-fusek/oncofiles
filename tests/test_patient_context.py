@@ -22,7 +22,7 @@ async def test_initialize_default():
     await db.migrate()
 
     ctx = await initialize(db.db)
-    assert ctx["name"] == "Erika Fusekova"
+    assert ctx["name"] == ""  # default is empty, loaded from DB/env
     # Clinical data is empty in defaults (loaded from DB/JSON at runtime)
     assert ctx["biomarkers"] == {}
     await db.close()
@@ -74,7 +74,7 @@ async def test_update_context_merges():
     assert updated["treatment"]["current_cycle"] == 5
     # Original fields preserved
     assert updated["treatment"]["regimen"] == "test"
-    assert updated["name"] == "Erika Fusekova"
+    assert updated["name"] == ""  # default is empty
 
 
 async def test_update_context_replaces_list():
@@ -100,7 +100,7 @@ def test_get_context_returns_default_when_empty():
 
     patient_context._context.clear()
     ctx = get_context()
-    assert ctx["name"] == "Erika Fusekova"
+    assert ctx["name"] == ""  # default is empty, loaded from DB/env
 
 
 def test_load_from_json_nonexistent(tmp_path: Path):
