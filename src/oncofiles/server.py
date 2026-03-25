@@ -1657,6 +1657,38 @@ footer {{ margin-top: 3rem; padding-top: 1rem; border-top: 1px solid #e5e5e5;
 </body></html>"""
 
 
+@mcp.custom_route("/oncoteam", methods=["GET"])
+async def oncoteam_page(request: Request) -> HTMLResponse:
+    return HTMLResponse(
+        _legal_page(
+            "Oncoteam",
+            """
+<p class="meta">Sister project of Oncofiles</p>
+
+<p><strong>Oncoteam</strong> is an AI agent that analyzes your
+Oncofiles data. While Oncofiles organizes your medical records,
+Oncoteam helps you understand them:</p>
+
+<ul>
+<li>Tracks lab value trends (CBC, tumor markers, liver enzymes)</li>
+<li>Calculates clinical indices (SII, Ne/Ly ratio)</li>
+<li>Searches PubMed and ClinicalTrials.gov for relevant research</li>
+<li>Prepares questions for your oncologist</li>
+<li>Checks pre-cycle lab safety for chemo protocols</li>
+</ul>
+
+<p>Oncoteam works through Claude.ai as an MCP connector,
+reading data from your Oncofiles repository.</p>
+
+<h2>For developers</h2>
+<p>Source code:
+<a href="https://github.com/peter-fusek/oncoteam">
+github.com/peter-fusek/oncoteam</a></p>
+""",
+        )
+    )
+
+
 _PRIVACY_HTML: str | None = None
 
 
