@@ -741,9 +741,10 @@
           <span id="connection-dot" class="connection-dot loading" title="Connecting..."></span>
           <span class="version" id="version-label"></span>
           <span class="user-info" id="user-info"></span>
-          <button class="logout-btn" onclick="logout()">Sign out</button>
+          <button class="logout-btn" onclick="logout()" data-sk="Odhlásiť" data-en="Sign out">Sign out</button>
+          <button id="dash-lang-toggle" onclick="toggleDashLang()" style="background:none;border:1px solid var(--border);color:var(--text-muted);padding:0.15rem 0.4rem;border-radius:4px;cursor:pointer;font-size:0.75rem">EN</button>
           <span id="last-refreshed" style="font-size:0.6875rem;color:var(--text-muted)"></span>
-          <button class="refresh-btn" onclick="refresh()">Refresh</button>
+          <button class="refresh-btn" onclick="refresh()" data-sk="Obnoviť" data-en="Refresh">Refresh</button>
         </div>
       </header>
 
@@ -770,23 +771,23 @@
 
       <!-- Summary cards -->
       <div class="cards" id="summary-cards">
-        <div class="card"><div class="value" id="card-total">-</div><div class="label">Total</div></div>
-        <div class="card"><div class="value" id="card-complete">-</div><div class="label">Complete</div></div>
-        <div class="card warning"><div class="value" id="card-gaps">-</div><div class="label">With Gaps</div></div>
-        <div class="card"><div class="value" id="card-synced">-</div><div class="label">Synced</div></div>
+        <div class="card"><div class="value" id="card-total">-</div><div class="label" data-sk="Celkom" data-en="Total">Total</div></div>
+        <div class="card"><div class="value" id="card-complete">-</div><div class="label" data-sk="Kompletné" data-en="Complete">Complete</div></div>
+        <div class="card warning"><div class="value" id="card-gaps">-</div><div class="label" data-sk="S medzerami" data-en="With Gaps">With Gaps</div></div>
+        <div class="card"><div class="value" id="card-synced">-</div><div class="label" data-sk="Synchronizované" data-en="Synced">Synced</div></div>
         <div class="card"><div class="value" id="card-rss">-</div><div class="label">RSS MB</div></div>
       </div>
 
       <!-- Pipeline funnel -->
       <div class="funnel" id="funnel">
-        <h2>Pipeline Funnel</h2>
+        <h2 data-sk="Pipeline" data-en="Pipeline Funnel">Pipeline Funnel</h2>
         <div id="funnel-rows"></div>
       </div>
 
       <!-- Filters -->
       <div class="filters" id="filters">
-        <span class="pill active" data-filter="all">All</span>
-        <span class="pill" data-filter="incomplete">Incomplete</span>
+        <span class="pill active" data-filter="all" data-sk="Všetky" data-en="All">All</span>
+        <span class="pill" data-filter="incomplete" data-sk="Nekompletné" data-en="Incomplete">Incomplete</span>
         <span class="pill" data-filter="missing_ocr">Missing OCR</span>
         <span class="pill" data-filter="missing_ai">Missing AI</span>
         <span class="pill" data-filter="missing_metadata">Missing Meta</span>
@@ -823,7 +824,7 @@
 
       <!-- Reconciliation -->
       <div class="panel" id="recon-panel" style="display:none">
-        <div class="panel-title">DB vs GDrive Reconciliation</div>
+        <div class="panel-title" data-sk="DB vs GDrive Reconciliation" data-en="DB vs GDrive Reconciliation">DB vs GDrive Reconciliation</div>
         <div id="recon-summary" style="display:flex;gap:1.5rem;margin-bottom:0.75rem;font-size:0.8125rem;color:var(--text-muted)"></div>
         <div id="recon-issues"></div>
       </div>
@@ -837,14 +838,14 @@
 
       <!-- Prompt Log -->
       <div class="sync-history" id="prompt-log-section">
-        <h2>AI Prompt Log</h2>
+        <h2 data-sk="AI Prompt Log" data-en="AI Prompt Log">AI Prompt Log</h2>
         <div id="prompt-stats" style="display:flex;gap:1rem;flex-wrap:wrap;margin-bottom:0.75rem"></div>
         <div id="prompt-log-rows"><div style="padding:0.5rem 0;color:var(--text-muted);font-size:0.8125rem">Loading...</div></div>
       </div>
 
       <!-- Usage Analytics -->
       <div class="sync-history" id="analytics-section">
-        <h2>Usage Analytics</h2>
+        <h2 data-sk="Štatistiky" data-en="Usage Analytics">Usage Analytics</h2>
         <div class="cards" id="analytics-cards" style="grid-template-columns:repeat(4,1fr);margin-bottom:1rem">
           <div class="card" title="OCR + document enhancement + email/calendar classification"><div class="value" id="ana-calls">-</div><div class="label">AI Calls (30d)</div></div>
           <div class="card" title="Total input + output tokens sent to Claude Haiku"><div class="value" id="ana-tokens">-</div><div class="label">Tokens (K)</div></div>
@@ -1142,6 +1143,32 @@
       d.textContent = s || '';
       return d.innerHTML;
     }
+
+    // ── Language toggle (SK/EN) ─────────────────────────────────────────
+    var dashLang = localStorage.getItem('oncofiles_lang') || 'sk';
+
+    function toggleDashLang() {
+      dashLang = dashLang === 'sk' ? 'en' : 'sk';
+      localStorage.setItem('oncofiles_lang', dashLang);
+      applyDashLang();
+    }
+
+    function applyDashLang() {
+      var btn = document.getElementById('dash-lang-toggle');
+      if (btn) btn.textContent = dashLang === 'sk' ? 'EN' : 'SK';
+      document.querySelectorAll('[data-sk][data-en]').forEach(function(el) {
+        var text = dashLang === 'sk' ? el.getAttribute('data-sk')
+          : el.getAttribute('data-en');
+        if (el.hasAttribute('data-html')) {
+          el.innerHTML = text;
+        } else {
+          el.textContent = text;
+        }
+      });
+    }
+
+    // Apply language on load
+    applyDashLang();
 
     /** Create a status dot element. */
     function makeDot(value) {
