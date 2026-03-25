@@ -199,6 +199,25 @@ async def validate_categories(
             )
             continue
 
+        # Check for legacy categories that need merging
+        from oncofiles.gdrive_folders import CATEGORY_MERGES
+
+        current_val = doc.category.value
+        if current_val in CATEGORY_MERGES:
+            target = CATEGORY_MERGES[current_val]
+            entry = {
+                "doc_id": doc.id,
+                "filename": doc.filename,
+                "current_category": current_val,
+                "suggested_category": target,
+                "reason": "legacy_category_merge",
+            }
+            mismatches.append(entry)
+            if not dry_run:
+                await db.update_document_category(doc.id, target)
+                corrected += 1
+            continue
+
         doc_type = meta.get("document_type")
         if not doc_type:
             continue

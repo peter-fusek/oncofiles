@@ -1666,22 +1666,28 @@ def _detect_category_from_parents(file_info: dict, folder_map: dict[str, str]) -
     """Detect document category from its parent folder name in GDrive.
 
     Handles both legacy EN-only names ('labs') and bilingual names
-    ('labs — laboratórne výsledky').
+    ('labs — laboratórne výsledky'). Auto-remaps legacy categories
+    (surgical_report → surgery, discharge_summary → discharge).
 
     Returns category string if parent folder matches a known category, else None.
     """
-    from oncofiles.gdrive_folders import en_key_from_folder_name
+    from oncofiles.gdrive_folders import CATEGORY_MERGES, en_key_from_folder_name
 
     parents = file_info.get("parents", [])
     valid_categories = {cat.value for cat in DocumentCategory}
 
     for parent_id in parents:
         folder_name = folder_map.get(parent_id, "")
+        detected = None
         # Direct match (legacy EN-only)
         if folder_name in valid_categories:
-            return folder_name
-        # Bilingual name: extract EN key
-        en_key = en_key_from_folder_name(folder_name)
-        if en_key and en_key in valid_categories:
-            return en_key
+            detected = folder_name
+        else:
+            # Bilingual name: extract EN key
+            en_key = en_key_from_folder_name(folder_name)
+            if en_key and en_key in valid_categories:
+                detected = en_key
+        if detected:
+            # Auto-remap legacy categories
+            return CATEGORY_MERGES.get(detected, detected)
     return None

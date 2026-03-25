@@ -945,9 +945,74 @@ def _start_sync_scheduler(
         async def _cleanup_folders_for(p_gdrive, folder_id, pid):
             cleaned = 0
             merged = 0
+            category_merged = 0
 
             # Get category folder structure
-            _, folder_map = await asyncio.to_thread(p_gdrive.list_folder_with_structure, folder_id)
+            _, folder_map = await asyncio.to_thread(
+                p_gdrive.list_folder_with_structure,
+                folder_id,
+            )
+
+            # Phase 0: Merge legacy category folders (e.g., surgical_report → surgery)
+            from oncofiles.gdrive_folders import (
+                CATEGORY_MERGES,
+                bilingual_name,
+                en_key_from_folder_name,
+            )
+
+            for legacy_cat, target_cat in CATEGORY_MERGES.items():
+                # Find legacy folder by name
+                legacy_folder_id = None
+                target_folder_id = None
+                for fid, fname in folder_map.items():
+                    en_key = en_key_from_folder_name(fname) or fname
+                    if en_key == legacy_cat:
+                        legacy_folder_id = fid
+                    if en_key == target_cat:
+                        target_folder_id = fid
+                if not legacy_folder_id or not target_folder_id:
+                    continue
+                # Move all files from legacy → target
+                try:
+                    legacy_contents = await asyncio.to_thread(
+                        lambda lid=legacy_folder_id: (
+                            p_gdrive._service.files()
+                            .list(
+                                q=f"'{lid}' in parents and trashed = false",
+                                fields="files(id, name)",
+                                pageSize=200,
+                            )
+                            .execute()
+                        )
+                    )
+                    files_to_move = legacy_contents.get("files", [])
+                    for f in files_to_move:
+                        await asyncio.to_thread(
+                            p_gdrive.move_file,
+                            f["id"],
+                            target_folder_id,
+                        )
+                    # Trash the legacy folder if now empty
+                    if files_to_move or not legacy_contents.get("files"):
+                        await asyncio.to_thread(
+                            p_gdrive.trash_file,
+                            legacy_folder_id,
+                        )
+                    category_merged += 1
+                    logger.info(
+                        "Merged legacy folder '%s' → '%s' (%d files moved) [%s]",
+                        bilingual_name(legacy_cat),
+                        bilingual_name(target_cat),
+                        len(files_to_move),
+                        pid,
+                    )
+                except Exception:
+                    logger.warning(
+                        "Failed to merge legacy folder %s → %s",
+                        legacy_cat,
+                        target_cat,
+                        exc_info=True,
+                    )
 
             # For each category folder, check subfolders
             for cat_folder_id, cat_name in folder_map.items():
@@ -1038,12 +1103,14 @@ def _start_sync_scheduler(
                 except Exception:
                     logger.warning("Empty folder check failed for %s", cat_name, exc_info=True)
 
-            if cleaned or merged:
+            if cleaned or merged or category_merged:
                 logger.info(
-                    "Folder cleanup [%s]: %d empty trashed, %d duplicates merged",
+                    "Folder cleanup [%s]: %d empty trashed, "
+                    "%d duplicates merged, %d legacy categories merged",
                     pid,
                     cleaned,
                     merged,
+                    category_merged,
                 )
             else:
                 logger.info("Folder cleanup [%s]: all folders OK", pid)
