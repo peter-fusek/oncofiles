@@ -1021,12 +1021,28 @@
         <p id="wiz-step3-status" style="color:var(--text-muted);font-size:0.8125rem;margin-top:0.75rem;display:none"></p>
       </div>
 
-      <!-- Step 4: Success -->
+      <!-- Step 4: Success + AI Setup -->
       <div id="wiz-step-4" style="display:none">
         <div class="wizard-success">
           <div class="check">&#10003;</div>
           <h2>Patient Created</h2>
           <p id="wiz-success-summary" style="color:var(--text-muted);font-size:0.875rem;margin-top:0.5rem"></p>
+        </div>
+        <div style="margin:1.5rem 0;padding:1rem;border:1px solid var(--border);border-radius:8px">
+          <h3 style="font-size:1rem;margin-bottom:0.75rem">Connect your AI chat</h3>
+          <p style="color:var(--text-muted);font-size:0.8rem;margin-bottom:0.75rem">
+            Paste these into Claude.ai or ChatGPT to connect:
+          </p>
+          <div style="display:flex;gap:0.5rem;align-items:center;margin-bottom:0.5rem">
+            <span style="font-size:0.75rem;color:var(--text-muted);min-width:70px">MCP URL</span>
+            <code id="wiz-mcp-url" style="flex:1;font-size:0.8rem;background:var(--bg);padding:4px 8px;border-radius:4px">https://oncofiles.com/mcp</code>
+            <button onclick="wizCopy('wiz-mcp-url')" style="font-size:0.75rem;padding:4px 10px;background:var(--accent);color:#fff;border:none;border-radius:4px;cursor:pointer">Copy</button>
+          </div>
+          <div style="display:flex;gap:0.5rem;align-items:center">
+            <span style="font-size:0.75rem;color:var(--text-muted);min-width:70px">Token</span>
+            <code id="wiz-token-display" style="flex:1;font-size:0.8rem;background:var(--bg);padding:4px 8px;border-radius:4px"></code>
+            <button onclick="wizCopy('wiz-token-display')" style="font-size:0.75rem;padding:4px 10px;background:var(--accent);color:#fff;border:none;border-radius:4px;cursor:pointer">Copy</button>
+          </div>
         </div>
         <div class="wizard-actions" style="justify-content:center">
           <button class="wizard-btn-primary" onclick="wizardFinish()">Go to Dashboard</button>
@@ -1685,11 +1701,31 @@
 
     function showWizardSummary(stats) {
       var el = document.getElementById('wiz-success-summary');
-      var parts = ['Patient "' + esc(wizardPatientId) + '" created successfully.'];
+      var parts = ['Patient "' + esc(wizardPatientId) + '" created.'];
       if (stats && stats.new > 0) {
         parts.push(stats.new + ' documents imported.');
       }
       el.textContent = parts.join(' ');
+      // Populate token for copy
+      var tokenEl = document.getElementById('wiz-token-display');
+      if (tokenEl && wizardBearerToken) {
+        tokenEl.textContent = wizardBearerToken;
+      } else if (tokenEl) {
+        tokenEl.textContent = '(generate via Share button)';
+      }
+    }
+
+    function wizCopy(elementId) {
+      var el = document.getElementById(elementId);
+      if (el && navigator.clipboard) {
+        navigator.clipboard.writeText(el.textContent).then(function() {
+          var btn = el.nextElementSibling;
+          if (btn) {
+            btn.textContent = 'Copied!';
+            setTimeout(function() { btn.textContent = 'Copy'; }, 2000);
+          }
+        });
+      }
     }
 
     async function wizardFinish() {

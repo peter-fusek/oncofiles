@@ -3,10 +3,13 @@
 [![Tests](https://img.shields.io/badge/tests-607%20passed-brightgreen)]()
 [![Python](https://img.shields.io/badge/python-3.12+-blue)]()
 [![MCP](https://img.shields.io/badge/protocol-MCP-purple)]()
+[![Claude](https://img.shields.io/badge/Claude-MCP-cc785c)](https://claude.ai)
 [![ChatGPT](https://img.shields.io/badge/ChatGPT-MCP-10a37f)](https://chatgpt.com)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
 Your medical records are scattered across Gmail, Google Drive, and Calendar. Oncofiles reads everything, organizes it, and makes it available through AI — so you can ask about your health naturally in Claude or ChatGPT.
+
+**[oncofiles.com](https://oncofiles.com)** | [Demo Dashboard](https://oncofiles.com/demo) | [Privacy Policy](https://oncofiles.com/privacy)
 
 ## What is this?
 
@@ -14,7 +17,7 @@ Oncofiles is an [MCP server](https://modelcontextprotocol.io/) built for cancer 
 
 **Built from real need:** Created by a caregiver managing his wife's cancer treatment. Hundreds of documents, dozens of doctors, constantly changing lab results. Oncofiles organizes the chaos so you can focus on treatment, not on finding papers.
 
-**Sister project:** [Oncoteam](https://github.com/peter-fusek/oncoteam) — an AI agent that analyzes your Oncofiles data: tracks lab trends, searches clinical trials, and prepares questions for your oncologist.
+**Sister project:** [Oncoteam](https://oncofiles.com/oncoteam) — an AI agent that analyzes your Oncofiles data: tracks lab trends, searches clinical trials, and prepares questions for your oncologist.
 
 **Your data, your control:** Everything stays in your Google Drive. No third-party data processing. Disconnect anytime — your files are always yours.
 
@@ -37,7 +40,7 @@ Oncofiles supports multiple patients on a single instance. Each patient gets:
 ## Features
 
 - **76 MCP tools** across 14 modules for comprehensive medical data management
-- **15 document categories** — labs, pathology, imaging, genetics, surgery, prescriptions, and more
+- **14 document categories** — labs, pathology, imaging, genetics, surgery, consultation, prescriptions, and more
 - **Lab value tracking** — store values, track trends, pre-cycle safety checks for chemo protocols
 - **Google Drive sync** — bidirectional sync with automatic OCR companion files
 - **Gmail & Calendar scanning** — medical emails and appointments are auto-detected and classified
@@ -157,6 +160,10 @@ src/oncofiles/
 └── models.py           # Pydantic models
 ```
 
+## MCP Registry
+
+Listed on the [MCP Registry](https://registry.modelcontextprotocol.io/) as `io.github.peter-fusek/oncofiles`.
+
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
@@ -164,3 +171,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 ## License
 
 [MIT](LICENSE)
+
+---
+
+Built by [Instarea](https://www.instarea.com) | Aligned with [EHDS](https://health.ec.europa.eu/ehealth-digital-health-and-care/european-health-data-space_en) principles
