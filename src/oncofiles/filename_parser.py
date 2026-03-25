@@ -50,7 +50,8 @@ CATEGORY_FILENAME_TOKENS: dict[DocumentCategory, str] = {
     DocumentCategory.IMAGING: "Imaging",
     DocumentCategory.GENETICS: "Genetics",
     DocumentCategory.SURGERY: "Surgery",
-    DocumentCategory.SURGICAL_REPORT: "SurgicalReport",
+    DocumentCategory.SURGICAL_REPORT: "SurgicalReport",  # legacy alias
+    DocumentCategory.CONSULTATION: "Consultation",
     DocumentCategory.PRESCRIPTION: "Prescription",
     DocumentCategory.REFERRAL: "Referral",
     DocumentCategory.DISCHARGE: "Discharge",
@@ -89,9 +90,14 @@ _CATEGORY_KEYWORDS: list[tuple[list[str], DocumentCategory]] = [
     (["prepustaci", "prepusten", "epikryza"], DocumentCategory.DISCHARGE),
     # Surgical reports (before generic surgery)
     (["operacna sprava", "operacnyprotokol"], DocumentCategory.SURGICAL_REPORT),
-    # Report (broad — many things are reports)
+    # Consultation / doctor visits (before report — more specific)
     (
-        ["sprava", "anamneza", "kontrola", "vysetren", "prijem", "konzultaci", "priebezn"],
+        ["konzultaci", "kontrola", "vysetren", "prijem", "ambulan"],
+        DocumentCategory.CONSULTATION,
+    ),
+    # Report (broad — remaining reports that aren't consultations)
+    (
+        ["sprava", "anamneza", "priebezn"],
         DocumentCategory.REPORT,
     ),
     # Prescription / referral
@@ -113,7 +119,6 @@ CATEGORY_ALIASES: dict[str, DocumentCategory] = {
     "krv": DocumentCategory.LABS,
     "report": DocumentCategory.REPORT,
     "sprava": DocumentCategory.REPORT,
-    "kontrola": DocumentCategory.REPORT,
     "imaging": DocumentCategory.IMAGING,
     "imaging_ct": DocumentCategory.IMAGING,
     "ct": DocumentCategory.IMAGING,
@@ -136,8 +141,12 @@ CATEGORY_ALIASES: dict[str, DocumentCategory] = {
     "referral": DocumentCategory.REFERRAL,
     "odporucanie": DocumentCategory.REFERRAL,
     "ziadanka": DocumentCategory.REFERRAL,
+    "consultation": DocumentCategory.CONSULTATION,
+    "konzultacia": DocumentCategory.CONSULTATION,
+    "kontrola": DocumentCategory.CONSULTATION,
+    "vysetrenie": DocumentCategory.CONSULTATION,
     "discharge": DocumentCategory.DISCHARGE,
-    "discharge_summary": DocumentCategory.DISCHARGE_SUMMARY,
+    "discharge_summary": DocumentCategory.DISCHARGE,  # merged
     "prepustenie": DocumentCategory.DISCHARGE,
     "epikryza": DocumentCategory.DISCHARGE,
     "chemo_sheet": DocumentCategory.CHEMO_SHEET,

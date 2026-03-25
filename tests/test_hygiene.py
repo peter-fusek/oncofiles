@@ -128,7 +128,7 @@ async def test_validate_detects_discharge_summary(db: Database):
 
     m = next(x for x in result["mismatches"] if x["doc_id"] == doc.id)
     assert m["current_category"] == "report"
-    assert m["suggested_category"] == "discharge_summary"
+    assert m["suggested_category"] == "discharge"
 
 
 async def test_validate_corrects_surgical_report(db: Database):

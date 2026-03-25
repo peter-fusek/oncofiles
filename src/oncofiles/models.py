@@ -9,7 +9,15 @@ from pydantic import BaseModel, Field
 
 
 class DocumentCategory(StrEnum):
-    """Medical document categories."""
+    """Medical document categories.
+
+    Taxonomy (v4.6.0):
+    - pathology = tissue morphology, histology, biopsy reports
+    - genetics = molecular/DNA testing (KRAS, MSI, HER2, BRAF panels)
+    - surgery = all surgical documentation (reports, protocols, notes)
+    - discharge = all discharge docs (summaries, epikrízy)
+    - consultation = doctor visits, clinical notes, follow-ups
+    """
 
     LABS = "labs"
     REPORT = "report"
@@ -17,15 +25,17 @@ class DocumentCategory(StrEnum):
     PATHOLOGY = "pathology"
     GENETICS = "genetics"
     SURGERY = "surgery"
-    SURGICAL_REPORT = "surgical_report"
+    CONSULTATION = "consultation"
     PRESCRIPTION = "prescription"
     REFERRAL = "referral"
     DISCHARGE = "discharge"
-    DISCHARGE_SUMMARY = "discharge_summary"
     CHEMO_SHEET = "chemo_sheet"
     REFERENCE = "reference"
     ADVOCATE = "advocate"
     OTHER = "other"
+    # Legacy aliases — kept for backward compat (DB may have these values)
+    SURGICAL_REPORT = "surgical_report"
+    DISCHARGE_SUMMARY = "discharge_summary"
 
 
 class Document(BaseModel):

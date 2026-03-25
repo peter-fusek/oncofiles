@@ -94,13 +94,13 @@ class TestNewFormat:
         r = parse_filename("20260216 ErikaFusekova-NOU-PriebeznaSpravaZhospitalizaciePo1chemo.pdf")
         assert r.category == DocumentCategory.REPORT
 
-    def test_prijem_report(self):
+    def test_prijem_consultation(self):
         r = parse_filename("20260213 ErikaFusekova-NOU-PrijemNaChemo[PHYSICIAN_REDACTED].JPG")
-        assert r.category == DocumentCategory.REPORT
+        assert r.category == DocumentCategory.CONSULTATION
 
-    def test_konzultacia_report(self):
+    def test_konzultacia_consultation(self):
         r = parse_filename("20260220 ErikaFusekova-NOU-KonzultaciaBioLiecbyPo1chemo[PHYSICIAN_REDACTED].JPG")
-        assert r.category == DocumentCategory.REPORT
+        assert r.category == DocumentCategory.CONSULTATION
 
     def test_advocate_institution(self):
         r = parse_filename(
@@ -143,9 +143,9 @@ class TestNewFormat:
         )
         assert r.category == DocumentCategory.DISCHARGE
 
-    def test_vysetrenie_report(self):
+    def test_vysetrenie_consultation(self):
         r = parse_filename("20260129 ErikaFusekova-BoryNemocnica-PooperacneVysetrenieChirurg.pdf")
-        assert r.category == DocumentCategory.REPORT
+        assert r.category == DocumentCategory.CONSULTATION
 
     def test_chemo_sheet(self):
         r = parse_filename("20260213 ErikaFusekova-NOU-ChemoterapeutickyProtokolFOLFOX.pdf")

@@ -8,8 +8,15 @@ from oncofiles.models import DocumentCategory
 
 logger = logging.getLogger(__name__)
 
-# Category folders map to DocumentCategory values
-CATEGORY_FOLDERS = [cat.value for cat in DocumentCategory]
+# Legacy folder names that should be merged into active categories.
+# Used by housekeeping to detect and merge obsolete GDrive folders.
+CATEGORY_MERGES: dict[str, str] = {
+    "surgical_report": "surgery",
+    "discharge_summary": "discharge",
+}
+
+# Active category folders (excludes legacy aliases like surgical_report)
+CATEGORY_FOLDERS = [cat.value for cat in DocumentCategory if cat.value not in CATEGORY_MERGES]
 
 # Additional metadata folders (not document categories)
 METADATA_FOLDERS = ["conversations", "treatment", "research"]
@@ -23,11 +30,10 @@ FOLDER_SK: dict[str, str] = {
     "pathology": "patológia",
     "imaging": "zobrazovanie",
     "surgery": "operácie",
-    "surgical_report": "operačné protokoly",
+    "consultation": "konzultácie",
     "prescription": "recepty",
     "referral": "odporúčania",
     "discharge": "prepúšťacie správy",
-    "discharge_summary": "epikrízy",
     "chemo_sheet": "chemoterapeutické protokoly",
     "genetics": "genetické vyšetrenia",
     "reference": "referenčné materiály",

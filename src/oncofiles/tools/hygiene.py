@@ -24,12 +24,12 @@ _UNMANAGED_FOLDER_MAP: dict[str, str] = {
 # Document types from AI metadata that map directly to categories
 _DOCTYPE_TO_CATEGORY: dict[str, str] = {
     "lab_report": "labs",
-    "discharge_summary": "discharge_summary",
+    "discharge_summary": "discharge",  # merged into discharge
     "pathology": "pathology",
     "imaging": "imaging",
-    "surgical_report": "surgery",
+    "surgical_report": "surgery",  # merged into surgery
     "genetics": "genetics",
-    "consultation": "report",
+    "consultation": "consultation",
     "referral": "referral",
     "chemo_sheet": "chemo_sheet",
     "prescription": "prescription",
