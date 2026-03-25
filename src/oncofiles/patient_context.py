@@ -15,9 +15,9 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 # Minimal fallback — real clinical data is loaded from DB or JSON file at runtime.
-# NEVER commit diagnosis, biomarkers, physicians, or treatment data to this public repo.
+# NEVER commit patient-specific data (diagnosis, biomarkers, physicians) to this repo.
 _DEFAULT_CONTEXT: dict[str, Any] = {
-    "name": os.environ.get("PATIENT_NAME", "Erika Fusekova"),
+    "name": os.environ.get("PATIENT_NAME", ""),
     "diagnosis": "",
     "staging": "",
     "histology": "",
@@ -30,12 +30,7 @@ _DEFAULT_CONTEXT: dict[str, Any] = {
     "surgeries": [],
     "physicians": {},
     "excluded_therapies": [],
-    "note": (
-        "Lab values should be interpreted considering active chemotherapy. "
-        "Key markers: CEA, CA 19-9, liver (ALT, AST, bilirubin), "
-        "renal (creatinine, urea), blood counts (WBC, neutrophils, Hb, platelets). "
-        "[CLINICAL_REDACTED] — bevacizumab is HIGH RISK."
-    ),
+    "note": "",
 }
 
 # Module-level mutable context — loaded at startup, updated via tools
