@@ -232,8 +232,8 @@ async def test_sync_from_gdrive_skips_unsupported(db: Database):
         [
             {
                 "id": "gd_1",
-                "name": "spreadsheet.xlsx",
-                "mimeType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                "name": "document.gdoc",
+                "mimeType": "application/octet-stream",
                 "modifiedTime": "2026-03-01T10:00:00Z",
                 "appProperties": {},
                 "parents": [],

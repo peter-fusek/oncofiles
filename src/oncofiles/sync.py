@@ -59,8 +59,8 @@ _last_sync_result: dict | None = None
 _last_sync_error: str | None = None
 _last_sync_time: float = 0.0
 
-SUPPORTED_EXTENSIONS = {".pdf", ".jpg", ".jpeg", ".png"}
-SKIP_EXTENSIONS = {".gdoc", ".xlsx", ".xls", ".ds_store"}
+SUPPORTED_EXTENSIONS = {".pdf", ".jpg", ".jpeg", ".png", ".xlsx", ".xls"}
+SKIP_EXTENSIONS = {".gdoc", ".ds_store"}
 GOOGLE_DOCS_MIMETYPES = {
     "application/vnd.google-apps.document",
     "application/vnd.google-apps.spreadsheet",

@@ -957,11 +957,25 @@ async def _build_reconciliation_report(
                 {"id": doc.id, "filename": doc.filename, "gdrive_id": doc.gdrive_id}
             )
 
-    # In GDrive but not in DB (orphans)
+    # In GDrive but not in DB (orphans) — classify as expected vs unexpected
     in_gdrive_not_db = []
+    expected_orphans = []
+    # System-generated files that sync intentionally skips
+    system_suffixes = (".json", ".md", "_OCR.txt")
+    system_prefixes = ("_manifest", "research-library", "treatment-timeline")
     for gid, gfile in gdrive_by_id.items():
         if gid not in db_by_gdrive_id:
-            in_gdrive_not_db.append({"gdrive_id": gid, "name": gfile["name"]})
+            name = gfile["name"]
+            is_system = (
+                any(name.endswith(s) for s in system_suffixes)
+                or any(name.startswith(p) for p in system_prefixes)
+                or "conversation-log" in name
+            )
+            entry = {"gdrive_id": gid, "name": name, "system": is_system}
+            if is_system:
+                expected_orphans.append(entry)
+            else:
+                in_gdrive_not_db.append(entry)
 
     # Filename mismatches (docs that exist in both)
     filename_mismatch = []
@@ -982,6 +996,7 @@ async def _build_reconciliation_report(
         "gdrive_count": len(gdrive_by_id),
         "in_db_not_gdrive": in_db_not_gdrive,
         "in_gdrive_not_db": in_gdrive_not_db,
+        "expected_orphans": expected_orphans,
         "filename_mismatch": filename_mismatch,
         "healthy": (
             len(in_db_not_gdrive) == 0
