@@ -152,6 +152,7 @@ class PersistentOAuthProvider(InMemoryOAuthProvider):
             "access_tokens": access_loaded,
             "refresh_tokens": refresh_loaded,
         }
+        self._last_restore_stats = stats
         if clients_loaded or access_loaded or refresh_loaded:
             logger.info("Restored MCP OAuth state: %s", stats)
         return stats

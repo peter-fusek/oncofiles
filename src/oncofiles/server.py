@@ -281,8 +281,22 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict]:
             db, files, gdrive, oauth_folder_id, gmail_client, calendar_client
         )
 
-    # Log memory usage after initialization
-    logger.info("Startup complete — RSS: %.1f MB", get_rss_mb())
+    # ── Startup validation ─────────────────────────────────────────────
+    tool_count = _count_tools()
+    oauth_stats = getattr(auth, "_last_restore_stats", {})
+    logger.info(
+        "Startup complete — tools=%d, RSS=%.1f MB, oauth_clients=%d, oauth_tokens=%d",
+        tool_count,
+        get_rss_mb(),
+        oauth_stats.get("clients", 0),
+        oauth_stats.get("access_tokens", 0) + oauth_stats.get("refresh_tokens", 0),
+    )
+    if tool_count < 70:
+        logger.warning(
+            "Tool count %d is below expected minimum (70). "
+            "Some tool modules may have failed to register silently.",
+            tool_count,
+        )
 
     try:
         yield {
