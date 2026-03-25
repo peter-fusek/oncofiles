@@ -218,6 +218,25 @@ async def validate_categories(
                 corrected += 1
             continue
 
+        # Advocate keyword sweep (#180): detect advocate files in other categories
+        current = doc.category.value
+        if current != "advocate":
+            fn_lower = doc.filename.lower()
+            advocate_keywords = ("advokat", "advocate", "pacientadvokat")
+            if any(kw in fn_lower for kw in advocate_keywords):
+                entry = {
+                    "doc_id": doc.id,
+                    "filename": doc.filename,
+                    "current_category": current,
+                    "suggested_category": "advocate",
+                    "reason": "advocate_keyword_in_filename",
+                }
+                mismatches.append(entry)
+                if not dry_run:
+                    await db.update_document_category(doc.id, "advocate")
+                    corrected += 1
+                continue
+
         doc_type = meta.get("document_type")
         if not doc_type:
             continue
@@ -231,8 +250,6 @@ async def validate_categories(
 
         if not expected_category:
             continue
-
-        current = doc.category.value
 
         # Special cases: advocate docs should stay as advocate regardless of content type
         if current == "advocate":

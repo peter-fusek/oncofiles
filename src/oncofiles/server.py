@@ -955,7 +955,9 @@ def _start_sync_scheduler(
 
             # Phase 0: Merge legacy category folders (e.g., surgical_report → surgery)
             from oncofiles.gdrive_folders import (
+                CATEGORY_FOLDERS,
                 CATEGORY_MERGES,
+                METADATA_FOLDERS,
                 bilingual_name,
                 en_key_from_folder_name,
             )
@@ -1082,7 +1084,7 @@ def _start_sync_scheduler(
                                     len(dup_files),
                                 )
 
-                    # Check for empty folders
+                    # Check for empty subfolders (#172)
                     for sf in sub_folders:
                         contents = await asyncio.to_thread(
                             lambda sid=sf["id"]: (
@@ -1100,8 +1102,96 @@ def _start_sync_scheduler(
                             cleaned += 1
                             logger.info("Trashed empty folder '%s/%s'", cat_name, sf["name"])
 
+                    # Move root-level files into year-month subfolders (#174)
+                    root_files_raw = await asyncio.to_thread(
+                        lambda fid=cat_folder_id: (
+                            p_gdrive._service.files()
+                            .list(
+                                q=(
+                                    f"'{fid}' in parents"
+                                    " and mimeType != "
+                                    "'application/vnd.google-apps.folder'"
+                                    " and trashed = false"
+                                ),
+                                fields="files(id, name, createdTime)",
+                                pageSize=50,
+                            )
+                            .execute()
+                        )
+                    )
+                    root_files = root_files_raw.get("files", [])
+                    for rf in root_files:
+                        # Parse date from filename or use createdTime
+                        name = rf["name"]
+                        ym = None
+                        if len(name) >= 8 and name[:8].isdigit():
+                            ym = f"{name[:4]}-{name[4:6]}"
+                        elif rf.get("createdTime"):
+                            ym = rf["createdTime"][:7]  # YYYY-MM
+                        if ym:
+                            # Find or create year-month subfolder
+                            ym_folder = None
+                            for sf in sub_folders:
+                                if sf["name"] == ym:
+                                    ym_folder = sf["id"]
+                                    break
+                            if not ym_folder:
+                                ym_folder = await asyncio.to_thread(
+                                    p_gdrive.create_folder,
+                                    ym,
+                                    cat_folder_id,
+                                )
+                            await asyncio.to_thread(
+                                p_gdrive.move_file,
+                                rf["id"],
+                                ym_folder,
+                            )
+                            cleaned += 1
+                            logger.info(
+                                "Moved root file '%s' → '%s/%s/'",
+                                name,
+                                cat_name,
+                                ym,
+                            )
+
                 except Exception:
-                    logger.warning("Empty folder check failed for %s", cat_name, exc_info=True)
+                    logger.warning(
+                        "Folder cleanup failed for %s",
+                        cat_name,
+                        exc_info=True,
+                    )
+
+            # Check for empty category folders (#172)
+            # Refresh folder map after cleanup
+            _, folder_map_2 = await asyncio.to_thread(
+                p_gdrive.list_folder_with_structure,
+                folder_id,
+            )
+            active_cats = set(CATEGORY_FOLDERS + METADATA_FOLDERS)
+            for cfid, cname in folder_map_2.items():
+                en = en_key_from_folder_name(cname) or cname
+                if en in active_cats:
+                    continue  # Don't trash active category folders
+                # Check if empty
+                cat_contents = await asyncio.to_thread(
+                    lambda fid=cfid: (
+                        p_gdrive._service.files()
+                        .list(
+                            q=f"'{fid}' in parents and trashed = false",
+                            fields="files(id)",
+                            pageSize=1,
+                        )
+                        .execute()
+                    )
+                )
+                if not cat_contents.get("files"):
+                    await asyncio.to_thread(p_gdrive.trash_file, cfid)
+                    cleaned += 1
+                    logger.info(
+                        "Trashed empty category folder '%s' [%s]",
+                        cname,
+                        pid,
+                    )
 
             if cleaned or merged or category_merged:
                 logger.info(
