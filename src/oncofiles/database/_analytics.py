@@ -135,10 +135,13 @@ class AnalyticsMixin:
         """Aggregate MCP tool usage from activity log for the last N days."""
         stats = ToolUsageStats()
 
-        # Top tools
+        # Top tools with duration and last called
         async with self.db.execute(
             """
-            SELECT tool_name, COUNT(*) as cnt
+            SELECT tool_name, COUNT(*) as cnt,
+                   AVG(duration_ms) as avg_dur,
+                   MAX(created_at) as last_called,
+                   SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) as err_cnt
             FROM activity_log
             WHERE created_at >= strftime('%Y-%m-%dT%H:%M:%SZ', 'now', ?)
             GROUP BY tool_name
@@ -149,7 +152,16 @@ class AnalyticsMixin:
         ) as cursor:
             rows = await cursor.fetchall()
 
-        stats.top_tools = [{"tool": r["tool_name"], "count": r["cnt"]} for r in rows]
+        stats.top_tools = [
+            {
+                "tool": r["tool_name"],
+                "count": r["cnt"],
+                "avg_duration_ms": round(r["avg_dur"]) if r["avg_dur"] else None,
+                "last_called": r["last_called"],
+                "error_count": r["err_cnt"] or 0,
+            }
+            for r in rows
+        ]
         stats.total_calls = sum(t["count"] for t in stats.top_tools)
 
         # Unique tools count

@@ -2465,6 +2465,23 @@
         cnt.style.cssText = 'font-size:0.75rem;color:var(--text-muted);width:40px;text-align:right';
         cnt.textContent = tt.count;
         row.appendChild(cnt);
+        row.style.cursor = 'pointer';
+        row.title = 'Click for details';
+        row.onclick = (function(tool) { return function() {
+          var existing = this.nextElementSibling;
+          if (existing && existing.className === 'tool-detail') {
+            existing.remove(); return;
+          }
+          var detail = document.createElement('div');
+          detail.className = 'tool-detail';
+          detail.style.cssText = 'padding:0.5rem;background:rgba(20,184,166,0.05);border-radius:4px;margin:0.25rem 0;font-size:0.7rem;color:var(--text-muted)';
+          detail.textContent = 'Tool: ' + tool.tool
+            + '\nTotal calls: ' + tool.count
+            + (tool.avg_duration_ms ? '\nAvg latency: ' + tool.avg_duration_ms + 'ms' : '')
+            + (tool.error_count ? '\nErrors: ' + tool.error_count : '\nErrors: 0')
+            + (tool.last_called ? '\nLast called: ' + new Date(tool.last_called).toLocaleString() : '');
+          this.parentNode.insertBefore(detail, this.nextSibling);
+        }; })(tt);
         toolsEl.appendChild(row);
       });
       if (tools.length === 0) {
@@ -2486,7 +2503,8 @@
       ];
       pipeItems.forEach(function(it) {
         var row = document.createElement('div');
-        row.style.cssText = 'display:flex;justify-content:space-between;padding:0.125rem 0;font-size:0.8125rem';
+        row.style.cssText = 'display:flex;justify-content:space-between;padding:0.125rem 0;font-size:0.8125rem;cursor:pointer';
+        row.title = 'Click for details';
         var lbl = document.createElement('span');
         lbl.style.color = 'var(--text-muted)';
         lbl.textContent = it[0];
@@ -2495,6 +2513,22 @@
         if (it[2]) val.style.color = it[2];
         val.textContent = it[1];
         row.appendChild(val);
+        row.onclick = (function(label, value) { return function() {
+          var existing = this.nextElementSibling;
+          if (existing && existing.className === 'pipe-detail') {
+            existing.remove(); return;
+          }
+          var detail = document.createElement('div');
+          detail.className = 'pipe-detail';
+          detail.style.cssText = 'padding:0.375rem;background:rgba(20,184,166,0.05);border-radius:4px;margin:0.125rem 0;font-size:0.7rem;color:var(--text-muted)';
+          var info = label + ': ' + value;
+          if (label === 'Syncs') info += '\nTotal sync cycles run in the last 30 days.';
+          if (label === 'Failed') info += '\nSync cycles that encountered errors.';
+          if (label === 'Enhanced') info += '\nDocuments processed by AI metadata extraction.';
+          if (label === 'Avg sync') info += '\nAverage duration of a full sync cycle.';
+          detail.textContent = info;
+          this.parentNode.insertBefore(detail, this.nextSibling);
+        }; })(it[0], it[1]);
         pipeEl.appendChild(row);
       });
 
