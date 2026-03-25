@@ -3317,7 +3317,7 @@ async def api_create_share_link(request: Request) -> JSONResponse:
         # Generate 6-char uppercase code
         import secrets
 
-        code = secrets.token_hex(3).upper()  # 6 hex chars
+        code = secrets.token_hex(8).upper()  # 16 hex chars
 
         # Purge expired codes
         now = time.time()

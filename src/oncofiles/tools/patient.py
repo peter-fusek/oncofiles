@@ -31,7 +31,7 @@ async def update_patient_context(
 
     Args:
         updates_json: JSON object with fields to update. Example:
-            '{"treatment": {"current_cycle": 3}, "comorbidities": ["[CLINICAL_REDACTED] (resolved)"]}'
+            '{"treatment": {"current_cycle": 3}}'
     """
     try:
         updates = json.loads(updates_json)
