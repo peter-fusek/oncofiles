@@ -289,8 +289,14 @@ async def test_store_lab_values_duplicate_document_upsert(db: Database):
     values_v1 = json.dumps([{"parameter": "CEA", "value": 100.0, "unit": "ug/L"}])
     await store_lab_values(ctx, doc.id, "2026-02-27", values_v1)
 
+    # Second call without force should be skipped (dedup)
     values_v2 = json.dumps([{"parameter": "CEA", "value": 200.0, "unit": "ug/L"}])
-    await store_lab_values(ctx, doc.id, "2026-02-27", values_v2)
+    skip_result = json.loads(await store_lab_values(ctx, doc.id, "2026-02-27", values_v2))
+    assert skip_result["action"] == "skipped"
+    assert skip_result["reason"] == "already_stored"
+
+    # With force=True, should replace
+    await store_lab_values(ctx, doc.id, "2026-02-27", values_v2, force=True)
 
     result = json.loads(await get_lab_trends(ctx, parameter="CEA"))
     assert result["total"] == 1

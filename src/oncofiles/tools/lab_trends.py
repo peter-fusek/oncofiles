@@ -15,11 +15,15 @@ async def store_lab_values(
     document_id: int,
     lab_date: str,
     values: str,
+    force: bool = False,
 ) -> str:
     """Store parsed lab values from a document for trend tracking.
 
-    Called by Oncoteam after analyzing a lab document. Values are stored
-    with INSERT OR REPLACE — safe to call multiple times for the same document.
+    Includes deduplication checks:
+    - If document_id already has stored values, returns skipped
+      (unless force=True to update/replace).
+    - If another document has values for the same lab_date, warns
+      about collision (stores anyway but flags it).
 
     Standardized parameter names:
         WBC, ABS_NEUT, ABS_LYMPH, PLT, HGB, ANC, ALT, AST, GMT, ALP,
@@ -31,7 +35,10 @@ async def store_lab_values(
         values: JSON array of objects, each with: parameter, value, unit,
                 and optionally reference_low, reference_high, flag.
                 Example: [{"parameter": "WBC", "value": 6.8, "unit": "10^9/L",
-                          "reference_low": 4.0, "reference_high": 10.0, "flag": ""}]
+                          "reference_low": 4.0, "reference_high": 10.0,
+                          "flag": ""}]
+        force: If True, store even if document already has values
+               (replaces existing via INSERT OR REPLACE).
     """
     try:
         parsed_date = _parse_date(lab_date)
@@ -44,6 +51,20 @@ async def store_lab_values(
     doc = await db.get_document(document_id)
     if not doc:
         return json.dumps({"error": f"Document not found: {document_id}"})
+
+    # Dedup check 1: document already has stored values
+    existing = await db.get_lab_snapshot(document_id)
+    if existing and not force:
+        return json.dumps(
+            {
+                "action": "skipped",
+                "reason": "already_stored",
+                "document_id": document_id,
+                "lab_date": parsed_date.isoformat(),
+                "existing_parameters": [v.parameter for v in existing],
+                "hint": "Set force=True to replace existing values.",
+            }
+        )
 
     try:
         raw_values = json.loads(values)
@@ -73,15 +94,34 @@ async def store_lab_values(
     if not lab_values:
         return json.dumps({"error": "No valid lab values found in input"})
 
-    count = await db.insert_lab_values(lab_values)
-    return json.dumps(
-        {
-            "stored": count,
-            "document_id": document_id,
-            "lab_date": parsed_date.isoformat(),
-            "parameters": [v.parameter for v in lab_values],
-        }
+    # Dedup check 2: same date collision from another document
+    date_collision = None
+    date_existing = await db.get_lab_values_by_date(
+        parsed_date.isoformat(),
     )
+    other_docs = {v.document_id for v in date_existing if v.document_id != document_id}
+    if other_docs:
+        date_collision = {
+            "collision_document_ids": sorted(other_docs),
+            "existing_parameters": list({v.parameter for v in date_existing}),
+        }
+
+    count = await db.insert_lab_values(lab_values)
+
+    result = {
+        "action": "stored",
+        "stored": count,
+        "document_id": document_id,
+        "lab_date": parsed_date.isoformat(),
+        "parameters": [v.parameter for v in lab_values],
+    }
+    if date_collision:
+        result["warning"] = "date_collision"
+        result["collision"] = date_collision
+    if existing and force:
+        result["note"] = "replaced_existing"
+
+    return json.dumps(result)
 
 
 async def get_lab_trends(
