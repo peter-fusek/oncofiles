@@ -237,6 +237,27 @@ async def validate_categories(
                     corrected += 1
                 continue
 
+        # Filename token rescue for "other" category (#176)
+        # If file has an explicit category token in its name, use it
+        if current == "other":
+            from oncofiles.filename_parser import parse_filename
+
+            reparsed = parse_filename(doc.filename)
+            if reparsed.category and reparsed.category.value != "other":
+                suggested = reparsed.category.value
+                entry = {
+                    "doc_id": doc.id,
+                    "filename": doc.filename,
+                    "current_category": current,
+                    "suggested_category": suggested,
+                    "reason": "filename_token_detected",
+                }
+                mismatches.append(entry)
+                if not dry_run:
+                    await db.update_document_category(doc.id, suggested)
+                    corrected += 1
+                continue
+
         doc_type = meta.get("document_type")
         if not doc_type:
             continue

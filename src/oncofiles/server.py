@@ -1102,7 +1102,7 @@ def _start_sync_scheduler(
                             cleaned += 1
                             logger.info("Trashed empty folder '%s/%s'", cat_name, sf["name"])
 
-                    # Move root-level files into year-month subfolders (#174)
+                    # Move root-level files into subfolders (#174, #175)
                     root_files_raw = await asyncio.to_thread(
                         lambda fid=cat_folder_id: (
                             p_gdrive._service.files()
@@ -1120,38 +1120,51 @@ def _start_sync_scheduler(
                         )
                     )
                     root_files = root_files_raw.get("files", [])
+                    en_cat = en_key_from_folder_name(cat_name) or cat_name
                     for rf in root_files:
-                        # Parse date from filename or use createdTime
                         name = rf["name"]
-                        ym = None
-                        if len(name) >= 8 and name[:8].isdigit():
-                            ym = f"{name[:4]}-{name[4:6]}"
-                        elif rf.get("createdTime"):
-                            ym = rf["createdTime"][:7]  # YYYY-MM
-                        if ym:
-                            # Find or create year-month subfolder
-                            ym_folder = None
+                        target_subfolder = None
+
+                        # Reference category: organize by source (#175)
+                        if en_cat == "reference":
+                            nl = name.lower()
+                            if "devita" in nl:
+                                target_subfolder = "DeVita-12e"
+                            elif "nccn" in nl:
+                                target_subfolder = "NCCN"
+                            elif "modra" in nl or "modrakniha" in nl:
+                                target_subfolder = "ModraKniha"
+                        # Default: year-month subfolder
+                        if not target_subfolder:
+                            if len(name) >= 8 and name[:8].isdigit():
+                                target_subfolder = f"{name[:4]}-{name[4:6]}"
+                            elif rf.get("createdTime"):
+                                target_subfolder = rf["createdTime"][:7]
+
+                        if target_subfolder:
+                            # Find or create subfolder
+                            sf_id = None
                             for sf in sub_folders:
-                                if sf["name"] == ym:
-                                    ym_folder = sf["id"]
+                                if sf["name"] == target_subfolder:
+                                    sf_id = sf["id"]
                                     break
-                            if not ym_folder:
-                                ym_folder = await asyncio.to_thread(
+                            if not sf_id:
+                                sf_id = await asyncio.to_thread(
                                     p_gdrive.create_folder,
-                                    ym,
+                                    target_subfolder,
                                     cat_folder_id,
                                 )
                             await asyncio.to_thread(
                                 p_gdrive.move_file,
                                 rf["id"],
-                                ym_folder,
+                                sf_id,
                             )
                             cleaned += 1
                             logger.info(
                                 "Moved root file '%s' → '%s/%s/'",
                                 name,
                                 cat_name,
-                                ym,
+                                target_subfolder,
                             )
 
                 except Exception:
