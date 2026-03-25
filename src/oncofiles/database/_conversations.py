@@ -21,8 +21,9 @@ class ConversationMixin:
             """
             INSERT INTO conversation_entries
                 (entry_date, entry_type, title, content, participant,
-                 session_id, tags, document_ids, source, source_ref, patient_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 session_type, session_id, tags, document_ids,
+                 source, source_ref, patient_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 entry.entry_date.isoformat(),
@@ -30,6 +31,7 @@ class ConversationMixin:
                 entry.title,
                 entry.content,
                 entry.participant,
+                entry.session_type,
                 entry.session_id,
                 json.dumps(entry.tags) if entry.tags else None,
                 json.dumps(entry.document_ids) if entry.document_ids else None,

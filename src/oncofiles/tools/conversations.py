@@ -55,12 +55,16 @@ async def log_conversation(
     # Try to capture session_id from context
     session_id = getattr(ctx, "session_id", None)
 
+    # Auto-classify session type based on participant
+    session_type = "technical" if participant == "claude-code" else "patient"
+
     entry = ConversationEntry(
         entry_date=parsed_date,
         entry_type=entry_type,
         title=title,
         content=content,
         participant=participant,
+        session_type=session_type,
         session_id=session_id,
         tags=parsed_tags,
         document_ids=parsed_doc_ids,

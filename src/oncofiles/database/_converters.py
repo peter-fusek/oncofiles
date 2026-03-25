@@ -119,6 +119,7 @@ def _row_to_conversation_entry(row: Any) -> ConversationEntry:
         title=row["title"],
         content=row["content"],
         participant=row["participant"],
+        session_type=row["session_type"] if "session_type" in dict(row) else "patient",
         session_id=row["session_id"],
         tags=json.loads(row["tags"]) if row["tags"] else None,
         document_ids=json.loads(row["document_ids"]) if row["document_ids"] else None,

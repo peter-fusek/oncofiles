@@ -130,6 +130,7 @@ class ConversationEntry(BaseModel):
     title: str
     content: str
     participant: str = "claude.ai"
+    session_type: str = "patient"  # "patient" or "technical"
     session_id: str | None = None
     tags: list[str] | None = None
     document_ids: list[int] | None = None
