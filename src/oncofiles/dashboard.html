@@ -1386,7 +1386,42 @@
       currentPatientId = patientId;
       localStorage.setItem('oncofiles_patient_id', patientId);
       updatePatientDiagnosis();
+      clearAllPatientData();
       refresh();
+    }
+
+    function clearAllPatientData() {
+      // Clear stat cards immediately to prevent stale data showing
+      showSkeletons();
+      // Clear document table — safe static string, no user input
+      var tbody = document.getElementById('doc-tbody');
+      if (tbody) {
+        while (tbody.firstChild) tbody.removeChild(tbody.firstChild);
+        var tr = document.createElement('tr');
+        var td = document.createElement('td');
+        td.setAttribute('colspan', '8');
+        td.style.textAlign = 'center';
+        td.style.color = '#888';
+        td.textContent = 'Loading...';
+        tr.appendChild(td);
+        tbody.appendChild(tr);
+      }
+      // Clear pipeline funnel
+      document.querySelectorAll('.funnel-bar').forEach(function(el) {
+        el.style.width = '0%';
+      });
+      document.querySelectorAll('.funnel-count').forEach(function(el) {
+        el.textContent = '0';
+      });
+      // Clear reconciliation
+      var reconEl = document.getElementById('reconciliation-content');
+      if (reconEl) { while (reconEl.firstChild) reconEl.removeChild(reconEl.firstChild); }
+      // Clear usage analytics
+      var analyticsEl = document.getElementById('analytics-content');
+      if (analyticsEl) { while (analyticsEl.firstChild) analyticsEl.removeChild(analyticsEl.firstChild); }
+      // Clear prompt log
+      var promptEl = document.getElementById('prompt-log-entries');
+      if (promptEl) { while (promptEl.firstChild) promptEl.removeChild(promptEl.firstChild); }
     }
 
     function updatePatientDiagnosis() {

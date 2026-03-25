@@ -2502,11 +2502,32 @@ async def api_reconciliation(request: Request) -> JSONResponse:
         lifespan_ctx = request.app.state.fastmcp_server._lifespan_result
         db: Database = lifespan_ctx["db"]
         gdrive = lifespan_ctx.get("gdrive")
-        folder_id = lifespan_ctx.get("gdrive_folder_id", "")
         patient_id = _get_dashboard_patient_id(request)
+        # Use per-patient GDrive folder, fall back to global
+        folder_id = ""
+        if patient_id:
+            token = await db.get_oauth_token(patient_id, "google")
+            if token and token.gdrive_folder_id:
+                folder_id = token.gdrive_folder_id
+        if not folder_id:
+            folder_id = lifespan_ctx.get("gdrive_folder_id", "")
         if not gdrive or not folder_id:
-            return JSONResponse({"error": "GDrive not configured"}, status_code=503)
-        result = await _build_reconciliation_report(db, gdrive, folder_id, patient_id=patient_id)
+            # No GDrive configured for this patient — return empty
+            return JSONResponse(
+                {
+                    "db_count": 0,
+                    "gdrive_count": 0,
+                    "in_db_not_gdrive": [],
+                    "in_gdrive_not_db": [],
+                    "filename_mismatches": [],
+                }
+            )
+        result = await _build_reconciliation_report(
+            db,
+            gdrive,
+            folder_id,
+            patient_id=patient_id,
+        )
         return JSONResponse(result)
     except Exception:
         logger.exception("API reconciliation endpoint error")
