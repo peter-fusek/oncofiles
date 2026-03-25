@@ -12,11 +12,14 @@ Legacy format (still supported): YYYYMMDD_institution_category_description.ext
 from __future__ import annotations
 
 import contextlib
+import logging
 import re
 from datetime import date
 from pathlib import PurePosixPath
 
 from oncofiles.models import DocumentCategory, ParsedFilename
+
+logger = logging.getLogger(__name__)
 
 # Known institution codes (expandable)
 KNOWN_INSTITUTIONS = {
@@ -41,6 +44,48 @@ KNOWN_INSTITUTIONS = {
     "Cytopathos",
     "BIOPTIKA",
 }
+
+# Institution normalization: variant → canonical code
+# Used to resolve institutions from OCR text, filenames, metadata
+INSTITUTION_NORMALIZE: dict[str, str] = {
+    "nou": "NOU",
+    "noú": "NOU",
+    "národný onkologický ústav": "NOU",
+    "narodny onkologicky ustav": "NOU",
+    "national oncology institute": "NOU",
+    "onkologicky ustav": "NOU",
+    "nou bratislava": "NOU",
+    "bory": "BoryNemocnica",
+    "bory nemocnica": "BoryNemocnica",
+    "nemocnica bory": "BoryNemocnica",
+    "socialna poistovna": "SocialnaPoistovna",
+    "socialnapoistovna": "SocialnaPoistovna",
+    "minnesota": "MinnesotaUniversity",
+    "university of minnesota": "MinnesotaUniversity",
+    "pacient advokat": "PacientAdvokat",
+    "pacientadvokat": "PacientAdvokat",
+    "ousa": "OUSA",
+    "unb": "UNB",
+    "medirex": "Medirex",
+    "alpha": "Alpha",
+    "synlab": "Synlab",
+    "bioptika": "BIOPTIKA",
+}
+
+
+def normalize_institution(raw: str | None) -> str | None:
+    """Normalize an institution name to canonical code.
+
+    Returns canonical institution code or None if unrecognized.
+    """
+    if not raw:
+        return None
+    # Already a known code
+    if raw in KNOWN_INSTITUTIONS:
+        return raw
+    # Lookup in normalization map (case-insensitive)
+    return INSTITUTION_NORMALIZE.get(raw.lower().strip())
+
 
 # Standard format: category → filename token (CamelCase, no spaces)
 CATEGORY_FILENAME_TOKENS: dict[DocumentCategory, str] = {
@@ -455,7 +500,14 @@ def rename_to_standard(
 
     # Build standard filename
     date_str = parsed.document_date.strftime("%Y%m%d")
-    institution = parsed.institution or "Unknown"
+    # Try to normalize institution; warn if still unknown
+    institution = normalize_institution(parsed.institution) or parsed.institution
+    if not institution or institution == "Unknown":
+        institution = "Unknown"
+        logger.warning(
+            "Institution unknown for %s — consider re-extracting",
+            filename,
+        )
 
     parts = [date_str, patient_compact, institution, cat_token]
     if desc:
