@@ -744,7 +744,7 @@
         <div class="header-right">
           <span id="connection-dot" class="connection-dot loading" title="Connecting..."></span>
           <span id="svc-badges" class="svc-badges">
-            <span id="svc-drive" class="svc-badge off" title="Google Drive">Drive</span>
+            <span id="svc-drive" class="svc-badge off" title="Google Drive" onclick="if(this.classList.contains('off'))showGdriveSetup()" style="cursor:pointer">Drive</span>
             <span id="svc-gmail" class="svc-badge off" title="Gmail">Gmail</span>
             <span id="svc-cal" class="svc-badge off" title="Google Calendar">Cal</span>
           </span>
@@ -760,6 +760,12 @@
       <div id="error-banner" class="error-banner">
         <span id="error-text"></span>
         <button class="refresh-btn" onclick="refresh()" style="margin-left:1rem" data-sk="Skúsiť znova" data-en="Retry">Skúsiť znova</button>
+      </div>
+
+      <!-- GDrive connect banner (shown when patient has no GDrive folder) -->
+      <div id="gdrive-connect-bar" style="display:none;background:rgba(20,184,166,0.1);border:1px solid rgba(20,184,166,0.3);border-radius:8px;padding:0.75rem 1rem;align-items:center;gap:0.75rem">
+        <span style="font-size:0.875rem;color:var(--text)" data-sk="Google Drive nie je pripojený pre tohto pacienta." data-en="Google Drive is not connected for this patient.">Google Drive nie je pripojený pre tohto pacienta.</span>
+        <button onclick="showGdriveSetup()" style="padding:0.375rem 0.75rem;background:var(--accent);color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:0.8125rem;font-weight:600;white-space:nowrap" data-sk="Pripojiť GDrive" data-en="Connect GDrive">Pripojiť GDrive</button>
       </div>
 
       <!-- MCP Connection bar (hidden in demo mode) -->
@@ -1475,6 +1481,31 @@
     var wizardBearerToken = '';
     var wizardCurrentStep = 1;
 
+    function showGdriveSetup() {
+      // Open wizard Step 2 directly for the current patient (skip patient creation)
+      var pid = document.getElementById('patient-select').value;
+      if (!pid) return;
+      wizardPatientId = pid;
+      wizardBearerToken = '';
+      wizardCurrentStep = 2;
+      for (var i = 1; i <= 4; i++) {
+        document.getElementById('wiz-step-' + i).style.display = i === 2 ? 'block' : 'none';
+      }
+      // Reset Step 2 to Phase A (authorize)
+      document.getElementById('wiz-step2-auth').style.display = 'block';
+      document.getElementById('wiz-step2-folder').style.display = 'none';
+      document.getElementById('wiz-step2-auth-done').style.display = 'none';
+      var statusEl = document.getElementById('wiz-step2-status');
+      if (statusEl) statusEl.style.display = 'none';
+      // Hide the token display (not relevant for existing patient)
+      var tokenBox = document.querySelector('.wizard-token-box');
+      if (tokenBox) tokenBox.style.display = 'none';
+      var tokenWarning = tokenBox ? tokenBox.nextElementSibling : null;
+      if (tokenWarning && tokenWarning.style) tokenWarning.style.display = 'none';
+      updateWizardDots();
+      document.getElementById('wizard-overlay').classList.add('active');
+    }
+
     function showOnboarding() {
       wizardPatientId = '';
       wizardBearerToken = '';
@@ -1916,6 +1947,9 @@
         var el = document.getElementById(id);
         if (el) el.className = 'svc-badge ' + (gs[svc] ? 'on' : 'off');
       });
+      // Show GDrive connect banner if no folder set for this patient
+      var gdriveBar = document.getElementById('gdrive-connect-bar');
+      if (gdriveBar) gdriveBar.style.display = (!gs.drive || !gs.folder_id) && !window.DEMO_MODE ? 'flex' : 'none';
 
       const h = s.document_health || {};
       document.getElementById('card-total').textContent = h.total || 0;
