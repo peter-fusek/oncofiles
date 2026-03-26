@@ -1122,7 +1122,6 @@
       descInput.addEventListener('input', updateLink);
 
       // Update placeholders on language switch
-      var origApply = window._langApply;
       function updatePlaceholders() {
         var l = localStorage.getItem('oncofiles_lang') || 'sk';
         document.querySelectorAll('[data-placeholder-' + l + ']').forEach(function(el) {

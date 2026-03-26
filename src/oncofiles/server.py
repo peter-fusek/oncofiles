@@ -2129,15 +2129,13 @@ async def status(request: Request) -> JSONResponse:
             try:
                 oauth_token = await db.get_oauth_token(patient_id=patient_id)
                 if oauth_token:
-                    import json as _json
-
-                    scopes = _json.loads(oauth_token.granted_scopes or "[]")
+                    scopes = json.loads(oauth_token.granted_scopes or "[]")
                     google_services["drive"] = SCOPE_DRIVE in scopes
                     google_services["gmail"] = SCOPE_GMAIL in scopes
                     google_services["calendar"] = SCOPE_CALENDAR in scopes
                     google_services["folder_id"] = oauth_token.gdrive_folder_id or None
             except Exception:
-                pass  # OAuth token not found — all services disconnected
+                logger.warning("Failed to load Google services status for %s", patient_id)
 
         # Memory
         rusage = resource.getrusage(resource.RUSAGE_SELF)
