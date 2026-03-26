@@ -51,3 +51,5 @@ uv run ruff check
 - Turso Hrana streams expire during idle — DB keepalive job pings every 4 min to prevent stale connections
 - `railway.toml`: healthcheckTimeout=120, overlapSeconds=30 — do not lower these
 - **Turso single-connection**: NEVER use `asyncio.gather` for concurrent DB queries — serialize them. Dashboard fetches must also be sequential (no `Promise.all`). The single libsql connection blocks under concurrent access.
+- **uv.lock**: After bumping version in pyproject.toml, always run `uv lock` — Railway uses `--locked` flag which rejects stale lockfiles
+- **Dashboard i18n**: Uses `data-sk`/`data-en` attributes on elements. `applyDashLang()` queries all `[data-sk][data-en]` elements. Add both attributes when adding new user-visible text.
