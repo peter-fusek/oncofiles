@@ -277,8 +277,9 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict]:
     scheduler = None
     job_tracker: dict[str, dict] = {}
     if SYNC_ENABLED:
+        sync_folder_id = _get_sync_folder_id_from(oauth_folder_id)
         scheduler, job_tracker = _start_sync_scheduler(
-            db, files, gdrive, oauth_folder_id, gmail_client, calendar_client
+            db, files, gdrive, sync_folder_id, gmail_client, calendar_client
         )
 
     # ── Startup validation ─────────────────────────────────────────────
