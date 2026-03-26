@@ -230,6 +230,9 @@ async def search_documents(
         )
         async with query_slot("search_documents"):
             docs = await db.search_documents(query, patient_id=_get_patient_id())
+        from oncofiles.memory import update_peak_rss
+
+        update_peak_rss()
         return json.dumps({"documents": [_doc_to_dict(d) for d in docs], "total": len(docs)})
     except ValueError as e:
         return json.dumps({"error": str(e)})

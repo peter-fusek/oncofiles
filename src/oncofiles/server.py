@@ -41,7 +41,14 @@ from oncofiles.config import (
 )
 from oncofiles.database import Database
 from oncofiles.gdrive_client import GDriveClient, create_gdrive_client
-from oncofiles.memory import get_rss_mb, is_memory_pressure
+from oncofiles.memory import (
+    get_rss_mb,
+    get_rss_trend,
+    get_semaphore_status,
+    init_rss_tracking,
+    is_memory_pressure,
+    periodic_memory_check,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -162,6 +169,7 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict]:
     from oncofiles.files_api import FilesClient
 
     _setup_logging()
+    init_rss_tracking()
     started_at = datetime.now(UTC)
     deploy_id = os.environ.get("RAILWAY_DEPLOYMENT_ID", "")
     git_sha = os.environ.get("RAILWAY_GIT_COMMIT_SHA", "")
@@ -1545,6 +1553,15 @@ def _start_sync_scheduler(
     scheduler.add_listener(_job_error, EVENT_JOB_ERROR)
     scheduler.add_listener(_job_missed, EVENT_JOB_MISSED)
 
+    # OF-1/OF-2: Periodic memory check — reclaim memory + graceful restart
+    scheduler.add_job(
+        periodic_memory_check,
+        IntervalTrigger(minutes=5),
+        id="memory_check",
+        max_instances=1,
+        misfire_grace_time=60,
+    )
+
     scheduler.start()
     logger.info("Sync scheduler started — every %d min", SYNC_INTERVAL_MINUTES)
     return scheduler, job_tracker
@@ -1998,6 +2015,8 @@ async def health(request: Request) -> JSONResponse:
         if started_at:
             result["uptime_s"] = int((datetime.now(UTC) - started_at).total_seconds())
         result["memory_rss_mb"] = round(get_rss_mb(), 1)
+        result["memory"] = get_rss_trend()
+        result["semaphores"] = get_semaphore_status()
     except Exception:
         pass  # still return 200 even if lifespan context unavailable during startup
     return JSONResponse(result)

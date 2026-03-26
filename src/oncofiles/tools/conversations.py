@@ -122,6 +122,9 @@ async def search_conversations(
         )
         async with query_slot("search_conversations"):
             entries = await db.search_conversation_entries(query, patient_id=_get_patient_id())
+        from oncofiles.memory import update_peak_rss
+
+        update_peak_rss()
     except ValueError as e:
         return json.dumps({"error": str(e)})
     items = [

@@ -3,6 +3,7 @@
 Uses a Python contextvars.ContextVar to propagate the resolved patient_id
 to tool functions without modifying the shared lifespan context.
 Also enforces per-token rate limiting to prevent API abuse (#147).
+Includes request correlation IDs for cross-system debugging (OF-4).
 """
 
 from __future__ import annotations
@@ -10,6 +11,7 @@ from __future__ import annotations
 import contextvars
 import logging
 import time
+import uuid
 from typing import Any
 
 from fastmcp.server.middleware.middleware import CallNext, Middleware, MiddlewareContext
@@ -22,6 +24,11 @@ _current_patient_id: contextvars.ContextVar[str] = contextvars.ContextVar(
     "patient_id", default="erika"
 )
 
+# Per-request correlation ID (OF-4) — set by middleware, included in logs
+_current_request_id: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "request_id", default=""
+)
+
 # Per-token rate limiting: {token_prefix: [timestamps]} — prevents credit depletion
 _tool_call_times: dict[str, list[float]] = {}
 _TOOL_RATE_LIMIT = 120  # max tool calls per minute per token
@@ -31,6 +38,16 @@ _TOOL_RATE_WINDOW = 60  # 1 minute window
 def get_current_patient_id() -> str:
     """Get the patient_id for the current request. Thread/task-safe."""
     return _current_patient_id.get()
+
+
+def get_current_request_id() -> str:
+    """Get the request correlation ID for the current request. Thread/task-safe."""
+    return _current_request_id.get()
+
+
+def generate_request_id() -> str:
+    """Generate a short unique request ID."""
+    return uuid.uuid4().hex[:12]
 
 
 class PatientResolutionMiddleware(Middleware):
@@ -85,9 +102,19 @@ class PatientResolutionMiddleware(Middleware):
             )
         _tool_call_times[token_key].append(now)
 
-        # Set the contextvar for this request
+        # Set contextvars for this request (patient_id + correlation ID)
+        request_id = generate_request_id()
         ctx_token = _current_patient_id.set(patient_id)
+        req_id_token = _current_request_id.set(request_id)
+        tool_name = getattr(context, "tool_name", "unknown")
+        logger.info(
+            "[req:%s] tool=%s patient=%s",
+            request_id,
+            tool_name,
+            patient_id,
+        )
         try:
             return await call_next(context)
         finally:
             _current_patient_id.reset(ctx_token)
+            _current_request_id.reset(req_id_token)

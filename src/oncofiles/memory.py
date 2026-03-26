@@ -9,7 +9,9 @@ from __future__ import annotations
 import asyncio
 import gc
 import logging
+import os
 import sys
+import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -18,15 +20,30 @@ logger = logging.getLogger(__name__)
 # Skip heavy operations when current RSS exceeds this threshold (MB)
 MEMORY_THRESHOLD_MB = 450
 
+# Configurable concurrency slots via env vars for tuning without redeploy (OF-3)
+_QUERY_SLOTS = int(os.environ.get("DB_QUERY_SLOTS", "5"))
+_EXPRESS_SLOTS = int(os.environ.get("DB_EXPRESS_SLOTS", "5"))
+_BACKGROUND_SLOTS = int(os.environ.get("DB_BACKGROUND_SLOTS", "2"))
+
 # Limit concurrent heavy DB queries (search_conversations, search_documents)
 # to prevent memory spikes from parallel Oncoteam agent requests.
-_query_semaphore = asyncio.Semaphore(3)
+_query_semaphore = asyncio.Semaphore(_QUERY_SLOTS)
 
 # Priority-aware DB concurrency — prevents dashboard 500s during sync.
 # Background (sync) and express (dashboard) get independent lanes so sync
 # operations can never starve dashboard queries.
-_db_background = asyncio.Semaphore(2)  # sync / background operations
-_db_express = asyncio.Semaphore(2)  # dashboard / priority operations
+_db_background = asyncio.Semaphore(_BACKGROUND_SLOTS)  # sync / background operations
+_db_express = asyncio.Semaphore(_EXPRESS_SLOTS)  # dashboard / priority operations
+
+# ── RSS trend tracking (OF-1) ──────────────────────────────────────────────
+_rss_startup: float = 0.0
+_rss_peak: float = 0.0
+_rss_started_at: float = 0.0
+
+# Graceful restart tracking (OF-2)
+MEMORY_RESTART_THRESHOLD_MB = int(os.environ.get("MEMORY_RESTART_THRESHOLD_MB", "420"))
+_restart_consecutive_checks: int = 0
+_RESTART_REQUIRED_CHECKS = 3
 
 
 async def acquire_query_slot(label: str) -> None:
@@ -144,3 +161,97 @@ def is_memory_pressure(label: str) -> bool:
     )
     reclaim_memory(label)
     return True
+
+
+# ── OF-1: RSS trend tracking ──────────────────────────────────────────────
+
+
+def init_rss_tracking() -> None:
+    """Initialize RSS tracking at startup. Call once in lifespan."""
+    global _rss_startup, _rss_peak, _rss_started_at
+    _rss_startup = get_rss_mb()
+    _rss_peak = _rss_startup
+    _rss_started_at = time.time()
+
+
+def update_peak_rss() -> float:
+    """Update peak RSS and return current value. Call after heavy operations."""
+    global _rss_peak
+    rss = get_rss_mb()
+    if rss > _rss_peak:
+        _rss_peak = rss
+    return rss
+
+
+def get_rss_trend() -> dict:
+    """Return RSS trend data for /health endpoint."""
+    current = get_rss_mb()
+    elapsed_h = (time.time() - _rss_started_at) / 3600 if _rss_started_at else 0
+    growth_rate = (current - _rss_startup) / elapsed_h if elapsed_h > 0.01 else 0.0
+    return {
+        "current_mb": round(current, 1),
+        "startup_mb": round(_rss_startup, 1),
+        "peak_mb": round(_rss_peak, 1),
+        "growth_rate_mb_per_hour": round(growth_rate, 1),
+    }
+
+
+def get_semaphore_status() -> dict:
+    """Return current semaphore slot availability for /health endpoint (OF-3)."""
+    return {
+        "query": {"total": _QUERY_SLOTS, "available": _query_semaphore._value},
+        "express": {"total": _EXPRESS_SLOTS, "available": _db_express._value},
+        "background": {"total": _BACKGROUND_SLOTS, "available": _db_background._value},
+    }
+
+
+# ── OF-2: Graceful restart on memory pressure ─────────────────────────────
+
+
+def check_memory_restart() -> bool:
+    """Check if RSS exceeds restart threshold for 3 consecutive checks.
+
+    Returns True if the process should gracefully restart.
+    Call this from the periodic memory check job.
+    """
+    global _restart_consecutive_checks
+    rss = get_rss_mb()
+    if rss > MEMORY_RESTART_THRESHOLD_MB:
+        _restart_consecutive_checks += 1
+        logger.warning(
+            "RSS %.1f MB > %d MB threshold — consecutive check %d/%d",
+            rss,
+            MEMORY_RESTART_THRESHOLD_MB,
+            _restart_consecutive_checks,
+            _RESTART_REQUIRED_CHECKS,
+        )
+        if _restart_consecutive_checks >= _RESTART_REQUIRED_CHECKS:
+            logger.critical(
+                "Graceful restart: RSS %.1f MB exceeds %d MB for %d consecutive checks",
+                rss,
+                MEMORY_RESTART_THRESHOLD_MB,
+                _RESTART_REQUIRED_CHECKS,
+            )
+            return True
+    else:
+        if _restart_consecutive_checks > 0:
+            logger.info("RSS %.1f MB — restart counter reset", rss)
+        _restart_consecutive_checks = 0
+    return False
+
+
+def periodic_memory_check() -> None:
+    """Periodic memory maintenance. Called every 5 minutes by scheduler.
+
+    1. If RSS > 300MB: run gc.collect + malloc_trim
+    2. Update peak RSS
+    3. Check if graceful restart needed
+    """
+    rss = update_peak_rss()
+    if rss > 300:
+        reclaim_memory("periodic_check")
+        rss = update_peak_rss()  # re-check after reclaim
+
+    if check_memory_restart():
+        logger.critical("Initiating graceful restart — exiting with code 0")
+        sys.exit(0)
