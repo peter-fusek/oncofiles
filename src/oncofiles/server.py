@@ -414,8 +414,6 @@ def _start_sync_scheduler(
 
     sync_timeout = 300  # 5 minutes max for scheduled sync
 
-    # Per-patient last-sync timestamps (skip-if-unchanged optimization)
-    _last_sync_times: dict[str, str] = {}
     _last_calendar_sync_times: dict[str, str] = {}
 
     async def _get_patient_gdrive(pid: str) -> tuple | None:
@@ -456,18 +454,9 @@ def _start_sync_scheduler(
                 continue
             p_gdrive, folder_id = gc
 
-            # Lightweight pre-check: skip heavy sync if no GDrive changes
-            last_sync = _last_sync_times.get(pid)
-            if last_sync and trigger == "scheduled":
-                try:
-                    has_changes = await asyncio.to_thread(
-                        p_gdrive.has_changes_since, folder_id, last_sync
-                    )
-                    if not has_changes:
-                        logger.debug("Sync skipped for %s — no changes since %s", pid, last_sync)
-                        continue
-                except Exception:
-                    pass  # On error, proceed with full sync
+            # Note: has_changes_since pre-check was removed — it only checked
+            # root folder children, missing files in category subfolders (#206).
+            # The sync itself is cheap for unchanged files (md5+modifiedTime skip).
 
             async with _sync_semaphore:
                 try:
@@ -475,7 +464,6 @@ def _start_sync_scheduler(
                         sync(db, files, p_gdrive, folder_id, trigger=trigger, patient_id=pid),
                         timeout=sync_timeout,
                     )
-                    _last_sync_times[pid] = datetime.now(UTC).isoformat()
                     logger.info("Sync [%s]: %s (RSS: %.1f MB)", pid, stats, get_rss_mb())
                     # Auto-enhance new docs after sync
                     if stats.get("new", 0) > 0 or stats.get("updated", 0) > 0:
