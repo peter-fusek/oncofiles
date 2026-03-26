@@ -2133,7 +2133,9 @@ async def status(request: Request) -> JSONResponse:
                     google_services["drive"] = SCOPE_DRIVE in scopes
                     google_services["gmail"] = SCOPE_GMAIL in scopes
                     google_services["calendar"] = SCOPE_CALENDAR in scopes
-                    google_services["folder_id"] = oauth_token.gdrive_folder_id or None
+                    google_services["folder_id"] = (
+                        oauth_token.gdrive_folder_id or lifespan_ctx.get("gdrive_folder_id") or None
+                    )
             except Exception:
                 logger.warning("Failed to load Google services status for %s", patient_id)
 
@@ -2721,12 +2723,12 @@ async def api_reconciliation(request: Request) -> JSONResponse:
         db: Database = lifespan_ctx["db"]
         gdrive = lifespan_ctx.get("gdrive")
         patient_id = _get_dashboard_patient_id(request)
-        # Use per-patient GDrive folder — no fallback to global (prevents cross-patient data)
+        # Use per-patient GDrive folder, fall back to global only if this patient has OAuth
         folder_id = ""
         if patient_id:
             token = await db.get_oauth_token(patient_id, "google")
-            if token and token.gdrive_folder_id:
-                folder_id = token.gdrive_folder_id
+            if token:
+                folder_id = token.gdrive_folder_id or lifespan_ctx.get("gdrive_folder_id", "")
         if not gdrive or not folder_id:
             # No GDrive configured for this patient — return empty
             return JSONResponse(
