@@ -2122,6 +2122,23 @@ async def status(request: Request) -> JSONResponse:
                 "standard_named": sum(1 for d in all_docs if is_standard_format(d.filename)),
             }
 
+            # Google service connection status
+            from oncofiles.oauth import SCOPE_CALENDAR, SCOPE_DRIVE, SCOPE_GMAIL
+
+            google_services = {"drive": False, "gmail": False, "calendar": False}
+            try:
+                oauth_token = await db.get_oauth_token(patient_id=patient_id)
+                if oauth_token:
+                    import json as _json
+
+                    scopes = _json.loads(oauth_token.granted_scopes or "[]")
+                    google_services["drive"] = SCOPE_DRIVE in scopes
+                    google_services["gmail"] = SCOPE_GMAIL in scopes
+                    google_services["calendar"] = SCOPE_CALENDAR in scopes
+                    google_services["folder_id"] = oauth_token.gdrive_folder_id or None
+            except Exception:
+                pass  # OAuth token not found — all services disconnected
+
         # Memory
         rusage = resource.getrusage(resource.RUSAGE_SELF)
         if sys.platform == "darwin":
@@ -2141,6 +2158,7 @@ async def status(request: Request) -> JSONResponse:
                 "documents": doc_count,
                 "document_limit": CONF_MAX_DOCS,
                 "document_health": doc_health,
+                "google_services": google_services,
                 "memory_rss_mb": round(rss_mb, 1),
                 "sync_7d": {
                     "total": sync_stats.get("total_syncs", 0),

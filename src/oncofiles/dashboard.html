@@ -682,6 +682,10 @@
     .connection-dot.offline { background: var(--red); }
     .connection-dot.loading { background: var(--amber); animation: pulse 1s infinite; }
     @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+    .svc-badges { display: inline-flex; gap: 0.25rem; margin-right: 0.5rem; vertical-align: middle; }
+    .svc-badge { font-size: 0.625rem; padding: 1px 5px; border-radius: 3px; font-weight: 600; letter-spacing: 0.02em; }
+    .svc-badge.on { background: rgba(34,197,94,0.15); color: var(--green); border: 1px solid rgba(34,197,94,0.3); }
+    .svc-badge.off { background: rgba(100,116,139,0.1); color: var(--text-dim); border: 1px solid var(--border); }
     .skeleton {
       background: linear-gradient(90deg, var(--surface) 25%, rgba(51,65,85,0.5) 50%, var(--surface) 75%);
       background-size: 200% 100%;
@@ -739,6 +743,11 @@
         </div>
         <div class="header-right">
           <span id="connection-dot" class="connection-dot loading" title="Connecting..."></span>
+          <span id="svc-badges" class="svc-badges">
+            <span id="svc-drive" class="svc-badge off" title="Google Drive">Drive</span>
+            <span id="svc-gmail" class="svc-badge off" title="Gmail">Gmail</span>
+            <span id="svc-cal" class="svc-badge off" title="Google Calendar">Cal</span>
+          </span>
           <span class="version" id="version-label"></span>
           <span class="user-info" id="user-info"></span>
           <button class="logout-btn" onclick="logout()" data-sk="Odhlásiť" data-en="Sign out">Sign out</button>
@@ -1917,6 +1926,15 @@
 
     function renderStatus(s) {
       document.getElementById('version-label').textContent = 'v' + (s.version || '?');
+
+      // Google service connection badges
+      var gs = s.google_services || {};
+      ['drive', 'gmail', 'calendar'].forEach(function(svc) {
+        var id = svc === 'calendar' ? 'svc-cal' : 'svc-' + svc;
+        var el = document.getElementById(id);
+        if (el) el.className = 'svc-badge ' + (gs[svc] ? 'on' : 'off');
+      });
+
       const h = s.document_health || {};
       document.getElementById('card-total').textContent = h.total || 0;
       document.getElementById('card-synced').textContent = h.synced || 0;
