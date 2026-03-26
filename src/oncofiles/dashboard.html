@@ -738,8 +738,8 @@
             <option value="">Loading...</option>
           </select>
           <span id="patient-diagnosis" class="patient-diagnosis"></span>
-          <button class="share-btn" onclick="showShareModal()">Share</button>
-          <button class="add-patient-btn" onclick="showOnboarding()">+ New Patient</button>
+          <button class="share-btn" onclick="showShareModal()" data-sk="Zdieľať" data-en="Share">Zdieľať</button>
+          <button class="add-patient-btn" onclick="showOnboarding()" data-sk="+ Nový pacient" data-en="+ New Patient">+ Nový pacient</button>
         </div>
         <div class="header-right">
           <span id="connection-dot" class="connection-dot loading" title="Connecting..."></span>
@@ -759,7 +759,7 @@
 
       <div id="error-banner" class="error-banner">
         <span id="error-text"></span>
-        <button class="refresh-btn" onclick="refresh()" style="margin-left:1rem">Retry</button>
+        <button class="refresh-btn" onclick="refresh()" style="margin-left:1rem" data-sk="Skúsiť znova" data-en="Retry">Skúsiť znova</button>
       </div>
 
       <!-- MCP Connection bar (hidden in demo mode) -->
@@ -767,15 +767,15 @@
         <div class="mcp-bar-item">
           <span class="mcp-bar-label">MCP URL</span>
           <code id="mcp-url-display">https://oncofiles.com/mcp</code>
-          <button class="copy-btn" onclick="navigator.clipboard.writeText(document.getElementById('mcp-url-display').textContent)">Copy</button>
+          <button class="copy-btn" onclick="navigator.clipboard.writeText(document.getElementById('mcp-url-display').textContent)" data-sk="Kopírovať" data-en="Copy">Kopírovať</button>
         </div>
         <div class="mcp-bar-item">
           <span class="mcp-bar-label">Bearer Token</span>
           <code id="mcp-token-display" style="max-width:180px;overflow:hidden;text-overflow:ellipsis">—</code>
-          <button class="copy-btn" id="mcp-token-copy" onclick="navigator.clipboard.writeText(document.getElementById('mcp-token-display').textContent)" style="display:none">Copy</button>
-          <button class="copy-btn" id="mcp-token-gen" onclick="showShareModal()">Generate</button>
+          <button class="copy-btn" id="mcp-token-copy" onclick="navigator.clipboard.writeText(document.getElementById('mcp-token-display').textContent)" style="display:none" data-sk="Kopírovať" data-en="Copy">Kopírovať</button>
+          <button class="copy-btn" id="mcp-token-gen" onclick="showShareModal()" data-sk="Vygenerovať" data-en="Generate">Vygenerovať</button>
         </div>
-        <button class="copy-btn" onclick="showShareModal()" style="margin-left:auto">Setup Guide</button>
+        <button class="copy-btn" onclick="showShareModal()" style="margin-left:auto" data-sk="Sprievodca nastavením" data-en="Setup Guide">Sprievodca nastavením</button>
       </div>
 
       <!-- Summary cards -->
@@ -797,11 +797,11 @@
       <div class="filters" id="filters">
         <span class="pill active" data-filter="all" data-sk="Všetky" data-en="All">All</span>
         <span class="pill" data-filter="incomplete" data-sk="Nekompletné" data-en="Incomplete">Incomplete</span>
-        <span class="pill" data-filter="missing_ocr">Missing OCR</span>
-        <span class="pill" data-filter="missing_ai">Missing AI</span>
-        <span class="pill" data-filter="missing_metadata">Missing Meta</span>
-        <span class="pill" data-filter="not_synced">Not Synced</span>
-        <span class="pill" data-filter="not_renamed">Not Renamed</span>
+        <span class="pill" data-filter="missing_ocr" data-sk="Chýba OCR" data-en="Missing OCR">Chýba OCR</span>
+        <span class="pill" data-filter="missing_ai" data-sk="Chýba AI" data-en="Missing AI">Chýba AI</span>
+        <span class="pill" data-filter="missing_metadata" data-sk="Chýba Meta" data-en="Missing Meta">Chýba Meta</span>
+        <span class="pill" data-filter="not_synced" data-sk="Nesynchronizované" data-en="Not Synced">Nesynchronizované</span>
+        <span class="pill" data-filter="not_renamed" data-sk="Nepremenované" data-en="Not Renamed">Nepremenované</span>
       </div>
 
       <!-- Document table -->
@@ -809,14 +809,14 @@
         <table id="doc-table">
           <thead>
             <tr>
-              <th data-sort="filename">Filename <span class="sort-arrow"></span></th>
-              <th data-sort="category">Category <span class="sort-arrow"></span></th>
-              <th data-sort="date">Date <span class="sort-arrow"></span></th>
+              <th data-sort="filename"><span data-sk="Súbor" data-en="Filename">Súbor</span> <span class="sort-arrow"></span></th>
+              <th data-sort="category"><span data-sk="Kategória" data-en="Category">Kategória</span> <span class="sort-arrow"></span></th>
+              <th data-sort="date"><span data-sk="Dátum" data-en="Date">Dátum</span> <span class="sort-arrow"></span></th>
               <th>OCR</th>
               <th>AI</th>
               <th>Meta</th>
               <th>Sync</th>
-              <th>Name</th>
+              <th data-sk="Názov" data-en="Name">Názov</th>
             </tr>
           </thead>
           <tbody id="doc-tbody">
@@ -827,7 +827,7 @@
 
       <!-- Remedies -->
       <div class="remedies" id="remedies-panel" style="display:none">
-        <h2>Errors &amp; Remedies</h2>
+        <h2 data-sk="Chyby a riešenia" data-en="Errors &amp; Remedies">Chyby a riešenia</h2>
         <div id="remedies-rows"></div>
       </div>
 
@@ -840,7 +840,7 @@
 
       <!-- Sync history -->
       <div class="sync-history">
-        <h2>Recent Syncs</h2>
+        <h2 data-sk="Posledné synchronizácie" data-en="Recent Syncs">Posledné synchronizácie</h2>
         <div id="next-sync" style="font-size:0.75rem;color:var(--text-muted);margin-bottom:0.5rem"></div>
         <div id="sync-rows"><div style="padding:0.5rem 0;color:var(--text-muted);font-size:0.8125rem">Loading...</div></div>
       </div>
@@ -856,22 +856,22 @@
       <div class="sync-history" id="analytics-section">
         <h2 data-sk="Štatistiky" data-en="Usage Analytics">Usage Analytics</h2>
         <div class="cards" id="analytics-cards" style="grid-template-columns:repeat(4,1fr);margin-bottom:1rem">
-          <div class="card" title="OCR + document enhancement + email/calendar classification"><div class="value" id="ana-calls">-</div><div class="label">AI Calls (30d)</div></div>
-          <div class="card" title="Total input + output tokens sent to Claude Haiku"><div class="value" id="ana-tokens">-</div><div class="label">Tokens (K)</div></div>
-          <div class="card" title="Estimated cost based on Claude Haiku pricing"><div class="value" id="ana-cost">-</div><div class="label">Cost USD</div></div>
-          <div class="card" id="ana-error-card" title="Percentage of AI calls that returned errors"><div class="value" id="ana-errors">-</div><div class="label">Error Rate</div></div>
+          <div class="card" title="OCR + document enhancement + email/calendar classification"><div class="value" id="ana-calls">-</div><div class="label" data-sk="AI volania (30d)" data-en="AI Calls (30d)">AI volania (30d)</div></div>
+          <div class="card" title="Total input + output tokens sent to Claude Haiku"><div class="value" id="ana-tokens">-</div><div class="label" data-sk="Tokeny (K)" data-en="Tokens (K)">Tokeny (K)</div></div>
+          <div class="card" title="Estimated cost based on Claude Haiku pricing"><div class="value" id="ana-cost">-</div><div class="label" data-sk="Cena USD" data-en="Cost USD">Cena USD</div></div>
+          <div class="card" id="ana-error-card" title="Percentage of AI calls that returned errors"><div class="value" id="ana-errors">-</div><div class="label" data-sk="Chybovosť" data-en="Error Rate">Chybovosť</div></div>
         </div>
         <div style="display:flex;gap:1rem;flex-wrap:wrap;margin-bottom:1rem">
           <div style="flex:1;min-width:280px">
-            <div style="font-size:0.75rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.04em;margin-bottom:0.5rem">Top Tools (30d)</div>
+            <div style="font-size:0.75rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.04em;margin-bottom:0.5rem" data-sk="Top nástroje (30d)" data-en="Top Tools (30d)">Top nástroje (30d)</div>
             <div id="ana-top-tools" style="font-size:0.8125rem"></div>
           </div>
           <div style="flex:1;min-width:280px">
-            <div style="font-size:0.75rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.04em;margin-bottom:0.5rem">Pipeline</div>
+            <div style="font-size:0.75rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.04em;margin-bottom:0.5rem" data-sk="Pipeline" data-en="Pipeline">Pipeline</div>
             <div id="ana-pipeline" style="font-size:0.8125rem"></div>
           </div>
           <div style="flex:1;min-width:280px">
-            <div style="font-size:0.75rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.04em;margin-bottom:0.5rem">Latency (p50 / p95)</div>
+            <div style="font-size:0.75rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.04em;margin-bottom:0.5rem" data-sk="Latencia (p50 / p95)" data-en="Latency (p50 / p95)">Latencia (p50 / p95)</div>
             <div id="ana-latency" style="font-size:0.8125rem"></div>
           </div>
         </div>
@@ -879,7 +879,7 @@
 
       <!-- Manifest info -->
       <div class="sync-history" id="manifest-section">
-        <h2 style="cursor:pointer" onclick="var el=document.getElementById('manifest-body');el.style.display=el.style.display==='none'?'block':'none'">GDrive Manifest <span id="manifest-status" style="font-size:0.75rem;color:var(--text-muted)"></span> <span style="font-size:0.75rem;color:var(--text-muted)">(click to expand)</span></h2>
+        <h2 style="cursor:pointer" onclick="var el=document.getElementById('manifest-body');el.style.display=el.style.display==='none'?'block':'none'">GDrive Manifest <span id="manifest-status" style="font-size:0.75rem;color:var(--text-muted)"></span> <span style="font-size:0.75rem;color:var(--text-muted)" data-sk="(kliknutím rozbaliť)" data-en="(click to expand)">(kliknutím rozbaliť)</span></h2>
         <div id="manifest-body" style="display:none;font-size:0.8125rem;color:var(--text-muted);line-height:1.7;margin-top:0.5rem">
           <div id="manifest-live" style="margin-bottom:0.75rem"></div>
           <p><code style="background:var(--surface);padding:0.125rem 0.375rem;border-radius:3px;font-size:0.75rem">_manifest.json</code> is exported every 5 minutes to your GDrive sync folder root. Contents:</p>
@@ -905,14 +905,14 @@
   <button id="bug-fab" title="Report a bug" style="position:fixed;bottom:1.5rem;right:1.5rem;width:48px;height:48px;border-radius:50%;background:var(--red);color:white;border:none;cursor:pointer;font-size:1.25rem;box-shadow:0 4px 12px rgba(0,0,0,0.4);z-index:1000;display:flex;align-items:center;justify-content:center;transition:transform 0.15s">&#128027;</button>
   <div id="bug-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:1001;align-items:center;justify-content:center">
     <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;max-width:560px;width:90%;padding:1.5rem;max-height:90vh;overflow-y:auto">
-      <h3 style="margin-bottom:1rem;font-size:1.1rem">Report a Bug</h3>
-      <div id="bug-paste-zone" style="border:2px dashed var(--border);border-radius:6px;padding:1rem;text-align:center;margin-bottom:1rem;cursor:pointer;color:var(--text-muted);font-size:0.875rem" tabindex="0">Paste screenshot (Ctrl+V) or <label style="color:var(--accent);cursor:pointer;text-decoration:underline">upload<input id="bug-file" type="file" accept="image/*" style="display:none"></label></div>
+      <h3 style="margin-bottom:1rem;font-size:1.1rem" data-sk="Nahlásiť chybu" data-en="Report a Bug">Nahlásiť chybu</h3>
+      <div id="bug-paste-zone" style="border:2px dashed var(--border);border-radius:6px;padding:1rem;text-align:center;margin-bottom:1rem;cursor:pointer;color:var(--text-muted);font-size:0.875rem" tabindex="0" data-sk="Vložte snímku (Ctrl+V) alebo nahrajte" data-en="Paste screenshot (Ctrl+V) or upload" data-html="1"><span data-sk="Vložte snímku (Ctrl+V) alebo " data-en="Paste screenshot (Ctrl+V) or ">Vložte snímku (Ctrl+V) alebo </span><label style="color:var(--accent);cursor:pointer;text-decoration:underline" data-sk="nahrajte" data-en="upload">nahrajte<input id="bug-file" type="file" accept="image/*" style="display:none"></label></div>
       <img id="bug-screenshot" style="width:100%;border-radius:6px;border:1px solid var(--border);margin-bottom:1rem;display:none" alt="screenshot">
-      <input id="bug-title" type="text" placeholder="What went wrong? (one-liner)" maxlength="120" style="width:100%;padding:0.625rem;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:6px;font-size:0.9375rem;margin-bottom:0.75rem">
-      <textarea id="bug-desc" placeholder="Additional details (optional)" rows="3" style="width:100%;padding:0.625rem;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:6px;font-size:0.875rem;margin-bottom:1rem;resize:vertical"></textarea>
+      <input id="bug-title" type="text" placeholder="Čo nefunguje? (jeden riadok)" maxlength="120" style="width:100%;padding:0.625rem;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:6px;font-size:0.9375rem;margin-bottom:0.75rem">
+      <textarea id="bug-desc" placeholder="Ďalšie podrobnosti (voliteľné)" rows="3" style="width:100%;padding:0.625rem;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:6px;font-size:0.875rem;margin-bottom:1rem;resize:vertical"></textarea>
       <div style="display:flex;gap:0.75rem;justify-content:flex-end">
-        <button id="bug-cancel" style="padding:0.5rem 1rem;background:transparent;color:var(--text-muted);border:1px solid var(--border);border-radius:6px;cursor:pointer">Cancel</button>
-        <button id="bug-submit" disabled style="padding:0.5rem 1.25rem;background:var(--red);color:white;border:none;border-radius:6px;cursor:pointer;font-weight:600">Submit Bug</button>
+        <button id="bug-cancel" style="padding:0.5rem 1rem;background:transparent;color:var(--text-muted);border:1px solid var(--border);border-radius:6px;cursor:pointer" data-sk="Zrušiť" data-en="Cancel">Zrušiť</button>
+        <button id="bug-submit" disabled style="padding:0.5rem 1.25rem;background:var(--red);color:white;border:none;border-radius:6px;cursor:pointer;font-weight:600" data-sk="Odoslať chybu" data-en="Submit Bug">Odoslať chybu</button>
       </div>
       <p id="bug-status" style="margin-top:0.75rem;font-size:0.8125rem;color:var(--text-muted);display:none"></p>
     </div>
@@ -923,95 +923,85 @@
   <div id="wizard-overlay" class="wizard-overlay">
     <div class="wizard-panel">
       <div class="wizard-steps">
-        <div id="wiz-dot-1" class="wizard-step-dot active" title="Create Patient">1</div>
-        <div id="wiz-dot-2" class="wizard-step-dot" title="Connect Drive">2</div>
-        <div id="wiz-dot-3" class="wizard-step-dot" title="First Sync">3</div>
-        <div id="wiz-dot-4" class="wizard-step-dot" title="Done">&#10003;</div>
+        <div id="wiz-dot-1" class="wizard-step-dot active" title="Vytvoriť pacienta">1</div>
+        <div id="wiz-dot-2" class="wizard-step-dot" title="Pripojiť Drive">2</div>
+        <div id="wiz-dot-3" class="wizard-step-dot" title="Prvá synchronizácia">3</div>
+        <div id="wiz-dot-4" class="wizard-step-dot" title="Hotovo">&#10003;</div>
       </div>
       <div class="wizard-step-labels">
-        <span>Create</span><span>Connect</span><span>Sync</span><span>Done</span>
+        <span data-sk="Vytvoriť" data-en="Create">Vytvoriť</span><span data-sk="Pripojiť" data-en="Connect">Pripojiť</span><span data-sk="Sync" data-en="Sync">Sync</span><span data-sk="Hotovo" data-en="Done">Hotovo</span>
       </div>
 
       <!-- Step 1: Create patient -->
       <div id="wiz-step-1">
-        <h2>Create Patient</h2>
+        <h2 data-sk="Vytvoriť pacienta" data-en="Create Patient">Vytvoriť pacienta</h2>
         <div class="wizard-field">
-          <label for="wiz-name">Patient name *</label>
-          <input type="text" id="wiz-name" placeholder="e.g. Erika Fusekova" required>
+          <label for="wiz-name" data-sk="Meno pacienta *" data-en="Patient name *">Meno pacienta *</label>
+          <input type="text" id="wiz-name" placeholder="napr. Erika Fusekova" required>
         </div>
         <div class="wizard-field">
-          <label for="wiz-id">Patient ID (slug) *</label>
-          <input type="text" id="wiz-id" placeholder="e.g. erika-fusekova" pattern="[a-z0-9_-]+">
+          <label for="wiz-id" data-sk="ID pacienta (slug) *" data-en="Patient ID (slug) *">ID pacienta (slug) *</label>
+          <input type="text" id="wiz-id" placeholder="napr. erika-fusekova" pattern="[a-z0-9_-]+">
         </div>
         <div class="wizard-field">
-          <label for="wiz-diagnosis">Diagnosis / cancer type</label>
-          <textarea id="wiz-diagnosis" placeholder="e.g. CRC, stage IV"></textarea>
+          <label for="wiz-diagnosis" data-sk="Diagnóza / typ rakoviny" data-en="Diagnosis / cancer type">Diagnóza / typ rakoviny</label>
+          <textarea id="wiz-diagnosis" placeholder="napr. CRC, štádium IV"></textarea>
         </div>
         <div class="wizard-field">
-          <label for="wiz-email">Caregiver email</label>
-          <input type="email" id="wiz-email" placeholder="caregiver@example.com">
+          <label for="wiz-email" data-sk="Email opatrovateľa" data-en="Caregiver email">Email opatrovateľa</label>
+          <input type="email" id="wiz-email" placeholder="opatrovatel@example.com">
         </div>
         <div class="wizard-field">
-          <label for="wiz-lang">Preferred language</label>
+          <label for="wiz-lang" data-sk="Preferovaný jazyk" data-en="Preferred language">Preferovaný jazyk</label>
           <select id="wiz-lang">
-            <option value="sk" selected>Slovak</option>
+            <option value="sk" selected>Slovenčina</option>
             <option value="en">English</option>
           </select>
         </div>
         <div class="wizard-actions">
-          <button class="wizard-btn-secondary" onclick="hideOnboarding()">Cancel</button>
-          <button class="wizard-btn-primary" id="wiz-create-btn" onclick="wizardStep1Submit()">Create Patient</button>
+          <button class="wizard-btn-secondary" onclick="hideOnboarding()" data-sk="Zrušiť" data-en="Cancel">Zrušiť</button>
+          <button class="wizard-btn-primary" id="wiz-create-btn" onclick="wizardStep1Submit()" data-sk="Vytvoriť pacienta" data-en="Create Patient">Vytvoriť pacienta</button>
         </div>
         <p id="wiz-step1-error" style="color:var(--red);font-size:0.8125rem;margin-top:0.75rem;display:none"></p>
       </div>
 
       <!-- Step 2: Connect Google Drive -->
       <div id="wiz-step-2" style="display:none">
-        <h2>Connect Google Drive</h2>
+        <h2 data-sk="Pripojiť Google Drive" data-en="Connect Google Drive">Pripojiť Google Drive</h2>
         <div class="wizard-token-box" id="wiz-token-display"></div>
-        <p style="color:var(--amber);font-size:0.75rem;margin-bottom:1rem">
-          Save this bearer token now — it will not be shown again.
-        </p>
+        <p style="color:var(--amber);font-size:0.75rem;margin-bottom:1rem" data-sk="Uložte si tento bearer token — znova sa nezobrazí." data-en="Save this bearer token now — it will not be shown again.">Uložte si tento bearer token — znova sa nezobrazí.</p>
 
         <!-- Phase A: Authorize -->
         <div id="wiz-step2-auth">
-          <p style="color:var(--text-muted);font-size:0.875rem;margin-bottom:0.5rem">
-            Authorize read-only access to your Google Drive.
-          </p>
-          <p style="color:var(--text-muted);font-size:0.75rem;margin-bottom:1rem;opacity:0.7">
-            Oncofiles will read files from your chosen folder, organize them by category and date, and make them searchable via AI. Your files stay on your Drive — we only read, rename, and organize.
-          </p>
+          <p style="color:var(--text-muted);font-size:0.875rem;margin-bottom:0.5rem" data-sk="Autorizujte prístup k vášmu Google Drive." data-en="Authorize read-only access to your Google Drive.">Autorizujte prístup k vášmu Google Drive.</p>
+          <p style="color:var(--text-muted);font-size:0.75rem;margin-bottom:1rem;opacity:0.7" data-sk="Oncofiles prečíta súbory z vášho priečinka, zorganizuje ich podľa kategórie a dátumu a sprístupní cez AI. Vaše súbory ostanú na Drive — iba čítame, premenúvame a organizujeme." data-en="Oncofiles will read files from your chosen folder, organize them by category and date, and make them searchable via AI. Your files stay on your Drive — we only read, rename, and organize.">Oncofiles prečíta súbory z vášho priečinka, zorganizuje ich podľa kategórie a dátumu a sprístupní cez AI. Vaše súbory ostanú na Drive — iba čítame, premenúvame a organizujeme.</p>
           <div class="wizard-actions">
-            <button class="wizard-btn-secondary" onclick="wizardSkipToEnd()">Skip for now</button>
-            <button class="wizard-btn-primary" onclick="wizardStep2Auth()">Authorize Google Drive</button>
+            <button class="wizard-btn-secondary" onclick="wizardSkipToEnd()" data-sk="Preskočiť" data-en="Skip for now">Preskočiť</button>
+            <button class="wizard-btn-primary" onclick="wizardStep2Auth()" data-sk="Autorizovať Google Drive" data-en="Authorize Google Drive">Autorizovať Google Drive</button>
           </div>
           <p id="wiz-step2-status" style="color:var(--text-muted);font-size:0.8125rem;margin-top:0.75rem;display:none"></p>
           <div class="wizard-actions" id="wiz-step2-auth-done" style="display:none">
-            <button class="wizard-btn-primary" onclick="wizardStep2LoadFolders()">Done, choose folder</button>
+            <button class="wizard-btn-primary" onclick="wizardStep2LoadFolders()" data-sk="Hotovo, vybrať priečinok" data-en="Done, choose folder">Hotovo, vybrať priečinok</button>
           </div>
         </div>
 
         <!-- Phase B: Folder picker (shown after OAuth) -->
         <div id="wiz-step2-folder" style="display:none">
-          <p style="color:var(--text-muted);font-size:0.875rem;margin-bottom:0.5rem">
-            Choose a folder for medical documents.
-          </p>
-          <p style="color:var(--text-muted);font-size:0.75rem;margin-bottom:1rem;opacity:0.7">
-            Pick an existing folder or create a new one. Oncofiles will create subfolders for each document category (Labs, Imaging, Pathology, etc.) inside it.
-          </p>
+          <p style="color:var(--text-muted);font-size:0.875rem;margin-bottom:0.5rem" data-sk="Vyberte priečinok pre zdravotné dokumenty." data-en="Choose a folder for medical documents.">Vyberte priečinok pre zdravotné dokumenty.</p>
+          <p style="color:var(--text-muted);font-size:0.75rem;margin-bottom:1rem;opacity:0.7" data-sk="Vyberte existujúci priečinok alebo vytvorte nový. Oncofiles vytvorí podpriečinky pre každú kategóriu dokumentov (Laboratóriá, Zobrazovanie, Patológia atď.)." data-en="Pick an existing folder or create a new one. Oncofiles will create subfolders for each document category (Labs, Imaging, Pathology, etc.) inside it.">Vyberte existujúci priečinok alebo vytvorte nový. Oncofiles vytvorí podpriečinky pre každú kategóriu dokumentov (Laboratóriá, Zobrazovanie, Patológia atď.).</p>
           <div class="wizard-field">
-            <label for="wiz-folder-select">Select folder</label>
+            <label for="wiz-folder-select" data-sk="Vybrať priečinok" data-en="Select folder">Vybrať priečinok</label>
             <select id="wiz-folder-select" onchange="wizardFolderChanged()">
-              <option value="">Loading folders...</option>
+              <option value="">Načítavam priečinky...</option>
             </select>
           </div>
           <div id="wiz-folder-new" class="wizard-field" style="display:none">
-            <label for="wiz-folder-name">New folder name</label>
-            <input type="text" id="wiz-folder-name" placeholder="Oncofiles - Patient Name">
+            <label for="wiz-folder-name" data-sk="Názov nového priečinka" data-en="New folder name">Názov nového priečinka</label>
+            <input type="text" id="wiz-folder-name" placeholder="Oncofiles - Meno pacienta">
           </div>
           <div class="wizard-actions">
-            <button class="wizard-btn-secondary" onclick="wizardSkipToEnd()">Skip</button>
-            <button class="wizard-btn-primary" id="wiz-folder-btn" onclick="wizardStep2SetFolder()">Set folder &amp; continue</button>
+            <button class="wizard-btn-secondary" onclick="wizardSkipToEnd()" data-sk="Preskočiť" data-en="Skip">Preskočiť</button>
+            <button class="wizard-btn-primary" id="wiz-folder-btn" onclick="wizardStep2SetFolder()" data-sk="Nastaviť priečinok a pokračovať" data-en="Set folder &amp; continue">Nastaviť priečinok a pokračovať</button>
           </div>
           <p id="wiz-step2-folder-status" style="color:var(--text-muted);font-size:0.8125rem;margin-top:0.75rem;display:none"></p>
         </div>
@@ -1019,16 +1009,12 @@
 
       <!-- Step 3: First sync -->
       <div id="wiz-step-3" style="display:none">
-        <h2>First Sync</h2>
-        <p style="color:var(--text-muted);font-size:0.875rem;margin-bottom:0.5rem">
-          Import documents from your Google Drive folder.
-        </p>
-        <p style="color:var(--text-muted);font-size:0.75rem;margin-bottom:1rem;opacity:0.7">
-          This reads your files, runs OCR on scans, generates AI summaries, and organizes everything by date and category. After this, syncs run automatically every 5 minutes.
-        </p>
+        <h2 data-sk="Prvá synchronizácia" data-en="First Sync">Prvá synchronizácia</h2>
+        <p style="color:var(--text-muted);font-size:0.875rem;margin-bottom:0.5rem" data-sk="Importujte dokumenty z vášho Google Drive priečinka." data-en="Import documents from your Google Drive folder.">Importujte dokumenty z vášho Google Drive priečinka.</p>
+        <p style="color:var(--text-muted);font-size:0.75rem;margin-bottom:1rem;opacity:0.7" data-sk="Prečíta vaše súbory, spustí OCR na skeny, vygeneruje AI súhrny a zorganizuje všetko podľa dátumu a kategórie. Potom sa synchy spúšťajú automaticky každých 5 minút." data-en="This reads your files, runs OCR on scans, generates AI summaries, and organizes everything by date and category. After this, syncs run automatically every 5 minutes.">Prečíta vaše súbory, spustí OCR na skeny, vygeneruje AI súhrny a zorganizuje všetko podľa dátumu a kategórie. Potom sa synchy spúšťajú automaticky každých 5 minút.</p>
         <div class="wizard-actions">
-          <button class="wizard-btn-secondary" onclick="wizardSkipToEnd()">Skip</button>
-          <button class="wizard-btn-primary" id="wiz-sync-btn" onclick="wizardStep3Sync()">Start First Sync</button>
+          <button class="wizard-btn-secondary" onclick="wizardSkipToEnd()" data-sk="Preskočiť" data-en="Skip">Preskočiť</button>
+          <button class="wizard-btn-primary" id="wiz-sync-btn" onclick="wizardStep3Sync()" data-sk="Spustiť prvú synchronizáciu" data-en="Start First Sync">Spustiť prvú synchronizáciu</button>
         </div>
         <p id="wiz-step3-status" style="color:var(--text-muted);font-size:0.8125rem;margin-top:0.75rem;display:none"></p>
       </div>
@@ -1037,14 +1023,12 @@
       <div id="wiz-step-4" style="display:none">
         <div class="wizard-success">
           <div class="check">&#10003;</div>
-          <h2>Patient Created</h2>
+          <h2 data-sk="Pacient vytvorený" data-en="Patient Created">Pacient vytvorený</h2>
           <p id="wiz-success-summary" style="color:var(--text-muted);font-size:0.875rem;margin-top:0.5rem"></p>
         </div>
         <div style="margin:1.5rem 0;padding:1rem;border:1px solid var(--border);border-radius:8px">
-          <h3 style="font-size:1rem;margin-bottom:0.75rem">Connect your AI chat</h3>
-          <p style="color:var(--text-muted);font-size:0.8rem;margin-bottom:0.75rem">
-            Paste these into Claude.ai or ChatGPT to connect:
-          </p>
+          <h3 style="font-size:1rem;margin-bottom:0.75rem" data-sk="Pripojte AI chat" data-en="Connect your AI chat">Pripojte AI chat</h3>
+          <p style="color:var(--text-muted);font-size:0.8rem;margin-bottom:0.75rem" data-sk="Vložte tieto údaje do Claude.ai alebo ChatGPT:" data-en="Paste these into Claude.ai or ChatGPT to connect:">Vložte tieto údaje do Claude.ai alebo ChatGPT:</p>
           <div style="display:flex;gap:0.5rem;align-items:center;margin-bottom:0.5rem">
             <span style="font-size:0.75rem;color:var(--text-muted);min-width:70px">MCP URL</span>
             <code id="wiz-mcp-url" style="flex:1;font-size:0.8rem;background:var(--bg);padding:4px 8px;border-radius:4px">https://oncofiles.com/mcp</code>
@@ -1057,7 +1041,7 @@
           </div>
         </div>
         <div class="wizard-actions" style="justify-content:center">
-          <button class="wizard-btn-primary" onclick="wizardFinish()">Go to Dashboard</button>
+          <button class="wizard-btn-primary" onclick="wizardFinish()" data-sk="Prejsť na Dashboard" data-en="Go to Dashboard">Prejsť na Dashboard</button>
         </div>
       </div>
     </div>
@@ -1066,10 +1050,8 @@
   <!-- Share Access Modal -->
   <div id="share-overlay" class="wizard-overlay">
     <div class="wizard-panel" style="max-width:36rem">
-      <h2 style="margin-bottom:0.5rem">Share Access</h2>
-      <p style="color:var(--text-muted);font-size:0.8125rem;margin-bottom:1.5rem">
-        Share connection info so a caregiver, family member, or AI tool can access this patient's records.
-      </p>
+      <h2 style="margin-bottom:0.5rem" data-sk="Zdieľať prístup" data-en="Share Access">Zdieľať prístup</h2>
+      <p style="color:var(--text-muted);font-size:0.8125rem;margin-bottom:1.5rem" data-sk="Zdieľajte pripojenie pre opatrovateľa, rodinu alebo AI nástroj." data-en="Share connection info so a caregiver, family member, or AI tool can access this patient's records.">Zdieľajte pripojenie pre opatrovateľa, rodinu alebo AI nástroj.</p>
 
       <!-- Connection info -->
       <div style="margin-bottom:1.5rem">
@@ -1086,11 +1068,11 @@
 
       <!-- Setup code -->
       <div style="margin-bottom:1.5rem">
-        <button class="wizard-btn-primary" id="share-gen-btn" onclick="generateShareCode()" style="width:100%">Generate One-Time Setup Code</button>
+        <button class="wizard-btn-primary" id="share-gen-btn" onclick="generateShareCode()" style="width:100%" data-sk="Vygenerovať jednorazový kód" data-en="Generate One-Time Setup Code">Vygenerovať jednorazový kód</button>
         <div id="share-code-box" style="display:none">
           <div class="share-code-display" id="share-code-value"></div>
           <p style="font-size:0.75rem;color:var(--text-muted);text-align:center">
-            This code expires in 10 minutes and can only be used once.
+            <span data-sk="Tento kód vyprší za 10 minút a je na jedno použitie." data-en="This code expires in 10 minutes and can only be used once.">Tento kód vyprší za 10 minút a je na jedno použitie.</span>
           </p>
         </div>
       </div>
@@ -1126,7 +1108,7 @@
       </div>
 
       <div class="wizard-actions" style="justify-content:flex-end">
-        <button class="wizard-btn-secondary" onclick="hideShareModal()">Close</button>
+        <button class="wizard-btn-secondary" onclick="hideShareModal()" data-sk="Zavrieť" data-en="Close">Zavrieť</button>
       </div>
     </div>
   </div>
