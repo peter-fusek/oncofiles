@@ -25,9 +25,7 @@ _current_patient_id: contextvars.ContextVar[str] = contextvars.ContextVar(
 )
 
 # Per-request correlation ID (OF-4) — set by middleware, included in logs
-_current_request_id: contextvars.ContextVar[str] = contextvars.ContextVar(
-    "request_id", default=""
-)
+_current_request_id: contextvars.ContextVar[str] = contextvars.ContextVar("request_id", default="")
 
 # Per-token rate limiting: {token_prefix: [timestamps]} — prevents credit depletion
 _tool_call_times: dict[str, list[float]] = {}
