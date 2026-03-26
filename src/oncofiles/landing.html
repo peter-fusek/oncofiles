@@ -1036,6 +1036,20 @@
     </div>
   </footer>
 
+  <!-- Bug Report FAB + Modal -->
+  <button id="bug-fab" title="Report a bug" style="position:fixed;bottom:1.5rem;right:1.5rem;width:48px;height:48px;border-radius:50%;background:#dc2626;color:white;border:none;cursor:pointer;font-size:1.25rem;box-shadow:0 4px 12px rgba(0,0,0,0.4);z-index:1000;display:flex;align-items:center;justify-content:center;transition:transform 0.15s" aria-label="Report a bug">&#128027;</button>
+  <div id="bug-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:1001;align-items:center;justify-content:center">
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;max-width:480px;width:90%;padding:1.5rem">
+      <h3 style="margin:0 0 1rem;font-size:1.1rem" data-sk="Nahlásiť chybu" data-en="Report a Bug">Nahlásiť chybu</h3>
+      <input id="bug-title" type="text" maxlength="120" style="width:100%;padding:0.625rem;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:6px;font-size:0.9375rem;margin-bottom:0.75rem;box-sizing:border-box" data-placeholder-sk="Čo nefunguje? (jeden riadok)" data-placeholder-en="What went wrong? (one-liner)" placeholder="Čo nefunguje? (jeden riadok)">
+      <textarea id="bug-desc" rows="3" style="width:100%;padding:0.625rem;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:6px;font-size:0.875rem;margin-bottom:1rem;resize:vertical;box-sizing:border-box" data-placeholder-sk="Ďalšie podrobnosti (voliteľné)" data-placeholder-en="Additional details (optional)" placeholder="Ďalšie podrobnosti (voliteľné)"></textarea>
+      <div style="display:flex;gap:0.75rem;justify-content:flex-end">
+        <button id="bug-cancel" style="padding:0.5rem 1rem;background:transparent;color:var(--text-muted);border:1px solid var(--border);border-radius:6px;cursor:pointer" data-sk="Zrušiť" data-en="Cancel">Zrušiť</button>
+        <a id="bug-submit" href="#" target="_blank" rel="noreferrer" style="padding:0.5rem 1.25rem;background:#dc2626;color:white;border:none;border-radius:6px;cursor:pointer;font-weight:600;text-decoration:none;display:inline-block" data-sk="Otvoriť na GitHub" data-en="Open on GitHub">Otvoriť na GitHub</a>
+      </div>
+    </div>
+  </div>
+
   <script>
     fetch('/api/stats').then(function(r){return r.json()}).then(function(d){
       var m = {'tools': d.tools, 'categories': d.categories, 'tests': d.tests, 'version': 'v'+d.version};
@@ -1076,6 +1090,48 @@
       document.getElementById('chat-' + tab).style.display = 'flex';
       if (btn) btn.classList.add('active');
     }
+
+    // Bug Report FAB
+    (function() {
+      var fab = document.getElementById('bug-fab');
+      var overlay = document.getElementById('bug-overlay');
+      var titleInput = document.getElementById('bug-title');
+      var descInput = document.getElementById('bug-desc');
+      var submitLink = document.getElementById('bug-submit');
+      var cancelBtn = document.getElementById('bug-cancel');
+
+      function updateLink() {
+        var t = encodeURIComponent(titleInput.value.trim() || 'Landing page bug report');
+        var body = descInput.value.trim();
+        var parts = ['**Page:** ' + location.href, '**Browser:** ' + navigator.userAgent];
+        if (body) parts.push('\n' + body);
+        var b = encodeURIComponent(parts.join('\n'));
+        submitLink.href = 'https://github.com/peter-fusek/oncofiles/issues/new?labels=bug&title=' + t + '&body=' + b;
+      }
+
+      fab.addEventListener('click', function() {
+        overlay.style.display = 'flex';
+        titleInput.value = '';
+        descInput.value = '';
+        updateLink();
+        titleInput.focus();
+      });
+      cancelBtn.addEventListener('click', function() { overlay.style.display = 'none'; });
+      overlay.addEventListener('click', function(e) { if (e.target === overlay) overlay.style.display = 'none'; });
+      titleInput.addEventListener('input', updateLink);
+      descInput.addEventListener('input', updateLink);
+
+      // Update placeholders on language switch
+      var origApply = window._langApply;
+      function updatePlaceholders() {
+        var l = localStorage.getItem('oncofiles_lang') || 'sk';
+        document.querySelectorAll('[data-placeholder-' + l + ']').forEach(function(el) {
+          el.placeholder = el.getAttribute('data-placeholder-' + l);
+        });
+      }
+      var origBtn = document.getElementById('lang-toggle');
+      if (origBtn) origBtn.addEventListener('click', function() { setTimeout(updatePlaceholders, 10); });
+    })();
   </script>
 </body>
 </html>
