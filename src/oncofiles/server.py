@@ -204,8 +204,11 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict]:
     oauth_folder_id = ""
     owner_email = ""
     token = None
+    # Resolve erika's UUID from slug (post-migration, patient_id is a UUID)
+    _erika = await db.get_patient_by_slug("erika")
+    _erika_uuid = _erika.patient_id if _erika else ""
     try:
-        token = await db.get_oauth_token(patient_id="erika")
+        token = await db.get_oauth_token(patient_id=_erika_uuid) if _erika_uuid else None
         if token:
             oauth_folder_id = token.gdrive_folder_id or ""
             owner_email = token.owner_email or ""
@@ -287,7 +290,13 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict]:
     if SYNC_ENABLED:
         sync_folder_id = _get_sync_folder_id_from(oauth_folder_id)
         scheduler, job_tracker = _start_sync_scheduler(
-            db, files, gdrive, sync_folder_id, gmail_client, calendar_client
+            db,
+            files,
+            gdrive,
+            sync_folder_id,
+            gmail_client,
+            calendar_client,
+            erika_uuid=_erika_uuid,
         )
 
     # ── Startup validation ─────────────────────────────────────────────
@@ -413,7 +422,14 @@ async def _create_patient_clients(
 
 
 def _start_sync_scheduler(
-    db, files, gdrive, oauth_folder_id, gmail_client=None, calendar_client=None
+    db,
+    files,
+    gdrive,
+    oauth_folder_id,
+    gmail_client=None,
+    calendar_client=None,
+    *,
+    erika_uuid: str = "",
 ):
     """Start APScheduler for periodic GDrive sync, Gmail sync, and Calendar sync."""
     from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -427,7 +443,7 @@ def _start_sync_scheduler(
 
     async def _get_patient_gdrive(pid: str) -> tuple | None:
         """Get GDrive client + folder_id for a patient. Uses shared lifespan clients for erika."""
-        if pid == "erika" and gdrive and oauth_folder_id:
+        if pid == erika_uuid and gdrive and oauth_folder_id:
             return (gdrive, _get_sync_folder_id_from(oauth_folder_id))
         clients = await _create_patient_clients(db, pid)
         if not clients:
@@ -436,14 +452,14 @@ def _start_sync_scheduler(
 
     async def _get_patient_gmail(pid: str):
         """Get Gmail client for a patient. Uses shared lifespan clients for erika."""
-        if pid == "erika" and gmail_client:
+        if pid == erika_uuid and gmail_client:
             return gmail_client
         clients = await _create_patient_clients(db, pid)
         return clients[1] if clients else None
 
     async def _get_patient_calendar(pid: str):
         """Get Calendar client for a patient. Uses shared lifespan clients for erika."""
-        if pid == "erika" and calendar_client:
+        if pid == erika_uuid and calendar_client:
             return calendar_client
         clients = await _create_patient_clients(db, pid)
         return clients[2] if clients else None
@@ -2110,7 +2126,7 @@ async def status(request: Request) -> JSONResponse:
     try:
         lifespan_ctx = request.app.state.fastmcp_server._lifespan_result
         db: Database = lifespan_ctx["db"]
-        patient_id = _get_dashboard_patient_id(request)
+        patient_id = await _get_dashboard_patient_id(request)
 
         from oncofiles.memory import db_slot
 
@@ -2315,9 +2331,19 @@ def _check_dashboard_auth(request: Request) -> JSONResponse | None:
     return JSONResponse({"error": "unauthorized"}, status_code=401)
 
 
-def _get_dashboard_patient_id(request: Request) -> str:
-    """Extract patient_id from query params for dashboard endpoints."""
-    return request.query_params.get("patient_id", "erika").strip().lower()
+async def _get_dashboard_patient_id(request: Request) -> str:
+    """Extract patient_id from query params and resolve slug → UUID.
+
+    Accepts either a UUID or a slug (e.g. 'erika').  Always returns
+    the UUID patient_id suitable for DB queries.
+    """
+    raw = request.query_params.get("patient_id", "erika").strip().lower()
+    try:
+        db: Database = request.app.state.fastmcp_server._lifespan_result["db"]
+        resolved = await db.resolve_patient_id(raw)
+        return resolved or raw
+    except Exception:
+        return raw
 
 
 @mcp.custom_route("/dashboard", methods=["GET"])
@@ -2711,7 +2737,7 @@ async def api_documents(request: Request) -> JSONResponse:
         from oncofiles.tools.hygiene import _build_document_matrix
 
         db: Database = request.app.state.fastmcp_server._lifespan_result["db"]
-        patient_id = _get_dashboard_patient_id(request)
+        patient_id = await _get_dashboard_patient_id(request)
         filter_param = request.query_params.get("filter", "all")
         try:
             limit = min(int(request.query_params.get("limit", "200")), 200)
@@ -2739,7 +2765,7 @@ async def api_reconciliation(request: Request) -> JSONResponse:
         lifespan_ctx = request.app.state.fastmcp_server._lifespan_result
         db: Database = lifespan_ctx["db"]
         gdrive = lifespan_ctx.get("gdrive")
-        patient_id = _get_dashboard_patient_id(request)
+        patient_id = await _get_dashboard_patient_id(request)
         # Use per-patient GDrive folder, fall back to global only if this patient has OAuth
         folder_id = ""
         if patient_id:
@@ -2794,7 +2820,7 @@ async def api_prompt_log(request: Request) -> JSONResponse:
         except (ValueError, TypeError):
             query.limit = 100
 
-        pid = _get_dashboard_patient_id(request)
+        pid = await _get_dashboard_patient_id(request)
         entries = await db_inst.search_prompt_log(query, patient_id=pid)
         stats = await db_inst.get_prompt_log_stats(patient_id=pid)
 
@@ -2831,7 +2857,7 @@ async def api_usage_analytics(request: Request) -> JSONResponse:
     try:
         db_inst: Database = request.app.state.fastmcp_server._lifespan_result["db"]
         days = min(int(request.query_params.get("days", "30")), 90)
-        pid = _get_dashboard_patient_id(request)
+        pid = await _get_dashboard_patient_id(request)
 
         # Sequential — Turso single-connection can't handle concurrent queries
         prompt_stats = await db_inst.get_prompt_stats(days=days, patient_id=pid)
@@ -3175,7 +3201,7 @@ async def api_gdrive_folders(request: Request) -> JSONResponse:
         return err
 
     try:
-        patient_id = _get_dashboard_patient_id(request)
+        patient_id = await _get_dashboard_patient_id(request)
         db_inst: Database = request.app.state.fastmcp_server._lifespan_result["db"]
 
         token = await db_inst.get_oauth_token(patient_id=patient_id)
@@ -3448,7 +3474,13 @@ async def oauth_authorize(request: Request) -> JSONResponse:
         return JSONResponse({"error": "OAuth not configured"}, status_code=500)
 
     service = request.path_params.get("service", "drive")
-    patient_id = request.query_params.get("patient_id", "erika").strip().lower()
+    raw_pid = request.query_params.get("patient_id", "erika").strip().lower()
+    # Resolve slug → UUID (e.g. "erika" → UUID); pass through if already UUID
+    try:
+        db_inst: Database = request.app.state.fastmcp_server._lifespan_result["db"]
+        patient_id = await db_inst.resolve_patient_id(raw_pid) or raw_pid
+    except Exception:
+        patient_id = raw_pid
     scope_map = {
         "drive": SCOPES,
         "gmail": GMAIL_SCOPES,

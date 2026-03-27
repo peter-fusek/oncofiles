@@ -20,9 +20,7 @@ from fastmcp.tools.tool import ToolResult
 logger = logging.getLogger(__name__)
 
 # Per-request patient_id — set by middleware, read by _get_patient_id()
-_current_patient_id: contextvars.ContextVar[str] = contextvars.ContextVar(
-    "patient_id", default="erika"
-)
+_current_patient_id: contextvars.ContextVar[str] = contextvars.ContextVar("patient_id", default="")
 
 # Per-request correlation ID (OF-4) — set by middleware, included in logs
 _current_request_id: contextvars.ContextVar[str] = contextvars.ContextVar("request_id", default="")
@@ -53,8 +51,7 @@ class PatientResolutionMiddleware(Middleware):
 
     Resolution order:
     1. patient_tokens table (SHA-256 hash of bearer token)
-    2. Legacy MCP_BEARER_TOKEN → "erika" (backward compatibility)
-    3. Default: "erika" (single-patient fallback)
+    2. Default patient from DB (first active patient)
     """
 
     async def on_call_tool(
@@ -62,7 +59,7 @@ class PatientResolutionMiddleware(Middleware):
         context: MiddlewareContext[Any],
         call_next: CallNext[Any, ToolResult],
     ) -> ToolResult:
-        patient_id = "erika"  # default
+        patient_id = ""  # will be resolved below
         token_key = "default"  # for rate limiting
 
         try:
@@ -79,8 +76,11 @@ class PatientResolutionMiddleware(Middleware):
                             resolved = await db.resolve_patient_from_token(raw_token)
                             if resolved:
                                 patient_id = resolved
+                    # Fallback: resolve default patient from DB
+                    if not patient_id:
+                        patient_id = await db.resolve_default_patient()
         except Exception:
-            logger.warning("Patient resolution failed, defaulting to 'erika'", exc_info=True)
+            logger.warning("Patient resolution failed, defaulting to empty", exc_info=True)
 
         # Rate limit: prevent token abuse / credit depletion (#147)
         now = time.time()

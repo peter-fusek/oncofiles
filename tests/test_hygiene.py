@@ -12,7 +12,7 @@ from oncofiles.tools.hygiene import (
     reconcile_gdrive,
     validate_categories,
 )
-from tests.helpers import make_doc
+from tests.helpers import ERIKA_UUID, make_doc
 
 _FOLDER_MIME = "application/vnd.google-apps.folder"
 
@@ -114,7 +114,7 @@ async def test_validate_detects_discharge_summary(db: Database):
         filename="20260227_ErikaFusekova_NOU_Report_Test.pdf",
         category=DocumentCategory.REPORT,
     )
-    doc = await db.insert_document(doc, patient_id="erika")
+    doc = await db.insert_document(doc, patient_id=ERIKA_UUID)
 
     await db.db.execute(
         "UPDATE documents SET structured_metadata = ? WHERE id = ?",
@@ -138,7 +138,7 @@ async def test_validate_corrects_surgical_report(db: Database):
         filename="20260212_ErikaFusekova_NOU_Report_PICC.pdf",
         category=DocumentCategory.REPORT,
     )
-    doc = await db.insert_document(doc, patient_id="erika")
+    doc = await db.insert_document(doc, patient_id=ERIKA_UUID)
 
     await db.db.execute(
         "UPDATE documents SET structured_metadata = ? WHERE id = ?",
@@ -161,7 +161,7 @@ async def test_validate_skips_advocate(db: Database):
         filename="20260301_Advocate_Notes.pdf",
         category=DocumentCategory.ADVOCATE,
     )
-    doc = await db.insert_document(doc, patient_id="erika")
+    doc = await db.insert_document(doc, patient_id=ERIKA_UUID)
 
     await db.db.execute(
         "UPDATE documents SET structured_metadata = ? WHERE id = ?",
@@ -182,7 +182,7 @@ async def test_validate_reference_by_filename(db: Database):
         filename="ErikaFusekova-Other-DeVita_Ch40_CRC.pdf",
         category=DocumentCategory.OTHER,
     )
-    doc = await db.insert_document(doc, patient_id="erika")
+    doc = await db.insert_document(doc, patient_id=ERIKA_UUID)
 
     ctx = _mock_ctx(db)
     result = json.loads(await validate_categories(ctx, dry_run=True))
@@ -199,7 +199,7 @@ async def test_validate_genetics_by_filename(db: Database):
         filename="20260210_ErikaFusekova_NOU_Pathology_Genetika.pdf",
         category=DocumentCategory.PATHOLOGY,
     )
-    doc = await db.insert_document(doc, patient_id="erika")
+    doc = await db.insert_document(doc, patient_id=ERIKA_UUID)
 
     ctx = _mock_ctx(db)
     result = json.loads(await validate_categories(ctx, dry_run=True))
@@ -216,7 +216,7 @@ async def test_validate_corrects_genetics(db: Database):
         filename="20260210_ErikaFusekova_NOU_Pathology_Genetic.pdf",
         category=DocumentCategory.PATHOLOGY,
     )
-    doc = await db.insert_document(doc, patient_id="erika")
+    doc = await db.insert_document(doc, patient_id=ERIKA_UUID)
 
     ctx = _mock_ctx(db)
     result = json.loads(await validate_categories(ctx, dry_run=False))

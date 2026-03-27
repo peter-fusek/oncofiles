@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from oncofiles.database import Database
 from oncofiles.models import SearchQuery
-from tests.helpers import make_doc
+from tests.helpers import ERIKA_UUID, make_doc
 
 
 async def test_multi_term_and_semantics(db: Database):
@@ -16,16 +16,16 @@ async def test_multi_term_and_semantics(db: Database):
         original_filename="20260213_OUSA_labs_CBC.pdf",
         institution="OUSA",
     )
-    await db.insert_document(doc1, patient_id="erika")
-    await db.insert_document(doc2, patient_id="erika")
+    await db.insert_document(doc1, patient_id=ERIKA_UUID)
+    await db.insert_document(doc2, patient_id=ERIKA_UUID)
 
     # "NOUonko CBC" → only doc1 matches both terms
-    results = await db.search_documents(SearchQuery(text="NOUonko CBC"), patient_id="erika")
+    results = await db.search_documents(SearchQuery(text="NOUonko CBC"), patient_id=ERIKA_UUID)
     assert len(results) == 1
     assert results[0].file_id == "f1"
 
     # "labs CBC" → both match
-    results = await db.search_documents(SearchQuery(text="labs CBC"), patient_id="erika")
+    results = await db.search_documents(SearchQuery(text="labs CBC"), patient_id=ERIKA_UUID)
     assert len(results) == 2
 
 
@@ -33,14 +33,14 @@ async def test_relevance_filename_over_summary(db: Database):
     """Documents matching in filename rank higher than AI summary matches."""
     # doc1: "CEA" in filename (weight 3)
     doc1 = make_doc(file_id="f1", filename="20260213_NOUonko_labs_CEA.pdf", description="CEA")
-    doc1 = await db.insert_document(doc1, patient_id="erika")
+    doc1 = await db.insert_document(doc1, patient_id=ERIKA_UUID)
 
     # doc2: "CEA" only in ai_summary (weight 2)
     doc2 = make_doc(file_id="f2", filename="20260213_NOUonko_labs_markers.pdf")
-    doc2 = await db.insert_document(doc2, patient_id="erika")
+    doc2 = await db.insert_document(doc2, patient_id=ERIKA_UUID)
     await db.update_document_ai_metadata(doc2.id, "CEA elevated to 1559", "[]")
 
-    results = await db.search_documents(SearchQuery(text="CEA"), patient_id="erika")
+    results = await db.search_documents(SearchQuery(text="CEA"), patient_id=ERIKA_UUID)
     assert len(results) == 2
     # doc1 should rank first (filename match = higher weight)
     assert results[0].file_id == "f1"
@@ -50,14 +50,14 @@ async def test_relevance_filename_over_summary(db: Database):
 async def test_relevance_summary_over_tags(db: Database):
     """AI summary matches (weight 2) rank above tag matches (weight 1)."""
     doc1 = make_doc(file_id="f1", filename="20260213_NOUonko_labs_a.pdf")
-    doc1 = await db.insert_document(doc1, patient_id="erika")
+    doc1 = await db.insert_document(doc1, patient_id=ERIKA_UUID)
     await db.update_document_ai_metadata(doc1.id, "FOLFOX regimen started", "[]")
 
     doc2 = make_doc(file_id="f2", filename="20260213_NOUonko_labs_b.pdf")
-    doc2 = await db.insert_document(doc2, patient_id="erika")
+    doc2 = await db.insert_document(doc2, patient_id=ERIKA_UUID)
     await db.update_document_ai_metadata(doc2.id, "Blood count results", '["FOLFOX"]')
 
-    results = await db.search_documents(SearchQuery(text="FOLFOX"), patient_id="erika")
+    results = await db.search_documents(SearchQuery(text="FOLFOX"), patient_id=ERIKA_UUID)
     assert len(results) == 2
     assert results[0].file_id == "f1"  # summary match (weight 2)
     assert results[1].file_id == "f2"  # tags match (weight 1)
@@ -66,14 +66,14 @@ async def test_relevance_summary_over_tags(db: Database):
 async def test_search_structured_metadata(db: Database):
     """Search finds matches in structured_metadata JSON."""
     doc = make_doc(file_id="f1", filename="20260213_NOUonko_genetics_panel.pdf")
-    doc = await db.insert_document(doc, patient_id="erika")
+    doc = await db.insert_document(doc, patient_id=ERIKA_UUID)
     await db.db.execute(
         "UPDATE documents SET structured_metadata = ? WHERE id = ?",
         ('{"biomarkers": ["EGFR", "pMMR"]}', doc.id),
     )
     await db.db.commit()
 
-    results = await db.search_documents(SearchQuery(text="EGFR"), patient_id="erika")
+    results = await db.search_documents(SearchQuery(text="EGFR"), patient_id=ERIKA_UUID)
     assert len(results) == 1
     assert results[0].file_id == "f1"
 
@@ -83,18 +83,18 @@ async def test_search_offset_pagination(db: Database):
     for i in range(5):
         await db.insert_document(
             make_doc(file_id=f"f{i}", filename=f"2026021{i}_NOUonko_labs_CBC.pdf"),
-            patient_id="erika",
+            patient_id=ERIKA_UUID,
         )
 
     # Page 1: first 2
     page1 = await db.search_documents(
-        SearchQuery(text="CBC", limit=2, offset=0), patient_id="erika"
+        SearchQuery(text="CBC", limit=2, offset=0), patient_id=ERIKA_UUID
     )
     assert len(page1) == 2
 
     # Page 2: next 2
     page2 = await db.search_documents(
-        SearchQuery(text="CBC", limit=2, offset=2), patient_id="erika"
+        SearchQuery(text="CBC", limit=2, offset=2), patient_id=ERIKA_UUID
     )
     assert len(page2) == 2
 
@@ -105,7 +105,7 @@ async def test_search_offset_pagination(db: Database):
 
     # Page 3: last 1
     page3 = await db.search_documents(
-        SearchQuery(text="CBC", limit=2, offset=4), patient_id="erika"
+        SearchQuery(text="CBC", limit=2, offset=4), patient_id=ERIKA_UUID
     )
     assert len(page3) == 1
 
@@ -120,10 +120,10 @@ async def test_search_no_text_date_order(db: Database):
     doc2 = make_doc(
         file_id="f2", filename="20260215_NOUonko_labs_b.pdf", document_date=date(2026, 2, 15)
     )
-    await db.insert_document(doc1, patient_id="erika")
-    await db.insert_document(doc2, patient_id="erika")
+    await db.insert_document(doc1, patient_id=ERIKA_UUID)
+    await db.insert_document(doc2, patient_id=ERIKA_UUID)
 
-    results = await db.search_documents(SearchQuery(category="labs"), patient_id="erika")
+    results = await db.search_documents(SearchQuery(category="labs"), patient_id=ERIKA_UUID)
     assert len(results) == 2
     # Newer first when no text query
     assert results[0].file_id == "f2"
@@ -131,8 +131,8 @@ async def test_search_no_text_date_order(db: Database):
 
 async def test_search_empty_query_returns_all(db: Database):
     """Empty text with no filters returns all non-deleted documents."""
-    await db.insert_document(make_doc(file_id="f1"), patient_id="erika")
-    await db.insert_document(make_doc(file_id="f2"), patient_id="erika")
+    await db.insert_document(make_doc(file_id="f1"), patient_id=ERIKA_UUID)
+    await db.insert_document(make_doc(file_id="f2"), patient_id=ERIKA_UUID)
 
-    results = await db.search_documents(SearchQuery(), patient_id="erika")
+    results = await db.search_documents(SearchQuery(), patient_id=ERIKA_UUID)
     assert len(results) == 2

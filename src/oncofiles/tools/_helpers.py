@@ -281,11 +281,11 @@ async def _ensure_ocr_text(
     return texts
 
 
-async def _check_baseline_labs(db: Database) -> str | None:
+async def _check_baseline_labs(db: Database, patient_id: str | None = None) -> str | None:
     """Check if pre-treatment baseline labs exist. Returns warning if missing."""
     from oncofiles.models import TreatmentEventQuery
 
-    pid = _get_patient_id()
+    pid = patient_id if patient_id is not None else _get_patient_id()
     events = await db.list_treatment_events(
         TreatmentEventQuery(event_type="chemo", limit=1), patient_id=pid
     )

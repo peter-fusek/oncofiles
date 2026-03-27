@@ -15,14 +15,14 @@ from oncofiles.manifest import (
     render_treatment_timeline,
 )
 from oncofiles.models import ConversationEntry, ResearchEntry, TreatmentEvent
-from tests.helpers import make_doc, make_research_entry, make_treatment_event
+from tests.helpers import ERIKA_UUID, make_doc, make_research_entry, make_treatment_event
 
 # ── Manifest export/parse roundtrip ──────────────────────────────────────
 
 
 async def test_export_manifest_empty(db: Database):
     """Empty DB produces valid manifest."""
-    manifest = await export_manifest(db, patient_id="erika")
+    manifest = await export_manifest(db, patient_id=ERIKA_UUID)
     assert manifest["version"] == "1.0"
     assert manifest["documents"] == []
     assert manifest["conversation_entries"] == []
@@ -32,11 +32,13 @@ async def test_export_manifest_empty(db: Database):
 
 async def test_export_manifest_with_data(db: Database):
     """Manifest includes all data types."""
-    await db.insert_document(make_doc(), patient_id="erika")
-    await db.insert_treatment_event(make_treatment_event(), patient_id="erika")
-    await db.insert_research_entry(make_research_entry(patient_id="erika"), patient_id="erika")
+    await db.insert_document(make_doc(), patient_id=ERIKA_UUID)
+    await db.insert_treatment_event(make_treatment_event(), patient_id=ERIKA_UUID)
+    await db.insert_research_entry(
+        make_research_entry(patient_id=ERIKA_UUID), patient_id=ERIKA_UUID
+    )
 
-    manifest = await export_manifest(db, patient_id="erika")
+    manifest = await export_manifest(db, patient_id=ERIKA_UUID)
     assert len(manifest["documents"]) == 1
     assert len(manifest["treatment_events"]) == 1
     assert len(manifest["research_entries"]) == 1
@@ -44,8 +46,8 @@ async def test_export_manifest_with_data(db: Database):
 
 async def test_manifest_roundtrip(db: Database):
     """Manifest can be serialized and parsed back."""
-    await db.insert_document(make_doc(), patient_id="erika")
-    manifest = await export_manifest(db, patient_id="erika")
+    await db.insert_document(make_doc(), patient_id=ERIKA_UUID)
+    manifest = await export_manifest(db, patient_id=ERIKA_UUID)
     json_str = render_manifest_json(manifest)
     parsed = parse_manifest(json_str)
 
@@ -57,20 +59,20 @@ async def test_manifest_roundtrip(db: Database):
 async def test_manifest_includes_structured_metadata(db: Database):
     """Manifest export includes structured_metadata for documents that have it."""
     doc = make_doc()
-    doc = await db.insert_document(doc, patient_id="erika")
+    doc = await db.insert_document(doc, patient_id=ERIKA_UUID)
     metadata_json = '{"diagnoses": ["CRC"], "medications": ["FOLFOX"]}'
     await db.update_structured_metadata(doc.id, metadata_json)
 
-    manifest = await export_manifest(db, patient_id="erika")
+    manifest = await export_manifest(db, patient_id=ERIKA_UUID)
     assert len(manifest["documents"]) == 1
     assert manifest["documents"][0]["structured_metadata"] == metadata_json
 
 
 async def test_manifest_structured_metadata_none_when_absent(db: Database):
     """Manifest export has null structured_metadata when not set."""
-    await db.insert_document(make_doc(), patient_id="erika")
+    await db.insert_document(make_doc(), patient_id=ERIKA_UUID)
 
-    manifest = await export_manifest(db, patient_id="erika")
+    manifest = await export_manifest(db, patient_id=ERIKA_UUID)
     assert manifest["documents"][0]["structured_metadata"] is None
 
 

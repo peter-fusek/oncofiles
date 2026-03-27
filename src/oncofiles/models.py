@@ -160,6 +160,7 @@ class Patient(BaseModel):
     """A patient managed by this oncofiles instance."""
 
     patient_id: str
+    slug: str = ""
     display_name: str
     caregiver_email: str | None = None
     diagnosis_summary: str | None = None
@@ -259,7 +260,7 @@ class OAuthToken(BaseModel):
     """OAuth token pair for a user's Google Drive access."""
 
     id: int | None = None
-    patient_id: str = "erika"
+    patient_id: str = ""
     provider: str = "google"
     access_token: str
     refresh_token: str
@@ -278,7 +279,7 @@ class EmailEntry(BaseModel):
     """A Gmail email entry stored for medical record tracking."""
 
     id: int | None = None
-    patient_id: str = "erika"
+    patient_id: str = ""
     gmail_message_id: str
     thread_id: str = ""
     subject: str = ""
@@ -316,7 +317,7 @@ class CalendarEntry(BaseModel):
     """A Google Calendar event stored for medical record tracking."""
 
     id: int | None = None
-    patient_id: str = "erika"
+    patient_id: str = ""
     google_event_id: str
     summary: str = ""
     description: str = ""
@@ -400,7 +401,7 @@ class PromptLogEntry(BaseModel):
     id: int | None = None
     call_type: PromptCallType
     document_id: int | None = None
-    patient_id: str = "erika"
+    patient_id: str = ""
     model: str
     system_prompt: str = ""
     user_prompt: str = ""

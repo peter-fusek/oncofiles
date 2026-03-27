@@ -25,7 +25,7 @@ from oncofiles.tools.documents import (
     restore_document,
     update_document_category,
 )
-from tests.helpers import make_doc
+from tests.helpers import ERIKA_UUID, make_doc
 
 
 @pytest.fixture(autouse=True)
@@ -64,7 +64,7 @@ def _mock_ctx(
 
 async def test_view_document_image(db: Database):
     doc = make_doc(file_id="file_img", mime_type="image/jpeg")
-    await db.insert_document(doc, patient_id="erika")
+    await db.insert_document(doc, patient_id=ERIKA_UUID)
 
     mock_files = MagicMock()
     mock_files.download.return_value = b"fake-jpeg-bytes"
@@ -80,7 +80,7 @@ async def test_view_document_image(db: Database):
 
 async def test_view_document_pdf(db: Database):
     doc = make_doc(file_id="file_pdf", mime_type="application/pdf")
-    await db.insert_document(doc, patient_id="erika")
+    await db.insert_document(doc, patient_id=ERIKA_UUID)
 
     mock_files = MagicMock()
     mock_files.download.return_value = _make_test_pdf()
@@ -108,7 +108,7 @@ async def test_analyze_labs_returns_content(db: Database):
             category=DocumentCategory.LABS,
             document_date=date(2024, 6, 1),
         ),
-        patient_id="erika",
+        patient_id=ERIKA_UUID,
     )
     await db.insert_document(
         make_doc(
@@ -116,7 +116,7 @@ async def test_analyze_labs_returns_content(db: Database):
             category=DocumentCategory.LABS,
             document_date=date(2024, 7, 1),
         ),
-        patient_id="erika",
+        patient_id=ERIKA_UUID,
     )
 
     mock_files = MagicMock()
@@ -132,7 +132,7 @@ async def test_analyze_labs_returns_content(db: Database):
 
 async def test_analyze_labs_specific_file_id(db: Database):
     await db.insert_document(
-        make_doc(file_id="file_lab_x", category=DocumentCategory.LABS), patient_id="erika"
+        make_doc(file_id="file_lab_x", category=DocumentCategory.LABS), patient_id=ERIKA_UUID
     )
 
     mock_files = MagicMock()
@@ -147,7 +147,7 @@ async def test_analyze_labs_specific_file_id(db: Database):
 
 async def test_analyze_labs_wrong_category(db: Database):
     await db.insert_document(
-        make_doc(file_id="file_img", category=DocumentCategory.IMAGING), patient_id="erika"
+        make_doc(file_id="file_img", category=DocumentCategory.IMAGING), patient_id=ERIKA_UUID
     )
     ctx = _mock_ctx(db)
     result = await analyze_labs(ctx, file_id="file_img")
@@ -160,11 +160,11 @@ async def test_analyze_labs_wrong_category(db: Database):
 async def test_compare_labs_specific_ids(db: Database):
     await db.insert_document(
         make_doc(file_id="file_a", category=DocumentCategory.LABS, document_date=date(2024, 1, 1)),
-        patient_id="erika",
+        patient_id=ERIKA_UUID,
     )
     await db.insert_document(
         make_doc(file_id="file_b", category=DocumentCategory.LABS, document_date=date(2024, 6, 1)),
-        patient_id="erika",
+        patient_id=ERIKA_UUID,
     )
 
     mock_files = MagicMock()
@@ -184,7 +184,7 @@ async def test_compare_labs_date_range(db: Database):
             category=DocumentCategory.LABS,
             document_date=date(2024, 1, 15),
         ),
-        patient_id="erika",
+        patient_id=ERIKA_UUID,
     )
     await db.insert_document(
         make_doc(
@@ -192,7 +192,7 @@ async def test_compare_labs_date_range(db: Database):
             category=DocumentCategory.LABS,
             document_date=date(2024, 6, 15),
         ),
-        patient_id="erika",
+        patient_id=ERIKA_UUID,
     )
     await db.insert_document(
         make_doc(
@@ -200,7 +200,7 @@ async def test_compare_labs_date_range(db: Database):
             category=DocumentCategory.LABS,
             document_date=date(2024, 12, 1),
         ),
-        patient_id="erika",
+        patient_id=ERIKA_UUID,
     )
 
     mock_files = MagicMock()
@@ -228,7 +228,7 @@ async def test_compare_labs_not_found(db: Database):
 
 
 async def test_view_document_download_fails(db: Database):
-    await db.insert_document(make_doc(file_id="file_fail"), patient_id="erika")
+    await db.insert_document(make_doc(file_id="file_fail"), patient_id=ERIKA_UUID)
 
     mock_files = MagicMock()
     mock_files.download.side_effect = Exception("not_found_error: file not found")
@@ -245,7 +245,7 @@ async def test_analyze_labs_all_downloads_fail(db: Database):
             file_id="file_lab_fail",
             category=DocumentCategory.LABS,
         ),
-        patient_id="erika",
+        patient_id=ERIKA_UUID,
     )
 
     mock_files = MagicMock()
@@ -263,7 +263,7 @@ async def test_analyze_labs_all_downloads_fail(db: Database):
 async def test_fallback_files_api_fails_gdrive_succeeds(db: Database):
     """When Files API fails but GDrive works, content should be returned."""
     await db.insert_document(
-        make_doc(file_id="file_fb1", gdrive_id="gdrive_abc123"), patient_id="erika"
+        make_doc(file_id="file_fb1", gdrive_id="gdrive_abc123"), patient_id=ERIKA_UUID
     )
 
     mock_files = MagicMock()
@@ -281,7 +281,7 @@ async def test_fallback_files_api_fails_gdrive_succeeds(db: Database):
 async def test_fallback_both_fail(db: Database):
     """When both Files API and GDrive fail, error message should be returned."""
     await db.insert_document(
-        make_doc(file_id="file_fb2", gdrive_id="gdrive_fail"), patient_id="erika"
+        make_doc(file_id="file_fb2", gdrive_id="gdrive_fail"), patient_id=ERIKA_UUID
     )
 
     mock_files = MagicMock()
@@ -297,7 +297,7 @@ async def test_fallback_both_fail(db: Database):
 
 async def test_fallback_no_gdrive_id(db: Database):
     """When Files API fails and doc has no gdrive_id, show appropriate error."""
-    await db.insert_document(make_doc(file_id="file_fb3"), patient_id="erika")  # no gdrive_id
+    await db.insert_document(make_doc(file_id="file_fb3"), patient_id=ERIKA_UUID)  # no gdrive_id
 
     mock_files = MagicMock()
     mock_files.download.side_effect = Exception("not downloadable")
@@ -311,7 +311,7 @@ async def test_fallback_no_gdrive_id(db: Database):
 async def test_fallback_no_gdrive_client(db: Database):
     """When Files API fails, gdrive_id exists, but no GDrive client configured."""
     await db.insert_document(
-        make_doc(file_id="file_fb4", gdrive_id="gdrive_xyz"), patient_id="erika"
+        make_doc(file_id="file_fb4", gdrive_id="gdrive_xyz"), patient_id=ERIKA_UUID
     )
 
     mock_files = MagicMock()
@@ -331,7 +331,7 @@ async def test_analyze_labs_gdrive_fallback(db: Database):
             category=DocumentCategory.LABS,
             gdrive_id="gdrive_lab1",
         ),
-        patient_id="erika",
+        patient_id=ERIKA_UUID,
     )
 
     mock_files = MagicMock()
@@ -353,7 +353,7 @@ async def test_analyze_labs_gdrive_fallback(db: Database):
 async def test_view_document_includes_ocr_text(db: Database):
     """view_document should include extracted OCR text before images."""
     doc = make_doc(file_id="file_ocr1", mime_type="application/pdf")
-    await db.insert_document(doc, patient_id="erika")
+    await db.insert_document(doc, patient_id=ERIKA_UUID)
 
     mock_files = MagicMock()
     mock_files.download.return_value = _make_test_pdf()
@@ -374,7 +374,7 @@ async def test_view_document_includes_ocr_text(db: Database):
 async def test_view_document_ocr_cache_hit(db: Database):
     """Second call should use cached OCR text, not call extract again."""
     doc = make_doc(file_id="file_ocr2", mime_type="application/pdf")
-    inserted = await db.insert_document(doc, patient_id="erika")
+    inserted = await db.insert_document(doc, patient_id=ERIKA_UUID)
 
     # Pre-populate cache
     await db.save_ocr_page(inserted.id, 1, "Cached text", "claude-haiku-4-5-20251001")
@@ -399,7 +399,7 @@ async def test_analyze_labs_includes_ocr_text(db: Database):
             file_id="file_lab_ocr",
             category=DocumentCategory.LABS,
         ),
-        patient_id="erika",
+        patient_id=ERIKA_UUID,
     )
 
     mock_files = MagicMock()
@@ -493,7 +493,7 @@ async def test_get_journey_timeline(db: Database):
 
     # Create a document + a conversation entry
     await db.insert_document(
-        make_doc(file_id="file_timeline", document_date=date(2025, 2, 1)), patient_id="erika"
+        make_doc(file_id="file_timeline", document_date=date(2025, 2, 1)), patient_id=ERIKA_UUID
     )
     await log_conversation(
         ctx,
@@ -520,7 +520,7 @@ async def test_get_journey_timeline(db: Database):
 async def test_find_duplicates_no_dupes(db: Database):
     ctx = _mock_ctx(db)
     await db.insert_document(
-        make_doc(file_id="file_a", filename="20240115_labs.pdf"), patient_id="erika"
+        make_doc(file_id="file_a", filename="20240115_labs.pdf"), patient_id=ERIKA_UUID
     )
     result = json.loads(await find_duplicates(ctx))
     assert result["total_groups"] == 0
@@ -532,13 +532,13 @@ async def test_find_duplicates_with_dupes(db: Database):
         make_doc(
             file_id="file_a", filename="dup.pdf", original_filename="orig.pdf", size_bytes=100
         ),
-        patient_id="erika",
+        patient_id=ERIKA_UUID,
     )
     await db.insert_document(
         make_doc(
             file_id="file_b", filename="dup2.pdf", original_filename="orig.pdf", size_bytes=100
         ),
-        patient_id="erika",
+        patient_id=ERIKA_UUID,
     )
     result = json.loads(await find_duplicates(ctx))
     assert result["total_groups"] == 1
@@ -550,8 +550,8 @@ async def test_find_duplicates_with_dupes(db: Database):
 
 async def test_restore_document_success(db: Database):
     ctx = _mock_ctx(db)
-    doc = await db.insert_document(make_doc(file_id="file_del"), patient_id="erika")
-    await db.delete_document_by_file_id("file_del", patient_id="erika")
+    doc = await db.insert_document(make_doc(file_id="file_del"), patient_id=ERIKA_UUID)
+    await db.delete_document_by_file_id("file_del", patient_id=ERIKA_UUID)
 
     result = json.loads(await restore_document(ctx, doc_id=doc.id))
     assert result["restored"] is True
@@ -576,8 +576,8 @@ async def test_list_trash_empty(db: Database):
 
 async def test_list_trash_with_items(db: Database):
     ctx = _mock_ctx(db)
-    await db.insert_document(make_doc(file_id="file_trash1"), patient_id="erika")
-    await db.delete_document_by_file_id("file_trash1", patient_id="erika")
+    await db.insert_document(make_doc(file_id="file_trash1"), patient_id=ERIKA_UUID)
+    await db.delete_document_by_file_id("file_trash1", patient_id=ERIKA_UUID)
 
     result = json.loads(await list_trash(ctx))
     assert result["total"] == 1
@@ -719,7 +719,7 @@ async def test_update_document_category_success(db: Database):
     """update_document_category changes category and returns old/new."""
     ctx = _mock_ctx(db)
     doc = await db.insert_document(
-        make_doc(file_id="file_cat", category=DocumentCategory.OTHER), patient_id="erika"
+        make_doc(file_id="file_cat", category=DocumentCategory.OTHER), patient_id=ERIKA_UUID
     )
 
     result = json.loads(await update_document_category(ctx, doc_id=doc.id, category="reference"))
@@ -735,7 +735,7 @@ async def test_update_document_category_success(db: Database):
 async def test_update_document_category_invalid(db: Database):
     """update_document_category rejects invalid category."""
     ctx = _mock_ctx(db)
-    doc = await db.insert_document(make_doc(file_id="file_cat2"), patient_id="erika")
+    doc = await db.insert_document(make_doc(file_id="file_cat2"), patient_id=ERIKA_UUID)
 
     result = json.loads(await update_document_category(ctx, doc_id=doc.id, category="bogus"))
     assert "error" in result

@@ -5,7 +5,7 @@ from __future__ import annotations
 from unittest.mock import MagicMock, patch
 
 from oncofiles.server import _check_bearer
-from tests.helpers import make_doc
+from tests.helpers import ERIKA_UUID, make_doc
 
 # ── _check_bearer helper ─────────────────────────────────────────────
 
@@ -76,7 +76,7 @@ async def test_build_document_matrix_empty_db(db):
     """Matrix returns empty results for empty database."""
     from oncofiles.tools.hygiene import _build_document_matrix
 
-    result = await _build_document_matrix(db)
+    result = await _build_document_matrix(db, patient_id=ERIKA_UUID)
     assert result["filter"] == "all"
     assert result["matched"] == 0
     assert result["summary"]["total"] == 0
@@ -89,12 +89,12 @@ async def test_build_document_matrix_with_docs(db):
     from oncofiles.tools.hygiene import _build_document_matrix
 
     doc = make_doc(filename="20260101_Test_Labs.pdf")
-    inserted = await db.insert_document(doc, patient_id="erika")
+    inserted = await db.insert_document(doc, patient_id=ERIKA_UUID)
 
     # Update with some fields to make it partially complete
     await db.update_document_ai_metadata(inserted.id, "Test summary", "tag1,tag2")
 
-    result = await _build_document_matrix(db)
+    result = await _build_document_matrix(db, patient_id=ERIKA_UUID)
     assert result["summary"]["total"] == 1
     assert result["summary"]["with_ai"] == 1
     assert result["matched"] == 1
@@ -112,13 +112,13 @@ async def test_build_document_matrix_filter_incomplete(db):
     from oncofiles.tools.hygiene import _build_document_matrix
 
     doc = make_doc(filename="test.pdf", gdrive_id=None)
-    await db.insert_document(doc, patient_id="erika")
+    await db.insert_document(doc, patient_id=ERIKA_UUID)
 
-    result = await _build_document_matrix(db, filter_param="incomplete")
+    result = await _build_document_matrix(db, filter_param="incomplete", patient_id=ERIKA_UUID)
     # Doc is incomplete (no AI, no sync, etc.) so it should be returned
     assert result["matched"] == 1
 
-    result_all = await _build_document_matrix(db, filter_param="all")
+    result_all = await _build_document_matrix(db, filter_param="all", patient_id=ERIKA_UUID)
     assert result_all["matched"] == 1
 
 
@@ -127,15 +127,15 @@ async def test_build_document_matrix_filter_missing_ai(db):
     from oncofiles.tools.hygiene import _build_document_matrix
 
     doc = make_doc(filename="test.pdf")
-    inserted = await db.insert_document(doc, patient_id="erika")
+    inserted = await db.insert_document(doc, patient_id=ERIKA_UUID)
 
     # No AI summary → should be returned
-    result = await _build_document_matrix(db, filter_param="missing_ai")
+    result = await _build_document_matrix(db, filter_param="missing_ai", patient_id=ERIKA_UUID)
     assert result["matched"] == 1
 
     # Add AI summary → should be excluded
     await db.update_document_ai_metadata(inserted.id, "Summary", "tags")
-    result = await _build_document_matrix(db, filter_param="missing_ai")
+    result = await _build_document_matrix(db, filter_param="missing_ai", patient_id=ERIKA_UUID)
     assert result["matched"] == 0
 
 
@@ -143,7 +143,7 @@ async def test_build_document_matrix_summary_has_fully_complete(db):
     """Summary includes fully_complete count."""
     from oncofiles.tools.hygiene import _build_document_matrix
 
-    result = await _build_document_matrix(db)
+    result = await _build_document_matrix(db, patient_id=ERIKA_UUID)
     assert "fully_complete" in result["summary"]
     assert isinstance(result["summary"]["fully_complete"], int)
 
@@ -154,10 +154,10 @@ async def test_build_document_matrix_limit(db):
 
     for i in range(5):
         await db.insert_document(
-            make_doc(filename=f"doc_{i}.pdf", file_id=f"file_{i}"), patient_id="erika"
+            make_doc(filename=f"doc_{i}.pdf", file_id=f"file_{i}"), patient_id=ERIKA_UUID
         )
 
-    result = await _build_document_matrix(db, limit=3)
+    result = await _build_document_matrix(db, limit=3, patient_id=ERIKA_UUID)
     assert result["matched"] == 3
     assert result["summary"]["total"] == 5
 

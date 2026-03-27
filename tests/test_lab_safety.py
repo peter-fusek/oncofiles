@@ -7,7 +7,7 @@ from unittest.mock import MagicMock
 
 from oncofiles.database import Database
 from oncofiles.tools.lab_trends import get_lab_safety_check, get_precycle_checklist
-from tests.helpers import make_doc, make_lab_value
+from tests.helpers import ERIKA_UUID, make_doc, make_lab_value
 
 
 def _mock_ctx(db: Database) -> MagicMock:
@@ -23,7 +23,7 @@ async def test_lab_safety_check_green(db: Database):
     """Value well above min threshold → green."""
     ctx = _mock_ctx(db)
     doc = make_doc()
-    doc = await db.insert_document(doc, patient_id="erika")
+    doc = await db.insert_document(doc, patient_id=ERIKA_UUID)
 
     values = [
         make_lab_value(document_id=doc.id, parameter="ABS_NEUT", value=3.0, unit="10^9/L"),
@@ -41,7 +41,7 @@ async def test_lab_safety_check_red_min(db: Database):
     """Value below min threshold (and below 90% borderline) → red."""
     ctx = _mock_ctx(db)
     doc = make_doc()
-    doc = await db.insert_document(doc, patient_id="erika")
+    doc = await db.insert_document(doc, patient_id=ERIKA_UUID)
 
     # ABS_NEUT min=1.5, 90% of 1.5 = 1.35 → 1.0 is red
     values = [
@@ -58,7 +58,7 @@ async def test_lab_safety_check_yellow_min(db: Database):
     """Value in borderline zone (between 90% and 100% of min) → yellow."""
     ctx = _mock_ctx(db)
     doc = make_doc()
-    doc = await db.insert_document(doc, patient_id="erika")
+    doc = await db.insert_document(doc, patient_id=ERIKA_UUID)
 
     # ABS_NEUT min=1.5, 90% = 1.35 → 1.4 is yellow
     values = [
@@ -75,7 +75,7 @@ async def test_lab_safety_check_red_max(db: Database):
     """Value above max threshold (and above 110% borderline) → red."""
     ctx = _mock_ctx(db)
     doc = make_doc()
-    doc = await db.insert_document(doc, patient_id="erika")
+    doc = await db.insert_document(doc, patient_id=ERIKA_UUID)
 
     # BILIRUBIN max=26.0, 110% = 28.6 → 30.0 is red
     values = [
@@ -93,7 +93,7 @@ async def test_lab_safety_check_green_max(db: Database):
     """Value within max threshold → green."""
     ctx = _mock_ctx(db)
     doc = make_doc()
-    doc = await db.insert_document(doc, patient_id="erika")
+    doc = await db.insert_document(doc, patient_id=ERIKA_UUID)
 
     # BILIRUBIN max=26.0 → 15.0 is green
     values = [
@@ -121,7 +121,7 @@ async def test_lab_safety_check_summary(db: Database):
     """Summary counts match individual statuses, cycle_safe logic correct."""
     ctx = _mock_ctx(db)
     doc = make_doc()
-    doc = await db.insert_document(doc, patient_id="erika")
+    doc = await db.insert_document(doc, patient_id=ERIKA_UUID)
 
     # Store good values for all 9 parameters
     good_values = [
@@ -149,7 +149,7 @@ async def test_lab_safety_check_not_safe_with_red(db: Database):
     """cycle_safe is False when any parameter is red."""
     ctx = _mock_ctx(db)
     doc = make_doc()
-    doc = await db.insert_document(doc, patient_id="erika")
+    doc = await db.insert_document(doc, patient_id=ERIKA_UUID)
 
     # ABS_NEUT red, rest missing
     values = [
@@ -199,7 +199,7 @@ async def test_precycle_checklist_links_lab_values(db: Database):
     """Lab-linked checklist items include last_value when values are stored."""
     ctx = _mock_ctx(db)
     doc = make_doc()
-    doc = await db.insert_document(doc, patient_id="erika")
+    doc = await db.insert_document(doc, patient_id=ERIKA_UUID)
 
     values = [
         make_lab_value(document_id=doc.id, parameter="ABS_NEUT", value=2.5),

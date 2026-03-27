@@ -4,10 +4,12 @@ from datetime import datetime
 
 from oncofiles.database import Database
 from oncofiles.models import EmailEntry, EmailQuery
+from tests.helpers import ERIKA_UUID
 
 
 def _make_email(**kwargs) -> EmailEntry:
     defaults = {
+        "patient_id": ERIKA_UUID,
         "gmail_message_id": "msg_001",
         "thread_id": "thread_001",
         "subject": "Lab results - CBC",
@@ -39,7 +41,7 @@ async def test_upsert_and_get(db: Database):
 async def test_get_by_gmail_id(db: Database):
     entry = _make_email()
     await db.upsert_email_entry(entry)
-    fetched = await db.get_email_entry_by_gmail_id("msg_001", patient_id="erika")
+    fetched = await db.get_email_entry_by_gmail_id("msg_001", patient_id=ERIKA_UUID)
     assert fetched is not None
     assert fetched.subject == "Lab results - CBC"
 
@@ -56,7 +58,7 @@ async def test_upsert_idempotent(db: Database):
 async def test_search_by_text(db: Database):
     await db.upsert_email_entry(_make_email(gmail_message_id="m1", subject="Chemo schedule"))
     await db.upsert_email_entry(_make_email(gmail_message_id="m2", subject="Invoice payment"))
-    results = await db.search_email_entries(EmailQuery(text="Chemo"), patient_id="erika")
+    results = await db.search_email_entries(EmailQuery(text="Chemo"), patient_id=ERIKA_UUID)
     assert len(results) == 1
     assert results[0].subject == "Chemo schedule"
 
@@ -64,30 +66,30 @@ async def test_search_by_text(db: Database):
 async def test_search_by_sender(db: Database):
     await db.upsert_email_entry(_make_email(gmail_message_id="m1", sender="dr@hospital.sk"))
     await db.upsert_email_entry(_make_email(gmail_message_id="m2", sender="shop@amazon.com"))
-    results = await db.search_email_entries(EmailQuery(sender="hospital"), patient_id="erika")
+    results = await db.search_email_entries(EmailQuery(sender="hospital"), patient_id=ERIKA_UUID)
     assert len(results) == 1
 
 
 async def test_search_medical_only(db: Database):
     await db.upsert_email_entry(_make_email(gmail_message_id="m1", is_medical=True))
     await db.upsert_email_entry(_make_email(gmail_message_id="m2", is_medical=False))
-    results = await db.search_email_entries(EmailQuery(is_medical=True), patient_id="erika")
+    results = await db.search_email_entries(EmailQuery(is_medical=True), patient_id=ERIKA_UUID)
     assert len(results) == 1
 
 
 async def test_list_entries(db: Database):
     for i in range(5):
         await db.upsert_email_entry(_make_email(gmail_message_id=f"m{i}"))
-    entries = await db.list_email_entries(limit=3, patient_id="erika")
+    entries = await db.list_email_entries(limit=3, patient_id=ERIKA_UUID)
     assert len(entries) == 3
 
 
 async def test_count(db: Database):
-    assert await db.count_email_entries(patient_id="erika") == 0
+    assert await db.count_email_entries(patient_id=ERIKA_UUID) == 0
     await db.upsert_email_entry(_make_email())
-    assert await db.count_email_entries(patient_id="erika") == 1
+    assert await db.count_email_entries(patient_id=ERIKA_UUID) == 1
 
 
 async def test_get_nonexistent(db: Database):
     assert await db.get_email_entry(999) is None
-    assert await db.get_email_entry_by_gmail_id("nonexistent", patient_id="erika") is None
+    assert await db.get_email_entry_by_gmail_id("nonexistent", patient_id=ERIKA_UUID) is None

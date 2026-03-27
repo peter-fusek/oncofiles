@@ -15,8 +15,10 @@ logger = logging.getLogger(__name__)
 
 def _row_to_patient(row: Any) -> Patient:
     """Convert a database row to a Patient model."""
+    d = dict(row)
     return Patient(
         patient_id=row["patient_id"],
+        slug=d.get("slug", ""),
         display_name=row["display_name"],
         caregiver_email=row["caregiver_email"],
         diagnosis_summary=row["diagnosis_summary"],
@@ -52,15 +54,65 @@ class PatientsMixin:
         async with self.db.execute(sql) as cursor:
             return [_row_to_patient(r) for r in await cursor.fetchall()]
 
+    async def get_patient_by_slug(self, slug: str) -> Patient | None:
+        """Get a patient by human-readable slug (e.g. 'erika')."""
+        async with self.db.execute("SELECT * FROM patients WHERE slug = ?", (slug,)) as cursor:
+            row = await cursor.fetchone()
+            return _row_to_patient(row) if row else None
+
+    async def resolve_patient_id(self, value: str) -> str | None:
+        """Resolve a patient identifier (UUID or slug) to a UUID patient_id.
+
+        If *value* looks like a UUID (36 chars with hyphens), look up by patient_id.
+        Otherwise, treat it as a slug.  Returns the UUID string or None.
+        """
+        import re as _re
+
+        _uuid_re = _re.compile(
+            r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", _re.I
+        )
+        if _uuid_re.match(value):
+            p = await self.get_patient(value)
+            return p.patient_id if p else None
+        p = await self.get_patient_by_slug(value)
+        return p.patient_id if p else None
+
+    async def resolve_default_patient(self) -> str:
+        """Return the UUID of the first active patient (fallback for tokenless sessions)."""
+        patients = await self.list_patients(active_only=True)
+        return patients[0].patient_id if patients else ""
+
     async def insert_patient(self, patient: Patient) -> Patient:
-        """Create a new patient."""
+        """Create a new patient.
+
+        If patient_id is not a UUID, it is treated as a slug and a UUID is generated.
+        If slug is empty, the original patient_id value is used as the slug.
+        """
+        import re as _re
+        import uuid as _uuid
+
+        _uuid_re = _re.compile(
+            r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", _re.I
+        )
+        pid = patient.patient_id
+        slug = patient.slug
+
+        if not _uuid_re.match(pid):
+            # Old-style slug passed as patient_id — generate a UUID
+            if not slug:
+                slug = pid
+            pid = str(_uuid.uuid4())
+        elif not slug:
+            slug = pid  # fallback: use UUID as slug (not ideal but safe)
+
         async with self.db.execute(
             """INSERT INTO patients
-               (patient_id, display_name, caregiver_email, diagnosis_summary,
+               (patient_id, slug, display_name, caregiver_email, diagnosis_summary,
                 is_active, preferred_lang)
-               VALUES (?, ?, ?, ?, ?, ?)""",
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
             (
-                patient.patient_id,
+                pid,
+                slug,
                 patient.display_name,
                 patient.caregiver_email,
                 patient.diagnosis_summary,
@@ -69,7 +121,7 @@ class PatientsMixin:
             ),
         ):
             await self.db.commit()
-        return (await self.get_patient(patient.patient_id)) or patient
+        return (await self.get_patient(pid)) or patient
 
     async def update_patient(
         self,

@@ -4,10 +4,12 @@ from datetime import datetime
 
 from oncofiles.database import Database
 from oncofiles.models import CalendarEntry, CalendarQuery
+from tests.helpers import ERIKA_UUID
 
 
 def _make_event(**kwargs) -> CalendarEntry:
     defaults = {
+        "patient_id": ERIKA_UUID,
         "google_event_id": "evt_001",
         "summary": "Chemo cycle 3",
         "description": "FOLFOX C3 at University Hospital",
@@ -35,7 +37,7 @@ async def test_upsert_and_get(db: Database):
 
 async def test_get_by_google_id(db: Database):
     await db.upsert_calendar_entry(_make_event())
-    fetched = await db.get_calendar_entry_by_google_id("evt_001", patient_id="erika")
+    fetched = await db.get_calendar_entry_by_google_id("evt_001", patient_id=ERIKA_UUID)
     assert fetched is not None
     assert fetched.summary == "Chemo cycle 3"
 
@@ -52,30 +54,32 @@ async def test_upsert_idempotent(db: Database):
 async def test_search_by_text(db: Database):
     await db.upsert_calendar_entry(_make_event(google_event_id="e1", summary="Chemo"))
     await db.upsert_calendar_entry(_make_event(google_event_id="e2", summary="Dentist"))
-    results = await db.search_calendar_entries(CalendarQuery(text="Chemo"), patient_id="erika")
+    results = await db.search_calendar_entries(CalendarQuery(text="Chemo"), patient_id=ERIKA_UUID)
     assert len(results) == 1
 
 
 async def test_search_medical_only(db: Database):
     await db.upsert_calendar_entry(_make_event(google_event_id="e1", is_medical=True))
     await db.upsert_calendar_entry(_make_event(google_event_id="e2", is_medical=False))
-    results = await db.search_calendar_entries(CalendarQuery(is_medical=True), patient_id="erika")
+    results = await db.search_calendar_entries(
+        CalendarQuery(is_medical=True), patient_id=ERIKA_UUID
+    )
     assert len(results) == 1
 
 
 async def test_list_entries(db: Database):
     for i in range(5):
         await db.upsert_calendar_entry(_make_event(google_event_id=f"e{i}"))
-    entries = await db.list_calendar_entries(limit=3, patient_id="erika")
+    entries = await db.list_calendar_entries(limit=3, patient_id=ERIKA_UUID)
     assert len(entries) == 3
 
 
 async def test_count(db: Database):
-    assert await db.count_calendar_entries(patient_id="erika") == 0
+    assert await db.count_calendar_entries(patient_id=ERIKA_UUID) == 0
     await db.upsert_calendar_entry(_make_event())
-    assert await db.count_calendar_entries(patient_id="erika") == 1
+    assert await db.count_calendar_entries(patient_id=ERIKA_UUID) == 1
 
 
 async def test_get_nonexistent(db: Database):
     assert await db.get_calendar_entry(999) is None
-    assert await db.get_calendar_entry_by_google_id("nonexistent", patient_id="erika") is None
+    assert await db.get_calendar_entry_by_google_id("nonexistent", patient_id=ERIKA_UUID) is None

@@ -12,6 +12,10 @@ from oncofiles.models import (
     TreatmentEvent,
 )
 
+# Deterministic UUIDs assigned by migration 035 — use in all tests
+ERIKA_UUID = "00000000-0000-4000-8000-000000000001"
+TEST_PATIENT_UUID = "00000000-0000-4000-8000-000000000002"
+
 
 def make_doc(**overrides) -> Document:
     defaults = {

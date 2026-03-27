@@ -34,7 +34,7 @@ async def gdrive_auth_url(ctx: Context) -> str:
     if not GOOGLE_OAUTH_CLIENT_ID:
         return json.dumps({"error": "GOOGLE_OAUTH_CLIENT_ID not configured"})
 
-    url = get_auth_url()
+    url = get_auth_url(patient_id=_get_patient_id())
     return json.dumps(
         {
             "auth_url": url,

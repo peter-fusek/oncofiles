@@ -85,7 +85,7 @@ def log_ai_call(
 
         patient_id = get_current_patient_id()
     except Exception:
-        patient_id = "erika"
+        patient_id = ""
 
     result_summary = _extract_result_summary(call_type, raw_response)
 

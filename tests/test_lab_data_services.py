@@ -8,7 +8,7 @@ from unittest.mock import MagicMock
 
 from oncofiles.database import Database
 from oncofiles.tools.lab_trends import compare_lab_panels, get_lab_summary, get_lab_time_series
-from tests.helpers import make_doc, make_lab_value
+from tests.helpers import ERIKA_UUID, make_doc, make_lab_value
 
 
 def _mock_ctx(db: Database) -> MagicMock:
@@ -20,9 +20,9 @@ def _mock_ctx(db: Database) -> MagicMock:
 async def _seed_lab_data(db: Database) -> int:
     """Insert a doc and multi-date lab values. Returns doc id."""
     doc = make_doc()
-    doc = await db.insert_document(doc, patient_id="erika")
+    doc = await db.insert_document(doc, patient_id=ERIKA_UUID)
     doc2 = make_doc(file_id="file_test456", filename="20260301_NOUonko_labs_bio.pdf")
-    doc2 = await db.insert_document(doc2, patient_id="erika")
+    doc2 = await db.insert_document(doc2, patient_id=ERIKA_UUID)
 
     values = [
         # Date 1: 2026-02-15
@@ -214,7 +214,7 @@ async def test_compare_panels_includes_available_dates(db: Database):
 async def test_compare_panels_one_date_only(db: Database):
     """When a parameter exists on only one date, status is 'only_one_date'."""
     doc = make_doc()
-    doc = await db.insert_document(doc, patient_id="erika")
+    doc = await db.insert_document(doc, patient_id=ERIKA_UUID)
     await db.insert_lab_values(
         [
             make_lab_value(

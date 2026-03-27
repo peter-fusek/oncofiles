@@ -71,7 +71,7 @@ async def gmail_auth_enable(ctx: Context) -> str:
         if SCOPE_GMAIL in granted:
             return json.dumps({"status": "already_enabled", "service": "gmail"})
 
-    auth_url = get_auth_url_for_scopes(GMAIL_SCOPES)
+    auth_url = get_auth_url_for_scopes(GMAIL_SCOPES, patient_id=_get_patient_id())
     return json.dumps(
         {
             "status": "authorization_required",
@@ -107,7 +107,7 @@ async def calendar_auth_enable(ctx: Context) -> str:
         if SCOPE_CALENDAR in granted:
             return json.dumps({"status": "already_enabled", "service": "calendar"})
 
-    auth_url = get_auth_url_for_scopes(CALENDAR_SCOPES)
+    auth_url = get_auth_url_for_scopes(CALENDAR_SCOPES, patient_id=_get_patient_id())
     return json.dumps(
         {
             "status": "authorization_required",

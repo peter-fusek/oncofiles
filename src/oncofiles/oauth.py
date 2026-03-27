@@ -58,7 +58,7 @@ def verify_state_token(state: str) -> tuple[bool, str]:
     Supports both new format ({patient_id}:{ts}.{sig}) and legacy ({ts}.{sig}).
     """
     if not state or "." not in state:
-        return False, "erika"
+        return False, ""
 
     # Split signature from the rest: everything after last "."
     dot_idx = state.rfind(".")
@@ -72,13 +72,13 @@ def verify_state_token(state: str) -> tuple[bool, str]:
         ts_str = prefix[colon_idx + 1 :]
     else:
         # Legacy format: {timestamp} only
-        patient_id = "erika"
+        patient_id = ""
         ts_str = prefix
 
     try:
         ts = int(ts_str)
     except ValueError:
-        return False, "erika"
+        return False, ""
     # Check expiry
     if time.time() - ts > _STATE_MAX_AGE:
         return False, patient_id
@@ -91,16 +91,16 @@ def verify_state_token(state: str) -> tuple[bool, str]:
     return hmac.compare_digest(sig, expected), patient_id
 
 
-def get_auth_url(state: str = "") -> str:
+def get_auth_url(state: str = "", patient_id: str = "") -> str:
     """Generate the Google OAuth 2.0 authorization URL for the user to visit.
 
     If no state is provided, an HMAC-signed state token is generated automatically
-    for CSRF protection.
+    for CSRF protection.  *patient_id* is embedded in the state token.
     """
     from urllib.parse import urlencode
 
     if not state:
-        state = _make_state_token(patient_id="erika")
+        state = _make_state_token(patient_id=patient_id)
 
     params = {
         "client_id": GOOGLE_OAUTH_CLIENT_ID,
@@ -114,15 +114,16 @@ def get_auth_url(state: str = "") -> str:
     return f"{AUTH_URL}?{urlencode(params)}"
 
 
-def get_auth_url_for_scopes(scopes: list[str], state: str = "") -> str:
+def get_auth_url_for_scopes(scopes: list[str], state: str = "", patient_id: str = "") -> str:
     """Generate auth URL requesting specific scopes with incremental consent.
 
     Uses include_granted_scopes=true so existing grants are preserved.
+    *patient_id* is embedded in the state token when no explicit state is given.
     """
     from urllib.parse import urlencode
 
     if not state:
-        state = _make_state_token(patient_id="erika")
+        state = _make_state_token(patient_id=patient_id)
 
     params = {
         "client_id": GOOGLE_OAUTH_CLIENT_ID,

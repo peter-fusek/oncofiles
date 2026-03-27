@@ -196,7 +196,7 @@ def _row_to_prompt_log(row: Any) -> PromptLogEntry:
         id=row["id"],
         call_type=PromptCallType(row["call_type"]),
         document_id=row["document_id"],
-        patient_id=row_dict.get("patient_id", "erika"),
+        patient_id=row_dict.get("patient_id", ""),
         model=row["model"],
         system_prompt=row["system_prompt"],
         user_prompt=row["user_prompt"],
