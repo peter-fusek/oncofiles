@@ -1491,12 +1491,22 @@
       for (var i = 1; i <= 4; i++) {
         document.getElementById('wiz-step-' + i).style.display = i === 2 ? 'block' : 'none';
       }
-      // Reset Step 2 to Phase A (authorize)
-      document.getElementById('wiz-step2-auth').style.display = 'block';
-      document.getElementById('wiz-step2-folder').style.display = 'none';
-      document.getElementById('wiz-step2-auth-done').style.display = 'none';
-      var statusEl = document.getElementById('wiz-step2-status');
-      if (statusEl) statusEl.style.display = 'none';
+      // Check if patient already has drive scope — skip to folder selection
+      var gs = window._lastStatus && window._lastStatus.google_services;
+      if (gs && gs.drive) {
+        document.getElementById('wiz-step2-auth').style.display = 'none';
+        document.getElementById('wiz-step2-folder').style.display = 'block';
+        document.getElementById('wiz-step2-auth-done').style.display = 'block';
+        var statusEl = document.getElementById('wiz-step2-status');
+        if (statusEl) statusEl.style.display = 'none';
+        wizardStep2LoadFolders();
+      } else {
+        document.getElementById('wiz-step2-auth').style.display = 'block';
+        document.getElementById('wiz-step2-folder').style.display = 'none';
+        document.getElementById('wiz-step2-auth-done').style.display = 'none';
+        var statusEl = document.getElementById('wiz-step2-status');
+        if (statusEl) statusEl.style.display = 'none';
+      }
       // Hide the token display (not relevant for existing patient)
       var tokenBox = document.querySelector('.wizard-token-box');
       if (tokenBox) tokenBox.style.display = 'none';
@@ -1938,6 +1948,7 @@
     // ── Renderers ────────────────────────────────────────────────────────
 
     function renderStatus(s) {
+      window._lastStatus = s;
       document.getElementById('version-label').textContent = 'v' + (s.version || '?');
 
       // Google service connection badges

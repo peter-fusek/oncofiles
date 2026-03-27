@@ -1870,6 +1870,14 @@ async def og_image_svg(request: Request) -> HTMLResponse:
     return HTMLResponse(_OG_IMAGE_SVG, media_type="image/svg+xml")
 
 
+@mcp.custom_route("/apple-touch-icon.png", methods=["GET"])
+async def apple_touch_icon(request: Request) -> HTMLResponse:
+    """Serve SVG favicon for Apple devices (modern iOS supports SVG)."""
+    from starlette.responses import RedirectResponse
+
+    return RedirectResponse("/favicon.svg", status_code=301)
+
+
 @mcp.custom_route("/favicon.ico", methods=["GET"])
 async def favicon_ico(request: Request) -> HTMLResponse:
     """Redirect favicon.ico to SVG (avoids 404 in browser tabs)."""
@@ -3497,6 +3505,8 @@ async def oauth_callback(request: Request) -> JSONResponse:
         refresh_token=tokens.get("refresh_token", ""),
         token_expiry=expiry,
         granted_scopes=json.dumps(merged_scopes),
+        gdrive_folder_id=existing_token.gdrive_folder_id if existing_token else "",
+        owner_email=existing_token.owner_email if existing_token else "",
     )
 
     await db.upsert_oauth_token(oauth_token)
