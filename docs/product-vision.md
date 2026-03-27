@@ -60,13 +60,13 @@ Google Drive (documents, images, OCR)
 - Per-patient GDrive folder isolation
 - Multi-patient Oncoteam agents
 
-> **Note**: User management, RBAC, consent management, and all UX/UI live in [oncoagents](https://github.com/instarea-sk/oncoagents) frontend — not in Oncofiles. Oncofiles stays a headless data/MCP layer.
+> **Note**: User management, RBAC, consent management, and all UX/UI are planned for a future frontend layer — not in Oncofiles. Oncofiles stays a headless data/MCP layer.
 
 ### Phase 3 — Product Layer (v5.x)
 - Integration with hospital information systems (HL7 FHIR)
 - Advanced document versioning and dedup
 
-> **Note**: Patient portal, WhatsApp notifications, clinician dashboard, and all user-facing features live in [oncoagents](https://github.com/instarea-sk/oncoagents) frontend.
+> **Note**: Patient portal, WhatsApp notifications, clinician dashboard, and all user-facing features are planned for a future frontend layer.
 
 ## Technical Stack
 

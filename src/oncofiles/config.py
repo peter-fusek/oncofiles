@@ -26,7 +26,7 @@ GOOGLE_APPLICATION_CREDENTIALS: str = os.environ.get("GOOGLE_APPLICATION_CREDENT
 GOOGLE_OAUTH_CLIENT_ID: str = os.environ.get("GOOGLE_OAUTH_CLIENT_ID", "")
 GOOGLE_OAUTH_CLIENT_SECRET: str = os.environ.get("GOOGLE_OAUTH_CLIENT_SECRET", "")
 GOOGLE_OAUTH_REDIRECT_URI: str = os.environ.get(
-    "GOOGLE_OAUTH_REDIRECT_URI", "https://aware-kindness-production.up.railway.app/oauth/callback"
+    "GOOGLE_OAUTH_REDIRECT_URI", "https://oncofiles.com/oauth/callback"
 )
 
 # Turso (v0.4)

@@ -1628,7 +1628,7 @@ def _load_landing_html() -> str:
         from pathlib import Path
 
         html_path = Path(__file__).parent / "landing.html"
-        _LANDING_HTML = html_path.read_text()
+        _LANDING_HTML = html_path.read_text().replace("{{VERSION}}", VERSION)
     return _LANDING_HTML
 
 
