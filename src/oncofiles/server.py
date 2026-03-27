@@ -495,11 +495,11 @@ def _start_sync_scheduler(
                     reclaim_memory(f"gdrive_sync:{pid}")
 
         # Graceful restart check after all patients processed
-        from oncofiles.memory import RESTART_THRESHOLD_MB
+        from oncofiles.memory import MEMORY_RESTART_THRESHOLD_MB
         from oncofiles.memory import reclaim_memory as _reclaim
 
         rss = _reclaim("gdrive_sync_all")
-        if rss > RESTART_THRESHOLD_MB and _sync_semaphore._value >= 1:
+        if rss > MEMORY_RESTART_THRESHOLD_MB:
             logger.warning(
                 "Graceful restart: RSS %.1f MB after sync — exiting for Railway restart",
                 rss,
@@ -663,7 +663,7 @@ def _start_sync_scheduler(
             logger.exception("Prompt log cleanup failed")
 
     async def _log_rss():
-        from oncofiles.memory import RESTART_THRESHOLD_MB, reclaim_memory
+        from oncofiles.memory import MEMORY_RESTART_THRESHOLD_MB, reclaim_memory
 
         rss_mb = get_rss_mb()
         logger.info(
@@ -672,14 +672,14 @@ def _start_sync_scheduler(
             _sync_semaphore._value,
         )
         # If RSS is elevated, try to reclaim first
-        if rss_mb > RESTART_THRESHOLD_MB:
+        if rss_mb > MEMORY_RESTART_THRESHOLD_MB:
             rss_mb = reclaim_memory("periodic_rss_check")
-        # If RSS is still high after reclaim and no syncs are running, restart
-        if rss_mb > RESTART_THRESHOLD_MB and _sync_semaphore._value == 2:
+        # If RSS is still high after reclaim, restart (#213: removed semaphore condition)
+        if rss_mb > MEMORY_RESTART_THRESHOLD_MB:
             logger.warning(
                 "Graceful restart: RSS %.1f MB > %d MB after reclaim — exiting",
                 rss_mb,
-                RESTART_THRESHOLD_MB,
+                MEMORY_RESTART_THRESHOLD_MB,
             )
             sys.exit(0)
 
@@ -718,7 +718,7 @@ def _start_sync_scheduler(
     )
     scheduler.add_job(
         _log_rss,
-        CronTrigger(hour="*/6", minute=15),  # every 6 hours at :15
+        CronTrigger(hour="*", minute=15),  # every hour at :15 (#213: was */6)
         id="rss_monitor",
         max_instances=1,
     )

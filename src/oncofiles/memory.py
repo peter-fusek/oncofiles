@@ -137,8 +137,7 @@ def reclaim_memory(label: str) -> float:
     return rss
 
 
-# RSS threshold for graceful self-restart (below OOM but above normal)
-RESTART_THRESHOLD_MB = 400
+# RESTART_THRESHOLD_MB removed — use MEMORY_RESTART_THRESHOLD_MB everywhere (see OF-2)
 
 
 def is_memory_pressure(label: str) -> bool:
@@ -243,15 +242,16 @@ def check_memory_restart() -> bool:
 def periodic_memory_check() -> None:
     """Periodic memory maintenance. Called every 5 minutes by scheduler.
 
-    1. If RSS > 300MB: run gc.collect + malloc_trim
-    2. Update peak RSS
-    3. Check if graceful restart needed
+    1. Update peak RSS
+    2. Check if graceful restart needed (BEFORE reclaim — uses pre-reclaim RSS)
+    3. If RSS > 300MB: run gc.collect + malloc_trim
     """
     rss = update_peak_rss()
-    if rss > 300:
-        reclaim_memory("periodic_check")
-        rss = update_peak_rss()  # re-check after reclaim
 
+    # Check restart FIRST, before reclaim drops RSS below threshold (#213 bug 1)
     if check_memory_restart():
         logger.critical("Initiating graceful restart — exiting with code 0")
         sys.exit(0)
+
+    if rss > 300:
+        reclaim_memory("periodic_check")
