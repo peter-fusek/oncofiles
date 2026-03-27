@@ -400,6 +400,7 @@ class PromptLogEntry(BaseModel):
     id: int | None = None
     call_type: PromptCallType
     document_id: int | None = None
+    patient_id: str = "erika"
     model: str
     system_prompt: str = ""
     user_prompt: str = ""

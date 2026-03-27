@@ -69,13 +69,18 @@ def _percentile(values: list[float], p: float) -> float:
 class AnalyticsMixin:
     """Usage analytics aggregation methods."""
 
-    async def get_prompt_stats(self, days: int = 30) -> PromptStats:
-        """Aggregate prompt log stats for the last N days."""
+    async def get_prompt_stats(
+        self, days: int = 30, *, patient_id: str | None = None
+    ) -> PromptStats:
+        """Aggregate prompt log stats for the last N days, optionally per patient."""
         stats = PromptStats()
+
+        pid_filter = "AND patient_id = ?" if patient_id else ""
+        params: tuple = (f"-{days} days", patient_id) if patient_id else (f"-{days} days",)
 
         # By call type
         async with self.db.execute(
-            """
+            f"""
             SELECT call_type,
                    COUNT(*) as cnt,
                    COALESCE(SUM(input_tokens), 0) as in_tok,
@@ -84,10 +89,11 @@ class AnalyticsMixin:
                    SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) as errs
             FROM prompt_log
             WHERE created_at >= strftime('%Y-%m-%dT%H:%M:%SZ', 'now', ?)
+            {pid_filter}
             GROUP BY call_type
             ORDER BY cnt DESC
             """,
-            (f"-{days} days",),
+            params,
         ) as cursor:
             rows = await cursor.fetchall()
 
@@ -117,14 +123,15 @@ class AnalyticsMixin:
 
         # Calls per day (last N days)
         async with self.db.execute(
-            """
+            f"""
             SELECT DATE(created_at) as day, COUNT(*) as cnt
             FROM prompt_log
             WHERE created_at >= strftime('%Y-%m-%dT%H:%M:%SZ', 'now', ?)
+            {pid_filter}
             GROUP BY day
             ORDER BY day
             """,
-            (f"-{days} days",),
+            params,
         ) as cursor:
             rows = await cursor.fetchall()
         stats.calls_per_day = [{"date": r["day"], "count": r["cnt"]} for r in rows]
@@ -236,17 +243,23 @@ class AnalyticsMixin:
 
         return stats
 
-    async def get_prompt_latency_percentiles(self, days: int = 30) -> dict:
+    async def get_prompt_latency_percentiles(
+        self, days: int = 30, *, patient_id: str | None = None
+    ) -> dict:
         """Calculate latency percentiles (p50, p95, p99) from prompt log."""
+        pid_filter = "AND patient_id = ?" if patient_id else ""
+        params: tuple = (f"-{days} days", patient_id) if patient_id else (f"-{days} days",)
+
         async with self.db.execute(
-            """
+            f"""
             SELECT call_type, duration_ms
             FROM prompt_log
             WHERE created_at >= strftime('%Y-%m-%dT%H:%M:%SZ', 'now', ?)
               AND duration_ms IS NOT NULL
+            {pid_filter}
             ORDER BY call_type, duration_ms
             """,
-            (f"-{days} days",),
+            params,
         ) as cursor:
             rows = await cursor.fetchall()
 

@@ -14,14 +14,15 @@ class PromptLogMixin:
         cursor = await self.db.execute(
             """
             INSERT INTO prompt_log
-                (call_type, document_id, model, system_prompt, user_prompt,
+                (call_type, document_id, patient_id, model, system_prompt, user_prompt,
                  raw_response, input_tokens, output_tokens, duration_ms,
                  result_summary, status, error_message)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 entry.call_type.value if hasattr(entry.call_type, "value") else entry.call_type,
                 entry.document_id,
+                entry.patient_id,
                 entry.model,
                 entry.system_prompt,
                 entry.user_prompt,
@@ -44,10 +45,16 @@ class PromptLogMixin:
             row = await cursor.fetchone()
             return _row_to_prompt_log(row) if row else None
 
-    async def search_prompt_log(self, query: PromptLogQuery) -> list[PromptLogEntry]:
-        """Search prompt logs with filters."""
+    async def search_prompt_log(
+        self, query: PromptLogQuery, *, patient_id: str | None = None
+    ) -> list[PromptLogEntry]:
+        """Search prompt logs with filters, optionally scoped to a patient."""
         conditions: list[str] = []
         params: list = []
+
+        if patient_id:
+            conditions.append("patient_id = ?")
+            params.append(patient_id)
 
         if query.call_type:
             conditions.append("call_type = ?")
@@ -82,10 +89,13 @@ class PromptLogMixin:
             rows = await cursor.fetchall()
             return [_row_to_prompt_log(r) for r in rows]
 
-    async def get_prompt_log_stats(self) -> dict:
-        """Get aggregate stats by call_type: counts, token totals, avg duration."""
+    async def get_prompt_log_stats(self, *, patient_id: str | None = None) -> dict:
+        """Get aggregate stats by call_type, optionally scoped to a patient."""
+        where = "WHERE patient_id = ?" if patient_id else ""
+        params = [patient_id] if patient_id else []
+
         async with self.db.execute(
-            """
+            f"""
             SELECT call_type,
                    COUNT(*) as count,
                    SUM(input_tokens) as total_input_tokens,
@@ -93,9 +103,11 @@ class PromptLogMixin:
                    ROUND(AVG(duration_ms)) as avg_duration_ms,
                    SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) as errors
             FROM prompt_log
+            {where}
             GROUP BY call_type
             ORDER BY call_type
-            """
+            """,
+            params,
         ) as cursor:
             rows = await cursor.fetchall()
             stats = {}

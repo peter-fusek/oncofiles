@@ -35,7 +35,7 @@ def _hash_token(token: str) -> str:
 class PatientsMixin:
     """Database mixin for patient management and token resolution."""
 
-    async def get_patient(self, patient_id: str) -> Patient | None:
+    async def get_patient(self, patient_id: str = "erika") -> Patient | None:
         """Get a patient by ID."""
         async with self.db.execute(
             "SELECT * FROM patients WHERE patient_id = ?", (patient_id,)
@@ -73,7 +73,7 @@ class PatientsMixin:
 
     async def update_patient(
         self,
-        patient_id: str,
+        patient_id: str = "erika",
         *,
         display_name: str | None = None,
         caregiver_email: str | None = None,
@@ -125,7 +125,7 @@ class PatientsMixin:
             row = await cursor.fetchone()
             return row["patient_id"] if row else None
 
-    async def create_patient_token(self, patient_id: str, label: str = "") -> str:
+    async def create_patient_token(self, patient_id: str = "erika", label: str = "") -> str:
         """Generate a new bearer token for a patient.
 
         Returns the plaintext token (shown once to the caller).
@@ -157,7 +157,7 @@ class PatientsMixin:
             await self.db.commit()
             return cursor.rowcount > 0
 
-    async def list_patient_tokens(self, patient_id: str) -> list[dict]:
+    async def list_patient_tokens(self, patient_id: str = "erika") -> list[dict]:
         """List active tokens for a patient (hashes only, never plaintext)."""
         async with self.db.execute(
             """SELECT id, token_hash, label, created_at

@@ -79,11 +79,20 @@ def log_ai_call(
     if db is None:
         return
 
+    # Capture patient_id from context (set by PatientResolutionMiddleware)
+    try:
+        from oncofiles.patient_middleware import get_current_patient_id
+
+        patient_id = get_current_patient_id()
+    except Exception:
+        patient_id = "erika"
+
     result_summary = _extract_result_summary(call_type, raw_response)
 
     entry = PromptLogEntry(
         call_type=call_type,
         document_id=document_id,
+        patient_id=patient_id,
         model=model,
         system_prompt=system_prompt,
         user_prompt=user_prompt,

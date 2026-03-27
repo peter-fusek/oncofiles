@@ -191,10 +191,12 @@ def _row_to_document(row: Any) -> Document:
 
 def _row_to_prompt_log(row: Any) -> PromptLogEntry:
     """Convert a database row to a PromptLogEntry."""
+    row_dict = dict(row)
     return PromptLogEntry(
         id=row["id"],
         call_type=PromptCallType(row["call_type"]),
         document_id=row["document_id"],
+        patient_id=row_dict.get("patient_id", "erika"),
         model=row["model"],
         system_prompt=row["system_prompt"],
         user_prompt=row["user_prompt"],

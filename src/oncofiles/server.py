@@ -2785,8 +2785,9 @@ async def api_prompt_log(request: Request) -> JSONResponse:
         except (ValueError, TypeError):
             query.limit = 100
 
-        entries = await db_inst.search_prompt_log(query)
-        stats = await db_inst.get_prompt_log_stats()
+        pid = _get_dashboard_patient_id(request)
+        entries = await db_inst.search_prompt_log(query, patient_id=pid)
+        stats = await db_inst.get_prompt_log_stats(patient_id=pid)
 
         items = [
             {
@@ -2821,12 +2822,13 @@ async def api_usage_analytics(request: Request) -> JSONResponse:
     try:
         db_inst: Database = request.app.state.fastmcp_server._lifespan_result["db"]
         days = min(int(request.query_params.get("days", "30")), 90)
+        pid = _get_dashboard_patient_id(request)
 
         # Sequential — Turso single-connection can't handle concurrent queries
-        prompt_stats = await db_inst.get_prompt_stats(days=days)
+        prompt_stats = await db_inst.get_prompt_stats(days=days, patient_id=pid)
         tool_stats = await db_inst.get_tool_usage_stats(days=days)
         pipeline_stats = await db_inst.get_pipeline_stats()
-        latency = await db_inst.get_prompt_latency_percentiles(days=days)
+        latency = await db_inst.get_prompt_latency_percentiles(days=days, patient_id=pid)
 
         from dataclasses import asdict
 
