@@ -205,7 +205,7 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict]:
     owner_email = ""
     token = None
     try:
-        token = await db.get_oauth_token()
+        token = await db.get_oauth_token(patient_id="erika")
         if token:
             oauth_folder_id = token.gdrive_folder_id or ""
             owner_email = token.owner_email or ""
@@ -475,7 +475,8 @@ def _start_sync_scheduler(
                     )
                     logger.info("Sync [%s]: %s (RSS: %.1f MB)", pid, stats, get_rss_mb())
                     # Auto-enhance new docs after sync
-                    if stats.get("new", 0) > 0 or stats.get("updated", 0) > 0:
+                    from_stats = stats.get("from_gdrive", {})
+                    if from_stats.get("new", 0) > 0 or from_stats.get("updated", 0) > 0:
                         try:
                             e_stats = await asyncio.wait_for(
                                 extract_all_metadata(db, files, p_gdrive, patient_id=pid),

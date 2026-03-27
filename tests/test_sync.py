@@ -463,7 +463,7 @@ async def test_rename_returns_renamed_ids(db: Database):
     await db.insert_document(doc, patient_id="erika")
 
     gdrive = _mock_gdrive()
-    stats = await _rename_to_standard(db, gdrive)
+    stats = await _rename_to_standard(db, gdrive, patient_id="erika")
 
     assert stats["renamed"] == 1
     assert doc.id in stats["renamed_ids"]

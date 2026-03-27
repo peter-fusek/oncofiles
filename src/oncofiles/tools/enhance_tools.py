@@ -11,6 +11,7 @@ from oncofiles.tools._helpers import (
     _get_db,
     _get_files,
     _get_gdrive,
+    _get_patient_id,
     _try_download,
 )
 
@@ -36,7 +37,8 @@ async def enhance_documents(
         [int(d.strip()) for d in document_ids.split(",") if d.strip()] if document_ids else None
     )
 
-    stats = await _enhance_documents(db, files, gdrive, document_ids=parsed_ids)
+    pid = _get_patient_id()
+    stats = await _enhance_documents(db, files, gdrive, document_ids=parsed_ids, patient_id=pid)
     return json.dumps(stats)
 
 

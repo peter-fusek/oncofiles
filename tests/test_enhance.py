@@ -88,7 +88,7 @@ async def test_enhance_documents_all_unprocessed(db: Database):
         "oncofiles.sync.enhance_document_text",
         return_value=("AI summary", '["labs"]'),
     ):
-        stats = await enhance_documents(db, files, None)
+        stats = await enhance_documents(db, files, None, patient_id="erika")
 
     assert stats["processed"] == 1
     assert stats["errors"] == 0
@@ -117,7 +117,7 @@ async def test_enhance_documents_specific_ids(db: Database):
         "oncofiles.sync.enhance_document_text",
         return_value=("summary", '["tag"]'),
     ):
-        stats = await enhance_documents(db, files, None, document_ids=[doc1.id])
+        stats = await enhance_documents(db, files, None, document_ids=[doc1.id], patient_id="erika")
 
     assert stats["processed"] == 1
 
@@ -136,7 +136,7 @@ async def test_enhance_skips_no_text(db: Database):
     files = MagicMock()
     files.download.side_effect = Exception("not downloadable")
 
-    stats = await enhance_documents(db, files, None, document_ids=[doc.id])
+    stats = await enhance_documents(db, files, None, document_ids=[doc.id], patient_id="erika")
 
     # Should skip gracefully (no text available)
     assert stats["processed"] == 0
@@ -213,7 +213,7 @@ async def test_enhance_text_document(db: Database):
         "oncofiles.sync.enhance_document_text",
         return_value=("DeVita Ch 40 summary", '["mCRC", "DeVita"]'),
     ):
-        stats = await enhance_documents(db, files, None, document_ids=[doc.id])
+        stats = await enhance_documents(db, files, None, document_ids=[doc.id], patient_id="erika")
 
     assert stats["processed"] == 1
 
@@ -287,7 +287,7 @@ async def test_enhance_backfills_null_date_and_institution(db: Database):
         patch("oncofiles.sync.extract_structured_metadata", return_value=metadata),
         patch("oncofiles.sync.generate_filename_description", return_value="GeneticsKrasResults"),
     ):
-        stats = await enhance_documents(db, files, None, document_ids=[doc.id])
+        stats = await enhance_documents(db, files, None, document_ids=[doc.id], patient_id="erika")
 
     assert stats["processed"] == 1
 
@@ -330,7 +330,7 @@ async def test_enhance_does_not_overwrite_existing_fields(db: Database):
         patch("oncofiles.sync.enhance_document_text", return_value=("summary", '["labs"]')),
         patch("oncofiles.sync.extract_structured_metadata", return_value=metadata),
     ):
-        await enhance_documents(db, files, None, document_ids=[doc.id])
+        await enhance_documents(db, files, None, document_ids=[doc.id], patient_id="erika")
 
     updated = await db.get_document(doc.id)
     # Original values preserved — NOT overwritten by metadata

@@ -76,6 +76,13 @@ def _should_sync(filename: str) -> bool:
     return ext in SUPPORTED_EXTENSIONS
 
 
+async def _get_doc_patient_id(db: Database, doc_id: int) -> str | None:
+    """Get the patient_id for a document by its local ID."""
+    async with db.db.execute("SELECT patient_id FROM documents WHERE id = ?", (doc_id,)) as cursor:
+        row = await cursor.fetchone()
+        return row["patient_id"] if row else None
+
+
 # ── GDrive → Oncofiles import ──────────────────────────────────────────────
 
 
@@ -178,7 +185,12 @@ async def sync_from_gdrive(
             existing = None
             oncofiles_id = app_props.get("oncofiles_id")
             if oncofiles_id:
-                existing = await db.get_document(int(oncofiles_id))
+                candidate = await db.get_document(int(oncofiles_id))
+                # Only trust appProperties match if doc belongs to this patient
+                if candidate:
+                    doc_pid = await _get_doc_patient_id(db, candidate.id)
+                    if doc_pid == patient_id:
+                        existing = candidate
             if not existing:
                 existing = await db.get_document_by_gdrive_id(gdrive_id, patient_id=patient_id)
 
@@ -516,7 +528,7 @@ async def sync_to_gdrive(
     if full:
         # Rename files to standard format (underscore-separated, EN description)
         try:
-            rename_stats = await _rename_to_standard(db, gdrive)
+            rename_stats = await _rename_to_standard(db, gdrive, patient_id=patient_id)
             stats["renamed"] = rename_stats["renamed"]
         except Exception as e:
             logger.warning("sync_to_gdrive: standard rename failed — %s", str(e)[:200])
@@ -584,7 +596,7 @@ async def sync_to_gdrive(
 
         # Clean up orphaned OCR files (old names from before bilingual rename)
         try:
-            cleanup_stats = await _cleanup_orphan_ocr(db, gdrive)
+            cleanup_stats = await _cleanup_orphan_ocr(db, gdrive, patient_id=patient_id)
             stats["ocr_cleaned"] = cleanup_stats["deleted"]
         except Exception as e:
             logger.warning("sync_to_gdrive: OCR cleanup failed — %s", str(e)[:200])
@@ -776,7 +788,7 @@ async def _assert_doc_pipeline_complete(
     return gaps
 
 
-async def _rename_to_standard(db: Database, gdrive: GDriveClient) -> dict:
+async def _rename_to_standard(db: Database, gdrive: GDriveClient, *, patient_id: str) -> dict:
     """Rename GDrive files to standard format (underscore-separated, EN description).
 
     For each document: checks if filename is already in standard format.
@@ -786,7 +798,7 @@ async def _rename_to_standard(db: Database, gdrive: GDriveClient) -> dict:
     Returns: {renamed, skipped, errors, renamed_ids}.
     """
     stats: dict = {"renamed": 0, "skipped": 0, "errors": 0, "renamed_ids": []}
-    docs = await db.list_documents(limit=500, patient_id="erika")
+    docs = await db.list_documents(limit=500, patient_id=patient_id)
     pending_renames: list[tuple] = []
 
     for doc in docs:
@@ -911,7 +923,7 @@ async def _rename_to_standard(db: Database, gdrive: GDriveClient) -> dict:
     return stats
 
 
-async def _cleanup_orphan_ocr(db: Database, gdrive: GDriveClient) -> dict:
+async def _cleanup_orphan_ocr(db: Database, gdrive: GDriveClient, *, patient_id: str) -> dict:
     """Delete orphaned OCR files whose names don't match any current document.
 
     After bilingual rename, old OCR files (pre-rename names) remain as duplicates.
@@ -923,7 +935,7 @@ async def _cleanup_orphan_ocr(db: Database, gdrive: GDriveClient) -> dict:
     stats = {"deleted": 0, "skipped": 0, "errors": 0}
 
     # Build set of expected OCR filenames from current documents
-    docs = await db.list_documents(limit=500, patient_id="erika")
+    docs = await db.list_documents(limit=500, patient_id=patient_id)
     expected_ocr_names: set[str] = set()
     doc_gdrive_ids: set[str] = set()
 
@@ -995,7 +1007,7 @@ async def _export_metadata(
         langs.append(preferred_lang())
 
     # 1. Export _manifest.json to root
-    manifest = await export_manifest(db)
+    manifest = await export_manifest(db, patient_id=patient_id)
     manifest_json = render_manifest_json(manifest)
     await asyncio.to_thread(
         _upload_or_update_text,
@@ -1266,6 +1278,8 @@ async def enhance_documents(
     files: FilesClient,
     gdrive: GDriveClient | None = None,
     document_ids: list[int] | None = None,
+    *,
+    patient_id: str,
 ) -> dict:
     """Run AI enhancement on documents.
 
@@ -1279,7 +1293,7 @@ async def enhance_documents(
             if doc:
                 docs.append(doc)
     else:
-        docs = await db.get_documents_without_ai(patient_id="erika")
+        docs = await db.get_documents_without_ai(patient_id=patient_id)
 
     logger.info("enhance_documents: %d documents to process", len(docs))
     stats = {"processed": 0, "skipped": 0, "errors": 0}
