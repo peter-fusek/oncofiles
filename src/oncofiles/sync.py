@@ -87,7 +87,7 @@ async def sync_from_gdrive(
     *,
     dry_run: bool = False,
     enhance: bool = True,
-    patient_id: str = "erika",
+    patient_id: str,
 ) -> dict:
     """Import new/changed files from GDrive into oncofiles.
 
@@ -379,7 +379,7 @@ async def sync_to_gdrive(
     *,
     dry_run: bool = False,
     full: bool = True,
-    patient_id: str = "erika",
+    patient_id: str,
 ) -> dict:
     """Export documents from oncofiles to GDrive with folder structure.
 
@@ -786,7 +786,7 @@ async def _rename_to_standard(db: Database, gdrive: GDriveClient) -> dict:
     Returns: {renamed, skipped, errors, renamed_ids}.
     """
     stats: dict = {"renamed": 0, "skipped": 0, "errors": 0, "renamed_ids": []}
-    docs = await db.list_documents(limit=500)
+    docs = await db.list_documents(limit=500, patient_id="erika")
     pending_renames: list[tuple] = []
 
     for doc in docs:
@@ -923,7 +923,7 @@ async def _cleanup_orphan_ocr(db: Database, gdrive: GDriveClient) -> dict:
     stats = {"deleted": 0, "skipped": 0, "errors": 0}
 
     # Build set of expected OCR filenames from current documents
-    docs = await db.list_documents(limit=500)
+    docs = await db.list_documents(limit=500, patient_id="erika")
     expected_ocr_names: set[str] = set()
     doc_gdrive_ids: set[str] = set()
 
@@ -981,7 +981,7 @@ async def _export_metadata(
     root_folder_id: str,
     folder_map: dict[str, str],
     *,
-    patient_id: str = "erika",
+    patient_id: str,
 ) -> None:
     """Export manifest.json and metadata markdown files to GDrive.
 
@@ -1095,7 +1095,7 @@ async def sync(
     dry_run: bool = False,
     enhance: bool = True,
     trigger: str = "manual",
-    patient_id: str = "erika",
+    patient_id: str,
 ) -> dict:
     """Run full bidirectional sync.
 
@@ -1149,7 +1149,7 @@ async def _sync_inner(
     dry_run: bool = False,
     enhance: bool = True,
     trigger: str = "manual",
-    patient_id: str = "erika",
+    patient_id: str,
 ) -> dict:
     """Inner sync logic (called under lock)."""
     global _last_sync_result, _last_sync_error, _last_sync_time  # noqa: PLW0603
@@ -1279,7 +1279,7 @@ async def enhance_documents(
             if doc:
                 docs.append(doc)
     else:
-        docs = await db.get_documents_without_ai()
+        docs = await db.get_documents_without_ai(patient_id="erika")
 
     logger.info("enhance_documents: %d documents to process", len(docs))
     stats = {"processed": 0, "skipped": 0, "errors": 0}
@@ -1309,7 +1309,9 @@ async def enhance_documents(
     return stats
 
 
-async def _generate_cross_references(db: Database, doc: Document, metadata: dict) -> int:
+async def _generate_cross_references(
+    db: Database, doc: Document, metadata: dict, *, patient_id: str
+) -> int:
     """Generate cross-references between a document and related documents.
 
     Uses heuristic matching:
@@ -1329,7 +1331,8 @@ async def _generate_cross_references(db: Database, doc: Document, metadata: dict
                 date_from=doc.document_date,
                 date_to=doc.document_date,
                 limit=20,
-            )
+            ),
+            patient_id=patient_id,
         )
         for c in candidates:
             if c.id != doc.id and c.deleted_at is None:
@@ -1342,7 +1345,8 @@ async def _generate_cross_references(db: Database, doc: Document, metadata: dict
         date_from = doc.document_date - timedelta(days=3)
         date_to = doc.document_date + timedelta(days=3)
         nearby = await db.search_documents(
-            SearchQuery(date_from=date_from, date_to=date_to, limit=20)
+            SearchQuery(date_from=date_from, date_to=date_to, limit=20),
+            patient_id=patient_id,
         )
         for c in nearby:
             if c.id != doc.id and c.deleted_at is None and c.document_date != doc.document_date:
@@ -1358,7 +1362,7 @@ async def extract_all_metadata(
     files: FilesClient,
     gdrive: GDriveClient | None = None,
     *,
-    patient_id: str = "erika",
+    patient_id: str,
 ) -> dict:
     """Backfill structured_metadata for documents that have AI summaries but no metadata.
 
@@ -1431,7 +1435,7 @@ async def extract_all_metadata(
             stats["processed"] += 1
 
             # Generate cross-references based on heuristic matching
-            await _generate_cross_references(db, doc, metadata)
+            await _generate_cross_references(db, doc, metadata, patient_id=patient_id)
 
             # Free memory between documents
             del full_text, text_parts

@@ -14,7 +14,7 @@ class ConversationMixin:
     """Conversation entry database operations."""
 
     async def insert_conversation_entry(
-        self, entry: ConversationEntry, *, patient_id: str = "erika"
+        self, entry: ConversationEntry, *, patient_id: str
     ) -> ConversationEntry:
         """Insert a conversation entry and return it with the generated ID."""
         cursor = await self.db.execute(
@@ -53,7 +53,7 @@ class ConversationMixin:
             return _row_to_conversation_entry(row) if row else None
 
     async def search_conversation_entries(
-        self, query: ConversationQuery, *, max_content_length: int = 510, patient_id: str = "erika"
+        self, query: ConversationQuery, *, max_content_length: int = 510, patient_id: str
     ) -> list[ConversationEntry]:
         """Search conversation entries using FTS5 and/or filters.
 
@@ -124,7 +124,7 @@ class ConversationMixin:
         date_to: date | None = None,
         limit: int = 100,
         *,
-        patient_id: str = "erika",
+        patient_id: str,
     ) -> list[ConversationEntry]:
         """Get conversation entries in chronological (ASC) order."""
         conditions: list[str] = ["patient_id = ?"]
@@ -155,7 +155,7 @@ class ConversationMixin:
         return cursor.rowcount > 0
 
     async def get_entry_by_source_ref(
-        self, source_ref: str, *, patient_id: str = "erika"
+        self, source_ref: str, *, patient_id: str
     ) -> ConversationEntry | None:
         """Get a conversation entry by source_ref (for idempotent imports)."""
         async with self.db.execute(

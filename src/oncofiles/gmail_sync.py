@@ -284,7 +284,7 @@ async def gmail_sync(
     gmail: GmailClient,
     initial: bool = False,
     *,
-    patient_id: str = "erika",
+    patient_id: str,
 ) -> dict:
     """Sync medical emails from Gmail.
 
@@ -317,7 +317,7 @@ async def _gmail_sync_inner(
     gmail: GmailClient,
     initial: bool,
     *,
-    patient_id: str = "erika",
+    patient_id: str,
 ) -> dict:
     """Inner sync logic."""
     stats: dict = {

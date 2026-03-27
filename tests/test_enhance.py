@@ -78,7 +78,7 @@ def test_enhance_missing_keys():
 async def test_enhance_documents_all_unprocessed(db: Database):
     """Enhances all documents without AI metadata."""
     doc = make_doc()
-    doc = await db.insert_document(doc)
+    doc = await db.insert_document(doc, patient_id="erika")
 
     # Seed OCR text so enhancement has something to work with
     await db.save_ocr_page(doc.id, 1, "CEA: 15.2 ng/mL", "pymupdf-native")
@@ -102,9 +102,10 @@ async def test_enhance_documents_all_unprocessed(db: Database):
 
 async def test_enhance_documents_specific_ids(db: Database):
     """Enhances only specified document IDs."""
-    doc1 = await db.insert_document(make_doc(file_id="f1"))
+    doc1 = await db.insert_document(make_doc(file_id="f1"), patient_id="erika")
     doc2 = await db.insert_document(
-        make_doc(file_id="f2", filename="other.pdf", original_filename="other.pdf")
+        make_doc(file_id="f2", filename="other.pdf", original_filename="other.pdf"),
+        patient_id="erika",
     )
 
     # Seed OCR text for both
@@ -130,7 +131,7 @@ async def test_enhance_documents_specific_ids(db: Database):
 async def test_enhance_skips_no_text(db: Database):
     """Documents with no OCR text are skipped (not errors)."""
     doc = make_doc()
-    doc = await db.insert_document(doc)
+    doc = await db.insert_document(doc, patient_id="erika")
 
     files = MagicMock()
     files.download.side_effect = Exception("not downloadable")
@@ -149,7 +150,7 @@ async def test_enhance_skips_no_text(db: Database):
 async def test_update_document_ai_metadata(db: Database):
     """AI metadata is stored and retrievable."""
     doc = make_doc()
-    doc = await db.insert_document(doc)
+    doc = await db.insert_document(doc, patient_id="erika")
 
     await db.update_document_ai_metadata(doc.id, "Test summary", '["test"]')
 
@@ -161,15 +162,16 @@ async def test_update_document_ai_metadata(db: Database):
 
 async def test_get_documents_without_ai(db: Database):
     """Only returns documents without AI processing."""
-    doc1 = await db.insert_document(make_doc(file_id="f1"))
+    doc1 = await db.insert_document(make_doc(file_id="f1"), patient_id="erika")
     doc2 = await db.insert_document(
-        make_doc(file_id="f2", filename="other.pdf", original_filename="other.pdf")
+        make_doc(file_id="f2", filename="other.pdf", original_filename="other.pdf"),
+        patient_id="erika",
     )
 
     # Process doc1 only
     await db.update_document_ai_metadata(doc1.id, "summary", "[]")
 
-    unprocessed = await db.get_documents_without_ai()
+    unprocessed = await db.get_documents_without_ai(patient_id="erika")
     assert len(unprocessed) == 1
     assert unprocessed[0].id == doc2.id
 
@@ -178,16 +180,16 @@ async def test_search_documents_includes_ai_fields(db: Database):
     """Search finds documents by AI summary and tags content."""
     from oncofiles.models import SearchQuery
 
-    doc = await db.insert_document(make_doc())
+    doc = await db.insert_document(make_doc(), patient_id="erika")
     await db.update_document_ai_metadata(doc.id, "Elevated CEA tumor marker", '["tumor-marker"]')
 
     # Search by AI summary content
-    results = await db.search_documents(SearchQuery(text="tumor marker"))
+    results = await db.search_documents(SearchQuery(text="tumor marker"), patient_id="erika")
     assert len(results) == 1
     assert results[0].id == doc.id
 
     # Search by AI tag content
-    results = await db.search_documents(SearchQuery(text="tumor-marker"))
+    results = await db.search_documents(SearchQuery(text="tumor-marker"), patient_id="erika")
     assert len(results) == 1
 
 
@@ -202,7 +204,7 @@ async def test_enhance_text_document(db: Database):
         original_filename="chapter_40_full.md",
         mime_type="text/markdown",
     )
-    doc = await db.insert_document(doc)
+    doc = await db.insert_document(doc, patient_id="erika")
 
     files = MagicMock()
     files.download.return_value = b"# Chapter 40\n\nColon cancer treatment overview."
@@ -263,7 +265,7 @@ async def test_enhance_backfills_null_date_and_institution(db: Database):
         institution=None,
         description="Dodatok histológia p. Fuseková",
     )
-    doc = await db.insert_document(doc)
+    doc = await db.insert_document(doc, patient_id="erika")
 
     # Seed OCR text
     await db.save_ocr_page(doc.id, 1, "Pathology report from Nemocnica Bory", "pymupdf-native")
@@ -308,7 +310,7 @@ async def test_enhance_does_not_overwrite_existing_fields(db: Database):
         institution="NOU",
         description="BloodResults",
     )
-    doc = await db.insert_document(doc)
+    doc = await db.insert_document(doc, patient_id="erika")
 
     await db.save_ocr_page(doc.id, 1, "Lab results from NOU", "pymupdf-native")
 
@@ -350,7 +352,7 @@ async def test_backfill_document_fields_coalesce(db: Database):
         institution="NOU",  # Already set
         description=None,
     )
-    doc = await db.insert_document(doc)
+    doc = await db.insert_document(doc, patient_id="erika")
 
     await db.backfill_document_fields(
         doc.id,

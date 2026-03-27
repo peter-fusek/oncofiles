@@ -45,7 +45,7 @@ async def test_upsert_and_get_oauth_token(db: Database):
     assert saved.patient_id == "erika"
 
     # Retrieve
-    fetched = await db.get_oauth_token()
+    fetched = await db.get_oauth_token(patient_id="erika")
     assert fetched is not None
     assert fetched.access_token == "access_123"
 
@@ -58,14 +58,14 @@ async def test_upsert_updates_existing_token(db: Database):
     token2 = OAuthToken(access_token="new", refresh_token="refresh_new")
     await db.upsert_oauth_token(token2)
 
-    fetched = await db.get_oauth_token()
+    fetched = await db.get_oauth_token(patient_id="erika")
     assert fetched.access_token == "new"
     assert fetched.refresh_token == "refresh_new"
 
 
 async def test_get_oauth_token_missing(db: Database):
     """Returns None when no token exists."""
-    fetched = await db.get_oauth_token()
+    fetched = await db.get_oauth_token(patient_id="erika")
     assert fetched is None
 
 
@@ -76,7 +76,7 @@ async def test_update_oauth_folder(db: Database):
 
     await db.update_oauth_folder("erika", "google", "folder_abc")
 
-    fetched = await db.get_oauth_token()
+    fetched = await db.get_oauth_token(patient_id="erika")
     assert fetched.gdrive_folder_id == "folder_abc"
 
 
@@ -134,7 +134,7 @@ async def test_scope_merge_on_reauth(db: Database):
     ]
 
     # Merge logic (mirrors server.py oauth callback)
-    existing_token = await db.get_oauth_token()
+    existing_token = await db.get_oauth_token(patient_id="erika")
     existing_scopes = json.loads(existing_token.granted_scopes)
     merged = sorted(set(existing_scopes) | set(new_scopes))
 
@@ -146,7 +146,7 @@ async def test_scope_merge_on_reauth(db: Database):
     )
     await db.upsert_oauth_token(updated)
 
-    fetched = await db.get_oauth_token()
+    fetched = await db.get_oauth_token(patient_id="erika")
     scopes = json.loads(fetched.granted_scopes)
     assert "https://www.googleapis.com/auth/calendar.readonly" in scopes
     assert "https://www.googleapis.com/auth/gmail.readonly" in scopes

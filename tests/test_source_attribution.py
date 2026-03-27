@@ -129,8 +129,8 @@ async def test_cross_reference_insert_and_query(db):
         original_filename="20240101_test_imaging.pdf",
         category=DocumentCategory.IMAGING,
     )
-    doc1 = await db.insert_document(doc1)
-    doc2 = await db.insert_document(doc2)
+    doc1 = await db.insert_document(doc1, patient_id="erika")
+    doc2 = await db.insert_document(doc2, patient_id="erika")
 
     await db.insert_cross_reference(doc1.id, doc2.id, "same_visit", 1.0)
     refs = await db.get_cross_references(doc1.id)
@@ -153,7 +153,8 @@ async def test_cross_reference_idempotent(db):
             filename="a.pdf",
             original_filename="a.pdf",
             category=DocumentCategory.LABS,
-        )
+        ),
+        patient_id="erika",
     )
     doc2 = await db.insert_document(
         Document(
@@ -161,7 +162,8 @@ async def test_cross_reference_idempotent(db):
             filename="b.pdf",
             original_filename="b.pdf",
             category=DocumentCategory.LABS,
-        )
+        ),
+        patient_id="erika",
     )
 
     await db.insert_cross_reference(doc1.id, doc2.id, "related", 0.8)
@@ -180,7 +182,8 @@ async def test_bulk_insert_cross_references(db):
                 filename=f"doc{i}.pdf",
                 original_filename=f"doc{i}.pdf",
                 category=DocumentCategory.LABS,
-            )
+            ),
+            patient_id="erika",
         )
         docs.append(d)
 
@@ -205,7 +208,8 @@ async def test_cross_reference_different_relationships(db):
             filename="a.pdf",
             original_filename="a.pdf",
             category=DocumentCategory.LABS,
-        )
+        ),
+        patient_id="erika",
     )
     doc2 = await db.insert_document(
         Document(
@@ -213,7 +217,8 @@ async def test_cross_reference_different_relationships(db):
             filename="b.pdf",
             original_filename="b.pdf",
             category=DocumentCategory.IMAGING,
-        )
+        ),
+        patient_id="erika",
     )
 
     await db.insert_cross_reference(doc1.id, doc2.id, "same_visit", 1.0)

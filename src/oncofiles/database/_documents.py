@@ -12,7 +12,7 @@ class DocumentMixin:
 
     # ── CRUD ──────────────────────────────────────────────────────────────
 
-    async def insert_document(self, doc: Document, *, patient_id: str = "erika") -> Document:
+    async def insert_document(self, doc: Document, *, patient_id: str) -> Document:
         """Insert a document and return it with the generated ID."""
         cursor = await self.db.execute(
             """
@@ -64,7 +64,7 @@ class DocumentMixin:
             return {doc.id: doc for row in rows if (doc := _row_to_document(row))}
 
     async def get_document_by_file_id(
-        self, file_id: str, *, patient_id: str = "erika"
+        self, file_id: str, *, patient_id: str
     ) -> Document | None:
         """Get a document by its Anthropic Files API file_id."""
         async with self.db.execute(
@@ -75,7 +75,7 @@ class DocumentMixin:
             return _row_to_document(row) if row else None
 
     async def get_document_by_original_filename(
-        self, original_filename: str, *, patient_id: str = "erika"
+        self, original_filename: str, *, patient_id: str
     ) -> Document | None:
         """Get a document by its original filename (for idempotent imports)."""
         async with self.db.execute(
@@ -86,7 +86,7 @@ class DocumentMixin:
             return _row_to_document(row) if row else None
 
     async def get_document_by_gdrive_id(
-        self, gdrive_id: str, *, patient_id: str = "erika"
+        self, gdrive_id: str, *, patient_id: str
     ) -> Document | None:
         """Get a document by its Google Drive file ID."""
         async with self.db.execute(
@@ -101,7 +101,7 @@ class DocumentMixin:
         limit: int = 50,
         offset: int = 0,
         *,
-        patient_id: str = "erika",
+        patient_id: str,
     ) -> list[Document]:
         """List documents ordered by date descending."""
         async with self.db.execute(
@@ -113,7 +113,7 @@ class DocumentMixin:
             return [_row_to_document(r) for r in rows]
 
     async def search_documents(
-        self, query: SearchQuery, *, patient_id: str = "erika"
+        self, query: SearchQuery, *, patient_id: str
     ) -> list[Document]:
         """Search documents with relevance scoring and multi-term matching.
 
@@ -212,7 +212,7 @@ class DocumentMixin:
         await self.db.commit()
         return cursor.rowcount > 0
 
-    async def delete_document_by_file_id(self, file_id: str, *, patient_id: str = "erika") -> bool:
+    async def delete_document_by_file_id(self, file_id: str, *, patient_id: str) -> bool:
         """Soft-delete a document by file_id. Returns True if updated."""
         cursor = await self.db.execute(
             "UPDATE documents SET deleted_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') "
@@ -231,7 +231,7 @@ class DocumentMixin:
         await self.db.commit()
         return cursor.rowcount > 0
 
-    async def list_trash(self, limit: int = 50, *, patient_id: str = "erika") -> list[Document]:
+    async def list_trash(self, limit: int = 50, *, patient_id: str) -> list[Document]:
         """List soft-deleted documents (recoverable within 30 days)."""
         async with self.db.execute(
             "SELECT * FROM documents WHERE deleted_at IS NOT NULL AND patient_id = ? "
@@ -241,7 +241,7 @@ class DocumentMixin:
             rows = await cursor.fetchall()
             return [_row_to_document(r) for r in rows]
 
-    async def find_duplicates(self, *, patient_id: str = "erika") -> list[list[Document]]:
+    async def find_duplicates(self, *, patient_id: str) -> list[list[Document]]:
         """Find potential duplicate documents based on original_filename + size_bytes.
 
         Returns groups of documents that share the same original filename and
@@ -272,7 +272,7 @@ class DocumentMixin:
                 result.append([_row_to_document(r) for r in rows])
         return result
 
-    async def purge_expired_trash(self, days: int = 30, *, patient_id: str = "erika") -> int:
+    async def purge_expired_trash(self, days: int = 30, *, patient_id: str) -> int:
         """Permanently delete documents that have been in trash for over N days.
 
         Also deletes associated OCR pages. Returns count of purged documents.
@@ -316,7 +316,7 @@ class DocumentMixin:
         await self.db.commit()
         return len(doc_ids)
 
-    async def count_documents(self, *, patient_id: str = "erika") -> int:
+    async def count_documents(self, *, patient_id: str) -> int:
         """Count all active (non-deleted) documents."""
         async with self.db.execute(
             "SELECT COUNT(*) as cnt FROM documents WHERE deleted_at IS NULL AND patient_id = ?",
@@ -347,7 +347,7 @@ class DocumentMixin:
         await self.db.commit()
 
     async def get_documents_without_metadata(
-        self, limit: int = 100, *, patient_id: str = "erika"
+        self, limit: int = 100, *, patient_id: str
     ) -> list[Document]:
         """Get documents that have AI summaries but no useful structured_metadata.
 
@@ -367,7 +367,7 @@ class DocumentMixin:
             return [_row_to_document(r) for r in rows]
 
     async def get_documents_without_ai(
-        self, limit: int = 100, *, patient_id: str = "erika"
+        self, limit: int = 100, *, patient_id: str
     ) -> list[Document]:
         """Get documents that haven't been AI-processed yet."""
         async with self.db.execute(
@@ -507,7 +507,7 @@ class DocumentMixin:
     # ── Lab-related document queries ──────────────────────────────────────
 
     async def get_labs_before_date(
-        self, before_date: str, *, patient_id: str = "erika"
+        self, before_date: str, *, patient_id: str
     ) -> list[Document]:
         """Get lab documents dated before a given date."""
         async with self.db.execute(
@@ -518,7 +518,7 @@ class DocumentMixin:
             rows = await cursor.fetchall()
             return [_row_to_document(r) for r in rows]
 
-    async def get_latest_labs(self, limit: int = 5, *, patient_id: str = "erika") -> list[Document]:
+    async def get_latest_labs(self, limit: int = 5, *, patient_id: str) -> list[Document]:
         """Get the most recent lab result documents."""
         async with self.db.execute(
             """
@@ -555,7 +555,7 @@ class DocumentMixin:
     # ── Versioning ─────────────────────────────────────────────────────
 
     async def get_active_document_by_filename(
-        self, original_filename: str, *, patient_id: str = "erika"
+        self, original_filename: str, *, patient_id: str
     ) -> Document | None:
         """Get an active (non-deleted) document by its original filename."""
         async with self.db.execute(
@@ -645,7 +645,7 @@ class DocumentMixin:
             rows = await cursor.fetchall()
             return [dict(r) for r in rows]
 
-    async def get_pending_sync_documents(self, *, patient_id: str = "erika") -> list[Document]:
+    async def get_pending_sync_documents(self, *, patient_id: str) -> list[Document]:
         """Get documents that need syncing (no gdrive_id or pending state)."""
         async with self.db.execute(
             "SELECT * FROM documents WHERE (gdrive_id IS NULL OR sync_state = 'pending') "
@@ -656,7 +656,7 @@ class DocumentMixin:
             return [_row_to_document(r) for r in rows]
 
     async def get_treatment_timeline(
-        self, limit: int = 200, *, patient_id: str = "erika"
+        self, limit: int = 200, *, patient_id: str
     ) -> list[Document]:
         """Get treatment documents in chronological (ASC) order."""
         treatment_categories = (

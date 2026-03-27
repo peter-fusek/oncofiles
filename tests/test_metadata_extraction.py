@@ -98,7 +98,7 @@ class TestStructuredMetadataDB:
     async def test_update_and_read_structured_metadata(self, db):
         from tests.helpers import make_doc
 
-        doc = await db.insert_document(make_doc())
+        doc = await db.insert_document(make_doc(), patient_id="erika")
         metadata = json.dumps({"document_type": "lab_report", "findings": ["WBC elevated"]})
         await db.update_structured_metadata(doc.id, metadata)
 
@@ -112,6 +112,6 @@ class TestStructuredMetadataDB:
     async def test_structured_metadata_null_by_default(self, db):
         from tests.helpers import make_doc
 
-        doc = await db.insert_document(make_doc())
+        doc = await db.insert_document(make_doc(), patient_id="erika")
         fetched = await db.get_document(doc.id)
         assert fetched.structured_metadata is None

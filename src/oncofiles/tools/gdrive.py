@@ -166,6 +166,7 @@ async def gdrive_sync(
     db = _get_db(ctx)
     files = _get_files(ctx)
     gdrive = _get_gdrive(ctx)
+    patient_id = _get_patient_id()
     if not gdrive:
         msg = "GDrive client not configured. Use gdrive_auth_url to connect."
         return json.dumps({"error": msg})
@@ -178,7 +179,14 @@ async def gdrive_sync(
     if dry_run:
         try:
             stats = await _sync(
-                db, files, gdrive, folder_id, dry_run=True, enhance=enhance, trigger="manual"
+                db,
+                files,
+                gdrive,
+                folder_id,
+                dry_run=True,
+                enhance=enhance,
+                trigger="manual",
+                patient_id=patient_id,
             )
         except Exception:
             logger.exception("gdrive_sync dry_run failed")
@@ -200,7 +208,14 @@ async def gdrive_sync(
     async def _background_sync() -> None:
         try:
             await _sync(
-                db, files, gdrive, folder_id, dry_run=False, enhance=enhance, trigger="manual"
+                db,
+                files,
+                gdrive,
+                folder_id,
+                dry_run=False,
+                enhance=enhance,
+                trigger="manual",
+                patient_id=patient_id,
             )
         except Exception:
             logger.exception("Background sync failed")
@@ -245,6 +260,7 @@ async def sync_from_gdrive(
     db = _get_db(ctx)
     files = _get_files(ctx)
     gdrive = _get_gdrive(ctx)
+    patient_id = _get_patient_id()
     if not gdrive:
         return json.dumps({"error": "GDrive client not configured"})
 
@@ -259,6 +275,7 @@ async def sync_from_gdrive(
         folder_id,
         dry_run=dry_run,
         enhance=enhance,
+        patient_id=patient_id,
     )
     return json.dumps(stats)
 
@@ -280,6 +297,7 @@ async def sync_to_gdrive(
     db = _get_db(ctx)
     files = _get_files(ctx)
     gdrive = _get_gdrive(ctx)
+    patient_id = _get_patient_id()
     if not gdrive:
         return json.dumps({"error": "GDrive client not configured"})
 
@@ -293,6 +311,7 @@ async def sync_to_gdrive(
         gdrive,
         folder_id,
         dry_run=dry_run,
+        patient_id=patient_id,
     )
     return json.dumps(stats)
 

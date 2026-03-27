@@ -15,7 +15,7 @@ def _mock_ctx(db: Database) -> MagicMock:
 
 
 async def test_select_query(db: Database):
-    await db.insert_document(make_doc(file_id="f1"))
+    await db.insert_document(make_doc(file_id="f1"), patient_id="erika")
     ctx = _mock_ctx(db)
     result = json.loads(await query_db(ctx, "SELECT COUNT(*) as cnt FROM documents"))
     assert result["rows"][0]["cnt"] == 1
@@ -48,7 +48,7 @@ async def test_blocks_update(db: Database):
 
 async def test_limit_enforced(db: Database):
     for i in range(5):
-        await db.insert_document(make_doc(file_id=f"f{i}"))
+        await db.insert_document(make_doc(file_id=f"f{i}"), patient_id="erika")
     ctx = _mock_ctx(db)
     result = json.loads(await query_db(ctx, "SELECT * FROM documents", limit=3))
     assert result["row_count"] == 3
@@ -62,7 +62,7 @@ async def test_invalid_sql(db: Database):
 
 async def test_with_clause(db: Database):
     """WITH (CTE) queries should work."""
-    await db.insert_document(make_doc(file_id="f1"))
+    await db.insert_document(make_doc(file_id="f1"), patient_id="erika")
     ctx = _mock_ctx(db)
     result = json.loads(
         await query_db(ctx, "WITH d AS (SELECT * FROM documents) SELECT COUNT(*) as c FROM d")

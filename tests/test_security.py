@@ -15,7 +15,7 @@ _TEST_TOKEN = "test-bearer-token-for-hmac"
 def test_state_token_roundtrip():
     """Valid state token passes verification."""
     with patch("oncofiles.oauth.MCP_BEARER_TOKEN", _TEST_TOKEN):
-        token = _make_state_token()
+        token = _make_state_token(patient_id="erika")
         valid, patient_id = verify_state_token(token)
         assert valid is True
         assert patient_id == "erika"
@@ -38,7 +38,7 @@ def test_state_token_requires_bearer_token():
         patch("oncofiles.oauth.MCP_BEARER_TOKEN", ""),
         pytest.raises(RuntimeError, match="MCP_BEARER_TOKEN must be set"),
     ):
-        _make_state_token()
+        _make_state_token(patient_id="erika")
 
 
 def test_state_token_rejects_empty():
@@ -57,7 +57,7 @@ def test_state_token_rejects_garbage():
 
 def test_state_token_rejects_tampered():
     with patch("oncofiles.oauth.MCP_BEARER_TOKEN", _TEST_TOKEN):
-        token = _make_state_token()
+        token = _make_state_token(patient_id="erika")
         # Replace signature with garbage
         dot_idx = token.rfind(".")
         tampered = f"{token[:dot_idx]}.{'a' * 32}"
@@ -68,7 +68,7 @@ def test_state_token_rejects_tampered():
 def test_state_token_rejects_expired(monkeypatch):
     """Tokens older than 30 minutes are rejected."""
     with patch("oncofiles.oauth.MCP_BEARER_TOKEN", _TEST_TOKEN):
-        token = _make_state_token()
+        token = _make_state_token(patient_id="erika")
         # Fast-forward time by 31 minutes
         real_time = time.time()
         import oncofiles.oauth as oauth_mod

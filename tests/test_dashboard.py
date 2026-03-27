@@ -89,7 +89,7 @@ async def test_build_document_matrix_with_docs(db):
     from oncofiles.tools.hygiene import _build_document_matrix
 
     doc = make_doc(filename="20260101_Test_Labs.pdf")
-    inserted = await db.insert_document(doc)
+    inserted = await db.insert_document(doc, patient_id="erika")
 
     # Update with some fields to make it partially complete
     await db.update_document_ai_metadata(inserted.id, "Test summary", "tag1,tag2")
@@ -112,7 +112,7 @@ async def test_build_document_matrix_filter_incomplete(db):
     from oncofiles.tools.hygiene import _build_document_matrix
 
     doc = make_doc(filename="test.pdf", gdrive_id=None)
-    await db.insert_document(doc)
+    await db.insert_document(doc, patient_id="erika")
 
     result = await _build_document_matrix(db, filter_param="incomplete")
     # Doc is incomplete (no AI, no sync, etc.) so it should be returned
@@ -127,7 +127,7 @@ async def test_build_document_matrix_filter_missing_ai(db):
     from oncofiles.tools.hygiene import _build_document_matrix
 
     doc = make_doc(filename="test.pdf")
-    inserted = await db.insert_document(doc)
+    inserted = await db.insert_document(doc, patient_id="erika")
 
     # No AI summary → should be returned
     result = await _build_document_matrix(db, filter_param="missing_ai")
@@ -153,7 +153,9 @@ async def test_build_document_matrix_limit(db):
     from oncofiles.tools.hygiene import _build_document_matrix
 
     for i in range(5):
-        await db.insert_document(make_doc(filename=f"doc_{i}.pdf", file_id=f"file_{i}"))
+        await db.insert_document(
+            make_doc(filename=f"doc_{i}.pdf", file_id=f"file_{i}"), patient_id="erika"
+        )
 
     result = await _build_document_matrix(db, limit=3)
     assert result["matched"] == 3

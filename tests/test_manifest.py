@@ -32,9 +32,9 @@ async def test_export_manifest_empty(db: Database):
 
 async def test_export_manifest_with_data(db: Database):
     """Manifest includes all data types."""
-    await db.insert_document(make_doc())
-    await db.insert_treatment_event(make_treatment_event())
-    await db.insert_research_entry(make_research_entry())
+    await db.insert_document(make_doc(), patient_id="erika")
+    await db.insert_treatment_event(make_treatment_event(), patient_id="erika")
+    await db.insert_research_entry(make_research_entry(patient_id="erika"), patient_id="erika")
 
     manifest = await export_manifest(db)
     assert len(manifest["documents"]) == 1
@@ -44,7 +44,7 @@ async def test_export_manifest_with_data(db: Database):
 
 async def test_manifest_roundtrip(db: Database):
     """Manifest can be serialized and parsed back."""
-    await db.insert_document(make_doc())
+    await db.insert_document(make_doc(), patient_id="erika")
     manifest = await export_manifest(db)
     json_str = render_manifest_json(manifest)
     parsed = parse_manifest(json_str)
@@ -57,7 +57,7 @@ async def test_manifest_roundtrip(db: Database):
 async def test_manifest_includes_structured_metadata(db: Database):
     """Manifest export includes structured_metadata for documents that have it."""
     doc = make_doc()
-    doc = await db.insert_document(doc)
+    doc = await db.insert_document(doc, patient_id="erika")
     metadata_json = '{"diagnoses": ["CRC"], "medications": ["FOLFOX"]}'
     await db.update_structured_metadata(doc.id, metadata_json)
 
@@ -68,7 +68,7 @@ async def test_manifest_includes_structured_metadata(db: Database):
 
 async def test_manifest_structured_metadata_none_when_absent(db: Database):
     """Manifest export has null structured_metadata when not set."""
-    await db.insert_document(make_doc())
+    await db.insert_document(make_doc(), patient_id="erika")
 
     manifest = await export_manifest(db)
     assert manifest["documents"][0]["structured_metadata"] is None

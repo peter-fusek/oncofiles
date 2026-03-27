@@ -20,7 +20,7 @@ class ClinicalMixin:
     # ── Treatment events (#34) ───────────────────────────────────────────
 
     async def insert_treatment_event(
-        self, event: TreatmentEvent, *, patient_id: str = "erika"
+        self, event: TreatmentEvent, *, patient_id: str
     ) -> TreatmentEvent:
         """Insert a treatment event and return it with the generated ID."""
         cursor = await self.db.execute(
@@ -51,7 +51,7 @@ class ClinicalMixin:
             return _row_to_treatment_event(row) if row else None
 
     async def list_treatment_events(
-        self, query: TreatmentEventQuery, *, patient_id: str = "erika"
+        self, query: TreatmentEventQuery, *, patient_id: str
     ) -> list[TreatmentEvent]:
         """List treatment events with optional filters."""
         conditions: list[str] = ["patient_id = ?"]
@@ -137,7 +137,7 @@ class ClinicalMixin:
         return await self.get_treatment_event(event_id)
 
     async def get_treatment_events_timeline(
-        self, limit: int = 200, *, patient_id: str = "erika"
+        self, limit: int = 200, *, patient_id: str
     ) -> list[TreatmentEvent]:
         """Get treatment events in chronological (ASC) order."""
         async with self.db.execute(
@@ -151,7 +151,7 @@ class ClinicalMixin:
     # ── Research entries (#33) ───────────────────────────────────────────
 
     async def insert_research_entry(
-        self, entry: ResearchEntry, *, patient_id: str = "erika"
+        self, entry: ResearchEntry, *, patient_id: str
     ) -> ResearchEntry:
         """Insert a research entry. Ignores duplicates (source+external_id)."""
         cursor = await self.db.execute(
@@ -186,7 +186,7 @@ class ClinicalMixin:
             return _row_to_research_entry(row)
 
     async def search_research_entries(
-        self, query: ResearchQuery, *, patient_id: str = "erika"
+        self, query: ResearchQuery, *, patient_id: str
     ) -> list[ResearchEntry]:
         """Search research entries using LIKE on title/summary/tags."""
         conditions: list[str] = ["patient_id = ?"]
@@ -209,7 +209,7 @@ class ClinicalMixin:
             return [_row_to_research_entry(r) for r in rows]
 
     async def list_research_entries(
-        self, source: str | None = None, limit: int = 50, *, patient_id: str = "erika"
+        self, source: str | None = None, limit: int = 50, *, patient_id: str
     ) -> list[ResearchEntry]:
         """List research entries, optionally filtered by source."""
         if source:

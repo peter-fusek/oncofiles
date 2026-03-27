@@ -22,7 +22,7 @@ def _mock_ctx(db: Database) -> MagicMock:
 async def test_insert_and_get_lab_trends(db: Database):
     """Insert lab values and retrieve by parameter."""
     doc = make_doc()
-    doc = await db.insert_document(doc)
+    doc = await db.insert_document(doc, patient_id="erika")
 
     values = [
         make_lab_value(document_id=doc.id, parameter="WBC", value=6.8),
@@ -45,7 +45,7 @@ async def test_insert_and_get_lab_trends(db: Database):
 async def test_lab_values_idempotent(db: Database):
     """Inserting same document_id+parameter replaces, not duplicates."""
     doc = make_doc()
-    doc = await db.insert_document(doc)
+    doc = await db.insert_document(doc, patient_id="erika")
 
     v1 = [make_lab_value(document_id=doc.id, parameter="WBC", value=6.8)]
     await db.insert_lab_values(v1)
@@ -62,7 +62,7 @@ async def test_lab_values_idempotent(db: Database):
 async def test_get_lab_snapshot(db: Database):
     """Get all lab values from a specific document."""
     doc = make_doc()
-    doc = await db.insert_document(doc)
+    doc = await db.insert_document(doc, patient_id="erika")
 
     values = [
         make_lab_value(document_id=doc.id, parameter="WBC", value=6.8),
@@ -80,9 +80,9 @@ async def test_get_lab_snapshot(db: Database):
 async def test_get_latest_lab_value(db: Database):
     """Get the most recent value for a parameter."""
     doc1 = make_doc(file_id="f1", filename="20260213_labs.pdf")
-    doc1 = await db.insert_document(doc1)
+    doc1 = await db.insert_document(doc1, patient_id="erika")
     doc2 = make_doc(file_id="f2", filename="20260227_labs.pdf")
-    doc2 = await db.insert_document(doc2)
+    doc2 = await db.insert_document(doc2, patient_id="erika")
 
     values = [
         make_lab_value(
@@ -109,9 +109,9 @@ async def test_get_latest_lab_value_none(db: Database):
 async def test_lab_trends_date_filter(db: Database):
     """Filter lab values by date range."""
     doc1 = make_doc(file_id="f1", filename="20260213_labs.pdf")
-    doc1 = await db.insert_document(doc1)
+    doc1 = await db.insert_document(doc1, patient_id="erika")
     doc2 = make_doc(file_id="f2", filename="20260227_labs.pdf")
-    doc2 = await db.insert_document(doc2)
+    doc2 = await db.insert_document(doc2, patient_id="erika")
 
     values = [
         make_lab_value(
@@ -132,9 +132,9 @@ async def test_lab_trends_date_filter(db: Database):
 async def test_lab_trends_chronological_order(db: Database):
     """Values are returned in chronological order (oldest first)."""
     doc1 = make_doc(file_id="f1", filename="20260227_labs.pdf")
-    doc1 = await db.insert_document(doc1)
+    doc1 = await db.insert_document(doc1, patient_id="erika")
     doc2 = make_doc(file_id="f2", filename="20260213_labs.pdf")
-    doc2 = await db.insert_document(doc2)
+    doc2 = await db.insert_document(doc2, patient_id="erika")
 
     values = [
         make_lab_value(
@@ -163,7 +163,7 @@ async def test_store_lab_values_tool(db: Database):
 
     ctx = _mock_ctx(db)
     doc = make_doc()
-    doc = await db.insert_document(doc)
+    doc = await db.insert_document(doc, patient_id="erika")
 
     values_json = json.dumps(
         [
@@ -202,7 +202,7 @@ async def test_get_lab_trends_tool(db: Database):
 
     ctx = _mock_ctx(db)
     doc = make_doc()
-    doc = await db.insert_document(doc)
+    doc = await db.insert_document(doc, patient_id="erika")
 
     values_json = json.dumps(
         [
@@ -239,7 +239,7 @@ async def test_store_lab_values_invalid_json(db: Database):
 
     ctx = _mock_ctx(db)
     doc = make_doc()
-    doc = await db.insert_document(doc)
+    doc = await db.insert_document(doc, patient_id="erika")
 
     result = json.loads(await store_lab_values(ctx, doc.id, "2026-02-27", "not json"))
     assert "error" in result
@@ -254,7 +254,7 @@ async def test_store_lab_values_empty_array(db: Database):
 
     ctx = _mock_ctx(db)
     doc = make_doc()
-    doc = await db.insert_document(doc)
+    doc = await db.insert_document(doc, patient_id="erika")
 
     result = json.loads(await store_lab_values(ctx, doc.id, "2026-02-27", "[]"))
     assert "error" in result
@@ -269,7 +269,7 @@ async def test_store_lab_values_not_array(db: Database):
 
     ctx = _mock_ctx(db)
     doc = make_doc()
-    doc = await db.insert_document(doc)
+    doc = await db.insert_document(doc, patient_id="erika")
 
     result = json.loads(await store_lab_values(ctx, doc.id, "2026-02-27", '{"parameter": "WBC"}'))
     assert "error" in result
@@ -284,7 +284,7 @@ async def test_store_lab_values_duplicate_document_upsert(db: Database):
 
     ctx = _mock_ctx(db)
     doc = make_doc()
-    doc = await db.insert_document(doc)
+    doc = await db.insert_document(doc, patient_id="erika")
 
     values_v1 = json.dumps([{"parameter": "CEA", "value": 100.0, "unit": "ug/L"}])
     await store_lab_values(ctx, doc.id, "2026-02-27", values_v1)

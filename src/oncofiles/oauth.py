@@ -35,7 +35,7 @@ TOKEN_URL = "https://oauth2.googleapis.com/token"
 _STATE_MAX_AGE = 1800  # 30 minutes
 
 
-def _make_state_token(patient_id: str = "erika") -> str:
+def _make_state_token(patient_id: str) -> str:
     """Generate an HMAC-signed state token with embedded timestamp and patient_id.
 
     Format: {patient_id}:{timestamp}.{hmac} — HMAC covers "{patient_id}:{timestamp}".
@@ -100,7 +100,7 @@ def get_auth_url(state: str = "") -> str:
     from urllib.parse import urlencode
 
     if not state:
-        state = _make_state_token()
+        state = _make_state_token(patient_id="erika")
 
     params = {
         "client_id": GOOGLE_OAUTH_CLIENT_ID,
@@ -122,7 +122,7 @@ def get_auth_url_for_scopes(scopes: list[str], state: str = "") -> str:
     from urllib.parse import urlencode
 
     if not state:
-        state = _make_state_token()
+        state = _make_state_token(patient_id="erika")
 
     params = {
         "client_id": GOOGLE_OAUTH_CLIENT_ID,

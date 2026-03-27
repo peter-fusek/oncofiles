@@ -64,14 +64,14 @@ async def test_sync_from_gdrive_new_file(db: Database):
         patch("oncofiles.sync.enhance_document_text", return_value=("summary", '["labs"]')),
         patch("oncofiles.sync.extract_structured_metadata", return_value={"diagnoses": []}),
     ):
-        stats = await sync_from_gdrive(db, files, gdrive, "folder123")
+        stats = await sync_from_gdrive(db, files, gdrive, "folder123", patient_id="erika")
 
     assert stats["new"] == 1
     assert stats["unchanged"] == 0
     assert stats["errors"] == 0
 
     # Verify document in DB
-    docs = await db.list_documents()
+    docs = await db.list_documents(patient_id="erika")
     assert len(docs) == 1
     assert docs[0].gdrive_id == "gd_1"
     assert docs[0].institution == "NOU"
@@ -81,7 +81,7 @@ async def test_sync_from_gdrive_new_file(db: Database):
 async def test_sync_from_gdrive_unchanged(db: Database):
     """Existing file with same modifiedTime is skipped."""
     doc = make_doc(gdrive_id="gd_1", gdrive_modified_time=datetime(2026, 3, 1, 10, 0))
-    await db.insert_document(doc)
+    await db.insert_document(doc, patient_id="erika")
 
     files = _mock_files()
     gdrive = _mock_gdrive(
@@ -97,7 +97,9 @@ async def test_sync_from_gdrive_unchanged(db: Database):
         ]
     )
 
-    stats = await sync_from_gdrive(db, files, gdrive, "folder123", enhance=False)
+    stats = await sync_from_gdrive(
+        db, files, gdrive, "folder123", enhance=False, patient_id="erika"
+    )
     assert stats["unchanged"] == 1
     assert stats["new"] == 0
 
@@ -105,7 +107,7 @@ async def test_sync_from_gdrive_unchanged(db: Database):
 async def test_sync_from_gdrive_updated(db: Database):
     """File with newer modifiedTime on GDrive gets re-imported."""
     doc = make_doc(gdrive_id="gd_1", gdrive_modified_time=datetime(2026, 1, 1))
-    await db.insert_document(doc)
+    await db.insert_document(doc, patient_id="erika")
 
     files = _mock_files()
     gdrive = _mock_gdrive(
@@ -125,7 +127,7 @@ async def test_sync_from_gdrive_updated(db: Database):
         patch("oncofiles.sync.enhance_document_text", return_value=("summary", '["labs"]')),
         patch("oncofiles.sync.extract_structured_metadata", return_value={"diagnoses": []}),
     ):
-        stats = await sync_from_gdrive(db, files, gdrive, "folder123")
+        stats = await sync_from_gdrive(db, files, gdrive, "folder123", patient_id="erika")
 
     assert stats["updated"] == 1
 
@@ -134,7 +136,7 @@ async def test_sync_from_gdrive_metadata_only_change(db: Database):
     """Rename-only change (same md5) skips re-import and preserves OCR."""
     doc = make_doc(gdrive_id="gd_1", gdrive_modified_time=datetime(2026, 1, 1))
     doc.gdrive_md5 = "abc123md5"
-    doc = await db.insert_document(doc)
+    doc = await db.insert_document(doc, patient_id="erika")
 
     # Simulate existing OCR cache
     await db.save_ocr_page(doc.id, 1, "Extracted OCR text page 1", "pymupdf-native")
@@ -155,7 +157,9 @@ async def test_sync_from_gdrive_metadata_only_change(db: Database):
         ]
     )
 
-    stats = await sync_from_gdrive(db, files, gdrive, "folder123", enhance=False)
+    stats = await sync_from_gdrive(
+        db, files, gdrive, "folder123", enhance=False, patient_id="erika"
+    )
 
     # Should be counted as unchanged (metadata-only), not updated
     assert stats["unchanged"] == 1
@@ -170,7 +174,7 @@ async def test_sync_from_gdrive_content_changed(db: Database):
     """Content change (different md5) triggers full re-import."""
     doc = make_doc(gdrive_id="gd_1", gdrive_modified_time=datetime(2026, 1, 1))
     doc.gdrive_md5 = "old_md5"
-    doc = await db.insert_document(doc)
+    doc = await db.insert_document(doc, patient_id="erika")
 
     # Simulate existing OCR cache
     await db.save_ocr_page(doc.id, 1, "Old OCR text", "pymupdf-native")
@@ -194,7 +198,7 @@ async def test_sync_from_gdrive_content_changed(db: Database):
         patch("oncofiles.sync.enhance_document_text", return_value=("summary", '["labs"]')),
         patch("oncofiles.sync.extract_structured_metadata", return_value={"diagnoses": []}),
     ):
-        stats = await sync_from_gdrive(db, files, gdrive, "folder123")
+        stats = await sync_from_gdrive(db, files, gdrive, "folder123", patient_id="erika")
 
     assert stats["updated"] == 1
     # Download should have happened
@@ -217,11 +221,11 @@ async def test_sync_from_gdrive_dry_run(db: Database):
         ]
     )
 
-    stats = await sync_from_gdrive(db, files, gdrive, "folder123", dry_run=True)
+    stats = await sync_from_gdrive(db, files, gdrive, "folder123", dry_run=True, patient_id="erika")
     assert stats["new"] == 1
 
     # No documents should be in the DB
-    docs = await db.list_documents()
+    docs = await db.list_documents(patient_id="erika")
     assert len(docs) == 0
 
 
@@ -241,7 +245,7 @@ async def test_sync_from_gdrive_skips_unsupported(db: Database):
         ]
     )
 
-    stats = await sync_from_gdrive(db, files, gdrive, "folder123")
+    stats = await sync_from_gdrive(db, files, gdrive, "folder123", patient_id="erika")
     assert stats["skipped"] == 1
     assert stats["new"] == 0
 
@@ -270,7 +274,7 @@ async def test_sync_from_gdrive_skips_metadata_files(db: Database):
         ]
     )
 
-    stats = await sync_from_gdrive(db, files, gdrive, "folder123")
+    stats = await sync_from_gdrive(db, files, gdrive, "folder123", patient_id="erika")
     assert stats["skipped"] == 2
     assert stats["new"] == 0
 
@@ -292,7 +296,7 @@ async def test_sync_from_gdrive_error_handling(db: Database):
     )
     gdrive.download.side_effect = Exception("network error")
 
-    stats = await sync_from_gdrive(db, files, gdrive, "folder123")
+    stats = await sync_from_gdrive(db, files, gdrive, "folder123", patient_id="erika")
     assert stats["errors"] == 1
     assert stats["new"] == 0
 
@@ -300,19 +304,21 @@ async def test_sync_from_gdrive_error_handling(db: Database):
 async def test_sync_from_gdrive_detects_missing(db: Database):
     """Files in DB but not on GDrive are flagged as missing."""
     doc = make_doc(gdrive_id="gd_missing")
-    await db.insert_document(doc)
+    await db.insert_document(doc, patient_id="erika")
 
     files = _mock_files()
     gdrive = _mock_gdrive([])  # Empty GDrive
 
-    stats = await sync_from_gdrive(db, files, gdrive, "folder123", enhance=False)
+    stats = await sync_from_gdrive(
+        db, files, gdrive, "folder123", enhance=False, patient_id="erika"
+    )
     assert stats["missing"] == 1
 
 
 async def test_sync_from_gdrive_matches_by_app_properties(db: Database):
     """Files with oncofiles_id in appProperties match existing docs."""
     doc = make_doc(gdrive_id="gd_1", gdrive_modified_time=datetime(2026, 3, 1, 10, 0))
-    doc = await db.insert_document(doc)
+    doc = await db.insert_document(doc, patient_id="erika")
 
     files = _mock_files()
     gdrive = _mock_gdrive(
@@ -328,7 +334,9 @@ async def test_sync_from_gdrive_matches_by_app_properties(db: Database):
         ]
     )
 
-    stats = await sync_from_gdrive(db, files, gdrive, "folder123", enhance=False)
+    stats = await sync_from_gdrive(
+        db, files, gdrive, "folder123", enhance=False, patient_id="erika"
+    )
     assert stats["unchanged"] == 1
 
 
@@ -339,7 +347,7 @@ async def test_sync_from_gdrive_detects_category_from_folder(db: Database):
         gdrive_modified_time=datetime(2026, 1, 1),
         category="other",
     )
-    await db.insert_document(doc)
+    await db.insert_document(doc, patient_id="erika")
 
     files = _mock_files()
     folder_map = {"folder_labs": "labs — laboratórne výsledky"}
@@ -361,7 +369,7 @@ async def test_sync_from_gdrive_detects_category_from_folder(db: Database):
         patch("oncofiles.sync.enhance_document_text", return_value=("summary", '["labs"]')),
         patch("oncofiles.sync.extract_structured_metadata", return_value={"diagnoses": []}),
     ):
-        stats = await sync_from_gdrive(db, files, gdrive, "folder123")
+        stats = await sync_from_gdrive(db, files, gdrive, "folder123", patient_id="erika")
 
     assert stats["updated"] == 1
     updated_doc = await db.get_document(doc.id)
@@ -374,12 +382,12 @@ async def test_sync_from_gdrive_detects_category_from_folder(db: Database):
 async def test_sync_to_gdrive_exports_new(db: Database):
     """Documents without gdrive_id get exported to folder structure."""
     doc = make_doc(gdrive_id=None)
-    await db.insert_document(doc)
+    await db.insert_document(doc, patient_id="erika")
 
     files = _mock_files()
     gdrive = _mock_gdrive()
 
-    stats = await sync_to_gdrive(db, files, gdrive, "folder123")
+    stats = await sync_to_gdrive(db, files, gdrive, "folder123", patient_id="erika")
     assert stats["exported"] == 1
     assert stats["skipped"] == 0
 
@@ -394,14 +402,14 @@ async def test_sync_to_gdrive_exports_new(db: Database):
 async def test_sync_to_gdrive_organizes_existing(db: Database):
     """Documents with gdrive_id in unorganized folders get moved."""
     doc = make_doc(gdrive_id="existing_gd_id")
-    await db.insert_document(doc)
+    await db.insert_document(doc, patient_id="erika")
 
     files = _mock_files()
     gdrive = _mock_gdrive()
     # File is in an unorganized folder (not matching any category folder)
     gdrive.get_file_parents.return_value = ["some_random_folder"]
 
-    stats = await sync_to_gdrive(db, files, gdrive, "folder123")
+    stats = await sync_to_gdrive(db, files, gdrive, "folder123", patient_id="erika")
     assert stats["organized"] >= 1  # Phase 1 + post-rename organize (mock doesn't update parents)
     assert stats["exported"] == 0
     assert gdrive.batch_move.call_count >= 1
@@ -410,7 +418,7 @@ async def test_sync_to_gdrive_organizes_existing(db: Database):
 async def test_sync_to_gdrive_skips_already_organized(db: Database):
     """Documents already in correct year-month folder are skipped."""
     doc = make_doc(gdrive_id="existing_gd_id")
-    await db.insert_document(doc)
+    await db.insert_document(doc, patient_id="erika")
 
     files = _mock_files()
     gdrive = _mock_gdrive()
@@ -419,7 +427,7 @@ async def test_sync_to_gdrive_skips_already_organized(db: Database):
     # find_folder returns the folder ID to indicate it already exists
     gdrive.find_folder.return_value = "folder_2024-01"
 
-    stats = await sync_to_gdrive(db, files, gdrive, "folder123")
+    stats = await sync_to_gdrive(db, files, gdrive, "folder123", patient_id="erika")
     assert stats["skipped"] >= 1
     assert stats["organized"] == 0
 
@@ -428,14 +436,14 @@ async def test_rename_triggers_organize_and_enhance(db: Database):
     """Renamed docs get immediately organized and re-enhanced."""
     # Doc with non-standard filename (missing patient name) and gdrive_id
     doc = make_doc(gdrive_id="gd_rename_test")
-    await db.insert_document(doc)
+    await db.insert_document(doc, patient_id="erika")
 
     files = _mock_files()
     gdrive = _mock_gdrive()
     # File is in unorganized folder
     gdrive.get_file_parents.return_value = ["some_random_folder"]
 
-    stats = await sync_to_gdrive(db, files, gdrive, "folder123")
+    stats = await sync_to_gdrive(db, files, gdrive, "folder123", patient_id="erika")
 
     # Rename should have happened
     assert stats["renamed"] == 1
@@ -452,7 +460,7 @@ async def test_rename_returns_renamed_ids(db: Database):
 
     # Doc with non-standard filename
     doc = make_doc(gdrive_id="gd_ids_test")
-    await db.insert_document(doc)
+    await db.insert_document(doc, patient_id="erika")
 
     gdrive = _mock_gdrive()
     stats = await _rename_to_standard(db, gdrive)
@@ -464,12 +472,12 @@ async def test_rename_returns_renamed_ids(db: Database):
 async def test_sync_to_gdrive_dry_run(db: Database):
     """Dry run counts but doesn't export."""
     doc = make_doc(gdrive_id=None)
-    await db.insert_document(doc)
+    await db.insert_document(doc, patient_id="erika")
 
     files = _mock_files()
     gdrive = _mock_gdrive()
 
-    stats = await sync_to_gdrive(db, files, gdrive, "folder123", dry_run=True)
+    stats = await sync_to_gdrive(db, files, gdrive, "folder123", dry_run=True, patient_id="erika")
     assert stats["exported"] == 1
 
     gdrive.upload.assert_not_called()
@@ -482,13 +490,13 @@ async def test_sync_to_gdrive_dry_run(db: Database):
 async def test_sync_to_gdrive_error_handling(db: Database):
     """Export errors are counted, not raised."""
     doc = make_doc(gdrive_id=None)
-    await db.insert_document(doc)
+    await db.insert_document(doc, patient_id="erika")
 
     files = _mock_files()
     files.download.side_effect = Exception("download failed")
     gdrive = _mock_gdrive()
 
-    stats = await sync_to_gdrive(db, files, gdrive, "folder123")
+    stats = await sync_to_gdrive(db, files, gdrive, "folder123", patient_id="erika")
     assert stats["errors"] == 1
     assert stats["exported"] == 0
 
@@ -498,14 +506,14 @@ async def test_sync_to_gdrive_exports_metadata(db: Database):
     files = _mock_files()
     gdrive = _mock_gdrive()
 
-    stats = await sync_to_gdrive(db, files, gdrive, "folder123")
+    stats = await sync_to_gdrive(db, files, gdrive, "folder123", patient_id="erika")
     assert stats["metadata_exported"] == 1
 
 
 async def test_sync_to_gdrive_no_ocr_companion_export(db: Database):
     """OCR companion files are no longer exported (text cached in DB instead)."""
     doc = make_doc(gdrive_id="gd_existing")
-    doc = await db.insert_document(doc)
+    doc = await db.insert_document(doc, patient_id="erika")
     await db.save_ocr_page(doc.id, 1, "Page 1 OCR text here", "test-model")
 
     files = _mock_files()
@@ -513,7 +521,7 @@ async def test_sync_to_gdrive_no_ocr_companion_export(db: Database):
     gdrive.get_file_parents.return_value = ["folder_2024-01"]
     gdrive.find_folder.return_value = "folder_2024-01"
 
-    await sync_to_gdrive(db, files, gdrive, "folder123")
+    await sync_to_gdrive(db, files, gdrive, "folder123", patient_id="erika")
     # No OCR export — companion files disabled (#114)
     upload_calls = [c for c in gdrive.upload.call_args_list if "_OCR.txt" in str(c)]
     assert len(upload_calls) == 0
@@ -535,7 +543,9 @@ async def test_sync_from_gdrive_skips_ocr_txt(db: Database):
         ]
     )
 
-    stats = await sync_from_gdrive(db, files, gdrive, "folder123", enhance=False)
+    stats = await sync_from_gdrive(
+        db, files, gdrive, "folder123", enhance=False, patient_id="erika"
+    )
     assert stats["skipped"] == 1
     assert stats["new"] == 0
 
@@ -546,12 +556,12 @@ async def test_sync_from_gdrive_skips_ocr_txt(db: Database):
 async def test_sync_bidirectional(db: Database):
     """Unified sync runs both directions."""
     doc = make_doc(gdrive_id=None)
-    await db.insert_document(doc)
+    await db.insert_document(doc, patient_id="erika")
 
     files = _mock_files()
     gdrive = _mock_gdrive()
 
-    stats = await sync(db, files, gdrive, "folder123", enhance=False)
+    stats = await sync(db, files, gdrive, "folder123", enhance=False, patient_id="erika")
 
     assert "from_gdrive" in stats
     assert "to_gdrive" in stats
@@ -565,13 +575,13 @@ async def test_sync_to_gdrive_renames_to_standard(db: Database):
         filename="20260227 ErikaFusekova-NOU-LabVysledkyPred2chemo[PHYSICIAN_REDACTED].pdf",
         category="labs",
     )
-    doc = await db.insert_document(doc)
+    doc = await db.insert_document(doc, patient_id="erika")
 
     files = _mock_files()
     gdrive = _mock_gdrive()
     gdrive.get_file_parents.return_value = ["folder_labs — laboratórne výsledky"]
 
-    stats = await sync_to_gdrive(db, files, gdrive, "folder123")
+    stats = await sync_to_gdrive(db, files, gdrive, "folder123", patient_id="erika")
     assert stats.get("renamed", 0) == 1
 
     # Verify batch_rename was called with standard format
@@ -593,13 +603,13 @@ async def test_sync_to_gdrive_skips_already_standard(db: Database):
         institution="NOUonko",
         category="labs",
     )
-    await db.insert_document(doc)
+    await db.insert_document(doc, patient_id="erika")
 
     files = _mock_files()
     gdrive = _mock_gdrive()
     gdrive.get_file_parents.return_value = ["folder_labs — laboratórne výsledky"]
 
-    stats = await sync_to_gdrive(db, files, gdrive, "folder123")
+    stats = await sync_to_gdrive(db, files, gdrive, "folder123", patient_id="erika")
     assert stats.get("renamed", 0) == 0
 
 
@@ -611,7 +621,7 @@ async def test_sync_to_gdrive_idempotent_double_run(db: Database):
         institution="NOUonko",
         category="labs",
     )
-    await db.insert_document(doc)
+    await db.insert_document(doc, patient_id="erika")
     # Pre-populate OCR so export doesn't try to extract
     await db.save_ocr_page(doc.id, 1, "Page 1 text", "test")
 
@@ -621,7 +631,7 @@ async def test_sync_to_gdrive_idempotent_double_run(db: Database):
     gdrive.find_folder.return_value = "folder_2026-01"
 
     # First run — renames file (non-standard format)
-    stats1 = await sync_to_gdrive(db, files, gdrive, "folder123")
+    stats1 = await sync_to_gdrive(db, files, gdrive, "folder123", patient_id="erika")
     assert stats1.get("renamed", 0) == 1
 
 
@@ -633,7 +643,7 @@ async def test_sync_to_gdrive_cleanup_orphan_ocr(db: Database):
         institution="NOUonko",
         category="labs",
     )
-    await db.insert_document(doc)
+    await db.insert_document(doc, patient_id="erika")
     await db.save_ocr_page(doc.id, 1, "Page 1 text", "test")
 
     files = _mock_files()
@@ -654,7 +664,7 @@ async def test_sync_to_gdrive_cleanup_orphan_ocr(db: Database):
     gdrive.list_folder.return_value = [orphan_ocr, expected_ocr]
     gdrive.trash_file.return_value = None
 
-    stats = await sync_to_gdrive(db, files, gdrive, "folder123")
+    stats = await sync_to_gdrive(db, files, gdrive, "folder123", patient_id="erika")
     assert stats.get("ocr_cleaned", 0) == 1
     gdrive.trash_file.assert_called_once_with("orphan_id")
 
@@ -665,7 +675,7 @@ async def test_sync_from_gdrive_extracts_structured_metadata(db: Database):
 
     # Insert a doc and pre-populate OCR text so _enhance_document has text to work with
     doc = make_doc()
-    doc = await db.insert_document(doc)
+    doc = await db.insert_document(doc, patient_id="erika")
     await db.save_ocr_page(doc.id, 1, "Patient diagnosed with CRC. Rx: FOLFOX.", "test")
 
     files = _mock_files()
@@ -699,7 +709,7 @@ async def test_sync_mutex_prevents_concurrent(db: Database):
     # Manually acquire the lock to simulate ongoing sync
     await _sync_lock.acquire()
     try:
-        result = await sync(db, files, gdrive, "folder123", enhance=False)
+        result = await sync(db, files, gdrive, "folder123", enhance=False, patient_id="erika")
         assert result.get("skipped") is True
         assert "already in progress" in result.get("message", "").lower()
     finally:
@@ -711,10 +721,10 @@ async def test_sync_mutex_allows_sequential(db: Database):
     files = _mock_files()
     gdrive = _mock_gdrive()
 
-    stats1 = await sync(db, files, gdrive, "folder123", enhance=False)
+    stats1 = await sync(db, files, gdrive, "folder123", enhance=False, patient_id="erika")
     assert "from_gdrive" in stats1
 
-    stats2 = await sync(db, files, gdrive, "folder123", enhance=False)
+    stats2 = await sync(db, files, gdrive, "folder123", enhance=False, patient_id="erika")
     assert "from_gdrive" in stats2
 
 
@@ -724,13 +734,13 @@ async def test_sync_mutex_allows_sequential(db: Database):
 async def test_sync_to_gdrive_text_file_uses_ocr_cache(db: Database):
     """Text/markdown docs use OCR cache instead of Files API download."""
     doc = make_doc(gdrive_id=None, mime_type="text/markdown")
-    doc = await db.insert_document(doc)
+    doc = await db.insert_document(doc, patient_id="erika")
     await db.save_ocr_page(doc.id, 1, "# Chapter 40\n\nContent here.", "text-decode")
 
     files = _mock_files()
     gdrive = _mock_gdrive()
 
-    stats = await sync_to_gdrive(db, files, gdrive, "folder123")
+    stats = await sync_to_gdrive(db, files, gdrive, "folder123", patient_id="erika")
     assert stats["exported"] == 1
 
     # Files API download should NOT have been called (text/* uses OCR cache)
@@ -749,12 +759,12 @@ async def test_sync_to_gdrive_text_file_uses_ocr_cache(db: Database):
 async def test_sync_to_gdrive_text_file_no_ocr_skipped(db: Database):
     """Text files without OCR cache are skipped."""
     doc = make_doc(gdrive_id=None, mime_type="text/markdown")
-    await db.insert_document(doc)
+    await db.insert_document(doc, patient_id="erika")
 
     files = _mock_files()
     gdrive = _mock_gdrive()
 
-    stats = await sync_to_gdrive(db, files, gdrive, "folder123")
+    stats = await sync_to_gdrive(db, files, gdrive, "folder123", patient_id="erika")
     assert stats["skipped"] == 1
     assert stats["exported"] == 0
 
@@ -799,12 +809,12 @@ async def test_sync_import_nonstandard_filename_backfills_metadata(db: Database)
         patch("oncofiles.sync.generate_filename_description", return_value="PathologyKrasResults"),
         patch("oncofiles.server._extract_pdf_text", return_value=["Pathology report text"]),
     ):
-        stats = await sync_from_gdrive(db, files, gdrive, "folder123")
+        stats = await sync_from_gdrive(db, files, gdrive, "folder123", patient_id="erika")
 
     assert stats["new"] == 1
     assert stats["errors"] == 0
 
-    docs = await db.list_documents()
+    docs = await db.list_documents(patient_id="erika")
     assert len(docs) == 1
     doc = docs[0]
     # Verify backfilled fields
@@ -838,7 +848,7 @@ async def test_sync_records_history(db: Database):
         patch("oncofiles.sync.enhance_document_text", return_value=("summary", '["labs"]')),
         patch("oncofiles.sync.extract_structured_metadata", return_value={"diagnoses": []}),
     ):
-        stats = await sync(db, files, gdrive, "folder123", trigger="test")
+        stats = await sync(db, files, gdrive, "folder123", trigger="test", patient_id="erika")
 
     assert stats.get("skipped") is not True
 
@@ -860,7 +870,7 @@ async def test_sync_history_records_failure(db: Database):
     import contextlib
 
     with contextlib.suppress(Exception):
-        await sync(db, files, gdrive, "folder123", trigger="test_fail")
+        await sync(db, files, gdrive, "folder123", trigger="test_fail", patient_id="erika")
 
     history = await db.get_sync_history(limit=1)
     assert len(history) == 1

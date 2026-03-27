@@ -77,7 +77,7 @@ class GmailMixin:
             return _row_to_email_entry(row) if row else None
 
     async def get_email_entry_by_gmail_id(
-        self, gmail_message_id: str, patient_id: str = "erika"
+        self, gmail_message_id: str, patient_id: str
     ) -> EmailEntry | None:
         """Get an email entry by Gmail message ID."""
         async with self.db.execute(
@@ -88,7 +88,7 @@ class GmailMixin:
             return _row_to_email_entry(row) if row else None
 
     async def search_email_entries(
-        self, query: EmailQuery, patient_id: str = "erika"
+        self, query: EmailQuery, patient_id: str
     ) -> list[EmailEntry]:
         """Search email entries with text, date, and medical filters."""
         conditions = ["patient_id = ?"]
@@ -117,7 +117,7 @@ class GmailMixin:
             return [_row_to_email_entry(r) for r in rows]
 
     async def list_email_entries(
-        self, patient_id: str = "erika", limit: int = 50
+        self, patient_id: str, limit: int = 50
     ) -> list[EmailEntry]:
         """List recent email entries."""
         async with self.db.execute(
@@ -127,7 +127,7 @@ class GmailMixin:
             rows = await cursor.fetchall()
             return [_row_to_email_entry(r) for r in rows]
 
-    async def count_email_entries(self, patient_id: str = "erika") -> int:
+    async def count_email_entries(self, patient_id: str) -> int:
         """Count email entries for a user."""
         async with self.db.execute(
             "SELECT COUNT(*) FROM email_entries WHERE patient_id = ?", (patient_id,)

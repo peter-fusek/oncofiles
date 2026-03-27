@@ -186,7 +186,7 @@ async def calendar_sync(
     calendar: CalendarClient,
     initial: bool = False,
     *,
-    patient_id: str = "erika",
+    patient_id: str,
 ) -> dict:
     """Sync medical events from Google Calendar.
 
@@ -217,7 +217,7 @@ async def _calendar_sync_inner(
     calendar: CalendarClient,
     initial: bool,
     *,
-    patient_id: str = "erika",
+    patient_id: str,
 ) -> dict:
     """Inner sync logic."""
     stats: dict = {

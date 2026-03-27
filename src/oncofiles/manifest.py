@@ -15,12 +15,12 @@ logger = logging.getLogger(__name__)
 MANIFEST_VERSION = "1.0"
 
 
-async def export_manifest(db: Database) -> dict:
+async def export_manifest(db: Database, *, patient_id: str = "erika") -> dict:
     """Serialize all DB tables into a manifest dict."""
-    documents = await db.list_documents(limit=200)
-    conversations = await db.get_conversation_timeline(limit=200)
-    treatment_events = await db.get_treatment_events_timeline(limit=200)
-    research_entries = await db.list_research_entries(limit=200)
+    documents = await db.list_documents(limit=200, patient_id=patient_id)
+    conversations = await db.get_conversation_timeline(limit=200, patient_id=patient_id)
+    treatment_events = await db.get_treatment_events_timeline(limit=200, patient_id=patient_id)
+    research_entries = await db.list_research_entries(limit=200, patient_id=patient_id)
     agent_states = await db.list_agent_states()
 
     return {

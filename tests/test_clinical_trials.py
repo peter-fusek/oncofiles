@@ -151,7 +151,7 @@ class TestClinicalTrialsDB:
         trial = parse_trial(SAMPLE_STUDY)
         entry_data = trial_to_research_entry(trial)
         entry = ResearchEntry(**entry_data)
-        saved = await db.insert_research_entry(entry)
+        saved = await db.insert_research_entry(entry, patient_id="erika")
 
         assert saved.id is not None
         assert saved.source == "clinicaltrials"
@@ -165,10 +165,10 @@ class TestClinicalTrialsDB:
         entry_data = trial_to_research_entry(trial)
 
         entry1 = ResearchEntry(**entry_data)
-        saved1 = await db.insert_research_entry(entry1)
+        saved1 = await db.insert_research_entry(entry1, patient_id="erika")
 
         entry2 = ResearchEntry(**entry_data)
-        saved2 = await db.insert_research_entry(entry2)
+        saved2 = await db.insert_research_entry(entry2, patient_id="erika")
 
         # Should return same entry (deduplicated)
         assert saved1.id == saved2.id

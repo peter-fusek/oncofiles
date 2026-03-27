@@ -209,7 +209,7 @@ class OperationalMixin:
         return await self.get_oauth_token(token.patient_id, token.provider)
 
     async def get_oauth_token(
-        self, patient_id: str = "erika", provider: str = "google"
+        self, patient_id: str, provider: str = "google"
     ) -> OAuthToken | None:
         """Get OAuth tokens for a user/provider pair."""
         async with self.db.execute(

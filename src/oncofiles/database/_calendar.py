@@ -67,7 +67,7 @@ class CalendarMixin:
             return _row_to_calendar_entry(row) if row else None
 
     async def get_calendar_entry_by_google_id(
-        self, google_event_id: str, patient_id: str = "erika"
+        self, google_event_id: str, patient_id: str
     ) -> CalendarEntry | None:
         """Get a calendar entry by Google event ID."""
         async with self.db.execute(
@@ -78,7 +78,7 @@ class CalendarMixin:
             return _row_to_calendar_entry(row) if row else None
 
     async def search_calendar_entries(
-        self, query: CalendarQuery, patient_id: str = "erika"
+        self, query: CalendarQuery, patient_id: str
     ) -> list[CalendarEntry]:
         """Search calendar entries with text, date, and medical filters."""
         conditions = ["patient_id = ?"]
@@ -104,7 +104,7 @@ class CalendarMixin:
             return [_row_to_calendar_entry(r) for r in rows]
 
     async def list_calendar_entries(
-        self, patient_id: str = "erika", limit: int = 50
+        self, patient_id: str, limit: int = 50
     ) -> list[CalendarEntry]:
         """List recent calendar entries."""
         async with self.db.execute(
@@ -114,7 +114,7 @@ class CalendarMixin:
             rows = await cursor.fetchall()
             return [_row_to_calendar_entry(r) for r in rows]
 
-    async def count_calendar_entries(self, patient_id: str = "erika") -> int:
+    async def count_calendar_entries(self, patient_id: str) -> int:
         """Count calendar entries for a user."""
         async with self.db.execute(
             "SELECT COUNT(*) FROM calendar_entries WHERE patient_id = ?", (patient_id,)

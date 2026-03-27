@@ -20,9 +20,9 @@ def _mock_ctx(db: Database) -> MagicMock:
 async def _seed_lab_data(db: Database) -> int:
     """Insert a doc and multi-date lab values. Returns doc id."""
     doc = make_doc()
-    doc = await db.insert_document(doc)
+    doc = await db.insert_document(doc, patient_id="erika")
     doc2 = make_doc(file_id="file_test456", filename="20260301_NOUonko_labs_bio.pdf")
-    doc2 = await db.insert_document(doc2)
+    doc2 = await db.insert_document(doc2, patient_id="erika")
 
     values = [
         # Date 1: 2026-02-15
@@ -214,7 +214,7 @@ async def test_compare_panels_includes_available_dates(db: Database):
 async def test_compare_panels_one_date_only(db: Database):
     """When a parameter exists on only one date, status is 'only_one_date'."""
     doc = make_doc()
-    doc = await db.insert_document(doc)
+    doc = await db.insert_document(doc, patient_id="erika")
     await db.insert_lab_values(
         [
             make_lab_value(

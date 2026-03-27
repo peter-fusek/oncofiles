@@ -13,7 +13,7 @@ class TestExportDocumentPackage:
 
     @pytest.mark.asyncio
     async def test_empty_database(self, db):
-        docs = await db.list_documents(limit=200)
+        docs = await db.list_documents(limit=200, patient_id="erika")
         assert len(docs) == 0
 
     @pytest.mark.asyncio
@@ -21,20 +21,23 @@ class TestExportDocumentPackage:
         from oncofiles.models import DocumentCategory
 
         await db.insert_document(
-            make_doc(file_id="f1", category=DocumentCategory.LABS, filename="labs1.pdf")
+            make_doc(file_id="f1", category=DocumentCategory.LABS, filename="labs1.pdf"),
+            patient_id="erika",
         )
         await db.insert_document(
-            make_doc(file_id="f2", category=DocumentCategory.LABS, filename="labs2.pdf")
+            make_doc(file_id="f2", category=DocumentCategory.LABS, filename="labs2.pdf"),
+            patient_id="erika",
         )
         await db.insert_document(
             make_doc(
                 file_id="f3",
                 category=DocumentCategory.IMAGING,
                 filename="img1.pdf",
-            )
+            ),
+            patient_id="erika",
         )
 
-        docs = await db.list_documents(limit=200)
+        docs = await db.list_documents(limit=200, patient_id="erika")
         by_cat: dict[str, list] = {}
         for d in docs:
             cat = d.category.value
@@ -54,24 +57,26 @@ class TestExportDocumentPackage:
                 event_date=date(2026, 2, 13),
                 event_type="chemo",
                 title="FOLFOX C1",
-            )
+            ),
+            patient_id="erika",
         )
         await db.insert_treatment_event(
             make_treatment_event(
                 event_date=date(2026, 2, 27),
                 event_type="chemo",
                 title="FOLFOX C2",
-            )
+            ),
+            patient_id="erika",
         )
 
-        events = await db.get_treatment_events_timeline()
+        events = await db.get_treatment_events_timeline(patient_id="erika")
         assert len(events) == 2
         assert events[0].title == "FOLFOX C1"
         assert events[1].title == "FOLFOX C2"
 
     @pytest.mark.asyncio
     async def test_structured_metadata_in_export(self, db):
-        doc = await db.insert_document(make_doc(file_id="f_meta"))
+        doc = await db.insert_document(make_doc(file_id="f_meta"), patient_id="erika")
         metadata = json.dumps({"document_type": "lab_report", "findings": ["anemia"]})
         await db.update_structured_metadata(doc.id, metadata)
 
@@ -92,10 +97,11 @@ class TestExportDocumentPackage:
             DocumentCategory.DISCHARGE_SUMMARY,
         ]:
             await db.insert_document(
-                make_doc(file_id=f"f_{cat.value}", category=cat, filename=f"{cat.value}.pdf")
+                make_doc(file_id=f"f_{cat.value}", category=cat, filename=f"{cat.value}.pdf"),
+                patient_id="erika",
             )
 
-        docs = await db.list_documents(limit=200)
+        docs = await db.list_documents(limit=200, patient_id="erika")
         categories = {d.category.value for d in docs}
         assert "imaging" in categories
         assert "genetics" in categories
@@ -124,7 +130,8 @@ class TestBaselineLabsCheck:
                 event_date=date(2026, 2, 13),
                 event_type="chemo",
                 title="FOLFOX C1",
-            )
+            ),
+            patient_id="erika",
         )
 
         result = await _check_baseline_labs(db)
@@ -142,7 +149,8 @@ class TestBaselineLabsCheck:
                 event_date=date(2026, 2, 13),
                 event_type="chemo",
                 title="FOLFOX C1",
-            )
+            ),
+            patient_id="erika",
         )
 
         # Add lab before chemo date
@@ -150,7 +158,8 @@ class TestBaselineLabsCheck:
             make_doc(
                 file_id="pre_chemo_labs",
                 document_date=date(2026, 2, 10),
-            )
+            ),
+            patient_id="erika",
         )
 
         result = await _check_baseline_labs(db)
@@ -158,9 +167,15 @@ class TestBaselineLabsCheck:
 
     @pytest.mark.asyncio
     async def test_get_labs_before_date(self, db):
-        await db.insert_document(make_doc(file_id="lab1", document_date=date(2026, 2, 1)))
-        await db.insert_document(make_doc(file_id="lab2", document_date=date(2026, 2, 15)))
+        await db.insert_document(
+            make_doc(file_id="lab1", document_date=date(2026, 2, 1)),
+            patient_id="erika",
+        )
+        await db.insert_document(
+            make_doc(file_id="lab2", document_date=date(2026, 2, 15)),
+            patient_id="erika",
+        )
 
-        before = await db.get_labs_before_date("2026-02-10")
+        before = await db.get_labs_before_date("2026-02-10", patient_id="erika")
         assert len(before) == 1
         assert before[0].file_id == "lab1"
