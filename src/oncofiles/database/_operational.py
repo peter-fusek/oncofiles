@@ -208,9 +208,7 @@ class OperationalMixin:
         await self.db.commit()
         return await self.get_oauth_token(token.patient_id, token.provider)
 
-    async def get_oauth_token(
-        self, patient_id: str, provider: str = "google"
-    ) -> OAuthToken | None:
+    async def get_oauth_token(self, patient_id: str, provider: str = "google") -> OAuthToken | None:
         """Get OAuth tokens for a user/provider pair."""
         async with self.db.execute(
             "SELECT * FROM oauth_tokens WHERE patient_id = ? AND provider = ?",

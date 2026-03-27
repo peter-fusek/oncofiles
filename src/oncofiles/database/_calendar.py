@@ -103,9 +103,7 @@ class CalendarMixin:
             rows = await cursor.fetchall()
             return [_row_to_calendar_entry(r) for r in rows]
 
-    async def list_calendar_entries(
-        self, patient_id: str, limit: int = 50
-    ) -> list[CalendarEntry]:
+    async def list_calendar_entries(self, patient_id: str, limit: int = 50) -> list[CalendarEntry]:
         """List recent calendar entries."""
         async with self.db.execute(
             "SELECT * FROM calendar_entries WHERE patient_id = ? ORDER BY start_time DESC LIMIT ?",

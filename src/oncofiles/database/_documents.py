@@ -63,9 +63,7 @@ class DocumentMixin:
             rows = await cursor.fetchall()
             return {doc.id: doc for row in rows if (doc := _row_to_document(row))}
 
-    async def get_document_by_file_id(
-        self, file_id: str, *, patient_id: str
-    ) -> Document | None:
+    async def get_document_by_file_id(self, file_id: str, *, patient_id: str) -> Document | None:
         """Get a document by its Anthropic Files API file_id."""
         async with self.db.execute(
             "SELECT * FROM documents WHERE file_id = ? AND patient_id = ?",
@@ -112,9 +110,7 @@ class DocumentMixin:
             rows = await cursor.fetchall()
             return [_row_to_document(r) for r in rows]
 
-    async def search_documents(
-        self, query: SearchQuery, *, patient_id: str
-    ) -> list[Document]:
+    async def search_documents(self, query: SearchQuery, *, patient_id: str) -> list[Document]:
         """Search documents with relevance scoring and multi-term matching.
 
         When text is provided, terms are split on whitespace and ALL must
@@ -506,9 +502,7 @@ class DocumentMixin:
 
     # ── Lab-related document queries ──────────────────────────────────────
 
-    async def get_labs_before_date(
-        self, before_date: str, *, patient_id: str
-    ) -> list[Document]:
+    async def get_labs_before_date(self, before_date: str, *, patient_id: str) -> list[Document]:
         """Get lab documents dated before a given date."""
         async with self.db.execute(
             "SELECT * FROM documents WHERE category = 'labs' AND document_date < ? "
@@ -655,9 +649,7 @@ class DocumentMixin:
             rows = await cursor.fetchall()
             return [_row_to_document(r) for r in rows]
 
-    async def get_treatment_timeline(
-        self, limit: int = 200, *, patient_id: str
-    ) -> list[Document]:
+    async def get_treatment_timeline(self, limit: int = 200, *, patient_id: str) -> list[Document]:
         """Get treatment documents in chronological (ASC) order."""
         treatment_categories = (
             "surgery",

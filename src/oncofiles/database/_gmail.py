@@ -87,9 +87,7 @@ class GmailMixin:
             row = await cursor.fetchone()
             return _row_to_email_entry(row) if row else None
 
-    async def search_email_entries(
-        self, query: EmailQuery, patient_id: str
-    ) -> list[EmailEntry]:
+    async def search_email_entries(self, query: EmailQuery, patient_id: str) -> list[EmailEntry]:
         """Search email entries with text, date, and medical filters."""
         conditions = ["patient_id = ?"]
         params: list = [patient_id]
@@ -116,9 +114,7 @@ class GmailMixin:
             rows = await cursor.fetchall()
             return [_row_to_email_entry(r) for r in rows]
 
-    async def list_email_entries(
-        self, patient_id: str, limit: int = 50
-    ) -> list[EmailEntry]:
+    async def list_email_entries(self, patient_id: str, limit: int = 50) -> list[EmailEntry]:
         """List recent email entries."""
         async with self.db.execute(
             "SELECT * FROM email_entries WHERE patient_id = ? ORDER BY date DESC LIMIT ?",
