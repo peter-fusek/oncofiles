@@ -2100,8 +2100,18 @@ async def api_stats(request: Request) -> JSONResponse:
     """Public project stats for landing page and llms.txt."""
     from oncofiles.models import DocumentCategory
 
+    doc_count = 0
+    try:
+        db: Database = request.app.state.fastmcp_server._lifespan_result["db"]
+        patients = await db.list_patients(active_only=True)
+        for p in patients:
+            doc_count += await db.count_documents(patient_id=p.patient_id)
+    except Exception:
+        pass
+
     return JSONResponse(
         {
+            "documents": doc_count,
             "tools": _count_tools(),
             "categories": len(DocumentCategory),
             "tests": TESTS_COUNT,

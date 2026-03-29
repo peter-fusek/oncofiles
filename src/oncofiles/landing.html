@@ -63,6 +63,11 @@
           "@type": "Question",
           "name": "Is my medical data safe?",
           "acceptedAnswer": { "@type": "Answer", "text": "Your files stay in your Google Drive. Oncofiles reads metadata and creates AI summaries but never moves or copies your original files. All data is encrypted in transit." }
+        },
+        {
+          "@type": "Question",
+          "name": "What types of medical documents does Oncofiles support?",
+          "acceptedAnswer": { "@type": "Answer", "text": "Oncofiles automatically categorizes documents into 14 types: labs, imaging (CT/MRI/USG), pathology, genetics, surgery, discharge summaries, prescriptions, referrals, chemo sheets, consultations, and more. PDF, JPEG, PNG, and Excel files are supported with automatic OCR." }
         }
       ]
     },
@@ -1023,11 +1028,15 @@
     <!-- Stats -->
     <section class="stats" id="stats">
       <div class="stat">
+        <div class="number" data-stat="documents">105</div>
+        <div class="label" data-sk="Dokumentov spracovaných" data-en="Documents Synced">Dokumentov spracovaných</div>
+      </div>
+      <div class="stat">
         <div class="number" data-stat="tools">76</div>
         <div class="label" data-sk="AI nástrojov" data-en="AI Tools">AI nástrojov</div>
       </div>
       <div class="stat">
-        <div class="number" data-stat="categories">15</div>
+        <div class="number" data-stat="categories">14</div>
         <div class="label" data-sk="Kategórií dokumentov" data-en="Doc Categories">Kategórií dokumentov</div>
       </div>
       <div class="stat">
@@ -1035,7 +1044,7 @@
         <div class="label" data-sk="Testov prechádza" data-en="Tests Passing">Testov prechádza</div>
       </div>
       <div class="stat">
-        <div class="number" data-stat="version">v4.1.0</div>
+        <div class="number" data-stat="version">v4.9.0</div>
         <div class="label" data-sk="Aktuálna verzia" data-en="Current Version">Aktuálna verzia</div>
       </div>
     </section>
@@ -1085,7 +1094,7 @@
 
   <script>
     fetch('/api/stats').then(function(r){return r.json()}).then(function(d){
-      var m = {'tools': d.tools, 'categories': d.categories, 'tests': d.tests, 'version': 'v'+d.version};
+      var m = {'documents': d.documents, 'tools': d.tools, 'categories': d.categories, 'tests': d.tests, 'version': 'v'+d.version};
       Object.keys(m).forEach(function(k){
         var el = document.querySelector('[data-stat="'+k+'"]');
         if(el) el.textContent = m[k];
