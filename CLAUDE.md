@@ -23,7 +23,7 @@ uv run ruff check
 - FastMCP 3.0+ for MCP server
 - Pydantic for data models
 - ruff for linting/formatting
-- Filenames follow standard convention: `YYYYMMDD_ErikaFusekova_Institution_Category_DescriptionEN.ext`
+- Filenames follow standard convention: `YYYYMMDD_PatientName_Institution_Category_DescriptionEN.ext`
   - Separators: underscores only
   - Description: English, CamelCase, max 60 chars
   - Category tokens: Labs, Report, Pathology, CT, USG, Genetics, Surgery, SurgicalReport, Prescription, Referral, Discharge, DischargeSummary, ChemoSheet, Reference, Advocate, Other
@@ -39,7 +39,7 @@ uv run ruff check
 
 ## Deployment
 
-- **Railway**: `aware-kindness-production.up.railway.app` (streamable-http at /mcp)
+- **Railway**: `oncofiles.com` (streamable-http at /mcp)
 - Push to `main` auto-deploys via Railway
 - 607 tests, CI green
 
