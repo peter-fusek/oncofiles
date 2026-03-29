@@ -1975,7 +1975,7 @@ async def llms_txt(request: Request) -> HTMLResponse:
         f"clinical trial search, and treatment event logging.\n"
         f"\n"
         f"## Key Features\n"
-        f"- 15 medical document categories (labs, imaging, pathology, genetics, etc.)\n"
+        f"- 14 medical document categories (labs, imaging, pathology, genetics, etc.)\n"
         f"- AI-powered OCR, summaries, tags, and structured metadata extraction\n"
         f"- Bidirectional Google Drive sync with auto-rename and folder organization\n"
         f"- Lab value tracking with trends, reference ranges, and pre-cycle safety checks\n"
@@ -2113,7 +2113,7 @@ async def api_stats(request: Request) -> JSONResponse:
         {
             "documents": doc_count,
             "tools": _count_tools(),
-            "categories": len(DocumentCategory),
+            "categories": len(DocumentCategory) - 2,  # exclude legacy aliases
             "tests": TESTS_COUNT,
             "version": VERSION,
         }
