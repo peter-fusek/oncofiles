@@ -52,10 +52,20 @@ _MEDICAL_KEYWORDS = [
     "doctor",
     "MUDr",
     "onkolog",
-    "Fusekova",
-    "fusekova",
-    "Erika",
 ]
+
+
+def _get_medical_keywords() -> list[str]:
+    """Return medical keywords including dynamic patient name terms."""
+    from oncofiles.patient_context import get_patient_name
+
+    keywords = list(_MEDICAL_KEYWORDS)
+    name = get_patient_name().strip()
+    if name:
+        for part in name.split():
+            if part and part not in keywords:
+                keywords.append(part)
+    return keywords
 
 
 async def _classify_event_medical(
@@ -71,9 +81,9 @@ async def _classify_event_medical(
     from oncofiles.prompt_logger import log_ai_call
 
     if not ANTHROPIC_API_KEY:
-        # Fallback: keyword matching
+        # Fallback: keyword matching (includes dynamic patient name terms)
         text = f"{summary} {description} {location}".lower()
-        for kw in _MEDICAL_KEYWORDS:
+        for kw in _get_medical_keywords():
             if kw.lower() in text:
                 return True, 0.7, "other_medical"
         return False, 0.0, "not_medical"
@@ -128,9 +138,9 @@ async def _classify_event_medical(
         )
     except Exception:
         logger.warning("Calendar event classification failed: %s", summary[:60], exc_info=True)
-        # Fallback to keyword match
+        # Fallback to keyword match (includes dynamic patient name terms)
         text_combined = f"{summary} {description} {location}".lower()
-        for kw in _MEDICAL_KEYWORDS:
+        for kw in _get_medical_keywords():
             if kw.lower() in text_combined:
                 return True, 0.5, "other_medical"
         return False, 0.0, "not_medical"

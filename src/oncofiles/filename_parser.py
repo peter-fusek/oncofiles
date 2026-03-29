@@ -1,11 +1,11 @@
 """Parse medical document filenames following the naming convention.
 
-Standard format (v3.15+): YYYYMMDD_ErikaFusekova_Institution_Category_DescriptionEN.ext
+Standard format (v3.15+): YYYYMMDD_PatientName_Institution_Category_DescriptionEN.ext
 Examples:
-    20260227_ErikaFusekova_NOU_Labs_BloodResultsBeforeCycle2DrPorsok.pdf
-    20260122_ErikaFusekova_BoryNemocnica_Discharge_DischargeSummaryAfterSurgery.pdf
+    20260227_PatientName_NOU_Labs_BloodResultsBeforeCycle2DrPorsok.pdf
+    20260122_PatientName_BoryNemocnica_Discharge_DischargeSummaryAfterSurgery.pdf
 
-Bilingual format (v3.5-3.14): YYYYMMDD ErikaFusekova-Institution-Category-SKDescription.ext
+Bilingual format (v3.5-3.14): YYYYMMDD PatientName-Institution-Category-SKDescription.ext
 Legacy format (still supported): YYYYMMDD_institution_category_description.ext
 """
 
@@ -221,7 +221,7 @@ def _patient_prefix_re() -> re.Pattern:
         compact = name.replace(" ", "")
         _cached_patient_re = re.compile(rf"^{re.escape(compact)}[-]?", re.IGNORECASE)
     else:
-        _cached_patient_re = re.compile(r"^ErikaFusekova[-]?", re.IGNORECASE)
+        _cached_patient_re = re.compile(r"^Patient[-]?", re.IGNORECASE)
     return _cached_patient_re
 
 
@@ -285,7 +285,7 @@ def _parse_standard_format(stem: str, ext: str) -> ParsedFilename | None:
     # First part should be patient name (e.g. "ErikaFusekova")
     from oncofiles.patient_context import get_patient_name
 
-    patient_name_compact = get_patient_name().replace(" ", "") or "ErikaFusekova"
+    patient_name_compact = get_patient_name().replace(" ", "") or "Patient"
     if parts[0].lower() != patient_name_compact.lower():
         return None  # Not standard format
 
@@ -394,7 +394,7 @@ def parse_filename(filename: str) -> ParsedFilename:
 
     from oncofiles.patient_context import get_patient_name
 
-    patient_name_compact = get_patient_name().replace(" ", "") or "ErikaFusekova"
+    patient_name_compact = get_patient_name().replace(" ", "") or "Patient"
 
     # Try standard format first: YYYYMMDD_PatientName_Institution_Category_Description
     if f"_{patient_name_compact}_" in stem or stem.startswith(f"{patient_name_compact}_"):
@@ -486,7 +486,7 @@ def rename_to_standard(
 
     from oncofiles.patient_context import get_patient_name
 
-    patient_compact = get_patient_name().replace(" ", "") or "ErikaFusekova"
+    patient_compact = get_patient_name().replace(" ", "") or "Patient"
 
     # Use provided EN description, or fall back to existing description
     desc = en_description or parsed.description or ""
@@ -528,7 +528,7 @@ def is_standard_format(filename: str) -> bool:
     stem = PurePosixPath(filename).stem
     from oncofiles.patient_context import get_patient_name
 
-    patient_name_compact = get_patient_name().replace(" ", "") or "ErikaFusekova"
+    patient_name_compact = get_patient_name().replace(" ", "") or "Patient"
 
     # Standard format: YYYYMMDD_PatientName_Institution_CategoryToken_Description
     if not _DATE_RE.match(stem):
@@ -562,7 +562,7 @@ def is_corrupted_filename(filename: str) -> bool:
     # Repeating patient name pattern (3+ consecutive occurrences)
     from oncofiles.patient_context import get_patient_name
 
-    patient = get_patient_name().replace(" ", "") or "ErikaFusekova"
+    patient = get_patient_name().replace(" ", "") or "Patient"
     return stem.count(patient) >= 3
 
 
@@ -612,7 +612,7 @@ def rename_to_bilingual(filename: str, category: DocumentCategory | str | None =
     # Reconstruct: YYYYMMDD PatientName-Institution-Category-Description.ext
     from oncofiles.patient_context import get_patient_name
 
-    patient_compact = get_patient_name().replace(" ", "") or "ErikaFusekova"
+    patient_compact = get_patient_name().replace(" ", "") or "Patient"
     parts = []
     if parsed.document_date:
         parts.append(parsed.document_date.strftime("%Y%m%d"))

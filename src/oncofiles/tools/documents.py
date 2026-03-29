@@ -37,8 +37,8 @@ async def upload_document(
     """Upload a medical document to persistent storage.
 
     The filename should follow the standard convention:
-    YYYYMMDD_ErikaFusekova_Institution_Category_DescriptionEN.ext
-    (e.g. 20260227_ErikaFusekova_NOU_Labs_BloodResultsBeforeCycle2.pdf)
+    YYYYMMDD_PatientName_Institution_Category_DescriptionEN.ext
+    (e.g. 20260227_PatientName_NOU_Labs_BloodResultsBeforeCycle2.pdf)
 
     Legacy formats (space+dash, underscore-separated) are also accepted and
     auto-parsed. Separators: underscores only. Description: English, CamelCase.

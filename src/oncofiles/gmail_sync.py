@@ -25,11 +25,9 @@ _LOCK_TIMEOUT = 600
 # Initial scan date
 _INITIAL_SCAN_AFTER = "2025/12/01"
 
-# Gmail search query for medical pre-filtering
-_BASE_MEDICAL_QUERY = (
-    "("
-    "erika fusekova OR fusekova erika OR fusekova "  # patient name
-    "OR lab OR laboratory OR výsledky OR vyšetrenie OR vysetrenie "  # lab terms
+# Gmail search query for medical pre-filtering (patient name added dynamically)
+_BASE_MEDICAL_TERMS = (
+    "lab OR laboratory OR výsledky OR vyšetrenie OR vysetrenie "  # lab terms
     "OR onkologia OR onkologický OR chemoterapia OR chemo "  # oncology SK
     "OR oncology OR pathology OR radiology OR CT OR MRI "  # medical EN
     "OR nemocnica OR hospital OR klinika OR ambulancia "  # places
@@ -37,8 +35,31 @@ _BASE_MEDICAL_QUERY = (
     "OR recept OR prescription OR prepúšťacia OR discharge "
     "OR NOU OR OUSA OR UNB OR Medirex OR Alpha OR Synlab "  # known institutions
     "OR has:attachment filename:pdf OR has:attachment filename:jpg"  # doc attachments
-    ")"
 )
+
+
+def _build_patient_query_clause() -> str:
+    """Build patient-name search terms from patient context."""
+    from oncofiles.patient_context import get_patient_name
+
+    name = get_patient_name().strip()
+    if not name:
+        return ""
+    parts = name.split()
+    if len(parts) >= 2:
+        # "Erika Fusekova" → "erika fusekova OR fusekova erika OR fusekova"
+        first, last = parts[0], parts[-1]
+        return f"{first} {last} OR {last} {first} OR {last} "
+    return f"{name} "
+
+
+def _build_base_medical_query() -> str:
+    """Build the full base medical query with dynamic patient name."""
+    patient_clause = _build_patient_query_clause()
+    if patient_clause:
+        return f"({patient_clause}OR {_BASE_MEDICAL_TERMS})"
+    return f"({_BASE_MEDICAL_TERMS})"
+
 
 # Supported attachment types for document pipeline
 _DOC_MIME_TYPES = {
@@ -51,10 +72,11 @@ _DOC_MIME_TYPES = {
 
 def _build_gmail_query(after_date: str, learned_senders: list[str] | None = None) -> str:
     """Build Gmail search query with date filter and optional learned senders."""
-    query = f"after:{after_date} {_BASE_MEDICAL_QUERY}"
+    base_query = _build_base_medical_query()
+    query = f"after:{after_date} {base_query}"
     if learned_senders:
         sender_clause = " OR ".join(f"from:{s}" for s in learned_senders[:20])
-        query = f"after:{after_date} ({_BASE_MEDICAL_QUERY} OR {sender_clause})"
+        query = f"after:{after_date} ({base_query} OR {sender_clause})"
     return query
 
 

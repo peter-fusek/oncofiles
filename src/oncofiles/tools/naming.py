@@ -66,7 +66,7 @@ async def rename_documents_to_standard(
             from oncofiles.filename_parser import CATEGORY_FILENAME_TOKENS
             from oncofiles.patient_context import get_patient_name
 
-            patient = get_patient_name().replace(" ", "") or "ErikaFusekova"
+            patient = get_patient_name().replace(" ", "") or "Patient"
             cat_token = CATEGORY_FILENAME_TOKENS.get(doc.category, "Other")
             if doc.document_date:
                 date_str = doc.document_date.strftime("%Y%m%d")

@@ -76,9 +76,20 @@ class PatientResolutionMiddleware(Middleware):
                             resolved = await db.resolve_patient_from_token(raw_token)
                             if resolved:
                                 patient_id = resolved
-                    # Fallback: resolve default patient from DB
+                    # Fallback depends on transport mode
                     if not patient_id:
-                        patient_id = await db.resolve_default_patient()
+                        if session and hasattr(session, "_access_token"):
+                            # HTTP transport: token was present but invalid/unmapped
+                            # → do NOT serve default patient data
+                            logger.error(
+                                "HTTP token present but no patient resolved — "
+                                "refusing fallback (token=%s...)",
+                                token_key[:8],
+                            )
+                            # patient_id stays "" → tool calls will fail gracefully
+                        else:
+                            # stdio transport (dev/Claude Desktop): no token expected
+                            patient_id = await db.resolve_default_patient()
         except Exception:
             logger.warning("Patient resolution failed, defaulting to empty", exc_info=True)
 
