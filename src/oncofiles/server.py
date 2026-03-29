@@ -2043,7 +2043,7 @@ async def health(request: Request) -> JSONResponse:
         result["memory"] = get_rss_trend()
         result["semaphores"] = get_semaphore_status()
     except Exception:
-        pass  # still return 200 even if lifespan context unavailable during startup
+        logger.debug("Health: lifespan context not yet available", exc_info=True)
     return JSONResponse(result)
 
 
@@ -2092,7 +2092,8 @@ def _count_tools() -> int:
     try:
         return sum(1 for k in mcp._local_provider._components if k.startswith("tool:"))
     except Exception:
-        return 65  # fallback
+        logger.warning("_count_tools: introspection failed, using fallback", exc_info=True)
+        return 76  # fallback — update when tool count changes
 
 
 @mcp.custom_route("/api/stats", methods=["GET"])
@@ -2107,7 +2108,7 @@ async def api_stats(request: Request) -> JSONResponse:
         for p in patients:
             doc_count += await db.count_documents(patient_id=p.patient_id)
     except Exception:
-        pass
+        logger.warning("api_stats: failed to count documents", exc_info=True)
 
     return JSONResponse(
         {
@@ -2347,12 +2348,17 @@ async def _get_dashboard_patient_id(request: Request) -> str:
     Accepts either a UUID or a slug (e.g. 'erika').  Always returns
     the UUID patient_id suitable for DB queries.
     """
-    raw = request.query_params.get("patient_id", "erika").strip().lower()
+    raw = request.query_params.get("patient_id", "").strip().lower()
+    if not raw:
+        raw = "erika"  # fallback slug for dashboard without explicit patient_id
     try:
         db: Database = request.app.state.fastmcp_server._lifespan_result["db"]
         resolved = await db.resolve_patient_id(raw)
+        if not resolved:
+            logger.warning("_get_dashboard_patient_id: no patient found for '%s'", raw)
         return resolved or raw
     except Exception:
+        logger.error("_get_dashboard_patient_id: resolution failed for '%s'", raw, exc_info=True)
         return raw
 
 
@@ -3484,12 +3490,15 @@ async def oauth_authorize(request: Request) -> JSONResponse:
         return JSONResponse({"error": "OAuth not configured"}, status_code=500)
 
     service = request.path_params.get("service", "drive")
-    raw_pid = request.query_params.get("patient_id", "erika").strip().lower()
+    raw_pid = request.query_params.get("patient_id", "").strip().lower()
+    if not raw_pid:
+        raw_pid = "erika"
     # Resolve slug → UUID (e.g. "erika" → UUID); pass through if already UUID
     try:
         db_inst: Database = request.app.state.fastmcp_server._lifespan_result["db"]
         patient_id = await db_inst.resolve_patient_id(raw_pid) or raw_pid
     except Exception:
+        logger.error("OAuth connect: patient resolution failed for '%s'", raw_pid, exc_info=True)
         patient_id = raw_pid
     scope_map = {
         "drive": SCOPES,
@@ -3515,7 +3524,7 @@ async def oauth_callback(request: Request) -> JSONResponse:
     # Validate CSRF state parameter and extract patient_id
     state = request.query_params.get("state", "")
     valid, patient_id = verify_state_token(state)
-    if not valid:
+    if not valid or not patient_id:
         return JSONResponse({"error": "Invalid or expired state parameter."}, status_code=400)
 
     code = request.query_params.get("code")

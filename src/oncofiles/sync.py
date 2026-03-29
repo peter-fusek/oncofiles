@@ -185,7 +185,11 @@ async def sync_from_gdrive(
             existing = None
             oncofiles_id = app_props.get("oncofiles_id")
             if oncofiles_id:
-                candidate = await db.get_document(int(oncofiles_id))
+                try:
+                    candidate = await db.get_document(int(oncofiles_id))
+                except (ValueError, TypeError):
+                    logger.warning("sync: invalid oncofiles_id '%s' on %s", oncofiles_id, gdrive_id)
+                    candidate = None
                 # Only trust appProperties match if doc belongs to this patient
                 if candidate:
                     doc_pid = await _get_doc_patient_id(db, candidate.id)
@@ -1291,7 +1295,9 @@ async def enhance_documents(
         for doc_id in document_ids:
             doc = await db.get_document(doc_id)
             if doc:
-                docs.append(doc)
+                doc_pid = await _get_doc_patient_id(db, doc.id)
+                if doc_pid == patient_id:
+                    docs.append(doc)
     else:
         docs = await db.get_documents_without_ai(patient_id=patient_id)
 
