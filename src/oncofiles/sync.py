@@ -269,7 +269,7 @@ async def sync_from_gdrive(
                 if enhance:
                     try:
                         await asyncio.wait_for(
-                            _enhance_document(db, existing, files, gdrive),
+                            _enhance_document(db, existing, files, gdrive, patient_id=patient_id),
                             timeout=60.0,
                         )
                     except TimeoutError:
@@ -356,7 +356,7 @@ async def sync_from_gdrive(
                 if enhance:
                     try:
                         await asyncio.wait_for(
-                            _enhance_document(db, doc, files, gdrive),
+                            _enhance_document(db, doc, files, gdrive, patient_id=patient_id),
                             timeout=60.0,
                         )
                     except TimeoutError:
@@ -575,7 +575,7 @@ async def sync_to_gdrive(
                 try:
                     doc = await db.get_document(doc_id)
                     await asyncio.wait_for(
-                        _enhance_document(db, doc, files, gdrive),
+                        _enhance_document(db, doc, files, gdrive, patient_id=patient_id),
                         timeout=60.0,
                     )
                     logger.info("sync_to_gdrive: post-rename enhanced doc %d", doc_id)
@@ -594,7 +594,11 @@ async def sync_to_gdrive(
             all_gaps = []
             for doc_id in rename_stats["renamed_ids"]:
                 gaps = await _assert_doc_pipeline_complete(
-                    db, doc_id, gdrive=gdrive, organized_folder_ids=organized_folder_ids
+                    db,
+                    doc_id,
+                    gdrive=gdrive,
+                    organized_folder_ids=organized_folder_ids,
+                    patient_id=patient_id,
                 )
                 all_gaps.extend(gaps)
             if all_gaps:
@@ -758,6 +762,7 @@ async def _assert_doc_pipeline_complete(
     doc_id: int,
     gdrive: GDriveClient | None = None,
     organized_folder_ids: set[str] | None = None,
+    patient_id: str = "",
 ) -> list[str]:
     """Check that a document has completed the full pipeline.
 
@@ -770,7 +775,7 @@ async def _assert_doc_pipeline_complete(
     except Exception:
         return [f"doc {doc_id}: not found in DB"]
 
-    if not is_standard_format(doc.filename):
+    if not is_standard_format(doc.filename, patient_id=patient_id):
         gaps.append(f"doc {doc_id}: filename not in standard format ({doc.filename})")
     if not doc.gdrive_id:
         gaps.append(f"doc {doc_id}: no gdrive_id (not exported)")
@@ -1320,7 +1325,7 @@ async def enhance_documents(
     for doc in docs:
         try:
             enhanced = await asyncio.wait_for(
-                _enhance_document(db, doc, files, gdrive),
+                _enhance_document(db, doc, files, gdrive, patient_id=patient_id),
                 timeout=60.0,
             )
             if enhanced:
@@ -1487,6 +1492,7 @@ async def _enhance_document(
     doc: Document,
     files: FilesClient,
     gdrive: GDriveClient | None = None,
+    patient_id: str = "",
 ) -> bool:
     """Run AI enhancement on a single document. Returns True if enhanced."""
     # Get text from OCR cache
@@ -1651,7 +1657,7 @@ async def _enhance_document(
                 logger.info("enhance: doc %d — backfill institution=%s", doc.id, inst)
 
         # Description: generate English CamelCase description if filename is non-standard
-        if not is_standard_format(doc.filename):
+        if not is_standard_format(doc.filename, patient_id=patient_id):
             try:
                 desc = generate_filename_description(full_text, db=db, document_id=doc.id)
                 if desc:
@@ -1666,7 +1672,7 @@ async def _enhance_document(
                 document_date=backfill_date,
                 institution=backfill_institution,
                 description=backfill_description,
-                force_description=not is_standard_format(doc.filename),
+                force_description=not is_standard_format(doc.filename, patient_id=patient_id),
             )
             logger.info(
                 "enhance: doc %d — backfilled fields (date=%s, inst=%s, desc=%s)",

@@ -55,12 +55,12 @@ _MEDICAL_KEYWORDS = [
 ]
 
 
-def _get_medical_keywords() -> list[str]:
+def _get_medical_keywords(patient_id: str = "") -> list[str]:
     """Return medical keywords including dynamic patient name terms."""
     from oncofiles.patient_context import get_patient_name
 
     keywords = list(_MEDICAL_KEYWORDS)
-    name = get_patient_name().strip()
+    name = get_patient_name(patient_id).strip()
     if name:
         for part in name.split():
             if part and part not in keywords:

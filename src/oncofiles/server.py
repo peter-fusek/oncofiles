@@ -2226,7 +2226,9 @@ async def status(request: Request) -> JSONResponse:
                 "with_date": sum(1 for d in all_docs if d.document_date),
                 "with_institution": sum(1 for d in all_docs if d.institution),
                 "synced": sum(1 for d in all_docs if d.gdrive_id),
-                "standard_named": sum(1 for d in all_docs if is_standard_format(d.filename)),
+                "standard_named": sum(
+                    1 for d in all_docs if is_standard_format(d.filename, patient_id=patient_id)
+                ),
             }
 
             # Google service connection status

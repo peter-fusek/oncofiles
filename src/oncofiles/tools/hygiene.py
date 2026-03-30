@@ -733,7 +733,7 @@ async def _build_document_matrix(
             "has_ai": doc.ai_summary is not None,
             "has_metadata": bool(doc.structured_metadata),
             "is_synced": doc.gdrive_id is not None,
-            "is_standard": is_standard_format(doc.filename),
+            "is_standard": is_standard_format(doc.filename, patient_id=pid),
             "has_date": doc.document_date is not None,
             "has_institution": doc.institution is not None,
         }
@@ -844,12 +844,13 @@ async def get_pipeline_status(ctx: Context) -> str:
     db = _get_db(ctx)
 
     # Pipeline stage counts
-    docs = await db.list_documents(limit=500, patient_id=_get_patient_id())
+    pid = _get_patient_id()
+    docs = await db.list_documents(limit=500, patient_id=pid)
     total = len(docs)
     with_ai = sum(1 for d in docs if d.ai_summary)
     with_metadata = sum(1 for d in docs if d.structured_metadata and d.structured_metadata != "")
     synced = sum(1 for d in docs if d.gdrive_id)
-    standard = sum(1 for d in docs if is_standard_format(d.filename))
+    standard = sum(1 for d in docs if is_standard_format(d.filename, patient_id=pid))
     with_date = sum(1 for d in docs if d.document_date)
     with_institution = sum(1 for d in docs if d.institution)
 
@@ -884,7 +885,7 @@ async def get_pipeline_status(ctx: Context) -> str:
                 and d.gdrive_id
                 and d.document_date
                 and d.institution
-                and is_standard_format(d.filename)
+                and is_standard_format(d.filename, patient_id=pid)
             ),
         },
         "scheduled_jobs": [
