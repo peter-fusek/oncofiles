@@ -58,7 +58,9 @@ CONF_MAX_DOCS = MAX_DOCUMENTS_PER_PATIENT
 TESTS_COUNT = 607
 
 # Global sync semaphore — limits concurrent sync operations (GDrive + Gmail + Calendar)
-_sync_semaphore = asyncio.Semaphore(2)
+_sync_semaphore = asyncio.Semaphore(
+    1
+)  # serialize all patient-touching jobs (Turso single-connection)
 
 # In-memory share codes: {code: {patient_id, bearer_token, patient_name, created_at}}
 _share_codes: dict[str, dict] = {}
@@ -2305,7 +2307,10 @@ async def metrics(request: Request) -> JSONResponse:
 
     try:
         db: Database = request.app.state.fastmcp_server._lifespan_result["db"]
-        doc_count = await db.count_documents()
+        patients = await db.list_patients(active_only=True)
+        doc_count = 0
+        for p in patients:
+            doc_count += await db.count_documents(patient_id=p.patient_id)
 
         # Memory usage (RSS in MB)
         rusage = resource.getrusage(resource.RUSAGE_SELF)
@@ -2408,7 +2413,15 @@ async def _get_dashboard_patient_id(request: Request) -> str:
     """
     raw = request.query_params.get("patient_id", "").strip().lower()
     if not raw:
-        raw = "erika"  # fallback slug for dashboard without explicit patient_id
+        # Fall back to first active patient instead of hardcoded "erika"
+        try:
+            db_fb: Database = request.app.state.fastmcp_server._lifespan_result["db"]
+            patients = await db_fb.list_patients(active_only=True)
+            if patients:
+                return patients[0].patient_id
+        except Exception:
+            pass
+        return ""
     try:
         db: Database = request.app.state.fastmcp_server._lifespan_result["db"]
         resolved = await db.resolve_patient_id(raw)
@@ -2784,7 +2797,17 @@ async def dashboard_verify(request: Request) -> JSONResponse:
     if email_verified not in ("true", True):
         return JSONResponse({"error": "email not verified"}, status_code=401)
 
-    if email not in DASHBOARD_ALLOWED_EMAILS:
+    allowed = set(DASHBOARD_ALLOWED_EMAILS)
+    # Also allow caregiver emails from the patients table
+    try:
+        db_auth: Database = request.app.state.fastmcp_server._lifespan_result["db"]
+        all_patients = await db_auth.list_patients(active_only=True)
+        for p in all_patients:
+            if p.caregiver_email:
+                allowed.add(p.caregiver_email.lower())
+    except Exception:
+        pass
+    if email not in allowed:
         logger.warning("Dashboard login denied for: %s", email)
         return JSONResponse({"error": "access denied for this email"}, status_code=403)
 
@@ -2838,14 +2861,14 @@ async def api_reconciliation(request: Request) -> JSONResponse:
 
         lifespan_ctx = request.app.state.fastmcp_server._lifespan_result
         db: Database = lifespan_ctx["db"]
-        gdrive = lifespan_ctx.get("gdrive")
         patient_id = await _get_dashboard_patient_id(request)
-        # Use per-patient GDrive folder, fall back to global only if this patient has OAuth
+        # Use per-patient GDrive client instead of global
+        gdrive = None
         folder_id = ""
         if patient_id:
-            token = await db.get_oauth_token(patient_id, "google")
-            if token:
-                folder_id = token.gdrive_folder_id or lifespan_ctx.get("gdrive_folder_id", "")
+            clients = await _create_patient_clients(db, patient_id)
+            if clients:
+                gdrive, _, _, folder_id = clients
         if not gdrive or not folder_id:
             # No GDrive configured for this patient — return empty
             return JSONResponse(
@@ -2935,8 +2958,8 @@ async def api_usage_analytics(request: Request) -> JSONResponse:
 
         # Sequential — Turso single-connection can't handle concurrent queries
         prompt_stats = await db_inst.get_prompt_stats(days=days, patient_id=pid)
-        tool_stats = await db_inst.get_tool_usage_stats(days=days)
-        pipeline_stats = await db_inst.get_pipeline_stats()
+        tool_stats = await db_inst.get_tool_usage_stats(days=days, patient_id=pid)
+        pipeline_stats = await db_inst.get_pipeline_stats(patient_id=pid)
         latency = await db_inst.get_prompt_latency_percentiles(days=days, patient_id=pid)
 
         from dataclasses import asdict
@@ -3138,7 +3161,7 @@ async def api_create_patient(request: Request) -> JSONResponse:
                 {"error": "patient_id must be lowercase alphanumeric with - or _ (2-50 chars)"},
                 status_code=400,
             )
-        existing = await db_inst.get_patient(patient_id)
+        existing = await db_inst.get_patient_by_slug(patient_id)
         if existing:
             return JSONResponse(
                 {"error": f"Patient '{patient_id}' already exists"}, status_code=409
@@ -3554,7 +3577,7 @@ async def oauth_authorize(request: Request) -> JSONResponse:
     service = request.path_params.get("service", "drive")
     raw_pid = request.query_params.get("patient_id", "").strip().lower()
     if not raw_pid:
-        raw_pid = "erika"
+        return JSONResponse({"error": "patient_id required"}, status_code=400)
     # Resolve slug → UUID (e.g. "erika" → UUID); pass through if already UUID
     try:
         db_inst: Database = request.app.state.fastmcp_server._lifespan_result["db"]

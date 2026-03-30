@@ -119,7 +119,7 @@ async def gdrive_set_folder(ctx: Context, folder_id: str) -> str:
     await db.update_oauth_folder(pid, token.provider, folder_id)
 
     # Detect folder owner and store for permission sharing
-    gdrive = _get_gdrive(ctx)
+    gdrive = await _get_gdrive(ctx)
     owner_email = None
     if gdrive:
         owner_email = await asyncio.to_thread(gdrive.get_folder_owner, folder_id)
@@ -165,7 +165,7 @@ async def gdrive_sync(
 
     db = _get_db(ctx)
     files = _get_files(ctx)
-    gdrive = _get_gdrive(ctx)
+    gdrive = await _get_gdrive(ctx)
     patient_id = _get_patient_id()
     if not gdrive:
         msg = "GDrive client not configured. Use gdrive_auth_url to connect."
@@ -259,7 +259,7 @@ async def sync_from_gdrive(
 
     db = _get_db(ctx)
     files = _get_files(ctx)
-    gdrive = _get_gdrive(ctx)
+    gdrive = await _get_gdrive(ctx)
     patient_id = _get_patient_id()
     if not gdrive:
         return json.dumps({"error": "GDrive client not configured"})
@@ -296,7 +296,7 @@ async def sync_to_gdrive(
 
     db = _get_db(ctx)
     files = _get_files(ctx)
-    gdrive = _get_gdrive(ctx)
+    gdrive = await _get_gdrive(ctx)
     patient_id = _get_patient_id()
     if not gdrive:
         return json.dumps({"error": "GDrive client not configured"})
@@ -330,7 +330,7 @@ async def gdrive_fix_permissions(
         email: Email to grant access to. If omitted, detects from folder owner.
     """
     db = _get_db(ctx)
-    gdrive = _get_gdrive(ctx)
+    gdrive = await _get_gdrive(ctx)
     if not gdrive:
         return json.dumps({"error": "GDrive client not configured."})
 
@@ -376,7 +376,7 @@ async def setup_gdrive(ctx: Context, root_folder_id: str) -> str:
     """
     from oncofiles.gdrive_folders import ALL_FOLDERS, bilingual_name
 
-    gdrive = _get_gdrive(ctx)
+    gdrive = await _get_gdrive(ctx)
     if not gdrive:
         msg = "GDrive client not configured. Use gdrive_auth_url to connect."
         return json.dumps({"error": msg})

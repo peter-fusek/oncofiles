@@ -38,24 +38,23 @@ _BASE_MEDICAL_TERMS = (
 )
 
 
-def _build_patient_query_clause() -> str:
+def _build_patient_query_clause(patient_id: str = "") -> str:
     """Build patient-name search terms from patient context."""
     from oncofiles.patient_context import get_patient_name
 
-    name = get_patient_name().strip()
+    name = get_patient_name(patient_id).strip()
     if not name:
         return ""
     parts = name.split()
     if len(parts) >= 2:
-        # "Erika Fusekova" → "erika fusekova OR fusekova erika OR fusekova"
         first, last = parts[0], parts[-1]
         return f"{first} {last} OR {last} {first} OR {last} "
     return f"{name} "
 
 
-def _build_base_medical_query() -> str:
+def _build_base_medical_query(patient_id: str = "") -> str:
     """Build the full base medical query with dynamic patient name."""
-    patient_clause = _build_patient_query_clause()
+    patient_clause = _build_patient_query_clause(patient_id)
     if patient_clause:
         return f"({patient_clause}OR {_BASE_MEDICAL_TERMS})"
     return f"({_BASE_MEDICAL_TERMS})"
@@ -70,9 +69,11 @@ _DOC_MIME_TYPES = {
 }
 
 
-def _build_gmail_query(after_date: str, learned_senders: list[str] | None = None) -> str:
+def _build_gmail_query(
+    after_date: str, learned_senders: list[str] | None = None, patient_id: str = ""
+) -> str:
     """Build Gmail search query with date filter and optional learned senders."""
-    base_query = _build_base_medical_query()
+    base_query = _build_base_medical_query(patient_id)
     query = f"after:{after_date} {base_query}"
     if learned_senders:
         sender_clause = " OR ".join(f"from:{s}" for s in learned_senders[:20])

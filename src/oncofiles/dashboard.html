@@ -943,11 +943,11 @@
         <h2 data-sk="Vytvoriť pacienta" data-en="Create Patient">Vytvoriť pacienta</h2>
         <div class="wizard-field">
           <label for="wiz-name" data-sk="Meno pacienta *" data-en="Patient name *">Meno pacienta *</label>
-          <input type="text" id="wiz-name" placeholder="napr. Erika Fusekova" required>
+          <input type="text" id="wiz-name" placeholder="napr. Meno Priezvisko" required>
         </div>
         <div class="wizard-field">
           <label for="wiz-id" data-sk="ID pacienta (slug) *" data-en="Patient ID (slug) *">ID pacienta (slug) *</label>
-          <input type="text" id="wiz-id" placeholder="napr. erika-fusekova" pattern="[a-z0-9_-]+">
+          <input type="text" id="wiz-id" placeholder="napr. meno-priezvisko" pattern="[a-z0-9_-]+">
         </div>
         <div class="wizard-field">
           <label for="wiz-diagnosis" data-sk="Diagnóza / typ rakoviny" data-en="Diagnosis / cancer type">Diagnóza / typ rakoviny</label>
@@ -2087,7 +2087,7 @@
             'AI Summary': 'AI-generated summary and tags. Triggered by: after OCR completion. Uses: Claude Haiku with system prompt asking for medical document summary, key findings, diagnoses.',
             'Metadata': 'Structured data extraction (document_type, findings, diagnoses, medications, providers). Triggered by: after AI summary. Uses: Claude Haiku with JSON schema prompt.',
             'Synced': 'Bidirectional Google Drive sync. Files exported to organized category/year-month folders with standard naming.',
-            'Named': 'Standard filename format: YYYYMMDD_ErikaFusekova_Institution_Category_Description.ext. Auto-renamed during sync.',
+            'Named': 'Standard filename format: YYYYMMDD_PatientName_Institution_Category_Description.ext. Auto-renamed during sync.',
             'Complete': 'All pipeline stages passed: OCR + AI Summary + Metadata + Synced + Named. The document is fully processed.'
           };
           var existing = document.getElementById('funnel-tooltip');

@@ -7,7 +7,12 @@ import json
 from fastmcp import Context
 
 from oncofiles.models import LabTrendQuery, LabValue
-from oncofiles.tools._helpers import _clamp_limit, _gdrive_url, _get_db, _parse_date
+from oncofiles.tools._helpers import (
+    _clamp_limit,
+    _gdrive_url,
+    _get_db,
+    _parse_date,
+)
 
 
 async def store_lab_values(
@@ -46,6 +51,9 @@ async def store_lab_values(
         return json.dumps({"error": str(e)})
 
     db = _get_db(ctx)
+    from oncofiles.tools._helpers import _get_patient_id
+
+    pid = _get_patient_id()
 
     # Verify document exists
     doc = await db.get_document(document_id)
@@ -53,7 +61,7 @@ async def store_lab_values(
         return json.dumps({"error": f"Document not found: {document_id}"})
 
     # Dedup check 1: document already has stored values
-    existing = await db.get_lab_snapshot(document_id)
+    existing = await db.get_lab_snapshot(document_id, patient_id=pid)
     if existing and not force:
         return json.dumps(
             {
@@ -98,6 +106,7 @@ async def store_lab_values(
     date_collision = None
     date_existing = await db.get_lab_values_by_date(
         parsed_date.isoformat(),
+        patient_id=pid,
     )
     other_docs = {v.document_id for v in date_existing if v.document_id != document_id}
     if other_docs:
@@ -143,11 +152,14 @@ async def get_lab_trends(
     """
     try:
         db = _get_db(ctx)
+        from oncofiles.tools._helpers import _get_patient_id
+
         query = LabTrendQuery(
             parameter=parameter,
             date_from=_parse_date(date_from),
             date_to=_parse_date(date_to),
             limit=_clamp_limit(limit),
+            patient_id=_get_patient_id(),
         )
         values = await db.get_lab_trends(query)
     except ValueError as e:
@@ -248,6 +260,9 @@ async def get_lab_safety_check(ctx: Context) -> str:
     Used by Oncoteam's clinical protocol UI for the "Laborat. prahy" section.
     """
     db = _get_db(ctx)
+    from oncofiles.tools._helpers import _get_patient_id
+
+    pid = _get_patient_id()
     results = []
 
     for param, threshold in _MFOLFOX6_THRESHOLDS.items():
@@ -267,7 +282,7 @@ async def get_lab_safety_check(ctx: Context) -> str:
             entry["threshold_type"] = "max"
 
         # Get latest value
-        latest = await db.get_latest_lab_value(param)
+        latest = await db.get_latest_lab_value(param, patient_id=pid)
         if latest:
             entry["last_value"] = latest.value
             entry["last_date"] = latest.lab_date.isoformat()
@@ -487,6 +502,9 @@ async def get_precycle_checklist(ctx: Context, cycle_number: int = 3) -> str:
         cycle_number: Current cycle number (for display context).
     """
     db = _get_db(ctx)
+    from oncofiles.tools._helpers import _get_patient_id
+
+    pid = _get_patient_id()
     sections = []
 
     for section_key, section in _PRECYCLE_CHECKLIST.items():
@@ -501,7 +519,7 @@ async def get_precycle_checklist(ctx: Context, cycle_number: int = 3) -> str:
 
             # For items linked to a lab parameter, fetch latest value
             if item["parameter"]:
-                latest = await db.get_latest_lab_value(item["parameter"])
+                latest = await db.get_latest_lab_value(item["parameter"], patient_id=pid)
                 if latest:
                     entry["last_value"] = latest.value
                     entry["last_date"] = latest.lab_date.isoformat()
@@ -547,6 +565,9 @@ async def get_lab_time_series(
         date_to: End date filter (YYYY-MM-DD). Optional.
     """
     db = _get_db(ctx)
+    from oncofiles.tools._helpers import _get_patient_id
+
+    pid = _get_patient_id()
     param_list = [p.strip() for p in parameters.split(",") if p.strip()]
     if not param_list:
         return json.dumps({"error": "No parameters specified"})
@@ -559,7 +580,9 @@ async def get_lab_time_series(
 
     result: dict = {"parameters": {}}
     for param in param_list:
-        query = LabTrendQuery(parameter=param, date_from=parsed_from, date_to=parsed_to, limit=200)
+        query = LabTrendQuery(
+            parameter=param, date_from=parsed_from, date_to=parsed_to, limit=200, patient_id=pid
+        )
         values = await db.get_lab_trends(query)
         series = []
         prev_value = None
@@ -603,14 +626,17 @@ async def compare_lab_panels(
         date_b: Second date (YYYY-MM-DD), typically the later measurement.
     """
     db = _get_db(ctx)
+    from oncofiles.tools._helpers import _get_patient_id
+
+    pid = _get_patient_id()
     try:
         _parse_date(date_a)
         _parse_date(date_b)
     except ValueError as e:
         return json.dumps({"error": str(e)})
 
-    values_a = await db.get_lab_values_by_date(date_a)
-    values_b = await db.get_lab_values_by_date(date_b)
+    values_a = await db.get_lab_values_by_date(date_a, patient_id=pid)
+    values_b = await db.get_lab_values_by_date(date_b, patient_id=pid)
 
     map_a = {v.parameter: v for v in values_a}
     map_b = {v.parameter: v for v in values_b}
@@ -665,7 +691,7 @@ async def compare_lab_panels(
             "date_b": date_b,
             "parameters": comparisons,
             "total": len(comparisons),
-            "available_dates": await db.get_distinct_lab_dates(),
+            "available_dates": await db.get_distinct_lab_dates(patient_id=pid),
         }
     )
 
@@ -679,10 +705,13 @@ async def get_lab_summary(ctx: Context) -> str:
     """
     from datetime import date as date_type
 
+    from oncofiles.tools._helpers import _get_patient_id
+
     db = _get_db(ctx)
-    latest_values = await db.get_all_latest_lab_values()
+    pid = _get_patient_id()
+    latest_values = await db.get_all_latest_lab_values(patient_id=pid)
     # Batch-fetch previous values for trend calculation (single query instead of N)
-    previous_values = await db.get_previous_lab_values()
+    previous_values = await db.get_previous_lab_values(patient_id=pid)
 
     today = date_type.today()
     summaries = []
@@ -765,7 +794,7 @@ async def get_lab_summary(ctx: Context) -> str:
             "parameters": summaries,
             "computed_indices": computed,
             "total_parameters": len(summaries),
-            "available_dates": await db.get_distinct_lab_dates(),
+            "available_dates": await db.get_distinct_lab_dates(patient_id=pid),
         }
     )
 

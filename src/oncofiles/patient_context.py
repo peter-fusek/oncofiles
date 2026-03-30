@@ -33,18 +33,23 @@ _DEFAULT_CONTEXT: dict[str, Any] = {
     "note": "",
 }
 
-# Module-level mutable context — loaded at startup, updated via tools
+# Per-patient context cache — keyed by patient_id
+_contexts: dict[str, dict[str, Any]] = {}
+# Legacy alias for backward compat during migration
 _context: dict[str, Any] = {}
 
 
-def get_context() -> dict[str, Any]:
-    """Return the current patient context dict."""
+def get_context(patient_id: str | None = None) -> dict[str, Any]:
+    """Return the patient context dict. If patient_id given, returns per-patient context."""
+    if patient_id and patient_id in _contexts:
+        return _contexts[patient_id]
+    # Fallback to legacy global for backward compat
     return _context if _context else _DEFAULT_CONTEXT.copy()
 
 
-def get_patient_name() -> str:
+def get_patient_name(patient_id: str | None = None) -> str:
     """Return the patient's name from context."""
-    return get_context().get("name", "")
+    return get_context(patient_id).get("name", "")
 
 
 def load_from_json(path: str | Path) -> dict[str, Any]:
@@ -58,48 +63,84 @@ def load_from_json(path: str | Path) -> dict[str, Any]:
     return {}
 
 
-async def load_from_db(db: Any) -> dict[str, Any]:
-    """Load patient context from the database (patient_context table)."""
+async def load_from_db(db: Any, patient_id: str | None = None) -> dict[str, Any]:
+    """Load patient context from the database (patient_context table).
+
+    If patient_id is given, loads that patient's context.
+    Otherwise loads the legacy id=1 row (backward compat).
+    """
     try:
-        async with db.execute("SELECT context_json FROM patient_context WHERE id = 1") as cursor:
-            row = await cursor.fetchone()
-            if row:
-                data_str = row["context_json"] if isinstance(row, dict) else row[0]
-                data = json.loads(data_str)
-                _context.update(data)
-                logger.info("Patient context loaded from database")
-                return _context
+        if patient_id:
+            async with db.execute(
+                "SELECT context_json FROM patient_context WHERE patient_id = ?",
+                (patient_id,),
+            ) as cursor:
+                row = await cursor.fetchone()
+        else:
+            async with db.execute(
+                "SELECT context_json FROM patient_context WHERE id = 1"
+            ) as cursor:
+                row = await cursor.fetchone()
+        if row:
+            data_str = row["context_json"] if isinstance(row, dict) else row[0]
+            data = json.loads(data_str)
+            if patient_id:
+                _contexts[patient_id] = data
+            _context.update(data)
+            logger.info(
+                "Patient context loaded from database (patient_id=%s)", patient_id or "legacy"
+            )
+            return data
     except Exception:
         logger.debug("No patient context in database (table may not exist yet)")
     return {}
 
 
-async def save_to_db(db: Any, context: dict[str, Any] | None = None) -> None:
-    """Save current patient context to the database."""
-    data = context or _context
-    await db.execute(
-        """
-        INSERT INTO patient_context (id, context_json, updated_at)
-        VALUES (1, ?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
-        ON CONFLICT(id) DO UPDATE SET
-            context_json = excluded.context_json,
-            updated_at = excluded.updated_at
-        """,
-        (json.dumps(data, ensure_ascii=False),),
-    )
+async def save_to_db(
+    db: Any, context: dict[str, Any] | None = None, *, patient_id: str | None = None
+) -> None:
+    """Save patient context to the database. Per-patient if patient_id given."""
+    data = context or (get_context(patient_id) if patient_id else _context)
+    json_data = json.dumps(data, ensure_ascii=False)
+    if patient_id:
+        await db.execute(
+            """
+            INSERT INTO patient_context (patient_id, context_json, updated_at)
+            VALUES (?, ?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+            ON CONFLICT(patient_id) DO UPDATE SET
+                context_json = excluded.context_json,
+                updated_at = excluded.updated_at
+            """,
+            (patient_id, json_data),
+        )
+    else:
+        await db.execute(
+            """
+            INSERT INTO patient_context (id, context_json, updated_at)
+            VALUES (1, ?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+            ON CONFLICT(id) DO UPDATE SET
+                context_json = excluded.context_json,
+                updated_at = excluded.updated_at
+            """,
+            (json_data,),
+        )
     await db.commit()
+    if patient_id:
+        _contexts[patient_id] = data
 
 
-def update_context(updates: dict[str, Any]) -> dict[str, Any]:
-    """Merge updates into the current context. Returns the updated context."""
-    ctx = get_context()
+def update_context(updates: dict[str, Any], patient_id: str | None = None) -> dict[str, Any]:
+    """Merge updates into the context. Returns the updated context."""
+    ctx = get_context(patient_id).copy()
     for key, value in updates.items():
         if isinstance(value, dict) and isinstance(ctx.get(key), dict):
             ctx[key].update(value)
         else:
             ctx[key] = value
+    if patient_id:
+        _contexts[patient_id] = ctx
     _context.update(ctx)
-    return _context
+    return ctx
 
 
 async def initialize(db: Any, json_path: str | Path | None = None) -> dict[str, Any]:

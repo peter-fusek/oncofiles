@@ -58,7 +58,7 @@ async def reconcile_gdrive(
         dry_run: If True (default), report issues without making changes.
                  If False, move files, rename folders, and clean up backups.
     """
-    gdrive = _get_gdrive(ctx)
+    gdrive = await _get_gdrive(ctx)
     if not gdrive:
         return json.dumps({"error": "GDrive client not configured"})
 
@@ -178,7 +178,7 @@ async def validate_categories(
                  If False, update categories and move GDrive files.
     """
     db = _get_db(ctx)
-    gdrive = _get_gdrive(ctx)
+    gdrive = await _get_gdrive(ctx)
 
     docs = await db.list_documents(limit=500, patient_id=_get_patient_id())
     valid_categories = {c.value for c in DocumentCategory}

@@ -260,95 +260,173 @@ class ClinicalMixin:
         """Get lab values filtered by parameter and date range, chronological order."""
         conditions: list[str] = []
         params: list[str | int | float] = []
+        join = ""
 
+        if query.patient_id:
+            join = "JOIN documents d ON d.id = lv.document_id"
+            conditions.append("d.patient_id = ?")
+            params.append(query.patient_id)
         if query.parameter:
-            conditions.append("parameter = ?")
+            conditions.append("lv.parameter = ?")
             params.append(query.parameter)
         if query.date_from:
-            conditions.append("lab_date >= ?")
+            conditions.append("lv.lab_date >= ?")
             params.append(query.date_from.isoformat())
         if query.date_to:
-            conditions.append("lab_date <= ?")
+            conditions.append("lv.lab_date <= ?")
             params.append(query.date_to.isoformat())
 
         where = " AND ".join(conditions) if conditions else "1=1"
-        sql = f"SELECT * FROM lab_values WHERE {where} ORDER BY lab_date ASC, parameter ASC LIMIT ?"
+        sql = (
+            f"SELECT lv.* FROM lab_values lv {join} WHERE {where}"
+            " ORDER BY lv.lab_date ASC, lv.parameter ASC LIMIT ?"
+        )
         params.append(query.limit)
 
         async with self.db.execute(sql, params) as cursor:
             rows = await cursor.fetchall()
             return [_row_to_lab_value(r) for r in rows]
 
-    async def get_lab_snapshot(self, document_id: int) -> list[LabValue]:
+    async def get_lab_snapshot(self, document_id: int, *, patient_id: str = "") -> list[LabValue]:
         """Get all lab values from a specific document."""
-        async with self.db.execute(
-            "SELECT * FROM lab_values WHERE document_id = ? ORDER BY parameter",
-            (document_id,),
-        ) as cursor:
-            rows = await cursor.fetchall()
-            return [_row_to_lab_value(r) for r in rows]
+        if patient_id:
+            async with self.db.execute(
+                """SELECT lv.* FROM lab_values lv
+                   JOIN documents d ON d.id = lv.document_id
+                   WHERE lv.document_id = ? AND d.patient_id = ?
+                   ORDER BY lv.parameter""",
+                (document_id, patient_id),
+            ) as cursor:
+                rows = await cursor.fetchall()
+        else:
+            async with self.db.execute(
+                "SELECT * FROM lab_values WHERE document_id = ? ORDER BY parameter",
+                (document_id,),
+            ) as cursor:
+                rows = await cursor.fetchall()
+        return [_row_to_lab_value(r) for r in rows]
 
-    async def get_latest_lab_value(self, parameter: str) -> LabValue | None:
+    async def get_latest_lab_value(
+        self, parameter: str, *, patient_id: str = ""
+    ) -> LabValue | None:
         """Get the most recent value for a given parameter."""
-        async with self.db.execute(
-            "SELECT * FROM lab_values WHERE parameter = ? ORDER BY lab_date DESC LIMIT 1",
-            (parameter,),
-        ) as cursor:
+        if patient_id:
+            sql = """SELECT lv.* FROM lab_values lv
+                     JOIN documents d ON d.id = lv.document_id
+                     WHERE lv.parameter = ? AND d.patient_id = ?
+                     ORDER BY lv.lab_date DESC LIMIT 1"""
+            params: tuple = (parameter, patient_id)
+        else:
+            sql = "SELECT * FROM lab_values WHERE parameter = ? ORDER BY lab_date DESC LIMIT 1"
+            params = (parameter,)
+        async with self.db.execute(sql, params) as cursor:
             row = await cursor.fetchone()
             return _row_to_lab_value(row) if row else None
 
-    async def get_all_latest_lab_values(self) -> list[LabValue]:
+    async def get_all_latest_lab_values(self, *, patient_id: str = "") -> list[LabValue]:
         """Get the most recent value for every tracked parameter."""
-        async with self.db.execute(
+        if patient_id:
+            sql = """
+                SELECT lv.* FROM lab_values lv
+                JOIN documents d ON d.id = lv.document_id
+                INNER JOIN (
+                    SELECT lv2.parameter, MAX(lv2.lab_date) AS max_date
+                    FROM lab_values lv2
+                    JOIN documents d2 ON d2.id = lv2.document_id
+                    WHERE d2.patient_id = ?
+                    GROUP BY lv2.parameter
+                ) latest ON lv.parameter = latest.parameter
+                    AND lv.lab_date = latest.max_date
+                WHERE d.patient_id = ?
+                ORDER BY lv.parameter
             """
-            SELECT lv.* FROM lab_values lv
-            INNER JOIN (
-                SELECT parameter, MAX(lab_date) AS max_date
-                FROM lab_values GROUP BY parameter
-            ) latest ON lv.parameter = latest.parameter
-                AND lv.lab_date = latest.max_date
-            ORDER BY lv.parameter
-            """,
-        ) as cursor:
+            params_t: tuple = (patient_id, patient_id)
+        else:
+            sql = """
+                SELECT lv.* FROM lab_values lv
+                INNER JOIN (
+                    SELECT parameter, MAX(lab_date) AS max_date
+                    FROM lab_values GROUP BY parameter
+                ) latest ON lv.parameter = latest.parameter
+                    AND lv.lab_date = latest.max_date
+                ORDER BY lv.parameter
+            """
+            params_t = ()
+        async with self.db.execute(sql, params_t) as cursor:
             rows = await cursor.fetchall()
             return [_row_to_lab_value(r) for r in rows]
 
-    async def get_previous_lab_values(self) -> dict[str, LabValue]:
-        """Get the second-most-recent value for every parameter (for trend calculation).
-
-        Returns {parameter: LabValue} for the value just before the latest.
-        """
-        async with self.db.execute(
+    async def get_previous_lab_values(self, *, patient_id: str = "") -> dict[str, LabValue]:
+        """Get the second-most-recent value for every parameter (for trend calculation)."""
+        if patient_id:
+            sql = """
+                SELECT lv.* FROM lab_values lv
+                JOIN documents d ON d.id = lv.document_id
+                INNER JOIN (
+                    SELECT lv2.parameter, MAX(lv2.lab_date) AS max_date
+                    FROM lab_values lv2
+                    JOIN documents d2 ON d2.id = lv2.document_id
+                    WHERE d2.patient_id = ?
+                    GROUP BY lv2.parameter
+                ) latest ON lv.parameter = latest.parameter
+                WHERE d.patient_id = ?
+                AND lv.lab_date < latest.max_date
+                AND lv.lab_date = (
+                    SELECT MAX(lv3.lab_date) FROM lab_values lv3
+                    JOIN documents d3 ON d3.id = lv3.document_id
+                    WHERE lv3.parameter = lv.parameter AND lv3.lab_date < latest.max_date
+                    AND d3.patient_id = ?
+                )
+                ORDER BY lv.parameter
             """
-            SELECT lv.* FROM lab_values lv
-            INNER JOIN (
-                SELECT parameter, MAX(lab_date) AS max_date
-                FROM lab_values GROUP BY parameter
-            ) latest ON lv.parameter = latest.parameter
-            WHERE lv.lab_date < latest.max_date
-            AND lv.lab_date = (
-                SELECT MAX(lv2.lab_date) FROM lab_values lv2
-                WHERE lv2.parameter = lv.parameter AND lv2.lab_date < latest.max_date
-            )
-            ORDER BY lv.parameter
-            """,
-        ) as cursor:
+            params_t2: tuple = (patient_id, patient_id, patient_id)
+        else:
+            sql = """
+                SELECT lv.* FROM lab_values lv
+                INNER JOIN (
+                    SELECT parameter, MAX(lab_date) AS max_date
+                    FROM lab_values GROUP BY parameter
+                ) latest ON lv.parameter = latest.parameter
+                WHERE lv.lab_date < latest.max_date
+                AND lv.lab_date = (
+                    SELECT MAX(lv2.lab_date) FROM lab_values lv2
+                    WHERE lv2.parameter = lv.parameter AND lv2.lab_date < latest.max_date
+                )
+                ORDER BY lv.parameter
+            """
+            params_t2 = ()
+        async with self.db.execute(sql, params_t2) as cursor:
             rows = await cursor.fetchall()
             return {v.parameter: v for r in rows if (v := _row_to_lab_value(r))}
 
-    async def get_lab_values_by_date(self, lab_date: str) -> list[LabValue]:
+    async def get_lab_values_by_date(
+        self, lab_date: str, *, patient_id: str = ""
+    ) -> list[LabValue]:
         """Get all lab values for a specific date."""
-        async with self.db.execute(
-            "SELECT * FROM lab_values WHERE lab_date = ? ORDER BY parameter",
-            (lab_date,),
-        ) as cursor:
+        if patient_id:
+            sql = """SELECT lv.* FROM lab_values lv
+                     JOIN documents d ON d.id = lv.document_id
+                     WHERE lv.lab_date = ? AND d.patient_id = ?
+                     ORDER BY lv.parameter"""
+            params_d: tuple = (lab_date, patient_id)
+        else:
+            sql = "SELECT * FROM lab_values WHERE lab_date = ? ORDER BY parameter"
+            params_d = (lab_date,)
+        async with self.db.execute(sql, params_d) as cursor:
             rows = await cursor.fetchall()
             return [_row_to_lab_value(r) for r in rows]
 
-    async def get_distinct_lab_dates(self) -> list[str]:
+    async def get_distinct_lab_dates(self, *, patient_id: str = "") -> list[str]:
         """Get all distinct lab dates, most recent first."""
-        async with self.db.execute(
-            "SELECT DISTINCT lab_date FROM lab_values ORDER BY lab_date DESC",
-        ) as cursor:
+        if patient_id:
+            sql = """SELECT DISTINCT lv.lab_date FROM lab_values lv
+                     JOIN documents d ON d.id = lv.document_id
+                     WHERE d.patient_id = ?
+                     ORDER BY lv.lab_date DESC"""
+            params_dd: tuple = (patient_id,)
+        else:
+            sql = "SELECT DISTINCT lab_date FROM lab_values ORDER BY lab_date DESC"
+            params_dd = ()
+        async with self.db.execute(sql, params_dd) as cursor:
             rows = await cursor.fetchall()
             return [row["lab_date"] if isinstance(row, dict) else row[0] for row in rows]

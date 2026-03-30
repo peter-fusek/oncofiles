@@ -31,7 +31,7 @@ async def enhance_documents(
 
     db = _get_db(ctx)
     files = _get_files(ctx)
-    gdrive = _get_gdrive(ctx)
+    gdrive = await _get_gdrive(ctx)
 
     parsed_ids = (
         [int(d.strip()) for d in document_ids.split(",") if d.strip()] if document_ids else None
@@ -59,7 +59,7 @@ async def extract_document_metadata(
 
     db = _get_db(ctx)
     files = _get_files(ctx)
-    gdrive = _get_gdrive(ctx)
+    gdrive = await _get_gdrive(ctx)
 
     doc = await db.get_document(document_id)
     if not doc:
@@ -100,7 +100,7 @@ async def extract_all_metadata(ctx: Context) -> str:
 
     db = _get_db(ctx)
     files = _get_files(ctx)
-    gdrive = _get_gdrive(ctx)
+    gdrive = await _get_gdrive(ctx)
 
     pid = _get_patient_id()
     stats = await _extract_all_metadata(db, files, gdrive, patient_id=pid)

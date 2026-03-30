@@ -37,7 +37,7 @@ async def rename_documents_to_standard(
     from oncofiles.sync import _SYNC_LOCK_TIMEOUT, _sync_lock, _sync_lock_acquired_at
 
     db = _get_db(ctx)
-    gdrive = _get_gdrive(ctx)
+    gdrive = await _get_gdrive(ctx)
 
     # Parse en_descriptions if provided
     desc_map: dict[int, str] = {}

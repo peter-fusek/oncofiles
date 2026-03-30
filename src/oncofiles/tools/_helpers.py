@@ -78,18 +78,40 @@ def _get_files(ctx: Context) -> FilesClient:
     return ctx.request_context.lifespan_context["files"]
 
 
-def _get_gdrive(ctx: Context) -> GDriveClient | None:
+async def _get_gdrive(ctx: Context) -> GDriveClient | None:
+    """Get GDrive client for the current patient (per-patient isolation)."""
+    clients = await _get_patient_clients(ctx)
+    if clients:
+        return clients[0]
     return ctx.request_context.lifespan_context.get("gdrive")
 
 
-def _get_gmail_client(ctx: Context):
-    """Get Gmail client from lifespan context (None if not configured)."""
+async def _get_gmail_client(ctx: Context):
+    """Get Gmail client for the current patient (per-patient isolation)."""
+    clients = await _get_patient_clients(ctx)
+    if clients:
+        return clients[1]
     return ctx.request_context.lifespan_context.get("gmail_client")
 
 
-def _get_calendar_client(ctx: Context):
-    """Get Calendar client from lifespan context (None if not configured)."""
+async def _get_calendar_client(ctx: Context):
+    """Get Calendar client for the current patient (per-patient isolation)."""
+    clients = await _get_patient_clients(ctx)
+    if clients:
+        return clients[2]
     return ctx.request_context.lifespan_context.get("calendar_client")
+
+
+async def _get_patient_clients(ctx: Context) -> tuple | None:
+    """Load per-patient GDrive/Gmail/Calendar clients via _create_patient_clients."""
+    pid = _get_patient_id()
+    if not pid:
+        return None
+    db = _get_db(ctx)
+    # Import here to avoid circular imports
+    from oncofiles.server import _create_patient_clients
+
+    return await _create_patient_clients(db, pid)
 
 
 def _parse_date(value: str | None) -> date | None:

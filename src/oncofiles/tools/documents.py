@@ -126,7 +126,7 @@ async def upload_document(
 
     # Auto-sync to GDrive if available
     gdrive_id = None
-    gdrive = _get_gdrive(ctx)
+    gdrive = await _get_gdrive(ctx)
     if gdrive:
         try:
             folder_id = ctx.request_context.lifespan_context.get("gdrive_folder_id")
@@ -525,7 +525,7 @@ async def update_document_category(ctx: Context, doc_id: int, category: str) -> 
 
     # Immediately move file in GDrive to match new category
     gdrive_moved = False
-    gdrive = _get_gdrive(ctx)
+    gdrive = await _get_gdrive(ctx)
     if gdrive and doc.gdrive_id and old_category != valid_category.value:
         try:
             folder_id = ctx.request_context.lifespan_context.get("gdrive_folder_id", "")

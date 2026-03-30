@@ -32,7 +32,7 @@ async def view_document(ctx: Context, file_id: str) -> list:
     """
     db = _get_db(ctx)
     files = _get_files(ctx)
-    gdrive = _get_gdrive(ctx)
+    gdrive = await _get_gdrive(ctx)
     doc = await db.get_document_by_file_id(file_id, patient_id=_get_patient_id())
     if not doc:
         return [f"Document not found: {file_id}"]
@@ -70,7 +70,7 @@ async def analyze_labs(
     """
     db = _get_db(ctx)
     files = _get_files(ctx)
-    gdrive = _get_gdrive(ctx)
+    gdrive = await _get_gdrive(ctx)
 
     if file_id:
         doc = await db.get_document_by_file_id(file_id, patient_id=_get_patient_id())
@@ -167,7 +167,7 @@ async def compare_labs(
     """
     db = _get_db(ctx)
     files = _get_files(ctx)
-    gdrive = _get_gdrive(ctx)
+    gdrive = await _get_gdrive(ctx)
     pid = _get_patient_id()
 
     if file_id_a or file_id_b:

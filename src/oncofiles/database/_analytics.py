@@ -138,24 +138,28 @@ class AnalyticsMixin:
 
         return stats
 
-    async def get_tool_usage_stats(self, days: int = 30) -> ToolUsageStats:
+    async def get_tool_usage_stats(self, days: int = 30, *, patient_id: str = "") -> ToolUsageStats:
         """Aggregate MCP tool usage from activity log for the last N days."""
         stats = ToolUsageStats()
+        pid_clause = "AND patient_id = ?" if patient_id else ""
+        params: list = [f"-{days} days"]
+        if patient_id:
+            params.append(patient_id)
 
-        # Top tools with duration and last called
         async with self.db.execute(
-            """
+            f"""
             SELECT tool_name, COUNT(*) as cnt,
                    AVG(duration_ms) as avg_dur,
                    MAX(created_at) as last_called,
                    SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) as err_cnt
             FROM activity_log
             WHERE created_at >= strftime('%Y-%m-%dT%H:%M:%SZ', 'now', ?)
+            {pid_clause}
             GROUP BY tool_name
             ORDER BY cnt DESC
             LIMIT 20
             """,
-            (f"-{days} days",),
+            params,
         ) as cursor:
             rows = await cursor.fetchall()
 
@@ -171,35 +175,35 @@ class AnalyticsMixin:
         ]
         stats.total_calls = sum(t["count"] for t in stats.top_tools)
 
-        # Unique tools count
         async with self.db.execute(
-            """
+            f"""
             SELECT COUNT(DISTINCT tool_name) as cnt
             FROM activity_log
             WHERE created_at >= strftime('%Y-%m-%dT%H:%M:%SZ', 'now', ?)
+            {pid_clause}
             """,
-            (f"-{days} days",),
+            params,
         ) as cursor:
             row = await cursor.fetchone()
             stats.unique_tools = row["cnt"] if row else 0
 
-        # Calls per day
         async with self.db.execute(
-            """
+            f"""
             SELECT DATE(created_at) as day, COUNT(*) as cnt
             FROM activity_log
             WHERE created_at >= strftime('%Y-%m-%dT%H:%M:%SZ', 'now', ?)
+            {pid_clause}
             GROUP BY day
             ORDER BY day
             """,
-            (f"-{days} days",),
+            params,
         ) as cursor:
             rows = await cursor.fetchall()
         stats.calls_per_day = [{"date": r["day"], "count": r["cnt"]} for r in rows]
 
         return stats
 
-    async def get_pipeline_stats(self) -> PipelineStats:
+    async def get_pipeline_stats(self, *, patient_id: str = "") -> PipelineStats:
         """Aggregate sync and enhancement pipeline statistics."""
         stats = PipelineStats()
 
@@ -225,16 +229,19 @@ class AnalyticsMixin:
                 stats.avg_sync_duration_s = row["avg_dur"] or 0.0
 
         # Enhancement status
+        pid_clause2 = "AND patient_id = ?" if patient_id else ""
+        params2 = [patient_id] if patient_id else []
         async with self.db.execute(
-            """
+            f"""
             SELECT
                 SUM(CASE WHEN ai_summary IS NOT NULL
                     AND ai_summary != '' THEN 1 ELSE 0 END) as done,
                 SUM(CASE WHEN ai_summary IS NULL
                     OR ai_summary = '' THEN 1 ELSE 0 END) as pending
             FROM documents
-            WHERE deleted_at IS NULL
-            """
+            WHERE deleted_at IS NULL {pid_clause2}
+            """,
+            params2,
         ) as cursor:
             row = await cursor.fetchone()
             if row:
