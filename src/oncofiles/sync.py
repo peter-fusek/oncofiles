@@ -1188,7 +1188,7 @@ async def _sync_inner(
     if not dry_run:
         try:
             async with db_slot("insert_sync_history", priority=False):
-                sync_id = await db.insert_sync_history(trigger=trigger)
+                sync_id = await db.insert_sync_history(trigger=trigger, patient_id=patient_id)
         except Exception:
             logger.warning("sync: failed to record sync start", exc_info=True)
 

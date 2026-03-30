@@ -249,16 +249,8 @@ async def test_lab_values_by_date_isolated(db: Database):
 
 
 @pytest.mark.asyncio
-@pytest.mark.xfail(
-    reason="agent_state has legacy UNIQUE(agent_id, key) — needs migration to isolate by patient_id"
-)
 async def test_agent_state_per_patient_stored(db: Database):
-    """Agent state stores patient_id, allowing per-patient unique keys.
-
-    KNOWN GAP: The legacy UNIQUE(agent_id, key) constraint causes the second
-    insert to overwrite the first. Needs migration to drop old constraint
-    and rely on UNIQUE(patient_id, agent_id, key) only.
-    """
+    """Agent state stores patient_id, allowing per-patient unique keys."""
     from oncofiles.models import AgentState
 
     await db.set_agent_state(
@@ -268,9 +260,11 @@ async def test_agent_state_per_patient_stored(db: Database):
         AgentState(agent_id="oncoteam", key="memo", value="test data", patient_id=TEST_PATIENT_UUID)
     )
 
-    states = await db.list_agent_states("oncoteam")
-    memo_states = [s for s in states if s.key == "memo"]
-    assert len(memo_states) == 2
+    # Per-patient queries return only that patient's state
+    state_a = await db.get_agent_state("memo", patient_id=ERIKA_UUID)
+    state_b = await db.get_agent_state("memo", patient_id=TEST_PATIENT_UUID)
+    assert state_a is not None and state_a.value == "erika data"
+    assert state_b is not None and state_b.value == "test data"
 
 
 # ── Patient Context ───────────────────────────────────────────────────────────

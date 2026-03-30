@@ -15,7 +15,8 @@ from ._converters import _row_to_activity_log, _row_to_agent_state, _row_to_oaut
 
 # "key" is a reserved word — always quote it in SQL and use aliased SELECT
 _AGENT_STATE_SELECT = (
-    'SELECT id, agent_id, "key" AS state_key, value, created_at, updated_at FROM agent_state'
+    'SELECT id, agent_id, "key" AS state_key, value, patient_id,'
+    " created_at, updated_at FROM agent_state"
 )
 
 
@@ -26,39 +27,43 @@ class OperationalMixin:
 
     async def set_agent_state(self, state: AgentState) -> AgentState:
         """Upsert an agent state key-value pair. Returns the saved state."""
+        pid = getattr(state, "patient_id", "") or ""
         await self.db.execute(
             """
-            INSERT INTO agent_state (agent_id, "key", value, updated_at)
-            VALUES (?, ?, ?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
-            ON CONFLICT(agent_id, "key") DO UPDATE SET
+            INSERT INTO agent_state (patient_id, agent_id, "key", value, updated_at)
+            VALUES (?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+            ON CONFLICT(patient_id, agent_id, "key") DO UPDATE SET
                 value = excluded.value,
                 updated_at = excluded.updated_at
             """,
-            (state.agent_id, state.key, state.value),
+            (pid, state.agent_id, state.key, state.value),
         )
         await self.db.commit()
-        # Re-fetch (lastrowid unreliable on upsert)
         async with self.db.execute(
-            _AGENT_STATE_SELECT + ' WHERE agent_id = ? AND "key" = ?',
-            (state.agent_id, state.key),
+            _AGENT_STATE_SELECT + ' WHERE patient_id = ? AND agent_id = ? AND "key" = ?',
+            (pid, state.agent_id, state.key),
         ) as cursor:
             row = await cursor.fetchone()
             return _row_to_agent_state(row)
 
-    async def get_agent_state(self, key: str, agent_id: str = "oncoteam") -> AgentState | None:
-        """Get a single agent state value by key."""
+    async def get_agent_state(
+        self, key: str, agent_id: str = "oncoteam", *, patient_id: str = ""
+    ) -> AgentState | None:
+        """Get a single agent state value by key, scoped by patient_id."""
         async with self.db.execute(
-            _AGENT_STATE_SELECT + ' WHERE agent_id = ? AND "key" = ?',
-            (agent_id, key),
+            _AGENT_STATE_SELECT + ' WHERE patient_id = ? AND agent_id = ? AND "key" = ?',
+            (patient_id, agent_id, key),
         ) as cursor:
             row = await cursor.fetchone()
             return _row_to_agent_state(row) if row else None
 
-    async def list_agent_states(self, agent_id: str = "oncoteam") -> list[AgentState]:
-        """List all state keys for an agent."""
+    async def list_agent_states(
+        self, agent_id: str = "oncoteam", *, patient_id: str = ""
+    ) -> list[AgentState]:
+        """List all state keys for an agent, scoped by patient_id."""
         async with self.db.execute(
-            _AGENT_STATE_SELECT + ' WHERE agent_id = ? ORDER BY "key"',
-            (agent_id,),
+            _AGENT_STATE_SELECT + ' WHERE patient_id = ? AND agent_id = ? ORDER BY "key"',
+            (patient_id, agent_id),
         ) as cursor:
             rows = await cursor.fetchall()
             return [_row_to_agent_state(r) for r in rows]
@@ -259,7 +264,7 @@ class OperationalMixin:
         await self.db.commit()
         return cursor.rowcount
 
-    async def insert_sync_history(self, trigger: str = "scheduled") -> int:
+    async def insert_sync_history(self, trigger: str = "scheduled", *, patient_id: str = "") -> int:
         """Start a sync history record. Returns the row ID."""
         # Clean up any stale 'running' records first (isolated — don't block insert)
         import logging
@@ -276,10 +281,10 @@ class OperationalMixin:
             )
         await self.db.execute(
             """
-            INSERT INTO sync_history (started_at, sync_trigger, status)
-            VALUES (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'), ?, 'running')
+            INSERT INTO sync_history (started_at, sync_trigger, status, patient_id)
+            VALUES (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'), ?, 'running', ?)
             """,
-            (trigger,),
+            (trigger, patient_id),
         )
         await self.db.commit()
         # lastrowid is unreliable on Turso — fetch the ID explicitly
@@ -340,19 +345,28 @@ class OperationalMixin:
         )
         await self.db.commit()
 
-    async def get_sync_history(self, limit: int = 20) -> list[dict]:
-        """Get recent sync history entries."""
-        async with self.db.execute(
-            "SELECT * FROM sync_history ORDER BY started_at DESC LIMIT ?",
-            (limit,),
-        ) as cursor:
-            rows = await cursor.fetchall()
-            return [dict(r) for r in rows]
+    async def get_sync_history(self, limit: int = 20, *, patient_id: str = "") -> list[dict]:
+        """Get recent sync history entries, optionally filtered by patient."""
+        if patient_id:
+            async with self.db.execute(
+                "SELECT * FROM sync_history WHERE patient_id = ? ORDER BY started_at DESC LIMIT ?",
+                (patient_id, limit),
+            ) as cursor:
+                rows = await cursor.fetchall()
+        else:
+            async with self.db.execute(
+                "SELECT * FROM sync_history ORDER BY started_at DESC LIMIT ?",
+                (limit,),
+            ) as cursor:
+                rows = await cursor.fetchall()
+        return [dict(r) for r in rows]
 
-    async def get_sync_stats_summary(self) -> dict:
+    async def get_sync_stats_summary(self, *, patient_id: str = "") -> dict:
         """Get aggregate sync statistics for system_health."""
+        pid_clause = "AND patient_id = ?" if patient_id else ""
+        params = [patient_id] if patient_id else []
         async with self.db.execute(
-            """
+            f"""
             SELECT
                 COUNT(*) as total_syncs,
                 SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as successful,
@@ -363,7 +377,9 @@ class OperationalMixin:
                 SUM(from_gdrive_errors + to_gdrive_errors) as total_errors
             FROM sync_history
             WHERE started_at >= strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-7 days')
-            """
+            {pid_clause}
+            """,
+            params,
         ) as cursor:
             row = await cursor.fetchone()
             return dict(row) if row else {}

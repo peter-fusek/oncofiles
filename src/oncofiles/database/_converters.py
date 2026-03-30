@@ -59,6 +59,7 @@ def _row_to_agent_state(row: Any) -> AgentState:
         agent_id=d["agent_id"],
         key=d["state_key"],
         value=d["value"],
+        patient_id=d.get("patient_id", ""),
         created_at=datetime.fromisoformat(d["created_at"]) if d["created_at"] else None,
         updated_at=datetime.fromisoformat(d["updated_at"]) if d["updated_at"] else None,
     )

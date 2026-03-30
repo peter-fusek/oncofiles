@@ -180,6 +180,7 @@ class AgentState(BaseModel):
     agent_id: str = "oncoteam"
     key: str
     value: str = "{}"
+    patient_id: str = ""
     created_at: datetime | None = None
     updated_at: datetime | None = None
 

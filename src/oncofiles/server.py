@@ -1393,7 +1393,7 @@ def _start_sync_scheduler(
             start = _time.monotonic()
             try:
                 async with db_slot("startup_insert_sync", priority=False):
-                    sync_id = await db.insert_sync_history(trigger="startup")
+                    sync_id = await db.insert_sync_history(trigger="startup", patient_id=pid)
             except Exception:
                 logger.warning("startup: failed to record sync history", exc_info=True)
 
@@ -2212,8 +2212,8 @@ async def status(request: Request) -> JSONResponse:
             from oncofiles.filename_parser import is_standard_format
 
             doc_count = await db.count_documents(patient_id=patient_id)
-            sync_stats = await db.get_sync_stats_summary()
-            recent_syncs = await db.get_sync_history(limit=5)
+            sync_stats = await db.get_sync_stats_summary(patient_id=patient_id)
+            recent_syncs = await db.get_sync_history(limit=5, patient_id=patient_id)
 
             # Document health summary
             all_docs = await db.list_documents(limit=500, patient_id=patient_id)
