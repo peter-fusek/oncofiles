@@ -820,7 +820,7 @@ async def _rename_to_standard(db: Database, gdrive: GDriveClient, *, patient_id:
 
         try:
             # Handle corrupted filenames: use DB metadata instead of parsing
-            if is_corrupted_filename(doc.filename):
+            if is_corrupted_filename(doc.filename, patient_id=patient_id):
                 from oncofiles.filename_parser import CATEGORY_FILENAME_TOKENS
                 from oncofiles.patient_context import get_patient_name
 

@@ -257,7 +257,7 @@ def _infer_category(description: str) -> DocumentCategory:
     return DocumentCategory.OTHER
 
 
-def _parse_standard_format(stem: str, ext: str) -> ParsedFilename | None:
+def _parse_standard_format(stem: str, ext: str, patient_id: str = "") -> ParsedFilename | None:
     """Try to parse as: YYYYMMDD_PatientName_Institution_Category_Description."""
     result = ParsedFilename(extension=ext)
 
@@ -284,7 +284,7 @@ def _parse_standard_format(stem: str, ext: str) -> ParsedFilename | None:
     # First part should be patient name (e.g. "ErikaFusekova")
     from oncofiles.patient_context import get_patient_name
 
-    patient_name_compact = get_patient_name().replace(" ", "") or "Patient"
+    patient_name_compact = get_patient_name(patient_id).replace(" ", "") or "Patient"
     if parts[0].lower() != patient_name_compact.lower():
         return None  # Not standard format
 
@@ -321,7 +321,7 @@ def _parse_standard_format(stem: str, ext: str) -> ParsedFilename | None:
     return result
 
 
-def _parse_new_format(stem: str, ext: str) -> ParsedFilename | None:
+def _parse_new_format(stem: str, ext: str, patient_id: str = "") -> ParsedFilename | None:
     """Try to parse as: YYYYMMDD ErikaFusekova-Institution-Description."""
     result = ParsedFilename(extension=ext)
 
@@ -344,7 +344,7 @@ def _parse_new_format(stem: str, ext: str) -> ParsedFilename | None:
         return None  # No date prefix → not new format
 
     # Strip patient prefix
-    remaining = _patient_prefix_re().sub("", remaining).lstrip("-")
+    remaining = _patient_prefix_re(patient_id).sub("", remaining).lstrip("-")
 
     if not remaining:
         return result
@@ -380,7 +380,7 @@ def _parse_new_format(stem: str, ext: str) -> ParsedFilename | None:
     return result
 
 
-def parse_filename(filename: str) -> ParsedFilename:
+def parse_filename(filename: str, patient_id: str = "") -> ParsedFilename:
     """Parse a filename into structured metadata.
 
     Tries formats in order:
@@ -393,17 +393,17 @@ def parse_filename(filename: str) -> ParsedFilename:
 
     from oncofiles.patient_context import get_patient_name
 
-    patient_name_compact = get_patient_name().replace(" ", "") or "Patient"
+    patient_name_compact = get_patient_name(patient_id).replace(" ", "") or "Patient"
 
     # Try standard format first: YYYYMMDD_PatientName_Institution_Category_Description
     if f"_{patient_name_compact}_" in stem or stem.startswith(f"{patient_name_compact}_"):
-        result = _parse_standard_format(stem, ext)
+        result = _parse_standard_format(stem, ext, patient_id=patient_id)
         if result:
             return result
 
     # Try bilingual format: YYYYMMDD PatientName-Institution-Description
     if " " in stem and patient_name_compact.lower() in stem.lower():
-        result = _parse_new_format(stem, ext)
+        result = _parse_new_format(stem, ext, patient_id=patient_id)
         if result:
             return result
 
@@ -547,22 +547,16 @@ def is_standard_format(filename: str, patient_id: str = "") -> bool:
     return parts[1].lower() in _TOKEN_TO_CATEGORY
 
 
-def is_corrupted_filename(filename: str) -> bool:
-    """Detect corrupted filenames (repeating patterns, excessive length).
-
-    Catches the known GDrive sync bug that produces filenames with
-    repeated "ErikaFusekova" patterns spanning 1,300–3,100+ characters.
-    """
+def is_corrupted_filename(filename: str, patient_id: str = "") -> bool:
+    """Detect corrupted filenames (repeating patterns, excessive length)."""
     stem = PurePosixPath(filename).stem
 
-    # Excessive length
     if len(filename) > 255:
         return True
 
-    # Repeating patient name pattern (3+ consecutive occurrences)
     from oncofiles.patient_context import get_patient_name
 
-    patient = get_patient_name().replace(" ", "") or "Patient"
+    patient = get_patient_name(patient_id).replace(" ", "") or "Patient"
     return stem.count(patient) >= 3
 
 

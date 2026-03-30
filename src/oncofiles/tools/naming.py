@@ -47,26 +47,27 @@ async def rename_documents_to_standard(
         except (json.JSONDecodeError, ValueError) as e:
             return json.dumps({"error": f"Invalid en_descriptions JSON: {e}"})
 
-    docs = await db.list_documents(limit=500, patient_id=_get_patient_id())
+    pid = _get_patient_id()
+    docs = await db.list_documents(limit=500, patient_id=pid)
 
     stats = {"total": len(docs), "already_standard": 0, "renamed": 0, "skipped": 0, "errors": 0}
     renames = []
 
     for doc in docs:
-        if is_standard_format(doc.filename):
+        if is_standard_format(doc.filename, patient_id=pid):
             stats["already_standard"] += 1
             continue
 
         en_desc = desc_map.get(doc.id)
 
         # Handle corrupted filenames using DB metadata
-        if is_corrupted_filename(doc.filename):
+        if is_corrupted_filename(doc.filename, patient_id=pid):
             import re
 
             from oncofiles.filename_parser import CATEGORY_FILENAME_TOKENS
             from oncofiles.patient_context import get_patient_name
 
-            patient = get_patient_name().replace(" ", "") or "Patient"
+            patient = get_patient_name(pid).replace(" ", "") or "Patient"
             cat_token = CATEGORY_FILENAME_TOKENS.get(doc.category, "Other")
             if doc.document_date:
                 date_str = doc.document_date.strftime("%Y%m%d")
@@ -84,6 +85,7 @@ async def rename_documents_to_standard(
                 doc.filename,
                 category=doc.category.value,
                 en_description=en_desc,
+                patient_id=pid,
             )
 
         if new_name == doc.filename:

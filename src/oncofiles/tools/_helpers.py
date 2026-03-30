@@ -52,8 +52,10 @@ def _research_source_url(source: str, external_id: str) -> str | None:
 
 # ── Patient context (delegated to patient_context module) ────────────────────
 
-# Backward-compatible alias — returns the live context dict
-PATIENT_CONTEXT = patient_context.get_context()
+
+# Backward-compatible alias — lazy to avoid capturing stale import-time state
+def PATIENT_CONTEXT() -> dict:  # noqa: N802
+    return patient_context.get_context()
 
 
 def _patient_context_text() -> str:

@@ -40,9 +40,23 @@ _context: dict[str, Any] = {}
 
 
 def get_context(patient_id: str | None = None) -> dict[str, Any]:
-    """Return the patient context dict. If patient_id given, returns per-patient context."""
-    if patient_id and patient_id in _contexts:
-        return _contexts[patient_id]
+    """Return the patient context dict.
+
+    Resolution order:
+    1. Explicit patient_id argument
+    2. Current request ContextVar (set by PatientResolutionMiddleware)
+    3. Legacy global _context (backward compat / startup / tests)
+    """
+    pid = patient_id
+    if not pid:
+        try:
+            from oncofiles.patient_middleware import get_current_patient_id
+
+            pid = get_current_patient_id()
+        except (ImportError, LookupError):
+            pass  # startup or test context without middleware
+    if pid and pid in _contexts:
+        return _contexts[pid]
     # Fallback to legacy global for backward compat
     return _context if _context else _DEFAULT_CONTEXT.copy()
 
@@ -165,9 +179,9 @@ async def initialize(db: Any, json_path: str | Path | None = None) -> dict[str, 
     return _context
 
 
-def format_context_text() -> str:
+def format_context_text(patient_id: str | None = None) -> str:
     """Format patient context as a human-readable string for tool output."""
-    ctx = get_context()
+    ctx = get_context(patient_id)
     bio = ctx.get("biomarkers", {})
     biomarkers = "\n".join(f"  - {k}: {v}" for k, v in bio.items())
     mets = ", ".join(ctx.get("metastases", []))
