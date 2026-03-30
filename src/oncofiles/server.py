@@ -3774,6 +3774,7 @@ def main() -> None:
             transport=MCP_TRANSPORT,
             host=MCP_HOST,
             port=MCP_PORT,
+            stateless_http=True,  # no server-side sessions — survives Railway deploys (#229)
             middleware=[
                 Middleware(
                     CORSMiddleware,
