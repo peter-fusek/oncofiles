@@ -814,7 +814,7 @@ async def _rename_to_standard(db: Database, gdrive: GDriveClient, *, patient_id:
             continue
 
         # Skip if already in standard format
-        if is_standard_format(doc.filename):
+        if is_standard_format(doc.filename, patient_id=patient_id):
             stats["skipped"] += 1
             continue
 
@@ -824,7 +824,7 @@ async def _rename_to_standard(db: Database, gdrive: GDriveClient, *, patient_id:
                 from oncofiles.filename_parser import CATEGORY_FILENAME_TOKENS
                 from oncofiles.patient_context import get_patient_name
 
-                patient = get_patient_name().replace(" ", "") or "Patient"
+                patient = get_patient_name(patient_id).replace(" ", "") or "Patient"
                 cat_token = CATEGORY_FILENAME_TOKENS.get(doc.category, "Other")
                 # Use document_date or created_at or fallback
                 if doc.document_date:
@@ -848,7 +848,9 @@ async def _rename_to_standard(db: Database, gdrive: GDriveClient, *, patient_id:
                     new_name,
                 )
             else:
-                new_name = rename_to_standard(doc.filename, category=doc.category.value)
+                new_name = rename_to_standard(
+                    doc.filename, category=doc.category.value, patient_id=patient_id
+                )
 
             # If rename_to_standard couldn't parse (returned unchanged),
             # build from DB metadata like we do for corrupted filenames
@@ -856,7 +858,7 @@ async def _rename_to_standard(db: Database, gdrive: GDriveClient, *, patient_id:
                 from oncofiles.filename_parser import CATEGORY_FILENAME_TOKENS
                 from oncofiles.patient_context import get_patient_name
 
-                patient = get_patient_name().replace(" ", "") or "Patient"
+                patient = get_patient_name(patient_id).replace(" ", "") or "Patient"
                 cat_token = CATEGORY_FILENAME_TOKENS.get(doc.category, "Other")
                 if doc.document_date:
                     date_str = doc.document_date.strftime("%Y%m%d")
@@ -1195,12 +1197,20 @@ async def _sync_inner(
         if not has_changes and not dry_run:
             # Check if any docs still need renaming (e.g., after backfill added dates)
             all_docs = await db.list_documents(limit=500, patient_id=patient_id)
-            needs_rename = any(not is_standard_format(d.filename) for d in all_docs if d.gdrive_id)
+            needs_rename = any(
+                not is_standard_format(d.filename, patient_id=patient_id)
+                for d in all_docs
+                if d.gdrive_id
+            )
             if needs_rename:
                 has_changes = True
                 logger.info(
                     "sync: forcing full export — %d docs need rename",
-                    sum(1 for d in all_docs if d.gdrive_id and not is_standard_format(d.filename)),
+                    sum(
+                        1
+                        for d in all_docs
+                        if d.gdrive_id and not is_standard_format(d.filename, patient_id=patient_id)
+                    ),
                 )
         to_stats = await sync_to_gdrive(
             db, files, gdrive, folder_id, dry_run=dry_run, full=has_changes, patient_id=patient_id

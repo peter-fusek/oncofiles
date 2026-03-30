@@ -197,6 +197,9 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict]:
     from oncofiles import patient_context
 
     await patient_context.initialize(db.db, PATIENT_CONTEXT_PATH)
+    # Load per-patient context for all active patients (populates _contexts dict)
+    for _p in await db.list_patients(active_only=True):
+        await patient_context.load_from_db(db.db, patient_id=_p.patient_id)
     files = FilesClient()
     # Restore MCP OAuth sessions from DB (survive deploys)
     if hasattr(auth, "set_db"):

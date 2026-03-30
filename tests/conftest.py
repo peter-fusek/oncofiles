@@ -17,19 +17,25 @@ def _set_patient_context():
     original_context = dict(patient_context._context)
     import oncofiles.filename_parser as fp
 
-    original_re = fp._cached_patient_re
+    original_re = dict(fp._cached_patient_re)
+    original_contexts = dict(patient_context._contexts)
 
     # Set test patient name
     patient_context._context["name"] = "Erika Fusekova"
+    # Also populate per-patient context so patient_id-based lookups work
+    patient_context._contexts.clear()
     # Invalidate cached regex so it rebuilds with the test patient name
-    fp._cached_patient_re = None
+    fp._cached_patient_re.clear()
 
     yield
 
     # Restore original state
     patient_context._context.clear()
     patient_context._context.update(original_context)
-    fp._cached_patient_re = original_re
+    patient_context._contexts.clear()
+    patient_context._contexts.update(original_contexts)
+    fp._cached_patient_re.clear()
+    fp._cached_patient_re.update(original_re)
 
 
 @pytest.fixture

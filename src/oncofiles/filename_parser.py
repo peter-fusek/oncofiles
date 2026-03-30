@@ -204,25 +204,24 @@ CATEGORY_ALIASES: dict[str, DocumentCategory] = {
 _DATE_RE = re.compile(r"^(\d{4})(\d{2})(\d{2})")
 _DATE_XX_RE = re.compile(r"^(\d{4})(\d{2})(xx)", re.IGNORECASE)
 
-_cached_patient_re: re.Pattern | None = None
+_cached_patient_re: dict[str, re.Pattern] = {}
 
 
-def _patient_prefix_re() -> re.Pattern:
-    """Build patient prefix regex from patient context name (cached)."""
-    global _cached_patient_re  # noqa: PLW0603
-    if _cached_patient_re is not None:
-        return _cached_patient_re
+def _patient_prefix_re(patient_id: str = "") -> re.Pattern:
+    """Build patient prefix regex from patient context name (cached per patient)."""
+    if patient_id in _cached_patient_re:
+        return _cached_patient_re[patient_id]
 
     from oncofiles.patient_context import get_patient_name
 
-    name = get_patient_name()
+    name = get_patient_name(patient_id)
     if name:
-        # "Erika Fusekova" → "ErikaFusekova" (no space, case-insensitive)
         compact = name.replace(" ", "")
-        _cached_patient_re = re.compile(rf"^{re.escape(compact)}[-]?", re.IGNORECASE)
+        pattern = re.compile(rf"^{re.escape(compact)}[-]?", re.IGNORECASE)
     else:
-        _cached_patient_re = re.compile(r"^Patient[-]?", re.IGNORECASE)
-    return _cached_patient_re
+        pattern = re.compile(r"^Patient[-]?", re.IGNORECASE)
+    _cached_patient_re[patient_id] = pattern
+    return pattern
 
 
 # Bilingual format: EN category prefix already present
@@ -461,6 +460,7 @@ def rename_to_standard(
     filename: str,
     category: DocumentCategory | str | None = None,
     en_description: str | None = None,
+    patient_id: str = "",
 ) -> str:
     """Rename a filename to the standard format.
 
@@ -486,7 +486,7 @@ def rename_to_standard(
 
     from oncofiles.patient_context import get_patient_name
 
-    patient_compact = get_patient_name().replace(" ", "") or "Patient"
+    patient_compact = get_patient_name(patient_id).replace(" ", "") or "Patient"
 
     # Use provided EN description, or fall back to existing description
     desc = en_description or parsed.description or ""
@@ -523,12 +523,12 @@ def rename_to_standard(
     return f"{new_stem}{ext}"
 
 
-def is_standard_format(filename: str) -> bool:
+def is_standard_format(filename: str, patient_id: str = "") -> bool:
     """Check if a filename is already in the standard format."""
     stem = PurePosixPath(filename).stem
     from oncofiles.patient_context import get_patient_name
 
-    patient_name_compact = get_patient_name().replace(" ", "") or "Patient"
+    patient_name_compact = get_patient_name(patient_id).replace(" ", "") or "Patient"
 
     # Standard format: YYYYMMDD_PatientName_Institution_CategoryToken_Description
     if not _DATE_RE.match(stem):
