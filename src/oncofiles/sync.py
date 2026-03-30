@@ -205,6 +205,9 @@ async def sync_from_gdrive(
                     gd_naive = gdrive_modified.replace(tzinfo=None)
                     ex_naive = existing.gdrive_modified_time.replace(tzinfo=None)
                     if gd_naive <= ex_naive:
+                        # GDrive doesn't update modifiedTime on folder moves,
+                        # so always check parent folder for category changes
+                        await _sync_category_from_folder(gf, existing, filename)
                         stats["unchanged"] += 1
                         continue
 

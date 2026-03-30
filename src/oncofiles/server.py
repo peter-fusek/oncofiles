@@ -435,6 +435,7 @@ def _start_sync_scheduler(
     from apscheduler.schedulers.asyncio import AsyncIOScheduler
     from apscheduler.triggers.interval import IntervalTrigger
 
+    from oncofiles.sync import enhance_documents as _enhance_docs
     from oncofiles.sync import extract_all_metadata, sync
 
     sync_timeout = 300  # 5 minutes max for scheduled sync
@@ -548,6 +549,30 @@ def _start_sync_scheduler(
 
             reclaim_memory("metadata_extraction")
 
+    async def _run_enhancement_sweep():
+        """Daily sweep: retry AI enhancement for docs stuck with ai_processed_at IS NULL."""
+        try:
+            patients = await db.list_patients(active_only=True)
+            for p in patients:
+                gc = await _get_patient_gdrive(p.patient_id)
+                if not gc:
+                    continue
+                p_gdrive, _ = gc
+                stats = await asyncio.wait_for(
+                    _enhance_docs(db, files, p_gdrive, patient_id=p.patient_id),
+                    timeout=metadata_timeout,
+                )
+                if stats["processed"] > 0:
+                    logger.info("Enhancement sweep [%s]: %s", p.patient_id, stats)
+        except TimeoutError:
+            logger.error("Enhancement sweep timed out after %ds", metadata_timeout)
+        except Exception:
+            logger.exception("Enhancement sweep failed")
+        finally:
+            from oncofiles.memory import reclaim_memory
+
+            reclaim_memory("enhancement_sweep")
+
     housekeeping_timeout = 120  # 2 minutes max for lightweight housekeeping jobs
 
     async def _run_trash_cleanup():
@@ -599,10 +624,37 @@ def _start_sync_scheduler(
                         len(gaps),
                         ", ".join(f"#{d.id}({'+'.join(g)})" for d, g in gaps[:10]),
                     )
-                    fixable = [d for d, g in gaps if "no_ai" in g or "no_metadata" in g]
-                    if fixable:
-                        gc = await _get_patient_gdrive(pid)
-                        if gc:
+                    no_ai_docs = [d for d, g in gaps if "no_ai" in g]
+                    no_metadata_docs = [
+                        d for d, g in gaps if "no_metadata" in g and "no_ai" not in g
+                    ]
+                    gc = (
+                        await _get_patient_gdrive(pid) if (no_ai_docs or no_metadata_docs) else None
+                    )
+                    if gc:
+                        if no_ai_docs:
+                            try:
+                                eh_stats = await asyncio.wait_for(
+                                    _enhance_docs(
+                                        db,
+                                        files,
+                                        gc[0],
+                                        document_ids=[d.id for d in no_ai_docs],
+                                        patient_id=pid,
+                                    ),
+                                    timeout=metadata_timeout,
+                                )
+                                if eh_stats["processed"] > 0:
+                                    logger.info(
+                                        "Pipeline integrity enhance [%s]: %s", pid, eh_stats
+                                    )
+                            except Exception:
+                                logger.warning(
+                                    "Pipeline integrity enhance [%s] failed",
+                                    pid,
+                                    exc_info=True,
+                                )
+                        if no_metadata_docs:
                             try:
                                 e_stats = await asyncio.wait_for(
                                     extract_all_metadata(db, files, gc[0], patient_id=pid),
@@ -610,11 +662,11 @@ def _start_sync_scheduler(
                                 )
                                 if e_stats["processed"] > 0:
                                     logger.info(
-                                        "Pipeline integrity auto-fix [%s]: %s", pid, e_stats
+                                        "Pipeline integrity metadata [%s]: %s", pid, e_stats
                                     )
                             except Exception:
                                 logger.warning(
-                                    "Pipeline integrity auto-fix [%s] failed",
+                                    "Pipeline integrity metadata [%s] failed",
                                     pid,
                                     exc_info=True,
                                 )
@@ -710,8 +762,14 @@ def _start_sync_scheduler(
         max_instances=1,
     )
     scheduler.add_job(
+        _run_enhancement_sweep,
+        CronTrigger(hour=3, minute=20),  # daily at 3:20 AM — retry stuck unprocessed docs
+        id="enhancement_sweep",
+        max_instances=1,
+    )
+    scheduler.add_job(
         _run_metadata_extraction,
-        CronTrigger(hour=3, minute=30),  # daily at 3:30 AM (after trash cleanup)
+        CronTrigger(hour=3, minute=30),  # daily at 3:30 AM (after enhancement sweep)
         id="metadata_extraction",
         max_instances=1,
     )
@@ -3167,13 +3225,16 @@ async def api_sync_trigger(request: Request) -> JSONResponse:
 
     try:
         body = await request.json()
-        patient_id = body.get("patient_id", "").strip().lower()
-        if not patient_id:
+        raw_patient_id = body.get("patient_id", "").strip().lower()
+        if not raw_patient_id:
             return JSONResponse({"error": "patient_id required"}, status_code=400)
 
         lifespan_ctx = request.app.state.fastmcp_server._lifespan_result
         db_inst: Database = lifespan_ctx["db"]
         files = lifespan_ctx["files"]
+
+        # Resolve slug → UUID before DB queries
+        patient_id = await db_inst.resolve_patient_id(raw_patient_id) or raw_patient_id
 
         # Verify patient exists
         pat = await db_inst.get_patient(patient_id)
@@ -3270,11 +3331,11 @@ async def api_gdrive_set_folder(request: Request) -> JSONResponse:
 
     try:
         body = await request.json()
-        patient_id = body.get("patient_id", "").strip().lower()
+        raw_patient_id = body.get("patient_id", "").strip().lower()
         folder_id = body.get("folder_id", "").strip()
         folder_name = body.get("folder_name", "").strip()
 
-        if not patient_id:
+        if not raw_patient_id:
             return JSONResponse({"error": "patient_id required"}, status_code=400)
         if not folder_id and not folder_name:
             return JSONResponse(
@@ -3283,6 +3344,7 @@ async def api_gdrive_set_folder(request: Request) -> JSONResponse:
             )
 
         db_inst: Database = request.app.state.fastmcp_server._lifespan_result["db"]
+        patient_id = await db_inst.resolve_patient_id(raw_patient_id) or raw_patient_id
         token = await db_inst.get_oauth_token(patient_id=patient_id)
         if not token:
             return JSONResponse(

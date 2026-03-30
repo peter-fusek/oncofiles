@@ -102,7 +102,8 @@ async def extract_all_metadata(ctx: Context) -> str:
     files = _get_files(ctx)
     gdrive = _get_gdrive(ctx)
 
-    stats = await _extract_all_metadata(db, files, gdrive)
+    pid = _get_patient_id()
+    stats = await _extract_all_metadata(db, files, gdrive, patient_id=pid)
     return json.dumps(stats)
 
 
