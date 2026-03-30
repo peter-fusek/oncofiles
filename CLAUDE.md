@@ -41,7 +41,7 @@ uv run ruff check
 
 - **Railway**: `oncofiles.com` (streamable-http at /mcp)
 - Push to `main` auto-deploys via Railway
-- 607 tests, CI green
+- 622 tests, CI green
 
 ## Infrastructure gotchas
 
@@ -53,3 +53,6 @@ uv run ruff check
 - **Turso single-connection**: NEVER use `asyncio.gather` for concurrent DB queries — serialize them. Dashboard fetches must also be sequential (no `Promise.all`). The single libsql connection blocks under concurrent access.
 - **uv.lock**: After bumping version in pyproject.toml, always run `uv lock` — Railway uses `--locked` flag which rejects stale lockfiles
 - **Dashboard i18n**: Uses `data-sk`/`data-en` attributes on elements. `applyDashLang()` queries all `[data-sk][data-en]` elements. Add both attributes when adding new user-visible text.
+- **Multi-patient isolation**: ALL functions that use patient identity (get_patient_name, get_context, is_standard_format, rename_to_standard, parse_filename) MUST pass `patient_id`. The ContextVar fallback in `get_context()` catches missed callers during tool calls, but explicit is better. Never call `get_patient_name()` without patient_id in new code.
+- **Stateless HTTP**: `stateless_http=True` in `mcp.run()` — no server-side sessions. Survives Railway deploys. Do not change to stateful unless SSE push is needed.
+- **Scheduler semaphore**: `_sync_semaphore = Semaphore(1)` — all DB-touching jobs serialized. Do not increase without fixing Turso single-connection constraint.
