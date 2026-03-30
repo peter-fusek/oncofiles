@@ -1,13 +1,25 @@
 -- Migration 036: Make patient_context per-patient instead of global singleton
--- Previously: single row with id=1 shared across all patients
--- Now: one row per patient_id with UNIQUE constraint
+-- Previously: single row with id=1 and CHECK(id=1) enforcing singleton
+-- Now: one row per patient_id with UNIQUE constraint, no singleton CHECK
 
-ALTER TABLE patient_context ADD COLUMN patient_id TEXT NOT NULL DEFAULT '';
+-- Recreate table without CHECK(id=1) constraint
+CREATE TABLE patient_context_new (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    patient_id TEXT NOT NULL DEFAULT '',
+    context_json TEXT NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    UNIQUE(patient_id)
+);
 
--- Migrate existing row (id=1) to erika's UUID
-UPDATE patient_context
-SET patient_id = (SELECT patient_id FROM patients WHERE slug = 'erika' LIMIT 1)
-WHERE id = 1 AND patient_id = '';
+-- Copy existing data, migrating erika's UUID from slug
+INSERT INTO patient_context_new (id, patient_id, context_json, updated_at)
+SELECT
+    pc.id,
+    COALESCE((SELECT p.patient_id FROM patients p WHERE p.slug = 'erika' LIMIT 1), ''),
+    pc.context_json,
+    pc.updated_at
+FROM patient_context pc
+WHERE pc.id = 1;
 
-CREATE UNIQUE INDEX IF NOT EXISTS idx_patient_context_patient
-ON patient_context(patient_id);
+DROP TABLE patient_context;
+ALTER TABLE patient_context_new RENAME TO patient_context;
