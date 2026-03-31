@@ -122,7 +122,7 @@ async def reconcile_gdrive(
                 )
         else:
             # Root-level file
-            if name in ("_manifest.json",):
+            if name == "_manifest.json":
                 # Known metadata file — skip
                 continue
             report["root_files"].append(

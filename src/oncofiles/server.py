@@ -1117,7 +1117,7 @@ def _start_sync_scheduler(
                     )
                 )
                 for rf in root_items_raw.get("files", []):
-                    if rf["name"] in ("_manifest.json",):
+                    if rf["name"] == "_manifest.json":
                         continue  # Skip known metadata files
                     try:
                         await asyncio.to_thread(p_gdrive.move_file, rf["id"], other_folder_id)

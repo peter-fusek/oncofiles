@@ -1032,21 +1032,6 @@ async def _export_metadata(
         "application/json",
     )
 
-    # Clean up _manifest.json from treatment folder (was briefly misplaced there)
-    treatment_folder = folder_map.get("treatment")
-    if treatment_folder:
-        try:
-            tf_files = await asyncio.to_thread(
-                gdrive.list_folder, treatment_folder, recursive=False
-            )
-            for f in tf_files:
-                if f["name"] == "_manifest.json":
-                    await asyncio.to_thread(gdrive.trash_file, f["id"])
-                    logger.info("Trashed misplaced _manifest.json from treatment folder")
-                    break
-        except Exception:
-            pass  # Best-effort cleanup
-
     # 2. Export conversation monthly logs
     conversations_folder = folder_map.get("conversations")
     if conversations_folder:
