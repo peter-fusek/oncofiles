@@ -41,7 +41,7 @@ uv run ruff check
 
 - **Railway**: `oncofiles.com` (streamable-http at /mcp)
 - Push to `main` auto-deploys via Railway
-- 622 tests, CI green
+- 627 tests, CI green
 
 ## Infrastructure gotchas
 
