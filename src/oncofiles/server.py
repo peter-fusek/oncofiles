@@ -1093,6 +1093,43 @@ def _start_sync_scheduler(
                         exc_info=True,
                     )
 
+            # Phase 0c: Move root-level files into 'other' category folder
+            other_folder_id = None
+            for fid, fname in folder_map.items():
+                if en_key_from_folder_name(fname) == "other":
+                    other_folder_id = fid
+                    break
+
+            if other_folder_id:
+                root_items_raw = await asyncio.to_thread(
+                    lambda: (
+                        p_gdrive._service.files()
+                        .list(
+                            q=(
+                                f"'{folder_id}' in parents"
+                                " and mimeType != 'application/vnd.google-apps.folder'"
+                                " and trashed = false"
+                            ),
+                            fields="files(id, name, createdTime)",
+                            pageSize=50,
+                        )
+                        .execute()
+                    )
+                )
+                for rf in root_items_raw.get("files", []):
+                    if rf["name"].startswith("_"):
+                        continue  # Skip metadata files (_manifest.json etc.)
+                    try:
+                        await asyncio.to_thread(p_gdrive.move_file, rf["id"], other_folder_id)
+                        cleaned += 1
+                        logger.info(
+                            "Moved root file '%s' → other/ [%s]",
+                            rf["name"],
+                            pid,
+                        )
+                    except Exception:
+                        logger.warning("Failed to move root file '%s'", rf["name"], exc_info=True)
+
             # For each category folder, check subfolders
             for cat_folder_id, cat_name in folder_map.items():
                 try:

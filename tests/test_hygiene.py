@@ -98,6 +98,75 @@ async def test_reconcile_skips_manifest_files(mock_list, db: Database):
     assert result["summary"]["root_files"] == 0
 
 
+@patch("oncofiles.tools.hygiene._count_files_in_folder", return_value=0)
+@patch("oncofiles.tools.hygiene._list_root_items")
+async def test_reconcile_detects_legacy_folders(mock_list, mock_count, db: Database):
+    """Legacy category folders (surgical_report) are detected with merge target."""
+    mock_list.return_value = [
+        {"id": "f1", "name": "surgery — operácie", "mimeType": _FOLDER_MIME},
+        {
+            "id": "f2",
+            "name": "surgical_report — operačné protokoly",
+            "mimeType": _FOLDER_MIME,
+        },
+    ]
+
+    ctx = _mock_ctx(db, gdrive=MagicMock())
+    result = json.loads(await reconcile_gdrive(ctx, dry_run=True))
+
+    assert result["summary"]["legacy_folders"] == 1
+    assert result["legacy_folders"][0]["legacy_category"] == "surgical_report"
+    assert result["legacy_folders"][0]["merge_target"] == "surgery"
+    # Should NOT appear in unknown_folders
+    assert result["summary"]["unknown_folders"] == 0
+
+
+@patch("oncofiles.tools.hygiene._count_files_in_folder", return_value=0)
+@patch("oncofiles.tools.hygiene._list_root_items")
+@patch("oncofiles.gdrive_folders.ensure_folder_structure")
+@patch("oncofiles.tools.hygiene._move_folder_contents", return_value=3)
+async def test_reconcile_merges_legacy_execute(
+    mock_move, mock_ensure, mock_list, mock_count, db: Database
+):
+    """Execute mode merges legacy folder contents and trashes the folder."""
+    mock_list.return_value = [
+        {"id": "f1", "name": "surgery — operácie", "mimeType": _FOLDER_MIME},
+        {
+            "id": "f2",
+            "name": "surgical_report — operačné protokoly",
+            "mimeType": _FOLDER_MIME,
+        },
+    ]
+    mock_ensure.return_value = {"surgery": "surgery_id", "other": "other_id"}
+
+    gdrive = MagicMock()
+    ctx = _mock_ctx(db, gdrive=gdrive)
+    result = json.loads(await reconcile_gdrive(ctx, dry_run=False))
+
+    assert any("Merged" in a and "surgical_report" in a for a in result["actions_taken"])
+    mock_move.assert_called_once_with(gdrive, "f2", "surgery_id")
+    gdrive.trash_file.assert_any_call("f2")
+
+
+@patch("oncofiles.tools.hygiene._count_files_in_folder", return_value=5)
+@patch("oncofiles.tools.hygiene._list_root_items")
+@patch("oncofiles.gdrive_folders.ensure_folder_structure")
+async def test_reconcile_moves_root_files_execute(mock_ensure, mock_list, mock_count, db: Database):
+    """Execute mode moves root-level files to 'other' folder."""
+    mock_list.return_value = [
+        {"id": "f1", "name": "other — ostatné", "mimeType": _FOLDER_MIME},
+        {"id": "rf1", "name": "Scanned 30 Mar.pdf", "mimeType": "application/pdf"},
+    ]
+    mock_ensure.return_value = {"other": "other_id"}
+
+    gdrive = MagicMock()
+    ctx = _mock_ctx(db, gdrive=gdrive)
+    result = json.loads(await reconcile_gdrive(ctx, dry_run=False))
+
+    assert any("Moved root file" in a for a in result["actions_taken"])
+    gdrive.move_file.assert_called_once_with("rf1", "other_id")
+
+
 # ── validate_categories ───────────────────────────────────────────────────────
 
 

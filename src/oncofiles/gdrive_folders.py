@@ -63,6 +63,10 @@ def en_key_from_folder_name(folder_name: str) -> str | None:
     candidate = folder_name.split(" — ", 1)[0] if " — " in folder_name else folder_name
     if candidate in ALL_FOLDERS:
         return candidate
+    # Legacy categories (surgical_report, discharge_summary) are not in ALL_FOLDERS
+    # but must be recognized so the cleanup job can find and merge them.
+    if candidate in CATEGORY_MERGES:
+        return candidate
     return None
 
 

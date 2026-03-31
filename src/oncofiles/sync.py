@@ -1020,17 +1020,31 @@ async def _export_metadata(
     if needs_secondary():
         langs.append(preferred_lang())
 
-    # 1. Export _manifest.json to root
+    # 1. Export _manifest.json to treatment metadata folder (not root)
     manifest = await export_manifest(db, patient_id=patient_id)
     manifest_json = render_manifest_json(manifest)
+    manifest_folder = folder_map.get("treatment", root_folder_id)
     await asyncio.to_thread(
         _upload_or_update_text,
         gdrive,
         "_manifest.json",
         manifest_json,
-        root_folder_id,
+        manifest_folder,
         "application/json",
     )
+    # Clean up legacy _manifest.json from root (one-time migration)
+    if manifest_folder != root_folder_id:
+        try:
+            root_files = await asyncio.to_thread(
+                gdrive.list_folder, root_folder_id, recursive=False
+            )
+            for f in root_files:
+                if f["name"] == "_manifest.json":
+                    await asyncio.to_thread(gdrive.trash_file, f["id"])
+                    logger.info("Trashed legacy _manifest.json from root folder")
+                    break
+        except Exception:
+            pass  # Best-effort cleanup
 
     # 2. Export conversation monthly logs
     conversations_folder = folder_map.get("conversations")

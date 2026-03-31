@@ -8,7 +8,7 @@ import logging
 
 from fastmcp import Context
 
-from oncofiles.gdrive_folders import bilingual_name, en_key_from_folder_name
+from oncofiles.gdrive_folders import CATEGORY_MERGES, bilingual_name, en_key_from_folder_name
 from oncofiles.models import DocumentCategory
 from oncofiles.tools._helpers import _gdrive_url, _get_db, _get_gdrive, _get_patient_id
 
@@ -68,6 +68,7 @@ async def reconcile_gdrive(
 
     report: dict = {
         "unknown_folders": [],
+        "legacy_folders": [],
         "root_files": [],
         "empty_folders": [],
         "backup_folders": [],
@@ -86,7 +87,19 @@ async def reconcile_gdrive(
 
         if is_folder:
             en_key = en_key_from_folder_name(name)
-            if en_key:
+            if en_key and en_key in CATEGORY_MERGES:
+                # Legacy folder that should be merged (e.g. surgical_report → surgery)
+                target = CATEGORY_MERGES[en_key]
+                report["legacy_folders"].append(
+                    {
+                        "name": name,
+                        "id": item_id,
+                        "legacy_category": en_key,
+                        "merge_target": target,
+                        "action": f"Merge contents into '{bilingual_name(target)}' and trash",
+                    }
+                )
+            elif en_key:
                 # Known managed folder
                 managed_folder_ids[en_key] = item_id
             elif name.startswith(".zaloha_"):
@@ -148,6 +161,32 @@ async def reconcile_gdrive(
                     f"Moved {moved} files from '{uf['name']}' to '{bilingual_name(target_cat)}'"
                 )
 
+        # Merge legacy folders into their target categories
+        for lf in report["legacy_folders"]:
+            target_cat = lf["merge_target"]
+            if target_cat in folder_map:
+                target_folder = folder_map[target_cat]
+                moved = await asyncio.to_thread(
+                    _move_folder_contents, gdrive, lf["id"], target_folder
+                )
+                await asyncio.to_thread(gdrive.trash_file, lf["id"])
+                report["actions_taken"].append(
+                    f"Merged {moved} files from legacy '{lf['name']}' "
+                    f"to '{bilingual_name(target_cat)}', trashed legacy folder"
+                )
+
+        # Move root-level files to 'other' category folder
+        if report["root_files"] and "other" in folder_map:
+            other_folder = folder_map["other"]
+            for rf in report["root_files"]:
+                try:
+                    await asyncio.to_thread(gdrive.move_file, rf["id"], other_folder)
+                    report["actions_taken"].append(
+                        f"Moved root file '{rf['name']}' to '{bilingual_name('other')}'"
+                    )
+                except Exception:
+                    logger.warning("Failed to move root file '%s'", rf["name"], exc_info=True)
+
         # Soft-delete backup folders
         for bf in report["backup_folders"]:
             await asyncio.to_thread(gdrive.trash_file, bf["id"])
@@ -155,6 +194,7 @@ async def reconcile_gdrive(
 
     report["summary"] = {
         "unknown_folders": len(report["unknown_folders"]),
+        "legacy_folders": len(report["legacy_folders"]),
         "root_files": len(report["root_files"]),
         "empty_folders": len(report["empty_folders"]),
         "backup_folders": len(report["backup_folders"]),
@@ -200,7 +240,6 @@ async def validate_categories(
             continue
 
         # Check for legacy categories that need merging
-        from oncofiles.gdrive_folders import CATEGORY_MERGES
 
         current_val = doc.category.value
         if current_val in CATEGORY_MERGES:

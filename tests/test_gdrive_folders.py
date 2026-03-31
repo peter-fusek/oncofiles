@@ -135,6 +135,13 @@ def test_en_key_from_folder_name_legacy():
     assert en_key_from_folder_name("treatment") == "treatment"
 
 
+def test_en_key_from_folder_name_legacy_merges():
+    """Legacy categories (surgical_report, discharge_summary) must be recognized."""
+    assert en_key_from_folder_name("surgical_report") == "surgical_report"
+    assert en_key_from_folder_name("discharge_summary") == "discharge_summary"
+    assert en_key_from_folder_name("surgical_report — operačné protokoly") == "surgical_report"
+
+
 def test_en_key_from_folder_name_unknown():
     assert en_key_from_folder_name("2026-03") is None
     assert en_key_from_folder_name("random_folder") is None
