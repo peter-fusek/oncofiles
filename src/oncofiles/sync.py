@@ -1020,28 +1020,29 @@ async def _export_metadata(
     if needs_secondary():
         langs.append(preferred_lang())
 
-    # 1. Export _manifest.json to treatment metadata folder (not root)
+    # 1. Export _manifest.json to root (it's a catalogue/index — root is correct)
     manifest = await export_manifest(db, patient_id=patient_id)
     manifest_json = render_manifest_json(manifest)
-    manifest_folder = folder_map.get("treatment", root_folder_id)
     await asyncio.to_thread(
         _upload_or_update_text,
         gdrive,
         "_manifest.json",
         manifest_json,
-        manifest_folder,
+        root_folder_id,
         "application/json",
     )
-    # Clean up legacy _manifest.json from root (one-time migration)
-    if manifest_folder != root_folder_id:
+
+    # Clean up _manifest.json from treatment folder (was briefly misplaced there)
+    treatment_folder = folder_map.get("treatment")
+    if treatment_folder:
         try:
-            root_files = await asyncio.to_thread(
-                gdrive.list_folder, root_folder_id, recursive=False
+            tf_files = await asyncio.to_thread(
+                gdrive.list_folder, treatment_folder, recursive=False
             )
-            for f in root_files:
+            for f in tf_files:
                 if f["name"] == "_manifest.json":
                     await asyncio.to_thread(gdrive.trash_file, f["id"])
-                    logger.info("Trashed legacy _manifest.json from root folder")
+                    logger.info("Trashed misplaced _manifest.json from treatment folder")
                     break
         except Exception:
             pass  # Best-effort cleanup
