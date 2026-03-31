@@ -87,15 +87,17 @@ async def test_reconcile_skips_metadata_folders(mock_list, mock_count, db: Datab
 
 
 @patch("oncofiles.tools.hygiene._list_root_items")
-async def test_reconcile_skips_manifest_files(mock_list, db: Database):
-    """Root files starting with _ should be ignored."""
+async def test_reconcile_skips_manifest_but_not_other_underscore(mock_list, db: Database):
+    """_manifest.json is skipped, but other _-prefixed files are detected."""
     mock_list.return_value = [
         {"id": "f1", "name": "_manifest.json", "mimeType": "application/json"},
+        {"id": "f2", "name": "_ POURICOVANIE FOL FAX?.png", "mimeType": "image/png"},
     ]
 
     ctx = _mock_ctx(db, gdrive=MagicMock())
     result = json.loads(await reconcile_gdrive(ctx, dry_run=True))
-    assert result["summary"]["root_files"] == 0
+    assert result["summary"]["root_files"] == 1
+    assert result["root_files"][0]["name"] == "_ POURICOVANIE FOL FAX?.png"
 
 
 @patch("oncofiles.tools.hygiene._count_files_in_folder", return_value=0)
