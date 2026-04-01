@@ -118,6 +118,12 @@ async def gdrive_set_folder(ctx: Context, folder_id: str) -> str:
 
     await db.update_oauth_folder(pid, token.provider, folder_id)
 
+    # Clear folder-invalid flag so sync resumes immediately
+    from oncofiles.server import _folder_404_counts, _patient_clients_cache
+
+    _folder_404_counts.pop(pid, None)
+    _patient_clients_cache.pop(pid, None)
+
     # Detect folder owner and store for permission sharing
     gdrive = await _get_gdrive(ctx)
     owner_email = None

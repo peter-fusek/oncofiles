@@ -345,6 +345,22 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict]:
 _patient_clients_cache: dict[str, tuple] = {}
 _CLIENT_CACHE_TTL = 1800  # 30 min — refresh token changes invalidate sooner
 
+# Track consecutive GDrive folder 404 failures per patient.
+# After _FOLDER_404_THRESHOLD consecutive 404s, skip sync until folder is re-set.
+_folder_404_counts: dict[str, int] = {}
+_FOLDER_404_THRESHOLD = 3
+
+
+def _is_folder_not_found(exc: BaseException) -> bool:
+    """Check if an exception is a GDrive 404 (folder not found)."""
+    status = getattr(getattr(exc, "resp", None), "status", None)
+    if status == 404:
+        return True
+    # Also check nested exceptions from asyncio.to_thread
+    if isinstance(exc, Exception) and exc.__cause__:
+        return _is_folder_not_found(exc.__cause__)
+    return False
+
 
 async def _create_patient_clients(
     db,
@@ -485,6 +501,16 @@ def _start_sync_scheduler(
                 continue
             p_gdrive, folder_id = gc
 
+            # Skip if folder has been flagged as invalid (consecutive 404s)
+            if _folder_404_counts.get(pid, 0) >= _FOLDER_404_THRESHOLD:
+                logger.debug(
+                    "Sync [%s] skipped — folder marked invalid after %d consecutive 404s. "
+                    "Re-set folder via gdrive_set_folder to resume.",
+                    pid,
+                    _folder_404_counts[pid],
+                )
+                continue
+
             # Note: has_changes_since pre-check was removed — it only checked
             # root folder children, missing files in category subfolders (#206).
             # The sync itself is cheap for unchanged files (md5+modifiedTime skip).
@@ -495,6 +521,8 @@ def _start_sync_scheduler(
                         sync(db, files, p_gdrive, folder_id, trigger=trigger, patient_id=pid),
                         timeout=sync_timeout,
                     )
+                    # Sync succeeded — reset 404 counter
+                    _folder_404_counts.pop(pid, None)
                     logger.info("Sync [%s]: %s (RSS: %.1f MB)", pid, stats, get_rss_mb())
                     # Auto-enhance new docs after sync
                     from_stats = stats.get("from_gdrive", {})
@@ -510,8 +538,22 @@ def _start_sync_scheduler(
                             logger.error("Post-sync enhance [%s] failed", pid, exc_info=True)
                 except TimeoutError:
                     logger.error("Sync [%s] timed out after %ds", pid, sync_timeout)
-                except Exception:
-                    logger.exception("Sync [%s] failed", pid)
+                except Exception as exc:
+                    # Detect GDrive folder 404 — stop hammering a dead folder
+                    if _is_folder_not_found(exc):
+                        count = _folder_404_counts.get(pid, 0) + 1
+                        _folder_404_counts[pid] = count
+                        logger.warning(
+                            "Sync [%s] folder 404 (%d/%d). %s",
+                            pid,
+                            count,
+                            _FOLDER_404_THRESHOLD,
+                            "Sync suspended — re-set folder to resume."
+                            if count >= _FOLDER_404_THRESHOLD
+                            else "Will retry next cycle.",
+                        )
+                    else:
+                        logger.exception("Sync [%s] failed", pid)
                 finally:
                     from oncofiles.memory import reclaim_memory
 
@@ -3441,6 +3483,10 @@ async def api_gdrive_set_folder(request: Request) -> JSONResponse:
 
         # Persist folder choice
         await db_inst.update_oauth_folder(patient_id, "google", folder_id)
+
+        # Clear folder-invalid flag so sync resumes immediately
+        _folder_404_counts.pop(patient_id, None)
+        _patient_clients_cache.pop(patient_id, None)
 
         # Detect owner email
         owner_email = await asyncio.to_thread(gdrive.get_folder_owner, folder_id)
