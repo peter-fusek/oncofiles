@@ -116,6 +116,32 @@ async def gdrive_set_folder(ctx: Context, folder_id: str) -> str:
     if not token:
         return json.dumps({"error": "No OAuth tokens found. Connect Google Drive first."})
 
+    # Validate folder exists and is accessible before persisting
+    gdrive = await _get_gdrive(ctx)
+    if gdrive:
+        try:
+            meta = await asyncio.to_thread(
+                lambda: (
+                    gdrive._service.files()
+                    .get(fileId=folder_id, fields="id,name,mimeType")
+                    .execute()
+                )
+            )
+            if meta.get("mimeType") != "application/vnd.google-apps.folder":
+                return json.dumps(
+                    {"error": f"ID '{folder_id}' is not a folder (type: {meta.get('mimeType')})"}
+                )
+        except Exception as exc:
+            status = getattr(getattr(exc, "resp", None), "status", None)
+            if status == 404:
+                return json.dumps(
+                    {
+                        "error": f"Folder '{folder_id}' not found. "
+                        "Check the ID — I vs l typos are common."
+                    }
+                )
+            return json.dumps({"error": f"Cannot access folder: {exc}"})
+
     await db.update_oauth_folder(pid, token.provider, folder_id)
 
     # Clear folder-invalid flag so sync resumes immediately

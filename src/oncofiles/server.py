@@ -2184,6 +2184,13 @@ async def health(request: Request) -> JSONResponse:
         result["memory_rss_mb"] = round(get_rss_mb(), 1)
         result["memory"] = get_rss_trend()
         result["semaphores"] = get_semaphore_status()
+        # Folder sync status — surfaces patients with suspended sync
+        if _folder_404_counts:
+            result["folder_404_suspended"] = {
+                pid: count
+                for pid, count in _folder_404_counts.items()
+                if count >= _FOLDER_404_THRESHOLD
+            }
     except Exception:
         logger.debug("Health: lifespan context not yet available", exc_info=True)
     return JSONResponse(result)
@@ -3480,6 +3487,29 @@ async def api_gdrive_set_folder(request: Request) -> JSONResponse:
         # Create new folder if needed
         if not folder_id and folder_name:
             folder_id = await asyncio.to_thread(gdrive.create_folder, folder_name, "root")
+
+        # Validate folder exists before persisting
+        try:
+            meta = await asyncio.to_thread(
+                lambda: (
+                    gdrive._service.files()
+                    .get(fileId=folder_id, fields="id,name,mimeType")
+                    .execute()
+                )
+            )
+            if meta.get("mimeType") != "application/vnd.google-apps.folder":
+                return JSONResponse(
+                    {"error": f"ID is not a folder (type: {meta.get('mimeType')})"},
+                    status_code=400,
+                )
+        except Exception as exc:
+            status = getattr(getattr(exc, "resp", None), "status", None)
+            if status == 404:
+                return JSONResponse(
+                    {"error": f"Folder '{folder_id}' not found. Check the ID."},
+                    status_code=404,
+                )
+            return JSONResponse({"error": f"Cannot access folder: {exc}"}, status_code=400)
 
         # Persist folder choice
         await db_inst.update_oauth_folder(patient_id, "google", folder_id)
