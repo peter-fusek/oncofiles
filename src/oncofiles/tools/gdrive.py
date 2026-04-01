@@ -151,7 +151,6 @@ async def gdrive_set_folder(ctx: Context, folder_id: str) -> str:
     _patient_clients_cache.pop(pid, None)
 
     # Detect folder owner and store for permission sharing
-    gdrive = await _get_gdrive(ctx)
     owner_email = None
     if gdrive:
         owner_email = await asyncio.to_thread(gdrive.get_folder_owner, folder_id)

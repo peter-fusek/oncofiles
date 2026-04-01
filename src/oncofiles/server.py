@@ -357,7 +357,7 @@ def _is_folder_not_found(exc: BaseException) -> bool:
     if status == 404:
         return True
     # Also check nested exceptions from asyncio.to_thread
-    if isinstance(exc, Exception) and exc.__cause__:
+    if exc.__cause__:
         return _is_folder_not_found(exc.__cause__)
     return False
 
