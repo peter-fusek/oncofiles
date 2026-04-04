@@ -103,6 +103,18 @@
       white-space: nowrap;
     }
     .add-patient-btn:hover { background: var(--accent-light); }
+    .archive-patient-btn {
+      background: none;
+      border: 1px solid var(--border);
+      color: var(--text-muted);
+      padding: 0.375rem 0.75rem;
+      border-radius: 0.375rem;
+      cursor: pointer;
+      font-size: 0.75rem;
+      white-space: nowrap;
+    }
+    .archive-patient-btn:hover { border-color: var(--red, #e74c3c); color: var(--red, #e74c3c); }
+    .archive-patient-btn.restore { border-color: var(--green, #27ae60); color: var(--green, #27ae60); }
 
     /* Onboarding wizard modal */
     .wizard-overlay {
@@ -740,6 +752,7 @@
           <span id="patient-diagnosis" class="patient-diagnosis"></span>
           <button class="share-btn" onclick="showShareModal()" data-sk="Zdieľať" data-en="Share">Zdieľať</button>
           <button class="add-patient-btn" onclick="showOnboarding()" data-sk="+ Nový pacient" data-en="+ New Patient">+ Nový pacient</button>
+          <button id="archive-patient-btn" class="archive-patient-btn" onclick="togglePatientArchive()" data-sk="Archivovať" data-en="Archive">Archive</button>
         </div>
         <div class="header-right">
           <span id="connection-dot" class="connection-dot loading" title="Connecting..."></span>
@@ -1419,6 +1432,7 @@
           localStorage.setItem('oncofiles_patient_id', currentPatientId);
         }
         updatePatientDiagnosis();
+        updateArchiveButton();
       } catch (e) {
         console.warn('Failed to load patients:', e);
       }
@@ -1428,8 +1442,51 @@
       currentPatientId = patientId;
       localStorage.setItem('oncofiles_patient_id', patientId);
       updatePatientDiagnosis();
+      updateArchiveButton();
       clearAllPatientData();
       refresh();
+    }
+
+    function updateArchiveButton() {
+      var btn = document.getElementById('archive-patient-btn');
+      if (!btn || !patientsCache) return;
+      var p = patientsCache.find(function(x) { return x.patient_id === currentPatientId; });
+      if (!p) return;
+      if (p.is_active) {
+        btn.textContent = dashLang === 'sk' ? 'Archivovať' : 'Archive';
+        btn.setAttribute('data-sk', 'Archivovať');
+        btn.setAttribute('data-en', 'Archive');
+        btn.classList.remove('restore');
+      } else {
+        btn.textContent = dashLang === 'sk' ? 'Obnoviť' : 'Restore';
+        btn.setAttribute('data-sk', 'Obnoviť');
+        btn.setAttribute('data-en', 'Restore');
+        btn.classList.add('restore');
+      }
+    }
+
+    async function togglePatientArchive() {
+      if (!currentPatientId) return;
+      var p = patientsCache.find(function(x) { return x.patient_id === currentPatientId; });
+      if (!p) return;
+      var newActive = !p.is_active;
+      var msg = newActive
+        ? (dashLang === 'sk' ? 'Obnoviť pacienta?' : 'Restore patient?')
+        : (dashLang === 'sk' ? 'Archivovať pacienta? Zastaví sa synchronizácia.' : 'Archive patient? This will stop syncing.');
+      if (!confirm(msg)) return;
+      try {
+        var resp = await fetch('/api/patients/' + currentPatientId, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + authToken },
+          body: JSON.stringify({ is_active: newActive })
+        });
+        if (!resp.ok) throw new Error('Failed');
+        await loadPatients();
+        updateArchiveButton();
+      } catch (e) {
+        console.error('Archive/restore failed:', e);
+        alert(dashLang === 'sk' ? 'Chyba pri zmene stavu.' : 'Failed to change status.');
+      }
     }
 
     function clearAllPatientData() {

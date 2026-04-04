@@ -3286,6 +3286,46 @@ async def api_create_patient(request: Request) -> JSONResponse:
         return JSONResponse({"error": "internal error"}, status_code=500)
 
 
+@mcp.custom_route("/api/patients/{patient_id}", methods=["PATCH"])
+async def api_update_patient(request: Request) -> JSONResponse:
+    """Update patient fields (is_active, display_name, preferred_lang).
+
+    Requires bearer or dashboard session auth.
+    Body: {is_active?: bool, display_name?: str, preferred_lang?: str}
+    """
+    err = _check_dashboard_auth(request)
+    if err:
+        return err
+    try:
+        db_inst: Database = request.app.state.fastmcp_server._lifespan_result["db"]
+        pid = request.path_params["patient_id"]
+        patient = await db_inst.get_patient(pid)
+        if not patient:
+            return JSONResponse({"error": "Patient not found"}, status_code=404)
+        body = await request.json()
+        updated = await db_inst.update_patient(
+            pid,
+            display_name=body.get("display_name"),
+            is_active=body.get("is_active"),
+            preferred_lang=body.get("preferred_lang"),
+        )
+        if updated and not body.get("is_active", True):
+            # Clear sync caches for deactivated patient
+            _patient_clients_cache.pop(pid, None)
+            _folder_404_counts.pop(pid, None)
+            logger.info("Patient deactivated: %s", pid)
+        return JSONResponse(
+            {
+                "patient_id": updated.patient_id if updated else pid,
+                "display_name": updated.display_name if updated else None,
+                "is_active": updated.is_active if updated else None,
+            }
+        )
+    except Exception:
+        logger.exception("API update-patient error")
+        return JSONResponse({"error": "internal error"}, status_code=500)
+
+
 @mcp.custom_route("/api/patient-tokens", methods=["POST"])
 async def api_create_patient_token(request: Request) -> JSONResponse:
     """Generate a new bearer token for a patient. Requires bearer or dashboard session auth.
