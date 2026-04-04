@@ -48,7 +48,7 @@ HARD_RSS_CEILING_MB = int(os.environ.get("HARD_RSS_CEILING_MB", "600"))
 async def acquire_query_slot(label: str) -> None:
     """Acquire a slot for a heavy query. Logs when queuing occurs."""
     if _query_semaphore._value == 0:
-        logger.info("Query queued — all 3 slots busy: %s", label)
+        logger.info("Query queued — all %d slots busy: %s", _QUERY_SLOTS, label)
     await _query_semaphore.acquire()
 
 
