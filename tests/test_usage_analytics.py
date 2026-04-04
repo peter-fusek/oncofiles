@@ -174,7 +174,7 @@ async def test_pipeline_stats_empty(db):
 @pytest.mark.asyncio
 async def test_pipeline_stats_with_syncs(db):
     await _seed_sync_history(db, count=3, status="completed")
-    await _seed_sync_history(db, count=1, status="error")
+    await _seed_sync_history(db, count=1, status="failed")
     stats = await db.get_pipeline_stats()
     assert stats.total_syncs == 4
     assert stats.successful_syncs == 3

@@ -116,6 +116,13 @@
     .archive-patient-btn:hover { border-color: var(--red, #e74c3c); color: var(--red, #e74c3c); }
     .archive-patient-btn.restore { border-color: var(--green, #27ae60); color: var(--green, #27ae60); }
 
+    /* Segmented language switcher */
+    .lang-switcher { display: inline-flex; border: 1px solid var(--border); border-radius: 4px; overflow: hidden; }
+    .lang-switcher button { background: none; border: none; color: var(--text-muted); padding: 0.2rem 0.45rem; cursor: pointer; font-size: 0.6875rem; font-family: inherit; line-height: 1; transition: background 0.15s, color 0.15s; }
+    .lang-switcher button.lang-active { background: var(--accent); color: var(--bg); font-weight: 600; }
+    .lang-switcher button:not(.lang-active):hover { color: var(--accent); }
+    .lang-switcher button:first-child { border-right: 1px solid var(--border); }
+
     /* Onboarding wizard modal */
     .wizard-overlay {
       display: none;
@@ -750,7 +757,7 @@
             <option value="">Loading...</option>
           </select>
           <span id="patient-diagnosis" class="patient-diagnosis"></span>
-          <button class="share-btn" onclick="showShareModal()" data-sk="Zdieľať" data-en="Share">Zdieľať</button>
+          <button class="share-btn" onclick="showShareModal()" data-sk="Pripojiť AI" data-en="Connect AI">Pripojiť AI</button>
           <button class="add-patient-btn" onclick="showOnboarding()" data-sk="+ Nový pacient" data-en="+ New Patient">+ Nový pacient</button>
           <button id="archive-patient-btn" class="archive-patient-btn" onclick="togglePatientArchive()" data-sk="Archivovať" data-en="Archive">Archive</button>
         </div>
@@ -764,7 +771,10 @@
           <span class="version" id="version-label"></span>
           <span class="user-info" id="user-info"></span>
           <button class="logout-btn" onclick="logout()" data-sk="Odhlásiť" data-en="Sign out">Sign out</button>
-          <button id="dash-lang-toggle" onclick="toggleDashLang()" style="background:none;border:1px solid var(--border);color:var(--text-muted);padding:0.15rem 0.4rem;border-radius:4px;cursor:pointer;font-size:0.75rem">EN</button>
+          <div class="lang-switcher" id="lang-switcher">
+            <button id="lang-btn-sk" onclick="setDashLang('sk')">SK</button>
+            <button id="lang-btn-en" onclick="setDashLang('en')">EN</button>
+          </div>
           <span id="last-refreshed" style="font-size:0.6875rem;color:var(--text-muted)"></span>
           <button class="refresh-btn" onclick="refresh()" data-sk="Obnoviť" data-en="Refresh">Refresh</button>
         </div>
@@ -803,7 +813,7 @@
         <div class="card"><div class="value" id="card-complete">-</div><div class="label" data-sk="Kompletné" data-en="Complete">Complete</div></div>
         <div class="card warning"><div class="value" id="card-gaps">-</div><div class="label" data-sk="S medzerami" data-en="With Gaps">With Gaps</div></div>
         <div class="card"><div class="value" id="card-synced">-</div><div class="label" data-sk="Synchronizované" data-en="Synced">Synced</div></div>
-        <div class="card"><div class="value" id="card-rss">-</div><div class="label">RSS MB</div></div>
+        <div class="card"><div class="value" id="card-uptime">-</div><div class="label" data-sk="Dostupnosť" data-en="Uptime">Dostupnosť</div></div>
       </div>
 
       <!-- Pipeline funnel -->
@@ -1157,20 +1167,30 @@
     // ── Language toggle (SK/EN) ─────────────────────────────────────────
     var dashLang = localStorage.getItem('oncofiles_lang') || 'sk';
 
-    function toggleDashLang() {
-      dashLang = dashLang === 'sk' ? 'en' : 'sk';
+    function setDashLang(lang) {
+      dashLang = lang;
       localStorage.setItem('oncofiles_lang', dashLang);
       applyDashLang();
     }
 
+    function toggleDashLang() {
+      setDashLang(dashLang === 'sk' ? 'en' : 'sk');
+    }
+
     function applyDashLang() {
-      var btn = document.getElementById('dash-lang-toggle');
-      if (btn) btn.textContent = dashLang === 'sk' ? 'EN' : 'SK';
+      var skBtn = document.getElementById('lang-btn-sk');
+      var enBtn = document.getElementById('lang-btn-en');
+      if (skBtn && enBtn) {
+        skBtn.classList.toggle('lang-active', dashLang === 'sk');
+        enBtn.classList.toggle('lang-active', dashLang === 'en');
+      }
+      // NOTE: data-html attribute is only used on developer-controlled elements
+      // with hardcoded SK/EN translations — never with user input. This is safe.
       document.querySelectorAll('[data-sk][data-en]').forEach(function(el) {
         var text = dashLang === 'sk' ? el.getAttribute('data-sk')
           : el.getAttribute('data-en');
         if (el.hasAttribute('data-html')) {
-          el.innerHTML = text;
+          el.innerHTML = text;  // safe: only hardcoded i18n strings, no user input
         } else {
           el.textContent = text;
         }
@@ -1960,7 +1980,7 @@
     }
 
     function showSkeletons() {
-      ['card-total','card-complete','card-gaps','card-synced','card-rss'].forEach(function(id) {
+      ['card-total','card-complete','card-gaps','card-synced','card-uptime'].forEach(function(id) {
         var el = document.getElementById(id);
         el.textContent = '';
         el.className = 'value skeleton';
@@ -1968,7 +1988,7 @@
     }
 
     function hideSkeletons() {
-      ['card-total','card-complete','card-gaps','card-synced','card-rss'].forEach(function(id) {
+      ['card-total','card-complete','card-gaps','card-synced','card-uptime'].forEach(function(id) {
         document.getElementById(id).className = 'value';
       });
     }
@@ -2022,7 +2042,16 @@
       const h = s.document_health || {};
       document.getElementById('card-total').textContent = h.total || 0;
       document.getElementById('card-synced').textContent = h.synced || 0;
-      document.getElementById('card-rss').textContent = s.memory_rss_mb || '-';
+      // Format uptime as human-readable (e.g. "2d 5h" or "3h 15m")
+      var uptimeSec = s.uptime_s || 0;
+      var uptimeText = '-';
+      if (uptimeSec > 0) {
+        var days = Math.floor(uptimeSec / 86400);
+        var hours = Math.floor((uptimeSec % 86400) / 3600);
+        var mins = Math.floor((uptimeSec % 3600) / 60);
+        uptimeText = days > 0 ? days + 'd ' + hours + 'h' : hours > 0 ? hours + 'h ' + mins + 'm' : mins + 'm';
+      }
+      document.getElementById('card-uptime').textContent = uptimeText;
 
       // Sync history
       const syncEl = document.getElementById('sync-rows');

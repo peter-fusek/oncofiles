@@ -212,11 +212,12 @@ class AnalyticsMixin:
             """
             SELECT COUNT(*) as total,
                    SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as ok,
-                   SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) as errs,
+                   SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as errs,
                    COALESCE(SUM(from_gdrive_new), 0) as imported,
                    COALESCE(SUM(to_gdrive_exported), 0) as exported,
                    ROUND(AVG(duration_s), 1) as avg_dur
             FROM sync_history
+            WHERE started_at >= strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-30 days')
             """
         ) as cursor:
             row = await cursor.fetchone()

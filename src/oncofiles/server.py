@@ -2810,7 +2810,7 @@ async def api_demo_data(request: Request) -> JSONResponse:
                 "pipeline": {
                     "total_syncs": 312,
                     "successful_syncs": 308,
-                    "failed_syncs": 4,
+                    "failed_syncs": 0,
                     "total_docs_imported": 100,
                     "total_docs_exported": 98,
                     "avg_sync_duration_s": 14.2,
