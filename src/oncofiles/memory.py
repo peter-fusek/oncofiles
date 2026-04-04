@@ -42,8 +42,7 @@ _rss_started_at: float = 0.0
 
 # Graceful restart tracking (OF-2)
 MEMORY_RESTART_THRESHOLD_MB = int(os.environ.get("MEMORY_RESTART_THRESHOLD_MB", "420"))
-_restart_consecutive_checks: int = 0
-_RESTART_REQUIRED_CHECKS = 3
+HARD_RSS_CEILING_MB = int(os.environ.get("HARD_RSS_CEILING_MB", "600"))
 
 
 async def acquire_query_slot(label: str) -> None:
@@ -208,50 +207,46 @@ def get_semaphore_status() -> dict:
 
 
 def check_memory_restart() -> bool:
-    """Check if RSS exceeds restart threshold for 3 consecutive checks.
+    """Check if RSS exceeds restart threshold after reclaiming memory.
 
     Returns True if the process should gracefully restart.
-    Call this from the periodic memory check job.
+    Reclaims memory first to avoid false positives from transient spikes.
     """
-    global _restart_consecutive_checks
-    rss = get_rss_mb()
-    if rss > MEMORY_RESTART_THRESHOLD_MB:
-        _restart_consecutive_checks += 1
-        logger.warning(
-            "RSS %.1f MB > %d MB threshold — consecutive check %d/%d",
-            rss,
+    rss_before = get_rss_mb()
+    if rss_before <= MEMORY_RESTART_THRESHOLD_MB:
+        return False
+    # Above threshold — try to reclaim first (gc.collect + malloc_trim)
+    rss_after = reclaim_memory("pre-restart-check")
+    if rss_after > MEMORY_RESTART_THRESHOLD_MB:
+        logger.critical(
+            "Graceful restart: RSS %.1f MB (was %.1f before reclaim) exceeds %d MB",
+            rss_after,
+            rss_before,
             MEMORY_RESTART_THRESHOLD_MB,
-            _restart_consecutive_checks,
-            _RESTART_REQUIRED_CHECKS,
         )
-        if _restart_consecutive_checks >= _RESTART_REQUIRED_CHECKS:
-            logger.critical(
-                "Graceful restart: RSS %.1f MB exceeds %d MB for %d consecutive checks",
-                rss,
-                MEMORY_RESTART_THRESHOLD_MB,
-                _RESTART_REQUIRED_CHECKS,
-            )
-            return True
-    else:
-        if _restart_consecutive_checks > 0:
-            logger.info("RSS %.1f MB — restart counter reset", rss)
-        _restart_consecutive_checks = 0
+        return True
+    logger.info(
+        "RSS dropped %.1f -> %.1f MB after reclaim — restart averted",
+        rss_before,
+        rss_after,
+    )
     return False
 
 
-def periodic_memory_check() -> None:
+async def periodic_memory_check() -> None:
     """Periodic memory maintenance. Called every 5 minutes by scheduler.
 
+    Must be async so APScheduler runs it on the event loop thread —
+    sys.exit/SIGTERM from a sync function in a thread pool is silently
+    swallowed by APScheduler (the root cause of #213 restart failure).
+
     1. Update peak RSS
-    2. Check if graceful restart needed (BEFORE reclaim — uses pre-reclaim RSS)
-    3. If RSS > 300MB: run gc.collect + malloc_trim
+    2. Reclaim if above threshold, restart if still high
     """
-    rss = update_peak_rss()
+    update_peak_rss()
 
-    # Check restart FIRST, before reclaim drops RSS below threshold (#213 bug 1)
     if check_memory_restart():
-        logger.critical("Initiating graceful restart — exiting with code 0")
-        sys.exit(0)
+        logger.critical("Initiating graceful restart via SIGTERM")
+        import signal
 
-    if rss > 300:
-        reclaim_memory("periodic_check")
+        os.kill(os.getpid(), signal.SIGTERM)

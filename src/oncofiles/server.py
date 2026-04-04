@@ -559,17 +559,10 @@ def _start_sync_scheduler(
 
                     reclaim_memory(f"gdrive_sync:{pid}")
 
-        # Graceful restart check after all patients processed
-        from oncofiles.memory import MEMORY_RESTART_THRESHOLD_MB
+        # Post-sync reclaim (restart logic consolidated into periodic_memory_check)
         from oncofiles.memory import reclaim_memory as _reclaim
 
-        rss = _reclaim("gdrive_sync_all")
-        if rss > MEMORY_RESTART_THRESHOLD_MB:
-            logger.warning(
-                "Graceful restart: RSS %.1f MB after sync — exiting for Railway restart",
-                rss,
-            )
-            sys.exit(0)
+        _reclaim("gdrive_sync_all")
 
     metadata_timeout = 600  # 10 minutes max for metadata extraction
 
@@ -778,26 +771,9 @@ def _start_sync_scheduler(
         except Exception:
             logger.exception("Prompt log cleanup failed")
 
-    async def _log_rss():
-        from oncofiles.memory import MEMORY_RESTART_THRESHOLD_MB, reclaim_memory
-
-        rss_mb = get_rss_mb()
-        logger.info(
-            "Periodic RSS check: %.1f MB (semaphore available: %d/2)",
-            rss_mb,
-            _sync_semaphore._value,
-        )
-        # If RSS is elevated, try to reclaim first
-        if rss_mb > MEMORY_RESTART_THRESHOLD_MB:
-            rss_mb = reclaim_memory("periodic_rss_check")
-        # If RSS is still high after reclaim, restart (#213: removed semaphore condition)
-        if rss_mb > MEMORY_RESTART_THRESHOLD_MB:
-            logger.warning(
-                "Graceful restart: RSS %.1f MB > %d MB after reclaim — exiting",
-                rss_mb,
-                MEMORY_RESTART_THRESHOLD_MB,
-            )
-            sys.exit(0)
+    # _log_rss removed — restart logic consolidated into periodic_memory_check().
+    # The old _log_rss reclaimed before checking, masking the threshold crossing,
+    # and sys.exit(0) was caught by APScheduler as a job error (#213).
 
     from apscheduler.triggers.cron import CronTrigger
 
@@ -836,12 +812,6 @@ def _start_sync_scheduler(
         _run_prompt_log_cleanup,
         CronTrigger(hour=4, minute=15),  # daily at 4:15 AM (after OAuth cleanup)
         id="prompt_log_cleanup",
-        max_instances=1,
-    )
-    scheduler.add_job(
-        _log_rss,
-        CronTrigger(hour="*", minute=15),  # every hour at :15 (#213: was */6)
-        id="rss_monitor",
         max_instances=1,
     )
     scheduler.add_job(
@@ -1693,6 +1663,21 @@ def _start_sync_scheduler(
         )
         job_tracker[event.job_id] = entry
         logger.error("Scheduler job failed: %s — %s", event.job_id, event.exception)
+        # If the memory monitoring job itself fails, check RSS directly as fallback.
+        # A broken safety net is worse than no safety net — force restart if needed.
+        if event.job_id == "memory_check":
+            from oncofiles.memory import MEMORY_RESTART_THRESHOLD_MB
+
+            rss = get_rss_mb()
+            if rss > MEMORY_RESTART_THRESHOLD_MB:
+                logger.critical(
+                    "memory_check job errored AND RSS %.1f MB > %d MB — forcing restart",
+                    rss,
+                    MEMORY_RESTART_THRESHOLD_MB,
+                )
+                import signal
+
+                os.kill(os.getpid(), signal.SIGTERM)
 
     def _job_missed(event):
         entry = job_tracker.get(event.job_id, {})
@@ -2172,6 +2157,19 @@ async def health(request: Request) -> JSONResponse:
     Used by Railway healthcheck and UptimeRobot.  Must never block on
     external I/O so the process is not killed during Turso reconnects.
     """
+    # Hard RSS ceiling — last-resort failsafe independent of scheduler health.
+    # sys.exit(1) makes Railway see a failed healthcheck → immediate replace.
+    from oncofiles.memory import HARD_RSS_CEILING_MB
+
+    _rss_now = get_rss_mb()
+    if _rss_now > HARD_RSS_CEILING_MB:
+        logger.critical(
+            "Hard RSS ceiling: %.1f MB > %d MB — forcing restart via health probe",
+            _rss_now,
+            HARD_RSS_CEILING_MB,
+        )
+        sys.exit(1)
+
     result: dict = {"status": "ok", "version": VERSION}
     commit = os.environ.get("RAILWAY_GIT_COMMIT_SHA", "")[:7]
     if commit:
@@ -2181,7 +2179,7 @@ async def health(request: Request) -> JSONResponse:
         started_at = lifespan_ctx.get("started_at")
         if started_at:
             result["uptime_s"] = int((datetime.now(UTC) - started_at).total_seconds())
-        result["memory_rss_mb"] = round(get_rss_mb(), 1)
+        result["memory_rss_mb"] = round(_rss_now, 1)
         result["memory"] = get_rss_trend()
         result["semaphores"] = get_semaphore_status()
         # Folder sync status — surfaces patients with suspended sync

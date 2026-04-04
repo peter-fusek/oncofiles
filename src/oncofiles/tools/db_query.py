@@ -69,6 +69,8 @@ async def query_db(
 
     db = _get_db(ctx)
     try:
+        # Reconnect stale Turso Hrana streams before querying
+        await db.reconnect_if_stale(timeout=5.0)
         result = await asyncio.wait_for(
             _execute_query(db, query, row_limit),
             timeout=QUERY_TIMEOUT_S,
@@ -77,8 +79,8 @@ async def query_db(
     except TimeoutError:
         return json.dumps({"error": f"Query timed out after {QUERY_TIMEOUT_S}s"})
     except Exception as e:
-        logger.warning("query_db error: %s", e)
-        return json.dumps({"error": str(e)})
+        logger.warning("query_db error [%s]: %r", type(e).__name__, e)
+        return json.dumps({"error": f"{type(e).__name__}: {e}"})
 
 
 async def _execute_query(db, query: str, row_limit: int) -> str:
