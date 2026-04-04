@@ -92,8 +92,9 @@ async def _execute_query(db, query: str, row_limit: int) -> str:
     results = []
     for row in rows[:row_limit]:
         record = {}
-        for i, col in enumerate(columns):
-            val = row[i]
+        for col in columns:
+            # Turso returns dicts, aiosqlite returns Row objects — access by column name
+            val = row[col] if isinstance(row, dict) else row[columns.index(col)]
             if isinstance(val, bytes):
                 val = f"<bytes:{len(val)}>"
             elif val is not None and not isinstance(val, (str, int, float, bool)):
