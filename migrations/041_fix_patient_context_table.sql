@@ -12,15 +12,8 @@ CREATE TABLE patient_context (
     UNIQUE(patient_id)
 );
 
--- Insert Erika's context (will be refreshed on next update_patient_context call)
-INSERT INTO patient_context (patient_id, context_json, updated_at)
-VALUES (
-    '00000000-0000-4000-8000-000000000001',
-    '{"name":"Erika Fusekova","patient_type":"oncology","date_of_birth":"","sex":"female","diagnosis":"","staging":"","histology":"","tumor_site":"","diagnosis_date":"","biomarkers":{},"treatment":{},"metastases":[],"comorbidities":[],"surgeries":[],"physicians":{},"excluded_therapies":[],"note":""}',
-    strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
-);
-
--- Insert e5g (Peter Fusek) context
+-- Erika's context is managed by the app (JSON/env/update_patient_context).
+-- Only seed e5g (Peter Fusek) who has no other context source.
 INSERT INTO patient_context (patient_id, context_json, updated_at)
 VALUES (
     '40a0e0c2-ddc7-4402-909a-0b0f09926917',
