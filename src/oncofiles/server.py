@@ -3429,6 +3429,47 @@ async def api_sync_trigger(request: Request) -> JSONResponse:
         return JSONResponse({"error": "internal error"}, status_code=500)
 
 
+@mcp.custom_route("/api/enhance-trigger", methods=["POST"])
+async def api_enhance_trigger(request: Request) -> JSONResponse:
+    """Trigger AI enhancement for a specific patient's documents. Requires dashboard auth.
+
+    Body: {"patient_id": "..."}
+    Enhances all unprocessed documents (OCR + AI summary + metadata).
+    """
+    err = _check_dashboard_auth(request)
+    if err:
+        return err
+
+    try:
+        body = await request.json()
+        raw_patient_id = body.get("patient_id", "").strip().lower()
+        if not raw_patient_id:
+            return JSONResponse({"error": "patient_id required"}, status_code=400)
+
+        lifespan_ctx = request.app.state.fastmcp_server._lifespan_result
+        db_inst: Database = lifespan_ctx["db"]
+        files = lifespan_ctx["files"]
+
+        patient_id = await db_inst.resolve_patient_id(raw_patient_id) or raw_patient_id
+        pat = await db_inst.get_patient(patient_id)
+        if not pat:
+            return JSONResponse({"error": f"Patient '{patient_id}' not found"}, status_code=404)
+
+        from oncofiles.sync import enhance_documents
+
+        stats = await asyncio.wait_for(
+            enhance_documents(db_inst, files, patient_id=patient_id),
+            timeout=300,
+        )
+
+        return JSONResponse({"status": "ok", "patient_id": patient_id, "stats": stats})
+    except TimeoutError:
+        return JSONResponse({"error": "Enhancement timed out after 300s"}, status_code=504)
+    except Exception:
+        logger.exception("API enhance-trigger error")
+        return JSONResponse({"error": "internal error"}, status_code=500)
+
+
 @mcp.custom_route("/api/gdrive-folders", methods=["GET"])
 async def api_gdrive_folders(request: Request) -> JSONResponse:
     """List Google Drive root folders for a patient. Requires dashboard auth."""
