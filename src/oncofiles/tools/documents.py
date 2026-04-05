@@ -209,7 +209,8 @@ async def search_documents(
         institution: Filter by institution code (e.g. NOUonko, OUSA).
         category: Filter by category (labs, report, imaging,
                   pathology, genetics, surgery, surgical_report, prescription,
-                  referral, discharge, discharge_summary, chemo_sheet, other).
+                  referral, discharge, discharge_summary, chemo_sheet,
+                  vaccination, dental, preventive, other).
         date_from: Filter from this date (YYYY-MM-DD).
         date_to: Filter to this date (YYYY-MM-DD).
         limit: Maximum results to return (max 200).
@@ -507,6 +508,7 @@ async def update_document_category(ctx: Context, doc_id: int, category: str) -> 
         category: New category (labs, report, imaging,
                   pathology, genetics, surgery, surgical_report, prescription,
                   referral, discharge, discharge_summary, chemo_sheet,
+                  vaccination, dental, preventive,
                   reference, advocate, other).
     """
     try:

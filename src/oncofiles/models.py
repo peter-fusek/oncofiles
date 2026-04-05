@@ -33,6 +33,10 @@ class DocumentCategory(StrEnum):
     REFERENCE = "reference"
     ADVOCATE = "advocate"
     OTHER = "other"
+    # General health categories (v5.2+)
+    VACCINATION = "vaccination"
+    DENTAL = "dental"
+    PREVENTIVE = "preventive"
     # Legacy aliases — kept for backward compat (DB may have these values)
     SURGICAL_REPORT = "surgical_report"
     DISCHARGE_SUMMARY = "discharge_summary"

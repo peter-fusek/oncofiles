@@ -426,8 +426,13 @@ async def sync_to_gdrive(
         logger.info("sync_to_gdrive: dry run — %s", stats)
         return stats
 
-    # Ensure folder structure
-    folder_map = await asyncio.to_thread(ensure_folder_structure, gdrive, folder_id)
+    # Ensure folder structure (patient-type-aware)
+    from oncofiles.patient_context import get_context
+
+    _pt = get_context(patient_id).get("patient_type", "oncology")
+    folder_map = await asyncio.to_thread(
+        ensure_folder_structure, gdrive, folder_id, patient_type=_pt
+    )
 
     # Collect all organized folder IDs (category folders + their year-month subfolders)
     organized_folder_ids = set(folder_map.values())

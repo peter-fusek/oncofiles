@@ -247,25 +247,157 @@ _MFOLFOX6_THRESHOLDS = {
     },
 }
 
+# General health reference ranges (EU/WHO/ESC guidelines)
+_GENERAL_HEALTH_THRESHOLDS = {
+    "GLUCOSE": {
+        "min": 3.9,
+        "max": 5.6,
+        "unit": "mmol/L",
+        "source": "WHO: fasting plasma glucose normal range",
+        "source_url": None,
+    },
+    "CHOLESTEROL_TOTAL": {
+        "max": 5.0,
+        "unit": "mmol/L",
+        "source": "ESC/EAS 2019 Dyslipidaemia Guidelines: desirable total cholesterol",
+        "source_url": "https://doi.org/10.1093/eurheartj/ehz455",
+    },
+    "HDL": {
+        "min": 1.0,
+        "unit": "mmol/L",
+        "source": "ESC/EAS 2019: low HDL threshold (male)",
+        "source_url": "https://doi.org/10.1093/eurheartj/ehz455",
+    },
+    "LDL": {
+        "max": 3.0,
+        "unit": "mmol/L",
+        "source": "ESC/EAS 2019: moderate CV risk target LDL <3.0",
+        "source_url": "https://doi.org/10.1093/eurheartj/ehz455",
+    },
+    "TRIGLYCERIDES": {
+        "max": 1.7,
+        "unit": "mmol/L",
+        "source": "ESC/EAS 2019: desirable fasting triglycerides",
+        "source_url": "https://doi.org/10.1093/eurheartj/ehz455",
+    },
+    "HBA1C": {
+        "max": 42.0,
+        "unit": "mmol/mol",
+        "source": "WHO: HbA1c <42 mmol/mol (6.0%) = normal; 42-47 = prediabetes",
+        "source_url": None,
+    },
+    "TSH": {
+        "min": 0.4,
+        "max": 4.0,
+        "unit": "mIU/L",
+        "source": "ATA Guidelines: normal TSH reference range",
+        "source_url": None,
+    },
+    "VITAMIN_D": {
+        "min": 75.0,
+        "unit": "nmol/L",
+        "source": "Endocrine Society: 25(OH)D sufficiency ≥75 nmol/L (30 ng/mL)",
+        "source_url": None,
+    },
+    "FERRITIN": {
+        "min": 30.0,
+        "max": 300.0,
+        "unit": "µg/L",
+        "source": "WHO: adult male ferritin reference range",
+        "source_url": None,
+    },
+    "PSA": {
+        "max": 4.0,
+        "unit": "ng/mL",
+        "source": "EAU Guidelines: PSA screening threshold (age-adjusted shared decision)",
+        "source_url": None,
+    },
+    # Standard CBC with general population ranges
+    "WBC": {
+        "min": 4.0,
+        "max": 10.0,
+        "unit": "10^9/L",
+        "source": "Standard adult reference range",
+        "source_url": None,
+    },
+    "HGB": {
+        "min": 130.0,
+        "max": 175.0,
+        "unit": "g/L",
+        "source": "WHO: adult male haemoglobin reference range",
+        "source_url": None,
+    },
+    "PLT": {
+        "min": 150.0,
+        "max": 400.0,
+        "unit": "10^9/L",
+        "source": "Standard adult platelet reference range",
+        "source_url": None,
+    },
+    "CREATININE": {
+        "min": 62.0,
+        "max": 106.0,
+        "unit": "µmol/L",
+        "source": "Standard adult male creatinine reference range",
+        "source_url": None,
+    },
+    "eGFR": {
+        "min": 90.0,
+        "unit": "mL/min/1.73m2",
+        "source": "KDIGO: eGFR ≥90 = normal; 60-89 = mild decrease",
+        "source_url": None,
+    },
+    "ALT": {
+        "max": 45.0,
+        "unit": "U/L",
+        "source": "Standard adult male ALT upper limit of normal",
+        "source_url": None,
+    },
+    "AST": {
+        "max": 35.0,
+        "unit": "U/L",
+        "source": "Standard adult male AST upper limit of normal",
+        "source_url": None,
+    },
+    "BILIRUBIN": {
+        "max": 17.0,
+        "unit": "µmol/L",
+        "source": "Standard adult total bilirubin upper limit of normal",
+        "source_url": None,
+    },
+}
+
+
+def _get_thresholds(patient_id: str) -> dict:
+    """Return the appropriate lab thresholds for a patient based on patient_type."""
+    from oncofiles.patient_context import get_context
+
+    patient_type = get_context(patient_id).get("patient_type", "oncology")
+    if patient_type == "general":
+        return _GENERAL_HEALTH_THRESHOLDS
+    return _MFOLFOX6_THRESHOLDS
+
 
 async def get_lab_safety_check(ctx: Context) -> str:
-    """Pre-cycle lab safety check against mFOLFOX6 thresholds.
+    """Lab safety check against thresholds appropriate for the patient type.
+
+    For oncology patients: mFOLFOX6 pre-cycle thresholds (NCCN + SmPC).
+    For general patients: standard health reference ranges (EU/WHO/ESC).
 
     For each safety parameter, returns:
     - The threshold (min or max) with source/guideline reference
     - The patient's most recent value with date and source document
     - Safety status: green (safe), red (unsafe), yellow (borderline ±10%)
     - Clickable gdrive_url to verify the source lab document
-
-    Used by Oncoteam's clinical protocol UI for the "Laborat. prahy" section.
     """
     db = _get_db(ctx)
     from oncofiles.tools._helpers import _get_patient_id
 
     pid = _get_patient_id()
+    thresholds = _get_thresholds(pid)
     results = []
 
-    for param, threshold in _MFOLFOX6_THRESHOLDS.items():
+    for param, threshold in thresholds.items():
         entry: dict = {
             "parameter": param,
             "unit": threshold["unit"],
@@ -799,6 +931,29 @@ async def get_lab_summary(ctx: Context) -> str:
     )
 
 
+async def get_preventive_care_status(ctx: Context) -> str:
+    """Get EU preventive care screening compliance for a general health patient.
+
+    Evaluates which screenings (colonoscopy, dental, ophthalmology, PSA, etc.)
+    are up-to-date, due soon, overdue, or never done — based on patient age,
+    sex, and treatment_events history.
+
+    Only available for patients with patient_type="general" in their context.
+    Requires date_of_birth and sex in patient context.
+
+    Returns a compliance report with actionable screening status for each
+    applicable protocol.
+    """
+    db = _get_db(ctx)
+    from oncofiles.tools._helpers import _get_patient_id
+
+    pid = _get_patient_id()
+
+    from oncofiles.preventive_care import get_preventive_care_status as _get_status
+
+    return await _get_status(db, pid)
+
+
 def register(mcp):
     mcp.tool()(store_lab_values)
     mcp.tool()(get_lab_trends)
@@ -807,3 +962,4 @@ def register(mcp):
     mcp.tool()(get_lab_time_series)
     mcp.tool()(compare_lab_panels)
     mcp.tool()(get_lab_summary)
+    mcp.tool()(get_preventive_care_status)

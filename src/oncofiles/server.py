@@ -1721,7 +1721,7 @@ def _get_sync_folder_id_from(oauth_folder_id: str) -> str:
 from oncofiles.audit_middleware import AuditMiddleware  # noqa: E402
 
 _MCP_INSTRUCTIONS = """\
-Medical document management for oncology patient records.
+Medical document management for oncology and general health patient records.
 
 SOURCE ATTRIBUTION — every response includes verifiable source links:
 1. Every document has a `gdrive_url` field linking to Google Drive. Always present this \
@@ -1744,9 +1744,16 @@ RECOMMENDED WORKFLOW for chat clients:
 - Use `get_related_documents` for drill-down into connected records.
 - In export packages, all entries include `gdrive_url` for offline verification.
 
+PATIENT TYPES — the system supports two patient profiles:
+- `oncology`: cancer patients with chemo protocols, biomarker tracking, pre-cycle checklists. \
+Categories include pathology, genetics, chemo_sheet.
+- `general`: healthy patients with preventive care screening, general health lab ranges. \
+Categories include vaccination, dental, preventive. Use `get_preventive_care_status` to check \
+which EU-recommended screenings are due/overdue.
+
 Available categories: labs, report, imaging, pathology, genetics, \
 surgery, surgical_report, prescription, referral, discharge, discharge_summary, chemo_sheet, \
-reference, advocate, other.\
+reference, advocate, other, vaccination, dental, preventive.\
 """
 
 mcp = FastMCP(

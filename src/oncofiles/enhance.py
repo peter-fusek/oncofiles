@@ -30,6 +30,13 @@ PROVIDER_TO_INSTITUTION: list[tuple[list[str], str]] = [
     (["agel"], "Agel"),
     (["minnesota"], "MinnesotaUniversity"),
     (["socialna poistovna", "socialnapoistovna"], "SocialnaPoistovna"),
+    # General healthcare providers
+    (["procare", "pro care"], "ProCare"),
+    (["medante"], "Medante"),
+    (["euromedic"], "Euromedic"),
+    (["iscare"], "ISCare"),
+    (["nemocnica sv. michala", "sv michala"], "SvMichal"),
+    (["kramarska", "kramárska", "kramare"], "Kramarska"),
 ]
 
 
@@ -150,12 +157,15 @@ METADATA_SYSTEM_PROMPT = (
     "produce a JSON object with exactly these keys:\n"
     '- "document_type": detected type (one of: lab_report, discharge_summary, pathology, '
     "imaging, surgical_report, prescription, referral, "
-    "genetics, chemo_sheet, consultation, other)\n"
+    "genetics, chemo_sheet, consultation, vaccination, dental, preventive_checkup, other)\n"
     '- "findings": array of key findings as short strings (max 10)\n'
     '- "diagnoses": array of objects with "name" and optional "icd_code" keys\n'
     '- "medications": array of medication names mentioned\n'
     '- "dates_mentioned": array of dates found in document (YYYY-MM-DD format when possible)\n'
     '- "providers": array of healthcare provider/institution names\n'
+    '- "doctors": array of doctor/physician names found in the document '
+    '(e.g. ["MUDr. Novak", "Dr. Smith"])\n'
+    '- "handwritten": boolean — true if any part of the document appears handwritten\n'
     '- "plain_summary": 3-sentence patient-friendly summary in English\n'
     '- "plain_summary_sk": The same patient-friendly summary in Slovak (slovenčina)\n\n'
     "Respond ONLY with the JSON object, no markdown fencing or extra text."
@@ -186,6 +196,8 @@ def extract_structured_metadata(
             "medications": [],
             "dates_mentioned": [],
             "providers": [],
+            "doctors": [],
+            "handwritten": False,
             "plain_summary": "",
             "plain_summary_sk": "",
         }
@@ -227,6 +239,8 @@ def extract_structured_metadata(
             "medications": parsed.get("medications", []),
             "dates_mentioned": parsed.get("dates_mentioned", []),
             "providers": parsed.get("providers", []),
+            "doctors": parsed.get("doctors", []),
+            "handwritten": parsed.get("handwritten", False),
             "plain_summary": parsed.get("plain_summary", ""),
             "plain_summary_sk": parsed.get("plain_summary_sk", ""),
         }
@@ -239,6 +253,8 @@ def extract_structured_metadata(
             "medications": [],
             "dates_mentioned": [],
             "providers": [],
+            "doctors": [],
+            "handwritten": False,
             "plain_summary": "",
             "plain_summary_sk": "",
         }
@@ -250,7 +266,8 @@ FILENAME_DESC_SYSTEM_PROMPT = (
     "Rules:\n"
     "- No spaces, no special characters (only letters and digits)\n"
     "- CamelCase format (e.g., BloodResultsBeforeCycle2DrPorsok)\n"
-    "- Include key content: document type, procedure/test, doctor name if present\n"
+    "- Include key content: document type, procedure/test. "
+    "ALWAYS append DrLastName if any doctor/physician is identified\n"
     "- Maximum 60 characters\n"
     "- If the text is in Slovak, translate the key concepts to English\n\n"
     "Respond ONLY with the CamelCase description, no quotes or extra text."

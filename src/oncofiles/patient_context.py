@@ -18,6 +18,9 @@ logger = logging.getLogger(__name__)
 # NEVER commit patient-specific data (diagnosis, biomarkers, physicians) to this repo.
 _DEFAULT_CONTEXT: dict[str, Any] = {
     "name": os.environ.get("PATIENT_NAME", ""),
+    "patient_type": "oncology",  # "oncology" or "general"
+    "date_of_birth": "",  # ISO date, e.g. "1980-01-15"
+    "sex": "",  # "male" or "female"
     "diagnosis": "",
     "staging": "",
     "histology": "",
@@ -189,18 +192,42 @@ def format_context_text(patient_id: str | None = None) -> str:
     excluded = "\n".join(f"  - {t}" for t in ctx.get("excluded_therapies", []))
     tx = ctx.get("treatment", {})
     phys = ctx.get("physicians", {})
-    return (
-        f"**Patient:** {ctx.get('name', 'Unknown')}\n"
-        f"**Diagnosis:** {ctx.get('diagnosis', '')}\n"
-        f"**Staging:** {ctx.get('staging', '')}\n"
-        f"**Histology:** {ctx.get('histology', '')}\n"
-        f"**Tumor site:** {ctx.get('tumor_site', '')}\n"
-        f"**Biomarkers:**\n{biomarkers}\n"
-        f"**Treatment:** {tx.get('regimen', '')} (cycle {tx.get('current_cycle', '?')}) "
-        f"at {tx.get('institution', '')}\n"
-        f"**Metastases:** {mets}\n"
-        f"**Comorbidities:** {comorb}\n"
-        f"**Physicians:** {phys.get('treating', '')}; {phys.get('admitting', '')}\n"
-        f"**Excluded therapies:**\n{excluded}\n"
-        f"**Note:** {ctx.get('note', '')}"
+    patient_type = ctx.get("patient_type", "oncology")
+    lines = [
+        f"**Patient:** {ctx.get('name', 'Unknown')}",
+        f"**Type:** {patient_type}",
+    ]
+    if ctx.get("date_of_birth"):
+        lines.append(f"**Date of birth:** {ctx['date_of_birth']}")
+    if ctx.get("sex"):
+        lines.append(f"**Sex:** {ctx['sex']}")
+
+    if patient_type == "oncology":
+        lines.extend(
+            [
+                f"**Diagnosis:** {ctx.get('diagnosis', '')}",
+                f"**Staging:** {ctx.get('staging', '')}",
+                f"**Histology:** {ctx.get('histology', '')}",
+                f"**Tumor site:** {ctx.get('tumor_site', '')}",
+                f"**Biomarkers:**\n{biomarkers}",
+                f"**Treatment:** {tx.get('regimen', '')} (cycle {tx.get('current_cycle', '?')}) "
+                f"at {tx.get('institution', '')}",
+                f"**Metastases:** {mets}",
+            ]
+        )
+    else:
+        if ctx.get("diagnosis"):
+            lines.append(f"**Conditions:** {ctx.get('diagnosis', '')}")
+
+    lines.extend(
+        [
+            f"**Comorbidities:** {comorb}",
+            f"**Physicians:** {phys.get('treating', '')}; {phys.get('admitting', '')}",
+        ]
     )
+
+    if patient_type == "oncology":
+        lines.append(f"**Excluded therapies:**\n{excluded}")
+
+    lines.append(f"**Note:** {ctx.get('note', '')}")
+    return "\n".join(lines)

@@ -23,6 +23,10 @@ METADATA_FOLDERS = ["conversations", "treatment", "research"]
 
 ALL_FOLDERS = CATEGORY_FOLDERS + METADATA_FOLDERS
 
+# Patient-type-aware folder filtering
+ONCOLOGY_ONLY_CATEGORIES = {"chemo_sheet", "pathology", "genetics"}
+GENERAL_ONLY_CATEGORIES = {"vaccination", "dental", "preventive"}
+
 # Bilingual display names: EN key → SK translation (for GDrive folder display)
 FOLDER_SK: dict[str, str] = {
     "labs": "laboratórne výsledky",
@@ -39,6 +43,9 @@ FOLDER_SK: dict[str, str] = {
     "reference": "referenčné materiály",
     "advocate": "záznamy advokáta pacienta",
     "other": "ostatné",
+    "vaccination": "očkovanie",
+    "dental": "zubné záznamy",
+    "preventive": "preventívne prehliadky",
     "conversations": "záznamy rozhovorov",
     "treatment": "priebeh liečby",
     "research": "výskum",
@@ -70,15 +77,31 @@ def en_key_from_folder_name(folder_name: str) -> str | None:
     return None
 
 
-def ensure_folder_structure(gdrive, root_folder_id: str) -> dict[str, str]:
+def _folders_for_patient_type(patient_type: str = "oncology") -> list[str]:
+    """Return the list of folders appropriate for a patient type."""
+    if patient_type == "general":
+        return [f for f in ALL_FOLDERS if f not in ONCOLOGY_ONLY_CATEGORIES]
+    # oncology: skip general-only categories
+    return [f for f in ALL_FOLDERS if f not in GENERAL_ONLY_CATEGORIES]
+
+
+def ensure_folder_structure(
+    gdrive, root_folder_id: str, *, patient_type: str = "oncology"
+) -> dict[str, str]:
     """Create category + metadata folders under root. Returns {en_key: folder_id} map.
 
     Uses bilingual display names. Finds existing folders by either old (EN-only)
     or new (bilingual) name, renames old folders to bilingual format.
     Idempotent.
+
+    Args:
+        patient_type: "oncology" (default) or "general" — controls which folders
+            are created. General patients skip chemo_sheet/pathology/genetics;
+            oncology patients skip vaccination/dental/preventive.
     """
+    folders = _folders_for_patient_type(patient_type)
     folder_map: dict[str, str] = {}
-    for name in ALL_FOLDERS:
+    for name in folders:
         display = bilingual_name(name)
         folder_id = _find_or_create_bilingual(gdrive, name, display, root_folder_id)
         folder_map[name] = folder_id

@@ -14,10 +14,12 @@ from oncofiles.prompt_logger import log_ai_call
 OCR_MODEL = "claude-haiku-4-5-20251001"
 
 OCR_SYSTEM_PROMPT = (
-    "You are an OCR assistant. Extract ALL text from this medical document image "
-    "exactly as written. Preserve the original language (Slovak/Czech), formatting, "
-    "section headers, values, units, and reference ranges. Do not interpret, summarize, "
-    "or translate. Output only the extracted text, nothing else."
+    "You are an OCR assistant specializing in medical documents including handwritten notes. "
+    "Extract ALL text from this medical document image exactly as written. "
+    "For handwritten text: read carefully, preserve the original language (Slovak/Czech), "
+    "mark uncertain readings with [?]. "
+    "For printed text: preserve formatting, section headers, values, units, and reference ranges. "
+    "Do not interpret, summarize, or translate. Output only the extracted text, nothing else."
 )
 
 

@@ -397,26 +397,33 @@ async def gdrive_fix_permissions(
 
 
 async def setup_gdrive(ctx: Context, root_folder_id: str) -> str:
-    """Create the full folder structure (17 categories + 3 metadata) in a GDrive root folder.
+    """Create the folder structure in a GDrive root folder (patient-type-aware).
 
     Idempotent: checks for existing folders by name before creating.
     Handles both bilingual and legacy EN-only folder names (renames old to bilingual).
+    Oncology patients skip general-only folders; general patients skip oncology-only.
 
     Args:
         root_folder_id: The Google Drive folder ID to create subfolders in.
     """
-    from oncofiles.gdrive_folders import ALL_FOLDERS, bilingual_name
+    from oncofiles.gdrive_folders import _folders_for_patient_type, bilingual_name
+    from oncofiles.patient_context import get_context
+    from oncofiles.tools._helpers import _get_patient_id
 
     gdrive = await _get_gdrive(ctx)
     if not gdrive:
         msg = "GDrive client not configured. Use gdrive_auth_url to connect."
         return json.dumps({"error": msg})
 
+    pid = _get_patient_id()
+    patient_type = get_context(pid).get("patient_type", "oncology")
+    folders = _folders_for_patient_type(patient_type)
+
     created: list[str] = []
     skipped: list[str] = []
     renamed: list[str] = []
 
-    for en_key in ALL_FOLDERS:
+    for en_key in folders:
         display = bilingual_name(en_key)
 
         # Check bilingual name first
@@ -440,13 +447,13 @@ async def setup_gdrive(ctx: Context, root_folder_id: str) -> str:
         {
             "status": "ok",
             "root_folder_id": root_folder_id,
-            "total_folders": len(ALL_FOLDERS),
+            "total_folders": len(folders),
             "created": created,
             "skipped": skipped,
             "renamed": renamed,
             "summary": (
                 f"Created {len(created)}, skipped {len(skipped)}, "
-                f"renamed {len(renamed)} of {len(ALL_FOLDERS)} folders."
+                f"renamed {len(renamed)} of {len(folders)} folders."
             ),
         }
     )

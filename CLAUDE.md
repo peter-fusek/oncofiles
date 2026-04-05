@@ -26,7 +26,7 @@ uv run ruff check
 - Filenames follow standard convention: `YYYYMMDD_PatientName_Institution_Category_DescriptionEN.ext`
   - Separators: underscores only
   - Description: English, CamelCase, max 60 chars
-  - Category tokens: Labs, Report, Pathology, CT, USG, Genetics, Surgery, SurgicalReport, Prescription, Referral, Discharge, DischargeSummary, ChemoSheet, Reference, Advocate, Other
+  - Category tokens: Labs, Report, Pathology, CT, USG, Genetics, Surgery, SurgicalReport, Prescription, Referral, Discharge, DischargeSummary, ChemoSheet, Reference, Advocate, Other, Vaccination, Dental, Preventive
   - Legacy formats (space+dash, underscore-separated) still parsed for backward compat
 
 ## Key commands
@@ -54,6 +54,7 @@ uv run ruff check
 - **uv.lock**: After bumping version in pyproject.toml, always run `uv lock` — Railway uses `--locked` flag which rejects stale lockfiles
 - **Dashboard i18n**: Uses `data-sk`/`data-en` attributes on elements. `applyDashLang()` queries all `[data-sk][data-en]` elements. Add both attributes when adding new user-visible text.
 - **Multi-patient isolation**: ALL functions that use patient identity (get_patient_name, get_context, is_standard_format, rename_to_standard, parse_filename) MUST pass `patient_id`. The ContextVar fallback in `get_context()` catches missed callers during tool calls, but explicit is better. Never call `get_patient_name()` without patient_id in new code.
+- **Patient types**: `patient_type` in patient context — `"oncology"` (default) or `"general"`. Controls folder creation (oncology skips vaccination/dental/preventive; general skips chemo_sheet/pathology/genetics), lab thresholds (mFOLFOX6 vs EU/WHO general health), and preventive care screening.
 - **Stateless HTTP**: `stateless_http=True` in `mcp.run()` — no server-side sessions. Survives Railway deploys. Do not change to stateful unless SSE push is needed.
 - **GDrive folder validation**: `gdrive_set_folder` (both MCP tool and REST API) validates the folder exists and is a folder before persisting. Prevents typos (e.g., `I` vs `l`) from causing cascading sync failures. If validation fails, the folder ID is NOT saved.
 - **Folder 404 skip logic**: `_folder_404_counts` in `server.py` tracks consecutive 404 failures per patient. After 3 failures, sync skips that patient until `gdrive_set_folder` is called (which clears the counter). `/health` endpoint surfaces `folder_404_suspended` when patients are skipped.

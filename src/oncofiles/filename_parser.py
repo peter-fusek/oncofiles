@@ -43,6 +43,13 @@ KNOWN_INSTITUTIONS = {
     "Synlab",
     "Cytopathos",
     "BIOPTIKA",
+    # General healthcare providers
+    "ProCare",
+    "Medante",
+    "Euromedic",
+    "ISCare",
+    "SvMichal",
+    "Kramarska",
 }
 
 # Institution normalization: variant → canonical code
@@ -70,6 +77,15 @@ INSTITUTION_NORMALIZE: dict[str, str] = {
     "alpha": "Alpha",
     "synlab": "Synlab",
     "bioptika": "BIOPTIKA",
+    "procare": "ProCare",
+    "pro care": "ProCare",
+    "medante": "Medante",
+    "euromedic": "Euromedic",
+    "iscare": "ISCare",
+    "sv michala": "SvMichal",
+    "nemocnica sv. michala": "SvMichal",
+    "kramarska": "Kramarska",
+    "kramárska": "Kramarska",
 }
 
 
@@ -105,6 +121,9 @@ CATEGORY_FILENAME_TOKENS: dict[DocumentCategory, str] = {
     DocumentCategory.REFERENCE: "Reference",
     DocumentCategory.ADVOCATE: "Advocate",
     DocumentCategory.OTHER: "Other",
+    DocumentCategory.VACCINATION: "Vaccination",
+    DocumentCategory.DENTAL: "Dental",
+    DocumentCategory.PREVENTIVE: "Preventive",
 }
 
 # Reverse lookup: filename token (lowercase) → category
@@ -118,6 +137,18 @@ _TOKEN_TO_CATEGORY["usg"] = DocumentCategory.IMAGING
 # Category inference from CamelCase description keywords.
 # Order matters — more specific matches first.
 _CATEGORY_KEYWORDS: list[tuple[list[str], DocumentCategory]] = [
+    # Vaccination (before consultation — more specific)
+    (
+        ["vakcinaci", "ockovani", "vaccination", "vaccine", "vakcina", "ockovac"],
+        DocumentCategory.VACCINATION,
+    ),
+    # Dental (before consultation — distinct specialty)
+    (["dental", "zubny", "zubna", "zubne", "stomatolog", "orthodon"], DocumentCategory.DENTAL),
+    # Preventive care (before consultation — distinct purpose)
+    (
+        ["preventiv", "screening", "annual checkup", "rocna prehliadka", "prehliadka"],
+        DocumentCategory.PREVENTIVE,
+    ),
     # Genetics (before pathology — genetics is a separate category)
     (["genetick", "genetik", "geneticke"], DocumentCategory.GENETICS),
     # Pathology / biopsy
@@ -199,6 +230,15 @@ CATEGORY_ALIASES: dict[str, DocumentCategory] = {
     "referencne": DocumentCategory.REFERENCE,
     "advocate": DocumentCategory.ADVOCATE,
     "advokat": DocumentCategory.ADVOCATE,
+    "vaccination": DocumentCategory.VACCINATION,
+    "vaccine": DocumentCategory.VACCINATION,
+    "ockovanie": DocumentCategory.VACCINATION,
+    "dental": DocumentCategory.DENTAL,
+    "zubne": DocumentCategory.DENTAL,
+    "stomatologia": DocumentCategory.DENTAL,
+    "preventive": DocumentCategory.PREVENTIVE,
+    "screening": DocumentCategory.PREVENTIVE,
+    "prehliadka": DocumentCategory.PREVENTIVE,
 }
 
 _DATE_RE = re.compile(r"^(\d{4})(\d{2})(\d{2})")
@@ -228,7 +268,7 @@ def _patient_prefix_re(patient_id: str = "") -> re.Pattern:
 _BILINGUAL_PREFIX_RE = re.compile(
     r"^(labs|report|pathology|imaging|genetics|surgery|"
     r"surgical_report|prescription|referral|discharge_summary|discharge|"
-    r"chemo_sheet|reference|advocate|other)-",
+    r"chemo_sheet|reference|advocate|other|vaccination|dental|preventive)-",
     re.IGNORECASE,
 )
 
