@@ -703,8 +703,18 @@
     @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
     .svc-badges { display: inline-flex; gap: 0.25rem; margin-right: 0.5rem; vertical-align: middle; }
     .svc-badge { font-size: 0.625rem; padding: 1px 5px; border-radius: 3px; font-weight: 600; letter-spacing: 0.02em; }
-    .svc-badge.on { background: rgba(34,197,94,0.15); color: var(--green); border: 1px solid rgba(34,197,94,0.3); }
-    .svc-badge.off { background: rgba(100,116,139,0.1); color: var(--text-dim); border: 1px solid var(--border); }
+    .svc-badge.on { background: rgba(34,197,94,0.15); color: var(--green); border: 1px solid rgba(34,197,94,0.3); cursor: pointer; }
+    .svc-badge.off { background: rgba(100,116,139,0.1); color: var(--text-dim); border: 1px solid var(--border); cursor: pointer; }
+    .integration-popover { display:none; position:absolute; top:100%; right:0; z-index:100; background:var(--surface); border:1px solid var(--border); border-radius:0.5rem; padding:0.75rem 1rem; min-width:260px; box-shadow:0 4px 12px rgba(0,0,0,0.3); margin-top:0.25rem; }
+    .integration-popover .ip-row { display:flex; justify-content:space-between; align-items:center; padding:0.25rem 0; font-size:0.8rem; }
+    .integration-popover .ip-label { color:var(--text-dim); }
+    .integration-popover .ip-value { color:var(--text); font-weight:500; }
+    .integration-popover .ip-status { display:inline-block; width:6px; height:6px; border-radius:50%; margin-right:4px; }
+    .integration-popover .ip-status.on { background:var(--green); }
+    .integration-popover .ip-status.off { background:var(--text-dim); }
+    .integration-popover .ip-actions { margin-top:0.5rem; padding-top:0.5rem; border-top:1px solid var(--border); }
+    .integration-popover .ip-actions button { font-size:0.75rem; padding:3px 8px; border-radius:3px; border:1px solid var(--border); background:var(--bg); color:var(--text); cursor:pointer; }
+    .integration-popover .ip-actions button:hover { background:var(--surface); }
     .skeleton {
       background: linear-gradient(90deg, var(--surface) 25%, rgba(51,65,85,0.5) 50%, var(--surface) 75%);
       background-size: 200% 100%;
@@ -763,10 +773,20 @@
         </div>
         <div class="header-right">
           <span id="connection-dot" class="connection-dot loading" title="Connecting..."></span>
-          <span id="svc-badges" class="svc-badges">
-            <span id="svc-drive" class="svc-badge off" title="Google Drive" onclick="if(this.classList.contains('off'))showGdriveSetup()" style="cursor:pointer">Drive</span>
-            <span id="svc-gmail" class="svc-badge off" title="Gmail">Gmail</span>
-            <span id="svc-cal" class="svc-badge off" title="Google Calendar">Cal</span>
+          <span id="svc-badges" class="svc-badges" style="position:relative">
+            <span id="svc-drive" class="svc-badge off" title="Google Drive" onclick="toggleIntegrationPanel()">Drive</span>
+            <span id="svc-gmail" class="svc-badge off" title="Gmail" onclick="toggleIntegrationPanel()">Gmail</span>
+            <span id="svc-cal" class="svc-badge off" title="Google Calendar" onclick="toggleIntegrationPanel()">Cal</span>
+            <div id="integration-popover" class="integration-popover">
+              <div class="ip-row"><span class="ip-label" data-sk="Účet" data-en="Account">Account</span><span class="ip-value" id="ip-email">—</span></div>
+              <div class="ip-row"><span class="ip-label">Drive</span><span class="ip-value"><span class="ip-status off" id="ip-drive-dot"></span><span id="ip-drive-text">—</span></span></div>
+              <div class="ip-row"><span class="ip-label" data-sk="Priečinok" data-en="Folder">Folder</span><span class="ip-value" id="ip-folder">—</span></div>
+              <div class="ip-row"><span class="ip-label">Gmail</span><span class="ip-value"><span class="ip-status off" id="ip-gmail-dot"></span><span id="ip-gmail-text">—</span></span></div>
+              <div class="ip-row"><span class="ip-label" data-sk="Kalendár" data-en="Calendar">Calendar</span><span class="ip-value"><span class="ip-status off" id="ip-cal-dot"></span><span id="ip-cal-text">—</span></span></div>
+              <div class="ip-actions">
+                <button onclick="showGdriveSetup(); toggleIntegrationPanel();" data-sk="Zmeniť priečinok" data-en="Change folder">Change folder</button>
+              </div>
+            </div>
           </span>
           <span class="version" id="version-label"></span>
           <span class="user-info" id="user-info"></span>
@@ -879,6 +899,35 @@
         <h2 data-sk="AI Prompt Log" data-en="AI Prompt Log">AI Prompt Log</h2>
         <div id="prompt-stats" style="display:flex;gap:1rem;flex-wrap:wrap;margin-bottom:0.75rem"></div>
         <div id="prompt-log-rows"><div style="padding:0.5rem 0;color:var(--text-muted);font-size:0.8125rem">Loading...</div></div>
+      </div>
+
+      <!-- Conversation Previews (demo only) -->
+      <div class="sync-history" id="demo-conversations" style="display:none">
+        <h2 data-sk="Ako to vyzerá v praxi" data-en="See it in action">Ako to vyzerá v praxi</h2>
+        <div style="font-size:0.8125rem;color:var(--text-muted);margin-bottom:0.75rem" data-sk="Takto AI asistent pracuje s vašimi dokumentmi cez MCP pripojenie:" data-en="This is how an AI assistant works with your documents via MCP connection:">Takto AI asistent pracuje s vašimi dokumentmi cez MCP pripojenie:</div>
+        <div id="demo-chat-tabs" style="display:flex;gap:0.25rem;margin-bottom:0.5rem">
+          <button class="demo-chat-tab active" onclick="switchDemoChat('labs',this)" style="font-size:0.75rem;padding:4px 10px;border-radius:4px;border:1px solid var(--border);background:var(--green);color:#fff;cursor:pointer" data-sk="Laboratórne výsledky" data-en="Lab Results">Laboratórne výsledky</button>
+          <button class="demo-chat-tab" onclick="switchDemoChat('chemo',this)" style="font-size:0.75rem;padding:4px 10px;border-radius:4px;border:1px solid var(--border);background:var(--bg);color:var(--text);cursor:pointer" data-sk="Pred chemo" data-en="Pre-Chemo">Pred chemo</button>
+          <button class="demo-chat-tab" onclick="switchDemoChat('docs',this)" style="font-size:0.75rem;padding:4px 10px;border-radius:4px;border:1px solid var(--border);background:var(--bg);color:var(--text);cursor:pointer" data-sk="Dokumenty" data-en="Documents">Dokumenty</button>
+        </div>
+        <div id="demo-chat-labs" class="demo-chat-panel" style="background:var(--bg);border:1px solid var(--border);border-radius:0.5rem;padding:0.75rem;font-size:0.8125rem;display:flex;flex-direction:column;gap:0.5rem">
+          <div style="background:rgba(20,184,166,0.1);padding:0.5rem 0.75rem;border-radius:0.375rem;color:var(--teal)">What changed in Erika's latest blood test compared to the previous one?</div>
+          <div style="color:var(--purple);font-size:0.75rem;font-family:monospace">oncofiles: search_documents("labs march")</div>
+          <div style="color:var(--purple);font-size:0.75rem;font-family:monospace">oncofiles: get_lab_trends("WBC, HGB, PLT")</div>
+          <div style="padding:0.5rem 0.75rem;border-radius:0.375rem;color:var(--text);line-height:1.5">Comparing the March 13 and February 27 labs:<br><b>WBC</b>: 4.2 → 5.1 (+21%) — recovering nicely after C2<br><b>HGB</b>: 98 → 102 g/L — stable, still below ref (120–160)<br><b>PLT</b>: 180 → 195 — within normal range<br><b>ANC</b>: 2.8 → 3.4 — above threshold for next cycle</div>
+        </div>
+        <div id="demo-chat-chemo" class="demo-chat-panel" style="background:var(--bg);border:1px solid var(--border);border-radius:0.5rem;padding:0.75rem;font-size:0.8125rem;display:none;flex-direction:column;gap:0.5rem">
+          <div style="background:rgba(20,184,166,0.1);padding:0.5rem 0.75rem;border-radius:0.375rem;color:var(--teal)">When is the next chemo and what do we need to prepare?</div>
+          <div style="color:var(--purple);font-size:0.75rem;font-family:monospace">oncofiles: search_calendar("chemo")</div>
+          <div style="color:var(--purple);font-size:0.75rem;font-family:monospace">oncofiles: get_precycle_checklist()</div>
+          <div style="padding:0.5rem 0.75rem;border-radius:0.375rem;color:var(--text);line-height:1.5"><b>Next cycle</b>: C3 mFOLFOX6 — March 27, 2026 at NOU<br><b>Pre-cycle checklist</b>:<br>&#x2705; CBC within 72h (March 25 labs scheduled)<br>&#x2705; ANC &gt; 1.5 (last: 3.4)<br>&#x26A0;&#xFE0F; Port flush — check if due<br>&#x274C; Anti-emetics prescription — needs renewal</div>
+        </div>
+        <div id="demo-chat-docs" class="demo-chat-panel" style="background:var(--bg);border:1px solid var(--border);border-radius:0.5rem;padding:0.75rem;font-size:0.8125rem;display:none;flex-direction:column;gap:0.5rem">
+          <div style="background:rgba(20,184,166,0.1);padding:0.5rem 0.75rem;border-radius:0.375rem;color:var(--teal)">Compare the pathology reports from surgery and the latest biopsy</div>
+          <div style="color:var(--purple);font-size:0.75rem;font-family:monospace">oncofiles: view_document(42) — surgical pathology</div>
+          <div style="color:var(--purple);font-size:0.75rem;font-family:monospace">oncofiles: view_document(98) — biopsy report</div>
+          <div style="padding:0.5rem 0.75rem;border-radius:0.375rem;color:var(--text);line-height:1.5"><b>Surgical pathology</b> (Jan 15): Adenocarcinoma, pT3N1M1, 3/14 nodes+<br><b>Biopsy</b> (Mar 10): Residual tumor, treatment effect grade 2<br><b>Key change</b>: Tumor regression noted, biomarkers stable (KRAS G12D, MSS)</div>
+        </div>
       </div>
 
       <!-- Usage Analytics -->
@@ -1234,8 +1283,25 @@
         if (patientControls) patientControls.style.display = 'none';
         var userInfo = document.getElementById('user-info');
         if (userInfo) userInfo.textContent = 'Demo Mode';
+        // Replace logout with "Back to Home" link
         var logoutBtn = document.querySelector('.logout-btn');
-        if (logoutBtn) logoutBtn.style.display = 'none';
+        if (logoutBtn) {
+          logoutBtn.textContent = '\u2190 Home';
+          logoutBtn.onclick = function(){ window.location.href = '/'; };
+          logoutBtn.removeAttribute('data-sk');
+          logoutBtn.removeAttribute('data-en');
+        }
+        // Disable service badges in demo — explain they need sign-in
+        var badges = document.querySelectorAll('.svc-badge');
+        badges.forEach(function(b) {
+          b.title = b.title + ' \u2014 sign in to connect';
+          b.onclick = null;
+          b.style.cursor = 'default';
+          b.style.opacity = '0.5';
+        });
+        // Hide GDrive connect bar in demo
+        var gdriveBar = document.getElementById('gdrive-connect-bar');
+        if (gdriveBar) gdriveBar.style.display = 'none';
         loadDemoData();
         return;
       }
@@ -1271,6 +1337,9 @@
         renderDocs(data.documents);
         if (data.prompt_log) renderPromptLog(data.prompt_log);
         if (data.analytics) renderAnalytics(data.analytics);
+        // Show conversation previews in demo
+        var demoConv = document.getElementById('demo-conversations');
+        if (demoConv) demoConv.style.display = 'block';
         setConnectionState('ok');
         hideSkeletons();
         document.getElementById('version-label').textContent = 'v' + data.status.version + ' demo';
@@ -1557,6 +1626,30 @@
     var wizardPatientId = '';
     var wizardBearerToken = '';
     var wizardCurrentStep = 1;
+
+    function switchDemoChat(tab, btn) {
+      document.querySelectorAll('.demo-chat-panel').forEach(function(el) { el.style.display = 'none'; });
+      var panel = document.getElementById('demo-chat-' + tab);
+      if (panel) panel.style.display = 'flex';
+      document.querySelectorAll('.demo-chat-tab').forEach(function(b) {
+        b.style.background = 'var(--bg)'; b.style.color = 'var(--text)';
+      });
+      if (btn) { btn.style.background = 'var(--green)'; btn.style.color = '#fff'; }
+    }
+
+    function toggleIntegrationPanel() {
+      if (window.DEMO_MODE) return;
+      var p = document.getElementById('integration-popover');
+      if (!p) return;
+      p.style.display = p.style.display === 'block' ? 'none' : 'block';
+    }
+    // Close popover on outside click
+    document.addEventListener('click', function(e) {
+      var p = document.getElementById('integration-popover');
+      if (p && p.style.display === 'block' && !e.target.closest('#svc-badges')) {
+        p.style.display = 'none';
+      }
+    });
 
     function showGdriveSetup() {
       // Open wizard Step 2 directly for the current patient (skip patient creation)
@@ -2057,6 +2150,23 @@
         var el = document.getElementById(id);
         if (el) el.className = 'svc-badge ' + (gs[svc] ? 'on' : 'off');
       });
+      // Update integration popover data
+      var ipEmail = document.getElementById('ip-email');
+      if (ipEmail) ipEmail.textContent = gs.owner_email || '—';
+      var statusLabels = {true: {sk:'pripojené', en:'connected'}, false: {sk:'nepripojené', en:'not connected'}};
+      var lang = window._dashLang || 'sk';
+      ['drive','gmail'].forEach(function(svc) {
+        var dot = document.getElementById('ip-' + svc + '-dot');
+        var txt = document.getElementById('ip-' + svc + '-text');
+        if (dot) dot.className = 'ip-status ' + (gs[svc] ? 'on' : 'off');
+        if (txt) txt.textContent = statusLabels[!!gs[svc]][lang];
+      });
+      var calDot = document.getElementById('ip-cal-dot');
+      var calTxt = document.getElementById('ip-cal-text');
+      if (calDot) calDot.className = 'ip-status ' + (gs.calendar ? 'on' : 'off');
+      if (calTxt) calTxt.textContent = statusLabels[!!gs.calendar][lang];
+      var ipFolder = document.getElementById('ip-folder');
+      if (ipFolder) ipFolder.textContent = gs.folder_id ? gs.folder_id.substring(0, 12) + '…' : '—';
       // Show GDrive connect banner if no folder set for this patient
       var gdriveBar = document.getElementById('gdrive-connect-bar');
       if (gdriveBar) gdriveBar.style.display = (!gs.drive || !gs.folder_id) && !window.DEMO_MODE ? 'flex' : 'none';

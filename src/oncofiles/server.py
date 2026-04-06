@@ -2358,6 +2358,7 @@ async def status(request: Request) -> JSONResponse:
                     google_services["folder_id"] = (
                         oauth_token.gdrive_folder_id or lifespan_ctx.get("gdrive_folder_id") or None
                     )
+                    google_services["owner_email"] = oauth_token.owner_email
             except Exception:
                 logger.warning("Failed to load Google services status for %s", patient_id)
 
