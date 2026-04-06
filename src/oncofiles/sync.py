@@ -115,9 +115,17 @@ async def sync_from_gdrive(
     batch_size = 10  # Process files in batches, gc.collect between batches
 
     async def _sync_category_from_folder(gf: dict, existing: Document, filename: str) -> None:
-        """Update document category if GDrive folder structure implies a different one."""
+        """Update document category if GDrive folder structure implies a different one.
+
+        Never downgrades from a specific AI-validated category to "other" —
+        folder detection returns "other" for root-level files, which would
+        overwrite validated categories on every sync cycle (#256).
+        """
         detected = _detect_category_from_parents(gf, folder_map)
         if detected and detected != existing.category.value:
+            # Don't overwrite a specific category with "other" — AI validation wins
+            if detected == "other" and existing.category.value != "other":
+                return
             logger.info(
                 "sync_from_gdrive: category changed %s → %s for %s",
                 existing.category.value,
