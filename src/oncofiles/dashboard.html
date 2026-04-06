@@ -1283,20 +1283,32 @@
         if (patientControls) patientControls.style.display = 'none';
         var userInfo = document.getElementById('user-info');
         if (userInfo) userInfo.textContent = 'Demo Mode';
-        // Replace logout with "Back to Home" link
+        // Replace logout with navigation links (#233)
         var logoutBtn = document.querySelector('.logout-btn');
         if (logoutBtn) {
-          logoutBtn.textContent = '\u2190 Home';
+          logoutBtn.textContent = '\u2190 oncofiles.com';
           logoutBtn.onclick = function(){ window.location.href = '/'; };
           logoutBtn.removeAttribute('data-sk');
           logoutBtn.removeAttribute('data-en');
+          // Add oncoteam link next to it
+          var oncoteamLink = document.createElement('a');
+          oncoteamLink.href = 'https://oncoteam.cloud';
+          oncoteamLink.textContent = 'oncoteam.cloud \u2192';
+          oncoteamLink.style.cssText = 'font-size:0.75rem;color:var(--accent);margin-left:0.75rem;text-decoration:none;opacity:0.8';
+          logoutBtn.parentNode.insertBefore(oncoteamLink, logoutBtn.nextSibling);
         }
-        // Disable service badges in demo — explain they need sign-in
+        // Disable service badges in demo — explain what each does (#233)
+        var badgeExplanations = {
+          'gdrive': 'Google Drive \u2014 syncs your medical documents. Sign in to connect.',
+          'gmail': 'Gmail \u2014 imports appointment confirmations. Sign in to connect.',
+          'gcal': 'Google Calendar \u2014 tracks appointments. Sign in to connect.'
+        };
         var badges = document.querySelectorAll('.svc-badge');
         badges.forEach(function(b) {
-          b.title = b.title + ' \u2014 sign in to connect';
+          var svcName = (b.dataset.svc || b.textContent || '').toLowerCase().trim();
+          b.title = badgeExplanations[svcName] || (b.title + ' \u2014 sign in to connect');
           b.onclick = null;
-          b.style.cursor = 'default';
+          b.style.cursor = 'help';
           b.style.opacity = '0.5';
         });
         // Hide GDrive connect bar in demo
