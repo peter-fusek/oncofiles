@@ -1997,28 +1997,50 @@
       hideError();
       setConnectionState('loading');
       showSkeletons();
+      var anyOk = false;
+      var errors = [];
+      // Sequential fetches — Turso single-connection can't handle parallel queries
+      // Each section is independent: one failure doesn't block the others
       try {
-        // Sequential fetches — Turso single-connection can't handle parallel queries
         var status = await apiFetch('/status');
-        var docs = await apiFetch('/api/documents?filter=' + encodeURIComponent(currentFilter) + '&limit=200');
-        var prompts = await apiFetch('/api/prompt-log?limit=50');
-        var recon = await apiFetch('/api/reconciliation').catch(function(){ return null; });
-        var analytics = await apiFetch('/api/usage-analytics').catch(function(){ return null; });
-        setConnectionState('ok');
-        hideSkeletons();
         renderStatus(status);
+        anyOk = true;
+      } catch (e) {
+        if (e.message === 'Unauthorized') { setConnectionState('offline'); hideSkeletons(); return; }
+        errors.push('status: ' + e.message);
+      }
+      try {
+        var docs = await apiFetch('/api/documents?filter=' + encodeURIComponent(currentFilter) + '&limit=200');
         renderDocs(docs);
+        anyOk = true;
+      } catch (e) {
+        errors.push('documents: ' + e.message);
+      }
+      try {
+        var prompts = await apiFetch('/api/prompt-log?limit=50');
         renderPromptLog(prompts);
+        anyOk = true;
+      } catch (e) {
+        errors.push('prompt-log: ' + e.message);
+      }
+      try {
+        var recon = await apiFetch('/api/reconciliation');
         if (recon) renderReconciliation(recon);
+        anyOk = true;
+      } catch (e) { /* optional section */ }
+      try {
+        var analytics = await apiFetch('/api/usage-analytics');
         if (analytics) renderAnalytics(analytics);
+        anyOk = true;
+      } catch (e) { /* optional section */ }
+      hideSkeletons();
+      setConnectionState(anyOk ? 'ok' : 'offline');
+      if (anyOk) {
         updateLastRefreshed();
         setTimeout(function(){ document.getElementById('next-sync').textContent = 'Next sync: ~' + (5 - Math.floor(((Date.now()/1000) % 300) / 60)) + ' min'; }, 100);
-      } catch (e) {
-        setConnectionState('offline');
-        hideSkeletons();
-        if (e.message !== 'Unauthorized') {
-          showError('Failed to load data: ' + e.message);
-        }
+      }
+      if (errors.length) {
+        showError('Partial load failure: ' + errors.join('; '));
       }
     }
 

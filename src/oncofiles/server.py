@@ -2306,20 +2306,42 @@ async def status(request: Request) -> JSONResponse:
             sync_stats = await db.get_sync_stats_summary(patient_id=patient_id)
             recent_syncs = await db.get_sync_history(limit=5, patient_id=patient_id)
 
-            # Document health summary
-            all_docs = await db.list_documents(limit=500, patient_id=patient_id)
+            # Document health summary — aggregate SQL to avoid deserializing all rows (#258)
+            async with db.db.execute(
+                """
+                SELECT
+                    COUNT(*) AS total,
+                    SUM(CASE WHEN ai_summary IS NOT NULL THEN 1 ELSE 0 END) AS with_ai,
+                    SUM(CASE WHEN structured_metadata IS NOT NULL
+                         AND structured_metadata != '' THEN 1 ELSE 0 END) AS with_metadata,
+                    SUM(CASE WHEN document_date IS NOT NULL THEN 1 ELSE 0 END) AS with_date,
+                    SUM(CASE WHEN institution IS NOT NULL THEN 1 ELSE 0 END) AS with_institution,
+                    SUM(CASE WHEN gdrive_id IS NOT NULL THEN 1 ELSE 0 END) AS synced
+                FROM documents
+                WHERE deleted_at IS NULL AND patient_id = ?
+                """,
+                (patient_id,),
+            ) as cursor:
+                h = await cursor.fetchone()
+
+            # standard_named requires Python logic — fetch only filenames
+            async with db.db.execute(
+                "SELECT filename FROM documents WHERE deleted_at IS NULL AND patient_id = ?",
+                (patient_id,),
+            ) as cursor:
+                fn_rows = await cursor.fetchall()
+            standard_count = sum(
+                1 for r in fn_rows if is_standard_format(r["filename"], patient_id=patient_id)
+            )
+
             doc_health = {
-                "total": len(all_docs),
-                "with_ai": sum(1 for d in all_docs if d.ai_summary),
-                "with_metadata": sum(
-                    1 for d in all_docs if d.structured_metadata and d.structured_metadata != ""
-                ),
-                "with_date": sum(1 for d in all_docs if d.document_date),
-                "with_institution": sum(1 for d in all_docs if d.institution),
-                "synced": sum(1 for d in all_docs if d.gdrive_id),
-                "standard_named": sum(
-                    1 for d in all_docs if is_standard_format(d.filename, patient_id=patient_id)
-                ),
+                "total": h["total"] or 0,
+                "with_ai": h["with_ai"] or 0,
+                "with_metadata": h["with_metadata"] or 0,
+                "with_date": h["with_date"] or 0,
+                "with_institution": h["with_institution"] or 0,
+                "synced": h["synced"] or 0,
+                "standard_named": standard_count,
             }
 
             # Google service connection status

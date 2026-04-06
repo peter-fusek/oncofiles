@@ -1627,23 +1627,48 @@ async def _enhance_document(
             fn_match = _re.match(r"^(\d{4})(\d{2})(\d{2})_", doc.filename)
             if fn_match:
                 y, m, d = fn_match.groups()
-                fn_date = f"{y}-{m}-{d}"
-                # Sanity check: year should be 2020-2030 range
-                if 2020 <= int(y) <= 2030:
-                    backfill_date = fn_date
-                    logger.info(
-                        "enhance: doc %d — backfill date=%s (from filename)", doc.id, backfill_date
+                # Validate with date() constructor — prevents invalid month/day
+                try:
+                    from datetime import date as _date
+
+                    parsed = _date(int(y), int(m), int(d))
+                    if 2020 <= parsed.year <= 2030:
+                        backfill_date = parsed.isoformat()
+                        logger.info(
+                            "enhance: doc %d — backfill date=%s (from filename)",
+                            doc.id,
+                            backfill_date,
+                        )
+                except ValueError:
+                    logger.warning(
+                        "enhance: doc %d — invalid filename date %s-%s-%s, skipping",
+                        doc.id,
+                        y,
+                        m,
+                        d,
                     )
             if not backfill_date:
                 dates = metadata.get("dates_mentioned", [])
                 if dates:
-                    # Filter out obvious DOB dates (before 2020)
-                    valid_dates = [d for d in dates if d >= "2020-"]
-                    if valid_dates:
-                        backfill_date = valid_dates[0]
-                        logger.info(
-                            "enhance: doc %d — backfill date=%s (from AI)", doc.id, backfill_date
-                        )
+                    from datetime import date as _date
+
+                    for d_str in dates:
+                        try:
+                            parsed = _date.fromisoformat(d_str)
+                            if 2020 <= parsed.year <= 2030:
+                                backfill_date = parsed.isoformat()
+                                logger.info(
+                                    "enhance: doc %d — backfill date=%s (from AI)",
+                                    doc.id,
+                                    backfill_date,
+                                )
+                                break
+                        except (ValueError, TypeError):
+                            logger.warning(
+                                "enhance: doc %d — invalid AI date %r, skipping",
+                                doc.id,
+                                d_str,
+                            )
             elif doc.gdrive_modified_time:
                 backfill_date = doc.gdrive_modified_time.strftime("%Y-%m-%d")
                 logger.info("enhance: doc %d — backfill date=%s (GDrive)", doc.id, backfill_date)

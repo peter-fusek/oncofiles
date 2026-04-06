@@ -2,9 +2,23 @@
 
 from __future__ import annotations
 
+import logging
+
 from oncofiles.models import Document, SearchQuery
 
 from ._converters import _row_to_document
+
+logger = logging.getLogger(__name__)
+
+
+def _safe_row_to_document(row) -> Document | None:
+    """Convert a row to Document, returning None on conversion errors."""
+    try:
+        return _row_to_document(row)
+    except Exception:
+        row_id = row["id"] if row else "?"
+        logger.warning("Skipping corrupt document row id=%s", row_id, exc_info=True)
+        return None
 
 
 class DocumentMixin:
@@ -61,7 +75,7 @@ class DocumentMixin:
             tuple(doc_ids),
         ) as cursor:
             rows = await cursor.fetchall()
-            return {doc.id: doc for row in rows if (doc := _row_to_document(row))}
+            return {doc.id: doc for row in rows if (doc := _safe_row_to_document(row))}
 
     async def get_document_by_file_id(self, file_id: str, *, patient_id: str) -> Document | None:
         """Get a document by its Anthropic Files API file_id."""
@@ -108,7 +122,7 @@ class DocumentMixin:
             (patient_id, limit, offset),
         ) as cursor:
             rows = await cursor.fetchall()
-            return [_row_to_document(r) for r in rows]
+            return [d for r in rows if (d := _safe_row_to_document(r)) is not None]
 
     async def search_documents(self, query: SearchQuery, *, patient_id: str) -> list[Document]:
         """Search documents with relevance scoring and multi-term matching.
@@ -196,7 +210,7 @@ class DocumentMixin:
 
         async with self.db.execute(sql, all_params) as cursor:
             rows = await cursor.fetchall()
-            return [_row_to_document(r) for r in rows]
+            return [d for r in rows if (d := _safe_row_to_document(r)) is not None]
 
     async def delete_document(self, doc_id: int) -> bool:
         """Soft-delete a document by local ID. Returns True if updated."""
@@ -235,7 +249,7 @@ class DocumentMixin:
             (patient_id, limit),
         ) as cursor:
             rows = await cursor.fetchall()
-            return [_row_to_document(r) for r in rows]
+            return [d for r in rows if (d := _safe_row_to_document(r)) is not None]
 
     async def find_duplicates(self, *, patient_id: str) -> list[list[Document]]:
         """Find potential duplicate documents based on original_filename + size_bytes.
@@ -265,7 +279,7 @@ class DocumentMixin:
                 (g["original_filename"], g["size_bytes"], patient_id),
             ) as cursor:
                 rows = await cursor.fetchall()
-                result.append([_row_to_document(r) for r in rows])
+                result.append([d for r in rows if (d := _safe_row_to_document(r)) is not None])
         return result
 
     async def purge_expired_trash(self, days: int = 30, *, patient_id: str) -> int:
@@ -360,7 +374,7 @@ class DocumentMixin:
             (patient_id, limit),
         ) as cursor:
             rows = await cursor.fetchall()
-            return [_row_to_document(r) for r in rows]
+            return [d for r in rows if (d := _safe_row_to_document(r)) is not None]
 
     async def get_documents_without_ai(
         self, limit: int = 100, *, patient_id: str
@@ -372,7 +386,7 @@ class DocumentMixin:
             (patient_id, limit),
         ) as cursor:
             rows = await cursor.fetchall()
-            return [_row_to_document(r) for r in rows]
+            return [d for r in rows if (d := _safe_row_to_document(r)) is not None]
 
     async def update_gdrive_id(self, doc_id: int, gdrive_id: str, modified_time: str) -> None:
         """Set the Google Drive file ID and modified time for a document."""
@@ -435,6 +449,19 @@ class DocumentMixin:
         """
         sets = []
         params: list = []
+        if document_date is not None:
+            # Validate date string before writing — prevents AI-hallucinated dates (#258)
+            from datetime import date as _date
+
+            try:
+                _date.fromisoformat(document_date)
+            except (ValueError, TypeError):
+                logger.warning(
+                    "backfill_document_fields: rejecting invalid date %r for doc %d",
+                    document_date,
+                    doc_id,
+                )
+                document_date = None
         if document_date is not None:
             sets.append("document_date = COALESCE(document_date, ?)")
             params.append(document_date)
@@ -510,7 +537,7 @@ class DocumentMixin:
             (before_date, patient_id),
         ) as cursor:
             rows = await cursor.fetchall()
-            return [_row_to_document(r) for r in rows]
+            return [d for r in rows if (d := _safe_row_to_document(r)) is not None]
 
     async def get_latest_labs(self, limit: int = 5, *, patient_id: str) -> list[Document]:
         """Get the most recent lab result documents."""
@@ -524,7 +551,7 @@ class DocumentMixin:
             (patient_id, limit),
         ) as cursor:
             rows = await cursor.fetchall()
-            return [_row_to_document(r) for r in rows]
+            return [d for r in rows if (d := _safe_row_to_document(r)) is not None]
 
     # ── Sync state ────────────────────────────────────────────────────────
 
@@ -647,7 +674,7 @@ class DocumentMixin:
             (patient_id,),
         ) as cursor:
             rows = await cursor.fetchall()
-            return [_row_to_document(r) for r in rows]
+            return [d for r in rows if (d := _safe_row_to_document(r)) is not None]
 
     async def get_treatment_timeline(self, limit: int = 200, *, patient_id: str) -> list[Document]:
         """Get treatment documents in chronological (ASC) order."""
@@ -677,4 +704,4 @@ class DocumentMixin:
             (*treatment_categories, patient_id, limit),
         ) as cursor:
             rows = await cursor.fetchall()
-            return [_row_to_document(r) for r in rows]
+            return [d for r in rows if (d := _safe_row_to_document(r)) is not None]

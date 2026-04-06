@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from datetime import date, datetime
 from typing import Any
 
@@ -22,6 +23,8 @@ from oncofiles.models import (
     TreatmentEvent,
 )
 
+logger = logging.getLogger(__name__)
+
 
 def _safe_get(row: Any, key: str, default=None):
     """Get a column value from a row, returning default if column doesn't exist."""
@@ -29,6 +32,17 @@ def _safe_get(row: Any, key: str, default=None):
         return row[key]
     except (IndexError, KeyError):
         return default
+
+
+def _safe_date(value: str | None) -> date | None:
+    """Parse a date string, returning None instead of crashing on invalid values."""
+    if not value:
+        return None
+    try:
+        return date.fromisoformat(value)
+    except (ValueError, TypeError):
+        logger.warning("Invalid date string in DB, treating as NULL: %r", value)
+        return None
 
 
 def _row_to_oauth_token(row: Any) -> OAuthToken:
@@ -69,7 +83,7 @@ def _row_to_treatment_event(row: Any) -> TreatmentEvent:
     """Convert a database row to a TreatmentEvent model."""
     return TreatmentEvent(
         id=row["id"],
-        event_date=date.fromisoformat(row["event_date"]),
+        event_date=_safe_date(row["event_date"]),
         event_type=row["event_type"],
         title=row["title"],
         notes=row["notes"],
@@ -115,7 +129,7 @@ def _row_to_conversation_entry(row: Any) -> ConversationEntry:
     """Convert a database row to a ConversationEntry model."""
     return ConversationEntry(
         id=row["id"],
-        entry_date=date.fromisoformat(row["entry_date"]),
+        entry_date=_safe_date(row["entry_date"]),
         entry_type=row["entry_type"],
         title=row["title"],
         content=row["content"],
@@ -136,7 +150,7 @@ def _row_to_lab_value(row: Any) -> LabValue:
     return LabValue(
         id=row["id"],
         document_id=row["document_id"],
-        lab_date=date.fromisoformat(row["lab_date"]),
+        lab_date=_safe_date(row["lab_date"]),
         parameter=row["parameter"],
         value=row["value"],
         unit=row["unit"],
@@ -155,7 +169,7 @@ def _row_to_document(row: Any) -> Document:
         file_id=row["file_id"],
         filename=row["filename"],
         original_filename=row["original_filename"],
-        document_date=date.fromisoformat(row["document_date"]) if row["document_date"] else None,
+        document_date=_safe_date(row["document_date"]),
         institution=row["institution"],
         category=DocumentCategory(row["category"]),
         description=row["description"],

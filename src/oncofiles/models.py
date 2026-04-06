@@ -129,7 +129,7 @@ class ConversationEntry(BaseModel):
     """A diary/worklog entry in the conversation archive."""
 
     id: int | None = None
-    entry_date: date
+    entry_date: date | None = None
     entry_type: str = "note"
     title: str
     content: str
@@ -196,7 +196,7 @@ class TreatmentEvent(BaseModel):
     """A structured treatment milestone (chemo cycle, surgery, scan, etc.)."""
 
     id: int | None = None
-    event_date: date
+    event_date: date | None = None
     event_type: str
     title: str
     notes: str = ""
@@ -367,7 +367,7 @@ class LabValue(BaseModel):
 
     id: int | None = None
     document_id: int
-    lab_date: date
+    lab_date: date | None = None
     parameter: str
     value: float
     unit: str = ""
