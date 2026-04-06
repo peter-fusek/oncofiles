@@ -33,6 +33,10 @@ _DOCTYPE_TO_CATEGORY: dict[str, str] = {
     "referral": "referral",
     "chemo_sheet": "chemo_sheet",
     "prescription": "prescription",
+    "preventive_checkup": "preventive",
+    "vaccination": "vaccination",
+    "dental": "dental",
+    "discharge": "discharge",
 }
 
 
