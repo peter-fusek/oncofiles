@@ -18,7 +18,7 @@ from urllib.parse import quote
 
 from fastmcp import FastMCP
 from starlette.requests import Request
-from starlette.responses import HTMLResponse, JSONResponse
+from starlette.responses import HTMLResponse, JSONResponse, Response
 
 from oncofiles.config import (
     DASHBOARD_ALLOWED_EMAILS,
@@ -2099,6 +2099,7 @@ async def favicon_svg(request: Request) -> HTMLResponse:
 
 
 _OG_IMAGE_SVG: str | None = None
+_OG_IMAGE_PNG: bytes | None = None
 
 
 @mcp.custom_route("/og-image.svg", methods=["GET"])
@@ -2107,6 +2108,14 @@ async def og_image_svg(request: Request) -> HTMLResponse:
     if _OG_IMAGE_SVG is None:
         _OG_IMAGE_SVG = (Path(__file__).parent / "og-image.svg").read_text()
     return HTMLResponse(_OG_IMAGE_SVG, media_type="image/svg+xml")
+
+
+@mcp.custom_route("/og-image.png", methods=["GET"])
+async def og_image_png(request: Request) -> Response:
+    global _OG_IMAGE_PNG  # noqa: PLW0603
+    if _OG_IMAGE_PNG is None:
+        _OG_IMAGE_PNG = (Path(__file__).parent / "og-image.png").read_bytes()
+    return Response(_OG_IMAGE_PNG, media_type="image/png")
 
 
 @mcp.custom_route("/apple-touch-icon.png", methods=["GET"])
