@@ -27,18 +27,25 @@ class OperationalMixin:
 
     async def set_agent_state(self, state: AgentState) -> AgentState:
         """Upsert an agent state key-value pair. Returns the saved state."""
+        from oncofiles.database._base import retry_on_hrana_conflict
+
         pid = getattr(state, "patient_id", "") or ""
-        await self.db.execute(
-            """
-            INSERT INTO agent_state (patient_id, agent_id, "key", value, updated_at)
-            VALUES (?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
-            ON CONFLICT(patient_id, agent_id, "key") DO UPDATE SET
-                value = excluded.value,
-                updated_at = excluded.updated_at
-            """,
-            (pid, state.agent_id, state.key, state.value),
-        )
-        await self.db.commit()
+
+        async def _do_upsert():
+            await self.db.execute(
+                """
+                INSERT INTO agent_state (patient_id, agent_id, "key", value, updated_at)
+                VALUES (?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+                ON CONFLICT(patient_id, agent_id, "key") DO UPDATE SET
+                    value = excluded.value,
+                    updated_at = excluded.updated_at
+                """,
+                (pid, state.agent_id, state.key, state.value),
+            )
+            await self.db.commit()
+
+        await retry_on_hrana_conflict(_do_upsert, label="set_agent_state")
+
         async with self.db.execute(
             _AGENT_STATE_SELECT + ' WHERE patient_id = ? AND agent_id = ? AND "key" = ?',
             (pid, state.agent_id, state.key),
@@ -72,27 +79,36 @@ class OperationalMixin:
 
     async def insert_activity_log(self, entry: ActivityLogEntry) -> ActivityLogEntry:
         """Append an activity log entry (immutable)."""
-        cursor = await self.db.execute(
-            """
-            INSERT INTO activity_log
-                (session_id, agent_id, tool_name, input_summary, output_summary,
-                 duration_ms, status, error_message, tags)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                entry.session_id,
-                entry.agent_id,
-                entry.tool_name,
-                entry.input_summary,
-                entry.output_summary,
-                entry.duration_ms,
-                entry.status,
-                entry.error_message,
-                entry.tags,
-            ),
-        )
-        await self.db.commit()
-        entry.id = cursor.lastrowid
+        from oncofiles.database._base import retry_on_hrana_conflict
+
+        _last_rowid: list[int] = []
+
+        async def _do_insert():
+            cursor = await self.db.execute(
+                """
+                INSERT INTO activity_log
+                    (session_id, agent_id, tool_name, input_summary, output_summary,
+                     duration_ms, status, error_message, tags)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    entry.session_id,
+                    entry.agent_id,
+                    entry.tool_name,
+                    entry.input_summary,
+                    entry.output_summary,
+                    entry.duration_ms,
+                    entry.status,
+                    entry.error_message,
+                    entry.tags,
+                ),
+            )
+            await self.db.commit()
+            _last_rowid.clear()
+            _last_rowid.append(cursor.lastrowid)
+
+        await retry_on_hrana_conflict(_do_insert, label="insert_activity_log")
+        entry.id = _last_rowid[0] if _last_rowid else None
         return entry
 
     async def search_activity_log(self, query: ActivityLogQuery) -> list[ActivityLogEntry]:

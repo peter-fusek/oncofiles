@@ -302,6 +302,42 @@ class _TursoConnection:
             self._conn = None
 
 
+# ── Hrana retry helper ─────────────────────────────────────────────────────────
+
+_HRANA_TRANSIENT_ERRORS = (
+    "Stream already in use",
+    "stream error",
+    "Failed to checkpoint WAL",
+    "database table is locked",
+)
+
+
+async def retry_on_hrana_conflict(coro_fn, *, max_retries: int = 3, label: str = ""):
+    """Retry an async DB operation on transient Hrana/libsql errors.
+
+    Applies exponential backoff (0.1s, 0.3s, 0.9s) for stream conflicts
+    that occur under concurrent access to the single Turso connection (#297).
+    """
+    for attempt in range(max_retries + 1):
+        try:
+            return await coro_fn()
+        except Exception as exc:
+            msg = str(exc)
+            if attempt < max_retries and any(e in msg for e in _HRANA_TRANSIENT_ERRORS):
+                delay = 0.1 * (3**attempt)
+                logger.warning(
+                    "Hrana transient error (attempt %d/%d, retry in %.1fs) [%s]: %s",
+                    attempt + 1,
+                    max_retries,
+                    delay,
+                    label,
+                    msg[:100],
+                )
+                await asyncio.sleep(delay)
+            else:
+                raise
+
+
 # ── DatabaseBase ──────────────────────────────────────────────────────────────
 
 

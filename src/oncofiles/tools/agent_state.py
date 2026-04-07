@@ -70,14 +70,17 @@ async def get_agent_state(
 async def list_agent_states(
     ctx: Context,
     agent_id: str = "oncoteam",
+    limit: int = 100,
 ) -> str:
     """List all persistent state keys for an agent.
 
     Args:
         agent_id: Agent identifier (default: oncoteam).
+        limit: Maximum number of states to return (default 100, max 500).
     """
     db = _get_db(ctx)
     states = await db.list_agent_states(agent_id)
+    capped = min(max(limit, 1), 500)
     return json.dumps(
         [
             {
@@ -85,7 +88,7 @@ async def list_agent_states(
                 "value": s.value,
                 "updated_at": s.updated_at.isoformat() if s.updated_at else None,
             }
-            for s in states
+            for s in states[:capped]
         ]
     )
 
