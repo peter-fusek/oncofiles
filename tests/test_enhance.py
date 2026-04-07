@@ -256,6 +256,32 @@ def test_infer_institution_none():
     assert infer_institution_from_providers(["Unknown Doctor"]) is None
 
 
+def test_infer_institution_svmichal_diacritics():
+    """SvMichal matched from diacritic-rich provider name (#261)."""
+    assert infer_institution_from_providers(["Nemocnica svätého Michala, Bratislava"]) == "SvMichal"
+
+
+def test_infer_institution_general_health_providers():
+    """General health providers added for e5g patient (#261)."""
+    assert infer_institution_from_providers(["MEDIFERA spol s r.o."]) == "Medifera"
+    assert infer_institution_from_providers(["Unilabs Slovensko, s.r.o."]) == "Unilabs"
+    assert infer_institution_from_providers(["VESELY Očná Klinika"]) == "VeselyKlinika"
+    assert infer_institution_from_providers(["Urosanus s.r.o."]) == "Urosanus"
+    assert infer_institution_from_providers(["SPORTMED s.r.o."]) == "Sportmed"
+    assert infer_institution_from_providers(["PRO SANUS a.s."]) == "ProSanus"
+    assert infer_institution_from_providers(["ÚNZ mesta Bratislavy"]) == "UNZBratislava"
+    assert infer_institution_from_providers(["ASESETA Klinika"]) == "Aseseta"
+    assert infer_institution_from_providers(["VESELA SÚKROMNÁ KLINIKA"]) == "VeselyKlinika"
+
+
+def test_infer_institution_generic_providers_no_match():
+    """Generic providers (GP offices, insurance) should NOT match (#261)."""
+    assert infer_institution_from_providers(["Praktická Ambulancia, s.r.o."]) is None
+    assert infer_institution_from_providers(["Gastroenterologická ambulancia"]) is None
+    assert infer_institution_from_providers(["ČSOB Poisťovňa, a.s."]) is None
+    assert infer_institution_from_providers(["USG ambulancia"]) is None
+
+
 # ── backfill fields from structured metadata ──────────────────────────────
 
 

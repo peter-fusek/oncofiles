@@ -35,8 +35,16 @@ PROVIDER_TO_INSTITUTION: list[tuple[list[str], str]] = [
     (["medante"], "Medante"),
     (["euromedic"], "Euromedic"),
     (["iscare"], "ISCare"),
-    (["nemocnica sv. michala", "sv michala"], "SvMichal"),
+    (["nemocnica sv. michala", "sv michala", "svateho michala", "sv. michala"], "SvMichal"),
     (["kramarska", "kramárska", "kramare"], "Kramarska"),
+    (["medifera"], "Medifera"),
+    (["unilabs"], "Unilabs"),
+    (["vesely", "vesela"], "VeselyKlinika"),
+    (["urosanus"], "Urosanus"),
+    (["sportmed"], "Sportmed"),
+    (["pro sanus", "prosanus"], "ProSanus"),
+    (["unz mesta", "uzemna poliklinika"], "UNZBratislava"),
+    (["aseseta"], "Aseseta"),
 ]
 
 
