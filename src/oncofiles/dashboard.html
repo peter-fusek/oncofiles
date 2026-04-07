@@ -584,6 +584,159 @@
     .doc-detail-row td {
       border-bottom: 1px solid var(--border) !important;
     }
+    /* Document detail split-pane */
+    .doc-detail-panel {
+      display: flex;
+      gap: 1rem;
+      padding: 1rem;
+      background: var(--surface);
+      border-radius: 0.5rem;
+      position: relative;
+    }
+    .doc-detail-panel .detail-close {
+      position: absolute;
+      top: 0.5rem;
+      right: 0.5rem;
+      background: none;
+      border: none;
+      color: var(--text-muted);
+      font-size: 1.25rem;
+      cursor: pointer;
+      line-height: 1;
+      padding: 0.25rem 0.5rem;
+      border-radius: 0.25rem;
+    }
+    .doc-detail-panel .detail-close:hover {
+      color: var(--text);
+      background: rgba(255,255,255,0.08);
+    }
+    .doc-detail-left {
+      flex: 1;
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 0.75rem;
+    }
+    .doc-detail-left iframe {
+      width: 100%;
+      height: 500px;
+      border: 1px solid var(--border);
+      border-radius: 0.375rem;
+      background: #000;
+    }
+    .doc-detail-right {
+      flex: 1;
+      min-width: 0;
+      max-height: 560px;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 0.75rem;
+    }
+    .doc-detail-right::-webkit-scrollbar {
+      width: 6px;
+    }
+    .doc-detail-right::-webkit-scrollbar-thumb {
+      background: var(--border);
+      border-radius: 3px;
+    }
+    .doc-ocr-page {
+      background: rgba(0,0,0,0.2);
+      border: 1px solid var(--border);
+      border-radius: 0.375rem;
+      padding: 0.75rem;
+    }
+    .doc-ocr-page-header {
+      font-size: 0.6875rem;
+      font-weight: 600;
+      color: var(--accent-light);
+      margin-bottom: 0.5rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    .doc-ocr-text {
+      font-family: 'SFMono-Regular', 'Consolas', 'Liberation Mono', 'Menlo', monospace;
+      font-size: 0.8125rem;
+      line-height: 1.5;
+      white-space: pre-wrap;
+      word-break: break-word;
+      user-select: text;
+      color: var(--text);
+      max-height: 200px;
+      overflow-y: auto;
+    }
+    .doc-meta-section {
+      display: flex;
+      flex-direction: column;
+      gap: 0.375rem;
+      padding-top: 0.5rem;
+      border-top: 1px solid var(--border);
+    }
+    .doc-meta-row {
+      display: flex;
+      gap: 0.5rem;
+      font-size: 0.8125rem;
+      line-height: 1.4;
+    }
+    .doc-meta-label {
+      color: var(--text-muted);
+      min-width: 7rem;
+      flex-shrink: 0;
+    }
+    .doc-meta-value {
+      color: var(--text);
+      word-break: break-word;
+    }
+    .doc-meta-tags {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.25rem;
+    }
+    .doc-meta-tag {
+      display: inline-block;
+      background: rgba(20,184,166,0.12);
+      color: var(--accent-light);
+      padding: 0.0625rem 0.375rem;
+      border-radius: 9999px;
+      font-size: 0.6875rem;
+    }
+    .doc-detail-loading {
+      text-align: center;
+      padding: 2rem;
+      color: var(--text-muted);
+      font-size: 0.875rem;
+    }
+    .doc-detail-no-preview {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      height: 300px;
+      background: rgba(0,0,0,0.2);
+      border: 1px solid var(--border);
+      border-radius: 0.375rem;
+      color: var(--text-muted);
+      font-size: 0.875rem;
+    }
+    .handwritten-badge {
+      display: inline-block;
+      background: rgba(245,158,11,0.15);
+      color: var(--amber);
+      padding: 0.0625rem 0.375rem;
+      border-radius: 9999px;
+      font-size: 0.6875rem;
+      font-weight: 600;
+    }
+    @media (max-width: 768px) {
+      .doc-detail-panel {
+        flex-direction: column;
+      }
+      .doc-detail-left iframe {
+        height: 300px;
+      }
+      .doc-detail-right {
+        max-height: none;
+      }
+    }
 
     /* Remedies panel */
     .remedies {
@@ -2461,8 +2614,8 @@
         });
 
         tr.style.cursor = 'pointer';
-        tr.onclick = (function(doc) { return function() {
-          var existingDetail = tr.nextElementSibling;
+        tr.onclick = (function(doc, clickedTr) { return function() {
+          var existingDetail = clickedTr.nextElementSibling;
           if (existingDetail && existingDetail.className === 'doc-detail-row') {
             existingDetail.remove();
             return;
@@ -2473,36 +2626,253 @@
           detailRow.className = 'doc-detail-row';
           var detailTd = document.createElement('td');
           detailTd.setAttribute('colspan', '8');
-          detailTd.style.cssText = 'padding:1rem;background:rgba(20,184,166,0.04);font-size:0.8125rem;line-height:1.6';
+          detailTd.style.cssText = 'padding:0.5rem;background:rgba(20,184,166,0.04)';
 
-          var lines = [];
-          lines.push('ID: #' + doc.id);
-          if (doc.gdrive_id) lines.push('GDrive: https://drive.google.com/file/d/' + doc.gdrive_id + '/view');
-          lines.push('Category: ' + (doc.category || '-'));
-          lines.push('Date: ' + (doc.date || '-'));
-          lines.push('OCR: ' + (doc.has_ocr ? 'Yes' : 'No'));
-          lines.push('AI Summary: ' + (doc.has_ai ? 'Yes' : 'No'));
-          lines.push('Metadata: ' + (doc.has_metadata ? 'Yes' : 'No'));
-          lines.push('Synced: ' + (doc.is_synced ? 'Yes' : 'No'));
-          lines.push('Standard Name: ' + (doc.is_standard_name ? 'Yes' : 'No'));
-
-          detailTd.textContent = lines.join('\n');
-          detailTd.style.whiteSpace = 'pre-line';
-
-          if (doc.gdrive_id) {
-            var link = document.createElement('a');
-            link.href = 'https://drive.google.com/file/d/' + encodeURIComponent(doc.gdrive_id) + '/view';
-            link.target = '_blank';
-            link.rel = 'noopener';
-            link.style.cssText = 'display:inline-block;margin-top:0.5rem;padding:0.25rem 0.75rem;background:var(--accent);color:var(--bg);border-radius:0.375rem;font-size:0.75rem;font-weight:600;text-decoration:none;margin-right:0.5rem';
-            link.textContent = 'Open on GDrive';
-            detailTd.appendChild(document.createElement('br'));
-            detailTd.appendChild(link);
-          }
-
+          // Show loading state
+          var loadingDiv = document.createElement('div');
+          loadingDiv.className = 'doc-detail-loading';
+          var loadingSpan = document.createElement('span');
+          loadingSpan.setAttribute('data-sk', 'Na\u010d\u00edtavam detail\u2026');
+          loadingSpan.setAttribute('data-en', 'Loading detail\u2026');
+          loadingSpan.textContent = 'Loading detail\u2026';
+          loadingDiv.appendChild(loadingSpan);
+          detailTd.appendChild(loadingDiv);
           detailRow.appendChild(detailTd);
-          tr.parentNode.insertBefore(detailRow, tr.nextSibling);
-        }; })(d);
+          clickedTr.parentNode.insertBefore(detailRow, clickedTr.nextSibling);
+          applyDashLang();
+
+          // Fetch detail from API
+          apiFetch('/api/doc-detail/' + doc.id).then(function(resp) {
+            return resp.json();
+          }).then(function(data) {
+            if (data.error) {
+              loadingDiv.textContent = data.error;
+              return;
+            }
+            // Clear loading
+            while (detailTd.firstChild) detailTd.removeChild(detailTd.firstChild);
+
+            var panel = document.createElement('div');
+            panel.className = 'doc-detail-panel';
+
+            // Close button
+            var closeBtn = document.createElement('button');
+            closeBtn.className = 'detail-close';
+            closeBtn.textContent = '\u00d7';
+            closeBtn.title = 'Close';
+            closeBtn.onclick = function(e) { e.stopPropagation(); detailRow.remove(); };
+            panel.appendChild(closeBtn);
+
+            // ── Left column: preview ──
+            var left = document.createElement('div');
+            left.className = 'doc-detail-left';
+
+            if (data.preview_url) {
+              var iframe = document.createElement('iframe');
+              iframe.src = data.preview_url;
+              iframe.setAttribute('allowfullscreen', '');
+              iframe.setAttribute('loading', 'lazy');
+              left.appendChild(iframe);
+            } else {
+              var noPreview = document.createElement('div');
+              noPreview.className = 'doc-detail-no-preview';
+              var noPreviewSpan = document.createElement('span');
+              noPreviewSpan.setAttribute('data-sk', 'N\u00e1h\u013ead nie je dostupn\u00fd');
+              noPreviewSpan.setAttribute('data-en', 'Preview not available');
+              noPreviewSpan.textContent = 'Preview not available';
+              noPreview.appendChild(noPreviewSpan);
+              left.appendChild(noPreview);
+            }
+
+            if (data.gdrive_url) {
+              var gdriveLink = document.createElement('a');
+              gdriveLink.href = data.gdrive_url;
+              gdriveLink.target = '_blank';
+              gdriveLink.rel = 'noopener';
+              gdriveLink.style.cssText = 'display:inline-block;padding:0.375rem 0.75rem;background:var(--accent);color:var(--bg);border-radius:0.375rem;font-size:0.75rem;font-weight:600;text-decoration:none;text-align:center';
+              var gdriveLinkSpan = document.createElement('span');
+              gdriveLinkSpan.setAttribute('data-sk', 'Otvori\u0165 v GDrive');
+              gdriveLinkSpan.setAttribute('data-en', 'Open in GDrive');
+              gdriveLinkSpan.textContent = 'Open in GDrive';
+              gdriveLink.appendChild(gdriveLinkSpan);
+              left.appendChild(gdriveLink);
+            }
+
+            panel.appendChild(left);
+
+            // ── Right column: OCR + metadata ──
+            var right = document.createElement('div');
+            right.className = 'doc-detail-right';
+
+            // OCR pages
+            if (data.pages && data.pages.length > 0) {
+              data.pages.forEach(function(page) {
+                var pageDiv = document.createElement('div');
+                pageDiv.className = 'doc-ocr-page';
+
+                var header = document.createElement('div');
+                header.className = 'doc-ocr-page-header';
+                var pgLabel = dashLang === 'sk' ? 'Strana' : 'Page';
+                var chLabel = dashLang === 'sk' ? 'znakov' : 'chars';
+                header.textContent = pgLabel + ' ' + page.page_number + ' (' + page.char_count + ' ' + chLabel + ')';
+                pageDiv.appendChild(header);
+
+                var textDiv = document.createElement('div');
+                textDiv.className = 'doc-ocr-text';
+                textDiv.textContent = page.text || '';
+                pageDiv.appendChild(textDiv);
+
+                right.appendChild(pageDiv);
+              });
+            } else {
+              var noOcr = document.createElement('div');
+              noOcr.className = 'doc-ocr-page';
+              var noOcrSpan = document.createElement('span');
+              noOcrSpan.style.cssText = 'color:var(--text-muted);font-size:0.8125rem';
+              noOcrSpan.setAttribute('data-sk', 'Nie s\u00fa dostupn\u00e9 OCR d\u00e1ta');
+              noOcrSpan.setAttribute('data-en', 'No OCR data available');
+              noOcrSpan.textContent = 'No OCR data available';
+              noOcr.appendChild(noOcrSpan);
+              right.appendChild(noOcr);
+            }
+
+            // ── Metadata section ──
+            var metaSection = document.createElement('div');
+            metaSection.className = 'doc-meta-section';
+
+            function addMetaRow(labelSk, labelEn, value) {
+              var row = document.createElement('div');
+              row.className = 'doc-meta-row';
+              var lbl = document.createElement('span');
+              lbl.className = 'doc-meta-label';
+              lbl.setAttribute('data-sk', labelSk);
+              lbl.setAttribute('data-en', labelEn);
+              lbl.textContent = dashLang === 'sk' ? labelSk : labelEn;
+              row.appendChild(lbl);
+              var val = document.createElement('span');
+              val.className = 'doc-meta-value';
+              if (typeof value === 'string') {
+                val.textContent = value;
+              } else {
+                val.appendChild(value);
+              }
+              row.appendChild(val);
+              metaSection.appendChild(row);
+            }
+
+            // Category badge
+            var catBadge = document.createElement('span');
+            catBadge.className = 'category-badge';
+            catBadge.textContent = data.category || 'other';
+            addMetaRow('Kateg\u00f3ria', 'Category', catBadge);
+
+            addMetaRow('D\u00e1tum', 'Date', data.document_date || '-');
+            addMetaRow('In\u0161tit\u00facia', 'Institution', data.institution || '-');
+            addMetaRow('ID', 'ID', '#' + data.id);
+
+            // Handwritten badge
+            var sm = data.structured_metadata || {};
+            if (sm.handwritten) {
+              var hwBadge = document.createElement('span');
+              hwBadge.className = 'handwritten-badge';
+              var hwSpan = document.createElement('span');
+              hwSpan.setAttribute('data-sk', 'Ru\u010dne p\u00edsan\u00e9');
+              hwSpan.setAttribute('data-en', 'Handwritten');
+              hwSpan.textContent = 'Handwritten';
+              hwBadge.appendChild(hwSpan);
+              addMetaRow('Form\u00e1t', 'Format', hwBadge);
+            }
+
+            // AI Summary
+            if (data.ai_summary) {
+              addMetaRow('AI Zhrnutie', 'AI Summary', data.ai_summary);
+            }
+
+            // Plain summary
+            if (sm.plain_summary) {
+              var summaryText = dashLang === 'sk' && sm.plain_summary_sk ? sm.plain_summary_sk : sm.plain_summary;
+              addMetaRow('Zhrnutie', 'Summary', summaryText);
+            }
+
+            // Providers
+            if (sm.providers && sm.providers.length > 0) {
+              var provTags = document.createElement('span');
+              provTags.className = 'doc-meta-tags';
+              sm.providers.forEach(function(p) {
+                var tag = document.createElement('span');
+                tag.className = 'doc-meta-tag';
+                tag.textContent = typeof p === 'string' ? p : (p.name || JSON.stringify(p));
+                provTags.appendChild(tag);
+              });
+              addMetaRow('Poskytovatelia', 'Providers', provTags);
+            }
+
+            // Doctors
+            if (sm.doctors && sm.doctors.length > 0) {
+              var docTags = document.createElement('span');
+              docTags.className = 'doc-meta-tags';
+              sm.doctors.forEach(function(dr) {
+                var tag = document.createElement('span');
+                tag.className = 'doc-meta-tag';
+                tag.textContent = typeof dr === 'string' ? dr : (dr.name || JSON.stringify(dr));
+                docTags.appendChild(tag);
+              });
+              addMetaRow('Lek\u00e1ri', 'Doctors', docTags);
+            }
+
+            // Diagnoses
+            if (sm.diagnoses && sm.diagnoses.length > 0) {
+              var diagTags = document.createElement('span');
+              diagTags.className = 'doc-meta-tags';
+              sm.diagnoses.forEach(function(dx) {
+                var tag = document.createElement('span');
+                tag.className = 'doc-meta-tag';
+                tag.textContent = typeof dx === 'string' ? dx : (dx.code ? dx.code + (dx.name ? ': ' + dx.name : '') : JSON.stringify(dx));
+                diagTags.appendChild(tag);
+              });
+              addMetaRow('Diagn\u00f3zy', 'Diagnoses', diagTags);
+            }
+
+            // Medications
+            if (sm.medications && sm.medications.length > 0) {
+              var medTags = document.createElement('span');
+              medTags.className = 'doc-meta-tags';
+              sm.medications.forEach(function(m) {
+                var tag = document.createElement('span');
+                tag.className = 'doc-meta-tag';
+                tag.textContent = typeof m === 'string' ? m : (m.name || JSON.stringify(m));
+                medTags.appendChild(tag);
+              });
+              addMetaRow('Lieky', 'Medications', medTags);
+            }
+
+            // Findings
+            if (sm.findings && sm.findings.length > 0) {
+              addMetaRow('N\u00e1lezy', 'Findings', sm.findings.join(', '));
+            }
+
+            // Tags
+            if (data.ai_tags && data.ai_tags.length > 0) {
+              var tagContainer = document.createElement('span');
+              tagContainer.className = 'doc-meta-tags';
+              data.ai_tags.forEach(function(t) {
+                var tag = document.createElement('span');
+                tag.className = 'doc-meta-tag';
+                tag.textContent = t;
+                tagContainer.appendChild(tag);
+              });
+              addMetaRow('\u0160t\u00edtky', 'Tags', tagContainer);
+            }
+
+            right.appendChild(metaSection);
+            panel.appendChild(right);
+
+            detailTd.appendChild(panel);
+            applyDashLang();
+          }).catch(function(err) {
+            loadingDiv.textContent = 'Error: ' + (err.message || 'unknown');
+          });
+        }; })(d, tr);
 
         tbody.appendChild(tr);
       });

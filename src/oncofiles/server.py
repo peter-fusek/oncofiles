@@ -3005,6 +3005,96 @@ async def api_documents(request: Request) -> JSONResponse:
         return JSONResponse({"error": "internal error"}, status_code=500)
 
 
+@mcp.custom_route("/api/doc-detail/{doc_id}", methods=["GET"])
+async def api_doc_detail(request: Request) -> JSONResponse:
+    """Document detail with OCR pages and structured metadata."""
+    err = _check_dashboard_auth(request)
+    if err:
+        return err
+
+    try:
+        doc_id_raw = request.path_params.get("doc_id", "")
+        try:
+            doc_id = int(doc_id_raw)
+        except (ValueError, TypeError):
+            return JSONResponse({"error": "invalid doc_id"}, status_code=400)
+
+        db: Database = request.app.state.fastmcp_server._lifespan_result["db"]
+        patient_id = await _get_dashboard_patient_id(request)
+
+        # Fetch document row
+        async with db.db.execute(
+            "SELECT id, filename, gdrive_id, category, document_date, institution, "
+            "ai_summary, ai_tags, structured_metadata, patient_id "
+            "FROM documents WHERE id = ? AND deleted_at IS NULL",
+            (doc_id,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        if not rows:
+            return JSONResponse({"error": "document not found"}, status_code=404)
+        doc = rows[0]
+
+        # Verify patient isolation
+        if patient_id and doc["patient_id"] != patient_id:
+            return JSONResponse({"error": "document not found"}, status_code=404)
+
+        gdrive_id = doc["gdrive_id"] or ""
+        gdrive_url = f"https://drive.google.com/file/d/{gdrive_id}/view" if gdrive_id else ""
+        preview_url = f"https://drive.google.com/file/d/{gdrive_id}/preview" if gdrive_id else ""
+
+        # Parse ai_tags (JSON string)
+        ai_tags: list[str] = []
+        if doc["ai_tags"]:
+            try:
+                ai_tags = json.loads(doc["ai_tags"])
+            except Exception:
+                ai_tags = []
+
+        # Parse structured_metadata (JSON string)
+        structured_metadata: dict = {}
+        if doc["structured_metadata"]:
+            try:
+                structured_metadata = json.loads(doc["structured_metadata"])
+            except Exception:
+                structured_metadata = {}
+
+        # Fetch OCR pages (serialized — single Turso connection)
+        async with db.db.execute(
+            "SELECT page_number, extracted_text FROM document_pages "
+            "WHERE document_id = ? ORDER BY page_number",
+            (doc_id,),
+        ) as cursor:
+            page_rows = await cursor.fetchall()
+        pages = [
+            {
+                "page_number": p["page_number"],
+                "text": p["extracted_text"] or "",
+                "char_count": len(p["extracted_text"] or ""),
+            }
+            for p in page_rows
+        ]
+
+        return JSONResponse(
+            {
+                "id": doc["id"],
+                "filename": doc["filename"],
+                "gdrive_id": gdrive_id,
+                "gdrive_url": gdrive_url,
+                "preview_url": preview_url,
+                "category": doc["category"] or "other",
+                "document_date": doc["document_date"] or "",
+                "institution": doc["institution"] or "",
+                "ai_summary": doc["ai_summary"] or "",
+                "ai_tags": ai_tags,
+                "structured_metadata": structured_metadata,
+                "pages": pages,
+            }
+        )
+    except Exception:
+        logger.exception("API doc-detail endpoint error")
+        return JSONResponse({"error": "internal error"}, status_code=500)
+
+
 @mcp.custom_route("/api/reconciliation", methods=["GET"])
 async def api_reconciliation(request: Request) -> JSONResponse:
     """DB vs GDrive reconciliation report. Requires bearer or dashboard session auth."""
