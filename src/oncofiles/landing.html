@@ -494,6 +494,162 @@
       font-size: 0.6875rem;
     }
 
+    /* ── Document detail mockup ───────────────────── */
+    .doc-detail {
+      padding: 5rem 0;
+      border-top: 1px solid var(--border);
+    }
+    .doc-detail-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 0.75rem;
+      overflow: hidden;
+      margin-top: 2rem;
+    }
+    .doc-detail-header {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      padding: 1rem 1.25rem;
+      border-bottom: 1px solid var(--border);
+      font-size: 0.8125rem;
+    }
+    .doc-detail-header .doc-icon {
+      width: 2rem;
+      height: 2rem;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: var(--accent-glow);
+      border-radius: 0.5rem;
+      font-size: 1rem;
+    }
+    .doc-detail-header .doc-title {
+      font-weight: 600;
+      flex: 1;
+    }
+    .doc-detail-header .doc-badge {
+      background: var(--accent-glow);
+      color: var(--accent);
+      padding: 0.1875rem 0.5rem;
+      border-radius: 0.25rem;
+      font-size: 0.6875rem;
+      font-weight: 600;
+    }
+    .doc-detail-split {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      min-height: 320px;
+    }
+    .doc-detail-preview {
+      padding: 1.25rem;
+      border-right: 1px solid var(--border);
+      background: var(--bg-deep);
+      font-size: 0.6875rem;
+      line-height: 1.8;
+      color: var(--text-dim);
+      font-family: 'DM Mono', 'Courier New', monospace;
+      overflow: hidden;
+    }
+    .doc-detail-preview .doc-preview-title {
+      font-family: 'DM Sans', sans-serif;
+      font-size: 0.75rem;
+      font-weight: 700;
+      color: var(--text-muted);
+      margin-bottom: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    .doc-detail-preview .lab-row {
+      display: flex;
+      justify-content: space-between;
+      padding: 0.25rem 0.5rem;
+      border-radius: 0.25rem;
+    }
+    .doc-detail-preview .lab-row:nth-child(even) {
+      background: rgba(255,255,255,0.02);
+    }
+    .doc-detail-preview .lab-name { color: var(--text-muted); }
+    .doc-detail-preview .lab-value { color: var(--text); font-weight: 500; }
+    .doc-detail-preview .lab-flag { color: var(--warm); font-weight: 700; font-size: 0.625rem; }
+    .doc-detail-preview .lab-normal { color: var(--accent); }
+    .doc-detail-preview .lab-ref { color: var(--text-dim); font-size: 0.5625rem; }
+    .doc-detail-meta {
+      padding: 1.25rem;
+      display: flex;
+      flex-direction: column;
+      gap: 1rem;
+    }
+    .doc-meta-row {
+      display: flex;
+      flex-direction: column;
+      gap: 0.25rem;
+    }
+    .doc-meta-label {
+      font-size: 0.625rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--text-dim);
+      font-weight: 600;
+    }
+    .doc-meta-value {
+      font-size: 0.8125rem;
+      color: var(--text);
+    }
+    .doc-meta-pills {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.375rem;
+    }
+    .doc-pill {
+      padding: 0.125rem 0.5rem;
+      border-radius: 9999px;
+      font-size: 0.6875rem;
+      font-weight: 500;
+    }
+    .doc-pill-teal {
+      background: var(--accent-glow);
+      color: var(--accent);
+    }
+    .doc-pill-purple {
+      background: rgba(139, 92, 246, 0.12);
+      color: var(--purple-light);
+    }
+    .doc-meta-summary {
+      font-size: 0.75rem;
+      color: var(--text-muted);
+      line-height: 1.6;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 0.5rem;
+      padding: 0.75rem;
+    }
+    .doc-detail-pipeline {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.75rem 1.25rem;
+      border-top: 1px solid var(--border);
+      font-size: 0.625rem;
+      color: var(--text-dim);
+    }
+    .pipeline-step {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.25rem;
+      padding: 0.1875rem 0.5rem;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 0.25rem;
+      color: var(--accent);
+      font-weight: 500;
+    }
+    .pipeline-arrow { color: var(--text-dim); }
+    @media (max-width: 768px) {
+      .doc-detail-split { grid-template-columns: 1fr; }
+      .doc-detail-preview { border-right: none; border-bottom: 1px solid var(--border); min-height: auto; }
+    }
+
     /* ── Founder story ────────────────────────────── */
     /* ── Chat preview ─────────────────────────────── */
     .chat-preview {
@@ -976,6 +1132,107 @@
               <li data-sk="Pridajte --header s Bearer tokenom" data-en="Add --header with Bearer token">Pridajte --header s Bearer tokenom</li>
               <li data-sk="Hotovo — 76 nástrojov k dispozícii" data-en="Done — 76 tools available">Hotovo — 76 nástrojov k dispozícii</li>
             </ol>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Document detail mockup -->
+    <section class="doc-detail">
+      <div class="container">
+        <div class="section-label" data-sk="Spracovanie dokumentov" data-en="Document processing">Spracovanie dokumentov</div>
+        <h2 class="section-title" data-sk="Každý dokument, kompletne spracovaný" data-en="Every document, fully processed">Každý dokument, kompletne spracovaný</h2>
+        <div class="doc-detail-card">
+          <div class="doc-detail-header">
+            <div class="doc-icon">&#128196;</div>
+            <span class="doc-title">20260319_JanaNovakova_NOU_Labs_BloodCount.pdf</span>
+            <span class="doc-badge" data-sk="Laboratória" data-en="Labs">Laboratória</span>
+          </div>
+          <div class="doc-detail-split">
+            <!-- Left: document preview -->
+            <div class="doc-detail-preview">
+              <div class="doc-preview-title" data-sk="Laboratórne výsledky" data-en="Laboratory Results">Laboratórne výsledky</div>
+              <div class="lab-row">
+                <span class="lab-name">WBC</span>
+                <span><span class="lab-value">3.8</span> <span class="lab-ref">10^9/L</span></span>
+                <span class="lab-ref">(4.0–10.0)</span>
+                <span class="lab-flag">&#9660; L</span>
+              </div>
+              <div class="lab-row">
+                <span class="lab-name">ABS NEUT</span>
+                <span><span class="lab-value">2.1</span> <span class="lab-ref">10^9/L</span></span>
+                <span class="lab-ref">(2.0–7.5)</span>
+                <span class="lab-normal">&#10003;</span>
+              </div>
+              <div class="lab-row">
+                <span class="lab-name">ABS LYMPH</span>
+                <span><span class="lab-value">1.2</span> <span class="lab-ref">10^9/L</span></span>
+                <span class="lab-ref">(1.0–4.0)</span>
+                <span class="lab-normal">&#10003;</span>
+              </div>
+              <div class="lab-row">
+                <span class="lab-name">HGB</span>
+                <span><span class="lab-value">112</span> <span class="lab-ref">g/L</span></span>
+                <span class="lab-ref">(120–160)</span>
+                <span class="lab-flag">&#9660; L</span>
+              </div>
+              <div class="lab-row">
+                <span class="lab-name">PLT</span>
+                <span><span class="lab-value">268</span> <span class="lab-ref">10^9/L</span></span>
+                <span class="lab-ref">(150–400)</span>
+                <span class="lab-normal">&#10003;</span>
+              </div>
+              <div class="lab-row">
+                <span class="lab-name">CEA</span>
+                <span><span class="lab-value">8.1</span> <span class="lab-ref">ng/mL</span></span>
+                <span class="lab-ref">(&lt;5.0)</span>
+                <span class="lab-flag">&#9650; H</span>
+              </div>
+              <div class="lab-row">
+                <span class="lab-name">ALT</span>
+                <span><span class="lab-value">28</span> <span class="lab-ref">U/L</span></span>
+                <span class="lab-ref">(7–56)</span>
+                <span class="lab-normal">&#10003;</span>
+              </div>
+            </div>
+            <!-- Right: AI-extracted metadata -->
+            <div class="doc-detail-meta">
+              <div class="doc-meta-row">
+                <span class="doc-meta-label" data-sk="Dátum" data-en="Date">Dátum</span>
+                <span class="doc-meta-value">19. 3. 2026</span>
+              </div>
+              <div class="doc-meta-row">
+                <span class="doc-meta-label" data-sk="Inštitúcia" data-en="Institution">Inštitúcia</span>
+                <span class="doc-meta-value" data-sk="Národný onkologický ústav" data-en="National Oncology Institute">Národný onkologický ústav</span>
+              </div>
+              <div class="doc-meta-row">
+                <span class="doc-meta-label" data-sk="Poskytovatelia" data-en="Providers">Poskytovatelia</span>
+                <div class="doc-meta-pills">
+                  <span class="doc-pill doc-pill-teal">MUDr. Kovacs</span>
+                  <span class="doc-pill doc-pill-teal" data-sk="Centrálne lab." data-en="Central lab">Centrálne lab.</span>
+                </div>
+              </div>
+              <div class="doc-meta-row">
+                <span class="doc-meta-label" data-sk="Diagnózy" data-en="Diagnoses">Diagnózy</span>
+                <div class="doc-meta-pills">
+                  <span class="doc-pill doc-pill-purple">C18.7 — mCRC</span>
+                  <span class="doc-pill doc-pill-purple">D64.9</span>
+                </div>
+              </div>
+              <div class="doc-meta-row">
+                <span class="doc-meta-label" data-sk="AI zhrnutie" data-en="AI Summary">AI zhrnutie</span>
+                <div class="doc-meta-summary" data-sk="Kontrolný krvný obraz pred 4. cyklom FOLFOX. WBC mierne pod normou (3.8), HGB klesol na 112 g/L — mierna anémia, sledovať. CEA klesá (12.4 &#8594; 8.1), čo naznačuje odpoveď na liečbu. Bezpečné pre ďalší cyklus." data-en="Pre-cycle blood count before 4th FOLFOX cycle. WBC slightly below normal (3.8), HGB dropped to 112 g/L — mild anemia, monitor. CEA declining (12.4 &#8594; 8.1), suggesting treatment response. Safe for next cycle.">Kontrolný krvný obraz pred 4. cyklom FOLFOX. WBC mierne pod normou (3.8), HGB klesol na 112 g/L — mierna anémia, sledovať. CEA klesá (12.4 &#8594; 8.1), čo naznačuje odpoveď na liečbu. Bezpečné pre ďalší cyklus.</div>
+              </div>
+            </div>
+          </div>
+          <div class="doc-detail-pipeline">
+            <span class="pipeline-step" data-sk="&#128247; Sken" data-en="&#128247; Scan">&#128247; Sken</span>
+            <span class="pipeline-arrow">&#8594;</span>
+            <span class="pipeline-step">OCR</span>
+            <span class="pipeline-arrow">&#8594;</span>
+            <span class="pipeline-step" data-sk="&#129302; AI extrakcia" data-en="&#129302; AI extraction">&#129302; AI extrakcia</span>
+            <span class="pipeline-arrow">&#8594;</span>
+            <span class="pipeline-step" data-sk="&#128202; Klinická inteligencia" data-en="&#128202; Clinical intelligence">&#128202; Klinická inteligencia</span>
           </div>
         </div>
       </div>
