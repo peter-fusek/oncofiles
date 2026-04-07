@@ -34,7 +34,8 @@ WHERE document_date = '2026-04-05'
 async def _insert_raw(db: Database, file_id: str, document_date: str, metadata: dict) -> None:
     await db.db.execute(
         "INSERT INTO documents "
-        "(file_id, filename, original_filename, document_date, category, patient_id, structured_metadata) "
+        "(file_id, filename, original_filename, document_date,"
+        " category, patient_id, structured_metadata) "
         "VALUES (?, ?, ?, ?, ?, ?, ?)",
         (
             file_id,
