@@ -34,6 +34,7 @@ from oncofiles.gdrive_folders import (
     ensure_folder_structure,
     ensure_year_month_folder,
     get_category_folder_path,
+    resolve_category_folder,
 )
 from oncofiles.manifest import (
     export_manifest,
@@ -507,7 +508,7 @@ async def sync_to_gdrive(
                 doc.category.value,
                 doc.document_date.isoformat() if doc.document_date else None,
             )
-            target_folder = folder_map.get(cat_name, folder_id)
+            target_folder = resolve_category_folder(folder_map, cat_name, folder_id)
             if year_month:
                 target_folder = await asyncio.to_thread(
                     ensure_year_month_folder, gdrive, target_folder, year_month + "-01"
@@ -668,7 +669,7 @@ def _move_to_organized_folder(
         doc.category.value,
         doc.document_date.isoformat() if doc.document_date else None,
     )
-    target_folder = folder_map.get(cat_name, root_folder_id)
+    target_folder = resolve_category_folder(folder_map, cat_name, root_folder_id)
     if year_month:
         target_folder = ensure_year_month_folder(gdrive, target_folder, year_month + "-01")
         # Track new year-month folder as organized
@@ -740,7 +741,7 @@ def _batch_organize_files(
             doc.category.value,
             doc.document_date.isoformat() if doc.document_date else None,
         )
-        target_folder = folder_map.get(cat_name, root_folder_id)
+        target_folder = resolve_category_folder(folder_map, cat_name, root_folder_id)
         if year_month:
             target_folder = ensure_year_month_folder(gdrive, target_folder, year_month + "-01")
             organized_folder_ids.add(target_folder)

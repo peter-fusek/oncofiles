@@ -536,6 +536,7 @@ async def _move_doc_to_correct_folder(
         ensure_folder_structure,
         ensure_year_month_folder,
         get_category_folder_path,
+        resolve_category_folder,
     )
 
     folder_map = await asyncio.to_thread(ensure_folder_structure, gdrive, root_folder_id)
@@ -544,7 +545,7 @@ async def _move_doc_to_correct_folder(
         target_category,
         doc.document_date.isoformat() if doc.document_date else None,
     )
-    target_folder = folder_map.get(cat_name, root_folder_id)
+    target_folder = resolve_category_folder(folder_map, cat_name, root_folder_id)
     if year_month:
         target_folder = await asyncio.to_thread(
             ensure_year_month_folder, gdrive, target_folder, year_month + "-01"

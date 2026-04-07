@@ -11,6 +11,7 @@ from oncofiles.gdrive_folders import (
     ensure_year_month_folder,
     find_or_create_folder,
     get_category_folder_path,
+    resolve_category_folder,
 )
 
 
@@ -145,3 +146,53 @@ def test_en_key_from_folder_name_legacy_merges():
 def test_en_key_from_folder_name_unknown():
     assert en_key_from_folder_name("2026-03") is None
     assert en_key_from_folder_name("random_folder") is None
+
+
+# ── resolve_category_folder (#273) ─────────────────────────────────────
+
+
+def test_resolve_category_folder_found():
+    """Returns the folder ID when category is in folder_map."""
+    folder_map = {"labs": "labs_id", "other": "other_id"}
+    assert resolve_category_folder(folder_map, "labs", "root_id") == "labs_id"
+
+
+def test_resolve_category_folder_missing_falls_back_to_other():
+    """Falls back to 'other' folder when category is missing — never root (#273)."""
+    folder_map = {"labs": "labs_id", "other": "other_id"}
+    assert resolve_category_folder(folder_map, "surgical_report", "root_id") == "other_id"
+    assert resolve_category_folder(folder_map, "vaccination", "root_id") == "other_id"
+
+
+def test_resolve_category_folder_no_other_falls_back_to_root():
+    """Falls back to root only when even 'other' folder is missing (shouldn't happen)."""
+    folder_map = {"labs": "labs_id"}
+    assert resolve_category_folder(folder_map, "vaccination", "root_id") == "root_id"
+
+
+# ── ensure_year_month_folder validation (#273) ─────────────────────────
+
+
+def test_ensure_year_month_folder_rejects_short_date():
+    """Returns parent folder as-is when date_str produces invalid year_month."""
+    gdrive = _mock_gdrive()
+    # "2025" is only 4 chars — [:7] = "2025" which has no dash at position 4
+    result = ensure_year_month_folder(gdrive, "cat_folder", "2025")
+    assert result == "cat_folder"  # Returns parent, doesn't create a "2025" folder
+    gdrive.create_folder.assert_not_called()
+
+
+def test_ensure_year_month_folder_rejects_year_only():
+    """A bare year string should not create a folder."""
+    gdrive = _mock_gdrive()
+    result = ensure_year_month_folder(gdrive, "cat_folder", "2026")
+    assert result == "cat_folder"
+    gdrive.create_folder.assert_not_called()
+
+
+def test_ensure_year_month_folder_accepts_valid_date():
+    """Normal YYYY-MM-DD date string works correctly."""
+    gdrive = _mock_gdrive()
+    result = ensure_year_month_folder(gdrive, "cat_folder", "2026-03-15")
+    gdrive.find_folder.assert_called_once_with("2026-03", "cat_folder")
+    assert result == "folder_2026-03"

@@ -10,7 +10,11 @@ import logging
 from fastmcp import Context
 
 from oncofiles.filename_parser import parse_filename
-from oncofiles.gdrive_folders import ensure_folder_structure, ensure_year_month_folder
+from oncofiles.gdrive_folders import (
+    ensure_folder_structure,
+    ensure_year_month_folder,
+    resolve_category_folder,
+)
 from oncofiles.models import Document, DocumentCategory, SearchQuery
 from oncofiles.tools._helpers import (
     _clamp_limit,
@@ -132,7 +136,7 @@ async def upload_document(
             folder_id = ctx.request_context.lifespan_context.get("gdrive_folder_id")
             if folder_id:
                 folder_map = await asyncio.to_thread(ensure_folder_structure, gdrive, folder_id)
-                cat_folder = folder_map.get(doc.category.value, folder_id)
+                cat_folder = resolve_category_folder(folder_map, doc.category.value, folder_id)
                 target_folder = cat_folder
                 if doc.document_date:
                     date_str = doc.document_date.isoformat()

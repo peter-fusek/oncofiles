@@ -127,6 +127,35 @@ def _find_or_create_bilingual(gdrive, en_key: str, bilingual: str, parent_id: st
     return gdrive.create_folder(bilingual, parent_id)
 
 
+def resolve_category_folder(
+    folder_map: dict[str, str], cat_name: str, root_folder_id: str
+) -> str:
+    """Resolve a category name to its folder ID, falling back to 'other' — never root.
+
+    When a category is missing from folder_map (e.g., legacy merged categories like
+    'surgical_report', or patient-type-excluded categories like 'vaccination' for
+    oncology patients), falls back to the 'other' folder instead of root_folder_id.
+    This prevents year-month subfolders from being created directly under root (#273).
+    """
+    folder_id = folder_map.get(cat_name)
+    if folder_id:
+        return folder_id
+    # Fall back to 'other' category folder — NEVER root
+    other_id = folder_map.get("other")
+    if other_id:
+        logger.warning(
+            "Category '%s' not in folder_map — falling back to 'other' folder (#273)",
+            cat_name,
+        )
+        return other_id
+    # Last resort: root (should never happen — 'other' is always created)
+    logger.error(
+        "Category '%s' and 'other' both missing from folder_map — using root (#273)",
+        cat_name,
+    )
+    return root_folder_id
+
+
 def ensure_year_month_folder(gdrive, category_folder_id: str, date_str: str) -> str:
     """Create or find a YYYY-MM subfolder under a category folder.
 
@@ -137,6 +166,15 @@ def ensure_year_month_folder(gdrive, category_folder_id: str, date_str: str) -> 
         Folder ID of the year-month subfolder.
     """
     year_month = date_str[:7]  # "2026-03"
+    # Validate: year_month must be YYYY-MM format (7 chars with dash at position 4)
+    if len(year_month) < 7 or year_month[4:5] != "-":
+        logger.warning(
+            "ensure_year_month_folder: invalid date_str '%s' — expected YYYY-MM-DD, "
+            "got year_month='%s'. Skipping folder creation to prevent stray folders (#273).",
+            date_str,
+            year_month,
+        )
+        return category_folder_id  # Return parent as-is rather than creating bad folder
     return find_or_create_folder(gdrive, year_month, category_folder_id)
 
 
