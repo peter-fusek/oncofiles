@@ -80,14 +80,11 @@ class PersistentOAuthProvider(InMemoryOAuthProvider):
         # 2. MCP OAuth tokens (in-memory, restored from DB on startup — Claude.ai, ChatGPT)
         result = await super().verify_token(token)
         if result:
-            # OAuth user → resolve default patient for now (multi-patient selection TBD)
+            # OAuth user → check stored selection, fall back to default (#291)
             if self._db:
-                try:
-                    pid = await self._db.resolve_default_patient()
-                    if pid:
-                        _verified_patient_id.set(pid)
-                except Exception:
-                    pass
+                pid = await self._resolve_oauth_patient()
+                if pid:
+                    _verified_patient_id.set(pid)
             return result
         # 3. Patient bearer tokens (DB lookup — survives restarts without restore)
         if self._db:
@@ -99,6 +96,25 @@ class PersistentOAuthProvider(InMemoryOAuthProvider):
             except Exception:
                 logger.warning("Patient token lookup failed", exc_info=True)
         return None
+
+    async def _resolve_oauth_patient(self) -> str:
+        """Resolve patient for an OAuth user: stored selection → default."""
+        try:
+            # Check all patients for stored selection by owner_email
+            patients = await self._db.list_patients(active_only=True)
+            for p in patients:
+                tok = await self._db.get_oauth_token(patient_id=p.patient_id)
+                if tok and tok.owner_email:
+                    sel = await self._db.get_patient_selection(tok.owner_email)
+                    if sel:
+                        return sel
+        except Exception:
+            logger.debug("OAuth patient selection lookup failed", exc_info=True)
+        # No selection stored → default patient
+        try:
+            return await self._db.resolve_default_patient()
+        except Exception:
+            return ""
 
     # ── Restore from DB on startup ──────────────────────────────────────
 

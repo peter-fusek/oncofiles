@@ -227,3 +227,49 @@ class PatientsMixin:
                 }
                 for r in await cursor.fetchall()
             ]
+
+    # ── Patient selection for OAuth (#291) ─────────────────────────────────
+
+    async def get_patient_selection(self, owner_email: str) -> str | None:
+        """Get the selected patient_id for an OAuth user, or None."""
+        try:
+            async with self.db.execute(
+                "SELECT patient_id FROM patient_selection WHERE owner_email = ?",
+                (owner_email,),
+            ) as cursor:
+                row = await cursor.fetchone()
+                return row["patient_id"] if row else None
+        except Exception:
+            return None
+
+    async def set_patient_selection(self, owner_email: str, patient_id: str) -> None:
+        """Store the OAuth user's preferred patient."""
+        await self.db.execute(
+            """INSERT INTO patient_selection (owner_email, patient_id, updated_at)
+               VALUES (?, ?, datetime('now'))
+               ON CONFLICT(owner_email) DO UPDATE SET
+                   patient_id = excluded.patient_id,
+                   updated_at = excluded.updated_at""",
+            (owner_email, patient_id),
+        )
+        await self.db.commit()
+
+    async def get_patients_for_email(self, owner_email: str) -> list:
+        """Get all active patients associated with an owner email."""
+        patients = await self.list_patients(active_only=True)
+        # Check which patients have OAuth tokens for this email
+        patient_ids_for_email: set[str] = set()
+        try:
+            async with self.db.execute(
+                "SELECT patient_id FROM oauth_tokens WHERE owner_email = ?",
+                (owner_email,),
+            ) as cursor:
+                for row in await cursor.fetchall():
+                    patient_ids_for_email.add(row["patient_id"])
+        except Exception:
+            pass
+        # Return all active patients (owner has access to all their patients)
+        # If we have OAuth mapping, prefer those; otherwise return all active
+        if patient_ids_for_email:
+            return [p for p in patients if p.patient_id in patient_ids_for_email]
+        return patients

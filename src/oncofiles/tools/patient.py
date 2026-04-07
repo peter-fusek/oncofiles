@@ -63,6 +63,96 @@ async def update_patient_context(
     )
 
 
+async def list_patients(ctx: Context) -> str:
+    """List all available patients.
+
+    Shows active patients with their slug, name, document count,
+    and patient type. Use select_patient to switch to a different patient.
+    """
+    db = _get_db(ctx)
+    current_pid = _get_patient_id()
+    patients = await db.list_patients(active_only=True)
+    result = []
+    for p in patients:
+        doc_count = await db.count_documents(patient_id=p.patient_id)
+        ctx_data = patient_context.get_context(p.patient_id)
+        result.append(
+            {
+                "patient_id": p.patient_id,
+                "slug": p.slug,
+                "name": p.display_name,
+                "patient_type": ctx_data.get("patient_type", "oncology"),
+                "documents": doc_count,
+                "is_current": p.patient_id == current_pid,
+            }
+        )
+    return json.dumps(result, ensure_ascii=False, indent=2)
+
+
+async def select_patient(
+    ctx: Context,
+    patient_slug: str,
+) -> str:
+    """Switch to a different patient for this connection.
+
+    After calling this, all subsequent tool calls will use the selected
+    patient's data. The selection persists across requests.
+
+    Args:
+        patient_slug: Patient slug or UUID (e.g. 'erika', 'e5g').
+    """
+    db = _get_db(ctx)
+
+    # Resolve slug to patient_id
+
+    patients = await db.list_patients(active_only=True)
+    target = None
+    for p in patients:
+        if p.slug == patient_slug or p.patient_id == patient_slug:
+            target = p
+            break
+    if not target:
+        return json.dumps(
+            {"error": f"Patient '{patient_slug}' not found. Use list_patients to see available."}
+        )
+
+    # Store selection — keyed by the owner_email from the current patient's OAuth token
+    current_pid = _get_patient_id()
+    token = await db.get_oauth_token(patient_id=current_pid)
+    owner_email = token.owner_email if token else None
+
+    if not owner_email:
+        # Try the target patient's token
+        token = await db.get_oauth_token(patient_id=target.patient_id)
+        owner_email = token.owner_email if token else None
+
+    if owner_email:
+        await db.set_patient_selection(owner_email, target.patient_id)
+
+    # Also update the ContextVar for immediate effect in this request
+    from oncofiles.persistent_oauth import _verified_patient_id
+
+    _verified_patient_id.set(target.patient_id)
+
+    ctx_data = patient_context.get_context(target.patient_id)
+    doc_count = await db.count_documents(patient_id=target.patient_id)
+
+    return json.dumps(
+        {
+            "status": "switched",
+            "patient_id": target.patient_id,
+            "slug": target.slug,
+            "name": target.display_name,
+            "patient_type": ctx_data.get("patient_type", "oncology"),
+            "documents": doc_count,
+            "note": "All subsequent tool calls will use this patient's data.",
+        },
+        ensure_ascii=False,
+    )
+
+
 def register(mcp):
     mcp.tool()(get_patient_context)
     mcp.tool()(update_patient_context)
+    mcp.tool()(list_patients)
+    mcp.tool()(select_patient)
