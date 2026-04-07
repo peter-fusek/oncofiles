@@ -3298,6 +3298,160 @@ async def api_manifest(request: Request) -> JSONResponse:
         return JSONResponse({"error": "internal error"}, status_code=500)
 
 
+# Static schedule definitions — APScheduler doesn't expose trigger config
+_SCHEDULE_DEFS = [
+    {
+        "id": "gdrive_sync",
+        "name": "GDrive Sync",
+        "schedule": "every 5 min",
+        "group": "sync",
+        "desc": "Bidirectional sync: import new files, export to category/YYYY-MM folders, rename",
+    },
+    {
+        "id": "gmail_sync",
+        "name": "Gmail Sync",
+        "schedule": "every 5 min (+2 min offset)",
+        "group": "sync",
+        "desc": "Import medical emails, classify relevance, extract metadata",
+    },
+    {
+        "id": "calendar_sync",
+        "name": "Calendar Sync",
+        "schedule": "every 5 min (+3 min offset)",
+        "group": "sync",
+        "desc": "Import calendar events, tag medical appointments",
+    },
+    {
+        "id": "db_keepalive",
+        "name": "DB Keepalive",
+        "schedule": "every 4 min",
+        "group": "infra",
+        "desc": "Ping Turso to prevent connection timeout, or sync embedded replica",
+    },
+    {
+        "id": "memory_check",
+        "name": "Memory Monitor",
+        "schedule": "every 5 min",
+        "group": "infra",
+        "desc": "Check RSS memory, trigger GC or graceful restart at threshold",
+    },
+    {
+        "id": "trash_cleanup",
+        "name": "Trash Cleanup",
+        "schedule": "daily 3:00 AM",
+        "group": "housekeeping",
+        "desc": "Permanently delete soft-deleted docs older than 30 days",
+    },
+    {
+        "id": "empty_folder_cleanup",
+        "name": "Folder Cleanup",
+        "schedule": "daily 3:15 AM",
+        "group": "housekeeping",
+        "desc": "Merge legacy folders, remove empty GDrive directories",
+    },
+    {
+        "id": "enhancement_sweep",
+        "name": "Enhancement Sweep",
+        "schedule": "daily 3:20 AM",
+        "group": "pipeline",
+        "desc": "Retry stuck unprocessed docs — OCR + AI summary + tags (max 5)",
+    },
+    {
+        "id": "metadata_extraction",
+        "name": "Metadata Extraction",
+        "schedule": "daily 3:30 AM",
+        "group": "pipeline",
+        "desc": "Backfill missing structured metadata — diagnoses, medications, providers (max 5)",
+    },
+    {
+        "id": "category_validation",
+        "name": "Category Validation",
+        "schedule": "daily 3:45 AM",
+        "group": "housekeeping",
+        "desc": "Auto-correct document categories based on AI-extracted metadata",
+    },
+    {
+        "id": "oauth_token_cleanup",
+        "name": "OAuth Cleanup",
+        "schedule": "daily 4:00 AM",
+        "group": "infra",
+        "desc": "Remove expired or revoked OAuth tokens",
+    },
+    {
+        "id": "prompt_log_cleanup",
+        "name": "Prompt Log Cleanup",
+        "schedule": "daily 4:15 AM",
+        "group": "infra",
+        "desc": "Archive prompt log entries older than 90 days",
+    },
+    {
+        "id": "pipeline_integrity",
+        "name": "Pipeline Integrity",
+        "schedule": "every 6 hours at :30",
+        "group": "pipeline",
+        "desc": "Detect docs stuck in incomplete pipeline state, trigger re-processing",
+    },
+    {
+        "id": "weekly_analytics",
+        "name": "Weekly Analytics",
+        "schedule": "Sunday 5:00 AM",
+        "group": "infra",
+        "desc": "Aggregate weekly usage statistics",
+    },
+    {
+        "id": "startup_catchup",
+        "name": "Startup Catchup",
+        "schedule": "90s after boot (once)",
+        "group": "sync",
+        "desc": "Run initial sync for all patients after server start",
+    },
+]
+
+
+@mcp.custom_route("/api/schedules", methods=["GET"])
+async def api_schedules(request: Request) -> JSONResponse:
+    """Processing schedules: all jobs with live status and prompt stats by call type."""
+    err = _check_dashboard_auth(request)
+    if err:
+        return err
+
+    try:
+        lifespan_ctx = request.app.state.fastmcp_server._lifespan_result
+        tracker = lifespan_ctx.get("job_tracker", {})
+
+        jobs = []
+        for defn in _SCHEDULE_DEFS:
+            live = tracker.get(defn["id"], {})
+            jobs.append(
+                {
+                    **defn,
+                    "running": live.get("running", False),
+                    "last_ok": live.get("last_ok"),
+                    "last_error": live.get("last_error"),
+                    "last_error_msg": live.get("last_error_msg"),
+                    "last_duration_s": live.get("last_duration_s"),
+                    "last_missed": live.get("last_missed"),
+                }
+            )
+
+        # Prompt stats by call type (last 30 days)
+        db_inst: Database = lifespan_ctx["db"]
+        prompt_stats = await db_inst.get_prompt_stats(days=30, patient_id=None)
+        from dataclasses import asdict
+
+        prompts = asdict(prompt_stats)
+
+        return JSONResponse(
+            {
+                "jobs": jobs,
+                "prompt_stats": prompts,
+            }
+        )
+    except Exception:
+        logger.exception("API schedules endpoint error")
+        return JSONResponse({"error": "internal error"}, status_code=500)
+
+
 @mcp.custom_route("/api/usage-analytics", methods=["GET"])
 async def api_usage_analytics(request: Request) -> JSONResponse:
     """Usage analytics: prompt stats, tool usage, pipeline health, latency."""

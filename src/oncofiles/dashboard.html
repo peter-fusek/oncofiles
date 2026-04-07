@@ -1163,6 +1163,102 @@
         </div>
       </div>
 
+      <!-- Processing Schedules (#287) -->
+      <div class="sync-history" id="schedules-section">
+        <h2 style="cursor:pointer" onclick="var el=document.getElementById('schedules-body');el.style.display=el.style.display==='none'?'block':'none'" data-sk="Spracovanie" data-en="Processing Schedules">Processing Schedules <span style="font-size:0.75rem;color:var(--text-muted)" data-sk="(kliknutím rozbaliť)" data-en="(click to expand)">(click to expand)</span></h2>
+        <div id="schedules-body" style="display:none;margin-top:0.75rem">
+          <!-- Job groups -->
+          <div id="sched-groups" style="display:flex;gap:0.5rem;margin-bottom:0.75rem;flex-wrap:wrap">
+            <span class="pill active" data-sched-filter="all">All</span>
+            <span class="pill" data-sched-filter="sync">Sync</span>
+            <span class="pill" data-sched-filter="pipeline">Pipeline</span>
+            <span class="pill" data-sched-filter="housekeeping">Housekeeping</span>
+            <span class="pill" data-sched-filter="infra">Infrastructure</span>
+          </div>
+          <div id="sched-jobs" style="font-size:0.8125rem"></div>
+          <!-- Prompt stats by call type -->
+          <div style="margin-top:1rem">
+            <div style="font-size:0.75rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.04em;margin-bottom:0.5rem" data-sk="AI volania podľa typu" data-en="AI Calls by Type">AI Calls by Type</div>
+            <div id="sched-prompt-stats" style="font-size:0.8125rem"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- MCP Client Setup (#288) -->
+      <div class="sync-history" id="mcp-setup-section">
+        <h2 style="cursor:pointer" onclick="var el=document.getElementById('mcp-setup-body');el.style.display=el.style.display==='none'?'block':'none'" data-sk="Nastavenie MCP" data-en="MCP Client Setup">MCP Client Setup <span style="font-size:0.75rem;color:var(--text-muted)" data-sk="(kliknutím rozbaliť)" data-en="(click to expand)">(click to expand)</span></h2>
+        <div id="mcp-setup-body" style="display:none;font-size:0.8125rem;color:var(--text-muted);line-height:1.7;margin-top:0.5rem">
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:1.5rem">
+            <!-- Claude.ai -->
+            <div style="background:var(--surface);border:1px solid var(--border);border-radius:0.75rem;padding:1.25rem">
+              <div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.75rem">
+                <span style="font-size:1.25rem">&#x1F7E0;</span>
+                <strong style="color:var(--text);font-size:1rem">Claude.ai</strong>
+                <span style="font-size:0.7rem;background:var(--accent);color:white;padding:0.125rem 0.5rem;border-radius:1rem" data-sk="Odporúčané" data-en="Recommended">Recommended</span>
+              </div>
+              <ol style="margin:0 0 0 1.25rem;padding:0;color:var(--text)">
+                <li style="margin-bottom:0.5rem">Go to <strong>claude.ai</strong> &rarr; Settings &rarr; Integrations</li>
+                <li style="margin-bottom:0.5rem">Click <strong>"Add custom integration"</strong></li>
+                <li style="margin-bottom:0.5rem">Enter URL: <code style="background:var(--bg);padding:0.125rem 0.375rem;border-radius:3px;font-size:0.75rem;user-select:all">https://oncofiles.com/mcp</code></li>
+                <li style="margin-bottom:0.5rem">Click <strong>"Connect"</strong> &rarr; sign in with Google</li>
+                <li style="margin-bottom:0.5rem">Select patient when prompted</li>
+              </ol>
+              <div style="margin-top:0.75rem;font-size:0.75rem;color:var(--text-muted)">
+                <strong data-sk="Funkcie" data-en="Features">Features</strong>: 78 tools, OAuth login, auto-patient selection<br>
+                <strong data-sk="Najlepšie pre" data-en="Best for">Best for</strong>: Full medical document analysis, lab trends, treatment planning
+              </div>
+            </div>
+            <!-- ChatGPT -->
+            <div style="background:var(--surface);border:1px solid var(--border);border-radius:0.75rem;padding:1.25rem">
+              <div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.75rem">
+                <span style="font-size:1.25rem">&#x1F7E2;</span>
+                <strong style="color:var(--text);font-size:1rem">ChatGPT</strong>
+              </div>
+              <ol style="margin:0 0 0 1.25rem;padding:0;color:var(--text)">
+                <li style="margin-bottom:0.5rem">Go to <strong>chatgpt.com</strong> &rarr; Settings &rarr; Connected Apps</li>
+                <li style="margin-bottom:0.5rem">Click <strong>"Add MCP Server"</strong></li>
+                <li style="margin-bottom:0.5rem">Enter URL: <code style="background:var(--bg);padding:0.125rem 0.375rem;border-radius:3px;font-size:0.75rem;user-select:all">https://oncofiles.com/mcp</code></li>
+                <li style="margin-bottom:0.5rem">Authenticate with Google OAuth</li>
+                <li style="margin-bottom:0.5rem">Select patient in the chat</li>
+              </ol>
+              <div style="margin-top:0.75rem;font-size:0.75rem;color:var(--text-muted)">
+                <strong data-sk="Funkcie" data-en="Features">Features</strong>: 78 tools, OAuth login<br>
+                <strong data-sk="Najlepšie pre" data-en="Best for">Best for</strong>: Quick document queries, second opinion analysis
+              </div>
+            </div>
+            <!-- Bearer Token -->
+            <div style="background:var(--surface);border:1px solid var(--border);border-radius:0.75rem;padding:1.25rem">
+              <div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.75rem">
+                <span style="font-size:1.25rem">&#x1F535;</span>
+                <strong style="color:var(--text);font-size:1rem" data-sk="Bearer Token (API)" data-en="Bearer Token (API)">Bearer Token (API)</strong>
+              </div>
+              <ol style="margin:0 0 0 1.25rem;padding:0;color:var(--text)">
+                <li style="margin-bottom:0.5rem" data-sk="Vygenerujte token v dashboarde (hore)" data-en="Generate token in dashboard (above)">Generate token in dashboard (above)</li>
+                <li style="margin-bottom:0.5rem" data-sk="Nastavte v MCP klientovi" data-en="Configure in your MCP client">Configure in your MCP client:</li>
+              </ol>
+              <pre style="background:var(--bg);border:1px solid var(--border);border-radius:0.5rem;padding:0.75rem;font-size:0.7rem;overflow-x:auto;margin-top:0.5rem;color:var(--text)">{
+  "mcpServers": {
+    "oncofiles": {
+      "url": "https://oncofiles.com/mcp",
+      "headers": {
+        "Authorization": "Bearer YOUR_TOKEN"
+      }
+    }
+  }
+}</pre>
+              <div style="margin-top:0.75rem;font-size:0.75rem;color:var(--text-muted)">
+                <strong data-sk="Funkcie" data-en="Features">Features</strong>: 78 tools, token-scoped to one patient<br>
+                <strong data-sk="Najlepšie pre" data-en="Best for">Best for</strong>: Claude Code, Cursor, Windsurf, custom integrations
+              </div>
+            </div>
+          </div>
+          <div style="margin-top:1rem;padding:0.75rem;background:rgba(20,184,166,0.06);border-radius:0.5rem;font-size:0.75rem;color:var(--text)">
+            <strong data-sk="Izolácia pacientov" data-en="Patient Isolation">Patient Isolation</strong>:
+            <span data-sk="Každé pripojenie je obmedzené na jedného pacienta. AI klient A nikdy nevidí dokumenty pacienta B." data-en="Each connection is scoped to one patient. AI Client A never sees Patient B's documents.">Each connection is scoped to one patient. AI Client A never sees Patient B's documents.</span>
+          </div>
+        </div>
+      </div>
+
       <!-- Manifest info -->
       <div class="sync-history" id="manifest-section">
         <h2 style="cursor:pointer" onclick="var el=document.getElementById('manifest-body');el.style.display=el.style.display==='none'?'block':'none'">GDrive Manifest <span id="manifest-status" style="font-size:0.75rem;color:var(--text-muted)"></span> <span style="font-size:0.75rem;color:var(--text-muted)" data-sk="(kliknutím rozbaliť)" data-en="(click to expand)">(kliknutím rozbaliť)</span></h2>
@@ -2404,6 +2500,11 @@
         if (analytics) renderAnalytics(analytics);
         anyOk = true;
       } catch (e) { /* optional section */ }
+      try {
+        var sched = await apiFetch('/api/schedules');
+        if (sched) renderSchedules(sched);
+        anyOk = true;
+      } catch (e) { /* optional section */ }
       hideSkeletons();
       setConnectionState(anyOk ? 'ok' : 'offline');
       if (anyOk) {
@@ -3008,6 +3109,121 @@
         }; })(d, tr);
 
         tbody.appendChild(tr);
+      });
+    }
+
+    // ── Processing Schedules (#287) ──────────────────────────────────
+    var schedFilter = 'all';
+    var schedData = null;
+
+    document.getElementById('sched-groups').addEventListener('click', function(e) {
+      if (!e.target.classList.contains('pill')) return;
+      e.target.parentElement.querySelectorAll('.pill').forEach(function(p) { p.classList.remove('active'); });
+      e.target.classList.add('active');
+      schedFilter = e.target.dataset.schedFilter;
+      if (schedData) renderSchedules(schedData);
+    });
+
+    function renderSchedules(data) {
+      schedData = data;
+      var container = document.getElementById('sched-jobs');
+      clearEl(container);
+
+      var jobs = (data.jobs || []).filter(function(j) {
+        return schedFilter === 'all' || j.group === schedFilter;
+      });
+
+      var groupColors = { sync: 'var(--accent)', pipeline: 'var(--purple)', housekeeping: '#f59e0b', infra: 'var(--text-muted)' };
+
+      jobs.forEach(function(j) {
+        var row = document.createElement('div');
+        row.style.cssText = 'display:flex;align-items:center;gap:0.75rem;padding:0.5rem 0;border-bottom:1px solid var(--border)';
+
+        // Status indicator
+        var dot = document.createElement('span');
+        dot.style.cssText = 'width:8px;height:8px;border-radius:50%;flex-shrink:0;';
+        if (j.running) { dot.style.background = 'var(--accent)'; dot.style.boxShadow = '0 0 6px var(--accent)'; }
+        else if (j.last_error && !j.last_ok) { dot.style.background = '#ef4444'; }
+        else if (j.last_ok) { dot.style.background = '#22c55e'; }
+        else { dot.style.background = 'var(--text-muted)'; }
+        row.appendChild(dot);
+
+        // Name + schedule
+        var info = document.createElement('div');
+        info.style.cssText = 'flex:1;min-width:0';
+        var nameEl = document.createElement('div');
+        nameEl.style.cssText = 'font-weight:600;color:var(--text);font-size:0.8125rem';
+        nameEl.textContent = j.name;
+        info.appendChild(nameEl);
+        var descEl = document.createElement('div');
+        descEl.style.cssText = 'font-size:0.7rem;color:var(--text-muted);margin-top:0.125rem';
+        descEl.textContent = j.desc;
+        info.appendChild(descEl);
+        row.appendChild(info);
+
+        // Schedule badge
+        var badge = document.createElement('span');
+        badge.style.cssText = 'font-size:0.7rem;padding:0.125rem 0.5rem;border-radius:1rem;background:' + (groupColors[j.group] || 'var(--text-muted)') + ';color:white;white-space:nowrap;flex-shrink:0';
+        badge.textContent = j.schedule;
+        row.appendChild(badge);
+
+        // Last run
+        var status = document.createElement('div');
+        status.style.cssText = 'text-align:right;font-size:0.7rem;color:var(--text-muted);min-width:100px;flex-shrink:0';
+        if (j.running) { status.textContent = 'Running...'; status.style.color = 'var(--accent)'; }
+        else if (j.last_ok) {
+          var ago = Math.round((Date.now() - new Date(j.last_ok + 'Z').getTime()) / 60000);
+          status.textContent = (ago < 1 ? '<1' : ago) + 'm ago';
+          if (j.last_duration_s) status.textContent += ' (' + j.last_duration_s + 's)';
+        }
+        else { status.textContent = 'Not run yet'; }
+        if (j.last_error) {
+          var errLine = document.createElement('div');
+          errLine.style.cssText = 'color:#ef4444;font-size:0.65rem;margin-top:0.125rem';
+          errLine.textContent = 'Error: ' + (j.last_error_msg || 'unknown').substring(0, 60);
+          status.appendChild(errLine);
+        }
+        row.appendChild(status);
+
+        container.appendChild(row);
+      });
+
+      // Prompt stats by call type
+      var psContainer = document.getElementById('sched-prompt-stats');
+      clearEl(psContainer);
+      var byType = data.prompt_stats ? data.prompt_stats.by_call_type || {} : {};
+      var typeLabels = {
+        'ocr': 'OCR Extraction', 'summary_tags': 'AI Summary + Tags',
+        'structured_metadata': 'Metadata Extraction', 'filename_description': 'Filename Description',
+        'email_classify': 'Email Classification', 'calendar_classify': 'Calendar Classification'
+      };
+      var maxCalls = Math.max.apply(null, Object.values(byType).map(function(v) { return v.count || 0; }).concat([1]));
+
+      Object.keys(byType).sort(function(a, b) { return (byType[b].count || 0) - (byType[a].count || 0); }).forEach(function(ct) {
+        var v = byType[ct];
+        var row = document.createElement('div');
+        row.style.cssText = 'display:flex;align-items:center;gap:0.5rem;margin-bottom:0.375rem';
+
+        var label = document.createElement('span');
+        label.style.cssText = 'width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:0.75rem;color:var(--text-muted)';
+        label.textContent = typeLabels[ct] || ct;
+        row.appendChild(label);
+
+        var barBg = document.createElement('div');
+        barBg.style.cssText = 'flex:1;height:14px;background:var(--bg);border-radius:7px;overflow:hidden';
+        var bar = document.createElement('div');
+        bar.style.cssText = 'height:100%;border-radius:7px;background:var(--purple);transition:width 0.3s';
+        bar.style.width = ((v.count / maxCalls) * 100) + '%';
+        barBg.appendChild(bar);
+        row.appendChild(barBg);
+
+        var stats = document.createElement('span');
+        stats.style.cssText = 'font-size:0.7rem;color:var(--text);min-width:120px;text-align:right;white-space:nowrap';
+        stats.textContent = v.count + ' calls · $' + (v.cost_usd || 0).toFixed(3);
+        if (v.errors > 0) stats.textContent += ' · ' + v.errors + ' err';
+        row.appendChild(stats);
+
+        psContainer.appendChild(row);
       });
     }
 
