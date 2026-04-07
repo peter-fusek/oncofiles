@@ -578,6 +578,7 @@ async def test_sync_to_gdrive_renames_to_standard(db: Database):
         gdrive_id="gd_existing",
         filename="20260227 ErikaFusekova-NOU-LabVysledkyPred2chemo[PHYSICIAN_REDACTED].pdf",
         category="labs",
+        institution="NOU",
     )
     doc = await db.insert_document(doc, patient_id=ERIKA_UUID)
 
@@ -588,7 +589,7 @@ async def test_sync_to_gdrive_renames_to_standard(db: Database):
     stats = await sync_to_gdrive(db, files, gdrive, "folder123", patient_id=ERIKA_UUID)
     assert stats.get("renamed", 0) == 1
 
-    # Verify batch_rename was called with standard format
+    # Verify batch_rename was called with standard format (uses DB institution)
     expected = "20260227_ErikaFusekova_NOU_Labs_LabVysledkyPred2chemo[PHYSICIAN_REDACTED].pdf"
     gdrive.batch_rename.assert_called_once()
     rename_arg = gdrive.batch_rename.call_args[0][0]

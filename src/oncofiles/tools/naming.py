@@ -86,6 +86,7 @@ async def rename_documents_to_standard(
                 category=doc.category.value,
                 en_description=en_desc,
                 patient_id=pid,
+                institution_override=doc.institution,
             )
 
         if new_name == doc.filename:

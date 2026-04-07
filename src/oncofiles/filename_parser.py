@@ -501,6 +501,7 @@ def rename_to_standard(
     category: DocumentCategory | str | None = None,
     en_description: str | None = None,
     patient_id: str = "",
+    institution_override: str | None = None,
 ) -> str:
     """Rename a filename to the standard format.
 
@@ -510,6 +511,7 @@ def rename_to_standard(
         filename: Current filename in any supported format.
         category: Category override. If None, infers from filename.
         en_description: English CamelCase description. If None, keeps existing description.
+        institution_override: Use this institution instead of parsing from filename.
 
     Returns the new filename in standard format (or unchanged if can't be parsed).
     """
@@ -540,8 +542,10 @@ def rename_to_standard(
 
     # Build standard filename
     date_str = parsed.document_date.strftime("%Y%m%d")
-    # Try to normalize institution; warn if still unknown
-    institution = normalize_institution(parsed.institution) or parsed.institution
+    # Use override (from DB) if provided; otherwise try to normalize from filename
+    institution = (
+        institution_override or normalize_institution(parsed.institution) or parsed.institution
+    )
     if not institution or institution == "Unknown":
         institution = "Unknown"
         logger.warning(
@@ -582,6 +586,10 @@ def is_standard_format(filename: str, patient_id: str = "") -> bool:
     after_patient = remaining[len(f"_{patient_name_compact}_") :]
     parts = after_patient.split("_", 2)  # institution, category, description
     if len(parts) < 2:
+        return False
+
+    # Reject "Unknown" institution — needs re-rename with actual institution (#280)
+    if parts[0] == "Unknown":
         return False
 
     return parts[1].lower() in _TOKEN_TO_CATEGORY

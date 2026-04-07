@@ -868,7 +868,10 @@ async def _rename_to_standard(db: Database, gdrive: GDriveClient, *, patient_id:
                 )
             else:
                 new_name = rename_to_standard(
-                    doc.filename, category=doc.category.value, patient_id=patient_id
+                    doc.filename,
+                    category=doc.category.value,
+                    patient_id=patient_id,
+                    institution_override=doc.institution,
                 )
 
             # If rename_to_standard couldn't parse (returned unchanged),
@@ -1210,29 +1213,11 @@ async def _sync_inner(
         from_stats = await sync_from_gdrive(
             db, files, gdrive, folder_id, dry_run=dry_run, enhance=enhance, patient_id=patient_id
         )
-        # Skip heavy export phases if nothing changed during import
-        # AND all docs are already standard-named (no pending renames)
-        has_changes = from_stats.get("new", 0) > 0 or from_stats.get("updated", 0) > 0
-        if not has_changes and not dry_run:
-            # Check if any docs still need renaming (e.g., after backfill added dates)
-            all_docs = await db.list_documents(limit=500, patient_id=patient_id)
-            needs_rename = any(
-                not is_standard_format(d.filename, patient_id=patient_id)
-                for d in all_docs
-                if d.gdrive_id
-            )
-            if needs_rename:
-                has_changes = True
-                logger.info(
-                    "sync: forcing full export — %d docs need rename",
-                    sum(
-                        1
-                        for d in all_docs
-                        if d.gdrive_id and not is_standard_format(d.filename, patient_id=patient_id)
-                    ),
-                )
+        # Always run full export — batch-organize is cheap (1 API call) when
+        # files are already in correct folders, but skipping it causes files to
+        # stay in wrong folders after date backfills or category changes (#278).
         to_stats = await sync_to_gdrive(
-            db, files, gdrive, folder_id, dry_run=dry_run, full=has_changes, patient_id=patient_id
+            db, files, gdrive, folder_id, dry_run=dry_run, full=True, patient_id=patient_id
         )
 
         combined = {
