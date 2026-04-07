@@ -1328,6 +1328,26 @@
         // Hide GDrive connect bar in demo
         var gdriveBar = document.getElementById('gdrive-connect-bar');
         if (gdriveBar) gdriveBar.style.display = 'none';
+        // Add signup CTA banner at bottom (#268)
+        var ctaBanner = document.createElement('div');
+        ctaBanner.id = 'demo-cta-banner';
+        ctaBanner.style.cssText = 'position:fixed;bottom:0;left:0;right:0;z-index:1000;background:var(--bg-card);border-top:1px solid var(--border);padding:0.75rem 1.5rem;display:flex;align-items:center;justify-content:center;gap:1rem;box-shadow:0 -2px 12px rgba(0,0,0,0.3)';
+        var ctaText = document.createElement('span');
+        ctaText.style.cssText = 'font-size:0.875rem;color:var(--text-dim)';
+        ctaText.setAttribute('data-sk', 'Páčilo sa vám? Začnite organizovať svoje dokumenty zadarmo');
+        ctaText.setAttribute('data-en', 'Like what you see? Start organizing your documents for free');
+        ctaText.textContent = 'Like what you see? Start organizing your documents for free';
+        var ctaBtn = document.createElement('a');
+        ctaBtn.href = '/dashboard';
+        ctaBtn.style.cssText = 'padding:0.5rem 1.25rem;background:var(--accent);color:#fff;border-radius:6px;text-decoration:none;font-size:0.8125rem;font-weight:600;white-space:nowrap';
+        ctaBtn.setAttribute('data-sk', 'Registrovať sa zadarmo');
+        ctaBtn.setAttribute('data-en', 'Sign up free');
+        ctaBtn.textContent = 'Sign up free';
+        ctaBanner.appendChild(ctaText);
+        ctaBanner.appendChild(ctaBtn);
+        document.body.appendChild(ctaBanner);
+        // Re-apply language after inserting CTA
+        if (typeof applyDashLang === 'function') applyDashLang();
         loadDemoData();
         return;
       }
