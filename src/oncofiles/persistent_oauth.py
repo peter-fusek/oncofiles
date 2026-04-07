@@ -68,9 +68,12 @@ class PersistentOAuthProvider(InMemoryOAuthProvider):
 
         # 1. Static bearer token (Oncoteam, dev)
         if self._bearer_token and hmac.compare_digest(token.encode(), self._bearer_token.encode()):
-            # Static token: resolve patient from patient_tokens table too
             if self._db:
+                # Try patient_tokens first (if static token is also a patient token)
                 pid = await self._db.resolve_patient_from_token(token)
+                if not pid:
+                    # Static bearer without patient mapping → default patient
+                    pid = await self._db.resolve_default_patient()
                 if pid:
                     _verified_patient_id.set(pid)
             return AccessToken(token=token, client_id="oncoteam", scopes=[])
