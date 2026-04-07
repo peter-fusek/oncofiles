@@ -2642,9 +2642,7 @@
           applyDashLang();
 
           // Fetch detail from API
-          apiFetch('/api/doc-detail/' + doc.id).then(function(resp) {
-            return resp.json();
-          }).then(function(data) {
+          apiFetch('/api/doc-detail/' + doc.id).then(function(data) {
             if (data.error) {
               loadingDiv.textContent = data.error;
               return;
