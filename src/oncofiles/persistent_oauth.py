@@ -6,6 +6,7 @@ Auth codes are ephemeral (5 min) and not persisted.
 
 from __future__ import annotations
 
+import contextvars
 import hmac
 import json
 import logging
@@ -21,6 +22,12 @@ if TYPE_CHECKING:
     from oncofiles.database import Database
 
 logger = logging.getLogger(__name__)
+
+# Set during verify_token so middleware can read the resolved patient_id
+# without re-resolving from session attributes that may not exist (#290).
+_verified_patient_id: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "verified_patient_id", default=""
+)
 
 
 class PersistentOAuthProvider(InMemoryOAuthProvider):
@@ -56,18 +63,35 @@ class PersistentOAuthProvider(InMemoryOAuthProvider):
     # ── Bearer token support (server-to-server) ─────────────────────────
 
     async def verify_token(self, token: str) -> AccessToken | None:
+        # Reset per-request ContextVar (#290)
+        _verified_patient_id.set("")
+
         # 1. Static bearer token (Oncoteam, dev)
         if self._bearer_token and hmac.compare_digest(token.encode(), self._bearer_token.encode()):
+            # Static token: resolve patient from patient_tokens table too
+            if self._db:
+                pid = await self._db.resolve_patient_from_token(token)
+                if pid:
+                    _verified_patient_id.set(pid)
             return AccessToken(token=token, client_id="oncoteam", scopes=[])
-        # 2. MCP OAuth tokens (in-memory, restored from DB on startup)
+        # 2. MCP OAuth tokens (in-memory, restored from DB on startup — Claude.ai, ChatGPT)
         result = await super().verify_token(token)
         if result:
+            # OAuth user → resolve default patient for now (multi-patient selection TBD)
+            if self._db:
+                try:
+                    pid = await self._db.resolve_default_patient()
+                    if pid:
+                        _verified_patient_id.set(pid)
+                except Exception:
+                    pass
             return result
         # 3. Patient bearer tokens (DB lookup — survives restarts without restore)
         if self._db:
             try:
                 patient_id = await self._db.resolve_patient_from_token(token)
                 if patient_id:
+                    _verified_patient_id.set(patient_id)
                     return AccessToken(token=token, client_id=f"patient:{patient_id}", scopes=[])
             except Exception:
                 logger.warning("Patient token lookup failed", exc_info=True)

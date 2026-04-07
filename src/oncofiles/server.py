@@ -332,6 +332,7 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict]:
             "gmail_client": gmail_client,
             "calendar_client": calendar_client,
             "job_tracker": job_tracker,
+            "transport": MCP_TRANSPORT,
         }
     finally:
         if scheduler:

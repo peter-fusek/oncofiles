@@ -67,29 +67,26 @@ class PatientResolutionMiddleware(Middleware):
             if fastmcp_ctx and hasattr(fastmcp_ctx, "request_context"):
                 db = fastmcp_ctx.request_context.lifespan_context.get("db")
                 if db:
-                    # Try to resolve from patient_tokens table
-                    session = getattr(fastmcp_ctx, "_session", None)
-                    if session and hasattr(session, "_access_token"):
-                        raw_token = session._access_token
-                        if raw_token:
-                            token_key = raw_token[:16]  # prefix for rate limiting
-                            resolved = await db.resolve_patient_from_token(raw_token)
-                            if resolved:
-                                patient_id = resolved
-                    # Fallback depends on transport mode
-                    if not patient_id:
-                        if session and hasattr(session, "_access_token"):
-                            # HTTP transport: token was present but invalid/unmapped
-                            # → do NOT serve default patient data
-                            logger.error(
-                                "HTTP token present but no patient resolved — "
-                                "refusing fallback (token=%s...)",
-                                token_key[:8],
-                            )
-                            # patient_id stays "" → tool calls will fail gracefully
-                        else:
-                            # stdio transport (dev/Claude Desktop): no token expected
+                    # Primary: read patient_id set by verify_token in PersistentOAuthProvider (#290)
+                    from oncofiles.persistent_oauth import _verified_patient_id
+
+                    verified = _verified_patient_id.get()
+                    if verified:
+                        patient_id = verified
+                        token_key = f"verified:{patient_id[:8]}"
+                    else:
+                        # Fallback: stdio transport (dev/Claude Desktop) — no token expected
+                        transport = fastmcp_ctx.request_context.lifespan_context.get(
+                            "transport", ""
+                        )
+                        if transport == "stdio":
                             patient_id = await db.resolve_default_patient()
+                        else:
+                            # HTTP transport without verified patient — refuse fallback
+                            logger.warning(
+                                "HTTP request without verified patient — "
+                                "tools will return empty results"
+                            )
         except Exception:
             logger.warning("Patient resolution failed, defaulting to empty", exc_info=True)
 
