@@ -127,9 +127,7 @@ def _find_or_create_bilingual(gdrive, en_key: str, bilingual: str, parent_id: st
     return gdrive.create_folder(bilingual, parent_id)
 
 
-def resolve_category_folder(
-    folder_map: dict[str, str], cat_name: str, root_folder_id: str
-) -> str:
+def resolve_category_folder(folder_map: dict[str, str], cat_name: str, root_folder_id: str) -> str:
     """Resolve a category name to its folder ID, falling back to 'other' — never root.
 
     When a category is missing from folder_map (e.g., legacy merged categories like
