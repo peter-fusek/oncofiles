@@ -878,6 +878,7 @@
     .integration-popover .ip-actions { margin-top:0.5rem; padding-top:0.5rem; border-top:1px solid var(--border); }
     .integration-popover .ip-actions button { font-size:0.75rem; padding:3px 8px; border-radius:3px; border:1px solid var(--border); background:var(--bg); color:var(--text); cursor:pointer; }
     .integration-popover .ip-actions button:hover { background:var(--surface); }
+    .integration-popover .ip-sync-time { font-size:0.65rem; color:var(--text-muted); margin-left:6px; }
     .skeleton {
       background: linear-gradient(90deg, var(--surface) 25%, rgba(51,65,85,0.5) 50%, var(--surface) 75%);
       background-size: 200% 100%;
@@ -952,12 +953,13 @@
             <span id="svc-cal" class="svc-badge off" title="Google Calendar" onclick="toggleIntegrationPanel()">Cal</span>
             <div id="integration-popover" class="integration-popover">
               <div class="ip-row"><span class="ip-label" data-sk="Účet" data-en="Account">Account</span><span class="ip-value" id="ip-email">—</span></div>
-              <div class="ip-row"><span class="ip-label">Drive</span><span class="ip-value"><span class="ip-status off" id="ip-drive-dot"></span><span id="ip-drive-text">—</span></span></div>
+              <div class="ip-row"><span class="ip-label">Drive</span><span class="ip-value"><span class="ip-status off" id="ip-drive-dot"></span><span id="ip-drive-text">—</span><span class="ip-sync-time" id="ip-drive-sync"></span></span></div>
               <div class="ip-row"><span class="ip-label" data-sk="Priečinok" data-en="Folder">Folder</span><span class="ip-value" id="ip-folder">—</span></div>
-              <div class="ip-row"><span class="ip-label">Gmail</span><span class="ip-value"><span class="ip-status off" id="ip-gmail-dot"></span><span id="ip-gmail-text">—</span></span></div>
-              <div class="ip-row"><span class="ip-label" data-sk="Kalendár" data-en="Calendar">Calendar</span><span class="ip-value"><span class="ip-status off" id="ip-cal-dot"></span><span id="ip-cal-text">—</span></span></div>
+              <div class="ip-row"><span class="ip-label">Gmail</span><span class="ip-value"><span class="ip-status off" id="ip-gmail-dot"></span><span id="ip-gmail-text">—</span><span class="ip-sync-time" id="ip-gmail-sync"></span></span></div>
+              <div class="ip-row"><span class="ip-label" data-sk="Kalendár" data-en="Calendar">Calendar</span><span class="ip-value"><span class="ip-status off" id="ip-cal-dot"></span><span id="ip-cal-text">—</span><span class="ip-sync-time" id="ip-cal-sync"></span></span></div>
               <div class="ip-actions">
                 <button onclick="showGdriveSetup(); toggleIntegrationPanel();" data-sk="Zmeniť priečinok" data-en="Change folder">Change folder</button>
+                <button id="ip-sync-btn" onclick="triggerManualSync()" data-sk="Synchronizovať" data-en="Sync now">Sync now</button>
               </div>
             </div>
           </span>
@@ -1056,7 +1058,10 @@
 
       <!-- Sync history -->
       <div class="sync-history">
-        <h2 data-sk="Posledné synchronizácie" data-en="Recent Syncs">Posledné synchronizácie</h2>
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:0.5rem;flex-wrap:wrap">
+          <h2 style="margin:0" data-sk="Posledné synchronizácie" data-en="Recent Syncs">Posledné synchronizácie</h2>
+          <div id="svc-sync-times" style="display:flex;gap:0.75rem;font-size:0.7rem;color:var(--text-muted)"></div>
+        </div>
         <div id="next-sync" style="font-size:0.75rem;color:var(--text-muted);margin-bottom:0.5rem"></div>
         <div id="sync-rows"><div style="padding:0.5rem 0;color:var(--text-muted);font-size:0.8125rem">Loading...</div></div>
       </div>
@@ -2126,6 +2131,33 @@
       }
     }
 
+    async function triggerManualSync() {
+      var btn = document.getElementById('ip-sync-btn');
+      if (!btn || btn.disabled) return;
+      btn.disabled = true;
+      var origText = btn.textContent;
+      btn.textContent = 'Syncing\u2026';
+      try {
+        var pid = currentPatientId || '';
+        var resp = await fetch('/api/sync-trigger', {
+          method: 'POST',
+          headers: { 'Authorization': authHeader(), 'Content-Type': 'application/json' },
+          body: JSON.stringify({ patient_id: pid })
+        });
+        if (resp.ok) {
+          btn.textContent = '\u2713';
+          setTimeout(function() { btn.textContent = origText; btn.disabled = false; refresh(); }, 1500);
+        } else {
+          var data = await resp.json();
+          btn.textContent = data.error || 'Error';
+          setTimeout(function() { btn.textContent = origText; btn.disabled = false; }, 3000);
+        }
+      } catch (e) {
+        btn.textContent = 'Error';
+        setTimeout(function() { btn.textContent = origText; btn.disabled = false; }, 3000);
+      }
+    }
+
     function wizardSkipToEnd() {
       showWizardSummary(null);
       wizardGoToStep(4);
@@ -2366,6 +2398,22 @@
       var calTxt = document.getElementById('ip-cal-text');
       if (calDot) calDot.className = 'ip-status ' + (gs.calendar ? 'on' : 'off');
       if (calTxt) calTxt.textContent = statusLabels[!!gs.calendar][lang];
+      // Per-service last sync times (#276)
+      var sst = s.service_sync_times || {};
+      ['drive','gmail','cal'].forEach(function(key) {
+        var svcKey = key === 'cal' ? 'calendar' : key;
+        var el = document.getElementById('ip-' + key + '-sync');
+        if (el) {
+          var t = sst[svcKey];
+          if (t) {
+            var d = new Date(t);
+            var hm = d.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
+            el.textContent = hm;
+          } else {
+            el.textContent = '';
+          }
+        }
+      });
       var ipFolder = document.getElementById('ip-folder');
       if (ipFolder) {
         ipFolder.textContent = '';
@@ -2399,6 +2447,22 @@
         uptimeText = days > 0 ? days + 'd ' + hours + 'h' : hours > 0 ? hours + 'h ' + mins + 'm' : mins + 'm';
       }
       document.getElementById('card-uptime').textContent = uptimeText;
+
+      // Per-service sync time badges (#276)
+      var svcTimesEl = document.getElementById('svc-sync-times');
+      if (svcTimesEl) {
+        svcTimesEl.textContent = '';
+        var sst2 = s.service_sync_times || {};
+        [['Drive','gdrive'],['Gmail','gmail'],['Cal','calendar']].forEach(function(pair) {
+          var t = sst2[pair[1]];
+          if (t) {
+            var sp = document.createElement('span');
+            var d = new Date(t);
+            sp.textContent = pair[0] + ' ' + d.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
+            svcTimesEl.appendChild(sp);
+          }
+        });
+      }
 
       // Sync history
       const syncEl = document.getElementById('sync-rows');

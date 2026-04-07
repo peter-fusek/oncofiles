@@ -350,6 +350,20 @@ _CLIENT_CACHE_TTL = 1800  # 30 min — refresh token changes invalidate sooner
 _folder_404_counts: dict[str, int] = {}
 _FOLDER_404_THRESHOLD = 3
 
+# Per-service last-sync timestamps for dashboard (#276)
+_last_service_sync: dict[str, dict[str, str | None]] = {}
+
+
+def _record_service_sync(pid: str, service: str):
+    """Record that a service sync completed for a patient."""
+    if pid not in _last_service_sync:
+        _last_service_sync[pid] = {"gdrive": None, "gmail": None, "calendar": None}
+    _last_service_sync[pid][service] = datetime.now(UTC).isoformat()
+
+
+def _get_service_sync_times(pid: str) -> dict[str, str | None]:
+    return _last_service_sync.get(pid, {"gdrive": None, "gmail": None, "calendar": None})
+
 
 def _is_folder_not_found(exc: BaseException) -> bool:
     """Check if an exception is a GDrive 404 (folder not found)."""
@@ -523,6 +537,7 @@ def _start_sync_scheduler(
                     )
                     # Sync succeeded — reset 404 counter
                     _folder_404_counts.pop(pid, None)
+                    _record_service_sync(pid, "gdrive")
                     logger.info("Sync [%s]: %s (RSS: %.1f MB)", pid, stats, get_rss_mb())
                     # Auto-enhance new docs after sync
                     from_stats = stats.get("from_gdrive", {})
@@ -1599,6 +1614,7 @@ def _start_sync_scheduler(
                     )
                     if not stats.get("skipped"):
                         logger.info("Gmail sync [%s] (%s): %s", pid, trigger, stats)
+                    _record_service_sync(pid, "gmail")
                 except TimeoutError:
                     logger.error("Gmail sync [%s] timed out after %ds", pid, gmail_sync_timeout)
                 except Exception:
@@ -1667,6 +1683,7 @@ def _start_sync_scheduler(
                     if not stats.get("skipped"):
                         logger.info("Calendar sync [%s] (%s): %s", pid, trigger, stats)
                     _last_calendar_sync_times[pid] = datetime.now(UTC).isoformat()
+                    _record_service_sync(pid, "calendar")
                 except TimeoutError:
                     logger.error(
                         "Calendar sync [%s] timed out after %ds", pid, calendar_sync_timeout
@@ -2453,6 +2470,7 @@ async def status(request: Request) -> JSONResponse:
                 "document_limit": CONF_MAX_DOCS,
                 "document_health": doc_health,
                 "google_services": google_services,
+                "service_sync_times": _get_service_sync_times(patient_id),
                 "memory_rss_mb": round(rss_mb, 1),
                 "sync_7d": {
                     "total": sync_stats.get("total_syncs", 0),
