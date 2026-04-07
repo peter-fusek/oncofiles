@@ -188,13 +188,15 @@ class OperationalMixin:
             """
             INSERT INTO oauth_tokens
                 (patient_id, provider, access_token, refresh_token, token_expiry,
-                 gdrive_folder_id, owner_email, granted_scopes, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+                 gdrive_folder_id, gdrive_folder_name, owner_email, granted_scopes, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
             ON CONFLICT(patient_id, provider) DO UPDATE SET
                 access_token = excluded.access_token,
                 refresh_token = excluded.refresh_token,
                 token_expiry = excluded.token_expiry,
                 gdrive_folder_id = excluded.gdrive_folder_id,
+                gdrive_folder_name = COALESCE(
+                    excluded.gdrive_folder_name, oauth_tokens.gdrive_folder_name),
                 owner_email = COALESCE(excluded.owner_email, oauth_tokens.owner_email),
                 granted_scopes = excluded.granted_scopes,
                 updated_at = excluded.updated_at
@@ -206,6 +208,7 @@ class OperationalMixin:
                 token.refresh_token,
                 token.token_expiry.isoformat() if token.token_expiry else None,
                 token.gdrive_folder_id,
+                token.gdrive_folder_name,
                 token.owner_email,
                 token.granted_scopes,
             ),
@@ -222,13 +225,19 @@ class OperationalMixin:
             row = await cursor.fetchone()
             return _row_to_oauth_token(row) if row else None
 
-    async def update_oauth_folder(self, patient_id: str, provider: str, folder_id: str) -> None:
-        """Set the GDrive folder ID for a user's OAuth token."""
+    async def update_oauth_folder(
+        self,
+        patient_id: str,
+        provider: str,
+        folder_id: str,
+        folder_name: str | None = None,
+    ) -> None:
+        """Set the GDrive folder ID (and optionally the display name) for a user's OAuth token."""
         await self.db.execute(
-            "UPDATE oauth_tokens SET gdrive_folder_id = ?, "
+            "UPDATE oauth_tokens SET gdrive_folder_id = ?, gdrive_folder_name = ?, "
             "updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') "
             "WHERE patient_id = ? AND provider = ?",
-            (folder_id, patient_id, provider),
+            (folder_id, folder_name, patient_id, provider),
         )
         await self.db.commit()
 

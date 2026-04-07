@@ -55,6 +55,7 @@ def _row_to_oauth_token(row: Any) -> OAuthToken:
         refresh_token=row["refresh_token"],
         token_expiry=(datetime.fromisoformat(row["token_expiry"]) if row["token_expiry"] else None),
         gdrive_folder_id=row["gdrive_folder_id"],
+        gdrive_folder_name=_safe_get(row, "gdrive_folder_name"),
         owner_email=_safe_get(row, "owner_email"),
         granted_scopes=_safe_get(row, "granted_scopes", "[]"),
         created_at=datetime.fromisoformat(row["created_at"]) if row["created_at"] else None,

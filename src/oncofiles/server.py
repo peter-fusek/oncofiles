@@ -2358,6 +2358,7 @@ async def status(request: Request) -> JSONResponse:
                     google_services["folder_id"] = (
                         oauth_token.gdrive_folder_id or lifespan_ctx.get("gdrive_folder_id") or None
                     )
+                    google_services["folder_name"] = oauth_token.gdrive_folder_name
                     google_services["owner_email"] = oauth_token.owner_email
             except Exception:
                 logger.warning("Failed to load Google services status for %s", patient_id)
@@ -3656,8 +3657,11 @@ async def api_gdrive_set_folder(request: Request) -> JSONResponse:
                 )
             return JSONResponse({"error": f"Cannot access folder: {exc}"}, status_code=400)
 
-        # Persist folder choice
-        await db_inst.update_oauth_folder(patient_id, "google", folder_id)
+        # Persist folder choice (including display name from metadata)
+        cached_folder_name = meta.get("name") if meta else None
+        await db_inst.update_oauth_folder(
+            patient_id, "google", folder_id, folder_name=cached_folder_name
+        )
 
         # Clear folder-invalid flag so sync resumes immediately
         _folder_404_counts.pop(patient_id, None)

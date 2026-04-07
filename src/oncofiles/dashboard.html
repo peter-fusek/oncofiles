@@ -2221,9 +2221,9 @@
           folderLink.href = 'https://drive.google.com/drive/folders/' + encodeURIComponent(gs.folder_id);
           folderLink.target = '_blank';
           folderLink.rel = 'noopener';
-          folderLink.title = gs.folder_id;
+          folderLink.title = gs.folder_name || gs.folder_id;
           folderLink.style.cssText = 'color:var(--accent);text-decoration:none;display:inline-flex;align-items:center;gap:0.25rem';
-          folderLink.textContent = '\uD83D\uDCC2 ' + gs.folder_id.substring(0, 12) + '\u2026';
+          folderLink.textContent = '\uD83D\uDCC2 ' + (gs.folder_name || (gs.folder_id.substring(0, 12) + '\u2026'));
           ipFolder.appendChild(folderLink);
         } else {
           ipFolder.textContent = '\u2014';

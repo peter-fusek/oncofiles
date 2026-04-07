@@ -118,6 +118,7 @@ async def gdrive_set_folder(ctx: Context, folder_id: str) -> str:
 
     # Validate folder exists and is accessible before persisting
     gdrive = await _get_gdrive(ctx)
+    meta = None
     if gdrive:
         try:
             meta = await asyncio.to_thread(
@@ -142,7 +143,10 @@ async def gdrive_set_folder(ctx: Context, folder_id: str) -> str:
                 )
             return json.dumps({"error": f"Cannot access folder: {exc}"})
 
-    await db.update_oauth_folder(pid, token.provider, folder_id)
+    # Cache folder display name from metadata (if available)
+    folder_name = meta.get("name") if gdrive and meta else None
+
+    await db.update_oauth_folder(pid, token.provider, folder_id, folder_name=folder_name)
 
     # Clear folder-invalid flag so sync resumes immediately
     from oncofiles.server import _folder_404_counts, _patient_clients_cache
