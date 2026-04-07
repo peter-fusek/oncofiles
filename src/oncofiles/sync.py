@@ -1660,27 +1660,34 @@ async def _enhance_document(
                 if dates:
                     from datetime import date as _date
 
+                    # Pick the latest valid date — most likely the exam/visit
+                    # date. Year range 1970-2030 filters out artifacts.
+                    # Using MAX avoids DOB (usually the oldest date).
+                    best_date = None
                     for d_str in dates:
                         try:
                             parsed = _date.fromisoformat(d_str)
-                            if 2020 <= parsed.year <= 2030:
-                                backfill_date = parsed.isoformat()
-                                logger.info(
-                                    "enhance: doc %d — backfill date=%s (from AI)",
-                                    doc.id,
-                                    backfill_date,
-                                )
-                                break
+                            if not (1970 <= parsed.year <= 2030):
+                                continue
+                            if best_date is None or parsed > best_date:
+                                best_date = parsed
                         except (ValueError, TypeError):
                             logger.warning(
                                 "enhance: doc %d — invalid AI date %r, skipping",
                                 doc.id,
                                 d_str,
                             )
-            elif doc.gdrive_modified_time:
+                    if best_date:
+                        backfill_date = best_date.isoformat()
+                        logger.info(
+                            "enhance: doc %d — backfill date=%s (from AI, latest)",
+                            doc.id,
+                            backfill_date,
+                        )
+            if not backfill_date and doc.gdrive_modified_time:
                 backfill_date = doc.gdrive_modified_time.strftime("%Y-%m-%d")
                 logger.info("enhance: doc %d — backfill date=%s (GDrive)", doc.id, backfill_date)
-            elif doc.created_at:
+            if not backfill_date and doc.created_at:
                 backfill_date = doc.created_at.strftime("%Y-%m-%d")
                 logger.info(
                     "enhance: doc %d — backfill date=%s (created_at)", doc.id, backfill_date
