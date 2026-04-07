@@ -40,13 +40,14 @@
     }
     .container { max-width: 1200px; margin: 0 auto; padding: 0 1rem; }
 
-    /* Header */
+    /* Header — two-row layout */
     header {
-      padding: 0.875rem 0;
+      padding: 0.5rem 1rem;
       border-bottom: 1px solid var(--border);
       display: flex;
+      flex-wrap: wrap;
       align-items: center;
-      justify-content: space-between;
+      gap: 0.5rem 1rem;
       position: sticky;
       top: 0;
       background: rgba(15, 23, 42, 0.85);
@@ -54,16 +55,23 @@
       -webkit-backdrop-filter: blur(12px);
       z-index: 50;
       margin: 0 -1rem;
-      padding-left: 1rem;
-      padding-right: 1rem;
     }
+    .header-top {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      width: 100%;
+    }
+    .header-top .logo { flex-shrink: 0; }
+    .header-top .patient-controls { flex: 1; min-width: 0; }
+    .header-top .header-account { display: flex; align-items: center; gap: 0.5rem; flex-shrink: 0; margin-left: auto; }
     .logo {
       font-family: 'DM Serif Display', Georgia, serif;
       font-size: 1.25rem;
       letter-spacing: -0.01em;
     }
     .logo span { color: var(--accent); }
-    .header-right { display: flex; align-items: center; gap: 1rem; }
+    .header-right { display: flex; align-items: center; gap: 0.75rem; width: 100%; justify-content: flex-end; padding-top: 0.125rem; }
     .version { font-size: 0.75rem; color: var(--text-muted); }
     .refresh-btn {
       background: var(--surface);
@@ -649,6 +657,8 @@
       .filename { max-width: 140px; }
       td { padding: 0.625rem 0.75rem; }
       .header-right { gap: 0.5rem; }
+      .header-top { flex-wrap: wrap; }
+      .header-account { flex-wrap: wrap; }
       .version { display: none; }
       .patient-controls { flex-wrap: wrap; gap: 0.375rem; }
       .mcp-bar { font-size: 0.6875rem; gap: 0.75rem; }
@@ -656,7 +666,7 @@
     }
     @media (max-width: 480px) {
       .cards { grid-template-columns: repeat(2, 1fr); }
-      header { flex-wrap: wrap; gap: 0.5rem; }
+      .header-top { gap: 0.375rem; }
       .logo { font-size: 1rem; }
       .filters { gap: 0.375rem; flex-wrap: wrap; }
       .pill { font-size: 0.6875rem; padding: 0.25rem 0.5rem; }
@@ -761,15 +771,25 @@
     <!-- Main dashboard (shown when authenticated) -->
     <div id="dashboard" style="display:none">
       <header>
-        <div class="logo">onco<span>files</span> <span style="color:var(--text-muted);font-weight:400;font-size:0.9375rem">dashboard</span></div>
-        <div class="patient-controls">
-          <select id="patient-select" onchange="switchPatient(this.value)">
-            <option value="">Loading...</option>
-          </select>
-          <span id="patient-diagnosis" class="patient-diagnosis"></span>
-          <button class="share-btn" onclick="showShareModal()" data-sk="Pripojiť AI" data-en="Connect AI">Pripojiť AI</button>
-          <button class="add-patient-btn" onclick="showOnboarding()" data-sk="+ Nový pacient" data-en="+ New Patient">+ Nový pacient</button>
-          <button id="archive-patient-btn" class="archive-patient-btn" onclick="togglePatientArchive()" data-sk="Archivovať" data-en="Archive">Archive</button>
+        <div class="header-top">
+          <div class="logo">onco<span>files</span> <span style="color:var(--text-muted);font-weight:400;font-size:0.9375rem">dashboard</span></div>
+          <div class="patient-controls">
+            <select id="patient-select" onchange="switchPatient(this.value)">
+              <option value="">Loading...</option>
+            </select>
+            <span id="patient-diagnosis" class="patient-diagnosis"></span>
+            <button class="share-btn" onclick="showShareModal()" data-sk="Pripojiť AI" data-en="Connect AI">Pripojiť AI</button>
+            <button class="add-patient-btn" onclick="showOnboarding()" data-sk="+ Nový pacient" data-en="+ New Patient">+ Nový pacient</button>
+            <button id="archive-patient-btn" class="archive-patient-btn" onclick="togglePatientArchive()" data-sk="Archivovať" data-en="Archive">Archive</button>
+          </div>
+          <div class="header-account">
+            <span class="user-info" id="user-info"></span>
+            <button class="logout-btn" onclick="logout()" data-sk="Odhlásiť" data-en="Sign out">Sign out</button>
+            <div class="lang-switcher" id="lang-switcher">
+              <button id="lang-btn-sk" onclick="setDashLang('sk')">SK</button>
+              <button id="lang-btn-en" onclick="setDashLang('en')">EN</button>
+            </div>
+          </div>
         </div>
         <div class="header-right">
           <span id="connection-dot" class="connection-dot loading" title="Connecting..."></span>
@@ -789,12 +809,6 @@
             </div>
           </span>
           <span class="version" id="version-label"></span>
-          <span class="user-info" id="user-info"></span>
-          <button class="logout-btn" onclick="logout()" data-sk="Odhlásiť" data-en="Sign out">Sign out</button>
-          <div class="lang-switcher" id="lang-switcher">
-            <button id="lang-btn-sk" onclick="setDashLang('sk')">SK</button>
-            <button id="lang-btn-en" onclick="setDashLang('en')">EN</button>
-          </div>
           <span id="last-refreshed" style="font-size:0.6875rem;color:var(--text-muted)"></span>
           <button class="refresh-btn" onclick="refresh()" data-sk="Obnoviť" data-en="Refresh">Refresh</button>
         </div>
@@ -2178,7 +2192,21 @@
       if (calDot) calDot.className = 'ip-status ' + (gs.calendar ? 'on' : 'off');
       if (calTxt) calTxt.textContent = statusLabels[!!gs.calendar][lang];
       var ipFolder = document.getElementById('ip-folder');
-      if (ipFolder) ipFolder.textContent = gs.folder_id ? gs.folder_id.substring(0, 12) + '…' : '—';
+      if (ipFolder) {
+        ipFolder.textContent = '';
+        if (gs.folder_id) {
+          var folderLink = document.createElement('a');
+          folderLink.href = 'https://drive.google.com/drive/folders/' + encodeURIComponent(gs.folder_id);
+          folderLink.target = '_blank';
+          folderLink.rel = 'noopener';
+          folderLink.title = gs.folder_id;
+          folderLink.style.cssText = 'color:var(--accent);text-decoration:none;display:inline-flex;align-items:center;gap:0.25rem';
+          folderLink.textContent = '\uD83D\uDCC2 ' + gs.folder_id.substring(0, 12) + '\u2026';
+          ipFolder.appendChild(folderLink);
+        } else {
+          ipFolder.textContent = '\u2014';
+        }
+      }
       // Show GDrive connect banner if no folder set for this patient
       var gdriveBar = document.getElementById('gdrive-connect-bar');
       if (gdriveBar) gdriveBar.style.display = (!gs.drive || !gs.folder_id) && !window.DEMO_MODE ? 'flex' : 'none';
