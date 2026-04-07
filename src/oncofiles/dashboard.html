@@ -915,11 +915,37 @@
   <div class="container">
     <!-- Auth gate (shown if no session) -->
     <div id="auth-gate" class="auth-gate" style="display:none">
-      <div class="logo" style="font-size:1.75rem">onco<span>files</span> <span style="color:var(--text-muted);font-weight:400;font-size:1.125rem">dashboard</span></div>
-      <p style="color:var(--text-muted);font-size:0.9375rem;margin-top:0.25rem">Sign in to view your document pipeline</p>
-      <div id="g_id_signin"></div>
-      <div id="auth-error" class="auth-error"></div>
-      <a href="/demo" style="color:var(--accent);font-size:0.8125rem;margin-top:0.5rem;text-decoration:none;opacity:0.7">Not ready to sign in? Try the demo first</a>
+      <div style="display:flex;flex-direction:column;align-items:center;gap:1.25rem;max-width:480px;text-align:center">
+        <div class="logo" style="font-size:1.75rem">onco<span>files</span> <span style="color:var(--text-muted);font-weight:400;font-size:1.125rem">dashboard</span></div>
+        <p style="color:var(--text-muted);font-size:0.9375rem;line-height:1.5" data-sk="AI-poháňaná správa zdravotných dokumentov.<br>Pripojte Google Drive, Gmail a Kalendár k Claude alebo ChatGPT." data-en="AI-powered medical document management.<br>Connect Google Drive, Gmail, and Calendar to Claude or ChatGPT.">AI-powered medical document management.<br>Connect Google Drive, Gmail, and Calendar to Claude or ChatGPT.</p>
+        <div id="g_id_signin"></div>
+        <div id="auth-error" class="auth-error"></div>
+
+        <!-- Demo showcase -->
+        <div style="width:100%;border-top:1px solid var(--border);padding-top:1.25rem;margin-top:0.25rem">
+          <a href="/demo" style="display:inline-flex;align-items:center;gap:0.5rem;padding:0.625rem 1.5rem;background:rgba(20,184,166,0.12);border:1px solid rgba(20,184,166,0.3);border-radius:8px;color:var(--accent);font-weight:600;font-size:0.9375rem;text-decoration:none;transition:background 0.2s" onmouseover="this.style.background='rgba(20,184,166,0.2)'" onmouseout="this.style.background='rgba(20,184,166,0.12)'" data-sk="&#9654; Vyskúšajte demo s reálnymi dátami" data-en="&#9654; Try the live demo with real data">&#9654; Try the live demo with real data</a>
+          <p style="color:var(--text-dim);font-size:0.75rem;margin-top:0.5rem" data-sk="Žiadna registrácia &mdash; okamžitý náhľad na 158 spracovaných dokumentov" data-en="No sign-up needed &mdash; instant preview of 158 processed documents">No sign-up needed &mdash; instant preview of 158 processed documents</p>
+        </div>
+
+        <!-- Mini feature preview -->
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:0.75rem;width:100%;margin-top:0.25rem">
+          <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:0.75rem;text-align:center">
+            <div style="font-size:1.5rem;margin-bottom:0.25rem">&#128196;</div>
+            <div style="font-size:0.75rem;font-weight:600;color:var(--text)" data-sk="OCR + AI" data-en="OCR + AI">OCR + AI</div>
+            <div style="font-size:0.625rem;color:var(--text-muted)" data-sk="Auto-extrakcia metadát" data-en="Auto-extract metadata">Auto-extract metadata</div>
+          </div>
+          <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:0.75rem;text-align:center">
+            <div style="font-size:1.5rem;margin-bottom:0.25rem">&#128200;</div>
+            <div style="font-size:0.75rem;font-weight:600;color:var(--text)" data-sk="Laby &amp; trendy" data-en="Labs &amp; trends">Labs &amp; trends</div>
+            <div style="font-size:0.625rem;color:var(--text-muted)" data-sk="Klinická inteligencia" data-en="Clinical intelligence">Clinical intelligence</div>
+          </div>
+          <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:0.75rem;text-align:center">
+            <div style="font-size:1.5rem;margin-bottom:0.25rem">&#128274;</div>
+            <div style="font-size:0.75rem;font-weight:600;color:var(--text)" data-sk="Len vaše dáta" data-en="Your data only">Your data only</div>
+            <div style="font-size:0.625rem;color:var(--text-muted)" data-sk="Žiadne zdieľanie" data-en="Private &amp; secure">Private &amp; secure</div>
+          </div>
+        </div>
+      </div>
     </div>
 
     <!-- Main dashboard (shown when authenticated) -->
