@@ -825,6 +825,8 @@ async def _build_document_matrix(
             (filter_param == "missing_ocr" and s["has_ocr"])
             or (filter_param == "missing_ai" and s["has_ai"])
             or (filter_param == "missing_metadata" and s["has_metadata"])
+            or (filter_param == "missing_date" and s["has_date"])
+            or (filter_param == "missing_institution" and s["has_institution"])
             or (filter_param == "not_synced" and s["is_synced"])
             or (filter_param == "not_renamed" and s["is_standard"])
             or (filter_param == "incomplete" and s["fully_complete"])

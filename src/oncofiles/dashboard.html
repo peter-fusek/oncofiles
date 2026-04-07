@@ -1044,6 +1044,8 @@
         <span class="pill" data-filter="missing_ocr" data-sk="Chýba OCR" data-en="Missing OCR">Chýba OCR</span>
         <span class="pill" data-filter="missing_ai" data-sk="Chýba AI" data-en="Missing AI">Chýba AI</span>
         <span class="pill" data-filter="missing_metadata" data-sk="Chýba Meta" data-en="Missing Meta">Chýba Meta</span>
+        <span class="pill" data-filter="missing_date" data-sk="Chýba dátum" data-en="Missing Date">Missing Date</span>
+        <span class="pill" data-filter="missing_institution" data-sk="Chýba inšt." data-en="Missing Inst.">Missing Inst.</span>
         <span class="pill" data-filter="not_synced" data-sk="Nesynchronizované" data-en="Not Synced">Nesynchronizované</span>
         <span class="pill" data-filter="not_renamed" data-sk="Nepremenované" data-en="Not Renamed">Nepremenované</span>
       </div>
@@ -1059,12 +1061,14 @@
               <th>OCR</th>
               <th>AI</th>
               <th>Meta</th>
+              <th data-sk="Dátum" data-en="Date">Date</th>
+              <th data-sk="Inštitúcia" data-en="Inst.">Inst.</th>
               <th>Sync</th>
               <th data-sk="Názov" data-en="Name">Názov</th>
             </tr>
           </thead>
           <tbody id="doc-tbody">
-            <tr><td colspan="8" class="table-empty">Loading...</td></tr>
+            <tr><td colspan="10" class="table-empty">Loading...</td></tr>
           </tbody>
         </table>
       </div>
@@ -1131,15 +1135,16 @@
       <!-- Usage Analytics -->
       <div class="sync-history" id="analytics-section">
         <h2 data-sk="Štatistiky" data-en="Usage Analytics">Usage Analytics</h2>
+        <div style="font-size:0.75rem;color:var(--text-muted);margin-bottom:0.5rem" id="ana-timeframe"></div>
         <div class="cards" id="analytics-cards" style="grid-template-columns:repeat(4,1fr);margin-bottom:1rem">
-          <div class="card" title="OCR + document enhancement + email/calendar classification"><div class="value" id="ana-calls">-</div><div class="label" data-sk="AI volania (30d)" data-en="AI Calls (30d)">AI volania (30d)</div></div>
+          <div class="card" title="OCR + document enhancement + email/calendar classification (all patients)"><div class="value" id="ana-calls">-</div><div class="label" data-sk="AI volania" data-en="AI Calls">AI Calls</div></div>
           <div class="card" title="Total input + output tokens sent to Claude Haiku"><div class="value" id="ana-tokens">-</div><div class="label" data-sk="Tokeny (K)" data-en="Tokens (K)">Tokeny (K)</div></div>
-          <div class="card" title="Estimated cost based on Claude Haiku pricing"><div class="value" id="ana-cost">-</div><div class="label" data-sk="Cena USD" data-en="Cost USD">Cena USD</div></div>
+          <div class="card" title="Estimated cost based on Claude Haiku pricing (all patients)"><div class="value" id="ana-cost">-</div><div class="label" data-sk="Cena USD" data-en="Cost USD">Cena USD</div></div>
           <div class="card" id="ana-error-card" title="Percentage of AI calls that returned errors"><div class="value" id="ana-errors">-</div><div class="label" data-sk="Chybovosť" data-en="Error Rate">Chybovosť</div></div>
         </div>
         <div style="display:flex;gap:1rem;flex-wrap:wrap;margin-bottom:1rem">
           <div style="flex:1;min-width:280px">
-            <div style="font-size:0.75rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.04em;margin-bottom:0.5rem" data-sk="Top nástroje (30d)" data-en="Top Tools (30d)">Top nástroje (30d)</div>
+            <div style="font-size:0.75rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.04em;margin-bottom:0.5rem" data-sk="Top nástroje" data-en="Top Tools">Top nástroje</div>
             <div id="ana-top-tools" style="font-size:0.8125rem"></div>
           </div>
           <div style="flex:1;min-width:280px">
@@ -2572,6 +2577,8 @@
         { label: 'OCR', count: summary.with_ocr || 0 },
         { label: 'AI Summary', count: summary.with_ai || 0 },
         { label: 'Metadata', count: summary.with_metadata || 0 },
+        { label: 'Date', count: summary.with_date || 0 },
+        { label: 'Institution', count: summary.with_institution || 0 },
         { label: 'Synced', count: summary.synced || 0 },
         { label: 'Named', count: summary.standard_named || 0 },
         { label: 'Complete', count: fc, complete: true }
@@ -2609,9 +2616,11 @@
             'OCR': 'Text extraction from scanned PDFs and images. Triggered by: new document import. Uses: Claude Haiku vision model for scanned docs, PyMuPDF for text PDFs.',
             'AI Summary': 'AI-generated summary and tags. Triggered by: after OCR completion. Uses: Claude Haiku with system prompt asking for medical document summary, key findings, diagnoses.',
             'Metadata': 'Structured data extraction (document_type, findings, diagnoses, medications, providers). Triggered by: after AI summary. Uses: Claude Haiku with JSON schema prompt.',
+            'Date': 'Document date extracted from content via AI or parsed from filename. Required for year-month folder organization.',
+            'Institution': 'Medical institution/provider identified from document content. Mapped via PROVIDER_TO_INSTITUTION. Required for standard filename.',
             'Synced': 'Bidirectional Google Drive sync. Files exported to organized category/year-month folders with standard naming.',
             'Named': 'Standard filename format: YYYYMMDD_PatientName_Institution_Category_Description.ext. Auto-renamed during sync.',
-            'Complete': 'All pipeline stages passed: OCR + AI Summary + Metadata + Synced + Named. The document is fully processed.'
+            'Complete': 'All pipeline stages passed: OCR + AI Summary + Metadata + Date + Institution + Synced + Named. The document is fully processed.'
           };
           var existing = document.getElementById('funnel-tooltip');
           if (existing) { existing.remove(); if (existing.dataset.stage === stage.label) return; }
@@ -2695,8 +2704,8 @@
         tdDate.textContent = d.date || '-';
         tr.appendChild(tdDate);
 
-        // Status dots: OCR, AI, Meta, Sync, Name
-        var fields = ['has_ocr', 'has_ai', 'has_metadata', 'is_synced', 'is_standard_name'];
+        // Status dots: OCR, AI, Meta, Date, Inst., Sync, Name
+        var fields = ['has_ocr', 'has_ai', 'has_metadata', 'has_date', 'has_institution', 'is_synced', 'is_standard_name'];
         fields.forEach(function(f) {
           var td = document.createElement('td');
           td.appendChild(makeDot(d[f]));
@@ -3024,6 +3033,8 @@
         'missing_ocr': total - (summary.with_ocr || 0),
         'missing_ai': total - (summary.with_ai || 0),
         'missing_metadata': total - (summary.with_metadata || 0),
+        'missing_date': total - (summary.with_date || 0),
+        'missing_institution': total - (summary.with_institution || 0),
         'not_synced': total - (summary.synced || 0),
         'not_renamed': total - (summary.standard_named || 0),
       };
@@ -3230,6 +3241,17 @@
       var t = data.tools || {};
       var pipe = data.pipeline || {};
       var lat = data.latency || {};
+
+      // Show explicit timeframe
+      var days = data.days || 30;
+      var endDate = new Date();
+      var startDate = new Date(endDate - days * 86400000);
+      var lang = window._dashLang || 'sk';
+      var tfEl = document.getElementById('ana-timeframe');
+      if (tfEl) {
+        var fmt = function(d) { return d.toLocaleDateString(lang === 'sk' ? 'sk-SK' : 'en-US', {month:'short', day:'numeric'}); };
+        tfEl.textContent = (lang === 'sk' ? 'Obdobie: ' : 'Period: ') + fmt(startDate) + ' – ' + fmt(endDate) + ' (' + days + (lang === 'sk' ? ' dní, všetci pacienti)' : ' days, all patients)');
+      }
 
       // Mini-cards
       document.getElementById('ana-calls').textContent = p.total_calls || 0;

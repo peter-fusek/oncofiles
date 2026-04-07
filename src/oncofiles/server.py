@@ -3288,13 +3288,13 @@ async def api_usage_analytics(request: Request) -> JSONResponse:
     try:
         db_inst: Database = request.app.state.fastmcp_server._lifespan_result["db"]
         days = min(int(request.query_params.get("days", "30")), 90)
-        pid = await _get_dashboard_patient_id(request)
 
-        # Sequential — Turso single-connection can't handle concurrent queries
-        prompt_stats = await db_inst.get_prompt_stats(days=days, patient_id=pid)
-        tool_stats = await db_inst.get_tool_usage_stats(days=days, patient_id=pid)
-        pipeline_stats = await db_inst.get_pipeline_stats(patient_id=pid)
-        latency = await db_inst.get_prompt_latency_percentiles(days=days, patient_id=pid)
+        # Analytics aggregate across ALL patients (system-wide view).
+        # Per-patient filtering misses unattributed calls (empty patient_id) (#283).
+        prompt_stats = await db_inst.get_prompt_stats(days=days, patient_id=None)
+        tool_stats = await db_inst.get_tool_usage_stats(days=days, patient_id=None)
+        pipeline_stats = await db_inst.get_pipeline_stats(patient_id=None)
+        latency = await db_inst.get_prompt_latency_percentiles(days=days, patient_id=None)
 
         from dataclasses import asdict
 
