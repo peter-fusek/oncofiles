@@ -1391,7 +1391,9 @@
             if (typeof google !== 'undefined' && google.accounts) {
               google.accounts.id.initialize({
                 client_id: cfg.client_id,
-                callback: handleGoogleCredential
+                callback: handleGoogleCredential,
+                ux_mode: 'popup',
+                use_fedcm_for_prompt: true
               });
               google.accounts.id.renderButton(
                 document.getElementById('g_id_signin'),
@@ -2991,9 +2993,11 @@
       });
 
       // File upload handler
-      fileInput.addEventListener('change', function() {
-        if (fileInput.files.length > 0) handleImage(fileInput.files[0]);
-      });
+      if (fileInput) {
+        fileInput.addEventListener('change', function() {
+          if (fileInput.files.length > 0) handleImage(fileInput.files[0]);
+        });
+      }
 
       fab.addEventListener('click', function() {
         overlay.style.display = 'flex';
