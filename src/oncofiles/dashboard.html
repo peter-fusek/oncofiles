@@ -1051,24 +1051,29 @@
       </div>
 
       <!-- Document table -->
+      <!-- Search -->
+      <div style="margin-bottom:0.75rem">
+        <input type="text" id="doc-search" placeholder="Search files..." data-sk-placeholder="Hľadať súbory..." data-en-placeholder="Search files..." style="width:100%;padding:0.5rem 0.75rem;border:1px solid var(--border);border-radius:0.5rem;background:var(--surface);color:var(--text);font-size:0.8125rem" oninput="renderTable()">
+      </div>
       <div class="table-wrap">
         <table id="doc-table">
           <thead>
             <tr>
               <th data-sort="filename"><span data-sk="Súbor" data-en="Filename">Súbor</span> <span class="sort-arrow"></span></th>
               <th data-sort="category"><span data-sk="Kategória" data-en="Category">Kategória</span> <span class="sort-arrow"></span></th>
+              <th data-sort="institution"><span data-sk="Inštitúcia" data-en="Institution">Institution</span> <span class="sort-arrow"></span></th>
               <th data-sort="date"><span data-sk="Dátum" data-en="Date">Dátum</span> <span class="sort-arrow"></span></th>
-              <th>OCR</th>
-              <th>AI</th>
-              <th>Meta</th>
-              <th data-sk="Dátum" data-en="Date">Date</th>
-              <th data-sk="Inštitúcia" data-en="Inst.">Inst.</th>
-              <th>Sync</th>
-              <th data-sk="Názov" data-en="Name">Názov</th>
+              <th data-sort="has_ocr">OCR <span class="sort-arrow"></span></th>
+              <th data-sort="has_ai">AI <span class="sort-arrow"></span></th>
+              <th data-sort="has_metadata">Meta <span class="sort-arrow"></span></th>
+              <th data-sort="has_date" data-sk="Dát." data-en="Date">Date <span class="sort-arrow"></span></th>
+              <th data-sort="has_institution" data-sk="Inšt." data-en="Inst.">Inst. <span class="sort-arrow"></span></th>
+              <th data-sort="is_synced">Sync <span class="sort-arrow"></span></th>
+              <th data-sort="is_standard_name" data-sk="Názov" data-en="Name">Name <span class="sort-arrow"></span></th>
             </tr>
           </thead>
           <tbody id="doc-tbody">
-            <tr><td colspan="10" class="table-empty">Loading...</td></tr>
+            <tr><td colspan="11" class="table-empty">Loading...</td></tr>
           </tbody>
         </table>
       </div>
@@ -1172,6 +1177,11 @@
             <li><strong style="color:var(--text)">agent_state</strong> &mdash; internal state (costs, scan timestamps, etc.)</li>
           </ul>
           <p>Use it for disaster recovery, auditing, or feeding data to other tools.</p>
+          <div style="display:flex;gap:0.5rem;margin-top:0.75rem">
+            <button class="copy-btn" onclick="loadManifestPreview()" data-sk="Zobraziť manifest" data-en="View Manifest">View Manifest</button>
+            <button class="copy-btn" onclick="downloadManifest()" data-sk="Stiahnuť JSON" data-en="Download JSON">Download JSON</button>
+          </div>
+          <pre id="manifest-preview" style="display:none;margin-top:0.75rem;max-height:400px;overflow:auto;background:var(--bg);border:1px solid var(--border);border-radius:0.5rem;padding:0.75rem;font-size:0.7rem;white-space:pre-wrap;word-break:break-all"></pre>
         </div>
       </div>
 
@@ -1446,6 +1456,10 @@
         } else {
           el.textContent = text;
         }
+      });
+      // Placeholder i18n for inputs
+      document.querySelectorAll('[data-sk-placeholder][data-en-placeholder]').forEach(function(el) {
+        el.placeholder = dashLang === 'sk' ? el.getAttribute('data-sk-placeholder') : el.getAttribute('data-en-placeholder');
       });
     }
 
@@ -1824,7 +1838,7 @@
         while (tbody.firstChild) tbody.removeChild(tbody.firstChild);
         var tr = document.createElement('tr');
         var td = document.createElement('td');
-        td.setAttribute('colspan', '8');
+        td.setAttribute('colspan', '11');
         td.style.textAlign = 'center';
         td.style.color = '#888';
         td.textContent = 'Loading...';
@@ -2651,21 +2665,37 @@
       var tbody = document.getElementById('doc-tbody');
       clearEl(tbody);
 
-      if (docsData.length === 0) {
+      // Text search filter
+      var searchEl = document.getElementById('doc-search');
+      var query = (searchEl ? searchEl.value : '').toLowerCase().trim();
+      var filtered = docsData;
+      if (query) {
+        filtered = docsData.filter(function(d) {
+          return (d.filename || '').toLowerCase().includes(query)
+            || (d.category || '').toLowerCase().includes(query)
+            || (d.institution || '').toLowerCase().includes(query)
+            || (d.date || '').includes(query);
+        });
+      }
+
+      if (filtered.length === 0) {
         var emptyRow = document.createElement('tr');
         var emptyTd = document.createElement('td');
-        emptyTd.setAttribute('colspan', '8');
+        emptyTd.setAttribute('colspan', '11');
         emptyTd.className = 'table-empty';
-        emptyTd.textContent = 'No documents match this filter';
+        emptyTd.textContent = query ? 'No documents match "' + query + '"' : 'No documents match this filter';
         emptyRow.appendChild(emptyTd);
         tbody.appendChild(emptyRow);
         return;
       }
 
-      // Sort
-      var sorted = docsData.slice().sort(function(a, b) {
-        var va = a[sortCol] || '';
-        var vb = b[sortCol] || '';
+      // Sort (booleans: false < true so problems sort first in ascending)
+      var sorted = filtered.slice().sort(function(a, b) {
+        var va = a[sortCol];
+        var vb = b[sortCol];
+        if (va == null) va = '';
+        if (vb == null) vb = '';
+        if (typeof va === 'boolean') { va = va ? 1 : 0; vb = vb ? 1 : 0; }
         if (typeof va === 'string') va = va.toLowerCase();
         if (typeof vb === 'string') vb = vb.toLowerCase();
         if (va < vb) return sortAsc ? -1 : 1;
@@ -2699,6 +2729,12 @@
         tdCat.appendChild(badge);
         tr.appendChild(tdCat);
 
+        // Institution
+        var tdInst = document.createElement('td');
+        tdInst.textContent = d.institution || '-';
+        tdInst.style.fontSize = '0.75rem';
+        tr.appendChild(tdInst);
+
         // Date
         var tdDate = document.createElement('td');
         tdDate.textContent = d.date || '-';
@@ -2724,7 +2760,7 @@
           var detailRow = document.createElement('tr');
           detailRow.className = 'doc-detail-row';
           var detailTd = document.createElement('td');
-          detailTd.setAttribute('colspan', '8');
+          detailTd.setAttribute('colspan', '11');
           detailTd.style.cssText = 'padding:0.5rem;background:rgba(20,184,166,0.04)';
 
           // Show loading state
@@ -2973,6 +3009,40 @@
 
         tbody.appendChild(tr);
       });
+    }
+
+    async function loadManifestPreview() {
+      var pre = document.getElementById('manifest-preview');
+      pre.style.display = 'block';
+      pre.textContent = 'Loading manifest...';
+      try {
+        var data = await apiFetch('/api/manifest');
+        var summary = {
+          documents: (data.documents || []).length,
+          treatment_events: (data.treatment_events || []).length,
+          conversation_entries: (data.conversation_entries || []).length,
+          research_entries: (data.research_entries || []).length,
+          generated_at: data.generated_at
+        };
+        pre.textContent = JSON.stringify(summary, null, 2) + '\n\n// Full manifest: ' + JSON.stringify(data).length + ' bytes\n// Use "Download JSON" for the complete file';
+      } catch (e) {
+        pre.textContent = 'Error: ' + e.message;
+      }
+    }
+
+    async function downloadManifest() {
+      try {
+        var data = await apiFetch('/api/manifest');
+        var blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+        var url = URL.createObjectURL(blob);
+        var a = document.createElement('a');
+        a.href = url;
+        a.download = '_manifest.json';
+        a.click();
+        URL.revokeObjectURL(url);
+      } catch (e) {
+        alert('Failed to download manifest: ' + e.message);
+      }
     }
 
     function renderRemedies(summary) {

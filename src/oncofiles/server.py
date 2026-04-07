@@ -3278,6 +3278,26 @@ async def api_prompt_log(request: Request) -> JSONResponse:
         return JSONResponse({"error": "internal error"}, status_code=500)
 
 
+@mcp.custom_route("/api/manifest", methods=["GET"])
+async def api_manifest(request: Request) -> JSONResponse:
+    """Return the manifest JSON for the current patient. Requires auth."""
+    err = _check_dashboard_auth(request)
+    if err:
+        return err
+
+    try:
+        from oncofiles.manifest import export_manifest, render_manifest_json
+
+        db_inst: Database = request.app.state.fastmcp_server._lifespan_result["db"]
+        pid = await _get_dashboard_patient_id(request)
+        manifest = await export_manifest(db_inst, patient_id=pid)
+        manifest_json = render_manifest_json(manifest)
+        return JSONResponse(json.loads(manifest_json))
+    except Exception:
+        logger.exception("API manifest endpoint error")
+        return JSONResponse({"error": "internal error"}, status_code=500)
+
+
 @mcp.custom_route("/api/usage-analytics", methods=["GET"])
 async def api_usage_analytics(request: Request) -> JSONResponse:
     """Usage analytics: prompt stats, tool usage, pipeline health, latency."""
