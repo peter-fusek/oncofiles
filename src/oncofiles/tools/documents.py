@@ -542,7 +542,11 @@ async def update_document_category(ctx: Context, doc_id: int, category: str) -> 
                     from oncofiles.tools.hygiene import _move_doc_to_correct_folder
 
                     await _move_doc_to_correct_folder(
-                        gdrive, updated_doc, valid_category.value, folder_id
+                        gdrive,
+                        updated_doc,
+                        valid_category.value,
+                        folder_id,
+                        patient_id=_get_patient_id(),
                     )
                     gdrive_moved = True
         except Exception:

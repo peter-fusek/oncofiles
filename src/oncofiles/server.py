@@ -1142,8 +1142,78 @@ def _start_sync_scheduler(
                     except Exception:
                         logger.warning("Failed to move root file '%s'", rf["name"], exc_info=True)
 
+            # Phase 0d: Re-home files from stray root-level folders (#277)
+            # Stray folders are direct children of root that aren't known categories
+            # (e.g., year folders "2025-03" created by pre-fix code).
+            root_folders_raw = await asyncio.to_thread(
+                lambda: (
+                    p_gdrive._service.files()
+                    .list(
+                        q=(
+                            f"'{folder_id}' in parents"
+                            " and mimeType = 'application/vnd.google-apps.folder'"
+                            " and trashed = false"
+                        ),
+                        fields="files(id, name)",
+                        pageSize=100,
+                    )
+                    .execute()
+                )
+            )
+            # Build set of known category/metadata folder IDs
+            known_cat_ids: dict[str, str] = {}  # {folder_id: en_key}
+            for rf in root_folders_raw.get("files", []):
+                en = en_key_from_folder_name(rf["name"])
+                if en:
+                    known_cat_ids[rf["id"]] = rf["name"]
+
+            if other_folder_id:
+                for rf in root_folders_raw.get("files", []):
+                    if rf["id"] in known_cat_ids:
+                        continue  # Known category folder — skip
+                    # Stray folder — move its files to 'other', then trash if empty
+                    try:
+                        stray_contents = await asyncio.to_thread(
+                            lambda sid=rf["id"]: (
+                                p_gdrive._service.files()
+                                .list(
+                                    q=f"'{sid}' in parents and trashed = false",
+                                    fields="files(id, name)",
+                                    pageSize=200,
+                                )
+                                .execute()
+                            )
+                        )
+                        stray_files = stray_contents.get("files", [])
+                        for sf in stray_files:
+                            await asyncio.to_thread(p_gdrive.move_file, sf["id"], other_folder_id)
+                            logger.info(
+                                "Moved '%s' from stray folder '%s' → other/ [%s]",
+                                sf["name"],
+                                rf["name"],
+                                pid,
+                            )
+                            cleaned += 1
+                        # Trash the stray folder (now empty or was already empty)
+                        await asyncio.to_thread(p_gdrive.trash_file, rf["id"])
+                        cleaned += 1
+                        logger.info(
+                            "Trashed stray root folder '%s' [%s]",
+                            rf["name"],
+                            pid,
+                        )
+                    except Exception:
+                        logger.warning(
+                            "Failed to clean stray folder '%s' [%s]",
+                            rf["name"],
+                            pid,
+                            exc_info=True,
+                        )
+
             # For each category folder, check subfolders
-            for cat_folder_id, cat_name in folder_map.items():
+            # Only iterate known category folders (direct children of root),
+            # NOT the full recursive folder_map which includes year-month subfolders (#277)
+            for cat_folder_id, cat_name in known_cat_ids.items():
                 try:
                     sub_folders_raw = await asyncio.to_thread(
                         lambda fid=cat_folder_id: (

@@ -343,7 +343,11 @@ async def validate_categories(
                         folder_id = _get_sync_folder_id(ctx)
                         if folder_id:
                             await _move_doc_to_correct_folder(
-                                gdrive, doc, expected_category, folder_id
+                                gdrive,
+                                doc,
+                                expected_category,
+                                folder_id,
+                                patient_id=_get_patient_id(),
                             )
                     except Exception:
                         logger.warning(
@@ -398,7 +402,13 @@ async def validate_categories(
                     try:
                         folder_id = _get_sync_folder_id(ctx)
                         if folder_id:
-                            await _move_doc_to_correct_folder(gdrive, doc, "reference", folder_id)
+                            await _move_doc_to_correct_folder(
+                                gdrive,
+                                doc,
+                                "reference",
+                                folder_id,
+                                patient_id=_get_patient_id(),
+                            )
                     except Exception:
                         logger.warning("Failed to move %s in GDrive", doc.filename, exc_info=True)
                 entry["action"] = "corrected"
@@ -428,7 +438,13 @@ async def validate_categories(
                     try:
                         folder_id = _get_sync_folder_id(ctx)
                         if folder_id:
-                            await _move_doc_to_correct_folder(gdrive, doc, "genetics", folder_id)
+                            await _move_doc_to_correct_folder(
+                                gdrive,
+                                doc,
+                                "genetics",
+                                folder_id,
+                                patient_id=_get_patient_id(),
+                            )
                     except Exception:
                         logger.warning("Failed to move %s in GDrive", doc.filename, exc_info=True)
                 entry["action"] = "corrected"
@@ -529,7 +545,7 @@ def _move_folder_contents(gdrive, source_folder_id: str, target_folder_id: str) 
 
 
 async def _move_doc_to_correct_folder(
-    gdrive, doc, target_category: str, root_folder_id: str
+    gdrive, doc, target_category: str, root_folder_id: str, *, patient_id: str | None = None
 ) -> None:
     """Move a document's GDrive file to the correct category/year-month folder."""
     from oncofiles.gdrive_folders import (
@@ -539,7 +555,14 @@ async def _move_doc_to_correct_folder(
         resolve_category_folder,
     )
 
-    folder_map = await asyncio.to_thread(ensure_folder_structure, gdrive, root_folder_id)
+    pt = "oncology"
+    if patient_id:
+        from oncofiles.patient_context import get_context
+
+        pt = get_context(patient_id).get("patient_type", "oncology")
+    folder_map = await asyncio.to_thread(
+        ensure_folder_structure, gdrive, root_folder_id, patient_type=pt
+    )
 
     cat_name, year_month = get_category_folder_path(
         target_category,
