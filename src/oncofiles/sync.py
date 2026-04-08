@@ -1065,7 +1065,6 @@ async def _export_metadata(
     # 2. Export conversation monthly logs
     conversations_folder = folder_map.get("conversations")
     if conversations_folder:
-        conv_listing = folder_listings.get(conversations_folder)
         entries = await db.get_conversation_timeline(limit=200, patient_id=patient_id)
         by_month = group_conversations_by_month(entries)
         for month_key, month_entries in by_month.items():
@@ -1080,13 +1079,12 @@ async def _export_metadata(
                     md_content,
                     conversations_folder,
                     "text/markdown",
-                    conv_listing,
+                    folder_listings.get(conversations_folder),
                 )
 
     # 3. Export treatment timeline
     treatment_folder = folder_map.get("treatment")
     if treatment_folder:
-        treat_listing = folder_listings.get(treatment_folder)
         events = await db.get_treatment_events_timeline(limit=200, patient_id=patient_id)
         for lang in langs:
             md_content = render_treatment_timeline(events, lang=lang)
@@ -1099,13 +1097,12 @@ async def _export_metadata(
                 md_content,
                 treatment_folder,
                 "text/markdown",
-                treat_listing,
+                folder_listings.get(treatment_folder),
             )
 
     # 4. Export research library
     research_folder = folder_map.get("research")
     if research_folder:
-        research_listing = folder_listings.get(research_folder)
         entries = await db.list_research_entries(limit=200, patient_id=patient_id)
         for lang in langs:
             md_content = render_research_library(entries, lang=lang)
@@ -1118,7 +1115,7 @@ async def _export_metadata(
                 md_content,
                 research_folder,
                 "text/markdown",
-                research_listing,
+                folder_listings.get(research_folder),
             )
 
 
@@ -1146,12 +1143,16 @@ def _upload_or_update_text(
         if f["name"] == filename:
             gdrive.update(f["id"], content_bytes, mime_type)
             return
-    gdrive.upload(
+    result = gdrive.upload(
         filename=filename,
         content_bytes=content_bytes,
         mime_type=mime_type,
         folder_id=folder_id,
     )
+    # Keep shared listing fresh so subsequent calls in the same batch
+    # see the new file and update instead of creating duplicates (#309).
+    if folder_listing is not None and result:
+        folder_listing.append({"id": result["id"], "name": filename})
 
 
 # ── Unified bidirectional sync ────────────────────────────────────────────
