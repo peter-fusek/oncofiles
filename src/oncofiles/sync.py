@@ -59,6 +59,8 @@ _SYNC_LOCK_TIMEOUT = 600  # 10 minutes
 _last_sync_result: dict[str, dict] = {}
 _last_sync_error: dict[str, str | None] = {}
 _last_sync_time: dict[str, float] = {}
+_sync_cycle_count: dict[str, int] = {}  # Per-patient cycle counter for full sync
+_FULL_SYNC_EVERY_N = 6  # Run full sync every 6th cycle (every 30 min at 5-min interval)
 
 SUPPORTED_EXTENSIONS = {".pdf", ".jpg", ".jpeg", ".png", ".xlsx", ".xls"}
 SKIP_EXTENSIONS = {".gdoc", ".ds_store"}
@@ -1037,6 +1039,16 @@ async def _export_metadata(
     if needs_secondary():
         langs.append(preferred_lang())
 
+    # Pre-fetch folder listings once per target folder to avoid repeated
+    # list_folder API calls in _upload_or_update_text (#309).
+    folder_listings: dict[str, list[dict]] = {}
+    for key in ("conversations", "treatment", "research"):
+        fid = folder_map.get(key)
+        if fid:
+            folder_listings[fid] = await asyncio.to_thread(gdrive.list_folder, fid, recursive=False)
+    root_listing = await asyncio.to_thread(gdrive.list_folder, root_folder_id, recursive=False)
+    folder_listings[root_folder_id] = root_listing
+
     # 1. Export _manifest.json to root (it's a catalogue/index — root is correct)
     manifest = await export_manifest(db, patient_id=patient_id)
     manifest_json = render_manifest_json(manifest)
@@ -1047,11 +1059,13 @@ async def _export_metadata(
         manifest_json,
         root_folder_id,
         "application/json",
+        folder_listings.get(root_folder_id),
     )
 
     # 2. Export conversation monthly logs
     conversations_folder = folder_map.get("conversations")
     if conversations_folder:
+        conv_listing = folder_listings.get(conversations_folder)
         entries = await db.get_conversation_timeline(limit=200, patient_id=patient_id)
         by_month = group_conversations_by_month(entries)
         for month_key, month_entries in by_month.items():
@@ -1066,11 +1080,13 @@ async def _export_metadata(
                     md_content,
                     conversations_folder,
                     "text/markdown",
+                    conv_listing,
                 )
 
     # 3. Export treatment timeline
     treatment_folder = folder_map.get("treatment")
     if treatment_folder:
+        treat_listing = folder_listings.get(treatment_folder)
         events = await db.get_treatment_events_timeline(limit=200, patient_id=patient_id)
         for lang in langs:
             md_content = render_treatment_timeline(events, lang=lang)
@@ -1083,11 +1099,13 @@ async def _export_metadata(
                 md_content,
                 treatment_folder,
                 "text/markdown",
+                treat_listing,
             )
 
     # 4. Export research library
     research_folder = folder_map.get("research")
     if research_folder:
+        research_listing = folder_listings.get(research_folder)
         entries = await db.list_research_entries(limit=200, patient_id=patient_id)
         for lang in langs:
             md_content = render_research_library(entries, lang=lang)
@@ -1100,6 +1118,7 @@ async def _export_metadata(
                 md_content,
                 research_folder,
                 "text/markdown",
+                research_listing,
             )
 
 
@@ -1109,11 +1128,20 @@ def _upload_or_update_text(
     content: str,
     folder_id: str,
     mime_type: str,
+    folder_listing: list[dict] | None = None,
 ) -> None:
-    """Upload a text file, or update it if it already exists in the folder."""
+    """Upload a text file, or update it if it already exists in the folder.
+
+    If *folder_listing* is provided, uses it instead of calling list_folder
+    (saves one API call per file — significant when exporting multiple files
+    to the same folder, see #309).
+    """
     content_bytes = content.encode("utf-8")
-    # Search for existing file
-    existing_files = gdrive.list_folder(folder_id, recursive=False)
+    existing_files = (
+        folder_listing
+        if folder_listing is not None
+        else gdrive.list_folder(folder_id, recursive=False)
+    )
     for f in existing_files:
         if f["name"] == filename:
             gdrive.update(f["id"], content_bytes, mime_type)
@@ -1213,11 +1241,16 @@ async def _sync_inner(
         from_stats = await sync_from_gdrive(
             db, files, gdrive, folder_id, dry_run=dry_run, enhance=enhance, patient_id=patient_id
         )
-        # Always run full export — batch-organize is cheap (1 API call) when
-        # files are already in correct folders, but skipping it causes files to
-        # stay in wrong folders after date backfills or category changes (#278).
+        # Determine whether heavy phases are needed (#309: full=True every cycle
+        # caused 357 MB/hour RSS growth).  Run full sync when:
+        # (a) new or updated imports detected, OR
+        # (b) every Nth cycle as safety net for date backfills / category changes (#278).
+        has_changes = from_stats.get("new", 0) > 0 or from_stats.get("updated", 0) > 0
+        cycle = _sync_cycle_count.get(patient_id, 0) + 1
+        _sync_cycle_count[patient_id] = cycle
+        run_full = has_changes or (cycle % _FULL_SYNC_EVERY_N == 0)
         to_stats = await sync_to_gdrive(
-            db, files, gdrive, folder_id, dry_run=dry_run, full=True, patient_id=patient_id
+            db, files, gdrive, folder_id, dry_run=dry_run, full=run_full, patient_id=patient_id
         )
 
         combined = {
