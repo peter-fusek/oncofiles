@@ -933,7 +933,12 @@
         <div id="auth-error" class="auth-error"></div>
 
         <!-- Demo showcase -->
-        <div style="width:100%;border-top:1px solid var(--border);padding-top:1.25rem;margin-top:0.25rem">
+        <div style="display:flex;align-items:center;gap:1rem;width:100%;margin-top:0.25rem">
+          <div style="flex:1;height:1px;background:var(--border)"></div>
+          <span style="color:var(--text-muted);font-size:0.75rem;font-weight:600;letter-spacing:0.05em" data-sk="ALEBO" data-en="OR">OR</span>
+          <div style="flex:1;height:1px;background:var(--border)"></div>
+        </div>
+        <div style="width:100%;padding-top:1rem">
           <a href="/demo" style="display:inline-flex;align-items:center;gap:0.5rem;padding:0.625rem 1.5rem;background:rgba(20,184,166,0.12);border:1px solid rgba(20,184,166,0.3);border-radius:8px;color:var(--accent);font-weight:600;font-size:0.9375rem;text-decoration:none;transition:background 0.2s" onmouseover="this.style.background='rgba(20,184,166,0.2)'" onmouseout="this.style.background='rgba(20,184,166,0.12)'" data-sk="&#9654; Vyskúšajte demo s reálnymi dátami" data-en="&#9654; Try the live demo with real data">&#9654; Try the live demo with real data</a>
           <p style="color:var(--text-dim);font-size:0.75rem;margin-top:0.5rem" data-sk="Žiadna registrácia &mdash; okamžitý náhľad na 158 spracovaných dokumentov" data-en="No sign-up needed &mdash; instant preview of 158 processed documents">No sign-up needed &mdash; instant preview of 158 processed documents</p>
         </div>
@@ -1176,7 +1181,7 @@
 
       <!-- Processing Schedules (#287) -->
       <div class="sync-history" id="schedules-section">
-        <h2 style="cursor:pointer" onclick="var el=document.getElementById('schedules-body');el.style.display=el.style.display==='none'?'block':'none'" data-sk="Spracovanie" data-en="Processing Schedules">Processing Schedules <span style="font-size:0.75rem;color:var(--text-muted)" data-sk="(kliknutím rozbaliť)" data-en="(click to expand)">(click to expand)</span></h2>
+        <h2 style="cursor:pointer" onclick="toggleSection('schedules-body',this)" data-sk="Spracovanie" data-en="Processing Schedules">Processing Schedules <span class="chevron" style="font-size:0.75rem;transition:transform 0.2s;display:inline-block">&#9654;</span></h2>
         <div id="schedules-body" style="display:none;margin-top:0.75rem">
           <!-- Job groups -->
           <div id="sched-groups" style="display:flex;gap:0.5rem;margin-bottom:0.75rem;flex-wrap:wrap">
@@ -1197,7 +1202,7 @@
 
       <!-- MCP Client Setup (#288) -->
       <div class="sync-history" id="mcp-setup-section">
-        <h2 style="cursor:pointer" onclick="var el=document.getElementById('mcp-setup-body');el.style.display=el.style.display==='none'?'block':'none'" data-sk="Nastavenie MCP" data-en="MCP Client Setup">MCP Client Setup <span style="font-size:0.75rem;color:var(--text-muted)" data-sk="(kliknutím rozbaliť)" data-en="(click to expand)">(click to expand)</span></h2>
+        <h2 style="cursor:pointer" onclick="toggleSection('mcp-setup-body',this)" data-sk="Nastavenie MCP" data-en="MCP Client Setup">MCP Client Setup <span class="chevron" style="font-size:0.75rem;transition:transform 0.2s;display:inline-block">&#9654;</span></h2>
         <div id="mcp-setup-body" style="display:none;font-size:0.8125rem;color:var(--text-muted);line-height:1.7;margin-top:0.5rem">
           <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:1.5rem">
             <!-- Claude.ai -->
@@ -1272,7 +1277,7 @@
 
       <!-- Manifest info -->
       <div class="sync-history" id="manifest-section">
-        <h2 style="cursor:pointer" onclick="var el=document.getElementById('manifest-body');el.style.display=el.style.display==='none'?'block':'none'">GDrive Manifest <span id="manifest-status" style="font-size:0.75rem;color:var(--text-muted)"></span> <span style="font-size:0.75rem;color:var(--text-muted)" data-sk="(kliknutím rozbaliť)" data-en="(click to expand)">(kliknutím rozbaliť)</span></h2>
+        <h2 style="cursor:pointer" onclick="toggleSection('manifest-body',this)">GDrive Manifest <span id="manifest-status" style="font-size:0.75rem;color:var(--text-muted)"></span> <span class="chevron" style="font-size:0.75rem;transition:transform 0.2s;display:inline-block">&#9654;</span></h2>
         <div id="manifest-body" style="display:none;font-size:0.8125rem;color:var(--text-muted);line-height:1.7;margin-top:0.5rem">
           <div id="manifest-live" style="margin-bottom:0.75rem"></div>
           <p><code style="background:var(--surface);padding:0.125rem 0.375rem;border-radius:3px;font-size:0.75rem">_manifest.json</code> is exported every 5 minutes to your GDrive sync folder root. Contents:</p>
@@ -1515,6 +1520,14 @@
     /* All data rendered via safe DOM methods — textContent for strings, createElement for structure.
        The esc() helper is used only as a safety net for the few cases where we build HTML strings
        from our own authenticated API responses (numeric/boolean fields). */
+
+    function toggleSection(bodyId, headerEl) {
+      var el = document.getElementById(bodyId);
+      var expanded = el.style.display !== 'none';
+      el.style.display = expanded ? 'none' : 'block';
+      var chevron = headerEl.querySelector('.chevron');
+      if (chevron) chevron.style.transform = expanded ? '' : 'rotate(90deg)';
+    }
 
     let authMode = '';  // 'bearer' or 'session'
     let TOKEN = '';     // bearer token or session token
