@@ -1523,6 +1523,7 @@
 
     function toggleSection(bodyId, headerEl) {
       var el = document.getElementById(bodyId);
+      if (!el) return;
       var expanded = el.style.display !== 'none';
       el.style.display = expanded ? 'none' : 'block';
       var chevron = headerEl.querySelector('.chevron');
@@ -1701,6 +1702,7 @@
       showSkeletons();
       try {
         var resp = await fetch('/api/demo-data');
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
         var data = await resp.json();
         renderStatus(data.status);
         renderDocs(data.documents);
@@ -1730,6 +1732,7 @@
           }
         }, 1500);
       } catch (e) {
+        console.error('Demo data load failed:', e);
         setConnectionState('error');
         showError('Failed to load demo data');
       }
@@ -2575,17 +2578,17 @@
         var recon = await apiFetch('/api/reconciliation');
         if (recon) renderReconciliation(recon);
         anyOk = true;
-      } catch (e) { /* optional section */ }
+      } catch (e) { console.warn('Reconciliation fetch failed:', e); }
       try {
         var analytics = await apiFetch('/api/usage-analytics');
         if (analytics) renderAnalytics(analytics);
         anyOk = true;
-      } catch (e) { /* optional section */ }
+      } catch (e) { console.warn('Analytics fetch failed:', e); }
       try {
         var sched = await apiFetch('/api/schedules');
         if (sched) renderSchedules(sched);
         anyOk = true;
-      } catch (e) { /* optional section */ }
+      } catch (e) { console.warn('Schedules fetch failed:', e); }
       hideSkeletons();
       setConnectionState(anyOk ? 'ok' : 'offline');
       if (anyOk) {

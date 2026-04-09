@@ -1511,7 +1511,7 @@
         var el = document.querySelector('[data-stat="'+k+'"]');
         if(el) el.textContent = m[k];
       });
-    }).catch(function(){});
+    }).catch(function(e){ console.warn('Stats fetch failed:', e); });
 
     // SK/EN language toggle
     (function() {
