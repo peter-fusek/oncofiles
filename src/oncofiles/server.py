@@ -479,7 +479,7 @@ def _start_sync_scheduler(
     _last_calendar_sync_times: dict[str, str] = {}
 
     async def _get_patient_gdrive(pid: str) -> tuple | None:
-        """Get GDrive client + folder_id for a patient. Uses shared lifespan clients for primary patient."""
+        """Get GDrive client + folder_id for a patient."""
         if pid == primary_uuid and gdrive and oauth_folder_id:
             return (gdrive, _get_sync_folder_id_from(oauth_folder_id))
         clients = await _create_patient_clients(db, pid)
