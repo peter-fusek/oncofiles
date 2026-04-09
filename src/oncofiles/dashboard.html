@@ -1712,10 +1712,55 @@
         setConnectionState('ok');
         hideSkeletons();
         document.getElementById('version-label').textContent = 'v' + data.status.version + ' demo';
+        // Auto-expand first document to showcase OCR + metadata
+        setTimeout(function() {
+          var firstRow = document.querySelector('#doc-table tbody tr');
+          if (firstRow) firstRow.click();
+        }, 500);
       } catch (e) {
         setConnectionState('error');
         showError('Failed to load demo data');
       }
+    }
+
+    /** Sample doc detail for demo mode — shows OCR and metadata without API call. */
+    function getDemoDocDetail(doc) {
+      var demoDetails = {
+        1: {
+          filename: '20260315_Patient_NOU_Labs_BloodCount.pdf',
+          category: 'labs', date: '2026-03-15', institution: 'NOU',
+          gdrive_url: null, preview_url: null,
+          ai_summary: 'Complete blood count before cycle 5 mFOLFOX6. WBC 4.2, HGB 112 g/L (mild anemia), PLT 268, ANC 2.1. Liver enzymes stable. CEA trending down from 18.4 to 12.1 — favorable response.',
+          ai_tags: ['CBC', 'pre-chemo', 'mFOLFOX6', 'CEA declining', 'mild anemia'],
+          metadata: { diagnosis: 'C18.7 — mCRC', treatment: 'mFOLFOX6 cycle 5', provider: 'Národný onkologický ústav' },
+          pages: [
+            { page_number: 1, char_count: 1842, text: 'NÁRODNÝ ONKOLOGICKÝ ÚSTAV\nKlenová 1, 833 10 Bratislava\n\nLABORATÓRNY NÁLEZ\nDátum: 15.03.2026\nPacient: [REDACTED]\n\nKRVNÝ OBRAZ:\nWBC: 4.2 x10^9/L (ref: 4.0-10.0)\nRBC: 3.89 x10^12/L (ref: 3.80-5.20)\nHGB: 112 g/L (ref: 120-160) ↓\nHCT: 0.34 L/L (ref: 0.35-0.47) ↓\nPLT: 268 x10^9/L (ref: 150-400)\nANC: 2.1 x10^9/L\n\nBIOCHÉMIA:\nALT: 0.45 µkat/L (ref: 0.10-0.83)\nAST: 0.52 µkat/L (ref: 0.10-0.72)\nGGT: 0.89 µkat/L (ref: 0.10-1.00)\nKreatinín: 78 µmol/L (ref: 53-115)\n\nNÁDOROVÉ MARKERY:\nCEA: 12.1 ng/mL (ref: <5.0) ↑\nCA 19-9: 28.4 U/mL (ref: <37.0)\n\nZáver: Mierna anémia, neutrofily v norme — pacient spôsobilý na chemoterapiu.' }
+          ]
+        },
+        3: {
+          filename: '20260301_Patient_NOU_Pathology_ColonBiopsy.pdf',
+          category: 'pathology', date: '2026-03-01', institution: 'NOU',
+          gdrive_url: null, preview_url: null,
+          ai_summary: 'Pathology report confirming adenocarcinoma G3, sigmoid colon. KRAS G12D mutation detected. MSS/pMMR. BRAF wild-type.',
+          ai_tags: ['adenocarcinoma', 'G3', 'KRAS G12D', 'MSS', 'pMMR', 'BRAF WT'],
+          metadata: { diagnosis: 'C18.7 — adenocarcinoma sigmoid', biomarkers: 'KRAS G12D, MSS, BRAF WT', provider: 'Národný onkologický ústav' },
+          pages: [
+            { page_number: 1, char_count: 2156, text: 'NÁRODNÝ ONKOLOGICKÝ ÚSTAV\nÚstav patológie\n\nHISTOPATOLOGICKÝ NÁLEZ\nDátum: 01.03.2026\n\nMateriál: Biopsia colon sigmoideum\nDiagnóza: Adenokarcinóm, grade 3 (G3)\nLokalizácia: Colon sigmoideum\n\nMikroskopický nález:\nInvazívny adenokarcinóm s tubulárnym a kribriformným usporiadaním.\nVýrazná jadrová atypia, vysoká mitotická aktivita.\n\nMolekulárna genetika:\nKRAS: mutácia G12D detegovaná\nNRAS: wild-type\nBRAF V600E: wild-type\nMMR/MSI: pMMR / MSS (stabilný)\n\nZáver: Adenokarcinóm hrubého čreva G3, KRAS G12D pozitívny.' }
+          ]
+        }
+      };
+      var detail = demoDetails[doc.id];
+      if (detail) return detail;
+      // Generic fallback for other demo docs
+      return {
+        filename: doc.filename, category: doc.category || 'other',
+        date: doc.date, institution: doc.institution || 'Hospital',
+        gdrive_url: null, preview_url: null,
+        ai_summary: 'AI-extracted summary of medical document. Categories, dates, and institutions are automatically detected from OCR text.',
+        ai_tags: [doc.category || 'document', 'auto-processed', 'OCR'],
+        metadata: {},
+        pages: [{ page_number: 1, char_count: 450, text: 'Sample OCR text from ' + (doc.filename || 'document') + '.\n\nOncofiles automatically extracts text via OCR, identifies the document category, date, and institution, then generates an AI summary with structured metadata.\n\nAll data stays in your Google Drive.' }]
+      };
     }
 
     function initGoogleSignIn() {
@@ -2901,8 +2946,11 @@
           clickedTr.parentNode.insertBefore(detailRow, clickedTr.nextSibling);
           applyDashLang();
 
-          // Fetch detail from API
-          apiFetch('/api/doc-detail/' + doc.id).then(function(data) {
+          // Fetch detail from API (or use demo data)
+          var detailPromise = window.DEMO_MODE
+            ? Promise.resolve(getDemoDocDetail(doc))
+            : apiFetch('/api/doc-detail/' + doc.id);
+          detailPromise.then(function(data) {
             if (data.error) {
               loadingDiv.textContent = data.error;
               return;
