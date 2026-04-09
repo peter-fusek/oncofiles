@@ -1712,16 +1712,23 @@
         setConnectionState('ok');
         hideSkeletons();
         document.getElementById('version-label').textContent = 'v' + data.status.version + ' demo';
-        // Auto-expand the Labs doc (id=1) to showcase rich OCR + metadata
+        // Auto-expand the Labs doc to showcase rich OCR + metadata
         setTimeout(function() {
           var rows = document.querySelectorAll('#doc-table tbody tr');
           var target = null;
           rows.forEach(function(r) {
-            if (r.textContent.indexOf('BloodCount') !== -1) target = r;
+            if (r.textContent.indexOf('BloodCount') !== -1 || r.textContent.indexOf('Labs_Blood') !== -1) target = r;
           });
-          if (target) { target.click(); target.scrollIntoView({behavior:'smooth', block:'center'}); }
-          else if (rows.length) rows[0].click();
-        }, 500);
+          if (!target) {
+            // Fallback: find any Labs row
+            rows.forEach(function(r) { if (!target && r.textContent.indexOf('Labs') !== -1) target = r; });
+          }
+          if (!target && rows.length) target = rows[0];
+          if (target) {
+            target.click();
+            setTimeout(function() { target.scrollIntoView({behavior:'smooth', block:'center'}); }, 100);
+          }
+        }, 1500);
       } catch (e) {
         setConnectionState('error');
         showError('Failed to load demo data');
