@@ -9,7 +9,9 @@
     window.dataLayer = window.dataLayer || [];
     function gtag(){dataLayer.push(arguments);}
     gtag('js', new Date());
-    gtag('config', 'G-JPSK46QKRB');
+    gtag('config', 'G-JPSK46QKRB', {
+      'page_location': window.location.href.replace(/[?&]token=[^&]*/g, ''),
+    });
   </script>
   <title>Oncofiles Dashboard</title>
   <link rel="icon" type="image/svg+xml" href="/favicon.svg">
@@ -2989,9 +2991,10 @@
               var left = document.createElement('div');
               left.className = 'doc-detail-left';
 
-              if (data.preview_url) {
+              if (data.preview_url && data.preview_url.startsWith('https://')) {
                 var iframe = document.createElement('iframe');
                 iframe.src = data.preview_url;
+                iframe.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-popups');
                 iframe.setAttribute('allowfullscreen', '');
                 iframe.setAttribute('loading', 'lazy');
                 left.appendChild(iframe);
@@ -3006,7 +3009,7 @@
                 left.appendChild(noPreview);
               }
 
-              if (data.gdrive_url) {
+              if (data.gdrive_url && /^https:\/\//.test(data.gdrive_url)) {
                 var gdriveLink = document.createElement('a');
                 gdriveLink.href = data.gdrive_url;
                 gdriveLink.target = '_blank';
