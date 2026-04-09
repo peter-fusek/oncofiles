@@ -852,6 +852,35 @@
       nav { flex-wrap: wrap; gap: 0.25rem; }
     }
 
+    /* ── FAQ ──────────────────────────────────────── */
+    .faq { padding: 5rem 0; }
+    .faq-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 1.5rem;
+    }
+    .faq-item {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 1.5rem;
+    }
+    .faq-item h3 {
+      font-size: 1rem;
+      font-weight: 600;
+      margin-bottom: 0.5rem;
+      color: var(--text);
+    }
+    .faq-item p {
+      font-size: 0.875rem;
+      color: var(--text-muted);
+      line-height: 1.6;
+      margin: 0;
+    }
+    @media (max-width: 768px) {
+      .faq-grid { grid-template-columns: 1fr; }
+    }
+
     /* ── Animations ────────────────────────────────── */
     @keyframes fadeUp {
       from { opacity: 0; transform: translateY(16px); }
@@ -1315,6 +1344,42 @@
         <p class="cta-note" data-sk="MIT Licencia &middot; Python 3.12+ &middot; FastMCP &middot; Pre pacientov a opatrovateľov" data-en="MIT License &middot; Python 3.12+ &middot; FastMCP &middot; For patients and caregivers">MIT Licencia &middot; Python 3.12+ &middot; FastMCP &middot; Pre pacientov a opatrovateľov</p>
       </div>
     </section>
+    <!-- FAQ -->
+    <section class="faq" id="faq">
+      <div class="container" style="text-align:center">
+        <div class="section-label" data-sk="Často kladené otázky" data-en="FAQ">Často kladené otázky</div>
+        <h2 class="section-title" data-sk="Ako sú chránené vaše dáta?" data-en="How is your data protected?">Ako sú chránené vaše dáta?</h2>
+      </div>
+      <div class="container">
+        <div class="faq-grid">
+          <div class="faq-item">
+            <h3 data-sk="Kde sú uložené moje dokumenty?" data-en="Where are my documents stored?">Kde sú uložené moje dokumenty?</h3>
+            <p data-sk="Výhradne vo vašom vlastnom Google Drive. Oncofiles nič nekopíruje na žiadny externý server — číta súbory priamo z vášho Drive a organizuje ich na mieste." data-en="Exclusively in your own Google Drive. Oncofiles never copies anything to an external server — it reads files directly from your Drive and organizes them in place.">Výhradne vo vašom vlastnom Google Drive. Oncofiles nič nekopíruje na žiadny externý server — číta súbory priamo z vášho Drive a organizuje ich na mieste.</p>
+          </div>
+          <div class="faq-item">
+            <h3 data-sk="Učí sa AI na mojich dátach?" data-en="Does AI learn from my data?">Učí sa AI na mojich dátach?</h3>
+            <p data-sk="Nie. Claude (Anthropic) ani ChatGPT (OpenAI) nepoužívajú dáta z MCP nástrojov na trénovanie modelov. Vaše dokumenty sa spracujú v reálnom čase a neukladajú sa na žiadnom AI serveri." data-en="No. Claude (Anthropic) and ChatGPT (OpenAI) do not use data from MCP tools for model training. Your documents are processed in real time and are not stored on any AI server.">Nie. Claude (Anthropic) ani ChatGPT (OpenAI) nepoužívajú dáta z MCP nástrojov na trénovanie modelov. Vaše dokumenty sa spracujú v reálnom čase a neukladajú sa na žiadnom AI serveri.</p>
+          </div>
+          <div class="faq-item">
+            <h3 data-sk="Prečo potrebujete prístup k Gmailu?" data-en="Why do you need Gmail access?">Prečo potrebujete prístup k Gmailu?</h3>
+            <p data-sk="Gmail je voliteľný — slúži na vyhľadanie lekárskych správ zaslaných emailom (napr. laboratórne výsledky). Prístup je iba na čítanie a používa sa len keď sa opýtate. Žiadne maily sa neposielajú ani nemažú." data-en="Gmail is optional — it helps find medical reports sent by email (e.g. lab results). Access is read-only and used only when you ask. No emails are ever sent or deleted.">Gmail je voliteľný — slúži na vyhľadanie lekárskych správ zaslaných emailom (napr. laboratórne výsledky). Prístup je iba na čítanie a používa sa len keď sa opýtate. Žiadne maily sa neposielajú ani nemažú.</p>
+          </div>
+          <div class="faq-item">
+            <h3 data-sk="Kto má prístup k mojim dátam?" data-en="Who can access my data?">Kto má prístup k mojim dátam?</h3>
+            <p data-sk="Len vy. Nemáme prístup k vášmu Google Drive ani Gmailu. Prihlasovanie prebieha cez oficiálny Google OAuth — my nevidíme vaše heslo ani vaše súbory. Zdrojový kód je open-source, môžete si overiť všetko." data-en="Only you. We have no access to your Google Drive or Gmail. Login uses official Google OAuth — we never see your password or your files. The source code is open-source so you can verify everything.">Len vy. Nemáme prístup k vášmu Google Drive ani Gmailu. Prihlasovanie prebieha cez oficiálny Google OAuth — my nevidíme vaše heslo ani vaše súbory. Zdrojový kód je open-source, môžete si overiť všetko.</p>
+          </div>
+          <div class="faq-item">
+            <h3 data-sk="Sú dáta šifrované?" data-en="Is data encrypted?">Sú dáta šifrované?</h3>
+            <p data-sk="Áno. Google Drive šifruje všetky súbory v pokoji aj pri prenose. Komunikácia medzi Oncofiles a Google prebieha cez HTTPS. Žiadne dáta sa neprenášajú nešifrovane." data-en="Yes. Google Drive encrypts all files at rest and in transit. Communication between Oncofiles and Google uses HTTPS. No data is ever transmitted unencrypted.">Áno. Google Drive šifruje všetky súbory v pokoji aj pri prenose. Komunikácia medzi Oncofiles a Google prebieha cez HTTPS. Žiadne dáta sa neprenášajú nešifrovane.</p>
+          </div>
+          <div class="faq-item">
+            <h3 data-sk="Môžem odstrániť prístup?" data-en="Can I revoke access?">Môžem odstrániť prístup?</h3>
+            <p data-sk="Kedykoľvek. V nastaveniach Google účtu (myaccount.google.com) môžete jedným klikom odobrať Oncofiles prístup k Drive aj Gmailu. Vaše súbory zostanú nedotknuté." data-en="Anytime. In your Google account settings (myaccount.google.com) you can revoke Oncofiles access to Drive and Gmail with one click. Your files remain untouched.">Kedykoľvek. V nastaveniach Google účtu (myaccount.google.com) môžete jedným klikom odobrať Oncofiles prístup k Drive aj Gmailu. Vaše súbory zostanú nedotknuté.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
   </main>
 
   <footer>
