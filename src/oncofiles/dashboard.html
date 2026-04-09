@@ -1712,10 +1712,15 @@
         setConnectionState('ok');
         hideSkeletons();
         document.getElementById('version-label').textContent = 'v' + data.status.version + ' demo';
-        // Auto-expand first document to showcase OCR + metadata
+        // Auto-expand the Labs doc (id=1) to showcase rich OCR + metadata
         setTimeout(function() {
-          var firstRow = document.querySelector('#doc-table tbody tr');
-          if (firstRow) firstRow.click();
+          var rows = document.querySelectorAll('#doc-table tbody tr');
+          var target = null;
+          rows.forEach(function(r) {
+            if (r.textContent.indexOf('BloodCount') !== -1) target = r;
+          });
+          if (target) { target.click(); target.scrollIntoView({behavior:'smooth', block:'center'}); }
+          else if (rows.length) rows[0].click();
         }, 500);
       } catch (e) {
         setConnectionState('error');
@@ -2879,7 +2884,7 @@
         // Filename
         var tdFn = document.createElement('td');
         tdFn.className = 'filename';
-        if (d.gdrive_id) {
+        if (d.gdrive_id && d.gdrive_id !== 'demo') {
           var a = document.createElement('a');
           a.href = 'https://drive.google.com/file/d/' + encodeURIComponent(d.gdrive_id) + '/view';
           a.target = '_blank';
