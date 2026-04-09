@@ -13,7 +13,8 @@ from oncofiles.models import (
 )
 
 # Deterministic UUIDs assigned by migration 035 — use in all tests
-ERIKA_UUID = "00000000-0000-4000-8000-000000000001"
+PATIENT_A_UUID = "00000000-0000-4000-8000-000000000001"
+ERIKA_UUID = PATIENT_A_UUID  # backward compat alias
 TEST_PATIENT_UUID = "00000000-0000-4000-8000-000000000002"
 
 

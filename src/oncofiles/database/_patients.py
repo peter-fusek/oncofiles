@@ -55,7 +55,7 @@ class PatientsMixin:
             return [_row_to_patient(r) for r in await cursor.fetchall()]
 
     async def get_patient_by_slug(self, slug: str) -> Patient | None:
-        """Get a patient by human-readable slug (e.g. 'erika')."""
+        """Get a patient by human-readable slug (e.g. 'q1b')."""
         async with self.db.execute("SELECT * FROM patients WHERE slug = ?", (slug,)) as cursor:
             row = await cursor.fetchone()
             return _row_to_patient(row) if row else None

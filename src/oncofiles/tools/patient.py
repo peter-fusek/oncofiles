@@ -99,7 +99,7 @@ async def select_patient(
     patient's data. The selection persists across requests.
 
     Args:
-        patient_slug: Patient slug or UUID (e.g. 'erika', 'e5g').
+        patient_slug: Patient slug or UUID (e.g. 'q1b', 'e5g').
     """
     db = _get_db(ctx)
 

@@ -209,11 +209,11 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict]:
     oauth_folder_id = ""
     owner_email = ""
     token = None
-    # Resolve erika's UUID from slug (post-migration, patient_id is a UUID)
-    _erika = await db.get_patient_by_slug("erika")
-    _erika_uuid = _erika.patient_id if _erika else ""
+    # Resolve primary patient UUID from slug (post-migration, patient_id is a UUID)
+    _primary = await db.get_patient_by_slug("q1b")
+    _primary_uuid = _primary.patient_id if _primary else ""
     try:
-        token = await db.get_oauth_token(patient_id=_erika_uuid) if _erika_uuid else None
+        token = await db.get_oauth_token(patient_id=_primary_uuid) if _primary_uuid else None
         if token:
             oauth_folder_id = token.gdrive_folder_id or ""
             owner_email = token.owner_email or ""
@@ -301,7 +301,7 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict]:
             sync_folder_id,
             gmail_client,
             calendar_client,
-            erika_uuid=_erika_uuid,
+            primary_uuid=_primary_uuid,
         )
 
     # ── Startup validation ─────────────────────────────────────────────
@@ -465,7 +465,7 @@ def _start_sync_scheduler(
     gmail_client=None,
     calendar_client=None,
     *,
-    erika_uuid: str = "",
+    primary_uuid: str = "",
 ):
     """Start APScheduler for periodic GDrive sync, Gmail sync, and Calendar sync."""
     from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -479,8 +479,8 @@ def _start_sync_scheduler(
     _last_calendar_sync_times: dict[str, str] = {}
 
     async def _get_patient_gdrive(pid: str) -> tuple | None:
-        """Get GDrive client + folder_id for a patient. Uses shared lifespan clients for erika."""
-        if pid == erika_uuid and gdrive and oauth_folder_id:
+        """Get GDrive client + folder_id for a patient. Uses shared lifespan clients for primary patient."""
+        if pid == primary_uuid and gdrive and oauth_folder_id:
             return (gdrive, _get_sync_folder_id_from(oauth_folder_id))
         clients = await _create_patient_clients(db, pid)
         if not clients:
@@ -488,15 +488,15 @@ def _start_sync_scheduler(
         return (clients[0], clients[3])
 
     async def _get_patient_gmail(pid: str):
-        """Get Gmail client for a patient. Uses shared lifespan clients for erika."""
-        if pid == erika_uuid and gmail_client:
+        """Get Gmail client for a patient. Uses shared lifespan clients for primary patient."""
+        if pid == primary_uuid and gmail_client:
             return gmail_client
         clients = await _create_patient_clients(db, pid)
         return clients[1] if clients else None
 
     async def _get_patient_calendar(pid: str):
-        """Get Calendar client for a patient. Uses shared lifespan clients for erika."""
-        if pid == erika_uuid and calendar_client:
+        """Get Calendar client for a patient. Uses shared lifespan clients for primary patient."""
+        if pid == primary_uuid and calendar_client:
             return calendar_client
         clients = await _create_patient_clients(db, pid)
         return clients[2] if clients else None
@@ -2626,12 +2626,12 @@ def _check_dashboard_auth(request: Request) -> JSONResponse | None:
 async def _get_dashboard_patient_id(request: Request) -> str:
     """Extract patient_id from query params and resolve slug → UUID.
 
-    Accepts either a UUID or a slug (e.g. 'erika').  Always returns
+    Accepts either a UUID or a slug (e.g. 'q1b').  Always returns
     the UUID patient_id suitable for DB queries.
     """
     raw = request.query_params.get("patient_id", "").strip().lower()
     if not raw:
-        # Fall back to first active patient instead of hardcoded "erika"
+        # Fall back to first active patient instead of hardcoded slug
         try:
             db_fb: Database = request.app.state.fastmcp_server._lifespan_result["db"]
             patients = await db_fb.list_patients(active_only=True)
@@ -4207,7 +4207,7 @@ async def oauth_authorize(request: Request) -> JSONResponse:
     raw_pid = request.query_params.get("patient_id", "").strip().lower()
     if not raw_pid:
         return JSONResponse({"error": "patient_id required"}, status_code=400)
-    # Resolve slug → UUID (e.g. "erika" → UUID); pass through if already UUID
+    # Resolve slug → UUID (e.g. "q1b" → UUID); pass through if already UUID
     try:
         db_inst: Database = request.app.state.fastmcp_server._lifespan_result["db"]
         patient_id = await db_inst.resolve_patient_id(raw_pid) or raw_pid
