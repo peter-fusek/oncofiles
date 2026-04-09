@@ -852,6 +852,43 @@
       nav { flex-wrap: wrap; gap: 0.25rem; }
     }
 
+    /* ── Testimonials ────────────────────────────── */
+    .testimonials { padding: 5rem 0; }
+    .testimonials-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 1.5rem;
+    }
+    .testimonial-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 1.5rem;
+      display: flex;
+      flex-direction: column;
+      gap: 1rem;
+    }
+    .testimonial-card blockquote {
+      font-size: 0.9375rem;
+      color: var(--text-muted);
+      line-height: 1.6;
+      margin: 0;
+      font-style: italic;
+    }
+    .testimonial-author {
+      font-size: 0.8125rem;
+      color: var(--text);
+      font-weight: 600;
+    }
+    .testimonial-role {
+      font-size: 0.75rem;
+      color: var(--text-muted);
+      font-weight: 400;
+    }
+    @media (max-width: 768px) {
+      .testimonials-grid { grid-template-columns: 1fr; }
+    }
+
     /* ── FAQ ──────────────────────────────────────── */
     .faq { padding: 5rem 0; }
     .faq-grid {
@@ -1308,6 +1345,42 @@
         <div class="story-card">
           <p class="story-quote" data-html data-sk="Keď mojej manželke Erike diagnostikovali metastatický kolorektálny karcinóm, zrazu som mal stovky dokumentov — laboratórne výsledky v Gmaili, CT skeny na Drive, termíny chemoterapií v kalendári. Ako jej <em>pacientsky advokát</em> som potreboval mať všetko na jednom mieste a rozumieť tomu. Tak vznikol Oncofiles — organizuje súbory, a jeho sesterský projekt <em>Oncoteam</em> ich analyzuje: sleduje trendy odberov, hľadá klinické štúdie a pripravuje otázky pre onkológa. Oba nástroje som postavil aby sme sa mohli sústrediť na liečbu, nie na hľadanie papierov." data-en="When my wife Erika was diagnosed with metastatic colorectal cancer, I suddenly had hundreds of documents — lab results in Gmail, CT scans on Drive, chemo appointments in Calendar. As her <em>patient advocate</em>, I needed everything in one place and to understand it. That's how Oncofiles was born — it organizes files, and its sister project <em>Oncoteam</em> analyzes them: tracking lab trends, searching clinical trials, and preparing questions for the oncologist. I built both tools so we could focus on treatment, not on finding papers.">Keď mojej manželke Erike diagnostikovali metastatický kolorektálny karcinóm, zrazu som mal stovky dokumentov — laboratórne výsledky v Gmaili, CT skeny na Drive, termíny chemoterapií v kalendári. Ako jej <em>pacientsky advokát</em> som potreboval mať všetko na jednom mieste a rozumieť tomu. Tak vznikol Oncofiles — organizuje súbory, a jeho sesterský projekt <em>Oncoteam</em> ich analyzuje: sleduje trendy odberov, hľadá klinické štúdie a pripravuje otázky pre onkológa. Oba nástroje som postavil aby sme sa mohli sústrediť na liečbu, nie na hľadanie papierov.</p>
           <p class="story-attribution" data-html data-sk="<strong><a href='https://www.linkedin.com/in/peterfusek/' style='color:var(--text);text-decoration:none'>Peter Fusek</a></strong> — CEO @ <a href='https://instarea.com' style='color:var(--accent)'>Instarea</a>, zakladateľ, opatrovateľ a pacientsky advokát pre svoju manželku Eriku. Oncofiles organizuje záznamy, <a href='https://oncofiles.com/oncoteam' style='color:var(--accent)'>Oncoteam</a> ich analyzuje a vysvetľuje." data-en="<strong><a href='https://www.linkedin.com/in/peterfusek/' style='color:var(--text);text-decoration:none'>Peter Fusek</a></strong> — CEO @ <a href='https://instarea.com' style='color:var(--accent)'>Instarea</a>, founder, caregiver, and patient advocate for his wife Erika. Oncofiles organizes records, <a href='https://oncofiles.com/oncoteam' style='color:var(--accent)'>Oncoteam</a> analyzes and explains them."><strong><a href="https://www.linkedin.com/in/peterfusek/" style="color:var(--text);text-decoration:none">Peter Fusek</a></strong> — CEO @ <a href="https://instarea.com" style="color:var(--accent)">Instarea</a>, zakladateľ, opatrovateľ a pacientsky advokát pre svoju manželku Eriku. Oncofiles organizuje záznamy, <a href="https://oncofiles.com/oncoteam" style="color:var(--accent)">Oncoteam</a> ich analyzuje a vysvetľuje.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- Testimonials -->
+    <section class="testimonials" id="testimonials">
+      <div class="container" style="text-align:center">
+        <div class="section-label" data-sk="Čo hovoria ľudia" data-en="What people say">Čo hovoria ľudia</div>
+        <h2 class="section-title" data-sk="Skutočné reakcie, skutočné príbehy" data-en="Real reactions, real stories">Skutočné reakcie, skutočné príbehy</h2>
+      </div>
+      <div class="container">
+        <div class="testimonials-grid">
+          <div class="testimonial-card">
+            <blockquote data-sk="„Moja mama bola onkologická pacientka a pri každej kontrole sa ma pýtala, či som jej všetky papiere priniesla."" data-en=""My mom was a cancer patient and at every check-up she asked me if I brought all her papers."">"Moja mama bola onkologická pacientka a pri každej kontrole sa ma pýtala, či som jej všetky papiere priniesla."</blockquote>
+            <div><span class="testimonial-author">Monika I.</span> <span class="testimonial-role" data-sk="— digitálne procesy" data-en="— digital processes">— digitálne procesy</span></div>
+          </div>
+          <div class="testimonial-card">
+            <blockquote data-sk="„Toto by moje pacientky isto ocenili! Budem odporúčať."" data-en=""My patients would definitely appreciate this! I'll be recommending it."">"Toto by moje pacientky isto ocenili! Budem odporúčať."</blockquote>
+            <div><span class="testimonial-author">Jessica Z.</span> <span class="testimonial-role" data-sk="— fyzioterapeutka v onkológii" data-en="— oncology physiotherapist">— fyzioterapeutka v onkológii</span></div>
+          </div>
+          <div class="testimonial-card">
+            <blockquote data-sk="„Ako človek s onko pacientom v rodine som vďačná za každý jeden pokrok a pomoc pri liečbe."" data-en=""As someone with a cancer patient in the family, I'm grateful for every advancement and help with treatment."">"Ako človek s onko pacientom v rodine som vďačná za každý jeden pokrok a pomoc pri liečbe."</blockquote>
+            <div><span class="testimonial-author">Zuzana L.</span> <span class="testimonial-role" data-sk="— rodinná opatrovateľka" data-en="— family caregiver">— rodinná opatrovateľka</span></div>
+          </div>
+          <div class="testimonial-card">
+            <blockquote data-sk="„Skvelé — prehľadné, zmysluplné a s nesmiernou človečinou."" data-en=""Excellent — clear, meaningful, and with immense humanity."">"Skvelé — prehľadné, zmysluplné a s nesmiernou človečinou."</blockquote>
+            <div><span class="testimonial-author">Gabriela P.</span> <span class="testimonial-role" data-sk="— HR riaditeľka" data-en="— HR director">— HR riaditeľka</span></div>
+          </div>
+          <div class="testimonial-card">
+            <blockquote data-sk="„Veľmi rád, môžeme to prejsť a posunúť ďalej."" data-en=""Very glad to, let's go through it and push it forward."">"Veľmi rád, môžeme to prejsť a posunúť ďalej."</blockquote>
+            <div><span class="testimonial-author">Viliam G.</span> <span class="testimonial-role" data-sk="— pacientska organizácia" data-en="— patient organization">— pacientska organizácia</span></div>
+          </div>
+          <div class="testimonial-card">
+            <blockquote data-sk="„Vďaka za inšpiráciu, ďalší dielik do mozaiky."" data-en=""Thanks for the inspiration, another piece of the puzzle."">"Vďaka za inšpiráciu, ďalší dielik do mozaiky."</blockquote>
+            <div><span class="testimonial-author">Juraj D.</span> <span class="testimonial-role" data-sk="— IT architekt, zdravotníctvo" data-en="— IT architect, healthcare">— IT architekt, zdravotníctvo</span></div>
+          </div>
         </div>
       </div>
     </section>
