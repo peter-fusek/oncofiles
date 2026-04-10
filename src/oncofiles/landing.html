@@ -67,8 +67,23 @@
         },
         {
           "@type": "Question",
+          "name": "Can I self-host Oncofiles?",
+          "acceptedAnswer": { "@type": "Answer", "text": "Yes. Oncofiles is fully open-source under the MIT license. You can deploy it on your own infrastructure with Python 3.12+, your own Google Drive API credentials, and any server. The self-hosted version is identical to the managed service." }
+        },
+        {
+          "@type": "Question",
+          "name": "What certifications does Oncofiles use?",
+          "acceptedAnswer": { "@type": "Answer", "text": "Oncofiles runs on Railway (SOC 2 Type II, SOC 3 certified), uses Anthropic Claude (SOC 2, ISO 27001 certified), and stores data in Google Drive (SOC 2, ISO 27001 certified). All providers publish transparency reports." }
+        },
+        {
+          "@type": "Question",
+          "name": "How is patient data isolated?",
+          "acceptedAnswer": { "@type": "Answer", "text": "Each patient has a unique bearer token and database-level isolation. Patient identities are anonymized with random codes. No personally identifiable information is stored in environment variables or logs." }
+        },
+        {
+          "@type": "Question",
           "name": "What types of medical documents does Oncofiles support?",
-          "acceptedAnswer": { "@type": "Answer", "text": "Oncofiles automatically categorizes documents into 14 types: labs, imaging (CT/MRI/USG), pathology, genetics, surgery, discharge summaries, prescriptions, referrals, chemo sheets, consultations, and more. PDF, JPEG, PNG, and Excel files are supported with automatic OCR." }
+          "acceptedAnswer": { "@type": "Answer", "text": "Oncofiles automatically categorizes documents into 17 types: labs, imaging (CT/MRI/USG), pathology, genetics, surgery, discharge summaries, prescriptions, referrals, chemo sheets, vaccination, dental, preventive care, and more. PDF, JPEG, PNG, and Excel files are supported with automatic OCR." }
         }
       ]
     },
@@ -917,6 +932,41 @@
     @media (max-width: 768px) {
       .faq-grid { grid-template-columns: 1fr; }
     }
+    .faq-tldr {
+      background: var(--surface);
+      border: 2px solid var(--accent);
+      border-radius: 12px;
+      padding: 1.5rem 2rem;
+      margin-bottom: 2.5rem;
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 0.75rem 2rem;
+      font-size: 0.9rem;
+      line-height: 1.5;
+      color: var(--text-muted);
+    }
+    .faq-tldr strong { color: var(--text); }
+    @media (max-width: 768px) {
+      .faq-tldr { grid-template-columns: 1fr; }
+    }
+    .faq-section-label {
+      grid-column: 1 / -1;
+      font-size: 0.75rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--accent);
+      margin-top: 1rem;
+      padding-bottom: 0.5rem;
+      border-bottom: 1px solid var(--border);
+    }
+    .faq-section-label:first-child { margin-top: 0; }
+    .faq-item a {
+      color: var(--accent);
+      text-decoration: underline;
+      text-underline-offset: 2px;
+    }
+    .faq-item a:hover { opacity: 0.8; }
 
     /* ── Animations ────────────────────────────────── */
     @keyframes fadeUp {
@@ -1424,22 +1474,32 @@
         <h2 class="section-title" data-sk="Ako sú chránené vaše dáta?" data-en="How is your data protected?">Ako sú chránené vaše dáta?</h2>
       </div>
       <div class="container">
+        <!-- TLDR Summary -->
+        <div class="faq-tldr">
+          <div><strong data-sk="Uložisko:" data-en="Storage:">Uložisko:</strong> <span data-sk="Váš vlastný Google Drive — nikdy nekopírujeme" data-en="Your own Google Drive — never copied">Váš vlastný Google Drive — nikdy nekopírujeme</span></div>
+          <div><strong data-sk="Open source:" data-en="Open source:">Open source:</strong> <span data-sk="MIT licencia, self-hosting k dispozícii" data-en="MIT license, self-hostable">MIT licencia, self-hosting k dispozícii</span> (<a href="https://github.com/peter-fusek/oncofiles" rel="noreferrer noopener">GitHub</a>)</div>
+          <div><strong data-sk="AI tréning:" data-en="AI training:">AI tréning:</strong> <span data-sk="Žiadny — Anthropic komerčné podmienky" data-en="None — Anthropic Commercial Terms">Žiadny — Anthropic komerčné podmienky</span> (<a href="https://www.anthropic.com/legal/commercial-terms" rel="noreferrer noopener" data-sk="podmienky" data-en="terms">podmienky</a>)</div>
+          <div><strong data-sk="Certifikácie:" data-en="Certifications:">Certifikácie:</strong> <span data-sk="SOC 2 Type II hosting (Railway)" data-en="SOC 2 Type II hosting (Railway)">SOC 2 Type II hosting (Railway)</span> (<a href="https://trust.railway.com/" rel="noreferrer noopener" data-sk="dôvera" data-en="trust">dôvera</a>)</div>
+        </div>
+
         <div class="faq-grid">
+          <!-- Data & Privacy -->
+          <div class="faq-section-label" data-sk="Dáta a súkromie" data-en="Data &amp; Privacy">Dáta a súkromie</div>
           <div class="faq-item">
             <h3 data-sk="Kde sú uložené moje dokumenty?" data-en="Where are my documents stored?">Kde sú uložené moje dokumenty?</h3>
             <p data-sk="Výhradne vo vašom vlastnom Google Drive. Oncofiles nič nekopíruje na žiadny externý server — číta súbory priamo z vášho Drive a organizuje ich na mieste." data-en="Exclusively in your own Google Drive. Oncofiles never copies anything to an external server — it reads files directly from your Drive and organizes them in place.">Výhradne vo vašom vlastnom Google Drive. Oncofiles nič nekopíruje na žiadny externý server — číta súbory priamo z vášho Drive a organizuje ich na mieste.</p>
           </div>
           <div class="faq-item">
             <h3 data-sk="Učí sa AI na mojich dátach?" data-en="Does AI learn from my data?">Učí sa AI na mojich dátach?</h3>
-            <p data-sk="Nie. Claude (Anthropic) ani ChatGPT (OpenAI) nepoužívajú dáta z MCP nástrojov na trénovanie modelov. Vaše dokumenty sa spracujú v reálnom čase a neukladajú sa na žiadnom AI serveri." data-en="No. Claude (Anthropic) and ChatGPT (OpenAI) do not use data from MCP tools for model training. Your documents are processed in real time and are not stored on any AI server.">Nie. Claude (Anthropic) ani ChatGPT (OpenAI) nepoužívajú dáta z MCP nástrojov na trénovanie modelov. Vaše dokumenty sa spracujú v reálnom čase a neukladajú sa na žiadnom AI serveri.</p>
-          </div>
-          <div class="faq-item">
-            <h3 data-sk="Prečo potrebujete prístup k Gmailu?" data-en="Why do you need Gmail access?">Prečo potrebujete prístup k Gmailu?</h3>
-            <p data-sk="Gmail je voliteľný — slúži na vyhľadanie lekárskych správ zaslaných emailom (napr. laboratórne výsledky). Prístup je iba na čítanie a používa sa len keď sa opýtate. Žiadne maily sa neposielajú ani nemažú." data-en="Gmail is optional — it helps find medical reports sent by email (e.g. lab results). Access is read-only and used only when you ask. No emails are ever sent or deleted.">Gmail je voliteľný — slúži na vyhľadanie lekárskych správ zaslaných emailom (napr. laboratórne výsledky). Prístup je iba na čítanie a používa sa len keď sa opýtate. Žiadne maily sa neposielajú ani nemažú.</p>
+            <p data-sk="Nie. Claude (Anthropic) ani ChatGPT (OpenAI) nepoužívajú dáta z MCP nástrojov na trénovanie modelov. Vaše dokumenty sa spracujú v reálnom čase a neukladajú sa na žiadnom AI serveri. Viac v <a href='https://www.anthropic.com/legal/commercial-terms' rel='noreferrer noopener'>Anthropic komerčných podmienkach</a>." data-en="No. Claude (Anthropic) and ChatGPT (OpenAI) do not use data from MCP tools for model training. Your documents are processed in real time and are not stored on any AI server. See <a href='https://www.anthropic.com/legal/commercial-terms' rel='noreferrer noopener'>Anthropic Commercial Terms</a>.">Nie. Claude (Anthropic) ani ChatGPT (OpenAI) nepoužívajú dáta z MCP nástrojov na trénovanie modelov. Vaše dokumenty sa spracujú v reálnom čase a neukladajú sa na žiadnom AI serveri. Viac v <a href="https://www.anthropic.com/legal/commercial-terms" rel="noreferrer noopener">Anthropic komerčných podmienkach</a>.</p>
           </div>
           <div class="faq-item">
             <h3 data-sk="Kto má prístup k mojim dátam?" data-en="Who can access my data?">Kto má prístup k mojim dátam?</h3>
             <p data-sk="Len vy. Nemáme prístup k vášmu Google Drive ani Gmailu. Prihlasovanie prebieha cez oficiálny Google OAuth — my nevidíme vaše heslo ani vaše súbory. Zdrojový kód je open-source, môžete si overiť všetko." data-en="Only you. We have no access to your Google Drive or Gmail. Login uses official Google OAuth — we never see your password or your files. The source code is open-source so you can verify everything.">Len vy. Nemáme prístup k vášmu Google Drive ani Gmailu. Prihlasovanie prebieha cez oficiálny Google OAuth — my nevidíme vaše heslo ani vaše súbory. Zdrojový kód je open-source, môžete si overiť všetko.</p>
+          </div>
+          <div class="faq-item">
+            <h3 data-sk="Ako sú izolované dáta pacientov?" data-en="How is patient data isolated?">Ako sú izolované dáta pacientov?</h3>
+            <p data-sk="Každý pacient má unikátny prístupový token a izoláciu na úrovni databázy. Identity pacientov sú anonymizované náhodnými kódmi. V logoch ani konfiguráciách servera sa neukladajú žiadne osobné údaje." data-en="Each patient has a unique bearer token and database-level isolation. Patient identities are anonymized with random codes. No personally identifiable information is stored in server logs or configuration.">Každý pacient má unikátny prístupový token a izoláciu na úrovni databázy. Identity pacientov sú anonymizované náhodnými kódmi. V logoch ani konfiguráciách servera sa neukladajú žiadne osobné údaje.</p>
           </div>
           <div class="faq-item">
             <h3 data-sk="Sú dáta šifrované?" data-en="Is data encrypted?">Sú dáta šifrované?</h3>
@@ -1449,6 +1509,39 @@
             <h3 data-sk="Môžem odstrániť prístup?" data-en="Can I revoke access?">Môžem odstrániť prístup?</h3>
             <p data-sk="Kedykoľvek. V nastaveniach Google účtu (myaccount.google.com) môžete jedným klikom odobrať Oncofiles prístup k Drive aj Gmailu. Vaše súbory zostanú nedotknuté." data-en="Anytime. In your Google account settings (myaccount.google.com) you can revoke Oncofiles access to Drive and Gmail with one click. Your files remain untouched.">Kedykoľvek. V nastaveniach Google účtu (myaccount.google.com) môžete jedným klikom odobrať Oncofiles prístup k Drive aj Gmailu. Vaše súbory zostanú nedotknuté.</p>
           </div>
+
+          <!-- Infrastructure & Certifications -->
+          <div class="faq-section-label" data-sk="Infraštruktúra a certifikácie" data-en="Infrastructure &amp; Certifications">Infraštruktúra a certifikácie</div>
+          <div class="faq-item">
+            <h3 data-sk="Kde beží Oncofiles?" data-en="Where does Oncofiles run?">Kde beží Oncofiles?</h3>
+            <p data-sk="Na <a href='https://railway.com' rel='noreferrer noopener'>Railway</a> — cloudovej platforme s certifikáciou SOC 2 Type II a SOC 3. Dáta sú uložené v šifrovanej databáze s automatickými zálohami." data-en="On <a href='https://railway.com' rel='noreferrer noopener'>Railway</a> — a cloud platform with SOC 2 Type II and SOC 3 certification. Data is stored in an encrypted database with automatic backups.">Na <a href="https://railway.com" rel="noreferrer noopener">Railway</a> — cloudovej platforme s certifikáciou SOC 2 Type II a SOC 3. Dáta sú uložené v šifrovanej databáze s automatickými zálohami.</p>
+          </div>
+          <div class="faq-item">
+            <h3 data-sk="Aké certifikácie platia?" data-en="What certifications apply?">Aké certifikácie platia?</h3>
+            <p data-sk="<a href='https://trust.anthropic.com/' rel='noreferrer noopener'>Anthropic</a>: SOC 2 + ISO 27001. <a href='https://trust.railway.com/' rel='noreferrer noopener'>Railway</a>: SOC 2 Type II + SOC 3. Google: SOC 2 + ISO 27001. Všetci poskytovatelia publikujú transparency reporty." data-en="<a href='https://trust.anthropic.com/' rel='noreferrer noopener'>Anthropic</a>: SOC 2 + ISO 27001. <a href='https://trust.railway.com/' rel='noreferrer noopener'>Railway</a>: SOC 2 Type II + SOC 3. Google: SOC 2 + ISO 27001. All providers publish transparency reports.">
+              <a href="https://trust.anthropic.com/" rel="noreferrer noopener">Anthropic</a>: SOC 2 + ISO 27001.
+              <a href="https://trust.railway.com/" rel="noreferrer noopener">Railway</a>: SOC 2 Type II + SOC 3.
+              Google: SOC 2 + ISO 27001.
+              <span data-sk="Všetci poskytovatelia publikujú transparency reporty." data-en="All providers publish transparency reports.">Všetci poskytovatelia publikujú transparency reporty.</span></p>
+          </div>
+          <div class="faq-item">
+            <h3 data-sk="Prečo potrebujete prístup k Gmailu?" data-en="Why do you need Gmail access?">Prečo potrebujete prístup k Gmailu?</h3>
+            <p data-sk="Gmail je voliteľný — slúži na vyhľadanie lekárskych správ zaslaných emailom (napr. laboratórne výsledky). Prístup je iba na čítanie a používa sa len keď sa opýtate. Žiadne maily sa neposielajú ani nemažú." data-en="Gmail is optional — it helps find medical reports sent by email (e.g. lab results). Access is read-only and used only when you ask. No emails are ever sent or deleted.">Gmail je voliteľný — slúži na vyhľadanie lekárskych správ zaslaných emailom (napr. laboratórne výsledky). Prístup je iba na čítanie a používa sa len keď sa opýtate. Žiadne maily sa neposielajú ani nemažú.</p>
+          </div>
+
+          <!-- Self-Hosting -->
+          <div class="faq-section-label" data-sk="Self-hosting" data-en="Self-Hosting">Self-hosting</div>
+          <div class="faq-item">
+            <h3 data-sk="Môžem si Oncofiles prevádzkovať sám?" data-en="Can I self-host Oncofiles?">Môžem si Oncofiles prevádzkovať sám?</h3>
+            <p data-sk="Áno. Oncofiles je plne open-source pod MIT licenciou. Potrebujete Python 3.12+, vlastné Google Drive API prístupové údaje a server. Self-hosted verzia je identická s manažovanou službou. <a href='https://github.com/peter-fusek/oncofiles' rel='noreferrer noopener'>Zdrojový kód na GitHub</a>." data-en="Yes. Oncofiles is fully open-source under the MIT license. You need Python 3.12+, your own Google Drive API credentials, and a server. The self-hosted version is identical to the managed service. <a href='https://github.com/peter-fusek/oncofiles' rel='noreferrer noopener'>Source code on GitHub</a>.">Áno. Oncofiles je plne open-source pod MIT licenciou. Potrebujete Python 3.12+, vlastné Google Drive API prístupové údaje a server. Self-hosted verzia je identická s manažovanou službou. <a href="https://github.com/peter-fusek/oncofiles" rel="noreferrer noopener">Zdrojový kód na GitHub</a>.</p>
+          </div>
+          <div class="faq-item">
+            <h3 data-sk="Je self-hosted verzia plne funkčná?" data-en="Is the self-hosted version fully functional?">Je self-hosted verzia plne funkčná?</h3>
+            <p data-sk="Áno. Rovnaký kód, rovnaké funkcie — 79 nástrojov, GDrive sync, OCR, laboratórne trendy. Beží na vašej vlastnej infraštruktúre, pod vašou kontrolou. Žiadne obmedzenia oproti manažovanej verzii." data-en="Yes. Same codebase, same features — 79 tools, GDrive sync, OCR, lab trends. Runs on your own infrastructure, under your control. No limitations compared to the managed version.">Áno. Rovnaký kód, rovnaké funkcie — 79 nástrojov, GDrive sync, OCR, laboratórne trendy. Beží na vašej vlastnej infraštruktúre, pod vašou kontrolou. Žiadne obmedzenia oproti manažovanej verzii.</p>
+          </div>
+
+          <!-- Using Oncofiles -->
+          <div class="faq-section-label" data-sk="Používanie Oncofiles" data-en="Using Oncofiles">Používanie Oncofiles</div>
           <div class="faq-item">
             <h3 data-sk="Potrebujem byť technický?" data-en="Do I need to be technical?">Potrebujem byť technický?</h3>
             <p data-sk="Vôbec nie. Stačí prepojiť Google Drive a začať sa pýtať bežným jazykom — cez Claude alebo ChatGPT. Žiadne programovanie, žiadne nastavovanie okrem prvého prepojenia." data-en="Not at all. Just connect your Google Drive and start asking questions in plain language — through Claude or ChatGPT. No coding, no setup beyond the initial connection.">Vôbec nie. Stačí prepojiť Google Drive a začať sa pýtať bežným jazykom — cez Claude alebo ChatGPT. Žiadne programovanie, žiadne nastavovanie okrem prvého prepojenia.</p>
