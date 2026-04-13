@@ -1091,101 +1091,91 @@
       .trust-company { flex-direction: column; align-items: flex-start; }
     }
 
-    /* ── Hero Carousel ─────────────────────────────── */
-    .hc {
-      position: relative;
-      max-width: 720px;
-      margin: 2rem auto 1.5rem;
-      height: 280px;
-      overflow: hidden;
+    /* ── Hero Visual: Before → After ─────────────── */
+    .hc-panel {
+      display: flex; align-items: center; gap: 1.5rem;
+      max-width: 760px; margin: 2rem auto 1.5rem; padding: 0.5rem 1rem;
     }
-    .hc-slide {
-      position: absolute;
-      inset: 0;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      opacity: 0;
-      transition: opacity 0.6s ease-in-out;
-      pointer-events: none;
-    }
-    .hc-slide.active { opacity: 1; pointer-events: auto; }
-    .hc-dots {
-      display: flex;
-      justify-content: center;
-      gap: 0.5rem;
-      margin-top: 0.5rem;
-    }
-    .hc-dot {
-      width: 8px; height: 8px; border-radius: 50%;
-      background: var(--border); border: none; cursor: pointer;
-      padding: 0; transition: background 0.3s, transform 0.3s;
-    }
-    .hc-dot.active { background: var(--accent); transform: scale(1.3); }
     .hc-label {
-      text-align: center; font-size: 0.6875rem; font-weight: 600;
-      text-transform: uppercase; letter-spacing: 0.05em;
-      color: var(--text-dim); margin-bottom: 0.75rem;
+      font-size: 0.625rem; font-weight: 600; text-transform: uppercase;
+      letter-spacing: 0.06em; color: var(--text-dim); margin-bottom: 0.5rem;
+      text-align: center;
     }
-    /* Slide 1: Chaos */
-    .hc-chaos {
-      display: flex; flex-wrap: wrap; gap: 0.5rem;
-      justify-content: center; padding: 0.5rem 1rem; max-width: 640px;
+    /* Left: paper stack */
+    .hc-before { flex: 1; animation: fadeUp 0.5s ease-out 0.2s both; }
+    .hc-stack {
+      position: relative; height: 210px; max-width: 260px; margin: 0 auto;
     }
-    .hc-chaos-card {
-      background: var(--surface); border: 1px solid var(--border);
-      border-radius: 0.5rem; padding: 0.5rem 0.75rem;
-      font-size: 0.6875rem; color: var(--text-muted);
-      box-shadow: var(--card-shadow);
-      transform: rotate(var(--rot, 0deg)); white-space: nowrap;
+    .hc-paper {
+      position: absolute; background: #fff; border: 1px solid #e0dbd4;
+      border-radius: 3px; padding: 0.625rem 0.75rem;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.08), 0 6px 16px rgba(0,0,0,0.04);
+      font-size: 0.625rem; color: var(--text-muted); width: 180px;
+      transform: rotate(var(--rot, 0deg));
     }
-    /* Slide 2: Magic */
-    .hc-magic {
-      display: flex; align-items: center; gap: 1rem;
-      padding: 0.5rem 1rem; max-width: 680px; width: 100%;
+    .hc-paper .hc-ptype {
+      font-size: 0.5rem; text-transform: uppercase; letter-spacing: 0.04em;
+      color: var(--text-dim); margin-bottom: 0.25rem;
     }
-    .hc-magic-input, .hc-magic-output {
-      flex: 1; display: flex; flex-direction: column; gap: 0.375rem;
+    .hc-paper .hc-pfname {
+      font-family: 'DM Mono', ui-monospace, monospace; font-size: 0.5625rem;
+      color: var(--text-muted); word-break: break-all;
     }
-    .hc-magic-center {
-      display: flex; flex-direction: column; align-items: center;
-      gap: 0.375rem; flex-shrink: 0;
+    @keyframes paperDrop {
+      from { opacity: 0; transform: translateY(-16px) rotate(var(--rot, 0deg)); }
+      to { opacity: 1; transform: translateY(0) rotate(var(--rot, 0deg)); }
     }
-    .hc-magic-logo {
-      width: 48px; height: 48px; border-radius: 50%;
+    .hc-paper:nth-child(1) { animation: paperDrop 0.35s ease-out 0.15s both; }
+    .hc-paper:nth-child(2) { animation: paperDrop 0.35s ease-out 0.25s both; }
+    .hc-paper:nth-child(3) { animation: paperDrop 0.35s ease-out 0.35s both; }
+    .hc-paper:nth-child(4) { animation: paperDrop 0.35s ease-out 0.45s both; }
+    .hc-paper:nth-child(5) { animation: paperDrop 0.35s ease-out 0.55s both; }
+    /* Center: arrow */
+    .hc-arrow {
+      flex-shrink: 0; display: flex; flex-direction: column;
+      align-items: center; gap: 0.25rem;
+      animation: fadeUp 0.5s ease-out 0.5s both;
+    }
+    .hc-arrow-icon {
+      width: 44px; height: 44px; border-radius: 50%;
       background: var(--accent); color: #fff;
       display: flex; align-items: center; justify-content: center;
       font-weight: 700; font-size: 0.875rem;
-      box-shadow: 0 0 20px var(--accent-glow), 0 0 40px var(--accent-glow);
+      box-shadow: 0 0 16px var(--accent-glow), 0 0 32px var(--accent-glow);
+      animation: pulse 2s ease-in-out infinite;
     }
-    .hc-mini-card {
-      background: var(--bg); border: 1px solid var(--border);
-      border-radius: 0.375rem; padding: 0.375rem 0.625rem;
-      font-size: 0.625rem; color: var(--text-dim);
-      display: flex; align-items: center; gap: 0.375rem;
+    @keyframes pulse {
+      0%, 100% { box-shadow: 0 0 16px var(--accent-glow), 0 0 32px var(--accent-glow); }
+      50% { box-shadow: 0 0 24px var(--accent-glow), 0 0 48px rgba(13,148,136,0.15); }
     }
-    .hc-mini-card.done { border-color: var(--accent); }
-    .hc-mini-card.done::before { content: "\2713"; color: var(--accent); font-weight: 700; }
-    /* Slide 3: Result */
-    .hc-result {
-      display: flex; gap: 1.5rem; padding: 0.5rem 1rem;
-      max-width: 640px; width: 100%;
+    .hc-arrow-label {
+      font-size: 0.5rem; font-weight: 600; color: var(--accent);
+      text-transform: uppercase; letter-spacing: 0.04em;
+    }
+    /* Right: result */
+    .hc-after {
+      flex: 1; animation: slideInRight 0.5s ease-out 0.6s both;
+    }
+    @keyframes slideInRight {
+      from { opacity: 0; transform: translateX(20px); }
+      to { opacity: 1; transform: translateX(0); }
     }
     .hc-folders {
-      flex: 1; background: var(--bg); border: 1px solid var(--border);
+      background: var(--bg); border: 1px solid var(--border);
       border-radius: 0.5rem; padding: 0.75rem; font-size: 0.6875rem;
+      margin-bottom: 0.5rem;
     }
-    .hc-folders-title { font-weight: 600; color: var(--text-muted); margin-bottom: 0.375rem; }
+    .hc-folders-title { font-weight: 600; color: var(--text-muted); margin-bottom: 0.25rem; }
     .hc-folder-row {
-      padding: 0.1875rem 0 0.1875rem 0.75rem;
+      padding: 0.125rem 0 0.125rem 0.75rem;
       display: flex; align-items: center; gap: 0.375rem;
       color: var(--text-muted); font-size: 0.625rem;
     }
     .hc-folder-count { color: var(--text-dim); font-size: 0.5625rem; margin-left: auto; }
-    .hc-chat { flex: 1; display: flex; flex-direction: column; gap: 0.5rem; justify-content: center; }
+    .hc-chat { display: flex; flex-direction: column; gap: 0.375rem; margin-bottom: 0.5rem; }
     .hc-chat-bubble {
-      padding: 0.5rem 0.75rem; border-radius: 0.5rem;
-      font-size: 0.6875rem; line-height: 1.5; max-width: 95%;
+      padding: 0.375rem 0.625rem; border-radius: 0.5rem;
+      font-size: 0.625rem; line-height: 1.4; max-width: 95%;
     }
     .hc-chat-bubble.user {
       background: var(--accent); color: #fff;
@@ -1198,22 +1188,21 @@
     }
     .hc-badges {
       display: flex; gap: 0.5rem; justify-content: center;
-      margin-top: 0.5rem; font-size: 0.5625rem;
+      font-size: 0.5625rem;
     }
     .hc-badge {
       background: var(--accent-glow); color: var(--accent);
       padding: 0.125rem 0.5rem; border-radius: 1rem; font-weight: 600;
     }
     @media (max-width: 768px) {
-      .hc { height: 300px; }
-      .hc-magic { flex-direction: column; gap: 0.75rem; }
-      .hc-magic-input, .hc-magic-output { flex-direction: row; flex-wrap: wrap; justify-content: center; }
-      .hc-magic-center { flex-direction: row; }
-      .hc-result { flex-direction: column; gap: 0.75rem; }
+      .hc-panel { flex-direction: column; gap: 1rem; }
+      .hc-arrow { flex-direction: row; }
+      .hc-stack { height: 180px; max-width: 220px; }
+      .hc-paper { width: 155px; padding: 0.5rem; }
     }
     @media (max-width: 480px) {
-      .hc { height: 340px; }
-      .hc-chaos-card { font-size: 0.625rem; padding: 0.375rem 0.5rem; }
+      .hc-stack { height: 160px; max-width: 190px; }
+      .hc-paper { width: 140px; font-size: 0.5625rem; }
     }
 
     /* ── Animations ────────────────────────────────── */
@@ -1224,9 +1213,7 @@
     .hero-badge { animation: fadeUp 0.6s ease-out; }
     .hero h1 { animation: fadeUp 0.6s ease-out 0.1s both; }
     .hero .subtitle { animation: fadeUp 0.6s ease-out 0.2s both; }
-    .hc { animation: fadeUp 0.6s ease-out 0.25s both; }
-    .hc-dots { animation: fadeUp 0.6s ease-out 0.25s both; }
-    .hero-cta { animation: fadeUp 0.6s ease-out 0.35s both; }
+    .hero-cta { animation: fadeUp 0.6s ease-out 0.8s both; }
   </style>
 </head>
 <body>
@@ -1250,78 +1237,59 @@
         <h1><span data-sk="Vaše zdravotné záznamy," data-en="Your medical records,">Vaše zdravotné záznamy,</span><br><em data-sk="konečne na jednom mieste" data-en="finally in one place">konečne na jednom mieste</em></h1>
         <p class="subtitle" data-sk="Dostali ste diagnózu a neviete, kde začať? Výsledky v Gmaili, skeny na Google Drive, termíny v kalendári. Oncofiles všetko prečíta, zorganizuje a sprístupní cez AI — pýtajte sa prirodzene v Claude alebo ChatGPT." data-en="Just got a diagnosis and don't know where to start? Lab results in Gmail, scans on Google Drive, appointments in Calendar. Oncofiles reads everything, organizes it, and makes it available through AI — ask naturally in Claude or ChatGPT.">Dostali ste diagnózu a neviete, kde začať? Výsledky v Gmaili, skeny na Google Drive, termíny v kalendári. Oncofiles všetko prečíta, zorganizuje a sprístupní cez AI — pýtajte sa prirodzene v Claude alebo ChatGPT.</p>
 
-        <!-- Hero Carousel: Before → Processing → After -->
-        <div class="hc" id="hero-carousel">
-          <!-- Slide 1: The Chaos -->
-          <div class="hc-slide active" data-slide="0">
-            <div>
-              <div class="hc-label" data-sk="Pred Oncofiles" data-en="Before Oncofiles">Pred Oncofiles</div>
-              <div class="hc-chaos">
-                <div class="hc-chaos-card" style="--rot:-3deg">&#128196; scan_foto_0142.jpeg</div>
-                <div class="hc-chaos-card" style="--rot:2deg">&#128231; <span data-sk="Preposl.: výsledky" data-en="Fwd: results">Preposl.: výsledky</span></div>
-                <div class="hc-chaos-card" style="--rot:-1deg">&#128196; vysledky(1).pdf</div>
-                <div class="hc-chaos-card" style="--rot:4deg">&#128247; IMG_20250918_lab.jpg</div>
-                <div class="hc-chaos-card" style="--rot:-4deg">&#128196; CT_bruso_final_v2.pdf</div>
-                <div class="hc-chaos-card" style="--rot:1deg">&#128197; <span data-sk="Kontrola 14:30" data-en="Checkup 14:30">Kontrola 14:30</span></div>
-                <div class="hc-chaos-card" style="--rot:3deg">&#128196; DSCN0034.pdf</div>
-                <div class="hc-chaos-card" style="--rot:-2deg">&#128196; dokument(3).pdf</div>
+        <!-- Hero Visual: Before → After -->
+        <div class="hc-panel">
+          <!-- Left: The Mess -->
+          <div class="hc-before">
+            <div class="hc-label" data-sk="Pred Oncofiles" data-en="Before Oncofiles">Pred Oncofiles</div>
+            <div class="hc-stack">
+              <div class="hc-paper" style="--rot:-2deg;top:0;left:10px">
+                <div class="hc-ptype">&#128231; email</div>
+                <div class="hc-pfname"><span data-sk="Preposl.: výsledky" data-en="Fwd: results">Preposl.: výsledky</span></div>
+              </div>
+              <div class="hc-paper" style="--rot:3deg;top:32px;left:30px">
+                <div class="hc-ptype">&#128247; foto</div>
+                <div class="hc-pfname">IMG_20250918_lab.jpg</div>
+              </div>
+              <div class="hc-paper" style="--rot:-1deg;top:64px;left:5px">
+                <div class="hc-ptype">&#128196; pdf</div>
+                <div class="hc-pfname">vysledky(1).pdf</div>
+              </div>
+              <div class="hc-paper" style="--rot:2deg;top:96px;left:25px">
+                <div class="hc-ptype">&#128196; pdf</div>
+                <div class="hc-pfname">CT_bruso_final_v2.pdf</div>
+              </div>
+              <div class="hc-paper" style="--rot:-3deg;top:128px;left:15px">
+                <div class="hc-ptype">&#128196; pdf</div>
+                <div class="hc-pfname">dokument(3).pdf</div>
               </div>
             </div>
           </div>
-          <!-- Slide 2: The Magic -->
-          <div class="hc-slide" data-slide="1">
-            <div>
-              <div class="hc-label" data-sk="Oncofiles pracuje" data-en="Oncofiles at work">Oncofiles pracuje</div>
-              <div class="hc-magic">
-                <div class="hc-magic-input">
-                  <div class="hc-mini-card">&#128196; scan_foto_0142.jpeg</div>
-                  <div class="hc-mini-card">&#128196; vysledky(1).pdf</div>
-                  <div class="hc-mini-card">&#128196; CT_bruso_final_v2.pdf</div>
-                </div>
-                <div class="hc-magic-center">
-                  <span style="color:var(--accent);font-size:1.25rem">&#8594;</span>
-                  <div class="hc-magic-logo">OF</div>
-                  <div style="font-size:0.5625rem;color:var(--accent);font-weight:600">OCR + AI</div>
-                  <span style="color:var(--accent);font-size:1.25rem">&#8594;</span>
-                </div>
-                <div class="hc-magic-output">
-                  <div class="hc-mini-card done">20250918_NOU_Labs_CBC.pdf</div>
-                  <div class="hc-mini-card done">20250312_NOU_CT_Abdomen.pdf</div>
-                  <div class="hc-mini-card done">20250115_NOU_Pathology_KRAS.pdf</div>
-                </div>
-              </div>
+          <!-- Center: Arrow -->
+          <div class="hc-arrow">
+            <div class="hc-arrow-icon">&#8594;</div>
+            <div class="hc-arrow-label">OCR + AI</div>
+          </div>
+          <!-- Right: The Result -->
+          <div class="hc-after">
+            <div class="hc-label" data-sk="S Oncofiles" data-en="With Oncofiles">S Oncofiles</div>
+            <div class="hc-folders">
+              <div class="hc-folders-title">&#128193; Google Drive</div>
+              <div class="hc-folder-row">&#128193; Labs <span class="hc-folder-count">24</span></div>
+              <div class="hc-folder-row">&#128193; Imaging <span class="hc-folder-count">8</span></div>
+              <div class="hc-folder-row">&#128193; Pathology <span class="hc-folder-count">5</span></div>
+              <div class="hc-folder-row">&#128193; Treatment <span class="hc-folder-count">12</span></div>
+            </div>
+            <div class="hc-chat">
+              <div class="hc-chat-bubble user" data-sk="Aké boli moje posledné výsledky?" data-en="What were my latest results?">Aké boli moje posledné výsledky?</div>
+              <div class="hc-chat-bubble ai" data-sk="CEA kleslo z 12.4 na 8.1 — dobrý trend." data-en="CEA dropped from 12.4 to 8.1 — good trend.">CEA kleslo z 12.4 na 8.1 — dobrý trend.</div>
+            </div>
+            <div class="hc-badges">
+              <span class="hc-badge" data-sk="Zadarmo" data-en="Free">Zadarmo</span>
+              <span class="hc-badge">Open source</span>
+              <span class="hc-badge" data-sk="Váš Google Drive" data-en="Your Google Drive">Váš Google Drive</span>
             </div>
           </div>
-          <!-- Slide 3: The Result -->
-          <div class="hc-slide" data-slide="2">
-            <div>
-              <div class="hc-label" data-sk="S Oncofiles" data-en="With Oncofiles">S Oncofiles</div>
-              <div class="hc-result">
-                <div class="hc-folders">
-                  <div class="hc-folders-title">&#128193; Google Drive / Oncofiles</div>
-                  <div class="hc-folder-row">&#128193; Labs <span class="hc-folder-count">24</span></div>
-                  <div class="hc-folder-row">&#128193; Imaging <span class="hc-folder-count">8</span></div>
-                  <div class="hc-folder-row">&#128193; Pathology <span class="hc-folder-count">5</span></div>
-                  <div class="hc-folder-row">&#128193; Genetics <span class="hc-folder-count">3</span></div>
-                  <div class="hc-folder-row">&#128193; Treatment <span class="hc-folder-count">12</span></div>
-                </div>
-                <div class="hc-chat">
-                  <div class="hc-chat-bubble user" data-sk="Aké boli moje posledné výsledky?" data-en="What were my latest results?">Aké boli moje posledné výsledky?</div>
-                  <div class="hc-chat-bubble ai" data-sk="CEA kleslo z 12.4 na 8.1 ng/ml — dobrý trend. WBC a PLT v norme. Ďalšie odbery 2.5." data-en="CEA dropped from 12.4 to 8.1 ng/ml — good trend. WBC and PLT normal. Next labs May 2.">CEA kleslo z 12.4 na 8.1 ng/ml — dobrý trend. WBC a PLT v norme. Ďalšie odbery 2.5.</div>
-                  <div class="hc-badges">
-                    <span class="hc-badge" data-sk="Zadarmo" data-en="Free">Zadarmo</span>
-                    <span class="hc-badge">Open source</span>
-                    <span class="hc-badge" data-sk="Váš Google Drive" data-en="Your Google Drive">Váš Google Drive</span>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-        <div class="hc-dots" id="hc-dots">
-          <button class="hc-dot active" data-dot="0" aria-label="Slide 1"></button>
-          <button class="hc-dot" data-dot="1" aria-label="Slide 2"></button>
-          <button class="hc-dot" data-dot="2" aria-label="Slide 3"></button>
         </div>
 
         <div class="hero-cta">
@@ -1984,30 +1952,6 @@
   </div>
 
   <script>
-    // Hero carousel
-    (function(){
-      var slides=document.querySelectorAll('.hc-slide');
-      var dots=document.querySelectorAll('.hc-dot');
-      var cur=0,total=slides.length,timer;
-      function goTo(n){
-        slides[cur].classList.remove('active');
-        dots[cur].classList.remove('active');
-        cur=(n%total+total)%total;
-        slides[cur].classList.add('active');
-        dots[cur].classList.add('active');
-      }
-      function start(){timer=setInterval(function(){goTo(cur+1);},4000);}
-      function stop(){clearInterval(timer);}
-      dots.forEach(function(d){
-        d.addEventListener('click',function(){
-          stop();goTo(parseInt(this.getAttribute('data-dot')));start();
-        });
-      });
-      var el=document.getElementById('hero-carousel');
-      if(el){el.addEventListener('mouseenter',stop);el.addEventListener('mouseleave',start);}
-      start();
-    })();
-
     fetch('/api/stats').then(function(r){return r.json()}).then(function(d){
       var m = {'documents': d.documents, 'tools': d.tools, 'categories': d.categories, 'tests': d.tests, 'version': 'v'+d.version};
       Object.keys(m).forEach(function(k){
