@@ -116,21 +116,22 @@
     @import url('https://fonts.googleapis.com/css2?family=DM+Serif+Display&family=DM+Sans:ital,wght@0,400;0,500;0,700;1,400&display=swap');
 
     :root {
-      --bg: #0f172a;
-      --bg-deep: #080e1e;
-      --surface: #1e293b;
-      --surface-hover: #253347;
-      --border: #334155;
-      --border-light: #475569;
-      --text: #e2e8f0;
-      --text-muted: #94a3b8;
-      --text-dim: #64748b;
-      --accent: #14b8a6;
-      --accent-light: #2dd4bf;
-      --accent-glow: rgba(20, 184, 166, 0.15);
-      --purple: #8b5cf6;
-      --purple-light: #a78bfa;
-      --warm: #f59e0b;
+      --bg: #faf9f7;
+      --bg-deep: #f0eeeb;
+      --surface: #ffffff;
+      --surface-hover: #f5f3f0;
+      --border: #d5cfc5;
+      --border-light: #bfb8ad;
+      --card-shadow: 0 1px 3px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.04);
+      --text: #1e293b;
+      --text-muted: #556270;
+      --text-dim: #8c9aab;
+      --accent: #0d9488;
+      --accent-light: #14b8a6;
+      --accent-glow: rgba(13, 148, 136, 0.10);
+      --purple: #7c3aed;
+      --purple-light: #8b5cf6;
+      --warm: #d97706;
     }
 
     * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -154,7 +155,7 @@
       border-bottom: 1px solid var(--border);
       position: sticky;
       top: 0;
-      background: rgba(15, 23, 42, 0.85);
+      background: rgba(250, 249, 247, 0.85);
       backdrop-filter: blur(12px);
       -webkit-backdrop-filter: blur(12px);
       z-index: 100;
@@ -201,6 +202,7 @@
       background: var(--surface);
       border: 1px solid var(--border);
       border-radius: 9999px;
+      box-shadow: var(--card-shadow);
       padding: 0.3rem 1rem 0.3rem 0.5rem;
       font-size: 0.75rem;
       color: var(--text-muted);
@@ -252,7 +254,7 @@
     }
     .btn-primary {
       background: var(--accent);
-      color: var(--bg);
+      color: #ffffff;
     }
     .btn-primary:hover { background: var(--accent-light); }
     .btn-secondary {
@@ -332,6 +334,7 @@
       background: var(--surface);
       padding: 2rem 1.5rem;
       position: relative;
+      box-shadow: var(--card-shadow);
     }
     .step-num {
       font-family: 'DM Serif Display', Georgia, serif;
@@ -407,7 +410,7 @@
     }
     .chat-user {
       background: var(--accent);
-      color: var(--bg);
+      color: #ffffff;
       margin-left: auto;
       border-bottom-right-radius: 0.125rem;
     }
@@ -433,6 +436,7 @@
       border-radius: 0.75rem;
       padding: 1.75rem;
       transition: border-color 0.2s;
+      box-shadow: var(--card-shadow);
     }
     .feature:hover { border-color: var(--border-light); }
     .feature-icon {
@@ -474,6 +478,7 @@
       border-radius: 0.75rem;
       padding: 1.75rem;
       transition: border-color 0.2s;
+      box-shadow: var(--card-shadow);
     }
     .platform-card:hover { border-color: var(--border-light); }
     .platform-header {
@@ -535,6 +540,7 @@
       border-radius: 0.75rem;
       overflow: hidden;
       margin-top: 2rem;
+      box-shadow: var(--card-shadow);
     }
     .doc-detail-header {
       display: flex;
@@ -597,7 +603,7 @@
       border-radius: 0.25rem;
     }
     .doc-detail-preview .lab-row:nth-child(even) {
-      background: rgba(255,255,255,0.02);
+      background: rgba(0, 0, 0, 0.03);
     }
     .doc-detail-preview .lab-name { color: var(--text-muted); }
     .doc-detail-preview .lab-value { color: var(--text); font-weight: 500; }
@@ -642,7 +648,7 @@
       color: var(--accent);
     }
     .doc-pill-purple {
-      background: rgba(139, 92, 246, 0.12);
+      background: rgba(124, 58, 237, 0.10);
       color: var(--purple-light);
     }
     .doc-meta-summary {
@@ -693,6 +699,7 @@
       overflow: hidden;
       max-width: 640px;
       margin: 2rem auto 0;
+      box-shadow: var(--card-shadow);
     }
     .chat-header {
       padding: 0.75rem 1rem;
@@ -714,8 +721,8 @@
     }
     .chat-msg.user {
       align-self: flex-end;
-      background: rgba(20, 184, 166, 0.15);
-      border: 1px solid rgba(20, 184, 166, 0.25);
+      background: rgba(13, 148, 136, 0.10);
+      border: 1px solid rgba(13, 148, 136, 0.20);
       color: var(--text);
     }
     .chat-msg.assistant {
@@ -727,8 +734,8 @@
     .chat-tool {
       font-size: 0.6875rem;
       padding: 0.5rem 0.75rem;
-      background: rgba(139, 92, 246, 0.08);
-      border: 1px solid rgba(139, 92, 246, 0.2);
+      background: rgba(124, 58, 237, 0.08);
+      border: 1px solid rgba(124, 58, 237, 0.18);
       border-radius: 0.5rem;
       margin: 0.25rem 0;
       color: var(--purple);
@@ -763,6 +770,7 @@
       padding: 2.5rem;
       position: relative;
       overflow: hidden;
+      box-shadow: var(--card-shadow);
     }
     .story-card::before {
       content: '';
@@ -896,6 +904,7 @@
       display: flex;
       flex-direction: column;
       gap: 1rem;
+      box-shadow: var(--card-shadow);
     }
     .testimonial-card blockquote {
       font-size: 0.9375rem;
@@ -930,6 +939,7 @@
       border: 1px solid var(--border);
       border-radius: 12px;
       padding: 1.5rem;
+      box-shadow: var(--card-shadow);
     }
     .faq-item h3 {
       font-size: 1rem;
@@ -981,6 +991,105 @@
       text-underline-offset: 2px;
     }
     .faq-item a:hover { opacity: 0.8; }
+
+    /* ── Trust & Transparency ────────────────────── */
+    .trust { padding: 5rem 0; }
+    .trust-founders {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 1.5rem;
+      margin-bottom: 1.5rem;
+    }
+    .trust-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 0.75rem;
+      padding: 1.75rem;
+      display: flex;
+      gap: 1.25rem;
+      align-items: flex-start;
+      transition: border-color 0.2s;
+      box-shadow: var(--card-shadow);
+    }
+    .trust-card:hover { border-color: var(--border-light); }
+    .trust-avatar {
+      width: 3.5rem;
+      height: 3.5rem;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+    .trust-info { flex: 1; }
+    .trust-name {
+      font-size: 1rem;
+      font-weight: 700;
+      margin-bottom: 0.125rem;
+    }
+    .trust-name a { color: var(--text); text-decoration: none; }
+    .trust-name a:hover { color: var(--accent); }
+    .trust-role {
+      font-size: 0.8125rem;
+      color: var(--accent);
+      font-weight: 600;
+      margin-bottom: 0.5rem;
+    }
+    .trust-bio {
+      font-size: 0.8125rem;
+      color: var(--text-muted);
+      line-height: 1.6;
+    }
+    .trust-company {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 0.75rem;
+      padding: 1.75rem;
+      display: flex;
+      align-items: center;
+      gap: 1.25rem;
+      transition: border-color 0.2s;
+      box-shadow: var(--card-shadow);
+    }
+    .trust-company:hover { border-color: var(--border-light); }
+    .trust-company-logo {
+      width: 3.5rem;
+      height: 3.5rem;
+      border-radius: 0.75rem;
+      background: var(--warm);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+    }
+    .trust-company-info { flex: 1; }
+    .trust-company-name {
+      font-size: 1rem;
+      font-weight: 700;
+      margin-bottom: 0.25rem;
+    }
+    .trust-company-name a { color: var(--text); text-decoration: none; }
+    .trust-company-name a:hover { color: var(--accent); }
+    .trust-company-desc {
+      font-size: 0.8125rem;
+      color: var(--text-muted);
+      line-height: 1.6;
+    }
+    .trust-company-stats {
+      display: flex;
+      gap: 1.5rem;
+      margin-top: 0.75rem;
+    }
+    .trust-stat-item {
+      font-size: 0.75rem;
+      color: var(--text-dim);
+    }
+    .trust-stat-item strong {
+      color: var(--text);
+      font-weight: 700;
+    }
+    @media (max-width: 768px) {
+      .trust-founders { grid-template-columns: 1fr; }
+      .trust-card { padding: 1.25rem; }
+      .trust-company { flex-direction: column; align-items: flex-start; }
+    }
 
     /* ── Animations ────────────────────────────────── */
     @keyframes fadeUp {
@@ -1097,7 +1206,7 @@
                   <span style="display:inline-flex;align-items:center;gap:0.25rem;background:var(--surface);padding:0.25rem 0.75rem;border-radius:0.25rem;font-size:0.5625rem"><span style="color:var(--green)">&#10003;</span> Gmail (read-only)</span>
                   <span style="display:inline-flex;align-items:center;gap:0.25rem;background:var(--surface);padding:0.25rem 0.75rem;border-radius:0.25rem;font-size:0.5625rem"><span style="color:var(--green)">&#10003;</span> Calendar (read-only)</span>
                 </div>
-                <div style="margin-top:0.5rem;background:var(--accent);color:var(--bg);padding:0.25rem 1rem;border-radius:0.25rem;display:inline-block;font-size:0.625rem;font-weight:600">Allow</div>
+                <div style="margin-top:0.5rem;background:var(--accent);color:#fff;padding:0.25rem 1rem;border-radius:0.25rem;display:inline-block;font-size:0.625rem;font-weight:600">Allow</div>
               </div>
             </div>
           </div>
@@ -1594,6 +1703,52 @@
       </div>
     </section>
 
+    <!-- Trust & Transparency -->
+    <section class="trust" id="trust">
+      <div class="container" style="text-align:center">
+        <div class="section-label" data-sk="Kto za tým stojí" data-en="Who's Behind This">Kto za tým stojí</div>
+        <h2 class="section-title" data-sk="Skutoční ľudia, skutočná firma, 18 rokov skúseností" data-en="Real people, real company, 18 years of experience">Skutoční ľudia, skutočná firma, 18 rokov skúseností</h2>
+      </div>
+      <div class="container">
+        <div class="trust-founders">
+          <div class="trust-card">
+            <div class="trust-avatar">
+              <svg width="56" height="56" viewBox="0 0 56 56" fill="none"><circle cx="28" cy="28" r="28" fill="#0d9488"/><text x="28" y="33" text-anchor="middle" fill="white" font-family="DM Serif Display, Georgia, serif" font-size="20">PF</text></svg>
+            </div>
+            <div class="trust-info">
+              <div class="trust-name"><a href="https://www.linkedin.com/in/peterfusek/" rel="noreferrer noopener">Peter Fusek</a></div>
+              <div class="trust-role">CEO &amp; Founder</div>
+              <p class="trust-bio" data-sk="Sériový podnikateľ, ex-Tatra banka, marketlocator (→ Deutsche Telekom), poradca VÚB. 18+ rokov v technológiách a biznise." data-en="Serial entrepreneur, ex-Tatra banka, marketlocator (&rarr; Deutsche Telekom), VUB advisor. 18+ years in tech and business.">Sériový podnikateľ, ex-Tatra banka, marketlocator (→ Deutsche Telekom), poradca VÚB. 18+ rokov v technológiách a biznise.</p>
+            </div>
+          </div>
+          <div class="trust-card">
+            <div class="trust-avatar">
+              <svg width="56" height="56" viewBox="0 0 56 56" fill="none"><circle cx="28" cy="28" r="28" fill="#7c3aed"/><text x="28" y="33" text-anchor="middle" fill="white" font-family="DM Serif Display, Georgia, serif" font-size="20">PČ</text></svg>
+            </div>
+            <div class="trust-info">
+              <div class="trust-name">Peter Čapkovič</div>
+              <div class="trust-role">CTO &amp; Co-founder</div>
+              <p class="trust-bio" data-sk="20+ rokov enterprise banking (VÚB), .NET/Python/SQL. Navrhol architektúru všetkých produktov Instarea." data-en="20+ years enterprise banking (VUB), .NET/Python/SQL. Architected all Instarea products.">20+ rokov enterprise banking (VÚB), .NET/Python/SQL. Navrhol architektúru všetkých produktov Instarea.</p>
+            </div>
+          </div>
+        </div>
+        <div class="trust-company">
+          <div class="trust-company-logo">
+            <svg width="56" height="56" viewBox="0 0 56 56" fill="none"><rect width="56" height="56" rx="12" fill="#d97706"/><text x="28" y="34" text-anchor="middle" fill="white" font-family="DM Serif Display, Georgia, serif" font-size="18">IN</text></svg>
+          </div>
+          <div class="trust-company-info">
+            <div class="trust-company-name"><a href="https://www.instarea.com" rel="noreferrer noopener">Instarea</a></div>
+            <p class="trust-company-desc" data-sk="Slovenská technologická firma. 18 rokov na trhu, 23 dodaných produktov, 10+ členov tímu. Od bankových systémov cez geolokačné platformy až po AI v zdravotníctve." data-en="Slovak technology company. 18 years on the market, 23 products shipped, 10+ team members. From banking systems to geolocation platforms to AI in healthcare.">Slovenská technologická firma. 18 rokov na trhu, 23 dodaných produktov, 10+ členov tímu. Od bankových systémov cez geolokačné platformy až po AI v zdravotníctve.</p>
+            <div class="trust-company-stats">
+              <span class="trust-stat-item"><strong>18</strong> <span data-sk="rokov" data-en="years">rokov</span></span>
+              <span class="trust-stat-item"><strong>23</strong> <span data-sk="produktov" data-en="products">produktov</span></span>
+              <span class="trust-stat-item"><strong>10+</strong> <span data-sk="členov tímu" data-en="team members">členov tímu</span></span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
   </main>
 
   <footer>
@@ -1612,8 +1767,8 @@
   </footer>
 
   <!-- Bug Report FAB + Modal -->
-  <button id="bug-fab" title="Report a bug" style="position:fixed;bottom:1.5rem;right:1.5rem;width:48px;height:48px;border-radius:50%;background:#dc2626;color:white;border:none;cursor:pointer;font-size:1.25rem;box-shadow:0 4px 12px rgba(0,0,0,0.4);z-index:1000;display:flex;align-items:center;justify-content:center;transition:transform 0.15s" aria-label="Report a bug">&#128027;</button>
-  <div id="bug-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:1001;align-items:center;justify-content:center">
+  <button id="bug-fab" title="Report a bug" style="position:fixed;bottom:1.5rem;right:1.5rem;width:48px;height:48px;border-radius:50%;background:#dc2626;color:white;border:none;cursor:pointer;font-size:1.25rem;box-shadow:0 4px 12px rgba(0,0,0,0.15);z-index:1000;display:flex;align-items:center;justify-content:center;transition:transform 0.15s" aria-label="Report a bug">&#128027;</button>
+  <div id="bug-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.4);z-index:1001;align-items:center;justify-content:center">
     <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;max-width:480px;width:90%;padding:1.5rem">
       <h3 style="margin:0 0 1rem;font-size:1.1rem" data-sk="Nahlásiť chybu" data-en="Report a Bug">Nahlásiť chybu</h3>
       <input id="bug-title" type="text" maxlength="120" style="width:100%;padding:0.625rem;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:6px;font-size:0.9375rem;margin-bottom:0.75rem;box-sizing:border-box" data-placeholder-sk="Čo nefunguje? (jeden riadok)" data-placeholder-en="What went wrong? (one-liner)" placeholder="Čo nefunguje? (jeden riadok)">
