@@ -174,4 +174,45 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 ---
 
+## Who's Behind This
+
+### The People
+
+<table>
+<tr>
+<td width="50%">
+
+**Peter Fusek** — CEO & Founder
+
+Serial entrepreneur and AI strategist. 4 years at Tatra banka. Co-founded marketlocator (exit to Deutsche Telekom). Advisor to VÚB Bank CEO. 18+ years building technology products.
+
+Built Oncofiles from personal need — managing his wife's cancer treatment across hundreds of documents, dozens of doctors, and constantly changing lab results.
+
+[LinkedIn](https://www.linkedin.com/in/peterfusek/) · peter.fusek@instarea.com
+
+</td>
+<td width="50%">
+
+**Peter Čapkovič** — CTO & Co-founder
+
+Senior IT architect with 20+ years in enterprise banking (VÚB). Expert in .NET, Python, SQL, and systems architecture. Led architecture across all Instarea products.
+
+Architecture, development, operations — everything under one roof.
+
+[LinkedIn](https://www.linkedin.com/in/peter-capkovic/)
+
+</td>
+</tr>
+</table>
+
+### The Company
+
+**[Instarea](https://www.instarea.com)** — 18 years, 23 products shipped. From telecom analytics and enterprise clients (Callinspector) to mobile-first fintech (InventButton), big data exits (marketlocator → Deutsche Telekom), IoT platforms, and AI-first products (PulseShape, ReplicaCity, HomeGrif).
+
+Oncofiles and [Oncoteam](https://github.com/peter-fusek/oncoteam) are Instarea's latest — built with the same engineering discipline that delivered enterprise-grade products for banking, telecom, and data industries.
+
+10+ verified, synchronized team members available across front-end, back-end, integration, data science, UX/UI, marketing, and cloud ops.
+
+> *"We take it personally, with our own faces, like family and at work."*
+
 Built by [Instarea](https://www.instarea.com) | Aligned with [EHDS](https://health.ec.europa.eu/ehealth-digital-health-and-care/european-health-data-space_en) principles
