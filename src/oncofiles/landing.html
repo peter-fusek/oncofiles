@@ -1091,50 +1091,51 @@
       .trust-company { flex-direction: column; align-items: flex-start; }
     }
 
-    /* ── Hero Visual: Before → After ─────────────── */
+    /* ── Hero Visual: Living Transformation ────────── */
     .hc-panel {
       display: flex; align-items: center; gap: 1.5rem;
       max-width: 760px; margin: 2rem auto 1.5rem; padding: 0.5rem 1rem;
+      position: relative;
     }
     .hc-label {
       font-size: 0.625rem; font-weight: 600; text-transform: uppercase;
       letter-spacing: 0.06em; color: var(--text-dim); margin-bottom: 0.5rem;
       text-align: center;
     }
-    /* Left: paper stack */
-    .hc-before { flex: 1; animation: fadeUp 0.5s ease-out 0.2s both; }
+    /* Left: paper pile — continuous cycle */
+    .hc-before { flex: 1; }
     .hc-stack {
-      position: relative; height: 210px; max-width: 260px; margin: 0 auto;
+      position: relative; height: 220px; max-width: 260px; margin: 0 auto;
+      overflow: visible;
     }
     .hc-paper {
-      position: absolute; background: #fff; border: 1px solid #e0dbd4;
+      position: absolute; background: #fefdfb; border: 1px solid #ddd7ce;
       border-radius: 3px; padding: 0.625rem 0.75rem;
-      box-shadow: 0 2px 6px rgba(0,0,0,0.08), 0 6px 16px rgba(0,0,0,0.04);
-      font-size: 0.625rem; color: var(--text-muted); width: 180px;
-      transform: rotate(var(--rot, 0deg));
+      box-shadow: 0 2px 8px rgba(0,0,0,0.10), 0 8px 20px rgba(0,0,0,0.05);
+      font-size: 0.625rem; color: var(--text-muted); width: 190px;
+      animation: paperCycle 8s ease-in-out infinite;
     }
-    .hc-paper .hc-ptype {
-      font-size: 0.5rem; text-transform: uppercase; letter-spacing: 0.04em;
-      color: var(--text-dim); margin-bottom: 0.25rem;
-    }
+    .hc-paper .hc-picon { font-size: 0.875rem; margin-bottom: 0.125rem; }
     .hc-paper .hc-pfname {
       font-family: 'DM Mono', ui-monospace, monospace; font-size: 0.5625rem;
       color: var(--text-muted); word-break: break-all;
     }
-    @keyframes paperDrop {
-      from { opacity: 0; transform: translateY(-16px) rotate(var(--rot, 0deg)); }
-      to { opacity: 1; transform: translateY(0) rotate(var(--rot, 0deg)); }
+    @keyframes paperCycle {
+      0%   { opacity: 0; transform: translateY(-20px) rotate(var(--rot, 0deg)); }
+      8%   { opacity: 1; transform: translateY(0) rotate(var(--rot, 0deg)); }
+      55%  { opacity: 1; transform: translateY(0) rotate(var(--rot, 0deg)); }
+      75%  { opacity: 0.4; transform: translateX(60px) translateY(-10px) scale(0.75) rotate(0deg); }
+      100% { opacity: 0; transform: translateX(100px) translateY(-20px) scale(0.5) rotate(0deg); }
     }
-    .hc-paper:nth-child(1) { animation: paperDrop 0.35s ease-out 0.15s both; }
-    .hc-paper:nth-child(2) { animation: paperDrop 0.35s ease-out 0.25s both; }
-    .hc-paper:nth-child(3) { animation: paperDrop 0.35s ease-out 0.35s both; }
-    .hc-paper:nth-child(4) { animation: paperDrop 0.35s ease-out 0.45s both; }
-    .hc-paper:nth-child(5) { animation: paperDrop 0.35s ease-out 0.55s both; }
-    /* Center: arrow */
+    .hc-paper:nth-child(1) { animation-delay: 0s; }
+    .hc-paper:nth-child(2) { animation-delay: 1.6s; }
+    .hc-paper:nth-child(3) { animation-delay: 3.2s; }
+    .hc-paper:nth-child(4) { animation-delay: 4.8s; }
+    .hc-paper:nth-child(5) { animation-delay: 6.4s; }
+    /* Center: arrow + flowing dots */
     .hc-arrow {
       flex-shrink: 0; display: flex; flex-direction: column;
-      align-items: center; gap: 0.25rem;
-      animation: fadeUp 0.5s ease-out 0.5s both;
+      align-items: center; gap: 0.25rem; position: relative;
     }
     .hc-arrow-icon {
       width: 44px; height: 44px; border-radius: 50%;
@@ -1143,23 +1144,37 @@
       font-weight: 700; font-size: 0.875rem;
       box-shadow: 0 0 16px var(--accent-glow), 0 0 32px var(--accent-glow);
       animation: pulse 2s ease-in-out infinite;
+      z-index: 2;
     }
     @keyframes pulse {
       0%, 100% { box-shadow: 0 0 16px var(--accent-glow), 0 0 32px var(--accent-glow); }
-      50% { box-shadow: 0 0 24px var(--accent-glow), 0 0 48px rgba(13,148,136,0.15); }
+      50% { box-shadow: 0 0 24px var(--accent-glow), 0 0 48px rgba(13,148,136,0.18); }
     }
     .hc-arrow-label {
       font-size: 0.5rem; font-weight: 600; color: var(--accent);
       text-transform: uppercase; letter-spacing: 0.04em;
     }
+    /* Flowing dots */
+    .hc-flow-track {
+      position: absolute; top: 50%; left: -60px; right: -60px; height: 2px;
+      pointer-events: none; z-index: 1;
+    }
+    .hc-dot-flow {
+      position: absolute; width: 6px; height: 6px; border-radius: 50%;
+      background: var(--accent); top: -2px;
+      animation: dotFlow 2.5s ease-in-out infinite;
+    }
+    @keyframes dotFlow {
+      0%   { left: 0%; opacity: 0; transform: scale(0.5); }
+      15%  { opacity: 1; transform: scale(1); }
+      85%  { opacity: 1; transform: scale(1); }
+      100% { left: 100%; opacity: 0; transform: scale(0.5); }
+    }
+    .hc-dot-flow:nth-child(1) { animation-delay: 0s; }
+    .hc-dot-flow:nth-child(2) { animation-delay: 0.8s; }
+    .hc-dot-flow:nth-child(3) { animation-delay: 1.6s; }
     /* Right: result */
-    .hc-after {
-      flex: 1; animation: slideInRight 0.5s ease-out 0.6s both;
-    }
-    @keyframes slideInRight {
-      from { opacity: 0; transform: translateX(20px); }
-      to { opacity: 1; transform: translateX(0); }
-    }
+    .hc-after { flex: 1; }
     .hc-folders {
       background: var(--bg); border: 1px solid var(--border);
       border-radius: 0.5rem; padding: 0.75rem; font-size: 0.6875rem;
@@ -1172,7 +1187,15 @@
       color: var(--text-muted); font-size: 0.625rem;
     }
     .hc-folder-count { color: var(--text-dim); font-size: 0.5625rem; margin-left: auto; }
-    .hc-chat { display: flex; flex-direction: column; gap: 0.375rem; margin-bottom: 0.5rem; }
+    .hc-chat {
+      display: flex; flex-direction: column; gap: 0.375rem; margin-bottom: 0.5rem;
+      min-height: 3.5rem; position: relative;
+    }
+    .hc-chat-pair {
+      display: flex; flex-direction: column; gap: 0.375rem;
+      transition: opacity 0.6s ease;
+    }
+    .hc-chat-pair.hidden { opacity: 0; position: absolute; inset: 0; }
     .hc-chat-bubble {
       padding: 0.375rem 0.625rem; border-radius: 0.5rem;
       font-size: 0.625rem; line-height: 1.4; max-width: 95%;
@@ -1197,12 +1220,13 @@
     @media (max-width: 768px) {
       .hc-panel { flex-direction: column; gap: 1rem; }
       .hc-arrow { flex-direction: row; }
-      .hc-stack { height: 180px; max-width: 220px; }
-      .hc-paper { width: 155px; padding: 0.5rem; }
+      .hc-flow-track { display: none; }
+      .hc-stack { height: 190px; max-width: 230px; }
+      .hc-paper { width: 165px; padding: 0.5rem; }
     }
     @media (max-width: 480px) {
-      .hc-stack { height: 160px; max-width: 190px; }
-      .hc-paper { width: 140px; font-size: 0.5625rem; }
+      .hc-stack { height: 170px; max-width: 200px; }
+      .hc-paper { width: 150px; font-size: 0.5625rem; }
     }
 
     /* ── Animations ────────────────────────────────── */
@@ -1237,40 +1261,45 @@
         <h1><span data-sk="Vaše zdravotné záznamy," data-en="Your medical records,">Vaše zdravotné záznamy,</span><br><em data-sk="konečne na jednom mieste" data-en="finally in one place">konečne na jednom mieste</em></h1>
         <p class="subtitle" data-sk="Dostali ste diagnózu a neviete, kde začať? Výsledky v Gmaili, skeny na Google Drive, termíny v kalendári. Oncofiles všetko prečíta, zorganizuje a sprístupní cez AI — pýtajte sa prirodzene v Claude alebo ChatGPT." data-en="Just got a diagnosis and don't know where to start? Lab results in Gmail, scans on Google Drive, appointments in Calendar. Oncofiles reads everything, organizes it, and makes it available through AI — ask naturally in Claude or ChatGPT.">Dostali ste diagnózu a neviete, kde začať? Výsledky v Gmaili, skeny na Google Drive, termíny v kalendári. Oncofiles všetko prečíta, zorganizuje a sprístupní cez AI — pýtajte sa prirodzene v Claude alebo ChatGPT.</p>
 
-        <!-- Hero Visual: Before → After -->
+        <!-- Hero Visual: Living Transformation -->
         <div class="hc-panel">
-          <!-- Left: The Mess -->
+          <!-- Left: Papers arriving continuously -->
           <div class="hc-before">
             <div class="hc-label" data-sk="Pred Oncofiles" data-en="Before Oncofiles">Pred Oncofiles</div>
             <div class="hc-stack">
               <div class="hc-paper" style="--rot:-2deg;top:0;left:10px">
-                <div class="hc-ptype">&#128231; email</div>
+                <div class="hc-picon">&#128231;</div>
                 <div class="hc-pfname"><span data-sk="Preposl.: výsledky" data-en="Fwd: results">Preposl.: výsledky</span></div>
               </div>
-              <div class="hc-paper" style="--rot:3deg;top:32px;left:30px">
-                <div class="hc-ptype">&#128247; foto</div>
+              <div class="hc-paper" style="--rot:3deg;top:36px;left:30px">
+                <div class="hc-picon">&#128247;</div>
                 <div class="hc-pfname">IMG_20250918_lab.jpg</div>
               </div>
-              <div class="hc-paper" style="--rot:-1deg;top:64px;left:5px">
-                <div class="hc-ptype">&#128196; pdf</div>
+              <div class="hc-paper" style="--rot:-1deg;top:72px;left:5px">
+                <div class="hc-picon">&#128196;</div>
                 <div class="hc-pfname">vysledky(1).pdf</div>
               </div>
-              <div class="hc-paper" style="--rot:2deg;top:96px;left:25px">
-                <div class="hc-ptype">&#128196; pdf</div>
+              <div class="hc-paper" style="--rot:2deg;top:108px;left:25px">
+                <div class="hc-picon">&#128196;</div>
                 <div class="hc-pfname">CT_bruso_final_v2.pdf</div>
               </div>
-              <div class="hc-paper" style="--rot:-3deg;top:128px;left:15px">
-                <div class="hc-ptype">&#128196; pdf</div>
+              <div class="hc-paper" style="--rot:-3deg;top:144px;left:15px">
+                <div class="hc-picon">&#128196;</div>
                 <div class="hc-pfname">dokument(3).pdf</div>
               </div>
             </div>
           </div>
-          <!-- Center: Arrow -->
+          <!-- Center: Arrow + flowing data dots -->
           <div class="hc-arrow">
+            <div class="hc-flow-track">
+              <div class="hc-dot-flow"></div>
+              <div class="hc-dot-flow"></div>
+              <div class="hc-dot-flow"></div>
+            </div>
             <div class="hc-arrow-icon">&#8594;</div>
             <div class="hc-arrow-label">OCR + AI</div>
           </div>
-          <!-- Right: The Result -->
+          <!-- Right: Organized result -->
           <div class="hc-after">
             <div class="hc-label" data-sk="S Oncofiles" data-en="With Oncofiles">S Oncofiles</div>
             <div class="hc-folders">
@@ -1281,8 +1310,14 @@
               <div class="hc-folder-row">&#128193; Treatment <span class="hc-folder-count">12</span></div>
             </div>
             <div class="hc-chat">
-              <div class="hc-chat-bubble user" data-sk="Aké boli moje posledné výsledky?" data-en="What were my latest results?">Aké boli moje posledné výsledky?</div>
-              <div class="hc-chat-bubble ai" data-sk="CEA kleslo z 12.4 na 8.1 — dobrý trend." data-en="CEA dropped from 12.4 to 8.1 — good trend.">CEA kleslo z 12.4 na 8.1 — dobrý trend.</div>
+              <div class="hc-chat-pair" id="hc-chat-0">
+                <div class="hc-chat-bubble user" data-sk="Aké boli moje posledné výsledky?" data-en="What were my latest results?">Aké boli moje posledné výsledky?</div>
+                <div class="hc-chat-bubble ai" data-sk="CEA kleslo z 12.4 na 8.1 — dobrý trend." data-en="CEA dropped from 12.4 to 8.1 — good trend.">CEA kleslo z 12.4 na 8.1 — dobrý trend.</div>
+              </div>
+              <div class="hc-chat-pair hidden" id="hc-chat-1">
+                <div class="hc-chat-bubble user" data-sk="Kedy mám ďalšiu kontrolu?" data-en="When is my next checkup?">Kedy mám ďalšiu kontrolu?</div>
+                <div class="hc-chat-bubble ai" data-sk="CT kontrola 15.5. o 9:00, NOU Bratislava." data-en="CT checkup May 15 at 9:00, NOU Bratislava.">CT kontrola 15.5. o 9:00, NOU Bratislava.</div>
+              </div>
             </div>
             <div class="hc-badges">
               <span class="hc-badge" data-sk="Zadarmo" data-en="Free">Zadarmo</span>
@@ -1952,6 +1987,18 @@
   </div>
 
   <script>
+    // Chat rotation
+    (function(){
+      var pairs=document.querySelectorAll('.hc-chat-pair');
+      if(pairs.length<2)return;
+      var cur=0;
+      setInterval(function(){
+        pairs[cur].classList.add('hidden');
+        cur=(cur+1)%pairs.length;
+        pairs[cur].classList.remove('hidden');
+      },5000);
+    })();
+
     fetch('/api/stats').then(function(r){return r.json()}).then(function(d){
       var m = {'documents': d.documents, 'tools': d.tools, 'categories': d.categories, 'tests': d.tests, 'version': 'v'+d.version};
       Object.keys(m).forEach(function(k){
