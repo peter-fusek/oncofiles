@@ -3,6 +3,10 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <!-- Early language restore — prevents FOUC for returning EN users -->
+  <script>
+    (function(){var l=localStorage.getItem('oncofiles_lang');if(l==='en')document.documentElement.lang='en';})();
+  </script>
   <!-- Google tag (gtag.js) -->
   <script async src="https://www.googletagmanager.com/gtag/js?id=G-JPSK46QKRB"></script>
   <script>
@@ -84,6 +88,16 @@
           "@type": "Question",
           "name": "What types of medical documents does Oncofiles support?",
           "acceptedAnswer": { "@type": "Answer", "text": "Oncofiles automatically categorizes documents into 17 types: labs, imaging (CT/MRI/USG), pathology, genetics, surgery, discharge summaries, prescriptions, referrals, chemo sheets, vaccination, dental, preventive care, and more. PDF, JPEG, PNG, and Excel files are supported with automatic OCR." }
+        },
+        {
+          "@type": "Question",
+          "name": "How much does Oncofiles cost?",
+          "acceptedAnswer": { "@type": "Answer", "text": "Oncofiles is free for up to 200 documents per patient. No credit card, no hidden fees. Open-source under the MIT license — you can also self-host it completely free." }
+        },
+        {
+          "@type": "Question",
+          "name": "Who pays for the infrastructure?",
+          "acceptedAnswer": { "@type": "Answer", "text": "Currently Peter Fusek personally funds the servers, database, and domain. Monthly costs: Railway hosting ~€5, Turso database ~€0 (free tier), domain ~€12/year. Total under €10/month." }
         }
       ]
     },
@@ -1561,6 +1575,20 @@
           <div class="faq-item">
             <h3 data-sk="Môžu to odporúčať zdravotníci?" data-en="Can healthcare providers recommend this?">Môžu to odporúčať zdravotníci?</h3>
             <p data-sk="Určite. Oncofiles je open-source, zadarmo do 200 dokumentov a navrhnutý pre pacientov a opatrovateľov. Fyzioterapeuti, zdravotné sestry aj pacientski advokáti ho už odporúčajú." data-en="Absolutely. Oncofiles is open-source, free up to 200 documents, and designed for patients and caregivers. Physiotherapists, nurses, and patient advocates already recommend it.">Určite. Oncofiles je open-source, zadarmo do 200 dokumentov a navrhnutý pre pacientov a opatrovateľov. Fyzioterapeuti, zdravotné sestry aj pacientski advokáti ho už odporúčajú.</p>
+          </div>
+
+          <div class="faq-section-label" data-sk="Náklady a financovanie" data-en="Costs &amp; Funding">Náklady a financovanie</div>
+          <div class="faq-item">
+            <h3 data-sk="Koľko to stojí?" data-en="How much does it cost?">Koľko to stojí?</h3>
+            <p data-sk="Oncofiles je zadarmo do 200 dokumentov na pacienta. Žiadna kreditná karta, žiadne skryté poplatky. Open-source pod MIT licenciou — môžete si ho aj hostiť sami úplne zadarmo." data-en="Oncofiles is free for up to 200 documents per patient. No credit card, no hidden fees. Open-source under the MIT license — you can also self-host it completely free.">Oncofiles je zadarmo do 200 dokumentov na pacienta. Žiadna kreditná karta, žiadne skryté poplatky. Open-source pod MIT licenciou — môžete si ho aj hostiť sami úplne zadarmo.</p>
+          </div>
+          <div class="faq-item">
+            <h3 data-sk="Kto platí za prevádzku?" data-en="Who pays for the infrastructure?">Kto platí za prevádzku?</h3>
+            <p data-sk="Aktuálne Peter Fusek osobne financuje servery, databázu a doménu. Mesačné náklady: Railway hosting ~5 €, Turso databáza ~0 € (free tier), doména ~12 €/rok. Celkovo pod 10 € mesačne." data-en="Currently Peter Fusek personally funds the servers, database, and domain. Monthly costs: Railway hosting ~€5, Turso database ~€0 (free tier), domain ~€12/year. Total under €10/month.">Aktuálne Peter Fusek osobne financuje servery, databázu a doménu. Mesačné náklady: Railway hosting ~5 €, Turso databáza ~0 € (free tier), doména ~12 €/rok. Celkovo pod 10 € mesačne.</p>
+          </div>
+          <div class="faq-item">
+            <h3 data-sk="Môžem prispieť alebo podporiť projekt?" data-en="Can I contribute or support the project?">Môžem prispieť alebo podporiť projekt?</h3>
+            <p data-sk="Áno! Najviac pomôžete zdieľaním s tými, ktorí to potrebujú — pacientmi, opatrovateľmi, zdravotníkmi. Ak chcete prispieť kódom, projekt je na GitHub-e. Finančná podpora zatiaľ nie je nastavená, ale pripravujeme ju." data-en="Yes! The best way to help is sharing Oncofiles with those who need it — patients, caregivers, healthcare providers. Code contributions are welcome on GitHub. Financial support options are coming soon.">Áno! Najviac pomôžete zdieľaním s tými, ktorí to potrebujú — pacientmi, opatrovateľmi, zdravotníkmi. Ak chcete prispieť kódom, projekt je na GitHub-e. Finančná podpora zatiaľ nie je nastavená, ale pripravujeme ju.</p>
           </div>
         </div>
       </div>

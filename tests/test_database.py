@@ -1,9 +1,12 @@
 """Tests for the database module."""
 
+import sqlite3
 from datetime import date
 
+import pytest
+
 from oncofiles.database import Database
-from oncofiles.models import DocumentCategory, SearchQuery
+from oncofiles.models import DocumentCategory, Patient, SearchQuery
 from tests.helpers import ERIKA_UUID, make_doc
 
 
@@ -437,3 +440,10 @@ async def test_ocr_preserved_on_soft_delete(db: Database):
     await db.delete_document(doc.id)
     # OCR pages still exist (soft delete doesn't cascade)
     assert await db.has_ocr_text(doc.id) is True
+
+
+async def test_duplicate_slug_rejected(db: Database):
+    """Inserting a patient with an existing slug raises IntegrityError (#325)."""
+    await db.insert_patient(Patient(patient_id="dup-test", display_name="First"))
+    with pytest.raises(sqlite3.IntegrityError):
+        await db.insert_patient(Patient(patient_id="dup-test", display_name="Second"))
