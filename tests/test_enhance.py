@@ -315,9 +315,16 @@ async def test_enhance_backfills_null_date_and_institution(db: Database):
         "document_date": "2026-02-23",
     }
 
+    classification = {
+        "institution_code": "BoryNemocnica",
+        "category": "pathology",
+        "document_date": "2026-02-23",
+    }
+
     with (
         patch("oncofiles.sync.enhance_document_text", return_value=("AI summary", '["pathology"]')),
         patch("oncofiles.sync.extract_structured_metadata", return_value=metadata),
+        patch("oncofiles.enhance.classify_document", return_value=classification),
         patch("oncofiles.sync.generate_filename_description", return_value="GeneticsKrasResults"),
     ):
         stats = await enhance_documents(

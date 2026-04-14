@@ -396,3 +396,78 @@ def generate_filename_description(
 
     cleaned = re.sub(r"[^a-zA-Z0-9]", "", raw)
     return cleaned[:60]
+
+
+CLASSIFY_SYSTEM_PROMPT = (
+    "You are a medical document classifier. Given document text, return a JSON object "
+    "with exactly 3 keys:\n"
+    '- "institution_code": The medical institution. Known codes: '
+    "NOU, BoryNemocnica, OUSA, UNB, Medirex, Alpha, Synlab, Cytopathos, BIOPTIKA, "
+    "Agel, ProCare, Medante, ISCare, SvMichal, Kramarska, Medifera, Unilabs, "
+    "VeselyKlinika, Urosanus, Sportmed, ProSanus, UNZBratislava, Aseseta, Mediros, "
+    "Europacolon, PacientAdvokat, VitalSource, NCCN. "
+    "Look at letterhead, stamps, addresses, provider names. "
+    "If identifiable but not listed, create CamelCase code. null if unknown.\n"
+    '- "category": One of: labs, report, imaging, pathology, genetics, surgery, '
+    "consultation, prescription, referral, discharge, chemo_sheet, reference, "
+    "advocate, other, vaccination, dental, preventive.\n"
+    '- "document_date": Clinical encounter date (YYYY-MM-DD). '
+    "NOT DOB, NOT appointments. null if unknown.\n\n"
+    "Respond ONLY with the JSON object."
+)
+
+
+def classify_document(
+    text: str,
+    *,
+    db=None,
+    document_id: int | None = None,
+) -> dict:
+    """Classify a document: institution, category, and date using AI.
+
+    Lightweight dedicated call — more reliable than embedding these fields
+    in the larger metadata extraction prompt.
+
+    Returns dict with institution_code, category, document_date (all nullable).
+    """
+    if not text.strip():
+        return {"institution_code": None, "category": "other", "document_date": None}
+
+    client = _get_client()
+    truncated = text[:6000]
+    user_prompt = f"Document text:\n\n{truncated}"
+
+    start = time.perf_counter()
+    response = client.messages.create(
+        model=ENHANCE_MODEL,
+        max_tokens=256,
+        system=CLASSIFY_SYSTEM_PROMPT,
+        messages=[{"role": "user", "content": user_prompt}],
+    )
+    duration_ms = int((time.perf_counter() - start) * 1000)
+
+    raw = response.content[0].text if response.content else "{}"
+
+    log_ai_call(
+        db,
+        call_type="doc_classification",
+        document_id=document_id,
+        model=ENHANCE_MODEL,
+        system_prompt=CLASSIFY_SYSTEM_PROMPT,
+        user_prompt=user_prompt,
+        raw_response=raw,
+        input_tokens=getattr(response.usage, "input_tokens", None),
+        output_tokens=getattr(response.usage, "output_tokens", None),
+        duration_ms=duration_ms,
+    )
+
+    try:
+        parsed = json.loads(_strip_markdown_fencing(raw))
+        return {
+            "institution_code": parsed.get("institution_code"),
+            "category": parsed.get("category", "other"),
+            "document_date": parsed.get("document_date"),
+        }
+    except json.JSONDecodeError:
+        logger.warning("Failed to parse classification response: %s", raw[:200])
+        return {"institution_code": None, "category": "other", "document_date": None}

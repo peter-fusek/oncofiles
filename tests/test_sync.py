@@ -811,9 +811,16 @@ async def test_sync_import_nonstandard_filename_backfills_metadata(db: Database)
         "document_date": "2026-02-23",
     }
 
+    classification = {
+        "institution_code": "BoryNemocnica",
+        "category": "pathology",
+        "document_date": "2026-02-23",
+    }
+
     with (
         patch("oncofiles.sync.enhance_document_text", return_value=("AI summary", '["pathology"]')),
         patch("oncofiles.sync.extract_structured_metadata", return_value=metadata),
+        patch("oncofiles.enhance.classify_document", return_value=classification),
         patch("oncofiles.sync.generate_filename_description", return_value="PathologyKrasResults"),
         patch("oncofiles.server._extract_pdf_text", return_value=["Pathology report text"]),
     ):

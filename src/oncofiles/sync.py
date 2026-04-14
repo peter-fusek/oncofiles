@@ -1759,15 +1759,22 @@ async def _enhance_document(
             doc.filename,
         )
 
-    # ── Backfill null top-level fields from AI metadata ──────────────────
-    if metadata:
+    # ── Backfill null top-level fields via AI classification ──────────────
+    needs_classification = (
+        not doc.document_date or not doc.institution or doc.category.value == "other"
+    )
+    if needs_classification and full_text:
+        from oncofiles.enhance import classify_document
+
+        classification = classify_document(full_text, db=db, document_id=doc.id)
+
         backfill_date = None
         backfill_institution = None
         backfill_description = None
 
-        # Date: AI document_date first, then filename YYYYMMDD, then GDrive time
+        # Date from AI classification
         if not doc.document_date:
-            ai_date = metadata.get("document_date")
+            ai_date = classification.get("document_date")
             if ai_date:
                 try:
                     from datetime import date as _date
@@ -1779,8 +1786,9 @@ async def _enhance_document(
                             "enhance: doc %d — backfill date=%s (AI)", doc.id, backfill_date
                         )
                 except (ValueError, TypeError):
-                    logger.warning("enhance: doc %d — invalid AI date %r", doc.id, ai_date)
+                    pass
 
+            # Fallback: filename YYYYMMDD
             if not backfill_date:
                 import re as _re
 
@@ -1793,38 +1801,28 @@ async def _enhance_document(
                         parsed = _date(int(y), int(m), int(d))
                         if 1900 <= parsed.year <= 2030:
                             backfill_date = parsed.isoformat()
-                            logger.info(
-                                "enhance: doc %d — backfill date=%s (filename)",
-                                doc.id,
-                                backfill_date,
-                            )
                     except ValueError:
                         pass
 
+            # Fallback: GDrive time
             if not backfill_date and doc.gdrive_modified_time:
                 backfill_date = doc.gdrive_modified_time.strftime("%Y-%m-%d")
-                logger.info("enhance: doc %d — backfill date=%s (GDrive)", doc.id, backfill_date)
 
-        # Institution: AI institution_code first, then keyword fallback
+        # Institution from AI classification
         if not doc.institution:
-            ai_inst = metadata.get("institution_code")
+            ai_inst = classification.get("institution_code")
             if ai_inst:
                 backfill_institution = ai_inst
                 logger.info("enhance: doc %d — backfill institution=%s (AI)", doc.id, ai_inst)
-            else:
-                # Fallback: keyword matching (deprecated, for transition)
+            elif metadata:
+                # Fallback: keyword matching (deprecated)
                 providers = metadata.get("providers", [])
                 inst = infer_institution_from_providers(providers)
                 if inst:
                     backfill_institution = inst
-                    logger.info(
-                        "enhance: doc %d — backfill institution=%s (keyword fallback)",
-                        doc.id,
-                        inst,
-                    )
 
-        # Category: AI category can upgrade "other" to specific
-        ai_category = metadata.get("category")
+        # Category from AI classification (only upgrade other → specific)
+        ai_category = classification.get("category")
         if ai_category and doc.category.value == "other" and ai_category != "other":
             from oncofiles.models import DocumentCategory as _DocCat
 
@@ -1832,12 +1830,10 @@ async def _enhance_document(
                 valid_cat = _DocCat(ai_category)
                 await db.update_document_category(doc.id, valid_cat.value)
                 logger.info(
-                    "enhance: doc %d — category upgraded other → %s (AI)",
-                    doc.id,
-                    valid_cat.value,
+                    "enhance: doc %d — category %s → %s (AI)", doc.id, "other", valid_cat.value
                 )
             except ValueError:
-                logger.warning("enhance: doc %d — invalid AI category %r", doc.id, ai_category)
+                pass
 
         # Description: generate English CamelCase description if filename is non-standard
         if not is_standard_format(doc.filename, patient_id=patient_id):

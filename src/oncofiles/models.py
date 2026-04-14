@@ -412,6 +412,7 @@ class PromptCallType(StrEnum):
     DOC_COMPOSITION = "doc_composition"
     DOC_CONSOLIDATION = "doc_consolidation"
     DOC_RELATIONSHIPS = "doc_relationships"
+    DOC_CLASSIFICATION = "doc_classification"
 
 
 class PromptLogEntry(BaseModel):

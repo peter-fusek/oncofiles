@@ -236,9 +236,7 @@ async def backfill_ai_classification(
 
     Returns stats dict.
     """
-    import json as _json
-
-    from oncofiles.enhance import extract_structured_metadata
+    from oncofiles.enhance import classify_document
 
     stats = {
         "scanned": 0,
@@ -272,12 +270,12 @@ async def backfill_ai_classification(
         full_text = "\n\n".join(p["extracted_text"] for p in pages)
 
         try:
-            metadata = extract_structured_metadata(full_text, db=db, document_id=doc.id)
+            classification = classify_document(full_text, db=db, document_id=doc.id)
 
             change = {"doc_id": doc.id, "filename": doc.filename, "updates": {}}
 
             # Institution from AI
-            ai_inst = metadata.get("institution_code")
+            ai_inst = classification.get("institution_code")
             if doc.institution is None and ai_inst:
                 change["updates"]["institution"] = {"old": None, "new": ai_inst}
                 stats["institution_fixed"] += 1
@@ -288,7 +286,7 @@ async def backfill_ai_classification(
                     )
 
             # Category from AI
-            ai_cat = metadata.get("category")
+            ai_cat = classification.get("category")
             if doc.category.value == "other" and ai_cat and ai_cat != "other":
                 from oncofiles.models import DocumentCategory as _DocCat
 
@@ -305,7 +303,7 @@ async def backfill_ai_classification(
                     pass
 
             # Date from AI
-            ai_date = metadata.get("document_date")
+            ai_date = classification.get("document_date")
             if doc.document_date is None and ai_date:
                 from datetime import date as _date
 
@@ -324,12 +322,6 @@ async def backfill_ai_classification(
                             )
                 except (ValueError, TypeError):
                     pass
-
-            # Update structured_metadata with the new AI results
-            if not dry_run and change["updates"]:
-                await db.update_structured_metadata(
-                    doc.id, _json.dumps(metadata, ensure_ascii=False)
-                )
 
             if change["updates"]:
                 stats["changes"].append(change)
