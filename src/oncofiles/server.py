@@ -21,7 +21,7 @@ from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, Response
 
 from oncofiles.config import (
-    DASHBOARD_ALLOWED_EMAILS,
+    DASHBOARD_ADMIN_EMAILS,
     DATABASE_PATH,
     GOOGLE_DRIVE_FOLDER_ID,
     GOOGLE_OAUTH_CLIENT_ID,
@@ -2609,17 +2609,32 @@ def _verify_session_token(token: str) -> str | None:
     return email
 
 
+def _get_dashboard_email(request: Request) -> str | None:
+    """Extract the authenticated user's email from the session token.
+
+    Returns the email for session-authenticated users, None for bearer-token
+    (admin) auth or unauthenticated requests.
+    """
+    auth_header = request.headers.get("authorization", "")
+    if auth_header.startswith("Bearer session:"):
+        session_token = auth_header.removeprefix("Bearer session:").strip()
+        return _verify_session_token(session_token)
+    return None
+
+
+def _is_admin_email(email: str | None) -> bool:
+    """Check whether *email* belongs to a dashboard admin."""
+    return email is not None and email.lower() in DASHBOARD_ADMIN_EMAILS
+
+
 def _check_dashboard_auth(request: Request) -> JSONResponse | None:
     """Check bearer token OR dashboard session token. Returns error response or None."""
     # Try standard bearer token first
     if _check_bearer(request) is None:
         return None
     # Try dashboard session token (Bearer session:xxx)
-    auth_header = request.headers.get("authorization", "")
-    if auth_header.startswith("Bearer session:"):
-        session_token = auth_header.removeprefix("Bearer session:").strip()
-        if _verify_session_token(session_token):
-            return None
+    if _get_dashboard_email(request) is not None:
+        return None
     return JSONResponse({"error": "unauthorized"}, status_code=401)
 
 
@@ -3051,21 +3066,7 @@ async def dashboard_verify(request: Request) -> JSONResponse:
     if email_verified not in ("true", True):
         return JSONResponse({"error": "email not verified"}, status_code=401)
 
-    allowed = set(DASHBOARD_ALLOWED_EMAILS)
-    # Also allow caregiver emails from the patients table
-    try:
-        db_auth: Database = request.app.state.fastmcp_server._lifespan_result["db"]
-        all_patients = await db_auth.list_patients(active_only=True)
-        for p in all_patients:
-            if p.caregiver_email:
-                allowed.add(p.caregiver_email.lower())
-    except Exception:
-        pass
-    if email not in allowed:
-        logger.warning("Dashboard login denied for: %s", email)
-        return JSONResponse({"error": "access denied for this email"}, status_code=403)
-
-    # Issue session token
+    # Issue session token (open signup — any verified Google email can sign in)
     session_token = _make_session_token(email)
     logger.info("Dashboard session issued for: %s", email)
     return JSONResponse(
@@ -3624,13 +3625,26 @@ Fix file: `src/oncofiles/dashboard.html`
 
 @mcp.custom_route("/api/patients", methods=["GET"])
 async def api_list_patients(request: Request) -> JSONResponse:
-    """List all patients. Requires bearer or dashboard session auth."""
+    """List patients visible to the authenticated user.
+
+    Admins (bearer token or admin email) see all patients.
+    Regular users see only patients where caregiver_email matches.
+    """
     err = _check_dashboard_auth(request)
     if err:
         return err
     try:
         db_inst: Database = request.app.state.fastmcp_server._lifespan_result["db"]
         patients = await db_inst.list_patients(active_only=False)
+
+        # Scope: non-admin session users only see their own patients
+        email = _get_dashboard_email(request)
+        is_admin = _check_bearer(request) is None or _is_admin_email(email)
+        if not is_admin and email:
+            patients = [
+                p for p in patients if p.caregiver_email and p.caregiver_email.lower() == email
+            ]
+
         return JSONResponse(
             [
                 {
@@ -3685,10 +3699,13 @@ async def api_create_patient(request: Request) -> JSONResponse:
                 {"error": f"Patient '{patient_id}' already exists"}, status_code=409
             )
 
+        # Default caregiver_email to the signed-in user so they can see the patient
+        caregiver_email = body.get("caregiver_email") or _get_dashboard_email(request)
+
         patient = Patient(
             patient_id=patient_id,
             display_name=body.get("display_name", patient_id),
-            caregiver_email=body.get("caregiver_email"),
+            caregiver_email=caregiver_email,
             diagnosis_summary=body.get("diagnosis_summary"),
             preferred_lang=body.get("preferred_lang", "sk"),
         )
@@ -4240,6 +4257,16 @@ async def oauth_callback(request: Request) -> JSONResponse:
     valid, patient_id = verify_state_token(state)
     if not valid or not patient_id:
         return JSONResponse({"error": "Invalid or expired state parameter."}, status_code=400)
+
+    # Validate that the patient still exists (#345)
+    db_check: Database = request.app.state.fastmcp_server._lifespan_result["db"]
+    patient = await db_check.get_patient(patient_id)
+    if not patient:
+        logger.warning("OAuth callback for deleted patient: %s", patient_id)
+        return JSONResponse(
+            {"error": "Patient no longer exists. Please create a new patient from the dashboard."},
+            status_code=404,
+        )
 
     code = request.query_params.get("code")
     if not code:

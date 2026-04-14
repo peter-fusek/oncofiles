@@ -197,7 +197,7 @@ def test_dashboard_verify_route_exists():
     assert callable(dashboard_verify)
     source = inspect.getsource(dashboard_verify)
     assert "tokeninfo" in source
-    assert "DASHBOARD_ALLOWED_EMAILS" in source
+    assert "session_token" in source
 
 
 def test_dashboard_html_exists():
@@ -277,8 +277,107 @@ def test_check_dashboard_auth_rejects_invalid():
         assert result.status_code == 401
 
 
-def test_dashboard_allowed_emails_config():
-    """DASHBOARD_ALLOWED_EMAILS defaults to empty (set via env var in prod)."""
-    from oncofiles.config import DASHBOARD_ALLOWED_EMAILS
+def test_dashboard_admin_emails_config():
+    """DASHBOARD_ADMIN_EMAILS defaults to a list (set via env var in prod)."""
+    from oncofiles.config import DASHBOARD_ADMIN_EMAILS
 
-    assert isinstance(DASHBOARD_ALLOWED_EMAILS, list)
+    assert isinstance(DASHBOARD_ADMIN_EMAILS, list)
+
+
+# ── Open signup (#341) ──────────────────────────────────────────────
+
+
+def test_get_dashboard_email_returns_email_for_session():
+    """_get_dashboard_email extracts email from valid session token."""
+    from oncofiles.server import _get_dashboard_email, _make_session_token
+
+    with patch("oncofiles.server.MCP_BEARER_TOKEN", "test-secret"):
+        session = _make_session_token("user@example.com")
+        request = _make_request("Bearer session:" + session)
+        assert _get_dashboard_email(request) == "user@example.com"
+
+
+def test_get_dashboard_email_returns_none_for_bearer():
+    """_get_dashboard_email returns None for standard bearer token auth."""
+    from oncofiles.server import _get_dashboard_email
+
+    request = _make_request("Bearer some-token")
+    assert _get_dashboard_email(request) is None
+
+
+def test_is_admin_email_true_for_configured():
+    """_is_admin_email returns True for configured admin emails."""
+    from oncofiles.server import _is_admin_email
+
+    with patch("oncofiles.server.DASHBOARD_ADMIN_EMAILS", ["admin@test.com"]):
+        assert _is_admin_email("admin@test.com") is True
+        assert _is_admin_email("Admin@Test.com") is True
+
+
+def test_is_admin_email_false_for_regular_user():
+    """_is_admin_email returns False for non-admin emails."""
+    from oncofiles.server import _is_admin_email
+
+    with patch("oncofiles.server.DASHBOARD_ADMIN_EMAILS", ["admin@test.com"]):
+        assert _is_admin_email("user@test.com") is False
+        assert _is_admin_email(None) is False
+
+
+def test_dashboard_verify_no_allowlist_check():
+    """dashboard_verify no longer references DASHBOARD_ALLOWED_EMAILS for gating."""
+    import inspect
+
+    from oncofiles.server import dashboard_verify
+
+    source = inspect.getsource(dashboard_verify)
+    # The allowlist gate has been removed — open signup
+    assert "access denied for this email" not in source
+    assert "DASHBOARD_ALLOWED_EMAILS" not in source
+
+
+# ── Patient ID guard (#342) ─────────────────────────────────────────
+
+
+def test_get_patient_id_raises_when_empty():
+    """_get_patient_id raises ValueError with helpful message when no patient selected."""
+    import pytest
+
+    from oncofiles.tools._helpers import _get_patient_id
+
+    with patch("oncofiles.patient_middleware._current_patient_id") as mock_cv:
+        mock_cv.get.return_value = ""
+        with pytest.raises(ValueError, match="No patient selected"):
+            _get_patient_id()
+
+
+def test_get_patient_id_allows_empty_when_not_required():
+    """_get_patient_id(required=False) returns empty string without raising."""
+    from oncofiles.tools._helpers import _get_patient_id
+
+    with patch("oncofiles.patient_middleware._current_patient_id") as mock_cv:
+        mock_cv.get.return_value = ""
+        result = _get_patient_id(required=False)
+        assert result == ""
+
+
+def test_get_patient_id_returns_value_when_set():
+    """_get_patient_id returns the patient_id when set."""
+    from oncofiles.tools._helpers import _get_patient_id
+
+    with patch("oncofiles.patient_middleware._current_patient_id") as mock_cv:
+        mock_cv.get.return_value = "test-patient-123"
+        assert _get_patient_id() == "test-patient-123"
+
+
+# ── OAuth callback patient validation (#345) ────────────────────────
+
+
+def test_oauth_callback_validates_patient_exists():
+    """oauth_callback checks that patient exists before exchanging code."""
+    import inspect
+
+    from oncofiles.server import oauth_callback
+
+    source = inspect.getsource(oauth_callback)
+    assert "get_patient" in source
+    assert "no longer exists" in source.lower() or "Patient no longer exists" in source

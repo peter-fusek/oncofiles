@@ -65,11 +65,25 @@ def _patient_context_text() -> str:
 # ── Context accessors ────────────────────────────────────────────────────────
 
 
-def _get_patient_id() -> str:
-    """Get the current patient_id (set by PatientResolutionMiddleware)."""
+def _get_patient_id(*, required: bool = True) -> str:
+    """Get the current patient_id (set by PatientResolutionMiddleware).
+
+    Args:
+        required: If True (default), raises ValueError when no patient is
+            selected. Set to False for bootstrapping tools (list_patients,
+            select_patient) that must work without a patient.
+    """
     from oncofiles.patient_middleware import get_current_patient_id
 
-    return get_current_patient_id()
+    pid = get_current_patient_id()
+    if not pid and required:
+        raise ValueError(
+            "No patient selected. "
+            "Use list_patients() to see available patients, "
+            "then select_patient(patient_id) to choose one. "
+            "If you have no patients yet, create one from the dashboard at https://oncofiles.com/dashboard"
+        )
+    return pid
 
 
 def _get_db(ctx: Context) -> Database:
@@ -106,7 +120,7 @@ async def _get_calendar_client(ctx: Context):
 
 async def _get_patient_clients(ctx: Context) -> tuple | None:
     """Load per-patient GDrive/Gmail/Calendar clients via _create_patient_clients."""
-    pid = _get_patient_id()
+    pid = _get_patient_id(required=False)
     if not pid:
         return None
     db = _get_db(ctx)

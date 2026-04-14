@@ -70,8 +70,23 @@ async def list_patients(ctx: Context) -> str:
     and patient type. Use select_patient to switch to a different patient.
     """
     db = _get_db(ctx)
-    current_pid = _get_patient_id()
+    current_pid = _get_patient_id(required=False)
     patients = await db.list_patients(active_only=True)
+    if not patients:
+        return json.dumps(
+            {
+                "patients": [],
+                "guidance": (
+                    "No patients found. To get started:\n"
+                    "1. Go to https://oncofiles.com/dashboard\n"
+                    "2. Sign in with Google\n"
+                    "3. Click '+ New Patient' to create your first patient\n"
+                    "4. Connect Google Drive to start uploading documents"
+                ),
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
     result = []
     for p in patients:
         doc_count = await db.count_documents(patient_id=p.patient_id)
@@ -117,7 +132,7 @@ async def select_patient(
         )
 
     # Store selection — keyed by the owner_email from the current patient's OAuth token
-    current_pid = _get_patient_id()
+    current_pid = _get_patient_id(required=False)
     token = await db.get_oauth_token(patient_id=current_pid)
     owner_email = token.owner_email if token else None
 
