@@ -310,6 +310,9 @@ async def test_enhance_backfills_null_date_and_institution(db: Database):
         "providers": ["MUDr. Rychlý Boris, PhD.", "Nemocnica Bory"],
         "plain_summary": "Pathology report.",
         "plain_summary_sk": "Patologická správa.",
+        "institution_code": "BoryNemocnica",
+        "category": "pathology",
+        "document_date": "2026-02-23",
     }
 
     with (

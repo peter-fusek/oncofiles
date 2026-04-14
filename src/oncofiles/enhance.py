@@ -224,7 +224,27 @@ METADATA_SYSTEM_PROMPT = (
     '(e.g. ["MUDr. Novak", "Dr. Smith"])\n'
     '- "handwritten": boolean — true if any part of the document appears handwritten\n'
     '- "plain_summary": 3-sentence patient-friendly summary in English\n'
-    '- "plain_summary_sk": The same patient-friendly summary in Slovak (slovenčina)\n\n'
+    '- "plain_summary_sk": The same patient-friendly summary in Slovak (slovenčina)\n'
+    '- "institution_code": Identify the medical institution from letterhead, stamp, address, '
+    "provider names, or any context in the document. Known codes: "
+    "NOU, BoryNemocnica, OUSA, UNB, Medirex, Alpha, Synlab, Cytopathos, BIOPTIKA, Agel, "
+    "ProCare, Medante, Euromedic, ISCare, SvMichal, Kramarska, Medifera, Unilabs, "
+    "VeselyKlinika, Urosanus, Sportmed, ProSanus, UNZBratislava, Aseseta, Mediros, "
+    "Europacolon, MinnesotaUniversity, SocialnaPoistovna, PacientAdvokat, VitalSource, NCCN. "
+    "If the institution is identifiable but not in this list, create a new CamelCase code "
+    "(e.g. NemocnicaPetrzalka). Return null for insurance companies, pharmaceutical "
+    "companies, or truly unidentifiable sources.\n"
+    '- "category": Classify the document into exactly one of: labs, report, imaging, '
+    "pathology, genetics, surgery, consultation, prescription, referral, discharge, "
+    "chemo_sheet, reference, advocate, other, vaccination, dental, preventive. "
+    'Use "genetics" for molecular/DNA testing (KRAS, MSI, HER2, BRAF panels). '
+    'Use "pathology" for tissue histology/biopsy morphology reports. '
+    'Use "reference" for textbook excerpts, clinical guidelines (DeVita, NCCN, ESMO). '
+    'Use "advocate" for patient advocacy documents.\n'
+    '- "document_date": The date of the actual clinical encounter, exam, or report creation '
+    "in YYYY-MM-DD format. This should be the visit/procedure date, NOT the patient's date "
+    "of birth, NOT future appointment dates, NOT printing timestamps. "
+    "Return null if the document date cannot be determined.\n\n"
     "Respond ONLY with the JSON object, no markdown fencing or extra text."
 )
 
@@ -257,6 +277,9 @@ def extract_structured_metadata(
             "handwritten": False,
             "plain_summary": "",
             "plain_summary_sk": "",
+            "institution_code": None,
+            "category": "other",
+            "document_date": None,
         }
 
     client = _get_client()

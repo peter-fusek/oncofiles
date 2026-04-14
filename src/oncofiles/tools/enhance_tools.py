@@ -211,9 +211,28 @@ async def detect_and_consolidate_documents(ctx: Context, dry_run: bool = True) -
     return json.dumps(results, default=str)
 
 
+async def backfill_ai_classification(ctx: Context, dry_run: bool = True) -> str:
+    """Re-run AI classification on documents with missing institution, category, or date.
+
+    Uses AI to read full document content (letterhead, stamps, addresses) to infer
+    institution codes, correct categories, and extract document dates — replacing
+    keyword-based heuristics with semantic understanding.
+
+    Args:
+        dry_run: If True (default), only report what would change without making updates.
+    """
+    from oncofiles.backfill_splits import backfill_ai_classification as _backfill
+
+    db = _get_db(ctx)
+    pid = _get_patient_id()
+    stats = await _backfill(db, patient_id=pid, dry_run=dry_run)
+    return json.dumps(stats, default=str)
+
+
 def register(mcp):
     mcp.tool()(enhance_documents)
     mcp.tool()(extract_document_metadata)
     mcp.tool()(extract_all_metadata)
     mcp.tool()(detect_and_split_documents)
     mcp.tool()(detect_and_consolidate_documents)
+    mcp.tool()(backfill_ai_classification)

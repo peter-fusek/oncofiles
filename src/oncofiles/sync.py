@@ -1759,85 +1759,85 @@ async def _enhance_document(
             doc.filename,
         )
 
-    # ── Backfill null top-level fields from structured metadata ──────────
+    # ── Backfill null top-level fields from AI metadata ──────────────────
     if metadata:
         backfill_date = None
         backfill_institution = None
         backfill_description = None
 
-        # Date: prefer filename YYYYMMDD prefix, then AI dates, then GDrive/created time
+        # Date: AI document_date first, then filename YYYYMMDD, then GDrive time
         if not doc.document_date:
-            # Trust filename date prefix first (avoids AI extracting DOB as document date)
-            import re as _re
-
-            fn_match = _re.match(r"^(\d{4})(\d{2})(\d{2})_", doc.filename)
-            if fn_match:
-                y, m, d = fn_match.groups()
-                # Validate with date() constructor — prevents invalid month/day
+            ai_date = metadata.get("document_date")
+            if ai_date:
                 try:
                     from datetime import date as _date
 
-                    parsed = _date(int(y), int(m), int(d))
-                    if 2020 <= parsed.year <= 2030:
+                    parsed = _date.fromisoformat(ai_date)
+                    if 1900 <= parsed.year <= 2030:
                         backfill_date = parsed.isoformat()
                         logger.info(
-                            "enhance: doc %d — backfill date=%s (from filename)",
-                            doc.id,
-                            backfill_date,
+                            "enhance: doc %d — backfill date=%s (AI)", doc.id, backfill_date
                         )
-                except ValueError:
-                    logger.warning(
-                        "enhance: doc %d — invalid filename date %s-%s-%s, skipping",
-                        doc.id,
-                        y,
-                        m,
-                        d,
-                    )
-            if not backfill_date:
-                dates = metadata.get("dates_mentioned", [])
-                if dates:
-                    from datetime import date as _date
+                except (ValueError, TypeError):
+                    logger.warning("enhance: doc %d — invalid AI date %r", doc.id, ai_date)
 
-                    # Pick the latest valid date — most likely the exam/visit
-                    # date. Year range 1970-2030 filters out artifacts.
-                    # Using MAX avoids DOB (usually the oldest date).
-                    best_date = None
-                    for d_str in dates:
-                        try:
-                            parsed = _date.fromisoformat(d_str)
-                            if not (1970 <= parsed.year <= 2030):
-                                continue
-                            if best_date is None or parsed > best_date:
-                                best_date = parsed
-                        except (ValueError, TypeError):
-                            logger.warning(
-                                "enhance: doc %d — invalid AI date %r, skipping",
+            if not backfill_date:
+                import re as _re
+
+                fn_match = _re.match(r"^(\d{4})(\d{2})(\d{2})_", doc.filename)
+                if fn_match:
+                    y, m, d = fn_match.groups()
+                    try:
+                        from datetime import date as _date
+
+                        parsed = _date(int(y), int(m), int(d))
+                        if 1900 <= parsed.year <= 2030:
+                            backfill_date = parsed.isoformat()
+                            logger.info(
+                                "enhance: doc %d — backfill date=%s (filename)",
                                 doc.id,
-                                d_str,
+                                backfill_date,
                             )
-                    if best_date:
-                        backfill_date = best_date.isoformat()
-                        logger.info(
-                            "enhance: doc %d — backfill date=%s (from AI, latest)",
-                            doc.id,
-                            backfill_date,
-                        )
+                    except ValueError:
+                        pass
+
             if not backfill_date and doc.gdrive_modified_time:
                 backfill_date = doc.gdrive_modified_time.strftime("%Y-%m-%d")
                 logger.info("enhance: doc %d — backfill date=%s (GDrive)", doc.id, backfill_date)
-            if not backfill_date and doc.created_at:
-                backfill_date = doc.created_at.strftime("%Y-%m-%d")
-                logger.info(
-                    "enhance: doc %d — backfill date=%s (created_at)", doc.id, backfill_date
-                )
 
-        # Institution: map providers to known institution codes
+        # Institution: AI institution_code first, then keyword fallback
         if not doc.institution:
-            providers = metadata.get("providers", [])
-            inst = infer_institution_from_providers(providers)
-            if inst:
-                backfill_institution = inst
-                logger.info("enhance: doc %d — backfill institution=%s", doc.id, inst)
+            ai_inst = metadata.get("institution_code")
+            if ai_inst:
+                backfill_institution = ai_inst
+                logger.info("enhance: doc %d — backfill institution=%s (AI)", doc.id, ai_inst)
+            else:
+                # Fallback: keyword matching (deprecated, for transition)
+                providers = metadata.get("providers", [])
+                inst = infer_institution_from_providers(providers)
+                if inst:
+                    backfill_institution = inst
+                    logger.info(
+                        "enhance: doc %d — backfill institution=%s (keyword fallback)",
+                        doc.id,
+                        inst,
+                    )
+
+        # Category: AI category can upgrade "other" to specific
+        ai_category = metadata.get("category")
+        if ai_category and doc.category.value == "other" and ai_category != "other":
+            from oncofiles.models import DocumentCategory as _DocCat
+
+            try:
+                valid_cat = _DocCat(ai_category)
+                await db.update_document_category(doc.id, valid_cat.value)
+                logger.info(
+                    "enhance: doc %d — category upgraded other → %s (AI)",
+                    doc.id,
+                    valid_cat.value,
+                )
+            except ValueError:
+                logger.warning("enhance: doc %d — invalid AI category %r", doc.id, ai_category)
 
         # Description: generate English CamelCase description if filename is non-standard
         if not is_standard_format(doc.filename, patient_id=patient_id):

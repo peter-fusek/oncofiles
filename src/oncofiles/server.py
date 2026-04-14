@@ -831,12 +831,7 @@ def _start_sync_scheduler(
         id="metadata_extraction",
         max_instances=1,
     )
-    scheduler.add_job(
-        _run_institution_backfill,
-        CronTrigger(hour=3, minute=35),  # daily at 3:35 AM (after metadata extraction)
-        id="institution_backfill",
-        max_instances=1,
-    )
+    # institution_backfill removed — AI handles institution inference in enhance pipeline
     scheduler.add_job(
         _run_trash_cleanup,
         CronTrigger(hour=3, minute=0),  # daily at 3 AM
@@ -882,11 +877,10 @@ def _start_sync_scheduler(
     )
 
     async def _run_category_validation():
-        """Auto-correct document categories after metadata extraction."""
+        """AI-powered document classification and dedup sweep."""
 
         async def _do_category_validation():
             from oncofiles.models import DocumentCategory as _DocCat  # noqa: N814
-            from oncofiles.tools.hygiene import _DOCTYPE_TO_CATEGORY
 
             patients = await db.list_patients(active_only=True)
             all_docs = []
@@ -897,76 +891,38 @@ def _start_sync_scheduler(
 
             corrected = 0
 
-            # Phase 0: Remap deprecated categories (#140)
+            # Phase 0: Remap deprecated categories (structural, keep)
             for doc in docs:
                 if doc.category.value == "surgical_report":
                     await db.update_document_category(doc.id, "surgery")
                     corrected += 1
                     logger.info("Category remap: %s surgical_report → surgery", doc.filename)
 
-            # Phase 1: AI metadata-based category correction
+            # Phase 1: AI category from structured_metadata.category field
             for doc in docs:
-                if not doc.structured_metadata or doc.category.value in ("advocate", "reference"):
+                if not doc.structured_metadata or doc.deleted_at:
                     continue
+                if doc.category.value != "other":
+                    continue  # only upgrade "other" → specific
                 try:
                     meta = _json.loads(doc.structured_metadata)
                 except (ValueError, TypeError):
-                    logger.info(
-                        "Category validation: unparseable metadata for doc %d (%s)",
-                        doc.id,
-                        doc.filename,
-                    )
                     continue
-                doc_type = meta.get("document_type")
-                if not doc_type:
-                    continue
-                expected = _DOCTYPE_TO_CATEGORY.get(doc_type)
-                if not expected and doc_type in {c.value for c in _DocCat}:
-                    expected = doc_type
-                if expected and doc.category.value != expected:
-                    await db.update_document_category(doc.id, expected)
-                    corrected += 1
-                    logger.info(
-                        "Category auto-corrected: %s %s → %s",
-                        doc.filename,
-                        doc.category.value,
-                        expected,
-                    )
-            # Also auto-detect reference materials in "other" category
-            ref_keywords = (
-                "devita",
-                "nccn",
-                "modra_kniha",
-                "modrakniha",
-                "esmo",
-                "guideline",
-            )
-            for doc in docs:
-                if doc.category.value != "other":
-                    continue
-                fn = doc.filename.lower()
-                combined = fn + " " + (doc.ai_summary or "").lower()
-                # Match by keywords OR by VitalSource institution (DeVita page splits)
-                is_reference = any(kw in combined for kw in ref_keywords) or (
-                    doc.institution == "VitalSource"
-                )
-                if is_reference:
-                    await db.update_document_category(doc.id, "reference")
-                    corrected += 1
-                    logger.info("Reference auto-detected: %s other → reference", doc.filename)
+                ai_cat = meta.get("category")
+                if ai_cat and ai_cat != "other":
+                    try:
+                        valid_cat = _DocCat(ai_cat)
+                        await db.update_document_category(doc.id, valid_cat.value)
+                        corrected += 1
+                        logger.info(
+                            "Category AI-corrected: %s other → %s",
+                            doc.filename,
+                            valid_cat.value,
+                        )
+                    except ValueError:
+                        pass
 
-            # Phase 3: Auto-detect advocate files in "other" category (#141)
-            advocate_keywords = ("advokat", "advocate", "pacientadvokat", "patient_advocate")
-            for doc in docs:
-                if doc.category.value != "other":
-                    continue
-                combined = doc.filename.lower() + " " + (doc.ai_summary or "").lower()
-                if any(kw in combined for kw in advocate_keywords):
-                    await db.update_document_category(doc.id, "advocate")
-                    corrected += 1
-                    logger.info("Advocate auto-detected: %s other → advocate", doc.filename)
-
-            # Phase 4: Dedup scan — soft-delete duplicate files (#144)
+            # Phase 2: Dedup scan — soft-delete duplicate files by md5 (keep)
             deduped = 0
             from collections import defaultdict
 
@@ -980,7 +936,6 @@ def _start_sync_scheduler(
             for _key, group_docs in groups.items():
                 if len(group_docs) < 2:
                     continue
-                # Within group, find docs with matching gdrive_md5
                 by_md5: dict[str, list] = defaultdict(list)
                 for doc in group_docs:
                     if doc.gdrive_md5:
@@ -988,7 +943,6 @@ def _start_sync_scheduler(
                 for md5, dups in by_md5.items():
                     if len(dups) < 2:
                         continue
-                    # Keep oldest (lowest id), soft-delete rest
                     dups.sort(key=lambda d: d.id)
                     for dup in dups[1:]:
                         await db.delete_document(dup.id)
@@ -1004,44 +958,11 @@ def _start_sync_scheduler(
             if deduped:
                 logger.info("Dedup scan: soft-deleted %d duplicates", deduped)
 
-            # Phase 5: Flag undated docs for date extraction (#143)
-            undated = 0
-            for doc in docs:
-                if doc.document_date or doc.deleted_at:
-                    continue
-                # Try to extract date from filename (YYYYMMDD prefix)
-                import re as _re
-
-                date_match = _re.match(r"(\d{8})", doc.filename)
-                if date_match:
-                    try:
-                        from datetime import date as _date
-
-                        extracted = _date(
-                            int(date_match.group(1)[:4]),
-                            int(date_match.group(1)[4:6]),
-                            int(date_match.group(1)[6:8]),
-                        )
-                        await db.db.execute(
-                            "UPDATE documents SET document_date = ?, "
-                            "updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') "
-                            "WHERE id = ?",
-                            (extracted.isoformat(), doc.id),
-                        )
-                        await db.db.commit()
-                        undated += 1
-                        logger.info("Date extracted: %s → %s", doc.filename, extracted.isoformat())
-                    except (ValueError, IndexError):
-                        pass
-            if undated:
-                logger.info("Undated fix: extracted dates for %d documents", undated)
-
-            if corrected or deduped or undated:
+            if corrected or deduped:
                 logger.info(
-                    "Category validation total: %d corrected, %d deduped, %d dates extracted",
+                    "Category validation total: %d corrected, %d deduped",
                     corrected,
                     deduped,
-                    undated,
                 )
 
         try:

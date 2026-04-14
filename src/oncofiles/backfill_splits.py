@@ -218,3 +218,138 @@ async def rebuild_cross_references(
 
     logger.info("rebuild_cross_references: %s", stats)
     return stats
+
+
+async def backfill_ai_classification(
+    db: Database,
+    *,
+    patient_id: str,
+    dry_run: bool = True,
+) -> dict:
+    """Re-run AI metadata extraction on docs with missing institution/category.
+
+    Uses the expanded extract_structured_metadata prompt that returns
+    institution_code, category, and document_date from full document context.
+
+    Args:
+        dry_run: If True, only report what would change without making updates.
+
+    Returns stats dict.
+    """
+    import json as _json
+
+    from oncofiles.enhance import extract_structured_metadata
+
+    stats = {
+        "scanned": 0,
+        "institution_fixed": 0,
+        "category_fixed": 0,
+        "date_fixed": 0,
+        "skipped": 0,
+        "errors": 0,
+        "changes": [],
+    }
+
+    all_docs = await db.list_documents(limit=200, patient_id=patient_id)
+    batch_count = 0
+
+    for doc in all_docs:
+        if doc.deleted_at:
+            continue
+
+        needs_work = (
+            doc.institution is None or doc.category.value == "other" or doc.document_date is None
+        )
+        if not needs_work:
+            continue
+
+        if not await db.has_ocr_text(doc.id):
+            stats["skipped"] += 1
+            continue
+
+        stats["scanned"] += 1
+        pages = await db.get_ocr_pages(doc.id)
+        full_text = "\n\n".join(p["extracted_text"] for p in pages)
+
+        try:
+            metadata = extract_structured_metadata(full_text, db=db, document_id=doc.id)
+
+            change = {"doc_id": doc.id, "filename": doc.filename, "updates": {}}
+
+            # Institution from AI
+            ai_inst = metadata.get("institution_code")
+            if doc.institution is None and ai_inst:
+                change["updates"]["institution"] = {"old": None, "new": ai_inst}
+                stats["institution_fixed"] += 1
+                if not dry_run:
+                    await db.db.execute(
+                        "UPDATE documents SET institution = ? WHERE id = ?",
+                        (ai_inst, doc.id),
+                    )
+
+            # Category from AI
+            ai_cat = metadata.get("category")
+            if doc.category.value == "other" and ai_cat and ai_cat != "other":
+                from oncofiles.models import DocumentCategory as _DocCat
+
+                try:
+                    _DocCat(ai_cat)  # validate
+                    change["updates"]["category"] = {
+                        "old": "other",
+                        "new": ai_cat,
+                    }
+                    stats["category_fixed"] += 1
+                    if not dry_run:
+                        await db.update_document_category(doc.id, ai_cat)
+                except ValueError:
+                    pass
+
+            # Date from AI
+            ai_date = metadata.get("document_date")
+            if doc.document_date is None and ai_date:
+                from datetime import date as _date
+
+                try:
+                    parsed = _date.fromisoformat(ai_date)
+                    if 1900 <= parsed.year <= 2030:
+                        change["updates"]["document_date"] = {
+                            "old": None,
+                            "new": ai_date,
+                        }
+                        stats["date_fixed"] += 1
+                        if not dry_run:
+                            await db.db.execute(
+                                "UPDATE documents SET document_date = ? WHERE id = ?",
+                                (ai_date, doc.id),
+                            )
+                except (ValueError, TypeError):
+                    pass
+
+            # Update structured_metadata with the new AI results
+            if not dry_run and change["updates"]:
+                await db.update_structured_metadata(
+                    doc.id, _json.dumps(metadata, ensure_ascii=False)
+                )
+
+            if change["updates"]:
+                stats["changes"].append(change)
+                logger.info(
+                    "backfill_ai: doc %d (%s) — %s",
+                    doc.id,
+                    doc.filename,
+                    change["updates"],
+                )
+
+        except Exception:
+            logger.warning("backfill_ai: error on doc %d", doc.id, exc_info=True)
+            stats["errors"] += 1
+
+        batch_count += 1
+        if batch_count % 5 == 0:
+            gc.collect()
+
+    if not dry_run:
+        await db.db.commit()
+
+    logger.info("backfill_ai_classification: %s (dry_run=%s)", stats, dry_run)
+    return stats

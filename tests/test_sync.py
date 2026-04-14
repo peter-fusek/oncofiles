@@ -806,6 +806,9 @@ async def test_sync_import_nonstandard_filename_backfills_metadata(db: Database)
         "providers": ["MUDr. Rychlý Boris, PhD.", "Nemocnica Bory"],
         "plain_summary": "Pathology report.",
         "plain_summary_sk": "Patologická správa.",
+        "institution_code": "BoryNemocnica",
+        "category": "pathology",
+        "document_date": "2026-02-23",
     }
 
     with (
