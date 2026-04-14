@@ -502,6 +502,28 @@ async def get_related_documents(ctx: Context, doc_id: int) -> str:
     return json.dumps({"document_id": doc_id, "related": items, "total": len(items)})
 
 
+async def get_document_group(ctx: Context, group_id: str) -> str:
+    """Get all documents in a logical group (split siblings or consolidated parts).
+
+    Documents that were split from a multi-document PDF or consolidated from
+    multiple files share a group_id. Returns all parts ordered by part_number.
+
+    Args:
+        group_id: The UUID group identifier.
+    """
+    db = _get_db(ctx)
+    docs = await db.get_documents_by_group(group_id)
+    if not docs:
+        return json.dumps({"error": f"No documents found for group: {group_id}"})
+    return json.dumps(
+        {
+            "group_id": group_id,
+            "total_parts": docs[0].total_parts,
+            "documents": [_doc_to_dict(d) for d in docs],
+        }
+    )
+
+
 async def update_document_category(ctx: Context, doc_id: int, category: str) -> str:
     """Update the category of a document.
 
@@ -577,4 +599,5 @@ def register(mcp):
     mcp.tool()(find_duplicates)
     mcp.tool()(get_document_versions)
     mcp.tool()(get_related_documents)
+    mcp.tool()(get_document_group)
     mcp.tool()(update_document_category)

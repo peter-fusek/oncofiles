@@ -202,6 +202,10 @@ def _row_to_document(row: Any) -> Document:
         ),
         version=row_dict.get("version", 1) or 1,
         previous_version_id=row_dict.get("previous_version_id"),
+        group_id=_safe_get(row, "group_id"),
+        part_number=_safe_get(row, "part_number"),
+        total_parts=_safe_get(row, "total_parts"),
+        split_source_doc_id=_safe_get(row, "split_source_doc_id"),
     )
 
 

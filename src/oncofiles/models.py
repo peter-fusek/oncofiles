@@ -75,6 +75,15 @@ class Document(BaseModel):
     previous_version_id: int | None = Field(
         default=None, description="ID of the previous version (soft-deleted)"
     )
+    # Multi-document grouping (splitting / consolidation)
+    group_id: str | None = Field(
+        default=None, description="Shared UUID for documents in the same logical group"
+    )
+    part_number: int | None = Field(default=None, description="1-based position within a group")
+    total_parts: int | None = Field(default=None, description="Total count of parts in the group")
+    split_source_doc_id: int | None = Field(
+        default=None, description="Original document ID this was split from"
+    )
 
     @property
     def content_block(self) -> dict:
@@ -400,6 +409,9 @@ class PromptCallType(StrEnum):
     FILENAME_DESCRIPTION = "filename_description"
     EMAIL_CLASSIFY = "email_classify"
     CALENDAR_CLASSIFY = "calendar_classify"
+    DOC_COMPOSITION = "doc_composition"
+    DOC_CONSOLIDATION = "doc_consolidation"
+    DOC_RELATIONSHIPS = "doc_relationships"
 
 
 class PromptLogEntry(BaseModel):

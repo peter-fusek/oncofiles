@@ -107,7 +107,113 @@ async def extract_all_metadata(ctx: Context) -> str:
     return json.dumps(stats)
 
 
+async def detect_and_split_documents(ctx: Context, dry_run: bool = True) -> str:
+    """Scan all documents for multi-document PDFs and split them.
+
+    AI analyzes each PDF's content to detect when one file contains multiple
+    distinct documents (different dates, institutions, or document types).
+    Detected multi-document PDFs are split into separate files on Google Drive.
+
+    Args:
+        dry_run: If True (default), only report what would be split without making changes.
+    """
+    from oncofiles.doc_analysis import analyze_document_composition
+
+    db = _get_db(ctx)
+    pid = _get_patient_id()
+    results = {"scanned": 0, "multi_doc": 0, "splits_created": 0, "details": []}
+
+    all_docs = await db.list_documents(limit=200, patient_id=pid)
+    for doc in all_docs:
+        if doc.group_id or doc.deleted_at or doc.mime_type != "application/pdf":
+            continue
+        if not await db.has_ocr_text(doc.id):
+            continue
+
+        pages = await db.get_ocr_pages(doc.id)
+        if len(pages) < 2:
+            continue
+
+        results["scanned"] += 1
+        full_text = "\n\n".join(p["extracted_text"] for p in pages)
+        sub_docs = analyze_document_composition(full_text, db=db, document_id=doc.id)
+
+        if len(sub_docs) > 1:
+            results["multi_doc"] += 1
+            detail = {
+                "doc_id": doc.id,
+                "filename": doc.filename,
+                "sub_documents": len(sub_docs),
+                "details": sub_docs,
+            }
+            results["details"].append(detail)
+
+            if not dry_run:
+                from oncofiles.split import split_document
+
+                files = _get_files(ctx)
+                gdrive = await _get_gdrive(ctx)
+                created = await split_document(
+                    db,
+                    files,
+                    gdrive,
+                    doc,
+                    sub_docs,
+                    patient_id=pid,
+                    folder_id="",
+                    folder_map={},
+                )
+                results["splits_created"] += len(created)
+
+    return json.dumps(results, default=str)
+
+
+async def detect_and_consolidate_documents(ctx: Context, dry_run: bool = True) -> str:
+    """Detect related multi-file documents and group them.
+
+    AI compares content across files to find documents that are parts of the
+    same logical document (e.g., a multi-page report scanned as separate PDFs).
+
+    Args:
+        dry_run: If True (default), only report what would be consolidated.
+    """
+    from oncofiles.doc_analysis import analyze_consolidation
+
+    db = _get_db(ctx)
+    pid = _get_patient_id()
+
+    all_docs = await db.list_documents(limit=200, patient_id=pid)
+    ungrouped = [d for d in all_docs if d.group_id is None and d.deleted_at is None]
+
+    if len(ungrouped) < 2:
+        return json.dumps({"message": "Not enough ungrouped documents to analyze."})
+
+    doc_texts = []
+    for doc in ungrouped:
+        text = ""
+        if await db.has_ocr_text(doc.id):
+            pages = await db.get_ocr_pages(doc.id)
+            text = "\n\n".join(p["extracted_text"] for p in pages)
+        doc_texts.append((doc, text))
+
+    groups = analyze_consolidation(doc_texts, db=db)
+    results = {"analyzed": len(ungrouped), "groups_found": len(groups), "groups": groups}
+
+    if not dry_run and groups:
+        from oncofiles.consolidate import consolidate_documents
+
+        gdrive = await _get_gdrive(ctx)
+        for group in groups:
+            if len(group.get("document_ids", [])) >= 2:
+                await consolidate_documents(db, gdrive, group, patient_id=pid)
+        results["consolidated"] = True
+
+    return json.dumps(results, default=str)
+
+
 def register(mcp):
     mcp.tool()(enhance_documents)
     mcp.tool()(extract_document_metadata)
     mcp.tool()(extract_all_metadata)
+    mcp.tool()(detect_and_split_documents)
+    mcp.tool()(detect_and_consolidate_documents)

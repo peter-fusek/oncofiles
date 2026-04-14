@@ -167,6 +167,12 @@ def _doc_to_dict(d: Document) -> dict:
         result["ai_tags"] = d.ai_tags
     if d.structured_metadata:
         result["structured_metadata"] = json.loads(d.structured_metadata)
+    if d.group_id:
+        result["group_id"] = d.group_id
+        result["part_number"] = d.part_number
+        result["total_parts"] = d.total_parts
+    if d.split_source_doc_id:
+        result["split_source_doc_id"] = d.split_source_doc_id
     return result
 
 

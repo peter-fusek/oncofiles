@@ -48,8 +48,9 @@ class DocumentMixin:
                 (file_id, filename, original_filename, document_date,
                  institution, category, description, mime_type, size_bytes,
                  gdrive_id, gdrive_modified_time, gdrive_md5,
-                 version, previous_version_id, patient_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 version, previous_version_id, patient_id,
+                 group_id, part_number, total_parts, split_source_doc_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 doc.file_id,
@@ -67,6 +68,10 @@ class DocumentMixin:
                 doc.version,
                 doc.previous_version_id,
                 patient_id,
+                doc.group_id,
+                doc.part_number,
+                doc.total_parts,
+                doc.split_source_doc_id,
             ),
         )
         await self.db.commit()
@@ -90,6 +95,16 @@ class DocumentMixin:
         ) as cursor:
             rows = await cursor.fetchall()
             return {doc.id: doc for row in rows if (doc := _safe_row_to_document(row))}
+
+    async def get_documents_by_group(self, group_id: str) -> list[Document]:
+        """Get all documents sharing a group_id, ordered by part_number."""
+        async with self.db.execute(
+            "SELECT * FROM documents WHERE group_id = ? "
+            "AND deleted_at IS NULL ORDER BY part_number",
+            (group_id,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return [doc for row in rows if (doc := _safe_row_to_document(row))]
 
     async def get_document_by_file_id(self, file_id: str, *, patient_id: str) -> Document | None:
         """Get a document by its Anthropic Files API file_id."""

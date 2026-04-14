@@ -472,6 +472,31 @@ class GDriveClient:
         return result.get("parents", [])
 
     @_retry_on_transient
+    def copy_file(
+        self,
+        file_id: str,
+        new_name: str,
+        folder_id: str,
+        app_properties: dict | None = None,
+    ) -> dict:
+        """Copy a file on Google Drive. Returns new file metadata dict."""
+        body: dict = {"name": new_name, "parents": [folder_id]}
+        if app_properties:
+            body["appProperties"] = app_properties
+        result = (
+            self._service.files()
+            .copy(
+                fileId=file_id,
+                body=body,
+                fields="id, name, modifiedTime, md5Checksum, size, appProperties",
+            )
+            .execute()
+        )
+        logger.info("Copied GDrive file %s → %s (%s)", file_id, result.get("id"), new_name)
+        self._auto_share(result["id"])
+        return result
+
+    @_retry_on_transient
     def rename_file(self, file_id: str, new_name: str) -> None:
         """Rename a file or folder on Google Drive."""
         self._service.files().update(

@@ -45,7 +45,7 @@ from oncofiles.manifest import (
     render_treatment_timeline,
 )
 from oncofiles.memory import MEMORY_THRESHOLD_MB, get_rss_mb
-from oncofiles.models import Document, DocumentCategory, SearchQuery
+from oncofiles.models import Document, DocumentCategory
 
 logger = logging.getLogger(__name__)
 
@@ -394,8 +394,113 @@ async def sync_from_gdrive(
             )
             stats["missing"] += 1
 
+    # ── Multi-document splitting & consolidation (AI-powered) ──────────────
+    if enhance and all_docs:
+        try:
+            await _detect_and_split_multi_docs(
+                db,
+                files,
+                gdrive,
+                all_docs,
+                folder_id=folder_id,
+                folder_map=folder_map,
+                patient_id=patient_id,
+            )
+        except Exception:
+            logger.warning("sync: multi-document detection failed", exc_info=True)
+
+        try:
+            await _detect_and_consolidate(db, gdrive, all_docs, patient_id=patient_id)
+        except Exception:
+            logger.warning("sync: consolidation detection failed", exc_info=True)
+
     logger.info("sync_from_gdrive: done — %s", stats)
     return stats
+
+
+async def _detect_and_split_multi_docs(
+    db: Database,
+    files: FilesClient,
+    gdrive: GDriveClient | None,
+    docs: list[Document],
+    *,
+    folder_id: str,
+    folder_map: dict[str, str],
+    patient_id: str,
+) -> None:
+    """Scan documents for multi-document PDFs and split them."""
+    from oncofiles.doc_analysis import analyze_document_composition
+    from oncofiles.split import split_document
+
+    for doc in docs:
+        # Only process ungrouped PDFs with cached OCR text (2+ pages)
+        if doc.group_id or doc.deleted_at:
+            continue
+        if doc.mime_type != "application/pdf":
+            continue
+        if not await db.has_ocr_text(doc.id):
+            continue
+
+        pages = await db.get_ocr_pages(doc.id)
+        if len(pages) < 2:
+            continue
+
+        full_text = "\n\n".join(p["extracted_text"] for p in pages)
+        sub_docs = analyze_document_composition(full_text, db=db, document_id=doc.id)
+
+        if len(sub_docs) > 1:
+            logger.info(
+                "sync: detected %d sub-documents in doc %d (%s)",
+                len(sub_docs),
+                doc.id,
+                doc.filename,
+            )
+            await split_document(
+                db,
+                files,
+                gdrive,
+                doc,
+                sub_docs,
+                patient_id=patient_id,
+                folder_id=folder_id,
+                folder_map=folder_map,
+            )
+
+
+async def _detect_and_consolidate(
+    db: Database,
+    gdrive: GDriveClient | None,
+    docs: list[Document],
+    *,
+    patient_id: str,
+) -> None:
+    """Scan documents for multi-file logical documents and consolidate them."""
+    from oncofiles.consolidate import consolidate_documents
+    from oncofiles.doc_analysis import analyze_consolidation
+
+    # Only consider ungrouped, active documents
+    ungrouped = [d for d in docs if d.group_id is None and d.deleted_at is None]
+    if len(ungrouped) < 2:
+        return
+
+    # Gather OCR text for each document
+    doc_texts = []
+    for doc in ungrouped:
+        text = ""
+        if await db.has_ocr_text(doc.id):
+            pages = await db.get_ocr_pages(doc.id)
+            text = "\n\n".join(p["extracted_text"] for p in pages)
+        doc_texts.append((doc, text))
+
+    groups = analyze_consolidation(doc_texts, db=db)
+    for group in groups:
+        if len(group.get("document_ids", [])) >= 2:
+            logger.info(
+                "sync: consolidating %d documents: %s",
+                len(group["document_ids"]),
+                group.get("reasoning", ""),
+            )
+            await consolidate_documents(db, gdrive, group, patient_id=patient_id)
 
 
 # ── Oncofiles → GDrive export ──────────────────────────────────────────────
@@ -1383,45 +1488,58 @@ async def enhance_documents(
 async def _generate_cross_references(
     db: Database, doc: Document, metadata: dict, *, patient_id: str
 ) -> int:
-    """Generate cross-references between a document and related documents.
+    """Generate cross-references between a document and related documents using AI.
 
-    Uses heuristic matching:
-    - same_visit: same date + same institution (confidence 1.0)
-    - related: same date within 3 days (confidence 0.7)
-    - related: shared diagnoses (confidence 0.8)
+    AI analyzes the document content and candidate summaries to determine
+    relationships: same_visit, follow_up, supersedes, related, contradicts.
 
     Returns count of new cross-references inserted.
     """
+    from oncofiles.doc_analysis import analyze_document_relationships
+
+    # Get document text
+    doc_text = ""
+    if await db.has_ocr_text(doc.id):
+        pages = await db.get_ocr_pages(doc.id)
+        doc_text = "\n\n".join(p["extracted_text"] for p in pages)
+
+    if not doc_text:
+        return 0
+
+    # Get candidate documents (all active docs for this patient, excluding self)
+    all_docs = await db.list_documents(limit=200, patient_id=patient_id)
+    candidates = []
+    for c in all_docs:
+        if c.id != doc.id and c.deleted_at is None:
+            candidates.append(
+                {
+                    "id": c.id,
+                    "filename": c.filename,
+                    "document_date": c.document_date.isoformat() if c.document_date else None,
+                    "institution": c.institution,
+                    "category": c.category.value,
+                    "ai_summary": c.ai_summary,
+                }
+            )
+
+    if not candidates:
+        return 0
+
+    try:
+        relationships = analyze_document_relationships(doc_text, doc.id, candidates, db=db)
+    except Exception:
+        logger.warning(
+            "AI cross-reference analysis failed for doc %d, skipping", doc.id, exc_info=True
+        )
+        return 0
+
     refs: list[tuple[int, int, str, float]] = []
-
-    # Match by same date + institution (same visit)
-    if doc.document_date and doc.institution:
-        candidates = await db.search_documents(
-            SearchQuery(
-                institution=doc.institution,
-                date_from=doc.document_date,
-                date_to=doc.document_date,
-                limit=20,
-            ),
-            patient_id=patient_id,
-        )
-        for c in candidates:
-            if c.id != doc.id and c.deleted_at is None:
-                refs.append((doc.id, c.id, "same_visit", 1.0))
-
-    # Match by date proximity (within 3 days)
-    if doc.document_date:
-        from datetime import timedelta
-
-        date_from = doc.document_date - timedelta(days=3)
-        date_to = doc.document_date + timedelta(days=3)
-        nearby = await db.search_documents(
-            SearchQuery(date_from=date_from, date_to=date_to, limit=20),
-            patient_id=patient_id,
-        )
-        for c in nearby:
-            if c.id != doc.id and c.deleted_at is None and c.document_date != doc.document_date:
-                refs.append((doc.id, c.id, "related", 0.7))
+    for rel in relationships:
+        target_id = rel.get("target_id")
+        rel_type = rel.get("relationship", "related")
+        confidence = rel.get("confidence", 0.5)
+        if target_id and target_id != doc.id:
+            refs.append((doc.id, target_id, rel_type, confidence))
 
     if refs:
         return await db.bulk_insert_cross_references(refs)
