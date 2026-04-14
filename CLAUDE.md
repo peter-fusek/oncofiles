@@ -41,7 +41,7 @@ uv run ruff check
 
 - **Railway**: `oncofiles.com` (streamable-http at /mcp)
 - Push to `main` auto-deploys via Railway
-- 686 tests, CI green
+- 687 tests, CI green
 
 ## Infrastructure gotchas
 
@@ -54,6 +54,8 @@ uv run ruff check
 - **uv.lock**: After bumping version in pyproject.toml, always run `uv lock` — Railway uses `--locked` flag which rejects stale lockfiles
 - **Dashboard i18n**: Uses `data-sk`/`data-en` attributes on elements. `applyDashLang()` queries all `[data-sk][data-en]` elements. Add both attributes when adding new user-visible text.
 - **Multi-patient isolation**: ALL functions that use patient identity (get_patient_name, get_context, is_standard_format, rename_to_standard, parse_filename) MUST pass `patient_id`. The ContextVar fallback in `get_context()` catches missed callers during tool calls, but explicit is better. Never call `get_patient_name()` without patient_id in new code.
+- **Open signup + patient scoping**: `DASHBOARD_ADMIN_EMAILS` (config.py) controls who sees all patients. Non-admin session users only see patients where `caregiver_email` matches. `_get_patient_id(required=True)` raises ValueError when no patient selected — use `required=False` only for bootstrapping tools (list_patients, select_patient).
+- **Document limit**: `MAX_DOCUMENTS_PER_PATIENT` (200) enforced at `insert_document()` DB level. Sync has its own FUP check (`fup_reached` flag). Both must remain in sync.
 - **Patient types**: `patient_type` in patient context — `"oncology"` (default) or `"general"`. Controls folder creation (oncology skips vaccination/dental/preventive; general skips chemo_sheet/pathology/genetics), lab thresholds (mFOLFOX6 vs EU/WHO general health), and preventive care screening.
 - **Stateless HTTP**: `stateless_http=True` in `mcp.run()` — no server-side sessions. Survives Railway deploys. Do not change to stateful unless SSE push is needed.
 - **Patient isolation (bearer tokens)**: `verify_token()` in `PersistentOAuthProvider` sets `_verified_patient_id` ContextVar. Middleware reads this — NEVER access `_session._access_token` (doesn't exist in FastMCP 3.1.1 stateless mode). Auth paths: `onco_*` patient tokens → specific patient; static `MCP_BEARER_TOKEN` → default patient; OAuth → default patient; stdio → default patient.
