@@ -45,6 +45,9 @@ PROVIDER_TO_INSTITUTION: list[tuple[list[str], str]] = [
     (["pro sanus", "prosanus"], "ProSanus"),
     (["unz mesta", "uzemna poliklinika"], "UNZBratislava"),
     (["aseseta"], "Aseseta"),
+    # v5.3.2 — backfill gaps from q1b + e5g audit
+    (["mediros"], "Mediros"),
+    (["europacolon"], "Europacolon"),
 ]
 
 
@@ -69,6 +72,52 @@ def infer_institution_from_providers(providers: list[str]) -> str | None:
         if any(kw in combined for kw in keywords):
             return institution
     return None
+
+
+async def backfill_missing_institutions(db) -> dict:
+    """Re-run institution inference on docs that have structured_metadata but null institution.
+
+    This is a second-pass backfill for documents where:
+    - institution is NULL
+    - structured_metadata exists with a providers array
+    - providers can now be mapped (new keywords added)
+
+    Args:
+        db: The raw aiosqlite/libsql connection (Database.db), not the Database wrapper.
+
+    Returns stats dict with counts.
+    """
+    import json as _json
+
+    stats = {"checked": 0, "updated": 0, "still_missing": 0}
+    async with db.execute(
+        "SELECT id, structured_metadata FROM documents "
+        "WHERE deleted_at IS NULL AND (institution IS NULL OR institution = '') "
+        "AND structured_metadata IS NOT NULL"
+    ) as cursor:
+        rows = await cursor.fetchall()
+    for row in rows:
+        stats["checked"] += 1
+        try:
+            meta = _json.loads(row["structured_metadata"])
+        except (ValueError, TypeError):
+            stats["still_missing"] += 1
+            continue
+        providers = meta.get("providers", [])
+        inst = infer_institution_from_providers(providers)
+        if inst:
+            await db.execute(
+                "UPDATE documents SET institution = ? WHERE id = ?",
+                (inst, row["id"]),
+            )
+            stats["updated"] += 1
+            logger.info("backfill_institution: doc %d → %s (from %s)", row["id"], inst, providers)
+        else:
+            stats["still_missing"] += 1
+    if stats["updated"]:
+        await db.commit()
+    logger.info("backfill_missing_institutions: %s", stats)
+    return stats
 
 
 def _get_client() -> anthropic.Anthropic:

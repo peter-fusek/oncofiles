@@ -397,3 +397,23 @@ async def test_backfill_document_fields_coalesce(db: Database):
     assert str(updated.document_date) == "2026-03-01"
     assert updated.institution == "NOU"  # Preserved, not overwritten
     assert updated.description == "TestDescription"
+
+
+# ── New provider mappings (v5.3.2) ────────────────────────────────────
+
+
+def test_new_provider_mappings():
+    """v5.3.2 provider mappings resolve correctly."""
+    assert infer_institution_from_providers(["Mediros"]) == "Mediros"
+    assert infer_institution_from_providers(["europacolon slovensko"]) == "Europacolon"
+    assert infer_institution_from_providers(["europacolon"]) == "Europacolon"
+    assert infer_institution_from_providers(["Poliklinika ProCare Central"]) == "ProCare"
+
+
+def test_provider_mapping_still_empty_for_generic():
+    """Generic providers (GP, insurance, pharma) still return None."""
+    assert infer_institution_from_providers(["Random Hospital XYZ"]) is None
+    assert infer_institution_from_providers([]) is None
+    assert infer_institution_from_providers(["pediatr", "detská sestra"]) is None
+    assert infer_institution_from_providers(["SANDOZ"]) is None  # pharma, not institution
+    assert infer_institution_from_providers(["Praktická Ambulancia"]) is None  # generic GP

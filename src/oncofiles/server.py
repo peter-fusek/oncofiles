@@ -632,6 +632,22 @@ def _start_sync_scheduler(
 
             reclaim_memory("enhancement_sweep")
 
+    async def _run_institution_backfill():
+        """Re-run institution inference for docs with metadata but null institution."""
+        try:
+            from oncofiles.enhance import backfill_missing_institutions
+
+            stats = await asyncio.wait_for(
+                backfill_missing_institutions(db.db),
+                timeout=60,
+            )
+            if stats["updated"] > 0:
+                logger.info("Institution backfill: %s", stats)
+        except TimeoutError:
+            logger.error("Institution backfill timed out")
+        except Exception:
+            logger.exception("Institution backfill failed")
+
     housekeeping_timeout = 120  # 2 minutes max for lightweight housekeeping jobs
 
     async def _run_trash_cleanup():
@@ -813,6 +829,12 @@ def _start_sync_scheduler(
         _run_metadata_extraction,
         CronTrigger(hour=3, minute=30),  # daily at 3:30 AM (after enhancement sweep)
         id="metadata_extraction",
+        max_instances=1,
+    )
+    scheduler.add_job(
+        _run_institution_backfill,
+        CronTrigger(hour=3, minute=35),  # daily at 3:35 AM (after metadata extraction)
+        id="institution_backfill",
         max_instances=1,
     )
     scheduler.add_job(
