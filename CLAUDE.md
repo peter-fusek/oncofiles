@@ -41,7 +41,7 @@ uv run ruff check
 
 - **Railway**: `oncofiles.com` (streamable-http at /mcp)
 - Push to `main` auto-deploys via Railway
-- 698 tests, CI green
+- 716 tests, CI green
 
 ## Infrastructure gotchas
 
@@ -69,3 +69,5 @@ uv run ruff check
 - **Institution mapping**: `PROVIDER_TO_INSTITUTION` in `enhance.py` maps provider names to institution codes. Uses diacritic-insensitive matching. When adding new providers, the daily `_run_institution_backfill` job (3:35 AM) auto-backfills from existing `structured_metadata.providers`. Generic providers (GP offices, insurance, pharma) are intentionally NOT mapped — see test_enhance.py `test_infer_institution_generic_providers_no_match`.
 - **Date validation**: `_safe_date()` in `_converters.py` handles invalid date strings gracefully (returns None + logs warning). `_safe_row_to_document()` wraps full row conversion so one bad row never crashes a batch. Write paths in `sync.py` and `backfill_document_fields()` validate dates with `date()` constructor before DB writes. Migration 043 NULLed all existing invalid dates. See #258.
 - **Sync category protection**: `_sync_category_from_folder()` never downgrades an AI-validated category to "other" — GDrive folder detection only overrides when it detects a specific (non-"other") category. See #256.
+- **Document groups**: `group_id`, `part_number`, `total_parts`, `split_source_doc_id` columns (migration 052). Documents split from multi-doc PDFs share a `group_id`. Consolidation groups multi-file logical documents. `get_document_group(group_id)` tool fetches all parts. `detect_and_split_documents`/`detect_and_consolidate_documents` MCP tools for scanning. Cross-references now AI-powered (replaces heuristic same_visit/related in `_generate_cross_references`).
+- **AI document analysis**: `doc_analysis.py` — three AI functions: `analyze_document_composition` (split detection), `analyze_consolidation` (multi-file grouping), `analyze_document_relationships` (cross-references). All use claude-haiku, no hardcoded heuristics.
