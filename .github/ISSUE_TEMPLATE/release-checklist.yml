@@ -1,0 +1,92 @@
+name: Release Checklist
+description: E2E verification protocol for releases
+labels: ["testing"]
+title: "E2E verification: v"
+body:
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      placeholder: "5.3.3"
+    validations:
+      required: true
+  - type: input
+    id: commit
+    attributes:
+      label: Deploy commit
+      placeholder: "abc1234"
+    validations:
+      required: true
+  - type: checkboxes
+    id: health
+    attributes:
+      label: "1. Production Health"
+      options:
+        - label: "`curl /health` — status ok, correct version and commit"
+        - label: "Memory < 420 MB"
+        - label: "Response time < 500ms"
+  - type: checkboxes
+    id: dashboard
+    attributes:
+      label: "2. Dashboard Visual (Chrome)"
+      options:
+        - label: "Sign in with Google (FedCM manual click)"
+        - label: "Patient A (oncology/q1b): doc count, pipeline bars, diagnosis line correct"
+        - label: "Patient B (general/e5g): switch patient, different data shown"
+        - label: "Admin sees all patients in selector dropdown"
+        - label: "Screenshots attached"
+  - type: checkboxes
+    id: mcp_claude
+    attributes:
+      label: "3. MCP — Claude.ai"
+      options:
+        - label: "list_patients + list_documents — correct response"
+        - label: "Cross-patient: select_patient to different patient, different docs returned"
+        - label: "Doc counts match dashboard"
+        - label: "Screenshot attached"
+  - type: checkboxes
+    id: mcp_chatgpt
+    attributes:
+      label: "4. MCP — ChatGPT"
+      options:
+        - label: "select_patient + list_documents — correct response with metadata"
+        - label: "Screenshot attached"
+  - type: checkboxes
+    id: isolation
+    attributes:
+      label: "5. Patient Isolation (Security)"
+      options:
+        - label: "Admin `/api/patients` returns ALL patients"
+        - label: "Non-admin session returns only own patients (caregiver_email match)"
+        - label: "Cross-patient docs have zero overlap"
+  - type: checkboxes
+    id: api
+    attributes:
+      label: "6. API Behavior"
+      options:
+        - label: "`/dashboard/verify` with invalid token → 401"
+        - label: "`/api/documents` without auth → 401"
+        - label: "Rate limiting on creation endpoints"
+  - type: checkboxes
+    id: code
+    attributes:
+      label: "7. Code-Level Checks"
+      options:
+        - label: "`_get_patient_id()` raises ValueError when empty"
+        - label: "`list_patients()` returns guidance JSON when no patients"
+        - label: "OAuth validates patient exists before token exchange"
+        - label: "No secrets in git diff"
+  - type: checkboxes
+    id: performance
+    attributes:
+      label: "8. Performance Baseline"
+      options:
+        - label: "`/health` < 500ms"
+        - label: "`/dashboard` < 3s"
+        - label: "`/api/documents` < 2s"
+        - label: "Memory post-deploy < 150 MB"
+  - type: textarea
+    id: notes
+    attributes:
+      label: "9. Notes & Evidence"
+      description: "Attach screenshots, paste API responses, note any issues found. 24-hour cool-down before closing sprint issues."
