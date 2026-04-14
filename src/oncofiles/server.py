@@ -55,7 +55,7 @@ logger = logging.getLogger(__name__)
 CONF_MAX_DOCS = MAX_DOCUMENTS_PER_PATIENT
 
 # Stats constants (single source of truth for values that can't be computed at runtime)
-TESTS_COUNT = 686
+TESTS_COUNT = 696
 
 # Global sync semaphore — limits concurrent sync operations (GDrive + Gmail + Calendar)
 _sync_semaphore = asyncio.Semaphore(
