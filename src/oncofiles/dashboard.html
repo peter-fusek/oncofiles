@@ -1035,7 +1035,7 @@
           <span class="mcp-bar-label">Bearer Token</span>
           <code id="mcp-token-display" style="max-width:180px;overflow:hidden;text-overflow:ellipsis">—</code>
           <button class="copy-btn" id="mcp-token-copy" onclick="navigator.clipboard.writeText(document.getElementById('mcp-token-display').textContent)" style="display:none" data-sk="Kopírovať" data-en="Copy">Kopírovať</button>
-          <button class="copy-btn" id="mcp-token-gen" onclick="showShareModal()" data-sk="Vygenerovať" data-en="Generate">Vygenerovať</button>
+          <button class="copy-btn" id="mcp-token-gen" onclick="regenerateToken()" data-sk="Vygenerovať" data-en="Generate">Vygenerovať</button>
         </div>
         <button class="copy-btn" onclick="showShareModal()" style="margin-left:auto" data-sk="Sprievodca nastavením" data-en="Setup Guide">Sprievodca nastavením</button>
       </div>
@@ -2432,6 +2432,32 @@
     // ── Share modal ─────────────────────────────────────────────────────
 
     var MCP_URL = 'https://oncofiles.com/mcp';
+
+    async function regenerateToken() {
+      var btn = document.getElementById('mcp-token-gen');
+      var orig = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = '...';
+      try {
+        var resp = await fetch('/api/patient-tokens', {
+          method: 'POST',
+          headers: { 'Authorization': authHeader(), 'Content-Type': 'application/json' },
+          body: JSON.stringify({ patient_id: currentPatientId, label: 'dashboard-regen' })
+        });
+        var data = await resp.json();
+        if (!resp.ok) {
+          btn.textContent = data.error || 'Error';
+          btn.disabled = false;
+          return;
+        }
+        document.getElementById('mcp-token-display').textContent = data.bearer_token;
+        document.getElementById('mcp-token-copy').style.display = '';
+        btn.style.display = 'none';
+      } catch (e) {
+        btn.textContent = orig;
+        btn.disabled = false;
+      }
+    }
 
     function showShareModal() {
       document.getElementById('share-code-box').style.display = 'none';
