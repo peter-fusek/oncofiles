@@ -80,11 +80,54 @@ async def extract_document_metadata(
 
     await db.update_structured_metadata(document_id, metadata_json)
 
+    # Also run AI classification for institution/category/date
+    from oncofiles.enhance import classify_document
+
+    classification = classify_document(full_text, db=db, document_id=document_id)
+    updates = {}
+
+    ai_inst = classification.get("institution_code")
+    if not doc.institution and ai_inst:
+        await db.db.execute(
+            "UPDATE documents SET institution = ? WHERE id = ?", (ai_inst, document_id)
+        )
+        await db.db.commit()
+        updates["institution"] = ai_inst
+
+    ai_cat = classification.get("category")
+    if doc.category.value == "other" and ai_cat and ai_cat != "other":
+        from oncofiles.models import DocumentCategory
+
+        try:
+            DocumentCategory(ai_cat)
+            await db.update_document_category(document_id, ai_cat)
+            updates["category"] = ai_cat
+        except ValueError:
+            pass
+
+    ai_date = classification.get("document_date")
+    if not doc.document_date and ai_date:
+        from datetime import date
+
+        try:
+            parsed = date.fromisoformat(ai_date)
+            if 1900 <= parsed.year <= 2030:
+                await db.db.execute(
+                    "UPDATE documents SET document_date = ? WHERE id = ?",
+                    (ai_date, document_id),
+                )
+                await db.db.commit()
+                updates["document_date"] = ai_date
+        except (ValueError, TypeError):
+            pass
+
     return json.dumps(
         {
             "document_id": document_id,
             "filename": doc.filename,
             "structured_metadata": metadata,
+            "classification": classification,
+            "updates_applied": updates,
         }
     )
 
