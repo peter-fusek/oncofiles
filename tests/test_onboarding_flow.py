@@ -206,3 +206,27 @@ def test_regenerate_token_in_dashboard():
     html = (Path(__file__).parent.parent / "src" / "oncofiles" / "dashboard.html").read_text()
     assert "regenerateToken" in html
     assert "/api/patient-tokens" in html
+
+
+# ── Document limit enforcement (#350) ────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_document_limit_enforced(db):
+    """insert_document raises ValueError when patient exceeds doc limit."""
+    from tests.helpers import make_doc
+
+    patient = Patient(patient_id="limit-test", display_name="Limit Test")
+    created = await db.insert_patient(patient)
+    pid = created.patient_id
+
+    with patch("oncofiles.config.MAX_DOCUMENTS_PER_PATIENT", 2):
+        # Insert 2 docs — should succeed
+        for i in range(2):
+            doc = make_doc(file_id=f"file_limit_{i}", filename=f"doc_{i}.pdf")
+            await db.insert_document(doc, patient_id=pid)
+
+        # 3rd doc should fail
+        doc3 = make_doc(file_id="file_limit_3", filename="doc_3.pdf")
+        with pytest.raises(ValueError, match="Document limit reached"):
+            await db.insert_document(doc3, patient_id=pid)

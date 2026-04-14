@@ -27,7 +27,21 @@ class DocumentMixin:
     # ── CRUD ──────────────────────────────────────────────────────────────
 
     async def insert_document(self, doc: Document, *, patient_id: str) -> Document:
-        """Insert a document and return it with the generated ID."""
+        """Insert a document and return it with the generated ID.
+
+        Raises ValueError if the patient has reached the document limit.
+        """
+        from oncofiles.config import MAX_DOCUMENTS_PER_PATIENT
+
+        if MAX_DOCUMENTS_PER_PATIENT > 0:
+            count = await self.count_documents(patient_id=patient_id)
+            if count >= MAX_DOCUMENTS_PER_PATIENT:
+                raise ValueError(
+                    f"Document limit reached ({MAX_DOCUMENTS_PER_PATIENT}). "
+                    f"Patient has {count} documents. "
+                    "Contact support or self-host for unlimited documents."
+                )
+
         cursor = await self.db.execute(
             """
             INSERT INTO documents
