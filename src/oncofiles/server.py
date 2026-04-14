@@ -73,6 +73,9 @@ _RATE_LIMITS = {
     "patient-tokens": 10,  # max 10 token creations per minute
     "patients": 5,  # max 5 patient creations per minute
     "share-redeem": 20,  # max 20 redemption attempts per minute (brute-force protection)
+    "dashboard-verify": 10,  # max 10 Google sign-in attempts per minute
+    "oauth-authorize": 10,  # max 10 OAuth starts per minute
+    "oauth-callback": 10,  # max 10 OAuth callbacks per minute
 }
 
 
@@ -3025,6 +3028,10 @@ async def dashboard_verify(request: Request) -> JSONResponse:
     """
     import httpx
 
+    rate_err = _check_rate_limit("dashboard-verify")
+    if rate_err:
+        return rate_err
+
     try:
         body = await request.json()
     except Exception:
@@ -4217,6 +4224,10 @@ async def oauth_authorize(request: Request) -> JSONResponse:
         get_auth_url_for_scopes,
     )
 
+    rate_err = _check_rate_limit("oauth-authorize")
+    if rate_err:
+        return rate_err
+
     if not GOOGLE_OAUTH_CLIENT_ID:
         return JSONResponse({"error": "OAuth not configured"}, status_code=500)
 
@@ -4251,6 +4262,10 @@ async def oauth_callback(request: Request) -> JSONResponse:
     """Handle Google OAuth 2.0 redirect callback."""
     from oncofiles.models import OAuthToken
     from oncofiles.oauth import exchange_code, verify_state_token
+
+    rate_err = _check_rate_limit("oauth-callback")
+    if rate_err:
+        return rate_err
 
     # Validate CSRF state parameter and extract patient_id
     state = request.query_params.get("state", "")

@@ -131,3 +131,41 @@ def test_upload_error_no_leak():
     source = inspect.getsource(upload_document)
     assert "Check server logs" in source
     assert 'f"Files API upload failed: {e}"' not in source
+
+
+# ── Rate limiting (#346) ────────────────────────────────────────────
+
+
+def test_rate_limits_configured():
+    """All auth endpoints have rate limits configured."""
+    from oncofiles.server import _RATE_LIMITS
+
+    assert "dashboard-verify" in _RATE_LIMITS
+    assert "oauth-authorize" in _RATE_LIMITS
+    assert "oauth-callback" in _RATE_LIMITS
+    # Existing limits still present
+    assert "share-link" in _RATE_LIMITS
+    assert "patients" in _RATE_LIMITS
+
+
+def test_rate_limit_in_dashboard_verify():
+    """dashboard_verify calls _check_rate_limit."""
+    import inspect
+
+    from oncofiles.server import dashboard_verify
+
+    source = inspect.getsource(dashboard_verify)
+    assert '_check_rate_limit("dashboard-verify")' in source
+
+
+def test_rate_limit_in_oauth_endpoints():
+    """OAuth authorize and callback call _check_rate_limit."""
+    import inspect
+
+    from oncofiles.server import oauth_authorize, oauth_callback
+
+    auth_src = inspect.getsource(oauth_authorize)
+    assert '_check_rate_limit("oauth-authorize")' in auth_src
+
+    cb_src = inspect.getsource(oauth_callback)
+    assert '_check_rate_limit("oauth-callback")' in cb_src
