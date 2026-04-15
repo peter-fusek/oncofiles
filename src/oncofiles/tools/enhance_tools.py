@@ -254,7 +254,7 @@ async def detect_and_consolidate_documents(ctx: Context, dry_run: bool = True) -
     return json.dumps(results, default=str)
 
 
-async def backfill_ai_classification(ctx: Context, dry_run: bool = True) -> str:
+async def backfill_ai_classification(ctx: Context, dry_run: bool = True, limit: int = 10) -> str:
     """Re-run AI classification on documents with missing institution, category, or date.
 
     Uses AI to read full document content (letterhead, stamps, addresses) to infer
@@ -263,12 +263,14 @@ async def backfill_ai_classification(ctx: Context, dry_run: bool = True) -> str:
 
     Args:
         dry_run: If True (default), only report what would change without making updates.
+        limit: Max documents to process per call (default 10). Use smaller values
+               to avoid MCP proxy timeouts on large patient records.
     """
     from oncofiles.backfill_splits import backfill_ai_classification as _backfill
 
     db = _get_db(ctx)
     pid = _get_patient_id()
-    stats = await _backfill(db, patient_id=pid, dry_run=dry_run)
+    stats = await _backfill(db, patient_id=pid, dry_run=dry_run, limit=limit)
     return json.dumps(stats, default=str)
 
 

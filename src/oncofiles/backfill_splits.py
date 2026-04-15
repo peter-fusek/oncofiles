@@ -225,6 +225,7 @@ async def backfill_ai_classification(
     *,
     patient_id: str,
     dry_run: bool = True,
+    limit: int = 10,
 ) -> dict:
     """Re-run AI metadata extraction on docs with missing institution/category.
 
@@ -233,6 +234,7 @@ async def backfill_ai_classification(
 
     Args:
         dry_run: If True, only report what would change without making updates.
+        limit: Max number of documents to process per call (default 10).
 
     Returns stats dict.
     """
@@ -246,6 +248,7 @@ async def backfill_ai_classification(
         "skipped": 0,
         "errors": 0,
         "changes": [],
+        "limit": limit,
     }
 
     all_docs = await db.list_documents(limit=200, patient_id=patient_id)
@@ -264,6 +267,9 @@ async def backfill_ai_classification(
         if not await db.has_ocr_text(doc.id):
             stats["skipped"] += 1
             continue
+
+        if stats["scanned"] >= limit:
+            break
 
         stats["scanned"] += 1
         pages = await db.get_ocr_pages(doc.id)

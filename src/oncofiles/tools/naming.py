@@ -13,6 +13,44 @@ from oncofiles.tools._helpers import _get_db, _get_gdrive, _get_patient_id
 
 logger = logging.getLogger(__name__)
 
+_DATE_RE = __import__("re").compile(r"^(\d{4})(\d{2})(\d{2})_")
+
+
+def _try_patient_name_swap(filename: str, patient_id: str) -> str | None:
+    """If filename is standard format with a WRONG patient name, swap to current.
+
+    Returns the corrected filename, or None if not applicable.
+    """
+
+    from oncofiles.filename_parser import _TOKEN_TO_CATEGORY
+    from oncofiles.patient_context import get_patient_name
+
+    m = _DATE_RE.match(filename)
+    if not m:
+        return None
+
+    current_patient = get_patient_name(patient_id).replace(" ", "") or "Patient"
+    stem_after_date = filename[9:]  # skip "YYYYMMDD_"
+    parts = stem_after_date.split("_")
+
+    if len(parts) < 3:
+        return None
+
+    candidate_name = parts[0]
+    # If the candidate name IS the current patient, this isn't a wrong-name case
+    if candidate_name.lower() == current_patient.lower():
+        return None
+
+    # Check if parts[2] (would-be category token) is a valid category
+    cat_token = parts[2].lower()
+    if cat_token not in _TOKEN_TO_CATEGORY:
+        return None
+
+    # This looks like standard format with wrong patient name — swap it
+    date_prefix = filename[:9]  # "YYYYMMDD_"
+    parts[0] = current_patient
+    return date_prefix + "_".join(parts)
+
 
 async def rename_documents_to_standard(
     ctx: Context,
@@ -60,8 +98,14 @@ async def rename_documents_to_standard(
 
         en_desc = desc_map.get(doc.id)
 
-        # Handle corrupted filenames using DB metadata
-        if is_corrupted_filename(doc.filename, patient_id=pid):
+        # Detect standard-format files with wrong patient name and swap it
+        new_name = _try_patient_name_swap(doc.filename, pid)
+        if new_name:
+            # File is in standard format but with a different patient name —
+            # just swap the name, keeping everything else intact
+            pass
+        elif is_corrupted_filename(doc.filename, patient_id=pid):
+            # Handle corrupted filenames using DB metadata
             import re
 
             from oncofiles.filename_parser import CATEGORY_FILENAME_TOKENS
