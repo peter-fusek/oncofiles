@@ -7,21 +7,13 @@ import logging
 import time
 from typing import Any
 
-import anthropic
-
-from oncofiles.config import ANTHROPIC_API_KEY
-from oncofiles.enhance import _strip_markdown_fencing
+from oncofiles.enhance import _get_client, _strip_markdown_fencing
 from oncofiles.models import Document
 from oncofiles.prompt_logger import log_ai_call
 
 logger = logging.getLogger(__name__)
 
 ANALYSIS_MODEL = "claude-haiku-4-5-20251001"
-
-
-def _get_client() -> anthropic.Anthropic:
-    """Create Anthropic client."""
-    return anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
 
 # ── Multi-document detection ────────────────────────────────────────────────

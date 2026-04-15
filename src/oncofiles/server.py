@@ -91,6 +91,9 @@ def _check_rate_limit(key: str, *, request: Request | None = None) -> JSONRespon
     if rate_key not in _rate_limits:
         _rate_limits[rate_key] = []
     _rate_limits[rate_key] = [t for t in _rate_limits[rate_key] if now - t < _RATE_WINDOW]
+    if not _rate_limits[rate_key]:
+        del _rate_limits[rate_key]
+        return None
     if len(_rate_limits[rate_key]) >= limit:
         return JSONResponse(
             {"error": "Rate limit exceeded. Try again in a minute."},

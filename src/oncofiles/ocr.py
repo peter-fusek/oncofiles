@@ -5,10 +5,9 @@ from __future__ import annotations
 import base64
 import time
 
-import anthropic
 from fastmcp.utilities.types import Image
 
-from oncofiles.config import ANTHROPIC_API_KEY
+from oncofiles.enhance import _get_client
 from oncofiles.prompt_logger import log_ai_call
 
 OCR_MODEL = "claude-haiku-4-5-20251001"
@@ -38,7 +37,7 @@ def extract_text_from_image(
         db: Database instance for prompt logging (optional).
         document_id: Document ID for prompt logging (optional).
     """
-    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+    client = _get_client()
 
     # Image.data is raw bytes, encode to base64 for the API
     image_b64 = base64.b64encode(image.data).decode("utf-8")

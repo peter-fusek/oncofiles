@@ -9,6 +9,16 @@ ERIKA_UUID = "00000000-0000-4000-8000-000000000001"
 
 
 @pytest.fixture(autouse=True)
+def _reset_anthropic_client():
+    """Reset shared Anthropic client singleton so test mocks take effect."""
+    import oncofiles.enhance
+
+    oncofiles.enhance._shared_client = None
+    yield
+    oncofiles.enhance._shared_client = None
+
+
+@pytest.fixture(autouse=True)
 def _set_patient_context():
     """Set patient context name for tests so filename parsing works with test data."""
     from oncofiles import patient_context

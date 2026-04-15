@@ -44,7 +44,7 @@ def test_composition_single_document():
     mock_response.content = [MagicMock(text=ai_response)]
     mock_response.usage = MagicMock(input_tokens=100, output_tokens=50)
 
-    with patch("oncofiles.doc_analysis.anthropic") as mock_anthropic:
+    with patch("oncofiles.enhance.anthropic") as mock_anthropic:
         mock_anthropic.Anthropic.return_value.messages.create.return_value = mock_response
         result = analyze_document_composition("Lab results: WBC 5.2...")
 
@@ -84,7 +84,7 @@ def test_composition_multi_document():
     mock_response.content = [MagicMock(text=ai_response)]
     mock_response.usage = MagicMock(input_tokens=200, output_tokens=100)
 
-    with patch("oncofiles.doc_analysis.anthropic") as mock_anthropic:
+    with patch("oncofiles.enhance.anthropic") as mock_anthropic:
         mock_anthropic.Anthropic.return_value.messages.create.return_value = mock_response
         result = analyze_document_composition("Page 1: Lab results... Page 3: Discharge...")
 
@@ -99,7 +99,7 @@ def test_composition_invalid_json():
     mock_response.content = [MagicMock(text="not valid json")]
     mock_response.usage = MagicMock(input_tokens=100, output_tokens=10)
 
-    with patch("oncofiles.doc_analysis.anthropic") as mock_anthropic:
+    with patch("oncofiles.enhance.anthropic") as mock_anthropic:
         mock_anthropic.Anthropic.return_value.messages.create.return_value = mock_response
         result = analyze_document_composition("Some text")
 
@@ -137,7 +137,7 @@ def test_consolidation_finds_group():
     doc1 = make_doc(id=1, file_id="f1", filename="pathology_p1.pdf")
     doc2 = make_doc(id=2, file_id="f2", filename="pathology_p2.pdf")
 
-    with patch("oncofiles.doc_analysis.anthropic") as mock_anthropic:
+    with patch("oncofiles.enhance.anthropic") as mock_anthropic:
         mock_anthropic.Anthropic.return_value.messages.create.return_value = mock_response
         result = analyze_consolidation([(doc1, "Page 1..."), (doc2, "Page 2...")])
 
@@ -157,7 +157,7 @@ def test_consolidation_no_groups():
     doc1 = make_doc(id=1, file_id="f1")
     doc2 = make_doc(id=2, file_id="f2")
 
-    with patch("oncofiles.doc_analysis.anthropic") as mock_anthropic:
+    with patch("oncofiles.enhance.anthropic") as mock_anthropic:
         mock_anthropic.Anthropic.return_value.messages.create.return_value = mock_response
         result = analyze_consolidation([(doc1, "text1"), (doc2, "text2")])
 
@@ -203,7 +203,7 @@ def test_relationships_found():
         {"id": 3, "filename": "followup.pdf", "category": "labs", "ai_summary": "Follow-up"},
     ]
 
-    with patch("oncofiles.doc_analysis.anthropic") as mock_anthropic:
+    with patch("oncofiles.enhance.anthropic") as mock_anthropic:
         mock_anthropic.Anthropic.return_value.messages.create.return_value = mock_response
         result = analyze_document_relationships("WBC 5.2...", 1, candidates)
 

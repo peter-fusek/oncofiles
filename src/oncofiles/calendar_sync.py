@@ -75,7 +75,6 @@ async def _classify_event_medical(
 
     Returns (is_medical, confidence, event_type).
     """
-    import anthropic
 
     from oncofiles.config import ANTHROPIC_API_KEY
     from oncofiles.prompt_logger import log_ai_call
@@ -101,7 +100,9 @@ async def _classify_event_medical(
     )
 
     try:
-        client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+        from oncofiles.enhance import _get_client
+
+        client = _get_client()
         start = time.time()
         response = client.messages.create(
             model="claude-haiku-4-5-20251001",

@@ -14,9 +14,9 @@ def test_extract_text_from_image():
     mock_response = MagicMock()
     mock_response.content = [MagicMock(text="Hemoglobín: 135 g/L\nLeukocyty: 5.2")]
 
-    with patch("oncofiles.ocr.anthropic.Anthropic") as mock_cls:
+    with patch("oncofiles.enhance.anthropic") as mock_anthropic:
         mock_client = MagicMock()
-        mock_cls.return_value = mock_client
+        mock_anthropic.Anthropic.return_value = mock_client
         mock_client.messages.create.return_value = mock_response
 
         result = extract_text_from_image(fake_image)
@@ -43,9 +43,9 @@ def test_extract_text_empty_response():
     mock_response = MagicMock()
     mock_response.content = []
 
-    with patch("oncofiles.ocr.anthropic.Anthropic") as mock_cls:
+    with patch("oncofiles.enhance.anthropic") as mock_anthropic:
         mock_client = MagicMock()
-        mock_cls.return_value = mock_client
+        mock_anthropic.Anthropic.return_value = mock_client
         mock_client.messages.create.return_value = mock_response
 
         result = extract_text_from_image(fake_image)
@@ -60,9 +60,9 @@ def test_extract_text_png_format():
     mock_response = MagicMock()
     mock_response.content = [MagicMock(text="Test text")]
 
-    with patch("oncofiles.ocr.anthropic.Anthropic") as mock_cls:
+    with patch("oncofiles.enhance.anthropic") as mock_anthropic:
         mock_client = MagicMock()
-        mock_cls.return_value = mock_client
+        mock_anthropic.Anthropic.return_value = mock_client
         mock_client.messages.create.return_value = mock_response
 
         extract_text_from_image(fake_image)

@@ -120,9 +120,16 @@ async def backfill_missing_institutions(db) -> dict:
     return stats
 
 
+_shared_client: anthropic.Anthropic | None = None
+
+
 def _get_client() -> anthropic.Anthropic:
-    """Create Anthropic client. Kept as a function for testability."""
-    return anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+    """Return a shared Anthropic client. Reuses the same httpx connection pool
+    to avoid leaking HTTP clients on every AI call."""
+    global _shared_client
+    if _shared_client is None:
+        _shared_client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+    return _shared_client
 
 
 def _strip_markdown_fencing(text: str) -> str:
