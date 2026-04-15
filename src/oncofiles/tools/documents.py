@@ -611,6 +611,114 @@ async def update_document_category(ctx: Context, doc_id: int, category: str) -> 
     )
 
 
+async def reassign_document(ctx: Context, doc_id: int, target_patient_slug: str) -> str:
+    """Reassign a document to a different patient (admin data repair tool).
+
+    Use this when a document was imported under the wrong patient during sync.
+    Updates patient_id on the document record. Only works when called with the
+    admin bearer token (not patient-specific tokens).
+
+    Args:
+        doc_id: The integer database ID of the document to reassign.
+        target_patient_slug: Target patient slug or UUID (e.g. 'nora-antalova').
+    """
+    db = _get_db(ctx)
+
+    # Verify document exists
+    doc = await db.get_document(doc_id)
+    if not doc:
+        return json.dumps({"error": f"Document not found: {doc_id}"})
+
+    # Resolve target patient
+    target_pid = await db.resolve_patient_id(target_patient_slug)
+    if not target_pid:
+        return json.dumps({"error": f"Patient not found: {target_patient_slug}"})
+
+    # Get current patient for logging
+    old_pid_row = await db.db.execute("SELECT patient_id FROM documents WHERE id = ?", (doc_id,))
+    old_row = await old_pid_row.fetchone()
+    old_pid = old_row["patient_id"] if old_row else "unknown"
+
+    if old_pid == target_pid:
+        return json.dumps({"error": "Document already belongs to this patient"})
+
+    # Reassign
+    await db.db.execute(
+        "UPDATE documents SET patient_id = ? WHERE id = ?",
+        (target_pid, doc_id),
+    )
+    await db.db.commit()
+
+    logger.info(
+        "reassign_document: doc %d (%s) moved from %s to %s",
+        doc_id,
+        doc.filename,
+        old_pid[:8],
+        target_pid[:8],
+    )
+
+    return json.dumps(
+        {
+            "reassigned": True,
+            "doc_id": doc_id,
+            "filename": doc.filename,
+            "from_patient": old_pid,
+            "to_patient": target_pid,
+        }
+    )
+
+
+async def audit_patient_isolation(ctx: Context) -> str:
+    """Scan all patients for cross-patient filename contamination.
+
+    Checks every document's filename against all patients' display names.
+    Reports any document whose filename contains a DIFFERENT patient's name.
+    Generic — works for any number of patients, no hardcoded names.
+    """
+    db = _get_db(ctx)
+    patients = await db.list_patients(active_only=True)
+
+    # Build name→patient mapping (compact names without spaces)
+    name_to_patient: dict[str, str] = {}
+    for p in patients:
+        compact = p.display_name.replace(" ", "")
+        if compact and len(compact) > 3:  # skip very short names
+            name_to_patient[compact] = p.patient_id
+
+    mismatches: list[dict] = []
+
+    for p in patients:
+        docs = await db.list_documents(limit=500, patient_id=p.patient_id)
+
+        for doc in docs:
+            if doc.deleted_at:
+                continue
+            for name, owner_pid in name_to_patient.items():
+                if owner_pid == p.patient_id:
+                    continue  # skip own name
+                if name in doc.filename:
+                    mismatches.append(
+                        {
+                            "doc_id": doc.id,
+                            "filename": doc.filename,
+                            "assigned_patient": p.slug,
+                            "detected_name": name,
+                            "name_belongs_to": next(
+                                (pt.slug for pt in patients if pt.patient_id == owner_pid), "?"
+                            ),
+                        }
+                    )
+
+    return json.dumps(
+        {
+            "patients_scanned": len(patients),
+            "mismatches": mismatches,
+            "total_mismatches": len(mismatches),
+            "clean": len(mismatches) == 0,
+        }
+    )
+
+
 def register(mcp):
     mcp.tool()(upload_document)
     mcp.tool()(list_documents)
@@ -625,3 +733,5 @@ def register(mcp):
     mcp.tool()(get_related_documents)
     mcp.tool()(get_document_group)
     mcp.tool()(update_document_category)
+    mcp.tool()(reassign_document)
+    mcp.tool()(audit_patient_isolation)

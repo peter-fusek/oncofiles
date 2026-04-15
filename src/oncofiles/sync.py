@@ -1440,11 +1440,15 @@ async def enhance_documents(
     document_ids: list[int] | None = None,
     *,
     patient_id: str,
+    limit: int = 0,
 ) -> dict:
     """Run AI enhancement on documents.
 
     If document_ids is None, processes all documents without AI metadata.
     Returns summary dict: {processed, skipped, errors}.
+
+    Args:
+        limit: Max documents to process (0 = no limit). Use to avoid MCP proxy timeouts.
     """
     if document_ids:
         docs = []
@@ -1456,6 +1460,9 @@ async def enhance_documents(
                     docs.append(doc)
     else:
         docs = await db.get_documents_without_ai(patient_id=patient_id)
+
+    if limit > 0:
+        docs = docs[:limit]
 
     logger.info("enhance_documents: %d documents to process", len(docs))
     stats = {"processed": 0, "skipped": 0, "errors": 0}

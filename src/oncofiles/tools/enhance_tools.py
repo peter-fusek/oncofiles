@@ -19,6 +19,7 @@ from oncofiles.tools._helpers import (
 async def enhance_documents(
     ctx: Context,
     document_ids: str | None = None,
+    limit: int = 0,
 ) -> str:
     """Run AI enhancement (summary + tags) on documents.
 
@@ -26,6 +27,8 @@ async def enhance_documents(
 
     Args:
         document_ids: Comma-separated document IDs to enhance. If omitted, enhances all unprocessed.
+        limit: Max documents to process (default 0 = no limit). Use smaller values
+               (e.g. 10) to avoid MCP proxy timeouts on large patient records.
     """
     from oncofiles.sync import enhance_documents as _enhance_documents
 
@@ -38,7 +41,9 @@ async def enhance_documents(
     )
 
     pid = _get_patient_id()
-    stats = await _enhance_documents(db, files, gdrive, document_ids=parsed_ids, patient_id=pid)
+    stats = await _enhance_documents(
+        db, files, gdrive, document_ids=parsed_ids, patient_id=pid, limit=limit
+    )
     return json.dumps(stats)
 
 
@@ -154,8 +159,8 @@ async def extract_all_metadata(ctx: Context) -> str:
     return json.dumps(stats)
 
 
-async def detect_and_split_documents(ctx: Context, dry_run: bool = True) -> str:
-    """Scan all documents for multi-document PDFs and split them.
+async def detect_and_split_documents(ctx: Context, dry_run: bool = True, limit: int = 10) -> str:
+    """Scan documents for multi-document PDFs and split them.
 
     AI analyzes each PDF's content to detect when one file contains multiple
     distinct documents (different dates, institutions, or document types).
@@ -163,12 +168,13 @@ async def detect_and_split_documents(ctx: Context, dry_run: bool = True) -> str:
 
     Args:
         dry_run: If True (default), only report what would be split without making changes.
+        limit: Max documents to scan per call (default 10). Use to avoid MCP proxy timeouts.
     """
     from oncofiles.doc_analysis import analyze_document_composition
 
     db = _get_db(ctx)
     pid = _get_patient_id()
-    results = {"scanned": 0, "multi_doc": 0, "splits_created": 0, "details": []}
+    results = {"scanned": 0, "multi_doc": 0, "splits_created": 0, "limit": limit, "details": []}
 
     all_docs = await db.list_documents(limit=200, patient_id=pid)
     for doc in all_docs:
@@ -180,6 +186,9 @@ async def detect_and_split_documents(ctx: Context, dry_run: bool = True) -> str:
         pages = await db.get_ocr_pages(doc.id)
         if len(pages) < 2:
             continue
+
+        if results["scanned"] >= limit:
+            break
 
         results["scanned"] += 1
         full_text = "\n\n".join(p["extracted_text"] for p in pages)
