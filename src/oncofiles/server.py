@@ -3745,6 +3745,15 @@ async def api_update_patient(request: Request) -> JSONResponse:
         patient = await db_inst.get_patient(pid)
         if not patient:
             return JSONResponse({"error": "Patient not found"}, status_code=404)
+
+        # Ownership check: non-admins can only modify their own patients
+        email = _get_dashboard_email(request)
+        is_admin = _check_bearer(request) is None or _is_admin_email(email)
+        if not is_admin and (
+            not patient.caregiver_email or patient.caregiver_email.lower() != (email or "").lower()
+        ):
+            return JSONResponse({"error": "Not authorized to modify this patient"}, status_code=403)
+
         body = await request.json()
         updated = await db_inst.update_patient(
             pid,
