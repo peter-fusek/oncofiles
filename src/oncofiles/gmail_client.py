@@ -73,6 +73,9 @@ class GmailClient:
     def _rebuild_service(self) -> None:
         from googleapiclient.discovery import build
 
+        old = self._service
+        if old and hasattr(old, "_http") and old._http:
+            old._http.close()
         self._service = build("gmail", "v1", credentials=self._creds)
 
     @classmethod

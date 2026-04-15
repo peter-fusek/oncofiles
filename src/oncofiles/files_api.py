@@ -20,6 +20,11 @@ class FilesClient:
     def __init__(self, api_key: str | None = None) -> None:
         self._client = anthropic.Anthropic(api_key=api_key or ANTHROPIC_API_KEY)
 
+    def close(self) -> None:
+        """Close the underlying httpx client to release connection pool."""
+        if self._client:
+            self._client.close()
+
     def upload(
         self,
         file: BinaryIO,

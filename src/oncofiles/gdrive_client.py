@@ -115,6 +115,10 @@ class GDriveClient:
         """
         from googleapiclient.discovery import build
 
+        # Close old httplib2 pool before creating a new one to prevent leak
+        old = self._service
+        if old and hasattr(old, "_http") and old._http:
+            old._http.close()
         self._service = build("drive", "v3", credentials=self._creds)
 
     @classmethod

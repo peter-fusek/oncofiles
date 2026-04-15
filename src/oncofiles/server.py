@@ -344,6 +344,14 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict]:
         if scheduler:
             scheduler.shutdown(wait=False)
             logger.info("Sync scheduler stopped")
+        # Close AI client to release httpx connection pool
+        import oncofiles.enhance
+
+        if oncofiles.enhance._shared_client:
+            oncofiles.enhance._shared_client.close()
+            oncofiles.enhance._shared_client = None
+        if files:
+            files.close()
         await db.close()
 
 
@@ -1734,10 +1742,14 @@ def _start_sync_scheduler(
     scheduler.add_listener(_job_error, EVENT_JOB_ERROR)
     scheduler.add_listener(_job_missed, EVENT_JOB_MISSED)
 
-    # OF-1/OF-2: Periodic memory check — reclaim memory + graceful restart
+    # OF-1/OF-2: Periodic memory check — reclaim memory + graceful restart.
+    # Start after 7 min to avoid false positives from startup sync spike (#366).
     scheduler.add_job(
         periodic_memory_check,
-        IntervalTrigger(minutes=5),
+        IntervalTrigger(
+            minutes=5,
+            start_date=datetime.now() + timedelta(minutes=7),
+        ),
         id="memory_check",
         max_instances=1,
         misfire_grace_time=60,

@@ -241,9 +241,17 @@ async def periodic_memory_check() -> None:
     swallowed by APScheduler (the root cause of #213 restart failure).
 
     1. Update peak RSS
-    2. Reclaim if above threshold, restart if still high
+    2. Log current RSS for diagnostics
+    3. Reclaim if above threshold, restart if still high
     """
-    update_peak_rss()
+    rss = update_peak_rss()
+    logger.info(
+        "Memory check: RSS=%.1f MB (startup=%.1f, peak=%.1f, threshold=%d)",
+        rss,
+        _rss_startup,
+        _rss_peak,
+        MEMORY_RESTART_THRESHOLD_MB,
+    )
 
     if check_memory_restart():
         logger.critical("Initiating graceful restart via SIGTERM")
