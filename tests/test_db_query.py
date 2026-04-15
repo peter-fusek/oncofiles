@@ -73,7 +73,9 @@ async def test_with_clause(db: Database):
     result = json.loads(
         await query_db(
             ctx,
-            f"WITH d AS (SELECT * FROM documents WHERE patient_id = '{ERIKA_UUID}') SELECT COUNT(*) as c FROM d",
+            "WITH d AS (SELECT * FROM documents"
+            f" WHERE patient_id = '{ERIKA_UUID}')"
+            " SELECT COUNT(*) as c FROM d",
         )
     )
     assert result["rows"][0]["c"] == 1
