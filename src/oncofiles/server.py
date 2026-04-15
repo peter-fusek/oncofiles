@@ -2584,8 +2584,21 @@ def _get_dashboard_email(request: Request) -> str | None:
 
 
 def _is_admin_email(email: str | None) -> bool:
-    """Check whether *email* belongs to a dashboard admin."""
+    """Check whether *email* belongs to a dashboard admin.
+
+    Admin status grants access to system-level endpoints (health, readiness,
+    schedules) but NOT automatic access to all patients' medical data.
+    Patient access is always controlled by caregiver_email matching.
+    """
     return email is not None and email.lower() in DASHBOARD_ADMIN_EMAILS
+
+
+def _email_matches_caregiver(email: str, caregiver_email: str | None) -> bool:
+    """Check if email matches caregiver_email (supports comma-separated list)."""
+    if not email or not caregiver_email:
+        return False
+    email_lower = email.lower()
+    return any(e.strip().lower() == email_lower for e in caregiver_email.split(","))
 
 
 def _check_dashboard_auth(request: Request) -> JSONResponse | None:
@@ -2605,13 +2618,13 @@ async def _get_dashboard_patient_id(request: Request) -> str:
     Accepts either a UUID or a slug (e.g. 'q1b').  Always returns
     the UUID patient_id suitable for DB queries.
 
-    Authorization: admins (bearer token or admin email) may access any
-    patient.  Non-admin session users may only access patients where
-    ``caregiver_email`` matches their session email; requests for other
-    patients silently fall back to the caller's own first patient.
+    Authorization: ALL session users (including admins) may only access
+    patients where their email appears in ``caregiver_email`` (comma-separated).
+    Bearer token requests (MCP/system) bypass patient scoping.
+    Unauthorized requests silently fall back to the caller's own first patient.
     """
     email = _get_dashboard_email(request)
-    is_admin = _check_bearer(request) is None or _is_admin_email(email)
+    is_bearer = _check_bearer(request) is None
 
     raw = request.query_params.get("patient_id", "").strip().lower()
     if not raw:
@@ -2619,9 +2632,9 @@ async def _get_dashboard_patient_id(request: Request) -> str:
         try:
             db_fb: Database = request.app.state.fastmcp_server._lifespan_result["db"]
             patients = await db_fb.list_patients(active_only=True)
-            if not is_admin and email:
+            if not is_bearer and email:
                 patients = [
-                    p for p in patients if p.caregiver_email and p.caregiver_email.lower() == email
+                    p for p in patients if _email_matches_caregiver(email, p.caregiver_email)
                 ]
             if patients:
                 return patients[0].patient_id
@@ -2636,22 +2649,30 @@ async def _get_dashboard_patient_id(request: Request) -> str:
             return raw
 
         # --- Authorization gate ---
-        if not is_admin and email:
-            # Verify the caller owns the requested patient
+        if not is_bearer and email:
             patients = await db.list_patients(active_only=False)
             target = next((p for p in patients if p.patient_id == resolved), None)
-            if not target or not target.caregiver_email or target.caregiver_email.lower() != email:
-                logger.warning(
-                    "_get_dashboard_patient_id: non-admin %s "
-                    "tried to access patient '%s' — falling back",
-                    email,
-                    raw,
-                )
-                # Fall back to caller's own first patient
-                own = [
-                    p for p in patients if p.caregiver_email and p.caregiver_email.lower() == email
-                ]
-                return own[0].patient_id if own else ""
+            is_caregiver = target and _email_matches_caregiver(email, target.caregiver_email)
+
+            if not is_caregiver:
+                if _is_admin_email(email):
+                    # Admin read-only access — allowed but audit-logged
+                    logger.info(
+                        "AUDIT: admin %s accessed patient '%s' (read-only)",
+                        email,
+                        target.display_name if target else raw,
+                    )
+                else:
+                    # Non-admin, non-caregiver — fall back to own patient
+                    logger.warning(
+                        "_get_dashboard_patient_id: %s tried to access patient '%s' — denied",
+                        email,
+                        raw,
+                    )
+                    own = [
+                        p for p in patients if _email_matches_caregiver(email, p.caregiver_email)
+                    ]
+                    return own[0].patient_id if own else ""
 
         return resolved
     except Exception:
@@ -3624,37 +3645,51 @@ Fix file: `src/oncofiles/dashboard.html`
 async def api_list_patients(request: Request) -> JSONResponse:
     """List patients visible to the authenticated user.
 
-    Admins (bearer token or admin email) see all patients.
-    Regular users see only patients where caregiver_email matches.
+    Returns {own: [...], admin: [...], is_admin: bool}.
+    - own: patients where caregiver_email matches the caller
+    - admin: all OTHER patients (only for admin emails, read-only access)
+    Bearer token requests (MCP/system) see all patients in 'own'.
     """
     err = _check_dashboard_auth(request)
     if err:
         return err
     try:
         db_inst: Database = request.app.state.fastmcp_server._lifespan_result["db"]
-        patients = await db_inst.list_patients(active_only=False)
+        all_patients = await db_inst.list_patients(active_only=False)
 
-        # Scope: non-admin session users only see their own patients
         email = _get_dashboard_email(request)
-        is_admin = _check_bearer(request) is None or _is_admin_email(email)
-        if not is_admin and email:
-            patients = [
-                p for p in patients if p.caregiver_email and p.caregiver_email.lower() == email
-            ]
+        is_bearer = _check_bearer(request) is None
+        is_admin = is_bearer or _is_admin_email(email)
+
+        def _to_dict(p):
+            return {
+                "patient_id": p.patient_id,
+                "display_name": p.display_name,
+                "caregiver_email": p.caregiver_email,
+                "diagnosis_summary": p.diagnosis_summary,
+                "is_active": p.is_active,
+                "preferred_lang": p.preferred_lang,
+                "created_at": p.created_at.isoformat() if p.created_at else None,
+            }
+
+        if is_bearer:
+            # MCP/system: all patients as own
+            return JSONResponse(
+                {"own": [_to_dict(p) for p in all_patients], "admin": [], "is_admin": False}
+            )
+
+        own = [p for p in all_patients if _email_matches_caregiver(email or "", p.caregiver_email)]
+        admin_patients = []
+        if is_admin:
+            own_ids = {p.patient_id for p in own}
+            admin_patients = [p for p in all_patients if p.patient_id not in own_ids]
 
         return JSONResponse(
-            [
-                {
-                    "patient_id": p.patient_id,
-                    "display_name": p.display_name,
-                    "caregiver_email": p.caregiver_email,
-                    "diagnosis_summary": p.diagnosis_summary,
-                    "is_active": p.is_active,
-                    "preferred_lang": p.preferred_lang,
-                    "created_at": p.created_at.isoformat() if p.created_at else None,
-                }
-                for p in patients
-            ]
+            {
+                "own": [_to_dict(p) for p in own],
+                "admin": [_to_dict(p) for p in admin_patients],
+                "is_admin": is_admin,
+            }
         )
     except Exception:
         logger.exception("API list-patients error")
@@ -3746,12 +3781,10 @@ async def api_update_patient(request: Request) -> JSONResponse:
         if not patient:
             return JSONResponse({"error": "Patient not found"}, status_code=404)
 
-        # Ownership check: non-admins can only modify their own patients
+        # Ownership check: session users can only modify patients they're caregiver for
         email = _get_dashboard_email(request)
-        is_admin = _check_bearer(request) is None or _is_admin_email(email)
-        if not is_admin and (
-            not patient.caregiver_email or patient.caregiver_email.lower() != (email or "").lower()
-        ):
+        is_bearer = _check_bearer(request) is None
+        if not is_bearer and not _email_matches_caregiver(email or "", patient.caregiver_email):
             return JSONResponse({"error": "Not authorized to modify this patient"}, status_code=403)
 
         body = await request.json()

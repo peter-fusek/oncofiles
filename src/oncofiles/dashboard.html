@@ -1013,6 +1013,9 @@
         </div>
       </header>
 
+      <div id="admin-readonly-banner" style="display:none;background:rgba(255,165,0,0.15);border:1px solid rgba(255,165,0,0.4);border-radius:0.5rem;padding:0.5rem 1rem;margin:0 1rem 0.5rem;text-align:center;color:#ffa500;font-size:0.8125rem">
+        <span data-sk="Admin prístup (len na čítanie) — nemôžete upravovať údaje tohto pacienta" data-en="Admin access (read-only) — you cannot modify this patient's data">Admin prístup (len na čítanie) — nemôžete upravovať údaje tohto pacienta</span>
+      </div>
       <div id="error-banner" class="error-banner">
         <span id="error-text"></span>
         <button class="refresh-btn" onclick="refresh()" style="margin-left:1rem" data-sk="Skúsiť znova" data-en="Retry">Skúsiť znova</button>
@@ -1920,14 +1923,26 @@
 
     // ── Patient selector ────────────────────────────────────────────────
 
+    var adminPatientIds = new Set();
+    var isAdminMode = false;
+
     async function loadPatients() {
       try {
-        // Fetch without patient_id filter (admin endpoint lists all)
         var resp = await fetch('/api/patients', {
           headers: { 'Authorization': authHeader() }
         });
         if (!resp.ok) return;
-        patientsCache = await resp.json();
+        var data = await resp.json();
+
+        // Handle both new format {own, admin} and legacy array format
+        var ownPatients = data.own || data;
+        var adminPatients = data.admin || [];
+        var isAdmin = data.is_admin || false;
+
+        // Build combined cache (own + admin)
+        patientsCache = ownPatients.concat(adminPatients);
+        adminPatientIds = new Set(adminPatients.map(function(p) { return p.patient_id; }));
+
         var select = document.getElementById('patient-select');
         clearEl(select);
         if (patientsCache.length === 0) {
@@ -1937,22 +1952,40 @@
           select.appendChild(emptyOpt);
           return;
         }
-        patientsCache.forEach(function(p) {
+
+        // Render own patients
+        ownPatients.forEach(function(p) {
           var opt = document.createElement('option');
           opt.value = p.patient_id;
           opt.textContent = p.display_name + (p.is_active ? '' : ' (archived)');
           select.appendChild(opt);
         });
+
+        // Render admin separator + admin patients (read-only)
+        if (isAdmin && adminPatients.length > 0) {
+          var sep = document.createElement('option');
+          sep.disabled = true;
+          sep.textContent = dashLang === 'sk' ? '── Admin (len na čítanie) ──' : '── Admin (read-only) ──';
+          select.appendChild(sep);
+          adminPatients.forEach(function(p) {
+            var opt = document.createElement('option');
+            opt.value = p.patient_id;
+            opt.textContent = '\u{1F512} ' + p.display_name + (p.is_active ? '' : ' (archived)');
+            select.appendChild(opt);
+          });
+        }
+
         // Restore selection from localStorage or default to first
         if (currentPatientId && patientsCache.some(function(p) {
           return p.patient_id === currentPatientId;
         })) {
           select.value = currentPatientId;
         } else {
-          currentPatientId = patientsCache[0].patient_id;
+          currentPatientId = patientsCache.length > 0 ? patientsCache[0].patient_id : '';
           select.value = currentPatientId;
           localStorage.setItem('oncofiles_patient_id', currentPatientId);
         }
+        updateAdminMode();
         updatePatientDiagnosis();
         updateArchiveButton();
       } catch (e) {
@@ -1960,9 +1993,22 @@
       }
     }
 
+    function updateAdminMode() {
+      isAdminMode = adminPatientIds.has(currentPatientId);
+      // Show/hide admin read-only banner
+      var banner = document.getElementById('admin-readonly-banner');
+      if (banner) banner.style.display = isAdminMode ? 'block' : 'none';
+      // Disable modify controls in admin mode
+      var archiveBtn = document.getElementById('archive-patient-btn');
+      if (archiveBtn) archiveBtn.style.display = isAdminMode ? 'none' : '';
+      var addPatientBtn = document.querySelector('.add-patient-btn');
+      if (addPatientBtn && isAdminMode) addPatientBtn.style.display = 'none';
+    }
+
     function switchPatient(patientId) {
       currentPatientId = patientId;
       localStorage.setItem('oncofiles_patient_id', patientId);
+      updateAdminMode();
       updatePatientDiagnosis();
       updateArchiveButton();
       clearAllPatientData();
