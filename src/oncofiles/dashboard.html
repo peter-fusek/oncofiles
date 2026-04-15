@@ -2043,6 +2043,10 @@
       // Clear prompt log
       var promptEl = document.getElementById('prompt-log-entries');
       if (promptEl) { while (promptEl.firstChild) promptEl.removeChild(promptEl.firstChild); }
+      // Clear filter badge counts to prevent stale numbers from previous patient
+      document.querySelectorAll('.pill .pill-count').forEach(function(el) {
+        el.textContent = '0';
+      });
     }
 
     function updatePatientDiagnosis() {
