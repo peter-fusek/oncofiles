@@ -84,6 +84,14 @@ class DocumentMixin:
             row = await cursor.fetchone()
             return _row_to_document(row) if row else None
 
+    async def check_document_ownership(self, doc_id: int, patient_id: str) -> bool:
+        """Check if a document belongs to the given patient. Returns False if not found."""
+        async with self.db.execute(
+            "SELECT patient_id FROM documents WHERE id = ?", (doc_id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+            return bool(row and row["patient_id"] == patient_id)
+
     async def get_documents_by_ids(self, doc_ids: set[int]) -> dict[int, Document]:
         """Get multiple documents by their IDs in a single query. Returns {id: Document}."""
         if not doc_ids:

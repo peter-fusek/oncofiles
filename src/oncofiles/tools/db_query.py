@@ -9,7 +9,7 @@ import re
 
 from fastmcp import Context
 
-from oncofiles.tools._helpers import _get_db
+from oncofiles.tools._helpers import _get_db, _get_patient_id
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +29,13 @@ QUERY_TIMEOUT_S = 10
 # Tables containing secrets or credentials — block from query_db
 _BLOCKED_TABLES = re.compile(
     r"\b(oauth_tokens|mcp_oauth_clients|mcp_oauth_tokens|patient_tokens)\b",
+    re.IGNORECASE,
+)
+
+# Tables that contain patient-scoped data — queries must include patient_id filter
+_PATIENT_SCOPED_TABLES = re.compile(
+    r"\b(documents|activity_log|conversations|treatment_events|research_entries"
+    r"|lab_values|document_pages|agent_state|patient_context)\b",
     re.IGNORECASE,
 )
 
@@ -60,6 +67,19 @@ async def query_db(
     # Block access to tables containing secrets/credentials
     if _BLOCKED_TABLES.search(sql):
         return json.dumps({"error": "Access to credential tables is not allowed."})
+
+    # Patient isolation: if query touches patient-scoped tables, require patient_id filter
+    try:
+        pid = _get_patient_id()
+    except (ValueError, Exception):
+        pid = ""
+    if _PATIENT_SCOPED_TABLES.search(sql) and pid and "patient_id" not in sql.lower():
+        return json.dumps(
+            {
+                "error": "Queries on patient-scoped tables must include a patient_id filter. "
+                f"Add: WHERE patient_id = '{pid}'"
+            }
+        )
 
     # Enforce limit
     row_limit = min(max(1, limit), MAX_ROWS)

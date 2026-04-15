@@ -32,6 +32,18 @@ logger = logging.getLogger(__name__)
 MAX_UPLOAD_SIZE = 100 * 1024 * 1024  # 100 MB
 
 
+async def _get_doc_owned(db, doc_id: int) -> Document | None:
+    """Fetch a document by integer ID with patient ownership check.
+
+    Returns None if the document doesn't exist or belongs to a different patient.
+    This prevents cross-patient data leaks via enumerable integer IDs.
+    """
+    pid = _get_patient_id()
+    if not await db.check_document_ownership(doc_id, pid):
+        return None
+    return await db.get_document(doc_id)
+
+
 async def upload_document(
     ctx: Context,
     content: str,
@@ -281,7 +293,7 @@ async def get_document_by_id(ctx: Context, doc_id: int) -> str:
         doc_id: The integer database ID of the document.
     """
     db = _get_db(ctx)
-    doc = await db.get_document(doc_id)
+    doc = await _get_doc_owned(db, doc_id)
     if not doc:
         return json.dumps({"error": f"Document not found: {doc_id}"})
     return json.dumps(
@@ -339,14 +351,20 @@ async def restore_document(ctx: Context, doc_id: int) -> str:
         doc_id: The local document ID to restore.
     """
     db = _get_db(ctx)
+    # Ownership check: verify doc belongs to current patient (even if deleted)
+    pid = _get_patient_id()
+    if not await db.check_document_ownership(doc_id, pid):
+        return json.dumps(
+            {"restored": False, "doc_id": doc_id, "message": "Document not found in trash."}
+        )
+    doc = await db.get_document(doc_id)
     restored = await db.restore_document(doc_id)
     if restored:
-        doc = await db.get_document(doc_id)
         return json.dumps(
             {
                 "restored": True,
                 "doc_id": doc_id,
-                "filename": doc.filename if doc else None,
+                "filename": doc.filename,
                 "message": "Document restored from trash.",
             }
         )
@@ -426,7 +444,7 @@ async def get_document_versions(ctx: Context, doc_id: int) -> str:
         doc_id: The integer database ID of any document in the version chain.
     """
     db = _get_db(ctx)
-    doc = await db.get_document(doc_id)
+    doc = await _get_doc_owned(db, doc_id)
     if not doc:
         return json.dumps({"error": f"Document not found: {doc_id}"})
 
@@ -464,7 +482,7 @@ async def get_related_documents(ctx: Context, doc_id: int) -> str:
         doc_id: The integer database ID of the document.
     """
     db = _get_db(ctx)
-    doc = await db.get_document(doc_id)
+    doc = await _get_doc_owned(db, doc_id)
     if not doc:
         return json.dumps({"error": f"Document not found: {doc_id}"})
 
@@ -512,7 +530,13 @@ async def get_document_group(ctx: Context, group_id: str) -> str:
         group_id: The UUID group identifier.
     """
     db = _get_db(ctx)
-    docs = await db.get_documents_by_group(group_id)
+    all_docs = await db.get_documents_by_group(group_id)
+    # Filter to only documents owned by the current patient
+    pid = _get_patient_id()
+    docs = []
+    for d in all_docs:
+        if d.id and await db.check_document_ownership(d.id, pid):
+            docs.append(d)
     if not docs:
         return json.dumps({"error": f"No documents found for group: {group_id}"})
     return json.dumps(
@@ -544,7 +568,7 @@ async def update_document_category(ctx: Context, doc_id: int, category: str) -> 
         return json.dumps({"error": f"Invalid category '{category}'. Valid: {valid_values}"})
 
     db = _get_db(ctx)
-    doc = await db.get_document(doc_id)
+    doc = await _get_doc_owned(db, doc_id)
     if not doc:
         return json.dumps({"error": f"Document not found: {doc_id}"})
 
