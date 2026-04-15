@@ -7,7 +7,7 @@ import json
 from fastmcp import Context
 
 from oncofiles.models import PromptLogQuery
-from oncofiles.tools._helpers import _get_db
+from oncofiles.tools._helpers import _get_db, _get_patient_id
 
 
 async def get_prompt_log_entry(
@@ -23,7 +23,8 @@ async def get_prompt_log_entry(
         entry_id: The prompt log entry ID.
     """
     db = _get_db(ctx)
-    entry = await db.get_prompt_log(entry_id)
+    pid = _get_patient_id()
+    entry = await db.get_prompt_log(entry_id, patient_id=pid)
     if not entry:
         return json.dumps({"error": f"Prompt log entry not found: {entry_id}"})
 
@@ -75,6 +76,7 @@ async def search_prompt_log(
     from oncofiles.tools._helpers import _parse_date
 
     db = _get_db(ctx)
+    pid = _get_patient_id()
     query = PromptLogQuery(
         call_type=call_type,
         document_id=document_id,
@@ -84,7 +86,7 @@ async def search_prompt_log(
         text=text,
         limit=min(max(1, limit), 200),
     )
-    entries = await db.search_prompt_log(query)
+    entries = await db.search_prompt_log(query, patient_id=pid)
 
     # Return compact list (no full prompts — use get_prompt_log_entry for those)
     items = [

@@ -39,9 +39,17 @@ class PromptLogMixin:
         entry.id = cursor.lastrowid
         return entry
 
-    async def get_prompt_log(self, entry_id: int) -> PromptLogEntry | None:
-        """Get a single prompt log entry by ID."""
-        async with self.db.execute("SELECT * FROM prompt_log WHERE id = ?", (entry_id,)) as cursor:
+    async def get_prompt_log(
+        self, entry_id: int, *, patient_id: str | None = None
+    ) -> PromptLogEntry | None:
+        """Get a single prompt log entry by ID, optionally scoped to a patient."""
+        if patient_id:
+            sql = "SELECT * FROM prompt_log WHERE id = ? AND patient_id = ?"
+            params = (entry_id, patient_id)
+        else:
+            sql = "SELECT * FROM prompt_log WHERE id = ?"
+            params = (entry_id,)
+        async with self.db.execute(sql, params) as cursor:
             row = await cursor.fetchone()
             return _row_to_prompt_log(row) if row else None
 

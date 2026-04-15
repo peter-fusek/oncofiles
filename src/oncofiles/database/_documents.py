@@ -249,13 +249,17 @@ class DocumentMixin:
             rows = await cursor.fetchall()
             return [d for r in rows if (d := _safe_row_to_document(r)) is not None]
 
-    async def delete_document(self, doc_id: int) -> bool:
+    async def delete_document(self, doc_id: int, *, patient_id: str | None = None) -> bool:
         """Soft-delete a document by local ID. Returns True if updated."""
-        cursor = await self.db.execute(
+        sql = (
             "UPDATE documents SET deleted_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') "
-            "WHERE id = ? AND deleted_at IS NULL",
-            (doc_id,),
+            "WHERE id = ? AND deleted_at IS NULL"
         )
+        params: list = [doc_id]
+        if patient_id is not None:
+            sql += " AND patient_id = ?"
+            params.append(patient_id)
+        cursor = await self.db.execute(sql, tuple(params))
         await self.db.commit()
         return cursor.rowcount > 0
 
@@ -521,12 +525,19 @@ class DocumentMixin:
 
     # ── OCR cache ─────────────────────────────────────────────────────────
 
-    async def has_ocr_text(self, document_id: int) -> bool:
+    async def has_ocr_text(self, document_id: int, *, patient_id: str | None = None) -> bool:
         """Check if OCR text is cached for a document."""
-        async with self.db.execute(
-            "SELECT 1 FROM document_pages WHERE document_id = ? LIMIT 1",
-            (document_id,),
-        ) as cursor:
+        if patient_id is not None:
+            sql = (
+                "SELECT 1 FROM document_pages dp "
+                "JOIN documents d ON d.id = dp.document_id "
+                "WHERE dp.document_id = ? AND d.patient_id = ? LIMIT 1"
+            )
+            params: tuple = (document_id, patient_id)
+        else:
+            sql = "SELECT 1 FROM document_pages WHERE document_id = ? LIMIT 1"
+            params = (document_id,)
+        async with self.db.execute(sql, params) as cursor:
             return await cursor.fetchone() is not None
 
     async def get_ocr_document_ids(self) -> set[int]:
@@ -535,13 +546,22 @@ class DocumentMixin:
             rows = await cursor.fetchall()
             return {(r["document_id"] if isinstance(r, dict) else r[0]) for r in rows}
 
-    async def get_ocr_pages(self, document_id: int) -> list[dict]:
+    async def get_ocr_pages(self, document_id: int, *, patient_id: str | None = None) -> list[dict]:
         """Get cached OCR text for a document, ordered by page number."""
-        async with self.db.execute(
-            "SELECT page_number, extracted_text, model FROM document_pages "
-            "WHERE document_id = ? ORDER BY page_number",
-            (document_id,),
-        ) as cursor:
+        if patient_id is not None:
+            sql = (
+                "SELECT dp.page_number, dp.extracted_text, dp.model FROM document_pages dp "
+                "JOIN documents d ON d.id = dp.document_id "
+                "WHERE dp.document_id = ? AND d.patient_id = ? ORDER BY dp.page_number"
+            )
+            params: tuple = (document_id, patient_id)
+        else:
+            sql = (
+                "SELECT page_number, extracted_text, model FROM document_pages "
+                "WHERE document_id = ? ORDER BY page_number"
+            )
+            params = (document_id,)
+        async with self.db.execute(sql, params) as cursor:
             rows = await cursor.fetchall()
             return [dict(r) for r in rows]
 

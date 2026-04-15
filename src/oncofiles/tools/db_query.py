@@ -73,7 +73,9 @@ async def query_db(
         pid = _get_patient_id()
     except (ValueError, Exception):
         pid = ""
-    if _PATIENT_SCOPED_TABLES.search(sql) and pid and "patient_id" not in sql.lower():
+    # Stricter check: require "patient_id = " or "patient_id='" pattern (not just the string)
+    _has_pid_filter = re.search(r"patient_id\s*=\s*[?'\"]", sql, re.IGNORECASE)
+    if _PATIENT_SCOPED_TABLES.search(sql) and pid and not _has_pid_filter:
         return json.dumps(
             {
                 "error": "Queries on patient-scoped tables must include a patient_id filter. "

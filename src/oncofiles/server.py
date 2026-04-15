@@ -2604,13 +2604,25 @@ async def _get_dashboard_patient_id(request: Request) -> str:
 
     Accepts either a UUID or a slug (e.g. 'q1b').  Always returns
     the UUID patient_id suitable for DB queries.
+
+    Authorization: admins (bearer token or admin email) may access any
+    patient.  Non-admin session users may only access patients where
+    ``caregiver_email`` matches their session email; requests for other
+    patients silently fall back to the caller's own first patient.
     """
+    email = _get_dashboard_email(request)
+    is_admin = _check_bearer(request) is None or _is_admin_email(email)
+
     raw = request.query_params.get("patient_id", "").strip().lower()
     if not raw:
-        # Fall back to first active patient instead of hardcoded slug
+        # Fall back to first active patient the caller is allowed to see
         try:
             db_fb: Database = request.app.state.fastmcp_server._lifespan_result["db"]
             patients = await db_fb.list_patients(active_only=True)
+            if not is_admin and email:
+                patients = [
+                    p for p in patients if p.caregiver_email and p.caregiver_email.lower() == email
+                ]
             if patients:
                 return patients[0].patient_id
         except Exception:
@@ -2621,7 +2633,27 @@ async def _get_dashboard_patient_id(request: Request) -> str:
         resolved = await db.resolve_patient_id(raw)
         if not resolved:
             logger.warning("_get_dashboard_patient_id: no patient found for '%s'", raw)
-        return resolved or raw
+            return raw
+
+        # --- Authorization gate ---
+        if not is_admin and email:
+            # Verify the caller owns the requested patient
+            patients = await db.list_patients(active_only=False)
+            target = next((p for p in patients if p.patient_id == resolved), None)
+            if not target or not target.caregiver_email or target.caregiver_email.lower() != email:
+                logger.warning(
+                    "_get_dashboard_patient_id: non-admin %s "
+                    "tried to access patient '%s' — falling back",
+                    email,
+                    raw,
+                )
+                # Fall back to caller's own first patient
+                own = [
+                    p for p in patients if p.caregiver_email and p.caregiver_email.lower() == email
+                ]
+                return own[0].patient_id if own else ""
+
+        return resolved
     except Exception:
         logger.error("_get_dashboard_patient_id: resolution failed for '%s'", raw, exc_info=True)
         return raw

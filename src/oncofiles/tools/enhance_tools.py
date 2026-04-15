@@ -61,6 +61,10 @@ async def extract_document_metadata(
     files = _get_files(ctx)
     gdrive = await _get_gdrive(ctx)
 
+    # Patient isolation: verify caller owns this document
+    pid = _get_patient_id()
+    if not await db.check_document_ownership(document_id, pid):
+        return json.dumps({"error": f"Document not found: {document_id}"})
     doc = await db.get_document(document_id)
     if not doc:
         return json.dumps({"error": f"Document not found: {document_id}"})

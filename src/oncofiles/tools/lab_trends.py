@@ -55,7 +55,9 @@ async def store_lab_values(
 
     pid = _get_patient_id()
 
-    # Verify document exists
+    # Patient isolation: verify caller owns this document
+    if not await db.check_document_ownership(document_id, pid):
+        return json.dumps({"error": f"Document not found: {document_id}"})
     doc = await db.get_document(document_id)
     if not doc:
         return json.dumps({"error": f"Document not found: {document_id}"})
