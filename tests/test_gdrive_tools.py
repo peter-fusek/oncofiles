@@ -140,11 +140,11 @@ async def test_setup_gdrive_creates_all_folders(db: Database):
 
     assert result["status"] == "ok"
     assert result["root_folder_id"] == "root123"
-    assert result["total_folders"] == 17  # 14 active categories + 3 metadata
-    assert len(result["created"]) == 17
+    assert result["total_folders"] == 18  # 15 active categories + 3 metadata
+    assert len(result["created"]) == 18
     assert len(result["skipped"]) == 0
     assert len(result["renamed"]) == 0
-    assert mock_gdrive.create_folder.call_count == 17
+    assert mock_gdrive.create_folder.call_count == 18
 
 
 async def test_setup_gdrive_skips_existing(db: Database):
@@ -158,7 +158,7 @@ async def test_setup_gdrive_skips_existing(db: Database):
 
     assert result["status"] == "ok"
     assert len(result["created"]) == 0
-    assert len(result["skipped"]) == 17
+    assert len(result["skipped"]) == 18
     assert mock_gdrive.create_folder.call_count == 0
 
 
@@ -178,9 +178,9 @@ async def test_setup_gdrive_renames_old_folders(db: Database):
     result = json.loads(await setup_gdrive(ctx, root_folder_id="root123"))
 
     assert result["status"] == "ok"
-    assert len(result["renamed"]) == 17
+    assert len(result["renamed"]) == 18
     assert len(result["created"]) == 0
-    assert mock_gdrive.rename_file.call_count == 17
+    assert mock_gdrive.rename_file.call_count == 18
 
 
 async def test_setup_gdrive_idempotent_mixed(db: Database):
@@ -205,5 +205,5 @@ async def test_setup_gdrive_idempotent_mixed(db: Database):
 
     assert result["status"] == "ok"
     assert len(result["skipped"]) == 1  # First folder was found
-    assert len(result["created"]) == 16  # Rest were created
+    assert len(result["created"]) == 17  # Rest were created
     assert "summary" in result

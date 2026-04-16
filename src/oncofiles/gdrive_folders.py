@@ -24,7 +24,7 @@ METADATA_FOLDERS = ["conversations", "treatment", "research"]
 ALL_FOLDERS = CATEGORY_FOLDERS + METADATA_FOLDERS
 
 # Patient-type-aware folder filtering
-ONCOLOGY_ONLY_CATEGORIES = {"chemo_sheet", "pathology", "genetics"}
+ONCOLOGY_ONLY_CATEGORIES = {"chemo_sheet", "pathology", "genetics", "hereditary_genetics"}
 GENERAL_ONLY_CATEGORIES = {"vaccination", "dental", "preventive"}
 
 # Bilingual display names: EN key → SK translation (for GDrive folder display)
@@ -40,6 +40,7 @@ FOLDER_SK: dict[str, str] = {
     "discharge": "prepúšťacie správy",
     "chemo_sheet": "chemoterapeutické protokoly",
     "genetics": "genetické vyšetrenia",
+    "hereditary_genetics": "dedičná genetika",
     "reference": "referenčné materiály",
     "advocate": "záznamy advokáta pacienta",
     "other": "ostatné",

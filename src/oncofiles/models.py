@@ -13,7 +13,8 @@ class DocumentCategory(StrEnum):
 
     Taxonomy (v4.6.0):
     - pathology = tissue morphology, histology, biopsy reports
-    - genetics = molecular/DNA testing (KRAS, MSI, HER2, BRAF panels)
+    - genetics = somatic/tumor molecular testing (KRAS, MSI, HER2, BRAF panels)
+    - hereditary_genetics = germline/inherited DNA testing (BRCA1/2, Lynch, Li-Fraumeni)
     - surgery = all surgical documentation (reports, protocols, notes)
     - discharge = all discharge docs (summaries, epikrízy)
     - consultation = doctor visits, clinical notes, follow-ups
@@ -24,6 +25,7 @@ class DocumentCategory(StrEnum):
     IMAGING = "imaging"
     PATHOLOGY = "pathology"
     GENETICS = "genetics"
+    HEREDITARY_GENETICS = "hereditary_genetics"
     SURGERY = "surgery"
     CONSULTATION = "consultation"
     PRESCRIPTION = "prescription"

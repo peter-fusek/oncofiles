@@ -85,6 +85,23 @@ class TestNewFormat:
         r = parse_filename("20260212 ErikaFusekova-NOU-SpravaZgenetickehoVysetreniaMudrCernak.JPG")
         assert r.category == DocumentCategory.GENETICS
 
+    def test_hereditary_genetics_standard_token(self):
+        r = parse_filename("20260415_ErikaFusekova_NOU_HereditaryGenetics_BRCA1Positive.pdf")
+        assert r.document_date == date(2026, 4, 15)
+        assert r.category == DocumentCategory.HEREDITARY_GENETICS
+
+    def test_hereditary_genetics_brca_keyword(self):
+        r = parse_filename("20260415 ErikaFusekova-NOU-BRCA2PathogenicVariant.pdf")
+        assert r.category == DocumentCategory.HEREDITARY_GENETICS
+
+    def test_hereditary_genetics_germline_keyword(self):
+        r = parse_filename("20260415 ErikaFusekova-Ambry-GermlinePanelNegative.pdf")
+        assert r.category == DocumentCategory.HEREDITARY_GENETICS
+
+    def test_hereditary_genetics_dedicna_sk(self):
+        r = parse_filename("20260415 ErikaFusekova-NOU-DedicnaMutaciaBRCA1.pdf")
+        assert r.category == DocumentCategory.HEREDITARY_GENETICS
+
     def test_blood_krv_is_labs(self):
         r = parse_filename("20260213 ErikaFusekova-NOU-KrvPredChemoMudrPittichova.JPG")
         assert r.category == DocumentCategory.LABS

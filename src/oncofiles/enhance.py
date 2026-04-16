@@ -415,9 +415,18 @@ CLASSIFY_SYSTEM_PROMPT = (
     "Europacolon, PacientAdvokat, VitalSource, NCCN. "
     "Look at letterhead, stamps, addresses, provider names. "
     "If identifiable but not listed, create CamelCase code. null if unknown.\n"
-    '- "category": One of: labs, report, imaging, pathology, genetics, surgery, '
+    '- "category": One of: labs, report, imaging, pathology, genetics, '
+    "hereditary_genetics, surgery, "
     "consultation, prescription, referral, discharge, chemo_sheet, reference, "
     "advocate, other, vaccination, dental, preventive.\n"
+    "  • Use `hereditary_genetics` when the document describes INHERITED / "
+    "GERMLINE / FAMILIAL cancer risk testing — keywords: hereditary, germline, "
+    "zárodočný, dedičný, BRCA1, BRCA2, Lynch syndrome, Li-Fraumeni, ACMG class, "
+    "cascade testing, familial cancer, pathogenic variant in a patient's DNA "
+    "(not tumor tissue).\n"
+    "  • Use `genetics` for SOMATIC / TUMOR molecular profiling — keywords: "
+    "MSI, MSS, TMB, tumor DNA, ctDNA, KRAS / NRAS / BRAF mutation status from "
+    "tumor tissue, HER2 amplification, PD-L1 TPS, somatic panel.\n"
     '- "document_date": Clinical encounter date (YYYY-MM-DD). '
     "NOT DOB, NOT appointments. null if unknown.\n\n"
     "Respond ONLY with the JSON object."

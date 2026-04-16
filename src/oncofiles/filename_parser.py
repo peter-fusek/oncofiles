@@ -110,6 +110,7 @@ CATEGORY_FILENAME_TOKENS: dict[DocumentCategory, str] = {
     DocumentCategory.PATHOLOGY: "Pathology",
     DocumentCategory.IMAGING: "Imaging",
     DocumentCategory.GENETICS: "Genetics",
+    DocumentCategory.HEREDITARY_GENETICS: "HereditaryGenetics",
     DocumentCategory.SURGERY: "Surgery",
     DocumentCategory.SURGICAL_REPORT: "SurgicalReport",  # legacy alias
     DocumentCategory.CONSULTATION: "Consultation",
@@ -148,6 +149,27 @@ _CATEGORY_KEYWORDS: list[tuple[list[str], DocumentCategory]] = [
     (
         ["preventiv", "screening", "annual checkup", "rocna prehliadka", "prehliadka"],
         DocumentCategory.PREVENTIVE,
+    ),
+    # Hereditary / germline genetics (before plain genetics — more specific)
+    (
+        [
+            "hereditary",
+            "germline",
+            "germinaln",
+            "dedicn",
+            "zarodocn",
+            "zárodočn",
+            "brca1",
+            "brca2",
+            "lynch",
+            "li-fraumeni",
+            "cascade test",
+            "kaskadove",
+            "kaskadové",
+            "inherited dna",
+            "familial cancer",
+        ],
+        DocumentCategory.HEREDITARY_GENETICS,
     ),
     # Genetics (before pathology — genetics is a separate category)
     (["genetick", "genetik", "geneticke"], DocumentCategory.GENETICS),
