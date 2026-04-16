@@ -505,13 +505,18 @@ async def test_get_journey_timeline(db: Database):
     result = await get_journey_timeline(ctx)
     import json
 
-    timeline = json.loads(result)
+    data = json.loads(result)
+    assert "items" in data
+    assert "total" in data
+    timeline = data["items"]
     assert len(timeline) == 2
-    # Check chronological order
-    assert timeline[0]["date"] <= timeline[1]["date"]
-    types = {item["type"] for item in timeline}
-    assert "document" in types
-    assert "conversation" in types
+    assert data["total"] == 2
+    # Check chronological order (asc by default is desc — newest first)
+    # With sort=desc, newest date comes first
+    assert timeline[0]["date"] >= timeline[1]["date"]
+    sources = {item["source_table"] for item in timeline}
+    assert "documents" in sources
+    assert "conversations" in sources
 
 
 # ── find_duplicates tool (#v3.2.0) ───────────────────────────────────────

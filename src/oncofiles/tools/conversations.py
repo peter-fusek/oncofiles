@@ -3,12 +3,44 @@
 from __future__ import annotations
 
 import json
+import logging
 from datetime import date
 
 from fastmcp import Context
 
 from oncofiles.models import ConversationEntry, ConversationQuery
 from oncofiles.tools._helpers import _clamp_limit, _get_db, _get_patient_id, _parse_date
+
+logger = logging.getLogger(__name__)
+
+
+def _row_get(row, key: str, default=""):
+    """Get a field from a DB row (works with both dict and sqlite3.Row)."""
+    try:
+        val = row[key]
+        return val if val is not None else default
+    except (KeyError, IndexError):
+        return default
+
+
+def _safe_json_list(raw: str | None) -> list:
+    """Parse a JSON string as a list, returning [] on any error."""
+    if not raw:
+        return []
+    try:
+        return json.loads(raw)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return []
+
+
+def _safe_json_field(raw: str | None, field: str) -> str:
+    """Extract a string field from a JSON blob, returning "" on any error."""
+    if not raw:
+        return ""
+    try:
+        return json.loads(raw).get(field, "")
+    except (json.JSONDecodeError, TypeError, ValueError, AttributeError):
+        return ""
 
 
 async def log_conversation(
@@ -175,16 +207,26 @@ async def get_journey_timeline(
     date_from: str | None = None,
     date_to: str | None = None,
     limit: int = 200,
+    offset: int = 0,
+    source_tables: str | None = None,
+    search: str | None = None,
+    sort: str = "desc",
 ) -> str:
-    """Get a unified chronological timeline merging documents and conversation entries.
+    """Get a unified chronological timeline of the complete patient journey.
 
-    This is the complete view of the oncology journey — documents and diary entries
-    interleaved by date. Useful for book writing, doctor sharing, or reviewing history.
+    Merges documents, treatment events, conversations, lab values, and research
+    entries into a single date-sorted stream. Each item includes a source_table
+    field for namespaced IDs (e.g. doc:42, te:7).
 
     Args:
         date_from: Start date (YYYY-MM-DD).
         date_to: End date (YYYY-MM-DD).
-        limit: Maximum items per type (default 200).
+        limit: Maximum total items returned (default 200, max 500).
+        offset: Skip first N items for pagination.
+        source_tables: Comma-separated list to include (e.g. "documents,treatment_events").
+                       Default: all tables.
+        search: Substring filter across title + summary + tags.
+        sort: "desc" (newest first, default) or "asc" (oldest first).
     """
     try:
         parsed_from = _parse_date(date_from)
@@ -192,62 +234,204 @@ async def get_journey_timeline(
     except ValueError as e:
         return json.dumps({"error": str(e)})
     db = _get_db(ctx)
+    patient_id = _get_patient_id()
+    limit = min(limit, 500)
 
-    # Fetch documents
-    doc_conditions: list[str] = []
-    doc_params: list[str | int] = []
-    if parsed_from:
-        doc_conditions.append("document_date >= ?")
-        doc_params.append(parsed_from.isoformat())
-    if parsed_to:
-        doc_conditions.append("document_date <= ?")
-        doc_params.append(parsed_to.isoformat())
-    doc_conditions.append("deleted_at IS NULL")
-    doc_conditions.append("patient_id = ?")
-    doc_params.append(_get_patient_id())
-    doc_where = " AND ".join(doc_conditions)
-    async with db.db.execute(
-        f"SELECT * FROM documents WHERE {doc_where} ORDER BY document_date ASC LIMIT ?",
-        (*doc_params, limit),
-    ) as cursor:
-        doc_rows = await cursor.fetchall()
+    # Which tables to include
+    all_tables = {
+        "documents",
+        "treatment_events",
+        "conversations",
+        "lab_values",
+        "research_entries",
+    }
+    if source_tables:
+        include = {t.strip() for t in source_tables.split(",") if t.strip() in all_tables}
+    else:
+        include = all_tables
 
-    # Fetch conversation entries
-    entries = await db.get_conversation_timeline(
-        date_from=parsed_from,
-        date_to=parsed_to,
-        limit=limit,
-        patient_id=_get_patient_id(),
-    )
-
-    # Merge into unified timeline
     timeline: list[dict] = []
-    for row in doc_rows:
-        timeline.append(
-            {
-                "date": row["document_date"] or "",
-                "type": "document",
-                "subtype": row["category"],
-                "title": row["filename"],
-                "detail": f"{row['institution'] or 'unknown'} | {row['category']}",
-                "id": row["id"],
-            }
-        )
-    for e in entries:
-        timeline.append(
-            {
-                "date": e.entry_date.isoformat(),
-                "type": "conversation",
-                "subtype": e.entry_type,
-                "title": e.title,
-                "detail": e.content[:200] + ("..." if len(e.content) > 200 else ""),
-                "id": e.id,
-            }
-        )
 
-    # Sort chronologically
-    timeline.sort(key=lambda x: x["date"])
-    return json.dumps(timeline)
+    # ── Documents ──────────────────────────────────────────────────────────
+    if "documents" in include:
+        conds = ["deleted_at IS NULL", "patient_id = ?"]
+        params: list[str | int] = [patient_id]
+        if parsed_from:
+            conds.append("document_date >= ?")
+            params.append(parsed_from.isoformat())
+        if parsed_to:
+            conds.append("document_date <= ?")
+            params.append(parsed_to.isoformat())
+        where = " AND ".join(conds)
+        sql = f"SELECT * FROM documents WHERE {where} ORDER BY document_date DESC LIMIT 500"
+        async with db.db.execute(sql, tuple(params)) as cursor:
+            for row in await cursor.fetchall():
+                gdrive_url = ""
+                if _row_get(row, "gdrive_id"):
+                    gdrive_url = f"https://drive.google.com/file/d/{row['gdrive_id']}/view"
+                timeline.append(
+                    {
+                        "id": row["id"],
+                        "source_table": "documents",
+                        "date": row["document_date"] or _row_get(row, "created_at", "")[:10] or "",
+                        "event_type": "document",
+                        "title": row["filename"],
+                        "summary": (_row_get(row, "ai_summary") or "")[:200],
+                        "category": row["category"],
+                        "document_id": row["id"],
+                        "gdrive_url": gdrive_url,
+                        "tags": [],
+                        "institution": _row_get(row, "institution") or "",
+                    }
+                )
+
+    # ── Treatment events ──────────────────────────────────────────────────
+    if "treatment_events" in include:
+        try:
+            conds = ["patient_id = ?"]
+            params = [patient_id]
+            if parsed_from:
+                conds.append("event_date >= ?")
+                params.append(parsed_from.isoformat())
+            if parsed_to:
+                conds.append("event_date <= ?")
+                params.append(parsed_to.isoformat())
+            where = " AND ".join(conds)
+            sql = f"SELECT * FROM treatment_events WHERE {where} ORDER BY event_date DESC LIMIT 500"
+            async with db.db.execute(sql, tuple(params)) as cursor:
+                for row in await cursor.fetchall():
+                    timeline.append(
+                        {
+                            "id": row["id"],
+                            "source_table": "treatment_events",
+                            "date": row["event_date"] or "",
+                            "event_type": row["event_type"],
+                            "title": row["title"],
+                            "summary": (_row_get(row, "notes") or "")[:200],
+                            "category": row["event_type"],
+                            "document_id": None,
+                            "gdrive_url": "",
+                            "tags": [],
+                        }
+                    )
+        except Exception:
+            logger.debug("treatment_events query failed — table may not exist")
+
+    # ── Conversations ─────────────────────────────────────────────────────
+    if "conversations" in include:
+        entries = await db.get_conversation_timeline(
+            date_from=parsed_from,
+            date_to=parsed_to,
+            limit=500,
+            patient_id=patient_id,
+        )
+        for e in entries:
+            tags = _safe_json_list(e.tags)
+            timeline.append(
+                {
+                    "id": e.id,
+                    "source_table": "conversations",
+                    "date": e.entry_date.isoformat(),
+                    "event_type": e.entry_type,
+                    "title": e.title,
+                    "summary": e.content[:200] + ("..." if len(e.content) > 200 else ""),
+                    "category": e.entry_type,
+                    "document_id": None,
+                    "gdrive_url": "",
+                    "tags": tags,
+                }
+            )
+
+    # ── Lab values (grouped by date+document) ─────────────────────────────
+    if "lab_values" in include:
+        try:
+            conds = ["patient_id = ?"]
+            params = [patient_id]
+            if parsed_from:
+                conds.append("lab_date >= ?")
+                params.append(parsed_from.isoformat())
+            if parsed_to:
+                conds.append("lab_date <= ?")
+                params.append(parsed_to.isoformat())
+            where = " AND ".join(conds)
+            sql = f"""SELECT lab_date, document_id, COUNT(*) as cnt,
+                       GROUP_CONCAT(parameter, ', ') as params
+                FROM lab_values WHERE {where}
+                GROUP BY lab_date, document_id
+                ORDER BY lab_date DESC LIMIT 500"""
+            async with db.db.execute(sql, tuple(params)) as cursor:
+                for row in await cursor.fetchall():
+                    param_list = (_row_get(row, "params") or "")[:100]
+                    timeline.append(
+                        {
+                            "id": row["document_id"] or 0,
+                            "source_table": "lab_values",
+                            "date": row["lab_date"] or "",
+                            "event_type": "lab_result",
+                            "title": f"Lab results ({row['cnt']} values)",
+                            "summary": param_list,
+                            "category": "labs",
+                            "document_id": row["document_id"],
+                            "gdrive_url": "",
+                            "tags": [],
+                        }
+                    )
+        except Exception:
+            logger.debug("lab_values query failed — table may not exist")
+
+    # ── Research entries ───────────────────────────────────────────────────
+    if "research_entries" in include:
+        try:
+            conds = ["patient_id = ?"]
+            params = [patient_id]
+            if parsed_from:
+                conds.append("date(created_at) >= ?")
+                params.append(parsed_from.isoformat())
+            if parsed_to:
+                conds.append("date(created_at) <= ?")
+                params.append(parsed_to.isoformat())
+            where = " AND ".join(conds)
+            sql = f"SELECT * FROM research_entries WHERE {where} ORDER BY created_at DESC LIMIT 500"
+            async with db.db.execute(sql, tuple(params)) as cursor:
+                for row in await cursor.fetchall():
+                    tags = _safe_json_list(_row_get(row, "tags"))
+                    url = _safe_json_field(_row_get(row, "raw_data"), "url")
+                    timeline.append(
+                        {
+                            "id": row["id"],
+                            "source_table": "research_entries",
+                            "date": (_row_get(row, "created_at") or "")[:10],
+                            "event_type": "research",
+                            "title": row["title"],
+                            "summary": (_row_get(row, "summary") or "")[:200],
+                            "category": _row_get(row, "source", "research"),
+                            "document_id": None,
+                            "gdrive_url": url,
+                            "tags": tags,
+                        }
+                    )
+        except Exception:
+            logger.debug("research_entries query failed — table may not exist")
+
+    # ── Search filter ─────────────────────────────────────────────────────
+    if search:
+        q = search.lower()
+        timeline = [
+            item
+            for item in timeline
+            if q in item["title"].lower()
+            or q in item.get("summary", "").lower()
+            or q in str(item.get("tags", [])).lower()
+        ]
+
+    # ── Sort ──────────────────────────────────────────────────────────────
+    timeline.sort(key=lambda x: x["date"], reverse=(sort != "asc"))
+
+    # ── Pagination ────────────────────────────────────────────────────────
+    total = len(timeline)
+    timeline = timeline[offset : offset + limit]
+
+    return json.dumps({"items": timeline, "total": total, "offset": offset, "limit": limit})
 
 
 def register(mcp):
