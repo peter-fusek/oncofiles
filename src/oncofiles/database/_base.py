@@ -148,6 +148,16 @@ def _is_stale_stream_error(exc: Exception) -> bool:
     return "stream not found" in msg or "stream expired" in msg
 
 
+def _is_transient_db_error(exc: Exception) -> bool:
+    """Check if an exception is a transient DB error worth retrying (#378).
+
+    Covers stale streams, Hrana conflicts, and embedded replica corruption
+    (common after Railway container restart or Volume hiccup).
+    """
+    msg = str(exc)
+    return _is_stale_stream_error(exc) or any(e in msg for e in _HRANA_TRANSIENT_ERRORS)
+
+
 class _TursoConnection:
     """Async wrapper around sync libsql connection matching aiosqlite interface.
 
@@ -241,7 +251,7 @@ class _TursoConnection:
             self._breaker.record_failure()
             raise
         except BaseException as exc:
-            if _is_stale_stream_error(exc) or "PanicException" in type(exc).__name__:
+            if _is_transient_db_error(exc) or "PanicException" in type(exc).__name__:
                 self._breaker.record_failure()
                 self._breaker.check()  # bail early if breaker just opened
                 logger.warning(
@@ -309,6 +319,9 @@ _HRANA_TRANSIENT_ERRORS = (
     "stream error",
     "Failed to checkpoint WAL",
     "database table is locked",
+    # Embedded replica corruption — transient after container restart (#378)
+    "file is not a database",
+    "database disk image is malformed",
 )
 
 

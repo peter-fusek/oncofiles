@@ -106,6 +106,9 @@ async def sync_from_gdrive(
 
     Returns summary dict: {new, updated, unchanged, skipped, missing, errors}.
     """
+    # Proactive reconnect before batch to avoid stale replica (#378)
+    await db.reconnect_if_stale(timeout=10.0)
+
     logger.info("sync_from_gdrive: listing folder %s (dry_run=%s)", folder_id, dry_run)
     gdrive_files, folder_map = await asyncio.to_thread(gdrive.list_folder_with_structure, folder_id)
     logger.info(
@@ -527,6 +530,9 @@ async def sync_to_gdrive(
 
     Returns summary dict: {exported, skipped, metadata_exported, errors}.
     """
+    # Proactive reconnect before batch to avoid stale replica (#378)
+    await db.reconnect_if_stale(timeout=10.0)
+
     logger.info("sync_to_gdrive: starting (dry_run=%s, full=%s)", dry_run, full)
 
     stats = {"exported": 0, "organized": 0, "skipped": 0, "metadata_exported": 0, "errors": 0}
@@ -1467,6 +1473,9 @@ async def enhance_documents(
     logger.info("enhance_documents: %d documents to process", len(docs))
     stats = {"processed": 0, "skipped": 0, "errors": 0}
 
+    # Proactive reconnect before batch to avoid stale replica (#378)
+    await db.reconnect_if_stale(timeout=10.0)
+
     for doc in docs:
         try:
             enhanced = await asyncio.wait_for(
@@ -1564,6 +1573,9 @@ async def extract_all_metadata(
 
     Returns summary dict: {processed, skipped, errors}.
     """
+    # Proactive reconnect before batch to avoid stale replica (#378)
+    await db.reconnect_if_stale(timeout=10.0)
+
     docs = await db.get_documents_without_metadata(patient_id=patient_id)
     docs = docs[:5]  # Process max 5 per run to limit memory
     logger.info("extract_all_metadata: %d documents to process", len(docs))
