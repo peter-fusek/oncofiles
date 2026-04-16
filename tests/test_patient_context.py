@@ -107,3 +107,58 @@ def test_load_from_json_nonexistent(tmp_path: Path):
     """Loading from nonexistent file returns empty dict."""
     result = load_from_json(tmp_path / "nonexistent.json")
     assert result == {}
+
+
+def test_set_germline_finding_records_and_normalizes():
+    """set_germline_finding uppercases gene + canonicalizes classification."""
+    from oncofiles import patient_context
+    from oncofiles.patient_context import set_germline_finding
+
+    patient_context._context.clear()
+    patient_context._context.update(_DEFAULT_CONTEXT.copy())
+
+    ctx = set_germline_finding(
+        "brca1",
+        "Likely Pathogenic",
+        variant="c.5266dupC",
+        zygosity="heterozygous",
+        test_date="2026-04-10",
+        test_lab="Ambry",
+    )
+    f = ctx["germline_findings"]["BRCA1"]
+    assert f["classification"] == "likely_pathogenic"
+    assert f["variant"] == "c.5266dupC"
+    assert f["test_lab"] == "Ambry"
+
+
+def test_get_germline_status_unknown_for_missing_gene():
+    """get_germline_status returns 'unknown' when gene not recorded."""
+    from oncofiles import patient_context
+    from oncofiles.patient_context import get_germline_status, set_germline_finding
+
+    patient_context._context.clear()
+    patient_context._context.update(_DEFAULT_CONTEXT.copy())
+
+    set_germline_finding("BRCA1", "pathogenic")
+    assert get_germline_status("BRCA1") == "pathogenic"
+    assert get_germline_status("MLH1") == "unknown"
+    assert get_germline_status("") == "unknown"
+
+
+def test_format_context_surfaces_germline_banner():
+    """format_context_text includes a 'Germline findings' section when set."""
+    from oncofiles import patient_context
+    from oncofiles.patient_context import format_context_text, set_germline_finding
+
+    patient_context._context.clear()
+    patient_context._context.update(_DEFAULT_CONTEXT.copy())
+    set_germline_finding(
+        "BRCA2",
+        "pathogenic",
+        variant="c.5946delT",
+        test_lab="Centogene",
+    )
+    text = format_context_text()
+    assert "Germline findings" in text
+    assert "BRCA2" in text
+    assert "pathogenic" in text

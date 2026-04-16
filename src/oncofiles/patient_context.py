@@ -27,6 +27,7 @@ _DEFAULT_CONTEXT: dict[str, Any] = {
     "tumor_site": "",
     "diagnosis_date": "",
     "biomarkers": {},
+    "germline_findings": {},  # {gene: {classification, variant, zygosity, test_date, test_lab}}
     "treatment": {},
     "metastases": [],
     "comorbidities": [],
@@ -160,6 +161,66 @@ def update_context(updates: dict[str, Any], patient_id: str | None = None) -> di
     return ctx
 
 
+# ── Germline findings helpers (v5.8.0 #385) ──────────────────────────────────
+
+# ACMG variant classification values (canonical form).
+_GERMLINE_CLASSIFICATIONS = {
+    "pathogenic",
+    "likely_pathogenic",
+    "vus",  # variant of uncertain significance (ACMG class 3)
+    "likely_benign",
+    "benign",
+    "unknown",
+}
+
+
+def set_germline_finding(
+    gene: str,
+    classification: str,
+    *,
+    variant: str = "",
+    zygosity: str = "",
+    test_date: str = "",
+    test_lab: str = "",
+    patient_id: str | None = None,
+) -> dict[str, Any]:
+    """Record a germline variant finding for a gene.
+
+    Gene names are uppercased (BRCA1, MLH1). Classification is lower-cased
+    and validated against ACMG values; unrecognized values fall back to
+    "unknown" so stored data stays queryable.
+    """
+    gene_key = (gene or "").strip().upper()
+    if not gene_key:
+        raise ValueError("gene is required")
+    cls = (classification or "").strip().lower().replace(" ", "_").replace("-", "_")
+    if cls not in _GERMLINE_CLASSIFICATIONS:
+        cls = "unknown"
+    ctx = get_context(patient_id)
+    findings = dict(ctx.get("germline_findings") or {})
+    findings[gene_key] = {
+        "classification": cls,
+        "variant": variant,
+        "zygosity": zygosity,
+        "test_date": test_date,
+        "test_lab": test_lab,
+    }
+    return update_context({"germline_findings": findings}, patient_id=patient_id)
+
+
+def get_germline_status(gene: str, patient_id: str | None = None) -> str:
+    """Return the ACMG classification for a gene, or "unknown" if not recorded."""
+    gene_key = (gene or "").strip().upper()
+    if not gene_key:
+        return "unknown"
+    ctx = get_context(patient_id)
+    finding = (ctx.get("germline_findings") or {}).get(gene_key)
+    if not isinstance(finding, dict):
+        return "unknown"
+    cls = str(finding.get("classification") or "unknown").lower()
+    return cls if cls in _GERMLINE_CLASSIFICATIONS else "unknown"
+
+
 async def initialize(db: Any, json_path: str | Path | None = None) -> dict[str, Any]:
     """Load patient context: DB → JSON file → hardcoded default.
 
@@ -227,6 +288,22 @@ def format_context_text(patient_id: str | None = None) -> str:
     )
 
     if patient_type == "oncology":
+        germline = ctx.get("germline_findings") or {}
+        if germline:
+            germ_lines = []
+            for gene, finding in sorted(germline.items()):
+                if not isinstance(finding, dict):
+                    continue
+                cls = finding.get("classification", "unknown")
+                variant = finding.get("variant", "")
+                lab = finding.get("test_lab", "")
+                bits = [f"{gene} ({cls})"]
+                if variant:
+                    bits.append(variant)
+                if lab:
+                    bits.append(lab)
+                germ_lines.append("  - " + " · ".join(bits))
+            lines.append("**Germline findings:**\n" + "\n".join(germ_lines))
         lines.append(f"**Excluded therapies:**\n{excluded}")
 
     lines.append(f"**Note:** {ctx.get('note', '')}")
