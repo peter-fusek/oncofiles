@@ -3735,6 +3735,75 @@ async def api_newsletter_subscribe(request: Request) -> JSONResponse:
     )
 
 
+# Per-IP rate limiter for check endpoint: {ip: [timestamp, ...]}
+_newsletter_check_rate: dict[str, list[float]] = {}
+_NEWSLETTER_CHECK_RATE_LIMIT = 20  # max checks per IP per hour
+_NEWSLETTER_CHECK_RATE_WINDOW = 3600
+
+
+@mcp.custom_route("/api/newsletter/check", methods=["GET"])
+async def api_newsletter_check(request: Request) -> JSONResponse:
+    """Check whether an email is already subscribed.
+
+    Returns {subscribed: bool, status, created_at} for the given email only.
+    Rate-limited per IP to prevent enumeration; no list endpoint exposed.
+    """
+    import re
+
+    client_ip = request.client.host if request.client else "unknown"
+    now = time.time()
+    hits = _newsletter_check_rate.get(client_ip, [])
+    hits = [t for t in hits if now - t < _NEWSLETTER_CHECK_RATE_WINDOW]
+    if len(hits) >= _NEWSLETTER_CHECK_RATE_LIMIT:
+        return JSONResponse(
+            {"error": "Too many checks. Try again later."},
+            status_code=429,
+            headers={"Access-Control-Allow-Origin": "*"},
+        )
+
+    email = (request.query_params.get("email") or "").strip().lower()
+    if not email or not re.match(r"^[^\s@]+@[^\s@]+\.[^\s@]+$", email) or len(email) > 254:
+        return JSONResponse(
+            {"error": "Invalid email"},
+            status_code=400,
+            headers={"Access-Control-Allow-Origin": "*"},
+        )
+
+    try:
+        db_inst: Database = request.app.state.fastmcp_server._lifespan_result["db"]
+        cursor = await db_inst.db.execute(
+            "SELECT status, created_at, verified_at FROM newsletter_subscribers WHERE email = ?",
+            (email,),
+        )
+        rows = await cursor.fetchall()
+    except Exception:
+        logger.exception("Newsletter check DB error")
+        return JSONResponse(
+            {"error": "internal error"},
+            status_code=500,
+            headers={"Access-Control-Allow-Origin": "*"},
+        )
+
+    hits.append(now)
+    _newsletter_check_rate[client_ip] = hits
+
+    if not rows:
+        return JSONResponse(
+            {"subscribed": False},
+            headers={"Access-Control-Allow-Origin": "*"},
+        )
+    row = rows[0]
+    return JSONResponse(
+        {
+            "subscribed": True,
+            "status": row["status"],
+            "created_at": row["created_at"],
+            "verified_at": row["verified_at"],
+        },
+        headers={"Access-Control-Allow-Origin": "*"},
+    )
+
+
 @mcp.custom_route("/api/patients", methods=["GET"])
 async def api_list_patients(request: Request) -> JSONResponse:
     """List patients visible to the authenticated user.

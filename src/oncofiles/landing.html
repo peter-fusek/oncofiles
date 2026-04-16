@@ -2158,12 +2158,25 @@
       msgEl.textContent = '';
       msgEl.className = 'nl-msg';
 
-      fetch('/api/newsletter/subscribe', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: email, source: source })
-      }).then(function(r) { return r.json().then(function(d) { return { ok: r.ok, data: d }; }); })
+      // Check first so we can distinguish "already subscribed" from "newly signed up"
+      fetch('/api/newsletter/check?email=' + encodeURIComponent(email))
+      .then(function(r) { return r.json().then(function(d) { return { ok: r.ok, data: d }; }); })
+      .then(function(check) {
+        var lang = localStorage.getItem('oncofiles_lang') || 'sk';
+        if (check.ok && check.data.subscribed) {
+          msgEl.textContent = lang === 'en' ? 'You are already subscribed.' : 'Už ste prihlásený.';
+          msgEl.className = 'nl-msg success';
+          input.value = '';
+          return null;
+        }
+        return fetch('/api/newsletter/subscribe', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email: email, source: source })
+        }).then(function(r) { return r.json().then(function(d) { return { ok: r.ok, data: d }; }); });
+      })
       .then(function(res) {
+        if (res === null) return;
         if (res.ok && res.data.ok) {
           var lang = localStorage.getItem('oncofiles_lang') || 'sk';
           msgEl.textContent = lang === 'en' ? 'Check your email!' : 'Skontrolujte email!';
