@@ -8,8 +8,8 @@
   <script>
     (function(){var l=localStorage.getItem('oncofiles_lang');if(l==='en')document.documentElement.lang='en';})();
   </script>
-  <title>Gloww OS — pracovný podklad k stretnutiu</title>
-  <meta name="description" content="Klon Oncofiles + Oncoteam prispôsobený pre obezitologickú prax Gloww.sk. Pracovný podklad, nie verejný produkt.">
+  <title>Gloww OS — infraštruktúra pre GLP-1 liečbu</title>
+  <meta name="description" content="Komerčná adaptácia bežiaceho Oncofiles + Oncoteam stacku pre obezitologickú prax. Spoločný pilot instarea a klinického partnera, grantová alebo licenčná cesta.">
   <link rel="icon" type="image/svg+xml" href="/favicon.svg">
   <style>
     @import url('https://fonts.googleapis.com/css2?family=DM+Serif+Display&family=DM+Sans:ital,wght@0,400;0,500;0,700;1,400&display=swap');
@@ -22,6 +22,7 @@
       --border: #d5cfc5;
       --border-light: #bfb8ad;
       --card-shadow: 0 1px 3px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.04);
+      --card-shadow-lg: 0 10px 30px rgba(0, 0, 0, 0.08), 0 4px 12px rgba(0, 0, 0, 0.04);
       --text: #1e293b;
       --text-muted: #556270;
       --text-dim: #8c9aab;
@@ -30,7 +31,14 @@
       --purple: #7c3aed;
       --purple-light: #8b5cf6;
       --purple-glow: rgba(124, 58, 237, 0.10);
+      --purple-soft: rgba(124, 58, 237, 0.04);
       --warm: #d97706;
+      --green: #22c55e;
+      --red: #ef4444;
+      --amber: #f59e0b;
+      --wa-green: #dcf8c6;
+      --wa-bg: #e5ddd5;
+      --wa-header: #075e54;
     }
 
     * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -44,7 +52,8 @@
       overflow-x: hidden;
     }
 
-    .container { max-width: 860px; margin: 0 auto; padding: 0 1.5rem; }
+    .container { max-width: 1080px; margin: 0 auto; padding: 0 1.5rem; }
+    .container-narrow { max-width: 860px; margin: 0 auto; padding: 0 1.5rem; }
 
     header {
       padding: 1.25rem 0;
@@ -52,13 +61,12 @@
       background: rgba(250, 249, 247, 0.85);
       backdrop-filter: blur(12px);
       -webkit-backdrop-filter: blur(12px);
+      position: sticky;
+      top: 0;
+      z-index: 10;
     }
     header .container { display: flex; align-items: center; justify-content: space-between; }
-    .logo {
-      font-family: 'DM Serif Display', Georgia, serif;
-      font-size: 1.375rem;
-      letter-spacing: -0.01em;
-    }
+    .logo { font-family: 'DM Serif Display', Georgia, serif; font-size: 1.375rem; letter-spacing: -0.01em; }
     .logo a { color: var(--text); text-decoration: none; }
     .logo span { color: var(--purple); }
     .logo small { font-family: 'DM Sans', sans-serif; font-size: 0.75rem; color: var(--text-dim); margin-left: 0.5rem; font-weight: 500; text-transform: uppercase; letter-spacing: 0.08em; }
@@ -66,339 +74,314 @@
     nav a { color: var(--text-muted); text-decoration: none; font-size: 0.875rem; padding: 0.25rem 0.5rem; }
     nav a:hover { color: var(--purple); }
     #lang-toggle {
-      background: none;
-      border: 1px solid var(--border);
-      color: var(--text-muted);
-      padding: 0.25rem 0.5rem;
-      border-radius: 4px;
-      cursor: pointer;
-      font-size: 0.8125rem;
-      font-family: inherit;
+      background: none; border: 1px solid var(--border);
+      color: var(--text-muted); padding: 0.25rem 0.5rem;
+      border-radius: 4px; cursor: pointer; font-size: 0.8125rem; font-family: inherit;
     }
     #lang-toggle:hover { border-color: var(--purple); color: var(--purple); }
 
-    .hero {
-      padding: 4rem 0 3rem;
-      position: relative;
-      overflow: hidden;
-    }
+    .hero { padding: 5rem 0 4rem; position: relative; overflow: hidden; }
     .hero::before {
-      content: '';
-      position: absolute;
-      top: -20%;
-      left: 50%;
-      transform: translateX(-50%);
-      width: 120%;
-      height: 70%;
+      content: ''; position: absolute; top: -20%; left: 50%;
+      transform: translateX(-50%); width: 120%; height: 70%;
       background: radial-gradient(ellipse at center, var(--purple-glow) 0%, transparent 60%);
-      pointer-events: none;
-      z-index: 0;
+      pointer-events: none; z-index: 0;
     }
     .hero .container { position: relative; z-index: 1; }
     .hero-badge {
-      display: inline-flex;
-      align-items: center;
-      gap: 0.5rem;
-      background: var(--surface);
-      border: 1px solid var(--border);
-      padding: 0.35rem 0.75rem;
-      border-radius: 999px;
-      font-size: 0.8125rem;
-      color: var(--text-muted);
-      margin-bottom: 1.5rem;
+      display: inline-flex; align-items: center; gap: 0.5rem;
+      background: var(--surface); border: 1px solid var(--border);
+      padding: 0.35rem 0.75rem; border-radius: 999px;
+      font-size: 0.8125rem; color: var(--text-muted); margin-bottom: 1.5rem;
     }
     .hero-badge .dot {
-      width: 6px; height: 6px; border-radius: 50%;
-      background: var(--purple);
+      width: 6px; height: 6px; border-radius: 50%; background: var(--purple);
       box-shadow: 0 0 0 3px var(--purple-glow);
     }
     .hero h1 {
       font-family: 'DM Serif Display', Georgia, serif;
-      font-size: clamp(2rem, 5vw, 2.75rem);
-      line-height: 1.15;
-      letter-spacing: -0.015em;
-      margin-bottom: 1.25rem;
+      font-size: clamp(2.25rem, 5.5vw, 3.25rem);
+      line-height: 1.12; letter-spacing: -0.015em;
+      margin-bottom: 1.25rem; max-width: 820px;
     }
-    .hero h1 em {
-      font-style: italic;
-      background: linear-gradient(90deg, var(--purple) 0%, var(--accent) 100%);
-      -webkit-background-clip: text;
-      background-clip: text;
-      color: transparent;
-    }
-    .hero .tagline {
-      font-size: 1.125rem;
-      color: var(--text-muted);
-      max-width: 620px;
-      margin-bottom: 1.5rem;
-    }
-    .hero .lead {
-      font-size: 1rem;
-      color: var(--text-muted);
-      max-width: 700px;
-      margin-bottom: 2rem;
-    }
-    .hero-cta { display: flex; gap: 0.75rem; flex-wrap: wrap; }
+    .hero h1 em { font-style: italic; color: var(--purple); }
+    .hero-sub { font-size: 1.125rem; color: var(--text-muted); max-width: 680px; margin-bottom: 2rem; }
+    .hero-ctas { display: flex; gap: 0.75rem; flex-wrap: wrap; }
     .btn {
-      display: inline-flex;
-      align-items: center;
-      gap: 0.4rem;
-      padding: 0.65rem 1.15rem;
-      border-radius: 6px;
-      font-size: 0.9375rem;
-      font-weight: 500;
-      text-decoration: none;
-      cursor: pointer;
-      transition: all 0.15s ease;
-      font-family: inherit;
+      display: inline-flex; align-items: center; gap: 0.5rem;
+      padding: 0.75rem 1.25rem; border-radius: 8px;
+      font-family: inherit; font-size: 0.9375rem; font-weight: 500;
+      text-decoration: none; cursor: pointer; transition: all 0.15s ease;
       border: 1px solid transparent;
     }
-    .btn-primary {
-      background: var(--purple);
-      color: white;
-      border-color: var(--purple);
-    }
-    .btn-primary:hover { background: var(--purple-light); border-color: var(--purple-light); }
-    .btn-secondary {
-      background: var(--surface);
-      color: var(--text);
-      border-color: var(--border);
-    }
-    .btn-secondary:hover { border-color: var(--purple); color: var(--purple); }
+    .btn-primary { background: var(--purple); color: white; }
+    .btn-primary:hover { background: var(--purple-light); transform: translateY(-1px); }
+    .btn-ghost { background: var(--surface); color: var(--text); border-color: var(--border); }
+    .btn-ghost:hover { border-color: var(--purple); color: var(--purple); }
 
-    section.content {
-      padding: 3rem 0;
-      border-top: 1px solid var(--border);
-    }
+    section { padding: 4rem 0; }
     .section-label {
-      font-size: 0.75rem;
-      text-transform: uppercase;
-      letter-spacing: 0.08em;
-      color: var(--purple);
-      font-weight: 500;
-      margin-bottom: 0.5rem;
+      display: inline-block; font-size: 0.75rem; text-transform: uppercase;
+      letter-spacing: 0.12em; color: var(--purple); font-weight: 600; margin-bottom: 0.75rem;
     }
     .section-title {
       font-family: 'DM Serif Display', Georgia, serif;
-      font-size: clamp(1.5rem, 3vw, 1.875rem);
-      line-height: 1.25;
-      margin-bottom: 2rem;
-      max-width: 620px;
+      font-size: clamp(1.75rem, 3.5vw, 2.25rem);
+      line-height: 1.2; letter-spacing: -0.01em; margin-bottom: 0.75rem; max-width: 720px;
+    }
+    .section-sub { color: var(--text-muted); max-width: 680px; margin-bottom: 2.5rem; }
+
+    .problems { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 1rem; }
+    .problem-card {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 12px; padding: 1.5rem; box-shadow: var(--card-shadow);
+    }
+    .problem-icon {
+      width: 40px; height: 40px; border-radius: 10px;
+      background: var(--purple-soft); color: var(--purple);
+      display: flex; align-items: center; justify-content: center; margin-bottom: 1rem;
+    }
+    .problem-card h3 { font-size: 1rem; font-weight: 600; margin-bottom: 0.5rem; }
+    .problem-card p { font-size: 0.9375rem; color: var(--text-muted); line-height: 1.55; }
+
+    .solutions { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 1rem; }
+    .solution-card {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 12px; padding: 1.75rem 1.5rem; box-shadow: var(--card-shadow);
+      transition: transform 0.15s ease, box-shadow 0.15s ease;
+    }
+    .solution-card:hover { transform: translateY(-2px); box-shadow: var(--card-shadow-lg); }
+    .solution-num {
+      display: inline-block; font-family: 'DM Serif Display', serif;
+      font-size: 1.5rem; color: var(--purple); margin-bottom: 0.75rem;
+    }
+    .solution-card h3 { font-size: 1.0625rem; font-weight: 600; margin-bottom: 0.5rem; }
+    .solution-card p { font-size: 0.9375rem; color: var(--text-muted); line-height: 1.55; }
+
+    .wa-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1.5rem; }
+    .wa-phone {
+      background: var(--wa-bg); border: 1px solid var(--border);
+      border-radius: 20px; overflow: hidden; box-shadow: var(--card-shadow-lg);
+      display: flex; flex-direction: column;
+    }
+    .wa-phone-header {
+      background: var(--wa-header); color: white; padding: 0.875rem 1rem;
+      display: flex; align-items: center; gap: 0.625rem; font-size: 0.875rem;
+    }
+    .wa-phone-avatar {
+      width: 32px; height: 32px; background: white; color: var(--wa-header);
+      border-radius: 50%; display: flex; align-items: center; justify-content: center;
+      font-weight: 700; font-size: 0.875rem;
+    }
+    .wa-phone-name { font-weight: 600; flex: 1; }
+    .wa-phone-status { font-size: 0.75rem; color: rgba(255,255,255,0.75); }
+    .wa-phone-body {
+      background-image: linear-gradient(rgba(229,221,213,0.75), rgba(229,221,213,0.75)),
+        repeating-linear-gradient(45deg, #d9cfbf 0 1px, transparent 1px 14px);
+      padding: 1rem 0.75rem; min-height: 320px; display: flex; flex-direction: column; gap: 0.5rem;
+    }
+    .wa-msg {
+      padding: 0.5rem 0.75rem; border-radius: 8px; max-width: 82%;
+      font-size: 0.8125rem; line-height: 1.45; box-shadow: 0 1px 1px rgba(0,0,0,0.08);
+    }
+    .wa-msg-user { background: var(--wa-green); align-self: flex-end; border-bottom-right-radius: 2px; }
+    .wa-msg-bot { background: white; align-self: flex-start; border-bottom-left-radius: 2px; }
+    .wa-msg-proactive { border-left: 3px solid var(--purple); }
+    .wa-phone-label {
+      background: var(--surface); padding: 0.625rem 1rem;
+      font-size: 0.75rem; color: var(--text-muted); text-align: center;
+      border-top: 1px solid var(--border);
     }
 
-    .problem-list {
-      list-style: none;
-      display: grid;
-      gap: 1rem;
+    .dash-mock {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 14px; overflow: hidden; box-shadow: var(--card-shadow-lg);
+      max-width: 760px; margin: 0 auto;
     }
-    .problem-list li {
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-left: 3px solid var(--warm);
-      border-radius: 6px;
-      padding: 1rem 1.25rem;
-      box-shadow: var(--card-shadow);
+    .mockup-bar {
+      display: flex; align-items: center; gap: 0.375rem;
+      padding: 0.625rem 0.875rem; background: var(--bg-deep);
+      border-bottom: 1px solid var(--border); font-size: 0.75rem;
     }
-    .problem-list .hl { color: var(--text); font-weight: 600; }
+    .mockup-dot { width: 10px; height: 10px; border-radius: 50%; }
+    .mockup-dot.red { background: var(--red); }
+    .mockup-dot.yellow { background: var(--amber); }
+    .mockup-dot.green { background: var(--green); }
+    .mockup-url { flex: 1; text-align: center; color: var(--text-dim); font-size: 0.75rem; }
+    .dash-mock-body { padding: 1.25rem; display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+    @media (max-width: 640px) { .dash-mock-body { grid-template-columns: 1fr; } }
+    .dash-card {
+      background: var(--bg); border: 1px solid var(--border);
+      border-radius: 10px; padding: 1rem;
+    }
+    .dash-card h4 { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-dim); margin-bottom: 0.625rem; font-weight: 600; }
+    .dash-metric { font-size: 1.75rem; font-weight: 700; font-family: 'DM Serif Display', serif; color: var(--text); }
+    .dash-metric small { font-size: 0.875rem; color: var(--text-muted); font-weight: 400; font-family: 'DM Sans', sans-serif; margin-left: 0.25rem; }
+    .dash-trend { display: inline-flex; align-items: center; gap: 0.25rem; font-size: 0.8125rem; color: var(--green); margin-top: 0.25rem; }
+    .dash-trend.warn { color: var(--amber); }
+    .dash-flag {
+      background: rgba(239,68,68,0.08); border-left: 3px solid var(--red);
+      padding: 0.5rem 0.75rem; border-radius: 4px; margin-top: 0.5rem;
+      font-size: 0.8125rem; color: var(--text); display: flex; align-items: center; gap: 0.5rem;
+    }
+    .dash-flag.ok { background: rgba(34,197,94,0.08); border-color: var(--green); }
+    .dash-row { display: flex; justify-content: space-between; font-size: 0.875rem; padding: 0.375rem 0; border-bottom: 1px solid var(--border); }
+    .dash-row:last-child { border-bottom: none; }
+    .dash-row-label { color: var(--text-muted); }
+    .dash-row-val { color: var(--text); font-weight: 500; }
+    .dash-patient-card { grid-column: 1 / -1; display: flex; align-items: center; gap: 0.875rem; padding: 0.875rem 1rem; background: linear-gradient(135deg, var(--purple-soft), transparent); border: 1px solid var(--border); border-radius: 10px; }
+    .dash-avatar { width: 40px; height: 40px; border-radius: 50%; background: var(--purple); color: white; display: flex; align-items: center; justify-content: center; font-weight: 600; }
+    .dash-patient-meta { font-size: 0.8125rem; color: var(--text-muted); }
 
-    .feature-grid {
-      display: grid;
-      grid-template-columns: repeat(3, 1fr);
-      gap: 1rem;
-    }
-    @media (max-width: 768px) {
-      .feature-grid { grid-template-columns: 1fr; }
-    }
-    .feature-card {
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      padding: 1.25rem;
-      box-shadow: var(--card-shadow);
-      transition: border-color 0.15s ease;
-    }
-    .feature-card:hover { border-color: var(--purple); }
-    .feature-icon {
-      width: 32px; height: 32px;
-      color: var(--accent);
-      margin-bottom: 0.75rem;
-    }
-    .feature-card h3 {
-      font-family: 'DM Sans', sans-serif;
-      font-size: 1rem;
-      font-weight: 700;
-      margin-bottom: 0.4rem;
-      color: var(--text);
-    }
-    .feature-card p {
-      font-size: 0.875rem;
-      color: var(--text-muted);
-      line-height: 1.5;
-    }
-
-    .stepper {
-      display: grid;
-      grid-template-columns: repeat(4, 1fr);
-      gap: 1rem;
-    }
-    @media (max-width: 768px) {
-      .stepper { grid-template-columns: 1fr; }
-    }
-    .step {
-      padding: 1.25rem;
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: 8px;
+    .steps { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 1rem; }
+    .step-card {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 12px; padding: 1.5rem; position: relative;
     }
     .step-num {
-      font-family: 'DM Serif Display', Georgia, serif;
-      font-size: 1.5rem;
-      color: var(--purple);
-      margin-bottom: 0.5rem;
-      display: block;
+      position: absolute; top: -14px; left: 1.25rem;
+      width: 32px; height: 32px; border-radius: 50%;
+      background: var(--purple); color: white;
+      display: flex; align-items: center; justify-content: center;
+      font-weight: 600; font-size: 0.875rem;
     }
-    .step h3 {
-      font-family: 'DM Sans', sans-serif;
-      font-size: 0.9375rem;
-      font-weight: 700;
-      margin-bottom: 0.35rem;
-    }
-    .step p {
-      font-size: 0.875rem;
-      color: var(--text-muted);
-    }
+    .step-card h3 { margin-top: 0.25rem; font-size: 1rem; font-weight: 600; margin-bottom: 0.5rem; }
+    .step-card p { font-size: 0.9375rem; color: var(--text-muted); margin-bottom: 1rem; }
 
-    .proof-strip {
-      display: grid;
-      grid-template-columns: repeat(3, 1fr);
-      gap: 1rem;
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      padding: 1.5rem;
-      text-align: center;
+    .arch {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 12px; padding: 2rem 1.5rem;
     }
-    @media (max-width: 640px) {
-      .proof-strip { grid-template-columns: 1fr; }
+    .arch-grid { display: flex; flex-direction: column; gap: 0.875rem; }
+    .arch-layer {
+      border: 1px solid var(--border); background: var(--bg);
+      border-radius: 10px; padding: 0.875rem 1rem;
+      display: flex; align-items: center; gap: 1rem;
     }
-    .proof-num {
-      font-family: 'DM Serif Display', Georgia, serif;
-      font-size: 1.875rem;
-      color: var(--accent);
+    .arch-layer.top { background: linear-gradient(135deg, rgba(124,58,237,0.08), transparent); border-color: rgba(124,58,237,0.35); }
+    .arch-layer.bottom { background: linear-gradient(135deg, rgba(13,148,136,0.08), transparent); border-color: rgba(13,148,136,0.35); }
+    .arch-label {
+      font-size: 0.6875rem; text-transform: uppercase;
+      letter-spacing: 0.08em; color: var(--text-dim);
+      min-width: 90px; font-weight: 600;
     }
-    .proof-label {
-      font-size: 0.8125rem;
-      color: var(--text-muted);
-      text-transform: uppercase;
-      letter-spacing: 0.05em;
+    .arch-pills { display: flex; flex-wrap: wrap; gap: 0.375rem; flex: 1; }
+    .arch-pill {
+      background: var(--surface); border: 1px solid var(--border);
+      padding: 0.25rem 0.625rem; border-radius: 999px;
+      font-size: 0.8125rem; color: var(--text); font-weight: 500;
     }
-    .proof-note {
-      margin-top: 1rem;
-      font-size: 0.875rem;
-      color: var(--text-muted);
-    }
+    .arch-arrow { display: flex; align-items: center; justify-content: center; font-size: 1.25rem; color: var(--text-dim); }
 
-    .faq { display: grid; gap: 0.5rem; }
-    .faq details {
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      overflow: hidden;
+    .proof { background: var(--bg-deep); }
+    .proof-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 1rem; margin-bottom: 2rem; }
+    .proof-stat {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 10px; padding: 1.5rem 1rem; text-align: center;
     }
-    .faq summary {
-      padding: 1rem 1.25rem;
-      cursor: pointer;
-      font-weight: 500;
-      list-style: none;
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      gap: 1rem;
-    }
-    .faq summary::-webkit-details-marker { display: none; }
-    .faq summary::after {
-      content: '+';
-      font-size: 1.25rem;
-      color: var(--purple);
-      transition: transform 0.15s ease;
-      line-height: 1;
-      flex-shrink: 0;
-    }
-    .faq details[open] summary::after { content: '−'; }
-    .faq .answer {
-      padding: 0 1.25rem 1.25rem;
-      color: var(--text-muted);
-      font-size: 0.9375rem;
-    }
+    .proof-stat-num { font-family: 'DM Serif Display', serif; font-size: 2.5rem; color: var(--purple); line-height: 1; margin-bottom: 0.5rem; }
+    .proof-stat-label { font-size: 0.875rem; color: var(--text-muted); }
+    .proof-urls { display: flex; gap: 1.5rem; flex-wrap: wrap; font-size: 0.9375rem; color: var(--text-muted); }
+    .proof-urls a { color: var(--purple); text-decoration: none; font-weight: 500; }
+    .proof-urls a:hover { text-decoration: underline; }
 
-    .biz-block {
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      padding: 1.5rem;
-      color: var(--text-muted);
-      font-size: 0.9375rem;
-      line-height: 1.65;
+    .team-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1.25rem; }
+    @media (max-width: 720px) { .team-grid { grid-template-columns: 1fr; } }
+    .team-card {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 14px; padding: 1.75rem; box-shadow: var(--card-shadow);
     }
-    .biz-block p + p { margin-top: 0.75rem; }
+    .team-role { display: inline-block; font-size: 0.6875rem; text-transform: uppercase; letter-spacing: 0.1em; color: var(--purple); font-weight: 600; margin-bottom: 0.5rem; }
+    .team-name { font-family: 'DM Serif Display', serif; font-size: 1.5rem; margin-bottom: 0.75rem; }
+    .team-bio { font-size: 0.9375rem; color: var(--text-muted); line-height: 1.55; }
+    .team-tags { display: flex; flex-wrap: wrap; gap: 0.375rem; margin-top: 1rem; }
+    .team-tag { background: var(--bg); border: 1px solid var(--border); font-size: 0.75rem; color: var(--text-muted); padding: 0.2rem 0.5rem; border-radius: 999px; }
 
+    .instarea-summary {
+      background: linear-gradient(135deg, var(--surface) 0%, var(--bg-deep) 100%);
+      border: 1px solid var(--border); border-radius: 14px;
+      padding: 2rem; margin-top: 1.5rem;
+      display: grid; grid-template-columns: 2fr 1fr; gap: 2rem; align-items: center;
+    }
+    @media (max-width: 720px) { .instarea-summary { grid-template-columns: 1fr; } }
+    .instarea-stats { display: grid; grid-template-columns: repeat(2, 1fr); gap: 0.75rem; }
+    .instarea-stat {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 8px; padding: 0.875rem 1rem; text-align: center;
+    }
+    .instarea-stat-num { font-family: 'DM Serif Display', serif; font-size: 1.5rem; color: var(--purple); line-height: 1; }
+    .instarea-stat-label { font-size: 0.75rem; color: var(--text-muted); margin-top: 0.25rem; }
+
+    .portfolio { overflow-x: auto; display: flex; gap: 0.875rem; padding: 0.5rem 0 1rem; scroll-snap-type: x mandatory; }
+    .portfolio::-webkit-scrollbar { height: 6px; }
+    .portfolio::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+    .portfolio-card {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 10px; padding: 1rem 1.25rem; min-width: 240px;
+      scroll-snap-align: start;
+    }
+    .portfolio-year { font-size: 0.75rem; color: var(--text-dim); font-weight: 600; letter-spacing: 0.08em; }
+    .portfolio-name { font-family: 'DM Serif Display', serif; font-size: 1.125rem; margin: 0.375rem 0; color: var(--text); }
+    .portfolio-desc { font-size: 0.8125rem; color: var(--text-muted); line-height: 1.45; }
+    .portfolio-badge { display: inline-block; margin-top: 0.5rem; background: rgba(34,197,94,0.1); color: #15803d; font-size: 0.6875rem; font-weight: 600; padding: 0.15rem 0.5rem; border-radius: 999px; }
+
+    .jv { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-top: 1.5rem; }
+    @media (max-width: 720px) { .jv { grid-template-columns: 1fr; } }
+    .jv-card {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 12px; padding: 1.5rem;
+    }
+    .jv-card h4 { font-family: 'DM Serif Display', serif; font-size: 1.125rem; margin-bottom: 0.875rem; }
+    .jv-card.instarea h4 { color: var(--purple); }
+    .jv-card.partner h4 { color: var(--accent); }
+    .jv-list { list-style: none; }
+    .jv-list li { padding: 0.375rem 0; font-size: 0.9375rem; color: var(--text-muted); display: flex; gap: 0.5rem; }
+    .jv-list li::before { content: '→'; color: var(--purple); font-weight: 600; }
+    .jv-card.partner .jv-list li::before { color: var(--accent); }
+
+    .biz { background: var(--bg-deep); }
+    .biz-tracks { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 1rem; }
+    .biz-track { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 1.5rem; }
+    .biz-tag { display: inline-block; font-size: 0.6875rem; text-transform: uppercase; letter-spacing: 0.08em; padding: 0.2rem 0.625rem; border-radius: 999px; margin-bottom: 0.75rem; font-weight: 600; }
+    .biz-tag.a { background: rgba(13,148,136,0.12); color: var(--accent); }
+    .biz-tag.b { background: rgba(124,58,237,0.12); color: var(--purple); }
+    .biz-tag.c { background: rgba(217,119,6,0.12); color: var(--warm); }
+    .biz-track h3 { font-family: 'DM Serif Display', serif; font-size: 1.25rem; margin-bottom: 0.5rem; }
+    .biz-track p { font-size: 0.9375rem; color: var(--text-muted); }
+
+    .faq { max-width: 780px; margin: 0 auto; }
+    .faq-item { border-bottom: 1px solid var(--border); }
+    .faq-q {
+      width: 100%; background: none; border: none; padding: 1.125rem 0;
+      text-align: left; font-family: inherit; font-size: 1rem; font-weight: 500;
+      color: var(--text); cursor: pointer; display: flex; justify-content: space-between; align-items: center;
+    }
+    .faq-q::after { content: '+'; color: var(--purple); font-size: 1.25rem; font-weight: 400; transition: transform 0.2s ease; }
+    .faq-item.open .faq-q::after { transform: rotate(45deg); }
+    .faq-a { max-height: 0; overflow: hidden; transition: max-height 0.25s ease; color: var(--text-muted); font-size: 0.9375rem; line-height: 1.6; }
+    .faq-item.open .faq-a { max-height: 400px; padding: 0 0 1.25rem; }
+
+    .cta-wrap { text-align: center; padding: 3rem 0 5rem; }
     .cta-card {
-      max-width: 540px;
-      margin: 0 auto;
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-left: 4px solid var(--warm);
-      border-radius: 8px;
-      padding: 2rem;
-      box-shadow: var(--card-shadow);
-      text-align: center;
+      background: linear-gradient(135deg, var(--surface) 0%, var(--bg-deep) 100%);
+      border: 1px solid var(--border); border-radius: 16px;
+      padding: 2.5rem 2rem; box-shadow: var(--card-shadow-lg);
+      max-width: 640px; margin: 0 auto;
     }
-    .cta-eyebrow {
-      font-size: 0.75rem;
-      text-transform: uppercase;
-      letter-spacing: 0.1em;
-      color: var(--warm);
-      font-weight: 600;
-      margin-bottom: 0.75rem;
+    .cta-card h2 { font-family: 'DM Serif Display', serif; font-size: 1.75rem; margin-bottom: 0.75rem; }
+    .cta-card p { color: var(--text-muted); margin-bottom: 1.5rem; }
+    .cta-form { display: flex; gap: 0.5rem; max-width: 440px; margin: 0 auto; flex-wrap: wrap; }
+    .cta-form input[type="email"] {
+      flex: 1; min-width: 200px;
+      padding: 0.75rem 1rem; border: 1px solid var(--border); border-radius: 8px;
+      background: var(--surface); font-family: inherit; font-size: 0.9375rem; color: var(--text);
     }
-    .cta-card h2 {
-      font-family: 'DM Serif Display', Georgia, serif;
-      font-size: 1.625rem;
-      line-height: 1.2;
-      margin-bottom: 1rem;
-    }
-    .cta-card .cta-sub {
-      color: var(--text-muted);
-      margin-bottom: 1.25rem;
-    }
-    .cta-card .cta-row {
-      display: flex;
-      gap: 1.5rem;
-      justify-content: center;
-      flex-wrap: wrap;
-      margin-bottom: 1rem;
-      font-size: 0.9375rem;
-    }
-    .cta-card .cta-row a {
-      color: var(--purple);
-      text-decoration: none;
-      border-bottom: 1px solid transparent;
-    }
-    .cta-card .cta-row a:hover { border-bottom-color: var(--purple); }
-    .cta-card .cta-note {
-      font-size: 0.8125rem;
-      color: var(--text-dim);
-      font-style: italic;
-    }
+    .cta-form input[type="email"]:focus { outline: none; border-color: var(--purple); box-shadow: 0 0 0 3px var(--purple-glow); }
+    .cta-msg { font-size: 0.875rem; margin-top: 0.75rem; min-height: 1.2em; }
+    .cta-msg.success { color: var(--green); }
+    .cta-msg.error { color: var(--red); }
 
-    footer {
-      border-top: 1px solid var(--border);
-      padding: 1.5rem 0;
-      margin-top: 3rem;
-      font-size: 0.8125rem;
-      color: var(--text-dim);
-    }
-    footer .container { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 1rem; }
+    footer { padding: 2rem 0; border-top: 1px solid var(--border); font-size: 0.875rem; color: var(--text-dim); text-align: center; }
     footer a { color: var(--text-muted); text-decoration: none; }
     footer a:hover { color: var(--purple); }
   </style>
@@ -407,235 +390,563 @@
   <header>
     <div class="container">
       <div class="logo">
-        <a href="/">onco<span>files</span></a>
-        <small data-sk="/ pre Gloww" data-en="/ for Gloww">/ pre Gloww</small>
+        <a href="/gloww"><span>Gloww</span> OS <small data-sk="koncept" data-en="concept">koncept</small></a>
       </div>
       <nav>
-        <a href="#stretnutie" data-sk="Stretnutie" data-en="Meeting">Stretnutie</a>
-        <button id="lang-toggle">EN</button>
+        <button id="lang-toggle" onclick="toggleLang()">EN</button>
       </nav>
     </div>
   </header>
 
-  <main>
-    <section class="hero">
-      <div class="container">
-        <div class="hero-badge">
-          <span class="dot"></span>
-          <span data-sk="Koncept · Piatok 12:00 · OC Retro" data-en="Concept · Friday 12:00 · OC Retro">Koncept · Piatok 12:00 · OC Retro</span>
-        </div>
-        <h1>
-          <span>Gloww OS —</span>
-          <br>
-          <em data-sk="infraštruktúra pre GLP-1 liečbu, ktorú vlastní pacient" data-en="patient-owned infrastructure for GLP-1 treatment">infraštruktúra pre GLP-1 liečbu, ktorú vlastní pacient</em>
-        </h1>
-        <p class="tagline" data-sk="Klon Oncofiles + Oncoteam prispôsobený pre obezitologickú prax Gloww.sk." data-en="A clone of Oncofiles + Oncoteam adapted for Gloww.sk's obesity practice.">Klon Oncofiles + Oncoteam prispôsobený pre obezitologickú prax Gloww.sk.</p>
-        <p class="lead" data-sk="Táto stránka nie je verejný produkt — je to pracovný podklad k stretnutiu v piatok. Ukazuje, ako by vyzerala adaptácia nášho existujúceho onkologického systému na GLP-1 liečbu: odbremeniť predpisujúceho lekára, udržať pacienta v protokole medzi návštevami a posunúť schvaľovanie receptov na pult lekárne bez straty klinickej kontroly." data-en="This page is not a public product — it is working material for Friday's meeting. It shows what an adaptation of our existing oncology system would look like for GLP-1 treatment: take load off the prescribing doctor, keep the patient inside the protocol between visits, and move prescription approval to the pharmacy counter without losing clinical control.">Táto stránka nie je verejný produkt — je to pracovný podklad k stretnutiu v piatok. Ukazuje, ako by vyzerala adaptácia nášho existujúceho onkologického systému na GLP-1 liečbu: odbremeniť predpisujúceho lekára, udržať pacienta v protokole medzi návštevami a posunúť schvaľovanie receptov na pult lekárne bez straty klinickej kontroly.</p>
-        <div class="hero-cta">
-          <a href="#stretnutie" class="btn btn-primary" data-sk="Detaily stretnutia" data-en="Meeting details">Detaily stretnutia</a>
-          <a href="tel:+421903124356" class="btn btn-secondary">0903 124 356</a>
-        </div>
+  <section class="hero">
+    <div class="container">
+      <span class="hero-badge">
+        <span class="dot"></span>
+        <span data-sk="Komerčný projekt · grantová alebo licenčná cesta" data-en="Commercial project · grant or licensing track">Komerčný projekt · grantová alebo licenčná cesta</span>
+      </span>
+      <h1 data-sk-html="Infraštruktúra pre GLP-1 liečbu, ktorú vlastní <em>pacient</em>." data-en-html="Infrastructure for GLP-1 treatment the <em>patient</em> owns.">Infraštruktúra pre GLP-1 liečbu, ktorú vlastní <em>pacient</em>.</h1>
+      <p class="hero-sub" data-sk="Gloww OS je komerčná adaptácia bežiaceho Oncofiles + Oncoteam stacku pre obezitologickú prax. Odbremeňuje predpisujúceho lekára, udržuje pacienta v protokole medzi návštevami a posúva schvaľovanie receptov na pult lekárne bez straty klinickej kontroly." data-en="Gloww OS is a commercial adaptation of our running Oncofiles + Oncoteam stack for obesity medicine. It offloads the prescriber, keeps patients on protocol between visits, and moves prescription approval to the pharmacy counter without losing clinical control.">Gloww OS je komerčná adaptácia bežiaceho Oncofiles + Oncoteam stacku pre obezitologickú prax. Odbremeňuje predpisujúceho lekára, udržuje pacienta v protokole medzi návštevami a posúva schvaľovanie receptov na pult lekárne bez straty klinickej kontroly.</p>
+      <div class="hero-ctas">
+        <a href="#how" class="btn btn-primary" data-sk="Ako to funguje" data-en="How it works">Ako to funguje</a>
+        <a href="#pilot" class="btn btn-ghost" data-sk="Pilot & obchodný model" data-en="Pilot &amp; business model">Pilot &amp; obchodný model</a>
       </div>
-    </section>
+    </div>
+  </section>
 
-    <section class="content">
-      <div class="container">
-        <div class="section-label" data-sk="Prečo teraz" data-en="Why now">Prečo teraz</div>
-        <h2 class="section-title" data-sk="Obezitologická ambulancia stráca čas tam, kde by ho AI nemusela strácať." data-en="An obesity practice loses time where AI doesn't have to.">Obezitologická ambulancia stráca čas tam, kde by ho AI nemusela strácať.</h2>
-        <ul class="problem-list">
-          <li>
-            <span class="hl" data-sk="Lekár strávi viac času papiermi než pacientom." data-en="Doctors spend more time on paper than on patients.">Lekár strávi viac času papiermi než pacientom.</span>
-            <span data-sk=" Vstupná anamnéza, kontraindikácie, BMI/HbA1c/obličky, interakcie — pri každom kandidátovi 20–40 minút manuálnej práce." data-en=" Intake history, contraindications, BMI/HbA1c/renal review, drug-interaction check — 20 to 40 minutes per new candidate."> Vstupná anamnéza, kontraindikácie, BMI/HbA1c/obličky, interakcie — pri každom kandidátovi 20–40 minút manuálnej práce.</span>
-          </li>
-          <li>
-            <span class="hl" data-sk="Medzi kontrolami je ticho." data-en="Silence between visits.">Medzi kontrolami je ticho.</span>
-            <span data-sk=" Pacient si nenastaví dávku, zabudne injekciu, má nauzeu a prestane. Adherencia GLP-1 po 12 mesiacoch padá pod 35 %. Lekár sa to dozvie až na ďalšej kontrole — alebo nikdy." data-en=" The patient mistitrates, skips a dose, feels nauseous and quits. Real-world GLP-1 adherence at 12 months falls below 35%. The doctor hears about it at the next visit — or never."> Pacient si nenastaví dávku, zabudne injekciu, má nauzeu a prestane. Adherencia GLP-1 po 12 mesiacoch padá pod 35 %. Lekár sa to dozvie až na ďalšej kontrole — alebo nikdy.</span>
-          </li>
-          <li>
-            <span class="hl" data-sk="Schvaľovanie pri pulte lekárne nefunguje." data-en="Pharmacy-counter approvals don't work.">Schvaľovanie pri pulte lekárne nefunguje.</span>
-            <span data-sk=" Pacient čaká na recept, lekáreň volá lekárovi, lekár je v ambulancii s iným pacientom. Nikto nemá pred sebou kompletnú kartu." data-en=" The patient waits, the pharmacy calls the doctor, the doctor is with someone else. Nobody has the full chart in front of them."> Pacient čaká na recept, lekáreň volá lekárovi, lekár je v ambulancii s iným pacientom. Nikto nemá pred sebou kompletnú kartu.</span>
-          </li>
-          <li>
-            <span class="hl" data-sk="Riziko protokolovej nezhody." data-en="Protocol-compliance risk.">Riziko protokolovej nezhody.</span>
-            <span data-sk=" Pankreatitída v anamnéze, MTC/MEN2, gravidita, súbežná liečba — dnes sa to kontroluje manuálne, chyby sa stávajú. Pri 10 000 pacientoch to je otázka zodpovednosti, nie chyby." data-en=" History of pancreatitis, MTC/MEN2, pregnancy, concurrent therapy — checked manually today. At 10 000 patients this becomes a liability question, not an accident."> Pankreatitída v anamnéze, MTC/MEN2, gravidita, súbežná liečba — dnes sa to kontroluje manuálne, chyby sa stávajú. Pri 10 000 pacientoch to je otázka zodpovednosti, nie chyby.</span>
-          </li>
-        </ul>
+  <section id="problem">
+    <div class="container">
+      <span class="section-label" data-sk="Prečo teraz" data-en="Why now">Prečo teraz</span>
+      <h2 class="section-title" data-sk="Obezitologická ambulancia stráca čas tam, kde by ho AI nemusela strácať." data-en="Obesity clinics waste time where AI would not have to.">Obezitologická ambulancia stráca čas tam, kde by ho AI nemusela strácať.</h2>
+      <div class="problems">
+        <div class="problem-card">
+          <div class="problem-icon"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 10h18M8 4v16"/></svg></div>
+          <h3 data-sk="Papier pred pacientom" data-en="Paperwork over patients">Papier pred pacientom</h3>
+          <p data-sk="Vstupná anamnéza, BMI/HbA1c/obličky, kontraindikácie, interakcie. 20–40 minút ručnej práce pri každom kandidátovi." data-en="Intake, BMI/HbA1c/kidney, contraindications, interactions. 20–40 min of manual work per candidate.">Vstupná anamnéza, BMI/HbA1c/obličky, kontraindikácie. 20–40 min ručnej práce pri každom kandidátovi.</p>
+        </div>
+        <div class="problem-card">
+          <div class="problem-icon"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg></div>
+          <h3 data-sk="Ticho medzi kontrolami" data-en="Silence between visits">Ticho medzi kontrolami</h3>
+          <p data-sk="Pacient si zle nastaví dávku, zabudne injekciu, má nauzeu a prestane. Adherencia GLP-1 po 12 mesiacoch padá pod 35 %." data-en="Wrong dose, missed injection, nausea, dropout. 12-month GLP-1 adherence drops under 35%.">Pacient si zle nastaví dávku, zabudne injekciu, má nauzeu a prestane. 12-mesačná adherencia GLP-1 padá pod 35 %.</p>
+        </div>
+        <div class="problem-card">
+          <div class="problem-icon"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7l9-4 9 4v10l-9 4-9-4V7z"/><path d="M12 11v6M9 14h6"/></svg></div>
+          <h3 data-sk="Schvaľovanie pri pulte" data-en="Approval at the counter">Schvaľovanie pri pulte</h3>
+          <p data-sk="Pacient čaká na recept. Lekáreň volá ambulanciu. Lekár je s iným pacientom a nemá kartu pred sebou." data-en="Patient waits. Pharmacy calls the clinic. Doctor is with someone else with no chart in front.">Pacient čaká na recept. Lekáreň volá ambulanciu. Nikto nemá pred sebou kompletnú kartu.</p>
+        </div>
+        <div class="problem-card">
+          <div class="problem-icon"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 9v4m0 4h.01M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/></svg></div>
+          <h3 data-sk="Protokolové riziko" data-en="Protocol risk">Protokolové riziko</h3>
+          <p data-sk="Pankreatitída, MTC/MEN2, gravidita, súbežná liečba. Manuálne kontroly pri 10 000 pacientoch nie sú škálovateľné." data-en="Pancreatitis, MTC/MEN2, pregnancy, interactions. Manual checks across 10,000 patients don't scale.">Pankreatitída, MTC/MEN2, gravidita. Manuálne kontroly pri 10 000 pacientoch nie sú škálovateľné.</p>
+        </div>
       </div>
-    </section>
+    </div>
+  </section>
 
-    <section class="content">
-      <div class="container">
-        <div class="section-label" data-sk="Čo staviame" data-en="What we're building">Čo staviame</div>
-        <h2 class="section-title" data-sk="Gloww OS — päť vrstiev nad existujúcou Oncofiles architektúrou." data-en="Gloww OS — five layers on top of existing Oncofiles architecture.">Gloww OS — päť vrstiev nad existujúcou Oncofiles architektúrou.</h2>
-        <div class="feature-grid">
-          <div class="feature-card">
-            <svg class="feature-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="2" width="8" height="4" rx="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><path d="M9 12h6M9 16h6"/></svg>
-            <h3 data-sk="Predliečebný dosier" data-en="Pre-treatment dossier">Predliečebný dosier</h3>
-            <p data-sk="Pacient nahrá labs, prepúšťacie správy, zoznam liekov. AI vyhodnotí BMI, HbA1c, obličky, pečeň a pripraví jednostranové zhrnutie s upozornením na kontraindikácie." data-en="Patient uploads labs, discharge summaries, medication list. AI evaluates BMI, HbA1c, renal and hepatic parameters, produces a one-page summary with contraindications flagged.">Pacient nahrá labs, prepúšťacie správy, zoznam liekov. AI vyhodnotí BMI, HbA1c, obličky, pečeň a pripraví jednostranové zhrnutie s upozornením na kontraindikácie.</p>
+  <section id="solution" style="background: var(--bg-deep);">
+    <div class="container">
+      <span class="section-label" data-sk="Čo staviame" data-en="What we build">Čo staviame</span>
+      <h2 class="section-title" data-sk="Päť vrstiev nad existujúcou Oncofiles architektúrou." data-en="Five layers on top of the existing Oncofiles architecture.">Päť vrstiev nad existujúcou Oncofiles architektúrou.</h2>
+      <p class="section-sub" data-sk="Nepíšeme zo zelenej lúky. Každá vrstva už dnes beží v produkcii na reálnych onkologických pacientoch — Gloww OS je protokolová a doménová adaptácia, nie nový softvér." data-en="We are not starting from scratch. Every layer runs in production on real oncology patients today — Gloww OS is a protocol and domain adaptation, not new software.">Nepíšeme zo zelenej lúky. Každá vrstva beží v produkcii na reálnych onkologických pacientoch — Gloww OS je protokolová adaptácia, nie nový softvér.</p>
+      <div class="solutions">
+        <div class="solution-card">
+          <div class="solution-num">01</div>
+          <h3 data-sk="Predliečebný dosier" data-en="Pre-treatment dossier">Predliečebný dosier</h3>
+          <p data-sk="Pacient nahrá labs, prepúšťacie správy, zoznam liekov. AI vyhodnotí BMI, HbA1c, obličky, pečeň a pripraví jednostranové zhrnutie s upozornením na kontraindikácie." data-en="Patient uploads labs, discharge notes, medication list. AI evaluates BMI, HbA1c, kidney and liver function, and builds a one-page dossier with contraindication flags.">Pacient nahrá labs, správy, lieky. AI vyhodnotí BMI/HbA1c/obličky a pripraví jednostranové zhrnutie s flagmi.</p>
+        </div>
+        <div class="solution-card">
+          <div class="solution-num">02</div>
+          <h3 data-sk="Proaktívne nudges" data-en="Proactive nudges">Proaktívne nudges</h3>
+          <p data-sk="WhatsApp a web pripomienky: injekcia, hydratácia, check-in na nauzeu na 3. deň po eskalácii, vážiaci interval — kontextovo, nie generické SMS." data-en="WhatsApp and web prompts: injection, hydration, day-3 nausea check-in after dose escalation, weigh-in — contextual, not generic SMS.">WhatsApp/web pripomienky: injekcia, hydratácia, check-in na 3. deň po eskalácii — kontextovo, nie SMS.</p>
+        </div>
+        <div class="solution-card">
+          <div class="solution-num">03</div>
+          <h3 data-sk="Kontext naprieč AI" data-en="Cross-AI context">Kontext naprieč AI</h3>
+          <p data-sk="Rovnaké pacientske dáta cez ChatGPT, Claude aj ľubovoľný MCP klient. Pacient si zvolí asistenta — odpovede sú vždy nad jeho vlastnými dokumentmi." data-en="Same patient data via ChatGPT, Claude, any MCP client. Patient picks assistant — answers always run over their own documents.">Rovnaké dáta cez ChatGPT, Claude a akýkoľvek MCP klient. Odpovede vždy nad vlastnými dokumentmi.</p>
+        </div>
+        <div class="solution-card">
+          <div class="solution-num">04</div>
+          <h3 data-sk="Schválenie pri pulte" data-en="Counter-side approval">Schválenie pri pulte</h3>
+          <p data-sk="Pacient v lekárni. Lekár dostane push, vidí aktuálny stav, protokolové flagy. Jedným klikom schváli alebo vyžiada doplnenie. Audit-logovaný úkon." data-en="Patient at pharmacy. Doctor gets a push, sees current state, protocol flags. One click approves or asks for more. Auditable act.">Pacient v lekárni. Lekár dostane push, vidí stav + flagy. Jedným klikom schváli. Audit logovaný.</p>
+        </div>
+        <div class="solution-card">
+          <div class="solution-num">05</div>
+          <h3 data-sk="Auto-kontrola protokolu" data-en="Protocol auto-check">Auto-kontrola protokolu</h3>
+          <p data-sk="Každý nový záznam (diagnóza, liek, lab) prechádza pravidlami GLP-1 protokolu. Kontraindikácie a liekové konflikty vyplávajú skôr, ako lekár podpíše." data-en="Every new record runs through the GLP-1 rulebook. Contraindications and drug conflicts surface before the prescriber signs.">Každý nový záznam prechádza pravidlami GLP-1. Kontraindikácie vyplávajú pred podpisom.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="whatsapp">
+    <div class="container">
+      <span class="section-label" data-sk="Pacient na WhatsApp" data-en="Patient on WhatsApp">Pacient na WhatsApp</span>
+      <h2 class="section-title" data-sk="Kanál, ktorý pacient už používa — bez novej aplikácie." data-en="The channel patients already live in — no new app.">Kanál, ktorý pacient už používa — bez novej aplikácie.</h2>
+      <p class="section-sub" data-sk="Kontextové nudge-y, check-iny, dávkovacie pripomienky a proaktívne varovania. Preverené v produkcii na oncoteam.cloud." data-en="Contextual nudges, check-ins, dosing reminders, proactive alerts. Battle-tested in production on oncoteam.cloud.">Kontextové nudge-y, check-iny, dávkovacie pripomienky. Preverené v produkcii na oncoteam.cloud.</p>
+      <div class="wa-grid">
+        <div class="wa-phone">
+          <div class="wa-phone-header">
+            <span class="wa-phone-avatar">G</span>
+            <span class="wa-phone-name">Gloww OS</span>
+            <span class="wa-phone-status" data-sk="online" data-en="online">online</span>
           </div>
-          <div class="feature-card">
-            <svg class="feature-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/><path d="M4 2C2.8 3.7 2 5.7 2 8"/><path d="M22 8c0-2.3-.8-4.3-2-6"/></svg>
-            <h3 data-sk="Proaktívne nudges" data-en="Proactive nudges">Proaktívne nudges</h3>
-            <p data-sk="WhatsApp a web pripomienky: injekcia, hydratácia, kontrolný check-in na nauzeu na 3. deň po eskalácii, vážiaci interval, laboratórny odber — kontextovo, nie generické SMS." data-en="WhatsApp and web reminders: injection, hydration, nausea check-in three days after dose escalation, weigh-in cadence, lab draw — contextual, not generic SMS.">WhatsApp a web pripomienky: injekcia, hydratácia, kontrolný check-in na nauzeu na 3. deň po eskalácii, vážiaci interval, laboratórny odber — kontextovo, nie generické SMS.</p>
+          <div class="wa-phone-body">
+            <div class="wa-msg wa-msg-bot wa-msg-proactive" data-sk-html="&#128117; <strong>Eskalácia dávky</strong><br>Dnes ráno: semaglutid 0.5 mg &rarr; <strong>1.0 mg</strong>. Rotuj stranu aplikácie.<br><br>&#128300; Pozor na nauzeu &mdash; ozvem sa o 3 dni." data-en-html="&#128117; <strong>Dose escalation</strong><br>Today: semaglutide 0.5 mg &rarr; <strong>1.0 mg</strong>. Rotate injection site.<br><br>&#128300; Watch for nausea &mdash; check-in in 3 days.">💉 Eskalácia dávky — 0.5 mg → 1.0 mg.</div>
+            <div class="wa-msg wa-msg-user" data-sk="ok, aplikované" data-en="ok, injected">ok, aplikované</div>
+            <div class="wa-msg wa-msg-bot" data-sk-html="&#10003; Zaznačené do karty. Pri silnej nauzei mi napíš hneď." data-en-html="&#10003; Logged. Message me if strong nausea appears.">✓ Zaznačené. Pri silnej nauzei mi napíš hneď.</div>
           </div>
-          <div class="feature-card">
-            <svg class="feature-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>
-            <h3 data-sk="Kontext naprieč AI" data-en="Cross-AI context">Kontext naprieč AI</h3>
-            <p data-sk="Rovnaké pacientske dáta cez ChatGPT, Claude aj akýkoľvek MCP klient. Pacient si zvolí asistenta; odpovede sú vždy nad jeho vlastnými dokumentmi." data-en="Same patient data through ChatGPT, Claude, or any MCP client. The patient picks the assistant; answers always run over their own documents.">Rovnaké pacientske dáta cez ChatGPT, Claude aj akýkoľvek MCP klient. Pacient si zvolí asistenta; odpovede sú vždy nad jeho vlastnými dokumentmi.</p>
+          <div class="wa-phone-label" data-sk="Eskalácia dávky" data-en="Dose escalation">Eskalácia dávky</div>
+        </div>
+        <div class="wa-phone">
+          <div class="wa-phone-header">
+            <span class="wa-phone-avatar">G</span>
+            <span class="wa-phone-name">Gloww OS</span>
+            <span class="wa-phone-status" data-sk="online" data-en="online">online</span>
           </div>
-          <div class="feature-card">
-            <svg class="feature-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M5 22h14"/><path d="M5 2h14"/><path d="M17 22v-4.172a2 2 0 0 0-.586-1.414L12 12l-4.414 4.414A2 2 0 0 0 7 17.828V22"/><path d="M7 2v4.172a2 2 0 0 0 .586 1.414L12 12l4.414-4.414A2 2 0 0 0 17 6.172V2"/></svg>
-            <h3 data-sk="Schvaľovanie na pulte lekárne" data-en="Pharmacy-counter approval">Schvaľovanie na pulte lekárne</h3>
-            <p data-sk="Pacient stojí v lekárni. Lekár dostane push, vidí aktuálny stav, kontrolu protokolu, nové varovania. Jedným klikom schváli alebo vyžiada doplnenie. Telemedicínsky úkon, doložiteľný auditom." data-en="Patient is at the pharmacy. The doctor gets a push, sees current status, protocol check, new warnings. One click to approve or request more. A documented, auditable telemedicine act.">Pacient stojí v lekárni. Lekár dostane push, vidí aktuálny stav, kontrolu protokolu, nové varovania. Jedným klikom schváli alebo vyžiada doplnenie. Telemedicínsky úkon, doložiteľný auditom.</p>
+          <div class="wa-phone-body">
+            <div class="wa-msg wa-msg-bot wa-msg-proactive" data-sk-html="&#128165; <strong>Check-in, deň 3</strong><br>Ako sa cítiš po zvýšení dávky?<br><br>1&#xfe0f;&#x20e3; Dobre<br>2&#xfe0f;&#x20e3; Mierna nauzea<br>3&#xfe0f;&#x20e3; Silná nauzea / zvracanie" data-en-html="&#128165; <strong>Day-3 check-in</strong><br>How are you after the dose increase?<br><br>1&#xfe0f;&#x20e3; Fine<br>2&#xfe0f;&#x20e3; Mild nausea<br>3&#xfe0f;&#x20e3; Strong nausea / vomiting">💥 Check-in, deň 3 — 1 dobre / 2 mierna / 3 silná</div>
+            <div class="wa-msg wa-msg-user">2</div>
+            <div class="wa-msg wa-msg-bot" data-sk-html="&#129495; Mierna nauzea je očakávaná. Menšie porcie, vyhni sa tučnému.<br><br>&#9888;&#65039; Pri zhoršení napíš &mdash; lekár môže dávku pribrzdiť." data-en-html="&#129495; Mild nausea is expected. Smaller meals, avoid fatty food.<br><br>&#9888;&#65039; If it worsens, message me — the doctor can hold the dose.">🤢 Mierna nauzea očakávaná. Menšie porcie. Pri zhoršení napíš.</div>
+            <div class="wa-msg wa-msg-bot" data-sk="Stav posielam aj tvojej lekárke do karty." data-en="I'm also logging to the doctor's chart.">Stav posielam aj lekárke do karty.</div>
           </div>
-          <div class="feature-card">
-            <svg class="feature-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10"/><polyline points="9 12 11 14 15 10"/></svg>
-            <h3 data-sk="Auto-kontrola protokolu" data-en="Protocol auto-check">Auto-kontrola protokolu</h3>
-            <p data-sk="Každý nový záznam (diagnóza, liek, lab) prechádza pravidlami GLP-1 protokolu. Kontraindikácie a liekové konflikty vyplávajú skôr, ako lekár podpíše." data-en="Every new record (diagnosis, drug, lab) runs against GLP-1 protocol rules. Contraindications and drug conflicts surface before the doctor signs.">Každý nový záznam (diagnóza, liek, lab) prechádza pravidlami GLP-1 protokolu. Kontraindikácie a liekové konflikty vyplávajú skôr, ako lekár podpíše.</p>
+          <div class="wa-phone-label" data-sk="Check-in po eskalácii" data-en="Post-escalation check-in">Check-in po eskalácii</div>
+        </div>
+        <div class="wa-phone">
+          <div class="wa-phone-header">
+            <span class="wa-phone-avatar">G</span>
+            <span class="wa-phone-name">Gloww OS · lekár</span>
+            <span class="wa-phone-status" data-sk="online" data-en="online">online</span>
+          </div>
+          <div class="wa-phone-body">
+            <div class="wa-msg wa-msg-bot wa-msg-proactive" data-sk-html="&#128138; <strong>Pult lekárne</strong><br>Pacient: N.A., 42 r., BMI 32.4<br>Žiada: semaglutid 1.0 mg<br><br>&#9989; HbA1c 6.4, obličky OK<br>&#9989; Bez kontraindikácií<br>&#9989; Protokol deň 85/365<br><br>Schváliť?" data-en-html="&#128138; <strong>Pharmacy counter</strong><br>Patient: N.A., 42yo, BMI 32.4<br>Requests: semaglutide 1.0 mg<br><br>&#9989; HbA1c 6.4, kidneys OK<br>&#9989; No contraindications<br>&#9989; Protocol day 85/365<br><br>Approve?">💊 Pult lekárne — N.A. 42r BMI 32.4 · semaglutid 1.0 mg · bez KI · deň 85/365. Schváliť?</div>
+            <div class="wa-msg wa-msg-user" data-sk="Schváliť" data-en="Approve">Schváliť ✓</div>
+            <div class="wa-msg wa-msg-bot" data-sk-html="&#10003; Recept odoslaný. Audit log #SKxxx-123." data-en-html="&#10003; Script sent. Audit log #SKxxx-123.">✓ Recept odoslaný. Audit log #SKxxx-123.</div>
+          </div>
+          <div class="wa-phone-label" data-sk="Schválenie pri pulte" data-en="Counter-side approval">Schválenie pri pulte</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="dashboard">
+    <div class="container">
+      <span class="section-label" data-sk="Pohľad lekára" data-en="Clinician view">Pohľad lekára</span>
+      <h2 class="section-title" data-sk="Jedna karta, všetko podstatné pod rukou." data-en="One card, everything that matters at a glance.">Jedna karta, všetko podstatné pod rukou.</h2>
+      <p class="section-sub" data-sk="Dashboard dedikovaný pre GLP-1 protokol. Adaptované z bežiaceho oncoteam.cloud frontendu." data-en="Dashboard tuned for the GLP-1 protocol. Preview adapted from the live oncoteam.cloud frontend.">Dashboard dedikovaný pre GLP-1 protokol. Adaptované z bežiaceho oncoteam.cloud frontendu.</p>
+      <div class="dash-mock">
+        <div class="mockup-bar">
+          <span class="mockup-dot red"></span>
+          <span class="mockup-dot yellow"></span>
+          <span class="mockup-dot green"></span>
+          <span class="mockup-url">gloww.os / patient / nora-a.</span>
+        </div>
+        <div class="dash-mock-body">
+          <div class="dash-patient-card">
+            <div class="dash-avatar">NA</div>
+            <div>
+              <div style="font-weight:600;font-size:0.9375rem">N. Antalová · 42 r.</div>
+              <div class="dash-patient-meta" data-sk="Semaglutid 1.0 mg · deň 85/365 · BMI 32.4" data-en="Semaglutide 1.0 mg · day 85/365 · BMI 32.4">Semaglutid 1.0 mg · deň 85/365 · BMI 32.4</div>
+            </div>
+          </div>
+          <div class="dash-card">
+            <h4 data-sk="Hmotnosť" data-en="Weight">Hmotnosť</h4>
+            <div class="dash-metric">84.2 <small>kg</small></div>
+            <div class="dash-trend">↓ 6.8 kg (8.1%) / 12 <span data-sk="týž" data-en="wk">týž</span></div>
+          </div>
+          <div class="dash-card">
+            <h4>HbA1c</h4>
+            <div class="dash-metric">6.4 <small>%</small></div>
+            <div class="dash-trend">↓ 0.7 (<span data-sk="pred 12 týž" data-en="12 wk ago">pred 12 týž</span>)</div>
+          </div>
+          <div class="dash-card">
+            <h4 data-sk="Protokolové flagy" data-en="Protocol flags">Protokolové flagy</h4>
+            <div class="dash-flag ok">✓ <span data-sk="Kontraindikácie: žiadne" data-en="Contraindications: none">Kontraindikácie: žiadne</span></div>
+            <div class="dash-flag ok">✓ <span data-sk="Obličky OK (eGFR 92)" data-en="Kidneys OK (eGFR 92)">Obličky OK (eGFR 92)</span></div>
+            <div class="dash-flag">⚠ <span data-sk="Vitamín B12: kontrola na 6. mes." data-en="Vitamin B12: check at 6 mo.">Vitamín B12: kontrola na 6. mes.</span></div>
+          </div>
+          <div class="dash-card">
+            <h4 data-sk="Ďalšia akcia" data-en="Next action">Ďalšia akcia</h4>
+            <div class="dash-row"><span class="dash-row-label" data-sk="Ďalšia dávka" data-en="Next dose">Ďalšia dávka</span><span class="dash-row-val">12.5. · 1.0 mg</span></div>
+            <div class="dash-row"><span class="dash-row-label" data-sk="Check-in" data-en="Check-in">Check-in</span><span class="dash-row-val">14.5. · WhatsApp</span></div>
+            <div class="dash-row"><span class="dash-row-label" data-sk="Kontrola" data-en="Visit">Kontrola</span><span class="dash-row-val">2.6. · 09:00</span></div>
           </div>
         </div>
       </div>
-    </section>
+    </div>
+  </section>
 
-    <section class="content">
-      <div class="container">
-        <div class="section-label" data-sk="Ako to funguje" data-en="How it works">Ako to funguje</div>
-        <h2 class="section-title" data-sk="Štyri kroky od prvého kontaktu po udržateľnú liečbu." data-en="Four steps from first contact to sustained treatment.">Štyri kroky od prvého kontaktu po udržateľnú liečbu.</h2>
-        <div class="stepper">
-          <div class="step">
-            <span class="step-num">01</span>
-            <h3 data-sk="Pripojenie" data-en="Connect">Pripojenie</h3>
-            <p data-sk="Pacient nahráva dokumenty a podpisuje súhlas. Web alebo WhatsApp, fotky, PDF, e-zdravie export." data-en="Patient uploads documents and signs consent. Web or WhatsApp, photos, PDFs, e-health exports.">Pacient nahráva dokumenty a podpisuje súhlas. Web alebo WhatsApp, fotky, PDF, e-zdravie export.</p>
+  <section id="how" style="background: var(--bg-deep);">
+    <div class="container">
+      <span class="section-label" data-sk="Ako to funguje" data-en="How it works">Ako to funguje</span>
+      <h2 class="section-title" data-sk="Od prvého kontaktu po udržateľnú liečbu." data-en="From first contact to sustainable treatment.">Od prvého kontaktu po udržateľnú liečbu.</h2>
+      <div class="steps" style="margin-top: 2rem;">
+        <div class="step-card">
+          <div class="step-num">1</div>
+          <h3 data-sk="Pripojenie" data-en="Connect">Pripojenie</h3>
+          <p data-sk="Pacient nahráva dokumenty a podpisuje súhlas. Web alebo WhatsApp, fotky, PDF, e-zdravie export." data-en="Patient uploads and consents. Web or WhatsApp, photos, PDFs, e-health export.">Web alebo WhatsApp. Fotky, PDF, e-zdravie export. Súhlas s GDPR v toku.</p>
+        </div>
+        <div class="step-card">
+          <div class="step-num">2</div>
+          <h3 data-sk="Triedenie" data-en="Structure">Triedenie</h3>
+          <p data-sk="AI extrahuje štruktúrované dáta a explicitne pýta chýbajúce polia. Nehádate." data-en="AI extracts structured data and explicitly asks for missing fields. No guessing.">AI extrahuje dáta a sama sa pýta na chýbajúce polia. Nehádame.</p>
+        </div>
+        <div class="step-card">
+          <div class="step-num">3</div>
+          <h3 data-sk="Schválenie" data-en="Approve">Schválenie</h3>
+          <p data-sk="Lekár v dashboarde: jednostranový dosier, farebne označené kontraindikácie, jedno tlačidlo na štart liečby." data-en="Doctor in the dashboard: one-page dossier, color-coded contraindications, one click to start.">Jednostranový dosier s farebnými kontraindikáciami. Jedno tlačidlo na štart.</p>
+        </div>
+        <div class="step-card">
+          <div class="step-num">4</div>
+          <h3 data-sk="Monitoring" data-en="Monitor">Monitoring</h3>
+          <p data-sk="WhatsApp/web check-iny, auto-eskalácia pri červenej vlajke (silná nauzea, neobvyklý trend, nový symptóm)." data-en="WhatsApp / web check-ins, auto-escalation on red flags.">Check-iny cez WhatsApp/web. Auto-eskalácia pri červenej vlajke.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="architecture">
+    <div class="container">
+      <span class="section-label" data-sk="Architektúra" data-en="Architecture">Architektúra</span>
+      <h2 class="section-title" data-sk="Tri vrstvy. Žiadny vendor lock-in." data-en="Three layers. No vendor lock-in.">Tri vrstvy. Žiadny vendor lock-in.</h2>
+      <p class="section-sub" data-sk="Dáta vlastní pacient. Kontext beží v MCP serveri. Klientov si vyberá pacient a lekár nezávisle." data-en="Data stays with the patient. Context runs in an MCP server. Patient and clinician pick clients independently.">Dáta vlastní pacient. Kontext beží v MCP serveri. Klientov si vyberá pacient a lekár nezávisle.</p>
+      <div class="arch">
+        <div class="arch-grid">
+          <div class="arch-layer top">
+            <span class="arch-label" data-sk="Klienti" data-en="Clients">Klienti</span>
+            <div class="arch-pills">
+              <span class="arch-pill">Claude.ai</span>
+              <span class="arch-pill">ChatGPT</span>
+              <span class="arch-pill">WhatsApp</span>
+              <span class="arch-pill">Gloww Dashboard</span>
+              <span class="arch-pill" data-sk="Akýkoľvek MCP klient" data-en="Any MCP client">Akýkoľvek MCP klient</span>
+            </div>
           </div>
-          <div class="step">
-            <span class="step-num">02</span>
-            <h3 data-sk="Triedenie" data-en="Organize">Triedenie</h3>
-            <p data-sk="AI extrahuje štruktúrované dáta a explicitne pýta chýbajúce polia. Nehádate." data-en="AI extracts structured data and explicitly asks for missing fields. No guessing.">AI extrahuje štruktúrované dáta a explicitne pýta chýbajúce polia. Nehádate.</p>
+          <div class="arch-arrow">↓</div>
+          <div class="arch-layer">
+            <span class="arch-label">Brain</span>
+            <div class="arch-pills">
+              <span class="arch-pill">Oncoteam → Gloww</span>
+              <span class="arch-pill" data-sk="Protokolové agenti" data-en="Protocol agents">Protokolové agenti</span>
+              <span class="arch-pill" data-sk="Lab analýza" data-en="Lab analysis">Lab analýza</span>
+              <span class="arch-pill" data-sk="Klinické rozhodnutia" data-en="Clinical decisions">Klinické rozhodnutia</span>
+            </div>
           </div>
-          <div class="step">
-            <span class="step-num">03</span>
-            <h3 data-sk="Schválenie" data-en="Approve">Schválenie</h3>
-            <p data-sk="Lekár v dashboarde: jednostranový dosier, farebne označené kontraindikácie, jedno tlačidlo na štart liečby." data-en="Doctor in dashboard: one-page dossier, colour-coded contraindications, single button to start treatment.">Lekár v dashboarde: jednostranový dosier, farebne označené kontraindikácie, jedno tlačidlo na štart liečby.</p>
-          </div>
-          <div class="step">
-            <span class="step-num">04</span>
-            <h3 data-sk="Monitoring" data-en="Monitor">Monitoring</h3>
-            <p data-sk="WhatsApp/web check-iny, automatická eskalácia pri červenej vlajke (silná nauzea, neobvyklý trend, nový symptóm)." data-en="WhatsApp/web check-ins, automatic escalation on red flag (severe nausea, abnormal trend, new symptom).">WhatsApp/web check-iny, automatická eskalácia pri červenej vlajke (silná nauzea, neobvyklý trend, nový symptóm).</p>
+          <div class="arch-arrow">↓</div>
+          <div class="arch-layer bottom">
+            <span class="arch-label" data-sk="Pamäť" data-en="Memory">Pamäť</span>
+            <div class="arch-pills">
+              <span class="arch-pill">Oncofiles → Gloww-files</span>
+              <span class="arch-pill">FastMCP 3</span>
+              <span class="arch-pill">Turso + embedded replica</span>
+              <span class="arch-pill" data-sk="Google Drive / pacient" data-en="Google Drive / patient">Google Drive / pacient</span>
+              <span class="arch-pill" data-sk="Bearer token per pacient" data-en="Per-patient bearer token">Bearer token per pacient</span>
+            </div>
           </div>
         </div>
       </div>
-    </section>
+    </div>
+  </section>
 
-    <section class="content">
-      <div class="container">
-        <div class="section-label" data-sk="Dôkaz" data-en="Proof">Dôkaz</div>
-        <h2 class="section-title" data-sk="Nie prototyp. Klon bežiaceho systému." data-en="Not a prototype. A clone of a running system.">Nie prototyp. Klon bežiaceho systému.</h2>
-        <div class="proof-strip">
-          <div>
-            <div class="proof-num">3</div>
-            <div class="proof-label" data-sk="pacienti v produkcii" data-en="patients in production">pacienti v produkcii</div>
-          </div>
-          <div>
-            <div class="proof-num">270+</div>
-            <div class="proof-label" data-sk="spravovaných dokumentov" data-en="managed documents">spravovaných dokumentov</div>
-          </div>
-          <div>
-            <div class="proof-num">85</div>
-            <div class="proof-label" data-sk="MCP nástrojov" data-en="MCP tools">MCP nástrojov</div>
-          </div>
+  <section class="proof">
+    <div class="container">
+      <span class="section-label" data-sk="Dôkaz" data-en="Proof">Dôkaz</span>
+      <h2 class="section-title" data-sk="Nie prototyp. Klon bežiaceho systému." data-en="Not a prototype. A clone of a running system.">Nie prototyp. Klon bežiaceho systému.</h2>
+      <div class="proof-stats">
+        <div class="proof-stat">
+          <div class="proof-stat-num">3</div>
+          <div class="proof-stat-label" data-sk="pacienti v produkcii" data-en="patients in production">pacienti v produkcii</div>
         </div>
-        <p class="proof-note" data-sk="oncofiles.com a oncoteam.cloud obsluhujú reálnych onkologických pacientov. Architektúra (Turso + embedded replica, FastMCP, stateless HTTP, bearer-token per-pacient izolácia) je preverená každodennou prevádzkou. Otvorený zdrojový kód: github.com/peter-fusek/oncofiles." data-en="oncofiles.com and oncoteam.cloud serve real oncology patients. The architecture (Turso with embedded replica, FastMCP, stateless HTTP, bearer-token per-patient isolation) is hardened by daily operation. Open source at github.com/peter-fusek/oncofiles.">oncofiles.com a oncoteam.cloud obsluhujú reálnych onkologických pacientov. Architektúra (Turso + embedded replica, FastMCP, stateless HTTP, bearer-token per-pacient izolácia) je preverená každodennou prevádzkou. Otvorený zdrojový kód: github.com/peter-fusek/oncofiles.</p>
-      </div>
-    </section>
-
-    <section class="content">
-      <div class="container">
-        <div class="section-label" data-sk="Otázky" data-en="FAQ">Otázky</div>
-        <h2 class="section-title" data-sk="Šesť otázok, ktoré pravdepodobne padnú pri obede." data-en="Six questions that will likely come up at lunch.">Šesť otázok, ktoré pravdepodobne padnú pri obede.</h2>
-        <div class="faq">
-          <details>
-            <summary data-sk="Kto vlastní pacientske dáta?" data-en="Who owns the patient data?">Kto vlastní pacientske dáta?</summary>
-            <div class="answer" data-sk="Pacient. Fyzicky ležia v jeho Google Drive priečinku (alebo ekvivalente). Gloww má prístup na základe súhlasu, ktorý pacient môže kedykoľvek odvolať. Žiadny vendor lock-in." data-en="The patient. It physically lives in their Google Drive folder (or equivalent). Gloww has access based on consent the patient can revoke at any time. No vendor lock-in.">Pacient. Fyzicky ležia v jeho Google Drive priečinku (alebo ekvivalente). Gloww má prístup na základe súhlasu, ktorý pacient môže kedykoľvek odvolať. Žiadny vendor lock-in.</div>
-          </details>
-          <details>
-            <summary data-sk="Ako je to s GDPR?" data-en="GDPR?">Ako je to s GDPR?</summary>
-            <div class="answer" data-sk="Dáta vlastní dotknutá osoba, spracovanie na základe súhlasu a plnenia zdravotnej starostlivosti. Nič sa neukladá u AI poskytovateľov na tréning. Architektúra je pripravená na DPIA pred spustením pilotu." data-en="Data is owned by the data subject, processing based on consent and the provision of healthcare. Nothing is retained by AI providers for training. The architecture is ready for a DPIA before pilot launch.">Dáta vlastní dotknutá osoba, spracovanie na základe súhlasu a plnenia zdravotnej starostlivosti. Nič sa neukladá u AI poskytovateľov na tréning. Architektúra je pripravená na DPIA pred spustením pilotu.</div>
-          </details>
-          <details>
-            <summary data-sk="Kto nesie klinickú zodpovednosť?" data-en="Who carries clinical liability?">Kto nesie klinickú zodpovednosť?</summary>
-            <div class="answer" data-sk="Lekár Gloww. Systém je podpora rozhodovania, nie autonómny preskriptor. Každý recept, každé schválenie na pulte lekárne podpisuje človek. Audit log zachytáva kto, kedy, na základe akých dát." data-en="The Gloww physician. The system is decision-support, not an autonomous prescriber. Every prescription, every pharmacy-counter approval is signed by a human. The audit log captures who approved what, when, based on which data.">Lekár Gloww. Systém je podpora rozhodovania, nie autonómny preskriptor. Každý recept, každé schválenie na pulte lekárne podpisuje človek. Audit log zachytáva kto, kedy, na základe akých dát.</div>
-          </details>
-          <details>
-            <summary data-sk="Integrácia s e-receptom a e-zdravím?" data-en="Integration with e-recept and e-zdravie?">Integrácia s e-receptom a e-zdravím?</summary>
-            <div class="answer" data-sk="Fáza 1: paralelný pracovný tok — lekár po schválení v Gloww OS vystaví recept v NCZI portáli ako doteraz. Fáza 2: priame napojenie cez eHealth API, keď dozrie pilot a NCZI umožní tretie strany." data-en="Phase 1: parallel workflow — after approving in Gloww OS the doctor issues the prescription in the NCZI portal as usual. Phase 2: direct eHealth API integration once the pilot matures and NCZI opens to third parties.">Fáza 1: paralelný pracovný tok — lekár po schválení v Gloww OS vystaví recept v NCZI portáli ako doteraz. Fáza 2: priame napojenie cez eHealth API, keď dozrie pilot a NCZI umožní tretie strany.</div>
-          </details>
-          <details>
-            <summary data-sk="Cenový model?" data-en="Pricing model?">Cenový model?</summary>
-            <div class="answer" data-sk="Pilot pro bono — výmenou za klinickú spätnú väzbu a 3–5 pacientov. Po pilote buď paušál na ambulanciu, alebo per-patient mesačne, podľa toho čo je prevádzkovo čistejšie. Grantová cesta (EU Digital Europe, Horizon EIC, APVV) zostáva otvorená." data-en="Pro bono pilot — in exchange for clinical feedback and 3 to 5 patients. Post-pilot either a clinic seat licence or per-patient monthly, whichever is cleaner operationally. The grant route (EU Digital Europe, Horizon EIC, APVV) stays open.">Pilot pro bono — výmenou za klinickú spätnú väzbu a 3–5 pacientov. Po pilote buď paušál na ambulanciu, alebo per-patient mesačne, podľa toho čo je prevádzkovo čistejšie. Grantová cesta (EU Digital Europe, Horizon EIC, APVV) zostáva otvorená.</div>
-          </details>
-          <details>
-            <summary data-sk="Kedy prvý reálny pacient?" data-en="When the first real patient?">Kedy prvý reálny pacient?</summary>
-            <div class="answer" data-sk="6–10 týždňov od kick-offu. Nepíšeme zo zelenej lúky — preberáme klon, prispôsobíme protokoly, dashboard a nudge-ovacie pravidlá na GLP-1." data-en="Six to ten weeks from kick-off. Not greenfield — we clone what already runs in oncology and adapt protocols, dashboard and nudge rules for GLP-1.">6–10 týždňov od kick-offu. Nepíšeme zo zelenej lúky — preberáme klon, prispôsobíme protokoly, dashboard a nudge-ovacie pravidlá na GLP-1.</div>
-          </details>
+        <div class="proof-stat">
+          <div class="proof-stat-num">270+</div>
+          <div class="proof-stat-label" data-sk="spravovaných dokumentov" data-en="documents managed">spravovaných dokumentov</div>
+        </div>
+        <div class="proof-stat">
+          <div class="proof-stat-num">85</div>
+          <div class="proof-stat-label" data-sk="MCP nástrojov" data-en="MCP tools">MCP nástrojov</div>
+        </div>
+        <div class="proof-stat">
+          <div class="proof-stat-num">18</div>
+          <div class="proof-stat-label" data-sk="rokov instarea" data-en="years of instarea">rokov instarea</div>
         </div>
       </div>
-    </section>
-
-    <section class="content">
-      <div class="container">
-        <div class="section-label" data-sk="Obchodný model" data-en="Business model">Obchodný model</div>
-        <h2 class="section-title" data-sk="Pilot pro bono, potom platený podľa toho, čo je čisté." data-en="Pro bono pilot, then paid once we know what clean looks like.">Pilot pro bono, potom platený podľa toho, čo je čisté.</h2>
-        <div class="biz-block">
-          <p data-sk="Prvý pilot ponúkam pro bono — výmenou za klinickú spätnú väzbu, prístup k 3–5 reálnym pacientom a súhlas použiť anonymizovaný dopad (čas ušetrený lekárovi, adherencia, protokolové zhody) v ďalších prezentáciách." data-en="The first pilot is pro bono — in exchange for clinical feedback, access to 3 to 5 real patients, and permission to use anonymised impact metrics (doctor time saved, adherence, protocol compliance) in further presentations.">Prvý pilot ponúkam pro bono — výmenou za klinickú spätnú väzbu, prístup k 3–5 reálnym pacientom a súhlas použiť anonymizovaný dopad (čas ušetrený lekárovi, adherencia, protokolové zhody) v ďalších prezentáciách.</p>
-          <p data-sk="Ak pilot ukáže meraný prínos, ďalšie nasadenie je platené — buď cez grantovú schému (EÚ Digital Europe, Horizon EIC Accelerator, APVV), alebo komerčne voči Magnapharm/Gloww ako softvérový produkt s vlastným brandingom. Grantové žiadosti viem koordinovať." data-en="If the pilot shows measurable benefit, further deployment is paid — either via grant (EU Digital Europe, Horizon EIC Accelerator, APVV), or commercially as a Magnapharm/Gloww-branded product. I can coordinate the grant application.">Ak pilot ukáže meraný prínos, ďalšie nasadenie je platené — buď cez grantovú schému (EÚ Digital Europe, Horizon EIC Accelerator, APVV), alebo komerčne voči Magnapharm/Gloww ako softvérový produkt s vlastným brandingom. Grantové žiadosti viem koordinovať.</p>
-        </div>
+      <div class="proof-urls">
+        <span data-sk="Bežiace systémy:" data-en="Running systems:">Bežiace systémy:</span>
+        <a href="https://oncofiles.com" target="_blank" rel="noopener">oncofiles.com</a>
+        <a href="https://oncoteam.cloud" target="_blank" rel="noopener">oncoteam.cloud</a>
+        <a href="https://github.com/peter-fusek/oncofiles" target="_blank" rel="noopener">github.com/peter-fusek/oncofiles</a>
       </div>
-    </section>
+    </div>
+  </section>
 
-    <section class="content" id="stretnutie">
-      <div class="container">
-        <div class="cta-card">
-          <div class="cta-eyebrow" data-sk="Stretnutie" data-en="Meeting">Stretnutie</div>
-          <h2 data-sk="Piatok 12:00 · OC Retro" data-en="Friday 12:00 · OC Retro">Piatok 12:00 · OC Retro</h2>
-          <p class="cta-sub" data-sk="Talianska reštaurácia na poschodí." data-en="Italian restaurant upstairs.">Talianska reštaurácia na poschodí.</p>
-          <div class="cta-row">
-            <a href="tel:+421903124356">0903 124 356</a>
-            <a href="mailto:peter.fusek@instarea.sk">peter.fusek@instarea.sk</a>
+  <section id="team">
+    <div class="container">
+      <span class="section-label" data-sk="Kto to stavia" data-en="Who is building this">Kto to stavia</span>
+      <h2 class="section-title" data-sk="instarea — sériový tím, rovnaká zostava od 2007." data-en="instarea — serial team, same core since 2007.">instarea — sériový tím, rovnaká zostava od 2007.</h2>
+      <div class="team-grid">
+        <div class="team-card">
+          <span class="team-role" data-sk="CEO &amp; Zakladateľ" data-en="CEO &amp; Founder">CEO &amp; Zakladateľ</span>
+          <div class="team-name">Peter Fusek</div>
+          <p class="team-bio" data-sk="Sériový podnikateľ a AI stratég. 4 roky v Tatra banke (CRM teamleader, 2000–2004). Co-founder marketlocator (exit Deutsche Telekom, 2019). Advisor to VÚB Bank CEO. 18+ rokov budovania technologických produktov." data-en="Serial founder and AI strategist. 4 years at Tatra banka (CRM team lead, 2000–2004). Co-founder of marketlocator (exit to Deutsche Telekom, 2019). Advisor to VÚB Bank CEO. 18+ years of tech product building.">Sériový podnikateľ a AI stratég. 4 roky v Tatra banke. Co-founder marketlocator (exit Deutsche Telekom, 2019). Advisor to VÚB Bank CEO.</p>
+          <div class="team-tags">
+            <span class="team-tag">AI strategy</span>
+            <span class="team-tag">Product</span>
+            <span class="team-tag">Fundraising</span>
+            <span class="team-tag">JV partnerships</span>
           </div>
-          <div class="cta-note" data-sk="Prineste otázky — slidy nebudú." data-en="Bring questions — no slides.">Prineste otázky — slidy nebudú.</div>
+        </div>
+        <div class="team-card">
+          <span class="team-role" data-sk="CTO &amp; Co-founder" data-en="CTO &amp; Co-founder">CTO &amp; Co-founder</span>
+          <div class="team-name">Peter Čapkovič</div>
+          <p class="team-bio" data-sk="Senior IT architekt s 20+ rokmi v enterprise bankingu (VÚB). Expert na .NET, Python, SQL a systémovú architektúru. Viedol architektúru naprieč všetkými produktmi instarea — od telekom analytiky po AI-first zdravotné stacky." data-en="Senior IT architect with 20+ years in enterprise banking (VÚB). Expert in .NET, Python, SQL and systems architecture. Led architecture across every instarea product — from telecom analytics to AI-first health stacks.">Senior IT architekt s 20+ rokmi v enterprise bankingu (VÚB). Expert na .NET, Python, SQL a systémovú architektúru. Viedol architektúru naprieč všetkými produktmi instarea.</p>
+          <div class="team-tags">
+            <span class="team-tag">Architecture</span>
+            <span class="team-tag">.NET / Python</span>
+            <span class="team-tag">Enterprise</span>
+            <span class="team-tag">Systems</span>
+          </div>
         </div>
       </div>
-    </section>
-  </main>
+
+      <div class="instarea-summary">
+        <div>
+          <h3 style="font-family:'DM Serif Display',serif;font-size:1.5rem;margin-bottom:0.5rem" data-sk="18 rokov, 23 produktov, 106+ alumni — rovnaký tím." data-en="18 years, 23 products, 106+ alumni — same team.">18 rokov, 23 produktov, 106+ alumni — rovnaký tím.</h3>
+          <p style="color:var(--text-muted);font-size:0.9375rem" data-sk="Architektúra, vývoj a operations pod jednou strechou. 10+ dedikovaných špecialistov. Kontinuálny track record od enterprise telecomu cez fintech až po zdravotnícke AI stacky." data-en="Architecture, engineering and operations under one roof. 10+ dedicated specialists. Continuous track record from enterprise telecom through fintech to healthcare AI stacks.">Architektúra, vývoj a operations pod jednou strechou. 10+ dedikovaných špecialistov.</p>
+        </div>
+        <div class="instarea-stats">
+          <div class="instarea-stat"><div class="instarea-stat-num">18+</div><div class="instarea-stat-label" data-sk="rokov" data-en="years">rokov</div></div>
+          <div class="instarea-stat"><div class="instarea-stat-num">23</div><div class="instarea-stat-label" data-sk="produktov" data-en="products">produktov</div></div>
+          <div class="instarea-stat"><div class="instarea-stat-num">106+</div><div class="instarea-stat-label" data-sk="alumni" data-en="alumni">alumni</div></div>
+          <div class="instarea-stat"><div class="instarea-stat-num">1</div><div class="instarea-stat-label" data-sk="exit do Deutsche Telekom" data-en="exit to Deutsche Telekom">exit do Deutsche Telekom</div></div>
+        </div>
+      </div>
+
+      <h3 style="font-family:'DM Serif Display',serif;font-size:1.375rem;margin:2.5rem 0 1rem" data-sk="Portfólio — od telecomu po AI-first zdravotníctvo" data-en="Portfolio — from telecom to AI-first healthcare">Portfólio — od telecomu po AI-first zdravotníctvo</h3>
+      <div class="portfolio">
+        <div class="portfolio-card">
+          <div class="portfolio-year">2009–2012</div>
+          <div class="portfolio-name">Callinspector</div>
+          <div class="portfolio-desc" data-sk="Telecom expense management. Enterprise klienti, webová analytika." data-en="Telecom expense management. Enterprise clients, web analytics.">Telecom expense management. Enterprise klienti.</div>
+        </div>
+        <div class="portfolio-card">
+          <div class="portfolio-year">2011–2013</div>
+          <div class="portfolio-name">InvestButton</div>
+          <div class="portfolio-desc" data-sk="Mobile-first produkty. PayPal integrácia, CallinspectorMobile." data-en="Mobile-first products. PayPal integration, CallinspectorMobile.">Mobile-first produkty. PayPal integrácia.</div>
+        </div>
+        <div class="portfolio-card">
+          <div class="portfolio-year">2014–2019</div>
+          <div class="portfolio-name">marketlocator</div>
+          <div class="portfolio-desc" data-sk="Geo-dáta monetizácia. Exit do Deutsche Telekom. Deloitte Fast 50, FT 1000." data-en="Geo-data monetization. Exit to Deutsche Telekom. Deloitte Fast 50, FT 1000.">Geo-dáta. Exit do Deutsche Telekom. Deloitte Fast 50, FT 1000.</div>
+          <span class="portfolio-badge" data-sk="EXIT" data-en="EXIT">EXIT</span>
+        </div>
+        <div class="portfolio-card">
+          <div class="portfolio-year">2018–2020</div>
+          <div class="portfolio-name" data-sk="Data platformy &middot; IoT" data-en="Data platforms &middot; IoT">Data platformy · IoT</div>
+          <div class="portfolio-desc" data-sk="Enterprise dáta, booking systém, IoT senzory." data-en="Enterprise data, booking system, IoT sensors.">Enterprise dáta. Booking systém. IoT senzory.</div>
+        </div>
+        <div class="portfolio-card">
+          <div class="portfolio-year">2020–2022</div>
+          <div class="portfolio-name">DingoDot fintech</div>
+          <div class="portfolio-desc" data-sk="PSD2 (vrátane TB PremiumAPI), swipe-sorting, QR platby." data-en="PSD2 (incl. TB PremiumAPI), swipe-sorting, QR payments.">PSD2 (TB PremiumAPI), swipe-sorting, QR platby.</div>
+        </div>
+        <div class="portfolio-card">
+          <div class="portfolio-year">2023–2025</div>
+          <div class="portfolio-name">AI-first éra</div>
+          <div class="portfolio-desc" data-sk="PulseShape · ReplicaCity · HomeGrif · GrandpaCheck · Robota." data-en="PulseShape · ReplicaCity · HomeGrif · GrandpaCheck · Robota.">PulseShape · ReplicaCity · HomeGrif · GrandpaCheck.</div>
+        </div>
+        <div class="portfolio-card" style="border-color: var(--purple); background: var(--purple-soft);">
+          <div class="portfolio-year">2025–2026</div>
+          <div class="portfolio-name" style="color: var(--purple)">Oncofiles · Oncoteam</div>
+          <div class="portfolio-desc" data-sk="AI-first healthcare stack. 3 pacienti v produkcii, 85 MCP nástrojov." data-en="AI-first healthcare stack. 3 patients in production, 85 MCP tools.">AI-first healthcare stack. 3 pacienti v produkcii.</div>
+          <span class="portfolio-badge" data-sk="BEŽÍ" data-en="LIVE">BEŽÍ</span>
+        </div>
+      </div>
+      <p style="font-size:0.875rem;color:var(--text-dim);margin-top:1rem" data-sk="Celý príbeh: instarea.com" data-en="Full story: instarea.com">Celý príbeh: <a href="https://www.instarea.com" target="_blank" rel="noopener" style="color:var(--purple)">instarea.com</a></p>
+    </div>
+  </section>
+
+  <section id="pilot" class="biz">
+    <div class="container">
+      <span class="section-label" data-sk="Obchodný model" data-en="Business model">Obchodný model</span>
+      <h2 class="section-title" data-sk="Spoločný pilot, potom tri paralelné cesty financovania." data-en="Joint pilot, then three parallel funding tracks.">Spoločný pilot, potom tri paralelné cesty financovania.</h2>
+      <p class="section-sub" data-sk="Gloww OS je komerčný projekt. Prvý pilot beží pro bono — výmenou za klinickú spätnú väzbu a meraný dopad. Následné nasadenie je platené: grant, licencia, alebo joint venture. Cieľom je, aby instarea bola platená partnerským modelom, nie subdodávkou." data-en="Gloww OS is a commercial project. The first pilot is pro bono in exchange for clinical feedback and measurable impact. Production rollout is paid: grant, license, or JV — with instarea as a partner, not a subcontractor.">Gloww OS je komerčný projekt. Prvý pilot pro bono za klinickú spätnú väzbu. Následné nasadenie platené — instarea ako partner, nie subdodávka.</p>
+      <div class="biz-tracks">
+        <div class="biz-track">
+          <span class="biz-tag a" data-sk="Pilot" data-en="Pilot">Pilot</span>
+          <h3 data-sk="Pro bono, 3–5 pacientov" data-en="Pro bono, 3–5 patients">Pro bono, 3–5 pacientov</h3>
+          <p data-sk="6–10 týždňov. Klinický partner prináša reálnych kandidátov a lekársku zodpovednosť. instarea prináša softvér. Meráme čas lekára, adherenciu a protokolové zhody. Výstup: anonymizovaný dopad." data-en="6–10 weeks. Clinical partner brings real candidates and medical liability. instarea brings software. We measure doctor time, adherence, protocol compliance. Output: anonymized impact.">6–10 týždňov. Partner prináša pacientov a zodpovednosť. instarea prináša softvér. Meraný čas lekára, adherencia.</p>
+        </div>
+        <div class="biz-track">
+          <span class="biz-tag b" data-sk="Granty" data-en="Grants">Granty</span>
+          <h3 data-sk="EU Digital Europe · EIC · APVV" data-en="EU Digital Europe · EIC · APVV">EU Digital Europe · EIC · APVV</h3>
+          <p data-sk="Grantové žiadosti koordinuje instarea. Témy: AI v zdravotníctve, pacient-centric dáta, chronické ochorenia. Žiadateľ je konzorcium partnerov — instarea ako technológia a koordinátor, klinický partner za zdravotnícku stranu." data-en="Grant submissions coordinated by instarea. Themes: AI in healthcare, patient-centric data, chronic disease. Applicant is a consortium — instarea as tech/coordinator, clinical partner as healthcare applicant.">Témy: AI v zdravotníctve, pacient-centric dáta, chronické ochorenia. Žiadateľ = konzorcium. instarea ako technológia a koordinátor.</p>
+        </div>
+        <div class="biz-track">
+          <span class="biz-tag c" data-sk="Komercia" data-en="Commercial">Komercia</span>
+          <h3 data-sk="Licencia alebo JV" data-en="License or JV">Licencia alebo JV</h3>
+          <p data-sk="Ak je grantová cesta pomalá: SaaS licencia na ambulanciu, per-patient mesačne, alebo JV štruktúra so spoločným vlastníctvom produktu a upside. Preferujeme JV — partnerstvo rovných, nie vendor vzťah." data-en="If grants are slow: SaaS per-clinic, per-patient monthly, or JV with shared product ownership and upside. We prefer JV — partnership of equals, not vendor.">SaaS na ambulanciu, per-patient mesačne, alebo JV so spoločným vlastníctvom a upside. Preferujeme JV.</p>
+        </div>
+      </div>
+
+      <h3 style="font-family:'DM Serif Display',serif;font-size:1.375rem;margin:2.5rem 0 0.5rem" data-sk="Rozdelenie rolí v JV" data-en="JV role split">Rozdelenie rolí v JV</h3>
+      <p style="color:var(--text-muted);font-size:0.9375rem;margin-bottom:1rem" data-sk="Keď pilot ukáže meraný dopad, navrhujeme takéto rozdelenie." data-en="When the pilot shows measurable impact, this is the split we propose.">Keď pilot ukáže meraný dopad, navrhujeme takéto rozdelenie.</p>
+      <div class="jv">
+        <div class="jv-card instarea">
+          <h4 data-sk="instarea prináša" data-en="instarea brings">instarea prináša</h4>
+          <ul class="jv-list">
+            <li data-sk="Produkt, technológia, AI kapabilita" data-en="Product, technology, AI capability">Produkt, technológia, AI kapabilita</li>
+            <li data-sk="Doménová expertíza (protokoly, MCP, izolácia pacientov)" data-en="Domain expertise (protocols, MCP, patient isolation)">Doménová expertíza (protokoly, MCP, izolácia pacientov)</li>
+            <li data-sk="Prevádzka a vývoj (10+ špecialistov)" data-en="Ops and engineering (10+ specialists)">Prevádzka a vývoj (10+ špecialistov)</li>
+            <li data-sk="Grantová koordinácia a EÚ fundraising" data-en="Grant coordination and EU fundraising">Grantová koordinácia a EÚ fundraising</li>
+          </ul>
+        </div>
+        <div class="jv-card partner">
+          <h4 data-sk="Klinický partner prináša" data-en="Clinical partner brings">Klinický partner prináša</h4>
+          <ul class="jv-list">
+            <li data-sk="Lekárska licencia a klinická zodpovednosť" data-en="Medical license and clinical liability">Lekárska licencia a klinická zodpovednosť</li>
+            <li data-sk="Distribúcia a pacientska báza" data-en="Distribution and patient base">Distribúcia a pacientska báza</li>
+            <li data-sk="Lekárensky network a schvaľovanie receptov" data-en="Pharmacy network and prescription flow">Lekárensky network a schvaľovanie receptov</li>
+            <li data-sk="Regulačný compliance (MZ SR, NCZI, GDPR/DPIA)" data-en="Regulatory compliance (MoH, eHealth, GDPR/DPIA)">Regulačný compliance (MZ SR, NCZI, GDPR/DPIA)</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="faq">
+    <div class="container-narrow">
+      <span class="section-label" data-sk="Otázky" data-en="FAQ">Otázky</span>
+      <h2 class="section-title" data-sk="Otázky, ktoré pravdepodobne padnú." data-en="Questions that tend to come up.">Otázky, ktoré pravdepodobne padnú.</h2>
+      <div class="faq" style="margin-top: 2rem;">
+        <div class="faq-item">
+          <button class="faq-q" onclick="toggleFaq(this)" data-sk="Kto vlastní pacientske dáta?" data-en="Who owns the patient data?">Kto vlastní pacientske dáta?</button>
+          <div class="faq-a"><p data-sk="Pacient. Dáta fyzicky ležia v jeho Google Drive (alebo ekvivalente). Klinický partner má prístup na základe súhlasu, ktorý pacient môže kedykoľvek odvolať. Žiadny vendor lock-in, žiadna centrálna pacientska databáza u nás." data-en="The patient. Data lives in their Google Drive (or equivalent). The clinical partner has access via consent, revocable anytime. No vendor lock-in, no central patient database on our side.">Pacient. Dáta fyzicky ležia v jeho Google Drive. Klinický partner má prístup na základe súhlasu. Žiadny vendor lock-in.</p></div>
+        </div>
+        <div class="faq-item">
+          <button class="faq-q" onclick="toggleFaq(this)" data-sk="Ako je to s GDPR?" data-en="How about GDPR?">Ako je to s GDPR?</button>
+          <div class="faq-a"><p data-sk="Dáta vlastní dotknutá osoba, spracovanie na základe súhlasu a plnenia zdravotnej starostlivosti. AI volania cez enterprise endpointy bez tréningu na pacientskych dátach. Architektúra je pripravená na DPIA pred spustením pilotu — šablónu dodávame." data-en="Data belongs to the data subject, processing based on consent and healthcare provision. AI via enterprise endpoints without training on patient data. DPIA-ready architecture — we provide the template.">Dáta vlastní dotknutá osoba. AI cez enterprise endpointy bez tréningu. DPIA šablónu dodávame.</p></div>
+        </div>
+        <div class="faq-item">
+          <button class="faq-q" onclick="toggleFaq(this)" data-sk="Kto nesie klinickú zodpovednosť?" data-en="Who carries clinical liability?">Kto nesie klinickú zodpovednosť?</button>
+          <div class="faq-a"><p data-sk="Klinický partner. Systém je podpora rozhodovania, nie autonómny preskriptor. Každý recept a každé schválenie pri pulte lekárne podpisuje človek. Audit log zachytáva kto, kedy a na základe akých dát rozhodol." data-en="The clinical partner. The system is decision support, not an autonomous prescriber. Every prescription is signed by a human. Audit log captures who, when, and on what data.">Klinický partner. Systém je podpora rozhodovania. Každý recept podpisuje človek. Audit log je povinný.</p></div>
+        </div>
+        <div class="faq-item">
+          <button class="faq-q" onclick="toggleFaq(this)" data-sk="Integrácia s e-receptom a e-zdravím?" data-en="Integration with e-prescription and e-health?">Integrácia s e-receptom a e-zdravím?</button>
+          <div class="faq-a"><p data-sk="Fáza 1: paralelný pracovný tok — lekár po schválení v Gloww OS vystaví recept v NCZI portáli ako doteraz. Fáza 2: priame napojenie cez eHealth API, keď dozrie pilot a regulátor umožní tretie strany." data-en="Phase 1: parallel workflow — after approving, the doctor issues the prescription in NCZI portal. Phase 2: direct eHealth API once the pilot matures and the regulator opens to third parties.">Fáza 1: paralelný tok s NCZI. Fáza 2: eHealth API, keď regulátor otvorí.</p></div>
+        </div>
+        <div class="faq-item">
+          <button class="faq-q" onclick="toggleFaq(this)" data-sk="Ako je Gloww OS izolovaný od onkológie?" data-en="How is Gloww OS isolated from oncology?">Ako je Gloww OS izolovaný od onkológie?</button>
+          <div class="faq-a"><p data-sk="Samostatné repo (gloww-files, gloww-team), samostatný Railway projekt, samostatná Turso DB, samostatná doména. Žiadne zdieľanie pacientov s onkológiou. Zdieľame len kódovú DNA — protokol a dáta sú oddelené." data-en="Separate repos, Railway project, Turso DB, domain. No patient sharing with oncology. Only code DNA is shared — protocols and data are isolated.">Samostatné repo, Railway projekt, Turso DB, doména. Iba kódová DNA — protokol a dáta sú oddelené.</p></div>
+        </div>
+        <div class="faq-item">
+          <button class="faq-q" onclick="toggleFaq(this)" data-sk="Kedy prvý reálny pacient?" data-en="When does the first real patient start?">Kedy prvý reálny pacient?</button>
+          <div class="faq-a"><p data-sk="6–10 týždňov od kick-offu. Týždne 1–2: DPIA + protokolové mapovanie. 3–6: adaptácia. 7–10: pilot s 3–5 pacientmi." data-en="6–10 weeks from kickoff. Weeks 1–2: DPIA + protocol mapping. 3–6: adaptation. 7–10: pilot with 3–5 patients.">6–10 týždňov od kick-offu. Týždne 1–2: DPIA. 3–6: adaptácia. 7–10: pilot s 3–5 pacientmi.</p></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <div class="cta-wrap">
+    <div class="container">
+      <div class="cta-card">
+        <h2 data-sk="Vidíte v tomto produkt?" data-en="See a product here?">Vidíte v tomto produkt?</h2>
+        <p data-sk="Nechajte kontakt a ozveme sa s konkrétnym návrhom pilotu, grantovej cesty alebo JV štruktúry." data-en="Drop a contact and we'll reach out with a concrete pilot, grant, or JV proposal.">Nechajte kontakt a ozveme sa s návrhom pilotu, grantu alebo JV.</p>
+        <form class="cta-form" onsubmit="return glowwContact(this, event)">
+          <input type="email" name="email" placeholder="name@company.com" required>
+          <button type="submit" class="btn btn-primary" data-sk="Ozvať sa" data-en="Reach out">Ozvať sa</button>
+        </form>
+        <div class="cta-msg" id="cta-msg"></div>
+      </div>
+    </div>
+  </div>
 
   <footer>
     <div class="container">
-      <div>
-        <span data-sk="Postavil " data-en="Built by ">Postavil </span>
-        <a href="https://www.instarea.com">Instarea</a>
-        · <a href="/">oncofiles.com</a>
-        · <a href="https://oncoteam.cloud">oncoteam.cloud</a>
-      </div>
-      <div data-sk="Interný pracovný podklad · neindexované" data-en="Internal working material · not indexed">Interný pracovný podklad · neindexované</div>
+      <p data-sk="Postavené instarea. Komerčný projekt na partnerskej báze." data-en="Built by instarea. Commercial project on a partnership basis.">Postavené <a href="https://www.instarea.com" target="_blank" rel="noopener">instarea</a>. Komerčný projekt na partnerskej báze.</p>
     </div>
   </footer>
 
   <script>
-    (function() {
-      var btn = document.getElementById('lang-toggle');
-      function apply(l) {
-        localStorage.setItem('oncofiles_lang', l);
-        btn.textContent = l === 'sk' ? 'EN' : 'SK';
-        document.documentElement.lang = l;
-        document.querySelectorAll('[data-' + l + ']').forEach(function(el) {
-          el.textContent = el.getAttribute('data-' + l);
-        });
-      }
-      var initial = localStorage.getItem('oncofiles_lang') || 'sk';
-      apply(initial);
-      btn.addEventListener('click', function() {
-        apply(localStorage.getItem('oncofiles_lang') === 'sk' ? 'en' : 'sk');
+    function applyLang(lang) {
+      document.documentElement.lang = lang;
+      document.querySelectorAll('[data-sk][data-en]').forEach(function(el) {
+        var val = lang === 'en' ? el.getAttribute('data-en') : el.getAttribute('data-sk');
+        if (val !== null) el.textContent = val;
       });
+      document.querySelectorAll('[data-sk-html][data-en-html]').forEach(function(el) {
+        var raw = lang === 'en' ? el.getAttribute('data-en-html') : el.getAttribute('data-sk-html');
+        renderSafeHtml(el, raw);
+      });
+      var btn = document.getElementById('lang-toggle');
+      if (btn) btn.textContent = lang === 'en' ? 'SK' : 'EN';
+      try { localStorage.setItem('oncofiles_lang', lang); } catch (e) {}
+    }
+    function renderSafeHtml(el, raw) {
+      while (el.firstChild) el.removeChild(el.firstChild);
+      if (!raw) return;
+      var decoded = raw.replace(/&#x([0-9A-Fa-f]+);/g, function(_, hex) {
+        return String.fromCodePoint(parseInt(hex, 16));
+      }).replace(/&#(\d+);/g, function(_, dec) {
+        return String.fromCodePoint(parseInt(dec, 10));
+      }).replace(/&mdash;/g, '—').replace(/&rarr;/g, '→').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>');
+      var parts = decoded.split(/(<br\s*\/?>|<\/?strong>|<\/?em>)/gi);
+      var stack = [el];
+      parts.forEach(function(p) {
+        if (!p) return;
+        var low = p.toLowerCase();
+        if (low === '<br>' || low === '<br/>' || low === '<br />') {
+          stack[stack.length - 1].appendChild(document.createElement('br'));
+        } else if (low === '<strong>') {
+          var s = document.createElement('strong'); stack[stack.length - 1].appendChild(s); stack.push(s);
+        } else if (low === '</strong>' || low === '</em>') {
+          if (stack.length > 1) stack.pop();
+        } else if (low === '<em>') {
+          var em = document.createElement('em'); stack[stack.length - 1].appendChild(em); stack.push(em);
+        } else {
+          stack[stack.length - 1].appendChild(document.createTextNode(p));
+        }
+      });
+    }
+    function toggleLang() {
+      var cur = document.documentElement.lang === 'en' ? 'en' : 'sk';
+      applyLang(cur === 'en' ? 'sk' : 'en');
+    }
+    function toggleFaq(btn) {
+      var item = btn.parentElement;
+      item.classList.toggle('open');
+    }
+    function glowwContact(form, e) {
+      e.preventDefault();
+      var input = form.querySelector('input[type="email"]');
+      var msg = document.getElementById('cta-msg');
+      var btn = form.querySelector('button');
+      var email = input.value.trim();
+      if (!email) return false;
+      var lang = document.documentElement.lang === 'en' ? 'en' : 'sk';
+      btn.disabled = true;
+      msg.textContent = '';
+      msg.className = 'cta-msg';
+      fetch('/api/newsletter/subscribe', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: email, source: 'gloww' })
+      }).then(function(r) { return r.json().then(function(d) { return { ok: r.ok, data: d }; }); })
+      .then(function(res) {
+        if (res.ok && res.data.ok) {
+          msg.textContent = lang === 'en' ? 'Thanks — we will reach out soon.' : 'Ďakujeme — ozveme sa.';
+          msg.className = 'cta-msg success';
+          input.value = '';
+        } else {
+          throw new Error(res.data.error || 'Failed');
+        }
+      }).catch(function() {
+        msg.textContent = lang === 'en' ? 'Something went wrong.' : 'Niečo sa pokazilo.';
+        msg.className = 'cta-msg error';
+      }).finally(function() { btn.disabled = false; });
+      return false;
+    }
+    (function() {
+      var stored = null;
+      try { stored = localStorage.getItem('oncofiles_lang'); } catch (e) {}
+      applyLang(stored === 'en' ? 'en' : 'sk');
     })();
   </script>
 </body>
