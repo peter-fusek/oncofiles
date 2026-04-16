@@ -876,7 +876,7 @@ wheels = [
 
 [[package]]
 name = "oncofiles"
-version = "5.3.1"
+version = "5.7.0"
 source = { editable = "." }
 dependencies = [
     { name = "aiosqlite" },
