@@ -3672,6 +3672,57 @@ _NEWSLETTER_RATE_LIMIT = 5  # max signups per IP per hour
 _NEWSLETTER_RATE_WINDOW = 3600  # 1 hour
 
 
+async def _notify_new_subscriber(email: str, source: str) -> None:
+    """Send '[Lead]' notification email via Resend when someone subscribes.
+
+    Fire-and-forget: failures are logged but never propagate — the subscribe
+    response must not depend on notification delivery.
+
+    Requires env vars RESEND_API_KEY, NOTIFY_FROM_EMAIL, NOTIFY_TO_EMAIL.
+    If any are missing the helper is a silent no-op.
+    """
+    import httpx
+
+    api_key = os.environ.get("RESEND_API_KEY")
+    from_email = os.environ.get("NOTIFY_FROM_EMAIL")
+    to_email = os.environ.get("NOTIFY_TO_EMAIL")
+    if not (api_key and from_email and to_email):
+        logger.debug("Newsletter notification skipped — RESEND_API_KEY/NOTIFY_* not configured")
+        return
+
+    subject = f"[Lead] {email} — newsletter ({source})"
+    text = (
+        f"New newsletter subscriber:\n\n"
+        f"  email:  {email}\n"
+        f"  source: {source}\n"
+        f"  time:   {time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime())}\n\n"
+        f"Stored in oncofiles newsletter_subscribers table.\n"
+    )
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(
+                "https://api.resend.com/emails",
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "from": from_email,
+                    "to": [to_email],
+                    "subject": subject,
+                    "text": text,
+                },
+            )
+            if resp.status_code >= 400:
+                logger.warning(
+                    "Resend newsletter notification failed: %s %s",
+                    resp.status_code,
+                    resp.text[:500],
+                )
+    except Exception:
+        logger.exception("Resend newsletter notification exception")
+
+
 @mcp.custom_route("/api/newsletter/subscribe", methods=["POST"])
 async def api_newsletter_subscribe(request: Request) -> JSONResponse:
     """Public newsletter signup — no auth required."""
@@ -3709,13 +3760,15 @@ async def api_newsletter_subscribe(request: Request) -> JSONResponse:
 
     source = (body.get("source") or "landing").strip()[:50]
 
+    is_new_row = False
     try:
         db_inst: Database = request.app.state.fastmcp_server._lifespan_result["db"]
         subscriber_id = str(uuid.uuid4())
-        await db_inst.db.execute(
+        cursor = await db_inst.db.execute(
             "INSERT OR IGNORE INTO newsletter_subscribers (id, email, source) VALUES (?, ?, ?)",
             (subscriber_id, email, source),
         )
+        is_new_row = bool(cursor.rowcount)
         await db_inst.db.commit()
     except Exception:
         logger.exception("Newsletter subscribe DB error")
@@ -3728,6 +3781,10 @@ async def api_newsletter_subscribe(request: Request) -> JSONResponse:
     # Record rate-limit hit after successful processing
     hits.append(now)
     _newsletter_rate[client_ip] = hits
+
+    # Fire-and-forget notification — only on genuinely new subscribers
+    if is_new_row:
+        asyncio.create_task(_notify_new_subscriber(email, source))
 
     return JSONResponse(
         {"ok": True},

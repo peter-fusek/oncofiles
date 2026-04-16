@@ -118,3 +118,46 @@ async def test_newsletter_cors_header(db):
 
     response = await api_newsletter_subscribe(request)
     assert response.headers.get("access-control-allow-origin") == "*"
+
+
+@pytest.mark.usefixtures("_clear_rate_limits")
+async def test_newsletter_notification_noop_when_no_env(db, monkeypatch):
+    """Notification helper is a silent no-op when RESEND_API_KEY is unset."""
+    from oncofiles.server import _notify_new_subscriber
+
+    monkeypatch.delenv("RESEND_API_KEY", raising=False)
+    monkeypatch.delenv("NOTIFY_FROM_EMAIL", raising=False)
+    monkeypatch.delenv("NOTIFY_TO_EMAIL", raising=False)
+
+    # Should return without raising and without making any HTTP call.
+    await _notify_new_subscriber("x@y.com", "test")
+
+
+@pytest.mark.usefixtures("_clear_rate_limits")
+async def test_newsletter_notification_fires_on_new_row(db, monkeypatch):
+    """A new subscription schedules a notification; duplicates do not."""
+    import asyncio
+
+    from oncofiles import server
+
+    calls: list[tuple[str, str]] = []
+
+    async def _fake_notify(email: str, source: str) -> None:
+        calls.append((email, source))
+
+    monkeypatch.setattr(server, "_notify_new_subscriber", _fake_notify)
+
+    request = _make_request({"email": "notify@example.com", "source": "test"})
+    request.app.state.fastmcp_server._lifespan_result = {"db": db}
+    await server.api_newsletter_subscribe(request)
+
+    # Give the fire-and-forget task a tick to run
+    await asyncio.sleep(0)
+    assert calls == [("notify@example.com", "test")]
+
+    # Duplicate submission should NOT trigger another notification
+    request2 = _make_request({"email": "notify@example.com", "source": "test"})
+    request2.app.state.fastmcp_server._lifespan_result = {"db": db}
+    await server.api_newsletter_subscribe(request2)
+    await asyncio.sleep(0)
+    assert calls == [("notify@example.com", "test")]
