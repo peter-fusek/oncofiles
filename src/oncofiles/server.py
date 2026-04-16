@@ -4716,14 +4716,19 @@ class SecurityHeadersMiddleware:
                     csp = (
                         "default-src 'self'; "
                         "script-src 'self' 'unsafe-inline' "
-                        "https://www.googletagmanager.com https://www.google-analytics.com; "
-                        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+                        "https://www.googletagmanager.com https://www.google-analytics.com "
+                        "https://accounts.google.com https://apis.google.com; "
+                        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com "
+                        "https://accounts.google.com; "
                         "font-src 'self' https://fonts.gstatic.com data:; "
                         "img-src 'self' data: https:; "
-                        "connect-src 'self' https://www.google-analytics.com; "
+                        "connect-src 'self' https://www.google-analytics.com "
+                        "https://accounts.google.com https://oauth2.googleapis.com "
+                        "https://www.googleapis.com; "
+                        "frame-src https://accounts.google.com https://content.googleapis.com; "
                         "frame-ancestors 'self'; "
                         "base-uri 'self'; "
-                        "form-action 'self'; "
+                        "form-action 'self' https://accounts.google.com; "
                         "upgrade-insecure-requests"
                     )
                     headers.append((b"content-security-policy", csp.encode("latin-1")))
