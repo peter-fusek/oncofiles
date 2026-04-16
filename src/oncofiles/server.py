@@ -4642,7 +4642,7 @@ class SecurityHeadersMiddleware:
         async def send_with_headers(message):
             if message["type"] == "http.response.start":
                 headers = list(message.get("headers") or [])
-                existing = {k.decode("latin-1").lower() for k, _ in headers}
+                existing = {k.decode("latin-1").lower(): v for k, v in headers}
                 defaults = [
                     (b"x-content-type-options", b"nosniff"),
                     (b"x-frame-options", b"SAMEORIGIN"),
@@ -4653,6 +4653,23 @@ class SecurityHeadersMiddleware:
                 for name, value in defaults:
                     if name.decode("latin-1").lower() not in existing:
                         headers.append((name, value))
+                # CSP only for HTML responses — avoid interfering with MCP/JSON clients
+                ct = existing.get("content-type", b"").decode("latin-1", errors="replace").lower()
+                if ct.startswith("text/html") and "content-security-policy" not in existing:
+                    csp = (
+                        "default-src 'self'; "
+                        "script-src 'self' 'unsafe-inline' "
+                        "https://www.googletagmanager.com https://www.google-analytics.com; "
+                        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+                        "font-src 'self' https://fonts.gstatic.com data:; "
+                        "img-src 'self' data: https:; "
+                        "connect-src 'self' https://www.google-analytics.com; "
+                        "frame-ancestors 'self'; "
+                        "base-uri 'self'; "
+                        "form-action 'self'; "
+                        "upgrade-insecure-requests"
+                    )
+                    headers.append((b"content-security-policy", csp.encode("latin-1")))
                 message["headers"] = headers
             await send(message)
 
