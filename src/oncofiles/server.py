@@ -3641,6 +3641,77 @@ Fix file: `src/oncofiles/dashboard.html`
         return JSONResponse({"error": "internal error"}, status_code=500)
 
 
+# ── Newsletter subscribe ─────────────────────────────────────────────
+
+# Per-IP rate limiter: {ip: [timestamp, ...]}
+_newsletter_rate: dict[str, list[float]] = {}
+_NEWSLETTER_RATE_LIMIT = 5  # max signups per IP per hour
+_NEWSLETTER_RATE_WINDOW = 3600  # 1 hour
+
+
+@mcp.custom_route("/api/newsletter/subscribe", methods=["POST"])
+async def api_newsletter_subscribe(request: Request) -> JSONResponse:
+    """Public newsletter signup — no auth required."""
+    import re
+    import uuid
+
+    # Per-IP rate limiting
+    client_ip = request.client.host if request.client else "unknown"
+    now = time.time()
+    hits = _newsletter_rate.get(client_ip, [])
+    hits = [t for t in hits if now - t < _NEWSLETTER_RATE_WINDOW]
+    if len(hits) >= _NEWSLETTER_RATE_LIMIT:
+        return JSONResponse(
+            {"error": "Too many signups. Try again later."},
+            status_code=429,
+            headers={"Access-Control-Allow-Origin": "*"},
+        )
+
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse(
+            {"error": "Invalid JSON body"},
+            status_code=400,
+            headers={"Access-Control-Allow-Origin": "*"},
+        )
+
+    email = (body.get("email") or "").strip().lower()
+    if not email or not re.match(r"^[^@]+@[^@]+\.[^@]+$", email):
+        return JSONResponse(
+            {"error": "Invalid email address"},
+            status_code=400,
+            headers={"Access-Control-Allow-Origin": "*"},
+        )
+
+    source = (body.get("source") or "landing").strip()[:50]
+
+    try:
+        db_inst: Database = request.app.state.fastmcp_server._lifespan_result["db"]
+        subscriber_id = str(uuid.uuid4())
+        await db_inst.db.execute(
+            "INSERT OR IGNORE INTO newsletter_subscribers (id, email, source) VALUES (?, ?, ?)",
+            (subscriber_id, email, source),
+        )
+        await db_inst.db.commit()
+    except Exception:
+        logger.exception("Newsletter subscribe DB error")
+        return JSONResponse(
+            {"error": "internal error"},
+            status_code=500,
+            headers={"Access-Control-Allow-Origin": "*"},
+        )
+
+    # Record rate-limit hit after successful processing
+    hits.append(now)
+    _newsletter_rate[client_ip] = hits
+
+    return JSONResponse(
+        {"ok": True},
+        headers={"Access-Control-Allow-Origin": "*"},
+    )
+
+
 @mcp.custom_route("/api/patients", methods=["GET"])
 async def api_list_patients(request: Request) -> JSONResponse:
     """List patients visible to the authenticated user.

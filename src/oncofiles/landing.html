@@ -1238,6 +1238,42 @@
     .hero h1 { animation: fadeUp 0.6s ease-out 0.1s both; }
     .hero .subtitle { animation: fadeUp 0.6s ease-out 0.2s both; }
     .hero-cta { animation: fadeUp 0.6s ease-out 0.8s both; }
+
+    /* ── Newsletter signup ────────────────────────── */
+    .nl-divider { color: var(--text-muted); font-size: 0.875rem; margin: 1.5rem 0 1rem; }
+    .nl-form { display: flex; gap: 0.5rem; justify-content: center; max-width: 440px; margin: 0 auto; }
+    .nl-form input[type="email"] {
+      flex: 1; min-width: 0;
+      padding: 0.625rem 0.875rem; background: var(--surface); color: var(--text);
+      border: 1px solid var(--border); border-radius: 6px; font-size: 0.9375rem;
+      font-family: 'DM Sans', sans-serif;
+    }
+    .nl-form input[type="email"]:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(13,148,136,0.15); }
+    .nl-form .nl-btn {
+      padding: 0.625rem 1.25rem; background: var(--accent); color: #fff;
+      border: none; border-radius: 6px; font-size: 0.9375rem; font-weight: 600;
+      font-family: 'DM Sans', sans-serif; cursor: pointer; white-space: nowrap;
+      transition: background 0.15s;
+    }
+    .nl-form .nl-btn:hover { background: var(--accent-light); }
+    .nl-form .nl-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+    .nl-msg { font-size: 0.8125rem; margin-top: 0.5rem; text-align: center; min-height: 1.25rem; }
+    .nl-msg.success { color: var(--accent); }
+    .nl-msg.error { color: #dc2626; }
+    .nl-spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid rgba(255,255,255,0.3); border-top-color: #fff; border-radius: 50%; animation: nlSpin 0.6s linear infinite; vertical-align: middle; }
+    @keyframes nlSpin { to { transform: rotate(360deg); } }
+
+    /* Footer newsletter — compact */
+    .footer-nl { margin: 1rem 0 0.5rem; }
+    .footer-nl .nl-form { max-width: 360px; }
+    .footer-nl .nl-form input[type="email"] { padding: 0.5rem 0.75rem; font-size: 0.875rem; }
+    .footer-nl .nl-form .nl-btn { padding: 0.5rem 0.75rem; font-size: 0.875rem; }
+    .footer-nl .nl-msg { font-size: 0.75rem; }
+
+    @media (max-width: 480px) {
+      .nl-form { flex-direction: column; }
+      .nl-form .nl-btn { width: 100%; }
+    }
   </style>
 </head>
 <body>
@@ -1798,6 +1834,12 @@
           <a href="/dashboard" class="btn btn-primary" data-sk="Otvoriť dashboard" data-en="Open dashboard">Otvoriť dashboard</a>
           <a href="https://github.com/peter-fusek/oncofiles" class="btn btn-secondary" rel="noreferrer noopener" data-sk="Zobraziť na GitHub" data-en="View on GitHub">Zobraziť na GitHub</a>
         </div>
+        <p class="nl-divider" data-sk="alebo buďte informovaní:" data-en="or stay updated:">alebo buďte informovaní:</p>
+        <form class="nl-form" data-nl-source="cta" onsubmit="return nlSubmit(this,event)">
+          <input type="email" required data-placeholder-sk="Váš email" data-placeholder-en="Your email" placeholder="Váš email">
+          <button type="submit" class="nl-btn" data-sk="Odoberať" data-en="Subscribe">Odoberať</button>
+        </form>
+        <div class="nl-msg" data-nl-msg="cta"></div>
         <p class="cta-note" data-sk="MIT Licencia &middot; Python 3.12+ &middot; FastMCP &middot; Pre pacientov a opatrovateľov" data-en="MIT License &middot; Python 3.12+ &middot; FastMCP &middot; For patients and caregivers">MIT Licencia &middot; Python 3.12+ &middot; FastMCP &middot; Pre pacientov a opatrovateľov</p>
       </div>
     </section>
@@ -1968,6 +2010,13 @@
 
   <footer>
     <div class="container">
+      <div class="footer-nl">
+        <form class="nl-form" data-nl-source="footer" onsubmit="return nlSubmit(this,event)">
+          <input type="email" required data-placeholder-sk="Váš email" data-placeholder-en="Your email" placeholder="Váš email">
+          <button type="submit" class="nl-btn" aria-label="Subscribe">&#8594;</button>
+        </form>
+        <div class="nl-msg" data-nl-msg="footer"></div>
+      </div>
       &copy; 2025-2026 <a href="https://www.linkedin.com/in/peterfusek/" rel="noreferrer noopener">Peter Fusek</a> &middot;
       <a href="/dashboard">Dashboard</a> &middot;
       <a href="/health">Status</a> &middot;
@@ -2089,6 +2138,56 @@
       var origBtn = document.getElementById('lang-toggle');
       if (origBtn) origBtn.addEventListener('click', function() { setTimeout(updatePlaceholders, 10); });
     })();
+
+    // Newsletter signup
+    function nlSubmit(form, e) {
+      e.preventDefault();
+      var source = form.getAttribute('data-nl-source');
+      var input = form.querySelector('input[type="email"]');
+      var btn = form.querySelector('.nl-btn');
+      var msgEl = document.querySelector('[data-nl-msg="' + source + '"]');
+      var email = input.value.trim();
+      if (!email) return false;
+
+      // Loading state — spinner is safe static markup, not user content
+      btn.disabled = true;
+      var spinner = document.createElement('span');
+      spinner.className = 'nl-spinner';
+      btn.textContent = '';
+      btn.appendChild(spinner);
+      msgEl.textContent = '';
+      msgEl.className = 'nl-msg';
+
+      fetch('/api/newsletter/subscribe', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: email, source: source })
+      }).then(function(r) { return r.json().then(function(d) { return { ok: r.ok, data: d }; }); })
+      .then(function(res) {
+        if (res.ok && res.data.ok) {
+          var lang = localStorage.getItem('oncofiles_lang') || 'sk';
+          msgEl.textContent = lang === 'en' ? 'Check your email!' : 'Skontrolujte email!';
+          msgEl.className = 'nl-msg success';
+          input.value = '';
+          if (typeof gtag === 'function') gtag('event', 'newsletter_signup', { source: source });
+        } else {
+          throw new Error(res.data.error || 'Subscription failed');
+        }
+      }).catch(function(err) {
+        var lang = localStorage.getItem('oncofiles_lang') || 'sk';
+        msgEl.textContent = err.message || (lang === 'en' ? 'Something went wrong.' : 'Nieco sa pokazilo.');
+        msgEl.className = 'nl-msg error';
+      }).finally(function() {
+        btn.disabled = false;
+        var lang = localStorage.getItem('oncofiles_lang') || 'sk';
+        if (source === 'footer') {
+          btn.textContent = '\u2192';
+        } else {
+          btn.textContent = lang === 'en' ? 'Subscribe' : 'Odoberať';
+        }
+      });
+      return false;
+    }
   </script>
 </body>
 </html>
