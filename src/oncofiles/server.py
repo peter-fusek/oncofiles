@@ -1837,6 +1837,25 @@ async def landing(request: Request) -> HTMLResponse:
     return HTMLResponse(_load_landing_html())
 
 
+_GLOWW_HTML: str | None = None
+
+
+def _load_gloww_html() -> str:
+    global _GLOWW_HTML  # noqa: PLW0603
+    if _GLOWW_HTML is None:
+        _GLOWW_HTML = (Path(__file__).parent / "gloww.html").read_text()
+    return _GLOWW_HTML
+
+
+@mcp.custom_route("/gloww", methods=["GET"])
+async def gloww_page(request: Request) -> HTMLResponse:
+    # Noindex pitch page — not linked from main landing, not in sitemap.
+    return HTMLResponse(
+        _load_gloww_html(),
+        headers={"X-Robots-Tag": "noindex, nofollow, noarchive, nosnippet"},
+    )
+
+
 # ── Legal pages (required for Google OAuth verification) ─────────────────────
 
 
@@ -2105,6 +2124,7 @@ async def robots_txt(request: Request) -> HTMLResponse:
         "Disallow: /dashboard/verify\n"
         "Disallow: /status\n"
         "Disallow: /metrics\n"
+        "Disallow: /gloww\n"
         "\n"
         "# LLM crawlers — allow landing + llms.txt, block private endpoints\n"
         "User-agent: GPTBot\n"
@@ -2113,6 +2133,7 @@ async def robots_txt(request: Request) -> HTMLResponse:
         "Disallow: /mcp\n"
         "Disallow: /api/\n"
         "Disallow: /dashboard/verify\n"
+        "Disallow: /gloww\n"
         "\n"
         "User-agent: ClaudeBot\n"
         "Allow: /\n"
@@ -2120,10 +2141,12 @@ async def robots_txt(request: Request) -> HTMLResponse:
         "Disallow: /mcp\n"
         "Disallow: /api/\n"
         "Disallow: /dashboard/verify\n"
+        "Disallow: /gloww\n"
         "\n"
         "User-agent: PerplexityBot\n"
         "Allow: /\n"
         "Allow: /llms.txt\n"
+        "Disallow: /gloww\n"
         "\n"
         "Sitemap: https://oncofiles.com/sitemap.xml\n",
         media_type="text/plain",
