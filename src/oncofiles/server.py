@@ -4624,6 +4624,41 @@ from oncofiles.tools.conversations import (  # noqa: E402, F401
 # ── Entry point ──────────────────────────────────────────────────────────────
 
 
+class SecurityHeadersMiddleware:
+    """Add baseline security headers to every HTTP response.
+
+    Does not override headers already set by route handlers (e.g.
+    X-Robots-Tag on /gloww).
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        async def send_with_headers(message):
+            if message["type"] == "http.response.start":
+                headers = list(message.get("headers") or [])
+                existing = {k.decode("latin-1").lower() for k, _ in headers}
+                defaults = [
+                    (b"x-content-type-options", b"nosniff"),
+                    (b"x-frame-options", b"SAMEORIGIN"),
+                    (b"referrer-policy", b"strict-origin-when-cross-origin"),
+                    (b"permissions-policy", b"geolocation=(), microphone=(), camera=()"),
+                    (b"strict-transport-security", b"max-age=31536000; includeSubDomains"),
+                ]
+                for name, value in defaults:
+                    if name.decode("latin-1").lower() not in existing:
+                        headers.append((name, value))
+                message["headers"] = headers
+            await send(message)
+
+        await self.app(scope, receive, send_with_headers)
+
+
 def main() -> None:
     if MCP_TRANSPORT == "stdio":
         mcp.run()
@@ -4637,6 +4672,7 @@ def main() -> None:
             port=MCP_PORT,
             stateless_http=True,  # no server-side sessions — survives Railway deploys (#229)
             middleware=[
+                Middleware(SecurityHeadersMiddleware),
                 Middleware(
                     CORSMiddleware,
                     allow_origins=[
