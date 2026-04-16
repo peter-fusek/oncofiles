@@ -21,13 +21,22 @@
   <link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display&family=DM+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <style>
     :root {
-      --bg: #0f172a;
-      --surface: #1e293b;
-      --border: #334155;
-      --text: #e2e8f0;
-      --text-muted: #94a3b8;
-      --accent: #14b8a6;
-      --accent-light: #2dd4bf;
+      --bg: #faf9f7;
+      --bg-deep: #f0eeeb;
+      --surface: #ffffff;
+      --surface-hover: #f5f3f0;
+      --border: #d5cfc5;
+      --border-light: #bfb8ad;
+      --card-shadow: 0 1px 3px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.04);
+      --text: #1e293b;
+      --text-muted: #556270;
+      --text-dim: #8c9aab;
+      --accent: #0d9488;
+      --accent-light: #14b8a6;
+      --accent-glow: rgba(13, 148, 136, 0.10);
+      --purple: #7c3aed;
+      --purple-light: #8b5cf6;
+      --warm: #d97706;
       --green: #22c55e;
       --amber: #f59e0b;
       --red: #ef4444;
@@ -52,7 +61,7 @@
       gap: 0.5rem 1rem;
       position: sticky;
       top: 0;
-      background: rgba(15, 23, 42, 0.85);
+      background: rgba(250, 249, 247, 0.85);
       backdrop-filter: blur(12px);
       -webkit-backdrop-filter: blur(12px);
       z-index: 50;
@@ -104,7 +113,7 @@
     .add-patient-btn {
       background: var(--accent);
       border: none;
-      color: var(--bg);
+      color: #fff;
       padding: 0.375rem 0.75rem;
       border-radius: 0.375rem;
       cursor: pointer;
@@ -129,7 +138,7 @@
     /* Segmented language switcher */
     .lang-switcher { display: inline-flex; border: 1px solid var(--border); border-radius: 4px; overflow: hidden; }
     .lang-switcher button { background: none; border: none; color: var(--text-muted); padding: 0.2rem 0.45rem; cursor: pointer; font-size: 0.6875rem; font-family: inherit; line-height: 1; transition: background 0.15s, color 0.15s; }
-    .lang-switcher button.lang-active { background: var(--accent); color: var(--bg); font-weight: 600; }
+    .lang-switcher button.lang-active { background: var(--accent); color: #fff; font-weight: 600; }
     .lang-switcher button:not(.lang-active):hover { color: var(--accent); }
     .lang-switcher button:first-child { border-right: 1px solid var(--border); }
 
@@ -139,7 +148,7 @@
       position: fixed;
       inset: 0;
       z-index: 100;
-      background: rgba(0, 0, 0, 0.7);
+      background: rgba(0, 0, 0, 0.4);
       backdrop-filter: blur(4px);
       align-items: center;
       justify-content: center;
@@ -154,6 +163,7 @@
       max-width: 32rem;
       max-height: 90vh;
       overflow-y: auto;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.12);
     }
     .wizard-panel h2 {
       font-family: 'DM Serif Display', Georgia, serif;
@@ -224,7 +234,7 @@
     .wizard-btn-primary {
       background: var(--accent);
       border: none;
-      color: var(--bg);
+      color: #fff;
       padding: 0.5rem 1.25rem;
       border-radius: 0.375rem;
       font-size: 0.875rem;
@@ -305,7 +315,7 @@
     .share-tab:last-child { border-radius: 0 0.375rem 0.375rem 0; }
     .share-tab.active {
       background: var(--accent);
-      color: var(--bg);
+      color: #fff;
       border-color: var(--accent);
       font-weight: 600;
     }
@@ -375,7 +385,7 @@
       transform: translateX(-50%);
       width: 400px;
       height: 400px;
-      background: radial-gradient(circle, rgba(20, 184, 166, 0.08) 0%, transparent 70%);
+      background: radial-gradient(circle, rgba(13, 148, 136, 0.06) 0%, transparent 70%);
       pointer-events: none;
     }
     .auth-gate input {
@@ -439,12 +449,13 @@
     .card {
       background: var(--surface);
       border: 1px solid var(--border);
-      border-radius: 0.625rem;
+      border-radius: 0.75rem;
       padding: 1rem;
       text-align: center;
-      transition: border-color 0.2s;
+      transition: border-color 0.2s, box-shadow 0.2s;
+      box-shadow: var(--card-shadow);
     }
-    .card:hover { border-color: rgba(20, 184, 166, 0.3); }
+    .card:hover { border-color: rgba(13, 148, 136, 0.3); box-shadow: 0 2px 8px rgba(0,0,0,0.08); }
     .card .value {
       font-family: 'DM Serif Display', Georgia, serif;
       font-size: 1.75rem;
@@ -465,9 +476,10 @@
     .funnel {
       background: var(--surface);
       border: 1px solid var(--border);
-      border-radius: 0.625rem;
+      border-radius: 0.75rem;
       padding: 1.25rem;
       margin-bottom: 1.25rem;
+      box-shadow: var(--card-shadow);
     }
     .funnel h2 { font-family: 'DM Serif Display', Georgia, serif; font-size: 1.0625rem; font-weight: 400; margin-bottom: 0.75rem; }
     .funnel-row {
@@ -480,7 +492,7 @@
     .funnel-bar-bg {
       flex: 1;
       height: 22px;
-      background: rgba(255,255,255,0.05);
+      background: rgba(0,0,0,0.04);
       border-radius: 4px;
       overflow: hidden;
       margin: 0 0.75rem;
@@ -515,7 +527,7 @@
     .pill.active { background: var(--accent); color: white; border-color: var(--accent); }
     .pill-count {
       display: inline-block;
-      background: rgba(255,255,255,0.15);
+      background: rgba(0,0,0,0.08);
       border-radius: 9999px;
       padding: 0 0.375rem;
       font-size: 0.625rem;
@@ -523,15 +535,16 @@
       min-width: 1rem;
       text-align: center;
     }
-    .pill.active .pill-count { background: rgba(255,255,255,0.25); }
+    .pill.active .pill-count { background: rgba(255,255,255,0.3); }
 
     /* Document table */
     .table-wrap {
       background: var(--surface);
       border: 1px solid var(--border);
-      border-radius: 0.625rem;
+      border-radius: 0.75rem;
       overflow-x: auto;
       margin-bottom: 1.25rem;
+      box-shadow: var(--card-shadow);
     }
     table { width: 100%; border-collapse: collapse; font-size: 0.8125rem; }
     th {
@@ -551,7 +564,7 @@
     th .sort-arrow { margin-left: 0.25rem; font-size: 0.625rem; }
     td {
       padding: 0.5rem 0.75rem;
-      border-bottom: 1px solid rgba(51,65,85,0.5);
+      border-bottom: 1px solid var(--border);
       white-space: nowrap;
     }
     tr:last-child td { border-bottom: none; }
@@ -610,7 +623,7 @@
     }
     .doc-detail-panel .detail-close:hover {
       color: var(--text);
-      background: rgba(255,255,255,0.08);
+      background: rgba(0,0,0,0.06);
     }
     .doc-detail-left {
       flex: 1;
@@ -624,7 +637,7 @@
       height: 500px;
       border: 1px solid var(--border);
       border-radius: 0.375rem;
-      background: #000;
+      background: var(--bg-deep);
     }
     .doc-detail-right {
       flex: 1;
@@ -643,7 +656,7 @@
       border-radius: 3px;
     }
     .doc-ocr-page {
-      background: rgba(0,0,0,0.2);
+      background: var(--bg-deep);
       border: 1px solid var(--border);
       border-radius: 0.375rem;
       padding: 0.75rem;
@@ -713,7 +726,7 @@
       align-items: center;
       justify-content: center;
       height: 300px;
-      background: rgba(0,0,0,0.2);
+      background: var(--bg-deep);
       border: 1px solid var(--border);
       border-radius: 0.375rem;
       color: var(--text-muted);
@@ -744,9 +757,10 @@
     .remedies {
       background: var(--surface);
       border: 1px solid var(--border);
-      border-radius: 0.625rem;
+      border-radius: 0.75rem;
       padding: 1.25rem;
       margin-bottom: 1.25rem;
+      box-shadow: var(--card-shadow);
     }
     .remedies h2 { font-family: 'DM Serif Display', Georgia, serif; font-size: 1.0625rem; font-weight: 400; margin-bottom: 0.75rem; }
     .remedy-row {
@@ -754,7 +768,7 @@
       align-items: center;
       justify-content: space-between;
       padding: 0.5rem 0;
-      border-bottom: 1px solid rgba(51,65,85,0.3);
+      border-bottom: 1px solid var(--border);
       font-size: 0.8125rem;
     }
     .remedy-row:last-child { border-bottom: none; }
@@ -763,7 +777,7 @@
     .remedy-action {
       font-family: 'SF Mono', 'Fira Code', monospace;
       font-size: 0.75rem;
-      background: rgba(255,255,255,0.05);
+      background: rgba(0,0,0,0.04);
       padding: 0.125rem 0.5rem;
       border-radius: 0.25rem;
       color: var(--text-muted);
@@ -773,9 +787,10 @@
     .sync-history {
       background: var(--surface);
       border: 1px solid var(--border);
-      border-radius: 0.625rem;
+      border-radius: 0.75rem;
       padding: 1.25rem;
       margin-bottom: 2rem;
+      box-shadow: var(--card-shadow);
     }
     .sync-history h2 { font-family: 'DM Serif Display', Georgia, serif; font-size: 1.0625rem; font-weight: 400; margin-bottom: 0.75rem; }
     .sync-row {
@@ -784,7 +799,7 @@
       gap: 1rem;
       padding: 0.375rem 0;
       font-size: 0.8125rem;
-      border-bottom: 1px solid rgba(51,65,85,0.3);
+      border-bottom: 1px solid var(--border);
     }
     .sync-row:last-child { border-bottom: none; }
     .sync-time { color: var(--text-muted); width: 150px; flex-shrink: 0; font-size: 0.75rem; }
@@ -881,7 +896,7 @@
     .svc-badge { font-size: 0.625rem; padding: 1px 5px; border-radius: 3px; font-weight: 600; letter-spacing: 0.02em; }
     .svc-badge.on { background: rgba(34,197,94,0.15); color: var(--green); border: 1px solid rgba(34,197,94,0.3); cursor: pointer; }
     .svc-badge.off { background: rgba(100,116,139,0.1); color: var(--text-dim); border: 1px solid var(--border); cursor: pointer; }
-    .integration-popover { display:none; position:absolute; top:100%; right:0; z-index:100; background:var(--surface); border:1px solid var(--border); border-radius:0.5rem; padding:0.75rem 1rem; min-width:260px; box-shadow:0 4px 12px rgba(0,0,0,0.3); margin-top:0.25rem; }
+    .integration-popover { display:none; position:absolute; top:100%; right:0; z-index:100; background:var(--surface); border:1px solid var(--border); border-radius:0.5rem; padding:0.75rem 1rem; min-width:260px; box-shadow:0 4px 12px rgba(0,0,0,0.1); margin-top:0.25rem; }
     .integration-popover .ip-row { display:flex; justify-content:space-between; align-items:center; padding:0.25rem 0; font-size:0.8rem; }
     .integration-popover .ip-label { color:var(--text-dim); }
     .integration-popover .ip-value { color:var(--text); font-weight:500; }
@@ -893,7 +908,7 @@
     .integration-popover .ip-actions button:hover { background:var(--surface); }
     .integration-popover .ip-sync-time { font-size:0.65rem; color:var(--text-muted); margin-left:6px; }
     .skeleton {
-      background: linear-gradient(90deg, var(--surface) 25%, rgba(51,65,85,0.5) 50%, var(--surface) 75%);
+      background: linear-gradient(90deg, var(--surface) 25%, var(--bg-deep) 50%, var(--surface) 75%);
       background-size: 200% 100%;
       animation: shimmer 1.5s infinite;
       border-radius: 0.375rem;
@@ -1139,19 +1154,19 @@
           <button class="demo-chat-tab" onclick="switchDemoChat('docs',this)" style="font-size:0.75rem;padding:4px 10px;border-radius:4px;border:1px solid var(--border);background:var(--bg);color:var(--text);cursor:pointer" data-sk="Dokumenty" data-en="Documents">Dokumenty</button>
         </div>
         <div id="demo-chat-labs" class="demo-chat-panel" style="background:var(--bg);border:1px solid var(--border);border-radius:0.5rem;padding:0.75rem;font-size:0.8125rem;display:flex;flex-direction:column;gap:0.5rem">
-          <div style="background:rgba(20,184,166,0.1);padding:0.5rem 0.75rem;border-radius:0.375rem;color:var(--teal)">What changed in the latest blood test compared to the previous one?</div>
+          <div style="background:rgba(20,184,166,0.1);padding:0.5rem 0.75rem;border-radius:0.375rem;color:var(--accent)">What changed in the latest blood test compared to the previous one?</div>
           <div style="color:var(--purple);font-size:0.75rem;font-family:monospace">oncofiles: search_documents("labs march")</div>
           <div style="color:var(--purple);font-size:0.75rem;font-family:monospace">oncofiles: get_lab_trends("WBC, HGB, PLT")</div>
           <div style="padding:0.5rem 0.75rem;border-radius:0.375rem;color:var(--text);line-height:1.5">Comparing the March 13 and February 27 labs:<br><b>WBC</b>: 4.2 → 5.1 (+21%) — recovering nicely after C2<br><b>HGB</b>: 98 → 102 g/L — stable, still below ref (120–160)<br><b>PLT</b>: 180 → 195 — within normal range<br><b>ANC</b>: 2.8 → 3.4 — above threshold for next cycle</div>
         </div>
         <div id="demo-chat-chemo" class="demo-chat-panel" style="background:var(--bg);border:1px solid var(--border);border-radius:0.5rem;padding:0.75rem;font-size:0.8125rem;display:none;flex-direction:column;gap:0.5rem">
-          <div style="background:rgba(20,184,166,0.1);padding:0.5rem 0.75rem;border-radius:0.375rem;color:var(--teal)">When is the next chemo and what do we need to prepare?</div>
+          <div style="background:rgba(20,184,166,0.1);padding:0.5rem 0.75rem;border-radius:0.375rem;color:var(--accent)">When is the next chemo and what do we need to prepare?</div>
           <div style="color:var(--purple);font-size:0.75rem;font-family:monospace">oncofiles: search_calendar("chemo")</div>
           <div style="color:var(--purple);font-size:0.75rem;font-family:monospace">oncofiles: get_precycle_checklist()</div>
           <div style="padding:0.5rem 0.75rem;border-radius:0.375rem;color:var(--text);line-height:1.5"><b>Next cycle</b>: C3 mFOLFOX6 — March 27, 2026 at NOU<br><b>Pre-cycle checklist</b>:<br>&#x2705; CBC within 72h (March 25 labs scheduled)<br>&#x2705; ANC &gt; 1.5 (last: 3.4)<br>&#x26A0;&#xFE0F; Port flush — check if due<br>&#x274C; Anti-emetics prescription — needs renewal</div>
         </div>
         <div id="demo-chat-docs" class="demo-chat-panel" style="background:var(--bg);border:1px solid var(--border);border-radius:0.5rem;padding:0.75rem;font-size:0.8125rem;display:none;flex-direction:column;gap:0.5rem">
-          <div style="background:rgba(20,184,166,0.1);padding:0.5rem 0.75rem;border-radius:0.375rem;color:var(--teal)">Compare the pathology reports from surgery and the latest biopsy</div>
+          <div style="background:rgba(20,184,166,0.1);padding:0.5rem 0.75rem;border-radius:0.375rem;color:var(--accent)">Compare the pathology reports from surgery and the latest biopsy</div>
           <div style="color:var(--purple);font-size:0.75rem;font-family:monospace">oncofiles: view_document(42) — surgical pathology</div>
           <div style="color:var(--purple);font-size:0.75rem;font-family:monospace">oncofiles: view_document(98) — biopsy report</div>
           <div style="padding:0.5rem 0.75rem;border-radius:0.375rem;color:var(--text);line-height:1.5"><b>Surgical pathology</b> (Jan 15): Adenocarcinoma, pT3N1M1, 3/14 nodes+<br><b>Biopsy</b> (Mar 10): Residual tumor, treatment effect grade 2<br><b>Key change</b>: Tumor regression noted, biomarkers stable (KRAS G12D, MSS)</div>
@@ -1660,7 +1675,7 @@
         // Add signup CTA banner at bottom (#268)
         var ctaBanner = document.createElement('div');
         ctaBanner.id = 'demo-cta-banner';
-        ctaBanner.style.cssText = 'position:fixed;bottom:0;left:0;right:0;z-index:1000;background:var(--bg-card);border-top:1px solid var(--border);padding:0.75rem 1.5rem;display:flex;align-items:center;justify-content:center;gap:1rem;box-shadow:0 -2px 12px rgba(0,0,0,0.3)';
+        ctaBanner.style.cssText = 'position:fixed;bottom:0;left:0;right:0;z-index:1000;background:var(--surface);border-top:1px solid var(--border);padding:0.75rem 1.5rem;display:flex;align-items:center;justify-content:center;gap:1rem;box-shadow:0 -2px 12px rgba(0,0,0,0.08)';
         var ctaText = document.createElement('span');
         ctaText.style.cssText = 'font-size:0.875rem;color:var(--text-dim)';
         ctaText.setAttribute('data-sk', 'Nastavenie trvá 2 minúty: Prihláste sa cez Google \u2192 Vyberte priečinok \u2192 Začnite sa pýtať AI');
@@ -3090,7 +3105,7 @@
                 gdriveLink.href = data.gdrive_url;
                 gdriveLink.target = '_blank';
                 gdriveLink.rel = 'noopener';
-                gdriveLink.style.cssText = 'display:inline-block;padding:0.375rem 0.75rem;background:var(--accent);color:var(--bg);border-radius:0.375rem;font-size:0.75rem;font-weight:600;text-decoration:none;text-align:center';
+                gdriveLink.style.cssText = 'display:inline-block;padding:0.375rem 0.75rem;background:var(--accent);color:#fff;border-radius:0.375rem;font-size:0.75rem;font-weight:600;text-decoration:none;text-align:center';
                 var gdriveLinkSpan = document.createElement('span');
                 gdriveLinkSpan.setAttribute('data-sk', 'Otvori\u0165 v GDrive');
                 gdriveLinkSpan.setAttribute('data-en', 'Open in GDrive');
