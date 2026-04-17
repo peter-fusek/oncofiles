@@ -239,6 +239,13 @@ class _TursoConnection:
         Turso driver panics repeatedly (e.g. overnight stale connections).
         """
         self._breaker.check()
+        # If a prior reconnect attempt failed (self._conn left None), the next
+        # query would crash with 'NoneType' object has no attribute 'execute'
+        # and the except branch below would not catch it as transient. Recover
+        # proactively here so the user-facing call can still succeed. (#405)
+        if self._conn is None:
+            logger.warning("DB connection is None on entry; attempting reconnect")
+            await self.reconnect()
         try:
             result = await asyncio.wait_for(
                 asyncio.to_thread(self._conn.execute, sql, params),
@@ -251,7 +258,12 @@ class _TursoConnection:
             self._breaker.record_failure()
             raise
         except BaseException as exc:
-            if _is_transient_db_error(exc) or "PanicException" in type(exc).__name__:
+            # Treat AttributeError from a None self._conn as transient: the
+            # prior reconnect likely lost the connection mid-call; retry with
+            # a fresh one. Common symptom of Turso Hrana stream expiry under
+            # load (#405).
+            none_conn = isinstance(exc, AttributeError) and self._conn is None
+            if _is_transient_db_error(exc) or "PanicException" in type(exc).__name__ or none_conn:
                 self._breaker.record_failure()
                 self._breaker.check()  # bail early if breaker just opened
                 logger.warning(
