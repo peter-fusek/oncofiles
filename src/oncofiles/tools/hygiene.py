@@ -1015,6 +1015,269 @@ async def get_pipeline_status(ctx: Context) -> str:
     return json.dumps(result)
 
 
+async def audit_document_pipeline(ctx: Context) -> str:
+    """Per-patient pipeline audit: stuck docs, group/split stats, and AI call history.
+
+    Surfaces gaps that the dashboard pipeline bars summarise (missing OCR/AI/metadata/
+    institution/standard name) plus grouping/splitting stats (group_id populated,
+    orphan parts, size mismatches) and counts of the three doc_analysis AI calls from
+    prompt_log (doc_composition / doc_consolidation / doc_relationships).
+
+    Use this tool when documents appear stuck at Institution/Named/Complete and you
+    need to decide which backfill to run next. See GitHub issue #396 for motivation.
+    """
+    from oncofiles.filename_parser import is_standard_format
+
+    db = _get_db(ctx)
+    pid = _get_patient_id()
+
+    docs = await db.list_documents(limit=1000, patient_id=pid)
+
+    # Patient-scoped OCR page counts — single query replaces (a) global
+    # get_ocr_document_ids() which would leak cross-patient info, and (b) a
+    # correlated subquery per PDF for split candidates (N+1 under Turso).
+    async with db.db.execute(
+        """
+        SELECT dp.document_id, COUNT(*) AS page_count
+        FROM document_pages dp
+        JOIN documents d ON d.id = dp.document_id
+        WHERE d.patient_id = ? AND d.deleted_at IS NULL
+        GROUP BY dp.document_id
+        """,
+        (pid,),
+    ) as cursor:
+        page_rows = await cursor.fetchall()
+    ocr_ids = {r["document_id"] for r in page_rows}
+    multi_page_ids = {
+        r["document_id"] for r in page_rows if (r["page_count"] if r["page_count"] else 0) >= 2
+    }
+
+    totals = {
+        "total_documents": len(docs),
+        "pdfs": sum(1 for d in docs if d.mime_type == "application/pdf"),
+        "images": sum(1 for d in docs if d.mime_type.startswith("image/")),
+    }
+
+    gaps = {
+        "missing_ocr": 0,
+        "missing_ai": 0,
+        "missing_metadata": 0,
+        "missing_date": 0,
+        "missing_institution": 0,
+        "not_synced": 0,
+        "not_standard_named": 0,
+        "fully_complete": 0,
+    }
+    stuck_samples: list[dict] = []
+    for doc in docs:
+        has_ocr = doc.id in ocr_ids
+        has_ai = doc.ai_summary is not None
+        has_metadata = bool(doc.structured_metadata)
+        has_date = doc.document_date is not None
+        has_institution = doc.institution is not None
+        is_synced = doc.gdrive_id is not None
+        is_standard = is_standard_format(doc.filename, patient_id=pid)
+
+        if not has_ocr:
+            gaps["missing_ocr"] += 1
+        if not has_ai:
+            gaps["missing_ai"] += 1
+        if not has_metadata:
+            gaps["missing_metadata"] += 1
+        if not has_date:
+            gaps["missing_date"] += 1
+        if not has_institution:
+            gaps["missing_institution"] += 1
+        if not is_synced:
+            gaps["not_synced"] += 1
+        if not is_standard:
+            gaps["not_standard_named"] += 1
+
+        if (
+            has_ocr
+            and has_ai
+            and has_metadata
+            and has_date
+            and has_institution
+            and is_synced
+            and is_standard
+        ):
+            gaps["fully_complete"] += 1
+            continue
+
+        if len(stuck_samples) < 20:
+            reasons = []
+            if not has_ocr:
+                reasons.append("no_ocr")
+            if not has_ai:
+                reasons.append("no_ai")
+            if not has_metadata:
+                reasons.append("no_metadata")
+            if not has_date:
+                reasons.append("no_date")
+            if not has_institution:
+                reasons.append("no_institution")
+            if not is_synced:
+                reasons.append("not_synced")
+            if not is_standard:
+                reasons.append("not_standard_named")
+            stuck_samples.append(
+                {
+                    "id": doc.id,
+                    "filename": doc.filename[:80],
+                    "category": doc.category.value,
+                    "gdrive_url": _gdrive_url(doc.gdrive_id),
+                    "last_ai_processed_at": doc.ai_processed_at.isoformat()
+                    if doc.ai_processed_at
+                    else None,
+                    "reasons": reasons,
+                }
+            )
+
+    # Group stats computed from the docs list (already patient-scoped).
+    grouped_docs = sum(1 for d in docs if d.group_id)
+    distinct_groups = len({d.group_id for d in docs if d.group_id})
+    split_from_source = sum(1 for d in docs if d.split_source_doc_id is not None)
+    split_candidates_pending = sum(
+        1
+        for d in docs
+        if d.mime_type == "application/pdf" and d.group_id is None and d.id in multi_page_ids
+    )
+
+    # Orphan parts: group_id set but either total_parts NULL or actual row count mismatches.
+    async with db.db.execute(
+        """
+        SELECT group_id, MAX(total_parts) AS declared_total, COUNT(*) AS actual_count
+        FROM documents
+        WHERE patient_id = ? AND deleted_at IS NULL AND group_id IS NOT NULL
+        GROUP BY group_id
+        """,
+        (pid,),
+    ) as cursor:
+        group_rows = await cursor.fetchall()
+
+    orphan_parts = 0
+    size_mismatch_groups: list[dict] = []
+    for raw in group_rows:
+        # Row may be sqlite3.Row (local dev/tests) or dict (Turso prod).
+        g = dict(raw) if not isinstance(raw, dict) else raw
+        declared = g.get("declared_total")
+        actual = g.get("actual_count") or 0
+        if declared is None:
+            orphan_parts += actual
+            continue
+        if actual != declared:
+            orphan_parts += abs(actual - declared)
+            size_mismatch_groups.append(
+                {
+                    "group_id": g.get("group_id"),
+                    "declared_total": declared,
+                    "actual_count": actual,
+                }
+            )
+
+    group_stats = {
+        "grouped_documents": grouped_docs,
+        "distinct_groups": distinct_groups,
+        "split_from_source": split_from_source,
+        "split_candidates_pending": split_candidates_pending,
+        "orphan_parts": orphan_parts,
+        "size_mismatch_groups": size_mismatch_groups[:10],
+    }
+
+    # AI-call observability — prompt_log breakdown scoped to patient.
+    prompt_stats = await db.get_prompt_log_stats(patient_id=pid)
+    composition_stats = {
+        k: prompt_stats.get(k, {"count": 0, "errors": 0})
+        for k in ("doc_composition", "doc_consolidation", "doc_relationships")
+    }
+
+    suggested_actions: list[dict] = []
+    if gaps["missing_ai"] > 0:
+        suggested_actions.append(
+            {
+                "tool": "backfill_ai_classification",
+                "params": {"limit": min(gaps["missing_ai"], 20)},
+                "reason": f"{gaps['missing_ai']} docs missing AI classification",
+            }
+        )
+    if gaps["missing_metadata"] > 0:
+        suggested_actions.append(
+            {
+                "tool": "extract_all_metadata",
+                "params": {},
+                "reason": (
+                    f"{gaps['missing_metadata']} docs missing structured_metadata "
+                    "(run after AI classification)"
+                ),
+            }
+        )
+    if gaps["not_standard_named"] > 0:
+        suggested_actions.append(
+            {
+                "tool": "rename_documents_to_standard",
+                "params": {"limit": min(gaps["not_standard_named"], 20)},
+                "reason": f"{gaps['not_standard_named']} docs not in canonical filename format",
+            }
+        )
+    if split_candidates_pending > 0:
+        suggested_actions.append(
+            {
+                "tool": "detect_and_split_documents",
+                "params": {"dry_run": False, "limit": min(split_candidates_pending, 10)},
+                "reason": (
+                    f"{split_candidates_pending} multi-page PDFs may contain "
+                    "multiple logical documents"
+                ),
+            }
+        )
+    if composition_stats["doc_consolidation"]["count"] == 0 and totals["total_documents"] > 5:
+        suggested_actions.append(
+            {
+                "tool": "detect_and_consolidate_documents",
+                "params": {"dry_run": False},
+                "reason": "doc_consolidation AI call has never run for this patient",
+            }
+        )
+
+    incomplete = totals["total_documents"] - gaps["fully_complete"]
+    summary_lines = [
+        f"**Patient `{pid}`** — {totals['total_documents']} documents "
+        f"({gaps['fully_complete']} fully complete, {incomplete} with gaps).",
+    ]
+    if incomplete:
+        top_gaps = [(k, v) for k, v in gaps.items() if k != "fully_complete" and v > 0]
+        top_gaps.sort(key=lambda kv: -kv[1])
+        summary_lines.append(
+            "Gaps: " + ", ".join(f"{name}={count}" for name, count in top_gaps[:5])
+        )
+    if split_candidates_pending or orphan_parts:
+        summary_lines.append(
+            f"Grouping: {grouped_docs} grouped / {distinct_groups} groups / "
+            f"{split_candidates_pending} split candidates pending / {orphan_parts} orphan parts."
+        )
+    if suggested_actions:
+        summary_lines.append("Next: " + ", ".join(a["tool"] for a in suggested_actions[:3]))
+
+    return json.dumps(
+        {
+            "patient_id": pid,
+            "summary_markdown": "\n".join(summary_lines),
+            "totals": totals,
+            "pipeline_gaps": gaps,
+            "group_stats": group_stats,
+            "ai_composition_calls": composition_stats,
+            "stuck_sample": stuck_samples,
+            "suggested_actions": suggested_actions,
+            "disclaimer": (
+                "Informational only. Pipeline stats describe document processing state, "
+                "not clinical facts. Any downstream medical interpretation requires "
+                "verification by a human oncologist."
+            ),
+        }
+    )
+
+
 async def list_tool_definitions(ctx: Context) -> str:
     """List all registered MCP tools with their descriptions and parameter schemas.
 
@@ -1140,4 +1403,5 @@ def register(mcp):
     mcp.tool()(system_health)
     mcp.tool()(get_document_status_matrix)
     mcp.tool()(get_pipeline_status)
+    mcp.tool()(audit_document_pipeline)
     mcp.tool()(list_tool_definitions)
