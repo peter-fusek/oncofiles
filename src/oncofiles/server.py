@@ -365,6 +365,36 @@ _CLIENT_CACHE_TTL = 1800  # 30 min — refresh token changes invalidate sooner
 _folder_404_counts: dict[str, int] = {}
 _FOLDER_404_THRESHOLD = 3
 
+# Track (patient_id, service) combinations with dead refresh tokens (#415).
+# Once an invalid_grant is seen, log once, skip further syncs, and surface on
+# /health so the dashboard / caregiver can trigger a re-auth. Cleared by
+# successful OAuth callback for that patient+service.
+_invalid_grant_tokens: set[tuple[str, str]] = set()
+
+
+def _is_invalid_grant(exc: BaseException) -> bool:
+    """Detect google.auth.exceptions.RefreshError('invalid_grant', ...)."""
+    name = type(exc).__name__
+    if name != "RefreshError":
+        return False
+    return "invalid_grant" in str(exc).lower()
+
+
+def _handle_sync_exception(pid: str, service: str, exc: BaseException) -> None:
+    """Log sync exceptions once per stale-token; full trace for unknown errors."""
+    if _is_invalid_grant(exc):
+        key = (pid, service)
+        if key not in _invalid_grant_tokens:
+            _invalid_grant_tokens.add(key)
+            logger.warning(
+                "%s sync [%s] suspended — refresh token invalid, re-auth required",
+                service.capitalize(),
+                pid,
+            )
+        return
+    logger.exception("%s sync [%s] failed", service.capitalize(), pid)
+
+
 # Per-service last-sync timestamps for dashboard (#276)
 _last_service_sync: dict[str, dict[str, str | None]] = {}
 
@@ -583,7 +613,7 @@ def _start_sync_scheduler(
                             else "Will retry next cycle.",
                         )
                     else:
-                        logger.exception("Sync [%s] failed", pid)
+                        _handle_sync_exception(pid, "gdrive", exc)
                 finally:
                     from oncofiles.memory import reclaim_memory
 
@@ -1678,8 +1708,8 @@ def _start_sync_scheduler(
                     _record_service_sync(pid, "gmail")
                 except TimeoutError:
                     logger.error("Gmail sync [%s] timed out after %ds", pid, gmail_sync_timeout)
-                except Exception:
-                    logger.exception("Gmail sync [%s] failed", pid)
+                except Exception as exc:
+                    _handle_sync_exception(pid, "gmail", exc)
                 finally:
                     from oncofiles.memory import reclaim_memory
 
@@ -1749,8 +1779,8 @@ def _start_sync_scheduler(
                     logger.error(
                         "Calendar sync [%s] timed out after %ds", pid, calendar_sync_timeout
                     )
-                except Exception:
-                    logger.exception("Calendar sync [%s] failed", pid)
+                except Exception as exc:
+                    _handle_sync_exception(pid, "calendar", exc)
                 finally:
                     from oncofiles.memory import reclaim_memory
 
@@ -2380,6 +2410,9 @@ async def health(request: Request) -> JSONResponse:
                 for pid, count in _folder_404_counts.items()
                 if count >= _FOLDER_404_THRESHOLD
             }
+        # Stale OAuth tokens — surfaces (patient_id, service) pairs that need re-auth
+        if _invalid_grant_tokens:
+            result["needs_reauth"] = sorted([f"{pid}:{svc}" for pid, svc in _invalid_grant_tokens])
     except Exception:
         logger.debug("Health: lifespan context not yet available", exc_info=True)
     return JSONResponse(result)
@@ -4756,6 +4789,10 @@ async def oauth_callback(request: Request) -> JSONResponse:
     )
 
     await db.upsert_oauth_token(oauth_token)
+
+    # Clear any "needs_reauth" flags for this patient now that fresh tokens landed (#415)
+    for key in [k for k in _invalid_grant_tokens if k[0] == patient_id]:
+        _invalid_grant_tokens.discard(key)
 
     return HTMLResponse(
         """<!DOCTYPE html>
