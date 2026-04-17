@@ -108,7 +108,7 @@ def get_auth_url(state: str = "", patient_id: str = "") -> str:
         "response_type": "code",
         "scope": " ".join(SCOPES),
         "access_type": "offline",
-        "prompt": "consent",
+        "prompt": "select_account consent",
         "state": state,
     }
     return f"{AUTH_URL}?{urlencode(params)}"
@@ -131,7 +131,7 @@ def get_auth_url_for_scopes(scopes: list[str], state: str = "", patient_id: str 
         "response_type": "code",
         "scope": " ".join(scopes),
         "access_type": "offline",
-        "prompt": "consent",
+        "prompt": "select_account consent",
         "include_granted_scopes": "true",
         "state": state,
     }
