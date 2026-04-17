@@ -786,6 +786,82 @@ def _start_sync_scheduler(
         except Exception:
             logger.exception("Pipeline integrity check failed")
 
+    async def _run_document_groups_backfill():
+        """Sweep the backlog for multi-doc PDFs + multi-file logical docs.
+
+        Without this job, detect_and_split_documents / detect_and_consolidate_documents
+        only run during the every-5-min gdrive_sync and therefore only catch newly-ingested
+        docs — backlog docs imported before auto-split shipped stay ungrouped forever (#396).
+
+        Split + consolidate each call AI per doc (claude-haiku), so the job is serialized via
+        _sync_semaphore so it never overlaps with gdrive_sync writes.
+        """
+        if is_memory_pressure("document_groups_backfill"):
+            return
+
+        try:
+            from oncofiles.backfill_splits import (
+                backfill_consolidation,
+                backfill_multi_document_splits,
+            )
+
+            patients = await db.list_patients(active_only=True)
+            for p in patients:
+                pid = p.patient_id
+                if is_memory_pressure(f"backfill:{pid}"):
+                    break
+                if _folder_404_counts.get(pid, 0) >= _FOLDER_404_THRESHOLD:
+                    continue
+
+                gc = await _get_patient_gdrive(pid)
+                if not gc:
+                    continue
+                p_gdrive, folder_id = gc
+
+                async with _sync_semaphore:
+                    try:
+                        split_stats = await asyncio.wait_for(
+                            backfill_multi_document_splits(
+                                db,
+                                files,
+                                p_gdrive,
+                                patient_id=pid,
+                                folder_id=folder_id,
+                                dry_run=False,
+                            ),
+                            timeout=metadata_timeout,
+                        )
+                        if (
+                            split_stats.get("splits_created", 0) > 0
+                            or split_stats.get("multi_doc", 0) > 0
+                        ):
+                            logger.info("Backfill splits [%s]: %s", pid, split_stats)
+                    except TimeoutError:
+                        logger.error("Backfill splits [%s] timed out", pid)
+                    except Exception:
+                        logger.exception("Backfill splits [%s] failed", pid)
+
+                    try:
+                        consol_stats = await asyncio.wait_for(
+                            backfill_consolidation(db, p_gdrive, patient_id=pid, dry_run=False),
+                            timeout=metadata_timeout,
+                        )
+                        if (
+                            consol_stats.get("consolidated", 0) > 0
+                            or consol_stats.get("groups_found", 0) > 0
+                        ):
+                            logger.info("Backfill consolidate [%s]: %s", pid, consol_stats)
+                    except TimeoutError:
+                        logger.error("Backfill consolidate [%s] timed out", pid)
+                    except Exception:
+                        logger.exception("Backfill consolidate [%s] failed", pid)
+        except Exception:
+            logger.exception("Document groups backfill failed")
+        finally:
+            from oncofiles.memory import reclaim_memory
+
+            reclaim_memory("document_groups_backfill")
+
     async def _run_oauth_token_cleanup():
         """Remove expired MCP OAuth tokens older than 30 days."""
         try:
@@ -865,6 +941,14 @@ def _start_sync_scheduler(
         _run_pipeline_integrity_check,
         CronTrigger(hour="*/6", minute=30),  # every 6 hours at :30
         id="pipeline_integrity",
+        max_instances=1,
+    )
+    scheduler.add_job(
+        _run_document_groups_backfill,
+        # 3:55 AM — after metadata (3:30) + category_validation (3:45), before
+        # oauth_cleanup (4:00). Sweeps backlog that auto-split/consolidate missed.
+        CronTrigger(hour=3, minute=55),
+        id="document_groups_backfill",
         max_instances=1,
     )
 

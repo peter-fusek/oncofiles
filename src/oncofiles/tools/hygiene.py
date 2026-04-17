@@ -984,6 +984,14 @@ async def get_pipeline_status(ctx: Context) -> str:
                 "description": "Auto-correct categories from AI document_type",
             },
             {
+                "name": "document_groups_backfill",
+                "trigger": "daily 3:55 AM",
+                "description": (
+                    "Sweep backlog for multi-doc PDFs + multi-file logical docs "
+                    "(split + consolidate)"
+                ),
+            },
+            {
                 "name": "oauth_cleanup",
                 "trigger": "daily 4:00 AM",
                 "description": "Remove expired MCP OAuth tokens",
