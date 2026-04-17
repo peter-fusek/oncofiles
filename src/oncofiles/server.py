@@ -2263,6 +2263,7 @@ async def robots_txt(request: Request) -> HTMLResponse:
         "User-agent: GPTBot\n"
         "Allow: /\n"
         "Allow: /llms.txt\n"
+        "Allow: /llms-sk.txt\n"
         "Disallow: /mcp\n"
         "Disallow: /api/\n"
         "Disallow: /dashboard/verify\n"
@@ -2271,6 +2272,7 @@ async def robots_txt(request: Request) -> HTMLResponse:
         "User-agent: ClaudeBot\n"
         "Allow: /\n"
         "Allow: /llms.txt\n"
+        "Allow: /llms-sk.txt\n"
         "Disallow: /mcp\n"
         "Disallow: /api/\n"
         "Disallow: /dashboard/verify\n"
@@ -2279,6 +2281,7 @@ async def robots_txt(request: Request) -> HTMLResponse:
         "User-agent: PerplexityBot\n"
         "Allow: /\n"
         "Allow: /llms.txt\n"
+        "Allow: /llms-sk.txt\n"
         "Disallow: /gloww\n"
         "\n"
         "Sitemap: https://oncofiles.com/sitemap.xml\n",
@@ -2291,7 +2294,8 @@ async def sitemap_xml(request: Request) -> HTMLResponse:
     today = datetime.now(UTC).strftime("%Y-%m-%d")
     return HTMLResponse(
         '<?xml version="1.0" encoding="UTF-8"?>\n'
-        '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
+        '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"'
+        ' xmlns:xhtml="http://www.w3.org/1999/xhtml">\n'
         f"  <url><loc>https://oncofiles.com/</loc><lastmod>{today}</lastmod>"
         "<priority>1.0</priority><changefreq>weekly</changefreq></url>\n"
         f"  <url><loc>https://oncofiles.com/dashboard</loc><lastmod>{today}</lastmod>"
@@ -2302,6 +2306,16 @@ async def sitemap_xml(request: Request) -> HTMLResponse:
         "<priority>0.5</priority><changefreq>monthly</changefreq></url>\n"
         f"  <url><loc>https://oncofiles.com/terms</loc><lastmod>{today}</lastmod>"
         "<priority>0.5</priority><changefreq>monthly</changefreq></url>\n"
+        f"  <url><loc>https://oncofiles.com/onkologia</loc><lastmod>{today}</lastmod>"
+        "<priority>0.7</priority><changefreq>monthly</changefreq>"
+        '<xhtml:link rel="alternate" hreflang="sk" href="https://oncofiles.com/onkologia"/>'
+        '<xhtml:link rel="alternate" hreflang="en" href="https://oncofiles.com/oncology"/>'
+        "</url>\n"
+        f"  <url><loc>https://oncofiles.com/oncology</loc><lastmod>{today}</lastmod>"
+        "<priority>0.7</priority><changefreq>monthly</changefreq>"
+        '<xhtml:link rel="alternate" hreflang="sk" href="https://oncofiles.com/onkologia"/>'
+        '<xhtml:link rel="alternate" hreflang="en" href="https://oncofiles.com/oncology"/>'
+        "</url>\n"
         "</urlset>\n",
         media_type="application/xml",
     )
@@ -2351,6 +2365,305 @@ async def llms_txt(request: Request) -> HTMLResponse:
         f"- GitHub: https://github.com/peter-fusek/oncofiles\n",
         media_type="text/plain; charset=utf-8",
     )
+
+
+@mcp.custom_route("/llms-sk.txt", methods=["GET"])
+async def llms_sk_txt(request: Request) -> HTMLResponse:
+    """Slovak LLM-readable site description (llms.txt standard)."""
+    tools_count = _count_tools()
+    return HTMLResponse(
+        f"# Oncofiles\n"
+        f"> Pacientsky MCP server pre správu onkologickej dokumentácie\n"
+        f"\n"
+        f"## O projekte\n"
+        f"Oncofiles je open-source MCP (Model Context Protocol) server, ktorý pomáha\n"
+        f"onkologickým pacientom a opatrovateľom organizovať, vyhľadávať a rozumieť\n"
+        f"vlastnej zdravotnej dokumentácii pomocou AI. Poskytuje {tools_count} nástrojov\n"
+        f"pre správu dokumentov, sledovanie laboratórnych hodnôt, vyhľadávanie\n"
+        f"klinických štúdií a evidenciu liečebných udalostí.\n"
+        f"\n"
+        f"## Pre koho\n"
+        f"- Onkologickí pacienti a ich rodiny na Slovensku, v ČR a EÚ\n"
+        f"- Opatrovatelia, ktorí vedú dokumentáciu za blízkeho\n"
+        f"- Lekári, ktorí dostanú od pacienta zrozumiteľný sumár histórie\n"
+        f"- Pacienti hľadajúci druhý názor cez AI (Claude, ChatGPT)\n"
+        f"\n"
+        f"## Kľúčové funkcie\n"
+        f"- 18 kategórií zdravotných dokumentov (laboratóriá, zobrazovacie vyšetrenia,\n"
+        f"  patológia, genetika zárodočná aj somatická, operácie, prepúšťacie správy,\n"
+        f"  recepty, odporúčania, chemoterapeutické hárky, očkovania, stomatológia,\n"
+        f"  preventívna starostlivosť a ďalšie)\n"
+        f"- AI-riadené OCR, sumáre, tagy a extrakcia štruktúrovaných metadát\n"
+        f"- Obojsmerná synchronizácia s Google Drive, automatické premenovanie súborov\n"
+        f"- Sledovanie laboratórnych trendov, referenčných rozsahov a bezpečnostných\n"
+        f"  kontrol pred chemoterapeutickým cyklom\n"
+        f"- Pipeline dashboard s Google Sign-In prihlásením\n"
+        f"- Vyhľadávanie v PubMed a ClinicalTrials.gov\n"
+        f"- Evidencia liečebných udalostí a výskumných poznámok\n"
+        f"\n"
+        f"## Ako sa líši od štátnych systémov (eZdravie / OnkoAsist / NCZI)\n"
+        f"- Oncofiles je pacientsky nástroj — dokumenty ostávajú vo vašom Google Drive,\n"
+        f"  nie na centrálnom serveri štátu.\n"
+        f"- Funguje s akýmkoľvek AI asistentom cez MCP protokol — Claude, ChatGPT,\n"
+        f"  lokálne LLM.\n"
+        f"- Open-source pod licenciou MIT — kód je verejne auditovateľný.\n"
+        f"- Bez byrokratickej registrácie; stačí Google účet.\n"
+        f"- Dopĺňa, nenahrádza, oficiálnu zdravotnú dokumentáciu.\n"
+        f"\n"
+        f"## Bezpečnosť a súkromie\n"
+        f"- Súbory ostávajú vo Vašom Google Drive, Oncofiles k nim pristupuje metadátovo.\n"
+        f"- Izolácia pacientov na úrovni databázy (unikátne bearer tokeny).\n"
+        f"- Infraštruktúra: Railway (SOC 2), Anthropic Claude (SOC 2, ISO 27001),\n"
+        f"  Google Drive (SOC 2, ISO 27001).\n"
+        f"- Šifrovaný prenos, žiadny predaj údajov tretím stranám.\n"
+        f"\n"
+        f"## Technické detaily\n"
+        f"- Verzia: {VERSION}\n"
+        f"- Protokol: MCP (Model Context Protocol) cez FastMCP\n"
+        f"- Jazyk: Python 3.12+\n"
+        f"- Databáza: SQLite / Turso\n"
+        f"- Licencia: MIT\n"
+        f"- Repozitár: https://github.com/peter-fusek/oncofiles\n"
+        f"\n"
+        f"## Integrácia\n"
+        f"Oncofiles funguje s Claude a akýmkoľvek MCP-kompatibilným AI asistentom.\n"
+        f"Pripojenie cez streamable-http transport na /mcp endpoint.\n"
+        f"Autentifikácia vyžaduje bearer token (MCP_BEARER_TOKEN).\n"
+        f"\n"
+        f"## Odkazy\n"
+        f"- Domovská stránka: https://oncofiles.com\n"
+        f"- Téma (SK): https://oncofiles.com/onkologia\n"
+        f"- Téma (EN): https://oncofiles.com/oncology\n"
+        f"- Dashboard: https://oncofiles.com/dashboard\n"
+        f"- Anglická verzia: https://oncofiles.com/llms.txt\n"
+        f"- GitHub: https://github.com/peter-fusek/oncofiles\n",
+        media_type="text/plain; charset=utf-8",
+    )
+
+
+# ── SEO topic pages: /onkologia (SK) + /oncology (EN) ────────────────────────
+
+_TOPIC_PAGE_CSS = """
+  :root { --bg:#faf9f7; --text:#1e293b; --text-muted:#556270; --accent:#0d9488;
+    --border:#d5cfc5; --surface:#ffffff; }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { font-family:'DM Sans',-apple-system,BlinkMacSystemFont,sans-serif;
+    background:var(--bg); color:var(--text); line-height:1.65; }
+  .container { max-width:760px; margin:0 auto; padding:2.5rem 1.5rem 4rem; }
+  header.top { padding:1rem 0; border-bottom:1px solid var(--border);
+    background:rgba(250,249,247,0.9); backdrop-filter:blur(10px); }
+  header.top .container { padding:0 1.5rem; display:flex; justify-content:space-between;
+    align-items:center; }
+  .logo { font-family:'DM Serif Display',Georgia,serif; font-size:1.25rem; color:var(--text);
+    text-decoration:none; }
+  .logo span { color:var(--accent); }
+  .lang-switch a { color:var(--text-muted); text-decoration:none; font-size:0.875rem;
+    padding:0.375rem 0.75rem; border:1px solid var(--border); border-radius:4px;
+    background:var(--surface); }
+  .lang-switch a:hover { color:var(--text); }
+  h1 { font-family:'DM Serif Display',Georgia,serif; font-size:2.25rem;
+    line-height:1.2; margin-bottom:1rem; letter-spacing:-0.01em; }
+  h2 { font-size:1.35rem; margin:2.25rem 0 0.75rem; color:var(--text); }
+  p { margin-bottom:1rem; color:var(--text-muted); }
+  ul { margin:0 0 1.5rem 1.25rem; color:var(--text-muted); }
+  ul li { margin-bottom:0.5rem; }
+  a { color:var(--accent); }
+  .cta { display:inline-block; margin-top:1.5rem; padding:0.75rem 1.5rem;
+    background:var(--accent); color:#fff; text-decoration:none; border-radius:6px;
+    font-weight:500; }
+  .cta:hover { opacity:0.92; }
+  footer { margin-top:3rem; padding-top:1.5rem; border-top:1px solid var(--border);
+    font-size:0.85rem; color:var(--text-muted); }
+  .intro { font-size:1.075rem; color:var(--text); }
+"""
+
+
+def _topic_page_html(
+    *,
+    lang: str,
+    title: str,
+    description: str,
+    canonical: str,
+    alt_hreflang: str,
+    alt_href: str,
+    body_html: str,
+) -> str:
+    return f"""<!DOCTYPE html>
+<html lang="{lang}">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{title}</title>
+<meta name="description" content="{description}">
+<link rel="canonical" href="{canonical}">
+<link rel="alternate" hreflang="{lang}" href="{canonical}">
+<link rel="alternate" hreflang="{alt_hreflang}" href="{alt_href}">
+<link rel="alternate" hreflang="x-default" href="https://oncofiles.com/">
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<meta property="og:title" content="{title}">
+<meta property="og:description" content="{description}">
+<meta property="og:type" content="article">
+<meta property="og:url" content="{canonical}">
+<meta property="og:image" content="https://oncofiles.com/og-image.png">
+<style>@import url('https://fonts.googleapis.com/css2?family=DM+Serif+Display&family=DM+Sans:wght@400;500;700&display=swap');
+{_TOPIC_PAGE_CSS}</style>
+</head>
+<body>
+<header class="top"><div class="container">
+  <a class="logo" href="/">Onco<span>files</span></a>
+  <span class="lang-switch">
+    <a href="{alt_href}" hreflang="{alt_hreflang}">{alt_hreflang.upper()}</a>
+  </span>
+</div></header>
+<main class="container">
+{body_html}
+</main>
+<footer class="container">
+<a href="/">&larr; oncofiles.com</a> &middot;
+<a href="https://github.com/peter-fusek/oncofiles">GitHub</a> &middot;
+<a href="mailto:peter.fusek@instarea.sk">peter.fusek@instarea.sk</a>
+</footer>
+</body>
+</html>"""
+
+
+@mcp.custom_route("/onkologia", methods=["GET"])
+async def onkologia_page(request: Request) -> HTMLResponse:
+    """SK topic page — AI pre onkologických pacientov."""
+    body = """
+<h1>AI pre onkologických pacientov: správa zdravotných dokumentov</h1>
+<p class="intro">Onkologická dokumentácia sa hromadí rýchlo — laboratórne výsledky,
+CT a MR popisy, histológia, genetické testy, prepúšťacie správy, recepty a
+emaily od troch rôznych kliník. Oncofiles prepája váš Google Drive s AI
+asistentom ako Claude alebo ChatGPT, aby ste sa ku všetkému dostali jednou
+vetou namiesto hľadania v desiatich priečinkoch.</p>
+
+<h2>Čo Oncofiles rieši</h2>
+<p>Typický onkologický pacient nazbiera za rok liečby 80-200 dokumentov z NOU,
+Onkologického ústavu sv. Alžbety, lokálnych nemocníc, súkromných laboratórií a
+zahraničných druhých názorov. Každý súbor má iné pomenovanie, iný formát, iný
+jazyk. Oncofiles ich automaticky klasifikuje do 18 kategórií, pridáva AI
+sumár, extrahuje štruktúrované metadáta (liečivá, dávky, hodnoty, termíny) a
+necháva originály vo Vašom Google Drive.</p>
+
+<h2>Kľúčové výhody pre pacientov a opatrovateľov</h2>
+<ul>
+<li><strong>Sledovanie trendov laboratórnych hodnôt</strong> — CEA, CA 19-9,
+hematológia, pečeňové testy; krivky cez viac odberov, referenčné rozsahy,
+varovania pred chemoterapeutickým cyklom.</li>
+<li><strong>Časová os liečby</strong> — všetky cykly chemoterapie, operácie,
+biopsie, CT kontroly na jednom mieste, zoradené chronologicky.</li>
+<li><strong>Porovnanie s klinickými protokolmi</strong> — automatické
+vyhľadávanie v ClinicalTrials.gov a PubMed pre váš diagnostický kód a biomarkery.</li>
+<li><strong>Pripravené na návštevu lekára</strong> — rýchla rekapitulácia
+histórie v jazyku zdravotníka, vrátane odkazov na zdrojové dokumenty.</li>
+<li><strong>Bez straty súkromia</strong> — dáta ostávajú vo vašom Google Drive,
+nie v centrálnej databáze. Open-source pod MIT licenciou.</li>
+</ul>
+
+<h2>Ako to dopĺňa eZdravie, OnkoAsist a NCZI</h2>
+<p>Štátne systémy (eZdravie, OnkoAsist, NCZI) slúžia na oficiálnu komunikáciu
+medzi zdravotníckymi zariadeniami. Oncofiles je pacientsky nástroj — neprepisuje
+oficiálnu zdravotnú kartu, ale pomáha pacientovi rozumieť vlastným dokumentom a
+pripraviť sa na ďalšiu konzultáciu. Tieto dva svety sa dopĺňajú: zdravotník má
+eZdravie, pacient má Oncofiles.</p>
+
+<h2>Pre koho je to určené</h2>
+<ul>
+<li>Onkologickí pacienti, ktorí chcú rozumieť vlastným výsledkom.</li>
+<li>Opatrovatelia (manželka, dcéra, syn), ktorí vedú dokumentáciu za blízkeho.</li>
+<li>Pacienti pripravujúci sa na druhý názor v zahraničí.</li>
+<li>Lekári, ktorí chcú od pacienta dostať štruktúrovaný sumár namiesto papierovej kôpky.</li>
+</ul>
+
+<p>Oncofiles je zadarmo pre prvých 200 dokumentov na pacienta. Bez kreditky,
+bez registrácie cez eID.</p>
+
+<a class="cta" href="/dashboard">Začať zadarmo &rarr;</a>
+"""
+    html = _topic_page_html(
+        lang="sk",
+        title="AI pre onkologických pacientov — Oncofiles",
+        description=(
+            "Správa zdravotných dokumentov pre onkologických pacientov. "
+            "AI sumáre, trendy laboratórnych hodnôt, časová os liečby — všetko "
+            "z vášho Google Drive cez Claude alebo ChatGPT."
+        ),
+        canonical="https://oncofiles.com/onkologia",
+        alt_hreflang="en",
+        alt_href="https://oncofiles.com/oncology",
+        body_html=body,
+    )
+    return HTMLResponse(html)
+
+
+@mcp.custom_route("/oncology", methods=["GET"])
+async def oncology_page(request: Request) -> HTMLResponse:
+    """EN topic page — AI for cancer patients and caregivers."""
+    body = """
+<h1>AI for cancer patients: oncology document management</h1>
+<p class="intro">Oncology paperwork compounds fast — lab panels, CT and MRI
+reports, histology, genetic tests, discharge summaries, prescriptions, and
+emails from three different clinics. Oncofiles connects your Google Drive to
+an AI assistant like Claude or ChatGPT so you can reach any document with one
+sentence instead of digging through ten folders.</p>
+
+<h2>What Oncofiles solves</h2>
+<p>A typical cancer patient accumulates 80-200 documents per treatment year
+across hospitals, private labs, and second-opinion clinics — each with a
+different filename convention, format, and language. Oncofiles auto-classifies
+them into 18 categories, adds an AI summary, extracts structured metadata
+(drugs, doses, lab values, appointment dates), and keeps the originals safely
+in your Google Drive.</p>
+
+<h2>Key benefits for patients and caregivers</h2>
+<ul>
+<li><strong>Lab trend tracking</strong> — CEA, CA 19-9, CBC, liver panels;
+curves across multiple draws, reference ranges, and pre-cycle safety alerts.</li>
+<li><strong>Treatment timeline</strong> — every chemo cycle, surgery, biopsy,
+and imaging study in one chronological view.</li>
+<li><strong>Clinical protocol matching</strong> — automatic search of
+ClinicalTrials.gov and PubMed for your diagnostic code and biomarkers.</li>
+<li><strong>Physician-ready briefings</strong> — a one-page history recap in
+clinical language, with links to source documents for any claim.</li>
+<li><strong>Privacy by design</strong> — your files stay in your Google Drive;
+Oncofiles never copies them to a central store. Open-source under MIT.</li>
+</ul>
+
+<h2>How it complements EHR and patient portals</h2>
+<p>National health records (eHealth / patient portals / NCZI-style systems) are
+built for provider-to-provider handoffs. Oncofiles is a <em>patient-side</em>
+tool — it does not replace official records but helps the patient understand
+their own documents and prepare for the next consultation. The two layers
+complement each other: the clinician has the EHR, the patient has Oncofiles.</p>
+
+<h2>Who it&rsquo;s for</h2>
+<ul>
+<li>Cancer patients who want to understand their own results.</li>
+<li>Caregivers (spouse, adult child) managing paperwork for a loved one.</li>
+<li>Patients preparing for a second opinion abroad.</li>
+<li>Clinicians who prefer a structured summary over a stack of PDFs.</li>
+</ul>
+
+<p>Oncofiles is free for the first 200 documents per patient. No credit card,
+no complex onboarding.</p>
+
+<a class="cta" href="/dashboard">Start for free &rarr;</a>
+"""
+    html = _topic_page_html(
+        lang="en",
+        title="AI for Cancer Patients — Oncology Document Management | Oncofiles",
+        description=(
+            "Oncology document management for cancer patients and caregivers. "
+            "AI summaries, lab trend tracking, treatment timeline — all from "
+            "your Google Drive via Claude or ChatGPT."
+        ),
+        canonical="https://oncofiles.com/oncology",
+        alt_hreflang="sk",
+        alt_href="https://oncofiles.com/onkologia",
+        body_html=body,
+    )
+    return HTMLResponse(html)
 
 
 @mcp.custom_route("/manifest.json", methods=["GET"])

@@ -3,9 +3,13 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <!-- Early language restore — prevents FOUC for returning EN users -->
+  <!-- Early language restore — prevents FOUC for returning EN users and hreflang deep-links -->
   <script>
-    (function(){var l=localStorage.getItem('oncofiles_lang');if(l==='en')document.documentElement.lang='en';})();
+    (function(){
+      var url=null;try{var p=new URLSearchParams(location.search).get('lang');if(p==='en'||p==='sk')url=p;}catch(e){}
+      var l=url||localStorage.getItem('oncofiles_lang');
+      if(l==='en')document.documentElement.lang='en';
+    })();
   </script>
   <!-- Google tag (gtag.js) -->
   <script async src="https://www.googletagmanager.com/gtag/js?id=G-JPSK46QKRB"></script>
@@ -34,7 +38,10 @@
   <meta name="google-site-verification" content="o3Lvo0V02iRMKmlqMrXSBPDlL9hqE4NZQoABj6Arhek">
   <link rel="icon" type="image/svg+xml" href="/favicon.svg">
   <link rel="apple-touch-icon" href="/favicon.svg">
-  <link rel="canonical" href="https://oncofiles.com">
+  <link rel="canonical" href="https://oncofiles.com/">
+  <link rel="alternate" hreflang="sk" href="https://oncofiles.com/">
+  <link rel="alternate" hreflang="en" href="https://oncofiles.com/?lang=en">
+  <link rel="alternate" hreflang="x-default" href="https://oncofiles.com/">
   <script type="application/ld+json">
   [
     {
@@ -42,13 +49,58 @@
       "@type": "SoftwareApplication",
       "name": "Oncofiles",
       "description": "AI-powered medical document management for cancer patients and caregivers. Connects Google Drive, Gmail, and Calendar to your AI chat for natural-language access to health records.",
-      "applicationCategory": "HealthApplication",
-      "operatingSystem": "Any",
+      "applicationCategory": "MedicalApplication",
+      "operatingSystem": "Web",
       "url": "https://oncofiles.com",
       "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
       "license": "https://opensource.org/licenses/MIT",
       "softwareVersion": "{{VERSION}}",
-      "codeRepository": "https://github.com/peter-fusek/oncofiles"
+      "codeRepository": "https://github.com/peter-fusek/oncofiles",
+      "inLanguage": ["sk", "en"]
+    },
+    {
+      "@context": "https://schema.org",
+      "@type": "MedicalWebPage",
+      "name": "Oncofiles — AI-powered cancer document management",
+      "url": "https://oncofiles.com",
+      "description": "Organize, search, and understand cancer treatment documents using AI. Lab trends, treatment timeline, and clinical trial matching via Claude and ChatGPT.",
+      "inLanguage": ["sk", "en"],
+      "about": {
+        "@type": "MedicalCondition",
+        "name": "Cancer",
+        "code": {
+          "@type": "MedicalCode",
+          "codingSystem": "ICD-10",
+          "codeValue": "C00-C97"
+        }
+      },
+      "audience": [
+        { "@type": "PeopleAudience", "audienceType": "Patient" },
+        { "@type": "PeopleAudience", "audienceType": "Caregiver" }
+      ],
+      "lastReviewed": "2026-04-17",
+      "isFamilyFriendly": true
+    },
+    {
+      "@context": "https://schema.org",
+      "@type": "Organization",
+      "name": "Oncofiles",
+      "url": "https://oncofiles.com",
+      "logo": "https://oncofiles.com/og-image.png",
+      "sameAs": [
+        "https://github.com/peter-fusek/oncofiles"
+      ],
+      "founder": {
+        "@type": "Person",
+        "name": "Peter Fusek",
+        "url": "https://github.com/peter-fusek"
+      },
+      "contactPoint": {
+        "@type": "ContactPoint",
+        "contactType": "customer support",
+        "email": "peter.fusek@instarea.sk",
+        "availableLanguage": ["Slovak", "English"]
+      }
     },
     {
       "@context": "https://schema.org",
@@ -2117,7 +2169,13 @@
 
     // SK/EN language toggle
     (function() {
-      var lang = localStorage.getItem('oncofiles_lang') || 'sk';
+      // ?lang=en/sk URL param wins for hreflang deep-links
+      var urlLang = null;
+      try {
+        var p = new URLSearchParams(window.location.search).get('lang');
+        if (p === 'en' || p === 'sk') urlLang = p;
+      } catch (e) { /* noop */ }
+      var lang = urlLang || localStorage.getItem('oncofiles_lang') || 'sk';
       var btn = document.getElementById('lang-toggle');
       function apply(l) {
         lang = l;
