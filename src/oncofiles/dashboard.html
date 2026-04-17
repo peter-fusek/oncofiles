@@ -1034,6 +1034,13 @@
       <div id="admin-readonly-banner" style="display:none;background:rgba(255,165,0,0.15);border:1px solid rgba(255,165,0,0.4);border-radius:0.5rem;padding:0.5rem 1rem;margin:0 1rem 0.5rem;text-align:center;color:#ffa500;font-size:0.8125rem">
         <span data-sk="Admin prístup (len na čítanie) — nemôžete upravovať údaje tohto pacienta" data-en="Admin access (read-only) — you cannot modify this patient's data">Admin prístup (len na čítanie) — nemôžete upravovať údaje tohto pacienta</span>
       </div>
+      <div id="germline-banner" style="display:none;background:rgba(220,38,38,0.08);border:1px solid rgba(220,38,38,0.35);border-left:3px solid #dc2626;border-radius:0.5rem;padding:0.65rem 1rem;margin:0 1rem 0.5rem;font-size:0.82rem;color:var(--text);line-height:1.45">
+        <div style="display:flex;align-items:baseline;gap:0.6rem;flex-wrap:wrap">
+          <strong style="color:#dc2626" data-sk="Dedičná genetika:" data-en="Hereditary genetics:">Dedičná genetika:</strong>
+          <span id="germline-findings-list" style="flex:1"></span>
+        </div>
+        <div style="margin-top:0.25rem;font-size:0.72rem;color:var(--text-dim);font-style:italic" data-sk="Informatívne. Potvrďte s onkológom — nie je to automaticky spôsobilosť na terapiu." data-en="Informational. Confirm with your oncologist — this is not automatic therapy eligibility.">Informatívne. Potvrďte s onkológom — nie je to automaticky spôsobilosť na terapiu.</div>
+      </div>
       <div id="error-banner" class="error-banner">
         <span id="error-text"></span>
         <button class="refresh-btn" onclick="refresh()" style="margin-left:1rem" data-sk="Skúsiť znova" data-en="Retry">Skúsiť znova</button>
@@ -2031,7 +2038,49 @@
       updatePatientDiagnosis();
       updateArchiveButton();
       clearAllPatientData();
+      loadGermlineBanner();
       refresh();
+    }
+
+    // Germline risk banner — #385 Session 3. Hidden unless patient has
+    // germline_findings (BRCA1/2, Lynch, Li-Fraumeni etc.). Keeps the red
+    // banner narrow: gene names + classification only; full details live in
+    // the hereditary-genetics document category.
+    async function loadGermlineBanner() {
+      var banner = document.getElementById('germline-banner');
+      var list = document.getElementById('germline-findings-list');
+      if (!banner || !list || !currentPatientId) { if (banner) banner.style.display = 'none'; return; }
+      try {
+        var resp = await fetch('/api/patient-context?patient_id=' + encodeURIComponent(currentPatientId), {
+          headers: { 'Authorization': 'Bearer ' + authToken }
+        });
+        if (!resp.ok) { banner.style.display = 'none'; return; }
+        var ctx = await resp.json();
+        var findings = ctx && ctx.germline_findings;
+        if (!findings || Object.keys(findings).length === 0) { banner.style.display = 'none'; return; }
+        // Build DOM via textContent only — germline values are user-supplied
+        // through update_patient_context and must never be interpolated as HTML.
+        while (list.firstChild) list.removeChild(list.firstChild);
+        Object.keys(findings).sort().forEach(function(gene) {
+          var f = findings[gene] || {};
+          if (typeof f !== 'object') return;
+          var span = document.createElement('span');
+          span.style.display = 'inline-block';
+          span.style.marginRight = '0.85rem';
+          var strong = document.createElement('strong');
+          var text = String(gene);
+          if (f.classification) text += ' (' + String(f.classification) + ')';
+          if (f.variant) text += ' ' + String(f.variant);
+          if (f.test_lab) text += ' · ' + String(f.test_lab);
+          strong.textContent = text;
+          span.appendChild(strong);
+          list.appendChild(span);
+        });
+        banner.style.display = 'block';
+        if (typeof applyDashLang === 'function') applyDashLang();
+      } catch (e) {
+        banner.style.display = 'none';
+      }
     }
 
     function updateArchiveButton() {

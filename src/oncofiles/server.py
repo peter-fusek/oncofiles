@@ -4019,6 +4019,79 @@ async def api_list_patients(request: Request) -> JSONResponse:
         return JSONResponse({"error": "internal error"}, status_code=500)
 
 
+@mcp.custom_route("/api/patient-context", methods=["GET"])
+async def api_patient_context(request: Request) -> JSONResponse:
+    """Return the clinical context (biomarkers + germline_findings + diagnosis) for a patient.
+
+    Query params:
+        patient_id: Target patient. If omitted, uses the caller's default patient
+                    (own/caregiver) or errors.
+
+    Feeds the dashboard germline risk banner (#385 Session 3). Never exposes
+    documents or PII beyond the patient's own clinical summary fields.
+    """
+    err = _check_dashboard_auth(request)
+    if err:
+        return err
+    try:
+        db_inst: Database = request.app.state.fastmcp_server._lifespan_result["db"]
+
+        target_pid = request.query_params.get("patient_id")
+        if not target_pid:
+            # Fall back to the caller's first own patient.
+            email = _get_dashboard_email(request)
+            is_bearer = _check_bearer(request) is None
+            patients = await db_inst.list_patients(active_only=True)
+            if is_bearer and patients:
+                target_pid = patients[0].patient_id
+            elif email:
+                own = [p for p in patients if _email_matches_caregiver(email, p.caregiver_email)]
+                if own:
+                    target_pid = own[0].patient_id
+        if not target_pid:
+            return JSONResponse({"error": "patient_id required"}, status_code=400)
+
+        # Authorisation: caller must be admin OR caregiver of this patient OR bearer token.
+        email = _get_dashboard_email(request)
+        is_bearer = _check_bearer(request) is None
+        if not is_bearer and not _is_admin_email(email):
+            target = await db_inst.get_patient(target_pid)
+            if not target or not _email_matches_caregiver(email or "", target.caregiver_email):
+                return JSONResponse({"error": "forbidden"}, status_code=403)
+
+        from oncofiles import patient_context as _pctx
+
+        ctx = await _pctx.load_from_db(db_inst.db, patient_id=target_pid)
+        if not ctx:
+            ctx = _pctx.get_context(target_pid) or {}
+
+        # Narrow the response to clinically-relevant fields — do not leak notes/
+        # physician names by default (caller can request full via MCP get_patient_context).
+        response = {
+            "patient_id": target_pid,
+            "patient_type": ctx.get("patient_type", "oncology"),
+            "diagnosis": ctx.get("diagnosis") or "",
+            "staging": ctx.get("staging") or "",
+            "biomarkers": ctx.get("biomarkers") or {},
+            "germline_findings": ctx.get("germline_findings") or {},
+            "excluded_therapies": ctx.get("excluded_therapies") or [],
+            "disclaimer": {
+                "sk": (
+                    "Informatívny súhrn pacienta. Nenahrádza ošetrujúceho lekára. "
+                    "Pred akýmkoľvek rozhodnutím o liečbe overte s onkológom."
+                ),
+                "en": (
+                    "Informational patient summary. Does not replace the treating "
+                    "physician. Verify with your oncologist before any treatment decision."
+                ),
+            },
+        }
+        return JSONResponse(response)
+    except Exception:
+        logger.exception("API patient-context error")
+        return JSONResponse({"error": "internal error"}, status_code=500)
+
+
 @mcp.custom_route("/api/patients", methods=["POST"])
 async def api_create_patient(request: Request) -> JSONResponse:
     """Create a new patient. Requires bearer or dashboard session auth.
