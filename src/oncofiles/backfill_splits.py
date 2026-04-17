@@ -29,10 +29,20 @@ async def backfill_multi_document_splits(
 
     Returns stats dict.
     """
+    import json as _json
+
     from oncofiles.doc_analysis import analyze_document_composition
+    from oncofiles.models import PromptLogQuery
     from oncofiles.split import split_document
 
-    stats = {"scanned": 0, "multi_doc": 0, "splits_created": 0, "skipped": 0, "errors": 0}
+    stats = {
+        "scanned": 0,
+        "multi_doc": 0,
+        "splits_created": 0,
+        "skipped": 0,
+        "skipped_cached": 0,
+        "errors": 0,
+    }
 
     all_docs = await db.list_documents(limit=200, patient_id=patient_id)
     batch_count = 0
@@ -47,6 +57,36 @@ async def backfill_multi_document_splits(
         pages = await db.get_ocr_pages(doc.id)
         if len(pages) < 2:
             continue
+
+        # Idempotency guard (#406 Finding 1): if we already ran composition
+        # analysis on this doc and the previous result was single-doc, skip.
+        # OCR pages don't change after ingest, so re-asking the same model
+        # the same question gives the same answer. Production showed the
+        # same doc being re-analysed 3+ times per hour, wasting AI spend.
+        try:
+            prior = await db.search_prompt_log(
+                PromptLogQuery(
+                    call_type="doc_composition",
+                    document_id=doc.id,
+                    status="ok",
+                    limit=1,
+                )
+            )
+            if prior:
+                raw = prior[0].raw_response or ""
+                # Strip ```json ... ``` fences the model sometimes emits.
+                if "```" in raw:
+                    raw = raw.split("```", 2)[1]
+                    if raw.startswith("json"):
+                        raw = raw[4:]
+                    raw = raw.strip()
+                parsed_prior = _json.loads(raw) if raw else {}
+                if parsed_prior.get("document_count") == 1:
+                    stats["skipped_cached"] += 1
+                    continue
+        except Exception:
+            # Parsing failures shouldn't block re-analysis; just fall through.
+            pass
 
         stats["scanned"] += 1
         try:
@@ -283,8 +323,25 @@ async def backfill_ai_classification(
 
             change = {"doc_id": doc.id, "filename": doc.filename, "updates": {}}
 
-            # Institution from AI
+            # Institution from AI — primary path.
             ai_inst = classification.get("institution_code")
+            # Fallback: if AI declined to map, reuse the provider keyword map
+            # from structured_metadata.providers[] (#406 Finding 2). Doesn't
+            # invent data — only projects already-extracted provider names
+            # onto the canonical institution codes.
+            if not ai_inst and doc.structured_metadata:
+                try:
+                    import json as _json
+
+                    from oncofiles.enhance import infer_institution_from_providers
+
+                    meta = _json.loads(doc.structured_metadata)
+                    providers = meta.get("providers", []) or []
+                    inferred = infer_institution_from_providers(providers)
+                    if inferred:
+                        ai_inst = inferred
+                except Exception:
+                    pass
             if doc.institution is None and ai_inst:
                 change["updates"]["institution"] = {"old": None, "new": ai_inst}
                 stats["institution_fixed"] += 1

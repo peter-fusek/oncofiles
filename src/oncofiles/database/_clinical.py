@@ -75,30 +75,51 @@ class ClinicalMixin:
             rows = await cursor.fetchall()
             events = [_row_to_treatment_event(r) for r in rows]
 
-        # Enrich lab_result events with lab values from lab_values table
-        for event in events:
-            if event.event_type == "lab_result" and (not event.metadata or event.metadata == "{}"):
-                try:
-                    async with self.db.execute(
-                        "SELECT parameter, value, unit, flag FROM lab_values "
-                        "WHERE lab_date = ? ORDER BY parameter LIMIT 20",
-                        (event.event_date.isoformat(),),
-                    ) as lv_cursor:
-                        lv_rows = await lv_cursor.fetchall()
-                        if lv_rows:
-                            import json
+        # Enrich lab_result events with lab values — BATCHED.
+        # Previously this was an N+1 query (one sub-SELECT per event). On
+        # Turso's single-connection serialisation that pattern observed up
+        # to 49.8s latency in production (#406 Finding 3). Now a single
+        # SELECT joins lab_values → documents for patient scoping AND
+        # covers every event_date at once.
+        dates_to_enrich = [
+            event.event_date.isoformat()
+            for event in events
+            if event.event_type == "lab_result" and (not event.metadata or event.metadata == "{}")
+        ]
+        if dates_to_enrich:
+            try:
+                placeholders = ",".join("?" for _ in dates_to_enrich)
+                lv_sql = (
+                    "SELECT lv.lab_date, lv.parameter, lv.value, lv.unit, lv.flag "
+                    "FROM lab_values lv "
+                    "JOIN documents d ON d.id = lv.document_id "
+                    f"WHERE d.patient_id = ? AND lv.lab_date IN ({placeholders}) "
+                    "ORDER BY lv.lab_date, lv.parameter"
+                )
+                lv_params: list[str] = [patient_id, *dates_to_enrich]
+                async with self.db.execute(lv_sql, lv_params) as lv_cursor:
+                    lv_rows = await lv_cursor.fetchall()
 
-                            lab_data = {
-                                r["parameter"]: {
-                                    "value": r["value"],
-                                    "unit": r["unit"] or "",
-                                    "flag": r["flag"] or "",
-                                }
-                                for r in lv_rows
-                            }
-                            event.metadata = json.dumps(lab_data)
-                except Exception:
-                    pass  # Don't break listing if enrichment fails
+                import json
+
+                by_date: dict[str, dict[str, dict]] = {}
+                for r in lv_rows:
+                    d = r["lab_date"]
+                    by_date.setdefault(d, {})[r["parameter"]] = {
+                        "value": r["value"],
+                        "unit": r["unit"] or "",
+                        "flag": r["flag"] or "",
+                    }
+                for event in events:
+                    if event.event_type != "lab_result":
+                        continue
+                    if event.metadata and event.metadata != "{}":
+                        continue
+                    lab_data = by_date.get(event.event_date.isoformat())
+                    if lab_data:
+                        event.metadata = json.dumps(lab_data)
+            except Exception:
+                pass  # Don't break listing if enrichment fails
 
         return events
 
