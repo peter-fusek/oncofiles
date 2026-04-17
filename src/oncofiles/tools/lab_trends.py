@@ -462,13 +462,17 @@ async def get_lab_safety_check(ctx: Context) -> str:
     }
     safe = summary["red"] == 0 and summary["missing"] == 0
 
+    from oncofiles.tools._helpers import _with_clinical_disclaimer
+
     return json.dumps(
-        {
-            "protocol": "mFOLFOX6",
-            "cycle_safe": safe,
-            "summary": summary,
-            "parameters": results,
-        }
+        _with_clinical_disclaimer(
+            {
+                "protocol": "mFOLFOX6",
+                "cycle_safe": safe,
+                "summary": summary,
+                "parameters": results,
+            }
+        )
     )
 
 
@@ -672,12 +676,16 @@ async def get_precycle_checklist(ctx: Context, cycle_number: int = 3) -> str:
             }
         )
 
+    from oncofiles.tools._helpers import _with_clinical_disclaimer
+
     return json.dumps(
-        {
-            "protocol": "mFOLFOX6",
-            "cycle": cycle_number,
-            "sections": sections,
-        }
+        _with_clinical_disclaimer(
+            {
+                "protocol": "mFOLFOX6",
+                "cycle": cycle_number,
+                "sections": sections,
+            }
+        )
     )
 
 

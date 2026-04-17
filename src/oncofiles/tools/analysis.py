@@ -137,7 +137,12 @@ async def analyze_labs(
             "nephrotoxicity (Cr, eGFR), "
             "hepatotoxicity (ALT, AST, bilirubin), neurotoxicity indicators.\n\n"
             "**Output sections:** Critical / Watch / Stable / Inflammatory Markers (SII, Ne/Ly) / "
-            "Tumor Markers / Questions for Oncologist (2-4 specific questions)"
+            "Tumor Markers / Questions for Oncologist (2-4 specific questions)\n\n"
+            "**Closing disclaimer (always include verbatim):** "
+            "'ℹ️ Informatívna analýza. Oncofiles nenahrádza onkológa — "
+            "pred akýmkoľvek rozhodnutím o liečbe sa poraďte s ošetrujúcim lekárom. / "
+            "Informational analysis. Oncofiles does not replace your oncologist — "
+            "consult your treating physician before any treatment decision.'"
         )
     return result
 

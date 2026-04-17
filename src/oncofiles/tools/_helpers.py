@@ -50,6 +50,40 @@ def _research_source_url(source: str, external_id: str) -> str | None:
     return None
 
 
+# ── Clinical-response disclaimer (#400) ───────────────────────────────────────
+#
+# Oncofiles is an information tool for patients and caregivers. It is NOT an
+# oncologist and does not diagnose or recommend treatment. Every clinical tool
+# that returns lab values, safety flags, checklists, or trial eligibility MUST
+# carry this disclaimer so chat clients and dashboards have a traceable "verify
+# with your physician" signal next to the data.
+
+CLINICAL_DISCLAIMER_SK = (
+    "Informatívny nástroj pre pacienta a opatrovateľa. Nenahrádza onkológa. "
+    "Pred akýmkoľvek rozhodnutím o liečbe overte u ošetrujúceho lekára."
+)
+CLINICAL_DISCLAIMER_EN = (
+    "Informational tool for the patient and caregiver. Does not replace your "
+    "oncologist. Verify with your treating physician before any treatment decision."
+)
+
+
+def _with_clinical_disclaimer(payload: dict | list) -> dict:
+    """Wrap a clinical tool response with the standard disclaimer.
+
+    For dict payloads the disclaimer is merged in-place; for list payloads the
+    list is nested under ``data`` so the disclaimer sits alongside it.
+    """
+    if isinstance(payload, list):
+        return {
+            "data": payload,
+            "disclaimer": {"sk": CLINICAL_DISCLAIMER_SK, "en": CLINICAL_DISCLAIMER_EN},
+        }
+    out = dict(payload)
+    out["disclaimer"] = {"sk": CLINICAL_DISCLAIMER_SK, "en": CLINICAL_DISCLAIMER_EN}
+    return out
+
+
 # ── Patient context (delegated to patient_context module) ────────────────────
 
 

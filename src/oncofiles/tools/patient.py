@@ -16,6 +16,8 @@ async def get_patient_context(ctx: Context) -> str:
     Returns structured patient data including diagnosis, biomarkers,
     treatment, metastases, comorbidities, and excluded therapies.
     """
+    from oncofiles.tools._helpers import _with_clinical_disclaimer
+
     pid = _get_patient_id()
     # Try loading from DB if not cached yet
     ctx_data = patient_context.get_context(pid)
@@ -24,7 +26,7 @@ async def get_patient_context(ctx: Context) -> str:
         ctx_data = await patient_context.load_from_db(db.db, patient_id=pid)
         if not ctx_data:
             ctx_data = patient_context.get_context(pid)
-    return json.dumps(ctx_data, ensure_ascii=False, indent=2)
+    return json.dumps(_with_clinical_disclaimer(ctx_data or {}), ensure_ascii=False, indent=2)
 
 
 async def update_patient_context(

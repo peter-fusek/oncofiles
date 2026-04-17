@@ -1321,6 +1321,7 @@
       </div>
 
       <footer>
+        <p style="font-size:0.78rem;color:var(--text-dim);margin:0 0 0.75rem 0;padding:0.6rem 0.9rem;border:1px solid var(--border);border-radius:6px;background:var(--surface);font-style:italic;text-align:left" data-sk="Všetky údaje sú informatívne. Oncofiles nenahrádza onkológa. Pred akýmkoľvek rozhodnutím o liečbe sa poraďte s ošetrujúcim lekárom." data-en="All information is informational only. Oncofiles does not replace your oncologist. Consult your treating physician before any treatment decision.">Všetky údaje sú informatívne. Oncofiles nenahrádza onkológa. Pred akýmkoľvek rozhodnutím o liečbe sa poraďte s ošetrujúcim lekárom.</p>
         <a href="/">Oncofiles</a> &middot; <a href="/health">Health</a> &middot; <a href="/privacy">Privacy</a> &middot; <a href="https://github.com/peter-fusek/oncofiles" rel="noreferrer noopener">GitHub</a>
         <br><span style="font-size:0.75rem">Built by <a href="https://www.instarea.com" rel="noreferrer noopener">Instarea</a></span>
       </footer>
@@ -1556,8 +1557,8 @@
     let authMode = '';  // 'bearer' or 'session'
     let TOKEN = '';     // bearer token or session token
     let currentFilter = 'all';
-    let sortCol = 'filename';
-    let sortAsc = true;
+    let sortCol = 'date';
+    let sortAsc = false;
     let docsData = [];
     let autoRefreshTimer = null;
 
