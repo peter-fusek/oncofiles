@@ -4155,6 +4155,16 @@ async def api_create_patient(request: Request) -> JSONResponse:
             },
             status_code=201,
         )
+    except RuntimeError as exc:
+        if "Circuit breaker" in str(exc):
+            logger.warning("API create-patient: circuit breaker open, returning 503")
+            return JSONResponse(
+                {"error": "Database briefly unavailable, please retry in ~30s"},
+                status_code=503,
+                headers={"Retry-After": "30"},
+            )
+        logger.exception("API create-patient error")
+        return JSONResponse({"error": "internal error"}, status_code=500)
     except Exception:
         logger.exception("API create-patient error")
         return JSONResponse({"error": "internal error"}, status_code=500)

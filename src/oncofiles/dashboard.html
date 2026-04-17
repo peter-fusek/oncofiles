@@ -1461,18 +1461,37 @@
           <p id="wiz-success-summary" style="color:var(--text-muted);font-size:0.875rem;margin-top:0.5rem"></p>
         </div>
         <div style="margin:1.5rem 0;padding:1rem;border:1px solid var(--border);border-radius:8px">
-          <h3 style="font-size:1rem;margin-bottom:0.75rem" data-sk="Pripojte AI chat" data-en="Connect your AI chat">Pripojte AI chat</h3>
-          <p style="color:var(--text-muted);font-size:0.8rem;margin-bottom:0.75rem" data-sk="Vložte tieto údaje do Claude.ai alebo ChatGPT:" data-en="Paste these into Claude.ai or ChatGPT to connect:">Vložte tieto údaje do Claude.ai alebo ChatGPT:</p>
+          <h3 style="font-size:1rem;margin-bottom:0.5rem" data-sk="Pripojiť AI asistenta (voliteľné)" data-en="Connect an AI assistant (optional)">Pripojiť AI asistenta (voliteľné)</h3>
+          <p style="color:var(--amber);font-size:0.8rem;margin-bottom:0.5rem;font-weight:600" data-sk="Pozor: toto NEVKLADAJTE do chatu — patrí do nastavení (Settings) v Claude.ai alebo ChatGPT." data-en="Heads-up: do NOT paste this into the chat — it goes into Settings in Claude.ai or ChatGPT.">Pozor: toto NEVKLADAJTE do chatu — patrí do nastavení (Settings) v Claude.ai alebo ChatGPT.</p>
+          <p style="color:var(--text-muted);font-size:0.75rem;margin-bottom:0.75rem" data-sk="Ak neplánujete používať AI chat, stačí kliknúť „Prejsť na Dashboard" – dashboard funguje aj bez pripojenia." data-en="If you don't plan to use an AI chat, just click „Go to Dashboard" below — the dashboard works without this.">Ak neplánujete používať AI chat, stačí kliknúť „Prejsť na Dashboard" – dashboard funguje aj bez pripojenia.</p>
           <div style="display:flex;gap:0.5rem;align-items:center;margin-bottom:0.5rem">
-            <span style="font-size:0.75rem;color:var(--text-muted);min-width:70px">MCP URL</span>
+            <span style="font-size:0.75rem;color:var(--text-muted);min-width:70px">Server URL</span>
             <code id="wiz-mcp-url" style="flex:1;font-size:0.8rem;background:var(--bg);padding:4px 8px;border-radius:4px">https://oncofiles.com/mcp</code>
             <button onclick="wizCopy('wiz-mcp-url')" style="font-size:0.75rem;padding:4px 10px;background:var(--accent);color:#fff;border:none;border-radius:4px;cursor:pointer">Copy</button>
           </div>
-          <div style="display:flex;gap:0.5rem;align-items:center">
-            <span style="font-size:0.75rem;color:var(--text-muted);min-width:70px">Token</span>
-            <code id="wiz-token-display" style="flex:1;font-size:0.8rem;background:var(--bg);padding:4px 8px;border-radius:4px"></code>
-            <button onclick="wizCopy('wiz-token-display')" style="font-size:0.75rem;padding:4px 10px;background:var(--accent);color:#fff;border:none;border-radius:4px;cursor:pointer">Copy</button>
+          <div style="display:flex;gap:0.5rem;align-items:center;margin-bottom:0.75rem">
+            <span style="font-size:0.75rem;color:var(--text-muted);min-width:70px">Bearer Token</span>
+            <code id="wiz-token-display-4" style="flex:1;font-size:0.8rem;background:var(--bg);padding:4px 8px;border-radius:4px"></code>
+            <button onclick="wizCopy('wiz-token-display-4')" style="font-size:0.75rem;padding:4px 10px;background:var(--accent);color:#fff;border:none;border-radius:4px;cursor:pointer">Copy</button>
           </div>
+          <details style="margin-top:0.5rem">
+            <summary style="cursor:pointer;font-size:0.8125rem;color:var(--accent);font-weight:600" data-sk="Ako pripojiť – krok za krokom ▾" data-en="How to connect — step by step ▾">Ako pripojiť – krok za krokom ▾</summary>
+            <div style="font-size:0.8125rem;color:var(--text-muted);margin-top:0.75rem;line-height:1.7">
+              <p style="font-weight:600;margin-bottom:0.25rem" data-sk="Claude.ai (web):" data-en="Claude.ai (web):">Claude.ai (web):</p>
+              <ol style="padding-left:1.25rem;margin-bottom:0.75rem">
+                <li data-sk="Otvorte claude.ai → Settings → Connectors" data-en="Open claude.ai → Settings → Connectors">Otvorte claude.ai → Settings → Connectors</li>
+                <li data-sk="Kliknite „Add custom connector"" data-en="Click „Add custom connector"">Kliknite „Add custom connector"</li>
+                <li data-sk="Vložte Server URL a Bearer Token vyššie (Copy tlačidlami)" data-en="Paste the Server URL and Bearer Token above (Copy buttons)">Vložte Server URL a Bearer Token vyššie (Copy tlačidlami)</li>
+                <li data-sk="Povolte v projekte – hotovo." data-en="Enable it in your project — done.">Povolte v projekte – hotovo.</li>
+              </ol>
+              <p style="font-weight:600;margin-bottom:0.25rem" data-sk="ChatGPT:" data-en="ChatGPT:">ChatGPT:</p>
+              <ol style="padding-left:1.25rem">
+                <li data-sk="Settings → Connectors → Advanced → povoľte MCP" data-en="Settings → Connectors → Advanced → enable MCP">Settings → Connectors → Advanced → povoľte MCP</li>
+                <li data-sk="„Add server" → vložte Server URL a Bearer Token vyššie" data-en="„Add server" → paste Server URL and Bearer Token above">„Add server" → vložte Server URL a Bearer Token vyššie</li>
+              </ol>
+              <p style="margin-top:0.75rem;opacity:0.85" data-sk="Token sa nikdy nevkladá priamo do správy/prompt – iba raz do Settings." data-en="The token never goes into a chat message/prompt — only once into Settings.">Token sa nikdy nevkladá priamo do správy/prompt – iba raz do Settings.</p>
+            </div>
+          </details>
         </div>
         <div class="wizard-actions" style="justify-content:center">
           <button class="wizard-btn-primary" onclick="wizardFinish()" data-sk="Prejsť na Dashboard" data-en="Go to Dashboard">Prejsť na Dashboard</button>
@@ -2312,24 +2331,42 @@
         return;
       }
 
-      try {
-        var resp = await fetch('/api/patients', {
+      var body = JSON.stringify({
+        patient_id: pid,
+        display_name: name,
+        diagnosis_summary: document.getElementById('wiz-diagnosis').value.trim() || null,
+        caregiver_email: document.getElementById('wiz-email').value.trim() || null,
+        preferred_lang: document.getElementById('wiz-lang').value
+      });
+      async function doCreate() {
+        return await fetch('/api/patients', {
           method: 'POST',
-          headers: {
-            'Authorization': authHeader(),
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify({
-            patient_id: pid,
-            display_name: name,
-            diagnosis_summary: document.getElementById('wiz-diagnosis').value.trim() || null,
-            caregiver_email: document.getElementById('wiz-email').value.trim() || null,
-            preferred_lang: document.getElementById('wiz-lang').value
-          })
+          headers: { 'Authorization': authHeader(), 'Content-Type': 'application/json' },
+          body: body
         });
+      }
+      try {
+        var resp = await doCreate();
+        // Auto-retry once on transient DB errors (circuit breaker, Turso stream expiry).
+        if (resp.status === 503 || resp.status === 500) {
+          btn.textContent = dashLang === 'sk' ? 'Pripájam databázu… skúšam znova' : 'Reconnecting database… retrying';
+          await new Promise(function (r) { setTimeout(r, 3500); });
+          resp = await doCreate();
+        }
         var data = await resp.json();
+        if (resp.status === 409) {
+          errEl.textContent = dashLang === 'sk'
+            ? 'Tento pacient už existuje. Zvoľte iné ID.'
+            : 'This patient already exists — pick a different ID.';
+          errEl.style.display = 'block';
+          btn.disabled = false;
+          btn.textContent = 'Create Patient';
+          return;
+        }
         if (!resp.ok) {
-          errEl.textContent = data.error || 'Failed to create patient';
+          errEl.textContent = dashLang === 'sk'
+            ? 'Databáza je krátko nedostupná, prosím skúste znova o ~30s. (' + (data.error || resp.status) + ')'
+            : 'Database briefly unavailable, please try again in ~30s. (' + (data.error || resp.status) + ')';
           errEl.style.display = 'block';
           btn.disabled = false;
           btn.textContent = 'Create Patient';
@@ -2341,7 +2378,7 @@
         document.getElementById('wiz-token-display').textContent = wizardBearerToken;
         wizardGoToStep(2);
       } catch (e) {
-        errEl.textContent = 'Network error: ' + e.message;
+        errEl.textContent = (dashLang === 'sk' ? 'Sieťová chyba: ' : 'Network error: ') + e.message;
         errEl.style.display = 'block';
       }
       btn.disabled = false;
@@ -2515,8 +2552,8 @@
         parts.push(stats.new + ' documents imported.');
       }
       el.textContent = parts.join(' ');
-      // Populate token for copy
-      var tokenEl = document.getElementById('wiz-token-display');
+      // Populate token for copy in step 4 (step-2 box uses same variable but different element)
+      var tokenEl = document.getElementById('wiz-token-display-4');
       if (tokenEl && wizardBearerToken) {
         tokenEl.textContent = wizardBearerToken;
       } else if (tokenEl) {
