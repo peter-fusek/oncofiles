@@ -855,6 +855,25 @@ def _start_sync_scheduler(
                         logger.error("Backfill consolidate [%s] timed out", pid)
                     except Exception:
                         logger.exception("Backfill consolidate [%s] failed", pid)
+
+                    # Robot unblock: patient-context institution fallback for stuck docs (#404)
+                    try:
+                        from oncofiles.enhance import (
+                            backfill_institution_from_patient_context,
+                        )
+
+                        unblock_stats = await asyncio.wait_for(
+                            backfill_institution_from_patient_context(
+                                db.db, patient_id=pid, dry_run=False
+                            ),
+                            timeout=60,
+                        )
+                        if unblock_stats.get("updated", 0) > 0:
+                            logger.info("Institution fallback [%s]: %s", pid, unblock_stats)
+                    except TimeoutError:
+                        logger.error("Institution fallback [%s] timed out", pid)
+                    except Exception:
+                        logger.exception("Institution fallback [%s] failed", pid)
         except Exception:
             logger.exception("Document groups backfill failed")
         finally:

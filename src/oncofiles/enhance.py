@@ -74,6 +74,101 @@ def infer_institution_from_providers(providers: list[str]) -> str | None:
     return None
 
 
+# Categories where a doc without a provider letterhead (e.g., internal chemo sheet,
+# pre-printed prescription) can safely be attributed to the patient's primary treating
+# oncology clinic from patient_context. Labs / imaging / pathology are excluded because
+# those are routinely outsourced to external facilities.
+_PATIENT_CONTEXT_INSTITUTION_FALLBACK_CATEGORIES = {
+    "chemo_sheet",
+    "prescription",
+    "discharge",
+    "discharge_summary",
+}
+
+
+async def backfill_institution_from_patient_context(
+    db_conn, *, patient_id: str, dry_run: bool = False
+) -> dict:
+    """Fallback institution inference using the patient's primary treating clinic.
+
+    When the normal backfill_missing_institutions cannot infer an institution from
+    structured_metadata.providers (common for chemo sheets with no letterhead), this
+    function falls back to the institution recorded in patient_context.treatment.institution.
+
+    Scoped to safe categories only (chemo_sheet, prescription, discharge) — categories
+    that are virtually always issued by the treating oncology clinic. Labs / imaging /
+    pathology are excluded because those are routinely outsourced.
+
+    Args:
+        db_conn: The raw aiosqlite/libsql connection (Database.db), not the Database wrapper.
+        patient_id: The patient to process.
+        dry_run: If True, report what would change without making updates.
+
+    Returns stats dict with counts.
+    """
+    from oncofiles import patient_context as _pctx
+
+    stats: dict = {
+        "checked": 0,
+        "updated": 0,
+        "skipped_unsafe_category": 0,
+        "skipped_no_context_institution": 0,
+        "dry_run": dry_run,
+    }
+
+    # Resolve the patient's primary treating institution.
+    ctx = _pctx.get_context(patient_id)
+    if not ctx or not ctx.get("name"):
+        try:
+            ctx = await _pctx.load_from_db(db_conn, patient_id=patient_id)
+        except Exception:
+            ctx = None
+    inst = None
+    if ctx:
+        tx = ctx.get("treatment") or {}
+        inst = (tx.get("institution") or "").strip() or None
+    if not inst:
+        stats["skipped_no_context_institution"] = 1
+        logger.info(
+            "backfill_institution_from_patient_context [%s]: no institution in patient_context",
+            patient_id,
+        )
+        return stats
+
+    async with db_conn.execute(
+        "SELECT id, category, filename FROM documents "
+        "WHERE deleted_at IS NULL AND (institution IS NULL OR institution = '') "
+        "AND patient_id = ?",
+        (patient_id,),
+    ) as cursor:
+        rows = await cursor.fetchall()
+
+    for row in rows:
+        stats["checked"] += 1
+        cat = (row["category"] or "").lower()
+        if cat not in _PATIENT_CONTEXT_INSTITUTION_FALLBACK_CATEGORIES:
+            stats["skipped_unsafe_category"] += 1
+            continue
+        if not dry_run:
+            await db_conn.execute(
+                "UPDATE documents SET institution = ? WHERE id = ?",
+                (inst, row["id"]),
+            )
+        stats["updated"] += 1
+        logger.info(
+            "backfill_institution_from_patient_context [%s]: doc %d (%s) → %s (dry_run=%s)",
+            patient_id,
+            row["id"],
+            cat,
+            inst,
+            dry_run,
+        )
+
+    if stats["updated"] and not dry_run:
+        await db_conn.commit()
+    return stats
+
+
 async def backfill_missing_institutions(db) -> dict:
     """Re-run institution inference on docs that have structured_metadata but null institution.
 

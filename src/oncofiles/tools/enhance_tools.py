@@ -287,6 +287,49 @@ async def backfill_ai_classification(ctx: Context, dry_run: bool = True, limit: 
     return json.dumps(stats, default=str)
 
 
+async def unblock_stuck_documents(ctx: Context, dry_run: bool = True) -> str:
+    """Unblock documents stuck in the institution + rename loop (#404).
+
+    Fallback institution inference for docs that the normal backfill can't resolve —
+    pulls the patient's primary treating oncology clinic from patient_context and
+    applies it to safe categories (chemo_sheet, prescription, discharge) where
+    provider letterhead is typically absent. Then reports how many filenames can
+    be re-rendered to standard.
+
+    Args:
+        dry_run: If True (default), only report what would change. Set False to apply.
+    """
+    from oncofiles.enhance import backfill_institution_from_patient_context
+
+    db = _get_db(ctx)
+    pid = _get_patient_id()
+    stats = await backfill_institution_from_patient_context(db.db, patient_id=pid, dry_run=dry_run)
+
+    next_steps: list[str] = []
+    if stats.get("updated", 0) > 0 and dry_run:
+        next_steps.append(
+            f"Run unblock_stuck_documents(dry_run=False) to apply "
+            f"{stats['updated']} institution updates."
+        )
+    if stats.get("updated", 0) > 0 and not dry_run:
+        next_steps.append(
+            "Run rename_documents_to_standard(dry_run=False) to rewrite "
+            "filenames now that institution is set."
+        )
+    if stats.get("skipped_no_context_institution"):
+        next_steps.append(
+            "patient_context.treatment.institution is empty — set it via update_patient_context "
+            'first, e.g. update_patient_context(\'{"treatment":{"institution":"NOU"}}\').'
+        )
+    if stats.get("skipped_unsafe_category"):
+        next_steps.append(
+            f"{stats['skipped_unsafe_category']} docs in categories outside the safe fallback "
+            "list (labs/imaging/pathology/etc.) were left alone — use reassign_document for those."
+        )
+
+    return json.dumps({"stats": stats, "patient_id": pid, "next_steps": next_steps})
+
+
 def register(mcp):
     mcp.tool()(enhance_documents)
     mcp.tool()(extract_document_metadata)
@@ -294,3 +337,4 @@ def register(mcp):
     mcp.tool()(detect_and_split_documents)
     mcp.tool()(detect_and_consolidate_documents)
     mcp.tool()(backfill_ai_classification)
+    mcp.tool()(unblock_stuck_documents)
