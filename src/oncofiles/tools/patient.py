@@ -7,18 +7,24 @@ import json
 from fastmcp import Context
 
 from oncofiles import patient_context
-from oncofiles.tools._helpers import _get_db, _get_patient_id
+from oncofiles.tools._helpers import _get_db, _get_patient_id, _resolve_patient_id
 
 
-async def get_patient_context(ctx: Context) -> str:
+async def get_patient_context(ctx: Context, patient_slug: str | None = None) -> str:
     """Get the current patient clinical context.
 
     Returns structured patient data including diagnosis, biomarkers,
     treatment, metastases, comorbidities, and excluded therapies.
+
+    Args:
+        patient_slug: Optional — explicit patient slug (e.g. 'q1b'). Required
+            in stateless HTTP contexts (Claude.ai connector, ChatGPT) where
+            select_patient() state does not persist across tool calls (#429).
+            Stdio + single-patient bearer flows can omit.
     """
     from oncofiles.tools._helpers import _with_clinical_disclaimer
 
-    pid = _get_patient_id()
+    pid = await _resolve_patient_id(patient_slug, ctx)
     # Try loading from DB if not cached yet
     ctx_data = patient_context.get_context(pid)
     if not ctx_data or not ctx_data.get("name"):
@@ -32,6 +38,7 @@ async def get_patient_context(ctx: Context) -> str:
 async def update_patient_context(
     ctx: Context,
     updates_json: str,
+    patient_slug: str | None = None,
 ) -> str:
     """Update specific fields in the patient clinical context.
 
@@ -42,6 +49,9 @@ async def update_patient_context(
     Args:
         updates_json: JSON object with fields to update. Example:
             '{"treatment": {"current_cycle": 3}}'
+        patient_slug: Optional — explicit patient slug (e.g. 'q1b'). Required
+            in stateless HTTP contexts (Claude.ai connector, ChatGPT) where
+            select_patient() state does not persist across tool calls (#429).
     """
     try:
         updates = json.loads(updates_json)
@@ -51,7 +61,7 @@ async def update_patient_context(
     if not isinstance(updates, dict):
         return json.dumps({"error": "updates_json must be a JSON object"})
 
-    pid = _get_patient_id()
+    pid = await _resolve_patient_id(patient_slug, ctx)
     updated = patient_context.update_context(updates, patient_id=pid)
     db = _get_db(ctx)
     await patient_context.save_to_db(db.db, updated, patient_id=pid)
@@ -61,6 +71,7 @@ async def update_patient_context(
             "status": "updated",
             "updated_fields": list(updates.keys()),
             "patient_name": updated.get("name", ""),
+            "patient_slug": patient_slug or "current",
         }
     )
 
