@@ -158,21 +158,32 @@ This guards against the GCP account itself being suspended.
 
 ## 10. Implementation checklist
 
-See oncofiles#425 for live issue tracking.
+See oncofiles#425 for live issue tracking. Provisioning is via `scripts/provision_backup_infra.sh` — idempotent gcloud/gsutil script, no Terraform (swapped 2026-04-18 for simplicity — single-operator, ~10 resources, rarely changes).
 
-- [ ] GCS bucket `oncofiles-backups-eu` created in `europe-west3`
-- [ ] KMS key ring + key created
-- [ ] Lifecycle policy + retention lock applied
-- [ ] Service account + IAM bindings
-- [ ] `scripts/backup_to_gcs.py` implemented
-- [ ] Railway cron service deployed (cron job or separate 1-RU container)
-- [ ] First successful daily backup verified
-- [ ] Weekly restore test implemented
-- [ ] `/readiness` job telemetry exposed
-- [ ] Email/Slack alert wired
-- [ ] Runbook drill performed (recover into staging DB)
-- [ ] Hourly WAL shipping (Phase 2)
-- [ ] R2 mirror (Phase 3)
+### Phase 1 — Daily backup (this sprint)
+- [ ] `bash scripts/provision_backup_infra.sh` — creates bucket + KMS + SAs
+- [ ] Writer SA key extracted + set on Railway (`GOOGLE_APPLICATION_CREDENTIALS_JSON`, `BACKUP_BUCKET`, `BACKUP_KMS_KEY`, `BACKUP_GITHUB_TOKEN`, `BACKUP_GITHUB_REPO`)
+- [ ] Railway backup cron service deployed (per `railway.toml` comments)
+- [ ] First manual run verified (object in GCS with CMEK, sha256 matches)
+- [ ] `jobs.backup.last_ok` on `/readiness`
+- [ ] Email/Slack alert on non-zero exit
+- [ ] Retention policy LOCKED via `gsutil retention lock gs://oncofiles-backups-eu` (IRREVERSIBLE — only after first-run verified)
+
+### Phase 1b — Local memory backup (Mac launchd)
+- [ ] `gcloud auth application-default login` (one-time, for ADC)
+- [ ] `cp scripts/com.oncofiles.memory-backup.plist ~/Library/LaunchAgents/`
+- [ ] `launchctl load ~/Library/LaunchAgents/com.oncofiles.memory-backup.plist`
+- [ ] First manual run verified (`bash scripts/backup_memory_local.sh`)
+
+### Phase 2 — Restore testing + hourly WAL
+- [ ] `scripts/restore_from_gcs.py` runnable with admin SA
+- [ ] Weekly restore test script + cron
+- [ ] Hourly WAL shipping for `prompt_log`, `structured_metadata`, `treatment_events`
+
+### Phase 3 — Multi-cloud + compliance docs
+- [ ] R2 mirror (weekly)
+- [ ] GDPR Art. 17 individual-purge procedure tested
+- [ ] Annual DR drill calendar event
 
 ## 11. Related plans — Oncoteam
 
@@ -189,3 +200,4 @@ Oncoteam runs in a separate Railway project with its own Turso DB and has indepe
 
 - 2026-04-18: Initial draft filed as oncofiles#425 (triggered by live triage session + user request for "materializacia / persistent / backup / disaster recovery").
 - 2026-04-18: Extended backup scope — Railway env, GitHub issues+PRs snapshot, separate local memory backup via launchd. Filed oncoteam parallel DR issue for their agents to mirror.
+- 2026-04-18: Swapped Terraform → idempotent shell script (`scripts/provision_backup_infra.sh`). Terraform overhead (state bucket, providers) wasn't justified for ~10 resources under single-operator ownership.
