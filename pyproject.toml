@@ -25,6 +25,9 @@ dev = [
     "pytest-asyncio>=0.24",
     "ruff>=0.8.0",
 ]
+backup = [
+    "google-cloud-storage>=2.18.0",
+]
 
 [project.scripts]
 oncofiles-mcp = "oncofiles.server:main"
