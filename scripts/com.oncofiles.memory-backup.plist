@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+launchd agent: daily local backup of Claude memory folder → GCS.
+Install:
+  cp scripts/com.oncofiles.memory-backup.plist ~/Library/LaunchAgents/
+  launchctl load ~/Library/LaunchAgents/com.oncofiles.memory-backup.plist
+
+Uninstall:
+  launchctl unload ~/Library/LaunchAgents/com.oncofiles.memory-backup.plist
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.oncofiles.memory-backup</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>/Users/peterfusek1980gmail.com/Projects/oncofiles/scripts/backup_memory_local.sh</string>
+    </array>
+
+    <!-- 02:30 local (Europe/Bratislava) every day -->
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>2</integer>
+        <key>Minute</key>
+        <integer>30</integer>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>/Users/peterfusek1980gmail.com/Library/Logs/oncofiles-memory-backup.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/Users/peterfusek1980gmail.com/Library/Logs/oncofiles-memory-backup.log</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    </dict>
+
+    <!-- Skip run if Mac was asleep at scheduled time; run at next wake instead -->
+    <key>RunAtLoad</key>
+    <false/>
+</dict>
+</plist>

@@ -43,24 +43,36 @@ Oncofiles holds medical data for EU/SK cancer patients. Data loss would destroy 
 
 ## 4. Daily backup job — `02:00 UTC`
 
-Runs as Railway scheduled service (separate from main MCP process to avoid resource contention).
+Runs as Railway scheduled cron service (separate container from the main MCP process — avoids the #426 memory-leak interaction).
 
+### 4a. Railway-side script — `scripts/backup_to_gcs.py`
 Artifacts produced per run under `gs://oncofiles-backups-eu/{YYYY}/{MM}/{DD}/`:
 
 | File | Source | Why |
 |---|---|---|
-| `turso_oncofiles.sql.gz` | `turso db shell oncofiles ".dump" \| gzip` | Full relational schema + data |
-| `turso_schema.sql` | `turso db shell oncofiles ".schema"` | Schema-only for fast diff review |
-| `memory_snapshot.tar.gz` | `~/.claude/.../memory/` tar | Session context + decisions |
-| `railway_env.json.enc` | `railway variables` → KMS-encrypted | Env reconstruction |
-| `issues_oncofiles.json` | `gh issue list --json …` | Issue state snapshot |
-| `issues_oncoteam.json` | `gh issue list --repo .../oncoteam --json …` | Ditto |
-| `manifest.json` | generated | sha256 of each above + timestamps |
+| `{TS}_turso_oncofiles.sql.gz` | `sqlite3.iterdump()` over embedded replica `/data/oncofiles.db`, gzipped | Full DB: patients, documents + AI metadata, ocr_text, treatment_events, patient_context (biomarkers + home_region + excluded_therapies), oauth_tokens, prompt_log, document_groups |
+| `{TS}_turso_schema.sql` | `SELECT sql FROM sqlite_master` | Schema-only for fast diff review |
+| `{TS}_railway_env.json` | Filtered `os.environ` — includes `TURSO_*`, `ANTHROPIC_*`, `GOOGLE_*`, `OAUTH_*`, `MCP_*`, `DASHBOARD_*`. Excludes `RAILWAY_*` ephemeral + `GOOGLE_APPLICATION_CREDENTIALS_JSON` (break-glass path, stored separately) | Service reconstruction — painful to regenerate manually (Anthropic key rotation, Turso token, etc.) |
+| `{TS}_issues_oncofiles.json` | GitHub REST API via `urllib.request` (no `gh` CLI dep on Railway) | Issue state + bodies — context for "why did we do X?" |
+| `{TS}_prs_oncofiles.json` | Same, `/pulls` endpoint | PR state snapshot |
+| `{TS}_manifest.json` | Generated | sha256 of each above + sizes + timestamps + oncofiles version |
 
-Post-run:
-1. Compute `sha256sum` of each artifact → compare to previous day (detect corruption)
-2. Upload `backup_success` metric to Railway healthcheck or `/readiness`
-3. Alert (email/Slack) if any artifact missing or sha256 collision suggests unchanged DB (Turso idle)
+All artifacts written with CMEK via bucket-level encryption (writer SA only holds `cryptoKeyEncrypter` — cannot decrypt anything it uploaded; only the admin SA has `cryptoKeyDecrypter`).
+
+### 4b. Local-side script — `scripts/backup_memory_local.sh`
+macOS-specific — lives in the operator's personal memory folder which Railway can't reach:
+
+| File | Source | Why |
+|---|---|---|
+| `memory/{YYYY}/{MM}/{DD}/{TS}_memory_snapshot.tar.gz` | `~/.claude/projects/-Users-.../memory/` tar | Accumulated cross-session context (user feedback, project memory, verification protocols, clinical references) |
+
+Runs via `com.oncofiles.memory-backup.plist` launchd agent at 02:30 local. Uses `gcloud` ADC (Application Default Credentials) so no SA key sits on the laptop filesystem — auth comes from `gcloud auth application-default login`.
+
+### Post-run checks
+1. Compute `sha256` of each artifact (embedded in manifest.json) → next-day backup compares to detect corruption or zero-change pathological state
+2. Expose `jobs.backup.last_ok` on `/readiness`
+3. Alert (email/Slack) via Railway notification hook on any non-zero exit
+4. Partial failures (missing `BACKUP_GITHUB_TOKEN`, GitHub API rate limit) log WARN but don't fail the run — DB dump success is the must-have
 
 ## 5. Hourly incremental — WAL shipping (Phase 2)
 
@@ -162,6 +174,18 @@ See oncofiles#425 for live issue tracking.
 - [ ] Hourly WAL shipping (Phase 2)
 - [ ] R2 mirror (Phase 3)
 
-## 11. Changelog
+## 11. Related plans — Oncoteam
+
+Oncoteam runs in a separate Railway project with its own Turso DB and has independent state (research decisions, session notes, agent_state, clinical trial cache). Oncoteam must run its **own** parallel DR plan — this template is reusable 1:1, just with different names:
+
+- Bucket: `oncoteam-backups-eu`
+- KMS key: either same `oncofiles` key ring (shared) or separate `oncoteam` ring (stronger isolation — recommended)
+- Writer SA: `oncoteam-backup@…`
+- Same RTO/RPO targets, same lifecycle, same scenarios
+
+**Tracked for oncoteam agents in oncoteam#NEW** — includes the full action checklist so another agent can pick up the work without re-reading this entire doc.
+
+## 12. Changelog
 
 - 2026-04-18: Initial draft filed as oncofiles#425 (triggered by live triage session + user request for "materializacia / persistent / backup / disaster recovery").
+- 2026-04-18: Extended backup scope — Railway env, GitHub issues+PRs snapshot, separate local memory backup via launchd. Filed oncoteam parallel DR issue for their agents to mirror.
