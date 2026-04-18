@@ -120,6 +120,44 @@ def _get_patient_id(*, required: bool = True) -> str:
     return pid
 
 
+async def _resolve_patient_id(
+    patient_slug: str | None,
+    ctx: Context,
+    *,
+    required: bool = True,
+) -> str:
+    """Resolve patient identity for a tool call (Option A per #429).
+
+    Stateless-HTTP safe: every patient-scoped tool should accept a
+    `patient_slug` parameter and resolve via this helper. Falls back to the
+    middleware-resolved current patient when slug is omitted (preserves
+    backwards-compat for bearer-token flows where the token already binds
+    a specific patient).
+
+    ACL: the caller's bearer token + the middleware's rate-limit + token→patient
+    binding still apply — if a caller's token maps to patient X and they pass
+    `patient_slug=Y` for someone else's patient, this currently allows it
+    (same as pre-Option-A behaviour). A stricter ACL check (caller ∈
+    allowed_callers_for(patient_id)) belongs in a follow-up once the
+    caller_identity plumbing is in place.
+
+    Args:
+        patient_slug: Explicit slug from the caller (e.g. 'q1b'). Preferred.
+        ctx: FastMCP request context.
+        required: If True (default), raises ValueError when neither slug nor
+            middleware-resolved patient is available.
+    """
+    if patient_slug:
+        db = _get_db(ctx)
+        patient = await db.get_patient_by_slug(patient_slug)
+        if not patient:
+            raise ValueError(
+                f"Patient not found: {patient_slug!r}. Use list_patients() to see available slugs."
+            )
+        return patient.patient_id
+    return _get_patient_id(required=required)
+
+
 def _get_db(ctx: Context) -> Database:
     return ctx.request_context.lifespan_context["db"]
 
