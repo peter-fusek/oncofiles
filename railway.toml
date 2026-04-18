@@ -4,3 +4,14 @@ healthcheckPath = "/health"
 healthcheckTimeout = 120
 restartPolicyType = "ALWAYS"
 overlapSeconds = 30
+
+# Daily backup — runs as a separate Railway cron service to isolate memory
+# pressure from the main MCP process (see #426). Deploy via:
+#   railway up --service oncofiles-backup
+# and configure the service in Railway dashboard with:
+#   Cron:     0 2 * * *
+#   Start:    uv sync --extra backup && uv run python scripts/backup_to_gcs.py
+#   Env:      GOOGLE_APPLICATION_CREDENTIALS_JSON, BACKUP_BUCKET, BACKUP_KMS_KEY,
+#             TURSO_REPLICA_PATH=/data/oncofiles.db, ONCOFILES_VERSION=$RAILWAY_GIT_COMMIT_SHA
+#   Volume:   mount the same /data volume as the main service (read-only OK)
+# See DISASTER_RECOVERY.md §4 and oncofiles#425.
