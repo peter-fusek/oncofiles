@@ -4,12 +4,22 @@ from __future__ import annotations
 
 import gc
 import logging
+from datetime import UTC, datetime, timedelta
 
 from oncofiles.database import Database
 from oncofiles.files_api import FilesClient
 from oncofiles.gdrive_client import GDriveClient
 
 logger = logging.getLogger(__name__)
+
+
+def _is_new(created, max_age_hours: int) -> bool:
+    """Return True if created_at falls within the last max_age_hours. See #433."""
+    if created is None:
+        return False
+    if created.tzinfo is None:
+        created = created.replace(tzinfo=UTC)
+    return created >= datetime.now(UTC) - timedelta(hours=max_age_hours)
 
 
 async def backfill_multi_document_splits(
@@ -21,11 +31,15 @@ async def backfill_multi_document_splits(
     folder_id: str = "",
     folder_map: dict[str, str] | None = None,
     dry_run: bool = True,
+    only_new: bool = False,
+    max_age_hours: int | None = None,
 ) -> dict:
     """Scan all documents for multi-document PDFs and split them.
 
     Args:
         dry_run: If True, only report findings without making changes.
+        only_new: If True, only consider docs created within max_age_hours. See #433.
+        max_age_hours: Sliding window for only_new (default AI_REPROCESS_MAX_AGE_HOURS).
 
     Returns stats dict.
     """
@@ -45,6 +59,13 @@ async def backfill_multi_document_splits(
     }
 
     all_docs = await db.list_documents(limit=200, patient_id=patient_id)
+
+    if only_new:
+        from oncofiles.config import AI_REPROCESS_MAX_AGE_HOURS
+
+        hours = max_age_hours if max_age_hours is not None else AI_REPROCESS_MAX_AGE_HOURS
+        all_docs = [d for d in all_docs if _is_new(d.created_at, hours)]
+
     batch_count = 0
 
     for doc in all_docs:
@@ -133,11 +154,15 @@ async def backfill_consolidation(
     *,
     patient_id: str,
     dry_run: bool = True,
+    only_new: bool = False,
+    max_age_hours: int | None = None,
 ) -> dict:
     """Scan documents for multi-file logical documents and consolidate them.
 
     Args:
         dry_run: If True, only report findings without making changes.
+        only_new: If True, only consider docs created within max_age_hours. See #433.
+        max_age_hours: Sliding window for only_new (default AI_REPROCESS_MAX_AGE_HOURS).
 
     Returns stats dict.
     """
@@ -147,6 +172,13 @@ async def backfill_consolidation(
     stats = {"analyzed": 0, "groups_found": 0, "consolidated": 0, "errors": 0}
 
     all_docs = await db.list_documents(limit=200, patient_id=patient_id)
+
+    if only_new:
+        from oncofiles.config import AI_REPROCESS_MAX_AGE_HOURS
+
+        hours = max_age_hours if max_age_hours is not None else AI_REPROCESS_MAX_AGE_HOURS
+        all_docs = [d for d in all_docs if _is_new(d.created_at, hours)]
+
     ungrouped = [d for d in all_docs if d.group_id is None and d.deleted_at is None]
     stats["analyzed"] = len(ungrouped)
 

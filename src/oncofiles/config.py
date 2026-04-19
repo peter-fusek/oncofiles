@@ -49,6 +49,27 @@ MAX_DOCUMENTS_PER_PATIENT: int = int(os.environ.get("MAX_DOCUMENTS_PER_PATIENT",
 SYNC_INTERVAL_MINUTES: int = int(os.environ.get("SYNC_INTERVAL_MINUTES", "5"))
 SYNC_ENABLED: bool = os.environ.get("SYNC_ENABLED", "true").lower() in ("true", "1", "yes")
 
+# Nightly-only AI pipeline (v5.10.0, #433)
+# When AI_NIGHTLY_ONLY=true (default), LLM-touching jobs collapse into one
+# CronTrigger at AI_NIGHT_WINDOW_START_UTC and only process new records
+# (ai_processed_at IS NULL AND created_at > now - AI_REPROCESS_MAX_AGE_HOURS).
+# Setting AI_NIGHTLY_ONLY=false restores the legacy 5-min interval + 4 nightly
+# sweep jobs — rollback knob.
+AI_NIGHTLY_ONLY: bool = os.environ.get("AI_NIGHTLY_ONLY", "true").lower() in (
+    "true",
+    "1",
+    "yes",
+)
+AI_NIGHT_WINDOW_START_UTC: int = int(os.environ.get("AI_NIGHT_WINDOW_START_UTC", "23"))
+AI_NIGHT_WINDOW_END_UTC: int = int(os.environ.get("AI_NIGHT_WINDOW_END_UTC", "3"))
+DAILY_AI_DOC_CAP: int = int(os.environ.get("DAILY_AI_DOC_CAP", "20"))
+AI_REPROCESS_MAX_AGE_HOURS: int = int(os.environ.get("AI_REPROCESS_MAX_AGE_HOURS", "36"))
+ENABLE_INTEGRITY_CHECK: bool = os.environ.get("ENABLE_INTEGRITY_CHECK", "false").lower() in (
+    "true",
+    "1",
+    "yes",
+)
+
 # Gmail + Calendar integration (#104)
 GMAIL_ENABLED: bool = os.environ.get("GMAIL_ENABLED", "false").lower() in ("true", "1", "yes")
 CALENDAR_ENABLED: bool = os.environ.get("CALENDAR_ENABLED", "false").lower() in (

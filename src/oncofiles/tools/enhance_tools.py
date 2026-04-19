@@ -41,8 +41,9 @@ async def enhance_documents(
     )
 
     pid = _get_patient_id()
+    # force=True — user invoked the tool explicitly, bypass ai_processed_at guard (#433).
     stats = await _enhance_documents(
-        db, files, gdrive, document_ids=parsed_ids, patient_id=pid, limit=limit
+        db, files, gdrive, document_ids=parsed_ids, patient_id=pid, limit=limit, force=True
     )
     return json.dumps(stats)
 

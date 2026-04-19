@@ -1447,6 +1447,9 @@ async def enhance_documents(
     *,
     patient_id: str,
     limit: int = 0,
+    force: bool = False,
+    only_new: bool = False,
+    max_age_hours: int | None = None,
 ) -> dict:
     """Run AI enhancement on documents.
 
@@ -1455,6 +1458,10 @@ async def enhance_documents(
 
     Args:
         limit: Max documents to process (0 = no limit). Use to avoid MCP proxy timeouts.
+        force: If True, bypass the ai_processed_at guard in _enhance_document
+            (user-initiated MCP tool calls set force=True). See #433.
+        only_new: If True, filter to docs created in the last max_age_hours.
+        max_age_hours: Sliding window for only_new (default AI_REPROCESS_MAX_AGE_HOURS).
     """
     if document_ids:
         docs = []
@@ -1466,6 +1473,23 @@ async def enhance_documents(
                     docs.append(doc)
     else:
         docs = await db.get_documents_without_ai(patient_id=patient_id)
+
+    if only_new:
+        from datetime import timedelta
+
+        from oncofiles.config import AI_REPROCESS_MAX_AGE_HOURS
+
+        hours = max_age_hours if max_age_hours is not None else AI_REPROCESS_MAX_AGE_HOURS
+        cutoff = datetime.now(UTC) - timedelta(hours=hours)
+
+        def _new(created):
+            if created is None:
+                return False
+            if created.tzinfo is None:
+                created = created.replace(tzinfo=UTC)
+            return created >= cutoff
+
+        docs = [d for d in docs if _new(d.created_at)]
 
     if limit > 0:
         docs = docs[:limit]
@@ -1479,7 +1503,7 @@ async def enhance_documents(
     for doc in docs:
         try:
             enhanced = await asyncio.wait_for(
-                _enhance_document(db, doc, files, gdrive, patient_id=patient_id),
+                _enhance_document(db, doc, files, gdrive, patient_id=patient_id, force=force),
                 timeout=60.0,
             )
             if enhanced:
@@ -1568,8 +1592,16 @@ async def extract_all_metadata(
     gdrive: GDriveClient | None = None,
     *,
     patient_id: str,
+    only_new: bool = False,
+    max_age_hours: int | None = None,
+    cap: int = 5,
 ) -> dict:
     """Backfill structured_metadata for documents that have AI summaries but no metadata.
+
+    Args:
+        only_new: If True, filter to docs created in the last max_age_hours. See #433.
+        max_age_hours: Sliding window for only_new (default AI_REPROCESS_MAX_AGE_HOURS).
+        cap: Max docs to process per run (default 5, keeps memory bounded).
 
     Returns summary dict: {processed, skipped, errors}.
     """
@@ -1577,7 +1609,25 @@ async def extract_all_metadata(
     await db.reconnect_if_stale(timeout=10.0)
 
     docs = await db.get_documents_without_metadata(patient_id=patient_id)
-    docs = docs[:5]  # Process max 5 per run to limit memory
+
+    if only_new:
+        from datetime import timedelta
+
+        from oncofiles.config import AI_REPROCESS_MAX_AGE_HOURS
+
+        hours = max_age_hours if max_age_hours is not None else AI_REPROCESS_MAX_AGE_HOURS
+        cutoff = datetime.now(UTC) - timedelta(hours=hours)
+
+        def _new(created):
+            if created is None:
+                return False
+            if created.tzinfo is None:
+                created = created.replace(tzinfo=UTC)
+            return created >= cutoff
+
+        docs = [d for d in docs if _new(d.created_at)]
+
+    docs = docs[:cap]  # bound memory / Anthropic spend per run
     logger.info("extract_all_metadata: %d documents to process", len(docs))
     stats = {"processed": 0, "skipped": 0, "errors": 0}
 
@@ -1663,8 +1713,18 @@ async def _enhance_document(
     files: FilesClient,
     gdrive: GDriveClient | None = None,
     patient_id: str = "",
+    *,
+    force: bool = False,
 ) -> bool:
-    """Run AI enhancement on a single document. Returns True if enhanced."""
+    """Run AI enhancement on a single document. Returns True if enhanced.
+
+    Guard: if doc already has `ai_processed_at` set, skip to avoid re-spending
+    Claude tokens on already-enhanced docs. User-initiated MCP tool calls pass
+    force=True to bypass. See #433.
+    """
+    if doc.ai_processed_at is not None and not force:
+        return False
+
     # Get text from OCR cache
     text_parts = []
     if await db.has_ocr_text(doc.id):

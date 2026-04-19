@@ -21,8 +21,13 @@ from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, Response
 
 from oncofiles.config import (
+    AI_NIGHT_WINDOW_START_UTC,
+    AI_NIGHTLY_ONLY,
+    AI_REPROCESS_MAX_AGE_HOURS,
+    DAILY_AI_DOC_CAP,
     DASHBOARD_ADMIN_EMAILS,
     DATABASE_PATH,
+    ENABLE_INTEGRITY_CHECK,
     GOOGLE_DRIVE_FOLDER_ID,
     GOOGLE_OAUTH_CLIENT_ID,
     GOOGLE_OAUTH_CLIENT_SECRET,
@@ -584,18 +589,10 @@ def _start_sync_scheduler(
                     _folder_404_counts.pop(pid, None)
                     _record_service_sync(pid, "gdrive")
                     logger.info("Sync [%s]: %s (RSS: %.1f MB)", pid, stats, get_rss_mb())
-                    # Auto-enhance new docs after sync
-                    from_stats = stats.get("from_gdrive", {})
-                    if from_stats.get("new", 0) > 0 or from_stats.get("updated", 0) > 0:
-                        try:
-                            e_stats = await asyncio.wait_for(
-                                extract_all_metadata(db, files, p_gdrive, patient_id=pid),
-                                timeout=metadata_timeout,
-                            )
-                            if e_stats["processed"] > 0:
-                                logger.info("Post-sync enhance [%s]: %s", pid, e_stats)
-                        except Exception:
-                            logger.error("Post-sync enhance [%s] failed", pid, exc_info=True)
+                    # Post-sync auto-enhance removed in #433 — enhancement now
+                    # runs only inside _run_nightly_ai_pipeline (AI_NIGHTLY_ONLY=true)
+                    # or via the separate enhancement_sweep / metadata_extraction
+                    # cron jobs when AI_NIGHTLY_ONLY=false.
                 except TimeoutError:
                     logger.error("Sync [%s] timed out after %ds", pid, sync_timeout)
                 except Exception as exc:
@@ -946,60 +943,235 @@ def _start_sync_scheduler(
     # The old _log_rss reclaimed before checking, masking the threshold crossing,
     # and sys.exit(0) was caught by APScheduler as a job error (#213).
 
+    async def _run_nightly_ai_pipeline():
+        """Consolidated nightly AI pipeline — runs at AI_NIGHT_WINDOW_START_UTC.
+
+        Replaces the legacy every-5-min sync + 4 overlapping 03:20/03:30/03:45/03:55
+        sweeps + every-6h integrity check. Only processes records created within
+        AI_REPROCESS_MAX_AGE_HOURS; bounded by DAILY_AI_DOC_CAP per patient. See #433.
+        """
+        from oncofiles.backfill_splits import (
+            backfill_consolidation,
+            backfill_multi_document_splits,
+        )
+        from oncofiles.sync import enhance_documents as _enhance_docs_fn
+
+        if is_memory_pressure("nightly_ai_pipeline"):
+            return
+
+        total_enhanced = 0
+        total_metadata = 0
+        total_split = 0
+        total_consolidated = 0
+
+        try:
+            patients = await db.list_patients(active_only=True)
+            for p in patients:
+                pid = p.patient_id
+                if is_memory_pressure(f"nightly:{pid}"):
+                    break
+                if _folder_404_counts.get(pid, 0) >= _FOLDER_404_THRESHOLD:
+                    continue
+
+                gc_pair = await _get_patient_gdrive(pid)
+                if not gc_pair:
+                    continue
+                p_gdrive, folder_id = gc_pair
+
+                async with _sync_semaphore:
+                    # Phase 1: GDrive import (md5-gated, cheap for unchanged)
+                    try:
+                        sync_stats = await asyncio.wait_for(
+                            sync(
+                                db,
+                                files,
+                                p_gdrive,
+                                folder_id,
+                                trigger="nightly",
+                                patient_id=pid,
+                            ),
+                            timeout=sync_timeout,
+                        )
+                        _record_service_sync(pid, "gdrive")
+                        _folder_404_counts.pop(pid, None)
+                        logger.info("Nightly sync [%s]: %s", pid, sync_stats)
+                    except TimeoutError:
+                        logger.error("Nightly sync [%s] timed out", pid)
+                        continue
+                    except Exception as exc:
+                        if _is_folder_not_found(exc):
+                            count = _folder_404_counts.get(pid, 0) + 1
+                            _folder_404_counts[pid] = count
+                        else:
+                            _handle_sync_exception(pid, "gdrive", exc)
+                        continue
+
+                    # Phase 2: Enhance NEW only, capped
+                    try:
+                        eh_stats = await asyncio.wait_for(
+                            _enhance_docs_fn(
+                                db,
+                                files,
+                                p_gdrive,
+                                patient_id=pid,
+                                only_new=True,
+                                max_age_hours=AI_REPROCESS_MAX_AGE_HOURS,
+                                limit=DAILY_AI_DOC_CAP,
+                            ),
+                            timeout=metadata_timeout,
+                        )
+                        total_enhanced += eh_stats.get("processed", 0)
+                        if eh_stats.get("processed", 0) > 0:
+                            logger.info("Nightly enhance [%s]: %s", pid, eh_stats)
+                    except Exception:
+                        logger.exception("Nightly enhance [%s] failed", pid)
+
+                    # Phase 3: Metadata extraction NEW only
+                    try:
+                        md_stats = await asyncio.wait_for(
+                            extract_all_metadata(
+                                db,
+                                files,
+                                p_gdrive,
+                                patient_id=pid,
+                                only_new=True,
+                                max_age_hours=AI_REPROCESS_MAX_AGE_HOURS,
+                                cap=DAILY_AI_DOC_CAP,
+                            ),
+                            timeout=metadata_timeout,
+                        )
+                        total_metadata += md_stats.get("processed", 0)
+                        if md_stats.get("processed", 0) > 0:
+                            logger.info("Nightly metadata [%s]: %s", pid, md_stats)
+                    except Exception:
+                        logger.exception("Nightly metadata [%s] failed", pid)
+
+                    # Phase 4: Group detection NEW only
+                    try:
+                        split_stats = await asyncio.wait_for(
+                            backfill_multi_document_splits(
+                                db,
+                                files,
+                                p_gdrive,
+                                patient_id=pid,
+                                folder_id=folder_id,
+                                dry_run=False,
+                                only_new=True,
+                                max_age_hours=AI_REPROCESS_MAX_AGE_HOURS,
+                            ),
+                            timeout=metadata_timeout,
+                        )
+                        total_split += split_stats.get("splits_created", 0)
+                        if split_stats.get("splits_created", 0) > 0:
+                            logger.info("Nightly splits [%s]: %s", pid, split_stats)
+                    except Exception:
+                        logger.exception("Nightly splits [%s] failed", pid)
+
+                    try:
+                        cons_stats = await asyncio.wait_for(
+                            backfill_consolidation(
+                                db,
+                                p_gdrive,
+                                patient_id=pid,
+                                dry_run=False,
+                                only_new=True,
+                                max_age_hours=AI_REPROCESS_MAX_AGE_HOURS,
+                            ),
+                            timeout=metadata_timeout,
+                        )
+                        total_consolidated += cons_stats.get("consolidated", 0)
+                        if cons_stats.get("consolidated", 0) > 0:
+                            logger.info("Nightly consolidate [%s]: %s", pid, cons_stats)
+                    except Exception:
+                        logger.exception("Nightly consolidate [%s] failed", pid)
+
+            logger.info(
+                "Nightly AI pipeline: enhanced=%d metadata=%d splits=%d consolidated=%d",
+                total_enhanced,
+                total_metadata,
+                total_split,
+                total_consolidated,
+            )
+        finally:
+            from oncofiles.memory import reclaim_memory
+
+            reclaim_memory("nightly_ai_pipeline")
+
     from apscheduler.triggers.cron import CronTrigger
 
     scheduler = AsyncIOScheduler()
-    scheduler.add_job(
-        _run_sync,
-        IntervalTrigger(minutes=SYNC_INTERVAL_MINUTES),
-        id="gdrive_sync",
-        max_instances=1,
-    )
-    scheduler.add_job(
-        _run_enhancement_sweep,
-        CronTrigger(hour=3, minute=20),  # daily at 3:20 AM — retry stuck unprocessed docs
-        id="enhancement_sweep",
-        max_instances=1,
-    )
-    scheduler.add_job(
-        _run_metadata_extraction,
-        CronTrigger(hour=3, minute=30),  # daily at 3:30 AM (after enhancement sweep)
-        id="metadata_extraction",
-        max_instances=1,
-    )
-    # institution_backfill removed — AI handles institution inference in enhance pipeline
+
+    # ── LLM-touching jobs: nightly-only vs legacy (see #433) ───────────────
+    if AI_NIGHTLY_ONLY:
+        scheduler.add_job(
+            _run_nightly_ai_pipeline,
+            CronTrigger(hour=AI_NIGHT_WINDOW_START_UTC, minute=0),
+            id="nightly_ai_pipeline",
+            max_instances=1,
+        )
+        logger.info(
+            "AI_NIGHTLY_ONLY=true — nightly AI pipeline scheduled at %02d:00 UTC "
+            "(cap=%d docs/patient, window=%dh)",
+            AI_NIGHT_WINDOW_START_UTC,
+            DAILY_AI_DOC_CAP,
+            AI_REPROCESS_MAX_AGE_HOURS,
+        )
+    else:
+        scheduler.add_job(
+            _run_sync,
+            IntervalTrigger(minutes=SYNC_INTERVAL_MINUTES),
+            id="gdrive_sync",
+            max_instances=1,
+        )
+        scheduler.add_job(
+            _run_enhancement_sweep,
+            CronTrigger(hour=3, minute=20),
+            id="enhancement_sweep",
+            max_instances=1,
+        )
+        scheduler.add_job(
+            _run_metadata_extraction,
+            CronTrigger(hour=3, minute=30),
+            id="metadata_extraction",
+            max_instances=1,
+        )
+        scheduler.add_job(
+            _run_document_groups_backfill,
+            CronTrigger(hour=3, minute=55),
+            id="document_groups_backfill",
+            max_instances=1,
+        )
+        logger.info("AI_NIGHTLY_ONLY=false — legacy 5-min sync + 4 nightly sweeps registered")
+
+    # ── Zero-cost housekeeping (always on) ─────────────────────────────────
     scheduler.add_job(
         _run_trash_cleanup,
-        CronTrigger(hour=3, minute=0),  # daily at 3 AM
+        CronTrigger(hour=3, minute=0),
         id="trash_cleanup",
         max_instances=1,
     )
     scheduler.add_job(
         _run_oauth_token_cleanup,
-        CronTrigger(hour=4, minute=0),  # daily at 4 AM
+        CronTrigger(hour=4, minute=0),
         id="oauth_token_cleanup",
         max_instances=1,
     )
     scheduler.add_job(
         _run_prompt_log_cleanup,
-        CronTrigger(hour=4, minute=15),  # daily at 4:15 AM (after OAuth cleanup)
+        CronTrigger(hour=4, minute=15),
         id="prompt_log_cleanup",
         max_instances=1,
     )
-    scheduler.add_job(
-        _run_pipeline_integrity_check,
-        CronTrigger(hour="*/6", minute=30),  # every 6 hours at :30
-        id="pipeline_integrity",
-        max_instances=1,
-    )
-    scheduler.add_job(
-        _run_document_groups_backfill,
-        # 3:55 AM — after metadata (3:30) + category_validation (3:45), before
-        # oauth_cleanup (4:00). Sweeps backlog that auto-split/consolidate missed.
-        CronTrigger(hour=3, minute=55),
-        id="document_groups_backfill",
-        max_instances=1,
-    )
+
+    # Pipeline integrity check: opt-in only (AI-touching; gated by ENABLE_INTEGRITY_CHECK)
+    if ENABLE_INTEGRITY_CHECK:
+        scheduler.add_job(
+            _run_pipeline_integrity_check,
+            CronTrigger(hour="*/6", minute=30),
+            id="pipeline_integrity",
+            max_instances=1,
+        )
+        logger.info("ENABLE_INTEGRITY_CHECK=true — every-6h pipeline integrity check registered")
 
     # ── DB keepalive / replica sync ──
 
@@ -1116,12 +1288,15 @@ def _start_sync_scheduler(
         except Exception:
             logger.exception("Category validation failed")
 
-    scheduler.add_job(
-        _run_category_validation,
-        CronTrigger(hour=3, minute=45),  # daily at 3:45 AM (after metadata extraction)
-        id="category_validation",
-        max_instances=1,
-    )
+    # Category validation only registered in legacy mode; nightly pipeline
+    # handles category upgrades inline during phase 2/3 via structured_metadata. #433
+    if not AI_NIGHTLY_ONLY:
+        scheduler.add_job(
+            _run_category_validation,
+            CronTrigger(hour=3, minute=45),
+            id="category_validation",
+            max_instances=1,
+        )
 
     folder_cleanup_timeout = 300  # 5 minutes max for GDrive folder operations
 
@@ -1715,26 +1890,35 @@ def _start_sync_scheduler(
 
                     reclaim_memory(f"gmail_sync:{pid}")
 
-    scheduler.add_job(
-        _run_gmail_sync,
-        IntervalTrigger(
-            minutes=SYNC_INTERVAL_MINUTES, start_date=datetime.now() + timedelta(minutes=2)
-        ),
-        id="gmail_sync",
-        max_instances=1,
-    )
-    gmail_startup_time = datetime.now() + timedelta(seconds=150)
-    scheduler.add_job(
-        lambda: _run_gmail_sync("startup", initial=True),
-        DateTrigger(run_date=gmail_startup_time),
-        id="gmail_startup_sync",
-        max_instances=1,
-    )
-    logger.info(
-        "Gmail sync scheduled — every %d min (offset +2m), startup at %s",
-        SYNC_INTERVAL_MINUTES,
-        gmail_startup_time.strftime("%H:%M:%S"),
-    )
+    if AI_NIGHTLY_ONLY:
+        scheduler.add_job(
+            _run_gmail_sync,
+            CronTrigger(hour=AI_NIGHT_WINDOW_START_UTC, minute=15),
+            id="gmail_sync",
+            max_instances=1,
+        )
+        logger.info("Gmail sync scheduled — nightly at %02d:15 UTC", AI_NIGHT_WINDOW_START_UTC)
+    else:
+        scheduler.add_job(
+            _run_gmail_sync,
+            IntervalTrigger(
+                minutes=SYNC_INTERVAL_MINUTES, start_date=datetime.now() + timedelta(minutes=2)
+            ),
+            id="gmail_sync",
+            max_instances=1,
+        )
+        gmail_startup_time = datetime.now() + timedelta(seconds=150)
+        scheduler.add_job(
+            lambda: _run_gmail_sync("startup", initial=True),
+            DateTrigger(run_date=gmail_startup_time),
+            id="gmail_startup_sync",
+            max_instances=1,
+        )
+        logger.info(
+            "Gmail sync scheduled — every %d min (offset +2m), startup at %s",
+            SYNC_INTERVAL_MINUTES,
+            gmail_startup_time.strftime("%H:%M:%S"),
+        )
 
     # ── Calendar sync jobs ─────────────────────────────────────────────────
     calendar_sync_timeout = 300  # 5 minutes max
@@ -1786,26 +1970,35 @@ def _start_sync_scheduler(
 
                     reclaim_memory(f"calendar_sync:{pid}")
 
-    scheduler.add_job(
-        _run_calendar_sync,
-        IntervalTrigger(
-            minutes=SYNC_INTERVAL_MINUTES, start_date=datetime.now() + timedelta(minutes=3)
-        ),
-        id="calendar_sync",
-        max_instances=1,
-    )
-    calendar_startup_time = datetime.now() + timedelta(seconds=210)
-    scheduler.add_job(
-        lambda: _run_calendar_sync("startup", initial=True),
-        DateTrigger(run_date=calendar_startup_time),
-        id="calendar_startup_sync",
-        max_instances=1,
-    )
-    logger.info(
-        "Calendar sync scheduled — every %d min (offset +3m), startup at %s",
-        SYNC_INTERVAL_MINUTES,
-        calendar_startup_time.strftime("%H:%M:%S"),
-    )
+    if AI_NIGHTLY_ONLY:
+        scheduler.add_job(
+            _run_calendar_sync,
+            CronTrigger(hour=AI_NIGHT_WINDOW_START_UTC, minute=20),
+            id="calendar_sync",
+            max_instances=1,
+        )
+        logger.info("Calendar sync scheduled — nightly at %02d:20 UTC", AI_NIGHT_WINDOW_START_UTC)
+    else:
+        scheduler.add_job(
+            _run_calendar_sync,
+            IntervalTrigger(
+                minutes=SYNC_INTERVAL_MINUTES, start_date=datetime.now() + timedelta(minutes=3)
+            ),
+            id="calendar_sync",
+            max_instances=1,
+        )
+        calendar_startup_time = datetime.now() + timedelta(seconds=210)
+        scheduler.add_job(
+            lambda: _run_calendar_sync("startup", initial=True),
+            DateTrigger(run_date=calendar_startup_time),
+            id="calendar_startup_sync",
+            max_instances=1,
+        )
+        logger.info(
+            "Calendar sync scheduled — every %d min (offset +3m), startup at %s",
+            SYNC_INTERVAL_MINUTES,
+            calendar_startup_time.strftime("%H:%M:%S"),
+        )
 
     # ── Job tracking for /health endpoint ────────────────────────────────
     job_tracker: dict[str, dict] = {}
