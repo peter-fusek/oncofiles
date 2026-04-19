@@ -1797,9 +1797,19 @@ def _start_sync_scheduler(
             except Exception:
                 logger.warning("startup: failed to record sync history", exc_info=True)
 
+            # In nightly mode (AI_NIGHTLY_ONLY=true) skip AI enhancement on startup —
+            # the nightly pipeline at 23:00 UTC owns all LLM work. Import-only on
+            # deploy prevents every Railway restart from firing Claude calls (#433).
             try:
                 import_stats = await asyncio.wait_for(
-                    _sync_from(db, files, p_gdrive, folder_id, enhance=True, patient_id=pid),
+                    _sync_from(
+                        db,
+                        files,
+                        p_gdrive,
+                        folder_id,
+                        enhance=not AI_NIGHTLY_ONLY,
+                        patient_id=pid,
+                    ),
                     timeout=180,  # 3 min max for import
                 )
                 logger.info("Startup import [%s]: %s", pid, import_stats)
@@ -1844,8 +1854,10 @@ def _start_sync_scheduler(
                     except Exception:
                         logger.warning("startup: failed to record sync failure", exc_info=True)
 
-        await _run_category_validation()
-        logger.info("Startup catchup complete: import + validate (RSS: %.1f MB)", get_rss_mb())
+        # Category validation deferred to nightly pipeline under AI_NIGHTLY_ONLY (#433)
+        if not AI_NIGHTLY_ONLY:
+            await _run_category_validation()
+        logger.info("Startup catchup complete (RSS: %.1f MB)", get_rss_mb())
 
     startup_time = datetime.now() + timedelta(seconds=90)
     scheduler.add_job(
