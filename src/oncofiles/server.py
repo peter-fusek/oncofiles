@@ -979,7 +979,10 @@ def _start_sync_scheduler(
                 p_gdrive, folder_id = gc_pair
 
                 async with _sync_semaphore:
-                    # Phase 1: GDrive import (md5-gated, cheap for unchanged)
+                    # Phase 1: GDrive import (md5-gated, cheap for unchanged).
+                    # enhance=False is the cap-enforcement contract — inline enhance
+                    # during import would bypass DAILY_AI_DOC_CAP. Phase 2 below is
+                    # the single authoritative AI-cost gate. See #433.
                     try:
                         sync_stats = await asyncio.wait_for(
                             sync(
@@ -989,6 +992,7 @@ def _start_sync_scheduler(
                                 folder_id,
                                 trigger="nightly",
                                 patient_id=pid,
+                                enhance=False,
                             ),
                             timeout=sync_timeout,
                         )
