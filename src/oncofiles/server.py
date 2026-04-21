@@ -24,6 +24,7 @@ from oncofiles.config import (
     AI_NIGHT_WINDOW_START_UTC,
     AI_NIGHTLY_ONLY,
     AI_REPROCESS_MAX_AGE_HOURS,
+    AI_RUN_ON_STARTUP,
     DAILY_AI_DOC_CAP,
     DASHBOARD_ADMIN_EMAILS,
     DATABASE_PATH,
@@ -1102,24 +1103,44 @@ def _start_sync_scheduler(
             reclaim_memory("nightly_ai_pipeline")
 
     from apscheduler.triggers.cron import CronTrigger
+    from apscheduler.triggers.date import DateTrigger
 
     scheduler = AsyncIOScheduler()
 
     # ── LLM-touching jobs: nightly-only vs legacy (see #433) ───────────────
     if AI_NIGHTLY_ONLY:
+        # misfire_grace_time=1800: absorb deploys within 30 min of the slot so
+        #   a restart at 23:10 doesn't silently skip the 23:00 run (#440).
+        # coalesce=True: if multiple misses accumulate, run once — never double-bill.
         scheduler.add_job(
             _run_nightly_ai_pipeline,
             CronTrigger(hour=AI_NIGHT_WINDOW_START_UTC, minute=0),
             id="nightly_ai_pipeline",
             max_instances=1,
+            misfire_grace_time=1800,
+            coalesce=True,
         )
         logger.info(
             "AI_NIGHTLY_ONLY=true — nightly AI pipeline scheduled at %02d:00 UTC "
-            "(cap=%d docs/patient, window=%dh)",
+            "(cap=%d docs/patient, window=%dh, grace=30min)",
             AI_NIGHT_WINDOW_START_UTC,
             DAILY_AI_DOC_CAP,
             AI_REPROCESS_MAX_AGE_HOURS,
         )
+        # AI_RUN_ON_STARTUP: one-off validation fire 2 min after boot. Use after
+        # cost-optimizer changes to validate without waiting 17h for 23:00 UTC.
+        if AI_RUN_ON_STARTUP:
+            _oneoff_at = datetime.now() + timedelta(minutes=2)
+            scheduler.add_job(
+                _run_nightly_ai_pipeline,
+                DateTrigger(run_date=_oneoff_at),
+                id="nightly_ai_oneoff",
+                max_instances=1,
+            )
+            logger.info(
+                "AI_RUN_ON_STARTUP=true — one-off nightly pipeline fires at %s UTC",
+                _oneoff_at.strftime("%H:%M:%S"),
+            )
     else:
         scheduler.add_job(
             _run_sync,
@@ -1912,6 +1933,8 @@ def _start_sync_scheduler(
             CronTrigger(hour=AI_NIGHT_WINDOW_START_UTC, minute=15),
             id="gmail_sync",
             max_instances=1,
+            misfire_grace_time=1800,
+            coalesce=True,
         )
         logger.info("Gmail sync scheduled — nightly at %02d:15 UTC", AI_NIGHT_WINDOW_START_UTC)
     else:
@@ -1992,6 +2015,8 @@ def _start_sync_scheduler(
             CronTrigger(hour=AI_NIGHT_WINDOW_START_UTC, minute=20),
             id="calendar_sync",
             max_instances=1,
+            misfire_grace_time=1800,
+            coalesce=True,
         )
         logger.info("Calendar sync scheduled — nightly at %02d:20 UTC", AI_NIGHT_WINDOW_START_UTC)
     else:

@@ -271,11 +271,12 @@ class OperationalMixin:
 
     # ── Sync history ──────────────────────────────────────────────────────
 
-    async def close_stale_syncs(self) -> int:
-        """Mark any stuck 'running' sync records as timed out.
+    async def close_stale_syncs(self, *, stale_after_minutes: int = 10) -> int:
+        """Mark truly-stuck 'running' sync records as timed out.
 
-        Called before starting a new sync to clean up stale records from
-        previous syncs that were killed by timeouts or crashes.
+        Only rows whose started_at is older than stale_after_minutes are closed.
+        Prevents a healthy concurrent sync from being flipped to 'timeout' just
+        because a new sync started (#437).
         """
         cursor = await self.db.execute(
             """
@@ -284,7 +285,9 @@ class OperationalMixin:
                 finished_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now'),
                 error_message = 'Marked as timed out (stale running record)'
             WHERE status = 'running'
-            """
+              AND started_at < strftime('%Y-%m-%dT%H:%M:%SZ', 'now', ?)
+            """,
+            (f"-{stale_after_minutes} minutes",),
         )
         await self.db.commit()
         return cursor.rowcount

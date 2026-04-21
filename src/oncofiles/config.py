@@ -69,6 +69,14 @@ ENABLE_INTEGRITY_CHECK: bool = os.environ.get("ENABLE_INTEGRITY_CHECK", "false")
     "1",
     "yes",
 )
+# One-off validation trigger: fire the full nightly AI pipeline ~2 min after boot.
+# Use after cost-optimizer changes to validate end-to-end without waiting for the
+# next 23:00 UTC slot. Turn off once validated. See #440.
+AI_RUN_ON_STARTUP: bool = os.environ.get("AI_RUN_ON_STARTUP", "false").lower() in (
+    "true",
+    "1",
+    "yes",
+)
 
 # Gmail + Calendar integration (#104)
 GMAIL_ENABLED: bool = os.environ.get("GMAIL_ENABLED", "false").lower() in ("true", "1", "yes")
