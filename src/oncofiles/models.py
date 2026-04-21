@@ -415,6 +415,7 @@ class PromptCallType(StrEnum):
     DOC_CONSOLIDATION = "doc_consolidation"
     DOC_RELATIONSHIPS = "doc_relationships"
     DOC_CLASSIFICATION = "doc_classification"
+    VACCINATION_EVENTS = "vaccination_events"
 
 
 class PromptLogEntry(BaseModel):
