@@ -12,6 +12,7 @@ from oncofiles.tools._helpers import (
     _get_files,
     _get_gdrive,
     _get_patient_id,
+    _resolve_patient_id,
     _try_download,
 )
 
@@ -20,6 +21,7 @@ async def enhance_documents(
     ctx: Context,
     document_ids: str | None = None,
     limit: int = 0,
+    patient_slug: str | None = None,
 ) -> str:
     """Run AI enhancement (summary + tags) on documents.
 
@@ -29,6 +31,8 @@ async def enhance_documents(
         document_ids: Comma-separated document IDs to enhance. If omitted, enhances all unprocessed.
         limit: Max documents to process (default 0 = no limit). Use smaller values
                (e.g. 10) to avoid MCP proxy timeouts on large patient records.
+        patient_slug: Optional — explicit patient slug (e.g. 'mattias-cesnak'). Required
+            in stateless HTTP contexts (#429) where select_patient does not persist.
     """
     from oncofiles.sync import enhance_documents as _enhance_documents
 
@@ -40,7 +44,7 @@ async def enhance_documents(
         [int(d.strip()) for d in document_ids.split(",") if d.strip()] if document_ids else None
     )
 
-    pid = _get_patient_id()
+    pid = await _resolve_patient_id(patient_slug, ctx)
     # force=True — user invoked the tool explicitly, bypass ai_processed_at guard (#433).
     stats = await _enhance_documents(
         db, files, gdrive, document_ids=parsed_ids, patient_id=pid, limit=limit, force=True
@@ -142,12 +146,15 @@ async def extract_document_metadata(
     )
 
 
-async def extract_all_metadata(ctx: Context) -> str:
+async def extract_all_metadata(ctx: Context, patient_slug: str | None = None) -> str:
     """Backfill structured_metadata for all documents that have AI summaries but no metadata.
 
     Scans for documents where ai_processed_at is set but structured_metadata is empty,
     then extracts structured metadata from cached OCR text. Useful after adding the
     structured_metadata column to an existing database.
+
+    Args:
+        patient_slug: Optional — explicit patient slug. Required in stateless HTTP (#429).
     """
     from oncofiles.sync import extract_all_metadata as _extract_all_metadata
 
@@ -155,12 +162,17 @@ async def extract_all_metadata(ctx: Context) -> str:
     files = _get_files(ctx)
     gdrive = await _get_gdrive(ctx)
 
-    pid = _get_patient_id()
+    pid = await _resolve_patient_id(patient_slug, ctx)
     stats = await _extract_all_metadata(db, files, gdrive, patient_id=pid)
     return json.dumps(stats)
 
 
-async def detect_and_split_documents(ctx: Context, dry_run: bool = True, limit: int = 10) -> str:
+async def detect_and_split_documents(
+    ctx: Context,
+    dry_run: bool = True,
+    limit: int = 10,
+    patient_slug: str | None = None,
+) -> str:
     """Scan documents for multi-document PDFs and split them.
 
     AI analyzes each PDF's content to detect when one file contains multiple
@@ -170,11 +182,12 @@ async def detect_and_split_documents(ctx: Context, dry_run: bool = True, limit: 
     Args:
         dry_run: If True (default), only report what would be split without making changes.
         limit: Max documents to scan per call (default 10). Use to avoid MCP proxy timeouts.
+        patient_slug: Optional — explicit patient slug. Required in stateless HTTP (#429).
     """
     from oncofiles.doc_analysis import analyze_document_composition
 
     db = _get_db(ctx)
-    pid = _get_patient_id()
+    pid = await _resolve_patient_id(patient_slug, ctx)
     results = {"scanned": 0, "multi_doc": 0, "splits_created": 0, "limit": limit, "details": []}
 
     all_docs = await db.list_documents(limit=200, patient_id=pid)
@@ -225,7 +238,11 @@ async def detect_and_split_documents(ctx: Context, dry_run: bool = True, limit: 
     return json.dumps(results, default=str)
 
 
-async def detect_and_consolidate_documents(ctx: Context, dry_run: bool = True) -> str:
+async def detect_and_consolidate_documents(
+    ctx: Context,
+    dry_run: bool = True,
+    patient_slug: str | None = None,
+) -> str:
     """Detect related multi-file documents and group them.
 
     AI compares content across files to find documents that are parts of the
@@ -233,11 +250,12 @@ async def detect_and_consolidate_documents(ctx: Context, dry_run: bool = True) -
 
     Args:
         dry_run: If True (default), only report what would be consolidated.
+        patient_slug: Optional — explicit patient slug. Required in stateless HTTP (#429).
     """
     from oncofiles.doc_analysis import analyze_consolidation
 
     db = _get_db(ctx)
-    pid = _get_patient_id()
+    pid = await _resolve_patient_id(patient_slug, ctx)
 
     all_docs = await db.list_documents(limit=200, patient_id=pid)
     ungrouped = [d for d in all_docs if d.group_id is None and d.deleted_at is None]
@@ -268,7 +286,12 @@ async def detect_and_consolidate_documents(ctx: Context, dry_run: bool = True) -
     return json.dumps(results, default=str)
 
 
-async def backfill_ai_classification(ctx: Context, dry_run: bool = True, limit: int = 10) -> str:
+async def backfill_ai_classification(
+    ctx: Context,
+    dry_run: bool = True,
+    limit: int = 10,
+    patient_slug: str | None = None,
+) -> str:
     """Re-run AI classification on documents with missing institution, category, or date.
 
     Uses AI to read full document content (letterhead, stamps, addresses) to infer
@@ -279,11 +302,12 @@ async def backfill_ai_classification(ctx: Context, dry_run: bool = True, limit: 
         dry_run: If True (default), only report what would change without making updates.
         limit: Max documents to process per call (default 10). Use smaller values
                to avoid MCP proxy timeouts on large patient records.
+        patient_slug: Optional — explicit patient slug. Required in stateless HTTP (#429).
     """
     from oncofiles.backfill_splits import backfill_ai_classification as _backfill
 
     db = _get_db(ctx)
-    pid = _get_patient_id()
+    pid = await _resolve_patient_id(patient_slug, ctx)
     stats = await _backfill(db, patient_id=pid, dry_run=dry_run, limit=limit)
     return json.dumps(stats, default=str)
 
