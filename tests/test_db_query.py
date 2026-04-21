@@ -83,10 +83,16 @@ async def test_with_clause(db: Database):
 
 async def test_blocks_cross_patient_query(db: Database):
     """Queries on patient-scoped tables without patient_id filter are rejected."""
-    from unittest.mock import patch
+    from unittest.mock import AsyncMock, patch
 
     ctx = _mock_ctx(db)
-    with patch("oncofiles.tools.db_query._get_patient_id", return_value=ERIKA_UUID):
+    # query_db now resolves the patient via _resolve_patient_id (Option A, #429)
+    # instead of the module-level _get_patient_id import. Mock the helper so the
+    # scoping check has a patient-id hint to include in its error message.
+    with patch(
+        "oncofiles.tools._helpers._resolve_patient_id",
+        new=AsyncMock(return_value=ERIKA_UUID),
+    ):
         result = json.loads(await query_db(ctx, "SELECT * FROM documents"))
         assert "error" in result
         assert "patient_id" in result["error"]

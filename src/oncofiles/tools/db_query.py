@@ -9,7 +9,7 @@ import re
 
 from fastmcp import Context
 
-from oncofiles.tools._helpers import _get_db, _get_patient_id
+from oncofiles.tools._helpers import _get_db
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +44,7 @@ async def query_db(
     ctx: Context,
     sql: str,
     limit: int = 50,
+    patient_slug: str | None = None,
 ) -> str:
     """Run a read-only SQL query against the production database.
 
@@ -55,6 +56,9 @@ async def query_db(
              conversations, treatment_events, research_entries, lab_values,
              document_pages, agent_state, patient_context, schema_migrations.
         limit: Max rows to return (default 50, max 200).
+        patient_slug: Optional — explicit patient slug (#429). Drives which
+            patient_id the "require patient_id filter on scoped tables" check
+            hints at in its error message.
     """
     # Whitelist: must start with SELECT or WITH
     if not _ALLOWED_PREFIX.match(sql):
@@ -70,7 +74,9 @@ async def query_db(
 
     # Patient isolation: if query touches patient-scoped tables, require patient_id filter
     try:
-        pid = _get_patient_id()
+        from oncofiles.tools._helpers import _resolve_patient_id
+
+        pid = await _resolve_patient_id(patient_slug, ctx, required=False)
     except (ValueError, Exception):
         pid = ""
     # Stricter check: require "patient_id = " or "patient_id='" pattern (not just the string)

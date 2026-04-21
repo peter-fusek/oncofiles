@@ -7,12 +7,13 @@ import json
 from fastmcp import Context
 
 from oncofiles.models import PromptLogQuery
-from oncofiles.tools._helpers import _get_db, _get_patient_id
+from oncofiles.tools._helpers import _get_db, _resolve_patient_id
 
 
 async def get_prompt_log_entry(
     ctx: Context,
     entry_id: int,
+    patient_slug: str | None = None,
 ) -> str:
     """Get a single prompt log entry with full prompts and raw response.
 
@@ -21,9 +22,10 @@ async def get_prompt_log_entry(
 
     Args:
         entry_id: The prompt log entry ID.
+        patient_slug: Optional — explicit patient slug (#429).
     """
     db = _get_db(ctx)
-    pid = _get_patient_id()
+    pid = await _resolve_patient_id(patient_slug, ctx)
     entry = await db.get_prompt_log(entry_id, patient_id=pid)
     if not entry:
         return json.dumps({"error": f"Prompt log entry not found: {entry_id}"})
@@ -57,6 +59,7 @@ async def search_prompt_log(
     date_to: str | None = None,
     text: str | None = None,
     limit: int = 50,
+    patient_slug: str | None = None,
 ) -> str:
     """Search prompt logs — all AI calls made during document processing.
 
@@ -72,11 +75,12 @@ async def search_prompt_log(
         date_to: Filter to date (YYYY-MM-DD).
         text: Search in prompts and responses.
         limit: Max results (1-200, default 50).
+        patient_slug: Optional — explicit patient slug (#429).
     """
     from oncofiles.tools._helpers import _parse_date
 
     db = _get_db(ctx)
-    pid = _get_patient_id()
+    pid = await _resolve_patient_id(patient_slug, ctx)
     query = PromptLogQuery(
         call_type=call_type,
         document_id=document_id,
