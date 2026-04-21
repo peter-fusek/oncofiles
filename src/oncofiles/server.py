@@ -2550,6 +2550,16 @@ async def sitemap_xml(request: Request) -> HTMLResponse:
         '<xhtml:link rel="alternate" hreflang="sk" href="https://oncofiles.com/onkologia"/>'
         '<xhtml:link rel="alternate" hreflang="en" href="https://oncofiles.com/oncology"/>'
         "</url>\n"
+        f"  <url><loc>https://oncofiles.com/eu</loc><lastmod>{today}</lastmod>"
+        "<priority>0.8</priority><changefreq>monthly</changefreq>"
+        '<xhtml:link rel="alternate" hreflang="en" href="https://oncofiles.com/eu"/>'
+        '<xhtml:link rel="alternate" hreflang="sk" href="https://oncofiles.com/sk"/>'
+        "</url>\n"
+        f"  <url><loc>https://oncofiles.com/sk</loc><lastmod>{today}</lastmod>"
+        "<priority>0.8</priority><changefreq>monthly</changefreq>"
+        '<xhtml:link rel="alternate" hreflang="en" href="https://oncofiles.com/eu"/>'
+        '<xhtml:link rel="alternate" hreflang="sk" href="https://oncofiles.com/sk"/>'
+        "</url>\n"
         "</urlset>\n",
         media_type="application/xml",
     )
@@ -2897,6 +2907,395 @@ no complex onboarding.</p>
         alt_href="https://oncofiles.com/onkologia",
         body_html=body,
     )
+    return HTMLResponse(html)
+
+
+# ── EU positioning pages: /eu (EN) + /sk (SK with press angles) ──────────────
+
+_EU_PAGE_EXTRA_CSS = """
+  .hero { padding:2.5rem 0 1.5rem; }
+  .eyebrow { display:inline-block; font-size:0.75rem; text-transform:uppercase;
+    letter-spacing:0.08em; color:var(--accent); font-weight:700;
+    margin-bottom:0.75rem; }
+  h1 .accent { color:var(--accent); }
+  .compare { width:100%; border-collapse:collapse; margin:1.5rem 0 2rem;
+    font-size:0.95rem; background:var(--surface); border:1px solid var(--border);
+    border-radius:6px; overflow:hidden; }
+  .compare th, .compare td { padding:0.75rem 0.9rem; text-align:left;
+    border-bottom:1px solid var(--border); vertical-align:top; }
+  .compare th { background:#f4f1ec; font-weight:600; color:var(--text);
+    font-size:0.85rem; }
+  .compare td:first-child { font-weight:500; color:var(--text); white-space:nowrap; }
+  .compare td strong { color:var(--accent); }
+  .callout { background:#ecfdf5; border-left:4px solid var(--accent);
+    padding:1rem 1.25rem; margin:1.5rem 0; border-radius:0 6px 6px 0; }
+  .callout p { margin:0; color:var(--text); }
+  .press-angles { background:var(--surface); border:1px solid var(--border);
+    padding:1.25rem 1.5rem; border-radius:6px; margin:1.5rem 0; }
+  .press-angles h3 { font-size:1rem; margin-bottom:0.5rem; }
+  .press-angles p { font-size:0.9rem; margin-bottom:0.5rem; }
+"""
+
+
+def _eu_comparison_schema_jsonld(canonical: str, name: str, description: str) -> str:
+    """JSON-LD for Schema.org SoftwareApplication + ComparisonPage rich results."""
+    return json.dumps(
+        {
+            "@context": "https://schema.org",
+            "@graph": [
+                {
+                    "@type": "SoftwareApplication",
+                    "name": "Oncofiles",
+                    "url": "https://oncofiles.com/",
+                    "applicationCategory": "HealthApplication",
+                    "operatingSystem": "Web, Claude.ai, ChatGPT",
+                    "offers": {
+                        "@type": "Offer",
+                        "price": "0",
+                        "priceCurrency": "EUR",
+                        "description": (
+                            "Free for the first 200 documents per patient "
+                            "(rolling €10/month steady-state budget, €30 onboarding)"
+                        ),
+                    },
+                    "availableOnDevice": [
+                        "Desktop",
+                        "Mobile",
+                        "MCP clients (Claude, ChatGPT)",
+                    ],
+                    "areaServed": [
+                        {"@type": "AdministrativeArea", "name": "European Union"},
+                        {"@type": "Country", "name": "Slovakia"},
+                        {"@type": "Country", "name": "Czech Republic"},
+                        {"@type": "Country", "name": "Germany"},
+                        {"@type": "Country", "name": "Austria"},
+                        {"@type": "Country", "name": "Switzerland"},
+                        {"@type": "Country", "name": "United Kingdom"},
+                    ],
+                    "license": "https://github.com/peter-fusek/oncofiles/blob/main/LICENSE",
+                    "isAccessibleForFree": True,
+                },
+                {
+                    "@type": "WebPage",
+                    "@id": canonical,
+                    "url": canonical,
+                    "name": name,
+                    "description": description,
+                    "inLanguage": "en" if canonical.endswith("/eu") else "sk",
+                    "isPartOf": {
+                        "@type": "WebSite",
+                        "name": "Oncofiles",
+                        "url": "https://oncofiles.com/",
+                    },
+                    "about": {
+                        "@type": "MedicalAudience",
+                        "audienceType": "Patient",
+                        "healthCondition": {
+                            "@type": "MedicalCondition",
+                            "name": "Cancer",
+                        },
+                    },
+                },
+            ],
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+
+
+_EU_COMPARISON_TABLE_EN = """
+<table class="compare" aria-label="Oncofiles vs ChatGPT Health vs HealthEx">
+  <thead>
+    <tr>
+      <th>Feature</th>
+      <th>Oncofiles</th>
+      <th>ChatGPT Health</th>
+      <th>HealthEx (Anthropic US)</th>
+      <th>National EHR<br><small>(eZdravie / ELGA)</small></th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr><td>Available in EU / CH / UK</td>
+      <td><strong>Yes</strong></td>
+      <td>No (excluded)</td>
+      <td>No (US only)</td>
+      <td>National-only</td></tr>
+    <tr><td>Your data stays in EU</td>
+      <td><strong>Yes &mdash; your own Google Drive</strong></td>
+      <td>N/A</td>
+      <td>N/A</td>
+      <td>Yes</td></tr>
+    <tr><td>Works with Claude &amp; ChatGPT</td>
+      <td><strong>Yes &mdash; MCP native</strong></td>
+      <td>ChatGPT only</td>
+      <td>Via US partnership</td>
+      <td>No</td></tr>
+    <tr><td>Multilingual (SK / CZ / EN)</td>
+      <td><strong>Yes</strong></td>
+      <td>English-first</td>
+      <td>English-first</td>
+      <td>National language</td></tr>
+    <tr><td>Covers whole patient journey</td>
+      <td><strong>Yes &mdash; labs, imaging, path, genetics, chemo, surgery</strong></td>
+      <td>Symptom triage</td>
+      <td>Patient intake</td>
+      <td>Provider records</td></tr>
+    <tr><td>Open-source (MIT)</td>
+      <td><strong>Yes</strong></td>
+      <td>No</td>
+      <td>No</td>
+      <td>N/A</td></tr>
+    <tr><td>Price for patients</td>
+      <td><strong>Free tier &mdash; 200 docs, €10/mo budget</strong></td>
+      <td>Part of paid ChatGPT</td>
+      <td>Enterprise only</td>
+      <td>Free (state-funded)</td></tr>
+  </tbody>
+</table>
+"""
+
+_EU_COMPARISON_TABLE_SK = """
+<table class="compare" aria-label="Oncofiles vs ChatGPT Health vs HealthEx">
+  <thead>
+    <tr>
+      <th>Funkcia</th>
+      <th>Oncofiles</th>
+      <th>ChatGPT Health</th>
+      <th>HealthEx (Anthropic US)</th>
+      <th>Štátne systémy<br><small>(eZdravie / OnkoAsist)</small></th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr><td>Dostupné v EÚ / CH / UK</td>
+      <td><strong>Áno</strong></td>
+      <td>Nie (vylúčené)</td>
+      <td>Nie (iba US)</td>
+      <td>Len národné</td></tr>
+    <tr><td>Dáta ostávajú v EÚ</td>
+      <td><strong>Áno &mdash; vo vašom Google Drive</strong></td>
+      <td>N/A</td>
+      <td>N/A</td>
+      <td>Áno</td></tr>
+    <tr><td>Funguje v Claude &amp; ChatGPT</td>
+      <td><strong>Áno &mdash; natívne MCP</strong></td>
+      <td>Len ChatGPT</td>
+      <td>Cez US partnerstvo</td>
+      <td>Nie</td></tr>
+    <tr><td>Slovenčina / čeština / angličtina</td>
+      <td><strong>Áno</strong></td>
+      <td>Angličtina</td>
+      <td>Angličtina</td>
+      <td>Národný jazyk</td></tr>
+    <tr><td>Celá cesta pacienta</td>
+      <td><strong>Áno &mdash; laboratórka, zobrazovanie, histológia, genetika,
+        chemo, chirurgia</strong></td>
+      <td>Triage symptómov</td>
+      <td>Predvstupný formulár</td>
+      <td>Záznamy zdravotníka</td></tr>
+    <tr><td>Open-source (MIT)</td>
+      <td><strong>Áno</strong></td>
+      <td>Nie</td>
+      <td>Nie</td>
+      <td>N/A</td></tr>
+    <tr><td>Cena pre pacienta</td>
+      <td><strong>Zadarmo &mdash; 200 dok., €10/mes rozpočet</strong></td>
+      <td>Časť platenej ChatGPT</td>
+      <td>Iba podnikové</td>
+      <td>Zadarmo (štátne)</td></tr>
+  </tbody>
+</table>
+"""
+
+
+@mcp.custom_route("/eu", methods=["GET"])
+async def eu_page(request: Request) -> HTMLResponse:
+    """EN EU-positioning landing page — #447 Phase A."""
+    canonical = "https://oncofiles.com/eu"
+    title = "AI for EU Cancer Patients — Data Stays in Europe | Oncofiles"
+    description = (
+        "Oncofiles is the open-source oncology document AI built for European "
+        "patients. Works with Claude and ChatGPT, your data stays in your EU "
+        "Google Drive, available where ChatGPT Health is excluded (EEA, CH, UK)."
+    )
+    body = f"""
+<section class="hero">
+  <span class="eyebrow">For EU cancer patients &amp; caregivers</span>
+  <h1>AI for European cancer patients &mdash;
+    <span class="accent">your data stays in Europe</span></h1>
+  <p class="intro">Oncofiles is the oncology document AI built for patients in
+  the EEA, Switzerland, and the UK &mdash; the regions ChatGPT Health currently
+  excludes. Connect your own Google Drive, keep your files in your own EU
+  storage, and use Claude or ChatGPT to search, summarize, and brief your
+  oncologist.</p>
+</section>
+
+<div class="callout">
+<p><strong>Why this matters now:</strong> ChatGPT Health launched excluding EEA,
+Switzerland, and the UK. HealthEx announced a US-only partnership with
+Anthropic for patient intake. That leaves a 450-million-person gap in
+patient-side oncology AI &mdash; for the next 18-36 months, until those vendors
+clear regulatory hurdles. Oncofiles closes that gap today.</p>
+</div>
+
+<h2>What makes Oncofiles different</h2>
+<ul>
+<li><strong>EU-first by design.</strong> Your documents stay in your own Google
+Drive. Oncofiles never copies them to a central vendor-owned store.</li>
+<li><strong>Works where you already work.</strong> Native MCP integration with
+Claude.ai and ChatGPT. No separate app to learn.</li>
+<li><strong>Multilingual.</strong> Full Slovak + Czech + English support today.
+German and French next quarter.</li>
+<li><strong>Whole-journey coverage.</strong> Labs, CT / MRI reports, histology,
+germline &amp; somatic genetics, chemo sheets, discharge summaries, even the
+stack of prescriptions from three different clinics.</li>
+<li><strong>Open-source under MIT.</strong> Audit the code,
+self-host if you prefer, extend it for your own use case.</li>
+</ul>
+
+<h2>How Oncofiles compares</h2>
+{_EU_COMPARISON_TABLE_EN}
+
+<h2>Built for the European oncology reality</h2>
+<p>Most EU cancer patients route between a public oncology centre, a private
+laboratory chain, a second-opinion clinic abroad, and a GP &mdash; four
+different filename conventions, three different languages, and two different
+EHR systems, none of which talks to the others. Oncofiles is the
+<em>patient-side</em> layer that stitches it together without replacing the
+official records.</p>
+
+<h2>Data governance</h2>
+<ul>
+<li>Documents stay in <strong>your</strong> Google Drive &mdash; they are never
+copied to a central database.</li>
+<li>Metadata (filenames, categories, AI summaries) is stored in an EU-region
+Turso database.</li>
+<li>Open-source: inspect what the code does with your data at any time.</li>
+<li>EU AI Act classification memo and medical-device scoping in progress with
+EU counsel (2026).</li>
+</ul>
+
+<a class="cta" href="/dashboard">Start for free &rarr;</a>
+<p style="margin-top:1rem; font-size:0.875rem;">Prefer the Slovak version?
+<a href="/sk">Prejsť na slovenskú verziu &rarr;</a></p>
+"""
+    html = _topic_page_html(
+        lang="en",
+        title=title,
+        description=description,
+        canonical=canonical,
+        alt_hreflang="sk",
+        alt_href="https://oncofiles.com/sk",
+        body_html=body,
+    )
+    # Inject comparison-table CSS + Schema.org JSON-LD before </head>.
+    jsonld = _eu_comparison_schema_jsonld(canonical, title, description)
+    injection = (
+        f'<style>{_EU_PAGE_EXTRA_CSS}</style><script type="application/ld+json">{jsonld}</script>'
+    )
+    html = html.replace("</head>", f"{injection}</head>")
+    return HTMLResponse(html)
+
+
+@mcp.custom_route("/sk", methods=["GET"])
+async def sk_page(request: Request) -> HTMLResponse:
+    """SK mirror of /eu with Slovak-specific press angles — #447 Phase A."""
+    canonical = "https://oncofiles.com/sk"
+    title = "AI pre onkologických pacientov na Slovensku — Oncofiles"
+    description = (
+        "Oncofiles je open-source nástroj pre onkologických pacientov na "
+        "Slovensku a v EÚ. Funguje s Claude a ChatGPT, vaše dáta ostávajú "
+        "v EÚ &mdash; dostupné tam, kde ChatGPT Health nefunguje."
+    )
+    body = f"""
+<section class="hero">
+  <span class="eyebrow">Pre slovenských onkologických pacientov a opatrovateľov</span>
+  <h1>AI pre onkologických pacientov &mdash;
+    <span class="accent">vaše dáta ostávajú v EÚ</span></h1>
+  <p class="intro">Oncofiles je open-source nástroj na spravovanie zdravotnej
+  dokumentácie pre pacientov na Slovensku, v Česku a ostatných krajinách EÚ.
+  Prepojíte svoj vlastný Google Drive, súbory ostávajú vo vašom úložisku,
+  a Claude alebo ChatGPT vám pomôžu hľadať, sumarizovať a pripraviť sa na
+  návštevu onkológa.</p>
+</section>
+
+<div class="callout">
+<p><strong>Prečo teraz:</strong> ChatGPT Health bol spustený <em>bez</em> EHP,
+Švajčiarska a UK. HealthEx ohlásil partnerstvo s Anthropic iba pre americký trh.
+To znamená, že 450 miliónov Európanov &mdash; vrátane každého slovenského
+onkologického pacienta &mdash; nemá v nasledujúcich 18-36 mesiacoch prístup k
+tomu, čo vidia Američania. Oncofiles túto medzeru zatvára dnes.</p>
+</div>
+
+<h2>Čo robí Oncofiles iným</h2>
+<ul>
+<li><strong>Priorita EÚ.</strong> Dokumenty ostávajú vo <em>vašom</em> Google
+Drive. Oncofiles ich nikdy nekopíruje do centrálnej databázy dodávateľa.</li>
+<li><strong>Funguje tam, kde ste zvyknutí.</strong> Natívna integrácia s
+Claude.ai a ChatGPT cez MCP. Žiadna ďalšia aplikácia na učenie.</li>
+<li><strong>Slovenčina.</strong> Plná podpora slovenčiny, češtiny a angličtiny.
+Nemčina a francúzština v ďalšom štvrťroku.</li>
+<li><strong>Celá cesta pacienta.</strong> Laboratórka, CT a MR popisy,
+histológia, zárodočná a somatická genetika, chemoterapeutické listy,
+prepúšťacie správy &mdash; aj tá kôpka receptov z troch rôznych kliník.</li>
+<li><strong>Open-source pod MIT.</strong> Overte si kód, nasaďte si ho doma,
+rozšírte ho pre vlastné potreby.</li>
+</ul>
+
+<h2>Ako sa Oncofiles porovnáva</h2>
+{_EU_COMPARISON_TABLE_SK}
+
+<h2>Postavené pre slovenskú onkologickú realitu</h2>
+<p>Väčšina slovenských onkologických pacientov krúži medzi Národným onkologickým
+ústavom (NOU), Onkologickým ústavom sv. Alžbety (OÚSA), súkromnými laboratóriami
+(Medirex, Alpha, Synlab), druhými názormi v zahraničí a praktickým lekárom
+&mdash; štyri rôzne pomenovacie konvencie, dva jazyky a dva EHR systémy, ktoré
+spolu nekomunikujú. Oncofiles je <em>pacientska vrstva</em>, ktorá to spája
+bez toho, aby nahradila oficiálnu zdravotnú kartu.</p>
+
+<h2>Dopĺňa eZdravie, OnkoAsist a NCZI</h2>
+<p>Štátne systémy slúžia na komunikáciu medzi zdravotníckymi zariadeniami.
+Oncofiles je pacientsky nástroj &mdash; nekopíruje eZdravie, ale pomáha
+pacientovi rozumieť vlastným dokumentom a prísť k ďalšej konzultácii
+pripravený. Zdravotník má eZdravie, pacient má Oncofiles.</p>
+
+<h2>Ochrana dát</h2>
+<ul>
+<li>Dokumenty ostávajú vo <strong>vašom</strong> Google Drive &mdash; nikdy sa
+nekopírujú do centrálnej databázy.</li>
+<li>Metadáta (názvy súborov, kategórie, AI sumáre) sú uložené v EÚ Turso DB.</li>
+<li>Open-source: kedykoľvek si overíte, čo kód s vašimi dátami robí.</li>
+<li>Klasifikačné memo podľa EU AI Act a rozbor klasifikácie zdravotnej pomôcky
+s právnou kanceláriou prebiehajú (2026).</li>
+</ul>
+
+<div class="press-angles">
+<h3>Pre novinárov a redakcie</h3>
+<p><strong>Kľúčové body:</strong> Slovenský open-source projekt. Zatvára
+medzeru po ChatGPT Health (nedostupný v EÚ) a HealthEx (iba US). Prvých päť
+pacientov už používa. Zadarmo pre pacientov (200 dok., €10/mes AI rozpočet).
+Autor: Peter Fusek, peter.fusek@instarea.sk.</p>
+<p><strong>K dispozícii:</strong> Rozhovor s autorom, technická demo, príbeh
+pacienta (anonymizovaný), rozbor konkurenčnej medzery.</p>
+</div>
+
+<a class="cta" href="/dashboard">Začať zadarmo &rarr;</a>
+<p style="margin-top:1rem; font-size:0.875rem;">Prefer English?
+<a href="/eu">Switch to the English version &rarr;</a></p>
+"""
+    html = _topic_page_html(
+        lang="sk",
+        title=title,
+        description=description,
+        canonical=canonical,
+        alt_hreflang="en",
+        alt_href="https://oncofiles.com/eu",
+        body_html=body,
+    )
+    jsonld = _eu_comparison_schema_jsonld(canonical, title, description)
+    injection = (
+        f'<style>{_EU_PAGE_EXTRA_CSS}</style><script type="application/ld+json">{jsonld}</script>'
+    )
+    html = html.replace("</head>", f"{injection}</head>")
     return HTMLResponse(html)
 
 
