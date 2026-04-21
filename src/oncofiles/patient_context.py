@@ -18,6 +18,14 @@ logger = logging.getLogger(__name__)
 # NEVER commit patient-specific data (diagnosis, biomarkers, physicians) to this repo.
 _DEFAULT_CONTEXT: dict[str, Any] = {
     "name": os.environ.get("PATIENT_NAME", ""),
+    # Hospital chart name if distinct from display name. Slovak medical records
+    # sometimes file patients under mother's/birth surname (common for pediatric
+    # or transplant patients). Pipelines that match filename↔patient must accept
+    # EITHER `name` OR `medical_record_name` — see _try_patient_name_swap. #439
+    "medical_record_name": "",
+    # Home region for trial/protocol localization. oncoteam prioritizes home-country
+    # clinical trials. {city, country, country_code (ISO 3166-1 alpha-2)}. #421
+    "home_region": {},
     "patient_type": "oncology",  # "oncology" or "general"
     "date_of_birth": "",  # ISO date, e.g. "1980-01-15"
     "sex": "",  # "male" or "female"
@@ -66,8 +74,19 @@ def get_context(patient_id: str | None = None) -> dict[str, Any]:
 
 
 def get_patient_name(patient_id: str | None = None) -> str:
-    """Return the patient's name from context."""
+    """Return the patient's display name from context."""
     return get_context(patient_id).get("name", "")
+
+
+def get_medical_record_name(patient_id: str | None = None) -> str:
+    """Return the hospital-chart name if distinct from display name.
+
+    Empty string means "no distinct chart name" — display_name is authoritative.
+    Populated means filenames containing this name ALSO belong to the patient
+    (Mattias Cesnak → 'Gonsorčíková' since his hospital chart is filed under
+    the mother's surname). See #439.
+    """
+    return get_context(patient_id).get("medical_record_name", "") or ""
 
 
 def load_from_json(path: str | Path) -> dict[str, Any]:

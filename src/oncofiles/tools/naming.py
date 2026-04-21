@@ -19,26 +19,36 @@ _DATE_RE = __import__("re").compile(r"^(\d{4})(\d{2})(\d{2})_")
 def _try_patient_name_swap(filename: str, patient_id: str) -> str | None:
     """If filename is standard format with a WRONG patient name, swap to current.
 
+    Recognizes TWO valid names: display_name and medical_record_name (#439).
+    SK medical records sometimes list patients under the mother's/birth surname
+    (pediatric + transplant cases). If the candidate name matches EITHER, this
+    is a correctly-named file and gets left alone.
+
     Returns the corrected filename, or None if not applicable.
     """
 
     from oncofiles.filename_parser import _TOKEN_TO_CATEGORY
-    from oncofiles.patient_context import get_patient_name
+    from oncofiles.patient_context import get_medical_record_name, get_patient_name
 
     m = _DATE_RE.match(filename)
     if not m:
         return None
 
-    current_patient = get_patient_name(patient_id).replace(" ", "") or "Patient"
+    display_name = get_patient_name(patient_id).replace(" ", "") or "Patient"
+    chart_name = get_medical_record_name(patient_id).replace(" ", "")
+
     stem_after_date = filename[9:]  # skip "YYYYMMDD_"
     parts = stem_after_date.split("_")
 
     if len(parts) < 3:
         return None
 
-    candidate_name = parts[0]
-    # If the candidate name IS the current patient, this isn't a wrong-name case
-    if candidate_name.lower() == current_patient.lower():
+    candidate_name = parts[0].lower()
+    # Leave alone if candidate matches EITHER the display name or the hospital
+    # chart name — both are valid identifiers for this patient (#439).
+    if candidate_name == display_name.lower():
+        return None
+    if chart_name and candidate_name == chart_name.lower():
         return None
 
     # Check if parts[2] (would-be category token) is a valid category
@@ -48,7 +58,7 @@ def _try_patient_name_swap(filename: str, patient_id: str) -> str | None:
 
     # This looks like standard format with wrong patient name — swap it
     date_prefix = filename[:9]  # "YYYYMMDD_"
-    parts[0] = current_patient
+    parts[0] = display_name
     return date_prefix + "_".join(parts)
 
 
