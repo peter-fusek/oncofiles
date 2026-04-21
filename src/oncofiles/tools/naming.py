@@ -9,7 +9,7 @@ import logging
 from fastmcp import Context
 
 from oncofiles.filename_parser import is_corrupted_filename, is_standard_format, rename_to_standard
-from oncofiles.tools._helpers import _get_db, _get_gdrive, _get_patient_id
+from oncofiles.tools._helpers import _get_db, _get_gdrive, _resolve_patient_id
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +66,7 @@ async def rename_documents_to_standard(
     ctx: Context,
     dry_run: bool = True,
     en_descriptions: str | None = None,
+    patient_slug: str | None = None,
 ) -> str:
     """Rename documents from old naming conventions to the standard format.
 
@@ -79,6 +80,9 @@ async def rename_documents_to_standard(
         en_descriptions: Optional JSON object mapping doc_id → English description
                         (e.g. '{"15": "BloodResultsPreCycle3", "42": "CTAbdomen"}').
                         If not provided, keeps existing descriptions.
+        patient_slug: Optional — explicit patient slug (e.g. 'mattias-cesnak'). Required
+            in stateless HTTP contexts where select_patient() state does not persist
+            across tool calls (#429). Stdio + single-patient bearer flows can omit.
     """
     import time
 
@@ -95,7 +99,7 @@ async def rename_documents_to_standard(
         except (json.JSONDecodeError, ValueError) as e:
             return json.dumps({"error": f"Invalid en_descriptions JSON: {e}"})
 
-    pid = _get_patient_id()
+    pid = await _resolve_patient_id(patient_slug, ctx)
     docs = await db.list_documents(limit=500, patient_id=pid)
 
     stats = {"total": len(docs), "already_standard": 0, "renamed": 0, "skipped": 0, "errors": 0}
