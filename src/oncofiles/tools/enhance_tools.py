@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 
 from fastmcp import Context
 
@@ -15,6 +17,8 @@ from oncofiles.tools._helpers import (
     _resolve_patient_id,
     _try_download,
 )
+
+logger = logging.getLogger(__name__)
 
 
 async def enhance_documents(
@@ -459,6 +463,215 @@ async def repair_broken_groups(
     )
 
 
+async def detect_and_clone_vaccinations(
+    ctx: Context,
+    dry_run: bool = True,
+    patient_slug: str | None = None,
+) -> str:
+    """Clone vaccination-log documents into every YYYY-MM folder they record (#460).
+
+    For each document in the patient's ``vaccination`` category, AI parses
+    the OCR text to enumerate individual vaccination events (date + product
+    + dose label). For each event, a ``document_references`` row is upserted
+    (UNIQUE on source_document_id + event_date + event_label, so repeated
+    calls are idempotent); when ``dry_run=False`` AND the patient has GDrive
+    wired, a GDrive shortcut file is also created in the target YYYY-MM
+    folder of the ``vaccination`` category.
+
+    The original document is never duplicated or moved. Each reference is a
+    pointer — browsing GDrive per month surfaces the vaccine; the file bytes
+    stay canonical.
+
+    Args:
+        dry_run: If True (default), report what would be created without
+            touching the DB or GDrive.
+        patient_slug: Optional — explicit patient slug (#429).
+    """
+    import json as _json
+    import re
+    import uuid as _uuid
+
+    from oncofiles.doc_analysis import analyze_vaccination_events
+    from oncofiles.gdrive_folders import (
+        bilingual_name,
+        ensure_year_month_folder,
+        resolve_category_folder,
+    )
+    from oncofiles.models import DocumentCategory
+
+    db = _get_db(ctx)
+    pid = await _resolve_patient_id(patient_slug, ctx)
+
+    all_docs = await db.list_documents(limit=10000, patient_id=pid)
+    vax_docs = [
+        d for d in all_docs if d.deleted_at is None and d.category == DocumentCategory.VACCINATION
+    ]
+    if not vax_docs:
+        return _json.dumps(
+            {
+                "dry_run": dry_run,
+                "patient_id": pid,
+                "message": "No vaccination-category documents for this patient.",
+                "scanned": 0,
+                "events_found": 0,
+                "references_created": 0,
+            }
+        )
+
+    # Resolve GDrive + folder_map only if we will write. For dry_run we skip
+    # the gdrive plumbing entirely — it's a read-only simulation.
+    gdrive = None
+    folder_map: dict[str, str] | None = None
+    root_folder_id: str | None = None
+    if not dry_run:
+        token = await db.get_oauth_token(patient_id=pid)
+        root_folder_id = token.gdrive_folder_id if token else None
+        if root_folder_id:
+            gdrive = await _get_gdrive(ctx)
+            if gdrive is not None:
+                try:
+                    from oncofiles import patient_context as _pctx
+                    from oncofiles.gdrive_folders import ensure_folder_structure
+
+                    ptype = (_pctx.get_context(pid) or {}).get("patient_type", "oncology")
+                    folder_map = await asyncio.to_thread(
+                        ensure_folder_structure, gdrive, root_folder_id, patient_type=ptype
+                    )
+                except Exception:
+                    logger.exception("detect_and_clone_vaccinations: folder structure setup failed")
+                    folder_map = None
+
+    ym_re = re.compile(r"^\d{4}-\d{2}")
+    scanned = 0
+    all_events: list[dict] = []
+    created_refs: list[dict] = []
+    skipped_existing = 0
+    created_shortcuts = 0
+    shortcut_errors = 0
+
+    for doc in vax_docs:
+        scanned += 1
+        # Collect OCR text for this doc; skip if none.
+        try:
+            if not await db.has_ocr_text(doc.id):
+                continue
+            pages = await db.get_ocr_pages(doc.id)
+        except Exception:
+            logger.debug("detect_and_clone_vaccinations: OCR fetch failed for %s", doc.id)
+            continue
+        text = "\n\n".join(p["extracted_text"] for p in pages)
+        if not text.strip():
+            continue
+
+        events = analyze_vaccination_events(text, db=db, document_id=doc.id)
+        for ev in events:
+            date_str = ev.get("date", "")
+            if not ym_re.match(date_str):
+                continue  # AI returned malformed date — skip
+            label_base = ev.get("vaccine_name") or "vaccine"
+            dose = ev.get("dose_label") or ""
+            event_label = f"{label_base}:{dose}" if dose else label_base
+
+            entry = {
+                "source_document_id": doc.id,
+                "event_date": date_str,
+                "event_label": event_label,
+                "reasoning": ev.get("reasoning", ""),
+            }
+            all_events.append(entry)
+
+            if dry_run:
+                continue
+
+            # Check for existing (respects UNIQUE constraint but also lets us
+            # report duplicates before calling the GDrive API).
+            async with db.db.execute(
+                "SELECT id FROM document_references "
+                "WHERE source_document_id = ? AND event_date = ? AND event_label = ?",
+                (doc.id, date_str, event_label),
+            ) as cursor:
+                existing = await cursor.fetchone()
+            if existing is not None:
+                skipped_existing += 1
+                continue
+
+            shortcut_id = None
+            target_folder_id = None
+            if gdrive is not None and folder_map and root_folder_id:
+                try:
+                    cat_folder = resolve_category_folder(
+                        folder_map, DocumentCategory.VACCINATION.value, root_folder_id
+                    )
+                    target_folder_id = await asyncio.to_thread(
+                        ensure_year_month_folder, gdrive, cat_folder, date_str
+                    )
+                    label_for_file = re.sub(r"[^A-Za-z0-9._-]+", "_", event_label)
+                    shortcut_name = f"{date_str}_{label_for_file}"
+                    result = await asyncio.to_thread(
+                        gdrive.create_shortcut,
+                        doc.gdrive_id,
+                        shortcut_name,
+                        target_folder_id,
+                        {"oncofiles_clone_of": str(doc.id)},
+                    )
+                    shortcut_id = result.get("id")
+                    created_shortcuts += 1
+                except Exception:
+                    shortcut_errors += 1
+                    logger.exception(
+                        "detect_and_clone_vaccinations: shortcut creation failed "
+                        "for doc %d event %s",
+                        doc.id,
+                        event_label,
+                    )
+
+            try:
+                await db.db.execute(
+                    "INSERT INTO document_references "
+                    "(patient_id, source_document_id, event_date, event_label, kind, "
+                    " gdrive_shortcut_id, target_folder_id, metadata_json) "
+                    "VALUES (?, ?, ?, ?, 'vaccination', ?, ?, ?)",
+                    (
+                        pid,
+                        doc.id,
+                        date_str,
+                        event_label,
+                        shortcut_id,
+                        target_folder_id,
+                        _json.dumps({"reasoning": ev.get("reasoning", "")}),
+                    ),
+                )
+                await db.db.commit()
+                created_refs.append(entry | {"shortcut_id": shortcut_id})
+            except Exception:
+                logger.exception(
+                    "detect_and_clone_vaccinations: INSERT failed for doc %d event %s",
+                    doc.id,
+                    event_label,
+                )
+                shortcut_errors += 1
+
+    # Note: the bilingual_name/uuid imports above are conservatively retained
+    # for future expansion (kind='dental', etc.) but not used in this v1.
+    _ = (bilingual_name, _uuid)
+
+    return _json.dumps(
+        {
+            "dry_run": dry_run,
+            "patient_id": pid,
+            "scanned": scanned,
+            "events_found": len(all_events),
+            "events": all_events,
+            "references_created": len(created_refs),
+            "references": created_refs,
+            "skipped_existing": skipped_existing,
+            "shortcuts_created": created_shortcuts,
+            "shortcut_errors": shortcut_errors,
+        },
+        default=str,
+    )
+
+
 def register(mcp):
     mcp.tool()(enhance_documents)
     mcp.tool()(extract_document_metadata)
@@ -468,3 +681,4 @@ def register(mcp):
     mcp.tool()(backfill_ai_classification)
     mcp.tool()(unblock_stuck_documents)
     mcp.tool()(repair_broken_groups)
+    mcp.tool()(detect_and_clone_vaccinations)

@@ -476,6 +476,50 @@ class GDriveClient:
         return result.get("parents", [])
 
     @_retry_on_transient
+    def create_shortcut(
+        self,
+        target_file_id: str,
+        name: str,
+        parent_folder_id: str,
+        app_properties: dict | None = None,
+    ) -> dict:
+        """Create a Google Drive shortcut (application/vnd.google-apps.shortcut)
+        pointing at ``target_file_id``, placed inside ``parent_folder_id``.
+
+        Used by #460 multi-event cloning — a single source document (e.g. a
+        lifetime vaccination log) can be referenced from every YYYY-MM folder
+        where it records an event, without duplicating the file bytes.
+
+        Returns the new shortcut's file metadata. Auto-shared via the same
+        fallback used by copy_file.
+        """
+        body: dict = {
+            "name": name,
+            "mimeType": "application/vnd.google-apps.shortcut",
+            "parents": [parent_folder_id],
+            "shortcutDetails": {"targetId": target_file_id},
+        }
+        if app_properties:
+            body["appProperties"] = app_properties
+        result = (
+            self._service.files()
+            .create(
+                body=body,
+                fields="id, name, shortcutDetails, parents, appProperties",
+            )
+            .execute()
+        )
+        logger.info(
+            "Created GDrive shortcut %s → '%s' (target=%s, parent=%s)",
+            result.get("id"),
+            name,
+            target_file_id,
+            parent_folder_id,
+        )
+        self._auto_share(result["id"])
+        return result
+
+    @_retry_on_transient
     def copy_file(
         self,
         file_id: str,

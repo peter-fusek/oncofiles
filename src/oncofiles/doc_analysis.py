@@ -225,6 +225,116 @@ def analyze_consolidation(
         return []
 
 
+# ── Multi-event extraction (vaccination logs, etc.) ─────────────────────────
+
+VACCINE_EVENTS_SYSTEM_PROMPT = """\
+You are a medical document analyst. Given the extracted text of a patient's \
+vaccination log or vaccination summary, identify every distinct vaccination \
+event recorded in the document.
+
+Each vaccination event has:
+- a specific administration date (not a scheduled future date — only actually \
+administered)
+- a vaccine name or product (e.g. Hepatitis B, MMR, Tdap, Infanrix Hexa, \
+Boostrix, Priorix)
+- optionally a dose/series label (e.g. primary, booster, 1st, 2nd, 3rd) to \
+distinguish vaccinations of the SAME product over time
+
+Respond with a JSON object:
+{
+  "events": [
+    {
+      "date": "<YYYY-MM-DD>",
+      "vaccine_name": "<short CamelCase or common name, max 30 chars>",
+      "dose_label": "<primary|booster|1st|2nd|3rd|... or empty string>",
+      "reasoning": "<brief — why you think this is a distinct event>"
+    }
+  ]
+}
+
+Rules:
+- Return each distinct administration as its own event, even if same vaccine \
+repeated across years.
+- If a year is given without month/day, use YYYY-01-01 and note in reasoning.
+- Skip planned / scheduled / recommended but not-yet-given rows.
+- If the document isn't a vaccination log at all, return {"events": []}.
+
+Respond ONLY with the JSON object, no markdown fencing or extra text."""
+
+
+def analyze_vaccination_events(
+    text: str,
+    *,
+    db: Any = None,
+    document_id: int | None = None,
+) -> list[dict]:
+    """Extract vaccination events with date + product + dose label from text.
+
+    Used by #460's ``detect_and_clone_vaccinations`` to decide which
+    ``document_references`` rows (and GDrive shortcuts) to create.
+
+    Returns a list of dicts: ``{date, vaccine_name, dose_label, reasoning}``.
+    Empty list when the document isn't a vaccination log or the AI response
+    is malformed — callers treat empty as "nothing to clone".
+    """
+    if not text.strip():
+        return []
+
+    client = _get_client()
+    truncated = text[:10000]
+    user_prompt = f"Vaccination log text:\n\n{truncated}"
+
+    start = time.perf_counter()
+    response = client.messages.create(
+        model=ANALYSIS_MODEL,
+        max_tokens=2048,
+        system=VACCINE_EVENTS_SYSTEM_PROMPT,
+        messages=[{"role": "user", "content": user_prompt}],
+    )
+    duration_ms = int((time.perf_counter() - start) * 1000)
+
+    raw = response.content[0].text if response.content else "{}"
+
+    log_ai_call(
+        db,
+        call_type="vaccination_events",
+        document_id=document_id,
+        model=ANALYSIS_MODEL,
+        system_prompt=VACCINE_EVENTS_SYSTEM_PROMPT,
+        user_prompt=user_prompt,
+        raw_response=raw,
+        input_tokens=getattr(response.usage, "input_tokens", None),
+        output_tokens=getattr(response.usage, "output_tokens", None),
+        duration_ms=duration_ms,
+    )
+
+    try:
+        parsed = json.loads(_strip_markdown_fencing(raw))
+        events = parsed.get("events", [])
+        if not isinstance(events, list):
+            return []
+        # Light validation: drop events that lack a date; normalise keys.
+        clean: list[dict] = []
+        for e in events:
+            if not isinstance(e, dict):
+                continue
+            date_str = str(e.get("date") or "").strip()
+            if not date_str:
+                continue
+            clean.append(
+                {
+                    "date": date_str,
+                    "vaccine_name": str(e.get("vaccine_name") or "").strip(),
+                    "dose_label": str(e.get("dose_label") or "").strip(),
+                    "reasoning": str(e.get("reasoning") or "").strip(),
+                }
+            )
+        return clean
+    except json.JSONDecodeError:
+        logger.warning("Failed to parse vaccination events response: %s", raw[:200])
+        return []
+
+
 # ── AI-powered cross-references ─────────────────────────────────────────────
 
 RELATIONSHIPS_SYSTEM_PROMPT = """\
