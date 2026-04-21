@@ -281,13 +281,19 @@ async def sync_from_gdrive(
 
                 # Re-run AI enhancement (will re-extract OCR)
                 if enhance:
+                    from oncofiles.config import ENHANCE_TIMEOUT_S
+
                     try:
                         await asyncio.wait_for(
                             _enhance_document(db, existing, files, gdrive, patient_id=patient_id),
-                            timeout=60.0,
+                            timeout=ENHANCE_TIMEOUT_S,
                         )
                     except TimeoutError:
-                        logger.warning("sync: enhance timed out for doc %d", existing.id)
+                        logger.warning(
+                            "sync: enhance timed out for doc %d (limit=%.0fs)",
+                            existing.id,
+                            ENHANCE_TIMEOUT_S,
+                        )
                         stats["errors"] = stats.get("errors", 0) + 1
 
                 stats["updated"] += 1
@@ -368,13 +374,19 @@ async def sync_from_gdrive(
 
                 # AI enhancement
                 if enhance:
+                    from oncofiles.config import ENHANCE_TIMEOUT_S
+
                     try:
                         await asyncio.wait_for(
                             _enhance_document(db, doc, files, gdrive, patient_id=patient_id),
-                            timeout=60.0,
+                            timeout=ENHANCE_TIMEOUT_S,
                         )
                     except TimeoutError:
-                        logger.warning("sync: enhance timed out for doc %d", doc.id)
+                        logger.warning(
+                            "sync: enhance timed out for doc %d (limit=%.0fs)",
+                            doc.id,
+                            ENHANCE_TIMEOUT_S,
+                        )
                         stats["errors"] = stats.get("errors", 0) + 1
 
                 stats["new"] += 1
@@ -698,18 +710,21 @@ async def sync_to_gdrive(
                     logger.exception("sync_to_gdrive: post-rename organize failed")
 
             # Post-rename: re-enhance renamed docs (metadata/FTS reflect new name)
+            from oncofiles.config import ENHANCE_TIMEOUT_S
+
             for doc_id in rename_stats["renamed_ids"]:
                 try:
                     doc = await db.get_document(doc_id)
                     await asyncio.wait_for(
                         _enhance_document(db, doc, files, gdrive, patient_id=patient_id),
-                        timeout=60.0,
+                        timeout=ENHANCE_TIMEOUT_S,
                     )
                     logger.info("sync_to_gdrive: post-rename enhanced doc %d", doc_id)
                 except TimeoutError:
                     logger.warning(
-                        "sync_to_gdrive: post-rename enhance timed out for doc %d",
+                        "sync_to_gdrive: post-rename enhance timed out for doc %d (limit=%.0fs)",
                         doc_id,
+                        ENHANCE_TIMEOUT_S,
                     )
                 except Exception:
                     logger.exception(
@@ -1500,11 +1515,14 @@ async def enhance_documents(
     # Proactive reconnect before batch to avoid stale replica (#378)
     await db.reconnect_if_stale(timeout=10.0)
 
+    from oncofiles.config import ENHANCE_TIMEOUT_S
+    from oncofiles.memory import reclaim_memory
+
     for doc in docs:
         try:
             enhanced = await asyncio.wait_for(
                 _enhance_document(db, doc, files, gdrive, patient_id=patient_id, force=force),
-                timeout=60.0,
+                timeout=ENHANCE_TIMEOUT_S,
             )
             if enhanced:
                 stats["processed"] += 1
@@ -1512,14 +1530,21 @@ async def enhance_documents(
                 stats["skipped"] += 1
         except TimeoutError:
             logger.warning(
-                "enhance_documents: doc %d (%s) timed out after 60s — skipping",
+                "enhance_documents: doc %d (%s) timed out after %.0fs — skipping",
                 doc.id,
                 doc.filename,
+                ENHANCE_TIMEOUT_S,
             )
             stats["errors"] += 1
         except Exception:
             logger.exception("enhance_documents: error on doc %d (%s)", doc.id, doc.filename)
             stats["errors"] += 1
+        finally:
+            # Per-doc reclaim — addresses #426 memory leak under nightly batch.
+            # Each scanned-PDF enhance leaks ~40 MB (fitz pixmaps + Anthropic SSL
+            # buffers on timeout). Calling gc + malloc_trim between docs keeps
+            # RSS bounded instead of growing monotonically through the batch.
+            reclaim_memory(f"enhance:{doc.id}")
 
     logger.info("enhance_documents: done — %s", stats)
     return stats

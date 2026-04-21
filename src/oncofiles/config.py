@@ -64,6 +64,11 @@ AI_NIGHT_WINDOW_START_UTC: int = int(os.environ.get("AI_NIGHT_WINDOW_START_UTC",
 AI_NIGHT_WINDOW_END_UTC: int = int(os.environ.get("AI_NIGHT_WINDOW_END_UTC", "3"))
 DAILY_AI_DOC_CAP: int = int(os.environ.get("DAILY_AI_DOC_CAP", "20"))
 AI_REPROCESS_MAX_AGE_HOURS: int = int(os.environ.get("AI_REPROCESS_MAX_AGE_HOURS", "36"))
+# Inline AI enhance timeout. 60s strands scanned multi-page PDFs mid-OCR (#422).
+# 180s covers typical 2-4 page Vision OCR + Haiku classify/metadata/summary.
+# Tune up if larger scanned files hit the wall; tune down if memory pressure
+# dominates (longer timeout = more time per-doc for leaked buffers to accumulate).
+ENHANCE_TIMEOUT_S: float = float(os.environ.get("ENHANCE_TIMEOUT_S", "180"))
 ENABLE_INTEGRITY_CHECK: bool = os.environ.get("ENABLE_INTEGRITY_CHECK", "false").lower() in (
     "true",
     "1",
