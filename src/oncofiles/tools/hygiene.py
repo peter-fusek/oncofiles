@@ -10,7 +10,13 @@ from fastmcp import Context
 
 from oncofiles.gdrive_folders import CATEGORY_MERGES, bilingual_name, en_key_from_folder_name
 from oncofiles.models import DocumentCategory
-from oncofiles.tools._helpers import _gdrive_url, _get_db, _get_gdrive, _get_patient_id
+from oncofiles.tools._helpers import (
+    _gdrive_url,
+    _get_db,
+    _get_gdrive,
+    _get_patient_id,
+    _resolve_patient_id,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -211,6 +217,7 @@ async def reconcile_gdrive(
 async def validate_categories(
     ctx: Context,
     dry_run: bool = True,
+    patient_slug: str | None = None,
 ) -> str:
     """Validate and fix document categories by comparing with AI-detected document types.
 
@@ -220,11 +227,13 @@ async def validate_categories(
     Args:
         dry_run: If True (default), report mismatches without fixing.
                  If False, update categories and move GDrive files.
+        patient_slug: Optional — explicit patient slug (#429).
     """
     db = _get_db(ctx)
     gdrive = await _get_gdrive(ctx)
+    pid = await _resolve_patient_id(patient_slug, ctx)
 
-    docs = await db.list_documents(limit=500, patient_id=_get_patient_id())
+    docs = await db.list_documents(limit=500, patient_id=pid)
     valid_categories = {c.value for c in DocumentCategory}
 
     mismatches: list[dict] = []
@@ -347,7 +356,7 @@ async def validate_categories(
                                 doc,
                                 expected_category,
                                 folder_id,
-                                patient_id=_get_patient_id(),
+                                patient_id=pid,
                             )
                     except Exception:
                         logger.warning(
@@ -407,7 +416,7 @@ async def validate_categories(
                                 doc,
                                 "reference",
                                 folder_id,
-                                patient_id=_get_patient_id(),
+                                patient_id=pid,
                             )
                     except Exception:
                         logger.warning("Failed to move %s in GDrive", doc.filename, exc_info=True)
@@ -443,7 +452,7 @@ async def validate_categories(
                                 doc,
                                 "genetics",
                                 folder_id,
-                                patient_id=_get_patient_id(),
+                                patient_id=pid,
                             )
                     except Exception:
                         logger.warning("Failed to move %s in GDrive", doc.filename, exc_info=True)
@@ -701,11 +710,16 @@ async def qa_analysis(
     return json.dumps(result)
 
 
-async def system_health(ctx: Context) -> str:
+async def system_health(ctx: Context, patient_slug: str | None = None) -> str:
     """Get system health overview: sync history, document counts, resource usage, and errors.
 
     Returns a comprehensive status report useful for monitoring and debugging.
     Includes 7-day sync statistics, recent sync runs, memory usage, and document counts.
+
+    Args:
+        patient_slug: Optional — explicit patient slug (#429). Document counts
+            are scoped to this patient; memory / uptime / sync stats are
+            system-wide (not patient-scoped).
     """
     import resource
     import sys
@@ -714,10 +728,11 @@ async def system_health(ctx: Context) -> str:
     from oncofiles.sync import get_sync_status
 
     db = _get_db(ctx)
+    pid = await _resolve_patient_id(patient_slug, ctx)
 
     # Document stats
-    doc_count = await db.count_documents(patient_id=_get_patient_id())
-    unprocessed = await db.get_documents_without_ai(patient_id=_get_patient_id())
+    doc_count = await db.count_documents(patient_id=pid)
+    unprocessed = await db.get_documents_without_ai(patient_id=pid)
 
     # Sync stats
     sync_stats = await db.get_sync_stats_summary()
@@ -881,6 +896,7 @@ async def get_document_status_matrix(
     ctx: Context,
     filter: str = "all",
     limit: int = 100,
+    patient_slug: str | None = None,
 ) -> str:
     """Get per-document status matrix showing OCR, AI, metadata, sync, and rename state.
 
@@ -891,17 +907,23 @@ async def get_document_status_matrix(
         filter: Filter documents — 'all', 'missing_ocr', 'missing_ai', 'missing_metadata',
                 'not_synced', 'not_renamed', 'incomplete' (any gap).
         limit: Maximum documents to return (max 200).
+        patient_slug: Optional — explicit patient slug (#429).
     """
     db = _get_db(ctx)
-    result = await _build_document_matrix(db, filter_param=filter, limit=limit)
+    pid = await _resolve_patient_id(patient_slug, ctx)
+    result = await _build_document_matrix(db, filter_param=filter, limit=limit, patient_id=pid)
     return json.dumps(result)
 
 
-async def get_pipeline_status(ctx: Context) -> str:
+async def get_pipeline_status(ctx: Context, patient_slug: str | None = None) -> str:
     """Get pipeline operations status: scheduled jobs, stage counts, and sync history.
 
     Shows which automated processes run, their schedule, last results,
     and how many documents are at each pipeline stage (OCR → AI → metadata → sync → rename).
+
+    Args:
+        patient_slug: Optional — explicit patient slug (#429). Stage counts are
+            scoped to this patient; scheduler / job history is system-wide.
     """
     import resource
     import sys
@@ -913,7 +935,7 @@ async def get_pipeline_status(ctx: Context) -> str:
     db = _get_db(ctx)
 
     # Pipeline stage counts
-    pid = _get_patient_id()
+    pid = await _resolve_patient_id(patient_slug, ctx)
     docs = await db.list_documents(limit=500, patient_id=pid)
     total = len(docs)
     with_ai = sum(1 for d in docs if d.ai_summary)
@@ -1023,7 +1045,7 @@ async def get_pipeline_status(ctx: Context) -> str:
     return json.dumps(result)
 
 
-async def audit_document_pipeline(ctx: Context) -> str:
+async def audit_document_pipeline(ctx: Context, patient_slug: str | None = None) -> str:
     """Per-patient pipeline audit: stuck docs, group/split stats, and AI call history.
 
     Surfaces gaps that the dashboard pipeline bars summarise (missing OCR/AI/metadata/
@@ -1033,11 +1055,14 @@ async def audit_document_pipeline(ctx: Context) -> str:
 
     Use this tool when documents appear stuck at Institution/Named/Complete and you
     need to decide which backfill to run next. See GitHub issue #396 for motivation.
+
+    Args:
+        patient_slug: Optional — explicit patient slug (#429).
     """
     from oncofiles.filename_parser import is_standard_format
 
     db = _get_db(ctx)
-    pid = _get_patient_id()
+    pid = await _resolve_patient_id(patient_slug, ctx)
 
     docs = await db.list_documents(limit=1000, patient_id=pid)
 
