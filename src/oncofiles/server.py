@@ -416,6 +416,49 @@ def _get_service_sync_times(pid: str) -> dict[str, str | None]:
     return _last_service_sync.get(pid, {"gdrive": None, "gmail": None, "calendar": None})
 
 
+async def _get_service_sync_times_async(db, pid: str) -> dict[str, str | None]:
+    """Per-patient last-sync timestamps surviving Railway restarts (#463).
+
+    In-memory `_last_service_sync` resets on every process restart (deploys,
+    keepalive, memory ceiling). Before this helper, the dashboard Integration
+    Status popover showed empty / stale values until the next sync tick fired
+    for that patient — feeling "already ran but obsolete data there".
+
+    Strategy: return in-memory value when present (cheap + matches
+    sync-completion timing), fall back to MAX(created_at) from the
+    arrival-side tables when a service has no in-memory record. Using
+    MAX(created_at) means after a restart we show "when the last new item
+    landed" which is arguably the stronger signal than "when the last
+    poll happened".
+    """
+    cached = _last_service_sync.get(pid, {"gdrive": None, "gmail": None, "calendar": None})
+    if all(v is not None for v in cached.values()):
+        return cached
+
+    result = dict(cached)
+    queries = (
+        ("gdrive", "SELECT MAX(created_at) AS t FROM documents WHERE patient_id = ?"),
+        ("gmail", "SELECT MAX(created_at) AS t FROM email_entries WHERE patient_id = ?"),
+        ("calendar", "SELECT MAX(created_at) AS t FROM calendar_entries WHERE patient_id = ?"),
+    )
+    for service, sql in queries:
+        if result.get(service):
+            continue
+        try:
+            async with db.db.execute(sql, (pid,)) as cursor:
+                row = await cursor.fetchone()
+            if row is None:
+                continue
+            t = dict(row).get("t") if row is not None else None
+            if t:
+                result[service] = t
+        except Exception:
+            # Table may be missing in older DBs or during migration — don't
+            # let this break the popover.
+            logger.debug("service_sync_times fallback query failed for %s", service, exc_info=True)
+    return result
+
+
 def _is_folder_not_found(exc: BaseException) -> bool:
     """Check if an exception is a GDrive 404 (folder not found)."""
     status = getattr(getattr(exc, "resp", None), "status", None)
@@ -3546,7 +3589,7 @@ async def status(request: Request) -> JSONResponse:
                 "document_limit": CONF_MAX_DOCS,
                 "document_health": doc_health,
                 "google_services": google_services,
-                "service_sync_times": _get_service_sync_times(patient_id),
+                "service_sync_times": await _get_service_sync_times_async(db, patient_id),
                 "memory_rss_mb": round(rss_mb, 1),
                 "sync_7d": {
                     "total": sync_stats.get("total_syncs", 0),
