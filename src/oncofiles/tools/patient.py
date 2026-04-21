@@ -154,8 +154,10 @@ async def select_patient(
         token = await db.get_oauth_token(patient_id=target.patient_id)
         owner_email = token.owner_email if token else None
 
+    persisted_across_requests = False
     if owner_email:
         await db.set_patient_selection(owner_email, target.patient_id)
+        persisted_across_requests = True
 
     # Also update the ContextVar for immediate effect in this request
     from oncofiles.persistent_oauth import _verified_patient_id
@@ -165,15 +167,35 @@ async def select_patient(
     ctx_data = patient_context.get_context(target.patient_id)
     doc_count = await db.count_documents(patient_id=target.patient_id)
 
+    # #408: when the session has no OAuth owner_email (e.g. bearer-token auth
+    # in stateless HTTP), the selection is NOT persisted across requests.
+    # Returning a plain "switched" response was misleading — subsequent
+    # calls like list_patients / search_documents would still scope to the
+    # bearer's bound patient. Honest contract: tell the caller what will
+    # and will NOT work.
+    if persisted_across_requests:
+        note = "Selection persisted. All subsequent tool calls will use this patient's data."
+        status = "switched"
+    else:
+        note = (
+            "Selection applied to THIS request only. The session is authenticated "
+            "via a patient-scoped bearer token (not OAuth), so select_patient "
+            "cannot persist across requests in stateless HTTP. Subsequent tool "
+            "calls will revert to the bearer-bound patient unless you pass "
+            "patient_slug explicitly on each call (Option A, #429)."
+        )
+        status = "switched_single_request"
+
     return json.dumps(
         {
-            "status": "switched",
+            "status": status,
             "patient_id": target.patient_id,
             "slug": target.slug,
             "name": target.display_name,
             "patient_type": ctx_data.get("patient_type", "oncology"),
             "documents": doc_count,
-            "note": "All subsequent tool calls will use this patient's data.",
+            "persisted_across_requests": persisted_across_requests,
+            "note": note,
         },
         ensure_ascii=False,
     )
