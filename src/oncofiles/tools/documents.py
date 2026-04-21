@@ -25,6 +25,7 @@ from oncofiles.tools._helpers import (
     _get_gdrive,
     _get_patient_id,
     _parse_date,
+    _resolve_patient_id,
 )
 
 logger = logging.getLogger(__name__)
@@ -32,13 +33,19 @@ logger = logging.getLogger(__name__)
 MAX_UPLOAD_SIZE = 100 * 1024 * 1024  # 100 MB
 
 
-async def _get_doc_owned(db, doc_id: int) -> Document | None:
+async def _get_doc_owned(db, doc_id: int, pid: str | None = None) -> Document | None:
     """Fetch a document by integer ID with patient ownership check.
 
     Returns None if the document doesn't exist or belongs to a different patient.
     This prevents cross-patient data leaks via enumerable integer IDs.
+
+    ``pid`` may be passed explicitly by callers that already resolved it via
+    ``_resolve_patient_id`` (Option A, #429). When omitted, falls back to the
+    middleware-resolved ContextVar — preserves stdio + single-patient bearer
+    flows.
     """
-    pid = _get_patient_id()
+    if pid is None:
+        pid = _get_patient_id()
     if not await db.check_document_ownership(doc_id, pid):
         return None
     return await db.get_document(doc_id)
@@ -49,6 +56,7 @@ async def upload_document(
     content: str,
     filename: str,
     mime_type: str = "application/pdf",
+    patient_slug: str | None = None,
 ) -> str:
     """Upload a medical document to persistent storage.
 
@@ -63,6 +71,7 @@ async def upload_document(
         content: Base64-encoded file content.
         filename: Document filename in standard or legacy format.
         mime_type: MIME type of the document.
+        patient_slug: Optional — explicit patient slug (#429).
     """
     import base64
     import binascii
@@ -80,11 +89,11 @@ async def upload_document(
 
     db = _get_db(ctx)
     files = _get_files(ctx)
+    patient_id = await _resolve_patient_id(patient_slug, ctx)
 
     # FUP: check document limit per patient
     from oncofiles.config import MAX_DOCUMENTS_PER_PATIENT
 
-    patient_id = _get_patient_id()
     doc_count = await db.count_documents(patient_id=patient_id)
     if doc_count >= MAX_DOCUMENTS_PER_PATIENT:
         return json.dumps(
@@ -108,7 +117,7 @@ async def upload_document(
     parsed = parse_filename(filename)
 
     # Check for existing active document with the same filename (re-upload / new version)
-    existing = await db.get_active_document_by_filename(filename, patient_id=_get_patient_id())
+    existing = await db.get_active_document_by_filename(filename, patient_id=patient_id)
     version = 1
     previous_version_id = None
     if existing:
@@ -133,7 +142,7 @@ async def upload_document(
         previous_version_id=previous_version_id,
     )
 
-    doc = await db.insert_document(doc, patient_id=_get_patient_id())
+    doc = await db.insert_document(doc, patient_id=patient_id)
 
     # Notify oncoteam of new document (fire-and-forget)
     from oncofiles.webhook import notify_oncoteam
@@ -192,13 +201,22 @@ async def list_documents(
     ctx: Context,
     limit: int = 50,
     offset: int = 0,
+    patient_slug: str | None = None,
 ) -> str:
     """List all stored medical documents with metadata.
 
     Returns documents ordered by date (newest first).
+
+    Args:
+        limit: Maximum results to return.
+        offset: Skip this many results (for pagination).
+        patient_slug: Optional — explicit patient slug (e.g. 'q1b'). Required
+            in stateless HTTP contexts (Claude.ai connector, ChatGPT) where
+            select_patient() state does not persist across tool calls (#429).
     """
     db = _get_db(ctx)
-    docs = await db.list_documents(limit=limit, offset=offset, patient_id=_get_patient_id())
+    pid = await _resolve_patient_id(patient_slug, ctx)
+    docs = await db.list_documents(limit=limit, offset=offset, patient_id=pid)
     return json.dumps({"documents": [_doc_to_dict(d) for d in docs], "total": len(docs)})
 
 
@@ -211,6 +229,7 @@ async def search_documents(
     date_to: str | None = None,
     limit: int = 50,
     offset: int = 0,
+    patient_slug: str | None = None,
 ) -> str:
     """Search medical documents by text, institution, category, or date range.
 
@@ -245,8 +264,9 @@ async def search_documents(
             limit=_clamp_limit(limit),
             offset=max(0, offset),
         )
+        pid = await _resolve_patient_id(patient_slug, ctx)
         async with query_slot("search_documents"):
-            docs = await db.search_documents(query, patient_id=_get_patient_id())
+            docs = await db.search_documents(query, patient_id=pid)
         from oncofiles.memory import update_peak_rss
 
         update_peak_rss()
@@ -255,16 +275,19 @@ async def search_documents(
         return json.dumps({"error": str(e)})
 
 
-async def get_document(ctx: Context, file_id: str) -> str:
+async def get_document(ctx: Context, file_id: str, patient_slug: str | None = None) -> str:
     """Get a document's metadata and file_id for Claude to analyze.
 
     Returns the file_id that can be used to reference the document in conversation.
 
     Args:
         file_id: The Anthropic Files API file_id.
+        patient_slug: Optional — explicit patient slug. Required in stateless
+            HTTP contexts (Claude.ai connector, ChatGPT). See #429.
     """
     db = _get_db(ctx)
-    doc = await db.get_document_by_file_id(file_id, patient_id=_get_patient_id())
+    pid = await _resolve_patient_id(patient_slug, ctx)
+    doc = await db.get_document_by_file_id(file_id, patient_id=pid)
     if not doc:
         return json.dumps({"error": f"Document not found: {file_id}"})
     return json.dumps(
@@ -284,16 +307,18 @@ async def get_document(ctx: Context, file_id: str) -> str:
     )
 
 
-async def get_document_by_id(ctx: Context, doc_id: int) -> str:
+async def get_document_by_id(ctx: Context, doc_id: int, patient_slug: str | None = None) -> str:
     """Get a document's metadata by its integer database ID.
 
     Use this when you have the numeric document ID (e.g. from search results or lab values).
 
     Args:
         doc_id: The integer database ID of the document.
+        patient_slug: Optional — explicit patient slug (#429).
     """
     db = _get_db(ctx)
-    doc = await _get_doc_owned(db, doc_id)
+    pid = await _resolve_patient_id(patient_slug, ctx)
+    doc = await _get_doc_owned(db, doc_id, pid=pid)
     if not doc:
         return json.dumps({"error": f"Document not found: {doc_id}"})
     return json.dumps(
@@ -313,7 +338,7 @@ async def get_document_by_id(ctx: Context, doc_id: int) -> str:
     )
 
 
-async def delete_document(ctx: Context, file_id: str) -> str:
+async def delete_document(ctx: Context, file_id: str, patient_slug: str | None = None) -> str:
     """Soft-delete a document (moves to trash, recoverable for 30 days).
 
     The document is hidden from all listings and searches but can be restored
@@ -321,9 +346,11 @@ async def delete_document(ctx: Context, file_id: str) -> str:
 
     Args:
         file_id: The Anthropic Files API file_id to delete.
+        patient_slug: Optional — explicit patient slug (#429).
     """
     db = _get_db(ctx)
     files = _get_files(ctx)
+    pid = await _resolve_patient_id(patient_slug, ctx)
 
     # Delete from Files API
     try:
@@ -332,7 +359,7 @@ async def delete_document(ctx: Context, file_id: str) -> str:
         await ctx.warning(f"Files API deletion failed (may already be deleted): {e}")
 
     # Soft-delete in local database
-    deleted = await db.delete_document_by_file_id(file_id, patient_id=_get_patient_id())
+    deleted = await db.delete_document_by_file_id(file_id, patient_id=pid)
     return json.dumps(
         {
             "deleted": deleted,
@@ -344,15 +371,16 @@ async def delete_document(ctx: Context, file_id: str) -> str:
     )
 
 
-async def restore_document(ctx: Context, doc_id: int) -> str:
+async def restore_document(ctx: Context, doc_id: int, patient_slug: str | None = None) -> str:
     """Restore a soft-deleted document from trash.
 
     Args:
         doc_id: The local document ID to restore.
+        patient_slug: Optional — explicit patient slug (#429).
     """
     db = _get_db(ctx)
     # Ownership check: verify doc belongs to current patient (even if deleted)
-    pid = _get_patient_id()
+    pid = await _resolve_patient_id(patient_slug, ctx)
     if not await db.check_document_ownership(doc_id, pid):
         return json.dumps(
             {"restored": False, "doc_id": doc_id, "message": "Document not found in trash."}
@@ -377,15 +405,17 @@ async def restore_document(ctx: Context, doc_id: int) -> str:
     )
 
 
-async def list_trash(ctx: Context, limit: int = 50) -> str:
+async def list_trash(ctx: Context, limit: int = 50, patient_slug: str | None = None) -> str:
     """List soft-deleted documents in trash.
 
     Args:
         limit: Maximum results to return (default 50, max 200).
+        patient_slug: Optional — explicit patient slug (#429).
     """
     db = _get_db(ctx)
     limit = min(max(limit, 1), 200)
-    docs = await db.list_trash(limit=limit, patient_id=_get_patient_id())
+    pid = await _resolve_patient_id(patient_slug, ctx)
+    docs = await db.list_trash(limit=limit, patient_id=pid)
     return json.dumps(
         {
             "trash": [
@@ -403,14 +433,18 @@ async def list_trash(ctx: Context, limit: int = 50) -> str:
     )
 
 
-async def find_duplicates(ctx: Context) -> str:
+async def find_duplicates(ctx: Context, patient_slug: str | None = None) -> str:
     """Detect potential duplicate documents based on original filename and file size.
 
     Returns groups of documents that share the same original_filename + size_bytes.
     Each group contains 2+ documents. Useful for cleanup after repeated imports.
+
+    Args:
+        patient_slug: Optional — explicit patient slug (#429).
     """
     db = _get_db(ctx)
-    groups = await db.find_duplicates(patient_id=_get_patient_id())
+    pid = await _resolve_patient_id(patient_slug, ctx)
+    groups = await db.find_duplicates(patient_id=pid)
     result = []
     for group in groups:
         result.append(
@@ -434,7 +468,7 @@ async def find_duplicates(ctx: Context) -> str:
     return json.dumps({"duplicate_groups": result, "total_groups": len(result)})
 
 
-async def get_document_versions(ctx: Context, doc_id: int) -> str:
+async def get_document_versions(ctx: Context, doc_id: int, patient_slug: str | None = None) -> str:
     """Get the version history chain for a document.
 
     Returns all versions (current and previous) ordered newest first.
@@ -442,9 +476,11 @@ async def get_document_versions(ctx: Context, doc_id: int) -> str:
 
     Args:
         doc_id: The integer database ID of any document in the version chain.
+        patient_slug: Optional — explicit patient slug (#429).
     """
     db = _get_db(ctx)
-    doc = await _get_doc_owned(db, doc_id)
+    pid = await _resolve_patient_id(patient_slug, ctx)
+    doc = await _get_doc_owned(db, doc_id, pid=pid)
     if not doc:
         return json.dumps({"error": f"Document not found: {doc_id}"})
 
@@ -471,7 +507,7 @@ async def get_document_versions(ctx: Context, doc_id: int) -> str:
     )
 
 
-async def get_related_documents(ctx: Context, doc_id: int) -> str:
+async def get_related_documents(ctx: Context, doc_id: int, patient_slug: str | None = None) -> str:
     """Get documents cross-referenced with the given document.
 
     Returns related documents found by shared visit dates, diagnoses,
@@ -480,9 +516,11 @@ async def get_related_documents(ctx: Context, doc_id: int) -> str:
 
     Args:
         doc_id: The integer database ID of the document.
+        patient_slug: Optional — explicit patient slug (#429).
     """
     db = _get_db(ctx)
-    doc = await _get_doc_owned(db, doc_id)
+    pid = await _resolve_patient_id(patient_slug, ctx)
+    doc = await _get_doc_owned(db, doc_id, pid=pid)
     if not doc:
         return json.dumps({"error": f"Document not found: {doc_id}"})
 
@@ -520,7 +558,7 @@ async def get_related_documents(ctx: Context, doc_id: int) -> str:
     return json.dumps({"document_id": doc_id, "related": items, "total": len(items)})
 
 
-async def get_document_group(ctx: Context, group_id: str) -> str:
+async def get_document_group(ctx: Context, group_id: str, patient_slug: str | None = None) -> str:
     """Get all documents in a logical group (split siblings or consolidated parts).
 
     Documents that were split from a multi-document PDF or consolidated from
@@ -528,11 +566,12 @@ async def get_document_group(ctx: Context, group_id: str) -> str:
 
     Args:
         group_id: The UUID group identifier.
+        patient_slug: Optional — explicit patient slug (#429).
     """
     db = _get_db(ctx)
     all_docs = await db.get_documents_by_group(group_id)
     # Filter to only documents owned by the current patient
-    pid = _get_patient_id()
+    pid = await _resolve_patient_id(patient_slug, ctx)
     docs = []
     for d in all_docs:
         if d.id and await db.check_document_ownership(d.id, pid):
@@ -548,7 +587,9 @@ async def get_document_group(ctx: Context, group_id: str) -> str:
     )
 
 
-async def update_document_category(ctx: Context, doc_id: int, category: str) -> str:
+async def update_document_category(
+    ctx: Context, doc_id: int, category: str, patient_slug: str | None = None
+) -> str:
     """Update the category of a document.
 
     Use this to recategorize documents (e.g. from 'other' to 'reference').
@@ -560,6 +601,7 @@ async def update_document_category(ctx: Context, doc_id: int, category: str) -> 
                   referral, discharge, discharge_summary, chemo_sheet,
                   vaccination, dental, preventive,
                   reference, advocate, other).
+        patient_slug: Optional — explicit patient slug (#429).
     """
     try:
         valid_category = DocumentCategory(category)
@@ -568,7 +610,8 @@ async def update_document_category(ctx: Context, doc_id: int, category: str) -> 
         return json.dumps({"error": f"Invalid category '{category}'. Valid: {valid_values}"})
 
     db = _get_db(ctx)
-    doc = await _get_doc_owned(db, doc_id)
+    pid = await _resolve_patient_id(patient_slug, ctx)
+    doc = await _get_doc_owned(db, doc_id, pid=pid)
     if not doc:
         return json.dumps({"error": f"Document not found: {doc_id}"})
 
@@ -592,7 +635,7 @@ async def update_document_category(ctx: Context, doc_id: int, category: str) -> 
                         updated_doc,
                         valid_category.value,
                         folder_id,
-                        patient_id=_get_patient_id(),
+                        patient_id=pid,
                     )
                     gdrive_moved = True
         except Exception:
