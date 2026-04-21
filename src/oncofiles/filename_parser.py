@@ -265,6 +265,32 @@ CATEGORY_ALIASES: dict[str, DocumentCategory] = {
 
 _DATE_RE = re.compile(r"^(\d{4})(\d{2})(\d{2})")
 _DATE_XX_RE = re.compile(r"^(\d{4})(\d{2})(xx)", re.IGNORECASE)
+# Dashed ISO date: YYYY-M-D, YYYY-MM-DD, YYYY-MM-D, etc. Consumed inclusive of
+# trailing separator so callers can consistently take `stem[match.end():]`.
+# Mattias's hospital chart uses this: "2025-09-19_kontrola Gonsorcikova.pdf".
+_DATE_DASH_RE = re.compile(r"^(\d{4})-(\d{1,2})-(\d{1,2})(?=[_\- ]|$)")
+
+
+def _match_any_date(stem: str) -> tuple[date, int] | None:
+    """Try all three date patterns. Returns (parsed_date, chars_consumed) or None.
+
+    Used by all three parse_* paths so dashed-date filenames like Mattias's
+    2025-09-19_kontrola*.pdf work wherever the 8-digit YYYYMMDD path works.
+    """
+    m = _DATE_RE.match(stem)
+    if m:
+        with contextlib.suppress(ValueError):
+            return date(int(m.group(1)), int(m.group(2)), int(m.group(3))), 8
+    xx = _DATE_XX_RE.match(stem)
+    if xx:
+        with contextlib.suppress(ValueError):
+            return date(int(xx.group(1)), int(xx.group(2)), 1), 8
+    dash = _DATE_DASH_RE.match(stem)
+    if dash:
+        with contextlib.suppress(ValueError):
+            return date(int(dash.group(1)), int(dash.group(2)), int(dash.group(3))), dash.end()
+    return None
+
 
 _cached_patient_re: dict[str, re.Pattern] = {}
 
@@ -323,17 +349,13 @@ def _parse_standard_format(stem: str, ext: str, patient_id: str = "") -> ParsedF
     """Try to parse as: YYYYMMDD_PatientName_Institution_Category_Description."""
     result = ParsedFilename(extension=ext)
 
-    # Extract date
-    date_match = _DATE_RE.match(stem)
-    if not date_match:
+    # Extract date (YYYYMMDD, YYYYMMXX, or YYYY-MM-DD)
+    date_result = _match_any_date(stem)
+    if not date_result:
         return None
 
-    with contextlib.suppress(ValueError):
-        result.document_date = date(
-            int(date_match.group(1)), int(date_match.group(2)), int(date_match.group(3))
-        )
-
-    remaining = stem[8:].lstrip("_")
+    result.document_date, consumed = date_result
+    remaining = stem[consumed:].lstrip("_")
 
     if not remaining:
         return result
@@ -387,23 +409,12 @@ def _parse_new_format(stem: str, ext: str, patient_id: str = "") -> ParsedFilena
     """Try to parse as: YYYYMMDD ErikaFusekova-Institution-Description."""
     result = ParsedFilename(extension=ext)
 
-    # Extract date
-    date_match = _DATE_RE.match(stem)
-    xx_match = _DATE_XX_RE.match(stem) if not date_match else None
-
-    if date_match:
-        with contextlib.suppress(ValueError):
-            result.document_date = date(
-                int(date_match.group(1)), int(date_match.group(2)), int(date_match.group(3))
-            )
-        remaining = stem[8:].lstrip(" ")
-    elif xx_match:
-        # Handle dates like 202602xx — use first of month
-        with contextlib.suppress(ValueError):
-            result.document_date = date(int(xx_match.group(1)), int(xx_match.group(2)), 1)
-        remaining = stem[8:].lstrip(" ")  # YYYYMMXX = 8 chars
-    else:
+    # Extract date (YYYYMMDD, YYYYMMXX, or YYYY-MM-DD)
+    date_result = _match_any_date(stem)
+    if not date_result:
         return None  # No date prefix → not new format
+    result.document_date, consumed = date_result
+    remaining = stem[consumed:].lstrip(" _-")
 
     # Strip patient prefix
     remaining = _patient_prefix_re(patient_id).sub("", remaining).lstrip("-")
@@ -472,20 +483,16 @@ def parse_filename(filename: str, patient_id: str = "") -> ParsedFilename:
     # Legacy format: YYYYMMDD_institution_category_description.ext
     result = ParsedFilename(extension=ext)
 
-    # Try to extract leading YYYYMMDD date
-    m = _DATE_RE.match(stem)
-    xx = _DATE_XX_RE.match(stem) if not m else None
-    if m:
-        with contextlib.suppress(ValueError):
-            result.document_date = date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
-        stem = stem[8:].lstrip("_- ")
-    elif xx:
-        with contextlib.suppress(ValueError):
-            result.document_date = date(int(xx.group(1)), int(xx.group(2)), 1)
-        stem = stem[8:].lstrip("_- ")  # YYYYMMXX = 8 chars
+    # Try to extract leading date (YYYYMMDD, YYYYMMXX, or YYYY-MM-DD)
+    date_result = _match_any_date(stem)
+    if date_result:
+        result.document_date, consumed = date_result
+        stem = stem[consumed:].lstrip("_- ")
 
-    # Split remaining parts on underscores and hyphens
-    parts = [p for p in re.split(r"[_\-]+", stem) if p]
+    # Split remaining parts on underscores, hyphens, AND whitespace. Whitespace
+    # matters because Mattias's hospital files look like "kontrola Gonsorcikova"
+    # — token-level category alias lookup would miss "kontrola" otherwise (#439).
+    parts = [p for p in re.split(r"[_\-\s]+", stem) if p]
 
     if not parts:
         return result
@@ -503,7 +510,7 @@ def parse_filename(filename: str, patient_id: str = "") -> ParsedFilename:
     if not parts:
         return result
 
-    # Try to match category from remaining parts
+    # Try to match category from remaining parts (exact ALIAS hit)
     for i, part in enumerate(parts):
         cat = CATEGORY_ALIASES.get(part.lower())
         if cat:
@@ -514,6 +521,12 @@ def parse_filename(filename: str, patient_id: str = "") -> ParsedFilename:
     # Remaining parts become the description
     if parts:
         result.description = " ".join(parts)
+
+    # If no category matched the ALIAS map, fall back to keyword inference on
+    # the full description. Catches Slovak variants like "kontrolny" that the
+    # exact-match ALIAS doesn't cover but _CATEGORY_KEYWORDS does.
+    if result.category == DocumentCategory.OTHER and result.description:
+        result.category = _infer_category(result.description)
 
     return result
 
