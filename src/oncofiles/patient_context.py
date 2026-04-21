@@ -55,11 +55,22 @@ def get_context(patient_id: str | None = None) -> dict[str, Any]:
     """Return the patient context dict.
 
     Resolution order:
-    1. Explicit patient_id argument
+    1. Non-empty explicit patient_id argument → _contexts cache (strict; NO legacy fallback)
     2. Current request ContextVar (set by PatientResolutionMiddleware)
-    3. Legacy global _context (backward compat / startup / tests)
+    3. Legacy global _context (backward compat / startup / tests, only when no pid)
+
+    Strictness on a non-empty explicit pid is a cross-patient-isolation
+    guarantee (#429). A cold cache miss for patient X must NOT return whatever
+    patient Y's data leaked into the legacy global via a prior `load_from_db`
+    call. Callers receiving `_DEFAULT_CONTEXT.copy()` here are expected to call
+    `load_from_db` to hydrate the cache.
+
+    Empty string ('') and None are treated as "no explicit pid" — callers like
+    `rename_to_standard(patient_id='')` still get the legacy fallback so the
+    bilingual-filename test fixtures keep working.
     """
     pid = patient_id
+    explicit_pid = bool(patient_id)  # non-empty string only; None and "" fall through
     if not pid:
         try:
             from oncofiles.patient_middleware import get_current_patient_id
@@ -69,7 +80,11 @@ def get_context(patient_id: str | None = None) -> dict[str, Any]:
             pass  # startup or test context without middleware
     if pid and pid in _contexts:
         return _contexts[pid]
-    # Fallback to legacy global for backward compat
+    # Non-empty explicit pid that's not cached → return default (caller must hydrate)
+    # Do NOT leak legacy global data under a different patient's pid (#429)
+    if explicit_pid:
+        return _DEFAULT_CONTEXT.copy()
+    # No pid at all (None or "") → legacy fallback for backward compat (startup/tests)
     return _context if _context else _DEFAULT_CONTEXT.copy()
 
 
@@ -123,7 +138,11 @@ async def load_from_db(db: Any, patient_id: str | None = None) -> dict[str, Any]
             data = json.loads(data_str)
             if patient_id:
                 _contexts[patient_id] = data
-            _context.update(data)
+                # DO NOT mirror into legacy `_context` when loading a specific
+                # patient — that's how cross-patient leaks happen (#429).
+                # Legacy `_context` only reflects the single-patient / legacy flow.
+            else:
+                _context.update(data)
             logger.info(
                 "Patient context loaded from database (patient_id=%s)", patient_id or "legacy"
             )
