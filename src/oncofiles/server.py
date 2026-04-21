@@ -3746,43 +3746,79 @@ async def _get_dashboard_patient_id(request: Request) -> str:
         except Exception:
             pass
         return ""
-    try:
-        db: Database = request.app.state.fastmcp_server._lifespan_result["db"]
-        resolved = await db.resolve_patient_id(raw)
-        if not resolved:
-            logger.warning("_get_dashboard_patient_id: no patient found for '%s'", raw)
-            return raw
+    db: Database = request.app.state.fastmcp_server._lifespan_result["db"]
 
-        # --- Authorization gate ---
-        if not is_bearer and email:
+    # Narrow try/except per DB call so the error log points at the exact
+    # failing operation (#443 diagnosis aid — previously a single broad catch
+    # swallowed three separate failure modes into one generic message).
+    try:
+        resolved = await db.resolve_patient_id(raw)
+    except Exception as exc:
+        logger.error(
+            "_get_dashboard_patient_id: resolve_patient_id('%s') raised %s: %s",
+            raw,
+            type(exc).__name__,
+            exc,
+            exc_info=True,
+        )
+        return raw
+    if not resolved:
+        logger.warning("_get_dashboard_patient_id: no patient found for '%s'", raw)
+        return raw
+
+    # --- Authorization gate ---
+    if not is_bearer and email:
+        try:
             patients = await db.list_patients(active_only=False)
+        except Exception as exc:
+            logger.error(
+                "_get_dashboard_patient_id: list_patients raised %s while "
+                "authorizing '%s' for '%s': %s",
+                type(exc).__name__,
+                email,
+                raw,
+                exc,
+                exc_info=True,
+            )
+            # Fail safe: return the resolved pid so read-only queries can
+            # still proceed — the endpoint can 500 on its own DB calls if
+            # the outage is persistent.
+            return resolved
+
+        try:
             target = next((p for p in patients if p.patient_id == resolved), None)
             is_caregiver = target and _email_matches_caregiver(email, target.caregiver_email)
+        except Exception as exc:
+            logger.error(
+                "_get_dashboard_patient_id: caregiver match raised %s for patient '%s' "
+                "email '%s': %s",
+                type(exc).__name__,
+                resolved,
+                email,
+                exc,
+                exc_info=True,
+            )
+            return resolved
 
-            if not is_caregiver:
-                if _is_admin_email(email):
-                    # Admin read-only access — allowed but audit-logged
-                    logger.info(
-                        "AUDIT: admin %s accessed patient '%s' (read-only)",
-                        email,
-                        target.display_name if target else raw,
-                    )
-                else:
-                    # Non-admin, non-caregiver — fall back to own patient
-                    logger.warning(
-                        "_get_dashboard_patient_id: %s tried to access patient '%s' — denied",
-                        email,
-                        raw,
-                    )
-                    own = [
-                        p for p in patients if _email_matches_caregiver(email, p.caregiver_email)
-                    ]
-                    return own[0].patient_id if own else ""
+        if not is_caregiver:
+            if _is_admin_email(email):
+                # Admin read-only access — allowed but audit-logged
+                logger.info(
+                    "AUDIT: admin %s accessed patient '%s' (read-only)",
+                    email,
+                    target.display_name if target else raw,
+                )
+            else:
+                # Non-admin, non-caregiver — fall back to own patient
+                logger.warning(
+                    "_get_dashboard_patient_id: %s tried to access patient '%s' — denied",
+                    email,
+                    raw,
+                )
+                own = [p for p in patients if _email_matches_caregiver(email, p.caregiver_email)]
+                return own[0].patient_id if own else ""
 
-        return resolved
-    except Exception:
-        logger.error("_get_dashboard_patient_id: resolution failed for '%s'", raw, exc_info=True)
-        return raw
+    return resolved
 
 
 @mcp.custom_route("/dashboard", methods=["GET"])
