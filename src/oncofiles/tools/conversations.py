@@ -9,7 +9,7 @@ from datetime import date
 from fastmcp import Context
 
 from oncofiles.models import ConversationEntry, ConversationQuery
-from oncofiles.tools._helpers import _clamp_limit, _get_db, _get_patient_id, _parse_date
+from oncofiles.tools._helpers import _clamp_limit, _get_db, _parse_date, _resolve_patient_id
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +52,7 @@ async def log_conversation(
     tags: str | None = None,
     document_ids: str | None = None,
     participant: str = "claude.ai",
+    patient_slug: str | None = None,
 ) -> str:
     """Save a diary entry to the conversation archive.
 
@@ -66,6 +67,7 @@ async def log_conversation(
         tags: Comma-separated tags (e.g. "chemo,FOLFOX,cycle-3").
         document_ids: Comma-separated document IDs referenced (e.g. "3,15").
         participant: Who created this: claude.ai, claude-code, oncoteam.
+        patient_slug: Optional — explicit patient slug (#429).
     """
     try:
         parsed_date = _parse_date(entry_date) or date.today()
@@ -102,7 +104,8 @@ async def log_conversation(
         document_ids=parsed_doc_ids,
         source="live",
     )
-    entry = await db.insert_conversation_entry(entry, patient_id=_get_patient_id())
+    pid = await _resolve_patient_id(patient_slug, ctx)
+    entry = await db.insert_conversation_entry(entry, patient_id=pid)
     return json.dumps(
         {
             "id": entry.id,
@@ -123,6 +126,7 @@ async def search_conversations(
     date_to: str | None = None,
     tags: str | None = None,
     limit: int = 50,
+    patient_slug: str | None = None,
 ) -> str:
     """Search the conversation archive by text, type, date, or tags.
 
@@ -137,11 +141,13 @@ async def search_conversations(
         date_to: Filter to this date (YYYY-MM-DD).
         tags: Comma-separated tags to filter by (all must match).
         limit: Maximum results to return.
+        patient_slug: Optional — explicit patient slug (#429).
     """
     from oncofiles.memory import query_slot
 
     try:
         db = _get_db(ctx)
+        pid = await _resolve_patient_id(patient_slug, ctx)
         parsed_tags = [t.strip() for t in tags.split(",") if t.strip()] if tags else None
         query = ConversationQuery(
             text=text,
@@ -153,7 +159,7 @@ async def search_conversations(
             limit=_clamp_limit(limit),
         )
         async with query_slot("search_conversations"):
-            entries = await db.search_conversation_entries(query, patient_id=_get_patient_id())
+            entries = await db.search_conversation_entries(query, patient_id=pid)
         from oncofiles.memory import update_peak_rss
 
         update_peak_rss()
@@ -175,13 +181,18 @@ async def search_conversations(
     return json.dumps({"entries": items, "total": len(items)})
 
 
-async def get_conversation(ctx: Context, entry_id: int) -> str:
+async def get_conversation(ctx: Context, entry_id: int, patient_slug: str | None = None) -> str:
     """Get the full content of a single conversation entry by ID.
 
     Args:
         entry_id: The conversation entry ID.
+        patient_slug: Optional — explicit patient slug (#429).
     """
     db = _get_db(ctx)
+    pid = await _resolve_patient_id(patient_slug, ctx)
+    # Cross-patient block: confirm the entry belongs to the resolved patient.
+    if not await db.check_conversation_entry_ownership(entry_id, pid):
+        return json.dumps({"error": f"Conversation entry not found: {entry_id}"})
     entry = await db.get_conversation_entry(entry_id)
     if not entry:
         return json.dumps({"error": f"Conversation entry not found: {entry_id}"})
@@ -211,6 +222,7 @@ async def get_journey_timeline(
     source_tables: str | None = None,
     search: str | None = None,
     sort: str = "desc",
+    patient_slug: str | None = None,
 ) -> str:
     """Get a unified chronological timeline of the complete patient journey.
 
@@ -227,6 +239,7 @@ async def get_journey_timeline(
                        Default: all tables.
         search: Substring filter across title + summary + tags.
         sort: "desc" (newest first, default) or "asc" (oldest first).
+        patient_slug: Optional — explicit patient slug (#429).
     """
     try:
         parsed_from = _parse_date(date_from)
@@ -234,7 +247,7 @@ async def get_journey_timeline(
     except ValueError as e:
         return json.dumps({"error": str(e)})
     db = _get_db(ctx)
-    patient_id = _get_patient_id()
+    patient_id = await _resolve_patient_id(patient_slug, ctx)
     limit = min(limit, 500)
 
     # Which tables to include

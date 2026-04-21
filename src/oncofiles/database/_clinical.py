@@ -43,12 +43,29 @@ class ClinicalMixin:
         return event
 
     async def get_treatment_event(self, event_id: int) -> TreatmentEvent | None:
-        """Get a treatment event by ID."""
+        """Get a treatment event by ID.
+
+        Callers that need patient-scoped access should pair this with
+        ``check_treatment_event_ownership`` (see Option A pattern #429).
+        """
         async with self.db.execute(
             "SELECT * FROM treatment_events WHERE id = ?", (event_id,)
         ) as cursor:
             row = await cursor.fetchone()
             return _row_to_treatment_event(row) if row else None
+
+    async def check_treatment_event_ownership(self, event_id: int, patient_id: str) -> bool:
+        """Check if a treatment event belongs to the given patient.
+
+        Returns False if the event doesn't exist. Mirrors the pattern used by
+        ``check_document_ownership`` to prevent cross-patient access via
+        enumerable integer IDs (#429).
+        """
+        async with self.db.execute(
+            "SELECT patient_id FROM treatment_events WHERE id = ?", (event_id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+            return bool(row and row["patient_id"] == patient_id)
 
     async def list_treatment_events(
         self, query: TreatmentEventQuery, *, patient_id: str

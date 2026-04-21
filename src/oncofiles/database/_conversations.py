@@ -45,12 +45,29 @@ class ConversationMixin:
         return entry
 
     async def get_conversation_entry(self, entry_id: int) -> ConversationEntry | None:
-        """Get a conversation entry by ID."""
+        """Get a conversation entry by ID.
+
+        Callers that need patient-scoped access should pair this with
+        ``check_conversation_entry_ownership`` (Option A pattern #429).
+        """
         async with self.db.execute(
             "SELECT * FROM conversation_entries WHERE id = ?", (entry_id,)
         ) as cursor:
             row = await cursor.fetchone()
             return _row_to_conversation_entry(row) if row else None
+
+    async def check_conversation_entry_ownership(self, entry_id: int, patient_id: str) -> bool:
+        """Check if a conversation entry belongs to the given patient.
+
+        Returns False if the entry doesn't exist. Mirrors the pattern used by
+        ``check_document_ownership`` / ``check_treatment_event_ownership`` to
+        prevent cross-patient access via enumerable integer IDs (#429).
+        """
+        async with self.db.execute(
+            "SELECT patient_id FROM conversation_entries WHERE id = ?", (entry_id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+            return bool(row and row["patient_id"] == patient_id)
 
     async def search_conversation_entries(
         self, query: ConversationQuery, *, max_content_length: int = 510, patient_id: str
