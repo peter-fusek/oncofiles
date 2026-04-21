@@ -4808,7 +4808,8 @@ async def _notify_new_subscriber(email: str, source: str) -> None:
     response must not depend on notification delivery.
 
     Requires env vars RESEND_API_KEY, NOTIFY_FROM_EMAIL, NOTIFY_TO_EMAIL.
-    If any are missing the helper is a silent no-op.
+    If any are missing the helper logs a WARNING (#461) so missing-config is
+    visible in Railway logs instead of silently dropping leads.
     """
     import httpx
 
@@ -4816,7 +4817,15 @@ async def _notify_new_subscriber(email: str, source: str) -> None:
     from_email = os.environ.get("NOTIFY_FROM_EMAIL")
     to_email = os.environ.get("NOTIFY_TO_EMAIL")
     if not (api_key and from_email and to_email):
-        logger.debug("Newsletter notification skipped — RESEND_API_KEY/NOTIFY_* not configured")
+        logger.warning(
+            "Newsletter admin notification SKIPPED for %s — env missing "
+            "(RESEND_API_KEY=%s, NOTIFY_FROM_EMAIL=%s, NOTIFY_TO_EMAIL=%s). "
+            "Subscriber is stored in DB but the [Lead] email won't arrive.",
+            email,
+            "set" if api_key else "missing",
+            "set" if from_email else "missing",
+            "set" if to_email else "missing",
+        )
         return
 
     subject = f"[Lead] {email} — newsletter ({source})"
@@ -4850,6 +4859,77 @@ async def _notify_new_subscriber(email: str, source: str) -> None:
                 )
     except Exception:
         logger.exception("Resend newsletter notification exception")
+
+
+async def _send_subscriber_welcome(email: str, source: str) -> None:
+    """Send a welcome/confirmation email TO the subscriber after they sign up.
+
+    Fire-and-forget. Reuses the same Resend + NOTIFY_FROM_EMAIL env config as
+    `_notify_new_subscriber`. If env is missing, logs a warning (#461) so a
+    silent "I signed up but got nothing" experience is easy to diagnose in
+    Railway logs.
+
+    The email is bilingual SK/EN because the landing page is SK-first.
+    """
+    import httpx
+
+    api_key = os.environ.get("RESEND_API_KEY")
+    from_email = os.environ.get("NOTIFY_FROM_EMAIL")
+    if not (api_key and from_email):
+        logger.warning(
+            "Subscriber welcome email SKIPPED for %s — env missing "
+            "(RESEND_API_KEY=%s, NOTIFY_FROM_EMAIL=%s). "
+            "Subscriber stored in DB but no confirmation arrived.",
+            email,
+            "set" if api_key else "missing",
+            "set" if from_email else "missing",
+        )
+        return
+
+    subject = "Oncofiles — ďakujeme za prihlásenie / thanks for subscribing"
+    text = (
+        "Ďakujeme, že ste sa prihlásili k odberu noviniek z Oncofiles.\n"
+        "Posielame len vtedy, keď máme niečo podstatné: nové funkcie, "
+        "upozornenia pre pacientov a opatrovateľov, kľúčové zmeny v platforme.\n\n"
+        "Odhlásiť sa môžete kedykoľvek — odpovedzte na tento email a odstránime Vás.\n\n"
+        "— Peter Fusek, Oncofiles\n"
+        "oncofiles.com\n\n"
+        "— English —\n\n"
+        "Thanks for subscribing to Oncofiles updates.\n"
+        "We only send when there's something substantive: new features, "
+        "alerts for patients and caregivers, significant platform changes.\n\n"
+        "You can unsubscribe any time — just reply to this email and we'll remove you.\n\n"
+        "— Peter Fusek, Oncofiles\n"
+        "oncofiles.com\n"
+    )
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(
+                "https://api.resend.com/emails",
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "from": from_email,
+                    "to": [email],
+                    "subject": subject,
+                    "text": text,
+                    "tags": [
+                        {"name": "kind", "value": "subscriber_welcome"},
+                        {"name": "source", "value": source[:50]},
+                    ],
+                },
+            )
+            if resp.status_code >= 400:
+                logger.warning(
+                    "Resend subscriber welcome failed for %s: %s %s",
+                    email,
+                    resp.status_code,
+                    resp.text[:500],
+                )
+    except Exception:
+        logger.exception("Resend subscriber welcome exception for %s", email)
 
 
 @mcp.custom_route("/api/newsletter/subscribe", methods=["POST"])
@@ -4911,9 +4991,13 @@ async def api_newsletter_subscribe(request: Request) -> JSONResponse:
     hits.append(now)
     _newsletter_rate[client_ip] = hits
 
-    # Fire-and-forget notification — only on genuinely new subscribers
+    # Fire-and-forget notifications — only on genuinely new subscribers.
+    # Admin gets the [Lead] alert; subscriber gets a welcome/confirmation
+    # email so "I signed up but heard nothing" is no longer the default UX
+    # (#461). Both are independent: one failing doesn't drop the other.
     if is_new_row:
         asyncio.create_task(_notify_new_subscriber(email, source))
+        asyncio.create_task(_send_subscriber_welcome(email, source))
 
     return JSONResponse(
         {"ok": True},
