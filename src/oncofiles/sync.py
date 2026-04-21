@@ -1792,10 +1792,16 @@ async def _enhance_document(
                 from oncofiles.ocr import OCR_MODEL, extract_text_from_image
                 from oncofiles.tools._helpers import _resize_image_if_needed
 
+                pdf_doc = None
                 try:
                     pdf_doc = fitz.open(stream=content_bytes, filetype="pdf")
+                    # fitz copies the stream internally; drop our reference so
+                    # the caller's bytes can be collected mid-OCR (#426).
+                    del content_bytes
+                    content_bytes = None
                     for page_num, page in enumerate(pdf_doc, start=1):
                         pix = page.get_pixmap(dpi=200)
+                        img = None
                         try:
                             img = MImage(data=pix.tobytes("jpeg"), format="jpeg")
                             img = _resize_image_if_needed(img)
@@ -1804,7 +1810,8 @@ async def _enhance_document(
                             text_parts.append(text)
                         finally:
                             del pix
-                    pdf_doc.close()
+                            if img is not None:
+                                del img
                     if text_parts:
                         logger.info(
                             "enhance: Vision OCR for doc %d (%d pages)",
@@ -1813,6 +1820,15 @@ async def _enhance_document(
                         )
                 except Exception:
                     logger.warning("enhance: Vision OCR failed for doc %d", doc.id, exc_info=True)
+                finally:
+                    # Always release MuPDF's C-level buffer — on any exception
+                    # (Vision timeout, API error), leaving pdf_doc open leaks
+                    # ~10 MB/doc of MuPDF memory that GC cannot reclaim. #426.
+                    if pdf_doc is not None:
+                        import contextlib as _contextlib
+
+                        with _contextlib.suppress(Exception):
+                            pdf_doc.close()
         elif content_bytes and doc.mime_type and doc.mime_type.startswith("image/"):
             # Image files: Vision OCR
             from fastmcp.utilities.types import Image as MImage
@@ -1820,9 +1836,13 @@ async def _enhance_document(
             from oncofiles.ocr import OCR_MODEL, extract_text_from_image
             from oncofiles.tools._helpers import _resize_image_if_needed
 
+            img = None
             try:
                 fmt = doc.mime_type.split("/")[1]
                 img = MImage(data=content_bytes, format=fmt)
+                # Drop caller's bytes — MImage holds its own reference. #426
+                del content_bytes
+                content_bytes = None
                 img = _resize_image_if_needed(img)
                 text = extract_text_from_image(img, db=db, document_id=doc.id)
                 await db.save_ocr_page(doc.id, 1, text, OCR_MODEL)
@@ -1831,7 +1851,10 @@ async def _enhance_document(
             except Exception:
                 logger.warning("enhance: Vision OCR failed for image doc %d", doc.id, exc_info=True)
             finally:
-                del content_bytes
+                if img is not None:
+                    del img
+                if content_bytes is not None:
+                    del content_bytes
         elif content_bytes and doc.mime_type and doc.mime_type.startswith("text/"):
             try:
                 text_content = content_bytes.decode("utf-8")

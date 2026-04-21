@@ -46,30 +46,37 @@ def extract_text_from_image(
     user_prompt = "Extract all text from this document image."
 
     start = time.perf_counter()
-    response = client.messages.create(
-        model=OCR_MODEL,
-        max_tokens=4096,
-        system=OCR_SYSTEM_PROMPT,
-        messages=[
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "image",
-                        "source": {
-                            "type": "base64",
-                            "media_type": media_type,
-                            "data": image_b64,
+    try:
+        response = client.messages.create(
+            model=OCR_MODEL,
+            max_tokens=4096,
+            system=OCR_SYSTEM_PROMPT,
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": media_type,
+                                "data": image_b64,
+                            },
                         },
-                    },
-                    {
-                        "type": "text",
-                        "text": user_prompt,
-                    },
-                ],
-            }
-        ],
-    )
+                        {
+                            "type": "text",
+                            "text": user_prompt,
+                        },
+                    ],
+                }
+            ],
+        )
+    finally:
+        # Base64 of a 200-DPI page is 5-20 MB, ~33% larger than the JPEG it
+        # encodes. The anthropic SDK has already serialized the request body
+        # into httpx — our local reference is dead weight through response
+        # processing. Drop it before the GC kicks in. #426
+        del image_b64
     duration_ms = int((time.perf_counter() - start) * 1000)
 
     raw = response.content[0].text if response.content else ""

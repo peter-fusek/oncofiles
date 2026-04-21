@@ -703,6 +703,81 @@ async def test_sync_from_gdrive_extracts_structured_metadata(db: Database):
     assert parsed["medications"] == ["FOLFOX"]
 
 
+async def test_enhance_document_closes_fitz_on_vision_ocr_exception(db: Database):
+    """Regression test for #426: pdf_doc.close() must fire even if Vision OCR raises.
+
+    Before the fix, pdf_doc.close() was the last line of the try block and ran
+    only on the happy path. A timeout or API error in extract_text_from_image
+    leaked ~10 MB/doc of MuPDF C-buffer memory per failure — the dominant
+    component of the 2,500 MB/h growth rate observed during nightly batches.
+    """
+    import fitz  # ensure module is imported so patch() can find fitz.open
+
+    from oncofiles.sync import _enhance_document
+
+    doc = make_doc(file_id="file_vision_fail", filename="scanned-pathology.pdf")
+    doc = await db.insert_document(doc, patient_id=ERIKA_UUID)
+
+    files = _mock_files()
+    gdrive = _mock_gdrive()
+
+    mock_pix = MagicMock()
+    mock_pix.tobytes.return_value = b"fake-jpeg-page"
+    mock_page = MagicMock()
+    mock_page.get_pixmap.return_value = mock_pix
+    mock_pdf_doc = MagicMock()
+    mock_pdf_doc.__iter__ = lambda self: iter([mock_page])
+
+    with (
+        patch("oncofiles.server._extract_pdf_text", return_value=None),
+        patch.object(fitz, "open", return_value=mock_pdf_doc),
+        patch(
+            "oncofiles.ocr.extract_text_from_image",
+            side_effect=TimeoutError("Vision OCR timed out"),
+        ),
+    ):
+        result = await _enhance_document(db, doc, files, gdrive)
+
+    assert result is False  # no text extracted → not enhanced
+    mock_pdf_doc.close.assert_called_once()  # critical: buffer released
+
+
+async def test_enhance_document_closes_fitz_on_happy_path(db: Database):
+    """Also verify pdf_doc.close() still fires on the success path (no regression
+    of behavior for the common case)."""
+    import fitz
+
+    from oncofiles.sync import _enhance_document
+
+    doc = make_doc(file_id="file_vision_ok", filename="scanned-labs.pdf")
+    doc = await db.insert_document(doc, patient_id=ERIKA_UUID)
+
+    files = _mock_files()
+    gdrive = _mock_gdrive()
+
+    mock_pix = MagicMock()
+    mock_pix.tobytes.return_value = b"fake-jpeg-page"
+    mock_page = MagicMock()
+    mock_page.get_pixmap.return_value = mock_pix
+    mock_pdf_doc = MagicMock()
+    mock_pdf_doc.__iter__ = lambda self: iter([mock_page])
+
+    with (
+        patch("oncofiles.server._extract_pdf_text", return_value=None),
+        patch.object(fitz, "open", return_value=mock_pdf_doc),
+        patch(
+            "oncofiles.ocr.extract_text_from_image",
+            return_value="CRC labs — within range",
+        ),
+        patch("oncofiles.sync.enhance_document_text", return_value=("summary", "[]")),
+        patch("oncofiles.sync.extract_structured_metadata", return_value={}),
+    ):
+        result = await _enhance_document(db, doc, files, gdrive)
+
+    assert result is True
+    mock_pdf_doc.close.assert_called_once()
+
+
 # ── Sync mutex ──────────────────────────────────────────────────────────
 
 
