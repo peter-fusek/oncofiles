@@ -21,6 +21,7 @@ async def store_lab_values(
     lab_date: str,
     values: str,
     force: bool = False,
+    patient_slug: str | None = None,
 ) -> str:
     """Store parsed lab values from a document for trend tracking.
 
@@ -44,6 +45,7 @@ async def store_lab_values(
                           "flag": ""}]
         force: If True, store even if document already has values
                (replaces existing via INSERT OR REPLACE).
+        patient_slug: Optional — explicit patient slug (#429).
     """
     try:
         parsed_date = _parse_date(lab_date)
@@ -51,9 +53,9 @@ async def store_lab_values(
         return json.dumps({"error": str(e)})
 
     db = _get_db(ctx)
-    from oncofiles.tools._helpers import _get_patient_id
+    from oncofiles.tools._helpers import _resolve_patient_id
 
-    pid = _get_patient_id()
+    pid = await _resolve_patient_id(patient_slug, ctx)
 
     # Patient isolation: verify caller owns this document
     if not await db.check_document_ownership(document_id, pid):
@@ -141,6 +143,7 @@ async def get_lab_trends(
     date_from: str | None = None,
     date_to: str | None = None,
     limit: int = 50,
+    patient_slug: str | None = None,
 ) -> str:
     """Retrieve stored lab values for trend analysis.
 
@@ -151,17 +154,19 @@ async def get_lab_trends(
         date_from: Filter from this date (YYYY-MM-DD).
         date_to: Filter to this date (YYYY-MM-DD).
         limit: Maximum results to return.
+        patient_slug: Optional — explicit patient slug (#429).
     """
     try:
         db = _get_db(ctx)
-        from oncofiles.tools._helpers import _get_patient_id
+        from oncofiles.tools._helpers import _resolve_patient_id
 
+        pid = await _resolve_patient_id(patient_slug, ctx)
         query = LabTrendQuery(
             parameter=parameter,
             date_from=_parse_date(date_from),
             date_to=_parse_date(date_to),
             limit=_clamp_limit(limit),
-            patient_id=_get_patient_id(),
+            patient_id=pid,
         )
         values = await db.get_lab_trends(query)
     except ValueError as e:
@@ -380,7 +385,7 @@ def _get_thresholds(patient_id: str) -> dict:
     return _MFOLFOX6_THRESHOLDS
 
 
-async def get_lab_safety_check(ctx: Context) -> str:
+async def get_lab_safety_check(ctx: Context, patient_slug: str | None = None) -> str:
     """Lab safety check against thresholds appropriate for the patient type.
 
     For oncology patients: mFOLFOX6 pre-cycle thresholds (NCCN + SmPC).
@@ -393,9 +398,9 @@ async def get_lab_safety_check(ctx: Context) -> str:
     - Clickable gdrive_url to verify the source lab document
     """
     db = _get_db(ctx)
-    from oncofiles.tools._helpers import _get_patient_id
+    from oncofiles.tools._helpers import _resolve_patient_id
 
-    pid = _get_patient_id()
+    pid = await _resolve_patient_id(patient_slug, ctx)
     thresholds = _get_thresholds(pid)
     results = []
 
@@ -629,7 +634,9 @@ _PRECYCLE_CHECKLIST = {
 }
 
 
-async def get_precycle_checklist(ctx: Context, cycle_number: int = 3) -> str:
+async def get_precycle_checklist(
+    ctx: Context, cycle_number: int = 3, patient_slug: str | None = None
+) -> str:
     """Get the full pre-cycle checklist for mFOLFOX6 with source references.
 
     Returns all checklist sections (lab safety, toxicity, VTE, general)
@@ -638,11 +645,12 @@ async def get_precycle_checklist(ctx: Context, cycle_number: int = 3) -> str:
 
     Args:
         cycle_number: Current cycle number (for display context).
+        patient_slug: Optional — explicit patient slug (#429).
     """
     db = _get_db(ctx)
-    from oncofiles.tools._helpers import _get_patient_id
+    from oncofiles.tools._helpers import _resolve_patient_id
 
-    pid = _get_patient_id()
+    pid = await _resolve_patient_id(patient_slug, ctx)
     sections = []
 
     for section_key, section in _PRECYCLE_CHECKLIST.items():
@@ -694,6 +702,7 @@ async def get_lab_time_series(
     parameters: str,
     date_from: str | None = None,
     date_to: str | None = None,
+    patient_slug: str | None = None,
 ) -> str:
     """Get structured time series data for one or more lab parameters.
 
@@ -705,11 +714,12 @@ async def get_lab_time_series(
         parameters: Comma-separated parameter names (e.g. "CEA,CA19_9" or "PLT").
         date_from: Start date filter (YYYY-MM-DD). Optional.
         date_to: End date filter (YYYY-MM-DD). Optional.
+        patient_slug: Optional — explicit patient slug (#429).
     """
     db = _get_db(ctx)
-    from oncofiles.tools._helpers import _get_patient_id
+    from oncofiles.tools._helpers import _resolve_patient_id
 
-    pid = _get_patient_id()
+    pid = await _resolve_patient_id(patient_slug, ctx)
     param_list = [p.strip() for p in parameters.split(",") if p.strip()]
     if not param_list:
         return json.dumps({"error": "No parameters specified"})
@@ -757,6 +767,7 @@ async def compare_lab_panels(
     ctx: Context,
     date_a: str,
     date_b: str,
+    patient_slug: str | None = None,
 ) -> str:
     """Compare lab values between two dates side-by-side.
 
@@ -766,11 +777,12 @@ async def compare_lab_panels(
     Args:
         date_a: First date (YYYY-MM-DD), typically the earlier measurement.
         date_b: Second date (YYYY-MM-DD), typically the later measurement.
+        patient_slug: Optional — explicit patient slug (#429).
     """
     db = _get_db(ctx)
-    from oncofiles.tools._helpers import _get_patient_id
+    from oncofiles.tools._helpers import _resolve_patient_id
 
-    pid = _get_patient_id()
+    pid = await _resolve_patient_id(patient_slug, ctx)
     try:
         _parse_date(date_a)
         _parse_date(date_b)
@@ -838,19 +850,22 @@ async def compare_lab_panels(
     )
 
 
-async def get_lab_summary(ctx: Context) -> str:
+async def get_lab_summary(ctx: Context, patient_slug: str | None = None) -> str:
     """Get a summary of the latest value for every tracked lab parameter.
 
     Returns status (normal/high/low), trend direction (rising/falling/stable),
     days since last measurement, and computed indices (SII, Ne/Ly ratio).
     Designed as a quick overview for clinical decision support.
+
+    Args:
+        patient_slug: Optional — explicit patient slug (#429).
     """
     from datetime import date as date_type
 
-    from oncofiles.tools._helpers import _get_patient_id
+    from oncofiles.tools._helpers import _resolve_patient_id
 
     db = _get_db(ctx)
-    pid = _get_patient_id()
+    pid = await _resolve_patient_id(patient_slug, ctx)
     latest_values = await db.get_all_latest_lab_values(patient_id=pid)
     # Batch-fetch previous values for trend calculation (single query instead of N)
     previous_values = await db.get_previous_lab_values(patient_id=pid)
@@ -941,7 +956,7 @@ async def get_lab_summary(ctx: Context) -> str:
     )
 
 
-async def get_preventive_care_status(ctx: Context) -> str:
+async def get_preventive_care_status(ctx: Context, patient_slug: str | None = None) -> str:
     """Get EU preventive care screening compliance for a general health patient.
 
     Evaluates which screenings (colonoscopy, dental, ophthalmology, PSA, etc.)
@@ -953,11 +968,14 @@ async def get_preventive_care_status(ctx: Context) -> str:
 
     Returns a compliance report with actionable screening status for each
     applicable protocol.
+
+    Args:
+        patient_slug: Optional — explicit patient slug (#429).
     """
     db = _get_db(ctx)
-    from oncofiles.tools._helpers import _get_patient_id
+    from oncofiles.tools._helpers import _resolve_patient_id
 
-    pid = _get_patient_id()
+    pid = await _resolve_patient_id(patient_slug, ctx)
 
     from oncofiles.preventive_care import get_preventive_care_status as _get_status
 
