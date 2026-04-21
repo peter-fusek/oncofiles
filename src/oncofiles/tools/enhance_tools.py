@@ -89,7 +89,9 @@ async def extract_document_metadata(
         return json.dumps({"error": "No text could be extracted from document"})
 
     full_text = "\n\n".join(texts)
-    metadata = extract_structured_metadata(full_text, db=db, document_id=document_id)
+    metadata = extract_structured_metadata(
+        full_text, db=db, document_id=document_id, filename=doc.filename
+    )
     metadata_json = json.dumps(metadata)
 
     await db.update_structured_metadata(document_id, metadata_json)

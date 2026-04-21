@@ -337,11 +337,72 @@ METADATA_SYSTEM_PROMPT = (
     "consultation, prescription, referral, discharge, chemo_sheet, reference, "
     "advocate, other, vaccination, dental, preventive.\n"
     '- "document_date": The clinical encounter/exam date (YYYY-MM-DD). '
-    "NOT DOB, NOT future appointments. null if unknown.\n"
+    "NOT DOB, NOT future appointments, NOT report-generation date, "
+    "NOT next-visit date. null if unknown.\n\n"
+    "Worked examples for document_date (#459). The right date is the one\n"
+    "a caregiver would call 'when this medical thing happened':\n\n"
+    "EXAMPLE 1 — Lab report with multiple dates\n"
+    "  DOB: 1972-04-14, Date of sample: 2026-02-13, Date of report: 2026-02-15\n"
+    "  → document_date = 2026-02-13  (the sample date, not DOB, not report gen)\n\n"
+    "EXAMPLE 2 — Discharge summary\n"
+    "  Admission: 2026-01-20, Discharge: 2026-01-27\n"
+    "  → document_date = 2026-01-27  (discharge > admission; the file "
+    "records the completed stay)\n\n"
+    "EXAMPLE 3 — Imaging report\n"
+    "  Exam performed: 2026-03-05, Report dictated: 2026-03-06\n"
+    "  → document_date = 2026-03-05  (the scan itself is the clinical event)\n\n"
+    "EXAMPLE 4 — Consultation with next-visit note\n"
+    "  Visit: 2026-02-20, Next check-up scheduled: 2026-03-10\n"
+    "  → document_date = 2026-02-20  (the visit just happened; next is FUTURE)\n\n"
+    "EXAMPLE 5 — Chemo sheet for cycle 3 of 8\n"
+    "  Cycle 1: 2026-01-05, Cycle 2: 2026-01-19, Cycle 3 (today): 2026-02-02, "
+    "Cycle 4 scheduled: 2026-02-16\n"
+    "  → document_date = 2026-02-02  (the cycle this specific sheet "
+    "documents, not the protocol overall)\n\n"
+    "If the document itself is a historical log covering multiple events "
+    "with no single 'today', use the latest past date that appears.\n\n"
     '- "plain_summary": 3-sentence patient-friendly summary in English\n'
     '- "plain_summary_sk": The same summary in Slovak (slovenčina)\n\n'
     "Respond ONLY with the JSON object, no markdown fencing or extra text."
 )
+
+
+def _check_filename_date_agreement(
+    filename: str | None, ai_document_date: str | None, document_id: int | None
+) -> None:
+    """#459 cross-check: warn when the AI-extracted document_date diverges
+    from the date encoded in the filename by more than 30 days.
+
+    Caregivers sometimes hand-name files with the correct clinical date in
+    YYYYMMDD prefix; a >30d divergence is almost always an AI pick of the
+    wrong candidate (DOB, report-gen, next-visit). We don't auto-override —
+    the AI date may be right and the filename wrong — but we surface the
+    mismatch so Peter can triage with search_prompt_log(text="date disagree").
+    """
+    if not filename or not ai_document_date:
+        return
+    try:
+        from datetime import date
+
+        from oncofiles.filename_parser import _match_any_date
+
+        stem_date = _match_any_date(filename)
+        if not stem_date:
+            return
+        filename_date, _ = stem_date
+        ai_date = date.fromisoformat(ai_document_date)
+        diff = abs((ai_date - filename_date).days)
+        if diff > 30:
+            logger.warning(
+                "date disagree doc=%s filename=%s AI=%s filename_date=%s diff=%dd",
+                document_id,
+                filename,
+                ai_document_date,
+                filename_date.isoformat(),
+                diff,
+            )
+    except Exception:
+        logger.debug("date-disagree check failed", exc_info=True)
 
 
 def extract_structured_metadata(
@@ -349,6 +410,7 @@ def extract_structured_metadata(
     *,
     db=None,
     document_id: int | None = None,
+    filename: str | None = None,
 ) -> dict:
     """Extract structured medical metadata from document text.
 
@@ -356,6 +418,9 @@ def extract_structured_metadata(
         text: Extracted text from the document.
         db: Database instance for prompt logging (optional).
         document_id: Document ID for prompt logging (optional).
+        filename: Original filename — when set, enables the #459 date-agreement
+            cross-check that warns if AI-extracted ``document_date`` differs
+            from the filename's encoded date by more than 30 days.
 
     Returns:
         Dict with structured metadata fields.
@@ -407,6 +472,7 @@ def extract_structured_metadata(
 
     try:
         parsed = json.loads(_strip_markdown_fencing(raw))
+        _check_filename_date_agreement(filename, parsed.get("document_date"), document_id)
         return {
             "document_type": parsed.get("document_type", "other"),
             "findings": parsed.get("findings", []),

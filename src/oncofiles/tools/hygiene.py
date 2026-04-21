@@ -1452,6 +1452,186 @@ async def _build_reconciliation_report(
     }
 
 
+async def audit_gdrive_folder_hygiene(
+    ctx: Context,
+    patient_slug: str | None = None,
+) -> str:
+    """Read-only audit of GDrive folder structure hygiene (#457).
+
+    Walks the patient's GDrive sync root and reports three classes of issue
+    WITHOUT making any changes. Use the output to decide targeted cleanups
+    (via reconcile_gdrive with dry_run=False or manual intervention).
+
+    Checks:
+      1. Nested year-month folders — a folder named YYYY-MM whose direct
+         parent is ALSO a YYYY-MM folder (e.g., ``2026-02/2026-02/...``).
+         Always a bug: some sync path or user action put the child in the
+         wrong parent.
+      2. Duplicate siblings — two or more folders with the same name under
+         the same parent (case-insensitive). Race-condition survivors from
+         find_or_create_folder's 2s dedup window.
+      3. Year-month outside category parent — a YYYY-MM folder whose parent
+         is NOT one of the managed category folders (labs, imaging, genetics,
+         etc.). Typically user-created at the wrong level.
+
+    Args:
+        patient_slug: Optional — explicit patient slug. Required in stateless
+            HTTP (#429) to pick a non-default patient.
+    """
+    import re
+
+    from oncofiles.gdrive_folders import ALL_FOLDERS
+
+    db = _get_db(ctx)
+    pid = await _resolve_patient_id(patient_slug, ctx)
+
+    token = await db.get_oauth_token(patient_id=pid)
+    if not token or not token.gdrive_folder_id:
+        return json.dumps(
+            {
+                "error": (
+                    "No GDrive folder configured for this patient. Call gdrive_set_folder first."
+                ),
+                "patient_id": pid,
+            }
+        )
+    root_folder_id = token.gdrive_folder_id
+
+    gdrive = await _get_gdrive(ctx, patient_slug=patient_slug) if False else await _get_gdrive(ctx)
+    if gdrive is None:
+        return json.dumps({"error": "GDrive client unavailable for this patient"})
+
+    ym_re = re.compile(r"^\d{4}-\d{2}$")
+    # Recognise managed category folders (both legacy EN-only and bilingual).
+    category_names = {f for f in ALL_FOLDERS}
+    from oncofiles.gdrive_folders import bilingual_name as _bil
+
+    category_names |= {_bil(f) for f in ALL_FOLDERS}
+
+    # Walk the tree ourselves to collect folder metadata without relying on
+    # list_folder (files-only) or list_folder_with_structure (flat map). We
+    # need the parent linkage to evaluate the three checks.
+    folders: dict[str, dict] = {}
+    _queue: list[str] = [root_folder_id]
+    visited: set[str] = set()
+    page_field = "nextPageToken, files(id, name, mimeType, parents)"
+
+    def _extract(parent_id: str) -> None:
+        page_token = None
+        while True:
+            try:
+                resp = (
+                    gdrive._service.files()
+                    .list(
+                        q=(
+                            f"'{parent_id}' in parents "
+                            f"and mimeType = 'application/vnd.google-apps.folder' "
+                            f"and trashed = false"
+                        ),
+                        fields=page_field,
+                        pageSize=100,
+                        pageToken=page_token,
+                    )
+                    .execute()
+                )
+            except Exception as exc:
+                logger.warning(
+                    "audit_gdrive_folder_hygiene: list failed for %s — %s",
+                    parent_id,
+                    str(exc)[:200],
+                )
+                return
+            for f in resp.get("files", []):
+                fid = f["id"]
+                folders[fid] = {
+                    "id": fid,
+                    "name": f.get("name", ""),
+                    "parents": f.get("parents", []),
+                }
+                if fid not in visited:
+                    visited.add(fid)
+                    _queue.append(fid)
+            page_token = resp.get("nextPageToken")
+            if not page_token:
+                break
+
+    # BFS walk
+    visited.add(root_folder_id)
+    while _queue:
+        current = _queue.pop(0)
+        await asyncio.to_thread(_extract, current)
+
+    # Check 1 — nested YYYY-MM folders
+    nested_ym: list[dict] = []
+    for fid, info in folders.items():
+        if not ym_re.match(info["name"]):
+            continue
+        parents = info.get("parents", [])
+        for pid_ in parents:
+            parent = folders.get(pid_)
+            if parent and ym_re.match(parent["name"]):
+                nested_ym.append(
+                    {
+                        "folder_id": fid,
+                        "name": info["name"],
+                        "parent_id": pid_,
+                        "parent_name": parent["name"],
+                    }
+                )
+
+    # Check 2 — duplicate siblings under the same parent (case-insensitive)
+    siblings: dict[tuple[str, str], list[str]] = {}
+    for fid, info in folders.items():
+        for pid_ in info.get("parents", []):
+            key = (pid_, info["name"].lower())
+            siblings.setdefault(key, []).append(fid)
+    duplicate_siblings: list[dict] = []
+    for (parent_id, lower_name), ids in siblings.items():
+        if len(ids) >= 2:
+            parent = folders.get(parent_id) or {"name": "?"}
+            duplicate_siblings.append(
+                {
+                    "parent_id": parent_id,
+                    "parent_name": parent.get("name", ""),
+                    "duplicate_name": lower_name,
+                    "folder_ids": ids,
+                    "count": len(ids),
+                }
+            )
+
+    # Check 3 — YYYY-MM outside any managed category parent
+    ym_orphans: list[dict] = []
+    for fid, info in folders.items():
+        if not ym_re.match(info["name"]):
+            continue
+        parents = info.get("parents", [])
+        for pid_ in parents:
+            parent = folders.get(pid_)
+            if parent is None:
+                continue  # parent is the root — fine
+            if parent["name"] not in category_names:
+                ym_orphans.append(
+                    {
+                        "folder_id": fid,
+                        "name": info["name"],
+                        "parent_id": pid_,
+                        "parent_name": parent["name"],
+                    }
+                )
+
+    return json.dumps(
+        {
+            "patient_id": pid,
+            "root_folder_id": root_folder_id,
+            "folders_scanned": len(folders),
+            "nested_year_month": nested_ym,
+            "duplicate_siblings": duplicate_siblings,
+            "ym_outside_category": ym_orphans,
+        },
+        default=str,
+    )
+
+
 def register(mcp):
     mcp.tool()(reconcile_gdrive)
     mcp.tool()(validate_categories)
@@ -1461,3 +1641,4 @@ def register(mcp):
     mcp.tool()(get_pipeline_status)
     mcp.tool()(audit_document_pipeline)
     mcp.tool()(list_tool_definitions)
+    mcp.tool()(audit_gdrive_folder_hygiene)

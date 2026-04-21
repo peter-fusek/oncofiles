@@ -1708,7 +1708,9 @@ async def extract_all_metadata(
                 continue
 
             full_text = "\n\n".join(text_parts)
-            metadata = extract_structured_metadata(full_text, db=db, document_id=doc.id)
+            metadata = extract_structured_metadata(
+                full_text, db=db, document_id=doc.id, filename=doc.filename
+            )
             await db.update_structured_metadata(doc.id, json.dumps(metadata, ensure_ascii=False))
             logger.info(
                 "extract_all_metadata: doc %d (%s) — metadata extracted",
@@ -1876,7 +1878,9 @@ async def _enhance_document(
     # Extract structured metadata (diagnoses, medications, findings, etc.)
     metadata = None
     try:
-        metadata = extract_structured_metadata(full_text, db=db, document_id=doc.id)
+        metadata = extract_structured_metadata(
+            full_text, db=db, document_id=doc.id, filename=doc.filename
+        )
         await db.update_structured_metadata(doc.id, json.dumps(metadata, ensure_ascii=False))
         logger.info("enhance: doc %d (%s) — structured metadata extracted", doc.id, doc.filename)
     except Exception:
