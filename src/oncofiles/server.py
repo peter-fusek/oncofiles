@@ -4214,12 +4214,23 @@ async def api_documents(request: Request) -> JSONResponse:
         db: Database = request.app.state.fastmcp_server._lifespan_result["db"]
         patient_id = await _get_dashboard_patient_id(request)
         filter_param = request.query_params.get("filter", "all")
+        # Cap bumped from 200 → 2000 (#419). Dashboard currently renders the full
+        # result so high limits are fine; heavy-pagination consumers should pass
+        # offset + limit explicitly.
         try:
-            limit = min(int(request.query_params.get("limit", "200")), 200)
+            limit = min(int(request.query_params.get("limit", "500")), 2000)
         except (ValueError, TypeError):
-            limit = 200
+            limit = 500
+        try:
+            offset = max(int(request.query_params.get("offset", "0")), 0)
+        except (ValueError, TypeError):
+            offset = 0
         result = await _build_document_matrix(
-            db, filter_param=filter_param, limit=limit, patient_id=patient_id
+            db,
+            filter_param=filter_param,
+            limit=limit,
+            offset=offset,
+            patient_id=patient_id,
         )
         return JSONResponse(result)
     except Exception:

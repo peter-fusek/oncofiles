@@ -149,7 +149,8 @@ async def test_build_document_matrix_summary_has_fully_complete(db):
 
 
 async def test_build_document_matrix_limit(db):
-    """Limit parameter caps the number of returned documents."""
+    """Limit parameter caps the returned page size. 'matched' reports total hits,
+    'returned' reports the slice, 'summary.total' is the unfiltered patient total."""
     from oncofiles.tools.hygiene import _build_document_matrix
 
     for i in range(5):
@@ -158,8 +159,73 @@ async def test_build_document_matrix_limit(db):
         )
 
     result = await _build_document_matrix(db, limit=3, patient_id=ERIKA_UUID)
-    assert result["matched"] == 3
+    assert result["matched"] == 5  # total filter hits (all 5 match filter='all')
+    assert result["returned"] == 3  # page size
+    assert result["limit"] == 3
+    assert result["offset"] == 0
+    assert len(result["documents"]) == 3
     assert result["summary"]["total"] == 5
+
+
+async def test_build_document_matrix_pagination(db):
+    """Offset + limit work together for true pagination (#419 fix)."""
+    from oncofiles.tools.hygiene import _build_document_matrix
+
+    for i in range(10):
+        await db.insert_document(
+            make_doc(filename=f"doc_{i:02d}.pdf", file_id=f"file_{i}"),
+            patient_id=ERIKA_UUID,
+        )
+
+    page1 = await _build_document_matrix(db, limit=4, offset=0, patient_id=ERIKA_UUID)
+    page2 = await _build_document_matrix(db, limit=4, offset=4, patient_id=ERIKA_UUID)
+    page3 = await _build_document_matrix(db, limit=4, offset=8, patient_id=ERIKA_UUID)
+
+    # All three pages report the same 'matched' total
+    assert page1["matched"] == page2["matched"] == page3["matched"] == 10
+
+    # Page sizes: 4, 4, 2 (10 docs)
+    assert page1["returned"] == 4
+    assert page2["returned"] == 4
+    assert page3["returned"] == 2
+
+    # Pages don't overlap
+    ids_p1 = {d["id"] for d in page1["documents"]}
+    ids_p2 = {d["id"] for d in page2["documents"]}
+    ids_p3 = {d["id"] for d in page3["documents"]}
+    assert not (ids_p1 & ids_p2)
+    assert not (ids_p2 & ids_p3)
+    assert len(ids_p1 | ids_p2 | ids_p3) == 10  # all unique
+
+
+async def test_build_document_matrix_cap_and_clamp(db):
+    """Verify the documented bounds (#419): default 500, ceiling 2000, clamp
+    behavior on over/under-size requests.
+
+    We can't exceed the MAX_DOCUMENTS_PER_PATIENT FUP limit in the test DB so
+    we verify the *limit echoed back in the response* reflects the clamp,
+    rather than inserting >2000 rows.
+    """
+    from oncofiles.tools.hygiene import _build_document_matrix
+
+    for i in range(5):
+        await db.insert_document(
+            make_doc(filename=f"doc_{i}.pdf", file_id=f"file_{i}"),
+            patient_id=ERIKA_UUID,
+        )
+
+    # Limits above ceiling are clamped to 2000
+    clamped = await _build_document_matrix(db, limit=99_999, patient_id=ERIKA_UUID)
+    assert clamped["limit"] == 2000
+
+    # Negative / zero limits are clamped UP to 1 (min(max(1, limit), 2000))
+    raised = await _build_document_matrix(db, limit=0, patient_id=ERIKA_UUID)
+    assert raised["limit"] == 1
+    assert raised["returned"] == 1  # we seeded 5 but asked for 1
+
+    # Negative offset is clamped up to 0
+    result = await _build_document_matrix(db, limit=10, offset=-5, patient_id=ERIKA_UUID)
+    assert result["offset"] == 0
 
 
 # ── Dashboard route (source-level checks) ────────────────────────────

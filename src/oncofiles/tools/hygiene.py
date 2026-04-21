@@ -791,18 +791,27 @@ async def system_health(ctx: Context, patient_slug: str | None = None) -> str:
 
 
 async def _build_document_matrix(
-    db, filter_param: str = "all", limit: int = 200, patient_id: str | None = None
+    db,
+    filter_param: str = "all",
+    limit: int = 500,
+    offset: int = 0,
+    patient_id: str | None = None,
 ) -> dict:
     """Build document status matrix — shared by MCP tool and HTTP API.
 
-    Returns: {"filter", "matched", "summary", "documents": [...]}
+    Returns: {"filter", "matched", "summary", "offset", "limit", "documents": [...]}
+
+    The summary counts cover the entire patient's document set; the
+    ``documents`` array is the paginated slice (offset + limit).
     """
     from oncofiles.filename_parser import is_standard_format
 
-    limit = min(limit, 200)
+    limit = min(max(1, limit), 2000)
+    offset = max(0, offset)
     pid = patient_id if patient_id is not None else _get_patient_id()
 
-    docs = await db.list_documents(limit=500, patient_id=pid)
+    # Fetch enough docs to satisfy offset + limit, capped at the pagination ceiling.
+    docs = await db.list_documents(limit=max(limit + offset, 500), patient_id=pid)
     ocr_ids = await db.get_ocr_document_ids()
     rows = []
 
@@ -832,10 +841,13 @@ async def _build_document_matrix(
         )
         doc_statuses.append(status)
 
+    # First: build the full filtered set, THEN slice by offset + limit. Pagination
+    # has to happen after filtering, otherwise pages 2+ would skip filtered-out rows
+    # silently (#419 follow-up — the old code only tracked `len(rows) >= limit`
+    # and couldn't support offset correctly even if added).
+    all_filtered: list[dict] = []
     for s in doc_statuses:
         doc = s["doc"]
-
-        # Apply filter — skip documents that don't match
         skip = (
             (filter_param == "missing_ocr" and s["has_ocr"])
             or (filter_param == "missing_ai" and s["has_ai"])
@@ -848,8 +860,7 @@ async def _build_document_matrix(
         )
         if skip:
             continue
-
-        rows.append(
+        all_filtered.append(
             {
                 "id": doc.id,
                 "filename": doc.filename[:60],
@@ -867,8 +878,9 @@ async def _build_document_matrix(
                 "fully_complete": s["fully_complete"],
             }
         )
-        if len(rows) >= limit:
-            break
+
+    total_matched = len(all_filtered)
+    rows = all_filtered[offset : offset + limit]
 
     # Summary counts (reuse pre-computed flags)
     total = len(doc_statuses)
@@ -886,7 +898,10 @@ async def _build_document_matrix(
 
     return {
         "filter": filter_param,
-        "matched": len(rows),
+        "matched": total_matched,
+        "returned": len(rows),
+        "offset": offset,
+        "limit": limit,
         "summary": summary,
         "documents": rows,
     }
@@ -895,23 +910,31 @@ async def _build_document_matrix(
 async def get_document_status_matrix(
     ctx: Context,
     filter: str = "all",
-    limit: int = 100,
+    limit: int = 500,
+    offset: int = 0,
     patient_slug: str | None = None,
 ) -> str:
     """Get per-document status matrix showing OCR, AI, metadata, sync, and rename state.
 
-    Returns a table of documents with their processing status at each pipeline stage.
-    Use filters to find documents that need attention.
+    Returns a paginated table of documents with their processing status at each
+    pipeline stage. Summary counts cover the entire patient set (not the slice).
+    Response fields: ``filter``, ``matched`` (total filter hits),
+    ``returned`` (this page size), ``offset``, ``limit``, ``summary``, ``documents``.
 
     Args:
         filter: Filter documents — 'all', 'missing_ocr', 'missing_ai', 'missing_metadata',
-                'not_synced', 'not_renamed', 'incomplete' (any gap).
-        limit: Maximum documents to return (max 200).
+                'missing_date', 'missing_institution', 'not_synced', 'not_renamed',
+                'incomplete' (any gap).
+        limit: Page size (default 500, max 2000). Previous default was 100 —
+               caused silent truncation in Oncoteam dashboard (#419).
+        offset: Skip this many filter-matching documents (for pagination beyond ``limit``).
         patient_slug: Optional — explicit patient slug (#429).
     """
     db = _get_db(ctx)
     pid = await _resolve_patient_id(patient_slug, ctx)
-    result = await _build_document_matrix(db, filter_param=filter, limit=limit, patient_id=pid)
+    result = await _build_document_matrix(
+        db, filter_param=filter, limit=limit, offset=offset, patient_id=pid
+    )
     return json.dumps(result)
 
 
