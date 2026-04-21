@@ -447,8 +447,162 @@ async def get_journey_timeline(
     return json.dumps({"items": timeline, "total": total, "offset": offset, "limit": limit})
 
 
+async def get_conversation_stats(
+    ctx: Context,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    top_tags_limit: int = 20,
+    patient_slug: str | None = None,
+) -> str:
+    """Per-patient conversation archive stats: counts, topics, monthly breakdown.
+
+    Surfaces how much the patient's journey has been narrated into the archive
+    and where the gaps are. Answers #462 ("report per patient about count and
+    topics of conversation via mcp logged in oncofile") and gives Peter a
+    direct way to spot the April-2026 gap called out in #455.
+
+    Returns JSON with:
+      - total: total live conversation entries (respects date filters)
+      - by_entry_type: {type: count}
+      - by_participant: {participant: count}
+      - by_month: ordered [{month: YYYY-MM, count}]
+      - top_tags: [{tag, count}] capped at top_tags_limit
+      - date_range: {first, last} as YYYY-MM-DD or None
+      - recency: {last_7_days, last_30_days}
+
+    Args:
+        date_from: Only consider entries with entry_date >= this (YYYY-MM-DD).
+        date_to: Only consider entries with entry_date <= this (YYYY-MM-DD).
+        top_tags_limit: Max number of tags returned in top_tags (default 20, max 100).
+        patient_slug: Optional — explicit patient slug (#429).
+    """
+    try:
+        parsed_from = _parse_date(date_from)
+        parsed_to = _parse_date(date_to)
+    except ValueError as e:
+        return json.dumps({"error": str(e)})
+
+    top_tags_limit = max(1, min(int(top_tags_limit or 20), 100))
+
+    db = _get_db(ctx)
+    pid = await _resolve_patient_id(patient_slug, ctx)
+
+    conds = ["patient_id = ?"]
+    params: list[str] = [pid]
+    if parsed_from:
+        conds.append("entry_date >= ?")
+        params.append(parsed_from.isoformat())
+    if parsed_to:
+        conds.append("entry_date <= ?")
+        params.append(parsed_to.isoformat())
+    where = " AND ".join(conds)
+
+    async def _scalar_count(extra_sql: str = "") -> int:
+        sql = f"SELECT COUNT(*) AS c FROM conversation_entries WHERE {where} {extra_sql}"
+        async with db.db.execute(sql, tuple(params)) as cursor:
+            row = await cursor.fetchone()
+        if row is None:
+            return 0
+        try:
+            return int(row["c"])
+        except Exception:
+            return int(dict(row).get("c", 0))
+
+    total = await _scalar_count()
+
+    # ── by_entry_type / by_participant / by_month ─────────────────────────
+    async def _group_counts(field_sql: str) -> dict[str, int]:
+        sql = (
+            f"SELECT {field_sql} AS k, COUNT(*) AS c FROM conversation_entries "
+            f"WHERE {where} GROUP BY k ORDER BY c DESC"
+        )
+        out: dict[str, int] = {}
+        async with db.db.execute(sql, tuple(params)) as cursor:
+            for row in await cursor.fetchall():
+                d = dict(row)
+                key = d.get("k") or "(unset)"
+                out[str(key)] = int(d.get("c", 0))
+        return out
+
+    by_entry_type = await _group_counts("entry_type")
+    by_participant = await _group_counts("participant")
+    by_month_raw = await _group_counts("substr(entry_date, 1, 7)")
+    by_month = [{"month": m, "count": by_month_raw[m]} for m in sorted(by_month_raw.keys())]
+
+    # ── date_range ────────────────────────────────────────────────────────
+    async with db.db.execute(
+        f"SELECT MIN(entry_date) AS mn, MAX(entry_date) AS mx FROM conversation_entries "
+        f"WHERE {where}",
+        tuple(params),
+    ) as cursor:
+        row = await cursor.fetchone()
+    range_row = dict(row) if row else {}
+    date_range = {"first": range_row.get("mn"), "last": range_row.get("mx")}
+
+    # ── top_tags via json_each over tags JSON blob ────────────────────────
+    # conversation_entries.tags is a TEXT column with JSON array contents.
+    # json_each works on SQLite/Turso (see migration 045 pattern). If a row's
+    # tags column is NULL or empty, json_each returns no rows for it.
+    tags_sql = (
+        f"SELECT j.value AS tag, COUNT(*) AS c "
+        f"FROM conversation_entries, json_each(conversation_entries.tags) AS j "
+        f"WHERE {where} AND conversation_entries.tags IS NOT NULL "
+        f"  AND conversation_entries.tags != '' "
+        f"GROUP BY j.value ORDER BY c DESC LIMIT ?"
+    )
+    tag_params = list(params) + [top_tags_limit]
+    top_tags: list[dict] = []
+    try:
+        async with db.db.execute(tags_sql, tuple(tag_params)) as cursor:
+            for row in await cursor.fetchall():
+                d = dict(row)
+                tag_val = d.get("tag")
+                if tag_val is None:
+                    continue
+                top_tags.append({"tag": str(tag_val), "count": int(d.get("c", 0))})
+    except Exception:
+        logger.debug("get_conversation_stats: json_each tag aggregation failed", exc_info=True)
+
+    # ── recency: last 7 / 30 days (relative to today, ignores date filters) ─
+    recency_conds = ["patient_id = ?"]
+    recency_params: list[str] = [pid]
+    # Use today-anchored SQL expressions so the count is "rolling" regardless
+    # of the date_from/date_to bounds above.
+    last_7_days = 0
+    last_30_days = 0
+    try:
+        async with db.db.execute(
+            "SELECT "
+            "  SUM(CASE WHEN entry_date >= date('now', '-7 days') THEN 1 ELSE 0 END) AS d7, "
+            "  SUM(CASE WHEN entry_date >= date('now', '-30 days') THEN 1 ELSE 0 END) AS d30 "
+            "FROM conversation_entries WHERE " + " AND ".join(recency_conds),
+            tuple(recency_params),
+        ) as cursor:
+            row = await cursor.fetchone()
+        d = dict(row) if row else {}
+        last_7_days = int(d.get("d7") or 0)
+        last_30_days = int(d.get("d30") or 0)
+    except Exception:
+        logger.debug("get_conversation_stats: recency aggregation failed", exc_info=True)
+
+    return json.dumps(
+        {
+            "patient_id": pid,
+            "total": total,
+            "by_entry_type": by_entry_type,
+            "by_participant": by_participant,
+            "by_month": by_month,
+            "top_tags": top_tags,
+            "date_range": date_range,
+            "recency": {"last_7_days": last_7_days, "last_30_days": last_30_days},
+        },
+        default=str,
+    )
+
+
 def register(mcp):
     mcp.tool()(log_conversation)
     mcp.tool()(search_conversations)
     mcp.tool()(get_conversation)
     mcp.tool()(get_journey_timeline)
+    mcp.tool()(get_conversation_stats)
