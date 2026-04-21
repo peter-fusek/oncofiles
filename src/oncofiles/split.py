@@ -9,11 +9,12 @@ from uuid import uuid4
 
 from oncofiles.config import MAX_DOCUMENTS_PER_PATIENT
 from oncofiles.database import Database
-from oncofiles.filename_parser import rename_to_standard
+from oncofiles.filename_parser import CATEGORY_FILENAME_TOKENS
 from oncofiles.files_api import FilesClient
 from oncofiles.gdrive_client import GDriveClient
 from oncofiles.gdrive_folders import ensure_year_month_folder, resolve_category_folder
 from oncofiles.models import Document, DocumentCategory
+from oncofiles.patient_context import get_patient_name
 
 logger = logging.getLogger(__name__)
 
@@ -96,21 +97,37 @@ async def split_document(
         sub_category = _CATEGORY_MAP.get(sub_category_str, DocumentCategory.OTHER)
         sub_description = sub.get("description", "")
 
-        # Build filename
-        new_filename = rename_to_standard(
-            doc.original_filename,
-            category=sub_category_str,
-            en_description=sub_description,
-            document_date=sub_date,
-            institution=sub_institution,
-            patient_id=patient_id,
-        )
-        if not new_filename or new_filename == doc.original_filename:
-            # Fallback: use original filename with part suffix
-            base, _, ext = doc.filename.rpartition(".")
-            new_filename = f"{base}_Part{part_number}of{total_parts}.{ext}"
+        # Build filename directly from the AI-detected sub-document fields.
+        # We can't go through `rename_to_standard` here because that helper
+        # derives the date from the filename stem — for splits the date comes
+        # from AI analysis, not the (usually ambiguous) parent PDF name.
+        patient_compact = (get_patient_name(patient_id) or "").replace(" ", "") or "Patient"
+        cat_token = CATEGORY_FILENAME_TOKENS.get(sub_category, "Other")
+        institution = sub_institution or doc.institution or "Unknown"
+        effective_date = sub_date or doc.document_date
+        _, _, ext = doc.filename.rpartition(".")
+        ext_with_dot = f".{ext}" if ext else ""
 
-        # Upload to Files API
+        if effective_date:
+            date_str = effective_date.strftime("%Y%m%d")
+            name_parts = [date_str, patient_compact, institution, cat_token]
+            if sub_description:
+                name_parts.append(sub_description)
+            name_parts.append(f"Part{part_number}of{total_parts}")
+            new_filename = f"{'_'.join(name_parts)}{ext_with_dot}"
+        else:
+            # Undated fallback — keep original stem but tag the part.
+            base, _, ext2 = doc.filename.rpartition(".")
+            new_filename = f"{base}_Part{part_number}of{total_parts}"
+            if ext2:
+                new_filename = f"{new_filename}.{ext2}"
+
+        # Upload to Files API. If this fails mid-loop, previously we hit
+        # `continue` which silently dropped the part — `total_parts` stayed at
+        # the original count, so callers saw "Part N of M" but only (M - k)
+        # files ever existed in the DB. Classic #456 symptom. We now abort the
+        # whole split on any error and soft-delete the parts we already wrote
+        # so the caller can retry cleanly.
         new_file_id = f"split_{doc.file_id}_{part_number}"  # placeholder
         if content_bytes:
             try:
@@ -121,8 +138,20 @@ async def split_document(
                 )
                 new_file_id = result.id
             except Exception:
-                logger.warning("Failed to upload split %d to Files API", part_number)
-                continue
+                logger.exception(
+                    "split_document: Files API upload failed on part %d/%d of doc %d — "
+                    "aborting split (rolling back %d earlier parts)",
+                    part_number,
+                    total_parts,
+                    doc.id,
+                    len(created_docs),
+                )
+                for created in created_docs:
+                    try:
+                        await db.delete_document(created.id)
+                    except Exception:
+                        logger.warning("split_document: failed to rollback part %d", created.id)
+                return []
 
         # Copy on GDrive
         new_gdrive_id = None

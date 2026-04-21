@@ -355,6 +355,108 @@ async def unblock_stuck_documents(ctx: Context, dry_run: bool = True) -> str:
     return json.dumps({"stats": stats, "patient_id": pid, "next_steps": next_steps})
 
 
+async def repair_broken_groups(
+    ctx: Context,
+    dry_run: bool = True,
+    patient_slug: str | None = None,
+) -> str:
+    """Un-group documents whose existing consolidation violates current guardrails.
+
+    Scans all groups assigned to this patient and reports (or, when dry_run=False,
+    resets) the ones that would now be rejected by :func:`consolidate_documents`:
+    members span >7d by document_date, or they originate from distinct
+    institutions. Rationale: #428 / #456 showed the AI happily grouped
+    cross-month, cross-institution files into one "Part N of M" — the new
+    guardrails block future occurrences, but existing data needs a one-shot
+    cleanup.
+
+    Each member of a rejected group has group_id / part_number / total_parts
+    cleared and the trailing ``_PartNofN`` suffix stripped from the filename.
+    Soft-deleted documents are untouched. GDrive file names are NOT mutated —
+    the downstream rename pipeline will re-converge them on the next
+    sync_to_gdrive run.
+
+    Args:
+        dry_run: If True (default), only report what would be reset.
+        patient_slug: Optional — explicit patient slug. Required in stateless HTTP (#429).
+    """
+    import re
+
+    from oncofiles.consolidate import (
+        CONSOLIDATE_MAX_DATE_SPAN_DAYS,
+        _dates_within_span,
+        _institutions_compatible,
+    )
+
+    db = _get_db(ctx)
+    pid = await _resolve_patient_id(patient_slug, ctx)
+
+    all_docs = await db.list_documents(limit=10000, patient_id=pid)
+    grouped = [d for d in all_docs if d.group_id and d.deleted_at is None]
+
+    groups: dict[str, list] = {}
+    for d in grouped:
+        groups.setdefault(d.group_id, []).append(d)
+
+    part_suffix_re = re.compile(r"_?Part\d+of\d+(?=\.[^.]+$|$)")
+    inspected = 0
+    broken_groups: list[dict] = []
+    reset_ids: list[int] = []
+
+    for gid, members in groups.items():
+        inspected += 1
+        if len(members) < 2:
+            # Orphan single-member group — also broken. Consolidation never
+            # produces 1-member groups; this is leftover from an aborted split
+            # or partial rollback (#456).
+            reason = "single_member"
+        elif not _dates_within_span(
+            [d.document_date for d in members], CONSOLIDATE_MAX_DATE_SPAN_DAYS
+        ):
+            reason = "date_span_too_large"
+        elif not _institutions_compatible([d.institution for d in members]):
+            reason = "institutions_differ"
+        else:
+            continue  # group still passes guardrails
+
+        broken_groups.append(
+            {
+                "group_id": gid,
+                "reason": reason,
+                "member_count": len(members),
+                "member_ids": [d.id for d in members],
+                "dates": [
+                    d.document_date.isoformat() if d.document_date else None for d in members
+                ],
+                "institutions": [d.institution for d in members],
+            }
+        )
+
+        if dry_run:
+            continue
+
+        for d in members:
+            stripped_name = part_suffix_re.sub("", d.filename)
+            await db.db.execute(
+                "UPDATE documents SET group_id = NULL, part_number = NULL, "
+                "total_parts = NULL, filename = ? WHERE id = ?",
+                (stripped_name, d.id),
+            )
+            reset_ids.append(d.id)
+        await db.db.commit()
+
+    return json.dumps(
+        {
+            "dry_run": dry_run,
+            "patient_id": pid,
+            "groups_inspected": inspected,
+            "broken_groups": broken_groups,
+            "reset_document_ids": reset_ids,
+        },
+        default=str,
+    )
+
+
 def register(mcp):
     mcp.tool()(enhance_documents)
     mcp.tool()(extract_document_metadata)
@@ -363,3 +465,4 @@ def register(mcp):
     mcp.tool()(detect_and_consolidate_documents)
     mcp.tool()(backfill_ai_classification)
     mcp.tool()(unblock_stuck_documents)
+    mcp.tool()(repair_broken_groups)
