@@ -7,7 +7,7 @@ import json
 from fastmcp import Context
 
 from oncofiles.models import ResearchEntry, ResearchQuery
-from oncofiles.tools._helpers import _get_db, _get_patient_id, _research_source_url
+from oncofiles.tools._helpers import _get_db, _research_source_url, _resolve_patient_id
 
 
 async def add_research_entry(
@@ -18,6 +18,7 @@ async def add_research_entry(
     summary: str = "",
     tags: str = "[]",
     raw_data: str = "",
+    patient_slug: str | None = None,
 ) -> str:
     """Save a research article or clinical trial found by an agent.
 
@@ -31,8 +32,10 @@ async def add_research_entry(
         summary: Brief summary or abstract excerpt.
         tags: JSON array of tags (e.g. '["FOLFOX","mCRC"]').
         raw_data: Full raw data (abstract, JSON, etc.) for reference.
+        patient_slug: Optional — explicit patient slug (#429).
     """
     db = _get_db(ctx)
+    pid = await _resolve_patient_id(patient_slug, ctx)
     entry = ResearchEntry(
         source=source,
         external_id=external_id,
@@ -41,7 +44,7 @@ async def add_research_entry(
         tags=tags,
         raw_data=raw_data,
     )
-    saved = await db.insert_research_entry(entry, patient_id=_get_patient_id())
+    saved = await db.insert_research_entry(entry, patient_id=pid)
     return json.dumps(
         {
             "id": saved.id,
@@ -58,6 +61,7 @@ async def search_research(
     text: str | None = None,
     source: str | None = None,
     limit: int = 20,
+    patient_slug: str | None = None,
 ) -> str:
     """Search saved research entries by text and/or source.
 
@@ -65,10 +69,12 @@ async def search_research(
         text: Search in title, summary, and tags.
         source: Filter by source (e.g. pubmed, clinicaltrials).
         limit: Maximum results to return.
+        patient_slug: Optional — explicit patient slug (#429).
     """
     db = _get_db(ctx)
+    pid = await _resolve_patient_id(patient_slug, ctx)
     query = ResearchQuery(text=text, source=source, limit=limit)
-    entries = await db.search_research_entries(query, patient_id=_get_patient_id())
+    entries = await db.search_research_entries(query, patient_id=pid)
     items = [
         {
             "id": e.id,
@@ -89,17 +95,18 @@ async def list_research_entries(
     ctx: Context,
     source: str | None = None,
     limit: int = 50,
+    patient_slug: str | None = None,
 ) -> str:
     """List saved research entries, optionally filtered by source.
 
     Args:
         source: Filter by source (e.g. pubmed, clinicaltrials).
         limit: Maximum results to return.
+        patient_slug: Optional — explicit patient slug (#429).
     """
     db = _get_db(ctx)
-    entries = await db.list_research_entries(
-        source=source, limit=limit, patient_id=_get_patient_id()
-    )
+    pid = await _resolve_patient_id(patient_slug, ctx)
+    entries = await db.list_research_entries(source=source, limit=limit, patient_id=pid)
     items = [
         {
             "id": e.id,

@@ -7,13 +7,14 @@ import json
 from fastmcp import Context
 
 from oncofiles.patient_context import get_context as _get_patient_context
-from oncofiles.tools._helpers import _gdrive_url, _get_db, _get_patient_id
+from oncofiles.tools._helpers import _gdrive_url, _get_db, _resolve_patient_id
 
 
 async def export_document_package(
     ctx: Context,
     include_metadata: bool = True,
     include_timeline: bool = True,
+    patient_slug: str | None = None,
 ) -> str:
     """Export a structured document package for consultations or second opinions.
 
@@ -24,11 +25,13 @@ async def export_document_package(
     Args:
         include_metadata: Include AI summaries and structured metadata (default True).
         include_timeline: Include treatment events timeline (default True).
+        patient_slug: Optional — explicit patient slug (#429).
     """
     db = _get_db(ctx)
+    pid = await _resolve_patient_id(patient_slug, ctx)
 
     # Get all documents grouped by category
-    docs = await db.list_documents(limit=200, patient_id=_get_patient_id())
+    docs = await db.list_documents(limit=200, patient_id=pid)
 
     # Group by category
     by_category: dict[str, list[dict]] = {}
@@ -59,7 +62,7 @@ async def export_document_package(
     }
 
     if include_timeline:
-        events = await db.get_treatment_events_timeline(patient_id=_get_patient_id())
+        events = await db.get_treatment_events_timeline(patient_id=pid)
         result["treatment_timeline"] = [
             {
                 "id": e.id,

@@ -7,7 +7,7 @@ import json
 from fastmcp import Context
 
 from oncofiles.models import ResearchEntry
-from oncofiles.tools._helpers import _get_db, _get_patient_id
+from oncofiles.tools._helpers import _get_db, _resolve_patient_id
 
 
 async def fetch_clinical_trials(
@@ -18,6 +18,7 @@ async def fetch_clinical_trials(
     location_country: str | None = None,
     phase: str | None = None,
     limit: int = 20,
+    patient_slug: str | None = None,
 ) -> str:
     """Fetch clinical trials from ClinicalTrials.gov and store in research_entries.
 
@@ -31,6 +32,7 @@ async def fetch_clinical_trials(
         location_country: Country filter (e.g. "United States", "Slovakia").
         phase: Phase filter (PHASE1, PHASE2, PHASE3, PHASE4).
         limit: Maximum number of trials to fetch (default 20).
+        patient_slug: Optional — explicit patient slug (#429).
     """
     from oncofiles.clinical_trials import search_trials, trial_to_research_entry
 
@@ -47,11 +49,12 @@ async def fetch_clinical_trials(
         return json.dumps({"error": f"ClinicalTrials.gov API error: {e}"})
 
     db = _get_db(ctx)
+    pid = await _resolve_patient_id(patient_slug, ctx)
     stored = []
     for trial in trials:
         entry_data = trial_to_research_entry(trial)
         entry = ResearchEntry(**entry_data)
-        saved = await db.insert_research_entry(entry, patient_id=_get_patient_id())
+        saved = await db.insert_research_entry(entry, patient_id=pid)
         stored.append(
             {
                 "id": saved.id,
