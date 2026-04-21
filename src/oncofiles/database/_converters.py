@@ -11,6 +11,9 @@ from oncofiles.models import (
     ActivityLogEntry,
     AgentState,
     CalendarEntry,
+    ClinicalRecord,
+    ClinicalRecordAudit,
+    ClinicalRecordNote,
     ConversationEntry,
     Document,
     DocumentCategory,
@@ -275,4 +278,70 @@ def _row_to_calendar_entry(row: Any) -> CalendarEntry:
         is_medical=bool(row["is_medical"]),
         created_at=datetime.fromisoformat(row["created_at"]) if row["created_at"] else None,
         updated_at=datetime.fromisoformat(row["updated_at"]) if row["updated_at"] else None,
+    )
+
+
+def _row_to_clinical_record(row: Any) -> ClinicalRecord:
+    """Convert a database row to a ClinicalRecord model."""
+    return ClinicalRecord(
+        id=row["id"],
+        patient_id=row["patient_id"],
+        record_type=row["record_type"],
+        source_document_id=_safe_get(row, "source_document_id"),
+        occurred_at=_safe_get(row, "occurred_at"),
+        param=_safe_get(row, "param"),
+        value_num=_safe_get(row, "value_num"),
+        value_text=_safe_get(row, "value_text"),
+        unit=_safe_get(row, "unit"),
+        status=_safe_get(row, "status"),
+        ref_range_low=_safe_get(row, "ref_range_low"),
+        ref_range_high=_safe_get(row, "ref_range_high"),
+        metadata_json=_safe_get(row, "metadata_json"),
+        source=row["source"],
+        session_id=_safe_get(row, "session_id"),
+        caller_identity=_safe_get(row, "caller_identity"),
+        created_at=_safe_get(row, "created_at"),
+        created_by=_safe_get(row, "created_by"),
+        updated_at=_safe_get(row, "updated_at"),
+        updated_by=_safe_get(row, "updated_by"),
+        deleted_at=_safe_get(row, "deleted_at"),
+        deleted_by=_safe_get(row, "deleted_by"),
+    )
+
+
+def _row_to_clinical_record_note(row: Any) -> ClinicalRecordNote:
+    """Convert a database row to a ClinicalRecordNote model."""
+    return ClinicalRecordNote(
+        id=row["id"],
+        record_id=row["record_id"],
+        note_text=row["note_text"],
+        tags=_safe_get(row, "tags"),
+        source=row["source"],
+        session_id=_safe_get(row, "session_id"),
+        mcp_conversation_ref=_safe_get(row, "mcp_conversation_ref"),
+        caller_identity=_safe_get(row, "caller_identity"),
+        created_at=_safe_get(row, "created_at"),
+        created_by=_safe_get(row, "created_by"),
+        updated_at=_safe_get(row, "updated_at"),
+        updated_by=_safe_get(row, "updated_by"),
+        deleted_at=_safe_get(row, "deleted_at"),
+        deleted_by=_safe_get(row, "deleted_by"),
+    )
+
+
+def _row_to_clinical_record_audit(row: Any) -> ClinicalRecordAudit:
+    """Convert a database row to a ClinicalRecordAudit model."""
+    return ClinicalRecordAudit(
+        id=row["id"],
+        record_id=row["record_id"],
+        action=row["action"],
+        before_json=_safe_get(row, "before_json"),
+        after_json=_safe_get(row, "after_json"),
+        changed_fields=_safe_get(row, "changed_fields"),
+        reason=_safe_get(row, "reason"),
+        source=row["source"],
+        session_id=_safe_get(row, "session_id"),
+        caller_identity=_safe_get(row, "caller_identity"),
+        changed_at=_safe_get(row, "changed_at"),
+        changed_by=_safe_get(row, "changed_by"),
     )

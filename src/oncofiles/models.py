@@ -447,3 +447,103 @@ class PromptLogQuery(BaseModel):
     date_to: date | None = None
     text: str | None = None
     limit: int = Field(default=50, ge=1, le=200)
+
+
+# ── Clinical records (#450) ──────────────────────────────────────────────────
+
+
+class ClinicalRecord(BaseModel):
+    """A canonical clinical fact — lab value, biomarker, finding, etc.
+
+    Replacement for the ad-hoc JSON blobs in ``patient_context`` and the partial
+    coverage in ``lab_values`` / ``treatment_events``. Every write generates a
+    row in ``clinical_record_audit`` so the full change history is queryable.
+    """
+
+    id: int | None = None
+    patient_id: str
+    record_type: str = Field(
+        description=(
+            "One of: lab, finding, medication, treatment_event, biomarker, "
+            "condition, procedure, imaging, pathology, genetic_variant, "
+            "allergy, vital"
+        )
+    )
+    source_document_id: int | None = None
+    occurred_at: str | None = Field(
+        default=None, description="ISO date or datetime of the clinical event"
+    )
+    param: str | None = None
+    value_num: float | None = None
+    value_text: str | None = None
+    unit: str | None = None
+    status: str | None = None
+    ref_range_low: float | None = None
+    ref_range_high: float | None = None
+    metadata_json: str | None = None
+    source: str = Field(
+        description=(
+            "Provenance: manual | ai-extract | oncoteam | mcp-claude | "
+            "mcp-chatgpt | import-* | migration"
+        )
+    )
+    session_id: str | None = None
+    caller_identity: str | None = None
+    created_at: str | None = None
+    created_by: str | None = None
+    updated_at: str | None = None
+    updated_by: str | None = None
+    deleted_at: str | None = None
+    deleted_by: str | None = None
+
+
+class ClinicalRecordQuery(BaseModel):
+    """Filter for listing clinical records."""
+
+    record_type: str | None = None
+    param: str | None = None
+    since: str | None = Field(default=None, description="Lower bound on occurred_at (ISO)")
+    until: str | None = Field(default=None, description="Upper bound on occurred_at (ISO)")
+    include_deleted: bool = False
+    limit: int = Field(default=200, ge=1, le=2000)
+
+
+class ClinicalRecordNote(BaseModel):
+    """A free-form annotation tied to a clinical record.
+
+    Sourceable from any session — Claude.ai chat, ChatGPT connector, caregiver
+    dashboard, Oncoteam — so the caregiver can see *who said what when* about
+    any single lab / biomarker / finding.
+    """
+
+    id: int | None = None
+    record_id: int
+    note_text: str
+    tags: str | None = Field(default=None, description="JSON array of tag strings")
+    source: str
+    session_id: str | None = None
+    mcp_conversation_ref: str | None = None
+    caller_identity: str | None = None
+    created_at: str | None = None
+    created_by: str | None = None
+    updated_at: str | None = None
+    updated_by: str | None = None
+    deleted_at: str | None = None
+    deleted_by: str | None = None
+
+
+class ClinicalRecordAudit(BaseModel):
+    """One row in the append-only change history of a clinical record."""
+
+    id: int | None = None
+    record_id: int
+    action: str = Field(description="create | update | delete | restore")
+    before_json: str | None = None
+    after_json: str | None = None
+    changed_fields: str | None = None
+    reason: str | None = None
+    source: str
+    session_id: str | None = None
+    caller_identity: str | None = None
+    changed_at: str | None = None
+    changed_by: str | None = None

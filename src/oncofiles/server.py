@@ -5382,6 +5382,7 @@ from oncofiles.tools import (  # noqa: E402
     agent_state,
     analysis,
     clinical,
+    clinical_records,
     conversations,
     db_query,
     documents,
@@ -5408,6 +5409,7 @@ activity.register(mcp)
 gdrive.register(mcp)
 enhance_tools.register(mcp)
 clinical.register(mcp)
+clinical_records.register(mcp)
 lab_trends.register(mcp)
 export.register(mcp)
 naming.register(mcp)
