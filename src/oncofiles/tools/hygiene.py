@@ -1632,6 +1632,322 @@ async def audit_gdrive_folder_hygiene(
     )
 
 
+async def repair_gdrive_folder_hygiene(
+    ctx: Context,
+    patient_slug: str | None = None,
+    dry_run: bool = True,
+    fix_nested: bool = True,
+    fix_duplicates: bool = False,
+    fix_orphans: bool = False,
+) -> str:
+    """Repair GDrive folder hygiene problems surfaced by audit_gdrive_folder_hygiene (#457).
+
+    Three independent classes of fix — each behind its own toggle so you can
+    start narrow. dry_run=True by default: returns the plan without touching
+    Drive. Always run with dry_run=True first and review the plan before
+    flipping to dry_run=False.
+
+    Fix classes:
+      - fix_nested (default ON): for every YYYY-MM folder whose parent is
+        also YYYY-MM (e.g., ``.../labs/2026-02/2026-02/``), move ALL of the
+        inner folder's children (files + subfolders) up into the outer
+        YYYY-MM parent, then trash the now-empty inner YYYY-MM.
+      - fix_duplicates (default OFF — more dangerous): for every case where
+        2+ folders share the same name under the same parent, keep the
+        smallest (fewest-children) folder, move its content into the other,
+        then trash the empty one. Off by default — review the audit output
+        and decide per-case if this is safe for you.
+      - fix_orphans (default OFF): for every YYYY-MM whose parent is NOT a
+        managed category folder, move it under the ``other`` category.
+
+    All file moves are atomic GDrive operations (files.update add/remove
+    parents). Trash is soft-delete (30-day recovery per the deletion policy).
+    Nothing is hard-deleted.
+
+    Args:
+        patient_slug: Optional — explicit patient slug (#429).
+        dry_run: If True (default), plan-only; no GDrive writes.
+        fix_nested: Fix nested YYYY-MM/YYYY-MM folders (default True).
+        fix_duplicates: Fix duplicate sibling folders (default False).
+        fix_orphans: Fix YYYY-MM outside a managed category (default False).
+
+    Returns JSON with plan (dry_run=True) or results (dry_run=False).
+    """
+    import re
+
+    from oncofiles.gdrive_folders import ALL_FOLDERS, bilingual_name
+
+    db = _get_db(ctx)
+    pid = await _resolve_patient_id(patient_slug, ctx)
+
+    token = await db.get_oauth_token(patient_id=pid)
+    if not token or not token.gdrive_folder_id:
+        return json.dumps(
+            {
+                "error": (
+                    "No GDrive folder configured for this patient. Call gdrive_set_folder first."
+                ),
+                "patient_id": pid,
+            }
+        )
+    root_folder_id = token.gdrive_folder_id
+
+    gdrive = await _get_gdrive(ctx)
+    if gdrive is None:
+        return json.dumps({"error": "GDrive client unavailable for this patient"})
+
+    ym_re = re.compile(r"^\d{4}-\d{2}$")
+    category_names = {f for f in ALL_FOLDERS} | {bilingual_name(f) for f in ALL_FOLDERS}
+
+    folders: dict[str, dict] = {}
+    _queue: list[str] = [root_folder_id]
+    visited: set[str] = set()
+    page_field = "nextPageToken, files(id, name, mimeType, parents)"
+
+    def _extract(parent_id: str) -> None:
+        page_token = None
+        while True:
+            try:
+                resp = (
+                    gdrive._service.files()
+                    .list(
+                        q=(
+                            f"'{parent_id}' in parents "
+                            f"and mimeType = 'application/vnd.google-apps.folder' "
+                            f"and trashed = false"
+                        ),
+                        fields=page_field,
+                        pageSize=100,
+                        pageToken=page_token,
+                    )
+                    .execute()
+                )
+            except Exception as exc:
+                logger.warning(
+                    "repair_gdrive_folder_hygiene: list failed for %s — %s",
+                    parent_id,
+                    str(exc)[:200],
+                )
+                return
+            for f in resp.get("files", []):
+                fid = f["id"]
+                folders[fid] = {
+                    "id": fid,
+                    "name": f.get("name", ""),
+                    "parents": f.get("parents", []),
+                }
+                if fid not in visited:
+                    visited.add(fid)
+                    _queue.append(fid)
+            page_token = resp.get("nextPageToken")
+            if not page_token:
+                break
+
+    visited.add(root_folder_id)
+    while _queue:
+        current = _queue.pop(0)
+        await asyncio.to_thread(_extract, current)
+
+    def _list_children_all(parent_id: str) -> list[dict]:
+        """List ALL children of a folder (files + folders) with pagination."""
+        out: list[dict] = []
+        page_token = None
+        while True:
+            try:
+                resp = (
+                    gdrive._service.files()
+                    .list(
+                        q=f"'{parent_id}' in parents and trashed = false",
+                        fields="nextPageToken, files(id, name, mimeType)",
+                        pageSize=200,
+                        pageToken=page_token,
+                    )
+                    .execute()
+                )
+            except Exception as exc:
+                logger.warning(
+                    "repair_gdrive_folder_hygiene: list children failed for %s — %s",
+                    parent_id,
+                    str(exc)[:200],
+                )
+                return out
+            out.extend(resp.get("files", []))
+            page_token = resp.get("nextPageToken")
+            if not page_token:
+                break
+        return out
+
+    report: dict = {
+        "patient_id": pid,
+        "root_folder_id": root_folder_id,
+        "dry_run": dry_run,
+        "folders_scanned": len(folders),
+        "nested_fixed": [],
+        "duplicates_fixed": [],
+        "orphans_fixed": [],
+        "errors": [],
+    }
+
+    if fix_nested:
+        for fid, info in folders.items():
+            if not ym_re.match(info["name"]):
+                continue
+            parents = info.get("parents", [])
+            for outer_parent_id in parents:
+                outer = folders.get(outer_parent_id)
+                if not (outer and ym_re.match(outer["name"])):
+                    continue
+
+                children = await asyncio.to_thread(_list_children_all, fid)
+                entry: dict = {
+                    "inner_folder_id": fid,
+                    "inner_folder_name": info["name"],
+                    "outer_parent_id": outer_parent_id,
+                    "outer_parent_name": outer["name"],
+                    "children_to_move": len(children),
+                    "moved": 0,
+                    "trashed_inner": False,
+                }
+
+                if dry_run:
+                    entry["children_preview"] = [
+                        {"id": c["id"], "name": c.get("name", "")} for c in children[:5]
+                    ]
+                    report["nested_fixed"].append(entry)
+                    continue
+
+                # Execute: move children to outer parent, then trash inner
+                move_failed = False
+                for child in children:
+                    try:
+                        await asyncio.to_thread(gdrive.move_file, child["id"], outer_parent_id)
+                        entry["moved"] += 1
+                    except Exception as exc:
+                        report["errors"].append(
+                            {
+                                "op": "move_file",
+                                "file_id": child["id"],
+                                "file_name": child.get("name", ""),
+                                "target_parent": outer_parent_id,
+                                "error": str(exc)[:200],
+                            }
+                        )
+                        move_failed = True
+
+                if not move_failed:
+                    try:
+                        await asyncio.to_thread(gdrive.trash_file, fid)
+                        entry["trashed_inner"] = True
+                    except Exception as exc:
+                        report["errors"].append(
+                            {
+                                "op": "trash_file",
+                                "file_id": fid,
+                                "error": str(exc)[:200],
+                            }
+                        )
+
+                report["nested_fixed"].append(entry)
+
+    if fix_duplicates:
+        siblings: dict[tuple[str, str], list[str]] = {}
+        for fid, info in folders.items():
+            for p_id in info.get("parents", []):
+                key = (p_id, info["name"].lower())
+                siblings.setdefault(key, []).append(fid)
+
+        for (parent_id, lower_name), ids in siblings.items():
+            if len(ids) < 2:
+                continue
+            # Rank by child-count (ascending) — we merge smaller into the largest
+            counts: list[tuple[str, list[dict]]] = [
+                (dup_id, await asyncio.to_thread(_list_children_all, dup_id)) for dup_id in ids
+            ]
+            counts.sort(key=lambda t: len(t[1]))  # smallest first
+            winners = counts[-1][0]  # largest becomes the keeper
+            entry = {
+                "parent_id": parent_id,
+                "duplicate_name": lower_name,
+                "keeper": winners,
+                "merged_from": [],
+                "errors": [],
+            }
+
+            for loser_id, loser_children in counts[:-1]:
+                if dry_run:
+                    entry["merged_from"].append(
+                        {
+                            "folder_id": loser_id,
+                            "children_count": len(loser_children),
+                        }
+                    )
+                    continue
+                merge_ok = True
+                moved = 0
+                for child in loser_children:
+                    try:
+                        await asyncio.to_thread(gdrive.move_file, child["id"], winners)
+                        moved += 1
+                    except Exception as exc:
+                        entry["errors"].append(
+                            {"op": "move_file", "file_id": child["id"], "error": str(exc)[:200]}
+                        )
+                        merge_ok = False
+                if merge_ok:
+                    try:
+                        await asyncio.to_thread(gdrive.trash_file, loser_id)
+                        entry["merged_from"].append(
+                            {"folder_id": loser_id, "moved": moved, "trashed": True}
+                        )
+                    except Exception as exc:
+                        entry["errors"].append(
+                            {"op": "trash_file", "file_id": loser_id, "error": str(exc)[:200]}
+                        )
+            report["duplicates_fixed"].append(entry)
+
+    if fix_orphans:
+        other_folder_id: str | None = None
+        for fid, info in folders.items():
+            if info["name"] in {"other", bilingual_name("other")} and root_folder_id in info.get(
+                "parents", []
+            ):
+                other_folder_id = fid
+                break
+
+        for fid, info in folders.items():
+            if not ym_re.match(info["name"]):
+                continue
+            parents = info.get("parents", [])
+            for p_id in parents:
+                parent = folders.get(p_id)
+                if parent is None:
+                    continue
+                if parent["name"] in category_names:
+                    continue
+                entry = {
+                    "folder_id": fid,
+                    "folder_name": info["name"],
+                    "current_parent_id": p_id,
+                    "current_parent_name": parent["name"],
+                    "moved_to_other": False,
+                }
+                if not other_folder_id:
+                    entry["error"] = "no 'other' category folder under root — skipped"
+                    report["orphans_fixed"].append(entry)
+                    continue
+                if dry_run:
+                    entry["planned_target_parent"] = other_folder_id
+                else:
+                    try:
+                        await asyncio.to_thread(gdrive.move_file, fid, other_folder_id)
+                        entry["moved_to_other"] = True
+                    except Exception as exc:
+                        entry["error"] = str(exc)[:200]
+                report["orphans_fixed"].append(entry)
+
+    return json.dumps(report, default=str)
+
+
 def register(mcp):
     mcp.tool()(reconcile_gdrive)
     mcp.tool()(validate_categories)
@@ -1642,3 +1958,4 @@ def register(mcp):
     mcp.tool()(audit_document_pipeline)
     mcp.tool()(list_tool_definitions)
     mcp.tool()(audit_gdrive_folder_hygiene)
+    mcp.tool()(repair_gdrive_folder_hygiene)

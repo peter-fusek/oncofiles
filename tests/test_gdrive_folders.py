@@ -196,3 +196,56 @@ def test_ensure_year_month_folder_accepts_valid_date():
     result = ensure_year_month_folder(gdrive, "cat_folder", "2026-03-15")
     gdrive.find_folder.assert_called_once_with("2026-03", "cat_folder")
     assert result == "folder_2026-03"
+
+
+# ── Preventive: refuse to nest YYYY-MM under YYYY-MM (#457) ─────────────
+
+
+def _clear_ym_cache():
+    from oncofiles.gdrive_folders import _looks_like_year_month_folder
+
+    _looks_like_year_month_folder._cache.clear()
+
+
+def test_ensure_year_month_folder_refuses_ym_parent():
+    """If the caller passed a YYYY-MM folder as the category parent, return
+    the parent as-is instead of creating a nested YYYY-MM. Covers the root
+    cause of #457's 71 nested folders on q1b."""
+    _clear_ym_cache()
+    gdrive = _mock_gdrive()
+    # The preventive check calls gdrive._service.files().get().execute()
+    gdrive._service.files.return_value.get.return_value.execute.return_value = {
+        "name": "2026-02"  # Parent is itself YYYY-MM — must trigger refusal
+    }
+
+    result = ensure_year_month_folder(gdrive, "ym_folder_id", "2026-03-15")
+
+    assert result == "ym_folder_id"  # returned parent unchanged
+    gdrive.find_folder.assert_not_called()  # never asked find_folder
+    gdrive.create_folder.assert_not_called()  # never tried to create
+
+
+def test_ensure_year_month_folder_allows_category_parent():
+    """Normal case: parent is a category folder (not YYYY-MM), proceed."""
+    _clear_ym_cache()
+    gdrive = _mock_gdrive()
+    gdrive._service.files.return_value.get.return_value.execute.return_value = {
+        "name": "labs — laboratórne výsledky"  # Bilingual category name
+    }
+
+    result = ensure_year_month_folder(gdrive, "labs_cat_id", "2026-03-15")
+
+    assert result == "folder_2026-03"  # created, proceeded normally
+    gdrive.find_folder.assert_called_once_with("2026-03", "labs_cat_id")
+
+
+def test_ensure_year_month_folder_preventive_never_breaks_on_gdrive_error():
+    """If the preventive lookup errors out, we still proceed — the check
+    is best-effort and must not break the sync hot path."""
+    _clear_ym_cache()
+    gdrive = _mock_gdrive()
+    gdrive._service.files.return_value.get.side_effect = RuntimeError("GDrive down")
+
+    result = ensure_year_month_folder(gdrive, "cat_folder", "2026-03-15")
+
+    assert result == "folder_2026-03"

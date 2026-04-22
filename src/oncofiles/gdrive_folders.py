@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import logging
+import re
 
 from oncofiles.models import DocumentCategory
 
 logger = logging.getLogger(__name__)
+
+_YM_RE = re.compile(r"^\d{4}-\d{2}$")
 
 # Legacy folder names that should be merged into active categories.
 # Used by housekeeping to detect and merge obsolete GDrive folders.
@@ -155,6 +158,36 @@ def resolve_category_folder(folder_map: dict[str, str], cat_name: str, root_fold
     return root_folder_id
 
 
+def _looks_like_year_month_folder(gdrive, folder_id: str) -> bool:
+    """Best-effort check: is this folder_id actually a YYYY-MM folder?
+
+    Returns True iff GDrive answers with a name matching ``YYYY-MM``. Any
+    GDrive error is swallowed and returns False — this check must never
+    break the sync hot path. Uses a per-process cache to avoid an extra
+    API round-trip on every ``ensure_year_month_folder`` call.
+    """
+    cache: dict[str, bool] = _looks_like_year_month_folder._cache  # type: ignore[attr-defined]
+    if folder_id in cache:
+        return cache[folder_id]
+    try:
+        meta = (
+            gdrive._service.files().get(fileId=folder_id, fields="name").execute()  # type: ignore[attr-defined]
+        )
+        name = meta.get("name", "")
+        result = bool(_YM_RE.match(name))
+    except Exception:
+        return False
+    cache[folder_id] = result
+    if len(cache) > 512:
+        # Bound cache size — keep newest entries, drop earliest insertions.
+        for k in list(cache.keys())[:256]:
+            cache.pop(k, None)
+    return result
+
+
+_looks_like_year_month_folder._cache = {}  # type: ignore[attr-defined]
+
+
 def ensure_year_month_folder(gdrive, category_folder_id: str, date_str: str) -> str:
     """Create or find a YYYY-MM subfolder under a category folder.
 
@@ -174,6 +207,21 @@ def ensure_year_month_folder(gdrive, category_folder_id: str, date_str: str) -> 
             year_month,
         )
         return category_folder_id  # Return parent as-is rather than creating bad folder
+
+    # Preventive: if the caller passed a YYYY-MM folder as the "category" parent,
+    # do NOT create another YYYY-MM under it. Return the parent unchanged and log
+    # an error so the upstream bug is visible. Caught every nested-YYYY-MM dup on
+    # q1b in #457. The check is best-effort (cached GDrive lookup) and never
+    # breaks the sync path if GDrive is unreachable.
+    if _looks_like_year_month_folder(gdrive, category_folder_id):
+        logger.error(
+            "ensure_year_month_folder: refusing to nest YYYY-MM under YYYY-MM. "
+            "category_folder_id=%s appears to itself be a year-month folder. "
+            "Returning parent as-is — upstream caller passed the wrong parent (#457).",
+            category_folder_id,
+        )
+        return category_folder_id
+
     return find_or_create_folder(gdrive, year_month, category_folder_id)
 
 
