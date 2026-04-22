@@ -641,6 +641,28 @@ def test_dashboard_swr_writes_cache_on_success():
     assert "_swrSet('prompt-log', prompts)" in html
 
 
+def test_dashboard_admin_breaker_widget_present():
+    """Admin-only breaker widget is wired to /readiness.circuit_breaker (#469 Phase 7)."""
+    from pathlib import Path
+
+    html = (Path(__file__).parent.parent / "src" / "oncofiles" / "dashboard.html").read_text()
+    assert 'id="breaker-widget"' in html
+    assert "updateBreakerWidget" in html
+    # Fetches /readiness (the /readiness endpoint is unauth-safe)
+    assert "fetch('/readiness'" in html
+    # Visibility gated on admin
+    assert "if (!isAdminMode) return" in html
+    # Reflects state via CSS classes
+    assert "state-open" in html and "state-closed" in html and "state-half_open" in html
+    # Trips counter element is populated
+    assert 'id="bw-trips"' in html
+    # Widget is invoked as part of the refresh() cycle (exact placement may
+    # vary but it must live inside refresh() so every tick updates the display).
+    refresh_start = html.index("async function refresh()")
+    refresh_slice = html[refresh_start : refresh_start + 6000]
+    assert "updateBreakerWidget()" in refresh_slice
+
+
 def test_dashboard_swr_clears_on_logout():
     """logout() wipes the cache so a different user can't see prior data."""
     from pathlib import Path

@@ -896,6 +896,13 @@
     .connection-dot.offline { background: var(--red); }
     .connection-dot.loading { background: var(--amber); animation: pulse 1s infinite; }
     @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+    /* Admin-only breaker widget (#469 Phase 7) — shows /readiness.circuit_breaker */
+    .breaker-widget { display: none; align-items: center; gap: 0.25rem; font-size: 0.6875rem; color: var(--text-muted); font-variant-numeric: tabular-nums; margin-right: 0.25rem; }
+    .breaker-widget.admin-visible { display: inline-flex; }
+    .breaker-widget .bw-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--green); }
+    .breaker-widget.state-open .bw-dot { background: var(--red); animation: pulse 1s infinite; }
+    .breaker-widget.state-half_open .bw-dot { background: var(--amber); animation: pulse 1s infinite; }
+    .breaker-widget.has-trips { color: var(--amber); }
     .svc-badges { display: inline-flex; gap: 0.25rem; margin-right: 0.5rem; vertical-align: middle; }
     .svc-badge { font-size: 0.625rem; padding: 1px 5px; border-radius: 3px; font-weight: 600; letter-spacing: 0.02em; }
     .svc-badge.on { background: rgba(34,197,94,0.15); color: var(--green); border: 1px solid rgba(34,197,94,0.3); cursor: pointer; }
@@ -1031,6 +1038,11 @@
           </span>
           <span class="version" id="version-label"></span>
           <span id="last-refreshed" style="font-size:0.6875rem;color:var(--text-muted)"></span>
+          <span id="breaker-widget" class="breaker-widget" title="Circuit breaker — admin only">
+            <span class="bw-dot" id="bw-dot"></span>
+            <span id="bw-trips">0</span>
+            <span style="color:var(--text-dim);font-size:0.6875rem" data-sk="trip" data-en="trip">trip</span>
+          </span>
           <button class="refresh-btn" onclick="refresh()" data-sk="Obnoviť" data-en="Refresh">Refresh</button>
         </div>
       </header>
@@ -1991,6 +2003,33 @@
           if (k && k.indexOf(_SWR_PREFIX) === 0) sessionStorage.removeItem(k);
         }
       } catch (e) { /* ignore */ }
+    }
+
+    // Admin-only breaker widget (#469 Phase 7) — fetches /readiness (no auth)
+    // and reflects state + lifetime trip count in the header. Hidden unless
+    // isAdminMode. Polls piggyback on the refresh() cycle; no separate timer.
+    async function updateBreakerWidget() {
+      if (!isAdminMode) return;
+      var widget = document.getElementById('breaker-widget');
+      if (!widget) return;
+      try {
+        var resp = await fetch('/readiness', { cache: 'no-store' });
+        if (!resp.ok) return;
+        var payload = await resp.json();
+        var cb = payload && payload.circuit_breaker;
+        if (!cb) return;
+        widget.classList.add('admin-visible');
+        widget.classList.remove('state-closed', 'state-open', 'state-half_open');
+        widget.classList.add('state-' + String(cb.state));
+        widget.classList.toggle('has-trips', (cb.trip_count_total || 0) > 0);
+        var tripsEl = document.getElementById('bw-trips');
+        if (tripsEl) tripsEl.textContent = String(cb.trip_count_total || 0);
+        // Tooltip with full detail (state, cause, last trip timestamp)
+        var tip = 'state=' + cb.state + ' · cooldown_remaining=' + (cb.cooldown_remaining_s || 0) + 's';
+        if (cb.last_trip_at) tip += ' · last_trip=' + cb.last_trip_at;
+        if (cb.last_trip_cause) tip += ' · cause=' + cb.last_trip_cause;
+        widget.title = tip;
+      } catch (e) { /* no-op — widget stays at last known state */ }
     }
 
     function _hydrateFromSwrCache() {
@@ -2982,6 +3021,8 @@
         if (sched) renderSchedules(sched);
         anyOk = true;
       } catch (e) { if (!trackBreaker(e)) console.warn('Schedules fetch failed:', e); }
+      // Admin-only breaker widget (#469 Phase 7) — fire-and-forget, no-op when non-admin.
+      updateBreakerWidget();
       hideSkeletons();
 
       // Breaker open — show friendly SK/EN countdown + auto-retry instead of a
