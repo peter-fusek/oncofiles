@@ -1934,6 +1934,7 @@
       sessionStorage.removeItem('oncofiles_auth_mode');
       sessionStorage.removeItem('oncofiles_email');
       sessionStorage.removeItem('oncofiles_name');
+      _swrCacheClearAll();
       TOKEN = '';
       authMode = '';
       if (autoRefreshTimer) clearInterval(autoRefreshTimer);
@@ -1943,6 +1944,66 @@
         google.accounts.id.disableAutoSelect();
       }
       initGoogleSignIn();
+    }
+
+    // ── Stale-while-revalidate cache (#469 Phase 5) ──────────────────────
+    // Cache /status, /api/documents, /api/prompt-log responses in
+    // sessionStorage (10 min TTL, per-patient keys). On refresh() start we
+    // hydrate from cache so the UI stays populated during fetch — instead of
+    // tearing down to skeletons every tick. On a breaker trip the cached
+    // data keeps rendering while the countdown banner handles recovery.
+
+    var _SWR_MAX_AGE_MS = 10 * 60 * 1000; // 10 minutes — "stale" ceiling
+    var _SWR_PREFIX = 'dashCache:';
+
+    function _swrKey(endpoint) {
+      return _SWR_PREFIX + (currentPatientId || 'default') + ':' + endpoint;
+    }
+
+    function _swrGet(endpoint) {
+      try {
+        var raw = sessionStorage.getItem(_swrKey(endpoint));
+        if (!raw) return null;
+        var entry = JSON.parse(raw);
+        if (!entry || !entry.cached_at) return null;
+        var ageMs = Date.now() - entry.cached_at;
+        if (ageMs > _SWR_MAX_AGE_MS) {
+          sessionStorage.removeItem(_swrKey(endpoint));
+          return null;
+        }
+        return { data: entry.data, ageMs: ageMs };
+      } catch (e) { return null; }
+    }
+
+    function _swrSet(endpoint, data) {
+      try {
+        sessionStorage.setItem(_swrKey(endpoint), JSON.stringify({
+          data: data,
+          cached_at: Date.now()
+        }));
+      } catch (e) { /* quota / JSON errors — non-fatal */ }
+    }
+
+    function _swrCacheClearAll() {
+      try {
+        for (var i = sessionStorage.length - 1; i >= 0; i--) {
+          var k = sessionStorage.key(i);
+          if (k && k.indexOf(_SWR_PREFIX) === 0) sessionStorage.removeItem(k);
+        }
+      } catch (e) { /* ignore */ }
+    }
+
+    function _hydrateFromSwrCache() {
+      // Try to populate the 3 critical sections from cache. Returns true if
+      // at least one section was hydrated — caller skips skeletons in that case.
+      var hydrated = false;
+      var s = _swrGet('status');
+      if (s) { try { renderStatus(s.data); hydrated = true; } catch (e) { console.warn('SWR status render failed:', e); } }
+      var d = _swrGet('documents');
+      if (d) { try { renderDocs(d.data); hydrated = true; } catch (e) { console.warn('SWR documents render failed:', e); } }
+      var p = _swrGet('prompt-log');
+      if (p) { try { renderPromptLog(p.data); hydrated = true; } catch (e) { console.warn('SWR prompt-log render failed:', e); } }
+      return hydrated;
     }
 
     function showError(msg) {
@@ -2860,7 +2921,13 @@
     async function refresh() {
       hideError();
       setConnectionState('loading');
-      showSkeletons();
+
+      // Stale-while-revalidate: render last known state instantly so the UI
+      // stays populated during the fetch. Only fall back to skeletons on
+      // first-ever load (no cache yet). See #469 Phase 5.
+      var hydrated = _hydrateFromSwrCache();
+      if (!hydrated) showSkeletons();
+
       var anyOk = false;
       var errors = [];
       // First 503 wins — we show one friendly banner + auto-retry at Retry-After
@@ -2878,6 +2945,7 @@
       try {
         var status = await apiFetch('/status');
         renderStatus(status);
+        _swrSet('status', status);
         anyOk = true;
       } catch (e) {
         if (e.message === 'Unauthorized') { setConnectionState('offline'); hideSkeletons(); return; }
@@ -2886,6 +2954,7 @@
       try {
         var docs = await apiFetch('/api/documents?filter=' + encodeURIComponent(currentFilter) + '&limit=200');
         renderDocs(docs);
+        _swrSet('documents', docs);
         anyOk = true;
       } catch (e) {
         if (!trackBreaker(e)) errors.push('documents: ' + e.message);
@@ -2893,6 +2962,7 @@
       try {
         var prompts = await apiFetch('/api/prompt-log?limit=50');
         renderPromptLog(prompts);
+        _swrSet('prompt-log', prompts);
         anyOk = true;
       } catch (e) {
         if (!trackBreaker(e)) errors.push('prompt-log: ' + e.message);

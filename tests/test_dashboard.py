@@ -586,6 +586,71 @@ def test_dashboard_breaker_banner_bilingual():
     assert "refresh()" in html
 
 
+def test_dashboard_swr_cache_helpers_exist():
+    """Stale-while-revalidate cache helpers are present (#469 Phase 5)."""
+    from pathlib import Path
+
+    html = (Path(__file__).parent.parent / "src" / "oncofiles" / "dashboard.html").read_text()
+    assert "_swrGet" in html
+    assert "_swrSet" in html
+    assert "_swrCacheClearAll" in html
+    assert "_hydrateFromSwrCache" in html
+
+
+def test_dashboard_swr_per_patient_keying():
+    """Cache key includes currentPatientId so cross-patient leak is impossible."""
+    from pathlib import Path
+
+    html = (Path(__file__).parent.parent / "src" / "oncofiles" / "dashboard.html").read_text()
+    # The key helper must include the patient id in its key string
+    assert "(currentPatientId || 'default')" in html
+    assert "dashCache:" in html
+
+
+def test_dashboard_swr_has_max_age_cap():
+    """Cache entries older than _SWR_MAX_AGE_MS are evicted, not deceptively served."""
+    from pathlib import Path
+
+    html = (Path(__file__).parent.parent / "src" / "oncofiles" / "dashboard.html").read_text()
+    assert "_SWR_MAX_AGE_MS" in html
+    # 10 min default, expressed as 10 * 60 * 1000
+    assert "10 * 60 * 1000" in html
+
+
+def test_dashboard_swr_refresh_hydrates_before_skeletons():
+    """refresh() hydrates from cache first, skips skeletons if cache hit."""
+    from pathlib import Path
+
+    html = (Path(__file__).parent.parent / "src" / "oncofiles" / "dashboard.html").read_text()
+    # The order matters: hydrate must come before showSkeletons in refresh()
+    refresh_start = html.index("async function refresh()")
+    refresh_slice = html[refresh_start : refresh_start + 2000]
+    assert "_hydrateFromSwrCache" in refresh_slice
+    # And skeletons only show when nothing was hydrated
+    assert "if (!hydrated) showSkeletons()" in refresh_slice
+
+
+def test_dashboard_swr_writes_cache_on_success():
+    """Successful fetches populate the cache for the 3 critical endpoints."""
+    from pathlib import Path
+
+    html = (Path(__file__).parent.parent / "src" / "oncofiles" / "dashboard.html").read_text()
+    # All three critical endpoints write to cache after successful render
+    assert "_swrSet('status', status)" in html
+    assert "_swrSet('documents', docs)" in html
+    assert "_swrSet('prompt-log', prompts)" in html
+
+
+def test_dashboard_swr_clears_on_logout():
+    """logout() wipes the cache so a different user can't see prior data."""
+    from pathlib import Path
+
+    html = (Path(__file__).parent.parent / "src" / "oncofiles" / "dashboard.html").read_text()
+    logout_start = html.index("function logout()")
+    logout_slice = html[logout_start : logout_start + 500]
+    assert "_swrCacheClearAll" in logout_slice
+
+
 def test_readiness_includes_circuit_breaker_when_turso():
     """/readiness exposes circuit_breaker stats when backed by Turso (#469 Phase 3)."""
     import inspect
