@@ -447,3 +447,114 @@ def test_oauth_callback_validates_patient_exists():
     source = inspect.getsource(oauth_callback)
     assert "get_patient" in source
     assert "no longer exists" in source.lower() or "Patient no longer exists" in source
+
+
+# ── Circuit-breaker 503 contract (#412 + #469) ───────────────────────
+
+
+def test_circuit_breaker_503_matches_breaker_runtimeerror():
+    """Helper converts breaker RuntimeError → 503 + Retry-After:30."""
+    import json
+
+    from oncofiles.server import _circuit_breaker_503
+
+    exc = RuntimeError("Circuit breaker open — DB unavailable, retry in 28s")
+    resp = _circuit_breaker_503(exc, "/status")
+
+    assert resp is not None
+    assert resp.status_code == 503
+    assert resp.headers["Retry-After"] == "30"
+    body = json.loads(bytes(resp.body).decode())
+    assert "Database briefly unavailable" in body["error"]
+
+
+def test_circuit_breaker_503_passes_through_other_runtimeerrors():
+    """Non-breaker RuntimeError returns None — caller handles as 500."""
+    from oncofiles.server import _circuit_breaker_503
+
+    exc = RuntimeError("some other runtime error")
+    assert _circuit_breaker_503(exc, "/status") is None
+
+
+def test_circuit_breaker_503_passes_through_value_errors():
+    """Non-RuntimeError exceptions return None."""
+    from oncofiles.server import _circuit_breaker_503
+
+    exc = ValueError("bad input")
+    assert _circuit_breaker_503(exc, "/status") is None
+
+
+def test_circuit_breaker_503_matches_real_breaker_message():
+    """The helper matches the actual message raised by _CircuitBreaker.check()."""
+    from oncofiles.database._base import _CircuitBreaker
+    from oncofiles.server import _circuit_breaker_503
+
+    cb = _CircuitBreaker(max_failures=1, window=60.0, cooldown=30.0)
+    cb.record_failure()
+    try:
+        cb.check()
+    except RuntimeError as exc:
+        resp = _circuit_breaker_503(exc, "/test")
+        assert resp is not None
+        assert resp.status_code == 503
+        assert resp.headers["Retry-After"] == "30"
+    else:
+        raise AssertionError("Breaker should have raised RuntimeError")
+
+
+def test_status_endpoint_uses_breaker_helper():
+    """/status catches circuit breaker and returns 503 via the helper."""
+    import inspect
+
+    from oncofiles.server import status
+
+    source = inspect.getsource(status)
+    assert "_circuit_breaker_503" in source
+    assert '"/status"' in source
+
+
+def test_api_documents_uses_breaker_helper():
+    """/api/documents catches circuit breaker and returns 503 via the helper."""
+    import inspect
+
+    from oncofiles.server import api_documents
+
+    source = inspect.getsource(api_documents)
+    assert "_circuit_breaker_503" in source
+    assert '"/api/documents"' in source
+
+
+def test_api_prompt_log_uses_breaker_helper():
+    """/api/prompt-log catches circuit breaker and returns 503 via the helper."""
+    import inspect
+
+    from oncofiles.server import api_prompt_log
+
+    source = inspect.getsource(api_prompt_log)
+    assert "_circuit_breaker_503" in source
+    assert '"/api/prompt-log"' in source
+
+
+def test_status_reconnect_no_longer_uses_suppress_exception():
+    """The silent suppress(Exception) wrap around reconnect_if_stale is gone (#469).
+
+    A bare suppress(Exception) hides a RuntimeError('Circuit breaker open…')
+    from the outer handler and prevents the 503 → Retry-After contract from firing.
+    """
+    import inspect
+
+    from oncofiles.server import status
+
+    source = inspect.getsource(status)
+    assert "reconnect_if_stale" in source
+    # The whole block immediately preceding reconnect_if_stale must NOT be
+    # `with suppress(Exception)` anymore — scope the check to the reconnect call.
+    idx = source.index("reconnect_if_stale")
+    preceding = source[max(0, idx - 200) : idx]
+    assert "suppress(Exception)" not in preceding, (
+        "suppress(Exception) around reconnect_if_stale masks the breaker "
+        "RuntimeError; use a specific except TimeoutError instead"
+    )
+    # And there should be an explicit TimeoutError clause nearby.
+    following = source[idx : idx + 500]
+    assert "TimeoutError" in following

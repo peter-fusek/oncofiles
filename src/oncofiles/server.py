@@ -11,7 +11,7 @@ import os
 import sys
 import time
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager, suppress
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from urllib.parse import quote
@@ -62,6 +62,28 @@ CONF_MAX_DOCS = MAX_DOCUMENTS_PER_PATIENT
 
 # Stats constants (single source of truth for values that can't be computed at runtime)
 TESTS_COUNT = 716
+
+
+def _circuit_breaker_503(exc: BaseException, endpoint_name: str) -> JSONResponse | None:
+    """Canonical 503 + Retry-After:30 response when the Turso circuit breaker is OPEN.
+
+    Returns the 503 response if exc is a RuntimeError raised by
+    database._base._CircuitBreaker.check() (message contains "Circuit breaker").
+    Returns None otherwise so the caller can fall through to its normal 500 path.
+
+    Every DB-touching custom route handler must call this before returning a
+    bare 500 so clients get an actionable status + Retry-After header.
+    See #412 (canonical pattern on api_create_patient) and #469 (dashboard rollout).
+    """
+    if isinstance(exc, RuntimeError) and "Circuit breaker" in str(exc):
+        logger.warning("%s: circuit breaker open, returning 503", endpoint_name)
+        return JSONResponse(
+            {"error": "Database briefly unavailable, please retry in ~30s"},
+            status_code=503,
+            headers={"Retry-After": "30"},
+        )
+    return None
+
 
 # Global sync semaphore — limits concurrent sync operations (GDrive + Gmail + Calendar)
 _sync_semaphore = asyncio.Semaphore(
@@ -3502,9 +3524,18 @@ async def status(request: Request) -> JSONResponse:
         from oncofiles.memory import db_slot
 
         async with db_slot("status", priority=True):
-            # Ensure DB connection is fresh before running dashboard queries
-            with suppress(Exception):
+            # Ensure DB connection is fresh before running dashboard queries.
+            # A 2s reconnect timeout is non-fatal (the next query will auto-
+            # reconnect on transient errors per #405/#378). A circuit-breaker
+            # RuntimeError must propagate so the outer handler can return
+            # 503 + Retry-After:30 instead of a bare 500 (see #469).
+            try:
                 await db.reconnect_if_stale(timeout=2.0)
+            except TimeoutError:
+                logger.warning(
+                    "Status endpoint: reconnect_if_stale timed out after 2s, "
+                    "proceeding with current connection"
+                )
 
             from oncofiles.filename_parser import is_standard_format
 
@@ -3614,7 +3645,10 @@ async def status(request: Request) -> JSONResponse:
                 ],
             }
         )
-    except Exception:
+    except Exception as exc:
+        resp = _circuit_breaker_503(exc, "/status")
+        if resp is not None:
+            return resp
         logger.exception("Status endpoint error")
         return JSONResponse({"status": "error", "version": VERSION}, status_code=500)
 
@@ -3662,7 +3696,10 @@ async def metrics(request: Request) -> JSONResponse:
                 "uptime_seconds": uptime_s,
             }
         )
-    except Exception:
+    except Exception as exc:
+        resp = _circuit_breaker_503(exc, "/metrics")
+        if resp is not None:
+            return resp
         logger.exception("Metrics endpoint error")
         return JSONResponse({"error": "internal error"}, status_code=500)
 
@@ -4312,7 +4349,10 @@ async def api_documents(request: Request) -> JSONResponse:
             patient_id=patient_id,
         )
         return JSONResponse(result)
-    except Exception:
+    except Exception as exc:
+        resp = _circuit_breaker_503(exc, "/api/documents")
+        if resp is not None:
+            return resp
         logger.exception("API documents endpoint error")
         return JSONResponse({"error": "internal error"}, status_code=500)
 
@@ -4402,7 +4442,10 @@ async def api_doc_detail(request: Request) -> JSONResponse:
                 "pages": pages,
             }
         )
-    except Exception:
+    except Exception as exc:
+        resp = _circuit_breaker_503(exc, "/api/doc-detail")
+        if resp is not None:
+            return resp
         logger.exception("API doc-detail endpoint error")
         return JSONResponse({"error": "internal error"}, status_code=500)
 
@@ -4445,7 +4488,10 @@ async def api_reconciliation(request: Request) -> JSONResponse:
             patient_id=patient_id,
         )
         return JSONResponse(result)
-    except Exception:
+    except Exception as exc:
+        resp = _circuit_breaker_503(exc, "/api/reconciliation")
+        if resp is not None:
+            return resp
         logger.exception("API reconciliation endpoint error")
         return JSONResponse({"error": "internal error"}, status_code=500)
 
@@ -4497,7 +4543,10 @@ async def api_prompt_log(request: Request) -> JSONResponse:
             for e in entries
         ]
         return JSONResponse({"entries": items, "stats": stats})
-    except Exception:
+    except Exception as exc:
+        resp = _circuit_breaker_503(exc, "/api/prompt-log")
+        if resp is not None:
+            return resp
         logger.exception("API prompt-log endpoint error")
         return JSONResponse({"error": "internal error"}, status_code=500)
 
@@ -4517,7 +4566,10 @@ async def api_manifest(request: Request) -> JSONResponse:
         manifest = await export_manifest(db_inst, patient_id=pid)
         manifest_json = render_manifest_json(manifest)
         return JSONResponse(json.loads(manifest_json))
-    except Exception:
+    except Exception as exc:
+        resp = _circuit_breaker_503(exc, "/api/manifest")
+        if resp is not None:
+            return resp
         logger.exception("API manifest endpoint error")
         return JSONResponse({"error": "internal error"}, status_code=500)
 
@@ -4671,7 +4723,10 @@ async def api_schedules(request: Request) -> JSONResponse:
                 "prompt_stats": prompts,
             }
         )
-    except Exception:
+    except Exception as exc:
+        resp = _circuit_breaker_503(exc, "/api/schedules")
+        if resp is not None:
+            return resp
         logger.exception("API schedules endpoint error")
         return JSONResponse({"error": "internal error"}, status_code=500)
 
@@ -4705,7 +4760,10 @@ async def api_usage_analytics(request: Request) -> JSONResponse:
                 "latency": latency,
             }
         )
-    except Exception:
+    except Exception as exc:
+        resp = _circuit_breaker_503(exc, "/api/usage-analytics")
+        if resp is not None:
+            return resp
         logger.exception("API usage-analytics endpoint error")
         return JSONResponse({"error": "internal error"}, status_code=500)
 
@@ -5167,7 +5225,10 @@ async def api_list_patients(request: Request) -> JSONResponse:
                 "is_admin": is_admin,
             }
         )
-    except Exception:
+    except Exception as exc:
+        resp = _circuit_breaker_503(exc, "/api/patients")
+        if resp is not None:
+            return resp
         logger.exception("API list-patients error")
         return JSONResponse({"error": "internal error"}, status_code=500)
 
@@ -5240,7 +5301,10 @@ async def api_patient_context(request: Request) -> JSONResponse:
             },
         }
         return JSONResponse(response)
-    except Exception:
+    except Exception as exc:
+        resp = _circuit_breaker_503(exc, "/api/patient-context")
+        if resp is not None:
+            return resp
         logger.exception("API patient-context error")
         return JSONResponse({"error": "internal error"}, status_code=500)
 
@@ -5308,17 +5372,10 @@ async def api_create_patient(request: Request) -> JSONResponse:
             },
             status_code=201,
         )
-    except RuntimeError as exc:
-        if "Circuit breaker" in str(exc):
-            logger.warning("API create-patient: circuit breaker open, returning 503")
-            return JSONResponse(
-                {"error": "Database briefly unavailable, please retry in ~30s"},
-                status_code=503,
-                headers={"Retry-After": "30"},
-            )
-        logger.exception("API create-patient error")
-        return JSONResponse({"error": "internal error"}, status_code=500)
-    except Exception:
+    except Exception as exc:
+        resp = _circuit_breaker_503(exc, "/api/patients")
+        if resp is not None:
+            return resp
         logger.exception("API create-patient error")
         return JSONResponse({"error": "internal error"}, status_code=500)
 
@@ -5365,7 +5422,10 @@ async def api_update_patient(request: Request) -> JSONResponse:
                 "is_active": updated.is_active if updated else None,
             }
         )
-    except Exception:
+    except Exception as exc:
+        resp = _circuit_breaker_503(exc, "/api/patients PATCH")
+        if resp is not None:
+            return resp
         logger.exception("API update-patient error")
         return JSONResponse({"error": "internal error"}, status_code=500)
 
@@ -5403,7 +5463,10 @@ async def api_create_patient_token(request: Request) -> JSONResponse:
             },
             status_code=201,
         )
-    except Exception:
+    except Exception as exc:
+        resp = _circuit_breaker_503(exc, "/api/patient-tokens")
+        if resp is not None:
+            return resp
         logger.exception("API create-patient-token error")
         return JSONResponse({"error": "internal error"}, status_code=500)
 
@@ -5461,7 +5524,10 @@ async def api_sync_trigger(request: Request) -> JSONResponse:
         return JSONResponse({"status": "ok", "patient_id": patient_id, "stats": stats})
     except TimeoutError:
         return JSONResponse({"error": "Sync timed out after 120s"}, status_code=504)
-    except Exception:
+    except Exception as exc:
+        resp = _circuit_breaker_503(exc, "/api/sync-trigger")
+        if resp is not None:
+            return resp
         logger.exception("API sync-trigger error")
         return JSONResponse({"error": "internal error"}, status_code=500)
 
@@ -5502,7 +5568,10 @@ async def api_enhance_trigger(request: Request) -> JSONResponse:
         return JSONResponse({"status": "ok", "patient_id": patient_id, "stats": stats})
     except TimeoutError:
         return JSONResponse({"error": "Enhancement timed out after 300s"}, status_code=504)
-    except Exception:
+    except Exception as exc:
+        resp = _circuit_breaker_503(exc, "/api/enhance-trigger")
+        if resp is not None:
+            return resp
         logger.exception("API enhance-trigger error")
         return JSONResponse({"error": "internal error"}, status_code=500)
 
@@ -5550,7 +5619,10 @@ async def api_gdrive_folders(request: Request) -> JSONResponse:
                 "current_folder_id": token.gdrive_folder_id,
             }
         )
-    except Exception:
+    except Exception as exc:
+        resp = _circuit_breaker_503(exc, "/api/gdrive-folders")
+        if resp is not None:
+            return resp
         logger.exception("API gdrive-folders error")
         return JSONResponse({"error": "internal error"}, status_code=500)
 
@@ -5673,7 +5745,10 @@ async def api_gdrive_set_folder(request: Request) -> JSONResponse:
                 "subfolders_skipped": len(skipped),
             }
         )
-    except Exception:
+    except Exception as exc:
+        resp = _circuit_breaker_503(exc, "/api/gdrive-set-folder")
+        if resp is not None:
+            return resp
         logger.exception("API gdrive-set-folder error")
         return JSONResponse({"error": "internal error"}, status_code=500)
 
@@ -5744,7 +5819,10 @@ async def api_create_share_link(request: Request) -> JSONResponse:
                 "expires_in": _SHARE_CODE_EXPIRY,
             }
         )
-    except Exception:
+    except Exception as exc:
+        resp = _circuit_breaker_503(exc, "/api/share-link")
+        if resp is not None:
+            return resp
         logger.exception("API share-link create error")
         return JSONResponse({"error": "internal error"}, status_code=500)
 
