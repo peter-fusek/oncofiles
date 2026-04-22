@@ -987,3 +987,76 @@ async def test_sync_stats_summary(db: Database):
     assert stats["failed"] == 0
     assert stats["total_imported"] == 4
     assert stats["total_errors"] == 1
+
+
+# ── extract_all_metadata mime-type filter (#466) ──────────────────────────
+
+
+async def test_extract_all_metadata_skips_xlsx(db: Database):
+    """xlsx / unsupported mime types are filtered before processing and
+    counted as skipped_unsupported_mime, not errors. #466: q1b has 2
+    BIOMARKER*.xlsx files that repeatedly jammed the backfill loop."""
+    from oncofiles.sync import extract_all_metadata
+
+    xlsx_mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+    pdf_doc = make_doc(
+        file_id="pdf_1",
+        filename="20260211_ErikaFusekova_NOU_Labs_krvnyObraz.pdf",
+        mime_type="application/pdf",
+    )
+    pdf_doc = await db.insert_document(pdf_doc, patient_id=ERIKA_UUID)
+    await db.update_document_ai_metadata(pdf_doc.id, "summary", "[]")
+
+    xlsx_doc = make_doc(
+        file_id="xlsx_1",
+        filename="20260211_ErikaFusekova_Unknown_Reference_BIOMARKER.xlsx",
+        mime_type=xlsx_mime,
+    )
+    xlsx_doc = await db.insert_document(xlsx_doc, patient_id=ERIKA_UUID)
+    await db.update_document_ai_metadata(xlsx_doc.id, "summary", "[]")
+
+    files = _mock_files()
+    # PDF download returns empty bytes → falls through the 'no text' skip
+    # branch without ever touching the xlsx (xlsx is pre-filtered).
+    files.download.return_value = b""
+
+    stats = await extract_all_metadata(db, files, patient_id=ERIKA_UUID)
+
+    assert stats["skipped_unsupported_mime"] == 1
+    assert stats["errors"] == 0
+    # files.download is only called for the PDF, not the xlsx
+    call_ids = [c.args[0] for c in files.download.call_args_list]
+    assert "xlsx_1" not in call_ids
+
+
+async def test_extract_all_metadata_keeps_image_and_empty_mime(db: Database):
+    """Image mimes pass the filter; rows with empty mime_type also pass
+    (we don't want to strand older records that pre-date mime capture)."""
+    from oncofiles.sync import EXTRACTABLE_MIME_TYPES, extract_all_metadata
+
+    assert "image/jpeg" in EXTRACTABLE_MIME_TYPES
+    assert "application/pdf" in EXTRACTABLE_MIME_TYPES
+
+    jpeg_doc = make_doc(
+        file_id="jpg_1",
+        filename="20260211_scan.jpg",
+        mime_type="image/jpeg",
+    )
+    jpeg_doc = await db.insert_document(jpeg_doc, patient_id=ERIKA_UUID)
+    await db.update_document_ai_metadata(jpeg_doc.id, "summary", "[]")
+
+    empty_doc = make_doc(
+        file_id="empty_1",
+        filename="20260211_legacy.pdf",
+        mime_type="",
+    )
+    empty_doc = await db.insert_document(empty_doc, patient_id=ERIKA_UUID)
+    await db.update_document_ai_metadata(empty_doc.id, "summary", "[]")
+
+    files = _mock_files()
+    files.download.return_value = b""
+
+    stats = await extract_all_metadata(db, files, patient_id=ERIKA_UUID)
+
+    assert stats["skipped_unsupported_mime"] == 0

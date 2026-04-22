@@ -1611,6 +1611,25 @@ async def _generate_cross_references(
     return 0
 
 
+EXTRACTABLE_MIME_TYPES = frozenset(
+    {
+        "application/pdf",
+        "image/jpeg",
+        "image/png",
+        "image/tiff",
+        "image/heic",
+        "image/heif",
+        "image/webp",
+    }
+)
+"""Mime types whose byte stream can feed OCR / metadata extraction.
+
+xlsx/docx/csv/markdown are persisted and searchable, but the OCR-based
+metadata pipeline has no path for them, so `extract_all_metadata` filters
+them out of its candidate set rather than counting them as errors (#466).
+"""
+
+
 async def extract_all_metadata(
     db: Database,
     files: FilesClient,
@@ -1628,7 +1647,7 @@ async def extract_all_metadata(
         max_age_hours: Sliding window for only_new (default AI_REPROCESS_MAX_AGE_HOURS).
         cap: Max docs to process per run (default 5, keeps memory bounded).
 
-    Returns summary dict: {processed, skipped, errors}.
+    Returns summary dict: {processed, skipped, skipped_unsupported_mime, errors}.
     """
     # Proactive reconnect before batch to avoid stale replica (#378)
     await db.reconnect_if_stale(timeout=10.0)
@@ -1652,9 +1671,23 @@ async def extract_all_metadata(
 
         docs = [d for d in docs if _new(d.created_at)]
 
+    skipped_unsupported_mime = sum(
+        1 for d in docs if d.mime_type and d.mime_type not in EXTRACTABLE_MIME_TYPES
+    )
+    docs = [d for d in docs if not d.mime_type or d.mime_type in EXTRACTABLE_MIME_TYPES]
+
     docs = docs[:cap]  # bound memory / Anthropic spend per run
-    logger.info("extract_all_metadata: %d documents to process", len(docs))
-    stats = {"processed": 0, "skipped": 0, "errors": 0}
+    logger.info(
+        "extract_all_metadata: %d documents to process (skipped %d unsupported mime)",
+        len(docs),
+        skipped_unsupported_mime,
+    )
+    stats = {
+        "processed": 0,
+        "skipped": 0,
+        "skipped_unsupported_mime": skipped_unsupported_mime,
+        "errors": 0,
+    }
 
     for doc in docs:
         try:
