@@ -535,6 +535,69 @@ def test_api_prompt_log_uses_breaker_helper():
     assert '"/api/prompt-log"' in source
 
 
+def test_dashboard_apifetch_retries_5xx():
+    """apiFetch retries on 500/502/504 and handles 503 separately (#469 Phase 4)."""
+    from pathlib import Path
+
+    html = (Path(__file__).parent.parent / "src" / "oncofiles" / "dashboard.html").read_text()
+    # Budget-based retries for transient 5xx
+    assert "500" in html and "502" in html and "504" in html
+    # Dedicated 503 path that surfaces retryAfterMs upward
+    assert "resp.status === 503" in html
+    assert "retryAfterMs" in html
+    # No more naive "retry once on 500 with 2s" that predates Phase 4
+    assert "Retry once on 500 (Turso contention during startup syncs)" not in html
+
+
+def test_dashboard_apifetch_honors_retry_after():
+    """apiFetch parses the Retry-After header (seconds or HTTP-date)."""
+    from pathlib import Path
+
+    html = (Path(__file__).parent.parent / "src" / "oncofiles" / "dashboard.html").read_text()
+    assert "_parseRetryAfter" in html
+    assert "'Retry-After'" in html
+    # seconds-form and HTTP-date form both covered
+    assert "parseInt" in html and "Date.parse" in html
+
+
+def test_dashboard_apifetch_has_abort_controller():
+    """apiFetch uses AbortController with a per-request timeout."""
+    from pathlib import Path
+
+    html = (Path(__file__).parent.parent / "src" / "oncofiles" / "dashboard.html").read_text()
+    assert "AbortController" in html
+    assert "AbortError" in html
+    assert "perRequestTimeoutMs" in html
+
+
+def test_dashboard_breaker_banner_bilingual():
+    """Friendly countdown banner renders in SK and EN."""
+    from pathlib import Path
+
+    html = (Path(__file__).parent.parent / "src" / "oncofiles" / "dashboard.html").read_text()
+    assert "showBreakerBanner" in html
+    # SK text — includes the "Databáza je krátko nedostupná" phrase
+    assert "Databáza je krátko nedostupná" in html
+    # EN text — "Database briefly unavailable"
+    assert "Database briefly unavailable" in html
+    # Live countdown via setInterval
+    assert "_breakerCountdownTimer" in html
+    # Auto-retry fires refresh() when countdown reaches zero
+    assert "refresh()" in html
+
+
+def test_dashboard_refresh_surfaces_503_without_red_cascade():
+    """refresh() detects 503 errors and shows the breaker banner instead of
+    'Partial load failure: HTTP 503 × N'."""
+    from pathlib import Path
+
+    html = (Path(__file__).parent.parent / "src" / "oncofiles" / "dashboard.html").read_text()
+    assert "trackBreaker" in html
+    assert "breakerError" in html
+    # Fallback generic error path still exists for non-breaker cascades
+    assert "Partial load failure" in html
+
+
 def test_status_reconnect_no_longer_uses_suppress_exception():
     """The silent suppress(Exception) wrap around reconnect_if_stale is gone (#469).
 

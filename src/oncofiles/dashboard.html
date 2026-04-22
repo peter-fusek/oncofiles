@@ -1953,29 +1953,147 @@
 
     function hideError() {
       document.getElementById('error-banner').classList.remove('visible');
+      _clearBreakerCountdown();
+    }
+
+    // ── Breaker-aware retry + friendly countdown banner (#469) ───────────
+
+    var _breakerCountdownTimer = null;
+    var _breakerSecondsRemaining = 0;
+
+    function _clearBreakerCountdown() {
+      if (_breakerCountdownTimer) {
+        clearInterval(_breakerCountdownTimer);
+        _breakerCountdownTimer = null;
+      }
+      _breakerSecondsRemaining = 0;
+    }
+
+    function _parseRetryAfter(headerValue) {
+      if (!headerValue) return null;
+      var n = parseInt(headerValue, 10);
+      if (!isNaN(n) && n >= 0) return n * 1000;
+      var d = Date.parse(headerValue);
+      if (!isNaN(d)) return Math.max(0, d - Date.now());
+      return null;
+    }
+
+    function _jitterMs(attempt, baseMs, maxMs) {
+      var exp = Math.min(maxMs, baseMs * Math.pow(2, attempt - 1));
+      var jitter = exp * 0.25 * (Math.random() * 2 - 1); // ±25%
+      return Math.max(0, Math.floor(exp + jitter));
+    }
+
+    function showBreakerBanner(retryAfterMs) {
+      _clearBreakerCountdown();
+      _breakerSecondsRemaining = Math.max(1, Math.ceil(retryAfterMs / 1000));
+      var banner = document.getElementById('error-banner');
+      var text = document.getElementById('error-text');
+      banner.classList.add('visible');
+
+      function render() {
+        var s = _breakerSecondsRemaining;
+        text.textContent = dashLang === 'sk'
+          ? 'Databáza je krátko nedostupná. Skúsim znova o ' + s + ' s…'
+          : 'Database briefly unavailable. Retrying in ' + s + 's…';
+      }
+      render();
+
+      _breakerCountdownTimer = setInterval(function() {
+        _breakerSecondsRemaining -= 1;
+        if (_breakerSecondsRemaining <= 0) {
+          _clearBreakerCountdown();
+          refresh();
+        } else {
+          render();
+        }
+      }, 1000);
     }
 
     // ── API ──────────────────────────────────────────────────────────────
 
-    async function apiFetch(url, _retry) {
+    /**
+     * Fetch with circuit-breaker awareness.
+     *
+     * - 401 → logout, throw 'Unauthorized'.
+     * - 503 → throw immediately with {status: 503, retryAfterMs} so the caller
+     *         can surface the friendly countdown banner; the banner IS the retry.
+     * - 500/502/504 → retry with exponential jitter (base 500ms, cap 5s,
+     *         ±25% jitter), max 3 attempts, then throw HTTP <status>.
+     * - AbortError (per-request timeout 25s) → same retry path as 5xx.
+     * - 4xx (except 401) and 2xx (not ok) → throw HTTP <status>.
+     *
+     * See #412 (server-side 503 contract) and #469 (client rollout).
+     */
+    async function apiFetch(url, opts) {
+      opts = opts || {};
+      var retryBudget = opts.retryBudget !== undefined ? opts.retryBudget : 3;
+      var perRequestTimeoutMs = opts.perRequestTimeoutMs || 25000;
+
       if (currentPatientId) {
         var sep = url.includes('?') ? '&' : '?';
         url = url + sep + 'patient_id=' + encodeURIComponent(currentPatientId);
       }
-      var resp = await fetch(url, {
-        headers: { 'Authorization': authHeader() }
-      });
-      if (resp.status === 401) {
-        logout();
-        throw new Error('Unauthorized');
+
+      var attempt = 0;
+      while (true) {
+        var ac = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+        var tid = ac ? setTimeout(function(){ ac.abort(); }, perRequestTimeoutMs) : null;
+        try {
+          var resp = await fetch(url, {
+            headers: { 'Authorization': authHeader() },
+            signal: ac ? ac.signal : undefined
+          });
+          if (tid) clearTimeout(tid);
+
+          if (resp.status === 401) {
+            logout();
+            throw new Error('Unauthorized');
+          }
+
+          // Breaker-open — surface to caller immediately. The caller renders a
+          // countdown banner that auto-retries at Retry-After. No inner retry:
+          // retrying inside the cooldown is guaranteed to fail.
+          if (resp.status === 503) {
+            var retryAfterMs = _parseRetryAfter(resp.headers.get('Retry-After'));
+            var err503 = new Error('HTTP 503');
+            err503.status = 503;
+            err503.retryAfterMs = retryAfterMs != null ? retryAfterMs : 30000;
+            throw err503;
+          }
+
+          // 500/502/504 — transient. Retry up to budget with jitter.
+          if (resp.status === 500 || resp.status === 502 || resp.status === 504) {
+            if (attempt < retryBudget) {
+              attempt += 1;
+              await new Promise(function(r){ setTimeout(r, _jitterMs(attempt, 500, 5000)); });
+              continue;
+            }
+            var err5xx = new Error('HTTP ' + resp.status);
+            err5xx.status = resp.status;
+            throw err5xx;
+          }
+
+          if (!resp.ok) {
+            var errNok = new Error('HTTP ' + resp.status);
+            errNok.status = resp.status;
+            throw errNok;
+          }
+          return resp.json();
+        } catch (e) {
+          if (tid) clearTimeout(tid);
+          // Per-request timeout → treat as transient, retry within budget.
+          if (e && e.name === 'AbortError') {
+            if (attempt < retryBudget) {
+              attempt += 1;
+              await new Promise(function(r){ setTimeout(r, _jitterMs(attempt, 500, 5000)); });
+              continue;
+            }
+            throw new Error('request timed out');
+          }
+          throw e;
+        }
       }
-      // Retry once on 500 (Turso contention during startup syncs)
-      if (resp.status === 500 && !_retry) {
-        await new Promise(function(r){ setTimeout(r, 2000); });
-        return apiFetch(url, true);
-      }
-      if (!resp.ok) throw new Error('HTTP ' + resp.status);
-      return resp.json();
     }
 
     // ── Patient selector ────────────────────────────────────────────────
@@ -2745,6 +2863,16 @@
       showSkeletons();
       var anyOk = false;
       var errors = [];
+      // First 503 wins — we show one friendly banner + auto-retry at Retry-After
+      // instead of the red "Partial load failure" cascade. See #469.
+      var breakerError = null;
+      function trackBreaker(e) {
+        if (e && e.status === 503 && e.retryAfterMs) {
+          if (!breakerError) breakerError = e;
+          return true;
+        }
+        return false;
+      }
       // Sequential fetches — Turso single-connection can't handle parallel queries
       // Each section is independent: one failure doesn't block the others
       try {
@@ -2753,38 +2881,47 @@
         anyOk = true;
       } catch (e) {
         if (e.message === 'Unauthorized') { setConnectionState('offline'); hideSkeletons(); return; }
-        errors.push('status: ' + e.message);
+        if (!trackBreaker(e)) errors.push('status: ' + e.message);
       }
       try {
         var docs = await apiFetch('/api/documents?filter=' + encodeURIComponent(currentFilter) + '&limit=200');
         renderDocs(docs);
         anyOk = true;
       } catch (e) {
-        errors.push('documents: ' + e.message);
+        if (!trackBreaker(e)) errors.push('documents: ' + e.message);
       }
       try {
         var prompts = await apiFetch('/api/prompt-log?limit=50');
         renderPromptLog(prompts);
         anyOk = true;
       } catch (e) {
-        errors.push('prompt-log: ' + e.message);
+        if (!trackBreaker(e)) errors.push('prompt-log: ' + e.message);
       }
       try {
         var recon = await apiFetch('/api/reconciliation');
         if (recon) renderReconciliation(recon);
         anyOk = true;
-      } catch (e) { console.warn('Reconciliation fetch failed:', e); }
+      } catch (e) { if (!trackBreaker(e)) console.warn('Reconciliation fetch failed:', e); }
       try {
         var analytics = await apiFetch('/api/usage-analytics');
         if (analytics) renderAnalytics(analytics);
         anyOk = true;
-      } catch (e) { console.warn('Analytics fetch failed:', e); }
+      } catch (e) { if (!trackBreaker(e)) console.warn('Analytics fetch failed:', e); }
       try {
         var sched = await apiFetch('/api/schedules');
         if (sched) renderSchedules(sched);
         anyOk = true;
-      } catch (e) { console.warn('Schedules fetch failed:', e); }
+      } catch (e) { if (!trackBreaker(e)) console.warn('Schedules fetch failed:', e); }
       hideSkeletons();
+
+      // Breaker open — show friendly SK/EN countdown + auto-retry instead of a
+      // red cascade. Any data we DID render during the partial load stays visible.
+      if (breakerError) {
+        setConnectionState('loading');
+        showBreakerBanner(breakerError.retryAfterMs);
+        return;
+      }
+
       setConnectionState(anyOk ? 'ok' : 'offline');
       if (anyOk) {
         updateLastRefreshed();
