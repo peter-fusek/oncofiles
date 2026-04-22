@@ -16,6 +16,7 @@ import json
 from typing import Any
 
 from oncofiles.models import (
+    ClinicalAnalysis,
     ClinicalRecord,
     ClinicalRecordAudit,
     ClinicalRecordNote,
@@ -23,6 +24,7 @@ from oncofiles.models import (
 )
 
 from ._converters import (
+    _row_to_clinical_analysis,
     _row_to_clinical_record,
     _row_to_clinical_record_audit,
     _row_to_clinical_record_note,
@@ -484,3 +486,96 @@ class ClinicalRecordsMixin:
             ),
         )
         await self.db.commit()
+
+    # ── clinical_analyses (#450 Phase 2) ───────────────────────────────
+
+    async def insert_clinical_analysis(self, analysis: ClinicalAnalysis) -> ClinicalAnalysis:
+        """Persist an analytic output over one or more clinical records."""
+        cursor = await self.db.execute(
+            """
+            INSERT INTO clinical_analyses (
+                patient_id, record_ids, analysis_type, result_json,
+                result_summary, tags, produced_by, session_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                analysis.patient_id,
+                analysis.record_ids,
+                analysis.analysis_type,
+                analysis.result_json,
+                analysis.result_summary,
+                analysis.tags,
+                analysis.produced_by,
+                analysis.session_id,
+            ),
+        )
+        await self.db.commit()
+        analysis.id = cursor.lastrowid
+        stored = await self.get_clinical_analysis(analysis.id)
+        if stored is None:
+            raise RuntimeError(f"insert_clinical_analysis: row {analysis.id} vanished after INSERT")
+        return stored
+
+    async def get_clinical_analysis(self, analysis_id: int) -> ClinicalAnalysis | None:
+        """Fetch a single clinical_analyses row by id."""
+        async with self.db.execute(
+            "SELECT * FROM clinical_analyses WHERE id = ?", (analysis_id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+            return _row_to_clinical_analysis(row) if row else None
+
+    async def list_clinical_analyses(
+        self,
+        *,
+        patient_id: str,
+        analysis_type: str | None = None,
+        limit: int = 100,
+    ) -> list[ClinicalAnalysis]:
+        """List clinical_analyses rows for a patient, newest first."""
+        conditions = ["patient_id = ?"]
+        params: list[Any] = [patient_id]
+        if analysis_type:
+            conditions.append("analysis_type = ?")
+            params.append(analysis_type)
+        where = " AND ".join(conditions)
+        params.append(limit)
+        async with self.db.execute(
+            f"SELECT * FROM clinical_analyses WHERE {where} "
+            "ORDER BY created_at DESC, id DESC LIMIT ?",
+            params,
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return [_row_to_clinical_analysis(r) for r in rows]
+
+    # ── clinical_record_notes full-text-ish search (#450 Phase 2) ─────────
+
+    async def search_clinical_record_notes(
+        self,
+        *,
+        patient_id: str,
+        query: str,
+        limit: int = 100,
+    ) -> list[ClinicalRecordNote]:
+        """LIKE-based search on note_text scoped to a patient.
+
+        FTS5 upgrade deferred until >500 notes/patient. Current use case
+        (caregiver recall: "What did I tag about CEA?") works with LIKE
+        and the existing (record_id, created_at DESC) index.
+        """
+        if not query.strip():
+            return []
+        like = f"%{query}%"
+        async with self.db.execute(
+            """
+            SELECT n.* FROM clinical_record_notes n
+            JOIN clinical_records r ON r.id = n.record_id
+            WHERE r.patient_id = ?
+              AND n.deleted_at IS NULL
+              AND n.note_text LIKE ?
+            ORDER BY n.created_at DESC, n.id DESC
+            LIMIT ?
+            """,
+            (patient_id, like, limit),
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return [_row_to_clinical_record_note(r) for r in rows]

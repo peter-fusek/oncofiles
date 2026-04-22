@@ -1,13 +1,21 @@
-"""MCP tools for clinical_records + notes (#450 Phase 1).
+"""MCP tools for clinical_records + notes + analyses (#450 Phases 1 + 2).
 
-Session 2 ships four of the eleven tools from #450. Remaining seven (update,
-soft-delete, audit-history view, search_notes, etc.) deferred to v5.12 so we
-can validate the data model in production against real Oncoteam workloads
-before growing the surface area.
+Phase 1 (v5.11) shipped four read/write tools (add, get, add_note, list_notes).
+Phase 2 (v5.13) adds seven more to close the CRUD loop + expose audit + give
+Oncoteam a place to persist analytic outputs:
 
-All four tools accept ``patient_slug`` per the Option A pattern (#429) —
-required in stateless-HTTP contexts (Claude.ai connector, ChatGPT) where
-``select_patient()`` state does not persist across tool calls.
+  - update_clinical_record     — partial update + audit row
+  - delete_clinical_record     — soft-delete + audit row
+  - restore_clinical_record    — restore from soft-delete + audit row
+  - list_clinical_records      — paginated filter
+  - get_record_audit           — full chronological audit history
+  - add_clinical_analysis      — persist analytic output referencing N records
+  - search_notes               — LIKE %q% on note_text (FTS5 deferred)
+
+All tools accept ``patient_slug`` per the Option A pattern (#429) — required
+in stateless-HTTP contexts (Claude.ai, ChatGPT) where ``select_patient()``
+state does not persist across tool calls. All mutating tools validate
+patient_id ownership before writing to prevent cross-patient ID spoofing.
 """
 
 from __future__ import annotations
@@ -16,7 +24,12 @@ import json
 
 from fastmcp import Context
 
-from oncofiles.models import ClinicalRecord, ClinicalRecordNote, ClinicalRecordQuery
+from oncofiles.models import (
+    ClinicalAnalysis,
+    ClinicalRecord,
+    ClinicalRecordNote,
+    ClinicalRecordQuery,
+)
 from oncofiles.tools._helpers import _get_db, _resolve_patient_id
 
 
@@ -247,10 +260,358 @@ async def list_clinical_record_notes(
     )
 
 
-# Stitched together here so ClinicalRecordQuery stays imported for future tools
-# (list_clinical_records ships in v5.12 — it'd be premature to ship it without
-# the dashboard view that consumes it).
-_ = ClinicalRecordQuery  # keep import used until v5.12 list tool lands
+# ── Phase 2 tools (#450) ────────────────────────────────────────────────
+
+
+async def update_clinical_record(
+    ctx: Context,
+    record_id: int,
+    source: str,
+    record_type: str | None = None,
+    param: str | None = None,
+    value_num: float | None = None,
+    value_text: str | None = None,
+    unit: str | None = None,
+    status: str | None = None,
+    occurred_at: str | None = None,
+    source_document_id: int | None = None,
+    ref_range_low: float | None = None,
+    ref_range_high: float | None = None,
+    metadata_json: str | None = None,
+    session_id: str | None = None,
+    caller_identity: str | None = None,
+    changed_by: str | None = None,
+    reason: str | None = None,
+    patient_slug: str | None = None,
+) -> str:
+    """Partial update on a clinical record — only provided fields change.
+
+    Every update writes an audit row with the before/after snapshots and the
+    list of changed field names, so the caregiver or Oncoteam can later
+    inspect who changed what and why. Fields not passed (left as None) are
+    untouched; pass an explicit value to clear a field is not supported here
+    — use the DB layer if you need that edge case.
+
+    Args:
+        record_id: Target clinical record id.
+        source: Provenance tag for this update — 'manual', 'ai-extract',
+            'oncoteam', 'mcp-claude', 'mcp-chatgpt'.
+        record_type / param / value_num / value_text / unit / status /
+        occurred_at / source_document_id / ref_range_low / ref_range_high /
+        metadata_json: Fields to update. Pass only what should change.
+        session_id: MCP conversation UUID — links audit row to the chat.
+        caller_identity: Token hash / OAuth sub — accountability.
+        changed_by: Email of the actor.
+        reason: Human explanation of why this update was made (audit).
+        patient_slug: Explicit patient slug per Option A (#429).
+    """
+    pid = await _resolve_patient_id(patient_slug, ctx)
+    db = _get_db(ctx)
+
+    target = await db.get_clinical_record(record_id, include_deleted=True)
+    if target is None:
+        return json.dumps({"error": "not_found", "record_id": record_id})
+    if target.patient_id != pid:
+        return json.dumps({"error": "wrong_patient", "record_id": record_id})
+
+    updates = {
+        k: v
+        for k, v in {
+            "record_type": record_type,
+            "param": param,
+            "value_num": value_num,
+            "value_text": value_text,
+            "unit": unit,
+            "status": status,
+            "occurred_at": occurred_at,
+            "source_document_id": source_document_id,
+            "ref_range_low": ref_range_low,
+            "ref_range_high": ref_range_high,
+            "metadata_json": metadata_json,
+        }.items()
+        if v is not None
+    }
+
+    if not updates:
+        return json.dumps(
+            {"status": "no_change", "id": record_id, "reason": "no updatable fields provided"}
+        )
+
+    after = await db.update_clinical_record(
+        record_id,
+        updates,
+        changed_by=changed_by,
+        source=source,
+        session_id=session_id,
+        caller_identity=caller_identity,
+        reason=reason,
+    )
+    return json.dumps(
+        {
+            "status": "updated",
+            "id": record_id,
+            "changed_fields": sorted(updates.keys()),
+            "record": after.model_dump() if after else None,
+        },
+        ensure_ascii=False,
+        default=str,
+    )
+
+
+async def delete_clinical_record(
+    ctx: Context,
+    record_id: int,
+    source: str,
+    session_id: str | None = None,
+    caller_identity: str | None = None,
+    deleted_by: str | None = None,
+    reason: str | None = None,
+    patient_slug: str | None = None,
+) -> str:
+    """Soft-delete a clinical record. Idempotent — already-deleted returns no_change.
+
+    Original row is preserved with deleted_at/deleted_by set; the audit row
+    captures the delete action. Recovery via restore_clinical_record within
+    the 30-day retention window (per global deletion policy). Nothing is ever
+    hard-deleted from this table.
+    """
+    pid = await _resolve_patient_id(patient_slug, ctx)
+    db = _get_db(ctx)
+
+    target = await db.get_clinical_record(record_id, include_deleted=True)
+    if target is None:
+        return json.dumps({"error": "not_found", "record_id": record_id})
+    if target.patient_id != pid:
+        return json.dumps({"error": "wrong_patient", "record_id": record_id})
+
+    did = await db.delete_clinical_record(
+        record_id,
+        deleted_by=deleted_by,
+        source=source,
+        session_id=session_id,
+        caller_identity=caller_identity,
+        reason=reason,
+    )
+    if not did:
+        return json.dumps({"status": "no_change", "id": record_id, "reason": "already_deleted"})
+    return json.dumps({"status": "deleted", "id": record_id})
+
+
+async def restore_clinical_record(
+    ctx: Context,
+    record_id: int,
+    source: str,
+    session_id: str | None = None,
+    caller_identity: str | None = None,
+    restored_by: str | None = None,
+    reason: str | None = None,
+    patient_slug: str | None = None,
+) -> str:
+    """Restore a soft-deleted clinical record. Emits a 'restore' audit row."""
+    pid = await _resolve_patient_id(patient_slug, ctx)
+    db = _get_db(ctx)
+
+    target = await db.get_clinical_record(record_id, include_deleted=True)
+    if target is None:
+        return json.dumps({"error": "not_found", "record_id": record_id})
+    if target.patient_id != pid:
+        return json.dumps({"error": "wrong_patient", "record_id": record_id})
+    if target.deleted_at is None:
+        return json.dumps({"status": "no_change", "id": record_id, "reason": "not_deleted"})
+
+    after = await db.restore_clinical_record(
+        record_id,
+        restored_by=restored_by,
+        source=source,
+        session_id=session_id,
+        caller_identity=caller_identity,
+        reason=reason,
+    )
+    return json.dumps(
+        {"status": "restored", "id": record_id, "record": after.model_dump() if after else None},
+        ensure_ascii=False,
+        default=str,
+    )
+
+
+async def list_clinical_records(
+    ctx: Context,
+    record_type: str | None = None,
+    param: str | None = None,
+    since: str | None = None,
+    until: str | None = None,
+    include_deleted: bool = False,
+    limit: int = 200,
+    patient_slug: str | None = None,
+) -> str:
+    """List clinical records for the active patient, paginated + filterable.
+
+    Args:
+        record_type: Filter by type — 'lab', 'biomarker', 'finding', etc.
+        param: Filter by parameter name (e.g. 'CEA', 'KRAS').
+        since / until: Date bounds on occurred_at (ISO strings).
+        include_deleted: If True, also returns soft-deleted rows.
+        limit: Max records to return (default 200, max 2000).
+        patient_slug: Explicit patient slug per Option A (#429).
+    """
+    pid = await _resolve_patient_id(patient_slug, ctx)
+    db = _get_db(ctx)
+    query = ClinicalRecordQuery(
+        record_type=record_type,
+        param=param,
+        since=since,
+        until=until,
+        include_deleted=include_deleted,
+        limit=limit,
+    )
+    records = await db.list_clinical_records(query, patient_id=pid)
+    return json.dumps(
+        {
+            "count": len(records),
+            "records": [r.model_dump() for r in records],
+        },
+        ensure_ascii=False,
+        default=str,
+    )
+
+
+async def get_record_audit(
+    ctx: Context,
+    record_id: int,
+    limit: int = 200,
+    patient_slug: str | None = None,
+) -> str:
+    """Full chronological audit history for a single clinical record.
+
+    Returns every create / update / delete / restore event newest-first.
+    Each entry has before_json + after_json snapshots + changed_fields list
+    so the caller can render a git-style diff view.
+    """
+    pid = await _resolve_patient_id(patient_slug, ctx)
+    db = _get_db(ctx)
+
+    target = await db.get_clinical_record(record_id, include_deleted=True)
+    if target is None:
+        return json.dumps({"error": "not_found", "record_id": record_id})
+    if target.patient_id != pid:
+        return json.dumps({"error": "wrong_patient", "record_id": record_id})
+
+    audit = await db.list_clinical_record_audit(record_id, limit=limit)
+    return json.dumps(
+        {
+            "record_id": record_id,
+            "count": len(audit),
+            "audit": [a.model_dump() for a in audit],
+        },
+        ensure_ascii=False,
+        default=str,
+    )
+
+
+async def add_clinical_analysis(
+    ctx: Context,
+    analysis_type: str,
+    result_json: str,
+    produced_by: str,
+    record_ids: list[int] | None = None,
+    result_summary: str | None = None,
+    tags: list[str] | None = None,
+    session_id: str | None = None,
+    patient_slug: str | None = None,
+) -> str:
+    """Persist an analytic output computed over one or more clinical records.
+
+    Oncoteam's primary write path for SII trends, lab deltas, biomarker
+    safety checks, session summaries, trial-eligibility notes, etc. The
+    ``record_ids`` list traces which facts fed this analysis — the caregiver
+    (or a future dashboard timeline) can drill from the analysis back to
+    the underlying facts.
+
+    Args:
+        analysis_type: Shape of the analysis — 'sii_trend' | 'ne_ly_ratio' |
+            'lab_delta' | 'biomarker_safety_check' | 'trial_eligibility' |
+            'session_note' | 'precycle_checklist' | 'custom'.
+        result_json: JSON-serialised analytic payload (free-form per type).
+        produced_by: 'oncoteam' | 'oncofiles-internal' | 'external-ai' | 'manual'.
+        record_ids: Optional list of clinical_records.id that fed this analysis.
+            Validated to belong to the targeted patient.
+        result_summary: One-line human summary for list views.
+        tags: JSON array of tag strings for later filtering.
+        session_id: MCP conversation UUID for traceback.
+        patient_slug: Explicit patient slug per Option A (#429).
+    """
+    pid = await _resolve_patient_id(patient_slug, ctx)
+    db = _get_db(ctx)
+
+    # Defence-in-depth: every record_id must belong to this patient so an
+    # external AI can't stitch together an analysis across patients.
+    if record_ids:
+        for rid in record_ids:
+            rec = await db.get_clinical_record(rid, include_deleted=True)
+            if rec is None:
+                return json.dumps({"error": "record_not_found", "record_id": rid})
+            if rec.patient_id != pid:
+                return json.dumps({"error": "wrong_patient", "record_id": rid})
+
+    analysis = ClinicalAnalysis(
+        patient_id=pid,
+        record_ids=json.dumps(record_ids) if record_ids else None,
+        analysis_type=analysis_type,
+        result_json=result_json,
+        result_summary=result_summary,
+        tags=json.dumps(tags, ensure_ascii=False) if tags else None,
+        produced_by=produced_by,
+        session_id=session_id,
+    )
+    stored = await db.insert_clinical_analysis(analysis)
+    return json.dumps(
+        {
+            "status": "created",
+            "id": stored.id,
+            "analysis_type": stored.analysis_type,
+            "produced_by": stored.produced_by,
+            "created_at": stored.created_at,
+            "record_ids": record_ids or [],
+            "tags": tags or [],
+        },
+        ensure_ascii=False,
+        default=str,
+    )
+
+
+async def search_notes(
+    ctx: Context,
+    query: str,
+    limit: int = 100,
+    patient_slug: str | None = None,
+) -> str:
+    """LIKE-based search over all active notes for the patient.
+
+    Covers the common caregiver recall case: 'what did we write about CEA?'.
+    Case-insensitive via SQLite's default LIKE. FTS5 upgrade deferred
+    until per-patient note count exceeds ~500 (see #450).
+
+    Args:
+        query: Substring to match inside note_text.
+        limit: Max notes to return (default 100).
+        patient_slug: Explicit patient slug per Option A (#429).
+    """
+    pid = await _resolve_patient_id(patient_slug, ctx)
+    db = _get_db(ctx)
+
+    if not query or not query.strip():
+        return json.dumps({"error": "empty_query"})
+
+    notes = await db.search_clinical_record_notes(patient_id=pid, query=query, limit=limit)
+    return json.dumps(
+        {
+            "query": query,
+            "count": len(notes),
+            "notes": [n.model_dump() for n in notes],
+        },
+        ensure_ascii=False,
+        default=str,
+    )
 
 
 def register(mcp):
@@ -258,3 +619,11 @@ def register(mcp):
     mcp.tool()(get_clinical_record)
     mcp.tool()(add_clinical_record_note)
     mcp.tool()(list_clinical_record_notes)
+    # Phase 2 (#450, v5.13)
+    mcp.tool()(update_clinical_record)
+    mcp.tool()(delete_clinical_record)
+    mcp.tool()(restore_clinical_record)
+    mcp.tool()(list_clinical_records)
+    mcp.tool()(get_record_audit)
+    mcp.tool()(add_clinical_analysis)
+    mcp.tool()(search_notes)

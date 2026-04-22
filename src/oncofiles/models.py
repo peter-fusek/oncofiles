@@ -554,3 +554,31 @@ class ClinicalRecordAudit(BaseModel):
     caller_identity: str | None = None
     changed_at: str | None = None
     changed_by: str | None = None
+
+
+class ClinicalAnalysis(BaseModel):
+    """An analytic output over one or more clinical records.
+
+    Lives alongside the facts in ``clinical_records`` — this is where Oncoteam
+    (or any external AI) stores computed results: SII trends, lab deltas,
+    biomarker safety checks, session summaries, etc. The ``record_ids`` JSON
+    array traces which facts fed the analysis.
+    """
+
+    id: int | None = None
+    patient_id: str
+    record_ids: str | None = Field(
+        default=None, description="JSON array of clinical_records.id that fed this analysis"
+    )
+    analysis_type: str = Field(
+        description=(
+            "sii_trend | ne_ly_ratio | lab_delta | biomarker_safety_check | "
+            "trial_eligibility | session_note | precycle_checklist | custom"
+        )
+    )
+    result_json: str = Field(description="JSON-serialised analytic payload")
+    result_summary: str | None = None
+    tags: str | None = Field(default=None, description="JSON array of tag strings")
+    produced_by: str = Field(description="oncoteam | oncofiles-internal | external-ai | manual")
+    session_id: str | None = None
+    created_at: str | None = None

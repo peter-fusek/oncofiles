@@ -11,6 +11,7 @@ from oncofiles.models import (
     ActivityLogEntry,
     AgentState,
     CalendarEntry,
+    ClinicalAnalysis,
     ClinicalRecord,
     ClinicalRecordAudit,
     ClinicalRecordNote,
@@ -344,4 +345,20 @@ def _row_to_clinical_record_audit(row: Any) -> ClinicalRecordAudit:
         caller_identity=_safe_get(row, "caller_identity"),
         changed_at=_safe_get(row, "changed_at"),
         changed_by=_safe_get(row, "changed_by"),
+    )
+
+
+def _row_to_clinical_analysis(row: Any) -> ClinicalAnalysis:
+    """Convert a database row to a ClinicalAnalysis model."""
+    return ClinicalAnalysis(
+        id=row["id"],
+        patient_id=row["patient_id"],
+        record_ids=_safe_get(row, "record_ids"),
+        analysis_type=row["analysis_type"],
+        result_json=row["result_json"],
+        result_summary=_safe_get(row, "result_summary"),
+        tags=_safe_get(row, "tags"),
+        produced_by=row["produced_by"],
+        session_id=_safe_get(row, "session_id"),
+        created_at=_safe_get(row, "created_at"),
     )
