@@ -903,6 +903,10 @@
     .breaker-widget.state-open .bw-dot { background: var(--red); animation: pulse 1s infinite; }
     .breaker-widget.state-half_open .bw-dot { background: var(--amber); animation: pulse 1s infinite; }
     .breaker-widget.has-trips { color: var(--amber); }
+    .budget-pill { display: inline-flex; align-items: center; gap: 0.25rem; font-size: 0.6875rem; color: var(--text-muted); font-variant-numeric: tabular-nums; margin-right: 0.25rem; padding: 0.15rem 0.4rem; border: 1px solid var(--border); border-radius: 999px; }
+    .budget-pill .bp-icon { font-size: 0.8125rem; line-height: 1; }
+    .budget-pill.state-warn { color: var(--amber); border-color: var(--amber); }
+    .budget-pill.state-over { color: var(--red); border-color: var(--red); }
     .svc-badges { display: inline-flex; gap: 0.25rem; margin-right: 0.5rem; vertical-align: middle; }
     .svc-badge { font-size: 0.625rem; padding: 1px 5px; border-radius: 3px; font-weight: 600; letter-spacing: 0.02em; }
     .svc-badge.on { background: rgba(34,197,94,0.15); color: var(--green); border: 1px solid rgba(34,197,94,0.3); cursor: pointer; }
@@ -1042,6 +1046,12 @@
             <span class="bw-dot" id="bw-dot"></span>
             <span id="bw-trips">0</span>
             <span style="color:var(--text-dim);font-size:0.6875rem" data-sk="trip" data-en="trip">trip</span>
+          </span>
+          <span id="budget-pill" class="budget-pill" style="display:none" title="">
+            <span class="bp-icon" id="bp-icon">🎁</span>
+            <span id="bp-spent">€0</span>
+            <span style="color:var(--text-dim)">/</span>
+            <span id="bp-cap">€0</span>
           </span>
           <button class="refresh-btn" onclick="refresh()" data-sk="Obnoviť" data-en="Refresh">Refresh</button>
         </div>
@@ -2003,6 +2013,42 @@
           if (k && k.indexOf(_SWR_PREFIX) === 0) sessionStorage.removeItem(k);
         }
       } catch (e) { /* ignore */ }
+    }
+
+    // Budget pill (#442) — fetches /api/patient-budget and reflects the
+    // patient's rolling 30-day AI spend. Hidden for admin/paid_* tiers
+    // (server returns show_pill=false). Piggybacks on refresh() cycle.
+    async function updateBudgetPill() {
+      var pill = document.getElementById('budget-pill');
+      if (!pill) return;
+      try {
+        var query = currentPatientId ? ('?patient_id=' + encodeURIComponent(currentPatientId)) : '';
+        var resp = await apiFetch('/api/patient-budget' + query);
+        if (!resp || !resp.show_pill) {
+          pill.style.display = 'none';
+          return;
+        }
+        pill.style.display = 'inline-flex';
+        pill.classList.remove('state-warn', 'state-over');
+        var used = Number(resp.used_eur || 0);
+        var cap = Number(resp.cap_eur || 0);
+        var ratio = cap > 0 ? (used / cap) : 0;
+        if (ratio >= 1) pill.classList.add('state-over');
+        else if (ratio >= 0.8) pill.classList.add('state-warn');
+        var iconEl = document.getElementById('bp-icon');
+        if (iconEl) iconEl.textContent = resp.in_onboarding ? '🎁' : '€';
+        var spentEl = document.getElementById('bp-spent');
+        if (spentEl) spentEl.textContent = '€' + used.toFixed(2);
+        var capEl = document.getElementById('bp-cap');
+        if (capEl) capEl.textContent = '€' + cap.toFixed(0);
+        var tip = resp.in_onboarding
+          ? 'Onboarding bonus — prvý mesiac zadarmo / free trial first month'
+          : 'Mesačný rozpočet AI / Monthly AI budget';
+        if (resp.onboarding_ends_at) tip += ' · ends ' + resp.onboarding_ends_at.slice(0, 10);
+        pill.title = tip;
+      } catch (e) {
+        // Silent — pill stays at last known state; breaker banner handles UX
+      }
     }
 
     // Admin-only breaker widget (#469 Phase 7) — fetches /readiness (no auth)
@@ -3023,6 +3069,8 @@
       } catch (e) { if (!trackBreaker(e)) console.warn('Schedules fetch failed:', e); }
       // Admin-only breaker widget (#469 Phase 7) — fire-and-forget, no-op when non-admin.
       updateBreakerWidget();
+      // Budget pill (#442) — fire-and-forget, hides itself when tier is admin/paid_*.
+      updateBudgetPill();
       hideSkeletons();
 
       // Breaker open — show friendly SK/EN countdown + auto-retry instead of a

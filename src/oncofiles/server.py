@@ -1031,12 +1031,31 @@ def _start_sync_scheduler(
         total_consolidated = 0
 
         try:
+            from oncofiles.budget import check_patient_budget
+
             patients = await db.list_patients(active_only=True)
             for p in patients:
                 pid = p.patient_id
                 if is_memory_pressure(f"nightly:{pid}"):
                     break
                 if _folder_404_counts.get(pid, 0) >= _FOLDER_404_THRESHOLD:
+                    continue
+
+                # Budget gate (#442): skip AI phases for patients over their
+                # rolling 30-day EUR cap. GDrive sync still runs (Phase 1
+                # passes enhance=False — zero AI cost) so the Drive inventory
+                # stays current; only Phases 2-4 (AI calls) are skipped. Admin
+                # tier returns within_budget=True always (grandfathered).
+                status = await check_patient_budget(db, pid)
+                if not status.within_budget:
+                    logger.info(
+                        "Nightly AI skipped [%s] — budget exhausted "
+                        "(tier=%s, used=€%.2f / cap=€%.2f)",
+                        pid,
+                        status.tier,
+                        status.used_eur,
+                        status.cap_eur or 0.0,
+                    )
                     continue
 
                 gc_pair = await _get_patient_gdrive(pid)
@@ -1234,6 +1253,41 @@ def _start_sync_scheduler(
         logger.info("AI_NIGHTLY_ONLY=false — legacy 5-min sync + 4 nightly sweeps registered")
 
     # ── Zero-cost housekeeping (always on) ─────────────────────────────────
+
+    async def _run_tier_transition():
+        """Move patients from 'free_onboarding' to 'free' when their 30-day
+        onboarding window expires. #442. Daily at 00:05 UTC — well clear of
+        the 23:00 UTC AI pipeline. No AI cost, pure SQL."""
+        try:
+            async with db.db.execute(
+                """
+                UPDATE patients
+                SET tier = 'free',
+                    updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+                WHERE tier = 'free_onboarding'
+                  AND onboarding_ends_at IS NOT NULL
+                  AND onboarding_ends_at < strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+                """,
+            ) as cursor:
+                count = cursor.rowcount
+            await db.db.commit()
+            if count:
+                logger.info(
+                    "tier_transition: moved %d patient(s) from free_onboarding → free",
+                    count,
+                )
+        except Exception:
+            logger.exception("tier_transition job failed")
+
+    scheduler.add_job(
+        _run_tier_transition,
+        CronTrigger(hour=0, minute=5),
+        id="tier_transition",
+        max_instances=1,
+        misfire_grace_time=1800,
+        coalesce=True,
+    )
+
     scheduler.add_job(
         _run_trash_cleanup,
         CronTrigger(hour=3, minute=0),
@@ -5314,6 +5368,71 @@ async def api_patient_context(request: Request) -> JSONResponse:
         if resp is not None:
             return resp
         logger.exception("API patient-context error")
+        return JSONResponse({"error": "internal error"}, status_code=500)
+
+
+@mcp.custom_route("/api/patient-budget", methods=["GET"])
+async def api_patient_budget(request: Request) -> JSONResponse:
+    """Return the rolling 30-day AI spend + tier cap for a patient (#442).
+
+    Drives the dashboard budget pill. Returns 204 No Content for tier='admin'
+    (grandfathered prod patients) and for paid_* tiers — the UI hides the pill
+    for those. Follows the 503 + Retry-After breaker contract (#469).
+
+    Query params:
+        patient_id: Target patient. If omitted, uses the caller's first patient.
+    """
+    err = _check_dashboard_auth(request)
+    if err:
+        return err
+    try:
+        db_inst: Database = request.app.state.fastmcp_server._lifespan_result["db"]
+
+        target_pid = request.query_params.get("patient_id")
+        if not target_pid:
+            email = _get_dashboard_email(request)
+            is_bearer = _check_bearer(request) is None
+            patients = await db_inst.list_patients(active_only=True)
+            if is_bearer and patients:
+                target_pid = patients[0].patient_id
+            elif email:
+                own = [p for p in patients if _email_matches_caregiver(email, p.caregiver_email)]
+                if own:
+                    target_pid = own[0].patient_id
+        if not target_pid:
+            return JSONResponse({"error": "patient_id required"}, status_code=400)
+
+        # Authorization: admin OR caregiver of this patient OR bearer token
+        email = _get_dashboard_email(request)
+        is_bearer = _check_bearer(request) is None
+        if not is_bearer and not _is_admin_email(email):
+            target = await db_inst.get_patient(target_pid)
+            if not target or not _email_matches_caregiver(email or "", target.caregiver_email):
+                return JSONResponse({"error": "forbidden"}, status_code=403)
+
+        from oncofiles.budget import check_patient_budget
+
+        status = await check_patient_budget(db_inst, target_pid)
+        patient = await db_inst.get_patient(target_pid)
+        onboarding_ends_at = (
+            patient.onboarding_ends_at.isoformat()
+            if patient and patient.onboarding_ends_at
+            else None
+        )
+
+        return JSONResponse(
+            {
+                **status.as_dict(),
+                "onboarding_ends_at": onboarding_ends_at,
+                # Pill should hide for admin + paid_* (no cap or paid for it).
+                "show_pill": status.tier in ("free_onboarding", "free"),
+            }
+        )
+    except Exception as exc:
+        resp = _circuit_breaker_503(exc, "/api/patient-budget")
+        if resp is not None:
+            return resp
+        logger.exception("API patient-budget error")
         return JSONResponse({"error": "internal error"}, status_code=500)
 
 

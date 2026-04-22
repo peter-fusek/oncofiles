@@ -181,6 +181,12 @@ class Patient(BaseModel):
     diagnosis_summary: str | None = None
     is_active: bool = True
     preferred_lang: str = "sk"
+    # Billing tier (migration 061, #442): free_onboarding | free | paid_basic |
+    # paid_pro | admin. Existing prod patients were grandfathered to 'admin'.
+    tier: str = "free_onboarding"
+    onboarding_ends_at: datetime | None = None
+    upgraded_at: datetime | None = None
+    tier_notes: str | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
 

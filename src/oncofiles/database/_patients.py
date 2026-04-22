@@ -16,6 +16,10 @@ logger = logging.getLogger(__name__)
 def _row_to_patient(row: Any) -> Patient:
     """Convert a database row to a Patient model."""
     d = dict(row)
+
+    def _dt(val):
+        return datetime.fromisoformat(val) if val else None
+
     return Patient(
         patient_id=row["patient_id"],
         slug=d.get("slug", ""),
@@ -24,8 +28,12 @@ def _row_to_patient(row: Any) -> Patient:
         diagnosis_summary=row["diagnosis_summary"],
         is_active=bool(row["is_active"]),
         preferred_lang=row["preferred_lang"] or "sk",
-        created_at=(datetime.fromisoformat(row["created_at"]) if row["created_at"] else None),
-        updated_at=(datetime.fromisoformat(row["updated_at"]) if row["updated_at"] else None),
+        tier=d.get("tier") or "free_onboarding",
+        onboarding_ends_at=_dt(d.get("onboarding_ends_at")),
+        upgraded_at=_dt(d.get("upgraded_at")),
+        tier_notes=d.get("tier_notes"),
+        created_at=_dt(row["created_at"]),
+        updated_at=_dt(row["updated_at"]),
     )
 
 
