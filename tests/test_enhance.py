@@ -5,9 +5,38 @@ from __future__ import annotations
 from unittest.mock import MagicMock, patch
 
 from oncofiles.database import Database
-from oncofiles.enhance import enhance_document_text, infer_institution_from_providers
+from oncofiles.enhance import (
+    CLASSIFY_SYSTEM_PROMPT,
+    enhance_document_text,
+    infer_institution_from_providers,
+)
 from oncofiles.sync import enhance_documents
 from tests.helpers import ERIKA_UUID, make_doc
+
+# ── CLASSIFY_SYSTEM_PROMPT disambiguation anchors (#465) ────────────────────
+
+
+def test_classify_prompt_labs_vs_chemo_sheet_vs_consultation_examples():
+    """Prompt must carry worked examples that disambiguate the three
+    categories that collided for q1b April docs (doc 277/280) in #465:
+    pure lab printouts → `labs`; chemo administration forms / trial
+    protocols → `chemo_sheet`; encounter notes with inline labs →
+    `consultation`.
+    """
+    prompt = CLASSIFY_SYSTEM_PROMPT
+
+    assert "Use `labs` ONLY when" in prompt
+    assert "dominant content is parameter/value/unit/" in prompt
+
+    assert "Use `chemo_sheet` for a chemotherapy administration" in prompt
+    assert "mFOLFOX6" in prompt
+    assert "INCA033890" in prompt or "trial protocol" in prompt
+    assert "quote a few pre-chemo lab values inline" in prompt
+
+    assert "Use `consultation` for a clinical encounter" in prompt
+    assert "WBC 12.11, neutr. 77.9%" in prompt
+    assert "Mináriková" in prompt
+
 
 # ── enhance_document_text ───────────────────────────────────────────────────
 
