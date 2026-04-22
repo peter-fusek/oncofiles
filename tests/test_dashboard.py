@@ -586,6 +586,46 @@ def test_dashboard_breaker_banner_bilingual():
     assert "refresh()" in html
 
 
+def test_readiness_includes_circuit_breaker_when_turso():
+    """/readiness exposes circuit_breaker stats when backed by Turso (#469 Phase 3)."""
+    import inspect
+
+    from oncofiles.server import readiness
+
+    source = inspect.getsource(readiness)
+    assert "circuit_breaker_stats" in source
+    assert '"circuit_breaker"' in source
+
+
+def test_readiness_uses_circuit_breaker_503_helper():
+    """/readiness exception path goes through the 503 contract helper.
+
+    Without the helper, a breaker trip during the reconnect_if_stale probe
+    would return the generic 'degraded' 503 (body hides the Retry-After),
+    masking the trip signal from clients.
+    """
+    import inspect
+
+    from oncofiles.server import readiness
+
+    source = inspect.getsource(readiness)
+    assert "_circuit_breaker_503" in source
+    assert '"/readiness"' in source
+
+
+def test_database_base_has_circuit_breaker_stats():
+    """Database.circuit_breaker_stats() returns None for aiosqlite, dict for Turso."""
+    from oncofiles.database._base import DatabaseBase
+
+    assert hasattr(DatabaseBase, "circuit_breaker_stats")
+    # Source-level sanity that it falls through for aiosqlite
+    import inspect
+
+    source = inspect.getsource(DatabaseBase.circuit_breaker_stats)
+    assert "return None" in source
+    assert "_TursoConnection" in source
+
+
 def test_dashboard_refresh_surfaces_503_without_red_cascade():
     """refresh() detects 503 errors and shows the breaker banner instead of
     'Partial load failure: HTTP 503 × N'."""

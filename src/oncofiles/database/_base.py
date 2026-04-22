@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -22,11 +23,16 @@ class _CircuitBreaker:
     States: CLOSED (normal) → OPEN (failing, reject fast) → HALF_OPEN (probe).
     After ``max_failures`` consecutive failures within ``window`` seconds,
     opens the circuit for ``cooldown`` seconds.
+
+    Exposes ``stats()`` for ``/readiness`` so operators can see live breaker
+    state + last-trip metadata without SSH'ing into the process (#469 Phase 3).
     """
 
     CLOSED = "closed"
     OPEN = "open"
     HALF_OPEN = "half_open"
+
+    _CAUSE_MAX_LEN = 200
 
     def __init__(
         self,
@@ -40,6 +46,10 @@ class _CircuitBreaker:
         self._state = self.CLOSED
         self._failure_times: list[float] = []
         self._opened_at: float = 0.0
+        # Telemetry (no functional role — exposed via stats() on /readiness)
+        self._last_trip_at: str | None = None
+        self._last_trip_cause: str | None = None
+        self._trip_count_total = 0
 
     @property
     def state(self) -> str:
@@ -51,18 +61,25 @@ class _CircuitBreaker:
         self._failure_times.clear()
         self._state = self.CLOSED
 
-    def record_failure(self) -> None:
+    def record_failure(self, cause: str | None = None) -> None:
         now = time.monotonic()
         self._failure_times = [t for t in self._failure_times if now - t < self.window]
         self._failure_times.append(now)
-        if len(self._failure_times) >= self.max_failures:
+        if len(self._failure_times) >= self.max_failures and self._state != self.OPEN:
             self._state = self.OPEN
             self._opened_at = now
+            self._trip_count_total += 1
+            self._last_trip_at = datetime.now(UTC).isoformat()
+            if cause:
+                self._last_trip_cause = cause[: self._CAUSE_MAX_LEN]
             logger.error(
-                "Circuit breaker OPEN: %d failures in %.0fs, cooling down %.0fs",
+                "Circuit breaker OPEN (trip #%d): %d failures in %.0fs, "
+                "cooling down %.0fs — cause: %s",
+                self._trip_count_total,
                 len(self._failure_times),
                 self.window,
                 self.cooldown,
+                self._last_trip_cause or "unknown",
             )
 
     def check(self) -> None:
@@ -71,6 +88,30 @@ class _CircuitBreaker:
         if state == self.OPEN:
             wait = self.cooldown - (time.monotonic() - self._opened_at)
             raise RuntimeError(f"Circuit breaker open — DB unavailable, retry in {wait:.0f}s")
+
+    def stats(self) -> dict[str, Any]:
+        """Live breaker state + telemetry for /readiness (#469 Phase 3).
+
+        Returned dict is JSON-serializable. ``state`` reads through the property
+        so a HALF_OPEN transition after cooldown is reflected correctly.
+        """
+        state = self.state  # triggers OPEN→HALF_OPEN transition if due
+        now = time.monotonic()
+        failures_in_window = sum(1 for t in self._failure_times if now - t < self.window)
+        cooldown_remaining_s = 0.0
+        if state == self.OPEN:
+            cooldown_remaining_s = max(0.0, self.cooldown - (now - self._opened_at))
+        return {
+            "state": state,
+            "failures_in_window": failures_in_window,
+            "window_seconds": self.window,
+            "max_failures": self.max_failures,
+            "cooldown_seconds": self.cooldown,
+            "cooldown_remaining_s": round(cooldown_remaining_s, 1),
+            "last_trip_at": self._last_trip_at,
+            "last_trip_cause": self._last_trip_cause,
+            "trip_count_total": self._trip_count_total,
+        }
 
 
 MIGRATIONS_DIR = Path(__file__).parent.parent.parent.parent / "migrations"
@@ -224,7 +265,7 @@ class _TursoConnection:
             await self.connect()
         except TimeoutError:
             logger.error("Turso reconnect timed out after %.0fs", self._CONNECT_TIMEOUT)
-            self._breaker.record_failure()
+            self._breaker.record_failure(f"reconnect TimeoutError after {self._CONNECT_TIMEOUT}s")
             raise RuntimeError("Turso reconnect timed out") from None
 
     def execute(self, sql: str, params: tuple | list = ()) -> _TursoExecProxy:
@@ -255,7 +296,7 @@ class _TursoConnection:
             return result
         except TimeoutError:
             logger.error("Query timed out after %.0fs: %s", self._QUERY_TIMEOUT, sql[:200])
-            self._breaker.record_failure()
+            self._breaker.record_failure(f"query TimeoutError after {self._QUERY_TIMEOUT}s")
             raise
         except BaseException as exc:
             # Treat AttributeError from a None self._conn as transient: the
@@ -264,7 +305,7 @@ class _TursoConnection:
             # load (#405).
             none_conn = isinstance(exc, AttributeError) and self._conn is None
             if _is_transient_db_error(exc) or "PanicException" in type(exc).__name__ or none_conn:
-                self._breaker.record_failure()
+                self._breaker.record_failure(f"{type(exc).__name__}: {str(exc)[:150]}")
                 self._breaker.check()  # bail early if breaker just opened
                 logger.warning(
                     "DB driver error (%s), reconnecting: %s", type(exc).__name__, sql[:100]
@@ -278,7 +319,9 @@ class _TursoConnection:
                     self._breaker.record_success()
                     return result
                 except BaseException as retry_exc:
-                    self._breaker.record_failure()
+                    self._breaker.record_failure(
+                        f"retry {type(retry_exc).__name__}: {str(retry_exc)[:150]}"
+                    )
                     if "PanicException" in type(retry_exc).__name__:
                         raise RuntimeError(
                             f"DB driver panic after reconnect: {retry_exc}"
@@ -411,6 +454,16 @@ class DatabaseBase:
         """Pull latest changes from Turso primary into local replica. No-op if not a replica."""
         if isinstance(self._db, _TursoConnection):
             await self._db.sync()
+
+    def circuit_breaker_stats(self) -> dict[str, Any] | None:
+        """Live circuit-breaker telemetry for /readiness (#469 Phase 3).
+
+        Returns None when running on local aiosqlite (no breaker) — tests and
+        dev. Returns a stats dict when backed by Turso.
+        """
+        if isinstance(self._db, _TursoConnection):
+            return self._db._breaker.stats()
+        return None
 
     async def reconnect_if_stale(self, timeout: float = 10.0) -> bool:
         """Reconnect Turso connection if stale. Returns True if reconnected.

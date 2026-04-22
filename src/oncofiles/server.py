@@ -3444,6 +3444,11 @@ async def readiness(request: Request) -> JSONResponse:
         if reconnected:
             result["reconnected"] = True
         result["memory_rss_mb"] = round(get_rss_mb(), 1)
+        # Circuit breaker telemetry (#469 Phase 3) — lets operators diagnose
+        # dashboard-500-cascade events without SSH'ing into the process.
+        breaker_stats = db.circuit_breaker_stats()
+        if breaker_stats is not None:
+            result["circuit_breaker"] = breaker_stats
         # Scheduler job status (lightweight summary)
         tracker = lifespan_ctx.get("job_tracker", {})
         if tracker:
@@ -3461,7 +3466,10 @@ async def readiness(request: Request) -> JSONResponse:
             if jobs:
                 result["jobs"] = jobs
         return JSONResponse(result)
-    except Exception:
+    except Exception as exc:
+        resp = _circuit_breaker_503(exc, "/readiness")
+        if resp is not None:
+            return resp
         logger.exception("Readiness check failed")
         return JSONResponse(
             {"status": "degraded", "version": VERSION, "db": "unavailable"},
