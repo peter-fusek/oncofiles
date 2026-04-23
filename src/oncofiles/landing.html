@@ -203,6 +203,10 @@
 
     * { margin: 0; padding: 0; box-sizing: border-box; }
 
+    html {
+      overflow-x: hidden;
+    }
+
     body {
       font-family: 'DM Sans', -apple-system, BlinkMacSystemFont, sans-serif;
       background: var(--bg);
@@ -212,6 +216,7 @@
       display: flex;
       flex-direction: column;
       overflow-x: hidden;
+      position: relative;
     }
 
     .container { max-width: 860px; margin: 0 auto; padding: 0 1.5rem; }
