@@ -2600,6 +2600,40 @@ async def favicon_ico(request: Request) -> HTMLResponse:
     return RedirectResponse("/favicon.svg", status_code=301)
 
 
+_PILE_PHOTO_NAMES = {
+    "01": "01-paper-folder-cancer-textbook-web.jpg",
+    "02": "02-papers-spread-medical-records-web.jpg",
+    "03": "03-dashboard-1982-handwritten-ocr-web.jpg",
+    "04": "04-dashboard-1982-handwritten-ocr-detail-web.jpg",
+}
+_PILE_PHOTO_DIR = (
+    Path(__file__).parent.parent.parent
+    / "assets"
+    / "landing"
+    / "pile-to-dashboard-2026-04-22"
+    / "web"
+)
+
+
+@mcp.custom_route("/assets/pile/{slot}.jpg", methods=["GET"])
+async def pile_photo(request: Request) -> Response:
+    """Serve resized landing photos (1600px max) for the #470 pile→dashboard block."""
+    from starlette.responses import FileResponse
+
+    slot = request.path_params.get("slot", "")
+    filename = _PILE_PHOTO_NAMES.get(slot)
+    if filename is None:
+        return Response("not found", status_code=404)
+    path = _PILE_PHOTO_DIR / filename
+    if not path.exists():
+        return Response("not found", status_code=404)
+    return FileResponse(
+        path,
+        media_type="image/jpeg",
+        headers={"Cache-Control": "public, max-age=86400"},
+    )
+
+
 @mcp.custom_route("/robots.txt", methods=["GET"])
 async def robots_txt(request: Request) -> HTMLResponse:
     return HTMLResponse(

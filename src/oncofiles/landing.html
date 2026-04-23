@@ -374,6 +374,67 @@
       padding: 5rem 0;
       border-top: 1px solid var(--border);
     }
+    /* Real example: pile-of-papers → dashboard (issue #470) */
+    .real-example {
+      padding: 5rem 0 3rem;
+      border-top: 1px solid var(--border);
+    }
+    .real-example .section-title {
+      margin-bottom: 0.5rem;
+    }
+    .real-example .re-lede {
+      color: var(--text-muted);
+      max-width: 640px;
+      margin: 0 0 2.5rem 0;
+      font-size: 1rem;
+      line-height: 1.55;
+    }
+    .real-example .re-split {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1.5rem;
+      align-items: stretch;
+    }
+    .real-example .re-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+    }
+    .real-example .re-card img {
+      display: block;
+      width: 100%;
+      height: auto;
+      aspect-ratio: 4 / 3;
+      object-fit: cover;
+      object-position: center;
+      background: #0b1a24;
+    }
+    .real-example .re-caption {
+      padding: 1rem 1.25rem 1.125rem;
+      font-size: 0.875rem;
+      color: var(--text-muted);
+      line-height: 1.5;
+    }
+    .real-example .re-caption strong {
+      color: var(--text);
+      font-weight: 600;
+      display: block;
+      margin-bottom: 0.25rem;
+    }
+    .real-example .re-footnote {
+      margin-top: 1.5rem;
+      font-size: 0.8125rem;
+      color: var(--text-dim);
+      font-style: italic;
+      line-height: 1.5;
+    }
+    @media (max-width: 720px) {
+      .real-example { padding: 3.5rem 0 2rem; }
+      .real-example .re-split { grid-template-columns: 1fr; gap: 1rem; }
+    }
     .section-label {
       font-size: 0.6875rem;
       text-transform: uppercase;
@@ -1438,6 +1499,32 @@
           <a href="/demo" class="btn btn-secondary" data-sk="Vyskúšať demo" data-en="Try the demo">Vyskúšať demo</a>
           <a href="https://github.com/peter-fusek/oncofiles" class="btn btn-secondary" rel="noreferrer noopener" data-sk="Zobraziť na GitHub" data-en="View on GitHub">Zobraziť na GitHub</a>
         </div>
+      </div>
+    </section>
+
+    <!-- Real example: pile-of-papers → dashboard (issue #470) -->
+    <section class="real-example">
+      <div class="container">
+        <div class="section-label" data-sk="Skutočný príklad" data-en="Real example">Skutočný príklad</div>
+        <h2 class="section-title" data-sk="Zo zložky v skrini na vyhľadateľný záznam" data-en="From a folder in the closet to a searchable record">Zo zložky v skrini na vyhľadateľný záznam</h2>
+        <p class="re-lede" data-sk="40+ rokov papierových záznamov jednej rodiny — ambulantné záznamy, očkovacie preukazy, nálezy, predpisy. Vrátane rukopisnej poznámky z roku 1982. OCR a AI ju prečítajú tak isto ako moderné PDF." data-en="40+ years of one family's paper records — ambulatory notes, vaccination cards, lab printouts, prescriptions. Including a 1982 handwritten doctor's note. OCR and AI read it the same way they read a modern PDF.">40+ rokov papierových záznamov jednej rodiny — ambulantné záznamy, očkovacie preukazy, nálezy, predpisy. Vrátane rukopisnej poznámky z roku 1982. OCR a AI ju prečítajú tak isto ako moderné PDF.</p>
+        <div class="re-split">
+          <div class="re-card">
+            <img src="/assets/pile/02.jpg" alt="Spread of 40+ years of paper medical records on a desk — ambulatory notes, vaccination cards, lab printouts" loading="lazy" width="1600" height="1200">
+            <div class="re-caption">
+              <strong data-sk="Pred Oncofiles" data-en="Before Oncofiles">Pred Oncofiles</strong>
+              <span data-sk="Zložka v skrini. Hľadanie jedného nálezu = polhodina listovania." data-en="A folder in the closet. Finding one result = half an hour of flipping pages.">Zložka v skrini. Hľadanie jedného nálezu = polhodina listovania.</span>
+            </div>
+          </div>
+          <div class="re-card">
+            <img src="/assets/pile/04.jpg" alt="Oncofiles dashboard showing OCR extraction of a 1982 handwritten Slovak doctor's note, page-by-page structured text" loading="lazy" width="1600" height="1200">
+            <div class="re-caption">
+              <strong data-sk="S Oncofiles" data-en="With Oncofiles">S Oncofiles</strong>
+              <span data-sk="Ten istý papier z roku 1982 — strojom čitateľný, vyhľadateľný, pripravený pre Claude alebo ChatGPT." data-en="The same 1982 page — machine-readable, searchable, ready for Claude or ChatGPT.">Ten istý papier z roku 1982 — strojom čitateľný, vyhľadateľný, pripravený pre Claude alebo ChatGPT.</span>
+            </div>
+          </div>
+        </div>
+        <p class="re-footnote" data-sk="Foto: 22. apríla 2026, reálne dokumenty, nafotené iPhonom. Rukopisná poznámka bola prečítaná modelom Claude Vision cez OCR pipeline (strana 1: 538 znakov, strana 2: 388 znakov)." data-en="Photo: April 22, 2026, real documents shot on iPhone. The handwritten note was read by Claude Vision via the OCR pipeline (page 1: 538 chars, page 2: 388 chars).">Foto: 22. apríla 2026, reálne dokumenty, nafotené iPhonom. Rukopisná poznámka bola prečítaná modelom Claude Vision cez OCR pipeline (strana 1: 538 znakov, strana 2: 388 znakov).</p>
       </div>
     </section>
 
