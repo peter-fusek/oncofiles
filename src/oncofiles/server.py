@@ -3895,16 +3895,30 @@ def _check_dashboard_auth(request: Request) -> JSONResponse | None:
     return JSONResponse({"error": "unauthorized"}, status_code=401)
 
 
+NO_PATIENT_ACCESS_SENTINEL = "__no_patient_access__"
+"""Sentinel returned when a dashboard caller has no authorized patient.
+
+Non-empty so it passes truthy `if patient_id:` filters in DB helpers —
+but not a valid UUID, so `WHERE patient_id = ?` matches zero rows.
+This closes a cross-patient data leak where new/unauthorized users would
+see ALL patients' logs: empty string fell through the optional-filter
+gate in _prompt_log / _clinical / _analytics / _operational DB helpers,
+producing unscoped queries (P0 reported 2026-04-23 for Marek Ovcacek).
+"""
+
+
 async def _get_dashboard_patient_id(request: Request) -> str:
     """Extract patient_id from query params and resolve slug → UUID.
 
     Accepts either a UUID or a slug (e.g. 'q1b').  Always returns
-    the UUID patient_id suitable for DB queries.
+    the UUID patient_id suitable for DB queries, OR a non-empty sentinel
+    that matches no real patient when the caller has no access.
 
     Authorization: ALL session users (including admins) may only access
     patients where their email appears in ``caregiver_email`` (comma-separated).
     Bearer token requests (MCP/system) bypass patient scoping.
-    Unauthorized requests silently fall back to the caller's own first patient.
+    Unauthorized requests get the sentinel — NEVER empty string — so
+    downstream `if patient_id:` truthy checks still apply the DB filter.
     """
     email = _get_dashboard_email(request)
     is_bearer = _check_bearer(request) is None
@@ -3923,7 +3937,13 @@ async def _get_dashboard_patient_id(request: Request) -> str:
                 return patients[0].patient_id
         except Exception:
             pass
-        return ""
+        logger.warning(
+            "_get_dashboard_patient_id: no accessible patient for email=%r is_bearer=%s — "
+            "returning sentinel",
+            email,
+            is_bearer,
+        )
+        return NO_PATIENT_ACCESS_SENTINEL
     db: Database = request.app.state.fastmcp_server._lifespan_result["db"]
 
     # Narrow try/except per DB call so the error log points at the exact
@@ -3994,7 +4014,7 @@ async def _get_dashboard_patient_id(request: Request) -> str:
                     raw,
                 )
                 own = [p for p in patients if _email_matches_caregiver(email, p.caregiver_email)]
-                return own[0].patient_id if own else ""
+                return own[0].patient_id if own else NO_PATIENT_ACCESS_SENTINEL
 
     return resolved
 
