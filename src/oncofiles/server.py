@@ -2844,8 +2844,10 @@ _TOPIC_PAGE_CSS = """
   :root { --bg:#faf9f7; --text:#1e293b; --text-muted:#556270; --accent:#0d9488;
     --border:#d5cfc5; --surface:#ffffff; }
   * { margin:0; padding:0; box-sizing:border-box; }
+  html { overflow-x:hidden; }
   body { font-family:'DM Sans',-apple-system,BlinkMacSystemFont,sans-serif;
-    background:var(--bg); color:var(--text); line-height:1.65; }
+    background:var(--bg); color:var(--text); line-height:1.65;
+    overflow-x:hidden; position:relative; }
   .container { max-width:760px; margin:0 auto; padding:2.5rem 1.5rem 4rem; }
   header.top { padding:1rem 0; border-bottom:1px solid var(--border);
     background:rgba(250,249,247,0.9); backdrop-filter:blur(10px); }
