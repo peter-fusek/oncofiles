@@ -225,22 +225,55 @@ class _TursoConnection:
     async def connect(self) -> None:
         import libsql
 
-        if self._replica_path:
+        def _sanity_check(conn) -> None:
+            """Execute SELECT 1 to verify the DB file isn't corrupt.
+
+            libsql.connect() + sync() don't actually read the main DB file —
+            they just initialize. The 'file is not a database' error only
+            surfaces on the first fetchone(). This probe forces that detection
+            at connect time so we can trigger the wipe-and-resync path.
+            """
+            cur = conn.execute("SELECT 1")
+            cur.fetchone()
+
+        def _wipe_replica_files() -> None:
+            import os
+
+            for suffix in ("", "-wal", "-shm", "-journal"):
+                path = f"{self._replica_path}{suffix}"
+                try:
+                    os.remove(path)
+                    logger.info("Wiped corrupt replica file: %s", path)
+                except FileNotFoundError:
+                    pass
+                except Exception as rm_exc:
+                    logger.warning("Failed to remove %s: %s", path, rm_exc)
+
+        async def _connect_and_sync():
             sync_url = self._url.replace("libsql://", "https://")
+            self._conn = await asyncio.wait_for(
+                asyncio.to_thread(
+                    libsql.connect,
+                    self._replica_path,
+                    sync_url=sync_url,
+                    auth_token=self._auth_token,
+                ),
+                timeout=self._CONNECT_TIMEOUT,
+            )
+            await asyncio.wait_for(
+                asyncio.to_thread(self._conn.sync),
+                timeout=self._CONNECT_TIMEOUT,
+            )
+            # Probe: validate the DB file is actually readable. Corruption
+            # only surfaces on first query, not connect/sync (#476).
+            await asyncio.wait_for(
+                asyncio.to_thread(_sanity_check, self._conn),
+                timeout=self._CONNECT_TIMEOUT,
+            )
+
+        if self._replica_path:
             try:
-                self._conn = await asyncio.wait_for(
-                    asyncio.to_thread(
-                        libsql.connect,
-                        self._replica_path,
-                        sync_url=sync_url,
-                        auth_token=self._auth_token,
-                    ),
-                    timeout=self._CONNECT_TIMEOUT,
-                )
-                await asyncio.wait_for(
-                    asyncio.to_thread(self._conn.sync),
-                    timeout=self._CONNECT_TIMEOUT,
-                )
+                await _connect_and_sync()
                 logger.info("Embedded replica connected: %s", self._replica_path)
             except Exception as exc:
                 msg = str(exc)
@@ -256,32 +289,10 @@ class _TursoConnection:
                         msg,
                         self._replica_path,
                     )
-                    import os
-
-                    for suffix in ("", "-wal", "-shm", "-journal"):
-                        path = f"{self._replica_path}{suffix}"
-                        try:
-                            os.remove(path)
-                            logger.info("Wiped corrupt replica file: %s", path)
-                        except FileNotFoundError:
-                            pass
-                        except Exception as rm_exc:
-                            logger.warning("Failed to remove %s: %s", path, rm_exc)
+                    _wipe_replica_files()
                     # Retry connect with a fresh file — libsql will create it
                     # from the cloud primary on first sync.
-                    self._conn = await asyncio.wait_for(
-                        asyncio.to_thread(
-                            libsql.connect,
-                            self._replica_path,
-                            sync_url=sync_url,
-                            auth_token=self._auth_token,
-                        ),
-                        timeout=self._CONNECT_TIMEOUT,
-                    )
-                    await asyncio.wait_for(
-                        asyncio.to_thread(self._conn.sync),
-                        timeout=self._CONNECT_TIMEOUT,
-                    )
+                    await _connect_and_sync()
                     logger.info(
                         "Embedded replica RESYNCED after corruption: %s", self._replica_path
                     )
