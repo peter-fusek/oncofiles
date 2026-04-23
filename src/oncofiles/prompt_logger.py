@@ -79,13 +79,21 @@ def log_ai_call(
     if db is None:
         return
 
-    # Capture patient_id from context (set by PatientResolutionMiddleware)
+    # Capture patient_id from context (set by PatientResolutionMiddleware).
+    # Empty string is FORBIDDEN here — see #476: 19,707 orphan rows with
+    # patient_id="" became cross-patient leak fodder under the unscoped
+    # `if patient_id:` filter pattern. Use a sentinel string instead so:
+    #   - DB NOT NULL constraint is satisfied
+    #   - sentinel is truthy → `if patient_id:` filters correctly
+    #   - sentinel is non-UUID → `WHERE patient_id = '<sentinel>'` matches no
+    #     real patient → cross-patient queries can't bleed via this fallback
+    NO_PATIENT_SENTINEL = "__system_no_patient__"
     try:
         from oncofiles.patient_middleware import get_current_patient_id
 
-        patient_id = get_current_patient_id()
+        patient_id = get_current_patient_id() or NO_PATIENT_SENTINEL
     except Exception:
-        patient_id = ""
+        patient_id = NO_PATIENT_SENTINEL
 
     result_summary = _extract_result_summary(call_type, raw_response)
 
