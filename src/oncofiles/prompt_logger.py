@@ -87,13 +87,13 @@ def log_ai_call(
     #   - sentinel is truthy → `if patient_id:` filters correctly
     #   - sentinel is non-UUID → `WHERE patient_id = '<sentinel>'` matches no
     #     real patient → cross-patient queries can't bleed via this fallback
-    NO_PATIENT_SENTINEL = "__system_no_patient__"
+    no_patient_sentinel = "__system_no_patient__"
     try:
         from oncofiles.patient_middleware import get_current_patient_id
 
-        patient_id = get_current_patient_id() or NO_PATIENT_SENTINEL
+        patient_id = get_current_patient_id() or no_patient_sentinel
     except Exception:
-        patient_id = NO_PATIENT_SENTINEL
+        patient_id = no_patient_sentinel
 
     result_summary = _extract_result_summary(call_type, raw_response)
 

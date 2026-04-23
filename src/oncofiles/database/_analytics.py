@@ -210,8 +210,13 @@ class AnalyticsMixin:
 
         return stats
 
-    async def get_pipeline_stats(self, *, patient_id: str = "") -> PipelineStats:
-        """Aggregate sync and enhancement pipeline statistics."""
+    async def get_pipeline_stats(self, *, patient_id: str | None = None) -> PipelineStats:
+        """Aggregate sync and enhancement pipeline statistics.
+
+        patient_id semantics (#476 hardened): None = unscoped (admin/audit);
+        any string (incl. "") = scoped — empty string matches 0 rows
+        rather than silently bleeding cross-patient.
+        """
         stats = PipelineStats()
 
         # Sync history
@@ -237,8 +242,8 @@ class AnalyticsMixin:
                 stats.avg_sync_duration_s = row["avg_dur"] or 0.0
 
         # Enhancement status
-        pid_clause2 = "AND patient_id = ?" if patient_id else ""
-        params2 = [patient_id] if patient_id else []
+        pid_clause2 = "AND patient_id = ?" if patient_id is not None else ""
+        params2 = [patient_id] if patient_id is not None else []
         async with self.db.execute(
             f"""
             SELECT
