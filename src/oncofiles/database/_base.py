@@ -227,20 +227,66 @@ class _TursoConnection:
 
         if self._replica_path:
             sync_url = self._url.replace("libsql://", "https://")
-            self._conn = await asyncio.wait_for(
-                asyncio.to_thread(
-                    libsql.connect,
-                    self._replica_path,
-                    sync_url=sync_url,
-                    auth_token=self._auth_token,
-                ),
-                timeout=self._CONNECT_TIMEOUT,
-            )
-            await asyncio.wait_for(
-                asyncio.to_thread(self._conn.sync),
-                timeout=self._CONNECT_TIMEOUT,
-            )
-            logger.info("Embedded replica connected: %s", self._replica_path)
+            try:
+                self._conn = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        libsql.connect,
+                        self._replica_path,
+                        sync_url=sync_url,
+                        auth_token=self._auth_token,
+                    ),
+                    timeout=self._CONNECT_TIMEOUT,
+                )
+                await asyncio.wait_for(
+                    asyncio.to_thread(self._conn.sync),
+                    timeout=self._CONNECT_TIMEOUT,
+                )
+                logger.info("Embedded replica connected: %s", self._replica_path)
+            except Exception as exc:
+                msg = str(exc)
+                # Auto-recover from corrupt replica file (#476 incident —
+                # migration 062's 19,707 UPDATE batch corrupted Turso WAL,
+                # leaving the replica in "file is not a database" state).
+                # Wipe the local file and retry — Turso will sync a fresh
+                # copy from cloud primary.
+                if "file is not a database" in msg or "disk image is malformed" in msg:
+                    logger.error(
+                        "Embedded replica corrupt (%s: %s) — wiping %s and resyncing from cloud",
+                        type(exc).__name__,
+                        msg,
+                        self._replica_path,
+                    )
+                    import os
+
+                    for suffix in ("", "-wal", "-shm", "-journal"):
+                        path = f"{self._replica_path}{suffix}"
+                        try:
+                            os.remove(path)
+                            logger.info("Wiped corrupt replica file: %s", path)
+                        except FileNotFoundError:
+                            pass
+                        except Exception as rm_exc:
+                            logger.warning("Failed to remove %s: %s", path, rm_exc)
+                    # Retry connect with a fresh file — libsql will create it
+                    # from the cloud primary on first sync.
+                    self._conn = await asyncio.wait_for(
+                        asyncio.to_thread(
+                            libsql.connect,
+                            self._replica_path,
+                            sync_url=sync_url,
+                            auth_token=self._auth_token,
+                        ),
+                        timeout=self._CONNECT_TIMEOUT,
+                    )
+                    await asyncio.wait_for(
+                        asyncio.to_thread(self._conn.sync),
+                        timeout=self._CONNECT_TIMEOUT,
+                    )
+                    logger.info(
+                        "Embedded replica RESYNCED after corruption: %s", self._replica_path
+                    )
+                else:
+                    raise
         else:
             self._conn = await asyncio.wait_for(
                 asyncio.to_thread(libsql.connect, self._url, auth_token=self._auth_token),
