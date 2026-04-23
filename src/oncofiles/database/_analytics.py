@@ -138,12 +138,19 @@ class AnalyticsMixin:
 
         return stats
 
-    async def get_tool_usage_stats(self, days: int = 30, *, patient_id: str = "") -> ToolUsageStats:
-        """Aggregate MCP tool usage from activity log for the last N days."""
+    async def get_tool_usage_stats(
+        self, days: int = 30, *, patient_id: str | None = None
+    ) -> ToolUsageStats:
+        """Aggregate MCP tool usage from activity log for the last N days.
+
+        patient_id semantics (#476 hardened): None = unscoped (admin/audit);
+        any string (incl. "") = scoped — empty string matches 0 rows
+        rather than silently bleeding cross-patient.
+        """
         stats = ToolUsageStats()
-        pid_clause = "AND patient_id = ?" if patient_id else ""
+        pid_clause = "AND patient_id = ?" if patient_id is not None else ""
         params: list = [f"-{days} days"]
-        if patient_id:
+        if patient_id is not None:
             params.append(patient_id)
 
         async with self.db.execute(

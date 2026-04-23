@@ -373,9 +373,16 @@ class OperationalMixin:
         )
         await self.db.commit()
 
-    async def get_sync_history(self, limit: int = 20, *, patient_id: str = "") -> list[dict]:
-        """Get recent sync history entries, optionally filtered by patient."""
-        if patient_id:
+    async def get_sync_history(
+        self, limit: int = 20, *, patient_id: str | None = None
+    ) -> list[dict]:
+        """Get recent sync history entries, optionally filtered by patient.
+
+        patient_id semantics (#476 hardened): None = unscoped (admin/audit);
+        any string (incl. "") = scoped — empty string matches 0 rows
+        rather than silently bleeding cross-patient.
+        """
+        if patient_id is not None:
             async with self.db.execute(
                 "SELECT * FROM sync_history WHERE patient_id = ? ORDER BY started_at DESC LIMIT ?",
                 (patient_id, limit),
@@ -389,10 +396,14 @@ class OperationalMixin:
                 rows = await cursor.fetchall()
         return [dict(r) for r in rows]
 
-    async def get_sync_stats_summary(self, *, patient_id: str = "") -> dict:
-        """Get aggregate sync statistics for system_health."""
-        pid_clause = "AND patient_id = ?" if patient_id else ""
-        params = [patient_id] if patient_id else []
+    async def get_sync_stats_summary(self, *, patient_id: str | None = None) -> dict:
+        """Get aggregate sync statistics for system_health.
+
+        patient_id semantics (#476 hardened): None = unscoped (admin/audit);
+        any string (incl. "") = scoped — empty string matches 0 rows.
+        """
+        pid_clause = "AND patient_id = ?" if patient_id is not None else ""
+        params = [patient_id] if patient_id is not None else []
         async with self.db.execute(
             f"""
             SELECT

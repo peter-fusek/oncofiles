@@ -325,9 +325,16 @@ class ClinicalMixin:
             rows = await cursor.fetchall()
             return [_row_to_lab_value(r) for r in rows]
 
-    async def get_lab_snapshot(self, document_id: int, *, patient_id: str = "") -> list[LabValue]:
-        """Get all lab values from a specific document."""
-        if patient_id:
+    async def get_lab_snapshot(
+        self, document_id: int, *, patient_id: str | None = None
+    ) -> list[LabValue]:
+        """Get all lab values from a specific document.
+
+        patient_id semantics (#476 hardened): None = unscoped (admin/audit);
+        any string (incl. "") = scoped — empty string matches 0 rows
+        rather than silently bleeding cross-patient.
+        """
+        if patient_id is not None:
             async with self.db.execute(
                 """SELECT lv.* FROM lab_values lv
                    JOIN documents d ON d.id = lv.document_id
@@ -345,10 +352,14 @@ class ClinicalMixin:
         return [_row_to_lab_value(r) for r in rows]
 
     async def get_latest_lab_value(
-        self, parameter: str, *, patient_id: str = ""
+        self, parameter: str, *, patient_id: str | None = None
     ) -> LabValue | None:
-        """Get the most recent value for a given parameter."""
-        if patient_id:
+        """Get the most recent value for a given parameter.
+
+        patient_id semantics (#476 hardened): None = unscoped (admin/audit);
+        any string (incl. "") = scoped — empty string matches 0 rows.
+        """
+        if patient_id is not None:
             sql = """SELECT lv.* FROM lab_values lv
                      JOIN documents d ON d.id = lv.document_id
                      WHERE lv.parameter = ? AND d.patient_id = ?
@@ -361,9 +372,13 @@ class ClinicalMixin:
             row = await cursor.fetchone()
             return _row_to_lab_value(row) if row else None
 
-    async def get_all_latest_lab_values(self, *, patient_id: str = "") -> list[LabValue]:
-        """Get the most recent value for every tracked parameter."""
-        if patient_id:
+    async def get_all_latest_lab_values(self, *, patient_id: str | None = None) -> list[LabValue]:
+        """Get the most recent value for every tracked parameter.
+
+        patient_id semantics (#476 hardened): None = unscoped (admin/audit);
+        any string (incl. "") = scoped — empty string matches 0 rows.
+        """
+        if patient_id is not None:
             sql = """
                 SELECT lv.* FROM lab_values lv
                 JOIN documents d ON d.id = lv.document_id
@@ -394,9 +409,15 @@ class ClinicalMixin:
             rows = await cursor.fetchall()
             return [_row_to_lab_value(r) for r in rows]
 
-    async def get_previous_lab_values(self, *, patient_id: str = "") -> dict[str, LabValue]:
-        """Get the second-most-recent value for every parameter (for trend calculation)."""
-        if patient_id:
+    async def get_previous_lab_values(
+        self, *, patient_id: str | None = None
+    ) -> dict[str, LabValue]:
+        """Get the second-most-recent value for every parameter (for trend calculation).
+
+        patient_id semantics (#476 hardened): None = unscoped (admin/audit);
+        any string (incl. "") = scoped — empty string matches 0 rows.
+        """
+        if patient_id is not None:
             sql = """
                 SELECT lv.* FROM lab_values lv
                 JOIN documents d ON d.id = lv.document_id
@@ -438,10 +459,14 @@ class ClinicalMixin:
             return {v.parameter: v for r in rows if (v := _row_to_lab_value(r))}
 
     async def get_lab_values_by_date(
-        self, lab_date: str, *, patient_id: str = ""
+        self, lab_date: str, *, patient_id: str | None = None
     ) -> list[LabValue]:
-        """Get all lab values for a specific date."""
-        if patient_id:
+        """Get all lab values for a specific date.
+
+        patient_id semantics (#476 hardened): None = unscoped (admin/audit);
+        any string (incl. "") = scoped — empty string matches 0 rows.
+        """
+        if patient_id is not None:
             sql = """SELECT lv.* FROM lab_values lv
                      JOIN documents d ON d.id = lv.document_id
                      WHERE lv.lab_date = ? AND d.patient_id = ?
@@ -454,9 +479,13 @@ class ClinicalMixin:
             rows = await cursor.fetchall()
             return [_row_to_lab_value(r) for r in rows]
 
-    async def get_distinct_lab_dates(self, *, patient_id: str = "") -> list[str]:
-        """Get all distinct lab dates, most recent first."""
-        if patient_id:
+    async def get_distinct_lab_dates(self, *, patient_id: str | None = None) -> list[str]:
+        """Get all distinct lab dates, most recent first.
+
+        patient_id semantics (#476 hardened): None = unscoped (admin/audit);
+        any string (incl. "") = scoped — empty string matches 0 rows.
+        """
+        if patient_id is not None:
             sql = """SELECT DISTINCT lv.lab_date FROM lab_values lv
                      JOIN documents d ON d.id = lv.document_id
                      WHERE d.patient_id = ?

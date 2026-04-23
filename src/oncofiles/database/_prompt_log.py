@@ -42,8 +42,13 @@ class PromptLogMixin:
     async def get_prompt_log(
         self, entry_id: int, *, patient_id: str | None = None
     ) -> PromptLogEntry | None:
-        """Get a single prompt log entry by ID, optionally scoped to a patient."""
-        if patient_id:
+        """Get a single prompt log entry by ID, optionally scoped to a patient.
+
+        patient_id semantics (#476 hardened): None = unscoped (admin/audit);
+        any string (including "") = scoped — empty string matches 0 rows
+        rather than silently bleeding cross-patient.
+        """
+        if patient_id is not None:
             sql = "SELECT * FROM prompt_log WHERE id = ? AND patient_id = ?"
             params = (entry_id, patient_id)
         else:
@@ -56,11 +61,16 @@ class PromptLogMixin:
     async def search_prompt_log(
         self, query: PromptLogQuery, *, patient_id: str | None = None
     ) -> list[PromptLogEntry]:
-        """Search prompt logs with filters, optionally scoped to a patient."""
+        """Search prompt logs with filters, optionally scoped to a patient.
+
+        patient_id semantics (#476 hardened): None = unscoped (admin/audit);
+        any string (including "") = scoped — empty string matches 0 rows
+        rather than silently bleeding cross-patient.
+        """
         conditions: list[str] = []
         params: list = []
 
-        if patient_id:
+        if patient_id is not None:
             conditions.append("patient_id = ?")
             params.append(patient_id)
 
@@ -98,9 +108,14 @@ class PromptLogMixin:
             return [_row_to_prompt_log(r) for r in rows]
 
     async def get_prompt_log_stats(self, *, patient_id: str | None = None) -> dict:
-        """Get aggregate stats by call_type, optionally scoped to a patient."""
-        where = "WHERE patient_id = ?" if patient_id else ""
-        params = [patient_id] if patient_id else []
+        """Get aggregate stats by call_type, optionally scoped to a patient.
+
+        patient_id semantics (#476 hardened): None = unscoped (admin/audit);
+        any string (including "") = scoped — empty string matches 0 rows
+        rather than silently bleeding cross-patient.
+        """
+        where = "WHERE patient_id = ?" if patient_id is not None else ""
+        params = [patient_id] if patient_id is not None else []
 
         async with self.db.execute(
             f"""
