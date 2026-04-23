@@ -748,3 +748,38 @@ def test_status_reconnect_no_longer_uses_suppress_exception():
     # And there should be an explicit TimeoutError clause nearby.
     following = source[idx : idx + 500]
     assert "TimeoutError" in following
+
+
+# ── #476: cross-patient leak guard — sentinel on no-access ─────────────
+
+
+def test_no_patient_access_sentinel_is_truthy_and_non_uuid():
+    """Sentinel must be truthy so `if patient_id:` guards apply DB filter,
+    AND must not be a valid UUID so `WHERE patient_id = ?` matches 0 rows.
+    """
+    from oncofiles.server import NO_PATIENT_ACCESS_SENTINEL
+
+    assert NO_PATIENT_ACCESS_SENTINEL, "sentinel must be truthy — empty string leaks"
+    assert bool(NO_PATIENT_ACCESS_SENTINEL) is True
+    # Not a valid UUID format — 36 chars with hyphens at 8-4-4-4-12
+    assert len(NO_PATIENT_ACCESS_SENTINEL) != 36
+    assert "-" not in NO_PATIENT_ACCESS_SENTINEL
+
+
+def test_get_dashboard_patient_id_returns_sentinel_not_empty_string():
+    """Regression — #476 P0 leak. Previously returned "" when caller has
+    no authorized patient, which bypassed `if patient_id:` filters in DB
+    layer and produced cross-patient queries.
+    """
+    import inspect
+
+    from oncofiles.server import _get_dashboard_patient_id
+
+    source = inspect.getsource(_get_dashboard_patient_id)
+    # No `return ""` should remain in the function — it's the leak signature.
+    # (Note: strings like raw="" are fine; only bare `return ""` is the bug.)
+    assert 'return ""' not in source, (
+        'return "" in _get_dashboard_patient_id re-introduces the #476 leak'
+    )
+    # Sentinel must be returned in the no-access paths
+    assert "NO_PATIENT_ACCESS_SENTINEL" in source
