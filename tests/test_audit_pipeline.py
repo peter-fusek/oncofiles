@@ -260,3 +260,66 @@ async def test_audit_summary_markdown_present(db: Database):
     result = json.loads(await audit_document_pipeline(_ctx(db)))
     assert "summary_markdown" in result
     assert ERIKA_UUID in result["summary_markdown"]
+
+
+# ── #475: false-positive suppression for non-extractable + legacy-OCR docs ──
+
+
+async def test_audit_xlsx_not_counted_as_missing_ocr(db: Database):
+    """XLSX/DOCX/MD mimes can't be OCR'd. #466 filters them from extract_all_metadata;
+    the audit must mirror that filter and NOT count them as missing_ocr/ai/metadata.
+    """
+    await _insert_doc(
+        db,
+        filename="biomarker_matrix.xlsx",
+        mime_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        document_date=date(2024, 3, 1),
+        institution="NOU",
+        gdrive_id="gdrive_xls",
+    )
+    result = json.loads(await audit_document_pipeline(_ctx(db)))
+    gaps = result["pipeline_gaps"]
+    assert gaps["missing_ocr"] == 0, "xlsx must not count as missing_ocr"
+    assert gaps["missing_ai"] == 0, "xlsx must not count as missing_ai"
+    assert gaps["missing_metadata"] == 0, "xlsx must not count as missing_metadata"
+    assert gaps["non_extractable_skipped"] == 1
+
+
+async def test_audit_legacy_ocr_doc_not_counted_as_missing_ocr(db: Database):
+    """Legacy PDFs processed before document_pages existed have ai_summary + metadata
+    populated but no per-page rows. They should NOT be flagged as missing_ocr.
+    """
+    await _insert_doc(
+        db,
+        filename="20240115_ErikaFusekova_NOU_Reference_Legacy.pdf",
+        mime_type="application/pdf",
+        ai_summary="legacy pipeline summary",
+        structured_metadata='{"document_type":"reference"}',
+        document_date=date(2024, 1, 15),
+        institution="NOU",
+        gdrive_id="gdrive_leg",
+    )
+    # NOTE: no save_ocr_page call — this simulates the legacy state
+    result = json.loads(await audit_document_pipeline(_ctx(db)))
+    gaps = result["pipeline_gaps"]
+    assert gaps["missing_ocr"] == 0, "legacy PDF with ai_summary+metadata must not be missing_ocr"
+    assert gaps["fully_complete"] == 1
+
+
+async def test_audit_xlsx_does_not_appear_in_stuck_sample(db: Database):
+    """XLSX with date+institution+sync+canonical name has no real gaps —
+    must not appear in stuck_sample even though it's not 'fully_complete' under
+    the old extraction-strict definition.
+    """
+    await _insert_doc(
+        db,
+        filename="20240301_ErikaFusekova_NOU_Reference_BiomarkerMatrix.xlsx",
+        mime_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        document_date=date(2024, 3, 1),
+        institution="NOU",
+        gdrive_id="gdrive_xls_complete",
+    )
+    result = json.loads(await audit_document_pipeline(_ctx(db)))
+    assert result["stuck_sample"] == []
+    # Non-extractable completes count as fully_complete when everything else is set
+    assert result["pipeline_gaps"]["fully_complete"] == 1

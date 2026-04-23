@@ -10,6 +10,7 @@ from fastmcp import Context
 
 from oncofiles.gdrive_folders import CATEGORY_MERGES, bilingual_name, en_key_from_folder_name
 from oncofiles.models import DocumentCategory
+from oncofiles.sync import EXTRACTABLE_MIME_TYPES
 from oncofiles.tools._helpers import (
     _gdrive_url,
     _get_db,
@@ -1123,10 +1124,20 @@ async def audit_document_pipeline(ctx: Context, patient_slug: str | None = None)
         "not_synced": 0,
         "not_standard_named": 0,
         "fully_complete": 0,
+        "non_extractable_skipped": 0,
     }
     stuck_samples: list[dict] = []
     for doc in docs:
-        has_ocr = doc.id in ocr_ids
+        # Non-extractable mimes (xlsx/docx/md/csv/etc.) can't be OCR'd or AI-enhanced —
+        # #466 filters them from extract_all_metadata. The audit must mirror that: only
+        # count OCR/AI/metadata gaps for mimes the pipeline can actually handle. (#475)
+        is_extractable = not doc.mime_type or doc.mime_type in EXTRACTABLE_MIME_TYPES
+
+        # has_ocr: either document_pages rows OR legacy ingest (ai_summary+metadata
+        # populated before document_pages table existed, so no per-page breakdown).
+        has_ocr = doc.id in ocr_ids or (
+            doc.ai_summary is not None and bool(doc.structured_metadata)
+        )
         has_ai = doc.ai_summary is not None
         has_metadata = bool(doc.structured_metadata)
         has_date = doc.document_date is not None
@@ -1134,12 +1145,17 @@ async def audit_document_pipeline(ctx: Context, patient_slug: str | None = None)
         is_synced = doc.gdrive_id is not None
         is_standard = is_standard_format(doc.filename, patient_id=pid)
 
-        if not has_ocr:
-            gaps["missing_ocr"] += 1
-        if not has_ai:
-            gaps["missing_ai"] += 1
-        if not has_metadata:
-            gaps["missing_metadata"] += 1
+        # Extraction gaps only apply when the pipeline can actually extract.
+        if is_extractable:
+            if not has_ocr:
+                gaps["missing_ocr"] += 1
+            if not has_ai:
+                gaps["missing_ai"] += 1
+            if not has_metadata:
+                gaps["missing_metadata"] += 1
+        else:
+            gaps["non_extractable_skipped"] += 1
+
         if not has_date:
             gaps["missing_date"] += 1
         if not has_institution:
@@ -1149,26 +1165,21 @@ async def audit_document_pipeline(ctx: Context, patient_slug: str | None = None)
         if not is_standard:
             gaps["not_standard_named"] += 1
 
-        if (
-            has_ocr
-            and has_ai
-            and has_metadata
-            and has_date
-            and has_institution
-            and is_synced
-            and is_standard
-        ):
+        # "fully_complete" is permissive for non-extractable: OCR/AI/meta are moot.
+        extraction_complete = (not is_extractable) or (has_ocr and has_ai and has_metadata)
+        if extraction_complete and has_date and has_institution and is_synced and is_standard:
             gaps["fully_complete"] += 1
             continue
 
         if len(stuck_samples) < 20:
             reasons = []
-            if not has_ocr:
-                reasons.append("no_ocr")
-            if not has_ai:
-                reasons.append("no_ai")
-            if not has_metadata:
-                reasons.append("no_metadata")
+            if is_extractable:
+                if not has_ocr:
+                    reasons.append("no_ocr")
+                if not has_ai:
+                    reasons.append("no_ai")
+                if not has_metadata:
+                    reasons.append("no_metadata")
             if not has_date:
                 reasons.append("no_date")
             if not has_institution:
@@ -1177,11 +1188,16 @@ async def audit_document_pipeline(ctx: Context, patient_slug: str | None = None)
                 reasons.append("not_synced")
             if not is_standard:
                 reasons.append("not_standard_named")
+            # Skip non-extractable docs from stuck_sample if their only "issues" were
+            # extraction-related (which don't apply to them).
+            if not reasons:
+                continue
             stuck_samples.append(
                 {
                     "id": doc.id,
                     "filename": doc.filename[:80],
                     "category": doc.category.value,
+                    "mime_type": doc.mime_type,
                     "gdrive_url": _gdrive_url(doc.gdrive_id),
                     "last_ai_processed_at": doc.ai_processed_at.isoformat()
                     if doc.ai_processed_at
