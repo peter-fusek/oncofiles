@@ -119,6 +119,12 @@ async def backfill_orphan_prompt_logs(
 ) -> str:
     """Backfill prompt_log rows that were stored with patient_id='' (#476 orphans).
 
+    **Admin-only** (#484 sweep follow-up): operates on prompt_log rows
+    system-wide (no patient_slug parameter) and rewrites the `patient_id`
+    column — giving a patient-token holder write access to other patients'
+    attribution. Restricted to static MCP_BEARER_TOKEN callers or OAuth
+    callers whose email is in DASHBOARD_ADMIN_EMAILS.
+
     Processes one batch at a time so long-running UPDATE transactions don't
     corrupt the Turso embedded replica (migration 062 crashed prod trying to
     do 19,707 UPDATEs in one transaction — this tool does chunked work).
@@ -145,6 +151,13 @@ async def backfill_orphan_prompt_logs(
         - remaining: orphan rows still to process after this batch
         - dry_run: whether changes were applied
     """
+    from oncofiles.tools._helpers import _require_admin_or_raise
+
+    try:
+        _require_admin_or_raise("backfill_orphan_prompt_logs")
+    except ValueError as exc:
+        return json.dumps({"error": str(exc)})
+
     db = _get_db(ctx)
 
     # Count remaining orphans before the batch

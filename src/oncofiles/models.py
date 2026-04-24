@@ -271,9 +271,15 @@ class ResearchQuery(BaseModel):
 
 
 class ActivityLogEntry(BaseModel):
-    """An immutable record of an agent tool call."""
+    """An immutable record of an agent tool call.
+
+    `patient_id` added #484 sweep follow-up — every entry must carry it so
+    search_activity_log / get_activity_stats can filter by caller pid.
+    Legacy rows will retain their migration 029 DEFAULT value.
+    """
 
     id: int | None = None
+    patient_id: str = ""
     session_id: str
     agent_id: str
     tool_name: str
@@ -379,8 +385,14 @@ class CalendarQuery(BaseModel):
 
 
 class ActivityLogQuery(BaseModel):
-    """Search parameters for activity log entries."""
+    """Search parameters for activity log entries.
 
+    `patient_id` added #484 sweep follow-up — required for patient-scoped
+    reads so a caller cannot enumerate other patients' tool-call history.
+    Empty string = admin system-wide view.
+    """
+
+    patient_id: str = ""
     session_id: str | None = None
     agent_id: str | None = None
     tool_name: str | None = None

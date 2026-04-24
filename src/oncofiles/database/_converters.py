@@ -114,9 +114,15 @@ def _row_to_research_entry(row: Any) -> ResearchEntry:
 
 
 def _row_to_activity_log(row: Any) -> ActivityLogEntry:
-    """Convert a database row to an ActivityLogEntry model."""
+    """Convert a database row to an ActivityLogEntry model.
+
+    `patient_id` column: added migration 029, surfaced on the model in the
+    #484 sweep follow-up. `_safe_get` handles legacy rows with missing
+    column on some sqlite dialects.
+    """
     return ActivityLogEntry(
         id=row["id"],
+        patient_id=_safe_get(row, "patient_id", "") or "",
         session_id=row["session_id"],
         agent_id=row["agent_id"],
         tool_name=row["tool_name"],

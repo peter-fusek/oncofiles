@@ -78,7 +78,12 @@ class OperationalMixin:
     # ── Activity log (#38) ──────────────────────────────────────────────
 
     async def insert_activity_log(self, entry: ActivityLogEntry) -> ActivityLogEntry:
-        """Append an activity log entry (immutable)."""
+        """Append an activity log entry (immutable).
+
+        Persists `patient_id` (#484 sweep follow-up) so read-side scoping in
+        search_activity_log / get_activity_stats actually sees per-patient
+        rows instead of all rows carrying the migration 029 DEFAULT.
+        """
         from oncofiles.database._base import retry_on_hrana_conflict
 
         _last_rowid: list[int] = []
@@ -88,8 +93,8 @@ class OperationalMixin:
                 """
                 INSERT INTO activity_log
                     (session_id, agent_id, tool_name, input_summary, output_summary,
-                     duration_ms, status, error_message, tags)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     duration_ms, status, error_message, tags, patient_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     entry.session_id,
@@ -101,6 +106,7 @@ class OperationalMixin:
                     entry.status,
                     entry.error_message,
                     entry.tags,
+                    entry.patient_id,
                 ),
             )
             await self.db.commit()
@@ -112,10 +118,21 @@ class OperationalMixin:
         return entry
 
     async def search_activity_log(self, query: ActivityLogQuery) -> list[ActivityLogEntry]:
-        """Search activity log with filters."""
+        """Search activity log with filters.
+
+        Patient scoping (#484 sweep follow-up): when `query.patient_id` is set,
+        only rows with that patient_id are returned. Admin callers pass empty
+        string to see system-wide. Prior to this fix the column existed
+        (migration 029) but the SQL builder never filtered on it — any
+        caller with search_activity_log MCP-tool access could enumerate
+        every patient's agent/tool call history.
+        """
         conditions: list[str] = []
         params: list[str | int] = []
 
+        if query.patient_id:
+            conditions.append("patient_id = ?")
+            params.append(query.patient_id)
         if query.session_id:
             conditions.append("session_id = ?")
             params.append(query.session_id)
@@ -153,11 +170,21 @@ class OperationalMixin:
         agent_id: str | None = None,
         date_from: date | None = None,
         date_to: date | None = None,
+        patient_id: str = "",
     ) -> list[dict]:
-        """Get aggregated activity counts grouped by tool_name and status."""
+        """Get aggregated activity counts grouped by tool_name and status.
+
+        Patient scoping (#484 sweep follow-up): when `patient_id` is non-empty,
+        filter stats to that patient. Admin callers pass empty string for
+        system-wide view. Prior behaviour leaked cross-patient aggregate
+        counts to every caller.
+        """
         conditions: list[str] = []
         params: list[str | int] = []
 
+        if patient_id:
+            conditions.append("patient_id = ?")
+            params.append(patient_id)
         if session_id:
             conditions.append("session_id = ?")
             params.append(session_id)
