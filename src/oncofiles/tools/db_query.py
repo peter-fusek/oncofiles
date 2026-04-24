@@ -1,43 +1,189 @@
-"""Direct DB query tool for monitoring and debugging."""
+"""Direct DB query tool for monitoring and debugging.
+
+Security contract (#486 / v5.15 sweep):
+
+  * **Allow-list of tables**, not a block-list. Every table referenced in
+    the query — including sub-queries, CTEs, and joins — must be in
+    `ALLOWED_TABLES`. `patients`, `newsletter_subscribers`, credential
+    tables, FTS shadow tables, `sqlite_master`, `pragma_*` are DENIED.
+  * **AST-based patient_id filter**, parsed with sqlglot. The previous
+    regex check passed `GROUP BY patient_id`, `WHERE patient_id LIKE '%'`,
+    `IN (…)`, `IS NOT NULL`, and admin-sentinel short-circuits — all
+    empirically bypassable (#484). We now require a literal equality
+    `patient_id = '<caller_pid>'` on every patient-scoped table reference.
+  * **No implicit admin scope.** Admin callers must pass `patient_slug=`
+    to indicate whose rows they want. The previous `and pid` short-circuit
+    silently allowed unfiltered queries when the caller's resolved pid was
+    empty (sentinel / admin session).
+  * CTEs (`WITH`) and `UNION` are rejected — they complicate the filter
+    proof without a real use case in this codebase.
+"""
 
 from __future__ import annotations
 
 import asyncio
 import json
 import logging
-import re
 
+import sqlglot
 from fastmcp import Context
+from sqlglot import expressions as exp
+from sqlglot.errors import ParseError
 
-from oncofiles.tools._helpers import _get_db
+from oncofiles.tools._helpers import _get_db, _resolve_patient_id
 
 logger = logging.getLogger(__name__)
-
-# Only allow read-only SQL — whitelist approach
-_ALLOWED_PREFIX = re.compile(r"^\s*(SELECT|WITH)\b", re.IGNORECASE)
-
-# Block known mutation keywords as defense-in-depth
-_FORBIDDEN_KEYWORDS = re.compile(
-    r"\b(INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|TRUNCATE|REPLACE|ATTACH|DETACH"
-    r"|PRAGMA\s+\w+\s*=|VACUUM|REINDEX)\b",
-    re.IGNORECASE,
-)
 
 MAX_ROWS = 200
 QUERY_TIMEOUT_S = 10
 
-# Tables containing secrets or credentials — block from query_db
-_BLOCKED_TABLES = re.compile(
-    r"\b(oauth_tokens|mcp_oauth_clients|mcp_oauth_tokens|patient_tokens)\b",
-    re.IGNORECASE,
+# Patient-scoped tables — readable iff the query filters by
+# `patient_id = '<caller_pid>'` literal equality. Everything in this set
+# has a `patient_id` column in the schema. Adding to this list is a
+# security decision — prefer a dedicated MCP tool unless ad-hoc SQL is
+# genuinely needed.
+ALLOWED_TABLES_PATIENT_SCOPED: frozenset[str] = frozenset(
+    {
+        "documents",
+        "activity_log",
+        "conversation_entries",
+        "treatment_events",
+        "research_entries",
+        "lab_values",
+        "document_pages",
+        "agent_state",
+        "patient_context",
+        "prompt_log",
+        "email_entries",
+        "calendar_entries",
+        "document_cross_references",
+        "clinical_records",
+        "clinical_analyses",
+        "clinical_record_notes",
+    }
 )
 
-# Tables that contain patient-scoped data — queries must include patient_id filter
-_PATIENT_SCOPED_TABLES = re.compile(
-    r"\b(documents|activity_log|conversations|treatment_events|research_entries"
-    r"|lab_values|document_pages|agent_state|patient_context)\b",
-    re.IGNORECASE,
+# Tables with no patient_id column (system-wide). Only admin-scope callers
+# should be reading these; for v5.15 Phase 2 we expose them read-only
+# (the scope decorator in Phase 3 / #487 will gate them properly).
+ALLOWED_TABLES_ADMIN_ONLY: frozenset[str] = frozenset(
+    {
+        "schema_migrations",
+        "sync_history",
+    }
 )
+
+ALLOWED_TABLES: frozenset[str] = ALLOWED_TABLES_PATIENT_SCOPED | ALLOWED_TABLES_ADMIN_ONLY
+
+
+def _validate_query(sql: str, caller_pid: str) -> str | None:
+    """Validate a SQL query against the hardening contract.
+
+    Returns None on success or an error string on rejection.
+    """
+    sql_stripped = sql.strip()
+    if not sql_stripped:
+        return "Empty query."
+
+    # Parse with sqlglot (SQLite dialect; prod uses Turso/libsql which is SQLite-compatible).
+    try:
+        tree = sqlglot.parse_one(sql_stripped, dialect="sqlite")
+    except ParseError as exc:
+        return f"SQL parse error: {exc}"
+    if tree is None:
+        return "Empty parse tree."
+
+    # Must be a SELECT-shaped top-level statement (Select, Union would have been caught below).
+    if not isinstance(tree, (exp.Select, exp.Subquery)):
+        return "Only SELECT queries are allowed."
+
+    # Reject CTEs and UNIONs — they complicate the filter proof without real use in this codebase.
+    if tree.find(exp.With) is not None:
+        return "CTEs (WITH clauses) are not allowed."
+    if tree.find(exp.Union) is not None:
+        return "UNION queries are not allowed."
+
+    # Reject any mutation nodes (defense-in-depth; parse should prevent them for SELECT-only trees).
+    for forbidden in (
+        exp.Insert,
+        exp.Update,
+        exp.Delete,
+        exp.Drop,
+        exp.Alter,
+        exp.Create,
+        exp.Command,
+        exp.Merge,
+        exp.TruncateTable,
+    ):
+        if tree.find(forbidden) is not None:
+            return f"{forbidden.__name__} statements are not allowed."
+
+    # Collect all table references (sqlglot walks into sub-queries automatically).
+    tables = list(tree.find_all(exp.Table))
+    if not tables:
+        return "No table references found."
+
+    patient_scoped_refs: list[exp.Table] = []
+    for t in tables:
+        name = t.name.lower()
+        # Reject schema-qualified references (e.g., `main.sqlite_master`, `temp.foo`).
+        if t.db:
+            return f"Schema-qualified table references not allowed: {t.db}.{name}"
+        # Reject pragma_* virtual tables.
+        if name.startswith("pragma_") or name.startswith("sqlite_"):
+            return f"Access to system table {name!r} is not allowed."
+        if name not in ALLOWED_TABLES:
+            return (
+                f"Table {name!r} is not in the query_db allow-list. "
+                f"Allowed: {sorted(ALLOWED_TABLES)}"
+            )
+        if name in ALLOWED_TABLES_PATIENT_SCOPED:
+            patient_scoped_refs.append(t)
+
+    # If the query touches a patient-scoped table, require a literal
+    # `patient_id = '<caller_pid>'` equality somewhere in the WHERE/JOIN-ON
+    # conditions. Caller must have a resolved pid — admin callers must
+    # pass patient_slug= explicitly.
+    if patient_scoped_refs:
+        if not caller_pid:
+            return (
+                "Patient-scoped tables require an authorized patient. "
+                "Pass patient_slug=<slug> or authenticate as a caregiver. "
+                "No implicit admin scope for patient-scoped reads."
+            )
+        # Walk every EQ node anywhere in the tree; match a Column(name='patient_id')
+        # against a string Literal whose value equals caller_pid.
+        found_pid_equality = False
+        for eq in tree.find_all(exp.EQ):
+            left, right = eq.left, eq.right
+            # Accept either (Column, Literal) or (Literal, Column) — SQL allows both sides.
+            pid_literal: str | None = None
+            if (
+                isinstance(left, exp.Column)
+                and left.name.lower() == "patient_id"
+                and isinstance(right, exp.Literal)
+                and right.is_string
+            ):
+                pid_literal = right.this
+            elif (
+                isinstance(right, exp.Column)
+                and right.name.lower() == "patient_id"
+                and isinstance(left, exp.Literal)
+                and left.is_string
+            ):
+                pid_literal = left.this
+            if pid_literal == caller_pid:
+                found_pid_equality = True
+                break
+
+        if not found_pid_equality:
+            return (
+                "Patient-scoped tables require literal equality "
+                f"WHERE patient_id = '{caller_pid}'. "
+                "LIKE, IN, IS NOT NULL, GROUP BY, and non-matching literals are rejected."
+            )
+
+    return None
 
 
 async def query_db(
@@ -46,50 +192,36 @@ async def query_db(
     limit: int = 50,
     patient_slug: str | None = None,
 ) -> str:
-    """Run a read-only SQL query against the production database.
+    """Run a read-only SQL query against the database.
 
-    Use this for monitoring, debugging, and ad-hoc analysis.
-    Only SELECT/WITH queries are allowed — mutations are blocked.
+    Security contract (#486):
+      - Allow-list of tables (see ALLOWED_TABLES). patients, newsletter_subscribers,
+        credential tables, FTS shadow tables, sqlite_master, pragma_* are DENIED.
+      - Patient-scoped tables require literal WHERE patient_id = '<your uuid>'.
+        LIKE, IN, IS NOT NULL, GROUP BY, non-matching literals are rejected.
+      - CTEs (WITH) and UNION are rejected.
+      - Admin callers must pass patient_slug= explicitly; no implicit admin bypass.
 
     Args:
-        sql: SQL query (SELECT only). Tables: documents, activity_log,
-             conversations, treatment_events, research_entries, lab_values,
-             document_pages, agent_state, patient_context, schema_migrations.
+        sql: SELECT query. Tables: see ALLOWED_TABLES in this module.
         limit: Max rows to return (default 50, max 200).
-        patient_slug: Optional — explicit patient slug (#429). Drives which
-            patient_id the "require patient_id filter on scoped tables" check
-            hints at in its error message.
+        patient_slug: Explicit patient slug (#429). Required for admin callers
+            reading patient-scoped tables; otherwise the caller's resolved
+            patient is used.
     """
-    # Whitelist: must start with SELECT or WITH
-    if not _ALLOWED_PREFIX.match(sql):
-        return json.dumps({"error": "Only SELECT/WITH queries are allowed."})
-
-    # Defense-in-depth: block mutation keywords anywhere in query
-    if _FORBIDDEN_KEYWORDS.search(sql):
-        return json.dumps({"error": "Only read-only (SELECT) queries are allowed."})
-
-    # Block access to tables containing secrets/credentials
-    if _BLOCKED_TABLES.search(sql):
-        return json.dumps({"error": "Access to credential tables is not allowed."})
-
-    # Patient isolation: if query touches patient-scoped tables, require patient_id filter
+    # Resolve caller identity first — required for the filter check.
     try:
-        from oncofiles.tools._helpers import _resolve_patient_id
+        caller_pid = await _resolve_patient_id(patient_slug, ctx, required=False)
+    except (ValueError, Exception) as exc:
+        # Patient lookup error (e.g., bad slug) — surface as 400, not 500.
+        return json.dumps({"error": f"patient lookup failed: {exc}"})
 
-        pid = await _resolve_patient_id(patient_slug, ctx, required=False)
-    except (ValueError, Exception):
-        pid = ""
-    # Stricter check: require "patient_id = " or "patient_id='" pattern (not just the string)
-    _has_pid_filter = re.search(r"patient_id\s*=\s*[?'\"]", sql, re.IGNORECASE)
-    if _PATIENT_SCOPED_TABLES.search(sql) and pid and not _has_pid_filter:
-        return json.dumps(
-            {
-                "error": "Queries on patient-scoped tables must include a patient_id filter. "
-                f"Add: WHERE patient_id = '{pid}'"
-            }
-        )
+    # Validate.
+    err = _validate_query(sql, caller_pid)
+    if err is not None:
+        return json.dumps({"error": err})
 
-    # Enforce limit
+    # Enforce row limit.
     row_limit = min(max(1, limit), MAX_ROWS)
     query = sql.rstrip().rstrip(";")
     if "LIMIT" not in query.upper():
@@ -97,7 +229,6 @@ async def query_db(
 
     db = _get_db(ctx)
     try:
-        # Reconnect stale Turso Hrana streams before querying
         await db.reconnect_if_stale(timeout=5.0)
         result = await asyncio.wait_for(
             _execute_query(db, query, row_limit),

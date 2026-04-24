@@ -97,30 +97,9 @@ async def test_get_previous_lab_values_two_entries(db):
 
 
 # ── query_db hardening ───────────────────────────────────────────────
-
-
-def test_query_db_rejects_non_select():
-    """query_db rejects queries not starting with SELECT/WITH."""
-
-    from oncofiles.tools.db_query import _ALLOWED_PREFIX
-
-    assert not _ALLOWED_PREFIX.match("INSERT INTO foo VALUES (1)")
-    assert not _ALLOWED_PREFIX.match("DELETE FROM foo")
-    assert not _ALLOWED_PREFIX.match("UPDATE foo SET x=1")
-    assert not _ALLOWED_PREFIX.match("DROP TABLE foo")
-    assert _ALLOWED_PREFIX.match("SELECT * FROM foo")
-    assert _ALLOWED_PREFIX.match("  SELECT * FROM foo")
-    assert _ALLOWED_PREFIX.match("WITH cte AS (SELECT 1) SELECT * FROM cte")
-
-
-def test_query_db_blocks_mutation_in_subquery():
-    """Defense-in-depth blocks mutation keywords even in subqueries."""
-    from oncofiles.tools.db_query import _FORBIDDEN_KEYWORDS
-
-    assert _FORBIDDEN_KEYWORDS.search("SELECT * FROM (DELETE FROM foo)")
-    assert _FORBIDDEN_KEYWORDS.search("SELECT 1; DROP TABLE foo")
-    assert _FORBIDDEN_KEYWORDS.search("SELECT * FROM foo WHERE x IN (INSERT INTO bar)")
-    assert not _FORBIDDEN_KEYWORDS.search("SELECT * FROM documents WHERE id = 1")
+# The regex-based `_ALLOWED_PREFIX` / `_FORBIDDEN_KEYWORDS` bypasses were
+# replaced by sqlglot-AST validation in #486. Bypass corpus lives in
+# tests/test_query_db_hardened.py. This file keeps just the timeout guard.
 
 
 def test_query_db_has_timeout():
