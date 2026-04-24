@@ -423,7 +423,12 @@ def extract_structured_metadata(
             from the filename's encoded date by more than 30 days.
 
     Returns:
-        Dict with structured metadata fields.
+        Dict with structured metadata fields. When the document text contains
+        a numeric lab table (per `has_lab_table`), a second Haiku call extracts
+        `lab_values` and merges them into the returned dict (#465). Chemo
+        sheets / consultations / discharge summaries commonly embed a CBC or
+        biochemistry panel — without this second call those values never reach
+        the `lab_values` DB table and the dashboard trend line goes flat.
     """
     if not text.strip():
         return {
@@ -473,7 +478,7 @@ def extract_structured_metadata(
     try:
         parsed = json.loads(_strip_markdown_fencing(raw))
         _check_filename_date_agreement(filename, parsed.get("document_date"), document_id)
-        return {
+        result = {
             "document_type": parsed.get("document_type", "other"),
             "findings": parsed.get("findings", []),
             "diagnoses": parsed.get("diagnoses", []),
@@ -487,7 +492,7 @@ def extract_structured_metadata(
         }
     except json.JSONDecodeError:
         logger.warning("Failed to parse metadata response: %s", raw[:200])
-        return {
+        result = {
             "document_type": "other",
             "findings": [],
             "diagnoses": [],
@@ -499,6 +504,266 @@ def extract_structured_metadata(
             "plain_summary": "",
             "plain_summary_sk": "",
         }
+
+    # #465 — regardless of category, if the text carries a numeric lab table,
+    # run a second Haiku call to extract lab_values. Costs 1 extra Haiku call
+    # per doc-with-lab-table; required because chemo_sheet / consultation /
+    # discharge classifications would otherwise drop CBC/biochem data.
+    if has_lab_table(text):
+        lab_values = extract_lab_values(text, db=db, document_id=document_id)
+        if lab_values:
+            result["lab_values"] = lab_values
+
+    return result
+
+
+# ── Lab-value extraction (#465) ─────────────────────────────────────────────
+
+# Heuristic: a "numeric lab table" is 3+ lines where each line starts with a
+# parameter-name token (letters / digits / underscores / percent sign /
+# parens, at least two characters long), whitespace, then a numeric value
+# (optional sign / decimal / scientific notation). Trailing tokens (units,
+# reference ranges, flags like "L"/"H") are allowed. Hospital printouts in
+# Slovakia (Medirex, Synlab, Alpha, NOU in-house) follow this pattern
+# reliably — e.g.:
+#     WBC           6.8   10^9/L    4.0 - 10.0
+#     NEUT%        62.5   %         50.0 - 70.0
+#     ABS_NEUT     4.2    10^9/L    2.0 - 7.0
+#     HGB           128   g/L       135 - 175   L
+#
+# Rejecting lines where the "value" is actually a date (YYYY-MM-DD /
+# DD.MM.YYYY) keeps us from false-firing on visit history tables.
+_LAB_LINE_RE = re.compile(
+    r"""
+    ^\s*
+    (?P<param>[A-Za-z][A-Za-z0-9_%\-\.\(\)/]{1,40})   # parameter name
+    \s+
+    (?P<value>[-+]?\d+(?:[.,]\d+)?(?:[eE][-+]?\d+)?)  # numeric value
+    (?:\s+|$)                                         # followed by WS or EOL
+    """,
+    re.VERBOSE,
+)
+# Dates that would otherwise match _LAB_LINE_RE numeric capture; filter
+# them out before counting a line as a lab row.
+_LAB_DATE_RE = re.compile(r"\b\d{1,4}[-./]\d{1,2}[-./]\d{1,4}\b")
+
+
+def has_lab_table(text: str, *, min_rows: int = 3) -> bool:
+    """Return True if `text` appears to contain a numeric lab-value table.
+
+    Heuristic — looks for at least `min_rows` (default 3) distinct lines
+    that match the `<param> <numeric-value> [<unit>]` pattern, which is
+    how every Slovak hospital / reference-lab print-out lays out CBC and
+    biochemistry panels. Rejects rows whose "value" is a date to avoid
+    false positives on visit-history tables.
+
+    Cheap — pure regex scan, no AI call. Gates whether the second Haiku
+    call fires in `extract_structured_metadata`.
+    """
+    if not text:
+        return False
+    hits = 0
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or _LAB_DATE_RE.match(stripped):
+            continue
+        m = _LAB_LINE_RE.match(stripped)
+        if not m:
+            continue
+        # Extra guard: value-only lines like "12.5" with a short param that's
+        # actually a header token ("Ref", "Min", "Max") still count but we
+        # accept them — the AI extractor dedupes via param validation.
+        hits += 1
+        if hits >= min_rows:
+            return True
+    return False
+
+
+LAB_VALUES_SYSTEM_PROMPT = (
+    "You are a medical lab-report parser. Given the extracted text of a "
+    "clinical document that embeds a numeric lab-results table (a CBC, "
+    "biochemistry panel, tumor markers, coagulation panel, etc.), extract "
+    "every measured parameter you can read with confidence and return them "
+    "as a JSON object with exactly two keys:\n"
+    '- "lab_date": The date the sample was drawn, in YYYY-MM-DD format '
+    "(NOT date of birth, NOT the print date). null if not stated.\n"
+    '- "values": An array of objects, one per parameter. Each object MUST '
+    'have "parameter" (standardized uppercase code — see list below), '
+    '"value" (number, decimal comma converted to period), and SHOULD have '
+    '"unit" (string, e.g. "10^9/L"). Optional: "reference_low" (number), '
+    '"reference_high" (number), "flag" ("H" for high, "L" for low, "" if '
+    "in range).\n\n"
+    "Standardized parameter codes (prefer these; only invent a new code "
+    "when none match):\n"
+    "  WBC, ABS_NEUT, ABS_LYMPH, ABS_MONO, ABS_EOS, ABS_BASO, NEUT_PCT, "
+    "LYMPH_PCT, MONO_PCT, EOS_PCT, BASO_PCT, RBC, HGB, HCT, MCV, MCH, "
+    "MCHC, RDW, PLT, MPV, ANC, ALT, AST, GMT, ALP, LDH, BILIRUBIN, "
+    "CREATININE, UREA, eGFR, NA, K, CL, CA, MG, GLUCOSE, CRP, ALBUMIN, "
+    "TOTAL_PROTEIN, CEA, CA19_9, CA15_3, CA125, PSA, AFP, HCG, FERRITIN, "
+    "IRON, TSH, T3, T4, INR, PT, APTT, FIBRINOGEN, D_DIMER\n\n"
+    "Apply Slovak↔English aliasing when you see it:\n"
+    "  'leukocyty' / 'leu' → WBC; 'neutrofily abs' / 'neu abs' → ABS_NEUT; "
+    "'lymfocyty abs' → ABS_LYMPH; 'hemoglobín' / 'Hb' → HGB; 'trombocyty' "
+    "/ 'TRO' → PLT; 'erytrocyty' → RBC; 'kreatinín' → CREATININE; 'močovina' "
+    "→ UREA; 'bilirubín' → BILIRUBIN; 'glykémia' / 'glukóza' → GLUCOSE.\n\n"
+    "EXAMPLE 1 — Slovak CBC table from Medirex\n"
+    "  Input (excerpt):\n"
+    "    Odber: 2026-04-15\n"
+    "    WBC          6.8    10^9/L    4.0 - 10.0\n"
+    "    NEUT%       62.5    %         50.0 - 70.0\n"
+    "    ABS_NEUT    4.25    10^9/L    2.0 - 7.0\n"
+    "    HGB          128    g/L       135 - 175   L\n"
+    "    PLT          210    10^9/L    150 - 400\n"
+    "  Output:\n"
+    '    {"lab_date": "2026-04-15", "values": [\n'
+    '      {"parameter":"WBC","value":6.8,"unit":"10^9/L","reference_low":4.0,'
+    '"reference_high":10.0,"flag":""},\n'
+    '      {"parameter":"NEUT_PCT","value":62.5,"unit":"%","reference_low":50.0,'
+    '"reference_high":70.0,"flag":""},\n'
+    '      {"parameter":"ABS_NEUT","value":4.25,"unit":"10^9/L",'
+    '"reference_low":2.0,"reference_high":7.0,"flag":""},\n'
+    '      {"parameter":"HGB","value":128,"unit":"g/L","reference_low":135,'
+    '"reference_high":175,"flag":"L"},\n'
+    '      {"parameter":"PLT","value":210,"unit":"10^9/L","reference_low":150,'
+    '"reference_high":400,"flag":""}\n'
+    "    ]}\n\n"
+    "EXAMPLE 2 — chemo sheet with inline pre-chemo bloods (the #465 case)\n"
+    "  Input (excerpt):\n"
+    "    Cyklus 4 / mFOLFOX6 / 15.4.2026\n"
+    "    Predchemo krv: Leu 6.2, Neu abs 3.8, Tro 198, Hb 126 g/L\n"
+    "  Output:\n"
+    '    {"lab_date": "2026-04-15", "values": [\n'
+    '      {"parameter":"WBC","value":6.2,"unit":"10^9/L","flag":""},\n'
+    '      {"parameter":"ABS_NEUT","value":3.8,"unit":"10^9/L","flag":""},\n'
+    '      {"parameter":"PLT","value":198,"unit":"10^9/L","flag":""},\n'
+    '      {"parameter":"HGB","value":126,"unit":"g/L","flag":""}\n'
+    "    ]}\n\n"
+    "EXAMPLE 3 — tumor markers on a biochem printout\n"
+    "  Input (excerpt):\n"
+    "    Date of sample: 2026-02-13\n"
+    "    CEA      18.2   ng/mL   <5.0     H\n"
+    "    CA 19-9  94.1   U/mL    <37      H\n"
+    "    ALT       45    U/L     10 - 40  H\n"
+    "  Output:\n"
+    '    {"lab_date": "2026-02-13", "values": [\n'
+    '      {"parameter":"CEA","value":18.2,"unit":"ng/mL",'
+    '"reference_high":5.0,"flag":"H"},\n'
+    '      {"parameter":"CA19_9","value":94.1,"unit":"U/mL",'
+    '"reference_high":37,"flag":"H"},\n'
+    '      {"parameter":"ALT","value":45,"unit":"U/L","reference_low":10,'
+    '"reference_high":40,"flag":"H"}\n'
+    "    ]}\n\n"
+    "EXAMPLE 4 — no numeric table present\n"
+    "  Input: narrative consultation note with no parameter/value rows.\n"
+    '  Output: {"lab_date": null, "values": []}\n\n'
+    "Rules:\n"
+    "- Skip parameters whose values cannot be parsed as a number.\n"
+    "- Decimal comma → decimal period (e.g. '6,8' → 6.8).\n"
+    "- If multiple dates appear, use the sample / draw date (NOT DOB, NOT "
+    "print date, NOT next-visit date).\n"
+    "- Never hallucinate a value you cannot see in the text.\n\n"
+    "Respond ONLY with the JSON object, no markdown fencing or extra text."
+)
+
+
+def extract_lab_values(
+    text: str,
+    *,
+    db=None,
+    document_id: int | None = None,
+) -> dict | None:
+    """Extract numeric lab values from document text via a dedicated Haiku call.
+
+    Called by `extract_structured_metadata` when `has_lab_table(text)` is True.
+    The #465 fix — chemo sheets / consultations / discharge summaries that
+    embed a CBC or biochem panel need their values persisted into the
+    `lab_values` table for the dashboard trend line to render.
+
+    Args:
+        text: Full document text (OCR or native PDF).
+        db: Database for prompt logging.
+        document_id: Source document id for log attribution.
+
+    Returns:
+        Dict `{"lab_date": "YYYY-MM-DD" | None, "values": [...]}` or None when
+        nothing parseable was extracted. Shape matches what
+        `tools/lab_trends.py::store_lab_values` expects after wrapping
+        `values` in `json.dumps`.
+    """
+    if not text.strip():
+        return None
+
+    client = _get_client()
+    truncated = text[:8000]
+    user_prompt = f"Document text:\n\n{truncated}"
+
+    start = time.perf_counter()
+    response = client.messages.create(
+        model=ENHANCE_MODEL,
+        max_tokens=2048,
+        system=LAB_VALUES_SYSTEM_PROMPT,
+        messages=[{"role": "user", "content": user_prompt}],
+    )
+    duration_ms = int((time.perf_counter() - start) * 1000)
+
+    raw = response.content[0].text if response.content else "{}"
+
+    log_ai_call(
+        db,
+        call_type="lab_values_extraction",
+        document_id=document_id,
+        model=ENHANCE_MODEL,
+        system_prompt=LAB_VALUES_SYSTEM_PROMPT,
+        user_prompt=user_prompt,
+        raw_response=raw,
+        input_tokens=getattr(response.usage, "input_tokens", None),
+        output_tokens=getattr(response.usage, "output_tokens", None),
+        duration_ms=duration_ms,
+    )
+
+    try:
+        parsed = json.loads(_strip_markdown_fencing(raw))
+    except json.JSONDecodeError:
+        logger.warning("Failed to parse lab_values response: %s", raw[:200])
+        return None
+
+    values = parsed.get("values")
+    if not isinstance(values, list) or not values:
+        return None
+
+    # Filter to well-formed rows. store_lab_values requires parameter + value.
+    clean: list[dict] = []
+    for item in values:
+        if not isinstance(item, dict):
+            continue
+        param = item.get("parameter")
+        val = item.get("value")
+        if not isinstance(param, str) or not param.strip():
+            continue
+        try:
+            val_f = float(val)
+        except (TypeError, ValueError):
+            continue
+        row: dict = {"parameter": param.strip(), "value": val_f}
+        unit = item.get("unit")
+        if isinstance(unit, str):
+            row["unit"] = unit
+        import contextlib
+
+        for k in ("reference_low", "reference_high"):
+            v = item.get(k)
+            if v is not None:
+                with contextlib.suppress(TypeError, ValueError):
+                    row[k] = float(v)
+        flag = item.get("flag")
+        if isinstance(flag, str):
+            row["flag"] = flag
+        clean.append(row)
+
+    if not clean:
+        return None
+
+    return {"lab_date": parsed.get("lab_date"), "values": clean}
 
 
 FILENAME_DESC_SYSTEM_PROMPT = (

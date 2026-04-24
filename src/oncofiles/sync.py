@@ -1740,6 +1740,96 @@ them out of its candidate set rather than counting them as errors (#466).
 """
 
 
+async def _persist_lab_values_from_metadata(
+    db: Database,
+    doc: Document,
+    metadata: dict,
+) -> int:
+    """#465 — persist `metadata['lab_values']` into the `lab_values` table.
+
+    Called from `extract_all_metadata` and from the
+    `backfill_lab_values_from_metadata` MCP tool. Idempotent — DB layer uses
+    INSERT OR REPLACE keyed on (document_id, parameter). Returns the number
+    of rows written (0 if there was nothing to persist).
+
+    Date resolution order:
+        1. `lab_values.lab_date` from the AI extractor
+        2. `structured_metadata['document_date']` — classifier's pick
+        3. `doc.document_date` — filename / existing column
+    """
+    from datetime import date
+
+    from oncofiles.models import LabValue
+
+    lv_block = metadata.get("lab_values") if isinstance(metadata, dict) else None
+    if not isinstance(lv_block, dict):
+        return 0
+    rows = lv_block.get("values")
+    if not isinstance(rows, list) or not rows:
+        return 0
+
+    # Resolve lab_date
+    resolved: date | None = None
+    candidates = [
+        lv_block.get("lab_date"),
+        metadata.get("document_date"),
+    ]
+    for c in candidates:
+        if isinstance(c, str) and c:
+            try:
+                resolved = date.fromisoformat(c)
+                break
+            except (ValueError, TypeError):
+                continue
+    if resolved is None:
+        resolved = doc.document_date
+
+    if resolved is None:
+        logger.warning(
+            "extract_all_metadata: doc %d has lab_values but no resolvable "
+            "lab_date — skipping persistence",
+            doc.id,
+        )
+        return 0
+
+    lab_values: list[LabValue] = []
+    for item in rows:
+        if not isinstance(item, dict):
+            continue
+        param = item.get("parameter")
+        val = item.get("value")
+        if not isinstance(param, str) or not param.strip():
+            continue
+        try:
+            val_f = float(val)
+        except (TypeError, ValueError):
+            continue
+        lab_values.append(
+            LabValue(
+                document_id=doc.id,
+                lab_date=resolved,
+                parameter=param.strip(),
+                value=val_f,
+                unit=item.get("unit", "") or "",
+                reference_low=item.get("reference_low"),
+                reference_high=item.get("reference_high"),
+                flag=item.get("flag", "") or "",
+            )
+        )
+
+    if not lab_values:
+        return 0
+
+    count = await db.insert_lab_values(lab_values)
+    logger.info(
+        "extract_all_metadata: doc %d — persisted %d lab_values (lab_date=%s)",
+        doc.id,
+        count,
+        resolved.isoformat(),
+    )
+    return count
+
+
 async def extract_all_metadata(
     db: Database,
     files: FilesClient,
@@ -1861,6 +1951,15 @@ async def extract_all_metadata(
                 doc.filename,
             )
             stats["processed"] += 1
+
+            # #465 — if the extractor detected an embedded lab table, persist
+            # the parsed values into lab_values so the dashboard trend line
+            # picks them up (bypasses the chemo_sheet / consultation category
+            # filter that used to drop CBCs embedded in non-labs docs).
+            persisted = await _persist_lab_values_from_metadata(db, doc, metadata)
+            if persisted:
+                stats.setdefault("lab_values_persisted", 0)
+                stats["lab_values_persisted"] += persisted
 
             # Generate cross-references based on heuristic matching
             await _generate_cross_references(db, doc, metadata, patient_id=patient_id)

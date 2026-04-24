@@ -100,6 +100,13 @@ async def extract_document_metadata(
 
     await db.update_structured_metadata(document_id, metadata_json)
 
+    # #465 — persist any extracted lab_values into the lab_values table so
+    # the dashboard trend line picks them up even when the doc is classified
+    # as chemo_sheet / consultation / discharge.
+    from oncofiles.sync import _persist_lab_values_from_metadata
+
+    lv_written = await _persist_lab_values_from_metadata(db, doc, metadata)
+
     # Also run AI classification for institution/category/date
     from oncofiles.enhance import classify_document
 
@@ -148,6 +155,7 @@ async def extract_document_metadata(
             "structured_metadata": metadata,
             "classification": classification,
             "updates_applied": updates,
+            "lab_values_persisted": lv_written,
         }
     )
 
@@ -242,6 +250,184 @@ async def detect_and_split_documents(
                 results["splits_created"] += len(created)
 
     return json.dumps(results, default=str)
+
+
+async def backfill_lab_values_from_metadata(
+    ctx: Context,
+    patient_slug: str | None = None,
+    category_in: list[str] | None = None,
+    dry_run: bool = True,
+    batch_size: int = 10,
+) -> str:
+    """Re-run lab-value extraction on non-`labs` documents (#465).
+
+    The AI classifier routes pre-chemo blood-count tables under
+    `chemo_sheet` / `consultation` / `discharge_summary` — not unreasonable
+    given the bundled form — but the original metadata extractor used a
+    generic schema and never pulled the CBC into `lab_values`. The dashboard
+    trend line therefore goes flat on dates where the actual labs were only
+    recorded as part of a chemo-administration sheet.
+
+    This tool scans documents in the configured categories, detects embedded
+    lab tables via `has_lab_table`, re-extracts with the labs-specific
+    Haiku prompt, and (when `dry_run=False`) persists the rows into
+    `lab_values` so `get_lab_trends` returns them.
+
+    Chunked-batch pattern per CLAUDE.md ("Bulk data fixes MUST NOT run as
+    startup migrations"): each call processes up to `batch_size` documents
+    and returns `remaining`; caller loops until `remaining == 0`.
+
+    Cap-bypass: this is an explicit user-invoked tool (force=True semantics)
+    so `DAILY_AI_DOC_CAP` does not apply — same convention as
+    `enhance_documents`, `extract_document_metadata`,
+    `detect_and_split_documents`.
+
+    Args:
+        patient_slug: Optional — explicit patient slug. Required in stateless HTTP.
+        category_in: Categories to scan (default:
+            ['chemo_sheet', 'consultation', 'discharge_summary', 'discharge']).
+        dry_run: If True (default), only report what would be extracted
+            without writing to `lab_values`.
+        batch_size: Max documents to process per call (1-100, default 10).
+
+    Returns JSON with:
+        processed: docs examined this batch
+        lab_values_added: rows persisted (0 when dry_run)
+        detected_lab_tables: docs where the heuristic fired
+        extracted_nonempty: docs where the AI returned >=1 value
+        remaining: docs still matching the scan after this batch
+        dry_run: bool
+    """
+    from oncofiles.enhance import extract_lab_values, has_lab_table
+    from oncofiles.sync import _persist_lab_values_from_metadata
+
+    db = _get_db(ctx)
+    pid = await _resolve_patient_id(patient_slug, ctx)
+
+    cats = category_in or ["chemo_sheet", "consultation", "discharge_summary", "discharge"]
+    # Validate categories — silently drop unknown tokens rather than hit DB
+    # with a bogus IN clause.
+    from oncofiles.models import DocumentCategory
+
+    valid: list[str] = []
+    for c in cats:
+        try:
+            DocumentCategory(c)
+            valid.append(c)
+        except ValueError:
+            continue
+    if not valid:
+        return json.dumps({"error": "no valid categories in category_in"})
+
+    batch_size = max(1, min(int(batch_size), 100))
+
+    # Build the scan set: docs in the given categories where
+    # structured_metadata is set but does NOT carry a "lab_values" block.
+    # Using LIKE '%lab_values%' as a negative filter is cheap and sqlite-safe.
+    placeholders = ",".join("?" for _ in valid)
+    count_sql = (
+        f"SELECT COUNT(*) AS cnt FROM documents "
+        f"WHERE patient_id = ? AND deleted_at IS NULL "
+        f"AND category IN ({placeholders}) "
+        f"AND structured_metadata IS NOT NULL "
+        f"AND structured_metadata NOT LIKE '%\"lab_values\"%'"
+    )
+    async with db.db.execute(count_sql, [pid, *valid]) as cur:
+        row = await cur.fetchone()
+        total_matching = dict(row)["cnt"] if row else 0
+
+    if total_matching == 0:
+        return json.dumps(
+            {
+                "processed": 0,
+                "lab_values_added": 0,
+                "detected_lab_tables": 0,
+                "extracted_nonempty": 0,
+                "remaining": 0,
+                "dry_run": dry_run,
+                "categories": valid,
+                "status": "complete",
+            }
+        )
+
+    batch_sql = (
+        f"SELECT * FROM documents "
+        f"WHERE patient_id = ? AND deleted_at IS NULL "
+        f"AND category IN ({placeholders}) "
+        f"AND structured_metadata IS NOT NULL "
+        f"AND structured_metadata NOT LIKE '%\"lab_values\"%' "
+        f"ORDER BY document_date DESC NULLS LAST, id DESC LIMIT ?"
+    )
+    from oncofiles.database._documents import _safe_row_to_document
+
+    async with db.db.execute(batch_sql, [pid, *valid, batch_size]) as cur:
+        rows = await cur.fetchall()
+
+    docs = [d for r in rows if (d := _safe_row_to_document(r)) is not None]
+
+    processed = 0
+    detected = 0
+    extracted_nonempty = 0
+    lab_values_added = 0
+
+    for doc in docs:
+        processed += 1
+        # Pull text from OCR cache — no download fallback, if no text we skip.
+        if not await db.has_ocr_text(doc.id):
+            continue
+        pages = await db.get_ocr_pages(doc.id)
+        full_text = "\n\n".join(p["extracted_text"] for p in pages if p.get("extracted_text"))
+        if not full_text.strip():
+            continue
+
+        if not has_lab_table(full_text):
+            continue
+        detected += 1
+
+        lv_block = extract_lab_values(full_text, db=db, document_id=doc.id)
+        if not lv_block or not lv_block.get("values"):
+            continue
+        extracted_nonempty += 1
+
+        # Merge the new lab_values block into the existing metadata JSON so
+        # the next call skips this doc (the NOT LIKE '%lab_values%' filter).
+        import json as _json
+
+        try:
+            meta = _json.loads(doc.structured_metadata) if doc.structured_metadata else {}
+        except (ValueError, TypeError):
+            meta = {}
+        if not isinstance(meta, dict):
+            meta = {}
+        meta["lab_values"] = lv_block
+
+        if dry_run:
+            continue
+
+        await db.update_structured_metadata(doc.id, _json.dumps(meta, ensure_ascii=False))
+        written = await _persist_lab_values_from_metadata(db, doc, meta)
+        lab_values_added += written
+
+    remaining = total_matching - processed if dry_run else total_matching - processed
+
+    return json.dumps(
+        {
+            "processed": processed,
+            "lab_values_added": lab_values_added,
+            "detected_lab_tables": detected,
+            "extracted_nonempty": extracted_nonempty,
+            "remaining": max(0, remaining),
+            "dry_run": dry_run,
+            "categories": valid,
+            "batch_size": batch_size,
+            "status": "partial" if remaining > 0 else "complete",
+            "_next_call": (
+                f"Call again with dry_run={dry_run} to process next {batch_size} docs"
+                if remaining > 0
+                else "All matching documents processed"
+            ),
+        }
+    )
 
 
 async def detect_and_consolidate_documents(
@@ -679,6 +865,7 @@ def register(mcp):
     mcp.tool()(detect_and_split_documents)
     mcp.tool()(detect_and_consolidate_documents)
     mcp.tool()(backfill_ai_classification)
+    mcp.tool()(backfill_lab_values_from_metadata)
     mcp.tool()(unblock_stuck_documents)
     mcp.tool()(repair_broken_groups)
     mcp.tool()(detect_and_clone_vaccinations)
