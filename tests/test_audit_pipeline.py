@@ -323,3 +323,40 @@ async def test_audit_xlsx_does_not_appear_in_stuck_sample(db: Database):
     assert result["stuck_sample"] == []
     # Non-extractable completes count as fully_complete when everything else is set
     assert result["pipeline_gaps"]["fully_complete"] == 1
+
+
+# ── #477: external_location + deleted_remote classification in audit ───────
+
+
+async def test_audit_counts_external_location_docs(db: Database):
+    """Docs flagged gdrive_parent_outside_root show up as external_location gap,
+    not as noisy 'missing'/'not_synced'."""
+    doc = await _insert_doc(
+        db,
+        filename="20260313_ErikaFusekova_PacientAdvokat_Advocate_Note.md",
+        mime_type="text/markdown",
+        document_date=date(2026, 3, 13),
+        institution="PacientAdvokat",
+        gdrive_id="gdrive_external_1",
+    )
+    await db.set_gdrive_parent_outside_root(doc.id, True)
+
+    result = json.loads(await audit_document_pipeline(_ctx(db)))
+    assert result["pipeline_gaps"]["external_location"] == 1
+    assert result["pipeline_gaps"]["deleted_remote"] == 0
+
+
+async def test_audit_counts_deleted_remote_docs(db: Database):
+    """Docs with sync_state=deleted_remote show up as deleted_remote gap."""
+    doc = await _insert_doc(
+        db,
+        filename="20260313_ErikaFusekova_NOU_Labs_KrvnyObraz.pdf",
+        document_date=date(2026, 3, 13),
+        institution="NOU",
+        gdrive_id="gdrive_gone",
+    )
+    await db.update_sync_state(doc.id, "deleted_remote")
+
+    result = json.loads(await audit_document_pipeline(_ctx(db)))
+    assert result["pipeline_gaps"]["deleted_remote"] == 1
+    assert result["pipeline_gaps"]["external_location"] == 0

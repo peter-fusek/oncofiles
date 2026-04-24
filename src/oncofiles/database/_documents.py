@@ -630,6 +630,20 @@ class DocumentMixin:
             )
         await self.db.commit()
 
+    async def set_gdrive_parent_outside_root(self, doc_id: int, outside: bool) -> None:
+        """Mark whether a document's GDrive file lives outside the patient's sync root.
+
+        Set by sync when it discovers a gdrive_id that's valid in Drive but not
+        in the sync-root listing (#477). Cleared when the file is moved back in,
+        either by the user or by ``consolidate_external_gdrive_files``.
+        """
+        await self.db.execute(
+            "UPDATE documents SET gdrive_parent_outside_root = ?, "
+            "updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = ?",
+            (1 if outside else 0, doc_id),
+        )
+        await self.db.commit()
+
     # ── Versioning ─────────────────────────────────────────────────────
 
     async def get_active_document_by_filename(

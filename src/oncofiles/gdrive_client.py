@@ -476,6 +476,22 @@ class GDriveClient:
         return result.get("parents", [])
 
     @_retry_on_transient
+    def get_file_metadata(self, file_id: str, fields: str = "id,name,parents,trashed") -> dict:
+        """Fetch metadata for a single file. Used by sync's external-vs-deleted classifier.
+
+        Raises ``FileNotFoundError`` (translated from googleapiclient 404) if the
+        file has been permanently deleted. Other HTTP errors bubble up.
+        """
+        from googleapiclient.errors import HttpError
+
+        try:
+            return self._service.files().get(fileId=file_id, fields=fields).execute()
+        except HttpError as exc:
+            if getattr(exc, "status_code", None) == 404 or getattr(exc.resp, "status", 0) == 404:
+                raise FileNotFoundError(f"GDrive file {file_id} not found") from exc
+            raise
+
+    @_retry_on_transient
     def create_shortcut(
         self,
         target_file_id: str,

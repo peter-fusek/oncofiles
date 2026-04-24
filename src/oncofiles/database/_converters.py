@@ -195,6 +195,7 @@ def _row_to_document(row: Any) -> Document:
             if row_dict.get("last_synced_at")
             else None
         ),
+        gdrive_parent_outside_root=bool(row_dict.get("gdrive_parent_outside_root") or 0),
         ai_summary=row["ai_summary"],
         ai_tags=row["ai_tags"],
         ai_processed_at=(

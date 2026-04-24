@@ -1125,6 +1125,13 @@ async def audit_document_pipeline(ctx: Context, patient_slug: str | None = None)
         "not_standard_named": 0,
         "fully_complete": 0,
         "non_extractable_skipped": 0,
+        # #477: files that live in GDrive under a DIFFERENT parent than the
+        # patient's sync root (typically 3rd-party services like PacientAdvokat
+        # that register their own uploads with us). Counted separately so users
+        # can see "16 external-location docs" instead of a scary "16 missing".
+        "external_location": 0,
+        # #477: files that are gone from GDrive entirely (404 or trashed).
+        "deleted_remote": 0,
     }
     stuck_samples: list[dict] = []
     for doc in docs:
@@ -1164,6 +1171,10 @@ async def audit_document_pipeline(ctx: Context, patient_slug: str | None = None)
             gaps["not_synced"] += 1
         if not is_standard:
             gaps["not_standard_named"] += 1
+        if doc.gdrive_parent_outside_root:
+            gaps["external_location"] += 1
+        if doc.sync_state == "deleted_remote":
+            gaps["deleted_remote"] += 1
 
         # "fully_complete" is permissive for non-extractable: OCR/AI/meta are moot.
         extraction_complete = (not is_extractable) or (has_ocr and has_ai and has_metadata)
@@ -1411,13 +1422,28 @@ async def _build_reconciliation_report(
         if doc.gdrive_id:
             db_by_gdrive_id[doc.gdrive_id] = doc
 
-    # In DB but not in GDrive
+    # In DB but not in GDrive's sync-root listing — classify per #477 so the
+    # dashboard doesn't alarm the user about docs that are actually fine
+    # (external_location) or already known-gone (deleted_remote).
     in_db_not_gdrive = []
+    in_db_external_location = []
+    in_db_deleted_remote = []
     for doc in db_docs:
-        if doc.gdrive_id and doc.gdrive_id not in gdrive_by_id:
-            in_db_not_gdrive.append(
-                {"id": doc.id, "filename": doc.filename, "gdrive_id": doc.gdrive_id}
-            )
+        if not doc.gdrive_id or doc.gdrive_id in gdrive_by_id:
+            continue
+        entry = {
+            "id": doc.id,
+            "filename": doc.filename,
+            "gdrive_id": doc.gdrive_id,
+        }
+        if doc.sync_state == "deleted_remote":
+            in_db_deleted_remote.append(entry)
+        elif doc.gdrive_parent_outside_root:
+            in_db_external_location.append(entry)
+        else:
+            # Unclassified: sync cycle hasn't reached this doc yet, or the
+            # metadata fetch is failing with non-404. Surface as legacy missing.
+            in_db_not_gdrive.append(entry)
 
     # In GDrive but not in DB (orphans) — classify as expected vs unexpected
     in_gdrive_not_db = []
@@ -1457,9 +1483,13 @@ async def _build_reconciliation_report(
         "db_count": len(db_docs),
         "gdrive_count": len(gdrive_by_id),
         "in_db_not_gdrive": in_db_not_gdrive,
+        "in_db_external_location": in_db_external_location,
+        "in_db_deleted_remote": in_db_deleted_remote,
         "in_gdrive_not_db": in_gdrive_not_db,
         "expected_orphans": expected_orphans,
         "filename_mismatch": filename_mismatch,
+        # Health excludes external_location + deleted_remote — those are known,
+        # classified states, not reconciliation failures. #477
         "healthy": (
             len(in_db_not_gdrive) == 0
             and len(in_gdrive_not_db) == 0
@@ -1964,6 +1994,180 @@ async def repair_gdrive_folder_hygiene(
     return json.dumps(report, default=str)
 
 
+async def consolidate_external_gdrive_files(
+    ctx: Context,
+    patient_slug: str | None = None,
+    dry_run: bool = True,
+    batch_size: int = 20,
+) -> str:
+    """Opt-in: move GDrive files flagged as gdrive_parent_outside_root back
+    into the patient's sync root.
+
+    Context (#477): when a 3rd-party service (PacientAdvokat, insurance
+    portal, hospital export) registers a gdrive_id with us that points to a
+    file in their own Drive folder, sync flags it as external_location. The
+    file still works (gdrive_url is valid), but it's invisible to normal
+    folder-structure queries and generates noise in reconciliation reports.
+
+    This tool tries to ``move_file`` each flagged file into the patient's
+    configured sync root. Moving requires WRITE access — if the caregiver's
+    OAuth token only has READ access (3rd-party-owned files, see #445), the
+    move returns 403 and we report it rather than crashing. The user can
+    then arrange ownership transfer or replicate the file manually.
+
+    Chunked: processes up to ``batch_size`` files per call (default 20) and
+    returns ``remaining`` so the caller can loop. Same pattern as
+    ``backfill_orphan_prompt_logs`` — avoids long-running transactions that
+    can corrupt the Turso embedded replica (lesson from #476).
+
+    Args:
+        patient_slug: Optional — explicit patient slug (required in
+            stateless HTTP to target a non-default patient).
+        dry_run: If True (default), list the files that would be moved
+            without calling the Drive API. Flip to False to actually move.
+        batch_size: Max files to process per call. Clamped to [1, 100].
+            Default 20.
+
+    Returns:
+        JSON with:
+            - patient_id
+            - dry_run (echo)
+            - batch_size (effective)
+            - moved: [{id, filename, gdrive_id, new_parent}]
+            - skipped_permissions: [{id, filename, gdrive_id, error}]
+            - failed: [{id, filename, gdrive_id, error}]
+            - remaining: files still flagged after this batch (poll until 0)
+    """
+    from oncofiles.server import _create_patient_clients
+
+    db = _get_db(ctx)
+    pid = await _resolve_patient_id(patient_slug, ctx)
+
+    # Use _create_patient_clients so we get the RESOLVED patient's GDrive
+    # client even when the caller's bearer resolves to a different patient
+    # via the middleware ContextVar.
+    clients = await _create_patient_clients(db, pid)
+    if not clients:
+        return json.dumps(
+            {
+                "error": (
+                    "No GDrive client for this patient. Caregiver must connect "
+                    "GDrive via the dashboard first."
+                ),
+                "patient_id": pid,
+            }
+        )
+    gdrive, _gmail, _cal, root_folder_id = clients
+    if gdrive is None or not root_folder_id:
+        return json.dumps(
+            {
+                "error": "GDrive folder not configured for this patient",
+                "patient_id": pid,
+            }
+        )
+
+    effective_batch = max(1, min(batch_size, 100))
+
+    async with db.db.execute(
+        "SELECT id, filename, gdrive_id FROM documents "
+        "WHERE patient_id = ? AND deleted_at IS NULL "
+        "AND gdrive_parent_outside_root = 1 "
+        "AND gdrive_id IS NOT NULL "
+        "ORDER BY id ASC LIMIT ?",
+        (pid, effective_batch),
+    ) as cursor:
+        rows = await cursor.fetchall()
+
+    moved: list[dict] = []
+    skipped_permissions: list[dict] = []
+    failed: list[dict] = []
+
+    for raw in rows:
+        row = dict(raw) if not isinstance(raw, dict) else raw
+        doc_id = row["id"]
+        filename = row["filename"]
+        gdrive_id = row["gdrive_id"]
+        entry = {"id": doc_id, "filename": filename, "gdrive_id": gdrive_id}
+        if dry_run:
+            entry["planned_target_parent"] = root_folder_id
+            moved.append(entry)
+            continue
+        try:
+            await asyncio.to_thread(gdrive.move_file, gdrive_id, root_folder_id)
+        except Exception as exc:
+            msg = str(exc)[:300]
+            # HttpError bodies from googleapiclient include the reason text —
+            # match on the known markers so the caller can see "permission vs
+            # something-else" without parsing error codes.
+            if "insufficientFilePermissions" in msg or "forbidden" in msg.lower():
+                entry["error"] = msg
+                skipped_permissions.append(entry)
+                logger.info(
+                    "consolidate_external: doc %d (gdrive_id=%s) — 403, caregiver "
+                    "can't move 3rd-party-owned file",
+                    doc_id,
+                    gdrive_id,
+                )
+            else:
+                entry["error"] = msg
+                failed.append(entry)
+                logger.warning(
+                    "consolidate_external: doc %d (gdrive_id=%s) move failed: %s",
+                    doc_id,
+                    gdrive_id,
+                    msg,
+                )
+            continue
+        try:
+            await db.set_gdrive_parent_outside_root(doc_id, False)
+        except Exception as exc:
+            # File physically moved but flag-clear failed. Next sync will
+            # self-heal (the file is now in root → flag cleared by loop).
+            logger.warning(
+                "consolidate_external: move ok for doc %d but flag-clear failed: %s",
+                doc_id,
+                exc,
+            )
+        entry["new_parent"] = root_folder_id
+        moved.append(entry)
+
+    # Count remaining after this batch (for caller's loop)
+    async with db.db.execute(
+        "SELECT COUNT(*) AS c FROM documents "
+        "WHERE patient_id = ? AND deleted_at IS NULL "
+        "AND gdrive_parent_outside_root = 1",
+        (pid,),
+    ) as cursor:
+        cnt_row = await cursor.fetchone()
+    cnt_dict = dict(cnt_row) if cnt_row and not isinstance(cnt_row, dict) else (cnt_row or {})
+    remaining = int(cnt_dict.get("c") or 0)
+    # Subtract the batch we just processed successfully when dry_run (dry-run
+    # doesn't touch the flag, so remaining is unchanged — that's correct).
+    if not dry_run:
+        # Post-move remaining already reflects cleared flags.
+        pass
+
+    return json.dumps(
+        {
+            "patient_id": pid,
+            "dry_run": dry_run,
+            "batch_size": effective_batch,
+            "moved": moved,
+            "skipped_permissions": skipped_permissions,
+            "failed": failed,
+            "remaining": remaining,
+            "note": (
+                "Files in skipped_permissions are owned by a 3rd party (see #445). "
+                "Caregiver must either arrange ownership transfer in Google Drive "
+                "or re-upload them into the sync root."
+            )
+            if skipped_permissions
+            else None,
+        },
+        default=str,
+    )
+
+
 def register(mcp):
     mcp.tool()(reconcile_gdrive)
     mcp.tool()(validate_categories)
@@ -1975,3 +2179,4 @@ def register(mcp):
     mcp.tool()(list_tool_definitions)
     mcp.tool()(audit_gdrive_folder_hygiene)
     mcp.tool()(repair_gdrive_folder_hygiene)
+    mcp.tool()(consolidate_external_gdrive_files)

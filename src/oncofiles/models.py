@@ -64,8 +64,19 @@ class Document(BaseModel):
     gdrive_md5: str | None = Field(
         default=None, description="GDrive md5Checksum for content change detection"
     )
-    sync_state: str = Field(default="synced", description="Sync state: synced, pending, conflict")
+    sync_state: str = Field(
+        default="synced",
+        description="Sync state: synced, pending, conflict, deleted_remote",
+    )
     last_synced_at: datetime | None = None
+    gdrive_parent_outside_root: bool = Field(
+        default=False,
+        description=(
+            "True when the GDrive file exists but lives outside the patient's sync "
+            "root (e.g., uploaded by a 3rd-party service into a different folder). "
+            "Distinct from sync_state='deleted_remote' (file gone entirely). #477"
+        ),
+    )
     ai_summary: str | None = Field(default=None, description="AI-generated document summary")
     ai_tags: str | None = Field(default=None, description="JSON array of AI-generated tags")
     ai_processed_at: datetime | None = None

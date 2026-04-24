@@ -38,6 +38,11 @@ def _mock_gdrive(gdrive_files: list[dict] | None = None, folder_map: dict | None
     }
     gdrive.batch_move.side_effect = lambda moves: {fid: True for fid in moves}
     gdrive.batch_rename.side_effect = lambda renames: {fid: True for fid in renames}
+    # #477: the "not in sync-root listing" classifier calls get_file_metadata
+    # to decide between deleted_remote (404) and external_location (exists
+    # under a different parent). Default: FileNotFoundError so tests that
+    # don't care about the distinction still see the "file gone" path.
+    gdrive.get_file_metadata.side_effect = FileNotFoundError("default: not found")
     return gdrive
 
 
@@ -303,18 +308,138 @@ async def test_sync_from_gdrive_error_handling(db: Database):
     assert stats["new"] == 0
 
 
-async def test_sync_from_gdrive_detects_missing(db: Database):
-    """Files in DB but not on GDrive are flagged as missing."""
+async def test_sync_from_gdrive_detects_deleted_remote(db: Database):
+    """Files that 404 on GDrive are classified as deleted_remote (not missing).
+
+    Previously this test was `test_sync_from_gdrive_detects_missing` and
+    asserted `stats["missing"] == 1`. Post-#477 the classifier distinguishes
+    genuine deletions from external-location: 404 → deleted_remote, other
+    errors → missing (legacy noisy bucket).
+    """
     doc = make_doc(gdrive_id="gd_missing")
-    await db.insert_document(doc, patient_id=ERIKA_UUID)
+    inserted = await db.insert_document(doc, patient_id=ERIKA_UUID)
 
     files = _mock_files()
-    gdrive = _mock_gdrive([])  # Empty GDrive
+    gdrive = _mock_gdrive([])  # Empty GDrive — doc not in sync-root listing
+    # _mock_gdrive default is FileNotFoundError → deleted_remote
+
+    stats = await sync_from_gdrive(
+        db, files, gdrive, "folder123", enhance=False, patient_id=ERIKA_UUID
+    )
+    assert stats["deleted_remote"] == 1
+    assert stats["missing"] == 0
+    assert stats["external_location"] == 0
+    # sync_state should be updated on the doc
+    refreshed = await db.get_document(inserted.id)
+    assert refreshed.sync_state == "deleted_remote"
+
+
+async def test_sync_from_gdrive_detects_external_location(db: Database):
+    """Files that exist in Drive but under a different parent → external_location flag set."""
+    doc = make_doc(gdrive_id="gd_external")
+    inserted = await db.insert_document(doc, patient_id=ERIKA_UUID)
+
+    files = _mock_files()
+    gdrive = _mock_gdrive([])
+    # Override default: file exists, just outside sync root, not trashed
+    gdrive.get_file_metadata.side_effect = None
+    gdrive.get_file_metadata.return_value = {
+        "id": "gd_external",
+        "name": "external.md",
+        "parents": ["some_other_folder"],
+        "trashed": False,
+    }
+
+    stats = await sync_from_gdrive(
+        db, files, gdrive, "folder123", enhance=False, patient_id=ERIKA_UUID
+    )
+    assert stats["external_location"] == 1
+    assert stats["missing"] == 0
+    assert stats["deleted_remote"] == 0
+    # Flag should be set on the doc
+    refreshed = await db.get_document(inserted.id)
+    assert refreshed.gdrive_parent_outside_root is True
+    # sync_state should NOT change (file isn't deleted, just external)
+    assert refreshed.sync_state != "deleted_remote"
+
+
+async def test_sync_from_gdrive_trashed_file_is_deleted_remote(db: Database):
+    """A file that exists but has trashed=True should map to deleted_remote."""
+    doc = make_doc(gdrive_id="gd_trashed")
+    inserted = await db.insert_document(doc, patient_id=ERIKA_UUID)
+
+    files = _mock_files()
+    gdrive = _mock_gdrive([])
+    gdrive.get_file_metadata.side_effect = None
+    gdrive.get_file_metadata.return_value = {
+        "id": "gd_trashed",
+        "name": "trashed.pdf",
+        "parents": ["some_folder"],
+        "trashed": True,
+    }
+
+    stats = await sync_from_gdrive(
+        db, files, gdrive, "folder123", enhance=False, patient_id=ERIKA_UUID
+    )
+    assert stats["deleted_remote"] == 1
+    assert stats["external_location"] == 0
+    refreshed = await db.get_document(inserted.id)
+    assert refreshed.sync_state == "deleted_remote"
+
+
+async def test_sync_from_gdrive_clears_external_flag_when_file_back_in_root(db: Database):
+    """If an external-flagged file now shows up in the sync-root listing, clear the flag."""
+    from datetime import datetime as _dt
+
+    doc = make_doc(gdrive_id="gd_moved_back", gdrive_modified_time=_dt(2026, 3, 1, 10, 0))
+    inserted = await db.insert_document(doc, patient_id=ERIKA_UUID)
+    # Pre-condition: flag is set from a prior cycle
+    await db.set_gdrive_parent_outside_root(inserted.id, True)
+
+    files = _mock_files()
+    # Listing now includes the file — it's back in root
+    gdrive = _mock_gdrive(
+        [
+            {
+                "id": "gd_moved_back",
+                "name": inserted.filename,
+                "mimeType": "application/pdf",
+                "modifiedTime": "2026-03-01T10:00:00+00:00",
+                "appProperties": {"oncofiles_id": str(inserted.id)},
+                "parents": [],
+            }
+        ]
+    )
+
+    stats = await sync_from_gdrive(
+        db, files, gdrive, "folder123", enhance=False, patient_id=ERIKA_UUID
+    )
+    # File was unchanged (same mtime) — counted as unchanged, not external
+    assert stats["external_location"] == 0
+    refreshed = await db.get_document(inserted.id)
+    assert refreshed.gdrive_parent_outside_root is False
+
+
+async def test_sync_from_gdrive_unclassifiable_error_still_missing(db: Database):
+    """If get_file_metadata raises a non-404 error, bucket as legacy 'missing'."""
+    doc = make_doc(gdrive_id="gd_unclassifiable")
+    inserted = await db.insert_document(doc, patient_id=ERIKA_UUID)
+
+    files = _mock_files()
+    gdrive = _mock_gdrive([])
+    # 500-ish transport error — neither 404 nor a successful metadata fetch
+    gdrive.get_file_metadata.side_effect = RuntimeError("transient transport error")
 
     stats = await sync_from_gdrive(
         db, files, gdrive, "folder123", enhance=False, patient_id=ERIKA_UUID
     )
     assert stats["missing"] == 1
+    assert stats["external_location"] == 0
+    assert stats["deleted_remote"] == 0
+    # No state mutation on unclassifiable
+    refreshed = await db.get_document(inserted.id)
+    assert refreshed.gdrive_parent_outside_root is False
+    assert refreshed.sync_state != "deleted_remote"
 
 
 async def test_sync_from_gdrive_matches_by_app_properties(db: Database):

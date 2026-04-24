@@ -117,7 +117,20 @@ async def sync_from_gdrive(
         len(folder_map),
     )
 
-    stats = {"new": 0, "updated": 0, "unchanged": 0, "skipped": 0, "missing": 0, "errors": 0}
+    stats = {
+        "new": 0,
+        "updated": 0,
+        "unchanged": 0,
+        "skipped": 0,
+        # #477: "missing" is legacy — kept for backward-compat with callers that
+        # summed it. It now only counts docs whose gdrive_id is neither in the
+        # sync-root listing NOR classifiable (metadata fetch failed with non-404).
+        # External-location and remote-deletion are reported as their own keys.
+        "missing": 0,
+        "external_location": 0,
+        "deleted_remote": 0,
+        "errors": 0,
+    }
     batch_size = 10  # Process files in batches, gc.collect between batches
 
     async def _sync_category_from_folder(gf: dict, existing: Document, filename: str) -> None:
@@ -398,16 +411,97 @@ async def sync_from_gdrive(
             logger.exception("sync_from_gdrive: error processing %s", filename)
             stats["errors"] += 1
 
-    # Detect deleted files (in DB but not on GDrive) — flag only, never auto-delete
+    # Classify docs whose gdrive_id isn't in the patient's sync-root listing
+    # into three buckets (#477):
+    #   1. external_location: file exists in Drive, but under a different parent
+    #      (e.g., PacientAdvokat uploaded markdown summaries to its own folder
+    #      and registered the gdrive_id with us). Flag + keep; gdrive_url still
+    #      works for the user.
+    #   2. deleted_remote: file is permanently gone (404). Mark sync_state so
+    #      reconciliation surfaces it but don't auto-delete the DB row.
+    #   3. missing (unclassifiable): metadata fetch errored with a non-404.
+    #      Retained as a legacy bucket for alerting — zero expected in steady
+    #      state.
+    # No matter the class, we NEVER auto-delete.
     all_docs = await db.list_documents(limit=200, patient_id=patient_id)
     for doc in all_docs:
-        if doc.gdrive_id and doc.gdrive_id not in seen_gdrive_ids:
-            logger.warning(
-                "sync_from_gdrive: file %s (gdrive_id=%s) missing from GDrive — flagging",
+        if not doc.gdrive_id or doc.gdrive_id in seen_gdrive_ids:
+            # If a previously-external file is now back in the root, clear the flag.
+            if doc.gdrive_id and doc.gdrive_parent_outside_root:
+                try:
+                    await db.set_gdrive_parent_outside_root(doc.id, False)
+                    logger.info(
+                        "sync_from_gdrive: cleared external-location flag on %s "
+                        "(file is back in sync root)",
+                        doc.filename,
+                    )
+                except Exception:
+                    logger.exception(
+                        "sync_from_gdrive: failed to clear external flag on doc %d",
+                        doc.id,
+                    )
+            continue
+
+        # Not in root — classify via direct metadata fetch
+        try:
+            meta = await asyncio.to_thread(gdrive.get_file_metadata, doc.gdrive_id)
+        except FileNotFoundError:
+            logger.info(
+                "sync_from_gdrive: file %s (gdrive_id=%s) is gone from GDrive — "
+                "marking deleted_remote",
                 doc.filename,
                 doc.gdrive_id,
             )
+            try:
+                await db.update_sync_state(doc.id, "deleted_remote")
+            except Exception:
+                logger.exception("sync_from_gdrive: failed to set deleted_remote on doc %d", doc.id)
+            stats["deleted_remote"] += 1
+            continue
+        except Exception:
+            # Unclassifiable (403 / 5xx / transport). Keep the legacy "missing"
+            # warning so ops notices; don't mutate state.
+            logger.warning(
+                "sync_from_gdrive: file %s (gdrive_id=%s) not in root and metadata "
+                "fetch failed — flagging",
+                doc.filename,
+                doc.gdrive_id,
+                exc_info=True,
+            )
             stats["missing"] += 1
+            continue
+
+        if meta.get("trashed"):
+            logger.info(
+                "sync_from_gdrive: file %s (gdrive_id=%s) is trashed in GDrive — "
+                "marking deleted_remote",
+                doc.filename,
+                doc.gdrive_id,
+            )
+            try:
+                await db.update_sync_state(doc.id, "deleted_remote")
+            except Exception:
+                logger.exception("sync_from_gdrive: failed to set deleted_remote on doc %d", doc.id)
+            stats["deleted_remote"] += 1
+            continue
+
+        # File exists, just outside the root we sync.
+        if not doc.gdrive_parent_outside_root:
+            try:
+                await db.set_gdrive_parent_outside_root(doc.id, True)
+                logger.info(
+                    "sync_from_gdrive: %s (gdrive_id=%s) lives outside sync root %s — "
+                    "marked gdrive_parent_outside_root",
+                    doc.filename,
+                    doc.gdrive_id,
+                    folder_id,
+                )
+            except Exception:
+                logger.exception(
+                    "sync_from_gdrive: failed to set external-location flag on doc %d",
+                    doc.id,
+                )
+        stats["external_location"] += 1
 
     # ── Multi-document splitting & consolidation (AI-powered) ──────────────
     if enhance and all_docs:
