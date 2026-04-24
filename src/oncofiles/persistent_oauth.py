@@ -18,6 +18,8 @@ from mcp.server.auth.provider import AccessToken, AuthorizationCode, RefreshToke
 from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
 from pydantic import AnyHttpUrl
 
+from oncofiles.constants import NO_PATIENT_ACCESS_SENTINEL
+
 if TYPE_CHECKING:
     from oncofiles.database import Database
 
@@ -72,15 +74,24 @@ class PersistentOAuthProvider(InMemoryOAuthProvider):
                 # Try patient_tokens first (if static token is also a patient token)
                 pid = await self._db.resolve_patient_from_token(token)
                 if not pid:
-                    # Static bearer without patient mapping → default patient
-                    pid = await self._db.resolve_default_patient()
+                    # Static bearer without patient mapping → only safe to
+                    # default in a single-patient deployment (caller is
+                    # necessarily the one patient's owner). In multi-patient
+                    # deployments the static token is operator-level and
+                    # MUST pass patient_slug per call, so we return the
+                    # sentinel to force explicit scoping and close the
+                    # cross-patient leak class reported by Michal Gašparík
+                    # 2026-04-24 (same class as #476).
+                    pid = await self._safe_single_patient_pid()
                 if pid:
                     _verified_patient_id.set(pid)
             return AccessToken(token=token, client_id="oncoteam", scopes=[])
         # 2. MCP OAuth tokens (in-memory, restored from DB on startup — Claude.ai, ChatGPT)
         result = await super().verify_token(token)
         if result:
-            # OAuth user → check stored selection, fall back to default (#291)
+            # OAuth user → resolve scoped patient. In multi-patient deployments
+            # this is the sentinel until we plumb Google owner_email through
+            # the MCP token issuance flow — see #478 follow-up.
             if self._db:
                 pid = await self._resolve_oauth_patient()
                 if pid:
@@ -97,24 +108,44 @@ class PersistentOAuthProvider(InMemoryOAuthProvider):
                 logger.warning("Patient token lookup failed", exc_info=True)
         return None
 
-    async def _resolve_oauth_patient(self) -> str:
-        """Resolve patient for an OAuth user: stored selection → default."""
+    async def _safe_single_patient_pid(self) -> str:
+        """Return the sole active patient's UUID, OR the no-access sentinel.
+
+        Single-patient deployments (dev, small self-hosted) are unambiguous:
+        whoever is calling is necessarily the one patient's caregiver, so the
+        lone patient is a safe default. Multi-patient deployments require an
+        explicit patient identity — anything else leaks across patients.
+        """
         try:
-            # Check all patients for stored selection by owner_email
             patients = await self._db.list_patients(active_only=True)
-            for p in patients:
-                tok = await self._db.get_oauth_token(patient_id=p.patient_id)
-                if tok and tok.owner_email:
-                    sel = await self._db.get_patient_selection(tok.owner_email)
-                    if sel:
-                        return sel
         except Exception:
-            logger.debug("OAuth patient selection lookup failed", exc_info=True)
-        # No selection stored → default patient
-        try:
-            return await self._db.resolve_default_patient()
-        except Exception:
-            return ""
+            logger.warning("list_patients failed during auth fallback", exc_info=True)
+            return NO_PATIENT_ACCESS_SENTINEL
+        if len(patients) == 1:
+            return patients[0].patient_id
+        return NO_PATIENT_ACCESS_SENTINEL
+
+    async def _resolve_oauth_patient(self) -> str:
+        """Resolve patient for an OAuth user.
+
+        Current limitation: the MCP OAuth flow (InMemoryOAuthProvider) does
+        NOT plumb the caller's Google email through to the issued access
+        token. Without the email we cannot correlate the caller to a
+        patient by caregiver_email, so any heuristic based on "pick a
+        patient with any stored selection" is caller-agnostic and leaks
+        across users. That exact bug routed Michal Gašparík to Peter's
+        test-patient (e5g) when he connected claude.ai 2026-04-24.
+
+        Until the follow-up issue ships proper email plumbing (see #478),
+        return the sole active patient's UUID ONLY in single-patient
+        deployments; otherwise return the no-access sentinel so
+        downstream patient-scoped DB queries match zero rows and the
+        caller is forced to pass ``patient_slug`` explicitly per call.
+
+        Bearer-token (onco_*) flows are unaffected and remain per-patient
+        scoped via the token itself.
+        """
+        return await self._safe_single_patient_pid()
 
     # ── Restore from DB on startup ──────────────────────────────────────
 

@@ -250,3 +250,204 @@ async def test_expired_tokens_cleaned_on_verify(db, provider):
 
     # Verify should return None for expired token
     assert await provider.verify_token(token.access_token) is None
+
+
+# ── Cross-patient isolation (Michal Gašparík report, 2026-04-24) ──────
+
+
+async def _make_oauth_token(provider, client_id="test-client"):
+    """Helper: mint an MCP OAuth access token end-to-end."""
+    from mcp.server.auth.provider import AuthorizationParams
+
+    client = _make_client_info(client_id=client_id)
+    await provider.register_client(client)
+    params = AuthorizationParams(
+        state="s",
+        scopes=[],
+        code_challenge="c",
+        code_challenge_method="S256",
+        redirect_uri="http://localhost:3000/callback",
+        redirect_uri_provided_explicitly=True,
+    )
+    redirect_uri = await provider.authorize(client, params)
+    from urllib.parse import parse_qs, urlparse
+
+    code = parse_qs(urlparse(redirect_uri).query)["code"][0]
+    auth_code = await provider.load_authorization_code(client, code)
+    return await provider.exchange_authorization_code(client, auth_code)
+
+
+async def _insert_patient(db, *, patient_id, slug, display_name, caregiver_email=None):
+    from oncofiles.models import Patient
+
+    p = Patient(
+        patient_id=patient_id,
+        slug=slug,
+        display_name=display_name,
+        caregiver_email=caregiver_email,
+    )
+    return await db.insert_patient(p)
+
+
+# Test DB is seeded with 1 patient (q1b / 0000-0000-0000-0000-000000000001)
+# by migration 028. Tests that need "multi-patient" or "zero-patient" states
+# adjust from this baseline explicitly.
+SEED_PID = "00000000-0000-4000-8000-000000000001"
+
+
+async def _delete_all_patients(db):
+    """Wipe the seed patient for zero-patient-deployment tests."""
+    await db.db.execute("DELETE FROM patients")
+    await db.db.commit()
+
+
+async def test_oauth_multi_patient_returns_sentinel(db, provider):
+    """MULTI-patient deployment + OAuth token → sentinel, not cross-patient leak.
+
+    This locks down the bug Michal Gašparík reported: he OAuth'd via claude.ai,
+    had no stored selection, and the old _resolve_oauth_patient fell back to
+    resolve_default_patient() → returned the first active patient (Peter's
+    test patient e5g) instead of nothing. New contract: multi-patient =
+    sentinel, and the caller MUST pass patient_slug per call.
+    """
+    from oncofiles.constants import NO_PATIENT_ACCESS_SENTINEL
+    from oncofiles.persistent_oauth import _verified_patient_id
+
+    # Add a second patient (seed SEED_PID is already there) — matches the shape
+    # of Michal's report: seed = Peter's test patient, insert = Michal.
+    await _insert_patient(
+        db,
+        patient_id="22222222-2222-4222-8222-222222222222",
+        slug="michal",
+        display_name="Michal G.",
+        caregiver_email="michal@example.com",
+    )
+
+    token = await _make_oauth_token(provider)
+    verified = await provider.verify_token(token.access_token)
+    assert verified is not None
+    # The ContextVar must hold the sentinel — NOT the seed pid, NOT Michal's pid.
+    assert _verified_patient_id.get() == NO_PATIENT_ACCESS_SENTINEL
+
+
+async def test_oauth_ignores_stranger_selection(db, provider):
+    """Pre-existing `patient_selection` rows for OTHER emails must NOT leak.
+
+    Before the fix, _resolve_oauth_patient iterated all patients, found any
+    patient whose owner had a stored selection, and returned it — regardless
+    of who was calling. This test proves that an OAuth token issued to a
+    fresh MCP client no longer inherits some other user's selection.
+    """
+    from oncofiles.constants import NO_PATIENT_ACCESS_SENTINEL
+    from oncofiles.persistent_oauth import _verified_patient_id
+
+    michal_pid = "22222222-2222-4222-8222-222222222222"
+    await _insert_patient(
+        db,
+        patient_id=michal_pid,
+        slug="michal",
+        display_name="Michal G.",
+        caregiver_email="michal@example.com",
+    )
+    # Peter previously called select_patient(seed) as admin
+    await db.set_patient_selection("peter@example.com", SEED_PID)
+
+    # Michal (different caller) OAuths freshly
+    token = await _make_oauth_token(provider, client_id="claude-ai-michal")
+    verified = await provider.verify_token(token.access_token)
+    assert verified is not None
+    # Must NOT inherit Peter's selection — the MCP token has no owner identity,
+    # so the only safe answer is sentinel.
+    assert _verified_patient_id.get() == NO_PATIENT_ACCESS_SENTINEL
+    assert _verified_patient_id.get() != SEED_PID
+
+
+async def test_oauth_single_patient_deployment_resolves(db, provider):
+    """Single-patient deployment is unambiguous — the lone patient IS the caller.
+
+    Preserves frictionless UX for dev / self-hosted single-user setups where
+    there's only one patient in the DB. The test fixture seeds exactly one
+    patient (SEED_PID), so we just assert the fix returns it.
+    """
+    from oncofiles.persistent_oauth import _verified_patient_id
+
+    token = await _make_oauth_token(provider)
+    verified = await provider.verify_token(token.access_token)
+    assert verified is not None
+    assert _verified_patient_id.get() == SEED_PID
+
+
+async def test_oauth_zero_patients_returns_sentinel(db, provider):
+    """Empty deployment → sentinel. Caller literally has nothing to see."""
+    from oncofiles.constants import NO_PATIENT_ACCESS_SENTINEL
+    from oncofiles.persistent_oauth import _verified_patient_id
+
+    await _delete_all_patients(db)
+
+    token = await _make_oauth_token(provider)
+    verified = await provider.verify_token(token.access_token)
+    assert verified is not None
+    assert _verified_patient_id.get() == NO_PATIENT_ACCESS_SENTINEL
+
+
+async def test_static_bearer_multi_patient_returns_sentinel(db):
+    """Same cross-patient leak existed on the static-bearer path (line 75-76).
+
+    Static MCP_BEARER_TOKEN is operator-level and should NOT auto-default to
+    patient 0 in multi-patient deployments — operators must pass patient_slug
+    per call (same contract as OAuth post-fix).
+    """
+    from oncofiles.constants import NO_PATIENT_ACCESS_SENTINEL
+    from oncofiles.persistent_oauth import _verified_patient_id
+
+    # Seed is already in DB — add one more to hit multi-patient path
+    await _insert_patient(
+        db,
+        patient_id="22222222-2222-4222-8222-222222222222",
+        slug="michal",
+        display_name="Michal G.",
+    )
+
+    provider = PersistentOAuthProvider(db=db, bearer_token="op-static-token")
+    verified = await provider.verify_token("op-static-token")
+    assert verified is not None
+    assert verified.client_id == "oncoteam"
+    assert _verified_patient_id.get() == NO_PATIENT_ACCESS_SENTINEL
+
+
+async def test_static_bearer_single_patient_still_defaults(db):
+    """Static bearer in single-patient deployment preserves the default-pid UX.
+
+    Fixture seeds exactly one patient (SEED_PID), matching the single-patient
+    contract.
+    """
+    from oncofiles.persistent_oauth import _verified_patient_id
+
+    provider = PersistentOAuthProvider(db=db, bearer_token="op-static-token")
+    verified = await provider.verify_token("op-static-token")
+    assert verified is not None
+    assert _verified_patient_id.get() == SEED_PID
+
+
+async def test_patient_bearer_token_unaffected_by_fix(db):
+    """`onco_*` patient bearer tokens identify the patient via the token
+    itself — must still resolve to that specific patient regardless of
+    deployment size. The leak fix must NOT regress this path."""
+    from oncofiles.persistent_oauth import _verified_patient_id
+
+    # Multi-patient deployment (seed + new)
+    michal_pid = "22222222-2222-4222-8222-222222222222"
+    await _insert_patient(
+        db,
+        patient_id=michal_pid,
+        slug="michal",
+        display_name="Michal G.",
+    )
+    # Mint a patient token specifically for Michal
+    michal_token = await db.create_patient_token(michal_pid, label="claude-desktop")
+
+    provider = PersistentOAuthProvider(db=db)
+    verified = await provider.verify_token(michal_token)
+    assert verified is not None
+    assert verified.client_id == f"patient:{michal_pid}"
+    assert _verified_patient_id.get() == michal_pid

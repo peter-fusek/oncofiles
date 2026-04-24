@@ -3895,16 +3895,11 @@ def _check_dashboard_auth(request: Request) -> JSONResponse | None:
     return JSONResponse({"error": "unauthorized"}, status_code=401)
 
 
-NO_PATIENT_ACCESS_SENTINEL = "__no_patient_access__"
-"""Sentinel returned when a dashboard caller has no authorized patient.
-
-Non-empty so it passes truthy `if patient_id:` filters in DB helpers —
-but not a valid UUID, so `WHERE patient_id = ?` matches zero rows.
-This closes a cross-patient data leak where new/unauthorized users would
-see ALL patients' logs: empty string fell through the optional-filter
-gate in _prompt_log / _clinical / _analytics / _operational DB helpers,
-producing unscoped queries (P0 reported 2026-04-23 for Marek Ovcacek).
-"""
+# Canonical sentinel lives in oncofiles.constants to avoid circular imports
+# with persistent_oauth (which also needs it). Re-export here so existing
+# `from oncofiles.server import NO_PATIENT_ACCESS_SENTINEL` call-sites keep
+# working.
+from oncofiles.constants import NO_PATIENT_ACCESS_SENTINEL  # noqa: E402
 
 
 async def _get_dashboard_patient_id(request: Request) -> str:
