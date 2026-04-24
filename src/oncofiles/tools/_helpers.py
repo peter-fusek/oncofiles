@@ -268,6 +268,28 @@ def _check_ownership_or_admin(
     return None
 
 
+def _safe_error(exc: BaseException, category: str = "internal_error") -> dict[str, str]:
+    """Build a sanitized error payload for MCP tool responses (#489).
+
+    Replaces `{"error": str(exc)}` patterns. Raw exception messages can
+    contain cross-patient UUIDs (from SQL bind params), internal URL paths,
+    or stack-frame fragments — per Felix Vítek's oncoteam#438 Bug 2 analysis
+    and our parallel scan.
+
+    Returns a two-key dict: a stable `error` category (safe to match against
+    in clients) and the exception class name for debugging. Always logs the
+    full exception server-side with stack trace.
+
+    Usage:
+        try:
+            ...
+        except Exception as exc:
+            return json.dumps(_safe_error(exc, "lab_fetch_failed"))
+    """
+    logger.exception("tool error [%s]", category)
+    return {"error": category, "kind": type(exc).__name__}
+
+
 def _get_db(ctx: Context) -> Database:
     return ctx.request_context.lifespan_context["db"]
 

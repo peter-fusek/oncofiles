@@ -4000,6 +4000,50 @@ def _email_matches_caregiver(email: str, caregiver_email: str | None) -> bool:
     return any(e.strip().lower() == email_lower for e in caregiver_email.split(","))
 
 
+async def _require_body_patient_access(
+    request: Request, db: Database, patient_id: str
+) -> JSONResponse | None:
+    """ACL gate for dashboard POST endpoints that accept `patient_id` in the body.
+
+    v5.15 Phase 3 closed the `?patient_id=` query-param path via
+    `_get_dashboard_patient_id` (caregiver-email scoping). The body-param path
+    was NOT in that scope — every `/api/*` POST that reads
+    `body.get("patient_id")` previously treated any authenticated dashboard
+    caller as authorized for any patient_id they typed. That's the same
+    class as Felix Vítek's oncoteam#438 Bug 3 (#489 Part B).
+
+    This helper MUST be called after `_check_dashboard_auth` on any endpoint
+    that looks up or mutates patient-specific data based on a caller-supplied
+    patient_id. Bearer-token (admin) callers bypass; session callers must
+    either be in DASHBOARD_ADMIN_EMAILS or match the target patient's
+    caregiver_email.
+
+    Returns None on success, JSONResponse(403) on denial. 404 is returned if
+    the patient doesn't exist — returned before the caregiver check so the
+    response shape stays identical to the pre-fix code for that case.
+    """
+    auth_header = request.headers.get("authorization", "")
+    # Static bearer token callers are admin-scoped (they had to know the secret).
+    if auth_header.startswith("Bearer ") and not auth_header.startswith("Bearer session:"):
+        # Admin bearer → allow. Non-matching bearer would have been rejected by
+        # _check_dashboard_auth already.
+        return None
+    email = _get_dashboard_email(request)
+    if _is_admin_email(email):
+        return None
+    patient = await db.get_patient(patient_id)
+    if not patient:
+        return JSONResponse({"error": f"Patient '{patient_id}' not found"}, status_code=404)
+    if email and _email_matches_caregiver(email, patient.caregiver_email):
+        return None
+    logger.warning(
+        "patient-id body ACL denied: email=%r tried patient=%r",
+        (email or "")[:40],
+        patient_id[:8],
+    )
+    return JSONResponse({"error": "forbidden: not authorized for this patient"}, status_code=403)
+
+
 def _check_dashboard_auth(request: Request) -> JSONResponse | None:
     """Check bearer token OR dashboard session token. Returns error response or None."""
     # Try standard bearer token first
@@ -5795,6 +5839,13 @@ async def api_create_patient_token(request: Request) -> JSONResponse:
         patient_id = body.get("patient_id", "").strip()
         if not patient_id:
             return JSONResponse({"error": "patient_id required"}, status_code=400)
+        # #489 Part B: ACL gate — body-supplied patient_id must belong to caller.
+        # Without this, any session-authenticated user could mint bearer tokens
+        # for any patient (cross-patient privilege escalation; mirror of Felix's
+        # oncoteam#438 Bug 3).
+        acl_err = await _require_body_patient_access(request, db_inst, patient_id)
+        if acl_err is not None:
+            return acl_err
         patient = await db_inst.get_patient(patient_id)
         if not patient:
             return JSONResponse({"error": f"Patient '{patient_id}' not found"}, status_code=404)
@@ -5840,6 +5891,11 @@ async def api_sync_trigger(request: Request) -> JSONResponse:
 
         # Resolve slug → UUID before DB queries
         patient_id = await db_inst.resolve_patient_id(raw_patient_id) or raw_patient_id
+
+        # #489 Part B: ACL gate (body-supplied patient_id → caregiver_email match).
+        acl_err = await _require_body_patient_access(request, db_inst, patient_id)
+        if acl_err is not None:
+            return acl_err
 
         # Verify patient exists
         pat = await db_inst.get_patient(patient_id)
@@ -5900,6 +5956,12 @@ async def api_enhance_trigger(request: Request) -> JSONResponse:
         files = lifespan_ctx["files"]
 
         patient_id = await db_inst.resolve_patient_id(raw_patient_id) or raw_patient_id
+
+        # #489 Part B: ACL gate (body-supplied patient_id → caregiver_email match).
+        acl_err = await _require_body_patient_access(request, db_inst, patient_id)
+        if acl_err is not None:
+            return acl_err
+
         pat = await db_inst.get_patient(patient_id)
         if not pat:
             return JSONResponse({"error": f"Patient '{patient_id}' not found"}, status_code=404)
@@ -6000,6 +6062,12 @@ async def api_gdrive_set_folder(request: Request) -> JSONResponse:
 
         db_inst: Database = request.app.state.fastmcp_server._lifespan_result["db"]
         patient_id = await db_inst.resolve_patient_id(raw_patient_id) or raw_patient_id
+
+        # #489 Part B: ACL gate (body-supplied patient_id → caregiver_email match).
+        acl_err = await _require_body_patient_access(request, db_inst, patient_id)
+        if acl_err is not None:
+            return acl_err
+
         token = await db_inst.get_oauth_token(patient_id=patient_id)
         if not token:
             return JSONResponse(
@@ -6123,6 +6191,13 @@ async def api_create_share_link(request: Request) -> JSONResponse:
             return JSONResponse({"error": "patient_id required"}, status_code=400)
 
         db_inst: Database = request.app.state.fastmcp_server._lifespan_result["db"]
+
+        # #489 Part B: ACL gate — share-link creation mints cross-session access.
+        # Body-supplied patient_id must belong to caller (or caller is admin).
+        acl_err = await _require_body_patient_access(request, db_inst, patient_id)
+        if acl_err is not None:
+            return acl_err
+
         patient = await db_inst.get_patient(patient_id)
         if not patient:
             return JSONResponse(
