@@ -3751,6 +3751,98 @@ async def status(request: Request) -> JSONResponse:
         return JSONResponse({"status": "error", "version": VERSION}, status_code=500)
 
 
+@mcp.custom_route("/debug/memory-trace", methods=["GET"])
+async def debug_memory_trace(request: Request) -> JSONResponse:
+    """On-demand tracemalloc snapshot for diagnosing memory leaks (#426).
+
+    Requires bearer token auth (operator-only, never exposed to MCP clients).
+    Opt-in via ``MEMORY_TRACEMALLOC_ENABLED=true`` env var so we don't pay
+    the ~15% per-alloc overhead in steady state. To use:
+
+        1. Set ``MEMORY_TRACEMALLOC_ENABLED=true`` in Railway env + deploy.
+        2. Wait for the suspect workload window (e.g. 23:00 UTC nightly AI run).
+        3. curl -H "Authorization: Bearer <MCP_BEARER_TOKEN>"
+              https://oncofiles.com/debug/memory-trace
+        4. The response carries top-20 allocators by size + current RSS.
+        5. Unset the env var after diagnosis — tracemalloc itself grows the
+           heap (each snapshot costs ~10-20 MB) and is not a steady-state tool.
+
+    Returns 503 when the flag is off so on/off state is obvious to the caller.
+    """
+    err = _check_bearer(request)
+    if err:
+        return err
+    if not MCP_BEARER_TOKEN:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+
+    if os.environ.get("MEMORY_TRACEMALLOC_ENABLED", "").lower() not in ("1", "true", "yes"):
+        return JSONResponse(
+            {
+                "error": "tracemalloc disabled",
+                "hint": (
+                    "Set MEMORY_TRACEMALLOC_ENABLED=true in Railway env and "
+                    "redeploy to enable. Unset after diagnosis to avoid the "
+                    "~15% per-alloc overhead."
+                ),
+            },
+            status_code=503,
+        )
+
+    try:
+        import tracemalloc
+
+        if not tracemalloc.is_tracing():
+            # Lazy-start on first hit so the env flag alone is enough — no
+            # need for a separate startup hook. Frames kept small (5 levels)
+            # to cap snapshot memory.
+            tracemalloc.start(5)
+            return JSONResponse(
+                {
+                    "status": "started",
+                    "message": (
+                        "tracemalloc just started — subsequent calls will "
+                        "return real top-allocator data. Trigger the suspect "
+                        "workload then call this endpoint again."
+                    ),
+                    "rss_mb": round(get_rss_mb(), 1),
+                }
+            )
+
+        snap = tracemalloc.take_snapshot()
+        top = snap.statistics("lineno")[:20]
+        entries = []
+        for stat in top:
+            frame = stat.traceback[0]
+            entries.append(
+                {
+                    "file": frame.filename.rsplit("/", 2)[-2]
+                    + "/"
+                    + frame.filename.rsplit("/", 1)[-1]
+                    if "/" in frame.filename
+                    else frame.filename,
+                    "line": frame.lineno,
+                    "size_mb": round(stat.size / (1024 * 1024), 3),
+                    "count": stat.count,
+                    "avg_bytes": int(stat.size / stat.count) if stat.count else 0,
+                }
+            )
+        current_mb, peak_mb = tracemalloc.get_traced_memory()
+        return JSONResponse(
+            {
+                "rss_mb": round(get_rss_mb(), 1),
+                "traced_current_mb": round(current_mb / (1024 * 1024), 1),
+                "traced_peak_mb": round(peak_mb / (1024 * 1024), 1),
+                "top_allocators": entries,
+            }
+        )
+    except Exception as exc:
+        resp = _circuit_breaker_503(exc, "/debug/memory-trace")
+        if resp is not None:
+            return resp
+        logger.exception("memory-trace endpoint error")
+        return JSONResponse({"error": "internal error"}, status_code=500)
+
+
 @mcp.custom_route("/metrics", methods=["GET"])
 async def metrics(request: Request) -> JSONResponse:
     """Return server metrics. Requires bearer token authentication."""

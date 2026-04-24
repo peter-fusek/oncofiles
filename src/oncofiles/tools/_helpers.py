@@ -256,15 +256,28 @@ def _doc_header(doc: Document) -> str:
 
 
 def _pdf_to_images(content_bytes: bytes) -> list[Image]:
-    """Convert PDF pages to JPEG images using pymupdf."""
+    """Convert PDF pages to JPEG images using pymupdf.
+
+    #426 cleanup: explicitly `del pix` after extracting bytes. A 200-DPI A4
+    pixmap is 4-8 MB of native (MuPDF C-heap) memory that Python GC can't
+    reclaim until the Python wrapper goes out of scope. Without the explicit
+    del, a 10-page PDF view can leave ~50 MB pinned until the surrounding
+    function returns, and on a long-running process with many view_document
+    calls this accumulates. The nightly pipeline's own fitz path in sync.py
+    already does this; this brings the view path to parity.
+    """
     import pymupdf
 
-    images = []
+    images: list[Image] = []
     doc = pymupdf.open(stream=content_bytes, filetype="pdf")
     try:
         for page in doc:
             pix = page.get_pixmap(dpi=200)
-            images.append(Image(data=pix.tobytes("jpeg"), format="jpeg"))
+            try:
+                jpeg_bytes = pix.tobytes("jpeg")
+            finally:
+                del pix
+            images.append(Image(data=jpeg_bytes, format="jpeg"))
     finally:
         doc.close()
     return images
