@@ -147,6 +147,50 @@ async def test_add_activity_log_sets_caller_patient_id(db: Database):
 # ── backfill_orphan_prompt_logs admin gate ─────────────────────────
 
 
+async def test_search_activity_log_non_admin_no_pid_refuses_to_enumerate(db: Database):
+    """Legacy-token regression: non-admin caller with empty caller_pid must
+    NOT fall through to unfiltered (the #484 no-misses empirical retest
+    caught this — get_activity_stats was returning 36,201 system-wide
+    rows for my pre-#478 legacy-email-binding OAuth session).
+    """
+    from oncofiles.tools.activity import search_activity_log
+
+    await _seed_activity(db, ERIKA_UUID, 2)
+    _verified_caller_is_admin.set(False)
+    from oncofiles import patient_middleware
+
+    token = patient_middleware._current_patient_id.set("")
+    try:
+        ctx = _mock_ctx(db)
+        raw = await search_activity_log(ctx)
+        result = json.loads(raw)
+        assert result["total"] == 0
+        assert result["entries"] == []
+    finally:
+        patient_middleware._current_patient_id.reset(token)
+
+
+async def test_get_activity_stats_non_admin_no_pid_refuses_to_enumerate(db: Database):
+    """Same regression, stats endpoint. Returning {"stats": [], "total_calls": 0}
+    is the safe default for legacy-token callers who have no bound patient.
+    """
+    from oncofiles.tools.activity import get_activity_stats
+
+    await _seed_activity(db, ERIKA_UUID, 3)
+    _verified_caller_is_admin.set(False)
+    from oncofiles import patient_middleware
+
+    token = patient_middleware._current_patient_id.set("")
+    try:
+        ctx = _mock_ctx(db)
+        raw = await get_activity_stats(ctx)
+        result = json.loads(raw)
+        assert result["total_calls"] == 0
+        assert result["stats"] == []
+    finally:
+        patient_middleware._current_patient_id.reset(token)
+
+
 async def test_backfill_orphan_prompt_logs_rejects_non_admin(db: Database):
     from oncofiles.tools.prompt_log import backfill_orphan_prompt_logs
 

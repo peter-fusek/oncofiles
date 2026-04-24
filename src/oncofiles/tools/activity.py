@@ -110,10 +110,18 @@ async def search_activity_log(
     try:
         db = _get_db(ctx)
         caller_pid = await _resolve_patient_id(patient_slug, ctx, required=False)
-        # Admin with no patient_slug → system-wide view (pid empty); admin
-        # with patient_slug → scoped to that patient. Non-admin always
-        # scoped to caller's own pid.
-        scope_pid = caller_pid if (caller_pid or not _is_admin_caller()) else ""
+        is_admin = _is_admin_caller()
+        # Scope policy:
+        #   - admin + no caller_pid → system-wide view (scope_pid = "")
+        #   - admin + caller_pid → scoped to that pid (patient_slug targeted)
+        #   - non-admin + caller_pid → scoped to their own pid
+        #   - non-admin + no caller_pid → refuse to enumerate (legacy pre-#478
+        #     OAuth tokens or unresolved identity); return empty instead of
+        #     falling through to unfiltered (that was the regression caught
+        #     during the #484 no-misses empirical retest).
+        if not is_admin and not caller_pid:
+            return json.dumps({"entries": [], "total": 0})
+        scope_pid = caller_pid if (caller_pid or not is_admin) else ""
         query = ActivityLogQuery(
             patient_id=scope_pid,
             session_id=session_id,
@@ -169,7 +177,13 @@ async def get_activity_stats(
     try:
         db = _get_db(ctx)
         caller_pid = await _resolve_patient_id(patient_slug, ctx, required=False)
-        scope_pid = caller_pid if (caller_pid or not _is_admin_caller()) else ""
+        is_admin = _is_admin_caller()
+        # Non-admin + no caller_pid → refuse to enumerate. Same policy as
+        # search_activity_log; prevents cross-patient aggregate leaks for
+        # legacy pre-#478 OAuth tokens that have no bound email.
+        if not is_admin and not caller_pid:
+            return json.dumps({"stats": [], "total_calls": 0})
+        scope_pid = caller_pid if (caller_pid or not is_admin) else ""
         stats = await db.get_activity_stats(
             session_id=session_id,
             agent_id=agent_id,
