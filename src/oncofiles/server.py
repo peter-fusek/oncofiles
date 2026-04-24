@@ -3525,16 +3525,19 @@ async def health(request: Request) -> JSONResponse:
         result["memory_rss_mb"] = round(_rss_now, 1)
         result["memory"] = get_rss_trend()
         result["semaphores"] = get_semaphore_status()
-        # Folder sync status — surfaces patients with suspended sync
-        if _folder_404_counts:
-            result["folder_404_suspended"] = {
-                pid: count
-                for pid, count in _folder_404_counts.items()
-                if count >= _FOLDER_404_THRESHOLD
-            }
-        # Stale OAuth tokens — surfaces (patient_id, service) pairs that need re-auth
+        # Folder sync status — surface COUNTS only, not patient IDs (#488).
+        # /health is unauthenticated (Railway liveness probe) so per-patient
+        # keys leaked active UUIDs + which caregivers were experiencing sync
+        # or OAuth pain. Aggregated counts keep operator observability
+        # without the enumeration vector. Authenticated admins can see the
+        # per-patient detail on the dashboard / /readiness.
+        suspended = sum(
+            1 for count in _folder_404_counts.values() if count >= _FOLDER_404_THRESHOLD
+        )
+        if suspended:
+            result["folder_404_suspended_count"] = suspended
         if _invalid_grant_tokens:
-            result["needs_reauth"] = sorted([f"{pid}:{svc}" for pid, svc in _invalid_grant_tokens])
+            result["needs_reauth_count"] = len(_invalid_grant_tokens)
     except Exception:
         logger.debug("Health: lifespan context not yet available", exc_info=True)
     return JSONResponse(result)
