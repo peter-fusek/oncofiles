@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import mimetypes
+import re
 from pathlib import Path
 from typing import BinaryIO
 
@@ -12,6 +13,16 @@ import anthropic
 from oncofiles.config import ANTHROPIC_API_KEY
 
 logger = logging.getLogger(__name__)
+
+# Anthropic Files API rejects filenames with characters like ?, :, *, <, >, |, ".
+# iOS Notes ("Scanned 30 Mar 2026 at 11:27:28.pdf") and SK fax scanner outputs
+# ("_ POURICOVANIE FOL FAX?.png") routinely produce such names. See #477.
+_FORBIDDEN_FILENAME_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f\x7f]')
+
+
+def _sanitize_filename(filename: str) -> str:
+    sanitized = _FORBIDDEN_FILENAME_CHARS.sub("_", filename).strip()
+    return sanitized or "file"
 
 
 class FilesClient:
@@ -32,6 +43,10 @@ class FilesClient:
         mime_type: str | None = None,
     ) -> anthropic.types.beta.FileMetadata:
         """Upload a file and return its metadata."""
+        sanitized = _sanitize_filename(filename)
+        if sanitized != filename:
+            logger.info("Sanitized filename for upload: %r -> %r", filename, sanitized)
+        filename = sanitized
         if len(filename) > 255:
             _, _, ext = filename.rpartition(".")
             filename = filename[: 255 - len(ext) - 1] + "." + ext if ext else filename[:255]
