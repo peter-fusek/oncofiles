@@ -186,6 +186,88 @@ async def _resolve_patient_id(
     return _get_patient_id(required=required)
 
 
+# ── Admin scope & ownership (#487 / v5.15 Phase 3) ──────────────────────────
+
+
+def _is_admin_caller() -> bool:
+    """Return True if the current request has admin scope.
+
+    Admin is either: (a) the static `MCP_BEARER_TOKEN` caller (operator /
+    Oncoteam / dev), or (b) an OAuth caller whose Google email matches
+    `DASHBOARD_ADMIN_EMAILS`. `verify_token()` in persistent_oauth.py sets
+    the `_verified_caller_is_admin` ContextVar for both cases.
+
+    The ContextVar defaults to False; local stdio invocations (direct
+    function calls from tests or stdio transport) need to opt in if they
+    want admin behavior. Returning False here for stdio is the safe
+    default — tests that need admin should set the ContextVar explicitly.
+    """
+    try:
+        from oncofiles.persistent_oauth import _verified_caller_is_admin
+
+        return bool(_verified_caller_is_admin.get())
+    except Exception:
+        return False
+
+
+def _caller_email() -> str:
+    """Return the caller's OAuth-bound Google email, or empty string.
+
+    Populated by `verify_token()` for MCP OAuth tokens (#478 email binding);
+    empty for static-bearer / patient-bearer / stdio callers.
+    """
+    try:
+        from oncofiles.persistent_oauth import _verified_caller_email
+
+        return _verified_caller_email.get() or ""
+    except Exception:
+        return ""
+
+
+def _require_admin_or_raise(tool_name: str) -> None:
+    """Raise ValueError if the current caller is not admin.
+
+    Used by admin-only MCP tools per #487. The ValueError surfaces to the
+    MCP client as a JSON-encoded error (wrapped by the tool's try/except),
+    so callers see a clear reason rather than a silent cross-patient action.
+    """
+    if not _is_admin_caller():
+        raise ValueError(
+            f"{tool_name!r} requires admin scope. "
+            "This tool can mutate or audit data across patients and is restricted "
+            "to the static MCP_BEARER_TOKEN caller or an OAuth caller whose Google "
+            "email is in DASHBOARD_ADMIN_EMAILS."
+        )
+
+
+def _check_ownership_or_admin(
+    entity_name: str, entity_id: int | str, owner_pid: str | None, caller_pid: str
+) -> str | None:
+    """Verify the caller owns `entity_id` OR has admin scope.
+
+    Returns None on success, or an error string for the tool to JSON-encode.
+    Admin callers bypass the pid check; non-admin callers must match the
+    entity's `patient_id` exactly.
+
+    Used by read-by-id MCP tools that take an integer id (get_email,
+    get_calendar_event, get_document_by_id, etc.) to close the #487 C1
+    cross-patient enumeration finding.
+    """
+    if _is_admin_caller():
+        return None
+    if not owner_pid:
+        return f"{entity_name} {entity_id}: no patient_id on record; cannot verify ownership."
+    if not caller_pid:
+        return (
+            f"{entity_name} {entity_id}: access denied — no authenticated patient. "
+            "Sign in or pass patient_slug."
+        )
+    if owner_pid != caller_pid:
+        # Do NOT echo the real owner's pid — that would be a secondary leak.
+        return f"{entity_name} {entity_id}: access denied (not owned by the calling patient)."
+    return None
+
+
 def _get_db(ctx: Context) -> Database:
     return ctx.request_context.lifespan_context["db"]
 

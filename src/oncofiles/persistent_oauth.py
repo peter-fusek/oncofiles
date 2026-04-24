@@ -32,6 +32,22 @@ _verified_patient_id: contextvars.ContextVar[str] = contextvars.ContextVar(
     "verified_patient_id", default=""
 )
 
+# Set during verify_token to flag admin callers (static MCP_BEARER_TOKEN OR
+# OAuth with an email in DASHBOARD_ADMIN_EMAILS). Used by Phase 3 of the
+# v5.15 security sweep (#487) to gate admin-only MCP tools and to permit
+# ownership-check bypass on read-by-id tools. Never set by regular patient
+# OAuth or per-patient `onco_*` bearer tokens.
+_verified_caller_is_admin: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "verified_caller_is_admin", default=False
+)
+
+# Set during verify_token to surface the OAuth-bound Google email to tools
+# that need to check caregiver_email scoping or admin-list membership.
+# Empty string when absent (static bearer, patient bearer, legacy OAuth).
+_verified_caller_email: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "verified_caller_email", default=""
+)
+
 # #478 email-capture bridge: populated by MCPAuthorizeEmailCaptureMiddleware
 # when a signed-in user's browser hits GET /authorize. Keyed by code_challenge
 # (stable across the OAuth handshake — AuthorizationCode carries it unchanged).
@@ -111,11 +127,14 @@ class PersistentOAuthProvider(InMemoryOAuthProvider):
     # ── Bearer token support (server-to-server) ─────────────────────────
 
     async def verify_token(self, token: str) -> AccessToken | None:
-        # Reset per-request ContextVar (#290)
+        # Reset per-request ContextVars (#290, #487)
         _verified_patient_id.set("")
+        _verified_caller_is_admin.set(False)
+        _verified_caller_email.set("")
 
-        # 1. Static bearer token (Oncoteam, dev)
+        # 1. Static bearer token (Oncoteam, dev) — implicit admin scope
         if self._bearer_token and hmac.compare_digest(token.encode(), self._bearer_token.encode()):
+            _verified_caller_is_admin.set(True)
             if self._db:
                 # Try patient_tokens first (if static token is also a patient token)
                 pid = await self._db.resolve_patient_from_token(token)
@@ -141,6 +160,17 @@ class PersistentOAuthProvider(InMemoryOAuthProvider):
             # safe single-patient / sentinel path.
             if self._db:
                 bound_email = await self._read_user_email(token)
+                if bound_email:
+                    _verified_caller_email.set(bound_email)
+                    # #487: admin scope for OAuth callers whose Google email
+                    # is listed in DASHBOARD_ADMIN_EMAILS. Matches the
+                    # dashboard /api/* scoping for consistency.
+                    from oncofiles.config import DASHBOARD_ADMIN_EMAILS
+
+                    email_lower = bound_email.lower()
+                    admin_emails_lower = {e.lower() for e in DASHBOARD_ADMIN_EMAILS}
+                    if email_lower in admin_emails_lower:
+                        _verified_caller_is_admin.set(True)
                 pid = await self._resolve_oauth_patient(user_email=bound_email)
                 if pid:
                     _verified_patient_id.set(pid)

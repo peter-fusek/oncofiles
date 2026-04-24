@@ -173,13 +173,26 @@ async def search_emails(
 async def get_email(ctx: Context, email_entry_id: int) -> str:
     """Get full details of a stored email entry by ID.
 
+    Access scoping (#487): callers must own the entry (patient_id match)
+    or have admin scope. Prevents cross-patient Gmail content enumeration
+    via sequential-ID brute force.
+
     Args:
         email_entry_id: The email entry ID.
     """
+    from oncofiles.tools._helpers import _check_ownership_or_admin
+
     db = _get_db(ctx)
     entry = await db.get_email_entry(email_entry_id)
     if not entry:
         return json.dumps({"error": f"Email entry not found: {email_entry_id}"})
+
+    caller_pid = _get_patient_id(required=False)
+    owner_pid = getattr(entry, "patient_id", None)
+    err = _check_ownership_or_admin("email_entry", email_entry_id, owner_pid, caller_pid)
+    if err is not None:
+        return json.dumps({"error": err})
+
     return json.dumps(
         {
             "id": entry.id,
@@ -254,13 +267,25 @@ async def search_calendar_events(
 async def get_calendar_event(ctx: Context, calendar_entry_id: int) -> str:
     """Get full details of a stored calendar entry by ID.
 
+    Access scoping (#487): callers must own the entry (patient_id match)
+    or have admin scope. Prevents cross-patient calendar enumeration.
+
     Args:
         calendar_entry_id: The calendar entry ID.
     """
+    from oncofiles.tools._helpers import _check_ownership_or_admin
+
     db = _get_db(ctx)
     entry = await db.get_calendar_entry(calendar_entry_id)
     if not entry:
         return json.dumps({"error": f"Calendar entry not found: {calendar_entry_id}"})
+
+    caller_pid = _get_patient_id(required=False)
+    owner_pid = getattr(entry, "patient_id", None)
+    err = _check_ownership_or_admin("calendar_entry", calendar_entry_id, owner_pid, caller_pid)
+    if err is not None:
+        return json.dumps({"error": err})
+
     return json.dumps(
         {
             "id": entry.id,

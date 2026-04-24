@@ -658,13 +658,21 @@ async def reassign_document(ctx: Context, doc_id: int, target_patient_slug: str)
     """Reassign a document to a different patient (admin data repair tool).
 
     Use this when a document was imported under the wrong patient during sync.
-    Updates patient_id on the document record. Only works when called with the
-    admin bearer token (not patient-specific tokens).
+    Updates patient_id on the document record. Enforced admin-only (#487):
+    requires either the static MCP_BEARER_TOKEN caller or an OAuth caller
+    whose Google email is in DASHBOARD_ADMIN_EMAILS.
 
     Args:
         doc_id: The integer database ID of the document to reassign.
         target_patient_slug: Target patient slug or UUID (e.g. 'nora-antalova').
     """
+    from oncofiles.tools._helpers import _require_admin_or_raise
+
+    try:
+        _require_admin_or_raise("reassign_document")
+    except ValueError as exc:
+        return json.dumps({"error": str(exc)})
+
     db = _get_db(ctx)
 
     # Verify document exists
@@ -714,10 +722,22 @@ async def reassign_document(ctx: Context, doc_id: int, target_patient_slug: str)
 async def audit_patient_isolation(ctx: Context) -> str:
     """Scan all patients for cross-patient filename contamination.
 
+    Admin-only (#487): enumerates every patient's slug + display_name; must
+    not be callable by patient-scoped tokens. Enforcement added after the
+    2026-04-24 audit found the docstring already claimed admin-sounding
+    scope while the code had zero check.
+
     Checks every document's filename against all patients' display names.
     Reports any document whose filename contains a DIFFERENT patient's name.
     Generic — works for any number of patients, no hardcoded names.
     """
+    from oncofiles.tools._helpers import _require_admin_or_raise
+
+    try:
+        _require_admin_or_raise("audit_patient_isolation")
+    except ValueError as exc:
+        return json.dumps({"error": str(exc)})
+
     db = _get_db(ctx)
     patients = await db.list_patients(active_only=True)
 

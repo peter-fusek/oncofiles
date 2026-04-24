@@ -77,14 +77,35 @@ async def update_patient_context(
 
 
 async def list_patients(ctx: Context) -> str:
-    """List all available patients.
+    """List available patients.
 
-    Shows active patients with their slug, name, document count,
-    and patient type. Use select_patient to switch to a different patient.
+    Scoping (#487 / #483): admin callers see every active patient; non-admin
+    callers see only patients whose `caregiver_email` matches the caller's
+    OAuth-bound Google email. Patient-bearer (`onco_*`) tokens see only the
+    single patient their token is bound to.
     """
+    from oncofiles.persistent_oauth import _email_matches_caregiver
+    from oncofiles.tools._helpers import _caller_email, _is_admin_caller
+
     db = _get_db(ctx)
     current_pid = _get_patient_id(required=False)
     patients = await db.list_patients(active_only=True)
+
+    # Apply caller-scope filter BEFORE building the response.
+    if not _is_admin_caller():
+        caller_email = _caller_email()
+        if caller_email:
+            # OAuth caller: show only patients whose caregiver_email matches.
+            patients = [
+                p for p in patients if _email_matches_caregiver(caller_email, p.caregiver_email)
+            ]
+        elif current_pid:
+            # No email (patient bearer or stdio): restrict to the bound patient.
+            patients = [p for p in patients if p.patient_id == current_pid]
+        else:
+            # No identity at all: refuse to enumerate.
+            patients = []
+
     if not patients:
         return json.dumps(
             {
