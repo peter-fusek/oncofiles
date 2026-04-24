@@ -6550,33 +6550,41 @@ class MCPAuthorizeEmailCaptureMiddleware:
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
-        if scope.get("path") != "/authorize" or scope.get("method") != "GET":
+        path = scope.get("path")
+        method = scope.get("method")
+        if path != "/authorize" or method != "GET":
             await self.app(scope, receive, send)
             return
+        # #494 diagnostic: we were seeing 37/37 tokens with NULL user_email on
+        # prod despite the middleware being registered. Log every /authorize
+        # GET so we can confirm the middleware fires and which branch it takes.
+        logger.info("email-capture MW: enter /authorize GET")
         try:
             from urllib.parse import parse_qs
 
-            # Extract code_challenge from query string
             qs = scope.get("query_string", b"").decode("latin-1", errors="replace")
             parsed = parse_qs(qs)
             code_challenges = parsed.get("code_challenge", [])
             if not code_challenges:
+                logger.info("email-capture MW: no code_challenge in query")
                 await self.app(scope, receive, send)
                 return
             code_challenge = code_challenges[0]
 
-            # Extract session cookie
+            cookie_header_found = False
+            session_cookie_found = False
             email = None
             for name, value in scope.get("headers", []):
                 if name.decode("latin-1").lower() != "cookie":
                     continue
+                cookie_header_found = True
                 cookie_header = value.decode("latin-1", errors="replace")
-                # Parse "name=value; name2=value2; ..."
                 for pair in cookie_header.split(";"):
                     if "=" not in pair:
                         continue
                     cname, _, cvalue = pair.strip().partition("=")
                     if cname == "oncofiles_session":
+                        session_cookie_found = True
                         email = _verify_session_token(cvalue.strip())
                         break
                 if email:
@@ -6587,6 +6595,14 @@ class MCPAuthorizeEmailCaptureMiddleware:
 
                 stash_email_for_challenge(code_challenge, email)
                 logger.info("MCP /authorize: bound email to code_challenge (email=%s)", email)
+            else:
+                logger.info(
+                    "email-capture MW: no email stashed (cookie_header=%s, session_cookie=%s, "
+                    "verify_ok=%s)",
+                    cookie_header_found,
+                    session_cookie_found,
+                    session_cookie_found and email is not None,
+                )
         except Exception:
             # Never block the /authorize flow on our own bug — fail open to
             # the post-hot-fix sentinel behavior.
