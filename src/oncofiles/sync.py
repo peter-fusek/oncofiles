@@ -407,9 +407,25 @@ async def sync_from_gdrive(
                 if current_doc_count >= MAX_DOCUMENTS_PER_PATIENT:
                     fup_reached = True
 
-        except Exception:
-            logger.exception("sync_from_gdrive: error processing %s", filename)
+        except Exception as exc:
+            # #477 Issue 2: previous log was "error processing <filename>" with only
+            # the traceback in exc_info. Grep-friendly format means we can run
+            # `rg "sync_from_gdrive: error"` in Railway logs and see the exception
+            # class + message in the first line without reading stacktraces.
+            logger.exception(
+                "sync_from_gdrive: error processing %r (gdrive_id=%s, mime=%s) — %s: %s",
+                filename,
+                gdrive_id,
+                mime_type,
+                type(exc).__name__,
+                str(exc)[:300],
+            )
+            # Track error classes in stats so audit_document_pipeline can surface
+            # recurring patterns without log-scraping.
             stats["errors"] += 1
+            err_cls = type(exc).__name__
+            stats.setdefault("errors_by_type", {})
+            stats["errors_by_type"][err_cls] = stats["errors_by_type"].get(err_cls, 0) + 1
 
     # Classify docs whose gdrive_id isn't in the patient's sync-root listing
     # into three buckets (#477):
