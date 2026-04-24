@@ -317,3 +317,123 @@ async def test_get_calendar_event_denies_other_patient(db: Database):
     assert "error" in result
     assert "access denied" in result["error"]
     assert "private appt" not in result.get("error", "")
+
+
+# ── get_patient_context ownership (#493) ─────────────────────────────
+
+
+async def test_get_patient_context_blocks_non_caregiver_slug(db: Database):
+    """#493: get_patient_context(patient_slug=X) must not leak name/DOB/surgeries
+    when the caller has no caregiver_email match and is not bound to X's pid.
+    """
+    from oncofiles import patient_context
+    from oncofiles.tools.patient import get_patient_context
+
+    victim = _make_patient("victim-slug", "Victim Patient", "owner@example.com")
+    await db.insert_patient(victim)
+    # Populate PHI for the victim so we can prove it's NOT leaked.
+    patient_context._contexts[victim.patient_id] = {
+        "name": "Victim Patient",
+        "date_of_birth": "1980-05-06",
+        "sex": "male",
+        "surgeries": [{"date": "1998-06-25", "procedure": "appendectomy"}],
+    }
+
+    _verified_caller_is_admin.set(False)
+    _verified_caller_email.set("different@example.com")
+    # No bound patient_id (OAuth caller whose email doesn't match any patient).
+    _verified_patient_id.set("")
+    ctx = MagicMock()
+    ctx.request_context.lifespan_context = {"db": db, "files": MagicMock()}
+
+    raw = await get_patient_context(ctx, patient_slug="victim-slug")
+    result = json.loads(raw)
+
+    # Canonical empty shape (list_patients style), NO PHI fields.
+    assert result.get("patients") == []
+    assert "guidance" in result
+    assert "name" not in result
+    assert "date_of_birth" not in result
+    assert "surgeries" not in result
+    assert "sex" not in result
+    # Sensitive values must not appear anywhere in the payload.
+    assert "Victim Patient" not in raw
+    assert "1980-05-06" not in raw
+    assert "1998-06-25" not in raw
+
+
+async def test_get_patient_context_admin_sees_full_context(db: Database):
+    """Admin callers keep full access — used by Oncoteam and DASHBOARD_ADMIN_EMAILS."""
+    from oncofiles import patient_context
+    from oncofiles.tools.patient import get_patient_context
+
+    victim = _make_patient("admin-target", "Admin Target", "owner@example.com")
+    await db.insert_patient(victim)
+    patient_context._contexts[victim.patient_id] = {
+        "name": "Admin Target",
+        "date_of_birth": "1980-05-06",
+    }
+
+    _verified_caller_is_admin.set(True)
+    _verified_caller_email.set("")
+    _verified_patient_id.set("")
+    ctx = MagicMock()
+    ctx.request_context.lifespan_context = {"db": db, "files": MagicMock()}
+
+    result = json.loads(await get_patient_context(ctx, patient_slug="admin-target"))
+    assert result.get("name") == "Admin Target"
+    assert result.get("date_of_birth") == "1980-05-06"
+    _verified_caller_is_admin.set(False)
+
+
+async def test_get_patient_context_caregiver_email_match_grants_access(db: Database):
+    """OAuth caller whose email matches caregiver_email sees full context."""
+    from oncofiles import patient_context
+    from oncofiles.tools.patient import get_patient_context
+
+    target = _make_patient("friend-slug", "Friend Target", "friend@example.com")
+    await db.insert_patient(target)
+    patient_context._contexts[target.patient_id] = {
+        "name": "Friend Target",
+        "date_of_birth": "1970-01-01",
+    }
+
+    _verified_caller_is_admin.set(False)
+    _verified_caller_email.set("friend@example.com")
+    _verified_patient_id.set("")
+    ctx = MagicMock()
+    ctx.request_context.lifespan_context = {"db": db, "files": MagicMock()}
+
+    result = json.loads(await get_patient_context(ctx, patient_slug="friend-slug"))
+    assert result.get("name") == "Friend Target"
+    assert result.get("date_of_birth") == "1970-01-01"
+
+
+async def test_get_patient_context_bearer_bound_to_own_pid_sees_context(db: Database):
+    """Patient-bearer caller bound to exactly this pid retains access."""
+    from oncofiles import patient_context
+    from oncofiles.patient_middleware import _current_patient_id
+    from oncofiles.tools.patient import get_patient_context
+
+    target = _make_patient("bearer-slug", "Bearer Target", "someone@example.com")
+    await db.insert_patient(target)
+    patient_context._contexts[target.patient_id] = {
+        "name": "Bearer Target",
+        "date_of_birth": "1990-12-12",
+    }
+
+    _verified_caller_is_admin.set(False)
+    _verified_caller_email.set("")
+    # _get_patient_id reads from patient_middleware._current_patient_id, not
+    # _verified_patient_id — override the fixture's ERIKA binding to simulate
+    # a patient-bearer token bound to this specific pid.
+    token = _current_patient_id.set(target.patient_id)
+    try:
+        ctx = MagicMock()
+        ctx.request_context.lifespan_context = {"db": db, "files": MagicMock()}
+
+        result = json.loads(await get_patient_context(ctx, patient_slug="bearer-slug"))
+        assert result.get("name") == "Bearer Target"
+        assert result.get("date_of_birth") == "1990-12-12"
+    finally:
+        _current_patient_id.reset(token)

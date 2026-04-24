@@ -16,15 +16,63 @@ async def get_patient_context(ctx: Context, patient_slug: str | None = None) -> 
     Returns structured patient data including diagnosis, biomarkers,
     treatment, metastases, comorbidities, and excluded therapies.
 
+    Scoping (#493): admin callers see every patient; non-admin OAuth callers
+    see only patients whose `caregiver_email` matches the caller's Google
+    email; patient-bearer (`onco_*`) callers see only the single patient
+    their token is bound to. Unauthorized slug lookups return the same
+    empty-plus-guidance shape as `list_patients` — never PHI (name, DOB,
+    surgeries, etc.).
+
     Args:
         patient_slug: Optional — explicit patient slug (e.g. 'q1b'). Required
             in stateless HTTP contexts (Claude.ai connector, ChatGPT) where
             select_patient() state does not persist across tool calls (#429).
             Stdio + single-patient bearer flows can omit.
     """
-    from oncofiles.tools._helpers import _with_clinical_disclaimer
+    from oncofiles.persistent_oauth import _email_matches_caregiver
+    from oncofiles.tools._helpers import (
+        _caller_email,
+        _is_admin_caller,
+        _with_clinical_disclaimer,
+    )
 
     pid = await _resolve_patient_id(patient_slug, ctx)
+
+    # Ownership check (#493): mirror list_patients scoping BEFORE returning PHI.
+    # Admin callers bypass. Non-admin callers must either (a) match the target
+    # patient's caregiver_email (OAuth path), or (b) be bound to this exact pid
+    # via a patient-bearer token. Anything else returns the empty-guidance
+    # shape so we never leak name/DOB/surgeries to unauthorized slug lookups.
+    if not _is_admin_caller():
+        db = _get_db(ctx)
+        target = await db.get_patient(pid)
+        caller_email = _caller_email()
+        bound_pid = _get_patient_id(required=False)
+        authorized = False
+        if (
+            caller_email
+            and target
+            and _email_matches_caregiver(caller_email, target.caregiver_email)
+        ):
+            authorized = True
+        elif bound_pid and bound_pid == pid:
+            # Patient-bearer / stdio caller already restricted to this pid.
+            authorized = True
+        if not authorized:
+            return json.dumps(
+                {
+                    "patients": [],
+                    "guidance": (
+                        "No patient access resolved for this slug. "
+                        "Use list_patients() to see patients you can access. "
+                        "If you expect access, ensure your Google email appears in "
+                        "the patient's caregiver_email on the dashboard."
+                    ),
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+
     # Try loading from DB if not cached yet
     ctx_data = patient_context.get_context(pid)
     if not ctx_data or not ctx_data.get("name"):
