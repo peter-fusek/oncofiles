@@ -451,3 +451,258 @@ async def test_patient_bearer_token_unaffected_by_fix(db):
     assert verified is not None
     assert verified.client_id == f"patient:{michal_pid}"
     assert _verified_patient_id.get() == michal_pid
+
+
+# ── #478 proper fix: email-bound OAuth resolution ───────────────────────
+
+
+async def _mint_oauth_token_with_email(provider, email, client_id="test-client", challenge="c"):
+    """Stash an email against the challenge, then mint an OAuth token that
+    consumes it via exchange_authorization_code. Mirrors the prod flow where
+    MCPAuthorizeEmailCaptureMiddleware stashes the dashboard session email
+    on the /authorize redirect and PersistentOAuthProvider pops it during
+    the /token exchange."""
+    from mcp.server.auth.provider import AuthorizationParams
+
+    from oncofiles.persistent_oauth import stash_email_for_challenge
+
+    client = _make_client_info(client_id=client_id)
+    await provider.register_client(client)
+    params = AuthorizationParams(
+        state="s",
+        scopes=[],
+        code_challenge=challenge,
+        code_challenge_method="S256",
+        redirect_uri="http://localhost:3000/callback",
+        redirect_uri_provided_explicitly=True,
+    )
+    stash_email_for_challenge(challenge, email)
+    redirect_uri = await provider.authorize(client, params)
+    from urllib.parse import parse_qs, urlparse
+
+    code = parse_qs(urlparse(redirect_uri).query)["code"][0]
+    auth_code = await provider.load_authorization_code(client, code)
+    return await provider.exchange_authorization_code(client, auth_code)
+
+
+async def test_oauth_bound_email_resolves_to_matching_patient(db, provider):
+    """Email bound at /authorize time resolves to the caregiver's patient.
+
+    This is the #478 proper-fix happy path: Michal signs in on the dashboard
+    (cookie captured), adds claude.ai connector, token is bound to his email,
+    verify_token resolves to his own patient — no sentinel, full UX restored.
+    """
+    from oncofiles.persistent_oauth import _verified_patient_id
+
+    michal_pid = "22222222-2222-4222-8222-222222222222"
+    await _insert_patient(
+        db,
+        patient_id=michal_pid,
+        slug="michal",
+        display_name="Michal G.",
+        caregiver_email="michal@example.com",
+    )
+
+    token = await _mint_oauth_token_with_email(
+        provider, email="michal@example.com", challenge="chal_michal"
+    )
+    verified = await provider.verify_token(token.access_token)
+    assert verified is not None
+    assert _verified_patient_id.get() == michal_pid
+
+
+async def test_oauth_bound_email_case_insensitive(db, provider):
+    """Caregiver_email match must be case-insensitive — Google OAuth returns
+    the email as the user typed it (often mixed-case), but caregiver_email
+    rows are typically lowercased."""
+    from oncofiles.persistent_oauth import _verified_patient_id
+
+    pid = "22222222-2222-4222-8222-222222222222"
+    await _insert_patient(
+        db,
+        patient_id=pid,
+        slug="mixed",
+        display_name="Mixed Case",
+        caregiver_email="user@example.com",
+    )
+
+    token = await _mint_oauth_token_with_email(
+        provider, email="User@Example.COM", challenge="chal_case"
+    )
+    verified = await provider.verify_token(token.access_token)
+    assert verified is not None
+    assert _verified_patient_id.get() == pid
+
+
+async def test_oauth_bound_email_no_match_returns_sentinel(db, provider):
+    """Google email with no matching caregiver_email → sentinel (not a leak
+    to seed patient). New user who hasn't created their patient yet."""
+    from oncofiles.constants import NO_PATIENT_ACCESS_SENTINEL
+    from oncofiles.persistent_oauth import _verified_patient_id
+
+    # Insert a second patient with a DIFFERENT caregiver_email so we're
+    # firmly in multi-patient territory.
+    await _insert_patient(
+        db,
+        patient_id="22222222-2222-4222-8222-222222222222",
+        slug="other",
+        display_name="Other Patient",
+        caregiver_email="other@example.com",
+    )
+
+    token = await _mint_oauth_token_with_email(
+        provider, email="stranger@example.com", challenge="chal_stranger"
+    )
+    verified = await provider.verify_token(token.access_token)
+    assert verified is not None
+    assert _verified_patient_id.get() == NO_PATIENT_ACCESS_SENTINEL
+
+
+async def test_oauth_bound_email_multi_match_without_selection_is_sentinel(db, provider):
+    """Admin whose email appears on multiple patients → sentinel unless a
+    patient_selection row points at one of them. Prevents the
+    admin-ends-up-as-patient-A-because-of-ordering leak."""
+    from oncofiles.constants import NO_PATIENT_ACCESS_SENTINEL
+    from oncofiles.persistent_oauth import _verified_patient_id
+
+    for i, slug in enumerate(["onco1", "onco2", "onco3"]):
+        await _insert_patient(
+            db,
+            patient_id=f"1111111{i + 1}-1111-4111-8111-111111111111",
+            slug=slug,
+            display_name=f"Patient {slug}",
+            caregiver_email="admin@example.com",
+        )
+
+    token = await _mint_oauth_token_with_email(
+        provider, email="admin@example.com", challenge="chal_admin"
+    )
+    verified = await provider.verify_token(token.access_token)
+    assert verified is not None
+    assert _verified_patient_id.get() == NO_PATIENT_ACCESS_SENTINEL
+
+
+async def test_oauth_bound_email_multi_match_with_selection_resolves(db, provider):
+    """Admin with multiple patients AND a stored selection → selection wins."""
+    from oncofiles.persistent_oauth import _verified_patient_id
+
+    target_pid = "11111112-1111-4111-8111-111111111111"
+    for slug, pid in [
+        ("onco1", "11111111-1111-4111-8111-111111111111"),
+        ("onco2", target_pid),
+        ("onco3", "11111113-1111-4111-8111-111111111111"),
+    ]:
+        await _insert_patient(
+            db,
+            patient_id=pid,
+            slug=slug,
+            display_name=f"Patient {slug}",
+            caregiver_email="admin@example.com",
+        )
+    await db.set_patient_selection("admin@example.com", target_pid)
+
+    token = await _mint_oauth_token_with_email(
+        provider, email="admin@example.com", challenge="chal_admin_sel"
+    )
+    verified = await provider.verify_token(token.access_token)
+    assert verified is not None
+    assert _verified_patient_id.get() == target_pid
+
+
+async def test_oauth_refresh_preserves_bound_email(db, provider):
+    """exchange_refresh_token must copy user_email from the old token row
+    onto the new one so the refresh flow doesn't strand the caller at
+    sentinel after claude.ai's first token refresh."""
+    from oncofiles.persistent_oauth import _verified_patient_id
+
+    pid = "22222222-2222-4222-8222-222222222222"
+    await _insert_patient(
+        db,
+        patient_id=pid,
+        slug="u",
+        display_name="Refresh User",
+        caregiver_email="refresh@example.com",
+    )
+
+    token = await _mint_oauth_token_with_email(
+        provider, email="refresh@example.com", challenge="chal_refresh"
+    )
+    assert token.refresh_token is not None
+
+    # Simulate claude.ai refreshing the token
+    refresh_obj = provider.refresh_tokens[token.refresh_token]
+    client = await provider.get_client("test-client")
+    new_token = await provider.exchange_refresh_token(client, refresh_obj, scopes=[])
+    verified = await provider.verify_token(new_token.access_token)
+    assert verified is not None
+    assert _verified_patient_id.get() == pid
+
+
+async def test_oauth_unbound_legacy_token_keeps_sentinel(db, provider):
+    """Tokens minted BEFORE migration 064 (or from an unsigned-in OAuth flow)
+    have NULL user_email. _resolve_oauth_patient must NOT upgrade them to
+    any specific patient — it must stay at sentinel."""
+    from oncofiles.constants import NO_PATIENT_ACCESS_SENTINEL
+    from oncofiles.persistent_oauth import _verified_patient_id
+
+    await _insert_patient(
+        db,
+        patient_id="22222222-2222-4222-8222-222222222222",
+        slug="other",
+        display_name="Other Patient",
+        caregiver_email="other@example.com",
+    )
+
+    # Mint without stashing — no email captured
+    token = await _make_oauth_token(provider)
+    verified = await provider.verify_token(token.access_token)
+    assert verified is not None
+    assert _verified_patient_id.get() == NO_PATIENT_ACCESS_SENTINEL
+
+
+async def test_email_stash_ttl_expires(db, provider):
+    """Stashed emails older than TTL are treated as absent (defense against
+    runaway memory growth + belt-and-suspenders against stale codes)."""
+    from oncofiles.constants import NO_PATIENT_ACCESS_SENTINEL
+    from oncofiles.persistent_oauth import (
+        _email_for_challenge,
+        _verified_patient_id,
+        stash_email_for_challenge,
+    )
+
+    pid = "22222222-2222-4222-8222-222222222222"
+    await _insert_patient(
+        db,
+        patient_id=pid,
+        slug="t",
+        display_name="TTL Patient",
+        caregiver_email="ttl@example.com",
+    )
+    # Stash with a fake ancient timestamp
+    stash_email_for_challenge("chal_ttl", "ttl@example.com")
+    email, _ = _email_for_challenge["chal_ttl"]
+    _email_for_challenge["chal_ttl"] = (email, 0.0)  # monotonic=0 is long ago
+
+    # Now drive the flow — the pop must return None and resolution must sentinel
+    from mcp.server.auth.provider import AuthorizationParams
+
+    client = _make_client_info(client_id="test-ttl")
+    await provider.register_client(client)
+    params = AuthorizationParams(
+        state="s",
+        scopes=[],
+        code_challenge="chal_ttl",
+        code_challenge_method="S256",
+        redirect_uri="http://localhost:3000/callback",
+        redirect_uri_provided_explicitly=True,
+    )
+    redirect_uri = await provider.authorize(client, params)
+    from urllib.parse import parse_qs, urlparse
+
+    code = parse_qs(urlparse(redirect_uri).query)["code"][0]
+    auth_code = await provider.load_authorization_code(client, code)
+    token = await provider.exchange_authorization_code(client, auth_code)
+
+    verified = await provider.verify_token(token.access_token)
+    assert verified is not None
+    assert _verified_patient_id.get() == NO_PATIENT_ACCESS_SENTINEL

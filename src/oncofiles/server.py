@@ -4421,13 +4421,29 @@ async def dashboard_verify(request: Request) -> JSONResponse:
     # Issue session token (open signup — any verified Google email can sign in)
     session_token = _make_session_token(email)
     logger.info("Dashboard session issued for: %s", email)
-    return JSONResponse(
+    resp = JSONResponse(
         {
             "session_token": session_token,
             "email": email,
             "name": token_info.get("name", ""),
         }
     )
+    # Also set as HttpOnly cookie so the MCP /authorize flow (browser redirect
+    # from claude.ai custom-connector) can identify the signed-in user without
+    # an Authorization header. The dashboard JS still reads `session_token`
+    # from the JSON body for its own XHR traffic; this cookie is purely so the
+    # email-capture middleware at /authorize can bind the user to the MCP
+    # token it's about to issue (#478 proper fix).
+    resp.set_cookie(
+        key="oncofiles_session",
+        value=session_token,
+        max_age=_SESSION_MAX_AGE,
+        httponly=True,
+        secure=True,
+        samesite="lax",
+        path="/",
+    )
+    return resp
 
 
 @mcp.custom_route("/api/documents", methods=["GET"])
@@ -6282,6 +6298,75 @@ from oncofiles.tools.conversations import (  # noqa: E402, F401
 # ── Entry point ──────────────────────────────────────────────────────────────
 
 
+class MCPAuthorizeEmailCaptureMiddleware:
+    """Read the oncofiles_session cookie on /authorize requests and stash the
+    Google account email against the request's `code_challenge`.
+
+    This is the #478 proper-fix bridge: FastMCP's AuthorizationHandler doesn't
+    know which Google user is driving the OAuth flow, so it can't bind the
+    issued MCP token to a specific user. We intercept the request upstream,
+    read the dashboard session cookie (set by /dashboard/verify on Google
+    sign-in), and store (code_challenge → email) in an in-memory dict that
+    ``PersistentOAuthProvider.exchange_authorization_code`` reads at code
+    exchange time.
+
+    Scope: ONLY /authorize GET requests with an oncofiles_session cookie.
+    Unsigned-in users pass through unchanged — their MCP token row gets a
+    NULL user_email and ``_resolve_oauth_patient`` keeps the post-hot-fix
+    sentinel behavior. No regression risk.
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        if scope.get("path") != "/authorize" or scope.get("method") != "GET":
+            await self.app(scope, receive, send)
+            return
+        try:
+            from urllib.parse import parse_qs
+
+            # Extract code_challenge from query string
+            qs = scope.get("query_string", b"").decode("latin-1", errors="replace")
+            parsed = parse_qs(qs)
+            code_challenges = parsed.get("code_challenge", [])
+            if not code_challenges:
+                await self.app(scope, receive, send)
+                return
+            code_challenge = code_challenges[0]
+
+            # Extract session cookie
+            email = None
+            for name, value in scope.get("headers", []):
+                if name.decode("latin-1").lower() != "cookie":
+                    continue
+                cookie_header = value.decode("latin-1", errors="replace")
+                # Parse "name=value; name2=value2; ..."
+                for pair in cookie_header.split(";"):
+                    if "=" not in pair:
+                        continue
+                    cname, _, cvalue = pair.strip().partition("=")
+                    if cname == "oncofiles_session":
+                        email = _verify_session_token(cvalue.strip())
+                        break
+                if email:
+                    break
+
+            if email:
+                from oncofiles.persistent_oauth import stash_email_for_challenge
+
+                stash_email_for_challenge(code_challenge, email)
+                logger.info("MCP /authorize: bound email to code_challenge (email=%s)", email)
+        except Exception:
+            # Never block the /authorize flow on our own bug — fail open to
+            # the post-hot-fix sentinel behavior.
+            logger.warning("email-capture middleware failed", exc_info=True)
+        await self.app(scope, receive, send)
+
+
 class SecurityHeadersMiddleware:
     """Add baseline security headers to every HTTP response.
 
@@ -6353,6 +6438,11 @@ def main() -> None:
             port=MCP_PORT,
             stateless_http=True,  # no server-side sessions — survives Railway deploys (#229)
             middleware=[
+                # #478: must run BEFORE FastMCP's AuthorizationHandler can
+                # issue the OAuth code — the middleware stashes the signed-in
+                # user's email by code_challenge so exchange_authorization_code
+                # can bind it to the minted token.
+                Middleware(MCPAuthorizeEmailCaptureMiddleware),
                 Middleware(SecurityHeadersMiddleware),
                 Middleware(
                     CORSMiddleware,

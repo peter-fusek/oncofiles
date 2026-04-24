@@ -10,6 +10,7 @@ import contextvars
 import hmac
 import json
 import logging
+import time
 from typing import TYPE_CHECKING
 
 from fastmcp.server.auth.auth import ClientRegistrationOptions, RevocationOptions
@@ -30,6 +31,51 @@ logger = logging.getLogger(__name__)
 _verified_patient_id: contextvars.ContextVar[str] = contextvars.ContextVar(
     "verified_patient_id", default=""
 )
+
+# #478 email-capture bridge: populated by MCPAuthorizeEmailCaptureMiddleware
+# when a signed-in user's browser hits GET /authorize. Keyed by code_challenge
+# (stable across the OAuth handshake — AuthorizationCode carries it unchanged).
+# TTL-cleaned on every read; auth codes are short-lived (5 min) so worst-case
+# stash size is tiny.
+_email_for_challenge: dict[str, tuple[str, float]] = {}
+_EMAIL_STASH_TTL_S = 600.0  # 10 min — longer than code TTL to avoid races
+
+
+def stash_email_for_challenge(code_challenge: str, email: str) -> None:
+    """Bind a Google account email to an in-flight OAuth code_challenge."""
+    _prune_email_stash()
+    _email_for_challenge[code_challenge] = (email, time.monotonic())
+
+
+def pop_email_for_challenge(code_challenge: str) -> str | None:
+    """Consume the stashed email for a code_challenge, returning None if expired/absent."""
+    _prune_email_stash()
+    entry = _email_for_challenge.pop(code_challenge, None)
+    if entry is None:
+        return None
+    email, created_at = entry
+    if time.monotonic() - created_at > _EMAIL_STASH_TTL_S:
+        return None
+    return email
+
+
+def _prune_email_stash() -> None:
+    now = time.monotonic()
+    stale = [k for k, (_, t) in _email_for_challenge.items() if now - t > _EMAIL_STASH_TTL_S]
+    for k in stale:
+        _email_for_challenge.pop(k, None)
+
+
+def _email_matches_caregiver(email: str, caregiver_email: str | None) -> bool:
+    """Case-insensitive check supporting comma-separated caregiver_email lists.
+
+    Mirrors server.py's helper — kept local here to avoid importing server.py
+    (which would re-trigger the circular we broke with constants.py).
+    """
+    if not email or not caregiver_email:
+        return False
+    email_lower = email.lower()
+    return any(e.strip().lower() == email_lower for e in caregiver_email.split(","))
 
 
 class PersistentOAuthProvider(InMemoryOAuthProvider):
@@ -89,11 +135,13 @@ class PersistentOAuthProvider(InMemoryOAuthProvider):
         # 2. MCP OAuth tokens (in-memory, restored from DB on startup — Claude.ai, ChatGPT)
         result = await super().verify_token(token)
         if result:
-            # OAuth user → resolve scoped patient. In multi-patient deployments
-            # this is the sentinel until we plumb Google owner_email through
-            # the MCP token issuance flow — see #478 follow-up.
+            # #478: resolve patient via the Google email bound to this token
+            # at /authorize time. If no email was captured (unsigned-in user
+            # or a legacy token from before migration 064), fall back to the
+            # safe single-patient / sentinel path.
             if self._db:
-                pid = await self._resolve_oauth_patient()
+                bound_email = await self._read_user_email(token)
+                pid = await self._resolve_oauth_patient(user_email=bound_email)
                 if pid:
                     _verified_patient_id.set(pid)
             return result
@@ -125,27 +173,59 @@ class PersistentOAuthProvider(InMemoryOAuthProvider):
             return patients[0].patient_id
         return NO_PATIENT_ACCESS_SENTINEL
 
-    async def _resolve_oauth_patient(self) -> str:
-        """Resolve patient for an OAuth user.
+    async def _resolve_oauth_patient(self, *, user_email: str | None = None) -> str:
+        """Resolve patient for an MCP OAuth caller.
 
-        Current limitation: the MCP OAuth flow (InMemoryOAuthProvider) does
-        NOT plumb the caller's Google email through to the issued access
-        token. Without the email we cannot correlate the caller to a
-        patient by caregiver_email, so any heuristic based on "pick a
-        patient with any stored selection" is caller-agnostic and leaks
-        across users. That exact bug routed Michal Gašparík to Peter's
-        test-patient (e5g) when he connected claude.ai 2026-04-24.
+        Resolution order (#478 proper fix):
+          1. If a Google account email was bound to the token at /authorize
+             time AND exactly one active patient has that email in its
+             `caregiver_email` list → return that pid. Frictionless UX.
+          2. If the bound email matches MULTIPLE active patients → consult
+             `patient_selection[email]`. If set and still valid → return it.
+             Otherwise → sentinel (caller must call `select_patient` OR
+             pass `patient_slug` per call; ambiguous defaults leak).
+          3. If the bound email matches ZERO active patients → sentinel.
+             (New user who hasn't created a patient yet, or an unauthorized
+             Google account.)
+          4. If NO email was bound (unsigned-in caller or legacy token)
+             → fall back to single-patient safe default, else sentinel.
 
-        Until the follow-up issue ships proper email plumbing (see #478),
-        return the sole active patient's UUID ONLY in single-patient
-        deployments; otherwise return the no-access sentinel so
-        downstream patient-scoped DB queries match zero rows and the
-        caller is forced to pass ``patient_slug`` explicitly per call.
-
-        Bearer-token (onco_*) flows are unaffected and remain per-patient
+        Bearer-token (`onco_*`) flows are unaffected and remain per-patient
         scoped via the token itself.
         """
-        return await self._safe_single_patient_pid()
+        if not user_email:
+            return await self._safe_single_patient_pid()
+
+        try:
+            patients = await self._db.list_patients(active_only=True)
+        except Exception:
+            logger.warning("list_patients failed during OAuth resolve", exc_info=True)
+            return NO_PATIENT_ACCESS_SENTINEL
+
+        matches = [p for p in patients if _email_matches_caregiver(user_email, p.caregiver_email)]
+        if len(matches) == 1:
+            return matches[0].patient_id
+        if len(matches) > 1:
+            try:
+                sel = await self._db.get_patient_selection(user_email)
+            except Exception:
+                logger.debug("get_patient_selection failed", exc_info=True)
+                sel = None
+            if sel and any(p.patient_id == sel for p in matches):
+                return sel
+            logger.info(
+                "OAuth caller %s matches %d patients but no stored selection — "
+                "returning sentinel so caller must pass patient_slug",
+                user_email,
+                len(matches),
+            )
+            return NO_PATIENT_ACCESS_SENTINEL
+        # No caregiver match — email has no patient access
+        logger.info(
+            "OAuth caller %s has no caregiver match in active patients — sentinel",
+            user_email,
+        )
+        return NO_PATIENT_ACCESS_SENTINEL
 
     # ── Restore from DB on startup ──────────────────────────────────────
 
@@ -241,8 +321,13 @@ class PersistentOAuthProvider(InMemoryOAuthProvider):
         self, client: OAuthClientInformationFull, authorization_code: AuthorizationCode
     ) -> OAuthToken:
         result = await super().exchange_authorization_code(client, authorization_code)
-        # Persist the newly issued access + refresh tokens
-        await self._persist_token_pair(result.access_token, result.refresh_token)
+        # #478: pop the email bound at /authorize time (if any) and persist
+        # it alongside the new token rows. None → unsigned-in OAuth caller,
+        # sentinel behavior preserved.
+        user_email = pop_email_for_challenge(authorization_code.code_challenge)
+        await self._persist_token_pair(
+            result.access_token, result.refresh_token, user_email=user_email
+        )
         return result
 
     async def exchange_refresh_token(
@@ -255,12 +340,18 @@ class PersistentOAuthProvider(InMemoryOAuthProvider):
         old_access = self._refresh_to_access_map.get(refresh_token.token)
         old_refresh = refresh_token.token
 
+        # #478: preserve the user_email across refresh — read it off the old
+        # refresh token row BEFORE we delete it.
+        old_email = await self._read_user_email(old_refresh)
+
         result = await super().exchange_refresh_token(client, refresh_token, scopes)
 
         # Delete old tokens from DB
         await self._delete_tokens(old_access, old_refresh)
-        # Persist new tokens
-        await self._persist_token_pair(result.access_token, result.refresh_token)
+        # Persist new tokens carrying the original user_email
+        await self._persist_token_pair(
+            result.access_token, result.refresh_token, user_email=old_email
+        )
         return result
 
     async def revoke_token(self, token: AccessToken | RefreshToken) -> None:
@@ -293,7 +384,11 @@ class PersistentOAuthProvider(InMemoryOAuthProvider):
             logger.warning("Failed to persist MCP client", exc_info=True)
 
     async def _persist_token_pair(
-        self, access_token_str: str, refresh_token_str: str | None
+        self,
+        access_token_str: str,
+        refresh_token_str: str | None,
+        *,
+        user_email: str | None = None,
     ) -> None:
         if not self._db:
             return
@@ -303,8 +398,9 @@ class PersistentOAuthProvider(InMemoryOAuthProvider):
                 await self._db.db.execute(
                     """
                     INSERT OR REPLACE INTO mcp_oauth_tokens
-                        (token, token_type, client_id, scopes_json, expires_at, linked_token)
-                    VALUES (?, 'access', ?, ?, ?, ?)
+                        (token, token_type, client_id, scopes_json, expires_at,
+                         linked_token, user_email)
+                    VALUES (?, 'access', ?, ?, ?, ?, ?)
                     """,
                     (
                         access_obj.token,
@@ -312,6 +408,7 @@ class PersistentOAuthProvider(InMemoryOAuthProvider):
                         json.dumps(access_obj.scopes),
                         access_obj.expires_at,
                         refresh_token_str,
+                        user_email,
                     ),
                 )
 
@@ -321,8 +418,9 @@ class PersistentOAuthProvider(InMemoryOAuthProvider):
                     await self._db.db.execute(
                         """
                         INSERT OR REPLACE INTO mcp_oauth_tokens
-                            (token, token_type, client_id, scopes_json, expires_at, linked_token)
-                        VALUES (?, 'refresh', ?, ?, ?, ?)
+                            (token, token_type, client_id, scopes_json, expires_at,
+                             linked_token, user_email)
+                        VALUES (?, 'refresh', ?, ?, ?, ?, ?)
                         """,
                         (
                             refresh_obj.token,
@@ -330,12 +428,30 @@ class PersistentOAuthProvider(InMemoryOAuthProvider):
                             json.dumps(refresh_obj.scopes),
                             refresh_obj.expires_at,
                             access_token_str,
+                            user_email,
                         ),
                     )
 
             await self._db.db.commit()
         except Exception:
             logger.warning("Failed to persist MCP tokens", exc_info=True)
+
+    async def _read_user_email(self, token_str: str | None) -> str | None:
+        """Look up the bound Google account email on a persisted MCP token row."""
+        if not self._db or not token_str:
+            return None
+        try:
+            async with self._db.db.execute(
+                "SELECT user_email FROM mcp_oauth_tokens WHERE token = ?",
+                (token_str,),
+            ) as cursor:
+                row = await cursor.fetchone()
+                if not row:
+                    return None
+                return row["user_email"] if isinstance(row, dict) else row[0]
+        except Exception:
+            logger.debug("user_email lookup failed for token", exc_info=True)
+            return None
 
     async def _delete_tokens(
         self, access_token_str: str | None, refresh_token_str: str | None
