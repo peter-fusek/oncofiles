@@ -122,7 +122,11 @@ async def load_from_db(db: Any, patient_id: str | None = None) -> dict[str, Any]
     Otherwise loads the legacy id=1 row (backward compat).
     """
     try:
-        if patient_id:
+        # `is not None` (not `if patient_id:`) so an accidental empty string
+        # can't silently fall through to the legacy id=1 row — #476 class of
+        # bugs where a dashboard session with no authorized patient had its
+        # pid coerced to "" and read the last-loaded patient's data.
+        if patient_id is not None:
             async with db.execute(
                 "SELECT context_json FROM patient_context WHERE patient_id = ?",
                 (patient_id,),
@@ -136,7 +140,7 @@ async def load_from_db(db: Any, patient_id: str | None = None) -> dict[str, Any]
         if row:
             data_str = row["context_json"] if isinstance(row, dict) else row[0]
             data = json.loads(data_str)
-            if patient_id:
+            if patient_id is not None:
                 _contexts[patient_id] = data
                 # DO NOT mirror into legacy `_context` when loading a specific
                 # patient — that's how cross-patient leaks happen (#429).
@@ -156,9 +160,9 @@ async def save_to_db(
     db: Any, context: dict[str, Any] | None = None, *, patient_id: str | None = None
 ) -> None:
     """Save patient context to the database. Per-patient if patient_id given."""
-    data = context or (get_context(patient_id) if patient_id else _context)
+    data = context or (get_context(patient_id) if patient_id is not None else _context)
     json_data = json.dumps(data, ensure_ascii=False)
-    if patient_id:
+    if patient_id is not None:
         await db.execute(
             """
             INSERT INTO patient_context (patient_id, context_json, updated_at)
@@ -181,7 +185,7 @@ async def save_to_db(
             (json_data,),
         )
     await db.commit()
-    if patient_id:
+    if patient_id is not None:
         _contexts[patient_id] = data
 
 
@@ -193,7 +197,7 @@ def update_context(updates: dict[str, Any], patient_id: str | None = None) -> di
             ctx[key].update(value)
         else:
             ctx[key] = value
-    if patient_id:
+    if patient_id is not None:
         _contexts[patient_id] = ctx
     _context.update(ctx)
     return ctx

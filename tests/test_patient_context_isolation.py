@@ -151,3 +151,48 @@ class TestLoadFromDbIsolation:
 
         await patient_context.load_from_db(FakeDB(), patient_id=None)
         assert patient_context._context.get("name") == "Legacy Only"
+
+    async def test_empty_string_pid_does_not_read_legacy_row(self, isolated_contexts):
+        """#476 defense: explicit empty-string pid MUST NOT silently fall through
+        to the legacy id=1 row via the `if patient_id:` falsy check.
+
+        Pre-fix: `load_from_db(db, patient_id='')` → took `else` branch → read
+        legacy id=1 row → returned whatever patient was last loaded there.
+        Post-fix: `is not None` guard → takes per-patient branch → queries
+        `WHERE patient_id = ''` → zero matches → returns {}.
+        """
+        queries: list[tuple[str, tuple]] = []
+
+        class FakeCursor:
+            async def fetchone(self):
+                return None  # no match
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                pass
+
+        class FakeDB:
+            def execute(self, query, params=()):
+                queries.append((query, params))
+                return FakeCursor()
+
+        # Pre-populate the legacy id=1 row with Nora's data (the leak vector)
+        patient_context._context.update({"name": "Nora Antalová"})
+
+        result = await patient_context.load_from_db(FakeDB(), patient_id="")
+
+        # Empty-string pid must hit the per-patient query, not the legacy one
+        assert any("patient_id = ?" in q for q, _ in queries), (
+            f"expected per-patient query with patient_id='', got {queries}"
+        )
+        assert not any("id = 1" in q for q, _ in queries), (
+            f"must NOT query legacy id=1 row for empty-string pid, got {queries}"
+        )
+        # No row matched, so no data loaded
+        assert result == {}
+        # Legacy cache must remain untouched
+        assert patient_context._context.get("name") == "Nora Antalová"
+        # And empty-string pid must NOT be cached in _contexts either
+        assert "" not in patient_context._contexts
