@@ -368,6 +368,31 @@ def test_session_token_rejects_expired():
         assert _verify_session_token(token) is None
 
 
+def test_session_cookie_url_encoded_roundtrip():
+    """Cookie set by /dashboard/verify survives browser echo via middleware.
+
+    SimpleCookie quotes values containing '@' (not in its legal-value chars),
+    so the raw cookie header the browser echoes back includes double-quotes.
+    The middleware URL-encodes the token at set time and URL-decodes at read
+    time to avoid this. This test locks the contract end-to-end.
+    """
+    from urllib.parse import quote as urlquote
+    from urllib.parse import unquote as urlunquote
+
+    from oncofiles.server import _make_session_token, _verify_session_token
+
+    with patch("oncofiles.server.MCP_BEARER_TOKEN", "test-secret"):
+        token = _make_session_token("real.user@gmail.com")
+
+        # Simulate Starlette set_cookie: URL-encode so SimpleCookie doesn't quote
+        cookie_value_on_wire = urlquote(token, safe="")
+        assert "@" not in cookie_value_on_wire  # no chars that trigger quoting
+
+        # Simulate middleware reading the cookie value back from the request
+        email = _verify_session_token(urlunquote(cookie_value_on_wire.strip()))
+        assert email == "real.user@gmail.com"
+
+
 def test_check_dashboard_auth_accepts_session():
     """_check_dashboard_auth accepts valid session tokens on HTTP transport."""
     from oncofiles.server import _check_dashboard_auth, _make_session_token
