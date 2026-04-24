@@ -39,5 +39,6 @@ htmlcov/
 oncofiles-prod*
 .claude/settings.local.json
 .claude/worktrees/
+.claude/scheduled_tasks.lock
 .mcpregistry_github_token
 .mcpregistry_registry_token

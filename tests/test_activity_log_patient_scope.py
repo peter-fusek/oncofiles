@@ -125,11 +125,7 @@ async def test_add_activity_log_sets_caller_patient_id(db: Database):
     token = patient_middleware._current_patient_id.set(ERIKA_UUID)
     try:
         ctx = _mock_ctx(db)
-        result = json.loads(
-            await add_activity_log(
-                ctx, session_id="s1", agent_id="oncoteam", tool_name="search_pubmed"
-            )
-        )
+        await add_activity_log(ctx, session_id="s1", agent_id="oncoteam", tool_name="search_pubmed")
         # Fetch the inserted row and verify patient_id is set.
         entries = await db.search_activity_log(
             __import__("oncofiles.models", fromlist=["ActivityLogQuery"]).ActivityLogQuery(
