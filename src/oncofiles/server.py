@@ -4599,11 +4599,10 @@ async def dashboard_verify(request: Request) -> JSONResponse:
     # Email addresses contain '@' which is outside SimpleCookie's legal-value
     # char set, causing it to quote the entire value. Browsers echo the quotes
     # back in the Cookie header and the middleware's manual parser breaks.
-    from urllib.parse import quote as _urlquote
-
+    # `quote` is imported module-level (see line 17).
     resp.set_cookie(
         key="oncofiles_session",
-        value=_urlquote(session_token, safe=""),
+        value=quote(session_token, safe=""),
         max_age=_SESSION_MAX_AGE,
         httponly=True,
         secure=True,
