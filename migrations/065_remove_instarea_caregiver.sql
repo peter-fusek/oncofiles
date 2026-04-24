@@ -15,8 +15,9 @@
 -- Reversibility: follow-up migration 066 (if needed) can re-add the email
 -- with an inverse UPDATE — easy, the stripped text is a fixed literal.
 --
--- Audit: activity_log row `{tool_name: 'migration_065', ...}` is inserted at
--- the end so the change is discoverable via search_activity_log.
+-- No audit INSERT — per CLAUDE.md memory "Never INSERT patient-specific
+-- data in migrations (runs in test DBs)". Migration trace lives in git
+-- (commit 20d2161) and Railway deploy logs.
 
 -- Case 1: sole caregiver — set to empty string
 UPDATE patients
@@ -32,18 +33,3 @@ WHERE LOWER(caregiver_email) LIKE 'peter.fusek@instarea.sk,%';
 UPDATE patients
 SET caregiver_email = REPLACE(caregiver_email, ',peter.fusek@instarea.sk', '')
 WHERE LOWER(caregiver_email) LIKE '%,peter.fusek@instarea.sk%';
-
--- Audit row — makes the change visible in search_activity_log post-deploy.
-INSERT INTO activity_log (
-    session_id, agent_id, tool_name, input_summary, output_summary,
-    status, duration_ms, patient_id
-) VALUES (
-    'migration_065',
-    'system',
-    'migration_065_remove_instarea_caregiver',
-    'remove peter.fusek@instarea.sk from patients.caregiver_email (#491 E2E test prep)',
-    'three UPDATE cases executed (sole/first/middle-or-last)',
-    'ok',
-    0,
-    ''
-);
