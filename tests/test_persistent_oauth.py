@@ -662,9 +662,20 @@ async def test_oauth_unbound_legacy_token_keeps_sentinel(db, provider):
 
 async def test_email_stash_ttl_expires(db, provider):
     """Stashed emails older than TTL are treated as absent (defense against
-    runaway memory growth + belt-and-suspenders against stale codes)."""
+    runaway memory growth + belt-and-suspenders against stale codes).
+
+    Note: `time.monotonic()` is boot-relative, not process-relative. On a
+    fresh CI VM it may be tens of seconds; on a dev machine it can be
+    millions of seconds. Using absolute `0.0` as the "ancient" timestamp
+    was fragile — it only looked ancient when `monotonic()` exceeded the
+    TTL. Fix: compute ancient as `monotonic() - (TTL + 1)` so the gap is
+    always exactly the expiry condition regardless of boot-time.
+    """
+    import time as _time
+
     from oncofiles.constants import NO_PATIENT_ACCESS_SENTINEL
     from oncofiles.persistent_oauth import (
+        _EMAIL_STASH_TTL_S,
         _email_for_challenge,
         _verified_patient_id,
         stash_email_for_challenge,
@@ -678,10 +689,11 @@ async def test_email_stash_ttl_expires(db, provider):
         display_name="TTL Patient",
         caregiver_email="ttl@example.com",
     )
-    # Stash with a fake ancient timestamp
+    # Stash with a timestamp that's guaranteed to be older than the TTL
     stash_email_for_challenge("chal_ttl", "ttl@example.com")
     email, _ = _email_for_challenge["chal_ttl"]
-    _email_for_challenge["chal_ttl"] = (email, 0.0)  # monotonic=0 is long ago
+    ancient = _time.monotonic() - (_EMAIL_STASH_TTL_S + 1)
+    _email_for_challenge["chal_ttl"] = (email, ancient)
 
     # Now drive the flow — the pop must return None and resolution must sentinel
     from mcp.server.auth.provider import AuthorizationParams
