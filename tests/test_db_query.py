@@ -111,3 +111,43 @@ async def test_allows_admin_only_table(db: Database, resolve_to_erika):
     ctx = _mock_ctx(db)
     result = json.loads(await query_db(ctx, "SELECT * FROM schema_migrations"))
     assert "error" not in result
+
+
+async def test_execution_error_uses_safe_error_shape(db: Database, resolve_to_erika):
+    """Execution-time exceptions return _safe_error shape, not raw message (#494 F2).
+
+    Before the narrowing, a broad `except Exception` returning f"{type(e).__name__}: {e}"
+    could surface SQLite bind-param values or internal paths to the caller. `_safe_error`
+    payload is `{"error": "<category>", "kind": "<ExceptionClass>"}` — stable for client
+    matching, no raw exception text.
+    """
+    ctx = _mock_ctx(db)
+    boom = RuntimeError("sensitive-bind-param-UUID-must-not-leak")
+    with patch(
+        "oncofiles.tools.db_query._execute_query",
+        new=AsyncMock(side_effect=boom),
+    ):
+        result = json.loads(
+            await query_db(ctx, f"SELECT 1 FROM documents WHERE patient_id = '{ERIKA_UUID}'")
+        )
+    assert result["error"] == "query_db_execution_failed"
+    assert result["kind"] == "RuntimeError"
+    # The sensitive detail never reaches the caller.
+    assert "sensitive-bind-param" not in json.dumps(result)
+
+
+async def test_non_value_error_from_resolve_propagates(db: Database):
+    """Non-ValueError from `_resolve_patient_id` is NOT silently caught as a slug-lookup
+    failure anymore (#494 F2). The redundant `(ValueError, Exception)` tuple would have
+    masked a DB-connection RuntimeError as "patient lookup failed: ..." — misleading
+    AND leaks the raw exception text. Narrowed to `except ValueError` so non-ValueError
+    propagates (caller gets 500, log has full trace)."""
+    ctx = _mock_ctx(db)
+    with (
+        patch(
+            "oncofiles.tools.db_query._resolve_patient_id",
+            new=AsyncMock(side_effect=RuntimeError("db-conn-timeout-leak")),
+        ),
+        pytest.raises(RuntimeError, match="db-conn-timeout-leak"),
+    ):
+        await query_db(ctx, "SELECT * FROM schema_migrations")

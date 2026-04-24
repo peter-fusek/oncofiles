@@ -30,7 +30,7 @@ from fastmcp import Context
 from sqlglot import expressions as exp
 from sqlglot.errors import ParseError
 
-from oncofiles.tools._helpers import _get_db, _resolve_patient_id
+from oncofiles.tools._helpers import _get_db, _resolve_patient_id, _safe_error
 
 logger = logging.getLogger(__name__)
 
@@ -212,8 +212,7 @@ async def query_db(
     # Resolve caller identity first — required for the filter check.
     try:
         caller_pid = await _resolve_patient_id(patient_slug, ctx, required=False)
-    except (ValueError, Exception) as exc:
-        # Patient lookup error (e.g., bad slug) — surface as 400, not 500.
+    except ValueError as exc:
         return json.dumps({"error": f"patient lookup failed: {exc}"})
 
     # Validate.
@@ -237,9 +236,8 @@ async def query_db(
         return result
     except TimeoutError:
         return json.dumps({"error": f"Query timed out after {QUERY_TIMEOUT_S}s"})
-    except Exception as e:
-        logger.warning("query_db error [%s]: %r", type(e).__name__, e)
-        return json.dumps({"error": f"{type(e).__name__}: {e}"})
+    except Exception as exc:
+        return json.dumps(_safe_error(exc, "query_db_execution_failed"))
 
 
 async def _execute_query(db, query: str, row_limit: int) -> str:
