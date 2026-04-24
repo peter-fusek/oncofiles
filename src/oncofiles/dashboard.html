@@ -1269,11 +1269,11 @@
                 <span style="font-size:0.7rem;background:var(--accent);color:white;padding:0.125rem 0.5rem;border-radius:1rem" data-sk="Odporúčané" data-en="Recommended">Recommended</span>
               </div>
               <ol style="margin:0 0 0 1.25rem;padding:0;color:var(--text)">
-                <li style="margin-bottom:0.5rem">Go to <strong>claude.ai</strong> &rarr; Settings &rarr; Integrations</li>
-                <li style="margin-bottom:0.5rem">Click <strong>"Add custom integration"</strong></li>
+                <li style="margin-bottom:0.5rem">Go to <strong>claude.ai</strong> &rarr; Settings &rarr; Connectors</li>
+                <li style="margin-bottom:0.5rem">Click <strong>"Add custom connector"</strong></li>
                 <li style="margin-bottom:0.5rem">Enter URL: <code style="background:var(--bg);padding:0.125rem 0.375rem;border-radius:3px;font-size:0.75rem;user-select:all">https://oncofiles.com/mcp</code></li>
-                <li style="margin-bottom:0.5rem">Click <strong>"Connect"</strong> &rarr; sign in with Google</li>
-                <li style="margin-bottom:0.5rem">Select patient when prompted</li>
+                <li style="margin-bottom:0.5rem"><strong>Leave OAuth fields blank</strong> &rarr; Add &rarr; sign in with Google</li>
+                <li style="margin-bottom:0.5rem">Use <code style="background:var(--bg);padding:0.125rem 0.375rem;border-radius:3px;font-size:0.75rem">patient_slug</code> in each prompt (e.g. "use patient_slug=q1b")</li>
               </ol>
               <div style="margin-top:0.75rem;font-size:0.75rem;color:var(--text-muted)">
                 <strong data-sk="Funkcie" data-en="Features">Features</strong>: 78 tools, OAuth login, auto-patient selection<br>
@@ -1511,19 +1511,20 @@
           <details style="margin-top:0.5rem">
             <summary style="cursor:pointer;font-size:0.8125rem;color:var(--accent);font-weight:600" data-sk="Ako pripojiť – krok za krokom ▾" data-en="How to connect — step by step ▾">Ako pripojiť – krok za krokom ▾</summary>
             <div style="font-size:0.8125rem;color:var(--text-muted);margin-top:0.75rem;line-height:1.7">
-              <p style="font-weight:600;margin-bottom:0.25rem" data-sk="Claude.ai (web):" data-en="Claude.ai (web):">Claude.ai (web):</p>
+              <p style="font-weight:600;margin-bottom:0.25rem" data-sk="Claude.ai (web) – OAuth, bez tokenu:" data-en="Claude.ai (web) – OAuth, no token:">Claude.ai (web) – OAuth, bez tokenu:</p>
               <ol style="padding-left:1.25rem;margin-bottom:0.75rem">
-                <li data-sk="Otvorte claude.ai → Settings → Connectors" data-en="Open claude.ai → Settings → Connectors">Otvorte claude.ai → Settings → Connectors</li>
-                <li data-sk="Kliknite „Add custom connector"" data-en="Click „Add custom connector"">Kliknite „Add custom connector"</li>
-                <li data-sk="Vložte Server URL a Bearer Token vyššie (Copy tlačidlami)" data-en="Paste the Server URL and Bearer Token above (Copy buttons)">Vložte Server URL a Bearer Token vyššie (Copy tlačidlami)</li>
-                <li data-sk="Povolte v projekte – hotovo." data-en="Enable it in your project — done.">Povolte v projekte – hotovo.</li>
+                <li data-sk="claude.ai → Settings → Connectors → „Add custom connector"" data-en="claude.ai → Settings → Connectors → „Add custom connector"">claude.ai → Settings → Connectors → „Add custom connector"</li>
+                <li data-sk="Name: Oncofiles, Remote MCP server URL vyššie (Copy)" data-en="Name: Oncofiles, paste the Remote MCP server URL above (Copy)">Name: Oncofiles, Remote MCP server URL vyššie (Copy)</li>
+                <li data-sk="OAuth Client ID / Secret nechajte prázdne – server rieši DCR" data-en="Leave OAuth Client ID / Secret blank — server handles DCR">OAuth Client ID / Secret nechajte prázdne – server rieši DCR</li>
+                <li data-sk="Add → prihláste sa cez Google účet → povoľte v projekte" data-en="Add → sign in with your Google account → enable in the project">Add → prihláste sa cez Google účet → povoľte v projekte</li>
               </ol>
-              <p style="font-weight:600;margin-bottom:0.25rem" data-sk="ChatGPT:" data-en="ChatGPT:">ChatGPT:</p>
-              <ol style="padding-left:1.25rem">
-                <li data-sk="Settings → Connectors → Advanced → povoľte MCP" data-en="Settings → Connectors → Advanced → enable MCP">Settings → Connectors → Advanced → povoľte MCP</li>
-                <li data-sk="„Add server" → vložte Server URL a Bearer Token vyššie" data-en="„Add server" → paste Server URL and Bearer Token above">„Add server" → vložte Server URL a Bearer Token vyššie</li>
+              <p style="font-weight:600;margin-bottom:0.25rem" data-sk="ChatGPT – tiež OAuth:" data-en="ChatGPT – OAuth too:">ChatGPT – tiež OAuth:</p>
+              <ol style="padding-left:1.25rem;margin-bottom:0.75rem">
+                <li data-sk="Settings → Connectors → Advanced → povoľte MCP (Developer Mode)" data-en="Settings → Connectors → Advanced → enable MCP (Developer Mode)">Settings → Connectors → Advanced → povoľte MCP (Developer Mode)</li>
+                <li data-sk="„Add server" → Server URL vyššie → prihláste cez Google" data-en="„Add server" → paste Server URL above → sign in with Google">„Add server" → Server URL vyššie → prihláste cez Google</li>
               </ol>
-              <p style="margin-top:0.75rem;opacity:0.85" data-sk="Token sa nikdy nevkladá priamo do správy/prompt – iba raz do Settings." data-en="The token never goes into a chat message/prompt — only once into Settings.">Token sa nikdy nevkladá priamo do správy/prompt – iba raz do Settings.</p>
+              <p style="font-weight:600;margin-bottom:0.25rem" data-sk="Bearer token – iba pre Claude Desktop / Cursor / vlastné skripty:" data-en="Bearer token – only for Claude Desktop / Cursor / custom scripts:">Bearer token – iba pre Claude Desktop / Cursor / vlastné skripty:</p>
+              <p style="margin-top:0.25rem;opacity:0.85" data-sk="Do claude_desktop_config.json ako Authorization: Bearer onco_... – nikdy nie do chatu/prompt. V claude.ai web sa token nepoužíva." data-en="Into claude_desktop_config.json as Authorization: Bearer onco_... – never into a chat/prompt. claude.ai web does not use a token.">Do claude_desktop_config.json ako Authorization: Bearer onco_... – nikdy nie do chatu/prompt. V claude.ai web sa token nepoužíva.</p>
             </div>
           </details>
         </div>
@@ -1573,16 +1574,16 @@
           <button class="share-tab" onclick="switchShareTab('claude-code',this)">Code</button>
         </div>
         <div id="share-tab-claude-ai" class="share-tab-content" style="font-size:0.8125rem;color:var(--text-muted);line-height:1.7">
-          1. Open your Claude.ai project<br>
-          2. Go to Project Settings &rarr; Connectors<br>
-          3. Click "Add MCP server"<br>
-          4. Paste the URL and Bearer Token above
+          1. Claude.ai &rarr; Settings &rarr; Connectors &rarr; <strong>Add custom connector</strong><br>
+          2. Name: Oncofiles. Paste the Remote MCP server URL above.<br>
+          3. <strong>Leave OAuth Client ID / Secret blank</strong> — the server handles DCR.<br>
+          4. Click Add &rarr; sign in with Google &rarr; done. Bearer token is not used for the web connector.
         </div>
         <div id="share-tab-chatgpt" class="share-tab-content" style="display:none;font-size:0.8125rem;color:var(--text-muted);line-height:1.7">
-          1. Open ChatGPT Settings<br>
-          2. Enable Developer Mode &rarr; MCP<br>
-          3. Click "Add server"<br>
-          4. Paste the URL and Bearer Token above
+          1. ChatGPT Settings &rarr; Connectors &rarr; Advanced &rarr; enable Developer Mode (MCP)<br>
+          2. Click "Add server". Paste the Remote MCP server URL above.<br>
+          3. Authenticate via Google OAuth when prompted.<br>
+          4. Bearer token is not used for the ChatGPT connector either.
         </div>
         <div id="share-tab-claude-desktop" class="share-tab-content" style="display:none;font-size:0.8125rem;color:var(--text-muted);line-height:1.7">
           Add to <code style="background:var(--bg);padding:0.125rem 0.375rem;border-radius:0.25rem">claude_desktop_config.json</code>:
