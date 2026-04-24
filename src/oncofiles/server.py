@@ -4954,7 +4954,20 @@ async def api_schedules(request: Request) -> JSONResponse:
 
 @mcp.custom_route("/api/usage-analytics", methods=["GET"])
 async def api_usage_analytics(request: Request) -> JSONResponse:
-    """Usage analytics: prompt stats, tool usage, pipeline health, latency."""
+    """Usage analytics: prompt stats, tool usage, pipeline health, latency.
+
+    Scoping (#482):
+      - Admin caller (DASHBOARD_ADMIN_EMAILS) → system-wide view by default
+        (patient_id=None). May drill down by passing ?patient_id=<uuid|slug>.
+      - Non-admin session user → ALWAYS scoped to the request's patient
+        (resolved via _get_dashboard_patient_id, which enforces the
+        caregiver_email ACL and returns the sentinel when access is denied).
+      - Bearer-token caller (system/ops) → system-wide view (patient_id=None).
+        Explicit ?patient_id= still honored for drilldown.
+
+    Returns a `scope` field so the dashboard knows whether to render
+    "všetci pacienti" vs "môj pacient" in the period label.
+    """
     err = _check_dashboard_auth(request)
     if err:
         return err
@@ -4963,18 +4976,41 @@ async def api_usage_analytics(request: Request) -> JSONResponse:
         db_inst: Database = request.app.state.fastmcp_server._lifespan_result["db"]
         days = min(int(request.query_params.get("days", "30")), 90)
 
-        # Analytics aggregate across ALL patients (system-wide view).
-        # Per-patient filtering misses unattributed calls (empty patient_id) (#283).
-        prompt_stats = await db_inst.get_prompt_stats(days=days, patient_id=None)
-        tool_stats = await db_inst.get_tool_usage_stats(days=days, patient_id=None)
-        pipeline_stats = await db_inst.get_pipeline_stats(patient_id=None)
-        latency = await db_inst.get_prompt_latency_percentiles(days=days, patient_id=None)
+        email = _get_dashboard_email(request)
+        is_bearer = _check_bearer(request) is None
+        is_admin = is_bearer or _is_admin_email(email)
+
+        scope: str
+        scoped_pid: str | None
+        if is_admin:
+            # Admin + bearer: unscoped by default, or drill-down if query param present.
+            explicit = request.query_params.get("patient_id", "").strip()
+            if explicit:
+                scoped_pid = await _get_dashboard_patient_id(request)
+                scope = "single_patient"
+            else:
+                scoped_pid = None
+                scope = "all_patients"
+        else:
+            # Regular session user: always scoped via the dashboard helper, which
+            # applies the caregiver_email ACL and returns NO_PATIENT_ACCESS_SENTINEL
+            # when the caller has no authorized patient. DB helpers below use
+            # `is not None` semantics so the sentinel string matches zero rows.
+            scoped_pid = await _get_dashboard_patient_id(request)
+            scope = "single_patient"
+
+        prompt_stats = await db_inst.get_prompt_stats(days=days, patient_id=scoped_pid)
+        tool_stats = await db_inst.get_tool_usage_stats(days=days, patient_id=scoped_pid)
+        pipeline_stats = await db_inst.get_pipeline_stats(patient_id=scoped_pid)
+        latency = await db_inst.get_prompt_latency_percentiles(days=days, patient_id=scoped_pid)
 
         from dataclasses import asdict
 
         return JSONResponse(
             {
                 "days": days,
+                "scope": scope,
+                "patient_id": scoped_pid,
                 "prompts": asdict(prompt_stats),
                 "tools": asdict(tool_stats),
                 "pipeline": asdict(pipeline_stats),

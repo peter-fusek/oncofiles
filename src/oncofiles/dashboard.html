@@ -4121,7 +4121,18 @@
       var tfEl = document.getElementById('ana-timeframe');
       if (tfEl) {
         var fmt = function(d) { return d.toLocaleDateString(lang === 'sk' ? 'sk-SK' : 'en-US', {month:'short', day:'numeric'}); };
-        tfEl.textContent = (lang === 'sk' ? 'Obdobie: ' : 'Period: ') + fmt(startDate) + ' – ' + fmt(endDate) + ' (' + days + (lang === 'sk' ? ' dní, všetci pacienti)' : ' days, all patients)');
+        // #482: label reflects the actual scope the server applied. Regular
+        // users only ever see their own patient's stats; the old static
+        // "všetci pacienti" label leaked the false impression they were
+        // seeing aggregated cross-patient data.
+        var scope = data.scope || 'all_patients';
+        var scopeLabel;
+        if (scope === 'all_patients') {
+          scopeLabel = lang === 'sk' ? ' dní, všetci pacienti)' : ' days, all patients)';
+        } else {
+          scopeLabel = lang === 'sk' ? ' dní, tento pacient)' : ' days, this patient)';
+        }
+        tfEl.textContent = (lang === 'sk' ? 'Obdobie: ' : 'Period: ') + fmt(startDate) + ' – ' + fmt(endDate) + ' (' + days + scopeLabel;
       }
 
       // Mini-cards
