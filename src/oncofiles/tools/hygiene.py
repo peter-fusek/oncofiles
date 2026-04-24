@@ -1445,10 +1445,25 @@ async def _build_reconciliation_report(
             # metadata fetch is failing with non-404. Surface as legacy missing.
             in_db_not_gdrive.append(entry)
 
-    # In GDrive but not in DB (orphans) — classify as expected vs unexpected
+    # In GDrive but not in DB — classify into three buckets so the dashboard
+    # renders each class with the right tone (#481):
+    #   - expected_orphans + reason="system_file": manifest/md/OCR companions
+    #     sync writes intentionally; info-gray, not an error.
+    #   - expected_orphans + reason="unsupported_extension": files whose
+    #     extension isn't in sync's SUPPORTED_EXTENSIONS — sync skips them
+    #     upstream (_should_sync in sync.py), so they were never candidates
+    #     for ingestion. Most common source: user drops .zip/.doc/.mp3 into
+    #     the sync folder (e.g. SK insurance-portal ZIP exports). Info-gray.
+    #   - in_gdrive_not_db: genuine orphans — file IS a supported type but
+    #     sync failed to ingest it. Error-red, action required.
+    #
+    # Pre-#481 only the first bucket existed; everything non-system landed
+    # in in_gdrive_not_db and showed as scary red alarm, matching the
+    # #475 class of "audit logic must mirror sync's filter intent".
+    from oncofiles.sync import SUPPORTED_EXTENSIONS
+
     in_gdrive_not_db = []
     expected_orphans = []
-    # System-generated files that sync intentionally skips
     system_suffixes = (".json", ".md", "_OCR.txt")
     system_prefixes = ("_manifest", "research-library", "treatment-timeline")
     for gid, gfile in gdrive_by_id.items():
@@ -1459,10 +1474,20 @@ async def _build_reconciliation_report(
                 or any(name.startswith(p) for p in system_prefixes)
                 or "conversation-log" in name
             )
-            entry = {"gdrive_id": gid, "name": name, "system": is_system}
+            ext = ("." + name.rsplit(".", 1)[-1].lower()) if "." in name else ""
+            is_unsupported_ext = bool(ext) and ext not in SUPPORTED_EXTENSIONS
+            entry: dict = {"gdrive_id": gid, "name": name}
             if is_system:
+                entry["system"] = True
+                entry["reason"] = "system_file"
+                expected_orphans.append(entry)
+            elif is_unsupported_ext:
+                entry["system"] = False
+                entry["reason"] = "unsupported_extension"
+                entry["extension"] = ext
                 expected_orphans.append(entry)
             else:
+                entry["system"] = False
                 in_gdrive_not_db.append(entry)
 
     # Filename mismatches (docs that exist in both)

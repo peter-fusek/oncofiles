@@ -112,3 +112,92 @@ async def test_report_healthy_excludes_classified_classes(db: Database):
     assert report["in_db_not_gdrive"] == []
     # and therefore the patient is reported healthy
     assert report["healthy"] is True
+
+
+# ── #481: unsupported file extensions → expected_orphans (not scary red) ──
+
+
+async def test_zip_in_gdrive_is_expected_orphan_not_unexpected(db: Database):
+    """The exact bug Peter observed on Michal's dashboard: 2 SK-insurance-portal
+    ZIPs (8053156100-PDG...zip) sit in the sync folder forever (sync correctly
+    skips them as unsupported) but the reconciler classified them as orphans,
+    displaying as scary red "2 orphans" count. Post-fix: they land in
+    expected_orphans with reason="unsupported_extension" so the dashboard
+    can render info-gray."""
+    gdrive = _mock_gdrive_listing(
+        [
+            {"id": "gd_zip1", "name": "8053156100-PDG2200001063145.zip"},
+            {"id": "gd_zip2", "name": "8053156100-PDG2400001331201.zip"},
+        ]
+    )
+
+    report = await _build_reconciliation_report(db, gdrive, folder_id="root", patient_id=ERIKA_UUID)
+
+    # No red-orphan noise
+    assert report["in_gdrive_not_db"] == []
+    # Both in expected_orphans with the right classification
+    assert len(report["expected_orphans"]) == 2
+    reasons = {e["reason"] for e in report["expected_orphans"]}
+    assert reasons == {"unsupported_extension"}
+    extensions = {e["extension"] for e in report["expected_orphans"]}
+    assert extensions == {".zip"}
+    # Patient stays healthy — unsupported-extension files are known skips
+    assert report["healthy"] is True
+
+
+async def test_system_file_reason_distinct_from_unsupported(db: Database):
+    """Manifest/OCR system files keep their distinct reason — dashboard
+    renders them differently ("skipped: system file") vs unsupported extensions
+    ("skipped: unsupported format, upload as PDF")."""
+    gdrive = _mock_gdrive_listing(
+        [
+            {"id": "gd_manifest", "name": "_manifest.md"},
+            {"id": "gd_ocr", "name": "some_report_OCR.txt"},
+            {"id": "gd_zip", "name": "insurance_2024.zip"},
+            {"id": "gd_metadata", "name": "doc.metadata.json"},
+        ]
+    )
+
+    report = await _build_reconciliation_report(db, gdrive, folder_id="root", patient_id=ERIKA_UUID)
+
+    # .metadata.json is filtered out upstream of the orphan loop
+    assert len(report["expected_orphans"]) == 3
+    by_name = {e["name"]: e for e in report["expected_orphans"]}
+    assert by_name["_manifest.md"]["reason"] == "system_file"
+    assert by_name["some_report_OCR.txt"]["reason"] == "system_file"
+    assert by_name["insurance_2024.zip"]["reason"] == "unsupported_extension"
+    assert by_name["insurance_2024.zip"]["extension"] == ".zip"
+    assert report["in_gdrive_not_db"] == []
+
+
+async def test_supported_extension_missing_from_db_is_real_orphan(db: Database):
+    """Genuine orphan: a PDF (supported type) sits in the sync folder but was
+    never ingested into DB. That IS error-red — sync failed to pick it up
+    and the user should be alerted. Fix must NOT silence these."""
+    gdrive = _mock_gdrive_listing(
+        [
+            {"id": "gd_real", "name": "20260101_ErikaFusekova_NOU_Labs_Bloods.pdf"},
+        ]
+    )
+
+    report = await _build_reconciliation_report(db, gdrive, folder_id="root", patient_id=ERIKA_UUID)
+
+    assert len(report["in_gdrive_not_db"]) == 1
+    assert report["in_gdrive_not_db"][0]["name"] == "20260101_ErikaFusekova_NOU_Labs_Bloods.pdf"
+    assert report["expected_orphans"] == []
+    assert report["healthy"] is False  # real orphan fails health
+
+
+async def test_extensionless_file_is_real_orphan(db: Database):
+    """A file with NO extension is treated as a real orphan (conservative —
+    could be anything). Prevents accidentally silencing truly unknown files."""
+    gdrive = _mock_gdrive_listing(
+        [
+            {"id": "gd_weird", "name": "NOTES_NO_EXTENSION"},
+        ]
+    )
+
+    report = await _build_reconciliation_report(db, gdrive, folder_id="root", patient_id=ERIKA_UUID)
+
+    assert len(report["in_gdrive_not_db"]) == 1
+    assert report["expected_orphans"] == []
