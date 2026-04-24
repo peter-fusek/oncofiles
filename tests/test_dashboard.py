@@ -23,39 +23,86 @@ def _make_request(auth_header: str | None = None):
     return request
 
 
-def test_check_bearer_no_token_configured():
-    """When MCP_BEARER_TOKEN is empty, _check_bearer returns None (allow)."""
-    with patch("oncofiles.server.MCP_BEARER_TOKEN", ""):
+# Tests below exercise the HTTP-transport path. The stdio path is a
+# local-IPC trust boundary and always returns None; covered by
+# test_check_bearer_stdio_transport_always_allows.
+
+
+def test_check_bearer_no_token_configured_http_returns_401():
+    """#485: HTTP transport + empty MCP_BEARER_TOKEN → 401 (fail-closed).
+
+    Prior behavior returned None (authorized); that bypassed every
+    _check_dashboard_auth / _get_dashboard_patient_id(is_bearer=True) path
+    and was the root cause of the #484 cross-patient audit finding.
+    """
+    with (
+        patch("oncofiles.server.MCP_BEARER_TOKEN", ""),
+        patch("oncofiles.server.MCP_TRANSPORT", "streamable-http"),
+    ):
         result = _check_bearer(_make_request())
-        assert result is None
+        assert result is not None
+        assert result.status_code == 401
+
+
+def test_check_bearer_no_token_configured_http_with_header_returns_401():
+    """HTTP transport + empty MCP_BEARER_TOKEN + any header → 401."""
+    with (
+        patch("oncofiles.server.MCP_BEARER_TOKEN", ""),
+        patch("oncofiles.server.MCP_TRANSPORT", "streamable-http"),
+    ):
+        result = _check_bearer(_make_request("Bearer anything"))
+        assert result is not None
+        assert result.status_code == 401
+
+
+def test_check_bearer_stdio_transport_always_allows():
+    """stdio: local-IPC trust boundary, no bearer required even with empty token."""
+    with (
+        patch("oncofiles.server.MCP_BEARER_TOKEN", ""),
+        patch("oncofiles.server.MCP_TRANSPORT", "stdio"),
+    ):
+        assert _check_bearer(_make_request()) is None
+        assert _check_bearer(_make_request("Bearer whatever")) is None
 
 
 def test_check_bearer_missing_header():
-    """Missing Authorization header returns 401."""
-    with patch("oncofiles.server.MCP_BEARER_TOKEN", "test-token"):
+    """HTTP + configured token + missing Authorization header returns 401."""
+    with (
+        patch("oncofiles.server.MCP_BEARER_TOKEN", "test-token"),
+        patch("oncofiles.server.MCP_TRANSPORT", "streamable-http"),
+    ):
         result = _check_bearer(_make_request())
         assert result is not None
         assert result.status_code == 401
 
 
 def test_check_bearer_wrong_token():
-    """Wrong bearer token returns 401."""
-    with patch("oncofiles.server.MCP_BEARER_TOKEN", "test-token"):
+    """HTTP + configured token + wrong bearer returns 401."""
+    with (
+        patch("oncofiles.server.MCP_BEARER_TOKEN", "test-token"),
+        patch("oncofiles.server.MCP_TRANSPORT", "streamable-http"),
+    ):
         result = _check_bearer(_make_request("Bearer wrong-token"))
         assert result is not None
         assert result.status_code == 401
 
 
 def test_check_bearer_correct_token():
-    """Correct bearer token returns None (allow)."""
-    with patch("oncofiles.server.MCP_BEARER_TOKEN", "test-token"):
+    """HTTP + configured token + matching bearer returns None (authorized)."""
+    with (
+        patch("oncofiles.server.MCP_BEARER_TOKEN", "test-token"),
+        patch("oncofiles.server.MCP_TRANSPORT", "streamable-http"),
+    ):
         result = _check_bearer(_make_request("Bearer test-token"))
         assert result is None
 
 
 def test_check_bearer_no_bearer_prefix():
     """Authorization header without 'Bearer ' prefix returns 401."""
-    with patch("oncofiles.server.MCP_BEARER_TOKEN", "test-token"):
+    with (
+        patch("oncofiles.server.MCP_BEARER_TOKEN", "test-token"),
+        patch("oncofiles.server.MCP_TRANSPORT", "streamable-http"),
+    ):
         result = _check_bearer(_make_request("Basic dXNlcjpwYXNz"))
         assert result is not None
         assert result.status_code == 401
@@ -322,10 +369,13 @@ def test_session_token_rejects_expired():
 
 
 def test_check_dashboard_auth_accepts_session():
-    """_check_dashboard_auth accepts valid session tokens."""
+    """_check_dashboard_auth accepts valid session tokens on HTTP transport."""
     from oncofiles.server import _check_dashboard_auth, _make_session_token
 
-    with patch("oncofiles.server.MCP_BEARER_TOKEN", "test-secret"):
+    with (
+        patch("oncofiles.server.MCP_BEARER_TOKEN", "test-secret"),
+        patch("oncofiles.server.MCP_TRANSPORT", "streamable-http"),
+    ):
         session = _make_session_token("user@example.com")
         request = _make_request("Bearer session:" + session)
         result = _check_dashboard_auth(request)
@@ -333,11 +383,47 @@ def test_check_dashboard_auth_accepts_session():
 
 
 def test_check_dashboard_auth_rejects_invalid():
-    """_check_dashboard_auth rejects invalid tokens."""
+    """_check_dashboard_auth rejects invalid tokens on HTTP transport."""
     from oncofiles.server import _check_dashboard_auth
 
-    with patch("oncofiles.server.MCP_BEARER_TOKEN", "test-secret"):
+    with (
+        patch("oncofiles.server.MCP_BEARER_TOKEN", "test-secret"),
+        patch("oncofiles.server.MCP_TRANSPORT", "streamable-http"),
+    ):
         request = _make_request("Bearer session:garbage")
+        result = _check_dashboard_auth(request)
+        assert result is not None
+        assert result.status_code == 401
+
+
+def test_check_dashboard_auth_fails_closed_when_token_unset():
+    """#485: HTTP + no MCP_BEARER_TOKEN + no session → 401 (fail-closed).
+
+    Regression lock for the root cause in #484: prior behavior let bearer
+    path return None (authorized) with no configured token, making every
+    dashboard route open to unauthenticated callers on a missing-secret deploy.
+    """
+    from oncofiles.server import _check_dashboard_auth
+
+    with (
+        patch("oncofiles.server.MCP_BEARER_TOKEN", ""),
+        patch("oncofiles.server.MCP_TRANSPORT", "streamable-http"),
+    ):
+        request = _make_request()
+        result = _check_dashboard_auth(request)
+        assert result is not None
+        assert result.status_code == 401
+
+
+def test_check_dashboard_auth_fails_closed_when_token_unset_with_bogus_header():
+    """#485: HTTP + no MCP_BEARER_TOKEN + arbitrary header → 401."""
+    from oncofiles.server import _check_dashboard_auth
+
+    with (
+        patch("oncofiles.server.MCP_BEARER_TOKEN", ""),
+        patch("oncofiles.server.MCP_TRANSPORT", "streamable-http"),
+    ):
+        request = _make_request("Bearer anything-at-all")
         result = _check_dashboard_auth(request)
         assert result is not None
         assert result.status_code == 401

@@ -132,9 +132,25 @@ def _check_rate_limit(key: str, *, request: Request | None = None) -> JSONRespon
 
 
 def _check_bearer(request: Request) -> JSONResponse | None:
-    """Validate bearer token from Authorization header. Returns error response or None if OK."""
-    if not MCP_BEARER_TOKEN:
+    """Validate `Authorization: Bearer` header against MCP_BEARER_TOKEN.
+
+    Fail-closed: on HTTP transports, returns 401 when either MCP_BEARER_TOKEN
+    is unset OR the request header does not match. stdio is a local-IPC trust
+    boundary and remains open with no bearer required.
+
+    Returns None on success, JSONResponse(401) on failure.
+
+    Security note (#484 / #485): prior to this fix, `not MCP_BEARER_TOKEN`
+    returned None (authorized) — which cascaded through `_check_dashboard_auth`
+    and `_get_dashboard_patient_id(is_bearer=True)` to bypass all per-caregiver
+    patient scoping if the env var was ever missing on an HTTP deploy.
+    """
+    # stdio: local IPC trust boundary — no bearer required
+    if MCP_TRANSPORT == "stdio":
         return None
+    # HTTP: require both a configured server token AND a matching request header
+    if not MCP_BEARER_TOKEN:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
     auth_header = request.headers.get("authorization", "")
     if not auth_header.startswith("Bearer "):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
@@ -177,9 +193,14 @@ def _create_auth():
 
 auth = _create_auth()
 
-if auth is None and MCP_TRANSPORT != "stdio":
-    logging.getLogger(__name__).warning(
-        "No authentication configured for transport=%s. Set MCP_BEARER_TOKEN.", MCP_TRANSPORT
+# Fail-closed startup gate (#485): an HTTP deploy with no MCP_BEARER_TOKEN and
+# no OAuth provider is effectively open — refuse to boot instead of logging a
+# warning. streamable-http always gets PersistentOAuthProvider, but a future
+# transport option could slip through; this assertion is the backstop.
+if MCP_TRANSPORT != "stdio" and not MCP_BEARER_TOKEN and auth is None:
+    raise RuntimeError(
+        f"No authentication configured for transport={MCP_TRANSPORT}. "
+        "Set MCP_BEARER_TOKEN or use an auth-providing transport (streamable-http)."
     )
 
 
