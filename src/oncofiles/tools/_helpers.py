@@ -104,12 +104,40 @@ def _get_patient_id(*, required: bool = True) -> str:
 
     Args:
         required: If True (default), raises ValueError when no patient is
-            selected. Set to False for bootstrapping tools (list_patients,
+            selected OR when resolution returned the no-access sentinel.
+            Set to False for bootstrapping tools (list_patients,
             select_patient) that must work without a patient.
+
+    Raises:
+        ValueError: with a caller-actionable message distinguishing the
+            three no-patient states: unauthorized caller (sentinel),
+            sentinel-from-unauthorized-OAuth, and never-set.
     """
+    from oncofiles.constants import NO_PATIENT_ACCESS_SENTINEL
     from oncofiles.patient_middleware import get_current_patient_id
 
     pid = get_current_patient_id()
+    if pid == NO_PATIENT_ACCESS_SENTINEL:
+        if required:
+            # Caller authenticated (OAuth or bearer) but we couldn't bind
+            # them to a patient. Distinct message from "no patient selected"
+            # so the UX can prompt them to (a) sign in on the dashboard and
+            # make sure their Google email matches caregiver_email, OR
+            # (b) pass an explicit patient_slug in their tool call if they
+            # know their slug.
+            raise ValueError(
+                "No patient access resolved for your account. "
+                "This usually means your Google email does not match the "
+                "caregiver_email of any patient, or you are not signed in "
+                "on the dashboard yet. "
+                "Fix: (1) sign in at https://oncofiles.com/dashboard with "
+                "the Google account you want to use, (2) create a patient "
+                "or verify your email appears in its caregiver_email, then "
+                "(3) in claude.ai reconnect the Oncofiles connector (Settings "
+                "→ Connectors → Oncofiles → Remove → Add again). "
+                "Alternatively pass patient_slug=<your-slug> in this tool call."
+            )
+        return ""  # treat sentinel as "no patient" for bootstrapping callers
     if not pid and required:
         raise ValueError(
             "No patient selected. "
