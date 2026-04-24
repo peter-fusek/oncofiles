@@ -370,29 +370,49 @@ async def backfill_lab_values_from_metadata(
     extracted_nonempty = 0
     lab_values_added = 0
 
+    import json as _json
+
+    async def _mark_scanned(doc, scan_result: str, lv_block: dict | None = None) -> None:
+        """Write a sentinel lab_values block so the NOT LIKE filter excludes
+        this doc on the next batch — prevents the pagination infinite loop
+        where docs without lab tables kept reappearing and remaining never
+        decremented. See #465 session 3 bug.
+        """
+        if dry_run:
+            return
+        try:
+            meta = _json.loads(doc.structured_metadata) if doc.structured_metadata else {}
+        except (ValueError, TypeError):
+            meta = {}
+        if not isinstance(meta, dict):
+            meta = {}
+        meta["lab_values"] = lv_block or {"values": [], "scan_result": scan_result}
+        await db.update_structured_metadata(doc.id, _json.dumps(meta, ensure_ascii=False))
+
     for doc in docs:
         processed += 1
         # Pull text from OCR cache — no download fallback, if no text we skip.
         if not await db.has_ocr_text(doc.id):
+            await _mark_scanned(doc, "no_ocr_text")
             continue
         pages = await db.get_ocr_pages(doc.id)
         full_text = "\n\n".join(p["extracted_text"] for p in pages if p.get("extracted_text"))
         if not full_text.strip():
+            await _mark_scanned(doc, "empty_ocr_text")
             continue
 
         if not has_lab_table(full_text):
+            await _mark_scanned(doc, "no_table_detected")
             continue
         detected += 1
 
         lv_block = extract_lab_values(full_text, db=db, document_id=doc.id)
         if not lv_block or not lv_block.get("values"):
+            await _mark_scanned(doc, "ai_extracted_empty")
             continue
         extracted_nonempty += 1
 
-        # Merge the new lab_values block into the existing metadata JSON so
-        # the next call skips this doc (the NOT LIKE '%lab_values%' filter).
-        import json as _json
-
+        # Merge the populated lab_values block into the existing metadata JSON.
         try:
             meta = _json.loads(doc.structured_metadata) if doc.structured_metadata else {}
         except (ValueError, TypeError):
