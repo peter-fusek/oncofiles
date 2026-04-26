@@ -1233,6 +1233,17 @@
             <div id="ana-latency" style="font-size:0.8125rem"></div>
           </div>
         </div>
+
+        <!-- Per-patient cost leaderboard (#411 Part A — admin only) -->
+        <div id="cost-leaderboard-section" style="display:none;margin-top:1.25rem;padding-top:1rem;border-top:1px solid var(--border)">
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:0.75rem;margin-bottom:0.5rem">
+            <div style="font-size:0.75rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.04em">
+              <span data-sk="Náklady podľa pacienta" data-en="Cost by Patient">Cost by Patient</span>
+            </div>
+            <div style="font-size:0.7rem;color:var(--text-muted)" data-sk="Klikni na riadok pre detail" data-en="Click a row to drill in">Click a row to drill in</div>
+          </div>
+          <div id="cost-leaderboard-body" style="font-size:0.8125rem"></div>
+        </div>
       </div>
 
       <!-- Processing Schedules (#287) -->
@@ -2247,6 +2258,11 @@
 
     var adminPatientIds = new Set();
     var isAdminMode = false;
+    // #411: caller is global admin (DASHBOARD_ADMIN_EMAILS / static bearer).
+    // Distinct from `isAdminMode` which means "current selected patient is one
+    // I'm admin-viewing read-only". The leaderboard widget on the analytics
+    // panel hides itself unless this is true.
+    var isGlobalAdmin = false;
 
     async function loadPatients() {
       try {
@@ -2260,6 +2276,7 @@
         var ownPatients = data.own || data;
         var adminPatients = data.admin || [];
         var isAdmin = data.is_admin || false;
+        isGlobalAdmin = isAdmin;
 
         // Build combined cache (own + admin)
         patientsCache = ownPatients.concat(adminPatients);
@@ -2450,6 +2467,9 @@
       // Clear usage analytics
       var analyticsEl = document.getElementById('analytics-content');
       if (analyticsEl) { while (analyticsEl.firstChild) analyticsEl.removeChild(analyticsEl.firstChild); }
+      // Clear cost leaderboard body — keep section visibility decision to renderCostLeaderboard.
+      var leaderboardEl = document.getElementById('cost-leaderboard-body');
+      if (leaderboardEl) { while (leaderboardEl.firstChild) leaderboardEl.removeChild(leaderboardEl.firstChild); }
       // Clear prompt log
       var promptEl = document.getElementById('prompt-log-entries');
       if (promptEl) { while (promptEl.firstChild) promptEl.removeChild(promptEl.firstChild); }
@@ -3063,6 +3083,22 @@
         if (analytics) renderAnalytics(analytics);
         anyOk = true;
       } catch (e) { if (!trackBreaker(e)) console.warn('Analytics fetch failed:', e); }
+      // #411: per-patient cost leaderboard — admin-only. Skip the fetch
+      // entirely for non-admin callers (saves a guaranteed 403). renderCostLeaderboard
+      // also hides the section when isGlobalAdmin is false, in case the order
+      // of operations ever changes.
+      if (isGlobalAdmin) {
+        try {
+          var leaderboard = await apiFetch('/api/cost-leaderboard?days=30&limit=50');
+          if (leaderboard) renderCostLeaderboard(leaderboard);
+          anyOk = true;
+        } catch (e) { if (!trackBreaker(e)) console.warn('Cost leaderboard fetch failed:', e); }
+      } else {
+        // Non-admin caller: explicitly hide the widget so a previous admin
+        // session's render doesn't bleed through after a page refresh.
+        var lb = document.getElementById('cost-leaderboard-section');
+        if (lb) lb.style.display = 'none';
+      }
       try {
         var sched = await apiFetch('/api/schedules');
         if (sched) renderSchedules(sched);
@@ -4286,6 +4322,121 @@
         latEl.textContent = 'No data';
         latEl.style.color = 'var(--text-muted)';
       }
+    }
+
+    // ── Cost leaderboard renderer (#411 Part A — admin only) ─────────────
+
+    function renderCostLeaderboard(data) {
+      var section = document.getElementById('cost-leaderboard-section');
+      var body = document.getElementById('cost-leaderboard-body');
+      if (!section || !body) return;
+      // Hide the whole widget for non-admin callers — the endpoint also
+      // 403s in that case, but we don't even fetch it then.
+      if (!isGlobalAdmin) {
+        section.style.display = 'none';
+        return;
+      }
+      section.style.display = 'block';
+      clearEl(body);
+
+      var rows = (data && data.leaderboard) || [];
+      if (rows.length === 0) {
+        body.textContent = (window._dashLang === 'sk' ? 'Žiadne dáta' : 'No data');
+        body.style.color = 'var(--text-muted)';
+        return;
+      }
+
+      // Header row — XSS-safe DOM construction (#469 dashboard guard).
+      var header = document.createElement('div');
+      header.style.cssText =
+        'display:grid;grid-template-columns:2fr 1fr 1fr 1fr 1fr;gap:0.5rem;' +
+        'padding:0.25rem 0.5rem;font-size:0.7rem;color:var(--text-muted);' +
+        'text-transform:uppercase;letter-spacing:0.04em;border-bottom:1px solid var(--border)';
+      ['Patient', 'Calls', 'Tokens (K)', 'Cost USD', 'Top tool'].forEach(function (label) {
+        var col = document.createElement('span');
+        col.textContent = label;
+        header.appendChild(col);
+      });
+      body.appendChild(header);
+
+      var maxCost = Math.max.apply(null, rows.map(function (r) { return r.total_cost_usd || 0; }));
+      rows.forEach(function (r) {
+        var row = document.createElement('div');
+        row.style.cssText =
+          'display:grid;grid-template-columns:2fr 1fr 1fr 1fr 1fr;gap:0.5rem;' +
+          'padding:0.375rem 0.5rem;font-size:0.8125rem;border-bottom:1px solid var(--border);' +
+          'cursor:pointer';
+        // Drill-in: clicking a row switches the dropdown to that patient.
+        // Skip the `__system_no_patient__` sentinel and any other __-prefixed
+        // sentinel — it's not a real caregiver patient and switchPatient()
+        // would 404 on the dropdown.
+        var pid = r.patient_id;
+        var isSentinel = !pid || String(pid).indexOf('__') === 0;
+        if (!isSentinel) {
+          row.title = (window._dashLang === 'sk' ? 'Klikni pre detail' : 'Click to drill in');
+          row.onclick = (function (clickedPid) { return function () { switchPatient(clickedPid); }; })(pid);
+        } else {
+          row.style.cursor = 'default';
+          row.style.color = 'var(--text-muted)';
+        }
+
+        var name = document.createElement('span');
+        name.style.cssText = 'overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
+        name.textContent = r.display_name || r.slug || r.patient_id || '?';
+        row.appendChild(name);
+
+        var calls = document.createElement('span');
+        calls.textContent = (r.total_calls || 0).toLocaleString();
+        row.appendChild(calls);
+
+        var tokens = document.createElement('span');
+        var tokTotal = ((r.total_input_tokens || 0) + (r.total_output_tokens || 0)) / 1000;
+        tokens.textContent = tokTotal < 10 ? tokTotal.toFixed(1) : Math.round(tokTotal).toLocaleString();
+        row.appendChild(tokens);
+
+        // Cost cell — bar + value, anomaly-flag color when >2x median (rough proxy).
+        var costWrap = document.createElement('span');
+        costWrap.style.cssText = 'display:flex;align-items:center;gap:0.375rem';
+        var barWrap = document.createElement('span');
+        barWrap.style.cssText = 'flex:1;height:10px;background:var(--border);border-radius:2px;overflow:hidden;display:inline-block';
+        var bar = document.createElement('span');
+        var pct = maxCost > 0 ? Math.round((r.total_cost_usd || 0) / maxCost * 100) : 0;
+        var costColor = (r.total_cost_usd || 0) > 5 ? 'var(--red)' : (r.total_cost_usd || 0) > 1 ? 'var(--amber)' : 'var(--accent)';
+        bar.style.cssText = 'display:block;height:100%;width:' + pct + '%;background:' + costColor + ';border-radius:2px';
+        barWrap.appendChild(bar);
+        costWrap.appendChild(barWrap);
+        var costVal = document.createElement('span');
+        costVal.style.cssText = 'min-width:60px;text-align:right;font-variant-numeric:tabular-nums';
+        costVal.textContent = '$' + (r.total_cost_usd || 0).toFixed(2);
+        costWrap.appendChild(costVal);
+        row.appendChild(costWrap);
+
+        var top = document.createElement('span');
+        top.style.cssText = 'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text-muted);font-size:0.75rem';
+        top.textContent = r.top_call_type || '—';
+        row.appendChild(top);
+
+        body.appendChild(row);
+      });
+
+      // Total footer
+      var footer = document.createElement('div');
+      footer.style.cssText =
+        'display:grid;grid-template-columns:2fr 1fr 1fr 1fr 1fr;gap:0.5rem;' +
+        'padding:0.5rem 0.5rem 0;margin-top:0.25rem;font-size:0.8125rem;font-weight:600;' +
+        'border-top:1px solid var(--border)';
+      var totalLabel = document.createElement('span');
+      totalLabel.textContent = (window._dashLang === 'sk' ? 'Spolu' : 'Total') +
+        ' (' + (data.patient_count || rows.length) + ' patients, ' + (data.days || 30) + 'd)';
+      footer.appendChild(totalLabel);
+      footer.appendChild(document.createElement('span'));
+      footer.appendChild(document.createElement('span'));
+      var totalCost = document.createElement('span');
+      totalCost.style.cssText = 'text-align:right;font-variant-numeric:tabular-nums';
+      totalCost.textContent = '$' + (data.total_cost_usd || 0).toFixed(2);
+      footer.appendChild(totalCost);
+      footer.appendChild(document.createElement('span'));
+      body.appendChild(footer);
     }
 
     // ── Event Listeners ──────────────────────────────────────────────────
