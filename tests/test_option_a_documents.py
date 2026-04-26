@@ -10,11 +10,17 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from oncofiles.database import Database
 from oncofiles.models import DocumentCategory
 from oncofiles.tools import documents as doc_tools
 from tests.conftest import ERIKA_UUID
 from tests.helpers import make_doc
+
+# These tests verify slug-routing across patients — admin scope per #497/#498.
+# Cross-patient denial is locked separately in test_resolve_patient_id_acl.py.
+pytestmark = pytest.mark.usefixtures("admin_scope")
 
 SECOND_UUID = "00000000-0000-4000-8000-000000000002"
 SECOND_SLUG = "bob-test"

@@ -59,3 +59,20 @@ async def db():
     yield database
     _current_patient_id.reset(token)
     await database.close()
+
+
+@pytest.fixture
+def admin_scope():
+    """Promote the in-test caller to admin scope for the duration.
+
+    Use as `pytestmark = pytest.mark.usefixtures("admin_scope")` at the top
+    of any test file that exercises cross-patient slug routing — the routing
+    mechanism is admin-only behavior under the #497/#498 ACL gate. Tests that
+    specifically verify the ACL itself (cross-patient denial) must NOT use
+    this fixture.
+    """
+    from oncofiles.persistent_oauth import _verified_caller_is_admin
+
+    tok = _verified_caller_is_admin.set(True)
+    yield
+    _verified_caller_is_admin.reset(tok)

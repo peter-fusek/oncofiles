@@ -154,7 +154,7 @@ async def _resolve_patient_id(
     *,
     required: bool = True,
 ) -> str:
-    """Resolve patient identity for a tool call (Option A per #429).
+    """Resolve patient identity for a tool call (Option A per #429) with ACL gate (#497/#498).
 
     Stateless-HTTP safe: every patient-scoped tool should accept a
     `patient_slug` parameter and resolve via this helper. Falls back to the
@@ -162,12 +162,27 @@ async def _resolve_patient_id(
     backwards-compat for bearer-token flows where the token already binds
     a specific patient).
 
-    ACL: the caller's bearer token + the middleware's rate-limit + token→patient
-    binding still apply — if a caller's token maps to patient X and they pass
-    `patient_slug=Y` for someone else's patient, this currently allows it
-    (same as pre-Option-A behaviour). A stricter ACL check (caller ∈
-    allowed_callers_for(patient_id)) belongs in a follow-up once the
-    caller_identity plumbing is in place.
+    ACL gate (added 2026-04-26 for #497/#498). Before this gate, a caller
+    bearer-bound to patient X could pass `patient_slug=Y` and the resolver
+    would happily return Y's patient_id — every patient-scoped tool then
+    operated under Y's scope, bypassing the entire isolation layer. The fix:
+
+    - **Admin callers** (static `MCP_BEARER_TOKEN`, OAuth caller whose Google
+      email is in `DASHBOARD_ADMIN_EMAILS`) bypass the ACL — they can resolve
+      any slug.
+    - **Non-admin callers** must satisfy ONE of:
+        * their bearer-bound `patient_id` (set by `verify_token` /
+          `PatientResolutionMiddleware`) equals the resolved `patient_id`, OR
+        * their OAuth-bound `caregiver_email` equals the patient's
+          `caregiver_email` (case-insensitive).
+      Otherwise the resolver raises `ValueError("access denied …")`. The
+      message does not echo the patient's owning email or any other PHI —
+      that would be a secondary leak.
+
+    Stdio dev note: stdio callers default to non-admin and the middleware
+    binds them to the first active patient. Multi-patient stdio dev that
+    needs cross-patient access should set `_verified_caller_is_admin=True`
+    in the dev session OR use the static `MCP_BEARER_TOKEN` (which is admin).
 
     Args:
         patient_slug: Explicit slug from the caller (e.g. 'q1b'). Preferred.
@@ -175,15 +190,38 @@ async def _resolve_patient_id(
         required: If True (default), raises ValueError when neither slug nor
             middleware-resolved patient is available.
     """
-    if patient_slug:
-        db = _get_db(ctx)
-        patient = await db.get_patient_by_slug(patient_slug)
-        if not patient:
-            raise ValueError(
-                f"Patient not found: {patient_slug!r}. Use list_patients() to see available slugs."
-            )
-        return patient.patient_id
-    return _get_patient_id(required=required)
+    if not patient_slug:
+        return _get_patient_id(required=required)
+
+    db = _get_db(ctx)
+    patient = await db.get_patient_by_slug(patient_slug)
+    if not patient:
+        raise ValueError(
+            f"Patient not found: {patient_slug!r}. Use list_patients() to see available slugs."
+        )
+    pid = patient.patient_id
+
+    if _is_admin_caller():
+        return pid
+
+    from oncofiles.constants import NO_PATIENT_ACCESS_SENTINEL
+    from oncofiles.patient_middleware import get_current_patient_id
+
+    bound_pid = get_current_patient_id()
+    bearer_match = bool(bound_pid) and bound_pid != NO_PATIENT_ACCESS_SENTINEL and bound_pid == pid
+
+    caller_email = _caller_email().strip().lower()
+    pat_caregiver = (patient.caregiver_email or "").strip().lower()
+    caregiver_match = bool(caller_email) and caller_email == pat_caregiver
+
+    if bearer_match or caregiver_match:
+        return pid
+
+    raise ValueError(
+        f"access denied for patient_slug={patient_slug!r}. "
+        "Your bearer token or OAuth identity is not authorized for that patient. "
+        "Use list_patients() to see patients available to you."
+    )
 
 
 # ── Admin scope & ownership (#487 / v5.15 Phase 3) ──────────────────────────

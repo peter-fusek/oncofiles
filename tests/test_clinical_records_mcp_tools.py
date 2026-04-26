@@ -10,10 +10,15 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from oncofiles.database import Database
 from oncofiles.models import ClinicalRecord
 from oncofiles.tools import clinical_records as cr_tools
 from tests.conftest import ERIKA_UUID
+
+# These tests verify slug-routing across patients — admin scope per #497/#498.
+pytestmark = pytest.mark.usefixtures("admin_scope")
 
 SECOND_UUID = "00000000-0000-4000-8000-000000000002"
 SECOND_SLUG = "bob-test"

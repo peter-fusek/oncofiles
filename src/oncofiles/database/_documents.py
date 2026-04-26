@@ -540,8 +540,39 @@ class DocumentMixin:
         async with self.db.execute(sql, params) as cursor:
             return await cursor.fetchone() is not None
 
-    async def get_ocr_document_ids(self) -> set[int]:
-        """Get all document IDs that have OCR text cached (batch query)."""
+    async def get_ocr_document_ids(self, *, patient_id: str) -> set[int]:
+        """Get document IDs with cached OCR text — scoped to one patient (#504/#505).
+
+        Patient-isolation gap fix: the original implementation queried
+        ``document_pages`` with no join to ``documents`` and no filter,
+        so callers consumed a global cross-patient set. Status / pipeline
+        code that compared a per-patient document list against this global
+        set was both incorrect (count drift if any cross-patient id
+        accidentally matched) and a structural leak class.
+
+        ``patient_id`` is now keyword-only and required. Admin jobs that
+        truly need a global view should call
+        ``get_ocr_document_ids_unscoped_for_admin`` and document the reason.
+        """
+        async with self.db.execute(
+            "SELECT DISTINCT dp.document_id "
+            "FROM document_pages dp "
+            "JOIN documents d ON d.id = dp.document_id "
+            "WHERE d.patient_id = ?",
+            (patient_id,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return {(r["document_id"] if isinstance(r, dict) else r[0]) for r in rows}
+
+    async def get_ocr_document_ids_unscoped_for_admin(self) -> set[int]:
+        """Cross-patient OCR ids — admin/operator jobs only.
+
+        Reserved for explicit admin paths that genuinely need a global view
+        (e.g. one-off integrity audits run by the operator). Patient-facing
+        MCP tools and dashboard endpoints MUST use ``get_ocr_document_ids``
+        (patient-scoped) — calling this from a per-patient code path is the
+        exact regression #504/#505 fixes.
+        """
         async with self.db.execute("SELECT DISTINCT document_id FROM document_pages") as cursor:
             rows = await cursor.fetchall()
             return {(r["document_id"] if isinstance(r, dict) else r[0]) for r in rows}

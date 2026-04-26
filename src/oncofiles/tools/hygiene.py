@@ -813,7 +813,7 @@ async def _build_document_matrix(
 
     # Fetch enough docs to satisfy offset + limit, capped at the pagination ceiling.
     docs = await db.list_documents(limit=max(limit + offset, 500), patient_id=pid)
-    ocr_ids = await db.get_ocr_document_ids()
+    ocr_ids = await db.get_ocr_document_ids(patient_id=pid)
     rows = []
 
     # Pre-compute per-doc status flags for both rows and summary
@@ -1090,9 +1090,10 @@ async def audit_document_pipeline(ctx: Context, patient_slug: str | None = None)
 
     docs = await db.list_documents(limit=1000, patient_id=pid)
 
-    # Patient-scoped OCR page counts — single query replaces (a) global
-    # get_ocr_document_ids() which would leak cross-patient info, and (b) a
-    # correlated subquery per PDF for split candidates (N+1 under Turso).
+    # Patient-scoped OCR page counts — single query also collects
+    # multi_page_ids in the same pass, replacing a correlated subquery per
+    # PDF for split candidates (N+1 under Turso). Cannot reuse
+    # `get_ocr_document_ids(patient_id=)` because we need page_count too.
     async with db.db.execute(
         """
         SELECT dp.document_id, COUNT(*) AS page_count
