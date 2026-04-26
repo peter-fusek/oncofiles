@@ -62,17 +62,34 @@ class PatientsMixin:
         async with self.db.execute(sql) as cursor:
             return [_row_to_patient(r) for r in await cursor.fetchall()]
 
-    async def get_patient_by_slug(self, slug: str) -> Patient | None:
-        """Get a patient by human-readable slug (e.g. 'q1b')."""
-        async with self.db.execute("SELECT * FROM patients WHERE slug = ?", (slug,)) as cursor:
+    async def get_patient_by_slug(self, slug: str, *, active_only: bool = True) -> Patient | None:
+        """Get a patient by human-readable slug (e.g. 'q1b').
+
+        Defaults to active patients only (#509). Archived/deactivated patients
+        used to be reachable through every MCP `patient_slug` flow because the
+        resolver short-circuited on slug-only lookup. The default here flipped
+        from "always return" to "only active" so any caller that needs to
+        target an archived patient (admin recovery, audit) must opt in
+        explicitly with `active_only=False`.
+        """
+        if active_only:
+            sql = "SELECT * FROM patients WHERE slug = ? AND is_active = 1"
+        else:
+            sql = "SELECT * FROM patients WHERE slug = ?"
+        async with self.db.execute(sql, (slug,)) as cursor:
             row = await cursor.fetchone()
             return _row_to_patient(row) if row else None
 
-    async def resolve_patient_id(self, value: str) -> str | None:
+    async def resolve_patient_id(self, value: str, *, active_only: bool = True) -> str | None:
         """Resolve a patient identifier (UUID or slug) to a UUID patient_id.
 
         If *value* looks like a UUID (36 chars with hyphens), look up by patient_id.
-        Otherwise, treat it as a slug.  Returns the UUID string or None.
+        Otherwise, treat it as a slug. Returns the UUID string or None.
+
+        `active_only` (#509) — defaults to True, propagated to the slug lookup
+        so MCP and dashboard callers don't accidentally re-target an archived
+        patient. UUID lookups still go through `get_patient(...)` which has no
+        active filter; if needed, callers can check `Patient.is_active` after.
         """
         import re as _re
 
@@ -81,8 +98,10 @@ class PatientsMixin:
         )
         if _uuid_re.match(value):
             p = await self.get_patient(value)
+            if p and active_only and not p.is_active:
+                return None
             return p.patient_id if p else None
-        p = await self.get_patient_by_slug(value)
+        p = await self.get_patient_by_slug(value, active_only=active_only)
         return p.patient_id if p else None
 
     async def resolve_default_patient(self) -> str:
