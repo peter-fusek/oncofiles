@@ -201,3 +201,75 @@ async def test_extensionless_file_is_real_orphan(db: Database):
 
     assert len(report["in_gdrive_not_db"]) == 1
     assert report["expected_orphans"] == []
+
+
+# ── #481 Issue B: cross-patient scoping ──────────────────────────────────
+
+
+async def test_report_does_not_leak_other_patient_db_docs(db: Database):
+    """#481 Issue B: when called with patient_id=A, the report's DB side must
+    only count docs owned by A. Pre-fix (Mar 2026), the dashboard could show
+    patient B's doc count next to patient A's filter — the symptom Peter
+    observed on Michal's dashboard showing 112 docs while Michal had 0.
+
+    The patient_id kwarg propagates straight to db.list_documents — this
+    test pins that contract so future refactors can't drop it.
+    """
+    from oncofiles.models import Patient
+
+    bob_uuid = "00000000-0000-4000-8000-000000000002"
+    await db.insert_patient(
+        Patient(
+            patient_id=bob_uuid,
+            slug="bob-test",
+            display_name="Bob Test",
+            caregiver_email="bob@example.com",
+        )
+    )
+
+    erika_doc = await _insert(
+        db,
+        file_id="erika_recon",
+        filename="20260101_Erika_NOU_Labs.pdf",
+        gdrive_id="gd_erika",
+    )
+    bob_doc = await db.insert_document(
+        make_doc(
+            file_id="bob_recon",
+            filename="20260101_Bob_NOU_Report.pdf",
+            gdrive_id="gd_bob",
+        ),
+        patient_id=bob_uuid,
+    )
+
+    # GDrive folder lists BOTH files (simulates a hypothetical leak path
+    # where the wrong folder_id was passed). With proper DB scoping, Erika's
+    # report should show Bob's gdrive file as a real orphan (it's not in
+    # Erika's DB), and Bob's report mirror.
+    gdrive = _mock_gdrive_listing(
+        [
+            {"id": "gd_erika", "name": erika_doc.filename},
+            {"id": "gd_bob", "name": bob_doc.filename},
+        ]
+    )
+
+    erika_report = await _build_reconciliation_report(
+        db, gdrive, folder_id="root", patient_id=ERIKA_UUID
+    )
+    # Erika's DB count is 1 — Bob's doc must not appear in any DB-side bucket
+    erika_db_filenames = {e["filename"] for e in erika_report["in_db_not_gdrive"]}
+    erika_db_filenames |= {e["filename"] for e in erika_report["in_db_external_location"]}
+    erika_db_filenames |= {e["filename"] for e in erika_report["in_db_deleted_remote"]}
+    assert bob_doc.filename not in erika_db_filenames
+    # Bob's GDrive file IS unrecognized from Erika's perspective → real orphan
+    orphan_names = {e["name"] for e in erika_report["in_gdrive_not_db"]}
+    assert bob_doc.filename in orphan_names
+
+    bob_report = await _build_reconciliation_report(
+        db, gdrive, folder_id="root", patient_id=bob_uuid
+    )
+    # Symmetric: Bob's report must not see Erika's DB doc
+    bob_db_filenames = {e["filename"] for e in bob_report["in_db_not_gdrive"]}
+    bob_db_filenames |= {e["filename"] for e in bob_report["in_db_external_location"]}
+    bob_db_filenames |= {e["filename"] for e in bob_report["in_db_deleted_remote"]}
+    assert erika_doc.filename not in bob_db_filenames
