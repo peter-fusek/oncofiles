@@ -138,6 +138,126 @@ class AnalyticsMixin:
 
         return stats
 
+    async def get_per_patient_cost_leaderboard(
+        self, days: int = 30, *, limit: int = 50
+    ) -> list[dict]:
+        """Aggregate AI spend per patient for the last N days (#411 Part A).
+
+        Admin-only by contract — caller MUST check `_is_admin_caller()` before
+        invoking this method. Returns one row per patient with non-zero
+        activity, sorted by total cost descending so the dashboard can flag
+        the top spenders for anomaly review.
+
+        Joins ``prompt_log`` with ``patients`` so the response includes slug
+        and display_name (saved from re-querying per row on the dashboard).
+        Patients with zero AI activity in the window are NOT returned —
+        the table represents only spenders. The leaderboard sums
+        ``estimated_cost_usd`` directly from ``prompt_log``; rows where
+        that column is NULL (pre-#442 history) are skipped via ``COALESCE``
+        so they don't fall under "free" by mistake — they're recomputed
+        from token counts via the same Haiku formula in
+        ``_estimate_cost`` for parity with ``get_prompt_stats``.
+
+        Args:
+            days: rolling window. Capped at 365 by callers (no DB enforcement).
+            limit: max patients to return. Default 50 — covers all multi-tenant
+                deployments we expect; the unbounded form would expose every
+                patient slug to admin in one call which is fine but not free.
+
+        Returns:
+            List of dicts: ``{patient_id, slug, display_name, total_calls,
+            total_input_tokens, total_output_tokens, total_cost_usd,
+            error_count, last_call_at, top_call_type}``.
+        """
+        # Build the per-patient aggregate. The COALESCE on estimated_cost_usd
+        # falls back to recomputing from tokens when the column is NULL — this
+        # keeps historical pre-migration-058 rows from silently disappearing.
+        async with self.db.execute(
+            """
+            SELECT
+                p.patient_id            AS patient_id,
+                COUNT(*)                AS total_calls,
+                COALESCE(SUM(input_tokens), 0)  AS in_tok,
+                COALESCE(SUM(output_tokens), 0) AS out_tok,
+                COALESCE(
+                    SUM(estimated_cost_usd),
+                    0
+                )                       AS billed_cost_usd,
+                SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) AS errs,
+                MAX(created_at)         AS last_call_at
+            FROM prompt_log p
+            WHERE created_at >= strftime('%Y-%m-%dT%H:%M:%SZ', 'now', ?)
+            GROUP BY p.patient_id
+            ORDER BY billed_cost_usd DESC, total_calls DESC
+            LIMIT ?
+            """,
+            (f"-{days} days", limit),
+        ) as cursor:
+            rows = await cursor.fetchall()
+
+        # Build a slug/display_name map for the patients we hit, plus an
+        # extra top-call-type subquery per row.
+        leaderboard: list[dict] = []
+        for r in rows:
+            pid = r["patient_id"]
+            in_tok = r["in_tok"] or 0
+            out_tok = r["out_tok"] or 0
+            billed = r["billed_cost_usd"] or 0.0
+
+            # If `estimated_cost_usd` was NULL on every row this aggregates,
+            # billed will be 0 even though there was activity — recompute
+            # from tokens for parity with `get_prompt_stats`.
+            cost = billed if billed > 0 else _estimate_cost(in_tok, out_tok)
+
+            # Resolve slug + display_name for non-system patients only — the
+            # `__system_no_patient__` sentinel won't have a row in `patients`.
+            slug = ""
+            display_name = ""
+            if pid and not pid.startswith("__"):
+                async with self.db.execute(
+                    "SELECT slug, display_name FROM patients WHERE patient_id = ?",
+                    (pid,),
+                ) as p_cur:
+                    p_row = await p_cur.fetchone()
+                if p_row:
+                    p_dict = dict(p_row)
+                    slug = p_dict.get("slug") or ""
+                    display_name = p_dict.get("display_name") or ""
+
+            # Top call_type for this patient over the window — single extra
+            # query per leaderboard row but bounded by `limit` (default 50).
+            async with self.db.execute(
+                """
+                SELECT call_type, COUNT(*) AS cnt
+                FROM prompt_log
+                WHERE patient_id = ?
+                  AND created_at >= strftime('%Y-%m-%dT%H:%M:%SZ', 'now', ?)
+                GROUP BY call_type
+                ORDER BY cnt DESC
+                LIMIT 1
+                """,
+                (pid, f"-{days} days"),
+            ) as t_cur:
+                top_row = await t_cur.fetchone()
+                top_call_type = dict(top_row)["call_type"] if top_row else None
+
+            leaderboard.append(
+                {
+                    "patient_id": pid,
+                    "slug": slug,
+                    "display_name": display_name,
+                    "total_calls": r["total_calls"],
+                    "total_input_tokens": in_tok,
+                    "total_output_tokens": out_tok,
+                    "total_cost_usd": round(cost, 6),
+                    "error_count": r["errs"] or 0,
+                    "last_call_at": r["last_call_at"],
+                    "top_call_type": top_call_type,
+                }
+            )
+
+        return leaderboard
+
     async def get_tool_usage_stats(
         self, days: int = 30, *, patient_id: str | None = None
     ) -> ToolUsageStats:

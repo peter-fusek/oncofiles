@@ -5099,6 +5099,72 @@ async def api_usage_analytics(request: Request) -> JSONResponse:
         return JSONResponse({"error": "internal error"}, status_code=500)
 
 
+@mcp.custom_route("/api/cost-leaderboard", methods=["GET"])
+async def api_cost_leaderboard(request: Request) -> JSONResponse:
+    """Per-patient AI spend leaderboard (#411 Part A — admin-only).
+
+    Returns one row per patient with non-zero AI activity in the rolling
+    window, sorted by total cost descending. Designed to surface anomalous
+    spenders for the admin dashboard's anomaly-review flow without requiring
+    the operator to drill into each patient via `/api/usage-analytics`.
+
+    Auth contract: admin-only. Static `MCP_BEARER_TOKEN` callers and OAuth
+    callers whose Google email is in `DASHBOARD_ADMIN_EMAILS` are admitted;
+    every other caller (including caregivers signed in to the dashboard)
+    receives 403 here. Self-service per-patient stats already work via
+    `/api/usage-analytics` which scopes to the caller's own patient — that
+    path covers Part B; this endpoint is exclusively the admin overview.
+
+    Query params:
+        days: rolling window (default 30, capped at 365).
+        limit: max patients to return (default 50, capped at 500).
+    """
+    err = _check_dashboard_auth(request)
+    if err:
+        return err
+
+    email = _get_dashboard_email(request)
+    is_bearer = _check_bearer(request) is None
+    if not (is_bearer or _is_admin_email(email)):
+        return JSONResponse(
+            {
+                "error": "forbidden",
+                "detail": (
+                    "Cost leaderboard is admin-only. Per-patient self-service "
+                    "stats are available via /api/usage-analytics."
+                ),
+            },
+            status_code=403,
+        )
+
+    try:
+        db_inst: Database = request.app.state.fastmcp_server._lifespan_result["db"]
+        days = min(max(int(request.query_params.get("days", "30")), 1), 365)
+        limit = min(max(int(request.query_params.get("limit", "50")), 1), 500)
+
+        leaderboard = await db_inst.get_per_patient_cost_leaderboard(days=days, limit=limit)
+
+        total_cost = round(sum(row["total_cost_usd"] for row in leaderboard), 6)
+
+        return JSONResponse(
+            {
+                "days": days,
+                "limit": limit,
+                "patient_count": len(leaderboard),
+                "total_cost_usd": total_cost,
+                "leaderboard": leaderboard,
+            }
+        )
+    except ValueError as exc:
+        return JSONResponse({"error": "bad_request", "detail": str(exc)}, status_code=400)
+    except Exception as exc:
+        resp = _circuit_breaker_503(exc, "/api/cost-leaderboard")
+        if resp is not None:
+            return resp
+        logger.exception("API cost-leaderboard endpoint error")
+        return JSONResponse({"error": "internal error"}, status_code=500)
+
+
 @mcp.custom_route("/api/bug-report", methods=["POST"])
 async def api_bug_report(request: Request) -> JSONResponse:
     """Create a GitHub issue from dashboard bug report with full context."""
