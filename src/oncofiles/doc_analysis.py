@@ -83,7 +83,13 @@ def analyze_document_composition(
     response = client.messages.create(
         model=ANALYSIS_MODEL,
         max_tokens=1024,
-        system=COMPOSITION_SYSTEM_PROMPT,
+        system=[
+            {
+                "type": "text",
+                "text": COMPOSITION_SYSTEM_PROMPT,
+                "cache_control": {"type": "ephemeral"},
+            }
+        ],
         messages=[{"role": "user", "content": user_prompt}],
     )
     duration_ms = int((time.perf_counter() - start) * 1000)
@@ -100,6 +106,8 @@ def analyze_document_composition(
         raw_response=raw,
         input_tokens=getattr(response.usage, "input_tokens", None),
         output_tokens=getattr(response.usage, "output_tokens", None),
+        cache_creation_input_tokens=getattr(response.usage, "cache_creation_input_tokens", None),
+        cache_read_input_tokens=getattr(response.usage, "cache_read_input_tokens", None),
         duration_ms=duration_ms,
     )
 
@@ -194,7 +202,13 @@ def analyze_consolidation(
     response = client.messages.create(
         model=ANALYSIS_MODEL,
         max_tokens=1024,
-        system=CONSOLIDATION_SYSTEM_PROMPT,
+        system=[
+            {
+                "type": "text",
+                "text": CONSOLIDATION_SYSTEM_PROMPT,
+                "cache_control": {"type": "ephemeral"},
+            }
+        ],
         messages=[{"role": "user", "content": user_prompt}],
     )
     duration_ms = int((time.perf_counter() - start) * 1000)
@@ -211,6 +225,8 @@ def analyze_consolidation(
         raw_response=raw,
         input_tokens=getattr(response.usage, "input_tokens", None),
         output_tokens=getattr(response.usage, "output_tokens", None),
+        cache_creation_input_tokens=getattr(response.usage, "cache_creation_input_tokens", None),
+        cache_read_input_tokens=getattr(response.usage, "cache_read_input_tokens", None),
         duration_ms=duration_ms,
     )
 
@@ -288,7 +304,13 @@ def analyze_vaccination_events(
     response = client.messages.create(
         model=ANALYSIS_MODEL,
         max_tokens=2048,
-        system=VACCINE_EVENTS_SYSTEM_PROMPT,
+        system=[
+            {
+                "type": "text",
+                "text": VACCINE_EVENTS_SYSTEM_PROMPT,
+                "cache_control": {"type": "ephemeral"},
+            }
+        ],
         messages=[{"role": "user", "content": user_prompt}],
     )
     duration_ms = int((time.perf_counter() - start) * 1000)
@@ -305,6 +327,8 @@ def analyze_vaccination_events(
         raw_response=raw,
         input_tokens=getattr(response.usage, "input_tokens", None),
         output_tokens=getattr(response.usage, "output_tokens", None),
+        cache_creation_input_tokens=getattr(response.usage, "cache_creation_input_tokens", None),
+        cache_read_input_tokens=getattr(response.usage, "cache_read_input_tokens", None),
         duration_ms=duration_ms,
     )
 
@@ -419,7 +443,13 @@ def analyze_document_relationships(
     response = client.messages.create(
         model=ANALYSIS_MODEL,
         max_tokens=1024,
-        system=RELATIONSHIPS_SYSTEM_PROMPT,
+        system=[
+            {
+                "type": "text",
+                "text": RELATIONSHIPS_SYSTEM_PROMPT,
+                "cache_control": {"type": "ephemeral"},
+            }
+        ],
         messages=[{"role": "user", "content": user_prompt}],
     )
     duration_ms = int((time.perf_counter() - start) * 1000)
@@ -436,6 +466,8 @@ def analyze_document_relationships(
         raw_response=raw,
         input_tokens=getattr(response.usage, "input_tokens", None),
         output_tokens=getattr(response.usage, "output_tokens", None),
+        cache_creation_input_tokens=getattr(response.usage, "cache_creation_input_tokens", None),
+        cache_read_input_tokens=getattr(response.usage, "cache_read_input_tokens", None),
         duration_ms=duration_ms,
     )
 

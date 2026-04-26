@@ -234,6 +234,8 @@ def _row_to_prompt_log(row: Any) -> PromptLogEntry:
         raw_response=row["raw_response"],
         input_tokens=row["input_tokens"],
         output_tokens=row["output_tokens"],
+        cache_creation_input_tokens=row_dict.get("cache_creation_input_tokens"),
+        cache_read_input_tokens=row_dict.get("cache_read_input_tokens"),
         duration_ms=row["duration_ms"],
         result_summary=row["result_summary"],
         status=row["status"],

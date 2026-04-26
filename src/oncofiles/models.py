@@ -461,6 +461,8 @@ class PromptLogEntry(BaseModel):
     raw_response: str = ""
     input_tokens: int | None = None
     output_tokens: int | None = None
+    cache_creation_input_tokens: int | None = None
+    cache_read_input_tokens: int | None = None
     duration_ms: int | None = None
     result_summary: str = ""
     status: str = "ok"

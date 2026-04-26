@@ -279,7 +279,13 @@ def enhance_document_text(
     response = client.messages.create(
         model=ENHANCE_MODEL,
         max_tokens=512,
-        system=ENHANCE_SYSTEM_PROMPT,
+        system=[
+            {
+                "type": "text",
+                "text": ENHANCE_SYSTEM_PROMPT,
+                "cache_control": {"type": "ephemeral"},
+            }
+        ],
         messages=[{"role": "user", "content": user_prompt}],
     )
     duration_ms = int((time.perf_counter() - start) * 1000)
@@ -296,6 +302,8 @@ def enhance_document_text(
         raw_response=raw,
         input_tokens=getattr(response.usage, "input_tokens", None),
         output_tokens=getattr(response.usage, "output_tokens", None),
+        cache_creation_input_tokens=getattr(response.usage, "cache_creation_input_tokens", None),
+        cache_read_input_tokens=getattr(response.usage, "cache_read_input_tokens", None),
         duration_ms=duration_ms,
     )
 
@@ -455,7 +463,13 @@ def extract_structured_metadata(
     response = client.messages.create(
         model=ENHANCE_MODEL,
         max_tokens=2048,
-        system=METADATA_SYSTEM_PROMPT,
+        system=[
+            {
+                "type": "text",
+                "text": METADATA_SYSTEM_PROMPT,
+                "cache_control": {"type": "ephemeral"},
+            }
+        ],
         messages=[{"role": "user", "content": user_prompt}],
     )
     duration_ms = int((time.perf_counter() - start) * 1000)
@@ -472,6 +486,8 @@ def extract_structured_metadata(
         raw_response=raw,
         input_tokens=getattr(response.usage, "input_tokens", None),
         output_tokens=getattr(response.usage, "output_tokens", None),
+        cache_creation_input_tokens=getattr(response.usage, "cache_creation_input_tokens", None),
+        cache_read_input_tokens=getattr(response.usage, "cache_read_input_tokens", None),
         duration_ms=duration_ms,
     )
 
@@ -701,7 +717,13 @@ def extract_lab_values(
     response = client.messages.create(
         model=ENHANCE_MODEL,
         max_tokens=2048,
-        system=LAB_VALUES_SYSTEM_PROMPT,
+        system=[
+            {
+                "type": "text",
+                "text": LAB_VALUES_SYSTEM_PROMPT,
+                "cache_control": {"type": "ephemeral"},
+            }
+        ],
         messages=[{"role": "user", "content": user_prompt}],
     )
     duration_ms = int((time.perf_counter() - start) * 1000)
@@ -718,6 +740,8 @@ def extract_lab_values(
         raw_response=raw,
         input_tokens=getattr(response.usage, "input_tokens", None),
         output_tokens=getattr(response.usage, "output_tokens", None),
+        cache_creation_input_tokens=getattr(response.usage, "cache_creation_input_tokens", None),
+        cache_read_input_tokens=getattr(response.usage, "cache_read_input_tokens", None),
         duration_ms=duration_ms,
     )
 
@@ -807,7 +831,13 @@ def generate_filename_description(
     response = client.messages.create(
         model=ENHANCE_MODEL,
         max_tokens=100,
-        system=FILENAME_DESC_SYSTEM_PROMPT,
+        system=[
+            {
+                "type": "text",
+                "text": FILENAME_DESC_SYSTEM_PROMPT,
+                "cache_control": {"type": "ephemeral"},
+            }
+        ],
         messages=[{"role": "user", "content": user_prompt}],
     )
     duration_ms = int((time.perf_counter() - start) * 1000)
@@ -824,6 +854,8 @@ def generate_filename_description(
         raw_response=raw,
         input_tokens=getattr(response.usage, "input_tokens", None),
         output_tokens=getattr(response.usage, "output_tokens", None),
+        cache_creation_input_tokens=getattr(response.usage, "cache_creation_input_tokens", None),
+        cache_read_input_tokens=getattr(response.usage, "cache_read_input_tokens", None),
         duration_ms=duration_ms,
     )
 
@@ -928,7 +960,13 @@ def classify_document(
     response = client.messages.create(
         model=ENHANCE_MODEL,
         max_tokens=256,
-        system=CLASSIFY_SYSTEM_PROMPT,
+        system=[
+            {
+                "type": "text",
+                "text": CLASSIFY_SYSTEM_PROMPT,
+                "cache_control": {"type": "ephemeral"},
+            }
+        ],
         messages=[{"role": "user", "content": user_prompt}],
     )
     duration_ms = int((time.perf_counter() - start) * 1000)
@@ -945,6 +983,8 @@ def classify_document(
         raw_response=raw,
         input_tokens=getattr(response.usage, "input_tokens", None),
         output_tokens=getattr(response.usage, "output_tokens", None),
+        cache_creation_input_tokens=getattr(response.usage, "cache_creation_input_tokens", None),
+        cache_read_input_tokens=getattr(response.usage, "cache_read_input_tokens", None),
         duration_ms=duration_ms,
     )
 

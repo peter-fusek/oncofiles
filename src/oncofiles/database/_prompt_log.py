@@ -15,9 +15,10 @@ class PromptLogMixin:
             """
             INSERT INTO prompt_log
                 (call_type, document_id, patient_id, model, system_prompt, user_prompt,
-                 raw_response, input_tokens, output_tokens, duration_ms,
-                 result_summary, status, error_message)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 raw_response, input_tokens, output_tokens,
+                 cache_creation_input_tokens, cache_read_input_tokens,
+                 duration_ms, result_summary, status, error_message)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 entry.call_type.value if hasattr(entry.call_type, "value") else entry.call_type,
@@ -29,6 +30,8 @@ class PromptLogMixin:
                 entry.raw_response,
                 entry.input_tokens,
                 entry.output_tokens,
+                entry.cache_creation_input_tokens,
+                entry.cache_read_input_tokens,
                 entry.duration_ms,
                 entry.result_summary,
                 entry.status,

@@ -67,6 +67,8 @@ def log_ai_call(
     raw_response: str,
     input_tokens: int | None = None,
     output_tokens: int | None = None,
+    cache_creation_input_tokens: int | None = None,
+    cache_read_input_tokens: int | None = None,
     duration_ms: int,
     status: str = "ok",
     error_message: str | None = None,
@@ -75,6 +77,15 @@ def log_ai_call(
 
     Safe to call from synchronous code running on the async event loop.
     If no event loop is running (e.g. called from asyncio.to_thread), silently skips.
+
+    cache_creation_input_tokens / cache_read_input_tokens (#441 Layer 6):
+        Pass `getattr(response.usage, "cache_creation_input_tokens", None)` and
+        `getattr(response.usage, "cache_read_input_tokens", None)` from the
+        Anthropic Messages API response. Both default None when the SDK didn't
+        populate them (older SDK or non-Anthropic call). Used to measure cache
+        hit rate empirically — Haiku 4.5's minimum cacheable prefix is 4096
+        tokens, so until system prompts cross that bar the values will be 0
+        even with `cache_control` markers in place.
     """
     if db is None:
         return
@@ -107,6 +118,8 @@ def log_ai_call(
         raw_response=raw_response,
         input_tokens=input_tokens,
         output_tokens=output_tokens,
+        cache_creation_input_tokens=cache_creation_input_tokens,
+        cache_read_input_tokens=cache_read_input_tokens,
         duration_ms=duration_ms,
         result_summary=result_summary,
         status=status,
