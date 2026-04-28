@@ -55,6 +55,7 @@ from oncofiles.memory import (
     is_memory_pressure,
     periodic_memory_check,
 )
+from oncofiles.secrets_keys import dashboard_session_key
 
 logger = logging.getLogger(__name__)
 
@@ -3938,7 +3939,7 @@ def _make_session_token(email: str) -> str:
     if not MCP_BEARER_TOKEN:
         raise ValueError("Cannot create session token: MCP_BEARER_TOKEN not configured")
     expiry = str(int(time.time()) + _SESSION_MAX_AGE)
-    key = MCP_BEARER_TOKEN.encode()
+    key = dashboard_session_key(MCP_BEARER_TOKEN)
     payload = f"{email}|{expiry}"
     sig = hmac.new(key, payload.encode(), hashlib.sha256).hexdigest()[:32]
     return f"{payload}|{sig}"
@@ -3961,7 +3962,7 @@ def _verify_session_token(token: str) -> str | None:
     if time.time() > expiry:
         logger.warning("Session token expired for %s", email)
         return None
-    key = MCP_BEARER_TOKEN.encode()
+    key = dashboard_session_key(MCP_BEARER_TOKEN)
     expected = hmac.new(key, f"{email}{sep}{expiry_str}".encode(), hashlib.sha256).hexdigest()[:32]
     if not hmac.compare_digest(sig, expected):
         logger.warning("Session token signature mismatch for %s", email)

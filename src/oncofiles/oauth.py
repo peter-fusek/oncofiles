@@ -14,6 +14,7 @@ from oncofiles.config import (
     GOOGLE_OAUTH_REDIRECT_URI,
     MCP_BEARER_TOKEN,
 )
+from oncofiles.secrets_keys import oauth_state_key
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +47,7 @@ def _make_state_token(patient_id: str) -> str:
             "MCP_BEARER_TOKEN must be set when OAuth is configured — "
             "it is used as the HMAC signing key for state tokens."
         )
-    key = MCP_BEARER_TOKEN.encode()
+    key = oauth_state_key(MCP_BEARER_TOKEN)
     payload = f"{patient_id}:{ts}"
     sig = hmac.new(key, payload.encode(), hashlib.sha256).hexdigest()[:32]
     return f"{patient_id}:{ts}.{sig}"
@@ -85,7 +86,7 @@ def verify_state_token(state: str) -> tuple[bool, str]:
     # Verify signature
     if not MCP_BEARER_TOKEN:
         return False, patient_id
-    key = MCP_BEARER_TOKEN.encode()
+    key = oauth_state_key(MCP_BEARER_TOKEN)
     # HMAC covers the full prefix (patient_id:ts or just ts for legacy)
     expected = hmac.new(key, prefix.encode(), hashlib.sha256).hexdigest()[:32]
     return hmac.compare_digest(sig, expected), patient_id
