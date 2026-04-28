@@ -780,8 +780,30 @@ def test_dashboard_swr_clears_on_logout():
 
     html = (Path(__file__).parent.parent / "src" / "oncofiles" / "dashboard.html").read_text()
     logout_start = html.index("function logout()")
-    logout_slice = html[logout_start : logout_start + 500]
+    logout_end = html.index("\n    }\n", logout_start)
+    logout_slice = html[logout_start:logout_end]
     assert "_swrCacheClearAll" in logout_slice
+
+
+def test_dashboard_logout_calls_api_endpoint():
+    """#510: logout() must POST /api/logout so server-side revocation runs.
+    Pre-#510 logout was client-only, leaving the captured session token
+    valid for its full 24h lifetime.
+    """
+    from pathlib import Path
+
+    html = (Path(__file__).parent.parent / "src" / "oncofiles" / "dashboard.html").read_text()
+    logout_start = html.index("function logout()")
+    logout_end = html.index("\n    }\n", logout_start)
+    logout_slice = html[logout_start:logout_end]
+    # The fetch call must be present BEFORE the local sessionStorage wipe,
+    # so the POST can still authenticate with the live token.
+    fetch_idx = logout_slice.index("fetch('/api/logout'")
+    wipe_idx = logout_slice.index("removeItem('oncofiles_token')")
+    assert fetch_idx < wipe_idx, (
+        "/api/logout fetch must run before sessionStorage.removeItem so the "
+        "POST has a live bearer to authenticate revocation"
+    )
 
 
 def test_readiness_includes_circuit_breaker_when_turso():

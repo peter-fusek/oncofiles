@@ -20,6 +20,7 @@ from fastmcp import FastMCP
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, Response
 
+from oncofiles import session_revocation
 from oncofiles.config import (
     AI_NIGHT_WINDOW_START_UTC,
     AI_NIGHTLY_ONLY,
@@ -103,6 +104,7 @@ _RATE_LIMITS = {
     "patients": 5,  # max 5 patient creations per minute
     "share-redeem": 20,  # max 20 redemption attempts per minute (brute-force protection)
     "dashboard-verify": 10,  # max 10 Google sign-in attempts per minute
+    "dashboard-logout": 30,  # max 30 logouts per minute (#510)
     "oauth-authorize": 10,  # max 10 OAuth starts per minute
     "oauth-callback": 10,  # max 10 OAuth callbacks per minute
 }
@@ -249,6 +251,13 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict]:
         db = Database(DATABASE_PATH)
     await db.connect()
     await db.migrate()
+    # #510: rehydrate the in-memory dashboard-session revocation set from
+    # the persisted table so revocations survive Railway restarts.
+    try:
+        await session_revocation.load_from_db(db.db)
+        await session_revocation.purge_expired(db.db)
+    except Exception:
+        logger.warning("Session revocation rehydrate failed — continuing", exc_info=True)
     # Load patient context (DB → JSON file → hardcoded default)
     from oncofiles import patient_context
 
@@ -3935,26 +3944,42 @@ def _load_dashboard_html() -> str:
 
 
 def _make_session_token(email: str) -> str:
-    """Create an HMAC-signed session token: email|expiry|signature."""
+    """Create an HMAC-signed session token: email|expiry|tid|signature.
+
+    The `tid` (token id, 16 hex chars) is the handle by which a logged-out
+    session is revoked server-side via /api/logout (#510).
+    """
     if not MCP_BEARER_TOKEN:
         raise ValueError("Cannot create session token: MCP_BEARER_TOKEN not configured")
     expiry = str(int(time.time()) + _SESSION_MAX_AGE)
+    tid = session_revocation.make_tid()
     key = dashboard_session_key(MCP_BEARER_TOKEN)
-    payload = f"{email}|{expiry}"
+    payload = f"{email}|{expiry}|{tid}"
     sig = hmac.new(key, payload.encode(), hashlib.sha256).hexdigest()[:32]
     return f"{payload}|{sig}"
 
 
 def _verify_session_token(token: str) -> str | None:
-    """Verify a session token. Returns email if valid, None otherwise."""
+    """Verify a session token. Returns email if valid, None otherwise.
+
+    Accepts both 4-part (email|expiry|tid|sig, current) and 3-part legacy
+    formats. Legacy 3-part tokens cannot be revoked — they predate #510
+    and were already invalidated by the #502 key rotation, so any still
+    in circulation are stale.
+    """
     if not token or not MCP_BEARER_TOKEN:
         return None
     # Support both new "|" and legacy "." separators
     sep = "|" if "|" in token else "."
-    parts = token.rsplit(sep, 2)
-    if len(parts) != 3:
+    # rsplit by 3 yields up to 4 parts: email, expiry, tid?, sig
+    parts = token.rsplit(sep, 3)
+    if len(parts) == 4:
+        email, expiry_str, tid, sig = parts
+    elif len(parts) == 3:
+        email, expiry_str, sig = parts
+        tid = ""
+    else:
         return None
-    email, expiry_str, sig = parts
     try:
         expiry = int(expiry_str)
     except ValueError:
@@ -3963,11 +3988,38 @@ def _verify_session_token(token: str) -> str | None:
         logger.warning("Session token expired for %s", email)
         return None
     key = dashboard_session_key(MCP_BEARER_TOKEN)
-    expected = hmac.new(key, f"{email}{sep}{expiry_str}".encode(), hashlib.sha256).hexdigest()[:32]
+    signed_payload = f"{email}{sep}{expiry_str}{sep}{tid}" if tid else f"{email}{sep}{expiry_str}"
+    expected = hmac.new(key, signed_payload.encode(), hashlib.sha256).hexdigest()[:32]
     if not hmac.compare_digest(sig, expected):
         logger.warning("Session token signature mismatch for %s", email)
         return None
+    if tid and session_revocation.is_revoked(tid):
+        logger.info("Session token rejected (revoked) for %s", email)
+        return None
     return email
+
+
+def _extract_session_tid_and_expiry(token: str) -> tuple[str, int] | None:
+    """Parse a session token to retrieve its tid + expiry without verifying.
+
+    Used by /api/logout — we want to revoke the token regardless of which
+    user submitted the logout request, but we still need the original
+    expiry to know how long the revocation row must live. Returns None
+    when the token is unparseable or has no tid (legacy 3-part format).
+    """
+    if not token:
+        return None
+    sep = "|" if "|" in token else "."
+    parts = token.rsplit(sep, 3)
+    if len(parts) != 4:
+        return None
+    _email, expiry_str, tid, _sig = parts
+    if not tid:
+        return None
+    try:
+        return tid, int(expiry_str)
+    except ValueError:
+        return None
 
 
 def _get_dashboard_email(request: Request) -> str | None:
@@ -4611,6 +4663,75 @@ async def dashboard_verify(request: Request) -> JSONResponse:
         path="/",
     )
     return resp
+
+
+@mcp.custom_route("/api/logout", methods=["POST"])
+async def api_logout(request: Request) -> JSONResponse:
+    """Revoke a dashboard session server-side and clear the cookie (#510).
+
+    Pre-#510, dashboard logout was client-only — sessionStorage cleared, but
+    the HMAC-signed token remained valid until natural 24h expiry. A
+    captured token (proxy log, browser history, hostile extension) could
+    keep authenticating until then.
+
+    This endpoint:
+    1. Reads the session token from `Authorization: Bearer session:…` OR
+       the `oncofiles_session` cookie.
+    2. Parses the tid + original expiry out of the token (no HMAC check —
+       even a tampered token is fine to "revoke" since it would already
+       fail _verify_session_token).
+    3. Persists the tid to `session_revocations` and adds it to the
+       in-memory denylist.
+    4. Returns 204 with a `set_cookie` that expires `oncofiles_session`.
+
+    Idempotent: a token without a tid (legacy 3-part format) returns 204
+    with the cookie cleared but no DB write — those tokens were already
+    invalidated by #502 key rotation.
+    """
+    rate_err = _check_rate_limit("dashboard-logout", request=request)
+    if rate_err:
+        return rate_err
+
+    token = ""
+    auth_header = request.headers.get("authorization", "")
+    if auth_header.startswith("Bearer session:"):
+        token = auth_header.removeprefix("Bearer session:").strip()
+    if not token:
+        cookie_header = request.headers.get("cookie", "")
+        for fragment in cookie_header.split(";"):
+            name, _, value = fragment.strip().partition("=")
+            if name == "oncofiles_session" and value:
+                from urllib.parse import unquote
+
+                token = unquote(value)
+                break
+
+    parsed = _extract_session_tid_and_expiry(token) if token else None
+    if parsed is not None:
+        tid, expiry = parsed
+        try:
+            db: Database = request.app.state.fastmcp_server._lifespan_result["db"]
+            await session_revocation.revoke(db.db, tid, expiry)
+            logger.info("Dashboard session revoked (tid=%s)", tid[:6] + "...")
+        except Exception as exc:
+            resp = _circuit_breaker_503(exc, "/api/logout")
+            if resp is not None:
+                return resp
+            logger.exception("Logout revoke failed")
+            # Fall through — still clear the cookie even if DB write failed.
+
+    response = JSONResponse({"ok": True}, status_code=200)
+    response.set_cookie(
+        key="oncofiles_session",
+        value="",
+        max_age=0,
+        expires=0,
+        httponly=True,
+        secure=True,
+        samesite="lax",
+        path="/",
+    )
+    return response
 
 
 @mcp.custom_route("/api/documents", methods=["GET"])

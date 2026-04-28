@@ -1965,6 +1965,30 @@
     }
 
     function logout() {
+      // #510: revoke server-side BEFORE wiping the local token, so the POST
+      // can still authenticate. Fire-and-forget — we always proceed with
+      // the local cleanup even if the network call fails (offline logout
+      // is still better than no logout).
+      try {
+        var prevToken = TOKEN;
+        var prevMode = authMode;
+        if (prevToken && prevMode === 'session') {
+          fetch('/api/logout', {
+            method: 'POST',
+            headers: { 'Authorization': 'Bearer session:' + prevToken },
+            credentials: 'include',
+            keepalive: true,
+          }).catch(function(){ /* offline / network failure — local cleanup still runs */ });
+        } else if (prevToken) {
+          // Bearer-mode: the cookie may still hold a session token from
+          // an earlier dashboard sign-in; clear it via cookie auth.
+          fetch('/api/logout', {
+            method: 'POST',
+            credentials: 'include',
+            keepalive: true,
+          }).catch(function(){});
+        }
+      } catch (e) { /* never block logout on a script error */ }
       sessionStorage.removeItem('oncofiles_token');
       sessionStorage.removeItem('oncofiles_auth_mode');
       sessionStorage.removeItem('oncofiles_email');
