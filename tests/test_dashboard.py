@@ -894,3 +894,34 @@ def test_get_dashboard_patient_id_returns_sentinel_not_empty_string():
     )
     # Sentinel must be returned in the no-access paths
     assert "NO_PATIENT_ACCESS_SENTINEL" in source
+
+
+def test_dashboard_does_not_accept_url_token_param():
+    """#500: dashboard.html must NOT read `?token=` from window.location.search
+    as a credential. The token would already have been logged by reverse
+    proxies, browser history, and analytics middleware before client-side
+    cleanup runs.
+    """
+    from pathlib import Path
+
+    html = (Path(__file__).parent.parent / "src" / "oncofiles" / "dashboard.html").read_text()
+
+    # The legacy "backward compat" branch must be gone. These three lines were
+    # the vulnerable path: read query param → assign to TOKEN → persist to
+    # sessionStorage. ANY of them surviving is the bug.
+    assert "var urlToken = params.get('token');" not in html, (
+        "#500 regression: dashboard still reads ?token= from URL"
+    )
+    assert "TOKEN = urlToken;" not in html, (
+        "#500 regression: dashboard still uses URL-derived token as credential"
+    )
+    assert "sessionStorage.setItem('oncofiles_token', urlToken)" not in html, (
+        "#500 regression: dashboard still persists URL-derived token"
+    )
+
+    # Defense-in-depth: if ?token= is present in the URL we still scrub it
+    # from the address bar so it doesn't sit visible. Verify the scrub is
+    # there along with a developer-facing warning.
+    assert "params.has('token')" in html
+    assert "ignored ?token= URL param (#500)" in html
+    assert "history.replaceState" in html

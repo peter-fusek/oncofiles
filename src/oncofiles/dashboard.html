@@ -1772,19 +1772,20 @@
         return;
       }
 
-      // Check URL ?token= param (backward compat)
+      // #500: bearer tokens MUST NOT be accepted from URL query params.
+      // Even with replaceState() cleanup, the token has already been logged
+      // by reverse proxies, browser history, and any analytics middleware.
+      // If a ?token= is present, scrub it from the URL but do NOT use it.
       var params = new URLSearchParams(window.location.search);
-      var urlToken = params.get('token');
-      if (urlToken) {
-        TOKEN = urlToken;
-        authMode = 'bearer';
-        sessionStorage.setItem('oncofiles_token', urlToken);
-        sessionStorage.setItem('oncofiles_auth_mode', 'bearer');
-        window.history.replaceState({}, '', window.location.pathname);
-      } else {
-        TOKEN = sessionStorage.getItem('oncofiles_token') || '';
-        authMode = sessionStorage.getItem('oncofiles_auth_mode') || '';
+      if (params.has('token')) {
+        console.warn('Dashboard ignored ?token= URL param (#500). Use the Authorization header or sign in with Google.');
+        params.delete('token');
+        var cleanQs = params.toString();
+        var cleanUrl = window.location.pathname + (cleanQs ? '?' + cleanQs : '');
+        window.history.replaceState({}, '', cleanUrl);
       }
+      TOKEN = sessionStorage.getItem('oncofiles_token') || '';
+      authMode = sessionStorage.getItem('oncofiles_auth_mode') || '';
 
       if (TOKEN && authMode) {
         showDashboard();
