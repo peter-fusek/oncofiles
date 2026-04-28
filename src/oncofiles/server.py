@@ -3943,6 +3943,33 @@ def _load_dashboard_html() -> str:
     return _DASHBOARD_HTML
 
 
+def _parse_session_token(token: str) -> tuple[str, int, str, str, str] | None:
+    """Single owner of the ``email|expiry|tid|sig`` format.
+
+    Returns ``(email, expiry, tid, sig, sep)`` on a structurally-valid token
+    (no HMAC verification, no expiry check) or ``None`` when unparseable.
+    A 3-part legacy token returns ``tid=""``. ``sep`` is the separator
+    actually used (current ``|`` or legacy ``.``) so signature
+    re-construction stays consistent.
+    """
+    if not token:
+        return None
+    sep = "|" if "|" in token else "."
+    parts = token.rsplit(sep, 3)
+    if len(parts) == 4:
+        email, expiry_str, tid, sig = parts
+    elif len(parts) == 3:
+        email, expiry_str, sig = parts
+        tid = ""
+    else:
+        return None
+    try:
+        expiry = int(expiry_str)
+    except ValueError:
+        return None
+    return email, expiry, tid, sig, sep
+
+
 def _make_session_token(email: str) -> str:
     """Create an HMAC-signed session token: email|expiry|tid|signature.
 
@@ -3967,28 +3994,17 @@ def _verify_session_token(token: str) -> str | None:
     and were already invalidated by the #502 key rotation, so any still
     in circulation are stale.
     """
-    if not token or not MCP_BEARER_TOKEN:
+    if not MCP_BEARER_TOKEN:
         return None
-    # Support both new "|" and legacy "." separators
-    sep = "|" if "|" in token else "."
-    # rsplit by 3 yields up to 4 parts: email, expiry, tid?, sig
-    parts = token.rsplit(sep, 3)
-    if len(parts) == 4:
-        email, expiry_str, tid, sig = parts
-    elif len(parts) == 3:
-        email, expiry_str, sig = parts
-        tid = ""
-    else:
+    parsed = _parse_session_token(token)
+    if parsed is None:
         return None
-    try:
-        expiry = int(expiry_str)
-    except ValueError:
-        return None
+    email, expiry, tid, sig, sep = parsed
     if time.time() > expiry:
         logger.warning("Session token expired for %s", email)
         return None
     key = dashboard_session_key(MCP_BEARER_TOKEN)
-    signed_payload = f"{email}{sep}{expiry_str}{sep}{tid}" if tid else f"{email}{sep}{expiry_str}"
+    signed_payload = f"{email}{sep}{expiry}{sep}{tid}" if tid else f"{email}{sep}{expiry}"
     expected = hmac.new(key, signed_payload.encode(), hashlib.sha256).hexdigest()[:32]
     if not hmac.compare_digest(sig, expected):
         logger.warning("Session token signature mismatch for %s", email)
@@ -4000,26 +4016,21 @@ def _verify_session_token(token: str) -> str | None:
 
 
 def _extract_session_tid_and_expiry(token: str) -> tuple[str, int] | None:
-    """Parse a session token to retrieve its tid + expiry without verifying.
+    """Pull ``(tid, expiry)`` out of a session token for revocation purposes.
 
-    Used by /api/logout — we want to revoke the token regardless of which
-    user submitted the logout request, but we still need the original
-    expiry to know how long the revocation row must live. Returns None
-    when the token is unparseable or has no tid (legacy 3-part format).
+    Used by /api/logout — we want to revoke regardless of HMAC validity
+    (a tampered tid still deserves to be denylisted), but we still need
+    the original expiry to know how long the revocation row must live.
+    Returns None when there's no tid (legacy 3-part format) — those
+    predate #510 and cannot be individually revoked.
     """
-    if not token:
+    parsed = _parse_session_token(token)
+    if parsed is None:
         return None
-    sep = "|" if "|" in token else "."
-    parts = token.rsplit(sep, 3)
-    if len(parts) != 4:
-        return None
-    _email, expiry_str, tid, _sig = parts
+    _email, expiry, tid, _sig, _sep = parsed
     if not tid:
         return None
-    try:
-        return tid, int(expiry_str)
-    except ValueError:
-        return None
+    return tid, expiry
 
 
 def _get_dashboard_email(request: Request) -> str | None:
@@ -4682,9 +4693,10 @@ async def api_logout(request: Request) -> JSONResponse:
        fail _verify_session_token).
     3. Persists the tid to `session_revocations` and adds it to the
        in-memory denylist.
-    4. Returns 204 with a `set_cookie` that expires `oncofiles_session`.
+    4. Returns 200 with `{"ok": true}` and a `set_cookie` that expires
+       `oncofiles_session`.
 
-    Idempotent: a token without a tid (legacy 3-part format) returns 204
+    Idempotent: a token without a tid (legacy 3-part format) returns 200
     with the cookie cleared but no DB write — those tokens were already
     invalidated by #502 key rotation.
     """
@@ -4697,14 +4709,11 @@ async def api_logout(request: Request) -> JSONResponse:
     if auth_header.startswith("Bearer session:"):
         token = auth_header.removeprefix("Bearer session:").strip()
     if not token:
-        cookie_header = request.headers.get("cookie", "")
-        for fragment in cookie_header.split(";"):
-            name, _, value = fragment.strip().partition("=")
-            if name == "oncofiles_session" and value:
-                from urllib.parse import unquote
-
-                token = unquote(value)
-                break
+        # Starlette's request.cookies is a parsed dict[str,str] and already
+        # URL-decodes values — no need to redo the SimpleCookie quote dance
+        # that the raw-ASGI middleware at MCPAuthorizeEmailCaptureMiddleware
+        # has to do (no Request object available there).
+        token = request.cookies.get("oncofiles_session", "")
 
     parsed = _extract_session_tid_and_expiry(token) if token else None
     if parsed is not None:
