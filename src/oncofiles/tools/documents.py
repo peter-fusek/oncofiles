@@ -10,6 +10,7 @@ import logging
 from fastmcp import Context
 
 from oncofiles.filename_parser import parse_filename
+from oncofiles.files_api import sanitize_filename
 from oncofiles.gdrive_folders import (
     ensure_folder_structure,
     ensure_year_month_folder,
@@ -86,6 +87,14 @@ async def upload_document(
 
     if len(file_bytes) > MAX_UPLOAD_SIZE:
         return json.dumps({"error": "File exceeds 100 MB limit."})
+
+    # #508: sanitize at the upload boundary so DB rows, GDrive uploads, and the
+    # parser all see the safe value. Never trust caller-supplied path-like
+    # filenames downstream (../, leading dots, control chars, embedded /).
+    safe_filename = sanitize_filename(filename)
+    if safe_filename != filename:
+        await ctx.info(f"Sanitized upload filename: {filename!r} -> {safe_filename!r}")
+    filename = safe_filename
 
     db = _get_db(ctx)
     files = _get_files(ctx)

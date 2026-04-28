@@ -20,9 +20,30 @@ logger = logging.getLogger(__name__)
 _FORBIDDEN_FILENAME_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f\x7f]')
 
 
-def _sanitize_filename(filename: str) -> str:
-    sanitized = _FORBIDDEN_FILENAME_CHARS.sub("_", filename).strip()
-    return sanitized or "file"
+def sanitize_filename(filename: str) -> str:
+    """Centralized filename sanitizer for the upload pipeline (#477, #508).
+
+    Strips path components (so ``../../foo.pdf`` becomes ``foo.pdf``),
+    forbidden characters (Anthropic Files API restrictions + control chars),
+    and leading dots (so ``.hidden`` / ``....pdf`` cannot be persisted as
+    hidden files by any downstream exporter that treats the value as a
+    POSIX filename). Falls back to ``"file"`` when everything is stripped.
+
+    Apply at every external-facing upload boundary BEFORE the value reaches
+    the Files API, the database, GDrive, or the parser — never trust the
+    caller-supplied filename downstream.
+    """
+    # Take basename only — both POSIX (/) and Windows (\) separators.
+    name = filename.replace("\\", "/").rsplit("/", 1)[-1]
+    # Replace forbidden characters with underscore, strip surrounding ws.
+    name = _FORBIDDEN_FILENAME_CHARS.sub("_", name).strip()
+    # Strip leading dots so `..`, `....pdf`, `.hidden` collapse safely.
+    name = name.lstrip(".")
+    return name or "file"
+
+
+# Backward-compat alias — older imports used the underscore-prefixed name.
+_sanitize_filename = sanitize_filename
 
 
 class FilesClient:

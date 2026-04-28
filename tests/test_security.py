@@ -133,6 +133,35 @@ def test_upload_error_no_leak():
     assert 'f"Files API upload failed: {e}"' not in source
 
 
+def test_upload_document_sanitizes_filename_at_entry():
+    """#508: upload_document MUST call sanitize_filename before any
+    downstream use (Files API, parser, DB insert, GDrive upload).
+
+    Pre-#508 the raw caller-supplied filename flowed unchanged into
+    documents.filename / documents.original_filename / GDrive upload —
+    only the FilesClient layer scrubbed forbidden chars, and even there
+    `..` segments survived. A path-traversal-shaped name like
+    `../../foo.pdf` could be persisted in the DB and rendered in the UI
+    as a path with traversal segments.
+    """
+    import inspect
+
+    from oncofiles.tools.documents import upload_document
+
+    source = inspect.getsource(upload_document)
+    # The sanitizer must be called on the caller-supplied `filename`.
+    assert "sanitize_filename(filename)" in source, (
+        "upload_document no longer sanitizes filename at entry — #508 regression"
+    )
+    # The reassignment must happen BEFORE the value is used downstream
+    # (parse_filename, get_active_document_by_filename, Document(...)).
+    sanitize_idx = source.index("sanitize_filename(filename)")
+    parse_idx = source.index("parse_filename(filename)")
+    db_lookup_idx = source.index("get_active_document_by_filename(filename")
+    assert sanitize_idx < parse_idx, "sanitize must precede parse_filename"
+    assert sanitize_idx < db_lookup_idx, "sanitize must precede DB lookup"
+
+
 # ── Rate limiting (#346) ────────────────────────────────────────────
 
 
