@@ -89,6 +89,38 @@ def test_dashboard_html_links_external_css_and_js():
     assert '<script src="/dashboard-gtag.js"></script>' in html
 
 
+def test_dashboard_html_has_no_inline_event_handlers():
+    """#525: every interactive element now uses ``data-action`` /
+    ``data-change`` / ``data-input`` instead of ``onclick=`` /
+    ``onchange=`` / ``oninput=`` / ``onmouseover=`` / ``onmouseout=``.
+    The single global dispatcher in dashboard.js routes events.
+    """
+    html = DASHBOARD_HTML.read_text()
+    # Every standard JS event-handler attribute is forbidden.
+    handler_attrs = re.findall(
+        r"\bon(click|change|input|submit|load|error|mouseover|mouseout|"
+        r'mousedown|mouseup|keydown|keyup|keypress|focus|blur|drop|dragover)="',
+        html,
+    )
+    assert handler_attrs == [], (
+        f"inline event handlers found in dashboard.html: {handler_attrs!r} (#525)"
+    )
+
+
+def test_dashboard_js_includes_action_dispatcher():
+    """The dispatcher must register click/change/input listeners and parse
+    the ``fnName|arg1|arg2|@this|@value`` spec language."""
+    js = DASHBOARD_JS.read_text()
+    assert "window._dispatch" in js
+    assert "data-action" in js
+    assert "data-change" in js
+    assert "data-input" in js
+    # The @this / @value sentinels MUST be supported so handlers that need
+    # the event target keep working.
+    assert "@this" in js
+    assert "@value" in js
+
+
 # ── CSP header: inline blocks BLOCKED via *-elem; *-attr still permits ─
 
 
@@ -147,15 +179,26 @@ def test_csp_blocks_inline_style_elem():
     assert "'self'" in directives["style-src-elem"]
 
 
-def test_csp_attr_directives_still_permit_inline():
-    """``script-src-attr`` and ``style-src-attr`` keep 'unsafe-inline' so
-    the dashboard's 58 onclick handlers and 230 inline ``style="…"``
-    attributes keep working. Removing this is the second half of #501
-    (full attribute-level rewrite, tracked separately)."""
+def test_csp_blocks_inline_event_handlers():
+    """``script-src-attr 'none'`` (#525, 2026-04-29) — the 50 inline event
+    handlers (onclick, onchange, oninput, onmouseover/out) were converted
+    to data-action / data-change / data-input + a delegated dispatcher in
+    dashboard.js. Inline event handlers must now be REJECTED by the
+    browser, not just permitted as a back-compat fallback."""
     directives = _live_csp_directives()
     assert "script-src-attr" in directives
+    assert directives["script-src-attr"] == "'none'", (
+        f"script-src-attr must be 'none' (#525). Got: {directives['script-src-attr']!r}"
+    )
+
+
+def test_csp_style_attr_still_permits_inline():
+    """``style-src-attr`` still permits 'unsafe-inline' — the ~240 inline
+    ``style="…"`` attributes haven't been migrated yet. Inline styles are
+    inert data (no JS execution), so the security cost is low; full
+    migration to CSS classes is a follow-up."""
+    directives = _live_csp_directives()
     assert "style-src-attr" in directives
-    assert "'unsafe-inline'" in directives["script-src-attr"]
     assert "'unsafe-inline'" in directives["style-src-attr"]
 
 

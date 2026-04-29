@@ -929,3 +929,13 @@
     #next-sync {
       font-style: italic;
     }
+
+    /* #525: teal-hover replaces the inline onmouseover/onmouseout pair that
+       previously toggled background:rgba(20,184,166,0.2) ↔ rgba(...,0.12). */
+    .teal-hover {
+      transition: background 0.18s ease;
+    }
+    .teal-hover:hover,
+    .teal-hover:focus-visible {
+      background: rgba(20, 184, 166, 0.2) !important;
+    }

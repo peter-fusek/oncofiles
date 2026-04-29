@@ -6929,18 +6929,24 @@ class SecurityHeadersMiddleware:
                 # CSP only for HTML responses — avoid interfering with MCP/JSON clients
                 ct = existing.get("content-type", b"").decode("latin-1", errors="replace").lower()
                 if ct.startswith("text/html") and "content-security-policy" not in existing:
-                    # CSP3 fine-grained directives (#501): script-src-elem and
-                    # style-src-elem now block ALL inline <script> / <style>
-                    # blocks (the dashboard's were extracted to dashboard.css /
-                    # dashboard.js / dashboard-gtag.js for this exact reason).
-                    # script-src-attr and style-src-attr keep 'unsafe-inline'
-                    # to preserve the dashboard's 58 onclick handlers and 230
-                    # inline style="" attributes — full attribute-level cleanup
-                    # is the remaining half of #501 (tracked separately).
-                    # `script-src` / `style-src` are kept as fallbacks for
-                    # browsers that don't yet support the *-elem / *-attr
-                    # split (Safari < 16, Firefox < 92, Chrome < 76); on those
-                    # the policy is no looser than it was before this change.
+                    # CSP3 fine-grained directives (#501 + #525):
+                    # - script-src-elem 'self' — blocks ALL inline <script> blocks.
+                    #   All dashboard JS lives in /dashboard.js + /dashboard-gtag.js.
+                    # - script-src-attr 'none' — blocks ALL inline event handlers
+                    #   (#525, 2026-04-29). The 50 onclick/onchange/oninput inline
+                    #   attributes were converted to data-action / data-change /
+                    #   data-input + a single delegated dispatcher in dashboard.js.
+                    # - style-src-elem 'self' — blocks ALL inline <style> blocks.
+                    #   All dashboard CSS lives in /dashboard.css.
+                    # - style-src-attr 'unsafe-inline' — STILL permitted for the
+                    #   ~240 inline `style="…"` attributes embedded in dashboard.html.
+                    #   Inline styles are inert data (no JS execution), much lower
+                    #   XSS attack value than inline scripts; full attribute-level
+                    #   migration to CSS classes is tracked as a follow-up.
+                    # `script-src` / `style-src` legacy fallbacks remain for
+                    # browsers that don't support the *-elem / *-attr split
+                    # (Safari < 16, Firefox < 92, Chrome < 76); on those the
+                    # policy is no looser than before.
                     csp = (
                         "default-src 'self'; "
                         "script-src 'self' 'unsafe-inline' "
@@ -6949,7 +6955,7 @@ class SecurityHeadersMiddleware:
                         "script-src-elem 'self' "
                         "https://www.googletagmanager.com https://www.google-analytics.com "
                         "https://accounts.google.com https://apis.google.com; "
-                        "script-src-attr 'unsafe-inline'; "
+                        "script-src-attr 'none'; "
                         "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com "
                         "https://accounts.google.com; "
                         "style-src-elem 'self' https://fonts.googleapis.com "

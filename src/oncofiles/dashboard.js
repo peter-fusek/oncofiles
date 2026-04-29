@@ -2,6 +2,68 @@
        The esc() helper is used only as a safety net for the few cases where we build HTML strings
        from our own authenticated API responses (numeric/boolean fields). */
 
+    /* ── #525: inline event-handler delegation ────────────────────────
+       Pre-#525 every interactive element used `onclick="foo()"` style
+       inline handlers, which forced CSP `script-src-attr 'unsafe-inline'`.
+       The dispatcher below routes every click / change / input to the
+       function named in `data-action` / `data-change` / `data-input`,
+       so the HTML carries pure data and CSP can lock attribute-level
+       script execution to 'none'.
+
+       Spec format:  "fnName"               → fn()
+                     "fnName|arg1|arg2"     → fn('arg1', 'arg2')
+                     "fnName|@this"         → fn(targetElement)
+                     "fnName|@value"        → fn(targetElement.value)
+                     "foo|x|@this|y"        → fn('x', targetElement, 'y')
+       Multiple actions chain with `;`:  "showGdriveSetup;toggleIntegrationPanel"
+    */
+    window._dispatch = function (spec, target) {
+      if (!spec) return;
+      String(spec).split(';').forEach(function (one) {
+        one = one.trim();
+        if (!one) return;
+        var parts = one.split('|');
+        var fn = window[parts[0]];
+        if (typeof fn !== 'function') {
+          console.warn('data-action: function not found:', parts[0]);
+          return;
+        }
+        var args = parts.slice(1).map(function (a) {
+          if (a === '@this') return target;
+          if (a === '@value') return target.value;
+          return a;
+        });
+        try { fn.apply(null, args); } catch (e) { console.error('data-action failed:', parts[0], e); }
+      });
+    };
+    document.addEventListener('click', function (e) {
+      var t = e.target.closest('[data-action]');
+      if (t) window._dispatch(t.dataset.action, t);
+    });
+    document.addEventListener('change', function (e) {
+      var t = e.target.closest('[data-change]');
+      if (t) window._dispatch(t.dataset.change, t);
+    });
+    document.addEventListener('input', function (e) {
+      var t = e.target.closest('[data-input]');
+      if (t) window._dispatch(t.dataset.input, t);
+    });
+
+    /* Named wrappers for the few inline expressions that don't fit the
+       fnName(args) shape — keeps `data-action` purely declarative. */
+    window.copyMcpUrlDisplay = function () {
+      var el = document.getElementById('mcp-url-display');
+      if (el) navigator.clipboard.writeText(el.textContent || '');
+    };
+    window.copyMcpTokenDisplay = function () {
+      var el = document.getElementById('mcp-token-display');
+      if (el) navigator.clipboard.writeText(el.textContent || '');
+    };
+    window.showGdriveSetupAndToggle = function () {
+      if (typeof showGdriveSetup === 'function') showGdriveSetup();
+      if (typeof toggleIntegrationPanel === 'function') toggleIntegrationPanel();
+    };
+
     function toggleSection(bodyId, headerEl) {
       var el = document.getElementById(bodyId);
       if (!el) return;
