@@ -12,17 +12,23 @@ from oncofiles.tools._helpers import (
     _get_db,
     _get_patient_id,
     _parse_date,
+    _resolve_patient_id,
 )
 
 
-async def integration_status(ctx: Context) -> str:
+async def integration_status(ctx: Context, patient_slug: str | None = None) -> str:
     """Show which Google services are connected and entry counts.
 
     Returns the status of Drive, Gmail, and Calendar integrations,
     including whether each is authorized and how many entries are stored.
+
+    Args:
+        patient_slug: Optional — explicit patient slug per Option A (#429).
+            Required for stateless HTTP / multi-patient callers (#518).
     """
     db = _get_db(ctx)
-    token = await db.get_oauth_token(patient_id=_get_patient_id())
+    pid = await _resolve_patient_id(patient_slug, ctx)
+    token = await db.get_oauth_token(patient_id=pid)
     granted = json.loads(token.granted_scopes) if token else []
 
     from oncofiles.oauth import SCOPE_CALENDAR, SCOPE_DRIVE, SCOPE_GMAIL
@@ -30,9 +36,9 @@ async def integration_status(ctx: Context) -> str:
     gmail_count = None
     cal_count = None
     if SCOPE_GMAIL in granted:
-        gmail_count = await db.count_email_entries(patient_id=_get_patient_id())
+        gmail_count = await db.count_email_entries(patient_id=pid)
     if SCOPE_CALENDAR in granted:
-        cal_count = await db.count_calendar_entries(patient_id=_get_patient_id())
+        cal_count = await db.count_calendar_entries(patient_id=pid)
 
     return json.dumps(
         {
@@ -55,13 +61,17 @@ async def integration_status(ctx: Context) -> str:
     )
 
 
-async def gmail_auth_enable(ctx: Context) -> str:
+async def gmail_auth_enable(ctx: Context, patient_slug: str | None = None) -> str:
     """Start Gmail authorization flow. Returns a URL the user must visit.
 
     After visiting the URL and completing Google's consent screen, Gmail
     read access will be enabled. Call integration_status() to verify.
 
     WARNING: This grants read access to ALL emails in the Gmail account.
+
+    Args:
+        patient_slug: Optional — explicit patient slug per Option A (#429).
+            The OAuth flow grants Gmail to THIS patient (#518).
     """
     from oncofiles.config import GOOGLE_OAUTH_CLIENT_ID
     from oncofiles.oauth import GMAIL_SCOPES, SCOPE_GMAIL, get_auth_url_for_scopes
@@ -70,13 +80,14 @@ async def gmail_auth_enable(ctx: Context) -> str:
         return json.dumps({"error": "OAuth not configured. Set GOOGLE_OAUTH_CLIENT_ID."})
 
     db = _get_db(ctx)
-    token = await db.get_oauth_token(patient_id=_get_patient_id())
+    pid = await _resolve_patient_id(patient_slug, ctx)
+    token = await db.get_oauth_token(patient_id=pid)
     if token:
         granted = json.loads(token.granted_scopes)
         if SCOPE_GMAIL in granted:
             return json.dumps({"status": "already_enabled", "service": "gmail"})
 
-    auth_url = get_auth_url_for_scopes(GMAIL_SCOPES, patient_id=_get_patient_id())
+    auth_url = get_auth_url_for_scopes(GMAIL_SCOPES, patient_id=pid)
     return json.dumps(
         {
             "status": "authorization_required",
@@ -91,13 +102,17 @@ async def gmail_auth_enable(ctx: Context) -> str:
     )
 
 
-async def calendar_auth_enable(ctx: Context) -> str:
+async def calendar_auth_enable(ctx: Context, patient_slug: str | None = None) -> str:
     """Start Calendar authorization flow. Returns a URL the user must visit.
 
     After visiting the URL and completing Google's consent screen, Calendar
     read access will be enabled. Call integration_status() to verify.
 
     WARNING: This grants read access to ALL events in Google Calendar.
+
+    Args:
+        patient_slug: Optional — explicit patient slug per Option A (#429).
+            The OAuth flow grants Calendar to THIS patient (#518).
     """
     from oncofiles.config import GOOGLE_OAUTH_CLIENT_ID
     from oncofiles.oauth import CALENDAR_SCOPES, SCOPE_CALENDAR, get_auth_url_for_scopes
@@ -106,13 +121,14 @@ async def calendar_auth_enable(ctx: Context) -> str:
         return json.dumps({"error": "OAuth not configured. Set GOOGLE_OAUTH_CLIENT_ID."})
 
     db = _get_db(ctx)
-    token = await db.get_oauth_token(patient_id=_get_patient_id())
+    pid = await _resolve_patient_id(patient_slug, ctx)
+    token = await db.get_oauth_token(patient_id=pid)
     if token:
         granted = json.loads(token.granted_scopes)
         if SCOPE_CALENDAR in granted:
             return json.dumps({"status": "already_enabled", "service": "calendar"})
 
-    auth_url = get_auth_url_for_scopes(CALENDAR_SCOPES, patient_id=_get_patient_id())
+    auth_url = get_auth_url_for_scopes(CALENDAR_SCOPES, patient_id=pid)
     return json.dumps(
         {
             "status": "authorization_required",
@@ -135,6 +151,7 @@ async def search_emails(
     sender: str | None = None,
     is_medical: bool | None = None,
     limit: int = 50,
+    patient_slug: str | None = None,
 ) -> str:
     """Search stored email entries by text, date, sender, or medical relevance.
 
@@ -145,9 +162,11 @@ async def search_emails(
         sender: Filter by sender email or name (partial match).
         is_medical: Filter to medical emails only when True.
         limit: Maximum results to return.
+        patient_slug: Optional — explicit patient slug per Option A (#429, #518).
     """
     try:
         db = _get_db(ctx)
+        pid = await _resolve_patient_id(patient_slug, ctx)
         eq = EmailQuery(
             text=query,
             date_from=_parse_date(date_from),
@@ -156,7 +175,7 @@ async def search_emails(
             is_medical=is_medical,
             limit=_clamp_limit(limit),
         )
-        entries = await db.search_email_entries(eq, patient_id=_get_patient_id())
+        entries = await db.search_email_entries(eq, patient_id=pid)
     except ValueError as e:
         return json.dumps({"error": str(e)})
     items = [
@@ -175,7 +194,7 @@ async def search_emails(
     return json.dumps({"emails": items, "total": len(items)})
 
 
-async def get_email(ctx: Context, email_entry_id: int) -> str:
+async def get_email(ctx: Context, email_entry_id: int, patient_slug: str | None = None) -> str:
     """Get full details of a stored email entry by ID.
 
     Access scoping (#487): callers must own the entry (patient_id match)
@@ -184,17 +203,18 @@ async def get_email(ctx: Context, email_entry_id: int) -> str:
 
     Args:
         email_entry_id: The email entry ID.
+        patient_slug: Optional — explicit patient slug per Option A (#429, #518).
     """
     from oncofiles.tools._helpers import _check_ownership_or_admin
 
     db = _get_db(ctx)
+    pid = await _resolve_patient_id(patient_slug, ctx)
     entry = await db.get_email_entry(email_entry_id)
     if not entry:
         return json.dumps({"error": f"Email entry not found: {email_entry_id}"})
 
-    caller_pid = _get_patient_id(required=False)
     owner_pid = getattr(entry, "patient_id", None)
-    err = _check_ownership_or_admin("email_entry", email_entry_id, owner_pid, caller_pid)
+    err = _check_ownership_or_admin("email_entry", email_entry_id, owner_pid, pid)
     if err is not None:
         return json.dumps({"error": err})
 
@@ -230,6 +250,7 @@ async def search_calendar_events(
     date_to: str | None = None,
     is_medical: bool | None = None,
     limit: int = 50,
+    patient_slug: str | None = None,
 ) -> str:
     """Search stored calendar entries by text, date, or medical relevance.
 
@@ -239,9 +260,11 @@ async def search_calendar_events(
         date_to: Filter to this date (YYYY-MM-DD).
         is_medical: Filter to medical events only when True.
         limit: Maximum results to return.
+        patient_slug: Optional — explicit patient slug per Option A (#429, #518).
     """
     try:
         db = _get_db(ctx)
+        pid = await _resolve_patient_id(patient_slug, ctx)
         cq = CalendarQuery(
             text=query,
             date_from=_parse_date(date_from),
@@ -249,7 +272,7 @@ async def search_calendar_events(
             is_medical=is_medical,
             limit=_clamp_limit(limit),
         )
-        entries = await db.search_calendar_entries(cq, patient_id=_get_patient_id())
+        entries = await db.search_calendar_entries(cq, patient_id=pid)
     except ValueError as e:
         return json.dumps({"error": str(e)})
     items = [
@@ -269,7 +292,9 @@ async def search_calendar_events(
     return json.dumps({"events": items, "total": len(items)})
 
 
-async def get_calendar_event(ctx: Context, calendar_entry_id: int) -> str:
+async def get_calendar_event(
+    ctx: Context, calendar_entry_id: int, patient_slug: str | None = None
+) -> str:
     """Get full details of a stored calendar entry by ID.
 
     Access scoping (#487): callers must own the entry (patient_id match)
@@ -277,17 +302,18 @@ async def get_calendar_event(ctx: Context, calendar_entry_id: int) -> str:
 
     Args:
         calendar_entry_id: The calendar entry ID.
+        patient_slug: Optional — explicit patient slug per Option A (#429, #518).
     """
     from oncofiles.tools._helpers import _check_ownership_or_admin
 
     db = _get_db(ctx)
+    pid = await _resolve_patient_id(patient_slug, ctx)
     entry = await db.get_calendar_entry(calendar_entry_id)
     if not entry:
         return json.dumps({"error": f"Calendar entry not found: {calendar_entry_id}"})
 
-    caller_pid = _get_patient_id(required=False)
     owner_pid = getattr(entry, "patient_id", None)
-    err = _check_ownership_or_admin("calendar_entry", calendar_entry_id, owner_pid, caller_pid)
+    err = _check_ownership_or_admin("calendar_entry", calendar_entry_id, owner_pid, pid)
     if err is not None:
         return json.dumps({"error": err})
 
@@ -309,6 +335,13 @@ async def get_calendar_event(ctx: Context, calendar_entry_id: int) -> str:
             "created_at": entry.created_at.isoformat() if entry.created_at else None,
         }
     )
+
+
+# Module-level alias retained so any internal helper that still imports
+# `_get_patient_id` from this module keeps working. (No active call sites
+# inside this module now use it — every patient-scoped path resolves via
+# `_resolve_patient_id(patient_slug, ctx)` per #518.)
+_ = _get_patient_id
 
 
 def register(mcp):

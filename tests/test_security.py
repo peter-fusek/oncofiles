@@ -198,3 +198,87 @@ def test_rate_limit_in_oauth_endpoints():
 
     cb_src = inspect.getsource(oauth_callback)
     assert '_check_rate_limit("oauth-callback")' in cb_src
+
+
+# ── #519: rate limiter actually engages ────────────────────────────
+
+
+def test_rate_limit_blocks_after_limit_reached():
+    """Pre-#519 the limiter dropped the bucket on an empty window and returned
+    BEFORE recording the current call, so the count never grew. Lock the new
+    contract: the first request lands in the bucket and the (limit+1)-th call
+    in the window gets the 429."""
+    from oncofiles.server import _RATE_LIMITS, _check_rate_limit, _rate_limits
+
+    # Pick a limiter with a small cap to keep the test fast and deterministic.
+    key = "share-link"  # cap = 5
+    limit = _RATE_LIMITS[key]
+
+    _rate_limits.pop(key, None)
+    try:
+        # Allowed for the first ``limit`` calls.
+        for i in range(limit):
+            assert _check_rate_limit(key) is None, f"call #{i + 1} should be allowed"
+        # Bucket must have grown with each allowed call — pre-#519 it stayed empty.
+        assert len(_rate_limits[key]) == limit
+        # Next call hits the cap.
+        blocked = _check_rate_limit(key)
+        assert blocked is not None
+        assert blocked.status_code == 429
+    finally:
+        _rate_limits.pop(key, None)
+
+
+def test_rate_limit_per_ip_for_share_redeem():
+    """share-redeem buckets are scoped per client IP (brute-force protection).
+    Two distinct IPs can each consume their own quota; the same IP twice gets
+    counted twice."""
+    from unittest.mock import MagicMock
+
+    from oncofiles.server import _RATE_LIMITS, _check_rate_limit, _rate_limits
+
+    key = "share-redeem"
+    limit = _RATE_LIMITS[key]
+
+    def _req(ip: str):
+        r = MagicMock()
+        r.client.host = ip
+        return r
+
+    for ip in ("1.1.1.1", "2.2.2.2"):
+        _rate_limits.pop(f"{key}:{ip}", None)
+    try:
+        # Burn IP 1's quota.
+        for _ in range(limit):
+            assert _check_rate_limit(key, request=_req("1.1.1.1")) is None
+        # IP 1 is throttled.
+        blocked = _check_rate_limit(key, request=_req("1.1.1.1"))
+        assert blocked is not None and blocked.status_code == 429
+        # IP 2 is unaffected.
+        assert _check_rate_limit(key, request=_req("2.2.2.2")) is None
+    finally:
+        for ip in ("1.1.1.1", "2.2.2.2"):
+            _rate_limits.pop(f"{key}:{ip}", None)
+
+
+def test_rate_limit_window_expiry_releases_bucket():
+    """Stale timestamps outside the window are filtered out so a returning
+    caller starts with a fresh quota — the rolling-window contract."""
+    import time
+
+    from oncofiles.server import _RATE_LIMITS, _RATE_WINDOW, _check_rate_limit, _rate_limits
+
+    key = "share-link"
+    limit = _RATE_LIMITS[key]
+
+    # Pre-seed a full bucket ENTIRELY outside the window.
+    stale = time.time() - _RATE_WINDOW - 5
+    _rate_limits[key] = [stale] * limit
+    try:
+        # First call should filter the stale entries and land successfully.
+        assert _check_rate_limit(key) is None
+        # Bucket holds exactly one fresh timestamp now.
+        assert len(_rate_limits[key]) == 1
+        assert _rate_limits[key][0] > stale
+    finally:
+        _rate_limits.pop(key, None)

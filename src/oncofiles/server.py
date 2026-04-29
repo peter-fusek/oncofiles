@@ -111,7 +111,17 @@ _RATE_LIMITS = {
 
 
 def _check_rate_limit(key: str, *, request: Request | None = None) -> JSONResponse | None:
-    """Check rate limit for a given key. Per-IP for share-redeem, global otherwise."""
+    """Check rate limit for a given key. Per-IP for share-redeem, global otherwise.
+
+    The bucket holds the timestamps of allowed requests within the rolling
+    window. Each call: filter out expired timestamps, then either 429 (bucket
+    full) or record the new request and persist. The previous shape (#519)
+    short-circuited on an empty bucket and returned BEFORE recording — that
+    means the first request in any fresh window was never counted, so the
+    bucket stayed empty forever and the limit never engaged. The fix is
+    twofold: always record the allowed request, and persist the bucket on
+    every code path so the next call sees the count.
+    """
     limit = _RATE_LIMITS.get(key, 60)
     # Per-IP scoping for brute-force-sensitive endpoints
     rate_key = key
@@ -119,18 +129,16 @@ def _check_rate_limit(key: str, *, request: Request | None = None) -> JSONRespon
         client_ip = request.client.host if request.client else "unknown"
         rate_key = f"{key}:{client_ip}"
     now = time.time()
-    if rate_key not in _rate_limits:
-        _rate_limits[rate_key] = []
-    _rate_limits[rate_key] = [t for t in _rate_limits[rate_key] if now - t < _RATE_WINDOW]
-    if not _rate_limits[rate_key]:
-        del _rate_limits[rate_key]
-        return None
-    if len(_rate_limits[rate_key]) >= limit:
+    bucket = [t for t in _rate_limits.get(rate_key, []) if now - t < _RATE_WINDOW]
+    if len(bucket) >= limit:
+        # Keep the full bucket so subsequent calls in the window also see 429.
+        _rate_limits[rate_key] = bucket
         return JSONResponse(
             {"error": "Rate limit exceeded. Try again in a minute."},
             status_code=429,
         )
-    _rate_limits[rate_key].append(now)
+    bucket.append(now)
+    _rate_limits[rate_key] = bucket
     return None
 
 
