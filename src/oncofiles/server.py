@@ -2639,6 +2639,40 @@ async def favicon_ico(request: Request) -> HTMLResponse:
     return RedirectResponse("/favicon.svg", status_code=301)
 
 
+# Dashboard external assets — extracted from inline blocks to let CSP drop
+# `'unsafe-inline'` from script-src-elem / style-src-elem (#501). The same
+# read-once-and-cache pattern as the other static assets above.
+_DASHBOARD_CSS: str | None = None
+_DASHBOARD_JS: str | None = None
+_DASHBOARD_GTAG_JS: str | None = None
+
+
+@mcp.custom_route("/dashboard.css", methods=["GET"])
+async def dashboard_css(request: Request) -> Response:
+    global _DASHBOARD_CSS  # noqa: PLW0603
+    if _DASHBOARD_CSS is None:
+        _DASHBOARD_CSS = (Path(__file__).parent / "dashboard.css").read_text()
+    return Response(_DASHBOARD_CSS, media_type="text/css; charset=utf-8")
+
+
+@mcp.custom_route("/dashboard.js", methods=["GET"])
+async def dashboard_js(request: Request) -> Response:
+    global _DASHBOARD_JS  # noqa: PLW0603
+    if _DASHBOARD_JS is None:
+        _DASHBOARD_JS = (Path(__file__).parent / "dashboard.js").read_text()
+    return Response(_DASHBOARD_JS, media_type="application/javascript; charset=utf-8")
+
+
+@mcp.custom_route("/dashboard-gtag.js", methods=["GET"])
+async def dashboard_gtag_js(request: Request) -> Response:
+    """Tiny gtag bootstrap — initialises the dataLayer queue before
+    googletagmanager.com/gtag/js (async) drains it."""
+    global _DASHBOARD_GTAG_JS  # noqa: PLW0603
+    if _DASHBOARD_GTAG_JS is None:
+        _DASHBOARD_GTAG_JS = (Path(__file__).parent / "dashboard-gtag.js").read_text()
+    return Response(_DASHBOARD_GTAG_JS, media_type="application/javascript; charset=utf-8")
+
+
 _PILE_PHOTO_NAMES = {
     "01": "01-paper-folder-cancer-textbook-web.jpg",
     "02": "02-papers-spread-medical-records-web.jpg",
@@ -6895,13 +6929,32 @@ class SecurityHeadersMiddleware:
                 # CSP only for HTML responses — avoid interfering with MCP/JSON clients
                 ct = existing.get("content-type", b"").decode("latin-1", errors="replace").lower()
                 if ct.startswith("text/html") and "content-security-policy" not in existing:
+                    # CSP3 fine-grained directives (#501): script-src-elem and
+                    # style-src-elem now block ALL inline <script> / <style>
+                    # blocks (the dashboard's were extracted to dashboard.css /
+                    # dashboard.js / dashboard-gtag.js for this exact reason).
+                    # script-src-attr and style-src-attr keep 'unsafe-inline'
+                    # to preserve the dashboard's 58 onclick handlers and 230
+                    # inline style="" attributes — full attribute-level cleanup
+                    # is the remaining half of #501 (tracked separately).
+                    # `script-src` / `style-src` are kept as fallbacks for
+                    # browsers that don't yet support the *-elem / *-attr
+                    # split (Safari < 16, Firefox < 92, Chrome < 76); on those
+                    # the policy is no looser than it was before this change.
                     csp = (
                         "default-src 'self'; "
                         "script-src 'self' 'unsafe-inline' "
                         "https://www.googletagmanager.com https://www.google-analytics.com "
                         "https://accounts.google.com https://apis.google.com; "
+                        "script-src-elem 'self' "
+                        "https://www.googletagmanager.com https://www.google-analytics.com "
+                        "https://accounts.google.com https://apis.google.com; "
+                        "script-src-attr 'unsafe-inline'; "
                         "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com "
                         "https://accounts.google.com; "
+                        "style-src-elem 'self' https://fonts.googleapis.com "
+                        "https://accounts.google.com; "
+                        "style-src-attr 'unsafe-inline'; "
                         "font-src 'self' https://fonts.gstatic.com data:; "
                         "img-src 'self' data: https:; "
                         "connect-src 'self' https://www.google-analytics.com "

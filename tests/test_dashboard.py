@@ -2,10 +2,29 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from oncofiles.server import _check_bearer
 from tests.helpers import ERIKA_UUID, make_doc
+
+
+def _dashboard_combined() -> str:
+    """Concat dashboard.html + dashboard.js + dashboard.css for grep-style tests.
+
+    After #501 the inline <script>/<style> bodies were extracted to external
+    files. Tests that pre-#501 grepped JS function names or CSS selectors
+    against the HTML now need to scan the union.
+    """
+    base = Path(__file__).parent.parent / "src" / "oncofiles"
+    return (
+        (base / "dashboard.html").read_text()
+        + "\n"
+        + (base / "dashboard.js").read_text()
+        + "\n"
+        + (base / "dashboard.css").read_text()
+    )
+
 
 # ── _check_bearer helper ─────────────────────────────────────────────
 
@@ -315,15 +334,14 @@ def test_dashboard_verify_route_exists():
 
 def test_dashboard_html_exists():
     """Dashboard HTML file exists and contains expected content."""
-    from pathlib import Path
-
     html_path = Path(__file__).parent.parent / "src" / "oncofiles" / "dashboard.html"
     assert html_path.exists()
     content = html_path.read_text()
     assert "Oncofiles Dashboard" in content
     assert "pipeline" in content.lower() or "funnel" in content.lower()
     assert "google" in content.lower()
-    assert "sessionStorage" in content
+    # `sessionStorage` is referenced from the extracted dashboard.js (#501).
+    assert "sessionStorage" in _dashboard_combined()
 
 
 # ── Session tokens ───────────────────────────────────────────────────
@@ -648,9 +666,8 @@ def test_api_prompt_log_uses_breaker_helper():
 
 def test_dashboard_apifetch_retries_5xx():
     """apiFetch retries on 500/502/504 and handles 503 separately (#469 Phase 4)."""
-    from pathlib import Path
 
-    html = (Path(__file__).parent.parent / "src" / "oncofiles" / "dashboard.html").read_text()
+    html = _dashboard_combined()
     # Budget-based retries for transient 5xx
     assert "500" in html and "502" in html and "504" in html
     # Dedicated 503 path that surfaces retryAfterMs upward
@@ -662,9 +679,8 @@ def test_dashboard_apifetch_retries_5xx():
 
 def test_dashboard_apifetch_honors_retry_after():
     """apiFetch parses the Retry-After header (seconds or HTTP-date)."""
-    from pathlib import Path
 
-    html = (Path(__file__).parent.parent / "src" / "oncofiles" / "dashboard.html").read_text()
+    html = _dashboard_combined()
     assert "_parseRetryAfter" in html
     assert "'Retry-After'" in html
     # seconds-form and HTTP-date form both covered
@@ -673,9 +689,8 @@ def test_dashboard_apifetch_honors_retry_after():
 
 def test_dashboard_apifetch_has_abort_controller():
     """apiFetch uses AbortController with a per-request timeout."""
-    from pathlib import Path
 
-    html = (Path(__file__).parent.parent / "src" / "oncofiles" / "dashboard.html").read_text()
+    html = _dashboard_combined()
     assert "AbortController" in html
     assert "AbortError" in html
     assert "perRequestTimeoutMs" in html
@@ -683,9 +698,8 @@ def test_dashboard_apifetch_has_abort_controller():
 
 def test_dashboard_breaker_banner_bilingual():
     """Friendly countdown banner renders in SK and EN."""
-    from pathlib import Path
 
-    html = (Path(__file__).parent.parent / "src" / "oncofiles" / "dashboard.html").read_text()
+    html = _dashboard_combined()
     assert "showBreakerBanner" in html
     # SK text — includes the "Databáza je krátko nedostupná" phrase
     assert "Databáza je krátko nedostupná" in html
@@ -699,9 +713,8 @@ def test_dashboard_breaker_banner_bilingual():
 
 def test_dashboard_swr_cache_helpers_exist():
     """Stale-while-revalidate cache helpers are present (#469 Phase 5)."""
-    from pathlib import Path
 
-    html = (Path(__file__).parent.parent / "src" / "oncofiles" / "dashboard.html").read_text()
+    html = _dashboard_combined()
     assert "_swrGet" in html
     assert "_swrSet" in html
     assert "_swrCacheClearAll" in html
@@ -710,9 +723,8 @@ def test_dashboard_swr_cache_helpers_exist():
 
 def test_dashboard_swr_per_patient_keying():
     """Cache key includes currentPatientId so cross-patient leak is impossible."""
-    from pathlib import Path
 
-    html = (Path(__file__).parent.parent / "src" / "oncofiles" / "dashboard.html").read_text()
+    html = _dashboard_combined()
     # The key helper must include the patient id in its key string
     assert "(currentPatientId || 'default')" in html
     assert "dashCache:" in html
@@ -720,9 +732,8 @@ def test_dashboard_swr_per_patient_keying():
 
 def test_dashboard_swr_has_max_age_cap():
     """Cache entries older than _SWR_MAX_AGE_MS are evicted, not deceptively served."""
-    from pathlib import Path
 
-    html = (Path(__file__).parent.parent / "src" / "oncofiles" / "dashboard.html").read_text()
+    html = _dashboard_combined()
     assert "_SWR_MAX_AGE_MS" in html
     # 10 min default, expressed as 10 * 60 * 1000
     assert "10 * 60 * 1000" in html
@@ -730,9 +741,8 @@ def test_dashboard_swr_has_max_age_cap():
 
 def test_dashboard_swr_refresh_hydrates_before_skeletons():
     """refresh() hydrates from cache first, skips skeletons if cache hit."""
-    from pathlib import Path
 
-    html = (Path(__file__).parent.parent / "src" / "oncofiles" / "dashboard.html").read_text()
+    html = _dashboard_combined()
     # The order matters: hydrate must come before showSkeletons in refresh()
     refresh_start = html.index("async function refresh()")
     refresh_slice = html[refresh_start : refresh_start + 2000]
@@ -743,9 +753,8 @@ def test_dashboard_swr_refresh_hydrates_before_skeletons():
 
 def test_dashboard_swr_writes_cache_on_success():
     """Successful fetches populate the cache for the 3 critical endpoints."""
-    from pathlib import Path
 
-    html = (Path(__file__).parent.parent / "src" / "oncofiles" / "dashboard.html").read_text()
+    html = _dashboard_combined()
     # All three critical endpoints write to cache after successful render
     assert "_swrSet('status', status)" in html
     assert "_swrSet('documents', docs)" in html
@@ -754,9 +763,8 @@ def test_dashboard_swr_writes_cache_on_success():
 
 def test_dashboard_admin_breaker_widget_present():
     """Admin-only breaker widget is wired to /readiness.circuit_breaker (#469 Phase 7)."""
-    from pathlib import Path
 
-    html = (Path(__file__).parent.parent / "src" / "oncofiles" / "dashboard.html").read_text()
+    html = _dashboard_combined()
     assert 'id="breaker-widget"' in html
     assert "updateBreakerWidget" in html
     # Fetches /readiness (the /readiness endpoint is unauth-safe)
@@ -776,9 +784,8 @@ def test_dashboard_admin_breaker_widget_present():
 
 def test_dashboard_swr_clears_on_logout():
     """logout() wipes the cache so a different user can't see prior data."""
-    from pathlib import Path
 
-    html = (Path(__file__).parent.parent / "src" / "oncofiles" / "dashboard.html").read_text()
+    html = _dashboard_combined()
     logout_start = html.index("function logout()")
     logout_end = html.index("\n    }\n", logout_start)
     logout_slice = html[logout_start:logout_end]
@@ -790,9 +797,8 @@ def test_dashboard_logout_calls_api_endpoint():
     Pre-#510 logout was client-only, leaving the captured session token
     valid for its full 24h lifetime.
     """
-    from pathlib import Path
 
-    html = (Path(__file__).parent.parent / "src" / "oncofiles" / "dashboard.html").read_text()
+    html = _dashboard_combined()
     logout_start = html.index("function logout()")
     logout_end = html.index("\n    }\n", logout_start)
     logout_slice = html[logout_start:logout_end]
@@ -979,9 +985,8 @@ def test_database_base_has_circuit_breaker_stats():
 def test_dashboard_refresh_surfaces_503_without_red_cascade():
     """refresh() detects 503 errors and shows the breaker banner instead of
     'Partial load failure: HTTP 503 × N'."""
-    from pathlib import Path
 
-    html = (Path(__file__).parent.parent / "src" / "oncofiles" / "dashboard.html").read_text()
+    html = _dashboard_combined()
     assert "trackBreaker" in html
     assert "breakerError" in html
     # Fallback generic error path still exists for non-breaker cascades
@@ -1054,9 +1059,8 @@ def test_dashboard_does_not_accept_url_token_param():
     proxies, browser history, and analytics middleware before client-side
     cleanup runs.
     """
-    from pathlib import Path
 
-    html = (Path(__file__).parent.parent / "src" / "oncofiles" / "dashboard.html").read_text()
+    html = _dashboard_combined()
 
     # The legacy "backward compat" branch must be gone. These three lines were
     # the vulnerable path: read query param → assign to TOKEN → persist to

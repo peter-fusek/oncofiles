@@ -200,12 +200,14 @@ def test_patient_tokens_endpoint_exists():
 
 
 def test_regenerate_token_in_dashboard():
-    """Dashboard HTML has regenerateToken function for token recovery."""
+    """Dashboard JS has regenerateToken function for token recovery (now in
+    the extracted dashboard.js per #501 — pre-#501 the JS was inline)."""
     from pathlib import Path
 
-    html = (Path(__file__).parent.parent / "src" / "oncofiles" / "dashboard.html").read_text()
-    assert "regenerateToken" in html
-    assert "/api/patient-tokens" in html
+    base = Path(__file__).parent.parent / "src" / "oncofiles"
+    combined = (base / "dashboard.html").read_text() + "\n" + (base / "dashboard.js").read_text()
+    assert "regenerateToken" in combined
+    assert "/api/patient-tokens" in combined
 
 
 # ── Document limit enforcement (#350) ────────────────────────────────
