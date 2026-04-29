@@ -195,7 +195,7 @@ async def rename_documents_to_standard(
             new_name = item["new"]
 
             try:
-                doc = await db.get_document(doc_id)
+                doc = await db.get_document(doc_id, patient_id=pid)
                 if not doc:
                     stats["errors"] += 1
                     continue

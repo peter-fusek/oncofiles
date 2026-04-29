@@ -78,9 +78,16 @@ class DocumentMixin:
         doc.id = cursor.lastrowid
         return doc
 
-    async def get_document(self, doc_id: int) -> Document | None:
-        """Get a document by its local ID."""
-        async with self.db.execute("SELECT * FROM documents WHERE id = ?", (doc_id,)) as cursor:
+    async def get_document(self, doc_id: int, *, patient_id: str) -> Document | None:
+        """Get a document by its local ID, scoped to ``patient_id``.
+
+        ``patient_id`` is required (#499/#516): the SQL filter prevents cross-patient
+        disclosure if a caller forgets a separate ownership check.
+        """
+        async with self.db.execute(
+            "SELECT * FROM documents WHERE id = ? AND patient_id = ?",
+            (doc_id, patient_id),
+        ) as cursor:
             row = await cursor.fetchone()
             return _row_to_document(row) if row else None
 
@@ -92,14 +99,21 @@ class DocumentMixin:
             row = await cursor.fetchone()
             return bool(row and row["patient_id"] == patient_id)
 
-    async def get_documents_by_ids(self, doc_ids: set[int]) -> dict[int, Document]:
-        """Get multiple documents by their IDs in a single query. Returns {id: Document}."""
+    async def get_documents_by_ids(
+        self, doc_ids: set[int], *, patient_id: str
+    ) -> dict[int, Document]:
+        """Get multiple documents by their IDs in a single query, scoped to ``patient_id``.
+
+        Returns ``{id: Document}``. ``patient_id`` is required (#516): rows from
+        other patients are filtered out at the SQL layer so a relationship row
+        or cached id list can never leak cross-patient document metadata.
+        """
         if not doc_ids:
             return {}
         placeholders = ",".join("?" for _ in doc_ids)
         async with self.db.execute(
-            f"SELECT * FROM documents WHERE id IN ({placeholders})",
-            tuple(doc_ids),
+            f"SELECT * FROM documents WHERE id IN ({placeholders}) AND patient_id = ?",
+            (*doc_ids, patient_id),
         ) as cursor:
             rows = await cursor.fetchall()
             return {doc.id: doc for row in rows if (doc := _safe_row_to_document(row))}
@@ -689,20 +703,20 @@ class DocumentMixin:
             row = await cursor.fetchone()
             return _row_to_document(row) if row else None
 
-    async def get_document_version_chain(self, doc_id: int) -> list[Document]:
+    async def get_document_version_chain(self, doc_id: int, *, patient_id: str) -> list[Document]:
         """Walk the version chain for a document, newest first.
 
         Starting from the given document, finds the latest version (if any
         newer version points back to it), then walks previous_version_id
-        backwards to build the full chain.
+        backwards to build the full chain. Both walks are patient-scoped so
+        version chains can never leak across patients (#499 collateral —
+        ``get_document`` is now required to be scoped).
         """
-        # First, find the latest version that traces back through this doc
-        # by walking forward: find any doc whose previous_version_id = doc_id
         current_id = doc_id
         while True:
             async with self.db.execute(
-                "SELECT id FROM documents WHERE previous_version_id = ?",
-                (current_id,),
+                "SELECT id FROM documents WHERE previous_version_id = ? AND patient_id = ?",
+                (current_id, patient_id),
             ) as cursor:
                 row = await cursor.fetchone()
                 if row:
@@ -710,12 +724,11 @@ class DocumentMixin:
                 else:
                     break
 
-        # Now walk backwards from the latest version
         chain: list[Document] = []
         visited: set[int] = set()
         while current_id and current_id not in visited:
             visited.add(current_id)
-            doc = await self.get_document(current_id)
+            doc = await self.get_document(current_id, patient_id=patient_id)
             if not doc:
                 break
             chain.append(doc)
@@ -757,13 +770,24 @@ class DocumentMixin:
         await self.db.commit()
         return count
 
-    async def get_cross_references(self, doc_id: int) -> list[dict]:
-        """Get all cross-references involving a document (both directions)."""
+    async def get_cross_references(self, doc_id: int, *, patient_id: str) -> list[dict]:
+        """Get cross-references where BOTH ends belong to ``patient_id`` (#517).
+
+        Joins ``document_cross_references`` with ``documents`` on both
+        ``source_document_id`` and ``target_document_id`` and filters both
+        sides by ``patient_id``. This blocks the cross-patient relationship
+        leak: even if a stray relationship row links a doc to another
+        patient's doc, the join + filter drops the row entirely so callers
+        can never observe (or follow) the cross-patient edge.
+        """
         async with self.db.execute(
-            "SELECT * FROM document_cross_references "
-            "WHERE source_document_id = ? OR target_document_id = ? "
-            "ORDER BY confidence DESC",
-            (doc_id, doc_id),
+            "SELECT r.* FROM document_cross_references r "
+            "JOIN documents d_src ON d_src.id = r.source_document_id "
+            "JOIN documents d_tgt ON d_tgt.id = r.target_document_id "
+            "WHERE (r.source_document_id = ? OR r.target_document_id = ?) "
+            "AND d_src.patient_id = ? AND d_tgt.patient_id = ? "
+            "ORDER BY r.confidence DESC",
+            (doc_id, doc_id, patient_id, patient_id),
         ) as cursor:
             rows = await cursor.fetchall()
             return [dict(r) for r in rows]

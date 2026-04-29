@@ -60,7 +60,7 @@ async def store_lab_values(
     # Patient isolation: verify caller owns this document
     if not await db.check_document_ownership(document_id, pid):
         return json.dumps({"error": f"Document not found: {document_id}"})
-    doc = await db.get_document(document_id)
+    doc = await db.get_document(document_id, patient_id=pid)
     if not doc:
         return json.dumps({"error": f"Document not found: {document_id}"})
 
@@ -174,7 +174,7 @@ async def get_lab_trends(
 
     # Batch-fetch gdrive_urls for all source documents (single query)
     doc_ids = {v.document_id for v in values}
-    docs_map = await db.get_documents_by_ids(doc_ids)
+    docs_map = await db.get_documents_by_ids(doc_ids, patient_id=pid)
     doc_urls: dict[int, str | None] = {
         did: _gdrive_url(doc.gdrive_id) if doc else None for did, doc in docs_map.items()
     }
@@ -428,7 +428,7 @@ async def get_lab_safety_check(ctx: Context, patient_slug: str | None = None) ->
             entry["last_document_id"] = latest.document_id
 
             # Get source document for gdrive_url
-            doc = await db.get_document(latest.document_id)
+            doc = await db.get_document(latest.document_id, patient_id=pid)
             if doc:
                 entry["last_document_filename"] = doc.filename
                 entry["last_document_gdrive_url"] = _gdrive_url(doc.gdrive_id)
@@ -670,7 +670,7 @@ async def get_precycle_checklist(
                     entry["last_value"] = latest.value
                     entry["last_date"] = latest.lab_date.isoformat()
                     entry["last_document_id"] = latest.document_id
-                    doc = await db.get_document(latest.document_id)
+                    doc = await db.get_document(latest.document_id, patient_id=pid)
                     if doc:
                         entry["last_document_gdrive_url"] = _gdrive_url(doc.gdrive_id)
 

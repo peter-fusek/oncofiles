@@ -221,7 +221,7 @@ async def test_validate_corrects_surgical_report(db: Database):
     result = json.loads(await validate_categories(ctx, dry_run=False))
     assert result["summary"]["corrected"] >= 1
 
-    updated = await db.get_document(doc.id)
+    updated = await db.get_document(doc.id, patient_id=ERIKA_UUID)
     assert updated.category == DocumentCategory.SURGERY
 
 
@@ -293,7 +293,7 @@ async def test_validate_corrects_genetics(db: Database):
     result = json.loads(await validate_categories(ctx, dry_run=False))
     assert result["summary"]["corrected"] >= 1
 
-    updated = await db.get_document(doc.id)
+    updated = await db.get_document(doc.id, patient_id=ERIKA_UUID)
     assert updated.category == DocumentCategory.GENETICS
 
 

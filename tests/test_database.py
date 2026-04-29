@@ -32,7 +32,7 @@ async def test_insert_and_get(db: Database):
     result = await db.insert_document(doc, patient_id=ERIKA_UUID)
     assert result.id is not None
 
-    fetched = await db.get_document(result.id)
+    fetched = await db.get_document(result.id, patient_id=ERIKA_UUID)
     assert fetched is not None
     assert fetched.file_id == "file_test123"
     assert fetched.institution == "NOUonko"
@@ -49,7 +49,7 @@ async def test_get_by_file_id(db: Database):
 
 
 async def test_get_nonexistent(db: Database):
-    assert await db.get_document(999) is None
+    assert await db.get_document(999, patient_id=ERIKA_UUID) is None
     assert await db.get_document_by_file_id("file_nope", patient_id=ERIKA_UUID) is None
 
 
@@ -89,7 +89,7 @@ async def test_delete_document(db: Database):
     assert deleted is True
 
     # Still retrievable by ID (needed for restore)
-    fetched = await db.get_document(result.id)
+    fetched = await db.get_document(result.id, patient_id=ERIKA_UUID)
     assert fetched is not None
     assert fetched.deleted_at is not None
 

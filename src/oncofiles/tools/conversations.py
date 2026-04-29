@@ -198,7 +198,7 @@ async def get_conversation(ctx: Context, entry_id: int, patient_slug: str | None
     # Cross-patient block: confirm the entry belongs to the resolved patient.
     if not await db.check_conversation_entry_ownership(entry_id, pid):
         return json.dumps({"error": f"Conversation entry not found: {entry_id}"})
-    entry = await db.get_conversation_entry(entry_id)
+    entry = await db.get_conversation_entry(entry_id, patient_id=pid)
     if not entry:
         return json.dumps({"error": f"Conversation entry not found: {entry_id}"})
     return json.dumps(

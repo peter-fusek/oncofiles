@@ -9,14 +9,14 @@ from tests.helpers import ERIKA_UUID, make_doc
 
 async def test_get_documents_by_ids_empty(db):
     """Empty ID set returns empty dict."""
-    result = await db.get_documents_by_ids(set())
+    result = await db.get_documents_by_ids(set(), patient_id=ERIKA_UUID)
     assert result == {}
 
 
 async def test_get_documents_by_ids_single(db):
     """Single ID returns matching document."""
     doc = await db.insert_document(make_doc(file_id="f1"), patient_id=ERIKA_UUID)
-    result = await db.get_documents_by_ids({doc.id})
+    result = await db.get_documents_by_ids({doc.id}, patient_id=ERIKA_UUID)
     assert doc.id in result
     assert result[doc.id].filename == doc.filename
 
@@ -26,7 +26,7 @@ async def test_get_documents_by_ids_multiple(db):
     d1 = await db.insert_document(make_doc(file_id="f1", filename="a.pdf"), patient_id=ERIKA_UUID)
     d2 = await db.insert_document(make_doc(file_id="f2", filename="b.pdf"), patient_id=ERIKA_UUID)
     d3 = await db.insert_document(make_doc(file_id="f3", filename="c.pdf"), patient_id=ERIKA_UUID)
-    result = await db.get_documents_by_ids({d1.id, d2.id, d3.id})
+    result = await db.get_documents_by_ids({d1.id, d2.id, d3.id}, patient_id=ERIKA_UUID)
     assert len(result) == 3
     assert result[d1.id].filename == "a.pdf"
     assert result[d3.id].filename == "c.pdf"
@@ -35,7 +35,7 @@ async def test_get_documents_by_ids_multiple(db):
 async def test_get_documents_by_ids_missing(db):
     """Missing IDs are simply absent from result."""
     doc = await db.insert_document(make_doc(file_id="f1"), patient_id=ERIKA_UUID)
-    result = await db.get_documents_by_ids({doc.id, 9999})
+    result = await db.get_documents_by_ids({doc.id, 9999}, patient_id=ERIKA_UUID)
     assert len(result) == 1
     assert doc.id in result
 

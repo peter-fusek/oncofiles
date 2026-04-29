@@ -74,7 +74,7 @@ async def test_update_changes_field_and_emits_audit(db: Database):
     assert result["status"] == "updated"
     assert result["changed_fields"] == ["value_num"]
 
-    after = await db.get_clinical_record(stored.id)
+    after = await db.get_clinical_record(stored.id, patient_id=ERIKA_UUID)
     assert after.value_num == 8.1
 
     audit = await db.list_clinical_record_audit(stored.id)
@@ -122,9 +122,9 @@ async def test_update_blocks_wrong_patient(db: Database):
             value_num=999.0,
         )
     )
-    assert result["error"] == "wrong_patient"
-    # Record unchanged
-    after = await db.get_clinical_record(other.id)
+    assert result["error"] == "not_found"
+    # Record unchanged — fetch from its real owner.
+    after = await db.get_clinical_record(other.id, patient_id=TEST_PATIENT_UUID)
     assert after.value_num == 5.2
 
 
@@ -144,7 +144,7 @@ async def test_delete_soft_deletes_and_idempotent(db: Database):
         )
     )
     assert result["status"] == "deleted"
-    after = await db.get_clinical_record(stored.id, include_deleted=True)
+    after = await db.get_clinical_record(stored.id, patient_id=ERIKA_UUID, include_deleted=True)
     assert after.deleted_at is not None
 
     # Second delete is a no-op
@@ -163,8 +163,8 @@ async def test_delete_blocks_wrong_patient(db: Database):
     await _seed_second_patient(db)
     other = await db.insert_clinical_record(_make_record(patient_id=TEST_PATIENT_UUID))
     result = json.loads(await delete_clinical_record(_ctx(db), record_id=other.id, source="manual"))
-    assert result["error"] == "wrong_patient"
-    after = await db.get_clinical_record(other.id)
+    assert result["error"] == "not_found"
+    after = await db.get_clinical_record(other.id, patient_id=TEST_PATIENT_UUID)
     assert after.deleted_at is None
 
 
@@ -173,7 +173,9 @@ async def test_delete_blocks_wrong_patient(db: Database):
 
 async def test_restore_clears_deleted_fields(db: Database):
     stored = await db.insert_clinical_record(_make_record())
-    await db.delete_clinical_record(stored.id, source="manual", deleted_by="x@example.com")
+    await db.delete_clinical_record(
+        stored.id, source="manual", deleted_by="x@example.com", patient_id=ERIKA_UUID
+    )
 
     result = json.loads(
         await restore_clinical_record(
@@ -185,7 +187,7 @@ async def test_restore_clears_deleted_fields(db: Database):
         )
     )
     assert result["status"] == "restored"
-    after = await db.get_clinical_record(stored.id)
+    after = await db.get_clinical_record(stored.id, patient_id=ERIKA_UUID)
     assert after is not None and after.deleted_at is None
     assert after.updated_by == "y@example.com"
 
@@ -237,7 +239,7 @@ async def test_list_records_respects_patient_isolation(db: Database):
 
 async def test_list_records_include_deleted_toggles(db: Database):
     stored = await db.insert_clinical_record(_make_record())
-    await db.delete_clinical_record(stored.id, source="manual")
+    await db.delete_clinical_record(stored.id, source="manual", patient_id=ERIKA_UUID)
 
     default = json.loads(await list_clinical_records(_ctx(db)))
     assert default["count"] == 0
@@ -252,9 +254,13 @@ async def test_list_records_include_deleted_toggles(db: Database):
 async def test_get_record_audit_returns_full_history(db: Database):
     stored = await db.insert_clinical_record(_make_record())
     await db.update_clinical_record(
-        stored.id, {"value_num": 7.7}, changed_by="x@example.com", source="manual"
+        stored.id,
+        {"value_num": 7.7},
+        changed_by="x@example.com",
+        source="manual",
+        patient_id=ERIKA_UUID,
     )
-    await db.delete_clinical_record(stored.id, source="manual")
+    await db.delete_clinical_record(stored.id, source="manual", patient_id=ERIKA_UUID)
 
     result = json.loads(await get_record_audit(_ctx(db), record_id=stored.id))
     assert result["count"] == 3
@@ -266,7 +272,7 @@ async def test_get_record_audit_blocks_wrong_patient(db: Database):
     await _seed_second_patient(db)
     other = await db.insert_clinical_record(_make_record(patient_id=TEST_PATIENT_UUID))
     result = json.loads(await get_record_audit(_ctx(db), record_id=other.id))
-    assert result["error"] == "wrong_patient"
+    assert result["error"] == "not_found"
 
 
 # ── add_clinical_analysis ──────────────────────────────────────────────
@@ -308,7 +314,11 @@ async def test_add_analysis_validates_record_ids_ownership(db: Database):
             record_ids=[other.id],
         )
     )
-    assert result["error"] == "wrong_patient"
+    # Foreign record_id is invisible under Erika's scope (#499 SQL filter), so
+    # add_clinical_analysis hits the same "record_not_found" branch as a
+    # genuinely missing id — the cross-patient distinction is no longer
+    # observable to the caller, which is the desired info-leak posture.
+    assert result["error"] == "record_not_found"
 
 
 async def test_add_analysis_record_not_found(db: Database):

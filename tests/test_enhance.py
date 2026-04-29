@@ -123,7 +123,7 @@ async def test_enhance_documents_all_unprocessed(db: Database):
     assert stats["errors"] == 0
 
     # Verify metadata was saved
-    updated = await db.get_document(doc.id)
+    updated = await db.get_document(doc.id, patient_id=ERIKA_UUID)
     assert updated.ai_summary == "AI summary"
     assert updated.ai_tags == '["labs"]'
     assert updated.ai_processed_at is not None
@@ -153,8 +153,8 @@ async def test_enhance_documents_specific_ids(db: Database):
     assert stats["processed"] == 1
 
     # Only doc1 should be enhanced
-    d1 = await db.get_document(doc1.id)
-    d2 = await db.get_document(doc2.id)
+    d1 = await db.get_document(doc1.id, patient_id=ERIKA_UUID)
+    d2 = await db.get_document(doc2.id, patient_id=ERIKA_UUID)
     assert d1.ai_summary == "summary"
     assert d2.ai_summary is None
 
@@ -185,7 +185,7 @@ async def test_update_document_ai_metadata(db: Database):
 
     await db.update_document_ai_metadata(doc.id, "Test summary", '["test"]')
 
-    updated = await db.get_document(doc.id)
+    updated = await db.get_document(doc.id, patient_id=ERIKA_UUID)
     assert updated.ai_summary == "Test summary"
     assert updated.ai_tags == '["test"]'
     assert updated.ai_processed_at is not None
@@ -250,7 +250,7 @@ async def test_enhance_text_document(db: Database):
 
     assert stats["processed"] == 1
 
-    updated = await db.get_document(doc.id)
+    updated = await db.get_document(doc.id, patient_id=ERIKA_UUID)
     assert updated.ai_summary == "DeVita Ch 40 summary"
 
     # Verify OCR cache was populated
@@ -362,7 +362,7 @@ async def test_enhance_backfills_null_date_and_institution(db: Database):
 
     assert stats["processed"] == 1
 
-    updated = await db.get_document(doc.id)
+    updated = await db.get_document(doc.id, patient_id=ERIKA_UUID)
     assert updated.document_date is not None
     assert str(updated.document_date) == "2026-02-23"
     assert updated.institution == "BoryNemocnica"
@@ -403,7 +403,7 @@ async def test_enhance_does_not_overwrite_existing_fields(db: Database):
     ):
         await enhance_documents(db, files, None, document_ids=[doc.id], patient_id=ERIKA_UUID)
 
-    updated = await db.get_document(doc.id)
+    updated = await db.get_document(doc.id, patient_id=ERIKA_UUID)
     # Original values preserved — NOT overwritten by metadata
     assert str(updated.document_date) == "2026-02-27"
     assert updated.institution == "NOU"
@@ -432,7 +432,7 @@ async def test_backfill_document_fields_coalesce(db: Database):
         description="TestDescription",
     )
 
-    updated = await db.get_document(doc.id)
+    updated = await db.get_document(doc.id, patient_id=ERIKA_UUID)
     assert str(updated.document_date) == "2026-03-01"
     assert updated.institution == "NOU"  # Preserved, not overwritten
     assert updated.description == "TestDescription"

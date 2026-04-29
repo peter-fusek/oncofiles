@@ -237,7 +237,7 @@ async def rebuild_cross_references(
     stats["documents"] = len(active_docs)
 
     for doc in active_docs:
-        existing_refs = await db.get_cross_references(doc.id)
+        existing_refs = await db.get_cross_references(doc.id, patient_id=patient_id)
         for ref in existing_refs:
             await db.db.execute("DELETE FROM document_cross_references WHERE id = ?", (ref["id"],))
     await db.db.commit()

@@ -83,9 +83,12 @@ async def test_add_clinical_record_targets_slug_patient(db: Database):
         )
     )
     stored_id = result["id"]
-    stored = await db.get_clinical_record(stored_id)
+    # Record was created under SECOND_UUID via slug routing; fetch under that scope.
+    stored = await db.get_clinical_record(stored_id, patient_id=SECOND_UUID)
     assert stored.patient_id == SECOND_UUID
     assert stored.patient_id != ERIKA_UUID
+    # Defence-in-depth: from Erika's scope the row is invisible (#499).
+    assert await db.get_clinical_record(stored_id, patient_id=ERIKA_UUID) is None
 
 
 async def test_add_clinical_record_with_audit_reason(db: Database):
@@ -174,9 +177,9 @@ async def test_get_clinical_record_blocks_cross_patient(db: Database):
             source="manual",
         )
     )
-    # Default scope (Erika) sees wrong_patient error
+    # Default scope (Erika) sees not_found — SQL filter (#499) blocks the row
     result = json.loads(await cr_tools.get_clinical_record(ctx, bob_rec.id))
-    assert result["error"] == "wrong_patient"
+    assert result["error"] == "not_found"
     # Content must NOT leak through the error response
     assert "9.9" not in json.dumps(result)
 
@@ -241,7 +244,7 @@ async def test_add_note_blocks_cross_patient(db: Database):
             source="mcp-claude",
         )
     )
-    assert result["error"] == "wrong_patient"
+    assert result["error"] == "not_found"
 
 
 async def test_add_note_record_not_found(db: Database):
@@ -354,6 +357,6 @@ async def test_list_notes_wrong_patient_record_id(db: Database):
     bob_rec = await db.insert_clinical_record(
         ClinicalRecord(patient_id=SECOND_UUID, record_type="lab", source="manual")
     )
-    # Erika's default scope + Bob's record_id → wrong_patient error
+    # Erika's default scope + Bob's record_id → not_found (SQL filter, #499)
     result = json.loads(await cr_tools.list_clinical_record_notes(ctx, record_id=bob_rec.id))
-    assert result["error"] == "wrong_patient"
+    assert result["error"] == "not_found"

@@ -114,7 +114,7 @@ async def consolidate_documents(
     # Fetch all documents
     docs: list[Document] = []
     for doc_id in doc_ids:
-        doc = await db.get_document(doc_id)
+        doc = await db.get_document(doc_id, patient_id=patient_id)
         if doc and not doc.deleted_at:
             docs.append(doc)
 

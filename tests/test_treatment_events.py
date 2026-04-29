@@ -13,14 +13,14 @@ async def test_insert_and_get(db: Database):
     saved = await db.insert_treatment_event(event, patient_id=ERIKA_UUID)
     assert saved.id is not None
 
-    fetched = await db.get_treatment_event(saved.id)
+    fetched = await db.get_treatment_event(saved.id, patient_id=ERIKA_UUID)
     assert fetched is not None
     assert fetched.title == "FOLFOX cycle 3"
     assert fetched.event_type == "chemo"
 
 
 async def test_get_not_found(db: Database):
-    result = await db.get_treatment_event(9999)
+    result = await db.get_treatment_event(9999, patient_id=ERIKA_UUID)
     assert result is None
 
 
@@ -101,7 +101,7 @@ async def test_metadata_stored(db: Database):
     event = make_treatment_event(metadata='{"drug": "oxaliplatin", "dose": "85mg/m2"}')
     saved = await db.insert_treatment_event(event, patient_id=ERIKA_UUID)
 
-    fetched = await db.get_treatment_event(saved.id)
+    fetched = await db.get_treatment_event(saved.id, patient_id=ERIKA_UUID)
     assert '"drug": "oxaliplatin"' in fetched.metadata
 
 
@@ -109,11 +109,11 @@ async def test_notes_stored(db: Database):
     event = make_treatment_event(notes="Patient tolerated well. No nausea.")
     saved = await db.insert_treatment_event(event, patient_id=ERIKA_UUID)
 
-    fetched = await db.get_treatment_event(saved.id)
+    fetched = await db.get_treatment_event(saved.id, patient_id=ERIKA_UUID)
     assert fetched.notes == "Patient tolerated well. No nausea."
 
 
 async def test_timestamps_set(db: Database):
     saved = await db.insert_treatment_event(make_treatment_event(), patient_id=ERIKA_UUID)
-    fetched = await db.get_treatment_event(saved.id)
+    fetched = await db.get_treatment_event(saved.id, patient_id=ERIKA_UUID)
     assert fetched.created_at is not None

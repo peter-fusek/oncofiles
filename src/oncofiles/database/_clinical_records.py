@@ -103,7 +103,7 @@ class ClinicalRecordsMixin:
         )
         await self.db.commit()
         record.id = cursor.lastrowid
-        stored = await self.get_clinical_record(record.id)
+        stored = await self.get_clinical_record(record.id, patient_id=record.patient_id)
         # ``stored`` is never None here: we just inserted it. The cast keeps
         # type checkers happy and guards against silent insert failures.
         if stored is None:
@@ -123,15 +123,27 @@ class ClinicalRecordsMixin:
         return stored
 
     async def get_clinical_record(
-        self, record_id: int, *, include_deleted: bool = False
+        self,
+        record_id: int,
+        *,
+        patient_id: str,
+        include_deleted: bool = False,
     ) -> ClinicalRecord | None:
-        """Fetch a single clinical record by id."""
+        """Fetch a single clinical record by id, scoped to ``patient_id`` (#499).
+
+        ``patient_id`` is required: the SQL filter is the data-layer
+        guarantee that a caller without an ownership check cannot read
+        another patient's record by enumerating IDs.
+        """
         if include_deleted:
-            sql = "SELECT * FROM clinical_records WHERE id = ?"
-            params: tuple = (record_id,)
+            sql = "SELECT * FROM clinical_records WHERE id = ? AND patient_id = ?"
+            params: tuple = (record_id, patient_id)
         else:
-            sql = "SELECT * FROM clinical_records WHERE id = ? AND deleted_at IS NULL"
-            params = (record_id,)
+            sql = (
+                "SELECT * FROM clinical_records "
+                "WHERE id = ? AND patient_id = ? AND deleted_at IS NULL"
+            )
+            params = (record_id, patient_id)
         async with self.db.execute(sql, params) as cursor:
             row = await cursor.fetchone()
             return _row_to_clinical_record(row) if row else None
@@ -173,20 +185,23 @@ class ClinicalRecordsMixin:
         record_id: int,
         updates: dict[str, Any],
         *,
+        patient_id: str,
         changed_by: str | None = None,
         source: str,
         session_id: str | None = None,
         caller_identity: str | None = None,
         reason: str | None = None,
     ) -> ClinicalRecord | None:
-        """Apply a partial update and emit an audit row.
+        """Apply a partial update and emit an audit row, scoped to ``patient_id`` (#499).
 
         Only fields in ``_RECORD_FIELDS`` are settable. Attempts to update
         ``patient_id``, ``created_at``, or audit-owned fields are silently
         dropped — those are controlled by other code paths (soft-delete writes
         ``deleted_at`` directly via ``delete_clinical_record``).
         """
-        before = await self.get_clinical_record(record_id, include_deleted=True)
+        before = await self.get_clinical_record(
+            record_id, patient_id=patient_id, include_deleted=True
+        )
         if before is None:
             return None
 
@@ -222,13 +237,16 @@ class ClinicalRecordsMixin:
         sets.append("updated_by = ?")
         params.append(changed_by)
         params.append(record_id)
+        params.append(patient_id)
         await self.db.execute(
-            f"UPDATE clinical_records SET {', '.join(sets)} WHERE id = ?",
+            f"UPDATE clinical_records SET {', '.join(sets)} WHERE id = ? AND patient_id = ?",
             params,
         )
         await self.db.commit()
 
-        after = await self.get_clinical_record(record_id, include_deleted=True)
+        after = await self.get_clinical_record(
+            record_id, patient_id=patient_id, include_deleted=True
+        )
         await self._write_audit(
             record_id=record_id,
             action="update",
@@ -247,25 +265,34 @@ class ClinicalRecordsMixin:
         self,
         record_id: int,
         *,
+        patient_id: str,
         deleted_by: str | None = None,
         source: str,
         session_id: str | None = None,
         caller_identity: str | None = None,
         reason: str | None = None,
     ) -> bool:
-        """Soft-delete a clinical record. Idempotent — already-deleted returns False."""
-        before = await self.get_clinical_record(record_id, include_deleted=True)
+        """Soft-delete a clinical record, scoped to ``patient_id``. Idempotent.
+
+        Returns False when the row doesn't exist for this patient OR was
+        already deleted (#499).
+        """
+        before = await self.get_clinical_record(
+            record_id, patient_id=patient_id, include_deleted=True
+        )
         if before is None or before.deleted_at is not None:
             return False
         await self.db.execute(
             "UPDATE clinical_records "
             "   SET deleted_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now'), "
             "       deleted_by = ? "
-            " WHERE id = ?",
-            (deleted_by, record_id),
+            " WHERE id = ? AND patient_id = ?",
+            (deleted_by, record_id, patient_id),
         )
         await self.db.commit()
-        after = await self.get_clinical_record(record_id, include_deleted=True)
+        after = await self.get_clinical_record(
+            record_id, patient_id=patient_id, include_deleted=True
+        )
         await self._write_audit(
             record_id=record_id,
             action="delete",
@@ -284,14 +311,20 @@ class ClinicalRecordsMixin:
         self,
         record_id: int,
         *,
+        patient_id: str,
         restored_by: str | None = None,
         source: str,
         session_id: str | None = None,
         caller_identity: str | None = None,
         reason: str | None = None,
     ) -> ClinicalRecord | None:
-        """Undo a soft-delete. Returns the restored record or None if not found."""
-        before = await self.get_clinical_record(record_id, include_deleted=True)
+        """Undo a soft-delete, scoped to ``patient_id``. Returns the restored row or None.
+
+        Patient scoping (#499) prevents cross-patient restore via id enumeration.
+        """
+        before = await self.get_clinical_record(
+            record_id, patient_id=patient_id, include_deleted=True
+        )
         if before is None or before.deleted_at is None:
             return None
         await self.db.execute(
@@ -299,11 +332,13 @@ class ClinicalRecordsMixin:
             "   SET deleted_at = NULL, deleted_by = NULL, "
             "       updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now'), "
             "       updated_by = ? "
-            " WHERE id = ?",
-            (restored_by, record_id),
+            " WHERE id = ? AND patient_id = ?",
+            (restored_by, record_id, patient_id),
         )
         await self.db.commit()
-        after = await self.get_clinical_record(record_id, include_deleted=True)
+        after = await self.get_clinical_record(
+            record_id, patient_id=patient_id, include_deleted=True
+        )
         await self._write_audit(
             record_id=record_id,
             action="restore",

@@ -330,7 +330,7 @@ async def test_sync_from_gdrive_detects_deleted_remote(db: Database):
     assert stats["missing"] == 0
     assert stats["external_location"] == 0
     # sync_state should be updated on the doc
-    refreshed = await db.get_document(inserted.id)
+    refreshed = await db.get_document(inserted.id, patient_id=ERIKA_UUID)
     assert refreshed.sync_state == "deleted_remote"
 
 
@@ -357,7 +357,7 @@ async def test_sync_from_gdrive_detects_external_location(db: Database):
     assert stats["missing"] == 0
     assert stats["deleted_remote"] == 0
     # Flag should be set on the doc
-    refreshed = await db.get_document(inserted.id)
+    refreshed = await db.get_document(inserted.id, patient_id=ERIKA_UUID)
     assert refreshed.gdrive_parent_outside_root is True
     # sync_state should NOT change (file isn't deleted, just external)
     assert refreshed.sync_state != "deleted_remote"
@@ -383,7 +383,7 @@ async def test_sync_from_gdrive_trashed_file_is_deleted_remote(db: Database):
     )
     assert stats["deleted_remote"] == 1
     assert stats["external_location"] == 0
-    refreshed = await db.get_document(inserted.id)
+    refreshed = await db.get_document(inserted.id, patient_id=ERIKA_UUID)
     assert refreshed.sync_state == "deleted_remote"
 
 
@@ -416,7 +416,7 @@ async def test_sync_from_gdrive_clears_external_flag_when_file_back_in_root(db: 
     )
     # File was unchanged (same mtime) — counted as unchanged, not external
     assert stats["external_location"] == 0
-    refreshed = await db.get_document(inserted.id)
+    refreshed = await db.get_document(inserted.id, patient_id=ERIKA_UUID)
     assert refreshed.gdrive_parent_outside_root is False
 
 
@@ -437,7 +437,7 @@ async def test_sync_from_gdrive_unclassifiable_error_still_missing(db: Database)
     assert stats["external_location"] == 0
     assert stats["deleted_remote"] == 0
     # No state mutation on unclassifiable
-    refreshed = await db.get_document(inserted.id)
+    refreshed = await db.get_document(inserted.id, patient_id=ERIKA_UUID)
     assert refreshed.gdrive_parent_outside_root is False
     assert refreshed.sync_state != "deleted_remote"
 
@@ -499,7 +499,7 @@ async def test_sync_from_gdrive_detects_category_from_folder(db: Database):
         stats = await sync_from_gdrive(db, files, gdrive, "folder123", patient_id=ERIKA_UUID)
 
     assert stats["updated"] == 1
-    updated_doc = await db.get_document(doc.id)
+    updated_doc = await db.get_document(doc.id, patient_id=ERIKA_UUID)
     assert updated_doc.category.value == "labs"
 
 
@@ -521,7 +521,7 @@ async def test_sync_to_gdrive_exports_new(db: Database):
     gdrive.upload.assert_called()
 
     # Verify gdrive_id was set
-    updated_doc = await db.get_document(doc.id)
+    updated_doc = await db.get_document(doc.id, patient_id=ERIKA_UUID)
     assert updated_doc.gdrive_id == "gdrive_new_id"
     assert updated_doc.sync_state == "synced"
 
@@ -612,7 +612,7 @@ async def test_sync_to_gdrive_dry_run(db: Database):
     gdrive.upload.assert_not_called()
 
     # gdrive_id should still be None
-    updated_doc = await db.get_document(doc.id)
+    updated_doc = await db.get_document(doc.id, patient_id=ERIKA_UUID)
     assert updated_doc.gdrive_id is None
 
 
@@ -721,7 +721,7 @@ async def test_sync_to_gdrive_renames_to_standard(db: Database):
     assert rename_arg.get("gd_existing") == expected
 
     # Verify DB filename updated
-    updated = await db.get_document(doc.id)
+    updated = await db.get_document(doc.id, patient_id=ERIKA_UUID)
     assert "_Labs_" in updated.filename
 
 
@@ -819,7 +819,7 @@ async def test_sync_from_gdrive_extracts_structured_metadata(db: Database):
         result = await _enhance_document(db, doc, files, gdrive)
 
     assert result is True
-    updated = await db.get_document(doc.id)
+    updated = await db.get_document(doc.id, patient_id=ERIKA_UUID)
     assert updated.structured_metadata is not None
     import json
 
@@ -957,7 +957,7 @@ async def test_sync_to_gdrive_text_file_uses_ocr_cache(db: Database):
     assert b"# Chapter 40" in content
 
     # Doc should now have gdrive_id
-    updated = await db.get_document(doc.id)
+    updated = await db.get_document(doc.id, patient_id=ERIKA_UUID)
     assert updated.gdrive_id == "gdrive_new_id"
 
 

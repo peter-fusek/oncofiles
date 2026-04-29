@@ -134,7 +134,7 @@ async def test_cross_reference_insert_and_query(db):
     doc2 = await db.insert_document(doc2, patient_id=ERIKA_UUID)
 
     await db.insert_cross_reference(doc1.id, doc2.id, "same_visit", 1.0)
-    refs = await db.get_cross_references(doc1.id)
+    refs = await db.get_cross_references(doc1.id, patient_id=ERIKA_UUID)
     assert len(refs) == 1
     assert refs[0]["source_document_id"] == doc1.id
     assert refs[0]["target_document_id"] == doc2.id
@@ -142,7 +142,7 @@ async def test_cross_reference_insert_and_query(db):
     assert refs[0]["confidence"] == 1.0
 
     # Query from the other direction
-    refs2 = await db.get_cross_references(doc2.id)
+    refs2 = await db.get_cross_references(doc2.id, patient_id=ERIKA_UUID)
     assert len(refs2) == 1
 
 
@@ -169,7 +169,7 @@ async def test_cross_reference_idempotent(db):
 
     await db.insert_cross_reference(doc1.id, doc2.id, "related", 0.8)
     await db.insert_cross_reference(doc1.id, doc2.id, "related", 0.8)
-    refs = await db.get_cross_references(doc1.id)
+    refs = await db.get_cross_references(doc1.id, patient_id=ERIKA_UUID)
     assert len(refs) == 1
 
 
@@ -197,7 +197,7 @@ async def test_bulk_insert_cross_references(db):
     )
     assert count == 3
 
-    refs = await db.get_cross_references(docs[0].id)
+    refs = await db.get_cross_references(docs[0].id, patient_id=ERIKA_UUID)
     assert len(refs) == 2
 
 
@@ -224,7 +224,7 @@ async def test_cross_reference_different_relationships(db):
 
     await db.insert_cross_reference(doc1.id, doc2.id, "same_visit", 1.0)
     await db.insert_cross_reference(doc1.id, doc2.id, "related", 0.7)
-    refs = await db.get_cross_references(doc1.id)
+    refs = await db.get_cross_references(doc1.id, patient_id=ERIKA_UUID)
     assert len(refs) == 2
 
 

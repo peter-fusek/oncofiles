@@ -733,7 +733,7 @@ async def test_update_document_category_success(db: Database):
     assert result["id"] == doc.id
 
     # Verify persisted
-    updated = await db.get_document(doc.id)
+    updated = await db.get_document(doc.id, patient_id=ERIKA_UUID)
     assert updated.category == DocumentCategory.REFERENCE
 
 

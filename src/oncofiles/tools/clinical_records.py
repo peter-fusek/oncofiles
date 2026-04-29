@@ -134,7 +134,7 @@ async def get_clinical_record(
     """
     pid = await _resolve_patient_id(patient_slug, ctx)
     db = _get_db(ctx)
-    record = await db.get_clinical_record(record_id, include_deleted=True)
+    record = await db.get_clinical_record(record_id, patient_id=pid, include_deleted=True)
     if record is None:
         return json.dumps({"error": "not_found", "record_id": record_id})
     if record.patient_id != pid:
@@ -189,7 +189,7 @@ async def add_clinical_record_note(
     pid = await _resolve_patient_id(patient_slug, ctx)
     db = _get_db(ctx)
 
-    target = await db.get_clinical_record(record_id, include_deleted=True)
+    target = await db.get_clinical_record(record_id, patient_id=pid, include_deleted=True)
     if target is None:
         return json.dumps({"error": "not_found", "record_id": record_id})
     if target.patient_id != pid:
@@ -240,7 +240,7 @@ async def list_clinical_record_notes(
     db = _get_db(ctx)
 
     if record_id is not None:
-        target = await db.get_clinical_record(record_id, include_deleted=True)
+        target = await db.get_clinical_record(record_id, patient_id=pid, include_deleted=True)
         if target is None:
             return json.dumps({"error": "not_found", "record_id": record_id})
         if target.patient_id != pid:
@@ -308,7 +308,7 @@ async def update_clinical_record(
     pid = await _resolve_patient_id(patient_slug, ctx)
     db = _get_db(ctx)
 
-    target = await db.get_clinical_record(record_id, include_deleted=True)
+    target = await db.get_clinical_record(record_id, patient_id=pid, include_deleted=True)
     if target is None:
         return json.dumps({"error": "not_found", "record_id": record_id})
     if target.patient_id != pid:
@@ -340,6 +340,7 @@ async def update_clinical_record(
     after = await db.update_clinical_record(
         record_id,
         updates,
+        patient_id=pid,
         changed_by=changed_by,
         source=source,
         session_id=session_id,
@@ -378,7 +379,7 @@ async def delete_clinical_record(
     pid = await _resolve_patient_id(patient_slug, ctx)
     db = _get_db(ctx)
 
-    target = await db.get_clinical_record(record_id, include_deleted=True)
+    target = await db.get_clinical_record(record_id, patient_id=pid, include_deleted=True)
     if target is None:
         return json.dumps({"error": "not_found", "record_id": record_id})
     if target.patient_id != pid:
@@ -386,6 +387,7 @@ async def delete_clinical_record(
 
     did = await db.delete_clinical_record(
         record_id,
+        patient_id=pid,
         deleted_by=deleted_by,
         source=source,
         session_id=session_id,
@@ -411,7 +413,7 @@ async def restore_clinical_record(
     pid = await _resolve_patient_id(patient_slug, ctx)
     db = _get_db(ctx)
 
-    target = await db.get_clinical_record(record_id, include_deleted=True)
+    target = await db.get_clinical_record(record_id, patient_id=pid, include_deleted=True)
     if target is None:
         return json.dumps({"error": "not_found", "record_id": record_id})
     if target.patient_id != pid:
@@ -421,6 +423,7 @@ async def restore_clinical_record(
 
     after = await db.restore_clinical_record(
         record_id,
+        patient_id=pid,
         restored_by=restored_by,
         source=source,
         session_id=session_id,
@@ -490,7 +493,7 @@ async def get_record_audit(
     pid = await _resolve_patient_id(patient_slug, ctx)
     db = _get_db(ctx)
 
-    target = await db.get_clinical_record(record_id, include_deleted=True)
+    target = await db.get_clinical_record(record_id, patient_id=pid, include_deleted=True)
     if target is None:
         return json.dumps({"error": "not_found", "record_id": record_id})
     if target.patient_id != pid:
@@ -547,7 +550,7 @@ async def add_clinical_analysis(
     # external AI can't stitch together an analysis across patients.
     if record_ids:
         for rid in record_ids:
-            rec = await db.get_clinical_record(rid, include_deleted=True)
+            rec = await db.get_clinical_record(rid, patient_id=pid, include_deleted=True)
             if rec is None:
                 return json.dumps({"error": "record_not_found", "record_id": rid})
             if rec.patient_id != pid:

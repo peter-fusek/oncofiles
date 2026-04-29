@@ -138,5 +138,5 @@ async def test_split_succeeds_when_all_uploads_succeed(db):
     assert {c.part_number for c in created} == {1, 2}
     assert all(c.total_parts == 2 for c in created)
     # Source should be soft-deleted after successful split.
-    refreshed_source = await db.get_document(source.id)
+    refreshed_source = await db.get_document(source.id, patient_id=ERIKA_UUID)
     assert refreshed_source.deleted_at is not None

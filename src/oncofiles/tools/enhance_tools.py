@@ -79,7 +79,7 @@ async def extract_document_metadata(
     pid = _get_patient_id()
     if not await db.check_document_ownership(document_id, pid):
         return json.dumps({"error": f"Document not found: {document_id}"})
-    doc = await db.get_document(document_id)
+    doc = await db.get_document(document_id, patient_id=pid)
     if not doc:
         return json.dumps({"error": f"Document not found: {document_id}"})
 

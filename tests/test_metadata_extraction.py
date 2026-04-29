@@ -102,7 +102,7 @@ class TestStructuredMetadataDB:
         metadata = json.dumps({"document_type": "lab_report", "findings": ["WBC elevated"]})
         await db.update_structured_metadata(doc.id, metadata)
 
-        updated = await db.get_document(doc.id)
+        updated = await db.get_document(doc.id, patient_id=ERIKA_UUID)
         assert updated.structured_metadata is not None
         parsed = json.loads(updated.structured_metadata)
         assert parsed["document_type"] == "lab_report"
@@ -113,5 +113,5 @@ class TestStructuredMetadataDB:
         from tests.helpers import ERIKA_UUID, make_doc
 
         doc = await db.insert_document(make_doc(), patient_id=ERIKA_UUID)
-        fetched = await db.get_document(doc.id)
+        fetched = await db.get_document(doc.id, patient_id=ERIKA_UUID)
         assert fetched.structured_metadata is None

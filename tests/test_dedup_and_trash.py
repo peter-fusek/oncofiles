@@ -98,7 +98,7 @@ async def test_purge_expired_trash_old(db: Database):
     assert len(trash) == 0
 
     # Gone from DB entirely
-    result = await db.get_document(doc.id)
+    result = await db.get_document(doc.id, patient_id=ERIKA_UUID)
     assert result is None
 
 

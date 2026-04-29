@@ -213,15 +213,14 @@ async def sync_from_gdrive(
             oncofiles_id = app_props.get("oncofiles_id")
             if oncofiles_id:
                 try:
-                    candidate = await db.get_document(int(oncofiles_id))
+                    candidate = await db.get_document(int(oncofiles_id), patient_id=patient_id)
                 except (ValueError, TypeError):
                     logger.warning("sync: invalid oncofiles_id '%s' on %s", oncofiles_id, gdrive_id)
                     candidate = None
-                # Only trust appProperties match if doc belongs to this patient
+                # get_document is now patient-scoped at the SQL layer (#499/#516),
+                # so a hit already proves ownership.
                 if candidate:
-                    doc_pid = await _get_doc_patient_id(db, candidate.id)
-                    if doc_pid == patient_id:
-                        existing = candidate
+                    existing = candidate
             if not existing:
                 existing = await db.get_document_by_gdrive_id(gdrive_id, patient_id=patient_id)
 
@@ -798,7 +797,7 @@ async def sync_to_gdrive(
             refreshed = []
             for d in renamed_docs:
                 try:
-                    refreshed.append(await db.get_document(d.id))
+                    refreshed.append(await db.get_document(d.id, patient_id=patient_id))
                 except Exception:
                     refreshed.append(d)
             if refreshed:
@@ -824,7 +823,7 @@ async def sync_to_gdrive(
 
             for doc_id in rename_stats["renamed_ids"]:
                 try:
-                    doc = await db.get_document(doc_id)
+                    doc = await db.get_document(doc_id, patient_id=patient_id)
                     await asyncio.wait_for(
                         _enhance_document(db, doc, files, gdrive, patient_id=patient_id),
                         timeout=ENHANCE_TIMEOUT_S,
@@ -1023,8 +1022,10 @@ async def _assert_doc_pipeline_complete(
     """
     gaps: list[str] = []
     try:
-        doc = await db.get_document(doc_id)
+        doc = await db.get_document(doc_id, patient_id=patient_id)
     except Exception:
+        return [f"doc {doc_id}: not found in DB"]
+    if doc is None:
         return [f"doc {doc_id}: not found in DB"]
 
     if not is_standard_format(doc.filename, patient_id=patient_id):
@@ -1591,11 +1592,11 @@ async def enhance_documents(
     if document_ids:
         docs = []
         for doc_id in document_ids:
-            doc = await db.get_document(doc_id)
+            # get_document is patient-scoped at the SQL layer (#499/#516),
+            # so the result already enforces ownership.
+            doc = await db.get_document(doc_id, patient_id=patient_id)
             if doc:
-                doc_pid = await _get_doc_patient_id(db, doc.id)
-                if doc_pid == patient_id:
-                    docs.append(doc)
+                docs.append(doc)
     else:
         docs = await db.get_documents_without_ai(patient_id=patient_id)
 

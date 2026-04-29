@@ -130,7 +130,7 @@ async def test_update_treatment_event_blocks_cross_patient(db: Database):
     # Erika tries to overwrite Bob's event title — rejected.
     result = json.loads(await tx_tools.update_treatment_event(ctx, b_id, title="HACKED"))
     assert "error" in result
-    bob_event = await db.get_treatment_event(b_id)
+    bob_event = await db.get_treatment_event(b_id, patient_id=SECOND_UUID)
     assert bob_event.title == "Bob C1"
 
     # Erika updates her own event — succeeds.

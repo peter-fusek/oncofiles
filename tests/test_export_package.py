@@ -80,7 +80,7 @@ class TestExportDocumentPackage:
         metadata = json.dumps({"document_type": "lab_report", "findings": ["anemia"]})
         await db.update_structured_metadata(doc.id, metadata)
 
-        fetched = await db.get_document(doc.id)
+        fetched = await db.get_document(doc.id, patient_id=ERIKA_UUID)
         assert fetched.structured_metadata is not None
         parsed = json.loads(fetched.structured_metadata)
         assert parsed["document_type"] == "lab_report"

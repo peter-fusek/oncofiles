@@ -42,14 +42,15 @@ class ClinicalMixin:
         event.id = cursor.lastrowid
         return event
 
-    async def get_treatment_event(self, event_id: int) -> TreatmentEvent | None:
-        """Get a treatment event by ID.
+    async def get_treatment_event(self, event_id: int, *, patient_id: str) -> TreatmentEvent | None:
+        """Get a treatment event by ID, scoped to ``patient_id`` (#499).
 
-        Callers that need patient-scoped access should pair this with
-        ``check_treatment_event_ownership`` (see Option A pattern #429).
+        ``patient_id`` is required: the SQL filter prevents cross-patient
+        disclosure if a caller forgets ``check_treatment_event_ownership``.
         """
         async with self.db.execute(
-            "SELECT * FROM treatment_events WHERE id = ?", (event_id,)
+            "SELECT * FROM treatment_events WHERE id = ? AND patient_id = ?",
+            (event_id, patient_id),
         ) as cursor:
             row = await cursor.fetchone()
             return _row_to_treatment_event(row) if row else None
@@ -140,20 +141,35 @@ class ClinicalMixin:
 
         return events
 
-    async def delete_treatment_event(self, event_id: int) -> bool:
-        """Delete a treatment event by ID. Returns True if deleted."""
-        cursor = await self.db.execute("DELETE FROM treatment_events WHERE id = ?", (event_id,))
+    async def delete_treatment_event(self, event_id: int, *, patient_id: str) -> bool:
+        """Delete a treatment event by ID, scoped to ``patient_id`` (#514).
+
+        ``patient_id`` is required: the SQL ``AND patient_id = ?`` clause
+        is the data-layer guarantee that a caller without an ownership
+        check cannot delete another patient's row by enumerating IDs.
+        """
+        cursor = await self.db.execute(
+            "DELETE FROM treatment_events WHERE id = ? AND patient_id = ?",
+            (event_id, patient_id),
+        )
         await self.db.commit()
         return cursor.rowcount > 0
 
     async def update_treatment_event(
         self,
         event_id: int,
+        *,
+        patient_id: str,
         title: str | None = None,
         notes: str | None = None,
         metadata: str | None = None,
     ) -> TreatmentEvent | None:
-        """Update a treatment event's title, notes, or metadata."""
+        """Update a treatment event's title, notes, or metadata, scoped to ``patient_id``.
+
+        Mirrors ``delete_treatment_event``: the SQL filter (#499) means an
+        unscoped caller cannot mutate another patient's row even with a
+        valid event id.
+        """
         updates: list[str] = []
         params: list = []
         if title is not None:
@@ -166,13 +182,15 @@ class ClinicalMixin:
             updates.append("metadata = ?")
             params.append(metadata)
         if not updates:
-            return await self.get_treatment_event(event_id)
+            return await self.get_treatment_event(event_id, patient_id=patient_id)
         params.append(event_id)
+        params.append(patient_id)
         await self.db.execute(
-            f"UPDATE treatment_events SET {', '.join(updates)} WHERE id = ?", params
+            f"UPDATE treatment_events SET {', '.join(updates)} WHERE id = ? AND patient_id = ?",
+            params,
         )
         await self.db.commit()
-        return await self.get_treatment_event(event_id)
+        return await self.get_treatment_event(event_id, patient_id=patient_id)
 
     async def get_treatment_events_timeline(
         self, limit: int = 200, *, patient_id: str

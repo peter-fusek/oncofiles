@@ -30,7 +30,7 @@ async def test_insert_and_get(db: Database):
     inserted = await db.insert_conversation_entry(entry, patient_id=ERIKA_UUID)
     assert inserted.id is not None
 
-    fetched = await db.get_conversation_entry(inserted.id)
+    fetched = await db.get_conversation_entry(inserted.id, patient_id=ERIKA_UUID)
     assert fetched is not None
     assert fetched.title == "Test entry"
     assert fetched.entry_date == date(2025, 3, 1)
@@ -38,19 +38,19 @@ async def test_insert_and_get(db: Database):
 
 
 async def test_get_not_found(db: Database):
-    result = await db.get_conversation_entry(9999)
+    result = await db.get_conversation_entry(9999, patient_id=ERIKA_UUID)
     assert result is None
 
 
 async def test_delete(db: Database):
     entry = await db.insert_conversation_entry(make_entry(), patient_id=ERIKA_UUID)
-    deleted = await db.delete_conversation_entry(entry.id)
+    deleted = await db.delete_conversation_entry(entry.id, patient_id=ERIKA_UUID)
     assert deleted is True
-    assert await db.get_conversation_entry(entry.id) is None
+    assert await db.get_conversation_entry(entry.id, patient_id=ERIKA_UUID) is None
 
 
 async def test_delete_not_found(db: Database):
-    deleted = await db.delete_conversation_entry(9999)
+    deleted = await db.delete_conversation_entry(9999, patient_id=ERIKA_UUID)
     assert deleted is False
 
 
@@ -188,5 +188,5 @@ async def test_document_ids_stored_and_retrieved(db: Database):
     entry = make_entry(document_ids=[3, 15, 22])
     inserted = await db.insert_conversation_entry(entry, patient_id=ERIKA_UUID)
 
-    fetched = await db.get_conversation_entry(inserted.id)
+    fetched = await db.get_conversation_entry(inserted.id, patient_id=ERIKA_UUID)
     assert fetched.document_ids == [3, 15, 22]

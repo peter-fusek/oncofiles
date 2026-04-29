@@ -44,14 +44,17 @@ class ConversationMixin:
         entry.id = cursor.lastrowid
         return entry
 
-    async def get_conversation_entry(self, entry_id: int) -> ConversationEntry | None:
-        """Get a conversation entry by ID.
+    async def get_conversation_entry(
+        self, entry_id: int, *, patient_id: str
+    ) -> ConversationEntry | None:
+        """Get a conversation entry by ID, scoped to ``patient_id`` (#499).
 
-        Callers that need patient-scoped access should pair this with
-        ``check_conversation_entry_ownership`` (Option A pattern #429).
+        ``patient_id`` is required: the SQL filter blocks cross-patient
+        disclosure if a caller forgets ``check_conversation_entry_ownership``.
         """
         async with self.db.execute(
-            "SELECT * FROM conversation_entries WHERE id = ?", (entry_id,)
+            "SELECT * FROM conversation_entries WHERE id = ? AND patient_id = ?",
+            (entry_id, patient_id),
         ) as cursor:
             row = await cursor.fetchone()
             return _row_to_conversation_entry(row) if row else None
@@ -165,9 +168,17 @@ class ConversationMixin:
             rows = await cursor.fetchall()
             return [_row_to_conversation_entry(r) for r in rows]
 
-    async def delete_conversation_entry(self, entry_id: int) -> bool:
-        """Delete a conversation entry by ID. Returns True if deleted."""
-        cursor = await self.db.execute("DELETE FROM conversation_entries WHERE id = ?", (entry_id,))
+    async def delete_conversation_entry(self, entry_id: int, *, patient_id: str) -> bool:
+        """Delete a conversation entry by ID, scoped to ``patient_id`` (#515).
+
+        ``patient_id`` is required: the SQL ``AND patient_id = ?`` clause
+        is the data-layer guarantee that a caller without an ownership
+        check cannot delete another patient's row by enumerating IDs.
+        """
+        cursor = await self.db.execute(
+            "DELETE FROM conversation_entries WHERE id = ? AND patient_id = ?",
+            (entry_id, patient_id),
+        )
         await self.db.commit()
         return cursor.rowcount > 0
 

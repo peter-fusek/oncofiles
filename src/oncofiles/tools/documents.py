@@ -47,9 +47,12 @@ async def _get_doc_owned(db, doc_id: int, pid: str | None = None) -> Document | 
     """
     if pid is None:
         pid = _get_patient_id()
+    # get_document is patient-scoped at the SQL layer (#499/#516). The
+    # explicit ownership check is redundant but kept as defence-in-depth
+    # (it short-circuits before the SELECT and gives the same None result).
     if not await db.check_document_ownership(doc_id, pid):
         return None
-    return await db.get_document(doc_id)
+    return await db.get_document(doc_id, patient_id=pid)
 
 
 async def upload_document(
@@ -394,7 +397,7 @@ async def restore_document(ctx: Context, doc_id: int, patient_slug: str | None =
         return json.dumps(
             {"restored": False, "doc_id": doc_id, "message": "Document not found in trash."}
         )
-    doc = await db.get_document(doc_id)
+    doc = await db.get_document(doc_id, patient_id=pid)
     restored = await db.restore_document(doc_id)
     if restored:
         return json.dumps(
@@ -493,7 +496,7 @@ async def get_document_versions(ctx: Context, doc_id: int, patient_slug: str | N
     if not doc:
         return json.dumps({"error": f"Document not found: {doc_id}"})
 
-    chain = await db.get_document_version_chain(doc_id)
+    chain = await db.get_document_version_chain(doc_id, patient_id=pid)
     return json.dumps(
         {
             "versions": [
@@ -533,14 +536,16 @@ async def get_related_documents(ctx: Context, doc_id: int, patient_slug: str | N
     if not doc:
         return json.dumps({"error": f"Document not found: {doc_id}"})
 
-    refs = await db.get_cross_references(doc_id)
+    # Both helpers are patient-scoped (#516/#517) — even if a stray cross-
+    # reference row points to another patient's doc, the join-and-filter
+    # query drops it, and the batch fetch ignores foreign IDs entirely.
+    refs = await db.get_cross_references(doc_id, patient_id=pid)
 
-    # Batch-fetch all related documents in a single query
     related_ids = set()
     for ref in refs:
         is_source = ref["source_document_id"] == doc_id
         related_ids.add(ref["target_document_id"] if is_source else ref["source_document_id"])
-    related_docs = await db.get_documents_by_ids(related_ids)
+    related_docs = await db.get_documents_by_ids(related_ids, patient_id=pid)
 
     items = []
     for ref in refs:
@@ -635,7 +640,7 @@ async def update_document_category(
             folder_id = ctx.request_context.lifespan_context.get("gdrive_folder_id", "")
             if folder_id:
                 # Refresh doc with new category for folder path calculation
-                updated_doc = await db.get_document(doc_id)
+                updated_doc = await db.get_document(doc_id, patient_id=pid)
                 if updated_doc:
                     from oncofiles.tools.hygiene import _move_doc_to_correct_folder
 
@@ -684,23 +689,29 @@ async def reassign_document(ctx: Context, doc_id: int, target_patient_slug: str)
 
     db = _get_db(ctx)
 
-    # Verify document exists
-    doc = await db.get_document(doc_id)
-    if not doc:
-        return json.dumps({"error": f"Document not found: {doc_id}"})
-
-    # Resolve target patient
+    # Resolve target patient up front so we can scope the lookup correctly.
     target_pid = await db.resolve_patient_id(target_patient_slug)
     if not target_pid:
         return json.dumps({"error": f"Patient not found: {target_patient_slug}"})
 
-    # Get current patient for logging
+    # Look up the document's CURRENT patient via raw SQL — get_document is
+    # patient-scoped (#499/#516) and reassign is the one tool that legitimately
+    # needs to read across patients (admin-only, #487). The raw SELECT here is
+    # the explicit cross-patient read; the admin gate above is the only thing
+    # that authorises it.
     old_pid_row = await db.db.execute("SELECT patient_id FROM documents WHERE id = ?", (doc_id,))
     old_row = await old_pid_row.fetchone()
-    old_pid = old_row["patient_id"] if old_row else "unknown"
+    if not old_row:
+        return json.dumps({"error": f"Document not found: {doc_id}"})
+    old_pid = old_row["patient_id"]
 
     if old_pid == target_pid:
         return json.dumps({"error": "Document already belongs to this patient"})
+
+    # Now fetch the full doc using the resolved old_pid so we have the row.
+    doc = await db.get_document(doc_id, patient_id=old_pid)
+    if not doc:
+        return json.dumps({"error": f"Document not found: {doc_id}"})
 
     # Reassign
     await db.db.execute(

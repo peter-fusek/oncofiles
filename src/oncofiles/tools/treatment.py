@@ -23,7 +23,7 @@ async def _get_event_owned(db, event_id: int, pid: str) -> TreatmentEvent | None
     """
     if not await db.check_treatment_event_ownership(event_id, pid):
         return None
-    return await db.get_treatment_event(event_id)
+    return await db.get_treatment_event(event_id, patient_id=pid)
 
 
 async def add_treatment_event(
@@ -154,7 +154,7 @@ async def delete_treatment_event(
     # Cross-patient block: confirm ownership before deletion (#429).
     if not await db.check_treatment_event_ownership(event_id, pid):
         return json.dumps({"error": f"Treatment event {event_id} not found"})
-    deleted = await db.delete_treatment_event(event_id)
+    deleted = await db.delete_treatment_event(event_id, patient_id=pid)
     if not deleted:
         return json.dumps({"error": f"Treatment event {event_id} not found"})
     return json.dumps({"deleted": True, "event_id": event_id})
@@ -182,7 +182,9 @@ async def update_treatment_event(
     # Cross-patient block: confirm ownership before update (#429).
     if not await db.check_treatment_event_ownership(event_id, pid):
         return json.dumps({"error": f"Treatment event {event_id} not found"})
-    updated = await db.update_treatment_event(event_id, title=title, notes=notes, metadata=metadata)
+    updated = await db.update_treatment_event(
+        event_id, patient_id=pid, title=title, notes=notes, metadata=metadata
+    )
     if not updated:
         return json.dumps({"error": f"Treatment event {event_id} not found"})
     return json.dumps(

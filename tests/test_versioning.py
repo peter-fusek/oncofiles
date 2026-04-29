@@ -22,7 +22,7 @@ async def test_insert_document_with_version(db: Database):
         make_doc(file_id="f2", version=2, previous_version_id=v1.id), patient_id=ERIKA_UUID
     )
 
-    fetched = await db.get_document(v2.id)
+    fetched = await db.get_document(v2.id, patient_id=ERIKA_UUID)
     assert fetched.version == 2
     assert fetched.previous_version_id == v1.id
 
@@ -74,7 +74,7 @@ async def test_get_active_document_by_filename_not_found(db: Database):
 async def test_version_chain_single_document(db: Database):
     """A document with no versions returns a chain of length 1."""
     doc = await db.insert_document(make_doc(file_id="f1"), patient_id=ERIKA_UUID)
-    chain = await db.get_document_version_chain(doc.id)
+    chain = await db.get_document_version_chain(doc.id, patient_id=ERIKA_UUID)
     assert len(chain) == 1
     assert chain[0].id == doc.id
 
@@ -86,7 +86,7 @@ async def test_version_chain_two_versions(db: Database):
         make_doc(file_id="f2", version=2, previous_version_id=v1.id), patient_id=ERIKA_UUID
     )
 
-    chain = await db.get_document_version_chain(v1.id)
+    chain = await db.get_document_version_chain(v1.id, patient_id=ERIKA_UUID)
     assert len(chain) == 2
     assert chain[0].id == v2.id
     assert chain[1].id == v1.id
@@ -103,19 +103,19 @@ async def test_version_chain_three_versions(db: Database):
     )
 
     # Query from any point in the chain
-    chain = await db.get_document_version_chain(v1.id)
+    chain = await db.get_document_version_chain(v1.id, patient_id=ERIKA_UUID)
     assert len(chain) == 3
     assert [d.id for d in chain] == [v3.id, v2.id, v1.id]
 
-    chain_from_middle = await db.get_document_version_chain(v2.id)
+    chain_from_middle = await db.get_document_version_chain(v2.id, patient_id=ERIKA_UUID)
     assert len(chain_from_middle) == 3
     assert [d.id for d in chain_from_middle] == [v3.id, v2.id, v1.id]
 
-    chain_from_latest = await db.get_document_version_chain(v3.id)
+    chain_from_latest = await db.get_document_version_chain(v3.id, patient_id=ERIKA_UUID)
     assert len(chain_from_latest) == 3
 
 
 async def test_version_chain_nonexistent(db: Database):
     """Chain for nonexistent document returns empty list."""
-    chain = await db.get_document_version_chain(999)
+    chain = await db.get_document_version_chain(999, patient_id=ERIKA_UUID)
     assert chain == []

@@ -65,7 +65,7 @@ async def test_dry_run_lists_candidates_without_moving(db: Database, monkeypatch
     # Dry-run does NOT call move_file
     gdrive.move_file.assert_not_called()
     # Flag still set
-    refreshed = await db.get_document(doc_id)
+    refreshed = await db.get_document(doc_id, patient_id=ERIKA_UUID)
     assert refreshed.gdrive_parent_outside_root is True
     # Remaining reflects the still-flagged doc
     assert result["remaining"] == 1
@@ -84,7 +84,7 @@ async def test_apply_moves_file_and_clears_flag(db: Database, monkeypatch):
     assert result["moved"][0]["new_parent"] == "root_folder_xyz"
     gdrive.move_file.assert_called_once_with("gd_ext_1", "root_folder_xyz")
     # Flag cleared
-    refreshed = await db.get_document(doc_id)
+    refreshed = await db.get_document(doc_id, patient_id=ERIKA_UUID)
     assert refreshed.gdrive_parent_outside_root is False
     assert result["remaining"] == 0
 
@@ -113,7 +113,7 @@ async def test_permission_denied_reports_without_crashing(db: Database, monkeypa
     assert "insufficientFilePermissions" in result["skipped_permissions"][0]["error"]
     assert result["note"]  # human-readable resolution hint
     # Flag must remain set — user still sees "external_location" in audit
-    refreshed = await db.get_document(doc_id)
+    refreshed = await db.get_document(doc_id, patient_id=ERIKA_UUID)
     assert refreshed.gdrive_parent_outside_root is True
     assert result["remaining"] == 1
 

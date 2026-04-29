@@ -111,7 +111,10 @@ async def test_consolidate_rejects_low_confidence(db):
     )
 
     assert result is None
-    refreshed = [await db.get_document(d1.id), await db.get_document(d2.id)]
+    refreshed = [
+        await db.get_document(d1.id, patient_id=ERIKA_UUID),
+        await db.get_document(d2.id, patient_id=ERIKA_UUID),
+    ]
     assert all(d.group_id is None for d in refreshed)
 
 
@@ -133,7 +136,7 @@ async def test_consolidate_rejects_date_span_too_large(db):
     )
 
     assert result is None
-    assert (await db.get_document(d1.id)).group_id is None
+    assert (await db.get_document(d1.id, patient_id=ERIKA_UUID)).group_id is None
 
 
 @pytest.mark.asyncio
@@ -151,7 +154,7 @@ async def test_consolidate_rejects_cross_institution(db):
     )
 
     assert result is None
-    assert (await db.get_document(d1.id)).group_id is None
+    assert (await db.get_document(d1.id, patient_id=ERIKA_UUID)).group_id is None
 
 
 @pytest.mark.asyncio
@@ -167,8 +170,8 @@ async def test_consolidate_accepts_valid_group(db):
     )
 
     assert result is not None
-    r1 = await db.get_document(d1.id)
-    r2 = await db.get_document(d2.id)
+    r1 = await db.get_document(d1.id, patient_id=ERIKA_UUID)
+    r2 = await db.get_document(d2.id, patient_id=ERIKA_UUID)
     assert r1.group_id == result
     assert r2.group_id == result
     assert {r1.part_number, r2.part_number} == {1, 2}
