@@ -3561,18 +3561,71 @@ async def health(request: Request) -> JSONResponse:
     return JSONResponse(result)
 
 
+def _readiness_caller_is_operator(request: Request) -> bool:
+    """Decide whether the /readiness caller is allowed the full diagnostic
+    payload (#512). Two paths qualify:
+
+    - ``Authorization: Bearer <MCP_BEARER_TOKEN>`` matches — the operator
+      bearer used by curl probes, Railway monitoring, ops scripts.
+    - ``oncofiles_session`` cookie verifies AND the embedded email is in
+      ``DASHBOARD_ADMIN_EMAILS`` — keeps the admin breaker widget on the
+      dashboard working without exposing internals to logged-out visitors
+      or non-admin caregivers.
+
+    Anything else gets the redacted public-safe shape: status + version
+    + db reachability only. No memory, no circuit-breaker internals, no
+    per-job last_error / running flags.
+    """
+    auth_header = request.headers.get("authorization", "")
+    if (
+        auth_header.startswith("Bearer ")
+        and not auth_header.startswith("Bearer session:")
+        and MCP_BEARER_TOKEN
+    ):
+        token = auth_header.removeprefix("Bearer ").strip()
+        if hmac.compare_digest(token.encode(), MCP_BEARER_TOKEN.encode()):
+            return True
+
+    # Dashboard session cookie path. The dashboard's breaker widget fires
+    # `fetch('/readiness')` with default credentials (same-origin), so the
+    # browser includes the cookie automatically.
+    cookie_header = request.headers.get("cookie", "")
+    if cookie_header:
+        for pair in cookie_header.split(";"):
+            if "=" not in pair:
+                continue
+            cname, _, cvalue = pair.strip().partition("=")
+            if cname != "oncofiles_session":
+                continue
+            from urllib.parse import unquote as _urlunquote
+
+            email = _verify_session_token(_urlunquote(cvalue.strip()))
+            return _is_admin_email(email)
+    return False
+
+
 @mcp.custom_route("/readiness", methods=["GET"])
 async def readiness(request: Request) -> JSONResponse:
     """Readiness probe — checks DB connectivity with a 5 s timeout.
 
     Suitable for dashboards and deeper monitoring; NOT used as Railway
     healthcheck so a slow Turso reconnect won't kill the process.
+
+    #512: the *minimal* shape (``status``, ``version``, ``db``) is public
+    because external uptime monitors and the load balancer rely on it.
+    The detailed operational telemetry (memory, circuit breaker state,
+    per-job error/running flags, reconnect signal) is only returned when
+    the caller is an operator — see ``_readiness_caller_is_operator``.
     """
     try:
         lifespan_ctx = request.app.state.fastmcp_server._lifespan_result
         db: Database = lifespan_ctx["db"]
         reconnected = await db.reconnect_if_stale(timeout=5.0)
         result: dict = {"status": "ok", "version": VERSION, "db": "connected"}
+        # Public-safe payload ends here. Anything below is operator-only.
+        if not _readiness_caller_is_operator(request):
+            return JSONResponse(result)
+
         if reconnected:
             result["reconnected"] = True
         result["memory_rss_mb"] = round(get_rss_mb(), 1)

@@ -35,6 +35,26 @@ TOKEN_URL = "https://oauth2.googleapis.com/token"
 # State token validity window (seconds)
 _STATE_MAX_AGE = 1800  # 30 minutes
 
+# #506: single-use OAuth state. ``verify_state_token`` records the SHA-256
+# hash of every successfully verified state token here, paired with its
+# expiry timestamp. A second verify of the same token (a replay) sees the
+# hash already present and is rejected. The map is opportunistically
+# pruned on each verify so memory stays bounded by max in-flight OAuth
+# flows × 30 min × ~50 bytes per entry — tiny in practice.
+_consumed_state_tokens: dict[str, float] = {}
+
+
+def _state_token_hash(state: str) -> str:
+    return hashlib.sha256(state.encode()).hexdigest()
+
+
+def _prune_consumed_state_tokens(now: float | None = None) -> None:
+    """Drop entries whose expiry has passed. O(N) sweep, called per verify."""
+    now = time.time() if now is None else now
+    expired = [h for h, exp in _consumed_state_tokens.items() if exp <= now]
+    for h in expired:
+        _consumed_state_tokens.pop(h, None)
+
 
 def _make_state_token(patient_id: str) -> str:
     """Generate an HMAC-signed state token with embedded timestamp and patient_id.
@@ -57,6 +77,13 @@ def verify_state_token(state: str) -> tuple[bool, str]:
     """Verify an HMAC-signed state token. Returns (valid, patient_id).
 
     Supports both new format ({patient_id}:{ts}.{sig}) and legacy ({ts}.{sig}).
+
+    Single-use semantics (#506): after a state token verifies successfully,
+    its SHA-256 hash is stored in ``_consumed_state_tokens`` until expiry.
+    A second verify of the same token returns (False, patient_id) — the
+    OAuth callback handler already maps that to its standard error path.
+    Tokens that fail HMAC verification are NOT recorded (no oracle for
+    attackers probing valid tokens via replays).
     """
     if not state or "." not in state:
         return False, ""
@@ -80,8 +107,9 @@ def verify_state_token(state: str) -> tuple[bool, str]:
         ts = int(ts_str)
     except ValueError:
         return False, ""
+    now = time.time()
     # Check expiry
-    if time.time() - ts > _STATE_MAX_AGE:
+    if now - ts > _STATE_MAX_AGE:
         return False, patient_id
     # Verify signature
     if not MCP_BEARER_TOKEN:
@@ -89,7 +117,22 @@ def verify_state_token(state: str) -> tuple[bool, str]:
     key = oauth_state_key(MCP_BEARER_TOKEN)
     # HMAC covers the full prefix (patient_id:ts or just ts for legacy)
     expected = hmac.new(key, prefix.encode(), hashlib.sha256).hexdigest()[:32]
-    return hmac.compare_digest(sig, expected), patient_id
+    if not hmac.compare_digest(sig, expected):
+        return False, patient_id
+
+    # HMAC valid + within window. Enforce single-use (#506).
+    _prune_consumed_state_tokens(now)
+    state_hash = _state_token_hash(state)
+    if state_hash in _consumed_state_tokens:
+        logger.warning(
+            "OAuth state token replay rejected (patient_id=%s, age=%ds)",
+            patient_id or "<legacy>",
+            int(now - ts),
+        )
+        return False, patient_id
+    # Record consumption — expire when the token would have expired anyway.
+    _consumed_state_tokens[state_hash] = ts + _STATE_MAX_AGE
+    return True, patient_id
 
 
 def get_auth_url(state: str = "", patient_id: str = "") -> str:

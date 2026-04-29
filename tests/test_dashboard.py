@@ -833,6 +833,136 @@ def test_readiness_uses_circuit_breaker_503_helper():
     assert '"/readiness"' in source
 
 
+# ── #512: /readiness redacts ops detail for unauthenticated callers ──
+
+
+def _make_cookie_request(cookie_value: str | None = None, auth_header: str | None = None):
+    """Mock request with optional Cookie + Authorization headers."""
+    request = MagicMock()
+    headers = {}
+    if auth_header is not None:
+        headers["authorization"] = auth_header
+    if cookie_value is not None:
+        headers["cookie"] = cookie_value
+    mock_headers = MagicMock()
+    mock_headers.get = lambda key, default="": headers.get(key, default)
+    request.headers = mock_headers
+    return request
+
+
+def test_readiness_caller_is_operator_recognises_bearer():
+    from oncofiles.server import _readiness_caller_is_operator
+
+    with patch("oncofiles.server.MCP_BEARER_TOKEN", "the-real-secret"):
+        assert _readiness_caller_is_operator(
+            _make_cookie_request(auth_header="Bearer the-real-secret")
+        )
+        # Wrong secret → not operator.
+        assert not _readiness_caller_is_operator(
+            _make_cookie_request(auth_header="Bearer not-the-secret")
+        )
+
+
+def test_readiness_caller_is_operator_rejects_session_bearer():
+    """`Authorization: Bearer session:...` is the dashboard session header,
+    NOT the operator bearer. The two paths share a prefix but the helper
+    must not confuse them — otherwise a non-admin caregiver's session
+    would unlock ops detail."""
+    from oncofiles.server import _readiness_caller_is_operator
+
+    with patch("oncofiles.server.MCP_BEARER_TOKEN", "the-real-secret"):
+        assert not _readiness_caller_is_operator(
+            _make_cookie_request(auth_header="Bearer session:whatever")
+        )
+
+
+def test_readiness_caller_is_operator_with_no_auth():
+    from oncofiles.server import _readiness_caller_is_operator
+
+    with patch("oncofiles.server.MCP_BEARER_TOKEN", "the-real-secret"):
+        assert not _readiness_caller_is_operator(_make_cookie_request())
+
+
+def test_readiness_caller_is_operator_admin_session_cookie():
+    """The dashboard's breaker widget (admin-only, #469 Phase 7) uses a
+    same-origin fetch that auto-includes the oncofiles_session cookie.
+    Admins on the cookie path should get the full diagnostic payload."""
+    from oncofiles.server import _make_session_token, _readiness_caller_is_operator
+
+    admin = "admin@oncofiles.com"
+    with (
+        patch("oncofiles.server.MCP_BEARER_TOKEN", "the-real-secret"),
+        patch("oncofiles.server.DASHBOARD_ADMIN_EMAILS", {admin}),
+    ):
+        token = _make_session_token(admin)
+        # URL-encode like the live dashboard.
+        from urllib.parse import quote
+
+        cookie = f"oncofiles_session={quote(token, safe='')}"
+        assert _readiness_caller_is_operator(_make_cookie_request(cookie_value=cookie))
+
+
+def test_readiness_caller_is_operator_non_admin_session_cookie():
+    """A signed-in caregiver who is NOT in DASHBOARD_ADMIN_EMAILS must NOT
+    unlock ops detail — even though their session cookie is otherwise
+    valid for patient-data access."""
+    from oncofiles.server import _make_session_token, _readiness_caller_is_operator
+
+    with (
+        patch("oncofiles.server.MCP_BEARER_TOKEN", "the-real-secret"),
+        patch("oncofiles.server.DASHBOARD_ADMIN_EMAILS", {"admin@oncofiles.com"}),
+    ):
+        token = _make_session_token("caregiver@example.com")
+        from urllib.parse import quote
+
+        cookie = f"oncofiles_session={quote(token, safe='')}"
+        assert not _readiness_caller_is_operator(_make_cookie_request(cookie_value=cookie))
+
+
+def test_readiness_caller_is_operator_garbage_cookie():
+    """Tampered or unparseable session cookies must not crash the helper."""
+    from oncofiles.server import _readiness_caller_is_operator
+
+    with (
+        patch("oncofiles.server.MCP_BEARER_TOKEN", "the-real-secret"),
+        patch("oncofiles.server.DASHBOARD_ADMIN_EMAILS", {"admin@oncofiles.com"}),
+    ):
+        for cookie in (
+            "oncofiles_session=not-a-token",
+            "oncofiles_session=",
+            "other_cookie=xyz; oncofiles_session=garbage|123|deadbeef|abc",
+        ):
+            assert not _readiness_caller_is_operator(_make_cookie_request(cookie_value=cookie))
+
+
+def test_readiness_redacts_for_unauthenticated_caller_source():
+    """Source-level lock: the redaction branch fires BEFORE memory_rss_mb,
+    circuit_breaker, and the jobs block are added to the result. If a
+    future refactor moves the early-return after those lines, this test
+    fails and forces a re-review."""
+    import inspect
+
+    from oncofiles.server import readiness
+
+    source = inspect.getsource(readiness)
+    redact_idx = source.index("_readiness_caller_is_operator(request)")
+    mem_idx = source.index('"memory_rss_mb"')
+    cb_idx = source.index('"circuit_breaker"')
+    jobs_idx = source.index('"jobs"')
+    assert redact_idx < mem_idx < cb_idx < jobs_idx, (
+        "the operator gate must run before the sensitive fields are added"
+    )
+    # The helper itself must check both paths.
+    helper_src = inspect.getsource(
+        __import__(
+            "oncofiles.server", fromlist=["_readiness_caller_is_operator"]
+        )._readiness_caller_is_operator
+    )
+    assert "MCP_BEARER_TOKEN" in helper_src
+    assert "oncofiles_session" in helper_src
+    assert "_is_admin_email" in helper_src
+
+
 def test_database_base_has_circuit_breaker_stats():
     """Database.circuit_breaker_stats() returns None for aiosqlite, dict for Turso."""
     from oncofiles.database._base import DatabaseBase

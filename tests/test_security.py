@@ -84,6 +84,78 @@ def test_state_token_rejects_no_dot():
     assert valid is False
 
 
+# ── #506: single-use state tokens ─────────────────────────────────
+
+
+def test_state_token_replay_rejected():
+    """A state token that already verified once is rejected on replay,
+    even within its 30-minute validity window. Pre-#506 the second call
+    succeeded — same HMAC, same timestamp, same answer."""
+    import oncofiles.oauth as oauth_mod
+
+    with patch("oncofiles.oauth.MCP_BEARER_TOKEN", _TEST_TOKEN):
+        oauth_mod._consumed_state_tokens.clear()
+        token = _make_state_token(patient_id=ERIKA_UUID)
+
+        valid_first, pid_first = verify_state_token(token)
+        assert valid_first is True
+        assert pid_first == ERIKA_UUID
+
+        # Replay within the window must fail.
+        valid_second, pid_second = verify_state_token(token)
+        assert valid_second is False
+        # The patient_id is still surfaced so the callback handler can log
+        # which flow tried to replay — but valid=False makes the callback
+        # take its standard error path.
+        assert pid_second == ERIKA_UUID
+
+
+def test_state_token_failed_verify_does_not_consume():
+    """A token whose HMAC doesn't validate must NOT be marked consumed —
+    otherwise an attacker probing with garbage tokens could pre-consume
+    legitimate tokens by collision (vanishingly unlikely with SHA-256, but
+    the principle is: only RECORD on a real success)."""
+    import oncofiles.oauth as oauth_mod
+
+    with patch("oncofiles.oauth.MCP_BEARER_TOKEN", _TEST_TOKEN):
+        oauth_mod._consumed_state_tokens.clear()
+        token = _make_state_token(patient_id=ERIKA_UUID)
+        # Tamper signature → verify fails.
+        dot_idx = token.rfind(".")
+        tampered = f"{token[:dot_idx]}.{'a' * 32}"
+        valid, _ = verify_state_token(tampered)
+        assert valid is False
+        # The original (valid) token has NOT been recorded as consumed.
+        assert oauth_mod._state_token_hash(token) not in oauth_mod._consumed_state_tokens
+        # And it still verifies once on its own.
+        valid2, _ = verify_state_token(token)
+        assert valid2 is True
+
+
+def test_state_token_consumed_set_pruned_on_expiry(monkeypatch):
+    """Entries are dropped once their original validity window has passed
+    so the dict cannot grow unbounded across long-lived processes."""
+    import oncofiles.oauth as oauth_mod
+
+    with patch("oncofiles.oauth.MCP_BEARER_TOKEN", _TEST_TOKEN):
+        oauth_mod._consumed_state_tokens.clear()
+        token = _make_state_token(patient_id=ERIKA_UUID)
+        valid, _ = verify_state_token(token)
+        assert valid is True
+        assert len(oauth_mod._consumed_state_tokens) == 1
+
+        # Fast-forward past the 30-minute window — verify a fresh token
+        # so the existing entry's expiry passes and gets pruned.
+        real_time = time.time()
+        monkeypatch.setattr(oauth_mod.time, "time", lambda: real_time + 1900)
+        # Need a token that's still "fresh" relative to the patched clock.
+        new_token = oauth_mod._make_state_token(patient_id=ERIKA_UUID)
+        valid_new, _ = verify_state_token(new_token)
+        assert valid_new is True
+        # The old token's hash should be gone after the prune sweep.
+        assert oauth_mod._state_token_hash(token) not in oauth_mod._consumed_state_tokens
+
+
 # ── Constant-time comparison (V1 + V4) ──────────────────────────────
 
 

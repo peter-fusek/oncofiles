@@ -7,7 +7,11 @@ import logging
 import time
 from typing import Any
 
-from oncofiles.enhance import _get_client, _strip_markdown_fencing
+from oncofiles.enhance import (
+    _get_client,
+    _strip_markdown_fencing,
+    _wrap_untrusted_document_text,
+)
 from oncofiles.models import Document
 from oncofiles.prompt_logger import log_ai_call
 
@@ -77,7 +81,7 @@ def analyze_document_composition(
 
     client = _get_client()
     truncated = text[:12000]  # more context for composition analysis
-    user_prompt = f"Document text:\n\n{truncated}"
+    user_prompt = _wrap_untrusted_document_text(truncated)
 
     start = time.perf_counter()
     response = client.messages.create(
@@ -177,17 +181,20 @@ def analyze_consolidation(
 
     client = _get_client()
 
-    # Build document summaries for the AI
+    # Build document summaries for the AI. Each document's text excerpt is
+    # wrapped per-row (#507) so closing tags inside one doc cannot be used
+    # to inject content into the next doc's prompt block.
     doc_descriptions = []
     for doc, text in doc_texts:
         excerpt = text[:2000] if text else "(no text)"
+        wrapped_excerpt = _wrap_untrusted_document_text(excerpt, label=f"document_text_id_{doc.id}")
         doc_descriptions.append(
             f"--- Document ID: {doc.id} ---\n"
             f"Filename: {doc.filename}\n"
             f"Date: {doc.document_date}\n"
             f"Institution: {doc.institution}\n"
             f"Category: {doc.category.value}\n"
-            f"Text excerpt:\n{excerpt}\n"
+            f"{wrapped_excerpt}\n"
         )
 
     user_prompt = f"Documents to analyze ({len(doc_texts)} files):\n\n" + "\n".join(
@@ -298,7 +305,7 @@ def analyze_vaccination_events(
 
     client = _get_client()
     truncated = text[:10000]
-    user_prompt = f"Vaccination log text:\n\n{truncated}"
+    user_prompt = _wrap_untrusted_document_text(truncated, label="vaccination_log_text")
 
     start = time.perf_counter()
     response = client.messages.create(
@@ -431,8 +438,9 @@ def analyze_document_relationships(
         )
 
     doc_excerpt = doc_text[:4000] if doc_text else "(no text)"
+    wrapped_target = _wrap_untrusted_document_text(doc_excerpt, label="target_document_text")
     user_prompt = (
-        f"Target document (ID {doc_id}):\n{doc_excerpt}\n\n"
+        f"Target document (ID {doc_id}):\n{wrapped_target}\n\n"
         f"Candidate documents:\n" + "\n".join(candidate_descriptions)
     )
 
