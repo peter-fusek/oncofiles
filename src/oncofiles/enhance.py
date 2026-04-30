@@ -9,6 +9,7 @@ import time
 
 import anthropic
 
+from oncofiles.ai_preamble import get_shared_preamble_block
 from oncofiles.config import ANTHROPIC_API_KEY
 from oncofiles.prompt_logger import log_ai_call
 
@@ -318,11 +319,12 @@ def enhance_document_text(
         model=ENHANCE_MODEL,
         max_tokens=512,
         system=[
+            get_shared_preamble_block(),
             {
                 "type": "text",
                 "text": ENHANCE_SYSTEM_PROMPT,
                 "cache_control": {"type": "ephemeral"},
-            }
+            },
         ],
         messages=[{"role": "user", "content": user_prompt}],
     )
@@ -502,11 +504,12 @@ def extract_structured_metadata(
         model=ENHANCE_MODEL,
         max_tokens=2048,
         system=[
+            get_shared_preamble_block(),
             {
                 "type": "text",
                 "text": METADATA_SYSTEM_PROMPT,
                 "cache_control": {"type": "ephemeral"},
-            }
+            },
         ],
         messages=[{"role": "user", "content": user_prompt}],
     )
@@ -756,11 +759,12 @@ def extract_lab_values(
         model=ENHANCE_MODEL,
         max_tokens=2048,
         system=[
+            get_shared_preamble_block(),
             {
                 "type": "text",
                 "text": LAB_VALUES_SYSTEM_PROMPT,
                 "cache_control": {"type": "ephemeral"},
-            }
+            },
         ],
         messages=[{"role": "user", "content": user_prompt}],
     )
@@ -870,11 +874,12 @@ def generate_filename_description(
         model=ENHANCE_MODEL,
         max_tokens=100,
         system=[
+            get_shared_preamble_block(),
             {
                 "type": "text",
                 "text": FILENAME_DESC_SYSTEM_PROMPT,
                 "cache_control": {"type": "ephemeral"},
-            }
+            },
         ],
         messages=[{"role": "user", "content": user_prompt}],
     )
@@ -999,11 +1004,12 @@ def classify_document(
         model=ENHANCE_MODEL,
         max_tokens=256,
         system=[
+            get_shared_preamble_block(),
             {
                 "type": "text",
                 "text": CLASSIFY_SYSTEM_PROMPT,
                 "cache_control": {"type": "ephemeral"},
-            }
+            },
         ],
         messages=[{"role": "user", "content": user_prompt}],
     )

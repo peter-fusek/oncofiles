@@ -7,6 +7,7 @@ import logging
 import time
 from typing import Any
 
+from oncofiles.ai_preamble import get_shared_preamble_block
 from oncofiles.enhance import (
     _get_client,
     _strip_markdown_fencing,
@@ -88,11 +89,12 @@ def analyze_document_composition(
         model=ANALYSIS_MODEL,
         max_tokens=1024,
         system=[
+            get_shared_preamble_block(),
             {
                 "type": "text",
                 "text": COMPOSITION_SYSTEM_PROMPT,
                 "cache_control": {"type": "ephemeral"},
-            }
+            },
         ],
         messages=[{"role": "user", "content": user_prompt}],
     )
@@ -210,11 +212,12 @@ def analyze_consolidation(
         model=ANALYSIS_MODEL,
         max_tokens=1024,
         system=[
+            get_shared_preamble_block(),
             {
                 "type": "text",
                 "text": CONSOLIDATION_SYSTEM_PROMPT,
                 "cache_control": {"type": "ephemeral"},
-            }
+            },
         ],
         messages=[{"role": "user", "content": user_prompt}],
     )
@@ -312,11 +315,12 @@ def analyze_vaccination_events(
         model=ANALYSIS_MODEL,
         max_tokens=2048,
         system=[
+            get_shared_preamble_block(),
             {
                 "type": "text",
                 "text": VACCINE_EVENTS_SYSTEM_PROMPT,
                 "cache_control": {"type": "ephemeral"},
-            }
+            },
         ],
         messages=[{"role": "user", "content": user_prompt}],
     )
@@ -452,11 +456,12 @@ def analyze_document_relationships(
         model=ANALYSIS_MODEL,
         max_tokens=1024,
         system=[
+            get_shared_preamble_block(),
             {
                 "type": "text",
                 "text": RELATIONSHIPS_SYSTEM_PROMPT,
                 "cache_control": {"type": "ephemeral"},
-            }
+            },
         ],
         messages=[{"role": "user", "content": user_prompt}],
     )
