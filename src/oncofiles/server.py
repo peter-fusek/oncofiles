@@ -5804,6 +5804,92 @@ async def _send_subscriber_welcome(email: str, source: str) -> None:
         logger.exception("Resend subscriber welcome exception for %s", email)
 
 
+async def _notify_admin_onboarding_event(
+    *,
+    patient_slug: str,
+    display_name: str,
+    caregiver_email: str,
+    event_type: str,
+) -> None:
+    """Send admin-facing onboarding notification via Resend (#468).
+
+    Fire-and-forget: same shape as `_notify_new_subscriber`. Reuses the
+    existing newsletter Resend env config (RESEND_API_KEY, NOTIFY_FROM_EMAIL,
+    NOTIFY_TO_EMAIL) so no new credentials are required. If env is missing,
+    logs a warning and returns — the caller's request must not fail because
+    the notifier couldn't send.
+
+    `patient_slug` is the human-readable slug (e.g. "q1b") used for both the
+    dashboard URL and operator-readable identifiers.
+    """
+    import httpx
+
+    api_key = os.environ.get("RESEND_API_KEY")
+    from_email = os.environ.get("NOTIFY_FROM_EMAIL")
+    to_email = os.environ.get("NOTIFY_TO_EMAIL")
+    if not (api_key and from_email and to_email):
+        logger.warning(
+            "Onboarding admin notification SKIPPED for patient=%s event=%s — env missing "
+            "(RESEND_API_KEY=%s, NOTIFY_FROM_EMAIL=%s, NOTIFY_TO_EMAIL=%s).",
+            patient_slug,
+            event_type,
+            "set" if api_key else "missing",
+            "set" if from_email else "missing",
+            "set" if to_email else "missing",
+        )
+        return
+
+    label_sk = {
+        "created": "Nový pacient",
+        "oauth_ok": "OAuth dokončený",
+        "folder_set": "Drive priečinok nastavený",
+        "first_sync": "Prvá synchronizácia",
+        "first_ai": "Prvý AI dokument",
+    }.get(event_type, event_type)
+    subject = f"[Oncofiles] {label_sk}: {display_name}"
+    text = (
+        f"{label_sk}: {display_name}\n\n"
+        f"  patient_slug:    {patient_slug}\n"
+        f"  caregiver_email: {caregiver_email or '(unset)'}\n"
+        f"  event_type:      {event_type}\n"
+        f"  time:            {time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime())}\n"
+        f"  dashboard:       https://oncofiles.com/dashboard?patient={patient_slug}\n"
+    )
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(
+                "https://api.resend.com/emails",
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "from": from_email,
+                    "to": [to_email],
+                    "subject": subject,
+                    "text": text,
+                    "tags": [
+                        {"name": "kind", "value": "onboarding"},
+                        {"name": "event_type", "value": event_type},
+                    ],
+                },
+            )
+            if resp.status_code >= 400:
+                logger.warning(
+                    "Resend onboarding notification failed for patient=%s event=%s: %s %s",
+                    patient_slug,
+                    event_type,
+                    resp.status_code,
+                    resp.text[:500],
+                )
+    except Exception:
+        logger.exception(
+            "Resend onboarding notification exception for patient=%s event=%s",
+            patient_slug,
+            event_type,
+        )
+
+
 @mcp.custom_route("/api/newsletter/subscribe", methods=["POST"])
 async def api_newsletter_subscribe(request: Request) -> JSONResponse:
     """Public newsletter signup — no auth required."""
@@ -6191,9 +6277,38 @@ async def api_create_patient(request: Request) -> JSONResponse:
             preferred_lang=body.get("preferred_lang", "sk"),
         )
         created = await db_inst.insert_patient(patient)
-        # Generate initial bearer token
-        token = await db_inst.create_patient_token(patient_id, label="initial")
+        # Generate initial bearer token. NB: `created.patient_id` is the UUID;
+        # the request-body `patient_id` is the slug. Token rows FK to the UUID,
+        # so passing the slug here would silently break token resolution
+        # (JOIN patient_tokens.patient_id = patients.patient_id would never match).
+        token = await db_inst.create_patient_token(created.patient_id, label="initial")
         logger.info("New patient created: %s", patient_id)
+
+        # Onboarding signal T0 (#468): record event row + fire-and-forget admin email.
+        # Both calls are best-effort and must NEVER fail patient creation.
+        # Note: `patient_id` (request body) is the slug; `created.patient_id` is the UUID.
+        try:
+            await db_inst.insert_onboarding_event(
+                created.patient_id,
+                "created",
+                meta={
+                    "slug": patient_id,
+                    "display_name": created.display_name,
+                    "caregiver_email": created.caregiver_email,
+                    "preferred_lang": created.preferred_lang,
+                },
+            )
+        except Exception:
+            logger.exception("Onboarding T0 event insert failed for %s", created.patient_id)
+        asyncio.create_task(
+            _notify_admin_onboarding_event(
+                patient_slug=patient_id,
+                display_name=created.display_name,
+                caregiver_email=created.caregiver_email or "",
+                event_type="created",
+            )
+        )
+
         return JSONResponse(
             {
                 "patient": {
