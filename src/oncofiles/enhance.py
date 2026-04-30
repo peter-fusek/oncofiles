@@ -170,6 +170,49 @@ async def backfill_institution_from_patient_context(
     return stats
 
 
+# #404 Option B: categories where the patient's primary treating clinic is
+# the obvious institution when the document text doesn't carry a letterhead.
+# Chemo administration sheets, surgery and discharge documents are filed by
+# the primary oncology clinic. Labs, imaging, prescriptions, and advocate
+# letters routinely come from external sources, so they do NOT participate
+# in this fallback — better to leave them NULL (and surface as needs-attention)
+# than to misattribute them to the primary clinic.
+_PRIMARY_CLINIC_FALLBACK_CATEGORIES = frozenset(
+    {
+        "chemo_sheet",
+        "surgery",
+        "surgical_report",
+        "discharge",
+        "discharge_summary",
+    }
+)
+
+
+def _primary_institution_for_patient(patient_id: str) -> str | None:
+    """Read the patient's primary treating clinic from patient_context.
+
+    Resolution order (#404 Option B):
+      1. ``patient_context["primary_institution"]`` — explicit operator-set value
+      2. ``patient_context["treatment"]["institution_code"]`` — sub-schema fallback
+      3. None — no fallback applies; caller leaves institution NULL
+
+    Empty strings normalise to None so the caller's "still_missing" path runs
+    (we don't want an empty string treated as a valid institution code).
+    """
+    from oncofiles.patient_context import get_context
+
+    ctx = get_context(patient_id)
+    primary = (ctx.get("primary_institution") or "").strip()
+    if primary:
+        return primary
+    treatment = ctx.get("treatment") or {}
+    if isinstance(treatment, dict):
+        from_treatment = (treatment.get("institution_code") or "").strip()
+        if from_treatment:
+            return from_treatment
+    return None
+
+
 async def backfill_missing_institutions(db) -> dict:
     """Re-run institution inference on docs that have structured_metadata but null institution.
 
@@ -178,6 +221,13 @@ async def backfill_missing_institutions(db) -> dict:
     - structured_metadata exists with a providers array
     - providers can now be mapped (new keywords added)
 
+    #404 Option B: when ``infer_institution_from_providers`` returns None,
+    fall back to the patient's primary clinic (from patient_context) for a
+    fixed allowlist of categories where the primary clinic is the obvious
+    answer (chemo_sheet, surgery, discharge, etc.). Other categories
+    (labs, imaging, advocate letters) skip the fallback because they
+    routinely come from external sources.
+
     Args:
         db: The raw aiosqlite/libsql connection (Database.db), not the Database wrapper.
 
@@ -185,9 +235,9 @@ async def backfill_missing_institutions(db) -> dict:
     """
     import json as _json
 
-    stats = {"checked": 0, "updated": 0, "still_missing": 0}
+    stats = {"checked": 0, "updated": 0, "updated_from_patient_context": 0, "still_missing": 0}
     async with db.execute(
-        "SELECT id, structured_metadata FROM documents "
+        "SELECT id, patient_id, category, structured_metadata FROM documents "
         "WHERE deleted_at IS NULL AND (institution IS NULL OR institution = '') "
         "AND structured_metadata IS NOT NULL"
     ) as cursor:
@@ -201,13 +251,38 @@ async def backfill_missing_institutions(db) -> dict:
             continue
         providers = meta.get("providers", [])
         inst = infer_institution_from_providers(providers)
+        from_fallback = False
+        if not inst:
+            # Provider-based inference failed. Try the patient-context fallback
+            # for the allowlisted categories only (#404 Option B).
+            cat = (row["category"] or "").lower()
+            pid = row["patient_id"]
+            if cat in _PRIMARY_CLINIC_FALLBACK_CATEGORIES and pid:
+                inst = _primary_institution_for_patient(pid)
+                from_fallback = bool(inst)
         if inst:
             await db.execute(
                 "UPDATE documents SET institution = ? WHERE id = ?",
                 (inst, row["id"]),
             )
             stats["updated"] += 1
-            logger.info("backfill_institution: doc %d → %s (from %s)", row["id"], inst, providers)
+            if from_fallback:
+                stats["updated_from_patient_context"] += 1
+                logger.info(
+                    "backfill_institution: doc %d → %s (patient-context fallback, "
+                    "category=%s, providers=%s)",
+                    row["id"],
+                    inst,
+                    row["category"],
+                    providers,
+                )
+            else:
+                logger.info(
+                    "backfill_institution: doc %d → %s (from %s)",
+                    row["id"],
+                    inst,
+                    providers,
+                )
         else:
             stats["still_missing"] += 1
     if stats["updated"]:

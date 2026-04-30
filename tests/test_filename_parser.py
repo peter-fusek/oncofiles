@@ -556,13 +556,15 @@ class TestRenameToStandard:
         )
         assert result == "20260213_ErikaFusekova_NOU_ChemoSheet_FOLFOXChemotherapyProtocol.pdf"
 
-    def test_no_institution_uses_unknown(self):
-        result = rename_to_standard(
-            "20260301 ErikaFusekova-ReferencneMaterialyKRAS.pdf",
-            en_description="KRASReferenceMaterials",
-        )
-        # When no institution parsed, uses "Unknown"
-        assert "_Unknown_" in result or "_Reference_" in result
+    def test_no_institution_returns_input_unchanged(self):
+        """#404 Option A: when no institution can be resolved, return the
+        input unchanged. Pre-#404 the renamer wrote ``_Unknown_`` back into
+        the filename, which is_standard_format then rejected, creating an
+        infinite oscillation in the dashboard's NÁZOV column."""
+        src = "20260301 ErikaFusekova-ReferencneMaterialyKRAS.pdf"
+        result = rename_to_standard(src, en_description="KRASReferenceMaterials")
+        assert result == src
+        assert "_Unknown_" not in result
 
 
 class TestCorruptedFilename:

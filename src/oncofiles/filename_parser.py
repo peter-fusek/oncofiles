@@ -582,11 +582,20 @@ def rename_to_standard(
         institution_override or normalize_institution(parsed.institution) or parsed.institution
     )
     if not institution or institution == "Unknown":
-        institution = "Unknown"
-        logger.warning(
-            "Institution unknown for %s — consider re-extracting",
+        # #404 Option A: don't write "Unknown" back into the filename — that
+        # creates an infinite rename loop (is_standard_format() rejects
+        # "Unknown" → renamer rebuilds the same "Unknown_..." filename →
+        # next sweep rejects again, forever). Instead, return the input
+        # unchanged so the doc surfaces as "needs-institution" in the
+        # audit/backfill report. The institution backfill (Option B) is
+        # responsible for refilling NULL institutions; once it does, the
+        # next rename pass produces a real institution code.
+        logger.info(
+            "rename_to_standard: institution unknown for %s — leaving filename "
+            "unchanged (won't loop on Unknown). #404",
             filename,
         )
+        return filename
 
     parts = [date_str, patient_compact, institution, cat_token]
     if desc:
