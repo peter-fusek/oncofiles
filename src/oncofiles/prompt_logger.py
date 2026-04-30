@@ -72,6 +72,7 @@ def log_ai_call(
     duration_ms: int,
     status: str = "ok",
     error_message: str | None = None,
+    prompt_hash: str | None = None,
 ) -> None:
     """Schedule a fire-and-forget prompt log write. Never raises, never blocks.
 
@@ -108,6 +109,16 @@ def log_ai_call(
 
     result_summary = _extract_result_summary(call_type, raw_response)
 
+    # Compute the dedup hash if the caller didn't supply one. Successful
+    # rows get a hash so future identical calls can hit the dedup cache
+    # via prompt_dedup.maybe_get_cached_response (#441 Layer 5). Failed
+    # calls (status != 'ok') still get a hash recorded — the dedup query
+    # filters by status='ok' so failures naturally fall out of the cache.
+    if prompt_hash is None:
+        from oncofiles.prompt_dedup import compute_prompt_hash
+
+        prompt_hash = compute_prompt_hash(system_prompt, user_prompt, model)
+
     entry = PromptLogEntry(
         call_type=call_type,
         document_id=document_id,
@@ -124,6 +135,7 @@ def log_ai_call(
         result_summary=result_summary,
         status=status,
         error_message=error_message,
+        prompt_hash=prompt_hash,
     )
 
     try:

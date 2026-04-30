@@ -17,8 +17,8 @@ class PromptLogMixin:
                 (call_type, document_id, patient_id, model, system_prompt, user_prompt,
                  raw_response, input_tokens, output_tokens,
                  cache_creation_input_tokens, cache_read_input_tokens,
-                 duration_ms, result_summary, status, error_message)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 duration_ms, result_summary, status, error_message, prompt_hash)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 entry.call_type.value if hasattr(entry.call_type, "value") else entry.call_type,
@@ -36,6 +36,7 @@ class PromptLogMixin:
                 entry.result_summary,
                 entry.status,
                 entry.error_message,
+                entry.prompt_hash,
             ),
         )
         await self.db.commit()

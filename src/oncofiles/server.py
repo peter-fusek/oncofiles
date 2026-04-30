@@ -24,7 +24,6 @@ from oncofiles import session_revocation
 from oncofiles.config import (
     AI_NIGHT_WINDOW_START_UTC,
     AI_NIGHTLY_ONLY,
-    AI_REPROCESS_MAX_AGE_HOURS,
     AI_RUN_ON_STARTUP,
     DAILY_AI_DOC_CAP,
     DASHBOARD_ADMIN_EMAILS,
@@ -1048,17 +1047,54 @@ def _start_sync_scheduler(
     # The old _log_rss reclaimed before checking, masking the threshold crossing,
     # and sys.exit(0) was caught by APScheduler as a job error (#213).
 
+    async def _patient_ai_cost_usd_today(patient_id: str) -> float:
+        """Sum estimated_cost_usd from prompt_log for ``patient_id`` in the
+        last 24h. Used to track per-job cost telemetry (#441 Layer 6).
+
+        Returns 0.0 when the column is empty or DB is unavailable — never
+        raises; this is observability, not a gate.
+        """
+        try:
+            sql = """
+                SELECT COALESCE(SUM(estimated_cost_usd), 0.0) AS usd
+                  FROM prompt_log
+                 WHERE patient_id = ?
+                   AND status = 'ok'
+                   AND created_at >= strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-1 days')
+            """
+            async with db.db.execute(sql, (patient_id,)) as cursor:
+                row = await cursor.fetchone()
+                return float(row["usd"] or 0.0) if row else 0.0
+        except Exception:
+            return 0.0
+
+    async def _total_ai_cost_usd_today() -> float:
+        """Cluster-wide AI cost in the last 24h. Surfaces in /readiness."""
+        try:
+            sql = """
+                SELECT COALESCE(SUM(estimated_cost_usd), 0.0) AS usd
+                  FROM prompt_log
+                 WHERE status = 'ok'
+                   AND created_at >= strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-1 days')
+            """
+            async with db.db.execute(sql) as cursor:
+                row = await cursor.fetchone()
+                return float(row["usd"] or 0.0) if row else 0.0
+        except Exception:
+            return 0.0
+
     async def _run_nightly_ai_pipeline():
         """Consolidated nightly AI pipeline — runs at AI_NIGHT_WINDOW_START_UTC.
 
-        Replaces the legacy every-5-min sync + 4 overlapping 03:20/03:30/03:45/03:55
-        sweeps + every-6h integrity check. Only processes records created within
-        AI_REPROCESS_MAX_AGE_HOURS; bounded by DAILY_AI_DOC_CAP per patient. See #433.
+        Tier T1+T2 (#441 Layer 3): classify (cheap) + enhance + structured
+        metadata. Tier T3 (multi-doc split detection + consolidation) lives
+        in `_run_weekly_discovery_pipeline` and runs Sunday 23:00 UTC, since
+        relationship/split graphs change slowly and weekly is sufficient.
+
+        Layer 2: no max_age_hours filter — backlog drains naturally as
+        budget permits. `only_new=True` (= ai_processed_at IS NULL) is the
+        only filter; per-patient EUR budget is the cost ceiling.
         """
-        from oncofiles.backfill_splits import (
-            backfill_consolidation,
-            backfill_multi_document_splits,
-        )
         from oncofiles.sync import enhance_documents as _enhance_docs_fn
 
         if is_memory_pressure("nightly_ai_pipeline"):
@@ -1066,11 +1102,11 @@ def _start_sync_scheduler(
 
         total_enhanced = 0
         total_metadata = 0
-        total_split = 0
-        total_consolidated = 0
 
         try:
             from oncofiles.budget import check_patient_budget
+
+            cost_before = await _total_ai_cost_usd_today()
 
             patients = await db.list_patients(active_only=True)
             for p in patients:
@@ -1134,7 +1170,9 @@ def _start_sync_scheduler(
                             _handle_sync_exception(pid, "gdrive", exc)
                         continue
 
-                    # Phase 2: Enhance NEW only, capped
+                    # Phase 2: Enhance NEW only — no max_age filter (#441 Layer 2),
+                    # rely on `only_new=True` (= ai_processed_at IS NULL) +
+                    # per-patient EUR budget gate to bound cost.
                     try:
                         eh_stats = await asyncio.wait_for(
                             _enhance_docs_fn(
@@ -1143,7 +1181,7 @@ def _start_sync_scheduler(
                                 p_gdrive,
                                 patient_id=pid,
                                 only_new=True,
-                                max_age_hours=AI_REPROCESS_MAX_AGE_HOURS,
+                                max_age_hours=None,
                                 limit=DAILY_AI_DOC_CAP,
                             ),
                             timeout=metadata_timeout,
@@ -1154,7 +1192,7 @@ def _start_sync_scheduler(
                     except Exception:
                         logger.exception("Nightly enhance [%s] failed", pid)
 
-                    # Phase 3: Metadata extraction NEW only
+                    # Phase 3: Metadata extraction NEW only — same Layer 2 contract.
                     try:
                         md_stats = await asyncio.wait_for(
                             extract_all_metadata(
@@ -1163,7 +1201,7 @@ def _start_sync_scheduler(
                                 p_gdrive,
                                 patient_id=pid,
                                 only_new=True,
-                                max_age_hours=AI_REPROCESS_MAX_AGE_HOURS,
+                                max_age_hours=None,
                                 cap=DAILY_AI_DOC_CAP,
                             ),
                             timeout=metadata_timeout,
@@ -1174,7 +1212,77 @@ def _start_sync_scheduler(
                     except Exception:
                         logger.exception("Nightly metadata [%s] failed", pid)
 
-                    # Phase 4: Group detection NEW only
+                    # Phase 4 (split + consolidation) moved to weekly Sunday
+                    # via `_run_weekly_discovery_pipeline` (#441 Layer 3).
+
+            cost_after = await _total_ai_cost_usd_today()
+            cost_delta = max(0.0, cost_after - cost_before)
+            logger.info(
+                "Nightly AI pipeline: enhanced=%d metadata=%d cost_delta=$%.4f",
+                total_enhanced,
+                total_metadata,
+                cost_delta,
+            )
+            # #441 Layer 6: surface per-run cost in job_tracker → /readiness.
+            try:
+                entry = job_tracker.get("nightly_ai_pipeline", {})
+                entry["last_cost_usd"] = round(cost_delta, 4)
+                job_tracker["nightly_ai_pipeline"] = entry
+            except Exception:
+                pass
+        finally:
+            from oncofiles.memory import reclaim_memory
+
+            reclaim_memory("nightly_ai_pipeline")
+
+    async def _run_weekly_discovery_pipeline():
+        """Tier 3 discovery — multi-doc split detection + consolidation.
+
+        Sunday 23:00 UTC. The relationship/split graph for any given week's
+        documents changes slowly; running daily was wasteful. Weekly cadence
+        cuts T3 cost by ~85% with no observable UX impact (the dashboard's
+        group_id / part_number columns still update on Monday morning).
+        """
+        from oncofiles.backfill_splits import (
+            backfill_consolidation,
+            backfill_multi_document_splits,
+        )
+
+        if is_memory_pressure("weekly_discovery_pipeline"):
+            return
+
+        total_split = 0
+        total_consolidated = 0
+
+        try:
+            from oncofiles.budget import check_patient_budget
+
+            cost_before = await _total_ai_cost_usd_today()
+            patients = await db.list_patients(active_only=True)
+            for p in patients:
+                pid = p.patient_id
+                if is_memory_pressure(f"weekly_discovery:{pid}"):
+                    break
+                if _folder_404_counts.get(pid, 0) >= _FOLDER_404_THRESHOLD:
+                    continue
+                # Same budget gate as nightly — Layer 1.
+                status = await check_patient_budget(db, pid)
+                if not status.within_budget:
+                    logger.info(
+                        "Weekly discovery skipped [%s] — budget exhausted "
+                        "(tier=%s, used=€%.2f / cap=€%.2f)",
+                        pid,
+                        status.tier,
+                        status.used_eur,
+                        status.cap_eur or 0.0,
+                    )
+                    continue
+                gc_pair = await _get_patient_gdrive(pid)
+                if not gc_pair:
+                    continue
+                p_gdrive, folder_id = gc_pair
+
+                async with _sync_semaphore:
                     try:
                         split_stats = await asyncio.wait_for(
                             backfill_multi_document_splits(
@@ -1185,15 +1293,15 @@ def _start_sync_scheduler(
                                 folder_id=folder_id,
                                 dry_run=False,
                                 only_new=True,
-                                max_age_hours=AI_REPROCESS_MAX_AGE_HOURS,
+                                max_age_hours=None,
                             ),
                             timeout=metadata_timeout,
                         )
                         total_split += split_stats.get("splits_created", 0)
                         if split_stats.get("splits_created", 0) > 0:
-                            logger.info("Nightly splits [%s]: %s", pid, split_stats)
+                            logger.info("Weekly splits [%s]: %s", pid, split_stats)
                     except Exception:
-                        logger.exception("Nightly splits [%s] failed", pid)
+                        logger.exception("Weekly splits [%s] failed", pid)
 
                     try:
                         cons_stats = await asyncio.wait_for(
@@ -1203,27 +1311,34 @@ def _start_sync_scheduler(
                                 patient_id=pid,
                                 dry_run=False,
                                 only_new=True,
-                                max_age_hours=AI_REPROCESS_MAX_AGE_HOURS,
+                                max_age_hours=None,
                             ),
                             timeout=metadata_timeout,
                         )
                         total_consolidated += cons_stats.get("consolidated", 0)
                         if cons_stats.get("consolidated", 0) > 0:
-                            logger.info("Nightly consolidate [%s]: %s", pid, cons_stats)
+                            logger.info("Weekly consolidate [%s]: %s", pid, cons_stats)
                     except Exception:
-                        logger.exception("Nightly consolidate [%s] failed", pid)
+                        logger.exception("Weekly consolidate [%s] failed", pid)
 
+            cost_after = await _total_ai_cost_usd_today()
+            cost_delta = max(0.0, cost_after - cost_before)
             logger.info(
-                "Nightly AI pipeline: enhanced=%d metadata=%d splits=%d consolidated=%d",
-                total_enhanced,
-                total_metadata,
+                "Weekly discovery pipeline: splits=%d consolidated=%d cost_delta=$%.4f",
                 total_split,
                 total_consolidated,
+                cost_delta,
             )
+            try:
+                entry = job_tracker.get("weekly_discovery_pipeline", {})
+                entry["last_cost_usd"] = round(cost_delta, 4)
+                job_tracker["weekly_discovery_pipeline"] = entry
+            except Exception:
+                pass
         finally:
             from oncofiles.memory import reclaim_memory
 
-            reclaim_memory("nightly_ai_pipeline")
+            reclaim_memory("weekly_discovery_pipeline")
 
     from apscheduler.triggers.cron import CronTrigger
     from apscheduler.triggers.date import DateTrigger
@@ -1243,12 +1358,25 @@ def _start_sync_scheduler(
             misfire_grace_time=1800,
             coalesce=True,
         )
+        # #441 Layer 3: weekly Tier 3 discovery (split + consolidation) on
+        # Sunday at AI_NIGHT_WINDOW_START_UTC + 30 min. Daily cadence was
+        # wasteful — relationship/split graphs change slowly. The 30-min
+        # offset from the nightly slot keeps the budget gate reading the
+        # latest spend from the just-finished nightly run.
+        scheduler.add_job(
+            _run_weekly_discovery_pipeline,
+            CronTrigger(day_of_week="sun", hour=AI_NIGHT_WINDOW_START_UTC, minute=30),
+            id="weekly_discovery_pipeline",
+            max_instances=1,
+            misfire_grace_time=1800,
+            coalesce=True,
+        )
         logger.info(
-            "AI_NIGHTLY_ONLY=true — nightly AI pipeline scheduled at %02d:00 UTC "
-            "(cap=%d docs/patient, window=%dh, grace=30min)",
+            "AI_NIGHTLY_ONLY=true — nightly AI pipeline at %02d:00 UTC, "
+            "weekly discovery on Sun %02d:30 UTC (cap=%d docs/patient, grace=30min)",
+            AI_NIGHT_WINDOW_START_UTC,
             AI_NIGHT_WINDOW_START_UTC,
             DAILY_AI_DOC_CAP,
-            AI_REPROCESS_MAX_AGE_HOURS,
         )
         # AI_RUN_ON_STARTUP: one-off validation fire 2 min after boot. Use after
         # cost-optimizer changes to validate without waiting 17h for 23:00 UTC.
@@ -3680,10 +3808,30 @@ async def readiness(request: Request) -> JSONResponse:
                     entry["last_error"] = info["last_error"]
                 if info.get("running"):
                     entry["running"] = True
+                # #441 Layer 6: per-run AI cost (set by _run_*_pipeline tail).
+                if info.get("last_cost_usd") is not None:
+                    entry["last_cost_usd"] = info["last_cost_usd"]
                 if entry:
                     jobs[job_id] = entry
             if jobs:
                 result["jobs"] = jobs
+        # #441 Layer 6: cluster-wide AI cost in the last 24h. Cheap aggregate
+        # query — operator-only, like the rest of the readiness payload.
+        try:
+            ai_cost_24h = 0.0
+            sql = (
+                "SELECT COALESCE(SUM(estimated_cost_usd), 0.0) AS usd "
+                "FROM prompt_log WHERE status = 'ok' "
+                "AND created_at >= strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-1 days')"
+            )
+            async with db.db.execute(sql) as cursor:
+                row = await cursor.fetchone()
+                if row is not None:
+                    ai_cost_24h = float(row["usd"] or 0.0)
+            result["ai_cost_usd_24h"] = round(ai_cost_24h, 4)
+        except Exception:
+            # Never let cost telemetry block readiness response.
+            pass
         return JSONResponse(result)
     except Exception as exc:
         resp = _circuit_breaker_503(exc, "/readiness")
