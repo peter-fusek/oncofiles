@@ -7175,6 +7175,8 @@ class SecurityHeadersMiddleware:
             await self.app(scope, receive, send)
             return
 
+        path = scope.get("path", "") or ""
+
         async def send_with_headers(message):
             if message["type"] == "http.response.start":
                 headers = list(message.get("headers") or [])
@@ -7192,55 +7194,90 @@ class SecurityHeadersMiddleware:
                 # CSP only for HTML responses — avoid interfering with MCP/JSON clients
                 ct = existing.get("content-type", b"").decode("latin-1", errors="replace").lower()
                 if ct.startswith("text/html") and "content-security-policy" not in existing:
-                    # CSP3 fine-grained directives (#501 + #525):
-                    # - script-src-elem 'self' — blocks ALL inline <script> blocks.
-                    #   All dashboard JS lives in /dashboard.js + /dashboard-gtag.js.
-                    # - script-src-attr 'none' — blocks ALL inline event handlers
-                    #   (#525, 2026-04-29). The 50 onclick/onchange/oninput inline
-                    #   attributes were converted to data-action / data-change /
-                    #   data-input + a single delegated dispatcher in dashboard.js.
-                    # - style-src-elem 'self' — blocks ALL inline <style> blocks.
-                    #   All dashboard CSS lives in /dashboard.css.
-                    # - style-src-attr 'unsafe-inline' — STILL permitted for the
-                    #   ~240 inline `style="…"` attributes embedded in dashboard.html.
-                    #   Inline styles are inert data (no JS execution), much lower
-                    #   XSS attack value than inline scripts; full attribute-level
-                    #   migration to CSS classes is tracked as a follow-up.
-                    # `script-src` / `style-src` legacy fallbacks remain for
-                    # browsers that don't support the *-elem / *-attr split
-                    # (Safari < 16, Firefox < 92, Chrome < 76); on those the
-                    # policy is no looser than before.
-                    csp = (
-                        "default-src 'self'; "
-                        "script-src 'self' 'unsafe-inline' "
-                        "https://www.googletagmanager.com https://www.google-analytics.com "
-                        "https://accounts.google.com https://apis.google.com; "
-                        "script-src-elem 'self' "
-                        "https://www.googletagmanager.com https://www.google-analytics.com "
-                        "https://accounts.google.com https://apis.google.com; "
-                        "script-src-attr 'none'; "
-                        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com "
-                        "https://accounts.google.com; "
-                        "style-src-elem 'self' https://fonts.googleapis.com "
-                        "https://accounts.google.com; "
-                        "style-src-attr 'unsafe-inline'; "
-                        "font-src 'self' https://fonts.gstatic.com data:; "
-                        "img-src 'self' data: https:; "
-                        "connect-src 'self' https://www.google-analytics.com "
-                        "https://accounts.google.com https://oauth2.googleapis.com "
-                        "https://www.googleapis.com; "
-                        "frame-src https://accounts.google.com https://content.googleapis.com "
-                        "https://drive.google.com https://docs.google.com; "
-                        "frame-ancestors 'self'; "
-                        "base-uri 'self'; "
-                        "form-action 'self' https://accounts.google.com; "
-                        "upgrade-insecure-requests"
-                    )
+                    csp = _csp_for_path(path)
                     headers.append((b"content-security-policy", csp.encode("latin-1")))
                 message["headers"] = headers
             await send(message)
 
         await self.app(scope, receive, send_with_headers)
+
+
+# Per-route CSP (#534). The #501 CSP3 fine-grained directives (`script-src-elem`,
+# `script-src-attr 'none'`, `style-src-elem`) were applied **globally** by the
+# middleware in `ea2496d` even though only `dashboard.html` had its inline
+# blocks extracted to /dashboard.css + /dashboard.js. Result: every other public
+# HTML route (landing, gloww, /onkologia, /oncology, /eu, /sk, /privacy, /terms,
+# /oauth/callback) silently rendered with UA-default styles + broken inline
+# scripts (gtag, lang switch, structured data) + dead `onclick=` CTAs for ~7 days
+# in production. Modern browsers (Chrome 76+, Firefox 92+, Safari 16+) honor
+# `*-elem` and `*-attr` over the legacy `script-src` / `style-src`.
+#
+# Fix: keep the strict #501/#525 policy for `/dashboard*` (where PHI is
+# rendered, XSS attack value is highest, and inline blocks WERE extracted),
+# fall back to the pre-#501 permissive policy for everything else. Public-page
+# extraction can come later — locking the regression on the public site is
+# more urgent than tightening CSP on routes that have no PHI.
+
+_STRICT_DASHBOARD_CSP = (
+    "default-src 'self'; "
+    "script-src 'self' 'unsafe-inline' "
+    "https://www.googletagmanager.com https://www.google-analytics.com "
+    "https://accounts.google.com https://apis.google.com; "
+    "script-src-elem 'self' "
+    "https://www.googletagmanager.com https://www.google-analytics.com "
+    "https://accounts.google.com https://apis.google.com; "
+    "script-src-attr 'none'; "
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com "
+    "https://accounts.google.com; "
+    "style-src-elem 'self' https://fonts.googleapis.com "
+    "https://accounts.google.com; "
+    "style-src-attr 'unsafe-inline'; "
+    "font-src 'self' https://fonts.gstatic.com data:; "
+    "img-src 'self' data: https:; "
+    "connect-src 'self' https://www.google-analytics.com "
+    "https://accounts.google.com https://oauth2.googleapis.com "
+    "https://www.googleapis.com; "
+    "frame-src https://accounts.google.com https://content.googleapis.com "
+    "https://drive.google.com https://docs.google.com; "
+    "frame-ancestors 'self'; "
+    "base-uri 'self'; "
+    "form-action 'self' https://accounts.google.com; "
+    "upgrade-insecure-requests"
+)
+
+# Pre-#501 CSP for public HTML routes — still hardens against framing,
+# arbitrary connect-src exfil, mixed content, etc. Restores `'unsafe-inline'`
+# in script-src + style-src (the directive form CSP3 still falls back to when
+# no `*-elem` directive is present), so inline `<script>`, inline `<style>`,
+# and inline event handlers continue to execute as designed on the marketing
+# site, gloww, legal, topic, and OAuth-callback pages.
+_PUBLIC_HTML_CSP = (
+    "default-src 'self'; "
+    "script-src 'self' 'unsafe-inline' "
+    "https://www.googletagmanager.com https://www.google-analytics.com "
+    "https://accounts.google.com https://apis.google.com; "
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com "
+    "https://accounts.google.com; "
+    "font-src 'self' https://fonts.gstatic.com data:; "
+    "img-src 'self' data: https:; "
+    "connect-src 'self' https://www.google-analytics.com "
+    "https://accounts.google.com https://oauth2.googleapis.com "
+    "https://www.googleapis.com; "
+    "frame-src https://accounts.google.com https://content.googleapis.com "
+    "https://drive.google.com https://docs.google.com; "
+    "frame-ancestors 'self'; "
+    "base-uri 'self'; "
+    "form-action 'self' https://accounts.google.com; "
+    "upgrade-insecure-requests"
+)
+
+
+def _csp_for_path(path: str) -> str:
+    """Return the strict #501 CSP for /dashboard* routes, the pre-#501
+    permissive CSP for every other HTML route. See #534 for context."""
+    if path.startswith("/dashboard"):
+        return _STRICT_DASHBOARD_CSP
+    return _PUBLIC_HTML_CSP
 
 
 def main() -> None:

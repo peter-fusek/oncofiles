@@ -10,9 +10,10 @@ handlers + 230 inline style attributes — needs its own session).
 
 from __future__ import annotations
 
-import inspect
 import re
 from pathlib import Path
+
+import pytest
 
 DASHBOARD_HTML = Path(__file__).parent.parent / "src" / "oncofiles" / "dashboard.html"
 DASHBOARD_CSS = Path(__file__).parent.parent / "src" / "oncofiles" / "dashboard.css"
@@ -124,26 +125,18 @@ def test_dashboard_js_includes_action_dispatcher():
 # ── CSP header: inline blocks BLOCKED via *-elem; *-attr still permits ─
 
 
-def _live_csp_directives() -> dict[str, str]:
-    """Pull the actual CSP literal out of the SecurityHeadersMiddleware
-    source and split it by directive.
+def _csp_directives(path: str = "/dashboard") -> dict[str, str]:
+    """Resolve the CSP that the SecurityHeadersMiddleware would emit for
+    ``path`` and split it by directive.
 
-    Reading the source (vs running the middleware against a fake ASGI
-    request) keeps the test self-contained — but we extract ONLY the
-    literal Python string passed to ``csp = (...)`` so comments mentioning
-    directive names (e.g. "script-src-elem") don't pollute the regex.
+    Per-route CSP (#534): ``/dashboard*`` gets the strict #501/#525 policy,
+    every other HTML route gets the pre-#501 permissive policy. Default is
+    /dashboard so the existing #501 lock-in tests keep asserting the strict
+    shape without needing parameter updates.
     """
-    from oncofiles.server import SecurityHeadersMiddleware
+    from oncofiles.server import _csp_for_path
 
-    src = inspect.getsource(SecurityHeadersMiddleware)
-    # Grab everything from `csp = (` to the closing `)`.
-    body_match = re.search(r"csp\s*=\s*\(\s*(.*?)\s*\)", src, re.DOTALL)
-    assert body_match is not None, "could not locate `csp = (...)` literal"
-    body = body_match.group(1)
-    # Concatenate all the quoted parts, stripping the quotes themselves.
-    pieces = re.findall(r'"([^"]*)"', body)
-    csp = "".join(pieces)
-    # Split by `;` and drop empties.
+    csp = _csp_for_path(path)
     directives: dict[str, str] = {}
     for d in csp.split(";"):
         d = d.strip()
@@ -152,6 +145,10 @@ def _live_csp_directives() -> dict[str, str]:
         name, _, rest = d.partition(" ")
         directives[name] = rest.strip()
     return directives
+
+
+# Backward-compat alias for any external callers that imported the old name.
+_live_csp_directives = _csp_directives
 
 
 def test_csp_blocks_inline_script_elem():
@@ -241,3 +238,77 @@ async def test_dashboard_gtag_js_route_serves_extracted_file():
     assert response.media_type.startswith("application/javascript")
     body = response.body.decode()
     assert "window.dataLayer" in body
+
+
+# ── Per-route CSP regression lock (#534) ──────────────────────────────
+#
+# `ea2496d` (#501) globalised the strict CSP3 directives to every text/html
+# response even though only `dashboard.html` had its inline blocks
+# extracted. The marketing landing page, gloww, /onkologia, /oncology, /eu,
+# /sk, /privacy, /terms and /oauth/callback all silently broke for ~7 days
+# until a human noticed the rendering. These tests lock the per-route split:
+# /dashboard* keeps the strict policy; every other HTML route falls back to
+# the pre-#501 permissive policy that allows their inline <style>, inline
+# <script> (gtag bootstrap, lang switch, JSON-LD), and inline event-handler
+# attributes (CTA tab buttons) to keep working.
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/",
+        "/onkologia",
+        "/oncology",
+        "/eu",
+        "/sk",
+        "/privacy",
+        "/terms",
+        "/gloww",
+        "/oauth/callback",
+    ],
+)
+def test_public_html_csp_permits_inline_blocks(path: str) -> None:
+    """Public HTML routes must NOT carry the strict #501 *-elem directives —
+    those would block the inline <script>/<style>/onclick that the public
+    pages still depend on. Falling back to the legacy `script-src` /
+    `style-src` 'unsafe-inline' shape is the documented hotfix shape (#534)."""
+    directives = _csp_directives(path)
+    assert "script-src-elem" not in directives, (
+        f"{path}: script-src-elem must NOT appear on public routes — its "
+        f"presence would override the legacy script-src and block inline "
+        f"<script> blocks (gtag bootstrap, JSON-LD, lang switch). #534."
+    )
+    assert "style-src-elem" not in directives, (
+        f"{path}: style-src-elem must NOT appear on public routes — its "
+        f"presence would override the legacy style-src and block the "
+        f"inline <style> block that owns the entire page layout. #534."
+    )
+    assert "script-src-attr" not in directives, (
+        f"{path}: script-src-attr 'none' must NOT appear on public routes — "
+        f"it would block the inline onclick CTAs on the landing/gloww pages. #534."
+    )
+    # Legacy directives must still be present and permit inline.
+    assert "'unsafe-inline'" in directives.get("script-src", ""), (
+        f"{path}: script-src must include 'unsafe-inline' for inline <script> blocks."
+    )
+    assert "'unsafe-inline'" in directives.get("style-src", ""), (
+        f"{path}: style-src must include 'unsafe-inline' for the inline <style> block."
+    )
+
+
+def test_dashboard_csp_stays_strict_after_split() -> None:
+    """The /dashboard* routes MUST keep the #501/#525 strict shape. This is
+    the regression-other-direction test — if someone widens the public CSP
+    branch to also cover /dashboard, the dashboard XSS hardening that #501
+    + #525 closed would silently regress."""
+    directives = _csp_directives("/dashboard")
+    assert directives.get("script-src-attr") == "'none'", (
+        f"/dashboard: script-src-attr must remain 'none' (#525). "
+        f"Got: {directives.get('script-src-attr')!r}"
+    )
+    assert "'unsafe-inline'" not in directives.get("script-src-elem", ""), (
+        "/dashboard: script-src-elem must NOT permit 'unsafe-inline' (#501)."
+    )
+    assert "'unsafe-inline'" not in directives.get("style-src-elem", ""), (
+        "/dashboard: style-src-elem must NOT permit 'unsafe-inline' (#501)."
+    )
