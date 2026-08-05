@@ -61,6 +61,43 @@ The design for this server, concretely:
 
 Net effect: a request for "my latest lab result" can only ever resolve against the requester's own rows, checked at three independent layers (tool signature, cache query, and Drive credential scope) rather than one.
 
+### The two OAuth flows, and exactly how they link to one account
+
+Two separate authorizations happen at different times, and they need to resolve to the *same* internal record without ever exchanging secrets directly with each other:
+
+**Flow A — onboarding, at sign-up.** Standard OAuth2 authorization-code exchange with Google, requesting `openid email` (identity) plus `drive.file` (folder access). Google's response includes an ID token — a signed JWT whose payload has a `sub` claim: a stable, unique identifier for that Google account (not the email address itself, which is a display attribute, not the primary key). The onboarding app creates one row:
+
+```
+accounts
+├── account_id        (internal id, e.g. "acct_7f3a")
+├── google_sub         "108234...9911"   ← from the ID token, the real key
+├── email              "erika@gmail.com" (display/lookup only)
+├── drive_folder_id     "1XyZ..."
+├── drive_refresh_token (encrypted; key kept OUTSIDE this table — see below)
+└── cache_db_path       "data/acct_7f3a.db"
+```
+
+**Flow B — connecting an AI chat, later, separately.** Claude or ChatGPT registers itself with the MCP server (Dynamic Client Registration, already-built plumbing) and starts an authorization-code flow *against the MCP server's own `/authorize` endpoint* — this is the same "MCP server acts as an OAuth provider" shape the current product already implements (`PersistentOAuthProvider`). Rather than asking for a username and password, that endpoint's login step redirects the user to Google again — this time asking only for `openid email`, no Drive scope, since access to the folder was already granted in Flow A and doesn't need re-granting. Google returns an ID token; the server reads its `sub`, looks it up against the `accounts` table above, and — on a match — completes its own OAuth exchange with Claude/ChatGPT, minting an access token whose only payload is a reference to `account_id`.
+
+**What this buys**: the `google_sub` value is the one thing that ties both flows to the same person. Nothing about Flow B needs to know the Drive folder, the refresh token, or anything else sensitive — it only needs to prove "this is the same Google account that connected a folder earlier," and Google's own ID token is what proves that, not a secret this server invented and has to protect in transit.
+
+### How accounts are actually isolated on disk
+
+Rather than one shared table with a `WHERE account_id = ?` filter on every query (correct, but only as safe as the discipline of never forgetting that clause), each account gets **its own SQLite file**:
+
+```
+data/
+├── accounts.db            ← the small table above: identity + Drive refresh tokens only, no medical data
+└── cache/
+    ├── acct_7f3a.db        ← Erika's documents, and only Erika's
+    ├── acct_91bc.db        ← the next user's, entirely separate file
+    └── ...
+```
+
+A request authenticated as `acct_7f3a` opens `cache/acct_7f3a.db` — full stop. There is no query that could return another account's rows by mistake, because there is no other account's data in that file to return. This is the same principle as "no client-suppliable id" taken one step further: instead of trusting a `WHERE` clause to always be present, there's physically nothing else in the file for a missing clause to leak. `accounts.db` itself holds no documents or extracted content — only the routing information (which Google account maps to which cache file and which Drive folder) — so even that file being read doesn't expose anyone's medical data on its own.
+
+One practical detail worth deciding deliberately: the encryption key protecting `drive_refresh_token` should live outside `accounts.db` entirely — macOS Keychain, or an environment variable loaded only into the running process — never alongside the ciphertext it protects. Worth being honest that this is one process with read access to every account's file; the isolation guarantee comes from the application only ever opening the one file the authenticated request resolved to, not from OS file permissions between users, which don't meaningfully separate anything when a single process is the one being trusted.
+
 ---
 
 ## Architecture
@@ -85,8 +122,9 @@ Peter's Mac mini (always on, from September)
 │        below touches the file itself
 │     5. rename + move the file via Drive API (full authority — a real backend,
 │        so there's no rename/move gap the native connector has)
-│     6. mirror the same row into the local cache (SQLite) — fast to query,
-│        entirely rebuildable by re-reading the Register Sheet, never authoritative
+│     6. mirror the same row into that user's OWN cache file (cache/acct_XXXX.db) —
+│        fast to query, entirely rebuildable by re-reading the Register Sheet,
+│        never authoritative, and physically separate from every other user's file
 │
 ├── MCP server (new, purpose-built — five tools, not ninety-six)
 │   ├── list_documents / search_documents / get_document / get_latest / get_timeline
@@ -167,7 +205,7 @@ Every tool response (`get_document`, `search_documents`, `list_documents`, `get_
 
 - **Reachability**: Cloudflare Tunnel (`cloudflared`) run as a system service (auto-restarts on reboot/crash) gives the Mac mini a stable public HTTPS hostname with no port-forwarding and no public IP exposure — confirmed free-tier-viable for this scale. The ceiling on reliability becomes home internet/power uptime, not Cloudflare's side.
 - **OAuth**: extend the existing `oncofiles-490809` GCP project's consent screen with the `drive.file` scope rather than standing up a second OAuth client — reuses the verification already done.
-- **Storage**: a local SQLite file for connections and the document cache is sufficient at this scale — no Turso, no replica, no single-connection concurrency concerns, because it's one process on one machine. It never needs a durability guarantee stronger than "rebuildable from each user's own Register Sheet."
+- **Storage**: one small `accounts.db` (identity + encrypted Drive refresh tokens, no medical data) plus one SQLite file per connected user for their document cache — no Turso, no replica, no single-connection concurrency concerns, because it's one process on one machine. Neither file needs a durability guarantee stronger than "rebuildable from each user's own Register Sheet" (the cache) or "re-derivable by having the user reconnect" (the account row, worst case).
 - **Scheduling**: launchd (macOS's native scheduler) running the poll/process job every few minutes, no Apps Script-style quota ceiling to design around.
 
 ## Open questions for Peter
