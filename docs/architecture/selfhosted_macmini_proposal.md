@@ -70,6 +70,15 @@ The only thing given up relative to the fully-serverless version is "literally z
 
 ---
 
+## Reaching the folder from Claude or ChatGPT — two separate connections
+
+The onboarding flow above only authorizes the Mac mini backend (via `drive.file` + Picker) to organize the folder. It grants **no access to Claude or ChatGPT** — those are separate, user-initiated connections made inside each AI product's own settings, after onboarding, using the same Google account.
+
+- **Claude**: Settings → Connectors → Google Drive, a one-time OAuth grant in the user's own Claude account. This is broad read access across their whole Drive, not scoped to a single folder — but since the backend keeps everything consistently named/dated, the user just asks in plain language and Claude's own search tools find the right folder by content, without needing to point at it explicitly.
+- **ChatGPT — a real gap for these users, checked live (Aug 2026), not assumed**: a comparable Drive connector exists, but (a) requires a paid plan (Free tier has none at all), and (b) **is currently excluded in the EEA, Switzerland, and the UK** — meaning it's not usable at all for Slovakia-based users today, independent of any setup step. Even where available, its retrieval path reads a file's existing text layer rather than doing image-level OCR, making it unreliable for scanned PDFs and phone photos specifically — the dominant content type here.
+
+**Practical conclusion**: Claude is the only "connect once, then just ask naturally" option for this project's actual users today. ChatGPT remains usable only via manually attaching individual files per conversation, and even then is weaker on scans than direct upload. Worth revisiting if the user base ever extends outside the EU/UK.
+
 ## Practical setup notes for September
 
 - **Reachability**: Cloudflare Tunnel (`cloudflared`) run as a system service (auto-restarts on reboot/crash) gives the Mac mini a stable public HTTPS hostname with no port-forwarding and no public IP exposure — confirmed free-tier-viable for this scale. The ceiling on reliability becomes home internet/power uptime, not Cloudflare's side.
