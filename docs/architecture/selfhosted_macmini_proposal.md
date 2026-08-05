@@ -43,7 +43,23 @@ The next revision after that proposed simply redeploying the existing 96-tool on
 - The OAuth + Dynamic Client Registration plumbing that lets an MCP client authenticate a user — the mechanism is generic and correct regardless of how many tools sit behind it.
 - The filename convention and category taxonomy — good design, independent of backend architecture.
 
-**What's fresh**: the tool surface above, a much smaller per-user data model (one local SQLite table, not a multi-tenant schema built for five unrelated hosted patients), and no dashboard/session/CSP layer at all — MCP is the only interface.
+**What's fresh**: the tool surface above, a much smaller per-user data model (one local cache table, not a multi-tenant schema built for five unrelated hosted patients), and no dashboard/session/CSP layer at all — MCP is the only interface.
+
+---
+
+## Security & isolation — how a user only ever sees their own data
+
+This deserves a direct answer, not an assumption, especially given the current product's own history: several of its hardest-won fixes (#429, #476, #495, #497/#498, #502, #510) exist because a client-supplied identifier, a falsy-but-not-empty sentinel, or an admin-bypass path turned into a real cross-patient leak at some point. None of that was bad luck — it's the standard failure shape for any system where more than one person's data lives behind one server. A fresh, five-tool design doesn't get to skip this just because it's smaller; if anything, it's the one piece of the old system's hard-earned thinking that must carry forward, even though the code doesn't.
+
+The design for this server, concretely:
+
+1. **Every tool resolves the caller's identity itself, server-side, from the authenticated session — never from a parameter the client supplies.** None of the five tools accept a `user_id` or `patient_id` argument. There is no field for a client to fill in, correctly or maliciously, that names whose data to fetch. This isn't a policy to remember to enforce — it's a shape the tool signatures don't allow you to get wrong. (This is the exact bug class #497/#498 had to retrofit an ACL gate onto after the fact, for a system that *did* accept a client-supplied slug. Not having that field at all is a stronger guarantee than checking it carefully.)
+2. **Every cache/query is scoped by that server-resolved identity — mandatory, structurally, not an optional filter.** The local cache's schema keys every row by user id; there is exactly one code path that reads it, and that path always filters by the id resolved in step 1. No `if user_id:` conditional that a falsy value could silently bypass — the historical failure mode (`""` treated as "no filter" in the current product's pre-#476 code) doesn't have a foothold here because there's no optional/empty case to fall through.
+3. **One identity across both OAuth flows.** The onboarding sign-in (drive.file + Picker) and the later MCP-connector sign-in (Claude/ChatGPT) are two separate authorizations, but both resolve to the same Google account. The MCP server looks up "which connected user does this Google identity belong to" rather than issuing or trusting a separate bearer secret — the account itself is the root of trust on both ends.
+4. **No admin bypass in the tool surface at all.** The current product's admin/caregiver access model is exactly where several of its scoping bugs concentrated. This server doesn't have an admin role in its MCP tools — if Peter ever needs to look at a specific user's data for support, that happens by his own direct access to his own machine, not through a special code path inside the tools that every other request also flows through.
+5. **Defense in depth from Google's own side, independent of the code above.** Each connected user's Drive OAuth token (from the `drive.file` + Picker grant) can only ever read the one folder they picked — Google enforces this at the API level, not this server's code. So even in a hypothetical bug in the cache-scoping logic, the background service physically cannot use user A's Drive credentials to touch user B's files, because it never holds user B's credentials while processing user A.
+
+Net effect: a request for "my latest lab result" can only ever resolve against the requester's own rows, checked at three independent layers (tool signature, cache query, and Drive credential scope) rather than one.
 
 ---
 
@@ -62,17 +78,20 @@ Peter's Mac mini (always on, from September)
 │     2. for each new/changed file: fetch → base64 → call Anthropic API directly
 │        (same extraction prompt shape as the current system: category, institution,
 │        date, summary, suggested filename)
-│     3. rename + move the file via Drive API (full authority — a real backend,
+│     3. fetch the file's `webViewLink` (and the parent folder's link) from the Drive API
+│     4. upsert one row into that user's own "Register" Google Sheet, IN THEIR DRIVE
+│        — filename, date, category, institution, summary, tags, extracted text,
+│        drive_file_url — this write is the durable commit, done before anything
+│        below touches the file itself
+│     5. rename + move the file via Drive API (full authority — a real backend,
 │        so there's no rename/move gap the native connector has)
-│     4. fetch the file's `webViewLink` from the Drive API and the parent
-│        folder's link, once, at processing time
-│     5. write one row to local SQLite: filename, date, category, institution,
-│        AI summary, tags, extracted text, drive_file_url, drive_folder_url
+│     6. mirror the same row into the local cache (SQLite) — fast to query,
+│        entirely rebuildable by re-reading the Register Sheet, never authoritative
 │
 ├── MCP server (new, purpose-built — five tools, not ninety-six)
 │   ├── list_documents / search_documents / get_document / get_latest / get_timeline
-│   │   — every response includes drive_file_url, so the answer can link
-│   │     straight back to the original scan
+│   │   — reads the local cache for speed; every response includes drive_file_url,
+│   │     so the answer can link straight back to the original scan
 │   └── OAuth + DCR (reused — this plumbing is generic, not SaaS-specific) —
 │       a user adds it to an AI chat as a connector, same shape as any other
 │
@@ -85,7 +104,14 @@ Claude.ai / Claude Code
     tool calls — not raw file search over a spreadsheet.
 ```
 
-**Correction to the earlier privacy framing**: this version of the Mac mini does hold more than connection metadata — it holds the extracted register (dates, categories, summaries, tags, and the extracted text used to answer questions), because that's what a real MCP server needs to query quickly and reliably. It does **not** hold the raw source files themselves — those stay only in the user's own Drive — but the AI-derived index of their contents now lives locally. Worth being explicit about, and worth a basic hygiene baseline given it's real medical metadata: disk encryption (FileVault, on by default on modern Macs), and a backup plan for that SQLite file (a home machine has no built-in redundancy the way Railway's Volume + Turso cloud replica did) — a simple nightly copy to Peter's own separate encrypted backup is enough at this scale.
+## GDrive stays the single source of truth — the Mac mini's cache is disposable
+
+Per direction: whatever gets extracted must be written back into the user's own Drive, not left living only on Peter's machine. Concretely, each user's connected folder gets one **Register** Google Sheet, and that Sheet — not the Mac mini's SQLite cache — is the authoritative copy:
+
+- **Write order matters for crash safety.** The Sheet row is written *before* the file is renamed/moved. If the process dies mid-file, worst case is a Sheet row pointing at a not-yet-renamed file — safely retryable next run (check the current name before renaming, idempotent). It can never produce a renamed file with no record of it, which was the actual failure mode the current product had to design around for split/merge safety.
+- **The local cache is a cache, full stop.** It exists only so the MCP tools can answer in milliseconds instead of round-tripping the Sheets API on every question in a conversation. It is never the record of anything — it's a mirror, rebuilt by re-reading each user's Register Sheet.
+- **What this buys**: if the Mac mini's disk fails, gets wiped, or Peter migrates to new hardware, nothing is lost. Recovery is "run the server again, reconnect each user's OAuth, rebuild the cache from their own Register Sheets" — not a restore-from-backup procedure. The disk-encryption/backup hygiene mentioned in an earlier revision of this doc becomes a nice-to-have, not a real dependency, because Drive was always the durable copy.
+- **One real limit worth knowing**: a Google Sheets cell caps out around 50,000 characters. Fine for the summary/tags/typical extracted text of an ordinary medical document; a genuinely huge multi-page scan's full extracted text might need truncation or a linked overflow — worth a note in the extraction code, not a blocker at this scale.
 
 ---
 
@@ -100,7 +126,7 @@ Claude.ai / Claude Code
 | Processing schedule | Batched around 6-min/90-min Apps Script quotas | A real always-on machine — no quota math needed |
 | New-file detection | Drive push notifications + expiring-channel renewal | Simple polling every few minutes — the machine is always on, so there's nothing to renew |
 | Where source documents live | User's own Drive | Unchanged — user's own Drive, never copied wholesale to the Mac mini |
-| Where the register/index lives | A Sheet in the user's own Drive | Local SQLite on the Mac mini, so the MCP server can query it directly |
+| Where the register/index lives | A Sheet in the user's own Drive | Same, unchanged — a Sheet in the user's own Drive is still the authoritative copy; the Mac mini keeps only a disposable, rebuildable cache for fast MCP answers |
 | What Peter operates | Nothing (that was the whole point) | A small, purpose-built MCP server (five tools) — new, not the old 96-tool surface |
 
 The only thing given up relative to the fully-serverless version is "literally zero infrastructure for Peter to run." Given a real server is available from September anyway, that trade is clearly worth it — it buys the actual onboarding experience requested, which the serverless version could not deliver.
@@ -141,7 +167,7 @@ Every tool response (`get_document`, `search_documents`, `list_documents`, `get_
 
 - **Reachability**: Cloudflare Tunnel (`cloudflared`) run as a system service (auto-restarts on reboot/crash) gives the Mac mini a stable public HTTPS hostname with no port-forwarding and no public IP exposure — confirmed free-tier-viable for this scale. The ceiling on reliability becomes home internet/power uptime, not Cloudflare's side.
 - **OAuth**: extend the existing `oncofiles-490809` GCP project's consent screen with the `drive.file` scope rather than standing up a second OAuth client — reuses the verification already done.
-- **Storage**: a local SQLite file for the connection table is sufficient at this scale — no Turso, no replica, no single-connection concurrency concerns, because it's one process on one machine.
+- **Storage**: a local SQLite file for connections and the document cache is sufficient at this scale — no Turso, no replica, no single-connection concurrency concerns, because it's one process on one machine. It never needs a durability guarantee stronger than "rebuildable from each user's own Register Sheet."
 - **Scheduling**: launchd (macOS's native scheduler) running the poll/process job every few minutes, no Apps Script-style quota ceiling to design around.
 
 ## Open questions for Peter
