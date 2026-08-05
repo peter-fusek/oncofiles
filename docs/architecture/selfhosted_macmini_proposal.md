@@ -22,14 +22,29 @@ No API key to paste. No script to copy. No "Advanced → go to this app anyway" 
 
 ---
 
+## Correction: the chat side needs a real MCP server, not the native Drive connector
+
+An earlier revision of this doc had the AI-chat side simply connecting Claude's generic Google Drive connector, reading a Register sheet directly. That's wrong for what's actually wanted: the chat needs to query the **register and the AI-extracted metadata as first-class, structured data** — "what's the latest lab result," "summarize everything from NOU this year" — not re-derive that from raw file search and hoping Claude parses a spreadsheet correctly each time.
+
+That's exactly what a purpose-built MCP server does, and — this is the important realization — **oncofiles already has one, fully built and tested.** `list_documents`, `search_documents`, `get_document` (returning AI summary + structured metadata), `get_journey_timeline` (chronological synthesis) already exist as MCP tools in the current codebase, backed by real structured rows rather than raw file content. The right move isn't to invent a second, thinner MCP server from scratch — it's to **redeploy the existing one**, trimmed to what a handful of self-hosted users need, rather than reinvent working, hardened code.
+
+What changes for the Mac mini deployment, concretely:
+- **Turso → local SQLite.** Turso's cloud-replica architecture exists to serve a distributed, always-scaling hosted product. A single always-on Mac mini has no need for a distributed replica — plain SQLite on local disk is simpler and sufficient at this scale.
+- **Railway → Mac mini + Cloudflare Tunnel.** Same server code, different host.
+- **GDrive OAuth, sync, rename-to-standard, and the AI extraction pipeline (`enhance.py`) carry over unchanged** — this is already AI-first (#365), already handles OCR/vision extraction, already writes structured metadata per document.
+- **MCP auth carries over unchanged** — the existing OAuth + Dynamic Client Registration flow already lets a user connect Claude.ai to an oncofiles-shaped MCP server the same way they'd add any other connector: click connect, authenticate, done. No separate bespoke auth scheme needs building.
+- **Multi-user isolation carries over unchanged** — the already-shipped Option A `patient_slug` + ACL-gate pattern (#429/#497/#498) is exactly "a few users, each seeing only their own data" — which is what this needs, just at a smaller scale than the current five-patient production system.
+
+---
+
 ## Architecture
 
 ```
 Peter's Mac mini (always on, from September)
-├── Tiny onboarding web app (reachable via Cloudflare Tunnel, e.g. connect.oncofiles.com)
+├── Onboarding web app (reachable via Cloudflare Tunnel, e.g. connect.oncofiles.com)
 │   ├── "Sign in with Google" → OAuth (drive.file scope, Production status)
 │   ├── Google Picker widget → user selects their Drive folder
-│   └── on success: store {user, refresh_token, folder_id} in one local SQLite table
+│   └── on success: create the user's row (refresh token, folder id)
 │
 ├── Background service (cron/launchd, runs every few minutes — no quotas, it's a real machine)
 │   for each connected user:
@@ -37,19 +52,28 @@ Peter's Mac mini (always on, from September)
 │     2. for each new/changed file: fetch → base64 → call Anthropic API directly
 │        (same extraction prompt shape as the current system: category, institution,
 │        date, summary, suggested filename)
-│     3. rename + move the file via Drive API (full authority — this is a real
-│        backend, not the native connector, so there's no rename/move gap at all)
-│     4. write/update one row in THAT USER'S OWN Register Google Sheet
+│     3. rename + move the file via Drive API (full authority — a real backend,
+│        so there's no rename/move gap the native connector has)
+│     4. write one row to local SQLite: filename, date, category, institution,
+│        AI summary, tags, extracted text — the same shape the current
+│        `documents` table already stores
+│
+├── MCP server (the existing oncofiles FastMCP server, redeployed here)
+│   ├── list_documents / search_documents / get_document / get_journey_timeline
+│   │   — reading that same local SQLite index, not raw Drive files
+│   └── OAuth + DCR (already built) — a user adds it to Claude.ai as a connector
+│       the same way they'd add any other, no bespoke auth to invent
 │
 └── One shared Anthropic API key, Peter's own billing (same €-per-month shape
     already validated in the current product, just for a smaller user count)
 
-Claude.ai / Claude Code (unchanged)
-  — user connects their own Google Drive, reads their own folder + register,
-    answers "what's the latest development" by sorting the register by date.
+Claude.ai / Claude Code
+  — user adds the oncofiles MCP server as a connector (separate step from
+    onboarding, see below) and asks questions answered from real structured
+    tool calls — not raw file search over a spreadsheet.
 ```
 
-What the Mac mini actually stores: OAuth tokens and folder IDs, in one small local table. **Not** the medical documents or their extracted content — those stay in each user's own Drive, in their own Register sheet, exactly as before. The Mac mini is a processing relay, not a database of anyone's medical records. That privacy framing survives this revision unchanged.
+**Correction to the earlier privacy framing**: this version of the Mac mini does hold more than connection metadata — it holds the extracted register (dates, categories, summaries, tags, and the extracted text used to answer questions), because that's what a real MCP server needs to query quickly and reliably. It does **not** hold the raw source files themselves — those stay only in the user's own Drive — but the AI-derived index of their contents now lives locally. Worth being explicit about, and worth a basic hygiene baseline given it's real medical metadata: disk encryption (FileVault, on by default on modern Macs), and a backup plan for that SQLite file (a home machine has no built-in redundancy the way Railway's Volume + Turso cloud replica did) — a simple nightly copy to Peter's own separate encrypted backup is enough at this scale.
 
 ---
 
@@ -63,21 +87,22 @@ What the Mac mini actually stores: OAuth tokens and folder IDs, in one small loc
 | API key | Each user needs their own | One shared key, Peter's own billing |
 | Processing schedule | Batched around 6-min/90-min Apps Script quotas | A real always-on machine — no quota math needed |
 | New-file detection | Drive push notifications + expiring-channel renewal | Simple polling every few minutes — the machine is always on, so there's nothing to renew |
-| Where documents live | User's own Drive + Sheet | Unchanged — user's own Drive + Sheet |
-| What Peter operates | Nothing (that was the whole point) | A small local SQLite table of connections, on hardware he already owns |
+| Where source documents live | User's own Drive | Unchanged — user's own Drive, never copied wholesale to the Mac mini |
+| Where the register/index lives | A Sheet in the user's own Drive | Local SQLite on the Mac mini, so the MCP server can query it directly |
+| What Peter operates | Nothing (that was the whole point) | The existing oncofiles server code, redeployed — not new code, a new host |
 
 The only thing given up relative to the fully-serverless version is "literally zero infrastructure for Peter to run." Given a real server is available from September anyway, that trade is clearly worth it — it buys the actual onboarding experience requested, which the serverless version could not deliver.
 
 ---
 
-## Reaching the folder from Claude or ChatGPT — two separate connections
+## Reaching the register from Claude or ChatGPT — two separate connections
 
-The onboarding flow above only authorizes the Mac mini backend (via `drive.file` + Picker) to organize the folder. It grants **no access to Claude or ChatGPT** — those are separate, user-initiated connections made inside each AI product's own settings, after onboarding, using the same Google account.
+The onboarding flow above only authorizes the Mac mini backend (via `drive.file` + Picker) to organize the folder. It grants **no access to Claude or ChatGPT** — connecting an AI chat to the register is a separate, user-initiated step, made inside each AI product's own settings, after onboarding.
 
-- **Claude**: Settings → Connectors → Google Drive, a one-time OAuth grant in the user's own Claude account. This is broad read access across their whole Drive, not scoped to a single folder — but since the backend keeps everything consistently named/dated, the user just asks in plain language and Claude's own search tools find the right folder by content, without needing to point at it explicitly.
-- **ChatGPT — a real gap for these users, checked live (Aug 2026), not assumed**: a comparable Drive connector exists, but (a) requires a paid plan (Free tier has none at all), and (b) **is currently excluded in the EEA, Switzerland, and the UK** — meaning it's not usable at all for Slovakia-based users today, independent of any setup step. Even where available, its retrieval path reads a file's existing text layer rather than doing image-level OCR, making it unreliable for scanned PDFs and phone photos specifically — the dominant content type here.
+- **Claude**: the user adds the oncofiles MCP server as a **custom connector** in their own Claude.ai account (the same OAuth + Dynamic Client Registration flow the current product already supports) — not the generic native Google Drive connector. This is the meaningful difference from the previous revision of this doc: instead of Claude guessing its way through a spreadsheet via raw file search, it gets real tools (`list_documents`, `search_documents`, `get_document`, `get_journey_timeline`) backed by the AI-extracted register directly. Same "click connect, authenticate, done" shape as any other connector, richer result.
+- **ChatGPT — checked live (Aug 2026), not assumed**: OpenAI's *generic Drive connector* is paid-plan-only and currently excluded in the EEA/Switzerland/UK, ruling it out for Slovakia-based users regardless. Whether ChatGPT's consumer app supports adding an arbitrary **custom MCP connector** (which would sidestep the Drive-connector restriction entirely, since it wouldn't be Google-specific) is **not yet verified** — OpenAI has been shipping MCP support across its API/Agents SDK, but consumer-app custom-connector support is moving fast enough to need a direct, current check rather than an assumption either way.
 
-**Practical conclusion**: Claude is the only "connect once, then just ask naturally" option for this project's actual users today. ChatGPT remains usable only via manually attaching individual files per conversation, and even then is weaker on scans than direct upload. Worth revisiting if the user base ever extends outside the EU/UK.
+**Practical conclusion**: Claude, via the oncofiles MCP connector, is the confirmed "connect once, ask naturally, get structured answers" option today. ChatGPT's viability depends on an unverified fact (custom MCP connector support in the consumer app) — worth checking directly before ruling it in or out.
 
 ## Practical setup notes for September
 
