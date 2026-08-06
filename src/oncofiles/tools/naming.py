@@ -8,6 +8,7 @@ import logging
 
 from fastmcp import Context
 
+from oncofiles.config import DOC_QUERY_LIMIT
 from oncofiles.filename_parser import is_corrupted_filename, is_standard_format, rename_to_standard
 from oncofiles.tools._helpers import _get_db, _get_gdrive, _resolve_patient_id
 
@@ -100,7 +101,7 @@ async def rename_documents_to_standard(
             return json.dumps({"error": f"Invalid en_descriptions JSON: {e}"})
 
     pid = await _resolve_patient_id(patient_slug, ctx)
-    docs = await db.list_documents(limit=500, patient_id=pid)
+    docs = await db.list_documents(limit=DOC_QUERY_LIMIT, patient_id=pid)
 
     stats = {"total": len(docs), "already_standard": 0, "renamed": 0, "skipped": 0, "errors": 0}
     renames = []

@@ -9,6 +9,7 @@ import logging
 
 from fastmcp import Context
 
+from oncofiles.config import DOC_QUERY_LIMIT
 from oncofiles.filename_parser import parse_filename
 from oncofiles.files_api import sanitize_filename
 from oncofiles.gdrive_folders import (
@@ -771,7 +772,7 @@ async def audit_patient_isolation(ctx: Context) -> str:
     mismatches: list[dict] = []
 
     for p in patients:
-        docs = await db.list_documents(limit=500, patient_id=p.patient_id)
+        docs = await db.list_documents(limit=DOC_QUERY_LIMIT, patient_id=p.patient_id)
 
         for doc in docs:
             if doc.deleted_at:

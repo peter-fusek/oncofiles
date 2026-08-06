@@ -6,6 +6,7 @@ import json
 
 from fastmcp import Context
 
+from oncofiles.config import DOC_QUERY_LIMIT
 from oncofiles.patient_context import get_context as _get_patient_context
 from oncofiles.tools._helpers import _gdrive_url, _get_db, _resolve_patient_id
 
@@ -31,7 +32,7 @@ async def export_document_package(
     pid = await _resolve_patient_id(patient_slug, ctx)
 
     # Get all documents grouped by category
-    docs = await db.list_documents(limit=200, patient_id=pid)
+    docs = await db.list_documents(limit=DOC_QUERY_LIMIT, patient_id=pid)
 
     # Group by category
     by_category: dict[str, list[dict]] = {}

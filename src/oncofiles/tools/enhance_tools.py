@@ -8,6 +8,7 @@ import logging
 
 from fastmcp import Context
 
+from oncofiles.config import DOC_QUERY_LIMIT
 from oncofiles.tools._helpers import (
     _ensure_ocr_text,
     _get_db,
@@ -204,7 +205,7 @@ async def detect_and_split_documents(
     pid = await _resolve_patient_id(patient_slug, ctx)
     results = {"scanned": 0, "multi_doc": 0, "splits_created": 0, "limit": limit, "details": []}
 
-    all_docs = await db.list_documents(limit=200, patient_id=pid)
+    all_docs = await db.list_documents(limit=DOC_QUERY_LIMIT, patient_id=pid)
     for doc in all_docs:
         if doc.group_id or doc.deleted_at or doc.mime_type != "application/pdf":
             continue
@@ -469,7 +470,7 @@ async def detect_and_consolidate_documents(
     db = _get_db(ctx)
     pid = await _resolve_patient_id(patient_slug, ctx)
 
-    all_docs = await db.list_documents(limit=200, patient_id=pid)
+    all_docs = await db.list_documents(limit=DOC_QUERY_LIMIT, patient_id=pid)
     ungrouped = [d for d in all_docs if d.group_id is None and d.deleted_at is None]
 
     if len(ungrouped) < 2:
@@ -603,7 +604,7 @@ async def repair_broken_groups(
     db = _get_db(ctx)
     pid = await _resolve_patient_id(patient_slug, ctx)
 
-    all_docs = await db.list_documents(limit=10000, patient_id=pid)
+    all_docs = await db.list_documents(limit=DOC_QUERY_LIMIT, patient_id=pid)
     grouped = [d for d in all_docs if d.group_id and d.deleted_at is None]
 
     groups: dict[str, list] = {}
@@ -708,7 +709,7 @@ async def detect_and_clone_vaccinations(
     db = _get_db(ctx)
     pid = await _resolve_patient_id(patient_slug, ctx)
 
-    all_docs = await db.list_documents(limit=10000, patient_id=pid)
+    all_docs = await db.list_documents(limit=DOC_QUERY_LIMIT, patient_id=pid)
     vax_docs = [
         d for d in all_docs if d.deleted_at is None and d.category == DocumentCategory.VACCINATION
     ]

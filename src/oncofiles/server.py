@@ -28,6 +28,7 @@ from oncofiles.config import (
     DAILY_AI_DOC_CAP,
     DASHBOARD_ADMIN_EMAILS,
     DATABASE_PATH,
+    DOC_QUERY_LIMIT,
     ENABLE_INTEGRITY_CHECK,
     GOOGLE_DRIVE_FOLDER_ID,
     GOOGLE_OAUTH_CLIENT_ID,
@@ -815,7 +816,7 @@ def _start_sync_scheduler(
             patients = await db.list_patients(active_only=True)
             for p in patients:
                 pid = p.patient_id
-                all_docs = await db.list_documents(limit=500, patient_id=pid)
+                all_docs = await db.list_documents(limit=DOC_QUERY_LIMIT, patient_id=pid)
                 ocr_ids = await db.get_ocr_document_ids(patient_id=pid)
                 gaps = []
 
@@ -1512,7 +1513,9 @@ def _start_sync_scheduler(
             patients = await db.list_patients(active_only=True)
             all_docs = []
             for p in patients:
-                all_docs.extend(await db.list_documents(limit=500, patient_id=p.patient_id))
+                all_docs.extend(
+                    await db.list_documents(limit=DOC_QUERY_LIMIT, patient_id=p.patient_id)
+                )
             docs = all_docs
             import json as _json
 

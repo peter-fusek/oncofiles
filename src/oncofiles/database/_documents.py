@@ -166,14 +166,34 @@ class DocumentMixin:
         *,
         patient_id: str,
     ) -> list[Document]:
-        """List documents ordered by date descending."""
+        """List documents ordered by date descending.
+
+        Whole-corpus callers pass ``limit=DOC_QUERY_LIMIT``; when such a read
+        fills its ceiling the result is silently incomplete, which has caused
+        real damage before (#548 — `_cleanup_orphan_ocr` trashes OCR sidecars
+        for any document missing from its view). Log loudly in that case.
+        Paginated callers use small limits and never trip this.
+        """
+        from oncofiles.config import DOC_QUERY_LIMIT
+
         async with self.db.execute(
             "SELECT * FROM documents WHERE deleted_at IS NULL AND patient_id = ? "
             "ORDER BY document_date DESC, created_at DESC LIMIT ? OFFSET ?",
             (patient_id, limit, offset),
         ) as cursor:
             rows = await cursor.fetchall()
-            return [d for r in rows if (d := _safe_row_to_document(r)) is not None]
+            docs = [d for r in rows if (d := _safe_row_to_document(r)) is not None]
+
+        if limit >= DOC_QUERY_LIMIT and len(rows) >= limit:
+            logger.error(
+                "list_documents: whole-corpus read for patient %s filled its ceiling "
+                "(%d rows at limit=%d) — results are probably TRUNCATED. Raise "
+                "DOC_QUERY_LIMIT or paginate this caller before trusting the output.",
+                patient_id,
+                len(rows),
+                limit,
+            )
+        return docs
 
     async def search_documents(self, query: SearchQuery, *, patient_id: str) -> list[Document]:
         """Search documents with relevance scoring and multi-term matching.

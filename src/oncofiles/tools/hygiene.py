@@ -8,6 +8,7 @@ import logging
 
 from fastmcp import Context
 
+from oncofiles.config import DOC_QUERY_LIMIT
 from oncofiles.gdrive_folders import CATEGORY_MERGES, bilingual_name, en_key_from_folder_name
 from oncofiles.models import DocumentCategory
 from oncofiles.sync import EXTRACTABLE_MIME_TYPES
@@ -234,7 +235,7 @@ async def validate_categories(
     gdrive = await _get_gdrive(ctx)
     pid = await _resolve_patient_id(patient_slug, ctx)
 
-    docs = await db.list_documents(limit=500, patient_id=pid)
+    docs = await db.list_documents(limit=DOC_QUERY_LIMIT, patient_id=pid)
     valid_categories = {c.value for c in DocumentCategory}
 
     mismatches: list[dict] = []
@@ -812,7 +813,7 @@ async def _build_document_matrix(
     pid = patient_id if patient_id is not None else _get_patient_id()
 
     # Fetch enough docs to satisfy offset + limit, capped at the pagination ceiling.
-    docs = await db.list_documents(limit=max(limit + offset, 500), patient_id=pid)
+    docs = await db.list_documents(limit=max(limit + offset, DOC_QUERY_LIMIT), patient_id=pid)
     ocr_ids = await db.get_ocr_document_ids(patient_id=pid)
     rows = []
 
@@ -960,7 +961,7 @@ async def get_pipeline_status(ctx: Context, patient_slug: str | None = None) -> 
 
     # Pipeline stage counts
     pid = await _resolve_patient_id(patient_slug, ctx)
-    docs = await db.list_documents(limit=500, patient_id=pid)
+    docs = await db.list_documents(limit=DOC_QUERY_LIMIT, patient_id=pid)
     total = len(docs)
     with_ai = sum(1 for d in docs if d.ai_summary)
     with_metadata = sum(1 for d in docs if d.structured_metadata and d.structured_metadata != "")
@@ -1088,7 +1089,7 @@ async def audit_document_pipeline(ctx: Context, patient_slug: str | None = None)
     db = _get_db(ctx)
     pid = await _resolve_patient_id(patient_slug, ctx)
 
-    docs = await db.list_documents(limit=1000, patient_id=pid)
+    docs = await db.list_documents(limit=DOC_QUERY_LIMIT, patient_id=pid)
 
     # Patient-scoped OCR page counts — single query also collects
     # multi_page_ids in the same pass, replacing a correlated subquery per
@@ -1407,7 +1408,7 @@ async def _build_reconciliation_report(
     # Fetch both sides
     gdrive_files = await asyncio.to_thread(gdrive.list_folder, folder_id)
     pid = patient_id if patient_id is not None else _get_patient_id()
-    db_docs = await db.list_documents(limit=500, patient_id=pid)
+    db_docs = await db.list_documents(limit=DOC_QUERY_LIMIT, patient_id=pid)
 
     # Build lookup maps
     # GDrive: id -> file dict (exclude metadata JSON files)

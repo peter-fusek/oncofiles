@@ -6,6 +6,7 @@ import gc
 import logging
 from datetime import UTC, datetime, timedelta
 
+from oncofiles.config import DOC_QUERY_LIMIT
 from oncofiles.database import Database
 from oncofiles.files_api import FilesClient
 from oncofiles.gdrive_client import GDriveClient
@@ -58,7 +59,7 @@ async def backfill_multi_document_splits(
         "errors": 0,
     }
 
-    all_docs = await db.list_documents(limit=200, patient_id=patient_id)
+    all_docs = await db.list_documents(limit=DOC_QUERY_LIMIT, patient_id=patient_id)
 
     if only_new:
         from oncofiles.config import AI_REPROCESS_MAX_AGE_HOURS
@@ -171,7 +172,7 @@ async def backfill_consolidation(
 
     stats = {"analyzed": 0, "groups_found": 0, "consolidated": 0, "errors": 0}
 
-    all_docs = await db.list_documents(limit=200, patient_id=patient_id)
+    all_docs = await db.list_documents(limit=DOC_QUERY_LIMIT, patient_id=patient_id)
 
     if only_new:
         from oncofiles.config import AI_REPROCESS_MAX_AGE_HOURS
@@ -232,7 +233,7 @@ async def rebuild_cross_references(
     stats = {"documents": 0, "refs_created": 0, "errors": 0}
 
     # Clear existing cross-references for this patient's documents
-    all_docs = await db.list_documents(limit=200, patient_id=patient_id)
+    all_docs = await db.list_documents(limit=DOC_QUERY_LIMIT, patient_id=patient_id)
     active_docs = [d for d in all_docs if d.deleted_at is None]
     stats["documents"] = len(active_docs)
 
@@ -326,7 +327,7 @@ async def backfill_ai_classification(
     # Proactive reconnect before batch to avoid stale replica (#378)
     await db.reconnect_if_stale(timeout=10.0)
 
-    all_docs = await db.list_documents(limit=200, patient_id=patient_id)
+    all_docs = await db.list_documents(limit=DOC_QUERY_LIMIT, patient_id=patient_id)
     batch_count = 0
 
     for doc in all_docs:
