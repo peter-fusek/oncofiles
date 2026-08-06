@@ -42,8 +42,17 @@ MCP_HOST: str = os.environ.get("MCP_HOST", "0.0.0.0")
 MCP_PORT: int = int(os.environ.get("MCP_PORT", os.environ.get("PORT", "8000")))
 MCP_BEARER_TOKEN: str = os.environ.get("MCP_BEARER_TOKEN", "")
 
-# Fair Use Policy (FUP) — free tier document limit per patient
-MAX_DOCUMENTS_PER_PATIENT: int = int(os.environ.get("MAX_DOCUMENTS_PER_PATIENT", "200"))
+# Fair Use Policy (FUP) — free tier document limit per patient. 0 disables it.
+MAX_DOCUMENTS_PER_PATIENT: int = int(os.environ.get("MAX_DOCUMENTS_PER_PATIENT", "500"))
+
+# Query ceiling for "every document for this patient" reads (#548). MUST track
+# the FUP cap: any smaller value silently truncates whole-corpus passes —
+# manifest export, orphan/external classification, cross-reference candidates,
+# and the rename sweep. Those four used to hardcode 200, which matched the old
+# cap by coincidence and would have dropped documents 201+ the moment it rose.
+# When the cap is disabled (0 = unlimited) fall back to a high sentinel; a
+# literal LIMIT 0 returns no rows at all.
+DOC_QUERY_LIMIT: int = MAX_DOCUMENTS_PER_PATIENT if MAX_DOCUMENTS_PER_PATIENT > 0 else 10_000
 
 # Sync scheduler (v1.0)
 SYNC_INTERVAL_MINUTES: int = int(os.environ.get("SYNC_INTERVAL_MINUTES", "5"))

@@ -438,7 +438,11 @@ async def sync_from_gdrive(
     #      Retained as a legacy bucket for alerting — zero expected in steady
     #      state.
     # No matter the class, we NEVER auto-delete.
-    all_docs = await db.list_documents(limit=200, patient_id=patient_id)
+    # DOC_QUERY_LIMIT: truncating here leaves docs 201+ unclassified, so
+    # reconciliation goes blind on them (#548).
+    from oncofiles.config import DOC_QUERY_LIMIT
+
+    all_docs = await db.list_documents(limit=DOC_QUERY_LIMIT, patient_id=patient_id)
     for doc in all_docs:
         if not doc.gdrive_id or doc.gdrive_id in seen_gdrive_ids:
             # If a previously-external file is now back in the root, clear the flag.
@@ -656,11 +660,13 @@ async def sync_to_gdrive(
 
     logger.info("sync_to_gdrive: starting (dry_run=%s, full=%s)", dry_run, full)
 
+    from oncofiles.config import DOC_QUERY_LIMIT
+
     stats = {"exported": 0, "organized": 0, "skipped": 0, "metadata_exported": 0, "errors": 0}
 
     if dry_run:
         # Count what would be exported/organized
-        docs = await db.list_documents(limit=500, patient_id=patient_id)
+        docs = await db.list_documents(limit=DOC_QUERY_LIMIT, patient_id=patient_id)
         for doc in docs:
             if doc.gdrive_id:
                 stats["skipped"] += 1
@@ -680,8 +686,10 @@ async def sync_to_gdrive(
     # Collect all organized folder IDs (category folders + their year-month subfolders)
     organized_folder_ids = set(folder_map.values())
 
-    # Export documents
-    docs = await db.list_documents(limit=500, patient_id=patient_id)
+    # Export documents. DOC_QUERY_LIMIT: this list also feeds the rename and
+    # organize phases below, so truncating it silently excludes documents from
+    # renaming and refoldering as well as export (#548).
+    docs = await db.list_documents(limit=DOC_QUERY_LIMIT, patient_id=patient_id)
 
     # Phase 1: Batch-organize existing GDrive files (skip if no changes)
     docs_to_organize = [d for d in docs if d.gdrive_id] if full else []
@@ -1062,8 +1070,10 @@ async def _rename_to_standard(db: Database, gdrive: GDriveClient, *, patient_id:
 
     Returns: {renamed, skipped, errors, renamed_ids}.
     """
+    from oncofiles.config import DOC_QUERY_LIMIT
+
     stats: dict = {"renamed": 0, "skipped": 0, "errors": 0, "renamed_ids": []}
-    docs = await db.list_documents(limit=500, patient_id=patient_id)
+    docs = await db.list_documents(limit=DOC_QUERY_LIMIT, patient_id=patient_id)
     pending_renames: list[tuple] = []
 
     for doc in docs:
@@ -1204,8 +1214,14 @@ async def _cleanup_orphan_ocr(db: Database, gdrive: GDriveClient, *, patient_id:
     """
     stats = {"deleted": 0, "skipped": 0, "errors": 0}
 
-    # Build set of expected OCR filenames from current documents
-    docs = await db.list_documents(limit=500, patient_id=patient_id)
+    # Build set of expected OCR filenames from current documents.
+    # DOC_QUERY_LIMIT is load-bearing for safety here: anything not in
+    # expected_ocr_names gets trashed as an orphan below, so a truncated list
+    # would soft-delete legitimate sidecars belonging to the excluded documents
+    # (#548).
+    from oncofiles.config import DOC_QUERY_LIMIT
+
+    docs = await db.list_documents(limit=DOC_QUERY_LIMIT, patient_id=patient_id)
     expected_ocr_names: set[str] = set()
     doc_gdrive_ids: set[str] = set()
 
@@ -1683,7 +1699,11 @@ async def _generate_cross_references(
         return 0
 
     # Get candidate documents (all active docs for this patient, excluding self)
-    all_docs = await db.list_documents(limit=200, patient_id=patient_id)
+    # DOC_QUERY_LIMIT: a literal here makes relationships to older documents
+    # undiscoverable once the corpus exceeds it (#548).
+    from oncofiles.config import DOC_QUERY_LIMIT
+
+    all_docs = await db.list_documents(limit=DOC_QUERY_LIMIT, patient_id=patient_id)
     candidates = []
     for c in all_docs:
         if c.id != doc.id and c.deleted_at is None:
