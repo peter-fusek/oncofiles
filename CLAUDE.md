@@ -39,11 +39,19 @@ uv run ruff check
 
 ## Deployment
 
-- **Railway**: `oncofiles.com` (streamable-http at /mcp)
-- Push to `main` auto-deploys via Railway
-- 716 tests, CI green
+- **Coolify on Forpsi `194.182.90.104`** (NOT Railway — migrated 2026-06-08): `oncofiles.com`, streamable-http at `/mcp`, Traefik + Let's Encrypt in front. Build pack Railpack (Beta), install `uv sync`, start `uv run oncofiles-mcp`.
+- **Push to `main` does NOT deploy** (#549). Deploys are a manual **Redeploy** click in Coolify → project `oncofiles` → app `oncofiles:main-cj7yxy1gac8mdwempibu27kq`. There is no webhook. Pushing and walking away means prod stays on the old commit — this went unnoticed for two months.
+- **Env-only changes are cheap**: with an unchanged commit SHA, Coolify logs `No build configuration changed & image found … Build step skipped` and just recreates the container. A new SHA triggers a full Railpack build.
+- **Never tick "Available at Buildtime"** on a new env var unless the build genuinely needs it. Railpack writes every buildtime-flagged var into a build-time `.env`, and `mise`/`aqua` read it — an expired `GITHUB_TOKEN` there returned 401 installing `uv` and broke every deploy for two months (#550).
+- **DB is a local libsql file** on the Coolify bind mount (`TURSO_DATABASE_URL=file:/data/oncofiles.db`); Turso Cloud is decommissioned. Data survives rebuilds. A failed deploy is safe — Coolify keeps the old container running.
+- 1360 tests, CI green (CI is lint+test only; it does not deploy)
 
 ## Infrastructure gotchas
+
+- **A job's success signal must never be decoupled from whether it did any work (#552).** `_run_nightly_ai_pipeline` used to `continue` past every per-patient exception, so the job never raised, APScheduler fired `EVENT_JOB_EXECUTED`, and `job_tracker["nightly_ai_pipeline"]["last_ok"]` stayed fresh — a night where **every** patient failed was indistinguishable from a clean one. Combined with `_handle_sync_exception` only promoting `invalid_grant` to a health surface, `/health` returned `status: ok` for a month while all Google-backed processing was dead. Now the pipeline counts `sync_attempted`/`sync_failed` (incremented on **both** bail-out paths) and raises when they are equal and non-zero; `0 attempted` stays a success. When adding any batch job that swallows per-item errors, do the same, and prefer a **failure-mode-agnostic** staleness check over enumerating known errors — `db.get_last_successful_sync(patient_id=)` reads `MAX(finished_at) WHERE status='completed'`, whereas `get_sync_stats_summary.last_sync_at` is `MAX(started_at)` over all rows and stays fresh while every run fails.
+- **`GOOGLE_INTEGRATION_ENABLED=false` is the Google kill switch** — use it, not `SYNC_ENABLED=false`, when Google credentials are dead. `SYNC_ENABLED` gates the entire APScheduler at `server.py:368`, taking `db_keepalive`, `memory_check`, the cleanup jobs and `sync_watchdog` down with it. The kill switch stops only Google-touching paths at two chokepoints: `_create_patient_clients` (returns `None` **before** any token load, so no refresh is attempted against a dead OAuth client) and the lifespan service-account fallback. Every caller already treats `None` as "not connected" and skips. `/health` reports `google_integration: "disabled"` so an intentional pause is never mistaken for health, and `sync_watchdog` suppresses its admin email while the switch is off.
+- **`/health` must never touch the DB.** It is the liveness probe; blocking I/O gets the process killed at 120s. Staleness and other DB-derived telemetry are computed by the hourly `sync_watchdog` job and cached in `_sync_staleness` for `/health` to read. Locked by `test_health_makes_no_db_call`.
+- **Don't classify `insufficientFilePermissions` as a credential failure.** `_hard_auth_reason()` matches project-deleted / API-disabled / dead-OAuth-client only. `insufficientFilePermissions` is #445's per-file ownership problem, which sync survives file-by-file; flagging it would permanently light up `/health` for patients whose Drive files are merely shared read-only.
 
 - `/health` is a **liveness probe only** — NO DB calls, NO blocking I/O (Railway kills process at 120s)
 - `/readiness` is the DB connectivity check (5s timeout) — use for dashboards, not healthchecks
