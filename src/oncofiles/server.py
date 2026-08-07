@@ -31,6 +31,7 @@ from oncofiles.config import (
     DOC_QUERY_LIMIT,
     ENABLE_INTEGRITY_CHECK,
     GOOGLE_DRIVE_FOLDER_ID,
+    GOOGLE_INTEGRATION_ENABLED,
     GOOGLE_OAUTH_CLIENT_ID,
     GOOGLE_OAUTH_CLIENT_SECRET,
     LOG_LEVEL,
@@ -42,6 +43,7 @@ from oncofiles.config import (
     PATIENT_CONTEXT_PATH,
     SYNC_ENABLED,
     SYNC_INTERVAL_MINUTES,
+    SYNC_STALE_ALERT_HOURS,
     TURSO_AUTH_TOKEN,
     TURSO_DATABASE_URL,
     VERSION,
@@ -285,16 +287,26 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict]:
     # Resolve primary patient UUID from slug (post-migration, patient_id is a UUID)
     _primary = await db.get_patient_by_slug("q1b")
     _primary_uuid = _primary.patient_id if _primary else ""
-    try:
-        token = await db.get_oauth_token(patient_id=_primary_uuid) if _primary_uuid else None
-        if token:
-            oauth_folder_id = token.gdrive_folder_id or ""
-            owner_email = token.owner_email or ""
-    except Exception:
+    if not GOOGLE_INTEGRATION_ENABLED:
+        # #552: leaving `token` as None short-circuits the OAuth GDrive block,
+        # the Gmail/Calendar client builds (all guarded by `if token`) and,
+        # together with the service-account guard below, every Google call.
         logger.warning(
-            "Failed to load OAuth token at startup — GDrive OAuth unavailable",
-            exc_info=True,
+            "GOOGLE_INTEGRATION_ENABLED=false — Drive/Gmail/Calendar disabled. "
+            "No Google API calls will be attempted. MCP, dashboard and local "
+            "housekeeping continue normally."
         )
+    else:
+        try:
+            token = await db.get_oauth_token(patient_id=_primary_uuid) if _primary_uuid else None
+            if token:
+                oauth_folder_id = token.gdrive_folder_id or ""
+                owner_email = token.owner_email or ""
+        except Exception:
+            logger.warning(
+                "Failed to load OAuth token at startup — GDrive OAuth unavailable",
+                exc_info=True,
+            )
 
     # Prefer OAuth (user has storage quota for uploads; service account does not)
     gdrive = None
@@ -355,8 +367,10 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict]:
         except Exception:
             logger.warning("Gmail/Calendar client init failed", exc_info=True)
 
-    # Fall back to service account if no OAuth
-    if not gdrive:
+    # Fall back to service account if no OAuth. Skipped entirely when the
+    # kill switch is off (#552) — the service account is the path that
+    # produced the "Project #... has been deleted" 403 every night.
+    if not gdrive and GOOGLE_INTEGRATION_ENABLED:
         try:
             gdrive = create_gdrive_client(owner_email=owner_email)
         except Exception as e:
@@ -447,6 +461,60 @@ def _is_invalid_grant(exc: BaseException) -> bool:
     return "invalid_grant" in str(exc).lower()
 
 
+# Track (patient_id, service) pairs whose Google credentials are *structurally*
+# broken — the GCP project, the API enablement or the OAuth client itself is
+# gone (#552). Distinct from _invalid_grant_tokens: a caregiver can fix an
+# invalid_grant by re-authing, but nobody can re-auth their way out of a
+# deleted project. These need operator action, so they get their own surface
+# on /health (counts) and /readiness (detail).
+_hard_auth_failures: dict[tuple[str, str], dict[str, str]] = {}
+
+# #552: cached output of the sync-staleness watchdog. /health is a liveness
+# probe and must never touch the DB, so the hourly `sync_watchdog` job does the
+# querying and parks the result here for the endpoints to read.
+_sync_staleness: dict[str, object] = {
+    "checked_at": None,
+    "stale_count": 0,
+    "patients": [],  # [{patient_slug, last_ok, age_h}] — stale ones only
+}
+# Deduplicate the admin alert to at most one per condition per day.
+_pipeline_alert_sent: dict[str, str] = {}
+
+# (needle, reason) — matched case-insensitively against str(exc).
+_HARD_AUTH_MARKERS: tuple[tuple[str, str], ...] = (
+    ("has been deleted", "project_deleted"),
+    ("has not been used in project", "api_not_enabled"),
+    ("accessnotconfigured", "api_not_enabled"),
+    ("service_disabled", "api_not_enabled"),
+    ("invalid_client", "oauth_client_invalid"),
+    ("unauthorized_client", "oauth_client_invalid"),
+)
+
+
+def _hard_auth_reason(exc: BaseException, _depth: int = 0) -> str | None:
+    """Classify a structural credential failure, or return None.
+
+    Deliberately does NOT match ``insufficientFilePermissions`` — that is a
+    per-file ownership problem (#445) that sync survives file-by-file, not a
+    dead credential. Flagging it here would permanently light up the health
+    endpoint for patients whose Drive files are merely shared read-only.
+
+    Recurses into ``__cause__`` (bounded) because ``asyncio.to_thread`` and the
+    googleapiclient wrappers frequently re-raise with the real error nested.
+    """
+    if _depth > 4:
+        return None
+    text = str(exc).lower()
+    if "insufficientfilepermissions" not in text:
+        for marker, reason in _HARD_AUTH_MARKERS:
+            if marker in text:
+                return reason
+    cause = exc.__cause__
+    if cause is not None and cause is not exc:
+        return _hard_auth_reason(cause, _depth + 1)
+    return None
+
+
 def _handle_sync_exception(pid: str, service: str, exc: BaseException) -> None:
     """Log sync exceptions once per stale-token; full trace for unknown errors."""
     if _is_invalid_grant(exc):
@@ -458,6 +526,30 @@ def _handle_sync_exception(pid: str, service: str, exc: BaseException) -> None:
                 service.capitalize(),
                 pid,
             )
+        return
+    reason = _hard_auth_reason(exc)
+    if reason:
+        key = (pid, service)
+        now = datetime.now(UTC).isoformat()
+        entry = _hard_auth_failures.get(key)
+        if entry is None:
+            _hard_auth_failures[key] = entry = {
+                "reason": reason,
+                "first_seen": now,
+                "detail": str(exc)[:200],
+            }
+            # ERROR, once per (pid, service): this halts ALL processing for the
+            # patient and no caregiver action can clear it. #552 went unnoticed
+            # for a month because this path used to be an unremarkable
+            # logger.exception among thousands of access-log lines.
+            logger.error(
+                "%s sync [%s] BLOCKED — %s. Operator action required; "
+                "no processing will run for this patient until credentials are repaired.",
+                service.capitalize(),
+                pid,
+                reason,
+            )
+        entry["last_seen"] = now
         return
     logger.exception("%s sync [%s] failed", service.capitalize(), pid)
 
@@ -471,6 +563,9 @@ def _record_service_sync(pid: str, service: str):
     if pid not in _last_service_sync:
         _last_service_sync[pid] = {"gdrive": None, "gmail": None, "calendar": None}
     _last_service_sync[pid][service] = datetime.now(UTC).isoformat()
+    # A successful call proves the credential is healthy again — clear any
+    # structural-auth flag so /health stops reporting a repaired patient (#552).
+    _hard_auth_failures.pop((pid, service), None)
 
 
 def _get_service_sync_times(pid: str) -> dict[str, str | None]:
@@ -541,6 +636,14 @@ async def _create_patient_clients(
     ``None`` if the patient has no OAuth token or no folder configured.
     Caches clients for 30 min to avoid rebuilding HTTP pools every sync cycle.
     """
+    # #552 kill switch. This is the single chokepoint for per-patient Google
+    # clients, so returning None here is enough to stop every Drive/Gmail/
+    # Calendar call downstream: callers already treat None as "not connected"
+    # and skip cleanly. Deliberately placed before the token load so we do not
+    # even attempt a refresh against a dead OAuth client.
+    if not GOOGLE_INTEGRATION_ENABLED:
+        return None
+
     import time as _time
 
     from oncofiles.oauth import SCOPE_CALENDAR, SCOPE_GMAIL, is_token_expired, refresh_access_token
@@ -1103,6 +1206,13 @@ def _start_sync_scheduler(
 
         total_enhanced = 0
         total_metadata = 0
+        # #552: a run where every patient's sync failed used to be
+        # indistinguishable from a clean run — the per-patient `continue`
+        # below swallowed the exception, the job returned normally, and
+        # job_tracker["nightly_ai_pipeline"]["last_ok"] was refreshed. Count
+        # outcomes so the tail can fail the job instead of reporting success.
+        sync_attempted = 0
+        sync_failed = 0
 
         try:
             from oncofiles.budget import check_patient_budget
@@ -1144,6 +1254,7 @@ def _start_sync_scheduler(
                     # enhance=False is the cap-enforcement contract — inline enhance
                     # during import would bypass DAILY_AI_DOC_CAP. Phase 2 below is
                     # the single authoritative AI-cost gate. See #433.
+                    sync_attempted += 1
                     try:
                         sync_stats = await asyncio.wait_for(
                             sync(
@@ -1161,9 +1272,11 @@ def _start_sync_scheduler(
                         _folder_404_counts.pop(pid, None)
                         logger.info("Nightly sync [%s]: %s", pid, sync_stats)
                     except TimeoutError:
+                        sync_failed += 1
                         logger.error("Nightly sync [%s] timed out", pid)
                         continue
                     except Exception as exc:
+                        sync_failed += 1
                         if _is_folder_not_found(exc):
                             count = _folder_404_counts.get(pid, 0) + 1
                             _folder_404_counts[pid] = count
@@ -1219,18 +1332,42 @@ def _start_sync_scheduler(
             cost_after = await _total_ai_cost_usd_today()
             cost_delta = max(0.0, cost_after - cost_before)
             logger.info(
-                "Nightly AI pipeline: enhanced=%d metadata=%d cost_delta=$%.4f",
+                "Nightly AI pipeline: patients_synced=%d/%d enhanced=%d metadata=%d "
+                "cost_delta=$%.4f",
+                sync_attempted - sync_failed,
+                sync_attempted,
                 total_enhanced,
                 total_metadata,
                 cost_delta,
             )
             # #441 Layer 6: surface per-run cost in job_tracker → /readiness.
+            # #552: also surface what the run actually accomplished, so
+            # "job succeeded" can be checked against "job did something".
             try:
                 entry = job_tracker.get("nightly_ai_pipeline", {})
                 entry["last_cost_usd"] = round(cost_delta, 4)
+                entry["last_run_summary"] = {
+                    "sync_attempted": sync_attempted,
+                    "sync_failed": sync_failed,
+                    "enhanced": total_enhanced,
+                    "metadata": total_metadata,
+                }
                 job_tracker["nightly_ai_pipeline"] = entry
             except Exception:
                 pass
+
+            # #552: total failure must not read as success. Raising hands the
+            # run to the EVENT_JOB_ERROR listener, which records last_error /
+            # last_error_msg on job_tracker and logs at ERROR — so /readiness
+            # shows a failing nightly job instead of a fresh last_ok. Only
+            # fires when we actually tried and every attempt failed; a night
+            # with nothing to do (0 attempted) is legitimately a success.
+            if sync_attempted > 0 and sync_failed == sync_attempted:
+                raise RuntimeError(
+                    f"Nightly pipeline: all {sync_attempted} patient sync(s) failed — "
+                    "no documents imported, renamed or enhanced. "
+                    "Check /readiness hard_auth_failures and the container log."
+                )
         finally:
             from oncofiles.memory import reclaim_memory
 
@@ -1502,6 +1639,102 @@ def _start_sync_scheduler(
         IntervalTrigger(minutes=4),
         id="db_keepalive",
         max_instances=1,
+    )
+
+    # ── Sync staleness watchdog (#552) ──
+
+    async def _run_sync_watchdog():
+        """Detect a silently-dead pipeline and tell a human.
+
+        Deliberately failure-mode agnostic: it does not care *why* sync stopped
+        (dead credentials, deleted GCP project, revoked folder, wedged
+        scheduler) — only that no run has *completed* for a patient who used to
+        sync fine. That generality is the point; #552 was invisible precisely
+        because every check we had enumerated specific known failures.
+
+        Zero AI cost, one cheap indexed query per active patient.
+        """
+        try:
+            threshold = timedelta(hours=SYNC_STALE_ALERT_HOURS)
+            now = datetime.now(UTC)
+            stale: list[dict] = []
+            for p in await db.list_patients(active_only=True):
+                last_ok = await db.get_last_successful_sync(patient_id=p.patient_id)
+                if not last_ok:
+                    # Never synced successfully — not "stale", just not
+                    # connected yet. Onboarding gaps are #468's job.
+                    continue
+                try:
+                    last_dt = datetime.fromisoformat(last_ok.replace("Z", "+00:00"))
+                except ValueError:
+                    logger.warning("sync_watchdog: unparseable finished_at %r", last_ok)
+                    continue
+                age = now - last_dt
+                if age > threshold:
+                    stale.append(
+                        {
+                            "patient_slug": p.slug,
+                            "last_ok": last_ok,
+                            "age_h": round(age.total_seconds() / 3600, 1),
+                        }
+                    )
+
+            _sync_staleness["checked_at"] = now.isoformat()
+            _sync_staleness["stale_count"] = len(stale)
+            _sync_staleness["patients"] = stale
+
+            if stale and not GOOGLE_INTEGRATION_ENABLED:
+                # Staleness is expected while the kill switch is off. Record it
+                # for /readiness but do not page — alert fatigue during a known
+                # outage is how the *next* real one gets ignored.
+                logger.info(
+                    "sync_watchdog: %d patient(s) stale, but GOOGLE_INTEGRATION_ENABLED=false "
+                    "— intentional pause, not alerting",
+                    len(stale),
+                )
+            elif stale:
+                logger.error(
+                    "sync_watchdog: %d patient(s) have had no successful sync in >%dh — %s",
+                    len(stale),
+                    SYNC_STALE_ALERT_HOURS,
+                    ", ".join(f"{s['patient_slug']}={s['age_h']}h" for s in stale),
+                )
+                lines = "\n".join(
+                    f"  {s['patient_slug']:<20} last OK {s['last_ok']}  ({s['age_h']}h ago)"
+                    for s in stale
+                )
+                auth_note = ""
+                if _hard_auth_failures:
+                    reasons = ", ".join(
+                        sorted({i.get("reason", "?") for i in _hard_auth_failures.values()})
+                    )
+                    auth_note = (
+                        f"\nStructural credential failures detected: {reasons}\n"
+                        "This needs operator action — caregivers cannot re-auth their way out.\n"
+                    )
+                await _notify_admin_pipeline_alert(
+                    condition="sync_stale",
+                    subject=f"[Oncofiles] Pipeline stalled — {len(stale)} patient(s) not syncing",
+                    body=(
+                        f"No successful sync in over {SYNC_STALE_ALERT_HOURS}h:\n\n"
+                        f"{lines}\n{auth_note}\n"
+                        f"Checked: {now.isoformat()}\n"
+                        f"Detail:  https://oncofiles.com/readiness (operator bearer required)\n"
+                    ),
+                )
+            else:
+                # Condition cleared — allow a future alert to fire again.
+                _pipeline_alert_sent.pop("sync_stale", None)
+        except Exception:
+            logger.exception("sync_watchdog failed")
+
+    scheduler.add_job(
+        _run_sync_watchdog,
+        IntervalTrigger(hours=1, start_date=datetime.now() + timedelta(minutes=5)),
+        id="sync_watchdog",
+        max_instances=1,
+        misfire_grace_time=600,
+        coalesce=True,
     )
 
     async def _run_category_validation():
@@ -3721,6 +3954,21 @@ async def health(request: Request) -> JSONResponse:
             result["folder_404_suspended_count"] = suspended
         if _invalid_grant_tokens:
             result["needs_reauth_count"] = len(_invalid_grant_tokens)
+        # #552: structural credential failure (deleted GCP project, disabled
+        # API, dead OAuth client). Counts only — /health is unauthenticated, so
+        # per-patient keys would leak active UUIDs (#488). Detail lives on the
+        # operator-only /readiness payload.
+        if _hard_auth_failures:
+            result["hard_auth_failed_count"] = len(_hard_auth_failures)
+        # #552: staleness read from the watchdog's cache — never a DB call.
+        # /health is the liveness probe; blocking I/O here gets the process
+        # killed at 120s.
+        if _sync_staleness.get("stale_count"):
+            result["stale_sync_count"] = _sync_staleness["stale_count"]
+        # Make an intentional pause unmistakable, so a quiet pipeline is never
+        # mistaken for a healthy one (or for a broken one).
+        if not GOOGLE_INTEGRATION_ENABLED:
+            result["google_integration"] = "disabled"
     except Exception:
         logger.debug("Health: lifespan context not yet available", exc_info=True)
     return JSONResponse(result)
@@ -3799,6 +4047,15 @@ async def readiness(request: Request) -> JSONResponse:
         breaker_stats = db.circuit_breaker_stats()
         if breaker_stats is not None:
             result["circuit_breaker"] = breaker_stats
+        # #552: full detail for structural credential failures. Operator-only,
+        # so patient IDs are safe here (unlike /health, which gets counts only).
+        if _hard_auth_failures:
+            result["hard_auth_failures"] = [
+                {"patient_id": pid, "service": service, **info}
+                for (pid, service), info in _hard_auth_failures.items()
+            ]
+        # #552: per-patient sync staleness, from the watchdog cache.
+        result["sync_staleness"] = _sync_staleness
         # Scheduler job status (lightweight summary)
         tracker = lifespan_ctx.get("job_tracker", {})
         if tracker:
@@ -5805,6 +6062,75 @@ async def _send_subscriber_welcome(email: str, source: str) -> None:
                 )
     except Exception:
         logger.exception("Resend subscriber welcome exception for %s", email)
+
+
+async def _notify_admin_pipeline_alert(*, condition: str, subject: str, body: str) -> None:
+    """Email the admin when the processing pipeline is broken (#552).
+
+    Same fire-and-forget shape and the same Resend env as
+    `_notify_admin_onboarding_event` — no new credentials.
+
+    This exists because logs demonstrably did not work: the GCP-project
+    deletion sat in the container log for a month while `/health` reported
+    `status: ok`, and the AutoCheck monitor (#524) had been blind for 100+
+    days. An email is the only channel that reaches a human who is not already
+    looking.
+
+    Deduplicated to at most one send per `condition` per UTC day so a
+    persistent outage does not become an hourly mail flood.
+    """
+    import httpx
+
+    today = datetime.now(UTC).date().isoformat()
+    if _pipeline_alert_sent.get(condition) == today:
+        return
+
+    api_key = os.environ.get("RESEND_API_KEY")
+    from_email = os.environ.get("NOTIFY_FROM_EMAIL")
+    to_email = os.environ.get("NOTIFY_TO_EMAIL")
+    if not (api_key and from_email and to_email):
+        logger.warning(
+            "Pipeline alert SKIPPED (%s) — Resend env missing "
+            "(RESEND_API_KEY=%s, NOTIFY_FROM_EMAIL=%s, NOTIFY_TO_EMAIL=%s)",
+            condition,
+            "set" if api_key else "missing",
+            "set" if from_email else "missing",
+            "set" if to_email else "missing",
+        )
+        return
+
+    # Mark before sending: a Resend outage must not turn into a retry storm.
+    _pipeline_alert_sent[condition] = today
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(
+                "https://api.resend.com/emails",
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "from": from_email,
+                    "to": [to_email],
+                    "subject": subject,
+                    "text": body,
+                    "tags": [
+                        {"name": "kind", "value": "pipeline_alert"},
+                        {"name": "condition", "value": condition},
+                    ],
+                },
+            )
+            if resp.status_code >= 400:
+                logger.warning(
+                    "Resend pipeline alert failed (%s): %s %s",
+                    condition,
+                    resp.status_code,
+                    resp.text[:200],
+                )
+            else:
+                logger.info("Pipeline alert sent to admin (%s)", condition)
+    except Exception:
+        logger.warning("Pipeline alert send failed (%s)", condition, exc_info=True)
 
 
 async def _notify_admin_onboarding_event(

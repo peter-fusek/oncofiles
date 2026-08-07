@@ -22,6 +22,21 @@ GOOGLE_DRIVE_FOLDER_ID: str = os.environ.get("GOOGLE_DRIVE_FOLDER_ID", "")
 GOOGLE_CREDENTIALS_BASE64: str = os.environ.get("GOOGLE_CREDENTIALS_BASE64", "")
 GOOGLE_APPLICATION_CREDENTIALS: str = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", "")
 
+# Master kill switch for ALL Google API access — Drive, Gmail, Calendar (#552).
+# Set false when the credentials behind them are known-dead (deleted GCP
+# project, revoked client) so the app stops hammering APIs that cannot answer.
+#
+# Prefer this over SYNC_ENABLED=false: SYNC_ENABLED kills the entire
+# APScheduler, taking db_keepalive, memory_check, the cleanup jobs and the
+# sync watchdog down with it. This flag disables only the Google-touching
+# paths, so the MCP server, dashboard, DB and local housekeeping keep running
+# normally and the watchdog can still report the outage.
+GOOGLE_INTEGRATION_ENABLED: bool = os.environ.get("GOOGLE_INTEGRATION_ENABLED", "true").lower() in (
+    "true",
+    "1",
+    "yes",
+)
+
 # Google OAuth 2.0 (v1.0)
 GOOGLE_OAUTH_CLIENT_ID: str = os.environ.get("GOOGLE_OAUTH_CLIENT_ID", "")
 GOOGLE_OAUTH_CLIENT_SECRET: str = os.environ.get("GOOGLE_OAUTH_CLIENT_SECRET", "")
@@ -66,6 +81,13 @@ DOC_QUERY_LIMIT: int = max(MAX_DOCUMENTS_PER_PATIENT, 10_000)
 # Sync scheduler (v1.0)
 SYNC_INTERVAL_MINUTES: int = int(os.environ.get("SYNC_INTERVAL_MINUTES", "5"))
 SYNC_ENABLED: bool = os.environ.get("SYNC_ENABLED", "true").lower() in ("true", "1", "yes")
+
+# Sync staleness watchdog (#552). If a patient with a connected Drive folder
+# has had no *completed* sync in this many hours, the pipeline is broken —
+# surfaced on /health + /readiness and emailed to the admin. 36h matches
+# AI_REPROCESS_MAX_AGE_HOURS and tolerates exactly one missed nightly run
+# (23:00 UTC daily) before alerting, so a single blip stays quiet.
+SYNC_STALE_ALERT_HOURS: int = int(os.environ.get("SYNC_STALE_ALERT_HOURS", "36"))
 
 # Nightly-only AI pipeline (v5.10.0, #433)
 # When AI_NIGHTLY_ONLY=true (default), LLM-touching jobs collapse into one

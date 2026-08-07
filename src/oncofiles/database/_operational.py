@@ -423,6 +423,31 @@ class OperationalMixin:
                 rows = await cursor.fetchall()
         return [dict(r) for r in rows]
 
+    async def get_last_successful_sync(self, *, patient_id: str) -> str | None:
+        """Return the ISO timestamp of the last *completed* sync, or None.
+
+        The staleness signal behind the #552 watchdog. Deliberately filters on
+        ``status = 'completed'`` — ``get_sync_stats_summary`` exposes
+        ``last_sync_at`` as ``MAX(started_at)`` over *all* rows, which stays
+        fresh even when every run is failing, and so cannot detect an outage.
+
+        Reads from ``sync_history`` rather than the in-memory
+        ``_last_service_sync`` because the latter resets on every deploy — part
+        of why a month-long outage stayed invisible.
+
+        ``patient_id`` is a required keyword and is ANDed into the SQL, per the
+        #499 scoping convention; an empty string matches zero rows.
+        """
+        async with self.db.execute(
+            "SELECT MAX(finished_at) AS last_ok FROM sync_history "
+            "WHERE status = 'completed' AND patient_id = ?",
+            (patient_id,),
+        ) as cursor:
+            row = await cursor.fetchone()
+            if row is None:
+                return None
+            return dict(row).get("last_ok")
+
     async def get_sync_stats_summary(self, *, patient_id: str | None = None) -> dict:
         """Get aggregate sync statistics for system_health.
 
