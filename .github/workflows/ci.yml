@@ -23,3 +23,62 @@ jobs:
       - uses: astral-sh/setup-uv@v5
       - run: uv sync --extra dev
       - run: uv run pytest
+
+  # Deploy na Mac mini (Coolify vo VM macmini-prod), len po pushi do main a zelených testoch.
+  # Coolify API nie je z internetu dostupné, runner sa preto pripojí do tailnetu
+  # ako efemérny uzol s tagom tag:ci (ACL povoľuje tag:ci → macmini-prod:8000).
+  # Vypínač: repo variable DEPLOY_ENABLED=true. Kým nie je nastavená, job sa preskočí.
+  # Secrets: TS_OAUTH_CLIENT_ID, TS_OAUTH_SECRET, COOLIFY_API_TOKEN
+  # Variables: COOLIFY_URL (napr. http://<tailnet-ip>:8000), COOLIFY_APP_UUID
+  deploy:
+    needs: [lint, test]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.DEPLOY_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
+    steps:
+      - name: Join tailnet (tag:ci)
+        uses: tailscale/github-action@84a3f23bb4d843bcf4da6cf824ec1be473daf4de # v3.2.3
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:ci
+
+      - name: Trigger Coolify deploy and wait
+        env:
+          COOLIFY_URL: ${{ vars.COOLIFY_URL }}
+          COOLIFY_APP_UUID: ${{ vars.COOLIFY_APP_UUID }}
+          COOLIFY_API_TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          auth=(-H "Authorization: Bearer ${COOLIFY_API_TOKEN}" -H "Accept: application/json")
+          resp=$(curl -fsS -m 30 "${auth[@]}" "${COOLIFY_URL}/api/v1/deploy?uuid=${COOLIFY_APP_UUID}&force=false")
+          dep=$(echo "$resp" | jq -r '.deployments[0].deployment_uuid // empty')
+          if [ -z "$dep" ]; then echo "Coolify did not return a deployment_uuid"; echo "$resp"; exit 1; fi
+          echo "Deployment ${dep} queued for ${GITHUB_SHA}"
+          for i in $(seq 1 120); do
+            status=$(curl -fsS -m 15 "${auth[@]}" "${COOLIFY_URL}/api/v1/deployments/${dep}" | jq -r '.status')
+            echo "[$i] status=${status}"
+            case "$status" in
+              finished) exit 0 ;;
+              failed|cancelled*|error) echo "Deploy ${status}. Logs: Coolify UI → oncofiles → Deployments"; exit 1 ;;
+            esac
+            sleep 10
+          done
+          echo "Timed out waiting for deployment ${dep}"; exit 1
+
+      # Pred prepnutím DNS nastav HEALTH_URL na tailnet adresu (sslip.io), potom na https://oncofiles.com/health
+      - name: Smoke test /health
+        env:
+          HEALTH_URL: ${{ vars.HEALTH_URL || 'https://oncofiles.com/health' }}
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 12); do
+            if curl -fsS -m 10 "$HEALTH_URL" | jq -e '.status == "ok"' >/dev/null; then
+              echo "$HEALTH_URL OK"; exit 0
+            fi
+            sleep 10
+          done
+          echo "$HEALTH_URL did not return ok"; exit 1
