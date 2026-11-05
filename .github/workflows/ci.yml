@@ -54,7 +54,8 @@ jobs:
         run: |
           set -euo pipefail
           auth=(-H "Authorization: Bearer ${COOLIFY_API_TOKEN}" -H "Accept: application/json")
-          resp=$(curl -fsS -m 30 "${auth[@]}" "${COOLIFY_URL}/api/v1/deploy?uuid=${COOLIFY_APP_UUID}&force=false")
+          # Coolify >= 4.6: /deploy je POST (GET vracia 405)
+          resp=$(curl -fsS -m 30 -X POST "${auth[@]}" "${COOLIFY_URL}/api/v1/deploy?uuid=${COOLIFY_APP_UUID}&force=false")
           dep=$(echo "$resp" | jq -r '.deployments[0].deployment_uuid // empty')
           if [ -z "$dep" ]; then echo "Coolify did not return a deployment_uuid"; echo "$resp"; exit 1; fi
           echo "Deployment ${dep} queued for ${GITHUB_SHA}"

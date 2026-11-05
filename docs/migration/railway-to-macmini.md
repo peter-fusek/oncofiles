@@ -320,11 +320,11 @@ Tailnet IP, MAC adresy a domáca verejná IP sem nepatria (repo je verejné).
 | Coolify | v1 vo VM, proxy Traefik s `letsencrypt` resolverom (HTTP-01 na `:80`), `api.insecure=false`, HTTP/3 zapnuté (UDP sa cez ssh forwarder neprenesie, to nevadí) |
 | Aplikácia | beží (`/health` ok, 5.18.1-dev), FQDN zatiaľ `oncofiles.<tailnet-ip>.sslip.io`, dáta v Docker volume `…-oncofiles-data` → `/app/data` (vnútri disku VM) |
 | DB | **čistá inštalácia**: `oncofiles.db` + WAL ~3 MB. **Prod dáta z Forpsi tu nie sú** (pozri rozhodnutie R1) |
-| Env v bežiacom kontajneri | `MCP_*`, `DATABASE_PATH`, `SYNC_ENABLED`, `HOST`, `PORT`. **Chýbajú** `ANTHROPIC_API_KEY`, `DASHBOARD_SESSION_SECRET`, `OAUTH_STATE_SECRET`: v Coolify sú zrejme nastavené až po poslednom deployi, treba **Redeploy** |
+| Env v bežiacom kontajneri | Pôvodne chýbali `ANTHROPIC_API_KEY`, `DASHBOARD_SESSION_SECRET`, `OAUTH_STATE_SECRET` (pridané po poslednom deployi). **Vyriešené Redeployom 2026-11-05**, pozri Priebeh |
 | Sieť doma | Mac mini → Deco BE65 (router, vlastná LAN) → router Telekomu (ďalšia LAN) → verejná IP. Tretí hop je verejná adresa Telekomu, takže **nie je CGNAT**. IP je zatiaľ dynamická |
 | LM Studio | počúva na hostiteľovi `*:1234` (s tokenom) |
 | Samsung T7 | pripojený ako `PF-SSD`, 4 TB, **exFAT, nešifrovaný**, 2,5 TB voľné |
-| Coolify API token | v Keychaine MacBooku (`oncofiles-coolify-api`). Prvý pokus uložil do Keychainu nesprávny obsah schránky, token treba uložiť znova |
+| Coolify API token | v Keychaine MacBooku (`oncofiles-coolify-api`), práva read/write/deploy bez `read:sensitive` (API hodnoty env nevracia). Coolify verzia 4.6.0 |
 | `gcloud` | na MacBooku prihlásený `peter.fusek@instarea.sk`, token expirovaný (treba `gcloud auth login`) |
 
 ### Krok 1: verejný prístup
@@ -398,7 +398,7 @@ Poznámka k SPF: mechanizmus `a` dnes autorizuje adresu Forpsi na odosielanie po
 7. **Forpsi zastaviť až po Petrovom súhlase** (Coolify Stop, nie Delete).
 
 ### Krok 4: CI/CD
-- `.github/workflows/ci.yml` má nový job `deploy`: po zelených `lint` + `test`, len pri pushi do `main`. Runner sa pripojí do tailnetu ako efemérny uzol `tag:ci` (`tailscale/github-action@v3`, OAuth client), zavolá `GET /api/v1/deploy?uuid=…` na Coolify, počká na stav `finished` a urobí smoke test `/health`.
+- `.github/workflows/ci.yml` má nový job `deploy`: po zelených `lint` + `test`, len pri pushi do `main`. Runner sa pripojí do tailnetu ako efemérny uzol `tag:ci` (`tailscale/github-action` pripnutá na SHA v3.2.3, OAuth client), zavolá `POST /api/v1/deploy?uuid=…` na Coolify (od verzie 4.6 je to POST, GET vracia 405), počká na stav `finished` a urobí smoke test `/health`.
 - Kým nie je nastavená repo variable `DEPLOY_ENABLED=true`, job sa preskočí. Merge preto nič nerozbije.
 - Peter nastaví: Tailscale ACL (`tagOwners` pre `tag:ci` a pravidlo `tag:ci` → `macmini-prod:8000`), Tailscale OAuth client so scope `auth_keys` a tagom `tag:ci`, Coolify API token. GitHub secrets `TS_OAUTH_CLIENT_ID`, `TS_OAUTH_SECRET`, `COOLIFY_API_TOKEN`, variables `COOLIFY_URL`, `COOLIFY_APP_UUID`, `HEALTH_URL`, `DEPLOY_ENABLED`.
 
@@ -410,6 +410,15 @@ Poznámka k SPF: mechanizmus `a` dnes autorizuje adresu Forpsi na odosielanie po
 
 ### Krok 6 (neskôr): lokálny model v LM Studio
 Až po spustení na `oncofiles.com`. Tu len poznámka, nič sa nerobí.
+
+### Priebeh (log)
+- **2026-11-05, hardening 1b:** Colima forwardy obmedzené (80/443 verejne, ostatné len localhost). Overené z LAN.
+- **2026-11-05, Keychain:** uložené `oncofiles-coolify-api`, `oncofiles-google-oauth-client-id`, `oncofiles-google-oauth-client-secret` (účet `claude`). Overený len tvar, hodnoty sa nevypisovali. Poučenie: `security add-generic-password … -w "$(pbpaste)"` je nespoľahlivé, lebo kopírovanie príkazu prepíše schránku. Správne: vo vlastnom Termináli `security add-generic-password -U -s <meno> -a claude -w` (bez hodnoty, interaktívny vstup).
+- **2026-11-05, Google env cez Coolify API:** `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, `GOOGLE_OAUTH_REDIRECT_URI=https://oncofiles.com/oauth/callback`, `GOOGLE_INTEGRATION_ENABLED=true`. Všetky runtime, **nie** buildtime. Hodnoty išli do API cez stdin, nie cez argumenty.
+- **2026-11-05, Redeploy:** env-only, bez buildu (~20 s). V novom kontajneri sú všetky tajomstvá nastavené a neprázdne, `/health` ok, dashboard 200, 0 reštartov.
+- **Zistenie:** `GOOGLE_CREDENTIALS_BASE64` je v Coolify nastavený a appka pri štarte inicializuje GDrive klienta zo servisného účtu (`Initializing GDrive client from base64 credentials`). Odstránenie čaká na súhlas.
+- **Zistenie:** `DATABASE_PATH`, `MCP_HOST`, `MCP_PORT`, `MCP_TRANSPORT`, `SYNC_ENABLED` majú v Coolify zaškrtnuté „Available at Buildtime“. Nie sú tajné, ale podľa pravidla z #550 to netreba. API ich bez `read:sensitive` nevie prepnúť (PATCH vyžaduje hodnotu), preto ich treba odškrtnúť v UI.
+- **Zistenie:** v Coolify je vypnutý health check aplikácie (`/health`). Odporúčam ho zapnúť, aby Coolify pri rolling update čakal na zdravý kontajner.
 
 ### Rozhodnutia (Peter, 2026-11-05)
 - **R1. Dáta z Forpsi: začať načisto.** Prod DB z Forpsi sa nepresúva. Používatelia si konektor v claude.ai pridajú znova a Drive priečinok pripoja znova cez Google OAuth. Pred zastavením Forpsi sa prod DB **archivuje** (šifrovaná kópia, nie zmazanie), lebo obsahuje zdravotné údaje a je to jediná kópia. Dôsledok: prepnutie DNS nemá split-brain riziko, stará appka sa dá zastaviť kedykoľvek po súhlase.
