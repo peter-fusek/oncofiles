@@ -17,7 +17,7 @@ Značka **NEOVERENÉ** znamená, že sa to v tomto behu nedalo priamo overiť. P
 5. **Na Apple Silicon to funguje.** Na M5 (arm64, macOS 27.2) prešlo **1360/1360 testov**. Natívne závislosti majú arm64 wheel: pymupdf 1.27.2, libsql 0.1.11, pydantic-core; cryptography má universal2.
 6. **Google integrácia je mŕtva** od 2026-07-06 (GCP projekty sú zmazané a nedajú sa obnoviť, #552). Prod beží s `GOOGLE_INTEGRATION_ENABLED=false`. Presun teda nemusí riešiť Google OAuth redirecty, kým sa nerozhodne #539.
 7. **Kľúčová vec pre bezvýpadkový prechod:** všetky verejné URL (MCP konektor, OAuth issuer, redirect URI) sú napevno `https://oncofiles.com`. **Ak zostane doména a skopírujú sa DB a tajomstvá 1:1, konektory v claude.ai a ChatGPT u všetkých používateľov fungujú ďalej bez zásahu.**
-8. Na Mac mini som sa **nedostal**. Tailscale ping na oba uzly („peters-mac-mini“ a Linux uzol „macmini-prod“) vypršal. Cez LAN SSH odpovedá, ale môj kľúč odmieta. Body 9–13 sú preto odporúčania s otvorenými otázkami, nie meranie.
+8. Na Mac mini som sa v tomto behu **nedostal**. Body 9–13 sú preto odporúčania s otvorenými otázkami, nie meranie.
 9. **Najväčšie riziká:** (1) momentálne neexistuje overená záloha prod DB mimo servera, lebo GCS záloha zanikla spolu s GCP; (2) FileVault a výpadok prúdu; (3) zdravotné údaje na domácom stroji (GDPR); (4) zverejnenie do internetu, keďže DNS je na websupport.sk, nie na Cloudflare.
 10. **Odporúčaná cesta:** nechať Forpsi zatiaľ ako **reverzný proxy a TLS front** a do Mac mini posielať prevádzku cez Tailscale. DNS, certifikát ani IP sa nemenia a návrat je len prepnutie cieľa v proxy (minúty). Úplné odstavenie Forpsi až po overení.
 
@@ -176,7 +176,7 @@ Zdroj „Coolify env“ znamená, že hodnota je dnes nastavená v Coolify UI (r
 
 ### Mac mini (body 9–13)
 
-> **Pozor:** tento beh prebehol na **MacBook Pro (Mac17,2, Apple M5, 32 GB, macOS 27.2)**, nie na Mac mini. Mac mini je v tailnete viditeľný ako `peters-mac-mini` (macOS) a navyše ako Linux uzol `macmini-prod` (VM alebo kontajner? **NEOVERENÉ**). Tailscale ping na oba vypršal, LAN SSH (Bonjour) odpovedá, ale odmieta kľúč. **Nič z bodov 9–12 nie je na Mac mini zmerané.**
+> **Pozor:** tento beh prebehol na vývojovom MacBooku, nie na Mac mini. **Nič z bodov 9–12 nie je na Mac mini zmerané.**
 
 ### 9. Hardvér a systém
 - Podľa `docs/architecture/selfhosted_macmini_proposal.md`: **M4 Pro, 14 CPU / 20 GPU jadier, 48 GB RAM**. Model, voľný disk a verzia macOS: **NEOVERENÉ**.
@@ -185,7 +185,6 @@ Zdroj „Coolify env“ znamená, že hodnota je dnes nastavená v Coolify UI (r
 
 ### 10. Prostredie
 - Docker/OrbStack/Colima a čo počúva na portoch: **NEOVERENÉ** (`lsof -iTCP -sTCP:LISTEN -n -P`, `which docker orbstack colima`).
-- Linux uzol `macmini-prod` naznačuje, že už existuje Linux VM. Treba zistiť, čo v nej beží.
 - **Odporúčanie: natívne cez `launchd` + `uv`**, nie Docker. Testy natívne na arm64 prechádzajú, odpadá vrstva VM, Drive for Desktop mount (#539) je priamo prístupný a Coolify/Railpack netreba. Docker by dával zmysel len pri zámere zostať prenositeľný späť na Linux VPS. V tom prípade najprv napísať Dockerfile, lebo dnes neexistuje.
 - Bežať pod **samostatným štandardným používateľom** (napr. `oncofiles`) ako LaunchDaemon s `UserName`, nie pod Peterovým účtom.
 
@@ -260,8 +259,8 @@ Stav na Mac mini (`tailscale status`, `cloudflared`): **NEOVERENÉ**. Na MacBook
 ### Otvorené otázky
 1. Existuje ešte Railway projekt, ktorý sa platí? (CLI odhlásené, treba skontrolovať v Railway dashboarde.)
 2. Prečo je cieľ „Railway → Mac mini“? Platí, že sa vlastne odchádza z **Forpsi/Coolify**? Má Forpsi VPS po migrácii zostať ako front (možnosť A) alebo zaniknúť?
-3. Mac mini: presný model, disk, macOS, či je FileVault zapnutý, čo beží v Linux uzle `macmini-prod`, prečo Tailscale ping na oba uzly vypršal (vypnutý Mac? spánok? key expiry?).
-4. Pobeží Mac mini natívne (launchd), alebo v Linux VM (`macmini-prod`)? Pri VM by šlo o Docker/systemd a FileVault chráni len hostiteľa.
+3. Mac mini: presný model, disk, macOS, FileVault, či už beží Linux VM a čo v nej.
+4. Pobeží Mac mini natívne (launchd), alebo v Linux VM? Pri VM by šlo o Docker/systemd a FileVault chráni len hostiteľa.
 5. Veľkosť prod DB a počty riadkov: potrebný operátorský bearer alebo SSH na VPS (`/readiness` s bearerom).
 6. Koľko klientov konektorov (`mcp_oauth_clients`) a aktívnych tokenov existuje, teda koľkých ľudí by zasiahla zmena URL?
 7. Ostáva rozhodnutie #539 (lokálny mount vs. obnova GCP)? Mac mini s Drive for Desktop je prirodzený domov pre variant „lokálny mount“. To mení, či treba na Mac mini Google účet a Drive for Desktop pod servisným používateľom.
@@ -304,125 +303,46 @@ Stav na Mac mini (`tailscale status`, `cloudflared`): **NEOVERENÉ**. Na MacBook
 
 ---
 
-## (f) Sprevádzkovanie na Mac mini: priebeh
+## (f) Sprevádzkovanie na Mac mini: verejné zhrnutie
 
-Cieľ: `https://oncofiles.com` beží z Mac mini (Coolify vo VM `macmini-prod`), bez Forpsi a bez Cloudflare. Google OAuth v dashboarde, MCP konektor na `/mcp`.
-Pravidlá: tajomstvá len v macOS Keychain alebo priamo v Coolify (API). Mazanie, zmena DNS, zmena na routeri a zastavenie Forpsi až po Petrovom súhlase.
-Tailnet IP, MAC adresy a domáca verejná IP sem nepatria (repo je verejné).
+Konkrétna domáca konfigurácia (sieť, adresy, zariadenia, disky, názvy tajomstiev, prevádzkový log) je zámerne **mimo repa** v súkromnom prevádzkovom manuáli. Tu je len všeobecný postup, ktorý sa dá zverejniť.
 
-### Stav k 2026-11-05 (overené čítaním)
+### Cieľový stav
+- `https://oncofiles.com` beží z domáceho Mac mini: Coolify v Linux VM (Colima), build Railpack, Traefik s Let's Encrypt. Bez Forpsi a bez Cloudflare.
+- Z internetu sú dostupné len TCP 80 a 443. Panel a API Coolify, SSH a ostatné služby sú dostupné len cez Tailscale.
+- Google OAuth v dashboarde (nový GCP projekt, consent screen External, In production, neoverený), MCP konektor na `/mcp`.
 
-| Vrstva | Zistenie |
-|---|---|
-| Hostiteľ | Mac mini, macOS 27.0.1, **FileVault ON**, `autorestart 1`, `sleep 0`, aplikačný firewall **vypnutý**. Pripojený cez **Wi-Fi** (`en1`), Ethernet (`en0`) nie je zapojený |
-| VM | Colima `default` (vz, aarch64, 6 CPU, 12 GiB, 150 GiB), `network.address: false` (user-mode sieť, VM má len internú adresu za hostiteľom), `portForwarder: ssh`. Štartuje cez `brew services` (`sh.brew.colima`) |
-| Cesta host → VM | **Už existuje.** Colima (ssh forwarder) počúva na hostiteľovi na `*:80`, `*:443`, `*:8000`, `*:8080`, `*:6001`, `*:6002` a posiela to do VM. Z LAN na `:80`/`:443` odpovedá Traefik (503 = zatiaľ žiadny router pre `oncofiles.com`) |
-| Coolify | v1 vo VM, proxy Traefik s `letsencrypt` resolverom (HTTP-01 na `:80`), `api.insecure=false`, HTTP/3 zapnuté (UDP sa cez ssh forwarder neprenesie, to nevadí) |
-| Aplikácia | beží (`/health` ok, 5.18.1-dev), FQDN zatiaľ `oncofiles.<tailnet-ip>.sslip.io`, dáta v Docker volume `…-oncofiles-data` → `/app/data` (vnútri disku VM) |
-| DB | **čistá inštalácia**: `oncofiles.db` + WAL ~3 MB. **Prod dáta z Forpsi tu nie sú** (pozri rozhodnutie R1) |
-| Env v bežiacom kontajneri | Pôvodne chýbali `ANTHROPIC_API_KEY`, `DASHBOARD_SESSION_SECRET`, `OAUTH_STATE_SECRET` (pridané po poslednom deployi). **Vyriešené Redeployom 2026-11-05**, pozri Priebeh |
-| Sieť doma | Mac mini → Deco BE65 (router, vlastná LAN) → router Telekomu (ďalšia LAN) → verejná IP. Tretí hop je verejná adresa Telekomu, takže **nie je CGNAT**. IP je zatiaľ dynamická |
-| LM Studio | počúva na hostiteľovi `*:1234` (s tokenom) |
-| Samsung T7 | pripojený ako `PF-SSD`, 4 TB, **exFAT, nešifrovaný**, 2,5 TB voľné |
-| Coolify API token | v Keychaine MacBooku (`oncofiles-coolify-api`), práva read/write/deploy bez `read:sensitive` (API hodnoty env nevracia). Coolify verzia 4.6.0 |
-| `gcloud` | na MacBooku prihlásený `peter.fusek@instarea.sk`, token expirovaný (treba `gcloud auth login`) |
+### Rozhodnutia (Peter, 2026-11-05/06)
+- **R1. Dáta z Forpsi: začať načisto.** Prod DB z Forpsi sa nepresúva. Používatelia si konektor v claude.ai pridajú znova a Drive priečinok pripoja znova cez Google OAuth. Pred zastavením Forpsi sa prod DB **archivuje** (šifrovaná kópia, nie zmazanie). Prepnutie DNS preto nemá split-brain riziko.
+- **R3. Google OAuth: External, In production, neoverené.** Varovanie „unverified app“ a strop 100 používateľov akceptujeme. Servisný účet sa nepoužíva, Drive ide len cez OAuth vo frontende.
+- **R4. Zálohy:** šifrované `restic` snapshoty lokálne aj mimo domu. Odložené, kým na Mac mini nebežia reálni používatelia.
 
-### Krok 1: verejný prístup
+### DNS a TLS
+- Pri prepnutí sa vo Websupporte menia len A záznamy `@` a `www`. MX, SPF, DMARC, `mail`, `autodiscover` a wildcard ostávajú. AAAA sa nepridáva.
+- Deň vopred znížiť TTL na 300 s. Overiť `dig +short oncofiles.com @ns1.websupport.sk`.
+- Certifikát Let's Encrypt vydá Traefik (HTTP-01) až po zmene DNS. Kvôli HSTS bude 1–2 minúty neplatný certifikát (bez výpadku by to šlo cez DNS-01).
 
-**Cesta paketu:** internet → verejná IP (Telekom) → *[NAT 1: router Telekomu]* → *[NAT 2: Deco]* → Mac mini `:80/:443` → Colima ssh forwarder → VM → Traefik (Coolify proxy) → kontajner `oncofiles:8080`.
+### Google Cloud
+- OAuth klient typu Web application, redirect `https://oncofiles.com/oauth/callback`, origin `https://oncofiles.com`. Consent screen a OAuth klient sa robia len v konzole (Google Auth Platform), nemajú verejné API.
+- Scopes: `drive` a `gmail.readonly` (restricted), `calendar.readonly` (sensitive). V stave Testing by refresh tokeny expirovali po 7 dňoch, preto In production.
+- `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, `GOOGLE_OAUTH_REDIRECT_URI`, `GOOGLE_INTEGRATION_ENABLED=true` nastavené v Coolify ako runtime premenné (nikdy buildtime, pozri #550).
 
-**Riešenie dvojitého NAT, odporúčanie: Deco prepnúť do režimu Access Point.**
-Router Telekomu potom robí jediný NAT a DHCP, Deco len Wi-Fi mesh. Výhody: jedno presmerovanie portov namiesto dvoch, funguje hairpin NAT (doma otvorený `https://oncofiles.com` pôjde cez verejnú IP, cez dva NATy to obvykle nefunguje), jednoduchšia diagnostika.
-Nevýhody: zmení sa LAN rozsah (z rozsahu Deco na rozsah routera Telekomu), zariadenia so statickou IP treba prestaviť, niektoré funkcie Deco (rodičovská kontrola, QoS) v AP režime nefungujú. Tailscale to neovplyvní.
+### Prepnutie (checklist)
+1. DB na Mac mini ostáva čistá (R1). Prod DB z Forpsi sa pred zastavením archivuje.
+2. Coolify: FQDN `https://oncofiles.com,https://www.oncofiles.com`, Redeploy.
+3. Presmerovanie 80/443 overené zvonka cez verejnú IP s hlavičkou `Host: oncofiles.com`.
+4. Websupport: A `@` a `www` na statickú IP.
+5. Overiť certifikát (`curl -sI https://oncofiles.com/health`, issuer Let's Encrypt).
+6. Testy: `/health`, `/readiness`, dashboard → Google prihlásenie → priečinok z Drive, claude.ai → konektor `https://oncofiles.com/mcp`.
+7. Forpsi zastaviť až po Petrovom súhlase (Coolify Stop, nie Delete).
 
-Ak Deco musí zostať routerom (záložný variant): presmerovanie v reťazi. Router Telekomu: 80/443 → WAN IP Deco (rezervovaná). Deco: 80/443 → Mac mini (rezervovaná). Hairpin NAT doma nebude fungovať, doma treba ísť cez mobilné dáta alebo cez lokálny DNS záznam.
-
-**Odporúčanie navyše:** Mac mini pripojiť **káblom** (Ethernet `en0`) namiesto Wi-Fi. Server s verejnou službou na Wi-Fi mesh je zbytočné riziko výpadkov.
-
-**Presné kroky (robí Peter, R2 = AP režim):**
-1. *Router Telekomu* (webové rozhranie na adrese brány): over, že **DHCP server je zapnutý** a zisti rozsah DHCP poolu. Po prepnutí Deco bude jediným DHCP serverom.
-2. *Router Telekomu:* over, že **vzdialená správa z WAN** (Remote management, TR-069 web, „Správa z internetu“) **nepočúva na portoch 80/443**. Ak áno, presuň ju na iný port alebo vypni, inak koliduje s presmerovaním. Vypni **UPnP**, aby si žiadne zariadenie neotváralo porty samo.
-3. *Mac mini:* zapoj Ethernet kábel do Deco (hlavná jednotka alebo satelit). Wi-Fi nechaj ako zálohu.
-4. *Deco app:* More → Advanced → **Operation Mode → Access Point** → uložiť. Deco sa reštartuje a sieť na ~2 min vypadne. Mac mini potom dostane adresu od routera Telekomu.
-5. *Router Telekomu:* **rezervácia DHCP** (statický lease) pre Ethernet MAC Mac mini na pevnú adresu **mimo DHCP poolu** (ďalej „adresa Mac mini“). MAC a IP adresy dostane Peter v chate, do repa nepatria.
-6. *Router Telekomu:* **presmerovanie portov** (Port forwarding / Virtual server / NAT):
-   - TCP 80 → adresa Mac mini, port 80
-   - TCP 443 → adresa Mac mini, port 443
-   - **nič iné**: nie DMZ, nie 8000, nie 22, nie 1234, nie UDP.
-7. Daj vedieť. Overím zvonka cez externú kontrolu a z Mac mini, či Traefik odpovedá na verejnej IP.
-8. Keď Telekom pridelí statickú IP: zopakuj, že presmerovanie platí (niekedy sa pri zmene profilu konfigurácia routera resetuje). Až potom zmena DNS.
-
-**Čo bude z internetu dostupné:** len TCP 80 a 443. Coolify panel (8000), Traefik (8080), Coolify realtime (6001/6002), SSH (22) a LM Studio (1234) sa na routeri **nepresmerúvajú**. Coolify sa ovláda len cez tailnet. **Hardening 1b: hotové 2026-11-05.** `~/.colima/_lima/_config/override.yaml` na hostiteľovi: TCP 80 a 443 na všetkých rozhraniach, všetky ostatné porty z VM len na localhost hostiteľa. Overené: z LAN 80/443 odpovedá Traefik, 8000/8080/6001/6002 sú zatvorené, Coolify ide cez Tailscale (beží vo VM).
-Pozor pri reštarte Colimy: `brew services restart colima` zastaví len Docker, VM beží ďalej a Docker sa už sám nespustí („already running, ignoring“), a Lima nenačíta zmenený override. Správny postup: `brew services stop colima && colima stop && brew services start colima`.
-
-**Známe obmedzenie:** ssh forwarder Colimy neprenáša IP klienta. Aplikácia a Traefik vidia všetky požiadavky z jednej adresy. Na logy a prípadný rate-limit to treba vedieť. Riešenie neskôr (voliteľné): `network.address: true` (vmnet) a forward priamo na IP VM, alebo PROXY protocol.
-
-**TLS:** Let's Encrypt cez Traefik (HTTP-01). Certifikát sa dá vydať až keď `oncofiles.com` ukazuje na domácu IP a port 80 je presmerovaný, teda po zmene DNS. Kvôli HSTS (`includeSubDomains`) bude 1–2 minúty po prepnutí neplatný certifikát. Bez výpadku TLS by to išlo len cez DNS-01 (Traefik vie provider `websupport`, treba API kľúč Websupportu). Voliteľné.
-
-**DNS: súčasné záznamy zóny `oncofiles.com`** (z autoritatívneho `ns1.websupport.sk`, 2026-11-05; AXFR nie je povolený, preto Peter pred zmenou porovná s exportom vo Websupporte):
-
-| Názov | Typ | Hodnota | Poznámka |
-|---|---|---|---|
-| `@` | NS | `ns1/ns2/ns3.websupport.sk` | bez zmeny |
-| `@` | SOA | `ns1.websupport.sk admin.websupport.sk` | bez zmeny |
-| `@` | A | Forpsi VPS | **mení sa** na statickú IP |
-| `www` | A | Forpsi VPS | **mení sa** na statickú IP |
-| `@` | AAAA | — | nie je; **nepridávať** (doma nie je IPv6 forward) |
-| `@` | MX | `10 mx10.websupport.sk`, `100 mx20.websupport.sk` | e-mail, **nemeniť** |
-| `@` | TXT | `v=spf1 a mx include:_spf.m1.websupport.sk -all` | pozri poznámku o SPF |
-| `_dmarc` | TXT | `v=DMARC1; p=quarantine` | nemeniť |
-| `mail` | A | server Websupport | e-mail Websupport, nemeniť |
-| `autodiscover` | CNAME | `web.prod.bts.websupport.sk` | e-mail klienti, nemeniť |
-| `*` | A | Websupport hosting | **wildcard**. Kvôli nemu každá subdoména, aj `ftp`, `send`, `resend._domainkey`, vráti adresu hostingu |
-| `resend._domainkey`, `send` | TXT/MX | — | **neexistujú** → Resend neposiela z `oncofiles.com` (odosielateľ je iná doména) |
-
-Poznámka k SPF: mechanizmus `a` dnes autorizuje adresu Forpsi na odosielanie pošty za `oncofiles.com`. Po zmene A bude autorizovať domácu IP. Doma žiadny mail server nebeží, takže to nič nerozbije. Čistejšie je `a` neskôr odstrániť.
-
-**Postup zmeny DNS (Peter vo Websupporte, po súhlase):** (1) deň vopred znížiť TTL `@` a `www` na 300 s, (2) v čase prepnutia zmeniť len A `@` a A `www`, nič iné, (3) overiť `dig +short oncofiles.com @ns1.websupport.sk`.
-
-### Krok 2: Google Cloud (projekt `oncofiles-macmini`, účet Instarea)
-- OAuth consent screen a OAuth klient sa cez `gcloud` vytvoriť nedajú (Google na to nemá verejné API). Robí sa v konzole: Google Auth Platform → Branding / Audience / Clients.
-- Klient typu **Web application**, Authorized redirect URI `https://oncofiles.com/oauth/callback`, JavaScript origin `https://oncofiles.com`.
-- Scopes, ktoré kód žiada: `drive` (**restricted**), `gmail.readonly` (**restricted**), `calendar.readonly` (sensitive).
-- **Dôležité:** v stave *Testing* expirujú refresh tokeny po **7 dňoch** a prístup majú len pridaní test users (max 100). Sync by sa každý týždeň rozbil. Pozri rozhodnutie R3.
-- `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET` a `GOOGLE_OAUTH_REDIRECT_URI` sa nastavia cez Coolify API (runtime, **nie** buildtime). Zároveň `GOOGLE_INTEGRATION_ENABLED=true` (default je `true`, ale nastaviť explicitne).
-- `GOOGLE_CREDENTIALS_BASE64` v bežiacom kontajneri **nie je**. Či je v Coolify konfigurácii, overím cez API. Servisný účet `oncofiles-drive` zmazať až po súhlase. GCP ho ešte 30 dní dokáže obnoviť (`undelete`).
-
-### Krok 3: prepnutie (checklist)
-1. R1 = načisto: DB na Mac mini ostáva čistá. Prod DB z Forpsi sa pred zastavením archivuje.
-2. Coolify: FQDN aplikácie `https://oncofiles.com,https://www.oncofiles.com` a Redeploy (nové env sa načítajú).
-3. Router/Deco presmerovanie 80/443 hotové, overené zvonka (mobilné dáta) na IP: `curl -H 'Host: oncofiles.com' http://<verejná adresa>/health`.
-4. Websupport: A `@` a `www` → statická IP.
-5. Traefik vydá LE certifikát. Overiť `curl -sI https://oncofiles.com/health` a `openssl s_client` (issuer Let's Encrypt).
-6. Testy: `/health`, `/readiness` (bearer), dashboard → Prihlásiť cez Google → pridať priečinok z Drive, claude.ai → konektor `https://oncofiles.com/mcp` → `tools/list`.
-7. **Forpsi zastaviť až po Petrovom súhlase** (Coolify Stop, nie Delete).
-
-### Krok 4: CI/CD
-- `.github/workflows/ci.yml` má nový job `deploy`: po zelených `lint` + `test`, len pri pushi do `main`. Runner sa pripojí do tailnetu ako efemérny uzol `tag:ci` (`tailscale/github-action` pripnutá na SHA v3.2.3, OAuth client), zavolá `POST /api/v1/deploy?uuid=…` na Coolify (od verzie 4.6 je to POST, GET vracia 405), počká na stav `finished` a urobí smoke test `/health`.
-- Kým nie je nastavená repo variable `DEPLOY_ENABLED=true`, job sa preskočí. Merge preto nič nerozbije.
-- Nastavenie: Tailscale ACL (`tagOwners` pre `tag:ci` a pravidlo `tag:ci` → `macmini-prod:8000` a `:80`), Tailscale OAuth client so scope `auth_keys` a tagom `tag:ci`, samostatný Coolify API token len s právom `deploy`. GitHub secrets `TS_OAUTH_CLIENT_ID`, `TS_OAUTH_SECRET`, `COOLIFY_API_TOKEN`, `COOLIFY_URL`, `COOLIFY_APP_UUID`, `HEALTH_URL` a variable `DEPLOY_ENABLED`.
+### CI/CD
+- `.github/workflows/ci.yml` má job `deploy`: po zelených `lint` + `test`, len pri pushi do `main` a len keď je repo variable `DEPLOY_ENABLED=true`.
+- Runner sa pripojí do tailnetu ako efemérny uzol `tag:ci` (`tailscale/github-action` pripnutý na SHA, OAuth client). Tailnet ACL povoľuje `tag:ci` len na port Coolify API a port 80 VM, nič iné (overené testami v politike).
+- Job zavolá `POST /api/v1/deploy?uuid=…` (od Coolify 4.6 je to POST, GET vracia 405), počká na `finished` a urobí smoke test `/health`.
+- Coolify token pre CI má len právo `deploy`.
 - Repo je verejné, a teda aj logy Actions. Preto sú aj URL a UUID uložené ako secrets: GitHub ich v logoch maskuje, kým hodnoty z `vars` by sa vypísali čitateľne.
+- Do `main` smie pushovať len vlastník repa (ruleset). Workflowy majú token len na čítanie.
 
-### Krok 5: zálohy (návrh)
-- Dáta sú v Docker volume **vnútri disku VM**, nie na hostiteľovi. Záloha preto: launchd úloha na hostiteľovi → `colima ssh` → `docker exec` → konzistentný snapshot cez SQLite backup API (`python3 -c "sqlite3 … .backup()"`, beží aj počas prevádzky) → `docker cp` na hostiteľa → `restic` (šifrovaný, deduplikovaný repozitár).
-- Cieľ 1: `restic` repozitár na T7 (`PF-SSD`). Disk je exFAT a nešifrovaný, šifrovanie preto robí restic. Heslo repozitára bude v Keychaine.
-- Cieľ 2 (mimo domu): Google Drive Instarea cez `rclone` (R4).
-- Retencia: každú hodinu 24×, denne 14×, týždenne 8×, mesačne 12×. Raz týždenne `restic check` a skúšobná obnova (`integrity_check` na obnovenom súbore). Pri zlyhaní e-mail cez Resend.
-
-### Krok 6 (neskôr): lokálny model v LM Studio
-Až po spustení na `oncofiles.com`. Tu len poznámka, nič sa nerobí.
-
-### Priebeh (log)
-- **2026-11-05, hardening 1b:** Colima forwardy obmedzené (80/443 verejne, ostatné len localhost). Overené z LAN.
-- **2026-11-05, Keychain:** uložené `oncofiles-coolify-api`, `oncofiles-google-oauth-client-id`, `oncofiles-google-oauth-client-secret` (účet `claude`). Overený len tvar, hodnoty sa nevypisovali. Poučenie: `security add-generic-password … -w "$(pbpaste)"` je nespoľahlivé, lebo kopírovanie príkazu prepíše schránku. Správne: vo vlastnom Termináli `security add-generic-password -U -s <meno> -a claude -w` (bez hodnoty, interaktívny vstup).
-- **2026-11-05, Google env cez Coolify API:** `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, `GOOGLE_OAUTH_REDIRECT_URI=https://oncofiles.com/oauth/callback`, `GOOGLE_INTEGRATION_ENABLED=true`. Všetky runtime, **nie** buildtime. Hodnoty išli do API cez stdin, nie cez argumenty.
-- **2026-11-05, Redeploy:** env-only, bez buildu (~20 s). V novom kontajneri sú všetky tajomstvá nastavené a neprázdne, `/health` ok, dashboard 200, 0 reštartov.
-- **Zistenie:** `GOOGLE_CREDENTIALS_BASE64` je v Coolify nastavený a appka pri štarte inicializuje GDrive klienta zo servisného účtu (`Initializing GDrive client from base64 credentials`). Odstránenie čaká na súhlas.
-- **Zistenie:** `DATABASE_PATH`, `MCP_HOST`, `MCP_PORT`, `MCP_TRANSPORT`, `SYNC_ENABLED` majú v Coolify zaškrtnuté „Available at Buildtime“. Nie sú tajné, ale podľa pravidla z #550 to netreba. API ich bez `read:sensitive` nevie prepnúť (PATCH vyžaduje hodnotu), preto ich treba odškrtnúť v UI.
-- **Zistenie:** v Coolify je vypnutý health check aplikácie (`/health`). Odporúčam ho zapnúť, aby Coolify pri rolling update čakal na zdravý kontajner.
-
-### Rozhodnutia (Peter, 2026-11-05)
-- **R1. Dáta z Forpsi: začať načisto.** Prod DB z Forpsi sa nepresúva. Používatelia si konektor v claude.ai pridajú znova a Drive priečinok pripoja znova cez Google OAuth. Pred zastavením Forpsi sa prod DB **archivuje** (šifrovaná kópia, nie zmazanie), lebo obsahuje zdravotné údaje a je to jediná kópia. Dôsledok: prepnutie DNS nemá split-brain riziko, stará appka sa dá zastaviť kedykoľvek po súhlase.
-- **R2. Dvojitý NAT: Deco do režimu Access Point.** Jediný NAT bude router Telekomu.
-- **R3. Google: External, publishing status *In production*, neoverené.** Varovanie „unverified app“ a strop 100 používateľov akceptujeme. Verifikácia alebo prechod na `drive.file` neskôr.
-- **R4. Záloha mimo domu: Google Drive účtu Instarea** (`restic` cez `rclone` backend). Google vidí len šifrované bloky restic. rclone remote nastaví Peter interaktívne (`rclone config`) na Mac mini.
+### Neskôr
+- Lokálny model (LM Studio, Anthropic-kompatibilné API) namiesto Anthropic API, až po spustení na `oncofiles.com`.
