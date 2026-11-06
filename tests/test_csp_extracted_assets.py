@@ -244,7 +244,7 @@ async def test_dashboard_gtag_js_route_serves_extracted_file():
 #
 # `ea2496d` (#501) globalised the strict CSP3 directives to every text/html
 # response even though only `dashboard.html` had its inline blocks
-# extracted. The marketing landing page, gloww, /onkologia, /oncology, /eu,
+# extracted. The marketing landing page, /onkologia, /oncology, /eu,
 # /sk, /privacy, /terms and /oauth/callback all silently broke for ~7 days
 # until a human noticed the rendering. These tests lock the per-route split:
 # /dashboard* keeps the strict policy; every other HTML route falls back to
@@ -263,7 +263,6 @@ async def test_dashboard_gtag_js_route_serves_extracted_file():
         "/sk",
         "/privacy",
         "/terms",
-        "/gloww",
         "/oauth/callback",
     ],
 )
@@ -285,7 +284,7 @@ def test_public_html_csp_permits_inline_blocks(path: str) -> None:
     )
     assert "script-src-attr" not in directives, (
         f"{path}: script-src-attr 'none' must NOT appear on public routes — "
-        f"it would block the inline onclick CTAs on the landing/gloww pages. #534."
+        f"it would block the inline onclick CTAs on the landing pages. #534."
     )
     # Legacy directives must still be present and permit inline.
     assert "'unsafe-inline'" in directives.get("script-src", ""), (
