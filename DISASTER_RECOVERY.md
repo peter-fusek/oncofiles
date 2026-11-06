@@ -1,5 +1,7 @@
 # Disaster Recovery & Backup Plan
 
+> **OUTDATED (2026-11-06).** This plan targets Railway + Turso Cloud + Google Cloud Storage. None of those exist any more: Railway was left in June 2026, Turso Cloud is decommissioned and the GCP projects were deleted (#552). Production is self-hosted on Coolify with a local SQLite/libSQL file. The replacement backup plan (encrypted `restic` snapshots, local and off-site) is tracked in #425 and summarised in `docs/migration/railway-to-macmini.md`. The scripts referenced below (`scripts/backup_to_gcs.py`, `restore_from_gcs.py`, `provision_backup_infra.sh`) target the dead GCP project and are kept for reference only.
+
 **Status**: DRAFT — tracked in oncofiles#425. Not yet implemented.
 **Last revised**: 2026-04-18
 **Owner**: Peter Fusek (peter.fusek@instarea.sk)

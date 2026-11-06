@@ -66,7 +66,7 @@ Oncofiles supports multiple patients on a single instance. Each patient gets:
                               └───────────┘ └─────────┘ └───────────┘
 ```
 
-**Stack:** Python 3.12+ · FastMCP 3.1 · Pydantic · SQLite/Turso · Railway
+**Stack:** Python 3.12+ · FastMCP 3.1 · Pydantic · SQLite/libSQL · self-hosted Coolify
 
 ## Quick start
 
@@ -128,14 +128,16 @@ Add to your Claude Desktop config (`~/Library/Application Support/Claude/claude_
 
 Oncofiles works with ChatGPT's MCP integration (Developer Mode). Point ChatGPT to your instance's `/mcp` endpoint with a bearer token.
 
-### Deploy to Railway
+### Deploy
 
-The included `Dockerfile` is ready for Railway deployment:
+Production runs on a self-hosted [Coolify](https://coolify.io) instance. There is no Dockerfile: Coolify builds the image with Railpack.
 
-1. Push to GitHub
-2. Connect repo in Railway
-3. Set environment variables
-4. Railway auto-deploys on push
+1. Add the repo as an application in Coolify (build pack Railpack, start command `uv run oncofiles-mcp`, port `MCP_PORT`).
+2. Set environment variables as **runtime only** (never "Available at Buildtime"), see `.env.example`.
+3. Mount a persistent volume for the SQLite/libSQL file and point `DATABASE_PATH` (or `TURSO_DATABASE_URL=file:…`) at it.
+4. Health check: `GET /health` (liveness only, never touches the DB).
+
+CI (`.github/workflows/ci.yml`) runs lint and tests on every push and PR, and after a green push to `main` triggers a Coolify deploy over Tailscale (gated by the `DEPLOY_ENABLED` repo variable).
 
 Live instance: [oncofiles.com](https://oncofiles.com)
 

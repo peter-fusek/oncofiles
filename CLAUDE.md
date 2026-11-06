@@ -57,7 +57,7 @@ uv run ruff check
 - `/readiness` is the DB connectivity check (5s timeout) — use for dashboards, not healthchecks
 - `reconnect_if_stale(timeout=10.0)` — always pass a timeout; unbounded reconnect cascades up to 105s
 - Turso Hrana streams expire during idle — DB keepalive job pings every 4 min to prevent stale connections
-- `railway.toml`: healthcheckTimeout=120, overlapSeconds=30 — do not lower these
+- Coolify health check: `/health` on the app port, interval 30 s, timeout 5 s, 3 retries, start period 30 s (Railway's `railway.toml` was removed 2026-11-06)
 - **Turso single-connection**: NEVER use `asyncio.gather` for concurrent DB queries — serialize them. Dashboard fetches must also be sequential (no `Promise.all`). The single libsql connection blocks under concurrent access.
 - **uv.lock**: After bumping version in pyproject.toml, always run `uv lock` — Railway uses `--locked` flag which rejects stale lockfiles
 - **Anthropic client singleton**: NEVER create `anthropic.Anthropic()` directly. Use `enhance._get_client()` — single shared httpx connection pool. Per-call client creation leaks SSL buffers (~1-5 MB each, never GC'd because SDK has no `__del__`). Caused P0 memory leak #366.
