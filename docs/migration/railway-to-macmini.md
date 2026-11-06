@@ -400,7 +400,8 @@ Poznámka k SPF: mechanizmus `a` dnes autorizuje adresu Forpsi na odosielanie po
 ### Krok 4: CI/CD
 - `.github/workflows/ci.yml` má nový job `deploy`: po zelených `lint` + `test`, len pri pushi do `main`. Runner sa pripojí do tailnetu ako efemérny uzol `tag:ci` (`tailscale/github-action` pripnutá na SHA v3.2.3, OAuth client), zavolá `POST /api/v1/deploy?uuid=…` na Coolify (od verzie 4.6 je to POST, GET vracia 405), počká na stav `finished` a urobí smoke test `/health`.
 - Kým nie je nastavená repo variable `DEPLOY_ENABLED=true`, job sa preskočí. Merge preto nič nerozbije.
-- Peter nastaví: Tailscale ACL (`tagOwners` pre `tag:ci` a pravidlo `tag:ci` → `macmini-prod:8000`), Tailscale OAuth client so scope `auth_keys` a tagom `tag:ci`, Coolify API token. GitHub secrets `TS_OAUTH_CLIENT_ID`, `TS_OAUTH_SECRET`, `COOLIFY_API_TOKEN`, variables `COOLIFY_URL`, `COOLIFY_APP_UUID`, `HEALTH_URL`, `DEPLOY_ENABLED`.
+- Nastavenie: Tailscale ACL (`tagOwners` pre `tag:ci` a pravidlo `tag:ci` → `macmini-prod:8000` a `:80`), Tailscale OAuth client so scope `auth_keys` a tagom `tag:ci`, samostatný Coolify API token len s právom `deploy`. GitHub secrets `TS_OAUTH_CLIENT_ID`, `TS_OAUTH_SECRET`, `COOLIFY_API_TOKEN`, `COOLIFY_URL`, `COOLIFY_APP_UUID`, `HEALTH_URL` a variable `DEPLOY_ENABLED`.
+- Repo je verejné, a teda aj logy Actions. Preto sú aj URL a UUID uložené ako secrets: GitHub ich v logoch maskuje, kým hodnoty z `vars` by sa vypísali čitateľne.
 
 ### Krok 5: zálohy (návrh)
 - Dáta sú v Docker volume **vnútri disku VM**, nie na hostiteľovi. Záloha preto: launchd úloha na hostiteľovi → `colima ssh` → `docker exec` → konzistentný snapshot cez SQLite backup API (`python3 -c "sqlite3 … .backup()"`, beží aj počas prevádzky) → `docker cp` na hostiteľa → `restic` (šifrovaný, deduplikovaný repozitár).

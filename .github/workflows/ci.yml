@@ -26,10 +26,11 @@ jobs:
 
   # Deploy na Mac mini (Coolify vo VM macmini-prod), len po pushi do main a zelených testoch.
   # Coolify API nie je z internetu dostupné, runner sa preto pripojí do tailnetu
-  # ako efemérny uzol s tagom tag:ci (ACL povoľuje tag:ci → macmini-prod:8000).
+  # ako efemérny uzol s tagom tag:ci (ACL povoľuje len tag:ci → macmini-prod:8000 a :80).
   # Vypínač: repo variable DEPLOY_ENABLED=true. Kým nie je nastavená, job sa preskočí.
-  # Secrets: TS_OAUTH_CLIENT_ID, TS_OAUTH_SECRET, COOLIFY_API_TOKEN
-  # Variables: COOLIFY_URL (napr. http://<tailnet-ip>:8000), COOLIFY_APP_UUID
+  # Secrets (repo je verejné, logy tiež, preto aj URL a UUID ako secrets, nech sú v logu maskované):
+  #   TS_OAUTH_CLIENT_ID, TS_OAUTH_SECRET, COOLIFY_API_TOKEN, COOLIFY_URL, COOLIFY_APP_UUID, HEALTH_URL
+  # Variables: DEPLOY_ENABLED. ACL musí povoliť tag:ci aj na port 80 VM, ak HEALTH_URL ide cez tailnet.
   deploy:
     needs: [lint, test]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.DEPLOY_ENABLED == 'true'
@@ -48,8 +49,8 @@ jobs:
 
       - name: Trigger Coolify deploy and wait
         env:
-          COOLIFY_URL: ${{ vars.COOLIFY_URL }}
-          COOLIFY_APP_UUID: ${{ vars.COOLIFY_APP_UUID }}
+          COOLIFY_URL: ${{ secrets.COOLIFY_URL }}
+          COOLIFY_APP_UUID: ${{ secrets.COOLIFY_APP_UUID }}
           COOLIFY_API_TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
         run: |
           set -euo pipefail
@@ -70,10 +71,10 @@ jobs:
           done
           echo "Timed out waiting for deployment ${dep}"; exit 1
 
-      # Pred prepnutím DNS nastav HEALTH_URL na tailnet adresu (sslip.io), potom na https://oncofiles.com/health
+      # Pred prepnutím DNS nastav secret HEALTH_URL na tailnet adresu (sslip.io), potom ho zmaž (default https://oncofiles.com/health)
       - name: Smoke test /health
         env:
-          HEALTH_URL: ${{ vars.HEALTH_URL || 'https://oncofiles.com/health' }}
+          HEALTH_URL: ${{ secrets.HEALTH_URL || 'https://oncofiles.com/health' }}
         run: |
           set -euo pipefail
           for i in $(seq 1 12); do
