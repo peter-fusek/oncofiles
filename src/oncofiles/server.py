@@ -2726,25 +2726,6 @@ async def landing(request: Request) -> HTMLResponse:
     return HTMLResponse(_load_landing_html())
 
 
-_GLOWW_HTML: str | None = None
-
-
-def _load_gloww_html() -> str:
-    global _GLOWW_HTML  # noqa: PLW0603
-    if _GLOWW_HTML is None:
-        _GLOWW_HTML = (Path(__file__).parent / "gloww.html").read_text()
-    return _GLOWW_HTML
-
-
-@mcp.custom_route("/gloww", methods=["GET"])
-async def gloww_page(request: Request) -> HTMLResponse:
-    # Noindex pitch page — not linked from main landing, not in sitemap.
-    return HTMLResponse(
-        _load_gloww_html(),
-        headers={"X-Robots-Tag": "noindex, nofollow, noarchive, nosnippet"},
-    )
-
-
 # ── Legal pages (required for Google OAuth verification) ─────────────────────
 
 
@@ -2813,7 +2794,7 @@ async def privacy_policy(request: Request) -> HTMLResponse:
         _PRIVACY_HTML = _legal_page(
             "Privacy Policy",
             """
-<p class="meta">Effective: March 25, 2026 · Last updated: March 25, 2026</p>
+<p class="meta">Effective: March 25, 2026 · Last updated: November 6, 2026</p>
 
 <p>Oncofiles is operated by <strong>Instarea s.r.o.</strong> ("we", "us").
 This policy describes how we handle your data when you use Oncofiles
@@ -2844,8 +2825,8 @@ unrelated to your medical document management.</p>
 
 <h2>3. Where Data Is Stored</h2>
 <ul>
-<li><strong>Document metadata</strong> — stored in a Turso database
-(SQLite-compatible, hosted in EU)</li>
+<li><strong>Document metadata</strong> — stored in an SQLite database on Oncofiles' own server
+in Slovakia (EU), on an encrypted disk</li>
 <li><strong>Original files</strong> — remain in your Google Drive;
 we do not copy them to separate storage</li>
 <li><strong>OCR text</strong> — stored as companion files in your Google Drive folder</li>
@@ -2858,8 +2839,8 @@ to third parties, except:</p>
 <ul>
 <li><strong>AI providers</strong> — document content may be sent to Anthropic (Claude) for metadata
 extraction. This is governed by Anthropic's data processing terms.</li>
-<li><strong>Infrastructure</strong> — Railway (hosting), Turso (database). Both process data
-under their respective privacy policies and data processing agreements.</li>
+<li><strong>Infrastructure</strong> — self-hosted on our own server in Slovakia (EU). No third-party
+hosting or database provider stores or processes your data.</li>
 </ul>
 
 <h2>5. Data Retention</h2>
@@ -3081,7 +3062,6 @@ async def robots_txt(request: Request) -> HTMLResponse:
         "Disallow: /dashboard/verify\n"
         "Disallow: /status\n"
         "Disallow: /metrics\n"
-        "Disallow: /gloww\n"
         "\n"
         "# LLM crawlers — allow landing + llms.txt, block private endpoints\n"
         "User-agent: GPTBot\n"
@@ -3091,7 +3071,6 @@ async def robots_txt(request: Request) -> HTMLResponse:
         "Disallow: /mcp\n"
         "Disallow: /api/\n"
         "Disallow: /dashboard/verify\n"
-        "Disallow: /gloww\n"
         "\n"
         "User-agent: ClaudeBot\n"
         "Allow: /\n"
@@ -3100,13 +3079,11 @@ async def robots_txt(request: Request) -> HTMLResponse:
         "Disallow: /mcp\n"
         "Disallow: /api/\n"
         "Disallow: /dashboard/verify\n"
-        "Disallow: /gloww\n"
         "\n"
         "User-agent: PerplexityBot\n"
         "Allow: /\n"
         "Allow: /llms.txt\n"
         "Allow: /llms-sk.txt\n"
-        "Disallow: /gloww\n"
         "\n"
         "Sitemap: https://oncofiles.com/sitemap.xml\n",
         media_type="text/plain",
@@ -3183,7 +3160,7 @@ async def llms_txt(request: Request) -> HTMLResponse:
         f"- Version: {VERSION}\n"
         f"- Protocol: MCP (Model Context Protocol) via FastMCP\n"
         f"- Language: Python 3.12+\n"
-        f"- Database: SQLite / Turso\n"
+        f"- Database: SQLite (libSQL), self-hosted in the EU (Slovakia)\n"
         f"- License: MIT\n"
         f"- Repository: https://github.com/peter-fusek/oncofiles\n"
         f"\n"
@@ -3247,15 +3224,15 @@ async def llms_sk_txt(request: Request) -> HTMLResponse:
         f"## Bezpečnosť a súkromie\n"
         f"- Súbory ostávajú vo Vašom Google Drive, Oncofiles k nim pristupuje metadátovo.\n"
         f"- Izolácia pacientov na úrovni databázy (unikátne bearer tokeny).\n"
-        f"- Infraštruktúra: Railway (SOC 2), Anthropic Claude (SOC 2, ISO 27001),\n"
-        f"  Google Drive (SOC 2, ISO 27001).\n"
+        f"- Infraštruktúra: vlastný server na Slovensku (EÚ), Anthropic Claude (SOC 2,\n"
+        f"  ISO 27001), Google Drive (SOC 2, ISO 27001).\n"
         f"- Šifrovaný prenos, žiadny predaj údajov tretím stranám.\n"
         f"\n"
         f"## Technické detaily\n"
         f"- Verzia: {VERSION}\n"
         f"- Protokol: MCP (Model Context Protocol) cez FastMCP\n"
         f"- Jazyk: Python 3.12+\n"
-        f"- Databáza: SQLite / Turso\n"
+        f"- Databáza: SQLite (libSQL), vlastný server v EÚ (Slovensko)\n"
         f"- Licencia: MIT\n"
         f"- Repozitár: https://github.com/peter-fusek/oncofiles\n"
         f"\n"
@@ -3759,8 +3736,8 @@ official records.</p>
 <ul>
 <li>Documents stay in <strong>your</strong> Google Drive &mdash; they are never
 copied to a central database.</li>
-<li>Metadata (filenames, categories, AI summaries) is stored in an EU-region
-Turso database.</li>
+<li>Metadata (filenames, categories, AI summaries) is stored in an SQLite database
+on our own server in Slovakia (EU).</li>
 <li>Open-source: inspect what the code does with your data at any time.</li>
 <li>EU AI Act classification memo and medical-device scoping in progress with
 EU counsel (2026).</li>
@@ -3854,7 +3831,8 @@ pripravený. Zdravotník má eZdravie, pacient má Oncofiles.</p>
 <ul>
 <li>Dokumenty ostávajú vo <strong>vašom</strong> Google Drive &mdash; nikdy sa
 nekopírujú do centrálnej databázy.</li>
-<li>Metadáta (názvy súborov, kategórie, AI sumáre) sú uložené v EÚ Turso DB.</li>
+<li>Metadáta (názvy súborov, kategórie, AI sumáre) sú uložené v SQLite databáze
+na vlastnom serveri na Slovensku (EÚ).</li>
 <li>Open-source: kedykoľvek si overíte, čo kód s vašimi dátami robí.</li>
 <li>Klasifikačné memo podľa EU AI Act a rozbor klasifikácie zdravotnej pomôcky
 s právnou kanceláriou prebiehajú (2026).</li>
@@ -7493,7 +7471,7 @@ class SecurityHeadersMiddleware:
     """Add baseline security headers to every HTTP response.
 
     Does not override headers already set by route handlers (e.g.
-    X-Robots-Tag on /gloww).
+    X-Robots-Tag set by a route).
     """
 
     def __init__(self, app):
@@ -7535,7 +7513,7 @@ class SecurityHeadersMiddleware:
 # `script-src-attr 'none'`, `style-src-elem`) were applied **globally** by the
 # middleware in `ea2496d` even though only `dashboard.html` had its inline
 # blocks extracted to /dashboard.css + /dashboard.js. Result: every other public
-# HTML route (landing, gloww, /onkologia, /oncology, /eu, /sk, /privacy, /terms,
+# HTML route (landing, /onkologia, /oncology, /eu, /sk, /privacy, /terms,
 # /oauth/callback) silently rendered with UA-default styles + broken inline
 # scripts (gtag, lang switch, structured data) + dead `onclick=` CTAs for ~7 days
 # in production. Modern browsers (Chrome 76+, Firefox 92+, Safari 16+) honor
@@ -7579,7 +7557,7 @@ _STRICT_DASHBOARD_CSP = (
 # in script-src + style-src (the directive form CSP3 still falls back to when
 # no `*-elem` directive is present), so inline `<script>`, inline `<style>`,
 # and inline event handlers continue to execute as designed on the marketing
-# site, gloww, legal, topic, and OAuth-callback pages.
+# site, legal, topic, and OAuth-callback pages.
 _PUBLIC_HTML_CSP = (
     "default-src 'self'; "
     "script-src 'self' 'unsafe-inline' "
