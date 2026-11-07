@@ -114,12 +114,12 @@
         {
           "@type": "Question",
           "name": "Is Oncofiles free?",
-          "acceptedAnswer": { "@type": "Answer", "text": "Yes, Oncofiles is completely free and open-source under the MIT license. Up to 200 documents per patient." }
+          "acceptedAnswer": { "@type": "Answer", "text": "Yes, Oncofiles is completely free and open-source under the MIT license. Up to 500 documents per patient." }
         },
         {
           "@type": "Question",
           "name": "What stays in Google Drive and what is stored on Oncofiles servers?",
-          "acceptedAnswer": { "@type": "Answer", "text": "Original PDFs, scans, and images stay in your Google Drive — Oncofiles never moves or copies them. The OCR-extracted text and structured metadata (date, diagnosis, institution, category, tags) are stored in an SQLite database on an encrypted disk on our own server in Slovakia (EU) so AI assistants can answer questions without re-OCRing every time. All data is encrypted in transit." }
+          "acceptedAnswer": { "@type": "Answer", "text": "Original PDFs, scans, and images stay in your Google Drive — Oncofiles never copies them out of it; it only renames them and files them into folders inside your Drive. The OCR-extracted text and structured metadata (date, diagnosis, institution, category, tags) are stored in an SQLite database on an encrypted disk on our own server in Slovakia (EU) so AI assistants can answer questions without re-OCRing every time. All data is encrypted in transit." }
         },
         {
           "@type": "Question",
@@ -159,7 +159,7 @@
         {
           "@type": "Question",
           "name": "How much does Oncofiles cost?",
-          "acceptedAnswer": { "@type": "Answer", "text": "Oncofiles is free for up to 200 documents per patient. No credit card, no hidden fees. Open-source under the MIT license — you can also self-host it completely free." }
+          "acceptedAnswer": { "@type": "Answer", "text": "Oncofiles is free for up to 500 documents per patient. No credit card, no hidden fees. Open-source under the MIT license — you can also self-host it completely free." }
         },
         {
           "@type": "Question",
@@ -1427,11 +1427,12 @@
     <!-- Hero -->
     <section class="hero">
       <div class="container">
-        <div class="hero-badge" style="background:linear-gradient(135deg,#0d9488 0%,#14b8a6 100%);color:#fff;border-color:transparent;font-weight:600;letter-spacing:0.01em;"><span class="dot" style="background:#fff;box-shadow:0 0 8px rgba(255,255,255,0.8);"></span> <span data-sk="3+ aktívni pacienti &middot; 270+ dokumentov &middot; Hľadáme early users" data-en="3+ active patients &middot; 270+ documents &middot; Looking for early users">3+ aktívni pacienti &middot; 270+ dokumentov &middot; Hľadáme early users</span></div>
+        <div class="hero-badge" style="background:linear-gradient(135deg,#0d9488 0%,#14b8a6 100%);color:#fff;border-color:transparent;font-weight:600;letter-spacing:0.01em;"><span class="dot" style="background:#fff;box-shadow:0 0 8px rgba(255,255,255,0.8);"></span> <span data-sk="Vlastný server v EÚ &middot; Hľadáme early users" data-en="Own server in the EU &middot; Looking for early users">Vlastný server v EÚ &middot; Hľadáme early users</span></div>
         <div class="hero-badge"><span class="dot"></span> <span data-sk="Open source &middot; Funguje s Claude &amp; ChatGPT" data-en="Open source &middot; Works with Claude &amp; ChatGPT">Open source &middot; Funguje s Claude &amp; ChatGPT</span></div>
         <h1><span data-sk="Vaše zdravotné záznamy," data-en="Your medical records,">Vaše zdravotné záznamy,</span><br><em data-sk="konečne na jednom mieste" data-en="finally in one place">konečne na jednom mieste</em></h1>
         <p class="subtitle" data-sk="Dostali ste diagnózu a neviete, kde začať? Výsledky v Gmaili, skeny na Google Drive, termíny v kalendári. Oncofiles všetko prečíta, zorganizuje a sprístupní cez AI — pýtajte sa prirodzene v Claude alebo ChatGPT." data-en="Just got a diagnosis and don't know where to start? Lab results in Gmail, scans on Google Drive, appointments in Calendar. Oncofiles reads everything, organizes it, and makes it available through AI — ask naturally in Claude or ChatGPT.">Dostali ste diagnózu a neviete, kde začať? Výsledky v Gmaili, skeny na Google Drive, termíny v kalendári. Oncofiles všetko prečíta, zorganizuje a sprístupní cez AI — pýtajte sa prirodzene v Claude alebo ChatGPT.</p>
         <p class="subtitle" style="margin-top:0.5rem;font-size:0.95rem;color:var(--text-dim);font-style:italic" data-sk="Oncofiles nenahrádza onkológa — pomáha Vám a Vášmu opatrovateľovi byť lepšie pripravení na rozhovor s lekárom. Všetky výstupy sú informatívne." data-en="Oncofiles does not replace your oncologist — it helps you and your caregiver be better prepared for the conversation. All outputs are informational.">Oncofiles nenahrádza onkológa — pomáha Vám a Vášmu opatrovateľovi byť lepšie pripravení na rozhovor s lekárom. Všetky výstupy sú informatívne.</p>
+        <p class="subtitle hero-status" role="status" style="margin-top:0.75rem;font-size:0.9rem;padding:0.6rem 0.9rem;border:1px solid var(--accent);border-radius:10px;color:var(--text)" data-sk="Novinka 11/2026: Oncofiles sa presťahoval na vlastný server na Slovensku. Pripájanie Google Drive je počas presunu dočasne pozastavené — ozvite sa a dáme vám vedieť, keď sa spustí." data-en="News 11/2026: Oncofiles moved to its own server in Slovakia. Connecting Google Drive is paused during the move — get in touch and we will let you know when it reopens.">Novinka 11/2026: Oncofiles sa presťahoval na vlastný server na Slovensku. Pripájanie Google Drive je počas presunu dočasne pozastavené — ozvite sa a dáme vám vedieť, keď sa spustí.</p>
 
         <!-- Hero Visual: Living Transformation -->
         <div class="hc-panel">
@@ -1500,7 +1501,7 @@
         </div>
 
         <div class="hero-cta">
-          <a href="/dashboard" class="btn btn-primary" data-sk="Začať zadarmo" data-en="Start for free">Začať zadarmo</a>
+          <a href="https://www.linkedin.com/in/peterfusek/" class="btn btn-primary" rel="noreferrer noopener" data-sk="Dajte mi vedieť" data-en="Let me know">Dajte mi vedieť</a>
           <a href="/demo" class="btn btn-secondary" data-sk="Vyskúšať demo" data-en="Try the demo">Vyskúšať demo</a>
           <a href="https://github.com/peter-fusek/oncofiles" class="btn btn-secondary" rel="noreferrer noopener" data-sk="Zobraziť na GitHub" data-en="View on GitHub">Zobraziť na GitHub</a>
         </div>
@@ -1990,7 +1991,7 @@
     <section class="cta">
       <div class="container">
         <h2 data-sk="Pripravení mať poriadok vo svojich záznamoch?" data-en="Ready to get organized?">Pripravení mať poriadok vo svojich záznamoch?</h2>
-        <p class="subtitle" data-sk="Open source, zadarmo do 200 dokumentov. Stačí prepojit Google Drive a začať sa pýtať." data-en="Open source, free up to 200 documents. Just connect Google Drive and start asking.">Open source, zadarmo do 200 dokumentov. Stačí prepojit Google Drive a začať sa pýtať.</p>
+        <p class="subtitle" data-sk="Open source, zadarmo do 500 dokumentov. Stačí prepojit Google Drive a začať sa pýtať." data-en="Open source, free up to 500 documents. Just connect Google Drive and start asking.">Open source, zadarmo do 500 dokumentov. Stačí prepojit Google Drive a začať sa pýtať.</p>
         <div class="cta-links">
           <a href="/dashboard" class="btn btn-primary" data-sk="Otvoriť dashboard" data-en="Open dashboard">Otvoriť dashboard</a>
           <a href="https://github.com/peter-fusek/oncofiles" class="btn btn-secondary" rel="noreferrer noopener" data-sk="Zobraziť na GitHub" data-en="View on GitHub">Zobraziť na GitHub</a>
@@ -2032,7 +2033,7 @@
           </div>
           <div class="faq-item">
             <h3 data-sk="Čo zostáva v Google Drive a čo je uložené na serveroch Oncofiles?" data-en="What stays in Google Drive and what is stored on Oncofiles servers?">Čo zostáva v Google Drive a čo je uložené na serveroch Oncofiles?</h3>
-            <p data-sk="Originálne PDF, skeny a obrázky zostávajú vo vašom Google Drive — Oncofiles ich nikdy nepresúva ani nekopíruje. Text získaný z OCR a štruktúrované metadáta (dátum, diagnóza, inštitúcia, kategória, štítky) sú uložené v SQLite databáze na šifrovanom disku vlastného servera na Slovensku (EÚ), aby AI asistent vedel odpovedať na otázky bez opakovaného OCR-u. Všetky dáta sú šifrované pri prenose." data-en="Original PDFs, scans, and images stay in your Google Drive — Oncofiles never moves or copies them. The OCR-extracted text and structured metadata (date, diagnosis, institution, category, tags) are stored in an SQLite database on an encrypted disk on our own server in Slovakia (EU) so AI assistants can answer questions without re-OCRing every time. All data is encrypted in transit.">Originálne PDF, skeny a obrázky zostávajú vo vašom Google Drive — Oncofiles ich nikdy nepresúva ani nekopíruje. Text získaný z OCR a štruktúrované metadáta (dátum, diagnóza, inštitúcia, kategória, štítky) sú uložené v SQLite databáze na šifrovanom disku vlastného servera na Slovensku (EÚ), aby AI asistent vedel odpovedať na otázky bez opakovaného OCR-u. Všetky dáta sú šifrované pri prenose.</p>
+            <p data-sk="Originálne PDF, skeny a obrázky zostávajú vo vašom Google Drive — Oncofiles ich nikdy nekopíruje mimo neho, len ich premenuje a zaradí do priečinkov priamo vo vašom Drive. Text získaný z OCR a štruktúrované metadáta (dátum, diagnóza, inštitúcia, kategória, štítky) sú uložené v SQLite databáze na šifrovanom disku vlastného servera na Slovensku (EÚ), aby AI asistent vedel odpovedať na otázky bez opakovaného OCR-u. Všetky dáta sú šifrované pri prenose." data-en="Original PDFs, scans, and images stay in your Google Drive — Oncofiles never copies them out of it; it only renames them and files them into folders inside your Drive. The OCR-extracted text and structured metadata (date, diagnosis, institution, category, tags) are stored in an SQLite database on an encrypted disk on our own server in Slovakia (EU) so AI assistants can answer questions without re-OCRing every time. All data is encrypted in transit.">Originálne PDF, skeny a obrázky zostávajú vo vašom Google Drive — Oncofiles ich nikdy nekopíruje mimo neho, len ich premenuje a zaradí do priečinkov priamo vo vašom Drive. Text získaný z OCR a štruktúrované metadáta (dátum, diagnóza, inštitúcia, kategória, štítky) sú uložené v SQLite databáze na šifrovanom disku vlastného servera na Slovensku (EÚ), aby AI asistent vedel odpovedať na otázky bez opakovaného OCR-u. Všetky dáta sú šifrované pri prenose.</p>
           </div>
           <div class="faq-item">
             <h3 data-sk="Učí sa AI na mojich dátach?" data-en="Does AI learn from my data?">Učí sa AI na mojich dátach?</h3>
@@ -2117,13 +2118,13 @@
           </div>
           <div class="faq-item">
             <h3 data-sk="Môžu to odporúčať zdravotníci?" data-en="Can healthcare providers recommend this?">Môžu to odporúčať zdravotníci?</h3>
-            <p data-sk="Určite. Oncofiles je open-source, zadarmo do 200 dokumentov a navrhnutý pre pacientov a opatrovateľov. Fyzioterapeuti, zdravotné sestry aj pacientski advokáti ho už odporúčajú." data-en="Absolutely. Oncofiles is open-source, free up to 200 documents, and designed for patients and caregivers. Physiotherapists, nurses, and patient advocates already recommend it.">Určite. Oncofiles je open-source, zadarmo do 200 dokumentov a navrhnutý pre pacientov a opatrovateľov. Fyzioterapeuti, zdravotné sestry aj pacientski advokáti ho už odporúčajú.</p>
+            <p data-sk="Určite. Oncofiles je open-source, zadarmo do 500 dokumentov a navrhnutý pre pacientov a opatrovateľov. Fyzioterapeuti, zdravotné sestry aj pacientski advokáti ho už odporúčajú." data-en="Absolutely. Oncofiles is open-source, free up to 500 documents, and designed for patients and caregivers. Physiotherapists, nurses, and patient advocates already recommend it.">Určite. Oncofiles je open-source, zadarmo do 500 dokumentov a navrhnutý pre pacientov a opatrovateľov. Fyzioterapeuti, zdravotné sestry aj pacientski advokáti ho už odporúčajú.</p>
           </div>
 
           <div class="faq-section-label" data-sk="Náklady a financovanie" data-en="Costs &amp; Funding">Náklady a financovanie</div>
           <div class="faq-item">
             <h3 data-sk="Koľko to stojí?" data-en="How much does it cost?">Koľko to stojí?</h3>
-            <p data-sk="Oncofiles je zadarmo do 200 dokumentov na pacienta. Žiadna kreditná karta, žiadne skryté poplatky. Open-source pod MIT licenciou — môžete si ho aj hostiť sami úplne zadarmo." data-en="Oncofiles is free for up to 200 documents per patient. No credit card, no hidden fees. Open-source under the MIT license — you can also self-host it completely free.">Oncofiles je zadarmo do 200 dokumentov na pacienta. Žiadna kreditná karta, žiadne skryté poplatky. Open-source pod MIT licenciou — môžete si ho aj hostiť sami úplne zadarmo.</p>
+            <p data-sk="Oncofiles je zadarmo do 500 dokumentov na pacienta. Žiadna kreditná karta, žiadne skryté poplatky. Open-source pod MIT licenciou — môžete si ho aj hostiť sami úplne zadarmo." data-en="Oncofiles is free for up to 500 documents per patient. No credit card, no hidden fees. Open-source under the MIT license — you can also self-host it completely free.">Oncofiles je zadarmo do 500 dokumentov na pacienta. Žiadna kreditná karta, žiadne skryté poplatky. Open-source pod MIT licenciou — môžete si ho aj hostiť sami úplne zadarmo.</p>
           </div>
           <div class="faq-item">
             <h3 data-sk="Kto platí za prevádzku?" data-en="Who pays for the infrastructure?">Kto platí za prevádzku?</h3>
@@ -2220,7 +2221,7 @@
             <div style="background:rgba(13,148,136,0.06);border:1px solid #0d9488;border-radius:10px;padding:0.875rem 1rem;min-width:220px;scroll-snap-align:start">
               <div style="font-size:0.75rem;color:var(--text-dim);font-weight:600;letter-spacing:0.08em">2025–2026</div>
               <div style="font-family:'DM Serif Display',serif;font-size:1.0625rem;margin:0.375rem 0;color:#0d9488">Oncofiles · Oncoteam</div>
-              <div style="font-size:0.8125rem;color:var(--text-muted);line-height:1.45" data-sk="AI-first healthcare stack. 3 pacienti v produkcii, 270+ dokumentov, 85 MCP nástrojov." data-en="AI-first healthcare stack. 3 patients in production, 270+ documents, 85 MCP tools.">AI-first healthcare stack. 3 pacienti v produkcii.</div>
+              <div style="font-size:0.8125rem;color:var(--text-muted);line-height:1.45" data-sk="AI-first healthcare stack pre pacientov a opatrovateľov, 100+ MCP nástrojov, vlastný server v EÚ." data-en="AI-first healthcare stack for patients and caregivers, 100+ MCP tools, own server in the EU.">AI-first healthcare stack. 3 pacienti v produkcii.</div>
               <span style="display:inline-block;margin-top:0.375rem;background:rgba(13,148,136,0.15);color:#0d9488;font-size:0.6875rem;font-weight:600;padding:0.15rem 0.5rem;border-radius:999px" data-sk="BEŽÍ" data-en="LIVE">BEŽÍ</span>
             </div>
           </div>
