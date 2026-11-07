@@ -437,3 +437,39 @@ def test_recheck_reports_drive_changes_during_run():
     d.move_rename = move_and_fork
     r = run(d, dry_run=False)
     assert r.status == "aborted" and r.flags[0].startswith("DRIVE CHANGED DURING RUN")
+
+
+# ── first live dry run (2026-11-07): mount vs API naming, nested subfolders ──
+
+
+def test_gdoc_sidecar_from_the_mount_pairs_with_the_api_google_doc():
+    """Cowork named a Google Doc's sidecar X.gdoc.md (mount name); the API name is X."""
+    d = FakeDrive()
+    doc = d.add("20260203_JanaNovakova_NOU_Reference_Notes", d.folder[LABS])
+    d.items[doc]["mime"] = "application/vnd.google-apps.document"
+    pdfdoc = d.add("20260220_JanaNovakova_Summary_Part2of2.pdf", d.folder[LABS])
+    d.items[pdfdoc]["mime"] = "application/vnd.google-apps.document"  # title ends .pdf
+    d.add("20260203_JanaNovakova_NOU_Reference_Notes.gdoc.md", d.folder[LABS], b"---\n---\n")
+    d.add("20260220_JanaNovakova_Summary_Part2of2.pdf.gdoc.md", d.folder[LABS], b"---\n---\n")
+    r = run(d)
+    assert r.status == "ok", r.message
+    # paired → not treated as missing a sidecar either
+    assert not [x for x in r.documents if x["result"] == "sidecar_added"]
+
+
+def test_real_orphan_sidecar_still_aborts():
+    d = FakeDrive()
+    d.add("gone.pdf.md", d.folder[LABS], b"---\n---\n")
+    r = run(d)
+    assert r.status == "aborted" and "every sidecar has its source" in r.message
+
+
+def test_nested_subfolder_is_flagged_not_fatal_and_left_alone():
+    d = FakeDrive()
+    sub = d.add("Textbook-Chapter-Scans", d.folder[LABS], folder=True)
+    inside = d.add("page1.pdf", sub, b"VYSLEDKY 05.08.2026")
+    d.add("scan_001.pdf", d.folder[INBOX], b"VYSLEDKY 05.08.2026")
+    r = run(d, dry_run=False)
+    assert r.status == "ok", r.message
+    assert any("flat" in f and "Textbook-Chapter-Scans" in f for f in r.flags)
+    assert d.items[inside]["parent"] == sub and d.items[inside]["name"] == "page1.pdf"
