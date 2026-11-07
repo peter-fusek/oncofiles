@@ -30,7 +30,12 @@ from fastmcp import Context
 from sqlglot import expressions as exp
 from sqlglot.errors import ParseError
 
-from oncofiles.tools._helpers import _get_db, _resolve_patient_id, _safe_error
+from oncofiles.tools._helpers import (
+    _get_db,
+    _is_admin_caller,
+    _resolve_patient_id,
+    _safe_error,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -63,9 +68,10 @@ ALLOWED_TABLES_PATIENT_SCOPED: frozenset[str] = frozenset(
     }
 )
 
-# Tables with no patient_id column (system-wide). Only admin-scope callers
-# should be reading these; for v5.15 Phase 2 we expose them read-only
-# (the scope decorator in Phase 3 / #487 will gate them properly).
+# System-wide tables (no patient_id column, or rows across all patients that
+# are not filtered per caller). Admin-scope callers only — enforced in
+# _validate_query (#541). Fails closed: a caller whose admin status cannot be
+# established is treated as non-admin.
 ALLOWED_TABLES_ADMIN_ONLY: frozenset[str] = frozenset(
     {
         "schema_migrations",
@@ -76,8 +82,11 @@ ALLOWED_TABLES_ADMIN_ONLY: frozenset[str] = frozenset(
 ALLOWED_TABLES: frozenset[str] = ALLOWED_TABLES_PATIENT_SCOPED | ALLOWED_TABLES_ADMIN_ONLY
 
 
-def _validate_query(sql: str, caller_pid: str) -> str | None:
+def _validate_query(sql: str, caller_pid: str, *, is_admin: bool = False) -> str | None:
     """Validate a SQL query against the hardening contract.
+
+    ``is_admin`` defaults to False so any caller that forgets to pass it is
+    denied the admin-only tables (fail closed, #541).
 
     Returns None on success or an error string on rejection.
     """
@@ -137,6 +146,8 @@ def _validate_query(sql: str, caller_pid: str) -> str | None:
                 f"Table {name!r} is not in the query_db allow-list. "
                 f"Allowed: {sorted(ALLOWED_TABLES)}"
             )
+        if name in ALLOWED_TABLES_ADMIN_ONLY and not is_admin:
+            return f"Table {name!r} is admin-only (#541)."
         if name in ALLOWED_TABLES_PATIENT_SCOPED:
             patient_scoped_refs.append(t)
 
@@ -201,6 +212,7 @@ async def query_db(
         LIKE, IN, IS NOT NULL, GROUP BY, non-matching literals are rejected.
       - CTEs (WITH) and UNION are rejected.
       - Admin callers must pass patient_slug= explicitly; no implicit admin bypass.
+      - System-wide tables (ALLOWED_TABLES_ADMIN_ONLY) are admin-only (#541).
 
     Args:
         sql: SELECT query. Tables: see ALLOWED_TABLES in this module.
@@ -216,7 +228,7 @@ async def query_db(
         return json.dumps({"error": f"patient lookup failed: {exc}"})
 
     # Validate.
-    err = _validate_query(sql, caller_pid)
+    err = _validate_query(sql, caller_pid, is_admin=_is_admin_caller())
     if err is not None:
         return json.dumps({"error": err})
 

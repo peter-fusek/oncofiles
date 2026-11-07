@@ -103,6 +103,12 @@ def ensure_folder_structure(
             are created. General patients skip chemo_sheet/pathology/genetics;
             oncology patients skip vaccination/dental/preventive.
     """
+    from oncofiles.curated_folder import write_block_reason
+
+    if (blocked := write_block_reason(gdrive)) is not None:
+        # Curated folder (#562): the folder set is fixed by its README — never create.
+        logger.info("ensure_folder_structure skipped: %s", blocked)
+        return {}
     folders = _folders_for_patient_type(patient_type)
     folder_map: dict[str, str] = {}
     for name in folders:
