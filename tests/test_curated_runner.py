@@ -308,3 +308,16 @@ def test_sidecars_are_never_candidates(folder):
     d.add("a.pdf.md", d.folder[folder], b"---\nreview_needed: false\n---\n")
     r = run(d)
     assert [doc["source"] for doc in r.documents] == ["a.pdf"]
+
+
+def test_oversized_file_goes_to_review_without_download(monkeypatch):
+    from oncofiles.curated import extract as ex_mod
+
+    monkeypatch.setattr(ex_mod, "MAX_FILE_BYTES", 10)
+    d = FakeDrive()
+    huge = d.add("huge.pdf", d.folder[INBOX], b"VYSLEDKY 05.08.2026 " * 5)
+    real = d.download
+    d.download = lambda fid: pytest.fail("must not download") if fid == huge else real(fid)
+    r = run(d)
+    assert r.documents[0]["result"] == "review_needed"
+    assert "larger than" in r.documents[0]["reasons"][0]

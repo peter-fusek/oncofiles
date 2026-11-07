@@ -413,12 +413,15 @@ class Runner:
         )
 
     def _file_document(self, tree, contract, folder, item, sidecar) -> None:
-        content = (
-            self.drive.download(item.id)
-            if not item.mime.startswith(extract_mod.GOOGLE_NATIVE_PREFIX)
-            else b""
-        )
-        ex = self.extract_fn(item.name, content, item.mime, min_text_chars=self.opts.min_text_chars)
+        native = item.mime.startswith(extract_mod.GOOGLE_NATIVE_PREFIX)
+        if item.size > extract_mod.MAX_FILE_BYTES:  # never download it
+            limit = extract_mod.MAX_FILE_BYTES >> 20
+            ex = extract_mod.Extraction("", "none", 0, "-", error=f"file larger than {limit} MB")
+        else:
+            content = b"" if native else self.drive.download(item.id)
+            ex = self.extract_fn(
+                item.name, content, item.mime, min_text_chars=self.opts.min_text_chars
+            )
         cls = None
         note = ""
         if not ex.ok:

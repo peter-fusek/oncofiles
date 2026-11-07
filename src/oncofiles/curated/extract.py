@@ -68,23 +68,50 @@ def _vision_pages(png_pages: list[bytes]) -> tuple[str, bool]:
     return "\n\n".join(texts), handwritten
 
 
-def _render_pdf(content: bytes) -> tuple[str, list[bytes], int]:
+MAX_PAGE_PIXELS = 25_000_000  # per rendered page; larger pages are rendered at lower dpi
+MAX_FILE_BYTES = 50 * 1024 * 1024  # checked by the runner before download
+
+
+def _pixmap_png(page) -> bytes:
+    """Render one page at RENDER_DPI, lowered so the bitmap stays under MAX_PAGE_PIXELS."""
+    import pymupdf
+
+    w_in, h_in = page.rect.width / 72, page.rect.height / 72
+    dpi = RENDER_DPI
+    if w_in * h_in * dpi * dpi > MAX_PAGE_PIXELS:
+        dpi = max(1, int((MAX_PAGE_PIXELS / max(w_in * h_in, 1e-6)) ** 0.5))
+    zoom = dpi / 72
+    return page.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom)).tobytes("png")
+
+
+def _pdf_text(content: bytes) -> tuple[str, int]:
     import pymupdf
 
     with pymupdf.open(stream=content, filetype="pdf") as doc:
-        text = "\n".join(page.get_text() for page in doc)
-        n = doc.page_count
-        pages = []
-        if n <= MAX_VISION_PAGES:
-            pages = [page.get_pixmap(dpi=RENDER_DPI).tobytes("png") for page in doc]
-    return text, pages, n
+        return "\n".join(page.get_text() for page in doc), doc.page_count
+
+
+def _render_pdf_pages(content: bytes) -> list[bytes]:
+    """Render pages lazily — only called once the text layer is known to be too thin."""
+    import pymupdf
+
+    with pymupdf.open(stream=content, filetype="pdf") as doc:
+        if doc.page_count > MAX_VISION_PAGES:
+            return []
+        return [_pixmap_png(page) for page in doc]
+
+
+def _render_pdf(content: bytes) -> tuple[str, list[bytes], int]:
+    """Text plus rendered pages (kept for the OCR benchmark script)."""
+    text, n = _pdf_text(content)
+    return text, _render_pdf_pages(content), n
 
 
 def _render_image(content: bytes, ext: str) -> bytes:
     import pymupdf
 
     with pymupdf.open(stream=content, filetype=ext) as doc:
-        return doc[0].get_pixmap(dpi=RENDER_DPI).tobytes("png")
+        return _pixmap_png(doc[0])
 
 
 def extract(
@@ -92,15 +119,18 @@ def extract(
 ) -> Extraction:
     """Run the ladder. Never raises — failures come back as ``error``."""
     ext = _ext(name)
+    if len(content) > MAX_FILE_BYTES:
+        return Extraction("", "none", 0, "-", error=f"file larger than {MAX_FILE_BYTES >> 20} MB")
     if mime_type.startswith(GOOGLE_NATIVE_PREFIX):
         return Extraction("", "none", 0, "google-native", error=None)
     try:
         if ext in TEXT_EXTS:
             return Extraction(content.decode("utf-8", errors="replace"), "plain", 1, "utf-8")
         if ext == "pdf":
-            text, pages, n = _render_pdf(content)
+            text, n = _pdf_text(content)
             if len(text.strip()) >= min_text_chars:
                 return Extraction(text, "text_layer", n, "pymupdf")
+            pages = _render_pdf_pages(content)
             if not pages:
                 return Extraction(
                     text,

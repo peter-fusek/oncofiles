@@ -193,3 +193,22 @@ def test_propose_uses_contract_and_returns_json(monkeypatch):
     assert classify.propose(CONTRACT, TEXT)["doc_type"] == "Report"
     assert "JanaNovakova" in captured["system"] and "Labs" in captured["system"]
     assert captured["user"].startswith("TEXT:")
+
+
+def test_text_layer_pdf_is_never_rendered(monkeypatch):
+    monkeypatch.setattr(extract, "_render_pdf_pages", lambda c: pytest.fail("must not render"))
+    assert extract.extract("a.pdf", _pdf("Lekarska sprava " * 20)).method == "text_layer"
+
+
+def test_huge_page_is_rendered_under_pixel_cap():
+    import pymupdf
+
+    doc = pymupdf.open()
+    doc.new_page(width=72 * 200, height=72 * 200)  # 200 x 200 inch page
+    pix = pymupdf.Pixmap(extract._pixmap_png(doc[0]))
+    assert pix.width * pix.height <= extract.MAX_PAGE_PIXELS
+
+
+def test_oversized_file_refused_before_parsing():
+    ex = extract.extract("big.pdf", b"x" * (extract.MAX_FILE_BYTES + 1))
+    assert not ex.ok and "larger than" in ex.error
