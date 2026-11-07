@@ -73,14 +73,18 @@ MAX_FILE_BYTES = 50 * 1024 * 1024  # checked by the runner before download
 
 
 def _pixmap_png(page) -> bytes:
-    """Render one page at RENDER_DPI, lowered so the bitmap stays under MAX_PAGE_PIXELS."""
+    """Render one page at up to RENDER_DPI, never above MAX_PAGE_PIXELS.
+
+    The zoom is fractional (an absurd MediaBox gets a tiny zoom, not 1 dpi), and
+    the final bitmap size is checked before rendering — over the cap is refused.
+    """
     import pymupdf
 
-    w_in, h_in = page.rect.width / 72, page.rect.height / 72
-    dpi = RENDER_DPI
-    if w_in * h_in * dpi * dpi > MAX_PAGE_PIXELS:
-        dpi = max(1, int((MAX_PAGE_PIXELS / max(w_in * h_in, 1e-6)) ** 0.5))
-    zoom = dpi / 72
+    area_pt = max(page.rect.width * page.rect.height, 1e-6)
+    zoom = min(RENDER_DPI / 72, (MAX_PAGE_PIXELS / area_pt) ** 0.5)
+    w, h = int(page.rect.width * zoom) + 1, int(page.rect.height * zoom) + 1
+    if w * h > MAX_PAGE_PIXELS * 1.01 or w < 8 or h < 8:
+        raise ValueError(f"page {page.rect.width:.0f}x{page.rect.height:.0f} pt cannot be rendered")
     return page.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom)).tobytes("png")
 
 

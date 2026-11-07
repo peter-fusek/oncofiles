@@ -212,3 +212,9 @@ def test_huge_page_is_rendered_under_pixel_cap():
 def test_oversized_file_refused_before_parsing():
     ex = extract.extract("big.pdf", b"x" * (extract.MAX_FILE_BYTES + 1))
     assert not ex.ok and "larger than" in ex.error
+
+
+def test_absurd_page_size_is_refused_not_rendered():
+    page = type("P", (), {"rect": type("R", (), {"width": 1e9, "height": 1e9})()})()
+    with pytest.raises(ValueError, match="cannot be rendered"):
+        extract._pixmap_png(page)
