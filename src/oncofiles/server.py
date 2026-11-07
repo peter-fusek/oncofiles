@@ -416,6 +416,16 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict]:
             tool_count,
         )
 
+    # Curated-folder nightly runs (#573): independent of SYNC_ENABLED/APScheduler.
+    from oncofiles.tools.curated import curated_nightly_loop, nightly_settings
+
+    curated_nightly_task = None
+    if nightly_settings()[0] and GOOGLE_INTEGRATION_ENABLED:
+        curated_nightly_task = asyncio.create_task(curated_nightly_loop(db))
+        logger.info(
+            "Curated nightly loop started (hour %d Europe/Bratislava)", nightly_settings()[1]
+        )
+
     try:
         yield {
             "db": db,
@@ -430,6 +440,8 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict]:
             "transport": MCP_TRANSPORT,
         }
     finally:
+        if curated_nightly_task is not None:
+            curated_nightly_task.cancel()
         if scheduler:
             scheduler.shutdown(wait=False)
             logger.info("Sync scheduler stopped")
@@ -7152,6 +7164,170 @@ async def api_gdrive_set_folder(request: Request) -> JSONResponse:
         if resp is not None:
             return resp
         logger.exception("API gdrive-set-folder error")
+        return JSONResponse({"error": "internal error"}, status_code=500)
+
+
+def _require_admin(request: Request) -> JSONResponse | None:
+    """Admin-only operations (#573): static bearer or an admin dashboard session.
+
+    Fails closed — any session that is not in DASHBOARD_ADMIN_EMAILS gets 403.
+    """
+    if _check_bearer(request) is None:
+        return None
+    email = _get_dashboard_email(request)
+    if email is None:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    if not _is_admin_email(email):
+        return JSONResponse({"error": "admin only"}, status_code=403)
+    return None
+
+
+async def _admin_patient_id(db_inst: Database, raw: str) -> str | None:
+    raw = (raw or "").strip().lower()
+    if not raw:
+        return None
+    return await db_inst.resolve_patient_id(raw)
+
+
+def _run_summary(run: dict | None) -> dict | None:
+    if not run:
+        return None
+    report = run.get("report") or {}
+    docs = report.get("documents") or []
+    return {
+        "id": run.get("id"),
+        "dry_run": bool(run.get("dry_run")),
+        "trigger": run.get("trigger"),
+        "status": run.get("status"),
+        "message": run.get("message"),
+        "started_at": run.get("started_at"),
+        "finished_at": run.get("finished_at"),
+        "documents": len(docs),
+        "filed": sum(1 for d in docs if d.get("result") == "filed"),
+        "review": sum(1 for d in docs if d.get("result") == "review_needed"),
+        "not_processed": len(report.get("not_processed") or []),
+    }
+
+
+@mcp.custom_route("/api/admin/curated/overview", methods=["GET"])
+async def api_admin_curated_overview(request: Request) -> JSONResponse:
+    """Admin operations panel: one card per patient (#573)."""
+    err = _require_admin(request)
+    if err:
+        return err
+    try:
+        from oncofiles.tools.curated import _runs, nightly_settings, preview_gate
+
+        db_inst: Database = request.app.state.fastmcp_server._lifespan_result["db"]
+        enabled, hour, max_runs = nightly_settings()
+        cards = []
+        for p in await db_inst.list_patients(active_only=True):
+            pid = p.patient_id
+            token = await db_inst.get_oauth_token(patient_id=pid)
+            running = _runs.get(pid)
+            cards.append(
+                {
+                    "patient_id": pid,
+                    "slug": p.slug,
+                    "name": p.display_name,
+                    "patient_type": getattr(p, "patient_type", "oncology"),
+                    "folder_name": token.gdrive_folder_name if token else None,
+                    "drive_connected": bool(token and token.gdrive_folder_id),
+                    "nightly_enabled": await db_inst.get_curated_nightly(patient_id=pid),
+                    "running": {k: v for k, v in running.items() if k != "state"}
+                    if running
+                    else None,
+                    "last_run": _run_summary(await db_inst.get_last_curated_run(patient_id=pid)),
+                    "real_run_blocked": await preview_gate(db_inst, pid),
+                }
+            )
+        return JSONResponse(
+            {
+                "nightly": {"enabled": enabled, "hour": hour, "max_runs": max_runs},
+                "patients": cards,
+            }
+        )
+    except Exception as exc:
+        resp = _circuit_breaker_503(exc, "/api/admin/curated/overview")
+        if resp is not None:
+            return resp
+        logger.exception("API admin curated overview error")
+        return JSONResponse({"error": "internal error"}, status_code=500)
+
+
+@mcp.custom_route("/api/admin/curated/run", methods=["POST"])
+async def api_admin_curated_run(request: Request) -> JSONResponse:
+    """Start a curated run (dry by default). A real run needs a clean preview < 24 h."""
+    err = _require_admin(request)
+    if err:
+        return err
+    try:
+        from oncofiles.tools.curated import start_run
+
+        body = await request.json()
+        db_inst: Database = request.app.state.fastmcp_server._lifespan_result["db"]
+        pid = await _admin_patient_id(db_inst, str(body.get("patient_id", "")))
+        if not pid:
+            return JSONResponse({"error": "unknown patient"}, status_code=404)
+        dry_run = body.get("dry_run", True) is not False  # anything but explicit false = dry
+        result = await start_run(db_inst, pid, dry_run=dry_run, trigger="dashboard")
+        return JSONResponse(result, status_code=409 if "error" in result else 202)
+    except Exception as exc:
+        resp = _circuit_breaker_503(exc, "/api/admin/curated/run")
+        if resp is not None:
+            return resp
+        logger.exception("API admin curated run error")
+        return JSONResponse({"error": "internal error"}, status_code=500)
+
+
+@mcp.custom_route("/api/admin/curated/report", methods=["GET"])
+async def api_admin_curated_report(request: Request) -> JSONResponse:
+    """Full report of a run (default: the latest) plus the run history."""
+    err = _require_admin(request)
+    if err:
+        return err
+    try:
+        db_inst: Database = request.app.state.fastmcp_server._lifespan_result["db"]
+        pid = await _admin_patient_id(db_inst, request.query_params.get("patient_id", ""))
+        if not pid:
+            return JSONResponse({"error": "unknown patient"}, status_code=404)
+        raw_id = request.query_params.get("run_id", "")
+        run = (
+            await db_inst.get_curated_run(int(raw_id), patient_id=pid)
+            if raw_id.isdigit()
+            else await db_inst.get_last_curated_run(patient_id=pid)
+        )
+        history = await db_inst.list_curated_runs(patient_id=pid, limit=20)
+        return JSONResponse({"run": run, "history": history})
+    except Exception as exc:
+        resp = _circuit_breaker_503(exc, "/api/admin/curated/report")
+        if resp is not None:
+            return resp
+        logger.exception("API admin curated report error")
+        return JSONResponse({"error": "internal error"}, status_code=500)
+
+
+@mcp.custom_route("/api/admin/curated/nightly", methods=["POST"])
+async def api_admin_curated_nightly(request: Request) -> JSONResponse:
+    """Turn the nightly run on/off for one patient."""
+    err = _require_admin(request)
+    if err:
+        return err
+    try:
+        body = await request.json()
+        db_inst: Database = request.app.state.fastmcp_server._lifespan_result["db"]
+        pid = await _admin_patient_id(db_inst, str(body.get("patient_id", "")))
+        if not pid:
+            return JSONResponse({"error": "unknown patient"}, status_code=404)
+        enabled = body.get("enabled") is True
+        who = _get_dashboard_email(request) or "bearer"
+        await db_inst.set_curated_nightly(patient_id=pid, enabled=enabled, updated_by=who)
+        return JSONResponse({"patient_id": pid, "nightly_enabled": enabled})
+    except Exception as exc:
+        resp = _circuit_breaker_503(exc, "/api/admin/curated/nightly")
+        if resp is not None:
+            return resp
+        logger.exception("API admin curated nightly error")
         return JSONResponse({"error": "internal error"}, status_code=500)
 
 
