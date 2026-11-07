@@ -106,6 +106,12 @@ async def sync_from_gdrive(
 
     Returns summary dict: {new, updated, unchanged, skipped, missing, errors}.
     """
+    from oncofiles.curated_folder import write_block_reason
+
+    if (blocked := write_block_reason(gdrive)) is not None:
+        logger.info("%s: skipped for patient %s — %s", "sync_from_gdrive", patient_id, blocked)
+        return {"skipped": True, "curated": True, "message": blocked}
+
     # Proactive reconnect before batch to avoid stale replica (#378)
     await db.reconnect_if_stale(timeout=10.0)
 
@@ -655,6 +661,12 @@ async def sync_to_gdrive(
 
     Returns summary dict: {exported, skipped, metadata_exported, errors}.
     """
+    from oncofiles.curated_folder import write_block_reason
+
+    if (blocked := write_block_reason(gdrive)) is not None:
+        logger.info("%s: skipped for patient %s — %s", "sync_to_gdrive", patient_id, blocked)
+        return {"skipped": True, "curated": True, "message": blocked}
+
     # Proactive reconnect before batch to avoid stale replica (#378)
     await db.reconnect_if_stale(timeout=10.0)
 
@@ -1429,6 +1441,12 @@ async def sync(
 
     Returns combined stats. Uses a module-level lock to prevent concurrent execution.
     """
+    from oncofiles.curated_folder import write_block_reason
+
+    if (blocked := write_block_reason(gdrive)) is not None:
+        logger.info("%s: skipped for patient %s — %s", "sync", patient_id, blocked)
+        return {"skipped": True, "curated": True, "message": blocked}
+
     global _sync_lock_acquired_at  # noqa: PLW0603
 
     if _sync_lock.locked():

@@ -1163,54 +1163,90 @@
       document.getElementById('wiz-step2-auth-done').style.display = 'flex';
     }
 
-    async function wizardStep2LoadFolders() {
+    // #563: navigable folder browser — parent stack for "up" navigation.
+    var wizardFolderParent = 'root';
+    var wizardFolderStack = [];
+
+    async function wizardStep2LoadFolders(parentId, pushEntry) {
       document.getElementById('wiz-step2-auth').style.display = 'none';
       document.getElementById('wiz-step2-folder').style.display = 'block';
+      var parent = parentId || 'root';
+      var statusEl = document.getElementById('wiz-step2-folder-status');
 
       try {
         var resp = await fetch(
-          '/api/gdrive-folders?patient_id=' + encodeURIComponent(wizardPatientId),
+          '/api/gdrive-folders?patient_id=' + encodeURIComponent(wizardPatientId) +
+            '&parent=' + encodeURIComponent(parent),
           { headers: { 'Authorization': authHeader() } }
         );
         if (!resp.ok) {
           var err = await resp.json();
-          var statusEl = document.getElementById('wiz-step2-folder-status');
           statusEl.textContent = err.error || 'Failed to load folders';
           statusEl.style.display = 'block';
           return;
         }
         var data = await resp.json();
+        if (!parentId) wizardFolderStack = [];  // fresh entry: reset breadcrumb
+        if (pushEntry) wizardFolderStack.push(pushEntry);  // only after a successful load
+        wizardFolderParent = data.parent_id || parent;
+        document.getElementById('wiz-folder-path').textContent =
+          wizardFolderStack.map(function(f) { return f.name; }).concat([data.parent_name || 'My Drive']).join(' / ');
+        document.getElementById('wiz-folder-up').hidden = wizardFolderParent === 'root';
+
         var select = document.getElementById('wiz-folder-select');
         clearEl(select);
 
-        // "Create new" option first
+        // "Create new" option first (created inside the folder being browsed)
         var newOpt = document.createElement('option');
         newOpt.value = '__new__';
         newOpt.textContent = '+ Create new folder';
         select.appendChild(newOpt);
 
-        // Existing folders
+        // The folder being browsed itself (not selectable at My Drive root)
+        if (wizardFolderParent !== 'root') {
+          var hereOpt = document.createElement('option');
+          hereOpt.value = wizardFolderParent;
+          hereOpt.textContent = '\u2713 ' + (data.parent_name || wizardFolderParent);
+          select.appendChild(hereOpt);
+        }
+
         (data.folders || []).forEach(function(f) {
           var opt = document.createElement('option');
           opt.value = f.id;
           opt.textContent = f.name;
+          opt.dataset.name = f.name;
           select.appendChild(opt);
         });
+        if (wizardFolderParent !== 'root') select.value = wizardFolderParent;
 
-        // Default new folder name
         var patientName = document.getElementById('wiz-name').value.trim();
         document.getElementById('wiz-folder-name').value = 'Oncofiles - ' + patientName;
+        statusEl.style.display = 'none';
         wizardFolderChanged();
       } catch (e) {
-        var statusEl = document.getElementById('wiz-step2-folder-status');
         statusEl.textContent = 'Error: ' + e.message;
         statusEl.style.display = 'block';
       }
     }
 
+    function wizardFolderOpen() {
+      var select = document.getElementById('wiz-folder-select');
+      var opt = select.options[select.selectedIndex];
+      if (!opt || opt.value === '__new__' || opt.value === wizardFolderParent) return;
+      var here = { id: wizardFolderParent, name: document.getElementById('wiz-folder-path').textContent.split(' / ').pop() };
+      wizardStep2LoadFolders(opt.value, here);
+    }
+
+    function wizardFolderUp() {
+      var prev = wizardFolderStack.pop();
+      // Going up to My Drive root passes no id, which also resets the stack.
+      wizardStep2LoadFolders(prev && prev.id !== 'root' ? prev.id : undefined);
+    }
+
     function wizardFolderChanged() {
       var val = document.getElementById('wiz-folder-select').value;
       document.getElementById('wiz-folder-new').style.display = val === '__new__' ? 'block' : 'none';
+      document.getElementById('wiz-folder-open').disabled = val === '__new__' || val === wizardFolderParent;
     }
 
     async function wizardStep2SetFolder() {
@@ -1221,9 +1257,13 @@
       statusEl.style.display = 'block';
 
       var selectVal = document.getElementById('wiz-folder-select').value;
+      var linkVal = document.getElementById('wiz-folder-link').value.trim();
       var body = { patient_id: wizardPatientId };
-      if (selectVal === '__new__') {
+      if (linkVal) {
+        body.folder_id = linkVal;  // server parses links and bare ids (#563)
+      } else if (selectVal === '__new__') {
         body.folder_name = document.getElementById('wiz-folder-name').value.trim() || 'Oncofiles';
+        body.parent_id = wizardFolderParent;
       } else {
         body.folder_id = selectVal;
       }
@@ -1240,7 +1280,9 @@
           btn.disabled = false;
           return;
         }
-        statusEl.textContent = 'Folder ready! ' + data.subfolders_created + ' category folders created.';
+        statusEl.textContent = data.curated
+          ? 'Folder connected. It has its own README.md contract, so no folders were created.'
+          : 'Folder ready! ' + data.subfolders_created + ' category folders created.';
         statusEl.style.color = 'var(--green)';
         setTimeout(function() { wizardGoToStep(3); }, 1000);
       } catch (e) {

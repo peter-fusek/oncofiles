@@ -164,12 +164,24 @@ def test_valid_query_with_literal_on_left_side():
     assert err is None
 
 
-def test_admin_only_table_no_filter_required():
-    """schema_migrations / sync_history have no patient_id column; allowed without filter."""
-    err = _validate_query("SELECT * FROM schema_migrations", CALLER_PID)
+@pytest.mark.parametrize("table", sorted(ALLOWED_TABLES_ADMIN_ONLY))
+def test_admin_only_table_denied_for_non_admin(table):
+    """#541: system-wide tables are admin-only; the default is fail-closed."""
+    err = _validate_query(f"SELECT * FROM {table}", CALLER_PID)
+    assert err is not None
+    assert table in err and "admin-only" in err
+
+
+@pytest.mark.parametrize("table", sorted(ALLOWED_TABLES_ADMIN_ONLY))
+def test_admin_only_table_allowed_for_admin(table):
+    err = _validate_query(f"SELECT * FROM {table}", CALLER_PID, is_admin=True)
     assert err is None
-    err = _validate_query("SELECT * FROM sync_history", CALLER_PID)
-    assert err is None
+
+
+def test_admin_flag_does_not_bypass_patient_scope_filter():
+    """Admin still needs the literal patient_id equality on patient-scoped tables."""
+    err = _validate_query("SELECT * FROM documents", CALLER_PID, is_admin=True)
+    assert err is not None and "patient_id" in err
 
 
 # ── No implicit admin scope ──────────────────────────────────────────
@@ -185,9 +197,9 @@ def test_empty_pid_cannot_read_patient_scoped_table():
     assert "authorized patient" in err or "implicit admin" in err
 
 
-def test_empty_pid_can_still_read_admin_only_table():
-    """Admin-only tables don't trigger the per-patient check."""
-    err = _validate_query("SELECT * FROM schema_migrations", "")
+def test_empty_pid_admin_can_read_admin_only_table():
+    """Admin-only tables don't trigger the per-patient check for admins."""
+    err = _validate_query("SELECT * FROM schema_migrations", "", is_admin=True)
     assert err is None
 
 

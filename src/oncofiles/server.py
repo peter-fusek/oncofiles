@@ -376,6 +376,14 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict]:
         except Exception as e:
             logger.warning("GDrive client init failed: %s — fallback disabled", e)
 
+    # Curated folder (#562): block legacy writes on the default-patient client too.
+    _startup_sync_folder = _get_sync_folder_id_from(oauth_folder_id)
+    if gdrive is not None and _startup_sync_folder:
+        try:
+            await _mark_patient_curated(_primary_uuid, gdrive, _startup_sync_folder)
+        except Exception:
+            logger.warning("curated-folder check failed at startup", exc_info=True)
+
     # Start background sync scheduler
     scheduler = None
     job_tracker: dict[str, dict] = {}
@@ -472,6 +480,27 @@ _hard_auth_failures: dict[tuple[str, str], dict[str, str]] = {}
 # #552: cached output of the sync-staleness watchdog. /health is a liveness
 # probe and must never touch the DB, so the hourly `sync_watchdog` job does the
 # querying and parks the result here for the endpoints to read.
+# Patients whose Drive folder overlaps a curated tree (#562). Filled by
+# _mark_patient_curated; the watchdog and the nightly/weekly pipelines skip them
+# so a deliberate block never reads as an outage.
+_curated_patients: set[str] = set()
+
+
+async def _mark_patient_curated(patient_id: str, gdrive, folder_id: str) -> bool:
+    """Run the (cached) curated check on a patient client; record the verdict."""
+    from oncofiles.curated_folder import mark_if_curated, write_block_reason
+
+    if gdrive is None or not folder_id:
+        return False
+    await asyncio.to_thread(mark_if_curated, gdrive, folder_id)
+    blocked = write_block_reason(gdrive) is not None
+    if blocked and patient_id:
+        if patient_id not in _curated_patients:
+            logger.info("patient %s: Drive folder is curated — legacy writes disabled", patient_id)
+        _curated_patients.add(patient_id)
+    return blocked
+
+
 _sync_staleness: dict[str, object] = {
     "checked_at": None,
     "stale_count": 0,
@@ -651,6 +680,9 @@ async def _create_patient_clients(
     # Check cache first
     cached = _patient_clients_cache.get(patient_id)
     if cached and (_time.monotonic() - cached[4]) < _CLIENT_CACHE_TTL:
+        # Re-check on cache hits too (cheap: detection is cached for 10 min) so a
+        # folder that becomes curated is blocked without waiting for the 30-min TTL.
+        await _mark_patient_curated(patient_id, cached[0], cached[3])
         return cached[:4]
 
     token = await db.get_oauth_token(patient_id=patient_id)
@@ -702,6 +734,9 @@ async def _create_patient_clients(
             client_secret=GOOGLE_OAUTH_CLIENT_SECRET,
         )
 
+    # Curated folder (#562): block every legacy write on this client.
+    await _mark_patient_curated(patient_id, p_gdrive, token.gdrive_folder_id)
+
     # Cache the clients
     _patient_clients_cache[patient_id] = (
         p_gdrive,
@@ -738,7 +773,11 @@ def _start_sync_scheduler(
     async def _get_patient_gdrive(pid: str) -> tuple | None:
         """Get GDrive client + folder_id for a patient."""
         if pid == primary_uuid and gdrive and oauth_folder_id:
-            return (gdrive, _get_sync_folder_id_from(oauth_folder_id))
+            # Check the folder actually synced, on every call (#562 review): the
+            # lifespan client is long-lived and is never rebuilt on folder change.
+            folder = _get_sync_folder_id_from(oauth_folder_id)
+            await _mark_patient_curated(pid, gdrive, folder)
+            return (gdrive, folder)
         clients = await _create_patient_clients(db, pid)
         if not clients:
             return None
@@ -1248,6 +1287,11 @@ def _start_sync_scheduler(
                 if not gc_pair:
                     continue
                 p_gdrive, folder_id = gc_pair
+                if pid in _curated_patients:
+                    # Curated folder (#562): owned by the contract pipeline, not the
+                    # legacy phases. Not an attempt, not a failure.
+                    logger.info("pipeline [%s]: curated folder — legacy phases skipped", pid)
+                    continue
 
                 async with _sync_semaphore:
                     # Phase 1: GDrive import (md5-gated, cheap for unchanged).
@@ -1419,6 +1463,11 @@ def _start_sync_scheduler(
                 if not gc_pair:
                     continue
                 p_gdrive, folder_id = gc_pair
+                if pid in _curated_patients:
+                    # Curated folder (#562): owned by the contract pipeline, not the
+                    # legacy phases. Not an attempt, not a failure.
+                    logger.info("pipeline [%s]: curated folder — legacy phases skipped", pid)
+                    continue
 
                 async with _sync_semaphore:
                     try:
@@ -1659,6 +1708,9 @@ def _start_sync_scheduler(
             now = datetime.now(UTC)
             stale: list[dict] = []
             for p in await db.list_patients(active_only=True):
+                if p.patient_id in _curated_patients:
+                    # Legacy sync is deliberately off for curated folders (#562).
+                    continue
                 last_ok = await db.get_last_successful_sync(patient_id=p.patient_id)
                 if not last_ok:
                     # Never synced successfully — not "stale", just not
@@ -6888,10 +6940,35 @@ async def api_gdrive_folders(request: Request) -> JSONResponse:
             client_secret=GOOGLE_OAUTH_CLIENT_SECRET,
         )
 
-        folders = await asyncio.to_thread(gdrive.list_root_folders)
+        # #563: browse into subfolders (e.g. Health/<patient>), not only My Drive root.
+        from oncofiles.curated_folder import parse_drive_folder_ref
+
+        raw_parent = request.query_params.get("parent", "").strip()
+        parent_id = "root"
+        if raw_parent and raw_parent != "root":
+            parent_id = parse_drive_folder_ref(raw_parent)
+            if not parent_id:
+                return JSONResponse({"error": "invalid parent folder id"}, status_code=400)
+
+        folders = await asyncio.to_thread(gdrive.list_child_folders, parent_id)
+        parent_name = "My Drive"
+        grandparent_id = None
+        if parent_id != "root":
+            try:
+                meta = await asyncio.to_thread(
+                    gdrive.get_file_metadata, parent_id, "id,name,parents,mimeType"
+                )
+            except FileNotFoundError:
+                return JSONResponse({"error": "folder not found"}, status_code=404)
+            parent_name = meta.get("name") or parent_id
+            parents = meta.get("parents") or []
+            grandparent_id = parents[0] if parents else "root"
         return JSONResponse(
             {
                 "folders": folders,
+                "parent_id": parent_id,
+                "parent_name": parent_name,
+                "grandparent_id": grandparent_id,
                 "current_folder_id": token.gdrive_folder_id,
             }
         )
@@ -6919,6 +6996,17 @@ async def api_gdrive_set_folder(request: Request) -> JSONResponse:
         raw_patient_id = body.get("patient_id", "").strip().lower()
         folder_id = body.get("folder_id", "").strip()
         folder_name = body.get("folder_name", "").strip()
+        if folder_id:
+            # #563: accept a pasted Drive folder link as well as a bare id.
+            from oncofiles.curated_folder import parse_drive_folder_ref
+
+            parsed = parse_drive_folder_ref(folder_id)
+            if not parsed:
+                return JSONResponse(
+                    {"error": "folder_id must be a Google Drive folder link or id"},
+                    status_code=400,
+                )
+            folder_id = parsed
 
         if not raw_patient_id:
             return JSONResponse({"error": "patient_id required"}, status_code=400)
@@ -6961,9 +7049,23 @@ async def api_gdrive_set_folder(request: Request) -> JSONResponse:
             client_secret=GOOGLE_OAUTH_CLIENT_SECRET,
         )
 
-        # Create new folder if needed
+        # Create new folder if needed — inside the browsed parent (#563), never
+        # inside a curated folder (#562: its README fixes the folder set).
         if not folder_id and folder_name:
-            folder_id = await asyncio.to_thread(gdrive.create_folder, folder_name, "root")
+            from oncofiles.curated_folder import is_curated_folder, parse_drive_folder_ref
+
+            raw_parent = str(body.get("parent_id", "") or "").strip()
+            create_parent = "root"
+            if raw_parent and raw_parent != "root":
+                create_parent = parse_drive_folder_ref(raw_parent)
+                if not create_parent:
+                    return JSONResponse({"error": "invalid parent_id"}, status_code=400)
+                if await asyncio.to_thread(is_curated_folder, gdrive, create_parent):
+                    return JSONResponse(
+                        {"error": "Cannot create a folder inside a curated folder (README.md)."},
+                        status_code=400,
+                    )
+            folder_id = await asyncio.to_thread(gdrive.create_folder, folder_name, create_parent)
 
         # Validate folder exists before persisting
         try:
@@ -7003,6 +7105,24 @@ async def api_gdrive_set_folder(request: Request) -> JSONResponse:
         if owner_email:
             await db_inst.update_oauth_owner_email(patient_id, "google", owner_email)
             gdrive.owner_email = owner_email
+
+        # Curated folder (#562): its README fixes the folder set — create nothing.
+        from oncofiles.curated_folder import clear_cache, mark_if_curated
+
+        clear_cache(folder_id)
+        if await asyncio.to_thread(mark_if_curated, gdrive, folder_id):
+            return JSONResponse(
+                {
+                    "status": "ok",
+                    "folder_id": folder_id,
+                    "owner_email": owner_email,
+                    "curated": True,
+                    "subfolders_created": 0,
+                    "subfolders_skipped": 0,
+                    "message": "Curated folder detected (README.md + _index.json): "
+                    "no folders created; legacy sync is disabled for it.",
+                }
+            )
 
         # Create category subfolders
         from oncofiles.gdrive_folders import ALL_FOLDERS, bilingual_name

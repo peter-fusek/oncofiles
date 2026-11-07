@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import contextlib
 import functools
 import io
 import json
@@ -27,6 +28,10 @@ _CONNECTION_ERRORS = (ssl.SSLError, ConnectionError, OSError, BrokenPipeError, T
 
 def _is_connection_error(exc: Exception) -> bool:
     """Check if an exception is a retryable SSL/connection error."""
+    from oncofiles.curated_folder import DriveWriteBlockedError
+
+    if isinstance(exc, DriveWriteBlockedError):  # a policy refusal, never transient (#562)
+        return False
     if isinstance(exc, _CONNECTION_ERRORS):
         return True
     # httplib2 wraps SSL errors in ServerNotFoundError or similar
@@ -83,6 +88,27 @@ def _retry_on_transient(func):
 
 class GDriveClient:
     """Download/upload files from Google Drive using service account or OAuth."""
+
+    # Set by oncofiles.curated_folder.mark_if_curated — when a str, every write
+    # method raises DriveWriteBlockedError (#562). Class attribute so from_oauth()
+    # instances get the default too.
+    write_block_reason: str | None = None
+    _contract_write_depth: int = 0
+
+    def _guard_write(self, op: str) -> None:
+        if self.write_block_reason and not self._contract_write_depth:
+            from oncofiles.curated_folder import DriveWriteBlockedError
+
+            raise DriveWriteBlockedError(f"{op} refused: {self.write_block_reason}")
+
+    @contextlib.contextmanager
+    def contract_writes(self):
+        """Lift the curated-folder write block for the contract pipeline only (#562)."""
+        self._contract_write_depth += 1
+        try:
+            yield self
+        finally:
+            self._contract_write_depth -= 1
 
     def __init__(
         self,
@@ -164,6 +190,7 @@ class GDriveClient:
 
     def grant_access(self, file_id: str, email: str, role: str = "writer") -> None:
         """Grant access to a file or folder. Idempotent — skips if already shared."""
+        self._guard_write("grant_access")
         try:
             self._service.permissions().create(
                 fileId=file_id,
@@ -238,6 +265,7 @@ class GDriveClient:
         app_properties: dict | None = None,
     ) -> dict:
         """Upload a file to Google Drive. Returns file metadata dict with id, modifiedTime."""
+        self._guard_write("upload")
         from googleapiclient.http import MediaInMemoryUpload
 
         file_metadata: dict = {"name": filename}
@@ -263,6 +291,7 @@ class GDriveClient:
     @_retry_on_transient
     def update(self, gdrive_id: str, content_bytes: bytes, mime_type: str) -> dict:
         """Update an existing file's content on Google Drive."""
+        self._guard_write("update")
         from googleapiclient.http import MediaInMemoryUpload
 
         media = MediaInMemoryUpload(content_bytes, mimetype=mime_type)
@@ -384,6 +413,7 @@ class GDriveClient:
     @_retry_on_transient
     def create_folder(self, name: str, parent_id: str) -> str:
         """Create a folder on Google Drive. Returns the folder ID."""
+        self._guard_write("create_folder")
         file_metadata = {
             "name": name,
             "mimeType": "application/vnd.google-apps.folder",
@@ -394,9 +424,17 @@ class GDriveClient:
         self._auto_share(result["id"])
         return result["id"]
 
-    @_retry_on_transient
     def list_root_folders(self) -> list[dict]:
         """List folders in My Drive root. Returns [{id, name}]."""
+        return self.list_child_folders("root")
+
+    @_retry_on_transient
+    def list_child_folders(self, parent_id: str) -> list[dict]:
+        """List the direct subfolders of ``parent_id`` ("root" = My Drive). Returns [{id, name}].
+
+        ``parent_id`` must be a Drive id (validated by the caller) — it is
+        interpolated into the Drive query string.
+        """
         folders: list[dict] = []
         page_token = None
         while True:
@@ -404,7 +442,7 @@ class GDriveClient:
                 self._service.files()
                 .list(
                     q=(
-                        "'root' in parents "
+                        f"'{parent_id}' in parents "
                         "and mimeType = 'application/vnd.google-apps.folder' "
                         "and trashed = false"
                     ),
@@ -464,6 +502,7 @@ class GDriveClient:
     @_retry_on_transient
     def set_app_properties(self, file_id: str, properties: dict) -> None:
         """Set appProperties on a file for metadata tracking."""
+        self._guard_write("set_app_properties")
         self._service.files().update(
             fileId=file_id,
             body={"appProperties": properties},
@@ -509,6 +548,7 @@ class GDriveClient:
         Returns the new shortcut's file metadata. Auto-shared via the same
         fallback used by copy_file.
         """
+        self._guard_write("create_shortcut")
         body: dict = {
             "name": name,
             "mimeType": "application/vnd.google-apps.shortcut",
@@ -544,6 +584,7 @@ class GDriveClient:
         app_properties: dict | None = None,
     ) -> dict:
         """Copy a file on Google Drive. Returns new file metadata dict."""
+        self._guard_write("copy_file")
         body: dict = {"name": new_name, "parents": [folder_id]}
         if app_properties:
             body["appProperties"] = app_properties
@@ -563,6 +604,7 @@ class GDriveClient:
     @_retry_on_transient
     def rename_file(self, file_id: str, new_name: str) -> None:
         """Rename a file or folder on Google Drive."""
+        self._guard_write("rename_file")
         self._service.files().update(
             fileId=file_id,
             body={"name": new_name},
@@ -573,6 +615,7 @@ class GDriveClient:
     @_retry_on_transient
     def trash_file(self, file_id: str) -> None:
         """Move a file to trash on Google Drive (soft delete)."""
+        self._guard_write("trash_file")
         self._service.files().update(
             fileId=file_id,
             body={"trashed": True},
@@ -583,6 +626,7 @@ class GDriveClient:
     @_retry_on_transient
     def move_file(self, file_id: str, new_parent_id: str) -> None:
         """Move a file to a new parent folder."""
+        self._guard_write("move_file")
         # Get current parents
         file_info = self._service.files().get(fileId=file_id, fields="parents").execute()
         previous_parents = ",".join(file_info.get("parents", []))
@@ -655,6 +699,7 @@ class GDriveClient:
 
         Returns {file_id: success} mapping.
         """
+        self._guard_write("batch_rename")
         results: dict[str, bool] = {}
         if not renames:
             return results
@@ -691,6 +736,7 @@ class GDriveClient:
 
         Returns {file_id: success} mapping.
         """
+        self._guard_write("batch_move")
         results: dict[str, bool] = {}
         if not moves:
             return results

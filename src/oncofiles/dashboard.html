@@ -528,12 +528,21 @@
  <!-- Phase B: Folder picker (shown after OAuth) -->
  <div id="wiz-step2-folder" style="display:none">
  <p style="color:var(--text-muted);font-size:0.875rem;margin-bottom:0.5rem" data-sk="Vyberte priečinok pre zdravotné dokumenty." data-en="Choose a folder for medical documents.">Vyberte priečinok pre zdravotné dokumenty.</p>
- <p style="color:var(--text-muted);font-size:0.75rem;margin-bottom:1rem;opacity:0.7" data-sk="Vyberte existujúci priečinok alebo vytvorte nový. Oncofiles vytvorí podpriečinky pre každú kategóriu dokumentov (Laboratóriá, Zobrazovanie, Patológia atď.)." data-en="Pick an existing folder or create a new one. Oncofiles will create subfolders for each document category (Labs, Imaging, Pathology, etc.) inside it.">Vyberte existujúci priečinok alebo vytvorte nový. Oncofiles vytvorí podpriečinky pre každú kategóriu dokumentov (Laboratóriá, Zobrazovanie, Patológia atď.).</p>
+ <p style="color:var(--text-muted);font-size:0.75rem;margin-bottom:1rem;opacity:0.7" data-sk="Vyberte existujúci priečinok alebo vytvorte nový. Oncofiles vytvorí podpriečinky pre každú kategóriu dokumentov (Laboratóriá, Zobrazovanie, Patológia atď.). Priečinok s vlastným kontraktom README.md sa nikdy neprestavuje." data-en="Pick an existing folder or create a new one. Oncofiles will create subfolders for each document category (Labs, Imaging, Pathology, etc.) inside it. A folder with its own README.md contract is never restructured.">Vyberte existujúci priečinok alebo vytvorte nový. Oncofiles vytvorí podpriečinky pre každú kategóriu dokumentov (Laboratóriá, Zobrazovanie, Patológia atď.).</p>
+ <p class="wizard-folder-path"><span data-sk="Priečinok:" data-en="Folder:">Priečinok:</span> <strong id="wiz-folder-path">My Drive</strong></p>
  <div class="wizard-field">
  <label for="wiz-folder-select" data-sk="Vybrať priečinok" data-en="Select folder">Vybrať priečinok</label>
  <select id="wiz-folder-select" data-change="wizardFolderChanged">
  <option value="">Načítavam priečinky...</option>
  </select>
+ </div>
+ <div class="wizard-folder-nav">
+ <button class="wizard-btn-secondary" id="wiz-folder-up" hidden data-action="wizardFolderUp" data-sk="▴ O úroveň vyššie" data-en="▴ Up one level">▴ O úroveň vyššie</button>
+ <button class="wizard-btn-secondary" id="wiz-folder-open" data-action="wizardFolderOpen" data-sk="Otvoriť podpriečinok ▸" data-en="Open subfolder ▸">Otvoriť podpriečinok ▸</button>
+ </div>
+ <div class="wizard-field">
+ <label for="wiz-folder-link" data-sk="Alebo vložte odkaz na priečinok v Google Drive" data-en="Or paste a Google Drive folder link">Alebo vložte odkaz na priečinok v Google Drive</label>
+ <input type="text" id="wiz-folder-link" placeholder="https://drive.google.com/drive/folders/…">
  </div>
  <div id="wiz-folder-new" class="wizard-field" style="display:none">
  <label for="wiz-folder-name" data-sk="Názov nového priečinka" data-en="New folder name">Názov nového priečinka</label>
