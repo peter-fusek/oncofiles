@@ -17,7 +17,11 @@ from __future__ import annotations
 
 import hashlib
 import io
+import logging
+import time
 from dataclasses import dataclass
+
+logger = logging.getLogger(__name__)
 
 FOLDER_MIME = "application/vnd.google-apps.folder"
 _FIELDS = "id,name,mimeType,parents,size,md5Checksum,sha256Checksum,modifiedTime,webViewLink"
@@ -44,6 +48,31 @@ class Item:
         return self.mime == FOLDER_MIME
 
 
+_READ_ATTEMPTS = 3
+STALE_AFTER_S = 60.0
+
+
+def _read(gdrive, fn):
+    """Run a Drive READ, retrying on connection errors with a fresh connection.
+
+    Reads are idempotent, so retrying is safe — unlike writes, which are never
+    retried (README §1b). 2026-11-07: after ~7 min of local-LLM work the
+    httplib2 HTTPS connection was stale and the next download failed (SSLError).
+    """
+    from oncofiles.gdrive_client import _is_connection_error
+
+    for attempt in range(_READ_ATTEMPTS):
+        try:
+            return fn()
+        except Exception as exc:
+            if attempt == _READ_ATTEMPTS - 1 or not _is_connection_error(exc):
+                raise
+            logger.warning("curated: Drive read failed (%s), fresh connection", type(exc).__name__)
+            gdrive._rebuild_service()
+            time.sleep(1 + attempt)
+    raise RuntimeError("unreachable")
+
+
 def _item(f: dict, parent: str) -> Item:
     return Item(
         id=f["id"],
@@ -62,17 +91,20 @@ def list_children(gdrive, folder_id: str) -> list[Item]:
     items: list[Item] = []
     page_token = None
     while True:
-        resp = (
-            gdrive._service.files()
-            .list(
-                q=f"'{folder_id}' in parents and trashed = false",
-                fields=f"nextPageToken, files({_FIELDS})",
-                pageSize=1000,
-                pageToken=page_token,
-                supportsAllDrives=True,
-                includeItemsFromAllDrives=True,
-            )
-            .execute()
+        resp = _read(
+            gdrive,
+            lambda page_token=page_token: (
+                gdrive._service.files()
+                .list(
+                    q=f"'{folder_id}' in parents and trashed = false",
+                    fields=f"nextPageToken, files({_FIELDS})",
+                    pageSize=1000,
+                    pageToken=page_token,
+                    supportsAllDrives=True,
+                    includeItemsFromAllDrives=True,
+                )
+                .execute()
+            ),
         )
         items.extend(_item(f, folder_id) for f in resp.get("files", []))
         page_token = resp.get("nextPageToken")
@@ -81,22 +113,28 @@ def list_children(gdrive, folder_id: str) -> list[Item]:
 
 
 def get(gdrive, file_id: str) -> dict:
-    return (
-        gdrive._service.files()
-        .get(fileId=file_id, fields=_FIELDS + ",trashed", supportsAllDrives=True)
-        .execute()
+    return _read(
+        gdrive,
+        lambda: (
+            gdrive._service.files()
+            .get(fileId=file_id, fields=_FIELDS + ",trashed", supportsAllDrives=True)
+            .execute()
+        ),
     )
 
 
 def download(gdrive, file_id: str) -> bytes:
     from googleapiclient.http import MediaIoBaseDownload
 
-    buf = io.BytesIO()
-    downloader = MediaIoBaseDownload(buf, gdrive._service.files().get_media(fileId=file_id))
-    done = False
-    while not done:
-        _, done = downloader.next_chunk()
-    return buf.getvalue()
+    def _once() -> bytes:  # a retry restarts the whole download on a fresh connection
+        buf = io.BytesIO()
+        downloader = MediaIoBaseDownload(buf, gdrive._service.files().get_media(fileId=file_id))
+        done = False
+        while not done:
+            _, done = downloader.next_chunk()
+        return buf.getvalue()
+
+    return _read(gdrive, _once)
 
 
 def _nfc(value: str) -> str:
@@ -195,28 +233,47 @@ def trash_canary(gdrive, file_id: str) -> None:
 
 
 class DriveOps:
-    """The runner's Drive interface — bound to one client. Tests substitute a fake."""
+    """The runner's Drive interface — bound to one client. Tests substitute a fake.
+
+    Renews the HTTPS connection before any call that follows a long pause
+    (local-LLM work between Drive calls takes minutes), so writes — which are
+    never retried — do not hit a stale connection.
+    """
 
     def __init__(self, gdrive):
         self.gdrive = gdrive
+        self._last = time.monotonic()
+
+    def _fresh(self) -> None:
+        now = time.monotonic()
+        if now - self._last > STALE_AFTER_S:
+            self.gdrive._rebuild_service()
+        self._last = now
 
     def list_children(self, folder_id: str) -> list[Item]:
+        self._fresh()
         return list_children(self.gdrive, folder_id)
 
     def list_my_drive_root(self) -> list[Item]:
+        self._fresh()
         return list_children(self.gdrive, "root")
 
     def download(self, file_id: str) -> bytes:
+        self._fresh()
         return download(self.gdrive, file_id)
 
     def create_text(self, folder_id: str, name: str, text: str, mime: str = "text/markdown") -> str:
+        self._fresh()
         return create_text(self.gdrive, folder_id, name, text, mime)
 
     def update_text(self, file_id: str, text: str, mime: str = "text/markdown") -> None:
+        self._fresh()
         update_text(self.gdrive, file_id, text, mime)
 
     def move_rename(self, file_id: str, new_name: str, from_parent: str, to_parent: str) -> None:
+        self._fresh()
         move_rename(self.gdrive, file_id, new_name, from_parent, to_parent)
 
     def trash_canary(self, file_id: str) -> None:
+        self._fresh()
         trash_canary(self.gdrive, file_id)
