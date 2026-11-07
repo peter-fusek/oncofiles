@@ -1324,6 +1324,163 @@
       }
     }
 
+
+    // ── #573 Operations panel: curated-folder runs (admin only) ──────────
+    var curatedOpsPoll = null;
+    var curatedArmed = {};
+
+    function coEl(tag, text, cls) {
+      var e = document.createElement(tag);
+      if (text !== undefined && text !== null) e.textContent = String(text);
+      if (cls) e.className = cls;
+      return e;
+    }
+
+    function coBilingual(tag, sk, en, cls) {
+      var e = coEl(tag, sk, cls);
+      e.setAttribute('data-sk', sk);
+      e.setAttribute('data-en', en);
+      return e;
+    }
+
+    async function coFetch(url, opts) {
+      opts = opts || {};
+      var headers = { 'Authorization': authHeader() };
+      if (opts.body) headers['Content-Type'] = 'application/json';
+      var resp = await fetch(url, { method: opts.method || 'GET', headers: headers, body: opts.body ? JSON.stringify(opts.body) : undefined });
+      var data = null;
+      try { data = await resp.json(); } catch (e) { data = null; }
+      return { ok: resp.ok, status: resp.status, data: data };
+    }
+
+    function coRunLine(run) {
+      if (!run) return 'Zatiaľ žiadny beh.';
+      var kind = run.dry_run ? 'náhľad' : 'naostro';
+      var when = (run.finished_at || run.started_at || '').replace('T', ' ').replace('Z', ' UTC');
+      return 'Posledný beh: ' + kind + ' (' + (run.trigger || '') + '), ' + when + ' — ' + run.status +
+        ' · dokumenty ' + run.documents + ' (zaradené ' + run.filed + ', na kontrolu ' + run.review + ', nespracované ' + run.not_processed + ')' +
+        (run.message ? ' · ' + run.message : '');
+    }
+
+    async function loadCuratedOps() {
+      var section = document.getElementById('curated-ops-section');
+      if (!section) return;
+      var res = await coFetch('/api/admin/curated/overview');
+      if (!res.ok || !res.data) { section.style.display = 'none'; return; }
+      section.style.display = 'block';
+      var n = res.data.nightly || {};
+      var note = document.getElementById('curated-ops-nightly');
+      note.textContent = n.enabled
+        ? ('Nočný beh je zapnutý na serveri: každú noc o ' + n.hour + ':00 (Bratislava) náhľad a potom najviac ' + n.max_runs + ' behov naostro pre pacientov so zapnutým prepínačom.')
+        : 'Nočný beh je na serveri vypnutý (CURATED_NIGHTLY_ENABLED). Prepínače pacientov sa uložia, ale nespustia sa.';
+      var body = document.getElementById('curated-ops-body');
+      clearEl(body);
+      var anyRunning = false;
+      (res.data.patients || []).forEach(function (p) {
+        var card = coEl('div', null, 'curated-ops-card');
+        card.appendChild(coEl('h3', p.name + ' (' + p.slug + ', ' + p.patient_type + ')'));
+        card.appendChild(coEl('div', 'Priečinok: ' + (p.folder_name || '—') + (p.drive_connected ? '' : ' · Drive nepripojený'), 'curated-ops-meta'));
+        var runLine = p.running
+          ? ('Práve beží: ' + (p.running.dry_run ? 'náhľad' : 'naostro') + ' (' + (p.running.trigger || '') + ')')
+          : coRunLine(p.last_run);
+        if (p.running) anyRunning = true;
+        var st = coEl('div', runLine, 'curated-ops-meta');
+        if (p.last_run && !p.running) st.classList.add(p.last_run.status === 'ok' ? 'curated-ops-status-ok' : 'curated-ops-status-bad');
+        card.appendChild(st);
+        var actions = coEl('div', null, 'curated-ops-actions');
+        var prev = coBilingual('button', 'Náhľad (dry run)', 'Preview (dry run)');
+        prev.setAttribute('data-action', 'curatedRun|' + p.patient_id + '|dry|@this');
+        prev.disabled = !!p.running || !p.drive_connected;
+        actions.appendChild(prev);
+        var real = coBilingual('button', 'Spustiť naostro', 'Run for real');
+        real.setAttribute('data-action', 'curatedRun|' + p.patient_id + '|real|@this');
+        real.disabled = !!p.running || !!p.real_run_blocked || !p.drive_connected;
+        if (p.real_run_blocked) real.title = p.real_run_blocked;
+        actions.appendChild(real);
+        var rep = coBilingual('button', 'Report', 'Report');
+        rep.setAttribute('data-action', 'curatedReport|' + p.patient_id);
+        actions.appendChild(rep);
+        var lbl = coEl('label', null, 'curated-ops-meta');
+        var cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.checked = !!p.nightly_enabled;
+        cb.setAttribute('data-change', 'curatedNightly|' + p.patient_id + '|@this');
+        lbl.appendChild(cb);
+        lbl.appendChild(coEl('span', ' Nočný beh'));
+        actions.appendChild(lbl);
+        card.appendChild(actions);
+        body.appendChild(card);
+      });
+      if (typeof applyDashLang === 'function') applyDashLang();
+      if (curatedOpsPoll) { clearTimeout(curatedOpsPoll); curatedOpsPoll = null; }
+      if (anyRunning) curatedOpsPoll = setTimeout(loadCuratedOps, 30000);
+    }
+
+    async function curatedRun(pid, mode, btn) {
+      var dry = mode !== 'real';
+      if (!dry) {
+        // Two-step confirm without a browser dialog: first click arms, second runs.
+        if (!curatedArmed[pid]) {
+          curatedArmed[pid] = true;
+          btn.classList.add('armed');
+          btn.textContent = 'Naozaj? Klikni znova (zapisuje do Drive)';
+          setTimeout(function () { curatedArmed[pid] = false; loadCuratedOps(); }, 6000);
+          return;
+        }
+        curatedArmed[pid] = false;
+      }
+      btn.disabled = true;
+      var res = await coFetch('/api/admin/curated/run', { method: 'POST', body: { patient_id: pid, dry_run: dry } });
+      var note = document.getElementById('curated-ops-nightly');
+      if (!res.ok) note.textContent = 'Nespustené: ' + ((res.data && res.data.error) || ('HTTP ' + res.status));
+      loadCuratedOps();
+    }
+
+    async function curatedNightly(pid, el) {
+      await coFetch('/api/admin/curated/nightly', { method: 'POST', body: { patient_id: pid, enabled: !!el.checked } });
+      loadCuratedOps();
+    }
+
+    async function curatedReport(pid) {
+      var box = document.getElementById('curated-ops-report');
+      clearEl(box);
+      var res = await coFetch('/api/admin/curated/report?patient_id=' + encodeURIComponent(pid));
+      if (!res.ok || !res.data || !res.data.run) { box.appendChild(coEl('p', 'Žiadny report.', 'curated-ops-note')); return; }
+      var run = res.data.run, r = run.report || {};
+      box.appendChild(coEl('h4', 'Report ' + (r.run_id || run.id) + ' — ' + (run.dry_run ? 'náhľad' : 'naostro') + ' — ' + run.status));
+      if (r.message) box.appendChild(coEl('p', r.message, 'curated-ops-note'));
+      if (r.gates && r.gates.length) {
+        box.appendChild(coEl('h4', 'Kontroly'));
+        var ul = coEl('ul');
+        r.gates.forEach(function (g) { ul.appendChild(coEl('li', (g.ok ? '✓ ' : (g.blocking === false ? '⚠ ' : '✗ ')) + g.name + (g.detail ? ' — ' + g.detail : ''))); });
+        box.appendChild(ul);
+      }
+      var docs = r.documents || [];
+      box.appendChild(coEl('h4', 'Dokumenty (' + docs.length + ')'));
+      if (docs.length) {
+        var t = coEl('table'), hr = coEl('tr');
+        ['Zdroj', 'Výsledok', 'Cieľ / dôvod'].forEach(function (h) { hr.appendChild(coEl('th', h)); });
+        t.appendChild(hr);
+        docs.forEach(function (d) {
+          var tr = coEl('tr');
+          tr.appendChild(coEl('td', d.source));
+          tr.appendChild(coEl('td', d.result));
+          var detail = d.to || (d.reasons ? d.reasons.join('; ') : '') || (d.proposal ? 'návrh: ' + d.proposal : '') || (d.survivor ? 'duplikát: ' + d.survivor : '');
+          tr.appendChild(coEl('td', detail));
+          t.appendChild(tr);
+        });
+        box.appendChild(t);
+      }
+      [['Upozornenia', r.flags], ['Čaká na kontrolu', r.awaiting_review], ['Nespracované (rozpočet)', r.not_processed]].forEach(function (pair) {
+        if (pair[1] && pair[1].length) {
+          box.appendChild(coEl('h4', pair[0] + ' (' + pair[1].length + ')'));
+          var ul2 = coEl('ul');
+          pair[1].forEach(function (x) { ul2.appendChild(coEl('li', x)); });
+          box.appendChild(ul2);
+        }
+      });
+    }
+
     async function triggerManualSync() {
       var btn = document.getElementById('ip-sync-btn');
       if (!btn || btn.disabled) return;
@@ -1613,6 +1770,8 @@
         var lb = document.getElementById('cost-leaderboard-section');
         if (lb) lb.style.display = 'none';
       }
+      // #573 curated-folder operations — admin only, independent fetch.
+      if (isGlobalAdmin) { loadCuratedOps(); } else { var co = document.getElementById('curated-ops-section'); if (co) co.style.display = 'none'; }
       try {
         var sched = await apiFetch('/api/schedules');
         if (sched) renderSchedules(sched);

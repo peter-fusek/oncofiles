@@ -943,3 +943,19 @@
     /* #563 folder browser */
     .wizard-folder-path { color: var(--text-muted); font-size: 0.8125rem; margin-bottom: 0.5rem; overflow-wrap: anywhere; }
     .wizard-folder-nav { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 1rem; }
+
+    /* #573 curated operations panel */
+    .curated-ops-note { color: var(--text-muted); font-size: 0.8125rem; margin: 0 0 0.75rem; }
+    .curated-ops-card { border: 1px solid var(--border); border-radius: 10px; padding: 0.75rem 1rem; margin-bottom: 0.75rem; }
+    .curated-ops-card h3 { margin: 0 0 0.25rem; font-size: 0.95rem; }
+    .curated-ops-meta { color: var(--text-muted); font-size: 0.8125rem; margin-bottom: 0.5rem; overflow-wrap: anywhere; }
+    .curated-ops-actions { display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center; }
+    .curated-ops-actions button { font-size: 0.8125rem; padding: 0.35rem 0.75rem; border-radius: 8px; border: 1px solid var(--border); background: var(--bg-card, transparent); color: var(--text); cursor: pointer; }
+    .curated-ops-actions button:hover, .curated-ops-actions button:focus-visible { border-color: var(--accent); }
+    .curated-ops-actions button.armed { border-color: var(--red, #dc2626); color: var(--red, #dc2626); }
+    .curated-ops-actions button:disabled { opacity: 0.5; cursor: not-allowed; }
+    .curated-ops-report table { width: 100%; border-collapse: collapse; font-size: 0.8125rem; }
+    .curated-ops-report th, .curated-ops-report td { text-align: left; padding: 0.3rem 0.4rem; border-bottom: 1px solid var(--border); vertical-align: top; overflow-wrap: anywhere; }
+    .curated-ops-report h4 { margin: 0.75rem 0 0.35rem; font-size: 0.875rem; }
+    .curated-ops-status-ok { color: var(--green, #16a34a); }
+    .curated-ops-status-bad { color: var(--red, #dc2626); }
