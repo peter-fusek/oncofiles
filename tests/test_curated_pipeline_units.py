@@ -259,3 +259,23 @@ def test_vocabulary_snap(doctor, expected, snapped):
 def test_date_in_text_needs_digit_boundaries(iso, printed):
     """Review #3: a substring match must not validate a wrong year or day."""
     assert not classify.date_in_text(iso, printed)
+
+
+# ── 2026-11-07 live finding: Qwen reasoning ate the whole token budget ──
+
+
+def test_chat_sends_large_budget_and_low_reasoning(local_llm):
+    seen: list = []
+    llm.chat("s", "u", client=_client("{}", seen=seen))
+    body = json.loads(seen[0].content)
+    assert body["max_tokens"] >= 8000 and body["reasoning_effort"] == "low"
+
+
+def test_chat_reports_truncation_by_reasoning(local_llm):
+    def handler(request):
+        return httpx.Response(
+            200, json={"choices": [{"message": {"content": ""}, "finish_reason": "length"}]}
+        )
+
+    with pytest.raises(llm.LocalLLMError, match="truncated"):
+        llm.chat("s", "u", client=httpx.Client(transport=httpx.MockTransport(handler)))
