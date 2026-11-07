@@ -133,6 +133,13 @@ def _walk_all(drive, folder_id: str, prefix: str = "") -> list[tuple[str, Item]]
     return out
 
 
+def _llm_down(error: str | None) -> bool:
+    """True when the local model is unavailable (abort the run); False for a
+    per-document problem such as an answer truncated by the reasoning budget."""
+    msg = error or ""
+    return "local LLM" in msg and "truncated" not in msg
+
+
 def sidecar_sources(name: str) -> list[str]:
     """Possible source names for a sidecar.
 
@@ -473,10 +480,11 @@ class Runner:
                 item.name, content, item.mime, min_text_chars=self.opts.min_text_chars
             )
         cls = None
+        raw = None
         note = ""
         if not ex.ok:
             note = f"extraction failed: {ex.error}"
-            if "local LLM" in (ex.error or ""):
+            if _llm_down(ex.error):
                 raise RunAbortError(f"local model unavailable — {ex.error}")
         elif not ex.text.strip():
             note = "no text to classify"
@@ -484,7 +492,10 @@ class Runner:
             try:
                 raw = self.propose_fn(contract, ex.text)
             except llm.LocalLLMError as exc:
-                raise RunAbortError(f"local model unavailable — {exc}") from exc
+                if _llm_down(str(exc)):
+                    raise RunAbortError(f"local model unavailable — {exc}") from exc
+                note = f"classification failed: {exc}"  # this document stays for review
+        if cls is None and raw is not None:
             cls = classify_mod.validate(
                 contract,
                 raw,
@@ -670,7 +681,7 @@ class Runner:
                 ex = self.extract_fn(
                     item.name, content, item.mime, min_text_chars=self.opts.min_text_chars
                 )
-                if not ex.ok and "local LLM" in (ex.error or ""):
+                if not ex.ok and _llm_down(ex.error):
                     raise RunAbortError(f"local model unavailable — {ex.error}")
                 cls = None
                 if ex.ok and ex.text.strip():

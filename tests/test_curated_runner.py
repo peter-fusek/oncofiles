@@ -473,3 +473,21 @@ def test_nested_subfolder_is_flagged_not_fatal_and_left_alone():
     assert r.status == "ok", r.message
     assert any("flat" in f and "Textbook-Chapter-Scans" in f for f in r.flags)
     assert d.items[inside]["parent"] == sub and d.items[inside]["name"] == "page1.pdf"
+
+
+def test_truncated_classification_is_per_document_not_a_run_abort():
+    d = FakeDrive()
+    d.add("scan_001.pdf", d.folder[INBOX], b"VYSLEDKY 05.08.2026")
+    d.add("scan_002.pdf", d.folder[INBOX], b"REPORT 01.09.2026", modified="2026-11-05T00:00:00Z")
+
+    def flaky(contract, text):
+        if "VYSLEDKY" in text:
+            raise llm.LocalLLMError("local LLM answer truncated: reasoning used the whole budget")
+        return fake_propose(contract, text)
+
+    r = run_curated(d, d.root, RunOptions(now=NOW), extract_fn=fake_extract, propose_fn=flaky)
+    assert r.status == "ok", r.message
+    res = {x["source"]: x for x in r.documents}
+    assert res["scan_001.pdf"]["result"] == "review_needed"
+    assert "truncated" in res["scan_001.pdf"]["reasons"][-1]
+    assert res["scan_002.pdf"]["result"] == "filed"

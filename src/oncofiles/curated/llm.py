@@ -21,6 +21,10 @@ from oncofiles import config
 
 _THINK_RE = re.compile(r"<think>.*?</think>", re.S)
 
+# Room for the model's reasoning *plus* the answer. Measured 2026-11-07 on
+# qwen3.8-27b-mlx: ~2400 reasoning tokens for one classification.
+REASONING_BUDGET = 12_000
+
 
 class LocalLLMError(RuntimeError):
     """The local model is unreachable, misconfigured, or answered nonsense."""
@@ -50,7 +54,7 @@ def chat(
     system: str,
     user_content: list[dict] | str,
     *,
-    max_tokens: int = 4096,
+    max_tokens: int = REASONING_BUDGET,
     temperature: float = 0.0,
     client: httpx.Client | None = None,
 ) -> str:
@@ -61,6 +65,9 @@ def chat(
         "model": config.LOCAL_LLM_MODEL,
         "temperature": temperature,
         "max_tokens": max_tokens,
+        # Qwen3.x reasons before answering and ignores "/no_think" in LM Studio;
+        # the reasoning counts against max_tokens, so callers pass a large budget.
+        "reasoning_effort": "low",
         "messages": [
             {"role": "system", "content": system + "\n/no_think"},
             {"role": "user", "content": user_content},
@@ -83,9 +90,15 @@ def chat(
     if resp.status_code != 200:
         raise LocalLLMError(f"local LLM HTTP {resp.status_code}")
     try:
-        content = resp.json()["choices"][0]["message"]["content"]
-    except (KeyError, IndexError, ValueError, TypeError) as exc:
+        choice = resp.json()["choices"][0]
+        content = choice["message"].get("content")
+    except (KeyError, IndexError, ValueError, TypeError, AttributeError) as exc:
         raise LocalLLMError("local LLM returned an unexpected payload") from exc
+    if not (content or "").strip() and choice.get("finish_reason") == "length":
+        # The whole budget went to reasoning (2026-11-07: 1199/1200 tokens).
+        raise LocalLLMError(
+            f"local LLM answer truncated: reasoning used the whole budget ({max_tokens} tokens)"
+        )
     return strip_think(content if isinstance(content, str) else json.dumps(content))
 
 

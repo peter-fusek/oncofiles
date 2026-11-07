@@ -101,7 +101,7 @@ def propose(contract: Contract, text: str) -> dict:
     system = SYSTEM_TEMPLATE.format(
         readme=contract.readme_text, doc_types=", ".join(sorted(contract.doc_types))
     )
-    answer = llm.chat(system, f"TEXT:\n{text[:MAX_TEXT_CHARS]}", max_tokens=1200)
+    answer = llm.chat(system, f"TEXT:\n{text[:MAX_TEXT_CHARS]}")
     return llm.parse_json_object(answer)
 
 

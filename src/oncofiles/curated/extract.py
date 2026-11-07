@@ -59,7 +59,6 @@ def _vision_pages(png_pages: list[bytes]) -> tuple[str, bool]:
         answer = llm.chat(
             OCR_SYSTEM_PROMPT,
             [{"type": "text", "text": f"Page {i} of {len(png_pages)}."}, llm.image_part(png)],
-            max_tokens=4096,
         )
         if answer.lower().startswith("[handwritten]"):
             handwritten = True
