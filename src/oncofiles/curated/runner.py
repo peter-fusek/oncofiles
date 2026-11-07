@@ -69,6 +69,7 @@ class Gate:
     name: str
     ok: bool
     detail: str = ""
+    blocking: bool = True
 
 
 @dataclass
@@ -132,9 +133,22 @@ def _walk_all(drive, folder_id: str, prefix: str = "") -> list[tuple[str, Item]]
     return out
 
 
+def sidecar_sources(name: str) -> list[str]:
+    """Possible source names for a sidecar.
+
+    ``X.md`` belongs to ``X``. A Google Doc shows as ``X.gdoc`` on the Drive for
+    Desktop mount (where the Cowork jobs named its sidecar ``X.gdoc.md``) but
+    as plain ``X`` through the Drive API — so ``X.gdoc.md`` also pairs with ``X``.
+    """
+    if not name.endswith(".md"):
+        return []
+    base = name[:-3]
+    return [base, base[:-5]] if base.endswith(".gdoc") else [base]
+
+
 def _is_sidecar(name: str, siblings: set[str]) -> bool:
     """``X.md`` next to ``X`` — whatever X's extension (Google Docs have none)."""
-    return name.endswith(".md") and name[:-3] in siblings
+    return any(src in siblings for src in sidecar_sources(name))
 
 
 # ── preflight ────────────────────────────────────────────────────────
@@ -158,7 +172,7 @@ def preflight(drive, tree: Tree, contract: Contract) -> list[Gate]:
     for folder, items in tree.files.items():
         siblings = {nfc(i.name) for i in items}
         for n in siblings:
-            if n.endswith(".md") and SOURCE_EXT_RE.search(n[:-3]) and n[:-3] not in siblings:
+            if n.endswith(".md") and SOURCE_EXT_RE.search(n[:-3]) and not _is_sidecar(n, siblings):
                 if folder.startswith("98-logs"):
                     continue
                 orphans.append(f"{folder}/{n}")
@@ -173,7 +187,10 @@ def preflight(drive, tree: Tree, contract: Contract) -> list[Gate]:
         for s in subs
         if contract.folders.get(f) is not None  # DocumentType folders must be flat
     ]
-    gates.append(Gate("DocumentType folders are flat", not nested, ", ".join(nested[:10])))
+    # Advisory, as in the Cowork jobs' six gates: report it, never process inside it.
+    gates.append(
+        Gate("DocumentType folders are flat", not nested, ", ".join(nested[:10]), blocking=False)
+    )
     return gates
 
 
@@ -317,7 +334,10 @@ class Runner:
         # including a preflight abort (a run that stops and explains is a success).
         try:
             self.report.gates.extend(preflight(self.drive, tree, contract))
-            failed = [g for g in self.report.gates if not g.ok]
+            for g in self.report.gates:
+                if not g.ok and not g.blocking:
+                    self.report.flags.append(f"{g.name}: {g.detail} (not processed)")
+            failed = [g for g in self.report.gates if not g.ok and g.blocking]
             if failed:
                 raise RunAbortError(
                     "preflight failed: " + "; ".join(f"{g.name} ({g.detail})" for g in failed)
@@ -364,8 +384,8 @@ class Runner:
 
     def _existing_sidecar(self, tree: Tree, folder: str, item: Item) -> Item | None:
         items = tree.files.get(folder, []) if folder else tree.root_files
-        want = nfc(item.name) + ".md"
-        return next((i for i in items if nfc(i.name) == want), None)
+        want = {nfc(item.name) + ".md", nfc(item.name) + ".gdoc.md"}
+        return next((i for i in items if nfc(i.name) in want), None)
 
     def _filed_hashes(self, tree: Tree, contract: Contract) -> dict[str, tuple[str, str]]:
         out: dict[str, tuple[str, str]] = {}
@@ -632,7 +652,7 @@ class Runner:
             names = {nfc(i.name) for i in items}
             for item in items:
                 n = nfc(item.name)
-                if _is_sidecar(n, names) or n + ".md" in names:
+                if _is_sidecar(n, names) or n + ".md" in names or n + ".gdoc.md" in names:
                     continue
                 if n.rsplit(".", 1)[-1].lower() in extract_mod.TEXT_EXTS:
                     continue
@@ -700,7 +720,7 @@ class Runner:
     def _recheck(self, contract: Contract) -> None:
         """RECONCILE: re-run the gates after a writing run; Drive failing mid-run is loud."""
         fresh = walk(self.drive, self.root_id)
-        failed = [g for g in preflight(self.drive, fresh, contract) if not g.ok]
+        failed = [g for g in preflight(self.drive, fresh, contract) if not g.ok and g.blocking]
         if failed:
             msg = "DRIVE CHANGED DURING RUN: " + "; ".join(f"{g.name} ({g.detail})" for g in failed)
             self.report.flags.insert(0, msg)
