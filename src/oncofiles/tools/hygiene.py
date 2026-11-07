@@ -737,8 +737,8 @@ async def system_health(ctx: Context, patient_slug: str | None = None) -> str:
     unprocessed = await db.get_documents_without_ai(patient_id=pid)
 
     # Sync stats
-    sync_stats = await db.get_sync_stats_summary()
-    recent_syncs = await db.get_sync_history(limit=10)
+    sync_stats = await db.get_sync_stats_summary(patient_id=pid)  # #540
+    recent_syncs = await db.get_sync_history(limit=10, patient_id=pid)
     current_sync = get_sync_status()
 
     # Memory
@@ -971,8 +971,8 @@ async def get_pipeline_status(ctx: Context, patient_slug: str | None = None) -> 
     with_institution = sum(1 for d in docs if d.institution)
 
     # Sync state
-    sync_stats = await db.get_sync_stats_summary()
-    recent_syncs = await db.get_sync_history(limit=5)
+    sync_stats = await db.get_sync_stats_summary(patient_id=pid)  # #540
+    recent_syncs = await db.get_sync_history(limit=5, patient_id=pid)
     current_sync = get_sync_status()
 
     # Memory

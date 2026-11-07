@@ -939,3 +939,7 @@
     .teal-hover:focus-visible {
       background: rgba(20, 184, 166, 0.2) !important;
     }
+
+    /* #563 folder browser */
+    .wizard-folder-path { color: var(--text-muted); font-size: 0.8125rem; margin-bottom: 0.5rem; overflow-wrap: anywhere; }
+    .wizard-folder-nav { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 1rem; }

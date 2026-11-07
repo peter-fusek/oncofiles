@@ -339,9 +339,11 @@ class AnalyticsMixin:
         """
         stats = PipelineStats()
 
-        # Sync history
+        # Sync history — scoped like the enhancement query below (#532)
+        pid_clause = "AND patient_id = ?" if patient_id is not None else ""
+        params = [patient_id] if patient_id is not None else []
         async with self.db.execute(
-            """
+            f"""
             SELECT COUNT(*) as total,
                    SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as ok,
                    SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as errs,
@@ -350,7 +352,9 @@ class AnalyticsMixin:
                    ROUND(AVG(duration_s), 1) as avg_dur
             FROM sync_history
             WHERE started_at >= strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-30 days')
-            """
+            {pid_clause}
+            """,
+            params,
         ) as cursor:
             row = await cursor.fetchone()
             if row:

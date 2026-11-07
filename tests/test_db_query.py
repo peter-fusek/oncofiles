@@ -106,10 +106,23 @@ async def test_blocks_cross_patient_query(db: Database, resolve_to_erika):
     assert "patient_id" in result["error"]
 
 
-async def test_allows_admin_only_table(db: Database, resolve_to_erika):
-    """schema_migrations has no patient_id; allow-listed as admin-only."""
+async def test_denies_admin_only_table_for_non_admin(db: Database, resolve_to_erika):
+    """#541: a caregiver cannot read system-wide tables such as sync_history."""
     ctx = _mock_ctx(db)
-    result = json.loads(await query_db(ctx, "SELECT * FROM schema_migrations"))
+    for table in ("schema_migrations", "sync_history"):
+        result = json.loads(await query_db(ctx, f"SELECT * FROM {table}"))
+        assert "admin-only" in result.get("error", ""), table
+
+
+async def test_allows_admin_only_table_for_admin(db: Database, resolve_to_erika):
+    from oncofiles.persistent_oauth import _verified_caller_is_admin
+
+    ctx = _mock_ctx(db)
+    tok = _verified_caller_is_admin.set(True)
+    try:
+        result = json.loads(await query_db(ctx, "SELECT * FROM schema_migrations"))
+    finally:
+        _verified_caller_is_admin.reset(tok)
     assert "error" not in result
 
 
