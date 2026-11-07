@@ -214,7 +214,20 @@ def test_oversized_file_refused_before_parsing():
     assert not ex.ok and "larger than" in ex.error
 
 
-def test_absurd_page_size_is_refused_not_rendered():
-    page = type("P", (), {"rect": type("R", (), {"width": 1e9, "height": 1e9})()})()
-    with pytest.raises(ValueError, match="cannot be rendered"):
-        extract._pixmap_png(page)
+def test_absurd_page_size_gets_a_fractional_zoom_within_the_cap():
+    seen = {}
+
+    class Pix:
+        def tobytes(self, fmt):
+            return b"png"
+
+    class Page:
+        rect = type("R", (), {"width": 1e9, "height": 1e9})()
+
+        def get_pixmap(self, matrix):
+            seen["zoom"] = matrix.a
+            return Pix()
+
+    extract._pixmap_png(Page())
+    px = (1e9 * seen["zoom"]) ** 2
+    assert seen["zoom"] < 1e-4 and px <= extract.MAX_PAGE_PIXELS * 1.01
