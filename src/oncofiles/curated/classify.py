@@ -15,6 +15,7 @@ can never rename a real medical record into a wrong place:
 
 from __future__ import annotations
 
+import difflib
 import re
 from dataclasses import dataclass, field
 from datetime import date
@@ -24,6 +25,7 @@ from oncofiles.curated.contract import Contract
 from oncofiles.curated.naming import UNKNOWN, NameFields, camel, surname_token
 
 MIN_CONFIDENCE = 0.60
+SNAP_CUTOFF = 0.8  # OCR typo tolerance when matching README vocabulary tokens
 MAX_TEXT_CHARS = 24_000
 
 SYSTEM_TEMPLATE = """You file medical documents into a patient folder that is governed by the \
@@ -110,6 +112,16 @@ def validate(
     reasons: list[str] = []
     flags: list[str] = []
 
+    def snap(token: str) -> str:
+        """Snap an OCR-misspelled token to the contract vocabulary (Parsok → Porsok)."""
+        if token == UNKNOWN or token in contract.known_tokens:
+            return token
+        match = difflib.get_close_matches(token, contract.known_tokens, n=1, cutoff=SNAP_CUTOFF)
+        if match:
+            flags.append(f"snapped {token!r} → {match[0]!r} (README vocabulary)")
+            return match[0]
+        return token
+
     doc_type = raw.get("doc_type") if isinstance(raw.get("doc_type"), str) else None
     if doc_type not in contract.doc_types:
         reasons.append(f"doc_type {doc_type!r} not in contract")
@@ -133,9 +145,9 @@ def validate(
             reasons.append(f"date {iso} does not appear in the document text")
             iso = None
 
-    institution = camel(raw.get("institution")) if raw.get("institution") else UNKNOWN
-    hospital = camel(raw.get("hospital")) if raw.get("hospital") else UNKNOWN
-    doctor = surname_token(raw.get("doctor"))
+    institution = snap(camel(raw.get("institution")) if raw.get("institution") else UNKNOWN)
+    hospital = snap(camel(raw.get("hospital")) if raw.get("hospital") else UNKNOWN)
+    doctor = snap(surname_token(raw.get("doctor")))
     if institution == UNKNOWN:
         reasons.append("institution unknown")
     for label, token in (("institution", institution), ("hospital", hospital), ("doctor", doctor)):

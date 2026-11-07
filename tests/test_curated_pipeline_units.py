@@ -231,3 +231,18 @@ def test_absurd_page_size_gets_a_fractional_zoom_within_the_cap():
     extract._pixmap_png(Page())
     px = (1e9 * seen["zoom"]) ** 2
     assert seen["zoom"] < 1e-4 and px <= extract.MAX_PAGE_PIXELS * 1.01
+
+
+@pytest.mark.parametrize(
+    "doctor,expected,snapped",
+    [
+        ("MUDr. Jana Kováčová", "Kovacova", False),  # exact
+        ("MUDr. Jana Kovačova", "Kovacova", False),  # diacritics only
+        ("MUDr. Jana Kovacsova", "Kovacova", True),  # OCR typo → snapped
+        ("MUDr. Peter Zeleny", "Zeleny", False),  # genuinely new → kept, flagged first-time
+    ],
+)
+def test_vocabulary_snap(doctor, expected, snapped):
+    c = classify.validate(CONTRACT, {**GOOD, "doctor": doctor}, TEXT, today=TODAY)
+    assert c.fields.doctor == expected
+    assert any("snapped" in f for f in c.flags) is snapped
