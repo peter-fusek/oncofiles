@@ -57,6 +57,11 @@ class RunOptions:
     min_text_chars: int = 100
     run_id: str = ""
     now: datetime | None = None
+    # Oncology contract (Cowork erika-daily-cleanup): a date > 2 years old on a
+    # new scan is suspect → review. None = no age rule (general patients).
+    max_doc_age_days: int | None = None
+    # Already-filed documents without a sidecar get one (sidecar only) per run.
+    max_missing_sidecars: int = 20
 
 
 @dataclass
@@ -188,6 +193,7 @@ def render_sidecar(
     cls: classify_mod.Classification | None,
     now: datetime,
     note: str = "",
+    extra: dict | None = None,
 ) -> str:
     raw = cls.raw if cls else {}
     fields = cls.fields if cls else None
@@ -213,6 +219,7 @@ def render_sidecar(
         "summary": raw.get("summary"),
         "processed_by": "oncofiles curated pipeline (#562)",
     }
+    meta.update(extra or {})
     if item.link and item.mime.startswith(extract_mod.GOOGLE_NATIVE_PREFIX):
         meta["link"] = item.link
     front = "\n".join(f"{k}: {_y(v)}" for k, v in meta.items())
@@ -289,6 +296,7 @@ class Runner:
         if readme is None or "_index.json" not in {i.name for i in tree.root_files}:
             raise RunAbortError("not a curated folder (README.md + _index.json missing)")
         contract = parse_contract(self.drive.download(readme.id).decode("utf-8"))
+        self._contract = contract
         self.report.contract_version = contract.version
 
         if not self.opts.dry_run:
@@ -324,6 +332,9 @@ class Runner:
                     "root holds files outside the four state files: " + ", ".join(stray_root)
                 )
             self._process(tree, contract)
+            self._backfill_sidecars(tree, contract)
+            if not self.opts.dry_run:
+                self._recheck(contract)
         except RunAbortError as exc:
             self.report.status = "aborted"
             self.report.message = str(exc)
@@ -454,7 +465,13 @@ class Runner:
                 raw = self.propose_fn(contract, ex.text)
             except llm.LocalLLMError as exc:
                 raise RunAbortError(f"local model unavailable — {exc}") from exc
-            cls = classify_mod.validate(contract, raw, ex.text, today=self.now.date())
+            cls = classify_mod.validate(
+                contract,
+                raw,
+                ex.text,
+                today=self.now.date(),
+                max_age_days=self.opts.max_doc_age_days,
+            )
         self.report.flags.extend(f"{item.name}: {f}" for f in (cls.flags if cls else []))
 
         target_folder = contract.folder_for(cls.doc_type) if cls and not cls.review_needed else None
@@ -496,6 +513,11 @@ class Runner:
         )
         if review:
             text = text.replace("review_needed: false", "review_needed: true")
+
+        # Text files (notes, timelines, CSV) are their own text: no sidecar (README §4).
+        if item.name.rsplit(".", 1)[-1].lower() in extract_mod.TEXT_EXTS:
+            self._file_text_source(tree, folder, item, review, target_folder, new_name, cls, note)
+            return
 
         # 1) sidecar next to the source, under the source's current name
         side_name = f"{item.name}.md"
@@ -546,6 +568,144 @@ class Runner:
                 "flags": cls.flags,
             }
         )
+
+    def _file_text_source(self, tree, folder, item, review, target_folder, new_name, cls, note):
+        """Move a text source on its own (it has no sidecar)."""
+        reasons = (cls.reasons if cls else []) + ([note] if note else [])
+        inbox = self._contract.inbox
+        if review:
+            if not folder:
+                self._move_single(tree, "", inbox, item, item.name)
+            self.report.documents.append(
+                {
+                    "source": item.name,
+                    "result": "review_needed",
+                    "stays_in": folder or inbox,
+                    "reasons": reasons,
+                }
+            )
+            return
+        self._move_single(tree, folder, target_folder, item, new_name)
+        self.report.documents.append(
+            {
+                "source": item.name,
+                "result": "filed",
+                "to": f"{target_folder}/{new_name}",
+                "extraction": "plain",
+                "flags": cls.flags if cls else [],
+            }
+        )
+
+    def _move_single(self, tree, from_folder, to_folder, item, new_name) -> None:
+        if nfc(new_name) in tree.names_in(to_folder):
+            raise RunAbortError(f"{new_name!r} already exists in {to_folder}")
+        src_id, dst_id = self._folder_id(tree, from_folder), tree.folders[to_folder].id
+        self._act(
+            {
+                "action": "move",
+                "from": f"{from_folder}/{item.name}",
+                "to": f"{to_folder}/{new_name}",
+                "sha256": item.sha256,
+                "undo": {
+                    "op": "move",
+                    "from": f"{to_folder}/{new_name}",
+                    "to": f"{from_folder}/{item.name}",
+                },
+            },
+            lambda: self.drive.move_rename(item.id, new_name, src_id, dst_id),
+        )
+        tree.files.setdefault(to_folder, []).append(
+            Item(id=item.id, name=new_name, mime=item.mime, parent=dst_id)
+        )
+
+    def _backfill_sidecars(self, tree: Tree, contract: Contract) -> None:
+        """Already-filed documents are read-only; only a missing sidecar may be added.
+
+        A classification that disagrees with the folder becomes a *proposal* in
+        the sidecar (``proposed_reclassification``) — never a move.
+        """
+        added = 0
+        for folder, doc_type in contract.folders.items():
+            if doc_type is None or folder not in tree.folders:
+                continue
+            items = list(tree.files.get(folder, []))
+            names = {nfc(i.name) for i in items}
+            for item in items:
+                n = nfc(item.name)
+                if _is_sidecar(n, names) or n + ".md" in names:
+                    continue
+                if n.rsplit(".", 1)[-1].lower() in extract_mod.TEXT_EXTS:
+                    continue
+                if added >= self.opts.max_missing_sidecars or (
+                    self.actions_used + 1 > self.opts.max_actions
+                ):
+                    self.report.not_processed.append(f"{folder}/{item.name} (missing sidecar)")
+                    continue
+                native = item.mime.startswith(extract_mod.GOOGLE_NATIVE_PREFIX)
+                content = (
+                    b""
+                    if native or item.size > extract_mod.MAX_FILE_BYTES
+                    else (self.drive.download(item.id))
+                )
+                ex = self.extract_fn(
+                    item.name, content, item.mime, min_text_chars=self.opts.min_text_chars
+                )
+                if not ex.ok and "local LLM" in (ex.error or ""):
+                    raise RunAbortError(f"local model unavailable — {ex.error}")
+                cls = None
+                if ex.ok and ex.text.strip():
+                    try:
+                        raw = self.propose_fn(contract, ex.text)
+                    except llm.LocalLLMError as exc:
+                        raise RunAbortError(f"local model unavailable — {exc}") from exc
+                    cls = classify_mod.validate(contract, raw, ex.text, today=self.now.date())
+                extra = {}
+                if cls and cls.doc_type != doc_type:
+                    extra["proposed_reclassification"] = cls.doc_type
+                text = render_sidecar(
+                    source_name=item.name,
+                    contract=contract,
+                    item=item,
+                    extraction=ex,
+                    cls=cls,
+                    now=self.now,
+                    extra=extra,
+                    note="" if ex.ok else f"extraction failed: {ex.error}",
+                )
+                side_name = f"{item.name}.md"
+                fid = tree.folders[folder].id
+                self._act(
+                    {
+                        "action": "write_sidecar",
+                        "path": f"{folder}/{side_name}",
+                        "kind": "backfill",
+                        "undo": {"op": "quarantine", "path": f"{folder}/{side_name}"},
+                    },
+                    lambda fid=fid, side_name=side_name, text=text: self.drive.create_text(
+                        fid, side_name, text
+                    ),
+                )
+                tree.files[folder].append(
+                    Item(id="new", name=side_name, mime="text/markdown", parent=fid)
+                )
+                added += 1
+                self.report.documents.append(
+                    {
+                        "source": f"{folder}/{item.name}",
+                        "result": "sidecar_added",
+                        "proposal": extra.get("proposed_reclassification"),
+                    }
+                )
+
+    def _recheck(self, contract: Contract) -> None:
+        """RECONCILE: re-run the gates after a writing run; Drive failing mid-run is loud."""
+        fresh = walk(self.drive, self.root_id)
+        failed = [g for g in preflight(self.drive, fresh, contract) if not g.ok]
+        if failed:
+            msg = "DRIVE CHANGED DURING RUN: " + "; ".join(f"{g.name} ({g.detail})" for g in failed)
+            self.report.flags.insert(0, msg)
+            self.report.status = "aborted"
+            self.report.message = (self.report.message + "; " if self.report.message else "") + msg
 
     def _move_pair(self, tree, from_folder, to_folder, item, side_id, new_name) -> None:
         src_id, dst_id = self._folder_id(tree, from_folder), tree.folders[to_folder].id
@@ -647,10 +807,15 @@ class Runner:
                 lines.append(f"- `{d['source']}` → `{d['to']}` ({d.get('extraction')})")
             elif d["result"] == "quarantined":
                 lines.append(f"- `{d['source']}` exact duplicate of `{d['survivor']}` → quarantine")
+            elif d["result"] == "sidecar_added":
+                prop = f" — proposal: reclassify as {d['proposal']}" if d.get("proposal") else ""
+                lines.append(f"- sidecar added to already-filed `{d['source']}`{prop}")
+            elif d["result"] == "skipped":
+                lines.append(f"- `{d['source']}` skipped ({'; '.join(d.get('reasons', []))})")
             else:
                 lines.append(
-                    f"- `{d['source']}` — **review_needed** ({'; '.join(d['reasons'])}), stays in "
-                    f"`{d['stays_in']}`"
+                    f"- `{d['source']}` — **review_needed** ({'; '.join(d.get('reasons', []))}), "
+                    f"stays in `{d.get('stays_in', '?')}`"
                 )
         for f in r.flags:
             lines.append(f"- flag: {f}")

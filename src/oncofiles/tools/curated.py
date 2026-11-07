@@ -22,9 +22,11 @@ logger = logging.getLogger(__name__)
 _runs: dict[str, dict] = {}
 _lock = asyncio.Lock()
 
-DEFAULTS = {  # patient_type -> (max_docs, min_text_chars)
-    "oncology": (20, 100),
-    "general": (8, 200),
+DEFAULTS = {  # patient_type -> (max_docs, min_text_chars, max_doc_age_days)
+    # Oncology (Cowork erika-daily-cleanup): a > 2-year-old date on a new scan is suspect.
+    "oncology": (20, 100, 730),
+    # General (peter-daily-cleanup): historical records back to birth are normal.
+    "general": (8, 200, None),
 }
 
 
@@ -47,12 +49,13 @@ async def _start(db, pid: str, *, dry_run: bool, max_docs: int | None, max_actio
         return {"error": f"patient folder is not a curated root ({reason or 'no README contract'})"}
 
     patient_type = (get_context(pid) or {}).get("patient_type", "oncology")
-    default_docs, min_chars = DEFAULTS.get(patient_type, DEFAULTS["oncology"])
+    default_docs, min_chars, max_age = DEFAULTS.get(patient_type, DEFAULTS["oncology"])
     opts = RunOptions(
         dry_run=dry_run,
         max_docs=max_docs or default_docs,
         max_actions=max_actions,
         min_text_chars=min_chars,
+        max_doc_age_days=max_age,
     )
 
     def _blocking():

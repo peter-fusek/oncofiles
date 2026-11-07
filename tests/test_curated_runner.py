@@ -173,6 +173,8 @@ def test_dry_run_plans_everything_and_writes_nothing():
         "scan_001.pdf": "filed",
         "scan_002.pdf": "review_needed",
         "scan_003.pdf": "filed",
+        # already-filed survivor had no sidecar → backfilled (Cowork rule)
+        f"{LABS}/20260101-JanaNovakova-NOU-Labs-X-Y.pdf": "sidecar_added",
     }
 
 
@@ -246,7 +248,8 @@ def test_action_budget_limits_the_run():
 
 def test_max_docs():
     r = run(_drive_with_inbox(), max_docs=1)
-    assert len(r.documents) == 1 and len(r.not_processed) == 3
+    new_docs = [d for d in r.documents if d["result"] != "sidecar_added"]
+    assert len(new_docs) == 1 and len(r.not_processed) == 3
 
 
 def test_name_collision_gets_suffix():
@@ -370,3 +373,67 @@ def test_sidecar_of_extensionless_source_is_not_a_candidate():
     d.add("Notes.md", d.folder[INBOX], b"---\nreview_needed: false\n---\n")
     r = run(d)
     assert [doc["source"] for doc in r.documents] == ["Notes"]
+
+
+# ── parity with the Cowork erika-daily-cleanup instructions ─────────
+
+
+def test_old_date_goes_to_review_when_age_rule_is_on():
+    d = FakeDrive()
+    d.add("old.pdf", d.folder[INBOX], b"VYSLEDKY 05.08.2026")
+    o = RunOptions(now=datetime(2029, 1, 1, tzinfo=UTC), max_doc_age_days=730)
+    r = run_curated(d, d.root, o, extract_fn=fake_extract, propose_fn=fake_propose)
+    doc = r.documents[0]
+    assert doc["result"] == "review_needed" and "years old" in doc["reasons"][0]
+
+
+def test_age_rule_off_by_default_for_general_patients():
+    d = FakeDrive()
+    d.add("old.pdf", d.folder[INBOX], b"VYSLEDKY 05.08.2026")
+    o = RunOptions(now=datetime(2029, 1, 1, tzinfo=UTC))
+    r = run_curated(d, d.root, o, extract_fn=fake_extract, propose_fn=fake_propose)
+    assert r.documents[0]["result"] == "filed"
+
+
+def test_text_source_moves_without_a_sidecar():
+    d = FakeDrive()
+    d.add("notes.md", d.folder[INBOX], b"REPORT 01.09.2026")
+    r = run(d, dry_run=False)
+    assert r.documents[0]["result"] == "filed"
+    report = d.names(d.folder[REPORT])
+    assert "20260901-JanaNovakova-NOU-Report-Kovacova-OKB.md" in report
+    assert not any(n.endswith(".md.md") for x in d.items.values() for n in [x["name"]])
+
+
+def test_backfill_adds_sidecar_only_and_proposes_reclassification():
+    d = FakeDrive()
+    filed = d.add("20260901-JanaNovakova-NOU-Labs-X-Y.pdf", d.folder[LABS], b"REPORT 01.09.2026")
+    r = run(d, dry_run=False)
+    assert d.items[filed]["parent"] == d.folder[LABS]  # never moved
+    assert d.items[filed]["name"] == "20260901-JanaNovakova-NOU-Labs-X-Y.pdf"  # never renamed
+    side = d.download(d.find(d.folder[LABS], "20260901-JanaNovakova-NOU-Labs-X-Y.pdf.md")).decode()
+    assert 'proposed_reclassification: "Report"' in side
+    assert r.documents[0]["proposal"] == "Report"
+
+
+def test_backfill_respects_its_cap():
+    d = FakeDrive()
+    for i in range(3):
+        d.add(f"2026010{i}-JanaNovakova-NOU-Labs-X-Y.pdf", d.folder[LABS], b"VYSLEDKY 05.08.2026")
+    r = run(d, max_missing_sidecars=2)
+    assert len([x for x in r.documents if x["result"] == "sidecar_added"]) == 2
+    assert any("missing sidecar" in n for n in r.not_processed)
+
+
+def test_recheck_reports_drive_changes_during_run():
+    d = _drive_with_inbox()
+    orig = d.move_rename
+
+    def move_and_fork(fid, new_name, from_parent, to_parent):
+        orig(fid, new_name, from_parent, to_parent)
+        if not d.find(d.root, "labs — laboratórne výsledky (1)"):
+            d.add("labs — laboratórne výsledky (1)", d.root, folder=True)  # Drive forked a folder
+
+    d.move_rename = move_and_fork
+    r = run(d, dry_run=False)
+    assert r.status == "aborted" and r.flags[0].startswith("DRIVE CHANGED DURING RUN")

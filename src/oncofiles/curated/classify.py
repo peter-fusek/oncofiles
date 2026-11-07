@@ -106,7 +106,12 @@ def propose(contract: Contract, text: str) -> dict:
 
 
 def validate(
-    contract: Contract, raw: dict, text: str, *, today: date | None = None
+    contract: Contract,
+    raw: dict,
+    text: str,
+    *,
+    today: date | None = None,
+    max_age_days: int | None = None,
 ) -> Classification:
     today = today or date.today()
     reasons: list[str] = []
@@ -143,6 +148,11 @@ def validate(
             iso = None
         elif not date_in_text(iso, text):
             reasons.append(f"date {iso} does not appear in the document text")
+            iso = None
+        elif max_age_days is not None and (today - date.fromisoformat(iso)).days > max_age_days:
+            # Oncology contract rule: an old date on a *new* scan is suspect
+            # (the classic failure is a historical date read off the page).
+            reasons.append(f"date {iso} is more than {max_age_days // 365} years old — suspect")
             iso = None
 
     institution = snap(camel(raw.get("institution")) if raw.get("institution") else UNKNOWN)
