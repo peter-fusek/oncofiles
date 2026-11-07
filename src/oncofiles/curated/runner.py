@@ -128,7 +128,8 @@ def _walk_all(drive, folder_id: str, prefix: str = "") -> list[tuple[str, Item]]
 
 
 def _is_sidecar(name: str, siblings: set[str]) -> bool:
-    return name.endswith(".md") and bool(SOURCE_EXT_RE.search(name[:-3])) and name[:-3] in siblings
+    """``X.md`` next to ``X`` — whatever X's extension (Google Docs have none)."""
+    return name.endswith(".md") and name[:-3] in siblings
 
 
 # ── preflight ────────────────────────────────────────────────────────
@@ -245,18 +246,27 @@ class Runner:
 
     # -- writes (no-ops in dry run, always logged) --
 
-    def _act(self, action: dict, fn: Callable | None) -> None:
+    def _act(self, action: dict, fn: Callable | None, *, pair_half: bool = False) -> None:
+        """Log the action first, then perform it — so a failure is always on record.
+
+        ``pair_half``: this write moves one half of a source+sidecar pair; if it
+        fails after Drive applied it, the pair may be split, and the message says so.
+        """
         action = {"ts": self.now.strftime("%Y-%m-%dT%H:%M"), "run": self.run_id, **action}
-        if not self.opts.dry_run and fn is not None:
-            try:
-                fn()
-            except WriteVerificationError as exc:
-                raise RunAbortError(f"write not verified: {exc}") from exc
-            except Exception as exc:  # Drive error, refused write, …
-                msg = f"write failed ({type(exc).__name__}): {action['action']}"
-                raise RunAbortError(msg) from exc
-        self.actions_used += 1
         self.report.actions.append(action)
+        self.actions_used += 1
+        if self.opts.dry_run or fn is None:
+            return
+        try:
+            fn()
+        except Exception as exc:  # unverified write, Drive error, refused write, …
+            action["status"] = "failed"
+            split = " — pair possibly split, see undo" if pair_half else ""
+            kind = "not verified" if isinstance(exc, WriteVerificationError) else "failed"
+            raise RunAbortError(
+                f"write {kind} ({type(exc).__name__}): {action['action']}{split}"
+            ) from exc
+        action["status"] = "done"
 
     def run(self) -> RunReport:
         try:
@@ -267,6 +277,10 @@ class Runner:
         except ContractError as exc:
             self.report.status = "aborted"
             self.report.message = f"contract: {exc}"
+        except Exception as exc:  # never report an unexpected crash as a clean run
+            logger.exception("curated run crashed")
+            self.report.status = "aborted"
+            self.report.message = f"unexpected error ({type(exc).__name__})"
         return self.report
 
     def _run(self) -> None:
@@ -313,6 +327,10 @@ class Runner:
         except RunAbortError as exc:
             self.report.status = "aborted"
             self.report.message = str(exc)
+        except Exception as exc:  # a crash is logged as an abort, never as a clean run
+            logger.exception("curated run crashed")
+            self.report.status = "aborted"
+            self.report.message = f"unexpected error ({type(exc).__name__})"
         finally:
             if not self.opts.dry_run:
                 self._write_state(tree, contract)
@@ -402,6 +420,7 @@ class Runner:
                     "undo": {"op": "move", "from": f"{dup}/{m.name}", "to": f"{folder}/{m.name}"},
                 },
                 lambda m=m: self.drive.move_rename(m.id, m.name, src_id, dst_id),
+                pair_half=len(moving) > 1,
             )
             tree.files.setdefault(dup, []).append(m)
         self.report.documents.append(
@@ -445,6 +464,18 @@ class Runner:
         review = target_folder is None
 
         inbox = contract.inbox
+        if review and not folder:
+            # The pair would move to the inbox under its own name; never create
+            # same-name siblings there (Drive allows them, the contract does not).
+            taken = tree.names_in(inbox)
+            if nfc(item.name) in taken or nfc(item.name) + ".md" in taken:
+                self.report.flags.append(
+                    f"{item.name}: needs review but the name is taken in {inbox} — left in root"
+                )
+                self.report.documents.append(
+                    {"source": item.name, "result": "skipped", "reasons": ["name taken in inbox"]}
+                )
+                return
         stay_folder = folder if folder else inbox  # loose root files go to the inbox for review
         src_folder_id = self._folder_id(tree, folder)
         # Final name first, so the sidecar's source_file names the file it ends up next to.
@@ -533,6 +564,7 @@ class Runner:
                 },
             },
             lambda: self.drive.move_rename(item.id, new_name, src_id, dst_id),
+            pair_half=True,
         )
         self.actions_used += 1  # the sidecar move is a second file action
         if not self.opts.dry_run:

@@ -99,6 +99,12 @@ def download(gdrive, file_id: str) -> bytes:
     return buf.getvalue()
 
 
+def _nfc(value: str) -> str:
+    import unicodedata
+
+    return unicodedata.normalize("NFC", value or "")
+
+
 def sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
@@ -153,8 +159,11 @@ def move_rename(gdrive, file_id: str, new_name: str, from_parent: str, to_parent
     """Rename and/or move in one atomic update, then verify name + parents."""
     gdrive._guard_write("curated.move_rename")
     current = get(gdrive, file_id)
-    if current.get("name") != new_name and new_name in _names_in(gdrive, to_parent):
-        raise WriteVerificationError(f"refusing to move to {new_name!r}: name exists")
+    renaming = current.get("name") != new_name
+    if (renaming or from_parent != to_parent) and _nfc(new_name) in {
+        _nfc(n) for n in _names_in(gdrive, to_parent)
+    }:
+        raise WriteVerificationError(f"refusing to move to {new_name!r}: name exists in target")
     kwargs = {
         "fileId": file_id,
         "body": {"name": new_name},

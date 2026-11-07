@@ -75,7 +75,7 @@ async def test_dry_run_runs_in_background_and_reports(db, llm_on):
             await asyncio.sleep(0.01)
     assert status["state"] == "done" and status["report"]["run_id"] == "r1"
     assert run.call_args.args[2].dry_run is True
-    gdrive.contract_writes.assert_called_once()  # block lifted only for the run
+    gdrive.contract_writes.assert_not_called()  # a dry run never lifts the block (review #1)
 
 
 async def test_one_run_at_a_time(db, llm_on):

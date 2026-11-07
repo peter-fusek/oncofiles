@@ -84,7 +84,7 @@ def date_in_text(iso: str, text: str) -> bool:
         p.format(d=d, m=m, y=y, di=str(int(d)), mi=str(int(m)), yy=y[2:]) for p in _DATE_PATTERNS
     }
     compact = re.sub(r"[ \t]+", " ", text)
-    return any(v in compact for v in variants)
+    return any(re.search(r"(?<!\d)" + re.escape(v) + r"(?!\d)", compact) for v in variants)
 
 
 def _parse_iso(value) -> str | None:

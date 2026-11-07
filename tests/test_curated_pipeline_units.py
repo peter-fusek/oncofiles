@@ -246,3 +246,16 @@ def test_vocabulary_snap(doctor, expected, snapped):
     c = classify.validate(CONTRACT, {**GOOD, "doctor": doctor}, TEXT, today=TODAY)
     assert c.fields.doctor == expected
     assert any("snapped" in f for f in c.flags) is snapped
+
+
+@pytest.mark.parametrize(
+    "iso,printed",
+    [
+        ("2024-01-02", "Dátum: 12.1.2024"),  # 2.1.2024 inside 12.1.2024
+        ("2020-01-02", "Dátum: 02.01.2024"),  # 02.01.20 inside 02.01.2024
+        ("2026-08-05", "Č. 105.08.2026"),
+    ],
+)
+def test_date_in_text_needs_digit_boundaries(iso, printed):
+    """Review #3: a substring match must not validate a wrong year or day."""
+    assert not classify.date_in_text(iso, printed)

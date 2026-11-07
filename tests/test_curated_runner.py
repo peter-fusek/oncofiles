@@ -321,3 +321,52 @@ def test_oversized_file_goes_to_review_without_download(monkeypatch):
     r = run(d)
     assert r.documents[0]["result"] == "review_needed"
     assert "larger than" in r.documents[0]["reasons"][0]
+
+
+# ── review findings on PR #568 ──────────────────────────────────────
+
+
+def test_unexpected_crash_is_recorded_as_abort_not_success():
+    """Review #2: any exception → status aborted, changelog says ABORTED, report kept."""
+    d = _drive_with_inbox()
+
+    def boom(contract, text):
+        raise ValueError("unexpected")
+
+    r = run_curated(
+        d, d.root, RunOptions(now=NOW, dry_run=False), extract_fn=fake_extract, propose_fn=boom
+    )
+    assert r.status == "aborted" and "unexpected error" in r.message
+    assert "ABORTED" in d.download(d.find(d.root, "_changelog.md")).decode()
+
+
+def test_failed_move_is_logged_and_says_pair_may_be_split():
+    """Review #5: the action is on record (status failed) and the split is reported."""
+    d = FakeDrive()
+    d.add("scan_001.pdf", d.folder[INBOX], b"VYSLEDKY 05.08.2026")
+    d.fail_on.add("move_rename")
+    r = run(d, dry_run=False)
+    assert "pair possibly split" in r.message
+    failed = [a for a in r.actions if a.get("status") == "failed"]
+    assert len(failed) == 1 and "undo" in failed[0]
+
+
+def test_loose_root_file_never_creates_same_name_sibling_in_inbox():
+    """Review #4: root → inbox move is skipped when the name is taken."""
+    d = FakeDrive()
+    d.add("scan.pdf", d.folder[INBOX], b"BIRTH 03.02.1970")
+    d.add("scan.pdf.md", d.folder[INBOX], b"---\nreview_needed: true\n---\n")
+    d.add("scan.pdf", d.root, b"BIRTH 03.02.1970 other scan")
+    r = run(d, dry_run=False)
+    names = [x["name"] for x in d.items.values() if x["parent"] == d.folder[INBOX]]
+    assert names.count("scan.pdf") == 1
+    assert any("name is taken" in f for f in r.flags)
+
+
+def test_sidecar_of_extensionless_source_is_not_a_candidate():
+    """Review #6: a Google Doc 'Notes' and its 'Notes.md' sidecar — only the doc is a candidate."""
+    d = FakeDrive()
+    d.add("Notes", d.folder[INBOX], b"")
+    d.add("Notes.md", d.folder[INBOX], b"---\nreview_needed: false\n---\n")
+    r = run(d)
+    assert [doc["source"] for doc in r.documents] == ["Notes"]

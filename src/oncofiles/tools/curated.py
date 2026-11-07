@@ -56,7 +56,9 @@ async def _start(db, pid: str, *, dry_run: bool, max_docs: int | None, max_actio
     )
 
     def _blocking():
-        with gdrive.contract_writes():
+        if dry_run:  # a dry run never needs the write bypass
+            return run_curated(DriveOps(gdrive), folder_id, opts)
+        with gdrive.contract_writes():  # thread-scoped: other tools stay blocked
             return run_curated(DriveOps(gdrive), folder_id, opts)
 
     async def _task():

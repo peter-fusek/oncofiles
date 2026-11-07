@@ -9,6 +9,7 @@ import io
 import json
 import logging
 import ssl
+import threading
 import time
 
 from oncofiles.config import GOOGLE_APPLICATION_CREDENTIALS, GOOGLE_CREDENTIALS_BASE64
@@ -93,22 +94,33 @@ class GDriveClient:
     # method raises DriveWriteBlockedError (#562). Class attribute so from_oauth()
     # instances get the default too.
     write_block_reason: str | None = None
-    _contract_write_depth: int = 0
+
+    def _contract_tls(self) -> threading.local:
+        tls = self.__dict__.get("_contract_local")
+        if tls is None:
+            tls = self.__dict__.setdefault("_contract_local", threading.local())
+        return tls
 
     def _guard_write(self, op: str) -> None:
-        if self.write_block_reason and not self._contract_write_depth:
+        if self.write_block_reason and not getattr(self._contract_tls(), "depth", 0):
             from oncofiles.curated_folder import DriveWriteBlockedError
 
             raise DriveWriteBlockedError(f"{op} refused: {self.write_block_reason}")
 
     @contextlib.contextmanager
     def contract_writes(self):
-        """Lift the curated-folder write block for the contract pipeline only (#562)."""
-        self._contract_write_depth += 1
+        """Lift the curated-folder write block for the contract pipeline only (#562).
+
+        Scoped to the **calling thread**: the client object is shared (patient
+        client cache), so an instance-wide flag would open the folder to every
+        other tool for the whole duration of a run.
+        """
+        tls = self._contract_tls()
+        tls.depth = getattr(tls, "depth", 0) + 1
         try:
             yield self
         finally:
-            self._contract_write_depth -= 1
+            tls.depth -= 1
 
     def __init__(
         self,
