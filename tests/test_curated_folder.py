@@ -339,3 +339,26 @@ def test_scheduler_paths_consult_curated_registry():
     assert "_mark_patient_curated" in shortcut
     cache_hit = src[src.index("if cached and (_time.monotonic() - cached[4])") :][:400]
     assert "_mark_patient_curated" in cache_hit
+
+
+def test_contract_writes_bypass_is_thread_scoped():
+    """Review #1: the shared client stays blocked for every other thread during a run."""
+    import threading
+
+    c = _client()
+    c._service.files.return_value.update.return_value.execute.return_value = {}
+    results = {}
+
+    def other_thread():
+        try:
+            c.rename_file("f", "legacy.pdf")
+            results["other"] = "wrote"
+        except DriveWriteBlockedError:
+            results["other"] = "blocked"
+
+    with c.contract_writes():
+        c.rename_file("f", "contract.pdf")  # the pipeline's own thread may write
+        t = threading.Thread(target=other_thread)
+        t.start()
+        t.join()
+    assert results["other"] == "blocked"

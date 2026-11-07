@@ -38,6 +38,14 @@ GOOGLE_INTEGRATION_ENABLED: bool = os.environ.get("GOOGLE_INTEGRATION_ENABLED", 
 )
 
 # Google OAuth 2.0 (v1.0)
+# Local LLM (#565): OpenAI-compatible endpoint on the self-hosted server (LM Studio).
+# Used by the curated-folder pipeline for OCR (vision) and classification, so
+# document content never leaves the server. Runtime-only env; never buildtime.
+LOCAL_LLM_BASE_URL: str = os.environ.get("LOCAL_LLM_BASE_URL", "").rstrip("/")
+LOCAL_LLM_API_KEY: str = os.environ.get("LOCAL_LLM_API_KEY", "")
+LOCAL_LLM_MODEL: str = os.environ.get("LOCAL_LLM_MODEL", "")
+LOCAL_LLM_TIMEOUT_S: float = float(os.environ.get("LOCAL_LLM_TIMEOUT_S", "900"))
+
 GOOGLE_OAUTH_CLIENT_ID: str = os.environ.get("GOOGLE_OAUTH_CLIENT_ID", "")
 GOOGLE_OAUTH_CLIENT_SECRET: str = os.environ.get("GOOGLE_OAUTH_CLIENT_SECRET", "")
 GOOGLE_OAUTH_REDIRECT_URI: str = os.environ.get(

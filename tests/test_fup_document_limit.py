@@ -129,15 +129,27 @@ def test_known_broken_allowlist_does_not_grow_silently():
 
 
 @pytest.mark.parametrize(
-    "filename",
-    ["sync.py", "manifest.py", "hygiene.py", "enhance_tools.py", "export.py", "naming.py"],
+    "relpath",
+    [
+        "sync.py",
+        "manifest.py",
+        "tools/hygiene.py",
+        "tools/enhance_tools.py",
+        "tools/export.py",
+        "tools/naming.py",
+    ],
 )
-def test_whole_corpus_modules_reference_doc_query_limit(filename: str):
-    """Modules doing whole-corpus reads must actually use the shared ceiling."""
-    matches = list(SRC.rglob(filename))
-    assert matches, f"{filename} not found under {SRC}"
-    source = matches[0].read_text(encoding="utf-8")
-    assert "DOC_QUERY_LIMIT" in source, f"{filename} no longer uses DOC_QUERY_LIMIT"
+def test_whole_corpus_modules_reference_doc_query_limit(relpath: str):
+    """Modules doing whole-corpus reads must actually use the shared ceiling.
+
+    Exact paths, not a basename rglob: ``curated/naming.py`` (#562) shares the
+    basename with ``tools/naming.py``, and rglob order is filesystem-dependent —
+    it picked the right file on macOS and the wrong one on Linux CI.
+    """
+    path = SRC / relpath
+    assert path.is_file(), f"{relpath} not found under {SRC}"
+    source = path.read_text(encoding="utf-8")
+    assert "DOC_QUERY_LIMIT" in source, f"{relpath} no longer uses DOC_QUERY_LIMIT"
 
 
 def test_truncation_is_logged_not_silent():

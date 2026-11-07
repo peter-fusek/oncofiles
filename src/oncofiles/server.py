@@ -7444,6 +7444,7 @@ from oncofiles.tools import (  # noqa: E402
     clinical,
     clinical_records,
     conversations,
+    curated,
     db_query,
     documents,
     enhance_tools,
@@ -7467,6 +7468,7 @@ treatment.register(mcp)
 research.register(mcp)
 activity.register(mcp)
 gdrive.register(mcp)
+curated.register(mcp)
 enhance_tools.register(mcp)
 clinical.register(mcp)
 clinical_records.register(mcp)
