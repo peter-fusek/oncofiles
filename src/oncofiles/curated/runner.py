@@ -81,6 +81,9 @@ class RunOptions:
     max_missing_sidecars: int = 20
     # Checked before each document: True stops the run cleanly (shutdown drain).
     should_stop: Callable[[], bool] | None = None
+    # Text sources have no sidecar, so a review decision leaves no mark on
+    # Drive: (file id, modified) pairs already sent to review by earlier runs.
+    reviewed_text: frozenset = frozenset()
 
 
 @dataclass
@@ -522,6 +525,9 @@ class Runner:
             if self.actions_used + ACTIONS_PER_DOCUMENT > self.opts.max_actions:
                 self.report.not_processed.append(label)
                 continue
+            if _is_text_source(item) and (item.id, item.modified) in self.opts.reviewed_text:
+                self.report.awaiting_review.append(label)
+                continue
             sidecar = self._existing_sidecar(tree, folder, item)
             if sidecar is not None and self._awaiting_review(sidecar, item):
                 self.report.awaiting_review.append(label)
@@ -531,6 +537,12 @@ class Runner:
                 self._quarantine(tree, contract, folder, item, sidecar, filed[item.sha256])
                 continue
             self._file_document(tree, contract, folder, item, sidecar)
+            last = self.report.documents[-1] if self.report.documents else {}
+            if item.sha256 and last.get("source") == item.name and last.get("result") == "filed":
+                # Later candidates in this same run must see it as already filed:
+                # two identical uploads in one batch → second one is a duplicate.
+                to_folder, _, to_name = last["to"].partition("/")
+                filed[item.sha256] = (to_folder, nfc(to_name))
 
     def _awaiting_review(self, sidecar: Item, item: Item) -> bool:
         text = self.drive.download(sidecar.id).decode("utf-8", errors="replace")[:4000]
@@ -732,6 +744,8 @@ class Runner:
                     "result": "review_needed",
                     "stays_in": folder or inbox,
                     "reasons": reasons,
+                    # Lets later runs skip it until the file changes (no sidecar).
+                    "text_source": {"id": item.id, "modified": item.modified},
                 }
             )
             return
@@ -1064,6 +1078,10 @@ class Probe:
     canary: bool = False  # a leftover canary: a run must recover or report it
 
 
+def _is_text_source(item: Item) -> bool:
+    return item.name.rsplit(".", 1)[-1].lower() in extract_mod.TEXT_EXTS
+
+
 def _signature(tree: Tree) -> str:
     rows = [f"/{i.id}/{i.name}/{i.modified}/{i.size}" for i in tree.root_files]
     for folder, items in tree.files.items():
@@ -1071,7 +1089,14 @@ def _signature(tree: Tree) -> str:
     return hashlib.sha256("\n".join(sorted(rows)).encode()).hexdigest()
 
 
-def probe(drive, root_id: str, *, idle_signature: str | None = None, now=None) -> Probe:
+def probe(
+    drive,
+    root_id: str,
+    *,
+    idle_signature: str | None = None,
+    now=None,
+    reviewed_text: frozenset = frozenset(),
+) -> Probe:
     """Cheap check for new work: one tree listing; sidecars are read only when
     the tree changed since the last probe that found nothing (``idle_signature``).
 
@@ -1098,6 +1123,8 @@ def probe(drive, root_id: str, *, idle_signature: str | None = None, now=None) -
         return result
     r = Runner(drive, root_id, RunOptions(dry_run=True, now=now))
     for folder, item in r._candidates(tree, contract):
+        if _is_text_source(item) and (item.id, item.modified) in reviewed_text:
+            continue
         side = r._existing_sidecar(tree, folder, item)
         if side is None or not r._awaiting_review(side, item):
             result.pending[item.id] = f"{folder or '(root)'}/{item.name}"

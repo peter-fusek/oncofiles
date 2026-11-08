@@ -447,3 +447,23 @@ def test_run_active_reflects_running_runs():
     finally:
         tool._runs.pop("x")
     assert not tool.run_active()
+
+
+async def test_text_review_memory_is_seeded_from_earlier_real_runs(db):
+    tool._text_reviews.clear()
+    report = {
+        "documents": [
+            {
+                "source": "n.txt",
+                "result": "review_needed",
+                "text_source": {"id": "f9", "modified": "m"},
+            },
+            {"source": "x.pdf", "result": "filed"},
+        ]
+    }
+    rid = await db.insert_curated_run(patient_id=ERIKA_UUID, dry_run=False, trigger="auto")
+    await db.finish_curated_run(rid, patient_id=ERIKA_UUID, status="ok", message="", report=report)
+    try:
+        assert await tool.reviewed_text_sources(db, ERIKA_UUID) == frozenset({("f9", "m")})
+    finally:
+        tool._text_reviews.clear()
