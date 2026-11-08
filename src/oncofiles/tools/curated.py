@@ -26,8 +26,10 @@ import hashlib
 import json
 import logging
 import os
+import threading
 import time
 from collections import OrderedDict
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
 from fastmcp import Context
@@ -86,6 +88,21 @@ def cached_propose(contract, text):
     raw = classify.propose(contract, text)
     _remember(_propose_cache, key, dict(raw))
     return raw
+
+
+# ── shutdown drain ────────────────────────────────────────────────────
+
+_stopping = threading.Event()
+
+
+def request_stop() -> None:
+    """Server shutdown: running runs finish the current document and log cleanly."""
+    _stopping.set()
+
+
+def run_active() -> bool:
+    """True while any curated run executes (exposed on /health for CI deploys)."""
+    return any(r.get("state") == "running" for r in _runs.values())
 
 
 # ── gates ─────────────────────────────────────────────────────────────
@@ -148,6 +165,7 @@ async def _prepare(db, pid: str, *, dry_run: bool, max_docs: int | None, max_act
         max_actions=max(1, max_actions),
         min_text_chars=min_chars,
         max_doc_age_days=max_age,
+        should_stop=_stopping.is_set,
     )
     return None, (gdrive, folder_id, opts)
 
@@ -277,7 +295,13 @@ def nightly_settings() -> tuple[bool, int | None, int]:
 
 
 async def nightly_for_patient(
-    db, pid: str, *, max_real_runs: int, reuse_preview: bool = False
+    db,
+    pid: str,
+    *,
+    max_real_runs: int,
+    reuse_preview: bool = False,
+    trigger: str = "nightly",
+    max_docs: int | None = None,
 ) -> list[dict]:
     """Preview first; if clean, real runs until the inbox is done or a run is not clean.
 
@@ -286,11 +310,17 @@ async def nightly_for_patient(
     """
     reports: list[dict] = []
     if not (reuse_preview and await preview_gate(db, pid) is None):
-        reports.append(await execute_run(db, pid, dry_run=True, trigger="nightly-preview"))
+        reports.append(
+            await execute_run(
+                db, pid, dry_run=True, trigger=f"{trigger}-preview", max_docs=max_docs
+            )
+        )
         if reports[-1].get("status") != "ok":
             return reports
     for _ in range(max_real_runs):
-        rep = await execute_run(db, pid, dry_run=False, trigger="nightly")
+        if _stopping.is_set():
+            break
+        rep = await execute_run(db, pid, dry_run=False, trigger=trigger, max_docs=max_docs)
         reports.append(rep)
         if rep.get("status") != "ok":
             break
@@ -303,16 +333,133 @@ async def nightly_for_patient(
 STARTUP_GRACE_S = 300  # let a rolling deploy retire the old container first (#581)
 
 
+# ── continuous mode: new files processed within minutes ───────────────
+
+
+def continuous_settings() -> tuple[bool, int, int, int]:
+    """(enabled, poll seconds, settle seconds, documents per run) from env.
+
+    On by default: the inbox is probed every ``CURATED_POLL_S`` and a run starts
+    as soon as new work has been quiet for ``CURATED_SETTLE_S`` (an upload of
+    many scans lands as one batch). Runs are short (``CURATED_CHUNK_DOCS``
+    documents) so deploys and other work interleave. The nightly sweep at
+    CURATED_NIGHTLY_HOUR stays as the full catch-all.
+    """
+    enabled = os.environ.get("CURATED_CONTINUOUS", "true").lower() in ("1", "true", "yes")
+    poll = max(30, int(os.environ.get("CURATED_POLL_S", "120")))
+    settle = max(0, int(os.environ.get("CURATED_SETTLE_S", "120")))
+    chunk = max(1, int(os.environ.get("CURATED_CHUNK_DOCS", "5")))
+    return enabled, poll, settle, chunk
+
+
+FAILURE_BACKOFF_S = 1800  # after a failed sequence; doubles, capped at 4 h
+FAILURE_BACKOFF_MAX_S = 4 * 3600
+
+
+@dataclass
+class _Watch:
+    """Per-patient continuous-mode memory (in-process; a restart re-probes)."""
+
+    idle_signature: str | None = None  # tree fingerprint with nothing to do
+    stuck: frozenset = frozenset()  # pending ids a sequence could not move
+    failures: int = 0
+    not_before: float = 0.0  # monotonic time of the next allowed attempt
+
+
+_watch: dict[str, _Watch] = {}
+
+
+async def probe_patient(db, pid: str, idle_signature: str | None):
+    """Read-only probe of the patient's curated folder, or None if unreachable."""
+    from oncofiles.curated.drive_ops import DriveOps
+    from oncofiles.curated.runner import probe
+    from oncofiles.server import _create_patient_clients
+
+    clients = await _create_patient_clients(db, pid)
+    if not clients or clients[0] is None:
+        return None
+    gdrive, folder_id = clients[0], clients[3]
+
+    def _blocking():
+        own = gdrive.dedicated_copy()
+        try:
+            return probe(DriveOps(own), folder_id, idle_signature=idle_signature)
+        finally:
+            own.close()
+
+    return await asyncio.to_thread(_blocking)
+
+
+def _sequence_outcome(reports: list[dict]) -> tuple[bool, bool]:
+    """(failed, progressed) for one sequence of runs."""
+    failed = any(r.get("error") or r.get("status") != "ok" for r in reports)
+    progressed = any(
+        d.get("result") != "skipped"
+        for r in reports
+        if not r.get("dry_run") and not r.get("error")
+        for d in r.get("documents", [])
+    ) or any(r.get("actions") for r in reports if not r.get("dry_run"))
+    return failed, progressed
+
+
+async def continuous_tick(
+    db, pid: str, *, settle_s: int, chunk: int, max_runs: int
+) -> list[dict] | None:
+    """Probe; run a short sequence when there is new, settled work. Never raises
+    for an ordinary outcome; returns the reports when a sequence ran."""
+    w = _watch.setdefault(pid, _Watch())
+    if time.monotonic() < w.not_before:
+        return None
+    pr = await probe_patient(db, pid, w.idle_signature)
+    if pr is None:
+        return None
+    work = set(pr.pending) - w.stuck
+    if not work and not pr.canary:
+        w.idle_signature = pr.signature
+        return None
+    if pr.newest_age_s is not None and pr.newest_age_s < settle_s:
+        return None  # uploads still arriving — wait for the batch to settle
+    logger.info(
+        "curated auto %s: %d new item(s)%s — starting",
+        pid,
+        len(work),
+        " + leftover canary" if pr.canary else "",
+    )
+    reports = await nightly_for_patient(
+        db, pid, max_real_runs=max_runs, reuse_preview=True, trigger="auto", max_docs=chunk
+    )
+    failed, progressed = _sequence_outcome(reports)
+    if failed:
+        w.failures += 1
+        delay = min(FAILURE_BACKOFF_S * 2 ** (w.failures - 1), FAILURE_BACKOFF_MAX_S)
+        w.not_before = time.monotonic() + delay
+    else:
+        w.failures = 0
+        # Nothing moved: what is pending now needs a human or the nightly sweep.
+        w.stuck = frozenset() if progressed else frozenset(pr.pending)
+    logger.info(
+        "curated auto %s: %s%s",
+        pid,
+        [(r.get("dry_run"), r.get("status") or r.get("error")) for r in reports],
+        f" — retry in {int(delay // 60)} min" if failed else "",
+    )
+    return reports
+
+
 async def curated_nightly_loop(
-    db, *, poll_s: int = 300, startup_grace_s: int = STARTUP_GRACE_S
+    db, *, poll_s: int | None = None, startup_grace_s: int = STARTUP_GRACE_S
 ) -> None:
-    """Background task: once per local night at CURATED_NIGHTLY_HOUR, per enabled patient.
+    """Background task for curated folders, per enabled patient.
 
-    With ``CURATED_NIGHTLY_HOUR=every`` a sequence starts once per clock hour
-    (a sequence that runs longer simply delays the next start).
+    * Continuous (default): every ``CURATED_POLL_S`` a read-only probe; new
+      files are processed minutes after they land (``continuous_tick``).
+    * Nightly sweep once per local night at CURATED_NIGHTLY_HOUR (full budget,
+      also retries what continuous mode parked). ``CURATED_NIGHTLY_HOUR=every``
+      makes the sweep hourly.
 
-    Independent of SYNC_ENABLED/APScheduler (which is off while the legacy sync
-    is retired). A crash in one night never kills the loop.
+    One run per patient at a time; patients take turns, so one big upload
+    cannot starve the others. Independent of SYNC_ENABLED/APScheduler. A
+    failing iteration never kills the loop.
     """
     from zoneinfo import ZoneInfo
 
@@ -324,30 +471,47 @@ async def curated_nightly_loop(
     except Exception:
         logger.exception("curated: could not mark interrupted runs")
     await asyncio.sleep(startup_grace_s)
-    while True:
+    while not _stopping.is_set():
+        cont, cont_poll, settle, chunk = False, 300, 0, 5
         try:
             enabled, hour, max_runs = nightly_settings()
+            cont, cont_poll, settle, chunk = continuous_settings()
             now = datetime.now(tz)
             slot = now.strftime("%Y-%m-%d") if hour is not None else now.strftime("%Y-%m-%dT%H")
             due = hour is None or now.hour == hour
             if enabled and due and last_night != slot:
                 last_night = slot
                 for pid in await db.list_curated_nightly_patients():
+                    if _stopping.is_set():
+                        break
                     if pid in _runs and _runs[pid].get("state") == "running":
                         continue  # a manual run is in progress
                     reports = await nightly_for_patient(
                         db, pid, max_real_runs=max_runs, reuse_preview=hour is None
                     )
+                    _watch.pop(pid, None)  # the sweep retried everything
                     logger.info(
                         "curated nightly %s: %s",
                         pid,
                         [(r.get("dry_run"), r.get("status") or r.get("error")) for r in reports],
                     )
+            elif enabled and cont:
+                for pid in await db.list_curated_nightly_patients():
+                    if _stopping.is_set():
+                        break
+                    if pid in _runs and _runs[pid].get("state") == "running":
+                        continue
+                    try:
+                        await continuous_tick(
+                            db, pid, settle_s=settle, chunk=chunk, max_runs=max_runs
+                        )
+                    except Exception:
+                        logger.exception("curated auto %s: tick failed", pid)
         except asyncio.CancelledError:
             raise
         except Exception:
-            logger.exception("curated nightly loop iteration failed")
-        await asyncio.sleep(poll_s)
+            logger.exception("curated loop iteration failed")
+        await asyncio.sleep(poll_s or (cont_poll if cont else 300))
 
 
 # ── MCP tools ─────────────────────────────────────────────────────────

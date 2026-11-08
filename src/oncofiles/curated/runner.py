@@ -19,6 +19,7 @@ classification but no write, and returns the plan.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
@@ -47,6 +48,10 @@ CANARY = "_healthcheck.tmp"
 # "<run_id> journal-v1", then one JSON line per action, written (and verified)
 # BEFORE the action. A canary left by a killed run therefore says exactly
 # what that run may have changed. Older canaries carry only the run id.
+# Each action line carries a ``seq``; once the action (for a pair: both
+# moves) is verified, a ``{"ok": seq}`` line confirms it. A killed run whose
+# every journaled action is confirmed left a consistent folder, so the next
+# run recovers automatically; any unconfirmed action still needs a human.
 JOURNAL_MARK = "journal-v1"
 # A leftover canary younger than this may belong to a run that is still alive
 # (e.g. the old container during a rolling deploy) — never touch it.
@@ -73,6 +78,8 @@ class RunOptions:
     max_doc_age_days: int | None = None
     # Already-filed documents without a sidecar get one (sidecar only) per run.
     max_missing_sidecars: int = 20
+    # Checked before each document: True stops the run cleanly (shutdown drain).
+    should_stop: Callable[[], bool] | None = None
 
 
 @dataclass
@@ -329,24 +336,42 @@ class Runner:
 
     # -- writes (no-ops in dry run, always logged) --
 
-    def _act(self, action: dict, fn: Callable | None, *, pair_half: bool = False) -> None:
+    def _journal_append(self, line: str) -> None:
+        try:
+            self.drive.update_text(self.canary_id, self._journal + line + "\n", "text/plain")
+        except Exception as exc:
+            raise RunAbortError(f"journal write failed ({type(exc).__name__})") from exc
+        self._journal += line + "\n"
+
+    def _confirm(self, seq: int) -> None:
+        """Journal that action ``seq`` is complete and verified."""
+        if self.canary_id and not self.opts.dry_run:
+            self._journal_append(json.dumps({"ok": seq}))
+
+    def _act(
+        self,
+        action: dict,
+        fn: Callable | None,
+        *,
+        pair_half: bool = False,
+        confirm: bool = True,
+    ) -> int:
         """Log the action first, then perform it — so a failure is always on record.
 
         ``pair_half``: this write moves one half of a source+sidecar pair; if it
         fails after Drive applied it, the pair may be split, and the message says so.
+        ``confirm=False``: the caller confirms (``_confirm(seq)``) once the rest
+        of the action is done. Returns the action's journal ``seq``.
         """
         action = {"ts": self.now.strftime("%Y-%m-%dT%H:%M"), "run": self.run_id, **action}
         self.report.actions.append(action)
         self.actions_used += 1
+        seq = len(self.report.actions)
         if self.opts.dry_run or fn is None:
-            return
+            return seq
         if self.canary_id:  # journal first, so a kill mid-action is on record
-            line = json.dumps({k: v for k, v in action.items() if k != "undo"}, ensure_ascii=False)
-            try:
-                self.drive.update_text(self.canary_id, self._journal + line + "\n", "text/plain")
-            except Exception as exc:
-                raise RunAbortError(f"journal write failed ({type(exc).__name__})") from exc
-            self._journal += line + "\n"
+            entry = {k: v for k, v in action.items() if k != "undo"}
+            self._journal_append(json.dumps({**entry, "seq": seq}, ensure_ascii=False))
         try:
             fn()
         except Exception as exc:  # unverified write, Drive error, refused write, …
@@ -357,6 +382,9 @@ class Runner:
                 f"write {kind} ({type(exc).__name__}): {action['action']}{split}"
             ) from exc
         action["status"] = "done"
+        if confirm:
+            self._confirm(seq)
+        return seq
 
     def run(self) -> RunReport:
         try:
@@ -468,9 +496,13 @@ class Runner:
         candidates = self._candidates(tree, contract)
         filed = self._filed_hashes(tree, contract)
         done = 0
+        stopping = False
         for folder, item in candidates:
             label = f"{folder or '(root)'}/{item.name}"
-            if done >= self.opts.max_docs:
+            if not stopping and self.opts.should_stop and self.opts.should_stop():
+                stopping = True
+                self.report.flags.append("stopped early: the server is shutting down")
+            if stopping or done >= self.opts.max_docs:
                 self.report.not_processed.append(label)
                 continue
             if self.actions_used + ACTIONS_PER_DOCUMENT > self.opts.max_actions:
@@ -740,8 +772,10 @@ class Runner:
                     continue
                 if n.rsplit(".", 1)[-1].lower() in extract_mod.TEXT_EXTS:
                     continue
-                if added >= self.opts.max_missing_sidecars or (
-                    self.actions_used + 1 > self.opts.max_actions
+                if (
+                    added >= self.opts.max_missing_sidecars
+                    or self.actions_used + 1 > self.opts.max_actions
+                    or (self.opts.should_stop and self.opts.should_stop())
                 ):
                     self.report.not_processed.append(f"{folder}/{item.name} (missing sidecar)")
                     continue
@@ -815,7 +849,7 @@ class Runner:
         src_id, dst_id = self._folder_id(tree, from_folder), tree.folders[to_folder].id
         old_side = f"{item.name}.md"
         new_side = f"{new_name}.md"
-        self._act(
+        seq = self._act(
             {
                 "action": "move_pair",
                 "from": [f"{from_folder}/{item.name}", f"{from_folder}/{old_side}"],
@@ -829,6 +863,7 @@ class Runner:
             },
             lambda: self.drive.move_rename(item.id, new_name, src_id, dst_id),
             pair_half=True,
+            confirm=False,
         )
         self.actions_used += 1  # the sidecar move is a second file action
         if not self.opts.dry_run:
@@ -840,6 +875,7 @@ class Runner:
             except Exception as exc:
                 msg = f"sidecar move failed ({type(exc).__name__}) — pair split"
                 raise RunAbortError(msg) from exc
+            self._confirm(seq)
         names = tree.files.setdefault(to_folder, [])
         names.append(Item(id=item.id, name=new_name, mime=item.mime, parent=dst_id))
         names.append(Item(id=side_id, name=new_side, mime="text/markdown", parent=dst_id))
@@ -871,15 +907,38 @@ class Runner:
                 f"canary from run {old_run} is fresh — that run may still be active"
             )
         journaled = [ln for ln in lines[1:] if ln.strip()]
-        if journaled:
-            summary = "; ".join(_journal_summary(ln) for ln in journaled[:10])
+        actions, oks, unconfirmed = [], set(), []
+        for ln in journaled:
+            try:
+                entry = json.loads(ln)
+            except ValueError:
+                unconfirmed.append(ln)
+                continue
+            if "ok" in entry:
+                oks.add(entry["ok"])
+            else:
+                actions.append((ln, entry))
+        unconfirmed += [ln for ln, e in actions if e.get("seq") is None or e["seq"] not in oks]
+        if unconfirmed:
+            summary = "; ".join(_journal_summary(ln) for ln in unconfirmed[:10])
             raise RunAbortError(
-                f"run {old_run} was interrupted after {len(journaled)} journaled action(s) — "
-                f"reconcile them first ({summary}), then trash the canary"
+                f"run {old_run} was interrupted with {len(unconfirmed)} unconfirmed "
+                f"journaled action(s) — reconcile them first ({summary}), then trash the canary"
             )
+        # Every journaled action completed and was verified: the folder is
+        # consistent. Carry the actions into this run's logs, then continue.
+        for _, entry in actions:
+            entry.pop("seq", None)
+            self.report.actions.append({**entry, "status": "done", "recovered": True})
         self.drive.trash_canary(old.id)
         tree.root_files = [i for i in tree.root_files if i.id != old.id]
-        msg = f"interrupted run {old_run} left no actions — its canary was trashed"
+        if actions:
+            msg = (
+                f"interrupted run {old_run} completed all {len(actions)} journaled action(s) — "
+                "recovered into this run's logs, its canary was trashed"
+            )
+        else:
+            msg = f"interrupted run {old_run} left no actions — its canary was trashed"
         self.report.gates.append(Gate("stale canary", True, msg))
         self.report.flags.append(msg)
 
@@ -976,6 +1035,71 @@ class Runner:
             f"contract version: {r.contract_version}\n\n## Preflight\n\n{gates}\n\n"
             f"## Changelog entry\n{self._changelog_entry()}"
         )
+
+
+# ── probe (continuous mode) ──────────────────────────────────────────
+
+
+@dataclass
+class Probe:
+    """What a run would find to do right now — read-only, no model calls."""
+
+    signature: str  # fingerprint of the whole tree (ids, names, mtimes, sizes)
+    pending: dict[str, str] = field(default_factory=dict)  # file id -> label
+    newest_age_s: float | None = None  # youngest file in the inbox / root
+    canary: bool = False  # a leftover canary: a run must recover or report it
+
+
+def _signature(tree: Tree) -> str:
+    rows = [f"/{i.id}/{i.name}/{i.modified}/{i.size}" for i in tree.root_files]
+    for folder, items in tree.files.items():
+        rows += [f"{folder}/{i.id}/{i.name}/{i.modified}/{i.size}" for i in items]
+    return hashlib.sha256("\n".join(sorted(rows)).encode()).hexdigest()
+
+
+def probe(drive, root_id: str, *, idle_signature: str | None = None, now=None) -> Probe:
+    """Cheap check for new work: one tree listing; sidecars are read only when
+    the tree changed since the last probe that found nothing (``idle_signature``).
+
+    Pending = what the next real run would process: inbox/root documents not
+    awaiting a human review (new files, Cowork sidecars, technical retries)
+    and filed documents without a sidecar.
+    """
+    tree = walk(drive, root_id)
+    now = now or datetime.now(UTC)
+    result = Probe(signature=_signature(tree))
+    result.canary = any(i.name == CANARY for i in tree.root_files)
+    readme = next((i for i in tree.root_files if i.name == "README.md"), None)
+    if readme is None:
+        return result
+    contract = parse_contract(drive.download(readme.id).decode("utf-8"))
+    inbox_items = [
+        i
+        for i in tree.files.get(contract.inbox, []) + tree.root_files
+        if nfc(i.name) not in ROOT_STATE_FILES and i.name != CANARY
+    ]
+    ages = [a for i in inbox_items if (a := _age_seconds(i.modified, now)) is not None]
+    result.newest_age_s = min(ages) if ages else None
+    if result.signature == idle_signature:
+        return result
+    r = Runner(drive, root_id, RunOptions(dry_run=True, now=now))
+    for folder, item in r._candidates(tree, contract):
+        side = r._existing_sidecar(tree, folder, item)
+        if side is None or not r._awaiting_review(side, item):
+            result.pending[item.id] = f"{folder or '(root)'}/{item.name}"
+    for folder, doc_type in contract.folders.items():
+        if doc_type is None or folder not in tree.folders:
+            continue
+        items = tree.files.get(folder, [])
+        names = {nfc(i.name) for i in items}
+        for item in items:
+            n = nfc(item.name)
+            if _is_sidecar(n, names) or n + ".md" in names or n + ".gdoc.md" in names:
+                continue
+            if n.rsplit(".", 1)[-1].lower() in extract_mod.TEXT_EXTS:
+                continue
+            result.pending[item.id] = f"{folder}/{item.name} (missing sidecar)"
+    return result
 
 
 def run_curated(drive, root_id: str, opts: RunOptions | None = None, **kwargs) -> RunReport:

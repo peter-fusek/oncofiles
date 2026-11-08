@@ -539,7 +539,7 @@ def test_stale_canary_with_journaled_actions_stops_the_run():
     d.add(CANARY, d.root, f"dead-run journal-v1\n{line}\n".encode(), modified=_old(30))
     r = run(d, dry_run=False)
     assert r.status == "aborted"
-    assert "dead-run" in r.message and "1 journaled" in r.message and "labs/x.pdf" in r.message
+    assert "dead-run" in r.message and "1 unconfirmed" in r.message and "labs/x.pdf" in r.message
     assert not [w for w in d.writes if w[0] in ("move", "create")]
 
 
@@ -621,3 +621,115 @@ def test_human_review_reason_is_never_retried():
     d.add("scan_7.pdf.md", d.folder[INBOX], _review_sidecar([TRUNC, "institution unknown"]))
     r = run(d, dry_run=False)
     assert r.awaiting_review == [f"{INBOX}/scan_7.pdf"] and r.documents == []
+
+
+# ── journal confirmations, drain, probe (continuous mode) ────────────
+
+
+def test_stale_canary_with_all_actions_confirmed_is_recovered():
+    d = _drive_with_inbox()
+    line = json.dumps({"action": "move_pair", "to": ["labs/x.pdf", "labs/x.pdf.md"], "seq": 1})
+    body = f"dead-run journal-v1\n{line}\n{json.dumps({'ok': 1})}\n"
+    d.add(CANARY, d.root, body.encode(), modified=_old(30))
+    r = run(d, dry_run=False)
+    assert r.status == "ok", r.message
+    recovered = [a for a in r.actions if a.get("recovered")]
+    assert len(recovered) == 1 and recovered[0]["status"] == "done"
+    assert any("completed all 1" in f for f in r.flags)
+    assert ("trash", CANARY) in d.writes
+
+
+def test_unconfirmed_action_among_confirmed_ones_still_stops_the_run():
+    d = _drive_with_inbox()
+    a1 = json.dumps({"action": "write_sidecar", "path": "a.md", "seq": 1})
+    a2 = json.dumps({"action": "move_pair", "to": ["labs/y.pdf"], "seq": 2})
+    body = f"dead-run journal-v1\n{a1}\n{json.dumps({'ok': 1})}\n{a2}\n"
+    d.add(CANARY, d.root, body.encode(), modified=_old(30))
+    r = run(d, dry_run=False)
+    assert r.status == "aborted" and "1 unconfirmed" in r.message and "labs/y.pdf" in r.message
+
+
+class _Killed(BaseException):
+    """Simulates the process being killed mid-run."""
+
+
+class KillOnSidecarMoveDrive(FakeDrive):
+    """Dies at the first sidecar move; keeps the journal as the kill left it
+    (a real kill never reaches the run's ``finally``)."""
+
+    def move_rename(self, fid, new_name, from_parent, to_parent):
+        if new_name.endswith(".md"):
+            self.journal_at_kill = self.download(self.find(self.root, CANARY)).decode()
+            raise _Killed
+        super().move_rename(fid, new_name, from_parent, to_parent)
+
+
+def test_pair_is_confirmed_only_after_both_moves():
+    d = _drive_with_inbox()
+    d.__class__ = KillOnSidecarMoveDrive
+    with pytest.raises(_Killed):
+        run(d, dry_run=False)
+    journal = d.journal_at_kill.splitlines()
+    entries = [json.loads(x) for x in journal[1:]]
+    moves = [e for e in entries if e.get("action") == "move_pair"]
+    oks = {e["ok"] for e in entries if "ok" in e}
+    assert moves and moves[-1]["seq"] not in oks  # half-moved pair stays unconfirmed
+    assert all(e["seq"] in oks for e in entries if "action" in e and e is not moves[-1])
+
+
+def test_every_completed_action_is_confirmed_in_the_journal():
+    d = _drive_with_inbox()
+    seen = []
+    orig = d.trash_canary
+
+    def keep(fid):
+        seen.append(d.download(fid).decode())
+        orig(fid)
+
+    d.trash_canary = keep
+    r = run(d, dry_run=False)
+    assert r.status == "ok", r.message
+    entries = [json.loads(x) for x in seen[0].splitlines()[1:]]
+    seqs = [e["seq"] for e in entries if "action" in e]
+    assert seqs and sorted(seqs) == sorted(e["ok"] for e in entries if "ok" in e)
+
+
+def test_should_stop_ends_the_run_cleanly_before_the_next_document():
+    d = _drive_with_inbox()
+    r = run(d, dry_run=False, should_stop=lambda: True)
+    assert r.status == "ok", r.message
+    assert not r.documents and r.not_processed
+    assert any("shutting down" in f for f in r.flags)
+    assert CANARY not in d.names(d.root)
+
+
+def test_probe_finds_new_inbox_work_without_writing():
+    from oncofiles.curated.runner import probe
+
+    d = _drive_with_inbox()
+    p = probe(d, d.root, now=NOW)
+    assert len(p.pending) == 5 and not p.canary  # 4 inbox + 1 filed without sidecar
+    assert d.writes == []
+    assert p.newest_age_s is not None and p.newest_age_s > 0
+
+
+def test_probe_skips_sidecar_reads_when_tree_is_unchanged():
+    from oncofiles.curated.runner import probe
+
+    d = _drive_with_inbox()
+    first = probe(d, d.root, now=NOW)
+    again = probe(d, d.root, idle_signature=first.signature, now=NOW)
+    assert again.signature == first.signature and again.pending == {}
+    d.add("scan_new.pdf", d.folder[INBOX], b"NEW 01.11.2026", modified=_old(1))
+    changed = probe(d, d.root, idle_signature=first.signature, now=NOW)
+    assert changed.signature != first.signature and len(changed.pending) == 6
+    assert changed.newest_age_s == pytest.approx(60)
+
+
+def test_probe_ignores_items_awaiting_review():
+    from oncofiles.curated.runner import probe
+
+    d = _drive_with_inbox()
+    run(d, dry_run=False)  # files what it can, the rest waits for review
+    p = probe(d, d.root, now=NOW)
+    assert p.pending == {}

@@ -345,3 +345,105 @@ async def test_nightly_loop_marks_interrupted_then_waits_before_first_run(db, mo
     assert calls == []  # still in the startup grace period
     rows = await db.list_curated_runs(patient_id=ERIKA_UUID)
     assert rows[0]["status"] == "interrupted"
+
+
+# ── continuous mode ──────────────────────────────────────────────────
+
+
+def _probe(pending=None, age=600.0, sig="s1", canary=False):
+    from oncofiles.curated.runner import Probe
+
+    return Probe(signature=sig, pending=pending or {}, newest_age_s=age, canary=canary)
+
+
+@pytest.fixture
+def cont(monkeypatch):
+    """Fake probe + sequence; returns (probes queue, sequence calls, reports queue)."""
+    tool._watch.clear()
+    probes, calls, reports = [], [], []
+
+    async def fake_probe(db, pid, idle):
+        calls.append(("probe", idle))
+        return probes.pop(0)
+
+    async def fake_seq(db, pid, **kw):
+        calls.append(("run", kw))
+        return reports.pop(0)
+
+    monkeypatch.setattr(tool, "probe_patient", fake_probe)
+    monkeypatch.setattr(tool, "nightly_for_patient", fake_seq)
+    yield probes, calls, reports
+    tool._watch.clear()
+
+
+def _ok(result="filed"):
+    return {"dry_run": False, "status": "ok", "documents": [{"result": result}], "actions": []}
+
+
+async def _tick(db):
+    return await tool.continuous_tick(db, ERIKA_UUID, settle_s=120, chunk=5, max_runs=5)
+
+
+async def test_continuous_idle_remembers_the_signature(db, cont):
+    probes, calls, _ = cont
+    probes += [_probe(sig="idle"), _probe(sig="idle")]
+    assert await _tick(db) is None
+    assert await _tick(db) is None
+    assert calls == [("probe", None), ("probe", "idle")]  # second probe skips sidecar reads
+
+
+async def test_continuous_waits_for_uploads_to_settle(db, cont):
+    probes, calls, reports = cont
+    probes += [_probe({"f1": "inbox/a.pdf"}, age=30), _probe({"f1": "inbox/a.pdf"}, age=200)]
+    reports.append([_ok()])
+    assert await _tick(db) is None
+    assert [c[0] for c in calls] == ["probe"]
+    assert await _tick(db) == [_ok()]
+    run_kw = calls[-1][1]
+    assert run_kw["trigger"] == "auto" and run_kw["max_docs"] == 5 and run_kw["reuse_preview"]
+
+
+async def test_continuous_parks_work_a_sequence_could_not_move(db, cont):
+    probes, calls, reports = cont
+    stuck = {"f1": "(root)/a.pdf"}
+    probes += [_probe(stuck), _probe(stuck, sig="s2"), _probe({**stuck, "f2": "inbox/b.pdf"})]
+    reports += [[_ok("skipped")], [_ok()]]
+    await _tick(db)  # runs, nothing moves → f1 parked
+    assert await _tick(db) is None  # only parked work → no run
+    assert await _tick(db) is not None  # a new file arrives → runs again
+    assert [c[0] for c in calls].count("run") == 2
+
+
+async def test_continuous_backs_off_after_a_failed_sequence(db, cont):
+    probes, calls, reports = cont
+    probes.append(_probe({"f1": "inbox/a.pdf"}))
+    reports.append([{"dry_run": False, "status": "aborted", "documents": []}])
+    await _tick(db)
+    assert tool._watch[ERIKA_UUID].failures == 1
+    assert await _tick(db) is None  # inside the backoff: no probe at all
+    assert [c[0] for c in calls] == ["probe", "run"]
+
+
+async def test_continuous_runs_to_recover_a_leftover_canary(db, cont):
+    probes, calls, reports = cont
+    probes.append(_probe({}, canary=True))
+    reports.append([_ok()])
+    assert await _tick(db) is not None
+
+
+def test_continuous_settings_defaults(monkeypatch):
+    for k in ("CURATED_CONTINUOUS", "CURATED_POLL_S", "CURATED_SETTLE_S", "CURATED_CHUNK_DOCS"):
+        monkeypatch.delenv(k, raising=False)
+    assert tool.continuous_settings() == (True, 120, 120, 5)
+    monkeypatch.setenv("CURATED_CONTINUOUS", "false")
+    monkeypatch.setenv("CURATED_POLL_S", "5")
+    assert tool.continuous_settings()[:2] == (False, 30)  # poll floor 30 s
+
+
+def test_run_active_reflects_running_runs():
+    tool._runs["x"] = {"state": "running"}
+    try:
+        assert tool.run_active()
+    finally:
+        tool._runs.pop("x")
+    assert not tool.run_active()
