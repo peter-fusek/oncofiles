@@ -464,6 +464,17 @@ def test_real_orphan_sidecar_still_aborts():
     assert r.status == "aborted" and "every sidecar has its source" in r.message
 
 
+def test_orphan_sidecar_quarantined_in_duplicates_is_flagged_not_fatal():
+    d = _drive_with_inbox()
+    d.add("old_scan.JPG.md", d.folder[DUPS], b"---\n---\n")
+    r = run(d, dry_run=False)
+    assert r.status == "ok", r.message
+    assert any(
+        "quarantined sidecars without source" in f and "old_scan.JPG.md" in f for f in r.flags
+    )
+    assert "old_scan.JPG.md" in d.names(d.folder[DUPS])  # never touched
+
+
 def test_nested_subfolder_is_flagged_not_fatal_and_left_alone():
     d = FakeDrive()
     sub = d.add("Textbook-Chapter-Scans", d.folder[LABS], folder=True)

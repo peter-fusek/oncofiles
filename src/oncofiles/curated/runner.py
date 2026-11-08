@@ -31,6 +31,7 @@ from oncofiles.curated import classify as classify_mod
 from oncofiles.curated import extract as extract_mod
 from oncofiles.curated import llm
 from oncofiles.curated.contract import (
+    DUPLICATES_PREFIX,
     ROOT_STATE_FILES,
     Contract,
     ContractError,
@@ -194,14 +195,27 @@ def preflight(drive, tree: Tree, contract: Contract) -> list[Gate]:
     gates.append(Gate("no cloud-only placeholders", True, "n/a — Drive API reads server copies"))
 
     orphans: list[str] = []
+    quarantined: list[str] = []
     for folder, items in tree.files.items():
         siblings = {nfc(i.name) for i in items}
         for n in siblings:
             if n.endswith(".md") and SOURCE_EXT_RE.search(n[:-3]) and not _is_sidecar(n, siblings):
                 if folder.startswith("98-logs"):
                     continue
-                orphans.append(f"{folder}/{n}")
+                # The duplicates folder is the quarantine: a sidecar parked there
+                # without its source was put there on purpose — report, never block.
+                bucket = quarantined if folder.startswith(DUPLICATES_PREFIX) else orphans
+                bucket.append(f"{folder}/{n}")
     gates.append(Gate("every sidecar has its source", not orphans, ", ".join(orphans[:10])))
+    if quarantined:
+        gates.append(
+            Gate(
+                "quarantined sidecars without source",
+                False,
+                ", ".join(quarantined[:10]),
+                blocking=False,
+            )
+        )
 
     unknown = sorted(set(tree.folders) - set(contract.folders))
     gates.append(Gate("folder set within README §2", not unknown, ", ".join(unknown)))
