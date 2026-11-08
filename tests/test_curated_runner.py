@@ -744,3 +744,14 @@ def test_probe_ignores_items_awaiting_review():
     run(d, dry_run=False)  # files what it can, the rest waits for review
     p = probe(d, d.root, now=NOW)
     assert p.pending == {}
+
+
+def test_identical_uploads_in_one_run_file_once_and_quarantine_the_rest():
+    d = FakeDrive()
+    d.add("photo_a.pdf", d.folder[INBOX], b"VYSLEDKY 05.08.2026", modified=_old(30))
+    d.add("photo_b.pdf", d.folder[INBOX], b"VYSLEDKY 05.08.2026", modified=_old(20))
+    r = run(d, dry_run=False)
+    assert r.status == "ok", r.message
+    results = sorted(x["result"] for x in r.documents)
+    assert results.count("filed") == 1, r.documents
+    assert "photo_b.pdf" in d.names(d.folder[DUPS])

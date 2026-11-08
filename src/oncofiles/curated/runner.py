@@ -531,6 +531,12 @@ class Runner:
                 self._quarantine(tree, contract, folder, item, sidecar, filed[item.sha256])
                 continue
             self._file_document(tree, contract, folder, item, sidecar)
+            last = self.report.documents[-1] if self.report.documents else {}
+            if item.sha256 and last.get("source") == item.name and last.get("result") == "filed":
+                # Later candidates in this same run must see it as already filed:
+                # two identical uploads in one batch → second one is a duplicate.
+                to_folder, _, to_name = last["to"].partition("/")
+                filed[item.sha256] = (to_folder, nfc(to_name))
 
     def _awaiting_review(self, sidecar: Item, item: Item) -> bool:
         text = self.drive.download(sidecar.id).decode("utf-8", errors="replace")[:4000]
