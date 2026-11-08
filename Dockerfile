@@ -67,8 +67,17 @@ COPY pyproject.toml uv.lock README.md LICENSE ./
 COPY src ./src
 COPY migrations ./migrations
 COPY assets ./assets
-# /app/data is the Coolify volume (SQLite DB); create it for runs without one.
-RUN mkdir -p /app/data
+# Non-root runtime user with a FIXED uid/gid (macmini#3, 3.1). The Coolify
+# volume mounted at /app/data must be owned by 10001:10001 — chown it once
+# before the first deploy of this image (the app only writes /app/data and
+# /tmp). HOME=/tmp so no library writes into a root-owned directory.
+RUN groupadd --system --gid 10001 oncofiles \
+    && useradd --system --uid 10001 --gid 10001 --home-dir /tmp --no-create-home \
+        --shell /usr/sbin/nologin oncofiles \
+    && mkdir -p /app/data \
+    && chown 10001:10001 /app/data
+ENV HOME=/tmp
+USER 10001:10001
 
 EXPOSE 8080
 
