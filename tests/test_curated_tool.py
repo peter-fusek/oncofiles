@@ -281,3 +281,36 @@ async def test_admin_real_run_without_preview_is_409(db, llm_on):
     )
     resp = await _call(server.api_admin_curated_run, req, email, admin=True)
     assert resp.status_code == 409 and "real run refused" in json.loads(resp.body)["error"]
+
+
+# ── hourly mode ──────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "raw,expected", [("1", 1), ("23", 23), ("every", None), ("Hourly", None), ("*", None)]
+)
+def test_nightly_hour_setting(monkeypatch, raw, expected):
+    monkeypatch.setenv("CURATED_NIGHTLY_HOUR", raw)
+    assert tool.nightly_settings()[1] == expected
+
+
+async def test_hourly_mode_reuses_a_fresh_clean_preview(db, llm_on):
+    rid = await db.insert_curated_run(patient_id=ERIKA_UUID, dry_run=True, trigger="t")
+    await db.finish_curated_run(rid, patient_id=ERIKA_UUID, status="ok", message="", report={})
+    _, patches = _env(lambda *a, **k: _report(dry_run=False, not_processed=[]))
+    with patches[0], patches[1], patches[2] as run:
+        reports = await tool.nightly_for_patient(
+            db, ERIKA_UUID, max_real_runs=5, reuse_preview=True
+        )
+    assert run.call_count == 1 and [r["dry_run"] for r in reports] == [False]
+    assert run.call_args.args[2].dry_run is False
+
+
+async def test_hourly_mode_previews_when_no_fresh_preview(db, llm_on):
+    seq = [_report(), _report(dry_run=False, not_processed=[])]
+    _, patches = _env(lambda *a, **k: seq.pop(0))
+    with patches[0], patches[1], patches[2] as run:
+        reports = await tool.nightly_for_patient(
+            db, ERIKA_UUID, max_real_runs=5, reuse_preview=True
+        )
+    assert run.call_count == 2 and [r["dry_run"] for r in reports] == [True, False]

@@ -263,19 +263,32 @@ async def run_status(db, pid: str) -> dict:
 # ── nightly loop (replaces the Cowork jobs) ───────────────────────────
 
 
-def nightly_settings() -> tuple[bool, int, int]:
-    """(enabled, local hour Europe/Bratislava, max real runs per night) from env."""
+def nightly_settings() -> tuple[bool, int | None, int]:
+    """(enabled, local hour Europe/Bratislava, max real runs per sequence) from env.
+
+    ``CURATED_NIGHTLY_HOUR=every`` (or ``hourly`` / ``*``) returns hour ``None``:
+    a sequence starts every hour instead of once per night.
+    """
     enabled = os.environ.get("CURATED_NIGHTLY_ENABLED", "false").lower() in ("1", "true", "yes")
-    hour = int(os.environ.get("CURATED_NIGHTLY_HOUR", "1"))
+    raw = os.environ.get("CURATED_NIGHTLY_HOUR", "1").strip().lower()
+    hour = None if raw in ("every", "hourly", "*") else int(raw)
     max_runs = int(os.environ.get("CURATED_NIGHTLY_MAX_RUNS", "5"))
     return enabled, hour, max_runs
 
 
-async def nightly_for_patient(db, pid: str, *, max_real_runs: int) -> list[dict]:
-    """Preview first; if clean, real runs until the inbox is done or a run is not clean."""
-    reports = [await execute_run(db, pid, dry_run=True, trigger="nightly-preview")]
-    if reports[-1].get("status") != "ok":
-        return reports
+async def nightly_for_patient(
+    db, pid: str, *, max_real_runs: int, reuse_preview: bool = False
+) -> list[dict]:
+    """Preview first; if clean, real runs until the inbox is done or a run is not clean.
+
+    ``reuse_preview`` (hourly mode) skips the preview while the last clean one is
+    still inside the 24 h gate — the real runs keep their own preflight gates.
+    """
+    reports: list[dict] = []
+    if not (reuse_preview and await preview_gate(db, pid) is None):
+        reports.append(await execute_run(db, pid, dry_run=True, trigger="nightly-preview"))
+        if reports[-1].get("status") != "ok":
+            return reports
     for _ in range(max_real_runs):
         rep = await execute_run(db, pid, dry_run=False, trigger="nightly")
         reports.append(rep)
@@ -290,6 +303,9 @@ async def nightly_for_patient(db, pid: str, *, max_real_runs: int) -> list[dict]
 async def curated_nightly_loop(db, *, poll_s: int = 300) -> None:
     """Background task: once per local night at CURATED_NIGHTLY_HOUR, per enabled patient.
 
+    With ``CURATED_NIGHTLY_HOUR=every`` a sequence starts once per clock hour
+    (a sequence that runs longer simply delays the next start).
+
     Independent of SYNC_ENABLED/APScheduler (which is off while the legacy sync
     is retired). A crash in one night never kills the loop.
     """
@@ -301,11 +317,16 @@ async def curated_nightly_loop(db, *, poll_s: int = 300) -> None:
         try:
             enabled, hour, max_runs = nightly_settings()
             now = datetime.now(tz)
-            tonight = now.date().isoformat()
-            if enabled and now.hour == hour and last_night != tonight:
-                last_night = tonight
+            slot = now.strftime("%Y-%m-%d") if hour is not None else now.strftime("%Y-%m-%dT%H")
+            due = hour is None or now.hour == hour
+            if enabled and due and last_night != slot:
+                last_night = slot
                 for pid in await db.list_curated_nightly_patients():
-                    reports = await nightly_for_patient(db, pid, max_real_runs=max_runs)
+                    if pid in _runs and _runs[pid].get("state") == "running":
+                        continue  # a manual run is in progress
+                    reports = await nightly_for_patient(
+                        db, pid, max_real_runs=max_runs, reuse_preview=hour is None
+                    )
                     logger.info(
                         "curated nightly %s: %s",
                         pid,
