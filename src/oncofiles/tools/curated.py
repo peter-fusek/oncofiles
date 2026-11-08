@@ -300,7 +300,12 @@ async def nightly_for_patient(
     return reports
 
 
-async def curated_nightly_loop(db, *, poll_s: int = 300) -> None:
+STARTUP_GRACE_S = 300  # let a rolling deploy retire the old container first (#581)
+
+
+async def curated_nightly_loop(
+    db, *, poll_s: int = 300, startup_grace_s: int = STARTUP_GRACE_S
+) -> None:
     """Background task: once per local night at CURATED_NIGHTLY_HOUR, per enabled patient.
 
     With ``CURATED_NIGHTLY_HOUR=every`` a sequence starts once per clock hour
@@ -313,6 +318,12 @@ async def curated_nightly_loop(db, *, poll_s: int = 300) -> None:
 
     tz = ZoneInfo("Europe/Bratislava")
     last_night: str | None = None
+    try:
+        if n := await db.mark_interrupted_curated_runs():
+            logger.warning("curated: marked %d run(s) interrupted by the last restart", n)
+    except Exception:
+        logger.exception("curated: could not mark interrupted runs")
+    await asyncio.sleep(startup_grace_s)
     while True:
         try:
             enabled, hour, max_runs = nightly_settings()

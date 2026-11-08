@@ -6,7 +6,7 @@ Synthetic data only (public repo). Extraction and classification are injected.
 import hashlib
 import itertools
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -491,3 +491,77 @@ def test_truncated_classification_is_per_document_not_a_run_abort():
     assert res["scan_001.pdf"]["result"] == "review_needed"
     assert "truncated" in res["scan_001.pdf"]["reasons"][-1]
     assert res["scan_002.pdf"]["result"] == "filed"
+
+
+# ── #581: canary journal + interrupted runs ─────────────────────────
+
+
+class JournalCheckingDrive(FakeDrive):
+    """Asserts every move is journaled in the canary BEFORE it happens."""
+
+    def move_rename(self, fid, new_name, from_parent, to_parent):
+        canary = self.find(self.root, CANARY)
+        journal = self.download(canary).decode()
+        assert new_name in journal, f"move to {new_name} not journaled first"
+        super().move_rename(fid, new_name, from_parent, to_parent)
+
+
+def _journaled_drive():
+    d = _drive_with_inbox()
+    d.__class__ = JournalCheckingDrive  # same state (ids, counters), checked moves
+    return d
+
+
+def test_every_action_is_journaled_in_the_canary_before_it_runs():
+    d = _journaled_drive()
+    r = run(d, dry_run=False)
+    assert r.status == "ok", r.message
+    assert CANARY not in d.names(d.root)  # clean run: canary trashed at the end
+
+
+def _old(minutes):
+    return (NOW - timedelta(minutes=minutes)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def test_stale_canary_without_actions_is_trashed_and_the_run_continues():
+    d = _drive_with_inbox()
+    d.add(CANARY, d.root, b"dead-run journal-v1\n", modified=_old(30))
+    r = run(d, dry_run=False)
+    assert r.status == "ok", r.message
+    assert any(g["name"] == "stale canary" for g in r.to_dict()["gates"])
+    assert any("dead-run" in f for f in r.flags)
+    assert ("trash", CANARY) in d.writes
+
+
+def test_stale_canary_with_journaled_actions_stops_the_run():
+    d = _drive_with_inbox()
+    line = json.dumps({"action": "move_pair", "to": ["labs/x.pdf", "labs/x.pdf.md"]})
+    d.add(CANARY, d.root, f"dead-run journal-v1\n{line}\n".encode(), modified=_old(30))
+    r = run(d, dry_run=False)
+    assert r.status == "aborted"
+    assert "dead-run" in r.message and "1 journaled" in r.message and "labs/x.pdf" in r.message
+    assert not [w for w in d.writes if w[0] in ("move", "create")]
+
+
+def test_fresh_canary_is_never_touched():
+    d = _drive_with_inbox()
+    d.add(CANARY, d.root, b"live-run journal-v1\n", modified=_old(1))
+    r = run(d, dry_run=False)
+    assert r.status == "aborted" and "may still be active" in r.message
+    assert d.writes == []
+
+
+def test_legacy_canary_without_journal_stops_the_run():
+    d = _drive_with_inbox()
+    d.add(CANARY, d.root, b"oncofiles-20261108T1159\n", modified=_old(60))
+    r = run(d, dry_run=False)
+    assert r.status == "aborted" and "no journal" in r.message
+    assert d.writes == []
+
+
+def test_dry_run_ignores_a_leftover_canary():
+    d = _drive_with_inbox()
+    d.add(CANARY, d.root, b"dead-run journal-v1\n", modified=_old(30))
+    r = run(d)
+    assert r.status == "ok", r.message
+    assert d.writes == []

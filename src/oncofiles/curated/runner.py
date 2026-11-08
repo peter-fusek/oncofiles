@@ -43,6 +43,14 @@ from oncofiles.curated.naming import build_filename, with_collision_suffix
 logger = logging.getLogger(__name__)
 
 CANARY = "_healthcheck.tmp"
+# The canary doubles as the run's write-ahead journal (#581): line 1 is
+# "<run_id> journal-v1", then one JSON line per action, written (and verified)
+# BEFORE the action. A canary left by a killed run therefore says exactly
+# what that run may have changed. Older canaries carry only the run id.
+JOURNAL_MARK = "journal-v1"
+# A leftover canary younger than this may belong to a run that is still alive
+# (e.g. the old container during a rolling deploy) — never touch it.
+STALE_CANARY_MIN_AGE_S = 300
 ACTIONS_PER_DOCUMENT = 3  # sidecar + source move + sidecar move
 SOURCE_EXT_RE = re.compile(r"\.[A-Za-z0-9]{1,5}$")
 YYYY_MM_RE = re.compile(r"^\d{4}-\d{2}( \(\d+\))?$")
@@ -251,6 +259,27 @@ def render_sidecar(
     return f"---\n{front}\n---\n\n{body}\n"
 
 
+def _age_seconds(modified: str, now: datetime) -> float | None:
+    try:
+        ts = datetime.fromisoformat(modified.replace("Z", "+00:00"))
+    except (AttributeError, ValueError):
+        return None
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=UTC)
+    return (now - ts).total_seconds()
+
+
+def _journal_summary(line: str) -> str:
+    try:
+        a = json.loads(line)
+    except ValueError:
+        return line[:80]
+    target = a.get("to") or a.get("path") or ""
+    if isinstance(target, list):
+        target = target[0] if target else ""
+    return f"{a.get('action')} {str(target)[:80]}"
+
+
 # ── run ──────────────────────────────────────────────────────────────
 
 
@@ -274,6 +303,7 @@ class Runner:
         self.propose_fn = propose_fn
         self.actions_used = 0
         self.canary_id: str | None = None
+        self._journal = f"{self.run_id} {JOURNAL_MARK}\n"
 
     # -- writes (no-ops in dry run, always logged) --
 
@@ -288,6 +318,13 @@ class Runner:
         self.actions_used += 1
         if self.opts.dry_run or fn is None:
             return
+        if self.canary_id:  # journal first, so a kill mid-action is on record
+            line = json.dumps({k: v for k, v in action.items() if k != "undo"}, ensure_ascii=False)
+            try:
+                self.drive.update_text(self.canary_id, self._journal + line + "\n", "text/plain")
+            except Exception as exc:
+                raise RunAbortError(f"journal write failed ({type(exc).__name__})") from exc
+            self._journal += line + "\n"
         try:
             fn()
         except Exception as exc:  # unverified write, Drive error, refused write, …
@@ -324,9 +361,10 @@ class Runner:
         self.report.contract_version = contract.version
 
         if not self.opts.dry_run:
+            self._clear_stale_canary(tree)
             try:
                 self.canary_id = self.drive.create_text(
-                    self.root_id, CANARY, f"{self.run_id}\n", "text/plain"
+                    self.root_id, CANARY, self._journal, "text/plain"
                 )
                 self.report.gates.append(Gate("canary write + read-back", True))
             except Exception as exc:
@@ -772,6 +810,43 @@ class Runner:
         names.append(Item(id=side_id, name=new_side, mime="text/markdown", parent=dst_id))
 
     # -- state files --
+
+    def _clear_stale_canary(self, tree: Tree) -> None:
+        """Handle a canary left by an earlier run that never finished (#581).
+
+        Only one run per patient is active in this process, so a canary found
+        here belongs to a run that died (deploy, restart, crash). It is trashed
+        only when its journal proves that run changed nothing; otherwise the
+        run stops and names the journaled actions for a human to reconcile.
+        """
+        old = next((i for i in tree.root_files if i.name == CANARY), None)
+        if old is None:
+            return
+        lines = self.drive.download(old.id).decode("utf-8", errors="replace").splitlines()
+        head = (lines[0] if lines else "").split()
+        old_run = head[0] if head else "?"
+        if len(head) < 2 or head[1] != JOURNAL_MARK:
+            raise RunAbortError(
+                f"canary from run {old_run} has no journal (older version) — "
+                "check that run's changes, then trash the canary"
+            )
+        age = _age_seconds(old.modified, self.now)
+        if age is None or age < STALE_CANARY_MIN_AGE_S:
+            raise RunAbortError(
+                f"canary from run {old_run} is fresh — that run may still be active"
+            )
+        journaled = [ln for ln in lines[1:] if ln.strip()]
+        if journaled:
+            summary = "; ".join(_journal_summary(ln) for ln in journaled[:10])
+            raise RunAbortError(
+                f"run {old_run} was interrupted after {len(journaled)} journaled action(s) — "
+                f"reconcile them first ({summary}), then trash the canary"
+            )
+        self.drive.trash_canary(old.id)
+        tree.root_files = [i for i in tree.root_files if i.id != old.id]
+        msg = f"interrupted run {old_run} left no actions — its canary was trashed"
+        self.report.gates.append(Gate("stale canary", True, msg))
+        self.report.flags.append(msg)
 
     def _write_state(self, tree: Tree, contract: Contract) -> None:
         """Append logs, rewrite the index, write the report, trash the canary.
