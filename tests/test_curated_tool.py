@@ -314,3 +314,34 @@ async def test_hourly_mode_previews_when_no_fresh_preview(db, llm_on):
             db, ERIKA_UUID, max_real_runs=5, reuse_preview=True
         )
     assert run.call_count == 2 and [r["dry_run"] for r in reports] == [True, False]
+
+
+async def test_startup_marks_runs_left_running_as_interrupted(db):
+    rid = await db.insert_curated_run(patient_id=ERIKA_UUID, dry_run=False, trigger="nightly")
+    done = await db.insert_curated_run(patient_id=ERIKA_UUID, dry_run=True, trigger="t")
+    await db.finish_curated_run(done, patient_id=ERIKA_UUID, status="ok", message="", report={})
+    assert await db.mark_interrupted_curated_runs() == 1
+    row = await db.get_curated_run(rid, patient_id=ERIKA_UUID)
+    assert row["status"] == "interrupted"
+    assert (await db.get_curated_run(done, patient_id=ERIKA_UUID))["status"] == "ok"
+
+
+async def test_nightly_loop_marks_interrupted_then_waits_before_first_run(db, monkeypatch):
+    monkeypatch.setenv("CURATED_NIGHTLY_ENABLED", "true")
+    monkeypatch.setenv("CURATED_NIGHTLY_HOUR", "every")
+    await db.insert_curated_run(patient_id=ERIKA_UUID, dry_run=False, trigger="nightly")
+    calls = []
+
+    async def fake_nightly(*a, **k):
+        calls.append(1)
+        return []
+
+    monkeypatch.setattr(tool, "nightly_for_patient", fake_nightly)
+    task = asyncio.create_task(tool.curated_nightly_loop(db, poll_s=3600, startup_grace_s=3600))
+    await asyncio.sleep(0.05)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert calls == []  # still in the startup grace period
+    rows = await db.list_curated_runs(patient_id=ERIKA_UUID)
+    assert rows[0]["status"] == "interrupted"

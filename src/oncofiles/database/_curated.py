@@ -40,6 +40,22 @@ class CuratedMixin(DatabaseBase):
         )
         await self.db.commit()
 
+    async def mark_interrupted_curated_runs(self) -> int:
+        """Startup housekeeping (#581): rows still 'running' belong to a dead process.
+
+        Runs execute in-process and in-memory state dies with the process, so at
+        startup no row can legitimately be running. Deliberately all patients.
+        """
+        cur = await self.db.execute(
+            """UPDATE curated_runs
+               SET status = 'interrupted',
+                   message = 'process stopped during the run (deploy or restart)',
+                   finished_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+               WHERE status = 'running'"""
+        )
+        await self.db.commit()
+        return getattr(cur, "rowcount", 0) or 0
+
     async def list_curated_runs(self, *, patient_id: str, limit: int = 20) -> list[dict]:
         """Newest first, without report_json (cheap list)."""
         async with self.db.execute(
