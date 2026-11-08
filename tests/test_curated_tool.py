@@ -110,6 +110,8 @@ async def test_dry_run_runs_in_background_and_is_persisted(db, llm_on):
     assert status["run"]["dry_run"] == 1 and status["run"]["trigger"] == "mcp"
     assert run.call_args.args[2].dry_run is True
     gdrive.contract_writes.assert_not_called()  # a dry run never lifts the block
+    gdrive.dedicated_copy.return_value.contract_writes.assert_not_called()
+    gdrive.dedicated_copy.return_value.close.assert_called_once()  # own connection, closed
     # MCP status reads the persisted run after the in-memory state is gone
     mcp_status = json.loads(await tool.curated_folder_status(_ctx(db)))
     assert mcp_status["run"]["status"] == "ok"
@@ -147,7 +149,8 @@ async def test_real_run_allowed_after_clean_preview(db, llm_on):
         out = json.loads(await tool.curated_folder_run(_ctx(db), dry_run=False))
         assert out["status"] == "started" and out["dry_run"] is False
         await _wait_done(db)
-    gdrive.contract_writes.assert_called_once()
+    gdrive.contract_writes.assert_not_called()  # the shared client is never unblocked
+    gdrive.dedicated_copy.return_value.contract_writes.assert_called_once()
 
 
 # ── nightly ──────────────────────────────────────────────────────────

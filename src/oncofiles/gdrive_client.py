@@ -145,6 +145,32 @@ class GDriveClient:
         self._service = build("drive", "v3", credentials=creds)
         self.owner_email = owner_email
 
+    def dedicated_copy(self) -> GDriveClient:
+        """Same credentials and write guard, but its own HTTP connection.
+
+        httplib2 connections are not thread-safe and patient clients are shared
+        (client cache, ``asyncio.to_thread`` callers). 2026-11-08: a dashboard
+        ``/api/reconciliation`` listing ran on the shared client while a curated
+        run was moving a file; both requests died with ``SSLError: record layer
+        failure`` and the run aborted mid-pair. Long-running jobs that write
+        (the curated pipeline) must use a copy. Call ``close()`` when done.
+        """
+        import copy
+
+        from googleapiclient.discovery import build
+
+        clone = copy.copy(self)
+        clone.__dict__.pop("_contract_local", None)  # own write-bypass scope
+        clone._service = build("drive", "v3", credentials=self._creds)
+        return clone
+
+    def close(self) -> None:
+        """Close this client's HTTP connection pool (best effort)."""
+        http = getattr(self._service, "_http", None)
+        if http is not None and hasattr(http, "close"):
+            with contextlib.suppress(Exception):
+                http.close()
+
     def _rebuild_service(self) -> None:
         """Rebuild the Drive service with a fresh HTTP connection pool.
 

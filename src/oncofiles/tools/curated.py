@@ -159,10 +159,16 @@ async def _execute(db, pid: str, gdrive, folder_id: str, opts, *, trigger: str) 
 
     def _blocking():
         kwargs = {"extract_fn": cached_extract, "propose_fn": cached_propose}
-        if opts.dry_run:  # a dry run never needs the write bypass
-            return run_curated(DriveOps(gdrive), folder_id, opts, **kwargs)
-        with gdrive.contract_writes():  # thread-scoped: other tools stay blocked
-            return run_curated(DriveOps(gdrive), folder_id, opts, **kwargs)
+        # Own HTTP connection: the shared patient client is used concurrently by
+        # dashboard/API threads, and httplib2 is not thread-safe (2026-11-08 abort).
+        own = gdrive.dedicated_copy()
+        try:
+            if opts.dry_run:  # a dry run never needs the write bypass
+                return run_curated(DriveOps(own), folder_id, opts, **kwargs)
+            with own.contract_writes():  # thread-scoped: other tools stay blocked
+                return run_curated(DriveOps(own), folder_id, opts, **kwargs)
+        finally:
+            own.close()
 
     row_id = await db.insert_curated_run(patient_id=pid, dry_run=opts.dry_run, trigger=trigger)
     sync_id = None if opts.dry_run else await db.insert_sync_history("curated", patient_id=pid)

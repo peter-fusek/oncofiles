@@ -362,3 +362,27 @@ def test_contract_writes_bypass_is_thread_scoped():
         t.start()
         t.join()
     assert results["other"] == "blocked"
+
+
+def test_dedicated_copy_has_own_connection_and_keeps_the_guard():
+    """2026-11-08: a dashboard listing shared the run's httplib2 connection (not
+    thread-safe) and both requests died with SSLError mid-pair. Runs use a copy."""
+    from unittest.mock import patch
+
+    c = _client()
+    c._creds = object()
+    fresh = MagicMock()
+    with patch("googleapiclient.discovery.build", return_value=fresh) as build:
+        own = c.dedicated_copy()
+    build.assert_called_once_with("drive", "v3", credentials=c._creds)
+    assert own._service is fresh and own._service is not c._service
+    assert own.write_block_reason == c.write_block_reason
+    with pytest.raises(DriveWriteBlockedError):
+        own.rename_file("f", "x.pdf")  # still guarded
+    fresh.files.return_value.update.return_value.execute.return_value = {}
+    with own.contract_writes():
+        own.rename_file("f", "x.pdf")
+        with pytest.raises(DriveWriteBlockedError):
+            c.rename_file("f", "y.pdf")  # lifting the copy never lifts the shared client
+    own.close()
+    fresh._http.close.assert_called_once()
