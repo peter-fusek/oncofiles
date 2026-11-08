@@ -279,3 +279,31 @@ def test_chat_reports_truncation_by_reasoning(local_llm):
 
     with pytest.raises(llm.LocalLLMError, match="truncated"):
         llm.chat("s", "u", client=httpx.Client(transport=httpx.MockTransport(handler)))
+
+
+def test_propose_retries_once_with_double_budget_when_truncated(monkeypatch):
+    calls = []
+
+    def fake_chat(system, user, **k):
+        calls.append(k)
+        if len(calls) == 1:
+            raise llm.LocalLLMError("local LLM answer truncated: reasoning used the whole budget")
+        return json.dumps(GOOD)
+
+    monkeypatch.setattr(llm, "chat", fake_chat)
+    assert classify.propose(CONTRACT, TEXT)["doc_type"] == "Report"
+    assert calls[0] == {} and calls[1]["max_tokens"] == 2 * llm.REASONING_BUDGET
+    assert calls[1]["timeout"] > 0
+
+
+def test_propose_does_not_retry_other_llm_errors(monkeypatch):
+    calls = []
+
+    def fake_chat(system, user, **k):
+        calls.append(1)
+        raise llm.LocalLLMError("local LLM HTTP 500")
+
+    monkeypatch.setattr(llm, "chat", fake_chat)
+    with pytest.raises(llm.LocalLLMError):
+        classify.propose(CONTRACT, TEXT)
+    assert len(calls) == 1

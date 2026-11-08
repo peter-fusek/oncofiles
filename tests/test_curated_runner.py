@@ -565,3 +565,59 @@ def test_dry_run_ignores_a_leftover_canary():
     r = run(d)
     assert r.status == "ok", r.message
     assert d.writes == []
+
+
+# ── technical failures are retried, human reviews are not ───────────
+
+
+def _review_sidecar(reasons, attempts=None, content=b"VYSLEDKY 05.08.2026"):
+    sha = hashlib.sha256(content).hexdigest()
+    extra = f"technical_attempts: {attempts}\n" if attempts is not None else ""
+    return (
+        f'---\nreview_needed: true\nsha256: "{sha}"\nreview_reasons: {json.dumps(reasons)}\n'
+        f"{extra}---\n"
+    ).encode()
+
+
+TRUNC = "classification failed: local LLM answer truncated: reasoning used the whole budget"
+
+
+def test_technical_review_is_retried_and_files_when_it_works():
+    d = FakeDrive()
+    d.add("scan_7.pdf", d.folder[INBOX], b"VYSLEDKY 05.08.2026")
+    d.add("scan_7.pdf.md", d.folder[INBOX], _review_sidecar([TRUNC]))
+    r = run(d, dry_run=False)
+    assert r.status == "ok", r.message
+    assert r.awaiting_review == []
+    assert "20260805-JanaNovakova-NOU-Labs-Kovacova-OKB.pdf" in d.names(d.folder[LABS])
+
+
+def test_technical_failure_again_counts_attempts():
+    d = FakeDrive()
+    d.add("scan_7.pdf", d.folder[INBOX], b"VYSLEDKY 05.08.2026")
+    d.add("scan_7.pdf.md", d.folder[INBOX], _review_sidecar([TRUNC]))
+
+    def failing(contract, text):
+        raise llm.LocalLLMError("local LLM answer truncated: reasoning used the whole budget")
+
+    o = RunOptions(now=NOW, run_id="test-run", dry_run=False)
+    r = run_curated(d, d.root, o, extract_fn=fake_extract, propose_fn=failing)
+    assert r.status == "ok", r.message
+    side = d.download(d.find(d.folder[INBOX], "scan_7.pdf.md")).decode()
+    assert "technical_attempts: 2" in side and "review_needed: true" in side
+
+
+def test_technical_review_stops_retrying_after_max_attempts():
+    d = FakeDrive()
+    d.add("scan_7.pdf", d.folder[INBOX], b"VYSLEDKY 05.08.2026")
+    d.add("scan_7.pdf.md", d.folder[INBOX], _review_sidecar([TRUNC], attempts=3))
+    r = run(d, dry_run=False)
+    assert r.awaiting_review == [f"{INBOX}/scan_7.pdf"] and r.documents == []
+
+
+def test_human_review_reason_is_never_retried():
+    d = FakeDrive()
+    d.add("scan_7.pdf", d.folder[INBOX], b"VYSLEDKY 05.08.2026")
+    d.add("scan_7.pdf.md", d.folder[INBOX], _review_sidecar([TRUNC, "institution unknown"]))
+    r = run(d, dry_run=False)
+    assert r.awaiting_review == [f"{INBOX}/scan_7.pdf"] and r.documents == []

@@ -20,6 +20,7 @@ import re
 from dataclasses import dataclass, field
 from datetime import date
 
+from oncofiles import config
 from oncofiles.curated import llm
 from oncofiles.curated.contract import Contract
 from oncofiles.curated.naming import UNKNOWN, NameFields, camel, surname_token
@@ -101,7 +102,20 @@ def propose(contract: Contract, text: str) -> dict:
     system = SYSTEM_TEMPLATE.format(
         readme=contract.readme_text, doc_types=", ".join(sorted(contract.doc_types))
     )
-    answer = llm.chat(system, f"TEXT:\n{text[:MAX_TEXT_CHARS]}")
+    user = f"TEXT:\n{text[:MAX_TEXT_CHARS]}"
+    try:
+        answer = llm.chat(system, user)
+    except llm.LocalLLMError as exc:
+        if "truncated" not in str(exc):
+            raise
+        # 2026-11-08: 3 of 11 documents ran out of reasoning budget. One retry
+        # with twice the budget (and time) before the document goes to review.
+        answer = llm.chat(
+            system,
+            user,
+            max_tokens=2 * llm.REASONING_BUDGET,
+            timeout=2 * config.LOCAL_LLM_TIMEOUT_S,
+        )
     return llm.parse_json_object(answer)
 
 
