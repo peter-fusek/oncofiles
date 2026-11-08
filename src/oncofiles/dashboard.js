@@ -1371,7 +1371,9 @@
       var n = res.data.nightly || {};
       var note = document.getElementById('curated-ops-nightly');
       note.textContent = n.enabled
-        ? ('Nočný beh je zapnutý na serveri: každú noc o ' + n.hour + ':00 (Bratislava) náhľad a potom najviac ' + n.max_runs + ' behov naostro pre pacientov so zapnutým prepínačom.')
+        ? (n.hour === null
+          ? ('Beh je zapnutý na serveri: každú hodinu najviac ' + n.max_runs + ' behov naostro (náhľad raz za 24 h) pre pacientov so zapnutým prepínačom.')
+          : ('Nočný beh je zapnutý na serveri: každú noc o ' + n.hour + ':00 (Bratislava) náhľad a potom najviac ' + n.max_runs + ' behov naostro pre pacientov so zapnutým prepínačom.'))
         : 'Nočný beh je na serveri vypnutý (CURATED_NIGHTLY_ENABLED). Prepínače pacientov sa uložia, ale nespustia sa.';
       var body = document.getElementById('curated-ops-body');
       clearEl(body);

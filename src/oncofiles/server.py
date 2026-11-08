@@ -423,7 +423,8 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict]:
     if nightly_settings()[0] and GOOGLE_INTEGRATION_ENABLED:
         curated_nightly_task = asyncio.create_task(curated_nightly_loop(db))
         logger.info(
-            "Curated nightly loop started (hour %d Europe/Bratislava)", nightly_settings()[1]
+            "Curated nightly loop started (hour %s Europe/Bratislava)",
+            nightly_settings()[1] if nightly_settings()[1] is not None else "every",
         )
 
     try:
