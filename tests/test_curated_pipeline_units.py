@@ -279,3 +279,66 @@ def test_chat_reports_truncation_by_reasoning(local_llm):
 
     with pytest.raises(llm.LocalLLMError, match="truncated"):
         llm.chat("s", "u", client=httpx.Client(transport=httpx.MockTransport(handler)))
+
+
+def test_propose_retries_once_with_double_budget_when_truncated(monkeypatch):
+    calls = []
+
+    def fake_chat(system, user, **k):
+        calls.append(k)
+        if len(calls) == 1:
+            raise llm.LocalLLMError("local LLM answer truncated: reasoning used the whole budget")
+        return json.dumps(GOOD)
+
+    monkeypatch.setattr(llm, "chat", fake_chat)
+    assert classify.propose(CONTRACT, TEXT)["doc_type"] == "Report"
+    assert calls[0] == {} and calls[1]["max_tokens"] == 2 * llm.REASONING_BUDGET
+    assert calls[1]["timeout"] > 0
+
+
+def test_propose_does_not_retry_other_llm_errors(monkeypatch):
+    calls = []
+
+    def fake_chat(system, user, **k):
+        calls.append(1)
+        raise llm.LocalLLMError("local LLM HTTP 500")
+
+    monkeypatch.setattr(llm, "chat", fake_chat)
+    with pytest.raises(llm.LocalLLMError):
+        classify.propose(CONTRACT, TEXT)
+    assert len(calls) == 1
+
+
+# ── #578: documents naming another family member ────────────────────
+
+
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        ("Pacient: Peter NOVÁK\nKontrolné vyšetrenie 26.05.2026", "Peter NOVÁK"),
+        ("Adresa: Mgr. Tomáš Novák, Hlavná 1", "Tomáš Novák"),
+        ("NOVÁK Michal, nar. 2010", "NOVÁK Michal"),
+        ("Pacientka: Jana Nováková\nmanžel Peter Novák", None),  # patient named
+        ("Kontrolné vyšetrenie bez mena 26.05.2026", None),  # nobody named
+        ("Pacientka: NOVÁKOVÁ JANA", None),
+    ],
+)
+def test_other_person_named(text, expected):
+    assert classify.other_person_named("Jana Nováková", text) == expected
+
+
+def test_document_of_another_person_goes_to_review():
+    text = "Pacient: Peter NOVÁK\nLekárska správa 26.05.2026 MUDr. Jana Kováčová NOU"
+    raw = {**GOOD, "doc_date": "2026-05-26"}
+    cls = classify.validate(CONTRACT, raw, text, today=date(2026, 11, 8))
+    assert cls.review_needed
+    assert any("another person (Peter NOVÁK)" in r for r in cls.reasons)
+
+
+def test_caregiver_material_may_name_the_caregiver(monkeypatch):
+    # the synthetic contract has no Reference type; exercise the exemption itself
+    monkeypatch.setattr(classify, "CAREGIVER_DOC_TYPES", {"Treatment"})
+    text = "NCCN Guidelines, poznámky: Peter Novák, 26.05.2026"
+    raw = {**GOOD, "doc_type": "Treatment", "doc_date": "2026-05-26"}
+    cls = classify.validate(CONTRACT, raw, text, today=date(2026, 11, 8))
+    assert not any("another person" in r for r in cls.reasons)

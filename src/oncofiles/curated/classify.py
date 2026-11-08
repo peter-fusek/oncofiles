@@ -17,9 +17,11 @@ from __future__ import annotations
 
 import difflib
 import re
+import unicodedata
 from dataclasses import dataclass, field
 from datetime import date
 
+from oncofiles import config
 from oncofiles.curated import llm
 from oncofiles.curated.contract import Contract
 from oncofiles.curated.naming import UNKNOWN, NameFields, camel, surname_token
@@ -101,8 +103,90 @@ def propose(contract: Contract, text: str) -> dict:
     system = SYSTEM_TEMPLATE.format(
         readme=contract.readme_text, doc_types=", ".join(sorted(contract.doc_types))
     )
-    answer = llm.chat(system, f"TEXT:\n{text[:MAX_TEXT_CHARS]}")
+    user = f"TEXT:\n{text[:MAX_TEXT_CHARS]}"
+    try:
+        answer = llm.chat(system, user)
+    except llm.LocalLLMError as exc:
+        if "truncated" not in str(exc):
+            raise
+        # 2026-11-08: 3 of 11 documents ran out of reasoning budget. One retry
+        # with twice the budget (and time) before the document goes to review.
+        answer = llm.chat(
+            system,
+            user,
+            max_tokens=2 * llm.REASONING_BUDGET,
+            timeout=2 * config.LOCAL_LLM_TIMEOUT_S,
+        )
     return llm.parse_json_object(answer)
+
+
+CAREGIVER_DOC_TYPES = {"Reference", "Advocate"}
+
+# Words that can stand next to a surname without being a given name.
+_NOT_GIVEN_NAMES = {
+    "pacient",
+    "pacientka",
+    "meno",
+    "priezvisko",
+    "rodne",
+    "cislo",
+    "adresa",
+    "poistenec",
+    "poistenka",
+    "datum",
+    "pani",
+    "pan",
+    "mudr",
+    "mgr",
+    "ing",
+    "phd",
+    "bc",
+    "rodina",
+    "rod",
+    "manzel",
+    "manzelka",
+    "syn",
+    "dcera",
+    "otec",
+    "matka",
+}
+_NAME = r"[^\W\d_][^\W\d_]+"
+
+
+def _fold(s: str) -> str:
+    return "".join(
+        c for c in unicodedata.normalize("NFD", s) if unicodedata.category(c) != "Mn"
+    ).lower()
+
+
+def other_person_named(patient_display: str, text: str) -> str | None:
+    """Name of a different person sharing the patient's surname, if the text names one
+    and never names the patient (#578: a son's dermatology report and a husband's
+    membership invoice were filed under the patient). Deterministic, no model.
+    """
+    parts = patient_display.split()
+    if len(parts) < 2 or not text:
+        return None
+    given = _fold(parts[0])
+    folded = _fold(text)
+    stem = _fold(parts[-1])
+    stem = stem[:-3] if stem.endswith("ova") else stem
+    if len(stem) < 3:
+        return None
+    g, st = re.escape(given), re.escape(stem)
+    # The patient counts as named only with given name AND surname together
+    # (a doctor may share the given name); relatives may then appear too.
+    if re.search(rf"\b{g}[,\s]+{st}\w*\b|\b{st}\w*[,\s]+{g}\b", folded):
+        return None
+    pattern = re.compile(
+        rf"\b({_NAME})[,\s]+({re.escape(stem)}\w*)\b|\b({re.escape(stem)}\w*)[,\s]+({_NAME})\b"
+    )
+    for m in pattern.finditer(folded):
+        other, sur = (m.group(1), m.group(2)) if m.group(1) else (m.group(4), m.group(3))
+        if other not in _NOT_GIVEN_NAMES and not other.startswith(stem):
+            start = m.start()
+            return text[start : m.end()].strip()
+    return None
 
 
 def validate(
@@ -174,6 +258,15 @@ def validate(
         confidence = 0.0
     if confidence < MIN_CONFIDENCE:
         reasons.append(f"model confidence {confidence:.2f} < {MIN_CONFIDENCE}")
+    # Reference/advocate material is written or collected by the caregiver,
+    # whose name is expected there; everything else must be the patient's.
+    other = (
+        None
+        if doc_type in CAREGIVER_DOC_TYPES
+        else other_person_named(contract.patient_display, text)
+    )
+    if other:
+        reasons.append(f"document names another person ({other}), not {contract.patient_display}")
 
     subject = raw.get("subject") if isinstance(raw.get("subject"), str) else None
     fields = None

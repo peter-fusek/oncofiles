@@ -57,6 +57,7 @@ def chat(
     max_tokens: int = REASONING_BUDGET,
     temperature: float = 0.0,
     client: httpx.Client | None = None,
+    timeout: float | None = None,
 ) -> str:
     """One blocking chat completion; returns the answer text."""
     if not configured():
@@ -77,7 +78,7 @@ def chat(
     if config.LOCAL_LLM_API_KEY:
         headers["Authorization"] = f"Bearer {config.LOCAL_LLM_API_KEY}"
     own = client is None
-    http = client or httpx.Client(timeout=config.LOCAL_LLM_TIMEOUT_S)
+    http = client or httpx.Client(timeout=timeout or config.LOCAL_LLM_TIMEOUT_S)
     try:
         resp = http.post(
             f"{config.LOCAL_LLM_BASE_URL}/chat/completions", json=payload, headers=headers

@@ -51,6 +51,9 @@ JOURNAL_MARK = "journal-v1"
 # A leftover canary younger than this may belong to a run that is still alive
 # (e.g. the old container during a rolling deploy) — never touch it.
 STALE_CANARY_MIN_AGE_S = 300
+# A review caused only by a technical failure (model ran out of budget, bad
+# JSON) is not a human decision: retry it on later runs, at most this often.
+MAX_TECHNICAL_ATTEMPTS = 3
 ACTIONS_PER_DOCUMENT = 3  # sidecar + source move + sidecar move
 SOURCE_EXT_RE = re.compile(r"\.[A-Za-z0-9]{1,5}$")
 YYYY_MM_RE = re.compile(r"^\d{4}-\d{2}( \(\d+\))?$")
@@ -259,6 +262,24 @@ def render_sidecar(
     return f"---\n{front}\n---\n\n{body}\n"
 
 
+def _review_reasons(sidecar_text: str) -> list[str]:
+    m = re.search(r"^review_reasons:\s*(\[.*\])\s*$", sidecar_text, re.M)
+    if not m:
+        return []
+    try:
+        value = json.loads(m.group(1))
+    except ValueError:
+        return []
+    return [str(r) for r in value] if isinstance(value, list) else []
+
+
+def _is_technical(reason: str) -> bool:
+    """A failure of the machinery, not a property of the document."""
+    return reason.startswith("classification failed:") or (
+        reason.startswith("extraction failed:") and "local LLM" in reason
+    )
+
+
 def _age_seconds(modified: str, now: datetime) -> float | None:
     try:
         ts = datetime.fromisoformat(modified.replace("Z", "+00:00"))
@@ -304,6 +325,7 @@ class Runner:
         self.actions_used = 0
         self.canary_id: str | None = None
         self._journal = f"{self.run_id} {JOURNAL_MARK}\n"
+        self._technical_attempts: dict[str, int] = {}
 
     # -- writes (no-ops in dry run, always logged) --
 
@@ -469,7 +491,16 @@ class Runner:
         review = re.search(r"^review_needed:\s*(true|\"true\")", text, re.M | re.I)
         sha = re.search(r"^sha256:\s*\"?([0-9a-f]{64})", text, re.M)
         unchanged = sha is None or not item.sha256 or sha.group(1) == item.sha256
-        return bool(review) and unchanged
+        if not (review and unchanged):
+            return False
+        reasons = _review_reasons(text)
+        if reasons and all(_is_technical(r) for r in reasons):
+            m = re.search(r"^technical_attempts:\s*(\d+)", text, re.M)
+            attempts = int(m.group(1)) if m else 1
+            if attempts < MAX_TECHNICAL_ATTEMPTS:
+                self._technical_attempts[item.id] = attempts
+                return False  # retry: nobody needs to look at a technical failure
+        return True
 
     def _folder_id(self, tree: Tree, folder: str) -> str:
         return tree.folders[folder].id if folder else self.root_id
@@ -571,6 +602,9 @@ class Runner:
             new_name = with_collision_suffix(
                 build_filename(cls.fields, ext), tree.names_in(target_folder)
             )
+        extra = None
+        if note and _is_technical(note):
+            extra = {"technical_attempts": self._technical_attempts.get(item.id, 0) + 1}
         text = render_sidecar(
             source_name=new_name,
             contract=contract,
@@ -579,6 +613,7 @@ class Runner:
             cls=cls,
             now=self.now,
             note=note,
+            extra=extra,
         )
         if review:
             text = text.replace("review_needed: false", "review_needed: true")
