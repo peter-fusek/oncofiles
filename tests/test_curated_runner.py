@@ -755,3 +755,18 @@ def test_identical_uploads_in_one_run_file_once_and_quarantine_the_rest():
     results = sorted(x["result"] for x in r.documents)
     assert results.count("filed") == 1, r.documents
     assert "photo_b.pdf" in d.names(d.folder[DUPS])
+
+
+def test_text_source_sent_to_review_is_not_reclassified_on_later_runs():
+    from oncofiles.curated.runner import probe
+
+    d = FakeDrive()
+    d.add("old note\n.txt", d.folder[INBOX], b"BIRTH 03.02.1970", modified=_old(60))
+    first = run(d, dry_run=False)
+    doc = next(x for x in first.documents if x["source"] == "old note\n.txt")
+    assert doc["result"] == "review_needed" and doc["text_source"]["id"]
+    key = (doc["text_source"]["id"], doc["text_source"]["modified"])
+    again = run(d, dry_run=False, reviewed_text=frozenset({key}))
+    assert again.documents == [] and again.awaiting_review
+    assert probe(d, d.root, now=NOW, reviewed_text=frozenset({key})).pending == {}
+    assert len(probe(d, d.root, now=NOW).pending) == 1  # without the memory it would rerun

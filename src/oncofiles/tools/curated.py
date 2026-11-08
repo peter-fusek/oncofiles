@@ -105,6 +105,32 @@ def run_active() -> bool:
     return any(r.get("state") == "running" for r in _runs.values())
 
 
+# ── text sources awaiting review (no sidecar to mark them) ─────────────
+
+_text_reviews: dict[str, set] = {}
+TEXT_REVIEW_SEED_RUNS = 30
+
+
+def _remember_text_reviews(pid: str, report: dict | None) -> None:
+    for d in (report or {}).get("documents", []):
+        ts = d.get("text_source")
+        if d.get("result") == "review_needed" and ts:
+            _text_reviews.setdefault(pid, set()).add((ts.get("id"), ts.get("modified")))
+
+
+async def reviewed_text_sources(db, pid: str) -> frozenset:
+    """(id, modified) of text sources earlier runs sent to review; seeded from
+    the DB once per process, so a restart does not re-classify them."""
+    if pid not in _text_reviews:
+        _text_reviews[pid] = set()
+        for row in await db.list_curated_runs(patient_id=pid, limit=TEXT_REVIEW_SEED_RUNS):
+            if row.get("dry_run"):
+                continue
+            full = await db.get_curated_run(row["id"], patient_id=pid)
+            _remember_text_reviews(pid, (full or {}).get("report"))
+    return frozenset(_text_reviews[pid])
+
+
 # ── gates ─────────────────────────────────────────────────────────────
 
 
@@ -166,6 +192,7 @@ async def _prepare(db, pid: str, *, dry_run: bool, max_docs: int | None, max_act
         min_text_chars=min_chars,
         max_doc_age_days=max_age,
         should_stop=_stopping.is_set,
+        reviewed_text=await reviewed_text_sources(db, pid),
     )
     return None, (gdrive, folder_id, opts)
 
@@ -196,6 +223,8 @@ async def _execute(db, pid: str, gdrive, folder_id: str, opts, *, trigger: str) 
     except Exception as exc:  # runner catches everything; this is belt and braces
         logger.exception("curated run crashed for %s", pid)
         report = {"status": "aborted", "message": f"crashed ({type(exc).__name__})"}
+    if not opts.dry_run:
+        _remember_text_reviews(pid, report)
     status, message = report.get("status", "aborted"), report.get("message", "")
     await db.finish_curated_run(
         row_id, patient_id=pid, status=status, message=message, report=report
@@ -379,11 +408,14 @@ async def probe_patient(db, pid: str, idle_signature: str | None):
     if not clients or clients[0] is None:
         return None
     gdrive, folder_id = clients[0], clients[3]
+    reviewed = await reviewed_text_sources(db, pid)
 
     def _blocking():
         own = gdrive.dedicated_copy()
         try:
-            return probe(DriveOps(own), folder_id, idle_signature=idle_signature)
+            return probe(
+                DriveOps(own), folder_id, idle_signature=idle_signature, reviewed_text=reviewed
+            )
         finally:
             own.close()
 
