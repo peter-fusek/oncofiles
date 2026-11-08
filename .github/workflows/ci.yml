@@ -93,8 +93,8 @@ jobs:
           oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
           tags: tag:ci
 
-      # A deploy kills an in-process curated run (#581). Continuous mode runs
-      # are short (a few documents), so wait for a gap instead of interrupting.
+      # A deploy kills an in-process curated run (#581): wait for a gap, and
+      # fail rather than interrupt (graceful drain to follow, reviewed by infra).
       - name: Wait for no active curated run
         env:
           HEALTH_URL: ${{ secrets.HEALTH_URL || 'https://oncofiles.com/health' }}
@@ -106,7 +106,9 @@ jobs:
             echo "[$i] curated_run_active=${active} — waiting 30 s"
             sleep 30
           done
-          echo "::warning::a curated run is still active after 20 min — deploying anyway (journal recovers it)"
+          # Never kill a run: fail, and re-run this job once /health shows curated_run_active=false.
+          echo "::error::a curated run is still active after 20 min — deploy NOT started. Re-run this job when /health shows curated_run_active=false."
+          exit 1
 
       - name: Trigger Coolify deploy and wait
         env:
