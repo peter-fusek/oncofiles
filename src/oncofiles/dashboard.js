@@ -1369,8 +1369,12 @@
       if (!res.ok || !res.data) { section.style.display = 'none'; return; }
       section.style.display = 'block';
       var n = res.data.nightly || {};
+      var c = res.data.continuous || {};
       var note = document.getElementById('curated-ops-nightly');
-      note.textContent = n.enabled
+      note.textContent = n.enabled && c.enabled
+        ? ('Priebežné spracovanie je zapnuté: server kontroluje priečinky každé ' + Math.round(c.poll_s / 60) + ' min a nové súbory spracuje do niekoľkých minút (po ' + c.chunk_docs + ' dokumentov na beh). '
+          + (n.hour === null ? 'Plný beh každú hodinu.' : 'Plný nočný beh o ' + n.hour + ':00 (Bratislava).'))
+        : n.enabled
         ? (n.hour === null
           ? ('Beh je zapnutý na serveri: každú hodinu najviac ' + n.max_runs + ' behov naostro (náhľad raz za 24 h) pre pacientov so zapnutým prepínačom.')
           : ('Nočný beh je zapnutý na serveri: každú noc o ' + n.hour + ':00 (Bratislava) náhľad a potom najviac ' + n.max_runs + ' behov naostro pre pacientov so zapnutým prepínačom.'))

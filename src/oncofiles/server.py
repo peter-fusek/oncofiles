@@ -417,14 +417,21 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict]:
         )
 
     # Curated-folder nightly runs (#573): independent of SYNC_ENABLED/APScheduler.
-    from oncofiles.tools.curated import curated_nightly_loop, nightly_settings
+    from oncofiles.tools.curated import (
+        continuous_settings,
+        curated_nightly_loop,
+        nightly_settings,
+        request_stop,
+    )
 
     curated_nightly_task = None
     if nightly_settings()[0] and GOOGLE_INTEGRATION_ENABLED:
         curated_nightly_task = asyncio.create_task(curated_nightly_loop(db))
+        cont, poll_s, settle_s, chunk = continuous_settings()
         logger.info(
-            "Curated nightly loop started (hour %s Europe/Bratislava)",
+            "Curated loop started (nightly sweep hour %s Europe/Bratislava; continuous %s)",
             nightly_settings()[1] if nightly_settings()[1] is not None else "every",
+            f"on: probe {poll_s}s, settle {settle_s}s, {chunk} docs/run" if cont else "off",
         )
 
     try:
@@ -441,6 +448,7 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict]:
             "transport": MCP_TRANSPORT,
         }
     finally:
+        request_stop()  # a running curated run finishes its document and logs cleanly
         if curated_nightly_task is not None:
             curated_nightly_task.cancel()
         if scheduler:
@@ -3983,6 +3991,11 @@ async def health(request: Request) -> JSONResponse:
             result["uptime_s"] = int((datetime.now(UTC) - started_at).total_seconds())
         result["memory_rss_mb"] = round(_rss_now, 1)
         result["memory"] = get_rss_trend()
+        # CI waits for False before deploying (a deploy kills a run). In-memory,
+        # no patient detail.
+        from oncofiles.tools.curated import run_active
+
+        result["curated_run_active"] = run_active()
         result["semaphores"] = get_semaphore_status()
         # Folder sync status — surface COUNTS only, not patient IDs (#488).
         # /health is unauthenticated (Railway liveness probe) so per-patient
@@ -7217,7 +7230,12 @@ async def api_admin_curated_overview(request: Request) -> JSONResponse:
     if err:
         return err
     try:
-        from oncofiles.tools.curated import _runs, nightly_settings, preview_gate
+        from oncofiles.tools.curated import (
+            _runs,
+            continuous_settings,
+            nightly_settings,
+            preview_gate,
+        )
 
         db_inst: Database = request.app.state.fastmcp_server._lifespan_result["db"]
         enabled, hour, max_runs = nightly_settings()
@@ -7245,6 +7263,13 @@ async def api_admin_curated_overview(request: Request) -> JSONResponse:
         return JSONResponse(
             {
                 "nightly": {"enabled": enabled, "hour": hour, "max_runs": max_runs},
+                "continuous": dict(
+                    zip(
+                        ("enabled", "poll_s", "settle_s", "chunk_docs"),
+                        continuous_settings(),
+                        strict=True,
+                    )
+                ),
                 "patients": cards,
             }
         )
