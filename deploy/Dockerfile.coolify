@@ -1,0 +1,17 @@
+# Coolify "build" for production: a pull, no compiling on the Mac mini.
+#
+# The real image is built by GitHub Actions (job `build` in
+# .github/workflows/ci.yml, from /Dockerfile) and pushed as
+# ghcr.io/peter-fusek/oncofiles:<full commit sha>. The `deploy` job runs only
+# after that push succeeded.
+#
+# Coolify app settings this relies on (build pack "dockerfile"):
+#   dockerfile_location            = /deploy/Dockerfile.coolify
+#   include_source_commit_in_build = true   → --build-arg SOURCE_COMMIT=<sha>
+#   use_build_secrets              = false  (secrets cannot feed a FROM line)
+# No other build-time variables are needed (#550).
+#
+# SOURCE_COMMIT has no default on purpose: if Coolify does not pass it, the
+# image reference is invalid and the deploy fails, keeping the old container.
+ARG SOURCE_COMMIT
+FROM ghcr.io/peter-fusek/oncofiles:${SOURCE_COMMIT}

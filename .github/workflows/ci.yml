@@ -28,6 +28,48 @@ jobs:
       - run: uv sync --extra dev
       - run: uv run pytest
 
+  # Produkčný image (linux/arm64, Mac mini) sa stavia tu, nie v produkčnej VM.
+  # Push do main: push do GHCR ako ghcr.io/peter-fusek/oncofiles:<sha> a :main.
+  # PR: len build (overenie, že Dockerfile prejde), bez loginu a bez pushu.
+  # Coolify potom len stiahne image cez deploy/Dockerfile.coolify (FROM …:${SOURCE_COMMIT}).
+  build:
+    needs: [lint, test]
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
+    env:
+      IMAGE: ghcr.io/peter-fusek/oncofiles
+      PUSH: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Log in to GHCR
+        if: env.PUSH == 'true'
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build (and push on main)
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: Dockerfile
+          platforms: linux/arm64
+          push: ${{ env.PUSH == 'true' }}
+          tags: |
+            ${{ env.IMAGE }}:${{ github.sha }}
+            ${{ env.IMAGE }}:main
+          cache-from: type=gha,scope=oncofiles-arm64
+          cache-to: type=gha,scope=oncofiles-arm64,mode=max
+
   # Deploy na Mac mini (Coolify vo VM), len po pushi do main a zelených testoch.
   # Coolify API nie je z internetu dostupné, runner sa preto pripojí do tailnetu
   # ako efemérny uzol s tagom tag:ci (tailnet ACL povoľuje tag:ci len na Coolify API a port 80 VM).
@@ -36,7 +78,7 @@ jobs:
   #   TS_OAUTH_CLIENT_ID, TS_OAUTH_SECRET, COOLIFY_API_TOKEN, COOLIFY_URL, COOLIFY_APP_UUID, HEALTH_URL
   # Variables: DEPLOY_ENABLED. ACL musí povoliť tag:ci aj na port 80 VM, ak HEALTH_URL ide cez tailnet.
   deploy:
-    needs: [lint, test]
+    needs: build
     if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.DEPLOY_ENABLED == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
