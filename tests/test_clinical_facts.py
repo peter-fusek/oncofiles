@@ -397,3 +397,33 @@ async def test_percent_spacing_variants_match(db):
     vocab = Vocabulary.from_rows(await db.fact_code_vocabulary())
     assert vocab.match("Neutrofilie%")["code"] == "NEUT_PCT"
     assert vocab.match("Neutrofilie %")["code"] == "NEUT_PCT"
+
+
+MD_TABLE = """## Výsledky laboratórnych vyšetrení — krvný obraz
+Odobrané: 19.08.2026 08:21 · Prijaté: 19.08.2026 08:21
+| Test | Hodnota | Jednotky | Ref. medze |
+|---|---|---|---|
+| WBC | 3.84 | G/l | 3.5 - 10 |
+| HGB | 119 (znížené) | g/l | 120 - 156 |
+| Neutrofily | 43.3 | % | 40 - 78 |
+| abs.počet NEUT | 1.66 | | |
+| Monocyty | 17.4 (zvýšené) | % | 1 - 10 |
+| eGFR | 1.76 | ml/s | > 1.49 |
+Výsledky uvoľnil(a): 1) Meno Priezvisko
+"""
+
+
+async def test_markdown_table_parser_and_percent_codes(db):
+    from oncofiles.curated.facts_rules import extract_lab_facts
+
+    vocab = Vocabulary.from_rows(await db.fact_code_vocabulary())
+    facts, extractor = extract_lab_facts([MD_TABLE], vocab)
+    assert extractor == "rule:mdtable-v1"
+    by = {f["code"]: f for f in facts}
+    assert by["WBC"]["value_num"] == 3.84 and by["WBC"]["occurred_at"] == "2026-08-19T08:21"
+    assert by["HGB"]["flag"] == "L"  # "(znížené)" and below range
+    assert by["NEUT_PCT"]["value_num"] == 43.3  # % never filed under the absolute count
+    assert by["NEUT"]["value_num"] == 1.66
+    assert by["MONO_PCT"]["flag"] == "H"
+    assert by["EGFR"]["ref_low"] == 1.49
+    assert all("uvoľnil" not in f["evidence"] for f in facts)
