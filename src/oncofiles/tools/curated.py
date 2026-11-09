@@ -198,7 +198,28 @@ async def _prepare(db, pid: str, *, dry_run: bool, max_docs: int | None, max_act
     return None, (gdrive, folder_id, opts)
 
 
+# One writer per patient (#612): a curated run, the read-model index and the
+# data backfill (#619) never overlap for the same patient, so the index never
+# reads a half-moved pair and facts don't churn in the audit trail.
+# INVARIANT: in-process lock — valid only while Oncofiles runs as ONE process
+# in ONE container (true today). Before adding workers or replicas, move this
+# to the DB (a per-patient lock row with a lease), or two writers return.
+_patient_locks: dict[str, asyncio.Lock] = {}
+
+
+def patient_lock(pid: str) -> asyncio.Lock:
+    lock = _patient_locks.get(pid)
+    if lock is None:
+        lock = _patient_locks[pid] = asyncio.Lock()
+    return lock
+
+
 async def _execute(db, pid: str, gdrive, folder_id: str, opts, *, trigger: str) -> dict:
+    async with patient_lock(pid):
+        return await _execute_locked(db, pid, gdrive, folder_id, opts, trigger=trigger)
+
+
+async def _execute_locked(db, pid: str, gdrive, folder_id: str, opts, *, trigger: str) -> dict:
     """Run to completion and persist. Never raises; returns the report dict."""
     from oncofiles.curated.drive_ops import DriveOps
     from oncofiles.curated.runner import run_curated
@@ -671,8 +692,9 @@ async def index_patient(db, pid: str) -> dict:
     """Local-only wrapper: the index and its fact extraction never reach the cloud."""
     from oncofiles.cloud_guard import local_only
 
-    with local_only("curated index + fact extraction"):
-        return await _index_patient(db, pid)
+    async with patient_lock(pid):  # never alongside a run or backfill (#612)
+        with local_only("curated index + fact extraction"):
+            return await _index_patient(db, pid)
 
 
 async def _index_patient(db, pid: str) -> dict:

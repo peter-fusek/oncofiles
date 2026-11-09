@@ -137,6 +137,20 @@ def _plausible(fact: dict, code_row: dict | None) -> bool:
     return bool(fact["value_text"] and _QUALITATIVE.match(fact["value_text"].strip()))
 
 
+# Plausible canonical-unit ranges (#637 review): a value outside its range is
+# never stored under the code (wrong unit or a percentage read as a count).
+PLAUSIBLE = {
+    "NEUT": (0, 50), "LYMPH": (0, 20), "MONO": (0, 5), "EOS": (0, 5), "BASO": (0, 5),
+    "NEUT_PCT": (0, 100), "LYMPH_PCT": (0, 100), "MONO_PCT": (0, 100),
+    "EOS_PCT": (0, 100), "BASO_PCT": (0, 100),
+    "WBC": (0, 300), "RBC": (0, 10), "HGB": (20, 250), "HCT": (0, 1), "PLT": (0, 3000),
+    "MCV": (40, 150), "MCH": (10, 60), "MCHC": (200, 450),
+    "CREA": (5, 2000), "UREA": (0, 100), "GLU": (0, 60), "NA": (90, 200), "K": (1, 10),
+    "CRP": (0, 1000), "ALB": (5, 70), "TP": (20, 120),
+}  # fmt: skip
+_DIFFERENTIAL = {"NEUT", "LYMPH", "MONO", "EOS", "BASO"}
+
+
 def _flag(value: float | None, lo: float | None, hi: float | None, arrow: str | None) -> str | None:
     if arrow == "▲":
         return "H"
@@ -168,6 +182,14 @@ def _fact(  # noqa: PLR0913
     unreliable: bool,
 ) -> dict | None:
     code_row = vocab.match(label, abbr)
+    if (
+        code_row
+        and code_row["code"] in _DIFFERENTIAL
+        and not unit
+        and "abs" not in norm_label(label)
+    ):
+        # "Neutrofily 53,4" without a unit is the percentage; the count is "abs.počet"
+        code_row = vocab.by_code.get(code_row["code"] + "_PCT")
     if code_row and unit and unit.strip() == "%" and code_row.get("unit_canonical") != "%":
         # "Neutrofily 51.2 %" is the percentage, not the absolute count
         code_row = vocab.by_code.get(code_row["code"] + "_PCT")
@@ -182,6 +204,16 @@ def _fact(  # noqa: PLR0913
             value_canonical = value
         elif uk in conv:
             value_canonical = round(value * float(conv[uk]), 6)
+    if code_row and numeric and code_row["code"] in PLAUSIBLE:
+        lo_p, hi_p = PLAUSIBLE[code_row["code"]]
+        canon = value_canonical if value_canonical is not None else value
+        if canon is None or not (lo_p <= canon <= hi_p):
+            code_row, value_canonical, unit_canonical = None, None, None  # never under the code
+            implausible = True
+        else:
+            implausible = False
+    else:
+        implausible = False
     unit_s = unit.strip() if unit else None
     if not code_row and unit_s and _DOSING.search(unit_s + " " + label):
         category = "medication"  # chemo dosing lines are not lab values
@@ -203,7 +235,9 @@ def _fact(  # noqa: PLR0913
         "occurred_at": when,
         "page_number": page,
         "evidence": evidence.strip()[:300],
-        "verification": "unverified" if (unreliable or "[?]" in evidence) else "machine",
+        "verification": "unverified"
+        if (unreliable or "[?]" in evidence or implausible)
+        else "machine",
     }
     if category == "medication":
         return fact if not _NOT_DATA.search(evidence) else None
@@ -387,6 +421,7 @@ def parse_inline_results(
     sentence with numbers is never read as results.
     """
     out: list[dict] = []
+    seen_keys: set = set()
     for page_no, text in enumerate(pages, start=1):
         prev = ""
         for line in text.splitlines():
@@ -394,6 +429,7 @@ def parse_inline_results(
             if len(items) >= 3 and not _NOT_DATA.search(line):
                 parsed = []
                 for item in items:
+                    item = re.sub(r"^.*:\s*", "", item.replace("*", ""))  # "Lab 1.2.2027: **CEA …"
                     m = _INLINE_ITEM.match(item)
                     if not m:
                         continue
@@ -416,7 +452,7 @@ def parse_inline_results(
                             label=m.group("label"),
                             abbr=None,
                             raw_value=m.group("val"),
-                            unit=unit if printed_unit else code_row.get("unit_canonical"),
+                            unit=unit if printed_unit else None,
                             lo=None,
                             hi=None,
                             ref_text=None,
@@ -434,6 +470,10 @@ def parse_inline_results(
                         if not printed_unit or not dm:
                             f["verification"] = "unverified"
                         f["metadata"] = meta
+                        key = (f["code"], f["occurred_at"], f["value_num"], f["value_text"])
+                        if key in seen_keys:
+                            continue  # the same line quoted twice in one report
+                        seen_keys.add(key)
                         out.append(f)
             if line.strip():
                 prev = line

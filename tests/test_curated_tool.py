@@ -529,3 +529,28 @@ async def test_index_runs_after_a_real_run_once_it_is_no_longer_active(db, llm_o
     with patches[0], patches[1], patches[2], patch.object(tool, "_index_quietly", spy):
         await tool.execute_run(db, ERIKA_UUID, dry_run=False, trigger="mcp")
     assert seen == [False]  # indexed exactly once, and not counted as an active run
+
+
+def test_turso_url_refuses_to_start():
+    from oncofiles import server
+
+    with pytest.raises(RuntimeError, match="local database only"):
+        server._assert_local_database("libsql://example.turso.io")
+    server._assert_local_database("")  # local file: fine
+
+
+async def test_index_waits_while_a_run_holds_the_patient_lock(db):
+    order = []
+    lock = tool.patient_lock(ERIKA_UUID)
+
+    async def fake_index(_db, _pid):
+        order.append("index")
+        return {}
+
+    with patch.object(tool, "_index_patient", fake_index):
+        async with lock:  # a run in progress
+            task = asyncio.create_task(tool.index_patient(db, ERIKA_UUID))
+            await asyncio.sleep(0.05)
+            order.append("run done")
+        await task
+    assert order == ["run done", "index"]

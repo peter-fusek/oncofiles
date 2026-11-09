@@ -511,3 +511,21 @@ async def test_shared_organizations_never_take_text_from_a_patient_readme(db, la
     async with db.db.execute("SELECT code, name FROM organizations") as cur:
         rows = [dict(r) for r in await cur.fetchall()]
     assert rows and all(r["name"] is None for r in rows)
+
+
+async def test_inline_differential_percent_vs_absolute_and_plausibility(db):
+    """#637 review: plain differential labels are %, 'abs.počet' is the count;
+    implausible values never get a code; a line quoted twice counts once."""
+    from oncofiles.curated.facts_rules import parse_inline_results
+
+    vocab = Vocabulary.from_rows(await db.fact_code_vocabulary())
+    line = (
+        "Lab 05.06.2027: WBC 6,10; Neutrofily 61,2; abs.počet NEUT 3,73; "
+        "Lymfocyty 24,8; abs.počet LYMPH 1,51; PLT 4870"
+    )
+    facts = parse_inline_results([line + "\n" + line], vocab, report_date="2027-06-09")
+    by = {f["code"]: f for f in facts}
+    assert by["NEUT_PCT"]["value_num"] == 61.2 and by["NEUT"]["value_num"] == 3.73
+    assert by["LYMPH_PCT"]["value_num"] == 24.8 and by["LYMPH"]["value_num"] == 1.51
+    assert "PLT" not in by  # 4870 ×10^9/L is implausible: never stored under PLT
+    assert sum(1 for f in facts if f["code"] == "WBC") == 1  # duplicate line counted once
