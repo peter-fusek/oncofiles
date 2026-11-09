@@ -503,3 +503,11 @@ async def test_alias_normalisation_serum_suffix_and_page(db):
     assert vocab.match("KREA S")["code"] == "CREA"
     assert vocab.match("Celkové bielkoviny v sére (str. 2)")["code"] == "TP"
     assert vocab.match("Osmolalita séra výpočtom")["code"] == "OSMO"
+
+
+async def test_shared_organizations_never_take_text_from_a_patient_readme(db, lab_env):
+    """organizations are shared across patients: no README-derived names (#637 review)."""
+    await tool.index_patient(db, ERIKA_UUID)
+    async with db.db.execute("SELECT code, name FROM organizations") as cur:
+        rows = [dict(r) for r in await cur.fetchall()]
+    assert rows and all(r["name"] is None for r in rows)

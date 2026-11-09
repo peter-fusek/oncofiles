@@ -222,7 +222,6 @@ class IndexScan:
     records: list[IndexRecord]
     contract_version: str
     skipped_folders: list[str]
-    org_names: dict[str, str] = field(default_factory=dict)  # README §3 institutions
 
 
 def _record(folder: str, category: DocumentCategory, item: Item) -> IndexRecord:
@@ -315,10 +314,4 @@ def scan(drive, root_id: str, *, known: dict[str, str] | None = None) -> IndexSc
                     _apply_sidecar(rec, front, pages)
                     rec.metadata["text_source"] = True
             records.append(rec)
-    org_names = {
-        m.group(1): m.group(2).strip()
-        for m in re.finditer(
-            r"^([A-Z][A-Za-z0-9]+)\s{2,}([^\n`]*[a-zá-ž][^\n`]*)$", contract.vocab_text, re.M
-        )
-    }
-    return IndexScan(records, contract.version, skipped, org_names)
+    return IndexScan(records, contract.version, skipped)

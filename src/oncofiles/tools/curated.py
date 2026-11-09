@@ -782,7 +782,7 @@ async def _index_patient(db, pid: str) -> dict:
                     if page:
                         await db.save_ocr_page(doc_id, n, page, indexer.INDEX_ENGINE)
                         stats["pages"] += 1
-                entities = await _link_entities(db, pid, doc_id, rec, scanned.org_names)
+                entities = await _link_entities(db, pid, doc_id, rec)
                 stats["facts"] += await _extract_facts(db, pid, doc_id, rec, entities, vocab)
                 await db.update_structured_metadata(doc_id, meta)  # commit marker, last
             ids.append(doc_id)
@@ -848,7 +848,7 @@ def _dept_ok(token: str | None) -> str | None:
     return token if token and re.fullmatch(r"[A-Z][A-Za-z]{2,40}", token) else None
 
 
-async def _link_entities(db, pid: str, doc_id: int, rec, org_names: dict | None = None) -> dict:
+async def _link_entities(db, pid: str, doc_id: int, rec) -> dict:
     """Organization, department, practitioner, encounter, title, Drive link (#603)."""
     fields = rec.filename.rsplit(".", 1)[0].split("-") if "." in rec.filename else []
     std = len(fields) >= 6 and fields[0].isdigit()
@@ -856,11 +856,10 @@ async def _link_entities(db, pid: str, doc_id: int, rec, org_names: dict | None 
     doctor = _known(fields[4]) if std else None
     doctor = _surname(doctor) if doctor else None
     dept_code = _dept_ok(_known(fields[5])) if std else None
-    org_id = (
-        await db.upsert_organization(org_code, name=(org_names or {}).get(org_code))
-        if org_code
-        else None
-    )
+    # organizations are SHARED across patients: never fill their names from one
+    # patient's README (cross-tenant text; security review of #637). Names come
+    # only from an admin-curated list (not yet built).
+    org_id = await db.upsert_organization(org_code) if org_code else None
     dept_id = await db.upsert_department(org_id, dept_code) if org_id and dept_code else None
     prac_id = None
     if doctor and org_code != "PacientAdvokat":
