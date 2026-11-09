@@ -544,6 +544,15 @@ class Runner:
                 to_folder, _, to_name = last["to"].partition("/")
                 filed[item.sha256] = (to_folder, nfc(to_name))
 
+    def _content(self, item: Item) -> bytes:
+        """Bytes to extract from: Drive's text export for Google Docs/Sheets/Slides."""
+        export_mime = extract_mod.NATIVE_EXPORT.get(item.mime)
+        if export_mime:
+            return self.drive.export(item.id, export_mime)
+        if item.mime.startswith(extract_mod.GOOGLE_NATIVE_PREFIX):
+            return b""  # Forms, Drawings…: nothing to read
+        return self.drive.download(item.id)
+
     def _awaiting_review(self, sidecar: Item, item: Item) -> bool:
         text = self.drive.download(sidecar.id).decode("utf-8", errors="replace")[:4000]
         review = re.search(r"^review_needed:\s*(true|\"true\")", text, re.M | re.I)
@@ -551,6 +560,10 @@ class Runner:
         unchanged = sha is None or not item.sha256 or sha.group(1) == item.sha256
         if not (review and unchanged):
             return False
+        if item.mime in extract_mod.NATIVE_EXPORT and re.search(
+            r'^ocr_engine:\s*"?google-native', text, re.M
+        ):
+            return False  # written before Google Docs were exported as text: read it now
         reasons = _review_reasons(text)
         if reasons and all(_is_technical(r) for r in reasons):
             m = re.search(r"^technical_attempts:\s*(\d+)", text, re.M)
@@ -602,7 +615,7 @@ class Runner:
             limit = extract_mod.MAX_FILE_BYTES >> 20
             ex = extract_mod.Extraction("", "none", 0, "-", error=f"file larger than {limit} MB")
         else:
-            content = b"" if native else self.drive.download(item.id)
+            content = self._content(item)
             ex = self.extract_fn(
                 item.name, content, item.mime, min_text_chars=self.opts.min_text_chars
             )
@@ -656,10 +669,15 @@ class Runner:
         # Final name first, so the sidecar's source_file names the file it ends up next to.
         new_name = item.name
         if not review:
-            ext = item.name.rsplit(".", 1)[-1] if "." in item.name else "bin"
-            new_name = with_collision_suffix(
-                build_filename(cls.fields, ext), tree.names_in(target_folder)
-            )
+            taken = tree.names_in(target_folder)
+            if native:  # a Google Doc's title has no extension (the mount shows .gdoc)
+                taken = taken | {f"{n}.gdoc" for n in taken}
+                ext = "gdoc"
+            else:
+                ext = item.name.rsplit(".", 1)[-1] if "." in item.name else "bin"
+            new_name = with_collision_suffix(build_filename(cls.fields, ext), taken)
+            if native:
+                new_name = new_name.removesuffix(".gdoc")
         extra = None
         if note and _is_technical(note):
             extra = {"technical_attempts": self._technical_attempts.get(item.id, 0) + 1}
@@ -807,12 +825,7 @@ class Runner:
                 ):
                     self.report.not_processed.append(f"{folder}/{item.name} (missing sidecar)")
                     continue
-                native = item.mime.startswith(extract_mod.GOOGLE_NATIVE_PREFIX)
-                content = (
-                    b""
-                    if native or item.size > extract_mod.MAX_FILE_BYTES
-                    else (self.drive.download(item.id))
-                )
+                content = b"" if item.size > extract_mod.MAX_FILE_BYTES else self._content(item)
                 ex = self.extract_fn(
                     item.name, content, item.mime, min_text_chars=self.opts.min_text_chars
                 )

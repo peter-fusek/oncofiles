@@ -33,6 +33,7 @@ class FakeDrive:
         self.items: dict[str, dict] = {}
         self.fail_on: set[str] = set()  # op names that raise WriteVerificationError
         self.writes: list[tuple] = []
+        self.exports: list[tuple] = []
         self.root = self.add("Jana", "rootid", folder=True)
         self.folder = {}
         for name in [INBOX, LABS, REPORT, "imaging — zobrazovanie", "other — ostatné", DUPS, LOGS]:
@@ -88,6 +89,12 @@ class FakeDrive:
         return []
 
     def download(self, fid):
+        if self.items[fid]["mime"].startswith("application/vnd.google-apps."):
+            raise AssertionError("Drive cannot get_media a Google-native file; export it")
+        return self.items[fid]["content"]
+
+    def export(self, fid, mime_type):
+        self.exports.append((fid, mime_type))
         return self.items[fid]["content"]
 
     def _check(self, op):
@@ -770,3 +777,51 @@ def test_text_source_sent_to_review_is_not_reclassified_on_later_runs():
     assert again.documents == [] and again.awaiting_review
     assert probe(d, d.root, now=NOW, reviewed_text=frozenset({key})).pending == {}
     assert len(probe(d, d.root, now=NOW).pending) == 1  # without the memory it would rerun
+
+
+# ── Google Docs in the inbox are read through Drive's text export ──
+
+
+def test_google_doc_in_inbox_is_exported_classified_and_filed():
+    d = FakeDrive()
+    doc = d.add("SecondOpinion_Part1of2.pdf", d.folder[INBOX], b"VYSLEDKY 05.08.2026")
+    d.items[doc]["mime"] = "application/vnd.google-apps.document"  # title ends .pdf
+    form = d.add("Dotaznik", d.folder[INBOX], b"")
+    d.items[form]["mime"] = "application/vnd.google-apps.form"
+    r = run(d, dry_run=False)
+    assert r.status == "ok", r.message
+    assert d.exports == [(doc, "text/plain")]  # the form is never exported
+    results = {x["source"]: x for x in r.documents}
+    assert results["SecondOpinion_Part1of2.pdf"]["result"] == "filed"
+    assert results["Dotaznik"]["result"] == "review_needed"
+    filed = d.items[doc]["name"]
+    assert d.items[doc]["parent"] == d.folder[LABS]
+    assert filed.startswith("20260805-") and "." not in filed  # no fake extension
+    assert f"{filed}.md" in d.names(d.folder[LABS])  # sidecar pairs with the API title
+
+
+def test_google_doc_name_collision_counts_extensionless_titles():
+    d = FakeDrive()
+    first = d.add("a", d.folder[INBOX], b"VYSLEDKY 05.08.2026")
+    second = d.add("b", d.folder[INBOX], b"VYSLEDKY 05.08.2026 (other doc)")
+    for fid in (first, second):
+        d.items[fid]["mime"] = "application/vnd.google-apps.document"
+    r = run(d, dry_run=False)
+    assert r.status == "ok", r.message
+    names = {d.items[first]["name"], d.items[second]["name"]}
+    assert len(names) == 2 and any(n.endswith("-02") for n in names), names
+
+
+def test_google_doc_held_by_the_old_no_text_sidecar_is_read_again():
+    d = FakeDrive()
+    doc = d.add("SecondOpinion_Part1of2.pdf", d.folder[INBOX], b"VYSLEDKY 05.08.2026")
+    d.items[doc]["mime"] = "application/vnd.google-apps.document"
+    old = (
+        b'---\nocr_engine: "google-native"\nreview_needed: true\n'
+        b'review_reasons: ["no text to classify"]\n---\n'
+    )
+    d.add("SecondOpinion_Part1of2.pdf.md", d.folder[INBOX], old)
+    r = run(d, dry_run=False)
+    assert r.status == "ok", r.message
+    assert d.items[doc]["parent"] == d.folder[LABS]
+    assert not r.awaiting_review

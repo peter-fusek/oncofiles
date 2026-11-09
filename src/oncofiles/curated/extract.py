@@ -5,7 +5,9 @@
    model (no tesseract, no cloud OCR). Handwriting and photos always land here.
 
 Plain-text sources (``.md``, ``.txt``, ``.csv``, ``.json``) are decoded as-is.
-Google-native documents get no extraction (the sidecar just links them).
+Google Docs and Slides are exported by Drive as plain text, Sheets as CSV
+(``NATIVE_EXPORT``); other Google-native types (Forms, Drawings…) get no
+extraction and stay in the inbox.
 Anything else is reported as unsupported so the file stays in the inbox.
 """
 
@@ -21,6 +23,12 @@ logger = logging.getLogger(__name__)
 TEXT_EXTS = {"md", "txt", "csv", "json"}
 IMAGE_EXTS = {"jpg", "jpeg", "png", "heic", "tif", "tiff", "webp", "bmp", "gif"}
 GOOGLE_NATIVE_PREFIX = "application/vnd.google-apps."
+# Google-native type → the format Drive exports it to (a read, never a write).
+NATIVE_EXPORT = {
+    "application/vnd.google-apps.document": "text/plain",
+    "application/vnd.google-apps.presentation": "text/plain",
+    "application/vnd.google-apps.spreadsheet": "text/csv",
+}
 MAX_VISION_PAGES = 40
 RENDER_DPI = 150
 
@@ -124,6 +132,9 @@ def extract(
     ext = _ext(name)
     if len(content) > MAX_FILE_BYTES:
         return Extraction("", "none", 0, "-", error=f"file larger than {MAX_FILE_BYTES >> 20} MB")
+    if mime_type in NATIVE_EXPORT:  # content is Drive's text export
+        text = content.decode("utf-8-sig", errors="replace")
+        return Extraction(text, "plain", 1, "google-export")
     if mime_type.startswith(GOOGLE_NATIVE_PREFIX):
         return Extraction("", "none", 0, "google-native", error=None)
     try:
