@@ -667,6 +667,14 @@ def _parse_drive_time(value: str) -> datetime | None:
 
 
 async def index_patient(db, pid: str) -> dict:
+    """Local-only wrapper: the index and its fact extraction never reach the cloud."""
+    from oncofiles.cloud_guard import local_only
+
+    with local_only("curated index + fact extraction"):
+        return await _index_patient(db, pid)
+
+
+async def _index_patient(db, pid: str) -> dict:
     """Mirror a patient's curated folder into the documents table (Drive reads only).
 
     One row per filed source (``file_id = gdrive:<id>``), sidecar text as its
@@ -692,9 +700,13 @@ async def index_patient(db, pid: str) -> dict:
         finally:
             own.close()
 
+    from oncofiles.curated.facts_rules import Vocabulary
+
     t0 = time.monotonic()
     scanned = await asyncio.to_thread(_blocking)
-    stats = {"created": 0, "updated": 0, "unchanged": 0, "removed": 0, "pages": 0, "errors": 0}
+    vocab = Vocabulary.from_rows(await db.fact_code_vocabulary())
+    stats = {"created": 0, "updated": 0, "unchanged": 0, "removed": 0, "pages": 0, "errors": 0,
+             "facts": 0}  # fmt: skip
     seen: set[str] = set()
     ids: list[int] = []
     for rec in scanned.records:
@@ -768,7 +780,9 @@ async def index_patient(db, pid: str) -> dict:
                     if page:
                         await db.save_ocr_page(doc_id, n, page, indexer.INDEX_ENGINE)
                         stats["pages"] += 1
-                await db.update_structured_metadata(doc_id, meta)  # commit marker
+                entities = await _link_entities(db, pid, doc_id, rec)
+                stats["facts"] += await _extract_facts(db, pid, doc_id, rec, entities, vocab)
+                await db.update_structured_metadata(doc_id, meta)  # commit marker, last
             ids.append(doc_id)
             key = "unchanged" if rec.unchanged else ("updated" if existing else "created")
             stats[key] += 1
@@ -786,6 +800,96 @@ async def index_patient(db, pid: str) -> dict:
     )
     logger.info("curated index %s: %s", pid, stats)
     return stats
+
+
+_CATEGORY_TITLE = {
+    "labs": "Laboratórne výsledky", "report": "Lekárska správa", "imaging": "Zobrazovanie",
+    "pathology": "Patológia", "genetics": "Genetika", "surgery": "Operácia / zákrok",
+    "discharge": "Prepúšťacia správa", "referral": "Odporúčanie", "prescription": "Lieky",
+    "chemo_sheet": "Liečba", "reference": "Referenčný materiál", "advocate": "Poznámka advokáta",
+    "other": "Dokument",
+}  # fmt: skip
+_ENCOUNTER_KIND = {
+    "labs": "lab_draw", "imaging": "imaging", "surgery": "procedure",
+    "chemo_sheet": "chemo_cycle", "discharge": "stay", "pathology": "procedure",
+}  # fmt: skip
+_LOCAL_ENGINES = ("qwen", "local", "google-export", "utf-8", "pymupdf")
+
+
+def _known(token: str | None) -> str | None:
+    return token if token and token != "Unknown" else None
+
+
+async def _link_entities(db, pid: str, doc_id: int, rec) -> dict:
+    """Organization, department, practitioner, encounter, title, Drive link (#603)."""
+    fields = rec.filename.rsplit(".", 1)[0].split("-") if "." in rec.filename else []
+    std = len(fields) >= 6 and fields[0].isdigit()
+    org_code = _known(rec.institution) or (_known(fields[2]) if std else None)
+    doctor = _known(fields[4]) if std else None
+    dept_code = _known(fields[5]) if std else None
+    org_id = await db.upsert_organization(org_code) if org_code else None
+    dept_id = await db.upsert_department(org_id, dept_code) if org_id and dept_code else None
+    prac_id = None
+    if doctor and org_code != "PacientAdvokat":
+        prac_id = await db.upsert_practitioner(
+            patient_id=pid,
+            surname_token=doctor,
+            display_name=rec.metadata.get("doctor"),
+            organization_id=org_id,
+            department_id=dept_id,
+        )
+    enc_id = None
+    day = rec.document_date.isoformat() if rec.document_date else None
+    cat = rec.category.value
+    if day and org_code and cat not in ("reference", "advocate", "other"):
+        kind = _ENCOUNTER_KIND.get(cat, "visit")
+        enc_id = await db.upsert_encounter(
+            patient_id=pid,
+            natural_key=f"{day}|{org_code}|{dept_code or '-'}|{kind}",
+            start_at=day,
+            kind=kind,
+            title=" · ".join(x for x in (org_code, dept_code, doctor) if x),
+            organization_id=org_id,
+            department_id=dept_id,
+            practitioner_id=prac_id,
+        )
+    title = " · ".join(
+        x for x in (_CATEGORY_TITLE.get(cat, "Dokument"), org_code, doctor or dept_code, day) if x
+    )
+    await db.set_document_entities(
+        doc_id,
+        patient_id=pid,
+        title=title,
+        source_url=f"https://drive.google.com/file/d/{rec.gdrive_id}/view",
+        encounter_id=enc_id,
+        practitioner_id=prac_id,
+        organization_id=org_id,
+        department_id=dept_id,
+    )
+    return {"encounter_id": enc_id, "practitioner_id": prac_id,
+            "organization_id": org_id, "department_id": dept_id}  # fmt: skip
+
+
+async def _extract_facts(db, pid: str, doc_id: int, rec, entities: dict, vocab) -> int:
+    """Rule-based lab facts from the sidecar text (no model call)."""
+    from oncofiles.curated.facts_rules import extract_lab_facts
+
+    engine = str(rec.metadata.get("ocr_engine") or "")
+    local = any(k in engine.lower() for k in _LOCAL_ENGINES)
+    unreliable = rec.metadata.get("handwritten") is True or not local
+    facts, extractor = extract_lab_facts(rec.pages, vocab, unreliable=unreliable)
+    if not facts:
+        return 0
+    day = rec.document_date.isoformat() if rec.document_date else None
+    system = "curated_sidecar" if local else "cowork_sidecar"
+    for f in facts:
+        f["occurred_at"] = f["occurred_at"] or day
+        f.update(entities)
+        f["metadata"] = {"source_system": system, "ocr_engine": engine or None}
+    res = await db.replace_document_facts(
+        patient_id=pid, document_id=doc_id, facts=facts, extracted_by=extractor
+    )
+    return res["added"]
 
 
 async def _index_quietly(db, pid: str) -> None:
