@@ -68,6 +68,17 @@ CONF_MAX_DOCS = MAX_DOCUMENTS_PER_PATIENT
 TESTS_COUNT = 716
 
 
+def _assert_local_database(turso_url: str | None) -> None:
+    """Fail closed (#617): Turso is not part of the architecture; the master
+    store is the local SQLite file. One env var must never route PHI to a
+    cloud database. (The Turso code path itself is removed in a follow-up.)"""
+    if turso_url:
+        raise RuntimeError(
+            "TURSO_DATABASE_URL is set, but Oncofiles runs on a local database only. "
+            "Unset TURSO_DATABASE_URL / TURSO_AUTH_TOKEN / TURSO_REPLICA_PATH."
+        )
+
+
 def _circuit_breaker_503(exc: BaseException, endpoint_name: str) -> JSONResponse | None:
     """Canonical 503 + Retry-After:30 response when the Turso circuit breaker is OPEN.
 
@@ -254,7 +265,8 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict]:
     logger.info(
         "Database mode: %s", "TURSO (remote/replica)" if TURSO_DATABASE_URL else "local file"
     )
-    if TURSO_DATABASE_URL:
+    _assert_local_database(TURSO_DATABASE_URL)
+    if TURSO_DATABASE_URL:  # unreachable until the Turso path is removed (#617)
         from oncofiles.config import TURSO_REPLICA_PATH
 
         db = Database(
