@@ -449,7 +449,8 @@ async def test_inline_results_rules(db):
     assert set(by) >= {"CEA", "CA19_9", "CREA", "URIC", "NA"}
     assert all(f["occurred_at"] == "2027-06-12" for f in facts)  # printed date, not report
     assert by["CEA"]["verification"] == "machine"  # printed unit + printed date
-    assert by["CA19_9"]["verification"] == "unverified"  # unit implied → never machine
+    # #659: a missing printed unit is not a reason to distrust the value
+    assert by["CA19_9"]["verification"] == "machine"
     assert by["CA19_9"]["metadata"]["unit_source"] == "implied"
     assert "WEIGHT" not in by  # the prose line is not results (fewer than 2 coded items)
 
@@ -479,24 +480,25 @@ def test_series_dedupe_drops_duplicate_sheets_and_report_quotes():
     base = {"code": "CEA", "value_text": None, "metadata_json": "{}", "page_number": 1}
     report = '{"date_source": "report"}'
     rows = [
-        {**base, "id": 1, "effective_at": "2027-03-03", "value_canonical": 44.4,
+        {**base, "id": 501, "effective_at": "2027-03-03", "value_canonical": 44.4,
          "verification": "machine", "source_document_id": 10},
-        {**base, "id": 2, "effective_at": "2027-03-03", "value_canonical": 44.4,
+        {**base, "id": 502, "effective_at": "2027-03-03", "value_canonical": 44.4,
          "verification": "unverified", "source_document_id": 11},  # duplicated sheet
-        {**base, "id": 3, "effective_at": "2027-03-20", "value_canonical": 44.4,
+        {**base, "id": 503, "effective_at": "2027-03-20", "value_canonical": 44.4,
          "verification": "unverified", "source_document_id": 12,
          "metadata_json": report},  # quoted in a later report, together with CA 19-9
-        {**base, "id": 4, "effective_at": "2027-06-12", "value_canonical": 38.2,
+        {**base, "id": 504, "effective_at": "2027-06-12", "value_canonical": 38.2,
          "verification": "machine", "source_document_id": 13},
-        {**base, "id": 77, "code": "CA19_9", "effective_at": "2027-03-03",
+        {**base, "id": 577, "code": "CA19_9", "effective_at": "2027-03-03",
          "value_canonical": 777.7, "verification": "machine", "source_document_id": 10},
-        {**base, "id": 78, "code": "CA19_9", "effective_at": "2027-03-20",
+        {**base, "id": 578, "code": "CA19_9", "effective_at": "2027-03-20",
          "value_canonical": 777.7, "verification": "unverified", "source_document_id": 12,
          "metadata_json": report},
     ]  # fmt: skip
     kept, dropped = cf._dedupe(rows)
-    assert sorted(r["id"] for r in kept) == [1, 4, 77]
-    assert dropped == 3
+    assert sorted(r["id"] for r in kept) == [501, 504, 577]
+    got = sorted((d["removed"]["fact_id"], d["reason"], d["kept"]["fact_id"]) for d in dropped)
+    assert got == [(502, "exact", 501), (503, "quote", 501), (578, "quote", 577)]
 
 
 def test_series_dedupe_keeps_a_single_coincidental_equal_value():
@@ -513,7 +515,37 @@ def test_series_dedupe_keeps_a_single_coincidental_equal_value():
          "metadata_json": '{"date_source": "report"}'},
     ]  # fmt: skip
     kept, dropped = cf._dedupe(rows)
-    assert dropped == 0 and len(kept) == 3
+    assert dropped == [] and len(kept) == 3
+
+
+def test_series_dedupe_range_hides_only_the_exact_same_value():
+    """Guardrail (#635 v10): a value dated inside a printed range is hidden only
+    when another document has the same code, value and unit inside the window;
+    a different value is never hidden, and both documents are reported."""
+    base = {"code": "WBC", "value_text": None, "page_number": 1, "unit_canonical": "10^9/L"}
+    rng = (
+        '{"date_source": "printed_range", "date_range_start": "2027-10-11", '
+        '"date_range_end": "2027-10-13"}'
+    )
+    rows = [
+        {**base, "id": 601, "effective_at": "2027-10-11", "value_canonical": 6.13,
+         "verification": "machine", "source_document_id": 30, "metadata_json": "{}"},
+        {**base, "id": 602, "effective_at": "2027-10-12", "value_canonical": 6.13,
+         "verification": "machine", "source_document_id": 31, "metadata_json": rng},
+        {**base, "id": 603, "code": "PLT", "effective_at": "2027-10-12", "value_canonical": 317.0,
+         "verification": "machine", "source_document_id": 31, "metadata_json": rng},
+        {**base, "id": 604, "code": "PLT", "effective_at": "2027-10-11", "value_canonical": 309.0,
+         "verification": "machine", "source_document_id": 30, "metadata_json": "{}"},
+        {**base, "id": 605, "effective_at": "2027-10-19", "value_canonical": 6.13,
+         "verification": "machine", "source_document_id": 32, "metadata_json": "{}"},
+    ]  # fmt: skip
+    kept, dropped = cf._dedupe(rows)
+    assert sorted(r["id"] for r in kept) == [601, 603, 604, 605]  # PLT differs; 605 outside
+    assert dropped == [{
+        "code": "WBC", "at": "2027-10-12", "value": 6.13, "reason": "range",
+        "removed": {"fact_id": 602, "document_id": 31},
+        "kept": {"fact_id": 601, "document_id": 30, "at": "2027-10-11"},
+    }]  # fmt: skip
 
 
 async def test_migration_075_codes_and_encounter_sources(db, lab_env):
@@ -580,7 +612,7 @@ async def test_inline_comma_lists_arrows_and_abs_counts(vocab):
     assert got[("NEUT_PCT", "2027-08-28")]["value_num"] == 58.1
     assert got[("NEUT", "2027-08-28")]["value_num"] == 3.02
     assert got[("PLT", "2027-08-28")]["value_num"] == 241  # trailing "." stripped
-    assert all(f["verification"] == "unverified" for f in facts)  # units are implied
+    assert all(f["verification"] == "machine" for f in facts)  # dated; units implied (#659)
 
 
 async def test_inline_date_range_is_never_a_printed_day(vocab):
@@ -589,7 +621,11 @@ async def test_inline_date_range_is_never_a_printed_day(vocab):
     line = "Laboratórne 3.–4.09.2027: CEA 9,1 ug/l; KREA S 60,0 umol/l; NA v sére 140,0 mmol/l"
     facts = parse_inline_results([line], vocab, report_date="2027-09-10")
     assert facts and all(f["metadata"]["date_source"] == "printed_range" for f in facts)
-    assert all(f["verification"] == "unverified" for f in facts)
+    # #659: a printed range is a date; the fact sits at its midpoint
+    assert all(f["verification"] == "machine" for f in facts)
+    assert {f["occurred_at"] for f in facts} == {"2027-09-03"}
+    assert all(f["metadata"]["date_range_start"] == "2027-09-03" for f in facts)
+    assert all(f["metadata"]["date_range_end"] == "2027-09-04" for f in facts)
 
 
 async def test_inline_prose_with_parentheses_is_not_results(vocab):
@@ -656,7 +692,8 @@ async def test_inline_segment_date_beats_another_reports_date(vocab):
     assert {f["occurred_at"] for f in facts} == {"2027-09-16"}
     assert by["NEUT"]["value_num"] == 2.9  # "ANC" is the absolute neutrophil count
     assert by["WBC"]["metadata"]["date_source"] == "printed_no_year"
-    assert all(f["verification"] == "unverified" for f in facts)
+    # the year is inferred only when unambiguous (_year_for), so the date is known
+    assert all(f["verification"] == "machine" for f in facts)
 
 
 def test_year_for_day_month_dates():
@@ -688,8 +725,129 @@ async def test_inline_full_date_range_is_a_range(vocab):
     line = "Lab 14.07.2027-15.07.2027 (krv EDTA): WBC 4,10; HGB 122; PLT 230; MONO 0,5"
     facts = parse_inline_results([line], vocab, report_date="2027-07-20")
     assert facts and all(f["metadata"]["date_source"] == "printed_range" for f in facts)
-    assert {f["occurred_at"] for f in facts} == {"2027-07-15"}  # a range is dated to its end
+    assert {f["occurred_at"] for f in facts} == {"2027-07-14"}  # midpoint, rounded down
     assert all(f["metadata"]["date_range_start"] == "2027-07-14" for f in facts)
-    short = "Laboratórne 3.–4.09.2027: CEA 9,1 ug/l; KREA S 60,0 umol/l; NA v sére 140,0 mmol/l"
-    facts = parse_inline_results([short], vocab, report_date="2027-09-10")
-    assert {f["occurred_at"] for f in facts} == {"2027-09-04"}
+    assert all(f["metadata"]["date_range_end"] == "2027-07-15" for f in facts)
+    long = "Lab 29.05.2027-12.06.2027 (krv EDTA): WBC 4,10; HGB 122; PLT 230"
+    facts = parse_inline_results([long], vocab, report_date="2027-06-20")
+    assert {f["occurred_at"] for f in facts} == {"2027-06-05"}  # 29.5.–12.6. → 5.6.
+
+
+# ── v10 verification policy (#659, #635) ─────────────────────────────────
+
+
+async def test_value_without_its_own_date_is_unverified_with_reason(vocab):
+    from oncofiles.curated.facts_rules import parse_inline_results
+
+    line = "Laboratórne výsledky: WBC 4,60; HGB 124; PLT 251; CEA 7,7"
+    facts = parse_inline_results([line], vocab, report_date="2027-10-02")
+    assert facts and all(f["occurred_at"] == "2027-10-02" for f in facts)
+    assert all(f["verification"] == "unverified" for f in facts)
+    assert all(f["metadata"]["unverified_reasons"] == ["date_unknown"] for f in facts)
+
+
+async def test_arrow_flag_is_labelled_arrow(vocab):
+    from oncofiles.curated.facts_rules import parse_inline_results
+
+    line = "Lab 4.10.2027: WBC 2,10↓; HGB 118; PLT 140"
+    by = {f["code"]: f for f in parse_inline_results([line], vocab, report_date="2027-10-08")}
+    assert by["WBC"]["flag"] == "L"
+    assert by["WBC"]["metadata"]["flag_source"] == "arrow"
+
+
+async def test_hgb_generic_flag_only_with_known_sex(vocab):
+    from oncofiles.curated.facts_rules import extract_lab_facts
+
+    page = "Lab 4.10.2027: WBC 5,10; HGB 112; PLT 240"
+    for sex, expected in ((None, None), ("female", "L"), ("male", "L")):
+        facts, _ = extract_lab_facts([page], vocab, report_date="2027-10-08", inline=True, sex=sex)
+        hgb = next(f for f in facts if f["code"] == "HGB")
+        assert hgb["flag"] == expected
+    facts, _ = extract_lab_facts(
+        ["Lab 4.10.2027: WBC 5,10; HGB 130; PLT 240"], vocab,
+        report_date="2027-10-08", inline=True, sex="female",
+    )  # fmt: skip
+    assert next(f for f in facts if f["code"] == "HGB")["flag"] is None  # in female range
+
+
+@pytest.mark.parametrize(
+    ("label", "value", "unit", "code"),
+    [
+        ("Neutrofilie", "55,2", "%", "NEUT_PCT"),
+        ("Neutrofilie", "3,1", "10^9/l", "NEUT"),
+        ("Neutrofily %", "48,0", "10^9/l", "NEUT"),
+        ("NEUT", "2,7", "%", "NEUT_PCT"),
+    ],
+)
+async def test_percent_and_count_never_swap_codes(vocab, label, value, unit, code):
+    """Guardrail (#635 v10): a "%" value never lands under the absolute code,
+    and a count with a real unit never under *_PCT."""
+    from oncofiles.curated.facts_rules import _fact
+
+    f = _fact(
+        vocab, label=label, abbr=None, raw_value=value, unit=unit, lo=None, hi=None,
+        ref_text=None, arrow=None, when="2027-10-04", page=1,
+        evidence=f"{label} {value} {unit}", unreliable=False,
+    )  # fmt: skip
+    assert f is not None and f["code"] == code
+
+
+def _row(i, doc, day, code, value, verification="machine", reasons=None):
+    import json as _json
+
+    meta = {"unverified_reasons": reasons} if reasons else {}
+    return {"id": i, "source_document_id": doc, "occurred_at": day, "code": code,
+            "value_canonical": value, "unit_canonical": "u", "verification": verification,
+            "metadata_json": _json.dumps(meta)}  # fmt: skip
+
+
+def test_corroboration_dates_a_quote_by_the_draw_it_quotes():
+    from oncofiles.curated.facts_rules import corroborations
+
+    q = {"verification": "unverified", "reasons": ["date_unknown"]}
+    rows = [
+        _row(41, 10, "2027-04-14", "WBC", 4.4), _row(42, 10, "2027-04-14", "PLT", 201.0),
+        _row(43, 10, "2027-04-14", "CEA", 6.6),
+        _row(44, 20, "2027-04-22", "WBC", 4.4, **q), _row(45, 20, "2027-04-22", "PLT", 201.0, **q),
+        _row(46, 20, "2027-04-22", "CEA", 7.7, **q),  # a different value is never re-dated
+    ]  # fmt: skip
+    wbc_draw, plt_draw, _, wbc_quote, plt_quote, _ = rows
+    day = wbc_draw["occurred_at"]
+    got = {fid: (d, draw) for fid, d, draw in corroborations(rows)}
+    assert got == {
+        wbc_quote["id"]: (day, wbc_draw["id"]),
+        plt_quote["id"]: (day, plt_draw["id"]),
+    }
+
+
+def test_corroboration_needs_two_matching_codes_and_the_window():
+    from oncofiles.curated.facts_rules import corroborations
+
+    q = {"verification": "unverified", "reasons": ["date_unknown"]}
+    one_code = [_row(1, 10, "2027-03-01", "WBC", 4.4), _row(4, 20, "2027-03-09", "WBC", 4.4, **q)]
+    assert corroborations(one_code) == []  # one equal number is a coincidence
+    too_old = [
+        _row(1, 10, "2027-01-01", "WBC", 4.4), _row(2, 10, "2027-01-01", "PLT", 201.0),
+        _row(4, 20, "2027-03-09", "WBC", 4.4, **q), _row(5, 20, "2027-03-09", "PLT", 201.0, **q),
+    ]  # fmt: skip
+    assert corroborations(too_old) == []
+    other_reason = [
+        _row(1, 10, "2027-03-01", "WBC", 4.4), _row(2, 10, "2027-03-01", "PLT", 201.0),
+        _row(4, 20, "2027-03-09", "WBC", 4.4, "unverified", ["cowork_ocr", "date_unknown"]),
+        _row(5, 20, "2027-03-09", "PLT", 201.0, "unverified", ["cowork_ocr", "date_unknown"]),
+    ]  # fmt: skip
+    assert corroborations(other_reason) == []  # uncertain digits are not corroborated by date
+
+
+def test_unverified_metric_counts_reasons():
+    from oncofiles.curated.facts_rules import unverified_metric
+
+    rows = [
+        _row(1, 10, "2027-03-01", "WBC", 4.4),
+        _row(2, 10, "2027-03-01", "PLT", 201.0, "unverified", ["cowork_ocr"]),
+        _row(3, 10, "2027-03-01", "CEA", 6.6, "unverified", ["cowork_ocr", "date_unknown"]),
+        _row(4, 10, "2027-03-01", "HGB", 120.0, "verified"),
+    ]
+    m = unverified_metric(rows)
+    assert m["coded"] == 4 and m["unverified"] == 2 and m["unverified_pct"] == 50.0
+    assert m["reasons"] == {"cowork_ocr": 2, "date_unknown": 1}
