@@ -149,6 +149,9 @@ ONCOTEAM_WEBHOOK_TOKEN: str = os.environ.get("ONCOTEAM_WEBHOOK_TOKEN", "")
 # GitHub bug reporting
 GITHUB_TOKEN: str = os.environ.get("GITHUB_TOKEN", "")
 GITHUB_REPO: str = os.environ.get("GITHUB_REPO", "peter-fusek/oncofiles")
+# Dashboard bug reports go ONLY to this repo, and only if GitHub confirms it is
+# private (the dashboard shows patient data). No default: unset = disabled (#621).
+BUG_REPORT_REPO: str = os.environ.get("BUG_REPORT_REPO", "")
 
 # Patient context
 PATIENT_CONTEXT_PATH: str = os.environ.get(

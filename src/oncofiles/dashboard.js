@@ -3185,7 +3185,7 @@
         reader.onload = function(e) {
           screenshotB64 = e.target.result.split(',')[1];
           screenshot.src = e.target.result;
-          screenshot.style.display = 'block';
+          // never shown or sent (#621)
           pasteZone.style.display = 'none';
         };
         reader.readAsDataURL(file);
@@ -3241,11 +3241,11 @@
         var payload = {
           title: title,
           description: descInput.value.trim(),
-          page_url: location.href,
-          page_section: location.hash || 'dashboard',
-          page_state: collectPageState(),
+          // Privacy (#621): no screenshot, no page state, no query/fragment —
+          // the dashboard shows patient data.
+          page_url: location.pathname,
+          page_section: 'dashboard',
           console_errors: consoleErrors.join('\n'),
-          screenshot: screenshotB64,
           user_agent: navigator.userAgent
         };
 
