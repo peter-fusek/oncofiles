@@ -369,3 +369,61 @@ async def test_spelling_variants_map_to_codes(db):
 async def test_migration_073_adds_codes(db):
     codes = {r["code"] for r in await db.fact_code_vocabulary()}
     assert {"NLR", "SII", "MPV", "PDW", "U_KET", "USED_BACT"} <= codes
+
+
+async def test_document_whose_new_extraction_is_empty_loses_old_junk(db, lab_env):
+    """#633 leftover: old unverified/machine rows of a document that now yields
+    no facts must be soft-deleted too (both are machine output)."""
+    d, src, side = lab_env
+    await tool.index_patient(db, ERIKA_UUID)
+    doc = await db.get_document_by_gdrive_id(src, patient_id=ERIKA_UUID)
+    await db.db.execute(
+        "UPDATE clinical_records SET verification = 'unverified', param = 'NOTE (agent): x' "
+        "WHERE source_document_id = ? AND code = 'WBC'",
+        (doc.id,),
+    )
+    await db.db.commit()
+    d.items[side]["content"] = b"---\ndoc_date: 2026-01-29\n---\n\nno lab values here\n"
+    d.items[side]["modified"] = "2026-11-04T00:00:00Z"
+    await tool.index_patient(db, ERIKA_UUID)
+    async with db.db.execute(
+        "SELECT COUNT(*) FROM clinical_records WHERE source_document_id = ? AND deleted_at IS NULL",
+        (doc.id,),
+    ) as cur:
+        assert (await cur.fetchone())[0] == 0
+
+
+async def test_percent_spacing_variants_match(db):
+    vocab = Vocabulary.from_rows(await db.fact_code_vocabulary())
+    assert vocab.match("Neutrofilie%")["code"] == "NEUT_PCT"
+    assert vocab.match("Neutrofilie %")["code"] == "NEUT_PCT"
+
+
+MD_TABLE = """## Výsledky laboratórnych vyšetrení — krvný obraz
+Odobrané: 19.08.2026 08:21 · Prijaté: 19.08.2026 08:21
+| Test | Hodnota | Jednotky | Ref. medze |
+|---|---|---|---|
+| WBC | 3.84 | G/l | 3.5 - 10 |
+| HGB | 119 (znížené) | g/l | 120 - 156 |
+| Neutrofily | 43.3 | % | 40 - 78 |
+| abs.počet NEUT | 1.66 | | |
+| Monocyty | 17.4 (zvýšené) | % | 1 - 10 |
+| eGFR | 1.76 | ml/s | > 1.49 |
+Výsledky uvoľnil(a): 1) Meno Priezvisko
+"""
+
+
+async def test_markdown_table_parser_and_percent_codes(db):
+    from oncofiles.curated.facts_rules import extract_lab_facts
+
+    vocab = Vocabulary.from_rows(await db.fact_code_vocabulary())
+    facts, extractor = extract_lab_facts([MD_TABLE], vocab)
+    assert extractor == "rule:mdtable-v1"
+    by = {f["code"]: f for f in facts}
+    assert by["WBC"]["value_num"] == 3.84 and by["WBC"]["occurred_at"] == "2026-08-19T08:21"
+    assert by["HGB"]["flag"] == "L"  # "(znížené)" and below range
+    assert by["NEUT_PCT"]["value_num"] == 43.3  # % never filed under the absolute count
+    assert by["NEUT"]["value_num"] == 1.66
+    assert by["MONO_PCT"]["flag"] == "H"
+    assert by["EGFR"]["ref_low"] == 1.49
+    assert all("uvoľnil" not in f["evidence"] for f in facts)

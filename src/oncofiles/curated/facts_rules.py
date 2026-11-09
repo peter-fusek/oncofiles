@@ -52,6 +52,7 @@ def norm_label(s: str) -> str:
     s = re.sub(r"^[sbp]\s*-\s*", "", s)  # S-Glukóza, B-…, P-…
     s = re.sub(r"^u\s*-\s*", "u-", s)  # "U- Krv" == "U-Krv"
     s = s.replace(".", " ")  # "abs.počet" == "abs. počet"
+    s = re.sub(r"\s*%", "%", s)  # "Neutrofilie %" == "Neutrofilie%"
     s = re.sub(r"\s+", " ", s)
     return s.strip(" :")
 
@@ -84,11 +85,13 @@ def _unit_key(u: str | None) -> str:
 @dataclass
 class Vocabulary:
     by_alias: dict[str, dict] = field(default_factory=dict)
+    by_code: dict[str, dict] = field(default_factory=dict)
 
     @classmethod
     def from_rows(cls, rows: list[dict]) -> Vocabulary:
         v = cls()
         for r in rows:
+            v.by_code[r["code"]] = r
             for alias in [r["code"], *r.get("aliases", [])]:
                 v.by_alias.setdefault(norm_label(alias), r)
         return v
@@ -163,6 +166,9 @@ def _fact(  # noqa: PLR0913
     unreliable: bool,
 ) -> dict | None:
     code_row = vocab.match(label, abbr)
+    if code_row and unit and unit.strip() == "%" and code_row.get("unit_canonical") != "%":
+        # "Neutrofily 43.3 %" is the percentage, not the absolute count
+        code_row = vocab.by_code.get(code_row["code"] + "_PCT")
     value = _num(raw_value)
     numeric = value is not None and re.fullmatch(_NUM, raw_value.strip()) is not None
     unit_canonical = code_row["unit_canonical"] if code_row else None
@@ -280,9 +286,88 @@ def parse_okb(pages: list[str], vocab: Vocabulary, *, unreliable: bool = False) 
     return out
 
 
+_MD_ROW = re.compile(r"^\s*\|(.+)\|\s*$")
+_MD_HEADER = re.compile(r"\b(test|parameter|vy\u0161etrenie)\b.*\bhodnota\b", re.I)
+_MD_VALUE = re.compile(rf"^\s*(?P<val>{_NUM}|\d\++|[A-Za-z]+)\s*(?:\((?P<note>[^)]*)\))?\s*$")
+
+
+def parse_markdown_table(
+    pages: list[str], vocab: Vocabulary, *, unreliable: bool = False
+) -> list[dict]:
+    """Lab tables written as markdown by older sidecar writers::
+
+    Odobrané: 19.08.2026 08:21 · …
+    | Test | Hodnota | Jednotky | Ref. medze |
+    |---|---|---|---|
+    | WBC | 3.84 | G/l | 3.5 - 10 |
+    | HGB | 119 (znížené) | g/l | 120 - 156 |
+    """
+    out: list[dict] = []
+    for page_no, text in enumerate(pages, start=1):
+        when = None
+        cols: list[str] | None = None
+        for line in text.splitlines():
+            if m := _OKB_ODOBRANE.search(line):
+                when = _iso(m.group(1))
+            row = _MD_ROW.match(line)
+            if not row:
+                cols = None if line.strip() else cols
+                continue
+            cells = [c.strip() for c in row.group(1).split("|")]
+            if _MD_HEADER.search(" ".join(cells)):
+                cols = [c.lower() for c in cells]
+                continue
+            if cols is None or all(set(c) <= set("-: ") for c in cells):
+                continue
+            label = cells[0]
+            vm = _MD_VALUE.match(cells[1]) if len(cells) > 1 else None
+            if not label or not vm:
+                continue
+            unit = cells[2] if len(cells) > 2 and cells[2] else None
+            ref = cells[3] if len(cells) > 3 else ""
+            lo = hi = None
+            ref_text = None
+            if rm := re.match(r"^\s*(-?[\d.,]+)\s*-\s*(-?[\d.,]+)\s*$", ref):
+                lo, hi = _num(rm.group(1)), _num(rm.group(2))
+            elif cm := re.match(r"^\s*([<>])\s*([\d.,]+)\s*$", ref):
+                bound = _num(cm.group(2))
+                lo, hi = (bound, None) if cm.group(1) == ">" else (None, bound)
+                ref_text = ref.strip()
+            elif ref.strip():
+                ref_text = ref.strip()[:120]
+            note = (vm.group("note") or "").lower()
+            arrow = (
+                "▲"
+                if "zvýš" in note or "zvys" in note
+                else ("▼" if "zníž" in note or "zniz" in note else None)
+            )
+            f = _fact(
+                vocab,
+                label=label,
+                abbr=None,
+                raw_value=vm.group("val"),
+                unit=unit,
+                lo=lo,
+                hi=hi,
+                ref_text=ref_text,
+                arrow=arrow,
+                when=when,
+                page=page_no,
+                evidence=line,
+                unreliable=unreliable,
+            )
+            if f:
+                out.append(f)
+    return out
+
+
 def extract_lab_facts(pages: list[str], vocab: Vocabulary, *, unreliable: bool = False):
     """(facts, extractor id) — the first format that yields anything wins."""
-    for name, fn in (("rule:bory-v1", parse_bory), ("rule:okb-v1", parse_okb)):
+    for name, fn in (
+        ("rule:bory-v1", parse_bory),
+        ("rule:okb-v1", parse_okb),
+        ("rule:mdtable-v1", parse_markdown_table),
+    ):
         facts = fn(pages, vocab, unreliable=unreliable)
         if facts:
             return facts, name
