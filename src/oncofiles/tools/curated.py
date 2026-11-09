@@ -102,8 +102,10 @@ def request_stop() -> None:
 
 
 def run_active() -> bool:
-    """True while any curated run executes (exposed on /health for CI deploys)."""
-    return any(r.get("state") == "running" for r in _runs.values())
+    """True while any curated run or re-OCR executes (on /health, CI deploys wait)."""
+    return any(r.get("state") == "running" for r in _runs.values()) or any(
+        j.get("state") == "running" for j in _reocr_jobs.values()
+    )
 
 
 # ── text sources awaiting review (no sidecar to mark them) ─────────────
@@ -1009,6 +1011,141 @@ async def _index_quietly(db, pid: str) -> None:
         logger.exception("curated index failed for %s", pid)
 
 
+_reocr_jobs: dict[str, dict] = {}
+
+
+_NOT_OCR = ("application/vnd.google-apps.", "application/vnd.openxmlformats")
+
+
+async def _reocr_targets(
+    db, pid: str, document_ids: list[int] | None, *, only_with_facts: bool = True
+) -> list[dict]:
+    """Documents worth reading again, most unverified facts first. By default
+    only those with unverified facts (the benchmark, #658)."""
+    from oncofiles.curated.reocr import needs_reocr
+
+    out = []
+    rows = sorted(
+        await db.curated_reocr_candidates(patient_id=pid),
+        key=lambda r: -(r.get("unverified_facts") or 0),
+    )
+    for r in rows:
+        meta = r["structured_metadata"]
+        cur = meta.get("curated") or {}
+        if document_ids and r["id"] not in document_ids:
+            continue
+        if not document_ids and only_with_facts and not r.get("unverified_facts"):
+            continue
+        if (r.get("mime_type") or "").startswith(_NOT_OCR):
+            continue  # exported or spreadsheet text, not a scan
+        reasons = needs_reocr(meta, ["[?]"] if r["uncertain"] else [])
+        if not reasons or not cur.get("sidecar_id") or not r.get("gdrive_id"):
+            continue
+        out.append({
+            "document_id": r["id"], "filename": r["filename"], "gdrive_id": r["gdrive_id"],
+            "sidecar_id": cur["sidecar_id"], "mime": r.get("mime_type") or "",
+            "engine": str(meta.get("ocr_engine") or meta.get("extraction") or ""),
+            "reasons": reasons, "unverified_facts": r.get("unverified_facts") or 0,
+        })  # fmt: skip
+    return out
+
+
+async def _reocr_job(db, pid: str, docs: list[dict], *, dry_run: bool, passes: int) -> None:
+    from oncofiles.cloud_guard import local_only
+    from oncofiles.curated.facts_rules import Vocabulary
+    from oncofiles.curated.reocr import run_reocr
+    from oncofiles.server import _create_patient_clients
+
+    job = _reocr_jobs[pid]
+    try:
+        async with patient_lock(pid):  # never alongside a run or an index (#612)
+            clients = await _create_patient_clients(db, pid)
+            if not clients or clients[0] is None:
+                raise RuntimeError("Drive not connected")
+            gdrive, folder_id = clients[0], clients[3]
+            vocab = Vocabulary.from_rows(await db.fact_code_vocabulary())
+            from oncofiles.curated.drive_ops import DriveOps
+
+            def _blocking():
+                own = gdrive.dedicated_copy()
+                try:
+                    with local_only("curated re-OCR"):
+                        kwargs = dict(dry_run=dry_run, passes=passes,
+                                      now=datetime.now(UTC), stop=_stopping.is_set)  # fmt: skip
+                        if dry_run:
+                            return run_reocr(DriveOps(own), folder_id, docs, vocab, **kwargs)
+                        with own.contract_writes():
+                            return run_reocr(DriveOps(own), folder_id, docs, vocab, **kwargs)
+                finally:
+                    own.close()
+
+            report = (await asyncio.to_thread(_blocking)).to_dict()
+        job.update(state="done", report=report)
+        if not dry_run and any(d["result"] == "rewritten" for d in report["documents"]):
+            job["index"] = await index_patient(db, pid)  # new sidecars → new facts
+    except Exception as exc:
+        logger.exception("curated re-OCR failed for %s", pid)
+        job.update(state="failed", error=type(exc).__name__)
+    finally:
+        job["finished_at"] = datetime.now(UTC).isoformat()
+
+
+async def curated_reocr(
+    ctx: Context,
+    patient_slug: str | None = None,
+    dry_run: bool = True,
+    limit: int = 3,
+    document_ids: list[int] | None = None,
+    passes: int = 2,
+    only_with_facts: bool = True,
+) -> str:
+    """Read uncertain documents again with the LOCAL model (#660): Cowork-era
+    transcriptions and pages with [?]. Two vision passes with high reasoning at
+    two resolutions (a PDF text layer is used as-is); digits are accepted only
+    where both passes agree. Dry run (default) writes nothing and previews how
+    many values would become machine-verified. A real run backs the old sidecar
+    up to the logs folder, then updates it in place, then re-indexes. Runs in
+    the background; poll curated_reocr_status. Slow: minutes per page.
+    By default only documents with unverified facts are chosen, most first
+    (only_with_facts=false: every Cowork-era or uncertain document).
+    """
+    pid = await _resolve_patient_id(patient_slug, ctx)
+    db = _get_db(ctx)
+    if _reocr_jobs.get(pid, {}).get("state") == "running" or (
+        pid in _runs and _runs[pid].get("state") == "running"
+    ):
+        return json.dumps({"error": "busy: a run or re-OCR is in progress for this patient"})
+    targets = await _reocr_targets(db, pid, document_ids, only_with_facts=only_with_facts)
+    docs = targets[: max(0, min(limit, 25))]
+    if not docs:
+        return json.dumps({"status": "nothing to do", "candidates": len(targets)})
+    _reocr_jobs[pid] = {
+        "state": "running", "dry_run": dry_run, "passes": passes,
+        "started_at": datetime.now(UTC).isoformat(), "candidates": len(targets),
+        "documents": [
+            {k: d[k] for k in ("document_id", "filename", "reasons", "unverified_facts")}
+            for d in docs
+        ],
+    }  # fmt: skip
+    _reocr_jobs[pid]["task"] = asyncio.create_task(
+        _reocr_job(db, pid, docs, dry_run=dry_run, passes=passes)
+    )
+    return json.dumps(
+        {k: v for k, v in _reocr_jobs[pid].items() if k != "task"}, ensure_ascii=False
+    )
+
+
+async def curated_reocr_status(ctx: Context, patient_slug: str | None = None) -> str:
+    """State and report of the last re-OCR job for this patient (#660). Read-only."""
+    pid = await _resolve_patient_id(patient_slug, ctx)
+    job = _reocr_jobs.get(pid)
+    if not job:
+        targets = await _reocr_targets(_get_db(ctx), pid, None)
+        return json.dumps({"state": "none", "candidates": len(targets)})
+    return json.dumps({k: v for k, v in job.items() if k != "task"}, ensure_ascii=False,
+                      default=str)  # fmt: skip
+
+
 async def curated_index(ctx: Context, patient_slug: str | None = None) -> str:
     """Refresh the searchable copy of a patient's curated Drive folder (#603).
 
@@ -1031,3 +1168,5 @@ def register(mcp):
     mcp.tool()(curated_folder_run)
     mcp.tool()(curated_folder_status)
     mcp.tool()(curated_index)
+    mcp.tool()(curated_reocr)
+    mcp.tool()(curated_reocr_status)

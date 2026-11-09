@@ -90,8 +90,12 @@ def chat(
     temperature: float = 0.0,
     client: httpx.Client | None = None,
     timeout: float | None = None,
+    reasoning_effort: str = "low",
 ) -> str:
-    """One blocking chat completion; returns the answer text."""
+    """One blocking chat completion; returns the answer text.
+
+    ``reasoning_effort="high"`` is for second passes where accuracy matters
+    more than time (re-OCR, #660); pass a matching ``max_tokens`` budget."""
     if not configured():
         raise LocalLLMError("LOCAL_LLM_BASE_URL / LOCAL_LLM_MODEL not set")
     est = estimate_prompt_tokens(system, user_content)
@@ -109,7 +113,7 @@ def chat(
         "max_tokens": max_tokens,
         # Qwen3.x reasons before answering and ignores "/no_think" in LM Studio;
         # the reasoning counts against max_tokens, so callers pass a large budget.
-        "reasoning_effort": "low",
+        "reasoning_effort": reasoning_effort,
         "messages": [
             {"role": "system", "content": system + "\n/no_think"},
             {"role": "user", "content": user_content},
