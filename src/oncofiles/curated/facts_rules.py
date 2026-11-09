@@ -155,7 +155,18 @@ PLAUSIBLE = {
     "CREA": (5, 2000), "UREA": (0, 100), "GLU": (0, 60), "NA": (90, 200), "K": (1, 10),
     "CRP": (0, 1000), "ALB": (5, 70), "TP": (20, 120), "P": (0, 10), "CA": (0, 6),
 }  # fmt: skip
+
+# Generic reference ranges (canonical units) for values printed WITHOUT a range
+# (#635). Deliberately permissive (the widest common Slovak lab ranges), never
+# sex-dependent codes, and never applied when the lab printed its own range:
+# such a flag carries metadata flag_source=generic.
+GENERIC_REF = {
+    "WBC": (3.5, 10.7), "NEUT": (1.7, 7.0), "PLT": (140, 420),
+    "CEA": (None, 5.0), "CA19_9": (None, 37.0), "CRP": (None, 5.0),
+}  # fmt: skip
 _DIFFERENTIAL = {"NEUT", "LYMPH", "MONO", "EOS", "BASO"}
+# labels that always mean the absolute count ("abs.počet NEUT", "NEUT#", "ANC")
+_ABSOLUTE_LABEL = re.compile(r"abs|#|^anc$")
 
 
 def _upper_from_text(ref: str | None) -> float | None:
@@ -205,7 +216,7 @@ def _fact(  # noqa: PLR0913
         code_row
         and code_row["code"] in _DIFFERENTIAL
         and not unit
-        and "abs" not in norm_label(label)
+        and not _ABSOLUTE_LABEL.search(norm_label(label))
     ):
         # "Neutrofily 53,4" without a unit is the percentage; the count is "abs.počet"
         code_row = vocab.by_code.get(code_row["code"] + "_PCT")
@@ -258,6 +269,17 @@ def _fact(  # noqa: PLR0913
         if (unreliable or "[?]" in evidence or implausible)
         else "machine",
     }
+    if (
+        fact["code"] in GENERIC_REF
+        and lo is None
+        and hi is None
+        and fact["flag"] is None
+        and value_canonical is not None
+    ):
+        g_lo, g_hi = GENERIC_REF[fact["code"]]
+        if flag := _flag(value_canonical, g_lo, g_hi, None):
+            fact["flag"] = flag
+            fact["metadata"] = {"flag_source": "generic"}
     if category == "medication":
         return fact if not _NOT_DATA.search(evidence) else None
     return fact if _plausible(fact, code_row) else None
@@ -355,7 +377,8 @@ def _attach_ref_text(fact: dict, ref: str) -> None:
     hi = _upper_from_text(ref)
     if hi is not None:
         fact["ref_high"] = hi
-        fact["flag"] = fact["flag"] or _flag(fact["value_num"], None, hi, None)
+        fact["flag"] = _flag(fact["value_num"], None, hi, None)  # the lab's own range wins
+        (fact.get("metadata") or {}).pop("flag_source", None)
 
 
 _MD_ROW = re.compile(r"^\s*\|(.+)\|\s*$")
@@ -451,13 +474,48 @@ _VITALS = re.compile(r"\bTK\s*\d+\s*/\s*\d+|\bSpO2\b|\bTT\s*\d", re.I)
 _STATS = re.compile(
     r"\b(HR|OR|RR)\s*[=:]?\s*\d|\b\d{2}\s*%\s*CI\b|\bCI\b|\bP\s*[=<>]|\bcohort\b", re.I
 )
-_DATE_RANGE_BEFORE = re.compile(r"\d{1,2}\.\s?[–-]\s?$")
+_DATE_RANGE_BEFORE = re.compile(r"(\d{1,2}\.|\d{4})\s?[–-]\s?$")
 
 
-def _inline_items(line: str) -> list[tuple[str, str, str | None, str | None]]:
-    """(label, value, unit, arrow) for every result item of a line."""
+_SEG_DATE = re.compile(r"(?<![\d.])(\d{1,2})\.\s?(\d{1,2})\.(?:\s?(\d{4}))?(?![\d,])")
+
+
+def _segment_date(segment: str) -> tuple[int, int, int | None, str | None] | None:
+    """(day, month, year or None, range start) printed in the prefix of a ";"
+    segment ("labs 9.9.: WBC …"). A range ("3.–4.9.2027", "14.7.2027-15.7.2027")
+    is dated to its END, consistently: a report quotes its latest results, and
+    a range start can collide with another document's real draw on that day.
+    The start is kept for the metadata."""
+    if ":" not in segment:
+        return None
+    prefix = segment.replace("*", "").rsplit(":", 1)[0]
+    hits = list(_SEG_DATE.finditer(prefix))
+    if not hits:
+        return None
+    hit = hits[-1]
+    d, mo, y = (int(g) if g else None for g in hit.groups())
+    if not (1 <= d <= 31 and 1 <= mo <= 12):
+        return None
+    before = prefix[: hit.start()]
+    if not _DATE_RANGE_BEFORE.search(before):
+        return d, mo, y, None
+    if len(hits) > 1 and re.fullmatch(r"\s?[–-]\s?", prefix[hits[-2].end() : hit.start()]):
+        d0, mo0, y0 = (int(g) if g else None for g in hits[-2].groups())  # "14.7.2027-15.7.2027"
+    elif m := re.search(r"(\d{1,2})\.\s?[–-]\s?$", before):
+        d0, mo0, y0 = int(m.group(1)), mo, y  # "3.–4.9.2027"
+    else:
+        return d, mo, y, "?"
+    y0 = y0 or y
+    start = f"{y0:04d}-{mo0:02d}-{d0:02d}" if y0 else f"{mo0:02d}-{d0:02d}"
+    return d, mo, y, start
+
+
+def _inline_items(line: str) -> list[tuple]:
+    """(label, value, unit, arrow, segment date) for every result item of a line."""
     out = []
+    seg_date = None
     for segment in line.split(";"):
+        seg_date = _segment_date(segment) or seg_date  # later items keep the last date
         parts = re.split(r",\s+(?=[^\W\d_])", segment)
         for item in parts:
             item = re.sub(r"^.*:\s*", "", item.replace("*", ""))  # "Lab 1.2.2027: **CEA …"
@@ -466,14 +524,29 @@ def _inline_items(line: str) -> list[tuple[str, str, str | None, str | None]]:
             if len(parts) == 1:  # "CA 19-9 812,4 (zakrúžkované)" in a ";" list
                 item = re.sub(r"\s*\([^()\d,]*\)$", "", item)
             if a := _INLINE_ABS.match(item):
-                out.append((a.group("label"), a.group("val"), None, None))
-                out.append((a.group("label") + " abs.", a.group("abs"), None, None))
+                out.append((a.group("label"), a.group("val"), None, None, seg_date))
+                out.append((a.group("label") + " abs.", a.group("abs"), None, None, seg_date))
             elif m := _INLINE_ITEM.match(item):
-                out.append((m.group("label"), m.group("val"), m.group("unit"), arrow))
+                out.append((m.group("label"), m.group("val"), m.group("unit"), arrow, seg_date))
     return out
 
 
 _LINE_DATE = re.compile(r"\b(\d{1,2})\.\s?(\d{1,2})\.\s?(\d{4})\b")
+
+
+def _year_for(day: int, month: int, ref: str | None) -> int | None:
+    """Year of a day-month date seen in a document dated ``ref``.
+
+    A measurement cannot postdate its report: the same year when that gives a
+    date on or before ``ref``; the year before when the month is at least six
+    months later ("15.12." in a January report); otherwise None (a date just
+    after the report is a print or control date, not a sample date)."""
+    if not ref or not re.match(r"\d{4}-\d{2}-\d{2}", ref):
+        return None
+    year, ref_month, ref_day = int(ref[:4]), int(ref[5:7]), int(ref[8:10])
+    if (month, day) <= (ref_month, ref_day):
+        return year
+    return year - 1 if month - ref_month >= 6 else None
 
 
 def parse_inline_results(
@@ -511,9 +584,18 @@ def parse_inline_results(
                     )
                     src_line = line if _LINE_DATE.search(line) else prev
                     ranged = bool(dm and _DATE_RANGE_BEFORE.search(src_line[: dm.start()]))
-                    for (label, val, unit, arrow), code_row in parsed:
+                    for (label, val, unit, arrow, seg_date), code_row in parsed:
                         if not code_row:
                             continue  # only known codes from free text
+                        item_when, date_source = when, ("printed" if dm else "report")
+                        if seg_date:  # the segment's own date beats any other date in the line
+                            d, mo, y, range_start = seg_date
+                            year = y or _year_for(d, mo, report_date or when)
+                            if year:
+                                item_when = f"{year:04d}-{mo:02d}-{d:02d}"
+                                date_source = "printed" if y else "printed_no_year"
+                                if range_start:
+                                    date_source = "printed_range"
                         unit = (unit or "").strip() or None
                         printed_unit = bool(unit and _UNIT_HINT.search(unit))
                         f = _fact(
@@ -526,19 +608,21 @@ def parse_inline_results(
                             hi=None,
                             ref_text=None,
                             arrow=arrow,
-                            when=when,
+                            when=item_when,
                             page=page_no,
                             evidence=line,
                             unreliable=unreliable,
                         )
                         if not f:
                             continue
-                        meta = {"date_source": "printed" if dm else "report"}
-                        if ranged:
+                        meta = {**(f.get("metadata") or {}), "date_source": date_source}
+                        if ranged and not seg_date:
                             meta["date_source"] = "printed_range"  # "5.–6.5.2027": day unsure
+                        if seg_date and seg_date[3]:
+                            meta["date_range_start"] = seg_date[3]
                         if not printed_unit:
                             meta["unit_source"] = "implied"
-                        if not printed_unit or not dm or ranged:
+                        if not printed_unit or meta["date_source"] != "printed":
                             f["verification"] = "unverified"
                         f["metadata"] = meta
                         key = (f["code"], f["occurred_at"], f["value_num"], f["value_text"])

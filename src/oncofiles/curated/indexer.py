@@ -32,7 +32,7 @@ CURATED_FILE_PREFIX = "gdrive:"
 INDEX_ENGINE = "curated-sidecar"
 # Bump when the index derives new data from the same sidecars (entities, facts,
 # titles…): rows indexed by an older version are re-processed once (#603).
-INDEX_VERSION = 8  # v8: comma lists, "(abs X)", text references (#635)
+INDEX_VERSION = 9  # v9: segment dates, ANC, generic flags (#635)
 TEXT_SOURCE_EXTS = {"md", "txt", "csv", "json"}
 MAX_TEXT_SOURCE_BYTES = 512 * 1024
 _PAGE_RE = re.compile(r"^<!-- page (\d+) -->\s*$", re.M)
