@@ -128,7 +128,17 @@ def test_llm_failure_is_reported_not_raised(monkeypatch, local_llm):
 def test_plain_text_and_unsupported():
     assert extract.extract("n.md", "# poznámka".encode()).method == "plain"
     assert not extract.extract("x.zip", b"PK").ok
-    assert extract.extract("d", b"", "application/vnd.google-apps.document").method == "none"
+    assert extract.extract("f", b"", "application/vnd.google-apps.form").method == "none"
+
+
+def test_google_native_export_is_read_as_plain_text():
+    doc = extract.extract(
+        "d.pdf", "\ufeffSpráva 05.08.2026".encode(), "application/vnd.google-apps.document"
+    )
+    assert doc.ok and doc.method == "plain" and doc.engine == "google-export"
+    assert doc.text == "Správa 05.08.2026"  # BOM from Drive's export stripped
+    sheet = extract.extract("s", b"a,b\n1,2", "application/vnd.google-apps.spreadsheet")
+    assert sheet.text.startswith("a,b")
 
 
 def test_corrupt_pdf_is_reported():

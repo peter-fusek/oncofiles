@@ -137,6 +137,22 @@ def download(gdrive, file_id: str) -> bytes:
     return _read(gdrive, _once)
 
 
+def export(gdrive, file_id: str, mime_type: str) -> bytes:
+    """Drive's export of a Google-native file (Docs → text). A read: no write guard."""
+    from googleapiclient.http import MediaIoBaseDownload
+
+    def _once() -> bytes:
+        buf = io.BytesIO()
+        request = gdrive._service.files().export_media(fileId=file_id, mimeType=mime_type)
+        downloader = MediaIoBaseDownload(buf, request)
+        done = False
+        while not done:
+            _, done = downloader.next_chunk()
+        return buf.getvalue()
+
+    return _read(gdrive, _once)
+
+
 def _nfc(value: str) -> str:
     import unicodedata
 
@@ -261,6 +277,10 @@ class DriveOps:
     def download(self, file_id: str) -> bytes:
         self._fresh()
         return download(self.gdrive, file_id)
+
+    def export(self, file_id: str, mime_type: str) -> bytes:
+        self._fresh()
+        return export(self.gdrive, file_id, mime_type)
 
     def create_text(self, folder_id: str, name: str, text: str, mime: str = "text/markdown") -> str:
         self._fresh()
