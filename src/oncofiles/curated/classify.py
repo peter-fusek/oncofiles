@@ -110,7 +110,13 @@ def propose(contract: Contract, text: str) -> dict:
         if "truncated" not in str(exc):
             raise
         # 2026-11-08: 3 of 11 documents ran out of reasoning budget. One retry
-        # with twice the budget (and time) before the document goes to review.
+        # with twice the budget (and time) before the document goes to review,
+        # but only if the context window actually leaves more room than before.
+        est = llm.estimate_prompt_tokens(system, user)
+        if llm.clamp_budget(2 * llm.REASONING_BUDGET, est) <= llm.clamp_budget(
+            llm.REASONING_BUDGET, est
+        ):
+            raise
         answer = llm.chat(
             system,
             user,

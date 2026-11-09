@@ -28,6 +28,33 @@ _THINK_RE = re.compile(r"<think>.*?</think>", re.S)
 # Room for the model's reasoning *plus* the answer. Measured 2026-11-07 on
 # qwen3.8-27b-mlx: ~2400 reasoning tokens for one classification.
 REASONING_BUDGET = 12_000
+# LM Studio serves the model with a fixed 32K context (macmini invariant):
+# prompt + max_tokens must fit, or the call fails or truncates mid-answer.
+CONTEXT_WINDOW = 32_768
+CONTEXT_MARGIN = 1_024  # chat template, tokeniser drift
+CHARS_PER_TOKEN = 3.0  # Slovak/Czech medical text, measured ~3.0-3.5 (2026-11-09)
+IMAGE_TOKENS = 3_000  # one page PNG at 150 dpi (vision models tile ~28 px patches)
+MIN_ANSWER_TOKENS = 1_500  # below this the model cannot reason and answer
+
+
+def estimate_prompt_tokens(system: str, user_content: list[dict] | str) -> int:
+    """Conservative token estimate for the prompt (no tokenizer available locally)."""
+    chars = len(system)
+    images = 0
+    if isinstance(user_content, str):
+        chars += len(user_content)
+    else:
+        for part in user_content:
+            if part.get("type") == "text":
+                chars += len(part.get("text", ""))
+            else:
+                images += 1
+    return int(chars / CHARS_PER_TOKEN) + images * IMAGE_TOKENS
+
+
+def clamp_budget(max_tokens: int, prompt_tokens: int) -> int:
+    """max_tokens that still fits the context window next to the prompt."""
+    return max(0, min(max_tokens, CONTEXT_WINDOW - prompt_tokens - CONTEXT_MARGIN))
 
 
 class LocalLLMError(RuntimeError):
@@ -66,6 +93,15 @@ def chat(
     """One blocking chat completion; returns the answer text."""
     if not configured():
         raise LocalLLMError("LOCAL_LLM_BASE_URL / LOCAL_LLM_MODEL not set")
+    est = estimate_prompt_tokens(system, user_content)
+    max_tokens = clamp_budget(max_tokens, est)
+    if max_tokens < MIN_ANSWER_TOKENS:
+        # A per-document problem (worded "truncated" so the run is not aborted
+        # as "model down"): the document goes to review, it never loops.
+        raise LocalLLMError(
+            f"local LLM answer truncated: prompt ~{est} tokens leaves no room "
+            f"in the {CONTEXT_WINDOW}-token context"
+        )
     payload = {
         "model": config.LOCAL_LLM_MODEL,
         "temperature": temperature,
@@ -100,7 +136,7 @@ def chat(
         content = choice["message"].get("content")
     except (KeyError, IndexError, ValueError, TypeError, AttributeError) as exc:
         raise LocalLLMError("local LLM returned an unexpected payload") from exc
-    _log_usage(resp, choice, max_tokens, time.monotonic() - t0)
+    _log_usage(resp, choice, max_tokens, est, time.monotonic() - t0)
     if not (content or "").strip() and choice.get("finish_reason") == "length":
         # The whole budget went to reasoning (2026-11-07: 1199/1200 tokens).
         raise LocalLLMError(
@@ -109,7 +145,7 @@ def chat(
     return strip_think(content if isinstance(content, str) else json.dumps(content))
 
 
-def _log_usage(resp, choice: dict, max_tokens: int, seconds: float) -> None:
+def _log_usage(resp, choice: dict, max_tokens: int, est: int, seconds: float) -> None:
     """Token counts per call — numbers only, never prompt or answer text."""
     try:
         usage = resp.json().get("usage") or {}
@@ -118,11 +154,12 @@ def _log_usage(resp, choice: dict, max_tokens: int, seconds: float) -> None:
     details = usage.get("completion_tokens_details") or {}
     logger.info(
         "local llm call: prompt_tokens=%s completion_tokens=%s reasoning_tokens=%s "
-        "max_tokens=%s finish=%s seconds=%.1f",
+        "max_tokens=%s prompt_estimate=%s finish=%s seconds=%.1f",
         usage.get("prompt_tokens"),
         usage.get("completion_tokens"),
         details.get("reasoning_tokens"),
         max_tokens,
+        est,
         choice.get("finish_reason"),
         seconds,
     )
