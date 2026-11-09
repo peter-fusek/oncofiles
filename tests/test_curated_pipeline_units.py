@@ -11,7 +11,7 @@ import httpx
 import pytest
 
 from oncofiles import config
-from oncofiles.curated import classify, extract, llm
+from oncofiles.curated import classify, extract, llm, runner
 from oncofiles.curated.contract import parse_contract
 
 CONTRACT = parse_contract(
@@ -376,3 +376,96 @@ def test_chat_logs_token_usage_but_never_text(local_llm, caplog):
     assert "reasoning_tokens=300" in line and "max_tokens=12000" in line
     assert "finish=stop" in line
     assert "SECRET" not in caplog.text
+
+
+# ── context window clamp (32K fixed in LM Studio) ──
+
+
+def test_clamp_keeps_prompt_plus_budget_inside_the_window():
+    assert llm.clamp_budget(12_000, 4_000) == 12_000
+    assert (
+        llm.clamp_budget(24_000, 8_007)
+        == config.LOCAL_LLM_CONTEXT_WINDOW - 8_007 - llm.CONTEXT_MARGIN
+    )
+    assert llm.clamp_budget(24_000, 40_000) == 0
+
+
+def test_estimate_counts_text_and_images():
+    assert llm.estimate_prompt_tokens("a" * 300, "b" * 300) == 200
+    parts = [{"type": "text", "text": "x" * 30}, {"type": "image_url"}, {"type": "image_url"}]
+    assert llm.estimate_prompt_tokens("", parts) == 10 + 2 * llm.IMAGE_TOKENS
+
+
+def test_chat_sends_clamped_max_tokens(local_llm):
+    seen = []
+    system = "s" * 3 * 20_000  # ~20K tokens of prompt
+    llm.chat(system, "u", client=_client("ok", seen=seen), max_tokens=24_000)
+    sent = json.loads(seen[0].content)["max_tokens"]
+    assert sent + 20_000 + llm.CONTEXT_MARGIN <= config.LOCAL_LLM_CONTEXT_WINDOW + 1
+    assert sent < 24_000
+
+
+def test_chat_refuses_a_prompt_that_leaves_no_room(local_llm):
+    seen = []
+    with pytest.raises(llm.LocalLLMError, match="truncated: prompt"):
+        llm.chat("s" * 3 * 31_000, "u", client=_client("ok", seen=seen))
+    assert seen == []  # never sent
+
+
+def test_propose_skips_the_retry_when_the_window_has_no_more_room(monkeypatch):
+    calls = []
+
+    def fake_chat(system, user, **k):
+        calls.append(k)
+        raise llm.LocalLLMError("local LLM answer truncated: reasoning used the whole budget")
+
+    monkeypatch.setattr(llm, "chat", fake_chat)
+    monkeypatch.setattr(
+        config, "LOCAL_LLM_CONTEXT_WINDOW", 4_000
+    )  # tiny window: 2x budget clamps to 1x
+    with pytest.raises(llm.LocalLLMError):
+        classify.propose(CONTRACT, TEXT)
+    assert len(calls) == 1
+
+
+def test_context_overflow_from_lm_studio_is_a_per_document_failure(local_llm):
+    def handler(request):
+        return httpx.Response(
+            400,
+            json={
+                "error": "The number of tokens to keep from the initial prompt is "
+                "greater than the context length"
+            },
+        )
+
+    with pytest.raises(llm.LocalLLMError) as exc:
+        llm.chat("s", "u", client=httpx.Client(transport=httpx.MockTransport(handler)))
+    assert "truncated" in str(exc.value)
+    assert not runner._llm_down(str(exc.value))  # review path, the run continues
+
+
+def test_other_http_errors_still_mean_the_model_is_down(local_llm):
+    def handler(request):
+        return httpx.Response(400, json={"error": "model not loaded"})
+
+    with pytest.raises(llm.LocalLLMError) as exc:
+        llm.chat("s", "u", client=httpx.Client(transport=httpx.MockTransport(handler)))
+    assert runner._llm_down(str(exc.value))
+
+
+def test_context_window_comes_from_config(monkeypatch):
+    monkeypatch.setattr(config, "LOCAL_LLM_CONTEXT_WINDOW", 65_536)
+    assert llm.clamp_budget(24_000, 30_000) == 24_000
+
+
+def test_propose_does_not_retry_a_context_overflow(monkeypatch):
+    calls = []
+
+    def fake_chat(system, user, **k):
+        calls.append(k)
+        raise llm.LocalLLMError("local LLM answer truncated: context overflow (HTTP 400)")
+
+    monkeypatch.setattr(llm, "chat", fake_chat)
+    with pytest.raises(llm.LocalLLMError):
+        classify.propose(CONTRACT, TEXT)
+    assert len(calls) == 1
