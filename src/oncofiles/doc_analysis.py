@@ -80,6 +80,9 @@ def analyze_document_composition(
     if not text.strip():
         return []
 
+    from oncofiles.curated.indexer import refuse_cloud
+
+    refuse_cloud(document_id, "analyze_document_composition")  # curated: local model only (#603)
     client = _get_client()
     truncated = text[:12000]  # more context for composition analysis
     user_prompt = _wrap_untrusted_document_text(truncated)
@@ -181,6 +184,10 @@ def analyze_consolidation(
     if len(doc_texts) < 2:
         return []
 
+    from oncofiles.curated.indexer import refuse_cloud
+
+    for _doc, _text in doc_texts:  # curated: local model only (#603)
+        refuse_cloud(getattr(_doc, "id", None), "analyze_consolidation")
     client = _get_client()
 
     # Build document summaries for the AI. Each document's text excerpt is
@@ -306,6 +313,9 @@ def analyze_vaccination_events(
     if not text.strip():
         return []
 
+    from oncofiles.curated.indexer import refuse_cloud
+
+    refuse_cloud(document_id, "analyze_vaccination_events")  # curated: local model only (#603)
     client = _get_client()
     truncated = text[:10000]
     user_prompt = _wrap_untrusted_document_text(truncated, label="vaccination_log_text")
@@ -429,6 +439,13 @@ def analyze_document_relationships(
     if not candidates:
         return []
 
+    from oncofiles.curated.indexer import refuse_cloud
+
+    refuse_cloud(doc_id, "analyze_document_relationships")  # curated: local model only (#603)
+    for _c in candidates or []:
+        refuse_cloud(
+            _c.get("id") if isinstance(_c, dict) else None, "analyze_document_relationships"
+        )
     client = _get_client()
 
     # Build candidate descriptions

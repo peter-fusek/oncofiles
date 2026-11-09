@@ -217,7 +217,17 @@ class DocumentMixin:
             ("ai_summary", 2),
             ("ai_tags", 1),
             ("structured_metadata", 1),
+            # Page text (OCR cache / curated sidecars, #603): a report is found
+            # by what it says, not only by its name and summary.
+            (
+                "EXISTS (SELECT 1 FROM document_pages dp "
+                "WHERE dp.document_id = documents.id AND dp.extracted_text",
+                1,
+            ),
         ]
+
+        def _like(field: str) -> str:
+            return f"{field} LIKE ?)" if field.startswith("EXISTS") else f"{field} LIKE ?"
 
         if query.text:
             # Split into terms — all must match somewhere (AND semantics).
@@ -227,7 +237,7 @@ class DocumentMixin:
             terms = query.text.split()
             for term in terms:
                 like_param = f"%{term}%"
-                field_checks = " OR ".join(f"{f} LIKE ?" for f, _ in search_fields)
+                field_checks = " OR ".join(_like(f) for f, _ in search_fields)
                 conditions.append(f"({field_checks})")
                 params.extend([like_param] * len(search_fields))
 
@@ -236,7 +246,7 @@ class DocumentMixin:
             # Score params are separate because they bind to SELECT clause
             # placeholders, which precede WHERE clause placeholders.
             for field, weight in search_fields:
-                term_cases = " OR ".join(f"{field} LIKE ?" for _ in terms)
+                term_cases = " OR ".join(_like(field) for _ in terms)
                 score_parts.append(f"(CASE WHEN ({term_cases}) THEN {weight} ELSE 0 END)")
                 score_params.extend(f"%{t}%" for t in terms)
 
@@ -441,6 +451,7 @@ class DocumentMixin:
         """
         async with self.db.execute(
             "SELECT * FROM documents WHERE ai_processed_at IS NOT NULL "
+            "AND file_id NOT LIKE 'gdrive:%' "  # curated: local model only (#603)
             "AND (structured_metadata IS NULL OR structured_metadata = '' "
             '  OR (structured_metadata NOT LIKE \'%"findings": ["%%\' '
             "      AND structured_metadata NOT LIKE '%\"diagnoses\": [{%%')) "
@@ -457,6 +468,7 @@ class DocumentMixin:
         """Get documents that haven't been AI-processed yet."""
         async with self.db.execute(
             "SELECT * FROM documents WHERE ai_processed_at IS NULL AND deleted_at IS NULL "
+            "AND file_id NOT LIKE 'gdrive:%' "  # curated: local model only (#603)
             "AND patient_id = ? ORDER BY document_date DESC LIMIT ?",
             (patient_id, limit),
         ) as cursor:
@@ -648,6 +660,78 @@ class DocumentMixin:
         )
         await self.db.commit()
         return cursor.rowcount > 0
+
+    # ── Curated read model (#603) ─────────────────────────────────────────
+
+    async def curated_index_state(self, *, patient_id: str) -> dict[str, dict]:
+        """Indexed curated rows of a patient: gdrive_id → {id, sidecar_modified, deleted}."""
+        import json as _json
+
+        async with self.db.execute(
+            "SELECT id, gdrive_id, structured_metadata, deleted_at FROM documents "
+            "WHERE patient_id = ? AND file_id LIKE 'gdrive:%'",
+            (patient_id,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        out: dict[str, dict] = {}
+        for r in rows:
+            r = dict(r)
+            try:
+                meta = _json.loads(r["structured_metadata"] or "{}")
+            except ValueError:
+                meta = {}
+            out[r["gdrive_id"]] = {
+                "id": r["id"],
+                "sidecar_modified": (meta.get("curated") or {}).get("sidecar_modified", ""),
+                "deleted": r["deleted_at"] is not None,
+            }
+        return out
+
+    async def curated_document_ids(self) -> set[int]:
+        """Ids of every curated row (all patients) — loads the cloud guard at startup."""
+        async with self.db.execute(
+            "SELECT id FROM documents WHERE file_id LIKE 'gdrive:%'"
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return {(r["id"] if isinstance(r, dict) else r[0]) for r in rows}
+
+    async def update_curated_document(
+        self,
+        doc_id: int,
+        *,
+        patient_id: str,
+        filename: str,
+        category: str,
+        mime_type: str,
+        size_bytes: int,
+        gdrive_modified_time: str,
+        structured_metadata: str | None,
+        text_fields: dict | None = None,
+    ) -> None:
+        """Refresh an indexed curated row (and undelete it if it reappeared).
+
+        ``text_fields`` (original_filename, document_date, institution,
+        description, ai_summary, ai_tags) only when the sidecar was re-read.
+        """
+        sets = [
+            "filename = ?", "category = ?", "mime_type = ?", "size_bytes = ?",
+            "gdrive_modified_time = ?", "deleted_at = NULL",
+            "ai_processed_at = COALESCE(ai_processed_at, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))",
+            "updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')",
+        ]  # fmt: skip
+        params: list = [filename, category, mime_type, size_bytes, gdrive_modified_time]
+        if structured_metadata is not None:  # None: sidecar unchanged, keep it
+            sets.append("structured_metadata = ?")
+            params.append(structured_metadata)
+        for key, value in (text_fields or {}).items():
+            sets.append(f"{key} = ?")
+            params.append(value)
+        params += [doc_id, patient_id]
+        await self.db.execute(
+            f"UPDATE documents SET {', '.join(sets)} WHERE id = ? AND patient_id = ?",
+            tuple(params),
+        )
+        await self.db.commit()
 
     # ── Lab-related document queries ──────────────────────────────────────
 

@@ -477,12 +477,15 @@ async def _try_download(
 
     Returns (success, content_items, raw_bytes).
     """
-    # 1. Try Files API
-    try:
-        content_bytes = files.download(doc.file_id)
-        return True, _inline_content(doc, content_bytes), content_bytes
-    except Exception:
-        logger.debug("Files API download failed for %s", doc.file_id)
+    # 1. Try Files API — curated documents are never uploaded there (#603)
+    from oncofiles.curated.indexer import is_curated_file_id
+
+    if not is_curated_file_id(doc.file_id):
+        try:
+            content_bytes = files.download(doc.file_id)
+            return True, _inline_content(doc, content_bytes), content_bytes
+        except Exception:
+            logger.debug("Files API download failed for %s", doc.file_id)
 
     # 2. Fallback: Google Drive
     if gdrive and doc.gdrive_id:

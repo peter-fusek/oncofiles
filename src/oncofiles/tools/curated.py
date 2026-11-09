@@ -226,6 +226,8 @@ async def _execute(db, pid: str, gdrive, folder_id: str, opts, *, trigger: str) 
     if not opts.dry_run:
         _remember_text_reviews(pid, report)
         _note_run_outcome(pid, report)
+        if report.get("status") == "ok":
+            await _index_quietly(db, pid)  # the chat tools see the new state (#603)
     status, message = report.get("status", "aborted"), report.get("message", "")
     await db.finish_curated_run(
         row_id, patient_id=pid, status=status, message=message, report=report
@@ -553,6 +555,13 @@ async def curated_nightly_loop(
     except Exception:
         logger.exception("curated: could not mark interrupted runs")
     await asyncio.sleep(startup_grace_s)
+    try:  # read model for the chat tools, once per start (#603)
+        for pid in await db.list_curated_nightly_patients():
+            if _stopping.is_set():
+                break
+            await _index_quietly(db, pid)
+    except Exception:
+        logger.exception("curated: startup index failed")
     while not _stopping.is_set():
         cont, cont_poll, settle, chunk = False, 300, 0, 5
         try:
@@ -634,6 +643,152 @@ async def curated_folder_run(
     return json.dumps(result)
 
 
+# ── read model for the MCP read tools (#603) ─────────────────────────
+
+
+def _parse_drive_time(value: str) -> datetime | None:
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")) if value else None
+    except ValueError:
+        return None
+
+
+async def index_patient(db, pid: str) -> dict:
+    """Mirror a patient's curated folder into the documents table (Drive reads only).
+
+    One row per filed source (``file_id = gdrive:<id>``), sidecar text as its
+    pages, metadata from the sidecar front matter. Rows whose file left the
+    filed folders are soft-deleted. Never uploads, never calls a cloud model.
+    """
+    from oncofiles.curated import indexer
+    from oncofiles.curated.drive_ops import DriveOps
+    from oncofiles.models import Document
+    from oncofiles.server import _create_patient_clients
+
+    clients = await _create_patient_clients(db, pid)
+    if not clients or clients[0] is None:
+        return {"status": "skipped", "reason": "Drive not connected"}
+    gdrive, folder_id = clients[0], clients[3]
+    state = await db.curated_index_state(patient_id=pid)
+    known = {g: s["sidecar_modified"] for g, s in state.items() if not s["deleted"]}
+
+    def _blocking():
+        own = gdrive.dedicated_copy()
+        try:
+            return indexer.scan(DriveOps(own), folder_id, known=known)
+        finally:
+            own.close()
+
+    t0 = time.monotonic()
+    scanned = await asyncio.to_thread(_blocking)
+    stats = {"created": 0, "updated": 0, "unchanged": 0, "removed": 0, "pages": 0, "errors": 0}
+    seen: set[str] = set()
+    ids: list[int] = []
+    for rec in scanned.records:
+        seen.add(rec.gdrive_id)
+        existing = state.get(rec.gdrive_id)
+        meta = None
+        text_fields = None
+        if not rec.unchanged:
+            meta = json.dumps(
+                {
+                    "source": "curated",
+                    "folder": rec.folder,
+                    "curated": {
+                        "sidecar_id": rec.sidecar_id,
+                        "sidecar_modified": rec.sidecar_modified,
+                        "contract_version": scanned.contract_version,
+                    },
+                    **rec.metadata,
+                },
+                ensure_ascii=False,
+            )
+            text_fields = {
+                "original_filename": rec.original_filename,
+                "document_date": rec.document_date.isoformat() if rec.document_date else None,
+                "institution": rec.institution,
+                "description": rec.description,
+                "ai_summary": rec.summary,
+                "ai_tags": json.dumps(rec.tags, ensure_ascii=False),
+            }
+        try:
+            if existing:
+                doc_id = existing["id"]
+            else:
+                doc = await db.insert_document(
+                    Document(
+                        file_id=rec.file_id,
+                        filename=rec.filename,
+                        original_filename=rec.original_filename,
+                        document_date=rec.document_date,
+                        institution=rec.institution,
+                        category=rec.category,
+                        description=rec.description,
+                        mime_type=rec.mime_type,
+                        size_bytes=rec.size_bytes,
+                        gdrive_id=rec.gdrive_id,
+                        gdrive_modified_time=_parse_drive_time(rec.modified),
+                        sync_state="synced",
+                    ),
+                    patient_id=pid,
+                )
+                doc_id = doc.id
+            indexer.register_curated_ids([doc_id])  # before any other job can see it
+            await db.update_curated_document(
+                doc_id,
+                patient_id=pid,
+                filename=rec.filename,
+                category=rec.category.value,
+                mime_type=rec.mime_type,
+                size_bytes=rec.size_bytes,
+                gdrive_modified_time=rec.modified,
+                structured_metadata=meta,
+                text_fields=text_fields,
+            )
+            if not rec.unchanged:
+                await db.delete_ocr_pages(doc_id)
+                for n, page in enumerate(rec.pages, start=1):
+                    if page:
+                        await db.save_ocr_page(doc_id, n, page, indexer.INDEX_ENGINE)
+                        stats["pages"] += 1
+            ids.append(doc_id)
+            key = "unchanged" if rec.unchanged else ("updated" if existing else "created")
+            stats[key] += 1
+        except Exception:
+            stats["errors"] += 1
+            logger.exception("curated index: %s failed for %s", rec.filename, pid)
+    for gdrive_id, row in state.items():
+        if gdrive_id not in seen and not row["deleted"]:
+            await db.delete_document(row["id"], patient_id=pid)  # soft delete
+            stats["removed"] += 1
+    stats.update(
+        status="ok" if not stats["errors"] else "partial",
+        documents=len(ids),
+        seconds=round(time.monotonic() - t0, 1),
+    )
+    logger.info("curated index %s: %s", pid, stats)
+    return stats
+
+
+async def _index_quietly(db, pid: str) -> None:
+    try:
+        await index_patient(db, pid)
+    except Exception:
+        logger.exception("curated index failed for %s", pid)
+
+
+async def curated_index(ctx: Context, patient_slug: str | None = None) -> str:
+    """Refresh the searchable copy of a patient's curated Drive folder (#603).
+
+    Reads the curated folder (filed documents and their sidecars) and updates
+    what search_documents, view_document and the other read tools see. Drive
+    is only read; nothing is uploaded or sent to a cloud model. Runs after
+    every curated run anyway — call it only to force a refresh.
+    """
+    pid = await _resolve_patient_id(patient_slug, ctx)
+    return json.dumps(await index_patient(_get_db(ctx), pid), ensure_ascii=False, default=str)
+
+
 async def curated_folder_status(ctx: Context, patient_slug: str | None = None) -> str:
     """Status and report of the latest curated-folder run for a patient (#562)."""
     pid = await _resolve_patient_id(patient_slug, ctx)
@@ -643,3 +798,4 @@ async def curated_folder_status(ctx: Context, patient_slug: str | None = None) -
 def register(mcp):
     mcp.tool()(curated_folder_run)
     mcp.tool()(curated_folder_status)
+    mcp.tool()(curated_index)

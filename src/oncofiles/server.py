@@ -424,6 +424,14 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict]:
         request_stop,
     )
 
+    # Cloud guard for curated documents (#603): every AI path refuses their ids.
+    try:
+        from oncofiles.curated.indexer import register_curated_ids
+
+        register_curated_ids(await db.curated_document_ids())
+    except Exception:
+        logger.exception("curated: could not load the curated-document guard")
+
     curated_nightly_task = None
     if nightly_settings()[0] and GOOGLE_INTEGRATION_ENABLED:
         curated_nightly_task = asyncio.create_task(curated_nightly_loop(db))

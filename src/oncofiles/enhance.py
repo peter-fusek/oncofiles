@@ -385,6 +385,9 @@ def enhance_document_text(
     if not text.strip():
         return "", "[]"
 
+    from oncofiles.curated.indexer import refuse_cloud
+
+    refuse_cloud(document_id, "enhance_document_text")  # curated: local model only (#603)
     client = _get_client()
     truncated = text[:8000]
     user_prompt = _wrap_untrusted_document_text(truncated)
@@ -570,6 +573,9 @@ def extract_structured_metadata(
             "document_date": None,
         }
 
+    from oncofiles.curated.indexer import refuse_cloud
+
+    refuse_cloud(document_id, "extract_structured_metadata")  # curated: local model only (#603)
     client = _get_client()
     truncated = text[:8000]
     user_prompt = _wrap_untrusted_document_text(truncated)
@@ -825,6 +831,9 @@ def extract_lab_values(
     if not text.strip():
         return None
 
+    from oncofiles.curated.indexer import refuse_cloud
+
+    refuse_cloud(document_id, "extract_lab_values")  # curated: local model only (#603)
     client = _get_client()
     truncated = text[:8000]
     user_prompt = _wrap_untrusted_document_text(truncated)
@@ -940,6 +949,9 @@ def generate_filename_description(
     if not text.strip():
         return ""
 
+    from oncofiles.curated.indexer import refuse_cloud
+
+    refuse_cloud(document_id, "generate_filename_description")  # curated: local model only (#603)
     client = _get_client()
     truncated = text[:4000]
     user_prompt = _wrap_untrusted_document_text(truncated)
@@ -1070,6 +1082,9 @@ def classify_document(
     if not text.strip():
         return {"institution_code": None, "category": "other", "document_date": None}
 
+    from oncofiles.curated.indexer import refuse_cloud
+
+    refuse_cloud(document_id, "classify_document")  # curated: local model only (#603)
     client = _get_client()
     truncated = text[:6000]
     user_prompt = _wrap_untrusted_document_text(truncated)
