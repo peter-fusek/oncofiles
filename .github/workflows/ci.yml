@@ -67,6 +67,8 @@ jobs:
           tags: |
             ${{ env.IMAGE }}:${{ github.sha }}
             ${{ env.IMAGE }}:main
+          build-args: |
+            GIT_SHA=${{ github.sha }}
           cache-from: type=gha,scope=oncofiles-arm64
           cache-to: type=gha,scope=oncofiles-arm64,mode=max
 
@@ -93,9 +95,22 @@ jobs:
           oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
           tags: tag:ci
 
+      # Deploy only our own commit (#610): Coolify builds whatever main HEAD is,
+      # so an older run would deploy a newer, maybe not-yet-pushed image.
+      - name: Skip if superseded by a newer commit on main
+        id: head
+        run: |
+          head=$(git ls-remote "https://github.com/${GITHUB_REPOSITORY}.git" refs/heads/main | cut -f1)
+          if [ "$head" != "$GITHUB_SHA" ]; then
+            echo "superseded by ${head:0:7} — the newer run deploys"; echo "current=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "current=true" >> "$GITHUB_OUTPUT"
+          fi
+
       # A deploy kills an in-process curated run (#581): wait for a gap, and
       # fail rather than interrupt (graceful drain to follow, reviewed by infra).
       - name: Wait for no active curated run
+        if: steps.head.outputs.current == 'true'
         env:
           HEALTH_URL: ${{ secrets.HEALTH_URL || 'https://oncofiles.com/health' }}
         run: |
@@ -111,6 +126,7 @@ jobs:
           exit 1
 
       - name: Trigger Coolify deploy and wait
+        if: steps.head.outputs.current == 'true'
         env:
           COOLIFY_URL: ${{ secrets.COOLIFY_URL }}
           COOLIFY_APP_UUID: ${{ secrets.COOLIFY_APP_UUID }}
@@ -136,14 +152,17 @@ jobs:
 
       # Pred prepnutím DNS nastav secret HEALTH_URL na tailnet adresu (sslip.io), potom ho zmaž (default https://oncofiles.com/health)
       - name: Smoke test /health
+        if: steps.head.outputs.current == 'true'
         env:
           HEALTH_URL: ${{ secrets.HEALTH_URL || 'https://oncofiles.com/health' }}
         run: |
           set -euo pipefail
-          for i in $(seq 1 12); do
-            if curl -fsS -m 10 "$HEALTH_URL" | jq -e '.status == "ok"' >/dev/null; then
-              echo "$HEALTH_URL OK"; exit 0
+          want="${GITHUB_SHA:0:7}"
+          for i in $(seq 1 18); do
+            got=$(curl -fsS -m 10 "$HEALTH_URL" | jq -r 'select(.status == "ok") | .commit // empty' || true)
+            if [ "$got" = "$want" ]; then
+              echo "$HEALTH_URL OK, running $got"; exit 0
             fi
-            sleep 10
+            echo "[$i] running '${got:-?}', want $want"; sleep 10
           done
-          echo "$HEALTH_URL did not return ok"; exit 1
+          echo "$HEALTH_URL is not running $want"; exit 1

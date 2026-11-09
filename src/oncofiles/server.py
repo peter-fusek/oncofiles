@@ -253,7 +253,7 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict]:
     init_rss_tracking()
     started_at = datetime.now(UTC)
     deploy_id = os.environ.get("RAILWAY_DEPLOYMENT_ID", "")
-    git_sha = os.environ.get("RAILWAY_GIT_COMMIT_SHA", "")
+    git_sha = os.environ.get("ONCOFILES_GIT_SHA") or os.environ.get("RAILWAY_GIT_COMMIT_SHA", "")
     logger.info(
         "Starting Oncofiles MCP server (transport=%s, deploy=%s, commit=%s)",
         MCP_TRANSPORT,
@@ -4012,7 +4012,10 @@ async def health(request: Request) -> JSONResponse:
         sys.exit(1)
 
     result: dict = {"status": "ok", "version": VERSION}
-    commit = os.environ.get("RAILWAY_GIT_COMMIT_SHA", "")[:7]
+    # Build-time commit (Dockerfile ARG GIT_SHA, #610); RAILWAY_* kept as fallback.
+    commit = (os.environ.get("ONCOFILES_GIT_SHA") or os.environ.get("RAILWAY_GIT_COMMIT_SHA", ""))[
+        :7
+    ]
     if commit:
         result["commit"] = commit
     try:

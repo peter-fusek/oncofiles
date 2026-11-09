@@ -34,3 +34,18 @@ def test_health_does_not_iterate_patients_for_response():
     source = inspect.getsource(health)
     # Should not build a dict keyed by pid for the response.
     assert "pid: count" not in source
+
+
+def test_health_reports_the_build_commit():
+    """#610: /health shows the image's own commit (Dockerfile ARG GIT_SHA →
+    ONCOFILES_GIT_SHA) so CI can verify it deployed its own commit."""
+    import inspect
+    from pathlib import Path
+
+    from oncofiles.server import health
+
+    assert "ONCOFILES_GIT_SHA" in inspect.getsource(health)
+    root = Path(__file__).resolve().parents[1]
+    assert "ONCOFILES_GIT_SHA=$GIT_SHA" in (root / "Dockerfile").read_text()
+    ci = (root / ".github/workflows/ci.yml").read_text()
+    assert "GIT_SHA=${{ github.sha }}" in ci and "steps.head.outputs.current" in ci
