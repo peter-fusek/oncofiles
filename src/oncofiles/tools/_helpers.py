@@ -477,12 +477,15 @@ async def _try_download(
 
     Returns (success, content_items, raw_bytes).
     """
-    # 1. Try Files API
-    try:
-        content_bytes = files.download(doc.file_id)
-        return True, _inline_content(doc, content_bytes), content_bytes
-    except Exception:
-        logger.debug("Files API download failed for %s", doc.file_id)
+    # 1. Try Files API — curated documents are never uploaded there (#603)
+    from oncofiles.curated.indexer import is_curated_file_id
+
+    if not is_curated_file_id(doc.file_id):
+        try:
+            content_bytes = files.download(doc.file_id)
+            return True, _inline_content(doc, content_bytes), content_bytes
+        except Exception:
+            logger.debug("Files API download failed for %s", doc.file_id)
 
     # 2. Fallback: Google Drive
     if gdrive and doc.gdrive_id:
@@ -564,6 +567,13 @@ async def _ensure_ocr_text(
             for page_num, text in enumerate(pdf_texts, start=1):
                 await db.save_ocr_page(doc.id, page_num, text, "pymupdf-native")
             return pdf_texts
+
+    # Curated documents get their text only from the local-model sidecar
+    # (indexed as document_pages); never a cloud Vision OCR fallback (#603).
+    from oncofiles.curated.indexer import is_curated_file_id
+
+    if is_curated_file_id(doc.file_id):
+        return []
 
     # 3. Fall back to Vision OCR for scanned docs / images
     images = [item for item in content_items if isinstance(item, Image)]

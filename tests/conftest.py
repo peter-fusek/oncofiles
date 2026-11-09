@@ -76,3 +76,14 @@ def admin_scope():
     tok = _verified_caller_is_admin.set(True)
     yield
     _verified_caller_is_admin.reset(tok)
+
+
+@pytest.fixture(autouse=True)
+def _reset_curated_cloud_guard():
+    """The curated-document cloud guard (#603) is process-global: ids from one
+    test's in-memory DB must not refuse another test's documents."""
+    from oncofiles.curated import indexer
+
+    yield
+    indexer._curated_ids.clear()
+    indexer.mark_guard_ready()

@@ -249,6 +249,11 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict]:
         deploy_id[:12] or "local",
         git_sha[:7] or "dev",
     )
+    # Where the data lives, stated at every start (never the URL itself):
+    # PHI from curated folders must stay on this host unless Turso is configured.
+    logger.info(
+        "Database mode: %s", "TURSO (remote/replica)" if TURSO_DATABASE_URL else "local file"
+    )
     if TURSO_DATABASE_URL:
         from oncofiles.config import TURSO_REPLICA_PATH
 
@@ -417,12 +422,26 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict]:
         )
 
     # Curated-folder nightly runs (#573): independent of SYNC_ENABLED/APScheduler.
+    # Cloud guard for curated documents (#603): every AI path refuses their ids.
+    from oncofiles.curated.indexer import (
+        mark_guard_failed,
+        mark_guard_ready,
+        register_curated_ids,
+    )
     from oncofiles.tools.curated import (
         continuous_settings,
         curated_nightly_loop,
         nightly_settings,
         request_stop,
     )
+
+    try:
+        register_curated_ids(await db.curated_document_ids())
+        mark_guard_ready()
+    except Exception:
+        # Fail closed: refuse every cloud-AI call on documents until it loads.
+        mark_guard_failed()
+        logger.exception("curated: guard not loaded — cloud AI refused for documents")
 
     curated_nightly_task = None
     if nightly_settings()[0] and GOOGLE_INTEGRATION_ENABLED:
