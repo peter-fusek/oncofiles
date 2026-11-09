@@ -37,16 +37,56 @@ def _source(row: dict) -> dict:
     }
 
 
+def _meta(row: dict) -> dict:
+    try:
+        return json.loads(row.get("metadata_json") or "{}")
+    except ValueError:
+        return {}
+
+
 def _dedupe(rows: list[dict]) -> tuple[list[dict], int]:
     """One measurement counts once (#635).
 
     * the same code, day and value from two documents (a duplicated lab
       sheet) is one point; the verified/machine one is kept;
-    * a value quoted in a report (``date_source=report``) equal to an earlier
-      value of the same code from another document within 60 days is a
-      quote, not a new measurement.
+    * values quoted in a report (``date_source=report``) are a quote of an
+      earlier draw only when at least TWO codes of the same report day equal
+      that draw's values (same source document, within 60 days). One equal
+      number alone (HGB 124 twice) is a coincidence, not a quote.
     """
     from datetime import date as _date
+
+    def day_of(r: dict) -> str:
+        return (r["effective_at"] or "")[:10]
+
+    def as_date(day: str):
+        try:
+            return _date.fromisoformat(day)
+        except ValueError:
+            return None
+
+    # every draw (source document, day) → {code: value}
+    draws: dict[tuple, dict] = {}
+    for r in rows:
+        if r["value_canonical"] is not None:
+            draws.setdefault((r["source_document_id"], day_of(r)), {})[r["code"]] = r[
+                "value_canonical"
+            ]
+
+    def quoted(r: dict) -> bool:
+        if _meta(r).get("date_source") != "report" or r["value_canonical"] is None:
+            return False
+        d0 = as_date(day_of(r))
+        own = draws.get((r["source_document_id"], day_of(r)), {})
+        for (doc, day), values in draws.items():
+            d1 = as_date(day)
+            if doc == r["source_document_id"] or not d0 or not d1 or not 0 < (d0 - d1).days <= 60:
+                continue
+            if values.get(r["code"]) != r["value_canonical"]:
+                continue
+            if sum(1 for c, v in own.items() if values.get(c) == v) >= 2:
+                return True
+        return False
 
     rank = {"verified": 0, "corrected": 0, "machine": 1, "unverified": 2}
     rows = sorted(
@@ -57,29 +97,10 @@ def _dedupe(rows: list[dict]) -> tuple[list[dict], int]:
     seen: set = set()
     dropped = 0
     for r in rows:
-        day = (r["effective_at"] or "")[:10]
-        key = (r["code"], day, r["value_canonical"], r["value_text"])
-        if key in seen:
+        key = (r["code"], day_of(r), r["value_canonical"], r["value_text"])
+        if key in seen or quoted(r):
             dropped += 1
             continue
-        try:
-            meta = json.loads(r.get("metadata_json") or "{}")
-        except ValueError:
-            meta = {}
-        if meta.get("date_source") == "report" and r["value_canonical"] is not None:
-            try:
-                d0 = _date.fromisoformat(day)
-            except ValueError:
-                d0 = None
-            if d0 and any(
-                k["code"] == r["code"]
-                and k["value_canonical"] == r["value_canonical"]
-                and k["source_document_id"] != r["source_document_id"]
-                and 0 <= (d0 - _date.fromisoformat((k["effective_at"] or day)[:10])).days <= 60
-                for k in kept
-            ):
-                dropped += 1
-                continue
         seen.add(key)
         kept.append(r)
     return kept, dropped
@@ -220,6 +241,7 @@ async def fact_series(
             ),
             "ref": [r["ref_range_low"], r["ref_range_high"]],
             "flag": r["flag"],
+            "flag_source": _meta(r).get("flag_source") or ("lab" if r["flag"] else None),
             "verification": r["verification"],
             "evidence": r["evidence"],
             "source": _source(r),
