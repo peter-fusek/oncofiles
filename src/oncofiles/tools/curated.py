@@ -397,7 +397,12 @@ async def nightly_for_patient(
     return reports
 
 
-STARTUP_GRACE_S = 300  # let a rolling deploy retire the old container first (#581)
+# During a rolling deploy the old and new containers run side by side for a
+# few seconds. That is safe only because the new curated loop waits this long
+# before its first run, and patient_lock() is in-process: it cannot serialize
+# two containers. Never shorten this below the deploy overlap, and never run
+# extra replicas or workers (RUNBOOK, Oncofiles section; #581, #612).
+STARTUP_GRACE_S = 300
 
 
 # ── continuous mode: new files processed within minutes ───────────────
