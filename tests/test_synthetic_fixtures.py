@@ -13,7 +13,8 @@ from pathlib import Path
 
 TESTS = Path(__file__).parent
 LAB_LIKE = re.compile(
-    r"(Odber|Odobran|Prijat|\[10\^9|ng/ml|µmol|umol|mmol/l|\bg/l\b|\.\.\.\d|\| *(WBC|HGB|PLT|CEA)\b)",
+    r"(Odber|Odobran|Prijat|\[10\^9|ng/ml|µmol|umol|mmol/l|\bg/l\b"
+    r"|\.\.\.\d|\| *(WBC|HGB|PLT|CEA)\b)",
     re.I,
 )
 REAL_ERA_DATE = re.compile(
