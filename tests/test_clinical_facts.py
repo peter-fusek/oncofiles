@@ -150,6 +150,8 @@ async def test_index_builds_entities_facts_and_timeline(db, lab_env):
     assert series["WBC"]["stats"]["max"] == 11.42
     assert series["PLT"]["values"] == [] and len(series["PLT"]["unverified"]) == 1
     assert series["PLT"]["stats"] is None  # an unverified value never becomes a statistic
+    assert series["PLT"]["latest_any"]["verification"] == "unverified"  # newest, labelled
+    assert series["WBC"]["latest_any"]["value"] == 11.42
 
     tl = json.loads(await cf.timeline(ctx))["rows"]
     kinds = {r["kind"] for r in tl}
@@ -529,3 +531,88 @@ async def test_inline_differential_percent_vs_absolute_and_plausibility(db):
     assert by["LYMPH_PCT"]["value_num"] == 24.8 and by["LYMPH"]["value_num"] == 1.51
     assert "PLT" not in by  # 4870 ×10^9/L is implausible: never stored under PLT
     assert sum(1 for f in facts if f["code"] == "WBC") == 1  # duplicate line counted once
+
+
+# ── round 3 (#635 R3 retest): comma lists, "(abs X)", text references ──
+
+
+async def test_inline_comma_lists_arrows_and_abs_counts(vocab):
+    """Items after "krv EDTA:" are comma-separated; arrows are flags;
+    "Neutrofily 58,1 (abs 3,02)" is the percentage AND the absolute count."""
+    from oncofiles.curated.facts_rules import parse_inline_results
+
+    text = (
+        "Laboratórne 14.08.2027 (sérum): CEA 12,4; CA 19-9 77,0; kreatinín 58; "
+        "krv EDTA: WBC 2,95↓, HGB 121, PLT 233, NEUT abs. 0,84↓.\n"
+        "Lab 28.08.2027 (krv EDTA): WBC 5,40; HGB 125; Neutrofily 58,1 (abs 3,02); "
+        "Lymfocyty 30,2; PLT 241.\n"
+    )
+    facts = parse_inline_results([text], vocab, report_date="2027-09-01")
+    got = {(f["code"], f["occurred_at"]): f for f in facts}
+    assert got[("WBC", "2027-08-14")]["value_num"] == 2.95
+    assert got[("WBC", "2027-08-14")]["flag"] == "L"  # "↓" printed next to the value
+    assert got[("PLT", "2027-08-14")]["value_num"] == 233
+    assert got[("NEUT", "2027-08-14")]["value_num"] == 0.84  # "NEUT abs." is the count
+    assert got[("NEUT_PCT", "2027-08-28")]["value_num"] == 58.1
+    assert got[("NEUT", "2027-08-28")]["value_num"] == 3.02
+    assert got[("PLT", "2027-08-28")]["value_num"] == 241  # trailing "." stripped
+    assert all(f["verification"] == "unverified" for f in facts)  # units are implied
+
+
+async def test_inline_date_range_is_never_a_printed_day(vocab):
+    from oncofiles.curated.facts_rules import parse_inline_results
+
+    line = "Laboratórne 3.–4.09.2027: CEA 9,1 ug/l; KREA S 60,0 umol/l; NA v sére 140,0 mmol/l"
+    facts = parse_inline_results([line], vocab, report_date="2027-09-10")
+    assert facts and all(f["metadata"]["date_source"] == "printed_range" for f in facts)
+    assert all(f["verification"] == "unverified" for f in facts)
+
+
+async def test_inline_prose_with_parentheses_is_not_results(vocab):
+    from oncofiles.curated.facts_rules import parse_inline_results
+
+    line = "Kontrola: WBC 9,90 (zvýšené, pooperačne), HGB 101 (anémia), PLT 455 (trombocytóza)"
+    assert parse_inline_results([line], vocab, report_date="2027-09-10") == []
+
+
+async def test_text_reference_under_okb_row_and_in_markdown_table(vocab):
+    from oncofiles.curated.facts_rules import parse_markdown_table
+
+    okb = OKB_TEXT.replace(
+        "/\nCA 19-9",
+        "/\n    refer. medze: nefajčiar: < 3,0 ng/ml, fajčiar < 6 ng/ml\nCA 19-9",
+        1,
+    )
+    cea = {f["code"]: f for f in parse_okb([okb], vocab)}["CEA"]
+    assert cea["ref_high"] == 3.0 and cea["flag"] == "H"  # strictest bound
+    assert "fajčiar" in cea["ref_text"]
+
+    md = (
+        "Odobrané: 07.09.2027 07:40\n| Test | Hodnota | Jednotky | Ref. medze | |\n"
+        "|---|---|---|---|---|\n| CEA v sére | 2.2 | ng/ml | nefajčiar <3,0; fajčiar <6 | |\n"
+        "| CA 19-9 v sére | 41.5 | U/ml | 0.0 - 30.9 | |\n"
+    )
+    by = {f["code"]: f for f in parse_markdown_table([md], vocab)}
+    assert by["CEA"]["ref_high"] == 3.0 and by["CEA"]["flag"] is None
+    assert by["CA19_9"]["flag"] == "H"
+
+
+async def test_inline_vital_signs_and_continuation_lines(vocab):
+    from oncofiles.curated.facts_rules import parse_inline_results
+
+    vitals = "Objektívne: TK 125/80, P 74, SpO2 97%, TT 36,7. Lab 2.9.2027: K 4,1, NA 139, CL 101"
+    assert parse_inline_results([vitals], vocab, report_date="2027-09-10") == []
+    stats = "In the trial cohort, OS 21.3 mo; HR 0.71; 95% CI 0.55-0.92; P .009; K 4.0; NA 139"
+    assert parse_inline_results([stats], vocab, report_date="2027-09-10") == []
+    # a wrapped line that starts with the previous line's last value keeps its items
+    cont = "Lab 9.9.2027: WBC 5,1; HGB 128; PLT 210; MONO 0,6\n0,41; SII 512,3; Ne/Ly ratio 2,10"
+    codes = {f["code"] for f in parse_inline_results([cont], vocab, report_date="2027-09-10")}
+    assert {"SII", "NLR"} <= codes
+
+
+async def test_inline_note_after_value_in_semicolon_list(vocab):
+    from oncofiles.curated.facts_rules import parse_inline_results
+
+    line = "Lab 6.9.2027: **CEA 14,2; CA 19-9 812,4** (zakrúžkované); WBC 5,0; HGB 126"
+    by = {f["code"]: f for f in parse_inline_results([line], vocab, report_date="2027-09-10")}
+    assert by["CA19_9"]["value_num"] == 812.4
