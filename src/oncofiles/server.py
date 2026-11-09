@@ -5878,32 +5878,38 @@ async def api_cost_leaderboard(request: Request) -> JSONResponse:
 
 @mcp.custom_route("/api/bug-report", methods=["POST"])
 async def api_bug_report(request: Request) -> JSONResponse:
-    """Create a GitHub issue from dashboard bug report with full context."""
-    from oncofiles.config import GITHUB_REPO, GITHUB_TOKEN
+    """File a dashboard bug report as an issue in a **private** repository.
+
+    Privacy (2026-11-09, #621): the dashboard shows patient documents, so no
+    screenshot and no page state ever leave the server. Reports go only to
+    ``BUG_REPORT_REPO`` (no default), and only after GitHub confirms that the
+    repository is private; otherwise the report is refused (fail closed).
+    """
+    from urllib.parse import urlsplit
+
+    import httpx
+
+    from oncofiles.config import BUG_REPORT_REPO, GITHUB_TOKEN
 
     err = _check_dashboard_auth(request)
     if err:
         return err
-
-    if not GITHUB_TOKEN:
-        return JSONResponse({"error": "GITHUB_TOKEN not configured"}, status_code=503)
+    if not (GITHUB_TOKEN and BUG_REPORT_REPO):
+        return JSONResponse({"error": "bug reports are not configured"}, status_code=503)
 
     try:
         body = await request.json()
-        title = body.get("title", "Dashboard bug report")[:120]
-        description = body.get("description", "")[:1000]
-        page_url = body.get("page_url", "")
-        page_section = body.get("page_section", "")
-        page_state = body.get("page_state", "")[:5000]
-        console_errors = body.get("console_errors", "")[:2000]
-        screenshot_b64 = body.get("screenshot", "")
-        user_agent = body.get("user_agent", "")
+        title = str(body.get("title", "Dashboard bug report"))[:120]
+        description = str(body.get("description", ""))[:1000]
+        page_path = urlsplit(str(body.get("page_url", ""))).path[:200]  # no query / fragment
+        page_section = str(body.get("page_section", ""))[:80]
+        user_agent = str(body.get("user_agent", ""))[:100]
+        console_errors = str(body.get("console_errors", ""))[:1000]
+        # Deliberately ignored: body["screenshot"], body["page_state"] (patient data).
 
-        # Sanitize user inputs for markdown (prevent injection)
         def _esc(s: str) -> str:
             return s.replace("|", "\\|").replace("`", "\\`")
 
-        # Build structured issue body for Claude Code
         issue_body = f"""## Bug Report (Dashboard)
 
 ### Description
@@ -5914,89 +5920,43 @@ async def api_bug_report(request: Request) -> JSONResponse:
 ### Context
 | Field | Value |
 |-------|-------|
-| Page | `{_esc(page_url)}` |
+| Page | `{_esc(page_path)}` |
 | Section | `{_esc(page_section)}` |
-| User Agent | `{_esc(user_agent[:100])}` |
+| User Agent | `{_esc(user_agent)}` |
 | Reported | {datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC")} |
-
-### Page State
-```json
-{page_state}
-```
 
 ### Console Errors
 ```
 {console_errors or "None"}
 ```
+
+_No screenshot or page data is attached: the dashboard shows patient documents._
 """
-        # Upload screenshot if provided
-        screenshot_url = ""
-        if screenshot_b64 and len(screenshot_b64) < 5_000_000:
-            ts = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
-            img_path = f".github/screenshots/bug_{ts}.png"
-            try:
-                import httpx
-
-                async with httpx.AsyncClient(timeout=15.0) as client:
-                    resp = await client.put(
-                        f"https://api.github.com/repos/{GITHUB_REPO}/contents/{img_path}",
-                        headers={
-                            "Authorization": f"Bearer {GITHUB_TOKEN}",
-                            "Accept": "application/vnd.github+json",
-                        },
-                        json={
-                            "message": f"Bug screenshot {ts}",
-                            "content": screenshot_b64,
-                            "branch": "main",
-                        },
-                    )
-                    if resp.status_code in (200, 201):
-                        dl = resp.json().get("content", {}).get("download_url", "")
-                        if dl:
-                            screenshot_url = dl
-            except Exception:
-                logger.warning("Failed to upload bug screenshot", exc_info=True)
-
-        if screenshot_url:
-            issue_body += f"\n### Screenshot\n![screenshot]({screenshot_url})\n"
-
-        issue_body += """
-### For Claude Code
-Fix file: `src/oncofiles/dashboard.html`
-- Check the Page State JSON for the data that was displayed
-- Check Console Errors for JS exceptions
-- Reproduce by navigating to the reported Page/Section
-"""
-
-        # Create GitHub issue
-        import httpx
-
+        headers = {
+            "Authorization": f"Bearer {GITHUB_TOKEN}",
+            "Accept": "application/vnd.github+json",
+        }
         async with httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.post(
-                f"https://api.github.com/repos/{GITHUB_REPO}/issues",
-                headers={
-                    "Authorization": f"Bearer {GITHUB_TOKEN}",
-                    "Accept": "application/vnd.github+json",
-                },
-                json={
-                    "title": f"[Dashboard Bug] {title}",
-                    "body": issue_body,
-                    "labels": ["bug", "dashboard"],
-                },
+            repo = await client.get(
+                f"https://api.github.com/repos/{BUG_REPORT_REPO}", headers=headers
             )
-            if resp.status_code == 201:
-                issue_url = resp.json().get("html_url", "")
-                logger.info("Bug report created: %s", issue_url)
-                return JSONResponse({"ok": True, "issue_url": issue_url})
-            else:
-                logger.error(
-                    "GitHub issue creation failed: %d %s", resp.status_code, resp.text[:200]
-                )
+            if repo.status_code != 200 or repo.json().get("private") is not True:
+                logger.error("Bug report refused: %s is not a private repository", BUG_REPORT_REPO)
                 return JSONResponse(
-                    {"error": f"GitHub API error: {resp.status_code}"},
-                    status_code=502,
+                    {"error": "bug report target is not a private repository"}, status_code=503
                 )
-
+            resp = await client.post(
+                f"https://api.github.com/repos/{BUG_REPORT_REPO}/issues",
+                headers=headers,
+                json={"title": f"[Dashboard Bug] {title}", "body": issue_body,
+                      "labels": ["bug", "dashboard"]},
+            )  # fmt: skip
+        if resp.status_code == 201:
+            issue_url = resp.json().get("html_url", "")
+            logger.info("Bug report created: %s", issue_url)
+            return JSONResponse({"ok": True, "issue_url": issue_url})
+        logger.error("GitHub issue creation failed: %d %s", resp.status_code, resp.text[:200])
+        return JSONResponse({"error": f"GitHub API error: {resp.status_code}"}, status_code=502)
     except Exception:
         logger.exception("Bug report endpoint error")
         return JSONResponse({"error": "internal error"}, status_code=500)
