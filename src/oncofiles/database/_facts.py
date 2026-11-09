@@ -406,3 +406,14 @@ class FactsMixin:
             "WHERE d.id = ? AND d.patient_id = ? AND d.deleted_at IS NULL",
             (document_id, patient_id),
         )
+
+    async def latest_any_rows(self, *, patient_id: str) -> list[dict]:
+        """Newest value per code, whatever its verification (shown with it)."""
+        async with self.db.execute(
+            "SELECT s.* FROM fact_series_v s WHERE s.patient_id = ? AND s.code IS NOT NULL "
+            "AND s.effective_at = (SELECT MAX(s2.effective_at) FROM fact_series_v s2 "
+            "WHERE s2.patient_id = s.patient_id AND s2.code = s.code) "
+            "ORDER BY s.category, s.code",
+            (patient_id,),
+        ) as cur:
+            return _rows(await cur.fetchall())

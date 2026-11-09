@@ -27,9 +27,9 @@ ocr_engine: "qwen-local"   # inline comment
 ---
 
 <!-- page 1 -->
-Hemoglobin 105 g/l
+Hemoglobin 98 g/l
 <!-- page 2 -->
-Leukocyty 10.89
+Leukocyty 9.37
 """
 
 FILED = "20260805-JanaNovakova-NOU-Labs-Novak-KlinikaOnkohematologie.pdf"
@@ -55,7 +55,7 @@ def test_parse_sidecar_front_matter_and_pages():
     assert front["diagnoses"] == ["C18.7"]
     assert front["handwritten"] is False
     assert front["ocr_engine"] == "qwen-local"  # comment stripped
-    assert pages == ["Hemoglobin 105 g/l", "Leukocyty 10.89"]
+    assert pages == ["Hemoglobin 98 g/l", "Leukocyty 9.37"]
 
 
 def test_parse_sidecar_without_front_matter_is_one_page():
@@ -82,7 +82,7 @@ def test_scan_indexes_filed_documents_only():
     assert rec.category is DocumentCategory.LABS
     assert rec.document_date.isoformat() == "2026-08-05"
     assert rec.institution == "NOU"
-    assert rec.pages == ["Hemoglobin 105 g/l", "Leukocyty 10.89"]
+    assert rec.pages == ["Hemoglobin 98 g/l", "Leukocyty 9.37"]
     assert rec.metadata["doctor"] == "MUDr. Novak"
     assert by_name["note.md"].pages == ["# Poznamka\nOtazky pred chemo"]
     assert d.writes == []  # never a write

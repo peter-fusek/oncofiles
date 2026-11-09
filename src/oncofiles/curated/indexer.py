@@ -32,7 +32,7 @@ CURATED_FILE_PREFIX = "gdrive:"
 INDEX_ENGINE = "curated-sidecar"
 # Bump when the index derives new data from the same sidecars (entities, facts,
 # titles…): rows indexed by an older version are re-processed once (#603).
-INDEX_VERSION = 5
+INDEX_VERSION = 6
 TEXT_SOURCE_EXTS = {"md", "txt", "csv", "json"}
 MAX_TEXT_SOURCE_BYTES = 512 * 1024
 _PAGE_RE = re.compile(r"^<!-- page (\d+) -->\s*$", re.M)
@@ -222,6 +222,7 @@ class IndexScan:
     records: list[IndexRecord]
     contract_version: str
     skipped_folders: list[str]
+    org_names: dict[str, str] = field(default_factory=dict)  # README §3 institutions
 
 
 def _record(folder: str, category: DocumentCategory, item: Item) -> IndexRecord:
@@ -314,4 +315,10 @@ def scan(drive, root_id: str, *, known: dict[str, str] | None = None) -> IndexSc
                     _apply_sidecar(rec, front, pages)
                     rec.metadata["text_source"] = True
             records.append(rec)
-    return IndexScan(records, contract.version, skipped)
+    org_names = {
+        m.group(1): m.group(2).strip()
+        for m in re.finditer(
+            r"^([A-Z][A-Za-z0-9]+)\s{2,}([^\n`]*[a-zá-ž][^\n`]*)$", contract.vocab_text, re.M
+        )
+    }
+    return IndexScan(records, contract.version, skipped, org_names)
