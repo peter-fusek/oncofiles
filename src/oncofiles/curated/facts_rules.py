@@ -28,8 +28,9 @@ _DT_RE = re.compile(r"(\d{1,2})\.(\d{1,2})\.(\d{4})(?:\s+(\d{1,2}):(\d{2}))?")
 _BORY_ODBER = re.compile(r"Odber:\s*(\d{1,2}\.\d{1,2}\.\d{4}(?:\s+\d{1,2}:\d{2})?)")
 _OKB_ODOBRANE = re.compile(r"Odobran[ée]:\s*(\d{1,2}\.\d{1,2}\.\d{4}(?:\s+\d{1,2}:\d{2})?)")
 _BORY_ITEM = re.compile(
-    r"^\s*(?P<label>[^\[\]{}]+?)\s*(?:\[(?P<abbr>[^\]]{1,12})\])?\s*\.\.\.\s*"
-    r"(?P<val>[<>]?\s*-?\d+(?:[.,]\d+)?|[A-Za-z0-9+/-]+)\s*(?P<arrow>[▲▼])?\s*"
+    r"^\s*(?P<label>[^\W\d_][^\[\]{}]{0,60}?)\s*(?:\[(?P<abbr>[^\]]{1,12})\])?\s*"
+    r"(?<!\.)\.\.\.(?!\.)\s*"
+    r"(?P<val>\d\++(?=\s|$|\[)|[<>]?\s*-?\d+(?:[.,]\d+)?|[A-Za-z0-9+/-]+)\s*(?P<arrow>[▲▼])?\s*"
     r"(?:\[(?P<unit>[^\]]+)\])?\s*(?:\{\s*(?P<lo>-?[\d.,]+)\s*-\s*(?P<hi>-?[\d.,]+)\s*\})?"
 )
 _NUM = r"[<>]?\s*-?\d+(?:[.,]\d+)?"
@@ -46,10 +47,13 @@ def _strip_accents(s: str) -> str:
 
 def norm_label(s: str) -> str:
     s = _strip_accents(s).lower().strip()
+    s = re.sub(r"^[^a-z0-9]+", "", s)  # "; S-Chloridy" → "s-chloridy"
     s = re.sub(r"\s+v\s+(sere|plazme|krvi|moci)$", "", s)
     s = re.sub(r"^[sbp]\s*-\s*", "", s)  # S-Glukóza, B-…, P-…
+    s = re.sub(r"^u\s*-\s*", "u-", s)  # "U- Krv" == "U-Krv"
+    s = s.replace(".", " ")  # "abs.počet" == "abs. počet"
     s = re.sub(r"\s+", " ", s)
-    return s.strip(" .:")
+    return s.strip(" :")
 
 
 def _num(s: str | None) -> float | None:
@@ -96,6 +100,38 @@ class Vocabulary:
         return None
 
 
+# Lines that are never document data: reviewer/agent/README notes written into
+# older sidecars, form placeholders, staff sign-offs, software versions.
+_NOT_DATA = re.compile(
+    r"^\s*(\*\*|>|#|NOTE\b|Note\b)|\(agent\)|README|Identical content|doctor is\b|"
+    r"Tel\.|telef|build \d|v\u00fdsledky uvo\u013enil|uvo\u013enil\(a\)|izol\u00e1cia od|"
+    r"Vysledok:|V\u00fdsledok:|\.{4,}|^\W*$",
+    re.I,
+)
+_QUALITATIVE = re.compile(
+    r"^(negat\w*|pozit\w*|neg|pos|stopy|\+{1,4}|[1-4]\+|norm\w*|nehodnoti\w*|\d+-\d+)$", re.I
+)
+_UNIT_HINT = re.compile(
+    r"(/|\^|%|\bg\b|\bfl\b|\bpg\b|\bs\b|kat|mol|\barb\b|mosm|cm3|mmhg|\bkg\b|\bcm\b)",
+    re.I,
+)
+_DOSING = re.compile(r"mg\s*/\s*m2|mg/m\u00b2|\bmg\b|\bml/h\b", re.I)
+
+
+def _plausible(fact: dict, code_row: dict | None) -> bool:
+    """A lab fact needs a known code, or a number with a lab-like unit, or a
+    known qualitative result. Everything else is not a fact (#603 review)."""
+    if _NOT_DATA.search(fact["evidence"]) or _NOT_DATA.search(fact["label"]):
+        return False
+    if len(fact["label"]) > 60 or not re.match(r"[^\W\d_]", fact["label"]):
+        return False
+    if code_row:
+        return True
+    if fact["value_num"] is not None:
+        return bool(fact["unit"]) and bool(_UNIT_HINT.search(fact["unit"]))
+    return bool(fact["value_text"] and _QUALITATIVE.match(fact["value_text"].strip()))
+
+
 def _flag(value: float | None, lo: float | None, hi: float | None, arrow: str | None) -> str | None:
     if arrow == "▲":
         return "H"
@@ -110,7 +146,7 @@ def _flag(value: float | None, lo: float | None, hi: float | None, arrow: str | 
     return None
 
 
-def _fact(
+def _fact(  # noqa: PLR0913
     vocab: Vocabulary,
     *,
     label: str,
@@ -125,7 +161,7 @@ def _fact(
     page: int,
     evidence: str,
     unreliable: bool,
-) -> dict:
+) -> dict | None:
     code_row = vocab.match(label, abbr)
     value = _num(raw_value)
     numeric = value is not None and re.fullmatch(_NUM, raw_value.strip()) is not None
@@ -138,8 +174,13 @@ def _fact(
             value_canonical = value
         elif uk in conv:
             value_canonical = round(value * float(conv[uk]), 6)
-    return {
-        "category": (code_row or {}).get("category", "lab"),
+    unit_s = unit.strip() if unit else None
+    if not code_row and unit_s and _DOSING.search(unit_s + " " + label):
+        category = "medication"  # chemo dosing lines are not lab values
+    else:
+        category = (code_row or {}).get("category", "lab")
+    fact = {
+        "category": category,
         "code": code_row["code"] if code_row else None,
         "label": label.strip(),
         "value_num": value if numeric else None,
@@ -156,6 +197,9 @@ def _fact(
         "evidence": evidence.strip()[:300],
         "verification": "unverified" if (unreliable or "[?]" in evidence) else "machine",
     }
+    if category == "medication":
+        return fact if not _NOT_DATA.search(evidence) else None
+    return fact if _plausible(fact, code_row) else None
 
 
 def parse_bory(pages: list[str], vocab: Vocabulary, *, unreliable: bool = False) -> list[dict]:
@@ -166,30 +210,30 @@ def parse_bory(pages: list[str], vocab: Vocabulary, *, unreliable: bool = False)
             if m := _BORY_ODBER.search(line):
                 when = _iso(m.group(1))
                 continue
-            if "..." not in line:
+            if "..." not in line or _NOT_DATA.match(line):
                 continue
             body = _SECTION_PREFIX.sub("", line.strip(), count=1)
             for chunk in body.split(" ; ") if " ; " in body else body.split(";"):
                 m = _BORY_ITEM.match(chunk)
                 if not m or not m.group("label").strip():
                     continue
-                out.append(
-                    _fact(
-                        vocab,
-                        label=_SECTION_PREFIX.sub("", m.group("label")),
-                        abbr=m.group("abbr"),
-                        raw_value=m.group("val"),
-                        unit=m.group("unit"),
-                        lo=_num(m.group("lo")),
-                        hi=_num(m.group("hi")),
-                        ref_text=None,
-                        arrow=m.group("arrow"),
-                        when=when,
-                        page=page_no,
-                        evidence=chunk,
-                        unreliable=unreliable,
-                    )
+                f = _fact(
+                    vocab,
+                    label=_SECTION_PREFIX.sub("", m.group("label")),
+                    abbr=m.group("abbr"),
+                    raw_value=m.group("val"),
+                    unit=m.group("unit"),
+                    lo=_num(m.group("lo")),
+                    hi=_num(m.group("hi")),
+                    ref_text=None,
+                    arrow=m.group("arrow"),
+                    when=when,
+                    page=page_no,
+                    evidence=chunk,
+                    unreliable=unreliable,
                 )
+                if f:
+                    out.append(f)
     return out
 
 
@@ -216,23 +260,23 @@ def parse_okb(pages: list[str], vocab: Vocabulary, *, unreliable: bool = False) 
             if cmp:
                 bound = _num(cmp)
                 lo, hi = (bound, None) if cmp.strip().startswith(">") else (None, bound)
-            out.append(
-                _fact(
-                    vocab,
-                    label=m.group("label"),
-                    abbr=None,
-                    raw_value=m.group("val"),
-                    unit=m.group("unit"),
-                    lo=lo,
-                    hi=hi,
-                    ref_text=cmp.strip() if cmp else None,
-                    arrow=None,
-                    when=when,
-                    page=page_no,
-                    evidence=line,
-                    unreliable=unreliable,
-                )
+            f = _fact(
+                vocab,
+                label=m.group("label"),
+                abbr=None,
+                raw_value=m.group("val"),
+                unit=m.group("unit"),
+                lo=lo,
+                hi=hi,
+                ref_text=cmp.strip() if cmp else None,
+                arrow=None,
+                when=when,
+                page=page_no,
+                evidence=line,
+                unreliable=unreliable,
             )
+            if f:
+                out.append(f)
     return out
 
 

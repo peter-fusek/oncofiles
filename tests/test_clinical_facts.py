@@ -313,3 +313,59 @@ async def test_rows_from_an_older_index_version_are_reprocessed_once(db, lab_env
     assert upgraded["unchanged"] == 0 and upgraded["facts"] >= 7
     again = await tool.index_patient(db, ERIKA_UUID)
     assert again["unchanged"] == 1 and again["facts"] == 0
+
+
+# ── parser quality (infra review of the first production run) ──
+
+GARBAGE = """Odber: 29.01.2026 12:24,
+......
+Tel.(predvoľba): ....
+medCOMP 2.0.8 build 2... 12 [arb]
+**Typ podla README par.3 je Admin ...1 [x]
+NOTE (agent): DUPLICATE (identical sha256 ...5 [x]
+Identical content to consultation/ ...2 [x]
+doctor is X, not 'Y' ...3 [x]
+Výsledky uvoľnil(a): Meno ...1 [x]
+'po CT simulacia ...2 [x]
+"""
+
+OKB_WITH_DOSING = """Odobrané: 13.03.2026 08:52
+Test                                Hodnota    Jednotky    Ref. medze
+CEA v sére                          732.9      ng/ml
+K 4.                                4          -
+HER2 gene amplification probe. Vysledok:   2   x
+5-FU                                2400       mg/m2
+Oxaliplatina                        85         mg/m2
+Výsledky uvoľnil(a): Meno           1          x
+"""
+
+REAL_VARIANTS = """Odber: 29.01.2026 12:24,
+Krvný obraz: abs. počet NEUT ...4.10 [10^9/l] {2.0 - 7.0 } ; Bazofilý abs.počet ...0.03 [10^9/l]
+Sérum: ; S-Chloridy ...101 [mmol/l] {98 - 107 }
+Moč: U- Ketóny ...NEGAT [arb] ; U-Bielkoviny ...1+ [arb]
+"""
+
+
+async def test_parser_rejects_notes_placeholders_and_staff_lines(vocab):
+    assert parse_bory([GARBAGE], vocab) == []
+
+
+async def test_okb_parser_keeps_labs_and_moves_dosing_to_medication(vocab):
+    facts = parse_okb([OKB_WITH_DOSING], vocab)
+    labs = [f for f in facts if f["category"] != "medication"]
+    meds = [f for f in facts if f["category"] == "medication"]
+    assert [f["code"] for f in labs] == ["CEA"]
+    assert {f["label"] for f in meds} == {"5-FU", "Oxaliplatina"}
+
+
+async def test_spelling_variants_map_to_codes(db):
+    vocab = Vocabulary.from_rows(await db.fact_code_vocabulary())
+    by = {f["code"]: f for f in parse_bory([REAL_VARIANTS], vocab)}
+    assert by["NEUT"]["value_num"] == 4.1
+    assert "BASO" in by and by["CL"]["value_num"] == 101.0
+    assert by["U_KET"]["value_text"] == "NEGAT" and by["U_PROT"]["value_text"] == "1+"
+
+
+async def test_migration_073_adds_codes(db):
+    codes = {r["code"] for r in await db.fact_code_vocabulary()}
+    assert {"NLR", "SII", "MPV", "PDW", "U_KET", "USED_BACT"} <= codes
