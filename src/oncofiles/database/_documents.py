@@ -663,6 +663,33 @@ class DocumentMixin:
 
     # ── Curated read model (#603) ─────────────────────────────────────────
 
+    async def curated_reocr_candidates(self, *, patient_id: str) -> list[dict]:
+        """Active curated documents of one patient with what re-OCR (#660) needs:
+        id, filename, gdrive_id, mime_type, parsed structured_metadata, whether
+        any stored page carries an uncertain-reading marker, and how many of its
+        facts are unverified."""
+        import json as _json
+
+        async with self.db.execute(
+            "SELECT d.id, d.filename, d.gdrive_id, d.mime_type, d.structured_metadata, "
+            "EXISTS (SELECT 1 FROM document_pages p WHERE p.document_id = d.id "
+            "AND p.extracted_text LIKE '%[?]%') AS uncertain, "
+            "(SELECT COUNT(*) FROM clinical_records c WHERE c.source_document_id = d.id "
+            "AND c.patient_id = d.patient_id AND c.deleted_at IS NULL "
+            "AND c.verification = 'unverified') AS unverified_facts "
+            "FROM documents d WHERE d.patient_id = ? AND d.file_id LIKE 'gdrive:%' "
+            "AND d.deleted_at IS NULL ORDER BY d.id",
+            (patient_id,),
+        ) as cursor:
+            rows = [dict(r) for r in await cursor.fetchall()]
+        for r in rows:
+            try:
+                r["structured_metadata"] = _json.loads(r["structured_metadata"] or "{}")
+            except ValueError:
+                r["structured_metadata"] = {}
+            r["uncertain"] = bool(r["uncertain"])
+        return rows
+
     async def curated_index_state(self, *, patient_id: str) -> dict[str, dict]:
         """Indexed curated rows of a patient: gdrive_id → {id, sidecar_modified, deleted}."""
         import json as _json
