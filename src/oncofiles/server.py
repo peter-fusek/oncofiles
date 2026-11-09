@@ -3993,9 +3993,11 @@ async def health(request: Request) -> JSONResponse:
         result["memory"] = get_rss_trend()
         # CI waits for False before deploying (a deploy kills a run). In-memory,
         # no patient detail.
-        from oncofiles.tools.curated import run_active
+        from oncofiles.tools.curated import heartbeat, run_active
 
         result["curated_run_active"] = run_active()
+        # Public endpoint: an age and a boolean only (detail: admin overview).
+        result.update(heartbeat())
         result["semaphores"] = get_semaphore_status()
         # Folder sync status — surface COUNTS only, not patient IDs (#488).
         # /health is unauthenticated (Railway liveness probe) so per-patient
@@ -7233,6 +7235,7 @@ async def api_admin_curated_overview(request: Request) -> JSONResponse:
         from oncofiles.tools.curated import (
             _runs,
             continuous_settings,
+            heartbeat_detail,
             nightly_settings,
             preview_gate,
         )
@@ -7270,6 +7273,7 @@ async def api_admin_curated_overview(request: Request) -> JSONResponse:
                         strict=True,
                     )
                 ),
+                "heartbeat": heartbeat_detail(),
                 "patients": cards,
             }
         )

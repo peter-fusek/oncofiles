@@ -225,6 +225,7 @@ async def _execute(db, pid: str, gdrive, folder_id: str, opts, *, trigger: str) 
         report = {"status": "aborted", "message": f"crashed ({type(exc).__name__})"}
     if not opts.dry_run:
         _remember_text_reviews(pid, report)
+        _note_run_outcome(pid, report)
     status, message = report.get("status", "aborted"), report.get("message", "")
     await db.finish_curated_run(
         row_id, patient_id=pid, status=status, message=message, report=report
@@ -397,6 +398,52 @@ class _Watch:
 
 _watch: dict[str, _Watch] = {}
 
+# ── heartbeat and loop detection (in-memory; /health shows booleans and ages only) ──
+LOOP_ALERT_RUNS = 5  # this many real runs in a row, moving nothing, over the same documents
+_last_probe_at: float | None = None  # monotonic time of the last completed probe
+_empty_streak: dict[str, tuple[tuple, int]] = {}  # pid -> (documents seen, consecutive runs)
+
+
+def _note_run_outcome(pid: str, report: dict) -> None:
+    """Count consecutive real runs that moved nothing over the same documents."""
+    if report.get("actions"):
+        _empty_streak.pop(pid, None)
+        return
+    seen = tuple(sorted(str(d.get("source")) for d in report.get("documents", [])))
+    prev, n = _empty_streak.get(pid, ((), 0))
+    n = n + 1 if (n and prev == seen) else 1
+    _empty_streak[pid] = (seen, n)
+    if n == LOOP_ALERT_RUNS:
+        logger.warning(
+            "curated loop suspected for %s: %d real runs in a row moved nothing (%d documents)",
+            pid,
+            n,
+            len(seen),
+        )
+
+
+def loop_suspected_patients() -> list[str]:
+    return [pid for pid, (_, n) in _empty_streak.items() if n >= LOOP_ALERT_RUNS]
+
+
+def heartbeat() -> dict:
+    """Public, non-sensitive: an age and a boolean (no counts, ids or names)."""
+    age = None if _last_probe_at is None else int(time.monotonic() - _last_probe_at)
+    return {
+        "curated_last_probe_age_s": age,
+        "curated_loop_suspected": bool(loop_suspected_patients()),
+    }
+
+
+def heartbeat_detail() -> dict:
+    """Admin-only detail behind the public flags."""
+    return {
+        **heartbeat(),
+        "empty_run_streaks": {pid: n for pid, (_, n) in _empty_streak.items()},
+        "loop_alert_runs": LOOP_ALERT_RUNS,
+        "pending": {pid: len(w.stuck) for pid, w in _watch.items()},
+    }
+
 
 async def probe_patient(db, pid: str, idle_signature: str | None):
     """Read-only probe of the patient's curated folder, or None if unreachable."""
@@ -419,7 +466,10 @@ async def probe_patient(db, pid: str, idle_signature: str | None):
         finally:
             own.close()
 
-    return await asyncio.to_thread(_blocking)
+    result = await asyncio.to_thread(_blocking)
+    global _last_probe_at
+    _last_probe_at = time.monotonic()
+    return result
 
 
 def _sequence_outcome(reports: list[dict]) -> tuple[bool, bool]:

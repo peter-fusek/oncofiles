@@ -13,11 +13,15 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import re
+import time
 
 import httpx
 
 from oncofiles import config
+
+logger = logging.getLogger(__name__)
 
 _THINK_RE = re.compile(r"<think>.*?</think>", re.S)
 
@@ -79,6 +83,7 @@ def chat(
         headers["Authorization"] = f"Bearer {config.LOCAL_LLM_API_KEY}"
     own = client is None
     http = client or httpx.Client(timeout=timeout or config.LOCAL_LLM_TIMEOUT_S)
+    t0 = time.monotonic()
     try:
         resp = http.post(
             f"{config.LOCAL_LLM_BASE_URL}/chat/completions", json=payload, headers=headers
@@ -95,12 +100,32 @@ def chat(
         content = choice["message"].get("content")
     except (KeyError, IndexError, ValueError, TypeError, AttributeError) as exc:
         raise LocalLLMError("local LLM returned an unexpected payload") from exc
+    _log_usage(resp, choice, max_tokens, time.monotonic() - t0)
     if not (content or "").strip() and choice.get("finish_reason") == "length":
         # The whole budget went to reasoning (2026-11-07: 1199/1200 tokens).
         raise LocalLLMError(
             f"local LLM answer truncated: reasoning used the whole budget ({max_tokens} tokens)"
         )
     return strip_think(content if isinstance(content, str) else json.dumps(content))
+
+
+def _log_usage(resp, choice: dict, max_tokens: int, seconds: float) -> None:
+    """Token counts per call — numbers only, never prompt or answer text."""
+    try:
+        usage = resp.json().get("usage") or {}
+    except ValueError:
+        usage = {}
+    details = usage.get("completion_tokens_details") or {}
+    logger.info(
+        "local llm call: prompt_tokens=%s completion_tokens=%s reasoning_tokens=%s "
+        "max_tokens=%s finish=%s seconds=%.1f",
+        usage.get("prompt_tokens"),
+        usage.get("completion_tokens"),
+        details.get("reasoning_tokens"),
+        max_tokens,
+        choice.get("finish_reason"),
+        seconds,
+    )
 
 
 def parse_json_object(text: str) -> dict:
