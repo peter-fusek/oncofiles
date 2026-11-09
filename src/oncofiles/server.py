@@ -249,6 +249,11 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict]:
         deploy_id[:12] or "local",
         git_sha[:7] or "dev",
     )
+    # Where the data lives, stated at every start (never the URL itself):
+    # PHI from curated folders must stay on this host unless Turso is configured.
+    logger.info(
+        "Database mode: %s", "TURSO (remote/replica)" if TURSO_DATABASE_URL else "local file"
+    )
     if TURSO_DATABASE_URL:
         from oncofiles.config import TURSO_REPLICA_PATH
 

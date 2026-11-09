@@ -747,6 +747,10 @@ async def index_patient(db, pid: str) -> dict:
                 )
                 doc_id = doc.id
             indexer.register_curated_ids([doc_id])  # before any other job can see it
+            # The row is keyed by gdrive_id (UNIQUE) and pages by (doc, page),
+            # so a re-run never duplicates. The "sidecar seen" marker inside
+            # structured_metadata is written LAST: if a deploy interrupts this
+            # document, the next index sees no marker and redoes it whole.
             await db.update_curated_document(
                 doc_id,
                 patient_id=pid,
@@ -755,7 +759,7 @@ async def index_patient(db, pid: str) -> dict:
                 mime_type=rec.mime_type,
                 size_bytes=rec.size_bytes,
                 gdrive_modified_time=rec.modified,
-                structured_metadata=meta,
+                structured_metadata=None,
                 text_fields=text_fields,
             )
             if not rec.unchanged:
@@ -764,6 +768,7 @@ async def index_patient(db, pid: str) -> dict:
                     if page:
                         await db.save_ocr_page(doc_id, n, page, indexer.INDEX_ENGINE)
                         stats["pages"] += 1
+                await db.update_structured_metadata(doc_id, meta)  # commit marker
             ids.append(doc_id)
             key = "unchanged" if rec.unchanged else ("updated" if existing else "created")
             stats[key] += 1

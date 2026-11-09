@@ -222,3 +222,25 @@ async def test_curated_row_without_pages_never_falls_back_to_cloud_ocr(db, env):
     await db.delete_ocr_pages(doc.id)
     with patch("oncofiles.ocr.extract_text_from_image", side_effect=AssertionError("cloud")):
         assert await _ensure_ocr_text(db, doc, [MagicMock()], None) == []
+
+
+async def test_an_interrupted_document_is_redone_whole_on_the_next_index(db, env):
+    d, src = env
+    real_save = db.save_ocr_page
+    calls = {"n": 0}
+
+    async def dies_on_second_page(doc_id, n, text, model):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise RuntimeError("deploy killed the container")
+        await real_save(doc_id, n, text, model)
+
+    with patch.object(db, "save_ocr_page", dies_on_second_page):
+        first = await tool.index_patient(db, ERIKA_UUID)
+    assert first["errors"] == 1
+    again = await tool.index_patient(db, ERIKA_UUID)  # no marker → redone, not "unchanged"
+    doc = await db.get_document_by_gdrive_id(src, patient_id=ERIKA_UUID)
+    pages = await db.get_ocr_pages(doc.id, patient_id=ERIKA_UUID)
+    assert len(pages) == 2 and again["errors"] == 0
+    rows = await db.list_documents(patient_id=ERIKA_UUID)
+    assert sum(1 for r in rows if r.gdrive_id == src) == 1  # never duplicated
