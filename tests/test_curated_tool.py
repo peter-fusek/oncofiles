@@ -14,6 +14,13 @@ from tests.helpers import ERIKA_UUID
 
 
 @pytest.fixture(autouse=True)
+def _no_index():
+    """The read-model index (#603) has its own tests; here Drive is a MagicMock."""
+    with patch.object(tool, "_index_quietly", AsyncMock()):
+        yield
+
+
+@pytest.fixture(autouse=True)
 def _reset():
     tool._runs.clear()
     tool._extract_cache.clear()
@@ -503,3 +510,22 @@ def test_public_heartbeat_has_only_an_age_and_a_boolean(monkeypatch):
     hb = tool.heartbeat()
     assert set(hb) == {"curated_last_probe_age_s", "curated_loop_suspected"}
     assert 41 <= hb["curated_last_probe_age_s"] <= 44
+
+
+async def test_index_runs_after_a_real_run_once_it_is_no_longer_active(db, llm_on):
+    seen = []
+
+    async def spy(_db, pid):
+        seen.append(tool.run_active())
+
+    gdrive, patches = _env(_report(dry_run=False))
+    await db.finish_curated_run(
+        await db.insert_curated_run(patient_id=ERIKA_UUID, dry_run=True, trigger="mcp"),
+        patient_id=ERIKA_UUID,
+        status="ok",
+        message="",
+        report={"status": "ok"},
+    )
+    with patches[0], patches[1], patches[2], patch.object(tool, "_index_quietly", spy):
+        await tool.execute_run(db, ERIKA_UUID, dry_run=False, trigger="mcp")
+    assert seen == [False]  # indexed exactly once, and not counted as an active run

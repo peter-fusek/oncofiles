@@ -226,8 +226,6 @@ async def _execute(db, pid: str, gdrive, folder_id: str, opts, *, trigger: str) 
     if not opts.dry_run:
         _remember_text_reviews(pid, report)
         _note_run_outcome(pid, report)
-        if report.get("status") == "ok":
-            await _index_quietly(db, pid)  # the chat tools see the new state (#603)
     status, message = report.get("status", "aborted"), report.get("message", "")
     await db.finish_curated_run(
         row_id, patient_id=pid, status=status, message=message, report=report
@@ -244,6 +242,16 @@ async def _execute(db, pid: str, gdrive, folder_id: str, opts, *, trigger: str) 
         )
     report["_row_id"] = row_id
     return report
+
+
+async def _index_after(db, pid: str, opts, report: dict | None) -> None:
+    """Refresh the read model after a successful real run (#603).
+
+    Called once the run is no longer "active": a deploy may interrupt the
+    index at no cost (it is a read-only copy, rebuilt at the next start).
+    """
+    if report and not opts.dry_run and report.get("status") == "ok":
+        await _index_quietly(db, pid)
 
 
 async def execute_run(
@@ -264,10 +272,13 @@ async def execute_run(
             "dry_run": dry_run,
             "trigger": trigger,
         }
+    report = None
     try:
-        return await _execute(db, pid, *ctx, trigger=trigger)
+        report = await _execute(db, pid, *ctx, trigger=trigger)
+        return report
     finally:
         _runs.pop(pid, None)
+        await _index_after(db, pid, ctx[2], report)
 
 
 async def start_run(
@@ -290,10 +301,12 @@ async def start_run(
         }
 
     async def _task():
+        report = None
         try:
-            await _execute(db, pid, *ctx, trigger=trigger)
+            report = await _execute(db, pid, *ctx, trigger=trigger)
         finally:
             _runs.pop(pid, None)
+            await _index_after(db, pid, ctx[2], report)
 
     asyncio.get_running_loop().create_task(_task())
     return {"status": "started", "dry_run": dry_run, "max_docs": ctx[2].max_docs}

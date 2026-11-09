@@ -188,3 +188,37 @@ async def test_download_never_tries_the_files_api_for_curated_rows(db, env):
     files.download.assert_not_called()
     gdrive.download.assert_called_once_with(doc.gdrive_id)
     assert ok and raw == real_pdf
+
+
+def test_guard_fails_closed_when_the_registry_did_not_load():
+    try:
+        indexer.mark_guard_failed()
+        with pytest.raises(indexer.CuratedCloudError, match="not loaded"):
+            indexer.refuse_cloud(123456, "test")
+        indexer.refuse_cloud(None, "test")  # calls without a document are unaffected
+    finally:
+        indexer.mark_guard_ready()
+
+
+def test_vision_ocr_refuses_a_curated_document():
+    from oncofiles import ocr
+
+    indexer.register_curated_ids([987654])
+    try:
+        with (
+            patch.object(ocr, "_get_client", side_effect=AssertionError("cloud called")),
+            pytest.raises(indexer.CuratedCloudError),
+        ):
+            ocr.extract_text_from_image(MagicMock(), document_id=987654)
+    finally:
+        indexer.forget_curated_ids([987654])
+
+
+async def test_curated_row_without_pages_never_falls_back_to_cloud_ocr(db, env):
+    from oncofiles.tools._helpers import _ensure_ocr_text
+
+    await tool.index_patient(db, ERIKA_UUID)
+    doc = await db.get_document_by_gdrive_id(env[1], patient_id=ERIKA_UUID)
+    await db.delete_ocr_pages(doc.id)
+    with patch("oncofiles.ocr.extract_text_from_image", side_effect=AssertionError("cloud")):
+        assert await _ensure_ocr_text(db, doc, [MagicMock()], None) == []

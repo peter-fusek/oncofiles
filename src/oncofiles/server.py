@@ -417,6 +417,12 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict]:
         )
 
     # Curated-folder nightly runs (#573): independent of SYNC_ENABLED/APScheduler.
+    # Cloud guard for curated documents (#603): every AI path refuses their ids.
+    from oncofiles.curated.indexer import (
+        mark_guard_failed,
+        mark_guard_ready,
+        register_curated_ids,
+    )
     from oncofiles.tools.curated import (
         continuous_settings,
         curated_nightly_loop,
@@ -424,13 +430,13 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict]:
         request_stop,
     )
 
-    # Cloud guard for curated documents (#603): every AI path refuses their ids.
     try:
-        from oncofiles.curated.indexer import register_curated_ids
-
         register_curated_ids(await db.curated_document_ids())
+        mark_guard_ready()
     except Exception:
-        logger.exception("curated: could not load the curated-document guard")
+        # Fail closed: refuse every cloud-AI call on documents until it loads.
+        mark_guard_failed()
+        logger.exception("curated: guard not loaded — cloud AI refused for documents")
 
     curated_nightly_task = None
     if nightly_settings()[0] and GOOGLE_INTEGRATION_ENABLED:

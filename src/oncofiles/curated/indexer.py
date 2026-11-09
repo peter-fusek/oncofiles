@@ -43,6 +43,10 @@ _CATEGORY_ALIASES = {"treatment": DocumentCategory.CHEMO_SHEET, "admin": Documen
 # ── cloud guard ──────────────────────────────────────────────────────────
 
 _curated_ids: set[int] = set()
+# Fail closed: if the registry could not be loaded at startup, every cloud-AI
+# call on a document is refused until it is (a missing id must never mean
+# "not curated").
+_guard_ready = True
 
 
 class CuratedCloudError(RuntimeError):
@@ -57,12 +61,27 @@ def forget_curated_ids(ids) -> None:
     _curated_ids.difference_update(int(i) for i in ids)
 
 
+def mark_guard_failed() -> None:
+    global _guard_ready
+    _guard_ready = False
+
+
+def mark_guard_ready() -> None:
+    global _guard_ready
+    _guard_ready = True
+
+
 def is_curated_id(document_id: int | None) -> bool:
     return document_id is not None and int(document_id) in _curated_ids
 
 
 def refuse_cloud(document_id: int | None, what: str) -> None:
     """Raise before any cloud-AI call on a curated document."""
+    if document_id is not None and not _guard_ready:
+        raise CuratedCloudError(
+            f"{what}: the curated-document guard is not loaded — cloud AI is "
+            "refused for every document until it is (#603)"
+        )
     if is_curated_id(document_id):
         raise CuratedCloudError(
             f"{what}: document {document_id} comes from a curated folder — "

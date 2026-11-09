@@ -37,6 +37,9 @@ def extract_text_from_image(
         db: Database instance for prompt logging (optional).
         document_id: Document ID for prompt logging (optional).
     """
+    from oncofiles.curated.indexer import refuse_cloud
+
+    refuse_cloud(document_id, "extract_text_from_image")  # curated: local model only (#603)
     client = _get_client()
 
     # Image.data is raw bytes, encode to base64 for the API

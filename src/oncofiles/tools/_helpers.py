@@ -568,6 +568,13 @@ async def _ensure_ocr_text(
                 await db.save_ocr_page(doc.id, page_num, text, "pymupdf-native")
             return pdf_texts
 
+    # Curated documents get their text only from the local-model sidecar
+    # (indexed as document_pages); never a cloud Vision OCR fallback (#603).
+    from oncofiles.curated.indexer import is_curated_file_id
+
+    if is_curated_file_id(doc.file_id):
+        return []
+
     # 3. Fall back to Vision OCR for scanned docs / images
     images = [item for item in content_items if isinstance(item, Image)]
     if not images:
