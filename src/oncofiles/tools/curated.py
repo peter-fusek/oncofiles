@@ -879,8 +879,9 @@ async def _extract_facts(db, pid: str, doc_id: int, rec, entities: dict, vocab) 
     local = any(k in engine.lower() for k in _LOCAL_ENGINES)
     unreliable = rec.metadata.get("handwritten") is True or not local
     facts, extractor = extract_lab_facts(rec.pages, vocab, unreliable=unreliable)
-    if not facts:
-        return 0
+    # Always replace, even with nothing: a document whose new extraction finds
+    # no facts must lose the machine rows an older parser version made (#633).
+    extractor = extractor or "rule:none"
     day = rec.document_date.isoformat() if rec.document_date else None
     system = "curated_sidecar" if local else "cowork_sidecar"
     for f in facts:

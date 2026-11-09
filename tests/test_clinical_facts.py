@@ -369,3 +369,31 @@ async def test_spelling_variants_map_to_codes(db):
 async def test_migration_073_adds_codes(db):
     codes = {r["code"] for r in await db.fact_code_vocabulary()}
     assert {"NLR", "SII", "MPV", "PDW", "U_KET", "USED_BACT"} <= codes
+
+
+async def test_document_whose_new_extraction_is_empty_loses_old_junk(db, lab_env):
+    """#633 leftover: old unverified/machine rows of a document that now yields
+    no facts must be soft-deleted too (both are machine output)."""
+    d, src, side = lab_env
+    await tool.index_patient(db, ERIKA_UUID)
+    doc = await db.get_document_by_gdrive_id(src, patient_id=ERIKA_UUID)
+    await db.db.execute(
+        "UPDATE clinical_records SET verification = 'unverified', param = 'NOTE (agent): x' "
+        "WHERE source_document_id = ? AND code = 'WBC'",
+        (doc.id,),
+    )
+    await db.db.commit()
+    d.items[side]["content"] = b"---\ndoc_date: 2026-01-29\n---\n\nno lab values here\n"
+    d.items[side]["modified"] = "2026-11-04T00:00:00Z"
+    await tool.index_patient(db, ERIKA_UUID)
+    async with db.db.execute(
+        "SELECT COUNT(*) FROM clinical_records WHERE source_document_id = ? AND deleted_at IS NULL",
+        (doc.id,),
+    ) as cur:
+        assert (await cur.fetchone())[0] == 0
+
+
+async def test_percent_spacing_variants_match(db):
+    vocab = Vocabulary.from_rows(await db.fact_code_vocabulary())
+    assert vocab.match("Neutrofilie%")["code"] == "NEUT_PCT"
+    assert vocab.match("Neutrofilie %")["code"] == "NEUT_PCT"

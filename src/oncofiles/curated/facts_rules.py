@@ -52,6 +52,7 @@ def norm_label(s: str) -> str:
     s = re.sub(r"^[sbp]\s*-\s*", "", s)  # S-Glukóza, B-…, P-…
     s = re.sub(r"^u\s*-\s*", "u-", s)  # "U- Krv" == "U-Krv"
     s = s.replace(".", " ")  # "abs.počet" == "abs. počet"
+    s = re.sub(r"\s*%", "%", s)  # "Neutrofilie %" == "Neutrofilie%"
     s = re.sub(r"\s+", " ", s)
     return s.strip(" :")
 
