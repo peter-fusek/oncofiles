@@ -49,3 +49,4 @@ def test_health_reports_the_build_commit():
     assert "ONCOFILES_GIT_SHA=$GIT_SHA" in (root / "Dockerfile").read_text()
     ci = (root / ".github/workflows/ci.yml").read_text()
     assert "GIT_SHA=${{ github.sha }}" in ci and "steps.head.outputs.current" in ci
+    assert "steps.deploy.outputs.deployed == 'true'" in ci  # re-check right before deploying
