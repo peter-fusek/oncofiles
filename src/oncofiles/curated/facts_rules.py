@@ -102,6 +102,13 @@ class Vocabulary:
         for key in (abbr, label):
             if key and (hit := self.by_alias.get(norm_label(key))):
                 return hit
+        # "NEUT abs. 2,1" / "abs. Neutrofily": the absolute count of a differential
+        key = norm_label(label)
+        base = re.sub(r"^abs( pocet)? | abs( pocet)?$", "", key)
+        if base != key and (hit := self.by_alias.get(base)):
+            code = hit["code"].removesuffix("_PCT")
+            if code in _DIFFERENTIAL:
+                return self.by_code.get(code)
         return None
 
 
@@ -146,9 +153,21 @@ PLAUSIBLE = {
     "WBC": (0, 300), "RBC": (0, 10), "HGB": (20, 250), "HCT": (0, 1), "PLT": (0, 3000),
     "MCV": (40, 150), "MCH": (10, 60), "MCHC": (200, 450),
     "CREA": (5, 2000), "UREA": (0, 100), "GLU": (0, 60), "NA": (90, 200), "K": (1, 10),
-    "CRP": (0, 1000), "ALB": (5, 70), "TP": (20, 120),
+    "CRP": (0, 1000), "ALB": (5, 70), "TP": (20, 120), "P": (0, 10), "CA": (0, 6),
 }  # fmt: skip
 _DIFFERENTIAL = {"NEUT", "LYMPH", "MONO", "EOS", "BASO"}
+
+
+def _upper_from_text(ref: str | None) -> float | None:
+    """Upper limit from a text reference with only "<" bounds (#635).
+
+    Several bounds (e.g. non-smoker / smoker) → the lowest, so a value above
+    the strictest limit is flagged rather than silently passing."""
+    if not ref or ">" in ref:
+        return None
+    bounds = [_num(b) for b in re.findall(r"<\s*(\d+(?:[.,]\d+)?)", ref)]
+    bounds = [b for b in bounds if b is not None]
+    return min(bounds) if bounds else None
 
 
 def _flag(value: float | None, lo: float | None, hi: float | None, arrow: str | None) -> str | None:
@@ -294,6 +313,9 @@ def parse_okb(pages: list[str], vocab: Vocabulary, *, unreliable: bool = False) 
                 continue
             if not in_table or not line.strip():
                 continue
+            if _REF_LINE.match(line) and out and out[-1]["page_number"] == page_no:
+                _attach_ref_text(out[-1], line.split(":", 1)[1].strip())
+                continue
             m = _OKB_ROW.match(line.strip())
             if not m:
                 continue
@@ -320,6 +342,20 @@ def parse_okb(pages: list[str], vocab: Vocabulary, *, unreliable: bool = False) 
             if f:
                 out.append(f)
     return out
+
+
+_REF_LINE = re.compile(r"^\s*refer(?:en\w*)?\.?\s*medze\s*:", re.I)
+
+
+def _attach_ref_text(fact: dict, ref: str) -> None:
+    """A text reference printed under the row it belongs to (#635)."""
+    if fact["ref_low"] is not None or fact["ref_high"] is not None:
+        return
+    fact["ref_text"] = ref[:120]
+    hi = _upper_from_text(ref)
+    if hi is not None:
+        fact["ref_high"] = hi
+        fact["flag"] = fact["flag"] or _flag(fact["value_num"], None, hi, None)
 
 
 _MD_ROW = re.compile(r"^\s*\|(.+)\|\s*$")
@@ -371,6 +407,7 @@ def parse_markdown_table(
                 ref_text = ref.strip()
             elif ref.strip():
                 ref_text = ref.strip()[:120]
+                hi = _upper_from_text(ref_text)  # "nefajčiar <2,5; fajčiar <5"
             note = (vm.group("note") or "").lower()
             arrow = (
                 "▲"
@@ -398,8 +435,44 @@ def parse_markdown_table(
 
 
 _INLINE_ITEM = re.compile(
-    r"^\s*(?P<label>[^\W\d_][^;:]{0,40}?)\s+(?P<val>[<>]?\d+(?:[.,]\d+)?)\s*(?P<unit>[^\d\s;][^\d;]{0,15})?\s*$"
+    r"^\s*(?P<label>[^\W\d_][^;:]{0,40}?)\s+(?P<val>[<>]?\d+(?:[.,]\d+)?)\s*(?P<unit>[^\d\s;(][^\d;(]{0,15})?\s*$"
 )
+# "Neutrofily 53,4 (abs 2,10)": the percentage and the absolute count in one item
+_INLINE_ABS = re.compile(
+    r"^\s*(?P<label>[^\W\d_][^;:()]{0,40}?)\s+(?P<val>\d+(?:[.,]\d+)?)\s*%?\s*"
+    r"\(\s*abs\.?\s*(?P<abs>\d+(?:[.,]\d+)?)\s*\)\s*$"
+)
+# items are separated by ";" or by ", " before the next label (decimal commas have no space)
+_INLINE_SPLIT = re.compile(r";|,\s+(?=[^\W\d_])")
+_INLINE_ARROW = {"↑": "▲", "↓": "▼", "▲": "▲", "▼": "▼"}
+# vital signs ("TK 120/80, P 72, SpO2 98%, TT 36,6") are not lab results: "P" is the pulse
+_VITALS = re.compile(r"\bTK\s*\d+\s*/\s*\d+|\bSpO2\b|\bTT\s*\d", re.I)
+# study statistics in reference articles ("HR 1.42; 95% CI 1.1-1.8; P .003")
+_STATS = re.compile(
+    r"\b(HR|OR|RR)\s*[=:]?\s*\d|\b\d{2}\s*%\s*CI\b|\bCI\b|\bP\s*[=<>]|\bcohort\b", re.I
+)
+_DATE_RANGE_BEFORE = re.compile(r"\d{1,2}\.\s?[–-]\s?$")
+
+
+def _inline_items(line: str) -> list[tuple[str, str, str | None, str | None]]:
+    """(label, value, unit, arrow) for every result item of a line."""
+    out = []
+    for segment in line.split(";"):
+        parts = re.split(r",\s+(?=[^\W\d_])", segment)
+        for item in parts:
+            item = re.sub(r"^.*:\s*", "", item.replace("*", ""))  # "Lab 1.2.2027: **CEA …"
+            arrow = next((_INLINE_ARROW[c] for c in item if c in _INLINE_ARROW), None)
+            item = re.sub(r"[↑↓▲▼]", "", item).strip().rstrip(".").strip()
+            if len(parts) == 1:  # "CA 19-9 812,4 (zakrúžkované)" in a ";" list
+                item = re.sub(r"\s*\([^()\d,]*\)$", "", item)
+            if a := _INLINE_ABS.match(item):
+                out.append((a.group("label"), a.group("val"), None, None))
+                out.append((a.group("label") + " abs.", a.group("abs"), None, None))
+            elif m := _INLINE_ITEM.match(item):
+                out.append((m.group("label"), m.group("val"), m.group("unit"), arrow))
+    return out
+
+
 _LINE_DATE = re.compile(r"\b(\d{1,2})\.\s?(\d{1,2})\.\s?(\d{4})\b")
 
 
@@ -425,16 +498,10 @@ def parse_inline_results(
     for page_no, text in enumerate(pages, start=1):
         prev = ""
         for line in text.splitlines():
-            items = [i for i in line.split(";") if i.strip()]
-            if len(items) >= 3 and not _NOT_DATA.search(line):
-                parsed = []
-                for item in items:
-                    item = re.sub(r"^.*:\s*", "", item.replace("*", ""))  # "Lab 1.2.2027: **CEA …"
-                    m = _INLINE_ITEM.match(item)
-                    if not m:
-                        continue
-                    code_row = vocab.match(m.group("label"))
-                    parsed.append((m, code_row))
+            skip = _NOT_DATA.search(line) or _VITALS.search(line) or _STATS.search(line)
+            items = [] if skip else _inline_items(line)
+            if len(_INLINE_SPLIT.split(line)) >= 3 and items:
+                parsed = [(it, vocab.match(it[0])) for it in items]
                 if sum(1 for _, c in parsed if c) >= 2:
                     dm = _LINE_DATE.search(line) or _LINE_DATE.search(prev)
                     when = (
@@ -442,21 +509,23 @@ def parse_inline_results(
                         if dm
                         else report_date
                     )
-                    for m, code_row in parsed:
+                    src_line = line if _LINE_DATE.search(line) else prev
+                    ranged = bool(dm and _DATE_RANGE_BEFORE.search(src_line[: dm.start()]))
+                    for (label, val, unit, arrow), code_row in parsed:
                         if not code_row:
                             continue  # only known codes from free text
-                        unit = (m.group("unit") or "").strip() or None
+                        unit = (unit or "").strip() or None
                         printed_unit = bool(unit and _UNIT_HINT.search(unit))
                         f = _fact(
                             vocab,
-                            label=m.group("label"),
+                            label=label,
                             abbr=None,
-                            raw_value=m.group("val"),
+                            raw_value=val,
                             unit=unit if printed_unit else None,
                             lo=None,
                             hi=None,
                             ref_text=None,
-                            arrow=None,
+                            arrow=arrow,
                             when=when,
                             page=page_no,
                             evidence=line,
@@ -465,9 +534,11 @@ def parse_inline_results(
                         if not f:
                             continue
                         meta = {"date_source": "printed" if dm else "report"}
+                        if ranged:
+                            meta["date_source"] = "printed_range"  # "5.–6.5.2027": day unsure
                         if not printed_unit:
                             meta["unit_source"] = "implied"
-                        if not printed_unit or not dm:
+                        if not printed_unit or not dm or ranged:
                             f["verification"] = "unverified"
                         f["metadata"] = meta
                         key = (f["code"], f["occurred_at"], f["value_num"], f["value_text"])

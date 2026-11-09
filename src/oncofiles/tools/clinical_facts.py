@@ -195,7 +195,8 @@ async def fact_series(
     Returns each value with its source (document, page, Drive link) and
     statistics (min, max, first, last, change, out-of-range count). Unverified
     values are listed separately and excluded from the statistics unless
-    include_unverified=true. Read-only.
+    include_unverified=true; ``latest_any`` is the newest value of any
+    verification (say which). Read-only.
     """
     pid = await _resolve_patient_id(patient_slug, ctx)
     rows = await _get_db(ctx).fact_series_rows(
@@ -228,6 +229,13 @@ async def fact_series(
     for s in out.values():
         s["stats"] = _stats(s["values"])
         s["stats_include_unverified"] = include_unverified
+        # the newest value of any verification, so "current" is never months old (#635)
+        newest = max(s["values"] + s["unverified"], key=lambda p: p["at"] or "", default=None)
+        s["latest_any"] = (
+            {k: newest[k] for k in ("at", "value", "flag", "verification", "source")}
+            if newest
+            else None
+        )
     return _dump({"series": out, "duplicates_removed": duplicates_removed, "note": UNVERIFIED_NOTE})
 
 
