@@ -7667,6 +7667,7 @@ from oncofiles.tools import (  # noqa: E402
     agent_state,
     analysis,
     clinical,
+    clinical_facts,
     clinical_records,
     conversations,
     curated,
@@ -7697,6 +7698,7 @@ curated.register(mcp)
 enhance_tools.register(mcp)
 clinical.register(mcp)
 clinical_records.register(mcp)
+clinical_facts.register(mcp)
 lab_trends.register(mcp)
 export.register(mcp)
 naming.register(mcp)

@@ -52,6 +52,13 @@ class FilesClient:
     def __init__(self, api_key: str | None = None) -> None:
         self._client = anthropic.Anthropic(api_key=api_key or ANTHROPIC_API_KEY)
 
+    def _guarded(self):
+        """The Anthropic client, refused inside local-only jobs (policy 2026-11-09)."""
+        from oncofiles.cloud_guard import check_cloud_allowed
+
+        check_cloud_allowed("Files API")
+        return self._client
+
     def close(self) -> None:
         """Close the underlying httpx client to release connection pool."""
         if self._client:
@@ -74,7 +81,7 @@ class FilesClient:
             logger.warning("Truncated filename to 255 chars: %s...", filename[:50])
         if mime_type is None:
             mime_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
-        return self._client.beta.files.upload(file=(filename, file, mime_type))
+        return self._guarded().beta.files.upload(file=(filename, file, mime_type))
 
     def upload_path(self, path: Path | str) -> anthropic.types.beta.FileMetadata:
         """Upload a file from a local path."""
@@ -85,19 +92,19 @@ class FilesClient:
 
     def list(self, limit: int = 100) -> list[anthropic.types.beta.FileMetadata]:
         """List all uploaded files."""
-        page = self._client.beta.files.list(limit=limit)
+        page = self._guarded().beta.files.list(limit=limit)
         return list(page.data)
 
     def get(self, file_id: str) -> anthropic.types.beta.FileMetadata:
         """Get metadata for a specific file."""
-        return self._client.beta.files.retrieve_metadata(file_id)
+        return self._guarded().beta.files.retrieve_metadata(file_id)
 
     def download(self, file_id: str) -> bytes:
         """Download file content as raw bytes."""
-        response = self._client.beta.files.download(file_id)
+        response = self._guarded().beta.files.download(file_id)
         return response.read()
 
     def delete(self, file_id: str) -> bool:
         """Delete a file. Returns True if successfully deleted."""
-        result = self._client.beta.files.delete(file_id)
+        result = self._guarded().beta.files.delete(file_id)
         return result.type == "file_deleted"

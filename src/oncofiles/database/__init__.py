@@ -13,6 +13,7 @@ from ._clinical_records import ClinicalRecordsMixin
 from ._conversations import ConversationMixin
 from ._curated import CuratedMixin
 from ._documents import DocumentMixin
+from ._facts import FactsMixin
 from ._gmail import GmailMixin
 from ._onboarding import OnboardingEventsMixin
 from ._operational import OperationalMixin
@@ -25,6 +26,7 @@ class Database(
     ConversationMixin,
     ClinicalMixin,
     ClinicalRecordsMixin,
+    FactsMixin,
     GmailMixin,
     CalendarMixin,
     OperationalMixin,

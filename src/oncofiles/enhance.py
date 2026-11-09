@@ -297,6 +297,9 @@ _shared_client: anthropic.Anthropic | None = None
 def _get_client() -> anthropic.Anthropic:
     """Return a shared Anthropic client. Reuses the same httpx connection pool
     to avoid leaking HTTP clients on every AI call."""
+    from oncofiles.cloud_guard import check_cloud_allowed
+
+    check_cloud_allowed("Anthropic client")  # local-only jobs never get one
     global _shared_client
     if _shared_client is None:
         _shared_client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
