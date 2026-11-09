@@ -7235,6 +7235,8 @@ async def api_admin_curated_overview(request: Request) -> JSONResponse:
         )
 
         db_inst: Database = request.app.state.fastmcp_server._lifespan_result["db"]
+        from oncofiles.patient_context import load_from_db as _load_ctx
+
         enabled, hour, max_runs = nightly_settings()
         cards = []
         for p in await db_inst.list_patients(active_only=True):
@@ -7246,7 +7248,9 @@ async def api_admin_curated_overview(request: Request) -> JSONResponse:
                     "patient_id": pid,
                     "slug": p.slug,
                     "name": p.display_name,
-                    "patient_type": getattr(p, "patient_type", "oncology"),
+                    # the type lives in patient_context, not on Patient (#650 test)
+                    "patient_type": (await _load_ctx(db_inst.db, pid)).get("patient_type")
+                    or "oncology",
                     "folder_name": token.gdrive_folder_name if token else None,
                     "drive_connected": bool(token and token.gdrive_folder_id),
                     "nightly_enabled": await db_inst.get_curated_nightly(patient_id=pid),
