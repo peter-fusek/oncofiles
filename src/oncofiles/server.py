@@ -4642,21 +4642,21 @@ def _get_dashboard_email(request: Request) -> str | None:
 
 
 def _is_admin_email(email: str | None) -> bool:
-    """Check whether *email* belongs to a dashboard admin.
+    """Check whether *email* belongs to an admin (``DASHBOARD_ADMIN_EMAILS``).
 
-    Admin status grants access to system-level endpoints (health, readiness,
-    schedules) but NOT automatic access to all patients' medical data.
-    Patient access is always controlled by caregiver_email matching.
+    Admin status grants the system-level endpoints AND, today, access to every
+    patient: the MCP resolver (`_resolve_patient_id`) and
+    `_require_body_patient_access` let admins through without a caregiver
+    match. Narrowing admin PHI access to audited break-glass is #655.
     """
     return email is not None and email.lower() in DASHBOARD_ADMIN_EMAILS
 
 
 def _email_matches_caregiver(email: str, caregiver_email: str | None) -> bool:
-    """Check if email matches caregiver_email (supports comma-separated list)."""
-    if not email or not caregiver_email:
-        return False
-    email_lower = email.lower()
-    return any(e.strip().lower() == email_lower for e in caregiver_email.split(","))
+    """Comma-separated caregiver match; delegates to the single implementation (#651)."""
+    from oncofiles.persistent_oauth import _email_matches_caregiver as _match
+
+    return _match(email, caregiver_email)
 
 
 async def _require_body_patient_access(
