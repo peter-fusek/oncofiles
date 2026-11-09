@@ -467,3 +467,39 @@ async def test_text_review_memory_is_seeded_from_earlier_real_runs(db):
         assert await tool.reviewed_text_sources(db, ERIKA_UUID) == frozenset({("f9", "m")})
     finally:
         tool._text_reviews.clear()
+
+
+# ── heartbeat and loop detection ──
+
+
+def test_loop_flag_after_repeated_empty_runs_over_the_same_documents():
+    tool._empty_streak.clear()
+    empty = {"actions": [], "documents": [{"source": "a.txt"}, {"source": "b.md"}]}
+    for _ in range(tool.LOOP_ALERT_RUNS - 1):
+        tool._note_run_outcome("p1", empty)
+    assert not tool.heartbeat()["curated_loop_suspected"]
+    tool._note_run_outcome("p1", empty)
+    assert tool.heartbeat()["curated_loop_suspected"]
+    assert tool.loop_suspected_patients() == ["p1"]
+    # a run that moves something clears it
+    tool._note_run_outcome("p1", {"actions": [{"type": "move"}], "documents": []})
+    assert not tool.heartbeat()["curated_loop_suspected"]
+    tool._empty_streak.clear()
+
+
+def test_empty_runs_over_different_documents_are_not_a_loop():
+    tool._empty_streak.clear()
+    for i in range(tool.LOOP_ALERT_RUNS + 2):
+        tool._note_run_outcome("p1", {"actions": [], "documents": [{"source": f"new{i}.pdf"}]})
+    assert not tool.loop_suspected_patients()
+    tool._empty_streak.clear()
+
+
+def test_public_heartbeat_has_only_an_age_and_a_boolean(monkeypatch):
+    tool._empty_streak.clear()
+    monkeypatch.setattr(tool, "_last_probe_at", None)
+    assert tool.heartbeat() == {"curated_last_probe_age_s": None, "curated_loop_suspected": False}
+    monkeypatch.setattr(tool, "_last_probe_at", tool.time.monotonic() - 42)
+    hb = tool.heartbeat()
+    assert set(hb) == {"curated_last_probe_age_s", "curated_loop_suspected"}
+    assert 41 <= hb["curated_last_probe_age_s"] <= 44

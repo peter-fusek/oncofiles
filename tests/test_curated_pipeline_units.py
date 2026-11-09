@@ -342,3 +342,27 @@ def test_caregiver_material_may_name_the_caregiver(monkeypatch):
     raw = {**GOOD, "doc_type": "Treatment", "doc_date": "2026-05-26"}
     cls = classify.validate(CONTRACT, raw, text, today=date(2026, 11, 8))
     assert not any("another person" in r for r in cls.reasons)
+
+
+def test_chat_logs_token_usage_but_never_text(local_llm, caplog):
+    def handler(request):
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"content": "SECRET ANSWER"}, "finish_reason": "stop"}],
+                "usage": {
+                    "prompt_tokens": 812,
+                    "completion_tokens": 340,
+                    "completion_tokens_details": {"reasoning_tokens": 300},
+                },
+            },
+        )
+
+    caplog.set_level("INFO", logger="oncofiles.curated.llm")
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    llm.chat("sys", "SECRET PROMPT", client=client, max_tokens=12000)
+    line = next(r.getMessage() for r in caplog.records if "local llm call" in r.getMessage())
+    assert "prompt_tokens=812" in line and "completion_tokens=340" in line
+    assert "reasoning_tokens=300" in line and "max_tokens=12000" in line
+    assert "finish=stop" in line
+    assert "SECRET" not in caplog.text
