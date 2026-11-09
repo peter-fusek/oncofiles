@@ -33,11 +33,11 @@ from tests.helpers import ERIKA_UUID, make_doc
 # Sample chemo_sheet text — the #465 case. Bundled pre-chemo CBC printout
 # underneath a chemo administration form.
 CHEMO_SHEET_WITH_LABS = """\
-Cyklus 4 / mFOLFOX6 / 15.4.2026
+Cyklus 4 / mFOLFOX6 / 15.4.2027
 Pacient: Erika Fusekova
 Klinika klinickej onkologie, Klenova 1, Bratislava
 
-Predchemo krvny obraz (Medirex, odber 2026-04-15):
+Predchemo krvny obraz (Medirex, odber 2027-04-15):
 
 WBC          6.80    10^9/L    4.0 - 10.0
 NEUT%        62.5    %         50.0 - 70.0
@@ -84,10 +84,10 @@ def test_has_lab_table_rejects_date_columns():
     """A visit-history table with dates in the value column must NOT trigger
     the heuristic — dates aren't lab values."""
     text = """Visit history
-    Cycle1 2026-01-05
-    Cycle2 2026-01-19
-    Cycle3 2026-02-02
-    Cycle4 2026-02-16
+    Cycle1 2027-01-05
+    Cycle2 2027-01-19
+    Cycle3 2027-02-02
+    Cycle4 2027-02-16
     """
     assert has_lab_table(text) is False
 
@@ -117,7 +117,7 @@ def _mock_anthropic_with_response(payload: dict | str):
 def test_extract_lab_values_parses_clean_response():
     """Valid Haiku JSON → parsed lab_values dict."""
     payload = {
-        "lab_date": "2026-04-15",
+        "lab_date": "2027-04-15",
         "values": [
             {"parameter": "WBC", "value": 6.8, "unit": "10^9/L", "flag": ""},
             {
@@ -135,7 +135,7 @@ def test_extract_lab_values_parses_clean_response():
         result = extract_lab_values(CHEMO_SHEET_WITH_LABS)
 
     assert result is not None
-    assert result["lab_date"] == "2026-04-15"
+    assert result["lab_date"] == "2027-04-15"
     assert len(result["values"]) == 2
     wbc = next(v for v in result["values"] if v["parameter"] == "WBC")
     assert wbc["value"] == 6.8
@@ -154,7 +154,7 @@ def test_extract_lab_values_empty_text_returns_none():
 def test_extract_lab_values_filters_malformed_rows():
     """Rows without parameter or with non-numeric value are dropped."""
     payload = {
-        "lab_date": "2026-04-15",
+        "lab_date": "2027-04-15",
         "values": [
             {"parameter": "WBC", "value": 6.8},
             {"parameter": "", "value": 5.0},  # empty param → drop
@@ -198,7 +198,7 @@ def test_extract_structured_metadata_fires_second_call_on_lab_table():
         "findings": ["Pre-cycle 4 CBC"],
         "diagnoses": [],
         "medications": ["Oxaliplatina", "5-FU"],
-        "dates_mentioned": ["2026-04-15"],
+        "dates_mentioned": ["2027-04-15"],
         "providers": ["NOU"],
         "doctors": ["MUDr. Porsok"],
         "handwritten": False,
@@ -206,7 +206,7 @@ def test_extract_structured_metadata_fires_second_call_on_lab_table():
         "plain_summary_sk": "Chemo list pre cyklus 4 mFOLFOX6.",
     }
     labs_payload = {
-        "lab_date": "2026-04-15",
+        "lab_date": "2027-04-15",
         "values": [
             {"parameter": "WBC", "value": 6.8, "unit": "10^9/L"},
             {"parameter": "ABS_NEUT", "value": 4.25, "unit": "10^9/L"},
@@ -237,7 +237,7 @@ def test_extract_structured_metadata_fires_second_call_on_lab_table():
     assert "Oxaliplatina" in result["medications"]
     # Lab values were attached
     assert "lab_values" in result
-    assert result["lab_values"]["lab_date"] == "2026-04-15"
+    assert result["lab_values"]["lab_date"] == "2027-04-15"
     params = [v["parameter"] for v in result["lab_values"]["values"]]
     assert sorted(params) == ["ABS_NEUT", "HGB", "WBC"]
 
@@ -275,8 +275,8 @@ async def test_persist_lab_values_writes_rows(db: Database):
     """Given a doc + metadata carrying lab_values, rows land in lab_values."""
     doc = make_doc(
         file_id="f_chemo_1",
-        filename="20260415_chemo_cycle4.pdf",
-        document_date=date(2026, 4, 15),
+        filename="20270415_chemo_cycle4.pdf",
+        document_date=date(2027, 4, 15),
         category=DocumentCategory.CHEMO_SHEET,
     )
     doc = await db.insert_document(doc, patient_id=ERIKA_UUID)
@@ -284,7 +284,7 @@ async def test_persist_lab_values_writes_rows(db: Database):
     metadata = {
         "document_type": "chemo_sheet",
         "lab_values": {
-            "lab_date": "2026-04-15",
+            "lab_date": "2027-04-15",
             "values": [
                 {"parameter": "WBC", "value": 6.8, "unit": "10^9/L"},
                 {"parameter": "ABS_NEUT", "value": 4.25, "unit": "10^9/L"},
@@ -301,7 +301,7 @@ async def test_persist_lab_values_writes_rows(db: Database):
     assert params == ["ABS_NEUT", "HGB", "WBC"]
     hgb = next(v for v in stored if v.parameter == "HGB")
     assert hgb.flag == "L"
-    assert hgb.lab_date == date(2026, 4, 15)
+    assert hgb.lab_date == date(2027, 4, 15)
 
 
 @pytest.mark.asyncio
@@ -309,8 +309,8 @@ async def test_persist_lab_values_falls_back_to_document_date(db: Database):
     """When the AI didn't extract a lab_date, fall back to doc.document_date."""
     doc = make_doc(
         file_id="f_chemo_2",
-        filename="20260415_chemo.pdf",
-        document_date=date(2026, 4, 15),
+        filename="20270415_chemo.pdf",
+        document_date=date(2027, 4, 15),
         category=DocumentCategory.CHEMO_SHEET,
     )
     doc = await db.insert_document(doc, patient_id=ERIKA_UUID)
@@ -326,7 +326,7 @@ async def test_persist_lab_values_falls_back_to_document_date(db: Database):
     assert written == 1
 
     stored = await db.get_lab_snapshot(doc.id, patient_id=ERIKA_UUID)
-    assert stored[0].lab_date == date(2026, 4, 15)
+    assert stored[0].lab_date == date(2027, 4, 15)
 
 
 @pytest.mark.asyncio
@@ -404,15 +404,15 @@ async def test_backfill_lab_values_dry_run_writes_nothing(db: Database):
     doc_id = await _insert_doc_with_metadata(
         db,
         file_id="f_bck_dry_1",
-        filename="20260415_chemo.pdf",
+        filename="20270415_chemo.pdf",
         category=DocumentCategory.CHEMO_SHEET,
-        doc_date=date(2026, 4, 15),
+        doc_date=date(2027, 4, 15),
         ocr_text=CHEMO_SHEET_WITH_LABS,
         metadata_json=json.dumps({"document_type": "chemo_sheet", "findings": []}),
     )
 
     labs_payload = {
-        "lab_date": "2026-04-15",
+        "lab_date": "2027-04-15",
         "values": [
             {"parameter": "WBC", "value": 6.8, "unit": "10^9/L"},
             {"parameter": "HGB", "value": 128, "unit": "g/L"},
@@ -450,24 +450,24 @@ async def test_backfill_lab_values_writes_when_not_dry_run(db: Database):
     doc1 = await _insert_doc_with_metadata(
         db,
         file_id="f_bck_w_1",
-        filename="20260415_chemo.pdf",
+        filename="20270415_chemo.pdf",
         category=DocumentCategory.CHEMO_SHEET,
-        doc_date=date(2026, 4, 15),
+        doc_date=date(2027, 4, 15),
         ocr_text=CHEMO_SHEET_WITH_LABS,
         metadata_json=json.dumps({"document_type": "chemo_sheet"}),
     )
     doc2 = await _insert_doc_with_metadata(
         db,
         file_id="f_bck_w_2",
-        filename="20260501_chemo.pdf",
+        filename="20270501_chemo.pdf",
         category=DocumentCategory.CHEMO_SHEET,
-        doc_date=date(2026, 5, 1),
+        doc_date=date(2027, 5, 1),
         ocr_text=CHEMO_SHEET_WITH_LABS,
         metadata_json=json.dumps({"document_type": "chemo_sheet"}),
     )
 
     labs_payload = {
-        "lab_date": "2026-04-15",
+        "lab_date": "2027-04-15",
         "values": [
             {"parameter": "WBC", "value": 6.8, "unit": "10^9/L"},
             {"parameter": "HGB", "value": 128, "unit": "g/L"},
@@ -495,7 +495,7 @@ async def test_backfill_lab_values_writes_when_not_dry_run(db: Database):
     # Exactly one doc has stored values
     stored1 = await db.get_lab_snapshot(doc1, patient_id=ERIKA_UUID)
     stored2 = await db.get_lab_snapshot(doc2, patient_id=ERIKA_UUID)
-    # The tool orders by doc_date DESC so doc2 (2026-05-01) is processed first
+    # The tool orders by doc_date DESC so doc2 (2027-05-01) is processed first
     processed_docs = (stored1, stored2)
     total = len(stored1) + len(stored2)
     assert total == 2  # one doc got 2 rows, the other got 0
@@ -514,9 +514,9 @@ async def test_backfill_lab_values_skips_docs_with_existing_lab_values_key(
     await _insert_doc_with_metadata(
         db,
         file_id="f_skip_already",
-        filename="20260415_chemo.pdf",
+        filename="20270415_chemo.pdf",
         category=DocumentCategory.CHEMO_SHEET,
-        doc_date=date(2026, 4, 15),
+        doc_date=date(2027, 4, 15),
         ocr_text=CHEMO_SHEET_WITH_LABS,
         metadata_json=json.dumps({"document_type": "chemo_sheet", "lab_values": {"values": []}}),
     )
