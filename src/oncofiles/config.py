@@ -45,6 +45,9 @@ LOCAL_LLM_BASE_URL: str = os.environ.get("LOCAL_LLM_BASE_URL", "").rstrip("/")
 LOCAL_LLM_API_KEY: str = os.environ.get("LOCAL_LLM_API_KEY", "")
 LOCAL_LLM_MODEL: str = os.environ.get("LOCAL_LLM_MODEL", "")
 LOCAL_LLM_TIMEOUT_S: float = float(os.environ.get("LOCAL_LLM_TIMEOUT_S", "900"))
+# Context length LM Studio loads the model with (central macmini setting).
+# Change it together with LM Studio, or prompts + budgets overflow (#601).
+LOCAL_LLM_CONTEXT_WINDOW: int = int(os.environ.get("LOCAL_LLM_CONTEXT_WINDOW", "32768"))
 
 GOOGLE_OAUTH_CLIENT_ID: str = os.environ.get("GOOGLE_OAUTH_CLIENT_ID", "")
 GOOGLE_OAUTH_CLIENT_SECRET: str = os.environ.get("GOOGLE_OAUTH_CLIENT_SECRET", "")

@@ -107,8 +107,8 @@ def propose(contract: Contract, text: str) -> dict:
     try:
         answer = llm.chat(system, user)
     except llm.LocalLLMError as exc:
-        if "truncated" not in str(exc):
-            raise
+        if "truncated" not in str(exc) or "overflow" in str(exc):
+            raise  # an overflowing prompt does not fit any better with a bigger budget
         # 2026-11-08: 3 of 11 documents ran out of reasoning budget. One retry
         # with twice the budget (and time) before the document goes to review,
         # but only if the context window actually leaves more room than before.

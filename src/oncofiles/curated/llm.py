@@ -28,9 +28,9 @@ _THINK_RE = re.compile(r"<think>.*?</think>", re.S)
 # Room for the model's reasoning *plus* the answer. Measured 2026-11-07 on
 # qwen3.8-27b-mlx: ~2400 reasoning tokens for one classification.
 REASONING_BUDGET = 12_000
-# LM Studio serves the model with a fixed 32K context (macmini invariant):
-# prompt + max_tokens must fit, or the call fails or truncates mid-answer.
-CONTEXT_WINDOW = 32_768
+# LM Studio serves the model with a fixed context (macmini invariant, 32K;
+# env LOCAL_LLM_CONTEXT_WINDOW): prompt + max_tokens must fit, or the call
+# fails or truncates mid-answer.
 CONTEXT_MARGIN = 1_024  # chat template, tokeniser drift
 CHARS_PER_TOKEN = 3.0  # Slovak/Czech medical text, measured ~3.0-3.5 (2026-11-09)
 IMAGE_TOKENS = 3_000  # one page PNG at 150 dpi (vision models tile ~28 px patches)
@@ -54,7 +54,8 @@ def estimate_prompt_tokens(system: str, user_content: list[dict] | str) -> int:
 
 def clamp_budget(max_tokens: int, prompt_tokens: int) -> int:
     """max_tokens that still fits the context window next to the prompt."""
-    return max(0, min(max_tokens, CONTEXT_WINDOW - prompt_tokens - CONTEXT_MARGIN))
+    window = config.LOCAL_LLM_CONTEXT_WINDOW
+    return max(0, min(max_tokens, window - prompt_tokens - CONTEXT_MARGIN))
 
 
 class LocalLLMError(RuntimeError):
@@ -100,7 +101,7 @@ def chat(
         # as "model down"): the document goes to review, it never loops.
         raise LocalLLMError(
             f"local LLM answer truncated: prompt ~{est} tokens leaves no room "
-            f"in the {CONTEXT_WINDOW}-token context"
+            f"in the {config.LOCAL_LLM_CONTEXT_WINDOW}-token context"
         )
     payload = {
         "model": config.LOCAL_LLM_MODEL,
@@ -129,6 +130,10 @@ def chat(
     finally:
         if own:
             http.close()
+    if resp.status_code == 400 and _is_overflow(resp):
+        # Our estimate was low: same per-document path as a truncation
+        # (review after limited retries), never a run abort.
+        raise LocalLLMError("local LLM answer truncated: context overflow (HTTP 400)")
     if resp.status_code != 200:
         raise LocalLLMError(f"local LLM HTTP {resp.status_code}")
     try:
@@ -143,6 +148,11 @@ def chat(
             f"local LLM answer truncated: reasoning used the whole budget ({max_tokens} tokens)"
         )
     return strip_think(content if isinstance(content, str) else json.dumps(content))
+
+
+def _is_overflow(resp) -> bool:
+    text = (resp.text or "").lower()
+    return any(k in text for k in ("context", "n_ctx", "too many tokens", "maximum length"))
 
 
 def _log_usage(resp, choice: dict, max_tokens: int, est: int, seconds: float) -> None:
