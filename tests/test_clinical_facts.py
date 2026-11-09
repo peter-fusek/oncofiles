@@ -24,7 +24,7 @@ BOB_UUID = "00000000-0000-4000-8000-000000000002"
 BOB_SLUG = "bob-test"
 
 BORY_SIDECAR = """---
-doc_date: "2026-01-29"
+doc_date: "2027-04-14"
 institution: "BoryNemocnica"
 doctor: "MUDr. Jana Testova"
 ocr_engine: "qwen3.8-27b-mlx"
@@ -34,27 +34,27 @@ summary: "Krvny obraz a biochemia."
 
 <!-- page 1 -->
 Pacient: Jana NOVAKOVA   RČ: 0000000000
-Odber: 29.01.2026 12:24,
+Odber: 14.04.2027 09:10,
 Hematológia,
-Krvný obraz: Leukocyty [WBC] ...10.89 ▲  [10^9/l] {3.80 - 10.70 } ; \
-Hemoglobín [HGB] ...105.0 ▼  [g/l] {120.0 - 155.0 } ; \
+Krvný obraz: Leukocyty [WBC] ...11.42 ▲  [10^9/l] {3.80 - 10.70 } ; \
+Hemoglobín [HGB] ...101.0 ▼  [g/l] {120.0 - 155.0 } ; \
 Trombocyty [PLT] ...2[?]5  [10^9/l] {150 - 400 }
-Sérum: S-Glukóza ...8.40 ▲  [mmol/l] {3.30 - 5.59 } ; \
-S-Kreatinín ...39.00 ▼  [µmol/l] {42.00 - 79.00 }
+Sérum: S-Glukóza ...7.10 ▲  [mmol/l] {3.30 - 5.59 } ; \
+S-Kreatinín ...37.00 ▼  [µmol/l] {42.00 - 79.00 }
 Moč: U- pH ...5.5 {5.5 - 6.5 } ; U- Krv ...NEGAT [arb]
 Strana 1 / 1
 """
 
-OKB_TEXT = """Odobrané: 13.03.2026 08:52    Prijaté: 13.03.2026 09:07
+OKB_TEXT = """Odobrané: 21.05.2027 08:05    Prijaté: 21.05.2027 08:30
 Test                                Hodnota    Jednotky    Ref. medze        Hodnotenie    SOP
 markery v sére
-CEA v sére                          732.9      ng/ml                                          /
-CA 19-9 v sére                      22294.3    U/ml      0.0 - 30.9        ****            /
-eGF CKD-EPI                         1.92       ml/s      > 1.49            v norme         /
-Kreatínin v sére                    42.2       µmol/l    44.0 - 71.0       *               /
+CEA v sére                          41.7       ng/ml                                          /
+CA 19-9 v sére                      812.4      U/ml      0.0 - 30.9        ****            /
+eGF CKD-EPI                         1.64       ml/s      > 1.49            v norme         /
+Kreatínin v sére                    40.8       µmol/l    44.0 - 71.0       *               /
 """
 
-FILED = "20260129-JanaNovakova-BoryNemocnica-Labs-Testova-BoryRDG-KrvnyObraz.pdf"
+FILED = "20270414-JanaNovakova-BoryNemocnica-Labs-Testova-BoryRDG-KrvnyObraz.pdf"
 
 
 @pytest.fixture
@@ -82,25 +82,25 @@ async def test_bory_parser(vocab):
     facts = parse_bory([BORY_SIDECAR.split("<!-- page 1 -->")[1]], vocab)
     by = {f["code"] or f["label"]: f for f in facts}
     wbc = by["WBC"]
-    assert wbc["value_num"] == 10.89 and wbc["flag"] == "H" and wbc["unit"] == "10^9/l"
+    assert wbc["value_num"] == 11.42 and wbc["flag"] == "H" and wbc["unit"] == "10^9/l"
     assert wbc["ref_low"] == 3.8 and wbc["ref_high"] == 10.7
-    assert wbc["occurred_at"] == "2026-01-29T12:24"
-    assert "10.89" in wbc["evidence"] and wbc["verification"] == "machine"
-    assert by["HGB"]["flag"] == "L" and by["HGB"]["value_canonical"] == 105.0
+    assert wbc["occurred_at"] == "2027-04-14T09:10"
+    assert "11.42" in wbc["evidence"] and wbc["verification"] == "machine"
+    assert by["HGB"]["flag"] == "L" and by["HGB"]["value_canonical"] == 101.0
     assert by["PLT"]["verification"] == "unverified"  # "[?]" in the evidence
-    assert by["GLU"]["value_num"] == 8.4 and by["CREA"]["flag"] == "L"
+    assert by["GLU"]["value_num"] == 7.1 and by["CREA"]["flag"] == "L"
     assert by["U_ERY"]["value_text"] == "NEGAT" and by["U_ERY"]["value_num"] is None
 
 
 async def test_okb_parser(vocab):
     facts = parse_okb([OKB_TEXT], vocab)
     by = {f["code"]: f for f in facts}
-    assert by["CEA"]["value_num"] == 732.9 and by["CEA"]["unit_canonical"] == "µg/L"
-    assert by["CEA"]["value_canonical"] == 732.9  # ng/ml == µg/L
+    assert by["CEA"]["value_num"] == 41.7 and by["CEA"]["unit_canonical"] == "µg/L"
+    assert by["CEA"]["value_canonical"] == 41.7  # ng/ml == µg/L
     assert by["CA19_9"]["flag"] == "H" and by["CA19_9"]["ref_high"] == 30.9
     assert by["EGFR"]["ref_low"] == 1.49 and by["EGFR"]["ref_text"] == "> 1.49"
     assert by["CREA"]["flag"] == "L"
-    assert all(f["occurred_at"] == "2026-03-13T08:52" for f in facts)
+    assert all(f["occurred_at"] == "2027-05-21T08:05" for f in facts)
     assert "markery" not in {f["label"] for f in facts}
 
 
@@ -147,7 +147,7 @@ async def test_index_builds_entities_facts_and_timeline(db, lab_env):
     ctx = _Ctx(db)
     series = json.loads(await cf.fact_series(ctx, codes=["wbc", "PLT"]))["series"]
     assert series["WBC"]["values"][0]["source"]["url"] == row["source_url"]
-    assert series["WBC"]["stats"]["max"] == 10.89
+    assert series["WBC"]["stats"]["max"] == 11.42
     assert series["PLT"]["values"] == [] and len(series["PLT"]["unverified"]) == 1
     assert series["PLT"]["stats"] is None  # an unverified value never becomes a statistic
 
@@ -175,7 +175,7 @@ async def test_reextraction_soft_deletes_with_audit_and_keeps_verified(db, lab_e
         (doc.id,),
     )
     await db.db.commit()
-    d.items[side]["content"] = BORY_SIDECAR.replace("10.89", "10.95").encode()
+    d.items[side]["content"] = BORY_SIDECAR.replace("11.42", "11.55").encode()
     d.items[side]["modified"] = "2026-11-03T00:00:00Z"
     await tool.index_patient(db, ERIKA_UUID)
     async with db.db.execute(
@@ -185,7 +185,7 @@ async def test_reextraction_soft_deletes_with_audit_and_keeps_verified(db, lab_e
     ) as cur:
         rows = [dict(r) for r in await cur.fetchall()]
     wbc = [r for r in rows if r["code"] == "WBC"]
-    assert {r["value_num"] for r in wbc if r["deleted_at"] is None} == {10.95}
+    assert {r["value_num"] for r in wbc if r["deleted_at"] is None} == {11.55}
     assert any(r["deleted_at"] for r in wbc)  # soft-deleted, still there
     hgb = [r for r in rows if r["code"] == "HGB"]
     assert len(hgb) == 1 and hgb[0]["verification"] == "verified"  # untouched, not duplicated
@@ -317,7 +317,7 @@ async def test_rows_from_an_older_index_version_are_reprocessed_once(db, lab_env
 
 # ── parser quality (infra review of the first production run) ──
 
-GARBAGE = """Odber: 29.01.2026 12:24,
+GARBAGE = """Odber: 14.04.2027 09:10,
 ......
 Tel.(predvoľba): ....
 medCOMP 2.0.8 build 2... 12 [arb]
@@ -329,9 +329,9 @@ Výsledky uvoľnil(a): Meno ...1 [x]
 'po CT simulacia ...2 [x]
 """
 
-OKB_WITH_DOSING = """Odobrané: 13.03.2026 08:52
+OKB_WITH_DOSING = """Odobrané: 21.05.2027 08:05
 Test                                Hodnota    Jednotky    Ref. medze
-CEA v sére                          732.9      ng/ml
+CEA v sére                          41.7       ng/ml
 K 4.                                4          -
 HER2 gene amplification probe. Vysledok:   2   x
 5-FU                                2400       mg/m2
@@ -339,7 +339,7 @@ Oxaliplatina                        85         mg/m2
 Výsledky uvoľnil(a): Meno           1          x
 """
 
-REAL_VARIANTS = """Odber: 29.01.2026 12:24,
+REAL_VARIANTS = """Odber: 14.04.2027 09:10,
 Krvný obraz: abs. počet NEUT ...4.10 [10^9/l] {2.0 - 7.0 } ; Bazofilý abs.počet ...0.03 [10^9/l]
 Sérum: ; S-Chloridy ...101 [mmol/l] {98 - 107 }
 Moč: U- Ketóny ...NEGAT [arb] ; U-Bielkoviny ...1+ [arb]
@@ -383,7 +383,7 @@ async def test_document_whose_new_extraction_is_empty_loses_old_junk(db, lab_env
         (doc.id,),
     )
     await db.db.commit()
-    d.items[side]["content"] = b"---\ndoc_date: 2026-01-29\n---\n\nno lab values here\n"
+    d.items[side]["content"] = b"---\ndoc_date: 2027-04-14\n---\n\nno lab values here\n"
     d.items[side]["modified"] = "2026-11-04T00:00:00Z"
     await tool.index_patient(db, ERIKA_UUID)
     async with db.db.execute(
@@ -400,15 +400,15 @@ async def test_percent_spacing_variants_match(db):
 
 
 MD_TABLE = """## Výsledky laboratórnych vyšetrení — krvný obraz
-Odobrané: 19.08.2026 08:21 · Prijaté: 19.08.2026 08:21
+Odobrané: 03.03.2027 07:15 · Prijaté: 03.03.2027 07:15
 | Test | Hodnota | Jednotky | Ref. medze |
 |---|---|---|---|
-| WBC | 3.84 | G/l | 3.5 - 10 |
-| HGB | 119 (znížené) | g/l | 120 - 156 |
-| Neutrofily | 43.3 | % | 40 - 78 |
-| abs.počet NEUT | 1.66 | | |
-| Monocyty | 17.4 (zvýšené) | % | 1 - 10 |
-| eGFR | 1.76 | ml/s | > 1.49 |
+| WBC | 4.21 | G/l | 3.5 - 10 |
+| HGB | 114 (znížené) | g/l | 120 - 156 |
+| Neutrofily | 51.2 | % | 40 - 78 |
+| abs.počet NEUT | 2.16 | | |
+| Monocyty | 12.6 (zvýšené) | % | 1 - 10 |
+| eGFR | 1.58 | ml/s | > 1.49 |
 Výsledky uvoľnil(a): 1) Meno Priezvisko
 """
 
@@ -420,10 +420,94 @@ async def test_markdown_table_parser_and_percent_codes(db):
     facts, extractor = extract_lab_facts([MD_TABLE], vocab)
     assert extractor == "rule:mdtable-v1"
     by = {f["code"]: f for f in facts}
-    assert by["WBC"]["value_num"] == 3.84 and by["WBC"]["occurred_at"] == "2026-08-19T08:21"
+    assert by["WBC"]["value_num"] == 4.21 and by["WBC"]["occurred_at"] == "2027-03-03T07:15"
     assert by["HGB"]["flag"] == "L"  # "(znížené)" and below range
-    assert by["NEUT_PCT"]["value_num"] == 43.3  # % never filed under the absolute count
-    assert by["NEUT"]["value_num"] == 1.66
+    assert by["NEUT_PCT"]["value_num"] == 51.2  # % never filed under the absolute count
+    assert by["NEUT"]["value_num"] == 2.16
     assert by["MONO_PCT"]["flag"] == "H"
     assert by["EGFR"]["ref_low"] == 1.49
     assert all("uvoľnil" not in f["evidence"] for f in facts)
+
+
+# ── round 2 (#635): inline results, entities, dedupe ──
+
+INLINE_REPORT = """## Lekárska správa
+Laboratórne výsledky z 12.06.2027:
+CEA S 38,2 ug/l; CA 19-9 655,1; KREA S 61,0 umol/l; KM S 310,4; NA v sére 139,0
+Pacientka je v dobrom stave, váha 62 kg; TK 120/80; bez ťažkostí.
+"""
+
+
+async def test_inline_results_rules(db):
+    from oncofiles.curated.facts_rules import parse_inline_results
+
+    vocab = Vocabulary.from_rows(await db.fact_code_vocabulary())
+    facts = parse_inline_results([INLINE_REPORT], vocab, report_date="2027-06-20")
+    by = {f["code"]: f for f in facts}
+    assert set(by) >= {"CEA", "CA19_9", "CREA", "URIC", "NA"}
+    assert all(f["occurred_at"] == "2027-06-12" for f in facts)  # printed date, not report
+    assert by["CEA"]["verification"] == "machine"  # printed unit + printed date
+    assert by["CA19_9"]["verification"] == "unverified"  # unit implied → never machine
+    assert by["CA19_9"]["metadata"]["unit_source"] == "implied"
+    assert "WEIGHT" not in by  # the prose line is not results (fewer than 2 coded items)
+
+
+async def test_inline_results_without_printed_date_use_report_date_unverified(db):
+    from oncofiles.curated.facts_rules import parse_inline_results
+
+    vocab = Vocabulary.from_rows(await db.fact_code_vocabulary())
+    text = "CEA S 38,2 ug/l; KREA S 61,0 umol/l; NA v sére 139,0 mmol/l\n"
+    facts = parse_inline_results([text], vocab, report_date="2027-06-20")
+    assert facts and all(f["occurred_at"] == "2027-06-20" for f in facts)
+    assert all(f["verification"] == "unverified" for f in facts)
+    assert all(f["metadata"]["date_source"] == "report" for f in facts)
+
+
+def test_practitioner_and_department_normalisation():
+    assert tool._surname("MUDrMgrJanaTestova") == "Testova"
+    assert tool._surname("Testova") == "Testova"
+    assert tool._person("prim. MUDr. Jana Testová (primár OKB — schvaľuje výsledky)") == (
+        "prim. MUDr. Jana Testová"
+    )
+    assert tool._dept_ok("AmbulanciaOrdinacneHodiny111a") is None
+    assert tool._dept_ok("KlinikaOnkohematologie") == "KlinikaOnkohematologie"
+
+
+def test_series_dedupe_drops_duplicate_sheets_and_report_quotes():
+    base = {"code": "CEA", "value_text": None, "metadata_json": "{}", "page_number": 1}
+    rows = [
+        {**base, "id": 1, "effective_at": "2027-03-03", "value_canonical": 44.4,
+         "verification": "machine", "source_document_id": 10},
+        {**base, "id": 2, "effective_at": "2027-03-03", "value_canonical": 44.4,
+         "verification": "unverified", "source_document_id": 11},  # duplicated sheet
+        {**base, "id": 3, "effective_at": "2027-03-20", "value_canonical": 44.4,
+         "verification": "unverified", "source_document_id": 12,
+         "metadata_json": '{"date_source": "report"}'},  # quoted in a later report
+        {**base, "id": 4, "effective_at": "2027-06-12", "value_canonical": 38.2,
+         "verification": "machine", "source_document_id": 13},
+    ]  # fmt: skip
+    kept, dropped = cf._dedupe(rows)
+    assert [r["id"] for r in kept] == [1, 4] and dropped == 2
+
+
+async def test_migration_075_codes_and_encounter_sources(db, lab_env):
+    codes = {r["code"] for r in await db.fact_code_vocabulary()}
+    assert {"FE", "TRF", "TSAT", "TIBC", "FERR", "VITD"} <= codes
+    await tool.index_patient(db, ERIKA_UUID)
+    rows = await db.timeline_rows(patient_id=ERIKA_UUID, kinds=["encounter"])
+    assert rows and all(r["source_document_id"] is not None for r in rows)
+
+
+async def test_alias_normalisation_serum_suffix_and_page(db):
+    vocab = Vocabulary.from_rows(await db.fact_code_vocabulary())
+    assert vocab.match("KREA S")["code"] == "CREA"
+    assert vocab.match("Celkové bielkoviny v sére (str. 2)")["code"] == "TP"
+    assert vocab.match("Osmolalita séra výpočtom")["code"] == "OSMO"
+
+
+async def test_shared_organizations_never_take_text_from_a_patient_readme(db, lab_env):
+    """organizations are shared across patients: no README-derived names (#637 review)."""
+    await tool.index_patient(db, ERIKA_UUID)
+    async with db.db.execute("SELECT code, name FROM organizations") as cur:
+        rows = [dict(r) for r in await cur.fetchall()]
+    assert rows and all(r["name"] is None for r in rows)

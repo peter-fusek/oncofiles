@@ -13,7 +13,7 @@ PAYLOAD = {
     "title": "Chart broken",
     "description": "the CEA chart is empty",
     "page_url": "https://oncofiles.com/dashboard?patient=secret-slug#labs",
-    "page_state": '{"patient": "Jana Novakova", "CEA": 732.9}',
+    "page_state": '{"patient": "Jana Novakova", "CEA": 41.7}',
     "screenshot": "iVBORw0KGgoAAAANSUhEUg==",
     "console_errors": "TypeError: x is undefined",
     "user_agent": "test",
@@ -72,7 +72,7 @@ async def test_private_repo_gets_no_screenshot_page_state_or_query():
     assert resp.status_code == 200
     posted = next(c[2] for c in client.calls if c[0] == "POST")
     text = json.dumps(posted)
-    assert "Jana Novakova" not in text and "732.9" not in text  # page state dropped
+    assert "Jana Novakova" not in text and "41.7" not in text  # page state dropped
     assert "iVBORw0K" not in text  # screenshot dropped
     assert "secret-slug" not in text and "/dashboard" in text  # path only
 

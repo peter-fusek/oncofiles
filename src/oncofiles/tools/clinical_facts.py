@@ -37,6 +37,54 @@ def _source(row: dict) -> dict:
     }
 
 
+def _dedupe(rows: list[dict]) -> tuple[list[dict], int]:
+    """One measurement counts once (#635).
+
+    * the same code, day and value from two documents (a duplicated lab
+      sheet) is one point; the verified/machine one is kept;
+    * a value quoted in a report (``date_source=report``) equal to an earlier
+      value of the same code from another document within 60 days is a
+      quote, not a new measurement.
+    """
+    from datetime import date as _date
+
+    rank = {"verified": 0, "corrected": 0, "machine": 1, "unverified": 2}
+    rows = sorted(
+        rows,
+        key=lambda r: (r["code"] or "", r["effective_at"] or "", rank.get(r["verification"], 3)),
+    )
+    kept: list[dict] = []
+    seen: set = set()
+    dropped = 0
+    for r in rows:
+        day = (r["effective_at"] or "")[:10]
+        key = (r["code"], day, r["value_canonical"], r["value_text"])
+        if key in seen:
+            dropped += 1
+            continue
+        try:
+            meta = json.loads(r.get("metadata_json") or "{}")
+        except ValueError:
+            meta = {}
+        if meta.get("date_source") == "report" and r["value_canonical"] is not None:
+            try:
+                d0 = _date.fromisoformat(day)
+            except ValueError:
+                d0 = None
+            if d0 and any(
+                k["code"] == r["code"]
+                and k["value_canonical"] == r["value_canonical"]
+                and k["source_document_id"] != r["source_document_id"]
+                and 0 <= (d0 - _date.fromisoformat((k["effective_at"] or day)[:10])).days <= 60
+                for k in kept
+            ):
+                dropped += 1
+                continue
+        seen.add(key)
+        kept.append(r)
+    return kept, dropped
+
+
 def _stats(points: list[dict]) -> dict | None:
     vals = [p["value"] for p in points if isinstance(p.get("value"), int | float)]
     if not vals:
@@ -62,7 +110,7 @@ async def patient_overview(ctx: Context, patient_slug: str | None = None) -> str
     """
     pid = await _resolve_patient_id(patient_slug, ctx)
     db = _get_db(ctx)
-    latest = await db.latest_fact_rows(patient_id=pid)
+    latest = await db.latest_any_rows(patient_id=pid)  # newest, with its verification
     conditions = [
         r for r in latest if r["category"] in ("condition", "genetic_variant", "biomarker")
     ]
@@ -90,6 +138,7 @@ async def patient_overview(ctx: Context, patient_slug: str | None = None) -> str
                     "unit": r["unit_canonical"],
                     "flag": r["flag"],
                     "at": r["effective_at"],
+                    "verification": r["verification"],
                     "source_document_id": r["source_document_id"],
                     "page": r["page_number"],
                 }
@@ -152,6 +201,7 @@ async def fact_series(
     rows = await _get_db(ctx).fact_series_rows(
         patient_id=pid, codes=[c.upper() for c in codes], date_from=date_from, date_to=date_to
     )
+    rows, duplicates_removed = _dedupe(rows)
     out: dict = {}
     for r in rows:
         s = out.setdefault(
@@ -178,7 +228,7 @@ async def fact_series(
     for s in out.values():
         s["stats"] = _stats(s["values"])
         s["stats_include_unverified"] = include_unverified
-    return _dump({"series": out, "note": UNVERIFIED_NOTE})
+    return _dump({"series": out, "duplicates_removed": duplicates_removed, "note": UNVERIFIED_NOTE})
 
 
 async def document_detail(ctx: Context, document_id: int, patient_slug: str | None = None) -> str:

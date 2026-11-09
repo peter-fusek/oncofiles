@@ -4,14 +4,14 @@ Two regular printout formats seen in real folders:
 
 * **Bory** hospital-system printout, one section per line::
 
-      Odber: 29.01.2026 12:24,
-      Krvný obraz: Leukocyty [WBC] ...10.89 ▲  [10^9/l] {3.80 - 10.70 } ; Hemoglobín ...
+      Odber: 14.04.2027 09:10,
+      Krvný obraz: Leukocyty [WBC] ...11.42 ▲  [10^9/l] {3.80 - 10.70 } ; Hemoglobín ...
 
 * **NOÚ OKB** table (fixed columns, two or more spaces between them)::
 
-      Odobrané: 13.03.2026 08:52   Prijaté: …
-      CA 19-9 v sére        22294.3    U/ml      0.0 - 30.9     ****   /
-      eGF CKD-EPI           1.92       ml/s      > 1.49         v norme
+      Odobrané: 21.05.2027 08:05   Prijaté: …
+      CA 19-9 v sére        812.4      U/ml      0.0 - 30.9     ****   /
+      eGF CKD-EPI           1.64       ml/s      > 1.49         v norme
 
 Every fact keeps the exact text it came from (``evidence``), and the value
 digits are always taken from that text. ``[?]`` anywhere in the evidence, or
@@ -47,14 +47,16 @@ def _strip_accents(s: str) -> str:
 
 def norm_label(s: str) -> str:
     s = _strip_accents(s).lower().strip()
+    s = re.sub(r"\(\s*str\.?\s*\d+\s*\)", "", s).strip()  # "(str. 2)" page suffix
     s = re.sub(r"^[^a-z0-9]+", "", s)  # "; S-Chloridy" → "s-chloridy"
     s = re.sub(r"\s+v\s+(sere|plazme|krvi|moci)$", "", s)
     s = re.sub(r"^[sbp]\s*-\s*", "", s)  # S-Glukóza, B-…, P-…
     s = re.sub(r"^u\s*-\s*", "u-", s)  # "U- Krv" == "U-Krv"
     s = s.replace(".", " ")  # "abs.počet" == "abs. počet"
     s = re.sub(r"\s*%", "%", s)  # "Neutrofilie %" == "Neutrofilie%"
-    s = re.sub(r"\s+", " ", s)
-    return s.strip(" :")
+    s = re.sub(r"\s+", " ", s).strip(" :")
+    s = re.sub(r" s( v)?$", "", s)  # serum suffix: "KREA S", "OSM S V"
+    return s
 
 
 def _num(s: str | None) -> float | None:
@@ -167,7 +169,7 @@ def _fact(  # noqa: PLR0913
 ) -> dict | None:
     code_row = vocab.match(label, abbr)
     if code_row and unit and unit.strip() == "%" and code_row.get("unit_canonical") != "%":
-        # "Neutrofily 43.3 %" is the percentage, not the absolute count
+        # "Neutrofily 51.2 %" is the percentage, not the absolute count
         code_row = vocab.by_code.get(code_row["code"] + "_PCT")
     value = _num(raw_value)
     numeric = value is not None and re.fullmatch(_NUM, raw_value.strip()) is not None
@@ -296,10 +298,10 @@ def parse_markdown_table(
 ) -> list[dict]:
     """Lab tables written as markdown by older sidecar writers::
 
-    Odobrané: 19.08.2026 08:21 · …
+    Odobrané: 03.03.2027 07:15 · …
     | Test | Hodnota | Jednotky | Ref. medze |
     |---|---|---|---|
-    | WBC | 3.84 | G/l | 3.5 - 10 |
+    | WBC | 4.21 | G/l | 3.5 - 10 |
     | HGB | 119 (znížené) | g/l | 120 - 156 |
     """
     out: list[dict] = []
@@ -361,7 +363,91 @@ def parse_markdown_table(
     return out
 
 
-def extract_lab_facts(pages: list[str], vocab: Vocabulary, *, unreliable: bool = False):
+_INLINE_ITEM = re.compile(
+    r"^\s*(?P<label>[^\W\d_][^;:]{0,40}?)\s+(?P<val>[<>]?\d+(?:[.,]\d+)?)\s*(?P<unit>[^\d\s;][^\d;]{0,15})?\s*$"
+)
+_LINE_DATE = re.compile(r"\b(\d{1,2})\.\s?(\d{1,2})\.\s?(\d{4})\b")
+
+
+def parse_inline_results(
+    pages: list[str],
+    vocab: Vocabulary,
+    *,
+    report_date: str | None = None,
+    unreliable: bool = False,
+) -> list[dict]:
+    """Result lines quoted inside clinic reports (#635)::
+
+        CEA S 38,2; CA 19-9 655,1; KREA S 61,0; NA v sére 139,0
+
+    Infra rules: a value without a printed unit is ALWAYS unverified (the unit
+    is implied from the code); the date must be printed next to the values,
+    otherwise the report date is used and the value is unverified with
+    ``date_source=report``. At least two items must match known codes, so a
+    sentence with numbers is never read as results.
+    """
+    out: list[dict] = []
+    for page_no, text in enumerate(pages, start=1):
+        prev = ""
+        for line in text.splitlines():
+            items = [i for i in line.split(";") if i.strip()]
+            if len(items) >= 3 and not _NOT_DATA.search(line):
+                parsed = []
+                for item in items:
+                    m = _INLINE_ITEM.match(item)
+                    if not m:
+                        continue
+                    code_row = vocab.match(m.group("label"))
+                    parsed.append((m, code_row))
+                if sum(1 for _, c in parsed if c) >= 2:
+                    dm = _LINE_DATE.search(line) or _LINE_DATE.search(prev)
+                    when = (
+                        f"{int(dm.group(3)):04d}-{int(dm.group(2)):02d}-{int(dm.group(1)):02d}"
+                        if dm
+                        else report_date
+                    )
+                    for m, code_row in parsed:
+                        if not code_row:
+                            continue  # only known codes from free text
+                        unit = (m.group("unit") or "").strip() or None
+                        printed_unit = bool(unit and _UNIT_HINT.search(unit))
+                        f = _fact(
+                            vocab,
+                            label=m.group("label"),
+                            abbr=None,
+                            raw_value=m.group("val"),
+                            unit=unit if printed_unit else code_row.get("unit_canonical"),
+                            lo=None,
+                            hi=None,
+                            ref_text=None,
+                            arrow=None,
+                            when=when,
+                            page=page_no,
+                            evidence=line,
+                            unreliable=unreliable,
+                        )
+                        if not f:
+                            continue
+                        meta = {"date_source": "printed" if dm else "report"}
+                        if not printed_unit:
+                            meta["unit_source"] = "implied"
+                        if not printed_unit or not dm:
+                            f["verification"] = "unverified"
+                        f["metadata"] = meta
+                        out.append(f)
+            if line.strip():
+                prev = line
+    return out
+
+
+def extract_lab_facts(
+    pages: list[str],
+    vocab: Vocabulary,
+    *,
+    unreliable: bool = False,
+    report_date: str | None = None,
+    inline: bool = False,
+):
     """(facts, extractor id) — the first format that yields anything wins."""
     for name, fn in (
         ("rule:bory-v1", parse_bory),
@@ -371,4 +457,8 @@ def extract_lab_facts(pages: list[str], vocab: Vocabulary, *, unreliable: bool =
         facts = fn(pages, vocab, unreliable=unreliable)
         if facts:
             return facts, name
+    if inline:  # results quoted inside clinic reports
+        facts = parse_inline_results(pages, vocab, report_date=report_date, unreliable=unreliable)
+        if facts:
+            return facts, "rule:inline-v1"
     return [], None

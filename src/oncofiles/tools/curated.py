@@ -26,6 +26,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import threading
 import time
 from collections import OrderedDict
@@ -821,13 +822,43 @@ def _known(token: str | None) -> str | None:
     return token if token and token != "Unknown" else None
 
 
+_TITLES = {"mudr", "mgr", "phd", "doc", "prof", "ing", "bc", "mph", "mha", "prim", "dr", "phdr",
+           "rndr", "mba", "csc", "drsc", "mudrmgr"}  # fmt: skip
+_NO_ENCOUNTER = ("reference", "advocate", "other", "prescription")
+
+
+def _surname(token: str) -> str:
+    """'MUDrMgrZuzanaMinarikova' → 'Minarikova'; 'Minarikova' stays (#635)."""
+    words = re.findall(r"[A-ZÁČĎÉÍĽĹŇÓÔŔŠŤÚÝŽ][a-záäčďéíľĺňóôŕšťúýž]+|[A-Z]{2,}(?![a-z])", token)
+    words = [w for w in words if w.lower() not in _TITLES]
+    return words[-1] if words else token
+
+
+def _person(display: str | None) -> str | None:
+    """'prim. MUDr. X Y (primár OKB — podpisuje …)' → 'prim. MUDr. X Y'."""
+    if not display or not isinstance(display, str):
+        return None
+    return (
+        re.split(r"\s[(—–]|\s-\s|,\s(?=[a-záčďéíľňóôŕšťúýž])", display, maxsplit=1)[0].strip()
+        or None
+    )
+
+
+def _dept_ok(token: str | None) -> str | None:
+    return token if token and re.fullmatch(r"[A-Z][A-Za-z]{2,40}", token) else None
+
+
 async def _link_entities(db, pid: str, doc_id: int, rec) -> dict:
     """Organization, department, practitioner, encounter, title, Drive link (#603)."""
     fields = rec.filename.rsplit(".", 1)[0].split("-") if "." in rec.filename else []
     std = len(fields) >= 6 and fields[0].isdigit()
     org_code = _known(rec.institution) or (_known(fields[2]) if std else None)
     doctor = _known(fields[4]) if std else None
-    dept_code = _known(fields[5]) if std else None
+    doctor = _surname(doctor) if doctor else None
+    dept_code = _dept_ok(_known(fields[5])) if std else None
+    # organizations are SHARED across patients: never fill their names from one
+    # patient's README (cross-tenant text; security review of #637). Names come
+    # only from an admin-curated list (not yet built).
     org_id = await db.upsert_organization(org_code) if org_code else None
     dept_id = await db.upsert_department(org_id, dept_code) if org_id and dept_code else None
     prac_id = None
@@ -835,14 +866,14 @@ async def _link_entities(db, pid: str, doc_id: int, rec) -> dict:
         prac_id = await db.upsert_practitioner(
             patient_id=pid,
             surname_token=doctor,
-            display_name=rec.metadata.get("doctor"),
+            display_name=_person(rec.metadata.get("doctor")),
             organization_id=org_id,
             department_id=dept_id,
         )
     enc_id = None
     day = rec.document_date.isoformat() if rec.document_date else None
     cat = rec.category.value
-    if day and org_code and cat not in ("reference", "advocate", "other"):
+    if day and org_code and cat not in _NO_ENCOUNTER:
         kind = _ENCOUNTER_KIND.get(cat, "visit")
         enc_id = await db.upsert_encounter(
             patient_id=pid,
@@ -878,7 +909,14 @@ async def _extract_facts(db, pid: str, doc_id: int, rec, entities: dict, vocab) 
     engine = str(rec.metadata.get("ocr_engine") or "")
     local = any(k in engine.lower() for k in _LOCAL_ENGINES)
     unreliable = rec.metadata.get("handwritten") is True or not local
-    facts, extractor = extract_lab_facts(rec.pages, vocab, unreliable=unreliable)
+    day = rec.document_date.isoformat() if rec.document_date else None
+    facts, extractor = extract_lab_facts(
+        rec.pages,
+        vocab,
+        unreliable=unreliable,
+        report_date=day,
+        inline=rec.category.value in ("report", "discharge", "chemo_sheet", "imaging", "surgery"),
+    )
     # Always replace, even with nothing: a document whose new extraction finds
     # no facts must lose the machine rows an older parser version made (#633).
     extractor = extractor or "rule:none"
@@ -887,7 +925,11 @@ async def _extract_facts(db, pid: str, doc_id: int, rec, entities: dict, vocab) 
     for f in facts:
         f["occurred_at"] = f["occurred_at"] or day
         f.update(entities)
-        f["metadata"] = {"source_system": system, "ocr_engine": engine or None}
+        f["metadata"] = {
+            **(f.get("metadata") or {}),
+            "source_system": system,
+            "ocr_engine": engine or None,
+        }
     res = await db.replace_document_facts(
         patient_id=pid, document_id=doc_id, facts=facts, extracted_by=extractor
     )
