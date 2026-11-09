@@ -52,9 +52,12 @@ FROM ${PYTHON_IMAGE}
 LABEL org.opencontainers.image.source="https://github.com/peter-fusek/oncofiles" \
       org.opencontainers.image.licenses="MIT"
 
+# Commit of this image, shown on /health (#610). Public repo: not sensitive.
+ARG GIT_SHA=""
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PATH="/app/.venv/bin:$PATH"
+    PATH="/app/.venv/bin:$PATH" \
+    ONCOFILES_GIT_SHA=$GIT_SHA
 
 # curl: Coolify runs its health check (GET /health) inside the container.
 RUN apt-get update \
