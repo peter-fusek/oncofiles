@@ -201,6 +201,9 @@ async def _prepare(db, pid: str, *, dry_run: bool, max_docs: int | None, max_act
 # One writer per patient (#612): a curated run, the read-model index and the
 # data backfill (#619) never overlap for the same patient, so the index never
 # reads a half-moved pair and facts don't churn in the audit trail.
+# INVARIANT: in-process lock — valid only while Oncofiles runs as ONE process
+# in ONE container (true today). Before adding workers or replicas, move this
+# to the DB (a per-patient lock row with a lease), or two writers return.
 _patient_locks: dict[str, asyncio.Lock] = {}
 
 
