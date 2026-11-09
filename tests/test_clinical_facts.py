@@ -299,3 +299,17 @@ def test_local_only_zone_is_scoped():
     with local_only("test job"), pytest.raises(CloudForbiddenError, match="test job"):
         check_cloud_allowed("x")
     check_cloud_allowed("x")  # outside the zone: allowed (user-initiated paths)
+
+
+async def test_rows_from_an_older_index_version_are_reprocessed_once(db, lab_env):
+    from oncofiles.curated import indexer
+
+    with (
+        patch.object(indexer, "INDEX_VERSION", 1),
+        patch.object(tool, "_extract_facts", AsyncMock(return_value=0)),
+    ):
+        await tool.index_patient(db, ERIKA_UUID)  # old code: no facts
+    upgraded = await tool.index_patient(db, ERIKA_UUID)  # new version: re-processed
+    assert upgraded["unchanged"] == 0 and upgraded["facts"] >= 7
+    again = await tool.index_patient(db, ERIKA_UUID)
+    assert again["unchanged"] == 1 and again["facts"] == 0

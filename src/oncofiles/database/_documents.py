@@ -680,9 +680,14 @@ class DocumentMixin:
                 meta = _json.loads(r["structured_metadata"] or "{}")
             except ValueError:
                 meta = {}
+            from oncofiles.curated.indexer import INDEX_VERSION
+
+            cur = meta.get("curated") or {}
+            current = cur.get("index_version") == INDEX_VERSION
             out[r["gdrive_id"]] = {
                 "id": r["id"],
-                "sidecar_modified": (meta.get("curated") or {}).get("sidecar_modified", ""),
+                # an older index version counts as "changed": re-processed once
+                "sidecar_modified": cur.get("sidecar_modified", "") if current else "",
                 "deleted": r["deleted_at"] is not None,
             }
         return out

@@ -723,6 +723,7 @@ async def _index_patient(db, pid: str) -> dict:
                         "sidecar_id": rec.sidecar_id,
                         "sidecar_modified": rec.sidecar_modified,
                         "contract_version": scanned.contract_version,
+                        "index_version": indexer.INDEX_VERSION,
                     },
                     **rec.metadata,
                 },
