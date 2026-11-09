@@ -154,6 +154,63 @@ async def test_caregiver_email_match_is_case_insensitive(
         _current_patient_id.reset(tok)
 
 
+async def test_second_caregiver_in_csv_list_can_resolve_slug(
+    two_patients: Database, reset_scope
+) -> None:
+    """#651: caregiver_email may list several caregivers. The second one must
+    pass the slug ACL just like login resolution already lets them in."""
+    second = "second.caregiver@example.com"
+    await two_patients.db.execute(
+        "UPDATE patients SET caregiver_email = ? WHERE patient_id = ?",
+        (f"{BOB_EMAIL}, {second.upper()}", BOB_UUID),
+    )
+    await two_patients.db.commit()
+    _verified_caller_email.set(f"  {second} ")
+    tok = _current_patient_id.set("")
+    try:
+        pid = await _resolve_patient_id(BOB_SLUG, _StubCtx(two_patients))
+        assert pid == BOB_UUID
+    finally:
+        _current_patient_id.reset(tok)
+
+
+@pytest.mark.parametrize(
+    "caller",
+    ["second.caregiver@example", "caregiver@example.com", "example.com", ",", " "],
+)
+async def test_partial_email_never_matches_csv_entry(
+    two_patients: Database, reset_scope, caller: str
+) -> None:
+    """A substring, suffix, separator or blank never matches a CSV entry."""
+    await two_patients.db.execute(
+        "UPDATE patients SET caregiver_email = ? WHERE patient_id = ?",
+        (f"{BOB_EMAIL},second.caregiver@example.com", BOB_UUID),
+    )
+    await two_patients.db.commit()
+    _verified_caller_email.set(caller)
+    tok = _current_patient_id.set("")
+    try:
+        with pytest.raises(ValueError, match="access denied"):
+            await _resolve_patient_id(BOB_SLUG, _StubCtx(two_patients))
+    finally:
+        _current_patient_id.reset(tok)
+
+
+def test_one_caregiver_matcher_everywhere() -> None:
+    """server.py and the resolver use the persistent_oauth implementation."""
+    from oncofiles import server
+    from oncofiles.persistent_oauth import _email_matches_caregiver
+
+    for email, csv, expected in [
+        ("a@x.sk", "b@y.sk, A@X.SK", True),
+        ("a@x.sk", "aa@x.sk", False),
+        ("", "a@x.sk", False),
+        ("a@x.sk", None, False),
+    ]:
+        assert _email_matches_caregiver(email, csv) is expected
+        assert server._email_matches_caregiver(email, csv) is expected
+
+
 # ── Branch 4: sentinel / no binding ───────────────────────────────────────
 
 

@@ -85,12 +85,13 @@ def _prune_email_stash() -> None:
 def _email_matches_caregiver(email: str, caregiver_email: str | None) -> bool:
     """Case-insensitive check supporting comma-separated caregiver_email lists.
 
-    Mirrors server.py's helper — kept local here to avoid importing server.py
-    (which would re-trigger the circular we broke with constants.py).
+    The single implementation (#651): OAuth resolution, the MCP resolver ACL,
+    ``list_patients`` and the dashboard all use it. Lives here, not in
+    server.py, to avoid the circular import we broke with constants.py.
     """
-    if not email or not caregiver_email:
+    if not email or not email.strip() or not caregiver_email:
         return False
-    email_lower = email.lower()
+    email_lower = email.strip().lower()
     return any(e.strip().lower() == email_lower for e in caregiver_email.split(","))
 
 

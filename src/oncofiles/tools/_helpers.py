@@ -173,8 +173,8 @@ async def _resolve_patient_id(
     - **Non-admin callers** must satisfy ONE of:
         * their bearer-bound `patient_id` (set by `verify_token` /
           `PatientResolutionMiddleware`) equals the resolved `patient_id`, OR
-        * their OAuth-bound `caregiver_email` equals the patient's
-          `caregiver_email` (case-insensitive).
+        * their OAuth-bound email is one of the patient's
+          `caregiver_email` entries (comma-separated, case-insensitive).
       Otherwise the resolver raises `ValueError("access denied …")`. The
       message does not echo the patient's owning email or any other PHI —
       that would be a secondary leak.
@@ -210,9 +210,12 @@ async def _resolve_patient_id(
     bound_pid = get_current_patient_id()
     bearer_match = bool(bound_pid) and bound_pid != NO_PATIENT_ACCESS_SENTINEL and bound_pid == pid
 
-    caller_email = _caller_email().strip().lower()
-    pat_caregiver = (patient.caregiver_email or "").strip().lower()
-    caregiver_match = bool(caller_email) and caller_email == pat_caregiver
+    # Same comma-separated matching as login, list_patients and the dashboard
+    # (#651): a second caregiver in the list must not be denied here.
+    from oncofiles.persistent_oauth import _email_matches_caregiver
+
+    caller_email = _caller_email().strip()
+    caregiver_match = _email_matches_caregiver(caller_email, patient.caregiver_email)
 
     if bearer_match or caregiver_match:
         return pid
