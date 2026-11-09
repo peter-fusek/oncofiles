@@ -822,6 +822,10 @@ async def _index_patient(db, pid: str) -> dict:
         if gdrive_id not in seen and not row["deleted"]:
             await db.delete_document(row["id"], patient_id=pid)  # soft delete
             stats["removed"] += 1
+    try:
+        stats["verification"] = await _corroborate_and_measure(db, pid)
+    except Exception:
+        logger.exception("curated index: corroboration failed for %s", pid)
     stats.update(
         status="ok" if not stats["errors"] else "partial",
         documents=len(ids),
@@ -943,7 +947,9 @@ async def _extract_facts(db, pid: str, doc_id: int, rec, entities: dict, vocab) 
         unreliable=unreliable,
         report_date=day,
         inline=rec.category.value in ("report", "discharge", "chemo_sheet", "imaging", "surgery"),
+        sex=_patient_sex(pid),
     )
+    source_reason = "handwritten" if rec.metadata.get("handwritten") is True else "cowork_ocr"
     # Always replace, even with nothing: a document whose new extraction finds
     # no facts must lose the machine rows an older parser version made (#633).
     extractor = extractor or "rule:none"
@@ -952,15 +958,48 @@ async def _extract_facts(db, pid: str, doc_id: int, rec, entities: dict, vocab) 
     for f in facts:
         f["occurred_at"] = f["occurred_at"] or day
         f.update(entities)
-        f["metadata"] = {
-            **(f.get("metadata") or {}),
-            "source_system": system,
-            "ocr_engine": engine or None,
-        }
+        meta = {**(f.get("metadata") or {}), "source_system": system, "ocr_engine": engine or None}
+        if "unreliable_source" in meta.get("unverified_reasons", []):
+            meta["unverified_reasons"] = sorted(
+                {source_reason} | set(meta["unverified_reasons"]) - {"unreliable_source"}
+            )
+        f["metadata"] = meta
     res = await db.replace_document_facts(
         patient_id=pid, document_id=doc_id, facts=facts, extracted_by=extractor
     )
     return res["added"]
+
+
+def _patient_sex(pid: str) -> str | None:
+    try:
+        from oncofiles.patient_context import get_context
+
+        return (get_context(pid) or {}).get("sex") or None
+    except Exception:
+        return None
+
+
+async def _corroborate_and_measure(db, pid: str) -> dict:
+    """Date report quotes by the draw they quote, then measure unverified (#659)."""
+    from oncofiles.curated.facts_rules import corroborations, unverified_metric
+
+    rows = await db.fact_verification_rows(patient_id=pid)
+    by_id = {r["id"]: r for r in rows}
+    done = 0
+    for fact_id, draw_day, draw_fact in corroborations(rows):
+        try:
+            meta = json.loads(by_id[fact_id].get("metadata_json") or "{}")
+        except ValueError:
+            meta = {}
+        meta.pop("unverified_reasons", None)
+        meta.update(date_source="corroborated", corroborated_by=draw_fact,
+                    quoted_on=(by_id[fact_id]["occurred_at"] or "")[:10])  # fmt: skip
+        if await db.corroborate_fact(
+            patient_id=pid, fact_id=fact_id, occurred_at=draw_day, metadata=meta
+        ):
+            done += 1
+    metric = unverified_metric(await db.fact_verification_rows(patient_id=pid))
+    return {"corroborated": done, **metric}
 
 
 async def _index_quietly(db, pid: str) -> None:

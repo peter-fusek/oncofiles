@@ -20,6 +20,7 @@ an unreliable page, makes the fact ``unverified``.
 
 from __future__ import annotations
 
+import json
 import re
 import unicodedata
 from dataclasses import dataclass, field
@@ -164,6 +165,10 @@ GENERIC_REF = {
     "WBC": (3.5, 10.7), "NEUT": (1.7, 7.0), "PLT": (140, 420),
     "CEA": (None, 5.0), "CA19_9": (None, 37.0), "CRP": (None, 5.0),
 }  # fmt: skip
+# HGB depends on sex: used only when the patient's sex is known (#635 v10)
+GENERIC_REF_BY_SEX = {
+    "HGB": {"female": (120, 155), "male": (135, 175)},
+}
 _DIFFERENTIAL = {"NEUT", "LYMPH", "MONO", "EOS", "BASO"}
 # labels that always mean the absolute count ("abs.počet NEUT", "NEUT#", "ANC")
 _ABSOLUTE_LABEL = re.compile(r"abs|#|^anc$")
@@ -223,6 +228,15 @@ def _fact(  # noqa: PLR0913
     if code_row and unit and unit.strip() == "%" and code_row.get("unit_canonical") != "%":
         # "Neutrofily 51.2 %" is the percentage, not the absolute count
         code_row = vocab.by_code.get(code_row["code"] + "_PCT")
+    elif (
+        code_row
+        and unit
+        and unit.strip() != "%"
+        and code_row["code"].endswith("_PCT")
+        and _UNIT_HINT.search(unit)
+    ):
+        # a count with a real unit ("10^9/l") is never the percentage code
+        code_row = vocab.by_code.get(code_row["code"][: -len("_PCT")])
     value = _num(raw_value)
     numeric = value is not None and re.fullmatch(_NUM, raw_value.strip()) is not None
     unit_canonical = code_row["unit_canonical"] if code_row else None
@@ -265,10 +279,22 @@ def _fact(  # noqa: PLR0913
         "occurred_at": when,
         "page_number": page,
         "evidence": evidence.strip()[:300],
-        "verification": "unverified"
-        if (unreliable or "[?]" in evidence or implausible)
-        else "machine",
+        "verification": "machine",
     }
+    reasons = [
+        r
+        for r, hit in (
+            ("unreliable_source", unreliable),
+            ("ocr_uncertain", "[?]" in evidence),
+            ("implausible", implausible),
+        )
+        if hit
+    ]
+    if reasons:
+        fact["verification"] = "unverified"
+        fact["metadata"] = {"unverified_reasons": reasons}
+    if arrow and lo is None and hi is None and fact["flag"]:
+        fact["metadata"] = {**(fact.get("metadata") or {}), "flag_source": "arrow"}
     if (
         fact["code"] in GENERIC_REF
         and lo is None
@@ -279,7 +305,7 @@ def _fact(  # noqa: PLR0913
         g_lo, g_hi = GENERIC_REF[fact["code"]]
         if flag := _flag(value_canonical, g_lo, g_hi, None):
             fact["flag"] = flag
-            fact["metadata"] = {"flag_source": "generic"}
+            fact["metadata"] = {**(fact.get("metadata") or {}), "flag_source": "generic"}
     if category == "medication":
         return fact if not _NOT_DATA.search(evidence) else None
     return fact if _plausible(fact, code_row) else None
@@ -483,9 +509,8 @@ _SEG_DATE = re.compile(r"(?<![\d.])(\d{1,2})\.\s?(\d{1,2})\.(?:\s?(\d{4}))?(?![\
 def _segment_date(segment: str) -> tuple[int, int, int | None, str | None] | None:
     """(day, month, year or None, range start) printed in the prefix of a ";"
     segment ("labs 9.9.: WBC …"). A range ("3.–4.9.2027", "14.7.2027-15.7.2027")
-    is dated to its END, consistently: a report quotes its latest results, and
-    a range start can collide with another document's real draw on that day.
-    The start is kept for the metadata."""
+    is returned with its END; the caller dates the fact at the midpoint and
+    keeps both ends in the metadata (#659)."""
     if ":" not in segment:
         return None
     prefix = segment.replace("*", "").rsplit(":", 1)[0]
@@ -549,6 +574,39 @@ def _year_for(day: int, month: int, ref: str | None) -> int | None:
     return year - 1 if month - ref_month >= 6 else None
 
 
+def _line_range_start(before: str, end_iso: str | None) -> str | None:
+    """Start day of "5.–6.5.2027" (same month and year as the end)."""
+    m = re.search(r"(\d{1,2})\.\s?[–-]\s?$", before)
+    if not m or not end_iso:
+        return None
+    return f"{end_iso[:8]}{int(m.group(1)):02d}"
+
+
+def _date_range_midpoint(fact: dict, meta: dict, start: str | None) -> None:
+    """Date a range at its middle (maintainer decision, #659): the range itself
+    is printed, so it is a dated value. ``date_range_start``/``_end`` keep the
+    window for dedupe. An unknown start keeps the end and is marked open."""
+    from datetime import date as _date
+
+    end = fact.get("occurred_at")
+    meta["date_range_end"] = end
+    if not end or not start or start == "?":
+        meta["date_range_open"] = True
+        return
+    if len(start) == 5:  # "MM-DD": the year of the end
+        start = f"{end[:4]}-{start}"
+    try:
+        d0, d1 = _date.fromisoformat(start[:10]), _date.fromisoformat(end[:10])
+    except ValueError:
+        meta["date_range_open"] = True
+        return
+    if d0 > d1:
+        meta["date_range_open"] = True
+        return
+    meta["date_range_start"] = d0.isoformat()
+    fact["occurred_at"] = (d0 + (d1 - d0) / 2).isoformat()
+
+
 def parse_inline_results(
     pages: list[str],
     vocab: Vocabulary,
@@ -560,10 +618,10 @@ def parse_inline_results(
 
         CEA S 38,2; CA 19-9 655,1; KREA S 61,0; NA v sére 139,0
 
-    Infra rules: a value without a printed unit is ALWAYS unverified (the unit
-    is implied from the code); the date must be printed next to the values,
-    otherwise the report date is used and the value is unverified with
-    ``date_source=report``. At least two items must match known codes, so a
+    Verification (#659): a missing printed unit is fine (the code's canonical
+    unit, ``unit_source=implied``); a printed date range is dated at its
+    midpoint. Only a value without any date of its own (``date_source=report``)
+    is unverified, with reason ``date_unknown``. At least two items must match known codes, so a
     sentence with numbers is never read as results.
     """
     out: list[dict] = []
@@ -616,14 +674,22 @@ def parse_inline_results(
                         if not f:
                             continue
                         meta = {**(f.get("metadata") or {}), "date_source": date_source}
+                        start = seg_date[3] if seg_date else None
                         if ranged and not seg_date:
-                            meta["date_source"] = "printed_range"  # "5.–6.5.2027": day unsure
-                        if seg_date and seg_date[3]:
-                            meta["date_range_start"] = seg_date[3]
+                            meta["date_source"] = "printed_range"  # "5.–6.5.2027"
+                            start = _line_range_start(src_line[: dm.start()], f["occurred_at"])
+                        if meta["date_source"] == "printed_range":
+                            _date_range_midpoint(f, meta, start)
                         if not printed_unit:
-                            meta["unit_source"] = "implied"
-                        if not printed_unit or meta["date_source"] != "printed":
-                            f["verification"] = "unverified"
+                            meta["unit_source"] = "implied"  # canonical unit of the code
+                        reasons = list(meta.pop("unverified_reasons", []))
+                        if meta["date_source"] == "report":
+                            reasons.append("date_unknown")  # quoted without its own date
+                        if meta.get("date_range_open"):
+                            reasons.append("date_unknown")
+                        if reasons:
+                            meta["unverified_reasons"] = sorted(set(reasons))
+                        f["verification"] = "unverified" if reasons else "machine"
                         f["metadata"] = meta
                         key = (f["code"], f["occurred_at"], f["value_num"], f["value_text"])
                         if key in seen_keys:
@@ -642,6 +708,7 @@ def extract_lab_facts(
     unreliable: bool = False,
     report_date: str | None = None,
     inline: bool = False,
+    sex: str | None = None,
 ):
     """(facts, extractor id) — the first format that yields anything wins."""
     for name, fn in (
@@ -651,9 +718,120 @@ def extract_lab_facts(
     ):
         facts = fn(pages, vocab, unreliable=unreliable)
         if facts:
-            return facts, name
+            return _sex_generic(facts, sex), name
     if inline:  # results quoted inside clinic reports
         facts = parse_inline_results(pages, vocab, report_date=report_date, unreliable=unreliable)
         if facts:
-            return facts, "rule:inline-v1"
+            return _sex_generic(facts, sex), "rule:inline-v1"
     return [], None
+
+
+def _sex_generic(facts: list[dict], sex: str | None) -> list[dict]:
+    """Sex-specific generic flags (HGB), only without a printed range or flag."""
+    key = (sex or "").strip().lower()
+    for f in facts:
+        ranges = GENERIC_REF_BY_SEX.get(f.get("code") or "")
+        if (
+            not ranges
+            or key not in ranges
+            or f.get("flag")
+            or f.get("ref_low") is not None
+            or f.get("ref_high") is not None
+            or f.get("value_canonical") is None
+        ):
+            continue
+        lo, hi = ranges[key]
+        if flag := _flag(f["value_canonical"], lo, hi, None):
+            f["flag"] = flag
+            f["metadata"] = {**(f.get("metadata") or {}), "flag_source": "generic"}
+    return facts
+
+
+def corroborations(rows: list[dict], *, window_days: int = 60) -> list[tuple[int, str, int]]:
+    """Report-quoted values that are a quote of a real draw (#659).
+
+    A fact whose only reason to be unverified is ``date_unknown`` (dated to its
+    report) is a quote of draw D when D is in another document, 1–60 days
+    earlier, has the same code with the same canonical value and unit, and at
+    least two codes of the quoting report day equal D's values. Returns
+    (fact id, draw day, id of the matching draw fact). Exact matches only: a
+    different value is never re-dated."""
+    from datetime import date as _date
+
+    def meta(r: dict) -> dict:
+        try:
+            return json.loads(r.get("metadata_json") or "{}")
+        except ValueError:
+            return {}
+
+    def day(r: dict) -> str:
+        return (r.get("occurred_at") or "")[:10]
+
+    def as_date(d: str):
+        try:
+            return _date.fromisoformat(d)
+        except ValueError:
+            return None
+
+    draws: dict[tuple, dict] = {}
+    for r in rows:
+        if r["verification"] != "unverified" and r.get("value_canonical") is not None:
+            draws.setdefault((r["source_document_id"], day(r)), {})[r["code"]] = (
+                r["value_canonical"], r.get("unit_canonical"), r["id"],
+            )  # fmt: skip
+    quoted: dict[tuple, dict] = {}
+    candidates = []
+    for r in rows:
+        if r["verification"] != "unverified" or r.get("value_canonical") is None:
+            continue
+        if meta(r).get("unverified_reasons") != ["date_unknown"]:
+            continue
+        quoted.setdefault((r["source_document_id"], day(r)), {})[r["code"]] = (
+            r["value_canonical"], r.get("unit_canonical"),
+        )  # fmt: skip
+        candidates.append(r)
+    out = []
+    for r in candidates:
+        d0 = as_date(day(r))
+        own = quoted[(r["source_document_id"], day(r))]
+        best = None
+        for (doc, dday), values in draws.items():
+            d1 = as_date(dday)
+            if doc == r["source_document_id"] or not d0 or not d1:
+                continue
+            if not 0 < (d0 - d1).days <= window_days:
+                continue
+            hit = values.get(r["code"])
+            if not hit or hit[:2] != (r["value_canonical"], r.get("unit_canonical")):
+                continue
+            same = sum(1 for c, v in own.items() if values.get(c, (None,))[:2] == v)
+            if same >= 2 and (best is None or dday > best[1]):
+                best = (r["id"], dday, hit[2])
+        if best:
+            out.append(best)
+    return out
+
+
+def unverified_metric(rows: list[dict]) -> dict:
+    """Share of unverified coded values and the reasons (benchmark ≤ 20 %, #658)."""
+    from collections import Counter
+
+    total = len(rows)
+    reasons: Counter = Counter()
+    unverified = 0
+    for r in rows:
+        if r["verification"] != "unverified":
+            continue
+        unverified += 1
+        try:
+            m = json.loads(r.get("metadata_json") or "{}")
+        except ValueError:
+            m = {}
+        for reason in m.get("unverified_reasons") or ["unspecified"]:
+            reasons[reason] += 1
+    return {
+        "coded": total,
+        "unverified": unverified,
+        "unverified_pct": round(100 * unverified / total, 1) if total else 0.0,
+        "reasons": dict(reasons.most_common()),
+    }

@@ -220,6 +220,33 @@ class FactsMixin:
         await self.db.commit()
         return {"added": added, "removed": removed, "kept_verified": len(protected)}
 
+    async def fact_verification_rows(self, *, patient_id: str) -> list[dict]:
+        """Active facts with what corroboration and the unverified metric need."""
+        async with self.db.execute(
+            "SELECT id, source_document_id, code, occurred_at, value_canonical, "
+            "unit_canonical, verification, metadata_json FROM clinical_records "
+            "WHERE patient_id = ? AND deleted_at IS NULL AND code IS NOT NULL",
+            (patient_id,),
+        ) as cur:
+            return _rows(await cur.fetchall())
+
+    async def corroborate_fact(
+        self, *, patient_id: str, fact_id: int, occurred_at: str, metadata: dict
+    ) -> bool:
+        """Date a report-quoted value by the draw it quotes (#659). Only an
+        unverified machine-extracted row changes; human-verified rows never."""
+        cur = await self.db.execute(
+            "UPDATE clinical_records SET occurred_at = ?, verification = 'machine', "
+            f"metadata_json = ?, updated_at = {_NOW}, updated_by = 'oncofiles' "
+            "WHERE id = ? AND patient_id = ? AND verification = 'unverified' "
+            "AND deleted_at IS NULL",
+            (occurred_at, json.dumps(metadata, ensure_ascii=False), fact_id, patient_id),
+        )
+        if cur.rowcount:
+            await self._audit(fact_id, "update", metadata, "corroborated by another document")
+        await self.db.commit()
+        return bool(cur.rowcount)
+
     # ── links (never across patients) ─────────────────────────────────
 
     async def _owned(self, entity: str, entity_id: int, patient_id: str) -> bool:
