@@ -254,3 +254,13 @@ def test_a_paged_sidecar_with_all_facts_on_page_one_keeps_the_per_page_rule():
     new_on_three = [dated("CEA", 4.4, "2027-06-03", 3)]
     assert rv.assess(olds, new_on_three, PAGES, old_page_count=3)["unconfirmed"] == [1]
     assert rv.assess(olds, new_on_three, PAGES, old_page_count=1)["confirmed"] == [1]
+
+
+def test_diagnostics_are_counts_and_codes_only():
+    olds = [old(1, "WBC", 6.12), old(2, "HGB", 127.0)]
+    news = [dated("WBC", 6.12, "2027-05-11", 1), dated("PLT", 233.0, "2027-05-11", 1)]
+    d = rv.diagnostics(olds, news, old_page_count=1)
+    assert d["old_facts"] == len(olds) and d["new_facts"] == len(news)
+    assert d["code_value_shared"] == 1 and d["codes_only_old"] == ["HGB"]
+    assert d["new_date_sources"] == {"printed": len(news)}
+    assert "6.12" not in str(d) and "127" not in str(d)  # never values
