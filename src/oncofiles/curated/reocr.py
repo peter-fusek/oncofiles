@@ -291,7 +291,7 @@ def run_reocr(
     passes: int = 2,
     now: datetime,
     stop=lambda: False,
-    reader=reread,
+    reader=None,
     rss_limit_mb: float | None = None,
     rss_mb=None,
 ) -> ReocrReport:
@@ -302,6 +302,7 @@ def run_reocr(
     ``rss_limit_mb``, no document is started while RSS is above it."""
     import gc
 
+    reader = reader or reread  # looked up at call time (tests patch reread)
     if rss_mb is None:
         from oncofiles.memory import get_rss_mb as rss_mb
     from oncofiles.curated.contract import parse_contract

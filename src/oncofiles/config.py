@@ -45,6 +45,9 @@ LOCAL_LLM_BASE_URL: str = os.environ.get("LOCAL_LLM_BASE_URL", "").rstrip("/")
 LOCAL_LLM_API_KEY: str = os.environ.get("LOCAL_LLM_API_KEY", "")
 LOCAL_LLM_MODEL: str = os.environ.get("LOCAL_LLM_MODEL", "")
 LOCAL_LLM_TIMEOUT_S: float = float(os.environ.get("LOCAL_LLM_TIMEOUT_S", "900"))
+# Re-OCR self-limit (#667): no new document is started while RSS is above this,
+# well under HARD_RSS_CEILING_MB, which makes /health exit the process.
+REOCR_RSS_LIMIT_MB: float = float(os.environ.get("REOCR_RSS_LIMIT_MB", "450"))
 # Context length LM Studio loads the model with (central macmini setting).
 # Change it together with LM Studio, or prompts + budgets overflow (#601).
 LOCAL_LLM_CONTEXT_WINDOW: int = int(os.environ.get("LOCAL_LLM_CONTEXT_WINDOW", "32768"))

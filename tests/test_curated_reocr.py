@@ -218,3 +218,74 @@ async def test_guard_never_rewrites_when_values_would_be_lost(vocab, monkeypatch
     d = rep.documents[0]
     assert d.result == "review" and drive.writes == []
     assert d.lost == ["PLT 240.0 missing"]
+
+
+# ── #667: bounded memory ──
+
+
+def _scan_pdf(pages: int) -> bytes:
+    import pymupdf
+
+    doc = pymupdf.open()
+    for _ in range(pages):
+        doc.new_page()
+    data = doc.tobytes()
+    doc.close()
+    return data
+
+
+def test_vision_reads_page_by_page_with_one_shared_client(monkeypatch):
+    calls = []
+
+    def fake_chat(system, content, **kw):
+        calls.append((content[0]["text"], kw["client"]))
+        return "Leukocyty 7,93 G/l"
+
+    monkeypatch.setattr(llm, "chat", fake_chat)
+    n = 3
+    rr = reocr.reread("scan.pdf", _scan_pdf(n))
+    assert rr.method == "vision2" and len(rr.pages) == n
+    # both passes of a page before the next page: only one page is ever rendered
+    expected = [f"Page {i} of {n}." for i in range(1, n + 1) for _ in ("first", "second")]
+    assert [c[0] for c in calls] == expected
+    shared = calls[0][-1]
+    assert shared is not None and all(c[-1] is shared for c in calls)
+
+
+def test_isolated_reader_runs_in_a_subprocess_and_never_raises(monkeypatch):
+    rr = reocr.reread_isolated("lab.pdf", _pdf("Leukocyty 6,37 G/l 4,0 - 11 " * 6))
+    assert rr.method == "text_layer" and "6,37" in rr.pages[0]
+
+    def broken_pool(*a, **k):
+        raise RuntimeError("no fork")
+
+    import concurrent.futures
+
+    monkeypatch.setattr(concurrent.futures, "ProcessPoolExecutor", broken_pool)
+    bad = reocr.reread_isolated("lab.pdf", b"%PDF")
+    assert bad.error and bad.error.startswith("worker:") and bad.pages == []
+
+
+async def test_no_document_starts_above_the_rss_limit(vocab):
+    drive, doc, side = _setup()
+    rep = reocr.run_reocr(drive, drive.root, [doc], vocab, dry_run=False, now=NOW,
+                          rss_limit_mb=450, rss_mb=lambda: 480.0,
+                          reader=lambda *a, **k: pytest.fail("must not read"))  # fmt: skip
+    d = rep.documents[0]
+    assert d.result == "skipped" and "480" in d.error and drive.writes == []
+
+
+async def test_reocr_jobs_are_persisted_apart_from_curated_runs(db):
+    from tests.conftest import ERIKA_UUID
+
+    run = await db.insert_curated_run(patient_id=ERIKA_UUID, dry_run=True, trigger="mcp")
+    await db.finish_curated_run(run, patient_id=ERIKA_UUID, status="ok", message="", report={})
+    job = await db.insert_curated_run(patient_id=ERIKA_UUID, dry_run=False, trigger="reocr")
+    # a re-OCR job is never mistaken for a curated run (preview gate, history)
+    assert (await db.get_last_curated_run(patient_id=ERIKA_UUID))["id"] == run
+    assert [r["id"] for r in await db.list_curated_runs(patient_id=ERIKA_UUID)] == [run]
+    # a restart reports the cut job instead of losing it
+    assert await db.mark_interrupted_curated_runs() == 1
+    last = await db.get_last_reocr_job(patient_id=ERIKA_UUID)
+    assert last["id"] == job and last["status"] == "interrupted"
+    assert await db.get_last_reocr_job(patient_id="someone-else") is None
