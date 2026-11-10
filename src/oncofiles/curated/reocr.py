@@ -27,6 +27,7 @@ import re
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 
+from oncofiles import config
 from oncofiles.curated import extract as extract_mod
 from oncofiles.curated import llm
 
@@ -84,27 +85,43 @@ def reconcile(first: list[str], second: list[str]) -> tuple[list[str], int]:
     return out, flagged
 
 
-def _render_pages(content: bytes, ext: str, dpi: int) -> list[bytes]:
+def _page_count(content: bytes, ext: str) -> int:
     import pymupdf
 
-    if ext == "pdf":
-        with pymupdf.open(stream=content, filetype="pdf") as doc:
-            if doc.page_count > extract_mod.MAX_VISION_PAGES:
-                return []
-            return [extract_mod._pixmap_png(p, dpi) for p in doc]
     with pymupdf.open(stream=content, filetype=ext) as doc:
-        return [extract_mod._pixmap_png(doc[0], dpi)]
+        return doc.page_count if ext == "pdf" else 1
 
 
-def _vision(pngs: list[bytes]) -> tuple[list[str], bool]:
+def _vision_passes(content: bytes, ext: str, dpis: list[int], client) -> list[list[str]]:
+    """One answer list per DPI. Memory-bounded (#667): one page is rendered,
+    sent and freed at a time, so at most one PNG and its base64 copy are alive."""
+    import pymupdf
+
+    passes: list[list[str]] = [[] for _ in dpis]
+    with pymupdf.open(stream=content, filetype=ext) as doc:
+        total = doc.page_count if ext == "pdf" else 1
+        for i in range(total):
+            page = doc[i]
+            for out, dpi in zip(passes, dpis, strict=True):
+                png = extract_mod._pixmap_png(page, dpi)
+                part = llm.image_part(png)
+                del png
+                answer = llm.chat(
+                    REOCR_SYSTEM_PROMPT,
+                    [{"type": "text", "text": f"Page {i + 1} of {total}."}, part],
+                    max_tokens=REOCR_BUDGET,
+                    reasoning_effort="high",
+                    client=client,
+                )
+                del part
+                out.append(answer)
+            del page
+    return passes
+
+
+def _strip_handwritten(answers: list[str]) -> tuple[list[str], bool]:
     pages, handwritten = [], False
-    for i, png in enumerate(pngs, start=1):
-        answer = llm.chat(
-            REOCR_SYSTEM_PROMPT,
-            [{"type": "text", "text": f"Page {i} of {len(pngs)}."}, llm.image_part(png)],
-            max_tokens=REOCR_BUDGET,
-            reasoning_effort="high",
-        )
+    for answer in answers:
         if answer.lower().startswith("[handwritten]"):
             handwritten = True
             answer = answer.split("\n", 1)[1] if "\n" in answer else ""
@@ -137,13 +154,17 @@ def reread(name: str, content: bytes, mime: str = "", *, passes: int = 2) -> Rer
                 return Reread([t.strip() for t in layer], "text_layer", "pymupdf")
         elif ext not in extract_mod.IMAGE_EXTS:
             return Reread([], "none", "-", error=f"unsupported file type .{ext}")
-        first_png = _render_pages(content, ext, extract_mod.RENDER_DPI)
-        if not first_png:
+        if _page_count(content, ext) > extract_mod.MAX_VISION_PAGES:
             return Reread([], "none", "-", error="too many pages for vision")
-        first, hand = _vision(first_png)
+        import httpx
+
+        dpis = [extract_mod.RENDER_DPI] + ([SECOND_PASS_DPI] if passes >= 2 else [])
+        with httpx.Client(timeout=config.LOCAL_LLM_TIMEOUT_S) as client:  # one per document
+            answers = _vision_passes(content, ext, dpis, client)
+        first, hand = _strip_handwritten(answers[0])
         flagged = 0
         if passes >= 2:
-            second, _ = _vision(_render_pages(content, ext, SECOND_PASS_DPI))
+            second, _ = _strip_handwritten(answers[1])
             first, flagged = reconcile(first, second)
         return Reread(first, "vision2" if passes >= 2 else "vision", llm.model_id(), hand, flagged)
     except llm.LocalLLMError as exc:
@@ -151,6 +172,25 @@ def reread(name: str, content: bytes, mime: str = "", *, passes: int = 2) -> Rer
     except Exception as exc:  # corrupt file, codec, …
         logger.warning("re-OCR failed for %s", name, exc_info=True)
         return Reread([], "none", "-", error=type(exc).__name__)
+
+
+def reread_isolated(name: str, content: bytes, mime: str = "", *, passes: int = 2) -> Reread:
+    """``reread`` in a short-lived spawned process (#667).
+
+    PyMuPDF buffers, PNGs and allocator fragmentation die with the process, so
+    the server's RSS returns to its baseline after every document. Never raises:
+    a crashed worker is a failed document, not a failed job."""
+    import multiprocessing
+    from concurrent.futures import ProcessPoolExecutor
+
+    try:
+        with ProcessPoolExecutor(
+            max_workers=1, mp_context=multiprocessing.get_context("spawn")
+        ) as pool:
+            return pool.submit(reread, name, content, mime, passes=passes).result()
+    except Exception as exc:  # BrokenProcessPool, pickling, …
+        logger.warning("re-OCR worker failed for %s", name, exc_info=True)
+        return Reread([], "none", "-", error=f"worker: {type(exc).__name__}")
 
 
 def rewrite_sidecar(old_text: str, rr: Reread, *, previous_engine: str, now: datetime) -> str:
@@ -251,10 +291,19 @@ def run_reocr(
     passes: int = 2,
     now: datetime,
     stop=lambda: False,
+    reader=reread,
+    rss_limit_mb: float | None = None,
+    rss_mb=None,
 ) -> ReocrReport:
     """Blocking. ``docs``: document_id, filename, gdrive_id, sidecar_id, mime,
     engine, reasons. Writes only when ``dry_run`` is False (caller holds
-    ``contract_writes()``); one document at a time, backup before update."""
+    ``contract_writes()``); one document at a time, backup before update.
+    ``reader`` reads a source (``reread_isolated`` in production, #667). With
+    ``rss_limit_mb``, no document is started while RSS is above it."""
+    import gc
+
+    if rss_mb is None:
+        from oncofiles.memory import get_rss_mb as rss_mb
     from oncofiles.curated.contract import parse_contract
     from oncofiles.curated.facts_rules import extract_lab_facts
     from oncofiles.curated.runner import nfc, walk
@@ -277,10 +326,13 @@ def run_reocr(
         if stop():
             res.result, res.error = "skipped", "stopping"
             continue
+        if rss_limit_mb and (now_rss := rss_mb()) > rss_limit_mb:
+            res.result, res.error = "skipped", f"rss {now_rss:.0f} MB > {rss_limit_mb:.0f} MB"
+            continue
         try:
             old = drive.download(d["sidecar_id"]).decode("utf-8", errors="replace")
             res.uncertain_before = old.count("[?]")
-            rr = reread(d["filename"], drive.download(d["gdrive_id"]), d.get("mime") or "",
+            rr = reader(d["filename"], drive.download(d["gdrive_id"]), d.get("mime") or "",
                         passes=passes)  # fmt: skip
             if rr.error or not any(p.strip() for p in rr.pages):
                 res.result, res.error = "failed", rr.error or "no text"
@@ -306,4 +358,6 @@ def run_reocr(
         except Exception as exc:
             logger.exception("re-OCR of %s failed", d.get("filename"))
             res.result, res.error = "failed", type(exc).__name__
+        finally:
+            gc.collect()
     return report
