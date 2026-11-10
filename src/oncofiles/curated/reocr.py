@@ -94,10 +94,11 @@ def _page_count(content: bytes, ext: str) -> int:
 
 def born_digital(page, *, image_cover: float = 0.8) -> bool:
     """Is this PDF page's text its own (born-digital), not OCR laid over a scan?
-    False when any text is invisible (render mode 3, how OCR layers are added)
+    False when any text is invisible (render mode 3 or opacity 0, how OCR layers are added)
     or a raster image covers most of the page."""
     try:
-        if any(span.get("type") == 3 for span in page.get_texttrace()):
+        if any(span.get("type") == 3 or span.get("opacity", 1) == 0
+               for span in page.get_texttrace()):  # fmt: skip
             return False
         area = abs(page.rect.width * page.rect.height) or 1.0
         for info in page.get_image_info():

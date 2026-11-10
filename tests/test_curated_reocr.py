@@ -416,3 +416,14 @@ def test_only_a_born_digital_text_layer_is_trusted(monkeypatch):
     rr = reocr.reread("scan.pdf", _scanned_pdf_with_invisible_text(text))
     assert rr.method == "vision2"
     assert reocr.reread("lab.pdf", _pdf(text)).method == "text_layer"
+
+
+def test_a_transparent_text_layer_is_not_born_digital():
+    import pymupdf
+
+    doc = pymupdf.open()
+    page = doc.new_page()
+    page.insert_text((72, 72), "Leukocyty 7,21 G/l " * 8, fill_opacity=0)
+    with pymupdf.open(stream=doc.tobytes(), filetype="pdf") as again:
+        assert not reocr.born_digital(again[0])
+    doc.close()
