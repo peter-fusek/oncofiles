@@ -252,18 +252,39 @@ def test_vision_reads_page_by_page_with_one_shared_client(monkeypatch):
     assert shared is not None and all(c[-1] is shared for c in calls)
 
 
-def test_isolated_reader_runs_in_a_subprocess_and_never_raises(monkeypatch):
+def test_isolated_reader_runs_in_a_child_and_never_raises(monkeypatch):
     rr = reocr.reread_isolated("lab.pdf", _pdf("Leukocyty 6,37 G/l 4,0 - 11 " * 6))
-    assert rr.method == "text_layer" and "6,37" in rr.pages[0]
+    assert rr.method == "text_layer" and "6,37" in rr.pages[0] and rr.error is None
 
-    def broken_pool(*a, **k):
-        raise RuntimeError("no fork")
+    import subprocess
 
-    import concurrent.futures
+    def broken_run(*a, **k):
+        raise OSError("no exec")
 
-    monkeypatch.setattr(concurrent.futures, "ProcessPoolExecutor", broken_pool)
+    monkeypatch.setattr(subprocess, "run", broken_run)
     bad = reocr.reread_isolated("lab.pdf", b"%PDF")
     assert bad.error and bad.error.startswith("worker:") and bad.pages == []
+
+
+def test_child_is_local_only_and_gets_no_secrets(monkeypatch):
+    import json as _json
+    import subprocess
+    import sys
+
+    from oncofiles.curated import reocr_child
+
+    for key in reocr_child.SECRET_PROBES:
+        monkeypatch.setenv(key, "test-secret-not-real")
+    monkeypatch.setenv("LOCAL_LLM_MODEL", "qwen-local")
+    env = reocr_child.child_env()
+    assert env["LOCAL_LLM_MODEL"] == "qwen-local"
+    assert not set(reocr_child.SECRET_PROBES) & set(env)
+    proc = subprocess.run(
+        [sys.executable, "-m", "oncofiles.curated.reocr_child", "--probe"],
+        capture_output=True, env=env, check=True,
+    )  # fmt: skip
+    seen = _json.loads(proc.stdout)
+    assert seen == {"cloud_forbidden": True, "secrets": []}
 
 
 async def test_no_document_starts_above_the_rss_limit(vocab):

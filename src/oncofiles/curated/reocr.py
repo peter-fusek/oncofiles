@@ -175,22 +175,39 @@ def reread(name: str, content: bytes, mime: str = "", *, passes: int = 2) -> Rer
 
 
 def reread_isolated(name: str, content: bytes, mime: str = "", *, passes: int = 2) -> Reread:
-    """``reread`` in a short-lived spawned process (#667).
+    """``reread`` in a short-lived child process (#667).
 
     PyMuPDF buffers, PNGs and allocator fragmentation die with the process, so
-    the server's RSS returns to its baseline after every document. Never raises:
-    a crashed worker is a failed document, not a failed job."""
-    import multiprocessing
-    from concurrent.futures import ProcessPoolExecutor
+    the server's RSS returns to its baseline after every document. The child
+    (``reocr_child``) gets only an allowlisted environment, never a secret, and
+    reads inside ``local_only``. Never raises: a failed child is a failed
+    document, not a failed job."""
+    import json as _json
+    import subprocess
+    import sys
 
+    from oncofiles.curated import reocr_child
+
+    header = _json.dumps({"name": name, "mime": mime, "passes": passes}).encode() + b"\n"
     try:
-        with ProcessPoolExecutor(
-            max_workers=1, mp_context=multiprocessing.get_context("spawn")
-        ) as pool:
-            return pool.submit(reread, name, content, mime, passes=passes).result()
-    except Exception as exc:  # BrokenProcessPool, pickling, …
-        logger.warning("re-OCR worker failed for %s", name, exc_info=True)
+        proc = subprocess.run(
+            [sys.executable, "-m", "oncofiles.curated.reocr_child"],
+            input=header + content,
+            capture_output=True,
+            env=reocr_child.child_env(),
+            check=False,
+        )
+        if proc.returncode != 0:
+            tail = proc.stderr.decode("utf-8", errors="replace").strip().splitlines()[-1:]
+            logger.warning("re-OCR child failed for %s: %s", name, tail)
+            return Reread([], "none", "-", error=f"worker: exit {proc.returncode}")
+        out = _json.loads(proc.stdout)
+    except Exception as exc:  # spawn failure, bad JSON, …
+        logger.warning("re-OCR child failed for %s", name, exc_info=True)
         return Reread([], "none", "-", error=f"worker: {type(exc).__name__}")
+    peak = out.pop("peak_rss_mb", None)
+    logger.info("re-OCR child for %s: peak RSS %s MB", name, peak)  # sizing #667
+    return Reread(**out)
 
 
 def rewrite_sidecar(old_text: str, rr: Reread, *, previous_engine: str, now: datetime) -> str:
