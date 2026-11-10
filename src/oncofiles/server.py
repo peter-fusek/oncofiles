@@ -2906,8 +2906,10 @@ This policy describes how we handle your data when you use Oncofiles
 
 <h2>1. What Data We Access</h2>
 <ul>
-<li><strong>Google Drive</strong> — only the folder you choose for your medical documents.
-Oncofiles reads the files in it and, inside that folder only, may rename files to a standard
+<li><strong>Google Drive</strong> — Google's consent screen asks for access to your Google
+Drive, because Google offers no narrower permission for this kind of folder work. Oncofiles
+reads and changes <strong>only the folder you choose</strong> for your medical documents.
+Inside that folder it may rename files to a standard
 name, move them into subfolders (for example Labs or Reports), and add a text transcript
 (<code>.md</code>) next to each file and a <code>README.md</code> with the folder's rules.
 <strong>Oncofiles never permanently deletes anything.</strong> A file it removes from a
@@ -2941,7 +2943,11 @@ unrelated to managing your medical documents.</p>
 the recognised text, extracted values with their verification state, and a log of the tool
 calls made on your records.</li>
 <li><strong>Backups</strong> — encrypted, kept in Slovakia (daily, with 7 daily, 4 weekly and
-6 monthly versions).</li>
+6 monthly versions). Before each change to the service we also keep a short-lived copy of the
+database (up to 14 days), and before each bulk update of verification data the server keeps
+its last 5 copies.</li>
+<li><strong>Server logs</strong> — our web server keeps technical access logs, including IP
+addresses, for security and troubleshooting.</li>
 <li><strong>Your Google Drive</strong> — your original files, plus the transcripts and
 <code>README.md</code> described in section 1.</li>
 </ul>

@@ -24,6 +24,7 @@ async def test_privacy_matches_the_service():
     html = await _text(server.privacy_policy)
     assert "local AI model" in html and "Slovakia" in html
     assert "never permanently deletes" in html
+    assert "only the folder you choose" in html and "access to your Google" in html
     assert "Gmail and Google Calendar</strong> — not used" in html
     assert "Google Analytics" in html and "Resend" in html
     assert "sent to Anthropic (Claude) for metadata" not in html  # retired claim
