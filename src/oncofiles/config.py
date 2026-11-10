@@ -48,6 +48,10 @@ LOCAL_LLM_TIMEOUT_S: float = float(os.environ.get("LOCAL_LLM_TIMEOUT_S", "900"))
 # Re-OCR self-limit (#667): no new document is started while RSS is above this,
 # well under HARD_RSS_CEILING_MB, which makes /health exit the process.
 REOCR_RSS_LIMIT_MB: float = float(os.environ.get("REOCR_RSS_LIMIT_MB", "450"))
+# Model reasoning for re-OCR / re-read transcription (perf): "on" (default, the
+# model's own behaviour) or "off" (chat_template_kwargs.enable_thinking=false).
+# Transcription only; classification and extraction are not affected.
+REOCR_THINKING: str = os.environ.get("REOCR_THINKING", "on").strip().lower()
 # Context length LM Studio loads the model with (central macmini setting).
 # Change it together with LM Studio, or prompts + budgets overflow (#601).
 LOCAL_LLM_CONTEXT_WINDOW: int = int(os.environ.get("LOCAL_LLM_CONTEXT_WINDOW", "32768"))

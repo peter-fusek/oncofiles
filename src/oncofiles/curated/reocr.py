@@ -111,6 +111,7 @@ def _vision_passes(content: bytes, ext: str, dpis: list[int], client) -> list[li
                     [{"type": "text", "text": f"Page {i + 1} of {total}."}, part],
                     max_tokens=REOCR_BUDGET,
                     reasoning_effort="high",
+                    thinking=False if config.REOCR_THINKING == "off" else None,
                     client=client,
                 )
                 del part
