@@ -13,6 +13,7 @@ authenticated caller could read every patient's tool-call history.
 from __future__ import annotations
 
 import json
+import re
 
 from fastmcp import Context
 
@@ -197,7 +198,85 @@ async def get_activity_stats(
     return json.dumps({"stats": stats, "total_calls": total_calls})
 
 
+_NO_PATIENT = "__system_no_patient__"
+_SLUG_IN_SUMMARY = re.compile(r"(?:^|, )patient_slug=([A-Za-z0-9_-]+)(?:,|$)")
+
+
+async def backfill_activity_log_attribution(
+    ctx: Context,
+    batch_size: int = 500,
+    dry_run: bool = True,
+) -> str:
+    """Re-attribute auto-logged activity rows written before the #663 fix.
+
+    **Admin-only.** Before #663 every auto-logged tool call took the
+    migration-029 column default instead of the patient the call acted on.
+    Those rows are the auto rows without the ``["attributed"]`` tag. Per row:
+    if its input summary names a ``patient_slug`` of an existing patient, the
+    row is attributed to that patient; otherwise it gets the no-patient
+    sentinel and the ``attribution_unknown`` tag, so no patient-scoped read
+    can ever match it. Rows are never deleted. One batch per call (at most
+    ``batch_size`` rows, one commit); call again until ``remaining`` is 0.
+
+    Args:
+        batch_size: Max rows per call (1-500).
+        dry_run: If True (default), only report what would change.
+    """
+    from oncofiles.tools._helpers import _require_admin_or_raise
+
+    try:
+        _require_admin_or_raise("backfill_activity_log_attribution")
+    except ValueError as exc:
+        return json.dumps({"error": str(exc)})
+
+    db = _get_db(ctx)
+    pending = "agent_id = 'auto' AND tags = '[]'"
+    async with db.db.execute(f"SELECT COUNT(*) AS cnt FROM activity_log WHERE {pending}") as cur:
+        row = await cur.fetchone()
+        total_before = dict(row)["cnt"] if row else 0
+
+    batch_size = max(1, min(batch_size, 500))
+    async with db.db.execute(
+        f"SELECT id, input_summary FROM activity_log WHERE {pending} ORDER BY id LIMIT ?",
+        (batch_size,),
+    ) as cur:
+        rows = [dict(r) for r in await cur.fetchall()]
+    async with db.db.execute("SELECT slug, patient_id FROM patients") as cur:
+        by_slug = {dict(r)["slug"]: dict(r)["patient_id"] for r in await cur.fetchall()}
+
+    updates: list[tuple[str, str, int]] = []
+    from_slug = 0
+    for r in rows:
+        m = _SLUG_IN_SUMMARY.search(r["input_summary"] or "")
+        pid = by_slug.get(m.group(1)) if m else None
+        if pid:
+            from_slug += 1
+            updates.append((pid, '["attributed", "from_slug"]', r["id"]))
+        else:
+            updates.append((_NO_PATIENT, '["attribution_unknown"]', r["id"]))
+
+    if not dry_run and updates:
+        for pid, tags, row_id in updates:
+            await db.db.execute(
+                "UPDATE activity_log SET patient_id = ?, tags = ? WHERE id = ?",
+                (pid, tags, row_id),
+            )
+        await db.db.commit()
+
+    done = 0 if dry_run else len(updates)
+    return json.dumps(
+        {
+            "scanned": len(rows),
+            "attributed_from_slug": from_slug,
+            "attribution_unknown": len(updates) - from_slug,
+            "remaining": total_before - done,
+            "dry_run": dry_run,
+        }
+    )
+
+
 def register(mcp):
+    mcp.tool()(backfill_activity_log_attribution)
     mcp.tool()(add_activity_log)
     mcp.tool()(search_activity_log)
     mcp.tool()(get_activity_stats)
