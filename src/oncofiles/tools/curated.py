@@ -1150,6 +1150,8 @@ async def _reocr_job(db, pid: str, docs: list[dict], *, dry_run: bool, passes: i
         job.update(state="failed", error=type(exc).__name__)
     finally:
         job["finished_at"] = datetime.now(UTC).isoformat()
+        if job.get("pre_store"):  # the safety copy is part of the record (#573)
+            job["report"] = {**(job.get("report") or {}), "pre_store": job["pre_store"]}
         try:
             await db.finish_curated_run(
                 row_id, patient_id=pid,
@@ -1158,6 +1160,7 @@ async def _reocr_job(db, pid: str, docs: list[dict], *, dry_run: bool, passes: i
             )  # fmt: skip
         except Exception:
             logger.exception("could not persist the re-OCR job for %s", pid)
+        await _audit_real_job(db, pid, job)
 
 
 def _busy(pid: str) -> bool:
@@ -1170,6 +1173,97 @@ def _public_job(pid: str) -> dict:
     return {k: v for k, v in _reocr_jobs[pid].items() if k != "task"}
 
 
+# Dry runs leave no activity_log row (#573 infra review); they are only counted.
+_dry_runs: dict[str, int] = {"reread": 0, "reocr": 0}
+
+
+def _global_slot_refusal(kind: str) -> str | None:
+    """Hook for the global re-read slot cap (#685, LM Studio slots).
+
+    TODO(#685): once its helper is on main, refuse here when every re-read
+    slot is taken (return the reason; the caller answers busy / 409).
+    """
+    return None
+
+
+async def _launch(db, pid: str, job: dict, factory, *, dry_run: bool, busy: str) -> dict:
+    """Reserve the patient's job slot, make the pre-store copy for a real
+    run, then start ``factory()`` in the background.
+
+    The slot is reserved before any await, so two requests can never both
+    start a job for one patient. A real run without a verified safety copy
+    of the DB is refused and writes nothing (the slot is released).
+    """
+    if _busy(pid):
+        return {"error": busy}
+    refusal = _global_slot_refusal(job["kind"])
+    if refusal:
+        return {"error": f"busy: {refusal}"}
+    previous = _reocr_jobs.get(pid)
+    job["state"] = "running"
+    _reocr_jobs[pid] = job
+    if dry_run:
+        _dry_runs[job["kind"]] = _dry_runs.get(job["kind"], 0) + 1
+    else:
+        from oncofiles.pre_store import PreStoreError, make_copy
+
+        try:
+            job["pre_store"] = await asyncio.to_thread(make_copy, db, job["kind"])
+        except Exception as exc:
+            if previous is not None:
+                _reocr_jobs[pid] = previous
+            else:
+                _reocr_jobs.pop(pid, None)
+            reason = str(exc) if isinstance(exc, PreStoreError) else type(exc).__name__
+            logger.error("pre-store copy failed for %s (%s): job refused", pid[:8], reason)
+            return {"error": f"refused: pre-store copy failed ({reason}); nothing was written"}
+    job["task"] = asyncio.create_task(factory())
+    return _public_job(pid)
+
+
+async def _audit_real_job(db, pid: str, job: dict) -> None:
+    """One activity_log row per REAL job (#573): who, which patient (#663:
+    the resolved pid), ids, the pre-store copy and result counts. Counts
+    only — never a value or evidence text."""
+    if job.get("dry_run") is not False:
+        return
+    from collections import Counter
+
+    from oncofiles.models import ActivityLogEntry
+
+    kind = job.get("kind") or "reocr"
+    docs = [d for d in (job.get("report") or {}).get("documents") or [] if isinstance(d, dict)]
+    counts: dict = {"results": dict(Counter(str(d.get("result")) for d in docs))}
+    for key in ("confirmed", "date_unconfirmed", "unconfirmed", "candidates"):
+        if any(key in d for d in docs):
+            counts[key] = sum(int(d.get(key) or 0) for d in docs)
+    actor = str(job.get("actor") or "unknown")[:120]
+    try:
+        await db.insert_activity_log(
+            ActivityLogEntry(
+                patient_id=pid,
+                session_id=f"curated-{kind}",
+                agent_id=actor,
+                tool_name="curated_reread_verify" if kind == "reread" else "curated_reocr",
+                input_summary=json.dumps(
+                    {
+                        "by": actor,
+                        "document_ids": [d.get("document_id") for d in job.get("documents") or []],
+                        "dry_run": False,
+                        "pre_store": job.get("pre_store"),
+                        "started_at": job.get("started_at"),
+                    }
+                ),  # fmt: skip
+                output_summary=json.dumps({"state": job.get("state"), **counts}),
+                status="ok" if job.get("state") == "done" else "error",
+                error_message=job.get("error"),
+                tags=json.dumps(["curated", kind, "real", "pre-store"]),
+            )
+        )
+    except Exception:
+        logger.exception("could not write the activity_log row for a real %s job", kind)
+
+
 async def start_reocr(
     db,
     pid: str,
@@ -1179,28 +1273,32 @@ async def start_reocr(
     document_ids: list[int] | None = None,
     passes: int = 2,
     only_with_facts: bool = True,
+    actor: str = "mcp",
 ) -> dict:
     """Start a re-OCR job in the background (#660). Shared by the MCP tool and
-    the admin dashboard API (#573); the caller has already resolved ``pid``."""
+    the admin dashboard API (#573); the caller has already resolved ``pid``.
+    A real run first makes a verified safety copy of the DB (``pre_store``)."""
+    busy = "busy: a run or re-OCR is in progress for this patient"
     if _busy(pid):
-        return {"error": "busy: a run or re-OCR is in progress for this patient"}
+        return {"error": busy}
     targets = await _reocr_targets(db, pid, document_ids, only_with_facts=only_with_facts)
     docs = targets[: max(0, min(limit, 25))]
     if not docs:
         return {"status": "nothing to do", "candidates": len(targets)}
-    _reocr_jobs[pid] = {
+    job = {
         "state": "running", "kind": "reocr", "dry_run": dry_run, "passes": passes,
         "started_at": datetime.now(UTC).isoformat(), "candidates": len(targets),
+        "actor": actor,
         "documents": [
             {k: d[k] for k in ("document_id", "filename", "category", "reasons",
                                "unverified_facts")}
             for d in docs
         ],
     }  # fmt: skip
-    _reocr_jobs[pid]["task"] = asyncio.create_task(
-        _reocr_job(db, pid, docs, dry_run=dry_run, passes=passes)
-    )
-    return _public_job(pid)
+    return await _launch(
+        db, pid, job, lambda: _reocr_job(db, pid, docs, dry_run=dry_run, passes=passes),
+        dry_run=dry_run, busy=busy,
+    )  # fmt: skip
 
 
 async def curated_reocr(
@@ -1335,6 +1433,8 @@ async def _reread_job(db, pid: str, docs: list[dict], *, dry_run: bool) -> None:
         job.update(state="failed", error=type(exc).__name__)
     finally:
         job["finished_at"] = datetime.now(UTC).isoformat()
+        if job.get("pre_store"):  # the safety copy is part of the record (#573)
+            job["report"] = {**(job.get("report") or {}), "pre_store": job["pre_store"]}
         try:
             await db.finish_curated_run(
                 row_id, patient_id=pid,
@@ -1343,28 +1443,35 @@ async def _reread_job(db, pid: str, docs: list[dict], *, dry_run: bool) -> None:
             )  # fmt: skip
         except Exception:
             logger.exception("could not persist the re-read job for %s", pid)
+        await _audit_real_job(db, pid, job)
 
 
-async def start_reread(db, pid: str, document_ids: list[int], *, dry_run: bool = True) -> dict:
+async def start_reread(
+    db, pid: str, document_ids: list[int], *, dry_run: bool = True, actor: str = "mcp"
+) -> dict:
     """Start a verify-only re-read in the background (#678). Shared by the MCP
     tool and the admin dashboard API (#573); the caller has resolved ``pid``.
-    Explicit ids only, max 10; ids of another patient are ignored."""
+    Explicit ids only, max 10; ids of another patient are ignored. A real
+    run first makes a verified safety copy of the DB (``pre_store``)."""
     ids = list(dict.fromkeys(int(i) for i in (document_ids or [])))[:10]
     if not ids:
         return {"error": "document_ids is required"}
+    busy = "busy: a run, re-OCR or re-read is in progress"
     if _busy(pid):
-        return {"error": "busy: a run, re-OCR or re-read is in progress"}
+        return {"error": busy}
     docs = [r for r in await db.curated_reocr_candidates(patient_id=pid) if r["id"] in ids]
     if not docs:
         return {"status": "nothing to do"}
-    _reocr_jobs[pid] = {
+    job = {
         "state": "running", "kind": "reread", "dry_run": dry_run,
-        "started_at": datetime.now(UTC).isoformat(),
+        "started_at": datetime.now(UTC).isoformat(), "actor": actor,
         "documents": [{"document_id": d["id"], "filename": d["filename"],
                        "category": d.get("category")} for d in docs],
     }  # fmt: skip
-    _reocr_jobs[pid]["task"] = asyncio.create_task(_reread_job(db, pid, docs, dry_run=dry_run))
-    return _public_job(pid)
+    return await _launch(
+        db, pid, job, lambda: _reread_job(db, pid, docs, dry_run=dry_run),
+        dry_run=dry_run, busy=busy,
+    )  # fmt: skip
 
 
 async def curated_reread_verify(
@@ -1401,7 +1508,9 @@ async def reocr_status(db, pid: str) -> dict:
     return {k: v for k, v in job.items() if k != "task"}
 
 
-_VIEW_JOB = ("state", "kind", "dry_run", "passes", "started_at", "finished_at", "candidates")
+_VIEW_JOB = (
+    "state", "kind", "dry_run", "passes", "started_at", "finished_at", "candidates", "pre_store",
+)  # fmt: skip
 _VIEW_PLANNED = ("document_id", "filename", "category", "reasons", "unverified_facts")
 _VIEW_RESULT = (
     "document_id", "filename", "result", "confirmed", "date_unconfirmed", "unconfirmed",
@@ -1432,7 +1541,8 @@ def admin_job_view(status: dict) -> dict:
         job = {"state": status.get("state"), "kind": job.get("trigger"),
                "dry_run": bool(job.get("dry_run")), "started_at": job.get("started_at"),
                "finished_at": job.get("finished_at"), "error": job.get("message") or None,
-               "report": job.get("report") or {}}  # fmt: skip
+               "report": job.get("report") or {},
+               "pre_store": (job.get("report") or {}).get("pre_store")}  # fmt: skip
     out = {k: job[k] for k in _VIEW_JOB if k in job}
     if "candidates" in status and "candidates" not in out:
         out["candidates"] = status["candidates"]

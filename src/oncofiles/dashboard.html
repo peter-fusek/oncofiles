@@ -318,7 +318,7 @@
  <!-- Verify-only re-read and re-OCR (#573 / #678 — admin only) -->
  <div class="sync-history" id="reread-section" style="display:none">
  <h2><span data-sk="Overovanie a prepis (admin)" data-en="Verification and re-OCR (admin)">Overovanie a prepis (admin)</span></h2>
- <p class="rr-banner" data-sk="Pred skutočným uložením (Uložiť overenie / Prepísať naostro) musí infra najprv urobiť čerstvý snapshot databázy. Skúšobný beh nič neukladá." data-en="Before a real store (Save verification / Re-OCR for real), infra must first take a fresh database snapshot. A dry run stores nothing.">Pred skutočným uložením (Uložiť overenie / Prepísať naostro) musí infra najprv urobiť čerstvý snapshot databázy. Skúšobný beh nič neukladá.</p>
+ <p class="rr-banner" data-sk="Pred skutočným uložením (Uložiť overenie / Prepísať naostro) musí infra najprv urobiť čerstvý snapshot databázy. Server si navyše pred každým uložením urobí vlastnú overenú kópiu DB (bez nej úlohu odmietne). Skúšobný beh nič neukladá." data-en="Before a real store (Save verification / Re-OCR for real), infra must first take a fresh database snapshot. The server also makes its own verified DB copy before every store (and refuses the job without it). A dry run stores nothing.">Pred skutočným uložením (Uložiť overenie / Prepísať naostro) musí infra najprv urobiť čerstvý snapshot databázy. Server si navyše pred každým uložením urobí vlastnú overenú kópiu DB (bez nej úlohu odmietne). Skúšobný beh nič neukladá.</p>
  <div class="rr-row">
  <label for="rr-patient" class="curated-ops-meta" data-sk="Pacient" data-en="Patient">Pacient</label>
  <select id="rr-patient" class="rr-select" data-change="rrSelectPatient|@value"></select>

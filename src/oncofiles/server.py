@@ -7456,7 +7456,10 @@ async def api_admin_reread(request: Request) -> JSONResponse:
             len(ids),
             dry_run,
         )
-        return _admin_job_response(await start_reread(db_inst, pid, ids, dry_run=dry_run))
+        actor = _get_dashboard_email(request) or "bearer"
+        return _admin_job_response(
+            await start_reread(db_inst, pid, ids, dry_run=dry_run, actor=actor)
+        )
     except Exception as exc:
         resp = _circuit_breaker_503(exc, "/api/admin/reread")
         if resp is not None:
@@ -7492,7 +7495,12 @@ async def api_admin_reocr(request: Request) -> JSONResponse:
             dry_run,
         )
         result = await start_reocr(
-            db_inst, pid, dry_run=dry_run, document_ids=ids or None, limit=len(ids) or 3
+            db_inst,
+            pid,
+            dry_run=dry_run,
+            document_ids=ids or None,
+            limit=len(ids) or 3,
+            actor=_get_dashboard_email(request) or "bearer",
         )
         return _admin_job_response(result)
     except Exception as exc:
@@ -7510,14 +7518,16 @@ async def api_admin_reocr_status(request: Request) -> JSONResponse:
     if err:
         return err
     try:
-        from oncofiles.tools.curated import admin_job_view, reocr_status
+        from oncofiles.tools.curated import _dry_runs, admin_job_view, reocr_status
 
         db_inst: Database = request.app.state.fastmcp_server._lifespan_result["db"]
         raw = request.query_params.get("patient_slug") or request.query_params.get("patient_id", "")
         pid = await _admin_patient_id(db_inst, raw)
         if not pid:
             return JSONResponse({"error": "unknown patient"}, status_code=404)
-        return JSONResponse(admin_job_view(await reocr_status(db_inst, pid)))
+        view = admin_job_view(await reocr_status(db_inst, pid))
+        view["dry_runs_since_start"] = dict(_dry_runs)  # counted, not logged (#573)
+        return JSONResponse(view)
     except Exception as exc:
         resp = _circuit_breaker_503(exc, "/api/admin/reocr-status")
         if resp is not None:

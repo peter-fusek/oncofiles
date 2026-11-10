@@ -163,11 +163,15 @@ async def test_reread_dry_run_is_the_default_and_only_explicit_false_stores(db):
         body = {"patient_slug": ERIKA_UUID, "document_ids": [501]}
         if raw is not None:
             body["dry_run"] = raw
-        with patch.object(tool, "_reread_job", AsyncMock()) as rr:
+        with (
+            patch.object(tool, "_reread_job", AsyncMock()) as rr,
+            patch("oncofiles.pre_store.make_copy", return_value="copy.db") as copy,
+        ):
             resp, _ = await _call(server.api_admin_reread, _request(db, body=body), admin=True)
             await tool._reocr_jobs[ERIKA_UUID]["task"]
         assert resp.status_code == 202
         assert rr.call_args.kwargs == {"dry_run": expected}, raw
+        assert copy.called is (not expected)  # only a real run makes the safety copy
 
 
 @pytest.mark.parametrize(
@@ -247,7 +251,9 @@ async def test_only_a_reocr_dry_run_may_auto_pick(db):
             server.api_admin_reocr, _request(db, body={"patient_slug": ERIKA_UUID}), admin=True
         )
     assert resp.status_code == 202
-    assert ro.call_args.kwargs == {"dry_run": True, "document_ids": None, "limit": 3}
+    assert ro.call_args.kwargs == {
+        "dry_run": True, "document_ids": None, "limit": 3, "actor": "someone@example.com"
+    }  # fmt: skip
 
 
 async def test_a_real_reocr_with_a_selection_starts(db):
@@ -257,7 +263,9 @@ async def test_a_real_reocr_with_a_selection_starts(db):
     with patch.object(tool, "start_reocr", AsyncMock(return_value=started)) as ro:
         resp, _ = await _call(server.api_admin_reocr, _request(db, body=body), admin=True)
     assert resp.status_code == 202
-    assert ro.call_args.kwargs == {"dry_run": False, "document_ids": [501], "limit": 1}
+    assert ro.call_args.kwargs == {
+        "dry_run": False, "document_ids": [501], "limit": 1, "actor": "someone@example.com"
+    }  # fmt: skip
 
 
 async def test_reocr_rejects_foreign_ids(db):

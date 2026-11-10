@@ -1693,6 +1693,7 @@
       box.appendChild(coBilingual('h4', 'Posledná úloha: ' + kindSk + modeSk + ' — ' + j.state + (when ? ' (' + when + ' UTC)' : ''),
         'Last job: ' + kindEn + modeEn + ' — ' + j.state + (when ? ' (' + when + ' UTC)' : '')));
       if (j.error) box.appendChild(coBilingual('p', 'Chyba: ' + j.error, 'Error: ' + j.error, 'curated-ops-note'));
+      if (j.pre_store) box.appendChild(coBilingual('p', 'Bezpečnostná kópia DB pred uložením: ' + j.pre_store, 'Pre-store DB safety copy: ' + j.pre_store, 'curated-ops-note'));
       if (running) box.appendChild(coBilingual('p', 'Beží… lokálny model číta minúty na stranu; stav sa obnovuje každých 15 s.', 'Running… the local model takes minutes per page; status refreshes every 15 s.', 'curated-ops-note'));
       var names = {};
       (j.documents || []).forEach(function (d) { names[d.document_id] = d.filename; });
