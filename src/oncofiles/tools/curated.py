@@ -950,7 +950,7 @@ async def _link_entities(db, pid: str, doc_id: int, rec) -> dict:
 
 async def _extract_facts(db, pid: str, doc_id: int, rec, entities: dict, vocab) -> int:
     """Rule-based lab facts from the sidecar text (no model call)."""
-    from oncofiles.curated.facts_rules import extract_lab_facts
+    from oncofiles.curated.facts_rules import INLINE_CATEGORIES, extract_lab_facts
 
     engine = str(rec.metadata.get("ocr_engine") or "")
     local = any(k in engine.lower() for k in _LOCAL_ENGINES)
@@ -961,7 +961,7 @@ async def _extract_facts(db, pid: str, doc_id: int, rec, entities: dict, vocab) 
         vocab,
         unreliable=unreliable,
         report_date=day,
-        inline=rec.category.value in ("report", "discharge", "chemo_sheet", "imaging", "surgery"),
+        inline=rec.category.value in INLINE_CATEGORIES,
         sex=_patient_sex(pid),
     )
     source_reason = "handwritten" if rec.metadata.get("handwritten") is True else "cowork_ocr"
@@ -1206,7 +1206,7 @@ async def curated_reocr(
     )
 
 
-_REPORT_LIKE = ("report", "discharge", "chemo_sheet", "imaging", "surgery")
+from oncofiles.curated.facts_rules import INLINE_CATEGORIES as _REPORT_LIKE  # noqa: E402
 
 
 def _reread_one(drive, d: dict, old: list[dict], vocab) -> dict:

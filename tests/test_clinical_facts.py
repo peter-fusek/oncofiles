@@ -1062,3 +1062,37 @@ async def test_a_conflicted_block_never_dates_another_quote(db):
     assert all(r["day"][:10] == "2027-04-14" for r in rows if r["d"] == 30)
     by = {q["corroborated_by"] for q in quoted}
     assert by and all(isinstance(b, int) for b in by)
+
+
+# ── #676: inline fallback on lab sheets ──
+
+_INLINE_SHEET = """## Krvný obraz — Testovacie laboratórium
+Odobrané 14.6.2028 07:25. Č. vzorky 000.000002.
+WBC 7,43; RBC 4,61; HGB 138; HCT 0,412; PLT 251
+Uvoľnil: laborant.
+"""
+
+_QUALITATIVE_SHEET = """## Krvná skupina — Testovacie laboratórium
+Odobrané 14.6.2028 07:25.
+Krvná skupina: 0 Rh(D) negat. Skríning protilátok: negatívny.
+"""
+
+
+async def test_a_lab_sheet_without_a_table_falls_back_to_inline(vocab):
+    from oncofiles.curated.facts_rules import INLINE_CATEGORIES, extract_lab_facts
+
+    assert "labs" in INLINE_CATEGORIES
+    facts, ext = extract_lab_facts([_INLINE_SHEET], vocab, unreliable=True,
+                                   report_date="2028-06-15", inline=True)  # fmt: skip
+    assert ext == "rule:inline-v1"
+    assert {f["code"] for f in facts} >= {"WBC", "RBC", "HGB", "PLT"}
+    assert all(f["occurred_at"][:10] == "2028-06-14" for f in facts)  # the "Odobrané" line
+    assert all(f["verification"] == "unverified" for f in facts)  # Cowork-era stays unverified
+
+
+async def test_a_qualitative_lab_sheet_yields_nothing(vocab):
+    from oncofiles.curated.facts_rules import extract_lab_facts
+
+    facts, ext = extract_lab_facts([_QUALITATIVE_SHEET], vocab, report_date="2028-06-15",
+                                   inline=True)  # fmt: skip
+    assert facts == [] and ext is None
