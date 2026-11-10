@@ -19,6 +19,19 @@ def _reset_anthropic_client():
 
 
 @pytest.fixture(autouse=True)
+def _cloud_ai_configured(monkeypatch):
+    """Tests run as a server that HAS an Anthropic key (#618 guard passes).
+
+    Only ``config.ANTHROPIC_API_KEY`` is set — the value the guard reads at
+    call time. The clients themselves are still built from the empty
+    module-level copies, so an unmocked API call still fails locally instead
+    of reaching the network. ``tests/test_cloud_ai_disabled.py`` patches it
+    back to "" to cover the disabled path.
+    """
+    monkeypatch.setattr("oncofiles.config.ANTHROPIC_API_KEY", "test-key-not-real")
+
+
+@pytest.fixture(autouse=True)
 def _set_patient_context():
     """Set patient context name for tests so filename parsing works with test data."""
     from oncofiles import patient_context

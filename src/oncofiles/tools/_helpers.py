@@ -341,6 +341,19 @@ def _safe_error(exc: BaseException, category: str = "internal_error") -> dict[st
     return {"error": category, "kind": type(exc).__name__}
 
 
+def _cloud_ai_disabled_response() -> str | None:
+    """JSON error for tools that need the Anthropic cloud, or None when it is available.
+
+    #618: without ANTHROPIC_API_KEY these tools refuse up front with a clear
+    message instead of failing per document (or storing unprocessed data).
+    """
+    from oncofiles.cloud_guard import CLOUD_AI_DISABLED_MESSAGE, cloud_ai_enabled
+
+    if cloud_ai_enabled():
+        return None
+    return json.dumps({"error": CLOUD_AI_DISABLED_MESSAGE, "kind": "CloudAIDisabledError"})
+
+
 def _get_db(ctx: Context) -> Database:
     return ctx.request_context.lifespan_context["db"]
 
