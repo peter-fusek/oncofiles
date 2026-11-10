@@ -244,3 +244,13 @@ async def test_an_interrupted_document_is_redone_whole_on_the_next_index(db, env
     assert len(pages) == 2 and again["errors"] == 0
     rows = await db.list_documents(patient_id=ERIKA_UUID)
     assert sum(1 for r in rows if r.gdrive_id == src) == 1  # never duplicated
+
+
+async def test_forced_documents_are_reparsed_without_a_sidecar_change(db, env):
+    d, src = env
+    await tool.index_patient(db, ERIKA_UUID)
+    doc = await db.get_document_by_gdrive_id(src, patient_id=ERIKA_UUID)
+    forced = await tool.index_patient(db, ERIKA_UUID, force_ids={doc.id})
+    assert forced["updated"] == 1 and forced["unchanged"] == 1
+    foreign = await tool.index_patient(db, ERIKA_UUID, force_ids={987654})
+    assert foreign["updated"] == 0 and foreign["unchanged"] == 2
