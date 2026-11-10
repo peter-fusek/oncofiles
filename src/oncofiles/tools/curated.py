@@ -1067,6 +1067,9 @@ async def _reocr_job(db, pid: str, docs: list[dict], *, dry_run: bool, passes: i
     from oncofiles.server import _create_patient_clients
 
     job = _reocr_jobs[pid]
+    # Persisted (#667): a deploy or restart turns this row 'interrupted' at
+    # startup instead of the job silently vanishing with the process.
+    row_id = await db.insert_curated_run(patient_id=pid, dry_run=dry_run, trigger="reocr")
     try:
         async with patient_lock(pid):  # never alongside a run or an index (#612)
             clients = await _create_patient_clients(db, pid)
@@ -1074,14 +1077,17 @@ async def _reocr_job(db, pid: str, docs: list[dict], *, dry_run: bool, passes: i
                 raise RuntimeError("Drive not connected")
             gdrive, folder_id = clients[0], clients[3]
             vocab = Vocabulary.from_rows(await db.fact_code_vocabulary())
+            from oncofiles import config
             from oncofiles.curated.drive_ops import DriveOps
+            from oncofiles.curated.reocr import reread_isolated
 
             def _blocking():
                 own = gdrive.dedicated_copy()
                 try:
                     with local_only("curated re-OCR"):
-                        kwargs = dict(dry_run=dry_run, passes=passes,
-                                      now=datetime.now(UTC), stop=_stopping.is_set)  # fmt: skip
+                        kwargs = dict(dry_run=dry_run, passes=passes, now=datetime.now(UTC),
+                                      stop=_stopping.is_set, reader=reread_isolated,
+                                      rss_limit_mb=config.REOCR_RSS_LIMIT_MB)  # fmt: skip
                         if dry_run:
                             return run_reocr(DriveOps(own), folder_id, docs, vocab, **kwargs)
                         with own.contract_writes():
@@ -1098,6 +1104,14 @@ async def _reocr_job(db, pid: str, docs: list[dict], *, dry_run: bool, passes: i
         job.update(state="failed", error=type(exc).__name__)
     finally:
         job["finished_at"] = datetime.now(UTC).isoformat()
+        try:
+            await db.finish_curated_run(
+                row_id, patient_id=pid,
+                status="ok" if job.get("state") == "done" else "failed",
+                message=job.get("error") or "", report=job.get("report") or {},
+            )  # fmt: skip
+        except Exception:
+            logger.exception("could not persist the re-OCR job for %s", pid)
 
 
 async def curated_reocr(
@@ -1150,7 +1164,12 @@ async def curated_reocr_status(ctx: Context, patient_slug: str | None = None) ->
     pid = await _resolve_patient_id(patient_slug, ctx)
     job = _reocr_jobs.get(pid)
     if not job:
-        targets = await _reocr_targets(_get_db(ctx), pid, None)
+        db = _get_db(ctx)
+        last = await db.get_last_reocr_job(patient_id=pid)  # survives a restart (#667)
+        targets = await _reocr_targets(db, pid, None)
+        if last:
+            return json.dumps({"state": last["status"], "job": last, "candidates": len(targets)},
+                              ensure_ascii=False, default=str)  # fmt: skip
         return json.dumps({"state": "none", "candidates": len(targets)})
     return json.dumps({k: v for k, v in job.items() if k != "task"}, ensure_ascii=False,
                       default=str)  # fmt: skip
