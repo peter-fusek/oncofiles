@@ -246,3 +246,11 @@ def test_stored_results_record_the_rule_version():
     f = old(1, "CEA", 4.4, "2027-06-03")
     keys = rv.result_keys({"confirmed": [1], "date_unconfirmed": []}, {1: f})
     assert keys["assess_version"] == rv.ASSESS_VERSION == 2
+
+
+def test_a_paged_sidecar_with_all_facts_on_page_one_keeps_the_per_page_rule():
+    """The signal is the old sidecar's page markers, not where its facts sit."""
+    olds = [old(1, "CEA", 4.4, "2027-06-03")]  # page 1 of a 3-page sidecar
+    new_on_three = [dated("CEA", 4.4, "2027-06-03", 3)]
+    assert rv.assess(olds, new_on_three, PAGES, old_page_count=3)["unconfirmed"] == [1]
+    assert rv.assess(olds, new_on_three, PAGES, old_page_count=1)["confirmed"] == [1]

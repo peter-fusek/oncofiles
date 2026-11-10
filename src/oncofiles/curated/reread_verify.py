@@ -69,7 +69,10 @@ def _usable(f: dict) -> bool:
     )
 
 
-def assess(old_facts: list[dict], new_facts: list[dict], new_pages: list[str]) -> dict:
+def assess(
+    old_facts: list[dict], new_facts: list[dict], new_pages: list[str],
+    *, old_page_count: int | None = None,
+) -> dict:  # fmt: skip
     """Which old Cowork-era facts the re-read confirms.
 
     ``old_facts``: id, code, value_canonical, occurred_at, page_number, meta.
@@ -79,7 +82,8 @@ def assess(old_facts: list[dict], new_facts: list[dict], new_pages: list[str]) -
 
     A paged old sidecar is matched page by page. A Cowork-era sidecar is often
     unpaged (no page markers, so every old fact sits on "page 1") while the
-    re-read is paged; then the match is on the re-read's own dated facts:
+    re-read is paged (``old_page_count``: pages of the old sidecar, i.e.
+    its page markers); then the match is on the re-read's own dated facts:
     the same code, value AND date, where the re-read printed that date itself
     (never the report-date fallback), as a document-level multiset, and the
     old date must be printed on the page of the matching new fact (#678 v2).
@@ -90,7 +94,9 @@ def assess(old_facts: list[dict], new_facts: list[dict], new_pages: list[str]) -
         if CONFIRMABLE in ((f.get("meta") or {}).get("unverified_reasons") or [])
         and f.get("value_canonical") is not None
     ]
-    unpaged = len(new_pages) > 1 and all(int(f.get("page_number") or 1) <= 1 for f in old_facts)
+    if old_page_count is None:  # callers without the sidecar: infer from the facts
+        old_page_count = max([int(f.get("page_number") or 1) for f in old_facts] or [1])
+    unpaged = len(new_pages) > 1 and old_page_count <= 1
     if unpaged:
         return _assess_unpaged(candidates, new_facts, new_pages)
     new_count: Counter = Counter(
