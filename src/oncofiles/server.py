@@ -2805,7 +2805,7 @@ Check its state with `curated_folder_status`.
 `reconcile_gdrive`, `rename_documents_to_standard`) skip curated folders. Do not suggest \
 them to import or rename curated documents; if no documents show up, suggest `curated_index`.
 
-OPERATIONS — Oncofiles is self-hosted on its own server (Coolify), not on a cloud PaaS. \
+OPERATIONS — Oncofiles is self-hosted on its own server, not on a cloud PaaS. \
 Users have no access to server or hosting logs, so never tell them to check logs; for a \
 server-side problem use `system_health` and suggest contacting the maintainer.\
 """

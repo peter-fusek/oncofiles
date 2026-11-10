@@ -40,6 +40,8 @@ def test_server_instructions_have_no_railway_and_explain_curated():
 
     text = _MCP_INSTRUCTIONS.lower()
     assert "railway" not in text
+    # Every connected client sees this text: no hosting-stack details.
+    assert "coolify" not in text
     for name in ("curated_index", "curated_folder_status", "curated_folder_run"):
         assert name in _MCP_INSTRUCTIONS
     assert "self-hosted" in text
