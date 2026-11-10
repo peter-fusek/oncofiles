@@ -195,3 +195,26 @@ async def test_targets_prefer_documents_with_unverified_facts(db):
     assert [t["document_id"] for t in got] == [9105, 9101]  # most unverified first
     everything = await tool._reocr_targets(db, ERIKA_UUID, None, only_with_facts=False)
     assert {t["document_id"] for t in everything} == {9105, 9101, 9102}  # never 9103 / 9104
+
+
+async def test_guard_never_rewrites_when_values_would_be_lost(vocab, monkeypatch):
+    report = (
+        "---\ndoc_date: 2027-06-20\ndoc_type: Report\nextraction: tesseract eng-only\n---\n\n"
+        "<!-- page 1 -->\nLab 12.6.2027: WBC 5,10; HGB 121; PLT 240; CEA 4,4\n"
+    )
+    drive = FakeDrive()
+    src = drive.add("r.pdf", drive.folder[LABS], b"%PDF")
+    side = drive.add("r.pdf.md", drive.folder[LABS], report.encode())
+    doc = {"document_id": 8, "filename": "r.pdf", "gdrive_id": src, "sidecar_id": side,
+           "engine": "tesseract eng-only", "reasons": ["cowork_ocr"]}  # fmt: skip
+    monkeypatch.setattr(
+        reocr,
+        "reread",
+        lambda *a, **k: reocr.Reread(
+            ["Lab 12.6.2027: WBC 5,10; HGB 121; CEA 4,4"], "vision2", "qwen-local"
+        ),
+    )  # PLT dropped
+    rep = reocr.run_reocr(drive, drive.root, [doc], vocab, dry_run=False, now=NOW)
+    d = rep.documents[0]
+    assert d.result == "review" and drive.writes == []
+    assert d.lost == ["PLT 240.0 missing"]
