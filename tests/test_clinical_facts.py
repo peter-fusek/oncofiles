@@ -1110,3 +1110,36 @@ async def test_a_two_item_marker_line_is_read_and_keeps_its_block(vocab):
     assert {"CEA", "CA19_9", "CREA", "UREA", "ALB", "GLU"} <= set(by)
     assert all(f["occurred_at"][:10] == "2028-07-09" for f in facts)
     assert all(f["metadata"]["date_source"] == "printed" for f in facts)
+
+
+async def test_a_medication_or_prose_line_with_a_number_ends_the_block(vocab):
+    """#683 review (i): a non-result number never carries the block date down."""
+    text = (
+        "Odobrané 9.7.2028 07:05.\n"
+        "Kreatinín 66,1; Močovina 4,9; Albumín 41,8\n"
+        "Dexametazón 8 mg\n"
+        "WBC 6,02; HGB 131; PLT 244\n"
+    )
+    facts = parse_inline_results([text], vocab, report_date="2028-07-12")
+    late = [f for f in facts if f["code"] in ("WBC", "HGB", "PLT")]
+    assert late and all(f["metadata"]["date_source"] == "report" for f in late)
+    early = [f for f in facts if f["code"] in ("CREA", "UREA", "ALB")]
+    assert early and all(f["occurred_at"][:10] == "2028-07-09" for f in early)
+
+
+async def test_a_new_header_wins_and_a_table_ends_the_block(vocab):
+    """#683 review (ii) a new dated header takes over; (iii) a table ends the block."""
+    text = (
+        "Odobrané 9.7.2028 07:05.\n"
+        "Kreatinín 66,1; Močovina 4,9; Albumín 41,8\n"
+        "Odobrané 10.7.2028 06:50.\n"
+        "WBC 6,02; HGB 131; PLT 244\n"
+        "| Liek | Dávka |\n"
+        "\n"
+        "NA v sére 139,4; K S 4,05; CL S 101\n"
+    )
+    facts = parse_inline_results([text], vocab, report_date="2028-07-12")
+    by = {f["code"]: f for f in facts}
+    assert by["WBC"]["occurred_at"][:10] == "2028-07-10"
+    assert by["CREA"]["occurred_at"][:10] == "2028-07-09"
+    assert by["NA"]["metadata"]["date_source"] == "report"

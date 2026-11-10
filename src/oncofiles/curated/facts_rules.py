@@ -832,7 +832,10 @@ def parse_inline_results(
                             continue  # the same line quoted twice in one report
                         seen_keys.add(key)
                         out.append(f)
-            if not _block_header(line) and not _keeps_block(line, is_results or bool(items)):
+            # a line keeps the block only with a result of a KNOWN code (exact, not
+            # fuzzy): "Dexametazón 8 mg" or "Hmotnosť 72 kg" must end it (#683 review)
+            known = is_results or any(vocab.match(it[0]) for it in items)
+            if not _block_header(line) and not _keeps_block(line, known):
                 block = None  # prose, a table or another dated line ends the block
             if line.strip():
                 prev = line
