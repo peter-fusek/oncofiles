@@ -992,7 +992,10 @@ def _patient_sex(pid: str) -> str | None:
 
 
 async def _corroborate_and_measure(db, pid: str) -> dict:
-    """Date report quotes by the draw they quote, then measure unverified (#659)."""
+    """Flag header/draw date conflicts, date report quotes by the draw they
+    quote, then measure unverified (#659, #672). Runs at the end of every
+    index (startup, curated_index, after a run or re-OCR), so flags that a
+    re-extraction resets are re-applied in the same call."""
     from oncofiles.curated.facts_rules import corroborations, date_conflicts, unverified_metric
 
     rows = await db.fact_verification_rows(patient_id=pid)
@@ -1007,6 +1010,9 @@ async def _corroborate_and_measure(db, pid: str) -> dict:
         meta["date_conflict_with"] = other_day
         if await db.flag_date_conflict(patient_id=pid, fact_id=fact_id, metadata=meta):
             conflicts += 1
+    if conflicts:  # a conflicted block is no longer a draw anything may be dated by
+        rows = await db.fact_verification_rows(patient_id=pid)
+        by_id = {r["id"]: r for r in rows}
     done = 0
     for fact_id, draw_day, draw_fact in corroborations(rows):
         try:

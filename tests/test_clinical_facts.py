@@ -1020,3 +1020,45 @@ async def test_nou_report_short_labels_are_mapped(vocab):
     text = "CA KOR V 2,31; BI C S 7,4; CB S 68,2; NA v sére 139,8\n"
     by = {f["code"]: f for f in parse_inline_results([text], vocab, report_date="2027-05-02")}
     assert {"CA_CORR", "BILI", "TP", "NA"} <= set(by)
+
+
+async def test_a_conflicted_block_never_dates_another_quote(db):
+    """#672 review: after a block is flagged date_conflict it is no longer a draw."""
+    from oncofiles.tools import curated as tool
+    from tests.helpers import ERIKA_UUID
+
+    async def fact(doc, day, code, value, verification, meta):
+        await db.db.execute(
+            "INSERT INTO clinical_records (patient_id, record_type, source_document_id, param, "
+            "code, occurred_at, value_canonical, verification, metadata_json, source) "
+            "VALUES (?, 'lab', ?, ?, ?, ?, ?, ?, ?, 't')",
+            (ERIKA_UUID, doc, code, code, day, value, verification, json.dumps(meta)),
+        )  # fmt: skip
+
+    for doc in (10, 20, 30):
+        await db.db.execute(
+            "INSERT INTO documents (id, file_id, filename, original_filename, category, "
+            "mime_type, size_bytes, patient_id) VALUES (?, ?, ?, ?, 'labs', 'application/pdf', "
+            "1, ?)",
+            (doc, f"t:{doc}", f"d{doc}.pdf", f"d{doc}.pdf", ERIKA_UUID),
+        )
+    hdr = {"date_from": "block_header"}
+    quote = {"unverified_reasons": ["date_unknown"]}
+    for code, v in (("WBC", 4.4), ("PLT", 201.0), ("HGB", 118.0)):
+        await fact(10, "2027-04-14", code, v, "machine", {})  # the real draw
+        await fact(20, "2027-04-20", code, v, "machine", hdr)  # header-dated copy
+        await fact(30, "2027-04-28", code, v, "unverified", quote)  # a later report quote
+    await db.db.commit()
+    out = await tool._corroborate_and_measure(db, ERIKA_UUID)
+    assert out["date_conflicts"] == 3
+    async with db.db.execute(
+        "SELECT source_document_id AS d, occurred_at AS day, verification AS v, "
+        "metadata_json AS m FROM clinical_records WHERE source_document_id IN (20, 30)"
+    ) as cur:
+        rows = [dict(r) for r in await cur.fetchall()]
+    assert all(r["v"] == "unverified" for r in rows if r["d"] == 20)
+    # the quote is dated by the real draw (doc 10), never by the conflicted block
+    quoted = [json.loads(r["m"]) for r in rows if r["d"] == 30]
+    assert all(r["day"][:10] == "2027-04-14" for r in rows if r["d"] == 30)
+    by = {q["corroborated_by"] for q in quoted}
+    assert by and all(isinstance(b, int) for b in by)

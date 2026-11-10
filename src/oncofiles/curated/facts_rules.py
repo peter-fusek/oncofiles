@@ -976,7 +976,12 @@ def date_conflicts(rows: list[dict], *, window_days: int = 60) -> list[tuple[int
     (``date_from=block_header``) whose values match another document's draw
     on a different day, by the same majority rule as corroboration, has two
     competing dates. Neither wins silently: returns (fact id, conflicting
-    draw day) so the caller marks the block unverified (``date_conflict``)."""
+    draw day) so the caller marks the block unverified (``date_conflict``).
+
+    Both directions within 60 days count: a later lab sheet identical to an
+    earlier report block most likely means the report quoted it under a
+    wrong header date, so the block conservatively goes unverified. Two
+    header-dated documents that match each other both go unverified."""
     from datetime import date as _date
 
     def as_date(d: str):
