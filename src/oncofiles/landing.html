@@ -174,665 +174,721 @@
   ]
   </script>
   <style>
+    /* Oncofiles landing, design iteration 2 (Nov 2026).
+       Editorial and document-like: left-aligned type, rules instead of boxes.
+       The only objects with depth are realistic ones (paper, a Drive window,
+       photos). Tokens: paper, ink, one teal accent, a highlighter yellow. */
     :root {
       color-scheme: light dark;
-      --bg: #faf9f7;
-      --bg-deep: #f2efea;
-      --surface: #ffffff;
-      --paper: #fffdf8;
-      --border: #ddd6cb;
-      --border-strong: #c4bbad;
-      --text: #1e293b;
-      --text-muted: #4f5d6b;
-      --text-dim: #7d8a99;
-      --accent: #0d9488;
-      --accent-strong: #0f766e;
-      --accent-soft: rgba(13, 148, 136, 0.10);
-      --mark: rgba(250, 204, 21, 0.38);
-      --ok: #15803d;
-      --ok-soft: rgba(21, 128, 61, 0.10);
-      --warn: #b45309;
-      --warn-soft: rgba(180, 83, 9, 0.10);
-      --human: #1d4ed8;
-      --human-soft: rgba(29, 78, 216, 0.10);
-      --shadow: 0 1px 2px rgba(30, 41, 59, 0.05), 0 8px 24px rgba(30, 41, 59, 0.06);
+      --bg: #f6f4ef;
+      --ink: #1c232d;
+      --ink-2: #4a5462;
+      --ink-3: #7b8592;
+      --rule: #dcd5c9;
+      --rule-2: #c9c1b3;
+      --accent: #0f6b63;
+      --accent-ink: #ffffff;
+      --mark: #f8e08e;
+      --ok: #2f6b3a;
+      --warn: #9a5507;
+      --human: #2d4f8a;
+      --paper: #fffdf6;
+      --paper-ink: #22262b;
+      --lift: 0 1px 1px rgba(30, 25, 15, 0.08), 0 10px 22px -8px rgba(30, 25, 15, 0.20), 0 28px 44px -26px rgba(30, 25, 15, 0.28);
+      /* Drive-like chrome (Material-style greys, not Google branding) */
+      --gd-bg: #f8fafd; --gd-surface: #ffffff; --gd-ink: #1f1f1f; --gd-ink-2: #444746; --gd-line: #e3e3e3;
+      --gd-search: #e9eef6; --gd-sel: #c2e7ff; --gd-folder: #5f6368; --gd-pdf: #ea4335; --gd-img: #d93025; --gd-txt: #4285f4;
       --serif: 'DM Serif Display', Georgia, serif;
       --sans: 'DM Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
       --num: 'IBM Plex Sans', 'DM Sans', -apple-system, sans-serif;
+      --ui: 'Google Sans', Roboto, Arial, 'Helvetica Neue', sans-serif;
     }
     @media (prefers-color-scheme: dark) {
       :root:not([data-theme="light"]) {
-        --bg: #121615;
-        --bg-deep: #0d1110;
-        --surface: #1a201e;
-        --paper: #1f2624;
-        --border: #2e3734;
-        --border-strong: #42504b;
-        --text: #e6ebe8;
-        --text-muted: #a9b5b0;
-        --text-dim: #7f8c87;
-        --accent: #2dd4bf;
-        --accent-strong: #5eead4;
-        --accent-soft: rgba(45, 212, 191, 0.12);
-        --mark: rgba(250, 204, 21, 0.22);
-        --ok: #4ade80;
-        --ok-soft: rgba(74, 222, 128, 0.12);
-        --warn: #fbbf24;
-        --warn-soft: rgba(251, 191, 36, 0.12);
-        --human: #93c5fd;
-        --human-soft: rgba(147, 197, 253, 0.12);
-        --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 8px 24px rgba(0, 0, 0, 0.25);
+        --bg: #151918; --ink: #e6eae7; --ink-2: #b3bdb8; --ink-3: #85918c; --rule: #2f3836; --rule-2: #3c4744;
+        --accent: #5ccfc0; --accent-ink: #0c1c1a; --mark: #f3d77a; --ok: #8fd19a; --warn: #f0b75c; --human: #9db9ee;
+        --paper: #ece8dc; --paper-ink: #1f2226;
+        --lift: 0 1px 1px rgba(0, 0, 0, 0.4), 0 12px 26px -8px rgba(0, 0, 0, 0.55);
+        --gd-bg: #1b1b1b; --gd-surface: #131314; --gd-ink: #e3e3e3; --gd-ink-2: #c4c7c5; --gd-line: #3c4043;
+        --gd-search: #282a2c; --gd-sel: #004a77; --gd-folder: #c4c7c5;
       }
     }
     :root[data-theme="dark"] {
-      --bg: #121615; --bg-deep: #0d1110; --surface: #1a201e; --paper: #1f2624;
-      --border: #2e3734; --border-strong: #42504b; --text: #e6ebe8; --text-muted: #a9b5b0;
-      --text-dim: #7f8c87; --accent: #2dd4bf; --accent-strong: #5eead4; --accent-soft: rgba(45, 212, 191, 0.12);
-      --mark: rgba(250, 204, 21, 0.22); --ok: #4ade80; --ok-soft: rgba(74, 222, 128, 0.12);
-      --warn: #fbbf24; --warn-soft: rgba(251, 191, 36, 0.12); --human: #93c5fd; --human-soft: rgba(147, 197, 253, 0.12);
+      --bg: #151918; --ink: #e6eae7; --ink-2: #b3bdb8; --ink-3: #85918c; --rule: #2f3836; --rule-2: #3c4744;
+      --accent: #5ccfc0; --accent-ink: #0c1c1a; --mark: #f3d77a; --ok: #8fd19a; --warn: #f0b75c; --human: #9db9ee;
+      --paper: #ece8dc; --paper-ink: #1f2226;
+      --lift: 0 1px 1px rgba(0, 0, 0, 0.4), 0 12px 26px -8px rgba(0, 0, 0, 0.55);
+      --gd-bg: #1b1b1b; --gd-surface: #131314; --gd-ink: #e3e3e3; --gd-ink-2: #c4c7c5; --gd-line: #3c4043;
+      --gd-search: #282a2c; --gd-sel: #004a77; --gd-folder: #c4c7c5;
     }
 
     * { margin: 0; padding: 0; box-sizing: border-box; }
     html { overflow-x: hidden; scroll-behavior: smooth; }
-    body {
-      font-family: var(--sans);
-      background: var(--bg);
-      color: var(--text);
-      line-height: 1.6;
-      overflow-x: hidden;
-      -webkit-font-smoothing: antialiased;
-    }
-    a { color: var(--accent-strong); }
-    .container { max-width: 1080px; margin: 0 auto; padding: 0 16px; }
-    @media (min-width: 720px) { .container { padding: 0 24px; } }
-    .icon { width: 20px; height: 20px; flex-shrink: 0; stroke: currentColor; fill: none; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
-    .num { font-family: var(--num); font-variant-numeric: tabular-nums; }
-    /* Grid/flex children default to min-width:auto, so one nowrap line (file
-       names, document lines) would widen the whole page on phones. */
-    .hero-grid > *, .prov-body > *, .split > *, .flow > *, .grid > *, .checks li > div { min-width: 0; }
-    .cite, .chat .num { overflow-wrap: anywhere; }
+    body { font: 400 1.0625rem/1.65 var(--sans); background: var(--bg); color: var(--ink); overflow-x: hidden; -webkit-font-smoothing: antialiased; }
+    a { color: var(--accent); text-underline-offset: 2px; }
+    :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+    .wrap { max-width: 1160px; margin: 0 auto; padding: 0 16px; }
+    @media (min-width: 760px) { .wrap { padding: 0 32px; } }
     .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+    .ic { width: 18px; height: 18px; flex-shrink: 0; }
 
     /* Header */
-    header.site {
-      position: sticky; top: 0; z-index: 100;
-      background: color-mix(in srgb, var(--bg) 88%, transparent);
-      backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
-      border-bottom: 1px solid var(--border);
-    }
-    header.site .container { display: flex; align-items: center; justify-content: space-between; gap: 12px; height: 56px; }
-    .logo { font-family: var(--serif); font-size: 1.375rem; letter-spacing: -0.01em; color: var(--text); text-decoration: none; }
+    header.site { border-bottom: 1px solid var(--rule); }
+    header.site .wrap { display: flex; align-items: baseline; gap: 24px; padding-top: 18px; padding-bottom: 14px; }
+    .logo { font: 1.45rem var(--serif); color: var(--ink); text-decoration: none; letter-spacing: -0.01em; }
     .logo span { color: var(--accent); }
-    nav.top { display: flex; align-items: center; gap: 2px; }
-    nav.top a { color: var(--text-muted); text-decoration: none; font-size: 0.8125rem; padding: 6px 10px; border-radius: 6px; }
-    nav.top a:hover { color: var(--text); background: var(--surface); }
-    nav.top .hide-sm { display: none; }
-    @media (min-width: 760px) { nav.top .hide-sm { display: inline-block; } }
-    .lang-btn { background: none; border: 1px solid var(--border); color: var(--text-muted); padding: 4px 8px; border-radius: 6px; cursor: pointer; font: inherit; font-size: 0.8125rem; margin-left: 6px; }
+    nav.top { display: flex; gap: 18px; align-items: baseline; margin-left: auto; font-size: 0.92rem; }
+    nav.top a { color: var(--ink-2); text-decoration: none; }
+    nav.top a:hover { color: var(--ink); text-decoration: underline; }
+    nav.top .wide { display: none; }
+    @media (min-width: 860px) { nav.top .wide { display: inline; } }
+    .lang { background: none; border: 1px solid var(--rule-2); border-radius: 4px; padding: 1px 8px; font: inherit; font-size: 0.82rem; color: var(--ink-2); cursor: pointer; }
 
     /* Type */
-    .eyebrow { font-size: 0.6875rem; text-transform: uppercase; letter-spacing: 0.14em; color: var(--accent-strong); font-weight: 700; margin-bottom: 10px; }
     h1, h2 { font-family: var(--serif); font-weight: 400; letter-spacing: -0.015em; }
-    h2 { font-size: clamp(1.6rem, 4.5vw, 2.25rem); line-height: 1.2; margin-bottom: 14px; }
-    h3 { font-size: 1rem; font-weight: 700; margin-bottom: 6px; }
-    .lede { color: var(--text-muted); font-size: 1.0625rem; max-width: 640px; }
-    section.block { padding: 64px 0; border-top: 1px solid var(--border); }
-    @media (min-width: 900px) { section.block { padding: 88px 0; } }
+    h1 { font-size: clamp(2.3rem, 6vw, 3.9rem); line-height: 1.04; max-width: 19ch; }
+    h2 { font-size: clamp(1.65rem, 3.4vw, 2.3rem); line-height: 1.12; max-width: 19ch; }
+    h3 { font-size: 1.02rem; font-weight: 700; line-height: 1.35; }
+    p { max-width: 64ch; }
 
-    /* Buttons */
-    .btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; padding: 11px 18px; border-radius: 8px; font-weight: 600; font-size: 0.9rem; text-decoration: none; border: 1px solid transparent; cursor: pointer; font-family: inherit; }
-    .btn-primary { background: var(--accent-strong); color: #fff; }
-    :root[data-theme="dark"] .btn-primary { color: #06201d; }
-    @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .btn-primary { color: #06201d; } }
-    .btn-primary:hover { filter: brightness(1.08); }
-    .btn-ghost { background: transparent; color: var(--text); border-color: var(--border-strong); }
-    .btn-ghost:hover { background: var(--surface); }
+    /* Sections: heading column + body column, separated by one rule */
+    .block { border-top: 1px solid var(--rule); padding: 56px 0 64px; }
+    @media (min-width: 960px) { .block { padding: 80px 0 88px; } }
+    .grid { display: grid; gap: 28px; }
+    @media (min-width: 960px) { .grid { grid-template-columns: 4fr 8fr; gap: 56px; } }
+    .side p { color: var(--ink-2); margin-top: 14px; }
+    .side .small { font-size: 0.92rem; }
 
-    /* Hero */
-    .hero { padding: 48px 0 56px; }
-    @media (min-width: 900px) { .hero { padding: 72px 0 88px; } }
-    .hero-grid { display: grid; gap: 40px; align-items: start; }
-    @media (min-width: 960px) { .hero-grid { grid-template-columns: 1fr 1.05fr; gap: 48px; } }
-    .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 20px; }
-    .chip { display: inline-flex; align-items: center; gap: 6px; font-size: 0.75rem; color: var(--text-muted); background: var(--surface); border: 1px solid var(--border); border-radius: 999px; padding: 3px 10px; }
-    .chip .icon { width: 14px; height: 14px; color: var(--accent); }
-    .hero h1 { font-size: clamp(2rem, 6vw, 3.1rem); line-height: 1.12; margin-bottom: 18px; }
-    .hero h1 em { font-style: normal; color: var(--accent-strong); }
-    .hero .lede { margin-bottom: 14px; }
-    .disclaimer { font-size: 0.875rem; color: var(--text-dim); font-style: italic; margin-bottom: 22px; max-width: 600px; }
-    .waitlist { border: 1px solid var(--accent); background: var(--accent-soft); border-radius: 12px; padding: 16px; margin-bottom: 18px; max-width: 560px; }
-    .waitlist p { font-size: 0.9375rem; margin-bottom: 10px; }
-    .waitlist strong { color: var(--text); }
-    .nl-form { display: flex; gap: 8px; flex-wrap: wrap; }
-    .nl-form input { flex: 1 1 200px; min-width: 0; padding: 10px 12px; border: 1px solid var(--border-strong); border-radius: 8px; background: var(--surface); color: var(--text); font: inherit; font-size: 0.9375rem; }
-    .nl-form input:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
-    .nl-msg { font-size: 0.8125rem; margin-top: 6px; min-height: 1.2em; }
-    .nl-msg.success { color: var(--ok); }
-    .nl-msg.error { color: #dc2626; }
+    /* Buttons and form */
+    .btn { display: inline-block; background: var(--accent); color: var(--accent-ink); border: 0; border-radius: 6px; padding: 11px 18px; font: 600 0.95rem var(--sans); text-decoration: none; cursor: pointer; }
+    .btn:hover { filter: brightness(1.08); }
+    .nl-form { display: flex; gap: 8px; flex-wrap: wrap; max-width: 520px; }
+    .nl-form input { flex: 1 1 220px; min-width: 0; padding: 10px 12px; border: 1px solid var(--rule-2); border-radius: 6px; background: var(--bg); color: var(--ink); font: inherit; font-size: 0.95rem; }
+    .nl-msg { font-size: 0.85rem; margin-top: 6px; min-height: 1.3em; }
+    .nl-msg.success { color: var(--ok); } .nl-msg.error { color: #c0392b; }
     .nl-spinner { width: 14px; height: 14px; border: 2px solid rgba(255,255,255,0.5); border-top-color: #fff; border-radius: 50%; display: inline-block; animation: spin 0.7s linear infinite; }
     @keyframes spin { to { transform: rotate(360deg); } }
-    .hero-cta { display: flex; gap: 10px; flex-wrap: wrap; }
 
-    /* Provenance card (hero visual) */
-    .prov { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; box-shadow: var(--shadow); overflow: hidden; }
-    .prov-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; padding: 12px 16px; border-bottom: 1px solid var(--border); font-size: 0.8125rem; color: var(--text-muted); flex-wrap: wrap; }
-    .prov-head strong { color: var(--text); font-size: 0.875rem; }
-    .prov-body { display: grid; }
-    @media (min-width: 560px) { .prov-body { grid-template-columns: 1fr 1fr; } }
-    .values { padding: 8px; border-bottom: 1px solid var(--border); }
-    @media (min-width: 560px) { .values { border-bottom: 0; border-right: 1px solid var(--border); } }
-    .vrow { width: 100%; display: grid; grid-template-columns: 1fr auto; gap: 2px 10px; align-items: baseline; text-align: left; background: transparent; border: 1px solid transparent; border-radius: 8px; padding: 9px 10px; cursor: pointer; font: inherit; color: var(--text); }
-    .vrow:hover { background: var(--bg); }
-    .vrow:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-    .vrow[aria-pressed="true"] { background: var(--accent-soft); border-color: var(--accent); }
-    .vname { font-size: 0.875rem; font-weight: 500; }
-    .vval { font-family: var(--num); font-variant-numeric: tabular-nums; font-weight: 600; font-size: 1rem; text-align: right; }
-    .vval small { font-weight: 400; color: var(--text-dim); font-size: 0.75rem; margin-left: 3px; }
-    .vsub { grid-column: 1 / -1; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; font-size: 0.72rem; color: var(--text-dim); }
-    .vsub .num { white-space: nowrap; }
-    .state { display: inline-flex; align-items: center; gap: 4px; padding: 1px 7px; border-radius: 999px; font-size: 0.68rem; font-weight: 600; white-space: nowrap; }
-    .state-machine { color: var(--ok); background: var(--ok-soft); }
-    .state-unverified { color: var(--warn); background: var(--warn-soft); }
-    .state-human { color: var(--human); background: var(--human-soft); }
-    .doc { background: var(--paper); padding: 14px 14px 12px; font-family: var(--num); font-size: 0.72rem; line-height: 1.5; color: var(--text-muted); }
-    .doc-top { display: flex; justify-content: space-between; color: var(--text-dim); font-size: 0.66rem; text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 8px; }
-    .dl { display: grid; grid-template-columns: 1.6em 1fr; gap: 6px; padding: 1px 4px; border-radius: 4px; transition: background 0.2s; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
-    .dl > span:first-child { color: var(--text-dim); text-align: right; opacity: 0.7; }
-    .dl.hd { color: var(--text); font-weight: 600; }
-    .dl.on { background: var(--mark); color: var(--text); box-shadow: inset 3px 0 0 var(--warn); }
-    .prov-foot { border-top: 1px solid var(--border); padding: 12px 16px; display: grid; gap: 6px 16px; grid-template-columns: repeat(2, minmax(0, 1fr)); font-size: 0.78rem; }
-    @media (min-width: 560px) { .prov-foot { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
-    .pf-k { color: var(--text-dim); font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.06em; }
-    .pf-v { font-family: var(--num); font-variant-numeric: tabular-nums; font-weight: 500; color: var(--text); }
-    .prov-note { padding: 0 16px 12px; font-size: 0.75rem; color: var(--text-dim); }
-    .prov-hint { font-size: 0.8125rem; color: var(--text-dim); margin-top: 10px; text-align: center; }
+    /* ── Hero ─────────────────────────────────────────────── */
+    .hero { padding: 44px 0 40px; }
+    @media (min-width: 960px) { .hero { padding: 72px 0 56px; } }
+    .hero-cols { display: grid; gap: 24px; margin-top: 26px; align-items: start; }
+    @media (min-width: 960px) { .hero-cols { grid-template-columns: 7fr 5fr; gap: 56px; } }
+    .lede { font-size: 1.15rem; color: var(--ink-2); }
+    .lede-note { color: var(--ink-3); font-size: 0.92rem; margin-top: 12px; }
+    .join h2 { font: 700 1rem/1.4 var(--sans); letter-spacing: 0; max-width: none; margin-bottom: 4px; }
+    .join p { color: var(--ink-2); font-size: 0.95rem; margin-bottom: 12px; }
+    .join .alt { margin-top: 4px; font-size: 0.92rem; }
 
-    /* Generic cards */
-    .grid { display: grid; gap: 14px; margin-top: 32px; }
-    @media (min-width: 640px) { .grid.two { grid-template-columns: 1fr 1fr; } }
-    @media (min-width: 900px) { .grid.four { grid-template-columns: repeat(4, 1fr); } .grid.three { grid-template-columns: repeat(3, 1fr); } }
-    @media (min-width: 640px) and (max-width: 899px) { .grid.four, .grid.three { grid-template-columns: 1fr 1fr; } }
-    .card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 20px; }
-    .card p { color: var(--text-muted); font-size: 0.9rem; }
-    .card .ic { width: 36px; height: 36px; border-radius: 9px; display: flex; align-items: center; justify-content: center; background: var(--accent-soft); color: var(--accent-strong); margin-bottom: 12px; }
-    .states { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+    /* The pile → OCR → one folder animation */
+    .stage { position: relative; margin-top: 44px; display: grid; gap: 10px; }
+    @media (min-width: 900px) { .stage { grid-template-columns: minmax(0, 0.9fr) 140px minmax(0, 1.5fr); align-items: center; gap: 0; min-height: 360px; } }
+    .pile { position: relative; height: 300px; }
+    .paper { position: absolute; width: 200px; background: #fff; color: #23272c; border-radius: 3px; padding: 10px 12px 12px; box-shadow: 0 1px 1px rgba(0,0,0,0.08), 0 6px 14px -4px rgba(30,25,15,0.25); transform: rotate(var(--rot)); font-family: var(--ui); font-size: 12px; line-height: 1.35; will-change: transform, opacity; }
+    .paper .fn { display: flex; gap: 7px; align-items: center; font-weight: 500; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+    .paper .fn span { overflow: hidden; text-overflow: ellipsis; }
+    .paper .tx { display: block; height: 5px; background: #e4e1da; border-radius: 2px; margin-top: 6px; }
+    .paper .tx.s { width: 60%; } .paper .tx.m { width: 82%; }
+    .paper .mail-from { color: #5f6368; font-size: 11px; }
+    .paper .photo { height: 70px; margin: 2px 0 6px; border-radius: 2px; background: #8a8577; position: relative; overflow: hidden; }
+    .paper .photo::after { content: ''; position: absolute; left: 22%; top: 12%; width: 52%; height: 92%; background: #f4f1e8; transform: rotate(-8deg); box-shadow: 0 2px 6px rgba(0,0,0,0.35); }
+    .paper .photo::before { content: ''; position: absolute; left: 30%; top: 30%; width: 34%; height: 3px; background: #b9b3a3; transform: rotate(-8deg); z-index: 1; box-shadow: 0 9px 0 #b9b3a3, 0 18px 0 #c8c2b2, 0 27px 0 #b9b3a3; }
+    .p0 { --rot: -7deg; left: 0; top: 3%; }
+    .p1 { --rot: 5deg; left: 44%; top: 0; width: 170px; }
+    .p2 { --rot: -2deg; left: 2%; top: 39%; }
+    .p3 { --rot: 8deg; left: 40%; top: 50%; }
+    .p4 { --rot: -11deg; left: 8%; top: 72%; }
+    @media (max-width: 899px) { .p1 { left: 46%; } .p3 { left: 44%; } }
+    .proc { display: flex; flex-direction: row; align-items: center; gap: 12px; color: var(--ink-2); font-size: 0.85rem; padding: 6px 0; }
+    @media (min-width: 900px) { .proc { flex-direction: column; text-align: center; padding: 0 14px; } }
+    .scan { position: relative; width: 46px; height: 58px; flex-shrink: 0; background: var(--paper); border-radius: 2px; box-shadow: var(--lift); overflow: hidden; }
+    .scan i { position: absolute; left: 8px; right: 8px; height: 3px; background: #d7d2c6; border-radius: 2px; }
+    .scan i:nth-child(1) { top: 10px; } .scan i:nth-child(2) { top: 19px; right: 16px; } .scan i:nth-child(3) { top: 28px; } .scan i:nth-child(4) { top: 37px; right: 20px; }
+    .scan b { position: absolute; left: 0; right: 0; top: 0; height: 2px; background: var(--accent); opacity: 0; }
+    .proc strong { display: block; color: var(--ink); font-weight: 600; }
 
-    /* Folder */
-    .split { display: grid; gap: 28px; margin-top: 32px; align-items: start; }
-    @media (min-width: 900px) { .split { grid-template-columns: 1.05fr 1fr; gap: 40px; } }
-    .tree { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 14px; font-family: var(--num); font-size: 0.78rem; box-shadow: var(--shadow); overflow-x: auto; }
-    .tree ul { list-style: none; }
-    .tree ul ul { padding-left: 18px; border-left: 1px dashed var(--border); margin-left: 8px; }
-    .tree li { padding: 3px 0; white-space: nowrap; }
-    .tree .t { display: inline-flex; align-items: center; gap: 6px; }
-    .tree .icon { width: 15px; height: 15px; color: var(--text-dim); }
-    .tree .md { color: var(--accent-strong); }
-    .tree .readme { font-weight: 600; color: var(--text); }
-    .tree .tag { font-family: var(--sans); font-size: 0.66rem; color: var(--text-dim); margin-left: 6px; }
-    .checks { list-style: none; display: grid; gap: 14px; }
-    .checks li { display: grid; grid-template-columns: 24px 1fr; gap: 10px; }
-    .checks .icon { color: var(--accent-strong); margin-top: 2px; }
-    .checks strong { display: block; }
-    .checks span.d { color: var(--text-muted); font-size: 0.9rem; }
+    /* Drive-like window (used in the hero and in the folder section) */
+    .gd { font-family: var(--ui); color: var(--gd-ink); background: var(--gd-bg); border-radius: 12px; box-shadow: var(--lift); overflow: hidden; font-size: 13px; border: 1px solid var(--gd-line); }
+    .gd-top { display: flex; align-items: center; gap: 14px; padding: 10px 14px; }
+    .gd-prod { font-size: 19px; color: var(--gd-ink-2); white-space: nowrap; }
+    .gd-search { flex: 1; display: flex; align-items: center; gap: 10px; background: var(--gd-search); border-radius: 22px; padding: 8px 14px; color: var(--gd-ink-2); min-width: 0; white-space: nowrap; overflow: hidden; }
+    .gd-avatar { width: 28px; height: 28px; border-radius: 50%; background: #7b5e9e; color: #fff; display: flex; align-items: center; justify-content: center; font-size: 13px; flex-shrink: 0; }
+    .gd-body { display: grid; grid-template-columns: 1fr; }
+    .gd-nav { display: none; padding: 4px 10px 12px; }
+    .gd-new { display: inline-flex; align-items: center; gap: 10px; background: var(--gd-surface); border-radius: 14px; padding: 12px 18px 12px 14px; box-shadow: 0 1px 2px rgba(0,0,0,0.25), 0 1px 3px 1px rgba(0,0,0,0.12); font-weight: 500; margin: 4px 0 14px; }
+    .gd-nav span { display: flex; align-items: center; gap: 12px; padding: 6px 12px; border-radius: 16px; color: var(--gd-ink-2); white-space: nowrap; }
+    .gd-nav span.on { background: var(--gd-sel); color: var(--gd-ink); font-weight: 600; }
+    .gd-quota { font-size: 11.5px; color: var(--gd-ink-2); padding: 14px 12px 0; }
+    .gd-quota i { display: block; height: 4px; background: var(--gd-line); border-radius: 2px; margin-bottom: 6px; position: relative; }
+    .gd-quota i::after { content: ''; position: absolute; inset: 0 86% 0 0; background: #1a73e8; border-radius: 2px; }
+    .gd-main { background: var(--gd-surface); border-radius: 14px 14px 0 0; margin: 0 6px; padding: 12px 14px 8px; min-width: 0; }
+    @media (min-width: 760px) { .gd-main { margin: 0 12px 0 0; } }
+    .gd-crumbs { font-size: 18px; color: var(--gd-ink-2); padding: 2px 0 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .gd-crumbs b { color: var(--gd-ink); font-weight: 400; }
+    .gd-row { display: grid; grid-template-columns: minmax(0, 1fr) 96px; align-items: center; gap: 12px; padding: 0 6px; height: 40px; border-bottom: 1px solid var(--gd-line); border-radius: 0; }
+    .gd-row.h { height: 34px; font-weight: 500; color: var(--gd-ink-2); font-size: 12.5px; }
+    .gd-row .nm { display: flex; align-items: center; gap: 14px; min-width: 0; }
+    .gd-row .nm span { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+    .gd-row .mt { color: var(--gd-ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .gd-row .loc { display: flex; align-items: center; gap: 8px; color: var(--gd-ink-2); white-space: nowrap; overflow: hidden; }
+    .gd-row .own { display: flex; align-items: center; gap: 8px; color: var(--gd-ink-2); }
+    .gd-row .own i { width: 20px; height: 20px; border-radius: 50%; background: #7b5e9e; color: #fff; font-style: normal; font-size: 10px; display: inline-flex; align-items: center; justify-content: center; }
+    .gd-row .opt { display: none; }
+    .gd .fi { width: 20px; height: 20px; flex-shrink: 0; }
+    .gd .fi-folder { color: var(--gd-folder); }
+    .gd-hero .gd-row { grid-template-columns: minmax(0, 1fr) 168px; }
+    @media (max-width: 520px) {
+      .gd-hero .gd-row { grid-template-columns: minmax(0, 1fr); height: auto; padding: 7px 6px; gap: 2px; }
+      .gd-hero .gd-row.h span:last-child { display: none; }
+      .gd-hero .loc { padding-left: 34px; font-size: 12px; }
+      .gd-hero .loc .fi { width: 14px; height: 14px; }
+    }
+    .gd-folder .gd-row { grid-template-columns: minmax(0, 1fr) 92px; }
+    @media (min-width: 760px) {
+      .gd-folder .gd-body { grid-template-columns: 210px minmax(0, 1fr); }
+      .gd-folder .gd-nav { display: block; }
+      .gd-folder .gd-row { grid-template-columns: minmax(0, 1fr) 70px 112px 74px; }
+      .gd-folder .gd-row .opt { display: flex; }
+    }
 
-    /* Data flow */
-    .flow { display: grid; gap: 10px; margin-top: 32px; align-items: stretch; }
-    @media (min-width: 900px) { .flow { grid-template-columns: 1fr 64px 1.25fr 64px 1fr; gap: 0; } }
-    .node { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 16px; }
-    .node.server { border: 2px solid var(--accent); background: linear-gradient(var(--accent-soft), var(--accent-soft)), var(--surface); }
-    .node-h { display: flex; align-items: center; gap: 8px; font-weight: 700; margin-bottom: 4px; }
-    .node-h .icon { color: var(--accent-strong); }
-    .node-s { font-size: 0.75rem; color: var(--text-dim); margin-bottom: 10px; }
-    .node ul { list-style: none; display: grid; gap: 6px; font-size: 0.85rem; color: var(--text-muted); }
-    .node li { display: flex; gap: 8px; }
-    .node li::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); margin-top: 0.55em; flex-shrink: 0; }
-    .sub { border: 1px solid var(--border); border-radius: 8px; padding: 10px; background: var(--surface); margin-top: 8px; }
-    .sub b { font-size: 0.85rem; }
-    .sub p { font-size: 0.8rem; color: var(--text-muted); }
-    .link { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; font-size: 0.7rem; color: var(--text-dim); text-align: center; padding: 4px 8px; }
-    .link .arrow { font-family: var(--num); font-size: 1.1rem; color: var(--accent-strong); line-height: 1; }
-    .link .arrow.v { display: inline; } .link .arrow.h { display: none; }
-    @media (min-width: 900px) { .link .arrow.v { display: none; } .link .arrow.h { display: inline; } }
-    .link.dashed .arrow { color: var(--text-dim); }
-    .flow-note { margin-top: 16px; font-size: 0.875rem; color: var(--text-muted); border-left: 3px solid var(--accent); padding: 4px 0 4px 12px; max-width: 760px; }
+    /* Animation (only when JS has measured the targets and motion is allowed) */
+    .stage.run .paper { animation: fly var(--cycle, 15s) cubic-bezier(.55,.05,.35,1) infinite both; animation-delay: calc(var(--i) * 1.35s); }
+    .stage.run .gd-hero .gd-row[data-k] { animation: land var(--cycle, 15s) ease-out infinite both; animation-delay: calc(var(--i) * 1.35s); }
+    .stage.run .scan b { animation: scan 1.35s ease-in-out infinite; }
+    .stage.paused .paper, .stage.paused .gd-row, .stage.paused .scan b { animation-play-state: paused; }
+    @keyframes fly {
+      0%, 7% { transform: translate(0, 0) rotate(var(--rot)) scale(1); opacity: 1; }
+      15% { transform: translate(var(--mx), var(--my)) rotate(0deg) scale(0.42); opacity: 1; }
+      19% { transform: translate(var(--mx), var(--my)) rotate(0deg) scale(0.42); opacity: 1; }
+      27% { transform: translate(var(--tx), var(--ty)) rotate(0deg) scale(0.3); opacity: 0; }
+      27.1%, 88% { transform: translate(0, 0) rotate(var(--rot)) scale(1); opacity: 0; }
+      96%, 100% { transform: translate(0, 0) rotate(var(--rot)) scale(1); opacity: 1; }
+    }
+    @keyframes land {
+      0%, 25% { opacity: 0; background-color: transparent; }
+      28% { opacity: 1; background-color: var(--mark); }
+      42% { opacity: 1; background-color: transparent; }
+      88% { opacity: 1; }
+      95%, 100% { opacity: 0; }
+    }
+    @keyframes scan { 0% { top: 4px; opacity: 0; } 15% { opacity: 0.9; } 85% { opacity: 0.9; } 100% { top: 52px; opacity: 0; } }
+    @media (prefers-reduced-motion: reduce) { .stage .paper, .stage .gd-row, .stage .scan b { animation: none !important; } html { scroll-behavior: auto; } }
+    .stage-cap { display: grid; gap: 4px; margin-top: 16px; color: var(--ink-3); font-size: 0.88rem; max-width: none; }
+    @media (min-width: 900px) { .stage-cap { grid-template-columns: minmax(0, 0.9fr) 140px minmax(0, 1.5fr); } .stage-cap span:last-child { grid-column: 3; } }
 
-    /* Connect */
-    .steps { list-style: none; counter-reset: s; display: grid; gap: 6px; margin-top: 8px; font-size: 0.85rem; color: var(--text-muted); }
-    .steps li { counter-increment: s; display: grid; grid-template-columns: 20px 1fr; gap: 6px; overflow-wrap: anywhere; }
-    .steps li::before { content: counter(s); font-family: var(--num); color: var(--accent-strong); font-weight: 600; }
-    code { font-family: var(--num); font-size: 0.85em; background: var(--bg-deep); padding: 1px 5px; border-radius: 4px; color: var(--text); }
-    .chat { margin-top: 28px; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
-    .chat-bar { padding: 10px 14px; border-bottom: 1px solid var(--border); font-size: 0.75rem; color: var(--text-dim); display: flex; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
-    .chat-in { padding: 16px; display: grid; gap: 10px; }
-    .msg { max-width: 92%; padding: 10px 12px; border-radius: 10px; font-size: 0.9rem; }
-    .msg.user { justify-self: end; background: var(--accent-strong); color: #fff; border-bottom-right-radius: 3px; }
-    :root[data-theme="dark"] .msg.user { color: #06201d; }
-    @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .msg.user { color: #06201d; } }
-    .msg.ai { background: var(--bg); border: 1px solid var(--border); border-bottom-left-radius: 3px; }
-    .msg.ai p + p { margin-top: 6px; }
-    .tool { font-family: var(--num); font-size: 0.72rem; color: var(--text-dim); }
-    .cite { font-size: 0.75rem; color: var(--text-dim); border-top: 1px dashed var(--border); margin-top: 8px; padding-top: 6px; }
-    .soon { margin-top: 28px; border: 1px dashed var(--border-strong); border-radius: 12px; padding: 18px; }
-    .soon ul { list-style: none; display: grid; gap: 8px; margin-top: 8px; }
-    @media (min-width: 640px) { .soon ul { grid-template-columns: 1fr 1fr; } }
-    .soon li { display: flex; gap: 8px; font-size: 0.9rem; color: var(--text-muted); }
-    .soon .icon { width: 16px; height: 16px; color: var(--text-dim); margin-top: 3px; }
+    /* ── Photos ───────────────────────────────────────────── */
+    .photos { display: grid; gap: 22px; align-items: start; margin-top: 36px; }
+    @media (min-width: 760px) { .photos { grid-template-columns: 1.15fr 1fr; gap: 32px; } .photos figure:last-child { margin-top: 96px; } }
+    .photos figure { margin: 0; }
+    .photos img { display: block; width: 100%; height: auto; border-radius: 3px; box-shadow: var(--lift); background: #2a2a2a; }
+    .photos figcaption { margin-top: 10px; font-size: 0.92rem; color: var(--ink-2); }
+    .photos figcaption b { color: var(--ink); font-weight: 600; }
+    .credit { color: var(--ink-3); font-size: 0.85rem; margin-top: 22px; }
 
-    /* Story + people */
-    .story { background: var(--surface); border: 1px solid var(--border); border-left: 4px solid var(--accent); border-radius: 12px; padding: 22px; margin-top: 32px; }
-    .story blockquote { font-family: var(--serif); font-size: clamp(1.1rem, 2.6vw, 1.35rem); line-height: 1.5; }
-    .story .by { margin-top: 12px; font-size: 0.875rem; color: var(--text-muted); }
-    .quotes { display: grid; gap: 10px; margin-top: 18px; }
-    @media (min-width: 640px) { .quotes { grid-template-columns: 1fr 1fr; } }
-    @media (min-width: 900px) { .quotes { grid-template-columns: repeat(3, 1fr); } }
-    .quote { font-size: 0.9rem; border: 1px solid var(--border); border-radius: 10px; padding: 14px; background: var(--surface); }
-    .quote .who { display: block; margin-top: 8px; font-size: 0.78rem; color: var(--text-dim); }
-    .people { display: grid; gap: 12px; margin-top: 18px; }
-    @media (min-width: 760px) { .people { grid-template-columns: 1fr 1fr 1fr; } }
-    .person { display: grid; grid-template-columns: 44px 1fr; gap: 12px; border: 1px solid var(--border); border-radius: 10px; padding: 14px; background: var(--surface); }
-    .avatar { width: 44px; height: 44px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-family: var(--serif); color: #fff; background: var(--accent-strong); }
-    .avatar.b { background: #6d28d9; } .avatar.c { background: #b45309; border-radius: 10px; }
-    .person b { display: block; } .person b a { color: var(--text); text-decoration: none; }
-    .person .role { font-size: 0.75rem; color: var(--text-dim); }
-    .person p { font-size: 0.82rem; color: var(--text-muted); margin-top: 4px; }
+    /* ── Provenance ───────────────────────────────────────── */
+    dl.facts { margin-top: 18px; display: grid; gap: 16px; }
+    dl.facts dt { font-weight: 700; }
+    dl.facts dd { color: var(--ink-2); font-size: 0.97rem; }
+    .st { font-size: 0.82rem; white-space: nowrap; font-family: var(--sans); }
+    .st::before { content: ''; display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 6px; vertical-align: 1px; }
+    .st-machine { color: var(--ok); } .st-machine::before { background: var(--ok); }
+    .st-human { color: var(--human); } .st-human::before { background: var(--human); }
+    .st-unverified { color: var(--warn); } .st-unverified::before { background: transparent; border: 1.5px solid var(--warn); width: 5px; height: 5px; }
+    .prov { position: relative; display: grid; gap: 20px; }
+    @media (min-width: 760px) { .prov { grid-template-columns: minmax(0, 1.08fr) minmax(0, 1fr); align-items: start; gap: 0; } }
+    .sheet { background: var(--paper); color: var(--paper-ink); padding: 26px 24px 32px; border-radius: 2px; box-shadow: var(--lift); font: 400 12.5px/1.5 var(--num); font-variant-numeric: tabular-nums; position: relative; overflow: hidden; }
+    .sheet .ln { display: grid; grid-template-columns: 20px minmax(0, 1fr); gap: 8px; padding: 1px 4px; margin: 0 -4px; border-radius: 2px; transition: background-color 0.25s; }
+    .sheet .no { color: #a39a88; font-size: 10.5px; text-align: right; padding-top: 1px; }
+    .sheet .cells { display: grid; grid-template-columns: 1fr 0.7fr 0.8fr 1fr; gap: 6px; }
+    .sheet .cells span:nth-child(2) { text-align: right; padding-right: 10px; font-weight: 600; }
+    .sheet .k-head { font: 14.5px Georgia, 'Times New Roman', serif; padding-bottom: 6px; margin-bottom: 4px; border-bottom: 1.5px solid #2c3036; }
+    .sheet .k-sub { font-weight: 700; padding-top: 4px; }
+    .sheet .k-th { color: #6c6658; border-bottom: 1px solid #cfc8b8; font-size: 11px; }
+    .sheet .k-th .cells span:nth-child(2) { font-weight: 400; }
+    .sheet .k-note { font-style: italic; color: #5d574b; }
+    .sheet .ln.on { background: #f8e08e; }
+    .sheet .stamp { position: absolute; right: 20px; bottom: 14px; width: 92px; height: 92px; transform: rotate(-11deg); opacity: 0.55; }
+    .app { background: var(--bg); border: 1px solid var(--rule-2); border-radius: 10px; box-shadow: var(--lift); padding: 16px 16px 12px; font-size: 0.92rem; }
+    @media (min-width: 760px) { .app { margin: 96px 0 0 24px; } }
+    .app h3 { font: 400 1.2rem var(--serif); margin-bottom: 2px; }
+    .app .who { color: var(--ink-3); font-size: 0.82rem; margin-bottom: 10px; }
+    .vrow { width: 100%; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 1px 10px; text-align: left; background: none; border: 0; border-top: 1px solid var(--rule); padding: 9px 4px; cursor: pointer; font: inherit; color: var(--ink); }
+    .vrow[aria-pressed="true"] { background: color-mix(in srgb, var(--mark) 55%, transparent); }
+    .vrow .v { font-family: var(--num); font-variant-numeric: tabular-nums; font-weight: 600; text-align: right; }
+    .vrow .v small { font-weight: 400; color: var(--ink-3); font-size: 0.75rem; margin-left: 3px; }
+    .vrow .m { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 4px 12px; color: var(--ink-3); font-size: 0.8rem; font-family: var(--num); }
+    .app .note { color: var(--ink-2); font-size: 0.85rem; border-top: 1px solid var(--rule); padding-top: 10px; min-height: 3.6em; }
+    .prov-hint { color: var(--ink-3); font-size: 0.85rem; margin-top: 14px; }
 
-    /* FAQ */
-    .faq { margin-top: 28px; display: grid; gap: 8px; }
-    .faq details { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; }
-    .faq summary { cursor: pointer; list-style: none; padding: 14px 44px 14px 16px; position: relative; }
+    /* ── Folder ───────────────────────────────────────────── */
+    .rules { list-style: none; margin-top: 18px; }
+    .rules li { padding: 10px 0; border-top: 1px solid var(--rule); color: var(--ink-2); font-size: 0.97rem; }
+    .rules li b { color: var(--ink); font-weight: 600; }
+    .folder-shot { margin-top: 36px; }
+    .folder-more { display: grid; gap: 28px; margin-top: 28px; align-items: start; }
+    @media (min-width: 960px) { .folder-more { grid-template-columns: 5fr 7fr; gap: 56px; } }
+    .readme { background: var(--gd-surface); color: var(--gd-ink); border: 1px solid var(--gd-line); border-radius: 10px; box-shadow: var(--lift); overflow: hidden; font-family: var(--ui); font-size: 12.5px; max-width: 560px; }
+    @media (min-width: 960px) { .readme { margin-top: -72px; position: relative; } }
+    .readme-bar { display: flex; align-items: center; gap: 10px; padding: 9px 14px; background: #3c4043; color: #e8eaed; font-size: 13px; }
+    .readme pre { margin: 0; padding: 14px 16px 16px; font: 12px/1.6 'SFMono-Regular', Menlo, Consolas, monospace; white-space: pre-wrap; color: var(--gd-ink); }
+
+    /* ── Privacy: three columns of type ───────────────────── */
+    .where { display: grid; gap: 28px; margin-top: 4px; }
+    @media (min-width: 760px) { .where { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 32px; } }
+    .where h3 { padding-bottom: 8px; border-bottom: 2px solid var(--ink); margin-bottom: 10px; }
+    .where .when { color: var(--ink-3); font-size: 0.88rem; margin-bottom: 10px; }
+    .where ul { list-style: none; color: var(--ink-2); font-size: 0.95rem; }
+    .where li { padding: 6px 0; border-bottom: 1px solid var(--rule); }
+    .aside { color: var(--ink-2); margin-top: 28px; font-size: 0.97rem; }
+
+    /* ── Connect ──────────────────────────────────────────── */
+    .how { display: grid; gap: 28px; }
+    @media (min-width: 760px) { .how { grid-template-columns: 1fr 1fr; gap: 32px; } }
+    .how ol { margin: 8px 0 0 1.2em; color: var(--ink-2); font-size: 0.95rem; }
+    .how li { padding: 3px 0; overflow-wrap: anywhere; }
+    code { font-family: var(--num); font-size: 0.9em; background: color-mix(in srgb, var(--rule) 55%, transparent); padding: 1px 5px; border-radius: 3px; color: var(--ink); }
+    .other { color: var(--ink-2); font-size: 0.95rem; margin-top: 22px; }
+    .transcript { margin-top: 36px; padding-top: 18px; border-top: 1px solid var(--rule); max-width: 680px; }
+    .transcript .who { font-size: 0.82rem; color: var(--ink-3); margin-bottom: 4px; }
+    .transcript .q { font-weight: 600; margin-bottom: 14px; }
+    .transcript .tool { font: 0.8rem var(--num); color: var(--ink-3); margin-bottom: 8px; }
+    .transcript .a p + p { margin-top: 6px; }
+    .transcript .nums { font-family: var(--num); font-variant-numeric: tabular-nums; }
+    .transcript .srcs { font-size: 0.85rem; color: var(--ink-3); margin-top: 8px; overflow-wrap: anywhere; }
+    .soon { margin-top: 36px; }
+    .soon h3 { margin-bottom: 6px; }
+    .soon ul { list-style: none; color: var(--ink-2); font-size: 0.95rem; }
+    .soon li { padding: 6px 0; border-bottom: 1px solid var(--rule); }
+
+    /* ── Family ───────────────────────────────────────────── */
+    blockquote.story { font: 400 clamp(1.25rem, 2.6vw, 1.6rem)/1.45 var(--serif); max-width: 34ch; margin-top: 8px; }
+    .story-by { color: var(--ink-2); font-size: 0.92rem; margin-top: 12px; }
+    .voices { display: grid; gap: 18px; margin-top: 36px; }
+    @media (min-width: 760px) { .voices { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 28px; } }
+    .voices p { font-size: 0.95rem; padding-top: 10px; border-top: 1px solid var(--rule); }
+    .voices .by { display: block; color: var(--ink-3); font-size: 0.82rem; margin-top: 6px; }
+    .team { color: var(--ink-2); font-size: 0.95rem; margin-top: 36px; }
+
+    /* ── FAQ ──────────────────────────────────────────────── */
+    .faq details { border-top: 1px solid var(--rule); }
+    .faq details:last-child { border-bottom: 1px solid var(--rule); }
+    .faq summary { cursor: pointer; list-style: none; padding: 16px 32px 16px 0; position: relative; }
     .faq summary::-webkit-details-marker { display: none; }
-    .faq summary::after { content: '+'; position: absolute; right: 16px; top: 12px; font-family: var(--num); font-size: 1.2rem; color: var(--accent-strong); }
-    .faq details[open] summary::after { content: '−'; }
-    .faq summary h3 { display: inline; font-size: 0.975rem; margin: 0; }
-    .faq .a { padding: 0 16px 16px; color: var(--text-muted); font-size: 0.92rem; }
-    .faq .a p + p { margin-top: 8px; }
+    .faq summary::after { content: '+'; position: absolute; right: 2px; top: 13px; font: 1.3rem var(--num); color: var(--ink-3); }
+    .faq details[open] summary::after { content: '\2212'; }
+    .faq summary h3 { display: inline; font-size: 1.02rem; }
+    .faq .a { color: var(--ink-2); padding: 0 0 18px; font-size: 0.97rem; }
 
-    /* CTA + footer */
-    .cta { text-align: center; }
-    .cta .waitlist { margin: 22px auto 0; text-align: left; }
-    footer { border-top: 1px solid var(--border); padding: 32px 0 96px; font-size: 0.82rem; color: var(--text-dim); text-align: center; }
-    footer a { color: var(--text-muted); }
-    footer .disc { margin: 0 auto 16px; max-width: 720px; padding: 10px 14px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
-    footer .links { display: flex; flex-wrap: wrap; justify-content: center; gap: 4px 14px; margin-bottom: 8px; }
+    /* ── Closing + footer ─────────────────────────────────── */
+    .closing h2 { max-width: 22ch; }
+    .closing p { color: var(--ink-2); margin: 12px 0 18px; }
+    footer { border-top: 1px solid var(--rule); padding: 28px 0 96px; color: var(--ink-3); font-size: 0.85rem; }
+    footer .disc { max-width: 72ch; margin-bottom: 14px; }
+    footer .links { display: flex; flex-wrap: wrap; gap: 4px 18px; margin-bottom: 8px; }
+    footer a { color: var(--ink-2); }
 
-    /* Bug report */
-    #bug-fab { position: fixed; bottom: 18px; right: 18px; width: 44px; height: 44px; border-radius: 50%; background: var(--surface); color: var(--text-muted); border: 1px solid var(--border-strong); cursor: pointer; box-shadow: var(--shadow); z-index: 1000; display: flex; align-items: center; justify-content: center; }
-    #bug-fab:hover { color: #dc2626; border-color: #dc2626; }
+    #bug-fab { position: fixed; bottom: 16px; right: 16px; width: 40px; height: 40px; border-radius: 50%; background: var(--bg); color: var(--ink-3); border: 1px solid var(--rule-2); cursor: pointer; z-index: 1000; display: flex; align-items: center; justify-content: center; }
+    #bug-fab:hover { color: #c0392b; border-color: #c0392b; }
     #bug-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.45); z-index: 1001; align-items: center; justify-content: center; padding: 16px; }
     #bug-overlay.open { display: flex; }
-    .bug-box { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; max-width: 480px; width: 100%; padding: 20px; }
-    .bug-box input, .bug-box textarea { width: 100%; padding: 10px; background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; font: inherit; font-size: 0.9rem; margin-bottom: 10px; }
-    .bug-actions { display: flex; gap: 10px; justify-content: flex-end; }
+    .bug-box { background: var(--bg); border: 1px solid var(--rule-2); border-radius: 8px; max-width: 480px; width: 100%; padding: 20px; }
+    .bug-box h3 { margin-bottom: 12px; }
+    .bug-box input, .bug-box textarea { width: 100%; padding: 10px; background: var(--bg); color: var(--ink); border: 1px solid var(--rule-2); border-radius: 6px; font: inherit; font-size: 0.92rem; margin-bottom: 10px; }
+    .bug-actions { display: flex; gap: 16px; justify-content: flex-end; align-items: center; }
+    .linkbtn { background: none; border: 0; color: var(--ink-2); font: inherit; cursor: pointer; text-decoration: underline; }
 
-    @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } .dl { transition: none; } }
+    /* Grid/flex children never widen the page on phones */
+    .grid > *, .hero-cols > *, .stage > *, .prov > *, .photos > *, .where > *, .how > * { min-width: 0; }
   </style>
 </head>
 <body>
-  <!-- Line-icon sprite (inline SVG, no emoji) -->
+  <!-- Icons: generic line/fill glyphs; Drive-style file icons are plain shapes, no Google logos -->
   <svg width="0" height="0" style="position:absolute" aria-hidden="true">
-    <symbol id="i-doc" viewBox="0 0 24 24"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5M9 13h6M9 17h4"/></symbol>
-    <symbol id="i-md" viewBox="0 0 24 24"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5M8 17v-4l2 2 2-2v4M15 13v4l1.5-1.5M15 17l-1.5-1.5"/></symbol>
-    <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></symbol>
-    <symbol id="i-cal" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M16 3v4M8 3v4M3 10h18M8 14h2"/></symbol>
-    <symbol id="i-link" viewBox="0 0 24 24"><path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1"/><path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/></symbol>
-    <symbol id="i-check" viewBox="0 0 24 24"><path d="M12 3l7 3v6c0 4.5-3 7.6-7 9-4-1.4-7-4.5-7-9V6z"/><path d="M9 12l2 2 4-4"/></symbol>
-    <symbol id="i-twin" viewBox="0 0 24 24"><circle cx="8" cy="12" r="5"/><circle cx="16" cy="12" r="5"/></symbol>
-    <symbol id="i-server" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="7" rx="1.5"/><rect x="3" y="13" width="18" height="7" rx="1.5"/><path d="M7 7.5h.01M7 16.5h.01"/></symbol>
-    <symbol id="i-chat" viewBox="0 0 24 24"><path d="M20 15a2 2 0 0 1-2 2H8l-4 4V6a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2z"/></symbol>
-    <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></symbol>
-    <symbol id="i-users" viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0"/><path d="M16 4.5a3.5 3.5 0 0 1 0 7M18 14a6.5 6.5 0 0 1 3.5 6"/></symbol>
-    <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></symbol>
-    <symbol id="i-eu" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/></symbol>
-    <symbol id="i-book" viewBox="0 0 24 24"><path d="M4 5a2 2 0 0 1 2-2h13v16H6a2 2 0 0 0-2 2z"/><path d="M4 21V5M8 7h7M8 11h5"/></symbol>
-    <symbol id="i-cpu" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/><path d="M9 2v4M15 2v4M9 18v4M15 18v4M2 9h4M2 15h4M18 9h4M18 15h4"/></symbol>
-    <symbol id="i-db" viewBox="0 0 24 24"><ellipse cx="12" cy="5.5" rx="7.5" ry="2.5"/><path d="M4.5 5.5v13c0 1.4 3.4 2.5 7.5 2.5s7.5-1.1 7.5-2.5v-13M4.5 12c0 1.4 3.4 2.5 7.5 2.5s7.5-1.1 7.5-2.5"/></symbol>
-    <symbol id="i-mail" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 7l9 6 9-6"/></symbol>
-    <symbol id="i-split" viewBox="0 0 24 24"><path d="M6 3v6l6 6v6M18 3v6l-6 6"/></symbol>
-    <symbol id="i-bug" viewBox="0 0 24 24"><rect x="7" y="8" width="10" height="12" rx="5"/><path d="M12 8v12M9 5l1.5 2M15 5l-1.5 2M3 12h4M17 12h4M4 18l3-2M20 18l-3-2M4 7l3 2M20 7l-3 2"/></symbol>
-    <symbol id="i-code" viewBox="0 0 24 24"><path d="M8 7l-5 5 5 5M16 7l5 5-5 5"/></symbol>
-    <symbol id="i-monitor" viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></symbol>
+    <symbol id="g-folder" viewBox="0 0 24 24"><path fill="currentColor" d="M10 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z"/></symbol>
+    <symbol id="g-pdf" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2" fill="#ea4335"/><text x="12" y="15.2" text-anchor="middle" font-family="Arial, sans-serif" font-size="6.6" font-weight="700" fill="#fff">PDF</text></symbol>
+    <symbol id="g-img" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2" fill="#d93025"/><path d="M6.5 17l3.5-4.5 2.5 3 3.5-4.5 2.5 6z" fill="#fff"/><circle cx="9" cy="8.5" r="1.6" fill="#fff"/></symbol>
+    <symbol id="g-txt" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2" fill="#4285f4"/><path d="M7 8h10M7 11.5h10M7 15h6" stroke="#fff" stroke-width="1.6"/></symbol>
+    <symbol id="g-search" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6" fill="none" stroke="currentColor" stroke-width="2"/><path d="M15 15l5 5" stroke="currentColor" stroke-width="2"/></symbol>
+    <symbol id="g-mail" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2" fill="none" stroke="#5f6368" stroke-width="1.6"/><path d="M3.5 6.5l8.5 6 8.5-6" fill="none" stroke="#5f6368" stroke-width="1.6"/></symbol>
+    <symbol id="g-home" viewBox="0 0 24 24"><path d="M4 11l8-6 8 6v8h-5v-5H9v5H4z" fill="none" stroke="currentColor" stroke-width="1.6"/></symbol>
+    <symbol id="g-drive" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M3 14h18" stroke="currentColor" stroke-width="1.6"/></symbol>
+    <symbol id="g-people" viewBox="0 0 24 24"><circle cx="9" cy="9" r="3.2" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M3.5 19a5.5 5.5 0 0 1 11 0M15.5 6.2a3.2 3.2 0 0 1 0 6M17 14.5a5.5 5.5 0 0 1 3.5 4.5" fill="none" stroke="currentColor" stroke-width="1.6"/></symbol>
+    <symbol id="g-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M12 8v4l3 2" fill="none" stroke="currentColor" stroke-width="1.6"/></symbol>
+    <symbol id="g-star" viewBox="0 0 24 24"><path d="M12 4l2.4 5 5.4.6-4 3.7 1.1 5.3L12 16l-4.9 2.6 1.1-5.3-4-3.7 5.4-.6z" fill="none" stroke="currentColor" stroke-width="1.6"/></symbol>
+    <symbol id="g-trash" viewBox="0 0 24 24"><path d="M5 7h14M10 11v6M14 11v6M7 7l1 12h8l1-12M9 7V4h6v3" fill="none" stroke="currentColor" stroke-width="1.6"/></symbol>
+    <symbol id="g-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2"/></symbol>
+    <symbol id="i-bug" viewBox="0 0 24 24"><rect x="7" y="8" width="10" height="12" rx="5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M12 8v12M9 5l1.5 2M15 5l-1.5 2M3 12h4M17 12h4" fill="none" stroke="currentColor" stroke-width="1.6"/></symbol>
   </svg>
 
   <header class="site">
-    <div class="container">
+    <div class="wrap">
       <a class="logo" href="/" aria-label="Oncofiles">onco<span>files</span></a>
       <nav class="top" aria-label="Main">
-        <a class="hide-sm" href="#provenance" data-sk="Pôvod hodnôt" data-en="Provenance">Pôvod hodnôt</a>
-        <a class="hide-sm" href="#privacy" data-sk="Súkromie" data-en="Privacy">Súkromie</a>
-        <a class="hide-sm" href="#faq" data-sk="Otázky" data-en="FAQ">Otázky</a>
-        <a href="/demo">Demo</a>
+        <a class="wide" href="#provenance" data-sk="Pôvod hodnôt" data-en="Provenance">Pôvod hodnôt</a>
+        <a class="wide" href="#folder" data-sk="Priečinok" data-en="Folder">Priečinok</a>
+        <a class="wide" href="#privacy" data-sk="Súkromie" data-en="Privacy">Súkromie</a>
+        <a class="wide" href="#faq" data-sk="Otázky" data-en="FAQ">Otázky</a>
+        <a href="/demo" data-sk="Ukážka" data-en="Demo">Ukážka</a>
         <a href="https://github.com/peter-fusek/oncofiles" rel="noreferrer noopener">GitHub</a>
-        <button id="lang-toggle" class="lang-btn" type="button" data-action="toggleLang" aria-label="Switch language / Prepnúť jazyk">EN</button>
+        <button id="lang-toggle" class="lang" type="button" data-action="toggleLang" aria-label="Switch language / Prepnúť jazyk">EN</button>
       </nav>
     </div>
   </header>
 
   <main>
-    <!-- 1. Hero -->
+    <!-- 1. Hero: the pile becomes one folder -->
     <section class="hero" id="top">
-      <div class="container hero-grid">
-        <div>
-          <div class="chips">
-            <span class="chip"><svg class="icon"><use href="#i-eu"/></svg><span data-sk="Vlastný server na Slovensku (EÚ)" data-en="Own server in Slovakia (EU)">Vlastný server na Slovensku (EÚ)</span></span>
-            <span class="chip"><svg class="icon"><use href="#i-cpu"/></svg><span data-sk="Lokálny OCR model" data-en="Local OCR model">Lokálny OCR model</span></span>
-            <span class="chip"><svg class="icon"><use href="#i-code"/></svg><span data-sk="Open source · MIT" data-en="Open source · MIT">Open source · MIT</span></span>
+      <div class="wrap">
+        <h1 data-sk="Zdravotné záznamy, v ktorých má každé číslo svoj zdroj" data-en="Medical records where every number has a source">Zdravotné záznamy, v ktorých má každé číslo svoj zdroj</h1>
+        <div class="hero-cols">
+          <div>
+            <p class="lede" data-sk="Prílohy z mailov, fotky z mobilu, PDF s názvom dokument(3).pdf. Oncofiles ich prečíta, pomenuje a uloží do jedného priečinka na vašom Google Drive. Pri každej laboratórnej hodnote vidíte dátum odberu, stranu a riadok, z ktorého bola prečítaná, a pýtať sa na ne môžete v Claude alebo ChatGPT." data-en="Email attachments, phone photos, PDFs called document(3).pdf. Oncofiles reads them, names them and files them into one folder on your Google Drive. For every lab value you see the sample date, the page and the line it was read from, and you can ask about them in Claude or ChatGPT.">Prílohy z mailov, fotky z mobilu, PDF s názvom dokument(3).pdf. Oncofiles ich prečíta, pomenuje a uloží do jedného priečinka na vašom Google Drive. Pri každej laboratórnej hodnote vidíte dátum odberu, stranu a riadok, z ktorého bola prečítaná, a pýtať sa na ne môžete v Claude alebo ChatGPT.</p>
+            <p class="lede-note" data-sk="Oncofiles nenahrádza lekára. Pomáha vám a vašim blízkym pripraviť sa na rozhovor s ním." data-en="Oncofiles does not replace your doctor. It helps you and your family prepare for the conversation.">Oncofiles nenahrádza lekára. Pomáha vám a vašim blízkym pripraviť sa na rozhovor s ním.</p>
           </div>
-          <h1><span data-sk="Zdravotné záznamy, v ktorých" data-en="Medical records where">Zdravotné záznamy, v ktorých</span> <em data-sk="má každé číslo svoj zdroj" data-en="every number has a source">má každé číslo svoj zdroj</em></h1>
-          <p class="lede" data-sk="Oncofiles udržiava v poriadku váš priečinok s lekárskymi správami na Google Drive a z výsledkov vyťahuje laboratórne hodnoty. Pri každej vidíte dátum odberu, dokument, stranu aj presný riadok, z ktorého bola prečítaná — a pýtať sa na ne môžete v Claude alebo ChatGPT." data-en="Oncofiles keeps your Google Drive folder of medical reports in order and extracts the lab values. For each one you see the sample date, the document, the page and the exact line it was read from — and you can ask about them in Claude or ChatGPT.">Oncofiles udržiava v poriadku váš priečinok s lekárskymi správami na Google Drive a z výsledkov vyťahuje laboratórne hodnoty. Pri každej vidíte dátum odberu, dokument, stranu aj presný riadok, z ktorého bola prečítaná — a pýtať sa na ne môžete v Claude alebo ChatGPT.</p>
-          <p class="disclaimer" data-sk="Oncofiles nenahrádza lekára — pomáha vám a vašim blízkym pripraviť sa na rozhovor s ním. Všetky výstupy sú informatívne." data-en="Oncofiles does not replace your doctor — it helps you and your family prepare for the conversation. All outputs are informational.">Oncofiles nenahrádza lekára — pomáha vám a vašim blízkym pripraviť sa na rozhovor s ním. Všetky výstupy sú informatívne.</p>
-
-          <div class="waitlist" id="waitlist">
-            <p><strong data-sk="Pripájanie vlastného Drive spúšťame v novembri 2026 — pridajte sa na zoznam." data-en="Connecting your own Drive opens in November 2026 — join the list.">Pripájanie vlastného Drive spúšťame v novembri 2026 — pridajte sa na zoznam.</strong> <span data-sk="Napíšeme vám, keď sa otvorí. Nič iné neposielame." data-en="We will email you when it opens. Nothing else.">Napíšeme vám, keď sa otvorí. Nič iné neposielame.</span></p>
+          <div class="join" id="waitlist">
+            <h2 data-sk="Pripájanie vlastného Drive spúšťame v novembri 2026 — pridajte sa na zoznam." data-en="Connecting your own Drive opens in November 2026 — join the list.">Pripájanie vlastného Drive spúšťame v novembri 2026 — pridajte sa na zoznam.</h2>
+            <p data-sk="Napíšeme vám, keď sa otvorí. Nič iné neposielame." data-en="We will email you when it opens. Nothing else.">Napíšeme vám, keď sa otvorí. Nič iné neposielame.</p>
             <form class="nl-form" data-nl-source="waitlist">
               <label class="sr-only" for="wl-email-top" data-sk="Váš email" data-en="Your email">Váš email</label>
               <input id="wl-email-top" type="email" required autocomplete="email" data-placeholder-sk="Váš email" data-placeholder-en="Your email" placeholder="Váš email">
-              <button type="submit" class="btn btn-primary nl-btn" data-label-sk="Chcem byť na zozname" data-label-en="Join the waitlist" data-sk="Chcem byť na zozname" data-en="Join the waitlist">Chcem byť na zozname</button>
+              <button type="submit" class="btn nl-btn" data-label-sk="Pridať sa na zoznam" data-label-en="Join the waitlist" data-sk="Pridať sa na zoznam" data-en="Join the waitlist">Pridať sa na zoznam</button>
             </form>
             <div class="nl-msg" data-nl-msg="waitlist" role="status"></div>
-          </div>
-
-          <div class="hero-cta">
-            <a href="/demo" class="btn btn-ghost" data-sk="Pozrieť demo s ukážkovými dátami" data-en="See the demo with sample data">Pozrieť demo s ukážkovými dátami</a>
-            <a href="#connect" class="btn btn-ghost" data-sk="Ako to pripojiť" data-en="How to connect">Ako to pripojiť</a>
+            <p class="alt"><a href="/demo" data-sk="Pozrieť ukážku s vymyslenou pacientkou" data-en="See the demo with an invented patient">Pozrieť ukážku s vymyslenou pacientkou</a></p>
           </div>
         </div>
 
-        <!-- Hero visual: value card linked to its source line (all data invented) -->
-        <div>
-          <div class="prov" id="prov">
-            <div class="prov-head">
-              <strong data-sk="Krvný obraz a markery" data-en="Blood count and markers">Krvný obraz a markery</strong>
-              <span data-sk="Ukážková pacientka (vymyslená)" data-en="Sample patient (invented)">Ukážková pacientka (vymyslená)</span>
+        <div class="stage" id="stage" role="img" aria-label="Five scattered files (an email, a phone photo and three PDFs) are read and filed into one Google Drive folder with standard names." data-sk-label="Päť roztrúsených súborov (mail, fotka z mobilu a tri PDF) sa prečíta a zaradí do jedného priečinka na Google Drive so štandardnými názvami." data-en-label="Five scattered files (an email, a phone photo and three PDFs) are read and filed into one Google Drive folder with standard names.">
+          <div class="pile">
+            <div class="paper p0" style="--i:0" data-k="0">
+              <div class="fn"><svg class="ic"><use href="#g-mail"/></svg><span>Preposl.: výsledky</span></div>
+              <div class="mail-from">Laboratórium Príkladov</div>
+              <i class="tx m"></i><i class="tx s"></i>
             </div>
-            <div class="prov-body">
-              <div class="values" role="group" aria-label="Lab values">
-                <button class="vrow" type="button" aria-pressed="true" data-action="pickValue|hgb" data-line="hgb" data-page="1" data-ln="11" data-state="machine" data-sample="14. 3. 2027 · 06:40">
-                  <span class="vname" data-sk="Hemoglobín" data-en="Haemoglobin">Hemoglobín</span>
-                  <span class="vval">131<small>g/L</small></span>
-                  <span class="vsub"><span class="state state-machine" data-sk="overené strojom" data-en="machine-verified">overené strojom</span><span class="num">str. 1 · r. 11</span></span>
-                </button>
-                <button class="vrow" type="button" aria-pressed="false" data-action="pickValue|wbc" data-line="wbc" data-page="1" data-ln="9" data-state="human" data-sample="14. 3. 2027 · 06:40">
-                  <span class="vname" data-sk="Leukocyty" data-en="White cells">Leukocyty</span>
-                  <span class="vval">6,3<small>×10⁹/L</small></span>
-                  <span class="vsub"><span class="state state-human" data-sk="overené človekom" data-en="human-verified">overené človekom</span><span class="num">str. 1 · r. 9</span></span>
-                </button>
-                <button class="vrow" type="button" aria-pressed="false" data-action="pickValue|plt" data-line="plt" data-page="1" data-ln="13" data-state="machine" data-sample="14. 3. 2027 · 06:40">
-                  <span class="vname" data-sk="Trombocyty" data-en="Platelets">Trombocyty</span>
-                  <span class="vval">248<small>×10⁹/L</small></span>
-                  <span class="vsub"><span class="state state-machine" data-sk="overené strojom" data-en="machine-verified">overené strojom</span><span class="num">str. 1 · r. 13</span></span>
-                </button>
-                <button class="vrow" type="button" aria-pressed="false" data-action="pickValue|cea" data-line="cea" data-page="1" data-ln="17" data-state="unverified" data-sample="?">
-                  <span class="vname">CEA</span>
-                  <span class="vval">2,7<small>µg/L</small></span>
-                  <span class="vsub"><span class="state state-unverified" data-sk="neoverené" data-en="unverified">neoverené</span><span class="num">str. 1 · r. 17</span></span>
-                </button>
-              </div>
-              <div class="doc" aria-label="Source document preview">
-                <div class="doc-top"><span data-sk="Laboratórny výsledok" data-en="Lab report">Laboratórny výsledok</span><span class="num" data-sk="strana 1 / 2" data-en="page 1 / 2">strana 1 / 2</span></div>
-                <div class="dl hd"><span>1</span><span data-sk="Nemocnica Príkladov · Oddelenie biochémie" data-en="Example Hospital · Biochemistry dept.">Nemocnica Príkladov · Oddelenie biochémie</span></div>
-                <div class="dl"><span>2</span><span data-sk="Pacient: Ema Vzorová (vymyslená)" data-en="Patient: Ema Vzorová (invented)">Pacient: Ema Vzorová (vymyslená)</span></div>
-                <div class="dl"><span>3</span><span data-sk="Odosielateľ: MUDr. Ján Ukážkový" data-en="Ordered by: Dr. Ján Ukážkový">Odosielateľ: MUDr. Ján Ukážkový</span></div>
-                <div class="dl"><span>4</span><span data-sk="Odber: 14.03.2027 06:40" data-en="Sampled: 14.03.2027 06:40">Odber: 14.03.2027 06:40</span></div>
-                <div class="dl"><span>5</span><span data-sk="Vydané: 17.03.2027" data-en="Issued: 17.03.2027">Vydané: 17.03.2027</span></div>
-                <div class="dl"><span>6</span><span>&nbsp;</span></div>
-                <div class="dl hd"><span>7</span><span data-sk="Krvný obraz" data-en="Blood count">Krvný obraz</span></div>
-                <div class="dl"><span>8</span><span>&nbsp;</span></div>
-                <div class="dl" data-src="wbc"><span>9</span><span>WBC&nbsp;&nbsp;&nbsp;6,3&nbsp;&nbsp;×10⁹/L&nbsp;&nbsp;(4,0–10,0)</span></div>
-                <div class="dl"><span>10</span><span>RBC&nbsp;&nbsp;&nbsp;4,42&nbsp;×10¹²/L</span></div>
-                <div class="dl on" data-src="hgb"><span>11</span><span>HGB&nbsp;&nbsp;&nbsp;131&nbsp;&nbsp;g/L&nbsp;&nbsp;&nbsp;&nbsp;(120–160)</span></div>
-                <div class="dl"><span>12</span><span>HCT&nbsp;&nbsp;&nbsp;0,39</span></div>
-                <div class="dl" data-src="plt"><span>13</span><span>PLT&nbsp;&nbsp;&nbsp;248&nbsp;&nbsp;×10⁹/L&nbsp;&nbsp;(150–400)</span></div>
-                <div class="dl"><span>14</span><span>&nbsp;</span></div>
-                <div class="dl hd"><span>15</span><span data-sk="Nádorové markery" data-en="Tumour markers">Nádorové markery</span></div>
-                <div class="dl"><span>16</span><span data-sk="(výsledok z iného odberu)" data-en="(result from another sample)">(výsledok z iného odberu)</span></div>
-                <div class="dl" data-src="cea"><span>17</span><span>CEA&nbsp;&nbsp;&nbsp;2,7&nbsp;&nbsp;µg/L&nbsp;&nbsp;&nbsp;(&lt;5,0)</span></div>
-              </div>
+            <div class="paper p1" style="--i:1" data-k="1">
+              <div class="photo"></div>
+              <div class="fn"><svg class="ic"><use href="#g-img"/></svg><span>IMG_20270118_lab.jpg</span></div>
             </div>
-            <div class="prov-foot" aria-live="polite">
-              <div><div class="pf-k" data-sk="Dátum odberu" data-en="Sample date">Dátum odberu</div><div class="pf-v" id="pf-sample">14. 3. 2027 · 06:40</div></div>
-              <div><div class="pf-k" data-sk="Dátum správy" data-en="Report date">Dátum správy</div><div class="pf-v">17. 3. 2027</div></div>
-              <div><div class="pf-k" data-sk="Zdroj" data-en="Source">Zdroj</div><div class="pf-v" id="pf-src">str. 1 · r. 11</div></div>
-              <div><div class="pf-k" data-sk="Stav" data-en="State">Stav</div><div class="pf-v" id="pf-state">overené strojom</div></div>
+            <div class="paper p2" style="--i:2" data-k="2">
+              <div class="fn"><svg class="ic"><use href="#g-pdf"/></svg><span>vysledky(1).pdf</span></div>
+              <i class="tx"></i><i class="tx m"></i><i class="tx s"></i>
             </div>
-            <p class="prov-note" id="pf-note" data-sk="Druhé nezávislé čítanie našlo rovnaké číslo aj rovnaký dátum → overené strojom." data-en="A second independent reading found the same number and the same date → machine-verified.">Druhé nezávislé čítanie našlo rovnaké číslo aj rovnaký dátum → overené strojom.</p>
+            <div class="paper p3" style="--i:3" data-k="3">
+              <div class="fn"><svg class="ic"><use href="#g-pdf"/></svg><span>CT_brucho_final_v2.pdf</span></div>
+              <i class="tx m"></i><i class="tx"></i>
+            </div>
+            <div class="paper p4" style="--i:4" data-k="4">
+              <div class="fn"><svg class="ic"><use href="#g-pdf"/></svg><span>dokument(3).pdf</span></div>
+              <i class="tx s"></i><i class="tx m"></i>
+            </div>
           </div>
-          <p class="prov-hint" data-sk="Kliknite na hodnotu — zvýrazní sa riadok, z ktorého bola prečítaná. Všetky údaje sú vymyslené." data-en="Click a value — the line it was read from lights up. All data here is invented.">Kliknite na hodnotu — zvýrazní sa riadok, z ktorého bola prečítaná. Všetky údaje sú vymyslené.</p>
+          <div class="proc" id="proc">
+            <div class="scan" aria-hidden="true"><i></i><i></i><i></i><i></i><b></b></div>
+            <div><strong>OCR + AI</strong><span data-sk="lokálny model na našom serveri" data-en="local model on our own server">lokálny model na našom serveri</span></div>
+          </div>
+          <div class="gd gd-hero" aria-hidden="true">
+            <div class="gd-top">
+              <span class="gd-prod" data-sk="Disk" data-en="Drive">Disk</span>
+              <div class="gd-search"><svg class="ic"><use href="#g-search"/></svg><span data-sk="Hľadať na Disku" data-en="Search in Drive">Hľadať na Disku</span></div>
+              <span class="gd-avatar">J</span>
+            </div>
+            <div class="gd-main">
+              <div class="gd-crumbs"><span data-sk="Môj disk" data-en="My Drive">Môj disk</span> › <b>Jana Testová</b></div>
+              <div class="gd-row h"><span data-sk="Názov" data-en="Name">Názov</span><span data-sk="Umiestnenie" data-en="Location">Umiestnenie</span></div>
+              <div class="gd-row" data-k="0" style="--i:0"><span class="nm"><svg class="fi"><use href="#g-pdf"/></svg><span>20270309_JanaTestova_NemPrikladov_Labs_BloodCount.pdf</span></span><span class="loc"><svg class="fi fi-folder"><use href="#g-folder"/></svg><span>Labs / Laboratóriá</span></span></div>
+              <div class="gd-row" data-k="1" style="--i:1"><span class="nm"><svg class="fi"><use href="#g-img"/></svg><span>20270118_JanaTestova_NemPrikladov_Labs_TumorMarkers.jpg</span></span><span class="loc"><svg class="fi fi-folder"><use href="#g-folder"/></svg><span>Labs / Laboratóriá</span></span></div>
+              <div class="gd-row" data-k="2" style="--i:2"><span class="nm"><svg class="fi"><use href="#g-pdf"/></svg><span>20270315_JanaTestova_NemPrikladov_Labs_BloodCount.pdf</span></span><span class="loc"><svg class="fi fi-folder"><use href="#g-folder"/></svg><span>Labs / Laboratóriá</span></span></div>
+              <div class="gd-row" data-k="3" style="--i:3"><span class="nm"><svg class="fi"><use href="#g-pdf"/></svg><span>20270220_JanaTestova_NemPrikladov_CT_AbdomenPelvis.pdf</span></span><span class="loc"><svg class="fi fi-folder"><use href="#g-folder"/></svg><span>Imaging / Zobrazovanie</span></span></div>
+              <div class="gd-row" data-k="4" style="--i:4"><span class="nm"><svg class="fi"><use href="#g-pdf"/></svg><span>20270402_JanaTestova_NemPrikladov_Report_OncologyVisit.pdf</span></span><span class="loc"><svg class="fi fi-folder"><use href="#g-folder"/></svg><span>Report / Správy</span></span></div>
+            </div>
+          </div>
         </div>
+        <p class="stage-cap"><span data-sk="Pred Oncofiles: súbory roztrúsené v mailoch, mobile a priečinku Stiahnuté." data-en="Before Oncofiles: files scattered across email, phone and Downloads.">Pred Oncofiles: súbory roztrúsené v mailoch, mobile a priečinku Stiahnuté.</span><span data-sk="S Oncofiles: jeden priečinok, štandardné názvy, každý súbor na svojom mieste. Vymyslená pacientka." data-en="With Oncofiles: one folder, standard names, every file in its place. Invented patient.">S Oncofiles: jeden priečinok, štandardné názvy, každý súbor na svojom mieste. Vymyslená pacientka.</span></p>
       </div>
     </section>
 
-    <!-- 2. Provenance -->
+    <!-- 2. Real photos -->
+    <section class="block" id="photos">
+      <div class="wrap">
+        <div class="grid">
+          <div class="side"><h2 data-sk="Zo zložky v skrini na vyhľadateľný záznam" data-en="From a folder in the closet to a searchable record">Zo zložky v skrini na vyhľadateľný záznam</h2></div>
+          <div class="side"><p data-sk="Viac ako 40 rokov papierov jednej rodiny: ambulantné záznamy, očkovacie preukazy, výsledky, recepty. Aj rukou písaná poznámka z roku 1982." data-en="More than 40 years of one family's papers: clinic notes, vaccination cards, results, prescriptions. Including a handwritten note from 1982.">Viac ako 40 rokov papierov jednej rodiny: ambulantné záznamy, očkovacie preukazy, výsledky, recepty. Aj rukou písaná poznámka z roku 1982.</p></div>
+        </div>
+        <div class="photos">
+            <figure>
+              <img src="/assets/pile/02.jpg" alt="A pile of paper medical records on a desk next to oncology textbooks and a mug of tea" loading="lazy" width="1200" height="700" data-sk-alt="Kôpka papierových zdravotných záznamov na stole vedľa onkologických učebníc a hrnčeka čaju" data-en-alt="A pile of paper medical records on a desk next to oncology textbooks and a mug of tea">
+              <figcaption><b data-sk="Predtým." data-en="Before.">Predtým.</b> <span data-sk="Hľadanie jedného výsledku znamenalo polhodinu listovania." data-en="Finding one result meant half an hour of leafing through paper.">Hľadanie jedného výsledku znamenalo polhodinu listovania.</span></figcaption>
+            </figure>
+            <figure>
+              <img src="/assets/pile/04.jpg" alt="A screen showing a scanned 1982 handwritten doctor's note next to its transcribed text" loading="lazy" width="1320" height="510" data-sk-alt="Obrazovka so skenom rukou písanej lekárskej poznámky z roku 1982 a vedľa nej jej prepis" data-en-alt="A screen showing a scanned 1982 handwritten doctor's note next to its transcribed text">
+              <figcaption><b data-sk="Potom." data-en="After.">Potom.</b> <span data-sk="Ten istý papier z roku 1982 ako text, v ktorom sa dá hľadať." data-en="The same 1982 page as text you can search.">Ten istý papier z roku 1982 ako text, v ktorom sa dá hľadať.</span></figcaption>
+            </figure>
+          </div>
+        <p class="credit" data-sk="Skutočné dokumenty, nafotené iPhonom 22. apríla 2026; fotky sú orezané, aby na nich neboli osobné údaje. Snímka obrazovky je z vtedajšej verzie. Dnes čítanie aj zaradenie robí lokálny model na našom serveri; staré rukopisy zatiaľ číta slabšie ako tlačené správy." data-en="Real documents, photographed on an iPhone on 22 April 2026; the photos are cropped to keep personal details out. The screenshot is from the version of that time. Today reading and filing run on a local model on our own server; it still reads old handwriting less well than printed reports.">Skutočné dokumenty, nafotené iPhonom 22. apríla 2026; fotky sú orezané, aby na nich neboli osobné údaje. Snímka obrazovky je z vtedajšej verzie. Dnes čítanie aj zaradenie robí lokálny model na našom serveri; staré rukopisy zatiaľ číta slabšie ako tlačené správy.</p>
+      </div>
+    </section>
+
+    <!-- 3. Provenance -->
     <section class="block" id="provenance">
-      <div class="container">
-        <div class="eyebrow" data-sk="Pôvod každej hodnoty" data-en="Provenance of every value">Pôvod každej hodnoty</div>
-        <h2 data-sk="Ako viem, že číslo v tabuľke je naozaj z mojej správy?" data-en="How do I know a number in the table really comes from my report?">Ako viem, že číslo v tabuľke je naozaj z mojej správy?</h2>
-        <p class="lede" data-sk="Pri onkologickej liečbe rozhoduje, či hemoglobín bol 113 alebo 131 a či bol nameraný pred cyklom alebo po ňom. Preto Oncofiles pri každej hodnote ukladá, odkiaľ a kedy pochádza." data-en="During cancer treatment it matters whether haemoglobin was 113 or 131, and whether it was measured before or after a cycle. So Oncofiles stores where and when every value comes from.">Pri onkologickej liečbe rozhoduje, či hemoglobín bol 113 alebo 131 a či bol nameraný pred cyklom alebo po ňom. Preto Oncofiles pri každej hodnote ukladá, odkiaľ a kedy pochádza.</p>
-        <div class="grid four">
-          <div class="card">
-            <div class="ic"><svg class="icon"><use href="#i-cal"/></svg></div>
-            <h3 data-sk="Dátum odberu, nie dátum správy" data-en="Sample date, not report date">Dátum odberu, nie dátum správy</h3>
-            <p data-sk="Správa môže prísť o tri dni neskôr alebo citovať staršie výsledky. Hodnota dostane čas odberu, ktorý je pri nej v dokumente uvedený." data-en="A report may arrive three days later or quote older results. A value gets the sample time printed next to it in the document.">Správa môže prísť o tri dni neskôr alebo citovať staršie výsledky. Hodnota dostane čas odberu, ktorý je pri nej v dokumente uvedený.</p>
-          </div>
-          <div class="card">
-            <div class="ic"><svg class="icon"><use href="#i-link"/></svg></div>
-            <h3 data-sk="Dokument, strana, riadok" data-en="Document, page, line">Dokument, strana, riadok</h3>
-            <p data-sk="Každá hodnota odkazuje na zdrojový dokument, stranu a presný text riadku, z ktorého bola prečítaná. Overiť si ju viete jedným klikom." data-en="Every value links to its source document, the page and the exact text of the line it was read from. You can check it in one click.">Každá hodnota odkazuje na zdrojový dokument, stranu a presný text riadku, z ktorého bola prečítaná. Overiť si ju viete jedným klikom.</p>
-          </div>
-          <div class="card">
-            <div class="ic"><svg class="icon"><use href="#i-check"/></svg></div>
-            <h3 data-sk="Stav overenia" data-en="Verification state">Stav overenia</h3>
-            <p data-sk="Neoverené hodnoty sa nezapočítavajú do štatistík ani trendov, kým ich niekto nepotvrdí." data-en="Unverified values are left out of statistics and trends until someone confirms them.">Neoverené hodnoty sa nezapočítavajú do štatistík ani trendov, kým ich niekto nepotvrdí.</p>
-            <div class="states">
-              <span class="state state-machine" data-sk="overené strojom" data-en="machine-verified">overené strojom</span>
-              <span class="state state-unverified" data-sk="neoverené" data-en="unverified">neoverené</span>
-              <span class="state state-human" data-sk="overené človekom" data-en="human-verified">overené človekom</span>
+      <div class="wrap grid">
+        <div class="side">
+          <h2 data-sk="Ako viem, že číslo v tabuľke je naozaj z mojej správy?" data-en="How do I know a number in the table really comes from my report?">Ako viem, že číslo v tabuľke je naozaj z mojej správy?</h2>
+          <dl class="facts">
+            <dt data-sk="Dátum odberu, nie dátum správy" data-en="Sample date, not report date">Dátum odberu, nie dátum správy</dt>
+            <dd data-sk="Správa môže prísť o tri dni neskôr alebo citovať starší výsledok. Hodnota dostane dátum odberu, ktorý je pri nej v dokumente." data-en="A report can arrive three days later or quote an older result. A value gets the sample date printed next to it.">Správa môže prísť o tri dni neskôr alebo citovať starší výsledok. Hodnota dostane dátum odberu, ktorý je pri nej v dokumente.</dd>
+            <dt data-sk="Dokument, strana a presný riadok" data-en="Document, page and exact line">Dokument, strana a presný riadok</dt>
+            <dd data-sk="Každá hodnota odkazuje na zdrojový súbor a text riadku, z ktorého bola prečítaná." data-en="Every value links to its source file and the text of the line it was read from.">Každá hodnota odkazuje na zdrojový súbor a text riadku, z ktorého bola prečítaná.</dd>
+            <dt data-sk="Dvojité čítanie" data-en="Double reading">Dvojité čítanie</dt>
+            <dd data-sk="Druhé, nezávislé lokálne čítanie potvrdí hodnotu len vtedy, keď sa zhoduje číslo aj dátum." data-en="A second, independent local reading confirms a value only when both the number and the date match.">Druhé, nezávislé lokálne čítanie potvrdí hodnotu len vtedy, keď sa zhoduje číslo aj dátum.</dd>
+            <dt data-sk="Stav overenia" data-en="Verification state">Stav overenia</dt>
+            <dd><span class="st st-machine" data-sk="overené strojom" data-en="machine-verified">overené strojom</span>, <span class="st st-human" data-sk="overené človekom" data-en="human-verified">overené človekom</span>, <span class="st st-unverified" data-sk="neoverené" data-en="unverified">neoverené</span>. <span data-sk="Neoverené hodnoty sa do štatistík ani trendov nepočítajú." data-en="Unverified values are left out of statistics and trends.">Neoverené hodnoty sa do štatistík ani trendov nepočítajú.</span></dd>
+          </dl>
+        </div>
+        <div>
+          <div class="prov">
+            <div class="sheet" aria-label="Lab report (invented)">
+              <div class="ln k-head"><span class="no">1</span><span>Nemocnica Príkladov – Oddelenie klinickej biochémie</span></div>
+              <div class="ln"><span class="no">2</span><span>Pacientka: Jana Testová (vymyslená)</span></div>
+              <div class="ln"><span class="no">3</span><span>Odosielajúci lekár: MUDr. Ján Ukážkový</span></div>
+              <div class="ln"><span class="no">4</span><span>Odber: 15.03.2027 06:40</span></div>
+              <div class="ln"><span class="no">5</span><span>Vydané: 17.03.2027</span></div>
+              <div class="ln"><span class="no">6</span><span>&nbsp;</span></div>
+              <div class="ln k-sub"><span class="no">7</span><span>Krvný obraz</span></div>
+              <div class="ln k-th"><span class="no">8</span><span class="cells"><span>Vyšetrenie</span><span>Výsledok</span><span>Jednotky</span><span>Ref. rozsah</span></span></div>
+              <div class="ln" data-src="wbc"><span class="no">9</span><span class="cells"><span>WBC</span><span>6,3</span><span>×10⁹/L</span><span>4,0–10,0</span></span></div>
+              <div class="ln"><span class="no">10</span><span class="cells"><span>RBC</span><span>4,21</span><span>×10¹²/L</span><span>3,80–5,20</span></span></div>
+              <div class="ln on" data-src="hgb"><span class="no">11</span><span class="cells"><span>HGB</span><span>131</span><span>g/L</span><span>120–160</span></span></div>
+              <div class="ln"><span class="no">12</span><span class="cells"><span>HCT</span><span>0,39</span><span>L/L</span><span>0,35–0,47</span></span></div>
+              <div class="ln" data-src="plt"><span class="no">13</span><span class="cells"><span>PLT</span><span>248</span><span>×10⁹/L</span><span>150–400</span></span></div>
+              <div class="ln"><span class="no">14</span><span>&nbsp;</span></div>
+              <div class="ln k-sub"><span class="no">15</span><span>Nádorové markery</span></div>
+              <div class="ln k-note"><span class="no">16</span><span>Výsledok z odberu 02.03.2027</span></div>
+              <div class="ln" data-src="cea"><span class="no">17</span><span class="cells"><span>CEA</span><span>2,7</span><span>µg/L</span><span>&lt; 5,0</span></span></div>
+              <div class="ln"><span class="no">18</span><span>&nbsp;</span></div>
+              <div class="ln"><span class="no">19</span><span>Vyšetrila: RNDr. Eva Vzorová</span></div>
+              <svg class="stamp" viewBox="0 0 100 100" aria-hidden="true"><circle cx="50" cy="50" r="44" fill="none" stroke="#2c4f9e" stroke-width="2.5"/><circle cx="50" cy="50" r="33" fill="none" stroke="#2c4f9e" stroke-width="1"/><text x="50" y="47" text-anchor="middle" font-size="9" fill="#2c4f9e" font-family="Georgia, serif">NEMOCNICA</text><text x="50" y="59" text-anchor="middle" font-size="9" fill="#2c4f9e" font-family="Georgia, serif">PRÍKLADOV</text><path d="M14 74 C 26 60, 34 86, 46 70 S 66 62, 74 76 S 88 70, 94 64" fill="none" stroke="#1d2b55" stroke-width="1.6"/></svg>
+            </div>
+            <div class="app" id="prov">
+              <h3 data-sk="Laboratórne hodnoty" data-en="Lab values">Laboratórne hodnoty</h3>
+              <p class="who" data-sk="Jana Testová, vymyslená pacientka" data-en="Jana Testová, invented patient">Jana Testová, vymyslená pacientka</p>
+              <button class="vrow" type="button" aria-pressed="true" data-action="pickValue|hgb" data-line="hgb" data-ln="11" data-state="machine" data-sample="15. 3. 2027">
+                <span data-sk="Hemoglobín" data-en="Haemoglobin">Hemoglobín</span><span class="v">131<small>g/L</small></span>
+                <span class="m"><span>15. 3. 2027</span><span class="ref" data-sk="str. 1, r. 11" data-en="p. 1, l. 11">str. 1, r. 11</span><span class="st st-machine" data-sk="overené strojom" data-en="machine-verified">overené strojom</span></span>
+              </button>
+              <button class="vrow" type="button" aria-pressed="false" data-action="pickValue|wbc" data-line="wbc" data-ln="9" data-state="human" data-sample="15. 3. 2027">
+                <span data-sk="Leukocyty" data-en="White cells">Leukocyty</span><span class="v">6,3<small>×10⁹/L</small></span>
+                <span class="m"><span>15. 3. 2027</span><span class="ref" data-sk="str. 1, r. 9" data-en="p. 1, l. 9">str. 1, r. 9</span><span class="st st-human" data-sk="overené človekom" data-en="human-verified">overené človekom</span></span>
+              </button>
+              <button class="vrow" type="button" aria-pressed="false" data-action="pickValue|plt" data-line="plt" data-ln="13" data-state="machine" data-sample="15. 3. 2027">
+                <span data-sk="Trombocyty" data-en="Platelets">Trombocyty</span><span class="v">248<small>×10⁹/L</small></span>
+                <span class="m"><span>15. 3. 2027</span><span class="ref" data-sk="str. 1, r. 13" data-en="p. 1, l. 13">str. 1, r. 13</span><span class="st st-machine" data-sk="overené strojom" data-en="machine-verified">overené strojom</span></span>
+              </button>
+              <button class="vrow" type="button" aria-pressed="false" data-action="pickValue|cea" data-line="cea" data-ln="17" data-state="unverified" data-sample="2. 3. 2027">
+                <span>CEA</span><span class="v">2,7<small>µg/L</small></span>
+                <span class="m"><span>2. 3. 2027</span><span class="ref" data-sk="str. 1, r. 17" data-en="p. 1, l. 17">str. 1, r. 17</span><span class="st st-unverified" data-sk="neoverené" data-en="unverified">neoverené</span></span>
+              </button>
+              <p class="note" id="pf-note" aria-live="polite" data-sk="Druhé nezávislé čítanie našlo rovnaké číslo aj rovnaký dátum odberu." data-en="A second independent reading found the same number and the same sample date.">Druhé nezávislé čítanie našlo rovnaké číslo aj rovnaký dátum odberu.</p>
             </div>
           </div>
-          <div class="card">
-            <div class="ic"><svg class="icon"><use href="#i-twin"/></svg></div>
-            <h3 data-sk="Dvojité čítanie" data-en="Double reading">Dvojité čítanie</h3>
-            <p data-sk="Druhé, nezávislé lokálne čítanie dokumentu potvrdí hodnotu len vtedy, keď sa zhoduje číslo aj dátum. Inak zostáva neoverená." data-en="A second, independent local reading of the document confirms a value only when both the number and the date match. Otherwise it stays unverified.">Druhé, nezávislé lokálne čítanie dokumentu potvrdí hodnotu len vtedy, keď sa zhoduje číslo aj dátum. Inak zostáva neoverená.</p>
-          </div>
+          <p class="prov-hint" data-sk="Kliknite na hodnotu: v správe sa zvýrazní riadok, z ktorého bola prečítaná. Všetky údaje sú vymyslené." data-en="Click a value: the line it was read from lights up in the report. All data here is invented.">Kliknite na hodnotu: v správe sa zvýrazní riadok, z ktorého bola prečítaná. Všetky údaje sú vymyslené.</p>
         </div>
       </div>
     </section>
 
-    <!-- 3. Folder -->
+    <!-- 4. Folder -->
     <section class="block" id="folder">
-      <div class="container">
-        <div class="eyebrow" data-sk="Váš priečinok" data-en="Your folder">Váš priečinok</div>
-        <h2 data-sk="Čo sa stane s mojím priečinkom na Google Drive?" data-en="What happens to my Google Drive folder?">Čo sa stane s mojím priečinkom na Google Drive?</h2>
-        <p class="lede" data-sk="Priečinok zostáva váš a zostáva čitateľný aj bez Oncofiles — v Drive, na disku aj vytlačený." data-en="The folder stays yours, and it stays readable without Oncofiles — in Drive, on disk, or printed.">Priečinok zostáva váš a zostáva čitateľný aj bez Oncofiles — v Drive, na disku aj vytlačený.</p>
-        <div class="split">
-          <div class="tree" aria-label="Example folder (invented)">
-            <ul>
-              <li><span class="t"><svg class="icon"><use href="#i-folder"/></svg>Ema Vzorová</span><span class="tag" data-sk="(vymyslená pacientka)" data-en="(invented patient)">(vymyslená pacientka)</span>
-                <ul>
-                  <li><span class="t readme"><svg class="icon"><use href="#i-book"/></svg>README.md</span><span class="tag" data-sk="pravidlá priečinka" data-en="folder contract">pravidlá priečinka</span></li>
-                  <li><span class="t"><svg class="icon"><use href="#i-folder"/></svg>Inbox</span><span class="tag" data-sk="sem pridávate nové súbory" data-en="drop new files here">sem pridávate nové súbory</span></li>
-                  <li><span class="t"><svg class="icon"><use href="#i-folder"/></svg>Labs</span>
-                    <ul>
-                      <li><span class="t"><svg class="icon"><use href="#i-doc"/></svg>20270314_EmaVzorova_NemPrikladov_Labs_BloodCount.pdf</span></li>
-                      <li><span class="t md"><svg class="icon"><use href="#i-md"/></svg>20270314_EmaVzorova_NemPrikladov_Labs_BloodCount.md</span><span class="tag" data-sk="prepis" data-en="transcript">prepis</span></li>
-                    </ul>
-                  </li>
-                  <li><span class="t"><svg class="icon"><use href="#i-folder"/></svg>Reports</span>
-                    <ul>
-                      <li><span class="t"><svg class="icon"><use href="#i-doc"/></svg>20270402_EmaVzorova_NemPrikladov_Report_OncologyVisit.pdf</span></li>
-                      <li><span class="t md"><svg class="icon"><use href="#i-md"/></svg>20270402_EmaVzorova_NemPrikladov_Report_OncologyVisit.md</span></li>
-                    </ul>
-                  </li>
-                  <li><span class="t"><svg class="icon"><use href="#i-folder"/></svg>Imaging</span><span class="tag">…</span></li>
-                </ul>
-              </li>
-            </ul>
-          </div>
-          <ul class="checks">
-            <li><svg class="icon"><use href="#i-book"/></svg><div><strong data-sk="Pravidlá v README" data-en="Rules in a README">Pravidlá v README</strong><span class="d" data-sk="Každý priečinok pacienta má súbor README so svojimi pravidlami: aké podpriečinky, aké názvy, čo sa kam presúva. Oncofiles sa ich drží." data-en="Each patient folder has a README with its own rules: which subfolders, which names, what goes where. Oncofiles follows them.">Každý priečinok pacienta má súbor README so svojimi pravidlami: aké podpriečinky, aké názvy, čo sa kam presúva. Oncofiles sa ich drží.</span></div></li>
-            <li><svg class="icon"><use href="#i-doc"/></svg><div><strong data-sk="Štandardné názvy súborov" data-en="Standard file names">Štandardné názvy súborov</strong><span class="d" data-sk="Dátum, pacient, inštitúcia, typ a popis. Súbory sa dajú zoradiť a nájsť aj v obyčajnom prieskumníkovi." data-en="Date, patient, institution, type and description. Files sort and search well in any file browser.">Dátum, pacient, inštitúcia, typ a popis. Súbory sa dajú zoradiť a nájsť aj v obyčajnom prieskumníkovi.</span></div></li>
-            <li><svg class="icon"><use href="#i-md"/></svg><div><strong data-sk="Prepis .md vedľa každého súboru" data-en="A .md transcript next to each file">Prepis .md vedľa každého súboru</strong><span class="d" data-sk="Prečítaný text skenu ležiaci priamo vo vašom priečinku — dá sa v ňom hľadať aj bez nás." data-en="The text read from each scan sits right in your folder — searchable even without us.">Prečítaný text skenu ležiaci priamo vo vašom priečinku — dá sa v ňom hľadať aj bez nás.</span></div></li>
-            <li><svg class="icon"><use href="#i-clock"/></svg><div><strong data-sk="Kontrola zhruba každé 2 minúty" data-en="Checked about every 2 minutes">Kontrola zhruba každé 2 minúty</strong><span class="d" data-sk="Nový súbor v priečinku sa spracuje krátko po nahratí, podľa pravidiel z README." data-en="A new file in the folder is processed shortly after upload, following the README rules.">Nový súbor v priečinku sa spracuje krátko po nahratí, podľa pravidiel z README.</span></div></li>
-            <li><svg class="icon"><use href="#i-trash"/></svg><div><strong data-sk="Nikdy nič nemaže" data-en="Never deletes anything">Nikdy nič nemaže</strong><span class="d" data-sk="Súbory sa len premenúvajú a presúvajú. Ak treba niečo odstrániť, ide to iba do koša Google Drive." data-en="Files are only renamed and moved. If something has to go, it only goes to the Google Drive trash.">Súbory sa len premenúvajú a presúvajú. Ak treba niečo odstrániť, ide to iba do koša Google Drive.</span></div></li>
-          </ul>
+      <div class="wrap">
+        <div class="grid">
+          <div class="side"><h2 data-sk="Čo sa stane s mojím priečinkom na Google Drive?" data-en="What happens to my Google Drive folder?">Čo sa stane s mojím priečinkom na Google Drive?</h2></div>
+          <div class="side"><p data-sk="Priečinok zostáva váš a dá sa čítať aj bez Oncofiles: v Drive, na disku aj vytlačený." data-en="The folder stays yours and stays readable without Oncofiles: in Drive, on disk or printed.">Priečinok zostáva váš a dá sa čítať aj bez Oncofiles: v Drive, na disku aj vytlačený.</p></div>
         </div>
-      </div>
-    </section>
-
-    <!-- 4. Privacy / data flow -->
-    <section class="block" id="privacy">
-      <div class="container">
-        <div class="eyebrow" data-sk="Súkromie" data-en="Privacy">Súkromie</div>
-        <h2 data-sk="Kde sú moje dáta a kto ich vidí?" data-en="Where is my data and who sees it?">Kde sú moje dáta a kto ich vidí?</h2>
-        <p class="lede" data-sk="Presne povedané: čo beží lokálne, čo je v našej databáze a čo a kedy ide do Claude alebo ChatGPT." data-en="Precisely: what runs locally, what is in our database, and what goes to Claude or ChatGPT, and when.">Presne povedané: čo beží lokálne, čo je v našej databáze a čo a kedy ide do Claude alebo ChatGPT.</p>
-        <div class="flow">
-          <div class="node">
-            <div class="node-h"><svg class="icon"><use href="#i-folder"/></svg><span data-sk="Váš Google Drive" data-en="Your Google Drive">Váš Google Drive</span></div>
-            <div class="node-s" data-sk="patrí vám" data-en="belongs to you">patrí vám</div>
-            <ul>
-              <li data-sk="originálne PDF, skeny a fotky" data-en="original PDFs, scans and photos">originálne PDF, skeny a fotky</li>
-              <li data-sk="prepisy .md vedľa súborov" data-en=".md transcripts next to the files">prepisy .md vedľa súborov</li>
-              <li data-sk="README s pravidlami priečinka" data-en="README with the folder rules">README s pravidlami priečinka</li>
-            </ul>
-          </div>
-          <div class="link"><span class="arrow h">⇄</span><span class="arrow v">⇅</span><span data-sk="čítanie ~každé 2 min; premenovanie, presun, prepis" data-en="read ~every 2 min; rename, move, transcript">čítanie ~každé 2 min; premenovanie, presun, prepis</span></div>
-          <div class="node server">
-            <div class="node-h"><svg class="icon"><use href="#i-server"/></svg><span data-sk="Náš server · Slovensko (EÚ)" data-en="Our server · Slovakia (EU)">Náš server · Slovensko (EÚ)</span></div>
-            <div class="node-s" data-sk="šifrovaný disk, správa len cez súkromnú VPN" data-en="encrypted disk, admin access only via private VPN">šifrovaný disk, správa len cez súkromnú VPN</div>
-            <div class="sub"><b><svg class="icon" style="width:15px;height:15px;vertical-align:-2px"><use href="#i-cpu"/></svg> <span data-sk="Lokálny model" data-en="Local model">Lokálny model</span></b><p data-sk="OCR a zatriedenie dokumentov. Obsah dokumentov pri spracovaní na pozadí neopúšťa náš server." data-en="OCR and document classification. Document content does not leave our server during background processing.">OCR a zatriedenie dokumentov. Obsah dokumentov pri spracovaní na pozadí neopúšťa náš server.</p></div>
-            <div class="sub"><b><svg class="icon" style="width:15px;height:15px;vertical-align:-2px"><use href="#i-db"/></svg> <span data-sk="Databáza" data-en="Database">Databáza</span></b><p data-sk="Index dokumentov, prečítaný text a vytiahnuté hodnoty s ich pôvodom. Áno, aj tieto údaje sú u nás — inak by sa nedalo rýchlo odpovedať." data-en="Document index, extracted text and extracted values with their provenance. Yes, this data is stored with us too — otherwise answers could not be fast.">Index dokumentov, prečítaný text a vytiahnuté hodnoty s ich pôvodom. Áno, aj tieto údaje sú u nás — inak by sa nedalo rýchlo odpovedať.</p></div>
-          </div>
-          <div class="link dashed"><span class="arrow h">→</span><span class="arrow v">↓</span><span data-sk="len pri vašej otázke" data-en="only when you ask">len pri vašej otázke</span></div>
-          <div class="node">
-            <div class="node-h"><svg class="icon"><use href="#i-chat"/></svg><span>Claude / ChatGPT</span></div>
-            <div class="node-s" data-sk="asistent, ktorý používate vy" data-en="the assistant you use">asistent, ktorý používate vy</div>
-            <ul>
-              <li data-sk="dostane len výsledky nástrojov k vašej otázke: texty, hodnoty, odkazy na zdroj" data-en="receives only the tool results for your question: text, values, source links">dostane len výsledky nástrojov k vašej otázke: texty, hodnoty, odkazy na zdroj</li>
-              <li data-sk="nič sa tam neposiela na pozadí" data-en="nothing is sent there in the background">nič sa tam neposiela na pozadí</li>
-              <li data-sk="pravidlá uchovávania určuje váš plán u Anthropic či OpenAI" data-en="retention follows your Anthropic or OpenAI plan">pravidlá uchovávania určuje váš plán u Anthropic či OpenAI</li>
-            </ul>
-          </div>
-        </div>
-        <p class="flow-note" data-sk="Pacienti sú v databáze od seba oddelení a každý prístup sa overuje — k pacientovi sa dostane len ten, komu bol priradený. Zdrojový kód je otvorený, takže si to môžete overiť." data-en="Patients are separated from each other in the database and every access is checked — only people assigned to a patient can reach them. The source code is open, so you can verify this.">Pacienti sú v databáze od seba oddelení a každý prístup sa overuje — k pacientovi sa dostane len ten, komu bol priradený. Zdrojový kód je otvorený, takže si to môžete overiť.</p>
-      </div>
-    </section>
-
-    <!-- 5. Connect -->
-    <section class="block" id="connect">
-      <div class="container">
-        <div class="eyebrow" data-sk="Claude a ChatGPT" data-en="Claude and ChatGPT">Claude a ChatGPT</div>
-        <h2 data-sk="Ako to pripojím ku Claude alebo ChatGPT?" data-en="How do I connect it to Claude or ChatGPT?">Ako to pripojím ku Claude alebo ChatGPT?</h2>
-        <p class="lede" data-sk="Oncofiles je MCP server — rozšírenie, ktoré si pridáte do svojho AI asistenta. Potom sa pýtate bežnou rečou a asistent si sám vyžiada potrebné záznamy." data-en="Oncofiles is an MCP server — an extension you add to your AI assistant. Then you ask in plain language and the assistant fetches the records it needs.">Oncofiles je MCP server — rozšírenie, ktoré si pridáte do svojho AI asistenta. Potom sa pýtate bežnou rečou a asistent si sám vyžiada potrebné záznamy.</p>
-        <div class="grid four">
-          <div class="card">
-            <div class="ic"><svg class="icon"><use href="#i-chat"/></svg></div>
-            <h3>Claude.ai</h3>
-            <ol class="steps">
-              <li>Settings → Connectors → Add custom connector</li>
-              <li><span data-sk="URL:" data-en="URL:">URL:</span>&nbsp;<code>https://oncofiles.com/mcp</code></li>
-              <li data-sk="OAuth polia nechajte prázdne → Add → prihláste sa cez Google" data-en="Leave OAuth fields blank → Add → sign in with Google">OAuth polia nechajte prázdne → Add → prihláste sa cez Google</li>
-            </ol>
-          </div>
-          <div class="card">
-            <div class="ic"><svg class="icon"><use href="#i-chat"/></svg></div>
-            <h3>ChatGPT</h3>
-            <ol class="steps">
-              <li>Settings → Connectors → Advanced → Developer Mode</li>
-              <li><span data-sk="Pridajte server:" data-en="Add server:">Pridajte server:</span>&nbsp;<code>https://oncofiles.com/mcp</code></li>
-              <li data-sk="Prihláste sa cez Google → vyberte pacienta" data-en="Sign in with Google → select patient">Prihláste sa cez Google → vyberte pacienta</li>
-            </ol>
-          </div>
-          <div class="card">
-            <div class="ic"><svg class="icon"><use href="#i-monitor"/></svg></div>
-            <h3>Claude Desktop</h3>
-            <ol class="steps">
-              <li data-sk="Otvorte claude_desktop_config.json" data-en="Open claude_desktop_config.json">Otvorte claude_desktop_config.json</li>
-              <li data-sk="Pridajte „oncofiles“ do mcpServers" data-en="Add “oncofiles” to mcpServers">Pridajte „oncofiles“ do mcpServers</li>
-              <li data-sk="URL + token z dashboardu → reštart" data-en="URL + token from the dashboard → restart">URL + token z dashboardu → reštart</li>
-            </ol>
-          </div>
-          <div class="card">
-            <div class="ic"><svg class="icon"><use href="#i-code"/></svg></div>
-            <h3 data-sk="Claude Code / iný MCP klient" data-en="Claude Code / other MCP client">Claude Code / iný MCP klient</h3>
-            <ol class="steps">
-              <li><code>claude mcp add oncofiles [URL]</code></li>
-              <li data-sk="pridajte --header s Bearer tokenom" data-en="add --header with a Bearer token">pridajte --header s Bearer tokenom</li>
-              <li data-sk="hotovo — viac ako 100 nástrojov" data-en="done — more than 100 tools">hotovo — viac ako 100 nástrojov</li>
-            </ol>
-          </div>
-        </div>
-
-        <div class="chat" aria-label="Example conversation (invented data)">
-          <div class="chat-bar"><span>Claude.ai + Oncofiles</span><span data-sk="ukážka · vymyslené údaje" data-en="example · invented data">ukážka · vymyslené údaje</span></div>
-          <div class="chat-in">
-            <div class="msg user" data-sk="Ako sa vyvíjal hemoglobín od začiatku liečby? Chcem to ukázať lekárke vo štvrtok." data-en="How has haemoglobin changed since treatment started? I want to show my doctor on Thursday.">Ako sa vyvíjal hemoglobín od začiatku liečby? Chcem to ukázať lekárke vo štvrtok.</div>
-            <div class="tool">oncofiles · fact_series(code="HGB")</div>
-            <div class="msg ai">
-              <p data-sk="Mám 4 overené merania hemoglobínu (dátumy odberu):" data-en="I have 4 verified haemoglobin measurements (sample dates):">Mám 4 overené merania hemoglobínu (dátumy odberu):</p>
-              <p class="num">10. 1. 2027 — 138 g/L · 7. 2. 2027 — 124 g/L · 7. 3. 2027 — 119 g/L · 14. 3. 2027 — 131 g/L</p>
-              <p data-sk="Po poklese vo februári a marci je posledná hodnota opäť v norme (120–160). Jedno ďalšie meranie z 21. 2. je neoverené — druhé čítanie nesúhlasilo v dátume —, preto ho do trendu nerátam. Môžete ho overiť v zdrojovom dokumente." data-en="After a dip in February and March the latest value is back in range (120–160). One more measurement from 21 Feb is unverified — the second reading disagreed on the date — so I leave it out of the trend. You can check it in the source document.">Po poklese vo februári a marci je posledná hodnota opäť v norme (120–160). Jedno ďalšie meranie z 21. 2. je neoverené — druhé čítanie nesúhlasilo v dátume —, preto ho do trendu nerátam. Môžete ho overiť v zdrojovom dokumente.</p>
-              <p class="cite"><span data-sk="Zdroje:" data-en="Sources:">Zdroje:</span> <span class="num">20270314_EmaVzorova_NemPrikladov_Labs_BloodCount.pdf · str. 1 · r. 11</span> <span data-sk="a 3 ďalšie" data-en="and 3 more">a 3 ďalšie</span></p>
+        <div class="folder-shot">
+          <div class="gd gd-folder" aria-label="Google Drive folder Labs / Laboratóriá of the invented patient Jana Testová">
+            <div class="gd-top">
+              <span class="gd-prod" data-sk="Disk" data-en="Drive">Disk</span>
+              <div class="gd-search"><svg class="ic"><use href="#g-search"/></svg><span data-sk="Hľadať na Disku" data-en="Search in Drive">Hľadať na Disku</span></div>
+              <span class="gd-avatar">J</span>
+            </div>
+            <div class="gd-body">
+              <div class="gd-nav" aria-hidden="true">
+                <div class="gd-new"><svg class="ic"><use href="#g-plus"/></svg><span data-sk="Nový" data-en="New">Nový</span></div>
+                <span><svg class="ic"><use href="#g-home"/></svg><span data-sk="Domov" data-en="Home">Domov</span></span>
+                <span class="on"><svg class="ic"><use href="#g-drive"/></svg><span data-sk="Môj disk" data-en="My Drive">Môj disk</span></span>
+                <span><svg class="ic"><use href="#g-people"/></svg><span data-sk="Zdieľané so mnou" data-en="Shared with me">Zdieľané so mnou</span></span>
+                <span><svg class="ic"><use href="#g-clock"/></svg><span data-sk="Nedávne" data-en="Recent">Nedávne</span></span>
+                <span><svg class="ic"><use href="#g-star"/></svg><span data-sk="S hviezdičkou" data-en="Starred">S hviezdičkou</span></span>
+                <span><svg class="ic"><use href="#g-trash"/></svg><span data-sk="Kôš" data-en="Trash">Kôš</span></span>
+                <div class="gd-quota"><i></i><span data-sk="Využité 2,1 GB z 15 GB" data-en="2.1 GB of 15 GB used">Využité 2,1 GB z 15 GB</span></div>
+              </div>
+              <div class="gd-main">
+                <div class="gd-crumbs"><span data-sk="Môj disk" data-en="My Drive">Môj disk</span> › Jana Testová › <b>Labs / Laboratóriá</b></div>
+                <div class="gd-row h"><span data-sk="Názov" data-en="Name">Názov</span><span class="opt" data-sk="Vlastník" data-en="Owner">Vlastník</span><span data-sk="Upravené" data-en="Modified">Upravené</span><span class="opt" data-sk="Veľkosť" data-en="Size">Veľkosť</span></div>
+                <div class="gd-row"><span class="nm"><svg class="fi"><use href="#g-pdf"/></svg><span>20270315_JanaTestova_NemPrikladov_Labs_BloodCount.pdf</span></span><span class="own opt"><i>J</i><span data-sk="ja" data-en="me">ja</span></span><span class="mt">17. 3. 2027</span><span class="mt opt">184 kB</span></div>
+                <div class="gd-row"><span class="nm"><svg class="fi"><use href="#g-txt"/></svg><span>20270315_JanaTestova_NemPrikladov_Labs_BloodCount.md</span></span><span class="own opt"><i>J</i><span data-sk="ja" data-en="me">ja</span></span><span class="mt">17. 3. 2027</span><span class="mt opt">3 kB</span></div>
+                <div class="gd-row"><span class="nm"><svg class="fi"><use href="#g-pdf"/></svg><span>20270309_JanaTestova_NemPrikladov_Labs_BloodCount.pdf</span></span><span class="own opt"><i>J</i><span data-sk="ja" data-en="me">ja</span></span><span class="mt">10. 3. 2027</span><span class="mt opt">176 kB</span></div>
+                <div class="gd-row"><span class="nm"><svg class="fi"><use href="#g-txt"/></svg><span>20270309_JanaTestova_NemPrikladov_Labs_BloodCount.md</span></span><span class="own opt"><i>J</i><span data-sk="ja" data-en="me">ja</span></span><span class="mt">10. 3. 2027</span><span class="mt opt">3 kB</span></div>
+                <div class="gd-row"><span class="nm"><svg class="fi"><use href="#g-img"/></svg><span>20270118_JanaTestova_NemPrikladov_Labs_TumorMarkers.jpg</span></span><span class="own opt"><i>J</i><span data-sk="ja" data-en="me">ja</span></span><span class="mt">18. 1. 2027</span><span class="mt opt">2,4 MB</span></div>
+                <div class="gd-row"><span class="nm"><svg class="fi"><use href="#g-txt"/></svg><span>20270118_JanaTestova_NemPrikladov_Labs_TumorMarkers.md</span></span><span class="own opt"><i>J</i><span data-sk="ja" data-en="me">ja</span></span><span class="mt">18. 1. 2027</span><span class="mt opt">2 kB</span></div>
+              </div>
             </div>
           </div>
         </div>
-
-        <div class="soon">
-          <h3 data-sk="Pripravujeme" data-en="Coming soon">Pripravujeme</h3>
-          <ul>
-            <li><svg class="icon"><use href="#i-folder"/></svg><span data-sk="Pripojenie vlastného Google Drive pre nových používateľov — november 2026" data-en="Connecting your own Google Drive for new users — November 2026">Pripojenie vlastného Google Drive pre nových používateľov — november 2026</span></li>
-            <li><svg class="icon"><use href="#i-mail"/></svg><span data-sk="Gmail a Kalendár (synchronizácia je zatiaľ pozastavená)" data-en="Gmail and Calendar (sync is paused for now)">Gmail a Kalendár (synchronizácia je zatiaľ pozastavená)</span></li>
-            <li><svg class="icon"><use href="#i-split"/></svg><span data-sk="Rozpoznanie viacerých dokumentov v jednom PDF" data-en="Detecting several documents inside one PDF">Rozpoznanie viacerých dokumentov v jednom PDF</span></li>
-            <li><svg class="icon"><use href="#i-doc"/></svg><span data-sk="Lepšie čítanie starých rukou písaných záznamov" data-en="Better reading of old handwritten records">Lepšie čítanie starých rukou písaných záznamov</span></li>
+        <div class="folder-more">
+          <ul class="rules">
+            <li><b data-sk="Pravidlá v README." data-en="Rules in a README.">Pravidlá v README.</b> <span data-sk="Každý priečinok pacienta má súbor README so svojimi pravidlami a Oncofiles sa ich drží." data-en="Each patient folder has a README with its own rules, and Oncofiles follows them.">Každý priečinok pacienta má súbor README so svojimi pravidlami a Oncofiles sa ich drží.</span></li>
+            <li><b data-sk="Štandardné názvy." data-en="Standard names.">Štandardné názvy.</b> <span data-sk="Dátum, pacient, inštitúcia, typ a popis, takže sa súbory zoradia samy." data-en="Date, patient, institution, type and description, so files sort themselves.">Dátum, pacient, inštitúcia, typ a popis, takže sa súbory zoradia samy.</span></li>
+            <li><b data-sk="Prepis .md vedľa každého súboru." data-en="A .md transcript next to each file.">Prepis .md vedľa každého súboru.</b> <span data-sk="Text skenu leží priamo vo vašom priečinku a dá sa v ňom hľadať aj bez nás." data-en="The text of each scan sits in your folder and is searchable without us.">Text skenu leží priamo vo vašom priečinku a dá sa v ňom hľadať aj bez nás.</span></li>
+            <li><b data-sk="Kontrola zhruba každé 2 minúty." data-en="Checked about every 2 minutes.">Kontrola zhruba každé 2 minúty.</b> <span data-sk="Nový súbor v priečinku Inbox sa spracuje krátko po nahratí." data-en="A new file in the Inbox folder is processed shortly after upload.">Nový súbor v priečinku Inbox sa spracuje krátko po nahratí.</span></li>
+            <li><b data-sk="Nič sa nemaže." data-en="Nothing is deleted.">Nič sa nemaže.</b> <span data-sk="Súbory sa len premenúvajú a presúvajú; ak niečo treba odstrániť, ide to do koša." data-en="Files are only renamed and moved; anything that has to go goes to the trash.">Súbory sa len premenúvajú a presúvajú; ak niečo treba odstrániť, ide to do koša.</span></li>
           </ul>
+          <div class="readme" aria-label="README.md of the patient folder (invented)">
+            <div class="readme-bar"><svg class="ic"><use href="#g-txt"/></svg><span>README.md</span></div>
+<pre>
+# Jana Testová – zdravotné záznamy
+Tento priečinok spravuje Oncofiles podľa pravidiel nižšie.
+
+## Priečinky
+Inbox/                    sem pridávajte nové súbory
+Labs / Laboratóriá/       laboratórne výsledky
+Report / Správy/          lekárske správy
+Imaging / Zobrazovanie/   CT, MR, USG
+
+## Názvy súborov
+RRRRMMDD_Pacient_Inštitúcia_Kategória_Popis.prípona
+
+## Zásady
+Ku každému súboru patrí prepis .md s rovnakým názvom.
+Nič sa nemaže, len presúva do koša.
+</pre>
+          </div>
         </div>
       </div>
     </section>
 
-    <!-- 6. For families + story + people -->
+    <!-- 5. Privacy -->
+    <section class="block" id="privacy">
+      <div class="wrap grid">
+        <div class="side">
+          <h2 data-sk="Kde sú moje dáta a kto ich vidí?" data-en="Where is my data and who sees it?">Kde sú moje dáta a kto ich vidí?</h2>
+          <p data-sk="Presne: čo zostáva u vás, čo je na našom serveri a čo a kedy ide do Claude alebo ChatGPT." data-en="Precisely: what stays with you, what is on our server, and what goes to Claude or ChatGPT, and when.">Presne: čo zostáva u vás, čo je na našom serveri a čo a kedy ide do Claude alebo ChatGPT.</p>
+        </div>
+        <div>
+          <div class="where">
+            <div>
+              <h3 data-sk="Váš Google Drive" data-en="Your Google Drive">Váš Google Drive</h3>
+              <p class="when" data-sk="Patrí vám. Oncofiles ho číta zhruba každé 2 minúty." data-en="Belongs to you. Oncofiles reads it about every 2 minutes.">Patrí vám. Oncofiles ho číta zhruba každé 2 minúty.</p>
+              <ul>
+                <li data-sk="originálne PDF, skeny a fotky" data-en="original PDFs, scans and photos">originálne PDF, skeny a fotky</li>
+                <li data-sk="prepisy .md vedľa súborov" data-en=".md transcripts next to the files">prepisy .md vedľa súborov</li>
+                <li data-sk="README s pravidlami priečinka" data-en="the README with the folder rules">README s pravidlami priečinka</li>
+              </ul>
+            </div>
+            <div>
+              <h3 data-sk="Náš server na Slovensku (EÚ)" data-en="Our server in Slovakia (EU)">Náš server na Slovensku (EÚ)</h3>
+              <p class="when" data-sk="Šifrovaný disk, správa len cez súkromnú VPN." data-en="Encrypted disk, admin access only via a private VPN.">Šifrovaný disk, správa len cez súkromnú VPN.</p>
+              <ul>
+                <li data-sk="lokálny model na OCR a zatriedenie: obsah dokumentov pri spracovaní na pozadí neopúšťa server" data-en="a local model for OCR and filing: document content does not leave the server during background processing">lokálny model na OCR a zatriedenie: obsah dokumentov pri spracovaní na pozadí neopúšťa server</li>
+                <li data-sk="databáza: index, prečítaný text a hodnoty s ich pôvodom" data-en="a database: the index, the extracted text and the values with their provenance">databáza: index, prečítaný text a hodnoty s ich pôvodom</li>
+              </ul>
+            </div>
+            <div>
+              <h3>Claude / ChatGPT</h3>
+              <p class="when" data-sk="Len keď sa v nich sami spýtate." data-en="Only when you ask there yourself.">Len keď sa v nich sami spýtate.</p>
+              <ul>
+                <li data-sk="dostanú výsledky nástrojov k vašej otázke: texty, hodnoty, odkazy na zdroj" data-en="they receive the tool results for your question: text, values, source links">dostanú výsledky nástrojov k vašej otázke: texty, hodnoty, odkazy na zdroj</li>
+                <li data-sk="na pozadí sa tam nič neposiela" data-en="nothing is sent there in the background">na pozadí sa tam nič neposiela</li>
+                <li data-sk="uchovávanie určuje váš plán u Anthropic či OpenAI" data-en="retention follows your Anthropic or OpenAI plan">uchovávanie určuje váš plán u Anthropic či OpenAI</li>
+              </ul>
+            </div>
+          </div>
+          <p class="aside" data-sk="Pacienti sú v databáze od seba oddelení a každý prístup sa overuje: k pacientovi sa dostane len ten, komu bol priradený. Kód je otvorený, takže si to môžete overiť." data-en="Patients are separated from each other in the database and every access is checked: only people assigned to a patient can reach them. The code is open, so you can verify this.">Pacienti sú v databáze od seba oddelení a každý prístup sa overuje: k pacientovi sa dostane len ten, komu bol priradený. Kód je otvorený, takže si to môžete overiť.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- 6. Connect -->
+    <section class="block" id="connect">
+      <div class="wrap grid">
+        <div class="side">
+          <h2 data-sk="Ako to pripojím ku Claude alebo ChatGPT?" data-en="How do I connect it to Claude or ChatGPT?">Ako to pripojím ku Claude alebo ChatGPT?</h2>
+          <p data-sk="Oncofiles je MCP server, rozšírenie pre vášho AI asistenta. Potom sa pýtate bežnou rečou a asistent si sám vyžiada potrebné záznamy." data-en="Oncofiles is an MCP server, an extension for your AI assistant. Then you ask in plain language and the assistant fetches the records it needs.">Oncofiles je MCP server, rozšírenie pre vášho AI asistenta. Potom sa pýtate bežnou rečou a asistent si sám vyžiada potrebné záznamy.</p>
+        </div>
+        <div>
+          <div class="how">
+            <div>
+              <h3>Claude.ai</h3>
+              <ol>
+                <li>Settings › Connectors › Add custom connector</li>
+                <li><span data-sk="URL:" data-en="URL:">URL:</span> <code>https://oncofiles.com/mcp</code></li>
+                <li data-sk="OAuth polia nechajte prázdne, Add a prihláste sa cez Google" data-en="Leave the OAuth fields blank, click Add and sign in with Google">OAuth polia nechajte prázdne, Add a prihláste sa cez Google</li>
+              </ol>
+            </div>
+            <div>
+              <h3>ChatGPT</h3>
+              <ol>
+                <li>Settings › Connectors › Advanced › Developer Mode</li>
+                <li><span data-sk="Pridajte server:" data-en="Add the server:">Pridajte server:</span> <code>https://oncofiles.com/mcp</code></li>
+                <li data-sk="Prihláste sa cez Google a vyberte pacienta" data-en="Sign in with Google and choose the patient">Prihláste sa cez Google a vyberte pacienta</li>
+              </ol>
+            </div>
+          </div>
+          <p class="other"><span data-sk="Claude Desktop, Claude Code a iné MCP klienty používajú tú istú adresu s prístupovým tokenom z dashboardu, napríklad" data-en="Claude Desktop, Claude Code and other MCP clients use the same address with an access token from the dashboard, for example">Claude Desktop, Claude Code a iné MCP klienty používajú tú istú adresu s prístupovým tokenom z dashboardu, napríklad</span> <code>claude mcp add oncofiles [URL]</code>.</p>
+
+          <div class="transcript" aria-label="Example conversation (invented data)">
+            <p class="who" data-sk="Príklad z Claude.ai, vymyslené údaje" data-en="Example from Claude.ai, invented data">Príklad z Claude.ai, vymyslené údaje</p>
+            <p class="q" data-sk="Ako sa vyvíjal hemoglobín od začiatku roka? Chcem to ukázať lekárke vo štvrtok." data-en="How has haemoglobin changed since January? I want to show my doctor on Thursday.">Ako sa vyvíjal hemoglobín od začiatku roka? Chcem to ukázať lekárke vo štvrtok.</p>
+            <p class="tool">oncofiles: fact_series(code="HGB")</p>
+            <div class="a">
+              <p data-sk="Mám štyri overené merania (dátumy odberu):" data-en="I have four verified measurements (sample dates):">Mám štyri overené merania (dátumy odberu):</p>
+              <p class="nums">12. 1. 2027: 138 g/L; 9. 2. 2027: 124 g/L; 9. 3. 2027: 119 g/L; 15. 3. 2027: 131 g/L</p>
+              <p data-sk="Po poklese vo februári a marci je posledná hodnota opäť v norme (120–160 g/L)." data-en="After a dip in February and March the latest value is back in range (120–160 g/L).">Po poklese vo februári a marci je posledná hodnota opäť v norme (120–160 g/L).</p>
+              <p class="srcs"><span data-sk="Zdroj poslednej hodnoty:" data-en="Source of the latest value:">Zdroj poslednej hodnoty:</span> 20270315_JanaTestova_NemPrikladov_Labs_BloodCount.pdf, <span data-sk="strana 1, riadok 11" data-en="page 1, line 11">strana 1, riadok 11</span></p>
+            </div>
+          </div>
+
+          <div class="soon">
+            <h3 data-sk="Pripravujeme" data-en="Coming soon">Pripravujeme</h3>
+            <ul>
+              <li data-sk="Pripojenie vlastného Google Drive pre nových používateľov, november 2026" data-en="Connecting your own Google Drive for new users, November 2026">Pripojenie vlastného Google Drive pre nových používateľov, november 2026</li>
+              <li data-sk="Gmail a Kalendár (synchronizácia je zatiaľ pozastavená)" data-en="Gmail and Calendar (sync is paused for now)">Gmail a Kalendár (synchronizácia je zatiaľ pozastavená)</li>
+              <li data-sk="Rozpoznanie viacerých dokumentov v jednom PDF" data-en="Detecting several documents inside one PDF">Rozpoznanie viacerých dokumentov v jednom PDF</li>
+              <li data-sk="Lepšie čítanie starých rukou písaných záznamov" data-en="Better reading of old handwritten records">Lepšie čítanie starých rukou písaných záznamov</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 7. Family and people -->
     <section class="block" id="family">
-      <div class="container">
-        <div class="eyebrow" data-sk="Pre pacientov a opatrovateľov" data-en="For patients and caregivers">Pre pacientov a opatrovateľov</div>
-        <h2 data-sk="Môžem spravovať záznamy za niekoho z rodiny?" data-en="Can I manage records for someone in my family?">Môžem spravovať záznamy za niekoho z rodiny?</h2>
-        <div class="grid two">
-          <div class="card">
-            <div class="ic"><svg class="icon"><use href="#i-users"/></svg></div>
-            <h3 data-sk="Viac pacientov pod jedným účtom" data-en="Several patients under one account">Viac pacientov pod jedným účtom</h3>
-            <p data-sk="Mama, otec, partner aj vy — každý pacient má vlastný priečinok, vlastné pravidlá a vlastné hodnoty. Údaje sa medzi pacientmi nikdy nemiešajú." data-en="Mum, dad, partner and you — each patient has their own folder, rules and values. Data is never mixed between patients.">Mama, otec, partner aj vy — každý pacient má vlastný priečinok, vlastné pravidlá a vlastné hodnoty. Údaje sa medzi pacientmi nikdy nemiešajú.</p>
-          </div>
-          <div class="card">
-            <div class="ic"><svg class="icon"><use href="#i-check"/></svg></div>
-            <h3 data-sk="Prístup pre opatrovateľa" data-en="Caregiver access">Prístup pre opatrovateľa</h3>
-            <p data-sk="Opatrovateľ sa prihlási vlastným Google účtom a vidí len pacientov, ku ktorým má prístup. Pýtať sa môže vo svojom Claude alebo ChatGPT." data-en="A caregiver signs in with their own Google account and sees only the patients they have access to. They can ask in their own Claude or ChatGPT.">Opatrovateľ sa prihlási vlastným Google účtom a vidí len pacientov, ku ktorým má prístup. Pýtať sa môže vo svojom Claude alebo ChatGPT.</p>
-          </div>
+      <div class="wrap grid">
+        <div class="side">
+          <h2 data-sk="Môžem spravovať záznamy za niekoho z rodiny?" data-en="Can I manage records for someone in my family?">Môžem spravovať záznamy za niekoho z rodiny?</h2>
+          <p data-sk="Áno. Pod jedným účtom môžete mať viac pacientov, každého s vlastným priečinkom a vlastnými hodnotami; údaje sa medzi nimi nemiešajú. Opatrovateľ sa prihlási vlastným Google účtom a vidí len pacientov, ku ktorým má prístup." data-en="Yes. One account can hold several patients, each with their own folder and values; data is never mixed between them. A caregiver signs in with their own Google account and sees only the patients they have access to.">Áno. Pod jedným účtom môžete mať viac pacientov, každého s vlastným priečinkom a vlastnými hodnotami; údaje sa medzi nimi nemiešajú. Opatrovateľ sa prihlási vlastným Google účtom a vidí len pacientov, ku ktorým má prístup.</p>
         </div>
-
-        <figure class="story">
-          <blockquote data-sk="„Keď mojej manželke diagnostikovali metastatický kolorektálny karcinóm, mal som zrazu stovky dokumentov z rôznych nemocníc a laboratórií. Ako jej opatrovateľ som potreboval vedieť, ktoré číslo je z ktorého odberu a či mu môžem veriť. Tak vznikol Oncofiles.“" data-en="“When my wife was diagnosed with metastatic colorectal cancer, I suddenly had hundreds of documents from different hospitals and labs. As her caregiver I needed to know which number came from which sample and whether I could trust it. That is how Oncofiles started.”">„Keď mojej manželke diagnostikovali metastatický kolorektálny karcinóm, mal som zrazu stovky dokumentov z rôznych nemocníc a laboratórií. Ako jej opatrovateľ som potreboval vedieť, ktoré číslo je z ktorého odberu a či mu môžem veriť. Tak vznikol Oncofiles.“</blockquote>
-          <figcaption class="by"><a href="https://www.linkedin.com/in/peterfusek/" rel="noreferrer noopener">Peter Fusek</a> — <span data-sk="zakladateľ a opatrovateľ. Sesterský projekt" data-en="founder and caregiver. Sister project">zakladateľ a opatrovateľ. Sesterský projekt</span> <a href="/oncoteam">Oncoteam</a> <span data-sk="pomáha záznamy analyzovať." data-en="helps analyse the records.">pomáha záznamy analyzovať.</span></figcaption>
-        </figure>
-
-        <div class="quotes">
-          <p class="quote"><span data-sk="„Moja mama bola onkologická pacientka a pri každej kontrole sa ma pýtala, či som jej všetky papiere priniesla.“" data-en="“My mom was a cancer patient and at every check-up she asked me if I brought all her papers.”">„Moja mama bola onkologická pacientka a pri každej kontrole sa ma pýtala, či som jej všetky papiere priniesla.“</span><span class="who">Monika I. · <span data-sk="digitálne procesy" data-en="digital processes">digitálne procesy</span></span></p>
-          <p class="quote"><span data-sk="„Toto by moje pacientky isto ocenili! Budem odporúčať.“" data-en="“My patients would definitely appreciate this! I'll be recommending it.”">„Toto by moje pacientky isto ocenili! Budem odporúčať.“</span><span class="who">Jessica Z. · <span data-sk="fyzioterapeutka v onkológii" data-en="oncology physiotherapist">fyzioterapeutka v onkológii</span></span></p>
-          <p class="quote"><span data-sk="„Ako človek s onko pacientom v rodine som vďačná za každý jeden pokrok a pomoc pri liečbe.“" data-en="“As someone with a cancer patient in the family, I'm grateful for every advancement and help with treatment.”">„Ako človek s onko pacientom v rodine som vďačná za každý jeden pokrok a pomoc pri liečbe.“</span><span class="who">Zuzana L. · <span data-sk="rodinná opatrovateľka" data-en="family caregiver">rodinná opatrovateľka</span></span></p>
-        </div>
-
-        <div class="people">
-          <div class="person"><div class="avatar">PF</div><div><b><a href="https://www.linkedin.com/in/peterfusek/" rel="noreferrer noopener">Peter Fusek</a></b><span class="role">CEO &amp; Founder</span><p data-sk="Spoluzakladateľ marketlocator (exit do Deutsche Telekom, 2019). 18+ rokov budovania technologických produktov." data-en="Co-founder of marketlocator (exit to Deutsche Telekom, 2019). 18+ years building tech products.">Spoluzakladateľ marketlocator (exit do Deutsche Telekom, 2019). 18+ rokov budovania technologických produktov.</p></div></div>
-          <div class="person"><div class="avatar b">PČ</div><div><b>Peter Čapkovič</b><span class="role">CTO &amp; Co-founder</span><p data-sk="Senior IT architekt s 20+ rokmi v enterprise bankingu. Python, SQL, systémová architektúra." data-en="Senior IT architect with 20+ years in enterprise banking. Python, SQL, systems architecture.">Senior IT architekt s 20+ rokmi v enterprise bankingu. Python, SQL, systémová architektúra.</p></div></div>
-          <div class="person"><div class="avatar c">IN</div><div><b><a href="https://www.instarea.com" rel="noreferrer noopener">Instarea</a></b><span class="role" data-sk="Bratislava · od 2008" data-en="Bratislava · since 2008">Bratislava · od 2008</span><p data-sk="Slovenská technologická firma, ktorá Oncofiles vyvíja a prevádzkuje." data-en="The Slovak technology company that builds and runs Oncofiles.">Slovenská technologická firma, ktorá Oncofiles vyvíja a prevádzkuje.</p></div></div>
+        <div>
+          <blockquote class="story" data-sk="„Keď mojej manželke diagnostikovali metastatický kolorektálny karcinóm, mal som zrazu stovky dokumentov z rôznych nemocníc a laboratórií. Potreboval som vedieť, ktoré číslo je z ktorého odberu a či mu môžem veriť. Tak vznikol Oncofiles.“" data-en="“When my wife was diagnosed with metastatic colorectal cancer, I suddenly had hundreds of documents from different hospitals and labs. I needed to know which number came from which sample and whether I could trust it. That is how Oncofiles started.”">„Keď mojej manželke diagnostikovali metastatický kolorektálny karcinóm, mal som zrazu stovky dokumentov z rôznych nemocníc a laboratórií. Potreboval som vedieť, ktoré číslo je z ktorého odberu a či mu môžem veriť. Tak vznikol Oncofiles.“</blockquote>
+          <p class="story-by"><a href="https://www.linkedin.com/in/peterfusek/" rel="noreferrer noopener">Peter Fusek</a>, <span data-sk="zakladateľ a opatrovateľ" data-en="founder and caregiver">zakladateľ a opatrovateľ</span></p>
+          <div class="voices">
+            <p><span class="q" data-sk="„Moja mama bola onkologická pacientka a pri každej kontrole sa ma pýtala, či som jej všetky papiere priniesla.“" data-en="“My mom was a cancer patient and at every check-up she asked me if I brought all her papers.”">„Moja mama bola onkologická pacientka a pri každej kontrole sa ma pýtala, či som jej všetky papiere priniesla.“</span><span class="by">Monika I., <span data-sk="digitálne procesy" data-en="digital processes">digitálne procesy</span></span></p>
+            <p><span class="q" data-sk="„Toto by moje pacientky isto ocenili! Budem odporúčať.“" data-en="“My patients would definitely appreciate this! I'll be recommending it.”">„Toto by moje pacientky isto ocenili! Budem odporúčať.“</span><span class="by">Jessica Z., <span data-sk="fyzioterapeutka v onkológii" data-en="oncology physiotherapist">fyzioterapeutka v onkológii</span></span></p>
+            <p><span class="q" data-sk="„Ako človek s onko pacientom v rodine som vďačná za každý jeden pokrok a pomoc pri liečbe.“" data-en="“As someone with a cancer patient in the family, I'm grateful for every advancement and help with treatment.”">„Ako človek s onko pacientom v rodine som vďačná za každý jeden pokrok a pomoc pri liečbe.“</span><span class="by">Zuzana L., <span data-sk="rodinná opatrovateľka" data-en="family caregiver">rodinná opatrovateľka</span></span></p>
+          </div>
+          <p class="team"><span data-sk="Oncofiles vyvíjajú" data-en="Oncofiles is built by">Oncofiles vyvíjajú</span> <a href="https://www.linkedin.com/in/peterfusek/" rel="noreferrer noopener">Peter Fusek</a> <span data-sk="a Peter Čapkovič v slovenskej technologickej firme" data-en="and Peter Čapkovič at the Slovak technology company">a Peter Čapkovič v slovenskej technologickej firme</span> <a href="https://www.instarea.com" rel="noreferrer noopener">Instarea</a><span data-sk=", ktorá od roku 2008 dodala 23 produktov." data-en=", which has shipped 23 products since 2008.">, ktorá od roku 2008 dodala 23 produktov.</span></p>
         </div>
       </div>
     </section>
 
-    <!-- 7. FAQ -->
+    <!-- 8. FAQ -->
     <section class="block" id="faq">
-      <div class="container">
-        <div class="eyebrow" data-sk="Časté otázky" data-en="FAQ">Časté otázky</div>
-        <h2 data-sk="Na čo sa ľudia pýtajú najčastejšie?" data-en="What do people ask most often?">Na čo sa ľudia pýtajú najčastejšie?</h2>
+      <div class="wrap grid">
+        <div class="side">
+          <h2 data-sk="Na čo sa ľudia pýtajú najčastejšie?" data-en="What do people ask most often?">Na čo sa ľudia pýtajú najčastejšie?</h2>
+        </div>
         <div class="faq">
           <details open>
             <summary><h3 data-sk="Posiela sa obsah mojich dokumentov do cloudovej AI?" data-en="Is the content of my documents sent to a cloud AI?">Posiela sa obsah mojich dokumentov do cloudovej AI?</h3></summary>
-            <div class="a"><p data-sk="Pri spracovaní na pozadí nie. Čítanie skenov (OCR) aj zatriedenie dokumentov beží na lokálnom modeli na našom serveri na Slovensku. Do Claude alebo ChatGPT ide len to, na čo sa v ňom sami spýtate — ako odpoveď nástroja na vašu otázku." data-en="Not in background processing. Reading scans (OCR) and classifying documents runs on a local model on our own server in Slovakia. Only what you ask about inside Claude or ChatGPT goes to that assistant — as the tool's answer to your question.">Pri spracovaní na pozadí nie. Čítanie skenov (OCR) aj zatriedenie dokumentov beží na lokálnom modeli na našom serveri na Slovensku. Do Claude alebo ChatGPT ide len to, na čo sa v ňom sami spýtate — ako odpoveď nástroja na vašu otázku.</p></div>
+            <div class="a"><p data-sk="Pri spracovaní na pozadí nie. Čítanie skenov (OCR) aj zatriedenie dokumentov beží na lokálnom modeli na našom serveri na Slovensku. Do Claude alebo ChatGPT ide len to, na čo sa v nich sami spýtate, ako odpoveď nástroja na vašu otázku." data-en="Not in background processing. Reading scans (OCR) and classifying documents runs on a local model on our own server in Slovakia. Only what you ask about inside Claude or ChatGPT goes to that assistant, as the tool's answer to your question.">Pri spracovaní na pozadí nie. Čítanie skenov (OCR) aj zatriedenie dokumentov beží na lokálnom modeli na našom serveri na Slovensku. Do Claude alebo ChatGPT ide len to, na čo sa v nich sami spýtate, ako odpoveď nástroja na vašu otázku.</p></div>
           </details>
           <details>
             <summary><h3 data-sk="Kde sú uložené moje dokumenty a údaje?" data-en="Where are my documents and data stored?">Kde sú uložené moje dokumenty a údaje?</h3></summary>
@@ -840,7 +896,7 @@
           </details>
           <details>
             <summary><h3 data-sk="Čo znamená „overené strojom“, „neoverené“ a „overené človekom“?" data-en="What do “machine-verified”, “unverified” and “human-verified” mean?">Čo znamená „overené strojom“, „neoverené“ a „overené človekom“?</h3></summary>
-            <div class="a"><p data-sk="Overené strojom: hodnotu prečítal model a druhé nezávislé čítanie potvrdilo rovnaké číslo aj dátum. Neoverené: potvrdenie chýba alebo nesúhlasí — taká hodnota sa nezapočíta do štatistík. Overené človekom: hodnotu skontroloval alebo opravil človek podľa zdrojového dokumentu." data-en="Machine-verified: the model read the value and a second independent reading confirmed the same number and date. Unverified: confirmation is missing or disagrees — such a value is excluded from statistics. Human-verified: a person checked or corrected the value against the source document.">Overené strojom: hodnotu prečítal model a druhé nezávislé čítanie potvrdilo rovnaké číslo aj dátum. Neoverené: potvrdenie chýba alebo nesúhlasí — taká hodnota sa nezapočíta do štatistík. Overené človekom: hodnotu skontroloval alebo opravil človek podľa zdrojového dokumentu.</p></div>
+            <div class="a"><p data-sk="Overené strojom: hodnotu prečítal model a druhé nezávislé čítanie potvrdilo rovnaké číslo aj dátum. Neoverené: potvrdenie chýba alebo nesúhlasí, a taká hodnota sa nezapočíta do štatistík. Overené človekom: hodnotu skontroloval alebo opravil človek podľa zdrojového dokumentu." data-en="Machine-verified: the model read the value and a second independent reading confirmed the same number and date. Unverified: confirmation is missing or disagrees, and such a value is excluded from statistics. Human-verified: a person checked or corrected the value against the source document.">Overené strojom: hodnotu prečítal model a druhé nezávislé čítanie potvrdilo rovnaké číslo aj dátum. Neoverené: potvrdenie chýba alebo nesúhlasí, a taká hodnota sa nezapočíta do štatistík. Overené človekom: hodnotu skontroloval alebo opravil človek podľa zdrojového dokumentu.</p></div>
           </details>
           <details>
             <summary><h3 data-sk="Zmaže Oncofiles niečo v mojom Drive?" data-en="Will Oncofiles delete anything in my Drive?">Zmaže Oncofiles niečo v mojom Drive?</h3></summary>
@@ -848,15 +904,15 @@
           </details>
           <details>
             <summary><h3 data-sk="Kedy si môžem pripojiť vlastný Google Drive?" data-en="When can I connect my own Google Drive?">Kedy si môžem pripojiť vlastný Google Drive?</h3></summary>
-            <div class="a"><p data-sk="Pre nových používateľov ho spúšťame v novembri 2026. Pridajte sa na zoznam vyššie a dáme vám vedieť emailom. Dovtedy si môžete pozrieť demo s ukážkovými dátami." data-en="We open it for new users in November 2026. Join the list above and we will let you know by email. Until then you can try the demo with sample data.">Pre nových používateľov ho spúšťame v novembri 2026. Pridajte sa na zoznam vyššie a dáme vám vedieť emailom. Dovtedy si môžete pozrieť demo s ukážkovými dátami.</p></div>
+            <div class="a"><p data-sk="Pre nových používateľov ho spúšťame v novembri 2026. Pridajte sa na zoznam hore na stránke a dáme vám vedieť emailom. Dovtedy si môžete pozrieť ukážku s vymyslenou pacientkou." data-en="We open it for new users in November 2026. Join the list at the top of the page and we will let you know by email. Until then you can look at the demo with an invented patient.">Pre nových používateľov ho spúšťame v novembri 2026. Pridajte sa na zoznam hore na stránke a dáme vám vedieť emailom. Dovtedy si môžete pozrieť ukážku s vymyslenou pacientkou.</p></div>
           </details>
           <details>
             <summary><h3 data-sk="Sú moje dáta v bezpečí, ak používam ChatGPT Free alebo Plus?" data-en="Is my data safe if I use ChatGPT Free or Plus?">Sú moje dáta v bezpečí, ak používam ChatGPT Free alebo Plus?</h3></summary>
-            <div class="a"><p data-sk="Pozor: ChatGPT Free, Plus a Pro štandardne používajú konverzácie na trénovanie modelov OpenAI. Je to vlastnosť vášho plánu, nie Oncofiles — no to, čo Oncofiles vráti na vašu otázku, je súčasťou konverzácie. Možnosti: vypnúť to v ChatGPT Settings → Data Controls, použiť ChatGPT Team/Enterprise, alebo Claude." data-en="Be aware: ChatGPT Free, Plus and Pro use conversations to train OpenAI models by default. That is a property of your plan, not of Oncofiles — but what Oncofiles returns to your question is part of the conversation. Options: switch it off in ChatGPT Settings → Data Controls, use ChatGPT Team/Enterprise, or use Claude.">Pozor: ChatGPT Free, Plus a Pro štandardne používajú konverzácie na trénovanie modelov OpenAI. Je to vlastnosť vášho plánu, nie Oncofiles — no to, čo Oncofiles vráti na vašu otázku, je súčasťou konverzácie. Možnosti: vypnúť to v ChatGPT Settings → Data Controls, použiť ChatGPT Team/Enterprise, alebo Claude.</p></div>
+            <div class="a"><p data-sk="Pozor: ChatGPT Free, Plus a Pro štandardne používajú konverzácie na trénovanie modelov OpenAI. Je to vlastnosť vášho plánu, nie Oncofiles, no to, čo Oncofiles vráti na vašu otázku, je súčasťou konverzácie. Možnosti: vypnúť to v ChatGPT Settings › Data Controls, použiť ChatGPT Team/Enterprise, alebo Claude." data-en="Be aware: ChatGPT Free, Plus and Pro use conversations to train OpenAI models by default. That is a property of your plan, not of Oncofiles, but what Oncofiles returns to your question is part of the conversation. Options: switch it off in ChatGPT Settings › Data Controls, use ChatGPT Team/Enterprise, or use Claude.">Pozor: ChatGPT Free, Plus a Pro štandardne používajú konverzácie na trénovanie modelov OpenAI. Je to vlastnosť vášho plánu, nie Oncofiles, no to, čo Oncofiles vráti na vašu otázku, je súčasťou konverzácie. Možnosti: vypnúť to v ChatGPT Settings › Data Controls, použiť ChatGPT Team/Enterprise, alebo Claude.</p></div>
           </details>
           <details>
             <summary><h3 data-sk="Funguje to so slovenskými lekárskymi správami?" data-en="Does it work with Slovak medical reports?">Funguje to so slovenskými lekárskymi správami?</h3></summary>
-            <div class="a"><p data-sk="Áno, tlačené slovenské správy čítame spoľahlivo. Staré rukou písané záznamy zatiaľ slabšie — preto má každá hodnota svoj stav overenia a odkaz na zdrojový riadok." data-en="Yes, printed Slovak reports are read reliably. Old handwritten records are weaker for now — which is why every value carries a verification state and a link to its source line.">Áno, tlačené slovenské správy čítame spoľahlivo. Staré rukou písané záznamy zatiaľ slabšie — preto má každá hodnota svoj stav overenia a odkaz na zdrojový riadok.</p></div>
+            <div class="a"><p data-sk="Áno, tlačené slovenské správy čítame spoľahlivo. Staré rukou písané záznamy zatiaľ slabšie, preto má každá hodnota svoj stav overenia a odkaz na zdrojový riadok." data-en="Yes, printed Slovak reports are read reliably. Old handwritten records are weaker for now, which is why every value carries a verification state and a link to its source line.">Áno, tlačené slovenské správy čítame spoľahlivo. Staré rukou písané záznamy zatiaľ slabšie, preto má každá hodnota svoj stav overenia a odkaz na zdrojový riadok.</p></div>
           </details>
           <details>
             <summary><h3 data-sk="Koľko to stojí a kto to platí?" data-en="How much does it cost and who pays for it?">Koľko to stojí a kto to platí?</h3></summary>
@@ -874,53 +930,51 @@
       </div>
     </section>
 
-    <!-- 8. Final CTA -->
-    <section class="block cta" id="join">
-      <div class="container">
-        <h2 data-sk="Chcete byť medzi prvými?" data-en="Want to be among the first?">Chcete byť medzi prvými?</h2>
-        <p class="lede" style="margin:0 auto" data-sk="Open source, zadarmo do 500 dokumentov na pacienta. Pripájanie vlastného Drive spúšťame v novembri 2026." data-en="Open source, free up to 500 documents per patient. Connecting your own Drive opens in November 2026.">Open source, zadarmo do 500 dokumentov na pacienta. Pripájanie vlastného Drive spúšťame v novembri 2026.</p>
-        <div class="waitlist">
+    <!-- Closing -->
+    <section class="block closing" id="join">
+      <div class="wrap grid">
+        <div class="side">
+          <h2 data-sk="Chcete byť medzi prvými?" data-en="Want to be among the first?">Chcete byť medzi prvými?</h2>
+        </div>
+        <div>
+          <p data-sk="Open source, zadarmo do 500 dokumentov na pacienta. Pripájanie vlastného Drive spúšťame v novembri 2026." data-en="Open source, free up to 500 documents per patient. Connecting your own Drive opens in November 2026.">Open source, zadarmo do 500 dokumentov na pacienta. Pripájanie vlastného Drive spúšťame v novembri 2026.</p>
           <form class="nl-form" data-nl-source="waitlist-bottom">
             <label class="sr-only" for="wl-email-bottom" data-sk="Váš email" data-en="Your email">Váš email</label>
             <input id="wl-email-bottom" type="email" required autocomplete="email" data-placeholder-sk="Váš email" data-placeholder-en="Your email" placeholder="Váš email">
-            <button type="submit" class="btn btn-primary nl-btn" data-label-sk="Pridať sa na zoznam" data-label-en="Join the waitlist" data-sk="Pridať sa na zoznam" data-en="Join the waitlist">Pridať sa na zoznam</button>
+            <button type="submit" class="btn nl-btn" data-label-sk="Pridať sa na zoznam" data-label-en="Join the waitlist" data-sk="Pridať sa na zoznam" data-en="Join the waitlist">Pridať sa na zoznam</button>
           </form>
           <div class="nl-msg" data-nl-msg="waitlist-bottom" role="status"></div>
-        </div>
-        <div class="hero-cta" style="justify-content:center;margin-top:18px">
-          <a href="/demo" class="btn btn-ghost" data-sk="Pozrieť demo" data-en="See the demo">Pozrieť demo</a>
-          <a href="https://github.com/peter-fusek/oncofiles" class="btn btn-ghost" rel="noreferrer noopener" data-sk="Kód na GitHube" data-en="Code on GitHub">Kód na GitHube</a>
+          <p><a href="/demo" data-sk="Pozrieť ukážku" data-en="See the demo">Pozrieť ukážku</a> <span aria-hidden="true">/</span> <a href="https://github.com/peter-fusek/oncofiles" rel="noreferrer noopener" data-sk="Kód na GitHube" data-en="Code on GitHub">Kód na GitHube</a></p>
         </div>
       </div>
     </section>
   </main>
 
   <footer>
-    <div class="container">
+    <div class="wrap">
       <p class="disc" data-sk="Oncofiles je informačný nástroj pre pacienta a opatrovateľa. Nenahrádza lekára, nediagnostikuje a nenavrhuje liečbu. Každý klinický záver si overte u svojho lekára." data-en="Oncofiles is an information tool for the patient and caregiver. It does not replace a physician, does not diagnose, and does not propose treatment. Verify every clinical conclusion with your doctor.">Oncofiles je informačný nástroj pre pacienta a opatrovateľa. Nenahrádza lekára, nediagnostikuje a nenavrhuje liečbu. Každý klinický záver si overte u svojho lekára.</p>
       <div class="links">
-        <a href="/demo">Demo</a>
+        <a href="/demo" data-sk="Ukážka" data-en="Demo">Ukážka</a>
         <a href="/dashboard">Dashboard</a>
-        <a href="/health">Status</a>
+        <a href="/health" data-sk="Stav" data-en="Status">Stav</a>
         <a href="/privacy" data-sk="Ochrana osobných údajov" data-en="Privacy">Ochrana osobných údajov</a>
         <a href="/terms" data-sk="Podmienky" data-en="Terms">Podmienky</a>
         <a href="https://github.com/peter-fusek/oncofiles/issues/new" rel="noreferrer noopener" data-sk="Nahlásiť chybu" data-en="Report a bug">Nahlásiť chybu</a>
         <a href="/llms.txt">llms.txt</a>
       </div>
-      <div>&copy; 2025–2026 <a href="https://www.linkedin.com/in/peterfusek/" rel="noreferrer noopener">Peter Fusek</a> · <span data-sk="Vytvorené v" data-en="Built by">Vytvorené v</span> <a href="https://www.instarea.com" rel="noreferrer noopener">Instarea</a> · <a href="https://github.com/peter-fusek/oncofiles/releases" rel="noreferrer noopener" data-stat="version">v{{VERSION}}</a></div>
+      <p>&copy; 2025–2026 <a href="https://www.linkedin.com/in/peterfusek/" rel="noreferrer noopener">Peter Fusek</a>, <a href="https://www.instarea.com" rel="noreferrer noopener">Instarea</a>. <a href="https://github.com/peter-fusek/oncofiles/releases" rel="noreferrer noopener">v{{VERSION}}</a></p>
     </div>
   </footer>
 
-  <!-- Bug report -->
-  <button id="bug-fab" type="button" data-action="openBug" aria-label="Report a bug" title="Report a bug"><svg class="icon"><use href="#i-bug"/></svg></button>
+  <button id="bug-fab" type="button" data-action="openBug" aria-label="Report a bug" title="Report a bug"><svg class="ic"><use href="#i-bug"/></svg></button>
   <div id="bug-overlay" role="dialog" aria-modal="true" aria-labelledby="bug-h">
     <div class="bug-box">
       <h3 id="bug-h" data-sk="Nahlásiť chybu" data-en="Report a bug">Nahlásiť chybu</h3>
       <input id="bug-title" type="text" maxlength="120" data-placeholder-sk="Čo nefunguje? (jeden riadok)" data-placeholder-en="What went wrong? (one line)" placeholder="Čo nefunguje? (jeden riadok)">
       <textarea id="bug-desc" rows="3" data-placeholder-sk="Ďalšie podrobnosti (voliteľné)" data-placeholder-en="More details (optional)" placeholder="Ďalšie podrobnosti (voliteľné)"></textarea>
       <div class="bug-actions">
-        <button type="button" class="btn btn-ghost" data-action="closeBug" data-sk="Zrušiť" data-en="Cancel">Zrušiť</button>
-        <a id="bug-submit" class="btn btn-primary" href="https://github.com/peter-fusek/oncofiles/issues/new" target="_blank" rel="noreferrer" data-sk="Otvoriť na GitHube" data-en="Open on GitHub">Otvoriť na GitHube</a>
+        <button type="button" class="linkbtn" data-action="closeBug" data-sk="Zrušiť" data-en="Cancel">Zrušiť</button>
+        <a id="bug-submit" class="btn" href="https://github.com/peter-fusek/oncofiles/issues/new" target="_blank" rel="noreferrer" data-sk="Otvoriť na GitHube" data-en="Open on GitHub">Otvoriť na GitHube</a>
       </div>
     </div>
   </div>
@@ -928,41 +982,34 @@
   <script>
   (function () {
     'use strict';
-    // No inline event-handler attributes on this page: every interaction is
-    // declared as data-action="fn|arg" and routed through this dispatcher,
-    // the same pattern dashboard.js uses (#525). All DOM updates use
-    // textContent / attributes — never innerHTML.
+    // No inline event-handler attributes: interactions are data-action="fn|arg"
+    // routed through this dispatcher (same pattern as dashboard.js, #525).
+    // DOM updates use textContent/attributes only, never innerHTML.
     var lang = 'sk';
     function store(k, v) { try { localStorage.setItem(k, v); } catch (e) { /* private mode */ } }
     function load(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
+    var reduceMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
-    var STATE = {
-      machine: { sk: 'overené strojom', en: 'machine-verified',
-        note_sk: 'Druhé nezávislé čítanie našlo rovnaké číslo aj rovnaký dátum → overené strojom.',
-        note_en: 'A second independent reading found the same number and the same date → machine-verified.' },
-      human: { sk: 'overené človekom', en: 'human-verified',
-        note_sk: 'Hodnotu skontroloval človek podľa zdrojového riadku → overené človekom.',
-        note_en: 'A person checked the value against the source line → human-verified.' },
-      unverified: { sk: 'neoverené', en: 'unverified',
-        note_sk: 'Pri hodnote chýba dátum odberu a druhé čítanie ho nepotvrdilo → neoverené, do štatistík sa nepočíta.',
-        note_en: 'The value has no sample date of its own and the second reading did not confirm it → unverified, left out of statistics.' }
+    /* Provenance card */
+    var NOTE = {
+      machine: ['Druhé nezávislé čítanie našlo rovnaké číslo aj rovnaký dátum odberu.', 'A second independent reading found the same number and the same sample date.'],
+      human: ['Hodnotu skontroloval človek podľa zdrojového riadku.', 'A person checked the value against the source line.'],
+      unverified: ['Pri tejto hodnote je uvedený iný odber ako pri ostatných a druhé čítanie dátum nepotvrdilo. Do trendov sa nepočíta.', 'This value refers to a different sample than the rest and the second reading did not confirm the date. It stays out of trends.']
     };
     var current = null;
-
     function pickValue(key) {
       var row = document.querySelector('.vrow[data-line="' + key + '"]');
       if (!row) return;
       current = row;
       document.querySelectorAll('.vrow').forEach(function (r) { r.setAttribute('aria-pressed', r === row ? 'true' : 'false'); });
-      document.querySelectorAll('.dl[data-src]').forEach(function (l) { l.classList.toggle('on', l.getAttribute('data-src') === key); });
-      var st = STATE[row.getAttribute('data-state')] || STATE.unverified;
-      var sample = row.getAttribute('data-sample');
-      document.getElementById('pf-sample').textContent = sample === '?' ? (lang === 'en' ? 'not stated' : 'neuvedený') : sample;
-      document.getElementById('pf-src').textContent = (lang === 'en' ? 'p. ' : 'str. ') + row.getAttribute('data-page') + (lang === 'en' ? ' · l. ' : ' · r. ') + row.getAttribute('data-ln');
-      document.getElementById('pf-state').textContent = st[lang];
-      document.getElementById('pf-note').textContent = st['note_' + lang];
+      document.querySelectorAll('.sheet .ln[data-src]').forEach(function (l) { l.classList.toggle('on', l.getAttribute('data-src') === key); });
+      var n = NOTE[row.getAttribute('data-state')] || NOTE.machine;
+      var note = document.getElementById('pf-note');
+      note.textContent = lang === 'sk' ? n[0] : n[1];
+      note.setAttribute('data-sk', n[0]); note.setAttribute('data-en', n[1]);
     }
 
+    /* Language */
     function applyLang(l) {
       lang = l;
       store('oncofiles_lang', l);
@@ -974,19 +1021,50 @@
         if (el.tagName === 'META') el.setAttribute('content', val);
         else el.textContent = val;
       });
-      document.querySelectorAll('[data-placeholder-' + l + ']').forEach(function (el) {
-        el.setAttribute('placeholder', el.getAttribute('data-placeholder-' + l));
-      });
-      document.querySelectorAll('.num').forEach(function (el) {
-        if (el.closest('.vsub')) {
-          var r = el.closest('.vrow');
-          el.textContent = (l === 'en' ? 'p. ' : 'str. ') + r.getAttribute('data-page') + (l === 'en' ? ' · l. ' : ' · r. ') + r.getAttribute('data-ln');
-        }
-      });
-      if (current) pickValue(current.getAttribute('data-line'));
+      document.querySelectorAll('[data-placeholder-' + l + ']').forEach(function (el) { el.setAttribute('placeholder', el.getAttribute('data-placeholder-' + l)); });
+      document.querySelectorAll('[data-' + l + '-alt]').forEach(function (el) { el.setAttribute('alt', el.getAttribute('data-' + l + '-alt')); });
+      document.querySelectorAll('[data-' + l + '-label]').forEach(function (el) { el.setAttribute('aria-label', el.getAttribute('data-' + l + '-label')); });
     }
     function toggleLang() { applyLang(lang === 'sk' ? 'en' : 'sk'); }
 
+    /* Hero animation: measure where each file has to fly, then run the CSS loop */
+    var stage = document.getElementById('stage');
+    function measure() {
+      if (!stage) return;
+      var proc = document.querySelector('#proc .scan');
+      if (!proc) return;
+      var pr = proc.getBoundingClientRect();
+      stage.querySelectorAll('.paper').forEach(function (p) {
+        var k = p.getAttribute('data-k');
+        var row = stage.querySelector('.gd-row[data-k="' + k + '"]');
+        if (!row) return;
+        // Measure without the animation transform: use the element's layout box.
+        var cs = p.style;
+        var r = p.getBoundingClientRect(), rr = row.getBoundingClientRect();
+        var cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+        cs.setProperty('--mx', Math.round(pr.left + pr.width / 2 - cx) + 'px');
+        cs.setProperty('--my', Math.round(pr.top + pr.height / 2 - cy) + 'px');
+        cs.setProperty('--tx', Math.round(rr.left + 40 - cx) + 'px');
+        cs.setProperty('--ty', Math.round(rr.top + rr.height / 2 - cy) + 'px');
+      });
+    }
+    function startStage() {
+      if (!stage || reduceMotion) return;
+      measure();
+      stage.classList.add('run');
+      var t = null;
+      window.addEventListener('resize', function () {
+        clearTimeout(t);
+        t = setTimeout(function () { stage.classList.remove('run'); measure(); void stage.offsetWidth; stage.classList.add('run'); }, 200);
+      });
+      if ('IntersectionObserver' in window) {
+        new IntersectionObserver(function (entries) {
+          entries.forEach(function (e) { stage.classList.toggle('paused', !e.isIntersecting); });
+        }).observe(stage);
+      }
+    }
+
+    /* Bug report */
     function updateBugLink() {
       var t = encodeURIComponent(document.getElementById('bug-title').value.trim() || 'Landing page bug report');
       var body = document.getElementById('bug-desc').value.trim();
@@ -1015,11 +1093,6 @@
       if (el) dispatch(el.getAttribute('data-action'));
       if (e.target.id === 'bug-overlay') closeBug();
     });
-    // Hover/focus preview on the value card (desktop pointer + keyboard).
-    document.addEventListener('mouseover', function (e) {
-      var row = e.target.closest('.vrow');
-      if (row && row !== current) dispatch(row.getAttribute('data-action'));
-    });
     document.addEventListener('focusin', function (e) {
       var row = e.target.closest('.vrow');
       if (row && row !== current) dispatch(row.getAttribute('data-action'));
@@ -1029,7 +1102,7 @@
       if (e.target.id === 'bug-title' || e.target.id === 'bug-desc') updateBugLink();
     });
 
-    // Waitlist / newsletter — same backend as before (/api/newsletter/*).
+    /* Waitlist: existing newsletter backend (/api/newsletter/*) */
     function nlSubmit(form) {
       var source = form.getAttribute('data-nl-source');
       var input = form.querySelector('input[type="email"]');
@@ -1062,7 +1135,7 @@
         .then(function (res) {
           if (res === null) return;
           if (res.ok && res.data.ok) {
-            msgEl.textContent = lang === 'en' ? 'Thank you — check your email.' : 'Ďakujeme — skontrolujte si email.';
+            msgEl.textContent = lang === 'en' ? 'Thank you, check your email.' : 'Ďakujeme, skontrolujte si email.';
             msgEl.className = 'nl-msg success';
             input.value = '';
             if (typeof gtag === 'function') gtag('event', 'newsletter_signup', { source: source });
@@ -1091,6 +1164,8 @@
     current = document.querySelector('.vrow[aria-pressed="true"]');
     var initial = urlLang || load('oncofiles_lang') || 'sk';
     if (initial === 'en') applyLang('en');
+    if (document.readyState === 'complete') startStage();
+    else window.addEventListener('load', startStage);
   })();
   </script>
 </body>

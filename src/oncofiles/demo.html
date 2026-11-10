@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="sk" data-demo="1">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title data-sk="Ukážka – Oncofiles" data-en="Demo – Oncofiles">Ukážka – Oncofiles</title>
+  <meta name="description" content="Oncofiles demo with an invented patient: lab trends with source lines, verification states and a document view.">
+  <meta name="robots" content="noindex">
+  <meta name="theme-color" content="#f6f4ef" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#151918" media="(prefers-color-scheme: dark)">
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,wght@0,400;0,500;0,700;1,400&family=DM+Serif+Display&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+  <link rel="stylesheet" href="/demo.css">
+  <script src="/demo.js" defer></script>
+</head>
+<body>
+  <header class="bar">
+    <a class="logo" href="/" aria-label="Oncofiles">onco<span>files</span></a>
+    <p class="bar-note" data-sk="Ukážka s vymyslenou pacientkou. Žiadne skutočné údaje." data-en="Demo with an invented patient. No real data.">Ukážka s vymyslenou pacientkou. Žiadne skutočné údaje.</p>
+    <button class="lang" type="button" id="lang-toggle" data-action="toggleLang" aria-label="Switch language / Prepnúť jazyk">EN</button>
+  </header>
+
+  <main id="demo" aria-busy="true">
+    <section class="overview" aria-labelledby="patient-name">
+      <div class="who">
+        <h1 id="patient-name">Jana Testová</h1>
+        <p class="sub" id="patient-sub"></p>
+      </div>
+      <p class="verify" id="verify-summary"></p>
+    </section>
+
+    <div class="cols">
+      <section class="trends" aria-labelledby="trends-h">
+        <h2 id="trends-h" data-sk="Laboratórne hodnoty" data-en="Lab values">Laboratórne hodnoty</h2>
+        <p class="hint" data-sk="Posledná overená hodnota, dátum odberu a riadok, z ktorého bola prečítaná." data-en="Latest verified value, sample date and the line it was read from.">Posledná overená hodnota, dátum odberu a riadok, z ktorého bola prečítaná.</p>
+        <table class="tt">
+          <thead>
+            <tr>
+              <th scope="col" data-sk="Hodnota" data-en="Test">Hodnota</th>
+              <th scope="col" class="c-spark" data-sk="Priebeh" data-en="Trend">Priebeh</th>
+              <th scope="col" class="c-num" data-sk="Posledná" data-en="Latest">Posledná</th>
+              <th scope="col" class="c-date" data-sk="Odber" data-en="Sampled">Odber</th>
+              <th scope="col" data-sk="Zdroj" data-en="Source">Zdroj</th>
+            </tr>
+          </thead>
+          <tbody id="trend-rows"></tbody>
+        </table>
+      </section>
+
+      <section class="docs" aria-labelledby="docs-h">
+        <h2 id="docs-h" data-sk="Dokumenty" data-en="Documents">Dokumenty</h2>
+        <ol class="doc-list" id="doc-list"></ol>
+      </section>
+    </div>
+
+    <section class="docview" id="docview" aria-labelledby="doc-title">
+      <div class="dv-head">
+        <h2 id="doc-title"></h2>
+        <p class="dv-meta"><span id="doc-date"></span> <span id="doc-inst"></span></p>
+        <p class="dv-file" id="doc-file"></p>
+      </div>
+      <div class="dv-grid">
+        <figure class="page" aria-label="Page preview">
+          <div class="sheet" id="sheet"></div>
+          <figcaption id="page-cap"></figcaption>
+        </figure>
+        <div class="extract">
+          <h3 data-sk="Prečítané hodnoty" data-en="Values read">Prečítané hodnoty</h3>
+          <p class="hint" id="extract-hint"></p>
+          <table class="vt">
+            <thead>
+              <tr>
+                <th scope="col" data-sk="Hodnota" data-en="Test">Hodnota</th>
+                <th scope="col" class="c-num" data-sk="Výsledok" data-en="Result">Výsledok</th>
+                <th scope="col" class="c-date" data-sk="Odber" data-en="Sampled">Odber</th>
+                <th scope="col" data-sk="Riadok" data-en="Line">Riadok</th>
+                <th scope="col" data-sk="Stav" data-en="State">Stav</th>
+              </tr>
+            </thead>
+            <tbody id="value-rows"></tbody>
+          </table>
+          <p class="state-note" id="state-note"></p>
+        </div>
+      </div>
+    </section>
+
+    <section class="next">
+      <p data-sk="Pripájanie vlastného Google Drive spúšťame v novembri 2026." data-en="Connecting your own Google Drive opens in November 2026.">Pripájanie vlastného Google Drive spúšťame v novembri 2026.</p>
+      <p class="next-links">
+        <a class="btn" href="/#waitlist" data-sk="Pridať sa na zoznam" data-en="Join the waitlist">Pridať sa na zoznam</a>
+        <a href="/" data-sk="Späť na oncofiles.com" data-en="Back to oncofiles.com">Späť na oncofiles.com</a>
+      </p>
+    </section>
+  </main>
+  <p class="foot"><span data-sk="Všetky mená, hodnoty a dátumy sú vymyslené." data-en="All names, values and dates are invented.">Všetky mená, hodnoty a dátumy sú vymyslené.</span> v{{VERSION}}</p>
+</body>
+</html>

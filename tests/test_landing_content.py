@@ -86,13 +86,18 @@ def _req(path: str) -> Request:
     return Request({"type": "http", "method": "GET", "path": path, "headers": []})
 
 
-async def test_demo_route_marks_demo_mode():
-    """#605: /demo used to inject an inline <script> by replacing the first
-    bare `<script>` tag — dashboard.html has none since #525, so the demo
-    silently showed the login gate."""
+async def test_demo_route_serves_the_standalone_demo():
+    """#605 + Nov 2026 redesign: /demo is its own page (demo.html + demo.js),
+    not the operator dashboard in demo mode. It must not load dashboard.js,
+    so it cannot reach an authenticated endpoint."""
     resp = await demo_dashboard(_req("/demo"))
     html = resp.body.decode()
-    assert '<html data-demo="1"' in html
+    assert 'data-demo="1"' in html
+    assert '<script src="/demo.js" defer></script>' in html
+    assert "/dashboard.js" not in html
+    assert "{{VERSION}}" not in html
+    assert not re.search(r"\son[a-z]+\s*=", html), "no inline event handlers"
+    # dashboard.js still honours the flag if anyone serves it with data-demo.
     js = (SRC / "dashboard.js").read_text(encoding="utf-8")
     assert "getAttribute('data-demo') === '1'" in js
 
@@ -294,3 +299,125 @@ def test_dashboard_phone_layout_does_not_widen_the_page():
         ".remedy-row { flex-wrap: wrap;",
     ):
         assert rule in block, rule
+
+
+# ── Standalone demo (Nov 2026 redesign) ───────────────────────────────
+
+DEMO_HTML = (SRC / "demo.html").read_text(encoding="utf-8")
+DEMO_JS = (SRC / "demo.js").read_text(encoding="utf-8")
+DEMO_CSS = (SRC / "demo.css").read_text(encoding="utf-8")
+
+
+def test_demo_js_only_fetches_demo_data():
+    assert "var DEMO_ALLOWED_PATHS = ['/api/demo-data'];" in DEMO_JS
+    fetched = set(re.findall(r"fetch\(\s*'([^']+)'", DEMO_JS))
+    assert fetched == {"/api/demo-data"}
+    # The guard wraps fetch before the single data request is made.
+    assert DEMO_JS.index("window.fetch = function") < DEMO_JS.index("fetch('/api/demo-data')")
+    assert "innerHTML" not in DEMO_JS.replace("there is no innerHTML", "")
+
+
+def test_demo_page_is_bilingual():
+    parser = _TextWithoutI18n()
+    body = DEMO_HTML[DEMO_HTML.index("<body>") :]
+    parser.feed(body)
+    # Brand, language switch label, invented name and version need no translation.
+    allowed = {"onco", "files", "EN", "Jana Testová", "v{{VERSION}}"}
+    assert set(parser.offenders) <= allowed, parser.offenders
+
+
+async def test_demo_assets_are_served_with_types():
+    from oncofiles.server import demo_css, demo_js
+
+    css = await demo_css(_req("/demo.css"))
+    js = await demo_js(_req("/demo.js"))
+    assert css.media_type.startswith("text/css")
+    assert js.media_type.startswith("application/javascript")
+
+
+async def test_every_demo_value_points_at_its_own_source_line():
+    """The demo's promise is provenance: each value's (doc, page, line) must
+    resolve to a line in that document that shows exactly this value."""
+    data = json.loads((await api_demo_data(_req("/api/demo-data"))).body)
+    docs = {d["id"]: d for d in data["documents"]}
+    seen = 0
+    for series in data["series"]:
+        for p in series["points"]:
+            doc = docs[p["doc"]]
+            page = doc["pages"][p["page"] - 1]
+            line = page["lines"][p["line"] - 1]
+            assert line["n"] == p["line"]
+            assert line["cells"][0] == series["code"]
+            assert line["cells"][1] == p["value_text"]
+            assert p["state"] in {"machine", "human", "unverified"}
+            seen += 1
+    assert seen >= 12
+    states = {p["state"] for s in data["series"] for p in s["points"]}
+    assert states == {"machine", "human", "unverified"}
+    assert data["patient"]["invented"] is True
+
+
+def test_demo_phone_layout_and_motion():
+    assert "@media (max-width: 640px)" in DEMO_CSS
+    assert "prefers-reduced-motion" in DEMO_CSS
+    assert "prefers-color-scheme: dark" in DEMO_CSS
+
+
+# ── Landing design iteration 2 ────────────────────────────────────────
+
+
+def test_landing_has_no_oncoteam():
+    assert "oncoteam" not in LANDING.lower()
+
+
+def test_landing_avoids_template_tells():
+    style = LANDING[LANDING.index("<style>") : LANDING.index("</style>")]
+    assert "border-left" not in style, "no accent stripes on boxes"
+    assert not re.search(r"inset\s+\d+px\s+0\s+0", style), "no inset side stripes"
+    assert "text-transform: uppercase" not in style
+    assert "gradient" not in style
+    assert "eyebrow" not in LANDING
+
+
+def test_landing_hero_pile_animation():
+    hero = LANDING[LANDING.index('id="stage"') : LANDING.index('class="stage-cap"')]
+    for name in (
+        "Preposl.: výsledky",
+        "IMG_20270118_lab.jpg",
+        "vysledky(1).pdf",
+        "CT_brucho_final_v2.pdf",
+        "dokument(3).pdf",
+    ):
+        assert name in hero, name
+    assert hero.count('class="paper ') == 5
+    assert len(re.findall(r'class="gd-row" data-k="\d"', hero)) == 5
+    assert "OCR + AI" in hero
+    style = LANDING[LANDING.index("<style>") : LANDING.index("</style>")]
+    assert "@keyframes fly" in style and "@keyframes land" in style
+    assert "prefers-reduced-motion: reduce" in style
+
+
+def test_landing_keeps_real_photos_with_honest_caption():
+    assert 'src="/assets/pile/02.jpg"' in LANDING
+    assert 'src="/assets/pile/04.jpg"' in LANDING
+    assert (
+        "lokálny model" in LANDING[LANDING.index('id="photos"') : LANDING.index('id="provenance"')]
+    )
+
+
+def test_pile_photos_are_served_as_crops_only():
+    from oncofiles.server import _PILE_PHOTO_DIR, _PILE_PHOTO_NAMES
+
+    assert set(_PILE_PHOTO_NAMES) == {"02", "04"}
+    for name in _PILE_PHOTO_NAMES.values():
+        assert "crop" in name
+        assert (_PILE_PHOTO_DIR / name).exists(), name
+
+
+def test_drive_mock_uses_invented_patient():
+    folder = LANDING[LANDING.index('id="folder"') : LANDING.index('id="privacy"')]
+    assert "Jana Testová" in folder
+    assert "README.md" in folder
+    assert ".md</span>" in folder
+    names = re.findall(r"(\d{8})_JanaTestova_", LANDING)
+    assert names and all(int(n[:4]) >= MIN_SYNTHETIC_YEAR for n in names)
