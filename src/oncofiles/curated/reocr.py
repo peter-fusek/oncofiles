@@ -313,10 +313,9 @@ def handled_before(log_names: list[str], filename: str) -> bool:
     or deliberately restored (the kept re-OCR text)? (#674)"""
     from oncofiles.curated.runner import nfc
 
-    tail = f"-{nfc(filename)}.md"
-    return any(
-        n.startswith(("_reocr-backup-", "_reocr-text-")) and n.endswith(tail) for n in log_names
-    )
+    name = re.escape(nfc(filename))
+    exact = re.compile(rf"_reocr-(?:backup|text)-\d{{8}}(?:-\d{{6}})?-{name}\.md")
+    return any(exact.fullmatch(nfc(n)) for n in log_names)
 
 
 def run_reocr(

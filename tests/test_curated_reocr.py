@@ -377,3 +377,11 @@ async def test_lab_sheets_are_chosen_before_reports(db):
     assert not any(t["explicit"] for t in got)
     listed = await tool._reocr_targets(db, ERIKA_UUID, [9201])
     assert [t["document_id"] for t in listed] == [9201] and listed[0]["explicit"]
+
+
+def test_handled_before_matches_the_exact_file_name():
+    names = ["_reocr-backup-20270101-120000-b-Labs.pdf.md", "_reocr-text-20270101-x.pdf.md"]
+    assert reocr.handled_before(names, "b-Labs.pdf")
+    assert reocr.handled_before(names, "x.pdf")
+    assert not reocr.handled_before(names, "Labs.pdf")  # a hyphen-suffix is another file
+    assert not reocr.handled_before(["_reocr-backup-20270101-a.pdf.md.bak"], "a.pdf")
