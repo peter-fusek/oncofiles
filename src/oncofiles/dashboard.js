@@ -137,6 +137,14 @@
       return span;
     }
 
+    /** Give a dynamically built element both languages; applyDashLang() keeps it in sync. */
+    function setI18n(el, sk, en) {
+      el.setAttribute('data-sk', sk);
+      el.setAttribute('data-en', en);
+      el.textContent = dashLang === 'sk' ? sk : en;
+      return el;
+    }
+
     /** Clear all children of an element. */
     function clearEl(el) {
       while (el.firstChild) el.removeChild(el.firstChild);
@@ -188,7 +196,14 @@
         var patientControls = document.querySelector('.patient-controls');
         if (patientControls) patientControls.style.display = 'none';
         var userInfo = document.getElementById('user-info');
-        if (userInfo) userInfo.textContent = 'Demo Mode';
+        if (userInfo) setI18n(userInfo, 'Ukážka', 'Demo');
+        // Panels that describe the operator's sync/AI-cost pipeline are not
+        // part of the demo story (#605): hide them, show the honest note.
+        ['sync-history-section', 'prompt-log-section', 'analytics-section', 'schedules-section', 'recon-panel',
+         'manifest-section', 'mcp-setup-section']
+          .forEach(function (id) { var el = document.getElementById(id); if (el) el.style.display = 'none'; });
+        var demoNote = document.getElementById('demo-processing-note');
+        if (demoNote) demoNote.style.display = 'block';
         var demoBanner = document.getElementById('demo-banner');
         if (demoBanner) demoBanner.style.display = 'block';
         // Replace logout with navigation links (#233)
@@ -277,8 +292,6 @@
         var data = await resp.json();
         renderStatus(data.status);
         renderDocs(data.documents);
-        if (data.prompt_log) renderPromptLog(data.prompt_log);
-        if (data.analytics) renderAnalytics(data.analytics);
         // Show conversation previews in demo
         var demoConv = document.getElementById('demo-conversations');
         if (demoConv) demoConv.style.display = 'block';
@@ -340,16 +353,22 @@
         }
       };
       var detail = demoDetails[doc.id];
-      if (detail) return detail;
+      if (detail) {
+        // The detail renderer reads `id` and `document_date` (#605: was "#undefined" / "-").
+        detail.id = doc.id;
+        detail.document_date = detail.date || doc.date;
+        return detail;
+      }
       // Generic fallback for other demo docs
       return {
+        id: doc.id, document_date: doc.date,
         filename: doc.filename, category: doc.category || 'other',
-        date: doc.date, institution: doc.institution || 'Hospital',
+        date: doc.date, institution: doc.institution || 'Example Hospital (invented)',
         gdrive_url: null, preview_url: null,
-        ai_summary: 'AI-extracted summary of medical document. Categories, dates, and institutions are automatically detected from OCR text.',
+        ai_summary: 'Sample summary of an invented document. Category, date and institution are recognised from the text read by the local model.',
         ai_tags: [doc.category || 'document', 'auto-processed', 'OCR'],
         metadata: {},
-        pages: [{ page_number: 1, char_count: 450, text: 'Sample OCR text from ' + (doc.filename || 'document') + '.\n\nOncofiles automatically extracts text via OCR, identifies the document category, date, and institution, then generates an AI summary with structured metadata.\n\nAll data stays in your Google Drive.' }]
+        pages: [{ page_number: 1, char_count: 450, text: 'Ukážkový text dokumentu ' + (doc.filename || '') + ' (vymyslený).\n\nOncofiles prečíta text, rozpozná kategóriu, dátum a inštitúciu a vedľa súboru uloží prepis .md. Originál zostáva vo vašom Google Drive; index a prečítaný text sú aj v databáze na našom serveri v EÚ.' }]
       };
     }
 
@@ -1002,10 +1021,8 @@
       document.querySelectorAll('.demo-chat-panel').forEach(function(el) { el.style.display = 'none'; });
       var panel = document.getElementById('demo-chat-' + tab);
       if (panel) panel.style.display = 'flex';
-      document.querySelectorAll('.demo-chat-tab').forEach(function(b) {
-        b.style.background = 'var(--bg)'; b.style.color = 'var(--text)';
-      });
-      if (btn) { btn.style.background = 'var(--green)'; btn.style.color = '#fff'; }
+      document.querySelectorAll('.demo-chat-tab').forEach(function(b) { b.classList.remove('active'); });
+      if (btn) btn.classList.add('active');
     }
 
     function toggleIntegrationPanel() {
@@ -2013,15 +2030,15 @@
 
       // Pipeline funnel
       var stages = [
-        { label: 'Total', count: total },
-        { label: 'OCR', count: summary.with_ocr || 0 },
-        { label: 'AI Summary', count: summary.with_ai || 0 },
-        { label: 'Metadata', count: summary.with_metadata || 0 },
-        { label: 'Date', count: summary.with_date || 0 },
-        { label: 'Institution', count: summary.with_institution || 0 },
-        { label: 'Synced', count: summary.synced || 0 },
-        { label: 'Named', count: summary.standard_named || 0 },
-        { label: 'Complete', count: fc, complete: true }
+        { label: 'Total', sk: 'Spolu', count: total },
+        { label: 'OCR', sk: 'OCR', count: summary.with_ocr || 0 },
+        { label: 'AI Summary', sk: 'Zhrnutie', count: summary.with_ai || 0 },
+        { label: 'Metadata', sk: 'Metadáta', count: summary.with_metadata || 0 },
+        { label: 'Date', sk: 'Dátum', count: summary.with_date || 0 },
+        { label: 'Institution', sk: 'Inštitúcia', count: summary.with_institution || 0 },
+        { label: 'Synced', sk: 'V priečinku', count: summary.synced || 0 },
+        { label: 'Named', sk: 'Premenované', count: summary.standard_named || 0 },
+        { label: 'Complete', sk: 'Kompletné', count: fc, complete: true }
       ];
       var funnelEl = document.getElementById('funnel-rows');
       clearEl(funnelEl);
@@ -2032,7 +2049,7 @@
 
         var label = document.createElement('span');
         label.className = 'funnel-label';
-        label.textContent = st.label;
+        setI18n(label, st.sk, st.label);
         row.appendChild(label);
 
         var barBg = document.createElement('div');
@@ -2049,18 +2066,19 @@
         row.appendChild(count);
 
         row.style.cursor = 'pointer';
-        row.title = 'Click for details';
+        row.title = dashLang === 'sk' ? 'Kliknite pre detail' : 'Click for details';
         row.onclick = (function(stage) { return function() {
+          // Honest, bilingual stage descriptions (Nov 2026: local model, curated folder).
           var info = {
-            'Total': 'Total documents imported from Google Drive. Triggered by: scheduled GDrive sync (every 5 min) or manual upload.',
-            'OCR': 'Text extraction from scanned PDFs and images. Triggered by: new document import. Uses: Claude Haiku vision model for scanned docs, PyMuPDF for text PDFs.',
-            'AI Summary': 'AI-generated summary and tags. Triggered by: after OCR completion. Uses: Claude Haiku with system prompt asking for medical document summary, key findings, diagnoses.',
-            'Metadata': 'Structured data extraction (document_type, findings, diagnoses, medications, providers). Triggered by: after AI summary. Uses: Claude Haiku with JSON schema prompt.',
-            'Date': 'Document date extracted from content via AI or parsed from filename. Required for year-month folder organization.',
-            'Institution': 'Medical institution/provider identified from document content. Mapped via PROVIDER_TO_INSTITUTION. Required for standard filename.',
-            'Synced': 'Bidirectional Google Drive sync. Files exported to organized category/year-month folders with standard naming.',
-            'Named': 'Standard filename format: YYYYMMDD_PatientName_Institution_Category_Description.ext. Auto-renamed during sync.',
-            'Complete': 'All pipeline stages passed: OCR + AI Summary + Metadata + Date + Institution + Synced + Named. The document is fully processed.'
+            'Total': ['Všetky dokumenty pacienta v indexe.', 'All of the patient\'s documents in the index.'],
+            'OCR': ['Text prečítaný zo skenov a PDF. Pri spracovaní na pozadí ho číta lokálny model na našom serveri.', 'Text read from scans and PDFs. In background processing a local model on our own server reads it.'],
+            'AI Summary': ['Krátke zhrnutie a štítky dokumentu.', 'A short summary and tags for the document.'],
+            'Metadata': ['Štruktúrované údaje: typ dokumentu, nálezy, diagnózy, lekári.', 'Structured data: document type, findings, diagnoses, doctors.'],
+            'Date': ['Dátum dokumentu z obsahu alebo z názvu súboru.', 'Document date from its content or file name.'],
+            'Institution': ['Inštitúcia rozpoznaná z obsahu dokumentu.', 'Institution recognised from the document content.'],
+            'Synced': ['Súbor je zaradený vo vašom priečinku Google Drive podľa pravidiel v README.', 'The file is filed in your Google Drive folder under the README rules.'],
+            'Named': ['Štandardný názov: RRRRMMDD_Pacient_Inštitúcia_Kategória_Popis.', 'Standard name: YYYYMMDD_Patient_Institution_Category_Description.'],
+            'Complete': ['Dokument prešiel všetkými krokmi.', 'The document passed every step.']
           };
           var existing = document.getElementById('funnel-tooltip');
           if (existing) { existing.remove(); if (existing.dataset.stage === stage.label) return; }
@@ -2070,10 +2088,11 @@
           tip.style.cssText = 'background:var(--surface);border:1px solid var(--border);border-radius:0.5rem;padding:1rem;margin:0.75rem 0;font-size:0.8125rem;color:var(--text-muted);line-height:1.6';
           var title = document.createElement('strong');
           title.style.color = 'var(--accent)';
-          title.textContent = stage.label;
+          title.textContent = dashLang === 'sk' ? stage.sk : stage.label;
           tip.appendChild(title);
           tip.appendChild(document.createElement('br'));
-          tip.appendChild(document.createTextNode(info[stage.label] || 'Pipeline stage'));
+          var desc = info[stage.label] || ['Krok spracovania', 'Processing step'];
+          tip.appendChild(document.createTextNode(dashLang === 'sk' ? desc[0] : desc[1]));
           funnelEl.appendChild(tip);
         }; })(st);
 
@@ -2603,18 +2622,18 @@
       var total = summary.total || 0;
       var gaps = [];
 
-      function check(label, count, tool) {
+      function check(sk, label, count, tool) {
         var missing = total - (count || 0);
-        if (missing > 0) gaps.push({ label: label, missing: missing, tool: tool });
+        if (missing > 0) gaps.push({ sk: sk, label: label, missing: missing, tool: tool });
       }
 
-      check('Missing OCR', summary.with_ocr, 'enhance_documents');
-      check('Missing AI Summary', summary.with_ai, 'enhance_documents');
-      check('Missing Metadata', summary.with_metadata, 'extract_all_metadata');
-      check('Not Synced', summary.synced, 'gdrive_sync');
-      check('Not Standard Named', summary.standard_named, 'rename_documents_to_standard');
-      check('Missing Date', summary.with_date, 'extract_document_metadata');
-      check('Missing Institution', summary.with_institution, 'extract_document_metadata');
+      check('Chýba OCR', 'Missing OCR', summary.with_ocr, 'enhance_documents');
+      check('Chýba zhrnutie', 'Missing AI Summary', summary.with_ai, 'enhance_documents');
+      check('Chýbajú metadáta', 'Missing Metadata', summary.with_metadata, 'extract_all_metadata');
+      check('Nie je v priečinku', 'Not Synced', summary.synced, 'gdrive_sync');
+      check('Neštandardný názov', 'Not Standard Named', summary.standard_named, 'rename_documents_to_standard');
+      check('Chýba dátum', 'Missing Date', summary.with_date, 'extract_document_metadata');
+      check('Chýba inštitúcia', 'Missing Institution', summary.with_institution, 'extract_document_metadata');
 
       if (gaps.length === 0) {
         panel.style.display = 'none';
@@ -2628,7 +2647,7 @@
 
         var lbl = document.createElement('span');
         lbl.className = 'remedy-label';
-        lbl.textContent = g.label;
+        setI18n(lbl, g.sk, g.label);
         row.appendChild(lbl);
 
         var cnt = document.createElement('span');

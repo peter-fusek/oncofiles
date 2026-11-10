@@ -965,3 +965,26 @@
     .gate-icon { color: var(--accent); display: flex; justify-content: center; margin-bottom: 0.35rem; }
     .demo-banner { margin: 0.5rem 0 0; padding: 0.5rem 0.75rem; border: 1px dashed var(--accent); border-radius: 8px; background: var(--accent-glow); color: var(--text); font-size: 0.8125rem; text-align: center; }
     table, td, th, .stat-value, .lab-value { font-variant-numeric: tabular-nums; }
+
+    /* Demo panels (#605): synthetic chats + honest processing note. */
+    .demo-chat-tab { background: var(--bg); color: var(--text); }
+    .demo-chat-tab.active { background: var(--accent); border-color: var(--accent) !important; color: #fff; }
+    .demo-chat-panel { background: var(--bg); border: 1px solid var(--border); border-radius: 0.5rem; padding: 0.75rem; font-size: 0.8125rem; flex-direction: column; gap: 0.5rem; }
+    .demo-chat-q { align-self: flex-end; max-width: 92%; background: rgba(20,184,166,0.1); padding: 0.5rem 0.75rem; border-radius: 0.375rem; color: var(--accent); }
+    .demo-chat-tool { color: var(--purple); font-size: 0.75rem; font-family: 'SF Mono', 'Fira Code', monospace; overflow-wrap: anywhere; }
+    .demo-chat-a { padding: 0.5rem 0.75rem; border-radius: 0.375rem; color: var(--text); line-height: 1.5; display: grid; gap: 0.15rem; font-variant-numeric: tabular-nums; }
+    .demo-chat-src { color: var(--text-dim); font-size: 0.75rem; margin-top: 0.25rem; overflow-wrap: anywhere; }
+    .demo-note-list { list-style: none; display: grid; gap: 0.5rem; font-size: 0.875rem; color: var(--text-muted); }
+    .demo-note-list li { padding-left: 1rem; position: relative; }
+    .demo-note-list li::before { content: ''; position: absolute; left: 0; top: 0.55em; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
+
+    /* Phones (#605): nothing may widen the page; wide content scrolls inside
+       its own container (.table-wrap already does). */
+    @media (max-width: 600px) {
+      .header-top .header-account { margin-left: 0; flex-shrink: 1; min-width: 0; flex-wrap: wrap; row-gap: 0.375rem; }
+      .sync-row { flex-wrap: wrap; gap: 0.25rem 0.75rem; }
+      .sync-time { width: auto; }
+      #analytics-cards { grid-template-columns: repeat(2, 1fr) !important; }
+      .remedy-row { flex-wrap: wrap; gap: 0.25rem 0.5rem; }
+      .remedy-action { overflow-wrap: anywhere; }
+    }

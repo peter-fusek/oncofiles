@@ -167,7 +167,7 @@
 
  <!-- Pipeline funnel -->
  <div class="funnel" id="funnel">
- <h2 data-sk="Pipeline" data-en="Pipeline Funnel">Pipeline Funnel</h2>
+ <h2 data-sk="Spracovanie dokumentov" data-en="Document processing">Spracovanie dokumentov</h2>
  <div id="funnel-rows"></div>
  </div>
 
@@ -225,8 +225,8 @@
  <div id="recon-issues"></div>
  </div>
 
- <!-- Sync history -->
- <div class="sync-history">
+ <!-- Sync history (hidden in demo mode) -->
+ <div class="sync-history" id="sync-history-section">
  <div style="display:flex;align-items:center;justify-content:space-between;gap:0.5rem;flex-wrap:wrap">
  <h2 style="margin:0" data-sk="Posledné synchronizácie" data-en="Recent Syncs">Posledné synchronizácie</h2>
  <div id="svc-sync-times" style="display:flex;gap:0.75rem;font-size:0.7rem;color:var(--text-muted)"></div>
@@ -242,32 +242,57 @@
  <div id="prompt-log-rows"><div style="padding:0.5rem 0;color:var(--text-muted);font-size:0.8125rem">Loading...</div></div>
  </div>
 
- <!-- Conversation Previews (demo only) -->
+ <!-- How documents are processed (demo only; replaces the old sync/prompt-log/cost panels, #605) -->
+ <div class="sync-history demo-only" id="demo-processing-note" style="display:none">
+ <h2 data-sk="Ako sa dokumenty spracúvajú" data-en="How documents are processed">Ako sa dokumenty spracúvajú</h2>
+ <ul class="demo-note-list">
+ <li data-sk="Priečinok pacienta na Google Drive sa kontroluje zhruba každé 2 minúty a nové súbory sa zaradia podľa pravidiel v jeho README." data-en="The patient's Google Drive folder is checked about every 2 minutes and new files are filed under the rules in its README.">Priečinok pacienta na Google Drive sa kontroluje zhruba každé 2 minúty a nové súbory sa zaradia podľa pravidiel v jeho README.</li>
+ <li data-sk="OCR a zatriedenie robí lokálny model na našom serveri na Slovensku — bez cloudovej AI a bez nákladov za cloud." data-en="OCR and classification run on a local model on our own server in Slovakia — no cloud AI and no cloud cost.">OCR a zatriedenie robí lokálny model na našom serveri na Slovensku — bez cloudovej AI a bez nákladov za cloud.</li>
+ <li data-sk="Do Claude alebo ChatGPT ide len to, na čo sa v nich sami spýtate." data-en="Only what you ask about inside Claude or ChatGPT goes to that assistant.">Do Claude alebo ChatGPT ide len to, na čo sa v nich sami spýtate.</li>
+ <li data-sk="Súbory sa nikdy nemažú — nanajvýš sa presunú do koša." data-en="Files are never deleted — at most they are moved to the trash.">Súbory sa nikdy nemažú — nanajvýš sa presunú do koša.</li>
+ </ul>
+ <p style="margin-top:0.75rem;font-size:0.8125rem"><a href="/#connect" style="color:var(--accent)" data-sk="Ako pripojiť Claude alebo ChatGPT →" data-en="How to connect Claude or ChatGPT →">Ako pripojiť Claude alebo ChatGPT →</a></p>
+ </div>
+
+ <!-- Conversation Previews (demo only; all content invented) -->
  <div class="sync-history" id="demo-conversations" style="display:none">
  <h2 data-sk="Ako to vyzerá v praxi" data-en="See it in action">Ako to vyzerá v praxi</h2>
- <div style="font-size:0.8125rem;color:var(--text-muted);margin-bottom:0.75rem" data-sk="Takto AI asistent pracuje s vašimi dokumentmi cez MCP pripojenie:" data-en="This is how an AI assistant works with your documents via MCP connection:">Takto AI asistent pracuje s vašimi dokumentmi cez MCP pripojenie:</div>
- <div id="demo-chat-tabs" style="display:flex;gap:0.25rem;margin-bottom:0.5rem">
- <button class="demo-chat-tab active" data-action="switchDemoChat|labs|@this" style="font-size:0.75rem;padding:4px 10px;border-radius:4px;border:1px solid var(--border);background:var(--green);color:#fff;cursor:pointer" data-sk="Laboratórne výsledky" data-en="Lab Results">Laboratórne výsledky</button>
- <button class="demo-chat-tab" data-action="switchDemoChat|chemo|@this" style="font-size:0.75rem;padding:4px 10px;border-radius:4px;border:1px solid var(--border);background:var(--bg);color:var(--text);cursor:pointer" data-sk="Pred chemo" data-en="Pre-Chemo">Pred chemo</button>
- <button class="demo-chat-tab" data-action="switchDemoChat|docs|@this" style="font-size:0.75rem;padding:4px 10px;border-radius:4px;border:1px solid var(--border);background:var(--bg);color:var(--text);cursor:pointer" data-sk="Dokumenty" data-en="Documents">Dokumenty</button>
+ <div style="font-size:0.8125rem;color:var(--text-muted);margin-bottom:0.75rem" data-sk="Takto AI asistent pracuje s dokumentmi cez MCP pripojenie (vymyslené údaje):" data-en="This is how an AI assistant works with the documents via MCP (invented data):">Takto AI asistent pracuje s dokumentmi cez MCP pripojenie (vymyslené údaje):</div>
+ <div id="demo-chat-tabs" style="display:flex;gap:0.25rem;margin-bottom:0.5rem;flex-wrap:wrap">
+ <button class="demo-chat-tab active" data-action="switchDemoChat|labs|@this" style="font-size:0.75rem;padding:4px 10px;border-radius:4px;border:1px solid var(--border);cursor:pointer" data-sk="Laboratórne výsledky" data-en="Lab results">Laboratórne výsledky</button>
+ <button class="demo-chat-tab" data-action="switchDemoChat|chemo|@this" style="font-size:0.75rem;padding:4px 10px;border-radius:4px;border:1px solid var(--border);cursor:pointer" data-sk="Pred cyklom" data-en="Before a cycle">Pred cyklom</button>
+ <button class="demo-chat-tab" data-action="switchDemoChat|docs|@this" style="font-size:0.75rem;padding:4px 10px;border-radius:4px;border:1px solid var(--border);cursor:pointer" data-sk="Dokumenty" data-en="Documents">Dokumenty</button>
  </div>
- <div id="demo-chat-labs" class="demo-chat-panel" style="background:var(--bg);border:1px solid var(--border);border-radius:0.5rem;padding:0.75rem;font-size:0.8125rem;display:flex;flex-direction:column;gap:0.5rem">
- <div style="background:rgba(20,184,166,0.1);padding:0.5rem 0.75rem;border-radius:0.375rem;color:var(--accent)">What changed in the latest blood test compared to the previous one?</div>
- <div style="color:var(--purple);font-size:0.75rem;font-family:monospace">oncofiles: search_documents("labs march")</div>
- <div style="color:var(--purple);font-size:0.75rem;font-family:monospace">oncofiles: get_lab_trends("WBC, HGB, PLT")</div>
- <div style="padding:0.5rem 0.75rem;border-radius:0.375rem;color:var(--text);line-height:1.5">Comparing the March 13 and February 27 labs:<br><b>WBC</b>: 4.2 → 5.1 (+21%) — recovering nicely after C2<br><b>HGB</b>: 98 → 102 g/L — stable, still below ref (120–160)<br><b>PLT</b>: 180 → 195 — within normal range<br><b>ANC</b>: 2.8 → 3.4 — above threshold for next cycle</div>
+ <div id="demo-chat-labs" class="demo-chat-panel" style="display:flex">
+ <div class="demo-chat-q" data-sk="Čo sa zmenilo v poslednom krvnom obraze oproti predchádzajúcemu?" data-en="What changed in the latest blood count compared to the previous one?">Čo sa zmenilo v poslednom krvnom obraze oproti predchádzajúcemu?</div>
+ <div class="demo-chat-tool">oncofiles: fact_series("WBC, HGB, PLT")</div>
+ <div class="demo-chat-a">
+ <div class="demo-chat-line" data-sk="Porovnanie odberov z 1. 3. 2027 a 15. 3. 2027 (dátumy odberu):" data-en="Comparing the samples of 1 Mar 2027 and 15 Mar 2027 (sample dates):">Porovnanie odberov z 1. 3. 2027 a 15. 3. 2027 (dátumy odberu):</div>
+ <div class="demo-chat-line" data-sk="WBC: 4,9 → 5,6 ×10⁹/L — v norme" data-en="WBC: 4.9 → 5.6 ×10⁹/L — within range">WBC: 4,9 → 5,6 ×10⁹/L — v norme</div>
+ <div class="demo-chat-line" data-sk="HGB: 114 → 118 g/L — mierne pod normou (120–160)" data-en="HGB: 114 → 118 g/L — slightly below range (120–160)">HGB: 114 → 118 g/L — mierne pod normou (120–160)</div>
+ <div class="demo-chat-line" data-sk="PLT: 219 → 231 ×10⁹/L — v norme" data-en="PLT: 219 → 231 ×10⁹/L — within range">PLT: 219 → 231 ×10⁹/L — v norme</div>
+ <div class="demo-chat-src" data-sk="Zdroj: 20270315_Patient_NOU_Labs_BloodCount.pdf, strana 1" data-en="Source: 20270315_Patient_NOU_Labs_BloodCount.pdf, page 1">Zdroj: 20270315_Patient_NOU_Labs_BloodCount.pdf, strana 1</div>
  </div>
- <div id="demo-chat-chemo" class="demo-chat-panel" style="background:var(--bg);border:1px solid var(--border);border-radius:0.5rem;padding:0.75rem;font-size:0.8125rem;display:none;flex-direction:column;gap:0.5rem">
- <div style="background:rgba(20,184,166,0.1);padding:0.5rem 0.75rem;border-radius:0.375rem;color:var(--accent)">When is the next chemo and what do we need to prepare?</div>
- <div style="color:var(--purple);font-size:0.75rem;font-family:monospace">oncofiles: search_calendar("chemo")</div>
- <div style="color:var(--purple);font-size:0.75rem;font-family:monospace">oncofiles: get_precycle_checklist()</div>
- <div style="padding:0.5rem 0.75rem;border-radius:0.375rem;color:var(--text);line-height:1.5"><b>Next cycle</b>: cycle 3 — March 27, 2027 at Example Hospital (invented)<br><b>Pre-cycle checklist</b>:<br>&#x2705; CBC within 72h (March 25 labs scheduled)<br>&#x2705; ANC &gt; 1.5 (last: 3.4)<br>&#x26A0;&#xFE0F; Port flush — check if due<br>&#x274C; Anti-emetics prescription — needs renewal</div>
  </div>
- <div id="demo-chat-docs" class="demo-chat-panel" style="background:var(--bg);border:1px solid var(--border);border-radius:0.5rem;padding:0.75rem;font-size:0.8125rem;display:none;flex-direction:column;gap:0.5rem">
- <div style="background:rgba(20,184,166,0.1);padding:0.5rem 0.75rem;border-radius:0.375rem;color:var(--accent)">Compare the pathology reports from surgery and the latest biopsy</div>
- <div style="color:var(--purple);font-size:0.75rem;font-family:monospace">oncofiles: view_document(42) — surgical pathology</div>
- <div style="color:var(--purple);font-size:0.75rem;font-family:monospace">oncofiles: view_document(98) — biopsy report</div>
- <div style="padding:0.5rem 0.75rem;border-radius:0.375rem;color:var(--text);line-height:1.5"><b>Surgical pathology</b> (Jan 15): Adenocarcinoma, sample staging<br><b>Biopsy</b> (Mar 10): Residual tumor, treatment effect grade 2<br><b>Key change</b>: Tumor regression noted, biomarkers unchanged (sample data)</div>
+ <div id="demo-chat-chemo" class="demo-chat-panel" style="display:none">
+ <div class="demo-chat-q" data-sk="Čo treba skontrolovať pred ďalším cyklom?" data-en="What needs checking before the next cycle?">Čo treba skontrolovať pred ďalším cyklom?</div>
+ <div class="demo-chat-tool">oncofiles: get_precycle_checklist()</div>
+ <div class="demo-chat-a">
+ <div class="demo-chat-line" data-sk="Krvný obraz z 15. 3. 2027: overený, ANC 3,1 — v rámci limitov pre cyklus." data-en="Blood count of 15 Mar 2027: verified, ANC 3.1 — within cycle limits.">Krvný obraz z 15. 3. 2027: overený, ANC 3,1 — v rámci limitov pre cyklus.</div>
+ <div class="demo-chat-line" data-sk="Pečeňové testy z 15. 3. 2027: v norme." data-en="Liver tests of 15 Mar 2027: within range.">Pečeňové testy z 15. 3. 2027: v norme.</div>
+ <div class="demo-chat-line" data-sk="Predpis na antiemetiká z 5. 2. 2027 — overte, či ešte platí." data-en="Antiemetic prescription of 5 Feb 2027 — check it is still valid.">Predpis na antiemetiká z 5. 2. 2027 — overte, či ešte platí.</div>
+ <div class="demo-chat-src" data-sk="Termín a rozhodnutie o cykle patria vášmu onkológovi." data-en="The date and the decision on the cycle belong to your oncologist.">Termín a rozhodnutie o cykle patria vášmu onkológovi.</div>
+ </div>
+ </div>
+ <div id="demo-chat-docs" class="demo-chat-panel" style="display:none">
+ <div class="demo-chat-q" data-sk="Porovnaj patologický nález s poslednou správou z onkológie." data-en="Compare the pathology report with the latest oncology report.">Porovnaj patologický nález s poslednou správou z onkológie.</div>
+ <div class="demo-chat-tool">oncofiles: view_document(3)</div>
+ <div class="demo-chat-tool">oncofiles: search_documents("onkológia")</div>
+ <div class="demo-chat-a">
+ <div class="demo-chat-line" data-sk="Patológia (1. 3. 2027): adenokarcinóm G2, RAS a BRAF wild-type, MSS." data-en="Pathology (1 Mar 2027): adenocarcinoma G2, RAS and BRAF wild-type, MSS.">Patológia (1. 3. 2027): adenokarcinóm G2, RAS a BRAF wild-type, MSS.</div>
+ <div class="demo-chat-line" data-sk="Obe správy uvádzajú rovnakú diagnózu; nález sa nemení." data-en="Both reports state the same diagnosis; the finding is unchanged.">Obe správy uvádzajú rovnakú diagnózu; nález sa nemení.</div>
+ <div class="demo-chat-src" data-sk="Všetky údaje v tejto ukážke sú vymyslené." data-en="All data in this demo is invented.">Všetky údaje v tejto ukážke sú vymyslené.</div>
+ </div>
  </div>
  </div>
 
@@ -354,7 +379,7 @@
  <li style="margin-bottom:0.5rem">Click <strong>"Add custom connector"</strong></li>
  <li style="margin-bottom:0.5rem">Enter URL: <code style="background:var(--bg);padding:0.125rem 0.375rem;border-radius:3px;font-size:0.75rem;user-select:all">https://oncofiles.com/mcp</code></li>
  <li style="margin-bottom:0.5rem"><strong>Leave OAuth fields blank</strong> &rarr; Add &rarr; sign in with Google</li>
- <li style="margin-bottom:0.5rem">Use <code style="background:var(--bg);padding:0.125rem 0.375rem;border-radius:3px;font-size:0.75rem">patient_slug</code> in each prompt (e.g. "use patient_slug=q1b")</li>
+ <li style="margin-bottom:0.5rem">Use <code style="background:var(--bg);padding:0.125rem 0.375rem;border-radius:3px;font-size:0.75rem">patient_slug</code> in each prompt (e.g. "use patient_slug=my-patient")</li>
  </ol>
  <div style="margin-top:0.75rem;font-size:0.75rem;color:var(--text-muted)">
  <strong data-sk="Funkcie" data-en="Features">Features</strong>: 78 tools, OAuth login, auto-patient selection<br>
@@ -436,8 +461,8 @@
 
  <footer>
  <p style="font-size:0.78rem;color:var(--text-dim);margin:0 0 0.75rem 0;padding:0.6rem 0.9rem;border:1px solid var(--border);border-radius:6px;background:var(--surface);font-style:italic;text-align:left" data-sk="Všetky údaje sú informatívne. Oncofiles nenahrádza onkológa. Pred akýmkoľvek rozhodnutím o liečbe sa poraďte s ošetrujúcim lekárom." data-en="All information is informational only. Oncofiles does not replace your oncologist. Consult your treating physician before any treatment decision.">Všetky údaje sú informatívne. Oncofiles nenahrádza onkológa. Pred akýmkoľvek rozhodnutím o liečbe sa poraďte s ošetrujúcim lekárom.</p>
- <a href="/">Oncofiles</a> &middot; <a href="/health">Health</a> &middot; <a href="/privacy">Privacy</a> &middot; <a href="https://github.com/peter-fusek/oncofiles" rel="noreferrer noopener">GitHub</a>
- <br><span style="font-size:0.75rem">Built by <a href="https://www.instarea.com" rel="noreferrer noopener">Instarea</a></span>
+ <a href="/">Oncofiles</a> &middot; <a href="/health" data-sk="Stav" data-en="Status">Stav</a> &middot; <a href="/privacy" data-sk="Súkromie" data-en="Privacy">Súkromie</a> &middot; <a href="https://github.com/peter-fusek/oncofiles" rel="noreferrer noopener">GitHub</a>
+ <br><span style="font-size:0.75rem"><span data-sk="Vytvorené v" data-en="Built by">Vytvorené v</span> <a href="https://www.instarea.com" rel="noreferrer noopener">Instarea</a></span>
  </footer>
  </div>
  </div>
