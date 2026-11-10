@@ -154,6 +154,10 @@
 
     // ── Init ─────────────────────────────────────────────────────────────
 
+    // #605: /demo marks <html data-demo="1"> server-side (no inline script —
+    // dashboard.html has none since #525 and CSP would block one anyway).
+    if (document.documentElement.getAttribute('data-demo') === '1') window.DEMO_MODE = true;
+
     (function init() {
       // Demo mode: skip auth, load sample data
       if (window.DEMO_MODE) {
@@ -164,6 +168,8 @@
         if (patientControls) patientControls.style.display = 'none';
         var userInfo = document.getElementById('user-info');
         if (userInfo) userInfo.textContent = 'Demo Mode';
+        var demoBanner = document.getElementById('demo-banner');
+        if (demoBanner) demoBanner.style.display = 'block';
         // Replace logout with navigation links (#233)
         var logoutBtn = document.querySelector('.logout-btn');
         if (logoutBtn) {
@@ -201,15 +207,15 @@
         ctaBanner.style.cssText = 'position:fixed;bottom:0;left:0;right:0;z-index:1000;background:var(--surface);border-top:1px solid var(--border);padding:0.75rem 1.5rem;display:flex;align-items:center;justify-content:center;gap:1rem;box-shadow:0 -2px 12px rgba(0,0,0,0.08)';
         var ctaText = document.createElement('span');
         ctaText.style.cssText = 'font-size:0.875rem;color:var(--text-dim)';
-        ctaText.setAttribute('data-sk', 'Nastavenie trvá 2 minúty: Prihláste sa cez Google \u2192 Vyberte priečinok \u2192 Začnite sa pýtať AI');
-        ctaText.setAttribute('data-en', 'Setup takes 2 minutes: Sign in with Google \u2192 Pick a Drive folder \u2192 Start asking AI');
-        ctaText.textContent = 'Setup takes 2 minutes: Sign in with Google \u2192 Pick a Drive folder \u2192 Start asking AI';
+        ctaText.setAttribute('data-sk', 'Toto je ukážka s vymyslenými dátami. Pripájanie vlastného Drive spúšťame v novembri 2026.');
+        ctaText.setAttribute('data-en', 'This is a demo with invented data. Connecting your own Drive opens in November 2026.');
+        ctaText.textContent = 'This is a demo with invented data. Connecting your own Drive opens in November 2026.';
         var ctaBtn = document.createElement('a');
-        ctaBtn.href = '/dashboard';
+        ctaBtn.href = '/#waitlist';
         ctaBtn.style.cssText = 'padding:0.5rem 1.25rem;background:var(--accent);color:#fff;border-radius:6px;text-decoration:none;font-size:0.8125rem;font-weight:600;white-space:nowrap';
-        ctaBtn.setAttribute('data-sk', 'Začať zadarmo');
-        ctaBtn.setAttribute('data-en', 'Start free');
-        ctaBtn.textContent = 'Start free';
+        ctaBtn.setAttribute('data-sk', 'Pridať sa na zoznam');
+        ctaBtn.setAttribute('data-en', 'Join the waitlist');
+        ctaBtn.textContent = 'Join the waitlist';
         ctaBanner.appendChild(ctaText);
         ctaBanner.appendChild(ctaBtn);
         document.body.appendChild(ctaBanner);
@@ -284,27 +290,28 @@
 
     /** Sample doc detail for demo mode — shows OCR and metadata without API call. */
     function getDemoDocDetail(doc) {
+      // All demo content is invented (patient, hospital, values, dates 2027+).
       var demoDetails = {
         1: {
-          filename: '20260315_Patient_NOU_Labs_BloodCount.pdf',
-          category: 'labs', date: '2026-03-15', institution: 'NOU',
+          filename: '20270315_Patient_NOU_Labs_BloodCount.pdf',
+          category: 'labs', date: '2027-03-15', institution: 'Example Hospital',
           gdrive_url: null, preview_url: null,
-          ai_summary: 'Complete blood count before cycle 5 mFOLFOX6. WBC 4.2, HGB 112 g/L (mild anemia), PLT 268, ANC 2.1. Liver enzymes stable. CEA trending down from 18.4 to 12.1 — favorable response.',
-          ai_tags: ['CBC', 'pre-chemo', 'mFOLFOX6', 'CEA declining', 'mild anemia'],
-          metadata: { diagnosis: 'C18.7 — mCRC', treatment: 'mFOLFOX6 cycle 5', provider: 'Národný onkologický ústav' },
+          ai_summary: 'Sample blood count before cycle 3 (invented data). WBC 5.6, HGB 118 g/L (slightly low), PLT 231, ANC 3.1. Liver enzymes within range. CEA 4.2, below the upper limit.',
+          ai_tags: ['CBC', 'pre-cycle', 'sample data'],
+          metadata: { diagnosis: 'C18 — colorectal (sample)', treatment: 'cycle 3 (sample)', provider: 'Example Hospital (invented)' },
           pages: [
-            { page_number: 1, char_count: 1842, text: 'NÁRODNÝ ONKOLOGICKÝ ÚSTAV\nKlenová 1, 833 10 Bratislava\n\nLABORATÓRNY NÁLEZ\nDátum: 15.03.2026\nPacient: [REDACTED]\n\nKRVNÝ OBRAZ:\nWBC: 4.2 x10^9/L (ref: 4.0-10.0)\nRBC: 3.89 x10^12/L (ref: 3.80-5.20)\nHGB: 112 g/L (ref: 120-160) ↓\nHCT: 0.34 L/L (ref: 0.35-0.47) ↓\nPLT: 268 x10^9/L (ref: 150-400)\nANC: 2.1 x10^9/L\n\nBIOCHÉMIA:\nALT: 0.45 µkat/L (ref: 0.10-0.83)\nAST: 0.52 µkat/L (ref: 0.10-0.72)\nGGT: 0.89 µkat/L (ref: 0.10-1.00)\nKreatinín: 78 µmol/L (ref: 53-115)\n\nNÁDOROVÉ MARKERY:\nCEA: 12.1 ng/mL (ref: <5.0) ↑\nCA 19-9: 28.4 U/mL (ref: <37.0)\n\nZáver: Mierna anémia, neutrofily v norme — pacient spôsobilý na chemoterapiu.' }
+            { page_number: 1, char_count: 1024, text: 'NEMOCNICA PRÍKLADOV (vymyslená)\nOddelenie klinickej biochémie\n\nLABORATÓRNY NÁLEZ — UKÁŽKA\nOdber: 15.03.2027 07:05\nPacient: Ema Vzorová (vymyslená)\n\nKRVNÝ OBRAZ:\nWBC: 5.6 x10^9/L (ref: 4.0-10.0)\nRBC: 4.05 x10^12/L (ref: 3.80-5.20)\nHGB: 118 g/L (ref: 120-160) ↓\nHCT: 0.36 L/L (ref: 0.35-0.47)\nPLT: 231 x10^9/L (ref: 150-400)\nANC: 3.1 x10^9/L\n\nBIOCHÉMIA:\nALT: 0.38 µkat/L (ref: 0.10-0.83)\nAST: 0.41 µkat/L (ref: 0.10-0.72)\nKreatinín: 71 µmol/L (ref: 53-115)\n\nNÁDOROVÉ MARKERY:\nCEA: 4.2 ng/mL (ref: <5.0)\n\nVšetky údaje sú vymyslené pre demo.' }
           ]
         },
         3: {
-          filename: '20260301_Patient_NOU_Pathology_ColonBiopsy.pdf',
-          category: 'pathology', date: '2026-03-01', institution: 'NOU',
+          filename: '20270301_Patient_NOU_Pathology_ColonBiopsy.pdf',
+          category: 'pathology', date: '2027-03-01', institution: 'Example Hospital',
           gdrive_url: null, preview_url: null,
-          ai_summary: 'Pathology report confirming adenocarcinoma G3, sigmoid colon. KRAS G12D mutation detected. MSS/pMMR. BRAF wild-type.',
-          ai_tags: ['adenocarcinoma', 'G3', 'KRAS G12D', 'MSS', 'pMMR', 'BRAF WT'],
-          metadata: { diagnosis: 'C18.7 — adenocarcinoma sigmoid', biomarkers: 'KRAS G12D, MSS, BRAF WT', provider: 'Národný onkologický ústav' },
+          ai_summary: 'Sample pathology report (invented data): adenocarcinoma G2, colon. RAS and BRAF wild-type, MSS/pMMR.',
+          ai_tags: ['adenocarcinoma', 'G2', 'RAS WT', 'MSS', 'sample data'],
+          metadata: { diagnosis: 'C18 — adenocarcinoma (sample)', biomarkers: 'RAS WT, BRAF WT, MSS', provider: 'Example Hospital (invented)' },
           pages: [
-            { page_number: 1, char_count: 2156, text: 'NÁRODNÝ ONKOLOGICKÝ ÚSTAV\nÚstav patológie\n\nHISTOPATOLOGICKÝ NÁLEZ\nDátum: 01.03.2026\n\nMateriál: Biopsia colon sigmoideum\nDiagnóza: Adenokarcinóm, grade 3 (G3)\nLokalizácia: Colon sigmoideum\n\nMikroskopický nález:\nInvazívny adenokarcinóm s tubulárnym a kribriformným usporiadaním.\nVýrazná jadrová atypia, vysoká mitotická aktivita.\n\nMolekulárna genetika:\nKRAS: mutácia G12D detegovaná\nNRAS: wild-type\nBRAF V600E: wild-type\nMMR/MSI: pMMR / MSS (stabilný)\n\nZáver: Adenokarcinóm hrubého čreva G3, KRAS G12D pozitívny.' }
+            { page_number: 1, char_count: 812, text: 'NEMOCNICA PRÍKLADOV (vymyslená)\nOddelenie patológie\n\nHISTOPATOLOGICKÝ NÁLEZ — UKÁŽKA\nDátum: 01.03.2027\n\nMateriál: Biopsia hrubého čreva\nDiagnóza: Adenokarcinóm, grade 2 (G2)\n\nMolekulárna genetika:\nKRAS: wild-type\nNRAS: wild-type\nBRAF V600E: wild-type\nMMR/MSI: pMMR / MSS\n\nVšetky údaje sú vymyslené pre demo.' }
           ]
         }
       };

@@ -3010,7 +3010,7 @@ See our <a href="/privacy">Privacy Policy</a> for details.</p>
 <ul>
 <li>You must have a Google account to use Oncofiles</li>
 <li>You are responsible for maintaining the security of your bearer tokens and credentials</li>
-<li>Free tier: up to 200 documents per patient</li>
+<li>Free tier: up to 500 documents per patient</li>
 </ul>
 
 <h2>5. Acceptable Use</h2>
@@ -3493,7 +3493,7 @@ eZdravie, pacient má Oncofiles.</p>
 <li>Lekári, ktorí chcú od pacienta dostať štruktúrovaný sumár namiesto papierovej kôpky.</li>
 </ul>
 
-<p>Oncofiles je zadarmo pre prvých 200 dokumentov na pacienta. Bez kreditky,
+<p>Oncofiles je zadarmo pre prvých 500 dokumentov na pacienta. Bez kreditky,
 bez registrácie cez eID.</p>
 
 <a class="cta" href="/dashboard">Začať zadarmo &rarr;</a>
@@ -3562,7 +3562,7 @@ complement each other: the clinician has the EHR, the patient has Oncofiles.</p>
 <li>Clinicians who prefer a structured summary over a stack of PDFs.</li>
 </ul>
 
-<p>Oncofiles is free for the first 200 documents per patient. No credit card,
+<p>Oncofiles is free for the first 500 documents per patient. No credit card,
 no complex onboarding.</p>
 
 <a class="cta" href="/dashboard">Start for free &rarr;</a>
@@ -3627,7 +3627,7 @@ def _eu_comparison_schema_jsonld(canonical: str, name: str, description: str) ->
                         "price": "0",
                         "priceCurrency": "EUR",
                         "description": (
-                            "Free for the first 200 documents per patient "
+                            "Free for the first 500 documents per patient "
                             "(rolling €10/month steady-state budget, €30 onboarding)"
                         ),
                     },
@@ -3719,7 +3719,7 @@ _EU_COMPARISON_TABLE_EN = """
       <td>No</td>
       <td>N/A</td></tr>
     <tr><td>Price for patients</td>
-      <td><strong>Free tier &mdash; 200 docs, €10/mo budget</strong></td>
+      <td><strong>Free tier &mdash; 500 docs, €10/mo budget</strong></td>
       <td>Part of paid ChatGPT</td>
       <td>Enterprise only</td>
       <td>Free (state-funded)</td></tr>
@@ -3771,7 +3771,7 @@ _EU_COMPARISON_TABLE_SK = """
       <td>Nie</td>
       <td>N/A</td></tr>
     <tr><td>Cena pre pacienta</td>
-      <td><strong>Zadarmo &mdash; 200 dok., €10/mes rozpočet</strong></td>
+      <td><strong>Zadarmo &mdash; 500 dok., €10/mes rozpočet</strong></td>
       <td>Časť platenej ChatGPT</td>
       <td>Iba podnikové</td>
       <td>Zadarmo (štátne)</td></tr>
@@ -3946,7 +3946,7 @@ s právnou kanceláriou prebiehajú (2026).</li>
 <h3>Pre novinárov a redakcie</h3>
 <p><strong>Kľúčové body:</strong> Slovenský open-source projekt. Zatvára
 medzeru po ChatGPT Health (nedostupný v EÚ) a HealthEx (iba US). Prvých päť
-pacientov už používa. Zadarmo pre pacientov (200 dok., €10/mes AI rozpočet).
+pacientov už používa. Zadarmo pre pacientov (500 dok., €10/mes AI rozpočet).
 Autor: Peter Fusek, peter.fusek@instarea.sk.</p>
 <p><strong>K dispozícii:</strong> Rozhovor s autorom, technická demo, príbeh
 pacienta (anonymizovaný), rozbor konkurenčnej medzery.</p>
@@ -4843,9 +4843,12 @@ async def dashboard(request: Request) -> HTMLResponse:
 async def demo_dashboard(request: Request) -> HTMLResponse:
     """Public demo dashboard with masked sample data. No auth required."""
     html = _load_dashboard_html()
-    # Inject demo mode flag BEFORE the main dashboard script so init() sees it
-    demo_inject = "<script>window.DEMO_MODE=true;</script>\n"
-    html = html.replace("<script>", demo_inject + "<script>", 1)
+    # #605: since #525 every <script> in dashboard.html has a `src`, so the old
+    # `replace("<script>", inline_flag)` matched nothing and /demo silently
+    # rendered the login gate. An inline flag script would also be fragile under
+    # CSP. Mark the <html> element instead; dashboard.js reads `data-demo`
+    # before init() runs.
+    html = html.replace("<html", '<html data-demo="1"', 1)
     return HTMLResponse(html)
 
 
@@ -4876,11 +4879,11 @@ async def api_demo_data(request: Request) -> JSONResponse:
                     "avg_duration_s": 14.2,
                     "total_imported": 6,
                     "total_errors": 0,
-                    "last_sync_at": "2026-03-24T14:30:00Z",
+                    "last_sync_at": "2027-03-24T14:30:00Z",
                 },
                 "recent_syncs": [
                     {
-                        "started_at": "2026-03-24T14:30:00Z",
+                        "started_at": "2027-03-24T14:30:00Z",
                         "status": "completed",
                         "trigger": "scheduled",
                         "duration_s": 12,
@@ -4888,7 +4891,7 @@ async def api_demo_data(request: Request) -> JSONResponse:
                         "errors": 0,
                     },
                     {
-                        "started_at": "2026-03-24T14:25:00Z",
+                        "started_at": "2027-03-24T14:25:00Z",
                         "status": "completed",
                         "trigger": "scheduled",
                         "duration_s": 8,
@@ -4896,7 +4899,7 @@ async def api_demo_data(request: Request) -> JSONResponse:
                         "errors": 0,
                     },
                     {
-                        "started_at": "2026-03-24T14:20:00Z",
+                        "started_at": "2027-03-24T14:20:00Z",
                         "status": "completed",
                         "trigger": "scheduled",
                         "duration_s": 15,
@@ -4922,9 +4925,9 @@ async def api_demo_data(request: Request) -> JSONResponse:
                 "documents": [
                     {
                         "id": 1,
-                        "filename": "20260315_Patient_NOU_Labs_BloodCount.pdf",
+                        "filename": "20270315_Patient_NOU_Labs_BloodCount.pdf",
                         "category": "Labs",
-                        "date": "2026-03-15",
+                        "date": "2027-03-15",
                         "has_ocr": True,
                         "has_ai": True,
                         "has_metadata": True,
@@ -4934,9 +4937,9 @@ async def api_demo_data(request: Request) -> JSONResponse:
                     },
                     {
                         "id": 2,
-                        "filename": "20260310_Patient_FNsP_CT_AbdomenPelvis.pdf",
+                        "filename": "20270310_Patient_FNsP_CT_AbdomenPelvis.pdf",
                         "category": "CT",
-                        "date": "2026-03-10",
+                        "date": "2027-03-10",
                         "has_ocr": True,
                         "has_ai": True,
                         "has_metadata": True,
@@ -4946,9 +4949,9 @@ async def api_demo_data(request: Request) -> JSONResponse:
                     },
                     {
                         "id": 3,
-                        "filename": "20260301_Patient_NOU_Pathology_ColonBiopsy.pdf",
+                        "filename": "20270301_Patient_NOU_Pathology_ColonBiopsy.pdf",
                         "category": "Pathology",
-                        "date": "2026-03-01",
+                        "date": "2027-03-01",
                         "has_ocr": True,
                         "has_ai": True,
                         "has_metadata": True,
@@ -4958,9 +4961,9 @@ async def api_demo_data(request: Request) -> JSONResponse:
                     },
                     {
                         "id": 4,
-                        "filename": "20260225_Patient_Medirex_Labs_TumorMarkers.pdf",
+                        "filename": "20270225_Patient_Medirex_Labs_TumorMarkers.pdf",
                         "category": "Labs",
-                        "date": "2026-02-25",
+                        "date": "2027-02-25",
                         "has_ocr": True,
                         "has_ai": True,
                         "has_metadata": True,
@@ -4970,9 +4973,9 @@ async def api_demo_data(request: Request) -> JSONResponse:
                     },
                     {
                         "id": 5,
-                        "filename": "20260220_Patient_NOU_Genetics_KRASPanel.pdf",
+                        "filename": "20270220_Patient_NOU_Genetics_KRASPanel.pdf",
                         "category": "Genetics",
-                        "date": "2026-02-20",
+                        "date": "2027-02-20",
                         "has_ocr": True,
                         "has_ai": True,
                         "has_metadata": True,
@@ -4982,9 +4985,9 @@ async def api_demo_data(request: Request) -> JSONResponse:
                     },
                     {
                         "id": 6,
-                        "filename": "20260215_Patient_NOU_ChemoSheet_FOLFOX_C3.pdf",
+                        "filename": "20270215_Patient_NOU_ChemoSheet_FOLFOX_C3.pdf",
                         "category": "ChemoSheet",
-                        "date": "2026-02-15",
+                        "date": "2027-02-15",
                         "has_ocr": True,
                         "has_ai": True,
                         "has_metadata": False,
@@ -4994,9 +4997,9 @@ async def api_demo_data(request: Request) -> JSONResponse:
                     },
                     {
                         "id": 7,
-                        "filename": "20260210_Patient_FNsP_USG_Liver.pdf",
+                        "filename": "20270210_Patient_FNsP_USG_Liver.pdf",
                         "category": "USG",
-                        "date": "2026-02-10",
+                        "date": "2027-02-10",
                         "has_ocr": True,
                         "has_ai": True,
                         "has_metadata": True,
@@ -5006,9 +5009,9 @@ async def api_demo_data(request: Request) -> JSONResponse:
                     },
                     {
                         "id": 8,
-                        "filename": "20260205_Patient_NOU_Prescription_[MEDICATION_REDACTED].pdf",
+                        "filename": "20270205_Patient_NOU_Prescription_Antiemetic.pdf",
                         "category": "Prescription",
-                        "date": "2026-02-05",
+                        "date": "2027-02-05",
                         "has_ocr": True,
                         "has_ai": False,
                         "has_metadata": True,
@@ -5018,9 +5021,9 @@ async def api_demo_data(request: Request) -> JSONResponse:
                     },
                     {
                         "id": 9,
-                        "filename": "20260130_Patient_NOU_DischargeSummary_Chemo.pdf",
+                        "filename": "20270130_Patient_NOU_DischargeSummary_Chemo.pdf",
                         "category": "DischargeSummary",
-                        "date": "2026-01-30",
+                        "date": "2027-01-30",
                         "has_ocr": True,
                         "has_ai": True,
                         "has_metadata": True,
@@ -5030,9 +5033,9 @@ async def api_demo_data(request: Request) -> JSONResponse:
                     },
                     {
                         "id": 10,
-                        "filename": "20260125_Patient_GP_Referral_Oncology.pdf",
+                        "filename": "20270125_Patient_GP_Referral_Oncology.pdf",
                         "category": "Referral",
-                        "date": "2026-01-25",
+                        "date": "2027-01-25",
                         "has_ocr": True,
                         "has_ai": True,
                         "has_metadata": True,
@@ -5042,9 +5045,9 @@ async def api_demo_data(request: Request) -> JSONResponse:
                     },
                     {
                         "id": 11,
-                        "filename": "20260320_Patient_GP_Vaccination_Covid19Booster.pdf",
+                        "filename": "20270320_Patient_GP_Vaccination_Covid19Booster.pdf",
                         "category": "Vaccination",
-                        "date": "2026-03-20",
+                        "date": "2027-03-20",
                         "has_ocr": True,
                         "has_ai": True,
                         "has_metadata": True,
@@ -5054,9 +5057,9 @@ async def api_demo_data(request: Request) -> JSONResponse:
                     },
                     {
                         "id": 12,
-                        "filename": "20260305_Patient_DentalClinic_Dental_AnnualCheckup.pdf",
+                        "filename": "20270305_Patient_DentalClinic_Dental_AnnualCheckup.pdf",
                         "category": "Dental",
-                        "date": "2026-03-05",
+                        "date": "2027-03-05",
                         "has_ocr": True,
                         "has_ai": True,
                         "has_metadata": True,
@@ -5066,9 +5069,9 @@ async def api_demo_data(request: Request) -> JSONResponse:
                     },
                     {
                         "id": 13,
-                        "filename": "20260228_Patient_GP_Preventive_ColorectalScreening.pdf",
+                        "filename": "20270228_Patient_GP_Preventive_ColorectalScreening.pdf",
                         "category": "Preventive",
-                        "date": "2026-02-28",
+                        "date": "2027-02-28",
                         "has_ocr": True,
                         "has_ai": True,
                         "has_metadata": True,
@@ -5088,21 +5091,21 @@ async def api_demo_data(request: Request) -> JSONResponse:
                         "input_tokens": 1250,
                         "output_tokens": 380,
                         "duration_ms": 2100,
-                        "result_summary": "Extracted metadata: Labs, NOU, 2026-03-15",
+                        "result_summary": "Extracted metadata: Labs, NOU, 2027-03-15",
                         "status": "ok",
-                        "created_at": "2026-03-24T14:28:00Z",
+                        "created_at": "2027-03-24T14:28:00Z",
                     },
                     {
                         "id": 2,
                         "call_type": "ocr",
                         "document_id": 41,
-                        "model": "claude-haiku-4-5-20251001",
+                        "model": "local-vision-model",
                         "input_tokens": 8400,
                         "output_tokens": 1200,
                         "duration_ms": 4500,
                         "result_summary": "OCR: 3 pages extracted",
                         "status": "ok",
-                        "created_at": "2026-03-24T14:25:00Z",
+                        "created_at": "2027-03-24T14:25:00Z",
                     },
                     {
                         "id": 3,
@@ -5114,7 +5117,7 @@ async def api_demo_data(request: Request) -> JSONResponse:
                         "duration_ms": 800,
                         "result_summary": "medical=true (0.94)",
                         "status": "ok",
-                        "created_at": "2026-03-24T14:20:00Z",
+                        "created_at": "2027-03-24T14:20:00Z",
                     },
                 ],
                 "stats": {

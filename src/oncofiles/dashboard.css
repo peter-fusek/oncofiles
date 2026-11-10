@@ -959,3 +959,9 @@
     .curated-ops-report h4 { margin: 0.75rem 0 0.35rem; font-size: 0.875rem; }
     .curated-ops-status-ok { color: var(--green, #16a34a); }
     .curated-ops-status-bad { color: var(--red, #dc2626); }
+
+    /* Landing refresh (Nov 2026): line icons on the auth gate, demo banner,
+       tabular figures wherever values line up in columns. */
+    .gate-icon { color: var(--accent); display: flex; justify-content: center; margin-bottom: 0.35rem; }
+    .demo-banner { margin: 0.5rem 0 0; padding: 0.5rem 0.75rem; border: 1px dashed var(--accent); border-radius: 8px; background: var(--accent-glow); color: var(--text); font-size: 0.8125rem; text-align: center; }
+    table, td, th, .stat-value, .lab-value { font-variant-numeric: tabular-nums; }
