@@ -48,6 +48,9 @@ LOCAL_LLM_TIMEOUT_S: float = float(os.environ.get("LOCAL_LLM_TIMEOUT_S", "900"))
 # Re-OCR self-limit (#667): no new document is started while RSS is above this,
 # well under HARD_RSS_CEILING_MB, which makes /health exit the process.
 REOCR_RSS_LIMIT_MB: float = float(os.environ.get("REOCR_RSS_LIMIT_MB", "450"))
+# Concurrent vision passes per page in a re-read (#593). 1 = sequential (default);
+# 2 needs at least 2 parallel slots in LM Studio (infra setting).
+REOCR_PARALLEL_PASSES: int = int(os.environ.get("REOCR_PARALLEL_PASSES", "1"))
 # Context length LM Studio loads the model with (central macmini setting).
 # Change it together with LM Studio, or prompts + budgets overflow (#601).
 LOCAL_LLM_CONTEXT_WINDOW: int = int(os.environ.get("LOCAL_LLM_CONTEXT_WINDOW", "32768"))
