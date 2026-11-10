@@ -3132,11 +3132,13 @@ async def dashboard_gtag_js(request: Request) -> Response:
     return Response(_DASHBOARD_GTAG_JS, media_type="application/javascript; charset=utf-8")
 
 
+# Only the two photos the landing uses, as crops (Nov 2026): the full-size
+# originals showed an ID-like number, a phone number and an e-mail on a
+# contract (02) and a third person's name in a table row (04). The
+# originals stay in the repo history but are no longer served.
 _PILE_PHOTO_NAMES = {
-    "01": "01-paper-folder-cancer-textbook-web.jpg",
-    "02": "02-papers-spread-medical-records-web.jpg",
-    "03": "03-dashboard-1982-handwritten-ocr-web.jpg",
-    "04": "04-dashboard-1982-handwritten-ocr-detail-web.jpg",
+    "02": "02-papers-pile-crop-web.jpg",
+    "04": "04-handwritten-ocr-crop-web.jpg",
 }
 _PILE_PHOTO_DIR = (
     Path(__file__).parent.parent.parent
@@ -4849,252 +4851,267 @@ async def dashboard(request: Request) -> HTMLResponse:
     return HTMLResponse(_load_dashboard_html())
 
 
+_DEMO_ASSETS: dict[str, str] = {}
+
+
+def _demo_asset(name: str) -> str:
+    """Read demo.html / demo.css / demo.js once (same pattern as the dashboard assets)."""
+    if name not in _DEMO_ASSETS:
+        _DEMO_ASSETS[name] = (Path(__file__).parent / name).read_text()
+    return _DEMO_ASSETS[name]
+
+
 @mcp.custom_route("/demo", methods=["GET"])
 async def demo_dashboard(request: Request) -> HTMLResponse:
-    """Public demo dashboard with masked sample data. No auth required."""
-    html = _load_dashboard_html()
-    # #605: since #525 every <script> in dashboard.html has a `src`, so the old
-    # `replace("<script>", inline_flag)` matched nothing and /demo silently
-    # rendered the login gate. An inline flag script would also be fragile under
-    # CSP. Mark the <html> element instead; dashboard.js reads `data-demo`
-    # before init() runs.
-    html = html.replace("<html", '<html data-demo="1"', 1)
-    return HTMLResponse(html)
+    """Public demo: one invented patient, rendered by demo.js from /api/demo-data.
+
+    The demo is its own small page (Nov 2026 redesign) instead of the operator
+    dashboard in "demo mode": a first-time visitor sees a patient overview and
+    a document view, not sync/pipeline/cost panels. It loads no dashboard.js,
+    so it cannot reach an authenticated endpoint; demo.js only fetches
+    /api/demo-data (#605).
+    """
+    return HTMLResponse(_demo_asset("demo.html").replace("{{VERSION}}", VERSION))
+
+
+@mcp.custom_route("/demo.css", methods=["GET"])
+async def demo_css(request: Request) -> Response:
+    return Response(_demo_asset("demo.css"), media_type="text/css; charset=utf-8")
+
+
+@mcp.custom_route("/demo.js", methods=["GET"])
+async def demo_js(request: Request) -> Response:
+    return Response(_demo_asset("demo.js"), media_type="application/javascript; charset=utf-8")
+
+
+# ── Demo data: one invented patient (all names, values and dates are made up,
+#    dates in 2027 per the synthetic-fixtures rule). ──────────────────────────
+
+_DEMO_HOSPITAL = "Nemocnica Príkladov"
+_DEMO_LAB_HEADER = "Vyšetrenie|Výsledok|Jednotky|Ref. rozsah"
+# (report date, sample date, sample time, {code: (value_text, state)}, cea_sample)
+_DEMO_LAB_REPORTS = [
+    (
+        "2027-01-14",
+        "2027-01-12",
+        "07:10",
+        {
+            "WBC": ("6,1", "machine"),
+            "HGB": ("138", "machine"),
+            "PLT": ("262", "machine"),
+            "CEA": ("3,1", "machine"),
+        },
+        None,
+    ),
+    (
+        "2027-02-11",
+        "2027-02-09",
+        "07:05",
+        {
+            "WBC": ("4,4", "machine"),
+            "HGB": ("124", "machine"),
+            "PLT": ("198", "human"),
+            "CEA": ("2,9", "machine"),
+        },
+        None,
+    ),
+    (
+        "2027-03-10",
+        "2027-03-09",
+        "06:55",
+        {"WBC": ("4,9", "machine"), "HGB": ("119", "machine"), "PLT": ("219", "machine")},
+        None,
+    ),
+    (
+        "2027-03-17",
+        "2027-03-15",
+        "06:40",
+        {
+            "WBC": ("6,3", "human"),
+            "HGB": ("131", "machine"),
+            "PLT": ("248", "machine"),
+            "CEA": ("2,7", "unverified"),
+        },
+        "2027-03-02",
+    ),
+]
+_DEMO_SERIES = [
+    ("WBC", "Leukocyty", "White cells", "×10⁹/L", "4,0–10,0", 4.0, 10.0),
+    ("HGB", "Hemoglobín", "Haemoglobin", "g/L", "120–160", 120, 160),
+    ("PLT", "Trombocyty", "Platelets", "×10⁹/L", "150–400", 150, 400),
+    ("CEA", "CEA", "CEA", "µg/L", "< 5,0", None, 5.0),
+]
+_DEMO_FIXED_ROWS = {"RBC": ("4,21", "×10¹²/L", "3,80–5,20"), "HCT": ("0,39", "L/L", "0,35–0,47")}
+
+
+def _sk_date(iso: str) -> str:
+    y, m, d = iso.split("-")
+    return f"{d}.{m}.{y}"
+
+
+def _demo_payload() -> dict:
+    meta = {s[0]: s for s in _DEMO_SERIES}
+    documents: list[dict] = []
+    points: dict[str, list[dict]] = {s[0]: [] for s in _DEMO_SERIES}
+    for idx, (reported, sampled, time_, values, cea_sample) in enumerate(_DEMO_LAB_REPORTS, 1):
+        lines: list[dict] = [
+            {"text": f"{_DEMO_HOSPITAL} – Oddelenie klinickej biochémie", "kind": "head"},
+            {"text": "Pacientka: Jana Testová (vymyslená)"},
+            {"text": "Odosielajúci lekár: MUDr. Ján Ukážkový"},
+            {"text": f"Odber: {_sk_date(sampled)} {time_}"},
+            {"text": f"Vydané: {_sk_date(reported)}"},
+            {"text": ""},
+            {"text": "Krvný obraz", "kind": "sub"},
+            {"cells": _DEMO_LAB_HEADER.split("|"), "kind": "th"},
+        ]
+        order = ["WBC", "RBC", "HGB", "HCT", "PLT"]
+        if "CEA" in values:
+            order += ["", "Nádorové markery", "note", "CEA"]
+        for code in order:
+            if code == "":
+                lines.append({"text": ""})
+                continue
+            if code == "Nádorové markery":
+                lines.append({"text": code, "kind": "sub"})
+                continue
+            if code == "note":
+                note = (
+                    f"Výsledok z odberu {_sk_date(cea_sample)}"
+                    if cea_sample
+                    else "Z rovnakého odberu"
+                )
+                lines.append({"text": note, "kind": "note"})
+                continue
+            if code in _DEMO_FIXED_ROWS:
+                v, unit, ref = _DEMO_FIXED_ROWS[code]
+                lines.append({"cells": [code, v, unit, ref]})
+                continue
+            value_text, state = values[code]
+            _, _sk, _en, unit, ref, _lo, _hi = meta[code]
+            lines.append({"cells": [code, value_text, unit, ref]})
+            line_no = len(lines)
+            sample = cea_sample if (code == "CEA" and cea_sample) else sampled
+            points[code].append(
+                {
+                    "date": sample,
+                    "value": float(value_text.replace(",", ".")),
+                    "value_text": value_text,
+                    "state": state,
+                    "doc": idx,
+                    "page": 1,
+                    "line": line_no,
+                    "note": "date_mismatch" if state == "unverified" else "",
+                }
+            )
+        lines += [{"text": ""}, {"text": "Vyšetrila: RNDr. Eva Vzorová"}]
+        for n, line in enumerate(lines, 1):
+            line["n"] = n
+        documents.append(
+            {
+                "id": idx,
+                "date": reported,
+                "category": "labs",
+                "title_sk": "Laboratórny výsledok",
+                "title_en": "Lab report",
+                "filename": (
+                    f"{reported.replace('-', '')}_JanaTestova_NemPrikladov_Labs_BloodCount.pdf"
+                ),
+                "institution": _DEMO_HOSPITAL,
+                "pages": [{"n": 1, "lines": lines}],
+            }
+        )
+    prose_docs = [
+        (
+            5,
+            "2027-02-20",
+            "imaging",
+            "CT brucha a malej panvy",
+            "CT of abdomen and pelvis",
+            "CT_AbdomenPelvis",
+            [
+                (f"{_DEMO_HOSPITAL} – Rádiologické oddelenie", "head"),
+                ("Pacientka: Jana Testová (vymyslená)", ""),
+                ("Vyšetrenie: CT brucha a malej panvy s kontrastnou látkou", ""),
+                ("Dátum vyšetrenia: 20.02.2027", ""),
+                ("", ""),
+                ("Popis", "sub"),
+                ("Pečeň primeranej veľkosti, bez ložiskových zmien.", ""),
+                ("Lymfatické uzliny nezväčšené.", ""),
+                ("", ""),
+                ("Záver", "sub"),
+                ("Stacionárny nález oproti predchádzajúcemu vyšetreniu.", ""),
+                ("", ""),
+                ("Vymyslený nález pre ukážku.", "note"),
+            ],
+        ),
+        (
+            6,
+            "2027-04-02",
+            "report",
+            "Správa z onkologickej ambulancie",
+            "Oncology clinic report",
+            "Report_OncologyVisit",
+            [
+                (f"{_DEMO_HOSPITAL} – Onkologická ambulancia", "head"),
+                ("Pacientka: Jana Testová (vymyslená)", ""),
+                ("Kontrola: 02.04.2027", ""),
+                ("Ošetrujúci lekár: MUDr. Ján Ukážkový", ""),
+                ("", ""),
+                ("Priebeh", "sub"),
+                ("Liečbu znáša dobre, bez nových ťažkostí.", ""),
+                ("Krvný obraz z 15.03.2027 bez obmedzení pre ďalší cyklus.", ""),
+                ("", ""),
+                ("Odporúčanie", "sub"),
+                ("Pokračovať podľa plánu, kontrola o 3 týždne.", ""),
+                ("", ""),
+                ("Vymyslená správa pre ukážku.", "note"),
+            ],
+        ),
+    ]
+    for doc_id, date, cat, t_sk, t_en, slug, rows in prose_docs:
+        lines = [{"n": n, "text": t, "kind": k} for n, (t, k) in enumerate(rows, 1)]
+        documents.append(
+            {
+                "id": doc_id,
+                "date": date,
+                "category": cat,
+                "title_sk": t_sk,
+                "title_en": t_en,
+                "filename": f"{date.replace('-', '')}_JanaTestova_NemPrikladov_{slug}.pdf",
+                "institution": _DEMO_HOSPITAL,
+                "pages": [{"n": 1, "lines": lines}],
+            }
+        )
+    documents.sort(key=lambda d: d["date"], reverse=True)
+    series = [
+        {
+            "code": code,
+            "name_sk": sk,
+            "name_en": en,
+            "unit": unit,
+            "ref": ref,
+            "low": lo,
+            "high": hi,
+            "points": points[code],
+        }
+        for code, sk, en, unit, ref, lo, hi in _DEMO_SERIES
+    ]
+    return {
+        "version": VERSION,
+        "patient": {"name": "Jana Testová", "invented": True},
+        "series": series,
+        "documents": documents,
+    }
 
 
 @mcp.custom_route("/api/demo-data", methods=["GET"])
 async def api_demo_data(request: Request) -> JSONResponse:
-    """Return masked sample data for demo dashboard. Public, no auth."""
-    return JSONResponse(
-        {
-            "status": {
-                "version": VERSION,
-                "uptime_s": 86400,
-                "memory_rss_mb": 145.2,
-                "documents": 158,
-                "document_health": {
-                    "total": 158,
-                    "with_ocr": 155,
-                    "with_ai": 158,
-                    "with_metadata": 158,
-                    "with_date": 158,
-                    "with_institution": 150,
-                    "synced": 158,
-                    "standard_named": 155,
-                },
-                "sync_7d": {
-                    "total": 312,
-                    "successful": 308,
-                    "failed": 4,
-                    "avg_duration_s": 14.2,
-                    "total_imported": 6,
-                    "total_errors": 0,
-                    "last_sync_at": "2027-03-24T14:30:00Z",
-                },
-                "recent_syncs": [
-                    {
-                        "started_at": "2027-03-24T14:30:00Z",
-                        "status": "completed",
-                        "trigger": "scheduled",
-                        "duration_s": 12,
-                        "new": 0,
-                        "errors": 0,
-                    },
-                    {
-                        "started_at": "2027-03-24T14:25:00Z",
-                        "status": "completed",
-                        "trigger": "scheduled",
-                        "duration_s": 8,
-                        "new": 1,
-                        "errors": 0,
-                    },
-                    {
-                        "started_at": "2027-03-24T14:20:00Z",
-                        "status": "completed",
-                        "trigger": "scheduled",
-                        "duration_s": 15,
-                        "new": 0,
-                        "errors": 0,
-                    },
-                ],
-            },
-            "documents": {
-                "filter": "all",
-                "matched": 15,
-                "summary": {
-                    "total": 158,
-                    "with_ocr": 155,
-                    "with_ai": 158,
-                    "with_metadata": 158,
-                    "synced": 158,
-                    "standard_named": 155,
-                    "with_date": 158,
-                    "with_institution": 150,
-                    "fully_complete": 150,
-                },
-                "documents": [
-                    {
-                        "id": 1,
-                        "filename": "20270315_Patient_NOU_Labs_BloodCount.pdf",
-                        "category": "Labs",
-                        "date": "2027-03-15",
-                        "has_ocr": True,
-                        "has_ai": True,
-                        "has_metadata": True,
-                        "is_synced": True,
-                        "is_standard_name": True,
-                        "gdrive_id": "demo",
-                    },
-                    {
-                        "id": 2,
-                        "filename": "20270310_Patient_FNsP_CT_AbdomenPelvis.pdf",
-                        "category": "CT",
-                        "date": "2027-03-10",
-                        "has_ocr": True,
-                        "has_ai": True,
-                        "has_metadata": True,
-                        "is_synced": True,
-                        "is_standard_name": True,
-                        "gdrive_id": "demo",
-                    },
-                    {
-                        "id": 3,
-                        "filename": "20270301_Patient_NOU_Pathology_ColonBiopsy.pdf",
-                        "category": "Pathology",
-                        "date": "2027-03-01",
-                        "has_ocr": True,
-                        "has_ai": True,
-                        "has_metadata": True,
-                        "is_synced": True,
-                        "is_standard_name": True,
-                        "gdrive_id": "demo",
-                    },
-                    {
-                        "id": 4,
-                        "filename": "20270225_Patient_Medirex_Labs_TumorMarkers.pdf",
-                        "category": "Labs",
-                        "date": "2027-02-25",
-                        "has_ocr": True,
-                        "has_ai": True,
-                        "has_metadata": True,
-                        "is_synced": True,
-                        "is_standard_name": True,
-                        "gdrive_id": "demo",
-                    },
-                    {
-                        "id": 5,
-                        "filename": "20270220_Patient_NOU_Genetics_KRASPanel.pdf",
-                        "category": "Genetics",
-                        "date": "2027-02-20",
-                        "has_ocr": True,
-                        "has_ai": True,
-                        "has_metadata": True,
-                        "is_synced": True,
-                        "is_standard_name": True,
-                        "gdrive_id": "demo",
-                    },
-                    {
-                        "id": 6,
-                        "filename": "20270215_Patient_NOU_ChemoSheet_FOLFOX_C3.pdf",
-                        "category": "ChemoSheet",
-                        "date": "2027-02-15",
-                        "has_ocr": True,
-                        "has_ai": True,
-                        "has_metadata": False,
-                        "is_synced": True,
-                        "is_standard_name": True,
-                        "gdrive_id": "demo",
-                    },
-                    {
-                        "id": 7,
-                        "filename": "20270210_Patient_FNsP_USG_Liver.pdf",
-                        "category": "USG",
-                        "date": "2027-02-10",
-                        "has_ocr": True,
-                        "has_ai": True,
-                        "has_metadata": True,
-                        "is_synced": True,
-                        "is_standard_name": True,
-                        "gdrive_id": "demo",
-                    },
-                    {
-                        "id": 8,
-                        "filename": "20270205_Patient_NOU_Prescription_Antiemetic.pdf",
-                        "category": "Prescription",
-                        "date": "2027-02-05",
-                        "has_ocr": True,
-                        "has_ai": False,
-                        "has_metadata": True,
-                        "is_synced": True,
-                        "is_standard_name": True,
-                        "gdrive_id": "demo",
-                    },
-                    {
-                        "id": 9,
-                        "filename": "20270130_Patient_NOU_DischargeSummary_Chemo.pdf",
-                        "category": "DischargeSummary",
-                        "date": "2027-01-30",
-                        "has_ocr": True,
-                        "has_ai": True,
-                        "has_metadata": True,
-                        "is_synced": True,
-                        "is_standard_name": True,
-                        "gdrive_id": "demo",
-                    },
-                    {
-                        "id": 10,
-                        "filename": "20270125_Patient_GP_Referral_Oncology.pdf",
-                        "category": "Referral",
-                        "date": "2027-01-25",
-                        "has_ocr": True,
-                        "has_ai": True,
-                        "has_metadata": True,
-                        "is_synced": True,
-                        "is_standard_name": True,
-                        "gdrive_id": "demo",
-                    },
-                    {
-                        "id": 11,
-                        "filename": "20270320_Patient_GP_Vaccination_Covid19Booster.pdf",
-                        "category": "Vaccination",
-                        "date": "2027-03-20",
-                        "has_ocr": True,
-                        "has_ai": True,
-                        "has_metadata": True,
-                        "is_synced": True,
-                        "is_standard_name": True,
-                        "gdrive_id": "demo",
-                    },
-                    {
-                        "id": 12,
-                        "filename": "20270305_Patient_DentalClinic_Dental_AnnualCheckup.pdf",
-                        "category": "Dental",
-                        "date": "2027-03-05",
-                        "has_ocr": True,
-                        "has_ai": True,
-                        "has_metadata": True,
-                        "is_synced": True,
-                        "is_standard_name": True,
-                        "gdrive_id": "demo",
-                    },
-                    {
-                        "id": 13,
-                        "filename": "20270228_Patient_GP_Preventive_ColorectalScreening.pdf",
-                        "category": "Preventive",
-                        "date": "2027-02-28",
-                        "has_ocr": True,
-                        "has_ai": True,
-                        "has_metadata": True,
-                        "is_synced": True,
-                        "is_standard_name": True,
-                        "gdrive_id": "demo",
-                    },
-                ],
-            },
-            # #605: no prompt-log / analytics in the demo payload: they described the
-            # old cloud pipeline (per-call tokens, USD cost). Processing is local now.
-        }
-    )
+    """Invented sample patient for the public demo. Public, no auth.
+
+    No prompt log, sync history or cost data (#605): those described the old
+    cloud pipeline and are not part of what a visitor needs to understand.
+    """
+    return JSONResponse(_demo_payload())
 
 
 @mcp.custom_route("/dashboard/config", methods=["GET"])
