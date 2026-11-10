@@ -657,6 +657,46 @@ def _year_for(day: int, month: int, ref: str | None) -> int | None:
     return year - 1 if month - ref_month >= 6 else None
 
 
+# Block headers (#661, maintainer decision 2026-11-10): a lab block in a report
+# is often introduced by a line that is only its date or date range
+# ("14.7.2027 - 15.7.2027:", "Vykonané vyšetrenia: laboratórne 3.8.2027:") or by
+# the sampling line ("Odobrané 3.8.2027 07:40 …"); its result lines follow,
+# maybe after specimen labels ("sérum OKB"). Strict on purpose: anything else
+# between the header and the values ends the block.
+_HEADER_DATES = re.compile(
+    r"^\s*(?:[^\d|:;]{0,40}:\s*)?[^\d|:;]{0,20}?"
+    r"(?P<dates>\d{1,2}\.\s?\d{1,2}\.(?:\s?\d{4})?"
+    r"(?:\s?[–-]\s?\d{1,2}\.(?:\s?\d{1,2}\.)?(?:\s?\d{4})?)?)\s*:\s*$"
+)
+_SAMPLED = re.compile(r"^\s*Odobran[éáa]\s+(\d{1,2})\.\s?(\d{1,2})\.\s?(\d{4})\b", re.I)
+_SPECIMEN = re.compile(r"^[^\d;|:]{1,30}$")  # "sérum OKB", "krv EDTA"
+_NUMBERS_ONLY = re.compile(r"^[\d\s,.<>]+$")  # a wrapped value ("99,9")
+
+
+def _block_header(line: str) -> tuple[int, int, int | None, str | None] | None:
+    """(day, month, year or None, range start) when ``line`` opens a lab block."""
+    text = line.replace("*", "").strip()
+    if not text or text.startswith(("|", "#")):
+        return None
+    if m := _SAMPLED.match(text):
+        d, mo, y = (int(g) for g in m.groups())
+        return (d, mo, y, None) if 1 <= d <= 31 and 1 <= mo <= 12 else None
+    if m := _HEADER_DATES.match(text):
+        return _segment_date(m.group("dates") + ":")
+    return None
+
+
+def _keeps_block(line: str, is_results: bool) -> bool:
+    """Can ``line`` sit between a block header and the block's values?"""
+    text = line.replace("*", "").strip()
+    return (
+        not text
+        or is_results
+        or bool(_NUMBERS_ONLY.match(text))
+        or (bool(_SPECIMEN.match(text)) and not text.startswith(("|", "#")))
+    )
+
+
 def _line_range_start(before: str, end_iso: str | None) -> str | None:
     """Start day of "5.–6.5.2027" (same month and year as the end)."""
     m = re.search(r"(\d{1,2})\.\s?[–-]\s?$", before)
@@ -711,12 +751,17 @@ def parse_inline_results(
     seen_keys: set = set()
     for page_no, text in enumerate(pages, start=1):
         prev = ""
+        block = None  # (header date, header line) of the lab block we are in (#661)
         for line in _join_wrapped(text.splitlines()):
             skip = _NOT_DATA.search(line) or _VITALS.search(line) or _STATS.search(line)
             items = [] if skip else _inline_items(line)
+            is_results = False
+            if header := _block_header(line):
+                block = (header, line.replace("*", "").strip()[:160])
             if len(_INLINE_SPLIT.split(line)) >= 3 and items:
                 parsed = [(it, vocab.match(it[0]) or vocab.match_fuzzy(it[0])) for it in items]
-                if sum(1 for _, c in parsed if c) >= 2:
+                is_results = sum(1 for _, c in parsed if c) >= 2
+                if is_results:
                     dm = _LINE_DATE.search(line) or _LINE_DATE.search(prev)
                     when = (
                         f"{int(dm.group(3)):04d}-{int(dm.group(2)):02d}-{int(dm.group(1)):02d}"
@@ -729,8 +774,11 @@ def parse_inline_results(
                         if not code_row:
                             continue  # only known codes from free text
                         item_when, date_source = when, ("printed" if dm else "report")
-                        if seg_date:  # the segment's own date beats any other date in the line
-                            d, mo, y, range_start = seg_date
+                        own_date, from_block = seg_date, False
+                        if not own_date and not dm and block:
+                            own_date, from_block = block[0], True  # the block's header date
+                        if own_date:  # the segment's own date beats any other date in the line
+                            d, mo, y, range_start = own_date
                             year = y or _year_for(d, mo, report_date or when)
                             if year:
                                 item_when = f"{year:04d}-{mo:02d}-{d:02d}"
@@ -757,8 +805,11 @@ def parse_inline_results(
                         if not f:
                             continue
                         meta = {**(f.get("metadata") or {}), "date_source": date_source}
-                        start = seg_date[3] if seg_date else None
-                        if ranged and not seg_date:
+                        if from_block and date_source != "report":
+                            meta["date_evidence"] = block[1]  # the header line, verbatim
+                            meta["date_from"] = "block_header"
+                        start = own_date[3] if own_date else None
+                        if ranged and not own_date:
                             meta["date_source"] = "printed_range"  # "5.–6.5.2027"
                             start = _line_range_start(src_line[: dm.start()], f["occurred_at"])
                         if meta["date_source"] == "printed_range":
@@ -779,6 +830,8 @@ def parse_inline_results(
                             continue  # the same line quoted twice in one report
                         seen_keys.add(key)
                         out.append(f)
+            if not _block_header(line) and not _keeps_block(line, is_results):
+                block = None  # prose, a table or another dated line ends the block
             if line.strip():
                 prev = line
     return out
