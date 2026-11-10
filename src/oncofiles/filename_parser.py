@@ -365,7 +365,7 @@ def _parse_standard_format(stem: str, ext: str, patient_id: str = "") -> ParsedF
     if len(parts) < 2:
         return None  # Need at least patient name + something
 
-    # First part should be patient name (e.g. "ErikaFusekova")
+    # First part should be patient name (e.g. "JanaTestova")
     from oncofiles.patient_context import get_patient_name
 
     patient_name_compact = get_patient_name(patient_id).replace(" ", "") or "Patient"
@@ -406,7 +406,7 @@ def _parse_standard_format(stem: str, ext: str, patient_id: str = "") -> ParsedF
 
 
 def _parse_new_format(stem: str, ext: str, patient_id: str = "") -> ParsedFilename | None:
-    """Try to parse as: YYYYMMDD ErikaFusekova-Institution-Description."""
+    """Try to parse as: YYYYMMDD JanaTestova-Institution-Description."""
     result = ParsedFilename(extension=ext)
 
     # Extract date (YYYYMMDD, YYYYMMXX, or YYYY-MM-DD)
@@ -659,8 +659,8 @@ def rename_to_bilingual(filename: str, category: DocumentCategory | str | None =
         Use :func:`rename_to_standard` instead.
 
     Transforms:
-        20260227 ErikaFusekova-NOU-LabVysledkyPred2chemo[PHYSICIAN_REDACTED].pdf
-    →   20260227 ErikaFusekova-NOU-Labs-LabVysledkyPred2chemo[PHYSICIAN_REDACTED].pdf
+        20270227 JanaTestova-NOU-LabVysledkyPred2chemoDrNovak.pdf
+    →   20270227 JanaTestova-NOU-Labs-LabVysledkyPred2chemoDrNovak.pdf
 
     If the filename already has a bilingual prefix, returns it unchanged.
     If category is not provided, infers it from the filename.

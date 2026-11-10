@@ -55,13 +55,13 @@ async def test_get_nonexistent(db: Database):
 
 async def test_list_documents(db: Database):
     await db.insert_document(
-        make_doc(file_id="file_1", document_date=date(2024, 1, 1)), patient_id=ERIKA_UUID
+        make_doc(file_id="file_1", document_date=date(2028, 1, 1)), patient_id=ERIKA_UUID
     )
     await db.insert_document(
-        make_doc(file_id="file_2", document_date=date(2024, 3, 1)), patient_id=ERIKA_UUID
+        make_doc(file_id="file_2", document_date=date(2028, 3, 1)), patient_id=ERIKA_UUID
     )
     await db.insert_document(
-        make_doc(file_id="file_3", document_date=date(2024, 2, 1)), patient_id=ERIKA_UUID
+        make_doc(file_id="file_3", document_date=date(2028, 2, 1)), patient_id=ERIKA_UUID
     )
 
     docs = await db.list_documents(patient_id=ERIKA_UUID)
@@ -168,7 +168,7 @@ async def test_soft_delete_filtered_from_search(db: Database):
     """Soft-deleted docs excluded from all search/filter queries."""
     doc = await db.insert_document(
         make_doc(
-            file_id="file_del", category=DocumentCategory.LABS, document_date=date(2024, 6, 1)
+            file_id="file_del", category=DocumentCategory.LABS, document_date=date(2028, 6, 1)
         ),
         patient_id=ERIKA_UUID,
     )
@@ -195,7 +195,7 @@ async def test_search_by_text(db: Database):
     await db.insert_document(
         make_doc(
             file_id="file_1",
-            filename="20240115_NOUonko_labs_krvnyObraz.pdf",
+            filename="20280115_NOUonko_labs_krvnyObraz.pdf",
             description="krvny obraz",
             institution="NOUonko",
         ),
@@ -204,8 +204,8 @@ async def test_search_by_text(db: Database):
     await db.insert_document(
         make_doc(
             file_id="file_2",
-            filename="20240301_UNB_imaging_CTabdomen.pdf",
-            original_filename="20240301_UNB_imaging_CTabdomen.pdf",
+            filename="20280301_UNB_imaging_CTabdomen.pdf",
+            original_filename="20280301_UNB_imaging_CTabdomen.pdf",
             description="CT abdomen",
             institution="UNB",
         ),
@@ -222,8 +222,8 @@ async def test_search_by_text_substring_in_filename(db: Database):
     await db.insert_document(
         make_doc(
             file_id="file_genetika",
-            filename="20240301_NOU_pathology_GenetikaMudrMalejcikova.pdf",
-            original_filename="20240301 ErikaFusekova-NOU-GenetikaMudrMalejcikova.pdf",
+            filename="20280301_NOU_pathology_GenetikaMudrMalejcikova.pdf",
+            original_filename="20280301 JanaTestova-NOU-GenetikaMudrMalejcikova.pdf",
             description="GenetikaMudrMalejcikova",
         ),
         patient_id=ERIKA_UUID,
@@ -286,17 +286,17 @@ async def test_search_by_category(db: Database):
 
 async def test_search_by_date_range(db: Database):
     await db.insert_document(
-        make_doc(file_id="file_1", document_date=date(2024, 1, 1)), patient_id=ERIKA_UUID
+        make_doc(file_id="file_1", document_date=date(2028, 1, 1)), patient_id=ERIKA_UUID
     )
     await db.insert_document(
-        make_doc(file_id="file_2", document_date=date(2024, 6, 1)), patient_id=ERIKA_UUID
+        make_doc(file_id="file_2", document_date=date(2028, 6, 1)), patient_id=ERIKA_UUID
     )
     await db.insert_document(
-        make_doc(file_id="file_3", document_date=date(2024, 12, 1)), patient_id=ERIKA_UUID
+        make_doc(file_id="file_3", document_date=date(2028, 12, 1)), patient_id=ERIKA_UUID
     )
 
     results = await db.search_documents(
-        SearchQuery(date_from=date(2024, 3, 1), date_to=date(2024, 9, 1)),
+        SearchQuery(date_from=date(2028, 3, 1), date_to=date(2028, 9, 1)),
         patient_id=ERIKA_UUID,
     )
     assert len(results) == 1
@@ -308,7 +308,7 @@ async def test_get_latest_labs(db: Database):
         make_doc(
             file_id="file_lab1",
             category=DocumentCategory.LABS,
-            document_date=date(2024, 1, 1),
+            document_date=date(2028, 1, 1),
         ),
         patient_id=ERIKA_UUID,
     )
@@ -316,7 +316,7 @@ async def test_get_latest_labs(db: Database):
         make_doc(
             file_id="file_lab2",
             category=DocumentCategory.LABS,
-            document_date=date(2024, 6, 1),
+            document_date=date(2028, 6, 1),
         ),
         patient_id=ERIKA_UUID,
     )
@@ -324,7 +324,7 @@ async def test_get_latest_labs(db: Database):
         make_doc(
             file_id="file_img",
             category=DocumentCategory.IMAGING,
-            document_date=date(2024, 12, 1),
+            document_date=date(2028, 12, 1),
         ),
         patient_id=ERIKA_UUID,
     )
@@ -340,7 +340,7 @@ async def test_get_treatment_timeline(db: Database):
         make_doc(
             file_id="file_surgery",
             category=DocumentCategory.SURGERY,
-            document_date=date(2024, 1, 10),
+            document_date=date(2028, 1, 10),
         ),
         patient_id=ERIKA_UUID,
     )
@@ -348,7 +348,7 @@ async def test_get_treatment_timeline(db: Database):
         make_doc(
             file_id="file_labs",
             category=DocumentCategory.LABS,
-            document_date=date(2024, 3, 15),
+            document_date=date(2028, 3, 15),
         ),
         patient_id=ERIKA_UUID,
     )
@@ -356,7 +356,7 @@ async def test_get_treatment_timeline(db: Database):
         make_doc(
             file_id="file_other",
             category=DocumentCategory.OTHER,
-            document_date=date(2024, 2, 1),
+            document_date=date(2028, 2, 1),
         ),
         patient_id=ERIKA_UUID,
     )
@@ -374,7 +374,7 @@ async def test_get_treatment_timeline_limit(db: Database):
             make_doc(
                 file_id=f"file_report_{i}",
                 category=DocumentCategory.REPORT,
-                document_date=date(2024, 1, i + 1),
+                document_date=date(2028, 1, i + 1),
             ),
             patient_id=ERIKA_UUID,
         )
@@ -388,8 +388,8 @@ async def test_get_treatment_timeline_limit(db: Database):
 
 async def test_save_and_get_ocr_pages(db: Database):
     doc = await db.insert_document(make_doc(), patient_id=ERIKA_UUID)
-    await db.save_ocr_page(doc.id, 1, "Page 1 text", "claude-haiku-4-5-20251001")
-    await db.save_ocr_page(doc.id, 2, "Page 2 text", "claude-haiku-4-5-20251001")
+    await db.save_ocr_page(doc.id, 1, "Page 1 text", "claude-haiku-4-5-20291001")
+    await db.save_ocr_page(doc.id, 2, "Page 2 text", "claude-haiku-4-5-20291001")
 
     pages = await db.get_ocr_pages(doc.id)
     assert len(pages) == 2
@@ -403,13 +403,13 @@ async def test_has_ocr_text(db: Database):
     doc = await db.insert_document(make_doc(), patient_id=ERIKA_UUID)
     assert await db.has_ocr_text(doc.id) is False
 
-    await db.save_ocr_page(doc.id, 1, "Some text", "claude-haiku-4-5-20251001")
+    await db.save_ocr_page(doc.id, 1, "Some text", "claude-haiku-4-5-20291001")
     assert await db.has_ocr_text(doc.id) is True
 
 
 async def test_delete_ocr_pages(db: Database):
     doc = await db.insert_document(make_doc(), patient_id=ERIKA_UUID)
-    await db.save_ocr_page(doc.id, 1, "Text", "claude-haiku-4-5-20251001")
+    await db.save_ocr_page(doc.id, 1, "Text", "claude-haiku-4-5-20291001")
     assert await db.has_ocr_text(doc.id) is True
 
     deleted = await db.delete_ocr_pages(doc.id)
@@ -424,8 +424,8 @@ async def test_delete_ocr_pages_nonexistent(db: Database):
 async def test_save_ocr_page_replace(db: Database):
     """INSERT OR REPLACE should update existing page text."""
     doc = await db.insert_document(make_doc(), patient_id=ERIKA_UUID)
-    await db.save_ocr_page(doc.id, 1, "Old text", "claude-haiku-4-5-20251001")
-    await db.save_ocr_page(doc.id, 1, "New text", "claude-haiku-4-5-20251001")
+    await db.save_ocr_page(doc.id, 1, "Old text", "claude-haiku-4-5-20291001")
+    await db.save_ocr_page(doc.id, 1, "New text", "claude-haiku-4-5-20291001")
 
     pages = await db.get_ocr_pages(doc.id)
     assert len(pages) == 1
@@ -435,7 +435,7 @@ async def test_save_ocr_page_replace(db: Database):
 async def test_ocr_preserved_on_soft_delete(db: Database):
     """Soft-deleting a document should preserve OCR pages (needed for restore)."""
     doc = await db.insert_document(make_doc(), patient_id=ERIKA_UUID)
-    await db.save_ocr_page(doc.id, 1, "Text", "claude-haiku-4-5-20251001")
+    await db.save_ocr_page(doc.id, 1, "Text", "claude-haiku-4-5-20291001")
 
     await db.delete_document(doc.id)
     # OCR pages still exist (soft delete doesn't cascade)

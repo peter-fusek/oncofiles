@@ -31,9 +31,9 @@ def _set_patient_context():
     original_contexts = dict(patient_context._contexts)
 
     # Set test patient name in both legacy global and per-patient cache
-    patient_context._context["name"] = "Erika Fusekova"
+    patient_context._context["name"] = "Jana Testova"
     patient_context._contexts.clear()
-    patient_context._contexts[ERIKA_UUID] = {"name": "Erika Fusekova"}
+    patient_context._contexts[ERIKA_UUID] = {"name": "Jana Testova"}
     # Invalidate cached regex so it rebuilds with the test patient name
     fp._cached_patient_re.clear()
 

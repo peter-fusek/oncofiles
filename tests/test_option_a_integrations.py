@@ -7,7 +7,7 @@ holding admin scope. The fix threads ``patient_slug`` through every tool
 and resolves via ``_resolve_patient_id(patient_slug, ctx)``.
 
 These tests prove that with admin scope and ``patient_slug=bob-test``, the
-tools query Bob's data even when the caller's ContextVar binds Erika.
+tools query Bob's data even when the caller's ContextVar binds Jana.
 """
 
 from __future__ import annotations
@@ -60,13 +60,13 @@ async def _seed_emails(db: Database) -> None:
     await db.upsert_email_entry(
         EmailEntry(
             patient_id=ERIKA_UUID,
-            gmail_message_id="erika-msg-1",
-            thread_id="erika-th",
-            subject="Erika lab results",
+            gmail_message_id="jana-msg-1",
+            thread_id="jana-th",
+            subject="Jana lab results",
             sender="lab@example.com",
             date=datetime(2026, 1, 1, 9, 0, 0),
-            body_snippet="Erika body",
-            body_text="Erika body text",
+            body_snippet="Jana body",
+            body_text="Jana body text",
             is_medical=True,
         )
     )
@@ -89,8 +89,8 @@ async def _seed_calendar(db: Database) -> None:
     await db.upsert_calendar_entry(
         CalendarEntry(
             patient_id=ERIKA_UUID,
-            google_event_id="erika-evt-1",
-            summary="Erika oncologist visit",
+            google_event_id="jana-evt-1",
+            summary="Jana oncologist visit",
             description="d1",
             start_time=datetime(2026, 1, 10, 10, 0, 0),
         )
@@ -114,10 +114,10 @@ async def test_search_emails_default_targets_bound_patient(db: Database):
     await _seed_emails(db)
     ctx = _StubCtx(db)
 
-    # ContextVar binds Erika; no slug passed.
+    # ContextVar binds Jana; no slug passed.
     result = json.loads(await integrations.search_emails(ctx))
     subjects = {e["subject"] for e in result["emails"]}
-    assert "Erika lab results" in subjects
+    assert "Jana lab results" in subjects
     assert "Bob CT scan" not in subjects
 
 
@@ -160,11 +160,11 @@ async def test_integration_status_slug_targets_other_patient(db: Database):
     # of this test is that the call doesn't blow up and that the resolution
     # path exercises the slug. (Token-granted variants are covered by the
     # search_* / get_* tests above.)
-    erika = json.loads(await integrations.integration_status(ctx))
+    jana = json.loads(await integrations.integration_status(ctx))
     bob = json.loads(await integrations.integration_status(ctx, patient_slug=SECOND_SLUG))
     # Neither patient has tokens, so token_present is False on both — and
     # crucially neither call raises.
-    assert erika["token_present"] is False
+    assert jana["token_present"] is False
     assert bob["token_present"] is False
 
 
@@ -222,7 +222,7 @@ async def test_get_email_slug_targets_owner_when_caller_is_admin(db: Database):
     bob_email = await db.get_email_entry_by_gmail_id("bob-msg-1", SECOND_UUID)
     assert bob_email is not None
 
-    # Bind the caller to Erika to prove the slug overrides bound pid.
+    # Bind the caller to Jana to prove the slug overrides bound pid.
     _verified_patient_id.set(ERIKA_UUID)
     _verified_caller_email.set("admin@oncofiles.com")
     ctx = _StubCtx(db)
@@ -275,7 +275,7 @@ async def test_search_emails_non_admin_foreign_slug_denied(db: Database):
     # Drop admin scope for this single test (overrides the module-level fixture).
     tok_admin = _verified_caller_is_admin.set(False)
     tok_pid = _verified_patient_id.set(ERIKA_UUID)
-    tok_email = _verified_caller_email.set("erika-caregiver@example.com")
+    tok_email = _verified_caller_email.set("jana-caregiver@example.com")
     ctx = _StubCtx(db)
     try:
         result = json.loads(await integrations.search_emails(ctx, patient_slug=SECOND_SLUG))
@@ -300,7 +300,7 @@ async def test_get_email_non_admin_foreign_slug_denied(db: Database):
 
     tok_admin = _verified_caller_is_admin.set(False)
     tok_pid = _verified_patient_id.set(ERIKA_UUID)
-    tok_email = _verified_caller_email.set("erika-caregiver@example.com")
+    tok_email = _verified_caller_email.set("jana-caregiver@example.com")
     ctx = _StubCtx(db)
     try:
         with pytest.raises(ValueError, match="access denied"):

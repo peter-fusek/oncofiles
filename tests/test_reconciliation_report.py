@@ -32,25 +32,25 @@ async def test_report_splits_external_location_from_missing(db: Database):
     present = await _insert(
         db,
         file_id="f_present",
-        filename="20260101_Erika_NOU_Labs.pdf",
+        filename="20300101_Jana_NOU_Labs.pdf",
         gdrive_id="gd_present",
-        document_date=date(2026, 1, 1),
+        document_date=date(2030, 1, 1),
     )
     external = await _insert(
         db,
         file_id="f_ext",
-        filename="20260313_Erika_PA_Advocate.md",
+        filename="20300313_Jana_PA_Advocate.md",
         gdrive_id="gd_external",
         mime_type="text/markdown",
-        document_date=date(2026, 3, 13),
+        document_date=date(2030, 3, 13),
     )
     await db.set_gdrive_parent_outside_root(external.id, True)
     missing = await _insert(
         db,
         file_id="f_miss",
-        filename="20260301_Erika_X_Other.pdf",
+        filename="20300301_Jana_X_Other.pdf",
         gdrive_id="gd_unknown",
-        document_date=date(2026, 3, 1),
+        document_date=date(2030, 3, 1),
     )
 
     # sync-root listing contains ONLY the "present" file
@@ -67,9 +67,9 @@ async def test_report_splits_deleted_remote_from_missing(db: Database):
     gone = await _insert(
         db,
         file_id="f_gone",
-        filename="20260201_Erika_NOU_Labs.pdf",
+        filename="20300201_Jana_NOU_Labs.pdf",
         gdrive_id="gd_gone",
-        document_date=date(2026, 2, 1),
+        document_date=date(2030, 2, 1),
     )
     await db.update_sync_state(gone.id, "deleted_remote")
 
@@ -87,19 +87,19 @@ async def test_report_healthy_excludes_classified_classes(db: Database):
     external = await _insert(
         db,
         file_id="f_ext",
-        filename="20260313_Erika_PA_Advocate.md",
+        filename="20300313_Jana_PA_Advocate.md",
         gdrive_id="gd_ext",
         mime_type="text/markdown",
-        document_date=date(2026, 3, 13),
+        document_date=date(2030, 3, 13),
     )
     await db.set_gdrive_parent_outside_root(external.id, True)
 
     deleted = await _insert(
         db,
         file_id="f_del",
-        filename="20260201_Erika_X_Other.pdf",
+        filename="20300201_Jana_X_Other.pdf",
         gdrive_id="gd_del",
-        document_date=date(2026, 2, 1),
+        document_date=date(2030, 2, 1),
     )
     await db.update_sync_state(deleted.id, "deleted_remote")
 
@@ -176,14 +176,14 @@ async def test_supported_extension_missing_from_db_is_real_orphan(db: Database):
     and the user should be alerted. Fix must NOT silence these."""
     gdrive = _mock_gdrive_listing(
         [
-            {"id": "gd_real", "name": "20260101_ErikaFusekova_NOU_Labs_Bloods.pdf"},
+            {"id": "gd_real", "name": "20300101_JanaTestova_NOU_Labs_Bloods.pdf"},
         ]
     )
 
     report = await _build_reconciliation_report(db, gdrive, folder_id="root", patient_id=ERIKA_UUID)
 
     assert len(report["in_gdrive_not_db"]) == 1
-    assert report["in_gdrive_not_db"][0]["name"] == "20260101_ErikaFusekova_NOU_Labs_Bloods.pdf"
+    assert report["in_gdrive_not_db"][0]["name"] == "20300101_JanaTestova_NOU_Labs_Bloods.pdf"
     assert report["expected_orphans"] == []
     assert report["healthy"] is False  # real orphan fails health
 
@@ -227,49 +227,49 @@ async def test_report_does_not_leak_other_patient_db_docs(db: Database):
         )
     )
 
-    erika_doc = await _insert(
+    jana_doc = await _insert(
         db,
-        file_id="erika_recon",
-        filename="20260101_Erika_NOU_Labs.pdf",
-        gdrive_id="gd_erika",
+        file_id="jana_recon",
+        filename="20300101_Jana_NOU_Labs.pdf",
+        gdrive_id="gd_jana",
     )
     bob_doc = await db.insert_document(
         make_doc(
             file_id="bob_recon",
-            filename="20260101_Bob_NOU_Report.pdf",
+            filename="20300101_Bob_NOU_Report.pdf",
             gdrive_id="gd_bob",
         ),
         patient_id=bob_uuid,
     )
 
     # GDrive folder lists BOTH files (simulates a hypothetical leak path
-    # where the wrong folder_id was passed). With proper DB scoping, Erika's
+    # where the wrong folder_id was passed). With proper DB scoping, Jana's
     # report should show Bob's gdrive file as a real orphan (it's not in
-    # Erika's DB), and Bob's report mirror.
+    # Jana's DB), and Bob's report mirror.
     gdrive = _mock_gdrive_listing(
         [
-            {"id": "gd_erika", "name": erika_doc.filename},
+            {"id": "gd_jana", "name": jana_doc.filename},
             {"id": "gd_bob", "name": bob_doc.filename},
         ]
     )
 
-    erika_report = await _build_reconciliation_report(
+    jana_report = await _build_reconciliation_report(
         db, gdrive, folder_id="root", patient_id=ERIKA_UUID
     )
-    # Erika's DB count is 1 — Bob's doc must not appear in any DB-side bucket
-    erika_db_filenames = {e["filename"] for e in erika_report["in_db_not_gdrive"]}
-    erika_db_filenames |= {e["filename"] for e in erika_report["in_db_external_location"]}
-    erika_db_filenames |= {e["filename"] for e in erika_report["in_db_deleted_remote"]}
-    assert bob_doc.filename not in erika_db_filenames
-    # Bob's GDrive file IS unrecognized from Erika's perspective → real orphan
-    orphan_names = {e["name"] for e in erika_report["in_gdrive_not_db"]}
+    # Jana's DB count is 1 — Bob's doc must not appear in any DB-side bucket
+    jana_db_filenames = {e["filename"] for e in jana_report["in_db_not_gdrive"]}
+    jana_db_filenames |= {e["filename"] for e in jana_report["in_db_external_location"]}
+    jana_db_filenames |= {e["filename"] for e in jana_report["in_db_deleted_remote"]}
+    assert bob_doc.filename not in jana_db_filenames
+    # Bob's GDrive file IS unrecognized from Jana's perspective → real orphan
+    orphan_names = {e["name"] for e in jana_report["in_gdrive_not_db"]}
     assert bob_doc.filename in orphan_names
 
     bob_report = await _build_reconciliation_report(
         db, gdrive, folder_id="root", patient_id=bob_uuid
     )
-    # Symmetric: Bob's report must not see Erika's DB doc
+    # Symmetric: Bob's report must not see Jana's DB doc
     bob_db_filenames = {e["filename"] for e in bob_report["in_db_not_gdrive"]}
     bob_db_filenames |= {e["filename"] for e in bob_report["in_db_external_location"]}
     bob_db_filenames |= {e["filename"] for e in bob_report["in_db_deleted_remote"]}
-    assert erika_doc.filename not in bob_db_filenames
+    assert jana_doc.filename not in bob_db_filenames

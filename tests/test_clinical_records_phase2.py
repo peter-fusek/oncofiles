@@ -314,7 +314,7 @@ async def test_add_analysis_validates_record_ids_ownership(db: Database):
             record_ids=[other.id],
         )
     )
-    # Foreign record_id is invisible under Erika's scope (#499 SQL filter), so
+    # Foreign record_id is invisible under Jana's scope (#499 SQL filter), so
     # add_clinical_analysis hits the same "record_not_found" branch as a
     # genuinely missing id — the cross-patient distinction is no longer
     # observable to the caller, which is the desired info-leak posture.
@@ -351,7 +351,7 @@ async def test_add_analysis_without_record_ids(db: Database):
 async def test_list_clinical_analyses_scopes_by_patient(db: Database):
     await _seed_second_patient(db)
 
-    # Log one for ERIKA
+    # Log one for JANA
     await add_clinical_analysis(
         _ctx(db),
         analysis_type="sii_trend",
@@ -371,11 +371,11 @@ async def test_list_clinical_analyses_scopes_by_patient(db: Database):
     finally:
         _current_patient_id.reset(token)
 
-    erika_rows = await db.list_clinical_analyses(patient_id=ERIKA_UUID)
+    jana_rows = await db.list_clinical_analyses(patient_id=ERIKA_UUID)
     test_rows = await db.list_clinical_analyses(patient_id=TEST_PATIENT_UUID)
-    assert len(erika_rows) == 1
+    assert len(jana_rows) == 1
     assert len(test_rows) == 1
-    assert erika_rows[0].analysis_type == "sii_trend"
+    assert jana_rows[0].analysis_type == "sii_trend"
     assert test_rows[0].analysis_type == "lab_delta"
 
 

@@ -121,7 +121,7 @@ async def test_reassign_document_rejects_non_admin(db: Database):
     _verified_caller_is_admin.set(False)
     ctx = MagicMock()
     ctx.request_context.lifespan_context = {"db": db, "files": MagicMock()}
-    result = json.loads(await reassign_document(ctx, doc_id=1, target_patient_slug="erika"))
+    result = json.loads(await reassign_document(ctx, doc_id=1, target_patient_slug="jana"))
     assert "error" in result
     assert "admin scope" in result["error"]
 
@@ -189,7 +189,7 @@ async def test_list_patients_non_admin_no_email_restricted_to_bound_pid(db: Data
 
     _verified_caller_is_admin.set(False)
     _verified_caller_email.set("")
-    # Caller is a patient bearer bound to Erika (the seeded test default).
+    # Caller is a patient bearer bound to Jana (the seeded test default).
     _verified_patient_id.set(ERIKA_UUID)
     ctx = MagicMock()
     ctx.request_context.lifespan_context = {"db": db, "files": MagicMock()}
@@ -199,7 +199,7 @@ async def test_list_patients_non_admin_no_email_restricted_to_bound_pid(db: Data
         assert result.get("patients") == []
         return
     slugs = {p["slug"] for p in result if isinstance(p, dict) and "slug" in p}
-    # "omega" must NOT appear — we bound only to Erika.
+    # "omega" must NOT appear — we bound only to Jana.
     assert "omega" not in slugs
 
 
@@ -425,7 +425,7 @@ async def test_get_patient_context_bearer_bound_to_own_pid_sees_context(db: Data
     _verified_caller_is_admin.set(False)
     _verified_caller_email.set("")
     # _get_patient_id reads from patient_middleware._current_patient_id, not
-    # _verified_patient_id — override the fixture's ERIKA binding to simulate
+    # _verified_patient_id — override the fixture's JANA binding to simulate
     # a patient-bearer token bound to this specific pid.
     token = _current_patient_id.set(target.patient_id)
     try:

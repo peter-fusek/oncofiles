@@ -58,12 +58,12 @@ async def test_set_then_get_respects_patient_slug(db: Database):
     # Write the same key under two different patients
     a = json.loads(
         await ast.set_agent_state(
-            ctx, key="last_briefing_date", value='"2026-04-20"', patient_slug="q1b"
+            ctx, key="last_briefing_date", value='"2030-04-20"', patient_slug="q1b"
         )
     )
     b = json.loads(
         await ast.set_agent_state(
-            ctx, key="last_briefing_date", value='"2026-04-24"', patient_slug=SECOND_SLUG
+            ctx, key="last_briefing_date", value='"2030-04-24"', patient_slug=SECOND_SLUG
         )
     )
 
@@ -75,8 +75,8 @@ async def test_set_then_get_respects_patient_slug(db: Database):
     rb = json.loads(
         await ast.get_agent_state(ctx, key="last_briefing_date", patient_slug=SECOND_SLUG)
     )
-    assert ra["value"] == '"2026-04-20"'
-    assert rb["value"] == '"2026-04-24"'
+    assert ra["value"] == '"2030-04-20"'
+    assert rb["value"] == '"2030-04-24"'
     assert ra["patient_id"] == ERIKA_UUID
     assert rb["patient_id"] == SECOND_UUID
 
@@ -86,10 +86,10 @@ async def test_get_missing_key_is_isolated(db: Database):
     await _seed_second_patient(db)
     ctx = _StubCtx(db)
 
-    await ast.set_agent_state(ctx, key="only_for_erika", value='"secret"', patient_slug="q1b")
+    await ast.set_agent_state(ctx, key="only_for_jana", value='"secret"', patient_slug="q1b")
 
     fetched = json.loads(
-        await ast.get_agent_state(ctx, key="only_for_erika", patient_slug=SECOND_SLUG)
+        await ast.get_agent_state(ctx, key="only_for_jana", patient_slug=SECOND_SLUG)
     )
     assert fetched["value"] is None
     assert fetched["patient_id"] == SECOND_UUID
@@ -100,20 +100,20 @@ async def test_list_agent_states_scoped_to_slug(db: Database):
     await _seed_second_patient(db)
     ctx = _StubCtx(db)
 
-    await ast.set_agent_state(ctx, key="erika_key_1", value='"1"', patient_slug="q1b")
-    await ast.set_agent_state(ctx, key="erika_key_2", value='"2"', patient_slug="q1b")
+    await ast.set_agent_state(ctx, key="jana_key_a", value='"1"', patient_slug="q1b")
+    await ast.set_agent_state(ctx, key="jana_key_b", value='"2"', patient_slug="q1b")
     await ast.set_agent_state(ctx, key="bob_key_1", value='"x"', patient_slug=SECOND_SLUG)
 
-    erika_states = json.loads(await ast.list_agent_states(ctx, patient_slug="q1b"))
+    jana_states = json.loads(await ast.list_agent_states(ctx, patient_slug="q1b"))
     bob_states = json.loads(await ast.list_agent_states(ctx, patient_slug=SECOND_SLUG))
 
-    erika_keys = {s["key"] for s in erika_states}
+    jana_keys = {s["key"] for s in jana_states}
     bob_keys = {s["key"] for s in bob_states}
 
-    assert erika_keys == {"erika_key_1", "erika_key_2"}
+    assert jana_keys == {"jana_key_a", "jana_key_b"}
     assert bob_keys == {"bob_key_1"}
     # Every returned row must carry the correct patient_id
-    assert all(s["patient_id"] == ERIKA_UUID for s in erika_states)
+    assert all(s["patient_id"] == ERIKA_UUID for s in jana_states)
     assert all(s["patient_id"] == SECOND_UUID for s in bob_states)
 
 
@@ -128,9 +128,9 @@ async def test_upsert_under_different_slugs_does_not_overwrite(db: Database):
     # Pre-#452 fix: this second write would have overwritten the first
     # (both stored with patient_id='') and the assertion below would fail.
 
-    erika = json.loads(await ast.get_agent_state(ctx, key="counter", patient_slug="q1b"))
+    jana = json.loads(await ast.get_agent_state(ctx, key="counter", patient_slug="q1b"))
     bob = json.loads(await ast.get_agent_state(ctx, key="counter", patient_slug=SECOND_SLUG))
-    assert erika["value"] == "1"
+    assert jana["value"] == "1"
     assert bob["value"] == "2"
 
 

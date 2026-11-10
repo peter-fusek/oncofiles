@@ -29,8 +29,8 @@ from oncofiles.persistent_oauth import (
 from oncofiles.tools._helpers import _resolve_patient_id
 from tests.conftest import ERIKA_UUID
 
-ERIKA_SLUG = "erika-test"
-ERIKA_EMAIL = "erika.caregiver@example.com"
+JANA_SLUG = "jana-test"
+JANA_EMAIL = "jana.caregiver@example.com"
 BOB_UUID = "00000000-0000-4000-8000-000000000002"
 BOB_SLUG = "bob-test"
 BOB_EMAIL = "bob.caregiver@example.com"
@@ -47,11 +47,11 @@ class _StubCtx:
 
 @pytest.fixture
 async def two_patients(db: Database) -> Database:
-    """Seed two patients with distinct caregiver_emails. Erika is also the
+    """Seed two patients with distinct caregiver_emails. Jana is also the
     bound pid via the conftest db fixture."""
     await db.db.execute(
         "UPDATE patients SET slug = ?, caregiver_email = ? WHERE patient_id = ?",
-        (ERIKA_SLUG, ERIKA_EMAIL, ERIKA_UUID),
+        (JANA_SLUG, JANA_EMAIL, ERIKA_UUID),
     )
     await db.db.execute(
         "INSERT INTO patients (patient_id, slug, display_name, caregiver_email) "
@@ -92,17 +92,17 @@ async def test_admin_caller_can_resolve_any_slug(two_patients: Database, reset_s
 async def test_bearer_bound_caller_can_resolve_own_slug(
     two_patients: Database, reset_scope
 ) -> None:
-    """db fixture binds Erika's pid via _current_patient_id; passing
-    Erika's slug is allowed (bearer match)."""
+    """db fixture binds Jana's pid via _current_patient_id; passing
+    Jana's slug is allowed (bearer match)."""
     ctx = _StubCtx(two_patients)
-    pid = await _resolve_patient_id(ERIKA_SLUG, ctx)
+    pid = await _resolve_patient_id(JANA_SLUG, ctx)
     assert pid == ERIKA_UUID
 
 
 async def test_bearer_bound_caller_blocked_from_other_slug(
     two_patients: Database, reset_scope
 ) -> None:
-    """db fixture binds Erika's pid; passing Bob's slug must be denied —
+    """db fixture binds Jana's pid; passing Bob's slug must be denied —
     this is the canonical #497 cross-patient bypass."""
     ctx = _StubCtx(two_patients)
     with pytest.raises(ValueError, match="access denied"):
@@ -124,16 +124,16 @@ async def test_oauth_caregiver_can_resolve_own_patient(two_patients: Database, r
 async def test_oauth_caregiver_blocked_from_non_caregiver_slug(
     two_patients: Database, reset_scope
 ) -> None:
-    """OAuth caller bound to Bob's email cannot resolve Erika's slug —
-    bound pid mismatches AND email doesn't match Erika's caregiver_email."""
+    """OAuth caller bound to Bob's email cannot resolve Jana's slug —
+    bound pid mismatches AND email doesn't match Jana's caregiver_email."""
     _verified_caller_email.set(BOB_EMAIL)
-    # Reset _current_patient_id so the conftest's Erika binding doesn't
+    # Reset _current_patient_id so the conftest's Jana binding doesn't
     # accidentally satisfy bearer_match.
     tok = _current_patient_id.set("")
     try:
         ctx = _StubCtx(two_patients)
         with pytest.raises(ValueError, match="access denied"):
-            await _resolve_patient_id(ERIKA_SLUG, ctx)
+            await _resolve_patient_id(JANA_SLUG, ctx)
     finally:
         _current_patient_id.reset(tok)
 

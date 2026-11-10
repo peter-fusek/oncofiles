@@ -55,7 +55,7 @@ async def test_reconcile_detects_unknown_folders(mock_list, mock_count, db: Data
     mock_list.return_value = [
         {"id": "f1", "name": "labs — laboratórne výsledky", "mimeType": _FOLDER_MIME},
         {"id": "f2", "name": "Guidelines", "mimeType": _FOLDER_MIME},
-        {"id": "f3", "name": ".zaloha_nazvov_20260302", "mimeType": _FOLDER_MIME},
+        {"id": "f3", "name": ".zaloha_nazvov_20300302", "mimeType": _FOLDER_MIME},
         {"id": "f4", "name": "MyDoc.pdf", "mimeType": "application/pdf", "size": "1234"},
     ]
 
@@ -182,7 +182,7 @@ async def test_validate_detects_discharge_summary(db: Database):
     """category=report + doc_type=discharge_summary → flagged."""
     doc = make_doc(
         file_id="file_ds1",
-        filename="20260227_ErikaFusekova_NOU_Report_Test.pdf",
+        filename="20300227_JanaTestova_NOU_Report_Test.pdf",
         category=DocumentCategory.REPORT,
     )
     doc = await db.insert_document(doc, patient_id=ERIKA_UUID)
@@ -206,7 +206,7 @@ async def test_validate_corrects_surgical_report(db: Database):
     """dry_run=False updates category in DB."""
     doc = make_doc(
         file_id="file_sr1",
-        filename="20260212_ErikaFusekova_NOU_Report_PICC.pdf",
+        filename="20300212_JanaTestova_NOU_Report_PICC.pdf",
         category=DocumentCategory.REPORT,
     )
     doc = await db.insert_document(doc, patient_id=ERIKA_UUID)
@@ -229,7 +229,7 @@ async def test_validate_skips_advocate(db: Database):
     """Advocate docs keep their category regardless of doc_type."""
     doc = make_doc(
         file_id="file_adv1",
-        filename="20260301_Advocate_Notes.pdf",
+        filename="20300301_Advocate_Notes.pdf",
         category=DocumentCategory.ADVOCATE,
     )
     doc = await db.insert_document(doc, patient_id=ERIKA_UUID)
@@ -250,7 +250,7 @@ async def test_validate_reference_by_filename(db: Database):
     """Docs in 'other' with DeVita in filename → reference."""
     doc = make_doc(
         file_id="file_ref1",
-        filename="ErikaFusekova-Other-DeVita_Ch40_CRC.pdf",
+        filename="JanaTestova-Other-DeVita_Ch40_CRC.pdf",
         category=DocumentCategory.OTHER,
     )
     doc = await db.insert_document(doc, patient_id=ERIKA_UUID)
@@ -267,7 +267,7 @@ async def test_validate_genetics_by_filename(db: Database):
     """Pathology docs with genetics keywords → genetics."""
     doc = make_doc(
         file_id="file_gen1",
-        filename="20260210_ErikaFusekova_NOU_Pathology_Genetika.pdf",
+        filename="20300210_JanaTestova_NOU_Pathology_Genetika.pdf",
         category=DocumentCategory.PATHOLOGY,
     )
     doc = await db.insert_document(doc, patient_id=ERIKA_UUID)
@@ -284,7 +284,7 @@ async def test_validate_corrects_genetics(db: Database):
     """Execute mode recategorizes genetics docs."""
     doc = make_doc(
         file_id="file_gen2",
-        filename="20260210_ErikaFusekova_NOU_Pathology_Genetic.pdf",
+        filename="20300210_JanaTestova_NOU_Pathology_Genetic.pdf",
         category=DocumentCategory.PATHOLOGY,
     )
     doc = await db.insert_document(doc, patient_id=ERIKA_UUID)

@@ -57,7 +57,7 @@ async def test_search_activity_log_filters_by_caller_pid(db: Database):
         ctx = _mock_ctx(db)
         raw = await search_activity_log(ctx)
         result = json.loads(raw)
-        # Only the 3 ERIKA entries should surface.
+        # Only the 3 JANA entries should surface.
         assert result["total"] == 3
         for entry in result["entries"]:
             assert entry["session_id"].startswith("sess_00000000"[:9])

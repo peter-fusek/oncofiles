@@ -258,7 +258,7 @@ async def _call_set_folder(body: dict, drive_names: list[str]):
     files = client._service.files.return_value
     files.get.return_value.execute.return_value = {
         "id": FID,
-        "name": "Erika",
+        "name": "Jana",
         "mimeType": "application/vnd.google-apps.folder",
     }
     files.list.return_value.execute.return_value = {"files": [{"name": n} for n in drive_names]}
