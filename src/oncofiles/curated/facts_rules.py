@@ -627,6 +627,7 @@ def _inline_items(line: str) -> list[tuple]:
         parts = re.split(r",\s+(?=[^\W\d_])", segment)
         for item in parts:
             item = re.sub(r"^.*:\s*", "", item.replace("*", ""))  # "Lab 1.2.2027: **CEA …"
+            item = re.sub(r"\s*\(ref\.?[^()]*\)\s*\.?\s*$", "", item, flags=re.I)  # "(ref 0–37)"
             arrow = next((_INLINE_ARROW[c] for c in item if c in _INLINE_ARROW), None)
             item = re.sub(r"[↑↓▲▼]", "", item).strip().rstrip(".").strip()
             if len(parts) == 1:  # "CA 19-9 812,4 (zakrúžkované)" in a ";" list
@@ -758,8 +759,9 @@ def parse_inline_results(
             is_results = False
             if header := _block_header(line):
                 block = (header, line.replace("*", "").strip()[:160])
-            if len(_INLINE_SPLIT.split(line)) >= 3 and items:
+            if len(_INLINE_SPLIT.split(line)) >= 2 and items:
                 parsed = [(it, vocab.match(it[0]) or vocab.match_fuzzy(it[0])) for it in items]
+                # two known codes in a ";" list ("CEA …; CA 19-9 …") are results too
                 is_results = sum(1 for _, c in parsed if c) >= 2
                 if is_results:
                     dm = _LINE_DATE.search(line) or _LINE_DATE.search(prev)
@@ -830,7 +832,7 @@ def parse_inline_results(
                             continue  # the same line quoted twice in one report
                         seen_keys.add(key)
                         out.append(f)
-            if not _block_header(line) and not _keeps_block(line, is_results):
+            if not _block_header(line) and not _keeps_block(line, is_results or bool(items)):
                 block = None  # prose, a table or another dated line ends the block
             if line.strip():
                 prev = line

@@ -1096,3 +1096,17 @@ async def test_a_qualitative_lab_sheet_yields_nothing(vocab):
     facts, ext = extract_lab_facts([_QUALITATIVE_SHEET], vocab, report_date="2028-06-15",
                                    inline=True)  # fmt: skip
     assert facts == [] and ext is None
+
+
+async def test_a_two_item_marker_line_is_read_and_keeps_its_block(vocab):
+    """#661: "CEA …; CA 19-9 … (ref …)." is a result line; the block date carries on."""
+    text = (
+        "Odobrané 9.7.2028 07:05. Č. vzorky 000.000003.\n"
+        "CEA 3,7 ng/ml; CA 19-9 21,3 U/ml (ref 0–37,0).\n"
+        "Kreatinín 66,1; Močovina 4,9; Albumín 41,8; Glukóza 5,11\n"
+    )
+    facts = parse_inline_results([text], vocab, report_date="2028-07-12")
+    by = {f["code"]: f for f in facts}
+    assert {"CEA", "CA19_9", "CREA", "UREA", "ALB", "GLU"} <= set(by)
+    assert all(f["occurred_at"][:10] == "2028-07-09" for f in facts)
+    assert all(f["metadata"]["date_source"] == "printed" for f in facts)
