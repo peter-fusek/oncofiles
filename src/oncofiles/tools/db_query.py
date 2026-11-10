@@ -211,24 +211,38 @@ async def query_db(
       - Patient-scoped tables require literal WHERE patient_id = '<your uuid>'.
         LIKE, IN, IS NOT NULL, GROUP BY, non-matching literals are rejected.
       - CTEs (WITH) and UNION are rejected.
-      - Admin callers must pass patient_slug= explicitly; no implicit admin bypass.
+      - Admin callers must pass patient_slug= explicitly for patient-scoped
+        tables; without it the query is rejected, never silently scoped to the
+        admin's current/default patient (#607).
       - System-wide tables (ALLOWED_TABLES_ADMIN_ONLY) are admin-only (#541).
 
     Args:
         sql: SELECT query. Tables: see ALLOWED_TABLES in this module.
         limit: Max rows to return (default 50, max 200).
         patient_slug: Explicit patient slug (#429). Required for admin callers
-            reading patient-scoped tables; otherwise the caller's resolved
-            patient is used.
+            reading patient-scoped tables (rejected without it, #607); for
+            non-admin callers the bound patient is used when omitted.
     """
+    is_admin = _is_admin_caller()
+
     # Resolve caller identity first — required for the filter check.
-    try:
-        caller_pid = await _resolve_patient_id(patient_slug, ctx, required=False)
-    except ValueError as exc:
-        return json.dumps({"error": f"patient lookup failed: {exc}"})
+    #
+    # #607: an admin caller WITHOUT patient_slug gets NO patient scope. The
+    # middleware still binds admins to a default/selected patient, and the
+    # resolver used to hand that pid back, so an admin query filtered on
+    # that pid silently ran against "whichever patient was current" — the
+    # implicit admin scope this tool's contract forbids. Admins must name
+    # the patient; admin-only system tables stay readable without one.
+    if is_admin and not patient_slug:
+        caller_pid = ""
+    else:
+        try:
+            caller_pid = await _resolve_patient_id(patient_slug, ctx, required=False)
+        except ValueError as exc:
+            return json.dumps({"error": f"patient lookup failed: {exc}"})
 
     # Validate.
-    err = _validate_query(sql, caller_pid, is_admin=_is_admin_caller())
+    err = _validate_query(sql, caller_pid, is_admin=is_admin)
     if err is not None:
         return json.dumps({"error": err})
 
