@@ -191,3 +191,58 @@ def test_a_reread_job_counts_as_an_active_run():
         assert tool.run_active() is True  # the CI deploy waits for it
     finally:
         tool._reocr_jobs.pop("p-test")
+
+
+# ── v2: unpaged Cowork sidecar vs a paged re-read ──
+
+
+def dated(code, value, day, page, source="printed", evidence="x"):
+    return {"code": code, "value_canonical": value, "occurred_at": day, "page_number": page,
+            "evidence": evidence, "metadata": {"date_source": source}}  # fmt: skip
+
+
+PAGES = ["Správa 20.6.2027, staré: 11.5.2027", "výsledky", "Lab 3.6.2027: CEA ..."]
+
+
+def test_unpaged_value_on_a_later_page_with_its_date_is_confirmed():
+    olds = [old(1, "CEA", 4.4, "2027-06-03")]
+    got = rv.assess(olds, [dated("CEA", 4.4, "2027-06-03", 3)], PAGES)
+    assert got["confirmed"] == [1]
+
+
+def test_unpaged_same_value_under_another_date_is_not_confirmed():
+    """(a) the old date also appears elsewhere in the document: still no."""
+    olds = [old(1, "CEA", 4.4, "2027-05-11")]  # page 1 prints 11.5.2027 too
+    got = rv.assess(olds, [dated("CEA", 4.4, "2027-06-03", 3)], PAGES)
+    assert got["unconfirmed"] == [1] and not got["confirmed"]
+
+
+def test_unpaged_multiset_confirms_only_as_many_as_the_reread_has():
+    """(b) two old facts, one new match: nothing is confirmed for that key."""
+    olds = [old(1, "CEA", 4.4, "2027-06-03"), old(2, "CEA", 4.4, "2027-06-03")]
+    got = rv.assess(olds, [dated("CEA", 4.4, "2027-06-03", 3)], PAGES)
+    assert sorted(got["unconfirmed"]) == [1, 2]
+    two = [dated("CEA", 4.4, "2027-06-03", 3), dated("CEA", 4.4, "2027-06-03", 3)]
+    assert sorted(rv.assess(olds, two, PAGES)["confirmed"]) == [1, 2]
+
+
+def test_unpaged_report_date_fallback_never_confirms():
+    """(c) the re-read only dated it by the report: not a second source for the date."""
+    olds = [old(1, "CEA", 4.4, "2027-06-20")]
+    got = rv.assess(olds, [dated("CEA", 4.4, "2027-06-20", 1, source="report")], PAGES)
+    assert got["unconfirmed"] == [1]
+
+
+def test_paged_sidecars_keep_the_strict_per_page_rule():
+    """(d) an old fact on page 2 is matched on page 2 only."""
+    olds = [old(1, "HGB", 127.0, "2027-05-11", page=2)]
+    on_page_one = [dated("HGB", 127.0, "2027-05-11", 1)]
+    assert rv.assess(olds, on_page_one, ["11.5.2027", "11.5.2027"])["unconfirmed"] == [1]
+    on_page_two = [dated("HGB", 127.0, "2027-05-11", 2)]
+    assert rv.assess(olds, on_page_two, ["x", "11.5.2027"])["confirmed"] == [1]
+
+
+def test_stored_results_record_the_rule_version():
+    f = old(1, "CEA", 4.4, "2027-06-03")
+    keys = rv.result_keys({"confirmed": [1], "date_unconfirmed": []}, {1: f})
+    assert keys["assess_version"] == rv.ASSESS_VERSION == 2
