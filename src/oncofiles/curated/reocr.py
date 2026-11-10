@@ -10,6 +10,10 @@ again from the **source file**, on the **local** model only:
   the second pass is marked ``[?]``. Digits are accepted only where both
   passes agree; the parser keeps ``[?]`` lines unverified.
 
+Guard: the old and the new text are both parsed; when the new one loses a
+code with its value, or dates it differently, the sidecar is NOT rewritten
+(result ``review``, the lost values listed).
+
 Writing (never in a dry run): the old sidecar is first copied to the logs
 folder (``_reocr-backup-<date>-<sidecar>``), then the sidecar is updated in
 place (same file id, read-back verified by ``drive_ops``). Nothing is deleted;
@@ -180,7 +184,7 @@ class DocResult:
     document_id: int
     filename: str
     reasons: list[str]
-    result: str = "pending"  # previewed | rewritten | failed | skipped
+    result: str = "pending"  # previewed | rewritten | review | failed | skipped
     method: str | None = None
     engine: str | None = None
     pages: int = 0
@@ -189,6 +193,7 @@ class DocResult:
     facts_machine: int = 0
     facts_unverified: int = 0
     backup: str | None = None
+    lost: list[str] = field(default_factory=list)  # "CODE value date" the old text had
     error: str | None = None
 
 
@@ -199,6 +204,41 @@ class ReocrReport:
 
     def to_dict(self) -> dict:
         return {"dry_run": self.dry_run, "documents": [asdict(d) for d in self.documents]}
+
+
+_INLINE_CATEGORIES = ("report", "discharge", "chemo_sheet", "imaging", "surgery")
+
+
+def _facts_of(text: str, vocab) -> set[tuple]:
+    """(code, value, day) of every coded fact a sidecar text yields."""
+    from oncofiles.curated.facts_rules import extract_lab_facts
+    from oncofiles.curated.indexer import category_for, parse_sidecar
+
+    front, pages = parse_sidecar(text)
+    day = str(front.get("doc_date") or "")[:10] or None
+    category = category_for(str(front.get("doc_type") or "other")).value
+    facts, _ = extract_lab_facts(pages, vocab, report_date=day,
+                                 inline=category in _INLINE_CATEGORIES)  # fmt: skip
+    return {
+        (f["code"], f["value_num"] if f["value_num"] is not None else f["value_text"],
+         (f["occurred_at"] or day or "")[:10])
+        for f in facts if f.get("code")
+    }  # fmt: skip
+
+
+def lost_values(old_text: str, new_text: str, vocab) -> list[str]:
+    """What the new transcription would silently drop (#660 guard): a code with
+    its value the old text had, missing from the new one, or present with a
+    different date. A re-OCR that loses anything is not written."""
+    old, new = _facts_of(old_text, vocab), _facts_of(new_text, vocab)
+    new_cv = {(c, v): d for c, v, d in new}
+    out = []
+    for c, v, d in sorted(old, key=str):
+        if (c, v) not in new_cv:
+            out.append(f"{c} {v} missing")
+        elif new_cv[(c, v)] != d:
+            out.append(f"{c} {v} re-dated {d}->{new_cv[(c, v)]}")
+    return out
 
 
 def run_reocr(
@@ -248,12 +288,16 @@ def run_reocr(
             res.method, res.engine, res.pages = rr.method, rr.engine, len(rr.pages)
             new = rewrite_sidecar(old, rr, previous_engine=d.get("engine") or "", now=now)
             res.uncertain_after = new.count("[?]")
+            res.lost = lost_values(old, new, vocab)
             facts, _ = extract_lab_facts(rr.pages, vocab, unreliable=rr.handwritten, inline=True)
             coded = [f for f in facts if f.get("code")]
             res.facts_machine = sum(1 for f in coded if f["verification"] == "machine")
             res.facts_unverified = len(coded) - res.facts_machine
             if dry_run:
                 res.result = "previewed"
+                continue
+            if res.lost:  # never shrink the record silently: a person decides
+                res.result = "review"
                 continue
             name = f"_reocr-backup-{now:%Y%m%d}-{d['filename']}.md"
             res.backup = drive.create_text(logs_id, name, old)  # before any change

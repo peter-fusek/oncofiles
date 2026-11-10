@@ -36,9 +36,18 @@ _BORY_ITEM = re.compile(
 )
 _NUM = r"[<>]?\s*-?\d+(?:[.,]\d+)?"
 _OKB_ROW = re.compile(
-    rf"^(?P<label>\S(?:.*?\S)?)\s{{2,}}(?P<val>{_NUM})\s+(?P<unit>[^\s\d][^\s]*)?"
+    # "(?:.*?\S)??" is lazy: a one-letter label ("K") must not swallow the value (#660)
+    rf"^(?P<label>\S(?:.*?\S)??)\s{{2,}}(?P<val>{_NUM})\s+(?P<unit>[^\s\d][^\s]*)?"
     rf"(?:\s+(?P<lo>-?[\d.,]+)\s*-\s*(?P<hi>-?[\d.,]+)|\s+(?P<cmp>[<>]\s*[\d.,]+))?(?P<rest>.*)$"
 )
+# OCR'd sheets sometimes keep one space before the value: accepted only with a
+# unit AND a printed range, so prose never matches (#660).
+_OKB_ROW_LOOSE = re.compile(
+    rf"^(?P<label>[^\W\d_][^\d]*?\S)\s+(?P<val>{_NUM})\s+(?P<unit>[^\s\d][^\s]*)"
+    rf"\s+(?P<lo>-?[\d.,]+)\s*-\s*(?P<hi>-?[\d.,]+)(?P<rest>.*)$"
+)
+_TRAILING_UNSURE = re.compile(r"\s*/?\s*\[\?\]\s*$")
+_LABEL_TAIL = re.compile(r"^[^\W\d_][^\d:;|]{0,24}$")
 _SECTION_PREFIX = re.compile(r"^[A-ZÁČĎÉÍĽĹŇÓÔŔŠŤÚÝŽa-záäčďéíľĺňóôŕšťúýž .]+:\s+")
 
 
@@ -111,6 +120,35 @@ class Vocabulary:
             if code in _DIFFERENTIAL:
                 return self.by_code.get(code)
         return None
+
+    def match_fuzzy(self, label: str) -> dict | None:
+        """One-typo tolerance for OCR'd labels ("Neutrofilly"), #660 guardrails:
+        edit distance 1, label of at least 8 characters, and every alias within
+        that distance must belong to ONE code. Callers keep such facts
+        unverified (reason ``label_fuzzy``)."""
+        key = norm_label(label)
+        if len(key) < 8:
+            return None
+        codes = {
+            r["code"]
+            for alias, r in self.by_alias.items()
+            if len(alias) >= 8 and abs(len(alias) - len(key)) <= 1 and _within_one(alias, key)
+        }
+        return self.by_code.get(codes.pop()) if len(codes) == 1 else None
+
+
+def _within_one(a: str, b: str) -> bool:
+    """Levenshtein distance <= 1 (one substitution, insertion or deletion)."""
+    if a == b:
+        return True
+    if abs(len(a) - len(b)) > 1:
+        return False
+    if len(a) > len(b):
+        a, b = b, a
+    i = 0
+    while i < len(a) and a[i] == b[i]:
+        i += 1
+    return a[i + 1 :] == b[i + 1 :] if len(a) == len(b) else a[i:] == b[i + 1 :]
 
 
 # Lines that are never document data: reviewer/agent/README notes written into
@@ -217,6 +255,9 @@ def _fact(  # noqa: PLR0913
     unreliable: bool,
 ) -> dict | None:
     code_row = vocab.match(label, abbr)
+    fuzzy = False
+    if code_row is None and (code_row := vocab.match_fuzzy(label)) is not None:
+        fuzzy = True
     if (
         code_row
         and code_row["code"] in _DIFFERENTIAL
@@ -287,6 +328,7 @@ def _fact(  # noqa: PLR0913
             ("unreliable_source", unreliable),
             ("ocr_uncertain", "[?]" in evidence),
             ("implausible", implausible),
+            ("label_fuzzy", fuzzy and code_row is not None),
         )
         if hit
     ]
@@ -348,12 +390,13 @@ def parse_bory(pages: list[str], vocab: Vocabulary, *, unreliable: bool = False)
 
 def parse_okb(pages: list[str], vocab: Vocabulary, *, unreliable: bool = False) -> list[dict]:
     out: list[dict] = []
+    when = None
+    in_table = False  # a table continues on the next page without its header (#660)
     for page_no, text in enumerate(pages, start=1):
-        if "Ref. medze" not in text and "Hodnota" not in text:
+        if not in_table and "Ref. medze" not in text and "Hodnota" not in text:
             continue
-        when = None
-        in_table = False
-        for line in text.splitlines():
+        lines = text.splitlines()
+        for idx, line in enumerate(lines):
             if m := _OKB_ODOBRANE.search(line):
                 when = _iso(m.group(1))
             if line.lstrip().startswith("Test") and "Hodnota" in line:
@@ -364,17 +407,28 @@ def parse_okb(pages: list[str], vocab: Vocabulary, *, unreliable: bool = False) 
             if _REF_LINE.match(line) and out and out[-1]["page_number"] == page_no:
                 _attach_ref_text(out[-1], line.split(":", 1)[1].strip())
                 continue
-            m = _OKB_ROW.match(line.strip())
+            # a trailing "[?]" keeps the row (unverified via the evidence), #660
+            row = _TRAILING_UNSURE.sub("", line.strip())
+            m = _OKB_ROW.match(row) or _OKB_ROW_LOOSE.match(row)
             if not m:
                 continue
-            cmp = m.group("cmp")
+            label = m.group("label")
+            nxt = lines[idx + 1].strip() if idx + 1 < len(lines) else ""
+            # a long label wrapped onto the next line ("… železa v" / "sére")
+            if (
+                vocab.match(label) is None
+                and _LABEL_TAIL.match(nxt)
+                and vocab.match(f"{label} {nxt}") is not None
+            ):
+                label = f"{label} {nxt}"
+            cmp = m.groupdict().get("cmp")
             lo, hi = _num(m.group("lo")), _num(m.group("hi"))
             if cmp:
                 bound = _num(cmp)
                 lo, hi = (bound, None) if cmp.strip().startswith(">") else (None, bound)
             f = _fact(
                 vocab,
-                label=m.group("label"),
+                label=label,
                 abbr=None,
                 raw_value=m.group("val"),
                 unit=m.group("unit"),
@@ -535,6 +589,35 @@ def _segment_date(segment: str) -> tuple[int, int, int | None, str | None] | Non
     return d, mo, y, start
 
 
+def _continues(prev: str, nxt: str) -> bool:
+    """Is ``nxt`` the visual continuation of the result list in ``prev``?
+
+    Only list lines (>= 2 ";" items) not ending a sentence are joined, and only
+    when the next line carries on the list: it starts with the value of a split
+    item, the previous line ends with a label that still lacks its value, or
+    the next line is itself a ";" list continuing the same run (#660)."""
+    p, n = prev.rstrip(), nxt.strip()
+    if not n or p.count(";") < 2 or p.endswith((".", ":")):
+        return False
+    tail = p.rsplit(";", 1)[-1]
+    label_without_value = bool(tail.strip()) and not re.search(r"\d", tail)
+    return (
+        bool(re.match(r"^[<>]?\s*\d", n))
+        or label_without_value
+        or (p.endswith(";") and n.count(";") >= 1 and not _LINE_DATE.search(n))
+    )
+
+
+def _join_wrapped(lines: list[str]) -> list[str]:
+    out: list[str] = []
+    for line in lines:
+        if out and _continues(out[-1], line):
+            out[-1] = out[-1].rstrip() + " " + line.strip()
+        else:
+            out.append(line)
+    return out
+
+
 def _inline_items(line: str) -> list[tuple]:
     """(label, value, unit, arrow, segment date) for every result item of a line."""
     out = []
@@ -628,11 +711,11 @@ def parse_inline_results(
     seen_keys: set = set()
     for page_no, text in enumerate(pages, start=1):
         prev = ""
-        for line in text.splitlines():
+        for line in _join_wrapped(text.splitlines()):
             skip = _NOT_DATA.search(line) or _VITALS.search(line) or _STATS.search(line)
             items = [] if skip else _inline_items(line)
             if len(_INLINE_SPLIT.split(line)) >= 3 and items:
-                parsed = [(it, vocab.match(it[0])) for it in items]
+                parsed = [(it, vocab.match(it[0]) or vocab.match_fuzzy(it[0])) for it in items]
                 if sum(1 for _, c in parsed if c) >= 2:
                     dm = _LINE_DATE.search(line) or _LINE_DATE.search(prev)
                     when = (

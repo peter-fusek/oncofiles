@@ -851,3 +851,61 @@ def test_unverified_metric_counts_reasons():
     m = unverified_metric(rows)
     assert m["coded"] == 4 and m["unverified"] == 2 and m["unverified_pct"] == 50.0
     assert m["reasons"] == {"cowork_ocr": 2, "date_unknown": 1}
+
+
+# ── re-OCR'd layouts (#660): wrapped lists, OCR typos, OKB variants ───────
+
+
+async def test_inline_joins_a_visually_wrapped_list(vocab):
+    from oncofiles.curated.facts_rules import parse_inline_results
+
+    text = "Lab 3.3.2027: WBC 5,10; HGB 120; PLT 255; GLUK S\n6,40; NA v sére 140,0; K 4,10"
+    by = {f["code"]: f for f in parse_inline_results([text], vocab, report_date="2027-03-09")}
+    assert by["GLU"]["value_num"] == 6.4 and by["NA"]["value_num"] == 140.0
+    assert {f["occurred_at"] for f in by.values()} == {"2027-03-03"}  # the list's date
+
+
+async def test_inline_does_not_join_a_finished_sentence(vocab):
+    from oncofiles.curated.facts_rules import _join_wrapped
+
+    lines = ["Lab 3.3.2027: WBC 5,10; HGB 120; PLT 255.", "Kontrola o 2 týždne."]
+    assert _join_wrapped(lines) == lines
+
+
+async def test_fuzzy_label_is_unique_unverified_and_unit_aware(vocab):
+    from oncofiles.curated.facts_rules import _fact
+
+    def fact(label, unit=None):
+        return _fact(vocab, label=label, abbr=None, raw_value="61,0", unit=unit, lo=None,
+                     hi=None, ref_text=None, arrow=None, when="2027-03-03", page=1,
+                     evidence=f"{label} 61,0", unreliable=False)  # fmt: skip
+
+    f = fact("Neutrofilly")  # one typo, no unit → the percentage (same rule as exact)
+    assert f["code"] == "NEUT_PCT" and f["verification"] == "unverified"
+    assert "label_fuzzy" in f["metadata"]["unverified_reasons"]
+    count = _fact(vocab, label="Neutrofilly", abbr=None, raw_value="3,1", unit="10^9/l",
+                  lo=None, hi=None, ref_text=None, arrow=None, when="2027-03-03", page=1,
+                  evidence="Neutrofilly 3,1 10^9/l", unreliable=False)  # fmt: skip
+    assert count["code"] == "NEUT"  # a count unit → the absolute code
+    assert vocab.match_fuzzy("WBCX") is None  # short labels never fuzzy
+
+
+async def test_okb_variants_from_a_reread_sheet(vocab):
+    from oncofiles.curated.facts_rules import parse_okb
+
+    page1 = (
+        "Odobrané: 14.06.2027 07:50\n"
+        "Test                                Hodnota    Jednotky    Ref. medze\n"
+        "Celkové bielkoviny v sére 71.3 g/l 64.0 - 83.0 / [?]\n"
+        "Celk. väzobná kapacita železa v    61.20      umol/l     45.00 - 77.00   /\n"
+        "sére\n"
+    )
+    page2 = "K                                   4.61       mmol/l     3.50 - 5.10     /\n"
+    facts = parse_okb([page1, page2], vocab)
+    by = {f["code"]: f for f in facts}
+    tp = by["TP"]  # one space before the value, unit + range present; "[?]" kept
+    assert tp["value_num"] == 71.3 and tp["verification"] == "unverified"
+    assert "ocr_uncertain" in tp["metadata"]["unverified_reasons"]
+    assert by["TIBC"]["value_num"] == 61.2  # wrapped label joined
+    assert by["K"]["value_num"] == 4.61  # the table continues on page 2 …
+    assert by["K"]["occurred_at"] == by["TIBC"]["occurred_at"]  # … with the same draw time
