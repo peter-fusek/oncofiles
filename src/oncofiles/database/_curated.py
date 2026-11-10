@@ -60,7 +60,7 @@ class CuratedMixin(DatabaseBase):
         """Newest first, without report_json (cheap list)."""
         async with self.db.execute(
             """SELECT id, run_id, trigger, dry_run, status, message, started_at, finished_at
-               FROM curated_runs WHERE patient_id = ? AND trigger != 'reocr'
+               FROM curated_runs WHERE patient_id = ? AND trigger NOT IN ('reocr', 'reread')
                ORDER BY id DESC LIMIT ?""",
             (patient_id, max(1, min(limit, 200))),
         ) as cursor:
@@ -81,7 +81,7 @@ class CuratedMixin(DatabaseBase):
     async def get_last_curated_run(
         self, *, patient_id: str, dry_run: bool | None = None, finished: bool = True
     ) -> dict | None:
-        where = ["patient_id = ?", "trigger != 'reocr'"]  # re-OCR jobs are not runs
+        where = ["patient_id = ?", "trigger NOT IN ('reocr', 'reread')"]  # re-OCR jobs are not runs
         params: list = [patient_id]
         if dry_run is not None:
             where.append("dry_run = ?")

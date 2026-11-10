@@ -671,7 +671,8 @@ class DocumentMixin:
         import json as _json
 
         async with self.db.execute(
-            "SELECT d.id, d.filename, d.gdrive_id, d.mime_type, d.category, d.structured_metadata, "
+            "SELECT d.id, d.filename, d.gdrive_id, d.mime_type, d.category, d.document_date, "
+            "d.structured_metadata, "
             "EXISTS (SELECT 1 FROM document_pages p WHERE p.document_id = d.id "
             "AND p.extracted_text LIKE '%[?]%') AS uncertain, "
             "(SELECT COUNT(*) FROM clinical_records c WHERE c.source_document_id = d.id "

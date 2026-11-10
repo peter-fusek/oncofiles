@@ -254,3 +254,20 @@ async def test_forced_documents_are_reparsed_without_a_sidecar_change(db, env):
     assert forced["updated"] == 1 and forced["unchanged"] == 1
     foreign = await tool.index_patient(db, ERIKA_UUID, force_ids={987654})
     assert foreign["updated"] == 0 and foreign["unchanged"] == 2
+
+
+async def test_index_records_the_sidecar_hash_and_source_md5(db, env):
+    """#678: a stored re-read is valid only for the exact sidecar and source."""
+    import hashlib
+    import json as _json
+
+    d, src = env
+    await tool.index_patient(db, ERIKA_UUID)
+    doc = await db.get_document_by_gdrive_id(src, patient_id=ERIKA_UUID)
+    async with db.db.execute(
+        "SELECT structured_metadata FROM documents WHERE id = ?", (doc.id,)
+    ) as cur:
+        cur_meta = _json.loads((await cur.fetchone())["structured_metadata"])["curated"]
+    side = d.find(d.folder[LABS], FILED + ".md")
+    assert cur_meta["sidecar_sha"] == hashlib.sha256(d.items[side]["content"]).hexdigest()
+    assert "source_md5" in cur_meta

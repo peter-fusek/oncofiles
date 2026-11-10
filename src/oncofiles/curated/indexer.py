@@ -18,6 +18,7 @@ Rules:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from dataclasses import dataclass, field
@@ -32,7 +33,7 @@ CURATED_FILE_PREFIX = "gdrive:"
 INDEX_ENGINE = "curated-sidecar"
 # Bump when the index derives new data from the same sidecars (entities, facts,
 # titles…): rows indexed by an older version are re-processed once (#603).
-INDEX_VERSION = 12  # v12: block-majority corroboration, date conflicts, NOU short labels (#672)
+INDEX_VERSION = 13  # v13: sidecar sha + source md5 stored for verify-only re-reads (#678)
 TEXT_SOURCE_EXTS = {"md", "txt", "csv", "json"}
 MAX_TEXT_SOURCE_BYTES = 512 * 1024
 _PAGE_RE = re.compile(r"^<!-- page (\d+) -->\s*$", re.M)
@@ -202,6 +203,8 @@ class IndexRecord:
     modified: str
     sidecar_id: str = ""
     sidecar_modified: str = ""
+    sidecar_sha: str = ""  # sha256 of the sidecar bytes this index read (#678)
+    source_md5: str = ""  # Drive md5 of the source file (#678)
     unchanged: bool = False  # sidecar not re-read; keep the stored text
     original_filename: str = ""
     document_date: date | None = None
@@ -234,6 +237,7 @@ def _record(folder: str, category: DocumentCategory, item: Item) -> IndexRecord:
         mime_type=item.mime or "application/octet-stream",
         size_bytes=item.size,
         modified=item.modified,
+        source_md5=item.md5,
         original_filename=nfc(item.name),
         document_date=_filename_date(item.name),
         institution=fields[2] if len(fields) >= 6 and fields[2] != "Unknown" else None,
@@ -300,8 +304,9 @@ def scan(drive, root_id: str, *, known: dict[str, str] | None = None) -> IndexSc
                 if known.get(item.id) == side.modified:
                     rec.unchanged = True
                 else:
-                    text = drive.download(side.id).decode("utf-8", errors="replace")
-                    front, pages = parse_sidecar(text)
+                    raw = drive.download(side.id)
+                    rec.sidecar_sha = hashlib.sha256(raw).hexdigest()
+                    front, pages = parse_sidecar(raw.decode("utf-8", errors="replace"))
                     _apply_sidecar(rec, front, pages)
             elif ext in TEXT_SOURCE_EXTS and item.size <= MAX_TEXT_SOURCE_BYTES:
                 # A text source (notes, timelines) is its own text; no sidecar.
