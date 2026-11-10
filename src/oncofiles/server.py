@@ -7922,6 +7922,8 @@ def main() -> None:
         from starlette.middleware import Middleware
         from starlette.middleware.cors import CORSMiddleware
 
+        from oncofiles.register_guard import RegisterJSONGuardMiddleware
+
         mcp.run(
             transport=MCP_TRANSPORT,
             host=MCP_HOST,
@@ -7933,6 +7935,8 @@ def main() -> None:
                 # user's email by code_challenge so exchange_authorization_code
                 # can bind it to the minted token.
                 Middleware(MCPAuthorizeEmailCaptureMiddleware),
+                # #584: non-JSON DCR body on POST /register → 400, not 500.
+                Middleware(RegisterJSONGuardMiddleware),
                 Middleware(SecurityHeadersMiddleware),
                 Middleware(
                     CORSMiddleware,
