@@ -1206,6 +1206,17 @@ async def curated_reocr(
     )
 
 
+def _reread_parallel() -> int:
+    """Concurrent vision passes for the next re-read (#593): at most
+    REOCR_PARALLEL_PASSES, and only 1 while another patient's re-OCR or
+    re-read job runs, so re-reads never hold more than 3 LM Studio slots
+    (2 jobs x 1, or 1 job x 2); the 4th slot stays for curation and users."""
+    from oncofiles import config
+
+    running = sum(1 for j in _reocr_jobs.values() if j.get("state") == "running")
+    return max(1, min(int(config.REOCR_PARALLEL_PASSES), 2 if running <= 1 else 1))
+
+
 from oncofiles.curated.facts_rules import INLINE_CATEGORIES as _REPORT_LIKE  # noqa: E402
 
 
@@ -1229,7 +1240,7 @@ def _reread_one(drive, d: dict, old: list[dict], vocab) -> dict:
     if cur.get("source_md5") and md5 != cur.get("source_md5"):
         return {**res, "result": "skipped", "error": "source changed since the index"}
     rr = reread_isolated(d["filename"], source, d.get("mime_type") or "", passes=2,
-                         doc_ref=d["id"])  # fmt: skip
+                         doc_ref=d["id"], parallel=_reread_parallel())  # fmt: skip
     if rr.error or not any(p.strip() for p in rr.pages):
         return {**res, "result": "failed", "error": rr.error or "no text"}
     new, _ = extract_lab_facts(rr.pages, vocab, report_date=str(d.get("document_date") or "")[:10]
@@ -1238,7 +1249,9 @@ def _reread_one(drive, d: dict, old: list[dict], vocab) -> dict:
 
     _, old_pages = parse_sidecar(raw_side.decode("utf-8", errors="replace"))
     assessment = rv.assess(old, new, rr.pages, old_page_count=len(old_pages))
-    res.update({k: len(v) for k, v in assessment.items()},
+    res.update({k: len(v) for k, v in assessment.items()}, seconds=rr.seconds,
+               parallel=rr.parallel, pages=len(rr.pages), method=rr.method,
+               diagnostics=rv.diagnostics(old, new, old_page_count=len(old_pages)),
                candidates=sum(len(v) for v in assessment.values()),
                engine=rr.engine, sidecar_sha=sha, source_md5=cur.get("source_md5") or md5,
                stored=rv.result_keys(assessment, {f["id"]: f for f in old},

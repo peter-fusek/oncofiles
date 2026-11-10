@@ -387,6 +387,43 @@ def test_handled_before_matches_the_exact_file_name():
     assert not reocr.handled_before(["_reocr-backup-20270101-a.pdf.md.bak"], "a.pdf")
 
 
+def test_parallel_passes_equal_sequential_passes(monkeypatch):
+    """#593: concurrent passes are independent requests and give the same result."""
+    import threading
+
+    threads = set()
+
+    def fake_chat(system, content, **kw):
+        threads.add(threading.get_ident())
+        page = content[0]["text"]
+        return f"{page} img={len(content[1]['image_url']['url'])}"  # depends only on its input
+
+    monkeypatch.setattr(llm, "chat", fake_chat)
+    pages, dpis = 3, [100, 120]
+    pdf = _scan_pdf(pages)
+    seq = reocr._vision_passes(pdf, "pdf", dpis, client=object(), parallel=1)
+    threads.clear()
+    par = reocr._vision_passes(pdf, "pdf", dpis, client=object(), parallel=len(dpis))
+    assert par == seq and len(seq) == len(dpis) and len(seq[0]) == pages
+    assert seq[0] != seq[1]  # the two resolutions are separate requests
+
+
+def test_reread_parallelism_is_capped_by_running_jobs(monkeypatch):
+    """#593: re-reads never hold more than 3 LM Studio slots together."""
+    from oncofiles import config
+    from oncofiles.tools import curated as tool
+
+    monkeypatch.setattr(config, "REOCR_PARALLEL_PASSES", 2)
+    monkeypatch.setattr(tool, "_reocr_jobs", {"p1": {"state": "running"}})
+    assert tool._reread_parallel() == 2  # alone: both passes at once
+    monkeypatch.setattr(tool, "_reocr_jobs", {"p1": {"state": "running"},
+                                               "p2": {"state": "running"}})  # fmt: skip
+    assert tool._reread_parallel() == 1  # two patients: one pass each
+    monkeypatch.setattr(config, "REOCR_PARALLEL_PASSES", 1)
+    monkeypatch.setattr(tool, "_reocr_jobs", {})
+    assert tool._reread_parallel() == 1  # default: sequential
+
+
 def _scanned_pdf_with_invisible_text(text: str) -> bytes:
     """A 'scan': a full-page image with an invisible OCR text layer on top."""
     import pymupdf
