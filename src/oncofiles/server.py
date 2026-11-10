@@ -3061,7 +3061,11 @@ async def og_image_svg(request: Request) -> HTMLResponse:
     global _OG_IMAGE_SVG  # noqa: PLW0603
     if _OG_IMAGE_SVG is None:
         _OG_IMAGE_SVG = (Path(__file__).parent / "og-image.svg").read_text()
-    return HTMLResponse(_OG_IMAGE_SVG, media_type="image/svg+xml")
+    return HTMLResponse(
+        _OG_IMAGE_SVG,
+        media_type="image/svg+xml",
+        headers={"Cache-Control": "public, max-age=86400"},
+    )
 
 
 @mcp.custom_route("/og-image.png", methods=["GET"])
@@ -3069,7 +3073,13 @@ async def og_image_png(request: Request) -> Response:
     global _OG_IMAGE_PNG  # noqa: PLW0603
     if _OG_IMAGE_PNG is None:
         _OG_IMAGE_PNG = (Path(__file__).parent / "og-image.png").read_bytes()
-    return Response(_OG_IMAGE_PNG, media_type="image/png")
+    # One day: social crawlers re-fetch rarely, and a refreshed image ships
+    # with a deploy anyway.
+    return Response(
+        _OG_IMAGE_PNG,
+        media_type="image/png",
+        headers={"Cache-Control": "public, max-age=86400"},
+    )
 
 
 @mcp.custom_route("/apple-touch-icon.png", methods=["GET"])

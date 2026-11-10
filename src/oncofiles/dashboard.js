@@ -158,6 +158,27 @@
     // dashboard.html has none since #525 and CSP would block one anyway).
     if (document.documentElement.getAttribute('data-demo') === '1') window.DEMO_MODE = true;
 
+    // Demo mode must never reach an authenticated endpoint. Single chokepoint:
+    // every same-origin fetch() except /api/demo-data is refused before it
+    // leaves the browser, so a filter click, the Refresh button, a timer or
+    // any future code path cannot hit /api/*, /status or /dashboard/*.
+    // Cross-origin requests (analytics) are untouched. Locked by
+    // tests/test_landing_content.py::test_demo_mode_fetch_chokepoint.
+    var DEMO_ALLOWED_PATHS = ['/api/demo-data'];
+    if (window.DEMO_MODE) {
+      var _demoRealFetch = window.fetch.bind(window);
+      window.fetch = function (input, init) {
+        var raw = typeof input === 'string' ? input : (input && input.url) || '';
+        var u = null;
+        try { u = new URL(raw, window.location.origin); } catch (e) { u = null; }
+        if (!u || (u.origin === window.location.origin && DEMO_ALLOWED_PATHS.indexOf(u.pathname) === -1)) {
+          console.info('Demo mode: request not sent:', u ? u.pathname : raw);
+          return Promise.reject(new Error('Not available in the demo'));
+        }
+        return _demoRealFetch(input, init);
+      };
+    }
+
     (function init() {
       // Demo mode: skip auth, load sample data
       if (window.DEMO_MODE) {
@@ -264,7 +285,10 @@
         setConnectionState('ok');
         hideSkeletons();
         document.getElementById('version-label').textContent = 'v' + data.status.version + ' demo';
-        // Auto-expand the Labs doc to showcase rich OCR + metadata
+        // Auto-expand the Labs doc to showcase rich OCR + metadata (first load only;
+        // filter clicks / Refresh re-run loadDemoData via refresh()).
+        if (window._demoExpanded) return;
+        window._demoExpanded = true;
         setTimeout(function() {
           var rows = document.querySelectorAll('#doc-table tbody tr');
           var target = null;
@@ -744,6 +768,7 @@
     var isGlobalAdmin = false;
 
     async function loadPatients() {
+      if (window.DEMO_MODE) return;
       try {
         var resp = await fetch('/api/patients', {
           headers: { 'Authorization': authHeader() }
@@ -1371,7 +1396,7 @@
 
     async function loadCuratedOps() {
       var section = document.getElementById('curated-ops-section');
-      if (!section) return;
+      if (!section || window.DEMO_MODE) return;
       var res = await coFetch('/api/admin/curated/overview');
       if (!res.ok || !res.data) { section.style.display = 'none'; return; }
       section.style.display = 'block';
@@ -1709,6 +1734,8 @@
     }
 
     async function refresh() {
+      // Demo: re-render the static sample payload instead of authenticated reads.
+      if (window.DEMO_MODE) return loadDemoData();
       hideError();
       setConnectionState('loading');
 

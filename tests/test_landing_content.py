@@ -110,3 +110,74 @@ def test_dashboard_demo_copy_is_honest():
     assert "demo with real data" not in html
     assert "s reálnymi dátami" not in html
     assert "158" not in html
+
+
+# ── Demo mode never reaches an authenticated endpoint ─────────────────
+
+DASHBOARD_JS = (SRC / "dashboard.js").read_text(encoding="utf-8")
+
+
+def test_demo_mode_fetch_chokepoint():
+    """In demo mode dashboard.js replaces window.fetch with a wrapper that
+    refuses every same-origin request except /api/demo-data. It must be
+    installed before any code that can call fetch (init, timers, listeners)."""
+    assert "var DEMO_ALLOWED_PATHS = ['/api/demo-data'];" in DASHBOARD_JS
+    chokepoint = DASHBOARD_JS.index("window.fetch = function (input, init)")
+    first_call = min(
+        DASHBOARD_JS.index(m)
+        for m in ("fetch('/", "apiFetch('/", "coFetch('/")
+        if m in DASHBOARD_JS
+    )
+    assert chokepoint < first_call
+    assert chokepoint < DASHBOARD_JS.index("(function init()")
+
+
+def test_only_demo_data_is_reachable_in_demo_mode():
+    """Inventory of literal endpoints fetched by dashboard.js: the allowlist
+    of the demo chokepoint may contain exactly /api/demo-data."""
+    endpoints = set(re.findall(r"(?:fetch|apiFetch|coFetch)\(\s*'(/[a-z\-/]+)", DASHBOARD_JS))
+    assert "/api/demo-data" in endpoints
+    start = DASHBOARD_JS.index("DEMO_ALLOWED_PATHS = [")
+    allowed = DASHBOARD_JS[start : DASHBOARD_JS.index("];", start)]
+    assert {e for e in endpoints if f"'{e}'" in allowed} == {"/api/demo-data"}
+    assert len(endpoints) > 10, "inventory regex stopped matching fetch calls"
+
+
+@pytest.mark.parametrize(
+    "guard",
+    [
+        "if (window.DEMO_MODE) return loadDemoData();",
+        "async function loadPatients() {\n      if (window.DEMO_MODE) return;",
+        "if (!section || window.DEMO_MODE) return;",
+        "var detailPromise = window.DEMO_MODE",
+    ],
+)
+def test_demo_guards_on_entry_points(guard):
+    # Belt and braces next to the chokepoint: what a demo visitor can trigger
+    # (filter pills and Refresh -> refresh(), patient load, curated poll, doc
+    # detail) short-circuits to demo data instead of producing requests.
+    assert guard in DASHBOARD_JS
+
+
+async def test_demo_data_needs_no_auth_but_api_documents_does():
+    from unittest.mock import patch
+
+    from oncofiles.server import api_documents
+
+    with (
+        patch("oncofiles.server.MCP_BEARER_TOKEN", "test-secret"),
+        patch("oncofiles.server.MCP_TRANSPORT", "streamable-http"),
+    ):
+        demo = await api_demo_data(_req("/api/demo-data"))
+        assert demo.status_code == 200
+        docs = await api_documents(_req("/api/documents"))
+        assert docs.status_code == 401
+
+
+async def test_og_image_png_headers():
+    from oncofiles.server import og_image_png
+
+    resp = await og_image_png(_req("/og-image.png"))
+    assert resp.media_type == "image/png"
+    assert "max-age" in resp.headers.get("cache-control", "")
+    assert resp.body[:8] == b"\x89PNG\r\n\x1a\n"
