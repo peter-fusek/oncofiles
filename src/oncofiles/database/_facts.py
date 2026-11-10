@@ -247,6 +247,22 @@ class FactsMixin:
         await self.db.commit()
         return bool(cur.rowcount)
 
+    async def flag_date_conflict(self, *, patient_id: str, fact_id: int, metadata: dict) -> bool:
+        """A machine fact whose header date conflicts with another document's
+        identical draw becomes unverified (#672). Never touches human-verified
+        or corrected rows."""
+        cur = await self.db.execute(
+            "UPDATE clinical_records SET verification = 'unverified', "
+            f"metadata_json = ?, updated_at = {_NOW}, updated_by = 'oncofiles' "
+            "WHERE id = ? AND patient_id = ? AND verification = 'machine' "
+            "AND deleted_at IS NULL",
+            (json.dumps(metadata, ensure_ascii=False), fact_id, patient_id),
+        )
+        if cur.rowcount:
+            await self._audit(fact_id, "update", metadata, "date conflict with another document")
+        await self.db.commit()
+        return bool(cur.rowcount)
+
     # ── links (never across patients) ─────────────────────────────────
 
     async def _owned(self, entity: str, entity_id: int, patient_id: str) -> bool:

@@ -809,15 +809,60 @@ def test_corroboration_dates_a_quote_by_the_draw_it_quotes():
         _row(41, 10, "2027-04-14", "WBC", 4.4), _row(42, 10, "2027-04-14", "PLT", 201.0),
         _row(43, 10, "2027-04-14", "CEA", 6.6),
         _row(44, 20, "2027-04-22", "WBC", 4.4, **q), _row(45, 20, "2027-04-22", "PLT", 201.0, **q),
-        _row(46, 20, "2027-04-22", "CEA", 7.7, **q),  # a different value is never re-dated
+        _row(46, 20, "2027-04-22", "CEA", 6.6, **q),
     ]  # fmt: skip
-    wbc_draw, plt_draw, _, wbc_quote, plt_quote, _ = rows
+    wbc_draw, plt_draw, cea_draw, wbc_quote, plt_quote, cea_quote = rows
     day = wbc_draw["occurred_at"]
     got = {fid: (d, draw) for fid, d, draw in corroborations(rows)}
-    assert got == {
+    assert got == {  # the whole block moves to the draw it quotes
         wbc_quote["id"]: (day, wbc_draw["id"]),
         plt_quote["id"]: (day, plt_draw["id"]),
+        cea_quote["id"]: (day, cea_draw["id"]),
     }
+
+
+def test_corroboration_never_tears_values_off_a_different_block():
+    """#672: two equal numbers in a panel that otherwise differs are a coincidence."""
+    from oncofiles.curated.facts_rules import corroborations
+
+    q = {"verification": "unverified", "reasons": ["date_unknown"]}
+    draw = [
+        _row(1, 10, "2027-04-14", "NA", 139.5), _row(2, 10, "2027-04-14", "UREA", 6.1),
+        _row(3, 10, "2027-04-14", "GLU", 5.3), _row(4, 10, "2027-04-14", "OSMO", 289.9),
+        _row(5, 10, "2027-04-14", "K", 4.2),
+    ]  # fmt: skip
+    differing = [
+        _row(11, 20, "2027-04-22", "NA", 141.5, **q), _row(12, 20, "2027-04-22", "UREA", 4.3, **q),
+        _row(13, 20, "2027-04-22", "GLU", 5.3, **q), _row(14, 20, "2027-04-22", "OSMO", 289.9, **q),
+        _row(15, 20, "2027-04-22", "K", 4.2, **q),
+    ]  # fmt: skip
+    assert corroborations(draw + differing) == []  # GLU, K equal, OSMO derived, NA/UREA differ
+    derived_only = [
+        _row(21, 30, "2027-04-22", "OSMO", 289.9, **q), _row(22, 30, "2027-04-22", "GLU", 5.3, **q),
+    ]  # fmt: skip
+    assert corroborations(draw + derived_only) == []  # one comparable code is not enough
+
+
+def test_header_date_conflicting_with_another_draw_is_flagged():
+    from oncofiles.curated.facts_rules import date_conflicts
+
+    draw = [
+        _row(1, 10, "2027-04-14", "WBC", 4.4), _row(2, 10, "2027-04-14", "PLT", 201.0),
+        _row(3, 10, "2027-04-14", "HGB", 118.0),
+    ]  # fmt: skip
+
+    def header(fid, code, value, day="2027-04-20"):
+        r = _row(fid, 20, day, code, value)
+        r["metadata_json"] = json.dumps({"date_from": "block_header"})
+        return r
+
+    quoted = [header(11, "WBC", 4.4), header(12, "PLT", 201.0), header(13, "HGB", 118.0)]
+    assert sorted(date_conflicts(draw + quoted)) == [(11, "2027-04-14"), (12, "2027-04-14"),
+                                                     (13, "2027-04-14")]  # fmt: skip
+    own = [header(21, "WBC", 5.9), header(22, "PLT", 201.0), header(23, "HGB", 131.0)]
+    assert date_conflicts(draw + own) == []  # a different draw that shares one number
+    same_day = [header(31, "WBC", 4.4, "2027-04-14"), header(32, "PLT", 201.0, "2027-04-14")]
+    assert date_conflicts(draw + same_day) == []  # same date: no conflict
 
 
 def test_corroboration_needs_two_matching_codes_and_the_window():
@@ -966,3 +1011,54 @@ async def test_a_table_row_or_a_sentence_is_never_a_block_header(vocab):
     )
     facts = parse_inline_results([text], vocab, report_date="2028-04-20")
     assert facts and all(f["metadata"]["date_source"] == "report" for f in facts)
+
+
+async def test_nou_report_short_labels_are_mapped(vocab):
+    """#672: short forms used in NOU reports."""
+    from oncofiles.curated.facts_rules import parse_inline_results
+
+    text = "CA KOR V 2,31; BI C S 7,4; CB S 68,2; NA v sére 139,8\n"
+    by = {f["code"]: f for f in parse_inline_results([text], vocab, report_date="2027-05-02")}
+    assert {"CA_CORR", "BILI", "TP", "NA"} <= set(by)
+
+
+async def test_a_conflicted_block_never_dates_another_quote(db):
+    """#672 review: after a block is flagged date_conflict it is no longer a draw."""
+    from oncofiles.tools import curated as tool
+    from tests.helpers import ERIKA_UUID
+
+    async def fact(doc, day, code, value, verification, meta):
+        await db.db.execute(
+            "INSERT INTO clinical_records (patient_id, record_type, source_document_id, param, "
+            "code, occurred_at, value_canonical, verification, metadata_json, source) "
+            "VALUES (?, 'lab', ?, ?, ?, ?, ?, ?, ?, 't')",
+            (ERIKA_UUID, doc, code, code, day, value, verification, json.dumps(meta)),
+        )  # fmt: skip
+
+    for doc in (10, 20, 30):
+        await db.db.execute(
+            "INSERT INTO documents (id, file_id, filename, original_filename, category, "
+            "mime_type, size_bytes, patient_id) VALUES (?, ?, ?, ?, 'labs', 'application/pdf', "
+            "1, ?)",
+            (doc, f"t:{doc}", f"d{doc}.pdf", f"d{doc}.pdf", ERIKA_UUID),
+        )
+    hdr = {"date_from": "block_header"}
+    quote = {"unverified_reasons": ["date_unknown"]}
+    for code, v in (("WBC", 4.4), ("PLT", 201.0), ("HGB", 118.0)):
+        await fact(10, "2027-04-14", code, v, "machine", {})  # the real draw
+        await fact(20, "2027-04-20", code, v, "machine", hdr)  # header-dated copy
+        await fact(30, "2027-04-28", code, v, "unverified", quote)  # a later report quote
+    await db.db.commit()
+    out = await tool._corroborate_and_measure(db, ERIKA_UUID)
+    assert out["date_conflicts"] == 3
+    async with db.db.execute(
+        "SELECT source_document_id AS d, occurred_at AS day, verification AS v, "
+        "metadata_json AS m FROM clinical_records WHERE source_document_id IN (20, 30)"
+    ) as cur:
+        rows = [dict(r) for r in await cur.fetchall()]
+    assert all(r["v"] == "unverified" for r in rows if r["d"] == 20)
+    # the quote is dated by the real draw (doc 10), never by the conflicted block
+    quoted = [json.loads(r["m"]) for r in rows if r["d"] == 30]
+    assert all(r["day"][:10] == "2027-04-14" for r in rows if r["d"] == 30)
+    by = {q["corroborated_by"] for q in quoted}
+    assert by and all(isinstance(b, int) for b in by)
