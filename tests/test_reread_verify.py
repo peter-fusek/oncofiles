@@ -254,3 +254,11 @@ def test_a_paged_sidecar_with_all_facts_on_page_one_keeps_the_per_page_rule():
     new_on_three = [dated("CEA", 4.4, "2027-06-03", 3)]
     assert rv.assess(olds, new_on_three, PAGES, old_page_count=3)["unconfirmed"] == [1]
     assert rv.assess(olds, new_on_three, PAGES, old_page_count=1)["confirmed"] == [1]
+
+
+def test_stored_result_records_the_read_method():
+    fid = 7
+    f = old(fid, "PLT", 288.0, "2028-01-19")
+    keys = rv.result_keys({"confirmed": [fid], "date_unconfirmed": []}, {fid: f},
+                          method="vision2")  # fmt: skip
+    assert keys["method"] == "vision2"

@@ -1241,7 +1241,8 @@ def _reread_one(drive, d: dict, old: list[dict], vocab) -> dict:
     res.update({k: len(v) for k, v in assessment.items()},
                candidates=sum(len(v) for v in assessment.values()),
                engine=rr.engine, sidecar_sha=sha, source_md5=cur.get("source_md5") or md5,
-               stored=rv.result_keys(assessment, {f["id"]: f for f in old}))  # fmt: skip
+               stored=rv.result_keys(assessment, {f["id"]: f for f in old},
+                                     method=rr.method))  # fmt: skip
     return res
 
 

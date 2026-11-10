@@ -92,6 +92,23 @@ def _page_count(content: bytes, ext: str) -> int:
         return doc.page_count if ext == "pdf" else 1
 
 
+def born_digital(page, *, image_cover: float = 0.8) -> bool:
+    """Is this PDF page's text its own (born-digital), not OCR laid over a scan?
+    False when any text is invisible (render mode 3, how OCR layers are added)
+    or a raster image covers most of the page."""
+    try:
+        if any(span.get("type") == 3 for span in page.get_texttrace()):
+            return False
+        area = abs(page.rect.width * page.rect.height) or 1.0
+        for info in page.get_image_info():
+            x0, y0, x1, y1 = info.get("bbox") or (0, 0, 0, 0)
+            if abs((x1 - x0) * (y1 - y0)) / area >= image_cover:
+                return False
+    except Exception:  # unreadable structure: do not trust the layer
+        return False
+    return True
+
+
 def _vision_passes(content: bytes, ext: str, dpis: list[int], client) -> list[list[str]]:
     """One answer list per DPI. Memory-bounded (#667): one page is rendered,
     sent and freed at a time, so at most one PNG and its base64 copy are alive."""
@@ -132,7 +149,7 @@ def _strip_handwritten(answers: list[str]) -> tuple[list[str], bool]:
 @dataclass
 class Reread:
     pages: list[str]
-    method: str  # text_layer | vision2 | plain
+    method: str  # text_layer (born-digital only) | vision2 | plain
     engine: str
     handwritten: bool = False
     flagged_lines: int = 0
@@ -153,7 +170,11 @@ def reread(
 
             with pymupdf.open(stream=content, filetype="pdf") as doc:
                 layer = [p.get_text() for p in doc]
-            if len("".join(layer).strip()) >= 100:
+                digital = all(born_digital(p) for p in doc)
+            # Only a born-digital text layer is the document's own text. An OCR'd
+            # layer (invisible text over a scan) is OCR of unknown quality, maybe
+            # the very text the old transcription copied: read the image instead.
+            if digital and len("".join(layer).strip()) >= 100:
                 return Reread([t.strip() for t in layer], "text_layer", "pymupdf")
         elif ext not in extract_mod.IMAGE_EXTS:
             return Reread([], "none", "-", error=f"unsupported file type .{ext}")
