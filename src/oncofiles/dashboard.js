@@ -1509,10 +1509,11 @@
         var b = document.getElementById(id);
         if (b) b.disabled = !!running || none || n === 0 || n > RR_MAX;
       });
-      ['rr-reocr-dry-btn', 'rr-reocr-real-btn'].forEach(function (id) {
-        var b = document.getElementById(id);
-        if (b) b.disabled = !!running || none || n > RR_MAX;
-      });
+      // Only a re-OCR dry run may auto-pick documents; every real run needs a selection.
+      var rd = document.getElementById('rr-reocr-dry-btn');
+      if (rd) rd.disabled = !!running || none || n > RR_MAX;
+      var rr = document.getElementById('rr-reocr-real-btn');
+      if (rr) rr.disabled = !!running || none || n === 0 || n > RR_MAX;
     }
 
     async function loadRereadConsole() {
@@ -1604,12 +1605,13 @@
     function rrStart(kind, mode) {
       if (!rrState.pid) return;
       var ids = rrSelectedIds();
-      if (kind === 'reread' && (ids.length === 0 || ids.length > RR_MAX)) return;
+      if (ids.length > RR_MAX) return;
+      if (kind === 'reread' && ids.length === 0) return;
       if (mode !== 'real') { rrSubmit(kind, ids, true); return; }
-      // Real store: typed confirmation built into the page (no window.confirm).
-      // The admin types the number of documents; for a re-OCR without a
-      // selection the server picks up to 3, so the expected number is 3.
-      var expected = ids.length || 3;
+      // Real store: explicit selection only (the server answers 400 otherwise),
+      // then a typed confirmation built into the page (no window.confirm).
+      if (ids.length === 0) return;
+      var expected = ids.length;
       rrState.pending = { kind: kind, ids: ids, expected: expected };
       var box = document.getElementById('rr-confirm');
       var txt = document.getElementById('rr-confirm-text');
@@ -1617,8 +1619,8 @@
         rrMsg(txt, 'Uložiť overenie pre ' + expected + ' dokumentov do databázy. Najprv over, že infra urobila čerstvý snapshot DB. Na potvrdenie napíš počet dokumentov (' + expected + ').',
           'Store the verification of ' + expected + ' documents in the database. First make sure infra took a fresh DB snapshot. To confirm, type the number of documents (' + expected + ').');
       } else {
-        rrMsg(txt, 'Prepísať naostro: ' + (ids.length ? expected + ' vybraných dokumentov' : 'až 3 dokumenty, ktoré vyberie server') + ' — mení sidecary v Drive (so zálohou) a databázu. Najprv čerstvý snapshot DB. Na potvrdenie napíš ' + expected + '.',
-          'Re-OCR for real: ' + (ids.length ? expected + ' selected documents' : 'up to 3 documents the server picks') + ' — rewrites sidecars in Drive (with a backup) and the database. Fresh DB snapshot first. To confirm, type ' + expected + '.');
+        rrMsg(txt, 'Prepísať naostro: ' + expected + ' vybraných dokumentov — mení sidecary v Drive (so zálohou) a databázu. Najprv čerstvý snapshot DB. Na potvrdenie napíš ' + expected + '.',
+          'Re-OCR for real: ' + expected + ' selected documents — rewrites sidecars in Drive (with a backup) and the database. Fresh DB snapshot first. To confirm, type ' + expected + '.');
       }
       var input = document.getElementById('rr-confirm-input');
       input.value = '';

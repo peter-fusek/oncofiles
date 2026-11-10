@@ -7384,7 +7384,8 @@ async def _admin_job_target(request: Request, db_inst: Database, body: dict):
 
     Returns ``(pid, ids, dry_run)`` or a JSONResponse error. Every id must be
     a curated document of that patient; at most 10; ``dry_run`` defaults to
-    true (anything but an explicit ``false`` is a dry run).
+    true (anything but an explicit ``false`` is a dry run). A real run needs
+    an explicit selection: only dry runs may auto-pick documents.
     """
     raw = body.get("patient_slug") or body.get("patient_id") or ""
     pid = await _admin_patient_id(db_inst, str(raw))
@@ -7410,7 +7411,13 @@ async def _admin_job_target(request: Request, db_inst: Database, body: dict):
                 {"error": "document_ids not found for this patient", "document_ids": foreign},
                 status_code=400,
             )
-    return pid, ids, body.get("dry_run", True) is not False
+    dry_run = body.get("dry_run", True) is not False
+    if not dry_run and not ids:  # only dry runs may auto-pick documents
+        return JSONResponse(
+            {"error": "a real run requires an explicit selection of document_ids"},
+            status_code=400,
+        )
+    return pid, ids, dry_run
 
 
 def _admin_job_response(result: dict) -> JSONResponse:
@@ -7460,8 +7467,9 @@ async def api_admin_reread(request: Request) -> JSONResponse:
 
 @mcp.custom_route("/api/admin/reocr", methods=["POST"])
 async def api_admin_reocr(request: Request) -> JSONResponse:
-    """Start a re-OCR (#660). Dry run by default; without ids the tool picks
-    up to 3 documents with unverified facts, as curated_reocr does."""
+    """Start a re-OCR (#660). Dry run by default; a dry run without ids picks
+    up to 3 documents with unverified facts, as curated_reocr does. A real
+    run requires explicit ``document_ids`` (400 otherwise)."""
     err = _require_admin(request) or _cross_origin(request)
     if err:
         return err

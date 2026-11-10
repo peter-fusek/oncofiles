@@ -223,6 +223,43 @@ async def test_admin_reocr_dry_run_reuses_the_tool_core(db):
     assert ro.call_args.kwargs == {"dry_run": True, "passes": 2}
 
 
+@pytest.mark.parametrize("name", ["api_admin_reocr", "api_admin_reread"])
+@pytest.mark.parametrize("ids", [None, []])
+async def test_a_real_run_requires_an_explicit_selection(db, name, ids):
+    await _seed(db)
+    body = {"patient_slug": ERIKA_UUID, "dry_run": False}
+    if ids is not None:
+        body["document_ids"] = ids
+    with (
+        patch.object(tool, "start_reocr", AsyncMock()) as ro,
+        patch.object(tool, "start_reread", AsyncMock()) as rr,
+    ):
+        resp, data = await _call(getattr(server, name), _request(db, body=body), admin=True)
+    assert resp.status_code == 400 and "explicit selection" in data["error"]
+    assert not ro.called and not rr.called and tool._reocr_jobs == {}
+
+
+async def test_only_a_reocr_dry_run_may_auto_pick(db):
+    await _seed(db)
+    started = {"state": "running", "kind": "reocr", "dry_run": True, "documents": []}
+    with patch.object(tool, "start_reocr", AsyncMock(return_value=started)) as ro:
+        resp, _ = await _call(
+            server.api_admin_reocr, _request(db, body={"patient_slug": ERIKA_UUID}), admin=True
+        )
+    assert resp.status_code == 202
+    assert ro.call_args.kwargs == {"dry_run": True, "document_ids": None, "limit": 3}
+
+
+async def test_a_real_reocr_with_a_selection_starts(db):
+    await _seed(db)
+    body = {"patient_slug": ERIKA_UUID, "document_ids": [501], "dry_run": False}
+    started = {"state": "running", "kind": "reocr", "dry_run": False, "documents": []}
+    with patch.object(tool, "start_reocr", AsyncMock(return_value=started)) as ro:
+        resp, _ = await _call(server.api_admin_reocr, _request(db, body=body), admin=True)
+    assert resp.status_code == 202
+    assert ro.call_args.kwargs == {"dry_run": False, "document_ids": [501], "limit": 1}
+
+
 async def test_reocr_rejects_foreign_ids(db):
     await _seed(db)
     body = {"patient_slug": ERIKA_UUID, "document_ids": [601]}
