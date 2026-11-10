@@ -266,13 +266,24 @@ def _apply_sidecar(rec: IndexRecord, front: dict, pages: list[str]) -> None:
     rec.metadata = {k: front[k] for k in keep if k in front and front[k] not in (None, "")}
 
 
-def scan(drive, root_id: str, *, known: dict[str, str] | None = None) -> IndexScan:
+def scan(
+    drive, root_id: str, *, known: dict[str, str] | None = None,
+    known_md5: dict[str, str] | None = None,
+) -> IndexScan:  # fmt: skip
     """Walk the curated tree (reads only) and build one record per filed source.
 
     ``known`` maps source Drive id → sidecar ``modified`` stored at the last
-    index; those sidecars are not downloaded again.
+    index; those sidecars are not downloaded again — unless ``known_md5`` shows
+    the source file itself changed since (#678): then the record is re-read, so
+    a re-read result keyed to the old source is void and its promotions revert.
     """
     known = known or {}
+    known_md5 = known_md5 or {}
+
+    def same_source(item) -> bool:
+        old = known_md5.get(item.id)
+        return not old or not item.md5 or old == item.md5
+
     tree = walk(drive, root_id)
     readme = next((i for i in tree.root_files if nfc(i.name) == "README.md"), None)
     if readme is None:
@@ -301,7 +312,7 @@ def scan(drive, root_id: str, *, known: dict[str, str] | None = None) -> IndexSc
             ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
             if side is not None:
                 rec.sidecar_id, rec.sidecar_modified = side.id, side.modified
-                if known.get(item.id) == side.modified:
+                if known.get(item.id) == side.modified and same_source(item):
                     rec.unchanged = True
                 else:
                     raw = drive.download(side.id)

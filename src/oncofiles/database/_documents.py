@@ -716,6 +716,7 @@ class DocumentMixin:
                 "id": r["id"],
                 # an older index version counts as "changed": re-processed once
                 "sidecar_modified": cur.get("sidecar_modified", "") if current else "",
+                "source_md5": cur.get("source_md5", ""),
                 "deleted": r["deleted_at"] is not None,
             }
         return out

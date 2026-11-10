@@ -33,20 +33,20 @@ def fact_key(code: str, value, day: str, page) -> tuple:
     return (code, value_hash(value), (day or "")[:10], int(page or 0))
 
 
-def _date_patterns(day: str) -> list[re.Pattern]:
-    y, m, d = int(day[:4]), int(day[5:7]), int(day[8:10])
-    dm = rf"(?<!\d)0?{d}\.\s?0?{m}\."
-    return [
-        re.compile(dm + rf"\s?(?:{y}|{y % 100:02d})(?!\d)"),
-        re.compile(dm + r"(?!\s?\d)"),  # "3.8." without a year
-        re.compile(rf"(?<!\d){y}-{m:02d}-{d:02d}(?!\d)"),
-    ]
-
-
 def date_printed(day: str | None, text: str) -> bool:
+    """Is ``day`` printed in ``text``? With its year in any form; a bare
+    day.month ("3.8.") counts only when the page shows that day and month with
+    no other year, so a page quoting two years never confirms the wrong one."""
     if not day or not re.match(r"\d{4}-\d{2}-\d{2}", day):
         return False
-    return any(p.search(text) for p in _date_patterns(day[:10]))
+    y, m, d = int(day[:4]), int(day[5:7]), int(day[8:10])
+    dm = rf"(?<!\d)0?{d}\.\s?0?{m}\."
+    if re.search(dm + rf"\s?(?:{y}|{y % 100:02d})(?!\d)", text):
+        return True
+    if re.search(rf"(?<!\d){y}-{m:02d}-{d:02d}(?!\d)", text):
+        return True
+    other_year = re.search(dm + r"\s?\d{2}(?:\d{2})?(?!\d)", text)
+    return not other_year and bool(re.search(dm + r"(?!\s?\d)", text))
 
 
 def _dates_of(fact: dict) -> list[str]:
@@ -130,7 +130,9 @@ def apply_plan(result: dict, facts: list[dict]) -> list[tuple[int, str, dict]]:
             rest = sorted({*(r for r in reasons if r != CONFIRMABLE), "date_unconfirmed"})
         else:
             continue
-        meta["verified_by_reread"] = True
+        meta["reread_checked"] = True
+        if key in confirmed:
+            meta["verified_by_reread"] = True  # only when the re-read confirmed it
         if rest:
             meta["unverified_reasons"] = rest
         else:

@@ -163,3 +163,31 @@ async def test_jobs_are_not_curated_runs(db, kind):
     run = await db.insert_curated_run(patient_id=ERIKA_UUID, dry_run=True, trigger=kind)
     await db.finish_curated_run(run, patient_id=ERIKA_UUID, status="ok", message="", report={})
     assert await db.get_last_curated_run(patient_id=ERIKA_UUID) is None
+
+
+def test_a_bare_day_month_never_confirms_when_another_year_is_on_the_page():
+    two_years = "Kontrola 3.5.2028. Laboratórium 3.5.:"
+    assert not rv.date_printed("2027-05-03", two_years)
+    assert rv.date_printed("2028-05-03", two_years)
+    assert rv.date_printed("2027-05-03", "Lab 3.5.: WBC; kontrola o 6 týždňov")
+
+
+def test_date_unconfirmed_rows_are_checked_not_verified():
+    f = old(1, "NA", 140.6)
+    result = {
+        "confirmed": [],
+        "date_unconfirmed": [list(rv.fact_key("NA", 140.6, f["occurred_at"], 1))],
+    }
+    [(_, verification, meta)] = rv.apply_plan(result, [f])
+    assert verification == "unverified" and meta["reread_checked"] is True
+    assert "verified_by_reread" not in meta
+
+
+def test_a_reread_job_counts_as_an_active_run():
+    from oncofiles.tools import curated as tool
+
+    tool._reocr_jobs["p-test"] = {"state": "running", "kind": "reread"}
+    try:
+        assert tool.run_active() is True  # the CI deploy waits for it
+    finally:
+        tool._reocr_jobs.pop("p-test")

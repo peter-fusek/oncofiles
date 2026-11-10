@@ -271,3 +271,23 @@ async def test_index_records_the_sidecar_hash_and_source_md5(db, env):
     side = d.find(d.folder[LABS], FILED + ".md")
     assert cur_meta["sidecar_sha"] == hashlib.sha256(d.items[side]["content"]).hexdigest()
     assert "source_md5" in cur_meta
+
+
+def test_a_changed_source_is_re_read_even_with_the_same_sidecar():
+    """#678 review: a stored re-read must not outlive a replaced source file."""
+    from dataclasses import replace
+
+    d, src = _drive()
+    side_mod = d.items[d.find(d.folder[LABS], FILED + ".md")]["modified"]
+    real = d.list_children
+
+    def with_md5(folder_id, md5="md-old"):
+        return [replace(i, md5=md5) if i.id == src else i for i in real(folder_id)]
+
+    d.list_children = with_md5
+    same = indexer.scan(d, d.root, known={src: side_mod}, known_md5={src: "md-old"})
+    assert next(r for r in same.records if r.gdrive_id == src).unchanged
+    d.list_children = lambda fid: with_md5(fid, md5="md-new")
+    changed = indexer.scan(d, d.root, known={src: side_mod}, known_md5={src: "md-old"})
+    rec = next(r for r in changed.records if r.gdrive_id == src)
+    assert not rec.unchanged and rec.source_md5 == "md-new" and rec.sidecar_sha

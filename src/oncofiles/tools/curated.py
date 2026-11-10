@@ -736,7 +736,8 @@ async def _index_patient(db, pid: str, *, force_ids: set[int] | None = None) -> 
     def _blocking():
         own = gdrive.dedicated_copy()
         try:
-            return indexer.scan(DriveOps(own), folder_id, known=known)
+            known_md5 = {g: s.get("source_md5", "") for g, s in state.items() if not s["deleted"]}
+            return indexer.scan(DriveOps(own), folder_id, known=known, known_md5=known_md5)
         finally:
             own.close()
 
