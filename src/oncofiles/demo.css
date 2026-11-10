@@ -280,3 +280,49 @@ ol.ans li::before { content: counter(q) "."; position: absolute; left: 0; top: 0
 .chat-tabs button { column-gap: 8px; }
 .foot.legal { max-width: 1120px; }
 .foot.legal { padding-bottom: 8px; }
+
+/* Device chrome for the chat frames (pure CSS; no images of real devices, no logos) */
+.mac-bar { position: relative; display: flex; align-items: center; gap: 10px; height: 40px; padding: 0 14px; background: #ececec; border-bottom: 1px solid #d4d4d4; font: 500 13px/1 -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; color: #4a4a4a; }
+.mac-bar.dark { background: #2c2c2e; border-bottom-color: #1c1c1e; color: #b8b8bd; }
+.tl { display: inline-flex; gap: 8px; flex-shrink: 0; }
+.tl i { width: 12px; height: 12px; border-radius: 50%; background: #ff5f57; box-shadow: inset 0 0 0 0.5px rgba(0,0,0,0.25); }
+.tl i:nth-child(2) { background: #febc2e; } .tl i:nth-child(3) { background: #28c840; }
+.mac-title { flex: 1; text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mac-title .wm { font: 600 13px/1 -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+.mt-dim { opacity: 0.75; }
+.mac-bar .cw-note { font-size: 11px; opacity: 0.8; }
+.cw-light, .cw-term { border-radius: 11px; border: 1px solid rgba(0,0,0,0.18); box-shadow: 0 0 0 0.5px rgba(0,0,0,0.12), 0 22px 50px -18px rgba(20,20,30,0.45), 0 8px 18px -10px rgba(20,20,30,0.3); }
+.win-cols { display: grid; grid-template-columns: 200px minmax(0, 1fr); }
+.win-side { display: flex; flex-direction: column; gap: 2px; padding: 12px 10px; background: #f9f9f9; border-right: 1px solid #ececec; font: 13px/1.35 -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; color: #2b2b2b; }
+.ws-new { font-weight: 600; padding: 7px 9px; border-radius: 8px; }
+.ws-item { padding: 7px 9px; border-radius: 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ws-item.on { background: #ececec; }
+.ws-head { color: #8e8e8e; font-size: 12px; padding: 12px 9px 4px; }
+.ws-user { margin-top: auto; display: flex; align-items: center; gap: 8px; padding: 8px 9px 2px; font-weight: 500; }
+.ws-user i { width: 24px; height: 24px; border-radius: 50%; background: #7b5e9e; color: #fff; font-style: normal; font-size: 11px; display: inline-flex; align-items: center; justify-content: center; }
+.win-main { min-width: 0; display: flex; flex-direction: column; }
+.win-main .cw-body { flex: 1; }
+/* Phone */
+.cw-warm { max-width: 372px; margin: 0 auto; padding: 11px; border-radius: 56px; background: #1c1c1e; border: 0; box-shadow: inset 0 0 0 2px #3a3a3c, 0 0 0 1px #0d0d0e, 0 30px 60px -24px rgba(20,20,30,0.55); }
+.phone-screen { border-radius: 46px; overflow: hidden; background: #f6f3ea; }
+.ios-status { position: relative; display: flex; align-items: center; justify-content: space-between; height: 50px; padding: 4px 30px 0 34px; font: 600 15px/1 -apple-system, BlinkMacSystemFont, sans-serif; color: #111; }
+.island { position: absolute; left: 50%; top: 11px; width: 112px; height: 32px; margin-left: -56px; background: #000; border-radius: 20px; }
+.ios-icons { width: 68px; height: 12px; fill: #111; color: #111; }
+.app-head { display: grid; grid-template-columns: 44px 1fr 44px; align-items: center; height: 46px; padding: 0 6px; border-bottom: 1px solid #e7e0cf; color: #3d3a30; }
+.ah-side { text-align: center; font-size: 18px; }
+.ah-t { text-align: center; font: 600 16px/1 -apple-system, BlinkMacSystemFont, sans-serif; }
+.ah-t .wm { font: inherit; }
+.cw-warm .cw-body { padding: 14px 14px 4px; }
+.cw-warm .m-ai { font-size: 15px; }
+.cw-warm .cw-composer { margin: 8px 10px 4px; border-radius: 22px; }
+.home-ind { width: 134px; height: 5px; border-radius: 3px; background: #1c1c1e; margin: 12px auto 9px; }
+.dev-note { text-align: center; color: #8d8d92; font: 11px/1.2 -apple-system, sans-serif; margin: 9px 0 0; max-width: none; }
+.dev-note .cw-note { margin: 0; }
+@media (max-width: 760px) { .win-cols { grid-template-columns: minmax(0, 1fr); } .win-side { display: none; } }
+@media (max-width: 420px) {
+  .cw-warm { padding: 8px; border-radius: 46px; }
+  .phone-screen { border-radius: 38px; }
+  .ios-status { padding: 4px 22px 0 26px; }
+  .island { width: 96px; height: 28px; margin-left: -48px; }
+  .mac-bar .cw-note { display: none; }
+}

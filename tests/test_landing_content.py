@@ -336,6 +336,12 @@ def test_demo_page_is_bilingual():
         "Oncofiles",
         "~/zdravie",
         "1 MCP server: oncofiles",
+        "Jana T.",
+        "J",
+        "9:41",
+        "☰",
+        "✎",
+        "— ~/zdravie — 96×28",
     }
     assert set(parser.offenders) <= allowed, parser.offenders
 
