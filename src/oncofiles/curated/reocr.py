@@ -139,8 +139,11 @@ class Reread:
     error: str | None = None
 
 
-def reread(name: str, content: bytes, mime: str = "", *, passes: int = 2) -> Reread:
-    """Read a source again, locally. Never raises."""
+def reread(
+    name: str, content: bytes, mime: str = "", *, passes: int = 2, doc_ref: object = None
+) -> Reread:
+    """Read a source again, locally. Never raises. ``doc_ref`` (a document id)
+    is what logs show: filenames can carry names or diagnoses."""
     ext = extract_mod._ext(name)
     try:
         if ext in extract_mod.TEXT_EXTS:
@@ -170,11 +173,13 @@ def reread(name: str, content: bytes, mime: str = "", *, passes: int = 2) -> Rer
     except llm.LocalLLMError as exc:
         return Reread([], "none", llm.model_id(), error=str(exc))
     except Exception as exc:  # corrupt file, codec, …
-        logger.warning("re-OCR failed for %s", name, exc_info=True)
+        logger.warning("re-OCR failed for doc %s", doc_ref, exc_info=True)
         return Reread([], "none", "-", error=type(exc).__name__)
 
 
-def reread_isolated(name: str, content: bytes, mime: str = "", *, passes: int = 2) -> Reread:
+def reread_isolated(
+    name: str, content: bytes, mime: str = "", *, passes: int = 2, doc_ref: object = None
+) -> Reread:
     """``reread`` in a short-lived child process (#667).
 
     PyMuPDF buffers, PNGs and allocator fragmentation die with the process, so
@@ -188,7 +193,12 @@ def reread_isolated(name: str, content: bytes, mime: str = "", *, passes: int = 
 
     from oncofiles.curated import reocr_child
 
-    header = _json.dumps({"name": name, "mime": mime, "passes": passes}).encode() + b"\n"
+    header = (
+        _json.dumps(
+            {"name": name, "mime": mime, "passes": passes, "doc_ref": doc_ref}, default=str
+        ).encode()
+        + b"\n"
+    )
     try:
         proc = subprocess.run(
             [sys.executable, "-m", "oncofiles.curated.reocr_child"],
@@ -199,14 +209,14 @@ def reread_isolated(name: str, content: bytes, mime: str = "", *, passes: int = 
         )
         if proc.returncode != 0:
             tail = proc.stderr.decode("utf-8", errors="replace").strip().splitlines()[-1:]
-            logger.warning("re-OCR child failed for %s: %s", name, tail)
+            logger.warning("re-OCR child failed for doc %s: %s", doc_ref, tail)
             return Reread([], "none", "-", error=f"worker: exit {proc.returncode}")
         out = _json.loads(proc.stdout)
     except Exception as exc:  # spawn failure, bad JSON, …
-        logger.warning("re-OCR child failed for %s", name, exc_info=True)
+        logger.warning("re-OCR child failed for doc %s", doc_ref, exc_info=True)
         return Reread([], "none", "-", error=f"worker: {type(exc).__name__}")
     peak = out.pop("peak_rss_mb", None)
-    logger.info("re-OCR child for %s: peak RSS %s MB", name, peak)  # sizing #667
+    logger.info("re-OCR child for doc %s: peak RSS %s MB", doc_ref, peak)  # sizing #667
     return Reread(**out)
 
 
@@ -351,7 +361,7 @@ def run_reocr(
             old = drive.download(d["sidecar_id"]).decode("utf-8", errors="replace")
             res.uncertain_before = old.count("[?]")
             rr = reader(d["filename"], drive.download(d["gdrive_id"]), d.get("mime") or "",
-                        passes=passes)  # fmt: skip
+                        passes=passes, doc_ref=d["document_id"])  # fmt: skip
             if rr.error or not any(p.strip() for p in rr.pages):
                 res.result, res.error = "failed", rr.error or "no text"
                 continue
@@ -374,7 +384,7 @@ def run_reocr(
             drive.update_text(d["sidecar_id"], new)
             res.result = "rewritten"
         except Exception as exc:
-            logger.exception("re-OCR of %s failed", d.get("filename"))
+            logger.exception("re-OCR of doc %s failed", d.get("document_id"))
             res.result, res.error = "failed", type(exc).__name__
         finally:
             gc.collect()

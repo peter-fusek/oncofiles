@@ -59,7 +59,8 @@ def main() -> int:
             header = json.loads(sys.stdin.buffer.readline())
             content = sys.stdin.buffer.read()
             rr = reread(header["name"], content, header.get("mime") or "",
-                        passes=int(header.get("passes", 2)))  # fmt: skip
+                        passes=int(header.get("passes", 2)),
+                        doc_ref=header.get("doc_ref"))  # fmt: skip
             out = {**asdict(rr), "peak_rss_mb": round(_peak_rss_mb(), 1)}
     sys.stdout.write(json.dumps(out, ensure_ascii=False))
     sys.stdout.flush()
