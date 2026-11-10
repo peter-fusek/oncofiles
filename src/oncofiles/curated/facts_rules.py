@@ -837,6 +837,13 @@ def parse_inline_results(
     return out
 
 
+# Categories whose sidecars may quote results inline ("WBC 5,1; HGB 120; …").
+# Lab sheets are included (#676): Cowork-era sheets were written as condensed
+# inline lists under an "Odobrané <date>" line. The table parsers still run
+# first; the inline parser only runs when they find nothing (first wins).
+INLINE_CATEGORIES = ("report", "discharge", "chemo_sheet", "imaging", "surgery", "labs")
+
+
 def extract_lab_facts(
     pages: list[str],
     vocab: Vocabulary,

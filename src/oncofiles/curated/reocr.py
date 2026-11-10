@@ -273,7 +273,7 @@ class ReocrReport:
         return {"dry_run": self.dry_run, "documents": [asdict(d) for d in self.documents]}
 
 
-_INLINE_CATEGORIES = ("report", "discharge", "chemo_sheet", "imaging", "surgery")
+from oncofiles.curated.facts_rules import INLINE_CATEGORIES as _INLINE_CATEGORIES  # noqa: E402
 
 
 def _facts_of(text: str, vocab) -> set[tuple]:
