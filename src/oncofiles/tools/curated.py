@@ -699,6 +699,12 @@ async def index_patient(db, pid: str) -> dict:
     """Local-only wrapper: the index and its fact extraction never reach the cloud."""
     from oncofiles.cloud_guard import local_only
 
+    try:  # hydrate the context cache: facts need the patient's sex (HGB, #659)
+        from oncofiles import patient_context
+
+        await patient_context.load_from_db(db.db, pid)
+    except Exception:
+        logger.warning("curated index: patient context not loaded for %s", pid)
     async with patient_lock(pid):  # never alongside a run or backfill (#612)
         with local_only("curated index + fact extraction"):
             return await _index_patient(db, pid)
