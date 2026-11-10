@@ -883,25 +883,57 @@ def _sex_generic(facts: list[dict], sex: str | None) -> list[dict]:
     return facts
 
 
+# Values computed from other values of the same panel (#672): two different
+# draws can land on the same number, so they never count as matching evidence.
+DERIVED_CODES = frozenset({"OSMO", "EGFR", "CA_CORR", "SII", "NLR", "TIBC", "TSAT"})
+
+
+def _fact_meta(r: dict) -> dict:
+    try:
+        return json.loads(r.get("metadata_json") or "{}")
+    except ValueError:
+        return {}
+
+
+def _fact_day(r: dict) -> str:
+    return (r.get("occurred_at") or "")[:10]
+
+
+def _draws(rows: list[dict]) -> dict[tuple, dict]:
+    """(document, day) → {code: (value, unit, fact id)} of non-unverified facts."""
+    draws: dict[tuple, dict] = {}
+    for r in rows:
+        if r["verification"] != "unverified" and r.get("value_canonical") is not None:
+            draws.setdefault((r["source_document_id"], _fact_day(r)), {})[r["code"]] = (
+                r["value_canonical"], r.get("unit_canonical"), r["id"],
+            )  # fmt: skip
+    return draws
+
+
+def _block_matches(block: dict, values: dict) -> bool:
+    """Is ``block`` (code → (value, unit)) a quote of the draw ``values``?
+    Most of its comparable (non-derived) codes must equal that draw, at least
+    two of them, and no comparable code may differ."""
+    comparable = [c for c in block if c not in DERIVED_CODES and c in values]
+    if len(comparable) < 2:
+        return False
+    same = sum(1 for c in comparable if values[c][:2] == block[c])
+    real = [c for c in block if c not in DERIVED_CODES]
+    return same == len(comparable) and same * 2 > len(real)
+
+
 def corroborations(rows: list[dict], *, window_days: int = 60) -> list[tuple[int, str, int]]:
-    """Report-quoted values that are a quote of a real draw (#659).
+    """Report-quoted values that are a quote of a real draw (#659, #672).
 
-    A fact whose only reason to be unverified is ``date_unknown`` (dated to its
-    report) is a quote of draw D when D is in another document, 1–60 days
-    earlier, has the same code with the same canonical value and unit, and at
-    least two codes of the quoting report day equal D's values. Returns
-    (fact id, draw day, id of the matching draw fact). Exact matches only: a
-    different value is never re-dated."""
+    The values of one report day whose only reason to be unverified is
+    ``date_unknown`` form a block. The block is a quote of draw D when D is in
+    another document, 1–60 days earlier, and most of the block's non-derived
+    codes equal D's values, at least two, none different. Then every value of
+    the block that equals D is re-dated to D: a value is never torn off its
+    block, and a coincidence of two numbers (or a derived value such as OSMO)
+    never re-dates anything. Returns (fact id, draw day, id of the matching
+    draw fact)."""
     from datetime import date as _date
-
-    def meta(r: dict) -> dict:
-        try:
-            return json.loads(r.get("metadata_json") or "{}")
-        except ValueError:
-            return {}
-
-    def day(r: dict) -> str:
-        return (r.get("occurred_at") or "")[:10]
 
     def as_date(d: str):
         try:
@@ -909,42 +941,71 @@ def corroborations(rows: list[dict], *, window_days: int = 60) -> list[tuple[int
         except ValueError:
             return None
 
-    draws: dict[tuple, dict] = {}
-    for r in rows:
-        if r["verification"] != "unverified" and r.get("value_canonical") is not None:
-            draws.setdefault((r["source_document_id"], day(r)), {})[r["code"]] = (
-                r["value_canonical"], r.get("unit_canonical"), r["id"],
-            )  # fmt: skip
-    quoted: dict[tuple, dict] = {}
-    candidates = []
+    draws = _draws(rows)
+    blocks: dict[tuple, list[dict]] = {}
     for r in rows:
         if r["verification"] != "unverified" or r.get("value_canonical") is None:
             continue
-        if meta(r).get("unverified_reasons") != ["date_unknown"]:
+        if _fact_meta(r).get("unverified_reasons") != ["date_unknown"]:
             continue
-        quoted.setdefault((r["source_document_id"], day(r)), {})[r["code"]] = (
-            r["value_canonical"], r.get("unit_canonical"),
-        )  # fmt: skip
-        candidates.append(r)
+        blocks.setdefault((r["source_document_id"], _fact_day(r)), []).append(r)
     out = []
-    for r in candidates:
-        d0 = as_date(day(r))
-        own = quoted[(r["source_document_id"], day(r))]
+    for (doc, bday), facts in blocks.items():
+        d0 = as_date(bday)
+        block = {f["code"]: (f["value_canonical"], f.get("unit_canonical")) for f in facts}
         best = None
-        for (doc, dday), values in draws.items():
+        for (ddoc, dday), values in draws.items():
             d1 = as_date(dday)
-            if doc == r["source_document_id"] or not d0 or not d1:
+            if ddoc == doc or not d0 or not d1 or not 0 < (d0 - d1).days <= window_days:
                 continue
-            if not 0 < (d0 - d1).days <= window_days:
-                continue
-            hit = values.get(r["code"])
-            if not hit or hit[:2] != (r["value_canonical"], r.get("unit_canonical")):
-                continue
-            same = sum(1 for c, v in own.items() if values.get(c, (None,))[:2] == v)
-            if same >= 2 and (best is None or dday > best[1]):
-                best = (r["id"], dday, hit[2])
+            if _block_matches(block, values) and (best is None or dday > best[0]):
+                best = (dday, values)
         if best:
-            out.append(best)
+            dday, values = best
+            for f in facts:
+                hit = values.get(f["code"])
+                if hit and hit[:2] == block[f["code"]]:
+                    out.append((f["id"], dday, hit[2]))
+    return out
+
+
+def date_conflicts(rows: list[dict], *, window_days: int = 60) -> list[tuple[int, str]]:
+    """Header-dated blocks that are really a quote of another draw (#672).
+
+    A block of machine facts dated by its lab-block header
+    (``date_from=block_header``) whose values match another document's draw
+    on a different day, by the same majority rule as corroboration, has two
+    competing dates. Neither wins silently: returns (fact id, conflicting
+    draw day) so the caller marks the block unverified (``date_conflict``)."""
+    from datetime import date as _date
+
+    def as_date(d: str):
+        try:
+            return _date.fromisoformat(d)
+        except ValueError:
+            return None
+
+    draws = _draws(rows)
+    blocks: dict[tuple, list[dict]] = {}
+    for r in rows:
+        if r["verification"] != "machine" or r.get("value_canonical") is None:
+            continue
+        if _fact_meta(r).get("date_from") != "block_header":
+            continue
+        blocks.setdefault((r["source_document_id"], _fact_day(r)), []).append(r)
+    out = []
+    for (doc, bday), facts in blocks.items():
+        d0 = as_date(bday)
+        block = {f["code"]: (f["value_canonical"], f.get("unit_canonical")) for f in facts}
+        for (ddoc, dday), values in draws.items():
+            d1 = as_date(dday)
+            if ddoc == doc or dday == bday or not d0 or not d1:
+                continue
+            if abs((d0 - d1).days) > window_days:
+                continue
+            if _block_matches(block, values):
+                out.extend((f["id"], dday) for f in facts)
+                break
     return out
 
 
