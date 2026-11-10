@@ -20,6 +20,9 @@ This module is the single declarative classification:
   server bookkeeping, not an effect of the tool, and does not change this.
 * ``DESTRUCTIVE_TOOLS`` — removes data or moves it out of a patient's
   scope. Marked explicitly (``destructiveHint=true``).
+* ``EGRESS_TOOLS`` — read-only, but bulk export of a patient's record into
+  the chat (``export_manifest``, ``export_document_package``). Left
+  without annotations on purpose so every export keeps a manual Allow.
 * ``WRITE_TOOLS`` — everything else that writes. Left without annotations
   so clients keep the conservative spec defaults and keep asking.
 
@@ -71,9 +74,7 @@ READ_ONLY_TOOLS: frozenset[str] = frozenset(
         "list_documents",
         "list_trash",
         "search_documents",
-        # export / gdrive
-        "export_document_package",
-        "export_manifest",
+        # gdrive
         "gdrive_auth_status",
         "gdrive_sync_status",
         # hygiene
@@ -119,6 +120,15 @@ DESTRUCTIVE_TOOLS: frozenset[str] = frozenset(
         "delete_clinical_record",
         "delete_treatment_event",
         "reassign_document",
+    }
+)
+
+# Bulk patient-data egress: they only read, but they dump a whole patient's
+# record into the chat, so they stay unannotated and keep a manual Allow.
+EGRESS_TOOLS: frozenset[str] = frozenset(
+    {
+        "export_document_package",
+        "export_manifest",
     }
 )
 

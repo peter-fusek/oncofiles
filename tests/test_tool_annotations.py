@@ -16,9 +16,12 @@ import pytest
 
 from oncofiles.tool_annotations import (
     DESTRUCTIVE_TOOLS,
+    EGRESS_TOOLS,
     READ_ONLY_TOOLS,
     WRITE_TOOLS,
 )
+
+ALL_CLASSIFIED = READ_ONLY_TOOLS | DESTRUCTIVE_TOOLS | EGRESS_TOOLS | WRITE_TOOLS
 
 # Modules that annotate their own tools or belong to another work stream.
 SELF_MANAGED_MODULES = ("oncofiles.tools.clinical_facts", "oncofiles.tools.curated")
@@ -36,21 +39,20 @@ def _managed(tools):
 
 
 def test_sets_are_disjoint():
-    assert not READ_ONLY_TOOLS & DESTRUCTIVE_TOOLS
-    assert not READ_ONLY_TOOLS & WRITE_TOOLS
-    assert not DESTRUCTIVE_TOOLS & WRITE_TOOLS
+    sets = [READ_ONLY_TOOLS, DESTRUCTIVE_TOOLS, EGRESS_TOOLS, WRITE_TOOLS]
+    assert sum(len(s) for s in sets) == len(ALL_CLASSIFIED)
 
 
 def test_every_tool_is_classified(tools):
-    """A new tool must be put in READ_ONLY_TOOLS, DESTRUCTIVE_TOOLS or
-    WRITE_TOOLS (oncofiles/tool_annotations.py) before it ships."""
-    classified = READ_ONLY_TOOLS | DESTRUCTIVE_TOOLS | WRITE_TOOLS
+    """A new tool must be put in READ_ONLY_TOOLS, DESTRUCTIVE_TOOLS,
+    EGRESS_TOOLS or WRITE_TOOLS (oncofiles/tool_annotations.py) before it ships."""
+    classified = ALL_CLASSIFIED
     missing = sorted(set(_managed(tools)) - classified)
     assert missing == [], f"classify these tools in tool_annotations.py: {missing}"
 
 
 def test_no_stale_names(tools):
-    classified = READ_ONLY_TOOLS | DESTRUCTIVE_TOOLS | WRITE_TOOLS
+    classified = ALL_CLASSIFIED
     assert sorted(classified - set(tools)) == []
 
 
@@ -68,6 +70,13 @@ def test_destructive_tools_annotated(tools):
         assert ann is not None and ann.readOnlyHint is False and ann.destructiveHint is True
 
 
+def test_bulk_export_tools_keep_manual_allow(tools):
+    """Bulk patient-data egress into a chat must never be auto-approvable."""
+    assert {"export_manifest", "export_document_package"} <= EGRESS_TOOLS
+    for name in EGRESS_TOOLS:
+        assert tools[name].annotations is None, name
+
+
 def test_write_tools_keep_spec_defaults(tools):
     for name in WRITE_TOOLS:
         ann = tools[name].annotations
@@ -78,7 +87,7 @@ def test_self_managed_annotations_untouched(tools):
     """clinical_facts sets its own READ_ONLY; curated tools are not touched here."""
     for name, t in tools.items():
         if t.fn.__module__ == "oncofiles.tools.curated":
-            assert name not in READ_ONLY_TOOLS | DESTRUCTIVE_TOOLS | WRITE_TOOLS
+            assert name not in ALL_CLASSIFIED
 
 
 _WRITE_NAME = re.compile(
@@ -122,5 +131,6 @@ def test_annotations_reach_the_wire():
     assert wire["list_documents"].annotations.readOnlyHint is True
     assert wire["query_db"].annotations.readOnlyHint is True
     assert wire["delete_document"].annotations.destructiveHint is True
+    assert wire["export_manifest"].annotations is None
     upload = wire["upload_document"].annotations
     assert upload is None or upload.readOnlyHint is not True
