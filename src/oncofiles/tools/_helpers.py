@@ -145,7 +145,15 @@ def _get_patient_id(*, required: bool = True) -> str:
             "then select_patient(patient_id) to choose one. "
             "If you have no patients yet, create one from the dashboard at https://oncofiles.com/dashboard"
         )
+    _note_resolved(pid)
     return pid
+
+
+def _note_resolved(pid: str) -> None:
+    """Tell the audit middleware which patient this call acted on (#663)."""
+    from oncofiles.audit_middleware import note_resolved_patient
+
+    note_resolved_patient(pid)
 
 
 async def _resolve_patient_id(
@@ -202,6 +210,7 @@ async def _resolve_patient_id(
     pid = patient.patient_id
 
     if _is_admin_caller():
+        _note_resolved(pid)
         return pid
 
     from oncofiles.constants import NO_PATIENT_ACCESS_SENTINEL
@@ -218,6 +227,7 @@ async def _resolve_patient_id(
     caregiver_match = _email_matches_caregiver(caller_email, patient.caregiver_email)
 
     if bearer_match or caregiver_match:
+        _note_resolved(pid)
         return pid
 
     raise ValueError(
