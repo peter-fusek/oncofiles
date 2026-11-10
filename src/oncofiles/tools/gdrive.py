@@ -191,6 +191,13 @@ async def gdrive_sync(
     2. Exports documents to organized category/year-month folders
     3. Exports manifest + metadata markdown files
 
+    Legacy (non-curated) Drive folders only. A curated patient folder
+    (README.md + _index.json) is never synced: the result is
+    ``{"skipped": true, "curated": true}``. Do NOT suggest this tool to
+    import a curated folder — it is processed by the curated pipeline
+    (continuous mode, or curated_folder_run) and mirrored into search by
+    curated_index; check it with curated_folder_status.
+
     Args:
         dry_run: Preview changes without syncing.
         enhance: Run AI summary/tag generation on new files (default True).
@@ -269,7 +276,8 @@ async def gdrive_sync_status(ctx: Context) -> str:
     """Check the status of the last or current GDrive sync.
 
     Returns whether a sync is currently running, and the result of the last
-    completed sync (if any).
+    completed sync (if any). Legacy Drive sync only — for curated patient
+    folders use curated_folder_status.
     """
     from oncofiles.sync import get_sync_status
 
@@ -285,6 +293,12 @@ async def sync_from_gdrive(
 
     Walks category/year-month subfolders, detects new and changed files,
     downloads them, uploads to Files API, and stores metadata.
+
+    Legacy (non-curated) Drive folders only. For a curated patient folder
+    (README.md + _index.json) it returns ``{"skipped": true, "curated": true}``
+    and imports nothing. To make curated documents searchable use
+    curated_index; new inbox files are filed by the curated pipeline
+    (continuous mode, or curated_folder_run). Check with curated_folder_status.
 
     Args:
         dry_run: Preview changes without importing.
@@ -323,6 +337,11 @@ async def sync_to_gdrive(
 
     Uploads documents to organized category/year-month folders with
     manifest and metadata markdown files.
+
+    Legacy (non-curated) Drive folders only. A curated patient folder
+    (README.md + _index.json) is write-protected: the result is
+    ``{"skipped": true, "curated": true}`` and nothing is exported. Curated
+    folders are maintained by the curated pipeline; see curated_folder_status.
 
     Args:
         dry_run: Preview changes without exporting.
@@ -406,6 +425,9 @@ async def setup_gdrive(ctx: Context, root_folder_id: str) -> str:
     Idempotent: checks for existing folders by name before creating.
     Handles both bilingual and legacy EN-only folder names (renames old to bilingual).
     Oncology patients skip general-only folders; general patients skip oncology-only.
+
+    Legacy (non-curated) folders only: a curated patient folder (README.md +
+    _index.json) keeps its own fixed folder set and is never restructured.
 
     Args:
         root_folder_id: The Google Drive folder ID to create subfolders in.
