@@ -121,20 +121,20 @@ async def test_non_admin_caller_never_sees_the_other_patients_calls(two):
     assert all(e["tool_name"] != "t_bob_only" for e in seen["entries"])
 
 
-_PREFIX_AUTO = [  # pre-fix auto rows carry the column default and tags '[]'
-    ("auto", "patient_slug=bob-test, limit=5", "[]"),
-    ("auto", "limit=5", "[]"),
-    ("auto", "patient_slug=nobody-here", "[]"),
-]
-
-
 async def _seed_prefix_rows(db):
-    rows = [*_PREFIX_AUTO, ("oncoteam", "patient_slug=bob-test", "[]")]  # manual: untouched
-    for agent, summary, tags in rows:
+    rows = [  # (agent, summary, patient_id, tags)
+        ("auto", "patient_slug=bob-test, limit=5", "erika", "[]"),  # pre-fix default
+        ("auto", "limit=5", "erika", "[]"),
+        ("auto", "patient_slug=nobody-here", "erika", "[]"),
+        ("auto", "patient_slug=bob-test", ERIKA_UUID, "[]"),  # forged-looking, real pid
+        ("oncoteam", "patient_slug=bob-test", "erika", "[]"),  # manual row: untouched
+    ]
+    for agent, summary, pid, tags in rows:
         await db.db.execute(
-            "INSERT INTO activity_log (session_id, agent_id, tool_name, input_summary, tags) "
-            "VALUES ('s', ?, 'old_tool', ?, ?)",
-            (agent, summary, tags),
+            "INSERT INTO activity_log "
+            "(session_id, agent_id, tool_name, input_summary, patient_id, tags) "
+            "VALUES ('s', ?, 'old_tool', ?, ?, ?)",
+            (agent, summary, pid, tags),
         )
     await db.db.commit()
 
@@ -146,26 +146,26 @@ async def test_backfill_is_admin_only(two):
     assert "error" in out
 
 
-async def test_backfill_reattributes_by_slug_and_marks_the_rest(two):
+async def test_backfill_marks_only_pre_fix_rows_and_never_guesses(two):
     from oncofiles.tools.activity import backfill_activity_log_attribution
 
     await _seed_prefix_rows(two)
     _verified_caller_is_admin.set(True)
+    pre_fix = 3
     preview = json.loads(await backfill_activity_log_attribution(_Ctx(two)))
     assert preview["dry_run"] is True
-    assert preview["scanned"] == preview["remaining"] == len(_PREFIX_AUTO)
-    assert preview["attributed_from_slug"] == 1
-    assert preview["attribution_unknown"] == len(_PREFIX_AUTO) - 1
+    assert preview["scanned"] == preview["remaining"] == pre_fix
     first = json.loads(await backfill_activity_log_attribution(_Ctx(two), 2, dry_run=False))
-    assert first["scanned"] == 2 and first["remaining"] == 1
+    assert first["scanned"] == 2 and first["remaining"] == pre_fix - 2
     last = json.loads(await backfill_activity_log_attribution(_Ctx(two), 2, dry_run=False))
     assert last["remaining"] == 0
     async with two.db.execute(
-        "SELECT agent_id, input_summary, patient_id, tags FROM activity_log ORDER BY id"
+        "SELECT agent_id, patient_id, tags FROM activity_log ORDER BY id"
     ) as cur:
         got = [dict(r) for r in await cur.fetchall()]
-    assert len(got) == 4  # nothing deleted
-    assert got[0]["patient_id"] == BOB_UUID
-    assert {got[1]["patient_id"], got[2]["patient_id"]} == {"__system_no_patient__"}
-    assert all("attribution_unknown" in g["tags"] for g in got[1:3])
-    assert got[3]["tags"] == "[]" and got[3]["agent_id"] == "oncoteam"
+    assert len(got) == pre_fix + 2  # nothing deleted
+    for g in got[:pre_fix]:  # a slug in the summary is never trusted
+        assert g["patient_id"] == "__system_no_patient__"
+        assert g["tags"] == '["attribution_unknown"]'
+    assert got[pre_fix]["patient_id"] == ERIKA_UUID  # not a pre-fix row
+    assert got[pre_fix + 1]["agent_id"] == "oncoteam" and got[pre_fix + 1]["tags"] == "[]"

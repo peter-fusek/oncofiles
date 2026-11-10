@@ -13,7 +13,6 @@ authenticated caller could read every patient's tool-call history.
 from __future__ import annotations
 
 import json
-import re
 
 from fastmcp import Context
 
@@ -199,7 +198,11 @@ async def get_activity_stats(
 
 
 _NO_PATIENT = "__system_no_patient__"
-_SLUG_IN_SUMMARY = re.compile(r"(?:^|, )patient_slug=([A-Za-z0-9_-]+)(?:,|$)")
+# Migration 029's column default. No patient has this id, and since #663 no
+# write path stores it (every insert sets patient_id explicitly), so it marks
+# exactly the rows written before the fix. Callers cannot forge it:
+# add_activity_log stores the resolver's pid.
+_PRE_663_DEFAULT = "erika"
 
 
 async def backfill_activity_log_attribution(
@@ -207,16 +210,17 @@ async def backfill_activity_log_attribution(
     batch_size: int = 500,
     dry_run: bool = True,
 ) -> str:
-    """Re-attribute auto-logged activity rows written before the #663 fix.
+    """Mark auto-logged activity rows written before the #663 fix as unattributed.
 
     **Admin-only.** Before #663 every auto-logged tool call took the
-    migration-029 column default instead of the patient the call acted on.
-    Those rows are the auto rows without the ``["attributed"]`` tag. Per row:
-    if its input summary names a ``patient_slug`` of an existing patient, the
-    row is attributed to that patient; otherwise it gets the no-patient
-    sentinel and the ``attribution_unknown`` tag, so no patient-scoped read
-    can ever match it. Rows are never deleted. One batch per call (at most
-    ``batch_size`` rows, one commit); call again until ``remaining`` is 0.
+    migration-029 column default instead of the patient the call acted on, so
+    the patient of those rows is unknown. They get the no-patient sentinel and
+    the ``attribution_unknown`` tag: no patient-scoped read can match them,
+    admins still see them. The patient is deliberately not guessed from the
+    input summary (a truncated, caller-shaped string, and a denied call's slug
+    names a patient the call never acted on). Rows are never deleted. One
+    batch per call (at most ``batch_size`` rows, one commit); call again until
+    ``remaining`` is 0.
 
     Args:
         batch_size: Max rows per call (1-500).
@@ -230,45 +234,34 @@ async def backfill_activity_log_attribution(
         return json.dumps({"error": str(exc)})
 
     db = _get_db(ctx)
-    pending = "agent_id = 'auto' AND tags = '[]'"
-    async with db.db.execute(f"SELECT COUNT(*) AS cnt FROM activity_log WHERE {pending}") as cur:
+    pending = "agent_id = 'auto' AND patient_id = ?"
+    async with db.db.execute(
+        f"SELECT COUNT(*) AS cnt FROM activity_log WHERE {pending}", (_PRE_663_DEFAULT,)
+    ) as cur:
         row = await cur.fetchone()
         total_before = dict(row)["cnt"] if row else 0
 
     batch_size = max(1, min(batch_size, 500))
     async with db.db.execute(
-        f"SELECT id, input_summary FROM activity_log WHERE {pending} ORDER BY id LIMIT ?",
-        (batch_size,),
+        f"SELECT id FROM activity_log WHERE {pending} ORDER BY id LIMIT ?",
+        (_PRE_663_DEFAULT, batch_size),
     ) as cur:
-        rows = [dict(r) for r in await cur.fetchall()]
-    async with db.db.execute("SELECT slug, patient_id FROM patients") as cur:
-        by_slug = {dict(r)["slug"]: dict(r)["patient_id"] for r in await cur.fetchall()}
+        ids = [dict(r)["id"] for r in await cur.fetchall()]
 
-    updates: list[tuple[str, str, int]] = []
-    from_slug = 0
-    for r in rows:
-        m = _SLUG_IN_SUMMARY.search(r["input_summary"] or "")
-        pid = by_slug.get(m.group(1)) if m else None
-        if pid:
-            from_slug += 1
-            updates.append((pid, '["attributed", "from_slug"]', r["id"]))
-        else:
-            updates.append((_NO_PATIENT, '["attribution_unknown"]', r["id"]))
-
-    if not dry_run and updates:
-        for pid, tags, row_id in updates:
+    if not dry_run and ids:
+        for row_id in ids:
             await db.db.execute(
-                "UPDATE activity_log SET patient_id = ?, tags = ? WHERE id = ?",
-                (pid, tags, row_id),
+                f"UPDATE activity_log SET patient_id = ?, tags = '[\"attribution_unknown\"]' "
+                f"WHERE id = ? AND {pending}",
+                (_NO_PATIENT, row_id, _PRE_663_DEFAULT),
             )
         await db.db.commit()
 
-    done = 0 if dry_run else len(updates)
+    done = 0 if dry_run else len(ids)
     return json.dumps(
         {
-            "scanned": len(rows),
-            "attributed_from_slug": from_slug,
-            "attribution_unknown": len(updates) - from_slug,
+            "scanned": len(ids),
+            "attribution_unknown": len(ids),
             "remaining": total_before - done,
             "dry_run": dry_run,
         }
