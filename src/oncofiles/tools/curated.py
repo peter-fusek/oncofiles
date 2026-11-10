@@ -695,7 +695,7 @@ def _parse_drive_time(value: str) -> datetime | None:
         return None
 
 
-async def index_patient(db, pid: str) -> dict:
+async def index_patient(db, pid: str, *, force_ids: set[int] | None = None) -> dict:
     """Local-only wrapper: the index and its fact extraction never reach the cloud."""
     from oncofiles.cloud_guard import local_only
 
@@ -707,10 +707,10 @@ async def index_patient(db, pid: str) -> dict:
         logger.warning("curated index: patient context not loaded for %s", pid)
     async with patient_lock(pid):  # never alongside a run or backfill (#612)
         with local_only("curated index + fact extraction"):
-            return await _index_patient(db, pid)
+            return await _index_patient(db, pid, force_ids=force_ids)
 
 
-async def _index_patient(db, pid: str) -> dict:
+async def _index_patient(db, pid: str, *, force_ids: set[int] | None = None) -> dict:
     """Mirror a patient's curated folder into the documents table (Drive reads only).
 
     One row per filed source (``file_id = gdrive:<id>``), sidecar text as its
@@ -727,7 +727,11 @@ async def _index_patient(db, pid: str) -> dict:
         return {"status": "skipped", "reason": "Drive not connected"}
     gdrive, folder_id = clients[0], clients[3]
     state = await db.curated_index_state(patient_id=pid)
-    known = {g: s["sidecar_modified"] for g, s in state.items() if not s["deleted"]}
+    known = {
+        g: ("" if force_ids and s["id"] in force_ids else s["sidecar_modified"])
+        for g, s in state.items()
+        if not s["deleted"]
+    }  # a forced document counts as changed: re-parsed with the current parser
 
     def _blocking():
         own = gdrive.dedicated_copy()
@@ -1152,16 +1156,26 @@ async def curated_reocr_status(ctx: Context, patient_slug: str | None = None) ->
                       default=str)  # fmt: skip
 
 
-async def curated_index(ctx: Context, patient_slug: str | None = None) -> str:
+async def curated_index(
+    ctx: Context, patient_slug: str | None = None, document_ids: list[int] | None = None
+) -> str:
     """Refresh the searchable copy of a patient's curated Drive folder (#603).
 
     Reads the curated folder (filed documents and their sidecars) and updates
     what search_documents, view_document and the other read tools see. Drive
     is only read; nothing is uploaded or sent to a cloud model. Runs after
     every curated run anyway — call it only to force a refresh.
+
+    Args:
+        document_ids: Re-parse these documents even though their sidecar did
+            not change (e.g. after a parser fix). Machine facts are replaced;
+            verified/corrected facts are never touched. Ids of another
+            patient are ignored.
     """
     pid = await _resolve_patient_id(patient_slug, ctx)
-    return json.dumps(await index_patient(_get_db(ctx), pid), ensure_ascii=False, default=str)
+    force = {int(i) for i in document_ids} if document_ids else None
+    out = await index_patient(_get_db(ctx), pid, force_ids=force)
+    return json.dumps(out, ensure_ascii=False, default=str)
 
 
 async def curated_folder_status(ctx: Context, patient_slug: str | None = None) -> str:

@@ -543,7 +543,7 @@ async def test_index_waits_while_a_run_holds_the_patient_lock(db):
     order = []
     lock = tool.patient_lock(ERIKA_UUID)
 
-    async def fake_index(_db, _pid):
+    async def fake_index(_db, _pid, **_kw):
         order.append("index")
         return {}
 
