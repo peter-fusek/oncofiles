@@ -909,3 +909,60 @@ async def test_okb_variants_from_a_reread_sheet(vocab):
     assert by["TIBC"]["value_num"] == 61.2  # wrapped label joined
     assert by["K"]["value_num"] == 4.61  # the table continues on page 2 …
     assert by["K"]["occurred_at"] == by["TIBC"]["occurred_at"]  # … with the same draw time
+
+
+# ── #661: block-header dating ──
+
+from oncofiles.curated.facts_rules import parse_inline_results  # noqa: E402
+
+_BLOCK_REPORT = """Anamnéza: bez zmeny.
+Vykonané vyšetrenia: laboratórne 11.4.2028 - 15.4.2028:
+sérum OKB
+KREA S 77,3; NA v sére 136,7; K S 4,61
+krv EDTA
+WBC 8,17; HGB 133; PLT 287
+
+Odobrané 22.5.2028 06:55. Č. vzorky 000.000001.
+CEA S 2,9; CA 19-9 17,4; KREA S 64,8
+
+Pacientka sa cíti dobre, bez ťažkostí.
+WBC 6,71; HGB 129; PLT 233
+"""
+
+
+async def test_block_header_dates_the_values_below_it(vocab):
+    facts = parse_inline_results([_BLOCK_REPORT], vocab, report_date="2028-06-02")
+    first = ("KREA S 77", "WBC 8,17")  # the range-dated block
+    by = {f["code"]: f for f in facts if f["evidence"].startswith(first)}
+    cea = next(f for f in facts if f["code"] == "CEA")
+    # a range header dates its block at the midpoint, through specimen labels
+    for code in ("CREA", "NA", "K"):
+        meta = by[code]["metadata"]
+        assert by[code]["occurred_at"][:10] == "2028-04-13"
+        assert by[code]["verification"] == "machine"
+        assert meta["date_from"] == "block_header" and meta["date_range_start"] == "2028-04-11"
+        assert meta["date_evidence"].startswith("Vykonané vyšetrenia")
+    assert by["PLT"]["occurred_at"][:10] == "2028-04-13"  # second specimen, same block
+    # the sampling line dates its block
+    assert cea["occurred_at"][:10] == "2028-05-22" and cea["verification"] == "machine"
+
+
+async def test_prose_ends_the_block_and_values_stay_unverified(vocab):
+    facts = parse_inline_results([_BLOCK_REPORT], vocab, report_date="2028-06-02")
+    late = [f for f in facts if f["evidence"].startswith("WBC 6,71")]
+    assert late and all(f["occurred_at"][:10] == "2028-06-02" for f in late)
+    assert all(f["verification"] == "unverified" for f in late)
+    assert all("date_unknown" in f["metadata"]["unverified_reasons"] for f in late)
+
+
+async def test_a_table_row_or_a_sentence_is_never_a_block_header(vocab):
+    text = (
+        "| Parameter | Stav | Zmena od 3. 4. 2028 |\n"
+        "sérum OKB\n"
+        "KREA S 70,9; NA v sére 141,3; K S 3,92\n\n"
+        "Kontrola bola 9.4.2028 a pacientka udáva:\n"
+        "krv EDTA\n"
+        "WBC 5,52; HGB 141; PLT 199\n"
+    )
+    facts = parse_inline_results([text], vocab, report_date="2028-04-20")
+    assert facts and all(f["metadata"]["date_source"] == "report" for f in facts)
