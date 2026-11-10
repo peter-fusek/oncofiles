@@ -58,7 +58,7 @@ def test_csp_allows_no_google_font_origin(path):
 
 @pytest.mark.parametrize(
     "template",
-    [SRC / "landing.html", SRC / "dashboard.html"],
+    [SRC / "landing.html", SRC / "dashboard.html", SRC / "demo.html"],
     ids=lambda p: p.name,
 )
 def test_templates_link_the_self_hosted_sheet(template):
@@ -78,6 +78,20 @@ async def test_topic_pages_link_the_self_hosted_sheet():
         html = (await handler(_req(path))).body.decode()
         assert '<link rel="stylesheet" href="/fonts/fonts.css">' in html
         assert "@import" not in html
+
+
+async def test_demo_route_uses_the_self_hosted_sheet():
+    """/demo is a standalone page (demo.html + demo.css) since #692."""
+    from oncofiles.server import _csp_for_path, demo_dashboard
+
+    html = (await demo_dashboard(_req("/demo"))).body.decode()
+    assert '<link rel="stylesheet" href="/fonts/fonts.css">' in html
+    css = (SRC / "demo.css").read_text()
+    for host in GOOGLE_FONT_HOSTS:
+        assert host not in html
+        assert host not in css
+        assert host not in _csp_for_path("/demo")
+        assert host not in _csp_for_path("/demo.css")
 
 
 # ── The @font-face sheet matches the files on disk ───────────────────────
