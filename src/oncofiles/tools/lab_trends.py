@@ -496,9 +496,9 @@ _PRECYCLE_CHECKLIST = {
             },
             {
                 "id": "plt",
-                "text": "PLT >= 75,000/µL (tiež >= 50,000 pre plnú dávku antikoagulancia)",
+                "text": "PLT >= 75,000/µL (tiež >= 50,000 pre plnú dávku LMWH)",
                 "parameter": "PLT",
-                "source": "NCCN Colon Cancer v1.2025 + anticoagulant SmPC",
+                "source": "NCCN Colon Cancer v1.2025 + LMWH SmPC",
                 "source_url": "https://www.nccn.org/guidelines/guidelines-detail"
                 "?category=1&id=1428",
             },
