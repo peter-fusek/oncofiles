@@ -1234,7 +1234,10 @@ def _reread_one(drive, d: dict, old: list[dict], vocab) -> dict:
         return {**res, "result": "failed", "error": rr.error or "no text"}
     new, _ = extract_lab_facts(rr.pages, vocab, report_date=str(d.get("document_date") or "")[:10]
                                or None, inline=d.get("category") in _REPORT_LIKE)  # fmt: skip
-    assessment = rv.assess(old, new, rr.pages)
+    from oncofiles.curated.indexer import parse_sidecar
+
+    _, old_pages = parse_sidecar(raw_side.decode("utf-8", errors="replace"))
+    assessment = rv.assess(old, new, rr.pages, old_page_count=len(old_pages))
     res.update({k: len(v) for k, v in assessment.items()},
                candidates=sum(len(v) for v in assessment.values()),
                engine=rr.engine, sidecar_sha=sha, source_md5=cur.get("source_md5") or md5,

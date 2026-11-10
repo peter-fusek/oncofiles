@@ -57,26 +57,53 @@ def _dates_of(fact: dict) -> list[str]:
     return [(fact.get("occurred_at") or "")[:10]]
 
 
-def assess(old_facts: list[dict], new_facts: list[dict], new_pages: list[str]) -> dict:
+ASSESS_VERSION = 2
+_PRINTED = ("printed", "printed_range")
+
+
+def _usable(f: dict) -> bool:
+    return (
+        bool(f.get("code"))
+        and f.get("value_canonical") is not None
+        and ("[?]" not in (f.get("evidence") or ""))
+    )
+
+
+def assess(
+    old_facts: list[dict], new_facts: list[dict], new_pages: list[str],
+    *, old_page_count: int | None = None,
+) -> dict:  # fmt: skip
     """Which old Cowork-era facts the re-read confirms.
 
     ``old_facts``: id, code, value_canonical, occurred_at, page_number, meta.
     ``new_facts``: facts parsed from the re-read (same parser), with
-    page_number, code, value_canonical, evidence. Returns
-    {"confirmed": [ids], "date_unconfirmed": [ids], "unconfirmed": [ids]}."""
-    new_count: Counter = Counter(
-        (f.get("page_number"), f.get("code"), f.get("value_canonical"))
-        for f in new_facts
-        if f.get("code")
-        and f.get("value_canonical") is not None
-        and "[?]" not in (f.get("evidence") or "")
-    )
+    page_number, code, value_canonical, occurred_at, evidence, metadata.
+    Returns {"confirmed": [ids], "date_unconfirmed": [ids], "unconfirmed": [ids]}.
+
+    A paged old sidecar is matched page by page. A Cowork-era sidecar is often
+    unpaged (no page markers, so every old fact sits on "page 1") while the
+    re-read is paged (``old_page_count``: pages of the old sidecar, i.e.
+    its page markers); then the match is on the re-read's own dated facts:
+    the same code, value AND date, where the re-read printed that date itself
+    (never the report-date fallback), as a document-level multiset, and the
+    old date must be printed on the page of the matching new fact (#678 v2).
+    """
     candidates = [
         f
         for f in old_facts
         if CONFIRMABLE in ((f.get("meta") or {}).get("unverified_reasons") or [])
         and f.get("value_canonical") is not None
     ]
+    if old_page_count is None:  # callers without the sidecar: infer from the facts
+        old_page_count = max([int(f.get("page_number") or 1) for f in old_facts] or [1])
+    unpaged = len(new_pages) > 1 and old_page_count <= 1
+    if unpaged:
+        return _assess_unpaged(candidates, new_facts, new_pages)
+    new_count: Counter = Counter(
+        (f.get("page_number"), f.get("code"), f.get("value_canonical"))
+        for f in new_facts
+        if _usable(f)
+    )
     old_count: Counter = Counter(
         (f.get("page_number"), f.get("code"), f.get("value_canonical")) for f in candidates
     )
@@ -95,6 +122,33 @@ def assess(old_facts: list[dict], new_facts: list[dict], new_pages: list[str]) -
     return out
 
 
+def _assess_unpaged(candidates: list[dict], new_facts: list[dict], new_pages: list[str]) -> dict:
+    pages_of: dict[tuple, list[int]] = {}
+    for f in new_facts:
+        meta = f.get("metadata") or f.get("meta") or {}
+        if not _usable(f) or meta.get("date_source") not in _PRINTED:
+            continue
+        key = (f["code"], f["value_canonical"], (f.get("occurred_at") or "")[:10])
+        pages_of.setdefault(key, []).append(int(f.get("page_number") or 1))
+    out: dict[str, list[int]] = {"confirmed": [], "date_unconfirmed": [], "unconfirmed": []}
+    groups: dict[tuple, list[dict]] = {}
+    for f in candidates:
+        key = (f["code"], f["value_canonical"], (f.get("occurred_at") or "")[:10])
+        groups.setdefault(key, []).append(f)
+    for key, olds in groups.items():
+        pages = pages_of.get(key, [])
+        if len(pages) < len(olds):  # every old fact needs its own new match
+            out["unconfirmed"].extend(f["id"] for f in olds)
+            continue
+        for f, page in zip(olds, pages, strict=False):
+            text = new_pages[page - 1] if 0 < page <= len(new_pages) else ""
+            if all(date_printed(d, text) for d in _dates_of(f)):
+                out["confirmed"].append(f["id"])
+            else:
+                out["unconfirmed"].append(f["id"])
+    return out
+
+
 def result_keys(assessment: dict, old_by_id: dict[int, dict]) -> dict:
     """The stored form: keys only, no ids (ids change on every re-extraction)."""
 
@@ -105,7 +159,7 @@ def result_keys(assessment: dict, old_by_id: dict[int, dict]) -> dict:
             for i in ids
         )  # fmt: skip
 
-    return {"confirmed": keys(assessment["confirmed"]),
+    return {"assess_version": ASSESS_VERSION, "confirmed": keys(assessment["confirmed"]),
             "date_unconfirmed": keys(assessment["date_unconfirmed"])}  # fmt: skip
 
 
