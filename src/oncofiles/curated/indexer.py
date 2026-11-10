@@ -18,6 +18,7 @@ Rules:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from dataclasses import dataclass, field
@@ -32,7 +33,7 @@ CURATED_FILE_PREFIX = "gdrive:"
 INDEX_ENGINE = "curated-sidecar"
 # Bump when the index derives new data from the same sidecars (entities, facts,
 # titles…): rows indexed by an older version are re-processed once (#603).
-INDEX_VERSION = 12  # v12: block-majority corroboration, date conflicts, NOU short labels (#672)
+INDEX_VERSION = 13  # v13: sidecar sha + source md5 stored for verify-only re-reads (#678)
 TEXT_SOURCE_EXTS = {"md", "txt", "csv", "json"}
 MAX_TEXT_SOURCE_BYTES = 512 * 1024
 _PAGE_RE = re.compile(r"^<!-- page (\d+) -->\s*$", re.M)
@@ -202,6 +203,8 @@ class IndexRecord:
     modified: str
     sidecar_id: str = ""
     sidecar_modified: str = ""
+    sidecar_sha: str = ""  # sha256 of the sidecar bytes this index read (#678)
+    source_md5: str = ""  # Drive md5 of the source file (#678)
     unchanged: bool = False  # sidecar not re-read; keep the stored text
     original_filename: str = ""
     document_date: date | None = None
@@ -234,6 +237,7 @@ def _record(folder: str, category: DocumentCategory, item: Item) -> IndexRecord:
         mime_type=item.mime or "application/octet-stream",
         size_bytes=item.size,
         modified=item.modified,
+        source_md5=item.md5,
         original_filename=nfc(item.name),
         document_date=_filename_date(item.name),
         institution=fields[2] if len(fields) >= 6 and fields[2] != "Unknown" else None,
@@ -262,13 +266,24 @@ def _apply_sidecar(rec: IndexRecord, front: dict, pages: list[str]) -> None:
     rec.metadata = {k: front[k] for k in keep if k in front and front[k] not in (None, "")}
 
 
-def scan(drive, root_id: str, *, known: dict[str, str] | None = None) -> IndexScan:
+def scan(
+    drive, root_id: str, *, known: dict[str, str] | None = None,
+    known_md5: dict[str, str] | None = None,
+) -> IndexScan:  # fmt: skip
     """Walk the curated tree (reads only) and build one record per filed source.
 
     ``known`` maps source Drive id → sidecar ``modified`` stored at the last
-    index; those sidecars are not downloaded again.
+    index; those sidecars are not downloaded again — unless ``known_md5`` shows
+    the source file itself changed since (#678): then the record is re-read, so
+    a re-read result keyed to the old source is void and its promotions revert.
     """
     known = known or {}
+    known_md5 = known_md5 or {}
+
+    def same_source(item) -> bool:
+        old = known_md5.get(item.id)
+        return not old or not item.md5 or old == item.md5
+
     tree = walk(drive, root_id)
     readme = next((i for i in tree.root_files if nfc(i.name) == "README.md"), None)
     if readme is None:
@@ -297,11 +312,12 @@ def scan(drive, root_id: str, *, known: dict[str, str] | None = None) -> IndexSc
             ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
             if side is not None:
                 rec.sidecar_id, rec.sidecar_modified = side.id, side.modified
-                if known.get(item.id) == side.modified:
+                if known.get(item.id) == side.modified and same_source(item):
                     rec.unchanged = True
                 else:
-                    text = drive.download(side.id).decode("utf-8", errors="replace")
-                    front, pages = parse_sidecar(text)
+                    raw = drive.download(side.id)
+                    rec.sidecar_sha = hashlib.sha256(raw).hexdigest()
+                    front, pages = parse_sidecar(raw.decode("utf-8", errors="replace"))
                     _apply_sidecar(rec, front, pages)
             elif ext in TEXT_SOURCE_EXTS and item.size <= MAX_TEXT_SOURCE_BYTES:
                 # A text source (notes, timelines) is its own text; no sidecar.

@@ -224,7 +224,7 @@ class FactsMixin:
         """Active facts with what corroboration and the unverified metric need."""
         async with self.db.execute(
             "SELECT id, source_document_id, code, occurred_at, value_canonical, "
-            "unit_canonical, verification, metadata_json FROM clinical_records "
+            "unit_canonical, verification, metadata_json, page_number FROM clinical_records "
             "WHERE patient_id = ? AND deleted_at IS NULL AND code IS NOT NULL",
             (patient_id,),
         ) as cur:
@@ -260,6 +260,67 @@ class FactsMixin:
         )
         if cur.rowcount:
             await self._audit(fact_id, "update", metadata, "date conflict with another document")
+        await self.db.commit()
+        return bool(cur.rowcount)
+
+    # ── verify-only re-reads (#678) ───────────────────────────────────
+
+    async def insert_fact_reread(
+        self, *, patient_id: str, document_id: int, sidecar_sha: str, source_md5: str,
+        engine: str, result: dict,
+    ) -> int:  # fmt: skip
+        cur = await self.db.execute(
+            "INSERT INTO fact_rereads (patient_id, document_id, sidecar_sha, source_md5, "
+            "engine, result_json) VALUES (?, ?, ?, ?, ?, ?)",
+            (patient_id, document_id, sidecar_sha, source_md5, engine,
+             json.dumps(result, ensure_ascii=False)),
+        )  # fmt: skip
+        await self.db.commit()
+        return cur.lastrowid
+
+    async def valid_fact_rereads(self, *, patient_id: str) -> dict[int, dict]:
+        """document id → the newest re-read result still valid for the
+        document's current sidecar sha and source md5 (#678)."""
+        async with self.db.execute(
+            "SELECT r.id, r.document_id, r.sidecar_sha, r.source_md5, r.result_json, "
+            "d.structured_metadata FROM fact_rereads r JOIN documents d "
+            "ON d.id = r.document_id AND d.patient_id = r.patient_id "
+            "WHERE r.patient_id = ? AND d.deleted_at IS NULL ORDER BY r.id",
+            (patient_id,),
+        ) as cur:
+            rows = _rows(await cur.fetchall())
+        out: dict[int, dict] = {}
+        for r in rows:
+            try:
+                cur_meta = json.loads(r["structured_metadata"] or "{}").get("curated") or {}
+            except ValueError:
+                cur_meta = {}
+            if (cur_meta.get("sidecar_sha"), cur_meta.get("source_md5")) != (
+                r["sidecar_sha"],
+                r["source_md5"],
+            ) or not r["sidecar_sha"]:
+                out.pop(r["document_id"], None)  # void: the text or the source changed
+                continue
+            try:
+                out[r["document_id"]] = {"id": r["id"], **json.loads(r["result_json"])}
+            except ValueError:
+                continue
+        return out
+
+    async def apply_reread_fact(
+        self, *, patient_id: str, fact_id: int, verification: str, metadata: dict
+    ) -> bool:
+        """Drop ``cowork_ocr`` from an unverified fact a re-read confirmed (#678).
+        Never touches machine, verified or corrected rows."""
+        cur = await self.db.execute(
+            f"UPDATE clinical_records SET verification = ?, metadata_json = ?, "
+            f"updated_at = {_NOW}, updated_by = 'oncofiles' "
+            "WHERE id = ? AND patient_id = ? AND verification = 'unverified' "
+            "AND deleted_at IS NULL",
+            (verification, json.dumps(metadata, ensure_ascii=False), fact_id, patient_id),
+        )
+        if cur.rowcount:
+            await self._audit(fact_id, "update", metadata, "confirmed by a local re-read")
         await self.db.commit()
         return bool(cur.rowcount)
 

@@ -736,7 +736,8 @@ async def _index_patient(db, pid: str, *, force_ids: set[int] | None = None) -> 
     def _blocking():
         own = gdrive.dedicated_copy()
         try:
-            return indexer.scan(DriveOps(own), folder_id, known=known)
+            known_md5 = {g: s.get("source_md5", "") for g, s in state.items() if not s["deleted"]}
+            return indexer.scan(DriveOps(own), folder_id, known=known, known_md5=known_md5)
         finally:
             own.close()
 
@@ -764,6 +765,8 @@ async def _index_patient(db, pid: str, *, force_ids: set[int] | None = None) -> 
                         "sidecar_modified": rec.sidecar_modified,
                         "contract_version": scanned.contract_version,
                         "index_version": indexer.INDEX_VERSION,
+                        "sidecar_sha": rec.sidecar_sha,
+                        "source_md5": rec.source_md5,
                     },
                     **rec.metadata,
                 },
@@ -998,6 +1001,7 @@ async def _corroborate_and_measure(db, pid: str) -> dict:
     re-extraction resets are re-applied in the same call."""
     from oncofiles.curated.facts_rules import corroborations, date_conflicts, unverified_metric
 
+    confirmed = await _apply_rereads(db, pid)
     rows = await db.fact_verification_rows(patient_id=pid)
     by_id = {r["id"]: r for r in rows}
     conflicts = 0
@@ -1027,7 +1031,30 @@ async def _corroborate_and_measure(db, pid: str) -> dict:
         ):
             done += 1
     metric = unverified_metric(await db.fact_verification_rows(patient_id=pid))
-    return {"corroborated": done, "date_conflicts": conflicts, **metric}
+    return {"corroborated": done, "date_conflicts": conflicts, "reread_applied": confirmed,
+            **metric}  # fmt: skip
+
+
+async def _apply_rereads(db, pid: str) -> int:
+    """Re-apply stored verify-only re-read results to the current facts (#678).
+    Runs in every index, so a re-extraction never loses a confirmation, and a
+    result whose sidecar or source changed is void (its reasons come back)."""
+    from oncofiles.curated.reread_verify import apply_plan, loads
+
+    rereads = await db.valid_fact_rereads(patient_id=pid)
+    if not rereads:
+        return 0
+    rows = await db.fact_verification_rows(patient_id=pid)
+    applied = 0
+    for doc_id, result in rereads.items():
+        facts = [{**r, "meta": loads(r.get("metadata_json"))} for r in rows
+                 if r["source_document_id"] == doc_id]  # fmt: skip
+        for fact_id, verification, meta in apply_plan(result, facts):
+            meta["reread_id"] = result["id"]
+            if await db.apply_reread_fact(patient_id=pid, fact_id=fact_id,
+                                          verification=verification, metadata=meta):  # fmt: skip
+                applied += 1
+    return applied
 
 
 async def _index_quietly(db, pid: str) -> None:
@@ -1179,6 +1206,157 @@ async def curated_reocr(
     )
 
 
+_REPORT_LIKE = ("report", "discharge", "chemo_sheet", "imaging", "surgery")
+
+
+def _reread_one(drive, d: dict, old: list[dict], vocab) -> dict:
+    """Blocking. Re-read one document locally and assess its Cowork-era facts
+    (#678). Reads Drive only; never writes. Returns counts and the result."""
+    import hashlib
+
+    from oncofiles.curated import reread_verify as rv
+    from oncofiles.curated.facts_rules import extract_lab_facts
+    from oncofiles.curated.reocr import reread_isolated
+
+    res = {"document_id": d["id"], "confirmed": 0, "date_unconfirmed": 0, "unconfirmed": 0,
+           "candidates": 0, "result": "previewed", "error": None}  # fmt: skip
+    cur = (d.get("structured_metadata") or {}).get("curated") or {}
+    raw_side = drive.download(cur.get("sidecar_id") or "")
+    source = drive.download(d["gdrive_id"])
+    sha, md5 = hashlib.sha256(raw_side).hexdigest(), hashlib.md5(source).hexdigest()  # noqa: S324
+    if not cur.get("sidecar_sha") or sha != cur.get("sidecar_sha"):
+        return {**res, "result": "skipped", "error": "sidecar changed since the index; index first"}
+    if cur.get("source_md5") and md5 != cur.get("source_md5"):
+        return {**res, "result": "skipped", "error": "source changed since the index"}
+    rr = reread_isolated(d["filename"], source, d.get("mime_type") or "", passes=2,
+                         doc_ref=d["id"])  # fmt: skip
+    if rr.error or not any(p.strip() for p in rr.pages):
+        return {**res, "result": "failed", "error": rr.error or "no text"}
+    new, _ = extract_lab_facts(rr.pages, vocab, report_date=str(d.get("document_date") or "")[:10]
+                               or None, inline=d.get("category") in _REPORT_LIKE)  # fmt: skip
+    assessment = rv.assess(old, new, rr.pages)
+    res.update({k: len(v) for k, v in assessment.items()},
+               candidates=sum(len(v) for v in assessment.values()),
+               engine=rr.engine, sidecar_sha=sha, source_md5=cur.get("source_md5") or md5,
+               stored=rv.result_keys(assessment, {f["id"]: f for f in old}))  # fmt: skip
+    return res
+
+
+async def _reread_job(db, pid: str, docs: list[dict], *, dry_run: bool) -> None:
+    from oncofiles import config
+    from oncofiles.cloud_guard import local_only
+    from oncofiles.curated.drive_ops import DriveOps
+    from oncofiles.curated.facts_rules import Vocabulary
+    from oncofiles.curated.reread_verify import loads
+    from oncofiles.memory import get_rss_mb
+    from oncofiles.server import _create_patient_clients
+
+    job = _reocr_jobs[pid]
+    row_id = await db.insert_curated_run(patient_id=pid, dry_run=dry_run, trigger="reread")
+    report: list[dict] = []
+    try:
+        async with patient_lock(pid):
+            clients = await _create_patient_clients(db, pid)
+            if not clients or clients[0] is None:
+                raise RuntimeError("Drive not connected")
+            gdrive = clients[0]
+            vocab = Vocabulary.from_rows(await db.fact_code_vocabulary())
+            rows = await db.fact_verification_rows(patient_id=pid)
+            for d in docs:
+                if _stopping.is_set():
+                    report.append(
+                        {"document_id": d["id"], "result": "skipped", "error": "stopping"}
+                    )
+                    continue
+                if (rss := get_rss_mb()) > config.REOCR_RSS_LIMIT_MB:
+                    report.append({"document_id": d["id"], "result": "skipped",
+                                   "error": f"rss {rss:.0f} MB"})  # fmt: skip
+                    continue
+                old = [{**r, "meta": loads(r.get("metadata_json"))} for r in rows
+                       if r["source_document_id"] == d["id"]]  # fmt: skip
+
+                def _blocking(d=d, old=old):
+                    own = gdrive.dedicated_copy()
+                    try:
+                        with local_only("curated verify-only re-read"):
+                            return _reread_one(DriveOps(own), d, old, vocab)
+                    finally:
+                        own.close()
+
+                try:
+                    res = await asyncio.to_thread(_blocking)
+                except Exception as exc:
+                    logger.exception("re-read of doc %s failed", d["id"])
+                    res = {"document_id": d["id"], "result": "failed", "error": type(exc).__name__}
+                stored = res.pop("stored", None)
+                if not dry_run and stored and res["result"] == "previewed":
+                    await db.insert_fact_reread(
+                        patient_id=pid, document_id=d["id"], sidecar_sha=res.pop("sidecar_sha"),
+                        source_md5=res.pop("source_md5"), engine=res.get("engine") or "",
+                        result=stored,
+                    )  # fmt: skip
+                    res["result"] = "stored"
+                res.pop("sidecar_sha", None), res.pop("source_md5", None)
+                report.append(res)
+            if not dry_run and any(r.get("result") == "stored" for r in report):
+                job["verification"] = await _corroborate_and_measure(db, pid)
+        job.update(state="done", report={"dry_run": dry_run, "documents": report})
+    except Exception as exc:
+        logger.exception("verify-only re-read failed for %s", pid)
+        job.update(state="failed", error=type(exc).__name__)
+    finally:
+        job["finished_at"] = datetime.now(UTC).isoformat()
+        try:
+            await db.finish_curated_run(
+                row_id, patient_id=pid,
+                status="ok" if job.get("state") == "done" else "failed",
+                message=job.get("error") or "", report=job.get("report") or {},
+            )  # fmt: skip
+        except Exception:
+            logger.exception("could not persist the re-read job for %s", pid)
+
+
+async def curated_reread_verify(
+    ctx: Context,
+    document_ids: list[int],
+    patient_slug: str | None = None,
+    dry_run: bool = True,
+) -> str:
+    """Confirm Cowork-era values by a LOCAL re-read, without rewriting anything (#678).
+
+    Reads each listed document again with the local model (two passes) and
+    parses it with the same rules. A Cowork-era value loses its ``cowork_ocr``
+    reason only when the re-read shows the same code and value on the same
+    page (as often as the old text) and its date is printed there too;
+    otherwise it stays unverified (``date_unconfirmed`` when only the date is
+    missing). Nothing is written to Drive. Dry run (default) only reports
+    counts. Explicit ``document_ids`` only (max 10). Runs in the background;
+    poll curated_reocr_status. Slow: minutes per page.
+    """
+    pid = await _resolve_patient_id(patient_slug, ctx)
+    db = _get_db(ctx)
+    ids = list(dict.fromkeys(int(i) for i in (document_ids or [])))[:10]
+    if not ids:
+        return json.dumps({"error": "document_ids is required"})
+    if _reocr_jobs.get(pid, {}).get("state") == "running" or (
+        pid in _runs and _runs[pid].get("state") == "running"
+    ):
+        return json.dumps({"error": "busy: a run, re-OCR or re-read is in progress"})
+    docs = [r for r in await db.curated_reocr_candidates(patient_id=pid) if r["id"] in ids]
+    if not docs:
+        return json.dumps({"status": "nothing to do"})
+    _reocr_jobs[pid] = {
+        "state": "running", "kind": "reread", "dry_run": dry_run,
+        "started_at": datetime.now(UTC).isoformat(),
+        "documents": [{"document_id": d["id"], "filename": d["filename"],
+                       "category": d.get("category")} for d in docs],
+    }  # fmt: skip
+    _reocr_jobs[pid]["task"] = asyncio.create_task(_reread_job(db, pid, docs, dry_run=dry_run))
+    return json.dumps(
+        {k: v for k, v in _reocr_jobs[pid].items() if k != "task"}, ensure_ascii=False
+    )
+
+
 async def curated_reocr_status(ctx: Context, patient_slug: str | None = None) -> str:
     """State and report of the last re-OCR job for this patient (#660). Read-only."""
     pid = await _resolve_patient_id(patient_slug, ctx)
@@ -1229,3 +1407,4 @@ def register(mcp):
     mcp.tool()(curated_index)
     mcp.tool()(curated_reocr)
     mcp.tool()(curated_reocr_status)
+    mcp.tool()(curated_reread_verify)
