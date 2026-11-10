@@ -127,7 +127,7 @@ async def test_real_run_backs_up_before_updating_in_place(vocab):
     assert rep.documents[0].result == "rewritten"
     kinds = [w[0] for w in drive.writes]
     assert kinds == ["create", "update"]  # backup first, never a delete or move
-    backup = drive.find(drive.folder[LOGS], f"_reocr-backup-20270503-{doc['filename']}.md")
+    backup = drive.find(drive.folder[LOGS], f"_reocr-backup-20270503-210000-{doc['filename']}.md")
     assert backup and drive.items[backup]["content"] == OLD_SIDECAR.encode()
     front, pages = parse_sidecar(drive.items[side]["content"].decode())
     assert front["extraction"] == "text_layer" and "6,37" in pages[0]
@@ -310,3 +310,78 @@ async def test_reocr_jobs_are_persisted_apart_from_curated_runs(db):
     last = await db.get_last_reocr_job(patient_id=ERIKA_UUID)
     assert last["id"] == job and last["status"] == "interrupted"
     assert await db.get_last_reocr_job(patient_id="someone-else") is None
+
+
+# ── #674: same-day retry, already handled documents ──
+
+
+async def test_a_same_day_retry_gets_its_own_backup(vocab):
+    from datetime import timedelta
+
+    drive, doc, side = _setup()
+    reocr.run_reocr(drive, drive.root, [{**doc, "explicit": True}], vocab, dry_run=False, now=NOW)
+    later = NOW + timedelta(minutes=7)
+    rep = reocr.run_reocr(drive, drive.root, [{**doc, "explicit": True}], vocab, dry_run=False,
+                          now=later)  # fmt: skip
+    assert rep.documents[0].result == "rewritten"
+    backups = [n for n in drive.names(drive.folder[LOGS]) if n.startswith("_reocr-backup-")]
+    assert len(backups) == 2  # two backups, nothing overwritten
+
+
+async def test_an_existing_backup_name_is_never_overwritten(vocab):
+    drive, doc, side = _setup()
+    name = f"_reocr-backup-{NOW:%Y%m%d-%H%M%S}-{doc['filename']}.md"
+    drive.add(name, drive.folder[LOGS], b"earlier backup")
+    rep = reocr.run_reocr(drive, drive.root, [{**doc, "explicit": True}], vocab, dry_run=False,
+                          now=NOW)  # fmt: skip
+    assert rep.documents[0].result == "failed"
+    assert drive.items[drive.find(drive.folder[LOGS], name)]["content"] == b"earlier backup"
+    assert drive.items[side]["content"] == OLD_SIDECAR.encode()
+
+
+async def test_handled_documents_are_skipped_unless_listed(vocab):
+    for marker in ("_reocr-backup-20270101-", "_reocr-text-20270101-"):
+        drive, doc, side = _setup()
+        drive.add(f"{marker}{doc['filename']}.md", drive.folder[LOGS], b"x")
+        auto = reocr.run_reocr(drive, drive.root, [doc], vocab, dry_run=False, now=NOW)
+        assert auto.documents[0].result == "skipped" and drive.writes == []
+        listed = reocr.run_reocr(drive, drive.root, [{**doc, "explicit": True}], vocab,
+                                 dry_run=False, now=NOW)  # fmt: skip
+        assert listed.documents[0].result == "rewritten"
+
+
+async def test_lab_sheets_are_chosen_before_reports(db):
+    import json as _json
+
+    from oncofiles.tools import curated as tool
+    from tests.conftest import ERIKA_UUID
+
+    meta = _json.dumps({"curated": {"sidecar_id": "side"}, "ocr_engine": "tesseract eng-only"})
+    for doc_id, cat, n in ((9201, "report", 9), (9202, "labs", 2)):
+        await db.db.execute(
+            "INSERT INTO documents (id, file_id, filename, original_filename, category, "
+            "mime_type, size_bytes, patient_id, gdrive_id, structured_metadata) "
+            "VALUES (?, ?, ?, ?, ?, 'application/pdf', 1, ?, ?, ?)",
+            (doc_id, f"gdrive:g{doc_id}", f"d{doc_id}.pdf", f"d{doc_id}.pdf", cat,
+             ERIKA_UUID, f"g{doc_id}", meta),
+        )  # fmt: skip
+        for _ in range(n):
+            await db.db.execute(
+                "INSERT INTO clinical_records (patient_id, record_type, source_document_id, "
+                "param, verification, source) VALUES (?, 'lab', ?, 'X', 'unverified', 't')",
+                (ERIKA_UUID, doc_id),
+            )
+    await db.db.commit()
+    got = await tool._reocr_targets(db, ERIKA_UUID, None)
+    assert [t["document_id"] for t in got] == [9202, 9201]
+    assert not any(t["explicit"] for t in got)
+    listed = await tool._reocr_targets(db, ERIKA_UUID, [9201])
+    assert [t["document_id"] for t in listed] == [9201] and listed[0]["explicit"]
+
+
+def test_handled_before_matches_the_exact_file_name():
+    names = ["_reocr-backup-20270101-120000-b-Labs.pdf.md", "_reocr-text-20270101-x.pdf.md"]
+    assert reocr.handled_before(names, "b-Labs.pdf")
+    assert reocr.handled_before(names, "x.pdf")
+    assert not reocr.handled_before(names, "Labs.pdf")  # a hyphen-suffix is another file
+    assert not reocr.handled_before(["_reocr-backup-20270101-a.pdf.md.bak"], "a.pdf")

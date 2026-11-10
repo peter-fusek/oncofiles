@@ -1030,14 +1030,16 @@ _NOT_OCR = ("application/vnd.google-apps.", "application/vnd.openxmlformats")
 async def _reocr_targets(
     db, pid: str, document_ids: list[int] | None, *, only_with_facts: bool = True
 ) -> list[dict]:
-    """Documents worth reading again, most unverified facts first. By default
-    only those with unverified facts (the benchmark, #658)."""
+    """Documents worth reading again: lab sheets first, then most unverified
+    facts first (#674). By default only those with unverified facts (the
+    benchmark, #658). Listed ``document_ids`` are marked explicit: only they
+    may be read again after an earlier re-OCR or a deliberate restore."""
     from oncofiles.curated.reocr import needs_reocr
 
     out = []
     rows = sorted(
         await db.curated_reocr_candidates(patient_id=pid),
-        key=lambda r: -(r.get("unverified_facts") or 0),
+        key=lambda r: (r.get("category") != "labs", -(r.get("unverified_facts") or 0)),
     )
     for r in rows:
         meta = r["structured_metadata"]
@@ -1056,6 +1058,7 @@ async def _reocr_targets(
             "sidecar_id": cur["sidecar_id"], "mime": r.get("mime_type") or "",
             "engine": str(meta.get("ocr_engine") or meta.get("extraction") or ""),
             "reasons": reasons, "unverified_facts": r.get("unverified_facts") or 0,
+            "category": r.get("category"), "explicit": bool(document_ids),
         })  # fmt: skip
     return out
 
@@ -1147,7 +1150,8 @@ async def curated_reocr(
         "state": "running", "dry_run": dry_run, "passes": passes,
         "started_at": datetime.now(UTC).isoformat(), "candidates": len(targets),
         "documents": [
-            {k: d[k] for k in ("document_id", "filename", "reasons", "unverified_facts")}
+            {k: d[k] for k in ("document_id", "filename", "category", "reasons",
+                               "unverified_facts")}
             for d in docs
         ],
     }  # fmt: skip

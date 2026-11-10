@@ -15,7 +15,7 @@ code with its value, or dates it differently, the sidecar is NOT rewritten
 (result ``review``, the lost values listed).
 
 Writing (never in a dry run): the old sidecar is first copied to the logs
-folder (``_reocr-backup-<date>-<sidecar>``), then the sidecar is updated in
+folder (``_reocr-backup-<date>-<time>-<sidecar>``), then the sidecar is updated in
 place (same file id, read-back verified by ``drive_ops``). Nothing is deleted;
 the front matter is kept, only the extraction keys change.
 """
@@ -308,6 +308,16 @@ def lost_values(old_text: str, new_text: str, vocab) -> list[str]:
     return out
 
 
+def handled_before(log_names: list[str], filename: str) -> bool:
+    """Does the logs folder show this document was re-OCR'd before (a backup)
+    or deliberately restored (the kept re-OCR text)? (#674)"""
+    from oncofiles.curated.runner import nfc
+
+    name = re.escape(nfc(filename))
+    exact = re.compile(rf"_reocr-(?:backup|text)-\d{{8}}(?:-\d{{6}})?-{name}\.md")
+    return any(exact.fullmatch(nfc(n)) for n in log_names)
+
+
 def run_reocr(
     drive,
     root_id: str,
@@ -337,22 +347,25 @@ def run_reocr(
     from oncofiles.curated.runner import nfc, walk
 
     report = ReocrReport(dry_run=dry_run)
-    logs_id = None
-    if not dry_run:
-        tree = walk(drive, root_id)
-        readme = next((i for i in tree.root_files if nfc(i.name) == "README.md"), None)
-        if readme is None:
-            raise RuntimeError("not a curated folder (no README.md)")
-        contract = parse_contract(drive.download(readme.id).decode("utf-8"))
-        logs = tree.folders.get(contract.logs)
-        if logs is None:
-            raise RuntimeError("the contract's logs folder is missing")
-        logs_id = logs.id
+    tree = walk(drive, root_id)
+    readme = next((i for i in tree.root_files if nfc(i.name) == "README.md"), None)
+    if readme is None:
+        raise RuntimeError("not a curated folder (no README.md)")
+    contract = parse_contract(drive.download(readme.id).decode("utf-8"))
+    logs = tree.folders.get(contract.logs)
+    if logs is None:
+        raise RuntimeError("the contract's logs folder is missing")
+    logs_id = logs.id
+    log_names = [nfc(i.name) for i in drive.list_children(logs_id)]
     for d in docs:
         res = DocResult(d["document_id"], d["filename"], list(d.get("reasons") or []))
         report.documents.append(res)
         if stop():
             res.result, res.error = "skipped", "stopping"
+            continue
+        if not d.get("explicit") and handled_before(log_names, d["filename"]):
+            # #674: re-OCR'd before, or its old sidecar was restored on purpose
+            res.result, res.error = "skipped", "re-OCR'd or restored before; list it explicitly"
             continue
         if rss_limit_mb and (now_rss := rss_mb()) > rss_limit_mb:
             res.result, res.error = "skipped", f"rss {now_rss:.0f} MB > {rss_limit_mb:.0f} MB"
@@ -379,7 +392,9 @@ def run_reocr(
             if res.lost:  # never shrink the record silently: a person decides
                 res.result = "review"
                 continue
-            name = f"_reocr-backup-{now:%Y%m%d}-{d['filename']}.md"
+            # time to the second (#674): a same-day retry gets its own backup;
+            # create_text still refuses an existing name, it never overwrites
+            name = f"_reocr-backup-{now:%Y%m%d-%H%M%S}-{d['filename']}.md"
             res.backup = drive.create_text(logs_id, name, old)  # before any change
             drive.update_text(d["sidecar_id"], new)
             res.result = "rewritten"
