@@ -2898,59 +2898,73 @@ async def privacy_policy(request: Request) -> HTMLResponse:
         _PRIVACY_HTML = _legal_page(
             "Privacy Policy",
             """
-<p class="meta">Effective: March 25, 2026 · Last updated: November 6, 2026</p>
+<p class="meta">Effective: March 25, 2026 · Last updated: November 2026</p>
 
 <p>Oncofiles is operated by <strong>Instarea s.r.o.</strong> ("we", "us").
 This policy describes how we handle your data when you use Oncofiles
 (<a href="https://oncofiles.com">oncofiles.com</a>).</p>
 
 <h2>1. What Data We Access</h2>
-<p>When you connect your Google account, Oncofiles accesses:</p>
 <ul>
-<li><strong>Google Drive</strong> — files in your designated medical documents folder only</li>
-<li><strong>Gmail</strong> (read-only) — emails matching medical keywords
-to detect appointments and results</li>
-<li><strong>Google Calendar</strong> (read-only) — events to identify medical appointments</li>
+<li><strong>Google Drive</strong> — only the folder you choose for your medical documents.
+Oncofiles reads the files in it and, inside that folder only, may rename files to a standard
+name, move them into subfolders (for example Labs or Reports), and add a text transcript
+(<code>.md</code>) next to each file and a <code>README.md</code> with the folder's rules.
+<strong>Oncofiles never permanently deletes anything.</strong> A file it removes from a
+subfolder goes to your Google Drive trash, where you can restore it.</li>
+<li><strong>Gmail and Google Calendar</strong> — not used at the moment. If we add them later,
+we will ask for your separate consent first.</li>
 </ul>
 <p>We only access data you explicitly authorize through Google's OAuth consent screen.
 You can revoke access at any time via
 <a href="https://myaccount.google.com/permissions">Google Account Permissions</a>.</p>
 
-<h2>2. How We Use Your Data</h2>
-<p>Your data is used exclusively to:</p>
+<h2>2. How We Process Your Data</h2>
 <ul>
-<li>Organize and categorize your medical documents</li>
-<li>Extract metadata (dates, institutions, categories) using AI</li>
-<li>Make your records searchable through AI chat (Claude, ChatGPT)</li>
-<li>Track lab values and treatment timelines</li>
+<li>Text recognition (OCR) and document classification run <strong>on a local AI model on our
+own server in Slovakia (EU)</strong>. Background processing does not send your documents to any
+cloud AI service.</li>
+<li>Lab values are extracted from the recognised text by rules. Each value keeps a link to its
+source document, page and line, and a verification state (machine-verified, unverified, or
+verified by a person).</li>
+<li><strong>When you ask about your records in Claude or ChatGPT</strong>, the results you
+request (document text, values, summaries) are sent to that assistant as part of your
+conversation. This happens only on your request and is governed by your own agreement with
+Anthropic or OpenAI, including their retention and training settings.</li>
 </ul>
 <p>We do <strong>not</strong> use your data for advertising, profiling, or any purpose
-unrelated to your medical document management.</p>
+unrelated to managing your medical documents.</p>
 
 <h2>3. Where Data Is Stored</h2>
 <ul>
-<li><strong>Document metadata</strong> — stored in an SQLite database on Oncofiles' own server
-in Slovakia (EU), on an encrypted disk</li>
-<li><strong>Original files</strong> — remain in your Google Drive;
-we do not copy them to separate storage</li>
-<li><strong>OCR text</strong> — stored as companion files in your Google Drive folder</li>
-<li><strong>AI-generated metadata</strong> — stored in the database alongside document records</li>
+<li><strong>On our server in Slovakia (EU), on an encrypted disk</strong> — the document index,
+the recognised text, extracted values with their verification state, and a log of the tool
+calls made on your records.</li>
+<li><strong>Backups</strong> — encrypted, kept in Slovakia (daily, with 7 daily, 4 weekly and
+6 monthly versions).</li>
+<li><strong>Your Google Drive</strong> — your original files, plus the transcripts and
+<code>README.md</code> described in section 1.</li>
 </ul>
 
 <h2>4. Data Sharing</h2>
-<p>We do <strong>not</strong> sell, share, or transfer your personal data
-to third parties, except:</p>
+<p>We do <strong>not</strong> sell, share, or transfer your personal data. Other services
+involved:</p>
 <ul>
-<li><strong>AI providers</strong> — document content may be sent to Anthropic (Claude) for metadata
-extraction. This is governed by Anthropic's data processing terms.</li>
-<li><strong>Infrastructure</strong> — self-hosted on our own server in Slovakia (EU). No third-party
-hosting or database provider stores or processes your data.</li>
+<li><strong>Google</strong> — stores your files in your own Google Drive account.</li>
+<li><strong>Anthropic (Claude) / OpenAI (ChatGPT)</strong> — only what you ask for in those
+assistants (section 2).</li>
+<li><strong>Resend</strong> (e-mail delivery) — if you join the waitlist, your e-mail address is
+used to notify us and to write to you about access. No medical data is sent.</li>
+<li><strong>Google Analytics</strong> — our public web pages measure visits (pages viewed,
+approximate location, device). It does not receive your medical documents or values.</li>
 </ul>
+<p>Hosting is our own server in Slovakia (EU); no third-party hosting or database provider
+stores or processes your data.</p>
 
 <h2>5. Data Retention</h2>
-<p>Your data is retained as long as your account is active. You can request deletion
-of all stored data by contacting us. Original files in Google Drive are never deleted
-by Oncofiles — only metadata in our database.</p>
+<p>Your data is retained as long as your account is active. You can request deletion of all
+stored data, including extracted values and the activity log, by contacting us. Original files
+in your Google Drive are never deleted by Oncofiles.</p>
 
 <h2>6. Your Rights (GDPR)</h2>
 <p>If you are in the EU/EEA, you have the right to:</p>
@@ -2985,15 +2999,16 @@ async def terms_of_service(request: Request) -> HTMLResponse:
         _TERMS_HTML = _legal_page(
             "Terms of Service",
             """
-<p class="meta">Effective: March 25, 2026 · Last updated: March 25, 2026</p>
+<p class="meta">Effective: March 25, 2026 · Last updated: November 2026</p>
 
 <p>These terms govern your use of Oncofiles (<a href="https://oncofiles.com">oncofiles.com</a>),
 operated by <strong>Instarea s.r.o.</strong> ("we", "us").</p>
 
 <h2>1. Service Description</h2>
-<p>Oncofiles is a medical document management tool that connects to your Google Drive,
-Gmail, and Calendar to organize health records and make them accessible through AI chat.
-It is designed for cancer patients and their caregivers.</p>
+<p>Oncofiles keeps a Google Drive folder of medical documents organized, recognizes their
+text on its own server in Slovakia, extracts lab values with a link to their source, and makes
+the records available to AI assistants such as Claude and ChatGPT. It is designed for cancer
+patients and their caregivers.</p>
 
 <h2>2. Not Medical Advice</h2>
 <p><strong>Oncofiles is not a medical device and does not provide medical advice.</strong>
@@ -3025,7 +3040,9 @@ See our <a href="/privacy">Privacy Policy</a> for details.</p>
 <h2>6. Availability</h2>
 <p>We aim for high availability but do not guarantee uninterrupted service. Oncofiles
 is provided "as is" without warranties of any kind. We are not liable for data loss
-beyond what is stored in your Google Drive (which we do not modify or delete).</p>
+beyond what is stored in your Google Drive. Oncofiles never permanently deletes files: it
+only renames and moves them inside the folder you chose, and anything it removes goes to
+your Google Drive trash.</p>
 
 <h2>7. Changes</h2>
 <p>We may update these terms. Continued use after changes constitutes acceptance.
