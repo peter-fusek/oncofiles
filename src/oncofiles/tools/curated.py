@@ -1250,7 +1250,8 @@ def _reread_one(drive, d: dict, old: list[dict], vocab) -> dict:
     _, old_pages = parse_sidecar(raw_side.decode("utf-8", errors="replace"))
     assessment = rv.assess(old, new, rr.pages, old_page_count=len(old_pages))
     res.update({k: len(v) for k, v in assessment.items()}, seconds=rr.seconds,
-               parallel=rr.parallel, pages=len(rr.pages),
+               parallel=rr.parallel, pages=len(rr.pages), method=rr.method,
+               diagnostics=rv.diagnostics(old, new, old_page_count=len(old_pages)),
                candidates=sum(len(v) for v in assessment.values()),
                engine=rr.engine, sidecar_sha=sha, source_md5=cur.get("source_md5") or md5,
                stored=rv.result_keys(assessment, {f["id"]: f for f in old}))  # fmt: skip
