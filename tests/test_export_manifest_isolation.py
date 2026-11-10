@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 from datetime import date
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -105,11 +105,87 @@ async def test_admin_with_slug_gets_that_patient(two_patients, as_admin):
     assert "PatientAOnly" not in json.dumps(out)
 
 
+async def test_admin_without_slug_is_refused(two_patients, as_admin):
+    """No implicit admin scope (#686 rule): the bound/default patient (A here)
+    must not be exported just because it is current."""
+    out = json.loads(await export_manifest(_ctx(two_patients)))
+    assert "patient_slug" in out["error"]
+    assert "documents" not in out
+    assert "PatientAOnly" not in json.dumps(out)
+
+
 async def test_admin_never_gets_whole_db(two_patients, as_admin):
-    for slug in (None, ERIKA_SLUG, BOB_SLUG):
+    for slug in (ERIKA_SLUG, BOB_SLUG):
         out = json.loads(await export_manifest(_ctx(two_patients), patient_slug=slug))
         ids = _file_ids(out)
         assert not ({"a-only-1"} <= ids and {"b-only-1"} <= ids), slug
+
+
+# ── Paths that bypass the tool: /api/manifest and the sync Drive backup ──
+
+
+async def test_api_manifest_passes_explicit_patient_id(two_patients):
+    from starlette.responses import JSONResponse
+
+    from oncofiles import manifest as manifest_mod
+    from oncofiles import server
+
+    request = MagicMock()
+    request.app.state.fastmcp_server._lifespan_result = {"db": two_patients}
+    with (
+        patch.object(server, "_check_dashboard_auth", return_value=None),
+        patch.object(server, "_get_dashboard_patient_id", new=AsyncMock(return_value=BOB_UUID)),
+        # api_manifest imports export_manifest from the module at call time.
+        patch.object(manifest_mod, "export_manifest", wraps=manifest_mod.export_manifest) as spy,
+    ):
+        resp = await server.api_manifest(request)
+    assert isinstance(resp, JSONResponse) and resp.status_code == 200
+    spy.assert_awaited_once()
+    assert spy.await_args.kwargs == {"patient_id": BOB_UUID}
+    body = json.loads(resp.body)
+    assert _file_ids(body) == {"b-only-1", "b-only-2"}
+    assert _state_keys(body) == {"b_key"}
+
+
+async def test_api_manifest_no_access_sentinel_exports_nothing(two_patients):
+    from oncofiles import server
+    from oncofiles.constants import NO_PATIENT_ACCESS_SENTINEL
+
+    request = MagicMock()
+    request.app.state.fastmcp_server._lifespan_result = {"db": two_patients}
+    with (
+        patch.object(server, "_check_dashboard_auth", return_value=None),
+        patch.object(
+            server,
+            "_get_dashboard_patient_id",
+            new=AsyncMock(return_value=NO_PATIENT_ACCESS_SENTINEL),
+        ),
+    ):
+        resp = await server.api_manifest(request)
+    body = json.loads(resp.body)
+    assert body["documents"] == [] and body["agent_state"] == []
+
+
+async def test_sync_drive_backup_manifest_is_patient_scoped(two_patients):
+    """_export_metadata writes _manifest.json to the patient's Drive root
+    with that patient's records only."""
+    from oncofiles import sync as sync_mod
+
+    uploads: dict[str, str] = {}
+
+    def _capture(gdrive, name, content, *args, **kwargs):
+        uploads[name] = content
+
+    gdrive = MagicMock()
+    gdrive.list_folder.return_value = []
+    with patch.object(sync_mod, "_upload_or_update_text", side_effect=_capture):
+        await sync_mod._export_metadata(
+            two_patients, gdrive, "synthetic-root", {}, patient_id=BOB_UUID
+        )
+    manifest = json.loads(uploads["_manifest.json"])
+    assert _file_ids(manifest) == {"b-only-1", "b-only-2"}
+    assert _state_keys(manifest) == {"b_key"}
+    assert "PatientAOnly" not in uploads["_manifest.json"]
 
 
 async def test_unknown_slug_is_an_error(two_patients, as_admin):
