@@ -3082,6 +3082,37 @@ async def og_image_png(request: Request) -> Response:
     )
 
 
+# Self-hosted web fonts (#695): every page view used to send the visitor's IP
+# to Google Fonts. The woff2 files, their @font-face sheet and the OFL licenses
+# live in src/oncofiles/fonts/. Only files present in that folder at import
+# time are served (allowlist, so no path tricks reach the filesystem). Font
+# file names carry the font version, so they are cached `immutable`; the CSS
+# and licence names are stable, so they get one day.
+_FONTS_DIR = Path(__file__).parent / "fonts"
+_FONT_TYPES = {
+    ".woff2": ("font/woff2", "public, max-age=31536000, immutable"),
+    ".css": ("text/css; charset=utf-8", "public, max-age=86400"),
+    ".txt": ("text/plain; charset=utf-8", "public, max-age=86400"),
+}
+_FONT_FILES = frozenset(
+    p.name for p in _FONTS_DIR.glob("*") if p.is_file() and p.suffix in _FONT_TYPES
+)
+_FONT_CACHE: dict[str, bytes] = {}
+
+
+@mcp.custom_route("/fonts/{name}", methods=["GET"])
+async def font_asset(request: Request) -> Response:
+    name = request.path_params.get("name", "")
+    if name not in _FONT_FILES:
+        return Response("not found", status_code=404)
+    body = _FONT_CACHE.get(name)
+    if body is None:
+        body = (_FONTS_DIR / name).read_bytes()
+        _FONT_CACHE[name] = body
+    media_type, cache_control = _FONT_TYPES[Path(name).suffix]
+    return Response(body, media_type=media_type, headers={"Cache-Control": cache_control})
+
+
 @mcp.custom_route("/apple-touch-icon.png", methods=["GET"])
 async def apple_touch_icon(request: Request) -> HTMLResponse:
     """Serve SVG favicon for Apple devices (modern iOS supports SVG)."""
@@ -3432,8 +3463,8 @@ def _topic_page_html(
 <meta property="og:type" content="article">
 <meta property="og:url" content="{canonical}">
 <meta property="og:image" content="https://oncofiles.com/og-image.png">
-<style>@import url('https://fonts.googleapis.com/css2?family=DM+Serif+Display&family=DM+Sans:wght@400;500;700&display=swap');
-{_TOPIC_PAGE_CSS}</style>
+<link rel="stylesheet" href="/fonts/fonts.css">
+<style>{_TOPIC_PAGE_CSS}</style>
 </head>
 <body>
 <header class="top"><div class="container">
@@ -7782,12 +7813,10 @@ _STRICT_DASHBOARD_CSP = (
     "https://www.googletagmanager.com https://www.google-analytics.com "
     "https://accounts.google.com https://apis.google.com; "
     "script-src-attr 'none'; "
-    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com "
-    "https://accounts.google.com; "
-    "style-src-elem 'self' https://fonts.googleapis.com "
-    "https://accounts.google.com; "
+    "style-src 'self' 'unsafe-inline' https://accounts.google.com; "
+    "style-src-elem 'self' https://accounts.google.com; "
     "style-src-attr 'unsafe-inline'; "
-    "font-src 'self' https://fonts.gstatic.com data:; "
+    "font-src 'self' data:; "
     "img-src 'self' data: https:; "
     "connect-src 'self' https://www.google-analytics.com "
     "https://accounts.google.com https://oauth2.googleapis.com "
@@ -7811,9 +7840,8 @@ _PUBLIC_HTML_CSP = (
     "script-src 'self' 'unsafe-inline' "
     "https://www.googletagmanager.com https://www.google-analytics.com "
     "https://accounts.google.com https://apis.google.com; "
-    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com "
-    "https://accounts.google.com; "
-    "font-src 'self' https://fonts.gstatic.com data:; "
+    "style-src 'self' 'unsafe-inline' https://accounts.google.com; "
+    "font-src 'self' data:; "
     "img-src 'self' data: https:; "
     "connect-src 'self' https://www.google-analytics.com "
     "https://accounts.google.com https://oauth2.googleapis.com "
