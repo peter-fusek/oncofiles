@@ -290,6 +290,186 @@
     note.textContent = t(STATE_NOTE[key] || STATE_NOTE.machine);
   }
 
+
+  /* ── Chat examples built from the demo data ────────────────────── */
+  function chip(docId, line, state, cls) {
+    var d = docById(docId);
+    var b = el('button', cls || 'chip');
+    b.type = 'button';
+    b.setAttribute('data-action', 'openSource|' + docId + '|' + line);
+    if (cls === 'tchip') {
+      b.textContent = '[' + srcText(1, line) + ']';
+      return b;
+    }
+    var dot = el('i', 'cd cd-' + (state === 'machine' ? 'm' : state === 'human' ? 'h' : 'u'));
+    b.appendChild(dot);
+    b.appendChild(el('span', null, (lang === 'sk' ? 'Správa ' : 'Report ') + fmtDate(d.date) + ' · ' + srcText(1, line).replace(', ', ' · ') + ' · ' + t(STATE[state])));
+    return b;
+  }
+  function numFmt(v) { return lang === 'sk' ? v : v.replace(',', '.'); }
+  function arrow(a, b) { return b > a ? ' ↑' : b < a ? ' ↓' : ' →'; }
+  function labComparison() {
+    var labs = data.documents.filter(function (d) { return d.category === 'labs'; });
+    var latest = labs[0], prev = labs[1];
+    var now = valuesOf(latest.id), before = prev ? valuesOf(prev.id) : [];
+    var rows = now.map(function (v) {
+      var old = before.filter(function (x) { return x.s.code === v.s.code && x.p.state !== 'unverified'; })[0];
+      return { v: v, old: old };
+    });
+    var sampleNow = (now.filter(function (v) { return v.p.state !== 'unverified'; })[0] || now[0]).p.date;
+    var samplePrev = before.length ? before[0].p.date : null;
+    return { latest: latest, prev: prev, rows: rows, sampleNow: sampleNow, samplePrev: samplePrev };
+  }
+  function toolLine(name, tail) {
+    var p = el('p', 'm-tool');
+    p.appendChild(el('span', 'tdot'));
+    p.appendChild(document.createTextNode('Oncofiles · ' + name + ' '));
+    if (tail) p.appendChild(el('span', 'tool-ok', tail));
+    return p;
+  }
+  function userLine(text, avatar) {
+    var p = el('p', 'm-user');
+    if (avatar) { p.appendChild(el('span', 'av', 'J')); }
+    p.appendChild(el('span', null, text));
+    return p;
+  }
+
+  function renderChatGpt(c) {
+    var body = document.getElementById('chat-gpt-body');
+    clear(body);
+    body.appendChild(userLine(lang === 'sk'
+      ? 'Aké boli moje posledné odbery a zmenilo sa niečo oproti minule?'
+      : 'What did my latest blood tests show, and has anything changed since last time?'));
+    body.appendChild(toolLine('fact_series', lang === 'sk' ? 'hotovo' : 'done'));
+    var ai = el('div', 'm-ai');
+    ai.appendChild(el('p', null, lang === 'sk'
+      ? 'Posledný odber bol ' + fmtDate(c.sampleNow) + '. Oproti odberu z ' + fmtDate(c.samplePrev) + ':'
+      : 'Your latest sample was taken on ' + fmtDate(c.sampleNow) + '. Compared with ' + fmtDate(c.samplePrev) + ':'));
+    var ul = el('ul', 'ans');
+    c.rows.forEach(function (r) {
+      var li = el('li', r.v.p.state === 'unverified' ? 'unv' : null);
+      var txt = el('span', 'ans-v');
+      txt.appendChild(document.createTextNode(seriesName(r.v.s) + ' '));
+      if (r.v.p.state === 'unverified') {
+        txt.appendChild(el('b', null, numFmt(r.v.p.value_text) + ' ' + r.v.s.unit));
+        txt.appendChild(document.createTextNode(lang === 'sk'
+          ? ' je neoverené: v správe je pri ňom iný dátum odberu (' + fmtDate(r.v.p.date) + '), preto ho neporovnávam.'
+          : ' is unverified: the report gives a different sample date for it (' + fmtDate(r.v.p.date) + '), so I am not comparing it.'));
+      } else {
+        txt.appendChild(el('b', null, numFmt(r.v.p.value_text) + ' ' + r.v.s.unit + (r.old ? arrow(r.old.p.value, r.v.p.value) : '')));
+        if (r.old) txt.appendChild(document.createTextNode((lang === 'sk' ? ' (predtým ' : ' (previously ') + numFmt(r.old.p.value_text) + ')'));
+      }
+      li.appendChild(txt);
+      li.appendChild(chip(c.latest.id, r.v.p.line, r.v.p.state));
+      ul.appendChild(li);
+    });
+    ai.appendChild(ul);
+    ai.appendChild(el('p', null, lang === 'sk'
+      ? 'Porovnávam len overené hodnoty. Ak chcete, pripravím k nim otázky pre lekára.'
+      : 'I only compare verified values. If you like, I can prepare questions for your doctor.'));
+    body.appendChild(ai);
+  }
+
+  function renderClaude(c) {
+    var body = document.getElementById('chat-claude-body');
+    clear(body);
+    body.appendChild(userLine(lang === 'sk' ? 'Priprav mi otázky na stredajšiu kontrolu u onkológa.' : 'Prepare questions for my oncology visit on Wednesday.', true));
+    body.appendChild(toolLine('fact_series', '›'));
+    body.appendChild(toolLine('document_detail', '›'));
+    var ai = el('div', 'm-ai');
+    ai.appendChild(el('p', null, lang === 'sk'
+      ? 'Tu sú otázky, ktoré vychádzajú z vašich posledných výsledkov. Odpovede patria lekárovi.'
+      : 'Here are questions based on your latest results. The answers belong to your doctor.'));
+    var ol = el('ol', 'ans');
+    var ordered = c.rows.filter(function (r) { return r.v.p.state === 'unverified'; })
+      .concat(c.rows.filter(function (r) { return r.v.p.state !== 'unverified'; }));
+    ordered.slice(0, 4).forEach(function (r) {
+      var name = seriesName(r.v.s), val = numFmt(r.v.p.value_text) + ' ' + r.v.s.unit, q;
+      if (r.v.p.state === 'unverified') {
+        q = lang === 'sk'
+          ? name + ' ' + val + ' je v správe z iného odberu (' + fmtDate(r.v.p.date) + '). Potrebujeme pred cyklom aktuálnu hodnotu?'
+          : 'The ' + name + ' of ' + val + ' in the report is from a different sample (' + fmtDate(r.v.p.date) + '). Do we need a current value before the cycle?';
+      } else if (r.old) {
+        q = lang === 'sk'
+          ? name + ' sa zmenil z ' + numFmt(r.old.p.value_text) + ' na ' + val + '. Je to pre ďalší postup podstatné?'
+          : name + ' changed from ' + numFmt(r.old.p.value_text) + ' to ' + val + '. Does that matter for the next steps?';
+      } else {
+        q = lang === 'sk' ? name + ' je ' + val + '. Treba ho pred ďalším cyklom skontrolovať?' : name + ' is ' + val + '. Should it be checked before the next cycle?';
+      }
+      var li = el('li');
+      li.appendChild(el('span', 'ans-v', q));
+      li.appendChild(chip(c.latest.id, r.v.p.line, r.v.p.state));
+      ol.appendChild(li);
+    });
+    ai.appendChild(ol);
+    body.appendChild(ai);
+  }
+
+  function renderGemini(c) {
+    var body = document.getElementById('chat-gemini-body');
+    clear(body);
+    var pr = el('p', 't-prompt');
+    pr.appendChild(el('span', 't-gt', '>'));
+    pr.appendChild(document.createTextNode(' ' + (lang === 'sk'
+      ? 'Skontroluj, či pribudol nový laboratórny výsledok, a porovnaj ho s minulým.'
+      : 'Check whether a new lab result has arrived and compare it with the previous one.')));
+    body.appendChild(pr);
+    function tool(name, lines) {
+      var box = el('div', 't-tool');
+      var h = el('p');
+      h.appendChild(el('span', 't-ok', '✓'));
+      h.appendChild(document.createTextNode(' ' + name + ' '));
+      h.appendChild(el('span', 't-dim', '(oncofiles)'));
+      box.appendChild(h);
+      lines.forEach(function (l) { box.appendChild(el('p', 't-dim', l)); });
+      body.appendChild(box);
+    }
+    tool('list_documents', ['limit: 5', (lang === 'sk' ? 'nový: ' : 'new: ') + c.latest.filename]);
+    tool('document_detail', ['document_id: ' + c.latest.id]);
+    tool('fact_series', ['codes: ' + c.rows.map(function (r) { return r.v.s.code; }).join(', ')]);
+    body.appendChild(el('p', 't-out', lang === 'sk'
+      ? 'Pribudol 1 nový výsledok: odber ' + fmtDate(c.sampleNow) + ' (správa z ' + fmtDate(c.latest.date) + '). Oproti odberu ' + fmtDate(c.samplePrev) + ':'
+      : '1 new result: sample of ' + fmtDate(c.sampleNow) + ' (report of ' + fmtDate(c.latest.date) + '). Compared with the sample of ' + fmtDate(c.samplePrev) + ':'));
+    var ul = el('ul', 't-diff');
+    c.rows.forEach(function (r) {
+      var li = el('li', r.v.p.state === 'unverified' ? 'unv' : null);
+      li.appendChild(el('span', 't-k', r.v.s.code));
+      var val = numFmt(r.v.p.value_text) + ' ' + r.v.s.unit;
+      li.appendChild(el('span', 't-n', r.v.p.state === 'unverified'
+        ? val + (lang === 'sk' ? ' neoverené, iný dátum odberu; neporovnávam' : ' unverified, different sample date; not compared')
+        : (r.old ? numFmt(r.old.p.value_text) + ' → ' + val + arrow(r.old.p.value, r.v.p.value) : val)));
+      li.appendChild(chip(c.latest.id, r.v.p.line, r.v.p.state, 'tchip'));
+      ul.appendChild(li);
+    });
+    body.appendChild(ul);
+    var idle = el('p', 't-prompt');
+    idle.appendChild(el('span', 't-gt', '>'));
+    idle.appendChild(document.createTextNode(' '));
+    idle.appendChild(el('span', 't-cur'));
+    body.appendChild(idle);
+  }
+
+  function renderChats() {
+    var c = labComparison();
+    renderChatGpt(c);
+    renderClaude(c);
+    renderGemini(c);
+  }
+  function showChat(name) {
+    document.querySelectorAll('.chat-tabs [role="tab"]').forEach(function (tb) {
+      var on = tb.getAttribute('aria-controls') === 'chat-' + name;
+      tb.setAttribute('aria-selected', on ? 'true' : 'false');
+      tb.setAttribute('tabindex', on ? '0' : '-1');
+    });
+    document.querySelectorAll('.chats [role="tabpanel"]').forEach(function (p) { p.hidden = p.id !== 'chat-' + name; });
+  }
+  function applyClientFlags() {
+    document.querySelectorAll('.chats [data-client]').forEach(function (frame) {
+      var tab = document.querySelector('.chat-tabs [aria-controls="' + frame.id + '"]');
+      if (tab) tab.setAttribute('data-verified', frame.getAttribute('data-verified') === 'true' ? 'true' : 'false');
+    });
+  }
+
   /* ── Actions ───────────────────────────────────────────────────── */
   function openDoc(id, line) {
     currentDoc = parseInt(id, 10);
@@ -310,9 +490,9 @@
     applyStatic();
     if (data) renderAll();
   }
-  function renderAll() { renderOverview(); renderTrends(); renderDocList(); renderDoc(); }
+  function renderAll() { renderOverview(); renderTrends(); renderDocList(); renderDoc(); renderChats(); }
 
-  var ACTIONS = { openDoc: openDoc, openSource: openSource, pickLine: pickLine, toggleLang: toggleLang };
+  var ACTIONS = { openDoc: openDoc, openSource: openSource, pickLine: pickLine, toggleLang: toggleLang, showChat: showChat };
   function dispatch(spec) {
     if (!spec) return;
     var parts = String(spec).split('|');
@@ -324,12 +504,23 @@
     if (t2) dispatch(t2.getAttribute('data-action'));
   });
   document.addEventListener('keydown', function (e) {
+    var tab = e.target.closest('.chat-tabs [role="tab"]');
+    if (tab && ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].indexOf(e.key) !== -1) {
+      var tabs = [].slice.call(document.querySelectorAll('.chat-tabs [role="tab"]'));
+      var i = tabs.indexOf(tab) + (e.key === 'ArrowLeft' || e.key === 'ArrowUp' ? -1 : 1);
+      var next = tabs[(i + tabs.length) % tabs.length];
+      e.preventDefault();
+      next.focus();
+      dispatch(next.getAttribute('data-action'));
+      return;
+    }
     if (e.key !== 'Enter' && e.key !== ' ') return;
     var row = e.target.closest('tr[data-action]');
     if (row) { e.preventDefault(); dispatch(row.getAttribute('data-action')); }
   });
 
   applyStatic();
+  applyClientFlags();
   fetch('/api/demo-data')
     .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
     .then(function (d) {

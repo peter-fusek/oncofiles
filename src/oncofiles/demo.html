@@ -55,6 +55,40 @@
       </section>
     </div>
 
+    <section class="ask" id="ask" aria-labelledby="ask-h">
+      <div class="ask-side">
+        <h2 id="ask-h" data-sk="Pýtajte sa vlastnými slovami" data-en="Ask in your own words">Pýtajte sa vlastnými slovami</h2>
+        <p class="hint" data-sk="Takto odpovedá asistent z dokumentov tejto pacientky. Kliknutím na zdroj sa otvorí dokument na danom riadku." data-en="This is how an assistant answers from this patient's documents. Click a source to open the document at that line.">Takto odpovedá asistent z dokumentov tejto pacientky. Kliknutím na zdroj sa otvorí dokument na danom riadku.</p>
+        <div class="chat-tabs" role="tablist" aria-label="Chat examples">
+          <button type="button" role="tab" id="tab-gpt" aria-controls="chat-gpt" aria-selected="true" data-action="showChat|gpt"><b>ChatGPT</b><span class="soon" data-sk="pripravujeme" data-en="coming soon">pripravujeme</span></button>
+          <button type="button" role="tab" id="tab-claude" aria-controls="chat-claude" aria-selected="false" tabindex="-1" data-action="showChat|claude"><b>Claude</b><span class="soon" data-sk="pripravujeme" data-en="coming soon">pripravujeme</span></button>
+          <button type="button" role="tab" id="tab-gemini" aria-controls="chat-gemini" aria-selected="false" tabindex="-1" data-action="showChat|gemini"><b>Gemini CLI</b><span class="soon" data-sk="pripravujeme" data-en="coming soon">pripravujeme</span></button>
+        </div>
+        <p class="works" data-sk="Pripája sa cez otvorený protokol MCP. Klientov, ktorých spojenie sme na novom serveri ešte znova neoverili, označujeme „pripravujeme“." data-en="Connects through the open MCP protocol. Clients we have not yet re-verified end to end on the new server are marked “coming soon”.">Pripája sa cez otvorený protokol MCP. Klientov, ktorých spojenie sme na novom serveri ešte znova neoverili, označujeme „pripravujeme“.</p>
+      </div>
+      <div class="chats">
+        <!-- One verified flag per client: data-verified="true" removes the "coming soon" label. -->
+        <div class="cw cw-light" id="chat-gpt" role="tabpanel" aria-labelledby="tab-gpt" data-client="chatgpt" data-verified="false">
+          <div class="cw-label"><span class="wm">ChatGPT</span><span class="soon" data-sk="pripravujeme" data-en="coming soon">pripravujeme</span><span class="cw-note" data-sk="vymyslené údaje" data-en="invented data">vymyslené údaje</span></div>
+          <div class="cw-body" id="chat-gpt-body"></div>
+          <div class="cw-composer" aria-hidden="true"><span class="cmp-plus">+</span><span class="cmp-conn"><span class="tdot"></span>Oncofiles</span><span class="cmp-ph" data-sk="Napíšte správu" data-en="Type a message">Napíšte správu</span><span class="cmp-send">↑</span></div>
+        </div>
+        <div class="cw cw-warm" id="chat-claude" role="tabpanel" aria-labelledby="tab-claude" data-client="claude" data-verified="true" hidden>
+          <div class="cw-label"><span class="wm">Claude</span><span class="soon" data-sk="pripravujeme" data-en="coming soon">pripravujeme</span><span class="cw-note" data-sk="vymyslené údaje" data-en="invented data">vymyslené údaje</span></div>
+          <div class="cw-body" id="chat-claude-body"></div>
+          <div class="cw-composer" aria-hidden="true"><span class="cmp-plus">+</span><span class="cmp-ph" data-sk="Napíšte správu" data-en="Type a message">Napíšte správu</span><span class="cmp-send">↑</span></div>
+        </div>
+        <div class="cw cw-term" id="chat-gemini" role="tabpanel" aria-labelledby="tab-gemini" data-client="gemini-cli" data-verified="false" hidden>
+          <div class="cw-label"><span class="wm">Gemini CLI</span><span class="soon" data-sk="pripravujeme" data-en="coming soon">pripravujeme</span><span class="cw-note" data-sk="vymyslené údaje" data-en="invented data">vymyslené údaje</span></div>
+          <div class="term">
+            <div class="term-bar"><i></i><i></i><i></i><span>~/zdravie</span></div>
+            <div class="term-body" id="chat-gemini-body"></div>
+            <div class="term-status"><span>~/zdravie</span><span>1 MCP server: oncofiles</span></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
     <section class="docview" id="docview" aria-labelledby="doc-title">
       <div class="dv-head">
         <h2 id="doc-title"></h2>
@@ -94,6 +128,7 @@
       </p>
     </section>
   </main>
+  <p class="foot legal" data-sk="ChatGPT je ochranná známka OpenAI, Claude je ochranná známka Anthropic, Gemini je ochranná známka Google. Oncofiles s týmito spoločnosťami nie je spojený; funguje s ich aplikáciami cez otvorený protokol MCP." data-en="ChatGPT is a trademark of OpenAI, Claude is a trademark of Anthropic, Gemini is a trademark of Google. Oncofiles is not affiliated with these companies; it works with their applications through the open MCP protocol.">ChatGPT je ochranná známka OpenAI, Claude je ochranná známka Anthropic, Gemini je ochranná známka Google. Oncofiles s týmito spoločnosťami nie je spojený; funguje s ich aplikáciami cez otvorený protokol MCP.</p>
   <p class="foot"><span data-sk="Všetky mená, hodnoty a dátumy sú vymyslené." data-en="All names, values and dates are invented.">Všetky mená, hodnoty a dátumy sú vymyslené.</span> v{{VERSION}}</p>
 </body>
 </html>

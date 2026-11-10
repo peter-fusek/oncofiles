@@ -322,7 +322,21 @@ def test_demo_page_is_bilingual():
     body = DEMO_HTML[DEMO_HTML.index("<body>") :]
     parser.feed(body)
     # Brand, language switch label, invented name and version need no translation.
-    allowed = {"onco", "files", "EN", "Jana Testová", "v{{VERSION}}"}
+    allowed = {
+        "onco",
+        "files",
+        "EN",
+        "Jana Testová",
+        "v{{VERSION}}",
+        "ChatGPT",
+        "Claude",
+        "Gemini CLI",
+        "+",
+        "↑",
+        "Oncofiles",
+        "~/zdravie",
+        "1 MCP server: oncofiles",
+    }
     assert set(parser.offenders) <= allowed, parser.offenders
 
 
@@ -421,3 +435,73 @@ def test_drive_mock_uses_invented_patient():
     assert ".md</span>" in folder
     names = re.findall(r"(\d{8})_JanaTestova_", LANDING)
     assert names and all(int(n[:4]) >= MIN_SYNTHETIC_YEAR for n in names)
+
+
+# ── Iteration 3: "ask in your own words" chat frames ──────────────────
+
+CLIENTS = {"chatgpt", "claude", "gemini-cli"}
+
+
+def _frames(html: str) -> list[tuple[str, str]]:
+    return re.findall(r'class="cw [^"]*"[^>]*data-client="([^"]+)" data-verified="([^"]*)"', html)
+
+
+@pytest.mark.parametrize("page", ["landing", "demo"])
+def test_every_client_frame_carries_a_verified_flag(page):
+    """A client is shown as working only after an E2E check: each frame has
+    exactly one data-verified flag (true/false), and an unverified frame
+    shows the "pripravujeme / coming soon" label via CSS."""
+    html = LANDING if page == "landing" else DEMO_HTML
+    frames = _frames(html)
+    assert {c for c, _ in frames} == CLIENTS
+    assert len(frames) == len(CLIENTS)
+    for client, flag in frames:
+        assert flag in {"true", "false"}, (client, flag)
+    css = LANDING if page == "landing" else DEMO_CSS
+    assert '[data-verified="true"] .soon { display: none; }' in css
+    assert html.count('class="soon"') >= len(CLIENTS)
+
+
+def test_landing_chat_source_chips_resolve_to_provenance_lines():
+    chips = re.findall(r'data-action="showSource\|(\w+)"', LANDING)
+    assert len(chips) >= 10
+    sheet = LANDING[LANDING.index('<div class="sheet"') : LANDING.index('<div class="app"')]
+    lines = set(re.findall(r'class="ln[^"]*" data-src="(\w+)"', sheet))
+    assert set(chips) <= lines, set(chips) - lines
+
+
+def test_chat_examples_only_use_real_mcp_tools():
+    from oncofiles.server import mcp
+
+    registered = {
+        k.partition(":")[2].partition("@")[0]
+        for k in mcp._local_provider._components
+        if k.startswith("tool:")
+    }
+    ask = LANDING[LANDING.index('id="ask"') : LANDING.index('id="privacy"')]
+    used = set(re.findall(r"Oncofiles · (\w+)", ask))
+    used |= set(re.findall(r'<span class="t-ok">✓</span> (\w+)', ask))
+    used |= set(re.findall(r"toolLine\('(\w+)'", DEMO_JS))
+    used |= set(re.findall(r"tool\('(\w+)'", DEMO_JS))
+    assert used, "no tool names found"
+    assert used <= registered, used - registered
+
+
+def test_demo_chat_chips_open_the_document_line():
+    assert "'openSource|' + docId + '|' + line" in DEMO_JS
+    assert "renderChats();" in DEMO_JS
+
+
+@pytest.mark.parametrize("page", ["landing", "demo"])
+def test_trademark_line_present(page):
+    html = LANDING if page == "landing" else DEMO_HTML
+    assert "ChatGPT je ochranná známka OpenAI" in html
+    assert "Oncofiles is not affiliated with these companies" in html
+
+
+def test_no_external_images_on_public_pages():
+    """Images (incl. any client logos) are self-hosted, never hotlinked."""
+    for name, text in (("landing", LANDING), ("demo", DEMO_HTML), ("demo.css", DEMO_CSS)):
+        for src in re.findall(r'<img[^>]+src="([^"]+)"', text):
+            assert src.startswith("/"), (name, src)
+        assert not re.search(r"url\(\s*['\"]?https?:", text), name
