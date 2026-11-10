@@ -7359,6 +7359,189 @@ async def api_admin_curated_nightly(request: Request) -> JSONResponse:
         return JSONResponse({"error": "internal error"}, status_code=500)
 
 
+# ── #573 admin: verify-only re-read and re-OCR from the dashboard ─────────
+
+_ADMIN_MAX_DOCS = 10
+
+
+def _cross_origin(request: Request) -> JSONResponse | None:
+    """Defence in depth for admin POSTs: auth is an Authorization header (never
+    a cookie), so a cross-site form cannot carry it; still refuse a request
+    whose Origin names another host."""
+    origin = request.headers.get("origin") or ""
+    if not origin:
+        return None
+    from urllib.parse import urlsplit
+
+    host = (request.headers.get("host") or "").lower()
+    if urlsplit(origin).netloc.lower() != host:
+        return JSONResponse({"error": "bad origin"}, status_code=403)
+    return None
+
+
+async def _admin_job_target(request: Request, db_inst: Database, body: dict):
+    """Resolve patient and validate ``document_ids`` for a re-read/re-OCR POST.
+
+    Returns ``(pid, ids, dry_run)`` or a JSONResponse error. Every id must be
+    a curated document of that patient; at most 10; ``dry_run`` defaults to
+    true (anything but an explicit ``false`` is a dry run).
+    """
+    raw = body.get("patient_slug") or body.get("patient_id") or ""
+    pid = await _admin_patient_id(db_inst, str(raw))
+    if not pid:
+        return JSONResponse({"error": "unknown patient"}, status_code=404)
+    raw_ids = body.get("document_ids")
+    if raw_ids is None:
+        raw_ids = []
+    if not isinstance(raw_ids, list) or any(
+        isinstance(i, bool) or not isinstance(i, int) for i in raw_ids
+    ):
+        return JSONResponse({"error": "document_ids must be a list of integers"}, status_code=400)
+    ids = list(dict.fromkeys(raw_ids))
+    if len(ids) > _ADMIN_MAX_DOCS:
+        return JSONResponse(
+            {"error": f"at most {_ADMIN_MAX_DOCS} documents per job"}, status_code=400
+        )
+    if ids:
+        own = {r["id"] for r in await db_inst.curated_reocr_candidates(patient_id=pid)}
+        foreign = [i for i in ids if i not in own]
+        if foreign:
+            return JSONResponse(
+                {"error": "document_ids not found for this patient", "document_ids": foreign},
+                status_code=400,
+            )
+    return pid, ids, body.get("dry_run", True) is not False
+
+
+def _admin_job_response(result: dict) -> JSONResponse:
+    from oncofiles.tools.curated import admin_job_view
+
+    if "error" in result:
+        return JSONResponse({"error": result["error"]}, status_code=409)
+    if result.get("state") != "running":  # "nothing to do"
+        return JSONResponse({k: v for k, v in result.items() if k in ("status", "candidates")})
+    return JSONResponse(admin_job_view(result), status_code=202)
+
+
+@mcp.custom_route("/api/admin/reread", methods=["POST"])
+async def api_admin_reread(request: Request) -> JSONResponse:
+    """Start a verify-only re-read (#678) for ≤ 10 documents. Dry run by default."""
+    err = _require_admin(request) or _cross_origin(request)
+    if err:
+        return err
+    try:
+        from oncofiles.tools.curated import start_reread
+
+        body = await request.json()
+        if not isinstance(body, dict):
+            return JSONResponse({"error": "invalid body"}, status_code=400)
+        db_inst: Database = request.app.state.fastmcp_server._lifespan_result["db"]
+        target = await _admin_job_target(request, db_inst, body)
+        if isinstance(target, JSONResponse):
+            return target
+        pid, ids, dry_run = target
+        if not ids:
+            return JSONResponse({"error": "document_ids is required"}, status_code=400)
+        logger.info(
+            "admin re-read: by=%s patient=%s docs=%d dry_run=%s",
+            (_get_dashboard_email(request) or "bearer")[:40],
+            pid[:8],
+            len(ids),
+            dry_run,
+        )
+        return _admin_job_response(await start_reread(db_inst, pid, ids, dry_run=dry_run))
+    except Exception as exc:
+        resp = _circuit_breaker_503(exc, "/api/admin/reread")
+        if resp is not None:
+            return resp
+        logger.exception("API admin reread error")
+        return JSONResponse({"error": "internal error"}, status_code=500)
+
+
+@mcp.custom_route("/api/admin/reocr", methods=["POST"])
+async def api_admin_reocr(request: Request) -> JSONResponse:
+    """Start a re-OCR (#660). Dry run by default; without ids the tool picks
+    up to 3 documents with unverified facts, as curated_reocr does."""
+    err = _require_admin(request) or _cross_origin(request)
+    if err:
+        return err
+    try:
+        from oncofiles.tools.curated import start_reocr
+
+        body = await request.json()
+        if not isinstance(body, dict):
+            return JSONResponse({"error": "invalid body"}, status_code=400)
+        db_inst: Database = request.app.state.fastmcp_server._lifespan_result["db"]
+        target = await _admin_job_target(request, db_inst, body)
+        if isinstance(target, JSONResponse):
+            return target
+        pid, ids, dry_run = target
+        logger.info(
+            "admin re-OCR: by=%s patient=%s docs=%d dry_run=%s",
+            (_get_dashboard_email(request) or "bearer")[:40],
+            pid[:8],
+            len(ids),
+            dry_run,
+        )
+        result = await start_reocr(
+            db_inst, pid, dry_run=dry_run, document_ids=ids or None, limit=len(ids) or 3
+        )
+        return _admin_job_response(result)
+    except Exception as exc:
+        resp = _circuit_breaker_503(exc, "/api/admin/reocr")
+        if resp is not None:
+            return resp
+        logger.exception("API admin reocr error")
+        return JSONResponse({"error": "internal error"}, status_code=500)
+
+
+@mcp.custom_route("/api/admin/reocr-status", methods=["GET"])
+async def api_admin_reocr_status(request: Request) -> JSONResponse:
+    """The patient's current or last re-read / re-OCR job: states and counts only."""
+    err = _require_admin(request)
+    if err:
+        return err
+    try:
+        from oncofiles.tools.curated import admin_job_view, reocr_status
+
+        db_inst: Database = request.app.state.fastmcp_server._lifespan_result["db"]
+        raw = request.query_params.get("patient_slug") or request.query_params.get("patient_id", "")
+        pid = await _admin_patient_id(db_inst, raw)
+        if not pid:
+            return JSONResponse({"error": "unknown patient"}, status_code=404)
+        return JSONResponse(admin_job_view(await reocr_status(db_inst, pid)))
+    except Exception as exc:
+        resp = _circuit_breaker_503(exc, "/api/admin/reocr-status")
+        if resp is not None:
+            return resp
+        logger.exception("API admin reocr-status error")
+        return JSONResponse({"error": "internal error"}, status_code=500)
+
+
+@mcp.custom_route("/api/admin/reread-candidates", methods=["GET"])
+async def api_admin_reread_candidates(request: Request) -> JSONResponse:
+    """Documents with Cowork-era unverified facts: ids, category, counts."""
+    err = _require_admin(request)
+    if err:
+        return err
+    try:
+        from oncofiles.tools.curated import reread_candidates
+
+        db_inst: Database = request.app.state.fastmcp_server._lifespan_result["db"]
+        raw = request.query_params.get("patient_slug") or request.query_params.get("patient_id", "")
+        pid = await _admin_patient_id(db_inst, raw)
+        if not pid:
+            return JSONResponse({"error": "unknown patient"}, status_code=404)
+        docs = await reread_candidates(db_inst, pid)
+        return JSONResponse({"patient_id": pid, "max_per_job": _ADMIN_MAX_DOCS, "documents": docs})
+    except Exception as exc:
+        resp = _circuit_breaker_503(exc, "/api/admin/reread-candidates")
+        if resp is not None:
+            return resp
+        logger.exception("API admin reread-candidates error")
+        return JSONResponse({"error": "internal error"}, status_code=500)
+
+
 _SHARE_CODE_EXPIRY = 600  # 10 minutes
 
 

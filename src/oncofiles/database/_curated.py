@@ -128,11 +128,12 @@ class CuratedMixin(DatabaseBase):
         return [r["patient_id"] if isinstance(r, dict) else r[0] for r in rows]
 
     async def get_last_reocr_job(self, *, patient_id: str) -> dict | None:
-        """The newest re-OCR job row (#667) with its report: survives a restart,
-        and a job cut by one is reported 'interrupted' by the startup sweep."""
+        """The newest re-OCR or verify-only re-read job row (#667, #678) with its
+        report: survives a restart, and a job cut by one is reported
+        'interrupted' by the startup sweep. Both kinds share one job slot."""
         async with self.db.execute(
-            "SELECT id FROM curated_runs WHERE patient_id = ? AND trigger = 'reocr' "
-            "ORDER BY id DESC LIMIT 1",
+            "SELECT id FROM curated_runs WHERE patient_id = ? "
+            "AND trigger IN ('reocr', 'reread') ORDER BY id DESC LIMIT 1",
             (patient_id,),
         ) as cursor:
             row = await cursor.fetchone()

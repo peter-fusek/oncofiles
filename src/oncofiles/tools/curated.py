@@ -1160,6 +1160,49 @@ async def _reocr_job(db, pid: str, docs: list[dict], *, dry_run: bool, passes: i
             logger.exception("could not persist the re-OCR job for %s", pid)
 
 
+def _busy(pid: str) -> bool:
+    return _reocr_jobs.get(pid, {}).get("state") == "running" or (
+        pid in _runs and _runs[pid].get("state") == "running"
+    )
+
+
+def _public_job(pid: str) -> dict:
+    return {k: v for k, v in _reocr_jobs[pid].items() if k != "task"}
+
+
+async def start_reocr(
+    db,
+    pid: str,
+    *,
+    dry_run: bool = True,
+    limit: int = 3,
+    document_ids: list[int] | None = None,
+    passes: int = 2,
+    only_with_facts: bool = True,
+) -> dict:
+    """Start a re-OCR job in the background (#660). Shared by the MCP tool and
+    the admin dashboard API (#573); the caller has already resolved ``pid``."""
+    if _busy(pid):
+        return {"error": "busy: a run or re-OCR is in progress for this patient"}
+    targets = await _reocr_targets(db, pid, document_ids, only_with_facts=only_with_facts)
+    docs = targets[: max(0, min(limit, 25))]
+    if not docs:
+        return {"status": "nothing to do", "candidates": len(targets)}
+    _reocr_jobs[pid] = {
+        "state": "running", "kind": "reocr", "dry_run": dry_run, "passes": passes,
+        "started_at": datetime.now(UTC).isoformat(), "candidates": len(targets),
+        "documents": [
+            {k: d[k] for k in ("document_id", "filename", "category", "reasons",
+                               "unverified_facts")}
+            for d in docs
+        ],
+    }  # fmt: skip
+    _reocr_jobs[pid]["task"] = asyncio.create_task(
+        _reocr_job(db, pid, docs, dry_run=dry_run, passes=passes)
+    )
+    return _public_job(pid)
+
+
 async def curated_reocr(
     ctx: Context,
     patient_slug: str | None = None,
@@ -1180,30 +1223,11 @@ async def curated_reocr(
     (only_with_facts=false: every Cowork-era or uncertain document).
     """
     pid = await _resolve_patient_id(patient_slug, ctx)
-    db = _get_db(ctx)
-    if _reocr_jobs.get(pid, {}).get("state") == "running" or (
-        pid in _runs and _runs[pid].get("state") == "running"
-    ):
-        return json.dumps({"error": "busy: a run or re-OCR is in progress for this patient"})
-    targets = await _reocr_targets(db, pid, document_ids, only_with_facts=only_with_facts)
-    docs = targets[: max(0, min(limit, 25))]
-    if not docs:
-        return json.dumps({"status": "nothing to do", "candidates": len(targets)})
-    _reocr_jobs[pid] = {
-        "state": "running", "dry_run": dry_run, "passes": passes,
-        "started_at": datetime.now(UTC).isoformat(), "candidates": len(targets),
-        "documents": [
-            {k: d[k] for k in ("document_id", "filename", "category", "reasons",
-                               "unverified_facts")}
-            for d in docs
-        ],
-    }  # fmt: skip
-    _reocr_jobs[pid]["task"] = asyncio.create_task(
-        _reocr_job(db, pid, docs, dry_run=dry_run, passes=passes)
-    )
-    return json.dumps(
-        {k: v for k, v in _reocr_jobs[pid].items() if k != "task"}, ensure_ascii=False
-    )
+    out = await start_reocr(
+        _get_db(ctx), pid, dry_run=dry_run, limit=limit, document_ids=document_ids,
+        passes=passes, only_with_facts=only_with_facts,
+    )  # fmt: skip
+    return json.dumps(out, ensure_ascii=False)
 
 
 from oncofiles.curated.facts_rules import INLINE_CATEGORIES as _REPORT_LIKE  # noqa: E402
@@ -1286,11 +1310,13 @@ async def _reread_job(db, pid: str, docs: list[dict], *, dry_run: bool) -> None:
                     finally:
                         own.close()
 
+                t0 = time.monotonic()
                 try:
                     res = await asyncio.to_thread(_blocking)
                 except Exception as exc:
                     logger.exception("re-read of doc %s failed", d["id"])
                     res = {"document_id": d["id"], "result": "failed", "error": type(exc).__name__}
+                res["seconds"] = round(time.monotonic() - t0, 1)
                 stored = res.pop("stored", None)
                 if not dry_run and stored and res["result"] == "previewed":
                     await db.insert_fact_reread(
@@ -1319,6 +1345,28 @@ async def _reread_job(db, pid: str, docs: list[dict], *, dry_run: bool) -> None:
             logger.exception("could not persist the re-read job for %s", pid)
 
 
+async def start_reread(db, pid: str, document_ids: list[int], *, dry_run: bool = True) -> dict:
+    """Start a verify-only re-read in the background (#678). Shared by the MCP
+    tool and the admin dashboard API (#573); the caller has resolved ``pid``.
+    Explicit ids only, max 10; ids of another patient are ignored."""
+    ids = list(dict.fromkeys(int(i) for i in (document_ids or [])))[:10]
+    if not ids:
+        return {"error": "document_ids is required"}
+    if _busy(pid):
+        return {"error": "busy: a run, re-OCR or re-read is in progress"}
+    docs = [r for r in await db.curated_reocr_candidates(patient_id=pid) if r["id"] in ids]
+    if not docs:
+        return {"status": "nothing to do"}
+    _reocr_jobs[pid] = {
+        "state": "running", "kind": "reread", "dry_run": dry_run,
+        "started_at": datetime.now(UTC).isoformat(),
+        "documents": [{"document_id": d["id"], "filename": d["filename"],
+                       "category": d.get("category")} for d in docs],
+    }  # fmt: skip
+    _reocr_jobs[pid]["task"] = asyncio.create_task(_reread_job(db, pid, docs, dry_run=dry_run))
+    return _public_job(pid)
+
+
 async def curated_reread_verify(
     ctx: Context,
     document_ids: list[int],
@@ -1337,43 +1385,113 @@ async def curated_reread_verify(
     poll curated_reocr_status. Slow: minutes per page.
     """
     pid = await _resolve_patient_id(patient_slug, ctx)
-    db = _get_db(ctx)
-    ids = list(dict.fromkeys(int(i) for i in (document_ids or [])))[:10]
-    if not ids:
-        return json.dumps({"error": "document_ids is required"})
-    if _reocr_jobs.get(pid, {}).get("state") == "running" or (
-        pid in _runs and _runs[pid].get("state") == "running"
-    ):
-        return json.dumps({"error": "busy: a run, re-OCR or re-read is in progress"})
-    docs = [r for r in await db.curated_reocr_candidates(patient_id=pid) if r["id"] in ids]
-    if not docs:
-        return json.dumps({"status": "nothing to do"})
-    _reocr_jobs[pid] = {
-        "state": "running", "kind": "reread", "dry_run": dry_run,
-        "started_at": datetime.now(UTC).isoformat(),
-        "documents": [{"document_id": d["id"], "filename": d["filename"],
-                       "category": d.get("category")} for d in docs],
-    }  # fmt: skip
-    _reocr_jobs[pid]["task"] = asyncio.create_task(_reread_job(db, pid, docs, dry_run=dry_run))
-    return json.dumps(
-        {k: v for k, v in _reocr_jobs[pid].items() if k != "task"}, ensure_ascii=False
-    )
+    out = await start_reread(_get_db(ctx), pid, document_ids, dry_run=dry_run)
+    return json.dumps(out, ensure_ascii=False)
+
+
+async def reocr_status(db, pid: str) -> dict:
+    """State and report of the last re-OCR / re-read job (#660, #667)."""
+    job = _reocr_jobs.get(pid)
+    if not job:
+        last = await db.get_last_reocr_job(patient_id=pid)  # survives a restart (#667)
+        targets = await _reocr_targets(db, pid, None)
+        if last:
+            return {"state": last["status"], "job": last, "candidates": len(targets)}
+        return {"state": "none", "candidates": len(targets)}
+    return {k: v for k, v in job.items() if k != "task"}
+
+
+_VIEW_JOB = ("state", "kind", "dry_run", "passes", "started_at", "finished_at", "candidates")
+_VIEW_PLANNED = ("document_id", "filename", "category", "reasons", "unverified_facts")
+_VIEW_RESULT = (
+    "document_id", "filename", "result", "confirmed", "date_unconfirmed", "unconfirmed",
+    "candidates", "seconds", "engine", "method", "pages", "uncertain_before",
+    "uncertain_after", "facts_machine", "facts_unverified",
+)  # fmt: skip
+
+
+def _counts(d) -> dict:
+    """Only numbers (and a reason -> count map) survive: no text can leak."""
+    if not isinstance(d, dict):
+        return {}
+    out: dict = {}
+    for k, v in d.items():
+        if isinstance(v, int | float):  # bool is an int
+            out[k] = v
+        elif isinstance(v, dict) and all(isinstance(x, int) for x in v.values()):
+            out[k] = {str(rk): rv for rk, rv in v.items()}
+    return out
+
+
+def admin_job_view(status: dict) -> dict:
+    """``reocr_status`` reduced for the admin dashboard (#573): states, counts,
+    filenames and reason names. Never a fact value, date or evidence text —
+    ``lost`` (re-OCR "CODE value date" strings) becomes ``lost_count``."""
+    job = status.get("job") if isinstance(status.get("job"), dict) else status
+    if job is not status:  # a persisted row (#667) after a restart
+        job = {"state": status.get("state"), "kind": job.get("trigger"),
+               "dry_run": bool(job.get("dry_run")), "started_at": job.get("started_at"),
+               "finished_at": job.get("finished_at"), "error": job.get("message") or None,
+               "report": job.get("report") or {}}  # fmt: skip
+    out = {k: job[k] for k in _VIEW_JOB if k in job}
+    if "candidates" in status and "candidates" not in out:
+        out["candidates"] = status["candidates"]
+    if job.get("error"):
+        out["error"] = str(job["error"])[:200]
+    out["documents"] = [
+        {k: d[k] for k in _VIEW_PLANNED if k in d}
+        for d in job.get("documents") or [] if isinstance(d, dict)
+    ]  # fmt: skip
+    report = job.get("report") if isinstance(job.get("report"), dict) else {}
+    results = []
+    for d in report.get("documents") or []:
+        if not isinstance(d, dict):
+            continue
+        r = {k: d[k] for k in _VIEW_RESULT if k in d}
+        if d.get("error"):
+            r["error"] = str(d["error"])[:200]
+        if "lost" in d:
+            r["lost_count"] = len(d.get("lost") or [])
+        results.append(r)
+    out["results"] = results
+    if "verification" in job:
+        out["verification"] = _counts(job["verification"])
+    if isinstance(job.get("index"), dict):
+        out["index"] = _counts(job["index"])
+    return out
+
+
+async def reread_candidates(db, pid: str) -> list[dict]:
+    """Curated documents with Cowork-era unverified facts (#573 admin panel):
+    id, filename, category and how many facts still carry ``cowork_ocr``.
+    Counts only — never a value, a date or evidence text."""
+    from oncofiles.curated.reread_verify import CONFIRMABLE
+
+    counts: dict[int, int] = {}
+    for r in await db.fact_verification_rows(patient_id=pid):
+        if r.get("verification") != "unverified":
+            continue
+        try:
+            reasons = json.loads(r.get("metadata_json") or "{}").get("unverified_reasons") or []
+        except (ValueError, AttributeError):
+            continue
+        if CONFIRMABLE in reasons:
+            doc = r["source_document_id"]
+            counts[doc] = counts.get(doc, 0) + 1
+    out = [
+        {"document_id": d["id"], "filename": d["filename"], "category": d.get("category"),
+         "cowork_unverified": counts[d["id"]]}
+        for d in await db.curated_reocr_candidates(patient_id=pid) if counts.get(d["id"])
+    ]  # fmt: skip
+    out.sort(key=lambda d: (d["category"] != "labs", -d["cowork_unverified"], d["document_id"]))
+    return out
 
 
 async def curated_reocr_status(ctx: Context, patient_slug: str | None = None) -> str:
     """State and report of the last re-OCR job for this patient (#660). Read-only."""
     pid = await _resolve_patient_id(patient_slug, ctx)
-    job = _reocr_jobs.get(pid)
-    if not job:
-        db = _get_db(ctx)
-        last = await db.get_last_reocr_job(patient_id=pid)  # survives a restart (#667)
-        targets = await _reocr_targets(db, pid, None)
-        if last:
-            return json.dumps({"state": last["status"], "job": last, "candidates": len(targets)},
-                              ensure_ascii=False, default=str)  # fmt: skip
-        return json.dumps({"state": "none", "candidates": len(targets)})
-    return json.dumps({k: v for k, v in job.items() if k != "task"}, ensure_ascii=False,
-                      default=str)  # fmt: skip
+    out = await reocr_status(_get_db(ctx), pid)
+    return json.dumps(out, ensure_ascii=False, default=str)
 
 
 async def curated_index(
