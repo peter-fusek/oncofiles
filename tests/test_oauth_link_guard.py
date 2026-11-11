@@ -266,7 +266,9 @@ async def test_session_state_needs_the_same_session(http_mode, db, monkeypatch):
     assert (await db.get_oauth_token(patient_id=ERIKA_UUID)).access_token == "synthetic-access-new"
 
 
-async def test_authorize_state_binds_session_patient_and_service(http_mode, db):
+async def test_authorize_state_binds_session_patient_and_service(http_mode, db, gmail_calendar_on):
+    # gmail_calendar_on: /oauth/authorize/gmail is refused while
+    # GMAIL_CALENDAR_ENABLED is off (#745); this test is about the state binding.
     from urllib.parse import parse_qs, urlparse
 
     from oncofiles import oauth
