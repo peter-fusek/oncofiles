@@ -20,6 +20,7 @@ an unreliable page, makes the fact ``unverified``.
 
 from __future__ import annotations
 
+import json
 import re
 import unicodedata
 from dataclasses import dataclass, field
@@ -35,9 +36,18 @@ _BORY_ITEM = re.compile(
 )
 _NUM = r"[<>]?\s*-?\d+(?:[.,]\d+)?"
 _OKB_ROW = re.compile(
-    rf"^(?P<label>\S(?:.*?\S)?)\s{{2,}}(?P<val>{_NUM})\s+(?P<unit>[^\s\d][^\s]*)?"
+    # "(?:.*?\S)??" is lazy: a one-letter label ("K") must not swallow the value (#660)
+    rf"^(?P<label>\S(?:.*?\S)??)\s{{2,}}(?P<val>{_NUM})\s+(?P<unit>[^\s\d][^\s]*)?"
     rf"(?:\s+(?P<lo>-?[\d.,]+)\s*-\s*(?P<hi>-?[\d.,]+)|\s+(?P<cmp>[<>]\s*[\d.,]+))?(?P<rest>.*)$"
 )
+# OCR'd sheets sometimes keep one space before the value: accepted only with a
+# unit AND a printed range, so prose never matches (#660).
+_OKB_ROW_LOOSE = re.compile(
+    rf"^(?P<label>[^\W\d_][^\d]*?\S)\s+(?P<val>{_NUM})\s+(?P<unit>[^\s\d][^\s]*)"
+    rf"\s+(?P<lo>-?[\d.,]+)\s*-\s*(?P<hi>-?[\d.,]+)(?P<rest>.*)$"
+)
+_TRAILING_UNSURE = re.compile(r"\s*/?\s*\[\?\]\s*$")
+_LABEL_TAIL = re.compile(r"^[^\W\d_][^\d:;|]{0,24}$")
 _SECTION_PREFIX = re.compile(r"^[A-ZÁČĎÉÍĽĹŇÓÔŔŠŤÚÝŽa-záäčďéíľĺňóôŕšťúýž .]+:\s+")
 
 
@@ -111,6 +121,35 @@ class Vocabulary:
                 return self.by_code.get(code)
         return None
 
+    def match_fuzzy(self, label: str) -> dict | None:
+        """One-typo tolerance for OCR'd labels ("Neutrofilly"), #660 guardrails:
+        edit distance 1, label of at least 8 characters, and every alias within
+        that distance must belong to ONE code. Callers keep such facts
+        unverified (reason ``label_fuzzy``)."""
+        key = norm_label(label)
+        if len(key) < 8:
+            return None
+        codes = {
+            r["code"]
+            for alias, r in self.by_alias.items()
+            if len(alias) >= 8 and abs(len(alias) - len(key)) <= 1 and _within_one(alias, key)
+        }
+        return self.by_code.get(codes.pop()) if len(codes) == 1 else None
+
+
+def _within_one(a: str, b: str) -> bool:
+    """Levenshtein distance <= 1 (one substitution, insertion or deletion)."""
+    if a == b:
+        return True
+    if abs(len(a) - len(b)) > 1:
+        return False
+    if len(a) > len(b):
+        a, b = b, a
+    i = 0
+    while i < len(a) and a[i] == b[i]:
+        i += 1
+    return a[i + 1 :] == b[i + 1 :] if len(a) == len(b) else a[i:] == b[i + 1 :]
+
 
 # Lines that are never document data: reviewer/agent/README notes written into
 # older sidecars, form placeholders, staff sign-offs, software versions.
@@ -164,6 +203,10 @@ GENERIC_REF = {
     "WBC": (3.5, 10.7), "NEUT": (1.7, 7.0), "PLT": (140, 420),
     "CEA": (None, 5.0), "CA19_9": (None, 37.0), "CRP": (None, 5.0),
 }  # fmt: skip
+# HGB depends on sex: used only when the patient's sex is known (#635 v10)
+GENERIC_REF_BY_SEX = {
+    "HGB": {"female": (120, 155), "male": (135, 175)},
+}
 _DIFFERENTIAL = {"NEUT", "LYMPH", "MONO", "EOS", "BASO"}
 # labels that always mean the absolute count ("abs.počet NEUT", "NEUT#", "ANC")
 _ABSOLUTE_LABEL = re.compile(r"abs|#|^anc$")
@@ -212,6 +255,9 @@ def _fact(  # noqa: PLR0913
     unreliable: bool,
 ) -> dict | None:
     code_row = vocab.match(label, abbr)
+    fuzzy = False
+    if code_row is None and (code_row := vocab.match_fuzzy(label)) is not None:
+        fuzzy = True
     if (
         code_row
         and code_row["code"] in _DIFFERENTIAL
@@ -223,6 +269,15 @@ def _fact(  # noqa: PLR0913
     if code_row and unit and unit.strip() == "%" and code_row.get("unit_canonical") != "%":
         # "Neutrofily 51.2 %" is the percentage, not the absolute count
         code_row = vocab.by_code.get(code_row["code"] + "_PCT")
+    elif (
+        code_row
+        and unit
+        and unit.strip() != "%"
+        and code_row["code"].endswith("_PCT")
+        and _UNIT_HINT.search(unit)
+    ):
+        # a count with a real unit ("10^9/l") is never the percentage code
+        code_row = vocab.by_code.get(code_row["code"][: -len("_PCT")])
     value = _num(raw_value)
     numeric = value is not None and re.fullmatch(_NUM, raw_value.strip()) is not None
     unit_canonical = code_row["unit_canonical"] if code_row else None
@@ -265,10 +320,23 @@ def _fact(  # noqa: PLR0913
         "occurred_at": when,
         "page_number": page,
         "evidence": evidence.strip()[:300],
-        "verification": "unverified"
-        if (unreliable or "[?]" in evidence or implausible)
-        else "machine",
+        "verification": "machine",
     }
+    reasons = [
+        r
+        for r, hit in (
+            ("unreliable_source", unreliable),
+            ("ocr_uncertain", "[?]" in evidence),
+            ("implausible", implausible),
+            ("label_fuzzy", fuzzy and code_row is not None),
+        )
+        if hit
+    ]
+    if reasons:
+        fact["verification"] = "unverified"
+        fact["metadata"] = {"unverified_reasons": reasons}
+    if arrow and lo is None and hi is None and fact["flag"]:
+        fact["metadata"] = {**(fact.get("metadata") or {}), "flag_source": "arrow"}
     if (
         fact["code"] in GENERIC_REF
         and lo is None
@@ -279,7 +347,7 @@ def _fact(  # noqa: PLR0913
         g_lo, g_hi = GENERIC_REF[fact["code"]]
         if flag := _flag(value_canonical, g_lo, g_hi, None):
             fact["flag"] = flag
-            fact["metadata"] = {"flag_source": "generic"}
+            fact["metadata"] = {**(fact.get("metadata") or {}), "flag_source": "generic"}
     if category == "medication":
         return fact if not _NOT_DATA.search(evidence) else None
     return fact if _plausible(fact, code_row) else None
@@ -322,12 +390,13 @@ def parse_bory(pages: list[str], vocab: Vocabulary, *, unreliable: bool = False)
 
 def parse_okb(pages: list[str], vocab: Vocabulary, *, unreliable: bool = False) -> list[dict]:
     out: list[dict] = []
+    when = None
+    in_table = False  # a table continues on the next page without its header (#660)
     for page_no, text in enumerate(pages, start=1):
-        if "Ref. medze" not in text and "Hodnota" not in text:
+        if not in_table and "Ref. medze" not in text and "Hodnota" not in text:
             continue
-        when = None
-        in_table = False
-        for line in text.splitlines():
+        lines = text.splitlines()
+        for idx, line in enumerate(lines):
             if m := _OKB_ODOBRANE.search(line):
                 when = _iso(m.group(1))
             if line.lstrip().startswith("Test") and "Hodnota" in line:
@@ -338,17 +407,28 @@ def parse_okb(pages: list[str], vocab: Vocabulary, *, unreliable: bool = False) 
             if _REF_LINE.match(line) and out and out[-1]["page_number"] == page_no:
                 _attach_ref_text(out[-1], line.split(":", 1)[1].strip())
                 continue
-            m = _OKB_ROW.match(line.strip())
+            # a trailing "[?]" keeps the row (unverified via the evidence), #660
+            row = _TRAILING_UNSURE.sub("", line.strip())
+            m = _OKB_ROW.match(row) or _OKB_ROW_LOOSE.match(row)
             if not m:
                 continue
-            cmp = m.group("cmp")
+            label = m.group("label")
+            nxt = lines[idx + 1].strip() if idx + 1 < len(lines) else ""
+            # a long label wrapped onto the next line ("… železa v" / "sére")
+            if (
+                vocab.match(label) is None
+                and _LABEL_TAIL.match(nxt)
+                and vocab.match(f"{label} {nxt}") is not None
+            ):
+                label = f"{label} {nxt}"
+            cmp = m.groupdict().get("cmp")
             lo, hi = _num(m.group("lo")), _num(m.group("hi"))
             if cmp:
                 bound = _num(cmp)
                 lo, hi = (bound, None) if cmp.strip().startswith(">") else (None, bound)
             f = _fact(
                 vocab,
-                label=m.group("label"),
+                label=label,
                 abbr=None,
                 raw_value=m.group("val"),
                 unit=m.group("unit"),
@@ -483,9 +563,8 @@ _SEG_DATE = re.compile(r"(?<![\d.])(\d{1,2})\.\s?(\d{1,2})\.(?:\s?(\d{4}))?(?![\
 def _segment_date(segment: str) -> tuple[int, int, int | None, str | None] | None:
     """(day, month, year or None, range start) printed in the prefix of a ";"
     segment ("labs 9.9.: WBC …"). A range ("3.–4.9.2027", "14.7.2027-15.7.2027")
-    is dated to its END, consistently: a report quotes its latest results, and
-    a range start can collide with another document's real draw on that day.
-    The start is kept for the metadata."""
+    is returned with its END; the caller dates the fact at that end and keeps
+    both ends in the metadata (#726)."""
     if ":" not in segment:
         return None
     prefix = segment.replace("*", "").rsplit(":", 1)[0]
@@ -510,6 +589,35 @@ def _segment_date(segment: str) -> tuple[int, int, int | None, str | None] | Non
     return d, mo, y, start
 
 
+def _continues(prev: str, nxt: str) -> bool:
+    """Is ``nxt`` the visual continuation of the result list in ``prev``?
+
+    Only list lines (>= 2 ";" items) not ending a sentence are joined, and only
+    when the next line carries on the list: it starts with the value of a split
+    item, the previous line ends with a label that still lacks its value, or
+    the next line is itself a ";" list continuing the same run (#660)."""
+    p, n = prev.rstrip(), nxt.strip()
+    if not n or p.count(";") < 2 or p.endswith((".", ":")):
+        return False
+    tail = p.rsplit(";", 1)[-1]
+    label_without_value = bool(tail.strip()) and not re.search(r"\d", tail)
+    return (
+        bool(re.match(r"^[<>]?\s*\d", n))
+        or label_without_value
+        or (p.endswith(";") and n.count(";") >= 1 and not _LINE_DATE.search(n))
+    )
+
+
+def _join_wrapped(lines: list[str]) -> list[str]:
+    out: list[str] = []
+    for line in lines:
+        if out and _continues(out[-1], line):
+            out[-1] = out[-1].rstrip() + " " + line.strip()
+        else:
+            out.append(line)
+    return out
+
+
 def _inline_items(line: str) -> list[tuple]:
     """(label, value, unit, arrow, segment date) for every result item of a line."""
     out = []
@@ -519,6 +627,7 @@ def _inline_items(line: str) -> list[tuple]:
         parts = re.split(r",\s+(?=[^\W\d_])", segment)
         for item in parts:
             item = re.sub(r"^.*:\s*", "", item.replace("*", ""))  # "Lab 1.2.2027: **CEA …"
+            item = re.sub(r"\s*\(ref\.?[^()]*\)\s*\.?\s*$", "", item, flags=re.I)  # "(ref 0–37)"
             arrow = next((_INLINE_ARROW[c] for c in item if c in _INLINE_ARROW), None)
             item = re.sub(r"[↑↓▲▼]", "", item).strip().rstrip(".").strip()
             if len(parts) == 1:  # "CA 19-9 812,4 (zakrúžkované)" in a ";" list
@@ -532,6 +641,13 @@ def _inline_items(line: str) -> list[tuple]:
 
 
 _LINE_DATE = re.compile(r"\b(\d{1,2})\.\s?(\d{1,2})\.\s?(\d{4})\b")
+# the end of a full-date range right after a line date: "17.3.2028 - 26.3.2028"
+_RANGE_END_AFTER = re.compile(r"\s?[–-]\s?(\d{1,2})\.\s?(\d{1,2})\.\s?(\d{4})\b")
+
+
+def _day_iso(m: re.Match) -> str:
+    """ISO day of a (day, month, year) match."""
+    return f"{int(m.group(3)):04d}-{int(m.group(2)):02d}-{int(m.group(1)):02d}"
 
 
 def _year_for(day: int, month: int, ref: str | None) -> int | None:
@@ -549,6 +665,90 @@ def _year_for(day: int, month: int, ref: str | None) -> int | None:
     return year - 1 if month - ref_month >= 6 else None
 
 
+# Block headers (#661, maintainer decision 2026-11-10): a lab block in a report
+# is often introduced by a line that is only its date or date range
+# ("14.7.2027 - 15.7.2027:", "Vykonané vyšetrenia: laboratórne 3.8.2027:") or by
+# the sampling line ("Odobrané 3.8.2027 07:40 …"); its result lines follow,
+# maybe after specimen labels ("sérum OKB"). Strict on purpose: anything else
+# between the header and the values ends the block.
+_HEADER_DATES = re.compile(
+    r"^\s*(?:[^\d|:;]{0,40}:\s*)?[^\d|:;]{0,20}?"
+    r"(?P<dates>\d{1,2}\.\s?\d{1,2}\.(?:\s?\d{4})?"
+    r"(?:\s?[–-]\s?\d{1,2}\.(?:\s?\d{1,2}\.)?(?:\s?\d{4})?)?)\s*:\s*$"
+)
+_SAMPLED = re.compile(r"^\s*Odobran[éáa]\s+(\d{1,2})\.\s?(\d{1,2})\.\s?(\d{4})\b", re.I)
+_SPECIMEN = re.compile(r"^[^\d;|:]{1,30}$")  # "sérum OKB", "krv EDTA"
+_NUMBERS_ONLY = re.compile(r"^[\d\s,.<>]+$")  # a wrapped value ("99,9")
+
+
+def _block_header(line: str) -> tuple[int, int, int | None, str | None] | None:
+    """(day, month, year or None, range start) when ``line`` opens a lab block."""
+    text = line.replace("*", "").strip()
+    if not text or text.startswith(("|", "#")):
+        return None
+    if m := _SAMPLED.match(text):
+        d, mo, y = (int(g) for g in m.groups())
+        return (d, mo, y, None) if 1 <= d <= 31 and 1 <= mo <= 12 else None
+    if m := _HEADER_DATES.match(text):
+        return _segment_date(m.group("dates") + ":")
+    return None
+
+
+def _keeps_block(line: str, is_results: bool) -> bool:
+    """Can ``line`` sit between a block header and the block's values?"""
+    text = line.replace("*", "").strip()
+    return (
+        not text
+        or is_results
+        or bool(_NUMBERS_ONLY.match(text))
+        or (bool(_SPECIMEN.match(text)) and not text.startswith(("|", "#")))
+    )
+
+
+def _line_range_start(before: str, end_iso: str | None) -> str | None:
+    """Start day of "5.–6.5.2027" (same month and year as the end)."""
+    m = re.search(r"(\d{1,2})\.\s?[–-]\s?$", before)
+    if not m or not end_iso:
+        return None
+    return f"{end_iso[:8]}{int(m.group(1)):02d}"
+
+
+def range_window(meta: dict) -> tuple[str, str] | None:
+    """(start, end) days of a value dated under a closed printed range (#726)."""
+    lo, hi = meta.get("date_range_start"), meta.get("date_range_end")
+    return (str(lo)[:10], str(hi)[:10]) if lo and hi else None
+
+
+def _date_at_range_end(fact: dict, meta: dict, start: str | None) -> None:
+    """Date a value printed under a date range at the range END (#726, which
+    supersedes the #659 midpoint): the latest possible draw date, usually the
+    report or visit date. The original states only the period, so the middle
+    of it would be a day printed nowhere. ``occurred_at`` stays the end;
+    ``date_range_start``/``_end`` keep the window (dedupe, corroboration,
+    date conflicts, re-read keys) and ``date_precision="range"`` says that
+    ``occurred_at`` is not the draw day. An unknown start keeps the end and is
+    marked open."""
+    from datetime import date as _date
+
+    end = fact.get("occurred_at")
+    meta["date_range_end"] = end
+    meta["date_precision"] = "range"
+    if not end or not start or start == "?":
+        meta["date_range_open"] = True
+        return
+    if len(start) == 5:  # "MM-DD": the year of the end
+        start = f"{end[:4]}-{start}"
+    try:
+        d0, d1 = _date.fromisoformat(start[:10]), _date.fromisoformat(end[:10])
+    except ValueError:
+        meta["date_range_open"] = True
+        return
+    if d0 > d1:
+        meta["date_range_open"] = True
+        return
+    meta["date_range_start"] = d0.isoformat()
+
+
 def parse_inline_results(
     pages: list[str],
     vocab: Vocabulary,
@@ -560,36 +760,51 @@ def parse_inline_results(
 
         CEA S 38,2; CA 19-9 655,1; KREA S 61,0; NA v sére 139,0
 
-    Infra rules: a value without a printed unit is ALWAYS unverified (the unit
-    is implied from the code); the date must be printed next to the values,
-    otherwise the report date is used and the value is unverified with
-    ``date_source=report``. At least two items must match known codes, so a
-    sentence with numbers is never read as results.
+    Verification (#659): a missing printed unit is fine (the code's canonical
+    unit, ``unit_source=implied``); a printed date range is a printed date, so
+    its values stay verifiable: they are dated at the range END, with both ends
+    and ``date_precision="range"`` in the metadata (#726, superseding the #659
+    midpoint). Only a value without any date of its own (``date_source=report``)
+    or under a range without a known start (``date_range_open``) is unverified,
+    with reason ``date_unknown``. At least two items must match known codes, so
+    a sentence with numbers is never read as results.
     """
     out: list[dict] = []
     seen_keys: set = set()
     for page_no, text in enumerate(pages, start=1):
         prev = ""
-        for line in text.splitlines():
+        block = None  # (header date, header line) of the lab block we are in (#661)
+        for line in _join_wrapped(text.splitlines()):
             skip = _NOT_DATA.search(line) or _VITALS.search(line) or _STATS.search(line)
             items = [] if skip else _inline_items(line)
-            if len(_INLINE_SPLIT.split(line)) >= 3 and items:
-                parsed = [(it, vocab.match(it[0])) for it in items]
-                if sum(1 for _, c in parsed if c) >= 2:
+            is_results = False
+            if header := _block_header(line):
+                block = (header, line.replace("*", "").strip()[:160])
+            if len(_INLINE_SPLIT.split(line)) >= 2 and items:
+                parsed = [(it, vocab.match(it[0]) or vocab.match_fuzzy(it[0])) for it in items]
+                # two known codes in a ";" list ("CEA …; CA 19-9 …") are results too
+                is_results = sum(1 for _, c in parsed if c) >= 2
+                if is_results:
                     dm = _LINE_DATE.search(line) or _LINE_DATE.search(prev)
-                    when = (
-                        f"{int(dm.group(3)):04d}-{int(dm.group(2)):02d}-{int(dm.group(1)):02d}"
-                        if dm
-                        else report_date
-                    )
                     src_line = line if _LINE_DATE.search(line) else prev
-                    ranged = bool(dm and _DATE_RANGE_BEFORE.search(src_line[: dm.start()]))
+                    full_start = None
+                    if dm and (tail := _RANGE_END_AFTER.match(src_line, dm.end())):
+                        # "17.3.2028 - 26.3.2028" (#726): the first date is the range
+                        # START, never a draw day; the values are dated at the end
+                        full_start, dm = _day_iso(dm), tail
+                    when = _day_iso(dm) if dm else report_date
+                    ranged = bool(
+                        dm and (full_start or _DATE_RANGE_BEFORE.search(src_line[: dm.start()]))
+                    )
                     for (label, val, unit, arrow, seg_date), code_row in parsed:
                         if not code_row:
                             continue  # only known codes from free text
                         item_when, date_source = when, ("printed" if dm else "report")
-                        if seg_date:  # the segment's own date beats any other date in the line
-                            d, mo, y, range_start = seg_date
+                        own_date, from_block = seg_date, False
+                        if not own_date and not dm and block:
+                            own_date, from_block = block[0], True  # the block's header date
+                        if own_date:  # the segment's own date beats any other date in the line
+                            d, mo, y, range_start = own_date
                             year = y or _year_for(d, mo, report_date or when)
                             if year:
                                 item_when = f"{year:04d}-{mo:02d}-{d:02d}"
@@ -616,23 +831,51 @@ def parse_inline_results(
                         if not f:
                             continue
                         meta = {**(f.get("metadata") or {}), "date_source": date_source}
-                        if ranged and not seg_date:
-                            meta["date_source"] = "printed_range"  # "5.–6.5.2027": day unsure
-                        if seg_date and seg_date[3]:
-                            meta["date_range_start"] = seg_date[3]
+                        if from_block and date_source != "report":
+                            meta["date_evidence"] = block[1]  # the header line, verbatim
+                            meta["date_from"] = "block_header"
+                        start = own_date[3] if own_date else None
+                        if ranged and not own_date:
+                            meta["date_source"] = "printed_range"  # "5.–6.5.2027"
+                            start = full_start or _line_range_start(
+                                src_line[: dm.start()], f["occurred_at"]
+                            )
+                        if meta["date_source"] == "printed_range":
+                            _date_at_range_end(f, meta, start)
                         if not printed_unit:
-                            meta["unit_source"] = "implied"
-                        if not printed_unit or meta["date_source"] != "printed":
-                            f["verification"] = "unverified"
+                            meta["unit_source"] = "implied"  # canonical unit of the code
+                        reasons = list(meta.pop("unverified_reasons", []))
+                        if meta["date_source"] == "report":
+                            reasons.append("date_unknown")  # quoted without its own date
+                        if meta.get("date_range_open"):
+                            reasons.append("date_unknown")
+                        if reasons:
+                            meta["unverified_reasons"] = sorted(set(reasons))
+                        f["verification"] = "unverified" if reasons else "machine"
                         f["metadata"] = meta
-                        key = (f["code"], f["occurred_at"], f["value_num"], f["value_text"])
+                        # a range value now shares its end day with a value printed
+                        # for that day: both are kept, the read-time dedupe decides
+                        key = (f["code"], f["occurred_at"], f["value_num"], f["value_text"],
+                               meta.get("date_precision"))  # fmt: skip
                         if key in seen_keys:
                             continue  # the same line quoted twice in one report
                         seen_keys.add(key)
                         out.append(f)
+            # a line keeps the block only with a result of a KNOWN code (exact, not
+            # fuzzy): "Dexametazón 8 mg" or "Hmotnosť 72 kg" must end it (#683 review)
+            known = is_results or any(vocab.match(it[0]) for it in items)
+            if not _block_header(line) and not _keeps_block(line, known):
+                block = None  # prose, a table or another dated line ends the block
             if line.strip():
                 prev = line
     return out
+
+
+# Categories whose sidecars may quote results inline ("WBC 5,1; HGB 120; …").
+# Lab sheets are included (#676): Cowork-era sheets were written as condensed
+# inline lists under an "Odobrané <date>" line. The table parsers still run
+# first; the inline parser only runs when they find nothing (first wins).
+INLINE_CATEGORIES = ("report", "discharge", "chemo_sheet", "imaging", "surgery", "labs")
 
 
 def extract_lab_facts(
@@ -642,6 +885,7 @@ def extract_lab_facts(
     unreliable: bool = False,
     report_date: str | None = None,
     inline: bool = False,
+    sex: str | None = None,
 ):
     """(facts, extractor id) — the first format that yields anything wins."""
     for name, fn in (
@@ -651,9 +895,221 @@ def extract_lab_facts(
     ):
         facts = fn(pages, vocab, unreliable=unreliable)
         if facts:
-            return facts, name
+            return _sex_generic(facts, sex), name
     if inline:  # results quoted inside clinic reports
         facts = parse_inline_results(pages, vocab, report_date=report_date, unreliable=unreliable)
         if facts:
-            return facts, "rule:inline-v1"
+            return _sex_generic(facts, sex), "rule:inline-v1"
     return [], None
+
+
+def _sex_generic(facts: list[dict], sex: str | None) -> list[dict]:
+    """Sex-specific generic flags (HGB), only without a printed range or flag."""
+    key = (sex or "").strip().lower()
+    for f in facts:
+        ranges = GENERIC_REF_BY_SEX.get(f.get("code") or "")
+        if (
+            not ranges
+            or key not in ranges
+            or f.get("flag")
+            or f.get("ref_low") is not None
+            or f.get("ref_high") is not None
+            or f.get("value_canonical") is None
+        ):
+            continue
+        lo, hi = ranges[key]
+        if flag := _flag(f["value_canonical"], lo, hi, None):
+            f["flag"] = flag
+            f["metadata"] = {**(f.get("metadata") or {}), "flag_source": "generic"}
+    return facts
+
+
+# Values computed from other values of the same panel (#672): two different
+# draws can land on the same number, so they never count as matching evidence.
+DERIVED_CODES = frozenset({"OSMO", "EGFR", "CA_CORR", "SII", "NLR", "TIBC", "TSAT"})
+
+
+def _fact_meta(r: dict) -> dict:
+    try:
+        return json.loads(r.get("metadata_json") or "{}")
+    except ValueError:
+        return {}
+
+
+def _fact_day(r: dict) -> str:
+    return (r.get("occurred_at") or "")[:10]
+
+
+def _draws(rows: list[dict]) -> dict[tuple, dict]:
+    """(document, day) → {code: (value, unit, fact id)} of non-unverified facts."""
+    draws: dict[tuple, dict] = {}
+    for r in rows:
+        if r["verification"] != "unverified" and r.get("value_canonical") is not None:
+            draws.setdefault((r["source_document_id"], _fact_day(r)), {})[r["code"]] = (
+                r["value_canonical"], r.get("unit_canonical"), r["id"],
+            )  # fmt: skip
+    return draws
+
+
+def _range_starts(rows: list[dict]) -> dict[tuple, str]:
+    """(document, day) → the earliest printed range start of its non-unverified
+    facts (#726), the same facts ``_draws`` uses.
+
+    A value under a printed range sits at the range END, so its (document,
+    day) stands for every day from that start to the end. Keys without a
+    range value are absent: the day is exact."""
+    starts: dict[tuple, str] = {}
+    for r in rows:
+        window = r["verification"] != "unverified" and range_window(_fact_meta(r))
+        if window:
+            key = (r["source_document_id"], _fact_day(r))
+            starts[key] = min(window[0], starts.get(key, window[0]))
+    return starts
+
+
+def _block_matches(block: dict, values: dict) -> bool:
+    """Is ``block`` (code → (value, unit)) a quote of the draw ``values``?
+    Most of its comparable (non-derived) codes must equal that draw, at least
+    two of them, and no comparable code may differ."""
+    comparable = [c for c in block if c not in DERIVED_CODES and c in values]
+    if len(comparable) < 2:
+        return False
+    same = sum(1 for c in comparable if values[c][:2] == block[c])
+    real = [c for c in block if c not in DERIVED_CODES]
+    return same == len(comparable) and same * 2 > len(real)
+
+
+def corroborations(rows: list[dict], *, window_days: int = 60) -> list[tuple[int, str, int]]:
+    """Report-quoted values that are a quote of a real draw (#659, #672).
+
+    The values of one report day whose only reason to be unverified is
+    ``date_unknown`` form a block. The block is a quote of draw D when D is in
+    another document, 1–60 days earlier, and most of the block's non-derived
+    codes equal D's values, at least two, none different. Then every value of
+    the block that equals D is re-dated to D: a value is never torn off its
+    block, and a coincidence of two numbers (or a derived value such as OSMO)
+    never re-dates anything. Returns (fact id, draw day, id of the matching
+    draw fact).
+
+    A draw dated under a printed range (#726) sits at its range end, which
+    must precede the quote. When the latest match is such a range and a draw
+    with an exact day inside that range matches too, the exact day wins: it is
+    the same measurement, dated precisely."""
+    from datetime import date as _date
+
+    def as_date(d: str):
+        try:
+            return _date.fromisoformat(d)
+        except ValueError:
+            return None
+
+    draws = _draws(rows)
+    starts = _range_starts(rows)
+    blocks: dict[tuple, list[dict]] = {}
+    for r in rows:
+        if r["verification"] != "unverified" or r.get("value_canonical") is None:
+            continue
+        if _fact_meta(r).get("unverified_reasons") != ["date_unknown"]:
+            continue
+        blocks.setdefault((r["source_document_id"], _fact_day(r)), []).append(r)
+    out = []
+    for (doc, bday), facts in blocks.items():
+        d0 = as_date(bday)
+        block = {f["code"]: (f["value_canonical"], f.get("unit_canonical")) for f in facts}
+        matches = []
+        for (ddoc, dday), values in draws.items():
+            d1 = as_date(dday)
+            if ddoc == doc or not d0 or not d1 or not 0 < (d0 - d1).days <= window_days:
+                continue
+            if _block_matches(block, values):
+                matches.append((dday, starts.get((ddoc, dday)), values))  # day, range start
+        best = max(matches, key=lambda m: m[0], default=None)
+        if best and best[1]:  # a range: an exact day inside it is the same draw
+            exact = [m for m in matches if not m[1] and best[1] <= m[0]]
+            best = max(exact, key=lambda m: m[0], default=best)
+        if best:
+            dday, _, values = best
+            for f in facts:
+                hit = values.get(f["code"])
+                if hit and hit[:2] == block[f["code"]]:
+                    out.append((f["id"], dday, hit[2]))
+    return out
+
+
+def date_conflicts(rows: list[dict], *, window_days: int = 60) -> list[tuple[int, str]]:
+    """Header-dated blocks that are really a quote of another draw (#672).
+
+    A block of machine facts dated by its lab-block header
+    (``date_from=block_header``) whose values match another document's draw
+    on a different day, by the same majority rule as corroboration, has two
+    competing dates. Neither wins silently: returns (fact id, conflicting
+    draw day) so the caller marks the block unverified (``date_conflict``).
+
+    Both directions within 60 days count: a later lab sheet identical to an
+    earlier report block most likely means the report quoted it under a
+    wrong header date, so the block conservatively goes unverified. Two
+    header-dated documents that match each other both go unverified.
+
+    Dates are compared as spans (#726): a value under a printed range stands
+    for every day of the range, so a block and a draw whose days or ranges
+    overlap agree (a range header quoting a lab sheet from inside its range
+    is no conflict); only disjoint dates conflict."""
+    from datetime import date as _date
+
+    def as_date(d: str):
+        try:
+            return _date.fromisoformat(d)
+        except ValueError:
+            return None
+
+    draws = _draws(rows)
+    starts = _range_starts(rows)
+    blocks: dict[tuple, list[dict]] = {}
+    for r in rows:
+        if r["verification"] != "machine" or r.get("value_canonical") is None:
+            continue
+        if _fact_meta(r).get("date_from") != "block_header":
+            continue
+        blocks.setdefault((r["source_document_id"], _fact_day(r)), []).append(r)
+    out = []
+    for (doc, bday), facts in blocks.items():
+        d0 = as_date(bday)
+        b_lo = starts.get((doc, bday), bday)
+        block = {f["code"]: (f["value_canonical"], f.get("unit_canonical")) for f in facts}
+        for (ddoc, dday), values in draws.items():
+            d1 = as_date(dday)
+            if ddoc == doc or not d0 or not d1:
+                continue
+            if b_lo <= dday and starts.get((ddoc, dday), dday) <= bday:
+                continue  # the same day, or overlapping printed ranges: no conflict
+            if abs((d0 - d1).days) > window_days:
+                continue
+            if _block_matches(block, values):
+                out.extend((f["id"], dday) for f in facts)
+                break
+    return out
+
+
+def unverified_metric(rows: list[dict]) -> dict:
+    """Share of unverified coded values and the reasons (benchmark ≤ 20 %, #658)."""
+    from collections import Counter
+
+    total = len(rows)
+    reasons: Counter = Counter()
+    unverified = 0
+    for r in rows:
+        if r["verification"] != "unverified":
+            continue
+        unverified += 1
+        try:
+            m = json.loads(r.get("metadata_json") or "{}")
+        except ValueError:
+            m = {}
+        for reason in m.get("unverified_reasons") or ["unspecified"]:
+            reasons[reason] += 1
+    return {
+        "coded": total,
+        "unverified": unverified,
+        "unverified_pct": round(100 * unverified / total, 1) if total else 0.0,
+        "reasons": dict(reasons.most_common()),
+    }

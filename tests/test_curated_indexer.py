@@ -244,3 +244,50 @@ async def test_an_interrupted_document_is_redone_whole_on_the_next_index(db, env
     assert len(pages) == 2 and again["errors"] == 0
     rows = await db.list_documents(patient_id=ERIKA_UUID)
     assert sum(1 for r in rows if r.gdrive_id == src) == 1  # never duplicated
+
+
+async def test_forced_documents_are_reparsed_without_a_sidecar_change(db, env):
+    d, src = env
+    await tool.index_patient(db, ERIKA_UUID)
+    doc = await db.get_document_by_gdrive_id(src, patient_id=ERIKA_UUID)
+    forced = await tool.index_patient(db, ERIKA_UUID, force_ids={doc.id})
+    assert forced["updated"] == 1 and forced["unchanged"] == 1
+    foreign = await tool.index_patient(db, ERIKA_UUID, force_ids={987654})
+    assert foreign["updated"] == 0 and foreign["unchanged"] == 2
+
+
+async def test_index_records_the_sidecar_hash_and_source_md5(db, env):
+    """#678: a stored re-read is valid only for the exact sidecar and source."""
+    import hashlib
+    import json as _json
+
+    d, src = env
+    await tool.index_patient(db, ERIKA_UUID)
+    doc = await db.get_document_by_gdrive_id(src, patient_id=ERIKA_UUID)
+    async with db.db.execute(
+        "SELECT structured_metadata FROM documents WHERE id = ?", (doc.id,)
+    ) as cur:
+        cur_meta = _json.loads((await cur.fetchone())["structured_metadata"])["curated"]
+    side = d.find(d.folder[LABS], FILED + ".md")
+    assert cur_meta["sidecar_sha"] == hashlib.sha256(d.items[side]["content"]).hexdigest()
+    assert "source_md5" in cur_meta
+
+
+def test_a_changed_source_is_re_read_even_with_the_same_sidecar():
+    """#678 review: a stored re-read must not outlive a replaced source file."""
+    from dataclasses import replace
+
+    d, src = _drive()
+    side_mod = d.items[d.find(d.folder[LABS], FILED + ".md")]["modified"]
+    real = d.list_children
+
+    def with_md5(folder_id, md5="md-old"):
+        return [replace(i, md5=md5) if i.id == src else i for i in real(folder_id)]
+
+    d.list_children = with_md5
+    same = indexer.scan(d, d.root, known={src: side_mod}, known_md5={src: "md-old"})
+    assert next(r for r in same.records if r.gdrive_id == src).unchanged
+    d.list_children = lambda fid: with_md5(fid, md5="md-new")
+    changed = indexer.scan(d, d.root, known={src: side_mod}, known_md5={src: "md-old"})
+    rec = next(r for r in changed.records if r.gdrive_id == src)
+    assert not rec.unchanged and rec.source_md5 == "md-new" and rec.sidecar_sha

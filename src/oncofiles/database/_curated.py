@@ -60,7 +60,8 @@ class CuratedMixin(DatabaseBase):
         """Newest first, without report_json (cheap list)."""
         async with self.db.execute(
             """SELECT id, run_id, trigger, dry_run, status, message, started_at, finished_at
-               FROM curated_runs WHERE patient_id = ? ORDER BY id DESC LIMIT ?""",
+               FROM curated_runs WHERE patient_id = ? AND trigger NOT IN ('reocr', 'reread')
+               ORDER BY id DESC LIMIT ?""",
             (patient_id, max(1, min(limit, 200))),
         ) as cursor:
             return [dict(r) for r in await cursor.fetchall()]
@@ -80,7 +81,7 @@ class CuratedMixin(DatabaseBase):
     async def get_last_curated_run(
         self, *, patient_id: str, dry_run: bool | None = None, finished: bool = True
     ) -> dict | None:
-        where = ["patient_id = ?"]
+        where = ["patient_id = ?", "trigger NOT IN ('reocr', 'reread')"]  # re-OCR jobs are not runs
         params: list = [patient_id]
         if dry_run is not None:
             where.append("dry_run = ?")
@@ -125,3 +126,18 @@ class CuratedMixin(DatabaseBase):
         ) as cursor:
             rows = await cursor.fetchall()
         return [r["patient_id"] if isinstance(r, dict) else r[0] for r in rows]
+
+    async def get_last_reocr_job(self, *, patient_id: str) -> dict | None:
+        """The newest re-OCR job row (#667) with its report: survives a restart,
+        and a job cut by one is reported 'interrupted' by the startup sweep."""
+        async with self.db.execute(
+            "SELECT id FROM curated_runs WHERE patient_id = ? AND trigger = 'reocr' "
+            "ORDER BY id DESC LIMIT 1",
+            (patient_id,),
+        ) as cursor:
+            row = await cursor.fetchone()
+        if row is None:
+            return None
+        return await self.get_curated_run(
+            row["id"] if isinstance(row, dict) else row[0], patient_id=patient_id
+        )

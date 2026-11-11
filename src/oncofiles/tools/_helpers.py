@@ -145,7 +145,15 @@ def _get_patient_id(*, required: bool = True) -> str:
             "then select_patient(patient_id) to choose one. "
             "If you have no patients yet, create one from the dashboard at https://oncofiles.com/dashboard"
         )
+    _note_resolved(pid)
     return pid
+
+
+def _note_resolved(pid: str) -> None:
+    """Tell the audit middleware which patient this call acted on (#663)."""
+    from oncofiles.audit_middleware import note_resolved_patient
+
+    note_resolved_patient(pid)
 
 
 async def _resolve_patient_id(
@@ -173,8 +181,8 @@ async def _resolve_patient_id(
     - **Non-admin callers** must satisfy ONE of:
         * their bearer-bound `patient_id` (set by `verify_token` /
           `PatientResolutionMiddleware`) equals the resolved `patient_id`, OR
-        * their OAuth-bound `caregiver_email` equals the patient's
-          `caregiver_email` (case-insensitive).
+        * their OAuth-bound email is one of the patient's
+          `caregiver_email` entries (comma-separated, case-insensitive).
       Otherwise the resolver raises `ValueError("access denied …")`. The
       message does not echo the patient's owning email or any other PHI —
       that would be a secondary leak.
@@ -202,6 +210,7 @@ async def _resolve_patient_id(
     pid = patient.patient_id
 
     if _is_admin_caller():
+        _note_resolved(pid)
         return pid
 
     from oncofiles.constants import NO_PATIENT_ACCESS_SENTINEL
@@ -210,11 +219,15 @@ async def _resolve_patient_id(
     bound_pid = get_current_patient_id()
     bearer_match = bool(bound_pid) and bound_pid != NO_PATIENT_ACCESS_SENTINEL and bound_pid == pid
 
-    caller_email = _caller_email().strip().lower()
-    pat_caregiver = (patient.caregiver_email or "").strip().lower()
-    caregiver_match = bool(caller_email) and caller_email == pat_caregiver
+    # Same comma-separated matching as login, list_patients and the dashboard
+    # (#651): a second caregiver in the list must not be denied here.
+    from oncofiles.persistent_oauth import _email_matches_caregiver
+
+    caller_email = _caller_email().strip()
+    caregiver_match = _email_matches_caregiver(caller_email, patient.caregiver_email)
 
     if bearer_match or caregiver_match:
+        _note_resolved(pid)
         return pid
 
     raise ValueError(
@@ -326,6 +339,21 @@ def _safe_error(exc: BaseException, category: str = "internal_error") -> dict[st
     """
     logger.exception("tool error [%s]", category)
     return {"error": category, "kind": type(exc).__name__}
+
+
+def _cloud_ai_disabled_response() -> str | None:
+    """JSON error for tools that need the Anthropic cloud, or None when it is available.
+
+    #618: with CLOUD_AI_ENABLED off (the default) or without ANTHROPIC_API_KEY
+    these tools refuse up front with a clear message instead of failing per
+    document (or storing unprocessed data).
+    """
+    from oncofiles.cloud_guard import cloud_ai_disabled_reason
+
+    reason = cloud_ai_disabled_reason()
+    if reason is None:
+        return None
+    return json.dumps({"error": reason, "kind": "CloudAIDisabledError"})
 
 
 def _get_db(ctx: Context) -> Database:

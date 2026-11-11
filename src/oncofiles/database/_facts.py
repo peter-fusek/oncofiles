@@ -169,8 +169,13 @@ class FactsMixin:
         """Re-extraction of one document: soft-delete its machine facts, insert new ones.
 
         Facts a person verified or corrected are kept, and a new machine fact
-        with the same code and time is not added next to them.
+        with the same code and time is not added next to them. A new fact
+        dated under a printed range (#726) is not added either when such a
+        fact of its code lies inside the range: an older index dated range
+        values at the range midpoint, and a person may have set the exact day.
         """
+        from oncofiles.curated.facts_rules import range_window
+
         async with self.db.execute(
             "SELECT id, code, occurred_at, verification FROM clinical_records "
             "WHERE patient_id = ? AND source_document_id = ? AND deleted_at IS NULL",
@@ -193,9 +198,17 @@ class FactsMixin:
             )
             await self._audit(r["id"], "delete", None, f"re-extraction by {extracted_by}")
             removed += 1
+        protected_days: dict = {}
+        for code, at in protected:
+            protected_days.setdefault(code, []).append((at or "")[:10])
         added = 0
         for f in facts:
             if (f.get("code"), f.get("occurred_at")) in protected:
+                continue
+            window = range_window(f.get("metadata") or {})
+            if window and any(
+                window[0] <= day <= window[1] for day in protected_days.get(f.get("code"), [])
+            ):
                 continue
             cur = await self.db.execute(
                 "INSERT INTO clinical_records (patient_id, record_type, source_document_id, "
@@ -219,6 +232,110 @@ class FactsMixin:
             added += 1
         await self.db.commit()
         return {"added": added, "removed": removed, "kept_verified": len(protected)}
+
+    async def fact_verification_rows(self, *, patient_id: str) -> list[dict]:
+        """Active facts with what corroboration and the unverified metric need."""
+        async with self.db.execute(
+            "SELECT id, source_document_id, code, occurred_at, value_canonical, "
+            "unit_canonical, verification, metadata_json, page_number FROM clinical_records "
+            "WHERE patient_id = ? AND deleted_at IS NULL AND code IS NOT NULL",
+            (patient_id,),
+        ) as cur:
+            return _rows(await cur.fetchall())
+
+    async def corroborate_fact(
+        self, *, patient_id: str, fact_id: int, occurred_at: str, metadata: dict
+    ) -> bool:
+        """Date a report-quoted value by the draw it quotes (#659). Only an
+        unverified machine-extracted row changes; human-verified rows never."""
+        cur = await self.db.execute(
+            "UPDATE clinical_records SET occurred_at = ?, verification = 'machine', "
+            f"metadata_json = ?, updated_at = {_NOW}, updated_by = 'oncofiles' "
+            "WHERE id = ? AND patient_id = ? AND verification = 'unverified' "
+            "AND deleted_at IS NULL",
+            (occurred_at, json.dumps(metadata, ensure_ascii=False), fact_id, patient_id),
+        )
+        if cur.rowcount:
+            await self._audit(fact_id, "update", metadata, "corroborated by another document")
+        await self.db.commit()
+        return bool(cur.rowcount)
+
+    async def flag_date_conflict(self, *, patient_id: str, fact_id: int, metadata: dict) -> bool:
+        """A machine fact whose header date conflicts with another document's
+        identical draw becomes unverified (#672). Never touches human-verified
+        or corrected rows."""
+        cur = await self.db.execute(
+            "UPDATE clinical_records SET verification = 'unverified', "
+            f"metadata_json = ?, updated_at = {_NOW}, updated_by = 'oncofiles' "
+            "WHERE id = ? AND patient_id = ? AND verification = 'machine' "
+            "AND deleted_at IS NULL",
+            (json.dumps(metadata, ensure_ascii=False), fact_id, patient_id),
+        )
+        if cur.rowcount:
+            await self._audit(fact_id, "update", metadata, "date conflict with another document")
+        await self.db.commit()
+        return bool(cur.rowcount)
+
+    # ── verify-only re-reads (#678) ───────────────────────────────────
+
+    async def insert_fact_reread(
+        self, *, patient_id: str, document_id: int, sidecar_sha: str, source_md5: str,
+        engine: str, result: dict,
+    ) -> int:  # fmt: skip
+        cur = await self.db.execute(
+            "INSERT INTO fact_rereads (patient_id, document_id, sidecar_sha, source_md5, "
+            "engine, result_json) VALUES (?, ?, ?, ?, ?, ?)",
+            (patient_id, document_id, sidecar_sha, source_md5, engine,
+             json.dumps(result, ensure_ascii=False)),
+        )  # fmt: skip
+        await self.db.commit()
+        return cur.lastrowid
+
+    async def valid_fact_rereads(self, *, patient_id: str) -> dict[int, dict]:
+        """document id → the newest re-read result still valid for the
+        document's current sidecar sha and source md5 (#678)."""
+        async with self.db.execute(
+            "SELECT r.id, r.document_id, r.sidecar_sha, r.source_md5, r.result_json, "
+            "d.structured_metadata FROM fact_rereads r JOIN documents d "
+            "ON d.id = r.document_id AND d.patient_id = r.patient_id "
+            "WHERE r.patient_id = ? AND d.deleted_at IS NULL ORDER BY r.id",
+            (patient_id,),
+        ) as cur:
+            rows = _rows(await cur.fetchall())
+        out: dict[int, dict] = {}
+        for r in rows:
+            try:
+                cur_meta = json.loads(r["structured_metadata"] or "{}").get("curated") or {}
+            except ValueError:
+                cur_meta = {}
+            if (cur_meta.get("sidecar_sha"), cur_meta.get("source_md5")) != (
+                r["sidecar_sha"],
+                r["source_md5"],
+            ) or not r["sidecar_sha"]:
+                out.pop(r["document_id"], None)  # void: the text or the source changed
+                continue
+            try:
+                out[r["document_id"]] = {"id": r["id"], **json.loads(r["result_json"])}
+            except ValueError:
+                continue
+        return out
+
+    async def apply_reread_fact(
+        self, *, patient_id: str, fact_id: int, verification: str, metadata: dict
+    ) -> bool:
+        """Drop ``cowork_ocr`` from an unverified fact a re-read confirmed (#678).
+        Never touches machine, verified or corrected rows."""
+        cur = await self.db.execute(
+            f"UPDATE clinical_records SET verification = ?, metadata_json = ?, "
+            f"updated_at = {_NOW}, updated_by = 'oncofiles' "
+            "WHERE id = ? AND patient_id = ? AND verification = 'unverified' "
+            "AND deleted_at IS NULL",
+            (verification, json.dumps(metadata, ensure_ascii=False), fact_id, patient_id),
+        )
+        if cur.rowcount:
+            await self._audit(fact_id, "update", metadata, "confirmed by a local re-read")
+        await self.db.commit()
+        return bool(cur.rowcount)
 
     # ── links (never across patients) ─────────────────────────────────
 

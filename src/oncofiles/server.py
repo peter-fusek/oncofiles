@@ -4642,21 +4642,21 @@ def _get_dashboard_email(request: Request) -> str | None:
 
 
 def _is_admin_email(email: str | None) -> bool:
-    """Check whether *email* belongs to a dashboard admin.
+    """Check whether *email* belongs to an admin (``DASHBOARD_ADMIN_EMAILS``).
 
-    Admin status grants access to system-level endpoints (health, readiness,
-    schedules) but NOT automatic access to all patients' medical data.
-    Patient access is always controlled by caregiver_email matching.
+    Admin status grants the system-level endpoints AND, today, access to every
+    patient: the MCP resolver (`_resolve_patient_id`) and
+    `_require_body_patient_access` let admins through without a caregiver
+    match. Narrowing admin PHI access to audited break-glass is #655.
     """
     return email is not None and email.lower() in DASHBOARD_ADMIN_EMAILS
 
 
 def _email_matches_caregiver(email: str, caregiver_email: str | None) -> bool:
-    """Check if email matches caregiver_email (supports comma-separated list)."""
-    if not email or not caregiver_email:
-        return False
-    email_lower = email.lower()
-    return any(e.strip().lower() == email_lower for e in caregiver_email.split(","))
+    """Comma-separated caregiver match; delegates to the single implementation (#651)."""
+    from oncofiles.persistent_oauth import _email_matches_caregiver as _match
+
+    return _match(email, caregiver_email)
 
 
 async def _require_body_patient_access(
@@ -7235,6 +7235,8 @@ async def api_admin_curated_overview(request: Request) -> JSONResponse:
         )
 
         db_inst: Database = request.app.state.fastmcp_server._lifespan_result["db"]
+        from oncofiles.patient_context import load_from_db as _load_ctx
+
         enabled, hour, max_runs = nightly_settings()
         cards = []
         for p in await db_inst.list_patients(active_only=True):
@@ -7246,7 +7248,9 @@ async def api_admin_curated_overview(request: Request) -> JSONResponse:
                     "patient_id": pid,
                     "slug": p.slug,
                     "name": p.display_name,
-                    "patient_type": getattr(p, "patient_type", "oncology"),
+                    # the type lives in patient_context, not on Patient (#650 test)
+                    "patient_type": (await _load_ctx(db_inst.db, pid)).get("patient_type")
+                    or "oncology",
                     "folder_name": token.gdrive_folder_name if token else None,
                     "drive_connected": bool(token and token.gdrive_folder_id),
                     "nightly_enabled": await db_inst.get_curated_nightly(patient_id=pid),
@@ -7634,9 +7638,15 @@ async def oauth_callback(request: Request) -> JSONResponse:
     )
 
 
-# ── Register tools and resources ─────────────────────────────────────────────
+# ── Register tools ───────────────────────────────────────────────────────────
+#
+# No MCP resources are registered (#717). The five legacy `files://` resources
+# were removed: they took no patient argument, so four were dead (TypeError on
+# the required `patient_id`, #551) and `files://activity-timeline` returned every
+# patient's activity log to any caller. The facts tools (`patient_overview`,
+# `timeline`, `fact_series`, ...) replace them and resolve the patient through
+# `_resolve_patient_id`. Locked by tests/test_activity_log_scoping.py.
 
-from oncofiles import resources  # noqa: E402
 from oncofiles.tools import (  # noqa: E402
     activity,
     agent_state,
@@ -7682,7 +7692,6 @@ hygiene.register(mcp)
 db_query.register(mcp)
 prompt_log.register(mcp)
 integrations.register(mcp)
-resources.register(mcp)
 
 # ── Backward-compatible re-exports for tests ─────────────────────────────────
 from oncofiles.tools._helpers import (  # noqa: E402, F401

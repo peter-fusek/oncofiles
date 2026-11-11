@@ -44,66 +44,131 @@ def _meta(row: dict) -> dict:
         return {}
 
 
-def _dedupe(rows: list[dict]) -> tuple[list[dict], int]:
-    """One measurement counts once (#635).
+RANGE_AT_NOTE = (
+    "For a range (date_precision='range'), `at` is the latest possible day, not a sample "
+    "date: the value was drawn sometime between at_from and at_to."
+)
 
-    * the same code, day and value from two documents (a duplicated lab
-      sheet) is one point; the verified/machine one is kept;
-    * values quoted in a report (``date_source=report``) are a quote of an
-      earlier draw only when at least TWO codes of the same report day equal
-      that draw's values (same source document, within 60 days). One equal
-      number alone (HGB 124 twice) is a coincidence, not a quote.
+
+def _date_fields(row: dict) -> dict:
+    """``date_precision`` and the printed window of a value dated under a date
+    range (#726): ``at`` is then the range end, the latest possible day. Empty
+    for a value with its own day. An open range has no ``at_from``."""
+    m = _meta(row)
+    if m.get("date_precision") != "range":
+        return {}
+    return {"date_precision": "range", "at_from": m.get("date_range_start"),
+            "at_to": m.get("date_range_end")}  # fmt: skip
+
+
+def _dedupe(rows: list[dict]) -> tuple[list[dict], list[dict]]:
+    """One measurement counts once (#635). Read time only: stored rows are never
+    merged or deleted, and every hidden point is listed with its provenance.
+
+    * ``exact``: the same code, day and value from two documents (a duplicated
+      lab sheet); the verified/machine one is kept;
+    * ``quote``: a value dated to its report (``date_source=report``) equals an
+      earlier draw of another document within 60 days, and at least TWO codes
+      of the same report day equal that draw. One equal number alone is a
+      coincidence, not a quote;
+    * ``range``: a value dated under a printed range (``date_range_start`` …
+      ``date_range_end``; it sits at the range end, #726) equals, by code,
+      canonical value and unit, a value of another document dated inside that
+      window. A different value is never hidden. A value with an exact day is
+      always preferred: a range value is hidden against another range value
+      only when that one was kept, so two documents quoting the same range
+      never hide each other, and on a shared day the exact value sorts first.
     """
     from datetime import date as _date
 
     def day_of(r: dict) -> str:
         return (r["effective_at"] or "")[:10]
 
-    def as_date(day: str):
+    def as_date(day: str | None):
         try:
-            return _date.fromisoformat(day)
+            return _date.fromisoformat((day or "")[:10])
         except ValueError:
             return None
 
-    # every draw (source document, day) → {code: value}
+    # every draw (source document, day) → {code: (value, unit, row)}
     draws: dict[tuple, dict] = {}
     for r in rows:
         if r["value_canonical"] is not None:
-            draws.setdefault((r["source_document_id"], day_of(r)), {})[r["code"]] = r[
-                "value_canonical"
-            ]
+            draws.setdefault((r["source_document_id"], day_of(r)), {})[r["code"]] = r
 
-    def quoted(r: dict) -> bool:
+    def same(a: dict, b: dict) -> bool:
+        return (a["value_canonical"], a.get("unit_canonical")) == (
+            b["value_canonical"],
+            b.get("unit_canonical"),
+        )
+
+    def quoted(r: dict) -> dict | None:
         if _meta(r).get("date_source") != "report" or r["value_canonical"] is None:
-            return False
+            return None
         d0 = as_date(day_of(r))
         own = draws.get((r["source_document_id"], day_of(r)), {})
         for (doc, day), values in draws.items():
             d1 = as_date(day)
             if doc == r["source_document_id"] or not d0 or not d1 or not 0 < (d0 - d1).days <= 60:
                 continue
-            if values.get(r["code"]) != r["value_canonical"]:
+            hit = values.get(r["code"])
+            if not hit or not same(hit, r):
                 continue
-            if sum(1 for c, v in own.items() if values.get(c) == v) >= 2:
-                return True
-        return False
+            if sum(1 for c, v in own.items() if c in values and same(values[c], v)) >= 2:
+                return hit
+        return None
+
+    def ranged(r: dict) -> bool:
+        m = _meta(r)
+        return bool(m.get("date_range_start") and m.get("date_range_end"))
+
+    def in_range(r: dict) -> dict | None:
+        m = _meta(r)
+        lo, hi = as_date(m.get("date_range_start")), as_date(m.get("date_range_end"))
+        if not lo or not hi or r["value_canonical"] is None:
+            return None
+        for (doc, day), values in draws.items():
+            d = as_date(day)
+            hit = values.get(r["code"])
+            if doc == r["source_document_id"] or not d or not lo <= d <= hi:
+                continue
+            if hit and same(hit, r) and (not ranged(hit) or id(hit) in kept_ids):
+                return hit
+        return None
 
     rank = {"verified": 0, "corrected": 0, "machine": 1, "unverified": 2}
     rows = sorted(
         rows,
-        key=lambda r: (r["code"] or "", r["effective_at"] or "", rank.get(r["verification"], 3)),
-    )
+        key=lambda r: (
+            r["code"] or "", r["effective_at"] or "", ranged(r), rank.get(r["verification"], 3),
+        ),
+    )  # fmt: skip
     kept: list[dict] = []
-    seen: set = set()
-    dropped = 0
+    kept_ids: set[int] = set()
+    first: dict = {}
+    removed: list[dict] = []
     for r in rows:
         key = (r["code"], day_of(r), r["value_canonical"], r["value_text"])
-        if key in seen or quoted(r):
-            dropped += 1
+        # a range value checks its window first, so the reason never depends on
+        # whether the matching draw happens to fall on the range end (#726)
+        other, reason = in_range(r), "range"
+        if other is None:
+            other, reason = first.get(key), "exact"
+        if other is None:
+            other, reason = quoted(r), "quote"
+        if other is not None and other is not r:
+            removed.append({
+                "code": r["code"], "at": r["effective_at"], "value": r["value_canonical"],
+                "reason": reason,
+                "removed": {"fact_id": r.get("id"), "document_id": r["source_document_id"]},
+                "kept": {"fact_id": other.get("id"), "document_id": other["source_document_id"],
+                         "at": other["effective_at"]},
+            })  # fmt: skip
             continue
-        seen.add(key)
+        first[key] = r
         kept.append(r)
-    return kept, dropped
+        kept_ids.add(id(r))
+    return kept, removed
 
 
 def _stats(points: list[dict]) -> dict | None:
@@ -217,13 +282,17 @@ async def fact_series(
     statistics (min, max, first, last, change, out-of-range count). Unverified
     values are listed separately and excluded from the statistics unless
     include_unverified=true; ``latest_any`` is the newest value of any
-    verification (say which). Read-only.
+    verification (say which). ``duplicates`` lists every hidden point (exact
+    duplicate, report quote, or same value inside a printed date range) with
+    both documents. A value printed under a date range carries
+    ``date_precision="range"`` with ``at_from``/``at_to``: for a range, ``at``
+    is the latest possible day, not a sample date. Read-only.
     """
     pid = await _resolve_patient_id(patient_slug, ctx)
     rows = await _get_db(ctx).fact_series_rows(
         patient_id=pid, codes=[c.upper() for c in codes], date_from=date_from, date_to=date_to
     )
-    rows, duplicates_removed = _dedupe(rows)
+    rows, duplicates = _dedupe(rows)
     out: dict = {}
     for r in rows:
         s = out.setdefault(
@@ -233,6 +302,7 @@ async def fact_series(
         )  # fmt: skip
         point = {
             "at": r["effective_at"],
+            **_date_fields(r),
             "value": r["value_canonical"] if r["value_canonical"] is not None else r["value_text"],
             "original": " ".join(
                 str(x)
@@ -254,17 +324,40 @@ async def fact_series(
         # the newest value of any verification, so "current" is never months old (#635)
         newest = max(s["values"] + s["unverified"], key=lambda p: p["at"] or "", default=None)
         s["latest_any"] = (
-            {k: newest[k] for k in ("at", "value", "flag", "verification", "source")}
+            {
+                k: newest[k]
+                for k in (
+                    "at",
+                    "date_precision",
+                    "at_from",
+                    "at_to",
+                    "value",
+                    "flag",
+                    "verification",
+                    "source",
+                )
+                if k in newest
+            }  # fmt: skip
             if newest
             else None
         )
-    return _dump({"series": out, "duplicates_removed": duplicates_removed, "note": UNVERIFIED_NOTE})
+    return _dump(
+        {
+            "series": out,
+            "duplicates_removed": len(duplicates),
+            "duplicates": duplicates,  # what was hidden, why, and which value was kept
+            "note": UNVERIFIED_NOTE + " " + RANGE_AT_NOTE,
+        }
+    )
 
 
 async def document_detail(ctx: Context, document_id: int, patient_slug: str | None = None) -> str:
     """One document: metadata, doctor/institution, the facts extracted from it, links.
 
-    The original opens via source_url (Drive) or view_document. Read-only.
+    The original opens via source_url (Drive) or view_document. A fact printed
+    under a date range carries ``date_precision="range"`` with
+    ``at_from``/``at_to``: for a range, ``at`` is the latest possible day, not
+    a sample date. Read-only.
     """
     pid = await _resolve_patient_id(patient_slug, ctx)
     db = _get_db(ctx)
@@ -285,6 +378,7 @@ async def document_detail(ctx: Context, document_id: int, patient_slug: str | No
                     "ref": [f["ref_range_low"], f["ref_range_high"]],
                     "flag": f["flag"],
                     "at": f["effective_at"],
+                    **_date_fields(f),
                     "page": f["page_number"],
                     "verification": f["verification"],
                     "evidence": f["evidence"],
@@ -292,7 +386,7 @@ async def document_detail(ctx: Context, document_id: int, patient_slug: str | No
                 for f in facts
             ],  # fmt: skip
             "links": await db.links_for(patient_id=pid, entity="document", entity_id=document_id),
-            "note": UNVERIFIED_NOTE,
+            "note": UNVERIFIED_NOTE + " " + RANGE_AT_NOTE,
         }
     )
 

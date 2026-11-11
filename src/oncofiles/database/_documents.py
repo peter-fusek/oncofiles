@@ -663,6 +663,34 @@ class DocumentMixin:
 
     # ── Curated read model (#603) ─────────────────────────────────────────
 
+    async def curated_reocr_candidates(self, *, patient_id: str) -> list[dict]:
+        """Active curated documents of one patient with what re-OCR (#660) needs:
+        id, filename, gdrive_id, mime_type, parsed structured_metadata, whether
+        any stored page carries an uncertain-reading marker, and how many of its
+        facts are unverified."""
+        import json as _json
+
+        async with self.db.execute(
+            "SELECT d.id, d.filename, d.gdrive_id, d.mime_type, d.category, d.document_date, "
+            "d.structured_metadata, "
+            "EXISTS (SELECT 1 FROM document_pages p WHERE p.document_id = d.id "
+            "AND p.extracted_text LIKE '%[?]%') AS uncertain, "
+            "(SELECT COUNT(*) FROM clinical_records c WHERE c.source_document_id = d.id "
+            "AND c.patient_id = d.patient_id AND c.deleted_at IS NULL "
+            "AND c.verification = 'unverified') AS unverified_facts "
+            "FROM documents d WHERE d.patient_id = ? AND d.file_id LIKE 'gdrive:%' "
+            "AND d.deleted_at IS NULL ORDER BY d.id",
+            (patient_id,),
+        ) as cursor:
+            rows = [dict(r) for r in await cursor.fetchall()]
+        for r in rows:
+            try:
+                r["structured_metadata"] = _json.loads(r["structured_metadata"] or "{}")
+            except ValueError:
+                r["structured_metadata"] = {}
+            r["uncertain"] = bool(r["uncertain"])
+        return rows
+
     async def curated_index_state(self, *, patient_id: str) -> dict[str, dict]:
         """Indexed curated rows of a patient: gdrive_id → {id, sidecar_modified, deleted}."""
         import json as _json
@@ -688,6 +716,7 @@ class DocumentMixin:
                 "id": r["id"],
                 # an older index version counts as "changed": re-processed once
                 "sidecar_modified": cur.get("sidecar_modified", "") if current else "",
+                "source_md5": cur.get("source_md5", ""),
                 "deleted": r["deleted_at"] is not None,
             }
         return out
@@ -907,36 +936,6 @@ class DocumentMixin:
             "SELECT * FROM documents WHERE (gdrive_id IS NULL OR sync_state = 'pending') "
             "AND deleted_at IS NULL AND patient_id = ? ORDER BY document_date DESC",
             (patient_id,),
-        ) as cursor:
-            rows = await cursor.fetchall()
-            return [d for r in rows if (d := _safe_row_to_document(r)) is not None]
-
-    async def get_treatment_timeline(self, limit: int = 200, *, patient_id: str) -> list[Document]:
-        """Get treatment documents in chronological (ASC) order."""
-        treatment_categories = (
-            "surgery",
-            "surgical_report",
-            "discharge",
-            "discharge_summary",
-            "report",
-            "pathology",
-            "genetics",
-            "labs",
-            "imaging",
-            "chemo_sheet",
-            "prescription",
-            "referral",
-        )
-        placeholders = ", ".join("?" for _ in treatment_categories)
-        async with self.db.execute(
-            f"""
-            SELECT * FROM documents
-            WHERE category IN ({placeholders}) AND deleted_at IS NULL
-            AND patient_id = ?
-            ORDER BY document_date ASC, created_at ASC
-            LIMIT ?
-            """,
-            (*treatment_categories, patient_id, limit),
         ) as cursor:
             rows = await cursor.fetchall()
             return [d for r in rows if (d := _safe_row_to_document(r)) is not None]

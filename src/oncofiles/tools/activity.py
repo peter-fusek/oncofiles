@@ -197,7 +197,79 @@ async def get_activity_stats(
     return json.dumps({"stats": stats, "total_calls": total_calls})
 
 
+_NO_PATIENT = "__system_no_patient__"
+# Migration 029's column default. No patient has this id, and since #663 no
+# write path stores it (every insert sets patient_id explicitly), so it marks
+# exactly the rows written before the fix. Callers cannot forge it:
+# add_activity_log stores the resolver's pid.
+_PRE_663_DEFAULT = "erika"
+
+
+async def backfill_activity_log_attribution(
+    ctx: Context,
+    batch_size: int = 500,
+    dry_run: bool = True,
+) -> str:
+    """Mark auto-logged activity rows written before the #663 fix as unattributed.
+
+    **Admin-only.** Before #663 every auto-logged tool call took the
+    migration-029 column default instead of the patient the call acted on, so
+    the patient of those rows is unknown. They get the no-patient sentinel and
+    the ``attribution_unknown`` tag: no patient-scoped read can match them,
+    admins still see them. The patient is deliberately not guessed from the
+    input summary (a truncated, caller-shaped string, and a denied call's slug
+    names a patient the call never acted on). Rows are never deleted. One
+    batch per call (at most ``batch_size`` rows, one commit); call again until
+    ``remaining`` is 0.
+
+    Args:
+        batch_size: Max rows per call (1-500).
+        dry_run: If True (default), only report what would change.
+    """
+    from oncofiles.tools._helpers import _require_admin_or_raise
+
+    try:
+        _require_admin_or_raise("backfill_activity_log_attribution")
+    except ValueError as exc:
+        return json.dumps({"error": str(exc)})
+
+    db = _get_db(ctx)
+    pending = "agent_id = 'auto' AND patient_id = ?"
+    async with db.db.execute(
+        f"SELECT COUNT(*) AS cnt FROM activity_log WHERE {pending}", (_PRE_663_DEFAULT,)
+    ) as cur:
+        row = await cur.fetchone()
+        total_before = dict(row)["cnt"] if row else 0
+
+    batch_size = max(1, min(batch_size, 500))
+    async with db.db.execute(
+        f"SELECT id FROM activity_log WHERE {pending} ORDER BY id LIMIT ?",
+        (_PRE_663_DEFAULT, batch_size),
+    ) as cur:
+        ids = [dict(r)["id"] for r in await cur.fetchall()]
+
+    if not dry_run and ids:
+        for row_id in ids:
+            await db.db.execute(
+                f"UPDATE activity_log SET patient_id = ?, tags = '[\"attribution_unknown\"]' "
+                f"WHERE id = ? AND {pending}",
+                (_NO_PATIENT, row_id, _PRE_663_DEFAULT),
+            )
+        await db.db.commit()
+
+    done = 0 if dry_run else len(ids)
+    return json.dumps(
+        {
+            "scanned": len(ids),
+            "attribution_unknown": len(ids),
+            "remaining": total_before - done,
+            "dry_run": dry_run,
+        }
+    )
+
+
 def register(mcp):
+    mcp.tool()(backfill_activity_log_attribution)
     mcp.tool()(add_activity_log)
     mcp.tool()(search_activity_log)
     mcp.tool()(get_activity_stats)
