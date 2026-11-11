@@ -85,6 +85,23 @@ logger = logging.getLogger(__name__)
 MAX_ROWS = 200
 QUERY_TIMEOUT_S = 10
 
+# Resource limits on the engine path (#738). The progress handler runs every
+# PROGRESS_CHECK_EVERY SQLite VM instructions and interrupts the query once
+# MAX_VM_STEPS instructions have run OR the wall clock passes
+# QUERY_TIMEOUT_S, whichever comes first (~200M steps is roughly 1 s of pure
+# VM work on the Mac mini; normal queries use well under 1M). No single
+# instruction can run long on its own: strings/blobs are capped at
+# MAX_VALUE_BYTES (so e.g. printf/replace cannot build a huge value), and
+# the sorter only ever sorts rows the step budget let through.
+PROGRESS_CHECK_EVERY = 10_000
+MAX_VM_STEPS = 200_000_000
+MAX_VALUE_BYTES = 2_000_000
+# Hard caps on what one call returns, whatever LIMIT the SQL says. Rows are
+# fetched one at a time and fetching stops at either cap (truncated: true),
+# so a cartesian result is never materialised.
+MAX_RESULT_ROWS = 5000
+MAX_RESULT_BYTES = 150_000
+
 # Patient-scoped tables — readable iff the query filters by
 # `patient_id = '<caller_pid>'` literal equality. Everything in this set
 # has a `patient_id` column in the schema. Adding to this list is a
@@ -128,10 +145,18 @@ ALLOWED_TABLES: frozenset[str] = ALLOWED_TABLES_PATIENT_SCOPED | ALLOWED_TABLES_
 # expression, so they only ever see rows the views already filtered.
 _SAFE_TABLE_VALUED: frozenset[str] = frozenset({"json_each", "json_tree"})
 
-# SQL functions the authorizer permits (#738). Anything else — including
-# load_extension, fts3_tokenizer, sqlite_* introspection and any function
-# an extension could register — is denied. Lower-case names, as SQLite
-# reports them; operators that compile to functions are listed too.
+# SQL functions the authorizer permits (#738). Anything else is denied,
+# notably: load_extension, readfile/writefile/edit (CLI-only builds),
+# fts3_tokenizer, fts5/fts5_source_id, sqlar_compress/sqlar_uncompress,
+# random/randomblob/zeroblob (no randomness that could serve as an oracle,
+# no giant blobs), changes/last_insert_rowid/total_changes, sqlite_* and
+# anything an extension could register. Virtual tables (zipfile, sqlar,
+# dbstat, bytecode, tables_used, fts3tokenize, fts5vocab, ...) are reads of
+# a table not on the read allow-list, so the table-read gate denies them;
+# json_each/json_tree are allowed but only see what their argument reads,
+# and a read of main.<patient table> inside that argument is denied too.
+# Lower-case names, as SQLite reports them; operators that compile to
+# functions are listed too.
 SAFE_FUNCTIONS: frozenset[str] = frozenset(
     {
         # aggregates
@@ -410,7 +435,12 @@ async def query_db(
             # SQLite's own text names the denied action/table, never row data.
             return json.dumps({"error": f"Denied by the database engine (#738): {msg}"})
         if "interrupted" in msg:
-            return json.dumps({"error": f"Query timed out after {QUERY_TIMEOUT_S}s"})
+            return json.dumps(
+                {
+                    "error": f"Query stopped: over {MAX_VM_STEPS:,} SQLite steps "
+                    f"or {QUERY_TIMEOUT_S}s (#738)"
+                }
+            )
         return json.dumps(_safe_error(exc, "query_db_execution_failed"))
     except Exception as exc:
         return json.dumps(_safe_error(exc, "query_db_execution_failed"))
@@ -566,33 +596,90 @@ def _disable_extensions(conn: sqlite3.Connection) -> None:
         conn.enable_load_extension(False)
 
 
+def _to_record(columns: list[str], row) -> dict:
+    record = {}
+    for idx, col in enumerate(columns):
+        # Turso returns dicts, sqlite3 returns tuples / Row objects
+        val = row[col] if isinstance(row, dict) else row[idx]
+        if isinstance(val, bytes):
+            val = f"<bytes:{len(val)}>"
+        elif val is not None and not isinstance(val, (str, int, float, bool)):
+            val = str(val)
+        record[col] = val
+    return record
+
+
+@dataclass
+class _Result:
+    columns: list[str]
+    rows: list[dict]
+    truncated: bool = False
+    truncated_by: str | None = None  # "rows" | "bytes"
+
+
+class _Collector:
+    """Accumulates rows up to the row and byte caps; tells the caller to stop."""
+
+    def __init__(self, columns: list[str], row_limit: int) -> None:
+        self.result = _Result(columns=columns, rows=[])
+        self.row_limit = min(max(1, row_limit), MAX_RESULT_ROWS)
+        self.bytes = 0
+
+    def add(self, row) -> bool:
+        """Add one row; False when the caller must stop fetching."""
+        if len(self.result.rows) >= self.row_limit:
+            self.result.truncated, self.result.truncated_by = True, "rows"
+            return False
+        record = _to_record(self.result.columns, row)
+        size = len(json.dumps(record, default=str))
+        if self.bytes + size > MAX_RESULT_BYTES:
+            self.result.truncated, self.result.truncated_by = True, "bytes"
+            return False
+        self.bytes += size
+        self.result.rows.append(record)
+        return True
+
+
 def _run_engine_scoped(
     conn: sqlite3.Connection,
     query: str,
     row_limit: int,
     caller_pid: str | None,
     is_admin: bool,
-) -> tuple[list[str], list]:
+) -> _Result:
     """Run ``query`` under temp-view scoping + authorizer. Synchronous; one thread."""
     _disable_extensions(conn)
     scope = _create_scope(conn, caller_pid)
     deadline = time.monotonic() + QUERY_TIMEOUT_S
+    max_calls = MAX_VM_STEPS // PROGRESS_CHECK_EVERY
+    calls = 0
+
+    def _progress() -> int:
+        nonlocal calls
+        calls += 1
+        return 1 if calls > max_calls or time.monotonic() > deadline else 0
+
+    old_length = conn.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, MAX_VALUE_BYTES)
     try:
-        conn.set_progress_handler(lambda: 1 if time.monotonic() > deadline else 0, 1000)
+        conn.set_progress_handler(_progress, PROGRESS_CHECK_EVERY)
         conn.set_authorizer(_make_authorizer(scope, is_admin=is_admin))
         try:
             cursor = conn.execute(query)
             try:
                 columns = [d[0] for d in cursor.description] if cursor.description else []
-                rows = cursor.fetchmany(row_limit + 1)
+                collector = _Collector(columns, row_limit)
+                while (row := cursor.fetchone()) is not None:
+                    if not collector.add(row):
+                        break
             finally:
                 cursor.close()
         finally:
             conn.set_authorizer(None)
             conn.set_progress_handler(None, 0)
     finally:
+        conn.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, old_length)
         _drop_scope(conn, scope)
-    return columns, rows
+    return collector.result
 
 
 def _readonly_uri(path: str) -> str:
@@ -601,7 +688,7 @@ def _readonly_uri(path: str) -> str:
 
 def _run_on_readonly_file(
     path: str, query: str, row_limit: int, caller_pid: str | None, is_admin: bool
-) -> tuple[list[str], list]:
+) -> _Result:
     """Open a per-call read-only connection to ``path`` and run the scoped query."""
     conn = sqlite3.connect(_readonly_uri(path), uri=True, timeout=5.0, isolation_level=None)
     try:
@@ -653,11 +740,11 @@ async def _execute_query(
             # Tests: one in-memory connection. Views, authorizer, query and
             # cleanup run as ONE job on aiosqlite's worker thread, so no other
             # coroutine's statement can interleave and see the temp views.
-            columns, rows = await raw._execute(
+            result = await raw._execute(
                 lambda: _run_engine_scoped(raw._conn, query, row_limit, caller_pid, is_admin)
             )
         else:
-            columns, rows = await asyncio.to_thread(
+            result = await asyncio.to_thread(
                 _run_on_readonly_file, str(db.path), query, row_limit, caller_pid, is_admin
             )
     else:
@@ -667,29 +754,21 @@ async def _execute_query(
         )
         async with raw.execute(_shadow_with_ctes(query, caller_pid)) as cursor:
             columns = [d[0] for d in cursor.description] if cursor.description else []
-            rows = await cursor.fetchall()
+            collector = _Collector(columns, row_limit)
+            while (row := await cursor.fetchone()) is not None:
+                if not collector.add(row):
+                    break
+            result = collector.result
 
-    results = []
-    for row in rows[:row_limit]:
-        record = {}
-        for idx, col in enumerate(columns):
-            # Turso returns dicts, sqlite3 returns tuples / Row objects
-            val = row[col] if isinstance(row, dict) else row[idx]
-            if isinstance(val, bytes):
-                val = f"<bytes:{len(val)}>"
-            elif val is not None and not isinstance(val, (str, int, float, bool)):
-                val = str(val)
-            record[col] = val
-        results.append(record)
-
-    return json.dumps(
-        {
-            "columns": columns,
-            "rows": results,
-            "row_count": len(results),
-            "truncated": len(rows) > row_limit,
-        }
-    )
+    payload = {
+        "columns": result.columns,
+        "rows": result.rows,
+        "row_count": len(result.rows),
+        "truncated": result.truncated,
+    }
+    if result.truncated_by:
+        payload["truncated_by"] = result.truncated_by
+    return json.dumps(payload)
 
 
 def register(mcp):
