@@ -359,7 +359,9 @@ async def redact_activity_log_inputs(
 
 def register(mcp):
     mcp.tool()(backfill_activity_log_attribution)
-    mcp.tool(annotations={"destructiveHint": False})(redact_activity_log_inputs)
+    # Annotation comes from tool_annotations.DESTRUCTIVE_TOOLS (#608): it
+    # overwrites stored inputs irreversibly, so clients keep asking.
+    mcp.tool()(redact_activity_log_inputs)
     mcp.tool()(add_activity_log)
     mcp.tool()(search_activity_log)
     mcp.tool()(get_activity_stats)
