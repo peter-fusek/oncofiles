@@ -6,7 +6,8 @@ again from the **source file**, on the **local** model only:
 
 * a PDF with a real text layer → that text, page by page (exact, no model);
 * otherwise two vision passes with high reasoning effort at two resolutions
-  (REOCR_DPI / REOCR_SECOND_PASS_DPI, default 150 / 220 dpi).
+  (default 150 / 220 dpi; REOCR_DPI / REOCR_SECOND_PASS_DPI for this rewrite
+  path, REREAD_DPI / REREAD_SECOND_PASS_DPI for the verify-only re-read).
   A line of the first pass whose numbers are not all found on the same page of
   the second pass is marked ``[?]``. Digits are accepted only where both
   passes agree; the parser keeps ``[?]`` lines unverified.
@@ -239,19 +240,30 @@ class Reread:
     skipped_second_pass_pages: list[int] = field(default_factory=list)
 
 
-def reocr_dpis(passes: int) -> list[int]:
-    """Render dpi of each vision pass (REOCR_DPI, REOCR_SECOND_PASS_DPI)."""
-    return [int(config.REOCR_DPI)] + ([int(config.REOCR_SECOND_PASS_DPI)] if passes >= 2 else [])
+def reocr_dpis(passes: int, purpose: str = "reocr") -> list[int]:
+    """Render dpi of each vision pass. ``purpose`` "reocr" (the rewrite path,
+    REOCR_DPI / REOCR_SECOND_PASS_DPI) or "reread" (verify-only, REREAD_DPI /
+    REREAD_SECOND_PASS_DPI); the two never affect each other."""
+    if purpose == "reread":
+        first, second = config.REREAD_DPI, config.REREAD_SECOND_PASS_DPI
+    elif purpose == "reocr":
+        first, second = config.REOCR_DPI, config.REOCR_SECOND_PASS_DPI
+    else:
+        raise ValueError(f"unknown re-read purpose {purpose!r}")
+    return [int(first)] + ([int(second)] if passes >= 2 else [])
 
 
 def reread(
     name: str, content: bytes, mime: str = "", *, passes: int = 2, doc_ref: object = None,
     parallel: int = 1, second_pass_pages: Collection[int] | None = None,
+    purpose: str = "reocr",
 ) -> Reread:  # fmt: skip
     """Read a source again, locally. Never raises. ``doc_ref`` (a document id)
     is what logs show: filenames can carry names or diagnoses.
     ``second_pass_pages`` (1-based, ``None`` = all): see ``_vision_passes``;
-    only the verify-only re-read passes it, and only in adaptive mode."""
+    only the verify-only re-read passes it, and only in adaptive mode.
+    ``purpose``: "reocr" (default, text written back) or "reread" (verify-only);
+    it picks the dpi settings (``reocr_dpis``)."""
     ext = extract_mod._ext(name)
     try:
         if ext in extract_mod.TEXT_EXTS:
@@ -269,7 +281,7 @@ def reread(
             return Reread([], "none", "-", error="too many pages for vision")
         import httpx
 
-        dpis = reocr_dpis(passes)
+        dpis = reocr_dpis(passes, purpose)
         adaptive = config.REOCR_PASSES_MODE == "adaptive"
         t0 = time.monotonic()
         with httpx.Client(timeout=config.LOCAL_LLM_TIMEOUT_S) as client:  # one per document
@@ -299,6 +311,7 @@ def reread(
 def reread_isolated(
     name: str, content: bytes, mime: str = "", *, passes: int = 2, doc_ref: object = None,
     parallel: int = 1, second_pass_pages: Collection[int] | None = None,
+    purpose: str = "reocr",
 ) -> Reread:  # fmt: skip
     """``reread`` in a short-lived child process (#667).
 
@@ -321,6 +334,7 @@ def reread_isolated(
                 "passes": passes,
                 "doc_ref": doc_ref,
                 "parallel": parallel,
+                "purpose": purpose,
                 "second_pass_pages": (
                     None if second_pass_pages is None else sorted(second_pass_pages)
                 ),

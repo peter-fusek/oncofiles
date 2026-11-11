@@ -1267,7 +1267,7 @@ def _reread_one(drive, d: dict, old: list[dict], vocab) -> dict:
     )
     rr = reread_isolated(d["filename"], source, d.get("mime_type") or "", passes=2,
                          doc_ref=d["id"], parallel=_reread_parallel(),
-                         second_pass_pages=wanted)  # fmt: skip
+                         second_pass_pages=wanted, purpose="reread")  # fmt: skip
     if rr.error or not any(p.strip() for p in rr.pages):
         return {**res, "result": "failed", "error": rr.error or "no text"}
     new, _ = extract_lab_facts(rr.pages, vocab, report_date=str(d.get("document_date") or "")[:10]

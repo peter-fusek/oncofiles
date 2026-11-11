@@ -73,7 +73,10 @@ def _confirmed(rr, olds, vocab, old_page_count) -> list[int]:
 
 def test_env_defaults_are_todays_values():
     assert reocr.reocr_dpis(2) == [extract_mod.RENDER_DPI, 220] == [150, 220]
+    assert reocr.reocr_dpis(2, "reread") == [150, 220]
     assert reocr.reocr_dpis(1) == [150]
+    with pytest.raises(ValueError):
+        reocr.reocr_dpis(2, "other")
     assert config.REOCR_PASSES_MODE == "fixed2"
 
 
@@ -109,6 +112,77 @@ def test_dpi_settings_reach_the_renderer(model, monkeypatch):
     assert rendered == [110, 160, 110, 160] and rr.dpi == [110, 160]
 
 
+def _rendered(model, monkeypatch, purpose: str) -> list:
+    rendered = []
+    monkeypatch.setattr(
+        extract_mod, "_pixmap_png", lambda page, dpi=None: rendered.append(dpi) or f"{dpi}".encode()
+    )
+    model["script"] = {(1, d): "WBC 6,12" for d in (100, 130, 150, 220)}
+    reocr.reread("scan.pdf", _scan_pdf(1), purpose=purpose)
+    return rendered
+
+
+def test_reread_dpi_never_changes_reocr_rendering(model, monkeypatch):
+    """The re-OCR rewrite path writes its transcript to Drive: the verify-only
+    A/B knob (REREAD_*) must never reach it, and vice versa."""
+    monkeypatch.setattr(config, "REREAD_DPI", 100)
+    monkeypatch.setattr(config, "REREAD_SECOND_PASS_DPI", 130)
+    assert _rendered(model, monkeypatch, "reocr") == [150, 220]
+    assert _rendered(model, monkeypatch, "reread") == [100, 130]
+
+
+def test_reocr_dpi_never_changes_reread_rendering(model, monkeypatch):
+    monkeypatch.setattr(config, "REOCR_DPI", 100)
+    monkeypatch.setattr(config, "REOCR_SECOND_PASS_DPI", 130)
+    assert _rendered(model, monkeypatch, "reread") == [150, 220]
+    assert _rendered(model, monkeypatch, "reocr") == [100, 130]
+
+
+def test_the_purpose_reaches_the_child(monkeypatch):
+    import json
+    import subprocess
+
+    from oncofiles.curated.reocr import Reread
+
+    sent = []
+
+    def fake_run(cmd, input, **kw):  # noqa: A002
+        sent.append(json.loads(input.split(b"\n", 1)[0]))
+        out = json.dumps({**Reread(["x"], "vision2", "qwen-local").__dict__, "peak_rss_mb": 1})
+        return subprocess.CompletedProcess(cmd, 0, out.encode(), b"")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    reocr.reread_isolated("scan.pdf", b"%PDF", purpose="reread")
+    reocr.reread_isolated("scan.pdf", b"%PDF")
+    assert [h["purpose"] for h in sent] == ["reread", "reocr"]
+
+
+def test_the_verify_only_reread_asks_for_reread_dpis():
+    import inspect
+
+    from oncofiles.tools import curated as tool
+
+    assert 'purpose="reread"' in inspect.getsource(tool._reread_one)
+
+
+async def test_the_rewrite_path_reads_with_reocr_dpis(vocab):
+    """run_reocr calls its reader without a purpose: the "reocr" default."""
+    from datetime import UTC, datetime
+
+    from tests.test_curated_reocr import _setup
+
+    drive, doc, _ = _setup()
+    seen = []
+
+    def reader(*a, **kw):
+        seen.append(kw)
+        return reocr.Reread([], "none", "-", error="stop here")
+
+    reocr.run_reocr(drive, drive.root, [doc], vocab, dry_run=True, reader=reader,
+                    now=datetime(2027, 5, 3, tzinfo=UTC))  # fmt: skip
+    assert seen and all(kw.get("purpose", "reocr") == "reocr" for kw in seen)
+
+
 def test_the_real_renderer_scales_with_the_dpi():
     import pymupdf
 
@@ -121,10 +195,9 @@ def test_the_real_renderer_scales_with_the_dpi():
 def test_the_child_inherits_the_dpi_and_mode_settings():
     from oncofiles.curated.reocr_child import child_env
 
-    env = child_env({"REOCR_DPI": "120", "REOCR_SECOND_PASS_DPI": "180",
-                     "REOCR_PASSES_MODE": "adaptive", "MCP_BEARER_TOKEN": "x"})  # fmt: skip
-    assert env == {"REOCR_DPI": "120", "REOCR_SECOND_PASS_DPI": "180",
-                   "REOCR_PASSES_MODE": "adaptive"}  # fmt: skip
+    knobs = {"REOCR_DPI": "160", "REOCR_SECOND_PASS_DPI": "230", "REREAD_DPI": "120",
+             "REREAD_SECOND_PASS_DPI": "180", "REOCR_PASSES_MODE": "adaptive"}  # fmt: skip
+    assert child_env({**knobs, "MCP_BEARER_TOKEN": "x"}) == knobs
 
 
 # ── adaptive ──

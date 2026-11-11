@@ -6,8 +6,8 @@ reach it, and the read runs inside ``local_only`` so no cloud path can open even
 by mistake. Drive I/O stays in the parent; the child only gets the file bytes.
 
 Protocol: stdin = one JSON header line (``name``, ``mime``, ``passes``) followed
-by the raw file bytes (header may carry ``parallel`` and
-``second_pass_pages``); stdout = one JSON object (the ``Reread`` fields plus
+by the raw file bytes (header may carry ``parallel``,
+``second_pass_pages`` and ``purpose``); stdout = one JSON object (the ``Reread`` fields plus
 ``peak_rss_mb``). ``--probe`` instead reports what the child can see, for tests.
 """
 
@@ -22,7 +22,7 @@ from dataclasses import asdict
 # Exact names and prefixes the child may inherit. An allowlist, so a new
 # secret added to the server env can never leak into the child by default.
 ENV_ALLOW = {"PATH", "HOME", "LANG", "TMPDIR", "TZ", "VIRTUAL_ENV", "SSL_CERT_FILE"}
-ENV_ALLOW_PREFIXES = ("LOCAL_LLM_", "REOCR_", "LC_", "PYTHON")
+ENV_ALLOW_PREFIXES = ("LOCAL_LLM_", "REOCR_", "REREAD_", "LC_", "PYTHON")
 SECRET_PROBES = (
     "ANTHROPIC_API_KEY",
     "MCP_BEARER_TOKEN",
@@ -63,6 +63,7 @@ def main() -> int:
                         passes=int(header.get("passes", 2)),
                         parallel=int(header.get("parallel", 1)),
                         second_pass_pages=header.get("second_pass_pages"),
+                        purpose=header.get("purpose") or "reocr",
                         doc_ref=header.get("doc_ref"))  # fmt: skip
             out = {**asdict(rr), "peak_rss_mb": round(_peak_rss_mb(), 1)}
     sys.stdout.write(json.dumps(out, ensure_ascii=False))

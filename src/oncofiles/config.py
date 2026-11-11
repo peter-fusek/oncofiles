@@ -60,13 +60,18 @@ REOCR_RSS_LIMIT_MB: float = float(os.environ.get("REOCR_RSS_LIMIT_MB", "450"))
 # Concurrent vision passes per page in a re-read (#593). 1 = sequential (default);
 # 2 needs at least 2 parallel slots in LM Studio (infra setting).
 REOCR_PARALLEL_PASSES: int = int(os.environ.get("REOCR_PARALLEL_PASSES", "1"))
-# Render resolution of the two re-OCR vision passes (#593 perf A/B). Defaults are
+# Render resolution of the two vision passes (#593), split by path. Defaults are
 # the values used since #660: pass 1 at 150 dpi, pass 2 at 220 dpi; every page is
-# still capped at extract.MAX_PAGE_PIXELS. Re-OCR / re-read only; the curation
-# pipeline's first OCR keeps extract.RENDER_DPI. Runtime env (the re-OCR child
-# inherits REOCR_*).
+# still capped at extract.MAX_PAGE_PIXELS. The curation pipeline's first OCR keeps
+# extract.RENDER_DPI. Runtime env; the re-OCR child inherits REOCR_* and REREAD_*.
+# Re-OCR rewrite path (curated_reocr: its transcript is written to Drive). DO NOT
+# LOWER without a separate measurement of that path's output quality.
 REOCR_DPI: int = int(os.environ.get("REOCR_DPI", "150"))
 REOCR_SECOND_PASS_DPI: int = int(os.environ.get("REOCR_SECOND_PASS_DPI", "220"))
+# Verify-only re-read (#678: nothing written, it only confirms Cowork-era values).
+# The A/B knob for #593 T3.
+REREAD_DPI: int = int(os.environ.get("REREAD_DPI", "150"))
+REREAD_SECOND_PASS_DPI: int = int(os.environ.get("REREAD_SECOND_PASS_DPI", "220"))
 # Second-pass policy (#593): "fixed2" (default) reads every page twice; "adaptive"
 # skips the second pass only where it provably cannot change what is confirmed
 # (see reocr._vision_passes); verification semantics never loosen.
