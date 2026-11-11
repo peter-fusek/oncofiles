@@ -590,3 +590,270 @@ async def test_consent_js_route():
 
     resp = await consent_js(_req("/consent.js"))
     assert resp.media_type.startswith("application/javascript")
+
+
+# ── Visual mockups follow the language switch (EN shows English) ──────
+
+_SK_IN_EN = re.compile(
+    r"[áäčďéíĺľňóôŕšťúýž]|JanaTestova|NemPrikladov|Testov|Laborat[oó]ri[aá]|Zobrazov", re.I
+)
+# Language-neutral leaf text allowed in the mockups without data-sk/data-en:
+# codes, units, numbers without a decimal comma, tool calls, chrome glyphs.
+_NEUTRAL = re.compile(
+    r"^(\d+|[\d ]+(kB|g/L)|[\d–→ ]+(g/L|×10⁹/L)?( ↑)?|\d+ g/L ↑|\d+ ×10⁹/L ↑"
+    r"|WBC|RBC|HGB|HCT|PLT|CEA|g/L|L/L|µg/L|×10⁹/L|×10¹²/L"
+    r"|IMG_20270118_lab\.jpg|OCR \+ AI|J|PDF|README\.md|9:41"
+    r"|ChatGPT|Claude|Gemini CLI|Oncofiles|Oncofiles · \w+|\w+|\(oncofiles\)"
+    r"|limit: 5|document_id: \d+|codes: [A-Z, ]+|oncofiles: fact_series\(code=\"HGB\"\)"
+    r"|[+>›↑☰✎✓,])$"
+)
+
+
+def _mock_regions(html: str) -> list[str]:
+    starts = [
+        'id="stage"',
+        'class="sheet"',
+        'class="app" id="prov"',
+        'class="folder-shot"',
+        'class="readme"',
+        'class="chats"',
+        'class="transcript"',
+    ]
+    out = []
+    for marker in starts:
+        i = html.rindex("<", 0, html.index(marker))
+        open_divs: list[str] = []
+        j = i
+        for m in re.finditer(r"<(?P<close>/?)div\b[^>]*>", html[i:]):
+            if m.group("close"):
+                open_divs.pop()
+            else:
+                open_divs.append(m.group(0))
+            if not open_divs:
+                j = i + m.end()
+                break
+        out.append(html[i:j])
+    return out
+
+
+def test_landing_mockups_have_no_untranslated_text():
+    """Hero pile + Drive mock, provenance sheet, folder mock, README and chat
+    frames: every visible text node is either inside an element carrying
+    data-sk/data-en or a language-neutral token (code, unit, number)."""
+    for region in _mock_regions(LANDING):
+        parser = _TextWithoutI18n()
+        parser.feed(region)
+        loose = [t for t in parser.offenders if not _NEUTRAL.match(t)]
+        assert not loose, loose
+
+
+def test_landing_english_variants_contain_no_slovak():
+    """EN mode must not show Slovak filenames, folders, names or diacritics in
+    the mockups (Peter Čapkovič in the team line is a real name)."""
+    for region in _mock_regions(LANDING):
+        for attr in re.findall(r'\sdata-en(?:-label|-title)?="([^"]*)"', region):
+            assert not _SK_IN_EN.search(attr), attr
+
+
+@pytest.mark.parametrize(
+    "sk,en",
+    [
+        ("Preposl.: výsledky", "Fwd: results"),
+        ("Laboratórium Príkladov", "Example Laboratory"),
+        ("vysledky(1).pdf", "results(1).pdf"),
+        ("CT_brucho_final_v2.pdf", "CT_abdomen_final_v2.pdf"),
+        ("dokument(3).pdf", "document(3).pdf"),
+        ("Imaging / Zobrazovanie", "Imaging"),
+        ("Report / Správy", "Reports"),
+        ("Labs / Laboratóriá", "Labs"),
+        ("Jana Testová", "Jane Doe"),
+        ("NEMOCNICA", "EXAMPLE"),
+        ("PRÍKLADOV", "HOSPITAL"),
+    ],
+)
+def test_hero_and_folder_mock_pairs(sk, en):
+    assert f'data-sk="{sk}" data-en="{en}"' in LANDING
+
+
+def test_mock_filenames_follow_the_convention_in_both_languages():
+    std = re.compile(
+        r"^(?P<date>\d{8})_(?P<patient>[A-Za-z]+)_(?P<inst>[A-Za-z]+)_(?P<cat>[A-Za-z]+)"
+        r"_(?P<desc>[A-Za-z0-9]+)\.(?P<ext>pdf|jpg|md)$"
+    )
+    shared = ("date", "cat", "desc", "ext")
+    pairs = re.findall(
+        r'data-sk="(\d{8}_JanaTestova_[^"]+)" data-en="(\d{8}_JaneDoe_[^"]+)"', LANDING
+    )
+    assert len(pairs) >= 12
+    for sk, en in pairs:
+        ms, me = std.match(sk), std.match(en)
+        assert ms and me, (sk, en)
+        assert ms.group("patient", "inst") == ("JanaTestova", "NemPrikladov")
+        assert me.group("patient", "inst") == ("JaneDoe", "ExampleHospital")
+        # date, category token, English description and extension are shared
+        assert ms.group(*shared) == me.group(*shared)
+        assert int(ms.group("date")[:4]) >= MIN_SYNTHETIC_YEAR
+    # every visible SK standard name has an EN twin (no bare SK filename left)
+    shown = re.findall(r">(\d{8}_JanaTestova_[^<]*)</", LANDING)
+    assert shown and all(f'data-sk="{m}" data-en=' in LANDING for m in shown)
+
+
+def test_landing_language_switch_updates_labels_titles_and_restarts_hero():
+    script = LANDING[LANDING.rindex("<script>") :]
+    assert "data-' + l + '-label" in script
+    assert "data-' + l + '-title" in script
+    assert "restartStage();" in script[script.index("function applyLang") :]
+
+
+def test_no_lock_in_callout_and_eu_first_hosting():
+    block = LANDING[LANDING.index('id="no-lock-in"') :]
+    block = block[: block.index("</div>")]
+    assert "No lock-in" in block and "Žiadne viazanie" in block
+    assert ".md" in block
+    # honest about what is not in Drive
+    assert "our database" in block and "našej databáze" in block
+    assert "Slovakia (EU)" not in LANDING and "Slovensku (EÚ)" not in LANDING
+    assert "in the EU (Slovakia)" in LANDING and "v EÚ (Slovensko)" in LANDING
+    assert '<symbol id="g-eu"' in LANDING
+    assert LANDING.count('<use href="#g-eu"/>') >= 2
+
+
+async def test_demo_payload_has_english_twins():
+    data = json.loads((await api_demo_data(_req("/api/demo-data"))).body)
+    assert (data["patient"]["name"], data["patient"]["name_en"]) == ("Jana Testová", "Jane Doe")
+    for doc in data["documents"]:
+        assert "JaneDoe_ExampleHospital" in doc["filename_en"]
+        swapped = doc["filename"].replace("JanaTestova_NemPrikladov", "JaneDoe_ExampleHospital")
+        assert swapped == doc["filename_en"]
+        assert not _SK_IN_EN.search(doc["institution_en"])
+        for line in doc["pages"][0]["lines"]:
+            if line.get("text"):
+                assert line.get("text_en"), line
+                assert not _SK_IN_EN.search(line["text_en"]), line["text_en"]
+            if "cells" in line:
+                en = line["cells_en"]
+                assert len(en) == len(line["cells"])
+                assert "," not in "".join(en), en
+                if line.get("kind") != "th":
+                    assert en[0] == line["cells"][0]
+                    assert en[1] == line["cells"][1].replace(",", ".")
+
+
+def test_demo_js_renders_english_twins():
+    for call in (
+        "loc(data.patient, 'name')",
+        "loc(d, 'institution')",
+        "loc(ln, 'text')",
+        "loc(ln, 'cells')",
+    ):
+        assert call in DEMO_JS, call
+    assert "loc(d, 'filename')" in DEMO_JS and "loc(c.latest, 'filename')" in DEMO_JS
+    assert "lang === 'sk' ? 'NEMOCNICA' : 'EXAMPLE'" in DEMO_JS
+    assert "v.replace(/,/g, '.')" in DEMO_JS
+    assert 'data-sk="Jana T." data-en="Jane D."' in DEMO_HTML
+    assert 'data-en=" — ~/health — 96×28"' in DEMO_HTML
+
+
+# ── Roadmap (honest status labels) ─────────────────────────────────────
+
+_DEVICES = ("Withings", "Apple Health", "Google Health Connect", "Garmin", "Strava")
+
+
+def _roadmap() -> str:
+    start = LANDING.index('<section class="block" id="roadmap">')
+    return LANDING[start : LANDING.index("</section>", start)]
+
+
+def _roadmap_column(status: str) -> str:
+    block = _roadmap()
+    start = block.index(f'data-status="{status}"')
+    return block[start : block.index("</ul>", start)]
+
+
+def test_roadmap_section_is_bilingual_with_three_statuses():
+    block = _roadmap()
+    assert 'href="#roadmap"' in LANDING
+    assert [m for m in re.findall(r'data-status="([\w-]+)"', block)] == [
+        "live",
+        "in-progress",
+        "planned",
+    ]
+    for sk, en in (("Funguje", "Live"), ("Rozpracované", "In progress"), ("Plánujeme", "Planned")):
+        assert f'data-sk="{sk}" data-en="{en}"' in block
+    parser = _TextWithoutI18n()
+    parser.feed(block)
+    assert not parser.offenders, parser.offenders
+    # no images or logos in the roadmap: plain-text names only
+    assert "<img" not in block and "<use" not in block
+
+
+def test_roadmap_device_names_appear_only_under_planned():
+    planned = _roadmap_column("planned")
+    for name in _DEVICES:
+        assert LANDING.count(name) == planned.count(name) >= 2, name  # SK + EN attrs
+
+
+def test_roadmap_does_not_claim_live_hospital_connections():
+    live, wip = _roadmap_column("live"), _roadmap_column("in-progress")
+    assert "EHDS" not in live and "EHDS" in wip
+    assert (
+        "no hospital is connected yet" in wip and "žiadna nemocnica zatiaľ pripojená nie je" in wip
+    )
+    assert "FHIR R4" in live  # read/search/$everything shipped in #716 phase 3a
+
+
+# ── Vision (puzzle) and "your dashboard, built on Oncofiles" ───────────
+
+
+def _section(section_id: str) -> str:
+    start = LANDING.index(f'<section class="block" id="{section_id}">')
+    return LANDING[start : LANDING.index("</section>", start)]
+
+
+@pytest.mark.parametrize("section_id", ["vision", "dashboard"])
+def test_story_sections_are_bilingual(section_id):
+    block = _section(section_id)
+    parser = _TextWithoutI18n()
+    parser.feed(block)
+    loose = [t for t in parser.offenders if not _NEUTRAL.match(t)]
+    assert not loose, loose
+    for attr in re.findall(r'\sdata-en(?:-label)?="([^"]*)"', block):
+        assert not _SK_IN_EN.search(attr), attr
+
+
+def test_vision_sits_above_the_roadmap_and_labels_connections_as_roadmap():
+    assert (
+        LANDING.index('id="vision"') < LANDING.index('id="photos"') < LANDING.index('id="roadmap"')
+    )
+    block = _section("vision")
+    for piece in ("pz-chat", "pz-docs", "pz-core", "pz-std", "pz-hosp"):
+        assert f'class="pz {piece}"' in block, piece
+    hosp = block[block.index('class="pz pz-hosp"') :]
+    assert 'data-en="roadmap"' in hosp and "No hospital or app is connected yet." in hosp
+    # devices are named only in the roadmap's planned column
+    for name in _DEVICES:
+        assert name not in block
+
+
+async def test_dashboard_section_is_a_mock_with_the_invented_patient():
+    from oncofiles.server import mcp
+
+    registered = {
+        k.partition(":")[2].partition("@")[0]
+        for k in mcp._local_provider._components
+        if k.startswith("tool:")
+    }
+    block = _section("dashboard")
+    assert "dashboard_feed" in block and "dashboard_feed" in registered
+    assert "It runs on Oncofiles." in block and "Beží na Oncofiles." in block
+    shot = block[block.index('id="artifact-shot"') :]
+    # public page: a mock with the invented demo patient, never a real screenshot
+    assert "<img" not in shot
+    assert "Example with an invented patient." in shot
+    assert 'data-en="Tumour markers and blood count · Jane Doe"' in shot
+    assert 'data-en="2.7 unverified"' in shot
+    # the mock's CEA values are the demo payload's values
+    data = json.loads((await api_demo_data(_req("/api/demo-data"))).body)
+    cea = [p["value_text"] for s in data["series"] if s["code"] == "CEA" for p in s["points"]]
+    for v in cea[-3:]:
+        assert f'data-sk="{v}"' in shot, v

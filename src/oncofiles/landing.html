@@ -14,9 +14,9 @@
   <!-- Analytics only after opt-in consent (#700); see /consent.js -->
   <script src="/consent.js" defer></script>
   <title data-sk="Oncofiles – zdravotné záznamy pre onkologických pacientov s overenými laboratórnymi hodnotami" data-en="Oncofiles – medical records for cancer patients with verified lab values">Oncofiles – zdravotné záznamy pre onkologických pacientov s overenými laboratórnymi hodnotami</title>
-  <meta name="description" data-sk="Váš priečinok s lekárskymi správami na Google Drive, usporiadaný a čitateľný aj bez nás. Každá laboratórna hodnota má dátum odberu, zdroj, stranu a riadok. OCR beží na lokálnom modeli na našom serveri v EÚ. Pýtajte sa v Claude alebo ChatGPT." data-en="Your Google Drive folder of medical reports, organized and readable even without us. Every lab value has its sample date, source document, page and line. OCR runs on a local model on our own EU server. Ask in Claude or ChatGPT." content="Váš priečinok s lekárskymi správami na Google Drive, usporiadaný a čitateľný aj bez nás. Každá laboratórna hodnota má dátum odberu, zdroj, stranu a riadok. OCR beží na lokálnom modeli na našom serveri v EÚ. Pýtajte sa v Claude alebo ChatGPT.">
+  <meta name="description" data-sk="Váš priečinok s lekárskymi správami na Google Drive, usporiadaný a čitateľný aj bez nás. Každá laboratórna hodnota má dátum odberu, zdroj, stranu a riadok. OCR beží na lokálnom modeli na našom serveri v EÚ (Slovensko). Pýtajte sa v Claude alebo ChatGPT." data-en="Your Google Drive folder of medical reports, organized and readable even without us. Every lab value has its sample date, source document, page and line. OCR runs on a local model on our own server, hosted in the EU (Slovakia). Ask in Claude or ChatGPT." content="Váš priečinok s lekárskymi správami na Google Drive, usporiadaný a čitateľný aj bez nás. Každá laboratórna hodnota má dátum odberu, zdroj, stranu a riadok. OCR beží na lokálnom modeli na našom serveri v EÚ (Slovensko). Pýtajte sa v Claude alebo ChatGPT.">
   <meta property="og:title" content="Oncofiles – medical records for cancer patients with verified lab values">
-  <meta property="og:description" content="Every lab value traced to its sample date, source document, page and line. Local OCR model on our own server in the EU. Works with Claude and ChatGPT via MCP.">
+  <meta property="og:description" content="Every lab value traced to its sample date, source document, page and line. Local OCR model on our own server, hosted in the EU (Slovakia). Works with Claude and ChatGPT via MCP.">
   <meta property="og:type" content="website">
   <meta property="og:url" content="https://oncofiles.com/">
   <meta property="og:site_name" content="Oncofiles">
@@ -30,7 +30,7 @@
   <meta name="twitter:card" content="summary_large_image">
   <meta name="twitter:image" content="https://oncofiles.com/og-image.png">
   <meta name="twitter:title" content="Oncofiles – medical records for cancer patients with verified lab values">
-  <meta name="twitter:description" content="Every lab value traced to its source line. Local OCR on our own EU server. Works with Claude and ChatGPT.">
+  <meta name="twitter:description" content="Every lab value traced to its source line. Local OCR on our own server, hosted in the EU (Slovakia). Works with Claude and ChatGPT.">
   <meta name="theme-color" content="#faf9f7" media="(prefers-color-scheme: light)">
   <meta name="theme-color" content="#121615" media="(prefers-color-scheme: dark)">
   <meta name="google-site-verification" content="o3Lvo0V02iRMKmlqMrXSBPDlL9hqE4NZQoABj6Arhek">
@@ -50,7 +50,7 @@
       "@context": "https://schema.org",
       "@type": "SoftwareApplication",
       "name": "Oncofiles",
-      "description": "Medical record management for cancer patients and caregivers. Keeps a Google Drive folder organized under its own README contract, extracts lab values with provenance (sample date, source document, page, exact line, verification state) using a local OCR model on its own server in the EU, and makes the records available in Claude and ChatGPT via MCP.",
+      "description": "Medical record management for cancer patients and caregivers. Keeps a Google Drive folder organized under its own README contract, extracts lab values with provenance (sample date, source document, page, exact line, verification state) using a local OCR model on its own server hosted in the EU (Slovakia), and makes the records available in Claude and ChatGPT via MCP.",
       "applicationCategory": "MedicalApplication",
       "operatingSystem": "Web",
       "url": "https://oncofiles.com/",
@@ -66,7 +66,7 @@
         "Independent second local reading confirms a value only when number and date match",
         "Google Drive folder kept readable without Oncofiles: standard file names, README contract, Markdown transcript next to each file",
         "Never deletes files, only moves to trash",
-        "Local OCR and classification model on own server in Slovakia (EU)",
+        "Local OCR and classification model on own server hosted in the EU (Slovakia)",
         "Multiple patients and caregiver access",
         "Works with Claude and ChatGPT via MCP"
       ]
@@ -76,7 +76,7 @@
       "@type": "MedicalWebPage",
       "name": "Oncofiles – medical records for cancer patients with verified lab values",
       "url": "https://oncofiles.com/",
-      "description": "Every lab value traced to its sample date, source document, page and line. Local OCR model on our own server in the EU. Works with Claude and ChatGPT via MCP.",
+      "description": "Every lab value traced to its sample date, source document, page and line. Local OCR model on our own server, hosted in the EU (Slovakia). Works with Claude and ChatGPT via MCP.",
       "inLanguage": ["sk", "en"],
       "about": {
         "@type": "MedicalCondition",
@@ -122,12 +122,12 @@
         {
           "@type": "Question",
           "name": "Where is my data stored?",
-          "acceptedAnswer": { "@type": "Answer", "text": "Original files and transcripts stay in your Google Drive. The search index, the extracted text and the extracted values are also stored in a database on our own server in Slovakia (EU), on an encrypted disk." }
+          "acceptedAnswer": { "@type": "Answer", "text": "Original files and transcripts stay in your Google Drive. The search index, the extracted text and the extracted values are also stored in a database on our own server hosted in the EU (Slovakia), on an encrypted disk." }
         },
         {
           "@type": "Question",
           "name": "Is document content sent to a cloud AI?",
-          "acceptedAnswer": { "@type": "Answer", "text": "Not in background processing. OCR and classification run on a local model on our own server. Only what you ask about inside Claude or ChatGPT goes to that assistant, as the answer to your question." }
+          "acceptedAnswer": { "@type": "Answer", "text": "Not in background processing. OCR and classification run on a local model on our own server hosted in the EU (Slovakia). Only what you ask about inside Claude or ChatGPT goes to that assistant, as the answer to your question." }
         },
         {
           "@type": "Question",
@@ -419,6 +419,14 @@
     .rules li { padding: 10px 0; border-top: 1px solid var(--rule); color: var(--ink-2); font-size: 0.97rem; }
     .rules li b { color: var(--ink); font-weight: 600; }
     .folder-shot { margin-top: 36px; }
+    .own-callout { margin: 36px 0 0; padding: 26px 28px; border: 2px solid var(--accent); border-radius: 14px; background: var(--bg); background: color-mix(in srgb, var(--accent) 8%, var(--bg)); color: var(--ink); }
+    .own-callout h3 { font-family: var(--serif); font-weight: 400; font-size: clamp(1.55rem, 3.4vw, 2.2rem); line-height: 1.15; color: var(--accent); margin: 0 0 12px; }
+    .own-callout p { font-size: 1.1rem; line-height: 1.55; max-width: 64ch; margin: 0; }
+    .own-callout p + p { margin-top: 10px; }
+    .own-callout .fine { font-size: 0.92rem; color: var(--ink-2); }
+    @media (max-width: 600px) { .own-callout { padding: 20px 18px; } }
+    .eu-flag { width: 1.5em; height: 1em; vertical-align: -0.12em; border-radius: 2px; flex: none; }
+    .eu-line { display: flex; align-items: center; gap: 10px; margin-top: 16px; font-weight: 600; font-size: 1.02rem; color: var(--ink); }
     .folder-more { display: grid; gap: 28px; margin-top: 28px; align-items: start; }
     @media (min-width: 960px) { .folder-more { grid-template-columns: 5fr 7fr; gap: 56px; } }
     .readme { background: var(--gd-surface); color: var(--gd-ink); border: 1px solid var(--gd-line); border-radius: 10px; box-shadow: var(--lift); overflow: hidden; font-family: var(--ui); font-size: 12.5px; max-width: 560px; }
@@ -449,10 +457,78 @@
     .transcript .a p + p { margin-top: 6px; }
     .transcript .nums { font-family: var(--num); font-variant-numeric: tabular-nums; }
     .transcript .srcs { font-size: 0.85rem; color: var(--ink-3); margin-top: 8px; overflow-wrap: anywhere; }
-    .coming { margin-top: 36px; }
-    .coming h3 { margin-bottom: 6px; }
-    .coming ul { list-style: none; color: var(--ink-2); font-size: 0.95rem; }
-    .coming li { padding: 6px 0; border-bottom: 1px solid var(--rule); }
+    /* Vision: puzzle pieces around Oncofiles */
+    .vz-intro { max-width: 64ch; }
+    .puzzle { margin: 40px auto 0; max-width: 940px; display: grid; gap: 26px; grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr) minmax(0, 1fr); grid-template-areas: ". chat ." "docs core std" ". hosp ."; align-items: stretch; }
+    .pz { position: relative; border-radius: 14px; padding: 18px 18px 16px; border: 2px solid var(--pz-c); background: var(--bg); background: color-mix(in srgb, var(--pz-c) 10%, var(--bg)); min-width: 0; }
+    .pz h3 { font-size: 1.02rem; margin: 0 0 6px; }
+    .pz p { margin: 0; color: var(--ink-2); font-size: 0.92rem; line-height: 1.45; }
+    .pz::after { content: ''; position: absolute; width: 26px; height: 26px; border-radius: 50%; background: inherit; border: 2px solid var(--pz-c); z-index: 1; }
+    .pz-chat { grid-area: chat; --pz-c: var(--human); }
+    .pz-docs { grid-area: docs; --pz-c: var(--ok); }
+    .pz-std { grid-area: std; --pz-c: var(--warn); }
+    .pz-hosp { grid-area: hosp; --pz-c: var(--ink-3); border-style: dashed; }
+    .pz-hosp::after { border-style: dashed; }
+    .pz-chat::after { left: calc(50% - 13px); bottom: -27px; clip-path: inset(50% 0 0 0); }
+    .pz-hosp::after { left: calc(50% - 13px); top: -27px; clip-path: inset(0 0 50% 0); }
+    .pz-docs::after { top: calc(50% - 13px); right: -27px; clip-path: inset(0 0 0 50%); }
+    .pz-std::after { top: calc(50% - 13px); left: -27px; clip-path: inset(0 50% 0 0); }
+    .pz-core { grid-area: core; --pz-c: var(--accent); background: var(--accent); color: var(--accent-ink); display: flex; flex-direction: column; justify-content: center; text-align: center; box-shadow: var(--lift); }
+    .pz-core::after { display: none; }
+    .pz-core h3 { font-family: var(--serif); font-weight: 400; font-size: 1.7rem; color: var(--accent-ink); }
+    .pz-core p { color: var(--accent-ink); opacity: 0.92; }
+    .pz-chip { display: inline-block; margin-left: 6px; font-size: 0.75rem; font-weight: 600; padding: 1px 8px; border-radius: 999px; border: 1px solid currentColor; color: var(--ink-3); vertical-align: 1px; }
+    .vz-note { margin: 22px auto 0; max-width: none; font-size: 0.9rem; color: var(--ink-3); text-align: center; }
+    @media (max-width: 760px) {
+      .puzzle { grid-template-columns: minmax(0, 1fr); grid-template-areas: "chat" "core" "docs" "std" "hosp"; gap: 24px; }
+      .pz-docs::after, .pz-std::after { top: -27px; left: calc(50% - 13px); right: auto; clip-path: inset(0 0 50% 0); }
+      .pz-docs::after { display: none; }
+    }
+    /* "Your dashboard, built on Oncofiles": mock of a Claude artifact.
+       Swap slot: replace .art-mock inside #artifact-shot with one <img>. */
+    .artifact-shot { margin: 0; }
+    .artifact-shot figcaption { margin-top: 10px; font-size: 0.88rem; color: var(--ink-3); }
+    .art-mock { border: 1px solid var(--rule-2); border-radius: 14px; overflow: hidden; background: #fbfaf7; color: #1f2328; box-shadow: var(--lift); font-family: var(--num); }
+    .art-bar { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-bottom: 1px solid #e7e2d8; background: #f3f0e9; font-size: 0.85rem; }
+    .art-bar b { font-weight: 600; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .art-tag { font-size: 0.72rem; padding: 2px 8px; border-radius: 6px; background: #e4ded2; color: #4a4f57; }
+    .art-body { padding: 16px; display: grid; gap: 14px; }
+    .art-cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+    .art-card { border: 1px solid #e7e2d8; border-radius: 10px; padding: 10px 12px; background: #fff; min-width: 0; }
+    .art-card span { display: block; font-size: 0.75rem; color: #6b717b; }
+    .art-card b { font-size: 1.25rem; font-weight: 600; }
+    .art-card small { color: #6b717b; margin-left: 3px; }
+    .art-card i { display: block; font-style: normal; font-size: 0.72rem; margin-top: 2px; }
+    .art-chart { border: 1px solid #e7e2d8; border-radius: 10px; background: #fff; padding: 10px 12px 6px; }
+    .art-chart h4 { margin: 0 0 4px; font-size: 0.85rem; font-weight: 600; }
+    .art-chart svg { display: block; width: 100%; height: auto; }
+    .art-src { list-style: none; margin: 0; padding: 0; font-size: 0.8rem; }
+    .art-src li { display: flex; flex-wrap: wrap; gap: 4px 10px; padding: 6px 0; border-top: 1px solid #eee8dd; }
+    .art-src .lnk { color: #0f6b63; text-decoration: underline; text-underline-offset: 2px; }
+    .ok-m { color: #2f6b3a; } .ok-h { color: #2d4f8a; } .ok-u { color: #9a5507; }
+    @media (max-width: 520px) { .art-cards { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); } .art-cards .art-card:last-child { grid-column: 1 / -1; } }
+    .roadmap-intro { max-width: 62ch; color: var(--ink-2); }
+    .roadmap { list-style: none; margin: 36px 0 0; padding: 0; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 32px; position: relative; }
+    .roadmap::before { content: ''; position: absolute; top: 8px; left: 8px; right: 8px; height: 2px; background: var(--rule-2); }
+    .rm-col { position: relative; padding-top: 34px; min-width: 0; }
+    .rm-dot { position: absolute; top: 0; left: 0; width: 18px; height: 18px; border-radius: 50%; border: 2px solid var(--accent); background: var(--bg); }
+    .rm-live .rm-dot { background: var(--accent); }
+    .rm-wip .rm-dot { background: var(--mark); border-color: var(--warn); }
+    .rm-plan .rm-dot { border-color: var(--ink-3); border-style: dashed; }
+    .rm-status { display: inline-block; font-size: 0.8rem; font-weight: 600; letter-spacing: 0.02em; padding: 2px 10px; border-radius: 999px; border: 1px solid currentColor; }
+    .rm-live .rm-status { color: var(--ok); }
+    .rm-wip .rm-status { color: var(--warn); }
+    .rm-plan .rm-status { color: var(--ink-3); }
+    .rm-col h3 { margin: 10px 0 8px; }
+    .rm-col ul { list-style: none; margin: 0; padding: 0; color: var(--ink-2); font-size: 0.95rem; }
+    .rm-col li { padding: 7px 0; border-bottom: 1px solid var(--rule); overflow-wrap: anywhere; }
+    .rm-col li.rm-note { border-bottom: 0; font-size: 0.88rem; color: var(--ink-3); }
+    @media (max-width: 760px) {
+      .roadmap { grid-template-columns: minmax(0, 1fr); gap: 26px; }
+      .roadmap::before { top: 8px; bottom: 8px; left: 8px; right: auto; width: 2px; height: auto; }
+      .rm-col { padding: 0 0 0 36px; }
+      .rm-col h3 { margin-top: 6px; }
+    }
 
     /* ── Family ───────────────────────────────────────────── */
     blockquote.story { font: 400 clamp(1.25rem, 2.6vw, 1.6rem)/1.45 var(--serif); max-width: 34ch; margin-top: 8px; }
@@ -677,6 +753,7 @@
 <body>
   <!-- Icons: generic line/fill glyphs; Drive-style file icons are plain shapes, no Google logos -->
   <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+    <symbol id="g-eu" viewBox="0 0 30 20"><rect width="30" height="20" rx="2" fill="#003399"/><g fill="#ffcc00"><polygon points="21.00,8.85 21.27,9.63 22.09,9.64 21.44,10.14 21.68,10.93 21.00,10.46 20.32,10.93 20.56,10.14 19.91,9.64 20.73,9.63"/><polygon points="20.20,11.85 20.47,12.63 21.29,12.64 20.63,13.14 20.87,13.93 20.20,13.46 19.52,13.93 19.76,13.14 19.10,12.64 19.93,12.63"/><polygon points="18.00,14.05 18.27,14.82 19.09,14.84 18.44,15.34 18.68,16.13 18.00,15.66 17.32,16.13 17.56,15.34 16.91,14.84 17.73,14.82"/><polygon points="15.00,14.85 15.27,15.63 16.09,15.64 15.44,16.14 15.68,16.93 15.00,16.46 14.32,16.93 14.56,16.14 13.91,15.64 14.73,15.63"/><polygon points="12.00,14.05 12.27,14.82 13.09,14.84 12.44,15.34 12.68,16.13 12.00,15.66 11.32,16.13 11.56,15.34 10.91,14.84 11.73,14.82"/><polygon points="9.80,11.85 10.07,12.63 10.90,12.64 10.24,13.14 10.48,13.93 9.80,13.46 9.13,13.93 9.37,13.14 8.71,12.64 9.53,12.63"/><polygon points="9.00,8.85 9.27,9.63 10.09,9.64 9.44,10.14 9.68,10.93 9.00,10.46 8.32,10.93 8.56,10.14 7.91,9.64 8.73,9.63"/><polygon points="9.80,5.85 10.07,6.63 10.90,6.64 10.24,7.14 10.48,7.93 9.80,7.46 9.13,7.93 9.37,7.14 8.71,6.64 9.53,6.63"/><polygon points="12.00,3.65 12.27,4.43 13.09,4.45 12.44,4.95 12.68,5.73 12.00,5.26 11.32,5.73 11.56,4.95 10.91,4.45 11.73,4.43"/><polygon points="15.00,2.85 15.27,3.63 16.09,3.64 15.44,4.14 15.68,4.93 15.00,4.46 14.32,4.93 14.56,4.14 13.91,3.64 14.73,3.63"/><polygon points="18.00,3.65 18.27,4.43 19.09,4.45 18.44,4.95 18.68,5.73 18.00,5.26 17.32,5.73 17.56,4.95 16.91,4.45 17.73,4.43"/><polygon points="20.20,5.85 20.47,6.63 21.29,6.64 20.63,7.14 20.87,7.93 20.20,7.46 19.52,7.93 19.76,7.14 19.10,6.64 19.93,6.63"/></g></symbol>
     <symbol id="g-folder" viewBox="0 0 24 24"><path fill="currentColor" d="M10 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z"/></symbol>
     <symbol id="g-pdf" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2" fill="#ea4335"/><text x="12" y="15.2" text-anchor="middle" font-family="Arial, sans-serif" font-size="6.6" font-weight="700" fill="#fff">PDF</text></symbol>
     <symbol id="g-img" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2" fill="#d93025"/><path d="M6.5 17l3.5-4.5 2.5 3 3.5-4.5 2.5 6z" fill="#fff"/><circle cx="9" cy="8.5" r="1.6" fill="#fff"/></symbol>
@@ -700,6 +777,7 @@
         <a class="wide" href="#provenance" data-sk="Pôvod hodnôt" data-en="Provenance">Pôvod hodnôt</a>
         <a class="wide" href="#folder" data-sk="Priečinok" data-en="Folder">Priečinok</a>
         <a class="wide" href="#privacy" data-sk="Súkromie" data-en="Privacy">Súkromie</a>
+        <a class="wide" href="#roadmap" data-sk="Plán" data-en="Roadmap">Plán</a>
         <a class="wide" href="#faq" data-sk="Otázky" data-en="FAQ">Otázky</a>
         <a href="/demo" data-sk="Ukážka" data-en="Demo">Ukážka</a>
         <a href="https://github.com/peter-fusek/oncofiles" rel="noreferrer noopener">GitHub</a>
@@ -716,6 +794,7 @@
         <div class="hero-cols">
           <div>
             <p class="lede" data-sk="Prílohy z mailov, fotky z mobilu, PDF s názvom dokument(3).pdf. Oncofiles ich prečíta, pomenuje a uloží do jedného priečinka na vašom Google Drive. Pri každej laboratórnej hodnote vidíte dátum odberu, stranu a riadok, z ktorého bola prečítaná, a pýtať sa na ne môžete v Claude alebo ChatGPT." data-en="Email attachments, phone photos, PDFs called document(3).pdf. Oncofiles reads them, names them and files them into one folder on your Google Drive. For every lab value you see the sample date, the page and the line it was read from, and you can ask about them in Claude or ChatGPT.">Prílohy z mailov, fotky z mobilu, PDF s názvom dokument(3).pdf. Oncofiles ich prečíta, pomenuje a uloží do jedného priečinka na vašom Google Drive. Pri každej laboratórnej hodnote vidíte dátum odberu, stranu a riadok, z ktorého bola prečítaná, a pýtať sa na ne môžete v Claude alebo ChatGPT.</p>
+            <p class="eu-line"><svg class="eu-flag" aria-hidden="true"><use href="#g-eu"/></svg><span data-sk="Prevádzkované v EÚ (Slovensko), na vlastnom serveri s lokálnym modelom." data-en="Hosted in the EU (Slovakia), on our own server with a local model.">Prevádzkované v EÚ (Slovensko), na vlastnom serveri s lokálnym modelom.</span></p>
             <p class="lede-note" data-sk="Oncofiles nenahrádza lekára. Pomáha vám a vašim blízkym pripraviť sa na rozhovor s ním." data-en="Oncofiles does not replace your doctor. It helps you and your family prepare for the conversation.">Oncofiles nenahrádza lekára. Pomáha vám a vašim blízkym pripraviť sa na rozhovor s ním.</p>
           </div>
           <div class="join" id="waitlist">
@@ -734,8 +813,8 @@
         <div class="stage" id="stage" role="img" aria-label="Five scattered files (an email, a phone photo and three PDFs) are read and filed into one Google Drive folder with standard names." data-sk-label="Päť roztrúsených súborov (mail, fotka z mobilu a tri PDF) sa prečíta a zaradí do jedného priečinka na Google Drive so štandardnými názvami." data-en-label="Five scattered files (an email, a phone photo and three PDFs) are read and filed into one Google Drive folder with standard names.">
           <div class="pile">
             <div class="paper p0" style="--i:0" data-k="0">
-              <div class="fn"><svg class="ic"><use href="#g-mail"/></svg><span>Preposl.: výsledky</span></div>
-              <div class="mail-from">Laboratórium Príkladov</div>
+              <div class="fn"><svg class="ic"><use href="#g-mail"/></svg><span data-sk="Preposl.: výsledky" data-en="Fwd: results">Preposl.: výsledky</span></div>
+              <div class="mail-from" data-sk="Laboratórium Príkladov" data-en="Example Laboratory">Laboratórium Príkladov</div>
               <i class="tx m"></i><i class="tx s"></i>
             </div>
             <div class="paper p1" style="--i:1" data-k="1">
@@ -743,21 +822,21 @@
               <div class="fn"><svg class="ic"><use href="#g-img"/></svg><span>IMG_20270118_lab.jpg</span></div>
             </div>
             <div class="paper p2" style="--i:2" data-k="2">
-              <div class="fn"><svg class="ic"><use href="#g-pdf"/></svg><span>vysledky(1).pdf</span></div>
+              <div class="fn"><svg class="ic"><use href="#g-pdf"/></svg><span data-sk="vysledky(1).pdf" data-en="results(1).pdf">vysledky(1).pdf</span></div>
               <i class="tx"></i><i class="tx m"></i><i class="tx s"></i>
             </div>
             <div class="paper p3" style="--i:3" data-k="3">
-              <div class="fn"><svg class="ic"><use href="#g-pdf"/></svg><span>CT_brucho_final_v2.pdf</span></div>
+              <div class="fn"><svg class="ic"><use href="#g-pdf"/></svg><span data-sk="CT_brucho_final_v2.pdf" data-en="CT_abdomen_final_v2.pdf">CT_brucho_final_v2.pdf</span></div>
               <i class="tx m"></i><i class="tx"></i>
             </div>
             <div class="paper p4" style="--i:4" data-k="4">
-              <div class="fn"><svg class="ic"><use href="#g-pdf"/></svg><span>dokument(3).pdf</span></div>
+              <div class="fn"><svg class="ic"><use href="#g-pdf"/></svg><span data-sk="dokument(3).pdf" data-en="document(3).pdf">dokument(3).pdf</span></div>
               <i class="tx s"></i><i class="tx m"></i>
             </div>
           </div>
           <div class="proc" id="proc">
             <div class="scan" aria-hidden="true"><i></i><i></i><i></i><i></i><b></b></div>
-            <div><strong>OCR + AI</strong><span data-sk="lokálny model na našom serveri" data-en="local model on our own server">lokálny model na našom serveri</span></div>
+            <div><strong>OCR + AI</strong><span data-sk="lokálny model, server v EÚ" data-en="local model, server in the EU">lokálny model, server v EÚ</span></div>
           </div>
           <div class="gd gd-hero" aria-hidden="true">
             <div class="gd-top">
@@ -766,17 +845,35 @@
               <span class="gd-avatar">J</span>
             </div>
             <div class="gd-main">
-              <div class="gd-crumbs"><span data-sk="Môj disk" data-en="My Drive">Môj disk</span> › <b>Jana Testová</b></div>
+              <div class="gd-crumbs"><span data-sk="Môj disk" data-en="My Drive">Môj disk</span> › <b data-sk="Jana Testová" data-en="Jane Doe">Jana Testová</b></div>
               <div class="gd-row h"><span data-sk="Názov" data-en="Name">Názov</span><span data-sk="Umiestnenie" data-en="Location">Umiestnenie</span></div>
-              <div class="gd-row" data-k="0" style="--i:0"><span class="nm"><svg class="fi"><use href="#g-pdf"/></svg><span>20270309_JanaTestova_NemPrikladov_Labs_BloodCount.pdf</span></span><span class="loc"><svg class="fi fi-folder"><use href="#g-folder"/></svg><span>Labs / Laboratóriá</span></span></div>
-              <div class="gd-row" data-k="1" style="--i:1"><span class="nm"><svg class="fi"><use href="#g-img"/></svg><span>20270118_JanaTestova_NemPrikladov_Labs_TumorMarkers.jpg</span></span><span class="loc"><svg class="fi fi-folder"><use href="#g-folder"/></svg><span>Labs / Laboratóriá</span></span></div>
-              <div class="gd-row" data-k="2" style="--i:2"><span class="nm"><svg class="fi"><use href="#g-pdf"/></svg><span>20270315_JanaTestova_NemPrikladov_Labs_BloodCount.pdf</span></span><span class="loc"><svg class="fi fi-folder"><use href="#g-folder"/></svg><span>Labs / Laboratóriá</span></span></div>
-              <div class="gd-row" data-k="3" style="--i:3"><span class="nm"><svg class="fi"><use href="#g-pdf"/></svg><span>20270220_JanaTestova_NemPrikladov_CT_AbdomenPelvis.pdf</span></span><span class="loc"><svg class="fi fi-folder"><use href="#g-folder"/></svg><span>Imaging / Zobrazovanie</span></span></div>
-              <div class="gd-row" data-k="4" style="--i:4"><span class="nm"><svg class="fi"><use href="#g-pdf"/></svg><span>20270402_JanaTestova_NemPrikladov_Report_OncologyVisit.pdf</span></span><span class="loc"><svg class="fi fi-folder"><use href="#g-folder"/></svg><span>Report / Správy</span></span></div>
+              <div class="gd-row" data-k="0" style="--i:0"><span class="nm"><svg class="fi"><use href="#g-pdf"/></svg><span data-sk="20270309_JanaTestova_NemPrikladov_Labs_BloodCount.pdf" data-en="20270309_JaneDoe_ExampleHospital_Labs_BloodCount.pdf">20270309_JanaTestova_NemPrikladov_Labs_BloodCount.pdf</span></span><span class="loc"><svg class="fi fi-folder"><use href="#g-folder"/></svg><span data-sk="Labs / Laboratóriá" data-en="Labs">Labs / Laboratóriá</span></span></div>
+              <div class="gd-row" data-k="1" style="--i:1"><span class="nm"><svg class="fi"><use href="#g-img"/></svg><span data-sk="20270118_JanaTestova_NemPrikladov_Labs_TumorMarkers.jpg" data-en="20270118_JaneDoe_ExampleHospital_Labs_TumorMarkers.jpg">20270118_JanaTestova_NemPrikladov_Labs_TumorMarkers.jpg</span></span><span class="loc"><svg class="fi fi-folder"><use href="#g-folder"/></svg><span data-sk="Labs / Laboratóriá" data-en="Labs">Labs / Laboratóriá</span></span></div>
+              <div class="gd-row" data-k="2" style="--i:2"><span class="nm"><svg class="fi"><use href="#g-pdf"/></svg><span data-sk="20270315_JanaTestova_NemPrikladov_Labs_BloodCount.pdf" data-en="20270315_JaneDoe_ExampleHospital_Labs_BloodCount.pdf">20270315_JanaTestova_NemPrikladov_Labs_BloodCount.pdf</span></span><span class="loc"><svg class="fi fi-folder"><use href="#g-folder"/></svg><span data-sk="Labs / Laboratóriá" data-en="Labs">Labs / Laboratóriá</span></span></div>
+              <div class="gd-row" data-k="3" style="--i:3"><span class="nm"><svg class="fi"><use href="#g-pdf"/></svg><span data-sk="20270220_JanaTestova_NemPrikladov_CT_AbdomenPelvis.pdf" data-en="20270220_JaneDoe_ExampleHospital_CT_AbdomenPelvis.pdf">20270220_JanaTestova_NemPrikladov_CT_AbdomenPelvis.pdf</span></span><span class="loc"><svg class="fi fi-folder"><use href="#g-folder"/></svg><span data-sk="Imaging / Zobrazovanie" data-en="Imaging">Imaging / Zobrazovanie</span></span></div>
+              <div class="gd-row" data-k="4" style="--i:4"><span class="nm"><svg class="fi"><use href="#g-pdf"/></svg><span data-sk="20270402_JanaTestova_NemPrikladov_Report_OncologyVisit.pdf" data-en="20270402_JaneDoe_ExampleHospital_Report_OncologyVisit.pdf">20270402_JanaTestova_NemPrikladov_Report_OncologyVisit.pdf</span></span><span class="loc"><svg class="fi fi-folder"><use href="#g-folder"/></svg><span data-sk="Report / Správy" data-en="Reports">Report / Správy</span></span></div>
             </div>
           </div>
         </div>
         <p class="stage-cap"><span data-sk="Pred Oncofiles: súbory roztrúsené v mailoch, mobile a priečinku Stiahnuté." data-en="Before Oncofiles: files scattered across email, phone and Downloads.">Pred Oncofiles: súbory roztrúsené v mailoch, mobile a priečinku Stiahnuté.</span><span data-sk="S Oncofiles: jeden priečinok, štandardné názvy, každý súbor na svojom mieste. Vymyslená pacientka." data-en="With Oncofiles: one folder, standard names, every file in its place. Invented patient.">S Oncofiles: jeden priečinok, štandardné názvy, každý súbor na svojom mieste. Vymyslená pacientka.</span></p>
+      </div>
+    </section>
+
+    <!-- 1b. Vision: Oncofiles as the missing piece between your AI chat and your records. -->
+    <section class="block" id="vision">
+      <div class="wrap">
+        <div class="grid">
+          <div class="side"><h2 data-sk="Chýbajúci dielik skladačky" data-en="The missing piece of the puzzle">Chýbajúci dielik skladačky</h2></div>
+          <div class="side"><p class="vz-intro" data-sk="O svojom zdraví sa ľudia už dnes rozprávajú s ChatGPT, Claude alebo s AI agentom: o trendoch, posledných výsledkoch aj diagnózach. Chýba im spoľahlivý zdroj, z ktorého by tá odpoveď vychádzala. Oncofiles ho dáva: vaše dokumenty prečítané, roztriedené a zapísané podľa zdravotníckych štandardov, s pôvodom každého údaja. A dáta pritom zostávajú pod vašou kontrolou, vo vašom Google Drive, takže od Oncofiles môžete kedykoľvek odísť." data-en="People already talk about their health with ChatGPT, Claude or an AI agent: trends, latest results, diagnoses. What that conversation lacks is a source it can trust. Oncofiles provides it: your documents read, filed and recorded to medical standards, with the origin of every fact. Meanwhile the data stays under your control, in your own Google Drive, so you can move away from Oncofiles at any time.">O svojom zdraví sa ľudia už dnes rozprávajú s ChatGPT, Claude alebo s AI agentom: o trendoch, posledných výsledkoch aj diagnózach. Chýba im spoľahlivý zdroj, z ktorého by tá odpoveď vychádzala. Oncofiles ho dáva: vaše dokumenty prečítané, roztriedené a zapísané podľa zdravotníckych štandardov, s pôvodom každého údaja. A dáta pritom zostávajú pod vašou kontrolou, vo vašom Google Drive, takže od Oncofiles môžete kedykoľvek odísť.</p></div>
+        </div>
+        <div class="puzzle" role="group" aria-label="Oncofiles spája váš AI rozhovor, vaše dokumenty, zdravotnícke štandardy a neskôr aj nemocnice a zdravotné aplikácie" data-sk-label="Oncofiles spája váš AI rozhovor, vaše dokumenty, zdravotnícke štandardy a neskôr aj nemocnice a zdravotné aplikácie" data-en-label="Oncofiles connects your AI chat, your documents, medical standards and, later, hospitals and health apps">
+          <div class="pz pz-chat"><h3 data-sk="Váš AI rozhovor" data-en="Your AI chat">Váš AI rozhovor</h3><p data-sk="Claude, ChatGPT alebo váš AI agent: trendy, posledné výsledky, otázky pre lekára." data-en="Claude, ChatGPT or your own AI agent: trends, latest results, questions for the doctor.">Claude, ChatGPT alebo váš AI agent: trendy, posledné výsledky, otázky pre lekára.</p></div>
+          <div class="pz pz-docs"><h3 data-sk="Vaše dokumenty vo vašom Drive" data-en="Your documents in your Drive">Vaše dokumenty vo vašom Drive</h3><p data-sk="Originály a prepisy .md zostávajú u vás. Odísť môžete kedykoľvek." data-en="Originals and .md transcripts stay with you. You can leave any time.">Originály a prepisy .md zostávajú u vás. Odísť môžete kedykoľvek.</p></div>
+          <div class="pz pz-core"><h3 data-sk="Oncofiles" data-en="Oncofiles">Oncofiles</h3><p data-sk="spoľahlivý, štandardizovaný zdroj: každý údaj s dokumentom, stranou a stavom overenia" data-en="a trustworthy, standardised source: every fact with its document, page and verification state">spoľahlivý, štandardizovaný zdroj: každý údaj s dokumentom, stranou a stavom overenia</p></div>
+          <div class="pz pz-std"><h3 data-sk="Zdravotnícke štandardy" data-en="Medical standards">Zdravotnícke štandardy</h3><p data-sk="FHIR R4 a kódy LOINC pre laboratórne hodnoty; ICD-10 pre diagnózy, ako pribúdajú." data-en="FHIR R4 and LOINC codes for lab values; ICD-10 for diagnoses as they are added.">FHIR R4 a kódy LOINC pre laboratórne hodnoty; ICD-10 pre diagnózy, ako pribúdajú.</p></div>
+          <div class="pz pz-hosp"><h3><span data-sk="Nemocnice a zdravotné aplikácie" data-en="Hospitals and health apps">Nemocnice a zdravotné aplikácie</span><span class="pz-chip" data-sk="plánujeme" data-en="roadmap">plánujeme</span></h3><p data-sk="Prepojenie cez FHIR R4 a EHDS a údaje zo zariadení. Zatiaľ nie je pripojená žiadna nemocnica ani aplikácia." data-en="Connections via FHIR R4 and EHDS, plus data from devices. No hospital or app is connected yet.">Prepojenie cez FHIR R4 a EHDS a údaje zo zariadení. Zatiaľ nie je pripojená žiadna nemocnica ani aplikácia.</p></div>
+        </div>
+        <p class="vz-note"><a href="#roadmap" data-sk="Čo funguje dnes a čo plánujeme" data-en="What works today and what is planned">Čo funguje dnes a čo plánujeme</a></p>
       </div>
     </section>
 
@@ -819,46 +916,46 @@
         </div>
         <div>
           <div class="prov">
-            <div class="sheet" aria-label="Lab report (invented)">
-              <div class="ln k-head"><span class="no">1</span><span>Nemocnica Príkladov – Oddelenie klinickej biochémie</span></div>
-              <div class="ln"><span class="no">2</span><span>Pacientka: Jana Testová (vymyslená)</span></div>
-              <div class="ln"><span class="no">3</span><span>Odosielajúci lekár: MUDr. Ján Ukážkový</span></div>
-              <div class="ln" data-src="sample"><span class="no">4</span><span>Odber: 15.03.2027 06:40</span></div>
-              <div class="ln"><span class="no">5</span><span>Vydané: 17.03.2027</span></div>
+            <div class="sheet" aria-label="Laboratórny výsledok (vymyslený)" data-sk-label="Laboratórny výsledok (vymyslený)" data-en-label="Lab report (invented)">
+              <div class="ln k-head"><span class="no">1</span><span data-sk="Nemocnica Príkladov – Oddelenie klinickej biochémie" data-en="Example Hospital – Clinical Biochemistry">Nemocnica Príkladov – Oddelenie klinickej biochémie</span></div>
+              <div class="ln"><span class="no">2</span><span data-sk="Pacientka: Jana Testová (vymyslená)" data-en="Patient: Jane Doe (invented)">Pacientka: Jana Testová (vymyslená)</span></div>
+              <div class="ln"><span class="no">3</span><span data-sk="Odosielajúci lekár: MUDr. Ján Ukážkový" data-en="Referring physician: Dr John Sample">Odosielajúci lekár: MUDr. Ján Ukážkový</span></div>
+              <div class="ln" data-src="sample"><span class="no">4</span><span data-sk="Odber: 15.03.2027 06:40" data-en="Sampled: 15 Mar 2027 06:40">Odber: 15.03.2027 06:40</span></div>
+              <div class="ln"><span class="no">5</span><span data-sk="Vydané: 17.03.2027" data-en="Issued: 17 Mar 2027">Vydané: 17.03.2027</span></div>
               <div class="ln"><span class="no">6</span><span>&nbsp;</span></div>
-              <div class="ln k-sub"><span class="no">7</span><span>Krvný obraz</span></div>
-              <div class="ln k-th"><span class="no">8</span><span class="cells"><span>Vyšetrenie</span><span>Výsledok</span><span>Jednotky</span><span>Ref. rozsah</span></span></div>
-              <div class="ln" data-src="wbc"><span class="no">9</span><span class="cells"><span>WBC</span><span>6,3</span><span>×10⁹/L</span><span>4,0–10,0</span></span></div>
-              <div class="ln"><span class="no">10</span><span class="cells"><span>RBC</span><span>4,21</span><span>×10¹²/L</span><span>3,80–5,20</span></span></div>
+              <div class="ln k-sub"><span class="no">7</span><span data-sk="Krvný obraz" data-en="Blood count">Krvný obraz</span></div>
+              <div class="ln k-th"><span class="no">8</span><span class="cells"><span data-sk="Vyšetrenie" data-en="Test">Vyšetrenie</span><span data-sk="Výsledok" data-en="Result">Výsledok</span><span data-sk="Jednotky" data-en="Units">Jednotky</span><span data-sk="Ref. rozsah" data-en="Ref. range">Ref. rozsah</span></span></div>
+              <div class="ln" data-src="wbc"><span class="no">9</span><span class="cells"><span>WBC</span><span data-sk="6,3" data-en="6.3">6,3</span><span>×10⁹/L</span><span data-sk="4,0–10,0" data-en="4.0–10.0">4,0–10,0</span></span></div>
+              <div class="ln"><span class="no">10</span><span class="cells"><span>RBC</span><span data-sk="4,21" data-en="4.21">4,21</span><span>×10¹²/L</span><span data-sk="3,80–5,20" data-en="3.80–5.20">3,80–5,20</span></span></div>
               <div class="ln on" data-src="hgb"><span class="no">11</span><span class="cells"><span>HGB</span><span>131</span><span>g/L</span><span>120–160</span></span></div>
-              <div class="ln"><span class="no">12</span><span class="cells"><span>HCT</span><span>0,39</span><span>L/L</span><span>0,35–0,47</span></span></div>
+              <div class="ln"><span class="no">12</span><span class="cells"><span>HCT</span><span data-sk="0,39" data-en="0.39">0,39</span><span>L/L</span><span data-sk="0,35–0,47" data-en="0.35–0.47">0,35–0,47</span></span></div>
               <div class="ln" data-src="plt"><span class="no">13</span><span class="cells"><span>PLT</span><span>248</span><span>×10⁹/L</span><span>150–400</span></span></div>
               <div class="ln"><span class="no">14</span><span>&nbsp;</span></div>
-              <div class="ln k-sub"><span class="no">15</span><span>Nádorové markery</span></div>
-              <div class="ln k-note"><span class="no">16</span><span>Výsledok z odberu 02.03.2027</span></div>
-              <div class="ln" data-src="cea"><span class="no">17</span><span class="cells"><span>CEA</span><span>2,7</span><span>µg/L</span><span>&lt; 5,0</span></span></div>
+              <div class="ln k-sub"><span class="no">15</span><span data-sk="Nádorové markery" data-en="Tumour markers">Nádorové markery</span></div>
+              <div class="ln k-note"><span class="no">16</span><span data-sk="Výsledok z odberu 02.03.2027" data-en="Result from the sample of 2 Mar 2027">Výsledok z odberu 02.03.2027</span></div>
+              <div class="ln" data-src="cea"><span class="no">17</span><span class="cells"><span>CEA</span><span data-sk="2,7" data-en="2.7">2,7</span><span>µg/L</span><span data-sk="&lt; 5,0" data-en="&lt; 5.0">&lt; 5,0</span></span></div>
               <div class="ln"><span class="no">18</span><span>&nbsp;</span></div>
-              <div class="ln"><span class="no">19</span><span>Vyšetrila: RNDr. Eva Vzorová</span></div>
-              <svg class="stamp" viewBox="0 0 100 100" aria-hidden="true"><circle cx="50" cy="50" r="44" fill="none" stroke="#2c4f9e" stroke-width="2.5"/><circle cx="50" cy="50" r="33" fill="none" stroke="#2c4f9e" stroke-width="1"/><text x="50" y="47" text-anchor="middle" font-size="9" fill="#2c4f9e" font-family="Georgia, serif">NEMOCNICA</text><text x="50" y="59" text-anchor="middle" font-size="9" fill="#2c4f9e" font-family="Georgia, serif">PRÍKLADOV</text><path d="M14 74 C 26 60, 34 86, 46 70 S 66 62, 74 76 S 88 70, 94 64" fill="none" stroke="#1d2b55" stroke-width="1.6"/></svg>
+              <div class="ln"><span class="no">19</span><span data-sk="Vyšetrila: RNDr. Eva Vzorová" data-en="Checked by: Eva Example, PhD">Vyšetrila: RNDr. Eva Vzorová</span></div>
+              <svg class="stamp" viewBox="0 0 100 100" aria-hidden="true"><circle cx="50" cy="50" r="44" fill="none" stroke="#2c4f9e" stroke-width="2.5"/><circle cx="50" cy="50" r="33" fill="none" stroke="#2c4f9e" stroke-width="1"/><text x="50" y="47" text-anchor="middle" font-size="9" fill="#2c4f9e" font-family="Georgia, serif" data-sk="NEMOCNICA" data-en="EXAMPLE">NEMOCNICA</text><text x="50" y="59" text-anchor="middle" font-size="9" fill="#2c4f9e" font-family="Georgia, serif" data-sk="PRÍKLADOV" data-en="HOSPITAL">PRÍKLADOV</text><path d="M14 74 C 26 60, 34 86, 46 70 S 66 62, 74 76 S 88 70, 94 64" fill="none" stroke="#1d2b55" stroke-width="1.6"/></svg>
             </div>
             <div class="app" id="prov">
               <h3 data-sk="Laboratórne hodnoty" data-en="Lab values">Laboratórne hodnoty</h3>
-              <p class="who" data-sk="Jana Testová, vymyslená pacientka" data-en="Jana Testová, invented patient">Jana Testová, vymyslená pacientka</p>
+              <p class="who" data-sk="Jana Testová, vymyslená pacientka" data-en="Jane Doe, invented patient">Jana Testová, vymyslená pacientka</p>
               <button class="vrow" type="button" aria-pressed="true" data-action="pickValue|hgb" data-line="hgb" data-ln="11" data-state="machine" data-sample="15. 3. 2027">
                 <span data-sk="Hemoglobín" data-en="Haemoglobin">Hemoglobín</span><span class="v">131<small>g/L</small></span>
-                <span class="m"><span>15. 3. 2027</span><span class="ref" data-sk="str. 1, r. 11" data-en="p. 1, l. 11">str. 1, r. 11</span><span class="st st-machine" data-sk="overené strojom" data-en="machine-verified">overené strojom</span></span>
+                <span class="m"><span data-sk="15. 3. 2027" data-en="15 Mar 2027">15. 3. 2027</span><span class="ref" data-sk="str. 1, r. 11" data-en="p. 1, l. 11">str. 1, r. 11</span><span class="st st-machine" data-sk="overené strojom" data-en="machine-verified">overené strojom</span></span>
               </button>
               <button class="vrow" type="button" aria-pressed="false" data-action="pickValue|wbc" data-line="wbc" data-ln="9" data-state="human" data-sample="15. 3. 2027">
-                <span data-sk="Leukocyty" data-en="White cells">Leukocyty</span><span class="v">6,3<small>×10⁹/L</small></span>
-                <span class="m"><span>15. 3. 2027</span><span class="ref" data-sk="str. 1, r. 9" data-en="p. 1, l. 9">str. 1, r. 9</span><span class="st st-human" data-sk="overené človekom" data-en="human-verified">overené človekom</span></span>
+                <span data-sk="Leukocyty" data-en="White cells">Leukocyty</span><span class="v"><span data-sk="6,3" data-en="6.3">6,3</span><small>×10⁹/L</small></span>
+                <span class="m"><span data-sk="15. 3. 2027" data-en="15 Mar 2027">15. 3. 2027</span><span class="ref" data-sk="str. 1, r. 9" data-en="p. 1, l. 9">str. 1, r. 9</span><span class="st st-human" data-sk="overené človekom" data-en="human-verified">overené človekom</span></span>
               </button>
               <button class="vrow" type="button" aria-pressed="false" data-action="pickValue|plt" data-line="plt" data-ln="13" data-state="machine" data-sample="15. 3. 2027">
                 <span data-sk="Trombocyty" data-en="Platelets">Trombocyty</span><span class="v">248<small>×10⁹/L</small></span>
-                <span class="m"><span>15. 3. 2027</span><span class="ref" data-sk="str. 1, r. 13" data-en="p. 1, l. 13">str. 1, r. 13</span><span class="st st-machine" data-sk="overené strojom" data-en="machine-verified">overené strojom</span></span>
+                <span class="m"><span data-sk="15. 3. 2027" data-en="15 Mar 2027">15. 3. 2027</span><span class="ref" data-sk="str. 1, r. 13" data-en="p. 1, l. 13">str. 1, r. 13</span><span class="st st-machine" data-sk="overené strojom" data-en="machine-verified">overené strojom</span></span>
               </button>
               <button class="vrow" type="button" aria-pressed="false" data-action="pickValue|cea" data-line="cea" data-ln="17" data-state="unverified" data-sample="2. 3. 2027">
-                <span>CEA</span><span class="v">2,7<small>µg/L</small></span>
-                <span class="m"><span>2. 3. 2027</span><span class="ref" data-sk="str. 1, r. 17" data-en="p. 1, l. 17">str. 1, r. 17</span><span class="st st-unverified" data-sk="neoverené" data-en="unverified">neoverené</span></span>
+                <span>CEA</span><span class="v"><span data-sk="2,7" data-en="2.7">2,7</span><small>µg/L</small></span>
+                <span class="m"><span data-sk="2. 3. 2027" data-en="2 Mar 2027">2. 3. 2027</span><span class="ref" data-sk="str. 1, r. 17" data-en="p. 1, l. 17">str. 1, r. 17</span><span class="st st-unverified" data-sk="neoverené" data-en="unverified">neoverené</span></span>
               </button>
               <p class="note" id="pf-note" aria-live="polite" data-sk="Druhé nezávislé čítanie našlo rovnaké číslo aj rovnaký dátum odberu." data-en="A second independent reading found the same number and the same sample date.">Druhé nezávislé čítanie našlo rovnaké číslo aj rovnaký dátum odberu.</p>
             </div>
@@ -875,8 +972,13 @@
           <div class="side"><h2 data-sk="Čo sa stane s mojím priečinkom na Google Drive?" data-en="What happens to my Google Drive folder?">Čo sa stane s mojím priečinkom na Google Drive?</h2></div>
           <div class="side"><p data-sk="Priečinok zostáva váš a dá sa čítať aj bez Oncofiles: v Drive, na disku aj vytlačený." data-en="The folder stays yours and stays readable without Oncofiles: in Drive, on disk or printed.">Priečinok zostáva váš a dá sa čítať aj bez Oncofiles: v Drive, na disku aj vytlačený.</p></div>
         </div>
+        <div class="own-callout" id="no-lock-in">
+          <h3 data-sk="Žiadne viazanie. Kedykoľvek môžete prestať a odísť." data-en="No lock-in. Stop any time and walk away.">Žiadne viazanie. Kedykoľvek môžete prestať a odísť.</h3>
+          <p data-sk="Vaše dáta sú vo vašom vlastnom Google Drive: originály so štandardnými názvami a vedľa každého súboru prepis .md s textom prečítaným zo skenu alebo fotky a s údajmi o dokumente (dátum, inštitúcia, typ, lekár, diagnózy, krátke zhrnutie). Keď Oncofiles odpojíte, všetko to vo vašom priečinku zostane a dá sa čítať aj bez nás." data-en="Your data lives in your own Google Drive: the originals under standard names, and next to each one a .md transcript with the text read from the scan or photo and the document details (date, institution, type, doctor, diagnoses, a short summary). If you disconnect Oncofiles, all of it stays in your folder and stays readable without us.">Vaše dáta sú vo vašom vlastnom Google Drive: originály so štandardnými názvami a vedľa každého súboru prepis .md s textom prečítaným zo skenu alebo fotky a s údajmi o dokumente (dátum, inštitúcia, typ, lekár, diagnózy, krátke zhrnutie). Keď Oncofiles odpojíte, všetko to vo vašom priečinku zostane a dá sa čítať aj bez nás.</p>
+          <p class="fine" data-sk="Tabuľka laboratórnych hodnôt so stavmi overenia je v našej databáze; text, z ktorého boli hodnoty prečítané, máte v Drive." data-en="The lab-value table with its verification states is kept in our database; the text the values were read from is in your Drive.">Tabuľka laboratórnych hodnôt so stavmi overenia je v našej databáze; text, z ktorého boli hodnoty prečítané, máte v Drive.</p>
+        </div>
         <div class="folder-shot">
-          <div class="gd gd-folder" aria-label="Google Drive folder Labs / Laboratóriá of the invented patient Jana Testová">
+          <div class="gd gd-folder" aria-label="Priečinok Labs / Laboratóriá na Google Drive vymyslenej pacientky Jana Testová" data-sk-label="Priečinok Labs / Laboratóriá na Google Drive vymyslenej pacientky Jana Testová" data-en-label="Google Drive folder Labs of the invented patient Jane Doe">
             <div class="gd-top">
               <span class="gd-prod" data-sk="Disk" data-en="Drive">Disk</span>
               <div class="gd-search"><svg class="ic"><use href="#g-search"/></svg><span data-sk="Hľadať na Disku" data-en="Search in Drive">Hľadať na Disku</span></div>
@@ -894,14 +996,14 @@
                 <div class="gd-quota"><i></i><span data-sk="Využité 2,1 GB z 15 GB" data-en="2.1 GB of 15 GB used">Využité 2,1 GB z 15 GB</span></div>
               </div>
               <div class="gd-main">
-                <div class="gd-crumbs"><span data-sk="Môj disk" data-en="My Drive">Môj disk</span> › Jana Testová › <b>Labs / Laboratóriá</b></div>
+                <div class="gd-crumbs"><span data-sk="Môj disk" data-en="My Drive">Môj disk</span> › <span data-sk="Jana Testová" data-en="Jane Doe">Jana Testová</span> › <b data-sk="Labs / Laboratóriá" data-en="Labs">Labs / Laboratóriá</b></div>
                 <div class="gd-row h"><span data-sk="Názov" data-en="Name">Názov</span><span class="opt" data-sk="Vlastník" data-en="Owner">Vlastník</span><span data-sk="Upravené" data-en="Modified">Upravené</span><span class="opt" data-sk="Veľkosť" data-en="Size">Veľkosť</span></div>
-                <div class="gd-row"><span class="nm"><svg class="fi"><use href="#g-pdf"/></svg><span>20270315_JanaTestova_NemPrikladov_Labs_BloodCount.pdf</span></span><span class="own opt"><i>J</i><span data-sk="ja" data-en="me">ja</span></span><span class="mt">17. 3. 2027</span><span class="mt opt">184 kB</span></div>
-                <div class="gd-row"><span class="nm"><svg class="fi"><use href="#g-txt"/></svg><span>20270315_JanaTestova_NemPrikladov_Labs_BloodCount.md</span></span><span class="own opt"><i>J</i><span data-sk="ja" data-en="me">ja</span></span><span class="mt">17. 3. 2027</span><span class="mt opt">3 kB</span></div>
-                <div class="gd-row"><span class="nm"><svg class="fi"><use href="#g-pdf"/></svg><span>20270309_JanaTestova_NemPrikladov_Labs_BloodCount.pdf</span></span><span class="own opt"><i>J</i><span data-sk="ja" data-en="me">ja</span></span><span class="mt">10. 3. 2027</span><span class="mt opt">176 kB</span></div>
-                <div class="gd-row"><span class="nm"><svg class="fi"><use href="#g-txt"/></svg><span>20270309_JanaTestova_NemPrikladov_Labs_BloodCount.md</span></span><span class="own opt"><i>J</i><span data-sk="ja" data-en="me">ja</span></span><span class="mt">10. 3. 2027</span><span class="mt opt">3 kB</span></div>
-                <div class="gd-row"><span class="nm"><svg class="fi"><use href="#g-img"/></svg><span>20270118_JanaTestova_NemPrikladov_Labs_TumorMarkers.jpg</span></span><span class="own opt"><i>J</i><span data-sk="ja" data-en="me">ja</span></span><span class="mt">18. 1. 2027</span><span class="mt opt">2,4 MB</span></div>
-                <div class="gd-row"><span class="nm"><svg class="fi"><use href="#g-txt"/></svg><span>20270118_JanaTestova_NemPrikladov_Labs_TumorMarkers.md</span></span><span class="own opt"><i>J</i><span data-sk="ja" data-en="me">ja</span></span><span class="mt">18. 1. 2027</span><span class="mt opt">2 kB</span></div>
+                <div class="gd-row"><span class="nm"><svg class="fi"><use href="#g-pdf"/></svg><span data-sk="20270315_JanaTestova_NemPrikladov_Labs_BloodCount.pdf" data-en="20270315_JaneDoe_ExampleHospital_Labs_BloodCount.pdf">20270315_JanaTestova_NemPrikladov_Labs_BloodCount.pdf</span></span><span class="own opt"><i>J</i><span data-sk="ja" data-en="me">ja</span></span><span class="mt" data-sk="17. 3. 2027" data-en="17 Mar 2027">17. 3. 2027</span><span class="mt opt">184 kB</span></div>
+                <div class="gd-row"><span class="nm"><svg class="fi"><use href="#g-txt"/></svg><span data-sk="20270315_JanaTestova_NemPrikladov_Labs_BloodCount.md" data-en="20270315_JaneDoe_ExampleHospital_Labs_BloodCount.md">20270315_JanaTestova_NemPrikladov_Labs_BloodCount.md</span></span><span class="own opt"><i>J</i><span data-sk="ja" data-en="me">ja</span></span><span class="mt" data-sk="17. 3. 2027" data-en="17 Mar 2027">17. 3. 2027</span><span class="mt opt">3 kB</span></div>
+                <div class="gd-row"><span class="nm"><svg class="fi"><use href="#g-pdf"/></svg><span data-sk="20270309_JanaTestova_NemPrikladov_Labs_BloodCount.pdf" data-en="20270309_JaneDoe_ExampleHospital_Labs_BloodCount.pdf">20270309_JanaTestova_NemPrikladov_Labs_BloodCount.pdf</span></span><span class="own opt"><i>J</i><span data-sk="ja" data-en="me">ja</span></span><span class="mt" data-sk="10. 3. 2027" data-en="10 Mar 2027">10. 3. 2027</span><span class="mt opt">176 kB</span></div>
+                <div class="gd-row"><span class="nm"><svg class="fi"><use href="#g-txt"/></svg><span data-sk="20270309_JanaTestova_NemPrikladov_Labs_BloodCount.md" data-en="20270309_JaneDoe_ExampleHospital_Labs_BloodCount.md">20270309_JanaTestova_NemPrikladov_Labs_BloodCount.md</span></span><span class="own opt"><i>J</i><span data-sk="ja" data-en="me">ja</span></span><span class="mt" data-sk="10. 3. 2027" data-en="10 Mar 2027">10. 3. 2027</span><span class="mt opt">3 kB</span></div>
+                <div class="gd-row"><span class="nm"><svg class="fi"><use href="#g-img"/></svg><span data-sk="20270118_JanaTestova_NemPrikladov_Labs_TumorMarkers.jpg" data-en="20270118_JaneDoe_ExampleHospital_Labs_TumorMarkers.jpg">20270118_JanaTestova_NemPrikladov_Labs_TumorMarkers.jpg</span></span><span class="own opt"><i>J</i><span data-sk="ja" data-en="me">ja</span></span><span class="mt" data-sk="18. 1. 2027" data-en="18 Jan 2027">18. 1. 2027</span><span class="mt opt" data-sk="2,4 MB" data-en="2.4 MB">2,4 MB</span></div>
+                <div class="gd-row"><span class="nm"><svg class="fi"><use href="#g-txt"/></svg><span data-sk="20270118_JanaTestova_NemPrikladov_Labs_TumorMarkers.md" data-en="20270118_JaneDoe_ExampleHospital_Labs_TumorMarkers.md">20270118_JanaTestova_NemPrikladov_Labs_TumorMarkers.md</span></span><span class="own opt"><i>J</i><span data-sk="ja" data-en="me">ja</span></span><span class="mt" data-sk="18. 1. 2027" data-en="18 Jan 2027">18. 1. 2027</span><span class="mt opt">2 kB</span></div>
               </div>
             </div>
           </div>
@@ -914,9 +1016,39 @@
             <li><b data-sk="Kontrola zhruba každé 2 minúty." data-en="Checked about every 2 minutes.">Kontrola zhruba každé 2 minúty.</b> <span data-sk="Nový súbor v priečinku Inbox sa spracuje krátko po nahratí." data-en="A new file in the Inbox folder is processed shortly after upload.">Nový súbor v priečinku Inbox sa spracuje krátko po nahratí.</span></li>
             <li><b data-sk="Nič sa nemaže." data-en="Nothing is deleted.">Nič sa nemaže.</b> <span data-sk="Súbory sa len premenúvajú a presúvajú; ak niečo treba odstrániť, ide to do koša." data-en="Files are only renamed and moved; anything that has to go goes to the trash.">Súbory sa len premenúvajú a presúvajú; ak niečo treba odstrániť, ide to do koša.</span></li>
           </ul>
-          <div class="readme" aria-label="README.md of the patient folder (invented)">
+          <div class="readme" aria-label="README.md priečinka pacientky (vymyslený)" data-sk-label="README.md priečinka pacientky (vymyslený)" data-en-label="README.md of the patient folder (invented)">
             <div class="readme-bar"><svg class="ic"><use href="#g-txt"/></svg><span>README.md</span></div>
-<pre>
+<pre data-sk="# Jana Testová – zdravotné záznamy
+Tento priečinok spravuje Oncofiles podľa pravidiel nižšie.
+
+## Priečinky
+Inbox/                    sem pridávajte nové súbory
+Labs / Laboratóriá/       laboratórne výsledky
+Report / Správy/          lekárske správy
+Imaging / Zobrazovanie/   CT, MR, USG
+
+## Názvy súborov
+RRRRMMDD_Pacient_Inštitúcia_Kategória_Popis.prípona
+
+## Zásady
+Ku každému súboru patrí prepis .md s rovnakým názvom.
+Nič sa nemaže, len presúva do koša.
+" data-en="# Jane Doe – medical records
+Oncofiles manages this folder by the rules below.
+
+## Folders
+Inbox/      add new files here
+Labs/       lab results
+Reports/    doctors&#39; reports
+Imaging/    CT, MRI, ultrasound
+
+## File names
+YYYYMMDD_Patient_Institution_Category_Description.ext
+
+## Rules
+Every file has a .md transcript with the same name.
+Nothing is deleted, only moved to the trash.
+">
 # Jana Testová – zdravotné záznamy
 Tento priečinok spravuje Oncofiles podľa pravidiel nižšie.
 
@@ -945,7 +1077,7 @@ Nič sa nemaže, len presúva do koša.
         <div class="side">
           <h2 data-sk="Pýtajte sa vlastnými slovami. Odpovedá z vašich dokumentov." data-en="Ask in your own words. It answers from your documents.">Pýtajte sa vlastnými slovami. Odpovedá z vašich dokumentov.</h2>
           <p data-sk="Spracovaný priečinok je k dispozícii priamo v rozhovore s vaším AI asistentom alebo agentom. Pri každej odpovedi je zdroj; kliknutím naň uvidíte riadok, z ktorého pochádza." data-en="Your processed folder is available right inside the conversation with your AI assistant or agent. Every answer carries its source; click it to see the line it came from.">Spracovaný priečinok je k dispozícii priamo v rozhovore s vaším AI asistentom alebo agentom. Pri každej odpovedi je zdroj; kliknutím naň uvidíte riadok, z ktorého pochádza.</p>
-          <div class="chat-tabs" role="tablist" aria-label="Chat examples">
+          <div class="chat-tabs" role="tablist" aria-label="Ukážky rozhovorov" data-sk-label="Ukážky rozhovorov" data-en-label="Chat examples">
             <button type="button" role="tab" id="tab-claude" aria-controls="chat-claude" aria-selected="true" data-action="pickChat|claude"><b data-sk="v Claude" data-en="in Claude">v Claude</b><span class="soon" data-sk="pripravujeme" data-en="coming soon">pripravujeme</span><span data-sk="Otázky na kontrolu u onkológa" data-en="Questions for the oncology visit">Otázky na kontrolu u onkológa</span><span class="tab-prog" aria-hidden="true"><i></i></span></button>
             <button type="button" role="tab" id="tab-gpt" aria-controls="chat-gpt" aria-selected="false" tabindex="-1" data-action="pickChat|gpt"><b data-sk="v ChatGPT" data-en="in ChatGPT">v ChatGPT</b><span class="soon" data-sk="pripravujeme" data-en="coming soon">pripravujeme</span><span data-sk="Aké boli posledné odbery?" data-en="What did my last blood test show?">Aké boli posledné odbery?</span><span class="tab-prog" aria-hidden="true"><i></i></span></button>
             <button type="button" role="tab" id="tab-gemini" aria-controls="chat-gemini" aria-selected="false" tabindex="-1" data-action="pickChat|gemini"><b data-sk="v Gemini CLI" data-en="in Gemini CLI">v Gemini CLI</b><span class="soon" data-sk="pripravujeme" data-en="coming soon">pripravujeme</span><span data-sk="Agent porovná nový výsledok" data-en="An agent compares the new result">Agent porovná nový výsledok</span><span class="tab-prog" aria-hidden="true"><i></i></span></button>
@@ -958,7 +1090,7 @@ Nič sa nemaže, len presúva do koša.
           <!-- Light, neutral chat frame (ChatGPT-like feel, not a copy) -->
           <div class="cw cw-light" id="chat-gpt" role="tabpanel" aria-labelledby="tab-gpt" data-client="chatgpt" data-verified="false" aria-hidden="true" inert>
             <div class="mac-bar"><span class="tl" aria-hidden="true"><i></i><i></i><i></i></span><span class="mac-title"><span class="wm">ChatGPT</span><span class="soon" data-sk="pripravujeme" data-en="coming soon">pripravujeme</span></span><span class="cw-note" data-sk="vymyslené údaje" data-en="invented data">vymyslené údaje</span></div>
-            <div class="win-cols"><aside class="win-side" aria-hidden="true"><span class="ws-new"><span data-sk="Nový chat" data-en="New chat">Nový chat</span></span><span class="ws-item"><span data-sk="Hľadať v chatoch" data-en="Search chats">Hľadať v chatoch</span></span><span class="ws-head" data-sk="Chaty" data-en="Chats">Chaty</span><span class="ws-item on"><span data-sk="Posledné odbery krvi" data-en="Latest blood tests">Posledné odbery krvi</span></span><span class="ws-item"><span data-sk="Plán kontrol na apríl" data-en="Check-up plan for April">Plán kontrol na apríl</span></span><span class="ws-item"><span data-sk="Preklad správy do angličtiny" data-en="Translate a report to English">Preklad správy do angličtiny</span></span><span class="ws-item"><span data-sk="Otázky pre sestričku" data-en="Questions for the nurse">Otázky pre sestričku</span></span><span class="ws-user"><i>J</i>Jana T.</span></aside><div class="win-main">
+            <div class="win-cols"><aside class="win-side" aria-hidden="true"><span class="ws-new"><span data-sk="Nový chat" data-en="New chat">Nový chat</span></span><span class="ws-item"><span data-sk="Hľadať v chatoch" data-en="Search chats">Hľadať v chatoch</span></span><span class="ws-head" data-sk="Chaty" data-en="Chats">Chaty</span><span class="ws-item on"><span data-sk="Posledné odbery krvi" data-en="Latest blood tests">Posledné odbery krvi</span></span><span class="ws-item"><span data-sk="Plán kontrol na apríl" data-en="Check-up plan for April">Plán kontrol na apríl</span></span><span class="ws-item"><span data-sk="Preklad správy do angličtiny" data-en="Translate a report to English">Preklad správy do angličtiny</span></span><span class="ws-item"><span data-sk="Otázky pre sestričku" data-en="Questions for the nurse">Otázky pre sestričku</span></span><span class="ws-user"><i>J</i><span data-sk="Jana T." data-en="Jane D.">Jana T.</span></span></aside><div class="win-main">
             <div class="cw-body">
               <p class="m-user" data-sk="Aké boli moje posledné odbery a zmenilo sa niečo oproti minule?" data-en="What did my latest blood tests show, and has anything changed since last time?">Aké boli moje posledné odbery a zmenilo sa niečo oproti minule?</p>
               <p class="m-tool"><span class="tdot"></span>Oncofiles · fact_series <span class="tool-ok" data-sk="hotovo" data-en="done">hotovo</span></p>
@@ -966,9 +1098,9 @@ Nič sa nemaže, len presúva do koša.
                 <p data-sk="Posledný odber bol 15. 3. 2027. Oproti odberu z 9. 3. 2027:" data-en="Your latest sample was taken on 15 Mar 2027. Compared with 9 Mar 2027:">Posledný odber bol 15. 3. 2027. Oproti odberu z 9. 3. 2027:</p>
                 <ul class="ans">
                   <li><span class="ans-v"><span data-sk="Hemoglobín" data-en="Haemoglobin">Hemoglobín</span> <b>131 g/L ↑</b> <span data-sk="(predtým 119)" data-en="(previously 119)">(predtým 119)</span></span><button type="button" class="chip" data-action="showSource|hgb"><i class="cd cd-m"></i><span data-sk="Správa 17. 3. 2027 · str. 1 · r. 11 · overené strojom" data-en="Report 17 Mar 2027 · p. 1 · l. 11 · machine-verified">Správa 17. 3. 2027 · str. 1 · r. 11 · overené strojom</span></button></li>
-                  <li><span class="ans-v"><span data-sk="Leukocyty" data-en="White cells">Leukocyty</span> <b>6,3 ×10⁹/L ↑</b> <span data-sk="(predtým 4,9)" data-en="(previously 4.9)">(predtým 4,9)</span></span><button type="button" class="chip" data-action="showSource|wbc"><i class="cd cd-h"></i><span data-sk="Správa 17. 3. 2027 · str. 1 · r. 9 · overené človekom" data-en="Report 17 Mar 2027 · p. 1 · l. 9 · human-verified">Správa 17. 3. 2027 · str. 1 · r. 9 · overené človekom</span></button></li>
+                  <li><span class="ans-v"><span data-sk="Leukocyty" data-en="White cells">Leukocyty</span> <b data-sk="6,3 ×10⁹/L ↑" data-en="6.3 ×10⁹/L ↑">6,3 ×10⁹/L ↑</b> <span data-sk="(predtým 4,9)" data-en="(previously 4.9)">(predtým 4,9)</span></span><button type="button" class="chip" data-action="showSource|wbc"><i class="cd cd-h"></i><span data-sk="Správa 17. 3. 2027 · str. 1 · r. 9 · overené človekom" data-en="Report 17 Mar 2027 · p. 1 · l. 9 · human-verified">Správa 17. 3. 2027 · str. 1 · r. 9 · overené človekom</span></button></li>
                   <li><span class="ans-v"><span data-sk="Trombocyty" data-en="Platelets">Trombocyty</span> <b>248 ×10⁹/L ↑</b> <span data-sk="(predtým 219)" data-en="(previously 219)">(predtým 219)</span></span><button type="button" class="chip" data-action="showSource|plt"><i class="cd cd-m"></i><span data-sk="Správa 17. 3. 2027 · str. 1 · r. 13 · overené strojom" data-en="Report 17 Mar 2027 · p. 1 · l. 13 · machine-verified">Správa 17. 3. 2027 · str. 1 · r. 13 · overené strojom</span></button></li>
-                  <li class="unv"><span class="ans-v"><span>CEA</span> <b>2,7 µg/L</b> <span data-sk="je neoverené: v správe je pri ňom iný dátum odberu (2. 3.), preto ho neporovnávam." data-en="is unverified: the report gives a different sample date for it (2 Mar), so I am not comparing it.">je neoverené: v správe je pri ňom iný dátum odberu (2. 3.), preto ho neporovnávam.</span></span><button type="button" class="chip" data-action="showSource|cea"><i class="cd cd-u"></i><span data-sk="Správa 17. 3. 2027 · str. 1 · r. 17 · neoverené" data-en="Report 17 Mar 2027 · p. 1 · l. 17 · unverified">Správa 17. 3. 2027 · str. 1 · r. 17 · neoverené</span></button></li>
+                  <li class="unv"><span class="ans-v"><span>CEA</span> <b data-sk="2,7 µg/L" data-en="2.7 µg/L">2,7 µg/L</b> <span data-sk="je neoverené: v správe je pri ňom iný dátum odberu (2. 3.), preto ho neporovnávam." data-en="is unverified: the report gives a different sample date for it (2 Mar), so I am not comparing it.">je neoverené: v správe je pri ňom iný dátum odberu (2. 3.), preto ho neporovnávam.</span></span><button type="button" class="chip" data-action="showSource|cea"><i class="cd cd-u"></i><span data-sk="Správa 17. 3. 2027 · str. 1 · r. 17 · neoverené" data-en="Report 17 Mar 2027 · p. 1 · l. 17 · unverified">Správa 17. 3. 2027 · str. 1 · r. 17 · neoverené</span></button></li>
                 </ul>
                 <p data-sk="Všetky tri overené hodnoty sú v referenčnom rozsahu uvedenom v správe. Ak chcete, pripravím k nim otázky pre lekára." data-en="All three verified values are within the reference range printed in the report. If you like, I can prepare questions for your doctor.">Všetky tri overené hodnoty sú v referenčnom rozsahu uvedenom v správe. Ak chcete, pripravím k nim otázky pre lekára.</p>
               </div>
@@ -998,29 +1130,62 @@ Nič sa nemaže, len presúva do koša.
 
           <!-- Terminal frame (Gemini CLI as an agent) -->
           <div class="cw cw-term" id="chat-gemini" role="tabpanel" aria-labelledby="tab-gemini" data-client="gemini-cli" data-verified="false" aria-hidden="true" inert>
-            <div class="mac-bar dark"><span class="tl" aria-hidden="true"><i></i><i></i><i></i></span><span class="mac-title"><span class="wm">Gemini CLI</span><span class="mt-dim"> — ~/zdravie — 96×28</span><span class="soon" data-sk="pripravujeme" data-en="coming soon">pripravujeme</span></span><span class="cw-note" data-sk="vymyslené údaje" data-en="invented data">vymyslené údaje</span></div>
+            <div class="mac-bar dark"><span class="tl" aria-hidden="true"><i></i><i></i><i></i></span><span class="mac-title"><span class="wm">Gemini CLI</span><span class="mt-dim" data-sk=" — ~/zdravie — 96×28" data-en=" — ~/health — 96×28"> — ~/zdravie — 96×28</span><span class="soon" data-sk="pripravujeme" data-en="coming soon">pripravujeme</span></span><span class="cw-note" data-sk="vymyslené údaje" data-en="invented data">vymyslené údaje</span></div>
             <div class="term">
               <div class="term-body">
                 <p class="t-prompt"><span class="t-gt">&gt;</span> <span data-sk="Skontroluj, či pribudol nový laboratórny výsledok, a porovnaj ho s minulým." data-en="Check whether a new lab result has arrived and compare it with the previous one.">Skontroluj, či pribudol nový laboratórny výsledok, a porovnaj ho s minulým.</span></p>
-                <div class="t-tool"><p><span class="t-ok">✓</span> list_documents <span class="t-dim">(oncofiles)</span></p><p class="t-dim">limit: 5</p><p class="t-dim" data-sk="nový: 20270317_JanaTestova_NemPrikladov_Labs_BloodCount.pdf" data-en="new: 20270317_JanaTestova_NemPrikladov_Labs_BloodCount.pdf">nový: 20270317_JanaTestova_NemPrikladov_Labs_BloodCount.pdf</p></div>
+                <div class="t-tool"><p><span class="t-ok">✓</span> list_documents <span class="t-dim">(oncofiles)</span></p><p class="t-dim">limit: 5</p><p class="t-dim" data-sk="nový: 20270317_JanaTestova_NemPrikladov_Labs_BloodCount.pdf" data-en="new: 20270317_JaneDoe_ExampleHospital_Labs_BloodCount.pdf">nový: 20270317_JanaTestova_NemPrikladov_Labs_BloodCount.pdf</p></div>
                 <div class="t-tool"><p><span class="t-ok">✓</span> document_detail <span class="t-dim">(oncofiles)</span></p><p class="t-dim">document_id: 4</p></div>
                 <div class="t-tool"><p><span class="t-ok">✓</span> fact_series <span class="t-dim">(oncofiles)</span></p><p class="t-dim">codes: HGB, WBC, PLT, CEA</p></div>
                 <p class="t-out" data-sk="Pribudol 1 nový výsledok: odber 15. 3. 2027 (správa zo 17. 3.). Oproti odberu 9. 3. 2027:" data-en="1 new result: sample of 15 Mar 2027 (report of 17 Mar). Compared with the sample of 9 Mar 2027:">Pribudol 1 nový výsledok: odber 15. 3. 2027 (správa zo 17. 3.). Oproti odberu 9. 3. 2027:</p>
                 <ul class="t-diff">
                   <li><span class="t-k">HGB</span><span class="t-n">119 → 131 g/L ↑</span><button type="button" class="tchip" data-action="showSource|hgb" data-sk="[str. 1, r. 11]" data-en="[p. 1, l. 11]">[str. 1, r. 11]</button></li>
-                  <li><span class="t-k">WBC</span><span class="t-n">4,9 → 6,3 ×10⁹/L ↑</span><button type="button" class="tchip" data-action="showSource|wbc" data-sk="[str. 1, r. 9]" data-en="[p. 1, l. 9]">[str. 1, r. 9]</button></li>
+                  <li><span class="t-k">WBC</span><span class="t-n" data-sk="4,9 → 6,3 ×10⁹/L ↑" data-en="4.9 → 6.3 ×10⁹/L ↑">4,9 → 6,3 ×10⁹/L ↑</span><button type="button" class="tchip" data-action="showSource|wbc" data-sk="[str. 1, r. 9]" data-en="[p. 1, l. 9]">[str. 1, r. 9]</button></li>
                   <li><span class="t-k">PLT</span><span class="t-n">219 → 248 ×10⁹/L ↑</span><button type="button" class="tchip" data-action="showSource|plt" data-sk="[str. 1, r. 13]" data-en="[p. 1, l. 13]">[str. 1, r. 13]</button></li>
                   <li class="unv"><span class="t-k">CEA</span><span class="t-n" data-sk="2,7 µg/L neoverené, iný dátum odberu; neporovnávam" data-en="2.7 µg/L unverified, different sample date; not compared">2,7 µg/L neoverené, iný dátum odberu; neporovnávam</span><button type="button" class="tchip" data-action="showSource|cea" data-sk="[str. 1, r. 17]" data-en="[p. 1, l. 17]">[str. 1, r. 17]</button></li>
                 </ul>
                 <p class="t-prompt t-idle"><span class="t-gt">&gt;</span> <span class="t-cur" aria-hidden="true"></span></p>
               </div>
-              <div class="term-status"><span>~/zdravie</span><span data-sk="1 MCP server: oncofiles" data-en="1 MCP server: oncofiles">1 MCP server: oncofiles</span></div>
+              <div class="term-status"><span data-sk="~/zdravie" data-en="~/health">~/zdravie</span><span data-sk="1 MCP server: oncofiles" data-en="1 MCP server: oncofiles">1 MCP server: oncofiles</span></div>
             </div>
           </div>
 
           </div>
           <p class="agents" data-sk="Tie isté nástroje použije akýkoľvek asistent s podporou MCP aj váš vlastný agent. Každá odpoveď cituje dokument, stranu a riadok, neoverené hodnoty sú označené. Oncofiles nenahrádza lekára." data-en="The same tools work for any MCP-capable assistant and for your own agent. Every answer cites the document, page and line, and unverified values are marked. Oncofiles does not replace your doctor.">Tie isté nástroje použije akýkoľvek asistent s podporou MCP aj váš vlastný agent. Každá odpoveď cituje dokument, stranu a riadok, neoverené hodnoty sú označené. Oncofiles nenahrádza lekára.</p>
         </div>
+      </div>
+    </section>
+
+    <!-- 4c. Your dashboard, built on Oncofiles: a Claude artifact as a frontend.
+         The visual is a mock with the INVENTED demo patient (public page: never a
+         screenshot of a real patient's dashboard). Swap slot: replace the
+         .art-mock div inside #artifact-shot with one <img> of the artifact run
+         against the sandbox patient; keep the figcaption. -->
+    <section class="block" id="dashboard">
+      <div class="wrap grid">
+        <div class="side">
+          <h2 data-sk="Váš vlastný dashboard, postavený na Oncofiles" data-en="Your own dashboard, built on Oncofiles">Váš vlastný dashboard, postavený na Oncofiles</h2>
+          <p data-sk="Okrem rozhovoru v Claude alebo ChatGPT môže byť vaším frontendom aj Claude artefakt: malá aplikácia priamo v Claude s analýzou a grafmi. Artefakt si údaje načíta priamo z Oncofiles cez nástroj dashboard_feed: hodnoty s dátumom odberu, odkazy na zdrojové dokumenty a stav overenia. Z nich kreslí trendy a grafy. Beží na Oncofiles." data-en="Besides chatting in Claude or ChatGPT, a Claude artifact can be your frontend: a small app inside Claude with data analysis and charts. The artifact loads its data directly from Oncofiles through the dashboard_feed tool: values with their sample dates, links to the source documents and the verification state. From these it draws trends and charts. It runs on Oncofiles.">Okrem rozhovoru v Claude alebo ChatGPT môže byť vaším frontendom aj Claude artefakt: malá aplikácia priamo v Claude s analýzou a grafmi. Artefakt si údaje načíta priamo z Oncofiles cez nástroj dashboard_feed: hodnoty s dátumom odberu, odkazy na zdrojové dokumenty a stav overenia. Z nich kreslí trendy a grafy. Beží na Oncofiles.</p>
+          <p class="lede-note" data-sk="Neoverené hodnoty sú v grafe označené a nespájajú sa s overenými do jednej čiary." data-en="Unverified values are marked in the chart and are not joined into the same line as verified ones.">Neoverené hodnoty sú v grafe označené a nespájajú sa s overenými do jednej čiary.</p>
+        </div>
+        <figure class="artifact-shot" id="artifact-shot">
+          <div class="art-mock" role="img" aria-label="Ukážka Claude artefaktu s vymyslenou pacientkou: karty hodnôt, graf CEA a zdroje" data-sk-label="Ukážka Claude artefaktu s vymyslenou pacientkou: karty hodnôt, graf CEA a zdroje" data-en-label="Example Claude artifact with an invented patient: value cards, a CEA chart and sources">
+            <div class="art-bar"><b data-sk="Nádorové markery a krvný obraz · Jana Testová" data-en="Tumour markers and blood count · Jane Doe">Nádorové markery a krvný obraz · Jana Testová</b><span class="art-tag" data-sk="Artefakt" data-en="Artifact">Artefakt</span></div>
+            <div class="art-body">
+              <div class="art-cards">
+                <div class="art-card"><span data-sk="Hemoglobín · 15. 3. 2027" data-en="Haemoglobin · 15 Mar 2027">Hemoglobín · 15. 3. 2027</span><b>131</b><small>g/L</small><i class="ok-m" data-sk="● overené strojom" data-en="● machine-verified">● overené strojom</i></div>
+                <div class="art-card"><span data-sk="Leukocyty · 15. 3. 2027" data-en="White cells · 15 Mar 2027">Leukocyty · 15. 3. 2027</span><b data-sk="6,3" data-en="6.3">6,3</b><small>×10⁹/L</small><i class="ok-h" data-sk="● overené človekom" data-en="● human-verified">● overené človekom</i></div>
+                <div class="art-card"><span data-sk="CEA · 2. 3. 2027" data-en="CEA · 2 Mar 2027">CEA · 2. 3. 2027</span><b data-sk="2,7" data-en="2.7">2,7</b><small>µg/L</small><i class="ok-u" data-sk="○ neoverené" data-en="○ unverified">○ neoverené</i></div>
+              </div>
+              <div class="art-chart"><h4 data-sk="CEA (µg/L), dátumy odberu" data-en="CEA (µg/L), sample dates">CEA (µg/L), dátumy odberu</h4><svg viewBox="0 0 360 160" role="img" aria-label="CEA: 3,1; 2,9; 2,7 µg/L (posledná neoverená)" data-sk-label="CEA: 3,1; 2,9; 2,7 µg/L (posledná neoverená)" data-en-label="CEA: 3.1, 2.9, 2.7 µg/L (latest unverified)"><line x1="40" y1="30" x2="350" y2="30" stroke="#9a5507" stroke-dasharray="4 4" stroke-width="1"/><text x="350" y="24" text-anchor="end" font-size="10" fill="#9a5507" data-sk="horná hranica 5,0" data-en="upper limit 5.0">horná hranica 5,0</text><line x1="40" y1="130" x2="350" y2="130" stroke="#d9d3c7" stroke-width="1"/><text x="34" y="133" text-anchor="end" font-size="10" fill="#6b717b">0</text><text x="34" y="33" text-anchor="end" font-size="10" fill="#6b717b">5</text><polyline points="70,68 200,72" fill="none" stroke="#0f6b63" stroke-width="2.5"/><circle cx="70" cy="68" r="4.5" fill="#0f6b63"/><circle cx="200" cy="72" r="4.5" fill="#0f6b63"/><circle cx="310" cy="76" r="5" fill="#fff" stroke="#9a5507" stroke-width="2"/><text x="70" y="58" text-anchor="middle" font-size="11" fill="#1f2328" data-sk="3,1" data-en="3.1">3,1</text><text x="200" y="62" text-anchor="middle" font-size="11" fill="#1f2328" data-sk="2,9" data-en="2.9">2,9</text><text x="310" y="66" text-anchor="middle" font-size="11" fill="#9a5507" data-sk="2,7 neoverené" data-en="2.7 unverified">2,7 neoverené</text><text x="70" y="148" text-anchor="middle" font-size="10" fill="#6b717b" data-sk="12. 1. 2027" data-en="12 Jan 2027">12. 1. 2027</text><text x="200" y="148" text-anchor="middle" font-size="10" fill="#6b717b" data-sk="9. 2. 2027" data-en="9 Feb 2027">9. 2. 2027</text><text x="310" y="148" text-anchor="middle" font-size="10" fill="#6b717b" data-sk="2. 3. 2027" data-en="2 Mar 2027">2. 3. 2027</text></svg></div>
+              <ul class="art-src">
+                <li><span data-sk="2. 3. 2027 · 2,7 µg/L" data-en="2 Mar 2027 · 2.7 µg/L">2. 3. 2027 · 2,7 µg/L</span><span class="ok-u" data-sk="neoverené: iný dátum odberu" data-en="unverified: different sample date">neoverené: iný dátum odberu</span><span class="lnk" data-sk="Lab. výsledok 17. 3. 2027, str. 1, r. 17 ↗" data-en="Lab report 17 Mar 2027, p. 1, l. 17 ↗">Lab. výsledok 17. 3. 2027, str. 1, r. 17 ↗</span></li>
+                <li><span data-sk="9. 2. 2027 · 2,9 µg/L" data-en="9 Feb 2027 · 2.9 µg/L">9. 2. 2027 · 2,9 µg/L</span><span class="ok-m" data-sk="overené strojom" data-en="machine-verified">overené strojom</span><span class="lnk" data-sk="Lab. výsledok 11. 2. 2027, str. 1, r. 17 ↗" data-en="Lab report 11 Feb 2027, p. 1, l. 17 ↗">Lab. výsledok 11. 2. 2027, str. 1, r. 17 ↗</span></li>
+              </ul>
+            </div>
+          </div>
+          <figcaption data-sk="Ukážka s vymyslenou pacientkou. Claude artefakt, ktorý si údaje načítava z Oncofiles (nástroj dashboard_feed)." data-en="Example with an invented patient. A Claude artifact that loads its data from Oncofiles (dashboard_feed tool).">Ukážka s vymyslenou pacientkou. Claude artefakt, ktorý si údaje načítava z Oncofiles (nástroj dashboard_feed).</figcaption>
+        </figure>
       </div>
     </section>
 
@@ -1043,7 +1208,7 @@ Nič sa nemaže, len presúva do koša.
               </ul>
             </div>
             <div>
-              <h3 data-sk="Náš server na Slovensku (EÚ)" data-en="Our server in Slovakia (EU)">Náš server na Slovensku (EÚ)</h3>
+              <h3><svg class="eu-flag" aria-hidden="true"><use href="#g-eu"/></svg> <span data-sk="Náš server v EÚ (Slovensko)" data-en="Our server in the EU (Slovakia)">Náš server v EÚ (Slovensko)</span></h3>
               <p class="when" data-sk="Šifrovaný disk, správa len cez súkromnú VPN." data-en="Encrypted disk, admin access only via a private VPN.">Šifrovaný disk, správa len cez súkromnú VPN.</p>
               <ul>
                 <li data-sk="lokálny model na OCR a zatriedenie: obsah dokumentov pri spracovaní na pozadí neopúšťa server" data-en="a local model for OCR and filing: document content does not leave the server during background processing">lokálny model na OCR a zatriedenie: obsah dokumentov pri spracovaní na pozadí neopúšťa server</li>
@@ -1093,28 +1258,66 @@ Nič sa nemaže, len presúva do koša.
           </div>
           <p class="other"><span data-sk="Claude Desktop, Claude Code a iné MCP klienty používajú tú istú adresu s prístupovým tokenom z dashboardu, napríklad" data-en="Claude Desktop, Claude Code and other MCP clients use the same address with an access token from the dashboard, for example">Claude Desktop, Claude Code a iné MCP klienty používajú tú istú adresu s prístupovým tokenom z dashboardu, napríklad</span> <code>claude mcp add oncofiles [URL]</code>.</p>
 
-          <div class="transcript" aria-label="Example conversation (invented data)">
+          <div class="transcript" aria-label="Ukážka rozhovoru (vymyslené údaje)" data-sk-label="Ukážka rozhovoru (vymyslené údaje)" data-en-label="Example conversation (invented data)">
             <p class="who" data-sk="Príklad z Claude.ai, vymyslené údaje" data-en="Example from Claude.ai, invented data">Príklad z Claude.ai, vymyslené údaje</p>
             <p class="q" data-sk="Ako sa vyvíjal hemoglobín od začiatku roka? Chcem to ukázať lekárke vo štvrtok." data-en="How has haemoglobin changed since January? I want to show my doctor on Thursday.">Ako sa vyvíjal hemoglobín od začiatku roka? Chcem to ukázať lekárke vo štvrtok.</p>
             <p class="tool">oncofiles: fact_series(code="HGB")</p>
             <div class="a">
               <p data-sk="Mám štyri overené merania (dátumy odberu):" data-en="I have four verified measurements (sample dates):">Mám štyri overené merania (dátumy odberu):</p>
-              <p class="nums">12. 1. 2027: 138 g/L; 9. 2. 2027: 124 g/L; 9. 3. 2027: 119 g/L; 15. 3. 2027: 131 g/L</p>
+              <p class="nums" data-sk="12. 1. 2027: 138 g/L; 9. 2. 2027: 124 g/L; 9. 3. 2027: 119 g/L; 15. 3. 2027: 131 g/L" data-en="12 Jan 2027: 138 g/L; 9 Feb 2027: 124 g/L; 9 Mar 2027: 119 g/L; 15 Mar 2027: 131 g/L">12. 1. 2027: 138 g/L; 9. 2. 2027: 124 g/L; 9. 3. 2027: 119 g/L; 15. 3. 2027: 131 g/L</p>
               <p data-sk="Po poklese vo februári a marci je posledná hodnota opäť v norme (120–160 g/L)." data-en="After a dip in February and March the latest value is back in range (120–160 g/L).">Po poklese vo februári a marci je posledná hodnota opäť v norme (120–160 g/L).</p>
-              <p class="srcs"><span data-sk="Zdroj poslednej hodnoty:" data-en="Source of the latest value:">Zdroj poslednej hodnoty:</span> 20270315_JanaTestova_NemPrikladov_Labs_BloodCount.pdf, <span data-sk="strana 1, riadok 11" data-en="page 1, line 11">strana 1, riadok 11</span></p>
+              <p class="srcs"><span data-sk="Zdroj poslednej hodnoty:" data-en="Source of the latest value:">Zdroj poslednej hodnoty:</span> <span data-sk="20270315_JanaTestova_NemPrikladov_Labs_BloodCount.pdf" data-en="20270315_JaneDoe_ExampleHospital_Labs_BloodCount.pdf">20270315_JanaTestova_NemPrikladov_Labs_BloodCount.pdf</span>, <span data-sk="strana 1, riadok 11" data-en="page 1, line 11">strana 1, riadok 11</span></p>
             </div>
           </div>
 
-          <div class="coming">
-            <h3 data-sk="Pripravujeme" data-en="Coming soon">Pripravujeme</h3>
+        </div>
+      </div>
+    </section>
+
+    <!-- 6b. Roadmap: honest status labels; only LIVE items are claims about today. -->
+    <section class="block" id="roadmap">
+      <div class="wrap">
+        <div class="grid">
+          <div class="side"><h2 data-sk="Kam Oncofiles smeruje" data-en="Where Oncofiles is heading">Kam Oncofiles smeruje</h2></div>
+          <div class="side"><p class="roadmap-intro" data-sk="Oncofiles má byť zázemím pre vaše zdravotné údaje: usporiadané, s overiteľným pôvodom každého údaja a pripravené pre rozhovory s AI asistentmi aj pre AI agentov. Nižšie je, čo funguje dnes, na čom pracujeme a čo plánujeme." data-en="Oncofiles is meant to be the backend for your medical data: organized, with a verifiable source for every fact, and ready for conversations with AI assistants and for AI agents. Below is what works today, what we are building and what we plan.">Oncofiles má byť zázemím pre vaše zdravotné údaje: usporiadané, s overiteľným pôvodom každého údaja a pripravené pre rozhovory s AI asistentmi aj pre AI agentov. Nižšie je, čo funguje dnes, na čom pracujeme a čo plánujeme.</p></div>
+        </div>
+        <ol class="roadmap">
+          <li class="rm-col rm-live" data-status="live">
+            <span class="rm-dot" aria-hidden="true"></span>
+            <span class="rm-status" data-sk="Funguje" data-en="Live">Funguje</span>
+            <h3 data-sk="Dnes" data-en="Today">Dnes</h3>
             <ul>
-              <li data-sk="Pripojenie vlastného Google Drive pre nových používateľov, november 2026" data-en="Connecting your own Google Drive for new users, November 2026">Pripojenie vlastného Google Drive pre nových používateľov, november 2026</li>
-              <li data-sk="Gmail a Kalendár (synchronizácia je zatiaľ pozastavená)" data-en="Gmail and Calendar (sync is paused for now)">Gmail a Kalendár (synchronizácia je zatiaľ pozastavená)</li>
+              <li data-sk="Priečinok na Google Drive pomenovaný a roztriedený podľa vašich vlastných pravidiel v README" data-en="Your Google Drive folder named and filed under your own README rules">Priečinok na Google Drive pomenovaný a roztriedený podľa vašich vlastných pravidiel v README</li>
+              <li data-sk="OCR a zatriedenie na lokálnom modeli na našom serveri v EÚ (Slovensko)" data-en="OCR and filing on a local model on our own server in the EU (Slovakia)">OCR a zatriedenie na lokálnom modeli na našom serveri v EÚ (Slovensko)</li>
+              <li data-sk="Každá hodnota so zdrojovým dokumentom, stranou a presným textom, z ktorého pochádza" data-en="Every value with its source document, page and the exact text it came from">Každá hodnota so zdrojovým dokumentom, stranou a presným textom, z ktorého pochádza</li>
+              <li data-sk="Pripojenie ku Claude a ChatGPT cez MCP (stav každého klienta je uvedený vyššie)" data-en="Connectors for Claude and ChatGPT via MCP (each client's status is shown above)">Pripojenie ku Claude a ChatGPT cez MCP (stav každého klienta je uvedený vyššie)</li>
+              <li data-sk="FHIR R4: čítanie, vyhľadávanie a export všetkých záznamov pacienta" data-en="FHIR R4: read, search and export of a patient's full record">FHIR R4: čítanie, vyhľadávanie a export všetkých záznamov pacienta</li>
+              <li class="rm-note" data-sk="Pripojenie vlastného Drive pre nových používateľov otvárame v novembri 2026." data-en="Connecting your own Drive opens to new users in November 2026.">Pripojenie vlastného Drive pre nových používateľov otvárame v novembri 2026.</li>
+            </ul>
+          </li>
+          <li class="rm-col rm-wip" data-status="in-progress">
+            <span class="rm-dot" aria-hidden="true"></span>
+            <span class="rm-status" data-sk="Rozpracované" data-en="In progress">Rozpracované</span>
+            <h3 data-sk="Na čom pracujeme" data-en="What we are building">Na čom pracujeme</h3>
+            <ul>
+              <li data-sk="Diagnózy, liečba a návštevy ako fakty so zdrojom, rovnako ako laboratórne hodnoty" data-en="Diagnoses, treatments and visits as facts with a source, just like lab values">Diagnózy, liečba a návštevy ako fakty so zdrojom, rovnako ako laboratórne hodnoty</li>
+              <li data-sk="Prepojenie s nemocničnými systémami cez FHIR R4 a európsky priestor zdravotných údajov (EHDS)" data-en="Connection to hospital systems via FHIR R4 and the European Health Data Space (EHDS)">Prepojenie s nemocničnými systémami cez FHIR R4 a európsky priestor zdravotných údajov (EHDS)</li>
+              <li class="rm-note" data-sk="Návrh prepojenia je hotový; žiadna nemocnica zatiaľ pripojená nie je." data-en="The design is done; no hospital is connected yet.">Návrh prepojenia je hotový; žiadna nemocnica zatiaľ pripojená nie je.</li>
+            </ul>
+          </li>
+          <li class="rm-col rm-plan" data-status="planned">
+            <span class="rm-dot" aria-hidden="true"></span>
+            <span class="rm-status" data-sk="Plánujeme" data-en="Planned">Plánujeme</span>
+            <h3 data-sk="Čo príde neskôr" data-en="What comes later">Čo príde neskôr</h3>
+            <ul>
+              <li data-sk="Osobné zdravotné údaje zo zariadení a platforiem: najprv Withings, potom Apple Health, Google Health Connect, Garmin, Strava a ďalšie" data-en="Personal health data from devices and platforms: Withings first, then Apple Health, Google Health Connect, Garmin, Strava and more to come">Osobné zdravotné údaje zo zariadení a platforiem: najprv Withings, potom Apple Health, Google Health Connect, Garmin, Strava a ďalšie</li>
+              <li data-sk="Gmail a Kalendár (po Drive; synchronizácia je zatiaľ pozastavená)" data-en="Gmail and Calendar (after Drive; sync is paused for now)">Gmail a Kalendár (po Drive; synchronizácia je zatiaľ pozastavená)</li>
               <li data-sk="Rozpoznanie viacerých dokumentov v jednom PDF" data-en="Detecting several documents inside one PDF">Rozpoznanie viacerých dokumentov v jednom PDF</li>
               <li data-sk="Lepšie čítanie starých rukou písaných záznamov" data-en="Better reading of old handwritten records">Lepšie čítanie starých rukou písaných záznamov</li>
+              <li class="rm-note" data-sk="Plány, nie sľuby: poradie sa môže zmeniť." data-en="Plans, not promises: the order may change.">Plány, nie sľuby: poradie sa môže zmeniť.</li>
             </ul>
-          </div>
-        </div>
+          </li>
+        </ol>
       </div>
     </section>
 
@@ -1147,11 +1350,11 @@ Nič sa nemaže, len presúva do koša.
         <div class="faq">
           <details open>
             <summary><h3 data-sk="Posiela sa obsah mojich dokumentov do cloudovej AI?" data-en="Is the content of my documents sent to a cloud AI?">Posiela sa obsah mojich dokumentov do cloudovej AI?</h3></summary>
-            <div class="a"><p data-sk="Pri spracovaní na pozadí nie. Čítanie skenov (OCR) aj zatriedenie dokumentov beží na lokálnom modeli na našom serveri na Slovensku. Do Claude alebo ChatGPT ide len to, na čo sa v nich sami spýtate, ako odpoveď nástroja na vašu otázku." data-en="Not in background processing. Reading scans (OCR) and classifying documents runs on a local model on our own server in Slovakia. Only what you ask about inside Claude or ChatGPT goes to that assistant, as the tool's answer to your question.">Pri spracovaní na pozadí nie. Čítanie skenov (OCR) aj zatriedenie dokumentov beží na lokálnom modeli na našom serveri na Slovensku. Do Claude alebo ChatGPT ide len to, na čo sa v nich sami spýtate, ako odpoveď nástroja na vašu otázku.</p></div>
+            <div class="a"><p data-sk="Pri spracovaní na pozadí nie. Čítanie skenov (OCR) aj zatriedenie dokumentov beží na lokálnom modeli na našom serveri v EÚ (Slovensko). Do Claude alebo ChatGPT ide len to, na čo sa v nich sami spýtate, ako odpoveď nástroja na vašu otázku." data-en="Not in background processing. Reading scans (OCR) and classifying documents runs on a local model on our own server in the EU (Slovakia). Only what you ask about inside Claude or ChatGPT goes to that assistant, as the tool's answer to your question.">Pri spracovaní na pozadí nie. Čítanie skenov (OCR) aj zatriedenie dokumentov beží na lokálnom modeli na našom serveri v EÚ (Slovensko). Do Claude alebo ChatGPT ide len to, na čo sa v nich sami spýtate, ako odpoveď nástroja na vašu otázku.</p></div>
           </details>
           <details>
             <summary><h3 data-sk="Kde sú uložené moje dokumenty a údaje?" data-en="Where are my documents and data stored?">Kde sú uložené moje dokumenty a údaje?</h3></summary>
-            <div class="a"><p data-sk="Originálne súbory a prepisy .md sú vo vašom Google Drive. Index dokumentov, prečítaný text a vytiahnuté hodnoty s ich pôvodom sú navyše uložené v databáze na našom serveri na Slovensku (EÚ), na šifrovanom disku. Server je z internetu dostupný len cez HTTPS." data-en="Original files and .md transcripts are in your Google Drive. The document index, the extracted text and the extracted values with their provenance are also stored in a database on our own server in Slovakia (EU), on an encrypted disk. The server is reachable from the internet only over HTTPS.">Originálne súbory a prepisy .md sú vo vašom Google Drive. Index dokumentov, prečítaný text a vytiahnuté hodnoty s ich pôvodom sú navyše uložené v databáze na našom serveri na Slovensku (EÚ), na šifrovanom disku. Server je z internetu dostupný len cez HTTPS.</p></div>
+            <div class="a"><p data-sk="Originálne súbory a prepisy .md sú vo vašom Google Drive. Index dokumentov, prečítaný text a vytiahnuté hodnoty s ich pôvodom sú navyše uložené v databáze na našom serveri v EÚ (Slovensko), na šifrovanom disku. Server je z internetu dostupný len cez HTTPS." data-en="Original files and .md transcripts are in your Google Drive. The document index, the extracted text and the extracted values with their provenance are also stored in a database on our own server in the EU (Slovakia), on an encrypted disk. The server is reachable from the internet only over HTTPS.">Originálne súbory a prepisy .md sú vo vašom Google Drive. Index dokumentov, prečítaný text a vytiahnuté hodnoty s ich pôvodom sú navyše uložené v databáze na našom serveri v EÚ (Slovensko), na šifrovanom disku. Server je z internetu dostupný len cez HTTPS.</p></div>
           </details>
           <details>
             <summary><h3 data-sk="Čo znamená „overené strojom“, „neoverené“ a „overené človekom“?" data-en="What do “machine-verified”, “unverified” and “human-verified” mean?">Čo znamená „overené strojom“, „neoverené“ a „overené človekom“?</h3></summary>
@@ -1234,7 +1437,7 @@ Nič sa nemaže, len presúva do koša.
       <button type="button" class="cookie-btn" data-consent="accept" data-sk="Prijať analytické cookies" data-en="Accept analytics cookies">Prijať analytické cookies</button>
     </div>
   </div>
-  <button id="bug-fab" type="button" data-action="openBug" aria-label="Report a bug" title="Report a bug"><svg class="ic"><use href="#i-bug"/></svg></button>
+  <button id="bug-fab" type="button" data-action="openBug" aria-label="Nahlásiť chybu" title="Nahlásiť chybu" data-sk-label="Nahlásiť chybu" data-en-label="Report a bug" data-sk-title="Nahlásiť chybu" data-en-title="Report a bug"><svg class="ic"><use href="#i-bug"/></svg></button>
   <div id="bug-overlay" role="dialog" aria-modal="true" aria-labelledby="bug-h">
     <div class="bug-box">
       <h3 id="bug-h" data-sk="Nahlásiť chybu" data-en="Report a bug">Nahlásiť chybu</h3>
@@ -1413,6 +1616,10 @@ Nič sa nemaže, len presúva do koša.
       document.querySelectorAll('[data-placeholder-' + l + ']').forEach(function (el) { el.setAttribute('placeholder', el.getAttribute('data-placeholder-' + l)); });
       document.querySelectorAll('[data-' + l + '-alt]').forEach(function (el) { el.setAttribute('alt', el.getAttribute('data-' + l + '-alt')); });
       document.querySelectorAll('[data-' + l + '-label]').forEach(function (el) { el.setAttribute('aria-label', el.getAttribute('data-' + l + '-label')); });
+      document.querySelectorAll('[data-' + l + '-title]').forEach(function (el) { el.setAttribute('title', el.getAttribute('data-' + l + '-title')); });
+      // The hero files fly to rows measured in the current language; names
+      // change length when the language flips, so measure again.
+      restartStage();
     }
     function toggleLang() { applyLang(lang === 'sk' ? 'en' : 'sk'); }
 
@@ -1437,6 +1644,10 @@ Nič sa nemaže, len presúva do koša.
         cs.setProperty('--ty', Math.round(rr.top + rr.height / 2 - cy) + 'px');
       });
     }
+    function restartStage() {
+      if (!stage || !stage.classList.contains('run')) return;
+      stage.classList.remove('run'); measure(); void stage.offsetWidth; stage.classList.add('run');
+    }
     function startStage() {
       if (!stage || reduceMotion) return;
       measure();
@@ -1444,7 +1655,7 @@ Nič sa nemaže, len presúva do koša.
       var t = null;
       window.addEventListener('resize', function () {
         clearTimeout(t);
-        t = setTimeout(function () { stage.classList.remove('run'); measure(); void stage.offsetWidth; stage.classList.add('run'); }, 200);
+        t = setTimeout(restartStage, 200);
       });
       if ('IntersectionObserver' in window) {
         new IntersectionObserver(function (entries) {

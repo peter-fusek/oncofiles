@@ -25,7 +25,7 @@
   <main id="demo" aria-busy="true">
     <section class="overview" aria-labelledby="patient-name">
       <div class="who">
-        <h1 id="patient-name">Jana Testová</h1>
+        <h1 id="patient-name" data-sk="Jana Testová" data-en="Jane Doe">Jana Testová</h1>
         <p class="sub" id="patient-sub"></p>
       </div>
       <p class="verify" id="verify-summary"></p>
@@ -59,7 +59,7 @@
       <div class="ask-side">
         <h2 id="ask-h" data-sk="Pýtajte sa vlastnými slovami" data-en="Ask in your own words">Pýtajte sa vlastnými slovami</h2>
         <p class="hint" data-sk="Takto odpovedá asistent z dokumentov tejto pacientky. Kliknutím na zdroj sa otvorí dokument na danom riadku." data-en="This is how an assistant answers from this patient's documents. Click a source to open the document at that line.">Takto odpovedá asistent z dokumentov tejto pacientky. Kliknutím na zdroj sa otvorí dokument na danom riadku.</p>
-        <div class="chat-tabs" role="tablist" aria-label="Chat examples">
+        <div class="chat-tabs" role="tablist" aria-label="Ukážky rozhovorov" data-sk-label="Ukážky rozhovorov" data-en-label="Chat examples">
           <button type="button" role="tab" id="tab-gpt" aria-controls="chat-gpt" aria-selected="true" data-action="showChat|gpt"><b>ChatGPT</b><span class="soon" data-sk="pripravujeme" data-en="coming soon">pripravujeme</span></button>
           <button type="button" role="tab" id="tab-claude" aria-controls="chat-claude" aria-selected="false" tabindex="-1" data-action="showChat|claude"><b>Claude</b><span class="soon" data-sk="pripravujeme" data-en="coming soon">pripravujeme</span></button>
           <button type="button" role="tab" id="tab-gemini" aria-controls="chat-gemini" aria-selected="false" tabindex="-1" data-action="showChat|gemini"><b>Gemini CLI</b><span class="soon" data-sk="pripravujeme" data-en="coming soon">pripravujeme</span></button>
@@ -70,7 +70,7 @@
         <!-- One verified flag per client: data-verified="true" removes the "coming soon" label. -->
         <div class="cw cw-light" id="chat-gpt" role="tabpanel" aria-labelledby="tab-gpt" data-client="chatgpt" data-verified="false">
           <div class="mac-bar"><span class="tl" aria-hidden="true"><i></i><i></i><i></i></span><span class="mac-title"><span class="wm">ChatGPT</span><span class="soon" data-sk="pripravujeme" data-en="coming soon">pripravujeme</span></span><span class="cw-note" data-sk="vymyslené údaje" data-en="invented data">vymyslené údaje</span></div>
-          <div class="win-cols"><aside class="win-side" aria-hidden="true"><span class="ws-new"><span data-sk="Nový chat" data-en="New chat">Nový chat</span></span><span class="ws-item"><span data-sk="Hľadať v chatoch" data-en="Search chats">Hľadať v chatoch</span></span><span class="ws-head" data-sk="Chaty" data-en="Chats">Chaty</span><span class="ws-item on"><span data-sk="Posledné odbery krvi" data-en="Latest blood tests">Posledné odbery krvi</span></span><span class="ws-item"><span data-sk="Plán kontrol na apríl" data-en="Check-up plan for April">Plán kontrol na apríl</span></span><span class="ws-item"><span data-sk="Preklad správy do angličtiny" data-en="Translate a report to English">Preklad správy do angličtiny</span></span><span class="ws-item"><span data-sk="Otázky pre sestričku" data-en="Questions for the nurse">Otázky pre sestričku</span></span><span class="ws-user"><i>J</i>Jana T.</span></aside><div class="win-main">
+          <div class="win-cols"><aside class="win-side" aria-hidden="true"><span class="ws-new"><span data-sk="Nový chat" data-en="New chat">Nový chat</span></span><span class="ws-item"><span data-sk="Hľadať v chatoch" data-en="Search chats">Hľadať v chatoch</span></span><span class="ws-head" data-sk="Chaty" data-en="Chats">Chaty</span><span class="ws-item on"><span data-sk="Posledné odbery krvi" data-en="Latest blood tests">Posledné odbery krvi</span></span><span class="ws-item"><span data-sk="Plán kontrol na apríl" data-en="Check-up plan for April">Plán kontrol na apríl</span></span><span class="ws-item"><span data-sk="Preklad správy do angličtiny" data-en="Translate a report to English">Preklad správy do angličtiny</span></span><span class="ws-item"><span data-sk="Otázky pre sestričku" data-en="Questions for the nurse">Otázky pre sestričku</span></span><span class="ws-user"><i>J</i><span data-sk="Jana T." data-en="Jane D.">Jana T.</span></span></aside><div class="win-main">
           <div class="cw-body" id="chat-gpt-body"></div>
           <div class="cw-composer" aria-hidden="true"><span class="cmp-plus">+</span><span class="cmp-conn"><span class="tdot"></span>Oncofiles</span><span class="cmp-ph" data-sk="Napíšte správu" data-en="Type a message">Napíšte správu</span><span class="cmp-send">↑</span></div></div></div>
         </div>
@@ -80,10 +80,10 @@
           <div class="cw-composer" aria-hidden="true"><span class="cmp-plus">+</span><span class="cmp-ph" data-sk="Napíšte správu" data-en="Type a message">Napíšte správu</span><span class="cmp-send">↑</span></div><div class="home-ind" aria-hidden="true"></div></div><p class="dev-note"><span class="cw-note" data-sk="vymyslené údaje" data-en="invented data">vymyslené údaje</span></p>
         </div>
         <div class="cw cw-term" id="chat-gemini" role="tabpanel" aria-labelledby="tab-gemini" data-client="gemini-cli" data-verified="false" hidden>
-          <div class="mac-bar dark"><span class="tl" aria-hidden="true"><i></i><i></i><i></i></span><span class="mac-title"><span class="wm">Gemini CLI</span><span class="mt-dim"> — ~/zdravie — 96×28</span><span class="soon" data-sk="pripravujeme" data-en="coming soon">pripravujeme</span></span><span class="cw-note" data-sk="vymyslené údaje" data-en="invented data">vymyslené údaje</span></div>
+          <div class="mac-bar dark"><span class="tl" aria-hidden="true"><i></i><i></i><i></i></span><span class="mac-title"><span class="wm">Gemini CLI</span><span class="mt-dim" data-sk=" — ~/zdravie — 96×28" data-en=" — ~/health — 96×28"> — ~/zdravie — 96×28</span><span class="soon" data-sk="pripravujeme" data-en="coming soon">pripravujeme</span></span><span class="cw-note" data-sk="vymyslené údaje" data-en="invented data">vymyslené údaje</span></div>
           <div class="term">
             <div class="term-body" id="chat-gemini-body"></div>
-            <div class="term-status"><span>~/zdravie</span><span>1 MCP server: oncofiles</span></div>
+            <div class="term-status"><span data-sk="~/zdravie" data-en="~/health">~/zdravie</span><span>1 MCP server: oncofiles</span></div>
           </div>
         </div>
       </div>
@@ -96,7 +96,7 @@
         <p class="dv-file" id="doc-file"></p>
       </div>
       <div class="dv-grid">
-        <figure class="page" aria-label="Page preview">
+        <figure class="page" aria-label="Náhľad strany" data-sk-label="Náhľad strany" data-en-label="Page preview">
           <div class="sheet" id="sheet"></div>
           <figcaption id="page-cap"></figcaption>
         </figure>
