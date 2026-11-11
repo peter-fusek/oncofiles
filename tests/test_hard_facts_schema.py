@@ -12,6 +12,17 @@ import sqlite3
 import pytest
 from pydantic import ValidationError
 
+from oncofiles.database._hard_facts import (
+    CODING_OWNER_TYPES,
+    ID_SYSTEM_ACCESSION,
+    ID_SYSTEM_ICO,
+    ID_SYSTEM_UDZS_DOCTOR,
+    ID_SYSTEM_UDZS_PROVIDER,
+    IDENTIFIER_OWNER_TYPES,
+    IDENTIFIER_SYSTEMS_BY_OWNER,
+    PATIENT_OWNER_TABLES,
+    SHARED_OWNER_TABLES,
+)
 from oncofiles.models import (
     CancerStage,
     Coding,
@@ -289,16 +300,16 @@ async def test_codings_identifiers_provenance_round_trip(two_patients):
     assert len(await db.list_codings("fact_code", "CEA", patient_id=None)) == 1
     org_id = await db.upsert_organization("SYNORG")
     await db.add_identifier(
-        Identifier(owner_type="organization", owner_id=org_id, system="urn:synthetic:ico",
+        Identifier(owner_type="organization", owner_id=org_id, system=ID_SYSTEM_ICO,
                    value="SYN-ICO"),
         patient_id=None,
     )  # fmt: skip
-    found = await db.find_by_identifier("urn:synthetic:ico", "SYN-ICO", patient_id=None)
+    found = await db.find_by_identifier(ID_SYSTEM_ICO, "SYN-ICO", patient_id=None)
     assert [i.owner_id for i in found] == [org_id]
 
     spec = await db.insert_specimen(Specimen(accession="SYN-B"), patient_id=ERIKA_UUID)
     await db.add_identifier(
-        Identifier(owner_type="specimen", owner_id=spec.id, system="urn:synthetic:acc",
+        Identifier(owner_type="specimen", owner_id=spec.id, system=ID_SYSTEM_ACCESSION,
                    value="SYN-B"),
         patient_id=ERIKA_UUID,
     )  # fmt: skip
@@ -514,3 +525,195 @@ async def test_owner_and_target_allowlists(db):
                              agent_role="verifier"),
             patient_id=ERIKA_UUID,
         )  # fmt: skip
+
+
+# ── patient owners vs catalog owners (codings + identifiers) ──
+
+CATALOG_OWNERS = {"organization", "department", "device", "fact_code"}
+
+
+async def _make_owner(db, owner_type: str, doc_id: int) -> str:
+    """Create one synthetic owner row of ``owner_type`` for Erika, return its id."""
+    pid = ERIKA_UUID
+    if owner_type == "fact":
+        cur = await db.db.execute(
+            "INSERT INTO clinical_records (patient_id, record_type, param, source) "
+            "VALUES (?, 'lab', 'Synthetic', 'manual')",
+            (pid,),
+        )
+        await db.db.commit()
+        return str(cur.lastrowid)
+    if owner_type == "document":
+        return str(doc_id)
+    if owner_type == "encounter":
+        enc_id = await db.upsert_encounter(
+            patient_id=pid, natural_key="syn-visit", start_at="2027-07", kind="visit",
+            title=None, organization_id=None, department_id=None, practitioner_id=None,
+        )  # fmt: skip
+        return str(enc_id)
+    if owner_type == "practitioner":
+        return str(await db.upsert_practitioner(patient_id=pid, surname_token="Synthetic"))
+    cond = await db.insert_condition(Condition(printed_text="Synthetic"), patient_id=pid)
+    course = await db.insert_treatment_course(
+        TreatmentCourse(regimen_printed="SYNTH"), patient_id=pid
+    )
+    if owner_type == "condition":
+        return str(cond.id)
+    if owner_type == "treatment_course":
+        return str(course.id)
+    if owner_type == "cancer_stage":
+        made = await db.insert_cancer_stage(
+            CancerStage(condition_id=cond.id, printed="synthetic"), patient_id=pid
+        )
+    elif owner_type == "treatment_cycle":
+        made = await db.insert_treatment_cycle(TreatmentCycle(course_id=course.id), patient_id=pid)
+    elif owner_type == "medication_event":
+        made = await db.insert_medication_event(
+            MedicationEvent(kind="statement", ingredient_printed="Synthocillin"), patient_id=pid
+        )
+    elif owner_type == "procedure":
+        made = await db.insert_procedure(
+            Procedure(kind="biopsy", printed_text="Synthetic"), patient_id=pid
+        )
+    elif owner_type == "specimen":
+        made = await db.insert_specimen(Specimen(), patient_id=pid)
+    elif owner_type == "report":
+        made = await db.insert_report(Report(), patient_id=pid)
+    else:
+        raise AssertionError(f"no factory for {owner_type}")
+    return str(made.id)
+
+
+def test_owner_type_partition_is_complete():
+    assert set(SHARED_OWNER_TABLES) | {"fact_code"} == CATALOG_OWNERS
+    assert set(CODING_OWNER_TYPES) == set(PATIENT_OWNER_TABLES) | CATALOG_OWNERS
+    assert set(IDENTIFIER_OWNER_TYPES) <= set(PATIENT_OWNER_TABLES) | CATALOG_OWNERS
+
+
+@pytest.mark.parametrize("owner_type", sorted(PATIENT_OWNER_TABLES))
+async def test_coding_patient_owner_requires_and_checks_patient(two_patients, owner_type):
+    db, doc_a, _ = two_patients
+    owner_id = await _make_owner(db, owner_type, doc_a)
+    coding = Coding(owner_type=owner_type, owner_id=owner_id, system="urn:s", code="X")
+    with pytest.raises(ValueError, match="patient_id is required"):
+        await db.add_coding(coding, patient_id=None)
+    with pytest.raises(ValueError, match="not found for this patient"):
+        await db.add_coding(coding, patient_id=BOB_UUID)
+    await db.add_coding(coding, patient_id=ERIKA_UUID)
+    assert len(await db.list_codings(owner_type, owner_id, patient_id=ERIKA_UUID)) == 1
+    assert await db.list_codings(owner_type, owner_id, patient_id=None) == []
+
+
+@pytest.mark.parametrize("owner_type", sorted(CATALOG_OWNERS))
+async def test_coding_catalog_owner_requires_null_patient(db, owner_type):
+    if owner_type == "organization":
+        owner_id = str(await db.upsert_organization("SYNORG"))
+    elif owner_type == "department":
+        owner_id = str(await db.upsert_department(await db.upsert_organization("SYNORG"), "D"))
+    elif owner_type == "device":
+        owner_id = str((await db.upsert_device(Device(kind="verifier", name="syn"))).id)
+    else:
+        owner_id = "CEA"
+    coding = Coding(owner_type=owner_type, owner_id=owner_id, system="urn:s", code="X")
+    with pytest.raises(ValueError, match="shared reference"):
+        await db.add_coding(coding, patient_id=ERIKA_UUID)
+    assert (await db.add_coding(coding, patient_id=None)).patient_id is None
+
+
+@pytest.mark.parametrize(
+    "owner_type", sorted(set(IDENTIFIER_OWNER_TYPES) & set(PATIENT_OWNER_TABLES))
+)
+async def test_identifier_patient_owner_requires_and_checks_patient(two_patients, owner_type):
+    db, doc_a, _ = two_patients
+    owner_id = int(await _make_owner(db, owner_type, doc_a))
+    system = sorted(IDENTIFIER_SYSTEMS_BY_OWNER[owner_type])[0]
+    ident = Identifier(owner_type=owner_type, owner_id=owner_id, system=system, value="SYN-X")
+    with pytest.raises(ValueError, match="patient_id is required"):
+        await db.add_identifier(ident, patient_id=None)
+    with pytest.raises(ValueError, match="not found for this patient"):
+        await db.add_identifier(ident, patient_id=BOB_UUID)
+    await db.add_identifier(ident, patient_id=ERIKA_UUID)
+    assert len(await db.list_identifiers(owner_type, owner_id, patient_id=ERIKA_UUID)) == 1
+
+
+@pytest.mark.parametrize("owner_type", ["organization", "department"])
+async def test_identifier_catalog_owner_requires_null_patient(db, owner_type):
+    org_id = await db.upsert_organization("SYNORG")
+    owner_id = org_id if owner_type == "organization" else await db.upsert_department(org_id, "D")
+    ident = Identifier(
+        owner_type=owner_type, owner_id=owner_id, system=ID_SYSTEM_UDZS_PROVIDER, value="SYN-P"
+    )
+    with pytest.raises(ValueError, match="shared reference"):
+        await db.add_identifier(ident, patient_id=ERIKA_UUID)
+    assert (await db.add_identifier(ident, patient_id=None)).patient_id is None
+
+
+# ── identifiers: data minimisation ──
+
+FORBIDDEN_SYSTEMS = [
+    "urn:oid:synthetic-rodne-cislo",
+    "rodné číslo",
+    "RC",
+    "national-id",
+    "urn:synthetic:birth-number",
+    "personal_id",
+    "SSN",
+    "insurance-number",
+    "cislo-poistenca",
+    "urn:synthetic:health-card",
+    "EHIC",
+    "MRN",
+    "medical-record-number",
+    "patient-id",
+    "patient number",
+    "chart number",
+    "hospital case number",
+]
+
+
+@pytest.mark.parametrize("system", FORBIDDEN_SYSTEMS)
+@pytest.mark.parametrize("owner_type", ["organization", "practitioner", "document", "condition"])
+async def test_identifier_forbidden_systems_rejected_for_any_owner(db, system, owner_type):
+    ident = Identifier(owner_type=owner_type, owner_id=1, system=system, value="SYN-X")
+    with pytest.raises(ValueError, match="never stored"):
+        await db.add_identifier(ident, patient_id=ERIKA_UUID)
+    async with db.db.execute("SELECT COUNT(*) FROM identifiers") as cur:
+        assert (await cur.fetchone())[0] == 0
+
+
+async def test_identifier_birth_number_shaped_value_rejected(db):
+    org_id = await db.upsert_organization("SYNORG")
+    ident = Identifier(
+        owner_type="organization", owner_id=org_id, system=ID_SYSTEM_ICO, value="000000/0000"
+    )
+    with pytest.raises(ValueError, match="never stored"):
+        await db.add_identifier(ident, patient_id=None)
+
+
+async def test_identifier_system_allowlist_per_owner(db):
+    org_id = await db.upsert_organization("SYNORG")
+    prac_id = await db.upsert_practitioner(patient_id=ERIKA_UUID, surname_token="Synthetic")
+    with pytest.raises(ValueError, match="not allowed for organization"):
+        await db.add_identifier(
+            Identifier(owner_type="organization", owner_id=org_id, system="urn:any", value="X"),
+            patient_id=None,
+        )
+    with pytest.raises(ValueError, match="not allowed for practitioner"):
+        await db.add_identifier(
+            Identifier(owner_type="practitioner", owner_id=prac_id, system=ID_SYSTEM_ICO,
+                       value="X"),
+            patient_id=ERIKA_UUID,
+        )  # fmt: skip
+    ok = await db.add_identifier(
+        Identifier(owner_type="practitioner", owner_id=prac_id, system=ID_SYSTEM_UDZS_DOCTOR,
+                   value="SYN-D"),
+        patient_id=ERIKA_UUID,
+    )  # fmt: skip
+    assert ok.system == ID_SYSTEM_UDZS_DOCTOR
+    for owner_type in ("condition", "encounter", "fact", "medication_event"):
+        with pytest.raises(ValueError, match="is not allowed"):
+            await db.add_identifier(
+                Identifier(owner_type=owner_type, owner_id=1, system=ID_SYSTEM_ACCESSION,
+                           value="X"),
+                patient_id=ERIKA_UUID,
+            )  # fmt: skip

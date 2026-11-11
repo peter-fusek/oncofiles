@@ -18,6 +18,7 @@ Rules enforced here:
 
 from __future__ import annotations
 
+import re
 import uuid
 from typing import Any
 
@@ -68,7 +69,49 @@ SHARED_OWNER_TABLES: dict[str, str] = {
 CODING_OWNER_TYPES = (
     frozenset(PATIENT_OWNER_TABLES) | frozenset(SHARED_OWNER_TABLES) | {"fact_code"}
 )
-IDENTIFIER_OWNER_TYPES = frozenset(PATIENT_OWNER_TABLES) | {"organization", "department"}
+# ── identifiers: data minimisation ──
+# Only business identifiers of providers and of lab/document artefacts are
+# stored. A patient's national ID (rodné číslo), insurance number or any
+# MRN-like patient number is NEVER stored, for any owner. If matching on them
+# is ever needed: only a salted hash, and only after a maintainer decision.
+# Extraction phases must not fill identifiers by default.
+ID_SYSTEM_UDZS_PROVIDER = "urn:oncofiles:id:udzs-provider"  # ÚDZS provider code
+ID_SYSTEM_UDZS_DOCTOR = "urn:oncofiles:id:udzs-doctor"  # ÚDZS doctor code
+ID_SYSTEM_ICO = "urn:oncofiles:id:ico"  # IČO (organisation registry number)
+ID_SYSTEM_ACCESSION = "urn:oncofiles:id:accession"  # lab / document accession number
+IDENTIFIER_SYSTEMS_BY_OWNER: dict[str, frozenset[str]] = {
+    "organization": frozenset({ID_SYSTEM_UDZS_PROVIDER, ID_SYSTEM_ICO}),
+    "department": frozenset({ID_SYSTEM_UDZS_PROVIDER}),
+    "practitioner": frozenset({ID_SYSTEM_UDZS_DOCTOR}),
+    "specimen": frozenset({ID_SYSTEM_ACCESSION}),
+    "report": frozenset({ID_SYSTEM_ACCESSION}),
+    "document": frozenset({ID_SYSTEM_ACCESSION}),
+}
+IDENTIFIER_OWNER_TYPES = frozenset(IDENTIFIER_SYSTEMS_BY_OWNER)
+# Explicitly forbidden for every owner: national ID, insurance, MRN-like numbers.
+_FORBIDDEN_ID_SYSTEM = re.compile(
+    r"rodn|birth|national|\bnid\b|personal.?(id|number|code)|ssn|social.?security"
+    r"|insur|poist|\bpoi\b|health.?card|ehic|mrn|medical.?record|patient.?(id|number)"
+    r"|chart.?number|case.?number|\brc\b",
+    re.I,
+)
+# A value shaped like a Slovak/Czech birth number with its slash (YYMMDD/NNNN).
+_BIRTH_NUMBER_VALUE = re.compile(r"^\s*\d{6}\s*/\s*\d{3,4}\s*$")
+
+
+def check_identifier_allowed(owner_type: str, system: str, value: str) -> None:
+    """Reject forbidden identifier systems/values, then enforce the per-owner allowlist."""
+    if _FORBIDDEN_ID_SYSTEM.search(system) or _BIRTH_NUMBER_VALUE.match(value):
+        raise ValueError(
+            "identifier rejected: national ID, insurance or patient record numbers are never stored"
+        )
+    allowed = IDENTIFIER_SYSTEMS_BY_OWNER.get(owner_type)
+    if allowed is None:
+        raise ValueError(f"owner_type {owner_type!r} is not allowed")
+    if system not in allowed:
+        raise ValueError(f"identifier system {system!r} is not allowed for {owner_type}")
+
+
 PROVENANCE_TARGET_TYPES = frozenset(FACT_ENTITIES) | {"fact", "encounter"}
 PROVENANCE_ACTIVITIES = frozenset({"extract", "reread", "verify", "correct", "import", "manual"})
 PROVENANCE_AGENT_ROLES = frozenset({"assembler", "verifier", "author", "enterer"})
@@ -395,7 +438,13 @@ class HardFactsMixin:
     # ── identifiers ───────────────────────────────────────────────────
 
     async def add_identifier(self, identifier: Identifier, *, patient_id: str | None) -> Identifier:
-        """Attach an identifier. ``patient_id`` is None only for organisations/departments."""
+        """Attach an identifier. ``patient_id`` is None only for organisations/departments.
+
+        Data minimisation: only the systems in ``IDENTIFIER_SYSTEMS_BY_OWNER`` are
+        accepted, and a national ID / insurance / MRN-like number is rejected for
+        every owner, before anything else is checked.
+        """
+        check_identifier_allowed(identifier.owner_type, identifier.system, identifier.value)
         if identifier.patient_id is not None and identifier.patient_id != patient_id:
             raise ValueError("model patient_id does not match the patient_id argument")
         await self._check_owner(
