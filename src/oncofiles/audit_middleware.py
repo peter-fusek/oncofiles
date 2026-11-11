@@ -11,6 +11,15 @@ from typing import Any
 from fastmcp.server.middleware.middleware import CallNext, Middleware, MiddlewareContext
 from fastmcp.tools.tool import ToolResult
 
+from oncofiles.audit_redaction import (
+    install_log_redaction,
+    reset_call_secrets,
+    scrub_text,
+    sensitive_strings,
+    set_call_secrets,
+    summarize_args,
+)
+
 logger = logging.getLogger(__name__)
 
 # Bounded set of in-flight audit tasks to prevent accumulation
@@ -94,7 +103,16 @@ class AuditMiddleware(Middleware):
     Captures tool name, duration, status, and error details without
     requiring manual logging from Oncoteam or other agents.
     Uses fire-and-forget to avoid blocking tool responses.
+
+    Arguments are summarized through an allowlist (#758): only ids, slugs,
+    booleans, enums and fact codes keep their value. The other values are
+    also scrubbed from the stored error message and from every log record
+    emitted while the call runs.
     """
+
+    def __init__(self) -> None:
+        super().__init__()
+        install_log_redaction()
 
     async def on_call_tool(
         self,
@@ -107,16 +125,19 @@ class AuditMiddleware(Middleware):
         error_message = None
         resolved: set[str] = set()
         bucket_token = _call_patient_ids.set(resolved)
+        secrets = sensitive_strings(getattr(context.message, "arguments", None))
+        secrets_token = set_call_secrets(secrets)
 
         try:
             result = await call_next(context)
             return result
         except Exception as e:
             status = "error"
-            error_message = str(e)[:500]
+            error_message = scrub_text(str(e), secrets)[:500]
             raise
         finally:
             _call_patient_ids.reset(bucket_token)
+            reset_call_secrets(secrets_token)
             duration_ms = int((time.perf_counter() - start) * 1000)
             patient_id = attributed_patient(resolved)
 
@@ -171,18 +192,8 @@ def _get_session_id(context: MiddlewareContext[Any]) -> str:
 
 
 def _summarize_input(message: Any) -> str:
-    """Create a brief summary of tool input arguments."""
+    """Allowlisted summary of the tool input arguments (#758)."""
     try:
-        args = getattr(message, "arguments", None)
-        if args and isinstance(args, dict):
-            # Truncate long values
-            summary_parts = []
-            for k, v in args.items():
-                v_str = str(v)
-                if len(v_str) > 100:
-                    v_str = v_str[:100] + "..."
-                summary_parts.append(f"{k}={v_str}")
-            return ", ".join(summary_parts)[:500]
+        return summarize_args(getattr(message, "arguments", None))
     except Exception:
-        pass
-    return ""
+        return ""
