@@ -142,6 +142,33 @@ async def _verification(db):
                 await cur.fetchall()}  # fmt: skip
 
 
+async def test_a_midpoint_reread_key_still_confirms_after_the_v16_reindex(db):
+    """#726: a re-read result stored before index v16 keys a range fact by the
+    old range MIDPOINT. After the v16 re-extraction moves the fact to the range
+    end, the stored result is still applied on every index and the fact stays
+    machine (confirmed), never falls back to cowork_ocr."""
+    from oncofiles.tools import curated as tool
+
+    await _seed(db)
+    lo, mid, hi = "2027-05-03", "2027-05-11", "2027-05-19"
+    midpoint_key = list(rv.fact_key("NA", 140.6, mid, 1))  # written by the pre-#726 index
+    stored = {"assess_version": 2, "confirmed": [midpoint_key], "date_unconfirmed": []}
+    await db.insert_fact_reread(patient_id=ERIKA_UUID, document_id=DOC, sidecar_sha="sha-a",
+                                source_md5="md-a", engine="qwen-local", result=stored)  # fmt: skip
+    meta = {**COWORK, "date_source": "printed_range", "date_precision": "range",
+            "date_range_start": lo, "date_range_end": hi}  # fmt: skip
+    v16 = {"code": "NA", "category": "lab", "occurred_at": hi, "label": "NA", "page_number": 1,
+           "value_canonical": 140.6, "verification": "unverified", "metadata": meta}  # fmt: skip
+    await db.replace_document_facts(patient_id=ERIKA_UUID, document_id=DOC, facts=[v16],
+                                    extracted_by="rule:inline-v1")  # fmt: skip
+    for _ in range(2):  # every index re-applies it
+        await tool._corroborate_and_measure(db, ERIKA_UUID)
+        verification, got = (await _verification(db))["NA"]
+        assert verification == "machine" and got["verified_by_reread"] is True
+        assert "cowork_ocr" not in got.get("unverified_reasons", [])
+        assert got["date_range_end"] == hi and got["date_precision"] == "range"
+
+
 async def test_stored_result_is_applied_on_every_index_and_void_when_the_text_changes(db):
     from oncofiles.tools import curated as tool
 

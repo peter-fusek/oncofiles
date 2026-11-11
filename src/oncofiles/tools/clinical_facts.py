@@ -44,6 +44,23 @@ def _meta(row: dict) -> dict:
         return {}
 
 
+RANGE_AT_NOTE = (
+    "For a range (date_precision='range'), `at` is the latest possible day, not a sample "
+    "date: the value was drawn sometime between at_from and at_to."
+)
+
+
+def _date_fields(row: dict) -> dict:
+    """``date_precision`` and the printed window of a value dated under a date
+    range (#726): ``at`` is then the range end, the latest possible day. Empty
+    for a value with its own day. An open range has no ``at_from``."""
+    m = _meta(row)
+    if m.get("date_precision") != "range":
+        return {}
+    return {"date_precision": "range", "at_from": m.get("date_range_start"),
+            "at_to": m.get("date_range_end")}  # fmt: skip
+
+
 def _dedupe(rows: list[dict]) -> tuple[list[dict], list[dict]]:
     """One measurement counts once (#635). Read time only: stored rows are never
     merged or deleted, and every hidden point is listed with its provenance.
@@ -267,7 +284,9 @@ async def fact_series(
     include_unverified=true; ``latest_any`` is the newest value of any
     verification (say which). ``duplicates`` lists every hidden point (exact
     duplicate, report quote, or same value inside a printed date range) with
-    both documents. Read-only.
+    both documents. A value printed under a date range carries
+    ``date_precision="range"`` with ``at_from``/``at_to``: for a range, ``at``
+    is the latest possible day, not a sample date. Read-only.
     """
     pid = await _resolve_patient_id(patient_slug, ctx)
     rows = await _get_db(ctx).fact_series_rows(
@@ -283,6 +302,7 @@ async def fact_series(
         )  # fmt: skip
         point = {
             "at": r["effective_at"],
+            **_date_fields(r),
             "value": r["value_canonical"] if r["value_canonical"] is not None else r["value_text"],
             "original": " ".join(
                 str(x)
@@ -304,7 +324,20 @@ async def fact_series(
         # the newest value of any verification, so "current" is never months old (#635)
         newest = max(s["values"] + s["unverified"], key=lambda p: p["at"] or "", default=None)
         s["latest_any"] = (
-            {k: newest[k] for k in ("at", "value", "flag", "verification", "source")}
+            {
+                k: newest[k]
+                for k in (
+                    "at",
+                    "date_precision",
+                    "at_from",
+                    "at_to",
+                    "value",
+                    "flag",
+                    "verification",
+                    "source",
+                )
+                if k in newest
+            }  # fmt: skip
             if newest
             else None
         )
@@ -313,7 +346,7 @@ async def fact_series(
             "series": out,
             "duplicates_removed": len(duplicates),
             "duplicates": duplicates,  # what was hidden, why, and which value was kept
-            "note": UNVERIFIED_NOTE,
+            "note": UNVERIFIED_NOTE + " " + RANGE_AT_NOTE,
         }
     )
 
@@ -321,7 +354,10 @@ async def fact_series(
 async def document_detail(ctx: Context, document_id: int, patient_slug: str | None = None) -> str:
     """One document: metadata, doctor/institution, the facts extracted from it, links.
 
-    The original opens via source_url (Drive) or view_document. Read-only.
+    The original opens via source_url (Drive) or view_document. A fact printed
+    under a date range carries ``date_precision="range"`` with
+    ``at_from``/``at_to``: for a range, ``at`` is the latest possible day, not
+    a sample date. Read-only.
     """
     pid = await _resolve_patient_id(patient_slug, ctx)
     db = _get_db(ctx)
@@ -342,6 +378,7 @@ async def document_detail(ctx: Context, document_id: int, patient_slug: str | No
                     "ref": [f["ref_range_low"], f["ref_range_high"]],
                     "flag": f["flag"],
                     "at": f["effective_at"],
+                    **_date_fields(f),
                     "page": f["page_number"],
                     "verification": f["verification"],
                     "evidence": f["evidence"],
@@ -349,7 +386,7 @@ async def document_detail(ctx: Context, document_id: int, patient_slug: str | No
                 for f in facts
             ],  # fmt: skip
             "links": await db.links_for(patient_id=pid, entity="document", entity_id=document_id),
-            "note": UNVERIFIED_NOTE,
+            "note": UNVERIFIED_NOTE + " " + RANGE_AT_NOTE,
         }
     )
 

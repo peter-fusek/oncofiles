@@ -1348,6 +1348,35 @@ async def test_reextraction_never_duplicates_a_verified_fact_inside_the_range(db
     assert rows == [("HGB", "verified"), ("PLT", "machine")]
 
 
+async def test_fact_series_and_document_detail_show_the_range(db):
+    """#726: a value dated under a printed range says so in the read tools:
+    ``date_precision="range"`` with ``at_from``/``at_to``; ``at`` is the range
+    end. A value with its own day carries none of these keys."""
+    await _insert_docs(db, _LAB, _RANGED)
+    await _insert_fact(db, _LAB, _DRAW_DAY, "HGB", 127.0, "machine", {"date_source": "printed"})
+    await _insert_fact(db, _RANGED, _R_HI, "HGB", 131.0, "machine", _RANGE_META)
+    await db.db.commit()
+    ctx = _Ctx(db)
+    out = json.loads(await cf.fact_series(ctx, codes=["HGB"]))
+    by_at = {p["at"][:10]: p for p in out["series"]["HGB"]["values"]}
+    ranged, exact = by_at[_R_HI], by_at[_DRAW_DAY]
+    assert ranged["date_precision"] == "range"
+    assert (ranged["at_from"], ranged["at_to"]) == (_R_LO, _R_HI)
+    assert not {"date_precision", "at_from", "at_to"} & set(exact)
+    assert out["series"]["HGB"]["latest_any"]["date_precision"] == "range"  # newest is the range
+    assert "latest possible day, not a sample date" in out["note"]
+
+    detail = json.loads(await cf.document_detail(ctx, document_id=_RANGED))
+    [fact] = detail["facts"]
+    assert fact["at"][:10] == _R_HI and fact["date_precision"] == "range"
+    assert (fact["at_from"], fact["at_to"]) == (_R_LO, _R_HI)
+    lab = json.loads(await cf.document_detail(ctx, document_id=_LAB))["facts"][0]
+    assert not {"date_precision", "at_from", "at_to"} & set(lab)
+    for tool_fn in (cf.fact_series, cf.document_detail):  # the tool descriptions say it
+        doc = " ".join(tool_fn.__doc__.split())
+        assert "for a range, ``at`` is the latest possible day, not a sample date" in doc
+
+
 # ── #676: inline fallback on lab sheets ──
 
 _INLINE_SHEET = """## Krvný obraz — Testovacie laboratórium
