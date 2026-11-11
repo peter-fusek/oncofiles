@@ -91,8 +91,8 @@ _NUMERIC_LIMIT_RE = re.compile(r"list_documents\(\s*limit\s*=\s*(\d+)")
 # deciding patient scope, which is out of scope for #548. Remove from this
 # allowlist as each is fixed; do NOT add new entries.
 # resources.py (files://catalog) left the list in #717: the resource was removed.
+# migrate_to_turso.py left the list in #617: the script was removed.
 _KNOWN_BROKEN_UNSCOPED_CALLERS = {
-    "migrate_to_turso.py",
     "backfill_gdrive_ids.py",
     "backfill_ocr.py",
 }

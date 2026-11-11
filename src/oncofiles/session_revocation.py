@@ -4,7 +4,7 @@ Each issued session token now carries a random `tid` (token id, 16 hex
 chars) in its payload. POST /api/logout adds the tid here; the
 _verify_session_token path rejects any tid present in the in-memory set.
 
-Persistence layer (Turso `session_revocations` table) survives restarts —
+Persistence layer (`session_revocations` table) survives restarts —
 on startup `load_from_db()` rehydrates the in-memory set from rows whose
 expires_at is still in the future. Stale rows (past expiry) are pruned
 opportunistically by `purge_expired()` so the set doesn't grow without
@@ -51,7 +51,7 @@ def _purge_expired_inplace() -> int:
 
 
 async def revoke(db, tid: str, expires_at: int) -> None:
-    """Persist a tid revocation to Turso and add it to the in-memory set.
+    """Persist a tid revocation to the DB and add it to the in-memory set.
 
     `expires_at` is the original session token's expiry (UNIX seconds) — we
     keep the row at least until that point so even after a restart the
@@ -71,7 +71,7 @@ async def revoke(db, tid: str, expires_at: int) -> None:
 
 
 async def load_from_db(db) -> int:
-    """Rehydrate the in-memory revocation set from Turso at startup.
+    """Rehydrate the in-memory revocation set from the DB at startup.
 
     Returns the number of rows loaded. Stale rows (expires_at < now) are
     skipped — they cannot block any still-valid token.

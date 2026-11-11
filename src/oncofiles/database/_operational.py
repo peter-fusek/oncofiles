@@ -27,8 +27,6 @@ class OperationalMixin:
 
     async def set_agent_state(self, state: AgentState) -> AgentState:
         """Upsert an agent state key-value pair. Returns the saved state."""
-        from oncofiles.database._base import retry_on_hrana_conflict
-
         pid = getattr(state, "patient_id", "") or ""
 
         async def _do_upsert():
@@ -44,7 +42,7 @@ class OperationalMixin:
             )
             await self.db.commit()
 
-        await retry_on_hrana_conflict(_do_upsert, label="set_agent_state")
+        await _do_upsert()
 
         async with self.db.execute(
             _AGENT_STATE_SELECT + ' WHERE patient_id = ? AND agent_id = ? AND "key" = ?',
@@ -84,8 +82,6 @@ class OperationalMixin:
         search_activity_log / get_activity_stats actually sees per-patient
         rows instead of all rows carrying the migration 029 DEFAULT.
         """
-        from oncofiles.database._base import retry_on_hrana_conflict
-
         _last_rowid: list[int] = []
 
         async def _do_insert():
@@ -113,7 +109,7 @@ class OperationalMixin:
             _last_rowid.clear()
             _last_rowid.append(cursor.lastrowid)
 
-        await retry_on_hrana_conflict(_do_insert, label="insert_activity_log")
+        await _do_insert()
         entry.id = _last_rowid[0] if _last_rowid else None
         return entry
 
@@ -329,7 +325,7 @@ class OperationalMixin:
             (trigger, patient_id),
         )
         await self.db.commit()
-        # lastrowid is unreliable on Turso — fetch the ID explicitly
+        # Fetch the ID explicitly (pattern dates from the Turso era, #617)
         async with self.db.execute(
             "SELECT id FROM sync_history ORDER BY id DESC LIMIT 1"
         ) as cursor:

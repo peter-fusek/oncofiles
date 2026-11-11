@@ -10,7 +10,7 @@ import logging
 import os
 import sys
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -44,8 +44,6 @@ from oncofiles.config import (
     SYNC_ENABLED,
     SYNC_INTERVAL_MINUTES,
     SYNC_STALE_ALERT_HOURS,
-    TURSO_AUTH_TOKEN,
-    TURSO_DATABASE_URL,
     VERSION,
 )
 from oncofiles.database import Database
@@ -68,23 +66,28 @@ CONF_MAX_DOCS = MAX_DOCUMENTS_PER_PATIENT
 TESTS_COUNT = 716
 
 
-def _assert_local_database(turso_url: str | None) -> None:
-    """Fail closed (#617): Turso is not part of the architecture; the master
-    store is the local SQLite file. One env var must never route PHI to a
-    cloud database. (The Turso code path itself is removed in a follow-up.)"""
-    if turso_url:
+def _assert_local_database(environ: Mapping[str, str] | None = None) -> None:
+    """Fail closed (#617): the master store is the local SQLite file and the
+    Turso/libsql code is gone. A leftover ``TURSO_*`` variable means someone
+    expects a cloud database; refuse to start rather than guess."""
+    env = os.environ if environ is None else environ
+    leftover = sorted(k for k, v in env.items() if k.startswith("TURSO_") and v.strip())
+    if leftover:
         raise RuntimeError(
-            "TURSO_DATABASE_URL is set, but Oncofiles runs on a local database only. "
-            "Unset TURSO_DATABASE_URL / TURSO_AUTH_TOKEN / TURSO_REPLICA_PATH."
+            f"{', '.join(leftover)} set, but Oncofiles runs on a local SQLite "
+            "file only (Turso support was removed in #617). Unset every TURSO_* "
+            "variable; the database path is DATABASE_PATH."
         )
 
 
 def _circuit_breaker_503(exc: BaseException, endpoint_name: str) -> JSONResponse | None:
-    """Canonical 503 + Retry-After:30 response when the Turso circuit breaker is OPEN.
+    """Canonical 503 + Retry-After:30 response for a "Circuit breaker" RuntimeError.
 
-    Returns the 503 response if exc is a RuntimeError raised by
-    database._base._CircuitBreaker.check() (message contains "Circuit breaker").
-    Returns None otherwise so the caller can fall through to its normal 500 path.
+    Returns the 503 response if exc is a RuntimeError whose message contains
+    "Circuit breaker". Returns None otherwise so the caller can fall through
+    to its normal 500 path. Since #617 nothing raises that error (the breaker
+    guarded the removed Turso connection); the call sites are inert and kept
+    to avoid churning server.py under many open PRs. Remove in a follow-up.
 
     Every DB-touching custom route handler must call this before returning a
     bare 500 so clients get an actionable status + Retry-After header.
@@ -101,9 +104,7 @@ def _circuit_breaker_503(exc: BaseException, endpoint_name: str) -> JSONResponse
 
 
 # Global sync semaphore — limits concurrent sync operations (GDrive + Gmail + Calendar)
-_sync_semaphore = asyncio.Semaphore(
-    1
-)  # serialize all patient-touching jobs (Turso single-connection)
+_sync_semaphore = asyncio.Semaphore(1)  # serialize all patient-touching jobs (single DB connection)
 
 # In-memory share codes: {code: {patient_id, bearer_token, patient_name, created_at}}
 _share_codes: dict[str, dict] = {}
@@ -260,22 +261,10 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict]:
         deploy_id[:12] or "local",
         git_sha[:7] or "dev",
     )
-    # Where the data lives, stated at every start (never the URL itself):
-    # PHI from curated folders must stay on this host unless Turso is configured.
-    logger.info(
-        "Database mode: %s", "TURSO (remote/replica)" if TURSO_DATABASE_URL else "local file"
-    )
-    _assert_local_database(TURSO_DATABASE_URL)
-    if TURSO_DATABASE_URL:  # unreachable until the Turso path is removed (#617)
-        from oncofiles.config import TURSO_REPLICA_PATH
-
-        db = Database(
-            turso_url=TURSO_DATABASE_URL,
-            turso_token=TURSO_AUTH_TOKEN,
-            turso_replica_path=TURSO_REPLICA_PATH,
-        )
-    else:
-        db = Database(DATABASE_PATH)
+    # Where the data lives, stated at every start: PHI stays on this host (#617).
+    _assert_local_database()
+    logger.info("Database mode: local file")
+    db = Database(DATABASE_PATH)
     await db.connect()
     await db.migrate()
     # #510: rehydrate the in-memory dashboard-session revocation set from
@@ -1723,25 +1712,6 @@ def _start_sync_scheduler(
         )
         logger.info("ENABLE_INTEGRITY_CHECK=true — every-6h pipeline integrity check registered")
 
-    # ── DB keepalive / replica sync ──
-
-    async def _db_keepalive():
-        """Ping Turso every 4 min to keep connection alive, or sync embedded replica."""
-        try:
-            if db.is_replica:
-                await db.sync_replica()
-            else:
-                await db.reconnect_if_stale(timeout=10.0)
-        except Exception:
-            logger.warning("DB keepalive/sync failed — will recover on next query")
-
-    scheduler.add_job(
-        _db_keepalive,
-        IntervalTrigger(minutes=4),
-        id="db_keepalive",
-        max_instances=1,
-    )
-
     # ── Sync staleness watchdog (#552) ──
 
     async def _run_sync_watchdog():
@@ -2366,7 +2336,7 @@ def _start_sync_scheduler(
         import json
 
         try:
-            # Sequential — Turso single-connection can't handle concurrent queries
+            # Sequential — the single DB connection must not see concurrent queries
             prompt_stats = await db.get_prompt_stats(days=7)
             tool_stats = await db.get_tool_usage_stats(days=7)
             pipeline_stats = await db.get_pipeline_stats()
@@ -3996,7 +3966,7 @@ async def health(request: Request) -> JSONResponse:
     """Liveness probe — instant response, no DB dependency.
 
     Used by Railway healthcheck and UptimeRobot.  Must never block on
-    external I/O so the process is not killed during Turso reconnects.
+    external I/O so the process is never killed by a slow dependency.
     """
     # Hard RSS ceiling — last-resort failsafe independent of scheduler health.
     # sys.exit(1) makes Railway see a failed healthcheck → immediate replace.
@@ -4111,34 +4081,27 @@ def _readiness_caller_is_operator(request: Request) -> bool:
 
 @mcp.custom_route("/readiness", methods=["GET"])
 async def readiness(request: Request) -> JSONResponse:
-    """Readiness probe — checks DB connectivity with a 5 s timeout.
+    """Readiness probe — checks DB connectivity with a 2 s timeout (no retry).
 
-    Suitable for dashboards and deeper monitoring; NOT used as Railway
-    healthcheck so a slow Turso reconnect won't kill the process.
+    Suitable for dashboards and deeper monitoring; NOT used as the
+    container healthcheck so a slow DB never gets the process killed.
 
     #512: the *minimal* shape (``status``, ``version``, ``db``) is public
     because external uptime monitors and the load balancer rely on it.
-    The detailed operational telemetry (memory, circuit breaker state,
-    per-job error/running flags, reconnect signal) is only returned when
+    The detailed operational telemetry (memory, per-job error/running
+    flags, sync staleness, AI cost) is only returned when
     the caller is an operator — see ``_readiness_caller_is_operator``.
     """
     try:
         lifespan_ctx = request.app.state.fastmcp_server._lifespan_result
         db: Database = lifespan_ctx["db"]
-        reconnected = await db.reconnect_if_stale(timeout=5.0)
+        await db.ping(timeout=2.0)
         result: dict = {"status": "ok", "version": VERSION, "db": "connected"}
         # Public-safe payload ends here. Anything below is operator-only.
         if not _readiness_caller_is_operator(request):
             return JSONResponse(result)
 
-        if reconnected:
-            result["reconnected"] = True
         result["memory_rss_mb"] = round(get_rss_mb(), 1)
-        # Circuit breaker telemetry (#469 Phase 3) — lets operators diagnose
-        # dashboard-500-cascade events without SSH'ing into the process.
-        breaker_stats = db.circuit_breaker_stats()
-        if breaker_stats is not None:
-            result["circuit_breaker"] = breaker_stats
         # #552: full detail for structural credential failures. Operator-only,
         # so patient IDs are safe here (unlike /health, which gets counts only).
         if _hard_auth_failures:
@@ -4251,19 +4214,6 @@ async def status(request: Request) -> JSONResponse:
         from oncofiles.memory import db_slot
 
         async with db_slot("status", priority=True):
-            # Ensure DB connection is fresh before running dashboard queries.
-            # A 2s reconnect timeout is non-fatal (the next query will auto-
-            # reconnect on transient errors per #405/#378). A circuit-breaker
-            # RuntimeError must propagate so the outer handler can return
-            # 503 + Retry-After:30 instead of a bare 500 (see #469).
-            try:
-                await db.reconnect_if_stale(timeout=2.0)
-            except TimeoutError:
-                logger.warning(
-                    "Status endpoint: reconnect_if_stale timed out after 2s, "
-                    "proceeding with current connection"
-                )
-
             from oncofiles.filename_parser import is_standard_format
 
             doc_count = await db.count_documents(patient_id=patient_id)
@@ -5431,7 +5381,7 @@ async def api_doc_detail(request: Request) -> JSONResponse:
             except Exception:
                 structured_metadata = {}
 
-        # Fetch OCR pages (serialized — single Turso connection)
+        # Fetch OCR pages (serialized — single DB connection)
         async with db.db.execute(
             "SELECT page_number, extracted_text FROM document_pages "
             "WHERE document_id = ? ORDER BY page_number",
@@ -5617,13 +5567,6 @@ _SCHEDULE_DEFS = [
         "schedule": "every 5 min (+3 min offset)",
         "group": "sync",
         "desc": "Import calendar events, tag medical appointments",
-    },
-    {
-        "id": "db_keepalive",
-        "name": "DB Keepalive",
-        "schedule": "every 4 min",
-        "group": "infra",
-        "desc": "Ping Turso to prevent connection timeout, or sync embedded replica",
     },
     {
         "id": "memory_check",
