@@ -1,4 +1,4 @@
--- Migration 081: LLM-first extraction of the non-lab kinds (#726 item 4, #711 phase 2b).
+-- Migration 083: LLM-first extraction of the non-lab kinds (#726 item 4, #711 phase 2b).
 -- Additive only: ADD COLUMN, one vocabulary row, one index, and the timeline
 -- view redefined. No rename, no patient data, nothing moved.
 --

@@ -703,10 +703,10 @@ async def test_birth_dates_come_from_the_readme_and_the_patient_context(db, monk
     assert await tool._all_birth_dates(db, ERIKA_UUID) == {"1970-02-03", DOB}
 
 
-# ── migration 081 ───────────────────────────────────────────────────────
+# ── migration 083 ───────────────────────────────────────────────────────
 
 
-async def test_migration_081_columns_code_and_view(db):
+async def test_migration_083_columns_code_and_view(db):
     async def cols(table):
         async with db.db.execute(f"PRAGMA table_info({table})") as cur:
             return {r[1] for r in await cur.fetchall()}
@@ -721,7 +721,7 @@ async def test_migration_081_columns_code_and_view(db):
     row = next(r for r in await db.fact_code_vocabulary() if r["code"] == "LESION_SIZE")
     assert row["category"] == "imaging" and row["unit_canonical"] == "mm"
     assert row["aliases"] == [] and row["unit_conversions"] == {"cm": 10}
-    await db.db.execute("DELETE FROM schema_migrations WHERE version = '081_hard_kinds_extraction'")
+    await db.db.execute("DELETE FROM schema_migrations WHERE version = '083_hard_kinds_extraction'")
     await db.db.commit()
     await db.migrate()  # ADD COLUMN falls back to best-effort, the view is recreated
     assert "metadata_json" in await cols("conditions")
