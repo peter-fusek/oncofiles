@@ -71,23 +71,24 @@ async def analyze_labs(
     db = _get_db(ctx)
     files = _get_files(ctx)
     gdrive = await _get_gdrive(ctx)
+    pid = _get_patient_id()
 
     if file_id:
-        doc = await db.get_document_by_file_id(file_id, patient_id=_get_patient_id())
+        doc = await db.get_document_by_file_id(file_id, patient_id=pid)
         if not doc:
             return [f"Document not found: {file_id}"]
         if doc.category != DocumentCategory.LABS:
             return [f"Document {file_id} is not a lab result (category: {doc.category.value})"]
         labs = [doc]
     else:
-        labs = await db.get_latest_labs(limit=limit, patient_id=_get_patient_id())
+        labs = await db.get_latest_labs(limit=limit, patient_id=pid)
         if not labs:
             return ["No lab results found."]
 
-    result: list = [_patient_context_text()]
+    result: list = [_patient_context_text(pid)]
 
     # Baseline labs availability check
-    baseline_warning = await _check_baseline_labs(db)
+    baseline_warning = await _check_baseline_labs(db, patient_id=pid)
     if baseline_warning:
         result.append(baseline_warning)
     download_errors = 0
@@ -209,7 +210,7 @@ async def compare_labs(
     # Sort chronologically (oldest -> newest)
     labs.sort(key=lambda d: d.document_date or date.min)
 
-    result: list = [_patient_context_text()]
+    result: list = [_patient_context_text(pid)]
     download_errors = 0
     for doc in labs:
         result.append(_doc_header(doc))

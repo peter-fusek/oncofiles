@@ -296,7 +296,7 @@ async def validate_categories(
         if current == "other":
             from oncofiles.filename_parser import parse_filename
 
-            reparsed = parse_filename(doc.filename)
+            reparsed = parse_filename(doc.filename, patient_id=pid)
             if reparsed.category and reparsed.category.value != "other":
                 suggested = reparsed.category.value
                 entry = {

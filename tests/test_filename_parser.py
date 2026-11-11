@@ -7,6 +7,8 @@ Legacy format: YYYYMMDD_institution_category_description.ext
 
 from datetime import date
 
+import pytest
+
 from oncofiles.filename_parser import (
     is_corrupted_filename,
     is_standard_format,
@@ -15,6 +17,10 @@ from oncofiles.filename_parser import (
     rename_to_standard,
 )
 from oncofiles.models import DocumentCategory
+
+# The parser resolves the patient from the request ContextVar when no explicit
+# patient_id is passed; there is no legacy/default patient any more (#733).
+pytestmark = pytest.mark.usefixtures("request_patient")
 
 # ── Real filenames from Google Drive ─────────────────────────────────────────
 

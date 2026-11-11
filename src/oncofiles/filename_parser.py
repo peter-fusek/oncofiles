@@ -292,24 +292,32 @@ def _match_any_date(stem: str) -> tuple[date, int] | None:
     return None
 
 
-_cached_patient_re: dict[str, re.Pattern] = {}
+def _patient_compact(patient_id: str = "") -> str:
+    """Compact (space-less) patient display name, or "Patient" when the name is empty.
+
+    The patient is the explicit `patient_id`, else the current request's pid;
+    with neither, `get_patient_name` raises ValueError (#733) — there is no
+    legacy/default patient to fall back to.
+    """
+    from oncofiles.patient_context import get_patient_name
+
+    return get_patient_name(patient_id).replace(" ", "") or "Patient"
 
 
 def _patient_prefix_re(patient_id: str = "") -> re.Pattern:
-    """Build patient prefix regex from patient context name (cached per patient)."""
-    if patient_id in _cached_patient_re:
-        return _cached_patient_re[patient_id]
+    """Build the patient-prefix regex from the patient's context name.
 
+    Not cached at module level (#733): a per-pid cache outlived name changes
+    and the "" key held whichever patient the legacy global pointed at.
+    `re` keeps its own compiled-pattern cache.
+    """
     from oncofiles.patient_context import get_patient_name
 
     name = get_patient_name(patient_id)
     if name:
         compact = name.replace(" ", "")
-        pattern = re.compile(rf"^{re.escape(compact)}[-]?", re.IGNORECASE)
-    else:
-        pattern = re.compile(r"^Patient[-]?", re.IGNORECASE)
-    _cached_patient_re[patient_id] = pattern
-    return pattern
+        return re.compile(rf"^{re.escape(compact)}[-]?", re.IGNORECASE)
+    return re.compile(r"^Patient[-]?", re.IGNORECASE)
 
 
 # Bilingual format: EN category prefix already present
@@ -366,9 +374,7 @@ def _parse_standard_format(stem: str, ext: str, patient_id: str = "") -> ParsedF
         return None  # Need at least patient name + something
 
     # First part should be patient name (e.g. "ErikaFusekova")
-    from oncofiles.patient_context import get_patient_name
-
-    patient_name_compact = get_patient_name(patient_id).replace(" ", "") or "Patient"
+    patient_name_compact = _patient_compact(patient_id)
     if parts[0].lower() != patient_name_compact.lower():
         return None  # Not standard format
 
@@ -464,9 +470,7 @@ def parse_filename(filename: str, patient_id: str = "") -> ParsedFilename:
     stem = PurePosixPath(filename).stem
     ext = PurePosixPath(filename).suffix.lstrip(".")
 
-    from oncofiles.patient_context import get_patient_name
-
-    patient_name_compact = get_patient_name(patient_id).replace(" ", "") or "Patient"
+    patient_name_compact = _patient_compact(patient_id)
 
     # Try standard format first: YYYYMMDD_PatientName_Institution_Category_Description
     if f"_{patient_name_compact}_" in stem or stem.startswith(f"{patient_name_compact}_"):
@@ -553,7 +557,7 @@ def rename_to_standard(
     path = PurePosixPath(filename)
     ext = path.suffix  # includes the dot
 
-    parsed = parse_filename(filename)
+    parsed = parse_filename(filename, patient_id=patient_id)
     cat = DocumentCategory(category) if category else parsed.category
     cat_token = CATEGORY_FILENAME_TOKENS.get(cat, "Other")
 
@@ -561,9 +565,7 @@ def rename_to_standard(
     if not parsed.document_date:
         return filename
 
-    from oncofiles.patient_context import get_patient_name
-
-    patient_compact = get_patient_name(patient_id).replace(" ", "") or "Patient"
+    patient_compact = _patient_compact(patient_id)
 
     # Use provided EN description, or fall back to existing description
     desc = en_description or parsed.description or ""
@@ -614,9 +616,7 @@ def rename_to_standard(
 def is_standard_format(filename: str, patient_id: str = "") -> bool:
     """Check if a filename is already in the standard format."""
     stem = PurePosixPath(filename).stem
-    from oncofiles.patient_context import get_patient_name
-
-    patient_name_compact = get_patient_name(patient_id).replace(" ", "") or "Patient"
+    patient_name_compact = _patient_compact(patient_id)
 
     # Standard format: YYYYMMDD_PatientName_Institution_CategoryToken_Description
     if not _DATE_RE.match(stem):
@@ -646,13 +646,15 @@ def is_corrupted_filename(filename: str, patient_id: str = "") -> bool:
     if len(filename) > 255:
         return True
 
-    from oncofiles.patient_context import get_patient_name
-
-    patient = get_patient_name(patient_id).replace(" ", "") or "Patient"
+    patient = _patient_compact(patient_id)
     return stem.count(patient) >= 3
 
 
-def rename_to_bilingual(filename: str, category: DocumentCategory | str | None = None) -> str:
+def rename_to_bilingual(
+    filename: str,
+    category: DocumentCategory | str | None = None,
+    patient_id: str = "",
+) -> str:
     """Add EN category prefix to a filename for bilingual display.
 
     .. deprecated:: 3.15.0
@@ -674,12 +676,12 @@ def rename_to_bilingual(filename: str, category: DocumentCategory | str | None =
     # Already has bilingual prefix?
     if _BILINGUAL_PREFIX_RE.search(stem.split("-")[-1] if "-" in stem else stem):
         # Check the description part after institution
-        parsed = parse_filename(filename)
+        parsed = parse_filename(filename, patient_id=patient_id)
         if parsed.description and _BILINGUAL_PREFIX_RE.match(parsed.description):
             return filename
 
     # Parse to get components
-    parsed = parse_filename(filename)
+    parsed = parse_filename(filename, patient_id=patient_id)
     cat = DocumentCategory(category) if category else parsed.category
 
     # Can't add prefix to files without a description
@@ -696,9 +698,7 @@ def rename_to_bilingual(filename: str, category: DocumentCategory | str | None =
     new_desc = f"{cat_prefix}-{parsed.description}"
 
     # Reconstruct: YYYYMMDD PatientName-Institution-Category-Description.ext
-    from oncofiles.patient_context import get_patient_name
-
-    patient_compact = get_patient_name().replace(" ", "") or "Patient"
+    patient_compact = _patient_compact(patient_id)
     parts = []
     if parsed.document_date:
         parts.append(parsed.document_date.strftime("%Y%m%d"))

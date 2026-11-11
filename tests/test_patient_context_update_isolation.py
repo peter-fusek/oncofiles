@@ -4,7 +4,7 @@ Three bugs in `update_context` / `update_patient_context`:
 1. Default pollution: a shallow copy + in-place nested `.update()` mutated the
    nested dicts of `_DEFAULT_CONTEXT` on a cold cache.
 2. Legacy-global leak: every update was mirrored into the legacy `_context`,
-   even with an explicit pid.
+   even with an explicit pid. (#733 removed that global entirely.)
 3. No hydrate before merge: on a cold cache the tool saved default + update
    over the patient's stored row.
 
@@ -13,7 +13,6 @@ All names and values are synthetic.
 
 from __future__ import annotations
 
-import copy
 import json
 from types import SimpleNamespace
 
@@ -30,18 +29,10 @@ PID_B = "b0000000-0000-4000-8000-00000000bbbb"
 @pytest.fixture
 def isolated_contexts():
     original_contexts = dict(patient_context._contexts)
-    original_context = dict(patient_context._context)
-    original_default = copy.deepcopy(patient_context._DEFAULT_CONTEXT)
     patient_context._contexts.clear()
-    patient_context._context.clear()
     yield
     patient_context._contexts.clear()
     patient_context._contexts.update(original_contexts)
-    patient_context._context.clear()
-    patient_context._context.update(original_context)
-    # Never let a failing test leave a polluted default behind.
-    patient_context._DEFAULT_CONTEXT.clear()
-    patient_context._DEFAULT_CONTEXT.update(original_default)
 
 
 @pytest.fixture
@@ -55,14 +46,14 @@ async def mem_db():
 
 class TestDefaultPollution:
     def test_update_on_cold_cache_never_changes_default(self, isolated_contexts):
-        before = copy.deepcopy(patient_context._DEFAULT_CONTEXT)
+        before = patient_context._default_context()
         patient_context.update_context(
             {"treatment": {"regimen": "SYNTH-REGIMEN-A"}, "biomarkers": {"GENE_X": "pos"}},
             patient_id=PID_A,
         )
-        assert before == patient_context._DEFAULT_CONTEXT
-        assert patient_context._DEFAULT_CONTEXT["treatment"] == {}
-        assert patient_context._DEFAULT_CONTEXT["biomarkers"] == {}
+        assert before == patient_context._default_context()
+        assert patient_context._default_context()["treatment"] == {}
+        assert patient_context._default_context()["biomarkers"] == {}
 
     def test_patient_a_update_does_not_reach_patient_b(self, isolated_contexts):
         patient_context.update_context({"treatment": {"regimen": "SYNTH-REGIMEN-A"}}, PID_A)
@@ -83,8 +74,9 @@ class TestDefaultPollution:
         ctx = patient_context.get_context(PID_A)
         ctx["treatment"]["regimen"] = "SYNTH-MUTATION"
         ctx["metastases"].append("synthetic-site")
-        assert patient_context._DEFAULT_CONTEXT["treatment"] == {}
-        assert patient_context._DEFAULT_CONTEXT["metastases"] == []
+        assert patient_context._default_context()["treatment"] == {}
+        assert patient_context._default_context()["metastases"] == []
+        assert patient_context.get_context(PID_B)["treatment"] == {}
 
     def test_cached_nested_dict_not_shared_with_returned_copy(self, isolated_contexts):
         patient_context._contexts[PID_A] = {"name": "Testa Alpha", "treatment": {"cycle": 1}}
@@ -97,51 +89,42 @@ class TestDefaultPollution:
         assert patient_context.get_context(PID_A)["treatment"] == {"cycle": 2}
 
 
-class TestLegacyGlobalNotWritten:
-    def test_explicit_pid_update_leaves_legacy_global_untouched(self, isolated_contexts):
-        patient_context._context.update({"name": "Legacy Synthetic"})
-        snapshot = copy.deepcopy(patient_context._context)
-        patient_context.update_context(
-            {"name": "Testa Alpha", "treatment": {"regimen": "SYNTH-REGIMEN-A"}}, PID_A
-        )
-        assert patient_context._context == snapshot
+class TestNoLegacyGlobal:
+    def test_module_has_no_legacy_global(self):
+        assert not hasattr(patient_context, "_context")
+        assert not hasattr(patient_context, "_DEFAULT_CONTEXT")
+        assert not hasattr(patient_context, "load_from_json")
 
-    def test_explicit_pid_update_on_empty_legacy_stays_empty(self, isolated_contexts):
+    def test_explicit_pid_update_is_invisible_to_no_pid_reader(self, isolated_contexts):
         patient_context.update_context({"name": "Testa Alpha"}, PID_A)
-        assert patient_context._context == {}
-        # A no-pid reader therefore never sees patient A.
-        assert patient_context.get_context().get("name", "") != "Testa Alpha"
+        # A no-pid reader cannot see patient A: it is refused outright (#733).
+        with pytest.raises(ValueError, match="patient_slug"):
+            patient_context.get_context()
 
 
 class TestNoPidUpdateRefused:
     @pytest.mark.parametrize("pid", [None, ""])
     def test_update_without_pid_raises_naming_patient_slug(self, isolated_contexts, pid):
-        patient_context._context.update({"name": "Legacy Synthetic"})
-        snapshot = copy.deepcopy(patient_context._context)
         with pytest.raises(ValueError, match="patient_slug"):
             patient_context.update_context({"note": "synthetic"}, patient_id=pid)
-        assert patient_context._context == snapshot
         assert patient_context._contexts == {}
 
     def test_set_germline_finding_without_pid_raises(self, isolated_contexts):
         with pytest.raises(ValueError, match="patient_slug"):
             patient_context.set_germline_finding("GENEX", "benign")
-        assert patient_context._context == {}
+        assert patient_context._contexts == {}
 
 
 class TestPidWithoutRowGetsEmptyTemplate:
-    def test_new_pid_gets_no_legacy_patient_data(self, isolated_contexts, monkeypatch):
-        # Legacy global holds patient A's (synthetic) data.
-        patient_context._context.update(
-            {
-                "name": "Testa Alpha",
-                "diagnosis": "synthetic diagnosis A",
-                "treatment": {"regimen": "SYNTH-REGIMEN-A"},
-                "biomarkers": {"GENE_X": "pos"},
-            }
-        )
-        # A hardcoded env default must not be attributed to a new pid either.
-        monkeypatch.setitem(patient_context._DEFAULT_CONTEXT, "name", "Env Default Synthetic")
+    def test_new_pid_gets_no_other_patient_data(self, isolated_contexts, monkeypatch):
+        patient_context._contexts[PID_A] = {
+            "name": "Testa Alpha",
+            "diagnosis": "synthetic diagnosis A",
+            "treatment": {"regimen": "SYNTH-REGIMEN-A"},
+            "biomarkers": {"GENE_X": "pos"},
+        }
+        # The removed PATIENT_NAME env default must not come back for a new pid.
+        monkeypatch.setenv("PATIENT_NAME", "Env Default Synthetic")
 
         ctx = patient_context.get_context(PID_B)
 
@@ -149,15 +132,15 @@ class TestPidWithoutRowGetsEmptyTemplate:
         assert ctx["diagnosis"] == ""
         assert ctx["treatment"] == {}
         assert ctx["biomarkers"] == {}
-        assert ctx["patient_type"] == patient_context._DEFAULT_CONTEXT["patient_type"]
+        assert ctx["patient_type"] == "oncology"
         non_empty = {k for k, v in ctx.items() if v}
         assert non_empty == {"patient_type"}
-        assert set(ctx) == set(patient_context._DEFAULT_CONTEXT)
+        assert set(ctx) == set(patient_context._default_context())
 
     def test_request_pid_without_row_gets_empty_template(self, isolated_contexts):
         from oncofiles.patient_middleware import _current_patient_id
 
-        patient_context._context.update({"name": "Testa Alpha", "diagnosis": "synthetic A"})
+        patient_context._contexts[PID_A] = {"name": "Testa Alpha", "diagnosis": "synthetic A"}
         token = _current_patient_id.set(PID_B)
         try:
             ctx = patient_context.get_context()
@@ -197,8 +180,6 @@ class TestHydrateBeforeMerge:
         assert reloaded["name"] == "Testa Alpha"
         assert reloaded["diagnosis"] == "synthetic diagnosis"
         assert reloaded["treatment"] == {"regimen": "SYNTH-REGIMEN-A", "cycle": 3}
-        # Hydration of A never touched the legacy global.
-        assert patient_context._context == {}
 
     async def test_cold_cache_update_does_not_touch_other_patient_row(
         self, isolated_contexts, mem_db
