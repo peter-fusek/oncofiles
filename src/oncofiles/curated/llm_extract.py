@@ -23,6 +23,7 @@ from __future__ import annotations
 import json
 import re
 import time
+import unicodedata
 from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -31,7 +32,7 @@ from oncofiles import cloud_guard
 from oncofiles.curated import llm
 
 # Bump on ANY change to the prompt, the schema or the item normalisation.
-EXTRACTOR_VERSION = "llm-extract-v1"
+EXTRACTOR_VERSION = "llm-extract-v2"
 
 DATE_ROLES = ("sample", "report", "other")
 _COMPARATORS = ("<=", ">=", "<", ">")
@@ -172,6 +173,19 @@ class PageResult:
     error: str | None = None
     seconds: float = 0.0
     finish_reason: str | None = None
+    error_kind: str | None = None
+    error_class: str | None = None
+    structured_output: str | None = None  # accepted | rejected (HTTP 400 → plain JSON)
+    answer: dict | None = None  # answer_shape(): masked, in memory only
+
+    def diagnostics(self) -> dict:
+        out = {"finish_reason": self.finish_reason, "structured_output": self.structured_output,
+               "seconds": round(self.seconds, 1)}  # fmt: skip
+        if self.error:
+            out.update(error_kind=self.error_kind, error_class=self.error_class)
+        if self.answer:
+            out["answer"] = self.answer
+        return out
 
     @property
     def truncated(self) -> bool:
@@ -194,28 +208,126 @@ def _text(v) -> str | None:
     return None
 
 
-def parse_answer(text: str) -> list:
-    """The raw ``facts`` list from a model answer.
+ERROR_KINDS = ("http_status", "json_decode", "schema_shape", "empty", "timeout", "truncated",
+               "other")  # fmt: skip
 
-    Tolerates reasoning blocks, ```json fences, text before/after the JSON and
-    a bare top-level list. Raises ``LocalLLMError`` when no JSON is found."""
+
+class AnswerError(llm.LocalLLMError):
+    """The model answered, but not with a usable facts JSON."""
+
+    def __init__(self, kind: str, message: str) -> None:
+        super().__init__(message)
+        self.kind = kind
+
+
+def _json_values(text: str):
+    """Every top-level JSON object/list decodable in ``text`` (fenced blocks
+    first). A decoded value is skipped as a whole, so a list nested inside
+    another object (``{"results": []}``) is never taken for the facts list."""
     text = llm.strip_think(text or "")
     blobs = [m.group(1) for m in re.finditer(r"```(?:json)?\s*(.*?)```", text, re.S)]
     blobs.append(text)
     decoder = json.JSONDecoder()
     for blob in blobs:
-        for i, ch in enumerate(blob):
-            if ch not in "{[":
+        i = 0
+        while i < len(blob):
+            if blob[i] not in "{[":
+                i += 1
                 continue
             try:
-                obj, _ = decoder.raw_decode(blob[i:])
+                obj, end = decoder.raw_decode(blob, i)
             except ValueError:
+                i += 1
                 continue
-            if isinstance(obj, dict) and isinstance(obj.get("facts"), list):
-                return obj["facts"]
-            if isinstance(obj, list):
-                return obj
-    raise llm.LocalLLMError("local LLM answer has no facts JSON")
+            yield obj
+            i = end
+
+
+def parse_answer(text: str) -> list:
+    """The raw ``facts`` list from a model answer.
+
+    Tolerates reasoning blocks, ```json fences, text before/after the JSON and
+    a bare top-level list. Raises ``AnswerError`` with kind ``empty`` (blank
+    answer), ``json_decode`` (no JSON at all) or ``schema_shape`` (JSON, but
+    no ``facts`` list)."""
+    if not llm.strip_think(text or "").strip():
+        raise AnswerError("empty", "local LLM answer is empty")
+    found = False
+    for obj in _json_values(text):
+        found = True
+        if isinstance(obj, dict) and isinstance(obj.get("facts"), list):
+            return obj["facts"]
+        if isinstance(obj, list):
+            return obj
+    if found:
+        raise AnswerError("schema_shape", "local LLM answer JSON has no facts list")
+    raise AnswerError("json_decode", "local LLM answer has no JSON")
+
+
+def error_kind(exc: BaseException) -> str:
+    if isinstance(exc, AnswerError):
+        return exc.kind
+    msg = str(exc)
+    if "truncated" in msg:
+        return "truncated"
+    if "unreachable" in msg and "Timeout" in msg:
+        return "timeout"
+    if "HTTP" in msg:
+        return "http_status"
+    return "other"
+
+
+_WORD = re.compile(r"[^\W\d_]+")
+_JSON_WORDS = "facts null true false label as printed value comparator unit ref range flag date"
+_JSON_WORDS += " role evidence sample report other"
+
+
+def _fold(w: str) -> str:
+    return "".join(c for c in unicodedata.normalize("NFKD", w) if not unicodedata.combining(c))
+
+
+def known_words(vocab=None) -> frozenset[str]:
+    """Words that stay readable in a masked answer: the JSON schema keys and
+    the lab vocabulary (codes, aliases, units) — never patient data."""
+    words = {_fold(w).lower() for w in _JSON_WORDS.split()}
+    for row in getattr(vocab, "by_code", {}).values():
+        texts = [
+            row.get("code") or "",
+            *(row.get("aliases") or []),
+            row.get("unit_canonical") or "",
+        ]
+        texts += list((row.get("unit_conversions") or {}).keys())
+        for t in texts:
+            words.update(_fold(w).lower() for w in _WORD.findall(str(t)))
+    return frozenset(words)
+
+
+MASK_CHARS = 600
+
+
+def mask(text: str, known: frozenset[str]) -> str:
+    """Digits → 9; a word → a's of its length unless it is a known word.
+    Same masking as the re-read fingerprint (#712)."""
+    text = re.sub(r"\d", "9", text[:MASK_CHARS])
+    return _WORD.sub(lambda m: m.group(0) if _fold(m.group(0)).lower() in known
+                     else "a" * len(m.group(0)), text)  # fmt: skip
+
+
+def answer_shape(raw: str, known: frozenset[str], *, field_used: str) -> dict:
+    """The shape of a raw model answer — no digit and no unknown word.
+    In-memory report only, never stored."""
+    top = "none"
+    for obj in _json_values(raw):
+        top = "object" if isinstance(obj, dict) else "list"
+        break
+    return {
+        "field": field_used,
+        "chars": len(raw or ""),
+        "has_think": "<think>" in (raw or "") or "</think>" in (raw or ""),
+        "has_fence": "```" in (raw or ""),
+        "top_level": top,
+        "masked": mask(raw or "", known),
+    }
 
 
 def normalize_item(raw) -> tuple[dict | None, str | None]:
@@ -261,15 +373,21 @@ def _thinking() -> bool:
 
 
 def extract_page(
-    text: str, *, page_number: int, chat: Callable[..., str] | None = None
+    text: str,
+    *,
+    page_number: int,
+    chat: Callable[..., str] | None = None,
+    known: frozenset[str] | None = None,
 ) -> PageResult:
-    """Blocking. Candidate facts of one page (not yet verified)."""
+    """Blocking. Candidate facts of one page (not yet verified), plus
+    diagnostics of the model answer (masked shape, error kind)."""
     if not cloud_guard.local_only_job():
         raise cloud_guard.CloudForbiddenError("llm_extract must run inside local_only()")
     res = PageResult(page_number=page_number)
     if not (text or "").strip():
         return res
     call = chat or llm.chat
+    known = known if known is not None else known_words()
     user = f"Page {page_number}:\n{text}"
     thinking = _thinking()
     budget = EXTRACT_BUDGET
@@ -279,29 +397,47 @@ def extract_page(
         try:
             answer = call(SYSTEM_PROMPT, user, max_tokens=budget, thinking=thinking,
                           response_format=RESPONSE_FORMAT, info=info)  # fmt: skip
+            res.structured_output = "accepted"
         except llm.LocalLLMError as exc:
             if "HTTP 400" not in str(exc) or "truncated" in str(exc):
                 raise
             # this server/model rejects structured output: strict instructions only
+            res.structured_output = "rejected"
             info.clear()
             answer = call(SYSTEM_PROMPT, user, max_tokens=budget, thinking=thinking, info=info)
         res.finish_reason = info.get("finish_reason")
+        raw, field_used = info.get("raw_content", answer or ""), "content"
+        if (
+            not llm.strip_think(answer or "").strip()
+            and (info.get("reasoning_content") or "").strip()
+        ):
+            # LM Studio may put the whole answer in reasoning_content (#714 prod run)
+            answer = raw = info["reasoning_content"]
+            field_used = "reasoning_content"
+        res.answer = answer_shape(raw or "", known, field_used=field_used)
         if res.finish_reason == "length":
             raise llm.LocalLLMError("local LLM answer truncated: finish_reason=length")
         raw_items = parse_answer(answer)
-    except llm.LocalLLMError as exc:
+    except Exception as exc:  # any failure leaves the page "not assessed"
         res.finish_reason = res.finish_reason or info.get("finish_reason")
         res.error = str(exc)[:200]
+        res.error_kind = error_kind(exc)
+        res.error_class = type(exc.__cause__ or exc).__name__
+        if res.answer is None and (info.get("raw_content") or info.get("reasoning_content")):
+            res.answer = answer_shape(info.get("raw_content") or info.get("reasoning_content"),
+                                      known, field_used="content")  # fmt: skip
         res.seconds = time.monotonic() - t0
         return res
     res.seconds = time.monotonic() - t0
-    for raw in raw_items:
-        cand, why = normalize_item(raw)
+    for raw_item in raw_items:
+        cand, why = normalize_item(raw_item)
         if cand is None:
             res.dropped[why] += 1
         else:
             cand["page_number"] = page_number
             res.candidates.append(cand)
+    if not res.error:
+        res.answer = {k: v for k, v in res.answer.items() if k != "masked"}  # shape only
     return res
 
 
@@ -320,6 +456,7 @@ def extract_document(
     counts; nothing is stored."""
     from oncofiles.curated import verifier
 
+    known = known_words(vocab)
     text_of = dict(pages)
     facts: list[dict] = []
     dropped: Counter = Counter()
@@ -327,11 +464,13 @@ def extract_document(
     seconds = 0.0
     not_assessed: list[int] = []
     finish: dict[str, str | None] = {}
+    page_diag: dict[str, dict] = {}
     for number, text in pages:
         if stop and stop():
             not_assessed.append(number)
             continue
-        pr = extract_page(text, page_number=number, chat=chat)
+        pr = extract_page(text, page_number=number, chat=chat, known=known)
+        page_diag[str(number)] = pr.diagnostics()
         seconds += pr.seconds
         dropped.update(pr.dropped)
         finish[str(number)] = pr.finish_reason
@@ -352,6 +491,7 @@ def extract_document(
         "facts": facts, "method": METHOD, "pages": len(pages),
         "pages_used": len(pages) - len(not_assessed), "pages_not_assessed": not_assessed,
         "pages_truncated": truncated, "page_errors": errors, "finish_reasons": finish,
+        "page_diagnostics": page_diag,
         "dob_known": dob_known,
         "birth_date_guard": "active" if dob_known else "inactive_no_dob",
         # dated facts whose date could not be checked against a birth date
@@ -373,6 +513,19 @@ def shadow_compare(stored: list[dict], llm_facts: list[dict], *, not_assessed_pa
     Pages the model did not assess (truncated, empty or unparseable answer)
     are left out on BOTH sides: such a page is unknown, never "LLM found 0"."""
     skip = {int(p) for p in not_assessed_pages}
+    all_stored = [r for r in stored if r.get("code")]
+    stored_info = {
+        # every stored fact of the document, whatever its verification (#714
+        # prod run: rule_facts=0 hid 8 unverified facts on an unassessed page)
+        "rule_facts_stored": len(all_stored),
+        "rule_facts_by_verification": dict(
+            sorted(Counter(r.get("verification") or "unknown" for r in all_stored).items())
+        ),
+        "rule_facts_no_value": sum(1 for r in all_stored if r.get("value_canonical") is None),
+        "rule_facts_on_unassessed_pages": sum(
+            1 for r in all_stored if int(r.get("page_number") or 1) in skip
+        ),
+    }
     stored = [r for r in stored if int(r.get("page_number") or 1) not in skip]
     llm_facts = [f for f in llm_facts if int(f.get("page_number") or 1) not in skip]
     rule = Counter(
@@ -393,8 +546,19 @@ def shadow_compare(stored: list[dict], llm_facts: list[dict], *, not_assessed_pa
     reasons: Counter = Counter()
     for f in llm_facts:
         reasons.update((f.get("metadata") or {}).get("unverified_reasons") or [])
+    unverified_rule = Counter(
+        _key(r["code"], r.get("occurred_at"), r["value_canonical"])
+        for r in stored
+        if r.get("code")
+        and r.get("value_canonical") is not None
+        and r.get("verification") == "unverified"
+    )
     return {
+        **stored_info,
+        # compared = stored facts with a code and a value on assessed pages
         "rule_facts": sum(rule.values()),
+        "rule_facts_compared_unverified": sum(unverified_rule.values()),
+        "agree_with_unverified_rule": sum((unverified_rule & mine).values()),
         "llm_facts": len(llm_facts),
         "llm_machine": sum(1 for f in llm_facts if f["verification"] == "machine"),
         "llm_unverified": sum(1 for f in llm_facts if f["verification"] != "machine"),
