@@ -7954,8 +7954,9 @@ def main() -> None:
                     allow_headers=["Authorization", "Content-Type", "mcp-protocol-version"],
                 ),
                 # #591: innermost, so CORS + security headers wrap its 429/413 and
-                # preflights never reach it. /health is exempt.
-                Middleware(RateLimitMiddleware),
+                # preflights never reach it. /health is exempt. The verifier is
+                # HMAC-only (no DB) so forged sessions can't key a victim's bucket.
+                Middleware(RateLimitMiddleware, session_verifier=_verify_session_token),
             ],
             uvicorn_config={
                 "timeout_keep_alive": 120,

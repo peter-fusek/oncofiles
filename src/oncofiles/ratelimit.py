@@ -16,30 +16,36 @@ Every HTTP request is put into one *route class*:
 ``exempt``  ``/health`` — never limited, never size-checked (Coolify's
             healthcheck and CI's smoke test poll it)
 
-Each class has two token buckets: a **global** one shared by every caller of
-that class and a **per-principal** one. The principal is derived from the
-credential the request carries — never from a DB lookup, so limiting stays
-O(1) and runs before any auth or DB work:
+Each class has a **per-principal** token bucket and two global buckets: the
+**trusted** global bucket for callers whose credential is known to be valid,
+and a smaller **anonymous** global bucket for everyone else (no credential,
+or a credential not yet seen to be valid). An anonymous flood therefore can
+never exhaust the bucket authenticated users draw from.
 
-* ``static``  — the operator ``MCP_BEARER_TOKEN`` (constant-time compare)
-* ``patient`` — an ``onco_*`` patient bearer token (keyed by its hash)
+Principals are derived without any DB lookup, so limiting stays O(1) and runs
+before any auth or DB work:
+
+* ``static``  — the operator ``MCP_BEARER_TOKEN`` (constant-time compare). Trusted.
 * ``session`` — a dashboard session (``Bearer session:…`` or the
-  ``oncofiles_session`` cookie), keyed by the hash of the session email
-  field so all of a user's tabs share one bucket
-* ``oauth``   — any other bearer (MCP OAuth access token), keyed by its hash
-* ``ip``      — no credential: the client address
+  ``oncofiles_session`` cookie). Its HMAC is verified with the injected
+  ``session_verifier`` (no DB); only a **valid** session is keyed by the hash
+  of its email (all of a user's tabs share one bucket) and trusted. An
+  invalid or unverifiable session is keyed by the hash of the *whole* token,
+  so a forged token carrying a victim's email never touches the victim's
+  bucket.
+* ``patient`` / ``oauth`` — an ``onco_*`` patient token / any other bearer,
+  keyed by the hash of the whole token. These can only be verified against
+  the DB, so they start untrusted; once a ``/mcp`` response for that exact
+  token comes back 2xx (``/mcp`` always requires auth), the principal is
+  remembered as trusted (LRU-bounded set).
+* ``ip``      — no credential: the client address. Never trusted.
 
-Credentials are not *verified* here (that would need the DB). A caller who
-invents a fresh fake token per request gets a fresh per-principal bucket, but
-still drains the class's global bucket and is rejected by the real auth
-layer with a cheap 401. The per-principal map is LRU-bounded so such a
-caller cannot grow memory without bound.
-
-The ``auth`` class is always keyed by IP. Behind the current host port
-forwarding every client shares one address (#591), so the per-IP auth bucket
-effectively acts as a second global limit until real client IPs are
-available; set ``RATE_LIMIT_TRUST_FORWARDED=true`` once the proxy sends a
-trustworthy ``X-Forwarded-For``.
+The ``auth`` class is always keyed by client IP. ``X-Forwarded-For`` is
+honoured **only** when the direct peer is in ``TRUSTED_PROXIES`` (CIDRs,
+default loopback + the Docker bridge range); entries are walked right to
+left, skipping trusted proxies. With ``TRUSTED_PROXIES`` empty, all clients
+may share one address, so the per-IP auth limit is raised to the auth global
+limit instead of acting as a hidden second global bucket.
 
 ``/mcp`` POSTs additionally take a per-principal **concurrency** slot for the
 duration of the request (one stateless tool call = one POST).
@@ -57,13 +63,16 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import ipaddress
 import json
 import logging
 import math
 import os
 import time
 from collections import OrderedDict
-from dataclasses import dataclass, field
+from collections.abc import Callable
+from dataclasses import dataclass, field, replace
+from urllib.parse import unquote
 
 logger = logging.getLogger(__name__)
 
@@ -117,6 +126,26 @@ def _env_num(name: str, default: float) -> float:
     return value if value >= 0 else default
 
 
+Network = ipaddress.IPv4Network | ipaddress.IPv6Network
+
+
+def parse_networks(raw: str) -> tuple[Network, ...]:
+    """Parse a comma-separated CIDR list; invalid entries are logged and skipped."""
+    nets = []
+    for part in raw.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            nets.append(ipaddress.ip_network(part, strict=False))
+        except ValueError:
+            logger.warning("ratelimit: ignoring invalid TRUSTED_PROXIES entry %r", part)
+    return tuple(nets)
+
+
+DEFAULT_TRUSTED_PROXIES = "127.0.0.0/8,::1/128,172.16.0.0/12"
+
+
 @dataclass(frozen=True)
 class Limit:
     """Token-bucket parameters: sustained ``per_minute`` with ``burst`` capacity.
@@ -129,18 +158,21 @@ class Limit:
 @dataclass(frozen=True)
 class ClassLimits:
     principal: Limit
-    global_: Limit
+    global_: Limit  # trusted callers
+    anon_global: Limit  # credential-less / not-yet-verified callers
     max_body_bytes: int  # 0 = unlimited
 
 
 # Defaults — sized for a handful of caregivers on one Mac mini. A Claude.ai
 # conversation fires tool calls in short bursts; the dashboard loads ~20 JSON
 # endpoints sequentially on open; an OAuth handshake is ~5 auth requests.
+# Auth and public traffic is anonymous by nature, so their anonymous global
+# equals their global.
 DEFAULTS: dict[str, ClassLimits] = {
-    MCP: ClassLimits(Limit(120, 60), Limit(600, 200), 10 * 1024 * 1024),
-    AUTH: ClassLimits(Limit(30, 20), Limit(120, 60), 64 * 1024),
-    API: ClassLimits(Limit(300, 120), Limit(1200, 400), 1024 * 1024),
-    PUBLIC: ClassLimits(Limit(300, 150), Limit(1200, 400), 64 * 1024),
+    MCP: ClassLimits(Limit(120, 60), Limit(600, 200), Limit(60, 30), 10 * 1024 * 1024),
+    AUTH: ClassLimits(Limit(30, 20), Limit(120, 60), Limit(120, 60), 64 * 1024),
+    API: ClassLimits(Limit(300, 120), Limit(1200, 400), Limit(120, 60), 1024 * 1024),
+    PUBLIC: ClassLimits(Limit(300, 150), Limit(1200, 400), Limit(1200, 400), 64 * 1024),
 }
 DEFAULT_MCP_CONCURRENCY = 4
 DEFAULT_MAX_PRINCIPALS = 10_000
@@ -151,16 +183,21 @@ class RateLimitConfig:
     enabled: bool = True
     classes: dict[str, ClassLimits] = field(default_factory=lambda: dict(DEFAULTS))
     mcp_concurrency: int = DEFAULT_MCP_CONCURRENCY  # 0 = unlimited
-    trust_forwarded: bool = False
+    trusted_proxies: tuple[Network, ...] = field(
+        default_factory=lambda: parse_networks(DEFAULT_TRUSTED_PROXIES)
+    )
     max_principals: int = DEFAULT_MAX_PRINCIPALS
     static_bearer: str = ""
 
     @classmethod
     def from_env(cls, static_bearer: str = "") -> RateLimitConfig:
-        """Read ``RATE_LIMIT_*`` env vars. Per class ``X`` in MCP/AUTH/API/PUBLIC:
+        """Read env vars. Per class ``X`` in MCP/AUTH/API/PUBLIC:
         ``RATE_LIMIT_X_PER_MIN``, ``RATE_LIMIT_X_BURST``,
         ``RATE_LIMIT_X_GLOBAL_PER_MIN``, ``RATE_LIMIT_X_GLOBAL_BURST``,
-        ``RATE_LIMIT_X_MAX_BODY_BYTES``."""
+        ``RATE_LIMIT_X_ANON_PER_MIN``, ``RATE_LIMIT_X_ANON_BURST``,
+        ``RATE_LIMIT_X_MAX_BODY_BYTES``. Plus ``RATE_LIMIT_ENABLED``,
+        ``RATE_LIMIT_MCP_CONCURRENCY``, ``RATE_LIMIT_MAX_PRINCIPALS`` and
+        ``TRUSTED_PROXIES`` (CIDR list; set it to an empty string to trust none)."""
         classes = {}
         for name, d in DEFAULTS.items():
             p = f"RATE_LIMIT_{name.upper()}_"
@@ -173,13 +210,19 @@ class RateLimitConfig:
                     _env_num(p + "GLOBAL_PER_MIN", d.global_.per_minute),
                     _env_num(p + "GLOBAL_BURST", d.global_.burst),
                 ),
+                anon_global=Limit(
+                    _env_num(p + "ANON_PER_MIN", d.anon_global.per_minute),
+                    _env_num(p + "ANON_BURST", d.anon_global.burst),
+                ),
                 max_body_bytes=int(_env_num(p + "MAX_BODY_BYTES", d.max_body_bytes)),
             )
         return cls(
             enabled=_env_bool("RATE_LIMIT_ENABLED", True),
             classes=classes,
             mcp_concurrency=int(_env_num("RATE_LIMIT_MCP_CONCURRENCY", DEFAULT_MCP_CONCURRENCY)),
-            trust_forwarded=_env_bool("RATE_LIMIT_TRUST_FORWARDED", False),
+            trusted_proxies=parse_networks(
+                os.environ.get("TRUSTED_PROXIES", DEFAULT_TRUSTED_PROXIES)
+            ),
             max_principals=int(_env_num("RATE_LIMIT_MAX_PRINCIPALS", DEFAULT_MAX_PRINCIPALS))
             or DEFAULT_MAX_PRINCIPALS,
             static_bearer=static_bearer,
@@ -232,49 +275,90 @@ def _header(scope, name: bytes) -> str:
     return ""
 
 
-def client_ip(scope, trust_forwarded: bool = False) -> str:
-    if trust_forwarded:
-        xff = _header(scope, b"x-forwarded-for")
-        if xff:
-            return xff.split(",")[0].strip() or "unknown"
+def _in_networks(ip: str, nets: tuple[Network, ...]) -> bool:
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return False
+    return any(addr in n for n in nets)
+
+
+def client_ip(scope, trusted_proxies: tuple[Network, ...] = ()) -> str:
+    """Client address. ``X-Forwarded-For`` is used only when the direct peer is
+    a trusted proxy; then the right-most entry that is not itself a trusted
+    proxy wins (left-most entries are client-controlled)."""
     client = scope.get("client")
-    return client[0] if client else "unknown"
+    peer = client[0] if client else "unknown"
+    if not trusted_proxies or not _in_networks(peer, trusted_proxies):
+        return peer
+    xff = _header(scope, b"x-forwarded-for")
+    if not xff:
+        return peer
+    hops = [h.strip() for h in xff.split(",") if h.strip()]
+    for hop in reversed(hops):
+        try:
+            ipaddress.ip_address(hop)
+        except ValueError:
+            return peer  # malformed chain — don't trust any of it
+        if not _in_networks(hop, trusted_proxies):
+            return hop
+    return hops[0] if hops else peer
 
 
-def _session_key(token: str) -> str:
-    # Session token format (#510): ``email|expiry|tid|sig``. Key on the email
-    # field so a user's concurrent tabs/sessions share one bucket.
-    email = token.split("|", 1)[0].strip().lower()
-    return "session:" + _h(email or token)
+@dataclass(frozen=True)
+class Principal:
+    key: str
+    trusted: bool  # credential verified without the DB (static bearer / valid session)
+    learnable: bool = False  # token-hash principal that may be learned as valid
 
 
-def principal_for(scope, route_class: str, cfg: RateLimitConfig) -> str:
-    """Return the bucket key for the caller of this request (no DB, no verification)."""
-    ip = client_ip(scope, cfg.trust_forwarded)
+SessionVerifier = Callable[[str], "str | None"]
+
+
+def _session_principal(token: str, verifier: SessionVerifier | None) -> Principal:
+    email = None
+    if verifier is not None:
+        try:
+            email = verifier(token)
+        except Exception:
+            logger.debug("ratelimit: session verifier raised", exc_info=True)
+            email = None
+    if email:
+        return Principal("session:" + _h(email.strip().lower()), trusted=True)
+    # Unverified: key on the whole token, never on the (forgeable) email field.
+    return Principal("session-unverified:" + _h(token), trusted=False)
+
+
+def principal_for(
+    scope,
+    route_class: str,
+    cfg: RateLimitConfig,
+    session_verifier: SessionVerifier | None = None,
+) -> Principal:
+    """Return the bucket principal for this request (no DB)."""
+    ip = client_ip(scope, cfg.trusted_proxies)
     if route_class == AUTH:
-        return "ip:" + ip
+        return Principal("ip:" + ip, trusted=False)
     auth = _header(scope, b"authorization").strip()
     if auth[:7].lower() == "bearer ":
         token = auth[7:].strip()
         if token.startswith("session:"):
-            return _session_key(token.removeprefix("session:"))
+            return _session_principal(token.removeprefix("session:"), session_verifier)
         if cfg.static_bearer and hmac.compare_digest(
             token.encode("utf-8", "replace"), cfg.static_bearer.encode("utf-8", "replace")
         ):
-            return "static"
+            return Principal("static", trusted=True)
         if token.startswith("onco_"):
-            return "patient:" + _h(token)
+            return Principal("patient:" + _h(token), trusted=False, learnable=True)
         if token:
-            return "oauth:" + _h(token)
+            return Principal("oauth:" + _h(token), trusted=False, learnable=True)
     cookie = _header(scope, b"cookie")
     if cookie:
-        from urllib.parse import unquote
-
         for pair in cookie.split(";"):
             name, sep, value = pair.strip().partition("=")
             if sep and name == "oncofiles_session" and value.strip():
-                return _session_key(unquote(value.strip()))
-    return "ip:" + ip
+                return _session_principal(unquote(value.strip()), session_verifier)
+    return Principal("ip:" + ip, trusted=False)
 
 
 # ── Middleware ───────────────────────────────────────────────────────────────
@@ -292,6 +376,7 @@ class RateLimitMiddleware:
         app,
         config: RateLimitConfig | None = None,
         clock=time.monotonic,
+        session_verifier: SessionVerifier | None = None,
     ) -> None:
         self.app = app
         if config is None:
@@ -300,35 +385,52 @@ class RateLimitMiddleware:
             config = RateLimitConfig.from_env(static_bearer=_app_config.MCP_BEARER_TOKEN or "")
         self.config = config
         self.clock = clock
-        self._global: dict[str, TokenBucket] = {}
+        self.session_verifier = session_verifier
+        limits = dict(config.classes)
+        if not config.trusted_proxies:
+            # No trusted proxy → every client may share one address; a strict
+            # per-IP auth bucket would silently be a second global bucket.
+            a = limits[AUTH]
+            raised = Limit(
+                max(a.principal.per_minute, a.global_.per_minute),
+                max(a.principal.burst, a.global_.burst),
+            )
+            limits[AUTH] = replace(a, principal=raised)
+        self.limits = limits
+        self._global: dict[tuple[str, bool], TokenBucket] = {}
         self._principal: OrderedDict[tuple[str, str], TokenBucket] = OrderedDict()
+        self._known_good: OrderedDict[str, None] = OrderedDict()
         self._inflight: dict[str, int] = {}
         if config.enabled:
             logger.info(
-                "ratelimit enabled: %s; mcp concurrency=%d",
+                "ratelimit enabled: %s; mcp concurrency=%d; trusted proxies=%s",
                 ", ".join(
                     f"{n}={c.principal.per_minute:g}/min(b{c.principal.burst:g}) "
-                    f"global={c.global_.per_minute:g}/min body<={c.max_body_bytes}"
-                    for n, c in config.classes.items()
+                    f"global={c.global_.per_minute:g}/min anon={c.anon_global.per_minute:g}/min "
+                    f"body<={c.max_body_bytes}"
+                    for n, c in limits.items()
                 ),
                 config.mcp_concurrency,
+                ",".join(str(n) for n in config.trusted_proxies) or "none",
             )
         else:
             logger.warning("ratelimit DISABLED (RATE_LIMIT_ENABLED=false)")
 
     # -- buckets --
 
-    def _global_bucket(self, route_class: str, now: float) -> TokenBucket | None:
-        limit = self.config.classes[route_class].global_
+    def _global_bucket(self, route_class: str, trusted: bool, now: float) -> TokenBucket | None:
+        c = self.limits[route_class]
+        limit = c.global_ if trusted else c.anon_global
         if limit.per_minute <= 0:
             return None
-        b = self._global.get(route_class)
+        k = (route_class, trusted)
+        b = self._global.get(k)
         if b is None:
-            b = self._global[route_class] = TokenBucket(limit, now)
+            b = self._global[k] = TokenBucket(limit, now)
         return b
 
     def _principal_bucket(self, route_class: str, key: str, now: float) -> TokenBucket | None:
-        limit = self.config.classes[route_class].principal
+        limit = self.limits[route_class].principal
         if limit.per_minute <= 0:
             return None
         k = (route_class, key)
@@ -341,15 +443,30 @@ class RateLimitMiddleware:
             self._principal.move_to_end(k)
         return b
 
-    def check(self, route_class: str, key: str) -> float:
-        """Consume one token from both buckets. Returns 0 if allowed, else the
-        Retry-After seconds. Nothing is consumed when the request is rejected."""
+    def is_trusted(self, principal: Principal) -> bool:
+        if principal.trusted:
+            return True
+        if principal.learnable and principal.key in self._known_good:
+            self._known_good.move_to_end(principal.key)
+            return True
+        return False
+
+    def mark_good(self, key: str) -> None:
+        self._known_good[key] = None
+        self._known_good.move_to_end(key)
+        while len(self._known_good) > self.config.max_principals:
+            self._known_good.popitem(last=False)
+
+    def check(self, route_class: str, key: str, trusted: bool = False) -> float:
+        """Consume one token from the principal bucket and the matching global
+        bucket. Returns 0 if allowed, else the Retry-After seconds. Nothing is
+        consumed when the request is rejected."""
         now = self.clock()
         buckets = [
             b
             for b in (
                 self._principal_bucket(route_class, key, now),
-                self._global_bucket(route_class, now),
+                self._global_bucket(route_class, trusted, now),
             )
             if b is not None
         ]
@@ -392,8 +509,7 @@ class RateLimitMiddleware:
             await self.app(scope, receive, send)
             return
 
-        limits = self.config.classes[route_class]
-        max_body = limits.max_body_bytes
+        max_body = self.limits[route_class].max_body_bytes
 
         # 1. Body size from Content-Length — before reading anything.
         if max_body > 0:
@@ -415,15 +531,18 @@ class RateLimitMiddleware:
                     return
 
         # 2. Token buckets.
-        key = principal_for(scope, route_class, self.config)
-        wait = self.check(route_class, key)
+        principal = principal_for(scope, route_class, self.config, self.session_verifier)
+        key = principal.key
+        trusted = self.is_trusted(principal)
+        wait = self.check(route_class, key, trusted)
         if wait > 0:
             retry_after = max(1, math.ceil(wait))
             logger.warning(
-                "ratelimit: 429 %s %s principal=%s retry_after=%ds",
+                "ratelimit: 429 %s %s principal=%s trusted=%s retry_after=%ds",
                 route_class,
                 path,
                 key.split(":", 1)[0],
+                trusted,
                 retry_after,
             )
             await self._reject(send, 429, "rate limit exceeded", route_class, retry_after)
@@ -443,8 +562,20 @@ class RateLimitMiddleware:
             self._inflight[key] = self._inflight.get(key, 0) + 1
             slot_key = key
 
+        # 4. Learn token-hash principals from successful /mcp responses
+        #    (/mcp always requires a valid bearer, so 2xx proves the token).
+        out_send = send
+        if route_class == MCP and principal.learnable and not trusted:
+
+            async def out_send(message):
+                if message.get("type") == "http.response.start" and (
+                    200 <= int(message.get("status", 0)) < 300
+                ):
+                    self.mark_good(key)
+                await send(message)
+
         try:
-            await self._call_with_body_guard(scope, receive, send, route_class, max_body)
+            await self._call_with_body_guard(scope, receive, out_send, route_class, max_body)
         finally:
             if slot_key is not None:
                 n = self._inflight.get(slot_key, 1) - 1

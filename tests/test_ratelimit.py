@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
+import os
 from urllib.parse import quote
 
 import httpx
@@ -27,10 +29,18 @@ from oncofiles.ratelimit import (
 STATIC = "static-test-bearer-synthetic"
 SESSION_TOKEN = "carer@example.test|exp|tidsynthetic|sigsynthetic"
 SESSION_COOKIE = quote("carer@example.test|exp2|tidother|sigother", safe="")
+FORGED_TOKEN = "carer@example.test|exp|tidforged|sigforged"
 OFF = Limit(per_minute=0, burst=0)
 TRICKLE = Limit(per_minute=1, burst=1)
 SMALL_BODY = 100
 TINY_BODY = 1
+
+
+def _verifier(token: str) -> str | None:
+    """Stand-in for server._verify_session_token: only the synthetic tokens
+    signed 'sigsynthetic' / 'sigother' verify."""
+    email, _, rest = token.partition("|")
+    return email if rest.endswith(("sigsynthetic", "sigother")) else None
 
 
 class FakeClock:
@@ -60,12 +70,16 @@ async def echo_app(scope, receive, send):
     await send({"type": "http.response.body", "body": body})
 
 
+def _cl(principal, global_, body, anon=None) -> ClassLimits:
+    return ClassLimits(principal, global_, anon or global_, body)
+
+
 def _cfg(**overrides) -> RateLimitConfig:
     classes = {
-        MCP: ClassLimits(Limit(60, 3), Limit(6000, 1000), 1000),
-        AUTH: ClassLimits(Limit(60, 2), Limit(6000, 1000), 100),
-        API: ClassLimits(Limit(60, 4), Limit(6000, 1000), 500),
-        PUBLIC: ClassLimits(Limit(60, 5), Limit(6000, 1000), 100),
+        MCP: _cl(Limit(60, 3), Limit(6000, 1000), 1000),
+        AUTH: _cl(Limit(60, 2), Limit(6000, 1000), 100),
+        API: _cl(Limit(60, 4), Limit(6000, 1000), 500),
+        PUBLIC: _cl(Limit(60, 5), Limit(6000, 1000), 100),
     }
     classes.update(overrides.pop("classes", {}))
     return RateLimitConfig(classes=classes, static_bearer=STATIC, **overrides)
@@ -76,8 +90,14 @@ def _client(app, ip="203.0.113.7") -> httpx.AsyncClient:
     return httpx.AsyncClient(transport=transport, base_url="http://testserver")
 
 
-def _mw(app=echo_app, clock=None, **cfg) -> RateLimitMiddleware:
-    return RateLimitMiddleware(app, config=_cfg(**cfg), clock=clock or FakeClock())
+def _mw(app=echo_app, clock=None, session_verifier=None, **cfg) -> RateLimitMiddleware:
+    return RateLimitMiddleware(
+        app, config=_cfg(**cfg), clock=clock or FakeClock(), session_verifier=session_verifier
+    )
+
+
+def _bearer(token: str) -> dict[str, str]:
+    return {"authorization": f"Bearer {token}"}
 
 
 # ── classification + principals ──────────────────────────────────────────────
@@ -116,29 +136,113 @@ def _scope(headers=(), ip="198.51.100.1"):
 
 def test_principal_kinds():
     cfg = _cfg()
-    assert principal_for(_scope([("authorization", f"Bearer {STATIC}")]), MCP, cfg) == "static"
-    assert principal_for(_scope([("authorization", "Bearer onco_x")]), MCP, cfg).startswith(
-        "patient:"
+    static = principal_for(_scope([("authorization", f"Bearer {STATIC}")]), MCP, cfg)
+    assert static.key == "static" and static.trusted
+    patient = principal_for(_scope([("authorization", "Bearer onco_x")]), MCP, cfg)
+    assert patient.key.startswith("patient:") and not patient.trusted and patient.learnable
+    oauth = principal_for(_scope([("authorization", "Bearer opaque")]), MCP, cfg)
+    assert oauth.key.startswith("oauth:") and not oauth.trusted and oauth.learnable
+    sess = principal_for(
+        _scope([("authorization", f"Bearer session:{SESSION_TOKEN}")]), API, cfg, _verifier
     )
-    assert principal_for(_scope([("authorization", "Bearer opaque")]), MCP, cfg).startswith(
-        "oauth:"
-    )
-    sess = principal_for(_scope([("authorization", f"Bearer session:{SESSION_TOKEN}")]), API, cfg)
     cookie = principal_for(
-        _scope([("cookie", f"theme=dark; oncofiles_session={SESSION_COOKIE}")]), API, cfg
+        _scope([("cookie", f"theme=dark; oncofiles_session={SESSION_COOKIE}")]),
+        API,
+        cfg,
+        _verifier,
     )
-    assert sess.startswith("session:") and sess == cookie  # same user, same bucket
-    assert principal_for(_scope(), PUBLIC, cfg) == "ip:198.51.100.1"
+    assert sess.key.startswith("session:") and sess.trusted
+    assert sess.key == cookie.key  # same verified user, same bucket
+    anon = principal_for(_scope(), PUBLIC, cfg)
+    assert anon.key == "ip:198.51.100.1" and not anon.trusted
     # auth endpoints are always IP-keyed, even with a credential
-    assert principal_for(_scope([("authorization", f"Bearer {STATIC}")]), AUTH, cfg).startswith(
-        "ip:"
+    key = principal_for(_scope([("authorization", f"Bearer {STATIC}")]), AUTH, cfg).key
+    assert key == "ip:198.51.100.1"
+
+
+def test_session_without_verifier_is_keyed_on_whole_token():
+    p = principal_for(_scope([("authorization", f"Bearer session:{SESSION_TOKEN}")]), API, _cfg())
+    assert p.key.startswith("session-unverified:") and not p.trusted
+
+
+def test_forged_session_with_victim_email_gets_its_own_key():
+    cfg = _cfg()
+    victim = principal_for(
+        _scope([("authorization", f"Bearer session:{SESSION_TOKEN}")]), API, cfg, _verifier
     )
+    forged = principal_for(
+        _scope([("authorization", f"Bearer session:{FORGED_TOKEN}")]), API, cfg, _verifier
+    )
+    assert victim.key.startswith("session:")
+    assert forged.key.startswith("session-unverified:") and not forged.trusted
+    assert forged.key != victim.key
 
 
-def test_forwarded_for_only_when_trusted():
-    s = _scope([("x-forwarded-for", "192.0.2.9, 10.0.0.1")])
-    assert principal_for(s, AUTH, _cfg()) == "ip:198.51.100.1"
-    assert principal_for(s, AUTH, _cfg(trust_forwarded=True)) == "ip:192.0.2.9"
+def test_session_verifier_exception_is_unverified():
+    def broken(_token):
+        raise RuntimeError("synthetic")
+
+    p = principal_for(
+        _scope([("authorization", f"Bearer session:{SESSION_TOKEN}")]), API, _cfg(), broken
+    )
+    assert p.key.startswith("session-unverified:")
+
+
+async def test_forged_session_flood_does_not_drain_victim_bucket():
+    app = _mw(session_verifier=_verifier)
+    forged = _bearer(f"session:{FORGED_TOKEN}")
+    victim = _bearer(f"session:{SESSION_TOKEN}")
+    async with _client(app) as c:
+        for _ in range(4):
+            await c.get("/api/documents", headers=forged)
+        assert (await c.get("/api/documents", headers=forged)).status_code == 429
+        for _ in range(4):
+            assert (await c.get("/api/documents", headers=victim)).status_code == 200
+
+
+# ── X-Forwarded-For / trusted proxies ─────────────────────────────────────────
+
+
+def test_forwarded_for_only_from_trusted_proxy():
+    xff = [("x-forwarded-for", "192.0.2.66, 192.0.2.9, 172.18.0.5")]
+    # untrusted direct peer: XFF ignored entirely
+    s = _scope(xff, ip="198.51.100.1")
+    assert principal_for(s, AUTH, _cfg()).key == "ip:198.51.100.1"
+    # trusted proxy peer (Docker range): right-most non-proxy hop wins; the
+    # client-controlled left-most entry is not used
+    s = _scope(xff, ip="172.18.0.2")
+    assert principal_for(s, AUTH, _cfg()).key == "ip:192.0.2.9"
+    # nothing trusted: XFF ignored even from a Docker peer
+    assert principal_for(s, AUTH, _cfg(trusted_proxies=())).key == "ip:172.18.0.2"
+    # malformed chain: fall back to the peer
+    bad = _scope([("x-forwarded-for", "not-an-ip")], ip="127.0.0.1")
+    assert principal_for(bad, AUTH, _cfg()).key == "ip:127.0.0.1"
+
+
+async def test_spoofed_xff_from_untrusted_client_does_not_dodge_auth_limit():
+    app = _mw()
+    async with _client(app, ip="198.51.100.1") as c:
+        for i in range(2):
+            await c.post("/register", headers={"x-forwarded-for": f"192.0.2.{i + 10}"})
+        r = await c.post("/register", headers={"x-forwarded-for": "192.0.2.99"})
+    assert r.status_code == 429
+
+
+async def test_xff_from_trusted_proxy_separates_clients():
+    app = _mw()
+    async with _client(app, ip="172.18.0.2") as c:
+        for _ in range(2):
+            await c.post("/register", headers={"x-forwarded-for": "192.0.2.10"})
+        r = await c.post("/register", headers={"x-forwarded-for": "192.0.2.10"})
+        assert r.status_code == 429
+        r = await c.post("/register", headers={"x-forwarded-for": "192.0.2.11"})
+        assert r.status_code == 200
+
+
+def test_auth_principal_limit_raised_without_trusted_proxies():
+    a = _mw(trusted_proxies=()).limits[AUTH]
+    assert a.principal == a.global_
+    assert _mw().limits[AUTH].principal == Limit(60, 2)
 
 
 # ── each bucket + 429 ─────────────────────────────────────────────────────────
@@ -157,9 +261,9 @@ async def test_each_bucket_429_with_retry_after(path, method, burst, json_body):
     app = _mw()
     async with _client(app) as c:
         for _ in range(burst):
-            r = await c.request(method, path, headers={"authorization": f"Bearer {STATIC}"})
+            r = await c.request(method, path, headers=_bearer(STATIC))
             assert r.status_code == 200
-        r = await c.request(method, path, headers={"authorization": f"Bearer {STATIC}"})
+        r = await c.request(method, path, headers=_bearer(STATIC))
     assert r.status_code == 429
     assert int(r.headers["retry-after"]) >= 1
     if json_body:
@@ -193,18 +297,71 @@ async def test_bucket_refills_over_time():
         assert (await c.post("/mcp")).status_code == 200
 
 
-async def test_global_bucket_caps_all_principals():
-    app = _mw(classes={MCP: ClassLimits(Limit(60, 100), Limit(60, 3), 1000)})
+async def test_global_bucket_caps_all_trusted_principals():
+    app = _mw(classes={API: _cl(Limit(60, 50), Limit(60, 3), 1000)}, session_verifier=_verifier)
     async with _client(app) as c:
-        for i in range(3):
-            r = await c.post("/mcp", headers={"authorization": f"Bearer onco_user{i}"})
-            assert r.status_code == 200
-        r = await c.post("/mcp", headers={"authorization": "Bearer onco_user9"})
+        for _ in range(3):
+            assert (await c.get("/api/x", headers=_bearer(STATIC))).status_code == 200
+        r = await c.get("/api/x", headers=_bearer(f"session:{SESSION_TOKEN}"))
     assert r.status_code == 429
 
 
+async def test_anon_global_bucket_caps_unknown_principals():
+    app = _mw(classes={MCP: _cl(Limit(60, 50), Limit(6000, 1000), 1000, anon=Limit(60, 3))})
+    async with _client(app) as c:
+        for i in range(3):
+            assert (await c.post("/mcp", headers=_bearer(f"onco_user{i}"))).status_code == 200
+        r = await c.post("/mcp", headers=_bearer("onco_userz"))
+    assert r.status_code == 429
+
+
+async def test_anonymous_flood_does_not_429_authenticated_users():
+    async def mcp_app(scope, receive, send):
+        # like /mcp: 401 without a known bearer, 200 with one
+        auth = dict(scope["headers"]).get(b"authorization", b"")
+        await receive()
+        status = 200 if auth in (b"Bearer known", f"Bearer {STATIC}".encode()) else 401
+        if scope["path"].startswith("/api/"):
+            status = 200 if b"session:" in auth else 401
+        await send({"type": "http.response.start", "status": status, "headers": []})
+        await send({"type": "http.response.body", "body": b""})
+
+    flood_limits = _cl(Limit(60, 50), Limit(6000, 1000), 1000, anon=Limit(60, 5))
+    app = _mw(
+        app=mcp_app,
+        classes={MCP: flood_limits, API: flood_limits},
+        session_verifier=_verifier,
+    )
+    async with _client(app) as c:
+        # a real OAuth token proves itself (2xx on /mcp) before the flood
+        assert (await c.post("/mcp", headers=_bearer("known"))).status_code == 200
+        # anonymous + junk-token flood exhausts the anonymous global buckets
+        for i in range(10):
+            await c.post("/mcp")
+            await c.post("/mcp", headers=_bearer(f"junk{i}"))
+            await c.get("/api/documents")
+        assert (await c.post("/mcp")).status_code == 429
+        assert (await c.post("/mcp", headers=_bearer("junkz"))).status_code == 429
+        assert (await c.get("/api/documents")).status_code == 429
+        # authenticated callers draw from the trusted global bucket
+        assert (await c.post("/mcp", headers=_bearer("known"))).status_code == 200
+        assert (await c.post("/mcp", headers=_bearer(STATIC))).status_code == 200
+        r = await c.get("/api/documents", headers=_bearer(f"session:{SESSION_TOKEN}"))
+        assert r.status_code == 200
+    # junk tokens got 401 and were never learned as valid
+    assert len(app._known_good) == 1
+
+
+def test_known_good_set_is_bounded():
+    mw = _mw(max_principals=3)
+    keys = [f"oauth:k{i}" for i in range(10)]
+    for k in keys:
+        mw.mark_good(k)
+    assert list(mw._known_good) == keys[-3:]
+
+
 async def test_zero_rate_disables_bucket():
-    app = _mw(classes={PUBLIC: ClassLimits(OFF, OFF, SMALL_BODY)})
+    app = _mw(classes={PUBLIC: _cl(OFF, OFF, SMALL_BODY)})
     async with _client(app) as c:
         for _ in range(50):
             assert (await c.get("/")).status_code == 200
@@ -217,13 +374,10 @@ async def test_one_principal_burst_does_not_block_another():
     app = _mw()
     async with _client(app) as c:
         for _ in range(3):
-            await c.post("/mcp", headers={"authorization": "Bearer onco_alice"})
-        r = await c.post("/mcp", headers={"authorization": "Bearer onco_alice"})
-        assert r.status_code == 429
-        r = await c.post("/mcp", headers={"authorization": "Bearer onco_bob"})
-        assert r.status_code == 200
-        r = await c.post("/mcp", headers={"authorization": f"Bearer {STATIC}"})
-        assert r.status_code == 200
+            await c.post("/mcp", headers=_bearer("onco_alice"))
+        assert (await c.post("/mcp", headers=_bearer("onco_alice"))).status_code == 429
+        assert (await c.post("/mcp", headers=_bearer("onco_bob"))).status_code == 200
+        assert (await c.post("/mcp", headers=_bearer(STATIC))).status_code == 200
 
 
 async def test_unauthenticated_ips_are_isolated():
@@ -246,7 +400,7 @@ def test_principal_map_is_bounded():
 
 
 async def test_health_never_limited_or_size_checked():
-    app = _mw(classes={PUBLIC: ClassLimits(TRICKLE, TRICKLE, TINY_BODY)})
+    app = _mw(classes={PUBLIC: _cl(TRICKLE, TRICKLE, TINY_BODY)})
     async with _client(app) as c:
         # exhaust everything else first
         await c.get("/")
@@ -291,15 +445,15 @@ async def test_body_limit_per_class():
         assert (await c.post("/api/bug-report", content=b"x" * 400)).status_code == 200
 
 
+async def _chunks():
+    for _ in range(5):
+        yield b"x" * 300
+
+
 async def test_413_for_chunked_body_without_content_length():
     mw = _mw()
-
-    async def chunks():
-        for _ in range(5):
-            yield b"x" * 300
-
     async with _client(mw) as c:
-        r = await c.post("/mcp", content=chunks())
+        r = await c.post("/mcp", content=_chunks())
     assert r.status_code == 413
 
 
@@ -314,13 +468,8 @@ async def test_413_when_app_swallows_the_guard_exception():
             return
 
     mw = _mw(app=app)
-
-    async def chunks():
-        for _ in range(5):
-            yield b"x" * 300
-
     async with _client(mw) as c:
-        r = await c.post("/mcp", content=chunks())
+        r = await c.post("/mcp", content=_chunks())
     assert r.status_code == 413
 
 
@@ -342,23 +491,20 @@ async def test_mcp_concurrency_cap_per_principal():
         await gate.wait()
         await echo_app(scope, receive, send)
 
-    mw = _mw(
-        app=slow_app,
-        mcp_concurrency=2,
-        classes={MCP: ClassLimits(Limit(6000, 100), Limit(6000, 100), 1000)},
-    )
-    alice = {"authorization": "Bearer onco_alice"}
+    roomy = Limit(6000, 100)
+    mw = _mw(app=slow_app, mcp_concurrency=2, classes={MCP: _cl(roomy, roomy, 1000)})
+    alice = _bearer("onco_alice")
     async with _client(mw) as c:
         first = asyncio.create_task(c.post("/mcp", headers=alice))
         second = asyncio.create_task(c.post("/mcp", headers=alice))
         while entered < 2:
             await asyncio.sleep(0)
-        r3 = await c.post("/mcp", headers=alice)
-        assert r3.status_code == 429
-        assert r3.headers["retry-after"] == "1"
-        assert r3.json()["error"] == "too many concurrent requests"
+        third = await c.post("/mcp", headers=alice)
+        assert third.status_code == 429
+        assert third.headers["retry-after"] == "1"
+        assert third.json()["error"] == "too many concurrent requests"
         # another principal is unaffected
-        other = asyncio.create_task(c.post("/mcp", headers={"authorization": "Bearer onco_bob"}))
+        other = asyncio.create_task(c.post("/mcp", headers=_bearer("onco_bob")))
         while entered < 3:
             await asyncio.sleep(0)
         gate.set()
@@ -403,34 +549,41 @@ async def test_disabled_mode_is_pass_through():
 
 
 def test_from_env_defaults(monkeypatch):
-    for k in list(__import__("os").environ):
-        if k.startswith("RATE_LIMIT_"):
+    for k in list(os.environ):
+        if k.startswith("RATE_LIMIT_") or k == "TRUSTED_PROXIES":
             monkeypatch.delenv(k)
     cfg = RateLimitConfig.from_env()
     assert cfg.enabled is True
     assert cfg.classes == ratelimit.DEFAULTS
     assert cfg.mcp_concurrency == ratelimit.DEFAULT_MCP_CONCURRENCY
-    assert cfg.trust_forwarded is False
+    assert [str(n) for n in cfg.trusted_proxies] == ["127.0.0.0/8", "::1/128", "172.16.0.0/12"]
 
 
 def test_from_env_overrides_and_kill_switch(monkeypatch):
     monkeypatch.setenv("RATE_LIMIT_ENABLED", "false")
     monkeypatch.setenv("RATE_LIMIT_MCP_PER_MIN", "10")
+    monkeypatch.setenv("RATE_LIMIT_MCP_ANON_PER_MIN", "11")
     monkeypatch.setenv("RATE_LIMIT_AUTH_MAX_BODY_BYTES", "2048")
     monkeypatch.setenv("RATE_LIMIT_MCP_CONCURRENCY", "7")
     monkeypatch.setenv("RATE_LIMIT_API_BURST", "not-a-number")
+    monkeypatch.setenv("TRUSTED_PROXIES", "10.0.0.0/8, bogus")
     cfg = RateLimitConfig.from_env()
     assert cfg.enabled is False
     assert cfg.classes[MCP].principal.per_minute == 10
+    assert cfg.classes[MCP].anon_global.per_minute == 11
     assert cfg.classes[AUTH].max_body_bytes == 2048
     assert cfg.mcp_concurrency == 7
     assert cfg.classes[API].principal.burst == ratelimit.DEFAULTS[API].principal.burst
+    assert [str(n) for n in cfg.trusted_proxies] == ["10.0.0.0/8"]
 
 
-def test_registered_in_server_main():
-    import inspect
+def test_empty_trusted_proxies_env_trusts_none(monkeypatch):
+    monkeypatch.setenv("TRUSTED_PROXIES", "")
+    assert RateLimitConfig.from_env().trusted_proxies == ()
 
+
+def test_registered_in_server_main_with_session_verifier():
     from oncofiles import server
 
     src = inspect.getsource(server.main)
-    assert "Middleware(RateLimitMiddleware)" in src
+    assert "Middleware(RateLimitMiddleware, session_verifier=_verify_session_token)" in src
