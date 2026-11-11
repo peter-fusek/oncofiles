@@ -243,11 +243,15 @@ def _setup_logging() -> None:
         fmt = "%(asctime)s %(levelname)-8s %(name)s — %(message)s"
     logging.basicConfig(level=level, format=fmt, stream=sys.stderr, force=True)
     # #706: survives container recreates when APP_LOG_DIR is set (off locally).
-    from oncofiles.app_log import file_handler_from_env
+    # Every root handler (stderr and the file) carries the same redaction filter.
+    from oncofiles.app_log import attach_redaction, file_handler_from_env
 
+    root = logging.getLogger()
+    for h in root.handlers:
+        attach_redaction(h)
     handler = file_handler_from_env(fmt, level)
     if handler is not None:
-        logging.getLogger().addHandler(handler)
+        root.addHandler(handler)
 
 
 @asynccontextmanager
