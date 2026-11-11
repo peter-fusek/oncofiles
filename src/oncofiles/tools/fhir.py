@@ -7,7 +7,9 @@ only that patient's rows. An admin caller without ``patient_slug`` is refused
 ``export_manifest`` #696). Nothing here writes.
 
 Tools: ``fhir_capabilities``, ``fhir_search``, ``fhir_read``,
-``patient_everything``, ``export_patient_summary``.
+``patient_everything``, ``export_patient_summary``. The last two are bulk
+egress of a patient's record and are deliberately NOT ``readOnlyHint`` (see
+``FHIR_EGRESS_TOOLS``), so clients keep asking for manual approval.
 """
 
 from __future__ import annotations
@@ -31,6 +33,12 @@ from oncofiles.fhir.store import load_patient
 from oncofiles.tools._helpers import _get_db, _is_admin_caller, _resolve_patient_id
 
 READ_ONLY = {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True}
+# Bulk patient-data egress (same class as export_manifest / export_document_package):
+# NOT readOnlyHint, so MCP clients (Claude.ai) keep asking the user for approval.
+# Locked by tests/test_fhir_read.py. TODO(#690): move into the shared tool
+# classification (egress set) when it lands.
+EGRESS = {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": True}
+FHIR_EGRESS_TOOLS = frozenset({"patient_everything", "export_patient_summary"})
 
 
 def _dump(obj: Any) -> str:
@@ -163,4 +171,4 @@ def register(mcp):
         patient_everything,
         export_patient_summary,
     ):
-        mcp.tool(annotations=READ_ONLY)(fn)
+        mcp.tool(annotations=EGRESS if fn.__name__ in FHIR_EGRESS_TOOLS else READ_ONLY)(fn)

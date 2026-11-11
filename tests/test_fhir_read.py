@@ -722,8 +722,30 @@ async def test_capabilities():
     assert "icd-10-cm" not in json.dumps(cs).replace("Never ICD-10-CM", "")
 
 
-def test_fhir_tools_are_read_only():
+def _annotations_by_tool() -> dict[str, dict]:
     mcp = MagicMock()
+    out: dict[str, dict] = {}
+
+    def tool_decorator(annotations=None):
+        return lambda fn: out.__setitem__(fn.__name__, annotations or {})
+
+    mcp.tool.side_effect = tool_decorator
     tool.register(mcp)
-    assert mcp.tool.call_count == 5
-    assert all(c.kwargs["annotations"]["readOnlyHint"] for c in mcp.tool.call_args_list)
+    return out
+
+
+def test_fhir_lookup_tools_are_read_only():
+    ann = _annotations_by_tool()
+    assert set(ann) == {"fhir_capabilities", "fhir_search", "fhir_read",
+                        "patient_everything", "export_patient_summary"}  # fmt: skip
+    for name in ("fhir_capabilities", "fhir_search", "fhir_read"):
+        assert ann[name]["readOnlyHint"] is True, name
+
+
+def test_fhir_bulk_egress_tools_are_never_read_only():
+    """Bulk export of a patient's record must keep manual approval in MCP clients
+    (same class as export_manifest / export_document_package)."""
+    assert {"patient_everything", "export_patient_summary"} == tool.FHIR_EGRESS_TOOLS
+    ann = _annotations_by_tool()
+    for name in tool.FHIR_EGRESS_TOOLS:
+        assert not ann[name].get("readOnlyHint", False), name
