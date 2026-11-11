@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 
@@ -92,30 +93,51 @@ def _page_count(content: bytes, ext: str) -> int:
         return doc.page_count if ext == "pdf" else 1
 
 
-def _vision_passes(content: bytes, ext: str, dpis: list[int], client) -> list[list[str]]:
+def _vision_passes(
+    content: bytes, ext: str, dpis: list[int], client, *, parallel: int = 1
+) -> list[list[str]]:
     """One answer list per DPI. Memory-bounded (#667): one page is rendered,
-    sent and freed at a time, so at most one PNG and its base64 copy are alive."""
+    sent and freed at a time. With ``parallel`` ≥ 2 (#593) the passes of that
+    one page go to the local model concurrently, each as its own independent
+    request (same prompt and settings, no shared state); at most one page's
+    PNGs are alive at once. The caller caps ``parallel`` (REOCR_PARALLEL_PASSES
+    and the number of running re-read jobs) so re-reads never hold more than
+    3 LM Studio slots together."""
+    from concurrent.futures import ThreadPoolExecutor
+
     import pymupdf
 
+    def ask(part: dict, i: int, total: int) -> str:
+        return llm.chat(
+            REOCR_SYSTEM_PROMPT,
+            [{"type": "text", "text": f"Page {i + 1} of {total}."}, part],
+            max_tokens=REOCR_BUDGET,
+            reasoning_effort="high",
+            thinking=False if config.REOCR_THINKING == "off" else None,
+            client=client,
+        )
+
+    workers = max(1, min(int(parallel), len(dpis)))
     passes: list[list[str]] = [[] for _ in dpis]
-    with pymupdf.open(stream=content, filetype=ext) as doc:
+    with (
+        pymupdf.open(stream=content, filetype=ext) as doc,
+        ThreadPoolExecutor(max_workers=workers) as pool,
+    ):
         total = doc.page_count if ext == "pdf" else 1
         for i in range(total):
             page = doc[i]
-            for out, dpi in zip(passes, dpis, strict=True):
+            parts = []
+            for dpi in dpis:
                 png = extract_mod._pixmap_png(page, dpi)
-                part = llm.image_part(png)
+                parts.append(llm.image_part(png))
                 del png
-                answer = llm.chat(
-                    REOCR_SYSTEM_PROMPT,
-                    [{"type": "text", "text": f"Page {i + 1} of {total}."}, part],
-                    max_tokens=REOCR_BUDGET,
-                    reasoning_effort="high",
-                    client=client,
-                )
-                del part
+            if workers > 1:
+                answers = list(pool.map(ask, parts, [i] * len(parts), [total] * len(parts)))
+            else:
+                answers = [ask(part, i, total) for part in parts]
+            for out, answer in zip(passes, answers, strict=True):
                 out.append(answer)
-            del page
+            del parts, page
     return passes
 
 
@@ -137,11 +159,14 @@ class Reread:
     handwritten: bool = False
     flagged_lines: int = 0
     error: str | None = None
+    seconds: float = 0.0  # vision time, for #593 measurements
+    parallel: int = 1
 
 
 def reread(
-    name: str, content: bytes, mime: str = "", *, passes: int = 2, doc_ref: object = None
-) -> Reread:
+    name: str, content: bytes, mime: str = "", *, passes: int = 2, doc_ref: object = None,
+    parallel: int = 1,
+) -> Reread:  # fmt: skip
     """Read a source again, locally. Never raises. ``doc_ref`` (a document id)
     is what logs show: filenames can carry names or diagnoses."""
     ext = extract_mod._ext(name)
@@ -162,14 +187,17 @@ def reread(
         import httpx
 
         dpis = [extract_mod.RENDER_DPI] + ([SECOND_PASS_DPI] if passes >= 2 else [])
+        t0 = time.monotonic()
         with httpx.Client(timeout=config.LOCAL_LLM_TIMEOUT_S) as client:  # one per document
-            answers = _vision_passes(content, ext, dpis, client)
+            answers = _vision_passes(content, ext, dpis, client, parallel=parallel)
+        seconds = round(time.monotonic() - t0, 1)
         first, hand = _strip_handwritten(answers[0])
         flagged = 0
         if passes >= 2:
             second, _ = _strip_handwritten(answers[1])
             first, flagged = reconcile(first, second)
-        return Reread(first, "vision2" if passes >= 2 else "vision", llm.model_id(), hand, flagged)
+        return Reread(first, "vision2" if passes >= 2 else "vision", llm.model_id(), hand, flagged,
+                      seconds=seconds, parallel=parallel)  # fmt: skip
     except llm.LocalLLMError as exc:
         return Reread([], "none", llm.model_id(), error=str(exc))
     except Exception as exc:  # corrupt file, codec, …
@@ -178,8 +206,9 @@ def reread(
 
 
 def reread_isolated(
-    name: str, content: bytes, mime: str = "", *, passes: int = 2, doc_ref: object = None
-) -> Reread:
+    name: str, content: bytes, mime: str = "", *, passes: int = 2, doc_ref: object = None,
+    parallel: int = 1,
+) -> Reread:  # fmt: skip
     """``reread`` in a short-lived child process (#667).
 
     PyMuPDF buffers, PNGs and allocator fragmentation die with the process, so
@@ -195,7 +224,14 @@ def reread_isolated(
 
     header = (
         _json.dumps(
-            {"name": name, "mime": mime, "passes": passes, "doc_ref": doc_ref}, default=str
+            {
+                "name": name,
+                "mime": mime,
+                "passes": passes,
+                "doc_ref": doc_ref,
+                "parallel": parallel,
+            },
+            default=str,  # fmt: skip
         ).encode()
         + b"\n"
     )

@@ -10,6 +10,7 @@ from fastmcp import Context
 
 from oncofiles.config import DOC_QUERY_LIMIT
 from oncofiles.tools._helpers import (
+    _cloud_ai_disabled_response,
     _ensure_ocr_text,
     _get_db,
     _get_files,
@@ -39,6 +40,8 @@ async def enhance_documents(
         patient_slug: Optional — explicit patient slug (e.g. 'mattias-cesnak'). Required
             in stateless HTTP contexts (#429) where select_patient does not persist.
     """
+    if (disabled := _cloud_ai_disabled_response()) is not None:  # #618
+        return disabled
     from oncofiles.sync import enhance_documents as _enhance_documents
 
     db = _get_db(ctx)
@@ -70,6 +73,8 @@ async def extract_document_metadata(
     Args:
         document_id: The local document ID to extract metadata from.
     """
+    if (disabled := _cloud_ai_disabled_response()) is not None:  # #618
+        return disabled
     from oncofiles.enhance import extract_structured_metadata
 
     db = _get_db(ctx)
@@ -171,6 +176,8 @@ async def extract_all_metadata(ctx: Context, patient_slug: str | None = None) ->
     Args:
         patient_slug: Optional — explicit patient slug. Required in stateless HTTP (#429).
     """
+    if (disabled := _cloud_ai_disabled_response()) is not None:  # #618
+        return disabled
     from oncofiles.sync import extract_all_metadata as _extract_all_metadata
 
     db = _get_db(ctx)
@@ -199,6 +206,8 @@ async def detect_and_split_documents(
         limit: Max documents to scan per call (default 10). Use to avoid MCP proxy timeouts.
         patient_slug: Optional — explicit patient slug. Required in stateless HTTP (#429).
     """
+    if (disabled := _cloud_ai_disabled_response()) is not None:  # #618
+        return disabled
     from oncofiles.doc_analysis import analyze_document_composition
 
     db = _get_db(ctx)
@@ -299,6 +308,8 @@ async def backfill_lab_values_from_metadata(
         remaining: docs still matching the scan after this batch
         dry_run: bool
     """
+    if (disabled := _cloud_ai_disabled_response()) is not None:  # #618
+        return disabled
     from oncofiles.enhance import extract_lab_values, has_lab_table
     from oncofiles.sync import _persist_lab_values_from_metadata
 
@@ -465,6 +476,8 @@ async def detect_and_consolidate_documents(
         dry_run: If True (default), only report what would be consolidated.
         patient_slug: Optional — explicit patient slug. Required in stateless HTTP (#429).
     """
+    if (disabled := _cloud_ai_disabled_response()) is not None:  # #618
+        return disabled
     from oncofiles.doc_analysis import analyze_consolidation
 
     db = _get_db(ctx)
@@ -517,6 +530,8 @@ async def backfill_ai_classification(
                to avoid MCP proxy timeouts on large patient records.
         patient_slug: Optional — explicit patient slug. Required in stateless HTTP (#429).
     """
+    if (disabled := _cloud_ai_disabled_response()) is not None:  # #618
+        return disabled
     from oncofiles.backfill_splits import backfill_ai_classification as _backfill
 
     db = _get_db(ctx)
@@ -706,6 +721,8 @@ async def detect_and_clone_vaccinations(
     )
     from oncofiles.models import DocumentCategory
 
+    if (disabled := _cloud_ai_disabled_response()) is not None:  # #618
+        return disabled
     db = _get_db(ctx)
     pid = await _resolve_patient_id(patient_slug, ctx)
 
