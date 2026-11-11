@@ -38,8 +38,6 @@ from oncofiles.gdrive_folders import (
 )
 from oncofiles.manifest import (
     export_manifest,
-    group_conversations_by_month,
-    render_conversation_month,
     render_manifest_json,
     render_research_library,
     render_treatment_timeline,
@@ -1310,7 +1308,8 @@ async def _export_metadata(
     folder_listings[root_folder_id] = root_listing
 
     # 1. Export _manifest.json to root (it's a catalogue/index — root is correct)
-    manifest = await export_manifest(db, patient_id=patient_id)
+    # The Drive copy of the manifest leaves the session diary out (local only).
+    manifest = await export_manifest(db, patient_id=patient_id, include_diary=False)
     manifest_json = render_manifest_json(manifest)
     await asyncio.to_thread(
         _upload_or_update_text,
@@ -1322,25 +1321,9 @@ async def _export_metadata(
         folder_listings.get(root_folder_id),
     )
 
-    # 2. Export conversation monthly logs
-    conversations_folder = folder_map.get("conversations")
-    if conversations_folder:
-        entries = await db.get_conversation_timeline(limit=200, patient_id=patient_id)
-        by_month = group_conversations_by_month(entries)
-        for month_key, month_entries in by_month.items():
-            md_content = render_conversation_month(month_entries)
-            for lang in langs:
-                suffix = f"_{lang.upper()}" if lang != "en" else ""
-                filename = f"{month_key}-conversation-log{suffix}.md"
-                await asyncio.to_thread(
-                    _upload_or_update_text,
-                    gdrive,
-                    filename,
-                    md_content,
-                    conversations_folder,
-                    "text/markdown",
-                    folder_listings.get(conversations_folder),
-                )
+    # 2. The session diary (conversation_entries) is NOT exported to Drive:
+    #    diary text stays on the Oncofiles server only (#721 follow-up,
+    #    2026-11-11). It used to be written as monthly conversation logs.
 
     # 3. Export treatment timeline
     treatment_folder = folder_map.get("treatment")

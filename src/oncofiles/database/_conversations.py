@@ -91,12 +91,15 @@ class ConversationMixin:
             import re
 
             safe_text = re.sub(r"[^\w\s-]", "", query.text)
-            if safe_text.strip():
-                conditions.append(
-                    "id IN (SELECT rowid FROM conversation_entries_fts "
-                    "WHERE conversation_entries_fts MATCH ?)"
-                )
-                params.append(f'"{safe_text}"')
+            if not safe_text.strip():
+                # Only punctuation was given: there is nothing to match. This
+                # used to drop the text filter and return every entry.
+                return []
+            conditions.append(
+                "id IN (SELECT rowid FROM conversation_entries_fts "
+                "WHERE conversation_entries_fts MATCH ?)"
+            )
+            params.append(f'"{safe_text}"')
 
         if query.entry_type:
             conditions.append("entry_type = ?")
@@ -115,9 +118,16 @@ class ConversationMixin:
             params.append(query.date_to.isoformat())
 
         if query.tags:
+            # Exact tag match. ``tags LIKE '%"x"%'`` treated % and _ in a tag
+            # as wildcards and matched inside other tags' JSON escapes. The
+            # lazy CASE keeps a malformed legacy value from failing the query.
             for tag in query.tags:
-                conditions.append("tags LIKE ?")
-                params.append(f'%"{tag}"%')
+                conditions.append(
+                    "EXISTS (SELECT 1 FROM json_each("
+                    "CASE WHEN json_valid(tags) THEN tags ELSE '[]' END) j "
+                    "WHERE j.value = ?)"
+                )
+                params.append(tag)
 
         where = " AND ".join(conditions) if conditions else "1=1"
         # Truncate content at SQL level to avoid loading full text into memory

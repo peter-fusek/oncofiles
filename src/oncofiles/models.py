@@ -179,7 +179,8 @@ class ConversationQuery(BaseModel):
     date_from: date | None = None
     date_to: date | None = None
     tags: list[str] | None = None
-    limit: int = Field(default=50, ge=1, le=200)
+    # 201 = the 200-row page cap + one look-ahead row (search_conversations has_more).
+    limit: int = Field(default=50, ge=1, le=201)
     offset: int = Field(default=0, ge=0)
 
 

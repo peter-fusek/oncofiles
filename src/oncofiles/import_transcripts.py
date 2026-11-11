@@ -3,10 +3,14 @@
 Parses each JSONL file, extracts user prompts + assistant responses,
 and creates a summary conversation entry per session.
 
+Every entry belongs to exactly one patient (session diary rule, #721
+follow-up): ``--patient-id`` is required. Text is cleaned and capped with the
+same limits as the ``log_conversation`` tool.
+
 Usage:
-    uv run python -m oncofiles.import_transcripts --dry-run
-    uv run python -m oncofiles.import_transcripts
-    uv run python -m oncofiles.import_transcripts --path /custom/path
+    uv run python -m oncofiles.import_transcripts --patient-id <uuid> --dry-run
+    uv run python -m oncofiles.import_transcripts --patient-id <uuid>
+    uv run python -m oncofiles.import_transcripts --patient-id <uuid> --path /custom/path
 """
 
 from __future__ import annotations
@@ -132,6 +136,8 @@ def _extract_session_summary(messages: list[dict], filename: str) -> dict | None
 async def import_transcripts(
     dry_run: bool = False,
     path: Path | None = None,
+    *,
+    patient_id: str,
 ) -> dict[str, int]:
     """Import JSONL session transcripts into conversation_entries.
 
@@ -155,7 +161,7 @@ async def import_transcripts(
         source_ref = jsonl_path.name
 
         # Idempotency check
-        existing = await db.get_entry_by_source_ref(source_ref)
+        existing = await db.get_entry_by_source_ref(source_ref, patient_id=patient_id)
         if existing:
             print(f"  SKIP  {source_ref} (already imported as entry #{existing.id})")
             stats["skipped"] += 1
@@ -179,17 +185,28 @@ async def import_transcripts(
                 stats["imported"] += 1
                 continue
 
+            from oncofiles.tools.conversations import (
+                DIARY_MAX_CONTENT_BYTES,
+                DIARY_MAX_TITLE_CHARS,
+                clean_diary_text,
+            )
+
+            title = clean_diary_text(summary["title"]).strip()[:DIARY_MAX_TITLE_CHARS]
+            content = clean_diary_text(summary["content"]).strip()
+            content = content.encode("utf-8")[:DIARY_MAX_CONTENT_BYTES].decode(
+                "utf-8", errors="ignore"
+            )
             entry = ConversationEntry(
                 entry_date=entry_date,
                 entry_type="summary",
-                title=summary["title"],
-                content=summary["content"],
+                title=title or source_ref,
+                content=content,
                 participant="claude-code",
                 tags=["import", "transcript"],
                 source="import",
                 source_ref=source_ref,
             )
-            entry = await db.insert_conversation_entry(entry)
+            entry = await db.insert_conversation_entry(entry, patient_id=patient_id)
             print(f'  OK    {source_ref} → entry #{entry.id}: "{entry.title[:60]}"')
             stats["imported"] += 1
 
@@ -214,8 +231,11 @@ def main() -> None:
     )
     parser.add_argument("--dry-run", action="store_true", help="Preview without importing")
     parser.add_argument("--path", type=Path, help="Path to transcripts directory")
+    parser.add_argument("--patient-id", required=True, help="Patient UUID the entries belong to")
     args = parser.parse_args()
-    asyncio.run(import_transcripts(dry_run=args.dry_run, path=args.path))
+    asyncio.run(
+        import_transcripts(dry_run=args.dry_run, path=args.path, patient_id=args.patient_id)
+    )
 
 
 if __name__ == "__main__":

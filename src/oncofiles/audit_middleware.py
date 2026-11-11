@@ -127,7 +127,7 @@ class AuditMiddleware(Middleware):
                     db = fastmcp_ctx.request_context.lifespan_context.get("db")
                     if db:
                         session_id = _get_session_id(context)
-                        input_summary = _summarize_input(context.message)
+                        input_summary = _summarize_input(context.message, tool_name)
                         # Bounded fire-and-forget: drop oldest if at capacity
                         if len(_audit_tasks) >= _MAX_AUDIT_TASKS:
                             logger.warning(
@@ -170,14 +170,26 @@ def _get_session_id(context: MiddlewareContext[Any]) -> str:
     return f"auto-{ts}"
 
 
-def _summarize_input(message: Any) -> str:
-    """Create a brief summary of tool input arguments."""
+def _summarize_input(message: Any, tool_name: str = "") -> str:
+    """Create a brief summary of tool input arguments.
+
+    Session-diary tools carry free text (title, content, search text, tags)
+    that must never land in activity_log: for them only the arguments in
+    ``DIARY_AUDIT_SAFE_ARGS`` keep their value; the others are logged as
+    ``<redacted>``.
+    """
+    from oncofiles.tools.conversations import DIARY_AUDIT_SAFE_ARGS, DIARY_TOOLS
+
+    redact = tool_name in DIARY_TOOLS
     try:
         args = getattr(message, "arguments", None)
         if args and isinstance(args, dict):
             # Truncate long values
             summary_parts = []
             for k, v in args.items():
+                if redact and k not in DIARY_AUDIT_SAFE_ARGS:
+                    summary_parts.append(f"{k}=<redacted>")
+                    continue
                 v_str = str(v)
                 if len(v_str) > 100:
                     v_str = v_str[:100] + "..."

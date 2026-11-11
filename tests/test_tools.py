@@ -416,8 +416,9 @@ async def test_analyze_labs_includes_ocr_text(db: Database):
 
 
 # ── Conversation archive tools (#37) ────────────────────────────────────────
-# #721 (Oncoteam sunset): log_conversation refuses new writes, so the archive
-# rows the read tools serve are seeded through the DB layer.
+# Session diary (kept 2026-11-11, #721 follow-up). The read tests seed rows
+# through the DB layer; the write path has its own suite in
+# tests/test_session_diary.py.
 
 
 async def _seed_conversation(
@@ -442,7 +443,7 @@ async def _seed_conversation(
     return entry.id
 
 
-async def test_log_conversation_refuses_new_writes(db: Database):
+async def test_log_conversation(db: Database):
     ctx = _mock_ctx(db)
     ctx.session_id = "test-session-123"
 
@@ -453,13 +454,25 @@ async def test_log_conversation_refuses_new_writes(db: Database):
             content="Synthetic body.",
             entry_date="2027-03-01",
             entry_type="progress",
-            tags="synthetic",
+            tags="synthetic,cycle-x",
         )
     )
-    assert data["error"] == "deprecated"
-    assert data["stored"] is False
-    assert "#721" in data["message"]
-    assert json.loads(await search_conversations(ctx, text="Synthetic"))["total"] == 0
+    assert data["id"] is not None
+    assert data["title"] == "Synthetic progress note"
+    assert data["entry_type"] == "progress"
+    assert data["tags"] == ["synthetic", "cycle-x"]
+    assert json.loads(await search_conversations(ctx, text="Synthetic"))["total"] == 1
+
+
+async def test_log_conversation_invalid_document_ids(db: Database):
+    """log_conversation returns error on non-numeric document_ids."""
+    ctx = _mock_ctx(db)
+    ctx.session_id = None
+
+    result = json.loads(
+        await log_conversation(ctx, title="Test", content="Test content", document_ids="abc,xyz")
+    )
+    assert "Invalid document_ids" in result["error"]
 
 
 async def test_search_conversations(db: Database):
