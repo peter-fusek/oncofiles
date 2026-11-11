@@ -30,7 +30,7 @@ import re
 import threading
 import time
 from collections import OrderedDict
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime, timedelta
 
 from fastmcp import Context
@@ -108,6 +108,25 @@ def run_active() -> bool:
     return any(r.get("state") == "running" for r in _runs.values()) or any(
         j.get("state") == "running" and j.get("kind") != "llm_shadow" for j in _reocr_jobs.values()
     )
+
+
+def run_block_reason(pid: str) -> str | None:
+    """Why a new run for THIS patient must wait, or None (#665 starvation fix).
+
+    Only the same patient's write-capable work blocks a run: a curated run, a
+    re-OCR or re-read job (both hold ``patient_lock``), or an index holding the
+    lock. Another patient's job never does, and neither does an LLM shadow job
+    (#714: it writes nothing and never takes the lock). A probe is never
+    blocked by any of these — it is a read-only Drive listing.
+    """
+    if (_runs.get(pid) or {}).get("state") == "running":
+        return "run_in_progress"
+    job = _reocr_jobs.get(pid) or {}
+    if job.get("state") == "running" and job.get("kind") != "llm_shadow":
+        return f"{job.get('kind') or 'reocr'}_in_progress"
+    if patient_lock(pid).locked():
+        return "patient_lock_held"
+    return None
 
 
 # ── text sources awaiting review (no sidecar to mark them) ─────────────
@@ -281,12 +300,25 @@ async def _index_after(db, pid: str, opts, report: dict | None) -> None:
 
 
 async def execute_run(
-    db, pid: str, *, dry_run: bool, trigger: str, max_docs: int | None = None, max_actions: int = 40
+    db,
+    pid: str,
+    *,
+    dry_run: bool,
+    trigger: str,
+    max_docs: int | None = None,
+    max_actions: int = 40,
+    skip_if_busy: bool = False,
 ) -> dict:
-    """Run in the foreground (nightly loop). Returns the report or {"error": …}."""
+    """Run in the foreground (nightly loop). Returns the report or {"error": …}.
+
+    ``skip_if_busy`` (the background loop): return ``{"blocked": reason}`` at
+    once instead of waiting on ``patient_lock`` behind a re-OCR or re-read job,
+    which can hold it for hours and would stall the loop for every patient."""
     async with _lock:
         if (_runs.get(pid) or {}).get("state") == "running":
             return {"error": "a run is already in progress for this patient"}
+        if skip_if_busy and (reason := run_block_reason(pid)):
+            return {"error": f"busy: {reason}", "blocked": reason}
         err, ctx = await _prepare(
             db, pid, dry_run=dry_run, max_docs=max_docs, max_actions=max_actions
         )
@@ -304,7 +336,12 @@ async def execute_run(
         return report
     finally:
         _runs.pop(pid, None)
-        await _index_after(db, pid, ctx[2], report)
+        if skip_if_busy and patient_lock(pid).locked():
+            # A job took the lock right after the run: never stall the loop
+            # behind it; the next real run (or start) refreshes the index.
+            logger.info("curated %s: index after run skipped (patient_lock_held)", pid)
+        else:
+            await _index_after(db, pid, ctx[2], report)
 
 
 async def start_run(
@@ -373,6 +410,7 @@ async def nightly_for_patient(
     reuse_preview: bool = False,
     trigger: str = "nightly",
     max_docs: int | None = None,
+    skip_if_busy: bool = False,
 ) -> list[dict]:
     """Preview first; if clean, real runs until the inbox is done or a run is not clean.
 
@@ -383,7 +421,12 @@ async def nightly_for_patient(
     if not (reuse_preview and await preview_gate(db, pid) is None):
         reports.append(
             await execute_run(
-                db, pid, dry_run=True, trigger=f"{trigger}-preview", max_docs=max_docs
+                db,
+                pid,
+                dry_run=True,
+                trigger=f"{trigger}-preview",
+                max_docs=max_docs,
+                skip_if_busy=skip_if_busy,
             )
         )
         if reports[-1].get("status") != "ok":
@@ -391,7 +434,9 @@ async def nightly_for_patient(
     for _ in range(max_real_runs):
         if _stopping.is_set():
             break
-        rep = await execute_run(db, pid, dry_run=False, trigger=trigger, max_docs=max_docs)
+        rep = await execute_run(
+            db, pid, dry_run=False, trigger=trigger, max_docs=max_docs, skip_if_busy=skip_if_busy
+        )
         reports.append(rep)
         if rep.get("status") != "ok":
             break
@@ -403,10 +448,14 @@ async def nightly_for_patient(
 
 # During a rolling deploy the old and new containers run side by side for a
 # few seconds. That is safe only because the new curated loop waits this long
-# before its first run, and patient_lock() is in-process: it cannot serialize
-# two containers. Never shorten this below the deploy overlap, and never run
-# extra replicas or workers (RUNBOOK, Oncofiles section; #581, #612).
+# before its first RUN (and its startup index), and patient_lock() is
+# in-process: it cannot serialize two containers. Never shorten this below the
+# deploy overlap, and never run extra replicas or workers (RUNBOOK, Oncofiles
+# section; #581, #612). The grace gates runs only: a probe is a read-only Drive
+# listing and starts PROBE_STARTUP_DELAY_S after boot, so on a day with many
+# deploys new work is at least seen (and counted) right away.
 STARTUP_GRACE_S = 300
+PROBE_STARTUP_DELAY_S = 15
 
 
 # ── continuous mode: new files processed within minutes ───────────────
@@ -488,7 +537,47 @@ def heartbeat_detail() -> dict:
         "empty_run_streaks": {pid: n for pid, (_, n) in _empty_streak.items()},
         "loop_alert_runs": LOOP_ALERT_RUNS,
         "pending": {pid: len(w.stuck) for pid, w in _watch.items()},
+        "probes": probe_stats(),
     }
+
+
+# ── continuous-mode counters (in-memory, operator surfaces only) ──────
+
+
+@dataclass
+class _ProbeStats:
+    """Per patient, since process start. Counts, reasons and times only — never
+    file names, ids or document content (operator /readiness + admin overview)."""
+
+    last_probe_at: str | None = None  # UTC ISO of the last completed probe
+    probes_total: int = 0
+    probes_skipped: dict[str, int] = field(default_factory=dict)  # reason -> count
+    runs_blocked: dict[str, int] = field(default_factory=dict)  # reason -> count
+    last_blocked_reason: str | None = None
+    last_auto_run_at: str | None = None  # UTC ISO of the last auto sequence start
+    auto_runs_total: int = 0
+    pending_inbox_count: int | None = None  # what the next run would process
+    parked_count: int = 0  # pending items a sequence could not move
+
+
+_probe_stats: dict[str, _ProbeStats] = {}
+
+
+def _stats(pid: str) -> _ProbeStats:
+    return _probe_stats.setdefault(pid, _ProbeStats())
+
+
+def _bump(counter: dict[str, int], reason: str) -> None:
+    counter[reason] = counter.get(reason, 0) + 1
+
+
+def _now_iso() -> str:
+    return datetime.now(UTC).isoformat(timespec="seconds")
+
+
+def probe_stats() -> dict:
+    """{patient_id: counters}. Operator-only: keyed by patient id."""
+    return {pid: asdict(st) for pid, st in _probe_stats.items()}
 
 
 async def probe_patient(db, pid: str, idle_signature: str | None):
@@ -519,7 +608,9 @@ async def probe_patient(db, pid: str, idle_signature: str | None):
 
 
 def _sequence_outcome(reports: list[dict]) -> tuple[bool, bool]:
-    """(failed, progressed) for one sequence of runs."""
+    """(failed, progressed) for one sequence of runs. A run that was not started
+    because the patient was busy is neither a failure nor progress."""
+    reports = [r for r in reports if not r.get("blocked")]
     failed = any(r.get("error") or r.get("status") != "ok" for r in reports)
     progressed = any(
         d.get("result") != "skipped"
@@ -530,41 +621,86 @@ def _sequence_outcome(reports: list[dict]) -> tuple[bool, bool]:
     return failed, progressed
 
 
+def _log_blocked(pid: str, reason: str, n_work: int) -> None:
+    st = _stats(pid)
+    _bump(st.runs_blocked, reason)
+    st.last_blocked_reason = reason
+    # One line per poll per patient: a tick calls this at most once.
+    logger.info(
+        "curated auto %s: %d new item(s), run blocked (%s) — retry next poll", pid, n_work, reason
+    )
+
+
 async def continuous_tick(
-    db, pid: str, *, settle_s: int, chunk: int, max_runs: int
+    db, pid: str, *, settle_s: int, chunk: int, max_runs: int, grace_until: float = 0.0
 ) -> list[dict] | None:
     """Probe; run a short sequence when there is new, settled work. Never raises
-    for an ordinary outcome; returns the reports when a sequence ran."""
+    for an ordinary outcome; returns the reports when a sequence ran.
+
+    The probe always happens (it only reads Drive). What may wait is the RUN:
+    startup grace, failure backoff, or this patient's own write-capable work
+    (``run_block_reason``). A blocked run is logged once and retried next poll.
+    """
     w = _watch.setdefault(pid, _Watch())
-    if time.monotonic() < w.not_before:
-        return None
-    pr = await probe_patient(db, pid, w.idle_signature)
+    st = _stats(pid)
+    try:
+        pr = await probe_patient(db, pid, w.idle_signature)
+    except Exception:
+        _bump(st.probes_skipped, "error")
+        raise
     if pr is None:
+        _bump(st.probes_skipped, "drive_unavailable")
         return None
+    st.probes_total += 1
+    st.last_probe_at = _now_iso()
+    if w.idle_signature is None or pr.signature != w.idle_signature:
+        st.pending_inbox_count = len(pr.pending)  # an idle repeat reads no sidecars
     work = set(pr.pending) - w.stuck
     if not work and not pr.canary:
         w.idle_signature = pr.signature
         return None
     if pr.newest_age_s is not None and pr.newest_age_s < settle_s:
         return None  # uploads still arriving — wait for the batch to settle
+    now = time.monotonic()
+    if now < grace_until:
+        reason = "startup_grace"
+    elif now < w.not_before:
+        reason = "failure_backoff"
+    else:
+        reason = run_block_reason(pid)
+    if reason:
+        _log_blocked(pid, reason, len(work))
+        return None
     logger.info(
         "curated auto %s: %d new item(s)%s — starting",
         pid,
         len(work),
         " + leftover canary" if pr.canary else "",
     )
+    st.last_auto_run_at = _now_iso()
+    st.auto_runs_total += 1
     reports = await nightly_for_patient(
-        db, pid, max_real_runs=max_runs, reuse_preview=True, trigger="auto", max_docs=chunk
+        db,
+        pid,
+        max_real_runs=max_runs,
+        reuse_preview=True,
+        trigger="auto",
+        max_docs=chunk,
+        skip_if_busy=True,
     )
+    blocked = next((r["blocked"] for r in reports if r.get("blocked")), None)
+    if blocked:
+        _log_blocked(pid, blocked, len(work))  # lost a race with a manual job
     failed, progressed = _sequence_outcome(reports)
     if failed:
         w.failures += 1
         delay = min(FAILURE_BACKOFF_S * 2 ** (w.failures - 1), FAILURE_BACKOFF_MAX_S)
         w.not_before = time.monotonic() + delay
-    else:
+    elif not blocked or progressed:
         w.failures = 0
         # Nothing moved: what is pending now needs a human or the nightly sweep.
         w.stuck = frozenset() if progressed else frozenset(pr.pending)
+    st.parked_count = len(w.stuck)
     logger.info(
         "curated auto %s: %s%s",
         pid,
@@ -574,8 +710,25 @@ async def continuous_tick(
     return reports
 
 
+async def _startup_index(db, pending: set[str]) -> None:
+    """Read model once per start (#603), after the grace. A patient whose lock
+    is held (a job started meanwhile) is retried next iteration instead of
+    stalling the loop behind it."""
+    for pid in sorted(pending):
+        if _stopping.is_set():
+            return
+        if patient_lock(pid).locked():
+            continue
+        await _index_quietly(db, pid)
+        pending.discard(pid)
+
+
 async def curated_nightly_loop(
-    db, *, poll_s: int | None = None, startup_grace_s: int = STARTUP_GRACE_S
+    db,
+    *,
+    poll_s: int | None = None,
+    startup_grace_s: int = STARTUP_GRACE_S,
+    probe_delay_s: int = PROBE_STARTUP_DELAY_S,
 ) -> None:
     """Background task for curated folders, per enabled patient.
 
@@ -585,9 +738,12 @@ async def curated_nightly_loop(
       also retries what continuous mode parked). ``CURATED_NIGHTLY_HOUR=every``
       makes the sweep hourly.
 
-    One run per patient at a time; patients take turns, so one big upload
-    cannot starve the others. Independent of SYNC_ENABLED/APScheduler. A
-    failing iteration never kills the loop.
+    Probes start ``probe_delay_s`` after boot; runs, the nightly sweep and the
+    startup index wait ``startup_grace_s`` (rolling deploy overlap). One run
+    per patient at a time; patients take turns. The loop never WAITS on a
+    patient's lock: a patient busy with its own re-OCR/re-read is skipped for
+    this poll, so one long job cannot stall the others. Independent of
+    SYNC_ENABLED/APScheduler. A failing iteration never kills the loop.
     """
     from zoneinfo import ZoneInfo
 
@@ -598,33 +754,40 @@ async def curated_nightly_loop(
             logger.warning("curated: marked %d run(s) interrupted by the last restart", n)
     except Exception:
         logger.exception("curated: could not mark interrupted runs")
-    await asyncio.sleep(startup_grace_s)
-    try:  # read model for the chat tools, once per start (#603)
-        for pid in await db.list_curated_nightly_patients():
-            if _stopping.is_set():
-                break
-            await _index_quietly(db, pid)
-    except Exception:
-        logger.exception("curated: startup index failed")
+    grace_until = time.monotonic() + startup_grace_s
+    await asyncio.sleep(min(probe_delay_s, startup_grace_s))
+    to_index: set[str] | None = None  # filled once the grace is over
     while not _stopping.is_set():
         cont, cont_poll, settle, chunk = False, 300, 0, 5
         try:
             enabled, hour, max_runs = nightly_settings()
             cont, cont_poll, settle, chunk = continuous_settings()
+            in_grace = time.monotonic() < grace_until
+            if not in_grace:
+                if to_index is None:
+                    to_index = set(await db.list_curated_nightly_patients())
+                if to_index:
+                    await _startup_index(db, to_index)
             now = datetime.now(tz)
             slot = now.strftime("%Y-%m-%d") if hour is not None else now.strftime("%Y-%m-%dT%H")
             due = hour is None or now.hour == hour
-            if enabled and due and last_night != slot:
+            if enabled and due and last_night != slot and not in_grace:
                 last_night = slot
                 for pid in await db.list_curated_nightly_patients():
                     if _stopping.is_set():
                         break
-                    if pid in _runs and _runs[pid].get("state") == "running":
-                        continue  # a manual run is in progress
+                    if reason := run_block_reason(pid):
+                        logger.info("curated nightly %s: skipped (%s)", pid, reason)
+                        continue
                     reports = await nightly_for_patient(
-                        db, pid, max_real_runs=max_runs, reuse_preview=hour is None
+                        db,
+                        pid,
+                        max_real_runs=max_runs,
+                        reuse_preview=hour is None,
+                        skip_if_busy=True,
                     )
-                    _watch.pop(pid, None)  # the sweep retried everything
+                    if not any(r.get("blocked") for r in reports):
+                        _watch.pop(pid, None)  # the sweep retried everything
                     logger.info(
                         "curated nightly %s: %s",
                         pid,
@@ -634,11 +797,14 @@ async def curated_nightly_loop(
                 for pid in await db.list_curated_nightly_patients():
                     if _stopping.is_set():
                         break
-                    if pid in _runs and _runs[pid].get("state") == "running":
-                        continue
                     try:
                         await continuous_tick(
-                            db, pid, settle_s=settle, chunk=chunk, max_runs=max_runs
+                            db,
+                            pid,
+                            settle_s=settle,
+                            chunk=chunk,
+                            max_runs=max_runs,
+                            grace_until=grace_until,
                         )
                     except Exception:
                         logger.exception("curated auto %s: tick failed", pid)

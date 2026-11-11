@@ -243,6 +243,16 @@ def _setup_logging() -> None:
     else:
         fmt = "%(asctime)s %(levelname)-8s %(name)s — %(message)s"
     logging.basicConfig(level=level, format=fmt, stream=sys.stderr, force=True)
+    # #706: survives container recreates when APP_LOG_DIR is set (off locally).
+    # Every root handler (stderr and the file) carries the same redaction filter.
+    from oncofiles.app_log import attach_redaction, file_handler_from_env
+
+    root = logging.getLogger()
+    for h in root.handlers:
+        attach_redaction(h)
+    handler = file_handler_from_env(fmt, level)
+    if handler is not None:
+        root.addHandler(handler)
 
 
 @asynccontextmanager
@@ -4129,6 +4139,10 @@ async def readiness(request: Request) -> JSONResponse:
             ]
         # #552: per-patient sync staleness, from the watchdog cache.
         result["sync_staleness"] = _sync_staleness
+        # #665: per-patient continuous-mode counters (in-memory, no DB call).
+        from oncofiles.tools.curated import probe_stats
+
+        result["curated_probes"] = probe_stats()
         # Scheduler job status (lightweight summary)
         tracker = lifespan_ctx.get("job_tracker", {})
         if tracker:
