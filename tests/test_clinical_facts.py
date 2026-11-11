@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from oncofiles import fact_identity
 from oncofiles.cloud_guard import CloudForbiddenError, local_only
 from oncofiles.curated.facts_rules import Vocabulary, parse_bory, parse_okb
 from oncofiles.persistent_oauth import (
@@ -531,9 +532,9 @@ def test_series_dedupe_range_hides_only_the_exact_same_value():
     rows = [
         {**base, "id": 601, "effective_at": "2027-10-11", "value_canonical": 6.13,
          "verification": "machine", "source_document_id": 30, "metadata_json": "{}"},
-        {**base, "id": 602, "effective_at": "2027-10-12", "value_canonical": 6.13,
+        {**base, "id": 602, "effective_at": "2027-10-13", "value_canonical": 6.13,
          "verification": "machine", "source_document_id": 31, "metadata_json": rng},
-        {**base, "id": 603, "code": "PLT", "effective_at": "2027-10-12", "value_canonical": 317.0,
+        {**base, "id": 603, "code": "PLT", "effective_at": "2027-10-13", "value_canonical": 317.0,
          "verification": "machine", "source_document_id": 31, "metadata_json": rng},
         {**base, "id": 604, "code": "PLT", "effective_at": "2027-10-11", "value_canonical": 309.0,
          "verification": "machine", "source_document_id": 30, "metadata_json": "{}"},
@@ -543,10 +544,63 @@ def test_series_dedupe_range_hides_only_the_exact_same_value():
     kept, dropped = cf._dedupe(rows)
     assert sorted(r["id"] for r in kept) == [601, 603, 604, 605]  # PLT differs; 605 outside
     assert dropped == [{
-        "code": "WBC", "at": "2027-10-12", "value": 6.13, "reason": "range",
+        "code": "WBC", "at": "2027-10-13", "value": 6.13, "reason": "range",
         "removed": {"fact_id": 602, "document_id": 31},
         "kept": {"fact_id": 601, "document_id": 30, "at": "2027-10-11"},
     }]  # fmt: skip
+
+
+def _series_row(fid, doc, day, value, window=None):
+    meta = {}
+    if window:
+        meta = {"date_source": "printed_range", "date_precision": "range",
+                "date_range_start": window[0], "date_range_end": window[1]}  # fmt: skip
+    return {"id": fid, "code": "HGB", "value_text": None, "page_number": 1,
+            "unit_canonical": "g/L", "effective_at": day, "value_canonical": value,
+            "verification": "machine", "source_document_id": doc,
+            "metadata_json": json.dumps(meta)}  # fmt: skip
+
+
+_RNG = ("2027-11-02", "2027-11-09")  # a printed range; its values sit at the end (#726)
+_END = _RNG[1]
+_DOC_A, _DOC_B, _DOC_C = 70, 71, 72
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_series_dedupe_range_end_day_prefers_the_exact_day(reverse):
+    """#726: a range value now shares its end day with a value printed for that
+    day. The exact one is kept and the reason is "range" in any input order."""
+    rows = [_series_row(1, _DOC_A, _END, 131.0), _series_row(2, _DOC_B, _END, 131.0, _RNG)]
+    kept, dropped = cf._dedupe(rows[::-1] if reverse else rows)
+    assert [r["id"] for r in kept] == [1]
+    assert [(d["removed"]["fact_id"], d["reason"], d["kept"]["fact_id"]) for d in dropped] == [
+        (2, "range", 1)
+    ]
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_series_dedupe_same_document_keeps_the_exact_day(reverse):
+    """One report quoting the same value under its range and on the end day:
+    both are stored (the parser keeps them apart), the exact one is shown."""
+    rows = [_series_row(1, _DOC_A, _END, 131.0), _series_row(2, _DOC_A, _END, 131.0, _RNG)]
+    kept, dropped = cf._dedupe(rows[::-1] if reverse else rows)
+    assert [r["id"] for r in kept] == [1]
+    assert [(d["removed"]["fact_id"], d["reason"]) for d in dropped] == [(2, "exact")]
+
+
+def test_series_dedupe_two_documents_quoting_one_range_keep_one():
+    """Two reports quoting the same range and value hid each other before
+    #726 (each matched the other); now the first is kept, the second hidden."""
+    rows = [_series_row(1, _DOC_A, _END, 131.0, _RNG), _series_row(2, _DOC_B, _END, 131.0, _RNG)]
+    kept, dropped = cf._dedupe(rows)
+    assert [r["id"] for r in kept] == [1]
+    assert [(d["removed"]["fact_id"], d["reason"], d["kept"]["fact_id"]) for d in dropped] == [
+        (2, "range", 1)
+    ]
+    # a value inside the window from a third document still wins over both
+    exact = _series_row(3, _DOC_C, "2027-11-05", 131.0)
+    kept, dropped = cf._dedupe([*rows, exact])
+    assert [r["id"] for r in kept] == [3] and {d["reason"] for d in dropped} == {"range"}
 
 
 async def test_migration_075_codes_and_encounter_sources(db, lab_env):
@@ -622,11 +676,12 @@ async def test_inline_date_range_is_never_a_printed_day(vocab):
     line = "Laboratórne 3.–4.09.2027: CEA 9,1 ug/l; KREA S 60,0 umol/l; NA v sére 140,0 mmol/l"
     facts = parse_inline_results([line], vocab, report_date="2027-09-10")
     assert facts and all(f["metadata"]["date_source"] == "printed_range" for f in facts)
-    # #659: a printed range is a date; the fact sits at its midpoint
+    # #659: a printed range is a date; #726: the fact sits at the range END
     assert all(f["verification"] == "machine" for f in facts)
-    assert {f["occurred_at"] for f in facts} == {"2027-09-03"}
+    assert {f["occurred_at"] for f in facts} == {"2027-09-04"}
     assert all(f["metadata"]["date_range_start"] == "2027-09-03" for f in facts)
     assert all(f["metadata"]["date_range_end"] == "2027-09-04" for f in facts)
+    assert all(f["metadata"]["date_precision"] == "range" for f in facts)
 
 
 async def test_inline_prose_with_parentheses_is_not_results(vocab):
@@ -726,12 +781,13 @@ async def test_inline_full_date_range_is_a_range(vocab):
     line = "Lab 14.07.2027-15.07.2027 (krv EDTA): WBC 4,10; HGB 122; PLT 230; MONO 0,5"
     facts = parse_inline_results([line], vocab, report_date="2027-07-20")
     assert facts and all(f["metadata"]["date_source"] == "printed_range" for f in facts)
-    assert {f["occurred_at"] for f in facts} == {"2027-07-14"}  # midpoint, rounded down
+    assert {f["occurred_at"] for f in facts} == {"2027-07-15"}  # the range end (#726)
     assert all(f["metadata"]["date_range_start"] == "2027-07-14" for f in facts)
     assert all(f["metadata"]["date_range_end"] == "2027-07-15" for f in facts)
     long = "Lab 29.05.2027-12.06.2027 (krv EDTA): WBC 4,10; HGB 122; PLT 230"
     facts = parse_inline_results([long], vocab, report_date="2027-06-20")
-    assert {f["occurred_at"] for f in facts} == {"2027-06-05"}  # 29.5.–12.6. → 5.6.
+    assert {f["occurred_at"] for f in facts} == {"2027-06-12"}  # 29.5.–12.6. → 12.6., never 5.6.
+    assert {f["metadata"]["date_range_start"] for f in facts} == {"2027-05-29"}
 
 
 # ── v10 verification policy (#659, #635) ─────────────────────────────────
@@ -866,6 +922,74 @@ def test_header_date_conflicting_with_another_draw_is_flagged():
     assert date_conflicts(draw + same_day) == []  # same date: no conflict
 
 
+_LAB, _RANGED, _QUOTE = 10, 20, 30  # documents: a lab sheet, a range report, a later report
+_DRAW_DAY, _R_LO, _R_HI = "2027-04-14", "2027-04-10", "2027-04-18"
+_Q = {"verification": "unverified", "reasons": ["date_unknown"]}
+
+
+def _pair(first_id, doc, day, wbc=4.4, plt=201.0, **kw):
+    """WBC and PLT of one draw, fact ids ``first_id`` and the next one."""
+    return [
+        _row(first_id, doc, day, "WBC", wbc, **kw),
+        _row(first_id + 1, doc, day, "PLT", plt, **kw),
+    ]
+
+
+def _in_range(rows, lo=_R_LO, hi=_R_HI, **extra):
+    """Machine facts dated under a printed range: they sit at the range end."""
+    for r in rows:
+        r["occurred_at"] = hi
+        meta = {"date_source": "printed_range", "date_precision": "range",
+                "date_range_start": lo, "date_range_end": hi, **extra}  # fmt: skip
+        r["metadata_json"] = json.dumps(meta)
+    return rows
+
+
+def _dated(quotes, draws, day):
+    """Expected corroborations: each quote fact dated ``day`` by its draw fact."""
+    return sorted((q["id"], day, d["id"]) for q, d in zip(quotes, draws, strict=True))
+
+
+def test_corroboration_by_a_range_draw_uses_its_end_and_prefers_an_exact_day():
+    from oncofiles.curated.facts_rules import corroborations
+
+    ranged = _in_range(_pair(21, _RANGED, ""))
+    quote = _pair(31, _QUOTE, "2027-04-25", **_Q)
+    # only the range report matches: the quote is dated at the range end, never its middle
+    assert sorted(corroborations(ranged + quote)) == _dated(quote, ranged, _R_HI)
+    # the lab sheet inside the range is the same draw with its exact day: it wins
+    lab = _pair(11, _LAB, _DRAW_DAY)
+    assert sorted(corroborations(lab + ranged + quote)) == _dated(quote, lab, _DRAW_DAY)
+    # a later exact draw outside the range stays the latest match, as before #726
+    late = _pair(13, _LAB, "2027-04-20")
+    assert {d for _, d, _ in corroborations(late + ranged + quote)} == {"2027-04-20"}
+
+
+def test_a_range_draw_ending_on_or_after_the_quote_never_dates_it():
+    from oncofiles.curated.facts_rules import corroborations
+
+    ranged = _in_range(_pair(21, _RANGED, ""))
+    quote = _pair(31, _QUOTE, _R_HI, **_Q)  # quoted on the range's last day
+    assert corroborations(ranged + quote) == []  # a value cannot postdate the report quoting it
+
+
+def test_a_range_header_overlapping_its_draw_is_no_date_conflict():
+    """#726: a range block and a draw agree when the draw's day lies in the
+    range, in both directions; disjoint dates still conflict."""
+    from oncofiles.curated.facts_rules import date_conflicts
+
+    hdr = {"date_from": "block_header"}
+    ranged = _in_range(_pair(21, _RANGED, ""), **hdr)
+    assert date_conflicts(_pair(11, _LAB, _DRAW_DAY) + ranged) == []  # lab day inside the range
+    inside = _pair(31, _QUOTE, "2027-04-16")
+    for r in inside:
+        r["metadata_json"] = json.dumps(hdr)
+    assert date_conflicts(ranged + inside) == []  # an exact header day inside the range
+    outside = "2027-04-02"
+    got = sorted(date_conflicts(_pair(11, _LAB, outside) + ranged))
+    assert got == sorted((r["id"], outside) for r in ranged)  # disjoint: still a conflict
+
+
 def test_corroboration_needs_two_matching_codes_and_the_window():
     from oncofiles.curated.facts_rules import corroborations
 
@@ -981,16 +1105,91 @@ async def test_block_header_dates_the_values_below_it(vocab):
     first = ("KREA S 77", "WBC 8,17")  # the range-dated block
     by = {f["code"]: f for f in facts if f["evidence"].startswith(first)}
     cea = next(f for f in facts if f["code"] == "CEA")
-    # a range header dates its block at the midpoint, through specimen labels
+    # a range header dates its block at the range END (#726), through specimen labels
     for code in ("CREA", "NA", "K"):
         meta = by[code]["metadata"]
-        assert by[code]["occurred_at"][:10] == "2028-04-13"
+        assert by[code]["occurred_at"][:10] == "2028-04-15"
         assert by[code]["verification"] == "machine"
         assert meta["date_from"] == "block_header" and meta["date_range_start"] == "2028-04-11"
+        assert meta["date_range_end"] == "2028-04-15" and meta["date_precision"] == "range"
         assert meta["date_evidence"].startswith("Vykonané vyšetrenia")
-    assert by["PLT"]["occurred_at"][:10] == "2028-04-13"  # second specimen, same block
+    assert by["PLT"]["occurred_at"][:10] == "2028-04-15"  # second specimen, same block
+    assert "date_precision" not in cea["metadata"]  # a single printed day stays exact
     # the sampling line dates its block
     assert cea["occurred_at"][:10] == "2028-05-22" and cea["verification"] == "machine"
+
+
+_RANGE_VALUES = "KREA S 66,1; NA v sére 139,4\n"
+
+
+@pytest.mark.parametrize(
+    "header",
+    [
+        "laboratórne: 17.03.2028 - 26.03.2028:\n",  # results right below the header
+        "laboratórne: 17.03.2028 - 26.03.2028:\nsérum OKB\n",  # through a specimen label
+        "Lab 17.03.2028 - 26.03.2028: ",  # on the result line itself
+        "laboratórne 17.–26.3.2028:\n",  # short form
+    ],
+)
+async def test_range_header_dates_its_values_at_the_range_end(vocab, header):
+    """#726 (supersedes the #659 midpoint): a value under a printed date range
+    is dated at the range END, the latest possible draw date; both ends and
+    ``date_precision=range`` say it is a period, not a day. Before #726 the
+    first shape was even dated at the range START as an exact printed day."""
+    facts = parse_inline_results([header + _RANGE_VALUES], vocab, report_date="2028-04-02")
+    assert {f["code"] for f in facts} == {"CREA", "NA"}
+    for f in facts:
+        meta = f["metadata"]
+        assert f["occurred_at"] == "2028-03-26" and f["verification"] == "machine"
+        assert meta["date_source"] == "printed_range" and meta["date_precision"] == "range"
+        assert (meta["date_range_start"], meta["date_range_end"]) == ("2028-03-17", "2028-03-26")
+        assert "date_range_open" not in meta
+
+
+@pytest.mark.parametrize(
+    "header",
+    [
+        "laboratórne: 30.03.2028 - 26.03.2028:\n",  # the start is after the end
+        "laboratórne: 30.03.2028 - 26.03.2028:\nsérum OKB\n",
+    ],
+)
+async def test_an_open_range_keeps_its_end_and_stays_unverified(vocab, header):
+    facts = parse_inline_results([header + _RANGE_VALUES], vocab, report_date="2028-04-02")
+    assert facts
+    for f in facts:
+        meta = f["metadata"]
+        assert f["occurred_at"] == "2028-03-26" and meta["date_range_end"] == "2028-03-26"
+        assert meta["date_range_open"] is True and "date_range_start" not in meta
+        assert meta["date_precision"] == "range" and meta["date_source"] == "printed_range"
+        assert f["verification"] == "unverified" and "date_unknown" in meta["unverified_reasons"]
+
+
+@pytest.mark.parametrize(
+    "header", ["laboratórne: 26.03.2028:\n", "laboratórne: 26.03.2028:\nsérum OKB\n"]
+)
+async def test_a_single_date_header_is_unchanged(vocab, header):
+    facts = parse_inline_results([header + _RANGE_VALUES], vocab, report_date="2028-04-02")
+    assert facts and {f["occurred_at"] for f in facts} == {"2028-03-26"}
+    for f in facts:
+        meta = f["metadata"]
+        assert meta["date_source"] == "printed" and f["verification"] == "machine"
+        assert not {"date_precision", "date_range_start", "date_range_end"} & set(meta)
+
+
+async def test_a_range_value_and_an_exact_value_on_its_end_day_are_both_kept(vocab):
+    """The range end can now equal a day printed in the same report: the parser
+    keeps both (the read-time dedupe shows the exact one), never drops the
+    exact one as "the same line quoted twice"."""
+    text = (
+        "laboratórne: 17.03.2028 - 26.03.2028:\n"
+        + _RANGE_VALUES
+        + "\nKontrola 26.03.2028: "
+        + _RANGE_VALUES
+    )
+    facts = parse_inline_results([text], vocab, report_date="2028-04-02")
+    crea = [f for f in facts if f["code"] == "CREA"]
+    assert {f["occurred_at"] for f in crea} == {"2028-03-26"}
+    assert sorted(f["metadata"]["date_source"] for f in crea) == ["printed", "printed_range"]
 
 
 async def test_prose_ends_the_block_and_values_stay_unverified(vocab):
@@ -1063,6 +1262,161 @@ async def test_a_conflicted_block_never_dates_another_quote(db):
     assert all(r["day"][:10] == "2027-04-14" for r in rows if r["d"] == 30)
     by = {q["corroborated_by"] for q in quoted}
     assert by and all(isinstance(b, int) for b in by)
+
+
+# ── #726: dependents of the range-end date ──
+
+_RANGE_META = {"date_source": "printed_range", "date_precision": "range",
+               "date_range_start": _R_LO, "date_range_end": _R_HI}  # fmt: skip
+
+
+async def _insert_docs(db, *docs):
+    for doc in docs:
+        await db.db.execute(
+            "INSERT INTO documents (id, file_id, filename, original_filename, category, "
+            "mime_type, size_bytes, patient_id) VALUES (?, ?, ?, ?, 'report', "
+            "'application/pdf', 1, ?)",
+            (doc, f"t:{doc}", f"d{doc}.pdf", f"d{doc}.pdf", ERIKA_UUID),
+        )
+
+
+async def _insert_fact(db, doc, day, code, value, verification, meta):
+    await db.db.execute(
+        "INSERT INTO clinical_records (patient_id, record_type, source_document_id, param, "
+        "code, occurred_at, value_canonical, verification, metadata_json, source) "
+        "VALUES (?, 'lab', ?, ?, ?, ?, ?, ?, ?, 't')",
+        (ERIKA_UUID, doc, code, code, day, value, verification, json.dumps(meta)),
+    )  # fmt: skip
+
+
+@pytest.mark.parametrize("draw_is_range", [True, False])
+async def test_a_corroborated_quote_takes_the_precision_of_its_draw(db, draw_is_range):
+    """The quote's date now comes from the draw, and so does its precision: a
+    range draw lends its range, an exact draw none. The quote's own (open)
+    range keys described only the day it was quoted, kept as ``quoted_on``."""
+    await _insert_docs(db, _RANGED, _QUOTE)
+    quoted_on = "2027-04-25"
+    quote = {"unverified_reasons": ["date_unknown"], "date_source": "printed_range",
+             "date_precision": "range", "date_range_end": quoted_on,
+             "date_range_open": True}  # fmt: skip
+    draw_day, draw_meta = (_R_HI, _RANGE_META) if draw_is_range else (_DRAW_DAY, {})
+    for code, value in (("WBC", 4.4), ("PLT", 201.0)):
+        await _insert_fact(db, _RANGED, draw_day, code, value, "machine", draw_meta)
+        await _insert_fact(db, _QUOTE, quoted_on, code, value, "unverified", quote)
+    await db.db.commit()
+    out = await tool._corroborate_and_measure(db, ERIKA_UUID)
+    assert out["corroborated"] == 2
+    async with db.db.execute(
+        "SELECT occurred_at AS day, verification AS v, metadata_json AS m "
+        "FROM clinical_records WHERE source_document_id = ?",
+        (_QUOTE,),
+    ) as cur:
+        rows = [dict(r) for r in await cur.fetchall()]
+    assert rows and all(r["day"] == draw_day and r["v"] == "machine" for r in rows)
+    for meta in (json.loads(r["m"]) for r in rows):
+        assert meta["date_source"] == "corroborated" and meta["quoted_on"] == quoted_on
+        assert "date_range_open" not in meta
+        if draw_is_range:
+            assert meta["date_precision"] == "range"
+            assert (meta["date_range_start"], meta["date_range_end"]) == (_R_LO, _R_HI)
+        else:
+            assert not {"date_precision", "date_range_start", "date_range_end"} & set(meta)
+
+
+async def test_reextraction_never_duplicates_a_verified_fact_inside_the_range(db):
+    """A verified/corrected fact of an older index (dated at the old midpoint,
+    or at the exact day a person set) inside a new range fact's window stands
+    for it; a code without such a fact is re-extracted as usual."""
+    await _insert_docs(db, _RANGED)
+    await _insert_fact(db, _RANGED, _DRAW_DAY, "HGB", 127.0, "verified", {})
+    await db.db.commit()
+
+    def new(code, value):
+        return {"code": code, "category": "lab", "occurred_at": _R_HI, "label": code,
+                "value_num": value, "value_canonical": value,
+                "metadata": dict(_RANGE_META)}  # fmt: skip
+
+    res = await db.replace_document_facts(
+        patient_id=ERIKA_UUID, document_id=_RANGED, extracted_by="rule:test",
+        facts=[new("HGB", 127.0), new("PLT", 201.0)],
+    )  # fmt: skip
+    assert res["added"] == 1 and res["kept_verified"] == 1
+    async with db.db.execute(
+        "SELECT code, verification FROM clinical_records "
+        "WHERE source_document_id = ? AND deleted_at IS NULL ORDER BY code",
+        (_RANGED,),
+    ) as cur:
+        rows = [tuple(r) for r in await cur.fetchall()]
+    assert rows == [("HGB", "verified"), ("PLT", "machine")]
+
+
+async def test_range_protection_and_stable_ids_together(db):
+    """#727 + #728 combined: the range-protected verified row keeps (gets) its
+    fact id, a range fact re-extracted twice keeps the same id under the
+    ``start/end`` day key with the next version, and nothing counts as churn."""
+    await _insert_docs(db, _RANGED)
+    await _insert_fact(db, _RANGED, _DRAW_DAY, "HGB", 127.0, "verified", {})
+    await db.db.commit()
+
+    def new(code, value):
+        return {"code": code, "category": "lab", "occurred_at": _R_HI, "label": code,
+                "value_num": value, "value_canonical": value,
+                "metadata": dict(_RANGE_META)}  # fmt: skip
+
+    async def active():
+        async with db.db.execute(
+            "SELECT code, verification, fhir_id, version_id FROM clinical_records "
+            "WHERE source_document_id = ? AND deleted_at IS NULL",
+            (_RANGED,),
+        ) as cur:
+            return {r["code"]: dict(r) for r in await cur.fetchall()}
+
+    facts = [new("HGB", 127.0), new("PLT", 201.0)]
+    first = await db.replace_document_facts(
+        patient_id=ERIKA_UUID, document_id=_RANGED, extracted_by="rule:test", facts=facts
+    )
+    before = await active()
+    second = await db.replace_document_facts(
+        patient_id=ERIKA_UUID, document_id=_RANGED, extracted_by="rule:test", facts=facts
+    )
+    after = await active()
+    assert first["added"] == second["added"] == len(facts) - first["kept_verified"]
+    assert not first["id_churn"] and not second["id_churn"]
+    assert before["HGB"]["verification"] == "verified" and before["HGB"]["fhir_id"]
+    assert after["HGB"]["fhir_id"] == before["HGB"]["fhir_id"]
+    assert after["PLT"]["fhir_id"] == before["PLT"]["fhir_id"]  # same id on re-extraction
+    assert after["PLT"]["version_id"] > before["PLT"]["version_id"]  # next version
+    key = fact_identity.fact_key(ERIKA_UUID, _RANGED, new("PLT", 201.0))
+    assert f"{_R_LO}/{_R_HI}" in key  # the range keys the id, not its end day
+
+
+async def test_fact_series_and_document_detail_show_the_range(db):
+    """#726: a value dated under a printed range says so in the read tools:
+    ``date_precision="range"`` with ``at_from``/``at_to``; ``at`` is the range
+    end. A value with its own day carries none of these keys."""
+    await _insert_docs(db, _LAB, _RANGED)
+    await _insert_fact(db, _LAB, _DRAW_DAY, "HGB", 127.0, "machine", {"date_source": "printed"})
+    await _insert_fact(db, _RANGED, _R_HI, "HGB", 131.0, "machine", _RANGE_META)
+    await db.db.commit()
+    ctx = _Ctx(db)
+    out = json.loads(await cf.fact_series(ctx, codes=["HGB"]))
+    by_at = {p["at"][:10]: p for p in out["series"]["HGB"]["values"]}
+    ranged, exact = by_at[_R_HI], by_at[_DRAW_DAY]
+    assert ranged["date_precision"] == "range"
+    assert (ranged["at_from"], ranged["at_to"]) == (_R_LO, _R_HI)
+    assert not {"date_precision", "at_from", "at_to"} & set(exact)
+    assert out["series"]["HGB"]["latest_any"]["date_precision"] == "range"  # newest is the range
+    assert "latest possible day, not a sample date" in out["note"]
+
+    detail = json.loads(await cf.document_detail(ctx, document_id=_RANGED))
+    [fact] = detail["facts"]
+    assert fact["at"][:10] == _R_HI and fact["date_precision"] == "range"
+    assert (fact["at_from"], fact["at_to"]) == (_R_LO, _R_HI)
+    lab = json.loads(await cf.document_detail(ctx, document_id=_LAB))["facts"][0]
+    assert not {"date_precision", "at_from", "at_to"} & set(lab)
+    for tool_fn in (cf.fact_series, cf.document_detail):  # the tool descriptions say it
+        doc = " ".join(tool_fn.__doc__.split())
+        assert "for a range, ``at`` is the latest possible day, not a sample date" in doc
 
 
 # ── #676: inline fallback on lab sheets ──

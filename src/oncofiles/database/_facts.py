@@ -175,13 +175,18 @@ class FactsMixin:
         """Re-extraction of one document: soft-delete its machine facts, insert new ones.
 
         Facts a person verified or corrected are kept, and a new machine fact
-        with the same code and time is not added next to them.
+        with the same code and time is not added next to them. A new fact
+        dated under a printed range (#726) is not added either when such a
+        fact of its code lies inside the range: an older index dated range
+        values at the range midpoint, and a person may have set the exact day.
 
         Every inserted fact gets its stable ``fhir_id`` (#726, ``fact_identity``):
         the same fact extracted again gets the same id and the next
         ``version_id``; the soft-deleted row keeps the id as its older version.
         A kept verified row without an id gets the one readers already saw.
         """
+        from oncofiles.curated.facts_rules import range_window
+
         async with self.db.execute(
             "SELECT id, code, param, occurred_at, page_number, evidence, metadata_json, "
             "verification, fhir_id, version_id, value_num, value_text FROM clinical_records "
@@ -222,7 +227,19 @@ class FactsMixin:
             )
             await self._audit(r["id"], "delete", None, f"re-extraction by {extracted_by}")
             removed += 1
-        to_insert = [f for f in facts if (f.get("code"), f.get("occurred_at")) not in protected]
+        protected_days: dict = {}
+        for code, at in protected:
+            protected_days.setdefault(code, []).append((at or "")[:10])
+
+        def _kept_by_person(f: dict) -> bool:
+            if (f.get("code"), f.get("occurred_at")) in protected:
+                return True
+            window = range_window(f.get("metadata") or {})
+            return bool(window) and any(
+                window[0] <= day <= window[1] for day in protected_days.get(f.get("code"), [])
+            )
+
+        to_insert = [f for f in facts if not _kept_by_person(f)]
         new_ids = fact_identity.ids_for_new_facts(patient_id, document_id, to_insert, taken)
         added = churn = 0
         for f, fid in zip(to_insert, new_ids, strict=True):

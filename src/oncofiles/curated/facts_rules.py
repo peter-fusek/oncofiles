@@ -563,8 +563,8 @@ _SEG_DATE = re.compile(r"(?<![\d.])(\d{1,2})\.\s?(\d{1,2})\.(?:\s?(\d{4}))?(?![\
 def _segment_date(segment: str) -> tuple[int, int, int | None, str | None] | None:
     """(day, month, year or None, range start) printed in the prefix of a ";"
     segment ("labs 9.9.: WBC …"). A range ("3.–4.9.2027", "14.7.2027-15.7.2027")
-    is returned with its END; the caller dates the fact at the midpoint and
-    keeps both ends in the metadata (#659)."""
+    is returned with its END; the caller dates the fact at that end and keeps
+    both ends in the metadata (#726)."""
     if ":" not in segment:
         return None
     prefix = segment.replace("*", "").rsplit(":", 1)[0]
@@ -641,6 +641,13 @@ def _inline_items(line: str) -> list[tuple]:
 
 
 _LINE_DATE = re.compile(r"\b(\d{1,2})\.\s?(\d{1,2})\.\s?(\d{4})\b")
+# the end of a full-date range right after a line date: "17.3.2028 - 26.3.2028"
+_RANGE_END_AFTER = re.compile(r"\s?[–-]\s?(\d{1,2})\.\s?(\d{1,2})\.\s?(\d{4})\b")
+
+
+def _day_iso(m: re.Match) -> str:
+    """ISO day of a (day, month, year) match."""
+    return f"{int(m.group(3)):04d}-{int(m.group(2)):02d}-{int(m.group(1)):02d}"
 
 
 def _year_for(day: int, month: int, ref: str | None) -> int | None:
@@ -706,14 +713,26 @@ def _line_range_start(before: str, end_iso: str | None) -> str | None:
     return f"{end_iso[:8]}{int(m.group(1)):02d}"
 
 
-def _date_range_midpoint(fact: dict, meta: dict, start: str | None) -> None:
-    """Date a range at its middle (maintainer decision, #659): the range itself
-    is printed, so it is a dated value. ``date_range_start``/``_end`` keep the
-    window for dedupe. An unknown start keeps the end and is marked open."""
+def range_window(meta: dict) -> tuple[str, str] | None:
+    """(start, end) days of a value dated under a closed printed range (#726)."""
+    lo, hi = meta.get("date_range_start"), meta.get("date_range_end")
+    return (str(lo)[:10], str(hi)[:10]) if lo and hi else None
+
+
+def _date_at_range_end(fact: dict, meta: dict, start: str | None) -> None:
+    """Date a value printed under a date range at the range END (#726, which
+    supersedes the #659 midpoint): the latest possible draw date, usually the
+    report or visit date. The original states only the period, so the middle
+    of it would be a day printed nowhere. ``occurred_at`` stays the end;
+    ``date_range_start``/``_end`` keep the window (dedupe, corroboration,
+    date conflicts, re-read keys) and ``date_precision="range"`` says that
+    ``occurred_at`` is not the draw day. An unknown start keeps the end and is
+    marked open."""
     from datetime import date as _date
 
     end = fact.get("occurred_at")
     meta["date_range_end"] = end
+    meta["date_precision"] = "range"
     if not end or not start or start == "?":
         meta["date_range_open"] = True
         return
@@ -728,7 +747,6 @@ def _date_range_midpoint(fact: dict, meta: dict, start: str | None) -> None:
         meta["date_range_open"] = True
         return
     meta["date_range_start"] = d0.isoformat()
-    fact["occurred_at"] = (d0 + (d1 - d0) / 2).isoformat()
 
 
 def parse_inline_results(
@@ -743,10 +761,13 @@ def parse_inline_results(
         CEA S 38,2; CA 19-9 655,1; KREA S 61,0; NA v sére 139,0
 
     Verification (#659): a missing printed unit is fine (the code's canonical
-    unit, ``unit_source=implied``); a printed date range is dated at its
-    midpoint. Only a value without any date of its own (``date_source=report``)
-    is unverified, with reason ``date_unknown``. At least two items must match known codes, so a
-    sentence with numbers is never read as results.
+    unit, ``unit_source=implied``); a printed date range is a printed date, so
+    its values stay verifiable: they are dated at the range END, with both ends
+    and ``date_precision="range"`` in the metadata (#726, superseding the #659
+    midpoint). Only a value without any date of its own (``date_source=report``)
+    or under a range without a known start (``date_range_open``) is unverified,
+    with reason ``date_unknown``. At least two items must match known codes, so
+    a sentence with numbers is never read as results.
     """
     out: list[dict] = []
     seen_keys: set = set()
@@ -765,13 +786,16 @@ def parse_inline_results(
                 is_results = sum(1 for _, c in parsed if c) >= 2
                 if is_results:
                     dm = _LINE_DATE.search(line) or _LINE_DATE.search(prev)
-                    when = (
-                        f"{int(dm.group(3)):04d}-{int(dm.group(2)):02d}-{int(dm.group(1)):02d}"
-                        if dm
-                        else report_date
-                    )
                     src_line = line if _LINE_DATE.search(line) else prev
-                    ranged = bool(dm and _DATE_RANGE_BEFORE.search(src_line[: dm.start()]))
+                    full_start = None
+                    if dm and (tail := _RANGE_END_AFTER.match(src_line, dm.end())):
+                        # "17.3.2028 - 26.3.2028" (#726): the first date is the range
+                        # START, never a draw day; the values are dated at the end
+                        full_start, dm = _day_iso(dm), tail
+                    when = _day_iso(dm) if dm else report_date
+                    ranged = bool(
+                        dm and (full_start or _DATE_RANGE_BEFORE.search(src_line[: dm.start()]))
+                    )
                     for (label, val, unit, arrow, seg_date), code_row in parsed:
                         if not code_row:
                             continue  # only known codes from free text
@@ -813,9 +837,11 @@ def parse_inline_results(
                         start = own_date[3] if own_date else None
                         if ranged and not own_date:
                             meta["date_source"] = "printed_range"  # "5.–6.5.2027"
-                            start = _line_range_start(src_line[: dm.start()], f["occurred_at"])
+                            start = full_start or _line_range_start(
+                                src_line[: dm.start()], f["occurred_at"]
+                            )
                         if meta["date_source"] == "printed_range":
-                            _date_range_midpoint(f, meta, start)
+                            _date_at_range_end(f, meta, start)
                         if not printed_unit:
                             meta["unit_source"] = "implied"  # canonical unit of the code
                         reasons = list(meta.pop("unverified_reasons", []))
@@ -827,7 +853,10 @@ def parse_inline_results(
                             meta["unverified_reasons"] = sorted(set(reasons))
                         f["verification"] = "unverified" if reasons else "machine"
                         f["metadata"] = meta
-                        key = (f["code"], f["occurred_at"], f["value_num"], f["value_text"])
+                        # a range value now shares its end day with a value printed
+                        # for that day: both are kept, the read-time dedupe decides
+                        key = (f["code"], f["occurred_at"], f["value_num"], f["value_text"],
+                               meta.get("date_precision"))  # fmt: skip
                         if key in seen_keys:
                             continue  # the same line quoted twice in one report
                         seen_keys.add(key)
@@ -922,6 +951,22 @@ def _draws(rows: list[dict]) -> dict[tuple, dict]:
     return draws
 
 
+def _range_starts(rows: list[dict]) -> dict[tuple, str]:
+    """(document, day) → the earliest printed range start of its non-unverified
+    facts (#726), the same facts ``_draws`` uses.
+
+    A value under a printed range sits at the range END, so its (document,
+    day) stands for every day from that start to the end. Keys without a
+    range value are absent: the day is exact."""
+    starts: dict[tuple, str] = {}
+    for r in rows:
+        window = r["verification"] != "unverified" and range_window(_fact_meta(r))
+        if window:
+            key = (r["source_document_id"], _fact_day(r))
+            starts[key] = min(window[0], starts.get(key, window[0]))
+    return starts
+
+
 def _block_matches(block: dict, values: dict) -> bool:
     """Is ``block`` (code → (value, unit)) a quote of the draw ``values``?
     Most of its comparable (non-derived) codes must equal that draw, at least
@@ -944,7 +989,12 @@ def corroborations(rows: list[dict], *, window_days: int = 60) -> list[tuple[int
     the block that equals D is re-dated to D: a value is never torn off its
     block, and a coincidence of two numbers (or a derived value such as OSMO)
     never re-dates anything. Returns (fact id, draw day, id of the matching
-    draw fact)."""
+    draw fact).
+
+    A draw dated under a printed range (#726) sits at its range end, which
+    must precede the quote. When the latest match is such a range and a draw
+    with an exact day inside that range matches too, the exact day wins: it is
+    the same measurement, dated precisely."""
     from datetime import date as _date
 
     def as_date(d: str):
@@ -954,6 +1004,7 @@ def corroborations(rows: list[dict], *, window_days: int = 60) -> list[tuple[int
             return None
 
     draws = _draws(rows)
+    starts = _range_starts(rows)
     blocks: dict[tuple, list[dict]] = {}
     for r in rows:
         if r["verification"] != "unverified" or r.get("value_canonical") is None:
@@ -965,15 +1016,19 @@ def corroborations(rows: list[dict], *, window_days: int = 60) -> list[tuple[int
     for (doc, bday), facts in blocks.items():
         d0 = as_date(bday)
         block = {f["code"]: (f["value_canonical"], f.get("unit_canonical")) for f in facts}
-        best = None
+        matches = []
         for (ddoc, dday), values in draws.items():
             d1 = as_date(dday)
             if ddoc == doc or not d0 or not d1 or not 0 < (d0 - d1).days <= window_days:
                 continue
-            if _block_matches(block, values) and (best is None or dday > best[0]):
-                best = (dday, values)
+            if _block_matches(block, values):
+                matches.append((dday, starts.get((ddoc, dday)), values))  # day, range start
+        best = max(matches, key=lambda m: m[0], default=None)
+        if best and best[1]:  # a range: an exact day inside it is the same draw
+            exact = [m for m in matches if not m[1] and best[1] <= m[0]]
+            best = max(exact, key=lambda m: m[0], default=best)
         if best:
-            dday, values = best
+            dday, _, values = best
             for f in facts:
                 hit = values.get(f["code"])
                 if hit and hit[:2] == block[f["code"]]:
@@ -993,7 +1048,12 @@ def date_conflicts(rows: list[dict], *, window_days: int = 60) -> list[tuple[int
     Both directions within 60 days count: a later lab sheet identical to an
     earlier report block most likely means the report quoted it under a
     wrong header date, so the block conservatively goes unverified. Two
-    header-dated documents that match each other both go unverified."""
+    header-dated documents that match each other both go unverified.
+
+    Dates are compared as spans (#726): a value under a printed range stands
+    for every day of the range, so a block and a draw whose days or ranges
+    overlap agree (a range header quoting a lab sheet from inside its range
+    is no conflict); only disjoint dates conflict."""
     from datetime import date as _date
 
     def as_date(d: str):
@@ -1003,6 +1063,7 @@ def date_conflicts(rows: list[dict], *, window_days: int = 60) -> list[tuple[int
             return None
 
     draws = _draws(rows)
+    starts = _range_starts(rows)
     blocks: dict[tuple, list[dict]] = {}
     for r in rows:
         if r["verification"] != "machine" or r.get("value_canonical") is None:
@@ -1013,11 +1074,14 @@ def date_conflicts(rows: list[dict], *, window_days: int = 60) -> list[tuple[int
     out = []
     for (doc, bday), facts in blocks.items():
         d0 = as_date(bday)
+        b_lo = starts.get((doc, bday), bday)
         block = {f["code"]: (f["value_canonical"], f.get("unit_canonical")) for f in facts}
         for (ddoc, dday), values in draws.items():
             d1 = as_date(dday)
-            if ddoc == doc or dday == bday or not d0 or not d1:
+            if ddoc == doc or not d0 or not d1:
                 continue
+            if b_lo <= dday and starts.get((ddoc, dday), dday) <= bday:
+                continue  # the same day, or overlapping printed ranges: no conflict
             if abs((d0 - d1).days) > window_days:
                 continue
             if _block_matches(block, values):
