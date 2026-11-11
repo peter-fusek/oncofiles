@@ -122,6 +122,15 @@ LLM_EXTRACT_SHADOW_DISABLED: bool = (
 # Model reasoning for the text extractor: "off" (default; the page text is
 # short and the answer is a copy job) or "on".
 LLM_EXTRACT_THINKING: str = os.environ.get("LLM_EXTRACT_THINKING", "off").strip().lower()
+# Structured output (json_schema response_format) for the clinical extractor
+# (#726). Default OFF: with a json_schema grammar Qwen cannot emit its empty
+# <think></think> first, so LM Studio files the whole answer under
+# reasoning_content, which is never machine-trusted (2026-11-11 prod preview).
+# Without it the answer comes back in content and is parsed and validated in
+# Python (same as re-OCR, #739).
+LLM_CLINICAL_STRUCTURED_OUTPUT: bool = (
+    os.environ.get("LLM_CLINICAL_STRUCTURED_OUTPUT", "false").strip().lower() == "true"
+)
 # LLM-first extraction of the non-lab kinds (#726 item 4): diagnoses, biomarkers,
 # treatments, procedures, lesion sizes, planned dates. MCP tools
 # curated_clinical_extract_preview (dry run) and curated_clinical_extract

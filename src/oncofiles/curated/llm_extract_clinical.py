@@ -43,7 +43,7 @@ from oncofiles.database._facts import LLM_CLINICAL_FAMILY
 
 logger = logging.getLogger(__name__)
 
-EXTRACTOR_VERSION = "llm-clinical-v1"
+EXTRACTOR_VERSION = "llm-clinical-v2"  # v2: no response_format, reasoning fallback
 EXTRACTOR_FAMILY = LLM_CLINICAL_FAMILY  # prefix of every version: re-extraction scope
 METHOD = "stored_sidecar_text"
 
@@ -438,6 +438,12 @@ def normalize_item(kind: str, raw) -> tuple[dict | None, str | None]:
     return item, None
 
 
+def _structured_output() -> bool:
+    from oncofiles import config
+
+    return config.LLM_CLINICAL_STRUCTURED_OUTPUT
+
+
 def _thinking() -> bool:
     from oncofiles import config
 
@@ -460,8 +466,9 @@ def extract_page(
     t0 = time.monotonic()
     try:
         try:
+            fmt = {"response_format": RESPONSE_FORMAT} if _structured_output() else {}
             answer = call(SYSTEM_PROMPT, user, max_tokens=EXTRACT_BUDGET, thinking=thinking,
-                          response_format=RESPONSE_FORMAT, info=info)  # fmt: skip
+                          info=info, **fmt)  # fmt: skip
         except llm.LocalLLMError as exc:
             if "HTTP 400" not in str(exc) or "truncated" in str(exc):
                 raise
