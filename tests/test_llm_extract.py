@@ -565,3 +565,61 @@ def test_stored_unverified_facts_are_counted_and_labelled():
     out = llm_extract.shadow_compare(stored, facts)
     assert out["rule_facts"] == out["rule_facts_compared_unverified"] == len(["ALT", "GLU"])
     assert out["agree_with_unverified_rule"] == out["agree"] == len(["ALT", "GLU"])
+
+
+# ── reasoning channel rule (infra review of #736) ───────────────────────
+
+
+def _reasoning_only(reasoning):
+    """content empty, everything in reasoning_content (LM Studio behaviour)."""
+    return _answer("", reasoning=reasoning)
+
+
+def test_one_valid_object_in_reasoning_is_accepted_and_tagged():
+    with local_only("test"):
+        out = llm_extract.extract_document(
+            [(1, PAGE)], vocab=VOCAB, chat=_reasoning_only(model_answer())
+        )
+    assert out["pages_not_assessed"] == [] and out["facts"]
+    assert out["facts_from_reasoning"] == len(out["facts"]) and out["facts_from_content"] == 0
+    assert {f["metadata"]["answer_source"] for f in out["facts"]} == {"reasoning"}
+    assert out["page_diagnostics"]["1"]["answer_source"] == "reasoning"
+    # never machine: every such fact carries the reasoning-channel reason
+    for f in out["facts"]:
+        assert f["verification"] == "unverified"
+        assert verifier.REASONING_CHANNEL_REASON in f["metadata"]["unverified_reasons"]
+
+
+def test_content_answers_are_tagged_content():
+    with local_only("test"):
+        out = llm_extract.extract_document([(1, PAGE)], vocab=VOCAB, chat=model_answer)
+    assert out["facts_from_content"] == len(out["facts"]) and out["facts_from_reasoning"] == 0
+    assert {f["metadata"]["answer_source"] for f in out["facts"]} == {"content"}
+
+
+@pytest.mark.parametrize(
+    "reasoning",
+    [
+        '{"facts": []} then the final answer ' + "{}",  # draft + final
+        "Draft:\n" + '{"facts": []}' + "\nFinal:\n" + model_answer(),  # two objects
+        '{"facts": [{"label_as_printed": "S-ALT"}]}',  # fails the schema
+        '{"results": []}',  # wrong top-level key
+        "[]",  # a list, not an object
+        '{"facts": [',  # partial
+        "no JSON at all",
+    ],
+)
+def test_ambiguous_reasoning_is_not_assessed(reasoning):
+    with local_only("test"):
+        pr = llm_extract.extract_page(PAGE, page_number=1, chat=_reasoning_only(reasoning))
+    assert not pr.assessed and pr.candidates == []
+    assert pr.diagnostics()["error_kind"] == "reasoning_ambiguous"
+
+
+def test_the_verifier_never_makes_a_reasoning_fact_machine():
+    f = check(cand(answer_source="reasoning"))
+    assert f["verification"] == "unverified"
+    assert f["metadata"]["unverified_reasons"] == ["llm_reasoning_channel"]
+    assert verifier.REASONING_CHANNEL_NEVER_MACHINE is True
+    assert verifier.from_reasoning_channel(f)
+    assert check(cand())["verification"] == "machine"  # the same fact from content

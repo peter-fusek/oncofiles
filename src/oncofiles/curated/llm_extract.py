@@ -177,9 +177,11 @@ class PageResult:
     error_class: str | None = None
     structured_output: str | None = None  # accepted | rejected (HTTP 400 → plain JSON)
     answer: dict | None = None  # answer_shape(): masked, in memory only
+    answer_source: str | None = None  # content | reasoning
 
     def diagnostics(self) -> dict:
         out = {"finish_reason": self.finish_reason, "structured_output": self.structured_output,
+               "answer_source": self.answer_source,
                "seconds": round(self.seconds, 1)}  # fmt: skip
         if self.error:
             out.update(error_kind=self.error_kind, error_class=self.error_class)
@@ -209,6 +211,7 @@ def _text(v) -> str | None:
 
 
 ERROR_KINDS = ("http_status", "json_decode", "schema_shape", "empty", "timeout", "truncated",
+               "reasoning_ambiguous",
                "other")  # fmt: skip
 
 
@@ -262,6 +265,56 @@ def parse_answer(text: str) -> list:
     if found:
         raise AnswerError("schema_shape", "local LLM answer JSON has no facts list")
     raise AnswerError("json_decode", "local LLM answer has no JSON")
+
+
+_NULLABLE = ("comparator", "unit_as_printed", "ref_range_as_printed", "flag_as_printed",
+             "date_as_printed", "date_role")  # fmt: skip
+_REQUIRED_STR = ("label_as_printed", "value", "evidence")
+
+
+def valid_against_schema(obj) -> bool:
+    """Does ``obj`` satisfy ``SCHEMA`` (``{"facts": [items]}``, no extra keys,
+    every item with all keys of the right type)? A small hand check of the
+    one schema we send; no jsonschema dependency."""
+    if not isinstance(obj, dict) or set(obj) != {"facts"} or not isinstance(obj["facts"], list):
+        return False
+    keys = set(_NULLABLE) | set(_REQUIRED_STR)
+    for item in obj["facts"]:
+        if not isinstance(item, dict) or set(item) != keys:
+            return False
+        if any(not isinstance(item[k], str) for k in _REQUIRED_STR):
+            return False
+        if any(item[k] is not None and not isinstance(item[k], str) for k in _NULLABLE):
+            return False
+        if item["date_role"] not in (*DATE_ROLES, None):
+            return False
+    return True
+
+
+def parse_reasoning_channel(text: str) -> list:
+    """The facts list from ``reasoning_content`` — accepted ONLY when the
+    channel holds exactly one complete top-level JSON value, which is an
+    object valid against ``SCHEMA``. A draft plus a final answer, a partial
+    object or an invalid one is ambiguous: ``AnswerError("reasoning_ambiguous")``,
+    the page is not assessed (infra rule, #714)."""
+    body = llm.strip_think(text or "")
+    decoder = json.JSONDecoder()
+    values, i = [], 0
+    while i < len(body):
+        if body[i] not in "{[":
+            i += 1
+            continue
+        try:
+            obj, i = decoder.raw_decode(body, i)
+        except ValueError:  # an unterminated or broken value
+            raise AnswerError("reasoning_ambiguous", "reasoning channel: partial JSON") from None
+        values.append(obj)
+    if len(values) != 1:
+        msg = f"reasoning channel: {len(values)} JSON values, need exactly one"
+        raise AnswerError("reasoning_ambiguous", msg)
+    if not valid_against_schema(values[0]):
+        raise AnswerError("reasoning_ambiguous", "reasoning channel: JSON fails the schema")
+    return values[0]["facts"]
 
 
 def error_kind(exc: BaseException) -> str:
@@ -412,12 +465,16 @@ def extract_page(
             and (info.get("reasoning_content") or "").strip()
         ):
             # LM Studio may put the whole answer in reasoning_content (#714 prod run)
-            answer = raw = info["reasoning_content"]
-            field_used = "reasoning_content"
+            raw, field_used = info["reasoning_content"], "reasoning_content"
         res.answer = answer_shape(raw or "", known, field_used=field_used)
         if res.finish_reason == "length":
             raise llm.LocalLLMError("local LLM answer truncated: finish_reason=length")
-        raw_items = parse_answer(answer)
+        if field_used == "reasoning_content":
+            raw_items = parse_reasoning_channel(raw)
+            res.answer_source = "reasoning"
+        else:
+            raw_items = parse_answer(answer)
+            res.answer_source = "content"
     except Exception as exc:  # any failure leaves the page "not assessed"
         res.finish_reason = res.finish_reason or info.get("finish_reason")
         res.error = str(exc)[:200]
@@ -435,6 +492,7 @@ def extract_page(
             res.dropped[why] += 1
         else:
             cand["page_number"] = page_number
+            cand["answer_source"] = res.answer_source
             res.candidates.append(cand)
     if not res.error:
         res.answer = {k: v for k, v in res.answer.items() if k != "masked"}  # shape only
@@ -496,6 +554,10 @@ def extract_document(
         "birth_date_guard": "active" if dob_known else "inactive_no_dob",
         # dated facts whose date could not be checked against a birth date
         "dates_unchecked_no_dob": 0 if dob_known else sum(1 for f in facts if f["occurred_at"]),
+        "facts_from_content": sum(1 for f in facts if f["metadata"]["answer_source"] == "content"),
+        "facts_from_reasoning": sum(
+            1 for f in facts if f["metadata"]["answer_source"] == "reasoning"
+        ),
         "dropped": dict(dropped), "seconds": round(seconds, 1),
     }  # fmt: skip
 

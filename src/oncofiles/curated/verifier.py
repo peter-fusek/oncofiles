@@ -43,6 +43,20 @@ from oncofiles.curated.reread_verify import date_printed
 VERIFIER_VERSION = 1
 
 
+# Facts parsed from LM Studio's ``reasoning_content`` channel (content empty)
+# are NEVER machine (infra rule, #714): ``verify`` always adds this reason,
+# and any future write path MUST store such facts as unverified with it.
+REASONING_CHANNEL_REASON = "llm_reasoning_channel"
+REASONING_CHANNEL_NEVER_MACHINE = True
+
+
+def from_reasoning_channel(fact_or_candidate: dict) -> bool:
+    """True for a candidate or fact that came from the reasoning channel."""
+    meta = fact_or_candidate.get("metadata") or {}
+    source = fact_or_candidate.get("answer_source") or meta.get("answer_source")
+    return source == "reasoning"
+
+
 class NoBirthDateError(RuntimeError):
     """A write of model-extracted facts was attempted without a known DOB."""
 
@@ -72,6 +86,7 @@ REASONS = (
     "unit_unconvertible",  # no conversion to the canonical unit in fact_codes
     "implausible",
     "ocr_uncertain",  # "[?]" in the evidence
+    "llm_reasoning_channel",  # parsed from reasoning_content: never machine
 )
 
 _NUMERIC = re.compile(r"-?\d+(?:[.,]\d+)?")
@@ -193,6 +208,8 @@ def verify(  # noqa: PLR0912, PLR0915
         reasons.append("ocr_uncertain")
     if source_reason:
         reasons.append(source_reason)
+    if REASONING_CHANNEL_NEVER_MACHINE and from_reasoning_channel(cand):
+        reasons.append(REASONING_CHANNEL_REASON)
 
     numeric = bool(_NUMERIC.fullmatch(value))
     value_num = _num(value) if numeric else None
@@ -253,7 +270,8 @@ def verify(  # noqa: PLR0912, PLR0915
     else:
         flag = _flag(value_num, lo, hi, None)
 
-    meta: dict = {"verifier": VERIFIER_VERSION, "date_source": date_source}
+    meta: dict = {"verifier": VERIFIER_VERSION, "date_source": date_source,
+                  "answer_source": cand.get("answer_source") or "content"}  # fmt: skip
     if cand.get("date_role"):
         meta["date_role"] = cand["date_role"]
     if comparator:

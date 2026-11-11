@@ -1447,7 +1447,8 @@ async def _llm_shadow_job(db, pid: str, docs: list[dict]) -> None:
             meta_keys = ("method", "pages", "pages_used", "pages_not_assessed", "pages_truncated",
                          "page_errors", "finish_reasons", "page_diagnostics", "dob_known",
                          "birth_date_guard",
-                         "dates_unchecked_no_dob", "dropped", "seconds")  # fmt: skip
+                         "dates_unchecked_no_dob", "facts_from_content",
+                         "facts_from_reasoning", "dropped", "seconds")  # fmt: skip
             report.append({
                 **entry, "result": "compared", **{k: out[k] for k in meta_keys},
                 **llm_extract.shadow_compare(
