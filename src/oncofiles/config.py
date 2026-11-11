@@ -64,6 +64,14 @@ REOCR_PARALLEL_PASSES: int = int(os.environ.get("REOCR_PARALLEL_PASSES", "1"))
 # model's own behaviour) or "off" (chat_template_kwargs.enable_thinking=false).
 # Transcription only; classification and extraction are not affected.
 REOCR_THINKING: str = os.environ.get("REOCR_THINKING", "on").strip().lower()
+# Qwen soft switch (#689): LM Studio ignores chat_template_kwargs.enable_thinking
+# for the Qwen3.x MLX model, so with thinking=False llm.chat also puts "/no_think"
+# into the last user message. "false" sends only the kwarg.
+LLM_NO_THINK_SOFT_SWITCH: bool = os.environ.get("LLM_NO_THINK_SOFT_SWITCH", "true").lower() in (
+    "true",
+    "1",
+    "yes",
+)
 # Context length LM Studio loads the model with (central macmini setting).
 # Change it together with LM Studio, or prompts + budgets overflow (#601).
 LOCAL_LLM_CONTEXT_WINDOW: int = int(os.environ.get("LOCAL_LLM_CONTEXT_WINDOW", "32768"))
