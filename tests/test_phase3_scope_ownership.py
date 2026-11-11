@@ -206,7 +206,7 @@ async def test_list_patients_non_admin_no_email_restricted_to_bound_pid(db: Data
 # ── get_email / get_calendar_event ownership ────────────────────────
 
 
-async def test_get_email_denies_other_patient(db: Database):
+async def test_get_email_denies_other_patient(db: Database, gmail_calendar_on):
     """Integer-id brute force across patients must be blocked (#487 C1)."""
     from oncofiles.tools.integrations import get_email
 
@@ -248,7 +248,7 @@ async def test_get_email_denies_other_patient(db: Database):
     assert "sender@example.com" not in result.get("error", "")
 
 
-async def test_get_email_admin_sees_other_patient(db: Database):
+async def test_get_email_admin_sees_other_patient(db: Database, gmail_calendar_on):
     from oncofiles.tools.integrations import get_email
 
     entry = MagicMock()
@@ -285,7 +285,7 @@ async def test_get_email_admin_sees_other_patient(db: Database):
     _verified_caller_is_admin.set(False)
 
 
-async def test_get_calendar_event_denies_other_patient(db: Database):
+async def test_get_calendar_event_denies_other_patient(db: Database, gmail_calendar_on):
     from oncofiles.tools.integrations import get_calendar_event
 
     entry = MagicMock()

@@ -47,6 +47,7 @@ from oncofiles.config import (
     TURSO_AUTH_TOKEN,
     TURSO_DATABASE_URL,
     VERSION,
+    gmail_calendar_enabled,
 )
 from oncofiles.database import Database
 from oncofiles.gdrive_client import GDriveClient, create_gdrive_client
@@ -2553,7 +2554,9 @@ def _start_sync_scheduler(
 
                     reclaim_memory(f"gmail_sync:{pid}")
 
-    if AI_NIGHTLY_ONLY:
+    if not gmail_calendar_enabled():
+        logger.info("Gmail sync not scheduled — GMAIL_CALENDAR_ENABLED=false (#618/#699)")
+    elif AI_NIGHTLY_ONLY:
         scheduler.add_job(
             _run_gmail_sync,
             CronTrigger(hour=AI_NIGHT_WINDOW_START_UTC, minute=15),
@@ -2635,7 +2638,9 @@ def _start_sync_scheduler(
 
                     reclaim_memory(f"calendar_sync:{pid}")
 
-    if AI_NIGHTLY_ONLY:
+    if not gmail_calendar_enabled():
+        logger.info("Calendar sync not scheduled — GMAIL_CALENDAR_ENABLED=false (#618/#699)")
+    elif AI_NIGHTLY_ONLY:
         scheduler.add_job(
             _run_calendar_sync,
             CronTrigger(hour=AI_NIGHT_WINDOW_START_UTC, minute=20),
@@ -7514,6 +7519,10 @@ async def oauth_authorize(request: Request) -> JSONResponse:
         return JSONResponse({"error": "OAuth not configured"}, status_code=500)
 
     service = request.path_params.get("service", "drive")
+    if service in ("gmail", "calendar") and not gmail_calendar_enabled():
+        from oncofiles.config import GMAIL_CALENDAR_DISABLED_MESSAGE
+
+        return JSONResponse({"error": GMAIL_CALENDAR_DISABLED_MESSAGE}, status_code=403)
     raw_pid = request.query_params.get("patient_id", "").strip().lower()
     if not raw_pid:
         return JSONResponse({"error": "patient_id required"}, status_code=400)

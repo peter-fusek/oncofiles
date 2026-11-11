@@ -30,7 +30,9 @@ from tests.conftest import ERIKA_UUID
 
 # Slug routing across patients runs through the #497/#498 ACL — admin scope
 # for the whole module so each test can pick its target.
-pytestmark = pytest.mark.usefixtures("admin_scope")
+# These lock the enabled Gmail/Calendar paths, so opt into GMAIL_CALENDAR_ENABLED
+# (off by default, #618/#699 — covered by tests/test_gmail_calendar_disabled.py).
+pytestmark = pytest.mark.usefixtures("admin_scope", "gmail_calendar_on")
 
 SECOND_UUID = "00000000-0000-4000-8000-000000000002"
 SECOND_SLUG = "bob-test"
