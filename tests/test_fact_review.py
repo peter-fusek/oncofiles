@@ -11,6 +11,7 @@ from oncofiles.persistent_oauth import (
     _verified_caller_is_admin,
     _verified_patient_id,
 )
+from oncofiles.secrets_keys import caller_email_hash
 from oncofiles.tools import fact_review as fr
 from tests.helpers import ERIKA_UUID
 
@@ -20,6 +21,12 @@ DOC = 4101
 BOB_DOC = 4102
 DAY = "2027-03-09"
 CARER = "carer@example.com"
+
+
+def _agent() -> str:
+    return f"user:{caller_email_hash(CARER)}"
+
+
 COUNT_UNIT = "10^9/l"
 DAY2 = "2027-03-10"
 
@@ -31,6 +38,11 @@ class _Ctx:
 
     def __init__(self, db):
         self.request_context = self._Req(db)
+
+
+@pytest.fixture(autouse=True)
+def _hash_key(monkeypatch):
+    monkeypatch.setenv("AUDIT_EMAIL_HASH_SECRET", "test-audit-key")
 
 
 @pytest.fixture
@@ -111,10 +123,10 @@ async def test_verify_round_trip_writes_audit_and_provenance(db, caller):
     out = json.loads(await fr.verify_fact(_Ctx(db), ids["HGB"], note="checked p1"))
     assert out["status"] == "verified" and out["fact"]["verification"] == "verified"
     row = await _row(db, ids["HGB"])
-    assert row["verification"] == "verified" and row["updated_by"] == CARER
+    assert row["verification"] == "verified" and row["updated_by"] == _agent()
 
     [prov] = await db.list_provenance("fact", ids["HGB"], patient_id=ERIKA_UUID)
-    assert (prov.activity, prov.agent_role, prov.agent_user) == ("verify", "verifier", CARER)
+    assert (prov.activity, prov.agent_role, prov.agent_user) == ("verify", "verifier", _agent())
     assert prov.source_document_id == DOC and prov.page_number == 1
     assert prov.quote == "HGB synthetic line" and prov.reason == "checked p1"
     assert out["provenance_id"] == prov.id
@@ -122,7 +134,7 @@ async def test_verify_round_trip_writes_audit_and_provenance(db, caller):
     audit = await db.list_clinical_record_audit(ids["HGB"])
     assert audit[0].action == "update" and audit[0].changed_fields == "verification"
     assert json.loads(audit[0].before_json) == {"verification": "machine"}
-    assert audit[0].changed_by == CARER
+    assert audit[0].changed_by == _agent()
 
     again = json.loads(await fr.verify_fact(_Ctx(db), ids["HGB"]))
     assert again["status"] == "already_verified"
@@ -170,7 +182,7 @@ async def test_correct_never_edits_in_place(db, caller):
     assert new_id != ids["HGB"]
 
     old = await _row(db, ids["HGB"])
-    assert old["deleted_at"] is not None and old["deleted_by"] == CARER
+    assert old["deleted_at"] is not None and old["deleted_by"] == _agent()
     for col in ("value_num", "value_canonical", "verification", "version_id", "metadata_json"):
         assert old[col] == old_before[col]  # the old version is untouched apart from deletion
 
@@ -184,7 +196,7 @@ async def test_correct_never_edits_in_place(db, caller):
     assert meta["corrected_from"] == {
         "fact_id": ids["HGB"], "version_id": 1, "verification": "machine", "fields": ["value_num"],
     }  # fmt: skip
-    assert new["source"] == "fact-review" and new["created_by"] == CARER
+    assert new["source"] == "fact-review" and new["created_by"] == _agent()
 
     [prov] = await db.list_provenance("fact", new_id, patient_id=ERIKA_UUID)
     assert (prov.activity, prov.agent_role, prov.target_version) == ("correct", "verifier", 2)
@@ -397,3 +409,17 @@ async def test_correct_refuses_before_writing_under_the_all_rows_fhir_index(db, 
     assert err["error"] == "invalid_input"
     row = await _row(db, ids["HGB"])
     assert row["deleted_at"] is None and row["verification"] == "machine"
+
+
+async def test_acting_user_is_a_keyed_hash_never_the_email(db, caller):
+    ids = await _seed(db)
+    await fr.verify_fact(_Ctx(db), ids["HGB"])
+    await fr.correct_fact(_Ctx(db), ids["PLT"], reason="r", value_num=239.5)
+    await fr.unverify_fact(_Ctx(db), ids["HGB"])
+    agent = _agent()
+    assert agent.startswith("user:") and len(agent) == len("user:") + 64
+    for table in ("clinical_records", "clinical_record_audit", "provenance", "activity_log"):
+        rows = await _all(db, f"SELECT * FROM {table}")
+        assert rows and CARER not in json.dumps(rows), table
+    provs = await _all(db, "SELECT DISTINCT agent_user FROM provenance")
+    assert provs == [{"agent_user": agent}]

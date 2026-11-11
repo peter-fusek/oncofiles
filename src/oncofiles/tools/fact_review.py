@@ -10,10 +10,11 @@ by re-extraction (``replace_document_facts``) and count in statistics.
   correction soft-deletes the old version, nothing is ever lost).
 * Every call writes an ``activity_log`` row with ids and statuses only, never
   values, notes or reasons (those live in the patient-scoped audit/provenance).
-* The acting person (``agent_user``) is the caller's OAuth-bound email, as the
-  existing audit columns store it (``clinical_records.created_by``,
-  ``curated_nightly.updated_by``); callers without an email are recorded by
-  their kind of credential.
+* The acting person (``agent_user``) is ``user:<keyed email hash>`` for an
+  OAuth caller (``secrets_keys.caller_email_hash``, HMAC-SHA256 of the
+  normalised email, #590/#604), never the plaintext email; callers without an
+  email are recorded by their kind of credential (``mcp-bearer:operator``,
+  ``mcp-bearer:patient``, ``local``).
 """
 
 from __future__ import annotations
@@ -25,6 +26,7 @@ import time
 from fastmcp import Context
 
 from oncofiles.models import ActivityLogEntry
+from oncofiles.secrets_keys import caller_email_hash
 from oncofiles.tools._helpers import (
     _caller_email,
     _get_db,
@@ -43,15 +45,22 @@ _FACT_KEYS = (
 
 
 def _agent_user() -> str:
-    email = _caller_email().strip().lower()
+    """Who acts, for audit and provenance: never a plaintext email."""
+    email = _caller_email().strip()
     if email:
-        return email
+        # No key (no MCP_BEARER_TOKEN, no override) -> no hash; still never the email.
+        return f"user:{caller_email_hash(email) or 'unkeyed'}"
     try:
-        from oncofiles.persistent_oauth import _verified_patient_id
+        from oncofiles.persistent_oauth import _verified_patient_id, caller_auth_method
 
         bound = _verified_patient_id.get()
+        method = caller_auth_method()
     except Exception:
-        bound = None
+        bound, method = None, ""
+    if method == "static_bearer":
+        return "mcp-bearer:operator"
+    if method == "patient_bearer":
+        return "mcp-bearer:patient"
     if _is_admin_caller():
         return "mcp-bearer:operator"
     if bound:
