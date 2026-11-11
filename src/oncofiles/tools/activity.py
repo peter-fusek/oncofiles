@@ -268,8 +268,98 @@ async def backfill_activity_log_attribution(
     )
 
 
+_REDACT_SCAN_PAGE = 1000
+
+
+async def redact_activity_log_inputs(
+    ctx: Context,
+    dry_run: bool = True,
+    batch_size: int = 500,
+) -> str:
+    """Rewrite old ``activity_log.input_summary`` values into the #758 allowlist format.
+
+    **Admin-only maintenance.** Rows written before #758 can hold the first
+    100 characters of every tool argument (search text, values, SQL,
+    filenames). This rewrites only ``input_summary`` with the same function
+    the audit middleware now uses: ids, slugs, booleans, enums and fact codes
+    keep their value, everything else becomes ``<redacted:len=N>``. No row is
+    deleted and no other column is touched. Idempotent: rows already in the
+    new format are left unchanged. One batch per call (at most ``batch_size``
+    rows, one commit); call again until ``remaining`` is 0.
+
+    Args:
+        dry_run: If True (default), only count what would change.
+        batch_size: Max rows rewritten per call (1-500).
+    """
+    from oncofiles.audit_redaction import redact_stored_summary
+    from oncofiles.tools._helpers import _require_admin_or_raise
+
+    try:
+        _require_admin_or_raise("redact_activity_log_inputs")
+    except ValueError as exc:
+        return json.dumps({"error": str(exc)})
+
+    db = _get_db(ctx)
+    batch_size = max(1, min(batch_size, 500))
+    scanned = 0
+    pending: list[tuple[int, str, str]] = []
+    last_id = 0
+    while True:
+        async with db.db.execute(
+            "SELECT id, input_summary FROM activity_log "
+            "WHERE id > ? AND input_summary IS NOT NULL AND input_summary != '' "
+            "ORDER BY id LIMIT ?",
+            (last_id, _REDACT_SCAN_PAGE),
+        ) as cur:
+            rows = [dict(r) for r in await cur.fetchall()]
+        if not rows:
+            break
+        for row in rows:
+            scanned += 1
+            old = row["input_summary"]
+            new = redact_stored_summary(old)
+            if new != old:
+                pending.append((row["id"], old, new))
+        last_id = rows[-1]["id"]
+
+    changed = 0
+    if not dry_run and pending:
+        for row_id, old, new in pending[:batch_size]:
+            # Guarded on the old value so a concurrent change is never overwritten.
+            await db.db.execute(
+                "UPDATE activity_log SET input_summary = ? WHERE id = ? AND input_summary = ?",
+                (new, row_id, old),
+            )
+            changed += 1
+        await db.db.commit()
+
+    result = {
+        "scanned": scanned,
+        "unchanged": scanned - len(pending),
+        "remaining": len(pending) - changed,
+        "dry_run": dry_run,
+    }
+    if dry_run:
+        result["would_change"] = len(pending)
+    else:
+        result["changed"] = changed
+        await db.insert_activity_log(
+            ActivityLogEntry(
+                session_id="maintenance",
+                agent_id="admin",
+                tool_name="redact_activity_log_inputs",
+                input_summary=f"dry_run=False, batch_size={batch_size}",
+                output_summary=json.dumps(result),
+                tags='["maintenance","redaction"]',
+                patient_id="",
+            )
+        )
+    return json.dumps(result)
+
+
 def register(mcp):
     mcp.tool()(backfill_activity_log_attribution)
+    mcp.tool(annotations={"destructiveHint": False})(redact_activity_log_inputs)
     mcp.tool()(add_activity_log)
     mcp.tool()(search_activity_log)
     mcp.tool()(get_activity_stats)
