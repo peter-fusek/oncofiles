@@ -4,8 +4,8 @@ Deletion policy: nothing patient-owned is hard-deleted. ``delete_*`` sets
 ``deleted_at`` / ``deleted_by``, every reader hides the row, ``restore_*``
 brings it back, and each action leaves an ``activity_log`` row (ids only).
 
-The lock test at the bottom greps ``src/oncofiles`` for ``DELETE FROM`` and
-allows only an explicit list of (file, table) pairs, each with a reason.
+The test at the bottom checks both tables against the repo's single
+hard-DELETE allowlist in ``tests/test_no_automatic_deletion.py`` (#734).
 """
 
 from __future__ import annotations
