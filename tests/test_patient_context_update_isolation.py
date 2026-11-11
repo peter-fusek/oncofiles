@@ -112,10 +112,59 @@ class TestLegacyGlobalNotWritten:
         # A no-pid reader therefore never sees patient A.
         assert patient_context.get_context().get("name", "") != "Testa Alpha"
 
-    def test_no_pid_update_still_writes_legacy(self, isolated_contexts):
-        patient_context.update_context({"name": "Legacy Synthetic"})
-        assert patient_context._context["name"] == "Legacy Synthetic"
-        assert PID_A not in patient_context._contexts
+
+class TestNoPidUpdateRefused:
+    @pytest.mark.parametrize("pid", [None, ""])
+    def test_update_without_pid_raises_naming_patient_slug(self, isolated_contexts, pid):
+        patient_context._context.update({"name": "Legacy Synthetic"})
+        snapshot = copy.deepcopy(patient_context._context)
+        with pytest.raises(ValueError, match="patient_slug"):
+            patient_context.update_context({"note": "synthetic"}, patient_id=pid)
+        assert patient_context._context == snapshot
+        assert patient_context._contexts == {}
+
+    def test_set_germline_finding_without_pid_raises(self, isolated_contexts):
+        with pytest.raises(ValueError, match="patient_slug"):
+            patient_context.set_germline_finding("GENEX", "benign")
+        assert patient_context._context == {}
+
+
+class TestPidWithoutRowGetsEmptyTemplate:
+    def test_new_pid_gets_no_legacy_patient_data(self, isolated_contexts, monkeypatch):
+        # Legacy global holds patient A's (synthetic) data.
+        patient_context._context.update(
+            {
+                "name": "Testa Alpha",
+                "diagnosis": "synthetic diagnosis A",
+                "treatment": {"regimen": "SYNTH-REGIMEN-A"},
+                "biomarkers": {"GENE_X": "pos"},
+            }
+        )
+        # A hardcoded env default must not be attributed to a new pid either.
+        monkeypatch.setitem(patient_context._DEFAULT_CONTEXT, "name", "Env Default Synthetic")
+
+        ctx = patient_context.get_context(PID_B)
+
+        assert ctx["name"] == ""
+        assert ctx["diagnosis"] == ""
+        assert ctx["treatment"] == {}
+        assert ctx["biomarkers"] == {}
+        assert ctx["patient_type"] == patient_context._DEFAULT_CONTEXT["patient_type"]
+        non_empty = {k for k, v in ctx.items() if v}
+        assert non_empty == {"patient_type"}
+        assert set(ctx) == set(patient_context._DEFAULT_CONTEXT)
+
+    def test_request_pid_without_row_gets_empty_template(self, isolated_contexts):
+        from oncofiles.patient_middleware import _current_patient_id
+
+        patient_context._context.update({"name": "Testa Alpha", "diagnosis": "synthetic A"})
+        token = _current_patient_id.set(PID_B)
+        try:
+            ctx = patient_context.get_context()
+        finally:
+            _current_patient_id.reset(token)
+        assert ctx["name"] == ""
+        assert ctx["diagnosis"] == ""
 
 
 class TestHydrateBeforeMerge:
