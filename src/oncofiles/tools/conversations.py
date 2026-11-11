@@ -306,7 +306,7 @@ async def get_journey_timeline(
     # ── Treatment events ──────────────────────────────────────────────────
     if "treatment_events" in include:
         try:
-            conds = ["patient_id = ?"]
+            conds = ["patient_id = ?", "deleted_at IS NULL"]
             params = [patient_id]
             if parsed_from:
                 conds.append("event_date >= ?")
@@ -492,7 +492,7 @@ async def get_conversation_stats(
     db = _get_db(ctx)
     pid = await _resolve_patient_id(patient_slug, ctx)
 
-    conds = ["patient_id = ?"]
+    conds = ["patient_id = ?", "deleted_at IS NULL"]
     params: list[str] = [pid]
     if parsed_from:
         conds.append("entry_date >= ?")
@@ -569,7 +569,7 @@ async def get_conversation_stats(
         logger.debug("get_conversation_stats: json_each tag aggregation failed", exc_info=True)
 
     # ── recency: last 7 / 30 days (relative to today, ignores date filters) ─
-    recency_conds = ["patient_id = ?"]
+    recency_conds = ["patient_id = ?", "deleted_at IS NULL"]
     recency_params: list[str] = [pid]
     # Use today-anchored SQL expressions so the count is "rolling" regardless
     # of the date_from/date_to bounds above.

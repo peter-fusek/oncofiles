@@ -165,6 +165,9 @@ class ConversationEntry(BaseModel):
     source_ref: str | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
+    # Soft delete (#723, migration 084): set by delete_conversation_entry.
+    deleted_at: str | None = None
+    deleted_by: str | None = None
 
 
 class ConversationQuery(BaseModel):
@@ -232,6 +235,9 @@ class TreatmentEvent(BaseModel):
     metadata: str = "{}"
     created_at: datetime | None = None
     updated_at: datetime | None = None
+    # Soft delete (#723, migration 084): set by delete_treatment_event.
+    deleted_at: str | None = None
+    deleted_by: str | None = None
 
 
 class TreatmentEventQuery(BaseModel):
