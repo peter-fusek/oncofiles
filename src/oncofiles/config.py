@@ -15,6 +15,15 @@ DATA_DIR = BASE_DIR / "data"
 DATA_DIR.mkdir(exist_ok=True)
 
 ANTHROPIC_API_KEY: str = os.environ.get("ANTHROPIC_API_KEY", "")
+# Cloud AI (Anthropic API) is OFF by default (#618/#699): documents are not sent
+# to a cloud model unless the operator opts in explicitly. Having a key is not
+# enough — both CLOUD_AI_ENABLED and ANTHROPIC_API_KEY are required.
+# Read at call time by cloud_guard.require_cloud_ai().
+CLOUD_AI_ENABLED: bool = os.environ.get("CLOUD_AI_ENABLED", "false").lower() in (
+    "true",
+    "1",
+    "yes",
+)
 DATABASE_PATH: Path = Path(os.environ.get("DATABASE_PATH", str(DATA_DIR / "oncofiles.db")))
 
 # Google Drive (v0.2)
