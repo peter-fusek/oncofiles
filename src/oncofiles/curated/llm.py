@@ -92,6 +92,7 @@ def chat(
     timeout: float | None = None,
     reasoning_effort: str = "low",
     thinking: bool | None = None,
+    response_format: dict | None = None,
 ) -> str:
     """One blocking chat completion; returns the answer text.
 
@@ -99,7 +100,9 @@ def chat(
     Qwen3.8 MLX model (it logs "cannot be converted to any custom KVs"), so
     the model always thinks. ``thinking=False`` asks the chat template to skip
     the reasoning (``chat_template_kwargs.enable_thinking=false``); ``None``
-    leaves the model's default. Pass a matching ``max_tokens`` budget."""
+    leaves the model's default. Pass a matching ``max_tokens`` budget.
+    ``response_format`` (OpenAI shape, e.g. ``{"type": "json_schema", ...}``)
+    asks LM Studio for structured output; callers still parse defensively."""
     if not configured():
         raise LocalLLMError("LOCAL_LLM_BASE_URL / LOCAL_LLM_MODEL not set")
     est = estimate_prompt_tokens(system, user_content)
@@ -123,6 +126,8 @@ def chat(
             {"role": "user", "content": user_content},
         ],
     }
+    if response_format is not None:
+        payload["response_format"] = response_format
     if thinking is not None:
         payload["chat_template_kwargs"] = {"enable_thinking": bool(thinking)}
     headers = {"Content-Type": "application/json"}
