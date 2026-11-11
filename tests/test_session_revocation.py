@@ -9,7 +9,7 @@ These tests lock in:
 - Each issued session token carries a unique random tid (16 hex chars)
 - _verify_session_token rejects tokens whose tid has been revoked
 - Legacy 3-part tokens (pre-#510) still verify but cannot be revoked
-- The persistence layer (Turso table) survives restarts via load_from_db
+- The persistence layer (DB table) survives restarts via load_from_db
 - Stale rows past expires_at are purged
 """
 

@@ -225,6 +225,22 @@ class IndexScan:
     records: list[IndexRecord]
     contract_version: str
     skipped_folders: list[str]
+    # the patient's birth date(s) from the README contract, ISO (never a fact date)
+    birth_dates: frozenset[str] = frozenset()
+
+
+def _iso_births(contract) -> frozenset[str]:
+    return frozenset(f"{b[:4]}-{b[4:6]}-{b[6:8]}" for b in contract.birth_dates if len(b) == 8)
+
+
+def readme_birth_dates(drive, root_id: str) -> frozenset[str]:
+    """Read only the README contract of a curated root: the patient's birth
+    date(s), ISO. Drive is only read. Raises ContractError without a README."""
+    root = drive.list_children(root_id)
+    readme = next((i for i in root if not i.is_folder and nfc(i.name) == "README.md"), None)
+    if readme is None:
+        raise ContractError("no README.md in the curated root")
+    return _iso_births(parse_contract(drive.download(readme.id).decode("utf-8")))
 
 
 def _record(folder: str, category: DocumentCategory, item: Item) -> IndexRecord:
@@ -330,4 +346,4 @@ def scan(
                     _apply_sidecar(rec, front, pages)
                     rec.metadata["text_source"] = True
             records.append(rec)
-    return IndexScan(records, contract.version, skipped)
+    return IndexScan(records, contract.version, skipped, _iso_births(contract))

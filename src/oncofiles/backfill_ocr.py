@@ -17,8 +17,6 @@ import logging
 from oncofiles.config import (
     DATABASE_PATH,
     GOOGLE_DRIVE_FOLDER_ID,
-    TURSO_AUTH_TOKEN,
-    TURSO_DATABASE_URL,
 )
 from oncofiles.database import Database
 from oncofiles.files_api import FilesClient
@@ -33,10 +31,7 @@ async def backfill(dry_run: bool = False) -> dict[str, int]:
 
     Returns summary dict with counts: total, skipped, processed, errors.
     """
-    if TURSO_DATABASE_URL:
-        db = Database(turso_url=TURSO_DATABASE_URL, turso_token=TURSO_AUTH_TOKEN)
-    else:
-        db = Database(DATABASE_PATH)
+    db = Database(DATABASE_PATH)
     await db.connect()
     await db.migrate()
 

@@ -55,7 +55,7 @@ _MEDICAL_KEYWORDS = [
 ]
 
 
-def _get_medical_keywords(patient_id: str = "") -> list[str]:
+def _get_medical_keywords(patient_id: str) -> list[str]:
     """Return medical keywords including dynamic patient name terms."""
     from oncofiles.patient_context import get_patient_name
 
@@ -69,7 +69,7 @@ def _get_medical_keywords(patient_id: str = "") -> list[str]:
 
 
 async def _classify_event_medical(
-    summary: str, description: str, location: str, *, db=None
+    summary: str, description: str, location: str, *, patient_id: str, db=None
 ) -> tuple[bool, float, str]:
     """Use Haiku to classify if a calendar event is medically relevant.
 
@@ -82,7 +82,7 @@ async def _classify_event_medical(
     if not cloud_ai_enabled():  # CLOUD_AI_ENABLED off (default) or no key
         # Fallback: keyword matching (includes dynamic patient name terms)
         text = f"{summary} {description} {location}".lower()
-        for kw in _get_medical_keywords():
+        for kw in _get_medical_keywords(patient_id):
             if kw.lower() in text:
                 return True, 0.7, "other_medical"
         return False, 0.0, "not_medical"
@@ -141,7 +141,7 @@ async def _classify_event_medical(
         logger.warning("Calendar event classification failed: %s", summary[:60], exc_info=True)
         # Fallback to keyword match (includes dynamic patient name terms)
         text_combined = f"{summary} {description} {location}".lower()
-        for kw in _get_medical_keywords():
+        for kw in _get_medical_keywords(patient_id):
             if kw.lower() in text_combined:
                 return True, 0.5, "other_medical"
         return False, 0.0, "not_medical"
@@ -320,7 +320,7 @@ async def _calendar_sync_inner(
 
             # Classify
             is_medical, confidence, event_type = await _classify_event_medical(
-                summary, description, location, db=db
+                summary, description, location, patient_id=patient_id, db=db
             )
             stats["classified"] += 1
 

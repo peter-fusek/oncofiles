@@ -129,7 +129,7 @@ async def consolidate_documents(
 
     # Guardrail 2: date proximity. Parts of one logical document share a date
     # (or a very small window). A span >7d across members is almost always the
-    # AI grouping unrelated visits (#428 Erika genetics Feb 12 + Mar 15).
+    # AI grouping unrelated visits (#428: genetics reports dated a month apart).
     if not _dates_within_span([d.document_date for d in docs], CONSOLIDATE_MAX_DATE_SPAN_DAYS):
         logger.warning(
             "consolidate_documents: rejecting group (dates span >%dd): ids=%s dates=%s",

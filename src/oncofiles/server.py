@@ -10,7 +10,7 @@ import logging
 import os
 import sys
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -40,13 +40,11 @@ from oncofiles.config import (
     MCP_HOST,
     MCP_PORT,
     MCP_TRANSPORT,
-    PATIENT_CONTEXT_PATH,
     SYNC_ENABLED,
     SYNC_INTERVAL_MINUTES,
     SYNC_STALE_ALERT_HOURS,
-    TURSO_AUTH_TOKEN,
-    TURSO_DATABASE_URL,
     VERSION,
+    gmail_calendar_enabled,
 )
 from oncofiles.database import Database
 from oncofiles.gdrive_client import GDriveClient, create_gdrive_client
@@ -68,23 +66,28 @@ CONF_MAX_DOCS = MAX_DOCUMENTS_PER_PATIENT
 TESTS_COUNT = 716
 
 
-def _assert_local_database(turso_url: str | None) -> None:
-    """Fail closed (#617): Turso is not part of the architecture; the master
-    store is the local SQLite file. One env var must never route PHI to a
-    cloud database. (The Turso code path itself is removed in a follow-up.)"""
-    if turso_url:
+def _assert_local_database(environ: Mapping[str, str] | None = None) -> None:
+    """Fail closed (#617): the master store is the local SQLite file and the
+    Turso/libsql code is gone. A leftover ``TURSO_*`` variable means someone
+    expects a cloud database; refuse to start rather than guess."""
+    env = os.environ if environ is None else environ
+    leftover = sorted(k for k, v in env.items() if k.startswith("TURSO_") and v.strip())
+    if leftover:
         raise RuntimeError(
-            "TURSO_DATABASE_URL is set, but Oncofiles runs on a local database only. "
-            "Unset TURSO_DATABASE_URL / TURSO_AUTH_TOKEN / TURSO_REPLICA_PATH."
+            f"{', '.join(leftover)} set, but Oncofiles runs on a local SQLite "
+            "file only (Turso support was removed in #617). Unset every TURSO_* "
+            "variable; the database path is DATABASE_PATH."
         )
 
 
 def _circuit_breaker_503(exc: BaseException, endpoint_name: str) -> JSONResponse | None:
-    """Canonical 503 + Retry-After:30 response when the Turso circuit breaker is OPEN.
+    """Canonical 503 + Retry-After:30 response for a "Circuit breaker" RuntimeError.
 
-    Returns the 503 response if exc is a RuntimeError raised by
-    database._base._CircuitBreaker.check() (message contains "Circuit breaker").
-    Returns None otherwise so the caller can fall through to its normal 500 path.
+    Returns the 503 response if exc is a RuntimeError whose message contains
+    "Circuit breaker". Returns None otherwise so the caller can fall through
+    to its normal 500 path. Since #617 nothing raises that error (the breaker
+    guarded the removed Turso connection); the call sites are inert and kept
+    to avoid churning server.py under many open PRs. Remove in a follow-up.
 
     Every DB-touching custom route handler must call this before returning a
     bare 500 so clients get an actionable status + Retry-After header.
@@ -101,9 +104,7 @@ def _circuit_breaker_503(exc: BaseException, endpoint_name: str) -> JSONResponse
 
 
 # Global sync semaphore — limits concurrent sync operations (GDrive + Gmail + Calendar)
-_sync_semaphore = asyncio.Semaphore(
-    1
-)  # serialize all patient-touching jobs (Turso single-connection)
+_sync_semaphore = asyncio.Semaphore(1)  # serialize all patient-touching jobs (single DB connection)
 
 # In-memory share codes: {code: {patient_id, bearer_token, patient_name, created_at}}
 _share_codes: dict[str, dict] = {}
@@ -242,6 +243,16 @@ def _setup_logging() -> None:
     else:
         fmt = "%(asctime)s %(levelname)-8s %(name)s — %(message)s"
     logging.basicConfig(level=level, format=fmt, stream=sys.stderr, force=True)
+    # #706: survives container recreates when APP_LOG_DIR is set (off locally).
+    # Every root handler (stderr and the file) carries the same redaction filter.
+    from oncofiles.app_log import attach_redaction, file_handler_from_env
+
+    root = logging.getLogger()
+    for h in root.handlers:
+        attach_redaction(h)
+    handler = file_handler_from_env(fmt, level)
+    if handler is not None:
+        root.addHandler(handler)
 
 
 @asynccontextmanager
@@ -260,22 +271,10 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict]:
         deploy_id[:12] or "local",
         git_sha[:7] or "dev",
     )
-    # Where the data lives, stated at every start (never the URL itself):
-    # PHI from curated folders must stay on this host unless Turso is configured.
-    logger.info(
-        "Database mode: %s", "TURSO (remote/replica)" if TURSO_DATABASE_URL else "local file"
-    )
-    _assert_local_database(TURSO_DATABASE_URL)
-    if TURSO_DATABASE_URL:  # unreachable until the Turso path is removed (#617)
-        from oncofiles.config import TURSO_REPLICA_PATH
-
-        db = Database(
-            turso_url=TURSO_DATABASE_URL,
-            turso_token=TURSO_AUTH_TOKEN,
-            turso_replica_path=TURSO_REPLICA_PATH,
-        )
-    else:
-        db = Database(DATABASE_PATH)
+    # Where the data lives, stated at every start: PHI stays on this host (#617).
+    _assert_local_database()
+    logger.info("Database mode: local file")
+    db = Database(DATABASE_PATH)
     await db.connect()
     await db.migrate()
     # #510: rehydrate the in-memory dashboard-session revocation set from
@@ -285,13 +284,11 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict]:
         await session_revocation.purge_expired(db.db)
     except Exception:
         logger.warning("Session revocation rehydrate failed — continuing", exc_info=True)
-    # Load patient context (DB → JSON file → hardcoded default)
+    # Hydrate the per-patient context cache for all active patients, by pid.
+    # There is no legacy/default patient any more (#733).
     from oncofiles import patient_context
 
-    await patient_context.initialize(db.db, PATIENT_CONTEXT_PATH)
-    # Load per-patient context for all active patients (populates _contexts dict)
-    for _p in await db.list_patients(active_only=True):
-        await patient_context.load_from_db(db.db, patient_id=_p.patient_id)
+    await patient_context.initialize(db)
     files = FilesClient()
     # Restore MCP OAuth sessions from DB (survive deploys)
     if hasattr(auth, "set_db"):
@@ -342,7 +339,9 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict]:
                 )
                 token.access_token = access_token
                 token.token_expiry = new_expiry
-                await db.upsert_oauth_token(token)
+                await db.update_oauth_access_token(
+                    token.patient_id, token.provider, access_token, new_expiry
+                )
 
             gdrive = GDriveClient.from_oauth(
                 access_token=access_token,
@@ -355,31 +354,13 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict]:
     except Exception as e:
         logger.warning("OAuth GDrive init failed: %s", e, exc_info=True)
 
-    # Build Gmail/Calendar clients if scopes granted
+    # Build Gmail/Calendar clients if scopes granted (never when the flag is off, #746)
     if token and GOOGLE_OAUTH_CLIENT_ID:
         try:
-            granted = json.loads(token.granted_scopes) if token.granted_scopes else []
-            from oncofiles.oauth import SCOPE_CALENDAR, SCOPE_GMAIL
-
-            if SCOPE_GMAIL in granted:
-                from oncofiles.gmail_client import GmailClient
-
-                gmail_client = GmailClient.from_oauth(
-                    access_token=access_token,
-                    refresh_token=token.refresh_token,
-                    client_id=GOOGLE_OAUTH_CLIENT_ID,
-                    client_secret=GOOGLE_OAUTH_CLIENT_SECRET,
-                )
+            gmail_client, calendar_client = _build_gmail_calendar_clients(token, access_token)
+            if gmail_client:
                 logger.info("Gmail client initialized from OAuth tokens")
-            if SCOPE_CALENDAR in granted:
-                from oncofiles.calendar_client import CalendarClient
-
-                calendar_client = CalendarClient.from_oauth(
-                    access_token=access_token,
-                    refresh_token=token.refresh_token,
-                    client_id=GOOGLE_OAUTH_CLIENT_ID,
-                    client_secret=GOOGLE_OAUTH_CLIENT_SECRET,
-                )
+            if calendar_client:
                 logger.info("Calendar client initialized from OAuth tokens")
         except Exception:
             logger.warning("Gmail/Calendar client init failed", exc_info=True)
@@ -707,6 +688,44 @@ def _is_folder_not_found(exc: BaseException) -> bool:
     return False
 
 
+def _build_gmail_calendar_clients(token, access_token: str) -> tuple:
+    """Return ``(gmail, calendar)`` clients for the scopes ``token`` grants.
+
+    #746: with GMAIL_CALENDAR_ENABLED off this returns ``(None, None)`` before
+    importing or constructing either client, even when the stored token holds
+    the gmail/calendar scopes. Callers treat None as "not connected".
+    """
+    if not gmail_calendar_enabled():
+        return None, None
+
+    from oncofiles.oauth import SCOPE_CALENDAR, SCOPE_GMAIL
+
+    granted = json.loads(token.granted_scopes) if token.granted_scopes else []
+
+    gmail = None
+    if SCOPE_GMAIL in granted:
+        from oncofiles.gmail_client import GmailClient
+
+        gmail = GmailClient.from_oauth(
+            access_token=access_token,
+            refresh_token=token.refresh_token,
+            client_id=GOOGLE_OAUTH_CLIENT_ID,
+            client_secret=GOOGLE_OAUTH_CLIENT_SECRET,
+        )
+
+    calendar = None
+    if SCOPE_CALENDAR in granted:
+        from oncofiles.calendar_client import CalendarClient
+
+        calendar = CalendarClient.from_oauth(
+            access_token=access_token,
+            refresh_token=token.refresh_token,
+            client_id=GOOGLE_OAUTH_CLIENT_ID,
+            client_secret=GOOGLE_OAUTH_CLIENT_SECRET,
+        )
+    return gmail, calendar
+
+
 async def _create_patient_clients(
     db,
     patient_id: str,
@@ -727,7 +746,7 @@ async def _create_patient_clients(
 
     import time as _time
 
-    from oncofiles.oauth import SCOPE_CALENDAR, SCOPE_GMAIL, is_token_expired, refresh_access_token
+    from oncofiles.oauth import is_token_expired, refresh_access_token
 
     # Check cache first
     cached = _patient_clients_cache.get(patient_id)
@@ -735,6 +754,8 @@ async def _create_patient_clients(
         # Re-check on cache hits too (cheap: detection is cached for 10 min) so a
         # folder that becomes curated is blocked without waiting for the 30-min TTL.
         await _mark_patient_curated(patient_id, cached[0], cached[3])
+        if not gmail_calendar_enabled():  # #746: never hand out Gmail/Calendar clients
+            return (cached[0], None, None, cached[3])
         return cached[:4]
 
     token = await db.get_oauth_token(patient_id=patient_id)
@@ -749,7 +770,9 @@ async def _create_patient_clients(
             new_expiry = datetime.now(UTC) + timedelta(seconds=refreshed.get("expires_in", 3600))
             token.access_token = access_token
             token.token_expiry = new_expiry
-            await db.upsert_oauth_token(token)
+            await db.update_oauth_access_token(
+                token.patient_id, token.provider, access_token, new_expiry
+            )
         except Exception:
             logger.warning("Token refresh failed for patient %s", patient_id, exc_info=True)
             return None
@@ -762,29 +785,7 @@ async def _create_patient_clients(
         owner_email=token.owner_email or "",
     )
 
-    granted = json.loads(token.granted_scopes) if token.granted_scopes else []
-
-    p_gmail = None
-    if SCOPE_GMAIL in granted:
-        from oncofiles.gmail_client import GmailClient
-
-        p_gmail = GmailClient.from_oauth(
-            access_token=access_token,
-            refresh_token=token.refresh_token,
-            client_id=GOOGLE_OAUTH_CLIENT_ID,
-            client_secret=GOOGLE_OAUTH_CLIENT_SECRET,
-        )
-
-    p_calendar = None
-    if SCOPE_CALENDAR in granted:
-        from oncofiles.calendar_client import CalendarClient
-
-        p_calendar = CalendarClient.from_oauth(
-            access_token=access_token,
-            refresh_token=token.refresh_token,
-            client_id=GOOGLE_OAUTH_CLIENT_ID,
-            client_secret=GOOGLE_OAUTH_CLIENT_SECRET,
-        )
+    p_gmail, p_calendar = _build_gmail_calendar_clients(token, access_token)
 
     # Curated folder (#562): block every legacy write on this client.
     await _mark_patient_curated(patient_id, p_gdrive, token.gdrive_folder_id)
@@ -985,25 +986,6 @@ def _start_sync_scheduler(
         except Exception:
             logger.exception("Institution backfill failed")
 
-    housekeeping_timeout = 120  # 2 minutes max for lightweight housekeeping jobs
-
-    async def _run_trash_cleanup():
-        try:
-            patients = await db.list_patients(active_only=True)
-            total_purged = 0
-            for p in patients:
-                purged = await asyncio.wait_for(
-                    db.purge_expired_trash(days=30, patient_id=p.patient_id),
-                    timeout=housekeeping_timeout,
-                )
-                total_purged += purged
-            if total_purged:
-                logger.info("Trash cleanup: purged %d expired documents", total_purged)
-        except TimeoutError:
-            logger.error("Trash cleanup timed out after %ds", housekeeping_timeout)
-        except Exception:
-            logger.exception("Trash cleanup failed")
-
     async def _run_pipeline_integrity_check():
         """Scheduled check: find and fix any docs stuck in incomplete pipeline state."""
         try:
@@ -1083,30 +1065,8 @@ def _start_sync_scheduler(
                                     exc_info=True,
                                 )
 
-                    # Auto-trash unrecoverable docs: Files API returns 400/404 AND no GDrive backup
-                    for doc, g in gaps:
-                        if "no_ocr" in g and "no_ai" in g and not doc.gdrive_id:
-                            try:
-                                files.download(doc.file_id)
-                            except Exception as dl_err:
-                                err_msg = str(dl_err).lower()
-                                if "not downloadable" in err_msg or "404" in err_msg:
-                                    logger.warning(
-                                        "Pipeline integrity [%s]: trashing doc #%d (%s) "
-                                        "— content gone, no GDrive backup",
-                                        pid,
-                                        doc.id,
-                                        doc.filename,
-                                    )
-                                    await db.delete_document(doc.id)
-                                else:
-                                    logger.info(
-                                        "Pipeline integrity [%s]: doc #%d download check failed "
-                                        "(transient?) — NOT deleting: %s",
-                                        pid,
-                                        doc.id,
-                                        dl_err,
-                                    )
+                    # No auto-trash (#734): a doc whose content is gone stays listed,
+                    # reported by the gap warning above. Only the user deletes it.
                 else:
                     logger.info("Pipeline integrity [%s]: all %d docs complete", pid, len(all_docs))
         except Exception:
@@ -1695,12 +1655,6 @@ def _start_sync_scheduler(
     )
 
     scheduler.add_job(
-        _run_trash_cleanup,
-        CronTrigger(hour=3, minute=0),
-        id="trash_cleanup",
-        max_instances=1,
-    )
-    scheduler.add_job(
         _run_oauth_token_cleanup,
         CronTrigger(hour=4, minute=0),
         id="oauth_token_cleanup",
@@ -1722,25 +1676,6 @@ def _start_sync_scheduler(
             max_instances=1,
         )
         logger.info("ENABLE_INTEGRITY_CHECK=true — every-6h pipeline integrity check registered")
-
-    # ── DB keepalive / replica sync ──
-
-    async def _db_keepalive():
-        """Ping Turso every 4 min to keep connection alive, or sync embedded replica."""
-        try:
-            if db.is_replica:
-                await db.sync_replica()
-            else:
-                await db.reconnect_if_stale(timeout=10.0)
-        except Exception:
-            logger.warning("DB keepalive/sync failed — will recover on next query")
-
-    scheduler.add_job(
-        _db_keepalive,
-        IntervalTrigger(minutes=4),
-        id="db_keepalive",
-        max_instances=1,
-    )
 
     # ── Sync staleness watchdog (#552) ──
 
@@ -1842,7 +1777,7 @@ def _start_sync_scheduler(
     )
 
     async def _run_category_validation():
-        """AI-powered document classification and dedup sweep."""
+        """AI-powered document classification sweep (no dedup, #734)."""
 
         async def _do_category_validation():
             from oncofiles.models import DocumentCategory as _DocCat  # noqa: N814
@@ -1889,48 +1824,10 @@ def _start_sync_scheduler(
                     except ValueError:
                         pass
 
-            # Phase 2: Dedup scan — soft-delete duplicate files by md5 (keep)
-            deduped = 0
-            from collections import defaultdict
-
-            groups: dict[tuple, list] = defaultdict(list)
-            for doc in docs:
-                if doc.deleted_at:
-                    continue
-                key = (doc.category.value, str(doc.document_date) if doc.document_date else "none")
-                groups[key].append(doc)
-
-            for _key, group_docs in groups.items():
-                if len(group_docs) < 2:
-                    continue
-                by_md5: dict[str, list] = defaultdict(list)
-                for doc in group_docs:
-                    if doc.gdrive_md5:
-                        by_md5[doc.gdrive_md5].append(doc)
-                for md5, dups in by_md5.items():
-                    if len(dups) < 2:
-                        continue
-                    dups.sort(key=lambda d: d.id)
-                    for dup in dups[1:]:
-                        await db.delete_document(dup.id)
-                        deduped += 1
-                        logger.info(
-                            "Dedup: soft-deleted #%d (%s) — duplicate of #%d (md5=%s)",
-                            dup.id,
-                            dup.filename,
-                            dups[0].id,
-                            md5[:12],
-                        )
-
-            if deduped:
-                logger.info("Dedup scan: soft-deleted %d duplicates", deduped)
-
-            if corrected or deduped:
-                logger.info(
-                    "Category validation total: %d corrected, %d deduped",
-                    corrected,
-                    deduped,
-                )
+            # No automatic dedup (#734): duplicates are reported by the
+            # user-invoked find_duplicates tool and removed only by the user.
+            if corrected:
+                logger.info("Category validation total: %d corrected", corrected)
 
         try:
             await asyncio.wait_for(_do_category_validation(), timeout=metadata_timeout)
@@ -1949,424 +1846,13 @@ def _start_sync_scheduler(
             max_instances=1,
         )
 
-    folder_cleanup_timeout = 300  # 5 minutes max for GDrive folder operations
-
-    async def _run_empty_folder_cleanup():
-        """Remove empty year-month subfolders and merge duplicates from GDrive."""
-
-        async def _do_folder_cleanup():
-            patients = await db.list_patients(active_only=True)
-            for p in patients:
-                gc = await _get_patient_gdrive(p.patient_id)
-                if not gc:
-                    continue
-                p_gdrive, folder_id = gc
-                await _cleanup_folders_for(p_gdrive, folder_id, p.patient_id)
-
-        async def _cleanup_folders_for(p_gdrive, folder_id, pid):
-            cleaned = 0
-            merged = 0
-            category_merged = 0
-
-            # Get category folder structure
-            _, folder_map = await asyncio.to_thread(
-                p_gdrive.list_folder_with_structure,
-                folder_id,
-            )
-
-            # Phase 0: Merge legacy category folders (e.g., surgical_report → surgery)
-            from oncofiles.gdrive_folders import (
-                CATEGORY_FOLDERS,
-                CATEGORY_MERGES,
-                METADATA_FOLDERS,
-                bilingual_name,
-                en_key_from_folder_name,
-            )
-
-            for legacy_cat, target_cat in CATEGORY_MERGES.items():
-                # Find legacy folder by name
-                legacy_folder_id = None
-                target_folder_id = None
-                for fid, fname in folder_map.items():
-                    en_key = en_key_from_folder_name(fname) or fname
-                    if en_key == legacy_cat:
-                        legacy_folder_id = fid
-                    if en_key == target_cat:
-                        target_folder_id = fid
-                if not legacy_folder_id or not target_folder_id:
-                    continue
-                # Move all files from legacy → target
-                try:
-                    legacy_contents = await asyncio.to_thread(
-                        lambda lid=legacy_folder_id: (
-                            p_gdrive._service.files()
-                            .list(
-                                q=f"'{lid}' in parents and trashed = false",
-                                fields="files(id, name)",
-                                pageSize=200,
-                            )
-                            .execute()
-                        )
-                    )
-                    files_to_move = legacy_contents.get("files", [])
-                    for f in files_to_move:
-                        await asyncio.to_thread(
-                            p_gdrive.move_file,
-                            f["id"],
-                            target_folder_id,
-                        )
-                    # Trash the legacy folder if now empty
-                    if files_to_move or not legacy_contents.get("files"):
-                        await asyncio.to_thread(
-                            p_gdrive.trash_file,
-                            legacy_folder_id,
-                        )
-                    category_merged += 1
-                    logger.info(
-                        "Merged legacy folder '%s' → '%s' (%d files moved) [%s]",
-                        bilingual_name(legacy_cat),
-                        bilingual_name(target_cat),
-                        len(files_to_move),
-                        pid,
-                    )
-                except Exception:
-                    logger.warning(
-                        "Failed to merge legacy folder %s → %s",
-                        legacy_cat,
-                        target_cat,
-                        exc_info=True,
-                    )
-
-            # Phase 0c: Move root-level files into 'other' category folder
-            other_folder_id = None
-            for fid, fname in folder_map.items():
-                if en_key_from_folder_name(fname) == "other":
-                    other_folder_id = fid
-                    break
-
-            if other_folder_id:
-                root_items_raw = await asyncio.to_thread(
-                    lambda: (
-                        p_gdrive._service.files()
-                        .list(
-                            q=(
-                                f"'{folder_id}' in parents"
-                                " and mimeType != 'application/vnd.google-apps.folder'"
-                                " and trashed = false"
-                            ),
-                            fields="files(id, name, createdTime)",
-                            pageSize=50,
-                        )
-                        .execute()
-                    )
-                )
-                for rf in root_items_raw.get("files", []):
-                    if rf["name"] == "_manifest.json":
-                        continue  # Skip known metadata files
-                    try:
-                        await asyncio.to_thread(p_gdrive.move_file, rf["id"], other_folder_id)
-                        cleaned += 1
-                        logger.info(
-                            "Moved root file '%s' → other/ [%s]",
-                            rf["name"],
-                            pid,
-                        )
-                    except Exception:
-                        logger.warning("Failed to move root file '%s'", rf["name"], exc_info=True)
-
-            # Phase 0d: Re-home files from stray root-level folders (#277)
-            # Stray folders are direct children of root that aren't known categories
-            # (e.g., year folders "2025-03" created by pre-fix code).
-            root_folders_raw = await asyncio.to_thread(
-                lambda: (
-                    p_gdrive._service.files()
-                    .list(
-                        q=(
-                            f"'{folder_id}' in parents"
-                            " and mimeType = 'application/vnd.google-apps.folder'"
-                            " and trashed = false"
-                        ),
-                        fields="files(id, name)",
-                        pageSize=100,
-                    )
-                    .execute()
-                )
-            )
-            # Build set of known category/metadata folder IDs
-            known_cat_ids: dict[str, str] = {}  # {folder_id: en_key}
-            for rf in root_folders_raw.get("files", []):
-                en = en_key_from_folder_name(rf["name"])
-                if en:
-                    known_cat_ids[rf["id"]] = rf["name"]
-
-            if other_folder_id:
-                for rf in root_folders_raw.get("files", []):
-                    if rf["id"] in known_cat_ids:
-                        continue  # Known category folder — skip
-                    # Stray folder — move its files to 'other', then trash if empty
-                    try:
-                        stray_contents = await asyncio.to_thread(
-                            lambda sid=rf["id"]: (
-                                p_gdrive._service.files()
-                                .list(
-                                    q=f"'{sid}' in parents and trashed = false",
-                                    fields="files(id, name)",
-                                    pageSize=200,
-                                )
-                                .execute()
-                            )
-                        )
-                        stray_files = stray_contents.get("files", [])
-                        for sf in stray_files:
-                            await asyncio.to_thread(p_gdrive.move_file, sf["id"], other_folder_id)
-                            logger.info(
-                                "Moved '%s' from stray folder '%s' → other/ [%s]",
-                                sf["name"],
-                                rf["name"],
-                                pid,
-                            )
-                            cleaned += 1
-                        # Trash the stray folder (now empty or was already empty)
-                        await asyncio.to_thread(p_gdrive.trash_file, rf["id"])
-                        cleaned += 1
-                        logger.info(
-                            "Trashed stray root folder '%s' [%s]",
-                            rf["name"],
-                            pid,
-                        )
-                    except Exception:
-                        logger.warning(
-                            "Failed to clean stray folder '%s' [%s]",
-                            rf["name"],
-                            pid,
-                            exc_info=True,
-                        )
-
-            # For each category folder, check subfolders
-            # Only iterate known category folders (direct children of root),
-            # NOT the full recursive folder_map which includes year-month subfolders (#277)
-            for cat_folder_id, cat_name in known_cat_ids.items():
-                try:
-                    sub_folders_raw = await asyncio.to_thread(
-                        lambda fid=cat_folder_id: (
-                            p_gdrive._service.files()
-                            .list(
-                                q=(
-                                    f"'{fid}' in parents"
-                                    f" and mimeType = 'application/vnd.google-apps.folder'"
-                                    f" and trashed = false"
-                                ),
-                                fields="files(id, name)",
-                                pageSize=100,
-                            )
-                            .execute()
-                        )
-                    )
-                    sub_folders = sub_folders_raw.get("files", [])
-
-                    # Check for duplicates (same name)
-                    by_name: dict[str, list[str]] = {}
-                    for sf in sub_folders:
-                        by_name.setdefault(sf["name"], []).append(sf["id"])
-
-                    for name, ids in by_name.items():
-                        if len(ids) > 1:
-                            # Merge: move files from duplicates → keep, then trash
-                            keep = ids[0]
-                            for dup in ids[1:]:
-                                # List ALL files in the duplicate folder
-                                dup_contents = await asyncio.to_thread(
-                                    lambda did=dup: (
-                                        p_gdrive._service.files()
-                                        .list(
-                                            q=f"'{did}' in parents and trashed = false",
-                                            fields="files(id, name)",
-                                            pageSize=200,
-                                        )
-                                        .execute()
-                                    )
-                                )
-                                dup_files = dup_contents.get("files", [])
-                                # Move files from duplicate to keep folder
-                                for df in dup_files:
-                                    try:
-                                        await asyncio.to_thread(p_gdrive.move_file, df["id"], keep)
-                                        logger.info(
-                                            "Moved '%s' from dup %s → %s", df["name"], dup, keep
-                                        )
-                                    except Exception:
-                                        logger.warning(
-                                            "Failed to move '%s' from dup folder",
-                                            df["name"],
-                                            exc_info=True,
-                                        )
-                                # Trash the now-empty duplicate
-                                await asyncio.to_thread(p_gdrive.trash_file, dup)
-                                merged += 1
-                                logger.info(
-                                    "Merged duplicate folder '%s/%s' (%s → %s, %d files moved)",
-                                    cat_name,
-                                    name,
-                                    dup,
-                                    keep,
-                                    len(dup_files),
-                                )
-
-                    # Check for empty subfolders (#172)
-                    for sf in sub_folders:
-                        contents = await asyncio.to_thread(
-                            lambda sid=sf["id"]: (
-                                p_gdrive._service.files()
-                                .list(
-                                    q=f"'{sid}' in parents and trashed = false",
-                                    fields="files(id)",
-                                    pageSize=1,
-                                )
-                                .execute()
-                            )
-                        )
-                        if not contents.get("files"):
-                            await asyncio.to_thread(p_gdrive.trash_file, sf["id"])
-                            cleaned += 1
-                            logger.info("Trashed empty folder '%s/%s'", cat_name, sf["name"])
-
-                    # Move root-level files into subfolders (#174, #175)
-                    root_files_raw = await asyncio.to_thread(
-                        lambda fid=cat_folder_id: (
-                            p_gdrive._service.files()
-                            .list(
-                                q=(
-                                    f"'{fid}' in parents"
-                                    " and mimeType != "
-                                    "'application/vnd.google-apps.folder'"
-                                    " and trashed = false"
-                                ),
-                                fields="files(id, name, createdTime)",
-                                pageSize=50,
-                            )
-                            .execute()
-                        )
-                    )
-                    root_files = root_files_raw.get("files", [])
-                    en_cat = en_key_from_folder_name(cat_name) or cat_name
-                    for rf in root_files:
-                        name = rf["name"]
-                        target_subfolder = None
-
-                        # Reference category: organize by source (#175)
-                        if en_cat == "reference":
-                            nl = name.lower()
-                            if "devita" in nl:
-                                target_subfolder = "DeVita-12e"
-                            elif "nccn" in nl:
-                                target_subfolder = "NCCN"
-                            elif "modra" in nl or "modrakniha" in nl:
-                                target_subfolder = "ModraKniha"
-                        # Default: year-month subfolder
-                        if not target_subfolder:
-                            if len(name) >= 8 and name[:8].isdigit():
-                                target_subfolder = f"{name[:4]}-{name[4:6]}"
-                            elif rf.get("createdTime"):
-                                target_subfolder = rf["createdTime"][:7]
-
-                        if target_subfolder:
-                            # Find or create subfolder
-                            sf_id = None
-                            for sf in sub_folders:
-                                if sf["name"] == target_subfolder:
-                                    sf_id = sf["id"]
-                                    break
-                            if not sf_id:
-                                sf_id = await asyncio.to_thread(
-                                    p_gdrive.create_folder,
-                                    target_subfolder,
-                                    cat_folder_id,
-                                )
-                            await asyncio.to_thread(
-                                p_gdrive.move_file,
-                                rf["id"],
-                                sf_id,
-                            )
-                            cleaned += 1
-                            logger.info(
-                                "Moved root file '%s' → '%s/%s/'",
-                                name,
-                                cat_name,
-                                target_subfolder,
-                            )
-
-                except Exception:
-                    logger.warning(
-                        "Folder cleanup failed for %s",
-                        cat_name,
-                        exc_info=True,
-                    )
-
-            # Check for empty category folders (#172)
-            # Refresh folder map after cleanup
-            _, folder_map_2 = await asyncio.to_thread(
-                p_gdrive.list_folder_with_structure,
-                folder_id,
-            )
-            active_cats = set(CATEGORY_FOLDERS + METADATA_FOLDERS)
-            for cfid, cname in folder_map_2.items():
-                en = en_key_from_folder_name(cname) or cname
-                if en in active_cats:
-                    continue  # Don't trash active category folders
-                # Check if empty
-                cat_contents = await asyncio.to_thread(
-                    lambda fid=cfid: (
-                        p_gdrive._service.files()
-                        .list(
-                            q=f"'{fid}' in parents and trashed = false",
-                            fields="files(id)",
-                            pageSize=1,
-                        )
-                        .execute()
-                    )
-                )
-                if not cat_contents.get("files"):
-                    await asyncio.to_thread(p_gdrive.trash_file, cfid)
-                    cleaned += 1
-                    logger.info(
-                        "Trashed empty category folder '%s' [%s]",
-                        cname,
-                        pid,
-                    )
-
-            if cleaned or merged or category_merged:
-                logger.info(
-                    "Folder cleanup [%s]: %d empty trashed, "
-                    "%d duplicates merged, %d legacy categories merged",
-                    pid,
-                    cleaned,
-                    merged,
-                    category_merged,
-                )
-            else:
-                logger.info("Folder cleanup [%s]: all folders OK", pid)
-
-        try:
-            await asyncio.wait_for(_do_folder_cleanup(), timeout=folder_cleanup_timeout)
-        except TimeoutError:
-            logger.error("Folder cleanup timed out after %ds", folder_cleanup_timeout)
-        except Exception:
-            logger.exception("Empty folder cleanup failed")
-
-    scheduler.add_job(
-        _run_empty_folder_cleanup,
-        CronTrigger(hour=3, minute=15),  # daily at 3:15 AM (between trash and metadata)
-        id="empty_folder_cleanup",
-        max_instances=1,
-    )
-
     # ── Weekly analytics aggregation ────────────────────────────────────
     async def _run_weekly_analytics():
         """Aggregate weekly usage stats and persist to agent_state."""
         import json
 
         try:
-            # Sequential — Turso single-connection can't handle concurrent queries
+            # Sequential — the single DB connection must not see concurrent queries
             prompt_stats = await db.get_prompt_stats(days=7)
             tool_stats = await db.get_tool_usage_stats(days=7)
             pipeline_stats = await db.get_pipeline_stats()
@@ -2553,7 +2039,9 @@ def _start_sync_scheduler(
 
                     reclaim_memory(f"gmail_sync:{pid}")
 
-    if AI_NIGHTLY_ONLY:
+    if not gmail_calendar_enabled():
+        logger.info("Gmail sync not scheduled — GMAIL_CALENDAR_ENABLED=false (#618/#699)")
+    elif AI_NIGHTLY_ONLY:
         scheduler.add_job(
             _run_gmail_sync,
             CronTrigger(hour=AI_NIGHT_WINDOW_START_UTC, minute=15),
@@ -2635,7 +2123,9 @@ def _start_sync_scheduler(
 
                     reclaim_memory(f"calendar_sync:{pid}")
 
-    if AI_NIGHTLY_ONLY:
+    if not gmail_calendar_enabled():
+        logger.info("Calendar sync not scheduled — GMAIL_CALENDAR_ENABLED=false (#618/#699)")
+    elif AI_NIGHTLY_ONLY:
         scheduler.add_job(
             _run_calendar_sync,
             CronTrigger(hour=AI_NIGHT_WINDOW_START_UTC, minute=20),
@@ -2795,7 +2285,19 @@ which EU-recommended screenings are due/overdue.
 
 Available categories: labs, report, imaging, pathology, genetics, \
 surgery, surgical_report, prescription, referral, discharge, discharge_summary, chemo_sheet, \
-reference, advocate, other, vaccination, dental, preventive.\
+reference, advocate, other, vaccination, dental, preventive.
+
+CURATED PATIENT FOLDERS — a Drive folder holding README.md + _index.json is curated:
+- It is processed only by the curated pipeline (continuous mode on the server, or \
+`curated_folder_run`) and mirrored into search/labs/timeline by `curated_index`. \
+Check its state with `curated_folder_status`.
+- Legacy Drive tools (`gdrive_sync`, `sync_from_gdrive`, `sync_to_gdrive`, `setup_gdrive`, \
+`reconcile_gdrive`, `rename_documents_to_standard`) skip curated folders. Do not suggest \
+them to import or rename curated documents; if no documents show up, suggest `curated_index`.
+
+OPERATIONS — Oncofiles is self-hosted on its own server, not on a cloud PaaS. \
+Users have no access to server or hosting logs, so never tell them to check logs; for a \
+server-side problem use `system_health` and suggest contacting the maintainer.\
 """
 
 mcp = FastMCP(
@@ -2858,31 +2360,13 @@ footer {{ margin-top: 3rem; padding-top: 1rem; border-top: 1px solid #e5e5e5;
 
 @mcp.custom_route("/oncoteam", methods=["GET"])
 async def oncoteam_page(request: Request) -> HTMLResponse:
+    # Oncoteam was retired (#721). The route stays so old links get a notice, not a 404.
     return HTMLResponse(
         _legal_page(
             "Oncoteam",
             """
-<p class="meta">Sister project of Oncofiles</p>
-
-<p><strong>Oncoteam</strong> is an AI agent that analyzes your
-Oncofiles data. While Oncofiles organizes your medical records,
-Oncoteam helps you understand them:</p>
-
-<ul>
-<li>Tracks lab value trends (CBC, tumor markers, liver enzymes)</li>
-<li>Calculates clinical indices (SII, Ne/Ly ratio)</li>
-<li>Searches PubMed and ClinicalTrials.gov for relevant research</li>
-<li>Prepares questions for your oncologist</li>
-<li>Checks pre-cycle lab safety for chemo protocols</li>
-</ul>
-
-<p>Oncoteam works through Claude.ai as an MCP connector,
-reading data from your Oncofiles repository.</p>
-
-<h2>For developers</h2>
-<p>Source code:
-<a href="https://github.com/peter-fusek/oncoteam">
-github.com/peter-fusek/oncoteam</a></p>
+<p><strong>Oncoteam</strong>, the former sister project of Oncofiles, has been retired.
+Your documents and records stay in Oncofiles.</p>
 """,
         )
     )
@@ -3995,8 +3479,8 @@ async def manifest_json(request: Request) -> JSONResponse:
 async def health(request: Request) -> JSONResponse:
     """Liveness probe — instant response, no DB dependency.
 
-    Used by Railway healthcheck and UptimeRobot.  Must never block on
-    external I/O so the process is not killed during Turso reconnects.
+    Used by the Coolify healthcheck and UptimeRobot.  Must never block on
+    external I/O so the process is never killed by a slow dependency.
     """
     # Hard RSS ceiling — last-resort failsafe independent of scheduler health.
     # sys.exit(1) makes Railway see a failed healthcheck → immediate replace.
@@ -4111,34 +3595,27 @@ def _readiness_caller_is_operator(request: Request) -> bool:
 
 @mcp.custom_route("/readiness", methods=["GET"])
 async def readiness(request: Request) -> JSONResponse:
-    """Readiness probe — checks DB connectivity with a 5 s timeout.
+    """Readiness probe — checks DB connectivity with a 2 s timeout (no retry).
 
-    Suitable for dashboards and deeper monitoring; NOT used as Railway
-    healthcheck so a slow Turso reconnect won't kill the process.
+    Suitable for dashboards and deeper monitoring; NOT used as the
+    container healthcheck so a slow DB never gets the process killed.
 
     #512: the *minimal* shape (``status``, ``version``, ``db``) is public
     because external uptime monitors and the load balancer rely on it.
-    The detailed operational telemetry (memory, circuit breaker state,
-    per-job error/running flags, reconnect signal) is only returned when
+    The detailed operational telemetry (memory, per-job error/running
+    flags, sync staleness, AI cost) is only returned when
     the caller is an operator — see ``_readiness_caller_is_operator``.
     """
     try:
         lifespan_ctx = request.app.state.fastmcp_server._lifespan_result
         db: Database = lifespan_ctx["db"]
-        reconnected = await db.reconnect_if_stale(timeout=5.0)
+        await db.ping(timeout=2.0)
         result: dict = {"status": "ok", "version": VERSION, "db": "connected"}
         # Public-safe payload ends here. Anything below is operator-only.
         if not _readiness_caller_is_operator(request):
             return JSONResponse(result)
 
-        if reconnected:
-            result["reconnected"] = True
         result["memory_rss_mb"] = round(get_rss_mb(), 1)
-        # Circuit breaker telemetry (#469 Phase 3) — lets operators diagnose
-        # dashboard-500-cascade events without SSH'ing into the process.
-        breaker_stats = db.circuit_breaker_stats()
-        if breaker_stats is not None:
-            result["circuit_breaker"] = breaker_stats
         # #552: full detail for structural credential failures. Operator-only,
         # so patient IDs are safe here (unlike /health, which gets counts only).
         if _hard_auth_failures:
@@ -4148,6 +3625,10 @@ async def readiness(request: Request) -> JSONResponse:
             ]
         # #552: per-patient sync staleness, from the watchdog cache.
         result["sync_staleness"] = _sync_staleness
+        # #665: per-patient continuous-mode counters (in-memory, no DB call).
+        from oncofiles.tools.curated import probe_stats
+
+        result["curated_probes"] = probe_stats()
         # Scheduler job status (lightweight summary)
         tracker = lifespan_ctx.get("job_tracker", {})
         if tracker:
@@ -4205,19 +3686,28 @@ def _count_tools() -> int:
         return 76  # fallback — update when tool count changes
 
 
+# #591: /api/stats is public, and the count costs 1 + N(patients) queries on the
+# single DB connection. Cached, so an unauthenticated flood costs one count per TTL.
+_API_STATS_TTL_S = 300
+_api_stats_cache: dict = {"at": 0.0, "documents": None}
+
+
 @mcp.custom_route("/api/stats", methods=["GET"])
 async def api_stats(request: Request) -> JSONResponse:
     """Public project stats for landing page and llms.txt."""
     from oncofiles.models import DocumentCategory
 
-    doc_count = 0
-    try:
-        db: Database = request.app.state.fastmcp_server._lifespan_result["db"]
-        patients = await db.list_patients(active_only=True)
-        for p in patients:
-            doc_count += await db.count_documents(patient_id=p.patient_id)
-    except Exception:
-        logger.warning("api_stats: failed to count documents", exc_info=True)
+    doc_count = _api_stats_cache["documents"]
+    if doc_count is None or time.time() - _api_stats_cache["at"] > _API_STATS_TTL_S:
+        doc_count = 0
+        try:
+            db: Database = request.app.state.fastmcp_server._lifespan_result["db"]
+            patients = await db.list_patients(active_only=True)
+            for p in patients:
+                doc_count += await db.count_documents(patient_id=p.patient_id)
+            _api_stats_cache.update(at=time.time(), documents=doc_count)
+        except Exception:
+            logger.warning("api_stats: failed to count documents", exc_info=True)
 
     return JSONResponse(
         {
@@ -4251,19 +3741,6 @@ async def status(request: Request) -> JSONResponse:
         from oncofiles.memory import db_slot
 
         async with db_slot("status", priority=True):
-            # Ensure DB connection is fresh before running dashboard queries.
-            # A 2s reconnect timeout is non-fatal (the next query will auto-
-            # reconnect on transient errors per #405/#378). A circuit-breaker
-            # RuntimeError must propagate so the outer handler can return
-            # 503 + Retry-After:30 instead of a bare 500 (see #469).
-            try:
-                await db.reconnect_if_stale(timeout=2.0)
-            except TimeoutError:
-                logger.warning(
-                    "Status endpoint: reconnect_if_stale timed out after 2s, "
-                    "proceeding with current connection"
-                )
-
             from oncofiles.filename_parser import is_standard_format
 
             doc_count = await db.count_documents(patient_id=patient_id)
@@ -4388,7 +3865,7 @@ async def debug_memory_trace(request: Request) -> JSONResponse:
     Opt-in via ``MEMORY_TRACEMALLOC_ENABLED=true`` env var so we don't pay
     the ~15% per-alloc overhead in steady state. To use:
 
-        1. Set ``MEMORY_TRACEMALLOC_ENABLED=true`` in Railway env + deploy.
+        1. Set ``MEMORY_TRACEMALLOC_ENABLED=true`` in the Coolify env + deploy.
         2. Wait for the suspect workload window (e.g. 23:00 UTC nightly AI run).
         3. curl -H "Authorization: Bearer <MCP_BEARER_TOKEN>"
               https://oncofiles.com/debug/memory-trace
@@ -4409,8 +3886,8 @@ async def debug_memory_trace(request: Request) -> JSONResponse:
             {
                 "error": "tracemalloc disabled",
                 "hint": (
-                    "Set MEMORY_TRACEMALLOC_ENABLED=true in Railway env and "
-                    "redeploy to enable. Unset after diagnosis to avoid the "
+                    "Set MEMORY_TRACEMALLOC_ENABLED=true in the deployment env "
+                    "(Coolify) and redeploy to enable. Unset after diagnosis to avoid the "
                     "~15% per-alloc overhead."
                 ),
             },
@@ -4581,7 +4058,7 @@ def _make_session_token(email: str) -> str:
     return f"{payload}|{sig}"
 
 
-def _verify_session_token(token: str) -> str | None:
+def _verify_session_token(token: str, *, log: bool = True) -> str | None:
     """Verify a session token. Returns email if valid, None otherwise.
 
     Accepts both 4-part (email|expiry|tid|sig, current) and 3-part legacy
@@ -4596,16 +4073,19 @@ def _verify_session_token(token: str) -> str | None:
         return None
     email, expiry, tid, sig, sep = parsed
     if time.time() > expiry:
-        logger.warning("Session token expired for %s", email)
+        if log:
+            logger.warning("Session token expired for %s", email)
         return None
     key = dashboard_session_key(MCP_BEARER_TOKEN)
     signed_payload = f"{email}{sep}{expiry}{sep}{tid}" if tid else f"{email}{sep}{expiry}"
     expected = hmac.new(key, signed_payload.encode(), hashlib.sha256).hexdigest()[:32]
     if not hmac.compare_digest(sig, expected):
-        logger.warning("Session token signature mismatch for %s", email)
+        if log:
+            logger.warning("Session token signature mismatch for %s", email)
         return None
     if tid and session_revocation.is_revoked(tid):
-        logger.info("Session token rejected (revoked) for %s", email)
+        if log:
+            logger.info("Session token rejected (revoked) for %s", email)
         return None
     return email
 
@@ -4613,9 +4093,9 @@ def _verify_session_token(token: str) -> str | None:
 def _extract_session_tid_and_expiry(token: str) -> tuple[str, int] | None:
     """Pull ``(tid, expiry)`` out of a session token for revocation purposes.
 
-    Used by /api/logout — we want to revoke regardless of HMAC validity
-    (a tampered tid still deserves to be denylisted), but we still need
-    the original expiry to know how long the revocation row must live.
+    Used by /api/logout, after the token verified (#591: a forged token is
+    never written to the denylist); the original expiry says how long the
+    revocation row must live.
     Returns None when there's no tid (legacy 3-part format) — those
     predate #510 and cannot be individually revoked.
     """
@@ -5283,9 +4763,9 @@ async def api_logout(request: Request) -> JSONResponse:
     This endpoint:
     1. Reads the session token from `Authorization: Bearer session:…` OR
        the `oncofiles_session` cookie.
-    2. Parses the tid + original expiry out of the token (no HMAC check —
-       even a tampered token is fine to "revoke" since it would already
-       fail _verify_session_token).
+    2. Parses the tid + original expiry out of the token, only when the
+       token still verifies (#591). A tampered or expired token already
+       fails _verify_session_token, so there is nothing to revoke.
     3. Persists the tid to `session_revocations` and adds it to the
        in-memory denylist.
     4. Returns 200 with `{"ok": true}` and a `set_cookie` that expires
@@ -5310,7 +4790,14 @@ async def api_logout(request: Request) -> JSONResponse:
         # has to do (no Request object available there).
         token = request.cookies.get("oncofiles_session", "")
 
-    parsed = _extract_session_tid_and_expiry(token) if token else None
+    # #591: only a token that still verifies goes on the denylist. A forged or
+    # expired one authenticates nothing, and revoking it would let a caller with
+    # no session insert rows with an expiry of its own choosing.
+    parsed = (
+        _extract_session_tid_and_expiry(token)
+        if token and _verify_session_token(token) is not None
+        else None
+    )
     if parsed is not None:
         tid, expiry = parsed
         try:
@@ -5431,7 +4918,7 @@ async def api_doc_detail(request: Request) -> JSONResponse:
             except Exception:
                 structured_metadata = {}
 
-        # Fetch OCR pages (serialized — single Turso connection)
+        # Fetch OCR pages (serialized — single DB connection)
         async with db.db.execute(
             "SELECT page_number, extracted_text FROM document_pages "
             "WHERE document_id = ? ORDER BY page_number",
@@ -5619,32 +5106,11 @@ _SCHEDULE_DEFS = [
         "desc": "Import calendar events, tag medical appointments",
     },
     {
-        "id": "db_keepalive",
-        "name": "DB Keepalive",
-        "schedule": "every 4 min",
-        "group": "infra",
-        "desc": "Ping Turso to prevent connection timeout, or sync embedded replica",
-    },
-    {
         "id": "memory_check",
         "name": "Memory Monitor",
         "schedule": "every 5 min",
         "group": "infra",
         "desc": "Check RSS memory, trigger GC or graceful restart at threshold",
-    },
-    {
-        "id": "trash_cleanup",
-        "name": "Trash Cleanup",
-        "schedule": "daily 3:00 AM",
-        "group": "housekeeping",
-        "desc": "Permanently delete soft-deleted docs older than 30 days",
-    },
-    {
-        "id": "empty_folder_cleanup",
-        "name": "Folder Cleanup",
-        "schedule": "daily 3:15 AM",
-        "group": "housekeeping",
-        "desc": "Merge legacy folders, remove empty GDrive directories",
     },
     {
         "id": "enhancement_sweep",
@@ -5679,7 +5145,7 @@ _SCHEDULE_DEFS = [
         "name": "Prompt Log Cleanup",
         "schedule": "daily 4:15 AM",
         "group": "infra",
-        "desc": "Archive prompt log entries older than 90 days",
+        "desc": "Delete prompt log entries (AI call telemetry) older than 90 days",
     },
     {
         "id": "pipeline_integrity",
@@ -6953,7 +6419,9 @@ async def api_gdrive_folders(request: Request) -> JSONResponse:
             new_expiry = datetime.now(UTC) + timedelta(seconds=refreshed.get("expires_in", 3600))
             token.access_token = access_token
             token.token_expiry = new_expiry
-            await db_inst.upsert_oauth_token(token)
+            await db_inst.update_oauth_access_token(
+                token.patient_id, token.provider, access_token, new_expiry
+            )
 
         gdrive = GDriveClient.from_oauth(
             access_token=access_token,
@@ -7062,7 +6530,9 @@ async def api_gdrive_set_folder(request: Request) -> JSONResponse:
             new_expiry = datetime.now(UTC) + timedelta(seconds=refreshed.get("expires_in", 3600))
             token.access_token = access_token
             token.token_expiry = new_expiry
-            await db_inst.upsert_oauth_token(token)
+            await db_inst.update_oauth_access_token(
+                token.patient_id, token.provider, access_token, new_expiry
+            )
 
         gdrive = GDriveClient.from_oauth(
             access_token=access_token,
@@ -7359,6 +6829,207 @@ async def api_admin_curated_nightly(request: Request) -> JSONResponse:
         return JSONResponse({"error": "internal error"}, status_code=500)
 
 
+# ── #573 admin: verify-only re-read and re-OCR from the dashboard ─────────
+
+_ADMIN_MAX_DOCS = 10
+
+
+def _cross_origin(request: Request) -> JSONResponse | None:
+    """Defence in depth for admin POSTs: auth is an Authorization header (never
+    a cookie), so a cross-site form cannot carry it; still refuse a request
+    whose Origin names another host."""
+    origin = request.headers.get("origin") or ""
+    if not origin:
+        return None
+    from urllib.parse import urlsplit
+
+    host = (request.headers.get("host") or "").lower()
+    if urlsplit(origin).netloc.lower() != host:
+        return JSONResponse({"error": "bad origin"}, status_code=403)
+    return None
+
+
+async def _admin_job_target(request: Request, db_inst: Database, body: dict):
+    """Resolve patient and validate ``document_ids`` for a re-read/re-OCR POST.
+
+    Returns ``(pid, ids, dry_run)`` or a JSONResponse error. Every id must be
+    a curated document of that patient; at most 10; ``dry_run`` defaults to
+    true (anything but an explicit ``false`` is a dry run). A real run needs
+    an explicit selection: only dry runs may auto-pick documents.
+    """
+    raw = body.get("patient_slug") or body.get("patient_id") or ""
+    pid = await _admin_patient_id(db_inst, str(raw))
+    if not pid:
+        return JSONResponse({"error": "unknown patient"}, status_code=404)
+    raw_ids = body.get("document_ids")
+    if raw_ids is None:
+        raw_ids = []
+    if not isinstance(raw_ids, list) or any(
+        isinstance(i, bool) or not isinstance(i, int) for i in raw_ids
+    ):
+        return JSONResponse({"error": "document_ids must be a list of integers"}, status_code=400)
+    ids = list(dict.fromkeys(raw_ids))
+    if len(ids) > _ADMIN_MAX_DOCS:
+        return JSONResponse(
+            {"error": f"at most {_ADMIN_MAX_DOCS} documents per job"}, status_code=400
+        )
+    if ids:
+        own = {r["id"] for r in await db_inst.curated_reocr_candidates(patient_id=pid)}
+        foreign = [i for i in ids if i not in own]
+        if foreign:
+            return JSONResponse(
+                {"error": "document_ids not found for this patient", "document_ids": foreign},
+                status_code=400,
+            )
+    dry_run = body.get("dry_run", True) is not False
+    if not dry_run and not ids:  # only dry runs may auto-pick documents
+        return JSONResponse(
+            {"error": "a real run requires an explicit selection of document_ids"},
+            status_code=400,
+        )
+    return pid, ids, dry_run
+
+
+def _admin_job_response(result: dict) -> JSONResponse:
+    from oncofiles.tools.curated import admin_job_view
+
+    if "error" in result:
+        return JSONResponse({"error": result["error"]}, status_code=409)
+    if result.get("state") != "running":  # "nothing to do"
+        return JSONResponse({k: v for k, v in result.items() if k in ("status", "candidates")})
+    return JSONResponse(admin_job_view(result), status_code=202)
+
+
+@mcp.custom_route("/api/admin/reread", methods=["POST"])
+async def api_admin_reread(request: Request) -> JSONResponse:
+    """Start a verify-only re-read (#678) for ≤ 10 documents. Dry run by default."""
+    err = _require_admin(request) or _cross_origin(request)
+    if err:
+        return err
+    try:
+        from oncofiles.tools.curated import start_reread
+
+        body = await request.json()
+        if not isinstance(body, dict):
+            return JSONResponse({"error": "invalid body"}, status_code=400)
+        db_inst: Database = request.app.state.fastmcp_server._lifespan_result["db"]
+        target = await _admin_job_target(request, db_inst, body)
+        if isinstance(target, JSONResponse):
+            return target
+        pid, ids, dry_run = target
+        if not ids:
+            return JSONResponse({"error": "document_ids is required"}, status_code=400)
+        logger.info(
+            "admin re-read: by=%s patient=%s docs=%d dry_run=%s",
+            (_get_dashboard_email(request) or "bearer")[:40],
+            pid[:8],
+            len(ids),
+            dry_run,
+        )
+        actor = _get_dashboard_email(request) or "bearer"
+        return _admin_job_response(
+            await start_reread(db_inst, pid, ids, dry_run=dry_run, actor=actor)
+        )
+    except Exception as exc:
+        resp = _circuit_breaker_503(exc, "/api/admin/reread")
+        if resp is not None:
+            return resp
+        logger.exception("API admin reread error")
+        return JSONResponse({"error": "internal error"}, status_code=500)
+
+
+@mcp.custom_route("/api/admin/reocr", methods=["POST"])
+async def api_admin_reocr(request: Request) -> JSONResponse:
+    """Start a re-OCR (#660). Dry run by default; a dry run without ids picks
+    up to 3 documents with unverified facts, as curated_reocr does. A real
+    run requires explicit ``document_ids`` (400 otherwise)."""
+    err = _require_admin(request) or _cross_origin(request)
+    if err:
+        return err
+    try:
+        from oncofiles.tools.curated import start_reocr
+
+        body = await request.json()
+        if not isinstance(body, dict):
+            return JSONResponse({"error": "invalid body"}, status_code=400)
+        db_inst: Database = request.app.state.fastmcp_server._lifespan_result["db"]
+        target = await _admin_job_target(request, db_inst, body)
+        if isinstance(target, JSONResponse):
+            return target
+        pid, ids, dry_run = target
+        logger.info(
+            "admin re-OCR: by=%s patient=%s docs=%d dry_run=%s",
+            (_get_dashboard_email(request) or "bearer")[:40],
+            pid[:8],
+            len(ids),
+            dry_run,
+        )
+        result = await start_reocr(
+            db_inst,
+            pid,
+            dry_run=dry_run,
+            document_ids=ids or None,
+            limit=len(ids) or 3,
+            actor=_get_dashboard_email(request) or "bearer",
+        )
+        return _admin_job_response(result)
+    except Exception as exc:
+        resp = _circuit_breaker_503(exc, "/api/admin/reocr")
+        if resp is not None:
+            return resp
+        logger.exception("API admin reocr error")
+        return JSONResponse({"error": "internal error"}, status_code=500)
+
+
+@mcp.custom_route("/api/admin/reocr-status", methods=["GET"])
+async def api_admin_reocr_status(request: Request) -> JSONResponse:
+    """The patient's current or last re-read / re-OCR job: states and counts only."""
+    err = _require_admin(request)
+    if err:
+        return err
+    try:
+        from oncofiles.tools.curated import _dry_runs, admin_job_view, reocr_status
+
+        db_inst: Database = request.app.state.fastmcp_server._lifespan_result["db"]
+        raw = request.query_params.get("patient_slug") or request.query_params.get("patient_id", "")
+        pid = await _admin_patient_id(db_inst, raw)
+        if not pid:
+            return JSONResponse({"error": "unknown patient"}, status_code=404)
+        view = admin_job_view(await reocr_status(db_inst, pid))
+        view["dry_runs_since_start"] = dict(_dry_runs)  # counted, not logged (#573)
+        return JSONResponse(view)
+    except Exception as exc:
+        resp = _circuit_breaker_503(exc, "/api/admin/reocr-status")
+        if resp is not None:
+            return resp
+        logger.exception("API admin reocr-status error")
+        return JSONResponse({"error": "internal error"}, status_code=500)
+
+
+@mcp.custom_route("/api/admin/reread-candidates", methods=["GET"])
+async def api_admin_reread_candidates(request: Request) -> JSONResponse:
+    """Documents with Cowork-era unverified facts: ids, category, counts."""
+    err = _require_admin(request)
+    if err:
+        return err
+    try:
+        from oncofiles.tools.curated import reread_candidates
+
+        db_inst: Database = request.app.state.fastmcp_server._lifespan_result["db"]
+        raw = request.query_params.get("patient_slug") or request.query_params.get("patient_id", "")
+        pid = await _admin_patient_id(db_inst, raw)
+        if not pid:
+            return JSONResponse({"error": "unknown patient"}, status_code=404)
+        docs = await reread_candidates(db_inst, pid)
+        return JSONResponse({"patient_id": pid, "max_per_job": _ADMIN_MAX_DOCS, "documents": docs})
+    except Exception as exc:
+        resp = _circuit_breaker_503(exc, "/api/admin/reread-candidates")
+        if resp is not None:
+            return resp
+        logger.exception("API admin reread-candidates error")
+        return JSONResponse({"error": "internal error"}, status_code=500)
+
+
 _SHARE_CODE_EXPIRY = 600  # 10 minutes
 
 
@@ -7514,16 +7185,55 @@ async def oauth_authorize(request: Request) -> JSONResponse:
         return JSONResponse({"error": "OAuth not configured"}, status_code=500)
 
     service = request.path_params.get("service", "drive")
+    if service in ("gmail", "calendar") and not gmail_calendar_enabled():
+        from oncofiles.config import GMAIL_CALENDAR_DISABLED_MESSAGE
+
+        return JSONResponse({"error": GMAIL_CALENDAR_DISABLED_MESSAGE}, status_code=403)
     raw_pid = request.query_params.get("patient_id", "").strip().lower()
     if not raw_pid:
         return JSONResponse({"error": "patient_id required"}, status_code=400)
+    # #591: the callback stores Google tokens for this patient, so only the
+    # operator bearer, an admin or the patient's caregiver may start the link.
+    # The dashboard opens this URL in a new tab, so its session is the cookie.
+    bearer_ok = _check_bearer(request) is None
+    email = None
+    principal: dict = {"k": "o"}
+    if not bearer_ok:
+        auth_header = request.headers.get("authorization", "")
+        session_token = (
+            auth_header.removeprefix("Bearer session:").strip()
+            if auth_header.startswith("Bearer session:")
+            else request.cookies.get("oncofiles_session", "")
+        )
+        email = _verify_session_token(session_token) if session_token else None
+        parsed_session = _parse_session_token(session_token) if email else None
+        if email is None or parsed_session is None or not parsed_session[2]:
+            return JSONResponse({"error": "unauthorized"}, status_code=401)
+        # The state is bound to this session; /oauth/callback checks its cookie.
+        principal = {"k": "s", "tid": parsed_session[2]}
+    if service not in {"drive", "gmail", "calendar", "all"}:
+        return JSONResponse({"error": "unknown service"}, status_code=400)
     # Resolve slug → UUID (e.g. "q1b" → UUID); pass through if already UUID
     try:
         db_inst: Database = request.app.state.fastmcp_server._lifespan_result["db"]
         patient_id = await db_inst.resolve_patient_id(raw_pid) or raw_pid
-    except Exception:
+        patient = await db_inst.get_patient(patient_id)
+    except Exception as exc:
+        resp = _circuit_breaker_503(exc, "/oauth/authorize")
+        if resp is not None:
+            return resp
         logger.error("OAuth connect: patient resolution failed for '%s'", raw_pid, exc_info=True)
-        patient_id = raw_pid
+        return JSONResponse({"error": "internal error"}, status_code=500)
+    if patient is None:
+        return JSONResponse({"error": "patient not found"}, status_code=404)
+    if not (
+        bearer_ok
+        or _is_admin_email(email)
+        or _email_matches_caregiver(email, patient.caregiver_email)
+    ):
+        return JSONResponse(
+            {"error": "forbidden: not authorized for this patient"}, status_code=403
+        )
     scope_map = {
         "drive": SCOPES,
         "gmail": GMAIL_SCOPES,
@@ -7534,36 +7244,82 @@ async def oauth_authorize(request: Request) -> JSONResponse:
 
     from oncofiles.oauth import _make_state_token
 
-    state = _make_state_token(patient_id=patient_id)
+    state = _make_state_token(patient_id=patient_id, service=service, principal=principal)
     auth_url = get_auth_url_for_scopes(scopes, state=state)
     return RedirectResponse(auth_url)
 
 
 @mcp.custom_route("/oauth/callback", methods=["GET"])
 async def oauth_callback(request: Request) -> JSONResponse:
-    """Handle Google OAuth 2.0 redirect callback."""
-    from oncofiles.models import OAuthToken
-    from oncofiles.oauth import exchange_code, verify_state_token
+    """Handle Google OAuth 2.0 redirect callback.
+
+    #591: the state (v2) names the patient, the service and the initiating
+    principal. A missing / expired / replayed / tampered state, or a session
+    state arriving without that session's cookie, is refused before any write.
+    ``store_google_link`` then refuses a Google account that is neither the
+    initiator's nor the caregiver's (login CSRF; an operator state completes
+    only with the caregiver's account), refuses to replace a different
+    account's token unless the initiator is the operator, an admin or the
+    patient's caregiver, and logs every link / re-link / refusal to
+    activity_log (hashes only).
+    """
+    from oncofiles.google_link import (
+        allowed_accounts,
+        log_link_refusal,
+        mcp_principal_privileged,
+        store_google_link,
+    )
+    from oncofiles.oauth import exchange_code, verify_link_state
 
     rate_err = _check_rate_limit("oauth-callback")
     if rate_err:
         return rate_err
 
     # Validate CSRF state parameter and extract patient_id
-    state = request.query_params.get("state", "")
-    valid, patient_id = verify_state_token(state)
-    if not valid or not patient_id:
+    payload = verify_link_state(request.query_params.get("state", ""))
+    if payload is None:
         return JSONResponse({"error": "Invalid or expired state parameter."}, status_code=400)
+    patient_id = payload["pid"]
+    principal = payload["pr"]
 
     # Validate that the patient still exists (#345)
-    db_check: Database = request.app.state.fastmcp_server._lifespan_result["db"]
-    patient = await db_check.get_patient(patient_id)
+    db: Database = request.app.state.fastmcp_server._lifespan_result["db"]
+    patient = await db.get_patient(patient_id)
     if not patient:
         logger.warning("OAuth callback for deleted patient: %s", patient_id)
         return JSONResponse(
             {"error": "Patient no longer exists. Please create a new patient from the dashboard."},
             status_code=404,
         )
+
+    # Bind to the initiating principal.
+    kind = principal.get("k")
+    session_email = None
+    if kind == "o":
+        privileged = True
+    elif kind == "s":
+        session_token = request.cookies.get("oncofiles_session", "")
+        session_email = _verify_session_token(session_token) if session_token else None
+        parsed_session = _parse_session_token(session_token) if session_email else None
+        if parsed_session is None or parsed_session[2] != principal.get("tid"):
+            await log_link_refusal(
+                db,
+                patient_id,
+                service=payload["svc"],
+                principal_kind=kind,
+                reason="started in another session",
+                source="oauth_callback",
+            )
+            return JSONResponse(
+                {"error": "This link was started in another session."}, status_code=403
+            )
+        privileged = _is_admin_email(session_email) or _email_matches_caregiver(
+            session_email, patient.caregiver_email
+        )
+    elif kind == "m":
+        privileged = mcp_principal_privileged(principal, patient.caregiver_email)
+    else:
+        return JSONResponse({"error": "Invalid or expired state parameter."}, status_code=400)
 
     code = request.query_params.get("code")
     if not code:
@@ -7575,31 +7331,18 @@ async def oauth_callback(request: Request) -> JSONResponse:
         logger.exception("OAuth token exchange failed")
         return JSONResponse({"error": "Token exchange failed. Please try again."}, status_code=500)
 
-    from oncofiles.oauth import parse_granted_scopes
-
-    expiry = datetime.now(UTC) + timedelta(seconds=tokens.get("expires_in", 3600))
-    new_scopes = parse_granted_scopes(tokens)
-
-    # Merge with existing scopes so incremental auth doesn't drop prior grants
-    db = request.app.state.fastmcp_server._lifespan_result["db"]
-    existing_token = await db.get_oauth_token(patient_id=patient_id)
-    if existing_token and existing_token.granted_scopes:
-        existing_scopes = json.loads(existing_token.granted_scopes)
-        merged_scopes = sorted(set(existing_scopes) | set(new_scopes))
-    else:
-        merged_scopes = new_scopes
-
-    oauth_token = OAuthToken(
+    stored, reason = await store_google_link(
+        db,
         patient_id=patient_id,
-        access_token=tokens["access_token"],
-        refresh_token=tokens.get("refresh_token", ""),
-        token_expiry=expiry,
-        granted_scopes=json.dumps(merged_scopes),
-        gdrive_folder_id=existing_token.gdrive_folder_id if existing_token else "",
-        owner_email=existing_token.owner_email if existing_token else "",
+        tokens=tokens,
+        service=payload["svc"],
+        principal_kind=kind,
+        privileged=privileged,
+        allowed_account_hashes=allowed_accounts(principal, patient.caregiver_email, session_email),
+        source="oauth_callback",
     )
-
-    await db.upsert_oauth_token(oauth_token)
+    if not stored:
+        return JSONResponse({"error": f"Google account not linked: {reason}."}, status_code=403)
 
     # Clear any "needs_reauth" flags for this patient now that fresh tokens landed (#415)
     for key in [k for k in _invalid_grant_tokens if k[0] == patient_id]:
@@ -7660,6 +7403,8 @@ from oncofiles.tools import (  # noqa: E402
     documents,
     enhance_tools,
     export,
+    fact_review,
+    fhir,
     gdrive,
     hygiene,
     integrations,
@@ -7684,6 +7429,8 @@ enhance_tools.register(mcp)
 clinical.register(mcp)
 clinical_records.register(mcp)
 clinical_facts.register(mcp)
+fact_review.register(mcp)
+fhir.register(mcp)
 lab_trends.register(mcp)
 export.register(mcp)
 naming.register(mcp)
@@ -7693,9 +7440,13 @@ db_query.register(mcp)
 prompt_log.register(mcp)
 integrations.register(mcp)
 
+# #608: readOnlyHint / destructiveHint from the declarative classification.
+from oncofiles.tool_annotations import ToolAnnotationTransform  # noqa: E402
+
+mcp.add_transform(ToolAnnotationTransform())
+
 # ── Backward-compatible re-exports for tests ─────────────────────────────────
 from oncofiles.tools._helpers import (  # noqa: E402, F401
-    PATIENT_CONTEXT,
     _check_baseline_labs,
     _clamp_limit,
     _doc_header,
@@ -7927,6 +7678,12 @@ def main() -> None:
         from starlette.middleware import Middleware
         from starlette.middleware.cors import CORSMiddleware
 
+        from oncofiles.ratelimit import RateLimitMiddleware
+        from oncofiles.register_guard import RegisterJSONGuardMiddleware
+
+        def _quiet_session_verifier(token: str) -> str | None:
+            return _verify_session_token(token, log=False)
+
         mcp.run(
             transport=MCP_TRANSPORT,
             host=MCP_HOST,
@@ -7945,12 +7702,21 @@ def main() -> None:
                         "https://oncofiles.com",
                         "https://claude.ai",
                         "https://chatgpt.com",
-                        "https://oncoteam.cloud",
                     ],
                     allow_credentials=True,
                     allow_methods=["GET", "POST", "OPTIONS", "DELETE"],
                     allow_headers=["Authorization", "Content-Type", "mcp-protocol-version"],
                 ),
+                # #591: innermost, so CORS + security headers wrap its 429/413 and
+                # preflights never reach it. /health is exempt. The verifier is
+                # HMAC-only (no DB) and silent (log=False), so forged sessions can
+                # neither key a victim's bucket nor flood the logs.
+                Middleware(RateLimitMiddleware, session_verifier=_quiet_session_verifier),
+                # #584: non-JSON DCR body on POST /register → 400, not 500.
+                # Inside the rate limiter (Wave A integration), so /register
+                # probes with junk bodies still count against the auth bucket
+                # and its body limit applies before this guard buffers.
+                Middleware(RegisterJSONGuardMiddleware),
             ],
             uvicorn_config={
                 "timeout_keep_alive": 120,

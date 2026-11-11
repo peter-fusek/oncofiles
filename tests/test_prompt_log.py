@@ -27,9 +27,9 @@ def test_extract_filename_description():
 
 
 def test_extract_ocr():
-    raw = "Pacientka: Erika Fusekova\nDatum: 2026-01-15\nWBC: 5.2"
+    raw = "Pacientka: Jana Testova\nDatum: 2030-01-15\nWBC: 5.2"
     result = _extract_result_summary("ocr", raw)
-    assert "Erika Fusekova" in result
+    assert "Jana Testova" in result
     assert len(result) <= 150
 
 
@@ -112,7 +112,7 @@ async def test_search_prompt_log_text_search(db):
         PromptLogEntry(
             call_type=PromptCallType.OCR,
             model="claude-haiku-4-5",
-            raw_response="Erika Fusekova blood count results",
+            raw_response="Jana Testova blood count results",
             result_summary="blood count",
         )
     )

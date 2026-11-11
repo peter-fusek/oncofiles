@@ -78,7 +78,7 @@ Značka **NEOVERENÉ** znamená, že sa to v tomto behu nedalo priamo overiť. P
 | Anthropic API | `ANTHROPIC_API_KEY`, volania priamo na api.anthropic.com, nočný pipeline 23:00 UTC | nie |
 | E-mail (Resend) | `RESEND_API_KEY`, `NOTIFY_FROM_EMAIL`, `NOTIFY_TO_EMAIL`. Upozornenia od `sync_watchdog`. Doména odosielateľa na Resend **NEOVERENÉ** | nie (odchádzajúce) |
 | GitHub (bug reporty z dashboardu) | `GITHUB_TOKEN`, `GITHUB_REPO`. Token je podľa poznámok **expirovaný** a čaká na rotáciu (#550) | nie |
-| Oncoteam webhook | `ONCOTEAM_WEBHOOK_URL`/`_TOKEN` (odchádzajúci) | áno, ak sa zmení URL oncoteamu |
+| Oncoteam webhook | `ONCOTEAM_WEBHOOK_URL`/`_TOKEN` (odchádzajúci; odstránený v #721) | áno, ak sa zmení URL oncoteamu |
 | Prichádzajúce webhooky | žiadne. GitHub repo hooks: 0. Coolify deploy webhook nie je registrovaný (#549) | |
 | MCP OAuth (Claude.ai, ChatGPT: DCR) | issuer `https://oncofiles.com/`, `/authorize`, `/token`, `/register` | **áno**: `base_url="https://oncofiles.com"` je **napevno** v `server.py` |
 
@@ -98,7 +98,7 @@ Značka **NEOVERENÉ** znamená, že sa to v tomto behu nedalo priamo overiť. P
 
 Všetko beží **v procese** cez APScheduler. Zapína ho `SYNC_ENABLED`. Úlohy, ktoré používajú Google, zastavuje `GOOGLE_INTEGRATION_ENABLED`. Všetky úlohy, ktoré pracujú s DB, sú serializované `Semaphore(1)`. Scheduler je **multi-patient**: iteruje cez všetkých pacientov.
 
-ID úloh v kóde: `db_keepalive`, `memory_check`, `sync_watchdog`, `nightly_ai_pipeline` (23:00 UTC, `misfire_grace_time=1800`), `gmail_sync`, `calendar_sync`, `gdrive_sync`, `startup_catchup`, `gmail_startup_sync`, `calendar_startup_sync`, `enhancement_sweep`, `metadata_extraction`, `category_validation`, `document_groups_backfill`, `pipeline_integrity`, `empty_folder_cleanup`, `trash_cleanup`, `oauth_token_cleanup`, `prompt_log_cleanup`, `tier_transition`, `weekly_analytics`, `weekly_discovery_pipeline`, `nightly_ai_oneoff`. Niektoré sa registrujú len v legacy režime `AI_NIGHTLY_ONLY=false`. Podľa poznámok z augusta je v prode aktívnych 14.
+ID úloh v kóde: `memory_check`, `sync_watchdog`, `nightly_ai_pipeline` (23:00 UTC, `misfire_grace_time=1800`), `gmail_sync`, `calendar_sync`, `gdrive_sync`, `startup_catchup`, `gmail_startup_sync`, `calendar_startup_sync`, `enhancement_sweep`, `metadata_extraction`, `category_validation`, `document_groups_backfill`, `pipeline_integrity`, `oauth_token_cleanup`, `prompt_log_cleanup`, `tier_transition`, `weekly_analytics`, `weekly_discovery_pipeline`, `nightly_ai_oneoff`. Niektoré sa registrujú len v legacy režime `AI_NIGHTLY_ONLY=false`. Podľa poznámok z augusta je v prode aktívnych 14. Úlohy `trash_cleanup` a `empty_folder_cleanup` boli odstránené v #734 (žiadne automatické mazanie používateľských dát).
 
 Mimo procesu: bývalý Railway cron `oncofiles-backup` (02:00 UTC, GCS) je **zaniknutý**. Lokálne `scripts/com.oncofiles.memory-backup.plist` je launchd záloha Claude memory, nie prod DB. Externé „triggery“ (denný health 06:00 UTC, týždenný ops audit) sú Claude remote triggery a podľa #524 sú slepé.
 
@@ -166,8 +166,9 @@ Zdroj „Coolify env“ znamená, že hodnota je dnes nastavená v Coolify UI (r
 | `NOTIFY_FROM_EMAIL` / `NOTIFY_TO_EMAIL` | odosielateľ a príjemca upozornení | nie | Coolify env |
 | `GITHUB_TOKEN` | bug reporty → GitHub issues (**expirovaný**, #550) | **áno** | Coolify env, iba runtime |
 | `GITHUB_REPO` | cieľové repo bug reportov | nie | default |
-| `ONCOTEAM_WEBHOOK_URL` / `ONCOTEAM_WEBHOOK_TOKEN` | notifikácia oncoteamu | URL nie / token **áno** | Coolify env (ak je) |
-| `ONCOFILES_PREFERRED_LANG`, `PATIENT_NAME`, `LOG_LEVEL` | lokalizácia, legacy single-patient, logy | nie (meno = osobný údaj) | default |
+| `ONCOTEAM_WEBHOOK_URL` / `ONCOTEAM_WEBHOOK_TOKEN` | notifikácia oncoteamu (odstránené v #721, Oncoteam ukončený) | URL nie / token **áno** | Coolify env (ak je) |
+| `ONCOFILES_PREFERRED_LANG`, `LOG_LEVEL` | lokalizácia, logy | nie | default |
+| `PATIENT_NAME`, `PATIENT_CONTEXT_PATH` | od #733 sa nečítajú (žiadny legacy pacient) — nenastavovať | — | — |
 | `IMPORT_LOCAL_SOURCE`, `IMPORT_TRANSCRIPTS_PATH` | jednorazové importy | nie | nepoužité v prode |
 | `BACKUP_BUCKET`, `BACKUP_KMS_KEY`, `BACKUP_GITHUB_TOKEN` | GCS záloha (zaniknutá) | token **áno** | bývalý Railway cron |
 | `RAILWAY_GIT_COMMIT_SHA`, `RAILWAY_DEPLOYMENT_ID` | len do logu pri štarte | nie | vkladá platforma, doma nastaviť ručne |

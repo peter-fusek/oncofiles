@@ -18,8 +18,6 @@ import sys
 from oncofiles.config import (
     DATABASE_PATH,
     GOOGLE_DRIVE_FOLDER_ID,
-    TURSO_AUTH_TOKEN,
-    TURSO_DATABASE_URL,
 )
 from oncofiles.database import Database
 from oncofiles.gdrive_client import create_gdrive_client
@@ -51,10 +49,7 @@ async def backfill(dry_run: bool = False, folder_id: str = "") -> dict[str, int]
     for gf in gdrive_files:
         gdrive_by_name[gf["name"]] = gf
 
-    if TURSO_DATABASE_URL:
-        db = Database(turso_url=TURSO_DATABASE_URL, turso_token=TURSO_AUTH_TOKEN)
-    else:
-        db = Database(DATABASE_PATH)
+    db = Database(DATABASE_PATH)
     await db.connect()
     await db.migrate()
 

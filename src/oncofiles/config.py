@@ -36,7 +36,7 @@ GOOGLE_APPLICATION_CREDENTIALS: str = os.environ.get("GOOGLE_APPLICATION_CREDENT
 # project, revoked client) so the app stops hammering APIs that cannot answer.
 #
 # Prefer this over SYNC_ENABLED=false: SYNC_ENABLED kills the entire
-# APScheduler, taking db_keepalive, memory_check, the cleanup jobs and the
+# APScheduler, taking memory_check, the cleanup jobs and the
 # sync watchdog down with it. This flag disables only the Google-touching
 # paths, so the MCP server, dashboard, DB and local housekeeping keep running
 # normally and the watchdog can still report the outage.
@@ -45,6 +45,26 @@ GOOGLE_INTEGRATION_ENABLED: bool = os.environ.get("GOOGLE_INTEGRATION_ENABLED", 
     "1",
     "yes",
 )
+
+# Gmail + Google Calendar are OFF by default (#618/#699). The privacy text says
+# they are not used, and this flag is what makes that true — independently of
+# SYNC_ENABLED and of GOOGLE_INTEGRATION_ENABLED (which must stay true so the
+# curated pipeline can reach Drive). When false: the gmail/calendar scheduler
+# jobs are not registered, no OAuth URL ever requests the gmail/calendar
+# scopes, and the Gmail/Calendar MCP tools refuse. Runtime-only env; read at
+# call time through ``gmail_calendar_enabled()`` so tests can patch it.
+GMAIL_CALENDAR_ENABLED: bool = os.environ.get("GMAIL_CALENDAR_ENABLED", "false").lower() in (
+    "true",
+    "1",
+    "yes",
+)
+GMAIL_CALENDAR_DISABLED_MESSAGE = "Gmail/Calendar integration is not enabled on this server."
+
+
+def gmail_calendar_enabled() -> bool:
+    """Return the current GMAIL_CALENDAR_ENABLED value (module attr, patchable)."""
+    return GMAIL_CALENDAR_ENABLED
+
 
 # Google OAuth 2.0 (v1.0)
 # Local LLM (#565): OpenAI-compatible endpoint on the self-hosted server (LM Studio).
@@ -60,6 +80,22 @@ REOCR_RSS_LIMIT_MB: float = float(os.environ.get("REOCR_RSS_LIMIT_MB", "450"))
 # Concurrent vision passes per page in a re-read (#593). 1 = sequential (default);
 # 2 needs at least 2 parallel slots in LM Studio (infra setting).
 REOCR_PARALLEL_PASSES: int = int(os.environ.get("REOCR_PARALLEL_PASSES", "1"))
+# Render resolution of the two vision passes (#593), split by path. Defaults are
+# the values used since #660: pass 1 at 150 dpi, pass 2 at 220 dpi; every page is
+# still capped at extract.MAX_PAGE_PIXELS. The curation pipeline's first OCR keeps
+# extract.RENDER_DPI. Runtime env; the re-OCR child inherits REOCR_* and REREAD_*.
+# Re-OCR rewrite path (curated_reocr: its transcript is written to Drive). DO NOT
+# LOWER without a separate measurement of that path's output quality.
+REOCR_DPI: int = int(os.environ.get("REOCR_DPI", "150"))
+REOCR_SECOND_PASS_DPI: int = int(os.environ.get("REOCR_SECOND_PASS_DPI", "220"))
+# Verify-only re-read (#678: nothing written, it only confirms Cowork-era values).
+# The A/B knob for #593 T3.
+REREAD_DPI: int = int(os.environ.get("REREAD_DPI", "150"))
+REREAD_SECOND_PASS_DPI: int = int(os.environ.get("REREAD_SECOND_PASS_DPI", "220"))
+# Second-pass policy (#593): "fixed2" (default) reads every page twice; "adaptive"
+# skips the second pass only where it provably cannot change what is confirmed
+# (see reocr._vision_passes); verification semantics never loosen.
+REOCR_PASSES_MODE: str = os.environ.get("REOCR_PASSES_MODE", "fixed2").strip().lower()
 # Model reasoning for re-OCR / re-read transcription (perf): "on" (default, the
 # model's own behaviour) or "off" (chat_template_kwargs.enable_thinking=false).
 # Transcription only; classification and extraction are not affected.
@@ -86,19 +122,20 @@ LLM_EXTRACT_SHADOW_DISABLED: bool = (
 # Model reasoning for the text extractor: "off" (default; the page text is
 # short and the answer is a copy job) or "on".
 LLM_EXTRACT_THINKING: str = os.environ.get("LLM_EXTRACT_THINKING", "off").strip().lower()
+# LLM-first extraction of the non-lab kinds (#726 item 4): diagnoses, biomarkers,
+# treatments, procedures, lesion sizes, planned dates. MCP tools
+# curated_clinical_extract_preview (dry run) and curated_clinical_extract
+# (dry_run=True by default; writes only with dry_run=false and a known DOB).
+# LLM_CLINICAL_EXTRACT_DISABLED=true is the off-switch for both.
+LLM_CLINICAL_EXTRACT_DISABLED: bool = (
+    os.environ.get("LLM_CLINICAL_EXTRACT_DISABLED", "false").strip().lower() == "true"
+)
 
 GOOGLE_OAUTH_CLIENT_ID: str = os.environ.get("GOOGLE_OAUTH_CLIENT_ID", "")
 GOOGLE_OAUTH_CLIENT_SECRET: str = os.environ.get("GOOGLE_OAUTH_CLIENT_SECRET", "")
 GOOGLE_OAUTH_REDIRECT_URI: str = os.environ.get(
     "GOOGLE_OAUTH_REDIRECT_URI", "https://oncofiles.com/oauth/callback"
 )
-
-# Turso (v0.4)
-TURSO_DATABASE_URL: str = os.environ.get("TURSO_DATABASE_URL", "")
-TURSO_AUTH_TOKEN: str = os.environ.get("TURSO_AUTH_TOKEN", "")
-TURSO_REPLICA_PATH: str = os.environ.get(
-    "TURSO_REPLICA_PATH", ""
-)  # local file for embedded replica
 
 # Cloud transport (v0.4)
 MCP_TRANSPORT: str = os.environ.get("MCP_TRANSPORT", "stdio")
@@ -115,9 +152,9 @@ MAX_DOCUMENTS_PER_PATIENT: int = int(os.environ.get("MAX_DOCUMENTS_PER_PATIENT",
 # does not bound rows that already exist — q1b sits at ~296 documents under a
 # cap of 200 today. So if a read limit tracked the cap exactly, LOWERING the cap
 # would silently truncate reads over existing data. In `_cleanup_orphan_ocr`
-# that means trashing OCR sidecars for the documents that fell outside the
-# window, because anything absent from `expected_ocr_names` is treated as an
-# orphan. `max()` makes the ceiling monotonic: it can never drop below either
+# (removed in #734) that meant trashing OCR sidecars for the documents that fell
+# outside the window, because anything absent from `expected_ocr_names` was
+# treated as an orphan. `max()` makes the ceiling monotonic: it can never drop below either
 # the cap or the historical high-water mark, and raising the cap raises it too.
 #
 # 10_000 also matches the most generous pre-existing literal in the codebase, so
@@ -180,21 +217,12 @@ CALENDAR_ENABLED: bool = os.environ.get("CALENDAR_ENABLED", "false").lower() in 
     "yes",
 )
 
-# Oncoteam webhook (real-time document processing)
-ONCOTEAM_WEBHOOK_URL: str = os.environ.get("ONCOTEAM_WEBHOOK_URL", "")
-ONCOTEAM_WEBHOOK_TOKEN: str = os.environ.get("ONCOTEAM_WEBHOOK_TOKEN", "")
-
 # GitHub bug reporting
 GITHUB_TOKEN: str = os.environ.get("GITHUB_TOKEN", "")
 GITHUB_REPO: str = os.environ.get("GITHUB_REPO", "peter-fusek/oncofiles")
 # Dashboard bug reports go ONLY to this repo, and only if GitHub confirms it is
 # private (the dashboard shows patient data). No default: unset = disabled (#621).
 BUG_REPORT_REPO: str = os.environ.get("BUG_REPORT_REPO", "")
-
-# Patient context
-PATIENT_CONTEXT_PATH: str = os.environ.get(
-    "PATIENT_CONTEXT_PATH", str(DATA_DIR / "patient_context.json")
-)
 
 # Dashboard auth — comma-separated admin emails (see all patients)
 # Non-admin users can still sign in but only see their own patients.

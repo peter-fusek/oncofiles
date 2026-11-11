@@ -143,7 +143,7 @@ async def test_notifier_calls_resend_with_correct_shape(monkeypatch):
 
     await _notify_admin_onboarding_event(
         patient_slug="q1b",
-        display_name="Erika Fusekova",
+        display_name="Jana Testova",
         caregiver_email="peter.fusek@instarea.sk",
         event_type="created",
     )
@@ -152,7 +152,7 @@ async def test_notifier_calls_resend_with_correct_shape(monkeypatch):
     assert captured["headers"]["Authorization"] == "Bearer re_test_key_123"
     assert captured["json"]["from"] == "Onco Notifier <hello@oncofiles.com>"
     assert captured["json"]["to"] == ["admin@oncofiles.com"]
-    assert "Nový pacient: Erika Fusekova" in captured["json"]["subject"]
+    assert "Nový pacient: Jana Testova" in captured["json"]["subject"]
     body = captured["json"]["text"]
     assert "patient_slug:    q1b" in body
     assert "caregiver_email: peter.fusek@instarea.sk" in body

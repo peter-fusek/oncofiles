@@ -68,10 +68,10 @@ async def test_trash_isolated(db: Database):
     doc = await db.insert_document(make_doc(file_id="trash_me"), patient_id=ERIKA_UUID)
     await db.delete_document(doc.id)
 
-    erika_trash = await db.list_trash(patient_id=ERIKA_UUID)
+    jana_trash = await db.list_trash(patient_id=ERIKA_UUID)
     other_trash = await db.list_trash(patient_id=TEST_PATIENT_UUID)
 
-    assert len(erika_trash) == 1
+    assert len(jana_trash) == 1
     assert len(other_trash) == 0
 
 
@@ -83,9 +83,7 @@ async def test_treatment_events_isolated(db: Database):
     """Treatment events for patient A are invisible to patient B."""
     from oncofiles.models import TreatmentEventQuery
 
-    await db.insert_treatment_event(
-        make_treatment_event(title="Erika chemo"), patient_id=ERIKA_UUID
-    )
+    await db.insert_treatment_event(make_treatment_event(title="Jana chemo"), patient_id=ERIKA_UUID)
     await db.insert_treatment_event(
         make_treatment_event(title="Test chemo"), patient_id=TEST_PATIENT_UUID
     )
@@ -96,7 +94,7 @@ async def test_treatment_events_isolated(db: Database):
     )
 
     assert len(events_a) == 1
-    assert events_a[0].title == "Erika chemo"
+    assert events_a[0].title == "Jana chemo"
     assert len(events_b) == 1
     assert events_b[0].title == "Test chemo"
 
@@ -108,7 +106,7 @@ async def test_treatment_events_isolated(db: Database):
 async def test_research_entries_isolated(db: Database):
     """Research entries for patient A are invisible to patient B."""
     await db.insert_research_entry(
-        make_research_entry(title="Erika research"), patient_id=ERIKA_UUID
+        make_research_entry(title="Jana research"), patient_id=ERIKA_UUID
     )
     await db.insert_research_entry(
         make_research_entry(title="Test research", external_id="PMID99999"),
@@ -119,7 +117,7 @@ async def test_research_entries_isolated(db: Database):
     results_b = await db.list_research_entries(patient_id=TEST_PATIENT_UUID)
 
     assert len(results_a) == 1
-    assert results_a[0].title == "Erika research"
+    assert results_a[0].title == "Jana research"
     assert len(results_b) == 1
     assert results_b[0].title == "Test research"
 
@@ -254,7 +252,7 @@ async def test_agent_state_per_patient_stored(db: Database):
     from oncofiles.models import AgentState
 
     await db.set_agent_state(
-        AgentState(agent_id="oncoteam", key="memo", value="erika data", patient_id=ERIKA_UUID)
+        AgentState(agent_id="oncoteam", key="memo", value="jana data", patient_id=ERIKA_UUID)
     )
     await db.set_agent_state(
         AgentState(agent_id="oncoteam", key="memo", value="test data", patient_id=TEST_PATIENT_UUID)
@@ -263,7 +261,7 @@ async def test_agent_state_per_patient_stored(db: Database):
     # Per-patient queries return only that patient's state
     state_a = await db.get_agent_state("memo", patient_id=ERIKA_UUID)
     state_b = await db.get_agent_state("memo", patient_id=TEST_PATIENT_UUID)
-    assert state_a is not None and state_a.value == "erika data"
+    assert state_a is not None and state_a.value == "jana data"
     assert state_b is not None and state_b.value == "test data"
 
 
@@ -275,7 +273,7 @@ async def test_patient_context_isolated(db: Database):
     """Patient context is per-patient, not a shared global."""
     from oncofiles import patient_context
 
-    ctx_a = {"name": "Erika", "diagnosis": "CRC stage IV"}
+    ctx_a = {"name": "Jana", "diagnosis": "CRC stage IV"}
     ctx_b = {"name": "Test Patient", "diagnosis": "Lung cancer"}
 
     await patient_context.save_to_db(db.db, ctx_a, patient_id=ERIKA_UUID)
@@ -284,7 +282,7 @@ async def test_patient_context_isolated(db: Database):
     loaded_a = await patient_context.load_from_db(db.db, patient_id=ERIKA_UUID)
     loaded_b = await patient_context.load_from_db(db.db, patient_id=TEST_PATIENT_UUID)
 
-    assert loaded_a["name"] == "Erika"
+    assert loaded_a["name"] == "Jana"
     assert loaded_a["diagnosis"] == "CRC stage IV"
     assert loaded_b["name"] == "Test Patient"
     assert loaded_b["diagnosis"] == "Lung cancer"
@@ -296,13 +294,13 @@ async def test_patient_context_update_doesnt_leak(db: Database):
     from oncofiles import patient_context
 
     await patient_context.save_to_db(
-        db.db, {"name": "Erika", "note": "original"}, patient_id=ERIKA_UUID
+        db.db, {"name": "Jana", "note": "original"}, patient_id=ERIKA_UUID
     )
     await patient_context.save_to_db(
         db.db, {"name": "Test", "note": "original"}, patient_id=TEST_PATIENT_UUID
     )
 
-    # Update only erika's context
+    # Update only jana's context
     patient_context.update_context({"note": "updated"}, patient_id=ERIKA_UUID)
     await patient_context.save_to_db(
         db.db, patient_context.get_context(ERIKA_UUID), patient_id=ERIKA_UUID

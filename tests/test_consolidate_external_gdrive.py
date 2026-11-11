@@ -30,9 +30,9 @@ class _StubCtx:
 async def _seed_external_doc(db: Database, *, gdrive_id: str, doc_id_hint: str) -> int:
     doc = make_doc(
         file_id=f"file_{doc_id_hint}",
-        filename=f"20260313_Erika_PA_Advocate_{doc_id_hint}.md",
+        filename=f"20300313_Jana_PA_Advocate_{doc_id_hint}.md",
         mime_type="text/markdown",
-        document_date=date(2026, 3, 13),
+        document_date=date(2030, 3, 13),
         gdrive_id=gdrive_id,
     )
     inserted = await db.insert_document(doc, patient_id=ERIKA_UUID)
