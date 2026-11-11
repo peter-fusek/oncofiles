@@ -174,8 +174,9 @@ def _validate_query(sql: str, caller_pid: str, *, is_admin: bool = False) -> str
                     "Patient-scoped tables require literal equality "
                     f"WHERE patient_id = '{caller_pid}' on every reference "
                     f"(table {t.name.lower()!r}, alias {t.alias_or_name!r}), as a top-level "
-                    "AND condition. OR, LIKE, IN, IS NOT NULL, GROUP BY, unfiltered "
-                    "joins/sub-queries and non-matching literals are rejected."
+                    "AND condition. OR, LIKE, IN, IS NOT NULL, GROUP BY, RIGHT/FULL "
+                    "joins, unfiltered joins/sub-queries and non-matching literals "
+                    "are rejected."
                 )
 
     return None
@@ -227,10 +228,24 @@ def _table_ref_is_pid_filtered(table: exp.Table, caller_pid: str) -> bool:
     qualifier = table.alias_or_name.lower()
     siblings = [t for t in select.find_all(exp.Table) if t.find_ancestor(exp.Select) is select]
 
+    # Outer joins: an ON-clause equality does not restrict the PRESERVED side,
+    # e.g. `(SELECT 1) x RIGHT JOIN documents d ON d.patient_id = '<pid>'`
+    # returns every patient's documents. RIGHT and FULL joins are rejected
+    # outright in any SELECT that reads a patient-scoped table.
+    joins = select.args.get("joins") or []
+    if any((j.side or "").upper() in ("RIGHT", "FULL") for j in joins):
+        return False
+    if any((j.kind or "").upper() == "OUTER" and not j.side for j in joins):
+        return False
+
     where = select.args.get("where")
     conditions = _conjuncts(where.this if where is not None else None)
     join = table.parent
-    if isinstance(join, exp.Join):
+    # An ON filter counts only for the table that join introduces, and only
+    # when that table is not preserved: INNER/CROSS (no side) or the
+    # right-hand table of a LEFT join. The FROM base of a LEFT join is never
+    # introduced by a Join node, so it always needs the WHERE filter.
+    if isinstance(join, exp.Join) and (join.side or "").upper() in ("", "LEFT"):
         conditions += _conjuncts(join.args.get("on"))
 
     for cond in conditions:

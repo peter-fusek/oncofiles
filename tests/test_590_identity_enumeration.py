@@ -311,6 +311,16 @@ async def test_query_db_foreign_slug_error_equals_unknown(pdb):
         f"SELECT * FROM documents WHERE NOT (patient_id = '{OWN_UUID}')",
         # Unqualified filter is ambiguous with two tables in the SELECT.
         f"SELECT b.patient_id FROM documents a, documents b WHERE patient_id = '{OWN_UUID}'",
+        # Outer joins: an ON equality does not restrict the preserved side.
+        f"SELECT d.* FROM (SELECT 1) x RIGHT JOIN documents d ON d.patient_id = '{OWN_UUID}'",
+        f"SELECT d.* FROM (SELECT 1) x FULL OUTER JOIN documents d ON d.patient_id = '{OWN_UUID}'",
+        f"SELECT d.* FROM (SELECT 1) x FULL JOIN documents d ON d.patient_id = '{OWN_UUID}'",
+        # RIGHT JOIN is rejected even when every table also has a WHERE filter.
+        f"SELECT d.id FROM document_pages p RIGHT JOIN documents d ON p.document_id = d.id "
+        f"WHERE d.patient_id = '{OWN_UUID}' AND p.patient_id = '{OWN_UUID}'",
+        # LEFT JOIN: the scoped table is the preserved left side, filtered only in ON.
+        f"SELECT d.* FROM documents d LEFT JOIN document_pages p "
+        f"ON d.patient_id = '{OWN_UUID}' AND p.patient_id = '{OWN_UUID}'",
     ],
 )
 def test_query_db_enumeration_bypasses_rejected(sql):
@@ -322,6 +332,11 @@ def test_query_db_enumeration_bypasses_rejected(sql):
     [
         f"SELECT * FROM documents WHERE (patient_id = '{OWN_UUID}') AND (id > 0)",
         f"SELECT d.id FROM documents d JOIN document_pages p ON p.document_id = d.id "
+        f"AND p.patient_id = '{OWN_UUID}' WHERE d.patient_id = '{OWN_UUID}'",
+        f"SELECT d.id FROM documents d INNER JOIN document_pages p ON p.document_id = d.id "
+        f"AND p.patient_id = '{OWN_UUID}' WHERE d.patient_id = '{OWN_UUID}'",
+        # LEFT JOIN: the non-preserved right-hand table may be filtered in ON.
+        f"SELECT d.id FROM documents d LEFT JOIN document_pages p ON p.document_id = d.id "
         f"AND p.patient_id = '{OWN_UUID}' WHERE d.patient_id = '{OWN_UUID}'",
         f"SELECT COUNT(*) FROM (SELECT id FROM documents WHERE patient_id = '{OWN_UUID}')",
         f"SELECT id FROM documents WHERE patient_id = '{OWN_UUID}' AND id IN "
