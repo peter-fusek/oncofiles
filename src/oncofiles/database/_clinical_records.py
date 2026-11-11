@@ -6,7 +6,7 @@ Notes and analyses are separate tables — see ``clinical_record_notes`` and
 ``clinical_analyses``.
 
 Deletion is always soft. A deleted record's audit row survives so the caregiver
-(or Oncoteam, or a future dashboard timeline) can still see when / why a fact
+(or a future dashboard timeline) can still see when / why a fact
 was retracted.
 """
 

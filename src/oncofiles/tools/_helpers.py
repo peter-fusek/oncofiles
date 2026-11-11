@@ -244,7 +244,7 @@ def _is_admin_caller() -> bool:
     """Return True if the current request has admin scope.
 
     Admin is either: (a) the static `MCP_BEARER_TOKEN` caller (operator /
-    Oncoteam / dev), or (b) an OAuth caller whose Google email matches
+    Claude Desktop / dev), or (b) an OAuth caller whose Google email matches
     `DASHBOARD_ADMIN_EMAILS`. `verify_token()` in persistent_oauth.py sets
     the `_verified_caller_is_admin` ContextVar for both cases.
 

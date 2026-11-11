@@ -240,7 +240,6 @@ async def _process_attachment(
 ) -> Document | None:
     """Download email attachment and process through document pipeline."""
     from oncofiles.filename_parser import parse_filename
-    from oncofiles.webhook import notify_oncoteam
 
     filename = attachment["filename"]
     mime_type = attachment["mime_type"]
@@ -277,9 +276,6 @@ async def _process_attachment(
             size_bytes=len(content_bytes),
         )
         doc = await db.insert_document(doc)
-
-        # Notify oncoteam
-        notify_oncoteam(doc.id, doc.filename, doc.category.value)
 
         # Link document to email entry
         linked = json.loads(email_entry.linked_document_ids)

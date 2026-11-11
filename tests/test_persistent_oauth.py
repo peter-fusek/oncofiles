@@ -200,7 +200,7 @@ async def test_bearer_token_verification(db):
 
     result = await provider.verify_token("my-secret-token")
     assert result is not None
-    assert result.client_id == "oncoteam"
+    assert result.client_id == "static-bearer"
 
     # Invalid token returns None
     assert await provider.verify_token("wrong-token") is None
@@ -411,7 +411,7 @@ async def test_static_bearer_multi_patient_returns_sentinel(db):
     provider = PersistentOAuthProvider(db=db, bearer_token="op-static-token")
     verified = await provider.verify_token("op-static-token")
     assert verified is not None
-    assert verified.client_id == "oncoteam"
+    assert verified.client_id == "static-bearer"
     assert _verified_patient_id.get() == NO_PATIENT_ACCESS_SENTINEL
 
 

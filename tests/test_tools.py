@@ -416,47 +416,69 @@ async def test_analyze_labs_includes_ocr_text(db: Database):
 
 
 # ── Conversation archive tools (#37) ────────────────────────────────────────
+# #721 (Oncoteam sunset): log_conversation refuses new writes, so the archive
+# rows the read tools serve are seeded through the DB layer.
 
 
-async def test_log_conversation(db: Database):
+async def _seed_conversation(
+    db: Database,
+    title: str,
+    content: str,
+    entry_date: date | None = None,
+    entry_type: str = "note",
+) -> int:
+    from oncofiles.models import ConversationEntry
+
+    entry = await db.insert_conversation_entry(
+        ConversationEntry(
+            entry_date=entry_date or date(2027, 1, 1),
+            entry_type=entry_type,
+            title=title,
+            content=content,
+            source="live",
+        ),
+        patient_id=ERIKA_UUID,
+    )
+    return entry.id
+
+
+async def test_log_conversation_refuses_new_writes(db: Database):
     ctx = _mock_ctx(db)
-    # Mock session_id access
     ctx.session_id = "test-session-123"
 
-    result = await log_conversation(
-        ctx,
-        title="FOLFOX cycle 3 started",
-        content="Started FOLFOX cycle 3 today. Nausea managed well.",
-        entry_date="2025-03-01",
-        entry_type="progress",
-        tags="chemo,FOLFOX",
+    data = json.loads(
+        await log_conversation(
+            ctx,
+            title="Synthetic progress note",
+            content="Synthetic body.",
+            entry_date="2027-03-01",
+            entry_type="progress",
+            tags="synthetic",
+        )
     )
-    import json
-
-    data = json.loads(result)
-    assert data["id"] is not None
-    assert data["title"] == "FOLFOX cycle 3 started"
-    assert data["entry_type"] == "progress"
-    assert data["tags"] == ["chemo", "FOLFOX"]
+    assert data["error"] == "deprecated"
+    assert data["stored"] is False
+    assert "#721" in data["message"]
+    assert json.loads(await search_conversations(ctx, text="Synthetic"))["total"] == 0
 
 
 async def test_search_conversations(db: Database):
     ctx = _mock_ctx(db)
     ctx.session_id = None
 
-    # Create two entries
-    await log_conversation(
-        ctx,
-        title="Lab review discussion",
-        content="Discussed blood counts with oncologist.",
-        entry_date="2025-03-01",
+    # Create two archive entries
+    await _seed_conversation(
+        db,
+        "Lab review discussion",
+        "Discussed blood counts with oncologist.",
+        date(2027, 3, 1),
     )
-    await log_conversation(
-        ctx,
-        title="FOLFOX decision",
-        content="Decided to continue FOLFOX protocol.",
-        entry_date="2025-03-02",
-        entry_type="decision",
+    await _seed_conversation(
+        db,
+        "FOLFOX decision",
+        "Decided to continue FOLFOX protocol.",
+        date(2027, 3, 2),
+        "decision",
     )
 
     result = await search_conversations(ctx, text="FOLFOX")
@@ -472,14 +494,7 @@ async def test_get_conversation(db: Database):
     ctx = _mock_ctx(db)
     ctx.session_id = None
 
-    result = await log_conversation(
-        ctx,
-        title="Test entry",
-        content="Full content here with lots of detail.",
-    )
-    import json
-
-    entry_id = json.loads(result)["id"]
+    entry_id = await _seed_conversation(db, "Test entry", "Full content here with lots of detail.")
 
     full = await get_conversation(ctx, entry_id=entry_id)
     data = json.loads(full)
@@ -495,11 +510,8 @@ async def test_get_journey_timeline(db: Database):
     await db.insert_document(
         make_doc(file_id="file_timeline", document_date=date(2025, 2, 1)), patient_id=ERIKA_UUID
     )
-    await log_conversation(
-        ctx,
-        title="Treatment discussion",
-        content="Discussed treatment plan.",
-        entry_date="2025-02-15",
+    await _seed_conversation(
+        db, "Treatment discussion", "Discussed treatment plan.", date(2027, 2, 15)
     )
 
     result = await get_journey_timeline(ctx)
@@ -607,26 +619,6 @@ async def test_upload_document_files_api_error(db: Database):
     result = json.loads(await upload_document(ctx, content=content, filename="test.pdf"))
     assert "error" in result
     assert "Files API upload failed" in result["error"]
-
-
-# ── log_conversation invalid document_ids ────────────────────────────────
-
-
-async def test_log_conversation_invalid_document_ids(db: Database):
-    """log_conversation returns error on non-numeric document_ids."""
-    ctx = _mock_ctx(db)
-    ctx.session_id = None
-
-    result = json.loads(
-        await log_conversation(
-            ctx,
-            title="Test",
-            content="Test content",
-            document_ids="abc,xyz",
-        )
-    )
-    assert "error" in result
-    assert "Invalid document_ids" in result["error"]
 
 
 # ── extract_all_metadata ──────────────────────────────────────────────────

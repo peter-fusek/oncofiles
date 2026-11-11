@@ -78,7 +78,7 @@ Značka **NEOVERENÉ** znamená, že sa to v tomto behu nedalo priamo overiť. P
 | Anthropic API | `ANTHROPIC_API_KEY`, volania priamo na api.anthropic.com, nočný pipeline 23:00 UTC | nie |
 | E-mail (Resend) | `RESEND_API_KEY`, `NOTIFY_FROM_EMAIL`, `NOTIFY_TO_EMAIL`. Upozornenia od `sync_watchdog`. Doména odosielateľa na Resend **NEOVERENÉ** | nie (odchádzajúce) |
 | GitHub (bug reporty z dashboardu) | `GITHUB_TOKEN`, `GITHUB_REPO`. Token je podľa poznámok **expirovaný** a čaká na rotáciu (#550) | nie |
-| Oncoteam webhook | `ONCOTEAM_WEBHOOK_URL`/`_TOKEN` (odchádzajúci) | áno, ak sa zmení URL oncoteamu |
+| Oncoteam webhook | `ONCOTEAM_WEBHOOK_URL`/`_TOKEN` (odchádzajúci; odstránený v #721) | áno, ak sa zmení URL oncoteamu |
 | Prichádzajúce webhooky | žiadne. GitHub repo hooks: 0. Coolify deploy webhook nie je registrovaný (#549) | |
 | MCP OAuth (Claude.ai, ChatGPT: DCR) | issuer `https://oncofiles.com/`, `/authorize`, `/token`, `/register` | **áno**: `base_url="https://oncofiles.com"` je **napevno** v `server.py` |
 
@@ -166,7 +166,7 @@ Zdroj „Coolify env“ znamená, že hodnota je dnes nastavená v Coolify UI (r
 | `NOTIFY_FROM_EMAIL` / `NOTIFY_TO_EMAIL` | odosielateľ a príjemca upozornení | nie | Coolify env |
 | `GITHUB_TOKEN` | bug reporty → GitHub issues (**expirovaný**, #550) | **áno** | Coolify env, iba runtime |
 | `GITHUB_REPO` | cieľové repo bug reportov | nie | default |
-| `ONCOTEAM_WEBHOOK_URL` / `ONCOTEAM_WEBHOOK_TOKEN` | notifikácia oncoteamu | URL nie / token **áno** | Coolify env (ak je) |
+| `ONCOTEAM_WEBHOOK_URL` / `ONCOTEAM_WEBHOOK_TOKEN` | notifikácia oncoteamu (odstránené v #721, Oncoteam ukončený) | URL nie / token **áno** | Coolify env (ak je) |
 | `ONCOFILES_PREFERRED_LANG`, `PATIENT_NAME`, `LOG_LEVEL` | lokalizácia, legacy single-patient, logy | nie (meno = osobný údaj) | default |
 | `IMPORT_LOCAL_SOURCE`, `IMPORT_TRANSCRIPTS_PATH` | jednorazové importy | nie | nepoužité v prode |
 | `BACKUP_BUCKET`, `BACKUP_KMS_KEY`, `BACKUP_GITHUB_TOKEN` | GCS záloha (zaniknutá) | token **áno** | bývalý Railway cron |
