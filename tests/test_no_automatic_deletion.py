@@ -16,9 +16,13 @@ removing a deletion path also removes its permission.
 3. Document trash: every call that moves a document to the Oncofiles trash
    (``delete_document`` / ``delete_document_by_file_id``) is an allowlisted
    (file, function) pair.
-4. Scheduler: no APScheduler job in ``server.py``, nor any ``server.py``
-   function it calls, references a deletion helper or hard-deletes a table
-   outside the technical allowlist.
+4. Scheduler: jobs are discovered by AST in every module (``add_job``,
+   ``@scheduled_job``, ``create_task`` in ``lifespan``). No job, nor any
+   function it reaches by name (same module or ``from oncofiles.x import``),
+   references a deletion helper or hard-deletes a table outside the technical
+   allowlist, except allowlisted reachable paths. Synthetic jobs prove it fails.
+5. Machine-fact re-extraction soft-deletes ``clinical_records`` with an audit
+   row; core tables are never hard-deleted or rewritten via ``REPLACE INTO``.
 
 Note for PR #732 (#723): it adds a similar hard-DELETE allowlist. Whichever of
 the two merges second drops the entries the other one made stale.
@@ -224,7 +228,16 @@ def test_document_trash_allowlist_no_stale_entries():
     assert not stale, f"allowlist entries no longer in the code, remove them: {sorted(stale)}"
 
 
-# ── 4. Scheduled jobs in server.py ───────────────────────────────────────
+# ── 4. Scheduled jobs (discovered, never listed by hand) ─────────────────
+#
+# Jobs are found by AST in every module under src/oncofiles: each
+# ``<anything>.add_job(target, ...)`` call, each ``@<x>.scheduled_job``
+# decorator, and each ``create_task`` / ``ensure_future`` inside a ``lifespan``
+# function (background loops started at boot). From each job function the
+# walker follows every function it references by name — in the same module, or imported with
+# ``from oncofiles.<mod> import <fn>`` — and flags any deletion reference.
+# Calls on objects (``db.foo()``) are not followed; locks 1-3 cover those
+# call sites globally.
 
 # Tables a scheduled job may hard-delete from: credentials and telemetry only.
 JOB_SQL_ALLOWLIST = {"mcp_oauth_tokens", "prompt_log", "session_revocations"}
@@ -233,6 +246,7 @@ FORBIDDEN_IN_JOBS = (
     _DRIVE_TRASH_ATTRS
     | _DOC_TRASH_ATTRS
     | {
+        "delete",
         "purge_expired_trash",
         "delete_ocr_pages",
         "delete_treatment_event",
@@ -244,67 +258,152 @@ FORBIDDEN_IN_JOBS = (
     }
 )
 
+# (module file, function, reference) reachable from a job -> reason. May only shrink.
+JOB_REACHABLE_ALLOWLIST: dict[tuple[str, str, str], str] = {
+    (
+        "split.py",
+        "split_document",
+        "delete_document",
+    ): "soft delete: original row replaced by its parts (Drive original untouched)",
+    (
+        "sync.py",
+        "sync_from_gdrive",
+        "delete_ocr_pages",
+    ): "OCR cache of the old content dropped when the Drive file's content changed",
+    (
+        "tools/curated.py",
+        "_index_patient",
+        "delete_document",
+    ): "soft delete of a curated mirror row whose Drive file left the filed folders",
+    (
+        "tools/curated.py",
+        "_index_patient",
+        "delete_ocr_pages",
+    ): "curated pages rewritten from the Drive sidecar in the same step",
+}
+
 REMOVED_JOB_IDS = {"trash_cleanup", "empty_folder_cleanup"}
 
 
-def _server_tree() -> ast.Module:
-    return ast.parse((SRC / "server.py").read_text(encoding="utf-8"))
+def _module_name(rel: str) -> str:
+    parts = rel[: -len(".py")].split("/")
+    if parts[-1] == "__init__":
+        parts = parts[:-1]
+    return ".".join(["oncofiles", *parts])
 
 
-def _add_job_calls(tree: ast.Module) -> list[ast.Call]:
-    return [
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and node.func.attr == "add_job"
-    ]
+class _Module:
+    def __init__(self, rel: str, tree: ast.Module) -> None:
+        self.rel = rel
+        self.tree = tree
+        self.funcs: dict[str, list[ast.AST]] = defaultdict(list)
+        self.imports: dict[str, tuple[str, str]] = {}  # alias -> (module, name)
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                self.funcs[node.name].append(node)
+            elif (
+                isinstance(node, ast.ImportFrom)
+                and node.level == 0
+                and (node.module or "").startswith("oncofiles")
+            ):
+                for alias in node.names:
+                    self.imports[alias.asname or alias.name] = (node.module, alias.name)
 
 
-def _scheduled_roots(tree: ast.Module) -> set[str]:
+def _load_modules(sources: dict[str, str] | None = None) -> dict[str, _Module]:
+    if sources is None:
+        sources = {
+            p.relative_to(SRC).as_posix(): p.read_text(encoding="utf-8") for p in SRC.rglob("*.py")
+        }
+    return {_module_name(rel): _Module(rel, ast.parse(text)) for rel, text in sources.items()}
+
+
+def _job_registrations(mod: _Module) -> tuple[set[str], set[str]]:
+    """(root function names, job ids) registered in one module."""
     roots: set[str] = set()
-    for call in _add_job_calls(tree):
-        target = call.args[0]
-        if isinstance(target, ast.Name):
-            roots.add(target.id)
-        elif isinstance(target, ast.Lambda):
-            roots |= {n.id for n in ast.walk(target.body) if isinstance(n, ast.Name)}
-        else:  # pragma: no cover - make an unparseable job loud, not invisible
-            raise AssertionError(f"unrecognised add_job target: {ast.dump(target)}")
-    return roots
-
-
-def _reachable_job_functions(tree: ast.Module) -> dict[str, list[ast.AST]]:
-    """Scheduled job functions plus every server.py function they reference."""
-    by_name: dict[str, list[ast.AST]] = defaultdict(list)
-    for node in ast.walk(tree):
+    ids: set[str] = set()
+    for node in ast.walk(mod.tree):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "add_job"
+        ):
+            target = node.args[0] if node.args else None
+            for kw in node.keywords:
+                if kw.arg == "func":
+                    target = kw.value
+                if kw.arg == "id" and isinstance(kw.value, ast.Constant):
+                    ids.add(kw.value.value)
+            if isinstance(target, (ast.Name, ast.Lambda, ast.Call, ast.Attribute)):
+                # Name: the job; Lambda / functools.partial(...): every name inside.
+                roots |= {n.id for n in ast.walk(target) if isinstance(n, ast.Name)}
+                roots |= {n.attr for n in ast.walk(target) if isinstance(n, ast.Attribute)}
+            else:  # make an unparseable job loud, not invisible
+                raise AssertionError(f"{mod.rel}: unrecognised add_job target")
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == "lifespan":
+            # Background loops started at boot (e.g. the curated nightly loop).
+            for call in ast.walk(node):
+                if (
+                    isinstance(call, ast.Call)
+                    and isinstance(call.func, ast.Attribute)
+                    and call.func.attr in {"create_task", "ensure_future"}
+                ):
+                    roots |= {n.id for n in ast.walk(call) if isinstance(n, ast.Name)}
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            by_name[node.name].append(node)
-    reached: dict[str, list[ast.AST]] = {}
-    todo = list(_scheduled_roots(tree))
+            for dec in node.decorator_list:
+                call = dec.func if isinstance(dec, ast.Call) else dec
+                if isinstance(call, ast.Attribute) and call.attr == "scheduled_job":
+                    roots.add(node.name)
+    return roots, ids
+
+
+def _job_offenders(modules: dict[str, _Module]) -> list[tuple[str, str, str]]:
+    todo: list[tuple[str, str]] = []
+    for name, mod in modules.items():
+        todo.extend((name, root) for root in _job_registrations(mod)[0])
+    seen: set[tuple[str, str]] = set()
+    offenders: set[tuple[str, str, str]] = set()
     while todo:
-        name = todo.pop()
-        if name in reached or name not in by_name:
+        mod_name, fn_name = todo.pop()
+        mod = modules.get(mod_name)
+        if (mod_name, fn_name) in seen or mod is None:
             continue
-        reached[name] = by_name[name]
-        for fn in by_name[name]:
-            todo.extend(n.id for n in ast.walk(fn) if isinstance(n, ast.Name) and n.id in by_name)
-    return reached
+        seen.add((mod_name, fn_name))
+        if fn_name not in mod.funcs:
+            if fn_name in mod.imports:  # re-export / module-level alias
+                todo.append(mod.imports[fn_name])
+            continue
+        for fn in mod.funcs[fn_name]:
+            for node in ast.walk(fn):
+                ref = None
+                if isinstance(node, ast.Attribute):
+                    ref = node.attr
+                elif isinstance(node, ast.Name):
+                    ref = node.id
+                    if ref in mod.funcs:
+                        todo.append((mod_name, ref))
+                    elif ref in mod.imports:
+                        todo.append(mod.imports[ref])
+                if ref in FORBIDDEN_IN_JOBS:
+                    offenders.add((mod.rel, fn_name, ref))
+                if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                    for m in DELETE_RE.finditer(node.value):
+                        if m.group(1) not in JOB_SQL_ALLOWLIST:
+                            offenders.add((mod.rel, fn_name, f"DELETE FROM {m.group(1)}"))
+    return sorted(offenders)
 
 
 def test_scheduler_roots_are_found():
-    """Guard the guard: the walker must see the real job functions."""
-    roots = _scheduled_roots(_server_tree())
+    """Guard the guard: discovery must see the real job functions."""
+    roots, ids = _job_registrations(_load_modules()["oncofiles.server"])
     assert {"_run_sync", "_run_oauth_token_cleanup", "_startup_catchup"} <= roots
+    assert "oauth_token_cleanup" in ids
 
 
 def test_removed_jobs_are_not_registered():
-    ids = set()
-    for call in _add_job_calls(_server_tree()):
-        for kw in call.keywords:
-            if kw.arg == "id" and isinstance(kw.value, ast.Constant):
-                ids.add(kw.value.value)
-    assert "oauth_token_cleanup" in ids  # the walker sees job ids at all
+    ids: set[str] = set()
+    for mod in _load_modules().values():
+        ids |= _job_registrations(mod)[1]
     assert not ids & REMOVED_JOB_IDS, sorted(ids & REMOVED_JOB_IDS)
     server_text = (SRC / "server.py").read_text(encoding="utf-8")
     for job_id in REMOVED_JOB_IDS:  # also gone from the /readiness + dashboard job list
@@ -312,19 +411,117 @@ def test_removed_jobs_are_not_registered():
 
 
 def test_scheduled_jobs_never_delete_user_data():
-    offenders: list[str] = []
-    for name, fns in _reachable_job_functions(_server_tree()).items():
-        for fn in fns:
-            for node in ast.walk(fn):
-                ref = None
-                if isinstance(node, ast.Attribute):
-                    ref = node.attr
-                elif isinstance(node, ast.Name):
-                    ref = node.id
-                if ref in FORBIDDEN_IN_JOBS:
-                    offenders.append(f"{name}: {ref}")
-                if isinstance(node, ast.Constant) and isinstance(node.value, str):
-                    for m in DELETE_RE.finditer(node.value):
-                        if m.group(1) not in JOB_SQL_ALLOWLIST:
-                            offenders.append(f"{name}: DELETE FROM {m.group(1)}")
-    assert not offenders, f"scheduled job deletes user data (#734): {sorted(set(offenders))}"
+    offenders = [o for o in _job_offenders(_load_modules()) if o not in JOB_REACHABLE_ALLOWLIST]
+    assert not offenders, f"scheduled job deletes user data (#734): {offenders}"
+
+
+def test_job_reachable_allowlist_no_stale_entries():
+    stale = set(JOB_REACHABLE_ALLOWLIST) - set(_job_offenders(_load_modules()))
+    assert not stale, f"allowlist entries no longer reachable, remove them: {sorted(stale)}"
+
+
+# ── 4b. The scheduler lock catches a synthetic new job ──────────────────
+
+_SYNTH_HELPER = """
+from oncofiles.gdrive_client import GDriveClient
+
+def tidy_drive(gdrive, file_id):
+    gdrive.trash_file(file_id)
+
+async def tidy_db(db):
+    await db.db.execute("DELETE FROM documents WHERE deleted_at IS NOT NULL")
+"""
+
+
+def _synthetic(job_source: str) -> dict[str, _Module]:
+    return _load_modules({"synth_helpers.py": _SYNTH_HELPER, "synth_jobs.py": job_source})
+
+
+def test_synthetic_job_calling_cross_module_trash_fails_the_lock():
+    job = """
+from oncofiles.synth_helpers import tidy_drive
+
+def start(scheduler, gdrive):
+    async def _run_new_cleanup():
+        tidy_drive(gdrive, "x")
+
+    scheduler.add_job(_run_new_cleanup, "cron", id="new_cleanup")
+"""
+    assert ("synth_helpers.py", "tidy_drive", "trash_file") in _job_offenders(_synthetic(job))
+
+
+def test_synthetic_lambda_job_with_hard_delete_fails_the_lock():
+    job = """
+from oncofiles.synth_helpers import tidy_db
+
+def start(scheduler, db):
+    scheduler.add_job(lambda: tidy_db(db), "interval", id="purge_again")
+"""
+    offenders = _job_offenders(_synthetic(job))
+    assert ("synth_helpers.py", "tidy_db", "DELETE FROM documents") in offenders
+
+
+def test_synthetic_decorated_job_calling_soft_delete_fails_the_lock():
+    job = """
+@sched.scheduled_job("cron", hour=3)
+async def nightly_dedup(db, doc):
+    await db.delete_document(doc.id)
+"""
+    assert ("synth_jobs.py", "nightly_dedup", "delete_document") in _job_offenders(_synthetic(job))
+
+
+def test_synthetic_harmless_job_passes():
+    job = """
+def start(scheduler, db):
+    async def _ping():
+        await db.db.execute("DELETE FROM prompt_log WHERE 0")
+
+    scheduler.add_job(_ping, "interval", id="ping")
+"""
+    assert _job_offenders(_synthetic(job)) == []
+
+
+# ── 5. Machine-fact re-extraction is a soft delete ──────────────────────
+
+# Tables never rewritten by INSERT OR REPLACE / REPLACE INTO (which deletes the
+# old row). lab_values deliberately uses an idempotent upsert keyed on
+# (document_id, parameter) and is not listed here.
+REPLACE_RE = re.compile(r"(?i:REPLACE\s+INTO)\s+([a-z_][a-z0-9_]*)\b")
+NEVER_REPLACED = {"documents", "clinical_records", "patients"}
+
+
+def test_core_tables_never_replaced():
+    found = {
+        m.group(1)
+        for path in SRC.rglob("*.py")
+        for m in REPLACE_RE.finditer(path.read_text(encoding="utf-8"))
+    }
+    assert not found & NEVER_REPLACED, sorted(found & NEVER_REPLACED)
+
+
+async def test_replace_document_facts_soft_deletes_with_audit(db):
+    from tests.helpers import ERIKA_UUID, make_doc
+
+    doc = await db.insert_document(make_doc(file_id="f_facts"), patient_id=ERIKA_UUID)
+    fact = {"category": "lab", "occurred_at": "2027-03-01", "label": "Invented", "value_num": 1.0}
+    await db.replace_document_facts(
+        patient_id=ERIKA_UUID, document_id=doc.id, facts=[fact], extracted_by="test-a"
+    )
+    res = await db.replace_document_facts(
+        patient_id=ERIKA_UUID, document_id=doc.id, facts=[fact], extracted_by="test-b"
+    )
+    assert res["removed"] == 1 and res["added"] == 1
+
+    async with db.db.execute(
+        "SELECT id, deleted_at FROM clinical_records WHERE source_document_id = ? ORDER BY id",
+        (doc.id,),
+    ) as cur:
+        rows = [dict(r) for r in await cur.fetchall()]
+    assert len(rows) == 2  # the old row is still there
+    assert rows[0]["deleted_at"] is not None and rows[1]["deleted_at"] is None
+
+    async with db.db.execute(
+        "SELECT action FROM clinical_record_audit WHERE record_id = ? ORDER BY id",
+        (rows[0]["id"],),
+    ) as cur:
+        assert [r["action"] for r in await cur.fetchall()] == ["create", "delete"]
