@@ -47,7 +47,7 @@ def _hash_key(monkeypatch):
 
 @pytest.fixture
 def caller():
-    """A non-admin OAuth caller bound to Erika, with an email."""
+    """A non-admin OAuth caller bound to Jana, with an email."""
     tokens = (
         _verified_caller_is_admin.set(False),
         _verified_caller_email.set(CARER),

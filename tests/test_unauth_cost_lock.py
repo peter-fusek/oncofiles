@@ -636,7 +636,7 @@ def http_mode(monkeypatch):
 
 async def test_oauth_authorize_rejects_anonymous_caller(http_mode, db):
     server = http_mode
-    req = _FakeRequest(query={"patient_id": "erika"}, path={"service": "drive"}, db=db)
+    req = _FakeRequest(query={"patient_id": "jana"}, path={"service": "drive"}, db=db)
     resp = await server.oauth_authorize(req)
     assert resp.status_code == 401
 

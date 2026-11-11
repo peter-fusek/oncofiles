@@ -37,7 +37,7 @@ from oncofiles.tools import fhir as tool
 from tests.helpers import ERIKA_UUID, make_doc
 
 BOB_UUID = "00000000-0000-4000-8000-000000000002"
-ERIKA_SLUG = "erika-test"
+ERIKA_SLUG = "jana-test"
 BOB_SLUG = "bob-test"
 AIAST = "AIAST"
 STORED_ID = str(uuid.uuid5(uuid.NAMESPACE_URL, "urn:synthetic:stored-fhir-id"))
@@ -69,7 +69,7 @@ async def _fact(db, pid: str, **cols) -> int:
 
 @pytest.fixture
 async def world(db):
-    """Two patients. Erika: labs, conditions, a regimen, meds, a procedure. Bob: one lab."""
+    """Two patients. Jana: labs, conditions, a regimen, meds, a procedure. Bob: one lab."""
     await _exec(db, "UPDATE patients SET slug = ? WHERE patient_id = ?", (ERIKA_SLUG, ERIKA_UUID))
     await _exec(
         db,
@@ -463,22 +463,22 @@ async def test_ids_are_stable_across_loads(world):
 
 async def test_projection_contains_only_this_patients_rows(world):
     db, ids = world
-    erika = await _index(db)
+    jana = await _index(db)
     bob = await _index(db, BOB_UUID)
-    erika_keys = set(erika.by_key)
-    assert f"Observation/{derived_id('clinical_records', ids['bob_wbc'])}" not in erika_keys
-    assert f"DocumentReference/{derived_id('documents', ids['bob_doc'])}" not in erika_keys
-    assert not (erika_keys - {f"Organization/{derived_id('organizations', ids['org'])}"}) & set(
+    jana_keys = set(jana.by_key)
+    assert f"Observation/{derived_id('clinical_records', ids['bob_wbc'])}" not in jana_keys
+    assert f"DocumentReference/{derived_id('documents', ids['bob_doc'])}" not in jana_keys
+    assert not (jana_keys - {f"Organization/{derived_id('organizations', ids['org'])}"}) & set(
         bob.by_key
     )
     # shared organisations appear only where the patient's own rows reference them
-    assert "Other Clinic" not in json.dumps(erika.resources)
+    assert "Other Clinic" not in json.dumps(jana.resources)
     assert "Synth Hospital" not in json.dumps(bob.resources)
     assert [r["resourceType"] for r in bob.resources].count("Observation") == 1
 
 
 @pytest.fixture
-def non_admin_bound_to_erika():
+def non_admin_bound_to_jana():
     tokens = (
         _verified_caller_is_admin.set(False),
         _verified_caller_email.set(""),
@@ -506,13 +506,13 @@ def as_admin():
         lambda ctx: tool.export_patient_summary(ctx, patient_slug=BOB_SLUG),
     ],
 )
-async def test_every_fhir_tool_denies_a_foreign_patient(world, non_admin_bound_to_erika, call):
+async def test_every_fhir_tool_denies_a_foreign_patient(world, non_admin_bound_to_jana, call):
     db, _ = world
     with pytest.raises(ValueError, match="access denied"):
         await call(_Ctx(db))
 
 
-async def test_foreign_id_reads_as_not_found(world, non_admin_bound_to_erika):
+async def test_foreign_id_reads_as_not_found(world, non_admin_bound_to_jana):
     db, ids = world
     bob_obs = derived_id("clinical_records", ids["bob_wbc"])
     out = json.loads(await tool.fhir_read(_Ctx(db), type="Observation", id=bob_obs))
@@ -588,7 +588,7 @@ async def test_search_newest_first_and_revinclude(world):
     assert got[0] == STORED_ID  # CRP, the newest date first
 
 
-async def test_search_errors_are_operation_outcomes(world, non_admin_bound_to_erika):
+async def test_search_errors_are_operation_outcomes(world, non_admin_bound_to_jana):
     db, _ = world
     ctx = _Ctx(db)
     for kwargs, code in (

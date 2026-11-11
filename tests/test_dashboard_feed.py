@@ -65,8 +65,8 @@ def _caller(admin: bool):
 
 
 @pytest.fixture
-def caregiver_of_erika():
-    """A non-admin caller bound to Erika (a caregiver's patient token)."""
+def caregiver_of_jana():
+    """A non-admin caller bound to Jana (a caregiver's patient token)."""
     yield from _caller(False)
 
 
@@ -428,7 +428,7 @@ async def _two_patients(db):
     return a, b
 
 
-async def test_a_caregiver_sees_only_their_patient(db, caregiver_of_erika):
+async def test_a_caregiver_sees_only_their_patient(db, caregiver_of_jana):
     a, _ = await _two_patients(db)
     own = await _feed(db)
     assert [d["id"] for d in own["documents"]] == [a.id]
@@ -445,9 +445,9 @@ async def test_an_admin_must_name_the_patient_and_gets_only_that_one(db, admin_c
     bob = await _feed(db, patient_slug=BOB_SLUG)
     assert [d["id"] for d in bob["documents"]] == [b.id]
     assert {f["document_id"] for f in bob["facts"]} == {b.id} and len(bob["facts"]) == 2
-    erika = await _feed(db, patient_slug=ERIKA_SLUG)
-    assert [d["id"] for d in erika["documents"]] == [a.id]
-    assert not {f["id"] for f in bob["facts"]} & {f["id"] for f in erika["facts"]}
+    jana = await _feed(db, patient_slug=ERIKA_SLUG)
+    assert [d["id"] for d in jana["documents"]] == [a.id]
+    assert not {f["id"] for f in bob["facts"]} & {f["id"] for f in jana["facts"]}
 
 
 # ── local institution codes (migration 081) ──

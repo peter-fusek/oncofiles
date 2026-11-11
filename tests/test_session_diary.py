@@ -67,18 +67,18 @@ class _Ctx:
 
 @pytest.fixture
 async def two(db: Database):
-    """Erika (bound patient of the non-admin caller) and Bob, one entry each."""
+    """Jana (bound patient of the non-admin caller) and Bob, one entry each."""
     await db.db.execute(
         "INSERT INTO patients (patient_id, slug, display_name, caregiver_email) "
         "VALUES (?, ?, ?, ?)",
         (BOB_UUID, BOB_SLUG, "Bob Invented", "bob@example.invalid"),
     )
     await db.db.commit()
-    erika = await db.insert_conversation_entry(
+    jana = await db.insert_conversation_entry(
         ConversationEntry(
             entry_date=date(2027, 2, 1),
-            title="Erika invented note",
-            content="quokka erika body",
+            title="Jana invented note",
+            content="quokka jana body",
             tags=["shared-tag"],
             source="live",
         ),
@@ -94,7 +94,7 @@ async def two(db: Database):
         ),
         patient_id=BOB_UUID,
     )
-    return SimpleNamespace(db=db, ctx=_Ctx(db), erika=erika.id, bob=bob.id)
+    return SimpleNamespace(db=db, ctx=_Ctx(db), jana=jana.id, bob=bob.id)
 
 
 @pytest.fixture
@@ -152,9 +152,9 @@ async def test_non_admin_cannot_name_another_patient(two):
 
 async def test_search_and_stats_are_scoped(two):
     found = _j(await diary.search_conversations(two.ctx, text="quokka"))
-    assert [e["id"] for e in found["entries"]] == [two.erika]
+    assert [e["id"] for e in found["entries"]] == [two.jana]
     by_tag = _j(await diary.search_conversations(two.ctx, tags="shared-tag"))
-    assert [e["id"] for e in by_tag["entries"]] == [two.erika]
+    assert [e["id"] for e in by_tag["entries"]] == [two.jana]
     stats = _j(await diary.get_conversation_stats(two.ctx))
     assert stats["total"] == 1 and stats["patient_id"] == ERIKA_UUID
     assert stats["top_tags"] == [{"tag": "shared-tag", "count": 1}]
@@ -166,10 +166,10 @@ async def test_admin_must_pass_slug(two):
         diary.log_conversation(two.ctx, title="t", content="c"),
         diary.diary_add(two.ctx, title="t", content="c"),
         diary.search_conversations(two.ctx),
-        diary.get_conversation(two.ctx, two.erika),
+        diary.get_conversation(two.ctx, two.jana),
         diary.get_conversation_stats(two.ctx),
-        diary.delete_conversation(two.ctx, two.erika),
-        diary.restore_conversation(two.ctx, two.erika),
+        diary.delete_conversation(two.ctx, two.jana),
+        diary.restore_conversation(two.ctx, two.jana),
     ]
     for call in calls:
         out = _j(await call)
@@ -177,8 +177,8 @@ async def test_admin_must_pass_slug(two):
     # With a slug the admin reaches exactly that patient.
     bob = _j(await diary.get_conversation(two.ctx, two.bob, patient_slug=BOB_SLUG))
     assert bob["title"] == "Bob invented note"
-    erika_view = _j(await diary.get_conversation(two.ctx, two.bob, patient_slug=ERIKA_SLUG))
-    assert erika_view["code"] == "not_found"
+    jana_view = _j(await diary.get_conversation(two.ctx, two.bob, patient_slug=ERIKA_SLUG))
+    assert jana_view["code"] == "not_found"
     added = _j(await diary.diary_add(two.ctx, title="t", content="c", patient_slug=BOB_SLUG))
     assert await two.db.check_conversation_entry_ownership(added["id"], BOB_UUID)
 
