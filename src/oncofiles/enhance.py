@@ -300,7 +300,7 @@ def _get_client() -> anthropic.Anthropic:
     from oncofiles.cloud_guard import check_cloud_allowed, require_cloud_ai
 
     check_cloud_allowed("Anthropic client")  # local-only jobs never get one
-    require_cloud_ai()  # no ANTHROPIC_API_KEY → clear error, not a TypeError mid-call (#618)
+    require_cloud_ai()  # CLOUD_AI_ENABLED off or no key → clear error, no API call (#618)
     global _shared_client
     if _shared_client is None:
         _shared_client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
