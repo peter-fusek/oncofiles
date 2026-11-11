@@ -469,3 +469,78 @@ def test_propose_does_not_retry_a_context_overflow(monkeypatch):
     with pytest.raises(llm.LocalLLMError):
         classify.propose(CONTRACT, TEXT)
     assert len(calls) == 1
+
+
+# ── #689: Qwen /no_think soft switch ─────────────────────────────────
+
+
+def _sent_user(seen: list) -> list | str:
+    return json.loads(seen[-1].content)["messages"][-1]["content"]
+
+
+def test_no_think_appended_once_to_text_when_thinking_off(local_llm):
+    seen: list = []
+    llm.chat("sys", "Transcribe.", client=_client("ok", seen=seen), thinking=False)
+    assert _sent_user(seen) == "Transcribe. /no_think"
+    body = json.loads(seen[-1].content)
+    assert body["chat_template_kwargs"] == {"enable_thinking": False}
+    assert body["messages"][0]["content"].endswith("\n/no_think")  # system keeps it
+    # Already present -> never a second time.
+    llm.chat("sys", "Transcribe. /no_think", client=_client("ok", seen=seen), thinking=False)
+    assert _sent_user(seen).count("/no_think") == 1
+
+
+def test_no_think_is_a_new_text_part_after_images(local_llm):
+    seen: list = []
+    img = llm.image_part(b"\x89PNG synthetic")
+    instr = {"type": "text", "text": "Synthetic instruction for test page."}
+    content = [instr, img]
+    llm.chat("sys", content, client=_client("ok", seen=seen), thinking=False)
+    sent = _sent_user(seen)
+    assert sent[0] == instr  # instruction unchanged
+    assert sent[1]["type"] == "image_url"
+    assert sent[2] == {"type": "text", "text": " /no_think"}
+    assert len(sent) == 3
+    assert content == [instr, img]  # caller not mutated
+    # Image-only content gets the text part too.
+    llm.chat("sys", [img], client=_client("ok", seen=seen), thinking=False)
+    assert _sent_user(seen)[-1] == {"type": "text", "text": " /no_think"}
+    # Already carrying it -> never twice.
+    llm.chat("sys", sent, client=_client("ok", seen=seen), thinking=False)
+    assert sum("/no_think" in p.get("text", "") for p in _sent_user(seen)) == 1
+
+
+@pytest.mark.parametrize("thinking", [True, None])
+def test_no_think_never_appended_unless_thinking_off(local_llm, thinking):
+    seen: list = []
+    img = llm.image_part(b"\x89PNG synthetic")
+    llm.chat("sys", "Transcribe.", client=_client("ok", seen=seen), thinking=thinking)
+    assert _sent_user(seen) == "Transcribe."
+    llm.chat("sys", [img], client=_client("ok", seen=seen), thinking=thinking)
+    assert _sent_user(seen) == [img]
+
+
+def test_no_think_soft_switch_env_off(local_llm, monkeypatch):
+    monkeypatch.setattr(config, "LLM_NO_THINK_SOFT_SWITCH", False)
+    seen: list = []
+    llm.chat("sys", "Transcribe.", client=_client("ok", seen=seen), thinking=False)
+    assert _sent_user(seen) == "Transcribe."
+    assert json.loads(seen[-1].content)["chat_template_kwargs"] == {"enable_thinking": False}
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        "<think></think>\n\nLine one\nLine two",
+        "<think>\n\n</think>\nLine one\nLine two",
+        "Line one\nLine two /no_think",
+        "<think></think>/no_think\nLine one\nLine two",
+    ],
+)
+def test_empty_think_block_and_no_think_echo_are_stripped(local_llm, answer):
+    out = llm.chat("sys", "Transcribe.", client=_client(answer), thinking=False)
+    assert out == "Line one\nLine two"
+
+
+def test_parse_json_tolerates_empty_think_block():
+    assert llm.parse_json_object('<think>\n</think>\n{"a": 1} /no_think') == {"a": 1}

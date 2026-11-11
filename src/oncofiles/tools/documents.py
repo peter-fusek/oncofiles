@@ -20,6 +20,7 @@ from oncofiles.gdrive_folders import (
 from oncofiles.models import Document, DocumentCategory, SearchQuery
 from oncofiles.tools._helpers import (
     _clamp_limit,
+    _cloud_ai_disabled_response,
     _doc_to_dict,
     _gdrive_url,
     _get_db,
@@ -80,6 +81,11 @@ async def upload_document(
     """
     import base64
     import binascii
+
+    # #618: uploads go to the Anthropic Files API. Without a key, refuse before
+    # any DB write or upload — never store a document that cannot be processed.
+    if (disabled := _cloud_ai_disabled_response()) is not None:
+        return disabled
 
     if len(content) > MAX_UPLOAD_SIZE * 4 // 3 + 4:
         return json.dumps({"error": "File exceeds 100 MB limit."})

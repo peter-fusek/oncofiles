@@ -149,6 +149,30 @@ def _assess_unpaged(candidates: list[dict], new_facts: list[dict], new_pages: li
     return out
 
 
+def diagnostics(old_facts: list[dict], new_facts: list[dict], *, old_page_count: int) -> dict:
+    """Counts only (never values) to explain a low confirmation rate: how many
+    facts each read has, how many code+value pairs and codes they share, and
+    how the re-read dated its facts."""
+    from collections import Counter
+
+    def pairs(fs):
+        return Counter((f.get("code"), f.get("value_canonical")) for f in fs
+                       if f.get("code") and f.get("value_canonical") is not None)  # fmt: skip
+
+    old_p, new_p = pairs(old_facts), pairs(new_facts)
+    sources = Counter(((f.get("metadata") or f.get("meta") or {}).get("date_source") or "none")
+                      for f in new_facts if f.get("code"))  # fmt: skip
+    return {
+        "old_facts": sum(old_p.values()),
+        "new_facts": sum(new_p.values()),
+        "code_value_shared": sum((old_p & new_p).values()),
+        "codes_shared": len({c for c, _ in old_p} & {c for c, _ in new_p}),
+        "codes_only_old": sorted({c for c, _ in old_p} - {c for c, _ in new_p}),
+        "new_date_sources": dict(sources),
+        "old_pages": old_page_count,
+    }
+
+
 def result_keys(assessment: dict, old_by_id: dict[int, dict]) -> dict:
     """The stored form: keys only, no ids (ids change on every re-extraction)."""
 
@@ -161,6 +185,20 @@ def result_keys(assessment: dict, old_by_id: dict[int, dict]) -> dict:
 
     return {"assess_version": ASSESS_VERSION, "confirmed": keys(assessment["confirmed"]),
             "date_unconfirmed": keys(assessment["date_unconfirmed"])}  # fmt: skip
+
+
+def _has_key(keys: set[tuple], key: tuple, meta: dict) -> bool:
+    """Is ``key`` stored? A fact dated under a printed range also matches a
+    key of the same code, value and page dated inside its range: results
+    stored before #726 keyed range facts by the range midpoint, now they
+    sit at the range end."""
+    if key in keys:
+        return True
+    lo, hi = (meta.get("date_range_start") or "")[:10], (meta.get("date_range_end") or "")[:10]
+    if not lo or not hi:
+        return False
+    code, vhash, _, page = key
+    return any(k[0] == code and k[1] == vhash and k[3] == page and lo <= k[2] <= hi for k in keys)
 
 
 def apply_plan(result: dict, facts: list[dict]) -> list[tuple[int, str, dict]]:
@@ -178,14 +216,15 @@ def apply_plan(result: dict, facts: list[dict]) -> list[tuple[int, str, dict]]:
         if CONFIRMABLE not in reasons:
             continue
         key = fact_key(f["code"], f["value_canonical"], f["occurred_at"], f["page_number"])
-        if key in confirmed:
+        is_confirmed = _has_key(confirmed, key, meta)
+        if is_confirmed:
             rest = [r for r in reasons if r != CONFIRMABLE]
-        elif key in no_date:
+        elif _has_key(no_date, key, meta):
             rest = sorted({*(r for r in reasons if r != CONFIRMABLE), "date_unconfirmed"})
         else:
             continue
         meta["reread_checked"] = True
-        if key in confirmed:
+        if is_confirmed:
             meta["verified_by_reread"] = True  # only when the re-read confirmed it
         if rest:
             meta["unverified_reasons"] = rest

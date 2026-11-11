@@ -169,8 +169,13 @@ class FactsMixin:
         """Re-extraction of one document: soft-delete its machine facts, insert new ones.
 
         Facts a person verified or corrected are kept, and a new machine fact
-        with the same code and time is not added next to them.
+        with the same code and time is not added next to them. A new fact
+        dated under a printed range (#726) is not added either when such a
+        fact of its code lies inside the range: an older index dated range
+        values at the range midpoint, and a person may have set the exact day.
         """
+        from oncofiles.curated.facts_rules import range_window
+
         async with self.db.execute(
             "SELECT id, code, occurred_at, verification FROM clinical_records "
             "WHERE patient_id = ? AND source_document_id = ? AND deleted_at IS NULL",
@@ -193,9 +198,17 @@ class FactsMixin:
             )
             await self._audit(r["id"], "delete", None, f"re-extraction by {extracted_by}")
             removed += 1
+        protected_days: dict = {}
+        for code, at in protected:
+            protected_days.setdefault(code, []).append((at or "")[:10])
         added = 0
         for f in facts:
             if (f.get("code"), f.get("occurred_at")) in protected:
+                continue
+            window = range_window(f.get("metadata") or {})
+            if window and any(
+                window[0] <= day <= window[1] for day in protected_days.get(f.get("code"), [])
+            ):
                 continue
             cur = await self.db.execute(
                 "INSERT INTO clinical_records (patient_id, record_type, source_document_id, "
