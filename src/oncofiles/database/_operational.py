@@ -267,6 +267,28 @@ class OperationalMixin:
         )
         await self.db.commit()
 
+    async def update_oauth_access_token(
+        self, patient_id: str, provider: str, access_token: str, token_expiry
+    ) -> None:
+        """Persist a refreshed access token (#591).
+
+        Touches only ``access_token``, ``token_expiry`` and ``updated_at``: a
+        refresh never changes ``owner_email``, the refresh token, the folder or
+        the scopes.
+        """
+        await self.db.execute(
+            "UPDATE oauth_tokens SET access_token = ?, token_expiry = ?, "
+            "updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') "
+            "WHERE patient_id = ? AND provider = ?",
+            (
+                access_token,
+                token_expiry.isoformat() if token_expiry else None,
+                patient_id,
+                provider,
+            ),
+        )
+        await self.db.commit()
+
     async def update_oauth_owner_email(
         self, patient_id: str, provider: str, owner_email: str
     ) -> None:

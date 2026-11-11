@@ -329,7 +329,9 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict]:
                 )
                 token.access_token = access_token
                 token.token_expiry = new_expiry
-                await db.upsert_oauth_token(token)
+                await db.update_oauth_access_token(
+                    token.patient_id, token.provider, access_token, new_expiry
+                )
 
             gdrive = GDriveClient.from_oauth(
                 access_token=access_token,
@@ -758,7 +760,9 @@ async def _create_patient_clients(
             new_expiry = datetime.now(UTC) + timedelta(seconds=refreshed.get("expires_in", 3600))
             token.access_token = access_token
             token.token_expiry = new_expiry
-            await db.upsert_oauth_token(token)
+            await db.update_oauth_access_token(
+                token.patient_id, token.provider, access_token, new_expiry
+            )
         except Exception:
             logger.warning("Token refresh failed for patient %s", patient_id, exc_info=True)
             return None
@@ -4182,19 +4186,28 @@ def _count_tools() -> int:
         return 76  # fallback — update when tool count changes
 
 
+# #591: /api/stats is public, and the count costs 1 + N(patients) queries on the
+# single DB connection. Cached, so an unauthenticated flood costs one count per TTL.
+_API_STATS_TTL_S = 300
+_api_stats_cache: dict = {"at": 0.0, "documents": None}
+
+
 @mcp.custom_route("/api/stats", methods=["GET"])
 async def api_stats(request: Request) -> JSONResponse:
     """Public project stats for landing page and llms.txt."""
     from oncofiles.models import DocumentCategory
 
-    doc_count = 0
-    try:
-        db: Database = request.app.state.fastmcp_server._lifespan_result["db"]
-        patients = await db.list_patients(active_only=True)
-        for p in patients:
-            doc_count += await db.count_documents(patient_id=p.patient_id)
-    except Exception:
-        logger.warning("api_stats: failed to count documents", exc_info=True)
+    doc_count = _api_stats_cache["documents"]
+    if doc_count is None or time.time() - _api_stats_cache["at"] > _API_STATS_TTL_S:
+        doc_count = 0
+        try:
+            db: Database = request.app.state.fastmcp_server._lifespan_result["db"]
+            patients = await db.list_patients(active_only=True)
+            for p in patients:
+                doc_count += await db.count_documents(patient_id=p.patient_id)
+            _api_stats_cache.update(at=time.time(), documents=doc_count)
+        except Exception:
+            logger.warning("api_stats: failed to count documents", exc_info=True)
 
     return JSONResponse(
         {
@@ -4580,9 +4593,9 @@ def _verify_session_token(token: str, *, log: bool = True) -> str | None:
 def _extract_session_tid_and_expiry(token: str) -> tuple[str, int] | None:
     """Pull ``(tid, expiry)`` out of a session token for revocation purposes.
 
-    Used by /api/logout — we want to revoke regardless of HMAC validity
-    (a tampered tid still deserves to be denylisted), but we still need
-    the original expiry to know how long the revocation row must live.
+    Used by /api/logout, after the token verified (#591: a forged token is
+    never written to the denylist); the original expiry says how long the
+    revocation row must live.
     Returns None when there's no tid (legacy 3-part format) — those
     predate #510 and cannot be individually revoked.
     """
@@ -5250,9 +5263,9 @@ async def api_logout(request: Request) -> JSONResponse:
     This endpoint:
     1. Reads the session token from `Authorization: Bearer session:…` OR
        the `oncofiles_session` cookie.
-    2. Parses the tid + original expiry out of the token (no HMAC check —
-       even a tampered token is fine to "revoke" since it would already
-       fail _verify_session_token).
+    2. Parses the tid + original expiry out of the token, only when the
+       token still verifies (#591). A tampered or expired token already
+       fails _verify_session_token, so there is nothing to revoke.
     3. Persists the tid to `session_revocations` and adds it to the
        in-memory denylist.
     4. Returns 200 with `{"ok": true}` and a `set_cookie` that expires
@@ -5277,7 +5290,14 @@ async def api_logout(request: Request) -> JSONResponse:
         # has to do (no Request object available there).
         token = request.cookies.get("oncofiles_session", "")
 
-    parsed = _extract_session_tid_and_expiry(token) if token else None
+    # #591: only a token that still verifies goes on the denylist. A forged or
+    # expired one authenticates nothing, and revoking it would let a caller with
+    # no session insert rows with an expiry of its own choosing.
+    parsed = (
+        _extract_session_tid_and_expiry(token)
+        if token and _verify_session_token(token) is not None
+        else None
+    )
     if parsed is not None:
         tid, expiry = parsed
         try:
@@ -6913,7 +6933,9 @@ async def api_gdrive_folders(request: Request) -> JSONResponse:
             new_expiry = datetime.now(UTC) + timedelta(seconds=refreshed.get("expires_in", 3600))
             token.access_token = access_token
             token.token_expiry = new_expiry
-            await db_inst.upsert_oauth_token(token)
+            await db_inst.update_oauth_access_token(
+                token.patient_id, token.provider, access_token, new_expiry
+            )
 
         gdrive = GDriveClient.from_oauth(
             access_token=access_token,
@@ -7022,7 +7044,9 @@ async def api_gdrive_set_folder(request: Request) -> JSONResponse:
             new_expiry = datetime.now(UTC) + timedelta(seconds=refreshed.get("expires_in", 3600))
             token.access_token = access_token
             token.token_expiry = new_expiry
-            await db_inst.upsert_oauth_token(token)
+            await db_inst.update_oauth_access_token(
+                token.patient_id, token.provider, access_token, new_expiry
+            )
 
         gdrive = GDriveClient.from_oauth(
             access_token=access_token,
@@ -7481,13 +7505,48 @@ async def oauth_authorize(request: Request) -> JSONResponse:
     raw_pid = request.query_params.get("patient_id", "").strip().lower()
     if not raw_pid:
         return JSONResponse({"error": "patient_id required"}, status_code=400)
+    # #591: the callback stores Google tokens for this patient, so only the
+    # operator bearer, an admin or the patient's caregiver may start the link.
+    # The dashboard opens this URL in a new tab, so its session is the cookie.
+    bearer_ok = _check_bearer(request) is None
+    email = None
+    principal: dict = {"k": "o"}
+    if not bearer_ok:
+        auth_header = request.headers.get("authorization", "")
+        session_token = (
+            auth_header.removeprefix("Bearer session:").strip()
+            if auth_header.startswith("Bearer session:")
+            else request.cookies.get("oncofiles_session", "")
+        )
+        email = _verify_session_token(session_token) if session_token else None
+        parsed_session = _parse_session_token(session_token) if email else None
+        if email is None or parsed_session is None or not parsed_session[2]:
+            return JSONResponse({"error": "unauthorized"}, status_code=401)
+        # The state is bound to this session; /oauth/callback checks its cookie.
+        principal = {"k": "s", "tid": parsed_session[2]}
+    if service not in {"drive", "gmail", "calendar", "all"}:
+        return JSONResponse({"error": "unknown service"}, status_code=400)
     # Resolve slug → UUID (e.g. "q1b" → UUID); pass through if already UUID
     try:
         db_inst: Database = request.app.state.fastmcp_server._lifespan_result["db"]
         patient_id = await db_inst.resolve_patient_id(raw_pid) or raw_pid
-    except Exception:
+        patient = await db_inst.get_patient(patient_id)
+    except Exception as exc:
+        resp = _circuit_breaker_503(exc, "/oauth/authorize")
+        if resp is not None:
+            return resp
         logger.error("OAuth connect: patient resolution failed for '%s'", raw_pid, exc_info=True)
-        patient_id = raw_pid
+        return JSONResponse({"error": "internal error"}, status_code=500)
+    if patient is None:
+        return JSONResponse({"error": "patient not found"}, status_code=404)
+    if not (
+        bearer_ok
+        or _is_admin_email(email)
+        or _email_matches_caregiver(email, patient.caregiver_email)
+    ):
+        return JSONResponse(
+            {"error": "forbidden: not authorized for this patient"}, status_code=403
+        )
     scope_map = {
         "drive": SCOPES,
         "gmail": GMAIL_SCOPES,
@@ -7498,36 +7557,82 @@ async def oauth_authorize(request: Request) -> JSONResponse:
 
     from oncofiles.oauth import _make_state_token
 
-    state = _make_state_token(patient_id=patient_id)
+    state = _make_state_token(patient_id=patient_id, service=service, principal=principal)
     auth_url = get_auth_url_for_scopes(scopes, state=state)
     return RedirectResponse(auth_url)
 
 
 @mcp.custom_route("/oauth/callback", methods=["GET"])
 async def oauth_callback(request: Request) -> JSONResponse:
-    """Handle Google OAuth 2.0 redirect callback."""
-    from oncofiles.models import OAuthToken
-    from oncofiles.oauth import exchange_code, verify_state_token
+    """Handle Google OAuth 2.0 redirect callback.
+
+    #591: the state (v2) names the patient, the service and the initiating
+    principal. A missing / expired / replayed / tampered state, or a session
+    state arriving without that session's cookie, is refused before any write.
+    ``store_google_link`` then refuses a Google account that is neither the
+    initiator's nor the caregiver's (login CSRF; an operator state completes
+    only with the caregiver's account), refuses to replace a different
+    account's token unless the initiator is the operator, an admin or the
+    patient's caregiver, and logs every link / re-link / refusal to
+    activity_log (hashes only).
+    """
+    from oncofiles.google_link import (
+        allowed_accounts,
+        log_link_refusal,
+        mcp_principal_privileged,
+        store_google_link,
+    )
+    from oncofiles.oauth import exchange_code, verify_link_state
 
     rate_err = _check_rate_limit("oauth-callback")
     if rate_err:
         return rate_err
 
     # Validate CSRF state parameter and extract patient_id
-    state = request.query_params.get("state", "")
-    valid, patient_id = verify_state_token(state)
-    if not valid or not patient_id:
+    payload = verify_link_state(request.query_params.get("state", ""))
+    if payload is None:
         return JSONResponse({"error": "Invalid or expired state parameter."}, status_code=400)
+    patient_id = payload["pid"]
+    principal = payload["pr"]
 
     # Validate that the patient still exists (#345)
-    db_check: Database = request.app.state.fastmcp_server._lifespan_result["db"]
-    patient = await db_check.get_patient(patient_id)
+    db: Database = request.app.state.fastmcp_server._lifespan_result["db"]
+    patient = await db.get_patient(patient_id)
     if not patient:
         logger.warning("OAuth callback for deleted patient: %s", patient_id)
         return JSONResponse(
             {"error": "Patient no longer exists. Please create a new patient from the dashboard."},
             status_code=404,
         )
+
+    # Bind to the initiating principal.
+    kind = principal.get("k")
+    session_email = None
+    if kind == "o":
+        privileged = True
+    elif kind == "s":
+        session_token = request.cookies.get("oncofiles_session", "")
+        session_email = _verify_session_token(session_token) if session_token else None
+        parsed_session = _parse_session_token(session_token) if session_email else None
+        if parsed_session is None or parsed_session[2] != principal.get("tid"):
+            await log_link_refusal(
+                db,
+                patient_id,
+                service=payload["svc"],
+                principal_kind=kind,
+                reason="started in another session",
+                source="oauth_callback",
+            )
+            return JSONResponse(
+                {"error": "This link was started in another session."}, status_code=403
+            )
+        privileged = _is_admin_email(session_email) or _email_matches_caregiver(
+            session_email, patient.caregiver_email
+        )
+    elif kind == "m":
+        privileged = mcp_principal_privileged(principal, patient.caregiver_email)
+    else:
+        return JSONResponse({"error": "Invalid or expired state parameter."}, status_code=400)
 
     code = request.query_params.get("code")
     if not code:
@@ -7539,31 +7644,18 @@ async def oauth_callback(request: Request) -> JSONResponse:
         logger.exception("OAuth token exchange failed")
         return JSONResponse({"error": "Token exchange failed. Please try again."}, status_code=500)
 
-    from oncofiles.oauth import parse_granted_scopes
-
-    expiry = datetime.now(UTC) + timedelta(seconds=tokens.get("expires_in", 3600))
-    new_scopes = parse_granted_scopes(tokens)
-
-    # Merge with existing scopes so incremental auth doesn't drop prior grants
-    db = request.app.state.fastmcp_server._lifespan_result["db"]
-    existing_token = await db.get_oauth_token(patient_id=patient_id)
-    if existing_token and existing_token.granted_scopes:
-        existing_scopes = json.loads(existing_token.granted_scopes)
-        merged_scopes = sorted(set(existing_scopes) | set(new_scopes))
-    else:
-        merged_scopes = new_scopes
-
-    oauth_token = OAuthToken(
+    stored, reason = await store_google_link(
+        db,
         patient_id=patient_id,
-        access_token=tokens["access_token"],
-        refresh_token=tokens.get("refresh_token", ""),
-        token_expiry=expiry,
-        granted_scopes=json.dumps(merged_scopes),
-        gdrive_folder_id=existing_token.gdrive_folder_id if existing_token else "",
-        owner_email=existing_token.owner_email if existing_token else "",
+        tokens=tokens,
+        service=payload["svc"],
+        principal_kind=kind,
+        privileged=privileged,
+        allowed_account_hashes=allowed_accounts(principal, patient.caregiver_email, session_email),
+        source="oauth_callback",
     )
-
-    await db.upsert_oauth_token(oauth_token)
+    if not stored:
+        return JSONResponse({"error": f"Google account not linked: {reason}."}, status_code=403)
 
     # Clear any "needs_reauth" flags for this patient now that fresh tokens landed (#415)
     for key in [k for k in _invalid_grant_tokens if k[0] == patient_id]:
