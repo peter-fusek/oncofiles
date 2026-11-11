@@ -120,7 +120,9 @@ async def test_delete_treatment_event_blocks_cross_patient(db: Database):
     # Erika deletes her own event — succeeds.
     result = json.loads(await tx_tools.delete_treatment_event(ctx, e_id))
     assert result.get("deleted") is True
-    assert await db.check_treatment_event_ownership(e_id, ERIKA_UUID) is False
+    # Soft delete (#723): the row is kept (still owned) but hidden from reads.
+    assert await db.get_treatment_event(e_id, patient_id=ERIKA_UUID) is None
+    assert await db.check_treatment_event_ownership(e_id, ERIKA_UUID) is True
 
 
 async def test_update_treatment_event_blocks_cross_patient(db: Database):
