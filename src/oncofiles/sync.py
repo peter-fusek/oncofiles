@@ -49,6 +49,20 @@ from oncofiles.models import Document, DocumentCategory
 
 logger = logging.getLogger(__name__)
 
+# Shown to MCP clients when a legacy sync hits a curated folder (#562/#606),
+# so they stop suggesting gdrive_sync / sync_from_gdrive "to import".
+CURATED_SYNC_HINT = (
+    "This patient folder is curated (README.md contract), so legacy Drive sync "
+    "does nothing here. New inbox files are filed by the curated pipeline "
+    "(continuous mode, or curated_folder_run); curated_index mirrors filed "
+    "documents into search; curated_folder_status shows the pipeline state."
+)
+
+
+def _curated_skip(blocked: str) -> dict:
+    return {"skipped": True, "curated": True, "message": blocked, "hint": CURATED_SYNC_HINT}
+
+
 # Module-level lock to prevent concurrent sync operations.
 # Uses a timestamp-based approach to auto-expire stale locks after 10 minutes.
 _sync_lock = asyncio.Lock()
@@ -110,7 +124,7 @@ async def sync_from_gdrive(
 
     if (blocked := write_block_reason(gdrive)) is not None:
         logger.info("%s: skipped for patient %s — %s", "sync_from_gdrive", patient_id, blocked)
-        return {"skipped": True, "curated": True, "message": blocked}
+        return _curated_skip(blocked)
 
     logger.info("sync_from_gdrive: listing folder %s (dry_run=%s)", folder_id, dry_run)
     gdrive_files, folder_map = await asyncio.to_thread(gdrive.list_folder_with_structure, folder_id)
@@ -662,7 +676,7 @@ async def sync_to_gdrive(
 
     if (blocked := write_block_reason(gdrive)) is not None:
         logger.info("%s: skipped for patient %s — %s", "sync_to_gdrive", patient_id, blocked)
-        return {"skipped": True, "curated": True, "message": blocked}
+        return _curated_skip(blocked)
 
     logger.info("sync_to_gdrive: starting (dry_run=%s, full=%s)", dry_run, full)
 
@@ -1439,7 +1453,7 @@ async def sync(
 
     if (blocked := write_block_reason(gdrive)) is not None:
         logger.info("%s: skipped for patient %s — %s", "sync", patient_id, blocked)
-        return {"skipped": True, "curated": True, "message": blocked}
+        return _curated_skip(blocked)
 
     global _sync_lock_acquired_at  # noqa: PLW0603
 

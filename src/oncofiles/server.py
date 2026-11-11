@@ -2767,7 +2767,19 @@ which EU-recommended screenings are due/overdue.
 
 Available categories: labs, report, imaging, pathology, genetics, \
 surgery, surgical_report, prescription, referral, discharge, discharge_summary, chemo_sheet, \
-reference, advocate, other, vaccination, dental, preventive.\
+reference, advocate, other, vaccination, dental, preventive.
+
+CURATED PATIENT FOLDERS — a Drive folder holding README.md + _index.json is curated:
+- It is processed only by the curated pipeline (continuous mode on the server, or \
+`curated_folder_run`) and mirrored into search/labs/timeline by `curated_index`. \
+Check its state with `curated_folder_status`.
+- Legacy Drive tools (`gdrive_sync`, `sync_from_gdrive`, `sync_to_gdrive`, `setup_gdrive`, \
+`reconcile_gdrive`, `rename_documents_to_standard`) skip curated folders. Do not suggest \
+them to import or rename curated documents; if no documents show up, suggest `curated_index`.
+
+OPERATIONS — Oncofiles is self-hosted on its own server, not on a cloud PaaS. \
+Users have no access to server or hosting logs, so never tell them to check logs; for a \
+server-side problem use `system_health` and suggest contacting the maintainer.\
 """
 
 mcp = FastMCP(
@@ -3967,7 +3979,7 @@ async def manifest_json(request: Request) -> JSONResponse:
 async def health(request: Request) -> JSONResponse:
     """Liveness probe — instant response, no DB dependency.
 
-    Used by Railway healthcheck and UptimeRobot.  Must never block on
+    Used by the Coolify healthcheck and UptimeRobot.  Must never block on
     external I/O so the process is never killed by a slow dependency.
     """
     # Hard RSS ceiling — last-resort failsafe independent of scheduler health.
@@ -4340,7 +4352,7 @@ async def debug_memory_trace(request: Request) -> JSONResponse:
     Opt-in via ``MEMORY_TRACEMALLOC_ENABLED=true`` env var so we don't pay
     the ~15% per-alloc overhead in steady state. To use:
 
-        1. Set ``MEMORY_TRACEMALLOC_ENABLED=true`` in Railway env + deploy.
+        1. Set ``MEMORY_TRACEMALLOC_ENABLED=true`` in the Coolify env + deploy.
         2. Wait for the suspect workload window (e.g. 23:00 UTC nightly AI run).
         3. curl -H "Authorization: Bearer <MCP_BEARER_TOKEN>"
               https://oncofiles.com/debug/memory-trace
@@ -4361,8 +4373,8 @@ async def debug_memory_trace(request: Request) -> JSONResponse:
             {
                 "error": "tracemalloc disabled",
                 "hint": (
-                    "Set MEMORY_TRACEMALLOC_ENABLED=true in Railway env and "
-                    "redeploy to enable. Unset after diagnosis to avoid the "
+                    "Set MEMORY_TRACEMALLOC_ENABLED=true in the deployment env "
+                    "(Coolify) and redeploy to enable. Unset after diagnosis to avoid the "
                     "~15% per-alloc overhead."
                 ),
             },
