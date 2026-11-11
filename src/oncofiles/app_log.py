@@ -36,12 +36,15 @@ FILE_MODE = 0o600
 
 # Log lines can carry attacker-controlled text (filenames, request values), so
 # every quantifier is bounded (linear matching, no catastrophic backtracking).
-# Redaction runs BEFORE truncation: a cut can never split a secret into pieces
-# the patterns no longer recognise. Only the kept head/tail regions (plus a
-# margin longer than any match) are scanned, so a huge line stays cheap.
+# Order: (1) a hard raw cap (MAX_RAW_CHARS) drops the middle of a huge text
+# BEFORE redaction, so no unredacted text ever survives and the cost stays
+# bounded; (2) the WHOLE capped string is redacted; (3) the redacted result is
+# cut to MAX_REDACT_CHARS (head + tail). At every cut, a token-character run
+# the cut splits is replaced by "[cut]", so no fragment of a secret remains.
 MAX_REDACT_CHARS = 16 * 1024
 _TAIL_CHARS = 4 * 1024  # a traceback's last lines name the actual error
-_MARGIN = 8 * 1024  # > the longest possible match of any pattern below
+MAX_RAW_CHARS = 256 * 1024
+_RAW_TAIL_CHARS = 64 * 1024  # the raw cap also keeps the end of a traceback
 
 _SECRET_KEYS = (
     "access_token|refresh_token|id_token|token|client_secret|api_key|apikey|secret|"
@@ -114,19 +117,20 @@ def _tail(redacted: str, n: int) -> str:
 
 
 def redact(text: str, limit: int = MAX_REDACT_CHARS) -> str:
-    """Mask secrets and e-mail addresses, then cut to about ``limit`` chars
-    (head + tail with a "…[truncated N chars]" marker)."""
+    """Cap, mask secrets and e-mail addresses, then cut to about ``limit``
+    chars (head + tail with a "…[truncated N chars]" marker)."""
+    original = len(text)
+    if original > MAX_RAW_CHARS:
+        text = _head(text, MAX_RAW_CHARS - _RAW_TAIL_CHARS) + " " + _tail(text, _RAW_TAIL_CHARS)
+    red = _redact_all(text)
     tail_n = min(_TAIL_CHARS, limit // 4)
     head_n = limit - tail_n
-    if len(text) <= head_n + tail_n + 2 * _MARGIN:
-        red_head = red_tail = _redact_all(text)
-    else:  # the middle is dropped anyway: scan only what can reach the output
-        red_head = _redact_all(text[: head_n + _MARGIN])
-        red_tail = _redact_all(text[len(text) - tail_n - _MARGIN :])
-    if red_head is red_tail and len(red_head) <= limit:
-        return red_head
-    head, tail = _head(red_head, head_n), _tail(red_tail, tail_n)
-    dropped = max(0, len(text) - head_n - tail_n)
+    if len(red) <= limit:
+        if original <= MAX_RAW_CHARS:
+            return red
+        return f"{red} …[truncated {original - MAX_RAW_CHARS} chars]"
+    head, tail = _head(red, head_n), _tail(red, tail_n)
+    dropped = max(0, original - head_n - tail_n)
     return f"{head}…[truncated {dropped} chars]{tail}"
 
 

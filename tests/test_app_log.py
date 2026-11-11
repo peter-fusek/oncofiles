@@ -282,7 +282,7 @@ def test_truncation_marker_counts_dropped_chars():
     assert f"…[truncated {len(text) - LIMIT} chars]" in app_log.redact(text)
 
 
-@pytest.mark.parametrize("tail_words", [3_000, 30_000])  # whole-text and region scans
+@pytest.mark.parametrize("tail_words", [3_000, 60_000])  # below and above the raw cap
 def test_bearer_token_straddling_the_head_cut_leaves_no_fragment(tail_words):
     token = "QzSyntheticStraddleTokenQz" * 3
     prefix = "auth header Bearer "
@@ -310,3 +310,41 @@ def test_email_straddling_the_tail_cut_leaves_no_fragment():
     assert pos < len(text) - tail_len < pos + len(email)
     out = app_log.redact(text)
     assert "straddle" not in out and "example" not in out
+
+
+RAW = app_log.MAX_RAW_CHARS
+RAW_TAIL = app_log._RAW_TAIL_CHARS
+
+
+def _straddle(cut_at: int, total: int, secret: str) -> str:
+    """Space-separated filler of length ``total`` with ``secret`` across ``cut_at``."""
+    pos = cut_at - len(secret) // 2
+    text = ("w " * (total // 2 + 1))[:total]
+    return text[: pos - 1] + " " + secret + " " + text[pos + len(secret) + 1 :]
+
+
+@pytest.mark.parametrize("where", ["raw_head", "raw_tail", "head", "tail"])
+@pytest.mark.parametrize(
+    "secret", ["Bearer QzSyntheticStraddleTokenQzQzSyntheticStraddleQz", "Zx" * 40]
+)
+def test_a_secret_straddling_any_cut_leaves_no_fragment(where, secret):
+    total = RAW + RAW_TAIL  # over the raw cap: every cut exists
+    cut_at = {
+        "raw_head": RAW - RAW_TAIL,
+        "raw_tail": total - RAW_TAIL,
+        "head": HEAD_N,
+        "tail": total - app_log._TAIL_CHARS,
+    }[where]
+    text = _straddle(cut_at, total, secret)
+    assert len(text) == total and secret in text
+    out = app_log.redact(text)
+    for frag in ("Qz", "Straddle", "Synthetic", "Zx"):
+        assert frag not in out, (where, frag)
+
+
+def test_raw_cap_bounds_the_work_and_reports_dropped_chars():
+    text = _words(RAW)  # five times the cap
+    t0 = time.perf_counter()
+    out = app_log.redact(text)
+    assert time.perf_counter() - t0 < 0.5
+    assert f"…[truncated {len(text) - LIMIT} chars]" in out and len(out) < LIMIT + 64
