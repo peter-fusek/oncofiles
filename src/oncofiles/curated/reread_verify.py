@@ -173,7 +173,7 @@ def diagnostics(old_facts: list[dict], new_facts: list[dict], *, old_page_count:
     }
 
 
-def result_keys(assessment: dict, old_by_id: dict[int, dict]) -> dict:
+def result_keys(assessment: dict, old_by_id: dict[int, dict], *, method: str = "") -> dict:
     """The stored form: keys only, no ids (ids change on every re-extraction)."""
 
     def keys(ids):
@@ -183,7 +183,8 @@ def result_keys(assessment: dict, old_by_id: dict[int, dict]) -> dict:
             for i in ids
         )  # fmt: skip
 
-    return {"assess_version": ASSESS_VERSION, "confirmed": keys(assessment["confirmed"]),
+    return {"assess_version": ASSESS_VERSION, "method": method,
+            "confirmed": keys(assessment["confirmed"]),
             "date_unconfirmed": keys(assessment["date_unconfirmed"])}  # fmt: skip
 
 
