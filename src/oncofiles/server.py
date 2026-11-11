@@ -4205,19 +4205,28 @@ def _count_tools() -> int:
         return 76  # fallback — update when tool count changes
 
 
+# #591: /api/stats is public, and the count costs 1 + N(patients) queries on the
+# single DB connection. Cached, so an unauthenticated flood costs one count per TTL.
+_API_STATS_TTL_S = 300
+_api_stats_cache: dict = {"at": 0.0, "documents": None}
+
+
 @mcp.custom_route("/api/stats", methods=["GET"])
 async def api_stats(request: Request) -> JSONResponse:
     """Public project stats for landing page and llms.txt."""
     from oncofiles.models import DocumentCategory
 
-    doc_count = 0
-    try:
-        db: Database = request.app.state.fastmcp_server._lifespan_result["db"]
-        patients = await db.list_patients(active_only=True)
-        for p in patients:
-            doc_count += await db.count_documents(patient_id=p.patient_id)
-    except Exception:
-        logger.warning("api_stats: failed to count documents", exc_info=True)
+    doc_count = _api_stats_cache["documents"]
+    if doc_count is None or time.time() - _api_stats_cache["at"] > _API_STATS_TTL_S:
+        doc_count = 0
+        try:
+            db: Database = request.app.state.fastmcp_server._lifespan_result["db"]
+            patients = await db.list_patients(active_only=True)
+            for p in patients:
+                doc_count += await db.count_documents(patient_id=p.patient_id)
+            _api_stats_cache.update(at=time.time(), documents=doc_count)
+        except Exception:
+            logger.warning("api_stats: failed to count documents", exc_info=True)
 
     return JSONResponse(
         {
@@ -4613,9 +4622,9 @@ def _verify_session_token(token: str) -> str | None:
 def _extract_session_tid_and_expiry(token: str) -> tuple[str, int] | None:
     """Pull ``(tid, expiry)`` out of a session token for revocation purposes.
 
-    Used by /api/logout — we want to revoke regardless of HMAC validity
-    (a tampered tid still deserves to be denylisted), but we still need
-    the original expiry to know how long the revocation row must live.
+    Used by /api/logout, after the token verified (#591: a forged token is
+    never written to the denylist); the original expiry says how long the
+    revocation row must live.
     Returns None when there's no tid (legacy 3-part format) — those
     predate #510 and cannot be individually revoked.
     """
@@ -5283,9 +5292,9 @@ async def api_logout(request: Request) -> JSONResponse:
     This endpoint:
     1. Reads the session token from `Authorization: Bearer session:…` OR
        the `oncofiles_session` cookie.
-    2. Parses the tid + original expiry out of the token (no HMAC check —
-       even a tampered token is fine to "revoke" since it would already
-       fail _verify_session_token).
+    2. Parses the tid + original expiry out of the token, only when the
+       token still verifies (#591). A tampered or expired token already
+       fails _verify_session_token, so there is nothing to revoke.
     3. Persists the tid to `session_revocations` and adds it to the
        in-memory denylist.
     4. Returns 200 with `{"ok": true}` and a `set_cookie` that expires
@@ -5310,7 +5319,14 @@ async def api_logout(request: Request) -> JSONResponse:
         # has to do (no Request object available there).
         token = request.cookies.get("oncofiles_session", "")
 
-    parsed = _extract_session_tid_and_expiry(token) if token else None
+    # #591: only a token that still verifies goes on the denylist. A forged or
+    # expired one authenticates nothing, and revoking it would let a caller with
+    # no session insert rows with an expiry of its own choosing.
+    parsed = (
+        _extract_session_tid_and_expiry(token)
+        if token and _verify_session_token(token) is not None
+        else None
+    )
     if parsed is not None:
         tid, expiry = parsed
         try:
@@ -7517,13 +7533,38 @@ async def oauth_authorize(request: Request) -> JSONResponse:
     raw_pid = request.query_params.get("patient_id", "").strip().lower()
     if not raw_pid:
         return JSONResponse({"error": "patient_id required"}, status_code=400)
+    # #591: the callback stores Google tokens for this patient, so only the
+    # operator bearer, an admin or the patient's caregiver may start the link.
+    # The dashboard opens this URL in a new tab, so its session is the cookie.
+    bearer_ok = _check_bearer(request) is None
+    email = None
+    if not bearer_ok:
+        email = _get_dashboard_email(request) or _verify_session_token(
+            request.cookies.get("oncofiles_session", "")
+        )
+        if email is None:
+            return JSONResponse({"error": "unauthorized"}, status_code=401)
     # Resolve slug → UUID (e.g. "q1b" → UUID); pass through if already UUID
     try:
         db_inst: Database = request.app.state.fastmcp_server._lifespan_result["db"]
         patient_id = await db_inst.resolve_patient_id(raw_pid) or raw_pid
-    except Exception:
+        patient = await db_inst.get_patient(patient_id)
+    except Exception as exc:
+        resp = _circuit_breaker_503(exc, "/oauth/authorize")
+        if resp is not None:
+            return resp
         logger.error("OAuth connect: patient resolution failed for '%s'", raw_pid, exc_info=True)
-        patient_id = raw_pid
+        return JSONResponse({"error": "internal error"}, status_code=500)
+    if patient is None:
+        return JSONResponse({"error": "patient not found"}, status_code=404)
+    if not (
+        bearer_ok
+        or _is_admin_email(email)
+        or _email_matches_caregiver(email, patient.caregiver_email)
+    ):
+        return JSONResponse(
+            {"error": "forbidden: not authorized for this patient"}, status_code=403
+        )
     scope_map = {
         "drive": SCOPES,
         "gmail": GMAIL_SCOPES,
