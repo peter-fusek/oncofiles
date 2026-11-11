@@ -22,6 +22,7 @@ after a preview does not OCR the same pages twice on the slow local model.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import json
 import logging
@@ -35,12 +36,15 @@ from datetime import UTC, datetime, timedelta
 
 from fastmcp import Context
 
-from oncofiles.tools._helpers import _get_db, _resolve_patient_id
+from oncofiles.secrets_keys import caller_email_hash
+from oncofiles.tools._helpers import _caller_email, _get_db, _resolve_patient_id
 
 logger = logging.getLogger(__name__)
 
 # patient_id -> {"state": "running", "started": ts, "dry_run": bool, "trigger": str}
 _runs: dict[str, dict] = {}
+# patient_id -> birth dates (ISO) from the README contract, refreshed by every index
+_readme_births: dict[str, set[str]] = {}
 _lock = asyncio.Lock()
 
 DEFAULTS = {  # patient_type -> (max_docs, min_text_chars, max_doc_age_days)
@@ -101,12 +105,18 @@ def request_stop() -> None:
     _stopping.set()
 
 
+# background jobs that write nothing: a deploy may cut them
+_NO_WRITE_KINDS = frozenset({"llm_shadow", "clinical_preview"})
+
+
 def run_active() -> bool:
     """True while any curated run or re-OCR executes (on /health, CI deploys wait).
 
-    An LLM-extract shadow job (#714) writes nothing, so a deploy may cut it."""
+    An LLM-extract shadow job (#714) or a clinical extraction preview (#726)
+    writes nothing, so a deploy may cut it."""
     return any(r.get("state") == "running" for r in _runs.values()) or any(
-        j.get("state") == "running" and j.get("kind") != "llm_shadow" for j in _reocr_jobs.values()
+        j.get("state") == "running" and j.get("kind") not in _NO_WRITE_KINDS
+        for j in _reocr_jobs.values()
     )
 
 
@@ -913,6 +923,7 @@ async def _index_patient(db, pid: str, *, force_ids: set[int] | None = None) -> 
 
     t0 = time.monotonic()
     scanned = await asyncio.to_thread(_blocking)
+    _readme_births[pid] = set(scanned.birth_dates)  # DOB guard of the LLM extractors (#726)
     vocab = Vocabulary.from_rows(await db.fact_code_vocabulary())
     stats = {"created": 0, "updated": 0, "unchanged": 0, "removed": 0, "pages": 0, "errors": 0,
              "facts": 0}  # fmt: skip
@@ -1991,6 +2002,353 @@ async def curated_llm_extract_preview(
     )
 
 
+# ── LLM-first extraction of the non-lab kinds (#726 item 4, #711 phase 2b) ──
+
+CLINICAL_MAX_DOCS = 10
+
+
+async def _all_birth_dates(db, pid: str) -> set[str]:
+    """Every birth date known for the patient (ISO): patient context plus the
+    README contract (cached by the last index; read from Drive, read-only,
+    when not cached yet). Never used as a fact date."""
+    try:
+        from oncofiles import patient_context
+
+        await patient_context.load_from_db(db.db, pid)
+    except Exception:
+        logger.warning("clinical extract: patient context not loaded for %s", pid)
+    if pid not in _readme_births:
+        try:
+            from oncofiles.curated import indexer
+            from oncofiles.curated.drive_ops import DriveOps
+            from oncofiles.server import _create_patient_clients
+
+            clients = await _create_patient_clients(db, pid)
+            if clients and clients[0] is not None:
+                gdrive, folder_id = clients[0], clients[3]
+
+                def _blocking():
+                    own = gdrive.dedicated_copy()
+                    try:
+                        return indexer.readme_birth_dates(DriveOps(own), folder_id)
+                    finally:
+                        own.close()
+
+                _readme_births[pid] = set(await asyncio.to_thread(_blocking))
+        except Exception:
+            logger.warning("clinical extract: README birth dates not read for %s", pid)
+    return set(_birth_dates(pid)) | _readme_births.get(pid, set())
+
+
+_CLINICAL_DOC_KEYS = (
+    "method", "pages", "pages_used", "pages_not_assessed", "pages_truncated", "page_errors",
+    "dob_known", "birth_date_guard", "counts", "unverified_reasons", "dropped", "seconds",
+)  # fmt: skip
+
+
+def _clinical_totals(report: list[dict]) -> dict:
+    """Sums over the documents: counts per kind, reasons, stored rows — no values."""
+    counts: dict[str, dict[str, int]] = {}
+    reasons: dict[str, int] = {}
+    stored: dict[str, dict[str, int]] = {}
+    for r in report:
+        for kind, c in (r.get("counts") or {}).items():
+            tot = counts.setdefault(kind, {"machine": 0, "unverified": 0})
+            for k, n in c.items():
+                tot[k] = tot.get(k, 0) + n
+        for reason, n in (r.get("unverified_reasons") or {}).items():
+            reasons[reason] = reasons.get(reason, 0) + n
+        for target, c in (r.get("stored") or {}).items():
+            tot = stored.setdefault(target, {})
+            for k, n in c.items():
+                tot[k] = tot.get(k, 0) + n
+    return {
+        "documents": len(report),
+        "stored_documents": sum(1 for r in report if r.get("result") == "stored"),
+        "pages_not_assessed": sum(len(r.get("pages_not_assessed") or []) for r in report),
+        "counts": counts,
+        "unverified_reasons": dict(sorted(reasons.items())),
+        "stored": stored,
+    }
+
+
+async def _clinical_job(db, pid: str, docs: list[dict], *, write: bool) -> None:
+    """Extract the non-lab kinds of each document with the LOCAL model and
+    verify them (#726 item 4). Preview (``write=False``) writes NOTHING; a
+    write holds the patient lock, refuses without a known birth date, and
+    stores nothing for a document with a page that was not assessed. One
+    model call at a time (one LM Studio slot); local only."""
+    from oncofiles import config
+    from oncofiles.cloud_guard import local_only
+    from oncofiles.curated import clinical_store, verifier, verifier_clinical
+    from oncofiles.curated import llm_extract_clinical as lx
+    from oncofiles.curated.facts_rules import Vocabulary
+
+    job = _reocr_jobs[pid]
+    row_id = (
+        await db.insert_curated_run(patient_id=pid, dry_run=False, trigger="clinical")
+        if write
+        else None
+    )
+    report: list[dict] = []
+    births: set[str] = set()
+    try:
+        async with patient_lock(pid) if write else contextlib.nullcontext():
+            births = await _all_birth_dates(db, pid)
+            if write:
+                verifier.require_dob_for_write(births)
+            vocab = Vocabulary.from_rows(await db.fact_code_vocabulary())
+            model = config.LOCAL_LLM_MODEL or None
+            for d in docs:
+                entry = {"document_id": d["id"], "category": d.get("category")}
+                if _stopping.is_set():
+                    report.append({**entry, "result": "skipped", "error": "stopping"})
+                    continue
+                pages = [(int(p["page_number"]), p.get("extracted_text") or "")
+                         for p in await db.get_ocr_pages(d["id"], patient_id=pid)]  # fmt: skip
+                if not any(t.strip() for _, t in pages):
+                    report.append({**entry, "result": "skipped", "error": "no page text"})
+                    continue
+                meta = d.get("structured_metadata") or {}
+                day = str(d.get("document_date") or "")[:10] or None
+
+                def _blocking(pages=pages, meta=meta, day=day):
+                    with local_only("curated clinical extraction"):
+                        return lx.extract_document(
+                            pages, vocab=vocab, report_date=day, birth_dates=births,
+                            source_reason=_source_reason(meta), stop=_stopping.is_set,
+                        )  # fmt: skip
+
+                try:
+                    out = await asyncio.to_thread(_blocking)
+                except Exception as exc:
+                    logger.exception("clinical extraction of doc %s failed", d["id"])
+                    report.append({**entry, "result": "failed", "error": type(exc).__name__})
+                    continue
+                entry.update({k: out[k] for k in _CLINICAL_DOC_KEYS}, result="previewed")
+                if write and out["pages_not_assessed"]:
+                    entry.update(result="skipped", error="a page was not assessed: nothing stored")
+                elif write:
+                    verifier.require_dob_for_write(births)
+                    try:
+                        res = await clinical_store.store_document(
+                            db, patient_id=pid, document_id=d["id"], items=out["items"],
+                            document_date=day, birth_dates=births, model=model,
+                        )  # fmt: skip
+                    except Exception as exc:  # re-running the document replaces it again
+                        logger.exception("storing clinical items of doc %s failed", d["id"])
+                        entry.update(result="failed", error=type(exc).__name__)
+                    else:
+                        entry.update(
+                            result="stored", stored=res["stored"], store_dropped=res["dropped"]
+                        )
+                report.append(entry)
+        job.update(state="done", report={
+            "dry_run": not write, "extractor": lx.EXTRACTOR_VERSION,
+            "verifier": verifier_clinical.CLINICAL_VERIFIER_VERSION, "dob_known": bool(births),
+            "totals": _clinical_totals(report), "documents": report,
+        })  # fmt: skip
+    except verifier.NoBirthDateError:
+        job.update(state="failed", error="no_birth_date", report={
+            "dry_run": not write, "documents": report,
+            "message": "no birth date known (README contract or patient context): nothing stored",
+        })  # fmt: skip
+    except Exception as exc:
+        logger.exception("clinical extraction job failed for %s", pid)
+        job.update(state="failed", error=type(exc).__name__, report={"documents": report})
+    finally:
+        job["finished_at"] = datetime.now(UTC).isoformat()
+        if job.get("pre_store"):  # the safety copy is part of the record
+            job["report"] = {**(job.get("report") or {}), "pre_store": job["pre_store"]}
+        if row_id is not None:
+            try:
+                await db.finish_curated_run(
+                    row_id, patient_id=pid,
+                    status="ok" if job.get("state") == "done" else "failed",
+                    message=job.get("error") or "", report=job.get("report") or {},
+                )  # fmt: skip
+            except Exception:
+                logger.exception("could not persist the clinical extraction job for %s", pid)
+        if write:
+            await _audit_clinical_write(db, pid, job)
+
+
+async def _audit_clinical_write(db, pid: str, job: dict) -> None:
+    """One activity_log row per REAL clinical extraction (as for re-read stores,
+    #573): caller, document ids, the pre-store copy, counts per kind and the
+    stored rows per target. Counts only — never a value or evidence text."""
+    from oncofiles.models import ActivityLogEntry
+
+    report = job.get("report") or {}
+    totals = report.get("totals") or {}
+    docs = [d for d in report.get("documents") or [] if isinstance(d, dict)]
+    actor = str(job.get("actor") or "unknown")[:120]
+    try:
+        await db.insert_activity_log(
+            ActivityLogEntry(
+                patient_id=pid,
+                session_id="curated-clinical",
+                agent_id=actor,
+                tool_name="curated_clinical_extract",
+                input_summary=json.dumps(
+                    {
+                        "by": actor,
+                        # keyed hash, never the email itself (#590/#604, migration 085)
+                        "caller_email_hash": job.get("caller_email_hash"),
+                        "dry_run": False,
+                        "pre_store": job.get("pre_store"),
+                        "document_ids": [d.get("document_id") for d in job.get("documents") or []],
+                        "started_at": job.get("started_at"),
+                        "extractor": job.get("extractor"),
+                    }
+                ),  # fmt: skip
+                output_summary=json.dumps(
+                    {
+                        "state": job.get("state"),
+                        "results": {
+                            r: sum(1 for d in docs if d.get("result") == r)
+                            for r in {str(d.get("result")) for d in docs}
+                        },
+                        "counts": totals.get("counts") or {},
+                        "stored": totals.get("stored") or {},
+                    }
+                ),  # fmt: skip
+                status="ok" if job.get("state") == "done" else "error",
+                error_message=job.get("error"),
+                tags=json.dumps(["curated", "clinical", "real", "pre-store"]),
+            )
+        )
+    except Exception:
+        logger.exception("could not write the activity_log row for a clinical extraction")
+
+
+async def _start_clinical(ctx: Context, document_ids, patient_slug, *, write: bool) -> str:
+    from oncofiles import config
+    from oncofiles.curated import llm
+    from oncofiles.curated.llm_extract_clinical import EXTRACTOR_VERSION
+
+    if config.LLM_CLINICAL_EXTRACT_DISABLED:
+        return json.dumps({"error": "disabled by LLM_CLINICAL_EXTRACT_DISABLED=true"})
+    if not llm.configured():
+        return json.dumps({"error": "local model not configured (LOCAL_LLM_BASE_URL/MODEL)"})
+    pid = await _resolve_patient_id(patient_slug, ctx)
+    db = _get_db(ctx)
+    ids = list(dict.fromkeys(int(i) for i in (document_ids or [])))
+    if not ids:
+        return json.dumps({"error": "document_ids is required"})
+    if len(ids) > CLINICAL_MAX_DOCS:
+        return json.dumps({"error": f"too many documents: at most {CLINICAL_MAX_DOCS} explicit "
+                           f"document_ids per call, got {len(ids)}"})  # fmt: skip
+    docs = [r for r in await db.curated_reocr_candidates(patient_id=pid) if r["id"] in ids]
+    if not docs:
+        return json.dumps({"status": "nothing to do"})
+
+    def busy() -> bool:
+        return (
+            _reocr_jobs.get(pid, {}).get("state") == "running"
+            or (pid in _runs and _runs[pid].get("state") == "running")
+            or (write and patient_lock(pid).locked())
+        )
+
+    busy_error = json.dumps({"error": "busy: a curated run, index, re-OCR, re-read or "
+                             "extraction is in progress for this patient"})  # fmt: skip
+    if busy():
+        return busy_error
+    # Reserve the patient's job slot before any further await, so two calls can
+    # never both start a job; released again on every refusal below.
+    previous = _reocr_jobs.get(pid)
+    _reocr_jobs[pid] = job = {
+        "state": "running", "kind": "clinical_extract" if write else "clinical_preview",
+        "dry_run": not write, "extractor": EXTRACTOR_VERSION,
+        "started_at": datetime.now(UTC).isoformat(), "actor": "mcp",
+        "caller_email_hash": caller_email_hash(_caller_email()),
+        "documents": [{"document_id": d["id"], "category": d.get("category")} for d in docs],
+    }  # fmt: skip
+
+    def release(error: str) -> str:
+        if previous is not None:
+            _reocr_jobs[pid] = previous
+        else:
+            _reocr_jobs.pop(pid, None)
+        return json.dumps({"error": error})
+
+    if write:
+        if not await _all_birth_dates(db, pid):
+            return release("no birth date known for this patient (README contract or patient "
+                           "context): refusing to store facts")  # fmt: skip
+        # Same safety bar as the re-read / re-OCR stores (#573): a verified copy
+        # of the DB before anything is written, or no write at all.
+        from oncofiles.pre_store import PreStoreError, make_copy
+
+        try:
+            job["pre_store"] = await asyncio.to_thread(make_copy, db, "clinical")
+        except Exception as exc:
+            reason = str(exc) if isinstance(exc, PreStoreError) else type(exc).__name__
+            logger.error("pre-store copy failed for %s (%s): extraction refused", pid[:8], reason)
+            return release(f"refused: pre-store copy failed ({reason}); nothing was written")
+    from oncofiles.cloud_guard import local_only
+
+    # The task copies the current context: the WHOLE job (DB writes included,
+    # not only the model calls) runs local-only.
+    with local_only("curated clinical extraction"):
+        _reocr_jobs[pid]["task"] = asyncio.create_task(_clinical_job(db, pid, docs, write=write))
+    return json.dumps(
+        {k: v for k, v in _reocr_jobs[pid].items() if k != "task"}, ensure_ascii=False
+    )
+
+
+async def curated_clinical_extract_preview(
+    ctx: Context,
+    document_ids: list[int],
+    patient_slug: str | None = None,
+) -> str:
+    """DRY RUN: what the LOCAL model would extract from curated documents (#726).
+
+    Kinds: diagnoses (ICD code, stage, primary/metastasis), biomarker and
+    genomic results, treatment courses, cycles (incl. postponements), medication
+    doses, procedures / imaging / radiotherapy, CT lesion sizes and planned dates.
+    Each item is checked by a generic verifier (evidence verbatim on the page,
+    key tokens inside it, dates printed and not a birth date): machine or
+    unverified with reasons. The verifier checks only that the text is printed
+    on the page: the interpretation (which line is the diagnosis, a current vs
+    a historical regimen) is the model's and is NOT verified. Writes NOTHING.
+    Reports per document only counts per kind and reason codes — never values.
+    Explicit ``document_ids`` (max 10). Runs in the background; poll
+    curated_reocr_status. About a minute per page.
+    """
+    return await _start_clinical(ctx, document_ids, patient_slug, write=False)
+
+
+async def curated_clinical_extract(
+    ctx: Context,
+    document_ids: list[int],
+    patient_slug: str | None = None,
+    dry_run: bool = True,
+) -> str:
+    """Extract diagnoses, biomarkers, treatments, procedures, lesion sizes and
+    planned dates from curated documents with the LOCAL model and store them (#726).
+
+    dry_run=true (default) is the same as curated_clinical_extract_preview and
+    writes nothing. dry_run=false stores the verified items as conditions,
+    stages, biomarker / genomic observations, treatment courses, cycles,
+    medication events, procedures, lesion sizes and planned encounters, each
+    with its document, page, evidence, verification and a provenance row.
+    Stored rows are shown everywhere with ``method = llm-clinical`` and their
+    own verification label: the verifier checks only that the text is printed
+    on the page, while the interpretation (which line is the diagnosis, a
+    current vs a historical regimen) is the model's and is NOT verified.
+    Re-running a document replaces only rows this extractor wrote and never
+    touches verified or corrected rows. Before writing, a verified safety copy
+    of the database is made (pre-store); no copy, no write. Every real run
+    leaves an activity_log row (caller, ids, copy, counts). Refused while
+    another curated run, re-OCR or extraction is active, or when no birth date
+    is known; holds the patient lock; a document with a page the model did not
+    assess is not stored. Explicit ``document_ids`` (max 10). Runs in the
+    background; poll curated_reocr_status. About a minute per page.
+    """
+    return await _start_clinical(ctx, document_ids, patient_slug, write=not dry_run)
+
+
 async def curated_reocr_status(ctx: Context, patient_slug: str | None = None) -> str:
     """State and report of the last re-OCR job for this patient (#660). Read-only."""
     pid = await _resolve_patient_id(patient_slug, ctx)
@@ -2034,3 +2392,5 @@ def register(mcp):
     mcp.tool()(curated_reocr_status)
     mcp.tool()(curated_reread_verify)
     mcp.tool()(curated_llm_extract_preview)
+    mcp.tool()(curated_clinical_extract_preview)
+    mcp.tool()(curated_clinical_extract)

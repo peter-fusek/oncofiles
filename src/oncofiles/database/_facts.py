@@ -30,6 +30,12 @@ _LINK_TABLES = {
 }
 PROTECTED_VERIFICATION = fact_identity.PROTECTED  # ("verified", "corrected")
 EXTRACT_SOURCE = "curated-extract"
+# extracted_by prefix of the LLM extractor of the non-lab kinds (#726). Its
+# biomarker / lesion rows in clinical_records belong to that extractor: the
+# rule re-extraction of labs never deletes them, and lab corroboration,
+# date-conflict checks and the unverified metric never see them.
+LLM_CLINICAL_FAMILY = "llm-clinical"
+_NOT_LLM_CLINICAL = f"COALESCE(extracted_by, '') NOT LIKE '{LLM_CLINICAL_FAMILY}%'"
 
 
 def _rows(rows) -> list[dict]:
@@ -190,7 +196,8 @@ class FactsMixin:
         async with self.db.execute(
             "SELECT id, code, param, occurred_at, page_number, evidence, metadata_json, "
             "verification, fhir_id, version_id, value_num, value_text FROM clinical_records "
-            "WHERE patient_id = ? AND source_document_id = ? AND deleted_at IS NULL ORDER BY id",
+            "WHERE patient_id = ? AND source_document_id = ? AND deleted_at IS NULL "
+            f"AND {_NOT_LLM_CLINICAL} ORDER BY id",
             (patient_id, document_id),
         ) as cur:
             existing = _rows(await cur.fetchall())
@@ -284,7 +291,8 @@ class FactsMixin:
         async with self.db.execute(
             "SELECT id, source_document_id, code, occurred_at, value_canonical, "
             "unit_canonical, verification, metadata_json, page_number FROM clinical_records "
-            "WHERE patient_id = ? AND deleted_at IS NULL AND code IS NOT NULL",
+            "WHERE patient_id = ? AND deleted_at IS NULL AND code IS NOT NULL "
+            f"AND {_NOT_LLM_CLINICAL}",
             (patient_id,),
         ) as cur:
             return _rows(await cur.fetchall())
@@ -597,7 +605,7 @@ class FactsMixin:
             "SELECT s.id, s.code, s.category, s.label_original, s.effective_at, s.value_num, "
             "s.value_text, s.unit, s.value_canonical, s.unit_canonical, s.ref_range_low, "
             "s.ref_range_high, s.flag, s.verification, s.source_document_id, s.page_number, "
-            "s.metadata_json, f.fhir_id FROM fact_series_v s "
+            "s.metadata_json, f.fhir_id, f.extracted_by FROM fact_series_v s "
             "JOIN clinical_records f ON f.id = s.id AND f.patient_id = s.patient_id "
             "LEFT JOIN documents d ON d.id = s.source_document_id AND d.patient_id = s.patient_id "
             "WHERE s.patient_id = ? AND s.effective_at IS NOT NULL "

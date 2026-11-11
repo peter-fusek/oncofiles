@@ -16,6 +16,7 @@ from datetime import UTC, date, datetime
 from fastmcp import Context
 
 from oncofiles.curated.facts_rules import _unit_key
+from oncofiles.fact_labels import LLM_NOTE, group_llm, is_llm, label_row, norm
 from oncofiles.tools._helpers import _gdrive_url, _get_db, _is_admin_caller, _resolve_patient_id
 
 READ_ONLY = {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True}
@@ -39,6 +40,9 @@ FEED_CATEGORIES = {
     "lab": ("lab", "tumor_marker", "vital"),
     "biomarker": ("biomarker",),
     "genetic_variant": ("genetic_variant",),
+    # CT lesion sizes (LESION_SIZE, mm) from the LLM extractor (#726 item 4)
+    "imaging": ("imaging",),
+    "lesion": ("imaging",),
 }
 FEED_DEFAULT_LIMIT = 1000
 FEED_MAX_LIMIT = 2000
@@ -145,6 +149,11 @@ def _feed_fact(r: dict, fact_id: str, at: str, conversions: dict) -> dict:
     if r["flag"]:
         row["flag"] = r["flag"]
     row["verification"] = r["verification"]
+    if is_llm(r.get("extracted_by")):  # read by the model (#729): say so, as everywhere
+        labelled = label_row({"verification": r["verification"],
+                              "extracted_by": r["extracted_by"]})  # fmt: skip
+        row["method"] = labelled["method"]
+        row["verification_label"] = labelled["verification_label"]
     row["document_id"] = r["source_document_id"]
     if r["page_number"] is not None:
         row["page"] = r["page_number"]
@@ -325,52 +334,115 @@ def _stats(points: list[dict]) -> dict | None:
 
 
 async def patient_overview(ctx: Context, patient_slug: str | None = None) -> str:
-    """Where do we stand? Diagnoses, documents by type, latest key values, last visits.
+    """Where do we stand? Diagnoses, markers, documents by type, latest key values,
+    last visits, upcoming planned dates.
 
-    Start here for any question about a patient. Read-only.
+    ``diagnoses_and_markers`` lists conditions (printed text, code, stage) and
+    biomarker / genomic results, each with its verification, document and
+    page. Every row says how it was obtained (``method``, ``verification_label``):
+    ``llm-clinical`` rows were read by the local model and only their text was
+    checked against the page; which line is the diagnosis is the model's
+    interpretation and is not verified. Identical model-read rows from several
+    documents are one item with ``sources``. Start here for any question about a
+    patient. Read-only.
     """
     pid = await _resolve_patient_id(patient_slug, ctx)
     db = _get_db(ctx)
     latest = await db.latest_any_rows(patient_id=pid)  # newest, with its verification
-    conditions = [
-        r for r in latest if r["category"] in ("condition", "genetic_variant", "biomarker")
-    ]
     key = [r for r in latest if r["code"] in KEY_CODES]
-    visits = await db.timeline_rows(patient_id=pid, kinds=["encounter"], limit=5)
+    visits = group_llm(
+        await db.timeline_rows(patient_id=pid, kinds=["encounter"], limit=5), _timeline_key,
+        page_key="page_number", id_key="entity_id",
+    )  # fmt: skip
     catalog = await db.fact_catalog_rows(patient_id=pid)
+    conditions = group_llm(
+        [
+            {
+                "kind": "condition",
+                "id": r["id"],
+                "code": r["code"],
+                "name": r["printed_text"],
+                "value": r["stage"],
+                "primary_cancer": bool(r["is_primary_cancer"]),
+                "site": r["body_site"],
+                "at": r["asserted_at"] or r["recorded_at"],
+                "date_source": "printed" if r["asserted_at"] else "document",
+                "verification": r["verification"],
+                "source_document_id": r["source_document_id"],
+                "page": r["page_number"],
+                "extracted_by": r["extracted_by"],
+            }
+            for r in await db.condition_rows(patient_id=pid)  # #726: the conditions table
+        ],
+        # same text, stage and printed date: the same diagnosis, whatever document
+        lambda r: (norm(r["name"]), norm(r["value"]), r["at"] if r["date_source"] == "printed"
+                   else None),
+        page_key="page",
+    )  # fmt: skip
+    markers = group_llm(
+        [
+            {
+                "kind": r["category"],
+                "id": r["id"],
+                "code": r["code"],
+                "name": r["name_en"],
+                "label": r["label_original"],
+                "value": r["value_text"] or r["value_num"],
+                "at": r["effective_at"],
+                "verification": r["verification"],
+                "source_document_id": r["source_document_id"],
+                "page": r["page_number"],
+                "extracted_by": r["extracted_by"],
+            }
+            for r in await db.marker_rows(patient_id=pid, newest_only=False)
+        ],
+        lambda r: (r["kind"], r["code"] or norm(r["label"]), norm(r["value"])),
+        page_key="page",
+    )
+    newest: dict = {}  # rows come newest first per code / label: keep the first
+    for m in markers:
+        newest.setdefault((m["kind"], m["code"] or norm(m["label"])), m)
+    today = datetime.now(UTC).date().isoformat()
+    upcoming = group_llm(
+        await db.planned_rows(patient_id=pid, from_day=today, limit=5), _timeline_key,
+        page_key="page_number", id_key="entity_id",
+    )  # fmt: skip
     return _dump(
         {
             "documents_by_type": await db.document_category_counts(patient_id=pid),
-            "diagnoses_and_markers": [
-                {
-                    "code": r["code"],
-                    "name": r["name_en"],
-                    "value": r["value_text"] or r["value_num"],
-                    "at": r["effective_at"],
-                    "source_document_id": r["source_document_id"],
-                }
-                for r in conditions
-            ],  # fmt: skip
+            "diagnoses_and_markers": [*conditions, *newest.values()],
+            "upcoming": upcoming,
             "latest_key_values": [
-                {
-                    "code": r["code"],
-                    "name": r["name_en"],
-                    "value": r["value_canonical"],
-                    "unit": r["unit_canonical"],
-                    "flag": r["flag"],
-                    "at": r["effective_at"],
-                    "verification": r["verification"],
-                    "source_document_id": r["source_document_id"],
-                    "page": r["page_number"],
-                }
+                label_row(
+                    {
+                        "code": r["code"],
+                        "name": r["name_en"],
+                        "value": r["value_canonical"],
+                        "unit": r["unit_canonical"],
+                        "flag": r["flag"],
+                        "at": r["effective_at"],
+                        "verification": r["verification"],
+                        "source_document_id": r["source_document_id"],
+                        "page": r["page_number"],
+                        "extracted_by": r["extracted_by"],
+                    }
+                )
                 for r in key
             ],  # fmt: skip
             "recent_visits": visits,
             "measured_codes": len(catalog),
             "unverified_values": sum(r["unverified"] or 0 for r in catalog),
             "note": UNVERIFIED_NOTE,
+            "llm_note": LLM_NOTE,
         }
     )
+
+
+def _timeline_key(r: dict) -> tuple:
+    """Identical timeline rows across documents: same kind, entity type, name,
+    value, detail and date."""
+    return (r["kind"], r["entity"], norm(r["title"]), norm(r["value"]), norm(r.get("detail")),
+            r["at"])  # fmt: skip
 
 
 async def timeline(
@@ -383,15 +455,26 @@ async def timeline(
 ) -> str:
     """What happened, newest first: visits, documents, treatments, diagnoses, abnormal values.
 
-    kinds filters by: encounter, document, treatment, condition, procedure,
-    genetic_variant, biomarker, medication, lab, tumor_marker. Dates are ISO
-    (YYYY-MM-DD). Every row links its source document. Read-only.
+    kinds filters by: encounter, document, treatment (courses, cycles and legacy
+    treatment events), condition, procedure (surgery, biopsy, imaging,
+    radiotherapy), medication, genetic_variant, biomarker, imaging (CT lesion
+    sizes), planned (next cycle, examination or visit), lab, tumor_marker.
+    Dates are ISO (YYYY-MM-DD). Every row links its source document and page;
+    ``date_source = document`` means no date was printed for the item and the
+    document date is shown. Every row has ``method`` and ``verification_label``:
+    ``llm-clinical`` rows (diagnoses, treatments, doses, procedures, lesion
+    sizes, biomarkers, planned dates) were read by the local model; only their
+    text was checked against the page, while the interpretation (which line is
+    the diagnosis, a current vs a historical regimen) is the model's and is not
+    verified. Identical model-read rows from several documents are one row with
+    ``sources`` (document, page). Read-only.
     """
     pid = await _resolve_patient_id(patient_slug, ctx)
     rows = await _get_db(ctx).timeline_rows(
         patient_id=pid, date_from=date_from, date_to=date_to, kinds=kinds, limit=min(limit, 1000)
     )
-    return _dump({"rows": rows, "note": UNVERIFIED_NOTE})
+    rows = group_llm(rows, _timeline_key, page_key="page_number", id_key="entity_id")
+    return _dump({"rows": rows, "note": UNVERIFIED_NOTE, "llm_note": LLM_NOTE})
 
 
 async def fact_catalog(ctx: Context, patient_slug: str | None = None) -> str:
@@ -583,9 +666,13 @@ async def dashboard_feed(
     * ``documents`` lists only the documents the returned facts cite; ``url``
       opens the original in Drive.
     * ``kinds`` defaults to ["lab"] (lab values, tumour markers, vital signs).
-      Also accepted: biomarker, genetic_variant, condition, treatment,
-      medication, procedure, imaging, lesion (empty until extracted); anything
-      else is listed in ``unknown_kinds`` and returns nothing.
+      Also accepted: biomarker, genetic_variant, imaging / lesion (CT lesion
+      sizes, code LESION_SIZE in mm), condition, treatment, medication,
+      procedure (the last four still empty here: use timeline); anything else
+      is listed in ``unknown_kinds`` and returns nothing.
+    * A fact read by the local model carries ``method: "llm-clinical"`` and a
+      ``verification_label`` ({en, sk}): only its text was checked against the
+      page; the interpretation is the model's and is not verified.
     * Pages of at most ``limit`` facts (default 1000, max 2000) and about 140 kB,
       ordered by (at, id). Pass ``next_cursor`` back as ``cursor`` until it is null.
 
