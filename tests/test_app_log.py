@@ -193,3 +193,58 @@ def test_setup_logging_puts_the_same_filter_on_stderr_and_the_file(monkeypatch, 
         for h, flt in saved_filters.items():
             h.filters[:] = flt
         root.setLevel(old_level)
+
+
+# ── ReDoS hardening (automated review of #756) ──
+
+
+def test_pathological_input_redacts_fast_and_is_truncated():
+    import time
+
+    evil = "a" * 500_000 + "@" + "a." * 250_000  # about 1 MB, no TLD
+    t0 = time.perf_counter()
+    out = app_log.redact(evil)
+    assert time.perf_counter() - t0 < 0.5
+    assert len(out) <= app_log.MAX_REDACT_CHARS + 64
+    assert "…[truncated " in out
+
+
+def test_every_pattern_is_fast_on_its_own_worst_case():
+    import time
+
+    cases = [
+        "x" * 15_000 + "@",
+        "a." * 8_000,
+        "Bearer " + "A" * 15_000,
+        "token=" * 2_700,
+        "onco_" + "-" * 15_000,
+        "1//" * 5_000,
+    ]
+    for case in cases:
+        t0 = time.perf_counter()
+        for pattern, repl in app_log._REDACTIONS:
+            pattern.sub(repl, case)  # untruncated: the patterns alone must be linear
+        assert time.perf_counter() - t0 < 0.5, case[:20]
+
+
+def test_normal_emails_and_tokens_still_masked_after_the_bounds():
+    for email in ("caregiver.synthetic@example.test", "a+b_c%d@mail.sub.example.co"):
+        assert app_log.redact(f"login {email} ok") == "login [email] ok"
+    assert (
+        app_log.redact('{"refresh_token": "SyntheticValue"}') == '{"refresh_token": "[redacted]"}'
+    )
+    assert app_log.redact("Bearer SyntheticBearerValueXyz") == "Bearer [redacted]"
+    assert app_log.redact("ids max_tokens=12 fine") == "ids max_tokens=12 fine"
+
+
+def test_truncation_keeps_head_and_tail():
+    text = "H" * 20_000 + "TAILEND"
+    out = app_log.truncate(text)
+    assert out.startswith("H") and out.endswith("TAILEND")
+    assert len(out) < app_log.MAX_REDACT_CHARS + 64
+    assert app_log.truncate("short") == "short"
+
+
+def test_truncation_marker_counts_dropped_chars():
+    out = app_log.truncate("x" * (app_log.MAX_REDACT_CHARS + 100))
+    assert "…[truncated 100 chars]" in out

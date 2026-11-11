@@ -34,30 +34,53 @@ FILE_MODE = 0o600
 
 # ── redaction: one filter on EVERY root handler (stderr and the file) ──
 
+# Log lines can carry attacker-controlled text (filenames, request values), so
+# every pattern is anchored and every quantifier bounded (no catastrophic
+# backtracking), and each text is cut to MAX_REDACT_CHARS before redaction.
+MAX_REDACT_CHARS = 16 * 1024
+_TAIL_CHARS = 4 * 1024  # a traceback's last lines name the actual error
+
 _REDACTIONS: list[tuple[re.Pattern, str]] = [
-    # e-mail addresses (caregiver logins, OAuth identities)
-    (re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}"), "[email]"),
+    # e-mail addresses (caregiver logins, OAuth identities); RFC length limits
+    (
+        re.compile(
+            r"(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9-]{1,63}"
+            r"(?:\.[A-Za-z0-9-]{1,63}){0,8}\.[A-Za-z]{2,24}"
+        ),
+        "[email]",
+    ),
     # Authorization headers and bearer values
-    (re.compile(r"(?i)\b(bearer|basic)\s+[A-Za-z0-9._~+/=-]{8,}"), r"\1 [redacted]"),
+    (re.compile(r"(?i)\b(bearer|basic)[ \t]{1,8}[A-Za-z0-9._~+/=-]{8,4096}"), r"\1 [redacted]"),
     # key=value / "key": "value" for secret-named keys
     (
         re.compile(
-            r"(?i)([\"']?(?:access_token|refresh_token|id_token|token|client_secret|api_key|"
-            r"apikey|secret|password|authorization)[\"']?\s*[:=]\s*[\"']?)[^\s\"'&,;}]+"
+            r"(?i)\b([\"']?(?:access_token|refresh_token|id_token|token|client_secret|api_key|"
+            r"apikey|secret|password|authorization)[\"']?[ \t]{0,8}[:=][ \t]{0,8}[\"']?)"
+            r"[^\s\"'&,;}]{1,4096}"
         ),
         r"\1[redacted]",
     ),
     # well-known token shapes: patient bearer tokens, Google access/refresh
     # tokens, Anthropic/OpenAI-style keys, GitHub tokens
-    (re.compile(r"\bonco_[A-Za-z0-9_-]{8,}"), "[token]"),
-    (re.compile(r"\bya29\.[A-Za-z0-9._-]{10,}"), "[token]"),
-    (re.compile(r"\b1//[A-Za-z0-9_-]{20,}"), "[token]"),
-    (re.compile(r"\bsk-[A-Za-z0-9_-]{16,}"), "[token]"),
-    (re.compile(r"\bgh[pousr]_[A-Za-z0-9]{20,}"), "[token]"),
+    (re.compile(r"\bonco_[A-Za-z0-9_-]{8,512}"), "[token]"),
+    (re.compile(r"\bya29\.[A-Za-z0-9._-]{10,4096}"), "[token]"),
+    (re.compile(r"(?<![A-Za-z0-9/])1//[A-Za-z0-9_-]{20,1024}"), "[token]"),
+    (re.compile(r"\bsk-[A-Za-z0-9_-]{16,512}"), "[token]"),
+    (re.compile(r"\bgh[pousr]_[A-Za-z0-9]{20,255}"), "[token]"),
 ]
 
 
+def truncate(text: str, limit: int = MAX_REDACT_CHARS) -> str:
+    """Head and tail of an over-long text with a marker between them."""
+    if len(text) <= limit:
+        return text
+    tail = min(_TAIL_CHARS, limit // 4)
+    cut = len(text) - limit  # chars dropped from the middle
+    return f"{text[: limit - tail]}…[truncated {cut} chars]{text[len(text) - tail :]}"
+
+
 def redact(text: str) -> str:
+    text = truncate(text)
     for pattern, repl in _REDACTIONS:
         text = pattern.sub(repl, text)
     return text
