@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import date
 
 from oncofiles.models import (
@@ -12,6 +13,8 @@ from oncofiles.models import (
 )
 
 from ._converters import _row_to_activity_log, _row_to_agent_state, _row_to_oauth_token
+
+logger = logging.getLogger(__name__)
 
 # "key" is a reserved word — always quote it in SQL and use aliased SELECT
 _AGENT_STATE_SELECT = (
@@ -27,8 +30,6 @@ class OperationalMixin:
 
     async def set_agent_state(self, state: AgentState) -> AgentState:
         """Upsert an agent state key-value pair. Returns the saved state."""
-        from oncofiles.database._base import retry_on_hrana_conflict
-
         pid = getattr(state, "patient_id", "") or ""
 
         async def _do_upsert():
@@ -44,7 +45,7 @@ class OperationalMixin:
             )
             await self.db.commit()
 
-        await retry_on_hrana_conflict(_do_upsert, label="set_agent_state")
+        await _do_upsert()
 
         async with self.db.execute(
             _AGENT_STATE_SELECT + ' WHERE patient_id = ? AND agent_id = ? AND "key" = ?',
@@ -84,8 +85,6 @@ class OperationalMixin:
         search_activity_log / get_activity_stats actually sees per-patient
         rows instead of all rows carrying the migration 029 DEFAULT.
         """
-        from oncofiles.database._base import retry_on_hrana_conflict
-
         _last_rowid: list[int] = []
 
         async def _do_insert():
@@ -113,9 +112,38 @@ class OperationalMixin:
             _last_rowid.clear()
             _last_rowid.append(cursor.lastrowid)
 
-        await retry_on_hrana_conflict(_do_insert, label="insert_activity_log")
+        await _do_insert()
         entry.id = _last_rowid[0] if _last_rowid else None
         return entry
+
+    async def log_soft_delete_activity(
+        self,
+        *,
+        action: str,
+        table: str,
+        row_id: int,
+        patient_id: str,
+        actor: str | None,
+    ) -> None:
+        """Audit row for a soft delete / restore on a table without its own audit (#723).
+
+        Writes ids only, never row content (titles and notes are PHI). A
+        failure to write the audit row is logged and never undoes the delete.
+        """
+        try:
+            await self.insert_activity_log(
+                ActivityLogEntry(
+                    patient_id=patient_id,
+                    session_id="soft-delete",
+                    agent_id=actor or "system",
+                    tool_name=f"{action}:{table}",
+                    input_summary=f"{table} id={row_id}",
+                    output_summary=action,
+                    tags='["soft-delete"]',
+                )
+            )
+        except Exception:
+            logger.exception("soft-delete audit row failed: %s %s id=%s", action, table, row_id)
 
     async def search_activity_log(self, query: ActivityLogQuery) -> list[ActivityLogEntry]:
         """Search activity log with filters.
@@ -210,19 +238,6 @@ class OperationalMixin:
             rows = await cursor.fetchall()
             return [dict(r) for r in rows]
 
-    async def get_activity_timeline(self, hours: int = 24) -> list[ActivityLogEntry]:
-        """Get recent activity log entries (last N hours)."""
-        async with self.db.execute(
-            """
-            SELECT * FROM activity_log
-            WHERE created_at >= strftime('%Y-%m-%dT%H:%M:%SZ', 'now', ?)
-            ORDER BY created_at DESC LIMIT 200
-            """,
-            (f"-{hours} hours",),
-        ) as cursor:
-            rows = await cursor.fetchall()
-            return [_row_to_activity_log(r) for r in rows]
-
     # ── OAuth tokens (#12) ─────────────────────────────────────────────
 
     async def upsert_oauth_token(self, token: OAuthToken) -> OAuthToken:
@@ -284,6 +299,28 @@ class OperationalMixin:
         )
         await self.db.commit()
 
+    async def update_oauth_access_token(
+        self, patient_id: str, provider: str, access_token: str, token_expiry
+    ) -> None:
+        """Persist a refreshed access token (#591).
+
+        Touches only ``access_token``, ``token_expiry`` and ``updated_at``: a
+        refresh never changes ``owner_email``, the refresh token, the folder or
+        the scopes.
+        """
+        await self.db.execute(
+            "UPDATE oauth_tokens SET access_token = ?, token_expiry = ?, "
+            "updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') "
+            "WHERE patient_id = ? AND provider = ?",
+            (
+                access_token,
+                token_expiry.isoformat() if token_expiry else None,
+                patient_id,
+                provider,
+            ),
+        )
+        await self.db.commit()
+
     async def update_oauth_owner_email(
         self, patient_id: str, provider: str, owner_email: str
     ) -> None:
@@ -342,7 +379,7 @@ class OperationalMixin:
             (trigger, patient_id),
         )
         await self.db.commit()
-        # lastrowid is unreliable on Turso — fetch the ID explicitly
+        # Fetch the ID explicitly (pattern dates from the Turso era, #617)
         async with self.db.execute(
             "SELECT id FROM sync_history ORDER BY id DESC LIMIT 1"
         ) as cursor:

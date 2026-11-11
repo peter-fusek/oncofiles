@@ -87,13 +87,11 @@ def _with_clinical_disclaimer(payload: dict | list) -> dict:
 # ── Patient context (delegated to patient_context module) ────────────────────
 
 
-# Backward-compatible alias — lazy to avoid capturing stale import-time state
-def PATIENT_CONTEXT() -> dict:  # noqa: N802
-    return patient_context.get_context()
-
-
-def _patient_context_text() -> str:
-    return patient_context.format_context_text()
+def _patient_context_text(patient_id: str) -> str:
+    """Patient context block for tool output. The patient is always explicit (#733)."""
+    if not patient_id:
+        raise ValueError("_patient_context_text requires a patient_id (#733)")
+    return patient_context.format_context_text(patient_id)
 
 
 # ── Context accessors ────────────────────────────────────────────────────────
@@ -183,9 +181,10 @@ async def _resolve_patient_id(
           `PatientResolutionMiddleware`) equals the resolved `patient_id`, OR
         * their OAuth-bound email is one of the patient's
           `caregiver_email` entries (comma-separated, case-insensitive).
-      Otherwise the resolver raises `ValueError("access denied …")`. The
-      message does not echo the patient's owning email or any other PHI —
-      that would be a secondary leak.
+      Otherwise the resolver raises `ValueError`. The message does not echo
+      the patient's owning email or any other PHI — that would be a
+      secondary leak — and it is byte-identical to the unknown-slug message
+      (#590), so a foreign slug cannot be told apart from a non-existent one.
 
     Stdio dev note: stdio callers default to non-admin and the middleware
     binds them to the first active patient. Multi-patient stdio dev that
@@ -204,9 +203,7 @@ async def _resolve_patient_id(
     db = _get_db(ctx)
     patient = await db.get_patient_by_slug(patient_slug)
     if not patient:
-        raise ValueError(
-            f"Patient not found: {patient_slug!r}. Use list_patients() to see available slugs."
-        )
+        raise ValueError(_patient_not_accessible_message(patient_slug))
     pid = patient.patient_id
 
     if _is_admin_caller():
@@ -230,10 +227,23 @@ async def _resolve_patient_id(
         _note_resolved(pid)
         return pid
 
-    raise ValueError(
-        f"access denied for patient_slug={patient_slug!r}. "
-        "Your bearer token or OAuth identity is not authorized for that patient. "
-        "Use list_patients() to see patients available to you."
+    raise ValueError(_patient_not_accessible_message(patient_slug))
+
+
+def _patient_not_accessible_message(patient_slug: str) -> str:
+    """The single error text for an unknown OR foreign patient slug (#590).
+
+    "Not found" and "access denied" used to be two different messages, which
+    made `_resolve_patient_id` an existence oracle: a non-admin caller could
+    probe slugs and learn which ones belong to real patients. Both cases now
+    return this exact text. It echoes only the slug the caller supplied and
+    never a patient_id, name or owning email. It deliberately contains both
+    "Patient not found" and "access denied" so existing callers that match
+    either phrase keep working.
+    """
+    return (
+        f"Patient not found or access denied: {patient_slug!r}. "
+        "Use list_patients() or whoami() to see the patients available to you."
     )
 
 
@@ -244,7 +254,7 @@ def _is_admin_caller() -> bool:
     """Return True if the current request has admin scope.
 
     Admin is either: (a) the static `MCP_BEARER_TOKEN` caller (operator /
-    Oncoteam / dev), or (b) an OAuth caller whose Google email matches
+    Claude Desktop / dev), or (b) an OAuth caller whose Google email matches
     `DASHBOARD_ADMIN_EMAILS`. `verify_token()` in persistent_oauth.py sets
     the `_verified_caller_is_admin` ContextVar for both cases.
 
@@ -273,6 +283,39 @@ def _caller_email() -> str:
         return _verified_caller_email.get() or ""
     except Exception:
         return ""
+
+
+async def _accessible_patients(db: Database) -> list:
+    """Active patients the current MCP caller may see listed (#590).
+
+    The one scoping rule behind ``list_patients`` and ``whoami``:
+
+    - A caller with an OAuth-bound Google email — **admin or not** — sees
+      only the patients whose ``caregiver_email`` contains that email. The
+      admin flag still lets such a caller *resolve* a slug they already know
+      (``_resolve_patient_id``), but it no longer lets a chat session
+      enumerate every patient. The cross-patient overview lives on the
+      authenticated dashboard (``/api/patients``), not in MCP.
+    - An admin caller without an email is, in production, only the static
+      ``MCP_BEARER_TOKEN`` (server-to-server: Oncoteam's patient registry
+      sync relies on the full list). It keeps every active patient.
+    - Anyone else (patient bearer ``onco_*``, stdio) sees only the patient
+      bound to the request, or nothing.
+    """
+    from oncofiles.constants import NO_PATIENT_ACCESS_SENTINEL
+    from oncofiles.patient_middleware import get_current_patient_id
+    from oncofiles.persistent_oauth import _email_matches_caregiver
+
+    patients = await db.list_patients(active_only=True)
+    caller_email = _caller_email().strip()
+    if caller_email:
+        return [p for p in patients if _email_matches_caregiver(caller_email, p.caregiver_email)]
+    if _is_admin_caller():
+        return patients
+    bound_pid = get_current_patient_id()
+    if bound_pid and bound_pid != NO_PATIENT_ACCESS_SENTINEL:
+        return [p for p in patients if p.patient_id == bound_pid]
+    return []
 
 
 def _require_admin_or_raise(tool_name: str) -> None:
@@ -344,14 +387,16 @@ def _safe_error(exc: BaseException, category: str = "internal_error") -> dict[st
 def _cloud_ai_disabled_response() -> str | None:
     """JSON error for tools that need the Anthropic cloud, or None when it is available.
 
-    #618: without ANTHROPIC_API_KEY these tools refuse up front with a clear
-    message instead of failing per document (or storing unprocessed data).
+    #618: with CLOUD_AI_ENABLED off (the default) or without ANTHROPIC_API_KEY
+    these tools refuse up front with a clear message instead of failing per
+    document (or storing unprocessed data).
     """
-    from oncofiles.cloud_guard import CLOUD_AI_DISABLED_MESSAGE, cloud_ai_enabled
+    from oncofiles.cloud_guard import cloud_ai_disabled_reason
 
-    if cloud_ai_enabled():
+    reason = cloud_ai_disabled_reason()
+    if reason is None:
         return None
-    return json.dumps({"error": CLOUD_AI_DISABLED_MESSAGE, "kind": "CloudAIDisabledError"})
+    return json.dumps({"error": reason, "kind": "CloudAIDisabledError"})
 
 
 def _get_db(ctx: Context) -> Database:

@@ -20,45 +20,60 @@ def _reset_anthropic_client():
 
 @pytest.fixture(autouse=True)
 def _cloud_ai_configured(monkeypatch):
-    """Tests run as a server that HAS an Anthropic key (#618 guard passes).
+    """Tests run as a server with cloud AI switched on AND a key (#618 guard passes).
 
-    Only ``config.ANTHROPIC_API_KEY`` is set — the value the guard reads at
-    call time. The clients themselves are still built from the empty
-    module-level copies, so an unmocked API call still fails locally instead
-    of reaching the network. ``tests/test_cloud_ai_disabled.py`` patches it
-    back to "" to cover the disabled path.
+    Production defaults to ``CLOUD_AI_ENABLED=false``; here the flag and
+    ``config.ANTHROPIC_API_KEY`` are set — the values the guard reads at call
+    time. The clients themselves are still built from the empty module-level
+    key copies, so an unmocked API call still fails locally instead of
+    reaching the network. ``tests/test_cloud_ai_disabled.py`` patches them
+    back off to cover the disabled paths.
     """
+    monkeypatch.setattr("oncofiles.config.CLOUD_AI_ENABLED", True)
     monkeypatch.setattr("oncofiles.config.ANTHROPIC_API_KEY", "test-key-not-real")
+
+
+@pytest.fixture
+def gmail_calendar_on(monkeypatch):
+    """Opt a test into GMAIL_CALENDAR_ENABLED=true (production default is off, #618/#699).
+
+    Deliberately NOT autouse: the default-off behaviour must stay the one
+    every other test sees. Tests of the enabled Gmail/Calendar paths request
+    this fixture explicitly.
+    """
+    monkeypatch.setattr("oncofiles.config.GMAIL_CALENDAR_ENABLED", True)
 
 
 @pytest.fixture(autouse=True)
 def _set_patient_context():
-    """Set patient context name for tests so filename parsing works with test data."""
+    """Seed the test patient's name in the per-patient cache (keyed by ERIKA_UUID).
+
+    There is no legacy/default patient (#733): code that parses filenames
+    must resolve a patient — explicitly or via the request ContextVar, which
+    the `db` fixture (or `request_patient`) sets to ERIKA_UUID.
+    """
     from oncofiles import patient_context
 
-    # Save original state
-    original_context = dict(patient_context._context)
-    import oncofiles.filename_parser as fp
-
-    original_re = dict(fp._cached_patient_re)
     original_contexts = dict(patient_context._contexts)
-
-    # Set test patient name in both legacy global and per-patient cache
-    patient_context._context["name"] = "Erika Fusekova"
     patient_context._contexts.clear()
-    patient_context._contexts[ERIKA_UUID] = {"name": "Erika Fusekova"}
-    # Invalidate cached regex so it rebuilds with the test patient name
-    fp._cached_patient_re.clear()
+    patient_context._contexts[ERIKA_UUID] = {"name": "Jana Testova"}
 
     yield
 
-    # Restore original state
-    patient_context._context.clear()
-    patient_context._context.update(original_context)
     patient_context._contexts.clear()
     patient_context._contexts.update(original_contexts)
-    fp._cached_patient_re.clear()
-    fp._cached_patient_re.update(original_re)
+
+
+@pytest.fixture
+def request_patient():
+    """Bind the request ContextVar to ERIKA_UUID for tests without the `db` fixture.
+
+    Stands in for PatientResolutionMiddleware so pure helpers (filename
+    parsing) resolve the test patient the same way they do inside a request.
+    """
+    token = _current_patient_id.set(ERIKA_UUID)
+    yield ERIKA_UUID
+    _current_patient_id.reset(token)
 
 
 @pytest.fixture

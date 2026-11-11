@@ -193,23 +193,67 @@ async def get_treatment_event(ctx: Context, event_id: int, patient_slug: str | N
 
 
 async def delete_treatment_event(
-    ctx: Context, event_id: int, patient_slug: str | None = None
+    ctx: Context,
+    event_id: int,
+    patient_slug: str | None = None,
+    deleted_by: str | None = None,
 ) -> str:
-    """Delete a treatment event by ID. Use for removing contaminated/test data.
+    """Move a treatment event to the trash (soft delete). Use for removing contaminated/test data.
+
+    The row is kept with deleted_at/deleted_by set and disappears from every
+    list, timeline and export. Recoverable for 30 days via
+    restore_treatment_event (deletion policy: nothing is hard-deleted, #723).
 
     Args:
         event_id: The treatment event ID to delete.
         patient_slug: Optional — explicit patient slug (#429).
+        deleted_by: Optional — who deleted it (email or agent name), kept for audit.
     """
     db = _get_db(ctx)
     pid = await _resolve_patient_id(patient_slug, ctx)
     # Cross-patient block: confirm ownership before deletion (#429).
     if not await db.check_treatment_event_ownership(event_id, pid):
         return json.dumps({"error": f"Treatment event {event_id} not found"})
-    deleted = await db.delete_treatment_event(event_id, patient_id=pid)
+    deleted = await db.delete_treatment_event(event_id, patient_id=pid, deleted_by=deleted_by)
     if not deleted:
         return json.dumps({"error": f"Treatment event {event_id} not found"})
-    return json.dumps({"deleted": True, "event_id": event_id})
+    return json.dumps(
+        {
+            "deleted": True,
+            "event_id": event_id,
+            "message": "Moved to trash. Recoverable for 30 days via restore_treatment_event.",
+        }
+    )
+
+
+async def restore_treatment_event(
+    ctx: Context,
+    event_id: int,
+    patient_slug: str | None = None,
+    restored_by: str | None = None,
+) -> str:
+    """Restore a soft-deleted treatment event from the trash (#723).
+
+    Args:
+        event_id: The treatment event ID to restore.
+        patient_slug: Optional — explicit patient slug (#429).
+        restored_by: Optional — who restored it (email or agent name), kept for audit.
+    """
+    db = _get_db(ctx)
+    pid = await _resolve_patient_id(patient_slug, ctx)
+    if not await db.check_treatment_event_ownership(event_id, pid):
+        return json.dumps({"error": f"Treatment event {event_id} not found"})
+    restored = await db.restore_treatment_event(event_id, patient_id=pid, restored_by=restored_by)
+    if restored is None:
+        return json.dumps({"error": f"Treatment event {event_id} is not in the trash"})
+    return json.dumps(
+        {
+            "restored": True,
+            "event_id": event_id,
+            "event_date": restored.event_date.isoformat() if restored.event_date else None,
+            "title": restored.title,
+        }
+    )
 
 
 async def update_treatment_event(
@@ -254,4 +298,5 @@ def register(mcp):
     mcp.tool()(list_treatment_events)
     mcp.tool()(get_treatment_event)
     mcp.tool()(delete_treatment_event)
+    mcp.tool()(restore_treatment_event)
     mcp.tool()(update_treatment_event)

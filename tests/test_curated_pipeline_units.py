@@ -156,7 +156,7 @@ def test_good_classification_builds_fields():
     assert not c.review_needed, c.reasons
     assert c.fields.date == "20260805" and c.fields.patient == "JanaNovakova"
     assert c.fields.doctor == "Kovacova"
-    assert any("first-time hospital" in f for f in c.flags)
+    assert any("new HospitalName value" in f for f in c.flags)
 
 
 @pytest.mark.parametrize(
@@ -249,13 +249,113 @@ def test_absurd_page_size_gets_a_fractional_zoom_within_the_cap():
         ("MUDr. Jana Kováčová", "Kovacova", False),  # exact
         ("MUDr. Jana Kovačova", "Kovacova", False),  # diacritics only
         ("MUDr. Jana Kovacsova", "Kovacova", True),  # OCR typo → snapped
-        ("MUDr. Peter Zeleny", "Zeleny", False),  # genuinely new → kept, flagged first-time
+        ("MUDr. Peter Zeleny", "Zeleny", False),  # genuinely new → kept (and sent to review, #754)
     ],
 )
 def test_vocabulary_snap(doctor, expected, snapped):
     c = classify.validate(CONTRACT, {**GOOD, "doctor": doctor}, TEXT, today=TODAY)
     assert c.fields.doctor == expected
     assert any("snapped" in f for f in c.flags) is snapped
+
+
+# ── #754: snap only genuine misspellings, never a different entity ──
+
+# Synthetic vocabulary: two departments sharing a long suffix, one GP practice.
+CONTRACT_754 = parse_contract(
+    (Path(__file__).parent / "fixtures" / "curated" / "README_oncology.md")
+    .read_text()
+    .replace(
+        "**Known doctors:**",
+        "**`HospitalName`**: `XyzAmbulancia`, `KlinikaVnutornehoLekarstva`, "
+        "`PraktikZelenaLuka`.\n\n**Known doctors:**",
+    )
+)
+
+
+def test_754_one_letter_ocr_fix_still_snaps():
+    c = classify.validate(
+        CONTRACT_754, {**GOOD, "doctor": "MUDr. Jana Kovacsova"}, TEXT, today=TODAY
+    )
+    assert c.fields.doctor == "Kovacova" and not c.review_needed, c.reasons
+    assert any("snapped 'Kovacsova'" in f for f in c.flags)
+
+
+def test_754_hospital_typo_in_the_same_department_snaps():
+    raw = {**GOOD, "hospital": "Klinika Vnutornrho Lekarstva"}
+    c = classify.validate(CONTRACT_754, raw, TEXT, today=TODAY)
+    assert c.fields.hospital == "KlinikaVnutornehoLekarstva"
+    assert not any("new HospitalName" in f for f in c.flags)
+
+
+def test_754_different_department_with_similar_suffix_is_not_snapped():
+    c = classify.validate(CONTRACT_754, {**GOOD, "hospital": "AbcAmbulancia"}, TEXT, today=TODAY)
+    assert c.fields.hospital == "AbcAmbulancia"
+    assert not any("snapped" in f for f in c.flags)
+    # Accepted (filed), but the reviewer sees it in the run report.
+    assert not c.review_needed, c.reasons
+    assert any("new HospitalName value 'AbcAmbulancia' (not in README)" in f for f in c.flags)
+
+
+def test_754_large_edit_is_not_snapped_even_with_same_leading_word():
+    raw = {**GOOD, "hospital": "PraktikZelenyDvor"}  # ratio-close, 4+ edits away
+    c = classify.validate(CONTRACT_754, raw, TEXT, today=TODAY)
+    assert c.fields.hospital == "PraktikZelenyDvor"
+    assert any("new HospitalName value" in f for f in c.flags)
+
+
+def test_754_new_subject_is_accepted_with_flag():
+    c = classify.validate(CONTRACT_754, {**GOOD, "subject": "KneeMri"}, TEXT, today=TODAY)
+    assert c.fields.subject == "KneeMri" and not c.review_needed
+    assert any("new Subject value 'KneeMri'" in f for f in c.flags)
+
+
+def test_754_new_institution_goes_to_review():
+    text = TEXT + "\nOrtopedia Brezova s.r.o."
+    raw = {**GOOD, "institution": "OrtopediaBrezova"}
+    c = classify.validate(CONTRACT_754, raw, text, today=TODAY)
+    assert c.review_needed
+    assert any(
+        "new institution 'OrtopediaBrezova' not in README vocabulary" in r for r in c.reasons
+    )
+
+
+def test_754_new_doctor_goes_to_review():
+    text = TEXT + "\nMUDr. Peter Zeleny"
+    c = classify.validate(CONTRACT_754, {**GOOD, "doctor": "MUDr. Peter Zeleny"}, text, today=TODAY)
+    assert c.fields.doctor == "Zeleny"
+    assert any("new doctor 'Zeleny' not in README vocabulary" in r for r in c.reasons)
+
+
+def test_754_doctor_printed_in_text_is_not_snapped_to_an_unprinted_neighbour():
+    # Hruskova is in the vocabulary; the text really says Hruskovic (a different doctor).
+    text = TEXT + "\nMUDr. Pavol Hruskovic"
+    raw = {**GOOD, "doctor": "MUDr. Pavol Hruskovic"}
+    c = classify.validate(CONTRACT_754, raw, text, today=TODAY)
+    assert c.fields.doctor == "Hruskovic"
+    assert not any("snapped" in f for f in c.flags)
+    assert c.review_needed
+
+
+def test_754_institution_ocr_typo_snaps_when_readme_token_is_printed():
+    text = TEXT + "\nSampleHospital a.s."
+    raw = {**GOOD, "institution": "SampleHospitel"}
+    c = classify.validate(CONTRACT_754, raw, text, today=TODAY)
+    assert c.fields.institution == "SampleHospital"
+    assert not any("new institution" in r for r in c.reasons)
+
+
+@pytest.mark.parametrize(
+    "token,known,same",
+    [
+        ("Parsok", "Porsok", True),
+        ("XyzAmbulancia", "AbcAmbulancia", False),
+        ("KlinikaVnutornrhoLekarstva", "KlinikaVnutornehoLekarstva", True),
+        ("NUO", "NOU", True),
+        ("PraktikZelenyDvor", "PraktikZelenaLuka", False),
+    ],
+)
+def test_754_same_entity(token, known, same):
+    assert classify._same_entity(token, known) is same
 
 
 @pytest.mark.parametrize(
@@ -469,3 +569,78 @@ def test_propose_does_not_retry_a_context_overflow(monkeypatch):
     with pytest.raises(llm.LocalLLMError):
         classify.propose(CONTRACT, TEXT)
     assert len(calls) == 1
+
+
+# ── #689: Qwen /no_think soft switch ─────────────────────────────────
+
+
+def _sent_user(seen: list) -> list | str:
+    return json.loads(seen[-1].content)["messages"][-1]["content"]
+
+
+def test_no_think_appended_once_to_text_when_thinking_off(local_llm):
+    seen: list = []
+    llm.chat("sys", "Transcribe.", client=_client("ok", seen=seen), thinking=False)
+    assert _sent_user(seen) == "Transcribe. /no_think"
+    body = json.loads(seen[-1].content)
+    assert body["chat_template_kwargs"] == {"enable_thinking": False}
+    assert body["messages"][0]["content"].endswith("\n/no_think")  # system keeps it
+    # Already present -> never a second time.
+    llm.chat("sys", "Transcribe. /no_think", client=_client("ok", seen=seen), thinking=False)
+    assert _sent_user(seen).count("/no_think") == 1
+
+
+def test_no_think_is_a_new_text_part_after_images(local_llm):
+    seen: list = []
+    img = llm.image_part(b"\x89PNG synthetic")
+    instr = {"type": "text", "text": "Synthetic instruction for test page."}
+    content = [instr, img]
+    llm.chat("sys", content, client=_client("ok", seen=seen), thinking=False)
+    sent = _sent_user(seen)
+    assert sent[0] == instr  # instruction unchanged
+    assert sent[1]["type"] == "image_url"
+    assert sent[2] == {"type": "text", "text": " /no_think"}
+    assert len(sent) == 3
+    assert content == [instr, img]  # caller not mutated
+    # Image-only content gets the text part too.
+    llm.chat("sys", [img], client=_client("ok", seen=seen), thinking=False)
+    assert _sent_user(seen)[-1] == {"type": "text", "text": " /no_think"}
+    # Already carrying it -> never twice.
+    llm.chat("sys", sent, client=_client("ok", seen=seen), thinking=False)
+    assert sum("/no_think" in p.get("text", "") for p in _sent_user(seen)) == 1
+
+
+@pytest.mark.parametrize("thinking", [True, None])
+def test_no_think_never_appended_unless_thinking_off(local_llm, thinking):
+    seen: list = []
+    img = llm.image_part(b"\x89PNG synthetic")
+    llm.chat("sys", "Transcribe.", client=_client("ok", seen=seen), thinking=thinking)
+    assert _sent_user(seen) == "Transcribe."
+    llm.chat("sys", [img], client=_client("ok", seen=seen), thinking=thinking)
+    assert _sent_user(seen) == [img]
+
+
+def test_no_think_soft_switch_env_off(local_llm, monkeypatch):
+    monkeypatch.setattr(config, "LLM_NO_THINK_SOFT_SWITCH", False)
+    seen: list = []
+    llm.chat("sys", "Transcribe.", client=_client("ok", seen=seen), thinking=False)
+    assert _sent_user(seen) == "Transcribe."
+    assert json.loads(seen[-1].content)["chat_template_kwargs"] == {"enable_thinking": False}
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        "<think></think>\n\nLine one\nLine two",
+        "<think>\n\n</think>\nLine one\nLine two",
+        "Line one\nLine two /no_think",
+        "<think></think>/no_think\nLine one\nLine two",
+    ],
+)
+def test_empty_think_block_and_no_think_echo_are_stripped(local_llm, answer):
+    out = llm.chat("sys", "Transcribe.", client=_client(answer), thinking=False)
+    assert out == "Line one\nLine two"
+
+
+def test_parse_json_tolerates_empty_think_block():
+    assert llm.parse_json_object('<think>\n</think>\n{"a": 1} /no_think') == {"a": 1}

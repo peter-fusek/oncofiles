@@ -35,11 +35,11 @@ async def _seed_two_patients(db: Database) -> None:
     )
     await db.db.commit()
 
-    # One doc under Erika (ContextVar scope), one under Bob (slug-targeted scope)
+    # One doc under Jana (ContextVar scope), one under Bob (slug-targeted scope)
     await db.insert_document(
         make_doc(
-            file_id="erika_doc1",
-            filename="20260101_Erika-NOU-Labs.pdf",
+            file_id="jana_doc1",
+            filename="20300101_Jana-NOU-Labs.pdf",
             category=DocumentCategory.LABS,
         ),
         patient_id=ERIKA_UUID,
@@ -47,7 +47,7 @@ async def _seed_two_patients(db: Database) -> None:
     await db.insert_document(
         make_doc(
             file_id="bob_doc1",
-            filename="20260101_Bob-NOU-Report.pdf",
+            filename="20300101_Bob-NOU-Report.pdf",
             category=DocumentCategory.REPORT,
         ),
         patient_id=SECOND_UUID,
@@ -69,10 +69,10 @@ async def test_list_documents_respects_explicit_patient_slug(db: Database):
     await _seed_two_patients(db)
     ctx = _StubCtx(db)
 
-    # Default (no slug) → ContextVar = ERIKA_UUID → Erika's doc only
+    # Default (no slug) → ContextVar = ERIKA_UUID → Jana's doc only
     default = json.loads(await doc_tools.list_documents(ctx))
     assert len(default["documents"]) == 1
-    assert default["documents"][0]["file_id"] == "erika_doc1"
+    assert default["documents"][0]["file_id"] == "jana_doc1"
 
     # Explicit slug override → Bob's doc instead
     bob_scoped = json.loads(await doc_tools.list_documents(ctx, patient_slug=SECOND_SLUG))
@@ -86,36 +86,36 @@ async def test_get_document_by_id_blocks_cross_patient_via_slug(db: Database):
 
     # Find each doc's integer id
     all_docs = await db.list_documents(limit=10, patient_id=ERIKA_UUID)
-    erika_doc_id = all_docs[0].id
+    jana_doc_id = all_docs[0].id
     all_bob = await db.list_documents(limit=10, patient_id=SECOND_UUID)
     bob_doc_id = all_bob[0].id
 
-    # Default ContextVar scope (Erika): Erika's doc found, Bob's doc NOT found
-    erika_ok = json.loads(await doc_tools.get_document_by_id(ctx, erika_doc_id))
-    assert erika_ok.get("id") == erika_doc_id
+    # Default ContextVar scope (Jana): Jana's doc found, Bob's doc NOT found
+    jana_ok = json.loads(await doc_tools.get_document_by_id(ctx, jana_doc_id))
+    assert jana_ok.get("id") == jana_doc_id
 
     bob_blocked = json.loads(await doc_tools.get_document_by_id(ctx, bob_doc_id))
     assert "error" in bob_blocked
 
-    # Explicit slug override: Bob's doc found when we target Bob, Erika's not
+    # Explicit slug override: Bob's doc found when we target Bob, Jana's not
     bob_ok = json.loads(
         await doc_tools.get_document_by_id(ctx, bob_doc_id, patient_slug=SECOND_SLUG)
     )
     assert bob_ok.get("id") == bob_doc_id
 
-    erika_blocked = json.loads(
-        await doc_tools.get_document_by_id(ctx, erika_doc_id, patient_slug=SECOND_SLUG)
+    jana_blocked = json.loads(
+        await doc_tools.get_document_by_id(ctx, jana_doc_id, patient_slug=SECOND_SLUG)
     )
-    assert "error" in erika_blocked
+    assert "error" in jana_blocked
 
 
 async def test_search_documents_honors_patient_slug(db: Database):
     await _seed_two_patients(db)
     ctx = _StubCtx(db)
 
-    # Search all — default scope (Erika) sees only Erika's
-    erika_results = json.loads(await doc_tools.search_documents(ctx))
-    assert {d["file_id"] for d in erika_results["documents"]} == {"erika_doc1"}
+    # Search all — default scope (Jana) sees only Jana's
+    jana_results = json.loads(await doc_tools.search_documents(ctx))
+    assert {d["file_id"] for d in jana_results["documents"]} == {"jana_doc1"}
 
     # Search with Bob slug — Bob's doc only
     bob_results = json.loads(await doc_tools.search_documents(ctx, patient_slug=SECOND_SLUG))
@@ -125,9 +125,9 @@ async def test_search_documents_honors_patient_slug(db: Database):
 async def test_find_duplicates_scopes_to_slug(db: Database):
     await _seed_two_patients(db)
     ctx = _StubCtx(db)
-    # Default scope: no dup groups within Erika alone (1 doc only)
-    erika_dups = json.loads(await doc_tools.find_duplicates(ctx))
-    assert erika_dups["total_groups"] == 0
+    # Default scope: no dup groups within Jana alone (1 doc only)
+    jana_dups = json.loads(await doc_tools.find_duplicates(ctx))
+    assert jana_dups["total_groups"] == 0
 
     # With Bob slug: also 0 (one doc), but proves the call routes
     bob_dups = json.loads(await doc_tools.find_duplicates(ctx, patient_slug=SECOND_SLUG))

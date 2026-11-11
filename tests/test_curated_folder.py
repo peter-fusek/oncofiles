@@ -190,10 +190,9 @@ async def test_legacy_sync_skips_curated(fn):
     from oncofiles import sync as sync_mod
 
     db = MagicMock()
-    db.reconnect_if_stale = AsyncMock()
     result = await getattr(sync_mod, fn)(db, MagicMock(), _client(), "root1", patient_id="p1")
     assert result["skipped"] is True and result["curated"] is True
-    db.reconnect_if_stale.assert_not_called()
+    assert db.method_calls == []  # returned before touching the DB
 
 
 def test_ensure_folder_structure_creates_nothing_in_curated():
@@ -258,7 +257,7 @@ async def _call_set_folder(body: dict, drive_names: list[str]):
     files = client._service.files.return_value
     files.get.return_value.execute.return_value = {
         "id": FID,
-        "name": "Erika",
+        "name": "Jana",
         "mimeType": "application/vnd.google-apps.folder",
     }
     files.list.return_value.execute.return_value = {"files": [{"name": n} for n in drive_names]}

@@ -38,7 +38,7 @@ _BASE_MEDICAL_TERMS = (
 )
 
 
-def _build_patient_query_clause(patient_id: str = "") -> str:
+def _build_patient_query_clause(patient_id: str) -> str:
     """Build patient-name search terms from patient context."""
     from oncofiles.patient_context import get_patient_name
 
@@ -52,7 +52,7 @@ def _build_patient_query_clause(patient_id: str = "") -> str:
     return f"{name} "
 
 
-def _build_base_medical_query(patient_id: str = "") -> str:
+def _build_base_medical_query(patient_id: str) -> str:
     """Build the full base medical query with dynamic patient name."""
     patient_clause = _build_patient_query_clause(patient_id)
     if patient_clause:
@@ -70,7 +70,7 @@ _DOC_MIME_TYPES = {
 
 
 def _build_gmail_query(
-    after_date: str, learned_senders: list[str] | None = None, patient_id: str = ""
+    after_date: str, learned_senders: list[str] | None = None, *, patient_id: str
 ) -> str:
     """Build Gmail search query with date filter and optional learned senders."""
     base_query = _build_base_medical_query(patient_id)
@@ -174,10 +174,10 @@ async def _classify_medical_relevance(
 ) -> tuple[bool, float]:
     """Use Haiku to classify if an email is medically relevant. Returns (is_medical, score)."""
 
-    from oncofiles.config import ANTHROPIC_API_KEY
+    from oncofiles.cloud_guard import cloud_ai_enabled
     from oncofiles.prompt_logger import log_ai_call
 
-    if not ANTHROPIC_API_KEY:
+    if not cloud_ai_enabled():  # CLOUD_AI_ENABLED off (default) or no key
         return False, 0.0
 
     prompt = (
@@ -237,10 +237,11 @@ async def _process_attachment(
     message_id: str,
     attachment: dict,
     email_entry: EmailEntry,
+    *,
+    patient_id: str,
 ) -> Document | None:
     """Download email attachment and process through document pipeline."""
     from oncofiles.filename_parser import parse_filename
-    from oncofiles.webhook import notify_oncoteam
 
     filename = attachment["filename"]
     mime_type = attachment["mime_type"]
@@ -259,7 +260,7 @@ async def _process_attachment(
         file_metadata = files.upload(io.BytesIO(content_bytes), filename, mime_type)
 
         # Parse filename for metadata
-        parsed = parse_filename(filename)
+        parsed = parse_filename(filename, patient_id=patient_id)
 
         # Build description — use parsed or derive from email context
         description = parsed.description or f"Email attachment from {email_entry.sender}"
@@ -276,10 +277,7 @@ async def _process_attachment(
             mime_type=mime_type,
             size_bytes=len(content_bytes),
         )
-        doc = await db.insert_document(doc)
-
-        # Notify oncoteam
-        notify_oncoteam(doc.id, doc.filename, doc.category.value)
+        doc = await db.insert_document(doc, patient_id=patient_id)
 
         # Link document to email entry
         linked = json.loads(email_entry.linked_document_ids)
@@ -364,7 +362,7 @@ async def _gmail_sync_inner(
 
     # Learn from existing data
     learned_senders = await _get_learned_senders(db)
-    query = _build_gmail_query(after_date, learned_senders)
+    query = _build_gmail_query(after_date, learned_senders, patient_id=patient_id)
 
     logger.info(
         "Gmail sync started (initial=%s, after=%s, learned_senders=%d)",
@@ -442,7 +440,9 @@ async def _gmail_sync_inner(
             # Process attachments for medical emails
             if is_medical and parts["attachments"]:
                 for att in parts["attachments"]:
-                    doc = await _process_attachment(db, files, gmail, msg_id, att, entry)
+                    doc = await _process_attachment(
+                        db, files, gmail, msg_id, att, entry, patient_id=patient_id
+                    )
                     if doc:
                         stats["attachments_processed"] += 1
 

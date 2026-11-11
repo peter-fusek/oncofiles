@@ -21,6 +21,7 @@ from ._onboarding import OnboardingEventsMixin
 from ._operational import OperationalMixin
 from ._patients import PatientsMixin
 from ._prompt_log import PromptLogMixin
+from ._verification import FactVerificationMixin
 
 
 class Database(
@@ -29,6 +30,7 @@ class Database(
     ClinicalMixin,
     ClinicalRecordsMixin,
     FactsMixin,
+    FactVerificationMixin,
     HardFactsMixin,
     HardExtractMixin,
     GmailMixin,
@@ -41,7 +43,7 @@ class Database(
     AnalyticsMixin,
     DatabaseBase,
 ):
-    """Async database for document metadata. Uses aiosqlite locally, Turso in cloud."""
+    """Async database for document metadata: a local SQLite file via aiosqlite (#617)."""
 
 
 __all__ = ["Database"]

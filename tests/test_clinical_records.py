@@ -306,22 +306,22 @@ async def test_list_scopes_to_single_patient(db: Database):
     await db.insert_clinical_record(_make_record(patient_id=ERIKA_UUID, param="CEA"))
     await db.insert_clinical_record(_make_record(patient_id=SECOND_UUID, param="CA19-9"))
 
-    erika = await db.list_clinical_records(ClinicalRecordQuery(), patient_id=ERIKA_UUID)
+    jana = await db.list_clinical_records(ClinicalRecordQuery(), patient_id=ERIKA_UUID)
     bob = await db.list_clinical_records(ClinicalRecordQuery(), patient_id=SECOND_UUID)
 
-    assert {r.param for r in erika} == {"CEA"}
+    assert {r.param for r in jana} == {"CEA"}
     assert {r.param for r in bob} == {"CA19-9"}
 
 
 async def test_notes_patient_scope_via_join(db: Database):
     await _seed_second_patient(db)
-    erika_rec = await db.insert_clinical_record(_make_record(patient_id=ERIKA_UUID))
+    jana_rec = await db.insert_clinical_record(_make_record(patient_id=ERIKA_UUID))
     bob_rec = await db.insert_clinical_record(_make_record(patient_id=SECOND_UUID))
 
     await db.insert_clinical_record_note(
         ClinicalRecordNote(
-            record_id=erika_rec.id,
-            note_text="Erika asked about this",
+            record_id=jana_rec.id,
+            note_text="Jana asked about this",
             source="dashboard",
         )
     )
@@ -333,12 +333,12 @@ async def test_notes_patient_scope_via_join(db: Database):
         )
     )
 
-    erika_notes = await db.list_clinical_record_notes(patient_id=ERIKA_UUID)
+    jana_notes = await db.list_clinical_record_notes(patient_id=ERIKA_UUID)
     bob_notes = await db.list_clinical_record_notes(patient_id=SECOND_UUID)
 
-    assert len(erika_notes) == 1
+    assert len(jana_notes) == 1
     assert len(bob_notes) == 1
-    assert "Erika" in erika_notes[0].note_text
+    assert "Jana" in jana_notes[0].note_text
     assert "Bob" in bob_notes[0].note_text
 
 

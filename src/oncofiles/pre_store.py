@@ -3,10 +3,8 @@
 Before any REAL re-read, re-OCR or clinical-extraction (#726) job writes, the
 server takes a consistent copy of the local DB file with SQLite's online
 backup API and checks it with ``PRAGMA quick_check``. No copy, no job: the
-caller refuses and writes nothing.
-
-Same module as on the #701 branch (``feat/573-admin-reread-console``) plus the
-``clinical`` job; when both land, keep the union of ``JOBS`` / ``NAME_RE``.
+caller refuses (409 on the API) and writes nothing. Retention is in TOTAL
+across job kinds.
 
 * Location: ``<DATABASE_PATH parent>/pre-store/oncofiles-<UTC ts>-<job>.db``
   (derived from ``config.DATABASE_PATH`` at call time, never hardcoded).

@@ -8,9 +8,11 @@ Anthropic client (``enhance._get_client``) and the Files API client refuse to
 work there — fail closed, no fallback. The flag is a ContextVar, so it follows
 ``asyncio.to_thread`` into worker threads.
 
-A server without ``ANTHROPIC_API_KEY`` has the cloud disabled altogether
-(#618): the same two chokepoints raise ``CloudAIDisabledError`` with a clear
-message instead of the SDK's bare ``TypeError`` on the first API call.
+The cloud is OFF by default: it needs ``CLOUD_AI_ENABLED`` switched on AND an
+``ANTHROPIC_API_KEY`` (#618, privacy text #699). Otherwise the same two
+chokepoints raise ``CloudAIDisabledError`` with a clear message instead of
+calling the API (or failing with the SDK's bare ``TypeError``). A key alone
+never enables it.
 """
 
 from __future__ import annotations
@@ -26,10 +28,11 @@ class CloudForbiddenError(RuntimeError):
 
 
 CLOUD_AI_DISABLED_MESSAGE = "cloud AI is disabled on this server (no ANTHROPIC_API_KEY)"
+CLOUD_AI_FLAG_OFF_MESSAGE = "cloud AI is disabled on this server (CLOUD_AI_ENABLED is off)"
 
 
 class CloudAIDisabledError(CloudForbiddenError):
-    """The server has no ANTHROPIC_API_KEY, so no Anthropic API call can be made (#618).
+    """Cloud AI is off on this server (flag off or no key), so no Anthropic call is made (#618).
 
     A configuration state, not a transient failure: never retry on it.
     """
@@ -38,21 +41,34 @@ class CloudAIDisabledError(CloudForbiddenError):
         super().__init__(message)
 
 
-def cloud_ai_enabled() -> bool:
-    """True when the server has an Anthropic API key. Read at call time."""
+def cloud_ai_disabled_reason(api_key: str | None = None) -> str | None:
+    """Why cloud AI is unavailable right now, or None when it may be used.
+
+    Reads ``config.CLOUD_AI_ENABLED`` and ``config.ANTHROPIC_API_KEY`` at call
+    time. The flag is checked first: with it off, a key changes nothing.
+    ``api_key`` is an explicit key handed to a client (e.g.
+    ``FilesClient(api_key=...)``); it can stand in for the server key but never
+    for the flag.
+    """
     from oncofiles import config
 
-    return bool(config.ANTHROPIC_API_KEY)
+    if not config.CLOUD_AI_ENABLED:
+        return CLOUD_AI_FLAG_OFF_MESSAGE
+    if not (api_key or config.ANTHROPIC_API_KEY):
+        return CLOUD_AI_DISABLED_MESSAGE
+    return None
+
+
+def cloud_ai_enabled() -> bool:
+    """True when CLOUD_AI_ENABLED is on AND the server has a key. Read at call time."""
+    return cloud_ai_disabled_reason() is None
 
 
 def require_cloud_ai(api_key: str | None = None) -> None:
-    """Raise ``CloudAIDisabledError`` unless a key is available.
-
-    ``api_key`` is an explicit key handed to a client (e.g. ``FilesClient(api_key=...)``);
-    without one the server-wide ``config.ANTHROPIC_API_KEY`` is read now.
-    """
-    if not (api_key or cloud_ai_enabled()):
-        raise CloudAIDisabledError()
+    """Raise ``CloudAIDisabledError`` unless the flag is on and a key is available."""
+    reason = cloud_ai_disabled_reason(api_key)
+    if reason is not None:
+        raise CloudAIDisabledError(reason)
 
 
 @contextmanager

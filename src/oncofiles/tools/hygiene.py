@@ -66,6 +66,9 @@ async def reconcile_gdrive(
     Scans for: unknown folders, root-level files not in any category folder,
     empty managed folders, and stale backup folders.
 
+    Legacy (non-curated) folders only: a curated patient folder (README.md +
+    _index.json) is write-protected and keeps its own fixed folder set.
+
     Args:
         dry_run: If True (default), report issues without making changes.
                  If False, move files, rename folders, and clean up backups.
@@ -296,7 +299,7 @@ async def validate_categories(
         if current == "other":
             from oncofiles.filename_parser import parse_filename
 
-            reparsed = parse_filename(doc.filename)
+            reparsed = parse_filename(doc.filename, patient_id=pid)
             if reparsed.category and reparsed.category.value != "other":
                 suggested = reparsed.category.value
                 entry = {
@@ -601,6 +604,10 @@ async def qa_analysis(
 ) -> str:
     """Analyze activity logs for errors, slow tools, and improvement opportunities.
 
+    **Admin-only (#717).** Aggregates the activity log of every patient (an
+    ops view of the whole system), so a patient-scoped caller must not reach
+    it: it would see other patients' tool usage and error patterns.
+
     Scans the audit trail for patterns: recurring errors, slow operations,
     failed storage, and usage trends. Returns actionable findings that can
     be used to create GitHub improvement issues.
@@ -609,6 +616,13 @@ async def qa_analysis(
         days: Number of days to analyze (default 7).
     """
     from datetime import date, timedelta
+
+    from oncofiles.tools._helpers import _require_admin_or_raise
+
+    try:
+        _require_admin_or_raise("qa_analysis")
+    except ValueError as exc:
+        return json.dumps({"error": str(exc)})
 
     db = _get_db(ctx)
 
@@ -1014,11 +1028,6 @@ async def get_pipeline_status(ctx: Context, patient_slug: str | None = None) -> 
                 "name": "gdrive_sync",
                 "trigger": f"every {SYNC_INTERVAL_MINUTES} min",
                 "description": "Full bidirectional sync (incremental export if no changes)",
-            },
-            {
-                "name": "trash_cleanup",
-                "trigger": "daily 3:00 AM",
-                "description": "Purge soft-deleted docs older than 30 days",
             },
             {
                 "name": "metadata_extraction",
