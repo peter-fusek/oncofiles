@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from oncofiles import fact_identity
 from oncofiles.cloud_guard import CloudForbiddenError, local_only
 from oncofiles.curated.facts_rules import Vocabulary, parse_bory, parse_okb
 from oncofiles.persistent_oauth import (
@@ -238,6 +239,7 @@ def non_admin_bound_to_erika():
         lambda ctx: cf.document_detail(ctx, document_id=1, patient_slug=BOB_SLUG),
         lambda ctx: cf.encounter_detail(ctx, encounter_id=1, patient_slug=BOB_SLUG),
         lambda ctx: cf.people_and_places(ctx, patient_slug=BOB_SLUG),
+        lambda ctx: cf.dashboard_feed(ctx, patient_slug=BOB_SLUG),
     ],
 )
 async def test_every_fact_tool_denies_a_foreign_patient(db, non_admin_bound_to_erika, call):
@@ -262,7 +264,7 @@ def test_fact_tools_are_annotated_read_only():
     mcp = MagicMock()
     cf.register(mcp)
     assert all(c.kwargs["annotations"]["readOnlyHint"] for c in mcp.tool.call_args_list)
-    assert mcp.tool.call_count == 7
+    assert mcp.tool.call_count == 8
 
 
 # ── local only: the index and extraction never get a cloud client ──
@@ -1346,6 +1348,46 @@ async def test_reextraction_never_duplicates_a_verified_fact_inside_the_range(db
     ) as cur:
         rows = [tuple(r) for r in await cur.fetchall()]
     assert rows == [("HGB", "verified"), ("PLT", "machine")]
+
+
+async def test_range_protection_and_stable_ids_together(db):
+    """#727 + #728 combined: the range-protected verified row keeps (gets) its
+    fact id, a range fact re-extracted twice keeps the same id under the
+    ``start/end`` day key with the next version, and nothing counts as churn."""
+    await _insert_docs(db, _RANGED)
+    await _insert_fact(db, _RANGED, _DRAW_DAY, "HGB", 127.0, "verified", {})
+    await db.db.commit()
+
+    def new(code, value):
+        return {"code": code, "category": "lab", "occurred_at": _R_HI, "label": code,
+                "value_num": value, "value_canonical": value,
+                "metadata": dict(_RANGE_META)}  # fmt: skip
+
+    async def active():
+        async with db.db.execute(
+            "SELECT code, verification, fhir_id, version_id FROM clinical_records "
+            "WHERE source_document_id = ? AND deleted_at IS NULL",
+            (_RANGED,),
+        ) as cur:
+            return {r["code"]: dict(r) for r in await cur.fetchall()}
+
+    facts = [new("HGB", 127.0), new("PLT", 201.0)]
+    first = await db.replace_document_facts(
+        patient_id=ERIKA_UUID, document_id=_RANGED, extracted_by="rule:test", facts=facts
+    )
+    before = await active()
+    second = await db.replace_document_facts(
+        patient_id=ERIKA_UUID, document_id=_RANGED, extracted_by="rule:test", facts=facts
+    )
+    after = await active()
+    assert first["added"] == second["added"] == len(facts) - first["kept_verified"]
+    assert not first["id_churn"] and not second["id_churn"]
+    assert before["HGB"]["verification"] == "verified" and before["HGB"]["fhir_id"]
+    assert after["HGB"]["fhir_id"] == before["HGB"]["fhir_id"]
+    assert after["PLT"]["fhir_id"] == before["PLT"]["fhir_id"]  # same id on re-extraction
+    assert after["PLT"]["version_id"] > before["PLT"]["version_id"]  # next version
+    key = fact_identity.fact_key(ERIKA_UUID, _RANGED, new("PLT", 201.0))
+    assert f"{_R_LO}/{_R_HI}" in key  # the range keys the id, not its end day
 
 
 async def test_fact_series_and_document_detail_show_the_range(db):
