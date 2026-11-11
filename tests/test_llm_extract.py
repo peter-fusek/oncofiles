@@ -248,6 +248,27 @@ def test_a_new_layout_needs_no_layout_code():
     assert out["page_errors"] == 0 and out["pages"] == 1
 
 
+# Wall-clock / duration fields: a timestamp like "...:38:00.451087" or a
+# time.time() float can contain a synthetic value's digits by chance, which made
+# the leak checks below flaky. They carry no extracted data, so the substring
+# checks run on the report without them; every other key and value is checked.
+_TIMING_KEYS = frozenset({"started", "started_at", "finished_at", "seconds"})
+
+
+def _without_timing(obj):
+    if isinstance(obj, dict):
+        return {k: _without_timing(v) for k, v in obj.items() if k not in _TIMING_KEYS}
+    if isinstance(obj, list):
+        return [_without_timing(v) for v in obj]
+    return obj
+
+
+def test_without_timing_keeps_everything_else():
+    report = {"started_at": "2027-01-01T00:38:00.451087", "seconds": 0.45,
+              "documents": [{"agree": 1, "finished_at": "x", "codes": ["ALT"]}]}  # fmt: skip
+    assert _without_timing(report) == {"documents": [{"agree": 1, "codes": ["ALT"]}]}
+
+
 def test_shadow_compare_reports_keys_and_counts_only():
     with local_only("test"):
         facts = llm_extract.extract_document([(1, PAGE)], vocab=VOCAB, chat=model_answer)["facts"]
@@ -262,7 +283,7 @@ def test_shadow_compare_reports_keys_and_counts_only():
     assert out["llm_only"] == out["value_mismatch"] == len(["GLU"])
     assert out["rule_only_codes"] == ["CA19_9"] and out["llm_only_codes"] == []
     assert out["unverified_reasons"] == {"label_unmapped": 1}
-    dumped = json.dumps(out)
+    dumped = json.dumps(_without_timing(out))
     assert "0.45" not in dumped and "5.6" not in dumped and "S-XYZ" not in dumped
 
 
@@ -364,7 +385,7 @@ async def test_the_preview_writes_nothing_and_runs_local_only(db, monkeypatch):
     assert job["report"]["extractor"] == llm_extract.EXTRACTOR_VERSION
     assert seen == ["curated LLM extract shadow"]
     assert await _snapshot(db) == before  # nothing written anywhere
-    dumped = json.dumps(job)
+    dumped = json.dumps(_without_timing(job))
     assert "0.45" not in dumped and "0,45" not in dumped and "S-ALT" not in dumped
 
 
