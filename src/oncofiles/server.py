@@ -4419,7 +4419,15 @@ async def demo_js(request: Request) -> Response:
 #    dates in 2027 per the synthetic-fixtures rule). ──────────────────────────
 
 _DEMO_HOSPITAL = "Nemocnica Príkladov"
+_DEMO_HOSPITAL_EN = "Example Hospital"
 _DEMO_LAB_HEADER = "Vyšetrenie|Výsledok|Jednotky|Ref. rozsah"
+_DEMO_LAB_HEADER_EN = "Test|Result|Units|Ref. range"
+# The demo shows the same invented patient in both languages: Slovak names and
+# Slovak report text in SK mode, English equivalents in EN mode (`*_en` keys).
+# Filenames keep the standard YYYYMMDD_Patient_Institution_Category_Desc.ext
+# shape; only the patient and institution tokens differ per language.
+_DEMO_PATIENT = ("Jana Testová", "Jane Doe")
+_DEMO_FILE_TOKENS = ("JanaTestova_NemPrikladov", "JaneDoe_ExampleHospital")
 # (report date, sample date, sample time, {code: (value_text, state)}, cea_sample)
 _DEMO_LAB_REPORTS = [
     (
@@ -4480,20 +4488,53 @@ def _sk_date(iso: str) -> str:
     return f"{d}.{m}.{y}"
 
 
+_EN_MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+
+
+def _en_date(iso: str) -> str:
+    y, m, d = iso.split("-")
+    return f"{int(d)} {_EN_MONTHS[int(m) - 1]} {y}"
+
+
+def _en_num(text: str) -> str:
+    return text.replace(",", ".")
+
+
+def _demo_filename(date: str, slug: str, en: bool = False) -> str:
+    return f"{date.replace('-', '')}_{_DEMO_FILE_TOKENS[1 if en else 0]}_{slug}.pdf"
+
+
 def _demo_payload() -> dict:
     meta = {s[0]: s for s in _DEMO_SERIES}
     documents: list[dict] = []
     points: dict[str, list[dict]] = {s[0]: [] for s in _DEMO_SERIES}
     for idx, (reported, sampled, time_, values, cea_sample) in enumerate(_DEMO_LAB_REPORTS, 1):
         lines: list[dict] = [
-            {"text": f"{_DEMO_HOSPITAL} – Oddelenie klinickej biochémie", "kind": "head"},
-            {"text": "Pacientka: Jana Testová (vymyslená)"},
-            {"text": "Odosielajúci lekár: MUDr. Ján Ukážkový"},
-            {"text": f"Odber: {_sk_date(sampled)} {time_}"},
-            {"text": f"Vydané: {_sk_date(reported)}"},
+            {
+                "text": f"{_DEMO_HOSPITAL} – Oddelenie klinickej biochémie",
+                "text_en": f"{_DEMO_HOSPITAL_EN} – Clinical Biochemistry",
+                "kind": "head",
+            },
+            {
+                "text": "Pacientka: Jana Testová (vymyslená)",
+                "text_en": "Patient: Jane Doe (invented)",
+            },
+            {
+                "text": "Odosielajúci lekár: MUDr. Ján Ukážkový",
+                "text_en": "Referring physician: Dr John Sample",
+            },
+            {
+                "text": f"Odber: {_sk_date(sampled)} {time_}",
+                "text_en": f"Sampled: {_en_date(sampled)} {time_}",
+            },
+            {"text": f"Vydané: {_sk_date(reported)}", "text_en": f"Issued: {_en_date(reported)}"},
             {"text": ""},
-            {"text": "Krvný obraz", "kind": "sub"},
-            {"cells": _DEMO_LAB_HEADER.split("|"), "kind": "th"},
+            {"text": "Krvný obraz", "text_en": "Blood count", "kind": "sub"},
+            {
+                "cells": _DEMO_LAB_HEADER.split("|"),
+                "cells_en": _DEMO_LAB_HEADER_EN.split("|"),
+                "kind": "th",
+            },
         ]
         order = ["WBC", "RBC", "HGB", "HCT", "PLT"]
         if "CEA" in values:
@@ -4503,23 +4544,33 @@ def _demo_payload() -> dict:
                 lines.append({"text": ""})
                 continue
             if code == "Nádorové markery":
-                lines.append({"text": code, "kind": "sub"})
+                lines.append({"text": code, "text_en": "Tumour markers", "kind": "sub"})
                 continue
             if code == "note":
-                note = (
-                    f"Výsledok z odberu {_sk_date(cea_sample)}"
-                    if cea_sample
-                    else "Z rovnakého odberu"
-                )
-                lines.append({"text": note, "kind": "note"})
+                if cea_sample:
+                    note = f"Výsledok z odberu {_sk_date(cea_sample)}"
+                    note_en = f"Result from the sample of {_en_date(cea_sample)}"
+                else:
+                    note, note_en = "Z rovnakého odberu", "From the same sample"
+                lines.append({"text": note, "text_en": note_en, "kind": "note"})
                 continue
             if code in _DEMO_FIXED_ROWS:
                 v, unit, ref = _DEMO_FIXED_ROWS[code]
-                lines.append({"cells": [code, v, unit, ref]})
+                lines.append(
+                    {
+                        "cells": [code, v, unit, ref],
+                        "cells_en": [code, _en_num(v), unit, _en_num(ref)],
+                    }
+                )
                 continue
             value_text, state = values[code]
             _, _sk, _en, unit, ref, _lo, _hi = meta[code]
-            lines.append({"cells": [code, value_text, unit, ref]})
+            lines.append(
+                {
+                    "cells": [code, value_text, unit, ref],
+                    "cells_en": [code, _en_num(value_text), unit, _en_num(ref)],
+                }
+            )
             line_no = len(lines)
             sample = cea_sample if (code == "CEA" and cea_sample) else sampled
             points[code].append(
@@ -4534,7 +4585,10 @@ def _demo_payload() -> dict:
                     "note": "date_mismatch" if state == "unverified" else "",
                 }
             )
-        lines += [{"text": ""}, {"text": "Vyšetrila: RNDr. Eva Vzorová"}]
+        lines += [
+            {"text": ""},
+            {"text": "Vyšetrila: RNDr. Eva Vzorová", "text_en": "Checked by: Eva Example, PhD"},
+        ]
         for n, line in enumerate(lines, 1):
             line["n"] = n
         documents.append(
@@ -4544,10 +4598,10 @@ def _demo_payload() -> dict:
                 "category": "labs",
                 "title_sk": "Laboratórny výsledok",
                 "title_en": "Lab report",
-                "filename": (
-                    f"{reported.replace('-', '')}_JanaTestova_NemPrikladov_Labs_BloodCount.pdf"
-                ),
+                "filename": _demo_filename(reported, "Labs_BloodCount"),
+                "filename_en": _demo_filename(reported, "Labs_BloodCount", en=True),
                 "institution": _DEMO_HOSPITAL,
+                "institution_en": _DEMO_HOSPITAL_EN,
                 "pages": [{"n": 1, "lines": lines}],
             }
         )
@@ -4560,19 +4614,35 @@ def _demo_payload() -> dict:
             "CT of abdomen and pelvis",
             "CT_AbdomenPelvis",
             [
-                (f"{_DEMO_HOSPITAL} – Rádiologické oddelenie", "head"),
-                ("Pacientka: Jana Testová (vymyslená)", ""),
-                ("Vyšetrenie: CT brucha a malej panvy s kontrastnou látkou", ""),
-                ("Dátum vyšetrenia: 20.02.2027", ""),
-                ("", ""),
-                ("Popis", "sub"),
-                ("Pečeň primeranej veľkosti, bez ložiskových zmien.", ""),
-                ("Lymfatické uzliny nezväčšené.", ""),
-                ("", ""),
-                ("Záver", "sub"),
-                ("Stacionárny nález oproti predchádzajúcemu vyšetreniu.", ""),
-                ("", ""),
-                ("Vymyslený nález pre ukážku.", "note"),
+                (
+                    f"{_DEMO_HOSPITAL} – Rádiologické oddelenie",
+                    f"{_DEMO_HOSPITAL_EN} – Radiology",
+                    "head",
+                ),
+                ("Pacientka: Jana Testová (vymyslená)", "Patient: Jane Doe (invented)", ""),
+                (
+                    "Vyšetrenie: CT brucha a malej panvy s kontrastnou látkou",
+                    "Examination: contrast-enhanced CT of abdomen and pelvis",
+                    "",
+                ),
+                ("Dátum vyšetrenia: 20.02.2027", "Date of examination: 20 Feb 2027", ""),
+                ("", "", ""),
+                ("Popis", "Findings", "sub"),
+                (
+                    "Pečeň primeranej veľkosti, bez ložiskových zmien.",
+                    "Liver of normal size, no focal lesions.",
+                    "",
+                ),
+                ("Lymfatické uzliny nezväčšené.", "Lymph nodes not enlarged.", ""),
+                ("", "", ""),
+                ("Záver", "Conclusion", "sub"),
+                (
+                    "Stacionárny nález oproti predchádzajúcemu vyšetreniu.",
+                    "Stable compared with the previous examination.",
+                    "",
+                ),
+                ("", "", ""),
+                ("Vymyslený nález pre ukážku.", "Invented finding for the demo.", "note"),
             ],
         ),
         (
@@ -4583,24 +4653,43 @@ def _demo_payload() -> dict:
             "Oncology clinic report",
             "Report_OncologyVisit",
             [
-                (f"{_DEMO_HOSPITAL} – Onkologická ambulancia", "head"),
-                ("Pacientka: Jana Testová (vymyslená)", ""),
-                ("Kontrola: 02.04.2027", ""),
-                ("Ošetrujúci lekár: MUDr. Ján Ukážkový", ""),
-                ("", ""),
-                ("Priebeh", "sub"),
-                ("Liečbu znáša dobre, bez nových ťažkostí.", ""),
-                ("Krvný obraz z 15.03.2027 bez obmedzení pre ďalší cyklus.", ""),
-                ("", ""),
-                ("Odporúčanie", "sub"),
-                ("Pokračovať podľa plánu, kontrola o 3 týždne.", ""),
-                ("", ""),
-                ("Vymyslená správa pre ukážku.", "note"),
+                (
+                    f"{_DEMO_HOSPITAL} – Onkologická ambulancia",
+                    f"{_DEMO_HOSPITAL_EN} – Oncology Clinic",
+                    "head",
+                ),
+                ("Pacientka: Jana Testová (vymyslená)", "Patient: Jane Doe (invented)", ""),
+                ("Kontrola: 02.04.2027", "Visit: 2 Apr 2027", ""),
+                ("Ošetrujúci lekár: MUDr. Ján Ukážkový", "Physician: Dr John Sample", ""),
+                ("", "", ""),
+                ("Priebeh", "Course", "sub"),
+                (
+                    "Liečbu znáša dobre, bez nových ťažkostí.",
+                    "Tolerating treatment well, no new complaints.",
+                    "",
+                ),
+                (
+                    "Krvný obraz z 15.03.2027 bez obmedzení pre ďalší cyklus.",
+                    "Blood count of 15 Mar 2027 allows the next cycle.",
+                    "",
+                ),
+                ("", "", ""),
+                ("Odporúčanie", "Plan", "sub"),
+                (
+                    "Pokračovať podľa plánu, kontrola o 3 týždne.",
+                    "Continue as planned, follow-up in 3 weeks.",
+                    "",
+                ),
+                ("", "", ""),
+                ("Vymyslená správa pre ukážku.", "Invented report for the demo.", "note"),
             ],
         ),
     ]
     for doc_id, date, cat, t_sk, t_en, slug, rows in prose_docs:
-        lines = [{"n": n, "text": t, "kind": k} for n, (t, k) in enumerate(rows, 1)]
+        lines = [
+            {"n": n, "text": t_sk, "text_en": t_en_line, "kind": k}
+            for n, (t_sk, t_en_line, k) in enumerate(rows, 1)
+        ]
         documents.append(
             {
                 "id": doc_id,
@@ -4608,8 +4697,10 @@ def _demo_payload() -> dict:
                 "category": cat,
                 "title_sk": t_sk,
                 "title_en": t_en,
-                "filename": f"{date.replace('-', '')}_JanaTestova_NemPrikladov_{slug}.pdf",
+                "filename": _demo_filename(date, slug),
+                "filename_en": _demo_filename(date, slug, en=True),
                 "institution": _DEMO_HOSPITAL,
+                "institution_en": _DEMO_HOSPITAL_EN,
                 "pages": [{"n": 1, "lines": lines}],
             }
         )
@@ -4629,7 +4720,7 @@ def _demo_payload() -> dict:
     ]
     return {
         "version": VERSION,
-        "patient": {"name": "Jana Testová", "invented": True},
+        "patient": {"name": _DEMO_PATIENT[0], "name_en": _DEMO_PATIENT[1], "invented": True},
         "series": series,
         "documents": documents,
     }

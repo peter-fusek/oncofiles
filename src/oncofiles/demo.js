@@ -65,11 +65,18 @@
   function stateNode(state) { return el('span', 'st st-' + state, t(STATE[state])); }
   function docById(id) { for (var i = 0; i < data.documents.length; i++) if (data.documents[i].id === id) return data.documents[i]; return null; }
   function seriesName(s) { return lang === 'sk' ? s.name_sk : s.name_en; }
+  // Payload fields with an English twin (`text_en`, `cells_en`, `filename_en`,
+  // `institution_en`, `name_en`): EN mode shows the twin, SK the original.
+  function loc(obj, key) {
+    var en = obj[key + '_en'];
+    return lang === 'en' && en !== undefined && en !== null ? en : obj[key];
+  }
 
   /* ── Static text ───────────────────────────────────────────────── */
   function applyStatic() {
     document.documentElement.lang = lang;
     document.querySelectorAll('[data-sk][data-en]').forEach(function (n) { n.textContent = n.getAttribute('data-' + lang); });
+    document.querySelectorAll('[data-sk-label][data-en-label]').forEach(function (n) { n.setAttribute('aria-label', n.getAttribute('data-' + lang + '-label')); });
     var b = document.getElementById('lang-toggle');
     if (b) b.textContent = lang === 'sk' ? 'EN' : 'SK';
   }
@@ -77,7 +84,7 @@
   /* ── Overview ──────────────────────────────────────────────────── */
   function renderOverview() {
     var docs = data.documents, labs = docs.filter(function (d) { return d.category === 'labs'; }).length;
-    document.getElementById('patient-name').textContent = data.patient.name;
+    document.getElementById('patient-name').textContent = loc(data.patient, 'name');
     document.getElementById('patient-sub').textContent = lang === 'sk'
       ? 'Vymyslená pacientka. ' + docs.length + ' dokumentov, z toho ' + labs + ' laboratórne výsledky.'
       : 'An invented patient. ' + docs.length + ' documents, ' + labs + ' of them lab reports.';
@@ -146,10 +153,10 @@
       var tr = document.createElement('tr');
       var c1 = el('td');
       c1.appendChild(el('span', 'name', seriesName(s)));
-      c1.appendChild(el('span', 'ref', (lang === 'sk' ? 'norma ' : 'range ') + s.ref + ' ' + s.unit));
+      c1.appendChild(el('span', 'ref', (lang === 'sk' ? 'norma ' : 'range ') + numFmt(s.ref) + ' ' + s.unit));
       var c2 = el('td', 'c-spark'); c2.appendChild(sparkline(s));
       var c3 = el('td', 'c-num');
-      c3.appendChild(el('b', null, last.value_text)); c3.appendChild(el('span', 'unit', s.unit));
+      c3.appendChild(el('b', null, numFmt(last.value_text))); c3.appendChild(el('span', 'unit', s.unit));
       var c4 = el('td', 'c-date');
       c4.appendChild(document.createTextNode(fmtDate(last.date) + ' '));
       c4.appendChild(document.createElement('br'));
@@ -207,9 +214,9 @@
     var txt = document.createElementNS(SVG, 'text');
     txt.setAttribute('x', '50'); txt.setAttribute('y', '47'); txt.setAttribute('text-anchor', 'middle');
     txt.setAttribute('font-size', '9'); txt.setAttribute('fill', '#2c4f9e'); txt.setAttribute('font-family', 'Georgia, serif');
-    txt.textContent = 'NEMOCNICA';
+    txt.textContent = lang === 'sk' ? 'NEMOCNICA' : 'EXAMPLE';
     svg.appendChild(txt);
-    var txt2 = txt.cloneNode(); txt2.setAttribute('y', '59'); txt2.textContent = 'PRÍKLADOV';
+    var txt2 = txt.cloneNode(); txt2.setAttribute('y', '59'); txt2.textContent = lang === 'sk' ? 'PRÍKLADOV' : 'HOSPITAL';
     svg.appendChild(txt2);
     var sig = document.createElementNS(SVG, 'path');
     sig.setAttribute('d', 'M14 74 C 26 60, 34 86, 46 70 S 66 62, 74 76 S 88 70, 94 64');
@@ -223,8 +230,8 @@
     if (!d) return;
     document.getElementById('doc-title').textContent = lang === 'sk' ? d.title_sk : d.title_en;
     document.getElementById('doc-date').textContent = (lang === 'sk' ? 'Vydané ' : 'Issued ') + fmtDate(d.date) + ',';
-    document.getElementById('doc-inst').textContent = d.institution;
-    document.getElementById('doc-file').textContent = d.filename;
+    document.getElementById('doc-inst').textContent = loc(d, 'institution');
+    document.getElementById('doc-file').textContent = loc(d, 'filename');
     var sheet = document.getElementById('sheet');
     clear(sheet);
     d.pages[0].lines.forEach(function (ln) {
@@ -233,10 +240,10 @@
       row.appendChild(el('span', 'no', String(ln.n)));
       if (ln.cells) {
         var cells = el('span', 'cells');
-        ln.cells.forEach(function (c) { cells.appendChild(el('span', null, c)); });
+        loc(ln, 'cells').forEach(function (c) { cells.appendChild(el('span', null, c)); });
         row.appendChild(cells);
       } else {
-        row.appendChild(el('span', null, ln.text || ' '));
+        row.appendChild(el('span', null, loc(ln, 'text') || ' '));
       }
       sheet.appendChild(row);
     });
@@ -265,7 +272,7 @@
         tr.setAttribute('aria-selected', currentLine === v.p.line ? 'true' : 'false');
         tr.appendChild(el('td', null, seriesName(v.s)));
         var num = el('td', 'c-num');
-        num.appendChild(el('b', null, v.p.value_text)); num.appendChild(el('span', 'unit', v.s.unit));
+        num.appendChild(el('b', null, numFmt(v.p.value_text))); num.appendChild(el('span', 'unit', v.s.unit));
         tr.appendChild(num);
         tr.appendChild(el('td', 'c-date', fmtDate(v.p.date)));
         tr.appendChild(el('td', 'num', String(v.p.line)));
@@ -306,7 +313,7 @@
     b.appendChild(el('span', null, (lang === 'sk' ? 'Správa ' : 'Report ') + fmtDate(d.date) + ' · ' + srcText(1, line).replace(', ', ' · ') + ' · ' + t(STATE[state])));
     return b;
   }
-  function numFmt(v) { return lang === 'sk' ? v : v.replace(',', '.'); }
+  function numFmt(v) { return lang === 'sk' ? v : v.replace(/,/g, '.'); }
   function arrow(a, b) { return b > a ? ' ↑' : b < a ? ' ↓' : ' →'; }
   function labComparison() {
     var labs = data.documents.filter(function (d) { return d.category === 'labs'; });
@@ -424,7 +431,7 @@
       lines.forEach(function (l) { box.appendChild(el('p', 't-dim', l)); });
       body.appendChild(box);
     }
-    tool('list_documents', ['limit: 5', (lang === 'sk' ? 'nový: ' : 'new: ') + c.latest.filename]);
+    tool('list_documents', ['limit: 5', (lang === 'sk' ? 'nový: ' : 'new: ') + loc(c.latest, 'filename')]);
     tool('document_detail', ['document_id: ' + c.latest.id]);
     tool('fact_series', ['codes: ' + c.rows.map(function (r) { return r.v.s.code; }).join(', ')]);
     body.appendChild(el('p', 't-out', lang === 'sk'
