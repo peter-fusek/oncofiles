@@ -172,6 +172,7 @@ WRITE_TOOLS: frozenset[str] = frozenset(
         "repair_gdrive_folder_hygiene",
         "restore_clinical_record",
         "restore_document",
+        "restore_treatment_event",  # #723
         "select_patient",
         "set_agent_state",
         "setup_gdrive",
