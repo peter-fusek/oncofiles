@@ -217,7 +217,7 @@ async def test_links_never_cross_patients(db, lab_env):
 
 
 @pytest.fixture
-def non_admin_bound_to_erika():
+def non_admin_bound_to_jana():
     tokens = (
         _verified_caller_is_admin.set(False),
         _verified_caller_email.set(""),
@@ -242,7 +242,7 @@ def non_admin_bound_to_erika():
         lambda ctx: cf.dashboard_feed(ctx, patient_slug=BOB_SLUG),
     ],
 )
-async def test_every_fact_tool_denies_a_foreign_patient(db, non_admin_bound_to_erika, call):
+async def test_every_fact_tool_denies_a_foreign_patient(db, non_admin_bound_to_jana, call):
     await db.db.execute(
         "INSERT INTO patients (patient_id, slug, display_name, caregiver_email) "
         "VALUES (?, ?, ?, ?)",

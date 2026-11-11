@@ -20,6 +20,7 @@ from oncofiles.constants import NO_PATIENT_ACCESS_SENTINEL
 from oncofiles.database import Database
 from oncofiles.persistent_oauth import _verified_caller_is_admin
 from oncofiles.tools._helpers import _get_patient_id, _resolve_patient_id
+from oncofiles.tools.activity import _PRE_663_DEFAULT
 from tests.conftest import ERIKA_UUID
 
 BOB_UUID = "00000000-0000-4000-8000-0000000000b2"
@@ -71,7 +72,7 @@ async def _call(db, tool, args, body):
 
 
 async def test_call_targeting_another_slug_logs_that_patient(two):
-    _verified_caller_is_admin.set(True)  # bound to Erika, targets Bob
+    _verified_caller_is_admin.set(True)  # bound to Jana, targets Bob
     row = await _call(
         two, "t_slug", {"patient_slug": BOB_SLUG},
         lambda: _resolve_patient_id(BOB_SLUG, _Ctx(two)),
@@ -116,18 +117,18 @@ async def test_non_admin_caller_never_sees_the_other_patients_calls(two):
         two, "t_bob_only", {"patient_slug": BOB_SLUG},
         lambda: _resolve_patient_id(BOB_SLUG, _Ctx(two)),
     )  # fmt: skip
-    _verified_caller_is_admin.set(False)  # Erika's caregiver
+    _verified_caller_is_admin.set(False)  # Jana's caregiver
     seen = json.loads(await search_activity_log(_Ctx(two)))
     assert all(e["tool_name"] != "t_bob_only" for e in seen["entries"])
 
 
 async def _seed_prefix_rows(db):
     rows = [  # (agent, summary, patient_id, tags)
-        ("auto", "patient_slug=bob-test, limit=5", "erika", "[]"),  # pre-fix default
-        ("auto", "limit=5", "erika", "[]"),
-        ("auto", "patient_slug=nobody-here", "erika", "[]"),
+        ("auto", "patient_slug=bob-test, limit=5", _PRE_663_DEFAULT, "[]"),  # pre-fix default
+        ("auto", "limit=5", _PRE_663_DEFAULT, "[]"),
+        ("auto", "patient_slug=nobody-here", _PRE_663_DEFAULT, "[]"),
         ("auto", "patient_slug=bob-test", ERIKA_UUID, "[]"),  # forged-looking, real pid
-        ("oncoteam", "patient_slug=bob-test", "erika", "[]"),  # manual row: untouched
+        ("oncoteam", "patient_slug=bob-test", _PRE_663_DEFAULT, "[]"),  # manual row: untouched
     ]
     for agent, summary, pid, tags in rows:
         await db.db.execute(

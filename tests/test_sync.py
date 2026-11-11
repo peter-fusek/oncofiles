@@ -26,11 +26,11 @@ def _mock_gdrive(gdrive_files: list[dict] | None = None, folder_map: dict | None
     gdrive.list_folder_with_structure.return_value = (gdrive_files or [], folder_map or {})
     gdrive.list_folder.return_value = gdrive_files or []
     gdrive.download.return_value = b"fake-pdf-content"
-    gdrive.upload.return_value = {"id": "gdrive_new_id", "modifiedTime": "2026-03-01T00:00:00Z"}
+    gdrive.upload.return_value = {"id": "gdrive_new_id", "modifiedTime": "2030-03-01T07:42:13Z"}
     gdrive.find_folder.return_value = None
     gdrive.create_folder.side_effect = lambda name, parent: f"folder_{name}"
     gdrive.rename_file.return_value = None
-    gdrive.update.return_value = {"id": "updated_id", "modifiedTime": "2026-03-01T00:00:00Z"}
+    gdrive.update.return_value = {"id": "updated_id", "modifiedTime": "2030-03-01T07:42:13Z"}
     gdrive.get_file_parents.return_value = ["some_unorganized_folder"]
     # Batch operations: return dicts keyed by file_id
     gdrive.batch_get_parents.side_effect = lambda fids: {
@@ -56,9 +56,9 @@ async def test_sync_from_gdrive_new_file(db: Database):
         [
             {
                 "id": "gd_1",
-                "name": "20260301 ErikaFusekova-NOU-LabVysledky.pdf",
+                "name": "20300301 JanaTestova-NOU-LabVysledky.pdf",
                 "mimeType": "application/pdf",
-                "modifiedTime": "2026-03-01T10:00:00Z",
+                "modifiedTime": "2030-03-01T10:00:00Z",
                 "appProperties": {},
                 "parents": [],
             },
@@ -85,7 +85,7 @@ async def test_sync_from_gdrive_new_file(db: Database):
 
 async def test_sync_from_gdrive_unchanged(db: Database):
     """Existing file with same modifiedTime is skipped."""
-    doc = make_doc(gdrive_id="gd_1", gdrive_modified_time=datetime(2026, 3, 1, 10, 0))
+    doc = make_doc(gdrive_id="gd_1", gdrive_modified_time=datetime(2030, 3, 1, 10, 0))
     await db.insert_document(doc, patient_id=ERIKA_UUID)
 
     files = _mock_files()
@@ -95,7 +95,7 @@ async def test_sync_from_gdrive_unchanged(db: Database):
                 "id": "gd_1",
                 "name": doc.filename,
                 "mimeType": "application/pdf",
-                "modifiedTime": "2026-03-01T10:00:00+00:00",
+                "modifiedTime": "2030-03-01T10:00:00+00:00",
                 "appProperties": {},
                 "parents": [],
             },
@@ -111,7 +111,7 @@ async def test_sync_from_gdrive_unchanged(db: Database):
 
 async def test_sync_from_gdrive_updated(db: Database):
     """File with newer modifiedTime on GDrive gets re-imported."""
-    doc = make_doc(gdrive_id="gd_1", gdrive_modified_time=datetime(2026, 1, 1))
+    doc = make_doc(gdrive_id="gd_1", gdrive_modified_time=datetime(2030, 1, 1))
     await db.insert_document(doc, patient_id=ERIKA_UUID)
 
     files = _mock_files()
@@ -121,7 +121,7 @@ async def test_sync_from_gdrive_updated(db: Database):
                 "id": "gd_1",
                 "name": doc.filename,
                 "mimeType": "application/pdf",
-                "modifiedTime": "2026-03-01T10:00:00Z",
+                "modifiedTime": "2030-03-01T10:00:00Z",
                 "appProperties": {},
                 "parents": [],
             },
@@ -139,7 +139,7 @@ async def test_sync_from_gdrive_updated(db: Database):
 
 async def test_sync_from_gdrive_metadata_only_change(db: Database):
     """Rename-only change (same md5) skips re-import and preserves OCR."""
-    doc = make_doc(gdrive_id="gd_1", gdrive_modified_time=datetime(2026, 1, 1))
+    doc = make_doc(gdrive_id="gd_1", gdrive_modified_time=datetime(2030, 1, 1))
     doc.gdrive_md5 = "abc123md5"
     doc = await db.insert_document(doc, patient_id=ERIKA_UUID)
 
@@ -152,9 +152,9 @@ async def test_sync_from_gdrive_metadata_only_change(db: Database):
         [
             {
                 "id": "gd_1",
-                "name": "20260301_ErikaFusekova_NOU_Labs_RenamedFile.pdf",
+                "name": "20300301_JanaTestova_NOU_Labs_RenamedFile.pdf",
                 "mimeType": "application/pdf",
-                "modifiedTime": "2026-03-01T10:00:00Z",  # newer than doc
+                "modifiedTime": "2030-03-01T10:00:00Z",  # newer than doc
                 "md5Checksum": "abc123md5",  # same content
                 "appProperties": {},
                 "parents": [],
@@ -177,7 +177,7 @@ async def test_sync_from_gdrive_metadata_only_change(db: Database):
 
 async def test_sync_from_gdrive_content_changed(db: Database):
     """Content change (different md5) triggers full re-import."""
-    doc = make_doc(gdrive_id="gd_1", gdrive_modified_time=datetime(2026, 1, 1))
+    doc = make_doc(gdrive_id="gd_1", gdrive_modified_time=datetime(2030, 1, 1))
     doc.gdrive_md5 = "old_md5"
     doc = await db.insert_document(doc, patient_id=ERIKA_UUID)
 
@@ -191,7 +191,7 @@ async def test_sync_from_gdrive_content_changed(db: Database):
                 "id": "gd_1",
                 "name": doc.filename,
                 "mimeType": "application/pdf",
-                "modifiedTime": "2026-03-01T10:00:00Z",
+                "modifiedTime": "2030-03-01T10:00:00Z",
                 "md5Checksum": "new_md5",  # content changed
                 "appProperties": {},
                 "parents": [],
@@ -217,9 +217,9 @@ async def test_sync_from_gdrive_dry_run(db: Database):
         [
             {
                 "id": "gd_1",
-                "name": "20260301 ErikaFusekova-NOU-LabVysledky.pdf",
+                "name": "20300301 JanaTestova-NOU-LabVysledky.pdf",
                 "mimeType": "application/pdf",
-                "modifiedTime": "2026-03-01T10:00:00Z",
+                "modifiedTime": "2030-03-01T10:00:00Z",
                 "appProperties": {},
                 "parents": [],
             },
@@ -245,7 +245,7 @@ async def test_sync_from_gdrive_skips_unsupported(db: Database):
                 "id": "gd_1",
                 "name": "document.gdoc",
                 "mimeType": "application/octet-stream",
-                "modifiedTime": "2026-03-01T10:00:00Z",
+                "modifiedTime": "2030-03-01T10:00:00Z",
                 "appProperties": {},
                 "parents": [],
             },
@@ -266,7 +266,7 @@ async def test_sync_from_gdrive_skips_metadata_files(db: Database):
                 "id": "gd_1",
                 "name": "_manifest.json",
                 "mimeType": "application/json",
-                "modifiedTime": "2026-03-01T10:00:00Z",
+                "modifiedTime": "2030-03-01T10:00:00Z",
                 "appProperties": {},
                 "parents": [],
             },
@@ -274,7 +274,7 @@ async def test_sync_from_gdrive_skips_metadata_files(db: Database):
                 "id": "gd_2",
                 "name": "treatment-timeline.md",
                 "mimeType": "text/markdown",
-                "modifiedTime": "2026-03-01T10:00:00Z",
+                "modifiedTime": "2030-03-01T10:00:00Z",
                 "appProperties": {},
                 "parents": [],
             },
@@ -293,9 +293,9 @@ async def test_sync_from_gdrive_error_handling(db: Database):
         [
             {
                 "id": "gd_1",
-                "name": "20260301 ErikaFusekova-NOU-LabVysledky.pdf",
+                "name": "20300301 JanaTestova-NOU-LabVysledky.pdf",
                 "mimeType": "application/pdf",
-                "modifiedTime": "2026-03-01T10:00:00Z",
+                "modifiedTime": "2030-03-01T10:00:00Z",
                 "appProperties": {},
                 "parents": [],
             },
@@ -404,7 +404,7 @@ async def test_sync_from_gdrive_clears_external_flag_when_file_back_in_root(db: 
                 "id": "gd_moved_back",
                 "name": inserted.filename,
                 "mimeType": "application/pdf",
-                "modifiedTime": "2026-03-01T10:00:00+00:00",
+                "modifiedTime": "2030-03-01T10:00:00+00:00",
                 "appProperties": {"oncofiles_id": str(inserted.id)},
                 "parents": [],
             }
@@ -444,7 +444,7 @@ async def test_sync_from_gdrive_unclassifiable_error_still_missing(db: Database)
 
 async def test_sync_from_gdrive_matches_by_app_properties(db: Database):
     """Files with oncofiles_id in appProperties match existing docs."""
-    doc = make_doc(gdrive_id="gd_1", gdrive_modified_time=datetime(2026, 3, 1, 10, 0))
+    doc = make_doc(gdrive_id="gd_1", gdrive_modified_time=datetime(2030, 3, 1, 10, 0))
     doc = await db.insert_document(doc, patient_id=ERIKA_UUID)
 
     files = _mock_files()
@@ -454,7 +454,7 @@ async def test_sync_from_gdrive_matches_by_app_properties(db: Database):
                 "id": "gd_1",
                 "name": doc.filename,
                 "mimeType": "application/pdf",
-                "modifiedTime": "2026-03-01T10:00:00+00:00",
+                "modifiedTime": "2030-03-01T10:00:00+00:00",
                 "appProperties": {"oncofiles_id": str(doc.id)},
                 "parents": [],
             },
@@ -471,7 +471,7 @@ async def test_sync_from_gdrive_detects_category_from_folder(db: Database):
     """Category is detected from parent folder name."""
     doc = make_doc(
         gdrive_id="gd_1",
-        gdrive_modified_time=datetime(2026, 1, 1),
+        gdrive_modified_time=datetime(2030, 1, 1),
         category="other",
     )
     await db.insert_document(doc, patient_id=ERIKA_UUID)
@@ -484,7 +484,7 @@ async def test_sync_from_gdrive_detects_category_from_folder(db: Database):
                 "id": "gd_1",
                 "name": doc.filename,
                 "mimeType": "application/pdf",
-                "modifiedTime": "2026-03-01T10:00:00Z",
+                "modifiedTime": "2030-03-01T10:00:00Z",
                 "appProperties": {},
                 "parents": ["folder_labs"],
             },
@@ -549,10 +549,10 @@ async def test_sync_to_gdrive_skips_already_organized(db: Database):
 
     files = _mock_files()
     gdrive = _mock_gdrive()
-    # File is already in the correct year-month folder (2024-01 for date 2024-01-15)
-    gdrive.get_file_parents.return_value = ["folder_2024-01"]
+    # File is already in the correct year-month folder (2028-01 for date 2028-01-15)
+    gdrive.get_file_parents.return_value = ["folder_2028-01"]
     # find_folder returns the folder ID to indicate it already exists
-    gdrive.find_folder.return_value = "folder_2024-01"
+    gdrive.find_folder.return_value = "folder_2028-01"
 
     stats = await sync_to_gdrive(db, files, gdrive, "folder123", patient_id=ERIKA_UUID)
     assert stats["skipped"] >= 1
@@ -647,8 +647,8 @@ async def test_sync_to_gdrive_no_ocr_companion_export(db: Database):
 
     files = _mock_files()
     gdrive = _mock_gdrive()
-    gdrive.get_file_parents.return_value = ["folder_2024-01"]
-    gdrive.find_folder.return_value = "folder_2024-01"
+    gdrive.get_file_parents.return_value = ["folder_2028-01"]
+    gdrive.find_folder.return_value = "folder_2028-01"
 
     await sync_to_gdrive(db, files, gdrive, "folder123", patient_id=ERIKA_UUID)
     # No OCR export — companion files disabled (#114)
@@ -663,9 +663,9 @@ async def test_sync_from_gdrive_skips_ocr_txt(db: Database):
         [
             {
                 "id": "gd_ocr",
-                "name": "20260301 ErikaFusekova-NOU-LabVysledky_OCR.txt",
+                "name": "20300301 JanaTestova-NOU-LabVysledky_OCR.txt",
                 "mimeType": "text/plain",
-                "modifiedTime": "2026-03-01T10:00:00Z",
+                "modifiedTime": "2030-03-01T10:00:00Z",
                 "appProperties": {},
                 "parents": ["root"],
             }
@@ -701,7 +701,7 @@ async def test_sync_to_gdrive_renames_to_standard(db: Database):
     """Files on GDrive get renamed to standard format (underscore-separated)."""
     doc = make_doc(
         gdrive_id="gd_existing",
-        filename="20260227 ErikaFusekova-NOU-LabVysledkyPred2chemo[PHYSICIAN_REDACTED].pdf",
+        filename="20300227 JanaTestova-NOU-LabVysledkyPred2chemoDrNovak.pdf",
         category="labs",
         institution="NOU",
     )
@@ -715,7 +715,7 @@ async def test_sync_to_gdrive_renames_to_standard(db: Database):
     assert stats.get("renamed", 0) == 1
 
     # Verify batch_rename was called with standard format (uses DB institution)
-    expected = "20260227_ErikaFusekova_NOU_Labs_LabVysledkyPred2chemo[PHYSICIAN_REDACTED].pdf"
+    expected = "20300227_JanaTestova_NOU_Labs_LabVysledkyPred2chemoDrNovak.pdf"
     gdrive.batch_rename.assert_called_once()
     rename_arg = gdrive.batch_rename.call_args[0][0]
     assert rename_arg.get("gd_existing") == expected
@@ -729,7 +729,7 @@ async def test_sync_to_gdrive_skips_already_standard(db: Database):
     """Files already in standard format with matching metadata are not renamed."""
     doc = make_doc(
         gdrive_id="gd_existing",
-        filename="20260227_ErikaFusekova_NOUonko_Labs_BloodResults.pdf",
+        filename="20300227_JanaTestova_NOUonko_Labs_BloodResults.pdf",
         institution="NOUonko",
         category="labs",
     )
@@ -747,7 +747,7 @@ async def test_sync_to_gdrive_idempotent_double_run(db: Database):
     """Running sync_to_gdrive twice: first renames, second skips."""
     doc = make_doc(
         gdrive_id="gd_existing",
-        filename="20260227 ErikaFusekova-NOU-LabVysledkyPred2chemo[PHYSICIAN_REDACTED].pdf",
+        filename="20300227 JanaTestova-NOU-LabVysledkyPred2chemoDrNovak.pdf",
         institution="NOUonko",
         category="labs",
     )
@@ -757,8 +757,8 @@ async def test_sync_to_gdrive_idempotent_double_run(db: Database):
 
     files = _mock_files()
     gdrive = _mock_gdrive()
-    gdrive.get_file_parents.return_value = ["folder_2026-01"]
-    gdrive.find_folder.return_value = "folder_2026-01"
+    gdrive.get_file_parents.return_value = ["folder_2030-01"]
+    gdrive.find_folder.return_value = "folder_2030-01"
 
     # First run — renames file (non-standard format)
     stats1 = await sync_to_gdrive(db, files, gdrive, "folder123", patient_id=ERIKA_UUID)
@@ -769,7 +769,7 @@ async def test_sync_to_gdrive_leaves_unmatched_ocr_files_in_place(db: Database):
     """Old *_OCR.txt files with no matching document are never trashed by sync (#734)."""
     doc = make_doc(
         gdrive_id="gd_existing",
-        filename="20260227_ErikaFusekova_NOUonko_Labs_BloodResults.pdf",
+        filename="20300227_JanaTestova_NOUonko_Labs_BloodResults.pdf",
         institution="NOUonko",
         category="labs",
     )
@@ -783,12 +783,12 @@ async def test_sync_to_gdrive_leaves_unmatched_ocr_files_in_place(db: Database):
     # Simulate orphaned OCR file (old bilingual name) in folder
     orphan_ocr = {
         "id": "orphan_id",
-        "name": "20260227 ErikaFusekova-NOU-Labs-LabVysledky_OCR.txt",
+        "name": "20300227 JanaTestova-NOU-Labs-LabVysledky_OCR.txt",
         "mimeType": "text/plain",
     }
     expected_ocr = {
         "id": "expected_id",
-        "name": "20260227_ErikaFusekova_NOUonko_Labs_BloodResults_OCR.txt",
+        "name": "20300227_JanaTestova_NOUonko_Labs_BloodResults_OCR.txt",
         "mimeType": "text/plain",
     }
     gdrive.list_folder.return_value = [orphan_ocr, expected_ocr]
@@ -987,9 +987,9 @@ async def test_sync_import_nonstandard_filename_backfills_metadata(db: Database)
         [
             {
                 "id": "gd_nonstandard",
-                "name": "Dodatok histológia p. Fuseková.pdf",
+                "name": "Dodatok histológia p. Testová.pdf",
                 "mimeType": "application/pdf",
-                "modifiedTime": "2026-03-16T10:00:00Z",
+                "modifiedTime": "2030-03-16T10:00:00Z",
                 "appProperties": {},
                 "parents": ["pathology_folder_id"],
             },
@@ -999,22 +999,22 @@ async def test_sync_import_nonstandard_filename_backfills_metadata(db: Database)
 
     metadata = {
         "document_type": "pathology",
-        "findings": ["[BIOMARKER_REDACTED]"],
+        "findings": ["BiomarkerX positive"],
         "diagnoses": [{"name": "Adenocarcinoma", "icd_code": "C18.7"}],
         "medications": [],
-        "dates_mentioned": ["2026-02-23"],
+        "dates_mentioned": ["2030-02-23"],
         "providers": ["MUDr. Rychlý Boris, PhD.", "Nemocnica Bory"],
         "plain_summary": "Pathology report.",
         "plain_summary_sk": "Patologická správa.",
         "institution_code": "BoryNemocnica",
         "category": "pathology",
-        "document_date": "2026-02-23",
+        "document_date": "2030-02-23",
     }
 
     classification = {
         "institution_code": "BoryNemocnica",
         "category": "pathology",
-        "document_date": "2026-02-23",
+        "document_date": "2030-02-23",
     }
 
     with (
@@ -1033,7 +1033,7 @@ async def test_sync_import_nonstandard_filename_backfills_metadata(db: Database)
     assert len(docs) == 1
     doc = docs[0]
     # Verify backfilled fields
-    assert str(doc.document_date) == "2026-02-23"
+    assert str(doc.document_date) == "2030-02-23"
     assert doc.institution == "BoryNemocnica"
     assert doc.description == "PathologyKrasResults"
     assert doc.category.value == "pathology"
@@ -1050,9 +1050,9 @@ async def test_sync_records_history(db: Database):
         [
             {
                 "id": "gd_hist",
-                "name": "20260301 ErikaFusekova-NOU-LabVysledky.pdf",
+                "name": "20300301 JanaTestova-NOU-LabVysledky.pdf",
                 "mimeType": "application/pdf",
-                "modifiedTime": "2026-03-01T10:00:00Z",
+                "modifiedTime": "2030-03-01T10:00:00Z",
                 "appProperties": {},
                 "parents": [],
             },
@@ -1127,7 +1127,7 @@ async def test_extract_all_metadata_skips_xlsx(db: Database):
 
     pdf_doc = make_doc(
         file_id="pdf_1",
-        filename="20260211_ErikaFusekova_NOU_Labs_krvnyObraz.pdf",
+        filename="20300211_JanaTestova_NOU_Labs_krvnyObraz.pdf",
         mime_type="application/pdf",
     )
     pdf_doc = await db.insert_document(pdf_doc, patient_id=ERIKA_UUID)
@@ -1135,7 +1135,7 @@ async def test_extract_all_metadata_skips_xlsx(db: Database):
 
     xlsx_doc = make_doc(
         file_id="xlsx_1",
-        filename="20260211_ErikaFusekova_Unknown_Reference_BIOMARKER.xlsx",
+        filename="20300211_JanaTestova_Unknown_Reference_BIOMARKER.xlsx",
         mime_type=xlsx_mime,
     )
     xlsx_doc = await db.insert_document(xlsx_doc, patient_id=ERIKA_UUID)
@@ -1165,7 +1165,7 @@ async def test_extract_all_metadata_keeps_image_and_empty_mime(db: Database):
 
     jpeg_doc = make_doc(
         file_id="jpg_1",
-        filename="20260211_scan.jpg",
+        filename="20300211_scan.jpg",
         mime_type="image/jpeg",
     )
     jpeg_doc = await db.insert_document(jpeg_doc, patient_id=ERIKA_UUID)
@@ -1173,7 +1173,7 @@ async def test_extract_all_metadata_keeps_image_and_empty_mime(db: Database):
 
     empty_doc = make_doc(
         file_id="empty_1",
-        filename="20260211_legacy.pdf",
+        filename="20300211_legacy.pdf",
         mime_type="",
     )
     empty_doc = await db.insert_document(empty_doc, patient_id=ERIKA_UUID)

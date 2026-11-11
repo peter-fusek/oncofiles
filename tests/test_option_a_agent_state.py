@@ -83,10 +83,10 @@ async def test_get_missing_key_is_isolated(db: Database):
     await _seed_second_patient(db)
     ctx = _StubCtx(db)
 
-    await _seed_state(db, ERIKA_UUID, "only_for_erika", '"secret"')
+    await _seed_state(db, ERIKA_UUID, "only_for_jana", '"secret"')
 
     fetched = json.loads(
-        await ast.get_agent_state(ctx, key="only_for_erika", patient_slug=SECOND_SLUG)
+        await ast.get_agent_state(ctx, key="only_for_jana", patient_slug=SECOND_SLUG)
     )
     assert fetched["value"] is None
     assert fetched["patient_id"] == SECOND_UUID
@@ -97,20 +97,20 @@ async def test_list_agent_states_scoped_to_slug(db: Database):
     await _seed_second_patient(db)
     ctx = _StubCtx(db)
 
-    await _seed_state(db, ERIKA_UUID, "erika_key_1", '"1"')
-    await _seed_state(db, ERIKA_UUID, "erika_key_2", '"2"')
+    await _seed_state(db, ERIKA_UUID, "jana_key_a", '"1"')
+    await _seed_state(db, ERIKA_UUID, "jana_key_b", '"2"')
     await _seed_state(db, SECOND_UUID, "bob_key_1", '"x"')
 
-    erika_states = json.loads(await ast.list_agent_states(ctx, patient_slug="q1b"))
+    jana_states = json.loads(await ast.list_agent_states(ctx, patient_slug="q1b"))
     bob_states = json.loads(await ast.list_agent_states(ctx, patient_slug=SECOND_SLUG))
 
-    erika_keys = {s["key"] for s in erika_states}
+    jana_keys = {s["key"] for s in jana_states}
     bob_keys = {s["key"] for s in bob_states}
 
-    assert erika_keys == {"erika_key_1", "erika_key_2"}
+    assert jana_keys == {"jana_key_a", "jana_key_b"}
     assert bob_keys == {"bob_key_1"}
     # Every returned row must carry the correct patient_id
-    assert all(s["patient_id"] == ERIKA_UUID for s in erika_states)
+    assert all(s["patient_id"] == ERIKA_UUID for s in jana_states)
     assert all(s["patient_id"] == SECOND_UUID for s in bob_states)
 
 
@@ -122,9 +122,9 @@ async def test_same_key_under_two_patients_reads_back_distinct(db: Database):
     await _seed_state(db, ERIKA_UUID, "counter", "1")
     await _seed_state(db, SECOND_UUID, "counter", "2")
 
-    erika = json.loads(await ast.get_agent_state(ctx, key="counter", patient_slug="q1b"))
+    jana = json.loads(await ast.get_agent_state(ctx, key="counter", patient_slug="q1b"))
     bob = json.loads(await ast.get_agent_state(ctx, key="counter", patient_slug=SECOND_SLUG))
-    assert erika["value"] == "1"
+    assert jana["value"] == "1"
     assert bob["value"] == "2"
 
 

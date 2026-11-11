@@ -56,7 +56,7 @@ def _set_patient_context():
 
     original_contexts = dict(patient_context._contexts)
     patient_context._contexts.clear()
-    patient_context._contexts[ERIKA_UUID] = {"name": "Erika Fusekova"}
+    patient_context._contexts[ERIKA_UUID] = {"name": "Jana Testova"}
 
     yield
 

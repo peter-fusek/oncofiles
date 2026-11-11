@@ -20,8 +20,8 @@ def test_sanitize_strips_forbidden_chars():
 
 
 def test_sanitize_passthrough_for_clean_names():
-    assert sanitize_filename("20260418_ErikaFusekova_NOU_Labs_PreCycle1.pdf") == (
-        "20260418_ErikaFusekova_NOU_Labs_PreCycle1.pdf"
+    assert sanitize_filename("20300418_JanaTestova_NOU_Labs_PreCycle1.pdf") == (
+        "20300418_JanaTestova_NOU_Labs_PreCycle1.pdf"
     )
 
 

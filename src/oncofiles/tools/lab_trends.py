@@ -635,9 +635,9 @@ _PRECYCLE_CHECKLIST = {
             },
             {
                 "id": "plt",
-                "text": "PLT >= 75,000/µL (tiež >= 50,000 pre plnú dávku [MEDICATION_REDACTED])",
+                "text": "PLT >= 75,000/µL (tiež >= 50,000 pre plnú dávku LMWH)",
                 "parameter": "PLT",
-                "source": "NCCN Colon Cancer v1.2025 + [MEDICATION_REDACTED] SmPC",
+                "source": "NCCN Colon Cancer v1.2025 + LMWH SmPC",
                 "source_url": "https://www.nccn.org/guidelines/guidelines-detail"
                 "?category=1&id=1428",
             },
@@ -652,7 +652,7 @@ _PRECYCLE_CHECKLIST = {
                 "id": "alt_ast",
                 "text": "ALT/AST <= 5× HHN (prah pri pečeňových metastázach)",
                 "parameter": "ALT",
-                "source": "5-FU SmPC: ALT/AST ≤5× ULN if hepatic mets ([CODE_REDACTED])",
+                "source": "5-FU SmPC: ALT/AST ≤5× ULN if hepatic mets",
                 "source_url": None,
             },
             {
@@ -722,9 +722,9 @@ _PRECYCLE_CHECKLIST = {
         "items": [
             {
                 "id": "plt_clexane",
-                "text": "PLT dostatočné pre pokračovanie [MEDICATION_REDACTED]",
+                "text": "PLT dostatočné pre pokračovanie antikoagulancia (LMWH)",
                 "parameter": "PLT",
-                "source": "[MEDICATION_REDACTED] SmPC: monitor PLT, risk of HIT",
+                "source": "LMWH SmPC: monitor PLT, risk of HIT",
                 "source_url": None,
             },
             {
@@ -736,7 +736,7 @@ _PRECYCLE_CHECKLIST = {
             },
             {
                 "id": "clexane_adherence",
-                "text": "Potvrdená adherencia [MEDICATION_REDACTED]",
+                "text": "Potvrdená adherencia k antikoagulačnej liečbe (LMWH)",
                 "parameter": None,
                 "source": "ASCO VTE Prophylaxis Guideline 2023",
                 "source_url": "https://pubmed.ncbi.nlm.nih.gov/36652645/",
