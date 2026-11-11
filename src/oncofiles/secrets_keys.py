@@ -73,3 +73,36 @@ def oauth_state_key(bearer: str | None = None) -> bytes:
     if override:
         return override.encode()
     return _derive(_OAUTH_STATE_PURPOSE, bearer)
+
+
+_AUDIT_EMAIL_PURPOSE = b"oncofiles.audit.caller_email.v1"
+
+
+def audit_email_hash_key(bearer: str | None = None) -> bytes:
+    """Key for the caller-email hash stored in ``activity_log`` (#590/#604).
+
+    A keyed HMAC, not a bare SHA-256: a plain hash of an email address is
+    reversed by hashing a list of candidate addresses. Override with
+    ``AUDIT_EMAIL_HASH_SECRET`` to keep hashes stable across a rotation of
+    ``MCP_BEARER_TOKEN`` (the derived key changes with it).
+    """
+    override = os.environ.get("AUDIT_EMAIL_HASH_SECRET", "")
+    if override:
+        return override.encode()
+    return _derive(_AUDIT_EMAIL_PURPOSE, bearer)
+
+
+def caller_email_hash(email: str, bearer: str | None = None) -> str | None:
+    """HMAC-SHA256 hex of the normalised (stripped, lower-case) email, or None.
+
+    None when there is no email or no key can be derived (no
+    ``MCP_BEARER_TOKEN`` and no override), so the audit write never fails.
+    """
+    normalised = (email or "").strip().lower()
+    if not normalised:
+        return None
+    try:
+        key = audit_email_hash_key(bearer)
+    except RuntimeError:
+        return None
+    return hmac.new(key, normalised.encode(), hashlib.sha256).hexdigest()

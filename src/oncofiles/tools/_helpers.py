@@ -287,22 +287,6 @@ def _caller_email() -> str:
         return ""
 
 
-def _caller_auth_method() -> str:
-    """Return how the current caller authenticated (#604).
-
-    One of ``"static_bearer"`` (the operator ``MCP_BEARER_TOKEN``),
-    ``"oauth"`` (MCP OAuth — Claude.ai, ChatGPT), ``"patient_bearer"``
-    (an ``onco_*`` patient token), or ``""`` when no token was verified
-    (stdio transport, direct calls from tests).
-    """
-    try:
-        from oncofiles.persistent_oauth import _verified_auth_method
-
-        return _verified_auth_method.get() or ""
-    except Exception:
-        return ""
-
-
 async def _accessible_patients(db: Database) -> list:
     """Active patients the current MCP caller may see listed (#590).
 

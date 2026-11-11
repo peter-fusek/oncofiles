@@ -56,6 +56,20 @@ _verified_auth_method: contextvars.ContextVar[str] = contextvars.ContextVar(
     "verified_auth_method", default=""
 )
 
+
+def caller_auth_method(transport: str = "") -> str:
+    """The current caller's auth method, with the no-token cases filled in.
+
+    ``verify_token`` sets ``oauth`` / ``patient_bearer`` / ``static_bearer``;
+    without a verified token it is ``stdio`` on the stdio transport, else
+    ``none``. Shared by ``whoami`` and the audit middleware (#604).
+    """
+    method = _verified_auth_method.get()
+    if method:
+        return method
+    return "stdio" if transport == "stdio" else "none"
+
+
 # #478 email-capture bridge: populated by MCPAuthorizeEmailCaptureMiddleware
 # when a signed-in user's browser hits GET /authorize. Keyed by code_challenge
 # (stable across the OAuth handshake — AuthorizationCode carries it unchanged).

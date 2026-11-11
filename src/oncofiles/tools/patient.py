@@ -265,18 +265,15 @@ async def whoami(ctx: Context) -> str:
     """
     from oncofiles.constants import NO_PATIENT_ACCESS_SENTINEL
     from oncofiles.patient_middleware import get_current_patient_id
+    from oncofiles.persistent_oauth import caller_auth_method
     from oncofiles.tools._helpers import (
         _accessible_patients,
-        _caller_auth_method,
         _caller_email,
         _is_admin_caller,
     )
 
     db = _get_db(ctx)
-    auth_method = _caller_auth_method()
-    if not auth_method:
-        transport = ctx.request_context.lifespan_context.get("transport", "")
-        auth_method = "stdio" if transport == "stdio" else "none"
+    auth_method = caller_auth_method(ctx.request_context.lifespan_context.get("transport", ""))
 
     patients = await _accessible_patients(db)
     bound_pid = get_current_patient_id()
