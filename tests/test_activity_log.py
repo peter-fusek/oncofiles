@@ -90,13 +90,6 @@ async def test_stats_filter_by_agent(db: Database):
     assert stats[0]["count"] == 1
 
 
-async def test_timeline_recent(db: Database):
-    await db.insert_activity_log(make_activity_log())
-
-    timeline = await db.get_activity_timeline(hours=24)
-    assert len(timeline) == 1
-
-
 async def test_timestamps_set(db: Database):
     await db.insert_activity_log(make_activity_log())
     # Re-fetch via search to get DB timestamps

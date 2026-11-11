@@ -98,8 +98,12 @@ async def update_patient_context(
         return json.dumps({"error": "updates_json must be a JSON object"})
 
     pid = await _resolve_patient_id(patient_slug, ctx)
-    updated = patient_context.update_context(updates, patient_id=pid)
     db = _get_db(ctx)
+    # Hydrate from the stored row before merging (#713): on a cold cache the
+    # merge would otherwise start from the default context and save
+    # default + update over the patient's stored context. DB errors propagate.
+    await patient_context.ensure_loaded(db.db, pid)
+    updated = patient_context.update_context(updates, patient_id=pid)
     await patient_context.save_to_db(db.db, updated, patient_id=pid)
 
     return json.dumps(

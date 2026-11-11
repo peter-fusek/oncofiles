@@ -60,6 +60,7 @@ def main() -> int:
             content = sys.stdin.buffer.read()
             rr = reread(header["name"], content, header.get("mime") or "",
                         passes=int(header.get("passes", 2)),
+                        parallel=int(header.get("parallel", 1)),
                         doc_ref=header.get("doc_ref"))  # fmt: skip
             out = {**asdict(rr), "peak_rss_mb": round(_peak_rss_mb(), 1)}
     sys.stdout.write(json.dumps(out, ensure_ascii=False))
