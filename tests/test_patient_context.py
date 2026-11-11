@@ -14,6 +14,9 @@ from oncofiles.patient_context import (
     update_context,
 )
 
+# Synthetic pid; the autouse conftest fixture restores `_contexts` after each test.
+_PID = "c0000000-0000-4000-8000-00000000cccc"
+
 
 async def test_initialize_default():
     """Without DB or file, falls back to hardcoded default."""
@@ -67,10 +70,9 @@ async def test_update_context_merges():
     """update_context merges nested dicts."""
     from oncofiles import patient_context
 
-    patient_context._context.clear()
-    patient_context._context.update({**_DEFAULT_CONTEXT, "treatment": {"regimen": "test"}})
+    patient_context._contexts[_PID] = {**_DEFAULT_CONTEXT, "treatment": {"regimen": "test"}}
 
-    updated = update_context({"treatment": {"current_cycle": 5}})
+    updated = update_context({"treatment": {"current_cycle": 5}}, patient_id=_PID)
     assert updated["treatment"]["current_cycle"] == 5
     # Original fields preserved
     assert updated["treatment"]["regimen"] == "test"
@@ -81,10 +83,9 @@ async def test_update_context_replaces_list():
     """update_context replaces lists entirely."""
     from oncofiles import patient_context
 
-    patient_context._context.clear()
-    patient_context._context.update(_DEFAULT_CONTEXT.copy())
+    patient_context._contexts[_PID] = _DEFAULT_CONTEXT.copy()
 
-    updated = update_context({"comorbidities": ["New comorbidity"]})
+    updated = update_context({"comorbidities": ["New comorbidity"]}, patient_id=_PID)
     assert updated["comorbidities"] == ["New comorbidity"]
 
 
@@ -124,6 +125,7 @@ def test_set_germline_finding_records_and_normalizes():
         zygosity="heterozygous",
         test_date="2026-04-10",
         test_lab="Ambry",
+        patient_id=_PID,
     )
     f = ctx["germline_findings"]["BRCA1"]
     assert f["classification"] == "likely_pathogenic"
@@ -139,9 +141,9 @@ def test_get_germline_status_unknown_for_missing_gene():
     patient_context._context.clear()
     patient_context._context.update(_DEFAULT_CONTEXT.copy())
 
-    set_germline_finding("BRCA1", "pathogenic")
-    assert get_germline_status("BRCA1") == "pathogenic"
-    assert get_germline_status("MLH1") == "unknown"
+    set_germline_finding("BRCA1", "pathogenic", patient_id=_PID)
+    assert get_germline_status("BRCA1", patient_id=_PID) == "pathogenic"
+    assert get_germline_status("MLH1", patient_id=_PID) == "unknown"
     assert get_germline_status("") == "unknown"
 
 
@@ -157,8 +159,9 @@ def test_format_context_surfaces_germline_banner():
         "pathogenic",
         variant="c.5946delT",
         test_lab="Centogene",
+        patient_id=_PID,
     )
-    text = format_context_text()
+    text = format_context_text(patient_id=_PID)
     assert "Germline findings" in text
     assert "BRCA2" in text
     assert "pathogenic" in text
