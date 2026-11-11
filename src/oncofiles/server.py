@@ -2494,7 +2494,7 @@ See our <a href="/privacy">Privacy Policy</a> for details.</p>
 <ul>
 <li>You must have a Google account to use Oncofiles</li>
 <li>You are responsible for maintaining the security of your bearer tokens and credentials</li>
-<li>Free tier: up to 200 documents per patient</li>
+<li>Free tier: up to 500 documents per patient</li>
 </ul>
 
 <h2>5. Acceptable Use</h2>
@@ -2545,7 +2545,11 @@ async def og_image_svg(request: Request) -> HTMLResponse:
     global _OG_IMAGE_SVG  # noqa: PLW0603
     if _OG_IMAGE_SVG is None:
         _OG_IMAGE_SVG = (Path(__file__).parent / "og-image.svg").read_text()
-    return HTMLResponse(_OG_IMAGE_SVG, media_type="image/svg+xml")
+    return HTMLResponse(
+        _OG_IMAGE_SVG,
+        media_type="image/svg+xml",
+        headers={"Cache-Control": "public, max-age=86400"},
+    )
 
 
 @mcp.custom_route("/og-image.png", methods=["GET"])
@@ -2553,7 +2557,44 @@ async def og_image_png(request: Request) -> Response:
     global _OG_IMAGE_PNG  # noqa: PLW0603
     if _OG_IMAGE_PNG is None:
         _OG_IMAGE_PNG = (Path(__file__).parent / "og-image.png").read_bytes()
-    return Response(_OG_IMAGE_PNG, media_type="image/png")
+    # One day: social crawlers re-fetch rarely, and a refreshed image ships
+    # with a deploy anyway.
+    return Response(
+        _OG_IMAGE_PNG,
+        media_type="image/png",
+        headers={"Cache-Control": "public, max-age=86400"},
+    )
+
+
+# Self-hosted web fonts (#695): every page view used to send the visitor's IP
+# to Google Fonts. The woff2 files, their @font-face sheet and the OFL licenses
+# live in src/oncofiles/fonts/. Only files present in that folder at import
+# time are served (allowlist, so no path tricks reach the filesystem). Font
+# file names carry the font version, so they are cached `immutable`; the CSS
+# and licence names are stable, so they get one day.
+_FONTS_DIR = Path(__file__).parent / "fonts"
+_FONT_TYPES = {
+    ".woff2": ("font/woff2", "public, max-age=31536000, immutable"),
+    ".css": ("text/css; charset=utf-8", "public, max-age=86400"),
+    ".txt": ("text/plain; charset=utf-8", "public, max-age=86400"),
+}
+_FONT_FILES = frozenset(
+    p.name for p in _FONTS_DIR.glob("*") if p.is_file() and p.suffix in _FONT_TYPES
+)
+_FONT_CACHE: dict[str, bytes] = {}
+
+
+@mcp.custom_route("/fonts/{name}", methods=["GET"])
+async def font_asset(request: Request) -> Response:
+    name = request.path_params.get("name", "")
+    if name not in _FONT_FILES:
+        return Response("not found", status_code=404)
+    body = _FONT_CACHE.get(name)
+    if body is None:
+        body = (_FONTS_DIR / name).read_bytes()
+        _FONT_CACHE[name] = body
+    media_type, cache_control = _FONT_TYPES[Path(name).suffix]
+    return Response(body, media_type=media_type, headers={"Cache-Control": cache_control})
 
 
 @mcp.custom_route("/apple-touch-icon.png", methods=["GET"])
@@ -2577,7 +2618,6 @@ async def favicon_ico(request: Request) -> HTMLResponse:
 # read-once-and-cache pattern as the other static assets above.
 _DASHBOARD_CSS: str | None = None
 _DASHBOARD_JS: str | None = None
-_DASHBOARD_GTAG_JS: str | None = None
 
 
 @mcp.custom_route("/dashboard.css", methods=["GET"])
@@ -2596,21 +2636,13 @@ async def dashboard_js(request: Request) -> Response:
     return Response(_DASHBOARD_JS, media_type="application/javascript; charset=utf-8")
 
 
-@mcp.custom_route("/dashboard-gtag.js", methods=["GET"])
-async def dashboard_gtag_js(request: Request) -> Response:
-    """Tiny gtag bootstrap — initialises the dataLayer queue before
-    googletagmanager.com/gtag/js (async) drains it."""
-    global _DASHBOARD_GTAG_JS  # noqa: PLW0603
-    if _DASHBOARD_GTAG_JS is None:
-        _DASHBOARD_GTAG_JS = (Path(__file__).parent / "dashboard-gtag.js").read_text()
-    return Response(_DASHBOARD_GTAG_JS, media_type="application/javascript; charset=utf-8")
-
-
+# Only the two photos the landing uses, as crops (Nov 2026): the full-size
+# originals showed an ID-like number, a phone number and an e-mail on a
+# contract (02) and a third person's name in a table row (04). The
+# originals stay in the repo history but are no longer served.
 _PILE_PHOTO_NAMES = {
-    "01": "01-paper-folder-cancer-textbook-web.jpg",
-    "02": "02-papers-spread-medical-records-web.jpg",
-    "03": "03-dashboard-1982-handwritten-ocr-web.jpg",
-    "04": "04-dashboard-1982-handwritten-ocr-detail-web.jpg",
+    "02": "02-papers-pile-crop-web.jpg",
+    "04": "04-handwritten-ocr-crop-web.jpg",
 }
 _PILE_PHOTO_DIR = (
     Path(__file__).parent.parent.parent
@@ -2906,8 +2938,8 @@ def _topic_page_html(
 <meta property="og:type" content="article">
 <meta property="og:url" content="{canonical}">
 <meta property="og:image" content="https://oncofiles.com/og-image.png">
-<style>@import url('https://fonts.googleapis.com/css2?family=DM+Serif+Display&family=DM+Sans:wght@400;500;700&display=swap');
-{_TOPIC_PAGE_CSS}</style>
+<link rel="stylesheet" href="/fonts/fonts.css">
+<style>{_TOPIC_PAGE_CSS}</style>
 </head>
 <body>
 <header class="top"><div class="container">
@@ -2977,7 +3009,7 @@ eZdravie, pacient má Oncofiles.</p>
 <li>Lekári, ktorí chcú od pacienta dostať štruktúrovaný sumár namiesto papierovej kôpky.</li>
 </ul>
 
-<p>Oncofiles je zadarmo pre prvých 200 dokumentov na pacienta. Bez kreditky,
+<p>Oncofiles je zadarmo pre prvých 500 dokumentov na pacienta. Bez kreditky,
 bez registrácie cez eID.</p>
 
 <a class="cta" href="/dashboard">Začať zadarmo &rarr;</a>
@@ -3046,7 +3078,7 @@ complement each other: the clinician has the EHR, the patient has Oncofiles.</p>
 <li>Clinicians who prefer a structured summary over a stack of PDFs.</li>
 </ul>
 
-<p>Oncofiles is free for the first 200 documents per patient. No credit card,
+<p>Oncofiles is free for the first 500 documents per patient. No credit card,
 no complex onboarding.</p>
 
 <a class="cta" href="/dashboard">Start for free &rarr;</a>
@@ -3111,7 +3143,7 @@ def _eu_comparison_schema_jsonld(canonical: str, name: str, description: str) ->
                         "price": "0",
                         "priceCurrency": "EUR",
                         "description": (
-                            "Free for the first 200 documents per patient "
+                            "Free for the first 500 documents per patient "
                             "(rolling €10/month steady-state budget, €30 onboarding)"
                         ),
                     },
@@ -3203,7 +3235,7 @@ _EU_COMPARISON_TABLE_EN = """
       <td>No</td>
       <td>N/A</td></tr>
     <tr><td>Price for patients</td>
-      <td><strong>Free tier &mdash; 200 docs, €10/mo budget</strong></td>
+      <td><strong>Free tier &mdash; 500 docs, €10/mo budget</strong></td>
       <td>Part of paid ChatGPT</td>
       <td>Enterprise only</td>
       <td>Free (state-funded)</td></tr>
@@ -3255,7 +3287,7 @@ _EU_COMPARISON_TABLE_SK = """
       <td>Nie</td>
       <td>N/A</td></tr>
     <tr><td>Cena pre pacienta</td>
-      <td><strong>Zadarmo &mdash; 200 dok., €10/mes rozpočet</strong></td>
+      <td><strong>Zadarmo &mdash; 500 dok., €10/mes rozpočet</strong></td>
       <td>Časť platenej ChatGPT</td>
       <td>Iba podnikové</td>
       <td>Zadarmo (štátne)</td></tr>
@@ -3430,7 +3462,7 @@ s právnou kanceláriou prebiehajú (2026).</li>
 <h3>Pre novinárov a redakcie</h3>
 <p><strong>Kľúčové body:</strong> Slovenský open-source projekt. Zatvára
 medzeru po ChatGPT Health (nedostupný v EÚ) a HealthEx (iba US). Prvých päť
-pacientov už používa. Zadarmo pre pacientov (200 dok., €10/mes AI rozpočet).
+pacientov už používa. Zadarmo pre pacientov (500 dok., €10/mes AI rozpočet).
 Autor: Peter Fusek, peter.fusek@instarea.sk.</p>
 <p><strong>K dispozícii:</strong> Rozhovor s autorom, technická demo, príbeh
 pacienta (anonymizovaný), rozbor konkurenčnej medzery.</p>
@@ -4319,342 +4351,273 @@ async def dashboard(request: Request) -> HTMLResponse:
     return HTMLResponse(_load_dashboard_html())
 
 
+_DEMO_ASSETS: dict[str, str] = {}
+
+
+def _demo_asset(name: str) -> str:
+    """Read demo.html / demo.css / demo.js once (same pattern as the dashboard assets)."""
+    if name not in _DEMO_ASSETS:
+        _DEMO_ASSETS[name] = (Path(__file__).parent / name).read_text()
+    return _DEMO_ASSETS[name]
+
+
 @mcp.custom_route("/demo", methods=["GET"])
 async def demo_dashboard(request: Request) -> HTMLResponse:
-    """Public demo dashboard with masked sample data. No auth required."""
-    html = _load_dashboard_html()
-    # Inject demo mode flag BEFORE the main dashboard script so init() sees it
-    demo_inject = "<script>window.DEMO_MODE=true;</script>\n"
-    html = html.replace("<script>", demo_inject + "<script>", 1)
-    return HTMLResponse(html)
+    """Public demo: one invented patient, rendered by demo.js from /api/demo-data.
+
+    The demo is its own small page (Nov 2026 redesign) instead of the operator
+    dashboard in "demo mode": a first-time visitor sees a patient overview and
+    a document view, not sync/pipeline/cost panels. It loads no dashboard.js,
+    so it cannot reach an authenticated endpoint; demo.js only fetches
+    /api/demo-data (#605).
+    """
+    return HTMLResponse(_demo_asset("demo.html").replace("{{VERSION}}", VERSION))
+
+
+@mcp.custom_route("/demo.css", methods=["GET"])
+async def demo_css(request: Request) -> Response:
+    return Response(_demo_asset("demo.css"), media_type="text/css; charset=utf-8")
+
+
+@mcp.custom_route("/consent.js", methods=["GET"])
+async def consent_js(request: Request) -> Response:
+    """Opt-in analytics loader for the public pages (#700). Never used by /dashboard."""
+    return Response(_demo_asset("consent.js"), media_type="application/javascript; charset=utf-8")
+
+
+@mcp.custom_route("/demo.js", methods=["GET"])
+async def demo_js(request: Request) -> Response:
+    return Response(_demo_asset("demo.js"), media_type="application/javascript; charset=utf-8")
+
+
+# ── Demo data: one invented patient (all names, values and dates are made up,
+#    dates in 2027 per the synthetic-fixtures rule). ──────────────────────────
+
+_DEMO_HOSPITAL = "Nemocnica Príkladov"
+_DEMO_LAB_HEADER = "Vyšetrenie|Výsledok|Jednotky|Ref. rozsah"
+# (report date, sample date, sample time, {code: (value_text, state)}, cea_sample)
+_DEMO_LAB_REPORTS = [
+    (
+        "2027-01-14",
+        "2027-01-12",
+        "07:10",
+        {
+            "WBC": ("6,1", "machine"),
+            "HGB": ("138", "machine"),
+            "PLT": ("262", "machine"),
+            "CEA": ("3,1", "machine"),
+        },
+        None,
+    ),
+    (
+        "2027-02-11",
+        "2027-02-09",
+        "07:05",
+        {
+            "WBC": ("4,4", "machine"),
+            "HGB": ("124", "machine"),
+            "PLT": ("198", "human"),
+            "CEA": ("2,9", "machine"),
+        },
+        None,
+    ),
+    (
+        "2027-03-10",
+        "2027-03-09",
+        "06:55",
+        {"WBC": ("4,9", "machine"), "HGB": ("119", "machine"), "PLT": ("219", "machine")},
+        None,
+    ),
+    (
+        "2027-03-17",
+        "2027-03-15",
+        "06:40",
+        {
+            "WBC": ("6,3", "human"),
+            "HGB": ("131", "machine"),
+            "PLT": ("248", "machine"),
+            "CEA": ("2,7", "unverified"),
+        },
+        "2027-03-02",
+    ),
+]
+_DEMO_SERIES = [
+    ("WBC", "Leukocyty", "White cells", "×10⁹/L", "4,0–10,0", 4.0, 10.0),
+    ("HGB", "Hemoglobín", "Haemoglobin", "g/L", "120–160", 120, 160),
+    ("PLT", "Trombocyty", "Platelets", "×10⁹/L", "150–400", 150, 400),
+    ("CEA", "CEA", "CEA", "µg/L", "< 5,0", None, 5.0),
+]
+_DEMO_FIXED_ROWS = {"RBC": ("4,21", "×10¹²/L", "3,80–5,20"), "HCT": ("0,39", "L/L", "0,35–0,47")}
+
+
+def _sk_date(iso: str) -> str:
+    y, m, d = iso.split("-")
+    return f"{d}.{m}.{y}"
+
+
+def _demo_payload() -> dict:
+    meta = {s[0]: s for s in _DEMO_SERIES}
+    documents: list[dict] = []
+    points: dict[str, list[dict]] = {s[0]: [] for s in _DEMO_SERIES}
+    for idx, (reported, sampled, time_, values, cea_sample) in enumerate(_DEMO_LAB_REPORTS, 1):
+        lines: list[dict] = [
+            {"text": f"{_DEMO_HOSPITAL} – Oddelenie klinickej biochémie", "kind": "head"},
+            {"text": "Pacientka: Jana Testová (vymyslená)"},
+            {"text": "Odosielajúci lekár: MUDr. Ján Ukážkový"},
+            {"text": f"Odber: {_sk_date(sampled)} {time_}"},
+            {"text": f"Vydané: {_sk_date(reported)}"},
+            {"text": ""},
+            {"text": "Krvný obraz", "kind": "sub"},
+            {"cells": _DEMO_LAB_HEADER.split("|"), "kind": "th"},
+        ]
+        order = ["WBC", "RBC", "HGB", "HCT", "PLT"]
+        if "CEA" in values:
+            order += ["", "Nádorové markery", "note", "CEA"]
+        for code in order:
+            if code == "":
+                lines.append({"text": ""})
+                continue
+            if code == "Nádorové markery":
+                lines.append({"text": code, "kind": "sub"})
+                continue
+            if code == "note":
+                note = (
+                    f"Výsledok z odberu {_sk_date(cea_sample)}"
+                    if cea_sample
+                    else "Z rovnakého odberu"
+                )
+                lines.append({"text": note, "kind": "note"})
+                continue
+            if code in _DEMO_FIXED_ROWS:
+                v, unit, ref = _DEMO_FIXED_ROWS[code]
+                lines.append({"cells": [code, v, unit, ref]})
+                continue
+            value_text, state = values[code]
+            _, _sk, _en, unit, ref, _lo, _hi = meta[code]
+            lines.append({"cells": [code, value_text, unit, ref]})
+            line_no = len(lines)
+            sample = cea_sample if (code == "CEA" and cea_sample) else sampled
+            points[code].append(
+                {
+                    "date": sample,
+                    "value": float(value_text.replace(",", ".")),
+                    "value_text": value_text,
+                    "state": state,
+                    "doc": idx,
+                    "page": 1,
+                    "line": line_no,
+                    "note": "date_mismatch" if state == "unverified" else "",
+                }
+            )
+        lines += [{"text": ""}, {"text": "Vyšetrila: RNDr. Eva Vzorová"}]
+        for n, line in enumerate(lines, 1):
+            line["n"] = n
+        documents.append(
+            {
+                "id": idx,
+                "date": reported,
+                "category": "labs",
+                "title_sk": "Laboratórny výsledok",
+                "title_en": "Lab report",
+                "filename": (
+                    f"{reported.replace('-', '')}_JanaTestova_NemPrikladov_Labs_BloodCount.pdf"
+                ),
+                "institution": _DEMO_HOSPITAL,
+                "pages": [{"n": 1, "lines": lines}],
+            }
+        )
+    prose_docs = [
+        (
+            5,
+            "2027-02-20",
+            "imaging",
+            "CT brucha a malej panvy",
+            "CT of abdomen and pelvis",
+            "CT_AbdomenPelvis",
+            [
+                (f"{_DEMO_HOSPITAL} – Rádiologické oddelenie", "head"),
+                ("Pacientka: Jana Testová (vymyslená)", ""),
+                ("Vyšetrenie: CT brucha a malej panvy s kontrastnou látkou", ""),
+                ("Dátum vyšetrenia: 20.02.2027", ""),
+                ("", ""),
+                ("Popis", "sub"),
+                ("Pečeň primeranej veľkosti, bez ložiskových zmien.", ""),
+                ("Lymfatické uzliny nezväčšené.", ""),
+                ("", ""),
+                ("Záver", "sub"),
+                ("Stacionárny nález oproti predchádzajúcemu vyšetreniu.", ""),
+                ("", ""),
+                ("Vymyslený nález pre ukážku.", "note"),
+            ],
+        ),
+        (
+            6,
+            "2027-04-02",
+            "report",
+            "Správa z onkologickej ambulancie",
+            "Oncology clinic report",
+            "Report_OncologyVisit",
+            [
+                (f"{_DEMO_HOSPITAL} – Onkologická ambulancia", "head"),
+                ("Pacientka: Jana Testová (vymyslená)", ""),
+                ("Kontrola: 02.04.2027", ""),
+                ("Ošetrujúci lekár: MUDr. Ján Ukážkový", ""),
+                ("", ""),
+                ("Priebeh", "sub"),
+                ("Liečbu znáša dobre, bez nových ťažkostí.", ""),
+                ("Krvný obraz z 15.03.2027 bez obmedzení pre ďalší cyklus.", ""),
+                ("", ""),
+                ("Odporúčanie", "sub"),
+                ("Pokračovať podľa plánu, kontrola o 3 týždne.", ""),
+                ("", ""),
+                ("Vymyslená správa pre ukážku.", "note"),
+            ],
+        ),
+    ]
+    for doc_id, date, cat, t_sk, t_en, slug, rows in prose_docs:
+        lines = [{"n": n, "text": t, "kind": k} for n, (t, k) in enumerate(rows, 1)]
+        documents.append(
+            {
+                "id": doc_id,
+                "date": date,
+                "category": cat,
+                "title_sk": t_sk,
+                "title_en": t_en,
+                "filename": f"{date.replace('-', '')}_JanaTestova_NemPrikladov_{slug}.pdf",
+                "institution": _DEMO_HOSPITAL,
+                "pages": [{"n": 1, "lines": lines}],
+            }
+        )
+    documents.sort(key=lambda d: d["date"], reverse=True)
+    series = [
+        {
+            "code": code,
+            "name_sk": sk,
+            "name_en": en,
+            "unit": unit,
+            "ref": ref,
+            "low": lo,
+            "high": hi,
+            "points": points[code],
+        }
+        for code, sk, en, unit, ref, lo, hi in _DEMO_SERIES
+    ]
+    return {
+        "version": VERSION,
+        "patient": {"name": "Jana Testová", "invented": True},
+        "series": series,
+        "documents": documents,
+    }
 
 
 @mcp.custom_route("/api/demo-data", methods=["GET"])
 async def api_demo_data(request: Request) -> JSONResponse:
-    """Return masked sample data for demo dashboard. Public, no auth."""
-    return JSONResponse(
-        {
-            "status": {
-                "version": VERSION,
-                "uptime_s": 86400,
-                "memory_rss_mb": 145.2,
-                "documents": 158,
-                "document_health": {
-                    "total": 158,
-                    "with_ocr": 155,
-                    "with_ai": 158,
-                    "with_metadata": 158,
-                    "with_date": 158,
-                    "with_institution": 150,
-                    "synced": 158,
-                    "standard_named": 155,
-                },
-                "sync_7d": {
-                    "total": 312,
-                    "successful": 308,
-                    "failed": 4,
-                    "avg_duration_s": 14.2,
-                    "total_imported": 6,
-                    "total_errors": 0,
-                    "last_sync_at": "2026-03-24T14:30:00Z",
-                },
-                "recent_syncs": [
-                    {
-                        "started_at": "2026-03-24T14:30:00Z",
-                        "status": "completed",
-                        "trigger": "scheduled",
-                        "duration_s": 12,
-                        "new": 0,
-                        "errors": 0,
-                    },
-                    {
-                        "started_at": "2026-03-24T14:25:00Z",
-                        "status": "completed",
-                        "trigger": "scheduled",
-                        "duration_s": 8,
-                        "new": 1,
-                        "errors": 0,
-                    },
-                    {
-                        "started_at": "2026-03-24T14:20:00Z",
-                        "status": "completed",
-                        "trigger": "scheduled",
-                        "duration_s": 15,
-                        "new": 0,
-                        "errors": 0,
-                    },
-                ],
-            },
-            "documents": {
-                "filter": "all",
-                "matched": 15,
-                "summary": {
-                    "total": 158,
-                    "with_ocr": 155,
-                    "with_ai": 158,
-                    "with_metadata": 158,
-                    "synced": 158,
-                    "standard_named": 155,
-                    "with_date": 158,
-                    "with_institution": 150,
-                    "fully_complete": 150,
-                },
-                "documents": [
-                    {
-                        "id": 1,
-                        "filename": "20260315_Patient_NOU_Labs_BloodCount.pdf",
-                        "category": "Labs",
-                        "date": "2026-03-15",
-                        "has_ocr": True,
-                        "has_ai": True,
-                        "has_metadata": True,
-                        "is_synced": True,
-                        "is_standard_name": True,
-                        "gdrive_id": "demo",
-                    },
-                    {
-                        "id": 2,
-                        "filename": "20260310_Patient_FNsP_CT_AbdomenPelvis.pdf",
-                        "category": "CT",
-                        "date": "2026-03-10",
-                        "has_ocr": True,
-                        "has_ai": True,
-                        "has_metadata": True,
-                        "is_synced": True,
-                        "is_standard_name": True,
-                        "gdrive_id": "demo",
-                    },
-                    {
-                        "id": 3,
-                        "filename": "20260301_Patient_NOU_Pathology_ColonBiopsy.pdf",
-                        "category": "Pathology",
-                        "date": "2026-03-01",
-                        "has_ocr": True,
-                        "has_ai": True,
-                        "has_metadata": True,
-                        "is_synced": True,
-                        "is_standard_name": True,
-                        "gdrive_id": "demo",
-                    },
-                    {
-                        "id": 4,
-                        "filename": "20260225_Patient_Medirex_Labs_TumorMarkers.pdf",
-                        "category": "Labs",
-                        "date": "2026-02-25",
-                        "has_ocr": True,
-                        "has_ai": True,
-                        "has_metadata": True,
-                        "is_synced": True,
-                        "is_standard_name": True,
-                        "gdrive_id": "demo",
-                    },
-                    {
-                        "id": 5,
-                        "filename": "20260220_Patient_NOU_Genetics_KRASPanel.pdf",
-                        "category": "Genetics",
-                        "date": "2026-02-20",
-                        "has_ocr": True,
-                        "has_ai": True,
-                        "has_metadata": True,
-                        "is_synced": True,
-                        "is_standard_name": True,
-                        "gdrive_id": "demo",
-                    },
-                    {
-                        "id": 6,
-                        "filename": "20260215_Patient_NOU_ChemoSheet_FOLFOX_C3.pdf",
-                        "category": "ChemoSheet",
-                        "date": "2026-02-15",
-                        "has_ocr": True,
-                        "has_ai": True,
-                        "has_metadata": False,
-                        "is_synced": True,
-                        "is_standard_name": True,
-                        "gdrive_id": "demo",
-                    },
-                    {
-                        "id": 7,
-                        "filename": "20260210_Patient_FNsP_USG_Liver.pdf",
-                        "category": "USG",
-                        "date": "2026-02-10",
-                        "has_ocr": True,
-                        "has_ai": True,
-                        "has_metadata": True,
-                        "is_synced": True,
-                        "is_standard_name": True,
-                        "gdrive_id": "demo",
-                    },
-                    {
-                        "id": 8,
-                        "filename": "20260205_Patient_NOU_Prescription_[MEDICATION_REDACTED].pdf",
-                        "category": "Prescription",
-                        "date": "2026-02-05",
-                        "has_ocr": True,
-                        "has_ai": False,
-                        "has_metadata": True,
-                        "is_synced": True,
-                        "is_standard_name": True,
-                        "gdrive_id": "demo",
-                    },
-                    {
-                        "id": 9,
-                        "filename": "20260130_Patient_NOU_DischargeSummary_Chemo.pdf",
-                        "category": "DischargeSummary",
-                        "date": "2026-01-30",
-                        "has_ocr": True,
-                        "has_ai": True,
-                        "has_metadata": True,
-                        "is_synced": True,
-                        "is_standard_name": True,
-                        "gdrive_id": "demo",
-                    },
-                    {
-                        "id": 10,
-                        "filename": "20260125_Patient_GP_Referral_Oncology.pdf",
-                        "category": "Referral",
-                        "date": "2026-01-25",
-                        "has_ocr": True,
-                        "has_ai": True,
-                        "has_metadata": True,
-                        "is_synced": True,
-                        "is_standard_name": True,
-                        "gdrive_id": "demo",
-                    },
-                    {
-                        "id": 11,
-                        "filename": "20260320_Patient_GP_Vaccination_Covid19Booster.pdf",
-                        "category": "Vaccination",
-                        "date": "2026-03-20",
-                        "has_ocr": True,
-                        "has_ai": True,
-                        "has_metadata": True,
-                        "is_synced": True,
-                        "is_standard_name": True,
-                        "gdrive_id": "demo",
-                    },
-                    {
-                        "id": 12,
-                        "filename": "20260305_Patient_DentalClinic_Dental_AnnualCheckup.pdf",
-                        "category": "Dental",
-                        "date": "2026-03-05",
-                        "has_ocr": True,
-                        "has_ai": True,
-                        "has_metadata": True,
-                        "is_synced": True,
-                        "is_standard_name": True,
-                        "gdrive_id": "demo",
-                    },
-                    {
-                        "id": 13,
-                        "filename": "20260228_Patient_GP_Preventive_ColorectalScreening.pdf",
-                        "category": "Preventive",
-                        "date": "2026-02-28",
-                        "has_ocr": True,
-                        "has_ai": True,
-                        "has_metadata": True,
-                        "is_synced": True,
-                        "is_standard_name": True,
-                        "gdrive_id": "demo",
-                    },
-                ],
-            },
-            "prompt_log": {
-                "entries": [
-                    {
-                        "id": 1,
-                        "call_type": "enhance",
-                        "document_id": 42,
-                        "model": "claude-haiku-4-5-20251001",
-                        "input_tokens": 1250,
-                        "output_tokens": 380,
-                        "duration_ms": 2100,
-                        "result_summary": "Extracted metadata: Labs, NOU, 2026-03-15",
-                        "status": "ok",
-                        "created_at": "2026-03-24T14:28:00Z",
-                    },
-                    {
-                        "id": 2,
-                        "call_type": "ocr",
-                        "document_id": 41,
-                        "model": "claude-haiku-4-5-20251001",
-                        "input_tokens": 8400,
-                        "output_tokens": 1200,
-                        "duration_ms": 4500,
-                        "result_summary": "OCR: 3 pages extracted",
-                        "status": "ok",
-                        "created_at": "2026-03-24T14:25:00Z",
-                    },
-                    {
-                        "id": 3,
-                        "call_type": "classify_email",
-                        "document_id": None,
-                        "model": "claude-haiku-4-5-20251001",
-                        "input_tokens": 420,
-                        "output_tokens": 85,
-                        "duration_ms": 800,
-                        "result_summary": "medical=true (0.94)",
-                        "status": "ok",
-                        "created_at": "2026-03-24T14:20:00Z",
-                    },
-                ],
-                "stats": {
-                    "total_calls": 847,
-                    "total_input_tokens": 1240000,
-                    "total_output_tokens": 320000,
-                    "avg_duration_ms": 2800,
-                },
-            },
-            "analytics": {
-                "days": 30,
-                "prompts": {
-                    "total_calls": 847,
-                    "total_input_tokens": 1240000,
-                    "total_output_tokens": 320000,
-                    "total_errors": 3,
-                    "error_rate": 0.004,
-                    "estimated_cost_usd": 2.27,
-                    "by_call_type": {
-                        "enhance": 312,
-                        "ocr": 198,
-                        "classify_email": 180,
-                        "classify_event": 92,
-                        "summarize": 65,
-                    },
-                    "calls_per_day": [],
-                },
-                "tools": {
-                    "total_calls": 2840,
-                    "unique_tools": 34,
-                    "top_tools": [
-                        {"tool": "search_documents", "count": 520},
-                        {"tool": "get_patient_context", "count": 410},
-                        {"tool": "analyze_labs", "count": 280},
-                        {"tool": "search_conversations", "count": 195},
-                        {"tool": "get_lab_trends", "count": 140},
-                    ],
-                    "calls_per_day": [],
-                },
-                "pipeline": {
-                    "total_syncs": 312,
-                    "successful_syncs": 308,
-                    "failed_syncs": 0,
-                    "total_docs_imported": 158,
-                    "total_docs_exported": 155,
-                    "avg_sync_duration_s": 14.2,
-                    "docs_enhanced": 158,
-                    "docs_pending": 3,
-                },
-                "latency": {
-                    "overall": {"p50": 2100, "p95": 5800, "p99": 12000},
-                    "by_type": {
-                        "enhance": {"p50": 2400, "p95": 4200},
-                        "ocr": {"p50": 4500, "p95": 8900},
-                        "classify_email": {"p50": 800, "p95": 1500},
-                    },
-                },
-            },
-        }
-    )
+    """Invented sample patient for the public demo. Public, no auth.
+
+    No prompt log, sync history or cost data (#605): those described the old
+    cloud pipeline and are not part of what a visitor needs to understand.
+    """
+    return JSONResponse(_demo_payload())
 
 
 @mcp.custom_route("/dashboard/config", methods=["GET"])
@@ -7609,23 +7572,22 @@ class SecurityHeadersMiddleware:
 # extraction can come later — locking the regression on the public site is
 # more urgent than tightening CSP on routes that have no PHI.
 
+# #700: no analytics on the logged-in dashboard (it renders medical records),
+# so neither Google tag host is allowed here. Locked by
+# tests/test_landing_content.py::test_dashboard_has_no_google_analytics.
 _STRICT_DASHBOARD_CSP = (
     "default-src 'self'; "
     "script-src 'self' 'unsafe-inline' "
-    "https://www.googletagmanager.com https://www.google-analytics.com "
     "https://accounts.google.com https://apis.google.com; "
     "script-src-elem 'self' "
-    "https://www.googletagmanager.com https://www.google-analytics.com "
     "https://accounts.google.com https://apis.google.com; "
     "script-src-attr 'none'; "
-    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com "
-    "https://accounts.google.com; "
-    "style-src-elem 'self' https://fonts.googleapis.com "
-    "https://accounts.google.com; "
+    "style-src 'self' 'unsafe-inline' https://accounts.google.com; "
+    "style-src-elem 'self' https://accounts.google.com; "
     "style-src-attr 'unsafe-inline'; "
-    "font-src 'self' https://fonts.gstatic.com data:; "
+    "font-src 'self' data:; "
     "img-src 'self' data: https:; "
-    "connect-src 'self' https://www.google-analytics.com "
+    "connect-src 'self' "
     "https://accounts.google.com https://oauth2.googleapis.com "
     "https://www.googleapis.com; "
     "frame-src https://accounts.google.com https://content.googleapis.com "
@@ -7647,11 +7609,11 @@ _PUBLIC_HTML_CSP = (
     "script-src 'self' 'unsafe-inline' "
     "https://www.googletagmanager.com https://www.google-analytics.com "
     "https://accounts.google.com https://apis.google.com; "
-    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com "
-    "https://accounts.google.com; "
-    "font-src 'self' https://fonts.gstatic.com data:; "
+    "style-src 'self' 'unsafe-inline' https://accounts.google.com; "
+    "font-src 'self' data:; "
     "img-src 'self' data: https:; "
-    "connect-src 'self' https://www.google-analytics.com "
+    "connect-src 'self' https://*.google-analytics.com "
+    "https://*.analytics.google.com https://www.googletagmanager.com "
     "https://accounts.google.com https://oauth2.googleapis.com "
     "https://www.googleapis.com; "
     "frame-src https://accounts.google.com https://content.googleapis.com "
