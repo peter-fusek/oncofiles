@@ -304,14 +304,26 @@ def _ctx(db):
     return ctx
 
 
-async def test_the_preview_is_off_by_default_and_shadow_only(db, monkeypatch):
+def test_the_preview_is_enabled_by_default(monkeypatch):
+    import importlib
+
+    from oncofiles import config
+
+    monkeypatch.delenv("LLM_EXTRACT_SHADOW_DISABLED", raising=False)
+    try:
+        assert importlib.reload(config).LLM_EXTRACT_SHADOW_DISABLED is False
+    finally:
+        importlib.reload(config)
+
+
+async def test_the_off_switch_and_shadow_only(db, monkeypatch):
     from oncofiles import config
     from oncofiles.tools import curated as tool
 
-    monkeypatch.setattr(config, "LLM_EXTRACT_SHADOW", False)
+    monkeypatch.setattr(config, "LLM_EXTRACT_SHADOW_DISABLED", True)
     out = json.loads(await tool.curated_llm_extract_preview(_ctx(db), document_ids=[DOC]))
-    assert "LLM_EXTRACT_SHADOW" in out["error"]
-    monkeypatch.setattr(config, "LLM_EXTRACT_SHADOW", True)
+    assert "LLM_EXTRACT_SHADOW_DISABLED" in out["error"]
+    monkeypatch.setattr(config, "LLM_EXTRACT_SHADOW_DISABLED", False)
     out = json.loads(
         await tool.curated_llm_extract_preview(_ctx(db), document_ids=[DOC], dry_run=False)
     )
@@ -323,7 +335,7 @@ async def test_the_preview_writes_nothing_and_runs_local_only(db, monkeypatch):
     from oncofiles.tools import curated as tool
 
     await _seed(db)
-    monkeypatch.setattr(config, "LLM_EXTRACT_SHADOW", True)
+    monkeypatch.setattr(config, "LLM_EXTRACT_SHADOW_DISABLED", False)
     monkeypatch.setattr(config, "LOCAL_LLM_BASE_URL", "http://local.invalid/v1")
     monkeypatch.setattr(config, "LOCAL_LLM_MODEL", "mock-model")
     seen = []

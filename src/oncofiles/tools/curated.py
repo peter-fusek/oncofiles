@@ -1478,15 +1478,15 @@ async def curated_llm_extract_preview(
     compared with the facts currently stored for that document and reported
     as keys and counts only (agreement on code + date + value hash, codes
     found by only one side, unverified reasons, seconds) — never values.
-    Writes nothing: no facts, no Drive. Needs LLM_EXTRACT_SHADOW=true.
+    Writes nothing: no facts, no Drive. Off-switch: LLM_EXTRACT_SHADOW_DISABLED=true.
     Explicit ``document_ids`` only (max 10). Runs in the background; poll
     curated_reocr_status. Slow: about a minute per page.
     """
     from oncofiles import config
     from oncofiles.curated import llm
 
-    if not config.LLM_EXTRACT_SHADOW:
-        return json.dumps({"error": "disabled: set LLM_EXTRACT_SHADOW=true"})
+    if config.LLM_EXTRACT_SHADOW_DISABLED:
+        return json.dumps({"error": "disabled by LLM_EXTRACT_SHADOW_DISABLED=true"})
     if not dry_run:
         return json.dumps({"error": "shadow mode only: this tool never writes facts"})
     if not llm.configured():
