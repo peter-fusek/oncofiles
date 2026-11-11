@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from datetime import UTC
 
 from fastmcp import Context
 
@@ -49,29 +48,36 @@ async def gdrive_auth_callback(ctx: Context, code: str) -> str:
     Args:
         code: The authorization code from the Google OAuth redirect.
     """
-    from datetime import datetime, timedelta
-
-    from oncofiles.models import OAuthToken
-    from oncofiles.oauth import exchange_code
+    from oncofiles.google_link import mcp_principal_privileged, store_google_link
+    from oncofiles.oauth import exchange_code, mcp_principal
 
     if not GOOGLE_OAUTH_CLIENT_ID:
         return json.dumps({"error": "GOOGLE_OAUTH_CLIENT_ID not configured"})
+
+    pid = _get_patient_id()
+    db = _get_db(ctx)
+    patient = await db.get_patient(pid)
+    if patient is None:
+        return json.dumps({"error": "patient not found"})
 
     try:
         tokens = exchange_code(code)
     except Exception as e:
         return json.dumps({"error": f"Token exchange failed: {e}"})
 
-    expiry = datetime.now(UTC) + timedelta(seconds=tokens.get("expires_in", 3600))
-    oauth_token = OAuthToken(
-        patient_id=_get_patient_id(),
-        access_token=tokens["access_token"],
-        refresh_token=tokens.get("refresh_token", ""),
-        token_expiry=expiry,
+    # #591: same overwrite guard + audit row as /oauth/callback.
+    principal = mcp_principal()
+    stored, reason = await store_google_link(
+        db,
+        patient_id=pid,
+        tokens=tokens,
+        service="drive",
+        principal_kind="m",
+        privileged=mcp_principal_privileged(principal, patient.caregiver_email),
+        source="gdrive_auth_callback",
     )
-
-    db = _get_db(ctx)
-    await db.upsert_oauth_token(oauth_token)
+    if not stored:
+        return json.dumps({"error": f"Google account not linked: {reason}"})
     msg = "Google Drive connected. Use gdrive_set_folder to pick a sync folder."
     return json.dumps({"status": "ok", "message": msg})
 

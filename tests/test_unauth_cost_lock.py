@@ -156,7 +156,8 @@ PUBLIC_ROUTES: dict[tuple[str, str], str] = {
     (
         "/oauth/callback",
         "oauth_callback",
-    ): "auth flow: HMAC state from /oauth/authorize, single use",
+    ): "auth flow: v2 state (10 min, single use) bound to principal + patient + service; "
+    "overwrite guard and audit row (tests/test_oauth_link_guard.py)",
 }
 
 # MCP OAuth (FastMCP / mcp SDK) routes: open by the OAuth / DCR specs.
@@ -187,7 +188,10 @@ DB_ALLOWLIST: dict[tuple[str, str], str] = {
     ("/api/newsletter/subscribe", "api_newsletter_subscribe"): "INSERT OR IGNORE one row",
     ("/api/newsletter/check", "api_newsletter_check"): "one SELECT by email",
     ("/oauth/authorize/{service}", "oauth_authorize"): "slug + patient lookup after the session",
-    ("/oauth/callback", "oauth_callback"): "patient + token lookup, upsert after a valid state",
+    (
+        "/oauth/callback",
+        "oauth_callback",
+    ): "patient + token lookup; guarded upsert + activity row after a bound state",
 }
 
 # ── static analysis ──────────────────────────────────────────────────────
