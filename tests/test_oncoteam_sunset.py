@@ -1,9 +1,12 @@
 """Lock tests for the Oncoteam sunset (#721).
 
-* The 13 Oncoteam storage tools stay registered, each with the deprecation
+* The 9 Oncoteam storage tools stay registered, each with the deprecation
   prefix at the start of its description.
-* The four WRITE tools refuse and store nothing; the READ tools still serve
+* The three WRITE tools refuse and store nothing; the READ tools still serve
   the archive rows.
+* The session diary (log_conversation, search_conversations, get_conversation,
+  get_conversation_stats) is NOT deprecated: kept by the maintainer on
+  2026-11-11 (see tests/test_session_diary.py).
 * The Oncoteam integration points are gone: the webhook module and its config,
   the oncoteam.cloud CORS origin, the dashboard link, and the "oncoteam"
   client name of the static bearer.
@@ -38,13 +41,19 @@ from tests.helpers import ERIKA_UUID
 
 SRC = Path(__file__).resolve().parent.parent / "src" / "oncofiles"
 
-EXPECTED_WRITES = {"set_agent_state", "log_conversation", "add_research_entry", "add_activity_log"}
-EXPECTED_READS = {
-    "get_agent_state",
-    "list_agent_states",
+EXPECTED_WRITES = {"set_agent_state", "add_research_entry", "add_activity_log"}
+DIARY_TOOLS = {
+    "log_conversation",
+    "diary_add",
     "search_conversations",
     "get_conversation",
     "get_conversation_stats",
+    "delete_conversation",
+    "restore_conversation",
+}
+EXPECTED_READS = {
+    "get_agent_state",
+    "list_agent_states",
     "search_research",
     "list_research_entries",
     "search_activity_log",
@@ -59,10 +68,14 @@ def _ctx(db: Database) -> MagicMock:
     return ctx
 
 
-def test_sunset_tool_set_is_exactly_the_13_oncoteam_tools():
+def test_sunset_tool_set_is_exactly_the_9_oncoteam_tools():
     assert set(ONCOTEAM_SUNSET_WRITE_TOOLS) == EXPECTED_WRITES
     assert ONCOTEAM_SUNSET_READ_TOOLS == EXPECTED_READS
-    assert len(ONCOTEAM_SUNSET_TOOLS) == 13
+    assert len(ONCOTEAM_SUNSET_TOOLS) == 9
+
+
+def test_session_diary_tools_are_not_deprecated():
+    assert not (DIARY_TOOLS & ONCOTEAM_SUNSET_TOOLS)
 
 
 def test_prefix_text():
@@ -105,13 +118,12 @@ async def _row_counts(db: Database) -> dict[str, int]:
     "call",
     [
         lambda ctx: agent_state.set_agent_state(ctx, key="k", value='"v"'),
-        lambda ctx: conversations.log_conversation(ctx, title="t", content="c"),
         lambda ctx: research.add_research_entry(ctx, source="pubmed", external_id="1", title="t"),
         lambda ctx: activity.add_activity_log(
             ctx, session_id="s", agent_id="a", tool_name="search"
         ),
     ],
-    ids=sorted(EXPECTED_WRITES),
+    ids=["set_agent_state", "add_research_entry", "add_activity_log"],
 )
 async def test_write_tools_refuse_and_store_nothing(db: Database, call):
     before = await _row_counts(db)

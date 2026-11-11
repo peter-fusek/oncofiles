@@ -178,11 +178,12 @@ async def test_get_conversation_blocks_cross_patient(db: Database):
     _, _, e_conv, b_conv = await _seed_two_patients(db)
     ctx = _StubCtx(db)
 
-    # Default (Erika) scope: Erika's entry visible, Bob's hidden.
-    ok = json.loads(await conv_tools.get_conversation(ctx, e_conv))
+    # Admin callers must name the patient (session diary has no implicit
+    # admin scope). Erika's scope: Erika's entry visible, Bob's hidden.
+    ok = json.loads(await conv_tools.get_conversation(ctx, e_conv, patient_slug="q1b"))
     assert ok.get("content") == "Erika private content"
 
-    blocked = json.loads(await conv_tools.get_conversation(ctx, b_conv))
+    blocked = json.loads(await conv_tools.get_conversation(ctx, b_conv, patient_slug="q1b"))
     assert "error" in blocked
     # Critical: content body must NOT leak through any field
     assert "Bob private content" not in json.dumps(blocked)
@@ -192,16 +193,23 @@ async def test_get_conversation_blocks_cross_patient(db: Database):
     assert bob_ok.get("content") == "Bob private content"
 
 
-async def test_log_conversation_refuses_under_any_slug(db: Database):
-    """#721: log_conversation is deprecated — refuses for every patient, stores nothing."""
+async def test_log_conversation_respects_slug(db: Database):
     await _seed_two_patients(db)
     ctx = _StubCtx(db)
 
-    for slug in (SECOND_SLUG, None):
-        result = json.loads(
-            await conv_tools.log_conversation(
-                ctx, title="Bob scoped note", content="body", patient_slug=slug
-            )
+    # Log under Bob's slug despite default ContextVar = Erika
+    result = json.loads(
+        await conv_tools.log_conversation(
+            ctx,
+            title="Bob scoped note",
+            content="body",
+            patient_slug=SECOND_SLUG,
         )
-        assert result["error"] == "deprecated"
-        assert "id" not in result
+    )
+    assert result.get("title") == "Bob scoped note"
+
+    # Verify DB row lives under Bob, not Erika
+    ok = await db.check_conversation_entry_ownership(result["id"], SECOND_UUID)
+    leak = await db.check_conversation_entry_ownership(result["id"], ERIKA_UUID)
+    assert ok is True
+    assert leak is False

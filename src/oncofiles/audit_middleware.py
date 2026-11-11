@@ -154,7 +154,7 @@ class AuditMiddleware(Middleware):
                     db = fastmcp_ctx.request_context.lifespan_context.get("db")
                     if db:
                         session_id = _get_session_id(context)
-                        input_summary = _summarize_input(context.message)
+                        input_summary = _summarize_input(context.message, tool_name)
                         # Bounded fire-and-forget: drop oldest if at capacity
                         if len(_audit_tasks) >= _MAX_AUDIT_TASKS:
                             logger.warning(
@@ -221,8 +221,14 @@ def _get_session_id(context: MiddlewareContext[Any]) -> str:
     return f"auto-{ts}"
 
 
-def _summarize_input(message: Any) -> str:
-    """Allowlisted summary of the tool input arguments (#758)."""
+def _summarize_input(message: Any, tool_name: str = "") -> str:
+    """Allowlisted summary of the tool input arguments (#758).
+
+    One renderer for every tool, the session-diary tools (#755) included:
+    only ids, slugs, booleans, enums and fact codes keep their value, so
+    diary free text (title, content, search text, tags) never reaches
+    activity_log. ``tool_name`` is accepted for the call site and unused.
+    """
     try:
         return summarize_args(getattr(message, "arguments", None))
     except Exception:

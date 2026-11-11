@@ -1,12 +1,16 @@
 """Oncoteam sunset (#721): deprecation of the Oncoteam storage tools.
 
 Oncoteam was the agent layer that stored its working memory in Oncofiles
-through 13 MCP tools (agent state, conversation diary, research entries,
-activity log). Oncoteam is stopped, so these tools are deprecated:
+through MCP tools (agent state, conversation diary, research entries,
+activity log). Oncoteam is stopped, so its 9 remaining storage tools are
+deprecated. The conversation diary (``log_conversation``,
+``search_conversations``, ``get_conversation``, ``get_conversation_stats``)
+is NOT: the maintainer kept it on 2026-11-11 as the patient-scoped session
+diary for Claude.ai / Claude Code / ChatGPT sessions (``tools/conversations.py``).
 
-* every one of them carries ``ONCOTEAM_SUNSET_PREFIX`` at the start of its
+* every deprecated tool carries ``ONCOTEAM_SUNSET_PREFIX`` at the start of its
   description, so MCP clients see the deprecation in the tool list;
-* the four WRITE tools refuse new writes (nothing is stored);
+* the three WRITE tools refuse new writes (nothing is stored);
 * the READ tools keep working, so the existing rows stay readable as an
   archive until the tools are removed.
 
@@ -35,11 +39,6 @@ ONCOTEAM_SUNSET_PREFIX = (
 # Tool name → the read tools that still serve its data.
 ONCOTEAM_SUNSET_WRITE_TOOLS: dict[str, tuple[str, ...]] = {
     "set_agent_state": ("get_agent_state", "list_agent_states"),
-    "log_conversation": (
-        "search_conversations",
-        "get_conversation",
-        "get_conversation_stats",
-    ),
     "add_research_entry": ("search_research", "list_research_entries"),
     "add_activity_log": ("search_activity_log", "get_activity_stats"),
 }

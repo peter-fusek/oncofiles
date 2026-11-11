@@ -146,6 +146,28 @@ def _row_to_activity_log(row: Any) -> ActivityLogEntry:
     )
 
 
+def _json_list(raw: Any, item_type: type) -> list | None:
+    """A JSON array column → list of ``item_type``; None for empty/malformed.
+
+    One bad legacy value must not crash a whole diary search (#721 diary review).
+    """
+    if not raw:
+        return None
+    try:
+        value = json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(value, list):
+        return None
+    out = []
+    for item in value:
+        try:
+            out.append(item_type(item))
+        except (TypeError, ValueError):
+            continue
+    return out or None
+
+
 def _row_to_conversation_entry(row: Any) -> ConversationEntry:
     """Convert a database row to a ConversationEntry model."""
     return ConversationEntry(
@@ -157,8 +179,8 @@ def _row_to_conversation_entry(row: Any) -> ConversationEntry:
         participant=row["participant"],
         session_type=row["session_type"] if "session_type" in dict(row) else "patient",
         session_id=row["session_id"],
-        tags=json.loads(row["tags"]) if row["tags"] else None,
-        document_ids=json.loads(row["document_ids"]) if row["document_ids"] else None,
+        tags=_json_list(row["tags"], str),
+        document_ids=_json_list(row["document_ids"], int),
         source=row["source"],
         source_ref=row["source_ref"],
         created_at=datetime.fromisoformat(row["created_at"]) if row["created_at"] else None,
