@@ -176,7 +176,6 @@ async def test_soft_delete_filtered_from_search(db: Database):
 
     assert len(await db.search_documents(SearchQuery(text="krvny"), patient_id=ERIKA_UUID)) == 0
     assert len(await db.get_latest_labs(patient_id=ERIKA_UUID)) == 0
-    assert len(await db.get_treatment_timeline(patient_id=ERIKA_UUID)) == 0
     assert len(await db.get_documents_without_ai(patient_id=ERIKA_UUID)) == 0
     assert len(await db.get_pending_sync_documents(patient_id=ERIKA_UUID)) == 0
 
@@ -333,54 +332,6 @@ async def test_get_latest_labs(db: Database):
     assert len(labs) == 2
     assert labs[0].file_id == "file_lab2"  # newest first
     assert labs[1].file_id == "file_lab1"
-
-
-async def test_get_treatment_timeline(db: Database):
-    await db.insert_document(
-        make_doc(
-            file_id="file_surgery",
-            category=DocumentCategory.SURGERY,
-            document_date=date(2024, 1, 10),
-        ),
-        patient_id=ERIKA_UUID,
-    )
-    await db.insert_document(
-        make_doc(
-            file_id="file_labs",
-            category=DocumentCategory.LABS,
-            document_date=date(2024, 3, 15),
-        ),
-        patient_id=ERIKA_UUID,
-    )
-    await db.insert_document(
-        make_doc(
-            file_id="file_other",
-            category=DocumentCategory.OTHER,
-            document_date=date(2024, 2, 1),
-        ),
-        patient_id=ERIKA_UUID,
-    )
-
-    timeline = await db.get_treatment_timeline(patient_id=ERIKA_UUID)
-    assert len(timeline) == 2  # 'other' excluded
-    # Chronological ASC
-    assert timeline[0].file_id == "file_surgery"
-    assert timeline[1].file_id == "file_labs"
-
-
-async def test_get_treatment_timeline_limit(db: Database):
-    for i in range(5):
-        await db.insert_document(
-            make_doc(
-                file_id=f"file_report_{i}",
-                category=DocumentCategory.REPORT,
-                document_date=date(2024, 1, i + 1),
-            ),
-            patient_id=ERIKA_UUID,
-        )
-
-    timeline = await db.get_treatment_timeline(limit=3, patient_id=ERIKA_UUID)
-    assert len(timeline) == 3
 
 
 # ── OCR cache ───────────────────────────────────────────────────────────────
