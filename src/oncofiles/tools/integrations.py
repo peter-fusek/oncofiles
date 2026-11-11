@@ -16,6 +16,21 @@ from oncofiles.tools._helpers import (
 )
 
 
+def _disabled_response(service: str) -> str | None:
+    """Refusal JSON when GMAIL_CALENDAR_ENABLED is off (#618/#699), else None."""
+    from oncofiles.config import GMAIL_CALENDAR_DISABLED_MESSAGE, gmail_calendar_enabled
+
+    if gmail_calendar_enabled():
+        return None
+    return json.dumps(
+        {
+            "status": "disabled",
+            "service": service,
+            "error": GMAIL_CALENDAR_DISABLED_MESSAGE,
+        }
+    )
+
+
 async def integration_status(ctx: Context, patient_slug: str | None = None) -> str:
     """Show which Google services are connected and entry counts.
 
@@ -31,7 +46,29 @@ async def integration_status(ctx: Context, patient_slug: str | None = None) -> s
     token = await db.get_oauth_token(patient_id=pid)
     granted = json.loads(token.granted_scopes) if token else []
 
+    from oncofiles.config import GMAIL_CALENDAR_DISABLED_MESSAGE, gmail_calendar_enabled
     from oncofiles.oauth import SCOPE_CALENDAR, SCOPE_DRIVE, SCOPE_GMAIL
+
+    if not gmail_calendar_enabled():
+        disabled = {
+            "enabled": False,
+            "server_disabled": True,
+            "entry_count": None,
+            "message": GMAIL_CALENDAR_DISABLED_MESSAGE,
+        }
+        return json.dumps(
+            {
+                "token_present": bool(token),
+                "token_expiry": token.token_expiry.isoformat()
+                if token and token.token_expiry
+                else None,
+                "services": {
+                    "drive": {"enabled": SCOPE_DRIVE in granted},
+                    "gmail": dict(disabled),
+                    "calendar": dict(disabled),
+                },
+            }
+        )
 
     gmail_count = None
     cal_count = None
@@ -74,6 +111,11 @@ async def gmail_auth_enable(ctx: Context, patient_slug: str | None = None) -> st
             The OAuth flow grants Gmail to THIS patient (#518).
     """
     from oncofiles.config import GOOGLE_OAUTH_CLIENT_ID
+
+    disabled = _disabled_response("gmail")
+    if disabled is not None:
+        return disabled
+
     from oncofiles.oauth import GMAIL_SCOPES, SCOPE_GMAIL, get_auth_url_for_scopes
 
     if not GOOGLE_OAUTH_CLIENT_ID:
@@ -115,6 +157,11 @@ async def calendar_auth_enable(ctx: Context, patient_slug: str | None = None) ->
             The OAuth flow grants Calendar to THIS patient (#518).
     """
     from oncofiles.config import GOOGLE_OAUTH_CLIENT_ID
+
+    disabled = _disabled_response("calendar")
+    if disabled is not None:
+        return disabled
+
     from oncofiles.oauth import CALENDAR_SCOPES, SCOPE_CALENDAR, get_auth_url_for_scopes
 
     if not GOOGLE_OAUTH_CLIENT_ID:
@@ -164,6 +211,10 @@ async def search_emails(
         limit: Maximum results to return.
         patient_slug: Optional — explicit patient slug per Option A (#429, #518).
     """
+    disabled = _disabled_response("gmail")
+    if disabled is not None:
+        return disabled
+
     try:
         db = _get_db(ctx)
         pid = await _resolve_patient_id(patient_slug, ctx)
@@ -205,6 +256,10 @@ async def get_email(ctx: Context, email_entry_id: int, patient_slug: str | None 
         email_entry_id: The email entry ID.
         patient_slug: Optional — explicit patient slug per Option A (#429, #518).
     """
+    disabled = _disabled_response("gmail")
+    if disabled is not None:
+        return disabled
+
     from oncofiles.tools._helpers import _check_ownership_or_admin
 
     db = _get_db(ctx)
@@ -262,6 +317,10 @@ async def search_calendar_events(
         limit: Maximum results to return.
         patient_slug: Optional — explicit patient slug per Option A (#429, #518).
     """
+    disabled = _disabled_response("calendar")
+    if disabled is not None:
+        return disabled
+
     try:
         db = _get_db(ctx)
         pid = await _resolve_patient_id(patient_slug, ctx)
@@ -304,6 +363,10 @@ async def get_calendar_event(
         calendar_entry_id: The calendar entry ID.
         patient_slug: Optional — explicit patient slug per Option A (#429, #518).
     """
+    disabled = _disabled_response("calendar")
+    if disabled is not None:
+        return disabled
+
     from oncofiles.tools._helpers import _check_ownership_or_admin
 
     db = _get_db(ctx)

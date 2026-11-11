@@ -158,6 +158,26 @@ def get_auth_url(state: str = "", patient_id: str = "") -> str:
     return f"{AUTH_URL}?{urlencode(params)}"
 
 
+_GMAIL_CALENDAR_SCOPES = frozenset({SCOPE_GMAIL, SCOPE_CALENDAR})
+
+
+def allowed_scopes(scopes: list[str]) -> list[str]:
+    """Drop the Gmail/Calendar scopes unless GMAIL_CALENDAR_ENABLED (#618/#699).
+
+    Single chokepoint for every OAuth URL that requests explicit scopes, so no
+    flow (per-service or the combined ``all`` set) can ask Google for mail or
+    calendar access while the integration is off.
+    """
+    from oncofiles.config import gmail_calendar_enabled
+
+    if gmail_calendar_enabled():
+        return list(scopes)
+    kept = [s for s in scopes if s not in _GMAIL_CALENDAR_SCOPES]
+    if len(kept) != len(scopes):
+        logger.info("OAuth: Gmail/Calendar scopes dropped (GMAIL_CALENDAR_ENABLED=false)")
+    return kept or list(SCOPES)
+
+
 def get_auth_url_for_scopes(scopes: list[str], state: str = "", patient_id: str = "") -> str:
     """Generate auth URL requesting specific scopes with incremental consent.
 
@@ -166,6 +186,7 @@ def get_auth_url_for_scopes(scopes: list[str], state: str = "", patient_id: str 
     """
     from urllib.parse import urlencode
 
+    scopes = allowed_scopes(scopes)
     if not state:
         state = _make_state_token(patient_id=patient_id)
 

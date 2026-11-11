@@ -46,6 +46,26 @@ GOOGLE_INTEGRATION_ENABLED: bool = os.environ.get("GOOGLE_INTEGRATION_ENABLED", 
     "yes",
 )
 
+# Gmail + Google Calendar are OFF by default (#618/#699). The privacy text says
+# they are not used, and this flag is what makes that true — independently of
+# SYNC_ENABLED and of GOOGLE_INTEGRATION_ENABLED (which must stay true so the
+# curated pipeline can reach Drive). When false: the gmail/calendar scheduler
+# jobs are not registered, no OAuth URL ever requests the gmail/calendar
+# scopes, and the Gmail/Calendar MCP tools refuse. Runtime-only env; read at
+# call time through ``gmail_calendar_enabled()`` so tests can patch it.
+GMAIL_CALENDAR_ENABLED: bool = os.environ.get("GMAIL_CALENDAR_ENABLED", "false").lower() in (
+    "true",
+    "1",
+    "yes",
+)
+GMAIL_CALENDAR_DISABLED_MESSAGE = "Gmail/Calendar integration is not enabled on this server."
+
+
+def gmail_calendar_enabled() -> bool:
+    """Return the current GMAIL_CALENDAR_ENABLED value (module attr, patchable)."""
+    return GMAIL_CALENDAR_ENABLED
+
+
 # Google OAuth 2.0 (v1.0)
 # Local LLM (#565): OpenAI-compatible endpoint on the self-hosted server (LM Studio).
 # Used by the curated-folder pipeline for OCR (vision) and classification, so

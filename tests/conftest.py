@@ -33,6 +33,17 @@ def _cloud_ai_configured(monkeypatch):
     monkeypatch.setattr("oncofiles.config.ANTHROPIC_API_KEY", "test-key-not-real")
 
 
+@pytest.fixture
+def gmail_calendar_on(monkeypatch):
+    """Opt a test into GMAIL_CALENDAR_ENABLED=true (production default is off, #618/#699).
+
+    Deliberately NOT autouse: the default-off behaviour must stay the one
+    every other test sees. Tests of the enabled Gmail/Calendar paths request
+    this fixture explicitly.
+    """
+    monkeypatch.setattr("oncofiles.config.GMAIL_CALENDAR_ENABLED", True)
+
+
 @pytest.fixture(autouse=True)
 def _set_patient_context():
     """Seed the test patient's name in the per-patient cache (keyed by ERIKA_UUID).
