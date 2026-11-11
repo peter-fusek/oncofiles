@@ -102,6 +102,7 @@ READ_ONLY_TOOLS: frozenset[str] = frozenset(
         # patient
         "get_patient_context",
         "list_patients",
+        "whoami",  # #604: identity + accessible patients, no writes
         # prompt_log
         "get_prompt_log_entry",
         "search_prompt_log",
@@ -120,6 +121,8 @@ DESTRUCTIVE_TOOLS: frozenset[str] = frozenset(
         "delete_clinical_record",
         "delete_treatment_event",
         "reassign_document",
+        # #758: overwrites stored activity_log inputs (dry_run=False), irreversible
+        "redact_activity_log_inputs",
     }
 )
 
