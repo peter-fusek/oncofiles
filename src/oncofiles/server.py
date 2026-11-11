@@ -7638,9 +7638,15 @@ async def oauth_callback(request: Request) -> JSONResponse:
     )
 
 
-# ── Register tools and resources ─────────────────────────────────────────────
+# ── Register tools ───────────────────────────────────────────────────────────
+#
+# No MCP resources are registered (#717). The five legacy `files://` resources
+# were removed: they took no patient argument, so four were dead (TypeError on
+# the required `patient_id`, #551) and `files://activity-timeline` returned every
+# patient's activity log to any caller. The facts tools (`patient_overview`,
+# `timeline`, `fact_series`, ...) replace them and resolve the patient through
+# `_resolve_patient_id`. Locked by tests/test_activity_log_scoping.py.
 
-from oncofiles import resources  # noqa: E402
 from oncofiles.tools import (  # noqa: E402
     activity,
     agent_state,
@@ -7686,7 +7692,6 @@ hygiene.register(mcp)
 db_query.register(mcp)
 prompt_log.register(mcp)
 integrations.register(mcp)
-resources.register(mcp)
 
 # #608: readOnlyHint / destructiveHint from the declarative classification.
 from oncofiles.tool_annotations import ToolAnnotationTransform  # noqa: E402
