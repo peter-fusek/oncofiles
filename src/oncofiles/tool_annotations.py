@@ -74,6 +74,10 @@ READ_ONLY_TOOLS: frozenset[str] = frozenset(
         "list_documents",
         "list_trash",
         "search_documents",
+        # fhir (#716; bulk exports are in EGRESS_TOOLS)
+        "fhir_capabilities",
+        "fhir_read",
+        "fhir_search",
         # gdrive
         "gdrive_auth_status",
         "gdrive_sync_status",
@@ -134,6 +138,9 @@ EGRESS_TOOLS: frozenset[str] = frozenset(
     {
         "export_document_package",
         "export_manifest",
+        # #716: FHIR $everything / IPS-style summary (tools.fhir.FHIR_EGRESS_TOOLS)
+        "export_patient_summary",
+        "patient_everything",
     }
 )
 

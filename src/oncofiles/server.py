@@ -7404,6 +7404,7 @@ from oncofiles.tools import (  # noqa: E402
     enhance_tools,
     export,
     fact_review,
+    fhir,
     gdrive,
     hygiene,
     integrations,
@@ -7429,6 +7430,7 @@ clinical.register(mcp)
 clinical_records.register(mcp)
 clinical_facts.register(mcp)
 fact_review.register(mcp)
+fhir.register(mcp)
 lab_trends.register(mcp)
 export.register(mcp)
 naming.register(mcp)
