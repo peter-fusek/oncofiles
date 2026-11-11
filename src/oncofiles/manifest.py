@@ -25,7 +25,10 @@ async def export_manifest(db: Database, *, patient_id: str) -> dict:
     conversations = await db.get_conversation_timeline(limit=200, patient_id=patient_id)
     treatment_events = await db.get_treatment_events_timeline(limit=200, patient_id=patient_id)
     research_entries = await db.list_research_entries(limit=200, patient_id=patient_id)
-    agent_states = await db.list_agent_states()
+    # #691: scoped like every other section. Without patient_id the helper
+    # defaults to '' and returned the legacy unscoped rows (pre-#452), not
+    # this patient's state.
+    agent_states = await db.list_agent_states(patient_id=patient_id)
 
     return {
         "exported_at": datetime.now(UTC).isoformat(),

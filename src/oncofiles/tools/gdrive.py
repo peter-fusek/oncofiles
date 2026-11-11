@@ -463,17 +463,43 @@ async def setup_gdrive(ctx: Context, root_folder_id: str) -> str:
     )
 
 
-async def export_manifest(ctx: Context) -> str:
-    """Export the full database as a JSON manifest (on-demand).
+async def export_manifest(ctx: Context, patient_slug: str | None = None) -> str:
+    """Export one patient's records as a JSON manifest (on-demand).
 
-    Returns the manifest JSON with all documents, conversations,
-    treatment events, research entries, and agent state.
+    Returns the manifest JSON with the patient's documents, conversations,
+    treatment events, research entries, and agent state. Always scoped to a
+    single patient — never the whole database.
+
+    Args:
+        patient_slug: Explicit patient slug (#429). Required for admin
+            callers (refused without it). Non-admin callers default to their
+            bound patient and may only name a patient they have access to.
     """
     from oncofiles.manifest import export_manifest as _export_manifest
     from oncofiles.manifest import render_manifest_json
+    from oncofiles.tools._helpers import _is_admin_caller, _resolve_patient_id
 
     db = _get_db(ctx)
-    manifest = await _export_manifest(db)
+    # #691: resolve through the ACL gate (#497) and pass the pid through.
+    # The tool used to call _export_manifest(db) without patient_id, which
+    # raised TypeError on every call; dropping the kwarg must never be
+    # "fixed" by exporting the whole DB.
+    #
+    # Same rule as query_db (#607/#686): an admin must name the patient.
+    # Falling back to the middleware-bound/default patient would export
+    # "whichever patient happens to be current".
+    if _is_admin_caller() and not patient_slug:
+        return json.dumps(
+            {
+                "error": "Admin callers must pass patient_slug=<slug> to export a "
+                "manifest; there is no implicit admin patient scope."
+            }
+        )
+    try:
+        pid = await _resolve_patient_id(patient_slug, ctx)
+    except ValueError as exc:
+        return json.dumps({"error": str(exc)})
+    manifest = await _export_manifest(db, patient_id=pid)
     return render_manifest_json(manifest)
 
 
