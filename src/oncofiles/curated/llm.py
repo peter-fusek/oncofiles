@@ -5,8 +5,9 @@ folders runs on a local vision model on the self-hosted server, so medical
 document content never leaves it. Plain ``httpx`` against
 ``/chat/completions``; no SDK dependency.
 
-The model "thinks" by default; ``/no_think`` is sent and any ``<think>`` block
-is stripped from the answer regardless.
+The model "thinks" by default; ``/no_think`` is sent in the system prompt
+(and, with ``thinking=False``, in the last user message, #689) and any
+``<think>`` block or echoed ``/no_think`` is stripped from the answer.
 """
 
 from __future__ import annotations
@@ -24,6 +25,9 @@ from oncofiles import config
 logger = logging.getLogger(__name__)
 
 _THINK_RE = re.compile(r"<think>.*?</think>", re.S)
+NO_THINK = "/no_think"
+# A "/no_think" the model echoes back must never reach a transcript or sidecar.
+_NO_THINK_ECHO_RE = re.compile(r"[ \t]*/no_think\b")
 
 # Room for the model's reasoning *plus* the answer. Measured 2026-11-07 on
 # qwen3.8-27b-mlx: ~2400 reasoning tokens for one classification.
@@ -76,10 +80,34 @@ def image_part(png_bytes: bytes, mime: str = "image/png") -> dict:
 
 
 def strip_think(text: str) -> str:
+    """Remove reasoning from a model answer: ``<think>…</think>`` blocks
+    (including the empty one Qwen emits under ``/no_think``), anything before
+    a stray ``</think>`` whose opening tag the template ate, and a literal
+    ``/no_think`` echoed by the model (#689)."""
     text = _THINK_RE.sub("", text or "")
     if "</think>" in text:  # opening tag eaten by the template
         text = text.split("</think>", 1)[1]
+    text = _NO_THINK_ECHO_RE.sub("", text)
     return text.strip()
+
+
+def _with_no_think(user_content: list[dict] | str) -> list[dict] | str:
+    """User content carrying the Qwen ``/no_think`` soft switch exactly once (#689).
+
+    LM Studio ignores ``chat_template_kwargs.enable_thinking=false`` for the
+    Qwen3.x MLX model; the soft switch in the last user turn is what the
+    model itself honours. Text content gets it appended. Multimodal content
+    gets a NEW text part after the image part(s), so the instruction text and
+    part order are unchanged (infra review). The caller's list is not mutated."""
+    if isinstance(user_content, str):
+        if NO_THINK in user_content:
+            return user_content
+        return user_content + " " + NO_THINK
+    if any(
+        part.get("type") == "text" and NO_THINK in (part.get("text") or "") for part in user_content
+    ):
+        return user_content
+    return [*user_content, {"type": "text", "text": " " + NO_THINK}]
 
 
 def chat(
@@ -100,8 +128,11 @@ def chat(
     ``reasoning_effort`` is sent but LM Studio ignores it for the current
     Qwen3.8 MLX model (it logs "cannot be converted to any custom KVs"), so
     the model always thinks. ``thinking=False`` asks the chat template to skip
-    the reasoning (``chat_template_kwargs.enable_thinking=false``); ``None``
-    leaves the model's default. Pass a matching ``max_tokens`` budget.
+    the reasoning (``chat_template_kwargs.enable_thinking=false``) and, unless
+    ``LLM_NO_THINK_SOFT_SWITCH=false``, also adds the Qwen ``/no_think`` soft
+    switch to the last user message, since LM Studio ignores the kwarg for
+    Qwen3.x MLX (#689); ``None`` leaves the model's default. Pass a matching
+    ``max_tokens`` budget.
     ``response_format`` (OpenAI shape, e.g. ``{"type": "json_schema", ...}``)
     asks LM Studio for structured output; callers still parse defensively.
     ``info`` (optional dict) receives ``finish_reason`` of the completion."""
@@ -120,11 +151,12 @@ def chat(
         "model": config.LOCAL_LLM_MODEL,
         "temperature": temperature,
         "max_tokens": max_tokens,
-        # Qwen3.x reasons before answering and ignores "/no_think" in LM Studio;
-        # the reasoning counts against max_tokens, so callers pass a large budget.
+        # Qwen3.x reasons before answering and ignores "/no_think" in the SYSTEM
+        # prompt in LM Studio; the reasoning counts against max_tokens, so callers
+        # pass a large budget. thinking=False also puts it in the user turn (#689).
         "reasoning_effort": reasoning_effort,
         "messages": [
-            {"role": "system", "content": system + "\n/no_think"},
+            {"role": "system", "content": system + "\n" + NO_THINK},
             {"role": "user", "content": user_content},
         ],
     }
@@ -132,6 +164,9 @@ def chat(
         payload["response_format"] = response_format
     if thinking is not None:
         payload["chat_template_kwargs"] = {"enable_thinking": bool(thinking)}
+    if thinking is False and config.LLM_NO_THINK_SOFT_SWITCH:
+        # The kwarg alone is ignored by LM Studio for Qwen3.x MLX (#689).
+        payload["messages"][-1]["content"] = _with_no_think(user_content)
     headers = {"Content-Type": "application/json"}
     if config.LOCAL_LLM_API_KEY:
         headers["Authorization"] = f"Bearer {config.LOCAL_LLM_API_KEY}"
