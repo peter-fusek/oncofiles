@@ -58,6 +58,17 @@ REOCR_THINKING: str = os.environ.get("REOCR_THINKING", "on").strip().lower()
 # Context length LM Studio loads the model with (central macmini setting).
 # Change it together with LM Studio, or prompts + budgets overflow (#601).
 LOCAL_LLM_CONTEXT_WINDOW: int = int(os.environ.get("LOCAL_LLM_CONTEXT_WINDOW", "32768"))
+# LLM-first fact extraction (#714), phase 2a: SHADOW mode only. The MCP tool
+# curated_llm_extract_preview runs the local-model extractor + the generic
+# verifier on stored page text and reports agreement with the stored rule
+# facts (keys and counts only). It writes nothing, so it is enabled by
+# default; LLM_EXTRACT_SHADOW_DISABLED=true is the off-switch.
+LLM_EXTRACT_SHADOW_DISABLED: bool = (
+    os.environ.get("LLM_EXTRACT_SHADOW_DISABLED", "false").strip().lower() == "true"
+)
+# Model reasoning for the text extractor: "off" (default; the page text is
+# short and the answer is a copy job) or "on".
+LLM_EXTRACT_THINKING: str = os.environ.get("LLM_EXTRACT_THINKING", "off").strip().lower()
 
 GOOGLE_OAUTH_CLIENT_ID: str = os.environ.get("GOOGLE_OAUTH_CLIENT_ID", "")
 GOOGLE_OAUTH_CLIENT_SECRET: str = os.environ.get("GOOGLE_OAUTH_CLIENT_SECRET", "")

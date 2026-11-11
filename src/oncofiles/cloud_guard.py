@@ -64,6 +64,11 @@ def local_only(job: str):
         _local_only.reset(token)
 
 
+def local_only_job() -> str | None:
+    """Name of the enclosing local-only job, or None outside one."""
+    return _local_only.get()
+
+
 def check_cloud_allowed(what: str) -> None:
     job = _local_only.get()
     if job:
