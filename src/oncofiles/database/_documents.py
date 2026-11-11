@@ -670,6 +670,8 @@ class DocumentMixin:
         facts are unverified."""
         import json as _json
 
+        from oncofiles.database._facts import LLM_CLINICAL_FAMILY
+
         async with self.db.execute(
             "SELECT d.id, d.filename, d.gdrive_id, d.mime_type, d.category, d.document_date, "
             "d.structured_metadata, "
@@ -677,7 +679,9 @@ class DocumentMixin:
             "AND p.extracted_text LIKE '%[?]%') AS uncertain, "
             "(SELECT COUNT(*) FROM clinical_records c WHERE c.source_document_id = d.id "
             "AND c.patient_id = d.patient_id AND c.deleted_at IS NULL "
-            "AND c.verification = 'unverified') AS unverified_facts "
+            "AND c.verification = 'unverified' "  # lab facts only, not the #726 extractor's
+            f"AND COALESCE(c.extracted_by, '') NOT LIKE '{LLM_CLINICAL_FAMILY}%') "
+            "AS unverified_facts "
             "FROM documents d WHERE d.patient_id = ? AND d.file_id LIKE 'gdrive:%' "
             "AND d.deleted_at IS NULL ORDER BY d.id",
             (patient_id,),

@@ -15,6 +15,7 @@ from ._curated import CuratedMixin
 from ._documents import DocumentMixin
 from ._facts import FactsMixin
 from ._gmail import GmailMixin
+from ._hard_extract import HardExtractMixin
 from ._hard_facts import HardFactsMixin
 from ._onboarding import OnboardingEventsMixin
 from ._operational import OperationalMixin
@@ -29,6 +30,7 @@ class Database(
     ClinicalRecordsMixin,
     FactsMixin,
     HardFactsMixin,
+    HardExtractMixin,
     GmailMixin,
     CalendarMixin,
     OperationalMixin,

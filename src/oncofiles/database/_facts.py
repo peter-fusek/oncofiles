@@ -24,6 +24,12 @@ _LINK_TABLES = {
 }
 PROTECTED_VERIFICATION = ("verified", "corrected")
 EXTRACT_SOURCE = "curated-extract"
+# extracted_by prefix of the LLM extractor of the non-lab kinds (#726). Its
+# biomarker / lesion rows in clinical_records belong to that extractor: the
+# rule re-extraction of labs never deletes them, and lab corroboration,
+# date-conflict checks and the unverified metric never see them.
+LLM_CLINICAL_FAMILY = "llm-clinical"
+_NOT_LLM_CLINICAL = f"COALESCE(extracted_by, '') NOT LIKE '{LLM_CLINICAL_FAMILY}%'"
 
 
 def _rows(rows) -> list[dict]:
@@ -173,7 +179,8 @@ class FactsMixin:
         """
         async with self.db.execute(
             "SELECT id, code, occurred_at, verification FROM clinical_records "
-            "WHERE patient_id = ? AND source_document_id = ? AND deleted_at IS NULL",
+            "WHERE patient_id = ? AND source_document_id = ? AND deleted_at IS NULL "
+            f"AND {_NOT_LLM_CLINICAL}",
             (patient_id, document_id),
         ) as cur:
             existing = _rows(await cur.fetchall())
@@ -225,7 +232,8 @@ class FactsMixin:
         async with self.db.execute(
             "SELECT id, source_document_id, code, occurred_at, value_canonical, "
             "unit_canonical, verification, metadata_json, page_number FROM clinical_records "
-            "WHERE patient_id = ? AND deleted_at IS NULL AND code IS NOT NULL",
+            "WHERE patient_id = ? AND deleted_at IS NULL AND code IS NOT NULL "
+            f"AND {_NOT_LLM_CLINICAL}",
             (patient_id,),
         ) as cur:
             return _rows(await cur.fetchall())

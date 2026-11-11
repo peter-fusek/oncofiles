@@ -642,6 +642,9 @@ class HardFact(BaseModel):
     created_at: str | None = None
     deleted_at: str | None = None
     deleted_by: str | None = None
+    metadata_json: str | None = Field(
+        default=None, description="JSON: verifier reasons, printed forms, links (migration 081)"
+    )
 
 
 class Specimen(HardFact):
@@ -749,6 +752,13 @@ class TreatmentCycle(HardFact):
     actual_at: str | None = None
     dose_modification_reason: str | None = None
     encounter_id: int | None = None
+    # validated in Python (curated.clinical_store.CYCLE_STATUSES), no CHECK
+    status: str | None = Field(
+        default=None, description="planned | administered | postponed | cancelled"
+    )
+    status_reason: str | None = Field(
+        default=None, description="e.g. a printed postponement reason"
+    )
 
 
 class MedicationEvent(HardFact):

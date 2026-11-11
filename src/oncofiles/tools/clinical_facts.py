@@ -9,6 +9,7 @@ from statistics unless ``include_unverified`` is set, and always flagged.
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 
 from fastmcp import Context
 
@@ -158,32 +159,58 @@ def _stats(points: list[dict]) -> dict | None:
 
 
 async def patient_overview(ctx: Context, patient_slug: str | None = None) -> str:
-    """Where do we stand? Diagnoses, documents by type, latest key values, last visits.
+    """Where do we stand? Diagnoses, markers, documents by type, latest key values,
+    last visits, upcoming planned dates.
 
-    Start here for any question about a patient. Read-only.
+    ``diagnoses_and_markers`` lists conditions (printed text, code, stage) and
+    biomarker / genomic results, each with its verification, document and
+    page. Start here for any question about a patient. Read-only.
     """
     pid = await _resolve_patient_id(patient_slug, ctx)
     db = _get_db(ctx)
     latest = await db.latest_any_rows(patient_id=pid)  # newest, with its verification
-    conditions = [
-        r for r in latest if r["category"] in ("condition", "genetic_variant", "biomarker")
-    ]
     key = [r for r in latest if r["code"] in KEY_CODES]
     visits = await db.timeline_rows(patient_id=pid, kinds=["encounter"], limit=5)
     catalog = await db.fact_catalog_rows(patient_id=pid)
+    conditions = await db.condition_rows(patient_id=pid)  # #726: the conditions table
+    markers = await db.marker_rows(patient_id=pid)  # newest per code / label, any verification
+    today = datetime.now(UTC).date().isoformat()
     return _dump(
         {
             "documents_by_type": await db.document_category_counts(patient_id=pid),
             "diagnoses_and_markers": [
-                {
-                    "code": r["code"],
-                    "name": r["name_en"],
-                    "value": r["value_text"] or r["value_num"],
-                    "at": r["effective_at"],
-                    "source_document_id": r["source_document_id"],
-                }
-                for r in conditions
+                *(
+                    {
+                        "kind": "condition",
+                        "code": r["code"],
+                        "name": r["printed_text"],
+                        "value": r["stage"],
+                        "primary_cancer": bool(r["is_primary_cancer"]),
+                        "site": r["body_site"],
+                        "at": r["asserted_at"] or r["recorded_at"],
+                        "date_source": "printed" if r["asserted_at"] else "document",
+                        "verification": r["verification"],
+                        "source_document_id": r["source_document_id"],
+                        "page": r["page_number"],
+                    }
+                    for r in conditions
+                ),
+                *(
+                    {
+                        "kind": r["category"],
+                        "code": r["code"],
+                        "name": r["name_en"],
+                        "label": r["label_original"],
+                        "value": r["value_text"] or r["value_num"],
+                        "at": r["effective_at"],
+                        "verification": r["verification"],
+                        "source_document_id": r["source_document_id"],
+                        "page": r["page_number"],
+                    }
+                    for r in markers
+                ),
             ],  # fmt: skip
+            "upcoming": await db.planned_rows(patient_id=pid, from_day=today, limit=5),
             "latest_key_values": [
                 {
                     "code": r["code"],
@@ -216,9 +243,13 @@ async def timeline(
 ) -> str:
     """What happened, newest first: visits, documents, treatments, diagnoses, abnormal values.
 
-    kinds filters by: encounter, document, treatment, condition, procedure,
-    genetic_variant, biomarker, medication, lab, tumor_marker. Dates are ISO
-    (YYYY-MM-DD). Every row links its source document. Read-only.
+    kinds filters by: encounter, document, treatment (courses, cycles and legacy
+    treatment events), condition, procedure (surgery, biopsy, imaging,
+    radiotherapy), medication, genetic_variant, biomarker, imaging (CT lesion
+    sizes), planned (next cycle, examination or visit), lab, tumor_marker.
+    Dates are ISO (YYYY-MM-DD). Every row links its source document and page;
+    ``date_source = document`` means no date was printed for the item and the
+    document date is shown. Read-only.
     """
     pid = await _resolve_patient_id(patient_slug, ctx)
     rows = await _get_db(ctx).timeline_rows(

@@ -69,6 +69,14 @@ LLM_EXTRACT_SHADOW_DISABLED: bool = (
 # Model reasoning for the text extractor: "off" (default; the page text is
 # short and the answer is a copy job) or "on".
 LLM_EXTRACT_THINKING: str = os.environ.get("LLM_EXTRACT_THINKING", "off").strip().lower()
+# LLM-first extraction of the non-lab kinds (#726 item 4): diagnoses, biomarkers,
+# treatments, procedures, lesion sizes, planned dates. MCP tools
+# curated_clinical_extract_preview (dry run) and curated_clinical_extract
+# (dry_run=True by default; writes only with dry_run=false and a known DOB).
+# LLM_CLINICAL_EXTRACT_DISABLED=true is the off-switch for both.
+LLM_CLINICAL_EXTRACT_DISABLED: bool = (
+    os.environ.get("LLM_CLINICAL_EXTRACT_DISABLED", "false").strip().lower() == "true"
+)
 
 GOOGLE_OAUTH_CLIENT_ID: str = os.environ.get("GOOGLE_OAUTH_CLIENT_ID", "")
 GOOGLE_OAUTH_CLIENT_SECRET: str = os.environ.get("GOOGLE_OAUTH_CLIENT_SECRET", "")

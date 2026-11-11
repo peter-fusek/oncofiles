@@ -14,6 +14,14 @@ from oncofiles.tools._helpers import (
     _resolve_patient_id,
 )
 
+# event types for which the document-extracted courses / cycles / doses are listed
+_EXTRACTED_TYPES = ("chemo", "treatment", "cycle", "medication")
+DEPRECATION_NOTE = (
+    "list_treatment_events is deprecated: use timeline(kinds=['treatment', 'medication', "
+    "'planned']). 'events' is the frozen legacy table; 'courses', 'cycles' and "
+    "'medication_events' come from documents (#711, #726)."
+)
+
 
 async def _get_event_owned(db, event_id: int, pid: str) -> TreatmentEvent | None:
     """Fetch a treatment event by ID with patient ownership check.
@@ -77,15 +85,22 @@ async def list_treatment_events(
     limit: int = 50,
     patient_slug: str | None = None,
 ) -> str:
-    """List treatment events, optionally filtered by type and date range.
+    """[DEPRECATED — use timeline(kinds=["treatment", "medication", "planned"]);
+    the legacy treatment_events table is frozen (#711, #726)]
 
-    Returns events in reverse chronological order.
+    List treatment events, optionally filtered by type and date range, newest
+    first. Also returns what was extracted from documents: ``courses``
+    (regimen, line, intent, from–to), ``cycles`` (administered, postponed with
+    the printed reason, planned) and ``medication_events`` (drug, dose, basis,
+    route, validity), each with document_id, page and verification.
 
     Args:
-        event_type: Filter by event type (e.g. chemo, surgery).
+        event_type: Filter by event type (e.g. chemo, surgery). The extracted
+            courses/cycles/medications are included for no type or for
+            chemo / treatment / cycle / medication.
         date_from: Filter from this date (YYYY-MM-DD).
         date_to: Filter to this date (YYYY-MM-DD).
-        limit: Maximum results to return.
+        limit: Maximum results to return (per list).
         patient_slug: Optional — explicit patient slug (#429).
     """
     try:
@@ -98,6 +113,13 @@ async def list_treatment_events(
             limit=_clamp_limit(limit),
         )
         events = await db.list_treatment_events(query, patient_id=pid)
+        extracted = (
+            await db.treatment_rows(
+                patient_id=pid, date_from=date_from, date_to=date_to, limit=_clamp_limit(limit)
+            )
+            if event_type in (None, "", *_EXTRACTED_TYPES)
+            else {"courses": [], "cycles": [], "medication_events": []}
+        )
     except ValueError as e:
         return json.dumps({"error": str(e)})
     items = [
@@ -112,7 +134,16 @@ async def list_treatment_events(
         }
         for e in events
     ]
-    return json.dumps({"events": items, "total": len(items)})
+    return json.dumps(
+        {
+            "events": items,
+            "total": len(items),
+            **extracted,
+            "deprecated": DEPRECATION_NOTE,
+        },
+        ensure_ascii=False,
+        default=str,
+    )
 
 
 async def get_treatment_event(ctx: Context, event_id: int, patient_slug: str | None = None) -> str:

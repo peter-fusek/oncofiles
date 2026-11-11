@@ -6,6 +6,10 @@ import json
 
 from ._base import DatabaseBase
 
+# background jobs persisted in curated_runs that are not curated-folder runs
+# (re-OCR, verify-only re-read, clinical extraction #726)
+_NOT_RUNS = "trigger NOT IN ('reocr', 'reread', 'clinical')"
+
 
 class CuratedMixin(DatabaseBase):
     async def insert_curated_run(self, *, patient_id: str, dry_run: bool, trigger: str) -> int:
@@ -60,7 +64,9 @@ class CuratedMixin(DatabaseBase):
         """Newest first, without report_json (cheap list)."""
         async with self.db.execute(
             """SELECT id, run_id, trigger, dry_run, status, message, started_at, finished_at
-               FROM curated_runs WHERE patient_id = ? AND trigger NOT IN ('reocr', 'reread')
+               FROM curated_runs WHERE patient_id = ? AND """
+            + _NOT_RUNS
+            + """
                ORDER BY id DESC LIMIT ?""",
             (patient_id, max(1, min(limit, 200))),
         ) as cursor:
@@ -81,7 +87,7 @@ class CuratedMixin(DatabaseBase):
     async def get_last_curated_run(
         self, *, patient_id: str, dry_run: bool | None = None, finished: bool = True
     ) -> dict | None:
-        where = ["patient_id = ?", "trigger NOT IN ('reocr', 'reread')"]  # re-OCR jobs are not runs
+        where = ["patient_id = ?", _NOT_RUNS]
         params: list = [patient_id]
         if dry_run is not None:
             where.append("dry_run = ?")
