@@ -511,3 +511,18 @@ def test_no_external_images_on_public_pages():
         for src in re.findall(r'<img[^>]+src="([^"]+)"', text):
             assert src.startswith("/"), (name, src)
         assert not re.search(r"url\(\s*['\"]?https?:", text), name
+
+
+def test_landing_chat_carousel_starts_on_claude():
+    """Peter (Nov 2026): the chat previews rotate Claude -> ChatGPT -> Gemini
+    CLI and always start on Claude; reduced motion means no rotation."""
+    tabs = re.findall(r'role="tab" id="tab-(\w+)"[^>]*aria-selected="(true|false)"', LANDING)
+    assert tabs[0] == ("claude", "true")
+    assert [t for t, sel in tabs if sel == "true"] == ["claude"]
+    assert 'class="cw cw-warm is-active" id="chat-claude"' in LANDING
+    assert LANDING.count(' is-active" id="chat-') == 1
+    assert '<div class="chat-stage" id="chat-stage" aria-live="off">' in LANDING
+    assert "var ROTATE_ORDER = ['claude', 'gpt', 'gemini'];" in LANDING
+    assert "if (!stageEl || !tablist || reduceMotion) return;" in LANDING
+    assert "visibilitychange" in LANDING
+    assert not re.search(r"\son[a-z]+\s*=", LANDING)

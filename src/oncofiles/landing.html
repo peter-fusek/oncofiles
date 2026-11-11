@@ -510,6 +510,19 @@
     .agents { color: var(--ink-2); font-size: 0.95rem; margin-top: 20px; }
     .cw { border-radius: 14px; overflow: hidden; box-shadow: var(--lift); max-width: 780px; }
     .cw[hidden] { display: none; }
+    /* Carousel stage: all frames in one grid cell, so the tallest frame
+       reserves the height and switching never shifts the page (no CLS). */
+    .chat-stage { display: grid; align-items: center; }
+    .chat-stage > .cw { grid-area: 1 / 1; transition: opacity 0.6s ease, visibility 0.6s; }
+    .chat-stage > .cw:not(.is-active) { opacity: 0; visibility: hidden; pointer-events: none; }
+    .chat-tabs button { position: relative; }
+    .tab-prog { position: absolute; left: 0; right: 0; bottom: -1px; height: 2px; overflow: hidden; display: none; }
+    .tab-prog i { display: block; height: 100%; width: 0; background: var(--accent); }
+    .chat-tabs.rotating [aria-selected="true"] .tab-prog { display: block; }
+    .chat-tabs.rotating.run [aria-selected="true"] .tab-prog i { animation: chatprog var(--rot-ms, 7500ms) linear forwards; }
+    .chat-tabs.paused [aria-selected="true"] .tab-prog i { animation-play-state: paused; }
+    @keyframes chatprog { from { width: 0; } to { width: 100%; } }
+    @media (prefers-reduced-motion: reduce) { .chat-stage > .cw { transition: none; } .tab-prog { display: none !important; } }
     .cw-label { display: flex; align-items: center; gap: 10px; font: 500 12px/1.2 var(--sans); padding: 10px 16px; }
     .cw-label .wm { font: 600 14px/1.2 var(--ui); letter-spacing: -0.01em; }
     .cw-label .cw-note { margin-left: auto; }
@@ -596,7 +609,7 @@
       .chat-tabs { grid-template-columns: repeat(3, minmax(0, 1fr)); border: 1px solid var(--rule); border-radius: 8px; overflow: hidden; }
       .chat-tabs button { border-bottom: 0; border-right: 1px solid var(--rule); padding: 9px 6px; text-align: center; }
       .chat-tabs button:last-child { border-right: 0; }
-      .chat-tabs button span { display: none; }
+      .chat-tabs button span:not(.tab-prog) { display: none; }
       .chat-tabs button b { font-size: 0.85rem; }
       .chat-tabs button { grid-template-columns: 1fr; justify-items: center; }
       .cw-body { padding: 14px 12px 4px; }
@@ -929,16 +942,17 @@ Nič sa nemaže, len presúva do koša.
           <h2 data-sk="Pýtajte sa vlastnými slovami. Odpovedá z vašich dokumentov." data-en="Ask in your own words. It answers from your documents.">Pýtajte sa vlastnými slovami. Odpovedá z vašich dokumentov.</h2>
           <p data-sk="Spracovaný priečinok je k dispozícii priamo v rozhovore s vaším AI asistentom alebo agentom. Pri každej odpovedi je zdroj; kliknutím naň uvidíte riadok, z ktorého pochádza." data-en="Your processed folder is available right inside the conversation with your AI assistant or agent. Every answer carries its source; click it to see the line it came from.">Spracovaný priečinok je k dispozícii priamo v rozhovore s vaším AI asistentom alebo agentom. Pri každej odpovedi je zdroj; kliknutím naň uvidíte riadok, z ktorého pochádza.</p>
           <div class="chat-tabs" role="tablist" aria-label="Chat examples">
-            <button type="button" role="tab" id="tab-gpt" aria-controls="chat-gpt" aria-selected="true" data-action="showChat|gpt"><b data-sk="v ChatGPT" data-en="in ChatGPT">v ChatGPT</b><span class="soon" data-sk="pripravujeme" data-en="coming soon">pripravujeme</span><span data-sk="Aké boli posledné odbery?" data-en="What did my last blood test show?">Aké boli posledné odbery?</span></button>
-            <button type="button" role="tab" id="tab-claude" aria-controls="chat-claude" aria-selected="false" tabindex="-1" data-action="showChat|claude"><b data-sk="v Claude" data-en="in Claude">v Claude</b><span class="soon" data-sk="pripravujeme" data-en="coming soon">pripravujeme</span><span data-sk="Otázky na kontrolu u onkológa" data-en="Questions for the oncology visit">Otázky na kontrolu u onkológa</span></button>
-            <button type="button" role="tab" id="tab-gemini" aria-controls="chat-gemini" aria-selected="false" tabindex="-1" data-action="showChat|gemini"><b data-sk="v Gemini CLI" data-en="in Gemini CLI">v Gemini CLI</b><span class="soon" data-sk="pripravujeme" data-en="coming soon">pripravujeme</span><span data-sk="Agent porovná nový výsledok" data-en="An agent compares the new result">Agent porovná nový výsledok</span></button>
+            <button type="button" role="tab" id="tab-claude" aria-controls="chat-claude" aria-selected="true" data-action="pickChat|claude"><b data-sk="v Claude" data-en="in Claude">v Claude</b><span class="soon" data-sk="pripravujeme" data-en="coming soon">pripravujeme</span><span data-sk="Otázky na kontrolu u onkológa" data-en="Questions for the oncology visit">Otázky na kontrolu u onkológa</span><span class="tab-prog" aria-hidden="true"><i></i></span></button>
+            <button type="button" role="tab" id="tab-gpt" aria-controls="chat-gpt" aria-selected="false" tabindex="-1" data-action="pickChat|gpt"><b data-sk="v ChatGPT" data-en="in ChatGPT">v ChatGPT</b><span class="soon" data-sk="pripravujeme" data-en="coming soon">pripravujeme</span><span data-sk="Aké boli posledné odbery?" data-en="What did my last blood test show?">Aké boli posledné odbery?</span><span class="tab-prog" aria-hidden="true"><i></i></span></button>
+            <button type="button" role="tab" id="tab-gemini" aria-controls="chat-gemini" aria-selected="false" tabindex="-1" data-action="pickChat|gemini"><b data-sk="v Gemini CLI" data-en="in Gemini CLI">v Gemini CLI</b><span class="soon" data-sk="pripravujeme" data-en="coming soon">pripravujeme</span><span data-sk="Agent porovná nový výsledok" data-en="An agent compares the new result">Agent porovná nový výsledok</span><span class="tab-prog" aria-hidden="true"><i></i></span></button>
           </div>
           <p class="works" data-sk="Pripája sa cez otvorený protokol MCP. Klientov, ktorých spojenie sme na novom serveri ešte znova neoverili, označujeme „pripravujeme“. Rozhovory sú ilustračné, s vymyslenými údajmi." data-en="Connects through the open MCP protocol. Clients we have not yet re-verified end to end on the new server are marked “coming soon”. The conversations are illustrations with invented data.">Pripája sa cez otvorený protokol MCP. Klientov, ktorých spojenie sme na novom serveri ešte znova neoverili, označujeme „pripravujeme“. Rozhovory sú ilustračné, s vymyslenými údajmi.</p>
         </div>
         <div class="chats">
+          <div class="chat-stage" id="chat-stage" aria-live="off">
 
           <!-- Light, neutral chat frame (ChatGPT-like feel, not a copy) -->
-          <div class="cw cw-light" id="chat-gpt" role="tabpanel" aria-labelledby="tab-gpt" data-client="chatgpt" data-verified="false">
+          <div class="cw cw-light" id="chat-gpt" role="tabpanel" aria-labelledby="tab-gpt" data-client="chatgpt" data-verified="false" aria-hidden="true" inert>
             <div class="mac-bar"><span class="tl" aria-hidden="true"><i></i><i></i><i></i></span><span class="mac-title"><span class="wm">ChatGPT</span><span class="soon" data-sk="pripravujeme" data-en="coming soon">pripravujeme</span></span><span class="cw-note" data-sk="vymyslené údaje" data-en="invented data">vymyslené údaje</span></div>
             <div class="win-cols"><aside class="win-side" aria-hidden="true"><span class="ws-new"><span data-sk="Nový chat" data-en="New chat">Nový chat</span></span><span class="ws-item"><span data-sk="Hľadať v chatoch" data-en="Search chats">Hľadať v chatoch</span></span><span class="ws-head" data-sk="Chaty" data-en="Chats">Chaty</span><span class="ws-item on"><span data-sk="Posledné odbery krvi" data-en="Latest blood tests">Posledné odbery krvi</span></span><span class="ws-item"><span data-sk="Plán kontrol na apríl" data-en="Check-up plan for April">Plán kontrol na apríl</span></span><span class="ws-item"><span data-sk="Preklad správy do angličtiny" data-en="Translate a report to English">Preklad správy do angličtiny</span></span><span class="ws-item"><span data-sk="Otázky pre sestričku" data-en="Questions for the nurse">Otázky pre sestričku</span></span><span class="ws-user"><i>J</i>Jana T.</span></aside><div class="win-main">
             <div class="cw-body">
@@ -959,7 +973,7 @@ Nič sa nemaže, len presúva do koša.
           </div>
 
           <!-- Warm chat frame (Claude-like feel, not a copy) -->
-          <div class="cw cw-warm" id="chat-claude" role="tabpanel" aria-labelledby="tab-claude" data-client="claude" data-verified="true" hidden>
+          <div class="cw cw-warm is-active" id="chat-claude" role="tabpanel" aria-labelledby="tab-claude" data-client="claude" data-verified="true">
             <div class="phone-screen"><div class="ios-status" aria-hidden="true"><span class="ios-time">9:41</span><span class="island"></span><svg class="ios-icons" viewBox="0 0 68 12" aria-hidden="true"><rect x="0" y="8" width="3" height="4" rx="1"/><rect x="5" y="6" width="3" height="6" rx="1"/><rect x="10" y="3" width="3" height="9" rx="1"/><rect x="15" y="0" width="3" height="12" rx="1"/><path d="M24 4.5a9 9 0 0 1 12 0l-1.4 1.5a7 7 0 0 0-9.2 0zM26.6 7.3a5.2 5.2 0 0 1 6.8 0L30 11z"/><rect x="43" y="1" width="21" height="10" rx="3" fill="none" stroke="currentColor" stroke-width="1"/><rect x="45" y="3" width="15" height="6" rx="1.5"/><rect x="65" y="4" width="2" height="4" rx="1"/></svg></div><div class="app-head"><span class="ah-side" aria-hidden="true">☰</span><span class="ah-t"><span class="wm">Claude</span><span class="soon" data-sk="pripravujeme" data-en="coming soon">pripravujeme</span></span><span class="ah-side" aria-hidden="true">✎</span></div>
             <div class="cw-body">
               <p class="m-user"><span class="av" aria-hidden="true">J</span><span data-sk="Priprav mi otázky na stredajšiu kontrolu u onkológa." data-en="Prepare questions for my oncology visit on Wednesday.">Priprav mi otázky na stredajšiu kontrolu u onkológa.</span></p>
@@ -979,7 +993,7 @@ Nič sa nemaže, len presúva do koša.
           </div>
 
           <!-- Terminal frame (Gemini CLI as an agent) -->
-          <div class="cw cw-term" id="chat-gemini" role="tabpanel" aria-labelledby="tab-gemini" data-client="gemini-cli" data-verified="false" hidden>
+          <div class="cw cw-term" id="chat-gemini" role="tabpanel" aria-labelledby="tab-gemini" data-client="gemini-cli" data-verified="false" aria-hidden="true" inert>
             <div class="mac-bar dark"><span class="tl" aria-hidden="true"><i></i><i></i><i></i></span><span class="mac-title"><span class="wm">Gemini CLI</span><span class="mt-dim"> — ~/zdravie — 96×28</span><span class="soon" data-sk="pripravujeme" data-en="coming soon">pripravujeme</span></span><span class="cw-note" data-sk="vymyslené údaje" data-en="invented data">vymyslené údaje</span></div>
             <div class="term">
               <div class="term-body">
@@ -1000,6 +1014,7 @@ Nič sa nemaže, len presúva do koša.
             </div>
           </div>
 
+          </div>
           <p class="agents" data-sk="Tie isté nástroje použije akýkoľvek asistent s podporou MCP aj váš vlastný agent. Každá odpoveď cituje dokument, stranu a riadok, neoverené hodnoty sú označené. Oncofiles nenahrádza lekára." data-en="The same tools work for any MCP-capable assistant and for your own agent. Every answer cites the document, page and line, and unverified values are marked. Oncofiles does not replace your doctor.">Tie isté nástroje použije akýkoľvek asistent s podporou MCP aj váš vlastný agent. Každá odpoveď cituje dokument, stranu a riadok, neoverené hodnoty sú označené. Oncofiles nenahrádza lekára.</p>
         </div>
       </div>
@@ -1261,8 +1276,86 @@ Nič sa nemaže, len presúva do koša.
         t.setAttribute('tabindex', on ? '0' : '-1');
       });
       document.querySelectorAll('.chats [role="tabpanel"]').forEach(function (panel) {
-        panel.hidden = panel.id !== 'chat-' + name;
+        var on = panel.id === 'chat-' + name;
+        panel.classList.toggle('is-active', on);
+        if (on) { panel.removeAttribute('aria-hidden'); panel.removeAttribute('inert'); }
+        else { panel.setAttribute('aria-hidden', 'true'); panel.setAttribute('inert', ''); }
       });
+    }
+
+    /* Auto-rotation: Claude -> ChatGPT -> Gemini CLI -> loop, ~7.5 s each.
+       Pauses on hover/focus inside the stage, while the browser tab is
+       hidden, and for 20 s after a tab click. Off under reduced motion. */
+    var ROTATE_ORDER = ['claude', 'gpt', 'gemini'];
+    var ROTATE_MS = 7500, CLICK_PAUSE_MS = 20000;
+    var rot = { i: 0, timer: null, startedAt: 0, remaining: ROTATE_MS, reasons: {}, clickTimer: null, on: false };
+    var tablist = document.querySelector('.chat-tabs');
+    function rotPaused() { for (var k in rot.reasons) { if (rot.reasons[k]) return true; } return false; }
+    function restartProgress() {
+      if (!tablist) return;
+      tablist.classList.remove('run');
+      void tablist.offsetWidth;
+      tablist.classList.add('run');
+    }
+    function rotSchedule(ms) {
+      clearTimeout(rot.timer);
+      rot.remaining = ms;
+      rot.startedAt = Date.now();
+      if (!rotPaused()) rot.timer = setTimeout(rotNext, ms);
+    }
+    function rotNext() {
+      rot.i = (rot.i + 1) % ROTATE_ORDER.length;
+      showChat(ROTATE_ORDER[rot.i]);
+      restartProgress();
+      rotSchedule(ROTATE_MS);
+    }
+    function rotPause(reason) {
+      if (!rot.on) return;
+      var was = rotPaused();
+      rot.reasons[reason] = true;
+      if (!was) {
+        clearTimeout(rot.timer);
+        rot.remaining = Math.max(0, rot.remaining - (Date.now() - rot.startedAt));
+        tablist.classList.add('paused');
+      }
+    }
+    function rotResume(reason) {
+      if (!rot.on) return;
+      rot.reasons[reason] = false;
+      if (rotPaused()) return;
+      tablist.classList.remove('paused');
+      rot.startedAt = Date.now();
+      clearTimeout(rot.timer);
+      rot.timer = setTimeout(rotNext, rot.remaining);
+    }
+    function pickChat(name) {
+      showChat(name);
+      var j = ROTATE_ORDER.indexOf(name);
+      if (j !== -1) rot.i = j;
+      if (!rot.on) return;
+      rotPause('click');
+      rot.remaining = ROTATE_MS;
+      restartProgress();
+      clearTimeout(rot.clickTimer);
+      rot.clickTimer = setTimeout(function () { rotResume('click'); }, CLICK_PAUSE_MS);
+    }
+    function startRotation() {
+      var stageEl = document.getElementById('chat-stage');
+      showChat('claude');
+      rot.i = 0;
+      if (!stageEl || !tablist || reduceMotion) return;
+      rot.on = true;
+      tablist.style.setProperty('--rot-ms', ROTATE_MS + 'ms');
+      tablist.classList.add('rotating');
+      stageEl.addEventListener('mouseenter', function () { rotPause('hover'); });
+      stageEl.addEventListener('mouseleave', function () { rotResume('hover'); });
+      stageEl.addEventListener('focusin', function () { rotPause('focus'); });
+      stageEl.addEventListener('focusout', function (e) { if (!stageEl.contains(e.relatedTarget)) rotResume('focus'); });
+      document.addEventListener('visibilitychange', function () {
+        if (document.hidden) rotPause('hidden'); else rotResume('hidden');
+      });
+      restartProgress();
+      rotSchedule(ROTATE_MS);
     }
     function showSource(key) {
       var row = document.querySelector('.vrow[data-line="' + key + '"]');
@@ -1365,7 +1458,7 @@ Nič sa nemaže, len presúva do koša.
     }
     function closeBug() { document.getElementById('bug-overlay').classList.remove('open'); }
 
-    var ACTIONS = { pickValue: pickValue, toggleLang: toggleLang, openBug: openBug, closeBug: closeBug, showChat: showChat, showSource: showSource };
+    var ACTIONS = { pickValue: pickValue, toggleLang: toggleLang, openBug: openBug, closeBug: closeBug, showChat: showChat, pickChat: pickChat, showSource: showSource };
     function dispatch(spec) {
       if (!spec) return;
       var parts = String(spec).split('|');
@@ -1458,6 +1551,7 @@ Nič sa nemaže, len presúva do koša.
     current = document.querySelector('.vrow[aria-pressed="true"]');
     var initial = urlLang || load('oncofiles_lang') || 'sk';
     if (initial === 'en') applyLang('en');
+    startRotation();
     if (document.readyState === 'complete') startStage();
     else window.addEventListener('load', startStage);
   })();
