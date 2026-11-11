@@ -6,7 +6,8 @@ reach it, and the read runs inside ``local_only`` so no cloud path can open even
 by mistake. Drive I/O stays in the parent; the child only gets the file bytes.
 
 Protocol: stdin = one JSON header line (``name``, ``mime``, ``passes``) followed
-by the raw file bytes; stdout = one JSON object (the ``Reread`` fields plus
+by the raw file bytes (header may carry ``parallel`` and
+``second_pass_pages``); stdout = one JSON object (the ``Reread`` fields plus
 ``peak_rss_mb``). ``--probe`` instead reports what the child can see, for tests.
 """
 
@@ -61,6 +62,7 @@ def main() -> int:
             rr = reread(header["name"], content, header.get("mime") or "",
                         passes=int(header.get("passes", 2)),
                         parallel=int(header.get("parallel", 1)),
+                        second_pass_pages=header.get("second_pass_pages"),
                         doc_ref=header.get("doc_ref"))  # fmt: skip
             out = {**asdict(rr), "peak_rss_mb": round(_peak_rss_mb(), 1)}
     sys.stdout.write(json.dumps(out, ensure_ascii=False))

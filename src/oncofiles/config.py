@@ -60,6 +60,17 @@ REOCR_RSS_LIMIT_MB: float = float(os.environ.get("REOCR_RSS_LIMIT_MB", "450"))
 # Concurrent vision passes per page in a re-read (#593). 1 = sequential (default);
 # 2 needs at least 2 parallel slots in LM Studio (infra setting).
 REOCR_PARALLEL_PASSES: int = int(os.environ.get("REOCR_PARALLEL_PASSES", "1"))
+# Render resolution of the two re-OCR vision passes (#593 perf A/B). Defaults are
+# the values used since #660: pass 1 at 150 dpi, pass 2 at 220 dpi; every page is
+# still capped at extract.MAX_PAGE_PIXELS. Re-OCR / re-read only; the curation
+# pipeline's first OCR keeps extract.RENDER_DPI. Runtime env (the re-OCR child
+# inherits REOCR_*).
+REOCR_DPI: int = int(os.environ.get("REOCR_DPI", "150"))
+REOCR_SECOND_PASS_DPI: int = int(os.environ.get("REOCR_SECOND_PASS_DPI", "220"))
+# Second-pass policy (#593): "fixed2" (default) reads every page twice; "adaptive"
+# skips the second pass only where it provably cannot change what is confirmed
+# (see reocr._vision_passes); verification semantics never loosen.
+REOCR_PASSES_MODE: str = os.environ.get("REOCR_PASSES_MODE", "fixed2").strip().lower()
 # Model reasoning for re-OCR / re-read transcription (perf): "on" (default, the
 # model's own behaviour) or "off" (chat_template_kwargs.enable_thinking=false).
 # Transcription only; classification and extraction are not affected.
