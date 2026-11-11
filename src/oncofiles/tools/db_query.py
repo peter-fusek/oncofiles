@@ -17,6 +17,42 @@ Security contract (#486 / v5.15 sweep):
     empty (sentinel / admin session).
   * CTEs (`WITH`) and `UNION` are rejected — they complicate the filter
     proof without a real use case in this codebase.
+
+Engine-level enforcement (#738). The AST check above is now the SECOND
+layer; the first is SQLite itself:
+
+  * The query runs on a dedicated **read-only** connection to the same DB
+    file (``file:<path>?mode=ro``), opened per call and closed afterwards.
+    For an in-memory DB (tests) the shared connection is used, with every
+    step below done atomically on aiosqlite's worker thread.
+  * Per call, every patient-scoped table that exists gets two TEMP VIEWs:
+    an inner one with an unguessable per-call name,
+    ``_qdb_<nonce>_<table> = SELECT * FROM main.<table> WHERE patient_id =
+    '<pid>'``, and an outer one named exactly like the table
+    (``documents = SELECT * FROM temp._qdb_<nonce>_documents``). SQLite
+    resolves an unqualified name to the temp schema first, so ``documents``
+    in the user's SQL is the caller's rows only, whatever shape the query
+    has (OR 1=1, aliases, sub-queries, CTEs, UNION, windows, json_each,
+    outer joins).
+  * ``sqlite3.set_authorizer`` then DENIES every action except SELECT,
+    reads and functions on a safe list. A read of ``main.<patient table>``
+    is allowed only when SQLite reports the inner per-call view as the
+    accessing view — so ``main.documents`` written directly, or wrapped in
+    a user CTE or view named ``documents``, is denied. PRAGMA (including
+    ``pragma_*`` table-valued functions), ATTACH, DETACH, writes, DDL,
+    transactions, ``sqlite_*`` tables and ``load_extension`` are denied;
+    extension loading is also switched off on the connection.
+  * Admin-only tables keep the admin rule at the engine too.
+  * The pid comes from ``_resolve_patient_id`` and is interpolated into
+    the view only after it validates as a UUID; anything else creates no
+    views, so patient-scoped reads fail closed.
+
+Driver note: production runs aiosqlite (stdlib ``sqlite3``) on a local file
+— ``server.py`` refuses to start with ``TURSO_DATABASE_URL`` (#617). The
+libsql driver behind the legacy Turso path has no ``set_authorizer``; on it
+query_db falls back to the AST check plus statement-scoped shadowing (the
+same per-patient filter as leading CTEs, because temp views on that shared
+connection would leak into concurrent app queries) and logs a warning.
 """
 
 from __future__ import annotations
@@ -24,7 +60,14 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
+import secrets
+import sqlite3
+import time
+from dataclasses import dataclass, field
+from pathlib import Path
 
+import aiosqlite
 import sqlglot
 from fastmcp import Context
 from sqlglot import expressions as exp
@@ -80,6 +123,51 @@ ALLOWED_TABLES_ADMIN_ONLY: frozenset[str] = frozenset(
 )
 
 ALLOWED_TABLES: frozenset[str] = ALLOWED_TABLES_PATIENT_SCOPED | ALLOWED_TABLES_ADMIN_ONLY
+
+# Table-valued functions a query may read from. Their input is an
+# expression, so they only ever see rows the views already filtered.
+_SAFE_TABLE_VALUED: frozenset[str] = frozenset({"json_each", "json_tree"})
+
+# SQL functions the authorizer permits (#738). Anything else — including
+# load_extension, fts3_tokenizer, sqlite_* introspection and any function
+# an extension could register — is denied. Lower-case names, as SQLite
+# reports them; operators that compile to functions are listed too.
+SAFE_FUNCTIONS: frozenset[str] = frozenset(
+    {
+        # aggregates
+        "avg", "count", "group_concat", "max", "min", "string_agg", "sum", "total",
+        # window functions
+        "cume_dist", "dense_rank", "first_value", "lag", "last_value", "lead",
+        "nth_value", "ntile", "percent_rank", "rank", "row_number",
+        # scalar core
+        "abs", "char", "coalesce", "concat", "concat_ws", "format", "glob", "hex",
+        "if", "ifnull", "iif", "instr", "length", "like", "likelihood", "likely",
+        "lower", "ltrim", "nullif", "octet_length", "printf", "quote", "replace",
+        "round", "rtrim", "sign", "soundex", "substr", "substring", "trim",
+        "typeof", "unhex", "unicode", "unlikely", "upper",
+        # date/time
+        "date", "datetime", "julianday", "strftime", "time", "timediff", "unixepoch",
+        # math
+        "acos", "asin", "atan", "atan2", "ceil", "ceiling", "cos", "degrees", "exp",
+        "floor", "ln", "log", "log10", "log2", "mod", "pi", "pow", "power",
+        "radians", "sin", "sqrt", "tan", "trunc",
+        # JSON (scalar + aggregate; json_each/json_tree are table-valued, above)
+        "json", "json_array", "json_array_length", "json_error_position",
+        "json_extract", "json_group_array", "json_group_object", "json_insert",
+        "json_object", "json_patch", "json_quote", "json_remove", "json_replace",
+        "json_set", "json_type", "json_valid", "jsonb", "jsonb_array",
+        "jsonb_extract", "jsonb_object", "->", "->>",
+    }
+)  # fmt: skip
+
+_UUID_RE = re.compile(
+    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+)
+
+_ALLOWED_ACTIONS_NO_CHECK = frozenset({sqlite3.SQLITE_SELECT, sqlite3.SQLITE_RECURSIVE})
+
+ENFORCEMENT_ENGINE = "engine"  # authorizer + temp views + AST check
+ENFORCEMENT_FALLBACK = "ast+shadow"  # driver without set_authorizer (libsql)
 
 
 def _validate_query(sql: str, caller_pid: str, *, is_admin: bool = False) -> str | None:
@@ -273,6 +361,11 @@ async def query_db(
       - CTEs (WITH) and UNION are rejected.
       - Admin callers must pass patient_slug= explicitly; no implicit admin bypass.
       - System-wide tables (ALLOWED_TABLES_ADMIN_ONLY) are admin-only (#541).
+      - Engine-enforced (#738): the query runs on a read-only connection where
+        each patient table name is a per-call view of your rows only; reads of
+        the real tables, PRAGMA, ATTACH, writes and DDL are denied by SQLite.
+      - document_pages, lab_values, document_cross_references and
+        clinical_record_notes expose their parent's patient_id column.
 
     Args:
         sql: SELECT query. Tables: see ALLOWED_TABLES in this module.
@@ -287,8 +380,9 @@ async def query_db(
     except ValueError as exc:
         return json.dumps({"error": f"patient lookup failed: {exc}"})
 
-    # Validate.
-    err = _validate_query(sql, caller_pid, is_admin=_is_admin_caller())
+    # Validate (second layer since #738; the engine enforces the same contract).
+    is_admin = _is_admin_caller()
+    err = _validate_query(sql, caller_pid, is_admin=is_admin)
     if err is not None:
         return json.dumps({"error": err})
 
@@ -302,27 +396,284 @@ async def query_db(
     try:
         await db.reconnect_if_stale(timeout=5.0)
         result = await asyncio.wait_for(
-            _execute_query(db, query, row_limit),
-            timeout=QUERY_TIMEOUT_S,
+            _execute_query(db, query, row_limit, caller_pid=caller_pid, is_admin=is_admin),
+            # The engine path also interrupts itself at QUERY_TIMEOUT_S via a
+            # progress handler, so the worker thread does not outlive the call.
+            timeout=QUERY_TIMEOUT_S + 2,
         )
         return result
     except TimeoutError:
         return json.dumps({"error": f"Query timed out after {QUERY_TIMEOUT_S}s"})
+    except sqlite3.DatabaseError as exc:
+        msg = str(exc)
+        if "not authorized" in msg or "prohibited" in msg:
+            # SQLite's own text names the denied action/table, never row data.
+            return json.dumps({"error": f"Denied by the database engine (#738): {msg}"})
+        if "interrupted" in msg:
+            return json.dumps({"error": f"Query timed out after {QUERY_TIMEOUT_S}s"})
+        return json.dumps(_safe_error(exc, "query_db_execution_failed"))
     except Exception as exc:
         return json.dumps(_safe_error(exc, "query_db_execution_failed"))
 
 
-async def _execute_query(db, query: str, row_limit: int) -> str:
-    """Execute a read-only query and return JSON result."""
-    async with db.db.execute(query) as cursor:
-        columns = [d[0] for d in cursor.description] if cursor.description else []
-        rows = await cursor.fetchall()
+# ── Engine-level enforcement (#738) ──────────────────────────────────
+
+
+@dataclass
+class _Scope:
+    """Per-call temp views and which inner view may read which main table."""
+
+    nonce: str
+    # patient table -> inner per-call view name
+    inner_views: dict[str, str] = field(default_factory=dict)
+    # main table -> inner view names allowed to read it
+    allowed_sources: dict[str, set[str]] = field(default_factory=dict)
+    # every table/view name in the main schema (for column-less reads)
+    main_names: frozenset[str] = frozenset()
+
+    @property
+    def temp_names(self) -> frozenset[str]:
+        return frozenset(self.inner_views) | frozenset(self.inner_views.values())
+
+
+# Patient-scoped tables without their own patient_id column, scoped through
+# the parent row(s) they reference: table -> (parent table, FK columns). A row
+# is the caller's only when EVERY referenced parent is (#517 for cross refs).
+# The view exposes the parent's patient_id as `patient_id`, so the AST
+# layer's `patient_id = '<pid>'` requirement is satisfiable on these tables.
+_PARENT_SCOPED: dict[str, tuple[str, tuple[str, ...]]] = {
+    "document_pages": ("documents", ("document_id",)),
+    "lab_values": ("documents", ("document_id",)),
+    "document_cross_references": ("documents", ("source_document_id", "target_document_id")),
+    "clinical_record_notes": ("clinical_records", ("record_id",)),
+}
+
+
+def _valid_pid(pid: str | None) -> str | None:
+    """The pid if it is a UUID (safe to interpolate into a view), else None."""
+    if pid and _UUID_RE.match(pid):
+        return pid
+    return None
+
+
+def _columns(conn: sqlite3.Connection, table: str) -> set[str]:
+    return {r[1] for r in conn.execute(f'PRAGMA main.table_info("{table}")')}
+
+
+def _scope_body(table: str, pid: str, *, has_patient_id: bool) -> tuple[str, str] | None:
+    """SELECT body that limits ``table`` to ``pid``, and the parent it reads (or "")."""
+    if has_patient_id:
+        return f"SELECT * FROM main.\"{table}\" WHERE patient_id = '{pid}'", ""
+    if table in _PARENT_SCOPED:
+        parent, fks = _PARENT_SCOPED[table]
+        joins = " ".join(
+            f'JOIN main."{parent}" p{i} ON p{i}.id = c."{fk}"' for i, fk in enumerate(fks)
+        )
+        where = " AND ".join(f"p{i}.patient_id = '{pid}'" for i in range(len(fks)))
+        return (
+            f'SELECT c.*, p0.patient_id AS patient_id FROM main."{table}" c {joins} WHERE {where}',
+            parent,
+        )
+    return None  # no way to scope it: no view, reads are denied (fail closed)
+
+
+def _create_scope(conn: sqlite3.Connection, caller_pid: str | None) -> _Scope:
+    """Create the per-call shadowing temp views on ``conn`` (before the authorizer)."""
+    rows = conn.execute("SELECT type, name FROM main.sqlite_master").fetchall()
+    scope = _Scope(
+        nonce=secrets.token_hex(16),
+        main_names=frozenset(r[1].lower() for r in rows if r[0] in ("table", "view")),
+    )
+    pid = _valid_pid(caller_pid)
+    if pid is None:
+        # No authorized patient: no views, so every patient-scoped read hits
+        # main.<table> directly and the authorizer denies it (fail closed).
+        return scope
+    existing = {r[1] for r in rows if r[0] == "table"}
+    for table in sorted(ALLOWED_TABLES_PATIENT_SCOPED & existing):
+        view = _scope_body(table, pid, has_patient_id="patient_id" in _columns(conn, table))
+        if view is None:
+            continue
+        body, parent = view
+        inner = f"_qdb_{scope.nonce}_{table}"
+        conn.execute(f'DROP VIEW IF EXISTS temp."{table}"')
+        conn.execute(f'CREATE TEMP VIEW "{inner}" AS {body}')
+        conn.execute(f'CREATE TEMP VIEW "{table}" AS SELECT * FROM temp."{inner}"')
+        scope.inner_views[table] = inner
+        scope.allowed_sources.setdefault(table, set()).add(inner)
+        if parent:
+            scope.allowed_sources.setdefault(parent, set()).add(inner)
+    return scope
+
+
+def _drop_scope(conn: sqlite3.Connection, scope: _Scope) -> None:
+    for table, inner in scope.inner_views.items():
+        conn.execute(f'DROP VIEW IF EXISTS temp."{table}"')
+        conn.execute(f'DROP VIEW IF EXISTS temp."{inner}"')
+
+
+def _make_authorizer(scope: _Scope, *, is_admin: bool):
+    """Build the sqlite3 authorizer callback for one call (#738)."""
+    temp_names = scope.temp_names
+    allowed_sources = scope.allowed_sources
+    main_names = scope.main_names
+    ok, deny = sqlite3.SQLITE_OK, sqlite3.SQLITE_DENY
+
+    def _main_read(table: str, source: str | None) -> int:
+        # Patient rows only through this call's inner views: `source` is
+        # SQLite's inner-most view name, unguessable per call, so a user CTE
+        # or a `main.<table>` reference never matches.
+        if table in ALLOWED_TABLES_PATIENT_SCOPED or table in allowed_sources:
+            return ok if source in allowed_sources.get(table, ()) else deny
+        if table in ALLOWED_TABLES_ADMIN_ONLY:
+            return ok if is_admin else deny
+        return ok if table in _SAFE_TABLE_VALUED else deny
+
+    def _authorize(action, arg1, arg2, db_name, source):
+        if action in _ALLOWED_ACTIONS_NO_CHECK:
+            return ok
+        if action == sqlite3.SQLITE_FUNCTION:
+            return ok if (arg2 or "").lower() in SAFE_FUNCTIONS else deny
+        if action != sqlite3.SQLITE_READ:
+            # PRAGMA, ATTACH, DETACH, INSERT/UPDATE/DELETE, every CREATE/DROP/
+            # ALTER, TRANSACTION, SAVEPOINT, ANALYZE, REINDEX, ...
+            return deny
+        table = (arg1 or "").lower()
+        if table.startswith("sqlite_"):
+            return deny
+        if db_name == "temp":
+            return ok if table in temp_names else deny
+        if db_name == "main":
+            return _main_read(table, source)
+        if db_name is None and arg2 == "":
+            # A table referenced without reading any column (COUNT(*), a
+            # join side, a CTE). SQLite omits the schema for unqualified
+            # names. Our temp views win name resolution; any other name
+            # that exists in main is judged as a main read (row counts of
+            # e.g. `patients` stay hidden); anything else is a CTE.
+            if table in temp_names:
+                return ok
+            if table in main_names or table in ALLOWED_TABLES:
+                return _main_read(table, source)
+            return ok
+        return deny
+
+    return _authorize
+
+
+def _disable_extensions(conn: sqlite3.Connection) -> None:
+    if hasattr(conn, "enable_load_extension"):
+        conn.enable_load_extension(False)
+
+
+def _run_engine_scoped(
+    conn: sqlite3.Connection,
+    query: str,
+    row_limit: int,
+    caller_pid: str | None,
+    is_admin: bool,
+) -> tuple[list[str], list]:
+    """Run ``query`` under temp-view scoping + authorizer. Synchronous; one thread."""
+    _disable_extensions(conn)
+    scope = _create_scope(conn, caller_pid)
+    deadline = time.monotonic() + QUERY_TIMEOUT_S
+    try:
+        conn.set_progress_handler(lambda: 1 if time.monotonic() > deadline else 0, 1000)
+        conn.set_authorizer(_make_authorizer(scope, is_admin=is_admin))
+        try:
+            cursor = conn.execute(query)
+            try:
+                columns = [d[0] for d in cursor.description] if cursor.description else []
+                rows = cursor.fetchmany(row_limit + 1)
+            finally:
+                cursor.close()
+        finally:
+            conn.set_authorizer(None)
+            conn.set_progress_handler(None, 0)
+    finally:
+        _drop_scope(conn, scope)
+    return columns, rows
+
+
+def _readonly_uri(path: str) -> str:
+    return f"{Path(path).resolve().as_uri()}?mode=ro"
+
+
+def _run_on_readonly_file(
+    path: str, query: str, row_limit: int, caller_pid: str | None, is_admin: bool
+) -> tuple[list[str], list]:
+    """Open a per-call read-only connection to ``path`` and run the scoped query."""
+    conn = sqlite3.connect(_readonly_uri(path), uri=True, timeout=5.0, isolation_level=None)
+    try:
+        return _run_engine_scoped(conn, query, row_limit, caller_pid, is_admin)
+    finally:
+        conn.close()
+
+
+def _is_memory_path(path: str) -> bool:
+    return path in ("", ":memory:") or path.startswith("file::memory:") or "mode=memory" in path
+
+
+def _enforcement_mode(db) -> str:
+    """Which enforcement a query on ``db`` gets: engine, or the libsql fallback."""
+    raw = db.db
+    if isinstance(raw, aiosqlite.Connection):
+        return ENFORCEMENT_ENGINE  # stdlib sqlite3 always has set_authorizer
+    return ENFORCEMENT_FALLBACK
+
+
+def _shadow_with_ctes(query: str, caller_pid: str | None) -> str:
+    """Fallback scoping for drivers without an authorizer: leading CTEs that
+    shadow every patient-scoped table with the caller's rows. The AST check
+    already rejected WITH and schema-qualified names, so the user query
+    cannot reach ``main.<table>`` around them."""
+    pid = _valid_pid(caller_pid)
+    if pid is None:
+        return query
+    bodies = {
+        t: _scope_body(t, pid, has_patient_id=t not in _PARENT_SCOPED)
+        for t in sorted(ALLOWED_TABLES_PATIENT_SCOPED)
+    }
+    ctes = ", ".join(f'"{t}" AS ({b[0]})' for t, b in bodies.items() if b is not None)
+    return f"WITH {ctes} SELECT * FROM ({query})"
+
+
+async def _execute_query(
+    db,
+    query: str,
+    row_limit: int,
+    *,
+    caller_pid: str | None = None,
+    is_admin: bool = False,
+) -> str:
+    """Execute a read-only query under engine-level scoping and return JSON."""
+    raw = db.db
+    if _enforcement_mode(db) == ENFORCEMENT_ENGINE:
+        if _is_memory_path(str(db.path)):
+            # Tests: one in-memory connection. Views, authorizer, query and
+            # cleanup run as ONE job on aiosqlite's worker thread, so no other
+            # coroutine's statement can interleave and see the temp views.
+            columns, rows = await raw._execute(
+                lambda: _run_engine_scoped(raw._conn, query, row_limit, caller_pid, is_admin)
+            )
+        else:
+            columns, rows = await asyncio.to_thread(
+                _run_on_readonly_file, str(db.path), query, row_limit, caller_pid, is_admin
+            )
+    else:
+        logger.warning(
+            "query_db: driver %s has no set_authorizer — AST check + CTE shadowing only (#738)",
+            type(raw).__name__,
+        )
+        async with raw.execute(_shadow_with_ctes(query, caller_pid)) as cursor:
+            columns = [d[0] for d in cursor.description] if cursor.description else []
+            rows = await cursor.fetchall()
 
     results = []
     for row in rows[:row_limit]:
         record = {}
         for idx, col in enumerate(columns):
-            # Turso returns dicts, aiosqlite returns Row objects
+            # Turso returns dicts, sqlite3 returns tuples / Row objects
             val = row[col] if isinstance(row, dict) else row[idx]
             if isinstance(val, bytes):
                 val = f"<bytes:{len(val)}>"
