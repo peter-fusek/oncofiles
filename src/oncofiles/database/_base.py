@@ -35,7 +35,7 @@ class DatabaseBase:
             await self._db.close()
             self._db = None
 
-    async def ping(self, timeout: float = 5.0) -> None:
+    async def ping(self, timeout: float = 2.0) -> None:
         """Bounded ``SELECT 1`` against the local file. Raises on failure or timeout.
 
         Used by ``/readiness``. Never call from ``/health`` (liveness, no DB).

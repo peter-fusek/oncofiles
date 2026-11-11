@@ -84,3 +84,58 @@ async def test_ping_runs_a_real_query(db):
 async def test_ping_fails_when_not_connected():
     with pytest.raises(RuntimeError, match="not connected"):
         await Database(":memory:").ping(timeout=1.0)
+
+
+# ── /readiness ping: short timeout, single attempt (infra review of #750) ──
+
+
+def test_readiness_pings_with_at_most_two_seconds():
+    import inspect
+    import re
+
+    source = inspect.getsource(server.readiness)
+    timeouts = [float(t) for t in re.findall(r"db\.ping\(timeout=([0-9.]+)\)", source)]
+    assert timeouts == [2.0]
+    default = inspect.signature(Database.ping).parameters["timeout"].default
+    assert default <= 2.0
+
+
+async def test_ping_is_one_attempt_with_no_retry(db):
+    import asyncio
+
+    calls = []
+    real_wait_for = asyncio.wait_for
+
+    async def spy(aw, timeout):
+        calls.append(timeout)
+        return await real_wait_for(aw, timeout)
+
+    with patch("oncofiles.database._base.asyncio.wait_for", spy):
+        await db.ping()
+    assert calls == [2.0]
+
+
+async def test_ping_times_out_once_and_raises(db):
+    import asyncio
+
+    attempts = []
+
+    class _SlowCursor:
+        async def __aenter__(self):
+            attempts.append(1)
+            await asyncio.sleep(1.0)
+            return self
+
+        async def __aexit__(self, *a):
+            return None
+
+    fake_conn = MagicMock()
+    fake_conn.execute = MagicMock(return_value=_SlowCursor())
+    real = db._db
+    db._db = fake_conn
+    try:
+        with pytest.raises(TimeoutError):
+            await db.ping(timeout=0.05)
+    finally:
+        db._db = real
+    assert attempts == [1]  # no retry

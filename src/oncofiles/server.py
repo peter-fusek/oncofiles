@@ -4081,7 +4081,7 @@ def _readiness_caller_is_operator(request: Request) -> bool:
 
 @mcp.custom_route("/readiness", methods=["GET"])
 async def readiness(request: Request) -> JSONResponse:
-    """Readiness probe — checks DB connectivity with a 5 s timeout.
+    """Readiness probe — checks DB connectivity with a 2 s timeout (no retry).
 
     Suitable for dashboards and deeper monitoring; NOT used as the
     container healthcheck so a slow DB never gets the process killed.
@@ -4095,7 +4095,7 @@ async def readiness(request: Request) -> JSONResponse:
     try:
         lifespan_ctx = request.app.state.fastmcp_server._lifespan_result
         db: Database = lifespan_ctx["db"]
-        await db.ping(timeout=5.0)
+        await db.ping(timeout=2.0)
         result: dict = {"status": "ok", "version": VERSION, "db": "connected"}
         # Public-safe payload ends here. Anything below is operator-only.
         if not _readiness_caller_is_operator(request):
