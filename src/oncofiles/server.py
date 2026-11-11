@@ -7763,6 +7763,11 @@ db_query.register(mcp)
 prompt_log.register(mcp)
 integrations.register(mcp)
 
+# #608: readOnlyHint / destructiveHint from the declarative classification.
+from oncofiles.tool_annotations import ToolAnnotationTransform  # noqa: E402
+
+mcp.add_transform(ToolAnnotationTransform())
+
 # ── Backward-compatible re-exports for tests ─────────────────────────────────
 from oncofiles.tools._helpers import (  # noqa: E402, F401
     _check_baseline_labs,
