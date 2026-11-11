@@ -503,6 +503,7 @@ def extract_page(
                 res.dropped[f"{kind}:{why}"] += 1
             else:
                 cand["page_number"] = page_number
+                cand["answer_source"] = res.answer_source
                 res.candidates.append(cand)
     return res
 

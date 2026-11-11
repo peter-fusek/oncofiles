@@ -757,7 +757,15 @@ async def test_answer_only_in_reasoning_channel_is_read(db):
     via_content = await _extract(db, PAGES_A)
     assert via_reasoning["page_errors"] == 0
     assert via_reasoning["pages_used"] == len(PAGES_A)
-    assert via_reasoning["counts"] == via_content["counts"]
+    total = sum(c["machine"] + c["unverified"] for c in via_content["counts"].values())
+    assert total > 0
+    # same items found, but nothing from the reasoning channel is machine-trusted
+    assert {k: c["machine"] + c["unverified"] for k, c in via_reasoning["counts"].items()} == {
+        k: c["machine"] + c["unverified"] for k, c in via_content["counts"].items()
+    }
+    assert all(c["machine"] == 0 for c in via_reasoning["counts"].values())
+    assert via_reasoning["unverified_reasons"].get("llm_reasoning_channel") == total
+    assert all(it["verification"] == "unverified" for it in via_reasoning["items"])
     assert via_reasoning["answer_sources"] == {"reasoning": len(PAGES_A)}
     assert via_content["answer_sources"] == {"content": len(PAGES_A)}
 
