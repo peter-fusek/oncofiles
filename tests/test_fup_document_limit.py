@@ -90,8 +90,8 @@ _NUMERIC_LIMIT_RE = re.compile(r"list_documents\(\s*limit\s*=\s*(\d+)")
 # raise TypeError before the limit matters. Tracked separately — fixing them means
 # deciding patient scope, which is out of scope for #548. Remove from this
 # allowlist as each is fixed; do NOT add new entries.
+# resources.py (files://catalog) left the list in #717: the resource was removed.
 _KNOWN_BROKEN_UNSCOPED_CALLERS = {
-    "resources.py",  # files://catalog MCP resource, registered at server.py:7054
     "migrate_to_turso.py",
     "backfill_gdrive_ids.py",
     "backfill_ocr.py",
