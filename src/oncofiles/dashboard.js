@@ -1487,6 +1487,246 @@
       });
     }
 
+    // ── #573 Verify-only re-read and re-OCR console (admin only) ─────────
+    // Counts only: the API never returns fact values, dates or evidence text.
+    var RR_MAX = 10;
+    var rrState = { pid: '', selected: {}, docs: {}, pending: null, poll: null, loaded: false };
+
+    function rrMsg(el, sk, en) {
+      el.textContent = dashLang === 'sk' ? sk : en;
+      el.setAttribute('data-sk', sk);
+      el.setAttribute('data-en', en);
+    }
+
+    function rrSelectedIds() {
+      return Object.keys(rrState.selected).filter(function (k) { return rrState.selected[k]; }).map(Number);
+    }
+
+    function rrUpdateButtons(running) {
+      var n = rrSelectedIds().length;
+      var none = !rrState.pid;
+      ['rr-dry-btn', 'rr-real-btn'].forEach(function (id) {
+        var b = document.getElementById(id);
+        if (b) b.disabled = !!running || none || n === 0 || n > RR_MAX;
+      });
+      // Only a re-OCR dry run may auto-pick documents; every real run needs a selection.
+      var rd = document.getElementById('rr-reocr-dry-btn');
+      if (rd) rd.disabled = !!running || none || n > RR_MAX;
+      var rr = document.getElementById('rr-reocr-real-btn');
+      if (rr) rr.disabled = !!running || none || n === 0 || n > RR_MAX;
+    }
+
+    async function loadRereadConsole() {
+      var section = document.getElementById('reread-section');
+      if (!section) return;
+      if (rrState.loaded) return;  // the page refresh cycle must not wipe selections
+      var res = await coFetch('/api/admin/curated/overview');
+      if (!res.ok || !res.data) { section.style.display = 'none'; return; }
+      rrState.loaded = true;
+      section.style.display = 'block';
+      var sel = document.getElementById('rr-patient');
+      clearEl(sel);
+      var blank = coBilingual('option', '— vyber pacienta —', '— pick a patient —');
+      blank.value = '';
+      sel.appendChild(blank);
+      (res.data.patients || []).forEach(function (p) {
+        var o = coEl('option', p.name + ' (' + p.slug + ')' + (p.drive_connected ? '' : ' · Drive ✗'));
+        o.value = p.slug || p.patient_id;
+        sel.appendChild(o);
+      });
+      rrUpdateButtons(false);
+      if (typeof applyDashLang === 'function') applyDashLang();
+    }
+
+    async function rrSelectPatient(value) {
+      rrState.pid = value || '';
+      rrState.selected = {};
+      rrState.docs = {};
+      rrConfirmCancel();
+      clearEl(document.getElementById('rr-candidates'));
+      clearEl(document.getElementById('rr-status'));
+      rrMsg(document.getElementById('rr-note'), '', '');
+      if (!rrState.pid) { rrUpdateButtons(false); return; }
+      await rrLoadCandidates();
+      await rrLoadStatus();
+    }
+
+    async function rrLoadCandidates() {
+      var box = document.getElementById('rr-candidates');
+      clearEl(box);
+      var res = await coFetch('/api/admin/reread-candidates?patient_slug=' + encodeURIComponent(rrState.pid));
+      if (!res.ok || !res.data) {
+        box.appendChild(coBilingual('p', 'Kandidátov sa nepodarilo načítať (HTTP ' + res.status + ').', 'Could not load candidates (HTTP ' + res.status + ').', 'curated-ops-note'));
+        return;
+      }
+      var docs = res.data.documents || [];
+      if (!docs.length) {
+        box.appendChild(coBilingual('p', 'Žiadne dokumenty s neoverenými hodnotami z Cowork OCR.', 'No documents with unverified Cowork-OCR values.', 'curated-ops-note'));
+        rrUpdateButtons(false);
+        return;
+      }
+      box.appendChild(coBilingual('h4', 'Kandidáti (' + docs.length + ') — vyber najviac ' + RR_MAX, 'Candidates (' + docs.length + ') — pick at most ' + RR_MAX));
+      var t = coEl('table'), hr = coEl('tr');
+      hr.appendChild(coEl('th', ''));
+      [['ID', 'ID'], ['Súbor', 'File'], ['Kategória', 'Category'], ['Neoverené (Cowork)', 'Unverified (Cowork)']].forEach(function (h) { hr.appendChild(coBilingual('th', h[0], h[1])); });
+      t.appendChild(hr);
+      docs.forEach(function (d) {
+        rrState.docs[d.document_id] = d;
+        var tr = coEl('tr');
+        var td = coEl('td');
+        var cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.setAttribute('data-change', 'rrToggle|' + d.document_id + '|@this');
+        cb.setAttribute('aria-label', 'doc ' + d.document_id);
+        td.appendChild(cb);
+        tr.appendChild(td);
+        tr.appendChild(coEl('td', d.document_id, 'rr-num'));
+        tr.appendChild(coEl('td', d.filename));
+        tr.appendChild(coEl('td', d.category || '—'));
+        tr.appendChild(coEl('td', d.cowork_unverified, 'rr-num'));
+        t.appendChild(tr);
+      });
+      box.appendChild(t);
+      rrUpdateButtons(false);
+      if (typeof applyDashLang === 'function') applyDashLang();
+    }
+
+    function rrToggle(docId, el) {
+      if (el.checked && rrSelectedIds().length >= RR_MAX) {
+        el.checked = false;
+        rrMsg(document.getElementById('rr-note'), 'Najviac ' + RR_MAX + ' dokumentov naraz.', 'At most ' + RR_MAX + ' documents at a time.');
+        return;
+      }
+      rrState.selected[docId] = !!el.checked;
+      rrConfirmCancel();
+      rrUpdateButtons(false);
+    }
+
+    function rrStart(kind, mode) {
+      if (!rrState.pid) return;
+      var ids = rrSelectedIds();
+      if (ids.length > RR_MAX) return;
+      if (kind === 'reread' && ids.length === 0) return;
+      if (mode !== 'real') { rrSubmit(kind, ids, true); return; }
+      // Real store: explicit selection only (the server answers 400 otherwise),
+      // then a typed confirmation built into the page (no window.confirm).
+      if (ids.length === 0) return;
+      var expected = ids.length;
+      rrState.pending = { kind: kind, ids: ids, expected: expected };
+      var box = document.getElementById('rr-confirm');
+      var txt = document.getElementById('rr-confirm-text');
+      if (kind === 'reread') {
+        rrMsg(txt, 'Uložiť overenie pre ' + expected + ' dokumentov do databázy. Najprv over, že infra urobila čerstvý snapshot DB. Na potvrdenie napíš počet dokumentov (' + expected + ').',
+          'Store the verification of ' + expected + ' documents in the database. First make sure infra took a fresh DB snapshot. To confirm, type the number of documents (' + expected + ').');
+      } else {
+        rrMsg(txt, 'Prepísať naostro: ' + expected + ' vybraných dokumentov — mení sidecary v Drive (so zálohou) a databázu. Najprv čerstvý snapshot DB. Na potvrdenie napíš ' + expected + '.',
+          'Re-OCR for real: ' + expected + ' selected documents — rewrites sidecars in Drive (with a backup) and the database. Fresh DB snapshot first. To confirm, type ' + expected + '.');
+      }
+      var input = document.getElementById('rr-confirm-input');
+      input.value = '';
+      document.getElementById('rr-confirm-go').disabled = true;
+      box.style.display = 'block';
+      input.focus();
+    }
+
+    function rrConfirmCheck(value) {
+      var go = document.getElementById('rr-confirm-go');
+      if (go) go.disabled = !rrState.pending || String(value).trim() !== String(rrState.pending.expected);
+    }
+
+    function rrConfirmGo() {
+      var p = rrState.pending;
+      var input = document.getElementById('rr-confirm-input');
+      if (!p || !input || input.value.trim() !== String(p.expected)) return;
+      rrConfirmCancel();
+      rrSubmit(p.kind, p.ids, false);
+    }
+
+    function rrConfirmCancel() {
+      rrState.pending = null;
+      var box = document.getElementById('rr-confirm');
+      if (box) box.style.display = 'none';
+    }
+
+    async function rrSubmit(kind, ids, dry) {
+      rrUpdateButtons(true);
+      var url = kind === 'reocr' ? '/api/admin/reocr' : '/api/admin/reread';
+      var body = { patient_slug: rrState.pid, dry_run: dry };
+      if (ids.length) body.document_ids = ids;
+      var res = await coFetch(url, { method: 'POST', body: body });
+      var note = document.getElementById('rr-note');
+      if (res.status === 202) {
+        rrMsg(note, (dry ? 'Skúšobný beh' : 'Beh naostro') + ' spustený.', (dry ? 'Dry run' : 'Real run') + ' started.');
+      } else if (res.ok && res.data && res.data.status) {
+        rrMsg(note, 'Nič na spracovanie.', 'Nothing to do.');
+      } else {
+        var err = (res.data && res.data.error) || ('HTTP ' + res.status);
+        rrMsg(note, 'Nespustené: ' + err, 'Not started: ' + err);
+      }
+      await rrLoadStatus();
+    }
+
+    function rrCell(v) {
+      return (v === undefined || v === null) ? '—' : v;
+    }
+
+    async function rrLoadStatus() {
+      if (rrState.poll) { clearTimeout(rrState.poll); rrState.poll = null; }
+      if (!rrState.pid) return;
+      var pidAtCall = rrState.pid;
+      var res = await coFetch('/api/admin/reocr-status?patient_slug=' + encodeURIComponent(pidAtCall));
+      if (pidAtCall !== rrState.pid) return;  // patient changed meanwhile
+      var box = document.getElementById('rr-status');
+      clearEl(box);
+      if (!res.ok || !res.data) {
+        box.appendChild(coBilingual('p', 'Stav sa nepodarilo načítať (HTTP ' + res.status + ').', 'Could not load status (HTTP ' + res.status + ').', 'curated-ops-note'));
+        rrUpdateButtons(false);
+        return;
+      }
+      var j = res.data;
+      var running = j.state === 'running';
+      var kindSk = j.kind === 'reread' ? 'overenie' : (j.kind ? 're-OCR' : '—');
+      var kindEn = j.kind === 'reread' ? 'verification' : (j.kind ? 're-OCR' : '—');
+      var when = (j.finished_at || j.started_at || '').replace('T', ' ').slice(0, 19);
+      var modeSk = j.dry_run === undefined ? '' : (j.dry_run ? ', skúšobne' : ', naostro');
+      var modeEn = j.dry_run === undefined ? '' : (j.dry_run ? ', dry run' : ', real');
+      box.appendChild(coBilingual('h4', 'Posledná úloha: ' + kindSk + modeSk + ' — ' + j.state + (when ? ' (' + when + ' UTC)' : ''),
+        'Last job: ' + kindEn + modeEn + ' — ' + j.state + (when ? ' (' + when + ' UTC)' : '')));
+      if (j.error) box.appendChild(coBilingual('p', 'Chyba: ' + j.error, 'Error: ' + j.error, 'curated-ops-note'));
+      if (j.pre_store) box.appendChild(coBilingual('p', 'Bezpečnostná kópia DB pred uložením: ' + j.pre_store, 'Pre-store DB safety copy: ' + j.pre_store, 'curated-ops-note'));
+      if (running) box.appendChild(coBilingual('p', 'Beží… lokálny model číta minúty na stranu; stav sa obnovuje každých 15 s.', 'Running… the local model takes minutes per page; status refreshes every 15 s.', 'curated-ops-note'));
+      var names = {};
+      (j.documents || []).forEach(function (d) { names[d.document_id] = d.filename; });
+      var results = j.results || [];
+      if (results.length) {
+        var t = coEl('table'), hr = coEl('tr');
+        [['Dokument', 'Document'], ['Výsledok', 'Result'], ['Potvrdené', 'Confirmed'], ['Bez dátumu', 'Date unconfirmed'],
+         ['Nepotvrdené', 'Unconfirmed'], ['Kandidáti', 'Candidates'], ['Sekundy', 'Seconds'], ['Chyba', 'Error']].forEach(function (h) { hr.appendChild(coBilingual('th', h[0], h[1])); });
+        t.appendChild(hr);
+        results.forEach(function (r) {
+          var tr = coEl('tr');
+          tr.appendChild(coEl('td', r.document_id + ' ' + (r.filename || names[r.document_id] || '')));
+          tr.appendChild(coEl('td', r.result || '—'));
+          ['confirmed', 'date_unconfirmed', 'unconfirmed', 'candidates', 'seconds'].forEach(function (k) { tr.appendChild(coEl('td', rrCell(r[k]), 'rr-num')); });
+          tr.appendChild(coEl('td', r.error || (r.lost_count ? ('lost ' + r.lost_count) : '')));
+          t.appendChild(tr);
+        });
+        box.appendChild(t);
+      } else if ((j.documents || []).length) {
+        var ul = coEl('ul');
+        j.documents.forEach(function (d) { ul.appendChild(coEl('li', d.document_id + ' ' + (d.filename || ''))); });
+        box.appendChild(ul);
+      }
+      if (j.verification && j.verification.coded !== undefined) {
+        var v = j.verification;
+        box.appendChild(coBilingual('p', 'Po uložení: potvrdené re-readom ' + rrCell(v.reread_applied) + ', neoverené ' + v.unverified + ' z ' + v.coded + ' (' + v.unverified_pct + ' %).',
+          'After store: confirmed by re-read ' + rrCell(v.reread_applied) + ', unverified ' + v.unverified + ' of ' + v.coded + ' (' + v.unverified_pct + ' %).', 'curated-ops-note'));
+      }
+      rrUpdateButtons(running);
+      if (typeof applyDashLang === 'function') applyDashLang();
+      if (running) rrState.poll = setTimeout(rrLoadStatus, 15000);
+    }
+
     async function triggerManualSync() {
       var btn = document.getElementById('ip-sync-btn');
       if (!btn || btn.disabled) return;
@@ -1778,6 +2018,8 @@
       }
       // #573 curated-folder operations — admin only, independent fetch.
       if (isGlobalAdmin) { loadCuratedOps(); } else { var co = document.getElementById('curated-ops-section'); if (co) co.style.display = 'none'; }
+      // #573 verify-only re-read console — admin only, loads once (keeps selections).
+      if (isGlobalAdmin) { loadRereadConsole(); } else { var rr = document.getElementById('reread-section'); if (rr) rr.style.display = 'none'; }
       try {
         var sched = await apiFetch('/api/schedules');
         if (sched) renderSchedules(sched);

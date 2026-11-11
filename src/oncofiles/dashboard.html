@@ -315,6 +315,33 @@
  <div id="curated-ops-report" class="curated-ops-report"></div>
  </div>
 
+ <!-- Verify-only re-read and re-OCR (#573 / #678 — admin only) -->
+ <div class="sync-history" id="reread-section" style="display:none">
+ <h2><span data-sk="Overovanie a prepis (admin)" data-en="Verification and re-OCR (admin)">Overovanie a prepis (admin)</span></h2>
+ <p class="rr-banner" data-sk="Pred skutočným uložením (Uložiť overenie / Prepísať naostro) musí infra najprv urobiť čerstvý snapshot databázy. Server si navyše pred každým uložením urobí vlastnú overenú kópiu DB (bez nej úlohu odmietne). Skúšobný beh nič neukladá." data-en="Before a real store (Save verification / Re-OCR for real), infra must first take a fresh database snapshot. The server also makes its own verified DB copy before every store (and refuses the job without it). A dry run stores nothing.">Pred skutočným uložením (Uložiť overenie / Prepísať naostro) musí infra najprv urobiť čerstvý snapshot databázy. Server si navyše pred každým uložením urobí vlastnú overenú kópiu DB (bez nej úlohu odmietne). Skúšobný beh nič neukladá.</p>
+ <div class="rr-row">
+ <label for="rr-patient" class="curated-ops-meta" data-sk="Pacient" data-en="Patient">Pacient</label>
+ <select id="rr-patient" class="rr-select" data-change="rrSelectPatient|@value"></select>
+ </div>
+ <p class="curated-ops-note" id="rr-note"></p>
+ <div id="rr-candidates" class="curated-ops-report"></div>
+ <div class="curated-ops-actions rr-actions">
+ <button type="button" id="rr-dry-btn" data-action="rrStart|reread|dry" data-sk="Skúšobne overiť" data-en="Verify (dry run)">Skúšobne overiť</button>
+ <button type="button" id="rr-real-btn" data-action="rrStart|reread|real" data-sk="Uložiť overenie" data-en="Save verification">Uložiť overenie</button>
+ <button type="button" id="rr-reocr-dry-btn" data-action="rrStart|reocr|dry" data-sk="Skúšobný prepis (re-OCR)" data-en="Re-OCR (dry run)">Skúšobný prepis (re-OCR)</button>
+ <button type="button" id="rr-reocr-real-btn" data-action="rrStart|reocr|real" data-sk="Prepísať naostro (re-OCR)" data-en="Re-OCR for real">Prepísať naostro (re-OCR)</button>
+ </div>
+ <div id="rr-confirm" class="rr-confirm" style="display:none">
+ <p id="rr-confirm-text" class="curated-ops-meta"></p>
+ <input type="text" id="rr-confirm-input" class="rr-input" inputmode="numeric" autocomplete="off" data-input="rrConfirmCheck|@value" data-sk-placeholder="počet dokumentov" data-en-placeholder="number of documents">
+ <div class="curated-ops-actions">
+ <button type="button" id="rr-confirm-go" disabled data-action="rrConfirmGo" data-sk="Potvrdiť a uložiť" data-en="Confirm and store">Potvrdiť a uložiť</button>
+ <button type="button" data-action="rrConfirmCancel" data-sk="Zrušiť" data-en="Cancel">Zrušiť</button>
+ </div>
+ </div>
+ <div id="rr-status" class="curated-ops-report"></div>
+ </div>
+
  <!-- Processing Schedules (#287) -->
  <div class="sync-history" id="schedules-section">
  <h2 style="cursor:pointer" data-action="toggleSection|schedules-body|@this"><span data-sk="Spracovanie" data-en="Processing Schedules">Spracovanie</span> <span class="chevron" style="font-size:0.75rem;transition:transform 0.2s;display:inline-block">&#9654;</span></h2>
