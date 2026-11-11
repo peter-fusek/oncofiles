@@ -29,9 +29,12 @@ from oncofiles.tools.db_query import (
     ENFORCEMENT_ENGINE,
     ENFORCEMENT_FALLBACK,
     MAX_RESULT_BYTES,
+    MAX_RESULT_COLUMNS,
     MAX_RESULT_ROWS,
     MAX_VALUE_BYTES,
     SAFE_FUNCTIONS,
+    TooManyColumnsError,
+    _Collector,
     _enforcement_mode,
     _execute_query,
     _readonly_uri,
@@ -723,3 +726,87 @@ async def test_seeded_fuzz_never_returns_other_patient(two_db):
         assert PID_B not in json.dumps(out), sql
     # The generator must exercise real queries, not just denials.
     assert ok >= FUZZ_COUNT * 0.9, (ok, denied)
+
+
+# ── Wide rows: column limit, value limit, pre-sized rows (#738 review) ──
+
+
+def _wide_select(n_cols: int, width: int) -> str:
+    cols = ", ".join(f"printf('%.{width}c', 'x') AS c{i}" for i in range(n_cols))
+    return f"SELECT {cols} FROM documents"
+
+
+async def test_many_wide_columns_rejected_by_column_limit(two_db):
+    with pytest.raises(sqlite3.DatabaseError, match="too many columns"):
+        await _run(two_db, _wide_select(500, MAX_VALUE_BYTES - 10))
+
+
+def test_collector_rejects_too_many_columns():
+    with pytest.raises(TooManyColumnsError):
+        _Collector([f"c{i}" for i in range(MAX_RESULT_COLUMNS + 1)], 10)
+
+
+async def test_widest_allowed_row_truncated_without_serialising_it(tmp_path):
+    """64 columns x 100 kB: the row is judged from its column lengths and
+    dropped before any JSON is built, so peak Python memory stays near one
+    fetched row (columns x value limit), not a multiple of it."""
+    import tracemalloc
+
+    path = tmp_path / "wide.db"
+    database = Database(path)
+    await database.connect()
+    await database.migrate()
+    await _seed(database)
+    await database.close()
+
+    width = 100_000
+    tracemalloc.start()
+    try:
+        result = db_query._run_on_readonly_file(
+            str(path), _wide_select(MAX_RESULT_COLUMNS, width), 200, PID_A, False
+        )
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert result.truncated is True
+    assert result.truncated_by == "bytes"
+    assert result.rows == []
+    one_row = MAX_RESULT_COLUMNS * width
+    assert peak < one_row * 1.5, peak
+
+
+async def test_rows_stop_at_remaining_byte_budget(two_db):
+    # Each row ~ 60 kB: two fit under 150 kB, the third would not.
+    out = await _run(
+        two_db, _wide_select(1, 60_000).replace("FROM documents", "FROM documents a, documents b")
+    )
+    assert out["truncated"] is True and out["truncated_by"] == "bytes"
+    assert out["row_count"] == 2
+    assert len(json.dumps(out["rows"])) <= MAX_RESULT_BYTES
+
+
+async def test_stored_value_over_limit_returns_clear_error(two_db):
+    async with two_db.db.execute(
+        "SELECT id FROM main.documents WHERE patient_id = ? LIMIT 1", (PID_A,)
+    ) as cur:
+        doc_id = (await cur.fetchone())[0]
+    await two_db.db.execute(
+        "INSERT INTO document_pages (document_id, page_number, extracted_text) VALUES (?, 9, ?)",
+        (doc_id, "x" * (MAX_VALUE_BYTES + 1000)),
+    )
+    await two_db.db.commit()
+    ctx = MagicMock()
+    ctx.request_context.lifespan_context = {"db": two_db, "files": MagicMock()}
+    with patch("oncofiles.tools.db_query._resolve_patient_id", new=AsyncMock(return_value=PID_A)):
+        out = json.loads(
+            await query_db(
+                ctx,
+                f"SELECT extracted_text FROM document_pages WHERE patient_id = '{PID_A}'",
+            )
+        )
+        assert "exceeds" in out["error"]
+        many = ", ".join(f"id AS c{i}" for i in range(MAX_RESULT_COLUMNS + 1))
+        out = json.loads(
+            await query_db(ctx, f"SELECT {many} FROM documents WHERE patient_id = '{PID_A}'")
+        )
+        assert "Too many result columns" in out["error"]

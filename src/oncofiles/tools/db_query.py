@@ -95,12 +95,19 @@ QUERY_TIMEOUT_S = 10
 # the sorter only ever sorts rows the step budget let through.
 PROGRESS_CHECK_EVERY = 10_000
 MAX_VM_STEPS = 200_000_000
-MAX_VALUE_BYTES = 2_000_000
 # Hard caps on what one call returns, whatever LIMIT the SQL says. Rows are
 # fetched one at a time and fetching stops at either cap (truncated: true),
 # so a cartesian result is never materialised.
 MAX_RESULT_ROWS = 5000
 MAX_RESULT_BYTES = 150_000
+# Per-value and per-row memory bounds (#738 review). SQLite refuses any
+# string/blob longer than MAX_VALUE_BYTES (also when reading a stored value
+# that long) and any result set wider than MAX_RESULT_COLUMNS, so one
+# fetched row is at most MAX_RESULT_COLUMNS * MAX_VALUE_BYTES (~9.6 MB) in
+# Python before the byte cap judges it. The widest allow-listed table
+# (clinical_records) has 50 columns, so SELECT * on one table still works.
+MAX_VALUE_BYTES = MAX_RESULT_BYTES
+MAX_RESULT_COLUMNS = 64
 
 # Patient-scoped tables — readable iff the query filters by
 # `patient_id = '<caller_pid>'` literal equality. Everything in this set
@@ -434,6 +441,17 @@ async def query_db(
         if "not authorized" in msg or "prohibited" in msg:
             # SQLite's own text names the denied action/table, never row data.
             return json.dumps({"error": f"Denied by the database engine (#738): {msg}"})
+        if "too many columns" in msg:
+            return json.dumps(
+                {"error": f"Too many result columns; the limit is {MAX_RESULT_COLUMNS} (#738)"}
+            )
+        if "too big" in msg:
+            return json.dumps(
+                {
+                    "error": f"A value exceeds {MAX_VALUE_BYTES:,} bytes; select "
+                    "substr(...) or length(...) instead (#738)"
+                }
+            )
         if "interrupted" in msg:
             return json.dumps(
                 {
@@ -442,6 +460,8 @@ async def query_db(
                 }
             )
         return json.dumps(_safe_error(exc, "query_db_execution_failed"))
+    except TooManyColumnsError as exc:
+        return json.dumps({"error": f"{exc} (#738)"})
     except Exception as exc:
         return json.dumps(_safe_error(exc, "query_db_execution_failed"))
 
@@ -617,24 +637,53 @@ class _Result:
     truncated_by: str | None = None  # "rows" | "bytes"
 
 
+class TooManyColumnsError(ValueError):
+    """The result set is wider than MAX_RESULT_COLUMNS."""
+
+
+def _estimate_row_bytes(columns: list[str], row) -> int:
+    """Cheap lower bound of the row's JSON size, from per-column lengths only."""
+    size = 2
+    for idx, col in enumerate(columns):
+        val = row[col] if isinstance(row, dict) else row[idx]
+        size += len(col) + 6
+        if isinstance(val, str):
+            size += len(val)
+        elif isinstance(val, bytes):
+            size += 16  # rendered as "<bytes:N>"
+        else:
+            size += 4
+    return size
+
+
 class _Collector:
     """Accumulates rows up to the row and byte caps; tells the caller to stop."""
 
     def __init__(self, columns: list[str], row_limit: int) -> None:
+        if len(columns) > MAX_RESULT_COLUMNS:
+            raise TooManyColumnsError(
+                f"Result has {len(columns)} columns; the limit is {MAX_RESULT_COLUMNS}."
+            )
         self.result = _Result(columns=columns, rows=[])
         self.row_limit = min(max(1, row_limit), MAX_RESULT_ROWS)
         self.bytes = 0
 
+    def _stop(self, reason: str) -> bool:
+        self.result.truncated, self.result.truncated_by = True, reason
+        return False
+
     def add(self, row) -> bool:
         """Add one row; False when the caller must stop fetching."""
         if len(self.result.rows) >= self.row_limit:
-            self.result.truncated, self.result.truncated_by = True, "rows"
-            return False
+            return self._stop("rows")
+        remaining = MAX_RESULT_BYTES - self.bytes
+        # Judge the row from its column lengths before building anything.
+        if _estimate_row_bytes(self.result.columns, row) > remaining:
+            return self._stop("bytes")
         record = _to_record(self.result.columns, row)
-        size = len(json.dumps(record, default=str))
-        if self.bytes + size > MAX_RESULT_BYTES:
-            self.result.truncated, self.result.truncated_by = True, "bytes"
-            return False
+        size = len(json.dumps(record, default=str))  # exact; escaping can grow it
+        if size > remaining:
+            return self._stop("bytes")
         self.bytes += size
         self.result.rows.append(record)
         return True
@@ -659,7 +708,9 @@ def _run_engine_scoped(
         calls += 1
         return 1 if calls > max_calls or time.monotonic() > deadline else 0
 
+    # Set after the views exist (they are created under the normal limits).
     old_length = conn.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, MAX_VALUE_BYTES)
+    old_columns = conn.setlimit(sqlite3.SQLITE_LIMIT_COLUMN, MAX_RESULT_COLUMNS)
     try:
         conn.set_progress_handler(_progress, PROGRESS_CHECK_EVERY)
         conn.set_authorizer(_make_authorizer(scope, is_admin=is_admin))
@@ -677,6 +728,7 @@ def _run_engine_scoped(
             conn.set_authorizer(None)
             conn.set_progress_handler(None, 0)
     finally:
+        conn.setlimit(sqlite3.SQLITE_LIMIT_COLUMN, old_columns)
         conn.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, old_length)
         _drop_scope(conn, scope)
     return collector.result
