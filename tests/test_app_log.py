@@ -348,3 +348,50 @@ def test_raw_cap_bounds_the_work_and_reports_dropped_chars():
     out = app_log.redact(text)
     assert time.perf_counter() - t0 < 0.5
     assert f"…[truncated {len(text) - LIMIT} chars]" in out and len(out) < LIMIT + 64
+
+
+# ── a cut between a context prefix and its value (final review of #756) ──
+
+PREFIXES = ["Bearer ", "password: ", '"refresh_token": "']
+VALUE = "QzSyntheticValueQz" * 2
+
+
+def _filler(total: int, newlines: bool) -> str:
+    line = ("w " * 39 + "\n") if newlines else "w " * 40
+    return (line * (total // len(line) + 1))[:total]
+
+
+def _with_split_at(cut: int, total: int, prefix: str, newlines: bool) -> str:
+    """Filler with ``prefix`` ending exactly at ``cut`` and VALUE starting there."""
+    base = _filler(total, newlines)
+    text = base[: cut - len(prefix) - 1] + " " + prefix + VALUE + " " + base[cut + len(VALUE) + 1 :]
+    assert text[cut - len(prefix) : cut] == prefix and text[cut : cut + len(VALUE)] == VALUE
+    return text
+
+
+@pytest.mark.parametrize("newlines", [True, False])
+@pytest.mark.parametrize("prefix", PREFIXES)
+def test_helpers_never_show_a_value_without_its_prefix(prefix, newlines):
+    total = 40_000
+    cut = 20_000
+    text = _with_split_at(cut, total, prefix, newlines)
+    head = app_log._head(text, cut)  # head-side cut right after the prefix
+    tail = app_log._tail(text, total - cut)  # tail-side cut right before the value
+    assert prefix.strip() not in head[-app_log._CUT_LINE_CHARS :]
+    assert "Qz" not in tail and "Synthetic" not in tail
+    assert head.endswith(app_log._CUT) and tail.startswith(app_log._CUT)
+
+
+@pytest.mark.parametrize("newlines", [True, False])
+@pytest.mark.parametrize("prefix", PREFIXES)
+@pytest.mark.parametrize("where", ["raw_head", "raw_tail", "head", "tail"])
+def test_end_to_end_split_prefix_and_value_leaves_no_fragment(where, prefix, newlines):
+    total = RAW + RAW_TAIL if where.startswith("raw") else LIMIT * 4
+    cut = {
+        "raw_head": RAW - RAW_TAIL,
+        "raw_tail": total - RAW_TAIL,
+        "head": HEAD_N,
+        "tail": total - app_log._TAIL_CHARS,
+    }[where]
+    out = app_log.redact(_with_split_at(cut, total, prefix, newlines))
+    assert "Qz" not in out and "Synthetic" not in out, where
