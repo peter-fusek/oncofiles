@@ -479,6 +479,9 @@ async def test_fact_catalog_lists_local_codes(db, curated_env):
 
 # ── legacy lab tools read the facts model ──
 
+OUTLIER = 25.0  # an unverified value far off the verified trend
+LATER = "T10:00"  # later on the second day: it would be "the latest" if counted
+
 
 async def _curated_labs(db) -> tuple[str, str]:
     first = date(YEAR, 8, 3)
@@ -493,15 +496,20 @@ async def _curated_labs(db) -> tuple[str, str]:
     ])  # fmt: skip
     await _put(db, ERIKA_UUID, b.id, [
         _fact("WBC", second_at, 4.5, PER_NL, **WBC_REF),
+        _fact("WBC", second_at + LATER, OUTLIER, PER_NL, verification="unverified"),
         _fact("NEUT", second_at, 2.8, PER_NL),
     ])  # fmt: skip
     return first_at, second_at
 
 
+def _values(points: list[dict]) -> list:
+    return [p["value"] for p in points]
+
+
 async def test_lab_time_series_reads_curated_facts(db):
     first_at, second_at = await _curated_labs(db)
     ctx = _Ctx(db)
-    out = json.loads(await lab_trends.get_lab_time_series(ctx, parameters="WBC,ABS_NEUT,PLT"))
+    out = json.loads(await lab_trends.get_lab_time_series(ctx, parameters="WBC,ABS_NEUT"))
     assert out["source"] == "facts"
     wbc = out["parameters"]["WBC"]
     assert [p["date"] for p in wbc["series"]] == [first_at, second_at]
@@ -509,31 +517,95 @@ async def test_lab_time_series_reads_curated_facts(db):
     first, second = wbc["series"]
     assert first["reference_high"] == WBC_REF["ref_high"] and "delta" not in first
     assert second["delta"] == -1.5 and "delta_pct" in second
-    assert out["parameters"]["ABS_NEUT"]["code"] == "NEUT"  # legacy name mapped
-    assert out["parameters"]["ABS_NEUT"]["count"] == 2
-    plt = out["parameters"]["PLT"]
-    assert plt["count"] == 0 and plt["unverified_excluded"] == 1  # unverified out by default
-    out = json.loads(
-        await lab_trends.get_lab_time_series(ctx, parameters="PLT", include_unverified=True)
+    neut = out["parameters"]["ABS_NEUT"]
+    assert neut["code"] == "NEUT" and neut["count"] == len(neut["series"])  # legacy name
+
+
+async def test_lab_time_series_counts_only_verified_values_by_default(db):
+    await _curated_labs(db)
+    out = json.loads(await lab_trends.get_lab_time_series(_Ctx(db), parameters="WBC,PLT"))
+    wbc, plt = out["parameters"]["WBC"], out["parameters"]["PLT"]
+    assert OUTLIER not in _values(wbc["series"])  # not in the trend …
+    assert wbc["series"][-1]["delta"] == -1.5  # … and not in any delta
+    assert {p["verification"] for p in wbc["series"]} == {"machine"}
+    assert wbc["unverified_excluded"] == 1 and "unverified" not in wbc
+    assert plt["series"] == [] and plt["unverified_excluded"] == 1
+
+
+async def test_lab_time_series_lists_unverified_apart_when_asked(db):
+    await _curated_labs(db)
+    raw = await lab_trends.get_lab_time_series(
+        _Ctx(db), parameters="WBC,PLT", include_unverified=True
     )
-    assert [p["verification"] for p in out["parameters"]["PLT"]["series"]] == ["unverified"]
+    wbc, plt = json.loads(raw)["parameters"]["WBC"], json.loads(raw)["parameters"]["PLT"]
+    assert OUTLIER not in _values(wbc["series"])  # the trend is unchanged
+    assert wbc["series"][-1]["delta"] == -1.5
+    [apart] = wbc["unverified"]
+    assert apart["value"] == OUTLIER and apart["verification"] == "unverified"
+    assert "delta" not in apart  # listed, never counted
+    assert plt["series"] == []
+    assert [p["verification"] for p in plt["unverified"]] == ["unverified"]
 
 
-async def test_lab_trends_and_compare_read_curated_facts(db):
+async def test_lab_trends_excludes_unverified_by_default_and_lists_them_apart(db):
     first_at, second_at = await _curated_labs(db)
     ctx = _Ctx(db)
     trends = json.loads(await lab_trends.get_lab_trends(ctx, parameter="WBC"))
     assert trends["source"] == "facts"
     assert [v["lab_date"] for v in trends["values"]] == [first_at, second_at]
+    assert OUTLIER not in _values(trends["values"])
+    assert trends["unverified_excluded"] == 1 and "unverified" not in trends
     assert trends["values"][0]["gdrive_url"].startswith("https://drive.google.com/file/d/")
     every = json.loads(await lab_trends.get_lab_trends(ctx))
-    assert {v["parameter"] for v in every["values"]} == {"WBC", "NEUT"}
+    assert {v["parameter"] for v in every["values"]} == {"WBC", "NEUT"}  # no unverified PLT
 
+    asked = json.loads(
+        await lab_trends.get_lab_trends(ctx, parameter="WBC", include_unverified=True)
+    )
+    assert asked["values"] == trends["values"]  # the counted values do not change
+    assert [(v["value"], v["verification"]) for v in asked["unverified"]] == [
+        (OUTLIER, "unverified")
+    ]
+
+
+async def test_compare_lab_panels_never_compares_unverified_values(db):
+    first_at, second_at = await _curated_labs(db)
+    ctx = _Ctx(db)
     panels = json.loads(await lab_trends.compare_lab_panels(ctx, first_at, second_at))
     assert panels["source"] == "facts" and panels["available_dates"] == [second_at, first_at]
     wbc = next(p for p in panels["parameters"] if p["parameter"] == "WBC")
-    assert wbc["direction"] == "falling" and wbc["status"] == "in_range"
+    assert wbc["date_b"]["value"] != OUTLIER  # the later unverified value is not "the latest"
+    assert wbc["delta"] == -1.5 and wbc["direction"] == "falling"
+    assert wbc["status"] == "in_range"
     assert not any(p["parameter"] == "PLT" for p in panels["parameters"])  # unverified only
+    assert panels["unverified_excluded"] == 2 and "unverified" not in panels
+
+    asked = json.loads(
+        await lab_trends.compare_lab_panels(ctx, first_at, second_at, include_unverified=True)
+    )
+    assert asked["parameters"] == panels["parameters"]  # comparisons unchanged
+    assert {(u["parameter"], u["verification"]) for u in asked["unverified"]} == {
+        ("PLT", "unverified"),
+        ("WBC", "unverified"),
+    }
+
+
+async def test_reordered_evidence_is_logged_as_id_churn(db, caplog):
+    day = date(YEAR, 9, 6)
+    at = day.isoformat()
+    doc = await _doc(db, ERIKA_UUID, 1, day)
+    low = _fact("CRP", at, 4.0, "mg/L", evidence="CRP line a")
+    high = _fact("CRP", at, 9.0, "mg/L", evidence="CRP line b")
+    assert (await _put(db, ERIKA_UUID, doc.id, [low, high]))["id_churn"] == 0
+    assert (await _put(db, ERIKA_UUID, doc.id, [low, high]))["id_churn"] == 0  # same order
+    caplog.set_level("INFO", logger="oncofiles.database._facts")
+    moved = {**low, "evidence": "CRP line c"}  # now sorts after the other: ordinals swap
+    res = await _put(db, ERIKA_UUID, doc.id, [moved, high])
+    assert res["id_churn"] == 2
+    [record] = [r for r in caplog.records if "fact id churn" in r.getMessage()]
+    assert record.levelname == "INFO"
+    assert f"document_id={doc.id}" in record.getMessage()
+    assert record.args[1] == res["id_churn"]
 
 
 def test_legacy_lab_readers_are_marked_deprecated():

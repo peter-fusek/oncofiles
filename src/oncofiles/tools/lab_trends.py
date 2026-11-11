@@ -61,22 +61,22 @@ class _FactLabs:
         return [r["code"] for r in rows if r["code"] and r["category"] in LAB_FACT_CATEGORIES]
 
     async def rows(
-        self, codes: list[str], date_from: str | None, date_to: str | None, include_unverified: bool
-    ) -> tuple[list[dict], int]:
-        """Deduplicated rows (oldest first per code) and how many unverified
-        values were left out."""
+        self, codes: list[str], date_from: str | None, date_to: str | None
+    ) -> tuple[list[dict], list[dict]]:
+        """Deduplicated rows (oldest first per code), split into (counted,
+        unverified). Unverified values are never counted in a trend, delta or
+        comparison: with include_unverified the tools only LIST them, apart
+        and labelled."""
         from oncofiles.tools.clinical_facts import _dedupe
 
         if not codes:
-            return [], 0
+            return [], []
         rows = await self.db.fact_series_rows(
             patient_id=self.pid, codes=sorted(set(codes)), date_from=date_from, date_to=date_to
         )
         rows, _ = _dedupe(rows)
-        if include_unverified:
-            return rows, 0
-        kept = [r for r in rows if r["verification"] != "unverified"]
-        return kept, len(rows) - len(kept)
+        counted = [r for r in rows if r["verification"] != "unverified"]
+        return counted, [r for r in rows if r["verification"] == "unverified"]
 
     def point(self, r: dict) -> dict:
         """value/unit/range in one unit, as the legacy tools name them."""
@@ -235,7 +235,7 @@ async def get_lab_trends(
 
     Returns values sorted chronologically (oldest first) for plotting trends.
     Patients with lab facts (curated folders) are read from the facts model;
-    unverified values are left out unless include_unverified=true.
+    unverified values are never counted; include_unverified=true lists them apart, labelled.
 
     Args:
         parameter: Filter by parameter name (e.g. PLT, SII, CEA). If None, returns all.
@@ -243,7 +243,8 @@ async def get_lab_trends(
         date_to: Filter to this date (YYYY-MM-DD).
         limit: Maximum results to return.
         patient_slug: Optional — explicit patient slug (#429).
-        include_unverified: Facts model only — include unverified values.
+        include_unverified: Facts model only — also list unverified values, apart
+            (``unverified``) and labelled; they never enter trends or comparisons.
     """
     try:
         db = _get_db(ctx)
@@ -301,11 +302,19 @@ async def _fact_lab_trends(
     include_unverified: bool,
 ) -> str:
     codes = [facts.code_for(parameter)] if parameter else await facts.lab_codes()
-    rows, hidden = await facts.rows([c for c in codes if c], date_from, date_to, include_unverified)
-    rows = sorted(rows, key=lambda r: (r["effective_at"] or "", r["code"]))[:limit]
-    urls = await facts.doc_urls({r["source_document_id"] for r in rows if r["source_document_id"]})
-    items = [
-        {
+    rows, unverified = await facts.rows([c for c in codes if c], date_from, date_to)
+
+    def ordered(rs: list[dict]) -> list[dict]:
+        return sorted(rs, key=lambda r: (r["effective_at"] or "", r["code"]))[:limit]
+
+    rows = ordered(rows)
+    listed = ordered(unverified) if include_unverified else []
+    urls = await facts.doc_urls(
+        {r["source_document_id"] for r in rows + listed if r["source_document_id"]}
+    )
+
+    def item(r: dict) -> dict:
+        return {
             "lab_date": (r["effective_at"] or "")[:10],
             "parameter": parameter if parameter else r["code"],
             **facts.point(r),
@@ -314,11 +323,16 @@ async def _fact_lab_trends(
             "gdrive_url": urls.get(r["source_document_id"]),
             "verification": r["verification"],
         }
-        for r in rows
-    ]
-    return json.dumps(
-        {"values": items, "total": len(items), "source": "facts", "unverified_excluded": hidden}
-    )
+
+    out = {
+        "values": [item(r) for r in rows],
+        "total": len(rows),
+        "source": "facts",
+        "unverified_excluded": len(unverified),
+    }
+    if include_unverified:  # listed apart, labelled, never part of "values"
+        out["unverified"] = [item(r) for r in listed]
+    return json.dumps(out)
 
 
 # mFOLFOX6 pre-cycle safety thresholds (NCCN Guidelines + SmPC)
@@ -837,14 +851,16 @@ async def get_lab_time_series(
     deltas (absolute change and % change between consecutive measurements).
     Patients with lab facts (curated folders) are read from the facts model:
     values in the code's canonical unit, duplicates removed as in fact_series,
-    unverified values left out unless include_unverified=true.
+    unverified values never in a series or delta (include_unverified=true lists
+    them apart, labelled).
 
     Args:
         parameters: Comma-separated parameter names (e.g. "CEA,CA19_9" or "PLT").
         date_from: Start date filter (YYYY-MM-DD). Optional.
         date_to: End date filter (YYYY-MM-DD). Optional.
         patient_slug: Optional — explicit patient slug (#429).
-        include_unverified: Facts model only — include unverified values.
+        include_unverified: Facts model only — also list unverified values, apart
+            (``unverified``) and labelled; they never enter trends or comparisons.
     """
     db = _get_db(ctx)
     from oncofiles.tools._helpers import _resolve_patient_id
@@ -905,26 +921,25 @@ async def _fact_time_series(
     include_unverified: bool,
 ) -> str:
     codes = {p: facts.code_for(p) for p in param_list}
-    rows, _ = await facts.rows(
-        [c for c in codes.values() if c], date_from, date_to, include_unverified=True
-    )
+    rows, unverified = await facts.rows([c for c in codes.values() if c], date_from, date_to)
+
+    def point_of(r: dict) -> dict:
+        return {
+            "date": (r["effective_at"] or "")[:10],
+            **facts.point(r),
+            "flag": r["flag"],
+            "document_id": r["source_document_id"],
+            "at": r["effective_at"],
+            "verification": r["verification"],
+        }
+
     result: dict = {"parameters": {}, "source": "facts"}
     for param in param_list:
         series: list[dict] = []
-        hidden = 0
+        hidden = [point_of(r) for r in unverified if codes[param] and r["code"] == codes[param]]
         prev = None  # (value, unit) of the previous numeric point
         for r in (r for r in rows if codes[param] and r["code"] == codes[param]):
-            if r["verification"] == "unverified" and not include_unverified:
-                hidden += 1
-                continue
-            point = {
-                "date": (r["effective_at"] or "")[:10],
-                **facts.point(r),
-                "flag": r["flag"],
-                "document_id": r["source_document_id"],
-                "at": r["effective_at"],
-                "verification": r["verification"],
-            }
+            point = point_of(r)
             value = point["value"]
             if _numeric(value):
                 if prev is not None and prev[1] == point["unit"]:
@@ -937,8 +952,10 @@ async def _fact_time_series(
             "count": len(series),
             "series": series,
             "code": codes[param],
-            "unverified_excluded": hidden,
+            "unverified_excluded": len(hidden),
         }
+        if include_unverified:  # listed apart, labelled, never in series or deltas
+            result["parameters"][param]["unverified"] = hidden
     return json.dumps(result)
 
 
@@ -955,13 +972,14 @@ async def compare_lab_panels(
     Returns all parameters measured on both dates with change direction,
     absolute delta, percentage change, and out-of-range flags. Patients with
     lab facts (curated folders) are read from the facts model; unverified
-    values are left out unless include_unverified=true.
+    values are never compared (include_unverified=true lists them apart).
 
     Args:
         date_a: First date (YYYY-MM-DD), typically the earlier measurement.
         date_b: Second date (YYYY-MM-DD), typically the later measurement.
         patient_slug: Optional — explicit patient slug (#429).
-        include_unverified: Facts model only — include unverified values.
+        include_unverified: Facts model only — also list unverified values, apart
+            (``unverified``) and labelled; they never enter trends or comparisons.
     """
     db = _get_db(ctx)
     from oncofiles.tools._helpers import _resolve_patient_id
@@ -1043,10 +1061,10 @@ async def _fact_compare(
 ) -> str:
     codes = await facts.lab_codes()
     panels: list[dict[str, dict]] = []
-    hidden = 0
+    unverified: list[dict] = []
     for day in (date_a, date_b):  # sequential: one DB connection
-        rows, n = await facts.rows(codes, day, day, include_unverified)
-        hidden += n
+        rows, apart = await facts.rows(codes, day, day)
+        unverified += apart
         panel: dict[str, dict] = {}
         for r in rows:  # the day's latest value, the best verified among equal times
             cur = panel.get(r["code"])
@@ -1081,19 +1099,24 @@ async def _fact_compare(
         else:
             entry["status"] = "only_one_date"
         comparisons.append(entry)
-    return json.dumps(
-        {
-            "date_a": date_a,
-            "date_b": date_b,
-            "parameters": comparisons,
-            "total": len(comparisons),
-            "available_dates": await facts.db.fact_days(
-                patient_id=facts.pid, categories=LAB_FACT_CATEGORIES
-            ),
-            "source": "facts",
-            "unverified_excluded": hidden,
-        }
-    )
+    out = {
+        "date_a": date_a,
+        "date_b": date_b,
+        "parameters": comparisons,
+        "total": len(comparisons),
+        "available_dates": await facts.db.fact_days(
+            patient_id=facts.pid, categories=LAB_FACT_CATEGORIES
+        ),
+        "source": "facts",
+        "unverified_excluded": len(unverified),
+    }
+    if include_unverified:  # listed apart, labelled, never compared
+        out["unverified"] = [
+            {"parameter": r["code"], "date": (r["effective_at"] or "")[:10], **facts.point(r),
+             "document_id": r["source_document_id"], "verification": r["verification"]}
+            for r in unverified
+        ]  # fmt: skip
+    return json.dumps(out)
 
 
 async def get_lab_summary(ctx: Context, patient_slug: str | None = None) -> str:

@@ -11,8 +11,11 @@ Rules enforced here:
 from __future__ import annotations
 
 import json
+import logging
 
 from oncofiles import fact_identity
+
+logger = logging.getLogger(__name__)
 
 _NOW = "strftime('%Y-%m-%dT%H:%M:%SZ', 'now')"
 LOCAL_CODE_SYSTEM_PREFIX = "urn:oncofiles:local:"  # an institution's own lab abbreviations
@@ -181,7 +184,7 @@ class FactsMixin:
         """
         async with self.db.execute(
             "SELECT id, code, param, occurred_at, page_number, evidence, metadata_json, "
-            "verification, fhir_id, version_id FROM clinical_records "
+            "verification, fhir_id, version_id, value_num, value_text FROM clinical_records "
             "WHERE patient_id = ? AND source_document_id = ? AND deleted_at IS NULL ORDER BY id",
             (patient_id, document_id),
         ) as cur:
@@ -194,6 +197,8 @@ class FactsMixin:
         }
         taken: set[str] = set()
         prev_version: dict[str, int] = {}
+        # (natural key, value) → ids the replaced rows had, to count id churn
+        before: dict[tuple, set[str]] = {}
         removed = 0
         for r in existing:
             fid = current_ids[r["id"]]
@@ -207,6 +212,9 @@ class FactsMixin:
                     )
                 continue
             prev_version[fid] = max(prev_version.get(fid, 0), r["version_id"] or 1)
+            same = (fact_identity.row_key(patient_id, document_id, r), r["value_num"],
+                    r["value_text"])  # fmt: skip
+            before.setdefault(same, set()).add(fid)
             await self.db.execute(
                 f"UPDATE clinical_records SET deleted_at = {_NOW}, deleted_by = ?, "
                 "fhir_id = COALESCE(fhir_id, ?) WHERE id = ? AND patient_id = ?",
@@ -216,8 +224,12 @@ class FactsMixin:
             removed += 1
         to_insert = [f for f in facts if (f.get("code"), f.get("occurred_at")) not in protected]
         new_ids = fact_identity.ids_for_new_facts(patient_id, document_id, to_insert, taken)
-        added = 0
+        added = churn = 0
         for f, fid in zip(to_insert, new_ids, strict=True):
+            same = (fact_identity.fact_key(patient_id, document_id, f), f.get("value_num"),
+                    f.get("value_text"))  # fmt: skip
+            if same in before and fid not in before[same]:
+                churn += 1  # the same fact moved to another ordinal: its id changed
             cur = await self.db.execute(
                 "INSERT INTO clinical_records (patient_id, record_type, source_document_id, "
                 "occurred_at, param, value_num, value_text, unit, ref_range_low, ref_range_high, "
@@ -240,7 +252,15 @@ class FactsMixin:
             await self._audit(cur.lastrowid, "create", f, f"extracted by {extracted_by}")
             added += 1
         await self.db.commit()
-        return {"added": added, "removed": removed, "kept_verified": len(protected)}
+        if churn:
+            logger.info(
+                "fact id churn: document_id=%s, %d re-extracted facts got a new id "
+                "(ordinal shift within the same natural key)",
+                document_id,
+                churn,
+            )
+        return {"added": added, "removed": removed, "kept_verified": len(protected),
+                "id_churn": churn}  # fmt: skip
 
     async def fact_verification_rows(self, *, patient_id: str) -> list[dict]:
         """Active facts with what corroboration and the unverified metric need."""

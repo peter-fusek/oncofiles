@@ -92,22 +92,29 @@ def _assign(keys: list[str], evidence: list[str], taken: set[str]) -> list[str]:
     return out
 
 
+def fact_key(patient_id: str, document_id: int | None, f: dict) -> str:
+    """Natural key (no ordinal) of an extractor fact."""
+    return natural_key(
+        patient_id,
+        document_id,
+        code=f.get("code"),
+        label=f.get("label"),
+        occurred_at=f.get("occurred_at"),
+        page=f.get("page_number"),
+        meta=_meta(f.get("metadata")),
+    )
+
+
+def row_key(patient_id: str, document_id: int | None, r: dict) -> str:
+    """Natural key (no ordinal) of a stored ``clinical_records`` row."""
+    return _row_keys(patient_id, document_id, [r])[0]
+
+
 def ids_for_new_facts(
     patient_id: str, document_id: int | None, facts: list[dict], taken: set[str]
 ) -> list[str]:
     """Ids for extractor facts about to be inserted (in list order)."""
-    keys = [
-        natural_key(
-            patient_id,
-            document_id,
-            code=f.get("code"),
-            label=f.get("label"),
-            occurred_at=f.get("occurred_at"),
-            page=f.get("page_number"),
-            meta=_meta(f.get("metadata")),
-        )
-        for f in facts
-    ]
+    keys = [fact_key(patient_id, document_id, f) for f in facts]
     return _assign(keys, [f.get("evidence") or "" for f in facts], taken)
 
 
