@@ -91,11 +91,15 @@ def chat(
     client: httpx.Client | None = None,
     timeout: float | None = None,
     reasoning_effort: str = "low",
+    thinking: bool | None = None,
 ) -> str:
     """One blocking chat completion; returns the answer text.
 
-    ``reasoning_effort="high"`` is for second passes where accuracy matters
-    more than time (re-OCR, #660); pass a matching ``max_tokens`` budget."""
+    ``reasoning_effort`` is sent but LM Studio ignores it for the current
+    Qwen3.8 MLX model (it logs "cannot be converted to any custom KVs"), so
+    the model always thinks. ``thinking=False`` asks the chat template to skip
+    the reasoning (``chat_template_kwargs.enable_thinking=false``); ``None``
+    leaves the model's default. Pass a matching ``max_tokens`` budget."""
     if not configured():
         raise LocalLLMError("LOCAL_LLM_BASE_URL / LOCAL_LLM_MODEL not set")
     est = estimate_prompt_tokens(system, user_content)
@@ -119,6 +123,8 @@ def chat(
             {"role": "user", "content": user_content},
         ],
     }
+    if thinking is not None:
+        payload["chat_template_kwargs"] = {"enable_thinking": bool(thinking)}
     headers = {"Content-Type": "application/json"}
     if config.LOCAL_LLM_API_KEY:
         headers["Authorization"] = f"Bearer {config.LOCAL_LLM_API_KEY}"

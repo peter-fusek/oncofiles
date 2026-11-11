@@ -422,3 +422,39 @@ def test_reread_parallelism_is_capped_by_running_jobs(monkeypatch):
     monkeypatch.setattr(config, "REOCR_PARALLEL_PASSES", 1)
     monkeypatch.setattr(tool, "_reocr_jobs", {})
     assert tool._reread_parallel() == 1  # default: sequential
+
+
+def test_thinking_off_is_sent_only_when_configured(monkeypatch):
+    """perf: REOCR_THINKING=off asks the template to skip reasoning; default sends nothing."""
+    from oncofiles import config
+
+    sent = []
+    monkeypatch.setattr(llm, "chat", lambda *a, **k: sent.append(k.get("thinking")) or "x")
+    pdf = _scan_pdf(1)
+    reocr._vision_passes(pdf, "pdf", [100], client=object())
+    monkeypatch.setattr(config, "REOCR_THINKING", "off")
+    reocr._vision_passes(pdf, "pdf", [100], client=object())
+    assert sent == [None, False]
+
+
+def test_chat_payload_carries_enable_thinking(monkeypatch):
+    import httpx
+
+    from oncofiles import config
+
+    monkeypatch.setattr(config, "LOCAL_LLM_BASE_URL", "http://llm.test/v1")
+    monkeypatch.setattr(config, "LOCAL_LLM_MODEL", "qwen-local")
+    bodies = []
+
+    def handler(request):
+        import json as _json
+
+        bodies.append(_json.loads(request.content))
+        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"},
+                                                      "finish_reason": "stop"}]})  # fmt: skip
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    llm.chat("sys", "hi", client=client, thinking=False)
+    llm.chat("sys", "hi", client=client)
+    assert bodies[0]["chat_template_kwargs"] == {"enable_thinking": False}
+    assert "chat_template_kwargs" not in bodies[1]
