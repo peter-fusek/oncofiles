@@ -1,4 +1,4 @@
-"""Tests for document deduplication detection and trash auto-purge."""
+"""Tests for document deduplication detection and trash retention (no auto-purge, #734)."""
 
 from __future__ import annotations
 
@@ -56,103 +56,37 @@ async def test_find_duplicates_excludes_deleted(db: Database):
     assert groups == []
 
 
-# ── Trash auto-purge ──────────────────────────────────────────────────────
+# ── Trash retention: nothing is purged automatically (#734) ──────────────
 
 
-async def test_purge_expired_trash_none(db: Database):
-    """No purge when trash is empty."""
-    count = await db.purge_expired_trash(days=30, patient_id=ERIKA_UUID)
-    assert count == 0
+def test_database_has_no_trash_purge():
+    """The 30-day hard-delete purge was removed, not flagged off (#734)."""
+    assert not hasattr(Database, "purge_expired_trash")
 
 
-async def test_purge_expired_trash_recent(db: Database):
-    """Recently deleted documents are NOT purged."""
-    doc = await db.insert_document(make_doc(file_id="f1"), patient_id=ERIKA_UUID)
-    await db.delete_document(doc.id)
-
-    count = await db.purge_expired_trash(days=30, patient_id=ERIKA_UUID)
-    assert count == 0
-
-    # Still in trash
-    trash = await db.list_trash(patient_id=ERIKA_UUID)
-    assert len(trash) == 1
-
-
-async def test_purge_expired_trash_old(db: Database):
-    """Documents deleted over N days ago are purged permanently."""
-    doc = await db.insert_document(make_doc(file_id="f1"), patient_id=ERIKA_UUID)
-
-    # Manually set deleted_at to 31 days ago
-    await db.db.execute(
-        "UPDATE documents SET deleted_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-31 days') "
-        "WHERE id = ?",
-        (doc.id,),
-    )
-    await db.db.commit()
-
-    count = await db.purge_expired_trash(days=30, patient_id=ERIKA_UUID)
-    assert count == 1
-
-    # Gone from trash
-    trash = await db.list_trash(patient_id=ERIKA_UUID)
-    assert len(trash) == 0
-
-    # Gone from DB entirely
-    result = await db.get_document(doc.id, patient_id=ERIKA_UUID)
-    assert result is None
-
-
-async def test_purge_cleans_ocr_pages(db: Database):
-    """Purge also removes associated OCR pages."""
-    doc = await db.insert_document(make_doc(file_id="f1"), patient_id=ERIKA_UUID)
-    await db.save_ocr_page(doc.id, 1, "Page 1 text", "test-model")
-
-    # Set deleted 31 days ago
-    await db.db.execute(
-        "UPDATE documents SET deleted_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-31 days') "
-        "WHERE id = ?",
-        (doc.id,),
-    )
-    await db.db.commit()
-
-    await db.purge_expired_trash(days=30, patient_id=ERIKA_UUID)
-
-    # OCR pages should be gone
-    pages = await db.get_ocr_pages(doc.id)
-    assert pages == []
-
-
-async def test_purge_cleans_lab_values(db: Database):
-    """Purge also removes associated lab values."""
+async def test_old_trash_stays_with_its_pages_and_labs_and_restores(db: Database):
+    """A document trashed long ago keeps its row, OCR pages and lab values,
+    and restore_document still brings it back."""
     from tests.helpers import make_lab_value
 
     doc = await db.insert_document(make_doc(file_id="f1"), patient_id=ERIKA_UUID)
-    await db.insert_lab_values(
-        [
-            make_lab_value(document_id=doc.id, parameter="WBC", value=6.8),
-        ]
-    )
+    await db.save_ocr_page(doc.id, 1, "Invented page text", "test-model")
+    await db.insert_lab_values([make_lab_value(document_id=doc.id, parameter="WBC", value=4.2)])
 
-    # Set deleted 31 days ago
+    # Trashed well past the old 30-day purge window.
     await db.db.execute(
-        "UPDATE documents SET deleted_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-31 days') "
+        "UPDATE documents SET deleted_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-400 days') "
         "WHERE id = ?",
         (doc.id,),
     )
     await db.db.commit()
 
-    await db.purge_expired_trash(days=30, patient_id=ERIKA_UUID)
+    trash = await db.list_trash(patient_id=ERIKA_UUID)
+    assert [d.id for d in trash] == [doc.id]
+    assert len(await db.get_ocr_pages(doc.id)) == 1
+    assert len(await db.get_lab_snapshot(doc.id)) == 1
 
-    # Lab values should be gone
-    snapshot = await db.get_lab_snapshot(doc.id)
-    assert snapshot == []
-
-
-async def test_purge_preserves_active_documents(db: Database):
-    """Active (non-deleted) documents are never purged."""
-    await db.insert_document(make_doc(file_id="f1"), patient_id=ERIKA_UUID)
-    await db.insert_document(make_doc(file_id="f2"), patient_id=ERIKA_UUID)
-
-    count = await db.purge_expired_trash(days=0, patient_id=ERIKA_UUID)  # even with 0 days
-    assert count == 0
-    assert await db.count_documents(patient_id=ERIKA_UUID) == 2
+    assert await db.restore_document(doc.id)
+    assert await db.list_trash(patient_id=ERIKA_UUID) == []
+    restored = await db.get_document(doc.id, patient_id=ERIKA_UUID)
+    assert restored is not None and restored.deleted_at is None

@@ -353,10 +353,11 @@ async def get_document_by_id(ctx: Context, doc_id: int, patient_slug: str | None
 
 
 async def delete_document(ctx: Context, file_id: str, patient_slug: str | None = None) -> str:
-    """Soft-delete a document (moves to trash, recoverable for 30 days).
+    """Soft-delete a document (moves it to trash; it stays there until restored).
 
     The document is hidden from all listings and searches but can be restored
-    using restore_document. Files API copy is also deleted.
+    at any time using restore_document — trash is never purged automatically.
+    The Files API copy is also deleted; the Google Drive original is untouched.
 
     Args:
         file_id: The Anthropic Files API file_id to delete.
@@ -378,7 +379,7 @@ async def delete_document(ctx: Context, file_id: str, patient_slug: str | None =
         {
             "deleted": deleted,
             "file_id": file_id,
-            "message": "Moved to trash. Recoverable for 30 days via restore_document."
+            "message": "Moved to trash. Restore any time via restore_document."
             if deleted
             else "Document not found or already deleted.",
         }
@@ -421,6 +422,9 @@ async def restore_document(ctx: Context, doc_id: int, patient_slug: str | None =
 
 async def list_trash(ctx: Context, limit: int = 50, patient_slug: str | None = None) -> str:
     """List soft-deleted documents in trash.
+
+    Trashed documents stay here until restored with restore_document; nothing
+    purges them automatically.
 
     Args:
         limit: Maximum results to return (default 50, max 200).

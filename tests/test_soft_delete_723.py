@@ -11,9 +11,7 @@ allows only an explicit list of (file, table) pairs, each with a reason.
 from __future__ import annotations
 
 import json
-import re
 from datetime import date
-from pathlib import Path
 
 from oncofiles.database import Database
 from oncofiles.manifest import export_manifest
@@ -231,54 +229,15 @@ async def test_journey_timeline_and_manifest_hide_deleted(db: Database):
 
 
 # ── lock: no hard DELETE on patient data ─────────────────────────────────
-
-SRC = Path(__file__).resolve().parent.parent / "src" / "oncofiles"
-# SQL keywords in any case; table names are lower snake_case, which skips prose
-# such as "# Delete from Files API".
-DELETE_RE = re.compile(r"(?i:DELETE\s+FROM)\s+([a-z_][a-z0-9_]*)\b")
-
-# (file relative to src/oncofiles, table) → reason. May only shrink.
-HARD_DELETE_ALLOWLIST: dict[tuple[str, str], str] = {
-    ("server.py", "mcp_oauth_tokens"): "expired OAuth tokens: credentials, not patient data",
-    (
-        "persistent_oauth.py",
-        "mcp_oauth_tokens",
-    ): "revoked OAuth token: credential, not patient data",
-    ("server.py", "prompt_log"): "90-day retention of AI call telemetry (operational log)",
-    ("session_revocation.py", "session_revocations"): "expired logout denylist entries",
-    ("backfill_splits.py", "document_cross_references"): "derived links, rebuilt by AI right after",
-    ("database/_documents.py", "document_pages"): "OCR cache: re-OCR reset + purge after 30d trash",
-    (
-        "database/_documents.py",
-        "lab_values",
-    ): "purge_expired_trash: rows of a doc trashed > 30 days",
-    ("database/_documents.py", "documents"): "purge_expired_trash: only docs trashed > 30 days",
-}
-
-
-def _hard_deletes() -> set[tuple[str, str]]:
-    found: set[tuple[str, str]] = set()
-    for path in SRC.rglob("*.py"):
-        text = path.read_text(encoding="utf-8")
-        for m in DELETE_RE.finditer(text):
-            found.add((path.relative_to(SRC).as_posix(), m.group(1)))
-    return found
-
-
-def test_no_hard_delete_outside_allowlist():
-    unexpected = _hard_deletes() - set(HARD_DELETE_ALLOWLIST)
-    assert not unexpected, (
-        "hard DELETE on a table not in the allowlist (deletion policy: soft delete "
-        f"with deleted_at/deleted_by, #723): {sorted(unexpected)}"
-    )
-
-
-def test_allowlist_has_no_stale_entries():
-    stale = set(HARD_DELETE_ALLOWLIST) - _hard_deletes()
-    assert not stale, f"allowlist entries no longer in the code, remove them: {sorted(stale)}"
+# One allowlist for the whole repo: tests/test_no_automatic_deletion.py
+# (SQL_DELETE_ALLOWLIST, #734). treatment_events and conversation_entries are
+# in its NEVER_HARD_DELETED set.
 
 
 def test_conversation_and_treatment_tables_never_hard_deleted():
-    tables = {t for _, t in _hard_deletes()}
+    from tests.test_no_automatic_deletion import NEVER_HARD_DELETED, _sql_hard_deletes
+
+    assert {"conversation_entries", "treatment_events"} <= NEVER_HARD_DELETED
+    tables = {t for _, t in _sql_hard_deletes()}
     assert "conversation_entries" not in tables
     assert "treatment_events" not in tables

@@ -170,8 +170,9 @@ class DocumentMixin:
 
         Whole-corpus callers pass ``limit=DOC_QUERY_LIMIT``; when such a read
         fills its ceiling the result is silently incomplete, which has caused
-        real damage before (#548 — `_cleanup_orphan_ocr` trashes OCR sidecars
-        for any document missing from its view). Log loudly in that case.
+        real damage before (#548 — the since-removed `_cleanup_orphan_ocr`
+        trashed OCR sidecars for any document missing from its view, #734).
+        Log loudly in that case.
         Paginated callers use small limits and never trip this.
         """
         from oncofiles.config import DOC_QUERY_LIMIT
@@ -327,7 +328,8 @@ class DocumentMixin:
         return cursor.rowcount > 0
 
     async def list_trash(self, limit: int = 50, *, patient_id: str) -> list[Document]:
-        """List soft-deleted documents (recoverable within 30 days)."""
+        """List soft-deleted documents. They stay in trash until restored (#734):
+        nothing purges them automatically."""
         async with self.db.execute(
             "SELECT * FROM documents WHERE deleted_at IS NOT NULL AND patient_id = ? "
             "ORDER BY deleted_at DESC LIMIT ?",
@@ -366,50 +368,6 @@ class DocumentMixin:
                 rows = await cursor.fetchall()
                 result.append([d for r in rows if (d := _safe_row_to_document(r)) is not None])
         return result
-
-    async def purge_expired_trash(self, days: int = 30, *, patient_id: str) -> int:
-        """Permanently delete documents that have been in trash for over N days.
-
-        Also deletes associated OCR pages. Returns count of purged documents.
-        """
-        # Find expired documents
-        async with self.db.execute(
-            """
-            SELECT id FROM documents
-            WHERE deleted_at IS NOT NULL AND patient_id = ?
-            AND deleted_at < strftime('%Y-%m-%dT%H:%M:%SZ', 'now', ?)
-            """,
-            (patient_id, f"-{days} days"),
-        ) as cursor:
-            rows = await cursor.fetchall()
-
-        if not rows:
-            return 0
-
-        doc_ids = [r["id"] for r in rows]
-
-        # Delete OCR pages for expired documents
-        for doc_id in doc_ids:
-            await self.db.execute(
-                "DELETE FROM document_pages WHERE document_id = ?",
-                (doc_id,),
-            )
-
-        # Delete lab values for expired documents
-        for doc_id in doc_ids:
-            await self.db.execute(
-                "DELETE FROM lab_values WHERE document_id = ?",
-                (doc_id,),
-            )
-
-        # Permanently delete documents
-        placeholders = ", ".join("?" for _ in doc_ids)
-        await self.db.execute(
-            f"DELETE FROM documents WHERE id IN ({placeholders})",
-            doc_ids,
-        )
-        await self.db.commit()
-        return len(doc_ids)
 
     async def count_documents(self, *, patient_id: str) -> int:
         """Count all active (non-deleted) documents."""
