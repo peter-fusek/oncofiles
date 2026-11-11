@@ -16,7 +16,7 @@ from datetime import UTC, date, datetime
 from fastmcp import Context
 
 from oncofiles.curated.facts_rules import _unit_key
-from oncofiles.fact_labels import LLM_NOTE, group_llm, label_row, norm
+from oncofiles.fact_labels import LLM_NOTE, group_llm, is_llm, label_row, norm
 from oncofiles.tools._helpers import _gdrive_url, _get_db, _is_admin_caller, _resolve_patient_id
 
 READ_ONLY = {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True}
@@ -40,6 +40,9 @@ FEED_CATEGORIES = {
     "lab": ("lab", "tumor_marker", "vital"),
     "biomarker": ("biomarker",),
     "genetic_variant": ("genetic_variant",),
+    # CT lesion sizes (LESION_SIZE, mm) from the LLM extractor (#726 item 4)
+    "imaging": ("imaging",),
+    "lesion": ("imaging",),
 }
 FEED_DEFAULT_LIMIT = 1000
 FEED_MAX_LIMIT = 2000
@@ -146,6 +149,11 @@ def _feed_fact(r: dict, fact_id: str, at: str, conversions: dict) -> dict:
     if r["flag"]:
         row["flag"] = r["flag"]
     row["verification"] = r["verification"]
+    if is_llm(r.get("extracted_by")):  # read by the model (#729): say so, as everywhere
+        labelled = label_row({"verification": r["verification"],
+                              "extracted_by": r["extracted_by"]})  # fmt: skip
+        row["method"] = labelled["method"]
+        row["verification_label"] = labelled["verification_label"]
     row["document_id"] = r["source_document_id"]
     if r["page_number"] is not None:
         row["page"] = r["page_number"]
@@ -658,9 +666,13 @@ async def dashboard_feed(
     * ``documents`` lists only the documents the returned facts cite; ``url``
       opens the original in Drive.
     * ``kinds`` defaults to ["lab"] (lab values, tumour markers, vital signs).
-      Also accepted: biomarker, genetic_variant, condition, treatment,
-      medication, procedure, imaging, lesion (empty until extracted); anything
-      else is listed in ``unknown_kinds`` and returns nothing.
+      Also accepted: biomarker, genetic_variant, imaging / lesion (CT lesion
+      sizes, code LESION_SIZE in mm), condition, treatment, medication,
+      procedure (the last four still empty here: use timeline); anything else
+      is listed in ``unknown_kinds`` and returns nothing.
+    * A fact read by the local model carries ``method: "llm-clinical"`` and a
+      ``verification_label`` ({en, sk}): only its text was checked against the
+      page; the interpretation is the model's and is not verified.
     * Pages of at most ``limit`` facts (default 1000, max 2000) and about 140 kB,
       ordered by (at, id). Pass ``next_cursor`` back as ``cursor`` until it is null.
 

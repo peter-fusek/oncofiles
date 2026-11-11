@@ -605,7 +605,7 @@ class FactsMixin:
             "SELECT s.id, s.code, s.category, s.label_original, s.effective_at, s.value_num, "
             "s.value_text, s.unit, s.value_canonical, s.unit_canonical, s.ref_range_low, "
             "s.ref_range_high, s.flag, s.verification, s.source_document_id, s.page_number, "
-            "s.metadata_json, f.fhir_id FROM fact_series_v s "
+            "s.metadata_json, f.fhir_id, f.extracted_by FROM fact_series_v s "
             "JOIN clinical_records f ON f.id = s.id AND f.patient_id = s.patient_id "
             "LEFT JOIN documents d ON d.id = s.source_document_id AND d.patient_id = s.patient_id "
             "WHERE s.patient_id = ? AND s.effective_at IS NOT NULL "

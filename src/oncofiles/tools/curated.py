@@ -36,6 +36,7 @@ from datetime import UTC, datetime, timedelta
 
 from fastmcp import Context
 
+from oncofiles.secrets_keys import caller_email_hash
 from oncofiles.tools._helpers import _caller_email, _get_db, _resolve_patient_id
 
 logger = logging.getLogger(__name__)
@@ -2192,6 +2193,8 @@ async def _audit_clinical_write(db, pid: str, job: dict) -> None:
                 input_summary=json.dumps(
                     {
                         "by": actor,
+                        # keyed hash, never the email itself (#590/#604, migration 085)
+                        "caller_email_hash": job.get("caller_email_hash"),
                         "dry_run": False,
                         "pre_store": job.get("pre_store"),
                         "document_ids": [d.get("document_id") for d in job.get("documents") or []],
@@ -2257,7 +2260,8 @@ async def _start_clinical(ctx: Context, document_ids, patient_slug, *, write: bo
     _reocr_jobs[pid] = job = {
         "state": "running", "kind": "clinical_extract" if write else "clinical_preview",
         "dry_run": not write, "extractor": EXTRACTOR_VERSION,
-        "started_at": datetime.now(UTC).isoformat(), "actor": _caller_email() or "mcp",
+        "started_at": datetime.now(UTC).isoformat(), "actor": "mcp",
+        "caller_email_hash": caller_email_hash(_caller_email()),
         "documents": [{"document_id": d["id"], "category": d.get("category")} for d in docs],
     }  # fmt: skip
 

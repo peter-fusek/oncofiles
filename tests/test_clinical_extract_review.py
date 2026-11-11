@@ -23,6 +23,7 @@ from oncofiles.database import Database
 from oncofiles.fact_labels import LLM_METHOD
 from oncofiles.patient_middleware import _current_patient_id
 from oncofiles.persistent_oauth import _verified_caller_email
+from oncofiles.secrets_keys import caller_email_hash
 from oncofiles.tools import clinical_facts as cf
 from oncofiles.tools import curated as tool
 from oncofiles.tools import treatment as tt
@@ -94,7 +95,8 @@ async def test_a_real_write_makes_a_verified_copy_first_and_logs_it(file_db, mon
         out = json.loads(await tool.curated_clinical_extract(_ctx(db), [DOC_A], dry_run=False))
     finally:
         _verified_caller_email.reset(token)
-    assert out["pre_store"].endswith("-clinical.db") and out["actor"] == "caregiver@example.com"
+    assert out["pre_store"].endswith("-clinical.db") and out["actor"] == "mcp"
+    expected_hash = caller_email_hash("caregiver@example.com")
     await asyncio.wait_for(tool._reocr_jobs[ERIKA_UUID]["task"], 10)
     job = tool._reocr_jobs[ERIKA_UUID]
     assert job["state"] == "done" and job["report"]["pre_store"] == out["pre_store"]
@@ -112,9 +114,11 @@ async def test_a_real_write_makes_a_verified_copy_first_and_logs_it(file_db, mon
     assert len(await _active(db, "conditions")) == len(["primary", "metastasis"])
 
     (row,) = await _activity(db)
-    assert row["patient_id"] == ERIKA_UUID and row["agent_id"] == "caregiver@example.com"
+    assert row["patient_id"] == ERIKA_UUID and row["agent_id"] == "mcp"
     assert row["status"] == "ok"
+    assert "caregiver@example.com" not in json.dumps(row)  # never the email itself (085)
     given = json.loads(row["input_summary"])
+    assert given["caller_email_hash"] == expected_hash
     assert given["document_ids"] == [DOC_A] and given["pre_store"] == out["pre_store"]
     result = json.loads(row["output_summary"])
     assert result["results"] == {"stored": 1}
@@ -207,6 +211,27 @@ async def test_model_read_rows_say_so_and_rule_rows_keep_their_label(seeded):
         assert "is not verified" in " ".join((fn.__doc__ or "").split()).replace("NOT", "not")
 
 
+async def test_dashboard_feed_labels_model_read_rows(seeded):
+    db = seeded
+    await _store(db, DOC_A, PAGES_A)
+    await db.replace_document_facts(
+        patient_id=ERIKA_UUID, document_id=DOC_B, extracted_by="rule:test",
+        facts=[{"code": "CRP", "label": "CRP", "value_num": 9.5, "occurred_at": DAY,
+                "verification": "machine"}],
+    )  # fmt: skip
+    ctx = _ctx(db)
+    feed = json.loads(
+        await cf.dashboard_feed(ctx, kinds=["biomarker", "genetic_variant", "lesion"])
+    )
+    codes = {f["code"] for f in feed["facts"]}
+    assert {"KRAS", "NRAS", "MSI", "LESION_SIZE"} <= codes
+    assert all(f["method"] == LLM_METHOD and f["verification_label"] == LLM_LABEL
+               for f in feed["facts"])  # fmt: skip
+    lab = json.loads(await cf.dashboard_feed(ctx))["facts"]
+    assert [f["code"] for f in lab] == ["CRP"]
+    assert "method" not in lab[0] and "verification_label" not in lab[0]  # compact as before
+
+
 # ── 3. identical rows across documents: one item with sources ───────────
 
 
@@ -267,8 +292,9 @@ NEW_ENTITIES = ("condition", "treatment_course", "treatment_cycle", "medication_
 
 
 async def _old_view(db) -> None:
-    """timeline_v exactly as migration 075 defined it, as timeline_old_v."""
-    text = (MIGRATIONS / "075_codes_iron_vitd_views.sql").read_text()
+    """timeline_v exactly as migration 084 (the last definition before 086)
+    defined it, as timeline_old_v."""
+    text = (MIGRATIONS / "084_soft_delete_conversations_treatments.sql").read_text()
     sql = text[text.index("CREATE VIEW timeline_v AS") :].split(";")[0]
     await db.db.execute(sql.replace("CREATE VIEW timeline_v", "CREATE VIEW timeline_old_v"))
     await db.db.commit()
@@ -294,6 +320,12 @@ async def _seed_pre_existing(db) -> None:
         "source_document_id) VALUES (?, 'chemo', 'Legacy cycle', ?, ?)",
         ("2027-05-03", ERIKA_UUID, DOC_A),
     )
+    await db.db.execute(  # soft-deleted (084): in neither view
+        "INSERT INTO treatment_events (event_date, event_type, title, patient_id, "
+        "source_document_id, deleted_at, deleted_by) VALUES (?, 'chemo', 'Trashed cycle', ?, ?, "
+        "'2027-05-04', 'test')",
+        ("2027-05-04", ERIKA_UUID, DOC_A),
+    )
     facts = [
         {"category": "lab", "code": "CRP", "label": "CRP", "value_num": 9.5, "flag": "H"},
         {"category": "lab", "code": "GLU", "label": "Glukóza", "value_num": 5.1},
@@ -318,6 +350,8 @@ async def test_rebuilt_view_returns_the_same_rows_for_pre_existing_kinds(seeded)
     await _old_view(db)
     await _seed_pre_existing(db)
     old = await _rows_of(db, "timeline_old_v")
+    titles = {r[OLD_COLUMNS.index("title")] for r in await _rows_of(db, "timeline_v")}
+    assert "Legacy cycle" in titles and "Trashed cycle" not in titles  # 084 kept
     assert len(old) > len(["encounter", "document", "treatment", "facts"])
     # (a) pre-existing data only: exactly the same rows, column for column; the
     # only addition is the new kind imaging (unflagged imaging facts)
