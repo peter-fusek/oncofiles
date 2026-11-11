@@ -131,6 +131,7 @@ def _vision_passes(
             [{"type": "text", "text": f"Page {i + 1} of {total}."}, part],
             max_tokens=REOCR_BUDGET,
             reasoning_effort="high",
+            thinking=False if config.REOCR_THINKING == "off" else None,
             client=client,
         )
 

@@ -15,6 +15,15 @@ DATA_DIR = BASE_DIR / "data"
 DATA_DIR.mkdir(exist_ok=True)
 
 ANTHROPIC_API_KEY: str = os.environ.get("ANTHROPIC_API_KEY", "")
+# Cloud AI (Anthropic API) is OFF by default (#618/#699): documents are not sent
+# to a cloud model unless the operator opts in explicitly. Having a key is not
+# enough — both CLOUD_AI_ENABLED and ANTHROPIC_API_KEY are required.
+# Read at call time by cloud_guard.require_cloud_ai().
+CLOUD_AI_ENABLED: bool = os.environ.get("CLOUD_AI_ENABLED", "false").lower() in (
+    "true",
+    "1",
+    "yes",
+)
 DATABASE_PATH: Path = Path(os.environ.get("DATABASE_PATH", str(DATA_DIR / "oncofiles.db")))
 
 # Google Drive (v0.2)
@@ -51,9 +60,32 @@ REOCR_RSS_LIMIT_MB: float = float(os.environ.get("REOCR_RSS_LIMIT_MB", "450"))
 # Concurrent vision passes per page in a re-read (#593). 1 = sequential (default);
 # 2 needs at least 2 parallel slots in LM Studio (infra setting).
 REOCR_PARALLEL_PASSES: int = int(os.environ.get("REOCR_PARALLEL_PASSES", "1"))
+# Model reasoning for re-OCR / re-read transcription (perf): "on" (default, the
+# model's own behaviour) or "off" (chat_template_kwargs.enable_thinking=false).
+# Transcription only; classification and extraction are not affected.
+REOCR_THINKING: str = os.environ.get("REOCR_THINKING", "on").strip().lower()
+# Qwen soft switch (#689): LM Studio ignores chat_template_kwargs.enable_thinking
+# for the Qwen3.x MLX model, so with thinking=False llm.chat also puts "/no_think"
+# into the last user message. "false" sends only the kwarg.
+LLM_NO_THINK_SOFT_SWITCH: bool = os.environ.get("LLM_NO_THINK_SOFT_SWITCH", "true").lower() in (
+    "true",
+    "1",
+    "yes",
+)
 # Context length LM Studio loads the model with (central macmini setting).
 # Change it together with LM Studio, or prompts + budgets overflow (#601).
 LOCAL_LLM_CONTEXT_WINDOW: int = int(os.environ.get("LOCAL_LLM_CONTEXT_WINDOW", "32768"))
+# LLM-first fact extraction (#714), phase 2a: SHADOW mode only. The MCP tool
+# curated_llm_extract_preview runs the local-model extractor + the generic
+# verifier on stored page text and reports agreement with the stored rule
+# facts (keys and counts only). It writes nothing, so it is enabled by
+# default; LLM_EXTRACT_SHADOW_DISABLED=true is the off-switch.
+LLM_EXTRACT_SHADOW_DISABLED: bool = (
+    os.environ.get("LLM_EXTRACT_SHADOW_DISABLED", "false").strip().lower() == "true"
+)
+# Model reasoning for the text extractor: "off" (default; the page text is
+# short and the answer is a copy job) or "on".
+LLM_EXTRACT_THINKING: str = os.environ.get("LLM_EXTRACT_THINKING", "off").strip().lower()
 
 GOOGLE_OAUTH_CLIENT_ID: str = os.environ.get("GOOGLE_OAUTH_CLIENT_ID", "")
 GOOGLE_OAUTH_CLIENT_SECRET: str = os.environ.get("GOOGLE_OAUTH_CLIENT_SECRET", "")
