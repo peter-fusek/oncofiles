@@ -60,6 +60,25 @@ def test_a_range_needs_both_ends_printed():
     assert rv.assess([o], [new("NA", 140.6)], ["19.5.2027:"])["date_unconfirmed"] == [1]
 
 
+def test_a_stored_midpoint_key_still_confirms_a_range_fact():
+    """#726: results stored before the change keyed a range fact by the range
+    midpoint; the fact now sits at the range end and keeps its confirmation.
+    Only a key inside the fact's own range matches; exact facts are unchanged."""
+    meta = {**COWORK, "date_range_start": "2027-05-03", "date_range_end": "2027-05-19"}
+    ranged = old(1, "NA", 140.6, "2027-05-19", meta=meta)  # now at the range end
+    midpoint = list(rv.fact_key("NA", 140.6, "2027-05-11", 1))
+    [(fid, verification, m)] = rv.apply_plan({"confirmed": [midpoint]}, [ranged])
+    assert (fid, verification) == (1, "machine") and m["verified_by_reread"] is True
+    [(_, verification, m)] = rv.apply_plan({"date_unconfirmed": [midpoint]}, [ranged])
+    assert verification == "unverified" and m["unverified_reasons"] == ["date_unconfirmed"]
+    outside = list(rv.fact_key("NA", 140.6, "2027-05-22", 1))
+    assert rv.apply_plan({"confirmed": [outside]}, [ranged]) == []
+    other_page = list(rv.fact_key("NA", 140.6, "2027-05-11", 2))
+    assert rv.apply_plan({"confirmed": [other_page]}, [ranged]) == []
+    exact = old(2, "NA", 140.6, "2027-05-19")  # no range: the day must match exactly
+    assert rv.apply_plan({"confirmed": [midpoint]}, [exact]) == []
+
+
 def test_date_formats():
     assert rv.date_printed("2027-05-03", "Lab 3.5.: WBC")
     assert rv.date_printed("2027-05-03", "03.05.2027")

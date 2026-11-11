@@ -999,7 +999,13 @@ async def _corroborate_and_measure(db, pid: str) -> dict:
     quote, then measure unverified (#659, #672). Runs at the end of every
     index (startup, curated_index, after a run or re-OCR), so flags that a
     re-extraction resets are re-applied in the same call."""
-    from oncofiles.curated.facts_rules import corroborations, date_conflicts, unverified_metric
+    from oncofiles.curated.facts_rules import (
+        _fact_meta,
+        corroborations,
+        date_conflicts,
+        range_window,
+        unverified_metric,
+    )
 
     confirmed = await _apply_rereads(db, pid)
     rows = await db.fact_verification_rows(patient_id=pid)
@@ -1026,6 +1032,13 @@ async def _corroborate_and_measure(db, pid: str) -> dict:
         meta.pop("unverified_reasons", None)
         meta.update(date_source="corroborated", corroborated_by=draw_fact,
                     quoted_on=(by_id[fact_id]["occurred_at"] or "")[:10])  # fmt: skip
+        # the date now comes from the draw, and so does its precision (#726): a
+        # draw under a printed range lends its range, an exact draw none
+        for k in ("date_precision", "date_range_start", "date_range_end", "date_range_open"):
+            meta.pop(k, None)
+        if window := range_window(_fact_meta(by_id.get(draw_fact) or {})):
+            meta.update(date_precision="range", date_range_start=window[0],
+                        date_range_end=window[1])  # fmt: skip
         if await db.corroborate_fact(
             patient_id=pid, fact_id=fact_id, occurred_at=draw_day, metadata=meta
         ):

@@ -54,10 +54,13 @@ def _dedupe(rows: list[dict]) -> tuple[list[dict], list[dict]]:
       earlier draw of another document within 60 days, and at least TWO codes
       of the same report day equal that draw. One equal number alone is a
       coincidence, not a quote;
-    * ``range``: a value dated inside a printed range (``date_range_start`` …
-      ``date_range_end``) equals, by code, canonical value and unit, a value of
-      another document dated inside that window. A different value is never
-      hidden.
+    * ``range``: a value dated under a printed range (``date_range_start`` …
+      ``date_range_end``; it sits at the range end, #726) equals, by code,
+      canonical value and unit, a value of another document dated inside that
+      window. A different value is never hidden. A value with an exact day is
+      always preferred: a range value is hidden against another range value
+      only when that one was kept, so two documents quoting the same range
+      never hide each other, and on a shared day the exact value sorts first.
     """
     from datetime import date as _date
 
@@ -98,6 +101,10 @@ def _dedupe(rows: list[dict]) -> tuple[list[dict], list[dict]]:
                 return hit
         return None
 
+    def ranged(r: dict) -> bool:
+        m = _meta(r)
+        return bool(m.get("date_range_start") and m.get("date_range_end"))
+
     def in_range(r: dict) -> dict | None:
         m = _meta(r)
         lo, hi = as_date(m.get("date_range_start")), as_date(m.get("date_range_end"))
@@ -106,25 +113,32 @@ def _dedupe(rows: list[dict]) -> tuple[list[dict], list[dict]]:
         for (doc, day), values in draws.items():
             d = as_date(day)
             hit = values.get(r["code"])
-            if doc != r["source_document_id"] and d and lo <= d <= hi and hit and same(hit, r):
+            if doc == r["source_document_id"] or not d or not lo <= d <= hi:
+                continue
+            if hit and same(hit, r) and (not ranged(hit) or id(hit) in kept_ids):
                 return hit
         return None
 
     rank = {"verified": 0, "corrected": 0, "machine": 1, "unverified": 2}
     rows = sorted(
         rows,
-        key=lambda r: (r["code"] or "", r["effective_at"] or "", rank.get(r["verification"], 3)),
-    )
+        key=lambda r: (
+            r["code"] or "", r["effective_at"] or "", ranged(r), rank.get(r["verification"], 3),
+        ),
+    )  # fmt: skip
     kept: list[dict] = []
+    kept_ids: set[int] = set()
     first: dict = {}
     removed: list[dict] = []
     for r in rows:
         key = (r["code"], day_of(r), r["value_canonical"], r["value_text"])
-        other, reason = first.get(key), "exact"
+        # a range value checks its window first, so the reason never depends on
+        # whether the matching draw happens to fall on the range end (#726)
+        other, reason = in_range(r), "range"
+        if other is None:
+            other, reason = first.get(key), "exact"
         if other is None:
             other, reason = quoted(r), "quote"
-        if other is None:
-            other, reason = in_range(r), "range"
         if other is not None and other is not r:
             removed.append({
                 "code": r["code"], "at": r["effective_at"], "value": r["value_canonical"],
@@ -136,6 +150,7 @@ def _dedupe(rows: list[dict]) -> tuple[list[dict], list[dict]]:
             continue
         first[key] = r
         kept.append(r)
+        kept_ids.add(id(r))
     return kept, removed
 
 
