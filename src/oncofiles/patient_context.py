@@ -6,6 +6,7 @@ Updates are persisted to DB (works on Railway where filesystem is ephemeral).
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import os
@@ -62,15 +63,24 @@ def get_context(patient_id: str | None = None) -> dict[str, Any]:
     Strictness on a non-empty explicit pid is a cross-patient-isolation
     guarantee (#429). A cold cache miss for patient X must NOT return whatever
     patient Y's data leaked into the legacy global via a prior `load_from_db`
-    call. Callers receiving `_DEFAULT_CONTEXT.copy()` here are expected to call
+    call. Callers receiving a default context here are expected to call
     `load_from_db` to hydrate the cache.
 
-    Empty string ('') and None are treated as "no explicit pid" — callers like
-    `rename_to_standard(patient_id='')` still get the legacy fallback so the
-    bilingual-filename test fixtures keep working.
+    Defaults are always handed out as a deep copy (#713): a shallow copy shares
+    the nested dicts/lists (`treatment`, `biomarkers`, …) with the module-level
+    `_DEFAULT_CONTEXT`, so mutating one patient's copy would leak into every
+    other patient's default.
+
+    A resolved pid (explicit or from the request ContextVar) with no cached
+    row gets an EMPTY template (`_empty_template()`): only `patient_type` is
+    set and `name` is empty — never the legacy global, never the
+    `PATIENT_NAME` env default, never any other patient's data (#713).
+
+    Empty string ('') and None with no request pid are treated as "no pid" —
+    callers like `rename_to_standard(patient_id='')` still get the legacy
+    fallback so the bilingual-filename test fixtures keep working.
     """
     pid = patient_id
-    explicit_pid = bool(patient_id)  # non-empty string only; None and "" fall through
     if not pid:
         try:
             from oncofiles.patient_middleware import get_current_patient_id
@@ -80,12 +90,30 @@ def get_context(patient_id: str | None = None) -> dict[str, Any]:
             pass  # startup or test context without middleware
     if pid and pid in _contexts:
         return _contexts[pid]
-    # Non-empty explicit pid that's not cached → return default (caller must hydrate)
-    # Do NOT leak legacy global data under a different patient's pid (#429)
-    if explicit_pid:
-        return _DEFAULT_CONTEXT.copy()
+    # A resolved pid that's not cached → empty template (caller must hydrate).
+    # Do NOT leak legacy global data under a different patient's pid (#429/#713).
+    if pid:
+        return _empty_template()
     # No pid at all (None or "") → legacy fallback for backward compat (startup/tests)
-    return _context if _context else _DEFAULT_CONTEXT.copy()
+    return _context if _context else _default_context()
+
+
+def _default_context() -> dict[str, Any]:
+    """Return a fresh deep copy of the default context (never shares nested objects)."""
+    return copy.deepcopy(_DEFAULT_CONTEXT)
+
+
+def _empty_template() -> dict[str, Any]:
+    """Context for a patient with no stored row (#713).
+
+    A deep copy of `_DEFAULT_CONTEXT` with the name blanked: the env-derived
+    `PATIENT_NAME` default belongs to the legacy single-patient flow and must
+    never be attributed to another pid. Only `patient_type` carries a value.
+    """
+    ctx = _default_context()
+    ctx["name"] = ""
+    ctx["medical_record_name"] = ""
+    return ctx
 
 
 def get_patient_name(patient_id: str | None = None) -> str:
@@ -115,6 +143,43 @@ def load_from_json(path: str | Path) -> dict[str, Any]:
     return {}
 
 
+async def _fetch_context_row(db: Any, patient_id: str | None) -> dict[str, Any] | None:
+    """Read one stored context row. Returns None when no row exists; DB errors propagate."""
+    # `is not None` (not `if patient_id:`) so an accidental empty string
+    # can't silently fall through to the legacy id=1 row — #476 class of
+    # bugs where a dashboard session with no authorized patient had its
+    # pid coerced to "" and read the last-loaded patient's data.
+    if patient_id is not None:
+        async with db.execute(
+            "SELECT context_json FROM patient_context WHERE patient_id = ?",
+            (patient_id,),
+        ) as cursor:
+            row = await cursor.fetchone()
+    else:
+        async with db.execute("SELECT context_json FROM patient_context WHERE id = 1") as cursor:
+            row = await cursor.fetchone()
+    if not row:
+        return None
+    data_str = row["context_json"] if isinstance(row, dict) else row[0]
+    return json.loads(data_str)
+
+
+async def ensure_loaded(db: Any, patient_id: str) -> None:
+    """Hydrate the per-patient cache from the DB before a read-modify-write (#713).
+
+    Unlike `load_from_db`, a DB error is NOT swallowed: a writer that merged
+    into the default context after a failed read would save default + update
+    over the stored row (data loss). A missing row is fine (new patient).
+    """
+    if not patient_id:
+        raise ValueError("ensure_loaded requires a non-empty patient_id")
+    if patient_id in _contexts:
+        return
+    data = await _fetch_context_row(db, patient_id)
+    if data is not None:
+        _contexts[patient_id] = data
+
+
 async def load_from_db(db: Any, patient_id: str | None = None) -> dict[str, Any]:
     """Load patient context from the database (patient_context table).
 
@@ -122,24 +187,8 @@ async def load_from_db(db: Any, patient_id: str | None = None) -> dict[str, Any]
     Otherwise loads the legacy id=1 row (backward compat).
     """
     try:
-        # `is not None` (not `if patient_id:`) so an accidental empty string
-        # can't silently fall through to the legacy id=1 row — #476 class of
-        # bugs where a dashboard session with no authorized patient had its
-        # pid coerced to "" and read the last-loaded patient's data.
-        if patient_id is not None:
-            async with db.execute(
-                "SELECT context_json FROM patient_context WHERE patient_id = ?",
-                (patient_id,),
-            ) as cursor:
-                row = await cursor.fetchone()
-        else:
-            async with db.execute(
-                "SELECT context_json FROM patient_context WHERE id = 1"
-            ) as cursor:
-                row = await cursor.fetchone()
-        if row:
-            data_str = row["context_json"] if isinstance(row, dict) else row[0]
-            data = json.loads(data_str)
+        data = await _fetch_context_row(db, patient_id)
+        if data is not None:
             if patient_id is not None:
                 _contexts[patient_id] = data
                 # DO NOT mirror into legacy `_context` when loading a specific
@@ -186,21 +235,38 @@ async def save_to_db(
         )
     await db.commit()
     if patient_id is not None:
-        _contexts[patient_id] = data
+        # Cache a private copy so later mutation of the caller's dict cannot
+        # change the cached context behind its back (#713).
+        _contexts[patient_id] = copy.deepcopy(data)
 
 
 def update_context(updates: dict[str, Any], patient_id: str | None = None) -> dict[str, Any]:
-    """Merge updates into the context. Returns the updated context."""
-    ctx = get_context(patient_id).copy()
+    """Merge updates into the context. Returns the updated context.
+
+    Isolation rules (#713):
+    - The base context is deep-copied before merging, so nested dicts of the
+      cached context or of `_DEFAULT_CONTEXT` are never mutated in place.
+    - A non-empty `patient_id` is required; None or "" raises ValueError (same
+      rule as #686/#696). Only that patient's cache entry is written; the
+      legacy global `_context` is never written here (#429/#438).
+    - With an explicit pid the caller must hydrate the cache first
+      (`await ensure_loaded(db, pid)`), otherwise the merge starts from the
+      default context.
+    """
+    if not patient_id:
+        raise ValueError(
+            "update_context requires a patient: pass patient_slug (or an explicit "
+            "patient_id). Updates without a patient are refused so they can never "
+            "land in another patient's context (#713)."
+        )
+    ctx = copy.deepcopy(get_context(patient_id))
     for key, value in updates.items():
         if isinstance(value, dict) and isinstance(ctx.get(key), dict):
-            ctx[key].update(value)
+            ctx[key].update(copy.deepcopy(value))
         else:
-            ctx[key] = value
-    if patient_id is not None:
-        _contexts[patient_id] = ctx
-    _context.update(ctx)
-    return ctx
+            ctx[key] = copy.deepcopy(value)
+    _contexts[patient_id] = ctx
+    return copy.deepcopy(ctx)
 
 
 # ── Germline findings helpers (v5.8.0 #385) ──────────────────────────────────
@@ -280,7 +346,7 @@ async def initialize(db: Any, json_path: str | Path | None = None) -> dict[str, 
             return result
 
     # 3. Fall back to hardcoded default
-    _context.update(_DEFAULT_CONTEXT)
+    _context.update(_default_context())
     logger.info("Patient context loaded from hardcoded default")
     return _context
 
