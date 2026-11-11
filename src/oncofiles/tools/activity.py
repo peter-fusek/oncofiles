@@ -16,7 +16,7 @@ import json
 
 from fastmcp import Context
 
-from oncofiles.models import ActivityLogQuery
+from oncofiles.models import ActivityLogEntry, ActivityLogQuery
 from oncofiles.tools._helpers import (
     _clamp_limit,
     _get_db,

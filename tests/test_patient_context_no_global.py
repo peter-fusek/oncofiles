@@ -19,7 +19,7 @@ import json
 import types
 from datetime import UTC, datetime
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -297,8 +297,8 @@ async def test_gmail_attachment_is_parsed_and_stored_for_its_patient(db: Databas
         "mime_type": "application/pdf",
         "attachment_id": "a1",
     }
-    with patch("oncofiles.webhook.notify_oncoteam"):
-        doc = await _process_attachment(db, files, gmail, "m1", att, entry, patient_id=PID_B)
+    # No webhook to stub: the Oncoteam webhook is gone (#721).
+    doc = await _process_attachment(db, files, gmail, "m1", att, entry, patient_id=PID_B)
 
     assert doc is not None
     assert doc.institution == "NOU"  # parsed with B's name, not the request patient A's
