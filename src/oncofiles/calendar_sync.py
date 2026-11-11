@@ -76,10 +76,10 @@ async def _classify_event_medical(
     Returns (is_medical, confidence, event_type).
     """
 
-    from oncofiles.config import ANTHROPIC_API_KEY
+    from oncofiles.cloud_guard import cloud_ai_enabled
     from oncofiles.prompt_logger import log_ai_call
 
-    if not ANTHROPIC_API_KEY:
+    if not cloud_ai_enabled():  # CLOUD_AI_ENABLED off (default) or no key
         # Fallback: keyword matching (includes dynamic patient name terms)
         text = f"{summary} {description} {location}".lower()
         for kw in _get_medical_keywords():

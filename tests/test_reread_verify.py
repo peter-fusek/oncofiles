@@ -60,6 +60,25 @@ def test_a_range_needs_both_ends_printed():
     assert rv.assess([o], [new("NA", 140.6)], ["19.5.2027:"])["date_unconfirmed"] == [1]
 
 
+def test_a_stored_midpoint_key_still_confirms_a_range_fact():
+    """#726: results stored before the change keyed a range fact by the range
+    midpoint; the fact now sits at the range end and keeps its confirmation.
+    Only a key inside the fact's own range matches; exact facts are unchanged."""
+    meta = {**COWORK, "date_range_start": "2027-05-03", "date_range_end": "2027-05-19"}
+    ranged = old(1, "NA", 140.6, "2027-05-19", meta=meta)  # now at the range end
+    midpoint = list(rv.fact_key("NA", 140.6, "2027-05-11", 1))
+    [(fid, verification, m)] = rv.apply_plan({"confirmed": [midpoint]}, [ranged])
+    assert (fid, verification) == (1, "machine") and m["verified_by_reread"] is True
+    [(_, verification, m)] = rv.apply_plan({"date_unconfirmed": [midpoint]}, [ranged])
+    assert verification == "unverified" and m["unverified_reasons"] == ["date_unconfirmed"]
+    outside = list(rv.fact_key("NA", 140.6, "2027-05-22", 1))
+    assert rv.apply_plan({"confirmed": [outside]}, [ranged]) == []
+    other_page = list(rv.fact_key("NA", 140.6, "2027-05-11", 2))
+    assert rv.apply_plan({"confirmed": [other_page]}, [ranged]) == []
+    exact = old(2, "NA", 140.6, "2027-05-19")  # no range: the day must match exactly
+    assert rv.apply_plan({"confirmed": [midpoint]}, [exact]) == []
+
+
 def test_date_formats():
     assert rv.date_printed("2027-05-03", "Lab 3.5.: WBC")
     assert rv.date_printed("2027-05-03", "03.05.2027")
@@ -121,6 +140,33 @@ async def _verification(db):
     ) as cur:
         return {r["code"]: (r["verification"], json.loads(r["metadata_json"])) for r in
                 await cur.fetchall()}  # fmt: skip
+
+
+async def test_a_midpoint_reread_key_still_confirms_after_the_v16_reindex(db):
+    """#726: a re-read result stored before index v16 keys a range fact by the
+    old range MIDPOINT. After the v16 re-extraction moves the fact to the range
+    end, the stored result is still applied on every index and the fact stays
+    machine (confirmed), never falls back to cowork_ocr."""
+    from oncofiles.tools import curated as tool
+
+    await _seed(db)
+    lo, mid, hi = "2027-05-03", "2027-05-11", "2027-05-19"
+    midpoint_key = list(rv.fact_key("NA", 140.6, mid, 1))  # written by the pre-#726 index
+    stored = {"assess_version": 2, "confirmed": [midpoint_key], "date_unconfirmed": []}
+    await db.insert_fact_reread(patient_id=ERIKA_UUID, document_id=DOC, sidecar_sha="sha-a",
+                                source_md5="md-a", engine="qwen-local", result=stored)  # fmt: skip
+    meta = {**COWORK, "date_source": "printed_range", "date_precision": "range",
+            "date_range_start": lo, "date_range_end": hi}  # fmt: skip
+    v16 = {"code": "NA", "category": "lab", "occurred_at": hi, "label": "NA", "page_number": 1,
+           "value_canonical": 140.6, "verification": "unverified", "metadata": meta}  # fmt: skip
+    await db.replace_document_facts(patient_id=ERIKA_UUID, document_id=DOC, facts=[v16],
+                                    extracted_by="rule:inline-v1")  # fmt: skip
+    for _ in range(2):  # every index re-applies it
+        await tool._corroborate_and_measure(db, ERIKA_UUID)
+        verification, got = (await _verification(db))["NA"]
+        assert verification == "machine" and got["verified_by_reread"] is True
+        assert "cowork_ocr" not in got.get("unverified_reasons", [])
+        assert got["date_range_end"] == hi and got["date_precision"] == "range"
 
 
 async def test_stored_result_is_applied_on_every_index_and_void_when_the_text_changes(db):
@@ -254,3 +300,13 @@ def test_a_paged_sidecar_with_all_facts_on_page_one_keeps_the_per_page_rule():
     new_on_three = [dated("CEA", 4.4, "2027-06-03", 3)]
     assert rv.assess(olds, new_on_three, PAGES, old_page_count=3)["unconfirmed"] == [1]
     assert rv.assess(olds, new_on_three, PAGES, old_page_count=1)["confirmed"] == [1]
+
+
+def test_diagnostics_are_counts_and_codes_only():
+    olds = [old(1, "WBC", 6.12), old(2, "HGB", 127.0)]
+    news = [dated("WBC", 6.12, "2027-05-11", 1), dated("PLT", 233.0, "2027-05-11", 1)]
+    d = rv.diagnostics(olds, news, old_page_count=1)
+    assert d["old_facts"] == len(olds) and d["new_facts"] == len(news)
+    assert d["code_value_shared"] == 1 and d["codes_only_old"] == ["HGB"]
+    assert d["new_date_sources"] == {"printed": len(news)}
+    assert "6.12" not in str(d) and "127" not in str(d)  # never values

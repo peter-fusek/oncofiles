@@ -3,6 +3,8 @@
 import json
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from oncofiles.database import Database
 from oncofiles.models import DocumentCategory
 from oncofiles.tools.hygiene import (
@@ -300,6 +302,7 @@ async def test_validate_corrects_genetics(db: Database):
 # ── qa_analysis ───────────────────────────────────────────────────────────────
 
 
+@pytest.mark.usefixtures("admin_scope")  # qa_analysis is admin-only (#717)
 async def test_qa_analysis_empty(db: Database):
     """Empty activity log returns zero findings."""
     ctx = _mock_ctx(db)
@@ -308,6 +311,7 @@ async def test_qa_analysis_empty(db: Database):
     assert result["findings"] == []
 
 
+@pytest.mark.usefixtures("admin_scope")
 async def test_qa_analysis_with_errors(db: Database):
     """Errors in activity log produce findings."""
     from oncofiles.models import ActivityLogEntry

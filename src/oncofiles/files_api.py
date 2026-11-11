@@ -50,13 +50,16 @@ class FilesClient:
     """Wrapper around the Anthropic Files API (beta)."""
 
     def __init__(self, api_key: str | None = None) -> None:
+        self._api_key = api_key  # explicit key; else config is read at call time (#618)
         self._client = anthropic.Anthropic(api_key=api_key or ANTHROPIC_API_KEY)
 
     def _guarded(self):
-        """The Anthropic client, refused inside local-only jobs (policy 2026-11-09)."""
-        from oncofiles.cloud_guard import check_cloud_allowed
+        """The Anthropic client, refused inside local-only jobs (policy 2026-11-09)
+        and when the server has no ANTHROPIC_API_KEY (#618)."""
+        from oncofiles.cloud_guard import check_cloud_allowed, require_cloud_ai
 
         check_cloud_allowed("Files API")
+        require_cloud_ai(self._api_key)
         return self._client
 
     def close(self) -> None:

@@ -210,19 +210,6 @@ class OperationalMixin:
             rows = await cursor.fetchall()
             return [dict(r) for r in rows]
 
-    async def get_activity_timeline(self, hours: int = 24) -> list[ActivityLogEntry]:
-        """Get recent activity log entries (last N hours)."""
-        async with self.db.execute(
-            """
-            SELECT * FROM activity_log
-            WHERE created_at >= strftime('%Y-%m-%dT%H:%M:%SZ', 'now', ?)
-            ORDER BY created_at DESC LIMIT 200
-            """,
-            (f"-{hours} hours",),
-        ) as cursor:
-            rows = await cursor.fetchall()
-            return [_row_to_activity_log(r) for r in rows]
-
     # ── OAuth tokens (#12) ─────────────────────────────────────────────
 
     async def upsert_oauth_token(self, token: OAuthToken) -> OAuthToken:

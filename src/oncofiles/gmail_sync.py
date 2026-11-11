@@ -174,10 +174,10 @@ async def _classify_medical_relevance(
 ) -> tuple[bool, float]:
     """Use Haiku to classify if an email is medically relevant. Returns (is_medical, score)."""
 
-    from oncofiles.config import ANTHROPIC_API_KEY
+    from oncofiles.cloud_guard import cloud_ai_enabled
     from oncofiles.prompt_logger import log_ai_call
 
-    if not ANTHROPIC_API_KEY:
+    if not cloud_ai_enabled():  # CLOUD_AI_ENABLED off (default) or no key
         return False, 0.0
 
     prompt = (
