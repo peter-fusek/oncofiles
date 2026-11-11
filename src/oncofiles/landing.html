@@ -11,14 +11,8 @@
       if(l==='en')document.documentElement.lang='en';
     })();
   </script>
-  <!-- Google tag (gtag.js) -->
-  <script async src="https://www.googletagmanager.com/gtag/js?id=G-JPSK46QKRB"></script>
-  <script>
-    window.dataLayer = window.dataLayer || [];
-    function gtag(){dataLayer.push(arguments);}
-    gtag('js', new Date());
-    gtag('config', 'G-JPSK46QKRB');
-  </script>
+  <!-- Analytics only after opt-in consent (#700); see /consent.js -->
+  <script src="/consent.js" defer></script>
   <title data-sk="Oncofiles – zdravotné záznamy pre onkologických pacientov s overenými laboratórnymi hodnotami" data-en="Oncofiles – medical records for cancer patients with verified lab values">Oncofiles – zdravotné záznamy pre onkologických pacientov s overenými laboratórnymi hodnotami</title>
   <meta name="description" data-sk="Váš priečinok s lekárskymi správami na Google Drive, usporiadaný a čitateľný aj bez nás. Každá laboratórna hodnota má dátum odberu, zdroj, stranu a riadok. OCR beží na lokálnom modeli na našom serveri v EÚ. Pýtajte sa v Claude alebo ChatGPT." data-en="Your Google Drive folder of medical reports, organized and readable even without us. Every lab value has its sample date, source document, page and line. OCR runs on a local model on our own EU server. Ask in Claude or ChatGPT." content="Váš priečinok s lekárskymi správami na Google Drive, usporiadaný a čitateľný aj bez nás. Každá laboratórna hodnota má dátum odberu, zdroj, stranu a riadok. OCR beží na lokálnom modeli na našom serveri v EÚ. Pýtajte sa v Claude alebo ChatGPT.">
   <meta property="og:title" content="Oncofiles – medical records for cancer patients with verified lab values">
@@ -666,6 +660,15 @@
       .mac-bar .cw-note { display: none; }
     }
     
+
+    /* Cookie consent (#700): overlay at the bottom, so it never shifts the layout */
+    .cookie-banner { position: fixed; left: 12px; right: 12px; bottom: 12px; z-index: 1002; max-width: 760px; margin: 0 auto; display: flex; flex-wrap: wrap; align-items: center; gap: 10px 18px; padding: 14px 16px; background: var(--bg); color: var(--ink); border: 1px solid var(--rule-2, var(--rule)); border-radius: 10px; box-shadow: 0 10px 30px -12px rgba(20, 20, 30, 0.35); font-size: 0.88rem; line-height: 1.5; }
+    .cookie-banner[hidden] { display: none; }
+    .cookie-banner p { flex: 1 1 320px; margin: 0; max-width: none; color: var(--ink-2); }
+    .cookie-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+    .cookie-btn { font: 600 0.88rem/1.2 var(--sans); padding: 9px 14px; border-radius: 6px; border: 1px solid var(--ink); background: transparent; color: var(--ink); cursor: pointer; }
+    .cookie-btn:hover { background: color-mix(in srgb, var(--ink) 8%, transparent); }
+    @media (max-width: 480px) { .cookie-actions { width: 100%; } .cookie-btn { flex: 1 1 0; } }
     /* Grid/flex children never widen the page on phones */
     .grid > *, .hero-cols > *, .stage > *, .prov > *, .photos > *, .where > *, .how > * { min-width: 0; }
   </style>
@@ -1217,11 +1220,19 @@ Nič sa nemaže, len presúva do koša.
         <a href="/terms" data-sk="Podmienky" data-en="Terms">Podmienky</a>
         <a href="https://github.com/peter-fusek/oncofiles/issues/new" rel="noreferrer noopener" data-sk="Nahlásiť chybu" data-en="Report a bug">Nahlásiť chybu</a>
         <a href="/llms.txt">llms.txt</a>
+        <a href="#" data-consent="open" data-sk="Nastavenia cookies" data-en="Cookie settings">Nastavenia cookies</a>
       </div>
       <p>&copy; 2025–2026 <a href="https://www.linkedin.com/in/peterfusek/" rel="noreferrer noopener">Peter Fusek</a>, <a href="https://www.instarea.com" rel="noreferrer noopener">Instarea</a>. <a href="https://github.com/peter-fusek/oncofiles/releases" rel="noreferrer noopener">v{{VERSION}}</a></p>
     </div>
   </footer>
 
+  <div class="cookie-banner" id="cookie-banner" role="region" aria-labelledby="cookie-text" hidden>
+    <p id="cookie-text"><span data-sk="Analytické cookies (Google Analytics) použijeme len s vaším súhlasom, aby sme videli, ktoré časti stránky ľudia čítajú. Bez súhlasu sa nič nenačíta." data-en="We use analytics cookies (Google Analytics) only with your consent, to see which parts of the page people read. Without consent nothing is loaded.">Analytické cookies (Google Analytics) použijeme len s vaším súhlasom, aby sme videli, ktoré časti stránky ľudia čítajú. Bez súhlasu sa nič nenačíta.</span> <a href="/privacy" data-sk="Ochrana osobných údajov" data-en="Privacy policy">Ochrana osobných údajov</a></p>
+    <div class="cookie-actions">
+      <button type="button" class="cookie-btn" data-consent="decline" data-sk="Odmietnuť" data-en="Decline">Odmietnuť</button>
+      <button type="button" class="cookie-btn" data-consent="accept" data-sk="Prijať analytické cookies" data-en="Accept analytics cookies">Prijať analytické cookies</button>
+    </div>
+  </div>
   <button id="bug-fab" type="button" data-action="openBug" aria-label="Report a bug" title="Report a bug"><svg class="ic"><use href="#i-bug"/></svg></button>
   <div id="bug-overlay" role="dialog" aria-modal="true" aria-labelledby="bug-h">
     <div class="bug-box">

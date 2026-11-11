@@ -526,3 +526,67 @@ def test_landing_chat_carousel_starts_on_claude():
     assert "if (!stageEl || !tablist || reduceMotion) return;" in LANDING
     assert "visibilitychange" in LANDING
     assert not re.search(r"\son[a-z]+\s*=", LANDING)
+
+
+# ── #700: analytics only with consent on public pages, never on the dashboard ──
+
+CONSENT_JS = (SRC / "consent.js").read_text(encoding="utf-8")
+
+
+def test_dashboard_has_no_google_analytics():
+    from oncofiles.server import _csp_for_path
+
+    for name in ("dashboard.html", "dashboard.js"):
+        text = (SRC / name).read_text(encoding="utf-8")
+        assert "gtag" not in text, name
+        assert "googletagmanager" not in text, name
+    assert not (SRC / "dashboard-gtag.js").exists()
+    for path in ("/dashboard", "/dashboard/x"):
+        csp = _csp_for_path(path)
+        assert "googletagmanager.com" not in csp
+        assert "google-analytics.com" not in csp
+
+
+@pytest.mark.parametrize("page", ["landing", "demo"])
+def test_public_pages_load_no_analytics_before_consent(page):
+    html = LANDING if page == "landing" else DEMO_HTML
+    assert not re.search(r"<script[^>]*googletagmanager", html)
+    assert "gtag('config'" not in html and "gtag('js'" not in html
+    assert '<script src="/consent.js" defer></script>' in html
+    # banner markup with two equal choices, privacy link, footer re-open link
+    assert re.search(r'id="cookie-banner"[^>]*\shidden>', html), "banner must start hidden"
+    assert 'data-consent="accept"' in html and 'data-consent="decline"' in html
+    assert 'data-sk="Prijať analytické cookies"' in html and 'data-sk="Odmietnuť"' in html
+    assert 'href="/privacy"' in html
+    assert 'data-consent="open"' in html and "Nastavenia cookies" in html
+
+
+def test_consent_js_injects_gtag_only_after_accept():
+    body = CONSENT_JS
+    start = body.index("function loadAnalytics()")
+    end = body.index("function banner()")
+    # the only place that mentions the Google tag host is inside loadAnalytics
+    assert body.count("googletagmanager.com") == 1
+    assert start < body.index("googletagmanager.com") < end
+    # loadAnalytics() is called only from accept() and for a stored "granted"
+    calls = [m.start() for m in re.finditer(r"loadAnalytics\(\);", body)]
+    assert len(calls) == 2
+    accept = body.index("function accept()")
+    assert accept < calls[0] < body.index("function decline()")
+    assert "if (choice === 'granted') loadAnalytics();" in body
+    for opt in (
+        "anonymize_ip: true",
+        "allow_google_signals: false",
+        "allow_ad_personalization_signals: false",
+    ):
+        assert opt in body
+    assert "page_location: cleanUrl(window.location.href)" in body
+    assert "x.origin + x.pathname" in body
+    assert "innerHTML" not in body.replace("no innerHTML", "")
+
+
+async def test_consent_js_route():
+    from oncofiles.server import consent_js
+
+    resp = await consent_js(_req("/consent.js"))
+    assert resp.media_type.startswith("application/javascript")

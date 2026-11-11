@@ -14,6 +14,7 @@
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,wght@0,400;0,500;0,700;1,400&family=DM+Serif+Display&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
   <link rel="stylesheet" href="/demo.css">
   <script src="/demo.js" defer></script>
+  <script src="/consent.js" defer></script>
 </head>
 <body>
   <header class="bar">
@@ -129,6 +130,13 @@
     </section>
   </main>
   <p class="foot legal" data-sk="ChatGPT je ochranná známka OpenAI, Claude je ochranná známka Anthropic, Gemini je ochranná známka Google. Oncofiles s týmito spoločnosťami nie je spojený; funguje s ich aplikáciami cez otvorený protokol MCP." data-en="ChatGPT is a trademark of OpenAI, Claude is a trademark of Anthropic, Gemini is a trademark of Google. Oncofiles is not affiliated with these companies; it works with their applications through the open MCP protocol.">ChatGPT je ochranná známka OpenAI, Claude je ochranná známka Anthropic, Gemini je ochranná známka Google. Oncofiles s týmito spoločnosťami nie je spojený; funguje s ich aplikáciami cez otvorený protokol MCP.</p>
-  <p class="foot"><span data-sk="Všetky mená, hodnoty a dátumy sú vymyslené." data-en="All names, values and dates are invented.">Všetky mená, hodnoty a dátumy sú vymyslené.</span> v{{VERSION}}</p>
+  <p class="foot"><span data-sk="Všetky mená, hodnoty a dátumy sú vymyslené." data-en="All names, values and dates are invented.">Všetky mená, hodnoty a dátumy sú vymyslené.</span> v{{VERSION}} <a href="#" data-consent="open" data-sk="Nastavenia cookies" data-en="Cookie settings">Nastavenia cookies</a></p>
+  <div class="cookie-banner" id="cookie-banner" role="region" aria-labelledby="cookie-text" hidden>
+    <p id="cookie-text"><span data-sk="Analytické cookies (Google Analytics) použijeme len s vaším súhlasom, aby sme videli, ktoré časti stránky ľudia čítajú. Bez súhlasu sa nič nenačíta." data-en="We use analytics cookies (Google Analytics) only with your consent, to see which parts of the page people read. Without consent nothing is loaded.">Analytické cookies (Google Analytics) použijeme len s vaším súhlasom, aby sme videli, ktoré časti stránky ľudia čítajú. Bez súhlasu sa nič nenačíta.</span> <a href="/privacy" data-sk="Ochrana osobných údajov" data-en="Privacy policy">Ochrana osobných údajov</a></p>
+    <div class="cookie-actions">
+      <button type="button" class="cookie-btn" data-consent="decline" data-sk="Odmietnuť" data-en="Decline">Odmietnuť</button>
+      <button type="button" class="cookie-btn" data-consent="accept" data-sk="Prijať analytické cookies" data-en="Accept analytics cookies">Prijať analytické cookies</button>
+    </div>
+  </div>
 </body>
 </html>

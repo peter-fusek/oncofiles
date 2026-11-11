@@ -3103,7 +3103,6 @@ async def favicon_ico(request: Request) -> HTMLResponse:
 # read-once-and-cache pattern as the other static assets above.
 _DASHBOARD_CSS: str | None = None
 _DASHBOARD_JS: str | None = None
-_DASHBOARD_GTAG_JS: str | None = None
 
 
 @mcp.custom_route("/dashboard.css", methods=["GET"])
@@ -3120,16 +3119,6 @@ async def dashboard_js(request: Request) -> Response:
     if _DASHBOARD_JS is None:
         _DASHBOARD_JS = (Path(__file__).parent / "dashboard.js").read_text()
     return Response(_DASHBOARD_JS, media_type="application/javascript; charset=utf-8")
-
-
-@mcp.custom_route("/dashboard-gtag.js", methods=["GET"])
-async def dashboard_gtag_js(request: Request) -> Response:
-    """Tiny gtag bootstrap — initialises the dataLayer queue before
-    googletagmanager.com/gtag/js (async) drains it."""
-    global _DASHBOARD_GTAG_JS  # noqa: PLW0603
-    if _DASHBOARD_GTAG_JS is None:
-        _DASHBOARD_GTAG_JS = (Path(__file__).parent / "dashboard-gtag.js").read_text()
-    return Response(_DASHBOARD_GTAG_JS, media_type="application/javascript; charset=utf-8")
 
 
 # Only the two photos the landing uses, as crops (Nov 2026): the full-size
@@ -4877,6 +4866,12 @@ async def demo_dashboard(request: Request) -> HTMLResponse:
 @mcp.custom_route("/demo.css", methods=["GET"])
 async def demo_css(request: Request) -> Response:
     return Response(_demo_asset("demo.css"), media_type="text/css; charset=utf-8")
+
+
+@mcp.custom_route("/consent.js", methods=["GET"])
+async def consent_js(request: Request) -> Response:
+    """Opt-in analytics loader for the public pages (#700). Never used by /dashboard."""
+    return Response(_demo_asset("consent.js"), media_type="application/javascript; charset=utf-8")
 
 
 @mcp.custom_route("/demo.js", methods=["GET"])
@@ -7790,13 +7785,14 @@ class SecurityHeadersMiddleware:
 # extraction can come later — locking the regression on the public site is
 # more urgent than tightening CSP on routes that have no PHI.
 
+# #700: no analytics on the logged-in dashboard (it renders medical records),
+# so neither Google tag host is allowed here. Locked by
+# tests/test_landing_content.py::test_dashboard_has_no_google_analytics.
 _STRICT_DASHBOARD_CSP = (
     "default-src 'self'; "
     "script-src 'self' 'unsafe-inline' "
-    "https://www.googletagmanager.com https://www.google-analytics.com "
     "https://accounts.google.com https://apis.google.com; "
     "script-src-elem 'self' "
-    "https://www.googletagmanager.com https://www.google-analytics.com "
     "https://accounts.google.com https://apis.google.com; "
     "script-src-attr 'none'; "
     "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com "
@@ -7806,7 +7802,7 @@ _STRICT_DASHBOARD_CSP = (
     "style-src-attr 'unsafe-inline'; "
     "font-src 'self' https://fonts.gstatic.com data:; "
     "img-src 'self' data: https:; "
-    "connect-src 'self' https://www.google-analytics.com "
+    "connect-src 'self' "
     "https://accounts.google.com https://oauth2.googleapis.com "
     "https://www.googleapis.com; "
     "frame-src https://accounts.google.com https://content.googleapis.com "
@@ -7832,7 +7828,8 @@ _PUBLIC_HTML_CSP = (
     "https://accounts.google.com; "
     "font-src 'self' https://fonts.gstatic.com data:; "
     "img-src 'self' data: https:; "
-    "connect-src 'self' https://www.google-analytics.com "
+    "connect-src 'self' https://*.google-analytics.com "
+    "https://*.analytics.google.com https://www.googletagmanager.com "
     "https://accounts.google.com https://oauth2.googleapis.com "
     "https://www.googleapis.com; "
     "frame-src https://accounts.google.com https://content.googleapis.com "
