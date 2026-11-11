@@ -1,7 +1,10 @@
 """Persistent rotating app log (#706): configured from env, off by default."""
 
 import logging
+import time
 from logging.handlers import TimedRotatingFileHandler
+
+import pytest
 
 from oncofiles import app_log
 
@@ -195,56 +198,115 @@ def test_setup_logging_puts_the_same_filter_on_stderr_and_the_file(monkeypatch, 
         root.setLevel(old_level)
 
 
-# ── ReDoS hardening (automated review of #756) ──
+# ── ReDoS hardening and redact-before-truncate (automated reviews of #756) ──
+
+LIMIT = app_log.MAX_REDACT_CHARS
+HEAD_N = LIMIT - app_log._TAIL_CHARS  # the head cut (12 KB)
+
+
+def _words(n: int) -> str:
+    return "word " * n
 
 
 def test_pathological_input_redacts_fast_and_is_truncated():
-    import time
-
     evil = "a" * 500_000 + "@" + "a." * 250_000  # about 1 MB, no TLD
     t0 = time.perf_counter()
     out = app_log.redact(evil)
     assert time.perf_counter() - t0 < 0.5
-    assert len(out) <= app_log.MAX_REDACT_CHARS + 64
+    assert len(out) <= LIMIT + 64
     assert "…[truncated " in out
 
 
 def test_every_pattern_is_fast_on_its_own_worst_case():
-    import time
-
     cases = [
-        "x" * 15_000 + "@",
-        "a." * 8_000,
-        "Bearer " + "A" * 15_000,
-        "token=" * 2_700,
-        "onco_" + "-" * 15_000,
-        "1//" * 5_000,
+        "x" * 30_000 + "@",
+        "_a" * 15_000,
+        "a." * 15_000,
+        "Bearer " + "A" * 30_000,
+        "token=" * 5_000,
+        "onco_" + "-" * 30_000,
+        "1//" * 10_000,
     ]
     for case in cases:
         t0 = time.perf_counter()
-        for pattern, repl in app_log._REDACTIONS:
-            pattern.sub(repl, case)  # untruncated: the patterns alone must be linear
+        app_log._redact_all(case)  # untruncated: the patterns alone must be linear
         assert time.perf_counter() - t0 < 0.5, case[:20]
 
 
-def test_normal_emails_and_tokens_still_masked_after_the_bounds():
-    for email in ("caregiver.synthetic@example.test", "a+b_c%d@mail.sub.example.co"):
-        assert app_log.redact(f"login {email} ok") == "login [email] ok"
-    assert (
-        app_log.redact('{"refresh_token": "SyntheticValue"}') == '{"refresh_token": "[redacted]"}'
-    )
-    assert app_log.redact("Bearer SyntheticBearerValueXyz") == "Bearer [redacted]"
+@pytest.mark.parametrize(
+    "line",
+    [
+        "RESEND_API_KEY=SyntheticSecretValue",
+        "auth_token=SyntheticSecretValue",
+        "oauth_token=SyntheticSecretValue",
+        "client_secret: SyntheticSecretValue",
+        '{"refresh_token": "SyntheticSecretValue"}',
+        "password=SyntheticSecretValue",
+    ],
+)
+def test_prefixed_and_plain_secret_keys_are_masked(line):
+    out = app_log.redact(f"config {line} loaded")
+    assert "SyntheticSecretValue" not in out and "[redacted]" in out
+
+
+def test_non_secret_counters_stay():
     assert app_log.redact("ids max_tokens=12 fine") == "ids max_tokens=12 fine"
 
 
-def test_truncation_keeps_head_and_tail():
-    text = "H" * 20_000 + "TAILEND"
-    out = app_log.truncate(text)
-    assert out.startswith("H") and out.endswith("TAILEND")
-    assert len(out) < app_log.MAX_REDACT_CHARS + 64
-    assert app_log.truncate("short") == "short"
+def test_normal_emails_and_tokens_still_masked():
+    for email in ("caregiver.synthetic@example.test", "a+b_c%d@mail.sub.example.co"):
+        assert app_log.redact(f"login {email} ok") == "login [email] ok"
+    assert app_log.redact("Bearer SyntheticBearerValueXyz") == "Bearer [redacted]"
+
+
+def test_email_after_a_long_underscore_run_is_masked():
+    out = app_log.redact("_" * 100 + "caregiver.synthetic@example.test")
+    assert "caregiver" not in out and "example.test" not in out and "[email]" in out
+
+
+def test_google_refresh_token_after_a_slash_is_masked():
+    out = app_log.redact("path /1//SyntheticRefreshTokenValueAbcdef end")
+    assert "SyntheticRefreshTokenValue" not in out and "[token]" in out
+
+
+def test_truncation_keeps_head_and_tail_and_short_text_whole():
+    text = "HEADSTART " + _words(5_000) + "TAILEND"
+    out = app_log.redact(text)
+    assert out.startswith("HEADSTART") and out.endswith("TAILEND")
+    assert len(out) < LIMIT + 64 and "…[truncated " in out
+    assert app_log.redact("short") == "short"
 
 
 def test_truncation_marker_counts_dropped_chars():
-    out = app_log.truncate("x" * (app_log.MAX_REDACT_CHARS + 100))
-    assert "…[truncated 100 chars]" in out
+    text = _words(4_000)
+    assert f"…[truncated {len(text) - LIMIT} chars]" in app_log.redact(text)
+
+
+@pytest.mark.parametrize("tail_words", [3_000, 30_000])  # whole-text and region scans
+def test_bearer_token_straddling_the_head_cut_leaves_no_fragment(tail_words):
+    token = "QzSyntheticStraddleTokenQz" * 3
+    prefix = "auth header Bearer "
+    filler = "w " * ((HEAD_N - len(prefix) - len(token) // 2) // 2)
+    text = filler + prefix + token + " " + _words(tail_words)
+    start = len(filler) + len(prefix)
+    assert start < HEAD_N < start + len(token)  # really straddles the cut
+    out = app_log.redact(text)
+    assert "Qz" not in out and "Straddle" not in out and "Synthetic" not in out
+
+
+def test_unknown_token_straddling_a_cut_is_masked():
+    blob = "Zx" * 40  # not a known token shape: only the cut-boundary mask applies
+    text = "w " * ((HEAD_N - len(blob) // 2) // 2) + blob + " " + _words(LIMIT)
+    out = app_log.redact(text)
+    assert "Zx" not in out and "[cut]" in out
+
+
+def test_email_straddling_the_tail_cut_leaves_no_fragment():
+    email = "caregiver.straddle@example.test"
+    tail_len = app_log._TAIL_CHARS
+    after = _words(tail_len)[: tail_len - len(email) // 2]
+    text = _words(4_000) + email + after
+    pos = text.index(email)
+    assert pos < len(text) - tail_len < pos + len(email)
+    out = app_log.redact(text)
+    assert "straddle" not in out and "example" not in out
