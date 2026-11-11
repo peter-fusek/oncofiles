@@ -122,6 +122,9 @@ def chat(
     thinking: bool | None = None,
     response_format: dict | None = None,
     info: dict | None = None,
+    top_p: float | None = None,
+    top_k: int | None = None,
+    presence_penalty: float | None = None,
 ) -> str:
     """One blocking chat completion; returns the answer text.
 
@@ -135,7 +138,14 @@ def chat(
     ``max_tokens`` budget.
     ``response_format`` (OpenAI shape, e.g. ``{"type": "json_schema", ...}``)
     asks LM Studio for structured output; callers still parse defensively.
-    ``info`` (optional dict) receives ``finish_reason`` of the completion."""
+    ``top_p`` / ``top_k`` / ``presence_penalty`` are sent only when set
+    (sampling profiles of the extractors, #767); every other caller keeps
+    the greedy ``temperature=0`` request unchanged.
+    ``timeout`` (seconds) overrides ``LOCAL_LLM_TIMEOUT_S`` for this call,
+    also on a caller-supplied ``client``.
+    ``info`` (optional dict) receives ``finish_reason`` and the token counts
+    (``prompt_tokens``, ``completion_tokens``, ``reasoning_tokens``) of the
+    completion, plus the raw answer channels (in memory only)."""
     if not configured():
         raise LocalLLMError("LOCAL_LLM_BASE_URL / LOCAL_LLM_MODEL not set")
     est = estimate_prompt_tokens(system, user_content)
@@ -160,6 +170,8 @@ def chat(
             {"role": "user", "content": user_content},
         ],
     }
+    sampling = {"top_p": top_p, "top_k": top_k, "presence_penalty": presence_penalty}
+    payload.update({k: v for k, v in sampling.items() if v is not None})
     if response_format is not None:
         payload["response_format"] = response_format
     if thinking is not None:
@@ -172,10 +184,15 @@ def chat(
         headers["Authorization"] = f"Bearer {config.LOCAL_LLM_API_KEY}"
     own = client is None
     http = client or httpx.Client(timeout=timeout or config.LOCAL_LLM_TIMEOUT_S)
+    # A caller's client keeps its own timeout unless this call sets one (#767).
+    per_call = {"timeout": timeout} if timeout else {}
     t0 = time.monotonic()
     try:
         resp = http.post(
-            f"{config.LOCAL_LLM_BASE_URL}/chat/completions", json=payload, headers=headers
+            f"{config.LOCAL_LLM_BASE_URL}/chat/completions",
+            json=payload,
+            headers=headers,
+            **per_call,
         )
     except httpx.HTTPError as exc:
         raise LocalLLMError(f"local LLM unreachable: {type(exc).__name__}") from exc
@@ -207,7 +224,10 @@ def chat(
             else ("" if content is None else json.dumps(content))
         )
         info["reasoning_content"] = reasoning if isinstance(reasoning, str) else ""
-    _log_usage(resp, choice, max_tokens, est, time.monotonic() - t0)
+    effective_timeout = timeout or (config.LOCAL_LLM_TIMEOUT_S if own else "client")
+    usage = _log_usage(resp, choice, payload, est, time.monotonic() - t0, timeout=effective_timeout)
+    if info is not None:
+        info.update(usage)  # counts only
     if not (content or "").strip() and choice.get("finish_reason") == "length":
         # The whole budget went to reasoning (2026-11-07: 1199/1200 tokens).
         raise LocalLLMError(
@@ -221,24 +241,43 @@ def _is_overflow(resp) -> bool:
     return any(k in text for k in ("context", "n_ctx", "too many tokens", "maximum length"))
 
 
-def _log_usage(resp, choice: dict, max_tokens: int, est: int, seconds: float) -> None:
-    """Token counts per call — numbers only, never prompt or answer text."""
+def _log_usage(
+    resp, choice: dict, payload: dict, est: int, seconds: float, *, timeout: float | str | None
+) -> dict:
+    """Token counts and the effective request parameters per call — numbers
+    only, never prompt or answer text. Returns the token counts."""
     try:
         usage = resp.json().get("usage") or {}
-    except ValueError:
+    except (ValueError, AttributeError):
+        usage = {}
+    if not isinstance(usage, dict):
         usage = {}
     details = usage.get("completion_tokens_details") or {}
+    counts = {
+        "prompt_tokens": usage.get("prompt_tokens"),
+        "completion_tokens": usage.get("completion_tokens"),
+        "reasoning_tokens": details.get("reasoning_tokens") if isinstance(details, dict) else None,
+    }
+    thinking = (payload.get("chat_template_kwargs") or {}).get("enable_thinking")
     logger.info(
         "local llm call: prompt_tokens=%s completion_tokens=%s reasoning_tokens=%s "
-        "max_tokens=%s prompt_estimate=%s finish=%s seconds=%.1f",
-        usage.get("prompt_tokens"),
-        usage.get("completion_tokens"),
-        details.get("reasoning_tokens"),
-        max_tokens,
+        "max_tokens=%s prompt_estimate=%s finish=%s seconds=%.1f "
+        "temperature=%s top_p=%s top_k=%s presence_penalty=%s thinking=%s timeout=%s",
+        counts["prompt_tokens"],
+        counts["completion_tokens"],
+        counts["reasoning_tokens"],
+        payload.get("max_tokens"),
         est,
         choice.get("finish_reason"),
         seconds,
+        payload.get("temperature"),
+        payload.get("top_p"),
+        payload.get("top_k"),
+        payload.get("presence_penalty"),
+        "default" if thinking is None else ("on" if thinking else "off"),
+        timeout,
     )
+    return counts
 
 
 def parse_json_object(text: str) -> dict:

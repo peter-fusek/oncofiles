@@ -801,3 +801,61 @@ def test_structured_output_is_off_by_default_and_switchable(monkeypatch):
         monkeypatch.setattr(config, "LLM_CLINICAL_STRUCTURED_OUTPUT", True)
         lx.extract_page(PAGES_A[0], page_number=1, chat=chat)
     assert seen == [False, True]
+
+
+# ── #767: per-job A/B overrides (dry run only) ──────────────────────────
+
+
+async def test_overrides_are_refused_on_the_write_path(seeded, local_model):
+    db = seeded
+    before = await _snapshot(db)
+    for kw in ({"thinking": "off"}, {"sampling": "qwen"}):
+        with pytest.raises(ValueError, match="dry run"):
+            await tool.curated_clinical_extract(_ctx(db), [DOC_A], dry_run=False, **kw)
+    with pytest.raises(ValueError):
+        await tool.curated_clinical_extract_preview(_ctx(db), [DOC_A], thinking="maybe")
+    assert ERIKA_UUID not in tool._reocr_jobs and local_model == []  # no pre-store copy
+    assert await _snapshot(db) == before
+
+
+async def test_preview_overrides_are_used_and_echoed(seeded, local_model, monkeypatch):
+    from oncofiles import config
+
+    db = seeded
+    monkeypatch.setattr(config, "LLM_EXTRACT_THINKING", "on")
+    monkeypatch.setattr(config, "LLM_EXTRACT_SAMPLING", "greedy")
+    monkeypatch.setattr(config, "LLM_EXTRACT_ANSWER_BUDGET", 4000)
+    monkeypatch.setattr(config, "LLM_EXTRACT_TIMEOUT_S", 300.0)
+    seen = []
+    keys = ("thinking", "temperature", "top_p", "top_k", "presence_penalty", "max_tokens",
+            "timeout")  # fmt: skip
+
+    def chat(system, user, **kw):
+        seen.append({k: kw.get(k) for k in keys})
+        return model_chat(system, user, **kw)
+
+    with patch.object(llm, "chat", chat):
+        started = json.loads(
+            await tool.curated_clinical_extract_preview(
+                _ctx(db), [DOC_A], thinking="off", sampling="qwen"
+            )
+        )
+        assert started["overrides"] == {"thinking": "off", "sampling": "qwen"}
+        await asyncio.wait_for(tool._reocr_jobs[ERIKA_UUID]["task"], 10)
+    report = tool._reocr_jobs[ERIKA_UUID]["report"]
+    assert report["settings"]["overrides"] == {"thinking": "off", "sampling": "qwen"}
+    assert (report["settings"]["thinking"], report["settings"]["sampling"]) == ("off", "qwen")
+    assert report["settings"]["max_tokens"] == 4000 and report["warnings"] == []
+    expected = {"thinking": False, "temperature": 0.7, "top_p": 0.8, "top_k": 20,
+                "presence_penalty": 1.0, "max_tokens": 4000, "timeout": 300.0}  # fmt: skip
+    assert seen and all(s == expected for s in seen)
+    doc = report["documents"][0]
+    assert set(doc["page_diagnostics"]) == {"1", "2"} and doc["warnings"] == []
+    assert all(p["sampling"] == "qwen" for p in doc["page_diagnostics"].values())
+    # a later preview without overrides is back on the env settings
+    tool._reocr_jobs.clear()
+    seen.clear()
+    with patch.object(llm, "chat", chat):
+        await tool.curated_clinical_extract_preview(_ctx(db), [DOC_A])
+        await asyncio.wait_for(tool._reocr_jobs[ERIKA_UUID]["task"], 10)
+    assert {s["temperature"] for s in seen} == {0.0} and {s["thinking"] for s in seen} == {True}

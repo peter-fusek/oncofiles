@@ -122,6 +122,19 @@ LLM_EXTRACT_SHADOW_DISABLED: bool = (
 # Model reasoning for the text extractor: "off" (default; the page text is
 # short and the answer is a copy job) or "on".
 LLM_EXTRACT_THINKING: str = os.environ.get("LLM_EXTRACT_THINKING", "off").strip().lower()
+# Sampling of both LLM extractors (#767): "greedy" (default, temperature 0,
+# the previous behaviour) or "qwen" (the Qwen3 model-card profiles; greedy
+# decoding makes Qwen3 models loop, especially with thinking off). Any other
+# value is treated as "greedy". Re-OCR and classification are not affected.
+LLM_EXTRACT_SAMPLING: str = os.environ.get("LLM_EXTRACT_SAMPLING", "greedy").strip().lower()
+# Answer budget (max_tokens) per page with thinking OFF (#767). A long lab
+# page (~40 items) needs well under 4000 tokens. Re-derive it from measured
+# data: p95 completion_tokens of the preview reports x 1.5. With thinking ON
+# the extractors keep llm.REASONING_BUDGET (reasoning counts into max_tokens).
+LLM_EXTRACT_ANSWER_BUDGET: int = int(os.environ.get("LLM_EXTRACT_ANSWER_BUDGET", "4000"))
+# Per-request timeout of an extractor call (#767), so a runaway generation
+# costs minutes, not the 900 s OCR timeout (LOCAL_LLM_TIMEOUT_S, unchanged).
+LLM_EXTRACT_TIMEOUT_S: float = float(os.environ.get("LLM_EXTRACT_TIMEOUT_S", "300"))
 # Structured output (json_schema response_format) for the lab shadow
 # extractor (#714). Default OFF: with a json_schema grammar Qwen cannot emit
 # its empty <think></think> first, so LM Studio files the whole answer under
