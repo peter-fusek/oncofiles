@@ -11,8 +11,14 @@ Rules enforced here:
 from __future__ import annotations
 
 import json
+import logging
+
+from oncofiles import fact_identity
+
+logger = logging.getLogger(__name__)
 
 _NOW = "strftime('%Y-%m-%dT%H:%M:%SZ', 'now')"
+LOCAL_CODE_SYSTEM_PREFIX = "urn:oncofiles:local:"  # an institution's own lab abbreviations
 
 # entity type → (table, id column) for link ownership checks
 _LINK_TABLES = {
@@ -22,8 +28,14 @@ _LINK_TABLES = {
     "treatment_event": ("treatment_events", "id"),
     "conversation": ("conversation_entries", "id"),
 }
-PROTECTED_VERIFICATION = ("verified", "corrected")
+PROTECTED_VERIFICATION = fact_identity.PROTECTED  # ("verified", "corrected")
 EXTRACT_SOURCE = "curated-extract"
+# extracted_by prefix of the LLM extractor of the non-lab kinds (#726). Its
+# biomarker / lesion rows in clinical_records belong to that extractor: the
+# rule re-extraction of labs never deletes them, and lab corroboration,
+# date-conflict checks and the unverified metric never see them.
+LLM_CLINICAL_FAMILY = "llm-clinical"
+_NOT_LLM_CLINICAL = f"COALESCE(extracted_by, '') NOT LIKE '{LLM_CLINICAL_FAMILY}%'"
 
 
 def _rows(rows) -> list[dict]:
@@ -173,50 +185,82 @@ class FactsMixin:
         dated under a printed range (#726) is not added either when such a
         fact of its code lies inside the range: an older index dated range
         values at the range midpoint, and a person may have set the exact day.
+
+        Every inserted fact gets its stable ``fhir_id`` (#726, ``fact_identity``):
+        the same fact extracted again gets the same id and the next
+        ``version_id``; the soft-deleted row keeps the id as its older version.
+        A kept verified row without an id gets the one readers already saw.
         """
         from oncofiles.curated.facts_rules import range_window
 
         async with self.db.execute(
-            "SELECT id, code, occurred_at, verification FROM clinical_records "
-            "WHERE patient_id = ? AND source_document_id = ? AND deleted_at IS NULL",
+            "SELECT id, code, param, occurred_at, page_number, evidence, metadata_json, "
+            "verification, fhir_id, version_id, value_num, value_text FROM clinical_records "
+            "WHERE patient_id = ? AND source_document_id = ? AND deleted_at IS NULL "
+            f"AND {_NOT_LLM_CLINICAL} ORDER BY id",
             (patient_id, document_id),
         ) as cur:
             existing = _rows(await cur.fetchall())
+        current_ids = fact_identity.ids_for_rows(patient_id, document_id, existing)
         protected = {
             (r["code"], r["occurred_at"])
             for r in existing
             if r["verification"] in PROTECTED_VERIFICATION
         }
+        taken: set[str] = set()
+        prev_version: dict[str, int] = {}
+        # (natural key, value) → ids the replaced rows had, to count id churn
+        before: dict[tuple, set[str]] = {}
         removed = 0
         for r in existing:
+            fid = current_ids[r["id"]]
             if r["verification"] in PROTECTED_VERIFICATION:
+                taken.add(fid)
+                if not r["fhir_id"]:  # freeze the id readers already saw
+                    await self.db.execute(
+                        "UPDATE clinical_records SET fhir_id = ? "
+                        "WHERE id = ? AND patient_id = ? AND fhir_id IS NULL",
+                        (fid, r["id"], patient_id),
+                    )
                 continue
+            prev_version[fid] = max(prev_version.get(fid, 0), r["version_id"] or 1)
+            same = (fact_identity.row_key(patient_id, document_id, r), r["value_num"],
+                    r["value_text"])  # fmt: skip
+            before.setdefault(same, set()).add(fid)
             await self.db.execute(
-                f"UPDATE clinical_records SET deleted_at = {_NOW}, deleted_by = ? "
-                "WHERE id = ? AND patient_id = ?",
-                ("oncofiles", r["id"], patient_id),
+                f"UPDATE clinical_records SET deleted_at = {_NOW}, deleted_by = ?, "
+                "fhir_id = COALESCE(fhir_id, ?) WHERE id = ? AND patient_id = ?",
+                ("oncofiles", fid, r["id"], patient_id),
             )
             await self._audit(r["id"], "delete", None, f"re-extraction by {extracted_by}")
             removed += 1
         protected_days: dict = {}
         for code, at in protected:
             protected_days.setdefault(code, []).append((at or "")[:10])
-        added = 0
-        for f in facts:
+
+        def _kept_by_person(f: dict) -> bool:
             if (f.get("code"), f.get("occurred_at")) in protected:
-                continue
+                return True
             window = range_window(f.get("metadata") or {})
-            if window and any(
+            return bool(window) and any(
                 window[0] <= day <= window[1] for day in protected_days.get(f.get("code"), [])
-            ):
-                continue
+            )
+
+        to_insert = [f for f in facts if not _kept_by_person(f)]
+        new_ids = fact_identity.ids_for_new_facts(patient_id, document_id, to_insert, taken)
+        added = churn = 0
+        for f, fid in zip(to_insert, new_ids, strict=True):
+            same = (fact_identity.fact_key(patient_id, document_id, f), f.get("value_num"),
+                    f.get("value_text"))  # fmt: skip
+            if same in before and fid not in before[same]:
+                churn += 1  # the same fact moved to another ordinal: its id changed
             cur = await self.db.execute(
                 "INSERT INTO clinical_records (patient_id, record_type, source_document_id, "
                 "occurred_at, param, value_num, value_text, unit, ref_range_low, ref_range_high, "
                 "ref_text, code, page_number, evidence, value_canonical, unit_canonical, flag, "
                 "encounter_id, practitioner_id, organization_id, department_id, verification, "
-                "extracted_by, confidence, source, metadata_json) "
-                f"VALUES ({', '.join('?' * 26)})",
+                "extracted_by, confidence, source, metadata_json, fhir_id, version_id, "
+                f"last_updated) VALUES ({', '.join('?' * 28)}, {_NOW})",
                 (
                     patient_id, f.get("category", "lab"), document_id, f.get("occurred_at"),
                     f.get("label"), f.get("value_num"), f.get("value_text"), f.get("unit"),
@@ -226,19 +270,29 @@ class FactsMixin:
                     f.get("practitioner_id"), f.get("organization_id"), f.get("department_id"),
                     f.get("verification", "machine"), extracted_by, f.get("confidence"),
                     EXTRACT_SOURCE, json.dumps(f.get("metadata") or {}, ensure_ascii=False),
+                    fid, prev_version.get(fid, 0) + 1,
                 ),
             )  # fmt: skip
             await self._audit(cur.lastrowid, "create", f, f"extracted by {extracted_by}")
             added += 1
         await self.db.commit()
-        return {"added": added, "removed": removed, "kept_verified": len(protected)}
+        if churn:
+            logger.info(
+                "fact id churn: document_id=%s, %d re-extracted facts got a new id "
+                "(ordinal shift within the same natural key)",
+                document_id,
+                churn,
+            )
+        return {"added": added, "removed": removed, "kept_verified": len(protected),
+                "id_churn": churn}  # fmt: skip
 
     async def fact_verification_rows(self, *, patient_id: str) -> list[dict]:
         """Active facts with what corroboration and the unverified metric need."""
         async with self.db.execute(
             "SELECT id, source_document_id, code, occurred_at, value_canonical, "
             "unit_canonical, verification, metadata_json, page_number FROM clinical_records "
-            "WHERE patient_id = ? AND deleted_at IS NULL AND code IS NOT NULL",
+            "WHERE patient_id = ? AND deleted_at IS NULL AND code IS NOT NULL "
+            f"AND {_NOT_LLM_CLINICAL}",
             (patient_id,),
         ) as cur:
             return _rows(await cur.fetchall())
@@ -534,3 +588,111 @@ class FactsMixin:
             (patient_id,),
         ) as cur:
             return _rows(await cur.fetchall())
+
+    # ── dashboard feed (#726) ─────────────────────────────────────────
+
+    async def feed_fact_rows(
+        self, *, patient_id: str, categories: list[str], since_day: str | None = None
+    ) -> list[dict]:
+        """Active dated facts of the given categories, without evidence.
+
+        A fact whose source document was soft-deleted (the file left the
+        patient's folder) is left out, so every fact has its document.
+        """
+        if not categories:
+            return []
+        sql = (
+            "SELECT s.id, s.code, s.category, s.label_original, s.effective_at, s.value_num, "
+            "s.value_text, s.unit, s.value_canonical, s.unit_canonical, s.ref_range_low, "
+            "s.ref_range_high, s.flag, s.verification, s.source_document_id, s.page_number, "
+            "s.metadata_json, f.fhir_id, f.extracted_by FROM fact_series_v s "
+            "JOIN clinical_records f ON f.id = s.id AND f.patient_id = s.patient_id "
+            "LEFT JOIN documents d ON d.id = s.source_document_id AND d.patient_id = s.patient_id "
+            "WHERE s.patient_id = ? AND s.effective_at IS NOT NULL "
+            "AND (s.source_document_id IS NULL OR (d.id IS NOT NULL AND d.deleted_at IS NULL)) "
+            f"AND s.category IN ({','.join('?' * len(categories))})"
+        )
+        params: list = [patient_id, *categories]
+        if since_day:
+            sql += " AND s.effective_at >= ?"
+            params.append(since_day)
+        async with self.db.execute(sql, tuple(params)) as cur:
+            return _rows(await cur.fetchall())
+
+    async def effective_fact_ids(
+        self, *, patient_id: str, document_ids: list[int | None]
+    ) -> dict[int, str]:
+        """Row id → stable fact id for every active fact of these documents
+        (stored ``fhir_id``, else computed as the insert path would)."""
+        ids = sorted({d for d in document_ids if d is not None})
+        clauses = []
+        params: list = [patient_id]
+        if ids:
+            clauses.append(f"source_document_id IN ({','.join('?' * len(ids))})")
+            params += ids
+        if None in document_ids:
+            clauses.append("source_document_id IS NULL")
+        if not clauses:
+            return {}
+        async with self.db.execute(
+            "SELECT id, source_document_id, code, param, occurred_at, page_number, evidence, "
+            "metadata_json, verification, fhir_id FROM clinical_records "
+            f"WHERE patient_id = ? AND deleted_at IS NULL AND ({' OR '.join(clauses)}) "
+            "ORDER BY id",
+            tuple(params),
+        ) as cur:
+            rows = _rows(await cur.fetchall())
+        by_doc: dict[int | None, list[dict]] = {}
+        for r in rows:
+            by_doc.setdefault(r["source_document_id"], []).append(r)
+        out: dict[int, str] = {}
+        for doc_id, group in by_doc.items():
+            out.update(fact_identity.ids_for_rows(patient_id, doc_id, group))
+        return out
+
+    async def feed_documents(self, *, patient_id: str, document_ids: list[int]) -> list[dict]:
+        if not document_ids:
+            return []
+        async with self.db.execute(
+            "SELECT d.id, COALESCE(d.title, d.filename) AS title, d.document_date, d.category, "
+            "COALESCE(o.code, d.institution) AS institution, d.gdrive_id, d.source_url "
+            "FROM documents d LEFT JOIN organizations o ON o.id = d.organization_id "
+            f"WHERE d.patient_id = ? AND d.deleted_at IS NULL "
+            f"AND d.id IN ({','.join('?' * len(document_ids))}) ORDER BY d.id",
+            (patient_id, *document_ids),
+        ) as cur:
+            return _rows(await cur.fetchall())
+
+    async def fact_code_local_codes(self) -> dict[str, dict[str, str]]:
+        """Our code → {local system: the institution's abbreviation} (shared
+        vocabulary in ``codings``, migration 081)."""
+        async with self.db.execute(
+            "SELECT owner_id, system, code FROM codings WHERE owner_type = 'fact_code' "
+            "AND patient_id IS NULL AND deleted_at IS NULL AND system LIKE ? ORDER BY id",
+            (LOCAL_CODE_SYSTEM_PREFIX + "%",),
+        ) as cur:
+            rows = _rows(await cur.fetchall())
+        out: dict[str, dict[str, str]] = {}
+        for r in rows:
+            out.setdefault(r["owner_id"], {}).setdefault(r["system"], r["code"])
+        return out
+
+    async def has_coded_facts(self, *, patient_id: str, categories: list[str]) -> bool:
+        """Whether the facts model holds coded values of these categories."""
+        row = await self._one(
+            "SELECT 1 AS ok FROM clinical_records WHERE patient_id = ? AND deleted_at IS NULL "
+            f"AND code IS NOT NULL AND record_type IN ({','.join('?' * len(categories))}) "
+            "LIMIT 1",
+            (patient_id, *categories),
+        )
+        return row is not None
+
+    async def fact_days(self, *, patient_id: str, categories: list[str]) -> list[str]:
+        """Distinct days with coded facts of these categories, newest first."""
+        async with self.db.execute(
+            "SELECT DISTINCT substr(effective_at, 1, 10) AS day FROM fact_series_v "
+            "WHERE patient_id = ? AND code IS NOT NULL AND effective_at IS NOT NULL "
+            f"AND category IN ({','.join('?' * len(categories))}) ORDER BY day DESC",
+            (patient_id, *categories),
+        ) as cur:
+            return [r["day"] for r in _rows(await cur.fetchall())]

@@ -37,7 +37,7 @@ def test_parse_granted_scopes_empty():
     assert parse_granted_scopes({"scope": ""}) == []
 
 
-def test_auth_url_includes_scopes(monkeypatch):
+def test_auth_url_includes_scopes(monkeypatch, gmail_calendar_on):
     monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_ID", "test-client-id")
     monkeypatch.setenv("MCP_BEARER_TOKEN", "test-token")
     # Force config reload by patching the module-level constants

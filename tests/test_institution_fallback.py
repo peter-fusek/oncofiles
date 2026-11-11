@@ -23,7 +23,7 @@ async def _insert_doc(db: Database, *, patient_id: str = ERIKA_UUID, **fields):
 
 def _set_treatment_institution(pid: str, inst: str | None) -> None:
     """Helper: set patient_context.treatment.institution for a patient."""
-    ctx = dict(patient_context._contexts.get(pid, {"name": "Erika Fusekova"}))
+    ctx = dict(patient_context._contexts.get(pid, {"name": "Jana Testova"}))
     if inst:
         ctx["treatment"] = {"institution": inst}
     else:
@@ -46,7 +46,7 @@ async def test_fallback_fills_chemo_sheet_from_patient_context(db: Database):
     _set_treatment_institution(ERIKA_UUID, "NOU")
     await _insert_doc(
         db,
-        filename="20230326_ErikaFusekova_Unknown_ChemoSheet_Cycle3.pdf",
+        filename="20270326_JanaTestova_Unknown_ChemoSheet_Cycle3.pdf",
         category="chemo_sheet",
         institution=None,
     )

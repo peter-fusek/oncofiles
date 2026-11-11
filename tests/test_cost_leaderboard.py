@@ -27,7 +27,7 @@ CAROL_UUID = "00000000-0000-4000-8000-000000000003"
 
 
 async def _seed_three_patients(db) -> None:
-    """Seed Bob and Carol alongside the conftest's Erika."""
+    """Seed Bob and Carol alongside the conftest's Jana."""
     await db.insert_patient(
         Patient(
             patient_id=BOB_UUID,
@@ -82,7 +82,7 @@ async def test_leaderboard_excludes_patients_with_no_activity(db):
     """Patients with zero rows in the window do NOT appear on the leaderboard.
 
     Empty patients are noise on the anomaly-review surface — admin only
-    cares about who's actually spending. Bob is logged; Erika and Carol
+    cares about who's actually spending. Bob is logged; Jana and Carol
     have no prompt_log rows.
     """
     await _seed_three_patients(db)
@@ -103,7 +103,7 @@ async def test_leaderboard_recomputes_cost_for_null_billed_rows(db):
     otherwise old patients show as $0 and disappear under newer activity.
     """
     await _seed_three_patients(db)
-    # Erika: NULL cost on every row, but real tokens
+    # Jana: NULL cost on every row, but real tokens
     await _log(db, patient_id=ERIKA_UUID, cost=None)
     await _log(db, patient_id=ERIKA_UUID, cost=None)
     # Bob: explicit $0.40 (one row)
@@ -111,7 +111,7 @@ async def test_leaderboard_recomputes_cost_for_null_billed_rows(db):
 
     rows = await db.get_per_patient_cost_leaderboard(days=30)
     by_pid = {r["patient_id"]: r for r in rows}
-    # Erika: 200 input + 100 output tokens × Haiku pricing → tiny but > 0
+    # Jana: 200 input + 100 output tokens × Haiku pricing → tiny but > 0
     assert by_pid[ERIKA_UUID]["total_cost_usd"] > 0
     assert by_pid[BOB_UUID]["total_cost_usd"] == 0.40
 

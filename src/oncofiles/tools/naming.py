@@ -76,6 +76,11 @@ async def rename_documents_to_standard(
     In dry_run mode (default), returns a preview of proposed renames without
     making any changes. Set dry_run=False to execute the rename.
 
+    Legacy (non-curated) documents only: files in a curated patient folder
+    (README.md + _index.json) are named by the curated pipeline
+    (curated_folder_run / continuous mode); they are skipped here and
+    counted as ``curated_skipped``.
+
     Args:
         dry_run: If True (default), only preview changes. Set False to execute.
         en_descriptions: Optional JSON object mapping doc_id → English description
@@ -107,6 +112,12 @@ async def rename_documents_to_standard(
     renames = []
 
     for doc in docs:
+        # Curated read-model rows (#603, file_id "gdrive:<id>") are named by
+        # the curated pipeline; renaming them here would desync the DB from
+        # the write-protected folder (#606).
+        if (doc.file_id or "").startswith("gdrive:"):
+            stats["curated_skipped"] = stats.get("curated_skipped", 0) + 1
+            continue
         if is_standard_format(doc.filename, patient_id=pid):
             stats["already_standard"] += 1
             continue

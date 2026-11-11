@@ -1,4 +1,8 @@
-"""Research entry tools."""
+"""Research entry tools.
+
+DEPRECATED (#721, Oncoteam sunset): ``add_research_entry`` refuses new writes;
+the read tools stay as an archive until 2027-01-10. See ``_sunset.py``.
+"""
 
 from __future__ import annotations
 
@@ -6,8 +10,9 @@ import json
 
 from fastmcp import Context
 
-from oncofiles.models import ResearchEntry, ResearchQuery
+from oncofiles.models import ResearchQuery
 from oncofiles.tools._helpers import _get_db, _research_source_url, _resolve_patient_id
+from oncofiles.tools._sunset import write_refused
 
 
 async def add_research_entry(
@@ -20,40 +25,23 @@ async def add_research_entry(
     raw_data: str = "",
     patient_slug: str | None = None,
 ) -> str:
-    """Save a research article or clinical trial found by an agent.
+    """[DEPRECATED — Oncoteam sunset (#721); removed after 2027-01-10] Refuses new writes.
 
-    Deduplicates by source+external_id — if a duplicate is found, returns
-    the existing entry without error.
+    Research entries were written by Oncoteam's literature and trial agents.
+    Oncoteam is retired, so this tool stores nothing and returns a
+    ``deprecated`` error. Existing entries stay readable via search_research
+    and list_research_entries.
 
     Args:
-        source: Source name (e.g. pubmed, clinicaltrials).
-        external_id: External identifier (e.g. PMID, NCT number).
-        title: Article or trial title.
-        summary: Brief summary or abstract excerpt.
-        tags: JSON array of tags (e.g. '["FOLFOX","mCRC"]').
-        raw_data: Full raw data (abstract, JSON, etc.) for reference.
-        patient_slug: Optional — explicit patient slug (#429).
+        source: Source name (ignored).
+        external_id: External identifier (ignored).
+        title: Title (ignored).
+        summary: Summary (ignored).
+        tags: Tags (ignored).
+        raw_data: Raw data (ignored).
+        patient_slug: Optional patient slug (ignored).
     """
-    db = _get_db(ctx)
-    pid = await _resolve_patient_id(patient_slug, ctx)
-    entry = ResearchEntry(
-        source=source,
-        external_id=external_id,
-        title=title,
-        summary=summary,
-        tags=tags,
-        raw_data=raw_data,
-    )
-    saved = await db.insert_research_entry(entry, patient_id=pid)
-    return json.dumps(
-        {
-            "id": saved.id,
-            "source": saved.source,
-            "external_id": saved.external_id,
-            "title": saved.title,
-            "url": _research_source_url(saved.source, saved.external_id),
-        }
-    )
+    return write_refused("add_research_entry")
 
 
 async def search_research(
@@ -63,7 +51,8 @@ async def search_research(
     limit: int = 20,
     patient_slug: str | None = None,
 ) -> str:
-    """Search saved research entries by text and/or source.
+    """[DEPRECATED — Oncoteam sunset (#721); removed after 2027-01-10]
+    Search saved research entries by text and/or source.
 
     Args:
         text: Search in title, summary, and tags.
@@ -97,7 +86,8 @@ async def list_research_entries(
     limit: int = 50,
     patient_slug: str | None = None,
 ) -> str:
-    """List saved research entries, optionally filtered by source.
+    """[DEPRECATED — Oncoteam sunset (#721); removed after 2027-01-10]
+    List saved research entries, optionally filtered by source.
 
     Args:
         source: Filter by source (e.g. pubmed, clinicaltrials).

@@ -58,11 +58,11 @@ async def test_audit_empty_patient(db: Database):
 async def test_audit_fully_complete_doc_has_no_gaps(db: Database):
     doc = await _insert_doc(
         db,
-        filename="20240115_ErikaFusekova_NOUonko_Labs_KrvnyObraz.pdf",
+        filename="20280115_JanaTestova_NOUonko_Labs_KrvnyObraz.pdf",
         gdrive_id="gdrive_abc",
         ai_summary="lab report summary",
         structured_metadata='{"x": 1}',
-        document_date=date(2024, 1, 15),
+        document_date=date(2028, 1, 15),
         institution="NOUonko",
     )
     await db.save_ocr_page(doc.id, 1, "page 1 text", "test-model")
@@ -77,12 +77,12 @@ async def test_audit_fully_complete_doc_has_no_gaps(db: Database):
 
 async def test_audit_detects_every_gap_type(db: Database):
     # Missing OCR
-    await _insert_doc(db, filename="20240101_no_ocr.pdf")
+    await _insert_doc(db, filename="20280101_no_ocr.pdf")
     # Missing AI
-    doc2 = await _insert_doc(db, filename="20240102_no_ai.pdf")
+    doc2 = await _insert_doc(db, filename="20280102_no_ai.pdf")
     await db.save_ocr_page(doc2.id, 1, "text", "m")
     # Missing metadata (has AI, no structured_metadata)
-    doc3 = await _insert_doc(db, filename="20240103_no_meta.pdf", ai_summary="s")
+    doc3 = await _insert_doc(db, filename="20280103_no_meta.pdf", ai_summary="s")
     await db.save_ocr_page(doc3.id, 1, "t", "m")
     # Missing date
     doc4 = await _insert_doc(db, filename="nodate.pdf", document_date=None, ai_summary="s")
@@ -118,14 +118,14 @@ async def test_audit_cross_patient_isolation(db: Database):
     )
     await db.insert_patient(other)
 
-    # Insert 2 docs for ERIKA
-    await _insert_doc(db, filename="erika1.pdf")
-    await _insert_doc(db, filename="erika2.pdf")
+    # Insert 2 docs for JANA
+    await _insert_doc(db, filename="jana1.pdf")
+    await _insert_doc(db, filename="jana2.pdf")
     # Insert 3 docs for TEST_PATIENT
     for i in range(3):
         await _insert_doc(db, patient_id=TEST_PATIENT_UUID, filename=f"other{i}.pdf")
 
-    # Audit ERIKA — must see only 2 docs, not 5
+    # Audit JANA — must see only 2 docs, not 5
     result = json.loads(await audit_document_pipeline(_ctx(db)))
     assert result["totals"]["total_documents"] == 2
 
@@ -273,7 +273,7 @@ async def test_audit_xlsx_not_counted_as_missing_ocr(db: Database):
         db,
         filename="biomarker_matrix.xlsx",
         mime_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        document_date=date(2024, 3, 1),
+        document_date=date(2028, 3, 1),
         institution="NOU",
         gdrive_id="gdrive_xls",
     )
@@ -291,11 +291,11 @@ async def test_audit_legacy_ocr_doc_not_counted_as_missing_ocr(db: Database):
     """
     await _insert_doc(
         db,
-        filename="20240115_ErikaFusekova_NOU_Reference_Legacy.pdf",
+        filename="20280115_JanaTestova_NOU_Reference_Legacy.pdf",
         mime_type="application/pdf",
         ai_summary="legacy pipeline summary",
         structured_metadata='{"document_type":"reference"}',
-        document_date=date(2024, 1, 15),
+        document_date=date(2028, 1, 15),
         institution="NOU",
         gdrive_id="gdrive_leg",
     )
@@ -313,9 +313,9 @@ async def test_audit_xlsx_does_not_appear_in_stuck_sample(db: Database):
     """
     await _insert_doc(
         db,
-        filename="20240301_ErikaFusekova_NOU_Reference_BiomarkerMatrix.xlsx",
+        filename="20280301_JanaTestova_NOU_Reference_BiomarkerMatrix.xlsx",
         mime_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        document_date=date(2024, 3, 1),
+        document_date=date(2028, 3, 1),
         institution="NOU",
         gdrive_id="gdrive_xls_complete",
     )
@@ -333,9 +333,9 @@ async def test_audit_counts_external_location_docs(db: Database):
     not as noisy 'missing'/'not_synced'."""
     doc = await _insert_doc(
         db,
-        filename="20260313_ErikaFusekova_PacientAdvokat_Advocate_Note.md",
+        filename="20300313_JanaTestova_PacientAdvokat_Advocate_Note.md",
         mime_type="text/markdown",
-        document_date=date(2026, 3, 13),
+        document_date=date(2030, 3, 13),
         institution="PacientAdvokat",
         gdrive_id="gdrive_external_1",
     )
@@ -350,8 +350,8 @@ async def test_audit_counts_deleted_remote_docs(db: Database):
     """Docs with sync_state=deleted_remote show up as deleted_remote gap."""
     doc = await _insert_doc(
         db,
-        filename="20260313_ErikaFusekova_NOU_Labs_KrvnyObraz.pdf",
-        document_date=date(2026, 3, 13),
+        filename="20300313_JanaTestova_NOU_Labs_KrvnyObraz.pdf",
+        document_date=date(2030, 3, 13),
         institution="NOU",
         gdrive_id="gdrive_gone",
     )

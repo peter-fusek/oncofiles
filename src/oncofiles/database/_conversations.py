@@ -45,17 +45,18 @@ class ConversationMixin:
         return entry
 
     async def get_conversation_entry(
-        self, entry_id: int, *, patient_id: str
+        self, entry_id: int, *, patient_id: str, include_deleted: bool = False
     ) -> ConversationEntry | None:
         """Get a conversation entry by ID, scoped to ``patient_id`` (#499).
 
         ``patient_id`` is required: the SQL filter blocks cross-patient
         disclosure if a caller forgets ``check_conversation_entry_ownership``.
+        Soft-deleted entries (#723) are hidden unless ``include_deleted``.
         """
-        async with self.db.execute(
-            "SELECT * FROM conversation_entries WHERE id = ? AND patient_id = ?",
-            (entry_id, patient_id),
-        ) as cursor:
+        sql = "SELECT * FROM conversation_entries WHERE id = ? AND patient_id = ?"
+        if not include_deleted:
+            sql += " AND deleted_at IS NULL"
+        async with self.db.execute(sql, (entry_id, patient_id)) as cursor:
             row = await cursor.fetchone()
             return _row_to_conversation_entry(row) if row else None
 
@@ -82,7 +83,7 @@ class ConversationMixin:
             max_content_length: Truncate content to this length in the query
                 to reduce memory usage. Use 0 for full content.
         """
-        conditions: list[str] = ["patient_id = ?"]
+        conditions: list[str] = ["patient_id = ?", "deleted_at IS NULL"]
         params: list[str | int] = [patient_id]
 
         if query.text:
@@ -90,12 +91,15 @@ class ConversationMixin:
             import re
 
             safe_text = re.sub(r"[^\w\s-]", "", query.text)
-            if safe_text.strip():
-                conditions.append(
-                    "id IN (SELECT rowid FROM conversation_entries_fts "
-                    "WHERE conversation_entries_fts MATCH ?)"
-                )
-                params.append(f'"{safe_text}"')
+            if not safe_text.strip():
+                # Only punctuation was given: there is nothing to match. This
+                # used to drop the text filter and return every entry.
+                return []
+            conditions.append(
+                "id IN (SELECT rowid FROM conversation_entries_fts "
+                "WHERE conversation_entries_fts MATCH ?)"
+            )
+            params.append(f'"{safe_text}"')
 
         if query.entry_type:
             conditions.append("entry_type = ?")
@@ -114,9 +118,16 @@ class ConversationMixin:
             params.append(query.date_to.isoformat())
 
         if query.tags:
+            # Exact tag match. ``tags LIKE '%"x"%'`` treated % and _ in a tag
+            # as wildcards and matched inside other tags' JSON escapes. The
+            # lazy CASE keeps a malformed legacy value from failing the query.
             for tag in query.tags:
-                conditions.append("tags LIKE ?")
-                params.append(f'%"{tag}"%')
+                conditions.append(
+                    "EXISTS (SELECT 1 FROM json_each("
+                    "CASE WHEN json_valid(tags) THEN tags ELSE '[]' END) j "
+                    "WHERE j.value = ?)"
+                )
+                params.append(tag)
 
         where = " AND ".join(conditions) if conditions else "1=1"
         # Truncate content at SQL level to avoid loading full text into memory
@@ -146,8 +157,8 @@ class ConversationMixin:
         *,
         patient_id: str,
     ) -> list[ConversationEntry]:
-        """Get conversation entries in chronological (ASC) order."""
-        conditions: list[str] = ["patient_id = ?"]
+        """Get live conversation entries in chronological (ASC) order."""
+        conditions: list[str] = ["patient_id = ?", "deleted_at IS NULL"]
         params: list[str | int] = [patient_id]
 
         if date_from:
@@ -168,24 +179,69 @@ class ConversationMixin:
             rows = await cursor.fetchall()
             return [_row_to_conversation_entry(r) for r in rows]
 
-    async def delete_conversation_entry(self, entry_id: int, *, patient_id: str) -> bool:
-        """Delete a conversation entry by ID, scoped to ``patient_id`` (#515).
+    async def delete_conversation_entry(
+        self, entry_id: int, *, patient_id: str, deleted_by: str | None = None
+    ) -> bool:
+        """Soft-delete a conversation entry, scoped to ``patient_id`` (#515, #723).
 
-        ``patient_id`` is required: the SQL ``AND patient_id = ?`` clause
-        is the data-layer guarantee that a caller without an ownership
+        Sets ``deleted_at`` / ``deleted_by``; the row stays restorable via
+        ``restore_conversation_entry`` (deletion policy: trash only). Returns
+        False when the entry does not exist for this patient or is already
+        deleted. ``patient_id`` is required: the SQL ``AND patient_id = ?``
+        clause is the data-layer guarantee that a caller without an ownership
         check cannot delete another patient's row by enumerating IDs.
         """
         cursor = await self.db.execute(
-            "DELETE FROM conversation_entries WHERE id = ? AND patient_id = ?",
+            "UPDATE conversation_entries "
+            "   SET deleted_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now'), deleted_by = ? "
+            " WHERE id = ? AND patient_id = ? AND deleted_at IS NULL",
+            (deleted_by, entry_id, patient_id),
+        )
+        await self.db.commit()
+        if cursor.rowcount <= 0:
+            return False
+        await self.log_soft_delete_activity(
+            action="soft_delete",
+            table="conversation_entries",
+            row_id=entry_id,
+            patient_id=patient_id,
+            actor=deleted_by,
+        )
+        return True
+
+    async def restore_conversation_entry(
+        self, entry_id: int, *, patient_id: str, restored_by: str | None = None
+    ) -> ConversationEntry | None:
+        """Undo a soft delete, scoped to ``patient_id`` (#723).
+
+        Returns the restored entry, or None when it does not exist for this
+        patient or is not deleted.
+        """
+        cursor = await self.db.execute(
+            "UPDATE conversation_entries SET deleted_at = NULL, deleted_by = NULL "
+            " WHERE id = ? AND patient_id = ? AND deleted_at IS NOT NULL",
             (entry_id, patient_id),
         )
         await self.db.commit()
-        return cursor.rowcount > 0
+        if cursor.rowcount <= 0:
+            return None
+        await self.log_soft_delete_activity(
+            action="restore",
+            table="conversation_entries",
+            row_id=entry_id,
+            patient_id=patient_id,
+            actor=restored_by,
+        )
+        return await self.get_conversation_entry(entry_id, patient_id=patient_id)
 
     async def get_entry_by_source_ref(
         self, source_ref: str, *, patient_id: str
     ) -> ConversationEntry | None:
-        """Get a conversation entry by source_ref (for idempotent imports)."""
+        """Get a conversation entry by source_ref (for idempotent imports).
+
+        Deliberately includes soft-deleted entries (#723): a re-import must not
+        bring back an entry the user deleted.
+        """
         async with self.db.execute(
             "SELECT * FROM conversation_entries WHERE source_ref = ? AND patient_id = ?",
             (source_ref, patient_id),

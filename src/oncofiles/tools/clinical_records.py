@@ -2,7 +2,7 @@
 
 Phase 1 (v5.11) shipped four read/write tools (add, get, add_note, list_notes).
 Phase 2 (v5.13) adds seven more to close the CRUD loop + expose audit + give
-Oncoteam a place to persist analytic outputs:
+AI clients a place to persist analytic outputs:
 
   - update_clinical_record     — partial update + audit row
   - delete_clinical_record     — soft-delete + audit row
@@ -167,7 +167,7 @@ async def add_clinical_record_note(
 ) -> str:
     """Attach a free-form note to a clinical record.
 
-    The killer feature for #450 Phase 1: any caregiver, Oncoteam session, or
+    The killer feature for #450 Phase 1: any caregiver or
     Claude.ai/ChatGPT chat can annotate a specific record with a personal
     observation (\"Asked Dr. Kovac about this CEA, monitoring\"). Notes surface
     in the dashboard + future clinical-timeline view.
@@ -287,7 +287,7 @@ async def update_clinical_record(
     """Partial update on a clinical record — only provided fields change.
 
     Every update writes an audit row with the before/after snapshots and the
-    list of changed field names, so the caregiver or Oncoteam can later
+    list of changed field names, so the caregiver or an AI client can later
     inspect who changed what and why. Fields not passed (left as None) are
     untouched; pass an explicit value to clear a field is not supported here
     — use the DB layer if you need that edge case.
@@ -372,9 +372,9 @@ async def delete_clinical_record(
     """Soft-delete a clinical record. Idempotent — already-deleted returns no_change.
 
     Original row is preserved with deleted_at/deleted_by set; the audit row
-    captures the delete action. Recovery via restore_clinical_record within
-    the 30-day retention window (per global deletion policy). Nothing is ever
-    hard-deleted from this table.
+    captures the delete action. Recovery via restore_clinical_record at any
+    time (per global deletion policy). Nothing is ever hard-deleted from this
+    table and nothing purges soft-deleted rows.
     """
     pid = await _resolve_patient_id(patient_slug, ctx)
     db = _get_db(ctx)
@@ -524,7 +524,7 @@ async def add_clinical_analysis(
 ) -> str:
     """Persist an analytic output computed over one or more clinical records.
 
-    Oncoteam's primary write path for SII trends, lab deltas, biomarker
+    The write path for AI-computed SII trends, lab deltas, biomarker
     safety checks, session summaries, trial-eligibility notes, etc. The
     ``record_ids`` list traces which facts fed this analysis — the caregiver
     (or a future dashboard timeline) can drill from the analysis back to
