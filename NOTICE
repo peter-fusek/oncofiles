@@ -1,0 +1,19 @@
+Oncofiles
+Copyright (c) Peter Fusek and contributors. Licensed under the terms in LICENSE.
+
+Third-party terminology notices
+-------------------------------
+
+LOINC
+  This material contains content from LOINC (http://loinc.org). LOINC is
+  copyright (c) Regenstrief Institute, Inc. and the Logical Observation
+  Identifiers Names and Codes (LOINC) Committee and is available at no cost
+  under the license at http://loinc.org/license. LOINC(R) is a registered
+  United States trademark of Regenstrief Institute, Inc.
+  Oncofiles stores LOINC codes only (in fact_codes.loinc); display names in
+  this repository are Oncofiles' own (name_sk / name_en), not LOINC names.
+
+Other terminologies (SNOMED CT, ICD-10 / MKCH-10, ICD-O-3, ATC, EDQM Standard
+Terms, UCUM, TNM/AJCC, HemOnc) are NOT distributed in this repository. Where
+Oncofiles stores their codes, the code lists are obtained from their
+publishers under their own licences. See docs/architecture/hard_data_model.md.
