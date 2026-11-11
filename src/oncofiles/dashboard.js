@@ -137,6 +137,14 @@
       return span;
     }
 
+    /** Give a dynamically built element both languages; applyDashLang() keeps it in sync. */
+    function setI18n(el, sk, en) {
+      el.setAttribute('data-sk', sk);
+      el.setAttribute('data-en', en);
+      el.textContent = dashLang === 'sk' ? sk : en;
+      return el;
+    }
+
     /** Clear all children of an element. */
     function clearEl(el) {
       while (el.firstChild) el.removeChild(el.firstChild);
@@ -154,6 +162,31 @@
 
     // ── Init ─────────────────────────────────────────────────────────────
 
+    // #605: /demo marks <html data-demo="1"> server-side (no inline script —
+    // dashboard.html has none since #525 and CSP would block one anyway).
+    if (document.documentElement.getAttribute('data-demo') === '1') window.DEMO_MODE = true;
+
+    // Demo mode must never reach an authenticated endpoint. Single chokepoint:
+    // every same-origin fetch() except /api/demo-data is refused before it
+    // leaves the browser, so a filter click, the Refresh button, a timer or
+    // any future code path cannot hit /api/*, /status or /dashboard/*.
+    // Cross-origin requests (analytics) are untouched. Locked by
+    // tests/test_landing_content.py::test_demo_mode_fetch_chokepoint.
+    var DEMO_ALLOWED_PATHS = ['/api/demo-data'];
+    if (window.DEMO_MODE) {
+      var _demoRealFetch = window.fetch.bind(window);
+      window.fetch = function (input, init) {
+        var raw = typeof input === 'string' ? input : (input && input.url) || '';
+        var u = null;
+        try { u = new URL(raw, window.location.origin); } catch (e) { u = null; }
+        if (!u || (u.origin === window.location.origin && DEMO_ALLOWED_PATHS.indexOf(u.pathname) === -1)) {
+          console.info('Demo mode: request not sent:', u ? u.pathname : raw);
+          return Promise.reject(new Error('Not available in the demo'));
+        }
+        return _demoRealFetch(input, init);
+      };
+    }
+
     (function init() {
       // Demo mode: skip auth, load sample data
       if (window.DEMO_MODE) {
@@ -163,7 +196,16 @@
         var patientControls = document.querySelector('.patient-controls');
         if (patientControls) patientControls.style.display = 'none';
         var userInfo = document.getElementById('user-info');
-        if (userInfo) userInfo.textContent = 'Demo Mode';
+        if (userInfo) setI18n(userInfo, 'Ukážka', 'Demo');
+        // Panels that describe the operator's sync/AI-cost pipeline are not
+        // part of the demo story (#605): hide them, show the honest note.
+        ['sync-history-section', 'prompt-log-section', 'analytics-section', 'schedules-section', 'recon-panel',
+         'manifest-section', 'mcp-setup-section']
+          .forEach(function (id) { var el = document.getElementById(id); if (el) el.style.display = 'none'; });
+        var demoNote = document.getElementById('demo-processing-note');
+        if (demoNote) demoNote.style.display = 'block';
+        var demoBanner = document.getElementById('demo-banner');
+        if (demoBanner) demoBanner.style.display = 'block';
         // Replace logout with navigation links (#233)
         var logoutBtn = document.querySelector('.logout-btn');
         if (logoutBtn) {
@@ -195,15 +237,15 @@
         ctaBanner.style.cssText = 'position:fixed;bottom:0;left:0;right:0;z-index:1000;background:var(--surface);border-top:1px solid var(--border);padding:0.75rem 1.5rem;display:flex;align-items:center;justify-content:center;gap:1rem;box-shadow:0 -2px 12px rgba(0,0,0,0.08)';
         var ctaText = document.createElement('span');
         ctaText.style.cssText = 'font-size:0.875rem;color:var(--text-dim)';
-        ctaText.setAttribute('data-sk', 'Nastavenie trvá 2 minúty: Prihláste sa cez Google \u2192 Vyberte priečinok \u2192 Začnite sa pýtať AI');
-        ctaText.setAttribute('data-en', 'Setup takes 2 minutes: Sign in with Google \u2192 Pick a Drive folder \u2192 Start asking AI');
-        ctaText.textContent = 'Setup takes 2 minutes: Sign in with Google \u2192 Pick a Drive folder \u2192 Start asking AI';
+        ctaText.setAttribute('data-sk', 'Toto je ukážka s vymyslenými dátami. Pripájanie vlastného Drive spúšťame v novembri 2026.');
+        ctaText.setAttribute('data-en', 'This is a demo with invented data. Connecting your own Drive opens in November 2026.');
+        ctaText.textContent = 'This is a demo with invented data. Connecting your own Drive opens in November 2026.';
         var ctaBtn = document.createElement('a');
-        ctaBtn.href = '/dashboard';
+        ctaBtn.href = '/#waitlist';
         ctaBtn.style.cssText = 'padding:0.5rem 1.25rem;background:var(--accent);color:#fff;border-radius:6px;text-decoration:none;font-size:0.8125rem;font-weight:600;white-space:nowrap';
-        ctaBtn.setAttribute('data-sk', 'Začať zadarmo');
-        ctaBtn.setAttribute('data-en', 'Start free');
-        ctaBtn.textContent = 'Start free';
+        ctaBtn.setAttribute('data-sk', 'Pridať sa na zoznam');
+        ctaBtn.setAttribute('data-en', 'Join the waitlist');
+        ctaBtn.textContent = 'Join the waitlist';
         ctaBanner.appendChild(ctaText);
         ctaBanner.appendChild(ctaBtn);
         document.body.appendChild(ctaBanner);
@@ -244,15 +286,16 @@
         var data = await resp.json();
         renderStatus(data.status);
         renderDocs(data.documents);
-        if (data.prompt_log) renderPromptLog(data.prompt_log);
-        if (data.analytics) renderAnalytics(data.analytics);
         // Show conversation previews in demo
         var demoConv = document.getElementById('demo-conversations');
         if (demoConv) demoConv.style.display = 'block';
         setConnectionState('ok');
         hideSkeletons();
         document.getElementById('version-label').textContent = 'v' + data.status.version + ' demo';
-        // Auto-expand the Labs doc to showcase rich OCR + metadata
+        // Auto-expand the Labs doc to showcase rich OCR + metadata (first load only;
+        // filter clicks / Refresh re-run loadDemoData via refresh()).
+        if (window._demoExpanded) return;
+        window._demoExpanded = true;
         setTimeout(function() {
           var rows = document.querySelectorAll('#doc-table tbody tr');
           var target = null;
@@ -278,41 +321,48 @@
 
     /** Sample doc detail for demo mode — shows OCR and metadata without API call. */
     function getDemoDocDetail(doc) {
+      // All demo content is invented (patient, hospital, values, dates 2027+).
       var demoDetails = {
         1: {
-          filename: '20260315_Patient_NOU_Labs_BloodCount.pdf',
-          category: 'labs', date: '2026-03-15', institution: 'NOU',
+          filename: '20270315_Patient_NOU_Labs_BloodCount.pdf',
+          category: 'labs', date: '2027-03-15', institution: 'Example Hospital',
           gdrive_url: null, preview_url: null,
-          ai_summary: 'Complete blood count before cycle 5 mFOLFOX6. WBC 4.2, HGB 112 g/L (mild anemia), PLT 268, ANC 2.1. Liver enzymes stable. CEA trending down from 18.4 to 12.1 — favorable response.',
-          ai_tags: ['CBC', 'pre-chemo', 'mFOLFOX6', 'CEA declining', 'mild anemia'],
-          metadata: { diagnosis: 'C18.7 — mCRC', treatment: 'mFOLFOX6 cycle 5', provider: 'Národný onkologický ústav' },
+          ai_summary: 'Sample blood count before cycle 3 (invented data). WBC 5.6, HGB 118 g/L (slightly low), PLT 231, ANC 3.1. Liver enzymes within range. CEA 4.2, below the upper limit.',
+          ai_tags: ['CBC', 'pre-cycle', 'sample data'],
+          metadata: { diagnosis: 'C18 — colorectal (sample)', treatment: 'cycle 3 (sample)', provider: 'Example Hospital (invented)' },
           pages: [
-            { page_number: 1, char_count: 1842, text: 'NÁRODNÝ ONKOLOGICKÝ ÚSTAV\nKlenová 1, 833 10 Bratislava\n\nLABORATÓRNY NÁLEZ\nDátum: 15.03.2026\nPacient: [REDACTED]\n\nKRVNÝ OBRAZ:\nWBC: 4.2 x10^9/L (ref: 4.0-10.0)\nRBC: 3.89 x10^12/L (ref: 3.80-5.20)\nHGB: 112 g/L (ref: 120-160) ↓\nHCT: 0.34 L/L (ref: 0.35-0.47) ↓\nPLT: 268 x10^9/L (ref: 150-400)\nANC: 2.1 x10^9/L\n\nBIOCHÉMIA:\nALT: 0.45 µkat/L (ref: 0.10-0.83)\nAST: 0.52 µkat/L (ref: 0.10-0.72)\nGGT: 0.89 µkat/L (ref: 0.10-1.00)\nKreatinín: 78 µmol/L (ref: 53-115)\n\nNÁDOROVÉ MARKERY:\nCEA: 12.1 ng/mL (ref: <5.0) ↑\nCA 19-9: 28.4 U/mL (ref: <37.0)\n\nZáver: Mierna anémia, neutrofily v norme — pacient spôsobilý na chemoterapiu.' }
+            { page_number: 1, char_count: 1024, text: 'NEMOCNICA PRÍKLADOV (vymyslená)\nOddelenie klinickej biochémie\n\nLABORATÓRNY NÁLEZ — UKÁŽKA\nOdber: 15.03.2027 07:05\nPacient: Ema Vzorová (vymyslená)\n\nKRVNÝ OBRAZ:\nWBC: 5.6 x10^9/L (ref: 4.0-10.0)\nRBC: 4.05 x10^12/L (ref: 3.80-5.20)\nHGB: 118 g/L (ref: 120-160) ↓\nHCT: 0.36 L/L (ref: 0.35-0.47)\nPLT: 231 x10^9/L (ref: 150-400)\nANC: 3.1 x10^9/L\n\nBIOCHÉMIA:\nALT: 0.38 µkat/L (ref: 0.10-0.83)\nAST: 0.41 µkat/L (ref: 0.10-0.72)\nKreatinín: 71 µmol/L (ref: 53-115)\n\nNÁDOROVÉ MARKERY:\nCEA: 4.2 ng/mL (ref: <5.0)\n\nVšetky údaje sú vymyslené pre demo.' }
           ]
         },
         3: {
-          filename: '20260301_Patient_NOU_Pathology_ColonBiopsy.pdf',
-          category: 'pathology', date: '2026-03-01', institution: 'NOU',
+          filename: '20270301_Patient_NOU_Pathology_ColonBiopsy.pdf',
+          category: 'pathology', date: '2027-03-01', institution: 'Example Hospital',
           gdrive_url: null, preview_url: null,
-          ai_summary: 'Pathology report confirming adenocarcinoma G3, sigmoid colon. KRAS G12D mutation detected. MSS/pMMR. BRAF wild-type.',
-          ai_tags: ['adenocarcinoma', 'G3', 'KRAS G12D', 'MSS', 'pMMR', 'BRAF WT'],
-          metadata: { diagnosis: 'C18.7 — adenocarcinoma sigmoid', biomarkers: 'KRAS G12D, MSS, BRAF WT', provider: 'Národný onkologický ústav' },
+          ai_summary: 'Sample pathology report (invented data): adenocarcinoma G2, colon. RAS and BRAF wild-type, MSS/pMMR.',
+          ai_tags: ['adenocarcinoma', 'G2', 'RAS WT', 'MSS', 'sample data'],
+          metadata: { diagnosis: 'C18 — adenocarcinoma (sample)', biomarkers: 'RAS WT, BRAF WT, MSS', provider: 'Example Hospital (invented)' },
           pages: [
-            { page_number: 1, char_count: 2156, text: 'NÁRODNÝ ONKOLOGICKÝ ÚSTAV\nÚstav patológie\n\nHISTOPATOLOGICKÝ NÁLEZ\nDátum: 01.03.2026\n\nMateriál: Biopsia colon sigmoideum\nDiagnóza: Adenokarcinóm, grade 3 (G3)\nLokalizácia: Colon sigmoideum\n\nMikroskopický nález:\nInvazívny adenokarcinóm s tubulárnym a kribriformným usporiadaním.\nVýrazná jadrová atypia, vysoká mitotická aktivita.\n\nMolekulárna genetika:\nKRAS: mutácia G12D detegovaná\nNRAS: wild-type\nBRAF V600E: wild-type\nMMR/MSI: pMMR / MSS (stabilný)\n\nZáver: Adenokarcinóm hrubého čreva G3, KRAS G12D pozitívny.' }
+            { page_number: 1, char_count: 812, text: 'NEMOCNICA PRÍKLADOV (vymyslená)\nOddelenie patológie\n\nHISTOPATOLOGICKÝ NÁLEZ — UKÁŽKA\nDátum: 01.03.2027\n\nMateriál: Biopsia hrubého čreva\nDiagnóza: Adenokarcinóm, grade 2 (G2)\n\nMolekulárna genetika:\nKRAS: wild-type\nNRAS: wild-type\nBRAF V600E: wild-type\nMMR/MSI: pMMR / MSS\n\nVšetky údaje sú vymyslené pre demo.' }
           ]
         }
       };
       var detail = demoDetails[doc.id];
-      if (detail) return detail;
+      if (detail) {
+        // The detail renderer reads `id` and `document_date` (#605: was "#undefined" / "-").
+        detail.id = doc.id;
+        detail.document_date = detail.date || doc.date;
+        return detail;
+      }
       // Generic fallback for other demo docs
       return {
+        id: doc.id, document_date: doc.date,
         filename: doc.filename, category: doc.category || 'other',
-        date: doc.date, institution: doc.institution || 'Hospital',
+        date: doc.date, institution: doc.institution || 'Example Hospital (invented)',
         gdrive_url: null, preview_url: null,
-        ai_summary: 'AI-extracted summary of medical document. Categories, dates, and institutions are automatically detected from OCR text.',
+        ai_summary: 'Sample summary of an invented document. Category, date and institution are recognised from the text read by the local model.',
         ai_tags: [doc.category || 'document', 'auto-processed', 'OCR'],
         metadata: {},
-        pages: [{ page_number: 1, char_count: 450, text: 'Sample OCR text from ' + (doc.filename || 'document') + '.\n\nOncofiles automatically extracts text via OCR, identifies the document category, date, and institution, then generates an AI summary with structured metadata.\n\nAll data stays in your Google Drive.' }]
+        pages: [{ page_number: 1, char_count: 450, text: 'Ukážkový text dokumentu ' + (doc.filename || '') + ' (vymyslený).\n\nOncofiles prečíta text, rozpozná kategóriu, dátum a inštitúciu a vedľa súboru uloží prepis .md. Originál zostáva vo vašom Google Drive; index a prečítaný text sú aj v databáze na našom serveri v EÚ.' }]
       };
     }
 
@@ -731,6 +781,7 @@
     var isGlobalAdmin = false;
 
     async function loadPatients() {
+      if (window.DEMO_MODE) return;
       try {
         var resp = await fetch('/api/patients', {
           headers: { 'Authorization': authHeader() }
@@ -964,10 +1015,8 @@
       document.querySelectorAll('.demo-chat-panel').forEach(function(el) { el.style.display = 'none'; });
       var panel = document.getElementById('demo-chat-' + tab);
       if (panel) panel.style.display = 'flex';
-      document.querySelectorAll('.demo-chat-tab').forEach(function(b) {
-        b.style.background = 'var(--bg)'; b.style.color = 'var(--text)';
-      });
-      if (btn) { btn.style.background = 'var(--green)'; btn.style.color = '#fff'; }
+      document.querySelectorAll('.demo-chat-tab').forEach(function(b) { b.classList.remove('active'); });
+      if (btn) btn.classList.add('active');
     }
 
     function toggleIntegrationPanel() {
@@ -1358,7 +1407,7 @@
 
     async function loadCuratedOps() {
       var section = document.getElementById('curated-ops-section');
-      if (!section) return;
+      if (!section || window.DEMO_MODE) return;
       var res = await coFetch('/api/admin/curated/overview');
       if (!res.ok || !res.data) { section.style.display = 'none'; return; }
       section.style.display = 'block';
@@ -1936,6 +1985,8 @@
     }
 
     async function refresh() {
+      // Demo: re-render the static sample payload instead of authenticated reads.
+      if (window.DEMO_MODE) return loadDemoData();
       hideError();
       setConnectionState('loading');
 
@@ -2215,15 +2266,15 @@
 
       // Pipeline funnel
       var stages = [
-        { label: 'Total', count: total },
-        { label: 'OCR', count: summary.with_ocr || 0 },
-        { label: 'AI Summary', count: summary.with_ai || 0 },
-        { label: 'Metadata', count: summary.with_metadata || 0 },
-        { label: 'Date', count: summary.with_date || 0 },
-        { label: 'Institution', count: summary.with_institution || 0 },
-        { label: 'Synced', count: summary.synced || 0 },
-        { label: 'Named', count: summary.standard_named || 0 },
-        { label: 'Complete', count: fc, complete: true }
+        { label: 'Total', sk: 'Spolu', count: total },
+        { label: 'OCR', sk: 'OCR', count: summary.with_ocr || 0 },
+        { label: 'AI Summary', sk: 'Zhrnutie', count: summary.with_ai || 0 },
+        { label: 'Metadata', sk: 'Metadáta', count: summary.with_metadata || 0 },
+        { label: 'Date', sk: 'Dátum', count: summary.with_date || 0 },
+        { label: 'Institution', sk: 'Inštitúcia', count: summary.with_institution || 0 },
+        { label: 'Synced', sk: 'V priečinku', count: summary.synced || 0 },
+        { label: 'Named', sk: 'Premenované', count: summary.standard_named || 0 },
+        { label: 'Complete', sk: 'Kompletné', count: fc, complete: true }
       ];
       var funnelEl = document.getElementById('funnel-rows');
       clearEl(funnelEl);
@@ -2234,7 +2285,7 @@
 
         var label = document.createElement('span');
         label.className = 'funnel-label';
-        label.textContent = st.label;
+        setI18n(label, st.sk, st.label);
         row.appendChild(label);
 
         var barBg = document.createElement('div');
@@ -2251,18 +2302,19 @@
         row.appendChild(count);
 
         row.style.cursor = 'pointer';
-        row.title = 'Click for details';
+        row.title = dashLang === 'sk' ? 'Kliknite pre detail' : 'Click for details';
         row.onclick = (function(stage) { return function() {
+          // Honest, bilingual stage descriptions (Nov 2026: local model, curated folder).
           var info = {
-            'Total': 'Total documents imported from Google Drive. Triggered by: scheduled GDrive sync (every 5 min) or manual upload.',
-            'OCR': 'Text extraction from scanned PDFs and images. Triggered by: new document import. Uses: Claude Haiku vision model for scanned docs, PyMuPDF for text PDFs.',
-            'AI Summary': 'AI-generated summary and tags. Triggered by: after OCR completion. Uses: Claude Haiku with system prompt asking for medical document summary, key findings, diagnoses.',
-            'Metadata': 'Structured data extraction (document_type, findings, diagnoses, medications, providers). Triggered by: after AI summary. Uses: Claude Haiku with JSON schema prompt.',
-            'Date': 'Document date extracted from content via AI or parsed from filename. Required for year-month folder organization.',
-            'Institution': 'Medical institution/provider identified from document content. Mapped via PROVIDER_TO_INSTITUTION. Required for standard filename.',
-            'Synced': 'Bidirectional Google Drive sync. Files exported to organized category/year-month folders with standard naming.',
-            'Named': 'Standard filename format: YYYYMMDD_PatientName_Institution_Category_Description.ext. Auto-renamed during sync.',
-            'Complete': 'All pipeline stages passed: OCR + AI Summary + Metadata + Date + Institution + Synced + Named. The document is fully processed.'
+            'Total': ['Všetky dokumenty pacienta v indexe.', 'All of the patient\'s documents in the index.'],
+            'OCR': ['Text prečítaný zo skenov a PDF. Pri spracovaní na pozadí ho číta lokálny model na našom serveri.', 'Text read from scans and PDFs. In background processing a local model on our own server reads it.'],
+            'AI Summary': ['Krátke zhrnutie a štítky dokumentu.', 'A short summary and tags for the document.'],
+            'Metadata': ['Štruktúrované údaje: typ dokumentu, nálezy, diagnózy, lekári.', 'Structured data: document type, findings, diagnoses, doctors.'],
+            'Date': ['Dátum dokumentu z obsahu alebo z názvu súboru.', 'Document date from its content or file name.'],
+            'Institution': ['Inštitúcia rozpoznaná z obsahu dokumentu.', 'Institution recognised from the document content.'],
+            'Synced': ['Súbor je zaradený vo vašom priečinku Google Drive podľa pravidiel v README.', 'The file is filed in your Google Drive folder under the README rules.'],
+            'Named': ['Štandardný názov: RRRRMMDD_Pacient_Inštitúcia_Kategória_Popis.', 'Standard name: YYYYMMDD_Patient_Institution_Category_Description.'],
+            'Complete': ['Dokument prešiel všetkými krokmi.', 'The document passed every step.']
           };
           var existing = document.getElementById('funnel-tooltip');
           if (existing) { existing.remove(); if (existing.dataset.stage === stage.label) return; }
@@ -2272,10 +2324,11 @@
           tip.style.cssText = 'background:var(--surface);border:1px solid var(--border);border-radius:0.5rem;padding:1rem;margin:0.75rem 0;font-size:0.8125rem;color:var(--text-muted);line-height:1.6';
           var title = document.createElement('strong');
           title.style.color = 'var(--accent)';
-          title.textContent = stage.label;
+          title.textContent = dashLang === 'sk' ? stage.sk : stage.label;
           tip.appendChild(title);
           tip.appendChild(document.createElement('br'));
-          tip.appendChild(document.createTextNode(info[stage.label] || 'Pipeline stage'));
+          var desc = info[stage.label] || ['Krok spracovania', 'Processing step'];
+          tip.appendChild(document.createTextNode(dashLang === 'sk' ? desc[0] : desc[1]));
           funnelEl.appendChild(tip);
         }; })(st);
 
@@ -2805,18 +2858,18 @@
       var total = summary.total || 0;
       var gaps = [];
 
-      function check(label, count, tool) {
+      function check(sk, label, count, tool) {
         var missing = total - (count || 0);
-        if (missing > 0) gaps.push({ label: label, missing: missing, tool: tool });
+        if (missing > 0) gaps.push({ sk: sk, label: label, missing: missing, tool: tool });
       }
 
-      check('Missing OCR', summary.with_ocr, 'enhance_documents');
-      check('Missing AI Summary', summary.with_ai, 'enhance_documents');
-      check('Missing Metadata', summary.with_metadata, 'extract_all_metadata');
-      check('Not Synced', summary.synced, 'gdrive_sync');
-      check('Not Standard Named', summary.standard_named, 'rename_documents_to_standard');
-      check('Missing Date', summary.with_date, 'extract_document_metadata');
-      check('Missing Institution', summary.with_institution, 'extract_document_metadata');
+      check('Chýba OCR', 'Missing OCR', summary.with_ocr, 'enhance_documents');
+      check('Chýba zhrnutie', 'Missing AI Summary', summary.with_ai, 'enhance_documents');
+      check('Chýbajú metadáta', 'Missing Metadata', summary.with_metadata, 'extract_all_metadata');
+      check('Nie je v priečinku', 'Not Synced', summary.synced, 'gdrive_sync');
+      check('Neštandardný názov', 'Not Standard Named', summary.standard_named, 'rename_documents_to_standard');
+      check('Chýba dátum', 'Missing Date', summary.with_date, 'extract_document_metadata');
+      check('Chýba inštitúcia', 'Missing Institution', summary.with_institution, 'extract_document_metadata');
 
       if (gaps.length === 0) {
         panel.style.display = 'none';
@@ -2830,7 +2883,7 @@
 
         var lbl = document.createElement('span');
         lbl.className = 'remedy-label';
-        lbl.textContent = g.label;
+        setI18n(lbl, g.sk, g.label);
         row.appendChild(lbl);
 
         var cnt = document.createElement('span');

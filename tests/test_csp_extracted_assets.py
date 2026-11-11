@@ -18,7 +18,6 @@ import pytest
 DASHBOARD_HTML = Path(__file__).parent.parent / "src" / "oncofiles" / "dashboard.html"
 DASHBOARD_CSS = Path(__file__).parent.parent / "src" / "oncofiles" / "dashboard.css"
 DASHBOARD_JS = Path(__file__).parent.parent / "src" / "oncofiles" / "dashboard.js"
-DASHBOARD_GTAG_JS = Path(__file__).parent.parent / "src" / "oncofiles" / "dashboard-gtag.js"
 
 
 # ── External assets exist and are non-trivial ──────────────────────────
@@ -44,14 +43,6 @@ def test_dashboard_js_exists_and_non_empty():
     assert "function logout" in body
     assert "fetch('/api/logout'" in body  # #510 server-side revocation path
     assert len(body) > 100_000, f"dashboard.js unexpectedly small: {len(body)} bytes"
-
-
-def test_dashboard_gtag_js_exists():
-    """The gtag bootstrap is no longer inline either."""
-    assert DASHBOARD_GTAG_JS.exists()
-    body = DASHBOARD_GTAG_JS.read_text()
-    assert "window.dataLayer" in body
-    assert "gtag(" in body
 
 
 # ── dashboard.html: no inline <script> or <style> blocks ──────────────
@@ -87,7 +78,7 @@ def test_dashboard_html_links_external_css_and_js():
     html = DASHBOARD_HTML.read_text()
     assert '<link rel="stylesheet" href="/dashboard.css">' in html
     assert '<script src="/dashboard.js" defer></script>' in html
-    assert '<script src="/dashboard-gtag.js"></script>' in html
+    assert "dashboard-gtag.js" not in html  # GA removed from the dashboard (#700)
 
 
 def test_dashboard_html_has_no_inline_event_handlers():
@@ -226,18 +217,6 @@ async def test_dashboard_js_route_serves_extracted_file():
     assert response.status_code == 200
     body = response.body.decode()
     assert "function toggleSection" in body
-
-
-async def test_dashboard_gtag_js_route_serves_extracted_file():
-    from unittest.mock import MagicMock
-
-    from oncofiles.server import dashboard_gtag_js
-
-    request = MagicMock()
-    response = await dashboard_gtag_js(request)
-    assert response.media_type.startswith("application/javascript")
-    body = response.body.decode()
-    assert "window.dataLayer" in body
 
 
 # ── Per-route CSP regression lock (#534) ──────────────────────────────
