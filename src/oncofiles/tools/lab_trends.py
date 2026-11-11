@@ -453,20 +453,41 @@ def _patient_conditions(pctx: dict) -> dict[str, bool]:
     }
 
 
-async def _load_patient_context(ctx: Context, pid: str) -> dict:
-    """The patient's own context, loaded from the DB on a cold cache (strict pid)."""
+async def _load_patient_context(ctx: Context, pid: str) -> dict | None:
+    """The patient's own context, or None when the patient has no context at all.
+
+    Strict per pid: the per-patient cache first, then the patient's own
+    patient_context row. Never the default or another patient's context, so
+    "no context row" stays distinguishable from "context without a regimen".
+    """
     from oncofiles import patient_context
 
-    pctx = patient_context.get_context(pid)
-    if not pctx or not pctx.get("name"):
-        loaded = await patient_context.load_from_db(_get_db(ctx).db, patient_id=pid)
-        if loaded:
-            pctx = loaded
-    return pctx or {}
+    cached = patient_context._contexts.get(pid)
+    if cached and cached.get("name"):
+        return cached
+    loaded = await patient_context.load_from_db(_get_db(ctx).db, patient_id=pid)
+    if loaded:
+        return loaded
+    return cached or None
 
 
-def _no_regimen_result(pctx: dict, regimen: str | None) -> dict:
+_SET_CONTEXT_GUIDANCE = (
+    "Set treatment.regimen (and medications / metastases) via update_patient_context."
+)
+
+
+def _no_regimen_result(pctx: dict | None, regimen: str | None) -> dict:
     """Honest result when the patient has no regimen with a pre-cycle rule set."""
+    if pctx is None:
+        return {
+            "protocol": None,
+            "regimen": None,
+            "status": "patient_context_missing",
+            "message": (
+                "This patient has no patient context, so no pre-cycle rules are "
+                "applied. " + _SET_CONTEXT_GUIDANCE
+            ),
+        }
     patient_type = pctx.get("patient_type", "oncology")
     if patient_type != "oncology":
         status = "not_applicable"
@@ -478,8 +499,7 @@ def _no_regimen_result(pctx: dict, regimen: str | None) -> dict:
         status = "no_regimen_configured"
         message = (
             "No chemotherapy regimen is set in this patient's context "
-            "(treatment.regimen), so no pre-cycle rules are applied. Set it with "
-            'update_patient_context(\'{"treatment": {"regimen": "..."}}\').'
+            "(treatment.regimen), so no pre-cycle rules are applied. " + _SET_CONTEXT_GUIDANCE
         )
     else:
         status = "regimen_not_supported"
@@ -497,7 +517,8 @@ async def get_lab_safety_check(ctx: Context, patient_slug: str | None = None) ->
     For oncology patients: the pre-cycle thresholds of the regimen set in the
     patient's context (treatment.regimen); currently mFOLFOX6 (NCCN + SmPC).
     With no supported regimen set, no thresholds are applied and the result
-    says so (status no_regimen_configured / regimen_not_supported).
+    says so (status patient_context_missing / no_regimen_configured /
+    regimen_not_supported).
     For general patients: standard health reference ranges (EU/WHO/ESC).
 
     For each safety parameter, returns:
@@ -511,11 +532,11 @@ async def get_lab_safety_check(ctx: Context, patient_slug: str | None = None) ->
 
     pid = await _resolve_patient_id(patient_slug, ctx)
     pctx = await _load_patient_context(ctx, pid)
-    if pctx.get("patient_type", "oncology") == "general":
+    if pctx is not None and pctx.get("patient_type", "oncology") == "general":
         regimen, protocol = None, "general_health"
         thresholds = _GENERAL_HEALTH_THRESHOLDS
     else:
-        regimen, protocol = _patient_regimen(pctx)
+        regimen, protocol = _patient_regimen(pctx or {})
         if protocol is None:
             empty = {"green": 0, "yellow": 0, "red": 0, "missing": 0}
             result = _no_regimen_result(pctx, regimen)
@@ -787,8 +808,9 @@ async def get_precycle_checklist(
 
     The regimen comes from the patient's context (treatment.regimen); the
     supported rule set is currently mFOLFOX6. Without a supported regimen
-    the result has no sections and a status of no_regimen_configured,
-    regimen_not_supported or not_applicable (general patients) — rules from
+    the result has no sections and a status of patient_context_missing (no
+    context row at all), no_regimen_configured, regimen_not_supported or
+    not_applicable (general patients) — rules from
     another patient's regimen are never applied.
 
     Rules tied to a condition appear only when the patient's context records
@@ -808,8 +830,8 @@ async def get_precycle_checklist(
 
     pid = await _resolve_patient_id(patient_slug, ctx)
     pctx = await _load_patient_context(ctx, pid)
-    regimen, protocol = _patient_regimen(pctx)
-    if protocol is None or pctx.get("patient_type", "oncology") != "oncology":
+    regimen, protocol = _patient_regimen(pctx or {})
+    if pctx is None or protocol is None or pctx.get("patient_type", "oncology") != "oncology":
         result = _no_regimen_result(pctx, regimen)
         result.update({"cycle": cycle_number, "sections": []})
         return json.dumps(_with_clinical_disclaimer(result))

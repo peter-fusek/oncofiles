@@ -45,6 +45,44 @@ def _items(result: dict) -> dict[str, dict]:
 # ── regimen gate ─────────────────────────────────────────────────────────
 
 
+async def test_no_context_row_is_reported_as_missing(db: Database):
+    """No cached context and no patient_context row → its own status."""
+    patient_context._contexts.pop(ERIKA_UUID, None)
+    ctx = _mock_ctx(db)
+    checklist = json.loads(await get_precycle_checklist(ctx))
+    safety = json.loads(await get_lab_safety_check(ctx))
+    for result in (checklist, safety):
+        assert result["status"] == "patient_context_missing"
+        assert result["protocol"] is None
+        assert "update_patient_context" in result["message"]
+        assert "treatment.regimen" in result["message"]
+    assert checklist["sections"] == []
+    assert safety["parameters"] == [] and safety["cycle_safe"] is None
+
+
+async def test_context_row_without_regimen_is_not_reported_as_missing(db: Database):
+    """A stored context without a regimen is no_regimen_configured, not missing."""
+    patient_context._contexts.pop(ERIKA_UUID, None)
+    await patient_context.save_to_db(
+        db.db, {"name": "Testa Pacientka", "patient_type": "oncology"}, patient_id=ERIKA_UUID
+    )
+    patient_context._contexts.pop(ERIKA_UUID, None)
+    result = json.loads(await get_precycle_checklist(_mock_ctx(db)))
+    assert result["status"] == "no_regimen_configured"
+
+
+async def test_stored_context_with_regimen_is_loaded_on_cold_cache(db: Database):
+    patient_context._contexts.pop(ERIKA_UUID, None)
+    await patient_context.save_to_db(
+        db.db,
+        {"name": "Testa Pacientka", "treatment": {"regimen": "mFOLFOX6"}},
+        patient_id=ERIKA_UUID,
+    )
+    patient_context._contexts.pop(ERIKA_UUID, None)
+    result = json.loads(await get_precycle_checklist(_mock_ctx(db)))
+    assert result["status"] == "ok" and result["protocol"] == "mFOLFOX6"
+
+
 async def test_no_regimen_configured_gives_no_rules(db: Database):
     _set_ctx(treatment={})
     result = json.loads(await get_precycle_checklist(_mock_ctx(db)))
