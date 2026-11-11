@@ -2961,8 +2961,10 @@ involved:</p>
 assistants (section 2).</li>
 <li><strong>Resend</strong> (e-mail delivery) — if you join the waitlist, your e-mail address is
 used to notify us and to write to you about access. No medical data is sent.</li>
-<li><strong>Google Analytics</strong> — our public web pages measure visits (pages viewed,
-approximate location, device). It does not receive your medical documents or values.</li>
+<li><strong>Google Analytics</strong> — only on our public web pages (home page and demo), and
+only after you accept analytics cookies in the cookie banner. It measures visits (pages viewed,
+approximate location, device, where you came from). The logged-in app does not load Google
+Analytics, and it never receives your medical documents or values.</li>
 </ul>
 <p>Hosting is our own server in Slovakia (EU); no third-party hosting or database provider
 stores or processes your data.</p>

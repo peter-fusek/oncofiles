@@ -27,6 +27,9 @@ async def test_privacy_matches_the_service():
     assert "only the folder you choose" in html and "access to your Google" in html
     assert "Gmail and Google Calendar</strong> — not used" in html
     assert "Google Analytics" in html and "Resend" in html
+    # #700: GA only on public pages, only after consent; never in the logged-in app
+    assert "after you accept analytics cookies" in html
+    assert "logged-in app does not load Google" in html
     assert "sent to Anthropic (Claude) for metadata" not in html  # retired claim
 
 
