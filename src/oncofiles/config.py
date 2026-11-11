@@ -36,7 +36,7 @@ GOOGLE_APPLICATION_CREDENTIALS: str = os.environ.get("GOOGLE_APPLICATION_CREDENT
 # project, revoked client) so the app stops hammering APIs that cannot answer.
 #
 # Prefer this over SYNC_ENABLED=false: SYNC_ENABLED kills the entire
-# APScheduler, taking db_keepalive, memory_check, the cleanup jobs and the
+# APScheduler, taking memory_check, the cleanup jobs and the
 # sync watchdog down with it. This flag disables only the Google-touching
 # paths, so the MCP server, dashboard, DB and local housekeeping keep running
 # normally and the watchdog can still report the outage.
@@ -92,13 +92,6 @@ GOOGLE_OAUTH_CLIENT_SECRET: str = os.environ.get("GOOGLE_OAUTH_CLIENT_SECRET", "
 GOOGLE_OAUTH_REDIRECT_URI: str = os.environ.get(
     "GOOGLE_OAUTH_REDIRECT_URI", "https://oncofiles.com/oauth/callback"
 )
-
-# Turso (v0.4)
-TURSO_DATABASE_URL: str = os.environ.get("TURSO_DATABASE_URL", "")
-TURSO_AUTH_TOKEN: str = os.environ.get("TURSO_AUTH_TOKEN", "")
-TURSO_REPLICA_PATH: str = os.environ.get(
-    "TURSO_REPLICA_PATH", ""
-)  # local file for embedded replica
 
 # Cloud transport (v0.4)
 MCP_TRANSPORT: str = os.environ.get("MCP_TRANSPORT", "stdio")

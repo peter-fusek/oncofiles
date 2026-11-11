@@ -613,24 +613,6 @@ def test_circuit_breaker_503_passes_through_value_errors():
     assert _circuit_breaker_503(exc, "/status") is None
 
 
-def test_circuit_breaker_503_matches_real_breaker_message():
-    """The helper matches the actual message raised by _CircuitBreaker.check()."""
-    from oncofiles.database._base import _CircuitBreaker
-    from oncofiles.server import _circuit_breaker_503
-
-    cb = _CircuitBreaker(max_failures=1, window=60.0, cooldown=30.0)
-    cb.record_failure()
-    try:
-        cb.check()
-    except RuntimeError as exc:
-        resp = _circuit_breaker_503(exc, "/test")
-        assert resp is not None
-        assert resp.status_code == 503
-        assert resp.headers["Retry-After"] == "30"
-    else:
-        raise AssertionError("Breaker should have raised RuntimeError")
-
-
 def test_status_endpoint_uses_breaker_helper():
     """/status catches circuit breaker and returns 503 via the helper."""
     import inspect
@@ -812,23 +794,11 @@ def test_dashboard_logout_calls_api_endpoint():
     )
 
 
-def test_readiness_includes_circuit_breaker_when_turso():
-    """/readiness exposes circuit_breaker stats when backed by Turso (#469 Phase 3)."""
-    import inspect
-
-    from oncofiles.server import readiness
-
-    source = inspect.getsource(readiness)
-    assert "circuit_breaker_stats" in source
-    assert '"circuit_breaker"' in source
-
-
 def test_readiness_uses_circuit_breaker_503_helper():
     """/readiness exception path goes through the 503 contract helper.
 
-    Without the helper, a breaker trip during the reconnect_if_stale probe
-    would return the generic 'degraded' 503 (body hides the Retry-After),
-    masking the trip signal from clients.
+    The helper is inert since #617 (nothing raises the breaker error any
+    more); this lock stays until the helper is removed everywhere at once.
     """
     import inspect
 
@@ -943,7 +913,7 @@ def test_readiness_caller_is_operator_garbage_cookie():
 
 def test_readiness_redacts_for_unauthenticated_caller_source():
     """Source-level lock: the redaction branch fires BEFORE memory_rss_mb,
-    circuit_breaker, and the jobs block are added to the result. If a
+    and the jobs block are added to the result. If a
     future refactor moves the early-return after those lines, this test
     fails and forces a re-review."""
     import inspect
@@ -953,9 +923,8 @@ def test_readiness_redacts_for_unauthenticated_caller_source():
     source = inspect.getsource(readiness)
     redact_idx = source.index("_readiness_caller_is_operator(request)")
     mem_idx = source.index('"memory_rss_mb"')
-    cb_idx = source.index('"circuit_breaker"')
     jobs_idx = source.index('"jobs"')
-    assert redact_idx < mem_idx < cb_idx < jobs_idx, (
+    assert redact_idx < mem_idx < jobs_idx, (
         "the operator gate must run before the sensitive fields are added"
     )
     # The helper itself must check both paths.
@@ -969,19 +938,6 @@ def test_readiness_redacts_for_unauthenticated_caller_source():
     assert "_is_admin_email" in helper_src
 
 
-def test_database_base_has_circuit_breaker_stats():
-    """Database.circuit_breaker_stats() returns None for aiosqlite, dict for Turso."""
-    from oncofiles.database._base import DatabaseBase
-
-    assert hasattr(DatabaseBase, "circuit_breaker_stats")
-    # Source-level sanity that it falls through for aiosqlite
-    import inspect
-
-    source = inspect.getsource(DatabaseBase.circuit_breaker_stats)
-    assert "return None" in source
-    assert "_TursoConnection" in source
-
-
 def test_dashboard_refresh_surfaces_503_without_red_cascade():
     """refresh() detects 503 errors and shows the breaker banner instead of
     'Partial load failure: HTTP 503 × N'."""
@@ -991,31 +947,6 @@ def test_dashboard_refresh_surfaces_503_without_red_cascade():
     assert "breakerError" in html
     # Fallback generic error path still exists for non-breaker cascades
     assert "Partial load failure" in html
-
-
-def test_status_reconnect_no_longer_uses_suppress_exception():
-    """The silent suppress(Exception) wrap around reconnect_if_stale is gone (#469).
-
-    A bare suppress(Exception) hides a RuntimeError('Circuit breaker open…')
-    from the outer handler and prevents the 503 → Retry-After contract from firing.
-    """
-    import inspect
-
-    from oncofiles.server import status
-
-    source = inspect.getsource(status)
-    assert "reconnect_if_stale" in source
-    # The whole block immediately preceding reconnect_if_stale must NOT be
-    # `with suppress(Exception)` anymore — scope the check to the reconnect call.
-    idx = source.index("reconnect_if_stale")
-    preceding = source[max(0, idx - 200) : idx]
-    assert "suppress(Exception)" not in preceding, (
-        "suppress(Exception) around reconnect_if_stale masks the breaker "
-        "RuntimeError; use a specific except TimeoutError instead"
-    )
-    # And there should be an explicit TimeoutError clause nearby.
-    following = source[idx : idx + 500]
-    assert "TimeoutError" in following
 
 
 # ── #476: cross-patient leak guard — sentinel on no-access ─────────────

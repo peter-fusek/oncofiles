@@ -112,9 +112,6 @@ async def sync_from_gdrive(
         logger.info("%s: skipped for patient %s — %s", "sync_from_gdrive", patient_id, blocked)
         return {"skipped": True, "curated": True, "message": blocked}
 
-    # Proactive reconnect before batch to avoid stale replica (#378)
-    await db.reconnect_if_stale(timeout=10.0)
-
     logger.info("sync_from_gdrive: listing folder %s (dry_run=%s)", folder_id, dry_run)
     gdrive_files, folder_map = await asyncio.to_thread(gdrive.list_folder_with_structure, folder_id)
     logger.info(
@@ -666,9 +663,6 @@ async def sync_to_gdrive(
     if (blocked := write_block_reason(gdrive)) is not None:
         logger.info("%s: skipped for patient %s — %s", "sync_to_gdrive", patient_id, blocked)
         return {"skipped": True, "curated": True, "message": blocked}
-
-    # Proactive reconnect before batch to avoid stale replica (#378)
-    await db.reconnect_if_stale(timeout=10.0)
 
     logger.info("sync_to_gdrive: starting (dry_run=%s, full=%s)", dry_run, full)
 
@@ -1657,9 +1651,6 @@ async def enhance_documents(
     logger.info("enhance_documents: %d documents to process", len(docs))
     stats = {"processed": 0, "skipped": 0, "errors": 0}
 
-    # Proactive reconnect before batch to avoid stale replica (#378)
-    await db.reconnect_if_stale(timeout=10.0)
-
     from oncofiles.config import ENHANCE_TIMEOUT_S
     from oncofiles.memory import reclaim_memory
 
@@ -1888,9 +1879,6 @@ async def extract_all_metadata(
 
     Returns summary dict: {processed, skipped, skipped_unsupported_mime, errors}.
     """
-    # Proactive reconnect before batch to avoid stale replica (#378)
-    await db.reconnect_if_stale(timeout=10.0)
-
     docs = await db.get_documents_without_metadata(patient_id=patient_id)
 
     if only_new:

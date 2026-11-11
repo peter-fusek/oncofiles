@@ -531,14 +531,6 @@ async def test_index_runs_after_a_real_run_once_it_is_no_longer_active(db, llm_o
     assert seen == [False]  # indexed exactly once, and not counted as an active run
 
 
-def test_turso_url_refuses_to_start():
-    from oncofiles import server
-
-    with pytest.raises(RuntimeError, match="local database only"):
-        server._assert_local_database("libsql://example.turso.io")
-    server._assert_local_database("")  # local file: fine
-
-
 async def test_index_waits_while_a_run_holds_the_patient_lock(db):
     order = []
     lock = tool.patient_lock(ERIKA_UUID)
