@@ -165,6 +165,9 @@ class ConversationEntry(BaseModel):
     source_ref: str | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
+    # Soft delete (#723, migration 084): set by delete_conversation_entry.
+    deleted_at: str | None = None
+    deleted_by: str | None = None
 
 
 class ConversationQuery(BaseModel):
@@ -176,7 +179,8 @@ class ConversationQuery(BaseModel):
     date_from: date | None = None
     date_to: date | None = None
     tags: list[str] | None = None
-    limit: int = Field(default=50, ge=1, le=200)
+    # 201 = the 200-row page cap + one look-ahead row (search_conversations has_more).
+    limit: int = Field(default=50, ge=1, le=201)
     offset: int = Field(default=0, ge=0)
 
 
@@ -232,6 +236,9 @@ class TreatmentEvent(BaseModel):
     metadata: str = "{}"
     created_at: datetime | None = None
     updated_at: datetime | None = None
+    # Soft delete (#723, migration 084): set by delete_treatment_event.
+    deleted_at: str | None = None
+    deleted_by: str | None = None
 
 
 class TreatmentEventQuery(BaseModel):
@@ -550,7 +557,7 @@ class ClinicalRecordNote(BaseModel):
     """A free-form annotation tied to a clinical record.
 
     Sourceable from any session — Claude.ai chat, ChatGPT connector, caregiver
-    dashboard, Oncoteam — so the caregiver can see *who said what when* about
+    dashboard — so the caregiver can see *who said what when* about
     any single lab / biomarker / finding.
     """
 
@@ -590,8 +597,8 @@ class ClinicalRecordAudit(BaseModel):
 class ClinicalAnalysis(BaseModel):
     """An analytic output over one or more clinical records.
 
-    Lives alongside the facts in ``clinical_records`` — this is where Oncoteam
-    (or any external AI) stores computed results: SII trends, lab deltas,
+    Lives alongside the facts in ``clinical_records`` — this is where an
+    external AI stores computed results: SII trends, lab deltas,
     biomarker safety checks, session summaries, etc. The ``record_ids`` JSON
     array traces which facts fed the analysis.
     """

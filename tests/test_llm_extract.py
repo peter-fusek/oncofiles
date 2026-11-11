@@ -380,6 +380,7 @@ async def test_the_preview_writes_nothing_and_runs_local_only(db, monkeypatch):
     assert doc["result"] == "compared" and doc["agree"] == 1 and doc["agree_machine"] == 1
     assert doc["method"] == "stored_sidecar_text" and doc["pages_not_assessed"] == []
     assert doc["dob_known"] is False and doc["birth_date_guard"] == "inactive_no_dob"
+    assert doc["parser_crosscheck"] == 0 and doc["crosscheck_pages"] == []  # local sidecar
     assert doc["llm_only_codes"] == ["GLU"] and doc["rule_only_codes"] == []
     assert doc["unverified_reasons"] == {"label_unmapped": 1}
     assert job["report"]["extractor"] == llm_extract.EXTRACTOR_VERSION
@@ -467,3 +468,227 @@ def test_future_write_paths_must_refuse_without_a_dob():
     with pytest.raises(verifier.NoBirthDateError):
         verifier.require_dob_for_write(set())
     verifier.require_dob_for_write({"2027-01-02"})
+
+
+# ── diagnostics after the first prod shadow run ─────────────────────────
+
+
+def _raise(exc):
+    def chat(*_a, **_k):
+        raise exc
+
+    return chat
+
+
+def _timeout():
+    import httpx
+
+    try:
+        raise httpx.ReadTimeout("slow")
+    except httpx.ReadTimeout as cause:
+        try:
+            raise llm.LocalLLMError("local LLM unreachable: ReadTimeout") from cause
+        except llm.LocalLLMError as exc:
+            return exc
+
+
+def _answer(text, finish="stop", reasoning=""):
+    def chat(*_a, info=None, **_k):
+        info.update(finish_reason=finish, raw_content=text, reasoning_content=reasoning)
+        return text
+
+    return chat
+
+
+@pytest.mark.parametrize(
+    ("chat", "kind", "cls"),
+    [
+        (_raise(llm.LocalLLMError("local LLM HTTP 500")), "http_status", "LocalLLMError"),
+        (_raise(_timeout()), "timeout", "ReadTimeout"),
+        (_answer("I found nothing useful here."), "json_decode", "AnswerError"),
+        (_answer('{"results": []}'), "schema_shape", "AnswerError"),
+        (_answer(""), "empty", "AnswerError"),
+        (_answer('{"facts": [', finish="length"), "truncated", "LocalLLMError"),
+        (_raise(ValueError("boom")), "other", "ValueError"),
+    ],
+)
+def test_each_error_kind_is_reported_and_the_page_not_assessed(chat, kind, cls):
+    with local_only("test"):
+        pr = llm_extract.extract_page(PAGE, page_number=1, chat=chat)
+    assert not pr.assessed and pr.candidates == []
+    diag = pr.diagnostics()
+    assert (diag["error_kind"], diag["error_class"]) == (kind, cls)
+    assert kind in llm_extract.ERROR_KINDS
+
+
+def test_the_answer_shape_is_masked():
+    raw = '<think>ok</think>```json\n{"results": ["Hodnota 5,83 S-ALT"]}\n```'
+    with local_only("test"):
+        pr = llm_extract.extract_page(PAGE, page_number=1, chat=_answer(raw),
+                                      known=llm_extract.known_words(VOCAB))  # fmt: skip
+    shape = pr.diagnostics()["answer"]
+    assert shape["has_think"] and shape["has_fence"] and shape["top_level"] == "object"
+    assert shape["chars"] == len(raw) and shape["field"] == "content"
+    assert "5" not in shape["masked"] and "8" not in shape["masked"]
+    assert "Hodnota" not in shape["masked"] and "aaaaaaa 9,99 a-ALT" in shape["masked"]
+    assert '"results"' not in shape["masked"]  # an unknown key is masked too
+
+
+def test_a_good_page_reports_its_shape_without_the_masked_text():
+    with local_only("test"):
+        pr = llm_extract.extract_page(PAGE, page_number=1, chat=_answer(model_answer()))
+    shape = pr.diagnostics()["answer"]
+    assert pr.assessed and "masked" not in shape and shape["top_level"] == "object"
+    assert pr.diagnostics()["structured_output"] == "accepted"
+
+
+def test_an_empty_content_falls_back_to_reasoning_content(monkeypatch):
+    """LM Studio may leave content empty and put the JSON in reasoning_content."""
+    import functools
+
+    from oncofiles import config
+
+    monkeypatch.setattr(config, "LOCAL_LLM_BASE_URL", "http://local.invalid/v1")
+    monkeypatch.setattr(config, "LOCAL_LLM_MODEL", "mock-model")
+    resp = MagicMock(status_code=200)
+    resp.json.return_value = {
+        "choices": [{"finish_reason": "stop",
+                     "message": {"content": "", "reasoning_content": model_answer()}}],
+        "usage": {},
+    }  # fmt: skip
+    client = MagicMock()
+    client.post.return_value = resp
+    with local_only("test"):
+        pr = llm_extract.extract_page(
+            PAGE, page_number=1, chat=functools.partial(llm.chat, client=client)
+        )
+    assert pr.assessed and len(pr.candidates) == len(["ALT", "GLU", "XYZ"])
+    assert pr.diagnostics()["answer"]["field"] == "reasoning_content"
+
+
+def test_stored_unverified_facts_are_counted_and_labelled():
+    stored = [
+        {"code": "ALT", "occurred_at": "2027-06-14", "value_canonical": 0.45,
+         "page_number": 1, "verification": "unverified"},
+        {"code": "GLU", "occurred_at": "2027-06-14", "value_canonical": 5.61,
+         "page_number": 1, "verification": "unverified"},
+        {"code": "CA19_9", "occurred_at": "2027-06-14", "value_canonical": None,
+         "page_number": 1, "verification": "machine"},
+    ]  # fmt: skip
+    # the page was not assessed: nothing compared, but the stored side is visible
+    out = llm_extract.shadow_compare(stored, [], not_assessed_pages=[1])
+    assert out["rule_facts"] == 0 and out["rule_facts_stored"] == len(stored)
+    assert out["rule_facts_on_unassessed_pages"] == len(stored)
+    assert out["rule_facts_by_verification"] == {"machine": 1, "unverified": len(["a", "b"])}
+    assert out["rule_facts_no_value"] == len(["CA19_9"])
+    # assessed: unverified stored facts are compared and their agreement labelled
+    with local_only("test"):
+        facts = llm_extract.extract_document([(1, PAGE)], vocab=VOCAB, chat=model_answer)["facts"]
+    out = llm_extract.shadow_compare(stored, facts)
+    assert out["rule_facts"] == out["rule_facts_compared_unverified"] == len(["ALT", "GLU"])
+    assert out["agree_with_unverified_rule"] == out["agree"] == len(["ALT", "GLU"])
+
+
+# ── reasoning channel rule (infra review of #736) ───────────────────────
+
+
+def _reasoning_only(reasoning):
+    """content empty, everything in reasoning_content (LM Studio behaviour)."""
+    return _answer("", reasoning=reasoning)
+
+
+def test_one_valid_object_in_reasoning_is_accepted_and_tagged():
+    with local_only("test"):
+        out = llm_extract.extract_document(
+            [(1, PAGE)], vocab=VOCAB, chat=_reasoning_only(model_answer())
+        )
+    assert out["pages_not_assessed"] == [] and out["facts"]
+    assert out["facts_from_reasoning"] == len(out["facts"]) and out["facts_from_content"] == 0
+    assert {f["metadata"]["answer_source"] for f in out["facts"]} == {"reasoning"}
+    assert out["page_diagnostics"]["1"]["answer_source"] == "reasoning"
+    # never machine: every such fact carries the reasoning-channel reason
+    for f in out["facts"]:
+        assert f["verification"] == "unverified"
+        assert verifier.REASONING_CHANNEL_REASON in f["metadata"]["unverified_reasons"]
+
+
+def test_content_answers_are_tagged_content():
+    with local_only("test"):
+        out = llm_extract.extract_document([(1, PAGE)], vocab=VOCAB, chat=model_answer)
+    assert out["facts_from_content"] == len(out["facts"]) and out["facts_from_reasoning"] == 0
+    assert {f["metadata"]["answer_source"] for f in out["facts"]} == {"content"}
+
+
+@pytest.mark.parametrize(
+    "reasoning",
+    [
+        '{"facts": []} then the final answer ' + "{}",  # draft + final
+        "Draft:\n" + '{"facts": []}' + "\nFinal:\n" + model_answer(),  # two objects
+        '{"facts": [{"label_as_printed": "S-ALT"}]}',  # fails the schema
+        '{"results": []}',  # wrong top-level key
+        "[]",  # a list, not an object
+        '{"facts": [',  # partial
+        "no JSON at all",
+    ],
+)
+def test_ambiguous_reasoning_is_not_assessed(reasoning):
+    with local_only("test"):
+        pr = llm_extract.extract_page(PAGE, page_number=1, chat=_reasoning_only(reasoning))
+    assert not pr.assessed and pr.candidates == []
+    assert pr.diagnostics()["error_kind"] == "reasoning_ambiguous"
+
+
+def test_the_verifier_never_makes_a_reasoning_fact_machine():
+    f = check(cand(answer_source="reasoning"))
+    assert f["verification"] == "unverified"
+    assert f["metadata"]["unverified_reasons"] == ["llm_reasoning_channel"]
+    assert verifier.REASONING_CHANNEL_NEVER_MACHINE is True
+    assert verifier.from_reasoning_channel(f)
+    assert check(cand())["verification"] == "machine"  # the same fact from content
+
+
+# ── text path never upgrades a transcription (#714 design rule) ─────────
+
+COWORK_ROW = {
+    "code": "ALT", "occurred_at": "2027-06-14", "value_canonical": 0.45, "page_number": 1,
+    "verification": "unverified",
+    "metadata_json": json.dumps({"unverified_reasons": ["cowork_ocr"]}),
+}  # fmt: skip
+
+
+def test_a_cowork_page_stays_unverified_and_agreement_is_only_a_parser_crosscheck():
+    assert verifier.TEXT_PATH_NEVER_UPGRADES_TRANSCRIPTION_REASONS is True
+    with local_only("test"):
+        out = llm_extract.extract_document(
+            [(1, PAGE)], vocab=VOCAB, chat=model_answer, source_reason="cowork_ocr"
+        )
+    facts = verifier.inherit_transcription_reasons(out["facts"], [COWORK_ROW])
+    alt = next(f for f in facts if f["code"] == "ALT")
+    assert alt["value_canonical"] == COWORK_ROW["value_canonical"]  # an exact match
+    assert alt["verification"] == "unverified"
+    assert "cowork_ocr" in alt["metadata"]["unverified_reasons"]
+    assert not any(f["verification"] == "machine" for f in facts)
+    pages = verifier.transcription_pages([COWORK_ROW], "cowork_ocr", [1])
+    cmp = llm_extract.shadow_compare([COWORK_ROW], facts, crosscheck_pages=pages)
+    assert cmp["parser_crosscheck"] == len(["ALT"]) and cmp["crosscheck_pages"] == [1]
+    assert cmp["agree"] == cmp["agree_machine"] == cmp["agree_with_unverified_rule"] == 0
+
+
+def test_a_stored_counterpart_reason_is_inherited_on_a_local_sidecar():
+    row = {**COWORK_ROW, "metadata_json": json.dumps({"unverified_reasons": ["ocr_uncertain"]})}
+    with local_only("test"):
+        facts = llm_extract.extract_document([(1, PAGE)], vocab=VOCAB, chat=model_answer)["facts"]
+    by_code = {f["code"]: f for f in facts}
+    assert by_code["ALT"]["verification"] == "machine"  # before: the LLM alone says machine
+    verifier.inherit_transcription_reasons(facts, [row])
+    assert by_code["ALT"]["verification"] == "unverified"
+    assert by_code["ALT"]["metadata"]["inherited_from_stored"] == ["ocr_uncertain"]
+    assert by_code["GLU"]["verification"] == "machine"  # no stored counterpart: untouched
+    assert verifier.transcription_pages([row], None, [1]) == {1}
+    assert verifier.transcription_pages([{**row, "metadata_json": "{}"}], None, [1]) == set()
+
+
+def test_inheritance_never_removes_reasons():
+    f = check(cand(), source_reason="handwritten")
+    verifier.inherit_transcription_reasons([f], [COWORK_ROW])
+    assert f["metadata"]["unverified_reasons"] == ["handwritten", "cowork_ocr"]

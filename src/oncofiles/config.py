@@ -80,6 +80,22 @@ REOCR_RSS_LIMIT_MB: float = float(os.environ.get("REOCR_RSS_LIMIT_MB", "450"))
 # Concurrent vision passes per page in a re-read (#593). 1 = sequential (default);
 # 2 needs at least 2 parallel slots in LM Studio (infra setting).
 REOCR_PARALLEL_PASSES: int = int(os.environ.get("REOCR_PARALLEL_PASSES", "1"))
+# Render resolution of the two vision passes (#593), split by path. Defaults are
+# the values used since #660: pass 1 at 150 dpi, pass 2 at 220 dpi; every page is
+# still capped at extract.MAX_PAGE_PIXELS. The curation pipeline's first OCR keeps
+# extract.RENDER_DPI. Runtime env; the re-OCR child inherits REOCR_* and REREAD_*.
+# Re-OCR rewrite path (curated_reocr: its transcript is written to Drive). DO NOT
+# LOWER without a separate measurement of that path's output quality.
+REOCR_DPI: int = int(os.environ.get("REOCR_DPI", "150"))
+REOCR_SECOND_PASS_DPI: int = int(os.environ.get("REOCR_SECOND_PASS_DPI", "220"))
+# Verify-only re-read (#678: nothing written, it only confirms Cowork-era values).
+# The A/B knob for #593 T3.
+REREAD_DPI: int = int(os.environ.get("REREAD_DPI", "150"))
+REREAD_SECOND_PASS_DPI: int = int(os.environ.get("REREAD_SECOND_PASS_DPI", "220"))
+# Second-pass policy (#593): "fixed2" (default) reads every page twice; "adaptive"
+# skips the second pass only where it provably cannot change what is confirmed
+# (see reocr._vision_passes); verification semantics never loosen.
+REOCR_PASSES_MODE: str = os.environ.get("REOCR_PASSES_MODE", "fixed2").strip().lower()
 # Model reasoning for re-OCR / re-read transcription (perf): "on" (default, the
 # model's own behaviour) or "off" (chat_template_kwargs.enable_thinking=false).
 # Transcription only; classification and extraction are not affected.
@@ -128,9 +144,9 @@ MAX_DOCUMENTS_PER_PATIENT: int = int(os.environ.get("MAX_DOCUMENTS_PER_PATIENT",
 # does not bound rows that already exist — q1b sits at ~296 documents under a
 # cap of 200 today. So if a read limit tracked the cap exactly, LOWERING the cap
 # would silently truncate reads over existing data. In `_cleanup_orphan_ocr`
-# that means trashing OCR sidecars for the documents that fell outside the
-# window, because anything absent from `expected_ocr_names` is treated as an
-# orphan. `max()` makes the ceiling monotonic: it can never drop below either
+# (removed in #734) that meant trashing OCR sidecars for the documents that fell
+# outside the window, because anything absent from `expected_ocr_names` was
+# treated as an orphan. `max()` makes the ceiling monotonic: it can never drop below either
 # the cap or the historical high-water mark, and raising the cap raises it too.
 #
 # 10_000 also matches the most generous pre-existing literal in the codebase, so
@@ -192,10 +208,6 @@ CALENDAR_ENABLED: bool = os.environ.get("CALENDAR_ENABLED", "false").lower() in 
     "1",
     "yes",
 )
-
-# Oncoteam webhook (real-time document processing)
-ONCOTEAM_WEBHOOK_URL: str = os.environ.get("ONCOTEAM_WEBHOOK_URL", "")
-ONCOTEAM_WEBHOOK_TOKEN: str = os.environ.get("ONCOTEAM_WEBHOOK_TOKEN", "")
 
 # GitHub bug reporting
 GITHUB_TOKEN: str = os.environ.get("GITHUB_TOKEN", "")

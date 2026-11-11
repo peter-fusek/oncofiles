@@ -2,9 +2,9 @@
 
 The cap rose 200 -> 500. Separately, 25 "every document for this patient" reads
 across the codebase hardcoded ceilings (200 / 500 / 1000 / 10000) that would
-silently truncate. The dangerous one is `_cleanup_orphan_ocr`, which *trashes*
-any `*_OCR.txt` missing from its view — a truncated read soft-deletes real
-sidecars.
+silently truncate. The dangerous one was `_cleanup_orphan_ocr` (removed in
+#734), which *trashed* any `*_OCR.txt` missing from its view — a truncated read
+soft-deleted real sidecars.
 
 Two invariants are pinned here:
   1. DOC_QUERY_LIMIT is decoupled from the cap and monotonic, so lowering the
@@ -65,8 +65,8 @@ def test_doc_query_limit_derivation_against_real_config(
 
     The `cap_env="200"` case is the actual bug this guards: q1b already holds
     ~296 documents under a cap of 200, so a ceiling that tracked the cap exactly
-    would truncate reads over existing rows — and make _cleanup_orphan_ocr trash
-    their sidecars.
+    would truncate reads over existing rows (and, before #734 removed it, made
+    _cleanup_orphan_ocr trash their sidecars).
     """
     monkeypatch.setenv("MAX_DOCUMENTS_PER_PATIENT", cap_env)
     try:

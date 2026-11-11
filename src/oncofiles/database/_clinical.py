@@ -42,16 +42,19 @@ class ClinicalMixin:
         event.id = cursor.lastrowid
         return event
 
-    async def get_treatment_event(self, event_id: int, *, patient_id: str) -> TreatmentEvent | None:
+    async def get_treatment_event(
+        self, event_id: int, *, patient_id: str, include_deleted: bool = False
+    ) -> TreatmentEvent | None:
         """Get a treatment event by ID, scoped to ``patient_id`` (#499).
 
         ``patient_id`` is required: the SQL filter prevents cross-patient
         disclosure if a caller forgets ``check_treatment_event_ownership``.
+        Soft-deleted events (#723) are hidden unless ``include_deleted``.
         """
-        async with self.db.execute(
-            "SELECT * FROM treatment_events WHERE id = ? AND patient_id = ?",
-            (event_id, patient_id),
-        ) as cursor:
+        sql = "SELECT * FROM treatment_events WHERE id = ? AND patient_id = ?"
+        if not include_deleted:
+            sql += " AND deleted_at IS NULL"
+        async with self.db.execute(sql, (event_id, patient_id)) as cursor:
             row = await cursor.fetchone()
             return _row_to_treatment_event(row) if row else None
 
@@ -71,8 +74,8 @@ class ClinicalMixin:
     async def list_treatment_events(
         self, query: TreatmentEventQuery, *, patient_id: str
     ) -> list[TreatmentEvent]:
-        """List treatment events with optional filters."""
-        conditions: list[str] = ["patient_id = ?"]
+        """List live (not soft-deleted) treatment events with optional filters."""
+        conditions: list[str] = ["patient_id = ?", "deleted_at IS NULL"]
         params: list[str | int] = [patient_id]
 
         if query.event_type:
@@ -141,19 +144,60 @@ class ClinicalMixin:
 
         return events
 
-    async def delete_treatment_event(self, event_id: int, *, patient_id: str) -> bool:
-        """Delete a treatment event by ID, scoped to ``patient_id`` (#514).
+    async def delete_treatment_event(
+        self, event_id: int, *, patient_id: str, deleted_by: str | None = None
+    ) -> bool:
+        """Soft-delete a treatment event, scoped to ``patient_id`` (#514, #723).
 
-        ``patient_id`` is required: the SQL ``AND patient_id = ?`` clause
-        is the data-layer guarantee that a caller without an ownership
+        Sets ``deleted_at`` / ``deleted_by``; the row stays restorable via
+        ``restore_treatment_event`` (deletion policy: trash only). Returns
+        False when the event does not exist for this patient or is already
+        deleted. ``patient_id`` is required: the SQL ``AND patient_id = ?``
+        clause is the data-layer guarantee that a caller without an ownership
         check cannot delete another patient's row by enumerating IDs.
         """
         cursor = await self.db.execute(
-            "DELETE FROM treatment_events WHERE id = ? AND patient_id = ?",
+            "UPDATE treatment_events "
+            "   SET deleted_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now'), deleted_by = ? "
+            " WHERE id = ? AND patient_id = ? AND deleted_at IS NULL",
+            (deleted_by, event_id, patient_id),
+        )
+        await self.db.commit()
+        if cursor.rowcount <= 0:
+            return False
+        await self.log_soft_delete_activity(
+            action="soft_delete",
+            table="treatment_events",
+            row_id=event_id,
+            patient_id=patient_id,
+            actor=deleted_by,
+        )
+        return True
+
+    async def restore_treatment_event(
+        self, event_id: int, *, patient_id: str, restored_by: str | None = None
+    ) -> TreatmentEvent | None:
+        """Undo a soft delete, scoped to ``patient_id`` (#723).
+
+        Returns the restored event, or None when it does not exist for this
+        patient or is not deleted.
+        """
+        cursor = await self.db.execute(
+            "UPDATE treatment_events SET deleted_at = NULL, deleted_by = NULL "
+            " WHERE id = ? AND patient_id = ? AND deleted_at IS NOT NULL",
             (event_id, patient_id),
         )
         await self.db.commit()
-        return cursor.rowcount > 0
+        if cursor.rowcount <= 0:
+            return None
+        await self.log_soft_delete_activity(
+            action="restore",
+            table="treatment_events",
+            row_id=event_id,
+            patient_id=patient_id,
+            actor=restored_by,
+        )
+        return await self.get_treatment_event(event_id, patient_id=patient_id)
 
     async def update_treatment_event(
         self,
@@ -186,7 +230,8 @@ class ClinicalMixin:
         params.append(event_id)
         params.append(patient_id)
         await self.db.execute(
-            f"UPDATE treatment_events SET {', '.join(updates)} WHERE id = ? AND patient_id = ?",
+            f"UPDATE treatment_events SET {', '.join(updates)} "
+            "WHERE id = ? AND patient_id = ? AND deleted_at IS NULL",
             params,
         )
         await self.db.commit()
@@ -195,9 +240,9 @@ class ClinicalMixin:
     async def get_treatment_events_timeline(
         self, limit: int = 200, *, patient_id: str
     ) -> list[TreatmentEvent]:
-        """Get treatment events in chronological (ASC) order."""
+        """Get live treatment events in chronological (ASC) order."""
         async with self.db.execute(
-            "SELECT * FROM treatment_events WHERE patient_id = ? "
+            "SELECT * FROM treatment_events WHERE patient_id = ? AND deleted_at IS NULL "
             "ORDER BY event_date ASC, created_at ASC LIMIT ?",
             (patient_id, limit),
         ) as cursor:

@@ -57,7 +57,7 @@ async def test_search_activity_log_filters_by_caller_pid(db: Database):
         ctx = _mock_ctx(db)
         raw = await search_activity_log(ctx)
         result = json.loads(raw)
-        # Only the 3 ERIKA entries should surface.
+        # Only the 3 JANA entries should surface.
         assert result["total"] == 3
         for entry in result["entries"]:
             assert entry["session_id"].startswith("sess_00000000"[:9])
@@ -115,8 +115,12 @@ async def test_get_activity_stats_filters_by_caller_pid(db: Database):
 # ── add_activity_log writes caller's pid ───────────────────────────
 
 
-async def test_add_activity_log_sets_caller_patient_id(db: Database):
-    """New entries carry the caller's pid so read-side filter works."""
+async def test_add_activity_log_refuses_and_stores_nothing(db: Database):
+    """#721: the manual add_activity_log tool is deprecated and writes no row.
+
+    The audit middleware keeps writing activity_log on its own (not via this tool).
+    """
+    from oncofiles.models import ActivityLogQuery
     from oncofiles.tools.activity import add_activity_log
 
     _verified_caller_is_admin.set(False)
@@ -125,17 +129,12 @@ async def test_add_activity_log_sets_caller_patient_id(db: Database):
     token = patient_middleware._current_patient_id.set(ERIKA_UUID)
     try:
         ctx = _mock_ctx(db)
-        await add_activity_log(ctx, session_id="s1", agent_id="oncoteam", tool_name="search_pubmed")
-        # Fetch the inserted row and verify patient_id is set.
-        entries = await db.search_activity_log(
-            __import__("oncofiles.models", fromlist=["ActivityLogQuery"]).ActivityLogQuery(
-                patient_id=ERIKA_UUID, limit=10
-            )
+        out = json.loads(
+            await add_activity_log(ctx, session_id="s1", agent_id="agent", tool_name="search")
         )
-        assert any(e.session_id == "s1" for e in entries)
-        for e in entries:
-            if e.session_id == "s1":
-                assert e.patient_id == ERIKA_UUID
+        assert out["error"] == "deprecated"
+        entries = await db.search_activity_log(ActivityLogQuery(patient_id=ERIKA_UUID, limit=10))
+        assert not any(e.session_id == "s1" for e in entries)
     finally:
         patient_middleware._current_patient_id.reset(token)
 

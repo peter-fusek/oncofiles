@@ -424,6 +424,48 @@ def test_reread_parallelism_is_capped_by_running_jobs(monkeypatch):
     assert tool._reread_parallel() == 1  # default: sequential
 
 
+def _scanned_pdf_with_invisible_text(text: str) -> bytes:
+    """A 'scan': a full-page image with an invisible OCR text layer on top."""
+    import pymupdf
+
+    doc = pymupdf.open()
+    page = doc.new_page()
+    pix = pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, 60, 80), False)
+    pix.clear_with(230)
+    page.insert_image(page.rect, pixmap=pix)
+    page.insert_text((72, 72), text, render_mode=3)
+    data = doc.tobytes()
+    doc.close()
+    return data
+
+
+def test_only_a_born_digital_text_layer_is_trusted(monkeypatch):
+    import pymupdf
+
+    text = "Leukocyty 7,21 G/l 4,0 - 11 " * 6
+    with pymupdf.open(stream=_pdf(text), filetype="pdf") as doc:
+        assert reocr.born_digital(doc[0])
+    with pymupdf.open(stream=_scanned_pdf_with_invisible_text(text), filetype="pdf") as doc:
+        assert not reocr.born_digital(doc[0])
+    # an OCR'd layer is ignored: the scan goes to the vision path instead
+    monkeypatch.setattr(llm, "chat", lambda *a, **k: "Leukocyty 7,21 G/l")
+    monkeypatch.setattr(llm, "model_id", lambda: "qwen-local")
+    rr = reocr.reread("scan.pdf", _scanned_pdf_with_invisible_text(text))
+    assert rr.method == "vision2"
+    assert reocr.reread("lab.pdf", _pdf(text)).method == "text_layer"
+
+
+def test_a_transparent_text_layer_is_not_born_digital():
+    import pymupdf
+
+    doc = pymupdf.open()
+    page = doc.new_page()
+    page.insert_text((72, 72), "Leukocyty 7,21 G/l " * 8, fill_opacity=0)
+    with pymupdf.open(stream=doc.tobytes(), filetype="pdf") as again:
+        assert not reocr.born_digital(again[0])
+    doc.close()
+
+
 def test_thinking_off_is_sent_only_when_configured(monkeypatch):
     """perf: REOCR_THINKING=off asks the template to skip reasoning; default sends nothing."""
     from oncofiles import config

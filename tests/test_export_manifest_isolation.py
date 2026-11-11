@@ -20,7 +20,7 @@ from oncofiles.persistent_oauth import _verified_caller_is_admin
 from oncofiles.tools.gdrive import export_manifest
 from tests.helpers import ERIKA_UUID, make_doc
 
-ERIKA_SLUG = "erika-test"
+ERIKA_SLUG = "jana-test"
 BOB_UUID = "00000000-0000-4000-8000-000000000002"
 BOB_SLUG = "bob-test"
 

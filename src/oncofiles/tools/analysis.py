@@ -244,7 +244,7 @@ async def compare_labs(
             "4. **PLT + thrombosis cross-check**: If active VTE on "
             "anticoagulation, PLT trending up or >400 → FLAG.\n\n"
             "5. **Liver enzyme pattern**: track hepatocellular vs cholestatic pattern changes "
-            "across dates — relate to [CLINICAL_REDACTED] ([CODE_REDACTED]).\n\n"
+            "across dates — relate to known liver involvement (e.g. hepatic metastases).\n\n"
             "6. **Tumor markers**: CEA, CA 19-9 direction and velocity of change.\n\n"
             "7. **Threshold crossings**: Flag any value that crossed normal/abnormal boundary.\n\n"
             "8. **Chemotherapy toxicity trends**: "

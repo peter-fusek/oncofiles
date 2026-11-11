@@ -156,7 +156,7 @@ def test_good_classification_builds_fields():
     assert not c.review_needed, c.reasons
     assert c.fields.date == "20260805" and c.fields.patient == "JanaNovakova"
     assert c.fields.doctor == "Kovacova"
-    assert any("first-time hospital" in f for f in c.flags)
+    assert any("new HospitalName value" in f for f in c.flags)
 
 
 @pytest.mark.parametrize(
@@ -249,13 +249,113 @@ def test_absurd_page_size_gets_a_fractional_zoom_within_the_cap():
         ("MUDr. Jana Kováčová", "Kovacova", False),  # exact
         ("MUDr. Jana Kovačova", "Kovacova", False),  # diacritics only
         ("MUDr. Jana Kovacsova", "Kovacova", True),  # OCR typo → snapped
-        ("MUDr. Peter Zeleny", "Zeleny", False),  # genuinely new → kept, flagged first-time
+        ("MUDr. Peter Zeleny", "Zeleny", False),  # genuinely new → kept (and sent to review, #754)
     ],
 )
 def test_vocabulary_snap(doctor, expected, snapped):
     c = classify.validate(CONTRACT, {**GOOD, "doctor": doctor}, TEXT, today=TODAY)
     assert c.fields.doctor == expected
     assert any("snapped" in f for f in c.flags) is snapped
+
+
+# ── #754: snap only genuine misspellings, never a different entity ──
+
+# Synthetic vocabulary: two departments sharing a long suffix, one GP practice.
+CONTRACT_754 = parse_contract(
+    (Path(__file__).parent / "fixtures" / "curated" / "README_oncology.md")
+    .read_text()
+    .replace(
+        "**Known doctors:**",
+        "**`HospitalName`**: `XyzAmbulancia`, `KlinikaVnutornehoLekarstva`, "
+        "`PraktikZelenaLuka`.\n\n**Known doctors:**",
+    )
+)
+
+
+def test_754_one_letter_ocr_fix_still_snaps():
+    c = classify.validate(
+        CONTRACT_754, {**GOOD, "doctor": "MUDr. Jana Kovacsova"}, TEXT, today=TODAY
+    )
+    assert c.fields.doctor == "Kovacova" and not c.review_needed, c.reasons
+    assert any("snapped 'Kovacsova'" in f for f in c.flags)
+
+
+def test_754_hospital_typo_in_the_same_department_snaps():
+    raw = {**GOOD, "hospital": "Klinika Vnutornrho Lekarstva"}
+    c = classify.validate(CONTRACT_754, raw, TEXT, today=TODAY)
+    assert c.fields.hospital == "KlinikaVnutornehoLekarstva"
+    assert not any("new HospitalName" in f for f in c.flags)
+
+
+def test_754_different_department_with_similar_suffix_is_not_snapped():
+    c = classify.validate(CONTRACT_754, {**GOOD, "hospital": "AbcAmbulancia"}, TEXT, today=TODAY)
+    assert c.fields.hospital == "AbcAmbulancia"
+    assert not any("snapped" in f for f in c.flags)
+    # Accepted (filed), but the reviewer sees it in the run report.
+    assert not c.review_needed, c.reasons
+    assert any("new HospitalName value 'AbcAmbulancia' (not in README)" in f for f in c.flags)
+
+
+def test_754_large_edit_is_not_snapped_even_with_same_leading_word():
+    raw = {**GOOD, "hospital": "PraktikZelenyDvor"}  # ratio-close, 4+ edits away
+    c = classify.validate(CONTRACT_754, raw, TEXT, today=TODAY)
+    assert c.fields.hospital == "PraktikZelenyDvor"
+    assert any("new HospitalName value" in f for f in c.flags)
+
+
+def test_754_new_subject_is_accepted_with_flag():
+    c = classify.validate(CONTRACT_754, {**GOOD, "subject": "KneeMri"}, TEXT, today=TODAY)
+    assert c.fields.subject == "KneeMri" and not c.review_needed
+    assert any("new Subject value 'KneeMri'" in f for f in c.flags)
+
+
+def test_754_new_institution_goes_to_review():
+    text = TEXT + "\nOrtopedia Brezova s.r.o."
+    raw = {**GOOD, "institution": "OrtopediaBrezova"}
+    c = classify.validate(CONTRACT_754, raw, text, today=TODAY)
+    assert c.review_needed
+    assert any(
+        "new institution 'OrtopediaBrezova' not in README vocabulary" in r for r in c.reasons
+    )
+
+
+def test_754_new_doctor_goes_to_review():
+    text = TEXT + "\nMUDr. Peter Zeleny"
+    c = classify.validate(CONTRACT_754, {**GOOD, "doctor": "MUDr. Peter Zeleny"}, text, today=TODAY)
+    assert c.fields.doctor == "Zeleny"
+    assert any("new doctor 'Zeleny' not in README vocabulary" in r for r in c.reasons)
+
+
+def test_754_doctor_printed_in_text_is_not_snapped_to_an_unprinted_neighbour():
+    # Hruskova is in the vocabulary; the text really says Hruskovic (a different doctor).
+    text = TEXT + "\nMUDr. Pavol Hruskovic"
+    raw = {**GOOD, "doctor": "MUDr. Pavol Hruskovic"}
+    c = classify.validate(CONTRACT_754, raw, text, today=TODAY)
+    assert c.fields.doctor == "Hruskovic"
+    assert not any("snapped" in f for f in c.flags)
+    assert c.review_needed
+
+
+def test_754_institution_ocr_typo_snaps_when_readme_token_is_printed():
+    text = TEXT + "\nSampleHospital a.s."
+    raw = {**GOOD, "institution": "SampleHospitel"}
+    c = classify.validate(CONTRACT_754, raw, text, today=TODAY)
+    assert c.fields.institution == "SampleHospital"
+    assert not any("new institution" in r for r in c.reasons)
+
+
+@pytest.mark.parametrize(
+    "token,known,same",
+    [
+        ("Parsok", "Porsok", True),
+        ("XyzAmbulancia", "AbcAmbulancia", False),
+        ("KlinikaVnutornrhoLekarstva", "KlinikaVnutornehoLekarstva", True),
+        ("NUO", "NOU", True),
+        ("PraktikZelenyDvor", "PraktikZelenaLuka", False),
+    ],
+)
+def test_754_same_entity(token, known, same):
+    assert classify._same_entity(token, known) is same
 
 
 @pytest.mark.parametrize(

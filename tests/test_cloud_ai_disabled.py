@@ -138,10 +138,9 @@ async def test_upload_document_unchanged_when_key_set(db: Database, with_key):
     before = await db.count_documents(patient_id=ERIKA_UUID)
 
     content = base64.b64encode(b"synthetic pdf bytes").decode()
-    with patch("oncofiles.webhook.notify_oncoteam"):
-        result = json.loads(
-            await upload_document(_ctx(db, files), content=content, filename="20270101_Synth.pdf")
-        )
+    result = json.loads(
+        await upload_document(_ctx(db, files), content=content, filename="20270101_Synth.pdf")
+    )
 
     assert "error" not in result
     files.upload.assert_called_once()
@@ -310,10 +309,9 @@ async def test_upload_document_works_when_flag_on(db: Database, flag_on_with_key
     before = await db.count_documents(patient_id=ERIKA_UUID)
 
     content = base64.b64encode(b"synthetic pdf bytes").decode()
-    with patch("oncofiles.webhook.notify_oncoteam"):
-        result = json.loads(
-            await upload_document(_ctx(db, files), content=content, filename="20270101_Synth.pdf")
-        )
+    result = json.loads(
+        await upload_document(_ctx(db, files), content=content, filename="20270101_Synth.pdf")
+    )
 
     assert "error" not in result
     files.upload.assert_called_once()

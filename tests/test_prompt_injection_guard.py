@@ -24,7 +24,7 @@ from oncofiles import doc_analysis, enhance
 
 
 def test_wrap_untrusted_document_text_includes_preamble_and_delimiters():
-    text = "Patient: Erika F.\nWBC: 5.2 ×10^9/L"
+    text = "Patient: Jana T.\nWBC: 5.2 ×10^9/L"
     out = enhance._wrap_untrusted_document_text(text)
     # Preamble appears before the body.
     assert "UNTRUSTED" in out

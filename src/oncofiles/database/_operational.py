@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import date
 
 from oncofiles.models import (
@@ -12,6 +13,8 @@ from oncofiles.models import (
 )
 
 from ._converters import _row_to_activity_log, _row_to_agent_state, _row_to_oauth_token
+
+logger = logging.getLogger(__name__)
 
 # "key" is a reserved word — always quote it in SQL and use aliased SELECT
 _AGENT_STATE_SELECT = (
@@ -112,6 +115,35 @@ class OperationalMixin:
         await _do_insert()
         entry.id = _last_rowid[0] if _last_rowid else None
         return entry
+
+    async def log_soft_delete_activity(
+        self,
+        *,
+        action: str,
+        table: str,
+        row_id: int,
+        patient_id: str,
+        actor: str | None,
+    ) -> None:
+        """Audit row for a soft delete / restore on a table without its own audit (#723).
+
+        Writes ids only, never row content (titles and notes are PHI). A
+        failure to write the audit row is logged and never undoes the delete.
+        """
+        try:
+            await self.insert_activity_log(
+                ActivityLogEntry(
+                    patient_id=patient_id,
+                    session_id="soft-delete",
+                    agent_id=actor or "system",
+                    tool_name=f"{action}:{table}",
+                    input_summary=f"{table} id={row_id}",
+                    output_summary=action,
+                    tags='["soft-delete"]',
+                )
+            )
+        except Exception:
+            logger.exception("soft-delete audit row failed: %s %s id=%s", action, table, row_id)
 
     async def search_activity_log(self, query: ActivityLogQuery) -> list[ActivityLogEntry]:
         """Search activity log with filters.

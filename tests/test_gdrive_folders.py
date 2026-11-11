@@ -104,6 +104,18 @@ def test_find_or_create_folder_finds():
     assert result == "found_id"
 
 
+def test_find_or_create_folder_race_keeps_duplicates_in_place(monkeypatch):
+    """A creation race returns the oldest folder and trashes nothing (#734)."""
+    monkeypatch.setattr("time.sleep", lambda _s: None)
+    gdrive = _mock_gdrive()
+    gdrive._service.files().list().execute.return_value = {
+        "files": [{"id": "older_folder"}, {"id": "folder_test"}]
+    }
+    result = find_or_create_folder(gdrive, "test", "parent")
+    assert result == "older_folder"
+    gdrive.trash_file.assert_not_called()
+
+
 def test_get_category_folder_path_with_date():
     cat, ym = get_category_folder_path("labs", "2026-03-01")
     assert cat == "labs"

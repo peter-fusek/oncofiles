@@ -44,8 +44,8 @@ def _default_context() -> dict[str, Any]:
         # or transplant patients). Pipelines that match filename<->patient must accept
         # EITHER `name` OR `medical_record_name` — see _try_patient_name_swap. #439
         "medical_record_name": "",
-        # Home region for trial/protocol localization. oncoteam prioritizes home-country
-        # clinical trials. {city, country, country_code (ISO 3166-1 alpha-2)}. #421
+        # Home region for trial/protocol localization (home-country clinical trials
+        # first). {city, country, country_code (ISO 3166-1 alpha-2)}. #421
         "home_region": {},
         "patient_type": "oncology",  # "oncology" or "general"
         "date_of_birth": "",  # ISO date

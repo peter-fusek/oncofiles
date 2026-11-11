@@ -310,3 +310,11 @@ def test_diagnostics_are_counts_and_codes_only():
     assert d["code_value_shared"] == 1 and d["codes_only_old"] == ["HGB"]
     assert d["new_date_sources"] == {"printed": len(news)}
     assert "6.12" not in str(d) and "127" not in str(d)  # never values
+
+
+def test_stored_result_records_the_read_method():
+    fid = 7
+    f = old(fid, "PLT", 288.0, "2028-01-19")
+    keys = rv.result_keys({"confirmed": [fid], "date_unconfirmed": []}, {fid: f},
+                          method="vision2")  # fmt: skip
+    assert keys["method"] == "vision2"

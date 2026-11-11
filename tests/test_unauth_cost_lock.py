@@ -305,15 +305,22 @@ def _reach(
     return offenders, db
 
 
+def _is_gate_call(node: ast.expr, gates: set[str]) -> bool:
+    """``GATE(...)``, or ``GATE(...) or other(...)``: the gate is the FIRST
+    operand of the ``or``, so it runs first and short-circuits on failure
+    (e.g. ``_require_admin(request) or _cross_origin(request)``, #573)."""
+    if isinstance(node, ast.BoolOp) and isinstance(node.op, ast.Or):
+        node = node.values[0]
+    return isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in gates
+
+
 def _is_gate_pair(stmt: ast.stmt, nxt: ast.stmt | None, gates: set[str]) -> bool:
     """``x = GATE(request)`` directly followed by ``if x: return ...``."""
     if not (
         isinstance(stmt, ast.Assign)
         and len(stmt.targets) == 1
         and isinstance(stmt.targets[0], ast.Name)
-        and isinstance(stmt.value, ast.Call)
-        and isinstance(stmt.value.func, ast.Name)
-        and stmt.value.func.id in gates
+        and _is_gate_call(stmt.value, gates)
     ):
         return False
     var = stmt.targets[0].id
@@ -629,7 +636,7 @@ def http_mode(monkeypatch):
 
 async def test_oauth_authorize_rejects_anonymous_caller(http_mode, db):
     server = http_mode
-    req = _FakeRequest(query={"patient_id": "erika"}, path={"service": "drive"}, db=db)
+    req = _FakeRequest(query={"patient_id": "jana"}, path={"service": "drive"}, db=db)
     resp = await server.oauth_authorize(req)
     assert resp.status_code == 401
 
@@ -712,3 +719,17 @@ async def test_api_stats_is_cached(monkeypatch):
         resp = await server.api_stats(req)
         assert resp.status_code == 200
     assert calls["n"] == 1
+
+
+def test_gate_must_be_first_operand_of_or():
+    """``GATE(r) or other(r)`` is gated; ``other(r) or GATE(r)`` is not, since
+    ``other`` would run before the caller is authenticated."""
+
+    def gated(src: str) -> bool:
+        return _is_gated(ast.parse(src).body[0])
+
+    first = "async def h(request):\n    err = _require_admin(request) or _x(request)\n"
+    second = "async def h(request):\n    err = _x(request) or _require_admin(request)\n"
+    tail = "    if err:\n        return err\n    return 1\n"
+    assert gated(first + tail)
+    assert not gated(second + tail)

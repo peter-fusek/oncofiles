@@ -20,7 +20,7 @@ def _mock_ctx(db: Database) -> MagicMock:
 
 
 @pytest.fixture
-def resolve_to_erika():
+def resolve_to_jana():
     """Resolve every query_db call in this file to ERIKA_UUID by default."""
     with patch(
         "oncofiles.tools.db_query._resolve_patient_id",
@@ -29,7 +29,7 @@ def resolve_to_erika():
         yield mocked
 
 
-async def test_select_query(db: Database, resolve_to_erika):
+async def test_select_query(db: Database, resolve_to_jana):
     await db.insert_document(make_doc(file_id="f1"), patient_id=ERIKA_UUID)
     ctx = _mock_ctx(db)
     result = json.loads(
@@ -41,31 +41,31 @@ async def test_select_query(db: Database, resolve_to_erika):
     assert result["rows"][0]["cnt"] == 1
 
 
-async def test_blocks_insert(db: Database, resolve_to_erika):
+async def test_blocks_insert(db: Database, resolve_to_jana):
     ctx = _mock_ctx(db)
     result = json.loads(await query_db(ctx, "INSERT INTO documents (id) VALUES (999)"))
     assert "error" in result
 
 
-async def test_blocks_delete(db: Database, resolve_to_erika):
+async def test_blocks_delete(db: Database, resolve_to_jana):
     ctx = _mock_ctx(db)
     result = json.loads(await query_db(ctx, "DELETE FROM documents WHERE id = 1"))
     assert "error" in result
 
 
-async def test_blocks_drop(db: Database, resolve_to_erika):
+async def test_blocks_drop(db: Database, resolve_to_jana):
     ctx = _mock_ctx(db)
     result = json.loads(await query_db(ctx, "DROP TABLE documents"))
     assert "error" in result
 
 
-async def test_blocks_update(db: Database, resolve_to_erika):
+async def test_blocks_update(db: Database, resolve_to_jana):
     ctx = _mock_ctx(db)
     result = json.loads(await query_db(ctx, "UPDATE documents SET filename = 'hack' WHERE id = 1"))
     assert "error" in result
 
 
-async def test_limit_enforced(db: Database, resolve_to_erika):
+async def test_limit_enforced(db: Database, resolve_to_jana):
     for i in range(5):
         await db.insert_document(make_doc(file_id=f"f{i}"), patient_id=ERIKA_UUID)
     ctx = _mock_ctx(db)
@@ -75,7 +75,7 @@ async def test_limit_enforced(db: Database, resolve_to_erika):
     assert result["row_count"] == 3
 
 
-async def test_unknown_table_rejected_by_allowlist(db: Database, resolve_to_erika):
+async def test_unknown_table_rejected_by_allowlist(db: Database, resolve_to_jana):
     """Nonexistent table now trips the allow-list before reaching the DB."""
     ctx = _mock_ctx(db)
     result = json.loads(await query_db(ctx, "SELECT * FROM nonexistent_table"))
@@ -83,7 +83,7 @@ async def test_unknown_table_rejected_by_allowlist(db: Database, resolve_to_erik
     assert "allow-list" in result["error"] or "not allowed" in result["error"]
 
 
-async def test_cte_rejected_post_486(db: Database, resolve_to_erika):
+async def test_cte_rejected_post_486(db: Database, resolve_to_jana):
     """CTEs are rejected by the hardened validator — document this explicitly."""
     ctx = _mock_ctx(db)
     result = json.loads(
@@ -98,7 +98,7 @@ async def test_cte_rejected_post_486(db: Database, resolve_to_erika):
     assert "CTE" in result["error"]
 
 
-async def test_blocks_cross_patient_query(db: Database, resolve_to_erika):
+async def test_blocks_cross_patient_query(db: Database, resolve_to_jana):
     """Patient-scoped table without the caller's pid literal is rejected."""
     ctx = _mock_ctx(db)
     result = json.loads(await query_db(ctx, "SELECT * FROM documents"))
@@ -106,7 +106,7 @@ async def test_blocks_cross_patient_query(db: Database, resolve_to_erika):
     assert "patient_id" in result["error"]
 
 
-async def test_denies_admin_only_table_for_non_admin(db: Database, resolve_to_erika):
+async def test_denies_admin_only_table_for_non_admin(db: Database, resolve_to_jana):
     """#541: a caregiver cannot read system-wide tables such as sync_history."""
     ctx = _mock_ctx(db)
     for table in ("schema_migrations", "sync_history"):
@@ -114,7 +114,7 @@ async def test_denies_admin_only_table_for_non_admin(db: Database, resolve_to_er
         assert "admin-only" in result.get("error", ""), table
 
 
-async def test_allows_admin_only_table_for_admin(db: Database, resolve_to_erika):
+async def test_allows_admin_only_table_for_admin(db: Database, resolve_to_jana):
     from oncofiles.persistent_oauth import _verified_caller_is_admin
 
     ctx = _mock_ctx(db)
@@ -126,7 +126,7 @@ async def test_allows_admin_only_table_for_admin(db: Database, resolve_to_erika)
     assert "error" not in result
 
 
-async def test_execution_error_uses_safe_error_shape(db: Database, resolve_to_erika):
+async def test_execution_error_uses_safe_error_shape(db: Database, resolve_to_jana):
     """Execution-time exceptions return _safe_error shape, not raw message (#494 F2).
 
     Before the narrowing, a broad `except Exception` returning f"{type(e).__name__}: {e}"

@@ -10,7 +10,12 @@ can never rename a real medical record into a wrong place:
   never a birth date from the README, and must literally appear in the text;
 * a suspected multi-document bundle, low confidence, or a missing date /
   type / institution → ``review_needed`` (stays in the inbox, README §6);
-* first-time institution / department / doctor tokens are *flagged*, not blocked.
+* an OCR-misspelled vocabulary token is snapped back to the README spelling,
+  but only when it is clearly the *same* entity (#754): edit distance <= 2 and the
+  same leading CamelCase word; for Institution / Doctor also the README token is
+  printed in the text, or the model's token is not;
+* a new Institution / Doctor (not in README §3) → ``review_needed``; a new
+  HospitalName / Subject is accepted and *flagged* for the run report.
 """
 
 from __future__ import annotations
@@ -28,6 +33,7 @@ from oncofiles.curated.naming import UNKNOWN, NameFields, camel, surname_token
 
 MIN_CONFIDENCE = 0.60
 SNAP_CUTOFF = 0.8  # OCR typo tolerance when matching README vocabulary tokens
+SNAP_MAX_EDITS = 2  # #754: a bigger "correction" is a different entity, not an OCR typo
 MAX_TEXT_CHARS = 24_000
 
 SYSTEM_TEMPLATE = """You file medical documents into a patient folder that is governed by the \
@@ -195,6 +201,45 @@ def other_person_named(patient_display: str, text: str) -> str | None:
     return None
 
 
+_CAMEL_WORD_RE = re.compile(r"[A-Z]+(?![a-z])|[A-Z][a-z0-9]*|[a-z0-9]+")
+
+
+def _edit_distance(a: str, b: str) -> int:
+    """Levenshtein distance (case-insensitive) between two short tokens."""
+    a, b = a.lower(), b.lower()
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        cur = [i]
+        for j, cb in enumerate(b, 1):
+            cur.append(min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (ca != cb)))
+        prev = cur
+    return prev[-1]
+
+
+def _leading_word(token: str) -> str:
+    words = _CAMEL_WORD_RE.findall(token)
+    return words[0].lower() if words else token.lower()
+
+
+def _same_entity(token: str, known: str) -> bool:
+    """#754: an OCR typo of ``known``, not a different entity with a similar name.
+
+    ``XyzAmbulancia`` vs ``AbcAmbulancia`` share a long suffix (difflib ratio is
+    high) but differ in the leading word, so they are two departments.
+    """
+    if _edit_distance(token, known) > SNAP_MAX_EDITS:
+        return False
+    words_t, words_k = _CAMEL_WORD_RE.findall(token), _CAMEL_WORD_RE.findall(known)
+    if len(words_t) <= 1 and len(words_k) <= 1:
+        return True  # single-word tokens (surnames, acronyms): the distance decides
+    return _leading_word(token) == _leading_word(known)
+
+
+def _in_text(token: str, folded_text: str) -> bool:
+    """``token`` printed in the text, ignoring diacritics, case, spaces and punctuation."""
+    return bool(token) and re.sub(r"[^a-z0-9]", "", token.lower()) in folded_text
+
+
 def validate(
     contract: Contract,
     raw: dict,
@@ -207,14 +252,27 @@ def validate(
     reasons: list[str] = []
     flags: list[str] = []
 
-    def snap(token: str) -> str:
-        """Snap an OCR-misspelled token to the contract vocabulary (Parsok → Porsok)."""
+    folded_text = re.sub(r"[^a-z0-9]", "", _fold(text or ""))
+
+    def snap(token: str, label: str) -> str:
+        """Snap an OCR-misspelled token to the contract vocabulary (Parsok → Porsok).
+
+        Only a genuine misspelling of the same entity is snapped (#754); a
+        similar-looking but different README token is never substituted.
+        """
         if token == UNKNOWN or token in contract.known_tokens:
             return token
-        match = difflib.get_close_matches(token, contract.known_tokens, n=1, cutoff=SNAP_CUTOFF)
-        if match:
-            flags.append(f"snapped {token!r} → {match[0]!r} (README vocabulary)")
-            return match[0]
+        for match in difflib.get_close_matches(
+            token, contract.known_tokens, n=3, cutoff=SNAP_CUTOFF
+        ):
+            if not _same_entity(token, match):
+                continue
+            if label in ("institution", "doctor") and not (
+                _in_text(match, folded_text) or not _in_text(token, folded_text)
+            ):
+                continue  # the model's token is printed and the README one is not
+            flags.append(f"snapped {token!r} → {match!r} (README vocabulary)")
+            return match
         return token
 
     doc_type = raw.get("doc_type") if isinstance(raw.get("doc_type"), str) else None
@@ -245,14 +303,24 @@ def validate(
             reasons.append(f"date {iso} is more than {max_age_days // 365} years old — suspect")
             iso = None
 
-    institution = snap(camel(raw.get("institution")) if raw.get("institution") else UNKNOWN)
-    hospital = snap(camel(raw.get("hospital")) if raw.get("hospital") else UNKNOWN)
-    doctor = snap(surname_token(raw.get("doctor")))
+    institution = snap(
+        camel(raw.get("institution")) if raw.get("institution") else UNKNOWN, "institution"
+    )
+    hospital = snap(camel(raw.get("hospital")) if raw.get("hospital") else UNKNOWN, "hospital")
+    doctor = snap(surname_token(raw.get("doctor")), "doctor")
+    subject = raw.get("subject") if isinstance(raw.get("subject"), str) else None
+    subject = snap(subject.strip(), "subject") if subject and subject.strip() else None
     if institution == UNKNOWN:
         reasons.append("institution unknown")
-    for label, token in (("institution", institution), ("hospital", hospital), ("doctor", doctor)):
+    # #754: a new institution or doctor is an entity the README does not know
+    # yet — a human confirms it (and adds it to §3) before anything is filed.
+    for label, token in (("institution", institution), ("doctor", doctor)):
         if token != UNKNOWN and token not in contract.known_tokens:
-            flags.append(f"first-time {label} value {token!r}")
+            reasons.append(f"new {label} {token!r} not in README vocabulary")
+    # A new department / subject is plausible on its own: file it, but say so.
+    for label, token in (("HospitalName", hospital), ("Subject", subject)):
+        if token and token != UNKNOWN and token not in contract.known_tokens:
+            flags.append(f"new {label} value {token!r} (not in README)")
 
     multiple = raw.get("multiple_documents")
     if multiple is True or (isinstance(multiple, str) and multiple.lower() == "true"):
@@ -274,7 +342,6 @@ def validate(
     if other:
         reasons.append(f"document names another person ({other}), not {contract.patient_display}")
 
-    subject = raw.get("subject") if isinstance(raw.get("subject"), str) else None
     fields = None
     if iso is not None:
         fields = NameFields(
