@@ -4545,7 +4545,7 @@ def _make_session_token(email: str) -> str:
     return f"{payload}|{sig}"
 
 
-def _verify_session_token(token: str) -> str | None:
+def _verify_session_token(token: str, *, log: bool = True) -> str | None:
     """Verify a session token. Returns email if valid, None otherwise.
 
     Accepts both 4-part (email|expiry|tid|sig, current) and 3-part legacy
@@ -4560,16 +4560,19 @@ def _verify_session_token(token: str) -> str | None:
         return None
     email, expiry, tid, sig, sep = parsed
     if time.time() > expiry:
-        logger.warning("Session token expired for %s", email)
+        if log:
+            logger.warning("Session token expired for %s", email)
         return None
     key = dashboard_session_key(MCP_BEARER_TOKEN)
     signed_payload = f"{email}{sep}{expiry}{sep}{tid}" if tid else f"{email}{sep}{expiry}"
     expected = hmac.new(key, signed_payload.encode(), hashlib.sha256).hexdigest()[:32]
     if not hmac.compare_digest(sig, expected):
-        logger.warning("Session token signature mismatch for %s", email)
+        if log:
+            logger.warning("Session token signature mismatch for %s", email)
         return None
     if tid and session_revocation.is_revoked(tid):
-        logger.info("Session token rejected (revoked) for %s", email)
+        if log:
+            logger.info("Session token rejected (revoked) for %s", email)
         return None
     return email
 
@@ -7887,7 +7890,11 @@ def main() -> None:
         from starlette.middleware import Middleware
         from starlette.middleware.cors import CORSMiddleware
 
+        from oncofiles.ratelimit import RateLimitMiddleware
         from oncofiles.register_guard import RegisterJSONGuardMiddleware
+
+        def _quiet_session_verifier(token: str) -> str | None:
+            return _verify_session_token(token, log=False)
 
         mcp.run(
             transport=MCP_TRANSPORT,
@@ -7900,8 +7907,6 @@ def main() -> None:
                 # user's email by code_challenge so exchange_authorization_code
                 # can bind it to the minted token.
                 Middleware(MCPAuthorizeEmailCaptureMiddleware),
-                # #584: non-JSON DCR body on POST /register → 400, not 500.
-                Middleware(RegisterJSONGuardMiddleware),
                 Middleware(SecurityHeadersMiddleware),
                 Middleware(
                     CORSMiddleware,
@@ -7915,6 +7920,16 @@ def main() -> None:
                     allow_methods=["GET", "POST", "OPTIONS", "DELETE"],
                     allow_headers=["Authorization", "Content-Type", "mcp-protocol-version"],
                 ),
+                # #591: innermost, so CORS + security headers wrap its 429/413 and
+                # preflights never reach it. /health is exempt. The verifier is
+                # HMAC-only (no DB) and silent (log=False), so forged sessions can
+                # neither key a victim's bucket nor flood the logs.
+                Middleware(RateLimitMiddleware, session_verifier=_quiet_session_verifier),
+                # #584: non-JSON DCR body on POST /register → 400, not 500.
+                # Inside the rate limiter (Wave A integration), so /register
+                # probes with junk bodies still count against the auth bucket
+                # and its body limit applies before this guard buffers.
+                Middleware(RegisterJSONGuardMiddleware),
             ],
             uvicorn_config={
                 "timeout_keep_alive": 120,
