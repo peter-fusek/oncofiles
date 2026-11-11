@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 from enum import StrEnum
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -611,4 +612,254 @@ class ClinicalAnalysis(BaseModel):
     tags: str | None = Field(default=None, description="JSON array of tag strings")
     produced_by: str = Field(description="oncoteam | oncofiles-internal | external-ai | manual")
     session_id: str | None = None
+    created_at: str | None = None
+
+
+# ── Hard-data model, phase 1 (#711, migration 080) ───────────────────────────
+#
+# Relational, FHIR-mappable rows (design: docs/architecture/hard_data_model.md).
+# ``patient_id`` is optional on the models because the DB helpers take it as a
+# required keyword argument and stamp it; a model carrying a different
+# ``patient_id`` is rejected. ``verification`` is our QA state and is never a
+# clinical status.
+
+Verification = Literal["machine", "unverified", "verified", "corrected"]
+
+
+class HardFact(BaseModel):
+    """Columns shared by every hard-fact table (identity, version, QA, provenance)."""
+
+    id: int | None = None
+    fhir_id: str | None = Field(default=None, description="Stable UUID, set on insert")
+    patient_id: str | None = None
+    source_document_id: int | None = None
+    page_number: int | None = None
+    evidence: str | None = Field(default=None, description="Verbatim quote from the source")
+    extracted_by: str | None = None
+    verification: Verification = "unverified"
+    version_id: int = 1
+    last_updated: str | None = None
+    created_at: str | None = None
+    deleted_at: str | None = None
+    deleted_by: str | None = None
+
+
+class Specimen(HardFact):
+    """FHIR Specimen."""
+
+    type_printed: str | None = None
+    collected_at: str | None = None
+    received_at: str | None = None
+    accession: str | None = None
+    body_site: str | None = None
+    encounter_id: int | None = None
+    organization_id: int | None = None
+
+
+class Report(HardFact):
+    """FHIR DiagnosticReport."""
+
+    panel_printed: str | None = None
+    category: str | None = None
+    status: (
+        Literal[
+            "registered", "partial", "preliminary", "final", "amended", "corrected",
+            "appended", "cancelled", "entered-in-error", "unknown",
+        ]
+        | None
+    ) = None  # fmt: skip
+    effective_at: str | None = None
+    issued_at: str | None = None
+    specimen_id: int | None = None
+    interpreter_practitioner_id: int | None = None
+    organization_id: int | None = None
+    department_id: int | None = None
+    encounter_id: int | None = None
+    conclusion: str | None = None
+
+
+class Condition(HardFact):
+    """FHIR Condition (diagnosis). ``clinical_certainty`` = FHIR verificationStatus."""
+
+    printed_text: str
+    category: Literal["problem-list-item", "encounter-diagnosis"] | None = None
+    clinical_status: (
+        Literal["active", "recurrence", "relapse", "inactive", "remission", "resolved"] | None
+    ) = None
+    clinical_certainty: (
+        Literal[
+            "unconfirmed", "provisional", "differential", "confirmed", "refuted",
+            "entered-in-error",
+        ]
+        | None
+    ) = None  # fmt: skip
+    onset_at: str | None = None
+    asserted_at: str | None = None
+    abatement_at: str | None = None
+    recorded_at: str | None = None
+    body_site: str | None = None
+    laterality: str | None = None
+    is_primary_cancer: bool = False
+    primary_condition_id: int | None = None
+    grade: str | None = None
+    basis_of_diagnosis: str | None = None
+    asserter_practitioner_id: int | None = None
+    encounter_id: int | None = None
+
+
+class CancerStage(HardFact):
+    """Stage group / TNM of one condition, as printed plus parsed parts."""
+
+    condition_id: int
+    printed: str
+    system: str | None = Field(default=None, description="UICC | AJCC | …")
+    edition: str | None = None
+    prefix: str | None = Field(default=None, description="c | p | yc | yp | r")
+    t: str | None = None
+    n: str | None = None
+    m: str | None = None
+    stage_group: str | None = None
+    assessed_at: str | None = None
+
+
+class TreatmentCourse(HardFact):
+    """Regimen (FHIR CarePlan, OMOP treatment-regimen episode)."""
+
+    regimen_printed: str
+    regimen_normalised: str | None = None
+    line_of_therapy: int | None = None
+    intent: str | None = None
+    setting: str | None = None
+    start_at: str | None = None
+    end_at: str | None = None
+    status: (
+        Literal["draft", "active", "on-hold", "revoked", "completed", "entered-in-error", "unknown"]
+        | None
+    ) = None
+    termination_reason: str | None = None
+    condition_id: int | None = None
+
+
+class TreatmentCycle(HardFact):
+    """One cycle of a course (CarePlan partOf course)."""
+
+    course_id: int
+    cycle_number_printed: str | None = None
+    planned_at: str | None = None
+    actual_at: str | None = None
+    dose_modification_reason: str | None = None
+    encounter_id: int | None = None
+
+
+class MedicationEvent(HardFact):
+    """MedicationRequest | Administration | Statement | Dispense."""
+
+    kind: Literal["request", "administration", "statement", "dispense"]
+    course_id: int | None = None
+    cycle_id: int | None = None
+    request_id: int | None = None
+    ingredient_printed: str
+    inn: str | None = None
+    dose_value: float | None = None
+    dose_unit_ucum: str | None = None
+    dose_printed: str | None = None
+    normalization_basis: str | None = None
+    route: str | None = None
+    timing_text: str | None = None
+    effective_start: str | None = None
+    effective_end: str | None = None
+    authored_at: str | None = None
+    prescriber_practitioner_id: int | None = None
+    status: str | None = None
+    encounter_id: int | None = None
+
+
+class Procedure(HardFact):
+    """FHIR Procedure (surgery, biopsy, radiotherapy course summary, other)."""
+
+    kind: str
+    printed_text: str
+    performed_at: str | None = None
+    performed_end: str | None = None
+    body_site: str | None = None
+    laterality: str | None = None
+    performer_practitioner_id: int | None = None
+    organization_id: int | None = None
+    outcome: str | None = None
+    condition_id: int | None = None
+    encounter_id: int | None = None
+
+
+class Device(BaseModel):
+    """An extractor that can act as a provenance agent (OCR model, LLM, parser, verifier)."""
+
+    id: int | None = None
+    fhir_id: str | None = None
+    kind: str
+    name: str
+    version: str = ""
+    model: str | None = None
+    note: str | None = None
+    version_id: int = 1
+    last_updated: str | None = None
+    created_at: str | None = None
+    deleted_at: str | None = None
+    deleted_by: str | None = None
+
+
+class Coding(BaseModel):
+    """One code of an entity. ``owner_id`` is text so it can also hold a fact code."""
+
+    id: int | None = None
+    patient_id: str | None = None
+    owner_type: str
+    owner_id: str
+    system: str = Field(description="System URI or OID")
+    code: str
+    display: str | None = None
+    system_version: str | None = None
+    is_original: bool = False
+    mapped_by: str | None = None
+    equivalence: str | None = None
+    created_at: str | None = None
+    deleted_at: str | None = None
+    deleted_by: str | None = None
+
+
+class Identifier(BaseModel):
+    """A business identifier (ÚDZS code, IČO, accession number …) of an entity."""
+
+    id: int | None = None
+    patient_id: str | None = None
+    owner_type: str
+    owner_id: int
+    system: str
+    value: str
+    type_text: str | None = None
+    created_at: str | None = None
+    deleted_at: str | None = None
+    deleted_by: str | None = None
+
+
+class ProvenanceRecord(BaseModel):
+    """One action on a fact (FHIR Provenance). Append-only."""
+
+    id: int | None = None
+    fhir_id: str | None = None
+    patient_id: str | None = None
+    target_type: str
+    target_id: int
+    target_version: int | None = None
+    activity: str = Field(description="extract | reread | verify | correct | import | manual")
+    agent_role: str = Field(description="assembler | verifier | author | enterer")
+    agent_device_id: int | None = None
+    agent_user: str | None = None
+    source_document_id: int | None = None
+    page_number: int | None = None
+    char_offset: int | None = None
+    char_length: int | None = None
+    quote: str | None = None
+    confidence: float | None = None
+    reason: str | None = Field(default=None, description="e.g. no_source_document")
+    recorded_at: str | None = None
     created_at: str | None = None

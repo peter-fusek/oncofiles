@@ -13,6 +13,7 @@
   <link rel="stylesheet" href="/fonts/fonts.css">
   <link rel="stylesheet" href="/demo.css">
   <script src="/demo.js" defer></script>
+  <script src="/consent.js" defer></script>
 </head>
 <body>
   <header class="bar">
@@ -54,6 +55,40 @@
       </section>
     </div>
 
+    <section class="ask" id="ask" aria-labelledby="ask-h">
+      <div class="ask-side">
+        <h2 id="ask-h" data-sk="Pýtajte sa vlastnými slovami" data-en="Ask in your own words">Pýtajte sa vlastnými slovami</h2>
+        <p class="hint" data-sk="Takto odpovedá asistent z dokumentov tejto pacientky. Kliknutím na zdroj sa otvorí dokument na danom riadku." data-en="This is how an assistant answers from this patient's documents. Click a source to open the document at that line.">Takto odpovedá asistent z dokumentov tejto pacientky. Kliknutím na zdroj sa otvorí dokument na danom riadku.</p>
+        <div class="chat-tabs" role="tablist" aria-label="Chat examples">
+          <button type="button" role="tab" id="tab-gpt" aria-controls="chat-gpt" aria-selected="true" data-action="showChat|gpt"><b>ChatGPT</b><span class="soon" data-sk="pripravujeme" data-en="coming soon">pripravujeme</span></button>
+          <button type="button" role="tab" id="tab-claude" aria-controls="chat-claude" aria-selected="false" tabindex="-1" data-action="showChat|claude"><b>Claude</b><span class="soon" data-sk="pripravujeme" data-en="coming soon">pripravujeme</span></button>
+          <button type="button" role="tab" id="tab-gemini" aria-controls="chat-gemini" aria-selected="false" tabindex="-1" data-action="showChat|gemini"><b>Gemini CLI</b><span class="soon" data-sk="pripravujeme" data-en="coming soon">pripravujeme</span></button>
+        </div>
+        <p class="works" data-sk="Pripája sa cez otvorený protokol MCP. Klientov, ktorých spojenie sme na novom serveri ešte znova neoverili, označujeme „pripravujeme“." data-en="Connects through the open MCP protocol. Clients we have not yet re-verified end to end on the new server are marked “coming soon”.">Pripája sa cez otvorený protokol MCP. Klientov, ktorých spojenie sme na novom serveri ešte znova neoverili, označujeme „pripravujeme“.</p>
+      </div>
+      <div class="chats">
+        <!-- One verified flag per client: data-verified="true" removes the "coming soon" label. -->
+        <div class="cw cw-light" id="chat-gpt" role="tabpanel" aria-labelledby="tab-gpt" data-client="chatgpt" data-verified="false">
+          <div class="mac-bar"><span class="tl" aria-hidden="true"><i></i><i></i><i></i></span><span class="mac-title"><span class="wm">ChatGPT</span><span class="soon" data-sk="pripravujeme" data-en="coming soon">pripravujeme</span></span><span class="cw-note" data-sk="vymyslené údaje" data-en="invented data">vymyslené údaje</span></div>
+          <div class="win-cols"><aside class="win-side" aria-hidden="true"><span class="ws-new"><span data-sk="Nový chat" data-en="New chat">Nový chat</span></span><span class="ws-item"><span data-sk="Hľadať v chatoch" data-en="Search chats">Hľadať v chatoch</span></span><span class="ws-head" data-sk="Chaty" data-en="Chats">Chaty</span><span class="ws-item on"><span data-sk="Posledné odbery krvi" data-en="Latest blood tests">Posledné odbery krvi</span></span><span class="ws-item"><span data-sk="Plán kontrol na apríl" data-en="Check-up plan for April">Plán kontrol na apríl</span></span><span class="ws-item"><span data-sk="Preklad správy do angličtiny" data-en="Translate a report to English">Preklad správy do angličtiny</span></span><span class="ws-item"><span data-sk="Otázky pre sestričku" data-en="Questions for the nurse">Otázky pre sestričku</span></span><span class="ws-user"><i>J</i>Jana T.</span></aside><div class="win-main">
+          <div class="cw-body" id="chat-gpt-body"></div>
+          <div class="cw-composer" aria-hidden="true"><span class="cmp-plus">+</span><span class="cmp-conn"><span class="tdot"></span>Oncofiles</span><span class="cmp-ph" data-sk="Napíšte správu" data-en="Type a message">Napíšte správu</span><span class="cmp-send">↑</span></div></div></div>
+        </div>
+        <div class="cw cw-warm" id="chat-claude" role="tabpanel" aria-labelledby="tab-claude" data-client="claude" data-verified="true" hidden>
+          <div class="phone-screen"><div class="ios-status" aria-hidden="true"><span class="ios-time">9:41</span><span class="island"></span><svg class="ios-icons" viewBox="0 0 68 12" aria-hidden="true"><rect x="0" y="8" width="3" height="4" rx="1"/><rect x="5" y="6" width="3" height="6" rx="1"/><rect x="10" y="3" width="3" height="9" rx="1"/><rect x="15" y="0" width="3" height="12" rx="1"/><path d="M24 4.5a9 9 0 0 1 12 0l-1.4 1.5a7 7 0 0 0-9.2 0zM26.6 7.3a5.2 5.2 0 0 1 6.8 0L30 11z"/><rect x="43" y="1" width="21" height="10" rx="3" fill="none" stroke="currentColor" stroke-width="1"/><rect x="45" y="3" width="15" height="6" rx="1.5"/><rect x="65" y="4" width="2" height="4" rx="1"/></svg></div><div class="app-head"><span class="ah-side" aria-hidden="true">☰</span><span class="ah-t"><span class="wm">Claude</span><span class="soon" data-sk="pripravujeme" data-en="coming soon">pripravujeme</span></span><span class="ah-side" aria-hidden="true">✎</span></div>
+          <div class="cw-body" id="chat-claude-body"></div>
+          <div class="cw-composer" aria-hidden="true"><span class="cmp-plus">+</span><span class="cmp-ph" data-sk="Napíšte správu" data-en="Type a message">Napíšte správu</span><span class="cmp-send">↑</span></div><div class="home-ind" aria-hidden="true"></div></div><p class="dev-note"><span class="cw-note" data-sk="vymyslené údaje" data-en="invented data">vymyslené údaje</span></p>
+        </div>
+        <div class="cw cw-term" id="chat-gemini" role="tabpanel" aria-labelledby="tab-gemini" data-client="gemini-cli" data-verified="false" hidden>
+          <div class="mac-bar dark"><span class="tl" aria-hidden="true"><i></i><i></i><i></i></span><span class="mac-title"><span class="wm">Gemini CLI</span><span class="mt-dim"> — ~/zdravie — 96×28</span><span class="soon" data-sk="pripravujeme" data-en="coming soon">pripravujeme</span></span><span class="cw-note" data-sk="vymyslené údaje" data-en="invented data">vymyslené údaje</span></div>
+          <div class="term">
+            <div class="term-body" id="chat-gemini-body"></div>
+            <div class="term-status"><span>~/zdravie</span><span>1 MCP server: oncofiles</span></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
     <section class="docview" id="docview" aria-labelledby="doc-title">
       <div class="dv-head">
         <h2 id="doc-title"></h2>
@@ -93,6 +128,14 @@
       </p>
     </section>
   </main>
-  <p class="foot"><span data-sk="Všetky mená, hodnoty a dátumy sú vymyslené." data-en="All names, values and dates are invented.">Všetky mená, hodnoty a dátumy sú vymyslené.</span> v{{VERSION}}</p>
+  <p class="foot legal" data-sk="ChatGPT je ochranná známka OpenAI, Claude je ochranná známka Anthropic, Gemini je ochranná známka Google. Oncofiles s týmito spoločnosťami nie je spojený; funguje s ich aplikáciami cez otvorený protokol MCP." data-en="ChatGPT is a trademark of OpenAI, Claude is a trademark of Anthropic, Gemini is a trademark of Google. Oncofiles is not affiliated with these companies; it works with their applications through the open MCP protocol.">ChatGPT je ochranná známka OpenAI, Claude je ochranná známka Anthropic, Gemini je ochranná známka Google. Oncofiles s týmito spoločnosťami nie je spojený; funguje s ich aplikáciami cez otvorený protokol MCP.</p>
+  <p class="foot"><span data-sk="Všetky mená, hodnoty a dátumy sú vymyslené." data-en="All names, values and dates are invented.">Všetky mená, hodnoty a dátumy sú vymyslené.</span> v{{VERSION}} <a href="#" data-consent="open" data-sk="Nastavenia cookies" data-en="Cookie settings">Nastavenia cookies</a></p>
+  <div class="cookie-banner" id="cookie-banner" role="region" aria-labelledby="cookie-text" hidden>
+    <p id="cookie-text"><span data-sk="Analytické cookies (Google Analytics) použijeme len s vaším súhlasom, aby sme videli, ktoré časti stránky ľudia čítajú. Bez súhlasu sa nič nenačíta." data-en="We use analytics cookies (Google Analytics) only with your consent, to see which parts of the page people read. Without consent nothing is loaded.">Analytické cookies (Google Analytics) použijeme len s vaším súhlasom, aby sme videli, ktoré časti stránky ľudia čítajú. Bez súhlasu sa nič nenačíta.</span> <a href="/privacy" data-sk="Ochrana osobných údajov" data-en="Privacy policy">Ochrana osobných údajov</a></p>
+    <div class="cookie-actions">
+      <button type="button" class="cookie-btn" data-consent="decline" data-sk="Odmietnuť" data-en="Decline">Odmietnuť</button>
+      <button type="button" class="cookie-btn" data-consent="accept" data-sk="Prijať analytické cookies" data-en="Accept analytics cookies">Prijať analytické cookies</button>
+    </div>
+  </div>
 </body>
 </html>

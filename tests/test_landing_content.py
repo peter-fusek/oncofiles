@@ -322,7 +322,27 @@ def test_demo_page_is_bilingual():
     body = DEMO_HTML[DEMO_HTML.index("<body>") :]
     parser.feed(body)
     # Brand, language switch label, invented name and version need no translation.
-    allowed = {"onco", "files", "EN", "Jana Testová", "v{{VERSION}}"}
+    allowed = {
+        "onco",
+        "files",
+        "EN",
+        "Jana Testová",
+        "v{{VERSION}}",
+        "ChatGPT",
+        "Claude",
+        "Gemini CLI",
+        "+",
+        "↑",
+        "Oncofiles",
+        "~/zdravie",
+        "1 MCP server: oncofiles",
+        "Jana T.",
+        "J",
+        "9:41",
+        "☰",
+        "✎",
+        "— ~/zdravie — 96×28",
+    }
     assert set(parser.offenders) <= allowed, parser.offenders
 
 
@@ -421,3 +441,152 @@ def test_drive_mock_uses_invented_patient():
     assert ".md</span>" in folder
     names = re.findall(r"(\d{8})_JanaTestova_", LANDING)
     assert names and all(int(n[:4]) >= MIN_SYNTHETIC_YEAR for n in names)
+
+
+# ── Iteration 3: "ask in your own words" chat frames ──────────────────
+
+CLIENTS = {"chatgpt", "claude", "gemini-cli"}
+
+
+def _frames(html: str) -> list[tuple[str, str]]:
+    return re.findall(r'class="cw [^"]*"[^>]*data-client="([^"]+)" data-verified="([^"]*)"', html)
+
+
+@pytest.mark.parametrize("page", ["landing", "demo"])
+def test_every_client_frame_carries_a_verified_flag(page):
+    """A client is shown as working only after an E2E check: each frame has
+    exactly one data-verified flag (true/false), and an unverified frame
+    shows the "pripravujeme / coming soon" label via CSS."""
+    html = LANDING if page == "landing" else DEMO_HTML
+    frames = _frames(html)
+    assert {c for c, _ in frames} == CLIENTS
+    assert len(frames) == len(CLIENTS)
+    for client, flag in frames:
+        assert flag in {"true", "false"}, (client, flag)
+    css = LANDING if page == "landing" else DEMO_CSS
+    assert '[data-verified="true"] .soon { display: none; }' in css
+    assert html.count('class="soon"') >= len(CLIENTS)
+
+
+def test_landing_chat_source_chips_resolve_to_provenance_lines():
+    chips = re.findall(r'data-action="showSource\|(\w+)"', LANDING)
+    assert len(chips) >= 10
+    sheet = LANDING[LANDING.index('<div class="sheet"') : LANDING.index('<div class="app"')]
+    lines = set(re.findall(r'class="ln[^"]*" data-src="(\w+)"', sheet))
+    assert set(chips) <= lines, set(chips) - lines
+
+
+def test_chat_examples_only_use_real_mcp_tools():
+    from oncofiles.server import mcp
+
+    registered = {
+        k.partition(":")[2].partition("@")[0]
+        for k in mcp._local_provider._components
+        if k.startswith("tool:")
+    }
+    ask = LANDING[LANDING.index('id="ask"') : LANDING.index('id="privacy"')]
+    used = set(re.findall(r"Oncofiles · (\w+)", ask))
+    used |= set(re.findall(r'<span class="t-ok">✓</span> (\w+)', ask))
+    used |= set(re.findall(r"toolLine\('(\w+)'", DEMO_JS))
+    used |= set(re.findall(r"tool\('(\w+)'", DEMO_JS))
+    assert used, "no tool names found"
+    assert used <= registered, used - registered
+
+
+def test_demo_chat_chips_open_the_document_line():
+    assert "'openSource|' + docId + '|' + line" in DEMO_JS
+    assert "renderChats();" in DEMO_JS
+
+
+@pytest.mark.parametrize("page", ["landing", "demo"])
+def test_trademark_line_present(page):
+    html = LANDING if page == "landing" else DEMO_HTML
+    assert "ChatGPT je ochranná známka OpenAI" in html
+    assert "Oncofiles is not affiliated with these companies" in html
+
+
+def test_no_external_images_on_public_pages():
+    """Images (incl. any client logos) are self-hosted, never hotlinked."""
+    for name, text in (("landing", LANDING), ("demo", DEMO_HTML), ("demo.css", DEMO_CSS)):
+        for src in re.findall(r'<img[^>]+src="([^"]+)"', text):
+            assert src.startswith("/"), (name, src)
+        assert not re.search(r"url\(\s*['\"]?https?:", text), name
+
+
+def test_landing_chat_carousel_starts_on_claude():
+    """Peter (Nov 2026): the chat previews rotate Claude -> ChatGPT -> Gemini
+    CLI and always start on Claude; reduced motion means no rotation."""
+    tabs = re.findall(r'role="tab" id="tab-(\w+)"[^>]*aria-selected="(true|false)"', LANDING)
+    assert tabs[0] == ("claude", "true")
+    assert [t for t, sel in tabs if sel == "true"] == ["claude"]
+    assert 'class="cw cw-warm is-active" id="chat-claude"' in LANDING
+    assert LANDING.count(' is-active" id="chat-') == 1
+    assert '<div class="chat-stage" id="chat-stage" aria-live="off">' in LANDING
+    assert "var ROTATE_ORDER = ['claude', 'gpt', 'gemini'];" in LANDING
+    assert "if (!stageEl || !tablist || reduceMotion) return;" in LANDING
+    assert "visibilitychange" in LANDING
+    assert not re.search(r"\son[a-z]+\s*=", LANDING)
+
+
+# ── #700: analytics only with consent on public pages, never on the dashboard ──
+
+CONSENT_JS = (SRC / "consent.js").read_text(encoding="utf-8")
+
+
+def test_dashboard_has_no_google_analytics():
+    from oncofiles.server import _csp_for_path
+
+    for name in ("dashboard.html", "dashboard.js"):
+        text = (SRC / name).read_text(encoding="utf-8")
+        assert "gtag" not in text, name
+        assert "googletagmanager" not in text, name
+    assert not (SRC / "dashboard-gtag.js").exists()
+    for path in ("/dashboard", "/dashboard/x"):
+        csp = _csp_for_path(path)
+        assert "googletagmanager.com" not in csp
+        assert "google-analytics.com" not in csp
+
+
+@pytest.mark.parametrize("page", ["landing", "demo"])
+def test_public_pages_load_no_analytics_before_consent(page):
+    html = LANDING if page == "landing" else DEMO_HTML
+    assert not re.search(r"<script[^>]*googletagmanager", html)
+    assert "gtag('config'" not in html and "gtag('js'" not in html
+    assert '<script src="/consent.js" defer></script>' in html
+    # banner markup with two equal choices, privacy link, footer re-open link
+    assert re.search(r'id="cookie-banner"[^>]*\shidden>', html), "banner must start hidden"
+    assert 'data-consent="accept"' in html and 'data-consent="decline"' in html
+    assert 'data-sk="Prijať analytické cookies"' in html and 'data-sk="Odmietnuť"' in html
+    assert 'href="/privacy"' in html
+    assert 'data-consent="open"' in html and "Nastavenia cookies" in html
+
+
+def test_consent_js_injects_gtag_only_after_accept():
+    body = CONSENT_JS
+    start = body.index("function loadAnalytics()")
+    end = body.index("function banner()")
+    # the only place that mentions the Google tag host is inside loadAnalytics
+    assert body.count("googletagmanager.com") == 1
+    assert start < body.index("googletagmanager.com") < end
+    # loadAnalytics() is called only from accept() and for a stored "granted"
+    calls = [m.start() for m in re.finditer(r"loadAnalytics\(\);", body)]
+    assert len(calls) == 2
+    accept = body.index("function accept()")
+    assert accept < calls[0] < body.index("function decline()")
+    assert "if (choice === 'granted') loadAnalytics();" in body
+    for opt in (
+        "anonymize_ip: true",
+        "allow_google_signals: false",
+        "allow_ad_personalization_signals: false",
+    ):
+        assert opt in body
+    assert "page_location: cleanUrl(window.location.href)" in body
+    assert "x.origin + x.pathname" in body
+    assert "innerHTML" not in body.replace("no innerHTML", "")
+
+
+async def test_consent_js_route():
+    from oncofiles.server import consent_js
+
+    resp = await consent_js(_req("/consent.js"))
+    assert resp.media_type.startswith("application/javascript")
