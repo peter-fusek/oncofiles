@@ -568,12 +568,19 @@ def _key(code, day, value) -> tuple:
     return (code, (day or "")[:10], value_hash(float(value)))
 
 
-def shadow_compare(stored: list[dict], llm_facts: list[dict], *, not_assessed_pages=()) -> dict:
+def shadow_compare(
+    stored: list[dict], llm_facts: list[dict], *, not_assessed_pages=(), crosscheck_pages=()
+) -> dict:
     """Stored (rule) facts vs LLM facts of ONE document, as counts and codes
     only — never values, labels or evidence. A key is (code, day, value hash).
 
     Pages the model did not assess (truncated, empty or unparseable answer)
-    are left out on BOTH sides: such a page is unknown, never "LLM found 0"."""
+    are left out on BOTH sides: such a page is unknown, never "LLM found 0".
+
+    On ``crosscheck_pages`` (transcription text: Cowork-era, uncertain or
+    handwritten, see ``verifier.transcription_pages``) the LLM read the same
+    text the rule parser read, so agreement there is reported only as
+    ``parser_crosscheck``, never as ``agree`` (verification)."""
     skip = {int(p) for p in not_assessed_pages}
     all_stored = [r for r in stored if r.get("code")]
     stored_info = {
@@ -602,7 +609,18 @@ def shadow_compare(stored: list[dict], llm_facts: list[dict], *, not_assessed_pa
         for f in keyed
         if f["verification"] == "machine"
     )
-    both = rule & mine
+    cross = {int(p) for p in crosscheck_pages}
+
+    def on_cross(rows, key=lambda r: int(r.get("page_number") or 1)):
+        return Counter(
+            _key(r["code"], r.get("occurred_at"), r["value_canonical"])
+            for r in rows
+            if r.get("code") and r.get("value_canonical") is not None and key(r) in cross
+        )
+
+    rule_x, mine_x = on_cross(stored), on_cross(keyed)
+    crosscheck = rule_x & mine_x
+    both = (rule & mine) - crosscheck  # verification-grade agreement only
     rule_cd = {(c, d) for c, d, _ in rule}
     mine_cd = {(c, d) for c, d, _ in mine}
     reasons: Counter = Counter()
@@ -620,12 +638,15 @@ def shadow_compare(stored: list[dict], llm_facts: list[dict], *, not_assessed_pa
         # compared = stored facts with a code and a value on assessed pages
         "rule_facts": sum(rule.values()),
         "rule_facts_compared_unverified": sum(unverified_rule.values()),
-        "agree_with_unverified_rule": sum((unverified_rule & mine).values()),
+        "agree_with_unverified_rule": sum(((unverified_rule & mine) - crosscheck).values()),
         "llm_facts": len(llm_facts),
         "llm_machine": sum(1 for f in llm_facts if f["verification"] == "machine"),
         "llm_unverified": sum(1 for f in llm_facts if f["verification"] != "machine"),
         "agree": sum(both.values()),
-        "agree_machine": sum((rule & machine).values()),
+        "agree_machine": sum(((rule & machine) - crosscheck).values()),
+        # agreement on transcription pages: the same text read twice, not a verification
+        "parser_crosscheck": sum(crosscheck.values()),
+        "crosscheck_pages": sorted(cross - skip),
         "rule_only": sum((rule - mine).values()),
         "llm_only": sum((mine - rule).values()),
         # same code and day in both, but a different value

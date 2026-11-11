@@ -359,6 +359,7 @@ async def test_the_preview_writes_nothing_and_runs_local_only(db, monkeypatch):
     assert doc["result"] == "compared" and doc["agree"] == 1 and doc["agree_machine"] == 1
     assert doc["method"] == "stored_sidecar_text" and doc["pages_not_assessed"] == []
     assert doc["dob_known"] is False and doc["birth_date_guard"] == "inactive_no_dob"
+    assert doc["parser_crosscheck"] == 0 and doc["crosscheck_pages"] == []  # local sidecar
     assert doc["llm_only_codes"] == ["GLU"] and doc["rule_only_codes"] == []
     assert doc["unverified_reasons"] == {"label_unmapped": 1}
     assert job["report"]["extractor"] == llm_extract.EXTRACTOR_VERSION
@@ -623,3 +624,50 @@ def test_the_verifier_never_makes_a_reasoning_fact_machine():
     assert verifier.REASONING_CHANNEL_NEVER_MACHINE is True
     assert verifier.from_reasoning_channel(f)
     assert check(cand())["verification"] == "machine"  # the same fact from content
+
+
+# ── text path never upgrades a transcription (#714 design rule) ─────────
+
+COWORK_ROW = {
+    "code": "ALT", "occurred_at": "2027-06-14", "value_canonical": 0.45, "page_number": 1,
+    "verification": "unverified",
+    "metadata_json": json.dumps({"unverified_reasons": ["cowork_ocr"]}),
+}  # fmt: skip
+
+
+def test_a_cowork_page_stays_unverified_and_agreement_is_only_a_parser_crosscheck():
+    assert verifier.TEXT_PATH_NEVER_UPGRADES_TRANSCRIPTION_REASONS is True
+    with local_only("test"):
+        out = llm_extract.extract_document(
+            [(1, PAGE)], vocab=VOCAB, chat=model_answer, source_reason="cowork_ocr"
+        )
+    facts = verifier.inherit_transcription_reasons(out["facts"], [COWORK_ROW])
+    alt = next(f for f in facts if f["code"] == "ALT")
+    assert alt["value_canonical"] == COWORK_ROW["value_canonical"]  # an exact match
+    assert alt["verification"] == "unverified"
+    assert "cowork_ocr" in alt["metadata"]["unverified_reasons"]
+    assert not any(f["verification"] == "machine" for f in facts)
+    pages = verifier.transcription_pages([COWORK_ROW], "cowork_ocr", [1])
+    cmp = llm_extract.shadow_compare([COWORK_ROW], facts, crosscheck_pages=pages)
+    assert cmp["parser_crosscheck"] == len(["ALT"]) and cmp["crosscheck_pages"] == [1]
+    assert cmp["agree"] == cmp["agree_machine"] == cmp["agree_with_unverified_rule"] == 0
+
+
+def test_a_stored_counterpart_reason_is_inherited_on_a_local_sidecar():
+    row = {**COWORK_ROW, "metadata_json": json.dumps({"unverified_reasons": ["ocr_uncertain"]})}
+    with local_only("test"):
+        facts = llm_extract.extract_document([(1, PAGE)], vocab=VOCAB, chat=model_answer)["facts"]
+    by_code = {f["code"]: f for f in facts}
+    assert by_code["ALT"]["verification"] == "machine"  # before: the LLM alone says machine
+    verifier.inherit_transcription_reasons(facts, [row])
+    assert by_code["ALT"]["verification"] == "unverified"
+    assert by_code["ALT"]["metadata"]["inherited_from_stored"] == ["ocr_uncertain"]
+    assert by_code["GLU"]["verification"] == "machine"  # no stored counterpart: untouched
+    assert verifier.transcription_pages([row], None, [1]) == {1}
+    assert verifier.transcription_pages([{**row, "metadata_json": "{}"}], None, [1]) == set()
+
+
+def test_inheritance_never_removes_reasons():
+    f = check(cand(), source_reason="handwritten")
+    verifier.inherit_transcription_reasons([f], [COWORK_ROW])
+    assert f["metadata"]["unverified_reasons"] == ["handwritten", "cowork_ocr"]
