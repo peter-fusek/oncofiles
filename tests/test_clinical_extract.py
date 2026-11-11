@@ -735,3 +735,44 @@ async def test_migration_086_columns_code_and_view(db):
     assert "metadata_json" in await cols("conditions")
     async with db.db.execute("SELECT COUNT(*) FROM timeline_v") as cur:
         assert (await cur.fetchone())[0] == 0
+
+
+# ── reasoning channel (2026-11-11 prod preview: content empty, answer in reasoning) ──
+
+
+def _reasoning_chat(body_for):
+    def chat(system, user, info=None, **kw):
+        if info is not None:
+            info["finish_reason"] = "stop"
+            info["raw_content"] = ""
+            info["reasoning_content"] = body_for(user.split("\n", 1)[1])
+        return ""
+
+    return chat
+
+
+async def test_answer_only_in_reasoning_channel_is_read(db):
+    one_json = _reasoning_chat(lambda page: json.dumps(ANSWERS[page], ensure_ascii=False))
+    via_reasoning = await _extract(db, PAGES_A, chat=one_json)
+    via_content = await _extract(db, PAGES_A)
+    assert via_reasoning["page_errors"] == 0
+    assert via_reasoning["pages_used"] == len(PAGES_A)
+    assert via_reasoning["counts"] == via_content["counts"]
+    assert via_reasoning["answer_sources"] == {"reasoning": len(PAGES_A)}
+    assert via_content["answer_sources"] == {"content": len(PAGES_A)}
+
+
+async def test_ambiguous_reasoning_channel_leaves_page_not_assessed(db):
+    def draft_plus_final(page):
+        answer = json.dumps(ANSWERS[page], ensure_ascii=False)
+        return f"draft {answer} final {answer}"
+
+    out = await _extract(db, PAGES_A[:1], chat=_reasoning_chat(draft_plus_final))
+    assert out["pages_used"] == 0 and out["page_errors"] == 1
+    assert out["error_kinds"] == {"reasoning_ambiguous": 1}
+    assert sum(c["machine"] + c["unverified"] for c in out["counts"].values()) == 0
+
+
+async def test_unparseable_answer_reports_a_coded_error_kind(db):
+    out = await _extract(db, PAGES_A[:1], chat=lambda s, u, info=None, **kw: "no json here")
+    assert out["page_errors"] == 1 and out["error_kinds"] == {"no_json": 1}

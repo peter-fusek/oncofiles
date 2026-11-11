@@ -2042,7 +2042,8 @@ async def _all_birth_dates(db, pid: str) -> set[str]:
 
 _CLINICAL_DOC_KEYS = (
     "method", "pages", "pages_used", "pages_not_assessed", "pages_truncated", "page_errors",
-    "dob_known", "birth_date_guard", "counts", "unverified_reasons", "dropped", "seconds",
+    "error_kinds", "answer_sources", "dob_known", "birth_date_guard", "counts",
+    "unverified_reasons", "dropped", "seconds",
 )  # fmt: skip
 
 
