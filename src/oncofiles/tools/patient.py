@@ -117,34 +117,19 @@ async def update_patient_context(
 
 
 async def list_patients(ctx: Context) -> str:
-    """List available patients.
+    """List the patients you can access.
 
-    Scoping (#487 / #483): admin callers see every active patient; non-admin
-    callers see only patients whose `caregiver_email` matches the caller's
-    OAuth-bound Google email. Patient-bearer (`onco_*`) tokens see only the
-    single patient their token is bound to.
+    Scoping (#487 / #483 / #590): never more than the caller's own access.
+    OAuth callers (admin or not) see only patients whose `caregiver_email`
+    matches their Google email; patient-bearer (`onco_*`) and stdio callers
+    see only their bound patient; the static operator bearer keeps the full
+    list for server-to-server use. See `_accessible_patients`.
     """
-    from oncofiles.persistent_oauth import _email_matches_caregiver
-    from oncofiles.tools._helpers import _caller_email, _is_admin_caller
+    from oncofiles.tools._helpers import _accessible_patients
 
     db = _get_db(ctx)
     current_pid = _get_patient_id(required=False)
-    patients = await db.list_patients(active_only=True)
-
-    # Apply caller-scope filter BEFORE building the response.
-    if not _is_admin_caller():
-        caller_email = _caller_email()
-        if caller_email:
-            # OAuth caller: show only patients whose caregiver_email matches.
-            patients = [
-                p for p in patients if _email_matches_caregiver(caller_email, p.caregiver_email)
-            ]
-        elif current_pid:
-            # No email (patient bearer or stdio): restrict to the bound patient.
-            patients = [p for p in patients if p.patient_id == current_pid]
-        else:
-            # No identity at all: refuse to enumerate.
-            patients = []
+    patients = await _accessible_patients(db)
 
     if not patients:
         return json.dumps(
@@ -185,64 +170,64 @@ async def select_patient(
     """Switch to a different patient for this connection.
 
     After calling this, all subsequent tool calls will use the selected
-    patient's data. The selection persists across requests.
+    patient's data. The selection persists across requests for OAuth callers
+    who are a caregiver of the selected patient.
+
+    Access (#590): the target goes through the same ACL as every other
+    patient-scoped tool (`_resolve_patient_id`). An unknown slug and a slug
+    you may not access return the same error.
 
     Args:
         patient_slug: Patient slug or UUID (e.g. 'q1b', 'e5g').
     """
+    from oncofiles.persistent_oauth import _email_matches_caregiver, _verified_patient_id
+    from oncofiles.tools._helpers import _caller_email, _patient_not_accessible_message
+
     db = _get_db(ctx)
 
-    # Resolve slug to patient_id
-
-    patients = await db.list_patients(active_only=True)
+    # Accept a UUID as well as a slug, then run the ACL on the slug. Both
+    # failure paths return the identical message (no existence oracle).
     target = None
-    for p in patients:
+    for p in await db.list_patients(active_only=True):
         if p.slug == patient_slug or p.patient_id == patient_slug:
             target = p
             break
-    if not target:
-        return json.dumps(
-            {"error": f"Patient '{patient_slug}' not found. Use list_patients to see available."}
-        )
+    if target is None:
+        return json.dumps({"error": _patient_not_accessible_message(patient_slug)})
+    try:
+        await _resolve_patient_id(target.slug, ctx)
+    except ValueError:
+        return json.dumps({"error": _patient_not_accessible_message(patient_slug)})
 
-    # Store selection — keyed by the owner_email from the current patient's OAuth token
-    current_pid = _get_patient_id(required=False)
-    token = await db.get_oauth_token(patient_id=current_pid)
-    owner_email = token.owner_email if token else None
-
-    if not owner_email:
-        # Try the target patient's token
-        token = await db.get_oauth_token(patient_id=target.patient_id)
-        owner_email = token.owner_email if token else None
-
+    # Persist the selection under the caller's own OAuth email, and only when
+    # that email is a caregiver of the target: `_resolve_oauth_patient` ignores
+    # any other stored selection. Never write a selection for someone else's
+    # email (the old fallback keyed it by a Drive token's owner_email, so an
+    # operator call could change another user's default patient).
+    caller_email = _caller_email().strip()
     persisted_across_requests = False
-    if owner_email:
-        await db.set_patient_selection(owner_email, target.patient_id)
+    if caller_email and _email_matches_caregiver(caller_email, target.caregiver_email):
+        await db.set_patient_selection(caller_email, target.patient_id)
         persisted_across_requests = True
 
     # Also update the ContextVar for immediate effect in this request
-    from oncofiles.persistent_oauth import _verified_patient_id
-
     _verified_patient_id.set(target.patient_id)
 
     ctx_data = patient_context.get_context(target.patient_id)
     doc_count = await db.count_documents(patient_id=target.patient_id)
 
-    # #408: when the session has no OAuth owner_email (e.g. bearer-token auth
-    # in stateless HTTP), the selection is NOT persisted across requests.
-    # Returning a plain "switched" response was misleading — subsequent
-    # calls like list_patients / search_documents would still scope to the
-    # bearer's bound patient. Honest contract: tell the caller what will
-    # and will NOT work.
+    # #408: when the selection is not persisted (bearer-token auth in
+    # stateless HTTP, or an OAuth account that is not a caregiver of the
+    # target), say so instead of a misleading plain "switched".
     if persisted_across_requests:
         note = "Selection persisted. All subsequent tool calls will use this patient's data."
         status = "switched"
     else:
         note = (
-            "Selection applied to THIS request only. The session is authenticated "
-            "via a patient-scoped bearer token (not OAuth), so select_patient "
-            "cannot persist across requests in stateless HTTP. Subsequent tool "
-            "calls will revert to the bearer-bound patient unless you pass "
+            "Selection applied to THIS request only. It cannot persist across "
+            "requests in stateless HTTP for this identity (bearer token, or an "
+            "OAuth account that is not a caregiver of this patient). Subsequent "
+            "tool calls revert to your bound patient unless you pass "
             "patient_slug explicitly on each call (Option A, #429)."
         )
         status = "switched_single_request"
@@ -262,8 +247,70 @@ async def select_patient(
     )
 
 
+async def whoami(ctx: Context) -> str:
+    """Show who you are calling as: identity, auth method, admin flag, patients.
+
+    Read-only, no PHI (#604). Use it to understand why a patient is or is not
+    visible ("why can't I see patient X?").
+
+    Returns:
+        auth_method: "oauth" (Claude.ai / ChatGPT connector), "static_bearer"
+            (operator token), "patient_bearer" (onco_* patient token),
+            "stdio" (local process) or "none".
+        email: the Google email bound to an OAuth connection, else null.
+        is_admin: whether admin-only tools are available to this caller.
+        bound_patient: slug + name of the patient tool calls default to, or null.
+        patients: slug + display name of every patient you may list
+            (the same scope as list_patients).
+    """
+    from oncofiles.constants import NO_PATIENT_ACCESS_SENTINEL
+    from oncofiles.patient_middleware import get_current_patient_id
+    from oncofiles.persistent_oauth import caller_auth_method
+    from oncofiles.tools._helpers import (
+        _accessible_patients,
+        _caller_email,
+        _is_admin_caller,
+    )
+
+    db = _get_db(ctx)
+    auth_method = caller_auth_method(ctx.request_context.lifespan_context.get("transport", ""))
+
+    patients = await _accessible_patients(db)
+    bound_pid = get_current_patient_id()
+    if bound_pid == NO_PATIENT_ACCESS_SENTINEL:
+        bound_pid = ""
+    # Report the bound patient only when it is inside the listed scope, so
+    # whoami can never reveal a patient that list_patients would hide.
+    bound = next((p for p in patients if p.patient_id == bound_pid), None)
+
+    is_admin = _is_admin_caller()
+    result: dict = {
+        "auth_method": auth_method,
+        "email": _caller_email().strip() or None,
+        "is_admin": is_admin,
+        "bound_patient": {"slug": bound.slug, "name": bound.display_name} if bound else None,
+        "patients": [{"slug": p.slug, "name": p.display_name} for p in patients],
+    }
+    if not patients:
+        result["guidance"] = (
+            "No patients are linked to this identity. Sign in at "
+            "https://oncofiles.com/dashboard with the Google account that is the "
+            "patient's caregiver, or ask the patient's caregiver to add your email."
+        )
+    elif is_admin and auth_method == "oauth":
+        result["note"] = (
+            "Admin scope: admin tools are available and a known patient_slug can be "
+            "passed to any tool. Only your own caregiver patients are listed (#590)."
+        )
+    return json.dumps(result, ensure_ascii=False, indent=2)
+
+
+READ_ONLY = {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True}
+
+
 def register(mcp):
     mcp.tool()(get_patient_context)
     mcp.tool()(update_patient_context)
     mcp.tool()(list_patients)
     mcp.tool()(select_patient)
+    mcp.tool(annotations=READ_ONLY)(whoami)

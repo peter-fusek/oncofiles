@@ -162,39 +162,99 @@ def _validate_query(sql: str, caller_pid: str, *, is_admin: bool = False) -> str
                 "Pass patient_slug=<slug> or authenticate as a caregiver. "
                 "No implicit admin scope for patient-scoped reads."
             )
-        # Walk every EQ node anywhere in the tree; match a Column(name='patient_id')
-        # against a string Literal whose value equals caller_pid.
-        found_pid_equality = False
-        for eq in tree.find_all(exp.EQ):
-            left, right = eq.left, eq.right
-            # Accept either (Column, Literal) or (Literal, Column) — SQL allows both sides.
-            pid_literal: str | None = None
-            if (
-                isinstance(left, exp.Column)
-                and left.name.lower() == "patient_id"
-                and isinstance(right, exp.Literal)
-                and right.is_string
-            ):
-                pid_literal = right.this
-            elif (
-                isinstance(right, exp.Column)
-                and right.name.lower() == "patient_id"
-                and isinstance(left, exp.Literal)
-                and left.is_string
-            ):
-                pid_literal = left.this
-            if pid_literal == caller_pid:
-                found_pid_equality = True
-                break
-
-        if not found_pid_equality:
-            return (
-                "Patient-scoped tables require literal equality "
-                f"WHERE patient_id = '{caller_pid}'. "
-                "LIKE, IN, IS NOT NULL, GROUP BY, and non-matching literals are rejected."
-            )
+        # #590: the equality must constrain EVERY patient-scoped table
+        # reference, as a top-level AND conjunct of the SELECT that owns it.
+        # The old check accepted one `patient_id = '<pid>'` anywhere in the
+        # tree, so `... WHERE patient_id = '<pid>' OR 1=1`, a second
+        # unfiltered alias (`FROM documents a, documents b`) or a scalar
+        # sub-query could still enumerate other patients' patient_ids.
+        for t in patient_scoped_refs:
+            if not _table_ref_is_pid_filtered(t, caller_pid):
+                return (
+                    "Patient-scoped tables require literal equality "
+                    f"WHERE patient_id = '{caller_pid}' on every reference "
+                    f"(table {t.name.lower()!r}, alias {t.alias_or_name!r}), as a top-level "
+                    "AND condition. OR, LIKE, IN, IS NOT NULL, GROUP BY, RIGHT/FULL "
+                    "joins, unfiltered joins/sub-queries and non-matching literals "
+                    "are rejected."
+                )
 
     return None
+
+
+def _conjuncts(cond: exp.Expression | None) -> list[exp.Expression]:
+    """Flatten a condition into its top-level AND conjuncts (parentheses unwrapped)."""
+    if cond is None:
+        return []
+    while isinstance(cond, exp.Paren):
+        cond = cond.this
+    if isinstance(cond, exp.And):
+        return _conjuncts(cond.left) + _conjuncts(cond.right)
+    return [cond]
+
+
+def _pid_equality_qualifier(cond: exp.Expression, caller_pid: str) -> str | None:
+    """If ``cond`` is ``[q.]patient_id = '<caller_pid>'`` (either side), return ``q``.
+
+    Returns ``""`` for an unqualified column and ``None`` when ``cond`` is
+    not such an equality.
+    """
+    if not isinstance(cond, exp.EQ):
+        return None
+    for col, lit in ((cond.left, cond.right), (cond.right, cond.left)):
+        if (
+            isinstance(col, exp.Column)
+            and col.name.lower() == "patient_id"
+            and isinstance(lit, exp.Literal)
+            and lit.is_string
+            and lit.this == caller_pid
+        ):
+            return (col.table or "").lower()
+    return None
+
+
+def _table_ref_is_pid_filtered(table: exp.Table, caller_pid: str) -> bool:
+    """True when ``table`` is restricted to ``caller_pid`` in its own SELECT.
+
+    Accepted: a top-level AND conjunct of that SELECT's WHERE, or of the ON
+    clause of the join that introduces ``table``, equal to
+    ``<alias>.patient_id = '<pid>'`` — or unqualified ``patient_id = '<pid>'``
+    when ``table`` is the only table in that SELECT. Everything else fails
+    closed.
+    """
+    select = table.find_ancestor(exp.Select)
+    if select is None:
+        return False
+    qualifier = table.alias_or_name.lower()
+    siblings = [t for t in select.find_all(exp.Table) if t.find_ancestor(exp.Select) is select]
+
+    # Outer joins: an ON-clause equality does not restrict the PRESERVED side,
+    # e.g. `(SELECT 1) x RIGHT JOIN documents d ON d.patient_id = '<pid>'`
+    # returns every patient's documents. RIGHT and FULL joins are rejected
+    # outright in any SELECT that reads a patient-scoped table.
+    joins = select.args.get("joins") or []
+    if any((j.side or "").upper() in ("RIGHT", "FULL") for j in joins):
+        return False
+    if any((j.kind or "").upper() == "OUTER" and not j.side for j in joins):
+        return False
+
+    where = select.args.get("where")
+    conditions = _conjuncts(where.this if where is not None else None)
+    join = table.parent
+    # An ON filter counts only for the table that join introduces, and only
+    # when that table is not preserved: INNER/CROSS (no side) or the
+    # right-hand table of a LEFT join. The FROM base of a LEFT join is never
+    # introduced by a Join node, so it always needs the WHERE filter.
+    if isinstance(join, exp.Join) and (join.side or "").upper() in ("", "LEFT"):
+        conditions += _conjuncts(join.args.get("on"))
+
+    for cond in conditions:
+        q = _pid_equality_qualifier(cond, caller_pid)
+        if q is None:
+            continue
+        if q == qualifier or (q == "" and len(siblings) == 1):
+            return True
+    return False
 
 
 async def query_db(

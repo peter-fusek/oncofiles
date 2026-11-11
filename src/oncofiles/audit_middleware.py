@@ -62,6 +62,8 @@ async def _write_audit_log(
     status,
     error_message,
     patient_id="",
+    auth_method="",
+    caller_email_hash=None,
 ):
     """Write audit log entry in background — never blocks tool response."""
     try:
@@ -69,8 +71,9 @@ async def _write_audit_log(
             """
             INSERT INTO activity_log
                 (session_id, agent_id, tool_name, input_summary,
-                 duration_ms, status, error_message, tags, patient_id)
-            VALUES (?, 'auto', ?, ?, ?, ?, ?, ?, ?)
+                 duration_ms, status, error_message, tags, patient_id,
+                 auth_method, caller_email_hash)
+            VALUES (?, 'auto', ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 session_id,
@@ -81,6 +84,8 @@ async def _write_audit_log(
                 error_message,
                 ATTRIBUTED_TAG,
                 patient_id,
+                auth_method,
+                caller_email_hash,
             ),
         )
         await db.db.commit()
@@ -107,6 +112,7 @@ class AuditMiddleware(Middleware):
         error_message = None
         resolved: set[str] = set()
         bucket_token = _call_patient_ids.set(resolved)
+        auth_method, caller_email_hash = _caller_identity(context)
 
         try:
             result = await call_next(context)
@@ -150,6 +156,8 @@ class AuditMiddleware(Middleware):
                                         status,
                                         error_message,
                                         patient_id,
+                                        auth_method,
+                                        caller_email_hash,
                                     ),
                                     timeout=_AUDIT_TIMEOUT,
                                 )
@@ -161,6 +169,28 @@ class AuditMiddleware(Middleware):
                         task.add_done_callback(_audit_tasks.discard)
             except Exception:
                 logger.debug("Audit log dispatch failed for %s", tool_name, exc_info=True)
+
+
+def _caller_identity(context: MiddlewareContext[Any]) -> tuple[str, str | None]:
+    """(auth_method, keyed hash of the OAuth email) for the current call (#590/#604).
+
+    Read before the tool runs: verify_token set these ContextVars for this
+    request. The email itself is never stored — only
+    ``secrets_keys.caller_email_hash`` (HMAC with a purpose-bound key).
+    """
+    try:
+        from oncofiles.persistent_oauth import _verified_caller_email, caller_auth_method
+        from oncofiles.secrets_keys import caller_email_hash
+
+        transport = ""
+        fastmcp_ctx = context.fastmcp_context
+        if fastmcp_ctx and hasattr(fastmcp_ctx, "request_context"):
+            lifespan = fastmcp_ctx.request_context.lifespan_context
+            transport = lifespan.get("transport", "") if isinstance(lifespan, dict) else ""
+        return caller_auth_method(transport), caller_email_hash(_verified_caller_email.get())
+    except Exception:
+        logger.debug("Audit caller identity failed", exc_info=True)
+        return "", None
 
 
 def _get_session_id(context: MiddlewareContext[Any]) -> str:
