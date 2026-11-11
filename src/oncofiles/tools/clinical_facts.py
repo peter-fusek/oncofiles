@@ -13,6 +13,7 @@ from datetime import UTC, datetime
 
 from fastmcp import Context
 
+from oncofiles.fact_labels import LLM_NOTE, group_llm, label_row, norm
 from oncofiles.tools._helpers import _get_db, _resolve_patient_id
 
 READ_ONLY = {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True}
@@ -164,73 +165,110 @@ async def patient_overview(ctx: Context, patient_slug: str | None = None) -> str
 
     ``diagnoses_and_markers`` lists conditions (printed text, code, stage) and
     biomarker / genomic results, each with its verification, document and
-    page. Start here for any question about a patient. Read-only.
+    page. Every row says how it was obtained (``method``, ``verification_label``):
+    ``llm-clinical`` rows were read by the local model and only their text was
+    checked against the page; which line is the diagnosis is the model's
+    interpretation and is not verified. Identical model-read rows from several
+    documents are one item with ``sources``. Start here for any question about a
+    patient. Read-only.
     """
     pid = await _resolve_patient_id(patient_slug, ctx)
     db = _get_db(ctx)
     latest = await db.latest_any_rows(patient_id=pid)  # newest, with its verification
     key = [r for r in latest if r["code"] in KEY_CODES]
-    visits = await db.timeline_rows(patient_id=pid, kinds=["encounter"], limit=5)
+    visits = group_llm(
+        await db.timeline_rows(patient_id=pid, kinds=["encounter"], limit=5), _timeline_key,
+        page_key="page_number", id_key="entity_id",
+    )  # fmt: skip
     catalog = await db.fact_catalog_rows(patient_id=pid)
-    conditions = await db.condition_rows(patient_id=pid)  # #726: the conditions table
-    markers = await db.marker_rows(patient_id=pid)  # newest per code / label, any verification
+    conditions = group_llm(
+        [
+            {
+                "kind": "condition",
+                "id": r["id"],
+                "code": r["code"],
+                "name": r["printed_text"],
+                "value": r["stage"],
+                "primary_cancer": bool(r["is_primary_cancer"]),
+                "site": r["body_site"],
+                "at": r["asserted_at"] or r["recorded_at"],
+                "date_source": "printed" if r["asserted_at"] else "document",
+                "verification": r["verification"],
+                "source_document_id": r["source_document_id"],
+                "page": r["page_number"],
+                "extracted_by": r["extracted_by"],
+            }
+            for r in await db.condition_rows(patient_id=pid)  # #726: the conditions table
+        ],
+        # same text, stage and printed date: the same diagnosis, whatever document
+        lambda r: (norm(r["name"]), norm(r["value"]), r["at"] if r["date_source"] == "printed"
+                   else None),
+        page_key="page",
+    )  # fmt: skip
+    markers = group_llm(
+        [
+            {
+                "kind": r["category"],
+                "id": r["id"],
+                "code": r["code"],
+                "name": r["name_en"],
+                "label": r["label_original"],
+                "value": r["value_text"] or r["value_num"],
+                "at": r["effective_at"],
+                "verification": r["verification"],
+                "source_document_id": r["source_document_id"],
+                "page": r["page_number"],
+                "extracted_by": r["extracted_by"],
+            }
+            for r in await db.marker_rows(patient_id=pid, newest_only=False)
+        ],
+        lambda r: (r["kind"], r["code"] or norm(r["label"]), norm(r["value"])),
+        page_key="page",
+    )
+    newest: dict = {}  # rows come newest first per code / label: keep the first
+    for m in markers:
+        newest.setdefault((m["kind"], m["code"] or norm(m["label"])), m)
     today = datetime.now(UTC).date().isoformat()
+    upcoming = group_llm(
+        await db.planned_rows(patient_id=pid, from_day=today, limit=5), _timeline_key,
+        page_key="page_number", id_key="entity_id",
+    )  # fmt: skip
     return _dump(
         {
             "documents_by_type": await db.document_category_counts(patient_id=pid),
-            "diagnoses_and_markers": [
-                *(
+            "diagnoses_and_markers": [*conditions, *newest.values()],
+            "upcoming": upcoming,
+            "latest_key_values": [
+                label_row(
                     {
-                        "kind": "condition",
-                        "code": r["code"],
-                        "name": r["printed_text"],
-                        "value": r["stage"],
-                        "primary_cancer": bool(r["is_primary_cancer"]),
-                        "site": r["body_site"],
-                        "at": r["asserted_at"] or r["recorded_at"],
-                        "date_source": "printed" if r["asserted_at"] else "document",
-                        "verification": r["verification"],
-                        "source_document_id": r["source_document_id"],
-                        "page": r["page_number"],
-                    }
-                    for r in conditions
-                ),
-                *(
-                    {
-                        "kind": r["category"],
                         "code": r["code"],
                         "name": r["name_en"],
-                        "label": r["label_original"],
-                        "value": r["value_text"] or r["value_num"],
+                        "value": r["value_canonical"],
+                        "unit": r["unit_canonical"],
+                        "flag": r["flag"],
                         "at": r["effective_at"],
                         "verification": r["verification"],
                         "source_document_id": r["source_document_id"],
                         "page": r["page_number"],
+                        "extracted_by": r["extracted_by"],
                     }
-                    for r in markers
-                ),
-            ],  # fmt: skip
-            "upcoming": await db.planned_rows(patient_id=pid, from_day=today, limit=5),
-            "latest_key_values": [
-                {
-                    "code": r["code"],
-                    "name": r["name_en"],
-                    "value": r["value_canonical"],
-                    "unit": r["unit_canonical"],
-                    "flag": r["flag"],
-                    "at": r["effective_at"],
-                    "verification": r["verification"],
-                    "source_document_id": r["source_document_id"],
-                    "page": r["page_number"],
-                }
+                )
                 for r in key
             ],  # fmt: skip
             "recent_visits": visits,
             "measured_codes": len(catalog),
             "unverified_values": sum(r["unverified"] or 0 for r in catalog),
             "note": UNVERIFIED_NOTE,
+            "llm_note": LLM_NOTE,
         }
     )
+
+
+def _timeline_key(r: dict) -> tuple:
+    """Identical timeline rows across documents: same kind, entity type, name,
+    value, detail and date."""
+    return (r["kind"], r["entity"], norm(r["title"]), norm(r["value"]), norm(r.get("detail")),
+            r["at"])  # fmt: skip
 
 
 async def timeline(
@@ -249,13 +287,20 @@ async def timeline(
     sizes), planned (next cycle, examination or visit), lab, tumor_marker.
     Dates are ISO (YYYY-MM-DD). Every row links its source document and page;
     ``date_source = document`` means no date was printed for the item and the
-    document date is shown. Read-only.
+    document date is shown. Every row has ``method`` and ``verification_label``:
+    ``llm-clinical`` rows (diagnoses, treatments, doses, procedures, lesion
+    sizes, biomarkers, planned dates) were read by the local model; only their
+    text was checked against the page, while the interpretation (which line is
+    the diagnosis, a current vs a historical regimen) is the model's and is not
+    verified. Identical model-read rows from several documents are one row with
+    ``sources`` (document, page). Read-only.
     """
     pid = await _resolve_patient_id(patient_slug, ctx)
     rows = await _get_db(ctx).timeline_rows(
         patient_id=pid, date_from=date_from, date_to=date_to, kinds=kinds, limit=min(limit, 1000)
     )
-    return _dump({"rows": rows, "note": UNVERIFIED_NOTE})
+    rows = group_llm(rows, _timeline_key, page_key="page_number", id_key="entity_id")
+    return _dump({"rows": rows, "note": UNVERIFIED_NOTE, "llm_note": LLM_NOTE})
 
 
 async def fact_catalog(ctx: Context, patient_slug: str | None = None) -> str:

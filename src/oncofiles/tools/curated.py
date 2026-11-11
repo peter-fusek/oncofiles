@@ -36,7 +36,7 @@ from datetime import UTC, datetime, timedelta
 
 from fastmcp import Context
 
-from oncofiles.tools._helpers import _get_db, _resolve_patient_id
+from oncofiles.tools._helpers import _caller_email, _get_db, _resolve_patient_id
 
 logger = logging.getLogger(__name__)
 
@@ -1688,6 +1688,8 @@ async def _clinical_job(db, pid: str, docs: list[dict], *, write: bool) -> None:
         job.update(state="failed", error=type(exc).__name__, report={"documents": report})
     finally:
         job["finished_at"] = datetime.now(UTC).isoformat()
+        if job.get("pre_store"):  # the safety copy is part of the record
+            job["report"] = {**(job.get("report") or {}), "pre_store": job["pre_store"]}
         if row_id is not None:
             try:
                 await db.finish_curated_run(
@@ -1697,6 +1699,55 @@ async def _clinical_job(db, pid: str, docs: list[dict], *, write: bool) -> None:
                 )  # fmt: skip
             except Exception:
                 logger.exception("could not persist the clinical extraction job for %s", pid)
+        if write:
+            await _audit_clinical_write(db, pid, job)
+
+
+async def _audit_clinical_write(db, pid: str, job: dict) -> None:
+    """One activity_log row per REAL clinical extraction (as for re-read stores,
+    #573): caller, document ids, the pre-store copy, counts per kind and the
+    stored rows per target. Counts only — never a value or evidence text."""
+    from oncofiles.models import ActivityLogEntry
+
+    report = job.get("report") or {}
+    totals = report.get("totals") or {}
+    docs = [d for d in report.get("documents") or [] if isinstance(d, dict)]
+    actor = str(job.get("actor") or "unknown")[:120]
+    try:
+        await db.insert_activity_log(
+            ActivityLogEntry(
+                patient_id=pid,
+                session_id="curated-clinical",
+                agent_id=actor,
+                tool_name="curated_clinical_extract",
+                input_summary=json.dumps(
+                    {
+                        "by": actor,
+                        "dry_run": False,
+                        "pre_store": job.get("pre_store"),
+                        "document_ids": [d.get("document_id") for d in job.get("documents") or []],
+                        "started_at": job.get("started_at"),
+                        "extractor": job.get("extractor"),
+                    }
+                ),  # fmt: skip
+                output_summary=json.dumps(
+                    {
+                        "state": job.get("state"),
+                        "results": {
+                            r: sum(1 for d in docs if d.get("result") == r)
+                            for r in {str(d.get("result")) for d in docs}
+                        },
+                        "counts": totals.get("counts") or {},
+                        "stored": totals.get("stored") or {},
+                    }
+                ),  # fmt: skip
+                status="ok" if job.get("state") == "done" else "error",
+                error_message=job.get("error"),
+                tags=json.dumps(["curated", "clinical", "real", "pre-store"]),
+            )
+        )
+    except Exception:
+        logger.exception("could not write the activity_log row for a clinical extraction")
 
 
 async def _start_clinical(ctx: Context, document_ids, patient_slug, *, write: bool) -> str:
@@ -1714,26 +1765,54 @@ async def _start_clinical(ctx: Context, document_ids, patient_slug, *, write: bo
     if not ids:
         return json.dumps({"error": "document_ids is required"})
     if len(ids) > CLINICAL_MAX_DOCS:
-        return json.dumps({"error": f"at most {CLINICAL_MAX_DOCS} documents per call"})
-    if (
-        _reocr_jobs.get(pid, {}).get("state") == "running"
-        or (pid in _runs and _runs[pid].get("state") == "running")
-        or (write and patient_lock(pid).locked())
-    ):
-        return json.dumps({"error": "busy: a curated run, index, re-OCR, re-read or "
-                           "extraction is in progress for this patient"})  # fmt: skip
+        return json.dumps({"error": f"too many documents: at most {CLINICAL_MAX_DOCS} explicit "
+                           f"document_ids per call, got {len(ids)}"})  # fmt: skip
     docs = [r for r in await db.curated_reocr_candidates(patient_id=pid) if r["id"] in ids]
     if not docs:
         return json.dumps({"status": "nothing to do"})
-    if write and not await _all_birth_dates(db, pid):
-        return json.dumps({"error": "no birth date known for this patient (README contract or "
-                           "patient context): refusing to store facts"})  # fmt: skip
-    _reocr_jobs[pid] = {
+
+    def busy() -> bool:
+        return (
+            _reocr_jobs.get(pid, {}).get("state") == "running"
+            or (pid in _runs and _runs[pid].get("state") == "running")
+            or (write and patient_lock(pid).locked())
+        )
+
+    busy_error = json.dumps({"error": "busy: a curated run, index, re-OCR, re-read or "
+                             "extraction is in progress for this patient"})  # fmt: skip
+    if busy():
+        return busy_error
+    # Reserve the patient's job slot before any further await, so two calls can
+    # never both start a job; released again on every refusal below.
+    previous = _reocr_jobs.get(pid)
+    _reocr_jobs[pid] = job = {
         "state": "running", "kind": "clinical_extract" if write else "clinical_preview",
         "dry_run": not write, "extractor": EXTRACTOR_VERSION,
-        "started_at": datetime.now(UTC).isoformat(),
+        "started_at": datetime.now(UTC).isoformat(), "actor": _caller_email() or "mcp",
         "documents": [{"document_id": d["id"], "category": d.get("category")} for d in docs],
     }  # fmt: skip
+
+    def release(error: str) -> str:
+        if previous is not None:
+            _reocr_jobs[pid] = previous
+        else:
+            _reocr_jobs.pop(pid, None)
+        return json.dumps({"error": error})
+
+    if write:
+        if not await _all_birth_dates(db, pid):
+            return release("no birth date known for this patient (README contract or patient "
+                           "context): refusing to store facts")  # fmt: skip
+        # Same safety bar as the re-read / re-OCR stores (#573): a verified copy
+        # of the DB before anything is written, or no write at all.
+        from oncofiles.pre_store import PreStoreError, make_copy
+
+        try:
+            job["pre_store"] = await asyncio.to_thread(make_copy, db, "clinical")
+        except Exception as exc:
+            reason = str(exc) if isinstance(exc, PreStoreError) else type(exc).__name__
+            logger.error("pre-store copy failed for %s (%s): extraction refused", pid[:8], reason)
+            return release(f"refused: pre-store copy failed ({reason}); nothing was written")
     from oncofiles.cloud_guard import local_only
 
     # The task copies the current context: the WHOLE job (DB writes included,
@@ -1757,9 +1836,12 @@ async def curated_clinical_extract_preview(
     doses, procedures / imaging / radiotherapy, CT lesion sizes and planned dates.
     Each item is checked by a generic verifier (evidence verbatim on the page,
     key tokens inside it, dates printed and not a birth date): machine or
-    unverified with reasons. Writes NOTHING. Reports per document only counts
-    per kind and reason codes — never values. Explicit ``document_ids`` (max 10).
-    Runs in the background; poll curated_reocr_status. About a minute per page.
+    unverified with reasons. The verifier checks only that the text is printed
+    on the page: the interpretation (which line is the diagnosis, a current vs
+    a historical regimen) is the model's and is NOT verified. Writes NOTHING.
+    Reports per document only counts per kind and reason codes — never values.
+    Explicit ``document_ids`` (max 10). Runs in the background; poll
+    curated_reocr_status. About a minute per page.
     """
     return await _start_clinical(ctx, document_ids, patient_slug, write=False)
 
@@ -1778,12 +1860,18 @@ async def curated_clinical_extract(
     stages, biomarker / genomic observations, treatment courses, cycles,
     medication events, procedures, lesion sizes and planned encounters, each
     with its document, page, evidence, verification and a provenance row.
+    Stored rows are shown everywhere with ``method = llm-clinical`` and their
+    own verification label: the verifier checks only that the text is printed
+    on the page, while the interpretation (which line is the diagnosis, a
+    current vs a historical regimen) is the model's and is NOT verified.
     Re-running a document replaces only rows this extractor wrote and never
-    touches verified or corrected rows. Refused while another curated run,
-    re-OCR or extraction is active, or when no birth date is known; holds the
-    patient lock; a document with a page the model did not assess is not stored.
-    Explicit ``document_ids`` (max 10). Runs in the background; poll
-    curated_reocr_status. About a minute per page.
+    touches verified or corrected rows. Before writing, a verified safety copy
+    of the database is made (pre-store); no copy, no write. Every real run
+    leaves an activity_log row (caller, ids, copy, counts). Refused while
+    another curated run, re-OCR or extraction is active, or when no birth date
+    is known; holds the patient lock; a document with a page the model did not
+    assess is not stored. Explicit ``document_ids`` (max 10). Runs in the
+    background; poll curated_reocr_status. About a minute per page.
     """
     return await _start_clinical(ctx, document_ids, patient_slug, write=not dry_run)
 

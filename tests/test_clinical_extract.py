@@ -15,7 +15,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from oncofiles import cloud_guard, patient_context
+from oncofiles import cloud_guard, patient_context, pre_store
 from oncofiles.cloud_guard import CloudForbiddenError, local_only
 from oncofiles.curated import clinical_store, llm, verifier
 from oncofiles.curated import llm_extract_clinical as lx
@@ -135,6 +135,14 @@ def local_model(monkeypatch):
     monkeypatch.setattr(llm, "chat", model_chat)
     monkeypatch.setattr(tool, "_reocr_jobs", {})
     monkeypatch.setattr(tool, "_readme_births", {ERIKA_UUID: {DOB}, BOB_UUID: {DOB}})
+    copies: list[str] = []
+
+    def fake_copy(db, job):  # the in-memory test DB has no file; see test_pre_store_*
+        copies.append(job)
+        return f"oncofiles-copy-{len(copies)}-{job}.db"
+
+    monkeypatch.setattr(pre_store, "make_copy", fake_copy)
+    return copies
 
 
 # ── prompt, schema, normalisation ───────────────────────────────────────
@@ -512,7 +520,7 @@ async def test_timeline_overview_and_treatment_list_return_the_new_kinds(seeded)
     undated = next(r for r in cond if r["title"].startswith("Metastázy"))
     assert undated["date_source"] == "document" and undated["at"] == DAY
     imaging = json.loads(await cf.timeline(ctx, kinds=["imaging"]))["rows"]
-    assert any(r["title"] == "Lesion size · S8" for r in imaging)
+    assert any(r["title"] == "Lesion size" and r["detail"] == "S8" for r in imaging)
 
     overview = json.loads(await cf.patient_overview(ctx))
     dm = overview["diagnoses_and_markers"]

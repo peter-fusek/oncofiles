@@ -6,6 +6,7 @@ import json
 
 from fastmcp import Context
 
+from oncofiles.fact_labels import LLM_NOTE, group_llm, norm
 from oncofiles.models import TreatmentEvent, TreatmentEventQuery
 from oncofiles.tools._helpers import (
     _clamp_limit,
@@ -21,6 +22,20 @@ DEPRECATION_NOTE = (
     "'planned']). 'events' is the frozen legacy table; 'courses', 'cycles' and "
     "'medication_events' come from documents (#711, #726)."
 )
+# identical document-extracted rows across documents (#730: until proper dedupe)
+_GROUP_KEYS = {
+    "courses": lambda r: (norm(r["regimen_printed"]), r["start_at"], r["end_at"],
+                          r["line_of_therapy"], r["intent"]),
+    "cycles": lambda r: (norm(r["regimen_printed"]), norm(r["cycle_number_printed"]),
+                         r["actual_at"], r["planned_at"], r["status"]),
+    "medication_events": lambda r: (norm(r["ingredient_printed"]), norm(r["dose_printed"]),
+                                    norm(r["route"]), r["kind"], r["effective_start"],
+                                    r["effective_end"]),
+}  # fmt: skip
+
+
+def _grouped(extracted: dict[str, list[dict]]) -> dict[str, list[dict]]:
+    return {name: group_llm(rows, _GROUP_KEYS[name]) for name, rows in extracted.items()}
 
 
 async def _get_event_owned(db, event_id: int, pid: str) -> TreatmentEvent | None:
@@ -92,7 +107,12 @@ async def list_treatment_events(
     first. Also returns what was extracted from documents: ``courses``
     (regimen, line, intent, from–to), ``cycles`` (administered, postponed with
     the printed reason, planned) and ``medication_events`` (drug, dose, basis,
-    route, validity), each with document_id, page and verification.
+    route, validity), each with document_id, page and verification. These were
+    read by the local model (``method = llm-clinical``, see
+    ``verification_label``): only their text was checked against the page;
+    whether a regimen is current or historical is the model's interpretation
+    and is not verified. Identical rows from several documents are one item
+    with ``sources``.
 
     Args:
         event_type: Filter by event type (e.g. chemo, surgery). The extracted
@@ -138,7 +158,8 @@ async def list_treatment_events(
         {
             "events": items,
             "total": len(items),
-            **extracted,
+            **_grouped(extracted),
+            "llm_note": LLM_NOTE,
             "deprecated": DEPRECATION_NOTE,
         },
         ensure_ascii=False,

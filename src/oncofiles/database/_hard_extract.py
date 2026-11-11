@@ -182,7 +182,7 @@ class HardExtractMixin:
         return await self._hx_all(
             "SELECT c.id, c.printed_text, c.asserted_at, c.recorded_at, c.body_site, "
             "c.is_primary_cancer, c.primary_condition_id, c.clinical_certainty, c.verification, "
-            "c.source_document_id, c.page_number, c.evidence, "
+            "c.source_document_id, c.page_number, c.evidence, c.extracted_by, "
             "(SELECT st.printed FROM cancer_stages st WHERE st.condition_id = c.id "
             " AND st.patient_id = c.patient_id AND st.deleted_at IS NULL "
             " ORDER BY st.id DESC LIMIT 1) AS stage, "
@@ -194,17 +194,21 @@ class HardExtractMixin:
             (patient_id,),
         )
 
-    async def marker_rows(self, *, patient_id: str) -> list[dict]:
-        """Newest biomarker / genomic / condition fact per code (or label when
-        unmapped), whatever its verification (shown with it)."""
-        return await self._hx_all(
-            "SELECT s.* FROM fact_series_v s WHERE s.patient_id = ? "
-            "AND s.category IN ('condition', 'genetic_variant', 'biomarker') "
+    async def marker_rows(self, *, patient_id: str, newest_only: bool = True) -> list[dict]:
+        """Biomarker / genomic / condition facts. ``newest_only``: the newest per
+        code (or label when unmapped), whatever its verification (shown with it)."""
+        newest = (
             "AND s.id = (SELECT s2.id FROM fact_series_v s2 WHERE s2.patient_id = s.patient_id "
             " AND s2.category = s.category "
             " AND COALESCE(s2.code, s2.label_original) = COALESCE(s.code, s.label_original) "
             " ORDER BY s2.effective_at DESC, s2.id DESC LIMIT 1) "
-            "ORDER BY s.category, COALESCE(s.code, s.label_original)",
+        )
+        return await self._hx_all(
+            "SELECT s.* FROM fact_series_v s WHERE s.patient_id = ? "
+            "AND s.category IN ('condition', 'genetic_variant', 'biomarker') "
+            + (newest if newest_only else "")
+            + "ORDER BY s.category, COALESCE(s.code, s.label_original), s.effective_at DESC, "
+            "s.id DESC",
             (patient_id,),
         )
 
@@ -245,6 +249,7 @@ class HardExtractMixin:
         out["courses"] = await self._hx_all(
             f"SELECT x.id, x.regimen_printed, x.line_of_therapy, x.intent, x.start_at, x.end_at, "
             f"x.status, x.verification, x.source_document_id, x.page_number, x.evidence, "
+            f"x.extracted_by, "
             f"{at} AS at FROM treatment_courses x WHERE x.patient_id = ? "
             f"AND x.deleted_at IS NULL{w} ORDER BY at DESC, x.id LIMIT ?",
             (patient_id, *p, limit),
@@ -254,7 +259,9 @@ class HardExtractMixin:
         out["cycles"] = await self._hx_all(
             f"SELECT x.id, x.course_id, x.cycle_number_printed, x.status, x.status_reason, "
             f"x.actual_at, x.planned_at, x.verification, x.source_document_id, x.page_number, "
-            f"x.evidence, {at} AS at FROM treatment_cycles x WHERE x.patient_id = ? "
+            f"x.evidence, x.extracted_by, {at} AS at, (SELECT tc.regimen_printed FROM "
+            f"treatment_courses tc WHERE tc.id = x.course_id AND tc.patient_id = x.patient_id) "
+            f"AS regimen_printed FROM treatment_cycles x WHERE x.patient_id = ? "
             f"AND x.deleted_at IS NULL{w} ORDER BY at DESC, x.id LIMIT ?",
             (patient_id, *p, limit),
         )
@@ -264,7 +271,7 @@ class HardExtractMixin:
             f"SELECT x.id, x.kind, x.course_id, x.cycle_id, x.ingredient_printed, x.dose_value, "
             f"x.dose_unit_ucum, x.dose_printed, x.normalization_basis, x.route, "
             f"x.effective_start, x.effective_end, x.verification, x.source_document_id, "
-            f"x.page_number, x.evidence, {at} AS at FROM medication_events x "
+            f"x.page_number, x.evidence, x.extracted_by, {at} AS at FROM medication_events x "
             f"WHERE x.patient_id = ? AND x.deleted_at IS NULL{w} ORDER BY at DESC, x.id LIMIT ?",
             (patient_id, *p, limit),
         )
