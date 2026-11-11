@@ -6,6 +6,7 @@ import json
 
 from fastmcp import Context
 
+from oncofiles.fact_labels import LLM_NOTE, group_llm, norm
 from oncofiles.models import TreatmentEvent, TreatmentEventQuery
 from oncofiles.tools._helpers import (
     _clamp_limit,
@@ -13,6 +14,28 @@ from oncofiles.tools._helpers import (
     _parse_date,
     _resolve_patient_id,
 )
+
+# event types for which the document-extracted courses / cycles / doses are listed
+_EXTRACTED_TYPES = ("chemo", "treatment", "cycle", "medication")
+DEPRECATION_NOTE = (
+    "list_treatment_events is deprecated: use timeline(kinds=['treatment', 'medication', "
+    "'planned']). 'events' is the frozen legacy table; 'courses', 'cycles' and "
+    "'medication_events' come from documents (#711, #726)."
+)
+# identical document-extracted rows across documents (#730: until proper dedupe)
+_GROUP_KEYS = {
+    "courses": lambda r: (norm(r["regimen_printed"]), r["start_at"], r["end_at"],
+                          r["line_of_therapy"], r["intent"]),
+    "cycles": lambda r: (norm(r["regimen_printed"]), norm(r["cycle_number_printed"]),
+                         r["actual_at"], r["planned_at"], r["status"]),
+    "medication_events": lambda r: (norm(r["ingredient_printed"]), norm(r["dose_printed"]),
+                                    norm(r["route"]), r["kind"], r["effective_start"],
+                                    r["effective_end"]),
+}  # fmt: skip
+
+
+def _grouped(extracted: dict[str, list[dict]]) -> dict[str, list[dict]]:
+    return {name: group_llm(rows, _GROUP_KEYS[name]) for name, rows in extracted.items()}
 
 
 async def _get_event_owned(db, event_id: int, pid: str) -> TreatmentEvent | None:
@@ -77,15 +100,27 @@ async def list_treatment_events(
     limit: int = 50,
     patient_slug: str | None = None,
 ) -> str:
-    """List treatment events, optionally filtered by type and date range.
+    """[DEPRECATED — use timeline(kinds=["treatment", "medication", "planned"]);
+    the legacy treatment_events table is frozen (#711, #726)]
 
-    Returns events in reverse chronological order.
+    List treatment events, optionally filtered by type and date range, newest
+    first. Also returns what was extracted from documents: ``courses``
+    (regimen, line, intent, from–to), ``cycles`` (administered, postponed with
+    the printed reason, planned) and ``medication_events`` (drug, dose, basis,
+    route, validity), each with document_id, page and verification. These were
+    read by the local model (``method = llm-clinical``, see
+    ``verification_label``): only their text was checked against the page;
+    whether a regimen is current or historical is the model's interpretation
+    and is not verified. Identical rows from several documents are one item
+    with ``sources``.
 
     Args:
-        event_type: Filter by event type (e.g. chemo, surgery).
+        event_type: Filter by event type (e.g. chemo, surgery). The extracted
+            courses/cycles/medications are included for no type or for
+            chemo / treatment / cycle / medication.
         date_from: Filter from this date (YYYY-MM-DD).
         date_to: Filter to this date (YYYY-MM-DD).
-        limit: Maximum results to return.
+        limit: Maximum results to return (per list).
         patient_slug: Optional — explicit patient slug (#429).
     """
     try:
@@ -98,6 +133,13 @@ async def list_treatment_events(
             limit=_clamp_limit(limit),
         )
         events = await db.list_treatment_events(query, patient_id=pid)
+        extracted = (
+            await db.treatment_rows(
+                patient_id=pid, date_from=date_from, date_to=date_to, limit=_clamp_limit(limit)
+            )
+            if event_type in (None, "", *_EXTRACTED_TYPES)
+            else {"courses": [], "cycles": [], "medication_events": []}
+        )
     except ValueError as e:
         return json.dumps({"error": str(e)})
     items = [
@@ -112,7 +154,17 @@ async def list_treatment_events(
         }
         for e in events
     ]
-    return json.dumps({"events": items, "total": len(items)})
+    return json.dumps(
+        {
+            "events": items,
+            "total": len(items),
+            **_grouped(extracted),
+            "llm_note": LLM_NOTE,
+            "deprecated": DEPRECATION_NOTE,
+        },
+        ensure_ascii=False,
+        default=str,
+    )
 
 
 async def get_treatment_event(ctx: Context, event_id: int, patient_slug: str | None = None) -> str:
@@ -141,23 +193,67 @@ async def get_treatment_event(ctx: Context, event_id: int, patient_slug: str | N
 
 
 async def delete_treatment_event(
-    ctx: Context, event_id: int, patient_slug: str | None = None
+    ctx: Context,
+    event_id: int,
+    patient_slug: str | None = None,
+    deleted_by: str | None = None,
 ) -> str:
-    """Delete a treatment event by ID. Use for removing contaminated/test data.
+    """Move a treatment event to the trash (soft delete). Use for removing contaminated/test data.
+
+    The row is kept with deleted_at/deleted_by set and disappears from every
+    list, timeline and export. Recoverable for 30 days via
+    restore_treatment_event (deletion policy: nothing is hard-deleted, #723).
 
     Args:
         event_id: The treatment event ID to delete.
         patient_slug: Optional — explicit patient slug (#429).
+        deleted_by: Optional — who deleted it (email or agent name), kept for audit.
     """
     db = _get_db(ctx)
     pid = await _resolve_patient_id(patient_slug, ctx)
     # Cross-patient block: confirm ownership before deletion (#429).
     if not await db.check_treatment_event_ownership(event_id, pid):
         return json.dumps({"error": f"Treatment event {event_id} not found"})
-    deleted = await db.delete_treatment_event(event_id, patient_id=pid)
+    deleted = await db.delete_treatment_event(event_id, patient_id=pid, deleted_by=deleted_by)
     if not deleted:
         return json.dumps({"error": f"Treatment event {event_id} not found"})
-    return json.dumps({"deleted": True, "event_id": event_id})
+    return json.dumps(
+        {
+            "deleted": True,
+            "event_id": event_id,
+            "message": "Moved to trash. Recoverable for 30 days via restore_treatment_event.",
+        }
+    )
+
+
+async def restore_treatment_event(
+    ctx: Context,
+    event_id: int,
+    patient_slug: str | None = None,
+    restored_by: str | None = None,
+) -> str:
+    """Restore a soft-deleted treatment event from the trash (#723).
+
+    Args:
+        event_id: The treatment event ID to restore.
+        patient_slug: Optional — explicit patient slug (#429).
+        restored_by: Optional — who restored it (email or agent name), kept for audit.
+    """
+    db = _get_db(ctx)
+    pid = await _resolve_patient_id(patient_slug, ctx)
+    if not await db.check_treatment_event_ownership(event_id, pid):
+        return json.dumps({"error": f"Treatment event {event_id} not found"})
+    restored = await db.restore_treatment_event(event_id, patient_id=pid, restored_by=restored_by)
+    if restored is None:
+        return json.dumps({"error": f"Treatment event {event_id} is not in the trash"})
+    return json.dumps(
+        {
+            "restored": True,
+            "event_id": event_id,
+            "event_date": restored.event_date.isoformat() if restored.event_date else None,
+            "title": restored.title,
+        }
+    )
 
 
 async def update_treatment_event(
@@ -202,4 +298,5 @@ def register(mcp):
     mcp.tool()(list_treatment_events)
     mcp.tool()(get_treatment_event)
     mcp.tool()(delete_treatment_event)
+    mcp.tool()(restore_treatment_event)
     mcp.tool()(update_treatment_event)

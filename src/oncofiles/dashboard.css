@@ -988,3 +988,12 @@
       .remedy-row { flex-wrap: wrap; gap: 0.25rem 0.5rem; }
       .remedy-action { overflow-wrap: anywhere; }
     }
+
+    /* #573 verify-only re-read console (admin only) */
+    .rr-banner { border: 1px solid rgba(255,165,0,0.4); background: rgba(255,165,0,0.12); color: var(--text); border-radius: 8px; padding: 0.5rem 0.75rem; font-size: 0.8125rem; margin: 0 0 0.75rem; }
+    .rr-row { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; margin-bottom: 0.5rem; }
+    .rr-select, .rr-input { font-size: 0.8125rem; padding: 0.3rem 0.5rem; border-radius: 8px; border: 1px solid var(--border); background: var(--bg-card, transparent); color: var(--text); max-width: 100%; }
+    .rr-actions { margin: 0.5rem 0; }
+    .rr-confirm { border: 1px solid var(--red, #dc2626); border-radius: 8px; padding: 0.5rem 0.75rem; margin: 0.5rem 0; }
+    .rr-confirm .rr-input { width: 10rem; margin-bottom: 0.5rem; }
+    .rr-num { text-align: right; white-space: nowrap; }

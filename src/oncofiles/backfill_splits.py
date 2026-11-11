@@ -1,4 +1,4 @@
-"""Retroactive backfill for document splitting, consolidation, and cross-references."""
+"""Retroactive backfill for document splitting, consolidation, and AI classification."""
 
 from __future__ import annotations
 
@@ -216,83 +216,6 @@ async def backfill_consolidation(
     return stats
 
 
-async def rebuild_cross_references(
-    db: Database,
-    *,
-    patient_id: str,
-) -> dict:
-    """Rebuild all cross-references using AI analysis.
-
-    Clears existing cross-references and regenerates them using
-    AI-powered document relationship analysis.
-
-    Returns stats dict.
-    """
-    from oncofiles.doc_analysis import analyze_document_relationships
-
-    stats = {"documents": 0, "refs_created": 0, "errors": 0}
-
-    # Clear existing cross-references for this patient's documents
-    all_docs = await db.list_documents(limit=DOC_QUERY_LIMIT, patient_id=patient_id)
-    active_docs = [d for d in all_docs if d.deleted_at is None]
-    stats["documents"] = len(active_docs)
-
-    for doc in active_docs:
-        existing_refs = await db.get_cross_references(doc.id, patient_id=patient_id)
-        for ref in existing_refs:
-            await db.db.execute("DELETE FROM document_cross_references WHERE id = ?", (ref["id"],))
-    await db.db.commit()
-
-    # Rebuild with AI
-    batch_count = 0
-    for doc in active_docs:
-        doc_text = ""
-        if await db.has_ocr_text(doc.id):
-            pages = await db.get_ocr_pages(doc.id)
-            doc_text = "\n\n".join(p["extracted_text"] for p in pages)
-
-        if not doc_text:
-            continue
-
-        candidates = [
-            {
-                "id": c.id,
-                "filename": c.filename,
-                "document_date": c.document_date.isoformat() if c.document_date else None,
-                "institution": c.institution,
-                "category": c.category.value,
-                "ai_summary": c.ai_summary,
-            }
-            for c in active_docs
-            if c.id != doc.id
-        ]
-
-        try:
-            relationships = analyze_document_relationships(doc_text, doc.id, candidates, db=db)
-            refs = []
-            for rel in relationships:
-                target_id = rel.get("target_id")
-                rel_type = rel.get("relationship", "related")
-                confidence = rel.get("confidence", 0.5)
-                if target_id and target_id != doc.id:
-                    refs.append((doc.id, target_id, rel_type, confidence))
-
-            if refs:
-                count = await db.bulk_insert_cross_references(refs)
-                stats["refs_created"] += count
-
-        except Exception:
-            logger.warning("rebuild_cross_refs: error on doc %d", doc.id, exc_info=True)
-            stats["errors"] += 1
-
-        batch_count += 1
-        if batch_count % 5 == 0:
-            gc.collect()
-
-    logger.info("rebuild_cross_references: %s", stats)
-    return stats
-
-
 async def backfill_ai_classification(
     db: Database,
     *,
@@ -323,9 +246,6 @@ async def backfill_ai_classification(
         "changes": [],
         "limit": limit,
     }
-
-    # Proactive reconnect before batch to avoid stale replica (#378)
-    await db.reconnect_if_stale(timeout=10.0)
 
     all_docs = await db.list_documents(limit=DOC_QUERY_LIMIT, patient_id=patient_id)
     batch_count = 0

@@ -235,7 +235,9 @@ def find_or_create_folder(gdrive, name: str, parent_id: str) -> str:
     """Find an existing folder or create a new one. Returns folder ID.
 
     Handles race conditions: after creating, re-lists all matching folders
-    and trashes any duplicates (keeps the oldest by createdTime).
+    and returns the oldest by createdTime. Duplicates are left in place and
+    logged (#734: nothing is trashed automatically); the user-invoked
+    ``repair_gdrive_folder_hygiene`` merges them on request.
     """
     existing = gdrive.find_folder(name, parent_id)
     if existing:
@@ -265,14 +267,14 @@ def find_or_create_folder(gdrive, name: str, parent_id: str) -> str:
         )
         if len(all_matching) > 1:
             keep = all_matching[0]["id"]  # oldest by createdTime
-            for dup in all_matching[1:]:
-                try:
-                    gdrive.trash_file(dup["id"])
-                    logger.warning(
-                        "Trashed duplicate folder '%s' (%s), keeping %s", name, dup["id"], keep
-                    )
-                except Exception:
-                    pass
+            logger.warning(
+                "Duplicate folder '%s' under %s: using %s, leaving %s in place "
+                "(merge with repair_gdrive_folder_hygiene)",
+                name,
+                parent_id,
+                keep,
+                [dup["id"] for dup in all_matching[1:]],
+            )
             return keep
     except Exception:
         pass

@@ -22,6 +22,7 @@ shape as ``facts_rules`` facts, so the two can be compared key by key.
 
 from __future__ import annotations
 
+import json
 import re
 import unicodedata
 from datetime import date
@@ -41,6 +42,85 @@ from oncofiles.curated.facts_rules import (
 from oncofiles.curated.reread_verify import date_printed
 
 VERIFIER_VERSION = 1
+
+
+# Facts parsed from LM Studio's ``reasoning_content`` channel (content empty)
+# are NEVER machine (infra rule, #714): ``verify`` always adds this reason,
+# and any future write path MUST store such facts as unverified with it.
+REASONING_CHANNEL_REASON = "llm_reasoning_channel"
+REASONING_CHANNEL_NEVER_MACHINE = True
+
+
+def from_reasoning_channel(fact_or_candidate: dict) -> bool:
+    """True for a candidate or fact that came from the reasoning channel."""
+    meta = fact_or_candidate.get("metadata") or {}
+    source = fact_or_candidate.get("answer_source") or meta.get("answer_source")
+    return source == "reasoning"
+
+
+# Text-only extraction from the STORED sidecar text is not an independent
+# source (design rule on #714): when that text is a Cowork-era transcription
+# (non-local sidecar → ``cowork_ocr``), or the stored counterpart of a fact
+# carries ``cowork_ocr`` / ``ocr_uncertain`` / ``handwritten``, the LLM read
+# the same unreliable text the rule parser read. Such facts keep those reasons
+# and stay unverified; the LLM text path never upgrades them to machine and
+# never removes those reasons. Agreement there is a parser cross-check only.
+# Independent confirmation needs a new read of the source (#678 re-read).
+TEXT_PATH_NEVER_UPGRADES_TRANSCRIPTION_REASONS = True
+TRANSCRIPTION_REASONS = frozenset({"cowork_ocr", "ocr_uncertain", "handwritten"})
+
+
+def stored_reasons(row: dict) -> list[str]:
+    """``unverified_reasons`` of a stored fact row (parsed ``meta`` or ``metadata_json``)."""
+    meta = row.get("meta")
+    if meta is None:
+        try:
+            meta = json.loads(row.get("metadata_json") or "{}")
+        except ValueError:
+            meta = {}
+    return list((meta or {}).get("unverified_reasons") or [])
+
+
+def _match_key(f: dict) -> tuple:
+    return (f.get("code"), (f.get("occurred_at") or "")[:10], f.get("value_canonical"))
+
+
+def inherit_transcription_reasons(facts: list[dict], stored_rows: list[dict]) -> list[dict]:
+    """Copy the transcription reasons of a matching stored fact (same code,
+    day and value) onto the LLM fact; such a fact becomes unverified. Only
+    ever ADDS reasons. Returns ``facts`` (changed in place)."""
+    if not TEXT_PATH_NEVER_UPGRADES_TRANSCRIPTION_REASONS:
+        return facts
+    inherited: dict[tuple, set[str]] = {}
+    for r in stored_rows:
+        hits = TRANSCRIPTION_REASONS.intersection(stored_reasons(r))
+        if hits and r.get("code"):
+            inherited.setdefault(_match_key(r), set()).update(hits)
+    for f in facts:
+        hits = inherited.get(_match_key(f))
+        if not hits:
+            continue
+        meta = f.setdefault("metadata", {})
+        reasons = list(meta.get("unverified_reasons") or [])
+        reasons += sorted(h for h in hits if h not in reasons)
+        meta["unverified_reasons"] = reasons
+        meta["inherited_from_stored"] = sorted(hits)
+        f["verification"] = "unverified"
+    return facts
+
+
+def transcription_pages(stored_rows: list[dict], source_reason: str | None,
+                        pages) -> set[int]:  # fmt: skip
+    """Pages whose text is a transcription: every page when the sidecar
+    itself is (``source_reason``), else pages holding a stored fact with a
+    transcription reason."""
+    if source_reason in TRANSCRIPTION_REASONS:
+        return {int(p) for p in pages}
+    return {
+        int(r.get("page_number") or 1)
+        for r in stored_rows
+        if TRANSCRIPTION_REASONS.intersection(stored_reasons(r))
+    }
 
 
 class NoBirthDateError(RuntimeError):
@@ -72,6 +152,7 @@ REASONS = (
     "unit_unconvertible",  # no conversion to the canonical unit in fact_codes
     "implausible",
     "ocr_uncertain",  # "[?]" in the evidence
+    "llm_reasoning_channel",  # parsed from reasoning_content: never machine
 )
 
 _NUMERIC = re.compile(r"-?\d+(?:[.,]\d+)?")
@@ -193,6 +274,8 @@ def verify(  # noqa: PLR0912, PLR0915
         reasons.append("ocr_uncertain")
     if source_reason:
         reasons.append(source_reason)
+    if REASONING_CHANNEL_NEVER_MACHINE and from_reasoning_channel(cand):
+        reasons.append(REASONING_CHANNEL_REASON)
 
     numeric = bool(_NUMERIC.fullmatch(value))
     value_num = _num(value) if numeric else None
@@ -253,7 +336,8 @@ def verify(  # noqa: PLR0912, PLR0915
     else:
         flag = _flag(value_num, lo, hi, None)
 
-    meta: dict = {"verifier": VERIFIER_VERSION, "date_source": date_source}
+    meta: dict = {"verifier": VERIFIER_VERSION, "date_source": date_source,
+                  "answer_source": cand.get("answer_source") or "content"}  # fmt: skip
     if cand.get("date_role"):
         meta["date_role"] = cand["date_role"]
     if comparator:

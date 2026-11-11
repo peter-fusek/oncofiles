@@ -131,7 +131,7 @@ def _detect(gdrive, folder_id: str) -> str | None:
         for anc in _ancestors(gdrive, folder_id):
             if _is_curated_root(gdrive, anc):
                 return f"lies inside curated folder {anc}"
-    # Does it contain a curated folder further down? (e.g. Health/ above Health/Erika)
+    # Does it contain a curated folder further down? (e.g. Health/ above Health/<Patient>)
     for holder in _index_file_parents(gdrive):
         if not _is_curated_root(gdrive, holder):
             continue

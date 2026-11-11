@@ -71,7 +71,7 @@ async def test_add_clinical_record_targets_slug_patient(db: Database):
     await _seed_two_patients(db)
     ctx = _StubCtx(db)
 
-    # Default ContextVar = Erika. Explicit slug overrides to Bob.
+    # Default ContextVar = Jana. Explicit slug overrides to Bob.
     result = json.loads(
         await cr_tools.add_clinical_record(
             ctx,
@@ -87,7 +87,7 @@ async def test_add_clinical_record_targets_slug_patient(db: Database):
     stored = await db.get_clinical_record(stored_id, patient_id=SECOND_UUID)
     assert stored.patient_id == SECOND_UUID
     assert stored.patient_id != ERIKA_UUID
-    # Defence-in-depth: from Erika's scope the row is invisible (#499).
+    # Defence-in-depth: from Jana's scope the row is invisible (#499).
     assert await db.get_clinical_record(stored_id, patient_id=ERIKA_UUID) is None
 
 
@@ -167,7 +167,7 @@ async def test_get_clinical_record_not_found(db: Database):
 async def test_get_clinical_record_blocks_cross_patient(db: Database):
     await _seed_two_patients(db)
     ctx = _StubCtx(db)
-    # Bob's record — Erika's ContextVar should NOT be able to read it
+    # Bob's record — Jana's ContextVar should NOT be able to read it
     bob_rec = await db.insert_clinical_record(
         ClinicalRecord(
             patient_id=SECOND_UUID,
@@ -177,7 +177,7 @@ async def test_get_clinical_record_blocks_cross_patient(db: Database):
             source="manual",
         )
     )
-    # Default scope (Erika) sees not_found — SQL filter (#499) blocks the row
+    # Default scope (Jana) sees not_found — SQL filter (#499) blocks the row
     result = json.loads(await cr_tools.get_clinical_record(ctx, bob_rec.id))
     assert result["error"] == "not_found"
     # Content must NOT leak through the error response
@@ -235,7 +235,7 @@ async def test_add_note_blocks_cross_patient(db: Database):
             source="manual",
         )
     )
-    # Default scope (Erika) — can't attach a note to Bob's record
+    # Default scope (Jana) — can't attach a note to Bob's record
     result = json.loads(
         await cr_tools.add_clinical_record_note(
             ctx,
@@ -308,14 +308,14 @@ async def test_list_notes_filters_by_tags_any(db: Database):
 async def test_list_notes_patient_scope_via_slug(db: Database):
     await _seed_two_patients(db)
     ctx = _StubCtx(db)
-    erika_rec = await db.insert_clinical_record(
+    jana_rec = await db.insert_clinical_record(
         ClinicalRecord(patient_id=ERIKA_UUID, record_type="lab", source="manual")
     )
     bob_rec = await db.insert_clinical_record(
         ClinicalRecord(patient_id=SECOND_UUID, record_type="lab", source="manual")
     )
     await cr_tools.add_clinical_record_note(
-        ctx, record_id=erika_rec.id, note_text="Erika-only", source="dashboard"
+        ctx, record_id=jana_rec.id, note_text="Jana-only", source="dashboard"
     )
     await cr_tools.add_clinical_record_note(
         ctx,
@@ -324,11 +324,11 @@ async def test_list_notes_patient_scope_via_slug(db: Database):
         source="dashboard",
         patient_slug=SECOND_SLUG,
     )
-    erika_listing = json.loads(await cr_tools.list_clinical_record_notes(ctx))
+    jana_listing = json.loads(await cr_tools.list_clinical_record_notes(ctx))
     bob_listing = json.loads(
         await cr_tools.list_clinical_record_notes(ctx, patient_slug=SECOND_SLUG)
     )
-    assert {n["note_text"] for n in erika_listing["notes"]} == {"Erika-only"}
+    assert {n["note_text"] for n in jana_listing["notes"]} == {"Jana-only"}
     assert {n["note_text"] for n in bob_listing["notes"]} == {"Bob-only"}
 
 
@@ -357,6 +357,6 @@ async def test_list_notes_wrong_patient_record_id(db: Database):
     bob_rec = await db.insert_clinical_record(
         ClinicalRecord(patient_id=SECOND_UUID, record_type="lab", source="manual")
     )
-    # Erika's default scope + Bob's record_id → not_found (SQL filter, #499)
+    # Jana's default scope + Bob's record_id → not_found (SQL filter, #499)
     result = json.loads(await cr_tools.list_clinical_record_notes(ctx, record_id=bob_rec.id))
     assert result["error"] == "not_found"

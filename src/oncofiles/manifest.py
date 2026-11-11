@@ -15,17 +15,31 @@ logger = logging.getLogger(__name__)
 MANIFEST_VERSION = "1.0"
 
 
-async def export_manifest(db: Database, *, patient_id: str) -> dict:
-    """Serialize all DB tables into a manifest dict."""
+async def export_manifest(db: Database, *, patient_id: str, include_diary: bool = True) -> dict:
+    """Serialize one patient's tables into a manifest dict.
+
+    ``include_diary=False`` leaves the session diary (``conversation_entries``)
+    out — required for every copy written off the server (the Drive
+    ``_manifest.json``): diary text stays local only. The on-demand
+    ``export_manifest`` MCP tool returns it to the user who asked, so it is an
+    EGRESS tool and must never be annotated read-only.
+    """
     # DOC_QUERY_LIMIT, not a literal: this is the durable export written to the
     # Drive root, so truncating it silently drops records from the backup (#548).
     from oncofiles.config import DOC_QUERY_LIMIT
 
     documents = await db.list_documents(limit=DOC_QUERY_LIMIT, patient_id=patient_id)
-    conversations = await db.get_conversation_timeline(limit=200, patient_id=patient_id)
+    conversations = (
+        await db.get_conversation_timeline(limit=DOC_QUERY_LIMIT, patient_id=patient_id)
+        if include_diary
+        else []
+    )
     treatment_events = await db.get_treatment_events_timeline(limit=200, patient_id=patient_id)
     research_entries = await db.list_research_entries(limit=200, patient_id=patient_id)
-    agent_states = await db.list_agent_states()
+    # #691: scoped like every other section. Without patient_id the helper
+    # defaults to '' and returned the legacy unscoped rows (pre-#452), not
+    # this patient's state.
+    agent_states = await db.list_agent_states(patient_id=patient_id)
 
     return {
         "exported_at": datetime.now(UTC).isoformat(),

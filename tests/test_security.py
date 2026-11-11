@@ -168,7 +168,7 @@ async def test_bearer_token_constant_time():
     # Correct token works
     result = await provider.verify_token("secret-token-123")
     assert result is not None
-    assert result.client_id == "oncoteam"
+    assert result.client_id == "static-bearer"
 
     # Wrong token rejected
     assert await provider.verify_token("wrong-token") is None
@@ -228,7 +228,7 @@ def test_upload_document_sanitizes_filename_at_entry():
     # The reassignment must happen BEFORE the value is used downstream
     # (parse_filename, get_active_document_by_filename, Document(...)).
     sanitize_idx = source.index("sanitize_filename(filename)")
-    parse_idx = source.index("parse_filename(filename)")
+    parse_idx = source.index("parse_filename(filename")
     db_lookup_idx = source.index("get_active_document_by_filename(filename")
     assert sanitize_idx < parse_idx, "sanitize must precede parse_filename"
     assert sanitize_idx < db_lookup_idx, "sanitize must precede DB lookup"

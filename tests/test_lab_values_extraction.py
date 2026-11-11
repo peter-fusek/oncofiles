@@ -34,7 +34,7 @@ from tests.helpers import ERIKA_UUID, make_doc
 # underneath a chemo administration form.
 CHEMO_SHEET_WITH_LABS = """\
 Cyklus 4 / mFOLFOX6 / 15.4.2027
-Pacient: Erika Fusekova
+Pacient: Jana Testova
 Klinika klinickej onkologie, Klenova 1, Bratislava
 
 Predchemo krvny obraz (Medirex, odber 2027-04-15):

@@ -26,7 +26,7 @@ _EXPRESS_SLOTS = int(os.environ.get("DB_EXPRESS_SLOTS", "5"))
 _BACKGROUND_SLOTS = int(os.environ.get("DB_BACKGROUND_SLOTS", "2"))
 
 # Limit concurrent heavy DB queries (search_conversations, search_documents)
-# to prevent memory spikes from parallel Oncoteam agent requests.
+# to prevent memory spikes from parallel agent requests.
 _query_semaphore = asyncio.Semaphore(_QUERY_SLOTS)
 
 # Priority-aware DB concurrency — prevents dashboard 500s during sync.

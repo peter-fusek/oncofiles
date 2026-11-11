@@ -231,7 +231,7 @@ async def test_enhance_text_document(db: Database):
     """Text documents (text/markdown, text/plain) get enhanced via UTF-8 decode."""
     doc = make_doc(
         file_id="f_md",
-        filename="20260311_DeVita_reference_Ch40.md",
+        filename="20300311_DeVita_reference_Ch40.md",
         original_filename="chapter_40_full.md",
         mime_type="text/markdown",
     )
@@ -318,11 +318,11 @@ async def test_enhance_backfills_null_date_and_institution(db: Database):
     """Enhancement backfills document_date and institution from structured metadata."""
     doc = make_doc(
         file_id="f_backfill",
-        filename="Dodatok histológia p. Fuseková.pdf",
-        original_filename="Dodatok histológia p. Fuseková.pdf",
+        filename="Dodatok histológia p. Testová.pdf",
+        original_filename="Dodatok histológia p. Testová.pdf",
         document_date=None,
         institution=None,
-        description="Dodatok histológia p. Fuseková",
+        description="Dodatok histológia p. Testová",
     )
     doc = await db.insert_document(doc, patient_id=ERIKA_UUID)
 
@@ -332,22 +332,22 @@ async def test_enhance_backfills_null_date_and_institution(db: Database):
     files = MagicMock()
     metadata = {
         "document_type": "pathology",
-        "findings": ["[BIOMARKER_REDACTED]"],
+        "findings": ["BiomarkerX positive"],
         "diagnoses": [],
         "medications": [],
-        "dates_mentioned": ["2026-02-23"],
+        "dates_mentioned": ["2030-02-23"],
         "providers": ["MUDr. Rychlý Boris, PhD.", "Nemocnica Bory"],
         "plain_summary": "Pathology report.",
         "plain_summary_sk": "Patologická správa.",
         "institution_code": "BoryNemocnica",
         "category": "pathology",
-        "document_date": "2026-02-23",
+        "document_date": "2030-02-23",
     }
 
     classification = {
         "institution_code": "BoryNemocnica",
         "category": "pathology",
-        "document_date": "2026-02-23",
+        "document_date": "2030-02-23",
     }
 
     with (
@@ -364,7 +364,7 @@ async def test_enhance_backfills_null_date_and_institution(db: Database):
 
     updated = await db.get_document(doc.id, patient_id=ERIKA_UUID)
     assert updated.document_date is not None
-    assert str(updated.document_date) == "2026-02-23"
+    assert str(updated.document_date) == "2030-02-23"
     assert updated.institution == "BoryNemocnica"
     assert updated.description == "GeneticsKrasResults"
 
@@ -375,9 +375,9 @@ async def test_enhance_does_not_overwrite_existing_fields(db: Database):
 
     doc = make_doc(
         file_id="f_no_overwrite",
-        filename="20260227_ErikaFusekova_NOU_Labs_BloodResults.pdf",
-        original_filename="20260227_ErikaFusekova_NOU_Labs_BloodResults.pdf",
-        document_date=date(2026, 2, 27),
+        filename="20300227_JanaTestova_NOU_Labs_BloodResults.pdf",
+        original_filename="20300227_JanaTestova_NOU_Labs_BloodResults.pdf",
+        document_date=date(2030, 2, 27),
         institution="NOU",
         description="BloodResults",
     )
@@ -391,7 +391,7 @@ async def test_enhance_does_not_overwrite_existing_fields(db: Database):
         "findings": [],
         "diagnoses": [],
         "medications": [],
-        "dates_mentioned": ["2026-03-01"],
+        "dates_mentioned": ["2030-03-01"],
         "providers": ["Nemocnica Bory"],
         "plain_summary": "",
         "plain_summary_sk": "",
@@ -405,7 +405,7 @@ async def test_enhance_does_not_overwrite_existing_fields(db: Database):
 
     updated = await db.get_document(doc.id, patient_id=ERIKA_UUID)
     # Original values preserved — NOT overwritten by metadata
-    assert str(updated.document_date) == "2026-02-27"
+    assert str(updated.document_date) == "2030-02-27"
     assert updated.institution == "NOU"
     assert updated.description == "BloodResults"
 
@@ -427,13 +427,13 @@ async def test_backfill_document_fields_coalesce(db: Database):
 
     await db.backfill_document_fields(
         doc.id,
-        document_date="2026-03-01",
+        document_date="2030-03-01",
         institution="BoryNemocnica",  # Should NOT overwrite existing NOU
         description="TestDescription",
     )
 
     updated = await db.get_document(doc.id, patient_id=ERIKA_UUID)
-    assert str(updated.document_date) == "2026-03-01"
+    assert str(updated.document_date) == "2030-03-01"
     assert updated.institution == "NOU"  # Preserved, not overwritten
     assert updated.description == "TestDescription"
 
