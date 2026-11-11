@@ -27,7 +27,6 @@ from oncofiles.tools.db_query import (
     _PARENT_SCOPED,
     ALLOWED_TABLES_PATIENT_SCOPED,
     ENFORCEMENT_ENGINE,
-    ENFORCEMENT_FALLBACK,
     MAX_RESULT_BYTES,
     MAX_RESULT_COLUMNS,
     MAX_RESULT_ROWS,
@@ -38,7 +37,6 @@ from oncofiles.tools.db_query import (
     _enforcement_mode,
     _execute_query,
     _readonly_uri,
-    _shadow_with_ctes,
     query_db,
 )
 from tests.helpers import make_doc, make_treatment_event
@@ -361,53 +359,17 @@ async def test_file_db_uses_readonly_connection(two_db):
     assert m.call_count == 1
 
 
-async def test_enforcement_mode_detection(two_db):
+async def test_non_aiosqlite_driver_is_refused(two_db):
+    """#617/#738: no AST-only fallback. A driver without the stdlib connection
+    (so maybe without set_authorizer) is refused before any SQL runs."""
     assert _enforcement_mode(two_db) == ENFORCEMENT_ENGINE
     fake = MagicMock()
-    fake.db = object()  # e.g. the libsql/Turso wrapper
-    assert _enforcement_mode(fake) == ENFORCEMENT_FALLBACK
-
-
-def test_libsql_has_no_authorizer():
-    libsql = pytest.importorskip("libsql")
-    conn = libsql.connect(":memory:")
-    assert not hasattr(conn, "set_authorizer")
-
-
-async def test_fallback_cte_shadowing_scopes_rows(tmp_path):
-    """The libsql fallback: AST check + leading CTEs. Run the shadowed SQL on a
-    real libsql connection (if installed) over the same synthetic DB."""
-    path = tmp_path / "fallback.db"
-    database = Database(path)
-    await database.connect()
-    await database.migrate()
-    await _seed(database)
-    await _seed_children(database)
-    await database.close()
-
-    try:
-        import libsql
-
-        conn = libsql.connect(str(path))
-    except ImportError:
-        conn = sqlite3.connect(path)
-    try:
-        for sql in (
-            "SELECT patient_id FROM documents",
-            f"SELECT patient_id FROM documents WHERE patient_id = '{PID_A}' OR 1=1",
-            "SELECT d.patient_id FROM documents d LEFT JOIN treatment_events t ON 0",
-        ):
-            rows = conn.execute(_shadow_with_ctes(sql, PID_A)).fetchall()
-            assert {r[0] for r in rows} == {PID_A}, sql
-            assert len(rows) == N_A
-        for table, expected in (("lab_values", N_A), ("document_cross_references", 1)):
-            sql = f"SELECT patient_id FROM {table} WHERE patient_id = '{PID_A}' OR 1=1"
-            rows = conn.execute(_shadow_with_ctes(sql, PID_A)).fetchall()
-            assert [r[0] for r in rows] == [PID_A] * expected, table
-        # Invalid pid: no shadowing (the AST layer already rejected the query).
-        assert _shadow_with_ctes("SELECT 1", "not-a-uuid") == "SELECT 1"
-    finally:
-        conn.close()
+    fake.db = MagicMock()  # any non-aiosqlite connection
+    with pytest.raises(RuntimeError, match="aiosqlite"):
+        _enforcement_mode(fake)
+    with pytest.raises(RuntimeError, match="aiosqlite"):
+        await _execute_query(fake, "SELECT 1", 10, caller_pid=PID_A)
+    fake.db.execute.assert_not_called()
 
 
 # ── Schema lock + end-to-end through the tool ──────────────────────────

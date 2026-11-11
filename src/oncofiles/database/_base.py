@@ -47,15 +47,6 @@ class DatabaseBase:
 
         await asyncio.wait_for(_probe(), timeout=timeout)
 
-    async def reconnect_if_stale(self, timeout: float = 10.0) -> bool:
-        """No-op kept for ``tools/db_query.py`` only; always returns False.
-
-        It existed for Turso's expiring Hrana streams (removed in #617). A local
-        aiosqlite connection does not go stale. Delete this together with its
-        last caller (open PR #743 touches that file).
-        """
-        return False
-
     @property
     def db(self) -> aiosqlite.Connection:
         if self._db is None:

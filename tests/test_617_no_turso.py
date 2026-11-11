@@ -72,6 +72,15 @@ def test_turso_code_is_gone():
         assert "turso_url" not in text, path
 
 
+def test_no_reconnect_shim_or_query_db_fallback():
+    from oncofiles.database._base import DatabaseBase
+    from oncofiles.tools import db_query
+
+    assert not hasattr(DatabaseBase, "reconnect_if_stale")
+    assert not hasattr(db_query, "_shadow_with_ctes")
+    assert not hasattr(db_query, "ENFORCEMENT_FALLBACK")
+
+
 def test_database_takes_only_a_path():
     with pytest.raises(TypeError):
         Database(turso_url="libsql://example-db.invalid")  # type: ignore[call-arg]

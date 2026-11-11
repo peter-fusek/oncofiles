@@ -47,12 +47,10 @@ layer; the first is SQLite itself:
     the view only after it validates as a UUID; anything else creates no
     views, so patient-scoped reads fail closed.
 
-Driver note: production runs aiosqlite (stdlib ``sqlite3``) on a local file
-— ``server.py`` refuses to start with ``TURSO_DATABASE_URL`` (#617). The
-libsql driver behind the legacy Turso path has no ``set_authorizer``; on it
-query_db falls back to the AST check plus statement-scoped shadowing (the
-same per-patient filter as leading CTEs, because temp views on that shared
-connection would leak into concurrent app queries) and logs a warning.
+Driver note: the only driver is aiosqlite (stdlib ``sqlite3``) on a local
+file; the Turso/libsql path is gone and ``server.py`` refuses to start with
+any ``TURSO_*`` variable (#617). A connection that is not aiosqlite (so may
+lack ``set_authorizer``) is refused, never run with the AST check alone.
 """
 
 from __future__ import annotations
@@ -199,7 +197,6 @@ _UUID_RE = re.compile(
 _ALLOWED_ACTIONS_NO_CHECK = frozenset({sqlite3.SQLITE_SELECT, sqlite3.SQLITE_RECURSIVE})
 
 ENFORCEMENT_ENGINE = "engine"  # authorizer + temp views + AST check
-ENFORCEMENT_FALLBACK = "ast+shadow"  # driver without set_authorizer (libsql)
 
 
 def _validate_query(sql: str, caller_pid: str, *, is_admin: bool = False) -> str | None:
@@ -439,7 +436,6 @@ async def query_db(
 
     db = _get_db(ctx)
     try:
-        await db.reconnect_if_stale(timeout=5.0)
         result = await asyncio.wait_for(
             _execute_query(db, query, row_limit, caller_pid=caller_pid, is_admin=is_admin),
             # The engine path also interrupts itself at QUERY_TIMEOUT_S via a
@@ -767,27 +763,16 @@ def _is_memory_path(path: str) -> bool:
 
 
 def _enforcement_mode(db) -> str:
-    """Which enforcement a query on ``db`` gets: engine, or the libsql fallback."""
-    raw = db.db
-    if isinstance(raw, aiosqlite.Connection):
-        return ENFORCEMENT_ENGINE  # stdlib sqlite3 always has set_authorizer
-    return ENFORCEMENT_FALLBACK
+    """Engine enforcement needs aiosqlite's stdlib connection (``set_authorizer``).
 
-
-def _shadow_with_ctes(query: str, caller_pid: str | None) -> str:
-    """Fallback scoping for drivers without an authorizer: leading CTEs that
-    shadow every patient-scoped table with the caller's rows. The AST check
-    already rejected WITH and schema-qualified names, so the user query
-    cannot reach ``main.<table>`` around them."""
-    pid = _valid_pid(caller_pid)
-    if pid is None:
-        return query
-    bodies = {
-        t: _scope_body(t, pid, has_patient_id=t not in _PARENT_SCOPED)
-        for t in sorted(ALLOWED_TABLES_PATIENT_SCOPED)
-    }
-    ctes = ", ".join(f'"{t}" AS ({b[0]})' for t, b in bodies.items() if b is not None)
-    return f"WITH {ctes} SELECT * FROM ({query})"
+    Any other driver is refused (fail closed, #617/#738): there is no
+    AST-only fallback, because the AST check alone is not a security boundary.
+    """
+    if isinstance(db.db, aiosqlite.Connection):
+        return ENFORCEMENT_ENGINE
+    raise RuntimeError(
+        f"query_db needs the local aiosqlite connection, got {type(db.db).__name__} (#617)"
+    )
 
 
 async def _execute_query(
@@ -800,30 +785,18 @@ async def _execute_query(
 ) -> str:
     """Execute a read-only query under engine-level scoping and return JSON."""
     raw = db.db
-    if _enforcement_mode(db) == ENFORCEMENT_ENGINE:
-        if _is_memory_path(str(db.path)):
-            # Tests: one in-memory connection. Views, authorizer, query and
-            # cleanup run as ONE job on aiosqlite's worker thread, so no other
-            # coroutine's statement can interleave and see the temp views.
-            result = await raw._execute(
-                lambda: _run_engine_scoped(raw._conn, query, row_limit, caller_pid, is_admin)
-            )
-        else:
-            result = await asyncio.to_thread(
-                _run_on_readonly_file, str(db.path), query, row_limit, caller_pid, is_admin
-            )
-    else:
-        logger.warning(
-            "query_db: driver %s has no set_authorizer — AST check + CTE shadowing only (#738)",
-            type(raw).__name__,
+    _enforcement_mode(db)  # raises for anything but aiosqlite
+    if _is_memory_path(str(db.path)):
+        # Tests: one in-memory connection. Views, authorizer, query and
+        # cleanup run as ONE job on aiosqlite's worker thread, so no other
+        # coroutine's statement can interleave and see the temp views.
+        result = await raw._execute(
+            lambda: _run_engine_scoped(raw._conn, query, row_limit, caller_pid, is_admin)
         )
-        async with raw.execute(_shadow_with_ctes(query, caller_pid)) as cursor:
-            columns = [d[0] for d in cursor.description] if cursor.description else []
-            collector = _Collector(columns, row_limit)
-            while (row := await cursor.fetchone()) is not None:
-                if not collector.add(row):
-                    break
-            result = collector.result
+    else:
+        result = await asyncio.to_thread(
+            _run_on_readonly_file, str(db.path), query, row_limit, caller_pid, is_admin
+        )
 
     payload = {
         "columns": result.columns,

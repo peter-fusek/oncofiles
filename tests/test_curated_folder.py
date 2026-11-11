@@ -190,10 +190,9 @@ async def test_legacy_sync_skips_curated(fn):
     from oncofiles import sync as sync_mod
 
     db = MagicMock()
-    db.reconnect_if_stale = AsyncMock()
     result = await getattr(sync_mod, fn)(db, MagicMock(), _client(), "root1", patient_id="p1")
     assert result["skipped"] is True and result["curated"] is True
-    db.reconnect_if_stale.assert_not_called()
+    assert db.method_calls == []  # returned before touching the DB
 
 
 def test_ensure_folder_structure_creates_nothing_in_curated():
