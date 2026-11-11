@@ -1,4 +1,4 @@
--- Migration 083: LLM-first extraction of the non-lab kinds (#726 item 4, #711 phase 2b).
+-- Migration 086: LLM-first extraction of the non-lab kinds (#726 item 4, #711 phase 2b).
 -- Additive only: ADD COLUMN, one vocabulary row, one index, and the timeline
 -- view redefined. No rename, no patient data, nothing moved.
 --
@@ -11,7 +11,9 @@
 --   Existing encounter rows keep NULL there (they come from the indexer).
 -- * fact_codes LESION_SIZE (category imaging, canonical unit mm, cm converts).
 --   Its only alias is the code itself, so no printed lab label can match it.
--- * timeline_v keeps its 13 columns and rows for the existing kinds, appends
+-- * timeline_v is rebuilt on the migration 084 definition (treatment events
+--   keep deleted_at IS NULL) and keeps its 13 columns and rows for the
+--   existing kinds. It appends
 --   page_number, date_source, detail (lesion label, site, end date, reason)
 --   and extracted_by (LLM rows are labelled at read time), and unions the hard
 --   tables: conditions, treatment courses, cycles, medication events and
@@ -68,7 +70,7 @@ UNION ALL
 SELECT t.patient_id, t.event_date, 'treatment', t.title, NULL, NULL, NULL, NULL,
        t.source_document_id, 'treatment_event', t.id, NULL, NULL,
        NULL, NULL, NULL, NULL
-  FROM treatment_events t
+  FROM treatment_events t WHERE t.deleted_at IS NULL
 UNION ALL
 SELECT s.patient_id, s.effective_at, s.category, s.name_en,
        COALESCE(s.value_text, CAST(s.value_num AS TEXT)), s.unit, s.flag, s.verification,

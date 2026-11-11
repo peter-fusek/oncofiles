@@ -650,7 +650,7 @@ class HardFact(BaseModel):
     deleted_at: str | None = None
     deleted_by: str | None = None
     metadata_json: str | None = Field(
-        default=None, description="JSON: verifier reasons, printed forms, links (migration 083)"
+        default=None, description="JSON: verifier reasons, printed forms, links (migration 086)"
     )
 
 

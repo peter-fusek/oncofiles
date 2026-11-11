@@ -1,4 +1,4 @@
-"""Storage and reads for the LLM-extracted non-lab kinds (#726 item 4, migration 083).
+"""Storage and reads for the LLM-extracted non-lab kinds (#726 item 4, migration 086).
 
 The hard-fact tables of #725 are written through ``HardFactsMixin``; this mixin
 adds what those helpers do not cover:
