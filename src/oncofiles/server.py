@@ -7927,6 +7927,8 @@ def main() -> None:
         from starlette.middleware import Middleware
         from starlette.middleware.cors import CORSMiddleware
 
+        from oncofiles.ratelimit import RateLimitMiddleware
+
         mcp.run(
             transport=MCP_TRANSPORT,
             host=MCP_HOST,
@@ -7951,6 +7953,9 @@ def main() -> None:
                     allow_methods=["GET", "POST", "OPTIONS", "DELETE"],
                     allow_headers=["Authorization", "Content-Type", "mcp-protocol-version"],
                 ),
+                # #591: innermost, so CORS + security headers wrap its 429/413 and
+                # preflights never reach it. /health is exempt.
+                Middleware(RateLimitMiddleware),
             ],
             uvicorn_config={
                 "timeout_keep_alive": 120,
