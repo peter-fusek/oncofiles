@@ -1,6 +1,6 @@
 """Tests for the repair_broken_groups MCP tool.
 
-Rationale: existing production data (Erika/q1b) contains consolidation groups
+Rationale: existing production data (Jana/q1b) contains consolidation groups
 that pre-date the guardrails in `consolidate_documents` — AI grouped unrelated
 documents across institutions or across months. The repair tool is a one-shot
 cleanup that un-groups any group whose members now fail the same guardrails

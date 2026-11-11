@@ -194,7 +194,19 @@ def chat(
     except (KeyError, IndexError, ValueError, TypeError, AttributeError) as exc:
         raise LocalLLMError("local LLM returned an unexpected payload") from exc
     if info is not None:
+        # Diagnostics for the caller only (in memory, never logged or stored).
+        # LM Studio may leave ``content`` empty and put the text in
+        # ``reasoning_content`` (reasoning parser + structured output); only
+        # callers that opt in read it (#714 shadow extractor).
+        message = choice.get("message") or {}
+        reasoning = message.get("reasoning_content") or message.get("reasoning")
         info["finish_reason"] = choice.get("finish_reason")
+        info["raw_content"] = (
+            content
+            if isinstance(content, str)
+            else ("" if content is None else json.dumps(content))
+        )
+        info["reasoning_content"] = reasoning if isinstance(reasoning, str) else ""
     _log_usage(resp, choice, max_tokens, est, time.monotonic() - t0)
     if not (content or "").strip() and choice.get("finish_reason") == "length":
         # The whole budget went to reasoning (2026-11-07: 1199/1200 tokens).

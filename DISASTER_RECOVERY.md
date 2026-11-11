@@ -187,16 +187,9 @@ See oncofiles#425 for live issue tracking. Provisioning is via `scripts/provisio
 - [ ] GDPR Art. 17 individual-purge procedure tested
 - [ ] Annual DR drill calendar event
 
-## 11. Related plans — Oncoteam
+## 11. Related plans — Oncoteam (retired)
 
-Oncoteam runs in a separate Railway project with its own Turso DB and has independent state (research decisions, session notes, agent_state, clinical trial cache). Oncoteam must run its **own** parallel DR plan — this template is reusable 1:1, just with different names:
-
-- Bucket: `oncoteam-backups-eu`
-- KMS key: either same `oncofiles` key ring (shared) or separate `oncoteam` ring (stronger isolation — recommended)
-- Writer SA: `oncoteam-backup@…`
-- Same RTO/RPO targets, same lifecycle, same scenarios
-
-**Tracked for oncoteam agents in oncoteam#NEW** — includes the full action checklist so another agent can pick up the work without re-reading this entire doc.
+Oncoteam was retired in 2026-11 (#721). It no longer needs a DR plan of its own. The rows it wrote into Oncofiles (`agent_state`, `conversation_entries`, `research_entries`, `activity_log`) stay in the Oncofiles DB as a read-only archive and are covered by the Oncofiles backups above; a one-off export goes to the private archive (#721).
 
 ## 12. Changelog
 

@@ -17,8 +17,6 @@ Oncofiles is an [MCP server](https://modelcontextprotocol.io/) built for cancer 
 
 **Built from real need:** Created by a caregiver managing his wife's cancer treatment. Hundreds of documents, dozens of doctors, constantly changing lab results. Oncofiles organizes the chaos so you can focus on treatment, not on finding papers.
 
-**Sister project:** [Oncoteam](https://oncofiles.com/oncoteam) — an AI agent that analyzes your Oncofiles data: tracks lab trends, searches clinical trials, and prepares questions for your oncologist.
-
 **Your data, your control:** Everything stays in your Google Drive. No third-party data processing. Disconnect anytime — your files are always yours.
 
 ## Multi-Patient Support (v4.0+)
@@ -61,12 +59,12 @@ Oncofiles supports multiple patients on a single instance. Each patient gets:
                                     ┌─────────────┼─────────────┐
                                     │             │             │
                               ┌─────▼─────┐ ┌────▼────┐ ┌─────▼─────┐
-                              │  SQLite /  │ │ Google  │ │ Anthropic │
-                              │   Turso    │ │  Drive  │ │ Files API │
+                              │  SQLite    │ │ Google  │ │ Anthropic │
+                              │ (local)    │ │  Drive  │ │ Files API │
                               └───────────┘ └─────────┘ └───────────┘
 ```
 
-**Stack:** Python 3.12+ · FastMCP 3.1 · Pydantic · SQLite/libSQL · self-hosted Coolify
+**Stack:** Python 3.12+ · FastMCP 3.1 · Pydantic · SQLite (local file) · self-hosted Coolify
 
 ## Quick start
 
@@ -92,9 +90,7 @@ uv run ruff check
 # Required
 DATABASE_PATH=data/oncofiles.db
 
-# Optional — cloud database
-TURSO_DATABASE_URL=libsql://...
-TURSO_AUTH_TOKEN=...
+# There is no cloud database option: any TURSO_* variable stops startup (#617).
 
 # Optional — Google Drive sync
 GOOGLE_DRIVE_FOLDER_ID=...
@@ -134,7 +130,7 @@ Production runs on a self-hosted [Coolify](https://coolify.io) instance. There i
 
 1. Add the repo as an application in Coolify (build pack Railpack, start command `uv run oncofiles-mcp`, port `MCP_PORT`).
 2. Set environment variables as **runtime only** (never "Available at Buildtime"), see `.env.example`.
-3. Mount a persistent volume for the SQLite/libSQL file and point `DATABASE_PATH` (or `TURSO_DATABASE_URL=file:…`) at it.
+3. Mount a persistent volume for the SQLite file and point `DATABASE_PATH` at it.
 4. Health check: `GET /health` (liveness only, never touches the DB).
 
 CI (`.github/workflows/ci.yml`) runs lint and tests on every push and PR, and after a green push to `main` triggers a Coolify deploy over Tailscale (gated by the `DEPLOY_ENABLED` repo variable).
@@ -146,7 +142,7 @@ Live instance: [oncofiles.com](https://oncofiles.com)
 ```
 src/oncofiles/
 ├── server.py           # FastMCP server, auth, routes, scheduler
-├── database/           # Mixin-based DB layer (SQLite/Turso)
+├── database/           # Mixin-based DB layer (local SQLite, aiosqlite)
 ├── tools/              # 14 tool modules (76 tools)
 │   ├── documents.py    # CRUD, search, view, versioning
 │   ├── lab_trends.py   # Lab values, trends, safety checks
@@ -211,7 +207,7 @@ Architecture, development, operations — everything under one roof.
 
 **[Instarea](https://www.instarea.com)** — 18 years, 23 products shipped. From telecom analytics and enterprise clients (Callinspector) to mobile-first fintech (InventButton), big data exits (marketlocator → Deutsche Telekom), IoT platforms, and AI-first products (PulseShape, ReplicaCity, HomeGrif).
 
-Oncofiles and [Oncoteam](https://github.com/peter-fusek/oncoteam) are Instarea's latest — built with the same engineering discipline that delivered enterprise-grade products for banking, telecom, and data industries.
+Oncofiles is Instarea's latest — built with the same engineering discipline that delivered enterprise-grade products for banking, telecom, and data industries.
 
 10+ verified, synchronized team members available across front-end, back-end, integration, data science, UX/UI, marketing, and cloud ops.
 

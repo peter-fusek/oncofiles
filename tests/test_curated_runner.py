@@ -382,7 +382,7 @@ def test_sidecar_of_extensionless_source_is_not_a_candidate():
     assert [doc["source"] for doc in r.documents] == ["Notes"]
 
 
-# ── parity with the Cowork erika-daily-cleanup instructions ─────────
+# ── parity with the Cowork jana-daily-cleanup instructions ─────────
 
 
 def test_old_date_goes_to_review_when_age_rule_is_on():

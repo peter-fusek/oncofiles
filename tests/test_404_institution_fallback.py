@@ -40,7 +40,7 @@ def test_rename_returns_input_when_institution_unknown_no_override():
     """The infinite-loop fix. Input has ``Unknown`` in the institution slot;
     no override available; rename must return the input UNCHANGED so the
     next sweep doesn't re-write the same Unknown filename."""
-    src = "20230326_ErikaFusekova_Unknown_ChemoSheet_ErikaFusekovaUnkn.pdf"
+    src = "20270326_JanaTestova_Unknown_ChemoSheet_JanaTestovaUnkn.pdf"
     out = rename_to_standard(src, patient_id=ERIKA_UUID)
     assert out == src, (
         "rename_to_standard must return the input unchanged when institution "
@@ -51,7 +51,7 @@ def test_rename_returns_input_when_institution_unknown_no_override():
 def test_rename_writes_real_institution_when_override_provided():
     """Sanity: the loop-break only applies when there's NO override. With a
     real override the rename produces the standard-format filename."""
-    src = "20230326_ErikaFusekova_Unknown_ChemoSheet_ErikaFusekovaUnkn.pdf"
+    src = "20270326_JanaTestova_Unknown_ChemoSheet_JanaTestovaUnkn.pdf"
     out = rename_to_standard(src, patient_id=ERIKA_UUID, institution_override="NOU")
     assert out != src
     assert "_NOU_" in out
@@ -61,7 +61,7 @@ def test_rename_writes_real_institution_when_override_provided():
 def test_rename_returns_input_when_institution_field_already_filename_unknown():
     """Even if the parsed filename's institution is the literal 'Unknown'
     token, no override → unchanged. Belt-and-suspenders against the loop."""
-    src = "20240101_ErikaFusekova_Unknown_Labs_Description.pdf"
+    src = "20280101_JanaTestova_Unknown_Labs_Description.pdf"
     out = rename_to_standard(src, patient_id=ERIKA_UUID)
     assert out == src
 
@@ -139,11 +139,11 @@ def test_primary_clinic_allowlist_is_locked():
 async def test_backfill_uses_patient_context_for_chemo_sheet(db):
     """Chemo sheet with no providers → fills institution from patient_context."""
     patient_context._contexts[ERIKA_UUID] = {
-        "name": "Erika Fusekova",
+        "name": "Jana Testova",
         "primary_institution": "NOU",
     }
     try:
-        doc = make_doc(filename="20230326_chemo.pdf", institution=None)
+        doc = make_doc(filename="20270326_chemo.pdf", institution=None)
         doc.category = DocumentCategory.CHEMO_SHEET
         inserted = await db.insert_document(doc, patient_id=ERIKA_UUID)
         # Set structured_metadata with empty providers — the dropout case.
@@ -167,11 +167,11 @@ async def test_backfill_uses_patient_context_for_chemo_sheet(db):
 async def test_backfill_skips_fallback_for_labs_category(db):
     """Labs from external lab → MUST NOT be misattributed to primary clinic."""
     patient_context._contexts[ERIKA_UUID] = {
-        "name": "Erika Fusekova",
+        "name": "Jana Testova",
         "primary_institution": "NOU",
     }
     try:
-        doc = make_doc(filename="20230326_labs.pdf", institution=None)
+        doc = make_doc(filename="20270326_labs.pdf", institution=None)
         doc.category = DocumentCategory.LABS
         inserted = await db.insert_document(doc, patient_id=ERIKA_UUID)
         await db.update_structured_metadata(inserted.id, json.dumps({"providers": []}))
@@ -193,9 +193,9 @@ async def test_backfill_skips_fallback_for_labs_category(db):
 @pytest.mark.asyncio
 async def test_backfill_skips_fallback_when_no_primary_institution(db):
     """Patient with no primary_institution config → no fallback. Doc stays NULL."""
-    patient_context._contexts[ERIKA_UUID] = {"name": "Erika Fusekova"}
+    patient_context._contexts[ERIKA_UUID] = {"name": "Jana Testova"}
     try:
-        doc = make_doc(filename="20230326_chemo.pdf", institution=None)
+        doc = make_doc(filename="20270326_chemo.pdf", institution=None)
         doc.category = DocumentCategory.CHEMO_SHEET
         inserted = await db.insert_document(doc, patient_id=ERIKA_UUID)
         await db.update_structured_metadata(inserted.id, json.dumps({"providers": []}))
@@ -212,11 +212,11 @@ async def test_backfill_provider_path_still_takes_precedence(db):
     """When providers DO infer an institution, use that — not the fallback.
     The fallback is the safety net, not the override."""
     patient_context._contexts[ERIKA_UUID] = {
-        "name": "Erika Fusekova",
+        "name": "Jana Testova",
         "primary_institution": "OUSA",  # different from what providers infer
     }
     try:
-        doc = make_doc(filename="20230326_chemo.pdf", institution=None)
+        doc = make_doc(filename="20270326_chemo.pdf", institution=None)
         doc.category = DocumentCategory.CHEMO_SHEET
         inserted = await db.insert_document(doc, patient_id=ERIKA_UUID)
         # Providers list a NOU doctor — should resolve to NOU, NOT the

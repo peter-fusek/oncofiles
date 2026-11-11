@@ -36,7 +36,7 @@ class TestExtractStructuredMetadata:
                         "document_type": "lab_report",
                         "findings": ["Elevated WBC", "Low hemoglobin"],
                         "diagnoses": [{"name": "Anemia", "icd_code": "D64.9"}],
-                        "medications": ["FOLFOX", "[MEDICATION_REDACTED]"],
+                        "medications": ["FOLFOX", "DrugX"],
                         "dates_mentioned": ["2026-02-27"],
                         "providers": ["NOU Bratislava"],
                         "plain_summary": "Lab results show anemia. WBC elevated.",

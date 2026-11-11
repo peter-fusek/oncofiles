@@ -5,7 +5,9 @@ tesseract English-only, cloud vision) or that carry ``[?]`` markers are read
 again from the **source file**, on the **local** model only:
 
 * a PDF with a real text layer → that text, page by page (exact, no model);
-* otherwise two vision passes with high reasoning effort at two resolutions.
+* otherwise two vision passes with high reasoning effort at two resolutions
+  (default 150 / 220 dpi; REOCR_DPI / REOCR_SECOND_PASS_DPI for this rewrite
+  path, REREAD_DPI / REREAD_SECOND_PASS_DPI for the verify-only re-read).
   A line of the first pass whose numbers are not all found on the same page of
   the second pass is marked ``[?]``. Digits are accepted only where both
   passes agree; the parser keeps ``[?]`` lines unverified.
@@ -25,6 +27,7 @@ from __future__ import annotations
 import logging
 import re
 import time
+from collections.abc import Collection
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 
@@ -35,7 +38,6 @@ from oncofiles.curated import llm
 logger = logging.getLogger(__name__)
 
 LOCAL_ENGINE_KEYS = ("qwen", "local", "google-export", "utf-8", "pymupdf")
-SECOND_PASS_DPI = 220
 REOCR_BUDGET = 16_000
 _NUM = re.compile(r"\d+(?:[.,]\d+)?")
 _FRONT = re.compile(r"^---\n(.*?)\n---\n?", re.S)
@@ -66,14 +68,19 @@ def needs_reocr(meta: dict, pages: list[str]) -> list[str]:
     return reasons
 
 
-def reconcile(first: list[str], second: list[str]) -> tuple[list[str], int]:
+def reconcile(first: list[str], second: list[str | None]) -> tuple[list[str], int]:
     """Mark first-pass lines whose numbers the second pass does not confirm.
 
     Comparison is per page and by number tokens (order-independent), so a
-    re-wrapped line still matches; a digit read differently does not."""
+    re-wrapped line still matches; a digit read differently does not.
+    ``None`` for a page = its second pass was skipped on purpose (#593
+    adaptive); its lines are not compared and gain no marker."""
     out, flagged = [], 0
     for i, page in enumerate(first):
         other = second[i] if i < len(second) else ""
+        if other is None:
+            out.append("\n".join(page.splitlines()))
+            continue
         pool = _NUM.findall(other)
         lines = []
         for line in page.splitlines():
@@ -93,16 +100,54 @@ def _page_count(content: bytes, ext: str) -> int:
         return doc.page_count if ext == "pdf" else 1
 
 
+def born_digital(page, *, image_cover: float = 0.8) -> bool:
+    """Is this PDF page's text its own (born-digital), not OCR laid over a scan?
+    False when any text is invisible (render mode 3 or opacity 0, how OCR layers are added)
+    or a raster image covers most of the page."""
+    try:
+        if any(span.get("type") == 3 or span.get("opacity", 1) == 0
+               for span in page.get_texttrace()):  # fmt: skip
+            return False
+        area = abs(page.rect.width * page.rect.height) or 1.0
+        for info in page.get_image_info():
+            x0, y0, x1, y1 = info.get("bbox") or (0, 0, 0, 0)
+            if abs((x1 - x0) * (y1 - y0)) / area >= image_cover:
+                return False
+    except Exception:  # unreadable structure: do not trust the layer
+        return False
+    return True
+
+
 def _vision_passes(
-    content: bytes, ext: str, dpis: list[int], client, *, parallel: int = 1
-) -> list[list[str]]:
+    content: bytes, ext: str, dpis: list[int], client, *, parallel: int = 1,
+    second_pass_pages: Collection[int] | None = None, adaptive: bool = False,
+) -> list[list[str | None]]:  # fmt: skip
     """One answer list per DPI. Memory-bounded (#667): one page is rendered,
     sent and freed at a time. With ``parallel`` ≥ 2 (#593) the passes of that
     one page go to the local model concurrently, each as its own independent
     request (same prompt and settings, no shared state); at most one page's
     PNGs are alive at once. The caller caps ``parallel`` (REOCR_PARALLEL_PASSES
     and the number of running re-read jobs) so re-reads never hold more than
-    3 LM Studio slots together."""
+    3 LM Studio slots together.
+
+    Skipping the second pass (#593 adaptive; ``None`` in that page's slot of
+    every later pass) happens only where it provably cannot change a
+    confirmation (verification never loosens):
+
+    * ``adaptive`` and sequential (``parallel`` 1): a page whose first pass has
+      no digit at all. ``reconcile`` compares number tokens only, so a second
+      pass cannot mark any line of such a page: the output is the same text.
+      Not done in parallel mode, where pass 2 runs alongside pass 1 and
+      deciding first would serialise every page.
+    * pages outside ``second_pass_pages`` (1-based; ``None`` = every page):
+      the verify-only re-read passes the pages a confirmable value can be on
+      (``reread_verify.pages_with_candidates``); never a re-read whose text is
+      written back. Such a page's own lines confirm nothing, but the fact
+      parser couples pages (the inline parser drops a value already seen on
+      an earlier page), so its second pass is only *deferred*: when the page
+      shares any number with a page that was read twice, it gets its second
+      pass after all. See ``_shares_numbers``.
+    """
     from concurrent.futures import ThreadPoolExecutor
 
     import pymupdf
@@ -117,8 +162,15 @@ def _vision_passes(
             client=client,
         )
 
+    def render(page, dpi: int) -> dict:
+        png = extract_mod._pixmap_png(page, dpi)
+        part = llm.image_part(png)
+        del png
+        return part
+
     workers = max(1, min(int(parallel), len(dpis)))
-    passes: list[list[str]] = [[] for _ in dpis]
+    passes: list[list[str | None]] = [[] for _ in dpis]
+    deferred: list[int] = []
     with (
         pymupdf.open(stream=content, filetype=ext) as doc,
         ThreadPoolExecutor(max_workers=workers) as pool,
@@ -126,19 +178,58 @@ def _vision_passes(
         total = doc.page_count if ext == "pdf" else 1
         for i in range(total):
             page = doc[i]
-            parts = []
-            for dpi in dpis:
-                png = extract_mod._pixmap_png(page, dpi)
-                parts.append(llm.image_part(png))
-                del png
-            if workers > 1:
-                answers = list(pool.map(ask, parts, [i] * len(parts), [total] * len(parts)))
+            wanted = second_pass_pages is None or (i + 1) in second_pass_pages
+            if len(dpis) > 1 and not wanted:
+                answers = [ask(render(page, dpis[0]), i, total)]
+                deferred.append(i)
+            elif adaptive and workers == 1 and len(dpis) > 1:
+                answers = [ask(render(page, dpis[0]), i, total)]
+                if _NUM.search(answers[0]):  # digits: the second pass decides them
+                    answers += [ask(render(page, dpi), i, total) for dpi in dpis[1:]]
             else:
-                answers = [ask(part, i, total) for part in parts]
-            for out, answer in zip(passes, answers, strict=True):
-                out.append(answer)
-            del parts, page
+                parts = [render(page, dpi) for dpi in dpis]
+                if workers > 1:
+                    answers = list(pool.map(ask, parts, [i] * len(parts), [total] * len(parts)))
+                else:
+                    answers = [ask(part, i, total) for part in parts]
+                del parts
+            for k, out in enumerate(passes):
+                out.append(answers[k] if k < len(answers) else None)
+            del page
+        twice = [a for i, a in enumerate(passes[0]) if passes[-1][i] is not None]
+        for i in deferred:
+            if _shares_numbers(passes[0][i] or "", twice):
+                page = doc[i]
+                for k, dpi in enumerate(dpis[1:], start=1):
+                    passes[k][i] = ask(render(page, dpi), i, total)
+                del page
     return passes
+
+
+def _numbers(text: str) -> set[float]:
+    return {float(t.replace(",", ".")) for t in _NUM.findall(text)}
+
+
+def _shares_numbers(once: str, twice: list[str]) -> bool:
+    """Exactness guard of a deferred second pass (#593 adaptive).
+
+    A page read once differs from its 2-pass text only by ``[?]`` markers on
+    lines with digits, which a parser may read differently. Facts of another
+    page depend on it only through (a) the parser chosen for the document and
+    (b) the inline parser's "same value already seen" drop. (a) cannot
+    loosen: a table row's existence is the same with or without the marker
+    (Bory and OKB rows; ``test_markers_never_create_table_rows``) or only
+    shrinks with it (markdown rows), so a page read once can only push the
+    choice to a parser that yields nothing on the confirmable pages. (b)
+    needs the same value on both pages: a value is a number printed on its
+    page. So when this page shares no number with any page read twice, its
+    second pass cannot change what is confirmed; otherwise it is read twice."""
+    if not _NUM.search(once):
+        return False  # no digit: no marker and no value either way
+    seen: set[float] = set()
+    for text in twice:
+        seen |= _numbers(text or "")
+    return bool(_numbers(once) & seen)
 
 
 def _strip_handwritten(answers: list[str]) -> tuple[list[str], bool]:
@@ -154,21 +245,43 @@ def _strip_handwritten(answers: list[str]) -> tuple[list[str], bool]:
 @dataclass
 class Reread:
     pages: list[str]
-    method: str  # text_layer | vision2 | plain
+    method: str  # text_layer (born-digital only) | vision2 | plain
     engine: str
     handwritten: bool = False
     flagged_lines: int = 0
     error: str | None = None
     seconds: float = 0.0  # vision time, for #593 measurements
     parallel: int = 1
+    # #593 A/B: render dpi per pass, vision passes per page, pages read once
+    dpi: list[int] = field(default_factory=list)
+    passes_per_page: list[int] = field(default_factory=list)
+    skipped_second_pass_pages: list[int] = field(default_factory=list)
+
+
+def reocr_dpis(passes: int, purpose: str = "reocr") -> list[int]:
+    """Render dpi of each vision pass. ``purpose`` "reocr" (the rewrite path,
+    REOCR_DPI / REOCR_SECOND_PASS_DPI) or "reread" (verify-only, REREAD_DPI /
+    REREAD_SECOND_PASS_DPI); the two never affect each other."""
+    if purpose == "reread":
+        first, second = config.REREAD_DPI, config.REREAD_SECOND_PASS_DPI
+    elif purpose == "reocr":
+        first, second = config.REOCR_DPI, config.REOCR_SECOND_PASS_DPI
+    else:
+        raise ValueError(f"unknown re-read purpose {purpose!r}")
+    return [int(first)] + ([int(second)] if passes >= 2 else [])
 
 
 def reread(
     name: str, content: bytes, mime: str = "", *, passes: int = 2, doc_ref: object = None,
-    parallel: int = 1,
+    parallel: int = 1, second_pass_pages: Collection[int] | None = None,
+    purpose: str = "reocr",
 ) -> Reread:  # fmt: skip
     """Read a source again, locally. Never raises. ``doc_ref`` (a document id)
-    is what logs show: filenames can carry names or diagnoses."""
+    is what logs show: filenames can carry names or diagnoses.
+    ``second_pass_pages`` (1-based, ``None`` = all): see ``_vision_passes``;
+    only the verify-only re-read passes it, and only in adaptive mode.
+    ``purpose``: "reocr" (default, text written back) or "reread" (verify-only);
+    it picks the dpi settings (``reocr_dpis``)."""
     ext = extract_mod._ext(name)
     try:
         if ext in extract_mod.TEXT_EXTS:
@@ -178,7 +291,11 @@ def reread(
 
             with pymupdf.open(stream=content, filetype="pdf") as doc:
                 layer = [p.get_text() for p in doc]
-            if len("".join(layer).strip()) >= 100:
+                digital = all(born_digital(p) for p in doc)
+            # Only a born-digital text layer is the document's own text. An OCR'd
+            # layer (invisible text over a scan) is OCR of unknown quality, maybe
+            # the very text the old transcription copied: read the image instead.
+            if digital and len("".join(layer).strip()) >= 100:
                 return Reread([t.strip() for t in layer], "text_layer", "pymupdf")
         elif ext not in extract_mod.IMAGE_EXTS:
             return Reread([], "none", "-", error=f"unsupported file type .{ext}")
@@ -186,18 +303,26 @@ def reread(
             return Reread([], "none", "-", error="too many pages for vision")
         import httpx
 
-        dpis = [extract_mod.RENDER_DPI] + ([SECOND_PASS_DPI] if passes >= 2 else [])
+        dpis = reocr_dpis(passes, purpose)
+        adaptive = config.REOCR_PASSES_MODE == "adaptive"
         t0 = time.monotonic()
         with httpx.Client(timeout=config.LOCAL_LLM_TIMEOUT_S) as client:  # one per document
-            answers = _vision_passes(content, ext, dpis, client, parallel=parallel)
+            answers = _vision_passes(
+                content, ext, dpis, client, parallel=parallel, adaptive=adaptive,
+                second_pass_pages=second_pass_pages if adaptive else None,
+            )  # fmt: skip
         seconds = round(time.monotonic() - t0, 1)
         first, hand = _strip_handwritten(answers[0])
-        flagged = 0
+        flagged, per_page, skipped = 0, [1] * len(first), []
         if passes >= 2:
-            second, _ = _strip_handwritten(answers[1])
+            stripped, _ = _strip_handwritten([a or "" for a in answers[1]])
+            second = [None if a is None else s for a, s in zip(answers[1], stripped, strict=True)]
             first, flagged = reconcile(first, second)
+            per_page = [1 if s is None else 2 for s in second]
+            skipped = [i for i, s in enumerate(second, start=1) if s is None]
         return Reread(first, "vision2" if passes >= 2 else "vision", llm.model_id(), hand, flagged,
-                      seconds=seconds, parallel=parallel)  # fmt: skip
+                      seconds=seconds, parallel=parallel, dpi=dpis, passes_per_page=per_page,
+                      skipped_second_pass_pages=skipped)  # fmt: skip
     except llm.LocalLLMError as exc:
         return Reread([], "none", llm.model_id(), error=str(exc))
     except Exception as exc:  # corrupt file, codec, …
@@ -207,7 +332,8 @@ def reread(
 
 def reread_isolated(
     name: str, content: bytes, mime: str = "", *, passes: int = 2, doc_ref: object = None,
-    parallel: int = 1,
+    parallel: int = 1, second_pass_pages: Collection[int] | None = None,
+    purpose: str = "reocr",
 ) -> Reread:  # fmt: skip
     """``reread`` in a short-lived child process (#667).
 
@@ -230,6 +356,10 @@ def reread_isolated(
                 "passes": passes,
                 "doc_ref": doc_ref,
                 "parallel": parallel,
+                "purpose": purpose,
+                "second_pass_pages": (
+                    None if second_pass_pages is None else sorted(second_pass_pages)
+                ),
             },
             default=str,  # fmt: skip
         ).encode()
@@ -298,6 +428,9 @@ class DocResult:
     backup: str | None = None
     lost: list[str] = field(default_factory=list)  # "CODE value date" the old text had
     error: str | None = None
+    dpi: list[int] = field(default_factory=list)  # #593 A/B
+    passes_per_page: list[int] = field(default_factory=list)
+    skipped_second_pass_pages: list[int] = field(default_factory=list)
 
 
 @dataclass
@@ -415,6 +548,8 @@ def run_reocr(
                 res.result, res.error = "failed", rr.error or "no text"
                 continue
             res.method, res.engine, res.pages = rr.method, rr.engine, len(rr.pages)
+            res.dpi, res.passes_per_page = rr.dpi, rr.passes_per_page
+            res.skipped_second_pass_pages = rr.skipped_second_pass_pages
             new = rewrite_sidecar(old, rr, previous_engine=d.get("engine") or "", now=now)
             res.uncertain_after = new.count("[?]")
             res.lost = lost_values(old, new, vocab)

@@ -138,10 +138,9 @@ async def test_upload_document_unchanged_when_key_set(db: Database, with_key):
     before = await db.count_documents(patient_id=ERIKA_UUID)
 
     content = base64.b64encode(b"synthetic pdf bytes").decode()
-    with patch("oncofiles.webhook.notify_oncoteam"):
-        result = json.loads(
-            await upload_document(_ctx(db, files), content=content, filename="20270101_Synth.pdf")
-        )
+    result = json.loads(
+        await upload_document(_ctx(db, files), content=content, filename="20270101_Synth.pdf")
+    )
 
     assert "error" not in result
     files.upload.assert_called_once()
@@ -310,10 +309,9 @@ async def test_upload_document_works_when_flag_on(db: Database, flag_on_with_key
     before = await db.count_documents(patient_id=ERIKA_UUID)
 
     content = base64.b64encode(b"synthetic pdf bytes").decode()
-    with patch("oncofiles.webhook.notify_oncoteam"):
-        result = json.loads(
-            await upload_document(_ctx(db, files), content=content, filename="20270101_Synth.pdf")
-        )
+    result = json.loads(
+        await upload_document(_ctx(db, files), content=content, filename="20270101_Synth.pdf")
+    )
 
     assert "error" not in result
     files.upload.assert_called_once()
@@ -329,6 +327,8 @@ async def test_gmail_and_calendar_classifiers_skip_cloud_when_flag_off(flag_off_
             False,
             0.0,
         )
-        is_medical, _, _ = await _classify_event_medical("Synthetic event", "", "")
+        is_medical, _, _ = await _classify_event_medical(
+            "Synthetic event", "", "", patient_id=ERIKA_UUID
+        )
         assert is_medical is False
     get_client.assert_not_called()

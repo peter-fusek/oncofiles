@@ -9,8 +9,9 @@ that are structurally stable are parsed strictly:
 * birth dates on lines mentioning DOB / birth / narodenia (never a doc date)
 
 Everything in §3 (institutions, departments, doctors) is kept as raw text and
-handed to the classifier as context, plus a lenient token set used only to
-*flag* first-time values. Anything that fails to parse raises
+handed to the classifier as context, plus a lenient token set used to snap
+OCR typos and to spot new values (a new institution/doctor goes to review, a
+new department/subject is flagged — #754). Anything that fails to parse raises
 ``ContractError`` and the run aborts at preflight — a run that stops and
 explains itself is a successful run (README §1b, lesson 10).
 """

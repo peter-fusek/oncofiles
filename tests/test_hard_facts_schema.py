@@ -65,9 +65,9 @@ async def two_patients(db):
         (BOB_UUID, "bob-test", "Bob Test"),
     )
     await db.db.commit()
-    erika_doc = await db.insert_document(make_doc(file_id="hf_a"), patient_id=ERIKA_UUID)
+    jana_doc = await db.insert_document(make_doc(file_id="hf_a"), patient_id=ERIKA_UUID)
     bob_doc = await db.insert_document(make_doc(file_id="hf_b"), patient_id=BOB_UUID)
-    return db, erika_doc.id, bob_doc.id
+    return db, jana_doc.id, bob_doc.id
 
 
 async def _columns(db, table: str) -> set[str]:
@@ -431,10 +431,10 @@ async def test_cross_patient_references_rejected(two_patients):
                 patient_id=ERIKA_UUID,
             )
 
-    erika_cond = await db.insert_condition(Condition(printed_text="Own"), patient_id=ERIKA_UUID)
+    jana_cond = await db.insert_condition(Condition(printed_text="Own"), patient_id=ERIKA_UUID)
     with pytest.raises(ValueError, match="source_document_id"):
         await db.add_provenance(
-            ProvenanceRecord(target_type="condition", target_id=erika_cond.id,
+            ProvenanceRecord(target_type="condition", target_id=jana_cond.id,
                              activity="extract", agent_role="assembler", agent_user="t",
                              source_document_id=doc_b),
             patient_id=ERIKA_UUID,
@@ -450,8 +450,8 @@ async def test_cross_patient_references_rejected(two_patients):
             Coding(owner_type="condition", owner_id=str(bob_cond.id), system="urn:s", code="X"),
             patient_id=ERIKA_UUID,
         )
-    # nothing was written for Erika by the rejected calls
-    assert [c.id for c in await db.list_conditions(patient_id=ERIKA_UUID)] == [erika_cond.id]
+    # nothing was written for Jana by the rejected calls
+    assert [c.id for c in await db.list_conditions(patient_id=ERIKA_UUID)] == [jana_cond.id]
     assert await db.list_medication_events(patient_id=ERIKA_UUID) == []
 
 
@@ -533,7 +533,7 @@ CATALOG_OWNERS = {"organization", "department", "device", "fact_code"}
 
 
 async def _make_owner(db, owner_type: str, doc_id: int) -> str:
-    """Create one synthetic owner row of ``owner_type`` for Erika, return its id."""
+    """Create one synthetic owner row of ``owner_type`` for Jana, return its id."""
     pid = ERIKA_UUID
     if owner_type == "fact":
         cur = await db.db.execute(

@@ -69,6 +69,38 @@ def _usable(f: dict) -> bool:
     )
 
 
+def _candidates(old_facts: list[dict]) -> list[dict]:
+    return [
+        f
+        for f in old_facts
+        if CONFIRMABLE in ((f.get("meta") or {}).get("unverified_reasons") or [])
+        and f.get("value_canonical") is not None
+    ]
+
+
+def pages_with_candidates(old_facts: list[dict], *, old_page_count: int) -> set[int] | None:
+    """Re-read pages (1-based) whose text ``assess`` can use to confirm a fact;
+    ``None`` = every page (#593 adaptive passes).
+
+    Only a paged old sidecar (``old_page_count`` > 1) narrows it: ``assess``
+    then matches each candidate on its own page number only, and reads the
+    date from that same page, so the text of any other page cannot change
+    the result. An unpaged sidecar matches on any page, and a candidate
+    without a page number could sit anywhere: every page."""
+    if old_page_count <= 1:
+        return None
+    pages: set[int] = set()
+    for f in _candidates(old_facts):
+        try:
+            page = int(f.get("page_number") or 0)
+        except (TypeError, ValueError):
+            return None
+        if page < 1:
+            return None
+        pages.add(page)
+    return pages
+
+
 def assess(
     old_facts: list[dict], new_facts: list[dict], new_pages: list[str],
     *, old_page_count: int | None = None,
@@ -88,12 +120,7 @@ def assess(
     (never the report-date fallback), as a document-level multiset, and the
     old date must be printed on the page of the matching new fact (#678 v2).
     """
-    candidates = [
-        f
-        for f in old_facts
-        if CONFIRMABLE in ((f.get("meta") or {}).get("unverified_reasons") or [])
-        and f.get("value_canonical") is not None
-    ]
+    candidates = _candidates(old_facts)
     if old_page_count is None:  # callers without the sidecar: infer from the facts
         old_page_count = max([int(f.get("page_number") or 1) for f in old_facts] or [1])
     unpaged = len(new_pages) > 1 and old_page_count <= 1
@@ -173,7 +200,7 @@ def diagnostics(old_facts: list[dict], new_facts: list[dict], *, old_page_count:
     }
 
 
-def result_keys(assessment: dict, old_by_id: dict[int, dict]) -> dict:
+def result_keys(assessment: dict, old_by_id: dict[int, dict], *, method: str = "") -> dict:
     """The stored form: keys only, no ids (ids change on every re-extraction)."""
 
     def keys(ids):
@@ -183,7 +210,8 @@ def result_keys(assessment: dict, old_by_id: dict[int, dict]) -> dict:
             for i in ids
         )  # fmt: skip
 
-    return {"assess_version": ASSESS_VERSION, "confirmed": keys(assessment["confirmed"]),
+    return {"assess_version": ASSESS_VERSION, "method": method,
+            "confirmed": keys(assessment["confirmed"]),
             "date_unconfirmed": keys(assessment["date_unconfirmed"])}  # fmt: skip
 
 
@@ -232,6 +260,69 @@ def apply_plan(result: dict, facts: list[dict]) -> list[tuple[int, str, dict]]:
             meta.pop("unverified_reasons", None)
         plan.append((f["id"], "unverified" if rest else "machine", meta))
     return plan
+
+
+# Units printed on Slovak lab sheets, besides those of the fact codes (#712).
+_UNIT_WORDS = (
+    "mmol umol µmol μmol nmol pmol mol ukat µkat μkat nkat kat g mg ug µg μg ng pg "
+    "l dl ml ul µl μl fl mm cm s min h iu u ie mu miu kiu mosm kg mmhg arb ratio inr"
+)
+_WORD = re.compile(r"[^\W\d_]+")
+FINGERPRINT_MAX_LINES = 80
+FINGERPRINT_MAX_CHARS = 200
+
+
+def _fold(word: str) -> str:
+    import unicodedata
+
+    s = unicodedata.normalize("NFKD", word.lower())
+    return "".join(c for c in s if not unicodedata.combining(c)).replace("μ", "µ")
+
+
+def known_words(vocab) -> frozenset[str]:
+    """Words that may stay readable in a fingerprint: the words of every fact
+    code, alias and unit (lab vocabulary, never patient data)."""
+    words = {_fold(w) for w in _UNIT_WORDS.split()}
+    for row in vocab.by_code.values():
+        texts = [
+            row.get("code") or "",
+            *(row.get("aliases") or []),
+            row.get("unit_canonical") or "",
+        ]
+        texts += list((row.get("unit_conversions") or {}).keys())
+        for t in texts:
+            words.update(_fold(w) for w in _WORD.findall(str(t)))
+    return frozenset(words)
+
+
+def mask_line(line: str, known: frozenset[str]) -> str:
+    """Digits → 9; a word → a's of its length unless it is a known lab word."""
+    line = re.sub(r"\d", "9", line)
+    return _WORD.sub(lambda m: m.group(0) if _fold(m.group(0)) in known else "a" * len(m.group(0)),
+                     line)  # fmt: skip
+
+
+def fingerprint(pages: list[str], vocab) -> dict:
+    """The masked shape of a re-read's text (#712): enough to see why the
+    parser found nothing (separators, columns, glued prefixes), with no digit
+    and no word outside the lab vocabulary. Computed on demand, never stored."""
+    known = known_words(vocab)
+    lines = [ln for p in pages for ln in p.splitlines()]
+    text = "\n".join(pages)
+    masked = [mask_line(ln.rstrip(), known)[:FINGERPRINT_MAX_CHARS] for ln in lines]
+    return {
+        "lines": masked[:FINGERPRINT_MAX_LINES],
+        "line_count": len(lines),
+        "page_line_counts": [len(p.splitlines()) for p in pages],
+        "truncated": len(lines) > FINGERPRINT_MAX_LINES,
+        "separators": {
+            "pipes": text.count("|"),
+            "tabs": text.count("\t"),
+            "semicolons": text.count(";"),
+            "double_spaces": len(re.findall(r"\S {2,}\S", text)),
+            "ellipses": text.count("..."),
+        },
+    }
 
 
 def loads(text: str | None) -> dict:

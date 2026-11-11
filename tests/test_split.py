@@ -10,8 +10,8 @@ from oncofiles.models import Document
 
 def test_add_part_suffix_standard_format():
     """Adds Part suffix to standard filename."""
-    result = _add_part_suffix("20260115_ErikaFusekova_NOU_Labs_BloodResults.pdf", 1, 3)
-    assert result == "20260115_ErikaFusekova_NOU_Labs_BloodResults_Part1of3.pdf"
+    result = _add_part_suffix("20300115_JanaTestova_NOU_Labs_BloodResults.pdf", 1, 3)
+    assert result == "20300115_JanaTestova_NOU_Labs_BloodResults_Part1of3.pdf"
 
 
 def test_add_part_suffix_no_extension():
@@ -22,8 +22,9 @@ def test_add_part_suffix_no_extension():
 
 def test_add_part_suffix_removes_existing():
     """Removes existing PartNofM before adding new one."""
-    result = _add_part_suffix("20260115_ErikaFusekova_NOU_Labs_BloodResults_Part1of2.pdf", 2, 3)
-    assert result == "20260115_ErikaFusekova_NOU_Labs_BloodResults_Part2of3.pdf"
+    src = "20300115_JanaTestova_NOU_Labs_BloodResults_Part1of2.pdf"
+    result = _add_part_suffix(src, 2, 3)
+    assert result == "20300115_JanaTestova_NOU_Labs_BloodResults_Part2of3.pdf"
 
 
 def test_add_part_suffix_preserves_extension():
