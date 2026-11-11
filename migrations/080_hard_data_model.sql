@@ -16,6 +16,8 @@
 -- activity, agent_role, procedure kind, stage system) are validated in Python,
 -- because widening a CHECK later would need a table rebuild and Turso cannot
 -- rename tables.
+-- fact_codes.plausible_low / plausible_high (in unit_canonical, nullable, not
+-- seeded here) let the generic verifier (#714) read plausibility from data.
 -- No semicolons inside comments: the best-effort fallback splits on them.
 
 CREATE TABLE IF NOT EXISTS devices (
@@ -389,3 +391,6 @@ ALTER TABLE clinical_records ADD COLUMN last_updated TEXT;
 CREATE UNIQUE INDEX IF NOT EXISTS uq_cr_fhir_id ON clinical_records(fhir_id) WHERE fhir_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_cr_specimen ON clinical_records(specimen_id);
 CREATE INDEX IF NOT EXISTS idx_cr_report ON clinical_records(report_id);
+
+ALTER TABLE fact_codes ADD COLUMN plausible_low REAL;
+ALTER TABLE fact_codes ADD COLUMN plausible_high REAL;

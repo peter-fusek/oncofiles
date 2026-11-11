@@ -73,6 +73,15 @@ async def test_migration_creates_tables_and_columns(db):
     for table in FACT_TABLES:
         assert await _columns(db, table) >= COMMON_FACT_COLUMNS, table
     assert await _columns(db, "clinical_records") >= NEW_CR_COLUMNS
+    assert await _columns(db, "fact_codes") >= {"plausible_low", "plausible_high"}
+
+
+async def test_fact_code_plausibility_is_not_seeded(db):
+    async with db.db.execute(
+        "SELECT COUNT(*) FROM fact_codes "
+        "WHERE plausible_low IS NOT NULL OR plausible_high IS NOT NULL"
+    ) as cur:
+        assert (await cur.fetchone())[0] == 0
 
 
 async def test_migration_is_idempotent_with_runner(db):
@@ -82,6 +91,7 @@ async def test_migration_is_idempotent_with_runner(db):
     await db.db.execute("DELETE FROM schema_migrations WHERE version = '080_hard_data_model'")
     await db.db.commit()
     await db.migrate()
+    assert await _columns(db, "fact_codes") >= {"plausible_low", "plausible_high"}
     async with db.db.execute(
         "SELECT COUNT(*) FROM schema_migrations WHERE version = '080_hard_data_model'"
     ) as cur:
