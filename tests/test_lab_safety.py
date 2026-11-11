@@ -5,9 +5,20 @@ from __future__ import annotations
 import json
 from unittest.mock import MagicMock
 
+import pytest
+
+from oncofiles import patient_context
 from oncofiles.database import Database
 from oncofiles.tools.lab_trends import get_lab_safety_check, get_precycle_checklist
 from tests.helpers import ERIKA_UUID, make_doc, make_lab_value
+
+
+@pytest.fixture(autouse=True)
+def _on_mfolfox6():
+    """These tests cover the mFOLFOX6 rule set, which needs the regimen in the
+    patient's own context since #703 (tests/test_precycle_patient_context.py
+    covers patients without it)."""
+    patient_context._contexts[ERIKA_UUID]["treatment"] = {"regimen": "mFOLFOX6"}
 
 
 def _mock_ctx(db: Database) -> MagicMock:

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import re
+import unicodedata
 
 from fastmcp import Context
 
@@ -375,20 +377,127 @@ _GENERAL_HEALTH_THRESHOLDS = {
 }
 
 
-def _get_thresholds(patient_id: str) -> dict:
-    """Return the appropriate lab thresholds for a patient based on patient_type."""
-    from oncofiles.patient_context import get_context
+def _fold(text: str) -> str:
+    """Lowercase, strip diacritics and drop everything but letters and digits."""
+    decomposed = unicodedata.normalize("NFKD", text or "")
+    plain = "".join(c for c in decomposed if not unicodedata.combining(c))
+    return re.sub(r"[^a-z0-9]", "", plain.lower())
 
-    patient_type = get_context(patient_id).get("patient_type", "oncology")
-    if patient_type == "general":
-        return _GENERAL_HEALTH_THRESHOLDS
-    return _MFOLFOX6_THRESHOLDS
+
+def _as_str_list(value: object) -> list[str]:
+    """Accept a list of strings or a single string; ignore anything else."""
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, list):
+        return [v for v in value if isinstance(v, str)]
+    return []
+
+
+# Regimens with a pre-cycle rule set (#703). Keys are folded names
+# (see _fold); a patient's treatment.regimen matches when its folded form
+# contains the key, so "mFOLFOX6 + bevacizumab" still selects mFOLFOX6.
+# Plain "FOLFOX", CAPOX, FOLFIRI etc. are deliberately NOT mapped: which
+# regimens get which rules is a clinical decision for the maintainer.
+_REGIMEN_KEYS = {"mfolfox6": "mFOLFOX6"}
+
+# Low-molecular-weight heparins, as folded generic names (#703). Fondaparinux
+# is not an LMWH and is deliberately absent.
+_LMWH_TERMS = (
+    "lmwh",
+    "nizkomolekularnyheparin",
+    "enoxaparin",
+    "dalteparin",
+    "tinzaparin",
+    "nadroparin",
+    "bemiparin",
+    "certoparin",
+    "parnaparin",
+    "reviparin",
+)
+
+# Folded substrings that mark a liver site in patient_context["metastases"].
+_HEPATIC_TERMS = ("liver", "hepat", "pecen", "jater")
+
+
+def _patient_regimen(pctx: dict) -> tuple[str | None, str | None]:
+    """Return (raw regimen text, supported protocol name or None)."""
+    treatment = pctx.get("treatment")
+    raw = treatment.get("regimen") if isinstance(treatment, dict) else None
+    if not isinstance(raw, str) or not raw.strip():
+        return None, None
+    folded = _fold(raw)
+    for key, protocol in _REGIMEN_KEYS.items():
+        if key in folded:
+            return raw.strip(), protocol
+    return raw.strip(), None
+
+
+def _patient_medications(pctx: dict) -> list[str]:
+    """Medications recorded in the patient's context.
+
+    Read from ``treatment.medications`` and top-level ``medications``; both
+    accept a list of names or a single string.
+    """
+    treatment = pctx.get("treatment")
+    meds = _as_str_list(treatment.get("medications")) if isinstance(treatment, dict) else []
+    return meds + _as_str_list(pctx.get("medications"))
+
+
+def _patient_conditions(pctx: dict) -> dict[str, bool]:
+    """Conditions that switch pre-cycle rules on, read from the patient's context."""
+    meds = [_fold(m) for m in _patient_medications(pctx)]
+    mets = [_fold(m) for m in _as_str_list(pctx.get("metastases"))]
+    return {
+        "lmwh": any(term in m for m in meds for term in _LMWH_TERMS),
+        "hepatic_metastases": any(term in m for m in mets for term in _HEPATIC_TERMS),
+    }
+
+
+async def _load_patient_context(ctx: Context, pid: str) -> dict:
+    """The patient's own context, loaded from the DB on a cold cache (strict pid)."""
+    from oncofiles import patient_context
+
+    pctx = patient_context.get_context(pid)
+    if not pctx or not pctx.get("name"):
+        loaded = await patient_context.load_from_db(_get_db(ctx).db, patient_id=pid)
+        if loaded:
+            pctx = loaded
+    return pctx or {}
+
+
+def _no_regimen_result(pctx: dict, regimen: str | None) -> dict:
+    """Honest result when the patient has no regimen with a pre-cycle rule set."""
+    patient_type = pctx.get("patient_type", "oncology")
+    if patient_type != "oncology":
+        status = "not_applicable"
+        message = (
+            "Pre-cycle chemotherapy rules apply to oncology patients only "
+            f"(patient_type is '{patient_type}')."
+        )
+    elif regimen is None:
+        status = "no_regimen_configured"
+        message = (
+            "No chemotherapy regimen is set in this patient's context "
+            "(treatment.regimen), so no pre-cycle rules are applied. Set it with "
+            'update_patient_context(\'{"treatment": {"regimen": "..."}}\').'
+        )
+    else:
+        status = "regimen_not_supported"
+        message = (
+            f"No pre-cycle rule set exists for the regimen '{regimen}'. "
+            f"Supported: {', '.join(_REGIMEN_KEYS.values())}. Rules from another "
+            "regimen are not applied."
+        )
+    return {"protocol": None, "regimen": regimen, "status": status, "message": message}
 
 
 async def get_lab_safety_check(ctx: Context, patient_slug: str | None = None) -> str:
     """Lab safety check against thresholds appropriate for the patient type.
 
-    For oncology patients: mFOLFOX6 pre-cycle thresholds (NCCN + SmPC).
+    For oncology patients: the pre-cycle thresholds of the regimen set in the
+    patient's context (treatment.regimen); currently mFOLFOX6 (NCCN + SmPC).
+    With no supported regimen set, no thresholds are applied and the result
+    says so (status no_regimen_configured / regimen_not_supported).
     For general patients: standard health reference ranges (EU/WHO/ESC).
 
     For each safety parameter, returns:
@@ -398,10 +507,21 @@ async def get_lab_safety_check(ctx: Context, patient_slug: str | None = None) ->
     - Clickable gdrive_url to verify the source lab document
     """
     db = _get_db(ctx)
-    from oncofiles.tools._helpers import _resolve_patient_id
+    from oncofiles.tools._helpers import _resolve_patient_id, _with_clinical_disclaimer
 
     pid = await _resolve_patient_id(patient_slug, ctx)
-    thresholds = _get_thresholds(pid)
+    pctx = await _load_patient_context(ctx, pid)
+    if pctx.get("patient_type", "oncology") == "general":
+        regimen, protocol = None, "general_health"
+        thresholds = _GENERAL_HEALTH_THRESHOLDS
+    else:
+        regimen, protocol = _patient_regimen(pctx)
+        if protocol is None:
+            empty = {"green": 0, "yellow": 0, "red": 0, "missing": 0}
+            result = _no_regimen_result(pctx, regimen)
+            result.update({"cycle_safe": None, "summary": empty, "parameters": []})
+            return json.dumps(_with_clinical_disclaimer(result))
+        thresholds = _MFOLFOX6_THRESHOLDS
     results = []
 
     for param, threshold in thresholds.items():
@@ -467,12 +587,12 @@ async def get_lab_safety_check(ctx: Context, patient_slug: str | None = None) ->
     }
     safe = summary["red"] == 0 and summary["missing"] == 0
 
-    from oncofiles.tools._helpers import _with_clinical_disclaimer
-
     return json.dumps(
         _with_clinical_disclaimer(
             {
-                "protocol": "mFOLFOX6",
+                "protocol": protocol,
+                "regimen": regimen,
+                "status": "ok",
                 "cycle_safe": safe,
                 "summary": summary,
                 "parameters": results,
@@ -481,8 +601,14 @@ async def get_lab_safety_check(ctx: Context, patient_slug: str | None = None) ->
     )
 
 
-# Full pre-cycle checklist: labs + toxicity + VTE + general
-_PRECYCLE_CHECKLIST = {
+# mFOLFOX6 pre-cycle checklist: labs + toxicity + VTE + general.
+#
+# Item keys beyond id/text/parameter/source/source_url (#703):
+# - "requires": a patient condition (see _patient_conditions). The item is
+#   shown only when the patient's context records that condition.
+# - "variants": {condition: {field: value}}. When the condition holds, those
+#   fields replace the defaults (e.g. a different threshold text and source).
+_MFOLFOX6_PRECYCLE_CHECKLIST = {
     "lab_safety": {
         "title": "Laboratórna bezpečnosť",
         "items": [
@@ -496,11 +622,19 @@ _PRECYCLE_CHECKLIST = {
             },
             {
                 "id": "plt",
-                "text": "PLT >= 75,000/µL (tiež >= 50,000 pre plnú dávku [MEDICATION_REDACTED])",
+                "text": "PLT >= 75,000/µL",
                 "parameter": "PLT",
-                "source": "NCCN Colon Cancer v1.2025 + [MEDICATION_REDACTED] SmPC",
+                "source": "NCCN Colon Cancer v1.2025, DOS-A + oxaliplatin SmPC",
                 "source_url": "https://www.nccn.org/guidelines/guidelines-detail"
                 "?category=1&id=1428",
+                # On LMWH, the platelet floor for the full anticoagulant dose
+                # is added to the same item (#703).
+                "variants": {
+                    "lmwh": {
+                        "text": "PLT >= 75,000/µL (tiež >= 50,000 pre plnú dávku antikoagulancia)",
+                        "source": "NCCN Colon Cancer v1.2025 + anticoagulant SmPC",
+                    },
+                },
             },
             {
                 "id": "creatinine",
@@ -511,10 +645,19 @@ _PRECYCLE_CHECKLIST = {
             },
             {
                 "id": "alt_ast",
-                "text": "ALT/AST <= 5× HHN (prah pri pečeňových metastázach)",
+                # Default is the standard limit the lab safety check already
+                # uses (_MFOLFOX6_THRESHOLDS). The relaxed 5× limit applies only
+                # when the patient's context records hepatic metastases (#703).
+                "text": "ALT/AST <= 3× HHN",
                 "parameter": "ALT",
-                "source": "5-FU SmPC: ALT/AST ≤5× ULN if hepatic mets ([CODE_REDACTED])",
+                "source": "5-FU SmPC: ALT/AST ≤3× ULN",
                 "source_url": None,
+                "variants": {
+                    "hepatic_metastases": {
+                        "text": "ALT/AST <= 5× HHN (prah pri pečeňových metastázach)",
+                        "source": "5-FU SmPC: ALT/AST ≤5× ULN if hepatic mets",
+                    },
+                },
             },
             {
                 "id": "bilirubin",
@@ -582,11 +725,13 @@ _PRECYCLE_CHECKLIST = {
         "title": "Monitorovanie VTE (žilovej trombózy)",
         "items": [
             {
+                # id kept for output stability; the rule covers any LMWH.
                 "id": "plt_clexane",
-                "text": "PLT dostatočné pre pokračovanie [MEDICATION_REDACTED]",
+                "text": "PLT dostatočné pre pokračovanie antikoagulancia (LMWH)",
                 "parameter": "PLT",
-                "source": "[MEDICATION_REDACTED] SmPC: monitor PLT, risk of HIT",
+                "source": "LMWH SmPC: monitor PLT, risk of HIT",
                 "source_url": None,
+                "requires": "lmwh",
             },
             {
                 "id": "dvt_symptoms",
@@ -597,10 +742,11 @@ _PRECYCLE_CHECKLIST = {
             },
             {
                 "id": "clexane_adherence",
-                "text": "Potvrdená adherencia [MEDICATION_REDACTED]",
+                "text": "Potvrdená adherencia k antikoagulačnej liečbe (LMWH)",
                 "parameter": None,
                 "source": "ASCO VTE Prophylaxis Guideline 2023",
                 "source_url": "https://pubmed.ncbi.nlm.nih.gov/36652645/",
+                "requires": "lmwh",
             },
         ],
     },
@@ -637,30 +783,55 @@ _PRECYCLE_CHECKLIST = {
 async def get_precycle_checklist(
     ctx: Context, cycle_number: int = 3, patient_slug: str | None = None
 ) -> str:
-    """Get the full pre-cycle checklist for mFOLFOX6 with source references.
+    """Get the pre-cycle checklist for the patient's own regimen, with sources.
 
-    Returns all checklist sections (lab safety, toxicity, VTE, general)
+    The regimen comes from the patient's context (treatment.regimen); the
+    supported rule set is currently mFOLFOX6. Without a supported regimen
+    the result has no sections and a status of no_regimen_configured,
+    regimen_not_supported or not_applicable (general patients) — rules from
+    another patient's regimen are never applied.
+
+    Rules tied to a condition appear only when the patient's context records
+    it: LMWH items need an LMWH in treatment.medications (or medications);
+    the relaxed ALT/AST limit needs a liver site in metastases.
+
+    Returns the checklist sections (lab safety, toxicity, VTE, general)
     with guideline source URLs for each item. Lab items include the
-    patient's latest value and safety status.
+    patient's latest value.
 
     Args:
         cycle_number: Current cycle number (for display context).
         patient_slug: Optional — explicit patient slug (#429).
     """
     db = _get_db(ctx)
-    from oncofiles.tools._helpers import _resolve_patient_id
+    from oncofiles.tools._helpers import _resolve_patient_id, _with_clinical_disclaimer
 
     pid = await _resolve_patient_id(patient_slug, ctx)
+    pctx = await _load_patient_context(ctx, pid)
+    regimen, protocol = _patient_regimen(pctx)
+    if protocol is None or pctx.get("patient_type", "oncology") != "oncology":
+        result = _no_regimen_result(pctx, regimen)
+        result.update({"cycle": cycle_number, "sections": []})
+        return json.dumps(_with_clinical_disclaimer(result))
+
+    conditions = _patient_conditions(pctx)
     sections = []
 
-    for section_key, section in _PRECYCLE_CHECKLIST.items():
+    for section_key, section in _MFOLFOX6_PRECYCLE_CHECKLIST.items():
         items = []
         for item in section["items"]:
+            required = item.get("requires")
+            if required and not conditions.get(required):
+                continue
+            chosen = dict(item)
+            for condition, overrides in item.get("variants", {}).items():
+                if conditions.get(condition):
+                    chosen.update(overrides)
             entry = {
-                "id": item["id"],
-                "text": item["text"],
-                "source": item["source"],
-                "source_url": item["source_url"],
+                "id": chosen["id"],
+                "text": chosen["text"],
+                "source": chosen["source"],
+                "source_url": chosen["source_url"],
             }
 
             # For items linked to a lab parameter, fetch latest value
@@ -676,20 +847,22 @@ async def get_precycle_checklist(
 
             items.append(entry)
 
-        sections.append(
-            {
-                "section": section_key,
-                "title": section["title"],
-                "items": items,
-            }
-        )
-
-    from oncofiles.tools._helpers import _with_clinical_disclaimer
+        if items:
+            sections.append(
+                {
+                    "section": section_key,
+                    "title": section["title"],
+                    "items": items,
+                }
+            )
 
     return json.dumps(
         _with_clinical_disclaimer(
             {
-                "protocol": "mFOLFOX6",
+                "protocol": protocol,
+                "regimen": regimen,
+                "status": "ok",
+                "conditions": conditions,
                 "cycle": cycle_number,
                 "sections": sections,
             }
