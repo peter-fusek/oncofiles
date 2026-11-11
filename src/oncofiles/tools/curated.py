@@ -1542,18 +1542,29 @@ def _reread_one(drive, d: dict, old: list[dict], vocab) -> dict:
         return {**res, "result": "skipped", "error": "sidecar changed since the index; index first"}
     if cur.get("source_md5") and md5 != cur.get("source_md5"):
         return {**res, "result": "skipped", "error": "source changed since the index"}
+    from oncofiles import config
+    from oncofiles.curated.indexer import parse_sidecar
+
+    _, old_pages = parse_sidecar(raw_side.decode("utf-8", errors="replace"))
+    # #593 adaptive: a second pass only on pages a confirmable value can be on
+    # (the same page rule ``assess`` applies below); never narrower
+    wanted = (
+        rv.pages_with_candidates(old, old_page_count=len(old_pages))
+        if config.REOCR_PASSES_MODE == "adaptive"
+        else None
+    )
     rr = reread_isolated(d["filename"], source, d.get("mime_type") or "", passes=2,
-                         doc_ref=d["id"], parallel=_reread_parallel())  # fmt: skip
+                         doc_ref=d["id"], parallel=_reread_parallel(),
+                         second_pass_pages=wanted, purpose="reread")  # fmt: skip
     if rr.error or not any(p.strip() for p in rr.pages):
         return {**res, "result": "failed", "error": rr.error or "no text"}
     new, _ = extract_lab_facts(rr.pages, vocab, report_date=str(d.get("document_date") or "")[:10]
                                or None, inline=d.get("category") in _REPORT_LIKE)  # fmt: skip
-    from oncofiles.curated.indexer import parse_sidecar
-
-    _, old_pages = parse_sidecar(raw_side.decode("utf-8", errors="replace"))
     assessment = rv.assess(old, new, rr.pages, old_page_count=len(old_pages))
     res.update({k: len(v) for k, v in assessment.items()}, seconds=rr.seconds,
                parallel=rr.parallel, pages=len(rr.pages), method=rr.method,
+               dpi=rr.dpi, passes_per_page=rr.passes_per_page,
+               skipped_second_pass_pages=rr.skipped_second_pass_pages,
                diagnostics=rv.diagnostics(old, new, old_page_count=len(old_pages)),
                candidates=sum(len(v) for v in assessment.values()),
                engine=rr.engine, sidecar_sha=sha, source_md5=cur.get("source_md5") or md5,

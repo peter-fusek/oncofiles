@@ -69,6 +69,38 @@ def _usable(f: dict) -> bool:
     )
 
 
+def _candidates(old_facts: list[dict]) -> list[dict]:
+    return [
+        f
+        for f in old_facts
+        if CONFIRMABLE in ((f.get("meta") or {}).get("unverified_reasons") or [])
+        and f.get("value_canonical") is not None
+    ]
+
+
+def pages_with_candidates(old_facts: list[dict], *, old_page_count: int) -> set[int] | None:
+    """Re-read pages (1-based) whose text ``assess`` can use to confirm a fact;
+    ``None`` = every page (#593 adaptive passes).
+
+    Only a paged old sidecar (``old_page_count`` > 1) narrows it: ``assess``
+    then matches each candidate on its own page number only, and reads the
+    date from that same page, so the text of any other page cannot change
+    the result. An unpaged sidecar matches on any page, and a candidate
+    without a page number could sit anywhere: every page."""
+    if old_page_count <= 1:
+        return None
+    pages: set[int] = set()
+    for f in _candidates(old_facts):
+        try:
+            page = int(f.get("page_number") or 0)
+        except (TypeError, ValueError):
+            return None
+        if page < 1:
+            return None
+        pages.add(page)
+    return pages
+
+
 def assess(
     old_facts: list[dict], new_facts: list[dict], new_pages: list[str],
     *, old_page_count: int | None = None,
@@ -88,12 +120,7 @@ def assess(
     (never the report-date fallback), as a document-level multiset, and the
     old date must be printed on the page of the matching new fact (#678 v2).
     """
-    candidates = [
-        f
-        for f in old_facts
-        if CONFIRMABLE in ((f.get("meta") or {}).get("unverified_reasons") or [])
-        and f.get("value_canonical") is not None
-    ]
+    candidates = _candidates(old_facts)
     if old_page_count is None:  # callers without the sidecar: infer from the facts
         old_page_count = max([int(f.get("page_number") or 1) for f in old_facts] or [1])
     unpaged = len(new_pages) > 1 and old_page_count <= 1
