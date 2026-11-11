@@ -84,6 +84,14 @@ def _row_to_agent_state(row: Any) -> AgentState:
     )
 
 
+def _soft_delete_col(row: Any, key: str) -> str | None:
+    """Read an optional soft-delete column (#723), absent from narrow SELECTs."""
+    try:
+        return row[key]
+    except (KeyError, IndexError):
+        return None
+
+
 def _row_to_treatment_event(row: Any) -> TreatmentEvent:
     """Convert a database row to a TreatmentEvent model."""
     return TreatmentEvent(
@@ -95,6 +103,8 @@ def _row_to_treatment_event(row: Any) -> TreatmentEvent:
         metadata=row["metadata"],
         created_at=datetime.fromisoformat(row["created_at"]) if row["created_at"] else None,
         updated_at=datetime.fromisoformat(row["updated_at"]) if row["updated_at"] else None,
+        deleted_at=_soft_delete_col(row, "deleted_at"),
+        deleted_by=_soft_delete_col(row, "deleted_by"),
     )
 
 
@@ -153,6 +163,8 @@ def _row_to_conversation_entry(row: Any) -> ConversationEntry:
         source_ref=row["source_ref"],
         created_at=datetime.fromisoformat(row["created_at"]) if row["created_at"] else None,
         updated_at=datetime.fromisoformat(row["updated_at"]) if row["updated_at"] else None,
+        deleted_at=_soft_delete_col(row, "deleted_at"),
+        deleted_by=_soft_delete_col(row, "deleted_by"),
     )
 
 
