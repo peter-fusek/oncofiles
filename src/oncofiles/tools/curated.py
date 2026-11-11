@@ -102,9 +102,11 @@ def request_stop() -> None:
 
 
 def run_active() -> bool:
-    """True while any curated run or re-OCR executes (on /health, CI deploys wait)."""
+    """True while any curated run or re-OCR executes (on /health, CI deploys wait).
+
+    An LLM-extract shadow job (#714) writes nothing, so a deploy may cut it."""
     return any(r.get("state") == "running" for r in _runs.values()) or any(
-        j.get("state") == "running" for j in _reocr_jobs.values()
+        j.get("state") == "running" and j.get("kind") != "llm_shadow" for j in _reocr_jobs.values()
     )
 
 
@@ -1386,6 +1388,153 @@ async def curated_reread_verify(
     )
 
 
+def _birth_dates(pid: str) -> set[str]:
+    """The patient's birth date (patient context), never a fact date (#714)."""
+    try:
+        from oncofiles.patient_context import get_context
+
+        dob = str((get_context(pid) or {}).get("date_of_birth") or "")[:10]
+    except Exception:
+        return set()
+    return {dob} if re.fullmatch(r"\d{4}-\d{2}-\d{2}", dob) else set()
+
+
+def _source_reason(meta: dict) -> str | None:
+    """Same source rule as ``_extract_facts``: a handwritten page or a
+    non-local (Cowork-era) transcription is never trusted as machine."""
+    engine = str(meta.get("ocr_engine") or "")
+    if meta.get("handwritten") is True:
+        return "handwritten"
+    if not any(k in engine.lower() for k in _LOCAL_ENGINES):
+        return "cowork_ocr"
+    return None
+
+
+async def _llm_shadow_job(db, pid: str, docs: list[dict]) -> None:
+    """LLM extractor + generic verifier on stored page text, compared with the
+    stored rule facts (#714 phase 2a). Writes NOTHING: no facts, no Drive, no
+    run row. One model call at a time (one LM Studio slot); local only."""
+    from oncofiles.cloud_guard import local_only
+    from oncofiles.curated import llm_extract, verifier
+    from oncofiles.curated.facts_rules import Vocabulary
+
+    job = _reocr_jobs[pid]
+    report: list[dict] = []
+    try:
+        try:
+            from oncofiles import patient_context
+
+            await patient_context.load_from_db(db.db, pid)
+        except Exception:
+            logger.warning("llm shadow: patient context not loaded for %s", pid)
+        vocab = Vocabulary.from_rows(await db.fact_code_vocabulary())
+        births = _birth_dates(pid)
+        stored = await db.fact_verification_rows(patient_id=pid)
+        for d in docs:
+            entry = {"document_id": d["id"], "category": d.get("category")}
+            if _stopping.is_set():
+                report.append({**entry, "result": "skipped", "error": "stopping"})
+                continue
+            pages = [(int(p["page_number"]), p.get("extracted_text") or "")
+                     for p in await db.get_ocr_pages(d["id"], patient_id=pid)]  # fmt: skip
+            if not any(t.strip() for _, t in pages):
+                report.append({**entry, "result": "skipped", "error": "no page text"})
+                continue
+            meta = d.get("structured_metadata") or {}
+            day = str(d.get("document_date") or "")[:10] or None
+
+            def _blocking(pages=pages, meta=meta, day=day):
+                with local_only("curated LLM extract shadow"):
+                    return llm_extract.extract_document(
+                        pages, vocab=vocab, report_date=day, birth_dates=births,
+                        source_reason=_source_reason(meta), stop=_stopping.is_set,
+                    )  # fmt: skip
+
+            try:
+                out = await asyncio.to_thread(_blocking)
+            except Exception as exc:
+                logger.exception("llm shadow extraction of doc %s failed", d["id"])
+                report.append({**entry, "result": "failed", "error": type(exc).__name__})
+                continue
+            rows = [r for r in stored if r["source_document_id"] == d["id"]]
+            meta_keys = ("method", "pages", "pages_used", "pages_not_assessed", "pages_truncated",
+                         "page_errors", "finish_reasons", "dob_known", "birth_date_guard",
+                         "dates_unchecked_no_dob", "dropped", "seconds")  # fmt: skip
+            report.append({
+                **entry, "result": "compared", **{k: out[k] for k in meta_keys},
+                **llm_extract.shadow_compare(
+                    rows, out["facts"], not_assessed_pages=out["pages_not_assessed"]
+                ),
+            })  # fmt: skip
+        done = [r for r in report if r.get("result") == "compared"]
+        totals = {k: sum(r[k] for r in done) for k in
+                  ("rule_facts", "llm_facts", "llm_machine", "agree", "agree_machine",
+                   "rule_only", "llm_only", "value_mismatch", "pages_used", "pages_truncated",
+                   "dates_unchecked_no_dob")}  # fmt: skip
+        totals["pages_not_assessed"] = sum(len(r["pages_not_assessed"]) for r in done)
+        job.update(state="done", report={
+            "dry_run": True, "extractor": llm_extract.EXTRACTOR_VERSION,
+            "verifier": verifier.VERIFIER_VERSION, "totals": totals, "documents": report,
+        })  # fmt: skip
+    except Exception as exc:
+        logger.exception("llm shadow job failed for %s", pid)
+        job.update(state="failed", error=type(exc).__name__, report={"documents": report})
+    finally:
+        job["finished_at"] = datetime.now(UTC).isoformat()
+
+
+async def curated_llm_extract_preview(
+    ctx: Context,
+    document_ids: list[int],
+    patient_slug: str | None = None,
+    dry_run: bool = True,
+) -> str:
+    """SHADOW mode of LLM-first fact extraction (#714): compare, never store.
+
+    For each listed curated document, the LOCAL model reads the stored page
+    text and lists the printed results; a generic verifier (no layout rules)
+    accepts each as machine or unverified with reason codes. The result is
+    compared with the facts currently stored for that document and reported
+    as keys and counts only (agreement on code + date + value hash, codes
+    found by only one side, unverified reasons, seconds) — never values.
+    Writes nothing: no facts, no Drive. Off-switch: LLM_EXTRACT_SHADOW_DISABLED=true.
+    Explicit ``document_ids`` only (max 10). Runs in the background; poll
+    curated_reocr_status. Slow: about a minute per page.
+    """
+    from oncofiles import config
+    from oncofiles.curated import llm
+
+    if config.LLM_EXTRACT_SHADOW_DISABLED:
+        return json.dumps({"error": "disabled by LLM_EXTRACT_SHADOW_DISABLED=true"})
+    if not dry_run:
+        return json.dumps({"error": "shadow mode only: this tool never writes facts"})
+    if not llm.configured():
+        return json.dumps({"error": "local model not configured (LOCAL_LLM_BASE_URL/MODEL)"})
+    pid = await _resolve_patient_id(patient_slug, ctx)
+    db = _get_db(ctx)
+    ids = list(dict.fromkeys(int(i) for i in (document_ids or [])))[:10]
+    if not ids:
+        return json.dumps({"error": "document_ids is required"})
+    if _reocr_jobs.get(pid, {}).get("state") == "running" or (
+        pid in _runs and _runs[pid].get("state") == "running"
+    ):
+        return json.dumps({"error": "busy: a run, re-OCR, re-read or shadow job is in progress"})
+    docs = [r for r in await db.curated_reocr_candidates(patient_id=pid) if r["id"] in ids]
+    if not docs:
+        return json.dumps({"status": "nothing to do"})
+    from oncofiles.curated.llm_extract import EXTRACTOR_VERSION
+
+    _reocr_jobs[pid] = {
+        "state": "running", "kind": "llm_shadow", "dry_run": True,
+        "extractor": EXTRACTOR_VERSION, "started_at": datetime.now(UTC).isoformat(),
+        "documents": [{"document_id": d["id"], "category": d.get("category")} for d in docs],
+    }  # fmt: skip
+    _reocr_jobs[pid]["task"] = asyncio.create_task(_llm_shadow_job(db, pid, docs))
+    return json.dumps(
+        {k: v for k, v in _reocr_jobs[pid].items() if k != "task"}, ensure_ascii=False
+    )
+
+
 async def curated_reocr_status(ctx: Context, patient_slug: str | None = None) -> str:
     """State and report of the last re-OCR job for this patient (#660). Read-only."""
     pid = await _resolve_patient_id(patient_slug, ctx)
@@ -1437,3 +1586,4 @@ def register(mcp):
     mcp.tool()(curated_reocr)
     mcp.tool()(curated_reocr_status)
     mcp.tool()(curated_reread_verify)
+    mcp.tool()(curated_llm_extract_preview)

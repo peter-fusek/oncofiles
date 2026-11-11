@@ -92,6 +92,8 @@ def chat(
     timeout: float | None = None,
     reasoning_effort: str = "low",
     thinking: bool | None = None,
+    response_format: dict | None = None,
+    info: dict | None = None,
 ) -> str:
     """One blocking chat completion; returns the answer text.
 
@@ -99,7 +101,10 @@ def chat(
     Qwen3.8 MLX model (it logs "cannot be converted to any custom KVs"), so
     the model always thinks. ``thinking=False`` asks the chat template to skip
     the reasoning (``chat_template_kwargs.enable_thinking=false``); ``None``
-    leaves the model's default. Pass a matching ``max_tokens`` budget."""
+    leaves the model's default. Pass a matching ``max_tokens`` budget.
+    ``response_format`` (OpenAI shape, e.g. ``{"type": "json_schema", ...}``)
+    asks LM Studio for structured output; callers still parse defensively.
+    ``info`` (optional dict) receives ``finish_reason`` of the completion."""
     if not configured():
         raise LocalLLMError("LOCAL_LLM_BASE_URL / LOCAL_LLM_MODEL not set")
     est = estimate_prompt_tokens(system, user_content)
@@ -123,6 +128,8 @@ def chat(
             {"role": "user", "content": user_content},
         ],
     }
+    if response_format is not None:
+        payload["response_format"] = response_format
     if thinking is not None:
         payload["chat_template_kwargs"] = {"enable_thinking": bool(thinking)}
     headers = {"Content-Type": "application/json"}
@@ -151,6 +158,8 @@ def chat(
         content = choice["message"].get("content")
     except (KeyError, IndexError, ValueError, TypeError, AttributeError) as exc:
         raise LocalLLMError("local LLM returned an unexpected payload") from exc
+    if info is not None:
+        info["finish_reason"] = choice.get("finish_reason")
     _log_usage(resp, choice, max_tokens, est, time.monotonic() - t0)
     if not (content or "").strip() and choice.get("finish_reason") == "length":
         # The whole budget went to reasoning (2026-11-07: 1199/1200 tokens).
