@@ -342,3 +342,26 @@ async def test_rebuilt_view_returns_the_same_rows_for_pre_existing_kinds(seeded)
     ]  # fmt: skip
     assert await _rows_of(db, "timeline_v", f"NOT ({new_only})") == old_after
     assert set(old) <= set(old_after)
+
+
+# ── pre-store retention: KEEP copies in TOTAL across job kinds ──────────
+
+
+def test_pre_store_keeps_five_copies_in_total_across_job_kinds(file_db):
+    from datetime import datetime, timedelta
+
+    start = datetime.fromisoformat("2027-03-01T00:00:00+00:00")
+    kinds = ["reread", "clinical", "reocr", "clinical", "reread", "clinical", "reread"]
+    names = [
+        pre_store.make_copy(file_db, kind, now=start + timedelta(minutes=n))
+        for n, kind in enumerate(kinds)
+    ]
+    directory = pre_store.pre_store_dir()
+    (directory / "notes.txt").write_text("not a copy")  # never touched by the cleanup
+    names.append(pre_store.make_copy(file_db, "clinical", now=start + timedelta(hours=1)))
+    left = sorted(n for n in os.listdir(directory) if n.endswith(".db"))
+    assert pre_store.KEEP == 5 and len(left) == pre_store.KEEP  # in total, not per kind
+    assert left == sorted(names)[-pre_store.KEEP :]  # the oldest go first, whatever the kind
+    assert {n.rsplit("-", 1)[1] for n in left} == {"reread.db", "clinical.db"}
+    assert (directory / "notes.txt").exists()
+    assert all(pre_store.NAME_RE.fullmatch(n) for n in names)  # both kinds match the cleanup
