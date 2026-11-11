@@ -14,6 +14,90 @@ from oncofiles.tools._helpers import (
     _parse_date,
 )
 
+# ── facts model read path (#726) ──
+# The lab readers below were written for the legacy ``lab_values`` table, which
+# curated patients never fill: their values live in the clinical facts model
+# (``clinical_records``, #603). A patient with coded lab facts is read from the
+# facts model (deduplicated like fact_series, unverified values excluded unless
+# asked); a patient without any keeps the legacy table, so nothing that still
+# writes ``lab_values`` loses its reads. These tools are deprecated (#711 §4.4).
+DEPRECATED = "[DEPRECATED — use fact_series / dashboard_feed; removed after 2027-01-10]"
+LAB_FACT_CATEGORIES = ["lab", "tumor_marker", "vital"]
+# legacy lab_values parameter names (the enhance.py prompt) → fact codes
+LEGACY_PARAMETER_CODES = {
+    "ABS_NEUT": "NEUT", "ANC": "NEUT", "ABS_LYMPH": "LYMPH", "ABS_MONO": "MONO",
+    "ABS_EOS": "EOS", "ABS_BASO": "BASO", "GMT": "GGT", "BILIRUBIN": "BILI",
+    "CREATININE": "CREA", "GLUCOSE": "GLU", "ALBUMIN": "ALB", "TOTAL_PROTEIN": "TP",
+    "FIBRINOGEN": "FIB", "FERRITIN": "FERR", "IRON": "FE", "VITAMIN_D": "VITD",
+}  # fmt: skip
+
+
+class _FactLabs:
+    """Fact-model lab rows for one patient, in the legacy tools' terms."""
+
+    def __init__(self, db, pid: str, vocab: list[dict]):
+        from oncofiles.tools.clinical_facts import _conversions
+
+        self.db, self.pid = db, pid
+        self.codes = {r["code"] for r in vocab}
+        self.alias = {}
+        for r in vocab:
+            for a in r["aliases"]:
+                self.alias.setdefault(str(a).strip().upper(), r["code"])
+        self.conversions = _conversions(vocab)
+
+    @classmethod
+    async def for_patient(cls, db, pid: str) -> _FactLabs | None:
+        if not await db.has_coded_facts(patient_id=pid, categories=LAB_FACT_CATEGORIES):
+            return None
+        return cls(db, pid, await db.fact_code_vocabulary())
+
+    def code_for(self, parameter: str) -> str | None:
+        p = parameter.strip().upper()
+        return p if p in self.codes else LEGACY_PARAMETER_CODES.get(p) or self.alias.get(p)
+
+    async def lab_codes(self) -> list[str]:
+        rows = await self.db.fact_catalog_rows(patient_id=self.pid)
+        return [r["code"] for r in rows if r["code"] and r["category"] in LAB_FACT_CATEGORIES]
+
+    async def rows(
+        self, codes: list[str], date_from: str | None, date_to: str | None, include_unverified: bool
+    ) -> tuple[list[dict], int]:
+        """Deduplicated rows (oldest first per code) and how many unverified
+        values were left out."""
+        from oncofiles.tools.clinical_facts import _dedupe
+
+        if not codes:
+            return [], 0
+        rows = await self.db.fact_series_rows(
+            patient_id=self.pid, codes=sorted(set(codes)), date_from=date_from, date_to=date_to
+        )
+        rows, _ = _dedupe(rows)
+        if include_unverified:
+            return rows, 0
+        kept = [r for r in rows if r["verification"] != "unverified"]
+        return kept, len(rows) - len(kept)
+
+    def point(self, r: dict) -> dict:
+        """value/unit/range in one unit, as the legacy tools name them."""
+        from oncofiles.tools.clinical_facts import _observation
+
+        obs = _observation(r, self.conversions)
+        return {
+            "value": obs["value"] if obs["value"] is not None else obs["value_text"],
+            "unit": obs["unit"],
+            "reference_low": obs["ref_low"],
+            "reference_high": obs["ref_high"],
+        }
+
+    async def doc_urls(self, doc_ids: set[int]) -> dict[int, str | None]:
+        docs = await self.db.get_documents_by_ids(doc_ids, patient_id=self.pid)
+        return {did: _gdrive_url(doc.gdrive_id) if doc else None for did, doc in docs.items()}
+
+
+def _numeric(v) -> bool:
+    return isinstance(v, int | float) and not isinstance(v, bool)
+
 
 async def store_lab_values(
     ctx: Context,
@@ -144,10 +228,14 @@ async def get_lab_trends(
     date_to: str | None = None,
     limit: int = 50,
     patient_slug: str | None = None,
+    include_unverified: bool = False,
 ) -> str:
-    """Retrieve stored lab values for trend analysis.
+    """[DEPRECATED — use fact_series / dashboard_feed; removed after 2027-01-10]
+    Retrieve stored lab values for trend analysis.
 
     Returns values sorted chronologically (oldest first) for plotting trends.
+    Patients with lab facts (curated folders) are read from the facts model;
+    unverified values are left out unless include_unverified=true.
 
     Args:
         parameter: Filter by parameter name (e.g. PLT, SII, CEA). If None, returns all.
@@ -155,12 +243,20 @@ async def get_lab_trends(
         date_to: Filter to this date (YYYY-MM-DD).
         limit: Maximum results to return.
         patient_slug: Optional — explicit patient slug (#429).
+        include_unverified: Facts model only — include unverified values.
     """
     try:
         db = _get_db(ctx)
         from oncofiles.tools._helpers import _resolve_patient_id
 
         pid = await _resolve_patient_id(patient_slug, ctx)
+        _parse_date(date_from)
+        _parse_date(date_to)
+        facts = await _FactLabs.for_patient(db, pid)
+        if facts is not None:
+            return await _fact_lab_trends(
+                facts, parameter, date_from, date_to, _clamp_limit(limit), include_unverified
+            )
         query = LabTrendQuery(
             parameter=parameter,
             date_from=_parse_date(date_from),
@@ -194,6 +290,35 @@ async def get_lab_trends(
         for v in values
     ]
     return json.dumps({"values": items, "total": len(items)})
+
+
+async def _fact_lab_trends(
+    facts: _FactLabs,
+    parameter: str | None,
+    date_from: str | None,
+    date_to: str | None,
+    limit: int,
+    include_unverified: bool,
+) -> str:
+    codes = [facts.code_for(parameter)] if parameter else await facts.lab_codes()
+    rows, hidden = await facts.rows([c for c in codes if c], date_from, date_to, include_unverified)
+    rows = sorted(rows, key=lambda r: (r["effective_at"] or "", r["code"]))[:limit]
+    urls = await facts.doc_urls({r["source_document_id"] for r in rows if r["source_document_id"]})
+    items = [
+        {
+            "lab_date": (r["effective_at"] or "")[:10],
+            "parameter": parameter if parameter else r["code"],
+            **facts.point(r),
+            "flag": r["flag"],
+            "document_id": r["source_document_id"],
+            "gdrive_url": urls.get(r["source_document_id"]),
+            "verification": r["verification"],
+        }
+        for r in rows
+    ]
+    return json.dumps(
+        {"values": items, "total": len(items), "source": "facts", "unverified_excluded": hidden}
+    )
 
 
 # mFOLFOX6 pre-cycle safety thresholds (NCCN Guidelines + SmPC)
@@ -703,18 +828,23 @@ async def get_lab_time_series(
     date_from: str | None = None,
     date_to: str | None = None,
     patient_slug: str | None = None,
+    include_unverified: bool = False,
 ) -> str:
-    """Get structured time series data for one or more lab parameters.
+    """[DEPRECATED — use fact_series / dashboard_feed; removed after 2027-01-10]
+    Get structured time series data for one or more lab parameters.
 
     Returns chronological values with reference ranges, units, and computed
     deltas (absolute change and % change between consecutive measurements).
-    Designed for Oncoteam and MCP clients to build trend charts and analysis.
+    Patients with lab facts (curated folders) are read from the facts model:
+    values in the code's canonical unit, duplicates removed as in fact_series,
+    unverified values left out unless include_unverified=true.
 
     Args:
         parameters: Comma-separated parameter names (e.g. "CEA,CA19_9" or "PLT").
         date_from: Start date filter (YYYY-MM-DD). Optional.
         date_to: End date filter (YYYY-MM-DD). Optional.
         patient_slug: Optional — explicit patient slug (#429).
+        include_unverified: Facts model only — include unverified values.
     """
     db = _get_db(ctx)
     from oncofiles.tools._helpers import _resolve_patient_id
@@ -729,6 +859,10 @@ async def get_lab_time_series(
         parsed_to = _parse_date(date_to)
     except ValueError as e:
         return json.dumps({"error": str(e)})
+
+    facts = await _FactLabs.for_patient(db, pid)
+    if facts is not None:
+        return await _fact_time_series(facts, param_list, date_from, date_to, include_unverified)
 
     result: dict = {"parameters": {}}
     for param in param_list:
@@ -763,21 +897,71 @@ async def get_lab_time_series(
     return json.dumps(result)
 
 
+async def _fact_time_series(
+    facts: _FactLabs,
+    param_list: list[str],
+    date_from: str | None,
+    date_to: str | None,
+    include_unverified: bool,
+) -> str:
+    codes = {p: facts.code_for(p) for p in param_list}
+    rows, _ = await facts.rows(
+        [c for c in codes.values() if c], date_from, date_to, include_unverified=True
+    )
+    result: dict = {"parameters": {}, "source": "facts"}
+    for param in param_list:
+        series: list[dict] = []
+        hidden = 0
+        prev = None  # (value, unit) of the previous numeric point
+        for r in (r for r in rows if codes[param] and r["code"] == codes[param]):
+            if r["verification"] == "unverified" and not include_unverified:
+                hidden += 1
+                continue
+            point = {
+                "date": (r["effective_at"] or "")[:10],
+                **facts.point(r),
+                "flag": r["flag"],
+                "document_id": r["source_document_id"],
+                "at": r["effective_at"],
+                "verification": r["verification"],
+            }
+            value = point["value"]
+            if _numeric(value):
+                if prev is not None and prev[1] == point["unit"]:
+                    point["delta"] = round(value - prev[0], 4)
+                    if prev[0] != 0:
+                        point["delta_pct"] = round((value - prev[0]) / abs(prev[0]) * 100, 1)
+                prev = (value, point["unit"])
+            series.append(point)
+        result["parameters"][param] = {
+            "count": len(series),
+            "series": series,
+            "code": codes[param],
+            "unverified_excluded": hidden,
+        }
+    return json.dumps(result)
+
+
 async def compare_lab_panels(
     ctx: Context,
     date_a: str,
     date_b: str,
     patient_slug: str | None = None,
+    include_unverified: bool = False,
 ) -> str:
-    """Compare lab values between two dates side-by-side.
+    """[DEPRECATED — use fact_series / dashboard_feed; removed after 2027-01-10]
+    Compare lab values between two dates side-by-side.
 
     Returns all parameters measured on both dates with change direction,
-    absolute delta, percentage change, and out-of-range flags.
+    absolute delta, percentage change, and out-of-range flags. Patients with
+    lab facts (curated folders) are read from the facts model; unverified
+    values are left out unless include_unverified=true.
 
     Args:
         date_a: First date (YYYY-MM-DD), typically the earlier measurement.
         date_b: Second date (YYYY-MM-DD), typically the later measurement.
         patient_slug: Optional — explicit patient slug (#429).
+        include_unverified: Facts model only — include unverified values.
     """
     db = _get_db(ctx)
     from oncofiles.tools._helpers import _resolve_patient_id
@@ -788,6 +972,10 @@ async def compare_lab_panels(
         _parse_date(date_b)
     except ValueError as e:
         return json.dumps({"error": str(e)})
+
+    facts = await _FactLabs.for_patient(db, pid)
+    if facts is not None:
+        return await _fact_compare(facts, date_a, date_b, include_unverified)
 
     values_a = await db.get_lab_values_by_date(date_a, patient_id=pid)
     values_b = await db.get_lab_values_by_date(date_b, patient_id=pid)
@@ -850,9 +1038,70 @@ async def compare_lab_panels(
     )
 
 
-async def get_lab_summary(ctx: Context, patient_slug: str | None = None) -> str:
-    """Get a summary of the latest value for every tracked lab parameter.
+async def _fact_compare(
+    facts: _FactLabs, date_a: str, date_b: str, include_unverified: bool
+) -> str:
+    codes = await facts.lab_codes()
+    panels: list[dict[str, dict]] = []
+    hidden = 0
+    for day in (date_a, date_b):  # sequential: one DB connection
+        rows, n = await facts.rows(codes, day, day, include_unverified)
+        hidden += n
+        panel: dict[str, dict] = {}
+        for r in rows:  # the day's latest value, the best verified among equal times
+            cur = panel.get(r["code"])
+            if cur is None or (r["effective_at"] or "") > (cur["effective_at"] or ""):
+                panel[r["code"]] = r
+        panels.append(panel)
+    map_a, map_b = panels
+    comparisons = []
+    for code in sorted(set(map_a) | set(map_b)):
+        entry: dict = {"parameter": code}
+        pa = facts.point(map_a[code]) if code in map_a else None
+        pb = facts.point(map_b[code]) if code in map_b else None
+        if pa:
+            entry["date_a"] = {"date": date_a, **pa}
+        if pb:
+            entry["date_b"] = {"date": date_b, **pb}
+        comparable = bool(pa and pb) and pa["unit"] == pb["unit"]
+        if comparable and _numeric(pa["value"]) and _numeric(pb["value"]):
+            delta = round(pb["value"] - pa["value"], 4)
+            entry["delta"] = delta
+            if pa["value"] != 0:
+                entry["delta_pct"] = round(delta / abs(pa["value"]) * 100, 1)
+            entry["direction"] = "rising" if delta > 0 else "falling" if delta < 0 else "stable"
+            if pb["reference_high"] is not None and pb["value"] > pb["reference_high"]:
+                entry["status"] = "above_range"
+            elif pb["reference_low"] is not None and pb["value"] < pb["reference_low"]:
+                entry["status"] = "below_range"
+            else:
+                entry["status"] = "in_range"
+        elif pa and pb:
+            entry["status"] = "not_comparable"  # text value or different units
+        else:
+            entry["status"] = "only_one_date"
+        comparisons.append(entry)
+    return json.dumps(
+        {
+            "date_a": date_a,
+            "date_b": date_b,
+            "parameters": comparisons,
+            "total": len(comparisons),
+            "available_dates": await facts.db.fact_days(
+                patient_id=facts.pid, categories=LAB_FACT_CATEGORIES
+            ),
+            "source": "facts",
+            "unverified_excluded": hidden,
+        }
+    )
 
+
+async def get_lab_summary(ctx: Context, patient_slug: str | None = None) -> str:
+    """[DEPRECATED — use patient_overview / fact_series / dashboard_feed; removed after 2027-01-10]
+    Get a summary of the latest value for every tracked lab parameter.
+
+    Reads the legacy lab_values table only: curated patients' values live in
+    the facts model, use patient_overview (latest key values) or fact_series.
     Returns status (normal/high/low), trend direction (rising/falling/stable),
     days since last measurement, and computed indices (SII, Ne/Ly ratio).
     Designed as a quick overview for clinical decision support.

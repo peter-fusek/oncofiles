@@ -238,6 +238,7 @@ def non_admin_bound_to_erika():
         lambda ctx: cf.document_detail(ctx, document_id=1, patient_slug=BOB_SLUG),
         lambda ctx: cf.encounter_detail(ctx, encounter_id=1, patient_slug=BOB_SLUG),
         lambda ctx: cf.people_and_places(ctx, patient_slug=BOB_SLUG),
+        lambda ctx: cf.dashboard_feed(ctx, patient_slug=BOB_SLUG),
     ],
 )
 async def test_every_fact_tool_denies_a_foreign_patient(db, non_admin_bound_to_erika, call):
@@ -262,7 +263,7 @@ def test_fact_tools_are_annotated_read_only():
     mcp = MagicMock()
     cf.register(mcp)
     assert all(c.kwargs["annotations"]["readOnlyHint"] for c in mcp.tool.call_args_list)
-    assert mcp.tool.call_count == 7
+    assert mcp.tool.call_count == 8
 
 
 # ── local only: the index and extraction never get a cloud client ──
