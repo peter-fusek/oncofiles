@@ -137,7 +137,7 @@ async def test_the_copy_exists_and_verifies_before_the_first_write(file_db):
     await _seed(file_db)
     seen = {}
 
-    async def fake_job(db, pid, docs, *, dry_run):  # the job's first write is its run row
+    async def fake_job(db, pid, docs, *, dry_run, fingerprint=False):  # first write: run row
         directory = config.DATABASE_PATH.parent / "pre-store"
         seen["copies"] = _copies(directory)
         seen["check"] = _quick_check(directory / seen["copies"][0])
