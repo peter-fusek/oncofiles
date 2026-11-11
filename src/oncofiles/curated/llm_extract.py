@@ -32,7 +32,7 @@ from oncofiles import cloud_guard
 from oncofiles.curated import llm
 
 # Bump on ANY change to the prompt, the schema or the item normalisation.
-EXTRACTOR_VERSION = "llm-extract-v2"
+EXTRACTOR_VERSION = "llm-extract-v3"  # v3: no response_format by default
 
 DATE_ROLES = ("sample", "report", "other")
 _COMPARATORS = ("<=", ">=", "<", ">")
@@ -175,7 +175,7 @@ class PageResult:
     finish_reason: str | None = None
     error_kind: str | None = None
     error_class: str | None = None
-    structured_output: str | None = None  # accepted | rejected (HTTP 400 → plain JSON)
+    structured_output: str | None = None  # accepted | rejected (HTTP 400) | off
     answer: dict | None = None  # answer_shape(): masked, in memory only
     answer_source: str | None = None  # content | reasoning
 
@@ -419,6 +419,12 @@ def normalize_item(raw) -> tuple[dict | None, str | None]:
     }, None
 
 
+def _structured_output() -> bool:
+    from oncofiles import config
+
+    return config.LLM_EXTRACT_STRUCTURED_OUTPUT
+
+
 def _thinking() -> bool:
     from oncofiles import config
 
@@ -448,9 +454,14 @@ def extract_page(
     t0 = time.monotonic()
     try:
         try:
-            answer = call(SYSTEM_PROMPT, user, max_tokens=budget, thinking=thinking,
-                          response_format=RESPONSE_FORMAT, info=info)  # fmt: skip
-            res.structured_output = "accepted"
+            if _structured_output():
+                answer = call(SYSTEM_PROMPT, user, max_tokens=budget, thinking=thinking,
+                              response_format=RESPONSE_FORMAT, info=info)  # fmt: skip
+                res.structured_output = "accepted"
+            else:
+                answer = call(SYSTEM_PROMPT, user, max_tokens=budget, thinking=thinking,
+                              info=info)  # fmt: skip
+                res.structured_output = "off"
         except llm.LocalLLMError as exc:
             if "HTTP 400" not in str(exc) or "truncated" in str(exc):
                 raise

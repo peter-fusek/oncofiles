@@ -197,7 +197,10 @@ def test_the_extractor_refuses_to_run_outside_local_only():
         llm_extract.extract_page(PAGE, page_number=1, chat=lambda *a, **k: "{}")
 
 
-def test_bad_json_is_a_page_error_and_structured_output_falls_back():
+def test_bad_json_is_a_page_error_and_structured_output_falls_back(monkeypatch):
+    from oncofiles import config
+
+    monkeypatch.setattr(config, "LLM_EXTRACT_STRUCTURED_OUTPUT", True)
     with local_only("test"):
         res = llm_extract.extract_page(PAGE, page_number=1, chat=lambda *a, **k: "sorry")
     assert res.error and not res.candidates
@@ -539,7 +542,7 @@ def test_a_good_page_reports_its_shape_without_the_masked_text():
         pr = llm_extract.extract_page(PAGE, page_number=1, chat=_answer(model_answer()))
     shape = pr.diagnostics()["answer"]
     assert pr.assessed and "masked" not in shape and shape["top_level"] == "object"
-    assert pr.diagnostics()["structured_output"] == "accepted"
+    assert pr.diagnostics()["structured_output"] == "off"  # default since v3
 
 
 def test_an_empty_content_falls_back_to_reasoning_content(monkeypatch):
@@ -692,3 +695,24 @@ def test_inheritance_never_removes_reasons():
     f = check(cand(), source_reason="handwritten")
     verifier.inherit_transcription_reasons([f], [COWORK_ROW])
     assert f["metadata"]["unverified_reasons"] == ["handwritten", "cowork_ocr"]
+
+
+def test_lab_structured_output_is_off_by_default_and_switchable(monkeypatch):
+    from oncofiles import config
+    from oncofiles.cloud_guard import local_only
+
+    seen = []
+
+    def chat(system, user, info=None, **kw):
+        seen.append("response_format" in kw)
+        if info is not None:
+            info["finish_reason"] = "stop"
+        return '{"facts": []}'
+
+    with local_only("test"):
+        monkeypatch.setattr(config, "LLM_EXTRACT_STRUCTURED_OUTPUT", False)
+        off = llm_extract.extract_page("Hemoglobin 140 g/L", page_number=1, chat=chat)
+        monkeypatch.setattr(config, "LLM_EXTRACT_STRUCTURED_OUTPUT", True)
+        on = llm_extract.extract_page("Hemoglobin 140 g/L", page_number=1, chat=chat)
+    assert seen == [False, True]
+    assert off.structured_output == "off" and on.structured_output == "accepted"
