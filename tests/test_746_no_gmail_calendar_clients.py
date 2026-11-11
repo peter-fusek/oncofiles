@@ -13,6 +13,7 @@ All values are synthetic.
 from __future__ import annotations
 
 import json
+import os
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -141,7 +142,8 @@ def lifespan_env(monkeypatch, tmp_path, ctors):
     from oncofiles.tools import curated
 
     monkeypatch.setattr(server, "DATABASE_PATH", str(tmp_path / "t746.db"))
-    monkeypatch.setattr(server, "TURSO_DATABASE_URL", "")
+    for name in [k for k in os.environ if k.startswith("TURSO_")]:  # #617 refuses any
+        monkeypatch.delenv(name)
     monkeypatch.setattr(server, "SYNC_ENABLED", False)
     monkeypatch.setattr(server, "GOOGLE_DRIVE_FOLDER_ID", "")
     monkeypatch.setattr(server, "_setup_logging", lambda: None)
