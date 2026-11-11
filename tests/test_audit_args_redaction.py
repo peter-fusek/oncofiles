@@ -12,14 +12,18 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
 from typing import Any
 from unittest.mock import MagicMock
+
+import pytest
 
 from oncofiles import audit_middleware
 from oncofiles.audit_middleware import AuditMiddleware
 from oncofiles.audit_redaction import redact_stored_summary, summarize_args
 from oncofiles.database import Database
+from oncofiles.persistent_oauth import _verified_caller_is_admin
 
 FAKE_NAME = "Jana Testovska"
 FAKE_VALUE = "137.5 g/L"
@@ -220,3 +224,99 @@ def test_stored_summary_rewrite_is_idempotent():
     assert redact_stored_summary(once) == once
     new = summarize_args({"document_ids": [7001, 7002], "date_from": FAKE_DATE, "limit": 37})
     assert redact_stored_summary(new) == new
+
+
+# ── redact_activity_log_inputs maintenance tool ────────────────────────────
+
+_LEGACY_ROWS = [
+    f"document_id=7011, patient_slug={FAKE_SLUG}, query={FAKE_NAME}",
+    f"sql={FAKE_SQL}",
+    f"filename={FAKE_FILE}, dry_run=True",
+    "document_id=7012, limit=37",  # already safe
+    "",
+]
+
+
+async def _seed(db: Database) -> None:
+    for i, summary in enumerate(_LEGACY_ROWS):
+        await db.db.execute(
+            "INSERT INTO activity_log (session_id, agent_id, tool_name, input_summary, "
+            "output_summary, duration_ms, status, error_message, tags, patient_id) "
+            "VALUES (?, 'auto', ?, ?, 'out', ?, 'ok', NULL, '[\"attributed\"]', 'pid-x')",
+            (f"s{i}", f"tool_{i}", summary, i),
+        )
+    await db.db.commit()
+
+
+async def _dump(db: Database) -> list[dict]:
+    async with db.db.execute("SELECT * FROM activity_log ORDER BY id") as cur:
+        return [dict(r) for r in await cur.fetchall()]
+
+
+@pytest.fixture
+def non_admin():
+    tok = _verified_caller_is_admin.set(False)
+    yield
+    _verified_caller_is_admin.reset(tok)
+
+
+async def test_redact_tool_refuses_non_admin(db: Database, non_admin):
+    from oncofiles.tools.activity import redact_activity_log_inputs
+
+    await _seed(db)
+    before = await _dump(db)
+    out = json.loads(await redact_activity_log_inputs(_Ctx(db), dry_run=False))
+    assert "error" in out
+    assert await _dump(db) == before
+
+
+@pytest.mark.usefixtures("admin_scope")
+async def test_redact_tool_dry_run_writes_nothing(db: Database):
+    from oncofiles.tools.activity import redact_activity_log_inputs
+
+    await _seed(db)
+    before = await _dump(db)
+    out = json.loads(await redact_activity_log_inputs(_Ctx(db)))
+    assert out == {
+        "scanned": 4,
+        "unchanged": 1,
+        "remaining": 3,
+        "dry_run": True,
+        "would_change": 3,
+    }
+    assert await _dump(db) == before
+
+
+@pytest.mark.usefixtures("admin_scope")
+async def test_redact_tool_rewrites_only_input_summary(db: Database):
+    from oncofiles.tools.activity import redact_activity_log_inputs
+
+    await _seed(db)
+    before = await _dump(db)
+    first = json.loads(await redact_activity_log_inputs(_Ctx(db), dry_run=False, batch_size=2))
+    assert first["changed"] == 2 and first["remaining"] == 1
+    second = json.loads(await redact_activity_log_inputs(_Ctx(db), dry_run=False))
+    assert second["changed"] == 1 and second["remaining"] == 0
+    third = json.loads(await redact_activity_log_inputs(_Ctx(db), dry_run=False))
+    assert third["changed"] == 0 and third["remaining"] == 0
+
+    after = await _dump(db)
+    # Nothing deleted; one counts-only maintenance row per real run.
+    assert len(after) == len(before) + 3
+    for old, new in zip(before, after, strict=False):
+        assert {k: v for k, v in old.items() if k != "input_summary"} == {
+            k: v for k, v in new.items() if k != "input_summary"
+        }
+    summaries = [r["input_summary"] for r in after]
+    blob = "\n".join(summaries)
+    for phi in (FAKE_NAME, FAKE_SQL, FAKE_FILE):
+        assert phi not in blob
+    assert summaries[0] == (
+        f"document_id=7011, patient_slug={FAKE_SLUG}, query=<redacted:len={len(FAKE_NAME)}>"
+    )
+    assert summaries[2] == f"filename=<redacted:len={len(FAKE_FILE)}>, dry_run=True"
+    assert summaries[3] == "document_id=7012, limit=37"
+    maint = [r for r in after[len(before) :] if r["tool_name"] == "redact_activity_log_inputs"]
+    assert len(maint) == 3
+    assert json.loads(maint[0]["output_summary"])["changed"] == 2
+    assert maint[0]["patient_id"] == ""
