@@ -82,9 +82,13 @@ _REDACTIONS: list[tuple[re.Pattern, str]] = [
     (re.compile(r"\bgh[pousr]_[A-Za-z0-9]{20,255}"), "[token]"),
 ]
 
-# characters a token or e-mail is made of: a run of them split by a cut is masked
-_TOKEN_CHARS = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._~+/=-@%")
+# At a cut, a value must never appear without its line context (a cut between
+# "Bearer " and its value leaves a bare value no pattern recognises). So a
+# head-side cut drops back to the last newline, a tail-side cut drops forward to
+# the next newline, each at most _CUT_LINE_CHARS; without a newline in that
+# span, the span is dropped and a non-whitespace run the new cut splits too.
 _CUT = "[cut]"
+_CUT_LINE_CHARS = 1024
 
 
 def _redact_all(text: str) -> str:
@@ -93,27 +97,33 @@ def _redact_all(text: str) -> str:
     return text
 
 
-def _head(redacted: str, n: int) -> str:
-    """First n chars; a token run the cut splits is replaced by a marker."""
-    head = redacted[:n]
-    if n < len(redacted) and head and head[-1] in _TOKEN_CHARS and redacted[n] in _TOKEN_CHARS:
-        i = len(head)
-        while i > 0 and head[i - 1] in _TOKEN_CHARS:
-            i -= 1
-        head = head[:i] + _CUT
-    return head
+def _head(text: str, n: int) -> str:
+    """First ``n`` chars, cut back to a line start (see _CUT_LINE_CHARS)."""
+    if n >= len(text):
+        return text
+    nl = text.rfind("\n", max(0, n - _CUT_LINE_CHARS), n)
+    if nl >= 0:
+        return text[: nl + 1] + _CUT
+    k = max(0, n - _CUT_LINE_CHARS)
+    if k > 0 and not text[k - 1].isspace() and not text[k].isspace():
+        while k > 0 and not text[k - 1].isspace():
+            k -= 1
+    return text[:k] + _CUT
 
 
-def _tail(redacted: str, n: int) -> str:
-    """Last n chars; a token run the cut splits is replaced by a marker."""
-    start = len(redacted) - n
-    tail = redacted[start:]
-    if start > 0 and tail and tail[0] in _TOKEN_CHARS and redacted[start - 1] in _TOKEN_CHARS:
-        i = 0
-        while i < len(tail) and tail[i] in _TOKEN_CHARS:
-            i += 1
-        tail = _CUT + tail[i:]
-    return tail
+def _tail(text: str, n: int) -> str:
+    """Last ``n`` chars, cut forward to a line end (see _CUT_LINE_CHARS)."""
+    start = len(text) - n
+    if start <= 0:
+        return text
+    nl = text.find("\n", start, min(len(text), start + _CUT_LINE_CHARS))
+    if nl >= 0:
+        return _CUT + text[nl:]
+    k = min(len(text), start + _CUT_LINE_CHARS)
+    if k < len(text) and not text[k - 1].isspace() and not text[k].isspace():
+        while k < len(text) and not text[k].isspace():
+            k += 1
+    return _CUT + text[k:]
 
 
 def redact(text: str, limit: int = MAX_REDACT_CHARS) -> str:
