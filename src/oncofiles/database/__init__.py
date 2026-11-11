@@ -20,6 +20,7 @@ from ._onboarding import OnboardingEventsMixin
 from ._operational import OperationalMixin
 from ._patients import PatientsMixin
 from ._prompt_log import PromptLogMixin
+from ._verification import FactVerificationMixin
 
 
 class Database(
@@ -28,6 +29,7 @@ class Database(
     ClinicalMixin,
     ClinicalRecordsMixin,
     FactsMixin,
+    FactVerificationMixin,
     HardFactsMixin,
     GmailMixin,
     CalendarMixin,
