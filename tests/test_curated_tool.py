@@ -367,6 +367,8 @@ def _probe(pending=None, age=600.0, sig="s1", canary=False):
 def cont(monkeypatch):
     """Fake probe + sequence; returns (probes queue, sequence calls, reports queue)."""
     tool._watch.clear()
+    tool._probe_stats.clear()
+    tool._reocr_jobs.clear()
     probes, calls, reports = [], [], []
 
     async def fake_probe(db, pid, idle):
@@ -381,6 +383,8 @@ def cont(monkeypatch):
     monkeypatch.setattr(tool, "nightly_for_patient", fake_seq)
     yield probes, calls, reports
     tool._watch.clear()
+    tool._probe_stats.clear()
+    tool._reocr_jobs.clear()
 
 
 def _ok(result="filed"):
@@ -427,8 +431,10 @@ async def test_continuous_backs_off_after_a_failed_sequence(db, cont):
     reports.append([{"dry_run": False, "status": "aborted", "documents": []}])
     await _tick(db)
     assert tool._watch[ERIKA_UUID].failures == 1
-    assert await _tick(db) is None  # inside the backoff: no probe at all
-    assert [c[0] for c in calls] == ["probe", "run"]
+    probes.append(_probe({"f1": "inbox/a.pdf"}))
+    assert await _tick(db) is None  # inside the backoff: probed, but no run
+    assert [c[0] for c in calls] == ["probe", "run", "probe"]
+    assert tool._probe_stats[ERIKA_UUID].runs_blocked == {"failure_backoff": 1}
 
 
 async def test_continuous_runs_to_recover_a_leftover_canary(db, cont):
@@ -436,6 +442,201 @@ async def test_continuous_runs_to_recover_a_leftover_canary(db, cont):
     probes.append(_probe({}, canary=True))
     reports.append([_ok()])
     assert await _tick(db) is not None
+
+
+# ── starvation fix: probes never wait, only the same patient's work blocks a run ──
+
+OTHER_PID = "00000000-0000-4000-8000-00000000beef"  # synthetic
+
+
+async def test_other_patients_job_blocks_neither_probe_nor_run(db, cont):
+    probes, calls, reports = cont
+    tool._reocr_jobs[OTHER_PID] = {"state": "running", "kind": "reread"}
+    probes.append(_probe({"f1": "inbox/a.pdf"}))
+    reports.append([_ok()])
+    assert await _tick(db) == [_ok()]
+    assert [c[0] for c in calls] == ["probe", "run"]
+
+
+async def test_shadow_job_of_the_same_patient_does_not_block(db, cont):
+    probes, calls, reports = cont
+    tool._reocr_jobs[ERIKA_UUID] = {"state": "running", "kind": "llm_shadow"}
+    probes.append(_probe({"f1": "inbox/a.pdf"}))
+    reports.append([_ok()])
+    assert await _tick(db) is not None
+    assert [c[0] for c in calls] == ["probe", "run"]
+
+
+@pytest.mark.parametrize(
+    ("job", "reason"),
+    [({"state": "running"}, "reocr_in_progress"),
+     ({"state": "running", "kind": "reread"}, "reread_in_progress")],
+)  # fmt: skip
+async def test_same_patient_job_blocks_the_run_not_the_probe(db, cont, caplog, job, reason):
+    probes, calls, reports = cont
+    tool._reocr_jobs[ERIKA_UUID] = job
+    probes += [_probe({"f1": "inbox/a.pdf"}), _probe({"f1": "inbox/a.pdf"})]
+    reports.append([_ok()])
+    with caplog.at_level("INFO", logger=tool.logger.name):
+        assert await _tick(db) is None
+    assert [c[0] for c in calls] == ["probe"]
+    [line] = [r for r in caplog.records if "run blocked" in r.getMessage()]  # once per poll
+    assert line.levelname == "INFO" and reason in line.getMessage()
+    st = tool._probe_stats[ERIKA_UUID]
+    assert st.probes_total == 1 and st.runs_blocked == {reason: 1}
+    assert tool._watch[ERIKA_UUID].failures == 0  # blocked is not a failure
+    job["state"] = "done"  # the job ends → the next poll runs
+    assert await _tick(db) == [_ok()]
+
+
+async def test_same_patient_run_or_held_lock_blocks_the_run(db, cont):
+    probes, calls, _ = cont
+    probes += [_probe({"f1": "inbox/a.pdf"}), _probe({"f1": "inbox/a.pdf"})]
+    tool._runs[ERIKA_UUID] = {"state": "running"}
+    assert await _tick(db) is None
+    tool._runs.clear()
+    async with tool.patient_lock(ERIKA_UUID):
+        assert await _tick(db) is None
+    assert [c[0] for c in calls] == ["probe", "probe"]
+    assert tool._probe_stats[ERIKA_UUID].runs_blocked == {
+        "run_in_progress": 1,
+        "patient_lock_held": 1,
+    }
+
+
+async def test_startup_grace_gates_the_run_but_not_the_probe(db, cont):
+    probes, calls, reports = cont
+    probes += [_probe({"f1": "inbox/a.pdf"}), _probe({"f1": "inbox/a.pdf"})]
+    reports.append([_ok()])
+    later = tool.time.monotonic() + 300
+    assert await tool.continuous_tick(
+        db, ERIKA_UUID, settle_s=120, chunk=5, max_runs=5, grace_until=later
+    ) is None  # fmt: skip
+    assert [c[0] for c in calls] == ["probe"]
+    assert tool._probe_stats[ERIKA_UUID].runs_blocked == {"startup_grace": 1}
+    assert await tool.continuous_tick(
+        db, ERIKA_UUID, settle_s=120, chunk=5, max_runs=5, grace_until=0.0
+    ) == [_ok()]  # fmt: skip
+
+
+async def test_a_run_blocked_mid_sequence_is_not_a_failure(db, cont):
+    probes, _, reports = cont
+    probes.append(_probe({"f1": "inbox/a.pdf"}))
+    reports.append([{"error": "busy: reread_in_progress", "blocked": "reread_in_progress"}])
+    await _tick(db)
+    w = tool._watch[ERIKA_UUID]
+    assert w.failures == 0 and w.not_before == 0.0 and w.stuck == frozenset()
+    assert tool._probe_stats[ERIKA_UUID].runs_blocked == {"reread_in_progress": 1}
+
+
+async def test_probe_counters(db, cont, monkeypatch):
+    probes, _, reports = cont
+    probes += [_probe({"f1": "inbox/a.pdf", "f2": "inbox/b.pdf"}), _probe(sig="idle")]
+    reports.append([_ok()])
+    await _tick(db)
+    st = tool._probe_stats[ERIKA_UUID]
+    assert st.probes_total == 1 and st.pending_inbox_count == 2
+    assert st.last_probe_at and st.last_auto_run_at and st.auto_runs_total == 1
+    await _tick(db)
+    assert st.probes_total == 2 and st.pending_inbox_count == 0
+
+    async def unreachable(db, pid, idle):
+        return None
+
+    monkeypatch.setattr(tool, "probe_patient", unreachable)
+    await _tick(db)
+    assert st.probes_skipped == {"drive_unavailable": 1} and st.probes_total == 2
+    detail = tool.heartbeat_detail()["probes"][ERIKA_UUID]
+    assert detail["probes_total"] == 2 and detail["probes_skipped"] == {"drive_unavailable": 1}
+    # the public heartbeat stays an age and a boolean (no patient ids)
+    assert set(tool.heartbeat()) == {"curated_last_probe_age_s", "curated_loop_suspected"}
+
+
+async def test_execute_run_skip_if_busy_never_waits_on_the_lock(db, llm_on):
+    tool._reocr_jobs.clear()
+    async with tool.patient_lock(ERIKA_UUID):
+        out = await asyncio.wait_for(
+            tool.execute_run(
+                db, ERIKA_UUID, dry_run=True, trigger="auto-preview", skip_if_busy=True
+            ),
+            timeout=2,
+        )
+    assert out["blocked"] == "patient_lock_held"
+    assert ERIKA_UUID not in tool._runs
+
+
+async def test_loop_probes_during_the_grace_and_does_not_stall_on_a_busy_patient(
+    db, cont, monkeypatch
+):
+    """Two patients: one with its own re-read job (lock held). The loop probes
+    both inside the startup grace, runs nothing, and never waits on the lock."""
+    probes, calls, _ = cont
+    monkeypatch.setenv("CURATED_NIGHTLY_ENABLED", "true")
+    monkeypatch.setenv("CURATED_NIGHTLY_HOUR", "every")
+    monkeypatch.setattr(
+        db, "list_curated_nightly_patients", AsyncMock(return_value=[OTHER_PID, ERIKA_UUID])
+    )
+    seen = []
+
+    async def fake_probe(db, pid, idle):
+        seen.append(pid)
+        return _probe({"f1": "inbox/a.pdf"})
+
+    monkeypatch.setattr(tool, "probe_patient", fake_probe)
+    tool._reocr_jobs[OTHER_PID] = {"state": "running", "kind": "reread"}
+    async with tool.patient_lock(OTHER_PID):
+        task = asyncio.create_task(
+            tool.curated_nightly_loop(db, poll_s=3600, startup_grace_s=3600, probe_delay_s=0)
+        )
+        for _ in range(100):
+            await asyncio.sleep(0.01)
+            if len(seen) == 2:
+                break
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    assert seen == [OTHER_PID, ERIKA_UUID]  # both probed, none waited
+    assert [c for c in calls if c[0] == "run"] == []  # grace: no run, no nightly
+    assert tool._probe_stats[ERIKA_UUID].runs_blocked == {"startup_grace": 1}
+
+
+async def test_loop_after_grace_runs_the_free_patient_while_the_other_is_busy(
+    db, cont, monkeypatch
+):
+    probes, calls, reports = cont
+    monkeypatch.setenv("CURATED_NIGHTLY_ENABLED", "true")
+    from zoneinfo import ZoneInfo
+
+    not_now = (datetime.now(ZoneInfo("Europe/Bratislava")).hour + 12) % 24
+    monkeypatch.setenv("CURATED_NIGHTLY_HOUR", str(not_now))  # not due: continuous branch
+    monkeypatch.setattr(
+        db, "list_curated_nightly_patients", AsyncMock(return_value=[OTHER_PID, ERIKA_UUID])
+    )
+    ran = []
+
+    async def fake_probe(db, pid, idle):
+        return _probe({"f1": "inbox/a.pdf"})
+
+    async def fake_seq(db, pid, **kw):
+        ran.append(pid)
+        return [_ok()]
+
+    monkeypatch.setattr(tool, "probe_patient", fake_probe)
+    monkeypatch.setattr(tool, "nightly_for_patient", fake_seq)
+    tool._reocr_jobs[OTHER_PID] = {"state": "running"}
+    async with tool.patient_lock(OTHER_PID):
+        task = asyncio.create_task(
+            tool.curated_nightly_loop(db, poll_s=3600, startup_grace_s=0, probe_delay_s=0)
+        )
+        for _ in range(100):
+            await asyncio.sleep(0.01)
+            if ran:
+                break
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    assert ran == [ERIKA_UUID]
+    assert tool._probe_stats[OTHER_PID].runs_blocked == {"reocr_in_progress": 1}
 
 
 def test_continuous_settings_defaults(monkeypatch):
@@ -529,14 +730,6 @@ async def test_index_runs_after_a_real_run_once_it_is_no_longer_active(db, llm_o
     with patches[0], patches[1], patches[2], patch.object(tool, "_index_quietly", spy):
         await tool.execute_run(db, ERIKA_UUID, dry_run=False, trigger="mcp")
     assert seen == [False]  # indexed exactly once, and not counted as an active run
-
-
-def test_turso_url_refuses_to_start():
-    from oncofiles import server
-
-    with pytest.raises(RuntimeError, match="local database only"):
-        server._assert_local_database("libsql://example.turso.io")
-    server._assert_local_database("")  # local file: fine
 
 
 async def test_index_waits_while_a_run_holds_the_patient_lock(db):

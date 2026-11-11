@@ -36,7 +36,7 @@ GOOGLE_APPLICATION_CREDENTIALS: str = os.environ.get("GOOGLE_APPLICATION_CREDENT
 # project, revoked client) so the app stops hammering APIs that cannot answer.
 #
 # Prefer this over SYNC_ENABLED=false: SYNC_ENABLED kills the entire
-# APScheduler, taking db_keepalive, memory_check, the cleanup jobs and the
+# APScheduler, taking memory_check, the cleanup jobs and the
 # sync watchdog down with it. This flag disables only the Google-touching
 # paths, so the MCP server, dashboard, DB and local housekeeping keep running
 # normally and the watchdog can still report the outage.
@@ -45,6 +45,26 @@ GOOGLE_INTEGRATION_ENABLED: bool = os.environ.get("GOOGLE_INTEGRATION_ENABLED", 
     "1",
     "yes",
 )
+
+# Gmail + Google Calendar are OFF by default (#618/#699). The privacy text says
+# they are not used, and this flag is what makes that true — independently of
+# SYNC_ENABLED and of GOOGLE_INTEGRATION_ENABLED (which must stay true so the
+# curated pipeline can reach Drive). When false: the gmail/calendar scheduler
+# jobs are not registered, no OAuth URL ever requests the gmail/calendar
+# scopes, and the Gmail/Calendar MCP tools refuse. Runtime-only env; read at
+# call time through ``gmail_calendar_enabled()`` so tests can patch it.
+GMAIL_CALENDAR_ENABLED: bool = os.environ.get("GMAIL_CALENDAR_ENABLED", "false").lower() in (
+    "true",
+    "1",
+    "yes",
+)
+GMAIL_CALENDAR_DISABLED_MESSAGE = "Gmail/Calendar integration is not enabled on this server."
+
+
+def gmail_calendar_enabled() -> bool:
+    """Return the current GMAIL_CALENDAR_ENABLED value (module attr, patchable)."""
+    return GMAIL_CALENDAR_ENABLED
+
 
 # Google OAuth 2.0 (v1.0)
 # Local LLM (#565): OpenAI-compatible endpoint on the self-hosted server (LM Studio).
@@ -92,13 +112,6 @@ GOOGLE_OAUTH_CLIENT_SECRET: str = os.environ.get("GOOGLE_OAUTH_CLIENT_SECRET", "
 GOOGLE_OAUTH_REDIRECT_URI: str = os.environ.get(
     "GOOGLE_OAUTH_REDIRECT_URI", "https://oncofiles.com/oauth/callback"
 )
-
-# Turso (v0.4)
-TURSO_DATABASE_URL: str = os.environ.get("TURSO_DATABASE_URL", "")
-TURSO_AUTH_TOKEN: str = os.environ.get("TURSO_AUTH_TOKEN", "")
-TURSO_REPLICA_PATH: str = os.environ.get(
-    "TURSO_REPLICA_PATH", ""
-)  # local file for embedded replica
 
 # Cloud transport (v0.4)
 MCP_TRANSPORT: str = os.environ.get("MCP_TRANSPORT", "stdio")
@@ -190,11 +203,6 @@ GITHUB_REPO: str = os.environ.get("GITHUB_REPO", "peter-fusek/oncofiles")
 # Dashboard bug reports go ONLY to this repo, and only if GitHub confirms it is
 # private (the dashboard shows patient data). No default: unset = disabled (#621).
 BUG_REPORT_REPO: str = os.environ.get("BUG_REPORT_REPO", "")
-
-# Patient context
-PATIENT_CONTEXT_PATH: str = os.environ.get(
-    "PATIENT_CONTEXT_PATH", str(DATA_DIR / "patient_context.json")
-)
 
 # Dashboard auth — comma-separated admin emails (see all patients)
 # Non-admin users can still sign in but only see their own patients.

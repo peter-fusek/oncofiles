@@ -324,9 +324,6 @@ async def backfill_ai_classification(
         "limit": limit,
     }
 
-    # Proactive reconnect before batch to avoid stale replica (#378)
-    await db.reconnect_if_stale(timeout=10.0)
-
     all_docs = await db.list_documents(limit=DOC_QUERY_LIMIT, patient_id=patient_id)
     batch_count = 0
 

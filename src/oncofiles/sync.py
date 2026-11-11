@@ -49,6 +49,20 @@ from oncofiles.models import Document, DocumentCategory
 
 logger = logging.getLogger(__name__)
 
+# Shown to MCP clients when a legacy sync hits a curated folder (#562/#606),
+# so they stop suggesting gdrive_sync / sync_from_gdrive "to import".
+CURATED_SYNC_HINT = (
+    "This patient folder is curated (README.md contract), so legacy Drive sync "
+    "does nothing here. New inbox files are filed by the curated pipeline "
+    "(continuous mode, or curated_folder_run); curated_index mirrors filed "
+    "documents into search; curated_folder_status shows the pipeline state."
+)
+
+
+def _curated_skip(blocked: str) -> dict:
+    return {"skipped": True, "curated": True, "message": blocked, "hint": CURATED_SYNC_HINT}
+
+
 # Module-level lock to prevent concurrent sync operations.
 # Uses a timestamp-based approach to auto-expire stale locks after 10 minutes.
 _sync_lock = asyncio.Lock()
@@ -110,10 +124,7 @@ async def sync_from_gdrive(
 
     if (blocked := write_block_reason(gdrive)) is not None:
         logger.info("%s: skipped for patient %s — %s", "sync_from_gdrive", patient_id, blocked)
-        return {"skipped": True, "curated": True, "message": blocked}
-
-    # Proactive reconnect before batch to avoid stale replica (#378)
-    await db.reconnect_if_stale(timeout=10.0)
+        return _curated_skip(blocked)
 
     logger.info("sync_from_gdrive: listing folder %s (dry_run=%s)", folder_id, dry_run)
     gdrive_files, folder_map = await asyncio.to_thread(gdrive.list_folder_with_structure, folder_id)
@@ -345,7 +356,7 @@ async def sync_from_gdrive(
                     import_mime = mime_type
                 metadata = files.upload(io.BytesIO(content_bytes), import_filename, import_mime)
 
-                parsed = parse_filename(import_filename)
+                parsed = parse_filename(import_filename, patient_id=patient_id)
                 guessed_mime = mimetypes.guess_type(import_filename)[0] or import_mime
                 gdrive_modified = _parse_gdrive_time(modified_time_str)
 
@@ -665,10 +676,7 @@ async def sync_to_gdrive(
 
     if (blocked := write_block_reason(gdrive)) is not None:
         logger.info("%s: skipped for patient %s — %s", "sync_to_gdrive", patient_id, blocked)
-        return {"skipped": True, "curated": True, "message": blocked}
-
-    # Proactive reconnect before batch to avoid stale replica (#378)
-    await db.reconnect_if_stale(timeout=10.0)
+        return _curated_skip(blocked)
 
     logger.info("sync_to_gdrive: starting (dry_run=%s, full=%s)", dry_run, full)
 
@@ -1445,7 +1453,7 @@ async def sync(
 
     if (blocked := write_block_reason(gdrive)) is not None:
         logger.info("%s: skipped for patient %s — %s", "sync", patient_id, blocked)
-        return {"skipped": True, "curated": True, "message": blocked}
+        return _curated_skip(blocked)
 
     global _sync_lock_acquired_at  # noqa: PLW0603
 
@@ -1656,9 +1664,6 @@ async def enhance_documents(
 
     logger.info("enhance_documents: %d documents to process", len(docs))
     stats = {"processed": 0, "skipped": 0, "errors": 0}
-
-    # Proactive reconnect before batch to avoid stale replica (#378)
-    await db.reconnect_if_stale(timeout=10.0)
 
     from oncofiles.config import ENHANCE_TIMEOUT_S
     from oncofiles.memory import reclaim_memory
@@ -1888,9 +1893,6 @@ async def extract_all_metadata(
 
     Returns summary dict: {processed, skipped, skipped_unsupported_mime, errors}.
     """
-    # Proactive reconnect before batch to avoid stale replica (#378)
-    await db.reconnect_if_stale(timeout=10.0)
-
     docs = await db.get_documents_without_metadata(patient_id=patient_id)
 
     if only_new:

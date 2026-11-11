@@ -66,6 +66,9 @@ async def reconcile_gdrive(
     Scans for: unknown folders, root-level files not in any category folder,
     empty managed folders, and stale backup folders.
 
+    Legacy (non-curated) folders only: a curated patient folder (README.md +
+    _index.json) is write-protected and keeps its own fixed folder set.
+
     Args:
         dry_run: If True (default), report issues without making changes.
                  If False, move files, rename folders, and clean up backups.
@@ -296,7 +299,7 @@ async def validate_categories(
         if current == "other":
             from oncofiles.filename_parser import parse_filename
 
-            reparsed = parse_filename(doc.filename)
+            reparsed = parse_filename(doc.filename, patient_id=pid)
             if reparsed.category and reparsed.category.value != "other":
                 suggested = reparsed.category.value
                 entry = {

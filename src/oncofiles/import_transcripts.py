@@ -21,8 +21,6 @@ from pathlib import Path
 
 from oncofiles.config import (
     DATABASE_PATH,
-    TURSO_AUTH_TOKEN,
-    TURSO_DATABASE_URL,
 )
 from oncofiles.database import Database
 from oncofiles.models import ConversationEntry
@@ -139,10 +137,7 @@ async def import_transcripts(
     """
     transcripts_dir = path or DEFAULT_TRANSCRIPTS_PATH
 
-    if TURSO_DATABASE_URL:
-        db = Database(turso_url=TURSO_DATABASE_URL, turso_token=TURSO_AUTH_TOKEN)
-    else:
-        db = Database(DATABASE_PATH)
+    db = Database(DATABASE_PATH)
     await db.connect()
     await db.migrate()
 

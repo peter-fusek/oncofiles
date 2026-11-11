@@ -6,8 +6,8 @@ import json
 
 from fastmcp import Context
 
+from oncofiles import patient_context
 from oncofiles.config import DOC_QUERY_LIMIT
-from oncofiles.patient_context import get_context as _get_patient_context
 from oncofiles.tools._helpers import _gdrive_url, _get_db, _resolve_patient_id
 
 
@@ -56,8 +56,11 @@ async def export_document_package(
                 entry["structured_metadata"] = json.loads(d.structured_metadata)
         by_category[cat].append(entry)
 
+    # The slug-resolved patient, never the request/default patient (#733):
+    # with admin slug routing the request pid can be a different patient.
+    await patient_context.ensure_loaded(db.db, pid)
     result: dict = {
-        "patient": _get_patient_context(),
+        "patient": patient_context.get_context(pid),
         "total_documents": len(docs),
         "documents_by_category": by_category,
     }

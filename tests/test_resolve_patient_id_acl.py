@@ -288,13 +288,18 @@ async def test_slug_omitted_no_binding_raises_when_required(
 # ── Unknown slug path is unchanged ────────────────────────────────────────
 
 
-async def test_unknown_slug_raises_not_found_not_access_denied(
+async def test_unknown_slug_indistinguishable_from_foreign_slug(
     two_patients: Database, reset_scope
 ) -> None:
-    """Unknown slug must keep returning the friendly 'Patient not found'
-    error rather than 'access denied' — clients depend on the distinction
-    to give actionable error messages, and the existence check happens
-    before the ACL check anyway."""
+    """#590: an unknown slug and a foreign slug raise the same message, so a
+    non-admin caller cannot probe which slugs belong to real patients. (Until
+    #590 the unknown slug said 'Patient not found' and the foreign one
+    'access denied' — an existence oracle.)"""
     ctx = _StubCtx(two_patients)
-    with pytest.raises(ValueError, match="Patient not found"):
+    with pytest.raises(ValueError, match="Patient not found") as unknown:
         await _resolve_patient_id("no-such-patient", ctx)
+    with pytest.raises(ValueError) as foreign:
+        await _resolve_patient_id(BOB_SLUG, ctx)
+    assert str(unknown.value).replace("no-such-patient", "X") == str(foreign.value).replace(
+        BOB_SLUG, "X"
+    )

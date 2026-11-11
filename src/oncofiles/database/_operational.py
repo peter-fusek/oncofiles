@@ -27,8 +27,6 @@ class OperationalMixin:
 
     async def set_agent_state(self, state: AgentState) -> AgentState:
         """Upsert an agent state key-value pair. Returns the saved state."""
-        from oncofiles.database._base import retry_on_hrana_conflict
-
         pid = getattr(state, "patient_id", "") or ""
 
         async def _do_upsert():
@@ -44,7 +42,7 @@ class OperationalMixin:
             )
             await self.db.commit()
 
-        await retry_on_hrana_conflict(_do_upsert, label="set_agent_state")
+        await _do_upsert()
 
         async with self.db.execute(
             _AGENT_STATE_SELECT + ' WHERE patient_id = ? AND agent_id = ? AND "key" = ?',
@@ -84,8 +82,6 @@ class OperationalMixin:
         search_activity_log / get_activity_stats actually sees per-patient
         rows instead of all rows carrying the migration 029 DEFAULT.
         """
-        from oncofiles.database._base import retry_on_hrana_conflict
-
         _last_rowid: list[int] = []
 
         async def _do_insert():
@@ -113,7 +109,7 @@ class OperationalMixin:
             _last_rowid.clear()
             _last_rowid.append(cursor.lastrowid)
 
-        await retry_on_hrana_conflict(_do_insert, label="insert_activity_log")
+        await _do_insert()
         entry.id = _last_rowid[0] if _last_rowid else None
         return entry
 
@@ -271,6 +267,28 @@ class OperationalMixin:
         )
         await self.db.commit()
 
+    async def update_oauth_access_token(
+        self, patient_id: str, provider: str, access_token: str, token_expiry
+    ) -> None:
+        """Persist a refreshed access token (#591).
+
+        Touches only ``access_token``, ``token_expiry`` and ``updated_at``: a
+        refresh never changes ``owner_email``, the refresh token, the folder or
+        the scopes.
+        """
+        await self.db.execute(
+            "UPDATE oauth_tokens SET access_token = ?, token_expiry = ?, "
+            "updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') "
+            "WHERE patient_id = ? AND provider = ?",
+            (
+                access_token,
+                token_expiry.isoformat() if token_expiry else None,
+                patient_id,
+                provider,
+            ),
+        )
+        await self.db.commit()
+
     async def update_oauth_owner_email(
         self, patient_id: str, provider: str, owner_email: str
     ) -> None:
@@ -329,7 +347,7 @@ class OperationalMixin:
             (trigger, patient_id),
         )
         await self.db.commit()
-        # lastrowid is unreliable on Turso — fetch the ID explicitly
+        # Fetch the ID explicitly (pattern dates from the Turso era, #617)
         async with self.db.execute(
             "SELECT id FROM sync_history ORDER BY id DESC LIMIT 1"
         ) as cursor:
