@@ -1220,9 +1220,10 @@ def _reread_parallel() -> int:
 from oncofiles.curated.facts_rules import INLINE_CATEGORIES as _REPORT_LIKE  # noqa: E402
 
 
-def _reread_one(drive, d: dict, old: list[dict], vocab) -> dict:
+def _reread_one(drive, d: dict, old: list[dict], vocab, *, fingerprint: bool = False) -> dict:
     """Blocking. Re-read one document locally and assess its Cowork-era facts
-    (#678). Reads Drive only; never writes. Returns counts and the result."""
+    (#678). Reads Drive only; never writes. Returns counts and the result;
+    with ``fingerprint`` also the masked shape of the re-read text (#712)."""
     import hashlib
 
     from oncofiles.curated import reread_verify as rv
@@ -1255,10 +1256,14 @@ def _reread_one(drive, d: dict, old: list[dict], vocab) -> dict:
                candidates=sum(len(v) for v in assessment.values()),
                engine=rr.engine, sidecar_sha=sha, source_md5=cur.get("source_md5") or md5,
                stored=rv.result_keys(assessment, {f["id"]: f for f in old}))  # fmt: skip
+    if fingerprint:
+        res["fingerprint"] = rv.fingerprint(rr.pages, vocab)
     return res
 
 
-async def _reread_job(db, pid: str, docs: list[dict], *, dry_run: bool) -> None:
+async def _reread_job(
+    db, pid: str, docs: list[dict], *, dry_run: bool, fingerprint: bool = False
+) -> None:
     from oncofiles import config
     from oncofiles.cloud_guard import local_only
     from oncofiles.curated.drive_ops import DriveOps
@@ -1295,7 +1300,9 @@ async def _reread_job(db, pid: str, docs: list[dict], *, dry_run: bool) -> None:
                     own = gdrive.dedicated_copy()
                     try:
                         with local_only("curated verify-only re-read"):
-                            return _reread_one(DriveOps(own), d, old, vocab)
+                            return _reread_one(
+                                DriveOps(own), d, old, vocab, fingerprint=fingerprint and dry_run
+                            )
                     finally:
                         own.close()
 
@@ -1326,10 +1333,19 @@ async def _reread_job(db, pid: str, docs: list[dict], *, dry_run: bool) -> None:
             await db.finish_curated_run(
                 row_id, patient_id=pid,
                 status="ok" if job.get("state") == "done" else "failed",
-                message=job.get("error") or "", report=job.get("report") or {},
+                message=job.get("error") or "", report=_without_fingerprints(job.get("report")),
             )  # fmt: skip
         except Exception:
             logger.exception("could not persist the re-read job for %s", pid)
+
+
+def _without_fingerprints(report: dict | None) -> dict:
+    """The persisted copy of a re-read report: fingerprints stay in memory only."""
+    if not report:
+        return {}
+    docs = [{k: v for k, v in d.items() if k != "fingerprint"}
+            for d in report.get("documents") or []]  # fmt: skip
+    return {**report, "documents": docs}
 
 
 async def curated_reread_verify(
@@ -1337,6 +1353,7 @@ async def curated_reread_verify(
     document_ids: list[int],
     patient_slug: str | None = None,
     dry_run: bool = True,
+    fingerprint: bool = False,
 ) -> str:
     """Confirm Cowork-era values by a LOCAL re-read, without rewriting anything (#678).
 
@@ -1348,7 +1365,16 @@ async def curated_reread_verify(
     missing). Nothing is written to Drive. Dry run (default) only reports
     counts. Explicit ``document_ids`` only (max 10). Runs in the background;
     poll curated_reocr_status. Slow: minutes per page.
+
+    Args:
+        fingerprint: Dry run only. Each document's report also carries the
+            masked shape of the NEW re-read text (digits → 9, words → a's
+            except lab codes, aliases and units; max 80 lines, plus line and
+            separator counts), to diagnose a layout the parser misses (#712).
+            Kept in memory for curated_reocr_status, never stored.
     """
+    if fingerprint and not dry_run:
+        return json.dumps({"error": "fingerprint is only allowed with dry_run=true"})
     pid = await _resolve_patient_id(patient_slug, ctx)
     db = _get_db(ctx)
     ids = list(dict.fromkeys(int(i) for i in (document_ids or [])))[:10]
@@ -1367,7 +1393,9 @@ async def curated_reread_verify(
         "documents": [{"document_id": d["id"], "filename": d["filename"],
                        "category": d.get("category")} for d in docs],
     }  # fmt: skip
-    _reocr_jobs[pid]["task"] = asyncio.create_task(_reread_job(db, pid, docs, dry_run=dry_run))
+    _reocr_jobs[pid]["task"] = asyncio.create_task(
+        _reread_job(db, pid, docs, dry_run=dry_run, fingerprint=fingerprint)
+    )
     return json.dumps(
         {k: v for k, v in _reocr_jobs[pid].items() if k != "task"}, ensure_ascii=False
     )
