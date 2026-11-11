@@ -278,11 +278,17 @@ def test_truncation_keeps_head_and_tail_and_short_text_whole():
 
 
 def test_truncation_marker_counts_dropped_chars():
+    import re
+
     text = _words(4_000)
-    assert f"…[truncated {len(text) - LIMIT} chars]" in app_log.redact(text)
+    out = app_log.redact(text)
+    head, marker, tail = re.split(r"(…\[truncated \d+ chars\])", out)
+    dropped = int(re.search(r"\d+", marker).group())
+    head, tail = head.removesuffix(app_log._CUT), tail.removeprefix(app_log._CUT)
+    assert len(head) + dropped + len(tail) == len(text)  # shown + dropped = all
 
 
-@pytest.mark.parametrize("tail_words", [3_000, 60_000])  # below and above the raw cap
+@pytest.mark.parametrize("tail_words", [3_000, 60_000])  # short and long input
 def test_bearer_token_straddling_the_head_cut_leaves_no_fragment(tail_words):
     token = "QzSyntheticStraddleTokenQz" * 3
     prefix = "auth header Bearer "
@@ -312,8 +318,8 @@ def test_email_straddling_the_tail_cut_leaves_no_fragment():
     assert "straddle" not in out and "example" not in out
 
 
-RAW = app_log.MAX_RAW_CHARS
-RAW_TAIL = app_log._RAW_TAIL_CHARS
+BIG = 256 * 1024  # a long input
+SNAP = app_log._CUT_LINE_CHARS
 
 
 def _straddle(cut_at: int, total: int, secret: str) -> str:
@@ -323,18 +329,24 @@ def _straddle(cut_at: int, total: int, secret: str) -> str:
     return text[: pos - 1] + " " + secret + " " + text[pos + len(secret) + 1 :]
 
 
-@pytest.mark.parametrize("where", ["raw_head", "raw_tail", "head", "tail"])
+def _cut_positions(total: int) -> dict[str, int]:
+    """The output cuts and the edges of their line-context spans."""
+    tail_start = total - app_log._TAIL_CHARS
+    return {
+        "head": HEAD_N,
+        "head_snap": HEAD_N - SNAP,
+        "tail": tail_start,
+        "tail_snap": tail_start + SNAP,
+    }
+
+
+@pytest.mark.parametrize("where", ["head", "head_snap", "tail", "tail_snap"])
 @pytest.mark.parametrize(
     "secret", ["Bearer QzSyntheticStraddleTokenQzQzSyntheticStraddleQz", "Zx" * 40]
 )
 def test_a_secret_straddling_any_cut_leaves_no_fragment(where, secret):
-    total = RAW + RAW_TAIL  # over the raw cap: every cut exists
-    cut_at = {
-        "raw_head": RAW - RAW_TAIL,
-        "raw_tail": total - RAW_TAIL,
-        "head": HEAD_N,
-        "tail": total - app_log._TAIL_CHARS,
-    }[where]
+    total = BIG
+    cut_at = _cut_positions(total)[where]
     text = _straddle(cut_at, total, secret)
     assert len(text) == total and secret in text
     out = app_log.redact(text)
@@ -342,12 +354,27 @@ def test_a_secret_straddling_any_cut_leaves_no_fragment(where, secret):
         assert frag not in out, (where, frag)
 
 
-def test_raw_cap_bounds_the_work_and_reports_dropped_chars():
-    text = _words(RAW)  # five times the cap
+def _budget(seconds: float) -> float:
+    """Shared CI runners are slower than a laptop; the bound stays linear."""
+    import os
+
+    return seconds * 3 if os.environ.get("CI") else seconds
+
+
+def test_three_megabytes_are_redacted_whole_and_fast():
+    line = "user caregiver.synthetic@example.test Bearer SyntheticBearerValueXyz w w w\n"
+    text = line * (3 * 1024 * 1024 // len(line))
     t0 = time.perf_counter()
     out = app_log.redact(text)
-    assert time.perf_counter() - t0 < 0.5
-    assert f"…[truncated {len(text) - LIMIT} chars]" in out and len(out) < LIMIT + 64
+    assert time.perf_counter() - t0 < _budget(0.5)
+    assert "Synthetic" not in out and "caregiver" not in out
+    assert "…[truncated " in out and len(out) < LIMIT + 64
+
+
+def test_over_four_megabytes_becomes_a_marker_with_no_content():
+    text = "Bearer SyntheticBearerValueXyz " * (5 * 1024 * 1024 // 31 + 1)
+    out = app_log.redact(text)
+    assert out == f"[log message too large: {len(text)} chars]"
 
 
 # ── a cut between a context prefix and its value (final review of #756) ──
@@ -384,14 +411,9 @@ def test_helpers_never_show_a_value_without_its_prefix(prefix, newlines):
 
 @pytest.mark.parametrize("newlines", [True, False])
 @pytest.mark.parametrize("prefix", PREFIXES)
-@pytest.mark.parametrize("where", ["raw_head", "raw_tail", "head", "tail"])
-def test_end_to_end_split_prefix_and_value_leaves_no_fragment(where, prefix, newlines):
-    total = RAW + RAW_TAIL if where.startswith("raw") else LIMIT * 4
-    cut = {
-        "raw_head": RAW - RAW_TAIL,
-        "raw_tail": total - RAW_TAIL,
-        "head": HEAD_N,
-        "tail": total - app_log._TAIL_CHARS,
-    }[where]
+@pytest.mark.parametrize("where", ["head", "head_snap", "tail", "tail_snap"])
+@pytest.mark.parametrize("total", [LIMIT * 4, BIG])
+def test_end_to_end_split_prefix_and_value_leaves_no_fragment(where, total, prefix, newlines):
+    cut = _cut_positions(total)[where]
     out = app_log.redact(_with_split_at(cut, total, prefix, newlines))
     assert "Qz" not in out and "Synthetic" not in out, where

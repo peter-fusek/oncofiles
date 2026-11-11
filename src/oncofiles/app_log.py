@@ -36,15 +36,14 @@ FILE_MODE = 0o600
 
 # Log lines can carry attacker-controlled text (filenames, request values), so
 # every quantifier is bounded (linear matching, no catastrophic backtracking).
-# Order: (1) a hard raw cap (MAX_RAW_CHARS) drops the middle of a huge text
-# BEFORE redaction, so no unredacted text ever survives and the cost stays
-# bounded; (2) the WHOLE capped string is redacted; (3) the redacted result is
-# cut to MAX_REDACT_CHARS (head + tail). At every cut, a token-character run
-# the cut splits is replaced by "[cut]", so no fragment of a secret remains.
+# Order (structural, so no cut can ever expose an unredacted value):
+# (1) a text over MAX_REDACT_INPUT_CHARS is replaced as a whole by a marker
+#     (nothing of it is shown); (2) the FULL text is redacted (linear, about
+#     0.1 s per MB); (3) only the redacted result is cut to MAX_REDACT_CHARS
+#     (head + tail), with the line-context rule below at each cut.
 MAX_REDACT_CHARS = 16 * 1024
 _TAIL_CHARS = 4 * 1024  # a traceback's last lines name the actual error
-MAX_RAW_CHARS = 256 * 1024
-_RAW_TAIL_CHARS = 64 * 1024  # the raw cap also keeps the end of a traceback
+MAX_REDACT_INPUT_CHARS = 4 * 1024 * 1024
 
 _SECRET_KEYS = (
     "access_token|refresh_token|id_token|token|client_secret|api_key|apikey|secret|"
@@ -64,11 +63,13 @@ _REDACTIONS: list[tuple[re.Pattern, str]] = [
     # Authorization headers and bearer values
     (re.compile(r"(?i)\b(bearer|basic)[ \t]{1,8}[A-Za-z0-9._~+/=-]{8,4096}"), r"\1 [redacted]"),
     # KEY=value / "key": "value" for secret-named keys, also prefixed ones
-    # (RESEND_API_KEY, auth_token, oauth_token). max_tokens=… stays: the key
-    # must be followed by the separator.
+    # (RESEND_API_KEY, auth_token, oauth_token: the key name may follow "_").
+    # max_tokens=… stays: the key must be followed by the separator. The
+    # prefix is left outside the match (lookbehind only), which keeps the
+    # pattern linear on long word runs.
     (
         re.compile(
-            r"(?i)(?<![A-Za-z0-9])((?:[A-Za-z0-9_]{0,64}_)?(?:" + _SECRET_KEYS + r")"
+            r"(?i)(?<![A-Za-z0-9])((?:" + _SECRET_KEYS + r")"
             r"[\"']?[ \t]{0,8}[:=][ \t]{0,8}[\"']?)[^\s\"'&,;}]{1,4096}"
         ),
         r"\1[redacted]",
@@ -127,21 +128,19 @@ def _tail(text: str, n: int) -> str:
 
 
 def redact(text: str, limit: int = MAX_REDACT_CHARS) -> str:
-    """Cap, mask secrets and e-mail addresses, then cut to about ``limit``
-    chars (head + tail with a "…[truncated N chars]" marker)."""
-    original = len(text)
-    if original > MAX_RAW_CHARS:
-        text = _head(text, MAX_RAW_CHARS - _RAW_TAIL_CHARS) + " " + _tail(text, _RAW_TAIL_CHARS)
+    """Mask secrets and e-mail addresses in the FULL text, then cut the
+    redacted result to about ``limit`` chars (head + tail with a
+    "…[truncated N chars]" marker). Absurdly long input is replaced whole."""
+    if len(text) > MAX_REDACT_INPUT_CHARS:
+        return f"[log message too large: {len(text)} chars]"
     red = _redact_all(text)
+    if len(red) <= limit:
+        return red
     tail_n = min(_TAIL_CHARS, limit // 4)
     head_n = limit - tail_n
-    if len(red) <= limit:
-        if original <= MAX_RAW_CHARS:
-            return red
-        return f"{red} …[truncated {original - MAX_RAW_CHARS} chars]"
     head, tail = _head(red, head_n), _tail(red, tail_n)
-    dropped = max(0, original - head_n - tail_n)
-    return f"{head}…[truncated {dropped} chars]{tail}"
+    shown = len(head.removesuffix(_CUT)) + len(tail.removeprefix(_CUT))
+    return f"{head}…[truncated {len(red) - shown} chars]{tail}"
 
 
 class RedactFilter(logging.Filter):
