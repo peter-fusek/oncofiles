@@ -152,7 +152,8 @@ async def test_admin_dry_run_starts_a_reread_job(db):
     assert data["state"] == "running" and data["kind"] == "reread" and data["dry_run"] is True
     assert sorted(d["document_id"] for d in data["documents"]) == [501, 502]
     args, kwargs = rr.call_args
-    assert args[1] == ERIKA_UUID and kwargs == {"dry_run": True}
+    # the admin API never asks for the #712 fingerprint (MCP dry runs only)
+    assert args[1] == ERIKA_UUID and kwargs == {"dry_run": True, "fingerprint": False}
     assert sorted(d["id"] for d in args[2]) == [501, 502]
 
 
@@ -170,7 +171,7 @@ async def test_reread_dry_run_is_the_default_and_only_explicit_false_stores(db):
             resp, _ = await _call(server.api_admin_reread, _request(db, body=body), admin=True)
             await tool._reocr_jobs[ERIKA_UUID]["task"]
         assert resp.status_code == 202
-        assert rr.call_args.kwargs == {"dry_run": expected}, raw
+        assert rr.call_args.kwargs == {"dry_run": expected, "fingerprint": False}, raw
         assert copy.called is (not expected)  # only a real run makes the safety copy
 
 

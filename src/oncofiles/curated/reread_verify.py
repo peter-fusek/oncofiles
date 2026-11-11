@@ -262,6 +262,69 @@ def apply_plan(result: dict, facts: list[dict]) -> list[tuple[int, str, dict]]:
     return plan
 
 
+# Units printed on Slovak lab sheets, besides those of the fact codes (#712).
+_UNIT_WORDS = (
+    "mmol umol µmol μmol nmol pmol mol ukat µkat μkat nkat kat g mg ug µg μg ng pg "
+    "l dl ml ul µl μl fl mm cm s min h iu u ie mu miu kiu mosm kg mmhg arb ratio inr"
+)
+_WORD = re.compile(r"[^\W\d_]+")
+FINGERPRINT_MAX_LINES = 80
+FINGERPRINT_MAX_CHARS = 200
+
+
+def _fold(word: str) -> str:
+    import unicodedata
+
+    s = unicodedata.normalize("NFKD", word.lower())
+    return "".join(c for c in s if not unicodedata.combining(c)).replace("μ", "µ")
+
+
+def known_words(vocab) -> frozenset[str]:
+    """Words that may stay readable in a fingerprint: the words of every fact
+    code, alias and unit (lab vocabulary, never patient data)."""
+    words = {_fold(w) for w in _UNIT_WORDS.split()}
+    for row in vocab.by_code.values():
+        texts = [
+            row.get("code") or "",
+            *(row.get("aliases") or []),
+            row.get("unit_canonical") or "",
+        ]
+        texts += list((row.get("unit_conversions") or {}).keys())
+        for t in texts:
+            words.update(_fold(w) for w in _WORD.findall(str(t)))
+    return frozenset(words)
+
+
+def mask_line(line: str, known: frozenset[str]) -> str:
+    """Digits → 9; a word → a's of its length unless it is a known lab word."""
+    line = re.sub(r"\d", "9", line)
+    return _WORD.sub(lambda m: m.group(0) if _fold(m.group(0)) in known else "a" * len(m.group(0)),
+                     line)  # fmt: skip
+
+
+def fingerprint(pages: list[str], vocab) -> dict:
+    """The masked shape of a re-read's text (#712): enough to see why the
+    parser found nothing (separators, columns, glued prefixes), with no digit
+    and no word outside the lab vocabulary. Computed on demand, never stored."""
+    known = known_words(vocab)
+    lines = [ln for p in pages for ln in p.splitlines()]
+    text = "\n".join(pages)
+    masked = [mask_line(ln.rstrip(), known)[:FINGERPRINT_MAX_CHARS] for ln in lines]
+    return {
+        "lines": masked[:FINGERPRINT_MAX_LINES],
+        "line_count": len(lines),
+        "page_line_counts": [len(p.splitlines()) for p in pages],
+        "truncated": len(lines) > FINGERPRINT_MAX_LINES,
+        "separators": {
+            "pipes": text.count("|"),
+            "tabs": text.count("\t"),
+            "semicolons": text.count(";"),
+            "double_spaces": len(re.findall(r"\S {2,}\S", text)),
+            "ellipses": text.count("..."),
+        },
+    }
+
+
 def loads(text: str | None) -> dict:
     try:
         return json.loads(text or "{}")
