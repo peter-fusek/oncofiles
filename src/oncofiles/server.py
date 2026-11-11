@@ -40,7 +40,6 @@ from oncofiles.config import (
     MCP_HOST,
     MCP_PORT,
     MCP_TRANSPORT,
-    PATIENT_CONTEXT_PATH,
     SYNC_ENABLED,
     SYNC_INTERVAL_MINUTES,
     SYNC_STALE_ALERT_HOURS,
@@ -274,13 +273,11 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict]:
         await session_revocation.purge_expired(db.db)
     except Exception:
         logger.warning("Session revocation rehydrate failed — continuing", exc_info=True)
-    # Load patient context (DB → JSON file → hardcoded default)
+    # Hydrate the per-patient context cache for all active patients, by pid.
+    # There is no legacy/default patient any more (#733).
     from oncofiles import patient_context
 
-    await patient_context.initialize(db.db, PATIENT_CONTEXT_PATH)
-    # Load per-patient context for all active patients (populates _contexts dict)
-    for _p in await db.list_patients(active_only=True):
-        await patient_context.load_from_db(db.db, patient_id=_p.patient_id)
+    await patient_context.initialize(db)
     files = FilesClient()
     # Restore MCP OAuth sessions from DB (survive deploys)
     if hasattr(auth, "set_db"):
@@ -7638,7 +7635,6 @@ integrations.register(mcp)
 
 # ── Backward-compatible re-exports for tests ─────────────────────────────────
 from oncofiles.tools._helpers import (  # noqa: E402, F401
-    PATIENT_CONTEXT,
     _check_baseline_labs,
     _clamp_limit,
     _doc_header,

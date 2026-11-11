@@ -35,32 +35,34 @@ def _cloud_ai_configured(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _set_patient_context():
-    """Set patient context name for tests so filename parsing works with test data."""
+    """Seed the test patient's name in the per-patient cache (keyed by ERIKA_UUID).
+
+    There is no legacy/default patient (#733): code that parses filenames
+    must resolve a patient — explicitly or via the request ContextVar, which
+    the `db` fixture (or `request_patient`) sets to ERIKA_UUID.
+    """
     from oncofiles import patient_context
 
-    # Save original state
-    original_context = dict(patient_context._context)
-    import oncofiles.filename_parser as fp
-
-    original_re = dict(fp._cached_patient_re)
     original_contexts = dict(patient_context._contexts)
-
-    # Set test patient name in both legacy global and per-patient cache
-    patient_context._context["name"] = "Erika Fusekova"
     patient_context._contexts.clear()
     patient_context._contexts[ERIKA_UUID] = {"name": "Erika Fusekova"}
-    # Invalidate cached regex so it rebuilds with the test patient name
-    fp._cached_patient_re.clear()
 
     yield
 
-    # Restore original state
-    patient_context._context.clear()
-    patient_context._context.update(original_context)
     patient_context._contexts.clear()
     patient_context._contexts.update(original_contexts)
-    fp._cached_patient_re.clear()
-    fp._cached_patient_re.update(original_re)
+
+
+@pytest.fixture
+def request_patient():
+    """Bind the request ContextVar to ERIKA_UUID for tests without the `db` fixture.
+
+    Stands in for PatientResolutionMiddleware so pure helpers (filename
+    parsing) resolve the test patient the same way they do inside a request.
+    """
+    token = _current_patient_id.set(ERIKA_UUID)
+    yield ERIKA_UUID
+    _current_patient_id.reset(token)
 
 
 @pytest.fixture

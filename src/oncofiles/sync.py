@@ -342,7 +342,7 @@ async def sync_from_gdrive(
                     import_mime = mime_type
                 metadata = files.upload(io.BytesIO(content_bytes), import_filename, import_mime)
 
-                parsed = parse_filename(import_filename)
+                parsed = parse_filename(import_filename, patient_id=patient_id)
                 guessed_mime = mimetypes.guess_type(import_filename)[0] or import_mime
                 gdrive_modified = _parse_gdrive_time(modified_time_str)
 

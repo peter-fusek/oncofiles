@@ -329,6 +329,8 @@ async def test_gmail_and_calendar_classifiers_skip_cloud_when_flag_off(flag_off_
             False,
             0.0,
         )
-        is_medical, _, _ = await _classify_event_medical("Synthetic event", "", "")
+        is_medical, _, _ = await _classify_event_medical(
+            "Synthetic event", "", "", patient_id=ERIKA_UUID
+        )
         assert is_medical is False
     get_client.assert_not_called()

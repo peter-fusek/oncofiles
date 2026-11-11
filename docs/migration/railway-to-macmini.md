@@ -167,7 +167,8 @@ Zdroj „Coolify env“ znamená, že hodnota je dnes nastavená v Coolify UI (r
 | `GITHUB_TOKEN` | bug reporty → GitHub issues (**expirovaný**, #550) | **áno** | Coolify env, iba runtime |
 | `GITHUB_REPO` | cieľové repo bug reportov | nie | default |
 | `ONCOTEAM_WEBHOOK_URL` / `ONCOTEAM_WEBHOOK_TOKEN` | notifikácia oncoteamu | URL nie / token **áno** | Coolify env (ak je) |
-| `ONCOFILES_PREFERRED_LANG`, `PATIENT_NAME`, `LOG_LEVEL` | lokalizácia, legacy single-patient, logy | nie (meno = osobný údaj) | default |
+| `ONCOFILES_PREFERRED_LANG`, `LOG_LEVEL` | lokalizácia, logy | nie | default |
+| `PATIENT_NAME`, `PATIENT_CONTEXT_PATH` | od #733 sa nečítajú (žiadny legacy pacient) — nenastavovať | — | — |
 | `IMPORT_LOCAL_SOURCE`, `IMPORT_TRANSCRIPTS_PATH` | jednorazové importy | nie | nepoužité v prode |
 | `BACKUP_BUCKET`, `BACKUP_KMS_KEY`, `BACKUP_GITHUB_TOKEN` | GCS záloha (zaniknutá) | token **áno** | bývalý Railway cron |
 | `RAILWAY_GIT_COMMIT_SHA`, `RAILWAY_DEPLOYMENT_ID` | len do logu pri štarte | nie | vkladá platforma, doma nastaviť ručne |

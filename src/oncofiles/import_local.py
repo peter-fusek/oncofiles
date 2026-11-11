@@ -4,7 +4,7 @@ Walks the Google Drive sync folder recursively, uploads each PDF/JPG/PNG
 to the Anthropic Files API, parses the filename, and stores metadata in SQLite.
 
 Usage:
-    uv run python -m oncofiles.import_local [--dry-run] [--path PATH]
+    uv run python -m oncofiles.import_local --patient-id PID [--dry-run] [--path PATH]
 """
 
 from __future__ import annotations
@@ -18,6 +18,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
+from oncofiles import patient_context
 from oncofiles.config import DATABASE_PATH, GOOGLE_DRIVE_FOLDER_ID
 from oncofiles.database import Database
 from oncofiles.filename_parser import parse_filename
@@ -61,11 +62,18 @@ def _collect_files(source_dir: Path) -> list[Path]:
 async def import_documents(
     source_dir: Path = DEFAULT_SOURCE,
     dry_run: bool = False,
+    *,
+    patient_id: str,
 ) -> dict[str, int]:
-    """Import all documents from source_dir into the system.
+    """Import all documents from source_dir into one patient's records.
+
+    `patient_id` is required (#733): filename parsing and the inserted rows are
+    scoped to that patient; there is no default patient.
 
     Returns summary dict with counts: total, imported, skipped, errors.
     """
+    if not patient_id:
+        raise ValueError("import_documents requires patient_id (#733)")
     if not source_dir.exists():
         logger.error("Source directory not found: %s", source_dir)
         sys.exit(1)
@@ -73,20 +81,24 @@ async def import_documents(
     files = _collect_files(source_dir)
     logger.info("Found %d importable files in %s", len(files), source_dir)
 
+    db = Database(DATABASE_PATH)
+    await db.connect()
+    await db.migrate()
+    # Filename parsing needs the patient's name from their stored context.
+    await patient_context.load_from_db(db.db, patient_id)
+
     if dry_run:
         for f in files:
-            parsed = parse_filename(f.name)
+            parsed = parse_filename(f.name, patient_id=patient_id)
             rel = f.relative_to(source_dir)
             cat = parsed.category.value
             inst = parsed.institution or "?"
             date_s = parsed.document_date.isoformat() if parsed.document_date else "????"
             logger.info("  [%s] %-20s %-12s %s", date_s, inst, cat, rel)
         logger.info("Dry run: %d files would be imported.", len(files))
+        await db.close()
         return {"total": len(files), "imported": 0, "skipped": 0, "errors": 0}
 
-    db = Database(DATABASE_PATH)
-    await db.connect()
-    await db.migrate()
     client = FilesClient()
 
     # Build GDrive filename → file info lookup for gdrive_id resolution
@@ -105,7 +117,7 @@ async def import_documents(
         rel = filepath.relative_to(source_dir)
 
         # Idempotency check
-        existing = await db.get_document_by_original_filename(name)
+        existing = await db.get_document_by_original_filename(name, patient_id=patient_id)
         if existing:
             logger.info("  [%d/%d] SKIP (exists) %s", i, len(files), rel)
             stats["skipped"] += 1
@@ -118,7 +130,7 @@ async def import_documents(
             logger.info("  → %s", metadata.id)
 
             # Parse filename for metadata
-            parsed = parse_filename(name)
+            parsed = parse_filename(name, patient_id=patient_id)
             mime = mimetypes.guess_type(name)[0] or "application/octet-stream"
 
             # Resolve GDrive file ID if available
@@ -145,7 +157,7 @@ async def import_documents(
                 gdrive_modified_time=gdrive_modified,
             )
 
-            await db.insert_document(doc)
+            await db.insert_document(doc, patient_id=patient_id)
             stats["imported"] += 1
 
         except Exception as e:
@@ -168,10 +180,15 @@ async def import_documents(
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(levelname)-8s %(message)s")
     parser = argparse.ArgumentParser(description="Import local medical documents")
+    parser.add_argument(
+        "--patient-id", required=True, help="Patient the documents belong to (#733)"
+    )
     parser.add_argument("--dry-run", action="store_true", help="Preview without uploading")
     parser.add_argument("--path", type=Path, default=DEFAULT_SOURCE, help="Source directory")
     args = parser.parse_args()
-    asyncio.run(import_documents(source_dir=args.path, dry_run=args.dry_run))
+    asyncio.run(
+        import_documents(source_dir=args.path, dry_run=args.dry_run, patient_id=args.patient_id)
+    )
 
 
 if __name__ == "__main__":

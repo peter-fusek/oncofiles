@@ -133,7 +133,7 @@ async def upload_document(
         return json.dumps({"error": "Files API upload failed. Check server logs."})
 
     # Parse filename for structured metadata
-    parsed = parse_filename(filename)
+    parsed = parse_filename(filename, patient_id=patient_id)
 
     # Check for existing active document with the same filename (re-upload / new version)
     existing = await db.get_active_document_by_filename(filename, patient_id=patient_id)

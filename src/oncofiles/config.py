@@ -184,11 +184,6 @@ GITHUB_REPO: str = os.environ.get("GITHUB_REPO", "peter-fusek/oncofiles")
 # private (the dashboard shows patient data). No default: unset = disabled (#621).
 BUG_REPORT_REPO: str = os.environ.get("BUG_REPORT_REPO", "")
 
-# Patient context
-PATIENT_CONTEXT_PATH: str = os.environ.get(
-    "PATIENT_CONTEXT_PATH", str(DATA_DIR / "patient_context.json")
-)
-
 # Dashboard auth — comma-separated admin emails (see all patients)
 # Non-admin users can still sign in but only see their own patients.
 DASHBOARD_ADMIN_EMAILS: list[str] = [

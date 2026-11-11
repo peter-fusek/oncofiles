@@ -87,13 +87,11 @@ def _with_clinical_disclaimer(payload: dict | list) -> dict:
 # ── Patient context (delegated to patient_context module) ────────────────────
 
 
-# Backward-compatible alias — lazy to avoid capturing stale import-time state
-def PATIENT_CONTEXT() -> dict:  # noqa: N802
-    return patient_context.get_context()
-
-
-def _patient_context_text() -> str:
-    return patient_context.format_context_text()
+def _patient_context_text(patient_id: str) -> str:
+    """Patient context block for tool output. The patient is always explicit (#733)."""
+    if not patient_id:
+        raise ValueError("_patient_context_text requires a patient_id (#733)")
+    return patient_context.format_context_text(patient_id)
 
 
 # ── Context accessors ────────────────────────────────────────────────────────

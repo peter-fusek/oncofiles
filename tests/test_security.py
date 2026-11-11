@@ -228,7 +228,7 @@ def test_upload_document_sanitizes_filename_at_entry():
     # The reassignment must happen BEFORE the value is used downstream
     # (parse_filename, get_active_document_by_filename, Document(...)).
     sanitize_idx = source.index("sanitize_filename(filename)")
-    parse_idx = source.index("parse_filename(filename)")
+    parse_idx = source.index("parse_filename(filename")
     db_lookup_idx = source.index("get_active_document_by_filename(filename")
     assert sanitize_idx < parse_idx, "sanitize must precede parse_filename"
     assert sanitize_idx < db_lookup_idx, "sanitize must precede DB lookup"
