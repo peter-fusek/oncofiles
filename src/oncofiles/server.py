@@ -356,31 +356,13 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict]:
     except Exception as e:
         logger.warning("OAuth GDrive init failed: %s", e, exc_info=True)
 
-    # Build Gmail/Calendar clients if scopes granted
+    # Build Gmail/Calendar clients if scopes granted (never when the flag is off, #746)
     if token and GOOGLE_OAUTH_CLIENT_ID:
         try:
-            granted = json.loads(token.granted_scopes) if token.granted_scopes else []
-            from oncofiles.oauth import SCOPE_CALENDAR, SCOPE_GMAIL
-
-            if SCOPE_GMAIL in granted:
-                from oncofiles.gmail_client import GmailClient
-
-                gmail_client = GmailClient.from_oauth(
-                    access_token=access_token,
-                    refresh_token=token.refresh_token,
-                    client_id=GOOGLE_OAUTH_CLIENT_ID,
-                    client_secret=GOOGLE_OAUTH_CLIENT_SECRET,
-                )
+            gmail_client, calendar_client = _build_gmail_calendar_clients(token, access_token)
+            if gmail_client:
                 logger.info("Gmail client initialized from OAuth tokens")
-            if SCOPE_CALENDAR in granted:
-                from oncofiles.calendar_client import CalendarClient
-
-                calendar_client = CalendarClient.from_oauth(
-                    access_token=access_token,
-                    refresh_token=token.refresh_token,
-                    client_id=GOOGLE_OAUTH_CLIENT_ID,
-                    client_secret=GOOGLE_OAUTH_CLIENT_SECRET,
-                )
+            if calendar_client:
                 logger.info("Calendar client initialized from OAuth tokens")
         except Exception:
             logger.warning("Gmail/Calendar client init failed", exc_info=True)
@@ -708,6 +690,44 @@ def _is_folder_not_found(exc: BaseException) -> bool:
     return False
 
 
+def _build_gmail_calendar_clients(token, access_token: str) -> tuple:
+    """Return ``(gmail, calendar)`` clients for the scopes ``token`` grants.
+
+    #746: with GMAIL_CALENDAR_ENABLED off this returns ``(None, None)`` before
+    importing or constructing either client, even when the stored token holds
+    the gmail/calendar scopes. Callers treat None as "not connected".
+    """
+    if not gmail_calendar_enabled():
+        return None, None
+
+    from oncofiles.oauth import SCOPE_CALENDAR, SCOPE_GMAIL
+
+    granted = json.loads(token.granted_scopes) if token.granted_scopes else []
+
+    gmail = None
+    if SCOPE_GMAIL in granted:
+        from oncofiles.gmail_client import GmailClient
+
+        gmail = GmailClient.from_oauth(
+            access_token=access_token,
+            refresh_token=token.refresh_token,
+            client_id=GOOGLE_OAUTH_CLIENT_ID,
+            client_secret=GOOGLE_OAUTH_CLIENT_SECRET,
+        )
+
+    calendar = None
+    if SCOPE_CALENDAR in granted:
+        from oncofiles.calendar_client import CalendarClient
+
+        calendar = CalendarClient.from_oauth(
+            access_token=access_token,
+            refresh_token=token.refresh_token,
+            client_id=GOOGLE_OAUTH_CLIENT_ID,
+            client_secret=GOOGLE_OAUTH_CLIENT_SECRET,
+        )
+    return gmail, calendar
+
+
 async def _create_patient_clients(
     db,
     patient_id: str,
@@ -728,7 +748,7 @@ async def _create_patient_clients(
 
     import time as _time
 
-    from oncofiles.oauth import SCOPE_CALENDAR, SCOPE_GMAIL, is_token_expired, refresh_access_token
+    from oncofiles.oauth import is_token_expired, refresh_access_token
 
     # Check cache first
     cached = _patient_clients_cache.get(patient_id)
@@ -736,6 +756,8 @@ async def _create_patient_clients(
         # Re-check on cache hits too (cheap: detection is cached for 10 min) so a
         # folder that becomes curated is blocked without waiting for the 30-min TTL.
         await _mark_patient_curated(patient_id, cached[0], cached[3])
+        if not gmail_calendar_enabled():  # #746: never hand out Gmail/Calendar clients
+            return (cached[0], None, None, cached[3])
         return cached[:4]
 
     token = await db.get_oauth_token(patient_id=patient_id)
@@ -763,29 +785,7 @@ async def _create_patient_clients(
         owner_email=token.owner_email or "",
     )
 
-    granted = json.loads(token.granted_scopes) if token.granted_scopes else []
-
-    p_gmail = None
-    if SCOPE_GMAIL in granted:
-        from oncofiles.gmail_client import GmailClient
-
-        p_gmail = GmailClient.from_oauth(
-            access_token=access_token,
-            refresh_token=token.refresh_token,
-            client_id=GOOGLE_OAUTH_CLIENT_ID,
-            client_secret=GOOGLE_OAUTH_CLIENT_SECRET,
-        )
-
-    p_calendar = None
-    if SCOPE_CALENDAR in granted:
-        from oncofiles.calendar_client import CalendarClient
-
-        p_calendar = CalendarClient.from_oauth(
-            access_token=access_token,
-            refresh_token=token.refresh_token,
-            client_id=GOOGLE_OAUTH_CLIENT_ID,
-            client_secret=GOOGLE_OAUTH_CLIENT_SECRET,
-        )
+    p_gmail, p_calendar = _build_gmail_calendar_clients(token, access_token)
 
     # Curated folder (#562): block every legacy write on this client.
     await _mark_patient_curated(patient_id, p_gdrive, token.gdrive_folder_id)
