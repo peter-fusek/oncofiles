@@ -3,6 +3,9 @@
 Both ways of completing a Google link go through ``store_google_link``: the
 ``/oauth/callback`` redirect and the ``gdrive_auth_callback`` MCP tool.
 
+- **Account binding (login CSRF).** The Google account that completes the
+  consent must be the initiator's own or the patient's caregiver's
+  (``allowed_accounts``); otherwise nothing is written.
 - **Overwrite guard.** If the patient already has a token whose
   ``owner_email`` differs from the new account's email (or the new email is
   unknown), only a privileged initiator may replace it: the operator, an
@@ -61,6 +64,30 @@ def mcp_principal_privileged(principal: dict, caregiver_email: str | None) -> bo
     return bool(eh) and eh in caregiver_hashes(caregiver_email)
 
 
+def allowed_accounts(
+    principal: dict, caregiver_email: str | None, session_email: str | None = None
+) -> set[str]:
+    """Hashes of the Google accounts allowed to complete a link (#591 login CSRF).
+
+    The account that finishes the consent screen must be the initiator's own
+    or the patient's caregiver's, so a link URL handed to someone else cannot
+    attach *their* Google account to the initiator's patient:
+
+    - ``s`` (dashboard session): the session's email or the caregiver's;
+    - ``m`` (MCP caller): the email bound to the caller's token (state hash) or
+      the caregiver's;
+    - ``o`` (operator bearer): the caregiver's only. There is deliberately no
+      operator override: to link another account, set it as caregiver first.
+    """
+    allowed = caregiver_hashes(caregiver_email)
+    kind = principal.get("k")
+    if kind == "s" and session_email:
+        allowed |= {email_hash(session_email)} - {None}
+    elif kind == "m" and principal.get("eh"):
+        allowed.add(principal["eh"])
+    return allowed
+
+
 async def store_google_link(
     db,
     *,
@@ -69,13 +96,18 @@ async def store_google_link(
     service: str,
     principal_kind: str,
     privileged: bool,
+    allowed_account_hashes: set[str],
     source: str,
 ) -> tuple[bool, str]:
     """Store the exchanged Google tokens for *patient_id*, or refuse.
 
+    *allowed_account_hashes* are the keyed hashes of the Google accounts that
+    may complete this link (see ``allowed_accounts``); any other account,
+    or one without a verified email, is refused (login-CSRF guard).
+
     Returns ``(stored, reason)``. Writes one activity_log row either way.
     """
-    from oncofiles.models import ActivityLogEntry, OAuthToken
+    from oncofiles.models import OAuthToken
     from oncofiles.oauth import account_email, parse_granted_scopes, required_scopes
 
     new_email = account_email(tokens)
@@ -85,9 +117,13 @@ async def store_google_link(
     same_account = bool(old_email) and new_email == old_email
 
     new_scopes = parse_granted_scopes(tokens)
+    new_hash = email_hash(new_email)
+    account_bound = bool(new_hash) and new_hash in allowed_account_hashes
     reason = ""
     if not required_scopes(service) <= set(new_scopes):
         reason = "requested scope not granted"
+    elif not account_bound:
+        reason = "this Google account is not the one that started the link, nor the caregiver's"
     elif old_email and not same_account and not privileged:
         reason = "a different Google account is already linked; only the caregiver may replace it"
 
@@ -115,10 +151,26 @@ async def store_google_link(
         "service": service,
         "principal": principal_kind,
         "privileged": privileged,
-        "new_email_hash": email_hash(new_email),
+        "account_bound": account_bound,
+        "new_email_hash": new_hash,
         "old_email_hash": email_hash(old_email),
         "same_account": same_account,
     }
+    await _audit(db, patient_id, detail, reason, source)
+    return (not reason), reason
+
+
+async def log_link_refusal(
+    db, patient_id: str, *, service: str, principal_kind: str, reason: str, source: str
+) -> None:
+    """Audit row for a link refused before the code exchange (ids only)."""
+    detail = {"event": "refused", "service": service, "principal": principal_kind}
+    await _audit(db, patient_id, detail, reason, source)
+
+
+async def _audit(db, patient_id: str, detail: dict, reason: str, source: str) -> None:
+    from oncofiles.models import ActivityLogEntry
+
     try:
         await db.insert_activity_log(
             ActivityLogEntry(
@@ -136,4 +188,3 @@ async def store_google_link(
         logger.warning("google_link: activity_log write failed", exc_info=True)
     if reason:
         logger.warning("Google link refused for patient %s: %s", patient_id[:8], reason)
-    return (not reason), reason

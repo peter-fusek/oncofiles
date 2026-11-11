@@ -7605,11 +7605,19 @@ async def oauth_callback(request: Request) -> JSONResponse:
     #591: the state (v2) names the patient, the service and the initiating
     principal. A missing / expired / replayed / tampered state, or a session
     state arriving without that session's cookie, is refused before any write.
-    ``store_google_link`` then refuses to replace a different account's token
-    unless the initiator is the operator, an admin or the patient's caregiver,
-    and logs every link / re-link to activity_log (hashes only).
+    ``store_google_link`` then refuses a Google account that is neither the
+    initiator's nor the caregiver's (login CSRF; an operator state completes
+    only with the caregiver's account), refuses to replace a different
+    account's token unless the initiator is the operator, an admin or the
+    patient's caregiver, and logs every link / re-link / refusal to
+    activity_log (hashes only).
     """
-    from oncofiles.google_link import mcp_principal_privileged, store_google_link
+    from oncofiles.google_link import (
+        allowed_accounts,
+        log_link_refusal,
+        mcp_principal_privileged,
+        store_google_link,
+    )
     from oncofiles.oauth import exchange_code, verify_link_state
 
     rate_err = _check_rate_limit("oauth-callback")
@@ -7635,18 +7643,27 @@ async def oauth_callback(request: Request) -> JSONResponse:
 
     # Bind to the initiating principal.
     kind = principal.get("k")
+    session_email = None
     if kind == "o":
         privileged = True
     elif kind == "s":
         session_token = request.cookies.get("oncofiles_session", "")
-        email = _verify_session_token(session_token) if session_token else None
-        parsed_session = _parse_session_token(session_token) if email else None
+        session_email = _verify_session_token(session_token) if session_token else None
+        parsed_session = _parse_session_token(session_token) if session_email else None
         if parsed_session is None or parsed_session[2] != principal.get("tid"):
+            await log_link_refusal(
+                db,
+                patient_id,
+                service=payload["svc"],
+                principal_kind=kind,
+                reason="started in another session",
+                source="oauth_callback",
+            )
             return JSONResponse(
                 {"error": "This link was started in another session."}, status_code=403
             )
-        privileged = _is_admin_email(email) or _email_matches_caregiver(
-            email, patient.caregiver_email
+        privileged = _is_admin_email(session_email) or _email_matches_caregiver(
+            session_email, patient.caregiver_email
         )
     elif kind == "m":
         privileged = mcp_principal_privileged(principal, patient.caregiver_email)
@@ -7670,6 +7687,7 @@ async def oauth_callback(request: Request) -> JSONResponse:
         service=payload["svc"],
         principal_kind=kind,
         privileged=privileged,
+        allowed_account_hashes=allowed_accounts(principal, patient.caregiver_email, session_email),
         source="oauth_callback",
     )
     if not stored:

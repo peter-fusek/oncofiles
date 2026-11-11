@@ -48,7 +48,11 @@ async def gdrive_auth_callback(ctx: Context, code: str) -> str:
     Args:
         code: The authorization code from the Google OAuth redirect.
     """
-    from oncofiles.google_link import mcp_principal_privileged, store_google_link
+    from oncofiles.google_link import (
+        allowed_accounts,
+        mcp_principal_privileged,
+        store_google_link,
+    )
     from oncofiles.oauth import exchange_code, mcp_principal
 
     if not GOOGLE_OAUTH_CLIENT_ID:
@@ -74,6 +78,7 @@ async def gdrive_auth_callback(ctx: Context, code: str) -> str:
         service="drive",
         principal_kind="m",
         privileged=mcp_principal_privileged(principal, patient.caregiver_email),
+        allowed_account_hashes=allowed_accounts(principal, patient.caregiver_email),
         source="gdrive_auth_callback",
     )
     if not stored:
