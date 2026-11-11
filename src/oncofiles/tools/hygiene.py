@@ -604,6 +604,10 @@ async def qa_analysis(
 ) -> str:
     """Analyze activity logs for errors, slow tools, and improvement opportunities.
 
+    **Admin-only (#717).** Aggregates the activity log of every patient (an
+    ops view of the whole system), so a patient-scoped caller must not reach
+    it: it would see other patients' tool usage and error patterns.
+
     Scans the audit trail for patterns: recurring errors, slow operations,
     failed storage, and usage trends. Returns actionable findings that can
     be used to create GitHub improvement issues.
@@ -612,6 +616,13 @@ async def qa_analysis(
         days: Number of days to analyze (default 7).
     """
     from datetime import date, timedelta
+
+    from oncofiles.tools._helpers import _require_admin_or_raise
+
+    try:
+        _require_admin_or_raise("qa_analysis")
+    except ValueError as exc:
+        return json.dumps({"error": str(exc)})
 
     db = _get_db(ctx)
 

@@ -939,33 +939,3 @@ class DocumentMixin:
         ) as cursor:
             rows = await cursor.fetchall()
             return [d for r in rows if (d := _safe_row_to_document(r)) is not None]
-
-    async def get_treatment_timeline(self, limit: int = 200, *, patient_id: str) -> list[Document]:
-        """Get treatment documents in chronological (ASC) order."""
-        treatment_categories = (
-            "surgery",
-            "surgical_report",
-            "discharge",
-            "discharge_summary",
-            "report",
-            "pathology",
-            "genetics",
-            "labs",
-            "imaging",
-            "chemo_sheet",
-            "prescription",
-            "referral",
-        )
-        placeholders = ", ".join("?" for _ in treatment_categories)
-        async with self.db.execute(
-            f"""
-            SELECT * FROM documents
-            WHERE category IN ({placeholders}) AND deleted_at IS NULL
-            AND patient_id = ?
-            ORDER BY document_date ASC, created_at ASC
-            LIMIT ?
-            """,
-            (*treatment_categories, patient_id, limit),
-        ) as cursor:
-            rows = await cursor.fetchall()
-            return [d for r in rows if (d := _safe_row_to_document(r)) is not None]
