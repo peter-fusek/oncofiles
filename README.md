@@ -17,8 +17,6 @@ Oncofiles is an [MCP server](https://modelcontextprotocol.io/) built for cancer 
 
 **Built from real need:** Created by a caregiver managing his wife's cancer treatment. Hundreds of documents, dozens of doctors, constantly changing lab results. Oncofiles organizes the chaos so you can focus on treatment, not on finding papers.
 
-**Sister project:** [Oncoteam](https://oncofiles.com/oncoteam) — an AI agent that analyzes your Oncofiles data: tracks lab trends, searches clinical trials, and prepares questions for your oncologist.
-
 **Your data, your control:** Everything stays in your Google Drive. No third-party data processing. Disconnect anytime — your files are always yours.
 
 ## Multi-Patient Support (v4.0+)
@@ -211,7 +209,7 @@ Architecture, development, operations — everything under one roof.
 
 **[Instarea](https://www.instarea.com)** — 18 years, 23 products shipped. From telecom analytics and enterprise clients (Callinspector) to mobile-first fintech (InventButton), big data exits (marketlocator → Deutsche Telekom), IoT platforms, and AI-first products (PulseShape, ReplicaCity, HomeGrif).
 
-Oncofiles and [Oncoteam](https://github.com/peter-fusek/oncoteam) are Instarea's latest — built with the same engineering discipline that delivered enterprise-grade products for banking, telecom, and data industries.
+Oncofiles is Instarea's latest — built with the same engineering discipline that delivered enterprise-grade products for banking, telecom, and data industries.
 
 10+ verified, synchronized team members available across front-end, back-end, integration, data science, UX/UI, marketing, and cloud ops.
 

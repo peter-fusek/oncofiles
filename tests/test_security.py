@@ -168,7 +168,7 @@ async def test_bearer_token_constant_time():
     # Correct token works
     result = await provider.verify_token("secret-token-123")
     assert result is not None
-    assert result.client_id == "oncoteam"
+    assert result.client_id == "static-bearer"
 
     # Wrong token rejected
     assert await provider.verify_token("wrong-token") is None

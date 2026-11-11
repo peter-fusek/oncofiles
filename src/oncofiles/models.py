@@ -550,7 +550,7 @@ class ClinicalRecordNote(BaseModel):
     """A free-form annotation tied to a clinical record.
 
     Sourceable from any session — Claude.ai chat, ChatGPT connector, caregiver
-    dashboard, Oncoteam — so the caregiver can see *who said what when* about
+    dashboard — so the caregiver can see *who said what when* about
     any single lab / biomarker / finding.
     """
 
@@ -590,8 +590,8 @@ class ClinicalRecordAudit(BaseModel):
 class ClinicalAnalysis(BaseModel):
     """An analytic output over one or more clinical records.
 
-    Lives alongside the facts in ``clinical_records`` — this is where Oncoteam
-    (or any external AI) stores computed results: SII trends, lab deltas,
+    Lives alongside the facts in ``clinical_records`` — this is where an
+    external AI stores computed results: SII trends, lab deltas,
     biomarker safety checks, session summaries, etc. The ``record_ids`` JSON
     array traces which facts fed the analysis.
     """

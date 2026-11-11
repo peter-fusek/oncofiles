@@ -133,7 +133,7 @@ class PersistentOAuthProvider(InMemoryOAuthProvider):
         _verified_caller_is_admin.set(False)
         _verified_caller_email.set("")
 
-        # 1. Static bearer token (Oncoteam, dev) — implicit admin scope
+        # 1. Static bearer token (Claude Desktop, dev) — implicit admin scope
         if self._bearer_token and hmac.compare_digest(token.encode(), self._bearer_token.encode()):
             _verified_caller_is_admin.set(True)
             if self._db:
@@ -151,7 +151,7 @@ class PersistentOAuthProvider(InMemoryOAuthProvider):
                     pid = await self._safe_single_patient_pid()
                 if pid:
                     _verified_patient_id.set(pid)
-            return AccessToken(token=token, client_id="oncoteam", scopes=[])
+            return AccessToken(token=token, client_id="static-bearer", scopes=[])
         # 2. MCP OAuth tokens (in-memory, restored from DB on startup — Claude.ai, ChatGPT)
         result = await super().verify_token(token)
         if result:

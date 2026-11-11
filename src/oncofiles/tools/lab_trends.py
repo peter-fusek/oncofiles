@@ -708,7 +708,7 @@ async def get_lab_time_series(
 
     Returns chronological values with reference ranges, units, and computed
     deltas (absolute change and % change between consecutive measurements).
-    Designed for Oncoteam and MCP clients to build trend charts and analysis.
+    Designed for MCP clients to build trend charts and analysis.
 
     Args:
         parameters: Comma-separated parameter names (e.g. "CEA,CA19_9" or "PLT").

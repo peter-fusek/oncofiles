@@ -4,17 +4,17 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import date
 
 from fastmcp import Context
 
-from oncofiles.models import ConversationEntry, ConversationQuery
+from oncofiles.models import ConversationQuery
 from oncofiles.tools._helpers import (
     _clamp_limit,
     _get_db,
     _parse_date,
     _resolve_patient_id,
 )
+from oncofiles.tools._sunset import write_refused
 
 logger = logging.getLogger(__name__)
 
@@ -59,67 +59,24 @@ async def log_conversation(
     participant: str = "claude.ai",
     patient_slug: str | None = None,
 ) -> str:
-    """Save a diary entry to the conversation archive.
+    """[DEPRECATED — Oncoteam sunset (#721); removed after 2027-01-10] Refuses new writes.
 
-    Use this to log summaries, decisions, progress notes, questions,
-    or any narrative content from conversations about the oncology journey.
+    The conversation diary was Oncoteam's narrative archive. Oncoteam is
+    retired, so this tool stores nothing and returns a ``deprecated`` error.
+    Existing entries stay readable via search_conversations, get_conversation
+    and get_conversation_stats.
 
     Args:
-        title: Short title for the entry.
-        content: Markdown body with the full entry text.
-        entry_date: Date the entry is about (YYYY-MM-DD). Defaults to today.
-        entry_type: Type of entry: summary, decision, progress, question, note.
-        tags: Comma-separated tags (e.g. "chemo,FOLFOX,cycle-3").
-        document_ids: Comma-separated document IDs referenced (e.g. "3,15").
-        participant: Who created this: claude.ai, claude-code, oncoteam.
-        patient_slug: Optional — explicit patient slug (#429).
+        title: Entry title (ignored).
+        content: Entry body (ignored).
+        entry_date: Entry date (ignored).
+        entry_type: Entry type (ignored).
+        tags: Tags (ignored).
+        document_ids: Document IDs (ignored).
+        participant: Participant (ignored).
+        patient_slug: Optional patient slug (ignored).
     """
-    try:
-        parsed_date = _parse_date(entry_date) or date.today()
-    except ValueError as e:
-        return json.dumps({"error": str(e)})
-
-    db = _get_db(ctx)
-
-    parsed_tags = [t.strip() for t in tags.split(",") if t.strip()] if tags else None
-    try:
-        parsed_doc_ids = (
-            [int(d.strip()) for d in document_ids.split(",") if d.strip()] if document_ids else None
-        )
-    except ValueError:
-        return json.dumps(
-            {"error": f"Invalid document_ids: {document_ids!r}. Expected comma-separated integers."}
-        )
-
-    # Try to capture session_id from context
-    session_id = getattr(ctx, "session_id", None)
-
-    # Auto-classify session type based on participant
-    session_type = "technical" if participant == "claude-code" else "patient"
-
-    entry = ConversationEntry(
-        entry_date=parsed_date,
-        entry_type=entry_type,
-        title=title,
-        content=content,
-        participant=participant,
-        session_type=session_type,
-        session_id=session_id,
-        tags=parsed_tags,
-        document_ids=parsed_doc_ids,
-        source="live",
-    )
-    pid = await _resolve_patient_id(patient_slug, ctx)
-    entry = await db.insert_conversation_entry(entry, patient_id=pid)
-    return json.dumps(
-        {
-            "id": entry.id,
-            "entry_date": entry.entry_date.isoformat(),
-            "entry_type": entry.entry_type,
-            "title": entry.title,
-            "tags": entry.tags,
-        }
-    )
+    return write_refused("log_conversation")
 
 
 async def search_conversations(
@@ -133,7 +90,8 @@ async def search_conversations(
     limit: int = 50,
     patient_slug: str | None = None,
 ) -> str:
-    """Search the conversation archive by text, type, date, or tags.
+    """[DEPRECATED — Oncoteam sunset (#721); removed after 2027-01-10]
+    Search the conversation archive by text, type, date, or tags.
 
     Returns entries with truncated content (500 chars). Use get_conversation
     for full text of a specific entry.
@@ -187,7 +145,8 @@ async def search_conversations(
 
 
 async def get_conversation(ctx: Context, entry_id: int, patient_slug: str | None = None) -> str:
-    """Get the full content of a single conversation entry by ID.
+    """[DEPRECATED — Oncoteam sunset (#721); removed after 2027-01-10]
+    Get the full content of a single conversation entry by ID.
 
     Args:
         entry_id: The conversation entry ID.
@@ -459,7 +418,8 @@ async def get_conversation_stats(
     top_tags_limit: int = 20,
     patient_slug: str | None = None,
 ) -> str:
-    """Per-patient conversation archive stats: counts, topics, monthly breakdown.
+    """[DEPRECATED — Oncoteam sunset (#721); removed after 2027-01-10]
+    Per-patient conversation archive stats: counts, topics, monthly breakdown.
 
     Surfaces how much the patient's journey has been narrated into the archive
     and where the gaps are. Answers #462 ("report per patient about count and

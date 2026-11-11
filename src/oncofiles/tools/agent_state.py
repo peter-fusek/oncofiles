@@ -1,5 +1,8 @@
 """Agent state persistence tools.
 
+DEPRECATED (#721, Oncoteam sunset): ``set_agent_state`` refuses new writes;
+the two read tools stay as an archive until 2027-01-10. See ``_sunset.py``.
+
 All three tools are patient-scoped via Option A (#429): every call resolves
 the acting patient via ``_resolve_patient_id(patient_slug, ctx)`` and passes
 it through to the DB layer's ``patient_id=`` kwarg. Prior to #452 the MCP
@@ -14,8 +17,8 @@ import json
 
 from fastmcp import Context
 
-from oncofiles.models import AgentState
 from oncofiles.tools._helpers import _get_db, _resolve_patient_id
+from oncofiles.tools._sunset import write_refused
 
 
 async def set_agent_state(
@@ -25,34 +28,19 @@ async def set_agent_state(
     agent_id: str = "oncoteam",
     patient_slug: str | None = None,
 ) -> str:
-    """Set a persistent key-value pair for an agent, scoped to a patient.
+    """[DEPRECATED — Oncoteam sunset (#721); removed after 2027-01-10] Refuses new writes.
 
-    Upserts: creates the key if new, updates if it already exists. The
-    UNIQUE constraint is ``(patient_id, agent_id, key)`` — writes for
-    different patients never collide.
+    Agent state was Oncoteam's working memory. Oncoteam is retired, so this
+    tool stores nothing and returns a ``deprecated`` error. Existing state
+    stays readable via get_agent_state and list_agent_states.
 
     Args:
-        key: State key name (e.g. "last_briefing_date", "treatment_protocol").
-        value: JSON string value to store.
-        agent_id: Agent identifier (default: oncoteam).
-        patient_slug: Optional — explicit patient slug (e.g. 'q1b'). Required
-            in stateless HTTP flows (Claude.ai connector, ChatGPT) where
-            select_patient() state does not survive across tool calls (#429).
+        key: State key name (ignored).
+        value: JSON string value (ignored).
+        agent_id: Agent identifier (ignored).
+        patient_slug: Optional patient slug (ignored).
     """
-    pid = await _resolve_patient_id(patient_slug, ctx)
-    db = _get_db(ctx)
-    state = AgentState(agent_id=agent_id, key=key, value=value, patient_id=pid)
-    saved = await db.set_agent_state(state)
-    return json.dumps(
-        {
-            "id": saved.id,
-            "agent_id": saved.agent_id,
-            "key": saved.key,
-            "value": saved.value,
-            "patient_id": saved.patient_id,
-            "updated_at": saved.updated_at.isoformat() if saved.updated_at else None,
-        }
-    )
+    return write_refused("set_agent_state")
 
 
 async def get_agent_state(
@@ -61,7 +49,8 @@ async def get_agent_state(
     agent_id: str = "oncoteam",
     patient_slug: str | None = None,
 ) -> str:
-    """Get a persistent state value by key, scoped to a patient.
+    """[DEPRECATED — Oncoteam sunset (#721); removed after 2027-01-10]
+    Get a persistent state value by key, scoped to a patient (read-only archive).
 
     Returns ``{value: null}`` if the key does not exist for this patient.
 
@@ -93,7 +82,8 @@ async def list_agent_states(
     limit: int = 100,
     patient_slug: str | None = None,
 ) -> str:
-    """List all persistent state keys for an agent, scoped to a patient.
+    """[DEPRECATED — Oncoteam sunset (#721); removed after 2027-01-10]
+    List all persistent state keys for an agent, scoped to a patient (read-only archive).
 
     Args:
         agent_id: Agent identifier (default: oncoteam).
