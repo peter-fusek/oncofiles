@@ -26,8 +26,8 @@ This module is the single declarative classification:
 * ``WRITE_TOOLS`` — everything else that writes. Left without annotations
   so clients keep the conservative spec defaults and keep asking.
 
-Tools that set their own annotations at registration (``clinical_facts``)
-are left untouched. ``tests/test_tool_annotations.py`` fails when a new tool
+Tools that set their own annotations at registration (``clinical_facts``,
+``fact_review``) are left untouched. ``tests/test_tool_annotations.py`` fails when a new tool
 is registered without being classified here — adding a tool to
 ``READ_ONLY_TOOLS`` is a reviewable decision: only if it truly never writes.
 """

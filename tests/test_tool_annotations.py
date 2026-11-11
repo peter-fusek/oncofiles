@@ -24,7 +24,13 @@ from oncofiles.tool_annotations import (
 ALL_CLASSIFIED = READ_ONLY_TOOLS | DESTRUCTIVE_TOOLS | EGRESS_TOOLS | WRITE_TOOLS
 
 # Modules that annotate their own tools or belong to another work stream.
-SELF_MANAGED_MODULES = ("oncofiles.tools.clinical_facts", "oncofiles.tools.curated")
+SELF_MANAGED_MODULES = (
+    "oncofiles.tools.clinical_facts",
+    "oncofiles.tools.curated",
+    # #742: verify_fact / unverify_fact / correct_fact set explicit write
+    # annotations (readOnlyHint=false) at registration.
+    "oncofiles.tools.fact_review",
+)
 
 
 @pytest.fixture(scope="module")
