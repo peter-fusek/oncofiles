@@ -357,6 +357,8 @@ async def test_the_preview_writes_nothing_and_runs_local_only(db, monkeypatch):
     assert job["state"] == "done", job
     doc = job["report"]["documents"][0]
     assert doc["result"] == "compared" and doc["agree"] == 1 and doc["agree_machine"] == 1
+    assert doc["method"] == "stored_sidecar_text" and doc["pages_not_assessed"] == []
+    assert doc["dob_known"] is False and doc["birth_date_guard"] == "inactive_no_dob"
     assert doc["llm_only_codes"] == ["GLU"] and doc["rule_only_codes"] == []
     assert doc["unverified_reasons"] == {"label_unmapped": 1}
     assert job["report"]["extractor"] == llm_extract.EXTRACTOR_VERSION
@@ -364,3 +366,83 @@ async def test_the_preview_writes_nothing_and_runs_local_only(db, monkeypatch):
     assert await _snapshot(db) == before  # nothing written anywhere
     dumped = json.dumps(job)
     assert "0.45" not in dumped and "0,45" not in dumped and "S-ALT" not in dumped
+
+
+# ── infra review: truncation, budget, DOB guard ─────────────────────────
+
+
+def two_pages():
+    return [(1, PAGE), (2, PAGE.replace("Laboratórny nález", "Pokračovanie"))]
+
+
+def test_a_truncated_page_is_not_assessed_and_excluded_from_the_metrics():
+    def chat(system, user, info=None, **kw):
+        if user.startswith("Page 2"):
+            info["finish_reason"] = "length"
+            return ""  # the whole budget went to reasoning
+        info["finish_reason"] = "stop"
+        return model_answer()
+
+    with local_only("test"):
+        out = llm_extract.extract_document(two_pages(), vocab=VOCAB, chat=chat)
+    assert out["pages_not_assessed"] == [2] and out["pages_truncated"] == len([2])
+    assert out["pages_used"] == len([1]) and out["finish_reasons"]["2"] == "length"
+    assert out["method"] == "stored_sidecar_text"
+    stored = [
+        {"code": "ALT", "occurred_at": "2027-06-14", "value_canonical": 0.45, "page_number": 1},
+        {"code": "CA19_9", "occurred_at": "2027-06-14", "value_canonical": 7.7, "page_number": 2},
+    ]
+    cmp = llm_extract.shadow_compare(stored, out["facts"], not_assessed_pages=[2])
+    assert cmp["rule_only"] == 0 and cmp["rule_only_codes"] == []  # page 2 is unknown
+    assert cmp["rule_facts"] == cmp["agree"] == len(["ALT"])
+
+
+@pytest.mark.parametrize("answer", ["", 'half an answer {"facts": ['])
+def test_empty_or_unparseable_answers_are_not_assessed(answer):
+    with local_only("test"):
+        out = llm_extract.extract_document([(1, PAGE)], vocab=VOCAB, chat=lambda *a, **k: answer)
+    assert out["pages_not_assessed"] == [1] and out["pages_used"] == 0
+    assert out["facts"] == []
+
+
+def test_a_valid_empty_answer_is_assessed():
+    with local_only("test"):
+        out = llm_extract.extract_document(
+            [(1, PAGE)], vocab=VOCAB, chat=lambda *a, **k: '{"facts": []}'
+        )
+    assert out["pages_not_assessed"] == [] and out["pages_used"] == len([1])
+
+
+@pytest.mark.parametrize("thinking", ["on", "off"])
+def test_the_full_reasoning_budget_is_used(monkeypatch, thinking):
+    from oncofiles import config
+
+    monkeypatch.setattr(config, "LLM_EXTRACT_THINKING", thinking)
+    budgets = []
+
+    def chat(system, user, max_tokens=None, **kw):
+        budgets.append(max_tokens)
+        return model_answer()
+
+    with local_only("test"):
+        llm_extract.extract_page(PAGE, page_number=1, chat=chat)
+    assert budgets == [llm.REASONING_BUDGET]
+    assert llm_extract.EXTRACT_BUDGET == llm.REASONING_BUDGET
+
+
+def test_dob_unknown_is_flagged_and_counted():
+    with local_only("test"):
+        unknown = llm_extract.extract_document([(1, PAGE)], vocab=VOCAB, chat=model_answer)
+        known = llm_extract.extract_document(
+            [(1, PAGE)], vocab=VOCAB, chat=model_answer, birth_dates={"2027-01-02"}
+        )
+    assert unknown["dob_known"] is False and unknown["birth_date_guard"] == "inactive_no_dob"
+    assert unknown["dates_unchecked_no_dob"] == len(unknown["facts"]) > 0
+    assert known["dob_known"] is True and known["birth_date_guard"] == "active"
+    assert known["dates_unchecked_no_dob"] == 0
+
+
+def test_future_write_paths_must_refuse_without_a_dob():
+    with pytest.raises(verifier.NoBirthDateError):
+        verifier.require_dob_for_write(set())
+    verifier.require_dob_for_write({"2027-01-02"})

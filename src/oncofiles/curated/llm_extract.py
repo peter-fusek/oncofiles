@@ -156,8 +156,12 @@ Answer:
 {"facts": []}
 """
 
-# Budget: thinking off needs only the answer (a long lab page ~ 40 items).
-ANSWER_BUDGET = 6_000
+# LM Studio counts reasoning tokens into max_tokens, and enable_thinking=false
+# may be ignored by the model (#689): a small budget ends in an empty answer
+# with finish_reason=length. Use the full reasoning budget (as re-OCR does)
+# until thinking-off is proven on the production model.
+EXTRACT_BUDGET = llm.REASONING_BUDGET
+METHOD = "stored_sidecar_text"
 
 
 @dataclass
@@ -167,6 +171,17 @@ class PageResult:
     dropped: Counter = field(default_factory=Counter)  # reason -> count
     error: str | None = None
     seconds: float = 0.0
+    finish_reason: str | None = None
+
+    @property
+    def truncated(self) -> bool:
+        return self.finish_reason == "length" or "truncated" in (self.error or "")
+
+    @property
+    def assessed(self) -> bool:
+        """False for a truncated, empty or unparseable answer: the page was
+        NOT read, which is never the same as "the model found nothing"."""
+        return self.error is None and not self.truncated
 
 
 def _text(v) -> str | None:
@@ -257,19 +272,25 @@ def extract_page(
     call = chat or llm.chat
     user = f"Page {page_number}:\n{text}"
     thinking = _thinking()
-    budget = llm.REASONING_BUDGET if thinking else ANSWER_BUDGET
+    budget = EXTRACT_BUDGET
+    info: dict = {}
     t0 = time.monotonic()
     try:
         try:
             answer = call(SYSTEM_PROMPT, user, max_tokens=budget, thinking=thinking,
-                          response_format=RESPONSE_FORMAT)  # fmt: skip
+                          response_format=RESPONSE_FORMAT, info=info)  # fmt: skip
         except llm.LocalLLMError as exc:
             if "HTTP 400" not in str(exc) or "truncated" in str(exc):
                 raise
             # this server/model rejects structured output: strict instructions only
-            answer = call(SYSTEM_PROMPT, user, max_tokens=budget, thinking=thinking)
+            info.clear()
+            answer = call(SYSTEM_PROMPT, user, max_tokens=budget, thinking=thinking, info=info)
+        res.finish_reason = info.get("finish_reason")
+        if res.finish_reason == "length":
+            raise llm.LocalLLMError("local LLM answer truncated: finish_reason=length")
         raw_items = parse_answer(answer)
     except llm.LocalLLMError as exc:
+        res.finish_reason = res.finish_reason or info.get("finish_reason")
         res.error = str(exc)[:200]
         res.seconds = time.monotonic() - t0
         return res
@@ -302,16 +323,22 @@ def extract_document(
     text_of = dict(pages)
     facts: list[dict] = []
     dropped: Counter = Counter()
-    errors = 0
+    errors = truncated = 0
     seconds = 0.0
+    not_assessed: list[int] = []
+    finish: dict[str, str | None] = {}
     for number, text in pages:
         if stop and stop():
-            break
+            not_assessed.append(number)
+            continue
         pr = extract_page(text, page_number=number, chat=chat)
         seconds += pr.seconds
         dropped.update(pr.dropped)
-        if pr.error:
-            errors += 1
+        finish[str(number)] = pr.finish_reason
+        truncated += pr.truncated
+        if not pr.assessed:
+            errors += pr.error is not None
+            not_assessed.append(number)
             continue
         for cand in pr.candidates:
             facts.append(
@@ -320,8 +347,17 @@ def extract_document(
                     birth_dates=birth_dates, source_reason=source_reason,
                 )
             )  # fmt: skip
-    return {"facts": facts, "pages": len(pages), "page_errors": errors,
-            "dropped": dict(dropped), "seconds": round(seconds, 1)}  # fmt: skip
+    dob_known = bool(birth_dates)
+    return {
+        "facts": facts, "method": METHOD, "pages": len(pages),
+        "pages_used": len(pages) - len(not_assessed), "pages_not_assessed": not_assessed,
+        "pages_truncated": truncated, "page_errors": errors, "finish_reasons": finish,
+        "dob_known": dob_known,
+        "birth_date_guard": "active" if dob_known else "inactive_no_dob",
+        # dated facts whose date could not be checked against a birth date
+        "dates_unchecked_no_dob": 0 if dob_known else sum(1 for f in facts if f["occurred_at"]),
+        "dropped": dict(dropped), "seconds": round(seconds, 1),
+    }  # fmt: skip
 
 
 def _key(code, day, value) -> tuple:
@@ -330,9 +366,15 @@ def _key(code, day, value) -> tuple:
     return (code, (day or "")[:10], value_hash(float(value)))
 
 
-def shadow_compare(stored: list[dict], llm_facts: list[dict]) -> dict:
+def shadow_compare(stored: list[dict], llm_facts: list[dict], *, not_assessed_pages=()) -> dict:
     """Stored (rule) facts vs LLM facts of ONE document, as counts and codes
-    only — never values, labels or evidence. A key is (code, day, value hash)."""
+    only — never values, labels or evidence. A key is (code, day, value hash).
+
+    Pages the model did not assess (truncated, empty or unparseable answer)
+    are left out on BOTH sides: such a page is unknown, never "LLM found 0"."""
+    skip = {int(p) for p in not_assessed_pages}
+    stored = [r for r in stored if int(r.get("page_number") or 1) not in skip]
+    llm_facts = [f for f in llm_facts if int(f.get("page_number") or 1) not in skip]
     rule = Counter(
         _key(r["code"], r.get("occurred_at"), r["value_canonical"])
         for r in stored

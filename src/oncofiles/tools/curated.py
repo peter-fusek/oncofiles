@@ -1444,15 +1444,21 @@ async def _llm_shadow_job(db, pid: str, docs: list[dict]) -> None:
                 report.append({**entry, "result": "failed", "error": type(exc).__name__})
                 continue
             rows = [r for r in stored if r["source_document_id"] == d["id"]]
+            meta_keys = ("method", "pages", "pages_used", "pages_not_assessed", "pages_truncated",
+                         "page_errors", "finish_reasons", "dob_known", "birth_date_guard",
+                         "dates_unchecked_no_dob", "dropped", "seconds")  # fmt: skip
             report.append({
-                **entry, "result": "compared", "pages": out["pages"],
-                "page_errors": out["page_errors"], "dropped": out["dropped"],
-                "seconds": out["seconds"], **llm_extract.shadow_compare(rows, out["facts"]),
+                **entry, "result": "compared", **{k: out[k] for k in meta_keys},
+                **llm_extract.shadow_compare(
+                    rows, out["facts"], not_assessed_pages=out["pages_not_assessed"]
+                ),
             })  # fmt: skip
         done = [r for r in report if r.get("result") == "compared"]
         totals = {k: sum(r[k] for r in done) for k in
                   ("rule_facts", "llm_facts", "llm_machine", "agree", "agree_machine",
-                   "rule_only", "llm_only", "value_mismatch")}  # fmt: skip
+                   "rule_only", "llm_only", "value_mismatch", "pages_used", "pages_truncated",
+                   "dates_unchecked_no_dob")}  # fmt: skip
+        totals["pages_not_assessed"] = sum(len(r["pages_not_assessed"]) for r in done)
         job.update(state="done", report={
             "dry_run": True, "extractor": llm_extract.EXTRACTOR_VERSION,
             "verifier": verifier.VERIFIER_VERSION, "totals": totals, "documents": report,

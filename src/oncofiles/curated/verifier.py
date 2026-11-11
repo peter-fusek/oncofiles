@@ -42,6 +42,21 @@ from oncofiles.curated.reread_verify import date_printed
 
 VERIFIER_VERSION = 1
 
+
+class NoBirthDateError(RuntimeError):
+    """A write of model-extracted facts was attempted without a known DOB."""
+
+
+def require_dob_for_write(birth_dates) -> None:
+    """MUST be called by every future write path for LLM-extracted facts
+    (#714 Phase 2b). Without a known birth date the ``birth_date`` guard is
+    inactive, so a DOB printed in a header could be stored as a result date:
+    the write is refused. The shadow preview (Phase 2a) writes nothing and
+    only reports ``birth_date_guard: inactive_no_dob``."""
+    if not birth_dates:
+        raise NoBirthDateError("no birth date known for this patient: refusing to store facts")
+
+
 REASONS = (
     "evidence_not_found",  # the evidence line is not on the page
     "label_not_in_evidence",
