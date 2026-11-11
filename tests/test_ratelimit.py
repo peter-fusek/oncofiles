@@ -23,13 +23,22 @@ from oncofiles.ratelimit import (
     RateLimitConfig,
     RateLimitMiddleware,
     classify,
+    looks_like_session_token,
+    parse_networks,
     principal_for,
+    safe_for_log,
 )
 
 STATIC = "static-test-bearer-synthetic"
-SESSION_TOKEN = "carer@example.test|exp|tidsynthetic|sigsynthetic"
-SESSION_COOKIE = quote("carer@example.test|exp2|tidother|sigother", safe="")
-FORGED_TOKEN = "carer@example.test|exp|tidforged|sigforged"
+EMAIL = "carer@example.test"
+EXPIRY = "9" * 10  # structurally valid, obviously synthetic
+SIG_GOOD = "a" * 32
+SIG_OTHER = "b" * 32
+SIG_FORGED = "f" * 32
+SESSION_TOKEN = f"{EMAIL}|{EXPIRY}|tidsynthetic|{SIG_GOOD}"
+SESSION_COOKIE = quote(f"{EMAIL}|{EXPIRY}|tidother|{SIG_OTHER}", safe="")
+FORGED_TOKEN = f"{EMAIL}|{EXPIRY}|tidforged|{SIG_FORGED}"
+DOCKER = parse_networks("172.16.0.0/12")
 OFF = Limit(per_minute=0, burst=0)
 TRICKLE = Limit(per_minute=1, burst=1)
 SMALL_BODY = 100
@@ -37,10 +46,10 @@ TINY_BODY = 1
 
 
 def _verifier(token: str) -> str | None:
-    """Stand-in for server._verify_session_token: only the synthetic tokens
-    signed 'sigsynthetic' / 'sigother' verify."""
+    """Stand-in for a quiet server._verify_session_token: only the synthetic
+    tokens signed SIG_GOOD / SIG_OTHER verify."""
     email, _, rest = token.partition("|")
-    return email if rest.endswith(("sigsynthetic", "sigother")) else None
+    return email if rest.endswith((SIG_GOOD, SIG_OTHER)) else None
 
 
 class FakeClock:
@@ -82,6 +91,7 @@ def _cfg(**overrides) -> RateLimitConfig:
         PUBLIC: _cl(Limit(60, 5), Limit(6000, 1000), 100),
     }
     classes.update(overrides.pop("classes", {}))
+    overrides.setdefault("trusted_proxies", DOCKER)
     return RateLimitConfig(classes=classes, static_bearer=STATIC, **overrides)
 
 
@@ -556,7 +566,7 @@ def test_from_env_defaults(monkeypatch):
     assert cfg.enabled is True
     assert cfg.classes == ratelimit.DEFAULTS
     assert cfg.mcp_concurrency == ratelimit.DEFAULT_MCP_CONCURRENCY
-    assert [str(n) for n in cfg.trusted_proxies] == ["127.0.0.0/8", "::1/128", "172.16.0.0/12"]
+    assert cfg.trusted_proxies == ()  # infra must opt in with Traefik's address
 
 
 def test_from_env_overrides_and_kill_switch(monkeypatch):
@@ -586,4 +596,115 @@ def test_registered_in_server_main_with_session_verifier():
     from oncofiles import server
 
     src = inspect.getsource(server.main)
-    assert "Middleware(RateLimitMiddleware, session_verifier=_verify_session_token)" in src
+    assert "Middleware(RateLimitMiddleware, session_verifier=_quiet_session_verifier)" in src
+    assert "_verify_session_token(token, log=False)" in src
+
+
+# ── XFF hardening + log flooding (review round 2) ─────────────────────────────
+
+
+def test_all_trusted_xff_chain_never_yields_left_most_hop():
+    # client sends "192.0.2.66", proxies append themselves; every hop trusted
+    s = _scope([("x-forwarded-for", "172.18.0.9, 172.18.0.5")], ip="172.18.0.2")
+    assert principal_for(s, AUTH, _cfg()).key == "ip:172.18.0.2"
+    spoof = _scope([("x-forwarded-for", "172.18.0.77")], ip="172.18.0.2")
+    assert principal_for(spoof, AUTH, _cfg()).key == "ip:172.18.0.2"
+
+
+def test_default_config_ignores_xff():
+    s = _scope([("x-forwarded-for", "192.0.2.9")], ip="127.0.0.1")
+    assert RateLimitConfig().trusted_proxies == ()
+    assert principal_for(s, AUTH, RateLimitConfig()).key == "ip:127.0.0.1"
+
+
+def test_structural_session_check():
+    assert looks_like_session_token(SESSION_TOKEN)
+    assert not looks_like_session_token("x" * 600)
+    assert not looks_like_session_token(f"{EMAIL}|{EXPIRY}|{SIG_GOOD}")  # legacy 3-part
+    assert not looks_like_session_token(f"{EMAIL}|soon|tid|{SIG_GOOD}")
+    assert not looks_like_session_token(f"{EMAIL}|{EXPIRY}|tid|nothex")
+    assert not looks_like_session_token(f"{EMAIL}\n|{EXPIRY}|tid|{SIG_GOOD}")
+
+
+def test_structurally_invalid_session_never_reaches_verifier():
+    calls = []
+
+    def spy(token):
+        calls.append(token)
+        return None
+
+    principal_for(_scope([("authorization", "Bearer session:junk")]), API, _cfg(), spy)
+    assert calls == []
+
+
+def test_safe_for_log_strips_control_chars():
+    assert safe_for_log("/api/x\r\nFAKE log line\x1b[31m") == "/api/x??FAKE log line?[31m"
+    assert len(safe_for_log("a" * 500)) == 120
+
+
+async def test_thousand_forged_sessions_log_nothing(monkeypatch, caplog):
+    import functools
+    import logging
+
+    from oncofiles import server
+
+    monkeypatch.setattr(server, "MCP_BEARER_TOKEN", "synthetic-bearer-for-hmac")
+    real = server._make_session_token(EMAIL)
+    quiet = functools.partial(server._verify_session_token, log=False)
+    assert quiet(real) == EMAIL
+
+    roomy = Limit(600000, 5000)
+    app = _mw(classes={API: _cl(roomy, roomy, 1000)}, session_verifier=quiet)
+    caplog.set_level(logging.DEBUG)
+    async with _client(app) as c:
+        for i in range(1000):
+            forged = f"{EMAIL}\r\nINJECTED|{EXPIRY}|tid{i}|{SIG_FORGED}"
+            await c.get("/api/documents", headers=_bearer(f"session:{forged}"))
+            forged = f"{EMAIL}|{EXPIRY}|tid{i}|{SIG_FORGED}"
+            await c.get("/api/documents", headers=_bearer(f"session:{forged}"))
+    noisy = [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert noisy == []
+    assert not any(EMAIL in r.getMessage() for r in caplog.records)
+
+
+def test_server_verifier_log_false_is_silent(monkeypatch, caplog):
+    import logging
+
+    from oncofiles import server
+
+    monkeypatch.setattr(server, "MCP_BEARER_TOKEN", "synthetic-bearer-for-hmac")
+    caplog.set_level(logging.DEBUG)
+    assert server._verify_session_token(f"{EMAIL}|{EXPIRY}|tid|{SIG_FORGED}", log=False) is None
+    assert server._verify_session_token(f"{EMAIL}|1|tid|{SIG_FORGED}", log=False) is None
+    assert caplog.records == []
+    # default behaviour unchanged
+    server._verify_session_token(f"{EMAIL}|{EXPIRY}|tid|{SIG_FORGED}")
+    assert any("signature mismatch" in r.getMessage() for r in caplog.records)
+
+
+async def test_rejection_logs_are_throttled(caplog):
+    import logging
+
+    clock = FakeClock()
+    app = _mw(clock=clock)
+    caplog.set_level(logging.WARNING, logger="oncofiles.ratelimit")
+    async with _client(app) as c:
+        for _ in range(200):
+            await c.get("/privacy%0D%0AFAKE")
+        assert len(caplog.records) == 1
+        assert "\n" not in caplog.records[0].getMessage()
+        clock.t += ratelimit.LOG_INTERVAL_S + 1
+        for _ in range(100):  # bucket refilled a bit; burst then 429s again
+            await c.get("/privacy")
+    assert len(caplog.records) == 2
+    assert "suppressed" in caplog.records[1].getMessage()
+
+
+def test_xff_takes_right_most_untrusted_hop_with_production_proxies():
+    # Production shape: Traefik reaches the app from the container network.
+    prod = _cfg(trusted_proxies=parse_networks("127.0.0.1/32,::1/128,172.17.0.0/16"))
+    s = _scope([("x-forwarded-for", "6.6.6.6, 203.0.113.9")], ip="172.17.0.3")
+    assert principal_for(s, AUTH, prod).key == "ip:203.0.113.9"
+    # the client-prepended left-most value never wins, however many hops
+    s = _scope([("x-forwarded-for", "6.6.6.6, 203.0.113.9, 172.17.0.3")], ip="172.17.0.3")
+    assert principal_for(s, AUTH, prod).key == "ip:203.0.113.9"

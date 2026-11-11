@@ -4581,7 +4581,7 @@ def _make_session_token(email: str) -> str:
     return f"{payload}|{sig}"
 
 
-def _verify_session_token(token: str) -> str | None:
+def _verify_session_token(token: str, *, log: bool = True) -> str | None:
     """Verify a session token. Returns email if valid, None otherwise.
 
     Accepts both 4-part (email|expiry|tid|sig, current) and 3-part legacy
@@ -4596,16 +4596,19 @@ def _verify_session_token(token: str) -> str | None:
         return None
     email, expiry, tid, sig, sep = parsed
     if time.time() > expiry:
-        logger.warning("Session token expired for %s", email)
+        if log:
+            logger.warning("Session token expired for %s", email)
         return None
     key = dashboard_session_key(MCP_BEARER_TOKEN)
     signed_payload = f"{email}{sep}{expiry}{sep}{tid}" if tid else f"{email}{sep}{expiry}"
     expected = hmac.new(key, signed_payload.encode(), hashlib.sha256).hexdigest()[:32]
     if not hmac.compare_digest(sig, expected):
-        logger.warning("Session token signature mismatch for %s", email)
+        if log:
+            logger.warning("Session token signature mismatch for %s", email)
         return None
     if tid and session_revocation.is_revoked(tid):
-        logger.info("Session token rejected (revoked) for %s", email)
+        if log:
+            logger.info("Session token rejected (revoked) for %s", email)
         return None
     return email
 
@@ -7929,6 +7932,9 @@ def main() -> None:
 
         from oncofiles.ratelimit import RateLimitMiddleware
 
+        def _quiet_session_verifier(token: str) -> str | None:
+            return _verify_session_token(token, log=False)
+
         mcp.run(
             transport=MCP_TRANSPORT,
             host=MCP_HOST,
@@ -7955,8 +7961,9 @@ def main() -> None:
                 ),
                 # #591: innermost, so CORS + security headers wrap its 429/413 and
                 # preflights never reach it. /health is exempt. The verifier is
-                # HMAC-only (no DB) so forged sessions can't key a victim's bucket.
-                Middleware(RateLimitMiddleware, session_verifier=_verify_session_token),
+                # HMAC-only (no DB) and silent (log=False), so forged sessions can
+                # neither key a victim's bucket nor flood the logs.
+                Middleware(RateLimitMiddleware, session_verifier=_quiet_session_verifier),
             ],
             uvicorn_config={
                 "timeout_keep_alive": 120,

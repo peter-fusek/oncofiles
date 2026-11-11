@@ -42,10 +42,20 @@ before any auth or DB work:
 
 The ``auth`` class is always keyed by client IP. ``X-Forwarded-For`` is
 honoured **only** when the direct peer is in ``TRUSTED_PROXIES`` (CIDRs,
-default loopback + the Docker bridge range); entries are walked right to
-left, skipping trusted proxies. With ``TRUSTED_PROXIES`` empty, all clients
-may share one address, so the per-IP auth limit is raised to the auth global
-limit instead of acting as a hidden second global bucket.
+**empty by default** — infra sets Traefik's exact address). Entries are
+walked right to left, skipping trusted proxies; if every hop is a trusted
+proxy the direct peer is used, never the client-controlled left-most entry.
+This is only sound when the app port is reachable solely through Traefik and
+Traefik overwrites (does not append to) a client-sent ``X-Forwarded-For``.
+With ``TRUSTED_PROXIES`` empty, all clients may share one address, so the
+per-IP auth limit is raised to the auth global limit instead of acting as a
+hidden second global bucket.
+
+Logging: credentials, emails and tokens are never logged. Session tokens are
+checked structurally first and then with a *silent* verifier, so forged
+sessions cannot flood the logs. Rejections (429/413) are logged at most once
+per minute per (status, class, principal kind) with a suppressed count, and
+request paths are stripped of control characters and truncated.
 
 ``/mcp`` POSTs additionally take a per-principal **concurrency** slot for the
 duration of the request (one stateless tool call = one POST).
@@ -143,7 +153,7 @@ def parse_networks(raw: str) -> tuple[Network, ...]:
     return tuple(nets)
 
 
-DEFAULT_TRUSTED_PROXIES = "127.0.0.0/8,::1/128,172.16.0.0/12"
+DEFAULT_TRUSTED_PROXIES = ""
 
 
 @dataclass(frozen=True)
@@ -175,6 +185,7 @@ DEFAULTS: dict[str, ClassLimits] = {
     PUBLIC: ClassLimits(Limit(300, 150), Limit(1200, 400), Limit(1200, 400), 64 * 1024),
 }
 DEFAULT_MCP_CONCURRENCY = 4
+LOG_INTERVAL_S = 60.0
 DEFAULT_MAX_PRINCIPALS = 10_000
 
 
@@ -264,6 +275,12 @@ class TokenBucket:
 # ── Principal extraction ────────────────────────────────────────────────────
 
 
+def safe_for_log(value, limit: int = 120) -> str:
+    """Strip control/non-printable characters and truncate (log-injection guard)."""
+    text = str(value)
+    return "".join(ch if ch.isprintable() else "?" for ch in text[:limit])
+
+
 def _h(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8", "replace")).hexdigest()[:24]
 
@@ -302,7 +319,9 @@ def client_ip(scope, trusted_proxies: tuple[Network, ...] = ()) -> str:
             return peer  # malformed chain — don't trust any of it
         if not _in_networks(hop, trusted_proxies):
             return hop
-    return hops[0] if hops else peer
+    # Every hop is a trusted proxy: the left-most entry is client-controlled,
+    # so fall back to the direct peer.
+    return peer
 
 
 @dataclass(frozen=True)
@@ -315,14 +334,33 @@ class Principal:
 SessionVerifier = Callable[[str], "str | None"]
 
 
+_HEX = frozenset("0123456789abcdef")
+MAX_SESSION_TOKEN_LEN = 512
+
+
+def looks_like_session_token(token: str) -> bool:
+    """Cheap structural check of ``email|expiry|tid|sig`` (#510) before any
+    HMAC work: bounded length, printable ASCII, 4 parts, numeric expiry,
+    32 lowercase-hex signature. Legacy 3-part tokens fail (they were
+    invalidated by the #502 key rotation) and are simply treated as unverified."""
+    if not token or len(token) > MAX_SESSION_TOKEN_LEN or not token.isascii():
+        return False
+    if not token.isprintable():
+        return False
+    parts = token.rsplit("|", 3)
+    if len(parts) != 4:
+        return False
+    email, expiry, tid, sig = parts
+    return bool(email) and expiry.isdigit() and bool(tid) and len(sig) == 32 and set(sig) <= _HEX
+
+
 def _session_principal(token: str, verifier: SessionVerifier | None) -> Principal:
     email = None
-    if verifier is not None:
+    if verifier is not None and looks_like_session_token(token):
         try:
-            email = verifier(token)
+            email = verifier(token)  # must be silent and side-effect free
         except Exception:
-            logger.debug("ratelimit: session verifier raised", exc_info=True)
-            email = None
+            email = None  # never log: the token is attacker-controlled
     if email:
         return Principal("session:" + _h(email.strip().lower()), trusted=True)
     # Unverified: key on the whole token, never on the (forgeable) email field.
@@ -401,6 +439,7 @@ class RateLimitMiddleware:
         self._principal: OrderedDict[tuple[str, str], TokenBucket] = OrderedDict()
         self._known_good: OrderedDict[str, None] = OrderedDict()
         self._inflight: dict[str, int] = {}
+        self._log_state: dict[tuple, list[float]] = {}  # key -> [last_logged, suppressed]
         if config.enabled:
             logger.info(
                 "ratelimit enabled: %s; mcp concurrency=%d; trusted proxies=%s",
@@ -415,6 +454,20 @@ class RateLimitMiddleware:
             )
         else:
             logger.warning("ratelimit DISABLED (RATE_LIMIT_ENABLED=false)")
+
+    # -- logging --
+
+    def _log_reject(self, key: tuple, fmt: str, *args) -> None:
+        """Log a rejection at most once per LOG_INTERVAL_S per key, reporting
+        how many were suppressed in between (no log flooding)."""
+        now = self.clock()
+        st = self._log_state.get(key)
+        if st is not None and now - st[0] < LOG_INTERVAL_S:
+            st[1] += 1
+            return
+        suppressed = int(st[1]) if st is not None else 0
+        self._log_state[key] = [now, 0]
+        logger.warning(fmt + " (suppressed %d similar)", *args, suppressed)
 
     # -- buckets --
 
@@ -520,10 +573,11 @@ class RateLimitMiddleware:
                 except ValueError:
                     declared = -1
                 if declared > max_body:
-                    logger.warning(
+                    self._log_reject(
+                        (413, route_class),
                         "ratelimit: 413 %s %s content-length=%d > %d",
                         route_class,
-                        path,
+                        safe_for_log(path),
                         declared,
                         max_body,
                     )
@@ -537,11 +591,13 @@ class RateLimitMiddleware:
         wait = self.check(route_class, key, trusted)
         if wait > 0:
             retry_after = max(1, math.ceil(wait))
-            logger.warning(
+            kind = key.split(":", 1)[0]
+            self._log_reject(
+                (429, route_class, kind, trusted),
                 "ratelimit: 429 %s %s principal=%s trusted=%s retry_after=%ds",
                 route_class,
-                path,
-                key.split(":", 1)[0],
+                safe_for_log(path),
+                kind,
                 trusted,
                 retry_after,
             )
@@ -552,10 +608,12 @@ class RateLimitMiddleware:
         slot_key = None
         if route_class == MCP and scope.get("method") == "POST" and self.config.mcp_concurrency > 0:
             if self._inflight.get(key, 0) >= self.config.mcp_concurrency:
-                logger.warning(
+                kind = key.split(":", 1)[0]
+                self._log_reject(
+                    ("concurrency", kind),
                     "ratelimit: 429 mcp concurrency cap (%d) principal=%s",
                     self.config.mcp_concurrency,
-                    key.split(":", 1)[0],
+                    kind,
                 )
                 await self._reject(send, 429, "too many concurrent requests", route_class, 1)
                 return
@@ -615,7 +673,11 @@ class RateLimitMiddleware:
             if not state["exceeded"]:
                 raise
         if state["exceeded"] and not state["started"]:
-            logger.warning(
-                "ratelimit: 413 %s %s streamed body > %d", route_class, scope.get("path"), max_body
+            self._log_reject(
+                (413, route_class),
+                "ratelimit: 413 %s %s streamed body > %d",
+                route_class,
+                safe_for_log(scope.get("path")),
+                max_body,
             )
             await self._reject(send, 413, "request body too large", route_class)
