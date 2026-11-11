@@ -985,25 +985,6 @@ def _start_sync_scheduler(
         except Exception:
             logger.exception("Institution backfill failed")
 
-    housekeeping_timeout = 120  # 2 minutes max for lightweight housekeeping jobs
-
-    async def _run_trash_cleanup():
-        try:
-            patients = await db.list_patients(active_only=True)
-            total_purged = 0
-            for p in patients:
-                purged = await asyncio.wait_for(
-                    db.purge_expired_trash(days=30, patient_id=p.patient_id),
-                    timeout=housekeeping_timeout,
-                )
-                total_purged += purged
-            if total_purged:
-                logger.info("Trash cleanup: purged %d expired documents", total_purged)
-        except TimeoutError:
-            logger.error("Trash cleanup timed out after %ds", housekeeping_timeout)
-        except Exception:
-            logger.exception("Trash cleanup failed")
-
     async def _run_pipeline_integrity_check():
         """Scheduled check: find and fix any docs stuck in incomplete pipeline state."""
         try:
@@ -1083,30 +1064,8 @@ def _start_sync_scheduler(
                                     exc_info=True,
                                 )
 
-                    # Auto-trash unrecoverable docs: Files API returns 400/404 AND no GDrive backup
-                    for doc, g in gaps:
-                        if "no_ocr" in g and "no_ai" in g and not doc.gdrive_id:
-                            try:
-                                files.download(doc.file_id)
-                            except Exception as dl_err:
-                                err_msg = str(dl_err).lower()
-                                if "not downloadable" in err_msg or "404" in err_msg:
-                                    logger.warning(
-                                        "Pipeline integrity [%s]: trashing doc #%d (%s) "
-                                        "— content gone, no GDrive backup",
-                                        pid,
-                                        doc.id,
-                                        doc.filename,
-                                    )
-                                    await db.delete_document(doc.id)
-                                else:
-                                    logger.info(
-                                        "Pipeline integrity [%s]: doc #%d download check failed "
-                                        "(transient?) — NOT deleting: %s",
-                                        pid,
-                                        doc.id,
-                                        dl_err,
-                                    )
+                    # No auto-trash (#734): a doc whose content is gone stays listed,
+                    # reported by the gap warning above. Only the user deletes it.
                 else:
                     logger.info("Pipeline integrity [%s]: all %d docs complete", pid, len(all_docs))
         except Exception:
@@ -1695,12 +1654,6 @@ def _start_sync_scheduler(
     )
 
     scheduler.add_job(
-        _run_trash_cleanup,
-        CronTrigger(hour=3, minute=0),
-        id="trash_cleanup",
-        max_instances=1,
-    )
-    scheduler.add_job(
         _run_oauth_token_cleanup,
         CronTrigger(hour=4, minute=0),
         id="oauth_token_cleanup",
@@ -1842,7 +1795,7 @@ def _start_sync_scheduler(
     )
 
     async def _run_category_validation():
-        """AI-powered document classification and dedup sweep."""
+        """AI-powered document classification sweep (no dedup, #734)."""
 
         async def _do_category_validation():
             from oncofiles.models import DocumentCategory as _DocCat  # noqa: N814
@@ -1889,48 +1842,10 @@ def _start_sync_scheduler(
                     except ValueError:
                         pass
 
-            # Phase 2: Dedup scan — soft-delete duplicate files by md5 (keep)
-            deduped = 0
-            from collections import defaultdict
-
-            groups: dict[tuple, list] = defaultdict(list)
-            for doc in docs:
-                if doc.deleted_at:
-                    continue
-                key = (doc.category.value, str(doc.document_date) if doc.document_date else "none")
-                groups[key].append(doc)
-
-            for _key, group_docs in groups.items():
-                if len(group_docs) < 2:
-                    continue
-                by_md5: dict[str, list] = defaultdict(list)
-                for doc in group_docs:
-                    if doc.gdrive_md5:
-                        by_md5[doc.gdrive_md5].append(doc)
-                for md5, dups in by_md5.items():
-                    if len(dups) < 2:
-                        continue
-                    dups.sort(key=lambda d: d.id)
-                    for dup in dups[1:]:
-                        await db.delete_document(dup.id)
-                        deduped += 1
-                        logger.info(
-                            "Dedup: soft-deleted #%d (%s) — duplicate of #%d (md5=%s)",
-                            dup.id,
-                            dup.filename,
-                            dups[0].id,
-                            md5[:12],
-                        )
-
-            if deduped:
-                logger.info("Dedup scan: soft-deleted %d duplicates", deduped)
-
-            if corrected or deduped:
-                logger.info(
-                    "Category validation total: %d corrected, %d deduped",
-                    corrected,
-                    deduped,
-                )
+            # No automatic dedup (#734): duplicates are reported by the
+            # user-invoked find_duplicates tool and removed only by the user.
+            if corrected:
+                logger.info("Category validation total: %d corrected", corrected)
 
         try:
             await asyncio.wait_for(_do_category_validation(), timeout=metadata_timeout)
@@ -1948,417 +1863,6 @@ def _start_sync_scheduler(
             id="category_validation",
             max_instances=1,
         )
-
-    folder_cleanup_timeout = 300  # 5 minutes max for GDrive folder operations
-
-    async def _run_empty_folder_cleanup():
-        """Remove empty year-month subfolders and merge duplicates from GDrive."""
-
-        async def _do_folder_cleanup():
-            patients = await db.list_patients(active_only=True)
-            for p in patients:
-                gc = await _get_patient_gdrive(p.patient_id)
-                if not gc:
-                    continue
-                p_gdrive, folder_id = gc
-                await _cleanup_folders_for(p_gdrive, folder_id, p.patient_id)
-
-        async def _cleanup_folders_for(p_gdrive, folder_id, pid):
-            cleaned = 0
-            merged = 0
-            category_merged = 0
-
-            # Get category folder structure
-            _, folder_map = await asyncio.to_thread(
-                p_gdrive.list_folder_with_structure,
-                folder_id,
-            )
-
-            # Phase 0: Merge legacy category folders (e.g., surgical_report → surgery)
-            from oncofiles.gdrive_folders import (
-                CATEGORY_FOLDERS,
-                CATEGORY_MERGES,
-                METADATA_FOLDERS,
-                bilingual_name,
-                en_key_from_folder_name,
-            )
-
-            for legacy_cat, target_cat in CATEGORY_MERGES.items():
-                # Find legacy folder by name
-                legacy_folder_id = None
-                target_folder_id = None
-                for fid, fname in folder_map.items():
-                    en_key = en_key_from_folder_name(fname) or fname
-                    if en_key == legacy_cat:
-                        legacy_folder_id = fid
-                    if en_key == target_cat:
-                        target_folder_id = fid
-                if not legacy_folder_id or not target_folder_id:
-                    continue
-                # Move all files from legacy → target
-                try:
-                    legacy_contents = await asyncio.to_thread(
-                        lambda lid=legacy_folder_id: (
-                            p_gdrive._service.files()
-                            .list(
-                                q=f"'{lid}' in parents and trashed = false",
-                                fields="files(id, name)",
-                                pageSize=200,
-                            )
-                            .execute()
-                        )
-                    )
-                    files_to_move = legacy_contents.get("files", [])
-                    for f in files_to_move:
-                        await asyncio.to_thread(
-                            p_gdrive.move_file,
-                            f["id"],
-                            target_folder_id,
-                        )
-                    # Trash the legacy folder if now empty
-                    if files_to_move or not legacy_contents.get("files"):
-                        await asyncio.to_thread(
-                            p_gdrive.trash_file,
-                            legacy_folder_id,
-                        )
-                    category_merged += 1
-                    logger.info(
-                        "Merged legacy folder '%s' → '%s' (%d files moved) [%s]",
-                        bilingual_name(legacy_cat),
-                        bilingual_name(target_cat),
-                        len(files_to_move),
-                        pid,
-                    )
-                except Exception:
-                    logger.warning(
-                        "Failed to merge legacy folder %s → %s",
-                        legacy_cat,
-                        target_cat,
-                        exc_info=True,
-                    )
-
-            # Phase 0c: Move root-level files into 'other' category folder
-            other_folder_id = None
-            for fid, fname in folder_map.items():
-                if en_key_from_folder_name(fname) == "other":
-                    other_folder_id = fid
-                    break
-
-            if other_folder_id:
-                root_items_raw = await asyncio.to_thread(
-                    lambda: (
-                        p_gdrive._service.files()
-                        .list(
-                            q=(
-                                f"'{folder_id}' in parents"
-                                " and mimeType != 'application/vnd.google-apps.folder'"
-                                " and trashed = false"
-                            ),
-                            fields="files(id, name, createdTime)",
-                            pageSize=50,
-                        )
-                        .execute()
-                    )
-                )
-                for rf in root_items_raw.get("files", []):
-                    if rf["name"] == "_manifest.json":
-                        continue  # Skip known metadata files
-                    try:
-                        await asyncio.to_thread(p_gdrive.move_file, rf["id"], other_folder_id)
-                        cleaned += 1
-                        logger.info(
-                            "Moved root file '%s' → other/ [%s]",
-                            rf["name"],
-                            pid,
-                        )
-                    except Exception:
-                        logger.warning("Failed to move root file '%s'", rf["name"], exc_info=True)
-
-            # Phase 0d: Re-home files from stray root-level folders (#277)
-            # Stray folders are direct children of root that aren't known categories
-            # (e.g., year folders "2025-03" created by pre-fix code).
-            root_folders_raw = await asyncio.to_thread(
-                lambda: (
-                    p_gdrive._service.files()
-                    .list(
-                        q=(
-                            f"'{folder_id}' in parents"
-                            " and mimeType = 'application/vnd.google-apps.folder'"
-                            " and trashed = false"
-                        ),
-                        fields="files(id, name)",
-                        pageSize=100,
-                    )
-                    .execute()
-                )
-            )
-            # Build set of known category/metadata folder IDs
-            known_cat_ids: dict[str, str] = {}  # {folder_id: en_key}
-            for rf in root_folders_raw.get("files", []):
-                en = en_key_from_folder_name(rf["name"])
-                if en:
-                    known_cat_ids[rf["id"]] = rf["name"]
-
-            if other_folder_id:
-                for rf in root_folders_raw.get("files", []):
-                    if rf["id"] in known_cat_ids:
-                        continue  # Known category folder — skip
-                    # Stray folder — move its files to 'other', then trash if empty
-                    try:
-                        stray_contents = await asyncio.to_thread(
-                            lambda sid=rf["id"]: (
-                                p_gdrive._service.files()
-                                .list(
-                                    q=f"'{sid}' in parents and trashed = false",
-                                    fields="files(id, name)",
-                                    pageSize=200,
-                                )
-                                .execute()
-                            )
-                        )
-                        stray_files = stray_contents.get("files", [])
-                        for sf in stray_files:
-                            await asyncio.to_thread(p_gdrive.move_file, sf["id"], other_folder_id)
-                            logger.info(
-                                "Moved '%s' from stray folder '%s' → other/ [%s]",
-                                sf["name"],
-                                rf["name"],
-                                pid,
-                            )
-                            cleaned += 1
-                        # Trash the stray folder (now empty or was already empty)
-                        await asyncio.to_thread(p_gdrive.trash_file, rf["id"])
-                        cleaned += 1
-                        logger.info(
-                            "Trashed stray root folder '%s' [%s]",
-                            rf["name"],
-                            pid,
-                        )
-                    except Exception:
-                        logger.warning(
-                            "Failed to clean stray folder '%s' [%s]",
-                            rf["name"],
-                            pid,
-                            exc_info=True,
-                        )
-
-            # For each category folder, check subfolders
-            # Only iterate known category folders (direct children of root),
-            # NOT the full recursive folder_map which includes year-month subfolders (#277)
-            for cat_folder_id, cat_name in known_cat_ids.items():
-                try:
-                    sub_folders_raw = await asyncio.to_thread(
-                        lambda fid=cat_folder_id: (
-                            p_gdrive._service.files()
-                            .list(
-                                q=(
-                                    f"'{fid}' in parents"
-                                    f" and mimeType = 'application/vnd.google-apps.folder'"
-                                    f" and trashed = false"
-                                ),
-                                fields="files(id, name)",
-                                pageSize=100,
-                            )
-                            .execute()
-                        )
-                    )
-                    sub_folders = sub_folders_raw.get("files", [])
-
-                    # Check for duplicates (same name)
-                    by_name: dict[str, list[str]] = {}
-                    for sf in sub_folders:
-                        by_name.setdefault(sf["name"], []).append(sf["id"])
-
-                    for name, ids in by_name.items():
-                        if len(ids) > 1:
-                            # Merge: move files from duplicates → keep, then trash
-                            keep = ids[0]
-                            for dup in ids[1:]:
-                                # List ALL files in the duplicate folder
-                                dup_contents = await asyncio.to_thread(
-                                    lambda did=dup: (
-                                        p_gdrive._service.files()
-                                        .list(
-                                            q=f"'{did}' in parents and trashed = false",
-                                            fields="files(id, name)",
-                                            pageSize=200,
-                                        )
-                                        .execute()
-                                    )
-                                )
-                                dup_files = dup_contents.get("files", [])
-                                # Move files from duplicate to keep folder
-                                for df in dup_files:
-                                    try:
-                                        await asyncio.to_thread(p_gdrive.move_file, df["id"], keep)
-                                        logger.info(
-                                            "Moved '%s' from dup %s → %s", df["name"], dup, keep
-                                        )
-                                    except Exception:
-                                        logger.warning(
-                                            "Failed to move '%s' from dup folder",
-                                            df["name"],
-                                            exc_info=True,
-                                        )
-                                # Trash the now-empty duplicate
-                                await asyncio.to_thread(p_gdrive.trash_file, dup)
-                                merged += 1
-                                logger.info(
-                                    "Merged duplicate folder '%s/%s' (%s → %s, %d files moved)",
-                                    cat_name,
-                                    name,
-                                    dup,
-                                    keep,
-                                    len(dup_files),
-                                )
-
-                    # Check for empty subfolders (#172)
-                    for sf in sub_folders:
-                        contents = await asyncio.to_thread(
-                            lambda sid=sf["id"]: (
-                                p_gdrive._service.files()
-                                .list(
-                                    q=f"'{sid}' in parents and trashed = false",
-                                    fields="files(id)",
-                                    pageSize=1,
-                                )
-                                .execute()
-                            )
-                        )
-                        if not contents.get("files"):
-                            await asyncio.to_thread(p_gdrive.trash_file, sf["id"])
-                            cleaned += 1
-                            logger.info("Trashed empty folder '%s/%s'", cat_name, sf["name"])
-
-                    # Move root-level files into subfolders (#174, #175)
-                    root_files_raw = await asyncio.to_thread(
-                        lambda fid=cat_folder_id: (
-                            p_gdrive._service.files()
-                            .list(
-                                q=(
-                                    f"'{fid}' in parents"
-                                    " and mimeType != "
-                                    "'application/vnd.google-apps.folder'"
-                                    " and trashed = false"
-                                ),
-                                fields="files(id, name, createdTime)",
-                                pageSize=50,
-                            )
-                            .execute()
-                        )
-                    )
-                    root_files = root_files_raw.get("files", [])
-                    en_cat = en_key_from_folder_name(cat_name) or cat_name
-                    for rf in root_files:
-                        name = rf["name"]
-                        target_subfolder = None
-
-                        # Reference category: organize by source (#175)
-                        if en_cat == "reference":
-                            nl = name.lower()
-                            if "devita" in nl:
-                                target_subfolder = "DeVita-12e"
-                            elif "nccn" in nl:
-                                target_subfolder = "NCCN"
-                            elif "modra" in nl or "modrakniha" in nl:
-                                target_subfolder = "ModraKniha"
-                        # Default: year-month subfolder
-                        if not target_subfolder:
-                            if len(name) >= 8 and name[:8].isdigit():
-                                target_subfolder = f"{name[:4]}-{name[4:6]}"
-                            elif rf.get("createdTime"):
-                                target_subfolder = rf["createdTime"][:7]
-
-                        if target_subfolder:
-                            # Find or create subfolder
-                            sf_id = None
-                            for sf in sub_folders:
-                                if sf["name"] == target_subfolder:
-                                    sf_id = sf["id"]
-                                    break
-                            if not sf_id:
-                                sf_id = await asyncio.to_thread(
-                                    p_gdrive.create_folder,
-                                    target_subfolder,
-                                    cat_folder_id,
-                                )
-                            await asyncio.to_thread(
-                                p_gdrive.move_file,
-                                rf["id"],
-                                sf_id,
-                            )
-                            cleaned += 1
-                            logger.info(
-                                "Moved root file '%s' → '%s/%s/'",
-                                name,
-                                cat_name,
-                                target_subfolder,
-                            )
-
-                except Exception:
-                    logger.warning(
-                        "Folder cleanup failed for %s",
-                        cat_name,
-                        exc_info=True,
-                    )
-
-            # Check for empty category folders (#172)
-            # Refresh folder map after cleanup
-            _, folder_map_2 = await asyncio.to_thread(
-                p_gdrive.list_folder_with_structure,
-                folder_id,
-            )
-            active_cats = set(CATEGORY_FOLDERS + METADATA_FOLDERS)
-            for cfid, cname in folder_map_2.items():
-                en = en_key_from_folder_name(cname) or cname
-                if en in active_cats:
-                    continue  # Don't trash active category folders
-                # Check if empty
-                cat_contents = await asyncio.to_thread(
-                    lambda fid=cfid: (
-                        p_gdrive._service.files()
-                        .list(
-                            q=f"'{fid}' in parents and trashed = false",
-                            fields="files(id)",
-                            pageSize=1,
-                        )
-                        .execute()
-                    )
-                )
-                if not cat_contents.get("files"):
-                    await asyncio.to_thread(p_gdrive.trash_file, cfid)
-                    cleaned += 1
-                    logger.info(
-                        "Trashed empty category folder '%s' [%s]",
-                        cname,
-                        pid,
-                    )
-
-            if cleaned or merged or category_merged:
-                logger.info(
-                    "Folder cleanup [%s]: %d empty trashed, "
-                    "%d duplicates merged, %d legacy categories merged",
-                    pid,
-                    cleaned,
-                    merged,
-                    category_merged,
-                )
-            else:
-                logger.info("Folder cleanup [%s]: all folders OK", pid)
-
-        try:
-            await asyncio.wait_for(_do_folder_cleanup(), timeout=folder_cleanup_timeout)
-        except TimeoutError:
-            logger.error("Folder cleanup timed out after %ds", folder_cleanup_timeout)
-        except Exception:
-            logger.exception("Empty folder cleanup failed")
-
-    scheduler.add_job(
-        _run_empty_folder_cleanup,
-        CronTrigger(hour=3, minute=15),  # daily at 3:15 AM (between trash and metadata)
-        id="empty_folder_cleanup",
-        max_instances=1,
-    )
 
     # ── Weekly analytics aggregation ────────────────────────────────────
     async def _run_weekly_analytics():
@@ -5633,20 +5137,6 @@ _SCHEDULE_DEFS = [
         "desc": "Check RSS memory, trigger GC or graceful restart at threshold",
     },
     {
-        "id": "trash_cleanup",
-        "name": "Trash Cleanup",
-        "schedule": "daily 3:00 AM",
-        "group": "housekeeping",
-        "desc": "Permanently delete soft-deleted docs older than 30 days",
-    },
-    {
-        "id": "empty_folder_cleanup",
-        "name": "Folder Cleanup",
-        "schedule": "daily 3:15 AM",
-        "group": "housekeeping",
-        "desc": "Merge legacy folders, remove empty GDrive directories",
-    },
-    {
         "id": "enhancement_sweep",
         "name": "Enhancement Sweep",
         "schedule": "daily 3:20 AM",
@@ -5679,7 +5169,7 @@ _SCHEDULE_DEFS = [
         "name": "Prompt Log Cleanup",
         "schedule": "daily 4:15 AM",
         "group": "infra",
-        "desc": "Archive prompt log entries older than 90 days",
+        "desc": "Delete prompt log entries (AI call telemetry) older than 90 days",
     },
     {
         "id": "pipeline_integrity",

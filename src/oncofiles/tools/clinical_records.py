@@ -372,9 +372,9 @@ async def delete_clinical_record(
     """Soft-delete a clinical record. Idempotent — already-deleted returns no_change.
 
     Original row is preserved with deleted_at/deleted_by set; the audit row
-    captures the delete action. Recovery via restore_clinical_record within
-    the 30-day retention window (per global deletion policy). Nothing is ever
-    hard-deleted from this table.
+    captures the delete action. Recovery via restore_clinical_record at any
+    time (per global deletion policy). Nothing is ever hard-deleted from this
+    table and nothing purges soft-deleted rows.
     """
     pid = await _resolve_patient_id(patient_slug, ctx)
     db = _get_db(ctx)

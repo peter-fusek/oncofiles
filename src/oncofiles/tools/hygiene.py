@@ -1027,11 +1027,6 @@ async def get_pipeline_status(ctx: Context, patient_slug: str | None = None) -> 
                 "description": "Full bidirectional sync (incremental export if no changes)",
             },
             {
-                "name": "trash_cleanup",
-                "trigger": "daily 3:00 AM",
-                "description": "Purge soft-deleted docs older than 30 days",
-            },
-            {
                 "name": "metadata_extraction",
                 "trigger": "daily 3:30 AM",
                 "description": "Backfill structured metadata (max 5 docs)",

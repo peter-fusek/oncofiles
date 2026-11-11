@@ -876,15 +876,10 @@ async def sync_to_gdrive(
                 stats["pipeline_gaps"] = all_gaps
                 logger.warning("sync_to_gdrive: %d pipeline gaps after rename", len(all_gaps))
 
-        # Clean up orphaned OCR files (old names from before bilingual rename)
-        try:
-            cleanup_stats = await _cleanup_orphan_ocr(db, gdrive, patient_id=patient_id)
-            stats["ocr_cleaned"] = cleanup_stats["deleted"]
-        except Exception as e:
-            logger.warning("sync_to_gdrive: OCR cleanup failed — %s", str(e)[:200])
-
         # OCR companion files (_OCR.txt) disabled — text is cached in DB document_pages
         # and accessible via MCP tools. Companion files caused orphan accumulation (#114).
+        # Existing *_OCR.txt files in Drive are left in place: sync never trashes
+        # them (#734 removed the automatic orphan cleanup).
     else:
         logger.info("sync_to_gdrive: skipping heavy phases (no import changes)")
 
@@ -1212,76 +1207,6 @@ async def _rename_to_standard(db: Database, gdrive: GDriveClient, *, patient_id:
             stats["renamed_ids"].append(doc.id)
 
     logger.info("_rename_to_standard: done — %s", stats)
-    return stats
-
-
-async def _cleanup_orphan_ocr(db: Database, gdrive: GDriveClient, *, patient_id: str) -> dict:
-    """Delete orphaned OCR files whose names don't match any current document.
-
-    After bilingual rename, old OCR files (pre-rename names) remain as duplicates.
-    This finds _OCR.txt files in document folders and deletes those that don't
-    correspond to any current document filename.
-
-    Returns: {deleted, skipped, errors}.
-    """
-    stats = {"deleted": 0, "skipped": 0, "errors": 0}
-
-    # Build set of expected OCR filenames from current documents.
-    # DOC_QUERY_LIMIT is load-bearing for safety here: anything not in
-    # expected_ocr_names gets trashed as an orphan below, so a truncated list
-    # would soft-delete legitimate sidecars belonging to the excluded documents
-    # (#548).
-    from oncofiles.config import DOC_QUERY_LIMIT
-
-    docs = await db.list_documents(limit=DOC_QUERY_LIMIT, patient_id=patient_id)
-    expected_ocr_names: set[str] = set()
-    doc_gdrive_ids: set[str] = set()
-
-    for doc in docs:
-        if not doc.gdrive_id:
-            continue
-        doc_gdrive_ids.add(doc.gdrive_id)
-        stem = doc.filename.rsplit(".", 1)[0] if "." in doc.filename else doc.filename
-        expected_ocr_names.add(f"{stem}_OCR.txt")
-
-    # For each doc, check siblings for orphaned OCR files
-    checked_folders: set[str] = set()
-    for doc in docs:
-        if not doc.gdrive_id:
-            continue
-
-        try:
-            parents = await asyncio.to_thread(gdrive.get_file_parents, doc.gdrive_id)
-            if not parents:
-                continue
-
-            parent_folder = parents[0]
-            if parent_folder in checked_folders:
-                continue
-            checked_folders.add(parent_folder)
-
-            siblings = await asyncio.to_thread(gdrive.list_folder, parent_folder, recursive=False)
-            for sib in siblings:
-                name = sib["name"]
-                if not name.endswith("_OCR.txt"):
-                    continue
-                if name in expected_ocr_names:
-                    stats["skipped"] += 1
-                    continue
-                # Orphan — trash it (soft delete)
-                try:
-                    await asyncio.to_thread(gdrive.trash_file, sib["id"])
-                    logger.info("_cleanup_orphan_ocr: trashed '%s'", name)
-                    stats["deleted"] += 1
-                except Exception:
-                    logger.warning("_cleanup_orphan_ocr: failed to trash '%s'", name)
-                    stats["errors"] += 1
-
-        except Exception:
-            logger.exception("_cleanup_orphan_ocr: error checking folder for doc %d", doc.id)
-            stats["errors"] += 1
-
-    logger.info("_cleanup_orphan_ocr: done — %s", stats)
     return stats
 
 

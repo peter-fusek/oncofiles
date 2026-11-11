@@ -765,8 +765,8 @@ async def test_sync_to_gdrive_idempotent_double_run(db: Database):
     assert stats1.get("renamed", 0) == 1
 
 
-async def test_sync_to_gdrive_cleanup_orphan_ocr(db: Database):
-    """Orphaned OCR files (old names) get trashed during sync."""
+async def test_sync_to_gdrive_leaves_unmatched_ocr_files_in_place(db: Database):
+    """Old *_OCR.txt files with no matching document are never trashed by sync (#734)."""
     doc = make_doc(
         gdrive_id="gd_existing",
         filename="20260227_ErikaFusekova_NOUonko_Labs_BloodResults.pdf",
@@ -795,8 +795,8 @@ async def test_sync_to_gdrive_cleanup_orphan_ocr(db: Database):
     gdrive.trash_file.return_value = None
 
     stats = await sync_to_gdrive(db, files, gdrive, "folder123", patient_id=ERIKA_UUID)
-    assert stats.get("ocr_cleaned", 0) == 1
-    gdrive.trash_file.assert_called_once_with("orphan_id")
+    assert "ocr_cleaned" not in stats
+    gdrive.trash_file.assert_not_called()
 
 
 async def test_sync_from_gdrive_extracts_structured_metadata(db: Database):

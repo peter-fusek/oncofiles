@@ -107,9 +107,9 @@ MAX_DOCUMENTS_PER_PATIENT: int = int(os.environ.get("MAX_DOCUMENTS_PER_PATIENT",
 # does not bound rows that already exist — q1b sits at ~296 documents under a
 # cap of 200 today. So if a read limit tracked the cap exactly, LOWERING the cap
 # would silently truncate reads over existing data. In `_cleanup_orphan_ocr`
-# that means trashing OCR sidecars for the documents that fell outside the
-# window, because anything absent from `expected_ocr_names` is treated as an
-# orphan. `max()` makes the ceiling monotonic: it can never drop below either
+# (removed in #734) that meant trashing OCR sidecars for the documents that fell
+# outside the window, because anything absent from `expected_ocr_names` was
+# treated as an orphan. `max()` makes the ceiling monotonic: it can never drop below either
 # the cap or the historical high-water mark, and raising the cap raises it too.
 #
 # 10_000 also matches the most generous pre-existing literal in the codebase, so
