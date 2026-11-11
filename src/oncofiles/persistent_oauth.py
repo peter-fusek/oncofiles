@@ -48,6 +48,14 @@ _verified_caller_email: contextvars.ContextVar[str] = contextvars.ContextVar(
     "verified_caller_email", default=""
 )
 
+# Set during verify_token to record HOW the caller authenticated (#604
+# whoami): "static_bearer" (operator MCP_BEARER_TOKEN), "oauth" (MCP OAuth),
+# "patient_bearer" (onco_* token). Empty when no token was verified (stdio,
+# direct calls from tests).
+_verified_auth_method: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "verified_auth_method", default=""
+)
+
 # #478 email-capture bridge: populated by MCPAuthorizeEmailCaptureMiddleware
 # when a signed-in user's browser hits GET /authorize. Keyed by code_challenge
 # (stable across the OAuth handshake — AuthorizationCode carries it unchanged).
@@ -132,10 +140,12 @@ class PersistentOAuthProvider(InMemoryOAuthProvider):
         _verified_patient_id.set("")
         _verified_caller_is_admin.set(False)
         _verified_caller_email.set("")
+        _verified_auth_method.set("")
 
         # 1. Static bearer token (Oncoteam, dev) — implicit admin scope
         if self._bearer_token and hmac.compare_digest(token.encode(), self._bearer_token.encode()):
             _verified_caller_is_admin.set(True)
+            _verified_auth_method.set("static_bearer")
             if self._db:
                 # Try patient_tokens first (if static token is also a patient token)
                 pid = await self._db.resolve_patient_from_token(token)
@@ -155,6 +165,7 @@ class PersistentOAuthProvider(InMemoryOAuthProvider):
         # 2. MCP OAuth tokens (in-memory, restored from DB on startup — Claude.ai, ChatGPT)
         result = await super().verify_token(token)
         if result:
+            _verified_auth_method.set("oauth")
             # #478: resolve patient via the Google email bound to this token
             # at /authorize time. If no email was captured (unsigned-in user
             # or a legacy token from before migration 064), fall back to the
@@ -182,6 +193,7 @@ class PersistentOAuthProvider(InMemoryOAuthProvider):
                 patient_id = await self._db.resolve_patient_from_token(token)
                 if patient_id:
                     _verified_patient_id.set(patient_id)
+                    _verified_auth_method.set("patient_bearer")
                     return AccessToken(token=token, client_id=f"patient:{patient_id}", scopes=[])
             except Exception:
                 logger.warning("Patient token lookup failed", exc_info=True)
