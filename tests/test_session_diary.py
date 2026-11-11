@@ -419,7 +419,6 @@ DIARY_ACCESS_ALLOWLIST = {
     "manifest.py": "user-requested export_manifest (EGRESS); Drive copy excludes the diary",
     "import_transcripts.py": "manual CLI import into one patient's diary",
     "tools/db_query.py": "patient-scoped query_db allowlist (user acting)",
-    "audit_middleware.py": "imports the redaction list only",
     "server.py": "tool registration",
 }
 # Extractors, indexers and every module that talks to a model.

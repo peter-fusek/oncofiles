@@ -123,6 +123,8 @@ DESTRUCTIVE_TOOLS: frozenset[str] = frozenset(
         "reassign_document",
         # #758: overwrites stored activity_log inputs (dry_run=False), irreversible
         "redact_activity_log_inputs",
+        # #755: moves a diary entry to trash (30-day restore)
+        "delete_conversation",
     }
 )
 
@@ -153,6 +155,7 @@ WRITE_TOOLS: frozenset[str] = frozenset(
         "compare_labs",
         "consolidate_external_gdrive_files",
         "detect_and_clone_vaccinations",
+        "diary_add",  # #755
         "detect_and_consolidate_documents",
         "detect_and_split_documents",
         "enhance_documents",
@@ -171,6 +174,7 @@ WRITE_TOOLS: frozenset[str] = frozenset(
         "repair_broken_groups",
         "repair_gdrive_folder_hygiene",
         "restore_clinical_record",
+        "restore_conversation",  # #755
         "restore_document",
         "restore_treatment_event",  # #723
         "select_patient",
