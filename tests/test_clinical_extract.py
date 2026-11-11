@@ -324,7 +324,7 @@ async def test_round_trip_stores_every_kind_with_provenance(seeded):
     assert primary["recorded_at"] == DAY and primary["page_number"] == 1
     assert meta["primary_condition_id"] == primary["id"] and meta["asserted_at"] is None
     assert all(c["verification"] == "machine" for c in conds)
-    assert all(c["extracted_by"] == "llm-clinical-v1/mock-model" for c in conds)
+    assert all(c["extracted_by"] == f"{lx.EXTRACTOR_VERSION}/mock-model" for c in conds)
     stage = next(
         s for s in await _active(db, "cancer_stages") if s["condition_id"] == primary["id"]
     )
@@ -735,3 +735,69 @@ async def test_migration_086_columns_code_and_view(db):
     assert "metadata_json" in await cols("conditions")
     async with db.db.execute("SELECT COUNT(*) FROM timeline_v") as cur:
         assert (await cur.fetchone())[0] == 0
+
+
+# ── reasoning channel (2026-11-11 prod preview: content empty, answer in reasoning) ──
+
+
+def _reasoning_chat(body_for):
+    def chat(system, user, info=None, **kw):
+        if info is not None:
+            info["finish_reason"] = "stop"
+            info["raw_content"] = ""
+            info["reasoning_content"] = body_for(user.split("\n", 1)[1])
+        return ""
+
+    return chat
+
+
+async def test_answer_only_in_reasoning_channel_is_read(db):
+    one_json = _reasoning_chat(lambda page: json.dumps(ANSWERS[page], ensure_ascii=False))
+    via_reasoning = await _extract(db, PAGES_A, chat=one_json)
+    via_content = await _extract(db, PAGES_A)
+    assert via_reasoning["page_errors"] == 0
+    assert via_reasoning["pages_used"] == len(PAGES_A)
+    total = sum(c["machine"] + c["unverified"] for c in via_content["counts"].values())
+    assert total > 0
+    # same items found, but nothing from the reasoning channel is machine-trusted
+    assert {k: c["machine"] + c["unverified"] for k, c in via_reasoning["counts"].items()} == {
+        k: c["machine"] + c["unverified"] for k, c in via_content["counts"].items()
+    }
+    assert all(c["machine"] == 0 for c in via_reasoning["counts"].values())
+    assert via_reasoning["unverified_reasons"].get("llm_reasoning_channel") == total
+    assert all(it["verification"] == "unverified" for it in via_reasoning["items"])
+    assert via_reasoning["answer_sources"] == {"reasoning": len(PAGES_A)}
+    assert via_content["answer_sources"] == {"content": len(PAGES_A)}
+
+
+async def test_ambiguous_reasoning_channel_leaves_page_not_assessed(db):
+    def draft_plus_final(page):
+        answer = json.dumps(ANSWERS[page], ensure_ascii=False)
+        return f"draft {answer} final {answer}"
+
+    out = await _extract(db, PAGES_A[:1], chat=_reasoning_chat(draft_plus_final))
+    assert out["pages_used"] == 0 and out["page_errors"] == 1
+    assert out["error_kinds"] == {"reasoning_ambiguous": 1}
+    assert sum(c["machine"] + c["unverified"] for c in out["counts"].values()) == 0
+
+
+async def test_unparseable_answer_reports_a_coded_error_kind(db):
+    out = await _extract(db, PAGES_A[:1], chat=lambda s, u, info=None, **kw: "no json here")
+    assert out["page_errors"] == 1 and out["error_kinds"] == {"no_json": 1}
+
+
+def test_structured_output_is_off_by_default_and_switchable(monkeypatch):
+    from oncofiles import config
+
+    seen = []
+
+    def chat(system, user, info=None, **kw):
+        seen.append("response_format" in kw)
+        return json.dumps(ANSWERS[user.split("\n", 1)[1]], ensure_ascii=False)
+
+    with local_only("test"):
+        monkeypatch.setattr(config, "LLM_CLINICAL_STRUCTURED_OUTPUT", False)
+        lx.extract_page(PAGES_A[0], page_number=1, chat=chat)
+        monkeypatch.setattr(config, "LLM_CLINICAL_STRUCTURED_OUTPUT", True)
+        lx.extract_page(PAGES_A[0], page_number=1, chat=chat)
+    assert seen == [False, True]

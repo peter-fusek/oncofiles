@@ -30,6 +30,7 @@ normalisation: it is stored as ``extracted_by`` and in the device row.
 from __future__ import annotations
 
 import json
+import logging
 import re
 import time
 from collections import Counter
@@ -37,10 +38,12 @@ from collections.abc import Callable
 
 from oncofiles import cloud_guard
 from oncofiles.curated import llm
-from oncofiles.curated.llm_extract import PageResult, _text
+from oncofiles.curated.llm_extract import AnswerError, PageResult, _text, error_kind
 from oncofiles.database._facts import LLM_CLINICAL_FAMILY
 
-EXTRACTOR_VERSION = "llm-clinical-v1"
+logger = logging.getLogger(__name__)
+
+EXTRACTOR_VERSION = "llm-clinical-v2"  # v2: no response_format, reasoning fallback
 EXTRACTOR_FAMILY = LLM_CLINICAL_FAMILY  # prefix of every version: re-extraction scope
 METHOD = "stored_sidecar_text"
 
@@ -374,7 +377,41 @@ def parse_answer(text: str) -> dict:
                 continue
             if isinstance(obj, dict) and any(isinstance(obj.get(k), list) for k in KINDS):
                 return {k: obj.get(k) if isinstance(obj.get(k), list) else [] for k in KINDS}
-    raise llm.LocalLLMError("local LLM answer has no clinical facts JSON")
+    raise AnswerError("no_json", "local LLM answer has no clinical facts JSON")
+
+
+def _valid_answer(obj) -> bool:
+    return (
+        isinstance(obj, dict)
+        and set(obj) == set(KINDS)
+        and all(isinstance(obj[k], list) for k in KINDS)
+    )
+
+
+def parse_reasoning_channel(text: str) -> dict:
+    """The kind lists from ``reasoning_content`` — accepted ONLY when the
+    channel holds exactly one complete top-level JSON value carrying exactly
+    the schema's kind lists. A draft plus a final answer, a partial object or
+    a different shape is ambiguous: ``AnswerError("reasoning_ambiguous")``,
+    the page is not assessed (same rule as the lab extractor, #714)."""
+    body = llm.strip_think(text or "")
+    decoder = json.JSONDecoder()
+    values, i = [], 0
+    while i < len(body):
+        if body[i] not in "{[":
+            i += 1
+            continue
+        try:
+            obj, i = decoder.raw_decode(body, i)
+        except ValueError:
+            raise AnswerError("reasoning_ambiguous", "reasoning channel: partial JSON") from None
+        values.append(obj)
+    if len(values) != 1:
+        msg = f"reasoning channel: {len(values)} JSON values, need exactly one"
+        raise AnswerError("reasoning_ambiguous", msg)
+    if not _valid_answer(values[0]):
+        raise AnswerError("reasoning_ambiguous", "reasoning channel: JSON fails the schema")
+    return {k: values[0][k] for k in KINDS}
 
 
 def normalize_item(kind: str, raw) -> tuple[dict | None, str | None]:
@@ -401,6 +438,12 @@ def normalize_item(kind: str, raw) -> tuple[dict | None, str | None]:
     return item, None
 
 
+def _structured_output() -> bool:
+    from oncofiles import config
+
+    return config.LLM_CLINICAL_STRUCTURED_OUTPUT
+
+
 def _thinking() -> bool:
     from oncofiles import config
 
@@ -423,8 +466,9 @@ def extract_page(
     t0 = time.monotonic()
     try:
         try:
+            fmt = {"response_format": RESPONSE_FORMAT} if _structured_output() else {}
             answer = call(SYSTEM_PROMPT, user, max_tokens=EXTRACT_BUDGET, thinking=thinking,
-                          response_format=RESPONSE_FORMAT, info=info)  # fmt: skip
+                          info=info, **fmt)  # fmt: skip
         except llm.LocalLLMError as exc:
             if "HTTP 400" not in str(exc) or "truncated" in str(exc):
                 raise
@@ -434,11 +478,29 @@ def extract_page(
         res.finish_reason = info.get("finish_reason")
         if res.finish_reason == "length":
             raise llm.LocalLLMError("local LLM answer truncated: finish_reason=length")
-        lists = parse_answer(answer)
+        if (
+            not llm.strip_think(answer or "").strip()
+            and (info.get("reasoning_content") or "").strip()
+        ):
+            # LM Studio (reasoning parser + structured output) may leave
+            # ``content`` empty and put the whole answer in reasoning_content
+            # (2026-11-11 prod preview: every page failed without this).
+            lists = parse_reasoning_channel(info["reasoning_content"])
+            res.answer_source = "reasoning"
+        else:
+            lists = parse_answer(answer)
+            res.answer_source = "content"
     except llm.LocalLLMError as exc:
         res.finish_reason = res.finish_reason or info.get("finish_reason")
         res.error = str(exc)[:200]
+        res.error_kind = error_kind(exc)
+        res.error_class = type(exc.__cause__ or exc).__name__
         res.seconds = time.monotonic() - t0
+        # Kind/class/finish only — never the answer or page text.
+        logger.warning(
+            "clinical extract: page %s not assessed (%s, %s, finish=%s)",
+            page_number, res.error_kind, res.error_class, res.finish_reason,
+        )  # fmt: skip
         return res
     res.seconds = time.monotonic() - t0
     for kind, raws in lists.items():
@@ -448,6 +510,7 @@ def extract_page(
                 res.dropped[f"{kind}:{why}"] += 1
             else:
                 cand["page_number"] = page_number
+                cand["answer_source"] = res.answer_source
                 res.candidates.append(cand)
     return res
 
@@ -486,6 +549,8 @@ def extract_document(
     seconds = 0.0
     not_assessed: list[int] = []
     finish: dict[str, str | None] = {}
+    error_kinds: Counter = Counter()
+    sources: Counter = Counter()
     for number, text in pages:
         if stop and stop():
             not_assessed.append(number)
@@ -496,9 +561,13 @@ def extract_document(
         finish[str(number)] = pr.finish_reason
         truncated += pr.truncated
         if not pr.assessed:
-            errors += pr.error is not None
+            if pr.error is not None:
+                errors += 1
+                error_kinds[pr.error_kind or "other"] += 1
             not_assessed.append(number)
             continue
+        if pr.answer_source:
+            sources[pr.answer_source] += 1
         for cand in pr.candidates:
             items.append(
                 verifier_clinical.verify_item(
@@ -512,6 +581,8 @@ def extract_document(
         "items": items, "method": METHOD, "pages": len(pages),
         "pages_used": len(pages) - len(not_assessed), "pages_not_assessed": not_assessed,
         "pages_truncated": truncated, "page_errors": errors, "finish_reasons": finish,
+        "error_kinds": dict(sorted(error_kinds.items())),
+        "answer_sources": dict(sorted(sources.items())),
         "dob_known": dob_known, "birth_date_guard": "active" if dob_known else "inactive_no_dob",
         "counts": counts, "unverified_reasons": reasons, "dropped": dict(sorted(dropped.items())),
         "seconds": round(seconds, 1),

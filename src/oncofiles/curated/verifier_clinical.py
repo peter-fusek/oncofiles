@@ -27,10 +27,11 @@ from __future__ import annotations
 
 import re
 
+from oncofiles.curated import verifier as _lab_verifier
 from oncofiles.curated.reread_verify import date_printed
 from oncofiles.curated.verifier import _birth_isos, _value_pattern, parse_printed_date, ws
 
-CLINICAL_VERIFIER_VERSION = 1
+CLINICAL_VERIFIER_VERSION = 2  # 2: reasoning-channel items never machine
 
 # answer key -> fields whose (non-empty) value must occur inside the evidence
 TOKEN_FIELDS: dict[str, tuple[str, ...]] = {
@@ -247,7 +248,11 @@ def verify_item(  # noqa: PLR0912, PLR0915
     whitespace-normalised); ``derived`` holds what is computed from them
     deterministically (codes, numbers, units, parsed stage parts)."""
     kind = cand["kind"]
-    fields = {k: v for k, v in cand.items() if k not in ("kind", "page_number", "evidence")}
+    fields = {
+        k: v
+        for k, v in cand.items()
+        if k not in ("kind", "page_number", "evidence", "answer_source")
+    }
     reasons: list[str] = []
     evidence = ws(cand.get("evidence"))
     ev_low = evidence.lower()
@@ -264,6 +269,10 @@ def verify_item(  # noqa: PLR0912, PLR0915
         reasons.append("ocr_uncertain")
     if source_reason:
         reasons.append(source_reason)
+    # Same rule as the lab verifier (#714): an answer read from the model's
+    # reasoning channel is never machine-trusted, whatever else checks out.
+    if _lab_verifier.REASONING_CHANNEL_NEVER_MACHINE and _lab_verifier.from_reasoning_channel(cand):
+        reasons.append(_lab_verifier.REASONING_CHANNEL_REASON)
 
     dates: dict[str, dict] = {}
     for field in DATE_FIELDS[kind]:
