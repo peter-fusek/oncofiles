@@ -180,26 +180,27 @@ async def test_compare_lab_panels_scopes_to_slug(db: Database):
 # ── research ───────────────────────────────────────────────────────────────
 
 
-async def test_add_and_list_research_respect_slug(db: Database):
+async def test_list_research_respects_slug(db: Database):
     await _seed_two_patients(db)
     ctx = _StubCtx(db)
 
-    # Add a PubMed entry under Bob via slug, default ContextVar is Erika
-    await research_tools.add_research_entry(
-        ctx,
-        source="pubmed",
-        external_id="12345",
-        title="Bob's PubMed article",
-        patient_slug=SECOND_SLUG,
+    # Archive rows seeded via the DB layer: add_research_entry is deprecated (#721).
+    await db.insert_research_entry(
+        ResearchEntry(source="pubmed", external_id="12345", title="Bob's PubMed article"),
+        patient_id=SECOND_UUID,
+    )
+    await db.insert_research_entry(
+        ResearchEntry(source="pubmed", external_id="67890", title="Erika's PubMed article"),
+        patient_id=ERIKA_UUID,
     )
 
-    # Add another under default (Erika)
-    await research_tools.add_research_entry(
-        ctx,
-        source="pubmed",
-        external_id="67890",
-        title="Erika's PubMed article",
+    # The deprecated write tool refuses and stores nothing.
+    refused = json.loads(
+        await research_tools.add_research_entry(
+            ctx, source="pubmed", external_id="99999", title="New", patient_slug=SECOND_SLUG
+        )
     )
+    assert refused["error"] == "deprecated"
 
     # List Erika's: only Erika's article
     erika_list = json.loads(await research_tools.list_research_entries(ctx))

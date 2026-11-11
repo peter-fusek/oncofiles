@@ -20,7 +20,7 @@ async def export_document_package(
     """Export a structured document package for consultations or second opinions.
 
     Assembles all documents grouped by category with metadata, treatment
-    events timeline, and structured metadata. Returns JSON that Oncoteam
+    events timeline, and structured metadata. Returns JSON that an MCP client
     can render as PDF, email, or share link.
 
     Args:

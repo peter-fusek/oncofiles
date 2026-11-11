@@ -16,7 +16,7 @@ import json
 
 from fastmcp import Context
 
-from oncofiles.models import ActivityLogEntry, ActivityLogQuery
+from oncofiles.models import ActivityLogQuery
 from oncofiles.tools._helpers import (
     _clamp_limit,
     _get_db,
@@ -24,6 +24,7 @@ from oncofiles.tools._helpers import (
     _parse_date,
     _resolve_patient_id,
 )
+from oncofiles.tools._sunset import write_refused
 
 
 async def add_activity_log(
@@ -39,40 +40,26 @@ async def add_activity_log(
     tags: str = "[]",
     patient_slug: str | None = None,
 ) -> str:
-    """Log an agent tool call to the activity audit trail (append-only).
+    """[DEPRECATED — Oncoteam sunset (#721); removed after 2027-01-10] Refuses new writes.
 
-    The row's `patient_id` is set from the caller's resolved patient so
-    read-side filtering actually scopes correctly (#484 follow-up). Admin
-    callers without a bound patient write with empty patient_id.
+    Manual activity logging was used by Oncoteam's agents. Oncoteam is retired,
+    so this tool stores nothing and returns a ``deprecated`` error. The audit
+    middleware still records every MCP tool call automatically; existing rows
+    stay readable via search_activity_log and get_activity_stats.
 
     Args:
-        session_id: Session identifier.
-        agent_id: Agent that made the call (e.g. oncoteam).
-        tool_name: Name of the tool that was called.
-        input_summary: Brief summary of the input parameters.
-        output_summary: Brief summary of the output.
-        duration_ms: How long the call took in milliseconds.
-        status: Result status (ok, error, timeout).
-        error_message: Error details if status is not ok.
-        tags: JSON array of tags (e.g. '["research","pubmed"]').
-        patient_slug: Optional explicit patient; defaults to caller's bound patient.
+        session_id: Session identifier (ignored).
+        agent_id: Agent identifier (ignored).
+        tool_name: Tool name (ignored).
+        input_summary: Input summary (ignored).
+        output_summary: Output summary (ignored).
+        duration_ms: Duration (ignored).
+        status: Status (ignored).
+        error_message: Error message (ignored).
+        tags: Tags (ignored).
+        patient_slug: Optional patient slug (ignored).
     """
-    db = _get_db(ctx)
-    caller_pid = await _resolve_patient_id(patient_slug, ctx, required=False)
-    entry = ActivityLogEntry(
-        session_id=session_id,
-        agent_id=agent_id,
-        tool_name=tool_name,
-        input_summary=input_summary,
-        output_summary=output_summary,
-        duration_ms=duration_ms,
-        status=status,
-        error_message=error_message,
-        tags=tags,
-        patient_id=caller_pid,
-    )
-    saved = await db.insert_activity_log(entry)
-    return json.dumps({"id": saved.id, "status": saved.status})
+    return write_refused("add_activity_log")
 
 
 async def search_activity_log(
@@ -87,7 +74,8 @@ async def search_activity_log(
     limit: int = 50,
     patient_slug: str | None = None,
 ) -> str:
-    """Search the activity log with filters, scoped to the caller's patient.
+    """[DEPRECATED — Oncoteam sunset (#721); removed after 2027-01-10]
+    Search the activity log with filters, scoped to the caller's patient.
 
     Admin callers (static bearer or DASHBOARD_ADMIN_EMAILS) see system-wide
     by default. Patient-scoped callers see only their patient's rows —
@@ -162,7 +150,8 @@ async def get_activity_stats(
     date_to: str | None = None,
     patient_slug: str | None = None,
 ) -> str:
-    """Get aggregated activity statistics by tool and status, patient-scoped.
+    """[DEPRECATED — Oncoteam sunset (#721); removed after 2027-01-10]
+    Get aggregated activity statistics by tool and status, patient-scoped.
 
     Admin callers see system-wide; non-admin scoped to their patient.
     Prior behaviour leaked cross-patient aggregate counts.

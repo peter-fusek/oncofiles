@@ -171,12 +171,6 @@
           logoutBtn.onclick = function(){ window.location.href = '/'; };
           logoutBtn.removeAttribute('data-sk');
           logoutBtn.removeAttribute('data-en');
-          // Add oncoteam link next to it
-          var oncoteamLink = document.createElement('a');
-          oncoteamLink.href = 'https://oncoteam.cloud';
-          oncoteamLink.textContent = 'oncoteam.cloud \u2192';
-          oncoteamLink.style.cssText = 'font-size:0.75rem;color:var(--accent);margin-left:0.75rem;text-decoration:none;opacity:0.8';
-          logoutBtn.parentNode.insertBefore(oncoteamLink, logoutBtn.nextSibling);
         }
         // Disable service badges in demo — explain what each does (#233)
         var badgeExplanations = {

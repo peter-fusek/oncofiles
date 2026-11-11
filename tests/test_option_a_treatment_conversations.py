@@ -192,23 +192,16 @@ async def test_get_conversation_blocks_cross_patient(db: Database):
     assert bob_ok.get("content") == "Bob private content"
 
 
-async def test_log_conversation_respects_slug(db: Database):
+async def test_log_conversation_refuses_under_any_slug(db: Database):
+    """#721: log_conversation is deprecated — refuses for every patient, stores nothing."""
     await _seed_two_patients(db)
     ctx = _StubCtx(db)
 
-    # Log under Bob's slug despite default ContextVar = Erika
-    result = json.loads(
-        await conv_tools.log_conversation(
-            ctx,
-            title="Bob scoped note",
-            content="body",
-            patient_slug=SECOND_SLUG,
+    for slug in (SECOND_SLUG, None):
+        result = json.loads(
+            await conv_tools.log_conversation(
+                ctx, title="Bob scoped note", content="body", patient_slug=slug
+            )
         )
-    )
-    assert result.get("title") == "Bob scoped note"
-
-    # Verify DB row lives under Bob, not Erika
-    ok = await db.check_conversation_entry_ownership(result["id"], SECOND_UUID)
-    leak = await db.check_conversation_entry_ownership(result["id"], ERIKA_UUID)
-    assert ok is True
-    assert leak is False
+        assert result["error"] == "deprecated"
+        assert "id" not in result

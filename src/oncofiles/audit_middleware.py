@@ -106,7 +106,7 @@ class AuditMiddleware(Middleware):
     """Automatically logs every tool call to the activity_log table.
 
     Captures tool name, duration, status, and error details without
-    requiring manual logging from Oncoteam or other agents.
+    requiring manual logging from the calling agent.
     Uses fire-and-forget to avoid blocking tool responses.
 
     Arguments are summarized through an allowlist (#758): only ids, slugs,
