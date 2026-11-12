@@ -416,7 +416,8 @@ async def store_document(  # noqa: PLR0912, PLR0915
             "value_num": max(float(n.replace(",", ".")) for n in printed_nums)
             if printed_nums else None,
             "value_text": f.get("size_as_printed") if len(dims) > 1 else None,
-            "unit": f.get("unit_as_printed"), "value_canonical": d.get("size_mm"),
+            "unit": f.get("unit_as_printed") or d.get("unit"),
+            "value_canonical": d.get("size_mm"),
             "unit_canonical": "mm" if d.get("size_mm") is not None else None,
             "occurred_at": day, "page_number": it.get("page_number"), "evidence": it["evidence"],
             "effective_precision": (it["dates"].get("date") or {}).get("precision"),

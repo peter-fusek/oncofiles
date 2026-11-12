@@ -15,7 +15,9 @@ when all of these hold:
 * every date is printed on the page AND inside the evidence, and is not a
   birth date (README contract / patient context);
 * a biomarker label maps to a ``fact_codes`` genetic_variant / biomarker code
-  (vocabulary is data); a lesion size has a convertible unit (mm, cm).
+  (vocabulary is data); a lesion size has a printed, convertible unit
+  (mm, cm; cm → mm is an exact ×10). A unit taken from the size string itself
+  ("23 x 18 mm") must follow the numbers inside the evidence.
 
 Anything else stays ``unverified`` with reason codes. Nothing is ever filled
 in: a field the model left empty stays empty, and only a lesion size or a
@@ -34,8 +36,11 @@ from oncofiles.curated.reread_verify import date_printed
 from oncofiles.curated.verifier import _birth_isos, _value_pattern, parse_printed_date, ws
 
 # 2: reasoning-channel items never machine; 3: printed date forms "5.3.27"
-# and month names ("5. marca 2027", "marec 2027", Slovak and Czech) parse
-CLINICAL_VERIFIER_VERSION = 3
+# and month names ("5. marca 2027", "marec 2027", Slovak and Czech) parse;
+# 4: lesion sizes — "x" / "×" separated dimensions, decimal comma, the unit
+# printed after the numbers ("2,3 x 1,8 cm") or once per dimension; a size
+# with no printed unit is ``unit_missing`` (never guessed) (#773)
+CLINICAL_VERIFIER_VERSION = 4
 
 # answer key -> fields whose (non-empty) value must occur inside the evidence
 TOKEN_FIELDS: dict[str, tuple[str, ...]] = {
@@ -73,7 +78,10 @@ REASONS = (
     "label_unmapped",  # biomarker label without a fact_codes alias (review → add data)
     "label_fuzzy",
     "label_not_biomarker",  # the label maps to a lab / tumour-marker code
-    "unit_unconvertible",  # lesion size unit other than mm / cm
+    "unit_unconvertible",  # lesion size unit other than mm / cm, or mixed / conflicting units
+    "unit_missing",  # lesion size without any printed unit (never guessed)
+    "unit_not_in_evidence",  # unit field not in the evidence, or a unit read from the
+    # size string ("23 x 18 mm") not printed right after those numbers
     "implausible",
     "ocr_uncertain",  # "[?]" in the evidence
     "handwritten",  # source reasons, carried from the document
@@ -81,6 +89,9 @@ REASONS = (
 )
 BIOMARKER_CATEGORIES = ("genetic_variant", "biomarker")
 LESION_MM_MAX = 1000.0  # a lesion size above 1 m is a misread, never a measurement
+SIZE_UNITS_MM = {"mm": 1, "cm": 10}  # printed length unit -> exact factor to mm
+_SIZE_UNIT = re.compile(r"(?<![^\W\d_])(mm|cm)(?![\w²³])", re.I)
+_SIZE_SEP = "[x×*]"  # dimension separators as printed: "23 x 18", "23×18", "23*18"
 
 _NUMERIC = re.compile(r"\d+(?:[.,]\d+)?")
 _MONTH_YEAR = re.compile(r"^\s*(\d{1,2})\s*[./]\s*((?:19|20)\d{2})\s*$")
@@ -275,6 +286,41 @@ def dose_unit(printed: str | None) -> tuple[str | None, str | None]:
     return ucum, basis
 
 
+def lesion_size(size: str | None, unit: str | None) -> tuple[list[float], str | None, str | None]:
+    """(dimensions, unit, reason) of a printed lesion size. ``size`` is the
+    printed size ("23 x 18", "2,3 x 1,8 cm", "31 mm x 20 mm"), ``unit`` the
+    printed unit field ("mm", "cm", "mm.", "mm x mm"). The unit may sit in
+    either; when both hold one it must be the same. No unit → ``unit_missing``
+    (never guessed); an unknown or mixed unit → ``unit_unconvertible``."""
+    dims = [float(n.replace(",", ".")) for n in _NUMERIC.findall(size or "")]
+    in_size = {u.lower() for u in _SIZE_UNIT.findall(size or "")}
+    in_field = {u.lower() for u in _SIZE_UNIT.findall(unit or "")}
+    rest = re.sub(rf"{_SIZE_UNIT.pattern}|{_SIZE_SEP}|[\s.]", "", unit or "", flags=re.I)
+    if rest:  # "in", "cm3", "ml", "mm2": not a length we convert
+        return dims, None, "unit_unconvertible"
+    units = in_size | in_field
+    if not units:
+        return dims, None, "unit_missing"
+    if len(units) > 1:
+        return dims, None, "unit_unconvertible"
+    return dims, units.pop(), None
+
+
+def _size_with_unit_printed(size: str, unit: str, evidence: str) -> bool:
+    """The numbers of ``size`` occur in ``evidence`` as one printed size
+    followed by ``unit``: "2,3 x 1,8 cm", "2.3×1.8cm", "23 mm x 18 mm"."""
+    nums = []
+    for n in _NUMERIC.findall(size):
+        whole, _, frac = n.replace(",", ".").partition(".")
+        nums.append(re.escape(whole) + (rf"[.,]{re.escape(frac)}" if frac else ""))
+    if not nums:
+        return False
+    u = re.escape(unit)
+    joint = rf"\s*(?:{u}\.?\s*)?{_SIZE_SEP}\s*"
+    pattern = rf"(?<![\d.,]){joint.join(nums)}\s*{u}(?![\w²³])"
+    return bool(re.search(pattern, evidence, re.I))
+
+
 def _vocab_row(vocab, label: str):
     row = vocab.match(label)
     if row is not None:
@@ -373,13 +419,16 @@ def verify_item(  # noqa: PLR0912, PLR0915
         size = ws(fields.get("size_as_printed"))
         if not _numbers_in(size, evidence, blank=(fields.get("lesion_as_printed"),)):
             reasons.append("size_not_in_evidence")
-        unit = re.sub(r"\s+", "", (fields.get("unit_as_printed") or "").lower())
-        factor = {"mm": 1.0, "cm": 10.0}.get(unit)
-        dims = [float(n.replace(",", ".")) for n in _NUMERIC.findall(size)]
-        if factor is None:
-            reasons.append("unit_unconvertible")
-        elif dims:
-            mm = [round(d * factor, 3) for d in dims]
+        dims, unit, why = lesion_size(size, fields.get("unit_as_printed"))
+        if why:
+            reasons.append(why)
+        elif not ws(fields.get("unit_as_printed")) and not _size_with_unit_printed(
+            size, unit, evidence
+        ):
+            reasons.append("unit_not_in_evidence")
+        if unit and dims:
+            derived["unit"] = unit
+            mm = [round(d * SIZE_UNITS_MM[unit], 3) for d in dims]
             derived["dims_mm"] = mm
             derived["size_mm"] = max(mm)
             if not 0 < derived["size_mm"] <= LESION_MM_MAX:

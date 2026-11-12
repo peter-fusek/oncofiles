@@ -291,6 +291,79 @@ async def test_correct_items_pass_and_a_birth_date_never_does(db):
     assert check({**diag, "date_as_printed": None})["verification"] == "machine"
 
 
+# #773: printed lesion size forms (invented values). (evidence line, size, unit) →
+# dimensions in mm, all machine.
+SIZE_PAGE = "\n".join([
+    "MR 6.6.2028: ložisko L4 23 x 18 mm.",
+    "MR 6.6.2028: ložisko L4 2,3 x 1,8 cm.",
+    "MR 6.6.2028: ložisko L4 2,3×1,8cm.",
+    "MR 6.6.2028: ložisko L4 23 mm x 18 mm.",
+    "MR 6.6.2028: ložisko L4 1,5 cm.",
+    "MR 6.6.2028: ložisko L4 37 x 29.",
+    "MR 6.6.2028: ložisko L4 23 x 18 (pozri tabuľku v mm).",
+    "MR 6.6.2028: ložisko L4 2 cm x 15 mm.",
+    "MR 6.6.2028: ložisko L4 objem 47 cm3.",
+])  # fmt: skip
+SIZE_LINES = SIZE_PAGE.splitlines()
+
+
+def _size(line: int, size: str, unit: str | None) -> dict:
+    return _lesion(lesion_as_printed="L4", size_as_printed=size, unit_as_printed=unit,
+                   evidence=SIZE_LINES[line])  # fmt: skip
+
+
+@pytest.mark.parametrize(
+    ("cand", "dims_mm"),
+    [
+        (_size(0, "23 x 18", "mm"), [23, 18]),
+        (_size(0, "23 x 18 mm", None), [23, 18]),  # unit only inside the size
+        (_size(1, "2,3 x 1,8", "cm"), [23, 18]),  # decimal comma, cm → mm exactly ×10
+        (_size(1, "2,3 x 1,8 cm", None), [23, 18]),
+        (_size(1, "2.3 x 1.8", "cm"), [23, 18]),
+        (_size(2, "2,3×1,8", "cm"), [23, 18]),  # "×", no spaces
+        (_size(2, "2,3×1,8cm", None), [23, 18]),
+        (_size(3, "23 mm x 18 mm", None), [23, 18]),  # the unit once per dimension
+        (_size(3, "23 x 18", "mm"), [23, 18]),
+        (_size(4, "1,5", "cm"), [15]),
+        (_size(4, "1,5 cm", "cm."), [15]),
+    ],
+)
+async def test_printed_lesion_size_forms_convert_to_mm(db, cand, dims_mm):
+    item = vc.verify_item(cand, page_text=SIZE_PAGE, vocab=await _vocab(db), report_date=DAY,
+                          birth_dates={DOB})  # fmt: skip
+    assert item["verification"] == "machine", item["reasons"]
+    assert item["derived"]["dims_mm"] == dims_mm
+    assert item["derived"]["size_mm"] == max(dims_mm)
+
+
+@pytest.mark.parametrize(
+    ("cand", "reason"),
+    [
+        (_size(5, "37 x 29", None), "unit_missing"),  # no unit printed: never guessed
+        (_size(0, "23 x 18", None), "unit_missing"),  # printed, but not returned: not added
+        (_size(6, "23 x 18 mm", None), "unit_not_in_evidence"),  # unit not after the numbers
+        (_size(0, "2,3 x 1,8 cm", "mm"), "unit_unconvertible"),  # conflicting units
+        (_size(7, "2 cm x 15 mm", None), "unit_unconvertible"),  # mixed units
+        (_size(8, "47", "cm3"), "unit_unconvertible"),  # a volume is not a length
+    ],
+)
+async def test_lesion_size_without_a_clear_printed_unit_stays_unverified(db, cand, reason):
+    item = vc.verify_item(cand, page_text=SIZE_PAGE, vocab=await _vocab(db), report_date=DAY,
+                          birth_dates={DOB})  # fmt: skip
+    assert item["verification"] == "unverified"
+    assert reason in item["reasons"], item["reasons"]
+    if reason != "unit_not_in_evidence":
+        assert "size_mm" not in item["derived"]
+
+
+def test_the_cm_worked_example_copies_the_label_as_printed():
+    page, answer = next((p, a) for p, a in lx.EXAMPLES if "cm" in p)
+    (lesion,) = answer["lesions"]
+    assert lesion["unit_as_printed"] == "cm" and "2028" in lesion["date_as_printed"]
+    assert lesion["lesion_as_printed"] in page  # copied, never "liver S6"
+    assert "null if not printed" in lx.SYSTEM_PROMPT
+
+
 def test_dates_keep_their_printed_precision():
     assert vc.parse_any_date("03/2027") == ("2027-03", "month")
     assert vc.parse_any_date("2028") == ("2028", "year")
@@ -578,7 +651,8 @@ async def test_preview_writes_nothing_and_reports_counts_only(seeded, local_mode
     assert job["state"] == "done", job
     assert await _snapshot(db) == before
     totals = job["report"]["totals"]
-    assert totals["counts"]["lesions"] == {"machine": 4, "unverified": 0}
+    lesions_taught = sum(len(ANSWERS[p]["lesions"]) for p in PAGES_A + PAGES_B)
+    assert totals["counts"]["lesions"] == {"machine": lesions_taught, "unverified": 0}
     assert totals["counts"]["diagnoses"]["machine"] == len(["C18.7", "meta", "C20"])
     assert all(d["result"] == "previewed" for d in job["report"]["documents"])
     assert set(seen) == {"curated clinical extraction"}
