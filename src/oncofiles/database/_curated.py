@@ -7,8 +7,9 @@ import json
 from ._base import DatabaseBase
 
 # background jobs persisted in curated_runs that are not curated-folder runs
-# (re-OCR, verify-only re-read, clinical extraction #726)
-_NOT_RUNS = "trigger NOT IN ('reocr', 'reread', 'clinical')"
+# (re-OCR, verify-only re-read, clinical extraction #726, extraction scorecard
+# #773): never listed as runs and never satisfy the preview gate
+_NOT_RUNS = "trigger NOT IN ('reocr', 'reread', 'clinical', 'scorecard')"
 
 
 class CuratedMixin(DatabaseBase):
@@ -132,6 +133,33 @@ class CuratedMixin(DatabaseBase):
         ) as cursor:
             rows = await cursor.fetchall()
         return [r["patient_id"] if isinstance(r, dict) else r[0] for r in rows]
+
+    async def get_last_scorecard(
+        self, *, patient_id: str, label_prefix: str | None = None, before_id: int | None = None
+    ) -> dict | None:
+        """The newest finished, ok extraction scorecard (#773) of one patient,
+        optionally only one whose label starts with ``label_prefix`` and older
+        than row ``before_id``. Its report holds aggregated counts only."""
+        where = ["patient_id = ?", "trigger = 'scorecard'", "status = 'ok'",
+                 "finished_at IS NOT NULL"]  # fmt: skip
+        params: list = [patient_id]
+        if before_id is not None:
+            where.append("id < ?")
+            params.append(before_id)
+        if label_prefix:
+            escaped = label_prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            where.append("json_extract(report_json, '$.label') LIKE ? ESCAPE '\\'")
+            params.append(escaped + "%")
+        async with self.db.execute(
+            f"SELECT id FROM curated_runs WHERE {' AND '.join(where)} ORDER BY id DESC LIMIT 1",
+            tuple(params),
+        ) as cursor:
+            row = await cursor.fetchone()
+        if row is None:
+            return None
+        return await self.get_curated_run(
+            row["id"] if isinstance(row, dict) else row[0], patient_id=patient_id
+        )
 
     async def get_last_reocr_job(self, *, patient_id: str) -> dict | None:
         """The newest re-OCR or verify-only re-read job row (#667, #678) with its
