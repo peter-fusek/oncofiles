@@ -244,7 +244,7 @@ table rebuilds in a maintenance window, after a verified snapshot.
 - `curated_settings` — PK `patient_id` (also no FK). Fix: (b).
 - `patient_selection` — PK `owner_email`. Fix: with (b), low priority.
 - `mcp_oauth_clients` — PK `client_id` as presented by the client. Fix: none planned.
-- `mcp_oauth_tokens` — PK is the token string itself. Fix: none planned (see Known).
+- `mcp_oauth_tokens` — PK: token key (auth table, format tracked separately).
 - `newsletter_subscribers` — PK `id` is a TEXT UUID. Fix: none planned.
 - `session_revocations` — PK is the session token's `tid`. Fix: none planned.
 

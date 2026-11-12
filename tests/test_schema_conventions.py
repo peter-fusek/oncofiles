@@ -124,7 +124,7 @@ LEGACY_PK: dict[str, str] = {
     "curated_settings": "one row per patient, PK patient_id (and no FK)",
     "patient_selection": "one row per caregiver, PK owner_email",
     "mcp_oauth_clients": "OAuth client registry, PK client_id as presented by the client",
-    "mcp_oauth_tokens": "PK is the token string itself",
+    "mcp_oauth_tokens": "auth table, tracked separately",
     "newsletter_subscribers": "PK id is a TEXT UUID",
     "session_revocations": "PK is the session token's tid",
 }
