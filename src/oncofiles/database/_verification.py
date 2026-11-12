@@ -15,11 +15,15 @@ Rules enforced here:
   the same ``fhir_id`` and the old row's source document / page / evidence,
   plus ``metadata.corrected_from``. Both rows get an audit row and the new row
   a provenance row (activity ``correct``; the old version is the ``revision``
-  entity, recorded in ``reason`` until provenance has an entity column);
+  entity, recorded in ``reason`` until provenance has an entity column). A row
+  stored before stable ids (``fhir_id`` NULL) gets, on both versions, the id
+  readers already saw, so a corrected date never changes the fact id (#741);
 * each action is written in one transaction (one commit at the end).
 
-Re-extraction (``replace_document_facts``) already keeps ``verified`` and
-``corrected`` rows; that contract is locked in ``tests/test_fact_review.py``.
+Re-extraction (``replace_document_facts``) keeps ``verified`` and ``corrected``
+rows and never re-adds the extractor's version of such a fact, also when its
+date was corrected (#741, matched by fact id or the original date); that
+contract is locked in ``tests/test_fact_review.py``.
 """
 
 from __future__ import annotations
@@ -297,15 +301,24 @@ class FactVerificationMixin:
         old = await self.find_reviewable_fact(fact_ref, patient_id=patient_id)
         if old is None:
             return {"status": "not_found"}
-        if old.get("fhir_id") and await self._vr_one(
+        all_rows_fhir_index = await self._vr_one(
             "SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'uq_cr_fhir_id'", ()
-        ):
+        )
+        if old.get("fhir_id") and all_rows_fhir_index:
             # Migration 080's index is unique over ALL rows; the new version must
             # share the fhir_id, which needs #728's active-only index. Refuse
             # before writing anything rather than half-apply the correction.
             raise ValueError("this fact has a stable id; correcting it needs migration 082")
 
         new: dict[str, Any] = {c: old.get(c) for c in _CARRY_COLUMNS}
+        if not new["fhir_id"] and not all_rows_fhir_index:
+            # A row stored before stable ids has none: both versions get the id
+            # readers already saw (computed as the insert path would), never one
+            # computed later from the corrected date (#741).
+            computed = await self.effective_fact_ids(
+                patient_id=patient_id, document_ids=[old.get("source_document_id")]
+            )
+            new["fhir_id"] = computed.get(old["id"])
         changed: list[str] = []
         if value_num is not None:
             new["value_num"], new["value_text"] = float(value_num), None
@@ -362,9 +375,10 @@ class FactVerificationMixin:
         # correction carries the same logical id as the version it replaces.
         await self.db.execute(
             f"UPDATE clinical_records SET deleted_at = {_NOW}, deleted_by = ?, "
-            f"updated_at = {_NOW}, updated_by = ?, last_updated = {_NOW} "
+            f"updated_at = {_NOW}, updated_by = ?, last_updated = {_NOW}, "
+            "fhir_id = COALESCE(fhir_id, ?) "
             "WHERE id = ? AND patient_id = ? AND deleted_at IS NULL",
-            (agent_user, agent_user, old["id"], patient_id),
+            (agent_user, agent_user, new["fhir_id"], old["id"], patient_id),
         )
         cols = list(new)
         cur = await self.db.execute(
