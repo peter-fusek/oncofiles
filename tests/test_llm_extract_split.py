@@ -341,3 +341,77 @@ def test_both_extractors_go_through_the_split_path(local_llm, monkeypatch):
             CLIN_PAGE, page_number=1, chat=Model(CLIN_PAGE, _clinical_for(CLIN_PAGE))
         )
     assert labels == ["llm extract", "clinical extract"]
+
+
+# ── context-loss check: items without a date, split vs unsplit (#773) ───
+
+
+def _undated(item: dict) -> dict:
+    return dict(item, date_as_printed=None, date_role=None)
+
+
+def test_date_null_items_per_page_and_rates_split_vs_unsplit(local_llm):
+    short_page = "\n".join(LAB_LINES[:2])
+    short = Model(short_page, _facts(Q, _undated(T)))
+    long = Model(LAB_PAGE, TRUNCATED, (_facts(Q, R), _facts(_undated(S), T)))
+
+    def chat(system, user, **kw):
+        model = short if user.endswith(short_page) else long
+        return model(system, user, **kw)
+
+    with local_only("test"):
+        out = llm_extract.extract_document(
+            [(1, short_page), (2, LAB_PAGE)], vocab=Vocabulary.from_rows([]), chat=chat
+        )
+    unsplit, split = out["page_diagnostics"]["1"], out["page_diagnostics"]["2"]
+    assert unsplit["split"] is False and split["split"] is True
+    assert unsplit["items"] == 2 and unsplit["date_null_items"] == 1
+    assert split["items"] == 4 and split["date_null_items"] == 1
+    assert out["items_unsplit"] == 2 and out["date_null_items_unsplit"] == 1
+    assert out["items_split"] == 4 and out["date_null_items_split"] == 1
+    assert out["date_null_rate_unsplit"] == 0.5
+    assert out["date_null_rate_split"] == 0.25
+
+
+def test_date_null_counts_every_clinical_date_field():
+    assert xcall.date_is_null({"kind": "planned", "date_as_printed": None})
+    assert not xcall.date_is_null(
+        {"start_date_as_printed": "2.4.2027", "end_date_as_printed": None}
+    )
+    assert xcall.date_is_null({"kind": "diagnoses", "text_as_printed": "x"})  # no date field
+
+
+def test_clinical_report_carries_the_date_null_totals(local_llm):
+    model = Model(CLIN_PAGE, _clinical_for(CLIN_PAGE))
+    with local_only("test"):
+        out = llm_extract_clinical.extract_document(
+            [(1, CLIN_PAGE)], vocab=Vocabulary.from_rows([]), chat=model
+        )
+    total = sum(len(v) for v in CLIN_ANSWER.values())
+    assert out["items_unsplit"] == total and out["items_split"] == 0
+    assert out["date_null_rate_split"] is None
+    assert set(xcall.DATE_NULL_KEYS) <= set(out)
+
+
+def test_scorecard_totals_and_delta_carry_the_date_null_rates():
+    from oncofiles.curated import scorecard
+
+    def page(split: bool, items: int, null: int) -> dict:
+        return {"finish_reason": "stop", "split": split, "items": items, "date_null_items": null}
+
+    def entry(split_null: int) -> dict:
+        unsplit_page = page(False, items=4, null=1)
+        split_page = page(True, items=8, null=split_null)
+        diags = {"1": unsplit_page, "2": split_page}
+        return {"document_id": 1, "result": "ok", "pages": 2, "page_diagnostics": diags}
+
+    before = scorecard.totals([scorecard.clinical_card(entry(2))])
+    after = scorecard.totals([scorecard.clinical_card(entry(4))])
+    assert before["dates"]["date_null_rate_unsplit"] == 0.25
+    assert before["dates"]["date_null_rate_split"] == 0.25
+    assert after["dates"]["date_null_rate_split"] == 0.5
+    assert after["dates"]["pages_split"] == after["dates"]["pages_unsplit"] == 1
+    metrics = scorecard.delta(before, after)["metrics"]
+    assert metrics["dates.date_null_rate_split"]["change"] == 0.25
+    assert metrics["dates.date_null_rate_unsplit"]["change"] == 0
+    assert "dates" in scorecard.persisted({"totals": after})["totals"]

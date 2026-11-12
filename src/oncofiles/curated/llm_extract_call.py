@@ -206,6 +206,9 @@ class PageResult:
     split_first_call: dict | None = None  # the truncated whole-page call
     split_chunks: list[dict] = field(default_factory=list)  # one per chunk CALLED
     split_duplicates_removed: int = 0
+    # context-loss check of the split (#773): candidates and those without a date
+    items: int = 0
+    date_null_items: int = 0
 
     def diagnostics(self) -> dict:
         """Counts and codes only — never page or answer text."""
@@ -220,6 +223,7 @@ class PageResult:
         if self.answer:
             out["answer"] = self.answer
         out["split"] = self.split
+        out.update(items=self.items, date_null_items=self.date_null_items)
         if self.split:
             out.update(split_trigger=self.split_trigger, chunk_count=SPLIT_CHUNKS,
                        chunks_called=len(self.split_chunks), first_call=self.split_first_call,
@@ -500,6 +504,49 @@ def _call_chunks(
         label, res.page_number, trigger, len(chunks),
     )  # fmt: skip
     return parts
+
+
+def _is_date_field(key: str) -> bool:
+    return key == "date_as_printed" or key.endswith("_date_as_printed")
+
+
+def date_is_null(cand: dict) -> bool:
+    """True when none of the item's printed date fields holds a value (lab
+    ``date_as_printed``; clinical ``date_as_printed`` / ``start_…`` /
+    ``end_…``). An item without any date field counts as null."""
+    return not any(v for k, v in cand.items() if _is_date_field(k))
+
+
+def finish_candidates(res: PageResult) -> None:
+    """After an extractor has collected a page's candidates: drop exact
+    duplicates of a split page, then count items and items without a date
+    (the split's context-loss check, #773). Counts only."""
+    dedupe_split(res)
+    res.items = len(res.candidates)
+    res.date_null_items = sum(date_is_null(c) for c in res.candidates)
+
+
+def _rate(part: int, whole: int) -> float | None:
+    return round(part / whole, 3) if whole else None
+
+
+DATE_NULL_KEYS = tuple(
+    f"{k}_{n}" for n in ("split", "unsplit") for k in ("items", "date_null_items", "date_null_rate")
+)
+
+
+def date_null_totals(page_results: list[PageResult]) -> dict:
+    """Report totals: items without a date / items, for split vs unsplit
+    pages (assessed pages only; a page not assessed has no items). Counts and
+    rates only."""
+    out: dict = {}
+    for name, flag in (("split", True), ("unsplit", False)):
+        pages = [p for p in page_results if p.assessed and p.split is flag]
+        items = sum(p.items for p in pages)
+        null = sum(p.date_null_items for p in pages)
+        out.update({f"items_{name}": items, f"date_null_items_{name}": null,
+                    f"date_null_rate_{name}": _rate(null, items)})  # fmt: skip
+    return out
 
 
 def dedupe_split(res: PageResult) -> None:

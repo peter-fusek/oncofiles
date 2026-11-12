@@ -408,7 +408,7 @@ def extract_page(
                 cand["page_number"] = page_number
                 cand["answer_source"] = part.answer_source
                 res.candidates.append(cand)
-    xcall.dedupe_split(res)
+    xcall.finish_candidates(res)
     if res.answer:
         res.answer = {k: v for k, v in res.answer.items() if k != "masked"}  # shape only
     return res
@@ -469,6 +469,7 @@ def extract_document(
         "pages_used": len(pages) - len(not_assessed), "pages_not_assessed": not_assessed,
         "pages_truncated": truncated, "page_errors": errors, "finish_reasons": finish,
         "page_diagnostics": page_diag, "warnings": xcall.warnings(results),
+        **xcall.date_null_totals(results),
         "dob_known": dob_known,
         "birth_date_guard": "active" if dob_known else "inactive_no_dob",
         # dated facts whose date could not be checked against a birth date

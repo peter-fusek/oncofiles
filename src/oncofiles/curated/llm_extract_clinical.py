@@ -511,7 +511,7 @@ def extract_page(
                     cand["page_number"] = page_number
                     cand["answer_source"] = part.answer_source
                     res.candidates.append(cand)
-    xcall.dedupe_split(res)
+    xcall.finish_candidates(res)
     return res
 
 
@@ -591,6 +591,7 @@ def extract_document(
         "error_kinds": dict(sorted(error_kinds.items())),
         "answer_sources": dict(sorted(sources.items())),
         "page_diagnostics": page_diag, "warnings": xcall.warnings(results),
+        **xcall.date_null_totals(results),
         "dob_known": dob_known, "birth_date_guard": "active" if dob_known else "inactive_no_dob",
         "counts": counts, "unverified_reasons": reasons, "dropped": dict(sorted(dropped.items())),
         "seconds": round(seconds, 1),
