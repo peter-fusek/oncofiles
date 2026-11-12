@@ -46,8 +46,9 @@ from oncofiles.database._facts import LLM_CLINICAL_FAMILY
 # v2: no response_format, reasoning fallback; v3: shared call path, sampling
 # switch, bounded answer budget and timeout (#767); v4: optional prefilled
 # closed think block, timeout override (#770); v5: optional reasoning-off
-# marker in the system message instead of /no_think (#770).
-EXTRACTOR_VERSION = "llm-clinical-v5"
+# marker in the system message instead of /no_think (#770); v6: qwen sampling
+# profiles follow the Qwen3.8 model card, prefill removed (#770).
+EXTRACTOR_VERSION = "llm-clinical-v6"
 EXTRACTOR_FAMILY = LLM_CLINICAL_FAMILY  # prefix of every version: re-extraction scope
 METHOD = "stored_sidecar_text"
 
