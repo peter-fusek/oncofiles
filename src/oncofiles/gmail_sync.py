@@ -11,7 +11,7 @@ import time
 from datetime import UTC, datetime, timedelta
 
 from oncofiles.database import Database
-from oncofiles.files_api import FilesClient
+from oncofiles.files_api import FilesClient, files_api_refusal_reason, name_len
 from oncofiles.gmail_client import GmailClient
 from oncofiles.models import Document, DocumentCategory, EmailEntry
 
@@ -252,10 +252,13 @@ async def _process_attachment(
 
     # #777: an attachment has no Drive copy to fall back on, and the Files API
     # is refused while cloud AI is off — skip it (not a failure, nothing read).
-    from oncofiles.files_api import files_api_refusal_reason
-
     if (reason := files_api_refusal_reason()) is not None:
-        logger.info("Gmail attachment %s not stored — %s", filename, reason)
+        logger.info(
+            "Gmail attachment %s of message %s not stored — %s",
+            name_len(filename),
+            message_id,
+            reason,
+        )
         return None
 
     try:
@@ -296,12 +299,12 @@ async def _process_attachment(
         )
         await db.db.commit()
 
-        logger.info("Gmail attachment processed: %s -> doc #%d", filename, doc.id)
+        logger.info("Gmail attachment processed: %s -> doc #%d", name_len(filename), doc.id)
         return doc
     except Exception:
         logger.warning(
             "Failed to process attachment %s from message %s",
-            filename,
+            name_len(filename),
             message_id,
             exc_info=True,
         )

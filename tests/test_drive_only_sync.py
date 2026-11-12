@@ -171,6 +171,128 @@ async def test_content_change_cloud_off_converts_to_drive_only(db: Database, clo
     assert updated.gdrive_md5 == "md5-synthetic-new"
 
 
+async def test_content_change_cloud_off_keeps_page_text_and_marks_stale(db: Database, cloud_off):
+    """No new text is written on a Drive-only update, so the old text is kept."""
+    doc = await db.insert_document(
+        make_doc(
+            file_id="file_synth_old",
+            filename=SYNTH_NAME,
+            gdrive_id="gd_synth_1",
+            gdrive_modified_time=datetime(2027, 2, 1, tzinfo=UTC),
+            gdrive_md5="md5-synthetic-old",
+        ),
+        patient_id=ERIKA_UUID,
+    )
+    await db.save_ocr_page(doc.id, 1, "Invented page text 2027", "pymupdf-native")
+    await db.update_structured_metadata(doc.id, json.dumps({"findings": ["invented"]}))
+    gdrive = _gdrive([_gfile(md5Checksum="md5-synthetic-new")])
+
+    await sync_from_gdrive(db, _real_files_client(), gdrive, "f", patient_id=ERIKA_UUID)
+
+    pages = await db.get_ocr_pages(doc.id)
+    assert [p["extracted_text"] for p in pages] == ["Invented page text 2027"]
+    updated = await db.get_document(doc.id, patient_id=ERIKA_UUID)
+    assert json.loads(updated.structured_metadata) == {
+        "findings": ["invented"],
+        "text_stale": True,
+    }
+
+
+async def test_content_change_cloud_on_still_replaces_text(db: Database):
+    """Unchanged cloud-on path: the old text is cleared because enhance re-extracts it."""
+    doc = await db.insert_document(
+        make_doc(
+            filename=SYNTH_NAME,
+            gdrive_id="gd_synth_1",
+            gdrive_modified_time=datetime(2027, 2, 1, tzinfo=UTC),
+            gdrive_md5="md5-synthetic-old",
+        ),
+        patient_id=ERIKA_UUID,
+    )
+    await db.save_ocr_page(doc.id, 1, "Invented page text 2027", "pymupdf-native")
+    files = MagicMock()
+    files.upload.return_value = MagicMock(id="file_synth_new")
+    gdrive = _gdrive([_gfile(md5Checksum="md5-synthetic-new")])
+
+    await sync_from_gdrive(db, files, gdrive, "f", enhance=False, patient_id=ERIKA_UUID)
+
+    assert not await db.has_ocr_text(doc.id)
+
+
+def test_mark_text_stale_never_overwrites_unparseable_metadata():
+    from oncofiles.sync import _mark_text_stale
+
+    assert _mark_text_stale("not json") == "not json"
+    assert json.loads(_mark_text_stale(None)) == {
+        "source": DRIVE_SYNC_SOURCE,
+        "text_stale": True,
+    }
+
+
+async def test_logs_never_contain_the_filename(db: Database, cloud_off, caplog):
+    """Medical filenames carry names/dates/diagnoses: logs show ids + length only."""
+    import logging
+
+    from oncofiles.gmail_sync import _process_attachment
+    from oncofiles.tools.documents import upload_document
+
+    caplog.set_level(logging.DEBUG)
+    # sync: import, content change, skipped type, export of a Files API row
+    await db.insert_document(
+        make_doc(
+            file_id="file_synth_old",
+            filename=SYNTH_NAME,
+            gdrive_id="gd_invented_kappa",
+            gdrive_modified_time=datetime(2027, 2, 1, tzinfo=UTC),
+            gdrive_md5="md5-synthetic-old",
+        ),
+        patient_id=ERIKA_UUID,
+    )
+    await db.insert_document(
+        make_doc(file_id="file_synth_legacy", filename=SYNTH_NAME, gdrive_id=None),
+        patient_id=ERIKA_UUID,
+    )
+    gdrive = _gdrive(
+        [
+            _gfile(),
+            _gfile("gd_invented_kappa", md5Checksum="md5-invented-omega"),
+            _gfile("gd_synth_3", name=SYNTH_NAME.replace(".pdf", ".exe")),
+        ]
+    )
+    await sync(db, _real_files_client(), gdrive, "f", trigger="test", patient_id=ERIKA_UUID)
+    # gmail attachment refused
+    await _process_attachment(
+        db,
+        _real_files_client(),
+        MagicMock(),
+        "msg_synth",
+        {"filename": SYNTH_NAME, "mime_type": "application/pdf", "attachment_id": "att_1"},
+        MagicMock(),
+        patient_id=ERIKA_UUID,
+    )
+    # Drive-only upload failure
+    failing = _gdrive([])
+    failing.upload.side_effect = RuntimeError("synthetic: upload failed")
+    with patch(
+        "oncofiles.server._create_patient_clients",
+        AsyncMock(return_value=(failing, None, None, "folder_synth")),
+    ):
+        await upload_document(
+            _ctx(db, _real_files_client()),
+            content=base64.b64encode(SYNTH_PDF).decode(),
+            filename=SYNTH_NAME,
+        )
+
+    ours = [r.getMessage() for r in caplog.records if r.name.startswith("oncofiles")]
+    text = "\n".join(ours)
+    assert "Gmail attachment <name len=" in text
+    assert "Drive-only upload failed for <name len=" in text
+    assert "gdrive_id=gd_synth_1 <name len=" in text
+    stem = SYNTH_NAME.rsplit(".", 1)[0]
+    leaking = [m for m in ours if stem in m]
+    assert leaking == []
+
+
 async def test_full_sync_cloud_off_makes_no_cloud_call(db: Database, cloud_off):
     """A whole sync (import + export, enhance requested) reads nothing in the cloud."""
     # A legacy Files API row without a Drive copy: export would need the Files API.

@@ -60,6 +60,15 @@ DRIVE_ONLY_PREFIX = "gdrive:"
 DRIVE_SYNC_SOURCE = "drive_sync"
 
 
+def name_len(name: str | None) -> str:
+    """Log stand-in for a document filename (#777 infra review).
+
+    Medical filenames often carry a patient name, a date or a diagnosis, so a
+    log line shows only the length, next to a document id or Drive id.
+    """
+    return f"<name len={len(name or '')}>"
+
+
 def drive_only_file_id(gdrive_id: str) -> str:
     return DRIVE_ONLY_PREFIX + gdrive_id
 

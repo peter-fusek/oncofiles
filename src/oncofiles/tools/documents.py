@@ -11,7 +11,7 @@ from fastmcp import Context
 
 from oncofiles.config import DOC_QUERY_LIMIT
 from oncofiles.filename_parser import parse_filename
-from oncofiles.files_api import drive_only_file_id, sanitize_filename
+from oncofiles.files_api import drive_only_file_id, name_len, sanitize_filename
 from oncofiles.gdrive_folders import (
     ensure_folder_structure,
     ensure_year_month_folder,
@@ -139,7 +139,7 @@ async def upload_document(
         try:
             metadata = files.upload(io.BytesIO(file_bytes), filename, mime_type)
         except Exception:
-            logger.exception("Files API upload failed for %s", filename)
+            logger.exception("Files API upload failed for %s", name_len(filename))
             return json.dumps({"error": "Files API upload failed. Check server logs."})
         file_id = metadata.id
         stored_mime, stored_size = metadata.mime_type, metadata.size_bytes
@@ -221,8 +221,9 @@ async def upload_document(
                 await db.update_gdrive_id(doc.id, gdrive_id, modified_time)
         except Exception:
             logger.warning(
-                "upload_document: GDrive auto-sync failed for %s — continuing",
-                doc.filename,
+                "upload_document: GDrive auto-sync failed for doc %d %s — continuing",
+                doc.id,
+                name_len(doc.filename),
                 exc_info=True,
             )
 
@@ -291,7 +292,10 @@ async def _upload_drive_only(
         )
     except Exception as exc:
         logger.warning(
-            "upload_document: Drive-only upload failed for %s — %s", filename, type(exc).__name__
+            "upload_document: Drive-only upload failed for %s (patient %s) — %s",
+            name_len(filename),
+            patient_id,
+            type(exc).__name__,
         )
         return json.dumps(
             {"error": "Google Drive upload failed; nothing was stored.", "kind": type(exc).__name__}
