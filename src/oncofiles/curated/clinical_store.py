@@ -144,6 +144,126 @@ def _common(item: dict, document_id: int, extracted_by: str, **extra) -> dict:
     }
 
 
+def _mine(r: dict) -> bool:
+    return (r.get("extracted_by") or "").startswith(EXTRACTOR_FAMILY)
+
+
+def _protected(r: dict) -> bool:
+    return r.get("verification") in PROTECTED_VERIFICATION
+
+
+async def _plan_removal(db, *, patient_id: str, document_id: int) -> dict:
+    """The active rows of one document and what of it stays: protected
+    (verified / corrected) rows and every row a protected row points to.
+    Shared by re-extraction (``store_document``) and the user-invoked
+    retract (``retract_document``) so both remove exactly the same rows."""
+    pid = patient_id
+    existing = {
+        e: await db.hard_rows_of_document(e, patient_id=pid, document_id=document_id)
+        for e in ENTITIES
+    }
+    records = await db.extracted_records_of_document(
+        patient_id=pid, document_id=document_id, family=EXTRACTOR_FAMILY
+    )
+    encounters = await db.planned_encounters_of_document(
+        patient_id=pid, document_id=document_id, family=EXTRACTOR_FAMILY
+    )
+    keep = {e: {r["id"] for r in rows if _protected(r)} for e, rows in existing.items()}
+    for r in records:
+        if _protected(r):
+            proc = json.loads(r.get("metadata_json") or "{}").get("imaging_procedure_id")
+            if proc:
+                keep["procedure"].add(proc)
+    parents = (
+        ("medication_event", "cycle_id", "treatment_cycle"),
+        ("medication_event", "course_id", "treatment_course"),
+        ("treatment_cycle", "course_id", "treatment_course"),
+        ("cancer_stage", "condition_id", "condition"),
+        ("condition", "primary_condition_id", "condition"),
+    )
+    for _ in range(3):  # medication → cycle → course chains
+        for child, col, parent in parents:
+            for r in existing[child]:
+                if r["id"] in keep[child] and r.get(col):
+                    keep[parent].add(r[col])
+    hard = [
+        (e, r) for e, rows in existing.items() for r in rows if _mine(r) and r["id"] not in keep[e]
+    ]
+    return {
+        "existing": existing,
+        "records": records,
+        "encounters": encounters,
+        "keep": keep,
+        "remove_hard": hard,
+        "remove_records": [r for r in records if not _protected(r)],
+        "remove_encounters": [r for r in encounters if not _protected(r)],
+    }
+
+
+def _record_stat(r: dict) -> str:
+    return "lesions" if r.get("code") == LESION_CODE else "biomarkers"
+
+
+def _planned_counts(plan: dict) -> dict[str, Counter]:
+    """What ``_soft_delete_planned`` would remove / what stays, per target."""
+    stats: dict[str, Counter] = {s: Counter() for s in STAT_OF.values()}
+    for e, _ in plan["remove_hard"]:
+        stats[STAT_OF[e]]["removed"] += 1
+    for e, rows in plan["existing"].items():
+        stats[STAT_OF[e]]["kept"] += sum(1 for r in rows if _mine(r) and r["id"] in plan["keep"][e])
+    for r in plan["remove_records"]:
+        stats[_record_stat(r)]["removed"] += 1
+    for r in plan["records"]:
+        if _protected(r):
+            stats[_record_stat(r)]["kept"] += 1
+    stats["planned_encounters"]["removed"] += len(plan["remove_encounters"])
+    stats["planned_encounters"]["kept"] += sum(1 for r in plan["encounters"] if _protected(r))
+    return stats
+
+
+async def _soft_delete_planned(
+    db, plan: dict, *, patient_id: str, reason: str, stats: dict[str, Counter]
+) -> None:
+    """Soft-delete the rows ``_plan_removal`` marked (never a hard delete; the
+    DB helpers refuse verified / corrected rows on their own as well)."""
+    pid = patient_id
+    for e, r in plan["remove_hard"]:
+        if await db.soft_delete_hard_fact(e, r["id"], patient_id=pid, deleted_by=reason):
+            await db.soft_delete_codings_of(e, r["id"], patient_id=pid, deleted_by=reason)
+            stats[STAT_OF[e]]["removed"] += 1
+    for r in plan["remove_records"]:
+        if await db.soft_delete_extracted_record(patient_id=pid, record_id=r["id"], reason=reason):
+            await db.soft_delete_codings_of("fact", r["id"], patient_id=pid, deleted_by=reason)
+            stats[_record_stat(r)]["removed"] += 1
+    for r in plan["remove_encounters"]:
+        if await db.soft_delete_planned_encounter(patient_id=pid, encounter_id=r["id"]):
+            stats["planned_encounters"]["removed"] += 1
+
+
+async def retract_document(
+    db, *, patient_id: str, document_id: int, reason: str, dry_run: bool = True
+) -> dict:
+    """User-invoked rollback of this extractor's rows of ONE document
+    (``curated_clinical_retract``): soft-deletes exactly what a re-extraction
+    would remove (same ``_plan_removal``) and adds nothing. Verified /
+    corrected rows, the rows they point to and every row another extractor
+    wrote (lab rule facts) stay. ``dry_run`` only counts. Counts only.
+
+    No birth-date guard: that guard protects writes of NEW facts dated from
+    the page; a retract writes no fact and no date."""
+    plan = await _plan_removal(db, patient_id=patient_id, document_id=document_id)
+    would = _planned_counts(plan)
+    if dry_run:
+        stats = would
+    else:
+        stats = {s: Counter() for s in STAT_OF.values()}
+        await _soft_delete_planned(db, plan, patient_id=patient_id, reason=reason, stats=stats)
+        for s, c in would.items():
+            if c["kept"]:
+                stats[s]["kept"] = c["kept"]
+    return {"stored": {k: {n: v for n, v in c.items() if v} for k, c in stats.items() if +c}}
+
+
 async def store_document(  # noqa: PLR0912, PLR0915
     db,
     *,
@@ -168,69 +288,18 @@ async def store_document(  # noqa: PLR0912, PLR0915
     stats: dict[str, Counter] = {s: Counter() for s in STAT_OF.values()}
     dropped: Counter = Counter()
 
-    def mine(r: dict) -> bool:
-        return (r.get("extracted_by") or "").startswith(EXTRACTOR_FAMILY)
-
-    def protected(r: dict) -> bool:
-        return r.get("verification") in PROTECTED_VERIFICATION
-
-    existing = {
-        e: await db.hard_rows_of_document(e, patient_id=pid, document_id=document_id)
-        for e in ENTITIES
-    }
-    records = await db.extracted_records_of_document(
-        patient_id=pid, document_id=document_id, family=EXTRACTOR_FAMILY
+    # ── soft-delete what this extractor wrote for the document (keeps protected rows)
+    plan = await _plan_removal(db, patient_id=pid, document_id=document_id)
+    await _soft_delete_planned(
+        db, plan, patient_id=pid, reason=f"re-extraction by {extracted_by}", stats=stats
     )
-    encounters = await db.planned_encounters_of_document(
-        patient_id=pid, document_id=document_id, family=EXTRACTOR_FAMILY
-    )
-
-    # ── what stays: protected rows and every row a protected row points to
-    keep = {e: {r["id"] for r in rows if protected(r)} for e, rows in existing.items()}
-    for r in records:
-        if protected(r):
-            proc = json.loads(r.get("metadata_json") or "{}").get("imaging_procedure_id")
-            if proc:
-                keep["procedure"].add(proc)
-    parents = (
-        ("medication_event", "cycle_id", "treatment_cycle"),
-        ("medication_event", "course_id", "treatment_course"),
-        ("treatment_cycle", "course_id", "treatment_course"),
-        ("cancer_stage", "condition_id", "condition"),
-        ("condition", "primary_condition_id", "condition"),
-    )
-    for _ in range(3):  # medication → cycle → course chains
-        for child, col, parent in parents:
-            for r in existing[child]:
-                if r["id"] in keep[child] and r.get(col):
-                    keep[parent].add(r[col])
-
-    # ── soft-delete the rest of what this extractor wrote for the document
-    reason = f"re-extraction by {extracted_by}"
-    for e, rows in existing.items():
-        for r in rows:
-            if (
-                mine(r)
-                and r["id"] not in keep[e]
-                and await db.soft_delete_hard_fact(e, r["id"], patient_id=pid, deleted_by=reason)
-            ):
-                await db.soft_delete_codings_of(e, r["id"], patient_id=pid, deleted_by=reason)
-                stats[STAT_OF[e]]["removed"] += 1
-    for r in records:
-        if not protected(r) and await db.soft_delete_extracted_record(
-            patient_id=pid, record_id=r["id"], reason=reason
-        ):
-            await db.soft_delete_codings_of("fact", r["id"], patient_id=pid, deleted_by=reason)
-            stats["lesions" if r.get("code") == LESION_CODE else "biomarkers"]["removed"] += 1
-    for r in encounters:
-        if not protected(r) and await db.soft_delete_planned_encounter(
-            patient_id=pid, encounter_id=r["id"]
-        ):
-            stats["planned_encounters"]["removed"] += 1
+    existing, records, encounters, keep = (
+        plan["existing"], plan["records"], plan["encounters"], plan["keep"],
+    )  # fmt: skip
 
     kept = {e: {KEYS[e](r): r for r in rows if r["id"] in keep[e]} for e, rows in existing.items()}
-    kept["record"] = {KEYS["record"](r): r for r in records if protected(r)}
-    kept["encounter"] = {KEYS["encounter"](r): r for r in encounters if protected(r)}
+    kept["record"] = {KEYS["record"](r): r for r in records if _protected(r)}
+    kept["encounter"] = {KEYS["encounter"](r): r for r in encounters if _protected(r)}
 
     async def provenance(target_type: str, target_id: int, item: dict) -> None:
         await db.add_provenance(
