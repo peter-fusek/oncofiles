@@ -1250,6 +1250,7 @@ def _start_sync_scheduler(
         budget permits. `only_new=True` (= ai_processed_at IS NULL) is the
         only filter; per-patient EUR budget is the cost ceiling.
         """
+        from oncofiles.cloud_guard import cloud_ai_disabled_reason
         from oncofiles.sync import enhance_documents as _enhance_docs_fn
 
         if is_memory_pressure("nightly_ai_pipeline"):
@@ -1264,6 +1265,17 @@ def _start_sync_scheduler(
         # outcomes so the tail can fail the job instead of reporting success.
         sync_attempted = 0
         sync_failed = 0
+        # #708: the AI phases (2 enhance, 3 metadata) swallow per-document
+        # errors into stats["errors"]; count them the same way. A phase that
+        # raises as a whole counts as one failed attempt.
+        enhance_attempted = 0
+        enhance_failed = 0
+        # #708: with cloud AI off (CLOUD_AI_ENABLED off or no key) every AI call
+        # raises CloudAIDisabledError. Skip the AI phases for the whole run and
+        # say so once: a deliberate skip, not N per-document failures.
+        enhance_skipped = cloud_ai_disabled_reason()
+        if enhance_skipped:
+            logger.info("Nightly AI pipeline: AI phases skipped this run — %s", enhance_skipped)
 
         try:
             from oncofiles.budget import check_patient_budget
@@ -1340,6 +1352,9 @@ def _start_sync_scheduler(
                             _handle_sync_exception(pid, "gdrive", exc)
                         continue
 
+                    if enhance_skipped:
+                        continue  # #708: cloud AI off — logged once above
+
                     # Phase 2: Enhance NEW only — no max_age filter (#441 Layer 2),
                     # rely on `only_new=True` (= ai_processed_at IS NULL) +
                     # per-patient EUR budget gate to bound cost.
@@ -1357,9 +1372,15 @@ def _start_sync_scheduler(
                             timeout=metadata_timeout,
                         )
                         total_enhanced += eh_stats.get("processed", 0)
+                        enhance_attempted += eh_stats.get("processed", 0) + eh_stats.get(
+                            "errors", 0
+                        )
+                        enhance_failed += eh_stats.get("errors", 0)
                         if eh_stats.get("processed", 0) > 0:
                             logger.info("Nightly enhance [%s]: %s", pid, eh_stats)
                     except Exception:
+                        enhance_attempted += 1
+                        enhance_failed += 1
                         logger.exception("Nightly enhance [%s] failed", pid)
 
                     # Phase 3: Metadata extraction NEW only — same Layer 2 contract.
@@ -1377,9 +1398,15 @@ def _start_sync_scheduler(
                             timeout=metadata_timeout,
                         )
                         total_metadata += md_stats.get("processed", 0)
+                        enhance_attempted += md_stats.get("processed", 0) + md_stats.get(
+                            "errors", 0
+                        )
+                        enhance_failed += md_stats.get("errors", 0)
                         if md_stats.get("processed", 0) > 0:
                             logger.info("Nightly metadata [%s]: %s", pid, md_stats)
                     except Exception:
+                        enhance_attempted += 1
+                        enhance_failed += 1
                         logger.exception("Nightly metadata [%s] failed", pid)
 
                     # Phase 4 (split + consolidation) moved to weekly Sunday
@@ -1389,11 +1416,14 @@ def _start_sync_scheduler(
             cost_delta = max(0.0, cost_after - cost_before)
             logger.info(
                 "Nightly AI pipeline: patients_synced=%d/%d enhanced=%d metadata=%d "
-                "cost_delta=$%.4f",
+                "ai_docs_failed=%d/%d ai_phases=%s cost_delta=$%.4f",
                 sync_attempted - sync_failed,
                 sync_attempted,
                 total_enhanced,
                 total_metadata,
+                enhance_failed,
+                enhance_attempted,
+                "skipped" if enhance_skipped else "ran",
                 cost_delta,
             )
             # #441 Layer 6: surface per-run cost in job_tracker → /readiness.
@@ -1407,6 +1437,10 @@ def _start_sync_scheduler(
                     "sync_failed": sync_failed,
                     "enhanced": total_enhanced,
                     "metadata": total_metadata,
+                    "enhance_attempted": enhance_attempted,
+                    "enhance_failed": enhance_failed,
+                    # #708: a deliberate skip is marked, never a silent last_ok.
+                    "enhance_skipped": "cloud_ai_disabled" if enhance_skipped else None,
                 }
                 job_tracker["nightly_ai_pipeline"] = entry
             except Exception:
@@ -1423,6 +1457,19 @@ def _start_sync_scheduler(
                     f"Nightly pipeline: all {sync_attempted} patient sync(s) failed — "
                     "no documents imported, renamed or enhanced. "
                     "Check /readiness hard_auth_failures and the container log."
+                )
+            # #708: the same rule for the AI phases. 0 attempted (nothing new,
+            # or cloud AI off and skipped) stays a success.
+            if enhance_attempted > 0 and enhance_failed == enhance_attempted:
+                raise RuntimeError(
+                    f"Nightly pipeline: all {enhance_attempted} document enhancement(s) "
+                    "failed — no AI summaries or metadata written. Check the container log."
+                )
+            if enhance_failed:
+                logger.warning(
+                    "Nightly AI pipeline: %d of %d document enhancement(s) failed",
+                    enhance_failed,
+                    enhance_attempted,
                 )
         finally:
             from oncofiles.memory import reclaim_memory
@@ -3553,6 +3600,11 @@ async def health(request: Request) -> JSONResponse:
         sys.exit(1)
 
     result: dict = {"status": "ok", "version": VERSION}
+    # #708: config only (flag + key presence), no DB — the nightly AI phases
+    # are skipped while this reads "disabled".
+    from oncofiles.cloud_guard import cloud_ai_enabled
+
+    result["cloud_ai"] = "enabled" if cloud_ai_enabled() else "disabled"
     # Build-time commit (Dockerfile ARG GIT_SHA, #610); RAILWAY_* kept as fallback.
     commit = (os.environ.get("ONCOFILES_GIT_SHA") or os.environ.get("RAILWAY_GIT_COMMIT_SHA", ""))[
         :7
