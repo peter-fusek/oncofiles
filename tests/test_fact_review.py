@@ -321,6 +321,205 @@ async def test_reextraction_keeps_verified_and_corrected_facts(db, caller):
     assert by_code["WBC"]["verification"] == "machine" and by_code["WBC"]["id"] != ids["WBC"]
 
 
+# ── #741: a corrected DATE is not undone by re-extraction ──
+
+DAY_EARLY = "2027-03-05"  # a draw day a report quoted on DAY
+R_LO, R_MID, R_HI = "2027-05-04", "2027-05-08", "2027-05-12"  # a printed date range
+R_INSIDE, R_AFTER = "2027-05-07", "2027-05-14"
+RANGE_META = {"date_source": "printed_range", "date_precision": "range",
+              "date_range_start": R_LO, "date_range_end": R_HI}  # fmt: skip
+
+
+async def _active(db, code: str | None = None) -> list[dict]:
+    rows = await _all(
+        db,
+        "SELECT id, code, occurred_at, page_number, verification, value_num, fhir_id, "
+        "version_id FROM clinical_records WHERE patient_id = ? AND source_document_id = ? "
+        "AND deleted_at IS NULL ORDER BY code, occurred_at, page_number",
+        (ERIKA_UUID, DOC),
+    )
+    return [r for r in rows if code is None or r["code"] == code]
+
+
+async def _reextract(db, facts: list[dict]) -> dict:
+    return await db.replace_document_facts(
+        patient_id=ERIKA_UUID, document_id=DOC, facts=facts, extracted_by="rule:again"
+    )
+
+
+async def _correct(db, fact_ref, **kwargs) -> dict:
+    out = json.loads(await fr.correct_fact(_Ctx(db), fact_ref, reason="r", **kwargs))
+    assert out["status"] == "corrected", out
+    return out["fact"]
+
+
+async def _drop_stored_ids(db) -> None:
+    """Make the document's rows look like rows stored before stable ids (#726)."""
+    await db.db.execute("UPDATE clinical_records SET fhir_id = NULL WHERE source_document_id = ?",
+                        (DOC,))  # fmt: skip
+    await db.db.commit()
+
+
+async def test_date_correction_is_not_re_added_at_the_old_date(db, caller):
+    facts = [_lab("HGB", 121.0), _lab("PLT", 233.0, COUNT_UNIT)]
+    ids = await _seed(db, facts=facts)
+    original = await _row(db, ids["HGB"])
+    corrected = await _correct(db, ids["HGB"], occurred_at=DAY2)
+    audit_before = await db.list_clinical_record_audit(corrected["id"])
+
+    res = await _reextract(db, facts)
+    assert res["skipped_by_identity"] == 1  # the extractor's HGB on the old day
+    assert res["added"] == res["removed"] == 1  # only the machine PLT is redone
+    [hgb] = await _active(db, "HGB")
+    assert (hgb["id"], hgb["occurred_at"], hgb["verification"]) == (
+        corrected["id"], DAY2, "corrected",
+    )  # fmt: skip
+    # the machine fact was soft-deleted with an audit row; the correction is untouched
+    plt_audit = (await db.list_clinical_record_audit(ids["PLT"]))[0]  # newest first
+    assert plt_audit.action == "delete" and plt_audit.reason == "re-extraction by rule:again"
+    assert len(await db.list_clinical_record_audit(corrected["id"])) == len(audit_before)
+
+    # id stability: the correction keeps the original fact id and version, every time
+    for _ in range(2):
+        [hgb] = await _active(db, "HGB")
+        assert (hgb["fhir_id"], hgb["version_id"]) == (original["fhir_id"], 2)
+        assert (await _reextract(db, facts))["id_churn"] == 0
+    feed_ids = await db.effective_fact_ids(patient_id=ERIKA_UUID, document_ids=[DOC])
+    assert feed_ids[corrected["id"]] == original["fhir_id"]
+
+
+async def test_value_and_unit_only_corrections_keep_working_as_before(db, caller):
+    facts = [_lab("HGB", 121.0), _lab("PLT", 233.0, COUNT_UNIT), _lab("WBC", 6.1, COUNT_UNIT)]
+    ids = await _seed(db, facts=facts)
+    hgb = await _correct(db, ids["HGB"], value_num=125.0)
+    plt = await _correct(db, ids["PLT"], unit="10^9/L")
+
+    res = await _reextract(db, facts)
+    redone, kept = len(["WBC"]), len(["HGB", "PLT"])
+    assert (res["added"], res["removed"], res["kept_verified"]) == (redone, redone, kept)
+    assert not res["id_churn"] and not res["skipped_by_identity"]
+    by_code = {r["code"]: r for r in await _active(db)}
+    assert len(by_code) == len(facts)
+    assert by_code["HGB"]["id"] == hgb["id"] and by_code["HGB"]["value_num"] == 125.0
+    assert by_code["PLT"]["id"] == plt["id"] and by_code["PLT"]["verification"] == "corrected"
+    assert by_code["WBC"]["verification"] == "machine"
+
+
+@pytest.mark.parametrize(("new_day", "by_identity"), [(R_INSIDE, 0), (R_AFTER, 1)])
+async def test_range_dated_fact_with_a_corrected_date_is_not_re_added(
+    db, caller, new_day, by_identity
+):
+    """A value under a printed range sits at the range end and its id keys on
+    the range (#726). A day set inside the range was already protected by the
+    range window; a day outside it is now protected by the fact id."""
+    ranged = _lab("CRP", 12.0, "mg/l", day=R_HI) | {"metadata": dict(RANGE_META)}
+    facts = [ranged, _lab("HGB", 121.0)]
+    ids = await _seed(db, facts=facts)
+    original = await _row(db, ids["CRP"])
+    corrected = await _correct(db, ids["CRP"], occurred_at=new_day)
+
+    res = await _reextract(db, facts)
+    assert res["skipped_by_identity"] == by_identity
+    [crp] = await _active(db, "CRP")
+    assert (crp["id"], crp["occurred_at"]) == (corrected["id"], new_day)
+    assert crp["fhir_id"] == original["fhir_id"]
+    assert len(await _active(db, "HGB")) == 1  # the other fact is re-extracted as usual
+
+
+async def test_correcting_a_row_without_a_stored_id_keeps_the_id_readers_saw(db, caller):
+    facts = [_lab("HGB", 121.0), _lab("PLT", 233.0, COUNT_UNIT)]
+    ids = await _seed(db, facts=facts)
+    await _drop_stored_ids(db)
+    seen = await db.effective_fact_ids(patient_id=ERIKA_UUID, document_ids=[DOC])
+
+    corrected = await _correct(db, ids["HGB"], occurred_at=DAY2)
+    assert corrected["fhir_id"] == seen[ids["HGB"]]  # not one computed from DAY2
+    assert (await _row(db, ids["HGB"]))["fhir_id"] == seen[ids["HGB"]]  # the older version
+
+    res = await _reextract(db, facts)
+    assert res["skipped_by_identity"] == 1
+    [hgb] = await _active(db, "HGB")
+    assert (hgb["id"], hgb["fhir_id"]) == (corrected["id"], seen[ids["HGB"]])
+    [plt] = await _active(db, "PLT")
+    assert plt["fhir_id"] == seen[ids["PLT"]]
+
+
+async def test_without_any_stored_id_the_original_date_protects_the_fact(db, caller):
+    """A correction made before stable ids (no id on any version), corrected
+    twice: the chain is followed back to the extractor's date."""
+    facts = [_lab("HGB", 121.0), _lab("PLT", 233.0, COUNT_UNIT)]
+    ids = await _seed(db, facts=facts)
+    first = await _correct(db, ids["HGB"], occurred_at=DAY2)
+    second = await _correct(db, first["id"], value_num=125.0)
+    await _drop_stored_ids(db)
+
+    res = await _reextract(db, facts)
+    assert res["skipped_by_identity"] == 1 and res["added"] == 1
+    [hgb] = await _active(db, "HGB")
+    assert (hgb["id"], hgb["occurred_at"], hgb["value_num"]) == (second["id"], DAY2, 125.0)
+
+
+async def test_without_a_stored_id_an_old_midpoint_date_protects_the_range_fact(db, caller):
+    """Before #726 a range value sat at the range midpoint. Its correction (no
+    stored id) is matched by the range window of the new range-end fact."""
+    old = _lab("CRP", 12.0, "mg/l", day=R_MID) | {"metadata": dict(RANGE_META)}
+    ids = await _seed(db, facts=[old])
+    corrected = await _correct(db, ids["CRP"], occurred_at=R_AFTER)
+    await _drop_stored_ids(db)  # rows stored and corrected before stable ids
+
+    res = await _reextract(db, [old | {"occurred_at": R_HI}])
+    assert res["skipped_by_identity"] == 1 and res["added"] == 0
+    [crp] = await _active(db, "CRP")
+    assert (crp["id"], crp["occurred_at"]) == (corrected["id"], R_AFTER)
+
+
+async def test_the_id_spares_a_sibling_and_a_moved_fact_falls_back_to_its_date(db, caller):
+    """Matched by id, only the corrected fact is held back: a second value of
+    the code on that day (another page) is re-extracted. When the corrected
+    fact moved to another page its id changes, and its original date holds it."""
+    hgb = _lab("HGB", 121.0)
+    sibling = _lab("HGB", 124.0) | {"page_number": 2, "evidence": "HGB second synthetic line"}
+    await _seed(db, facts=[hgb, sibling])
+    first_page = next(r for r in await _active(db, "HGB") if r["page_number"] == 1)
+    corrected = await _correct(db, first_page["id"], occurred_at=DAY2)
+
+    res = await _reextract(db, [hgb, sibling])
+    assert res["skipped_by_identity"] == 1 and res["added"] == 1
+    rows = await _active(db, "HGB")
+    got = [(r["occurred_at"], r["page_number"], r["verification"]) for r in rows]
+    assert got == [
+        (DAY, sibling["page_number"], "machine"),
+        (DAY2, hgb["page_number"], "corrected"),
+    ]
+
+    res = await _reextract(db, [hgb | {"page_number": 3}])
+    assert res["skipped_by_identity"] == 1 and res["added"] == 0
+    [row] = await _active(db, "HGB")
+    assert row["id"] == corrected["id"]
+
+
+async def test_a_verified_corroborated_quote_is_not_re_added_at_its_quoted_day(db, caller):
+    """Corroboration re-dates a quote to its draw and keeps ``quoted_on``; the
+    fact id keys on the quoted day. Once a person verified it, the extractor's
+    quote (dated on the quoted day) is that same fact."""
+    facts = [_lab("HGB", 121.0), _lab("PLT", 233.0, COUNT_UNIT)]
+    ids = await _seed(db, facts=facts)
+    meta = {"date_source": "corroborated", "quoted_on": DAY}
+    await db.db.execute(
+        "UPDATE clinical_records SET occurred_at = ?, metadata_json = ? WHERE id = ?",
+        (DAY_EARLY, json.dumps(meta), ids["HGB"]),
+    )
+    await db.db.commit()
+    assert json.loads(await fr.verify_fact(_Ctx(db), ids["HGB"]))["status"] == "verified"
+
+    res = await _reextract(db, facts)
+    assert res["skipped_by_identity"] == 1
+    [hgb] = await _active(db, "HGB")
+    assert (hgb["id"], hgb["occurred_at"], hgb["verification"]) == (
+        ids["HGB"], DAY_EARLY, "verified",
+    )  # fmt: skip
+
+
 # ── isolation, permissions, activity log ──
 
 

@@ -4,7 +4,8 @@ Rules enforced here:
 * every read takes a ``patient_id`` and filters by it in SQL;
 * ``links`` never join two patients (both ends are checked before insert);
 * re-extraction soft-deletes machine/unverified facts of a document with an
-  audit row, and never touches ``verified`` / ``corrected`` ones;
+  audit row, never touches ``verified`` / ``corrected`` ones, and never re-adds
+  the extractor's version of them, also after a corrected date (#741);
 * aggregates exclude ``unverified`` values unless asked to include them.
 """
 
@@ -38,8 +39,36 @@ LLM_CLINICAL_FAMILY = "llm-clinical"
 _NOT_LLM_CLINICAL = f"COALESCE(extracted_by, '') NOT LIKE '{LLM_CLINICAL_FAMILY}%'"
 
 
+_MAX_CORRECTION_CHAIN = 50  # corrections of one fact followed back (#741); a guard, not a limit
+
+
 def _rows(rows) -> list[dict]:
     return [dict(r) for r in rows]
+
+
+def _meta(raw) -> dict:
+    if isinstance(raw, dict):
+        return raw
+    try:
+        out = json.loads(raw or "{}")
+    except (TypeError, ValueError):
+        return {}
+    return out if isinstance(out, dict) else {}
+
+
+def _what(code: str | None, label: str | None) -> tuple[str, str]:
+    """What a fact measures: its code, else its printed label (as in the fact id)."""
+    return ("code", code) if code else ("param", (label or "").strip())
+
+
+def _extractor_days(row: dict) -> set[str]:
+    """Days the extractor gave a stored version: its date, and for a quote that
+    corroboration re-dated to its draw, the day it was quoted on."""
+    meta = _meta(row.get("metadata_json"))
+    days = {(row.get("occurred_at") or "")[:10]}
+    if meta.get("date_source") == "corroborated" and meta.get("quoted_on"):
+        days.add(str(meta["quoted_on"])[:10])
+    return days
 
 
 class FactsMixin:
@@ -175,6 +204,41 @@ class FactsMixin:
             ),
         )  # fmt: skip
 
+    async def _older_versions(
+        self, *, patient_id: str, document_id: int, kept: list[dict]
+    ) -> dict[int, list[dict]]:
+        """Corrected row id → the versions it replaced, newest first (#741).
+
+        Follows ``metadata.corrected_from`` back (a correction may replace an
+        earlier one) over rows of this patient and document only; the older
+        versions are soft-deleted, so they are read regardless of ``deleted_at``.
+        """
+        out: dict[int, list[dict]] = {}
+        for r in kept:
+            if r["verification"] != "corrected":
+                continue
+            chain: list[dict] = []
+            seen = {r["id"]}
+            row = r
+            while len(chain) < _MAX_CORRECTION_CHAIN:
+                prev = _meta(row.get("metadata_json")).get("corrected_from")
+                prev_id = prev.get("fact_id") if isinstance(prev, dict) else None
+                if not isinstance(prev_id, int) or prev_id in seen:
+                    break
+                seen.add(prev_id)
+                row = await self._one(
+                    "SELECT id, code, param, occurred_at, metadata_json, fhir_id "
+                    "FROM clinical_records WHERE id = ? AND patient_id = ? "
+                    "AND source_document_id = ?",
+                    (prev_id, patient_id, document_id),
+                )
+                if row is None:
+                    break
+                chain.append(row)
+            if chain:
+                out[r["id"]] = chain
+        return out
+
     async def replace_document_facts(
         self, *, patient_id: str, document_id: int, facts: list[dict], extracted_by: str
     ) -> dict:
@@ -185,6 +249,15 @@ class FactsMixin:
         dated under a printed range (#726) is not added either when such a
         fact of its code lies inside the range: an older index dated range
         values at the range midpoint, and a person may have set the exact day.
+
+        A kept fact also stands for its own fact id (#741): a new fact whose id,
+        computed as if nothing were kept, is the id of a kept row or of one of
+        its older versions is that same fact and is not added. This covers a
+        corrected DATE, which moves the kept row off the extractor's key, and a
+        verified corroborated quote. A date-corrected fact whose id no new fact
+        carries (a row stored before stable ids, or the fact moved page) falls
+        back to the original date(s) of its older versions
+        (``metadata.corrected_from``), with the same range-window rule.
 
         Every inserted fact gets its stable ``fhir_id`` (#726, ``fact_identity``):
         the same fact extracted again gets the same id and the next
@@ -202,11 +275,11 @@ class FactsMixin:
         ) as cur:
             existing = _rows(await cur.fetchall())
         current_ids = fact_identity.ids_for_rows(patient_id, document_id, existing)
-        protected = {
-            (r["code"], r["occurred_at"])
-            for r in existing
-            if r["verification"] in PROTECTED_VERIFICATION
-        }
+        kept = [r for r in existing if r["verification"] in PROTECTED_VERIFICATION]
+        protected = {(r["code"], r["occurred_at"]) for r in kept}
+        older = await self._older_versions(
+            patient_id=patient_id, document_id=document_id, kept=kept
+        )
         taken: set[str] = set()
         prev_version: dict[str, int] = {}
         # (natural key, value) → ids the replaced rows had, to count id churn
@@ -238,15 +311,47 @@ class FactsMixin:
         for code, at in protected:
             protected_days.setdefault(code, []).append((at or "")[:10])
 
-        def _kept_by_person(f: dict) -> bool:
+        def _in_window(f: dict, days) -> bool:
+            window = range_window(f.get("metadata") or {})
+            return bool(window) and any(window[0] <= day <= window[1] for day in days)
+
+        def _kept_by_key(f: dict) -> bool:
             if (f.get("code"), f.get("occurred_at")) in protected:
                 return True
-            window = range_window(f.get("metadata") or {})
-            return bool(window) and any(
-                window[0] <= day <= window[1] for day in protected_days.get(f.get("code"), [])
-            )
+            return _in_window(f, protected_days.get(f.get("code"), []))
 
-        to_insert = [f for f in facts if not _kept_by_person(f)]
+        # #741: the id each new fact would get if no row were kept (the insert
+        # path's helper, nothing taken), and the ids the kept rows stand for.
+        natural_ids = fact_identity.ids_for_new_facts(patient_id, document_id, facts, set())
+        incoming = set(natural_ids)
+        kept_ids = {current_ids[r["id"]] for r in kept}
+        original_days: dict[tuple, set[str]] = {}
+        for chain in older.values():
+            # Only an id stored on an older version names the original fact: a
+            # row without one computes its id from the corrected date.
+            chain_ids = {v["fhir_id"] for v in chain if v["fhir_id"]}
+            kept_ids |= chain_ids
+            if not chain_ids & incoming:
+                for v in chain:
+                    original_days.setdefault(_what(v["code"], v["param"]), set()).update(
+                        _extractor_days(v)
+                    )
+
+        def _is_original(f: dict) -> bool:
+            days = original_days.get(_what(f.get("code"), f.get("label")))
+            if not days:
+                return False
+            return (f.get("occurred_at") or "")[:10] in days or _in_window(f, days)
+
+        to_insert: list[dict] = []
+        by_identity = 0
+        for f, natural in zip(facts, natural_ids, strict=True):
+            if _kept_by_key(f):
+                continue
+            if natural in kept_ids or _is_original(f):
+                by_identity += 1
+                continue
+            to_insert.append(f)
         new_ids = fact_identity.ids_for_new_facts(patient_id, document_id, to_insert, taken)
         added = churn = 0
         for f, fid in zip(to_insert, new_ids, strict=True):
@@ -283,8 +388,15 @@ class FactsMixin:
                 document_id,
                 churn,
             )
+        if by_identity:
+            logger.info(
+                "re-extraction: document_id=%s, %d facts not re-added: a verified or "
+                "corrected version of the same fact is kept (#741)",
+                document_id,
+                by_identity,
+            )
         return {"added": added, "removed": removed, "kept_verified": len(protected),
-                "id_churn": churn}  # fmt: skip
+                "id_churn": churn, "skipped_by_identity": by_identity}  # fmt: skip
 
     async def fact_verification_rows(self, *, patient_id: str) -> list[dict]:
         """Active facts with what corroboration and the unverified metric need."""
