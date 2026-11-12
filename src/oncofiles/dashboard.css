@@ -874,13 +874,6 @@
     .connection-dot.offline { background: var(--red); }
     .connection-dot.loading { background: var(--amber); animation: pulse 1s infinite; }
     @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
-    /* Admin-only breaker widget (#469 Phase 7) — shows /readiness.circuit_breaker */
-    .breaker-widget { display: none; align-items: center; gap: 0.25rem; font-size: 0.6875rem; color: var(--text-muted); font-variant-numeric: tabular-nums; margin-right: 0.25rem; }
-    .breaker-widget.admin-visible { display: inline-flex; }
-    .breaker-widget .bw-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--green); }
-    .breaker-widget.state-open .bw-dot { background: var(--red); animation: pulse 1s infinite; }
-    .breaker-widget.state-half_open .bw-dot { background: var(--amber); animation: pulse 1s infinite; }
-    .breaker-widget.has-trips { color: var(--amber); }
     .budget-pill { display: inline-flex; align-items: center; gap: 0.25rem; font-size: 0.6875rem; color: var(--text-muted); font-variant-numeric: tabular-nums; margin-right: 0.25rem; padding: 0.15rem 0.4rem; border: 1px solid var(--border); border-radius: 999px; }
     .budget-pill .bp-icon { font-size: 0.8125rem; line-height: 1; }
     .budget-pill.state-warn { color: var(--amber); border-color: var(--amber); }

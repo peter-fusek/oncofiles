@@ -185,7 +185,7 @@ DB_ALLOWLIST: dict[tuple[str, str], str] = {
     (
         "/readiness",
         "readiness",
-    ): "reconnect_if_stale(5 s); 24 h prompt_log SUM for the operator only",
+    ): "db.ping(2 s); 24 h prompt_log SUM for the operator only",
     ("/api/stats", "api_stats"): "1 + N(patients) COUNTs, at most once per 5 min (cache)",
     ("/api/logout", "api_logout"): "one revocation row, only for a token that verifies",
     ("/api/newsletter/subscribe", "api_newsletter_subscribe"): "INSERT OR IGNORE one row",

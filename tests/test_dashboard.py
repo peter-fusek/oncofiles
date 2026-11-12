@@ -578,72 +578,17 @@ def test_oauth_callback_validates_patient_exists():
     assert "no longer exists" in source.lower() or "Patient no longer exists" in source
 
 
-# ── Circuit-breaker 503 contract (#412 + #469) ───────────────────────
+# ── 503 contract: the DB circuit breaker is gone (#617, #751) ──────────
 
 
-def test_circuit_breaker_503_matches_breaker_runtimeerror():
-    """Helper converts breaker RuntimeError → 503 + Retry-After:30."""
-    import json
-
-    from oncofiles.server import _circuit_breaker_503
-
-    exc = RuntimeError("Circuit breaker open — DB unavailable, retry in 28s")
-    resp = _circuit_breaker_503(exc, "/status")
-
-    assert resp is not None
-    assert resp.status_code == 503
-    assert resp.headers["Retry-After"] == "30"
-    body = json.loads(bytes(resp.body).decode())
-    assert "Database briefly unavailable" in body["error"]
-
-
-def test_circuit_breaker_503_passes_through_other_runtimeerrors():
-    """Non-breaker RuntimeError returns None — caller handles as 500."""
-    from oncofiles.server import _circuit_breaker_503
-
-    exc = RuntimeError("some other runtime error")
-    assert _circuit_breaker_503(exc, "/status") is None
-
-
-def test_circuit_breaker_503_passes_through_value_errors():
-    """Non-RuntimeError exceptions return None."""
-    from oncofiles.server import _circuit_breaker_503
-
-    exc = ValueError("bad input")
-    assert _circuit_breaker_503(exc, "/status") is None
-
-
-def test_status_endpoint_uses_breaker_helper():
-    """/status catches circuit breaker and returns 503 via the helper."""
+def test_circuit_breaker_helper_removed():
+    """#751: the inert _circuit_breaker_503 helper and its call sites are gone."""
     import inspect
 
-    from oncofiles.server import status
+    from oncofiles import server
 
-    source = inspect.getsource(status)
-    assert "_circuit_breaker_503" in source
-    assert '"/status"' in source
-
-
-def test_api_documents_uses_breaker_helper():
-    """/api/documents catches circuit breaker and returns 503 via the helper."""
-    import inspect
-
-    from oncofiles.server import api_documents
-
-    source = inspect.getsource(api_documents)
-    assert "_circuit_breaker_503" in source
-    assert '"/api/documents"' in source
-
-
-def test_api_prompt_log_uses_breaker_helper():
-    """/api/prompt-log catches circuit breaker and returns 503 via the helper."""
-    import inspect
-
-    from oncofiles.server import api_prompt_log
-
-    source = inspect.getsource(api_prompt_log)
-    assert "_circuit_breaker_503" in source
-    assert '"/api/prompt-log"' in source
+    assert not hasattr(server, "_circuit_breaker_503")
+    assert "_circuit_breaker_503" not in inspect.getsource(server)
 
 
 def test_dashboard_apifetch_retries_5xx():
@@ -743,25 +688,13 @@ def test_dashboard_swr_writes_cache_on_success():
     assert "_swrSet('prompt-log', prompts)" in html
 
 
-def test_dashboard_admin_breaker_widget_present():
-    """Admin-only breaker widget is wired to /readiness.circuit_breaker (#469 Phase 7)."""
+def test_dashboard_admin_breaker_widget_removed():
+    """#751: the admin breaker widget read /readiness.circuit_breaker, which no longer exists."""
 
     html = _dashboard_combined()
-    assert 'id="breaker-widget"' in html
-    assert "updateBreakerWidget" in html
-    # Fetches /readiness (the /readiness endpoint is unauth-safe)
-    assert "fetch('/readiness'" in html
-    # Visibility gated on admin
-    assert "if (!isAdminMode) return" in html
-    # Reflects state via CSS classes
-    assert "state-open" in html and "state-closed" in html and "state-half_open" in html
-    # Trips counter element is populated
-    assert 'id="bw-trips"' in html
-    # Widget is invoked as part of the refresh() cycle (exact placement may
-    # vary but it must live inside refresh() so every tick updates the display).
-    refresh_start = html.index("async function refresh()")
-    refresh_slice = html[refresh_start : refresh_start + 6000]
-    assert "updateBreakerWidget()" in refresh_slice
+    assert 'id="breaker-widget"' not in html
+    assert "updateBreakerWidget" not in html
+    assert ".breaker-widget" not in html
 
 
 def test_dashboard_swr_clears_on_logout():
@@ -792,21 +725,6 @@ def test_dashboard_logout_calls_api_endpoint():
         "/api/logout fetch must run before sessionStorage.removeItem so the "
         "POST has a live bearer to authenticate revocation"
     )
-
-
-def test_readiness_uses_circuit_breaker_503_helper():
-    """/readiness exception path goes through the 503 contract helper.
-
-    The helper is inert since #617 (nothing raises the breaker error any
-    more); this lock stays until the helper is removed everywhere at once.
-    """
-    import inspect
-
-    from oncofiles.server import readiness
-
-    source = inspect.getsource(readiness)
-    assert "_circuit_breaker_503" in source
-    assert '"/readiness"' in source
 
 
 # ── #512: /readiness redacts ops detail for unauthenticated callers ──
@@ -860,9 +778,8 @@ def test_readiness_caller_is_operator_with_no_auth():
 
 
 def test_readiness_caller_is_operator_admin_session_cookie():
-    """The dashboard's breaker widget (admin-only, #469 Phase 7) uses a
-    same-origin fetch that auto-includes the oncofiles_session cookie.
-    Admins on the cookie path should get the full diagnostic payload."""
+    """A same-origin dashboard fetch auto-includes the oncofiles_session
+    cookie. Admins on the cookie path should get the full diagnostic payload."""
     from oncofiles.server import _make_session_token, _readiness_caller_is_operator
 
     admin = "admin@oncofiles.com"
