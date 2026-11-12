@@ -13,6 +13,8 @@ Safe values:
 - lists of integers under ``*_ids`` keys;
 - ``patient_slug`` / ``target_patient_slug`` when slug-shaped;
 - known enum/option values (``category``, ``kinds``, ``filter``, ``sort``, ...);
+- the LLM extractor override modes (``thinking``, ``sampling``,
+  ``reasoning_marker``) and ``timeout_s`` (#769);
 - fact codes matching ``^[A-Z0-9_]{1,20}$`` (``code``, ``codes``, ``parameters``).
 
 The same rules also scrub the values that are NOT safe out of the error
@@ -57,6 +59,8 @@ INT_KEYS = frozenset(
         "passes",
         "top_tags_limit",
         "duration_ms",
+        # LLM extractor A/B override (#767/#770): seconds, validated in [30, 900]
+        "timeout_s",
     }
 )
 CODE_KEYS = frozenset({"code", "codes", "parameters"})
@@ -118,6 +122,13 @@ ENUM_VALUES: dict[str, frozenset[str]] = {
     ),
     "phase": frozenset({"PHASE1", "PHASE2", "PHASE3", "PHASE4"}),
     "mime_type": frozenset({"application/pdf", "image/jpeg", "image/png", "text/plain"}),
+    # LLM extractor A/B overrides (#767/#770), mirrored from
+    # curated.llm_extract_call (*_MODES; a test keeps them equal). Without them
+    # e.g. thinking="off" became a call secret and every log line of the job
+    # showed "thinking=<redacted:len=3>" (#769).
+    "thinking": frozenset({"on", "off"}),
+    "sampling": frozenset({"greedy", "qwen"}),
+    "reasoning_marker": frozenset({"on", "off"}),
 }
 
 

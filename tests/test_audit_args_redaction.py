@@ -320,3 +320,65 @@ async def test_redact_tool_rewrites_only_input_summary(db: Database):
     assert len(maint) == 3
     assert json.loads(maint[0]["output_summary"])["changed"] == 2
     assert maint[0]["patient_id"] == ""
+
+
+# ── #769: LLM extractor A/B overrides are diagnostics, not secrets ─────────
+
+
+def test_llm_override_modes_match_the_extractor():
+    from oncofiles.audit_redaction import ENUM_VALUES, INT_KEYS
+    from oncofiles.curated import llm_extract_call as c
+
+    assert ENUM_VALUES["thinking"] == set(c.THINKING_MODES)
+    assert ENUM_VALUES["sampling"] == set(c.SAMPLING_MODES)
+    assert ENUM_VALUES["reasoning_marker"] == set(c.REASONING_MARKER_MODES)
+    assert "timeout_s" in INT_KEYS
+
+
+def test_the_llm_call_log_line_keeps_thinking_off_and_secrets_stay_masked():
+    """``thinking="off"`` used to be a call secret (len 3, not allowlisted), so
+    every log line of the job showed ``thinking=<redacted:len=3>``."""
+    from oncofiles.app_log import RedactFilter
+    from oncofiles.audit_redaction import scrub_text, sensitive_strings
+
+    args = {
+        "document_ids": [FAKE_ID],
+        "patient_slug": FAKE_SLUG,
+        "dry_run": True,
+        "thinking": "off",
+        "sampling": "qwen",
+        "reasoning_marker": "off",
+        "timeout_s": 300,
+        "note": FAKE_NAME,
+    }
+    assert summarize_args(args) == (
+        f"document_ids=[{FAKE_ID}], patient_slug={FAKE_SLUG}, dry_run=True, thinking=off, "
+        "sampling=qwen, reasoning_marker=off, timeout_s=300, "
+        f"note=<redacted:len={len(FAKE_NAME)}>"
+    )
+    secrets = sensitive_strings(args)
+    assert secrets == (FAKE_NAME,)
+    assert "<redacted" in summarize_args({"thinking": FAKE_NAME})  # only known modes pass
+    line = (
+        "local llm call: prompt_tokens=1200 completion_tokens=300 reasoning_tokens=0 "
+        "max_tokens=4096 prompt_estimate=1180 finish=stop seconds=12.5 temperature=0.7 "
+        "top_p=0.8 top_k=20 presence_penalty=1.0 thinking=off timeout=300 "
+        f"note={FAKE_NAME}"
+    )
+    scrubbed = scrub_text(line, secrets)
+    assert "thinking=off" in scrubbed and "timeout=300" in scrubbed
+    assert "max_tokens=4096" in scrubbed and FAKE_NAME not in scrubbed
+
+    secret_line = (
+        scrubbed + " token=tokvalueqwerty secret=secvaluexyzzy password=pwvaluexyzzy "
+        "api_key=keyvaluexyzzy Authorization: Bearer abcdefghijklmnop "
+        "onco_abcdefghijkl jana.testovska@example.com"
+    )
+    record = logging.LogRecord("t", logging.INFO, __file__, 1, secret_line, None, None)
+    RedactFilter().filter(record)
+    out = record.getMessage()
+    assert "thinking=off" in out and "finish=stop" in out and "max_tokens=4096" in out
+    leaks = ("tokvalueqwerty", "secvaluexyzzy", "pwvaluexyzzy", "keyvaluexyzzy", "abcdefghijklmnop",
+             "onco_abcdefghijkl", "jana.testovska@example.com")  # fmt: skip
+    for leaked in leaks:
+        assert leaked not in out, leaked
