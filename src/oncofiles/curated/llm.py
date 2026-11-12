@@ -143,7 +143,6 @@ def chat(
     top_p: float | None = None,
     top_k: int | None = None,
     presence_penalty: float | None = None,
-    prefill_assistant: str | None = None,
     reasoning_marker: bool | None = None,
 ) -> str:
     """One blocking chat completion; returns the answer text.
@@ -166,11 +165,6 @@ def chat(
     ``info`` (optional dict) receives ``finish_reason`` and the token counts
     (``prompt_tokens``, ``completion_tokens``, ``reasoning_tokens``) of the
     completion, plus the raw answer channels (in memory only).
-    ``prefill_assistant`` (optional) appends a final assistant message with
-    that content, so the model continues it (#770: an already-closed empty
-    think block for a model that ignores thinking-off). LM Studio may return
-    only the continuation or the prefill plus continuation; ``strip_think``
-    handles both. Only the extractors pass it, behind ``LLM_EXTRACT_PREFILL``.
     ``reasoning_marker`` (``None`` = env ``LLM_REASONING_MARKER``; #770): when
     on, no ``/no_think`` is sent anywhere; with ``thinking=False`` the system
     message ends with ``REASONING_OFF_MARKER``, otherwise it is sent bare.
@@ -211,9 +205,6 @@ def chat(
         # The kwarg alone is ignored by LM Studio for Qwen3.x MLX (#689).
         # With the #770 marker the template rule switches thinking off instead.
         payload["messages"][-1]["content"] = _with_no_think(user_content)
-    if prefill_assistant is not None:
-        # Must stay the LAST message: the model continues this turn (#770).
-        payload["messages"].append({"role": "assistant", "content": prefill_assistant})
     headers = {"Content-Type": "application/json"}
     if config.LOCAL_LLM_API_KEY:
         headers["Authorization"] = f"Bearer {config.LOCAL_LLM_API_KEY}"

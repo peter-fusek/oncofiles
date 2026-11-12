@@ -42,8 +42,10 @@ from oncofiles.curated.llm_extract_call import (  # noqa: F401 (re-exported)
 # call settings. v3: no response_format by default; v4: shared call path,
 # sampling switch, bounded answer budget and timeout (#767); v5: optional
 # prefilled closed think block, timeout override (#770); v6: optional
-# reasoning-off marker in the system message instead of /no_think (#770).
-EXTRACTOR_VERSION = "llm-extract-v6"
+# reasoning-off marker in the system message instead of /no_think (#770);
+# v7: qwen sampling profiles follow the Qwen3.8 model card, prefill removed
+# (the chat template renders a trailing assistant turn as finished, #770).
+EXTRACTOR_VERSION = "llm-extract-v7"
 
 DATE_ROLES = ("sample", "report", "other")
 _COMPARATORS = ("<=", ">=", "<", ">")
