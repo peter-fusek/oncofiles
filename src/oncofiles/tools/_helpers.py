@@ -558,10 +558,19 @@ async def _try_download(
         except Exception:
             logger.debug("Files API download failed for %s", doc.file_id)
 
-    # 2. Fallback: Google Drive
+    # 2. Fallback: Google Drive (the only source of a Drive-only document, #777)
     if gdrive and doc.gdrive_id:
         try:
-            content_bytes = await asyncio.to_thread(gdrive.download, doc.gdrive_id)
+            try:
+                content_bytes = await asyncio.to_thread(gdrive.download, doc.gdrive_id)
+            except Exception:
+                # A Google Doc/Sheet/Slides has no binary content: the sync import
+                # registers it as a PDF, so export it as one (as _enhance_document does).
+                if doc.mime_type != "application/pdf":
+                    raise
+                content_bytes = await asyncio.to_thread(
+                    gdrive.export_google_doc, doc.gdrive_id, "application/pdf"
+                )
             return True, _inline_content(doc, content_bytes), content_bytes
         except Exception as e:
             return False, [f"[GDrive download also failed: {e}]"], None

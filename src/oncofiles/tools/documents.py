@@ -11,7 +11,7 @@ from fastmcp import Context
 
 from oncofiles.config import DOC_QUERY_LIMIT
 from oncofiles.filename_parser import parse_filename
-from oncofiles.files_api import sanitize_filename
+from oncofiles.files_api import drive_only_file_id, sanitize_filename
 from oncofiles.gdrive_folders import (
     ensure_folder_structure,
     ensure_year_month_folder,
@@ -82,10 +82,10 @@ async def upload_document(
     import base64
     import binascii
 
-    # #618: uploads go to the Anthropic Files API. Without a key, refuse before
-    # any DB write or upload — never store a document that cannot be processed.
-    if (disabled := _cloud_ai_disabled_response()) is not None:
-        return disabled
+    # #618/#777: with cloud AI off the Files API is never called. The document
+    # is stored Drive-only (file_id "gdrive:<id>") in the patient's own Drive
+    # folder when one is connected; otherwise refused before any write.
+    disabled = _cloud_ai_disabled_response()
 
     if len(content) > MAX_UPLOAD_SIZE * 4 // 3 + 4:
         return json.dumps({"error": "File exceeds 100 MB limit."})
@@ -124,13 +124,25 @@ async def upload_document(
             }
         )
 
-    # Upload to Files API
-    await ctx.info(f"Uploading {filename} ({len(file_bytes)} bytes)...")
-    try:
-        metadata = files.upload(io.BytesIO(file_bytes), filename, mime_type)
-    except Exception:
-        logger.exception("Files API upload failed for %s", filename)
-        return json.dumps({"error": "Files API upload failed. Check server logs."})
+    drive = None  # (gdrive client, uploaded metadata) on the Drive-only path
+    if disabled is not None:
+        drive = await _upload_drive_only(
+            ctx, db, file_bytes, filename, mime_type, patient_id=patient_id, disabled=disabled
+        )
+        if isinstance(drive, str):
+            return drive  # refused or failed: nothing stored
+        file_id = drive_only_file_id(drive[1]["id"])
+        stored_mime, stored_size = mime_type, len(file_bytes)
+    else:
+        # Upload to Files API
+        await ctx.info(f"Uploading {filename} ({len(file_bytes)} bytes)...")
+        try:
+            metadata = files.upload(io.BytesIO(file_bytes), filename, mime_type)
+        except Exception:
+            logger.exception("Files API upload failed for %s", filename)
+            return json.dumps({"error": "Files API upload failed. Check server logs."})
+        file_id = metadata.id
+        stored_mime, stored_size = metadata.mime_type, metadata.size_bytes
 
     # Parse filename for structured metadata
     parsed = parse_filename(filename, patient_id=patient_id)
@@ -148,25 +160,43 @@ async def upload_document(
         )
 
     doc = Document(
-        file_id=metadata.id,
+        file_id=file_id,
         filename=filename,
         original_filename=filename,
         document_date=parsed.document_date,
         institution=parsed.institution,
         category=parsed.category,
         description=parsed.description,
-        mime_type=metadata.mime_type,
-        size_bytes=metadata.size_bytes,
+        mime_type=stored_mime,
+        size_bytes=stored_size,
         version=version,
         previous_version_id=previous_version_id,
     )
+    if drive is not None:
+        from oncofiles.sync import _parse_gdrive_time
+
+        doc.gdrive_id = drive[1]["id"]
+        doc.gdrive_modified_time = _parse_gdrive_time(drive[1].get("modifiedTime", ""))
+        doc.sync_state = "synced"
 
     doc = await db.insert_document(doc, patient_id=patient_id)
 
-    # Auto-sync to GDrive if available
     gdrive_id = None
-    gdrive = await _get_gdrive(ctx)
-    if gdrive:
+    if drive is not None:
+        from oncofiles.files_api import DRIVE_SYNC_SOURCE
+        from oncofiles.sync import _register_drive_only
+
+        gdrive, gdrive_id = drive[0], drive[1]["id"]
+        await db.update_structured_metadata(doc.id, json.dumps({"source": DRIVE_SYNC_SOURCE}))
+        _register_drive_only(doc.id)
+        try:
+            await asyncio.to_thread(
+                gdrive.set_app_properties, gdrive_id, {"oncofiles_id": str(doc.id)}
+            )
+        except Exception:
+            logger.warning("upload_document: failed to set appProperties on %s", gdrive_id)
+    # Auto-sync to GDrive if available
+    elif gdrive := await _get_gdrive(ctx):
         try:
             folder_id = ctx.request_context.lifespan_context.get("gdrive_folder_id")
             if folder_id:
@@ -206,9 +236,67 @@ async def upload_document(
         "version": doc.version,
         "gdrive_url": _gdrive_url(gdrive_id),
     }
+    if drive is not None:
+        result["storage"] = "drive_only"
     if doc.previous_version_id:
         result["previous_version_id"] = doc.previous_version_id
     return json.dumps(result)
+
+
+async def _upload_drive_only(
+    ctx: Context,
+    db,
+    file_bytes: bytes,
+    filename: str,
+    mime_type: str,
+    *,
+    patient_id: str,
+    disabled: str,
+):
+    """Put the bytes of ``upload_document`` into Drive while cloud AI is off (#777).
+
+    Drive is then the only copy: the caller registers the row Drive-only
+    (``gdrive:<id>``), exactly like a Drive sync import. It uses the resolved
+    patient's own Drive client and folder, never the caller's. Returns
+    ``(gdrive, uploaded)``, or a JSON error string when nothing was stored: no
+    Drive connected, or the upload failed (a curated folder is write-blocked).
+    """
+    from oncofiles.server import _create_patient_clients
+
+    clients = await _create_patient_clients(db, patient_id)
+    if not clients or clients[0] is None or not clients[3]:
+        err = json.loads(disabled)
+        err["detail"] = (
+            "Documents are stored only in Google Drive while cloud AI is off; "
+            "connect Google Drive for this patient to upload."
+        )
+        return json.dumps(err)
+    gdrive, folder_id = clients[0], clients[3]
+
+    parsed = parse_filename(filename, patient_id=patient_id)
+    await ctx.info(f"Uploading {filename} ({len(file_bytes)} bytes) to Google Drive...")
+    try:
+        folder_map = await asyncio.to_thread(ensure_folder_structure, gdrive, folder_id)
+        target_folder = resolve_category_folder(folder_map, parsed.category.value, folder_id)
+        if parsed.document_date:
+            target_folder = await asyncio.to_thread(
+                ensure_year_month_folder, gdrive, target_folder, parsed.document_date.isoformat()
+            )
+        uploaded = await asyncio.to_thread(
+            gdrive.upload,
+            filename=filename,
+            content_bytes=file_bytes,
+            mime_type=mime_type,
+            folder_id=target_folder,
+        )
+    except Exception as exc:
+        logger.warning(
+            "upload_document: Drive-only upload failed for %s — %s", filename, type(exc).__name__
+        )
+        return json.dumps(
+            {"error": "Google Drive upload failed; nothing was stored.", "kind": type(exc).__name__}
+        )
+    return gdrive, uploaded
 
 
 async def list_documents(

@@ -15,6 +15,7 @@ import mimetypes
 import time
 from datetime import UTC, datetime
 
+from oncofiles.cloud_guard import CloudForbiddenError
 from oncofiles.database import Database
 from oncofiles.enhance import (
     enhance_document_text,
@@ -28,7 +29,13 @@ from oncofiles.filename_parser import (
     parse_filename,
     rename_to_standard,
 )
-from oncofiles.files_api import FilesClient
+from oncofiles.files_api import (
+    DRIVE_SYNC_SOURCE,
+    FilesClient,
+    drive_only_file_id,
+    files_api_refusal_reason,
+    is_drive_only_file_id,
+)
 from oncofiles.gdrive_client import GDriveClient
 from oncofiles.gdrive_folders import (
     ensure_folder_structure,
@@ -101,6 +108,26 @@ async def _get_doc_patient_id(db: Database, doc_id: int) -> str | None:
 # ── GDrive → Oncofiles import ──────────────────────────────────────────────
 
 
+def _drive_size(gf: dict) -> int:
+    """Size reported by the Drive listing (Google Docs have none → 0)."""
+    try:
+        return int(gf.get("size") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _register_drive_only(doc_id: int) -> None:
+    """Put a Drive-only row under the same cloud refusal as curated rows (#777).
+
+    At startup every ``gdrive:%`` row is loaded into this registry
+    (``db.curated_document_ids``); registering here keeps a running process
+    consistent with the next restart, so no cloud-AI function ever reads it.
+    """
+    from oncofiles.curated.indexer import register_curated_ids
+
+    register_curated_ids([doc_id])
+
+
 async def sync_from_gdrive(
     db: Database,
     files: FilesClient,
@@ -123,6 +150,18 @@ async def sync_from_gdrive(
     if (blocked := write_block_reason(gdrive)) is not None:
         logger.info("%s: skipped for patient %s — %s", "sync_from_gdrive", patient_id, blocked)
         return _curated_skip(blocked)
+
+    # #777: with cloud AI off the Files API refuses every upload, so documents
+    # are registered Drive-only (file_id "gdrive:<id>", as curated documents)
+    # and nothing is read in the cloud: no upload, no inline AI enhancement.
+    drive_only_reason = files_api_refusal_reason()
+    if drive_only_reason is not None:
+        logger.info(
+            "sync_from_gdrive: Drive-only import for patient %s — %s",
+            patient_id,
+            drive_only_reason,
+        )
+        enhance = False
 
     logger.info("sync_from_gdrive: listing folder %s (dry_run=%s)", folder_id, dry_run)
     gdrive_files, folder_map = await asyncio.to_thread(gdrive.list_folder_with_structure, folder_id)
@@ -285,6 +324,27 @@ async def sync_from_gdrive(
                 # Clear old OCR before re-import (will be re-extracted by enhance)
                 await db.delete_ocr_pages(existing.id)
 
+                if drive_only_reason is not None:
+                    # #777: the stale Files API copy (if any) is dropped from the
+                    # row; the document is read from Drive from now on.
+                    await db.update_document_file_id(
+                        existing.id, drive_only_file_id(gdrive_id), _drive_size(gf)
+                    )
+                    await db.update_gdrive_id(existing.id, gdrive_id, modified_time_str)
+                    if gdrive_md5:
+                        await db.update_gdrive_md5(existing.id, gdrive_md5)
+                    now_str = datetime.now(UTC).isoformat()
+                    await db.update_sync_state(existing.id, "synced", now_str)
+                    await _sync_category_from_folder(gf, existing, filename)
+                    if not existing.structured_metadata:
+                        await db.update_structured_metadata(
+                            existing.id, json.dumps({"source": DRIVE_SYNC_SOURCE})
+                        )
+                    _register_drive_only(existing.id)
+                    stats["updated"] += 1
+                    stats["drive_only"] = stats.get("drive_only", 0) + 1
+                    continue
+
                 if is_google_doc:
                     content_bytes = await asyncio.to_thread(
                         gdrive.export_google_doc, gdrive_id, "application/pdf"
@@ -342,17 +402,29 @@ async def sync_from_gdrive(
 
                 logger.info("sync_from_gdrive: importing %s", filename)
                 if is_google_doc:
-                    content_bytes = await asyncio.to_thread(
-                        gdrive.export_google_doc, gdrive_id, "application/pdf"
-                    )
                     # Google Docs: export as PDF, fix filename and mime
                     import_filename = f"{filename}.pdf" if "." not in filename else filename
                     import_mime = "application/pdf"
                 else:
-                    content_bytes = await asyncio.to_thread(gdrive.download, gdrive_id)
                     import_filename = filename
                     import_mime = mime_type
-                metadata = files.upload(io.BytesIO(content_bytes), import_filename, import_mime)
+
+                if drive_only_reason is not None:
+                    # #777: Drive-only — the bytes are not downloaded here at all;
+                    # every read path fetches them from Drive when needed.
+                    content_bytes = b""
+                    file_id = drive_only_file_id(gdrive_id)
+                    size = _drive_size(gf)
+                else:
+                    if is_google_doc:
+                        content_bytes = await asyncio.to_thread(
+                            gdrive.export_google_doc, gdrive_id, "application/pdf"
+                        )
+                    else:
+                        content_bytes = await asyncio.to_thread(gdrive.download, gdrive_id)
+                    metadata = files.upload(io.BytesIO(content_bytes), import_filename, import_mime)
+                    file_id = metadata.id
+                    size = len(content_bytes)
 
                 parsed = parse_filename(import_filename, patient_id=patient_id)
                 guessed_mime = mimetypes.guess_type(import_filename)[0] or import_mime
@@ -364,12 +436,10 @@ async def sync_from_gdrive(
                     DocumentCategory(detected_category) if detected_category else parsed.category
                 )
 
-                size = len(content_bytes)
                 del content_bytes  # Free large buffer immediately
 
-                now_str = datetime.now(UTC).isoformat()
                 doc = Document(
-                    file_id=metadata.id,
+                    file_id=file_id,
                     filename=import_filename,
                     original_filename=filename,
                     document_date=parsed.document_date,
@@ -385,6 +455,12 @@ async def sync_from_gdrive(
                     last_synced_at=datetime.now(UTC),
                 )
                 doc = await db.insert_document(doc, patient_id=patient_id)
+                if drive_only_reason is not None:
+                    await db.update_structured_metadata(
+                        doc.id, json.dumps({"source": DRIVE_SYNC_SOURCE})
+                    )
+                    _register_drive_only(doc.id)
+                    stats["drive_only"] = stats.get("drive_only", 0) + 1
 
                 # Set appProperties on GDrive for future matching
                 try:
@@ -755,6 +831,12 @@ async def sync_to_gdrive(
                     )
                     stats["skipped"] += 1
                     continue
+            elif (refused := files_api_refusal_reason()) is not None:
+                # #777: the only copy is in the Files API, which may not be
+                # read now. A configuration state, not a sync failure.
+                logger.info("sync_to_gdrive: skipped %s — %s", doc.filename, refused)
+                stats["skipped"] += 1
+                continue
             else:
                 content_bytes = files.download(doc.file_id)
 
@@ -788,6 +870,15 @@ async def sync_to_gdrive(
 
             stats["exported"] += 1
 
+        except CloudForbiddenError as e:
+            # #777: the Files API copy cannot be read while cloud AI is off.
+            # A configuration state, not a sync failure.
+            logger.info(
+                "sync_to_gdrive: skipped %s — Files API unavailable (%s)",
+                doc.filename,
+                str(e)[:120],
+            )
+            stats["skipped"] += 1
         except Exception as e:
             err_str = str(e)
             if "not downloadable" in err_str.lower():
@@ -839,10 +930,14 @@ async def sync_to_gdrive(
                 except Exception:
                     logger.exception("sync_to_gdrive: post-rename organize failed")
 
-            # Post-rename: re-enhance renamed docs (metadata/FTS reflect new name)
+            # Post-rename: re-enhance renamed docs (metadata/FTS reflect new name).
+            # #777: never with cloud AI off — enhancement is a cloud call.
             from oncofiles.config import ENHANCE_TIMEOUT_S
 
-            for doc_id in rename_stats["renamed_ids"]:
+            reenhance_ids = (
+                rename_stats["renamed_ids"] if files_api_refusal_reason() is None else []
+            )
+            for doc_id in reenhance_ids:
                 try:
                     doc = await db.get_document(doc_id, patient_id=patient_id)
                     await asyncio.wait_for(
@@ -1859,6 +1954,8 @@ async def extract_all_metadata(
                 from oncofiles.tools._helpers import _extract_pdf_text
 
                 try:
+                    if is_drive_only_file_id(doc.file_id):
+                        raise LookupError("Drive-only document (#777)")
                     content_bytes = files.download(doc.file_id)
                 except Exception:
                     if gdrive and doc.gdrive_id:
@@ -1951,6 +2048,8 @@ async def _enhance_document(
 
         content_bytes = None
         try:
+            if is_drive_only_file_id(doc.file_id):
+                raise LookupError("Drive-only document (#777)")
             content_bytes = files.download(doc.file_id)
         except Exception:
             if gdrive and doc.gdrive_id:

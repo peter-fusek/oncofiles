@@ -250,6 +250,14 @@ async def _process_attachment(
     if mime_type not in _DOC_MIME_TYPES:
         return None
 
+    # #777: an attachment has no Drive copy to fall back on, and the Files API
+    # is refused while cloud AI is off — skip it (not a failure, nothing read).
+    from oncofiles.files_api import files_api_refusal_reason
+
+    if (reason := files_api_refusal_reason()) is not None:
+        logger.info("Gmail attachment %s not stored — %s", filename, reason)
+        return None
+
     try:
         # Download attachment
         content_bytes = await asyncio.to_thread(

@@ -46,6 +46,44 @@ def sanitize_filename(filename: str) -> str:
 _sanitize_filename = sanitize_filename
 
 
+# ── Drive-only documents (#777) ────────────────────────────────────────────
+# A document whose bytes live only in Google Drive carries this file_id
+# prefix instead of an Anthropic Files API id. Curated documents (#603) were
+# the first; since #777 the Drive sync import and ``upload_document`` store
+# Drive-only too whenever the Files API may not be used. Every read path
+# (``_try_download``, view_document, OCR) fetches such a document from Drive.
+# Must equal ``curated.indexer.CURATED_FILE_PREFIX`` (locked by a test).
+DRIVE_ONLY_PREFIX = "gdrive:"
+
+# structured_metadata marker of a Drive-only row written by the legacy sync
+# or upload path, so the curated indexer never mistakes it for its own row.
+DRIVE_SYNC_SOURCE = "drive_sync"
+
+
+def drive_only_file_id(gdrive_id: str) -> str:
+    return DRIVE_ONLY_PREFIX + gdrive_id
+
+
+def is_drive_only_file_id(file_id: str | None) -> bool:
+    return bool(file_id) and file_id.startswith(DRIVE_ONLY_PREFIX)
+
+
+def files_api_refusal_reason() -> str | None:
+    """Why the Files API may not be used right now, or None when it may.
+
+    The same predicate as ``enhance._get_client`` / ``FilesClient._guarded``:
+    refused inside a ``local_only()`` job and whenever cloud AI is off
+    (``CLOUD_AI_ENABLED`` off or no key, #618). Callers that would upload
+    document bytes check this first and store the document Drive-only instead
+    of calling the API and counting the refusal as a failure (#777).
+    """
+    from oncofiles.cloud_guard import cloud_ai_disabled_reason, local_only_job
+
+    if (job := local_only_job()) is not None:
+        return f"'{job}' runs on the local model only"
+    return cloud_ai_disabled_reason()
+
+
 class FilesClient:
     """Wrapper around the Anthropic Files API (beta)."""
 
