@@ -1871,19 +1871,34 @@ def _source_reason(meta: dict) -> str | None:
     return None
 
 
+def _overrides(thinking, sampling, prefill, timeout_s) -> dict:
+    """The per-job A/B overrides as echoed in job and report (#767, #770)."""
+    return {"thinking": thinking, "sampling": sampling, "prefill": prefill,
+            "timeout_s": timeout_s}  # fmt: skip
+
+
 async def _llm_shadow_job(
-    db, pid: str, docs: list[dict], *, thinking: str | None = None, sampling: str | None = None
+    db,
+    pid: str,
+    docs: list[dict],
+    *,
+    thinking: str | None = None,
+    sampling: str | None = None,
+    prefill: str | None = None,
+    timeout_s: int | None = None,
 ) -> None:
     """LLM extractor + generic verifier on stored page text, compared with the
     stored rule facts (#714 phase 2a). Writes NOTHING: no facts, no Drive, no
     run row. One model call at a time (one LM Studio slot); local only.
-    ``thinking`` / ``sampling`` override the env for this job only (#767)."""
+    ``thinking`` / ``sampling`` (#767) and ``prefill`` / ``timeout_s`` (#770)
+    override the env for this job only."""
     from oncofiles.cloud_guard import local_only
     from oncofiles.curated import llm_extract, llm_extract_call, verifier
     from oncofiles.curated.facts_rules import Vocabulary
 
     job = _reocr_jobs[pid]
-    cfg = llm_extract_call.settings(thinking, sampling)
+    cfg = llm_extract_call.settings(thinking, sampling, prefill, timeout_s)
+    overrides = _overrides(thinking, sampling, prefill, timeout_s)
     report: list[dict] = []
     try:
         try:
@@ -1947,7 +1962,7 @@ async def _llm_shadow_job(
         job.update(state="done", report={
             "dry_run": True, "extractor": llm_extract.EXTRACTOR_VERSION,
             "verifier": verifier.VERIFIER_VERSION,
-            "settings": {**cfg.report(), "overrides": {"thinking": thinking, "sampling": sampling}},
+            "settings": {**cfg.report(), "overrides": overrides},
             "warnings": llm_extract_call.merge_warnings(done),
             "totals": totals, "documents": report,
         })  # fmt: skip
@@ -1965,6 +1980,8 @@ async def curated_llm_extract_preview(
     dry_run: bool = True,
     thinking: str | None = None,
     sampling: str | None = None,
+    prefill: str | None = None,
+    timeout_s: int | None = None,
 ) -> str:
     """SHADOW mode of LLM-first fact extraction (#714): compare, never store.
 
@@ -1982,15 +1999,22 @@ async def curated_llm_extract_preview(
         thinking: "on" / "off" overrides LLM_EXTRACT_THINKING for this job
             only (A/B, #767); null keeps the env setting.
         sampling: "greedy" / "qwen" overrides LLM_EXTRACT_SAMPLING for this
-            job only; null keeps the env setting. Both are echoed in the
-            report (``settings``) and refused (error) with dry_run=false.
+            job only; null keeps the env setting.
+        prefill: "on" / "off" overrides LLM_EXTRACT_PREFILL for this job only
+            (#770): with thinking off, the request ends with an assistant turn
+            holding an already-closed empty think block; never with thinking on.
+        timeout_s: per-call timeout in seconds (int, 30-900) for this job only;
+            null keeps LLM_EXTRACT_TIMEOUT_S.
+        All four are echoed in the report (``settings``) and refused (error)
+        with dry_run=false.
     """
     from oncofiles import config
     from oncofiles.curated import llm, llm_extract_call
 
     llm_extract_call.refuse_overrides_on_write(
-        write=not dry_run, thinking=thinking, sampling=sampling
-    )
+        write=not dry_run, thinking=thinking, sampling=sampling, prefill=prefill,
+        timeout_s=timeout_s,
+    )  # fmt: skip
     if config.LLM_EXTRACT_SHADOW_DISABLED:
         return json.dumps({"error": "disabled by LLM_EXTRACT_SHADOW_DISABLED=true"})
     if not dry_run:
@@ -2014,12 +2038,13 @@ async def curated_llm_extract_preview(
     _reocr_jobs[pid] = {
         "state": "running", "kind": "llm_shadow", "dry_run": True,
         "extractor": EXTRACTOR_VERSION, "started_at": datetime.now(UTC).isoformat(),
-        "overrides": {"thinking": thinking, "sampling": sampling},
+        "overrides": _overrides(thinking, sampling, prefill, timeout_s),
         "documents": [{"document_id": d["id"], "category": d.get("category")} for d in docs],
     }  # fmt: skip
     _reocr_jobs[pid]["task"] = asyncio.create_task(
-        _llm_shadow_job(db, pid, docs, thinking=thinking, sampling=sampling)
-    )
+        _llm_shadow_job(db, pid, docs, thinking=thinking, sampling=sampling, prefill=prefill,
+                        timeout_s=timeout_s)
+    )  # fmt: skip
     return json.dumps(
         {k: v for k, v in _reocr_jobs[pid].items() if k != "task"}, ensure_ascii=False
     )
@@ -2104,13 +2129,16 @@ async def _clinical_job(
     write: bool,
     thinking: str | None = None,
     sampling: str | None = None,
+    prefill: str | None = None,
+    timeout_s: int | None = None,
 ) -> None:
     """Extract the non-lab kinds of each document with the LOCAL model and
     verify them (#726 item 4). Preview (``write=False``) writes NOTHING; a
     write holds the patient lock, refuses without a known birth date, and
     stores nothing for a document with a page that was not assessed. One
     model call at a time (one LM Studio slot); local only. ``thinking`` /
-    ``sampling`` override the env for a PREVIEW only (#767)."""
+    ``sampling`` (#767) and ``prefill`` / ``timeout_s`` (#770) override the
+    env for a PREVIEW only."""
     from oncofiles import config
     from oncofiles.cloud_guard import local_only
     from oncofiles.curated import clinical_store, llm_extract_call, verifier, verifier_clinical
@@ -2118,8 +2146,10 @@ async def _clinical_job(
     from oncofiles.curated.facts_rules import Vocabulary
 
     # refused at the tool already; the job itself stays safe too
-    llm_extract_call.refuse_overrides_on_write(write=write, thinking=thinking, sampling=sampling)
-    cfg = llm_extract_call.settings(thinking, sampling)
+    llm_extract_call.refuse_overrides_on_write(
+        write=write, thinking=thinking, sampling=sampling, prefill=prefill, timeout_s=timeout_s
+    )
+    cfg = llm_extract_call.settings(thinking, sampling, prefill, timeout_s)
     job = _reocr_jobs[pid]
     row_id = (
         await db.insert_curated_run(patient_id=pid, dry_run=False, trigger="clinical")
@@ -2182,7 +2212,8 @@ async def _clinical_job(
         job.update(state="done", report={
             "dry_run": not write, "extractor": lx.EXTRACTOR_VERSION,
             "verifier": verifier_clinical.CLINICAL_VERIFIER_VERSION, "dob_known": bool(births),
-            "settings": {**cfg.report(), "overrides": {"thinking": thinking, "sampling": sampling}},
+            "settings": {**cfg.report(),
+                         "overrides": _overrides(thinking, sampling, prefill, timeout_s)},
             "warnings": llm_extract_call.merge_warnings(report),
             "totals": _clinical_totals(report), "documents": report,
         })  # fmt: skip
@@ -2268,13 +2299,17 @@ async def _start_clinical(
     write: bool,
     thinking: str | None = None,
     sampling: str | None = None,
+    prefill: str | None = None,
+    timeout_s: int | None = None,
 ) -> str:
     from oncofiles import config
     from oncofiles.curated import llm, llm_extract_call
     from oncofiles.curated.llm_extract_clinical import EXTRACTOR_VERSION
 
-    # A/B overrides are for a dry run only: a write never takes them (#767).
-    llm_extract_call.refuse_overrides_on_write(write=write, thinking=thinking, sampling=sampling)
+    # A/B overrides are for a dry run only: a write never takes them (#767, #770).
+    llm_extract_call.refuse_overrides_on_write(
+        write=write, thinking=thinking, sampling=sampling, prefill=prefill, timeout_s=timeout_s
+    )
     if config.LLM_CLINICAL_EXTRACT_DISABLED:
         return json.dumps({"error": "disabled by LLM_CLINICAL_EXTRACT_DISABLED=true"})
     if not llm.configured():
@@ -2310,7 +2345,7 @@ async def _start_clinical(
         "dry_run": not write, "extractor": EXTRACTOR_VERSION,
         "started_at": datetime.now(UTC).isoformat(), "actor": "mcp",
         "caller_email_hash": caller_email_hash(_caller_email()),
-        "overrides": {"thinking": thinking, "sampling": sampling},
+        "overrides": _overrides(thinking, sampling, prefill, timeout_s),
         "documents": [{"document_id": d["id"], "category": d.get("category")} for d in docs],
     }  # fmt: skip
 
@@ -2341,7 +2376,16 @@ async def _start_clinical(
     # not only the model calls) runs local-only.
     with local_only("curated clinical extraction"):
         _reocr_jobs[pid]["task"] = asyncio.create_task(
-            _clinical_job(db, pid, docs, write=write, thinking=thinking, sampling=sampling)
+            _clinical_job(
+                db,
+                pid,
+                docs,
+                write=write,
+                thinking=thinking,
+                sampling=sampling,
+                prefill=prefill,
+                timeout_s=timeout_s,
+            )
         )
     return json.dumps(
         {k: v for k, v in _reocr_jobs[pid].items() if k != "task"}, ensure_ascii=False
@@ -2354,6 +2398,8 @@ async def curated_clinical_extract_preview(
     patient_slug: str | None = None,
     thinking: str | None = None,
     sampling: str | None = None,
+    prefill: str | None = None,
+    timeout_s: int | None = None,
 ) -> str:
     """DRY RUN: what the LOCAL model would extract from curated documents (#726).
 
@@ -2373,12 +2419,20 @@ async def curated_clinical_extract_preview(
         thinking: "on" / "off" overrides LLM_EXTRACT_THINKING for this preview
             only (A/B, #767); null keeps the env setting.
         sampling: "greedy" / "qwen" overrides LLM_EXTRACT_SAMPLING for this
-            preview only; null keeps the env setting. Both are echoed in the
-            report (``settings``), with per-page token counts and warnings.
+            preview only; null keeps the env setting.
+        prefill: "on" / "off" overrides LLM_EXTRACT_PREFILL for this preview
+            only (#770): with thinking off, the request ends with an assistant
+            turn holding an already-closed empty think block; never with
+            thinking on.
+        timeout_s: per-call timeout in seconds (int, 30-900) for this preview
+            only; null keeps LLM_EXTRACT_TIMEOUT_S.
+        All four are echoed in the report (``settings``), with per-page token
+        counts and warnings.
     """
     return await _start_clinical(
-        ctx, document_ids, patient_slug, write=False, thinking=thinking, sampling=sampling
-    )
+        ctx, document_ids, patient_slug, write=False, thinking=thinking, sampling=sampling,
+        prefill=prefill, timeout_s=timeout_s,
+    )  # fmt: skip
 
 
 async def curated_clinical_extract(
@@ -2388,6 +2442,8 @@ async def curated_clinical_extract(
     dry_run: bool = True,
     thinking: str | None = None,
     sampling: str | None = None,
+    prefill: str | None = None,
+    timeout_s: int | None = None,
 ) -> str:
     """Extract diagnoses, biomarkers, treatments, procedures, lesion sizes and
     planned dates from curated documents with the LOCAL model and store them (#726).
@@ -2410,13 +2466,15 @@ async def curated_clinical_extract(
     assess is not stored. Explicit ``document_ids`` (max 10). Runs in the
     background; poll curated_reocr_status. About a minute per page.
 
-    ``thinking`` / ``sampling`` overrides (see curated_clinical_extract_preview)
-    are accepted with dry_run=true only; with dry_run=false they are refused
-    (error): a write always uses the configured env settings.
+    ``thinking`` / ``sampling`` / ``prefill`` / ``timeout_s`` overrides (see
+    curated_clinical_extract_preview) are accepted with dry_run=true only; with
+    dry_run=false they are refused (error): a write always uses the configured
+    env settings.
     """
     return await _start_clinical(
-        ctx, document_ids, patient_slug, write=not dry_run, thinking=thinking, sampling=sampling
-    )
+        ctx, document_ids, patient_slug, write=not dry_run, thinking=thinking, sampling=sampling,
+        prefill=prefill, timeout_s=timeout_s,
+    )  # fmt: skip
 
 
 async def curated_reocr_status(ctx: Context, patient_slug: str | None = None) -> str:

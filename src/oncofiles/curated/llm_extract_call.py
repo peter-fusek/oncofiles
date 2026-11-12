@@ -5,8 +5,9 @@ kinds (``curated.llm_extract_clinical``, #726) — send one page of sidecar text
 to the LOCAL model and parse a JSON answer. Everything about *how* the model
 is called and how its answer channels are read lives here, once:
 
-* call settings: thinking on/off, sampling profile, answer budget, timeout
-  (env defaults, per-job overrides for the dry-run A/B only);
+* call settings: thinking on/off, sampling profile, answer budget, timeout,
+  prefilled assistant turn (env defaults, per-job overrides for the dry-run
+  A/B only);
 * an optional ``response_format`` with the HTTP-400 retry without it;
 * ``finish_reason=length`` → the page is ``truncated`` (never "found nothing");
 * the strict reasoning-channel fallback (the caller's validator decides, and
@@ -36,6 +37,11 @@ SAMPLING_MODES = ("greedy", "qwen")
 QWEN_NON_THINKING = {"temperature": 0.7, "top_p": 0.8, "top_k": 20, "presence_penalty": 1.0}
 QWEN_THINKING = {"temperature": 0.6, "top_p": 0.95, "top_k": 20}
 GREEDY = {"temperature": 0.0}
+PREFILL_MODES = ("on", "off")
+# #770: an already-closed empty think block as the final assistant turn, so a
+# model that ignores thinking-off continues AFTER the reasoning.
+THINK_PREFILL = "<think>\n\n</think>\n\n"
+TIMEOUT_MIN_S, TIMEOUT_MAX_S = 30, 900
 
 ERROR_KINDS = ("http_status", "json_decode", "schema_shape", "empty", "timeout", "truncated",
                "reasoning_ambiguous", "no_json",
@@ -71,23 +77,46 @@ def sampling_params(sampling: str, thinking: bool) -> dict:
     return dict(GREEDY)
 
 
-def validate_overrides(thinking: str | None = None, sampling: str | None = None) -> None:
-    """Per-job overrides must be one of the known modes (ValueError otherwise)."""
+def validate_overrides(
+    thinking: str | None = None,
+    sampling: str | None = None,
+    prefill: str | None = None,
+    timeout_s: int | None = None,
+) -> None:
+    """Per-job overrides must be one of the known modes, and ``timeout_s`` an
+    int of seconds in [30, 900] (ValueError otherwise)."""
     if thinking is not None and thinking not in THINKING_MODES:
         raise ValueError(f"thinking must be one of {THINKING_MODES} or null, got {thinking!r}")
     if sampling is not None and sampling not in SAMPLING_MODES:
         raise ValueError(f"sampling must be one of {SAMPLING_MODES} or null, got {sampling!r}")
+    if prefill is not None and prefill not in PREFILL_MODES:
+        raise ValueError(f"prefill must be one of {PREFILL_MODES} or null, got {prefill!r}")
+    if timeout_s is not None and (
+        isinstance(timeout_s, bool)
+        or not isinstance(timeout_s, int)
+        or not TIMEOUT_MIN_S <= timeout_s <= TIMEOUT_MAX_S
+    ):
+        raise ValueError(
+            f"timeout_s must be an int of seconds, {TIMEOUT_MIN_S} <= timeout_s <= "
+            f"{TIMEOUT_MAX_S}, or null, got {timeout_s!r}"
+        )
 
 
 def refuse_overrides_on_write(
-    *, write: bool, thinking: str | None = None, sampling: str | None = None
+    *,
+    write: bool,
+    thinking: str | None = None,
+    sampling: str | None = None,
+    prefill: str | None = None,
+    timeout_s: int | None = None,
 ) -> None:
     """Overrides are for the dry-run A/B only: a write path never takes them."""
-    validate_overrides(thinking, sampling)
-    if write and (thinking is not None or sampling is not None):
+    validate_overrides(thinking, sampling, prefill, timeout_s)
+    if write and any(v is not None for v in (thinking, sampling, prefill, timeout_s)):
         raise ValueError(
-            "thinking/sampling overrides are allowed only on a dry run; "
-            "a write always uses the configured LLM_EXTRACT_THINKING / LLM_EXTRACT_SAMPLING"
+            "thinking/sampling/prefill/timeout_s overrides are allowed only on a dry run; "
+            "a write always uses the configured LLM_EXTRACT_THINKING / LLM_EXTRACT_SAMPLING "
+            "/ LLM_EXTRACT_PREFILL / LLM_EXTRACT_TIMEOUT_S"
         )
 
 
@@ -97,6 +126,7 @@ class CallSettings:
     sampling: str
     max_tokens: int
     timeout_s: float
+    prefill: bool = False  # effective: never with thinking on (#770)
 
     @property
     def params(self) -> dict:
@@ -106,24 +136,34 @@ class CallSettings:
         """Effective settings for a job report (numbers and modes only)."""
         return {"thinking": "on" if self.thinking else "off", "sampling": self.sampling,
                 "max_tokens": self.max_tokens, "timeout_s": self.timeout_s,
-                **self.params}  # fmt: skip
+                "prefill": "on" if self.prefill else "off", **self.params}  # fmt: skip
 
 
-def settings(thinking: str | None = None, sampling: str | None = None) -> CallSettings:
+def settings(
+    thinking: str | None = None,
+    sampling: str | None = None,
+    prefill: str | None = None,
+    timeout_s: int | None = None,
+) -> CallSettings:
     """Effective call settings: per-job overrides over the env defaults.
 
     Thinking ON keeps the full ``llm.REASONING_BUDGET`` (LM Studio counts the
     reasoning into ``max_tokens``, #689); thinking OFF gets the bounded answer
-    budget ``LLM_EXTRACT_ANSWER_BUDGET`` so a repetition loop ends early."""
+    budget ``LLM_EXTRACT_ANSWER_BUDGET`` so a repetition loop ends early.
+    The prefilled closed think block (#770) is used only with thinking OFF and
+    ``LLM_EXTRACT_PREFILL`` (or the ``prefill="on"`` override); ``timeout_s``
+    overrides ``LLM_EXTRACT_TIMEOUT_S``."""
     from oncofiles import config
 
-    validate_overrides(thinking, sampling)
+    validate_overrides(thinking, sampling, prefill, timeout_s)
     on = (thinking or config.LLM_EXTRACT_THINKING) == "on"
     mode = sampling or config.LLM_EXTRACT_SAMPLING
     if mode not in SAMPLING_MODES:
         mode = "greedy"  # an unknown env value never changes behaviour
     budget = llm.REASONING_BUDGET if on else config.LLM_EXTRACT_ANSWER_BUDGET
-    return CallSettings(on, mode, int(budget), float(config.LLM_EXTRACT_TIMEOUT_S))
+    want_prefill = prefill == "on" if prefill is not None else bool(config.LLM_EXTRACT_PREFILL)
+    timeout = timeout_s if timeout_s is not None else config.LLM_EXTRACT_TIMEOUT_S
+    return CallSettings(on, mode, int(budget), float(timeout), prefill=want_prefill and not on)
 
 
 @dataclass
@@ -144,6 +184,7 @@ class PageResult:
     reasoning_tokens: int | None = None
     thinking: str | None = None  # on | off (effective)
     sampling: str | None = None  # greedy | qwen (effective)
+    prefill: bool | None = None  # closed think block prefilled (#770, effective)
 
     def diagnostics(self) -> dict:
         """Counts and codes only — never page or answer text."""
@@ -151,7 +192,7 @@ class PageResult:
                "answer_source": self.answer_source, "seconds": round(self.seconds, 1),
                "prompt_tokens": self.prompt_tokens, "completion_tokens": self.completion_tokens,
                "reasoning_tokens": self.reasoning_tokens, "thinking": self.thinking,
-               "sampling": self.sampling}  # fmt: skip
+               "sampling": self.sampling, "prefill": self.prefill}  # fmt: skip
         if self.error:
             out.update(error_kind=self.error_kind, error_class=self.error_class)
         if self.answer:
@@ -193,8 +234,11 @@ def call_and_parse(
     call = chat or llm.chat
     res.thinking = "on" if cfg.thinking else "off"
     res.sampling = cfg.sampling
+    res.prefill = cfg.prefill
     kwargs = {"max_tokens": cfg.max_tokens, "thinking": cfg.thinking,
               "timeout": cfg.timeout_s, **cfg.params}  # fmt: skip
+    if cfg.prefill:  # only then: other chat signatures stay untouched (#770)
+        kwargs["prefill_assistant"] = THINK_PREFILL
     info: dict = {}
     t0 = time.monotonic()
     try:

@@ -751,14 +751,65 @@ async def test_preview_overrides_are_echoed_used_and_refused_on_write(db, monkey
     started = json.loads(
         await tool.curated_llm_extract_preview(_ctx(db), [DOC], thinking="on", sampling="qwen")
     )
-    assert started["overrides"] == {"thinking": "on", "sampling": "qwen"}
+    assert started["overrides"] == {"thinking": "on", "sampling": "qwen", "prefill": None,
+                                    "timeout_s": None}  # fmt: skip
     await asyncio.wait_for(tool._reocr_jobs[ERIKA_UUID]["task"], 10)
     report = json.loads(await tool.curated_reocr_status(_ctx(db)))["report"]
     assert report["settings"]["thinking"] == "on" and report["settings"]["sampling"] == "qwen"
-    assert report["settings"]["overrides"] == {"thinking": "on", "sampling": "qwen"}
+    assert report["settings"]["overrides"] == {"thinking": "on", "sampling": "qwen",
+                                               "prefill": None, "timeout_s": None}  # fmt: skip
     assert report["warnings"] == []
     assert seen == [{"thinking": True, "temperature": 0.6, "top_p": 0.95,
                      "max_tokens": llm.REASONING_BUDGET}]  # fmt: skip
     page = report["documents"][0]["page_diagnostics"]["1"]
     assert (page["thinking"], page["sampling"]) == ("on", "qwen")
     assert report["documents"][0]["warnings"] == []
+
+
+# ── #770: prefilled closed think block + timeout override (dry run only) ──
+
+
+async def test_preview_prefill_and_timeout_overrides(db, monkeypatch):
+    from oncofiles import config
+    from oncofiles.curated import llm_extract_call as xcall
+    from oncofiles.tools import curated as tool
+
+    await _seed(db)
+    monkeypatch.setattr(config, "LLM_EXTRACT_SHADOW_DISABLED", False)
+    monkeypatch.setattr(config, "LOCAL_LLM_BASE_URL", "http://local.invalid/v1")
+    monkeypatch.setattr(config, "LOCAL_LLM_MODEL", "mock-model")
+    monkeypatch.setattr(config, "LLM_EXTRACT_THINKING", "off")
+    monkeypatch.setattr(config, "LLM_EXTRACT_SAMPLING", "greedy")
+    monkeypatch.setattr(config, "LLM_EXTRACT_PREFILL", False)
+    monkeypatch.setattr(config, "LLM_EXTRACT_TIMEOUT_S", 300.0)
+    seen = []
+
+    def fake_chat(system, user, **kw):
+        seen.append({k: kw.get(k) for k in ("prefill_assistant", "timeout", "thinking")})
+        return model_answer()
+
+    monkeypatch.setattr(llm, "chat", fake_chat)
+    monkeypatch.setattr(tool, "_reocr_jobs", {})
+    for kw in ({"prefill": "on"}, {"prefill": "off"}, {"timeout_s": 120}):
+        with pytest.raises(ValueError, match="dry run"):
+            await tool.curated_llm_extract_preview(_ctx(db), [DOC], dry_run=False, **kw)
+    for kw in ({"prefill": "yes"}, {"timeout_s": 29}, {"timeout_s": 901}, {"timeout_s": 60.5},
+               {"timeout_s": True}):  # fmt: skip
+        with pytest.raises(ValueError):
+            await tool.curated_llm_extract_preview(_ctx(db), [DOC], **kw)
+    assert ERIKA_UUID not in tool._reocr_jobs and seen == []
+    started = json.loads(
+        await tool.curated_llm_extract_preview(
+            _ctx(db), [DOC], thinking="off", sampling="qwen", prefill="on", timeout_s=120
+        )
+    )
+    assert started["overrides"] == {"thinking": "off", "sampling": "qwen", "prefill": "on",
+                                    "timeout_s": 120}  # fmt: skip
+    await asyncio.wait_for(tool._reocr_jobs[ERIKA_UUID]["task"], 10)
+    report = json.loads(await tool.curated_reocr_status(_ctx(db)))["report"]
+    assert report["extractor"] == "llm-extract-v5"
+    assert report["settings"]["prefill"] == "on" and report["settings"]["timeout_s"] == 120.0
+    assert report["settings"]["overrides"]["prefill"] == "on"
+    assert seen == [{"prefill_assistant": xcall.THINK_PREFILL, "timeout": 120.0,
+                     "thinking": False}]  # fmt: skip
+    assert report["documents"][0]["page_diagnostics"]["1"]["prefill"] is True

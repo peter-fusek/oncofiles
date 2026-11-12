@@ -135,6 +135,13 @@ LLM_EXTRACT_ANSWER_BUDGET: int = int(os.environ.get("LLM_EXTRACT_ANSWER_BUDGET",
 # Per-request timeout of an extractor call (#767), so a runaway generation
 # costs minutes, not the 900 s OCR timeout (LOCAL_LLM_TIMEOUT_S, unchanged).
 LLM_EXTRACT_TIMEOUT_S: float = float(os.environ.get("LLM_EXTRACT_TIMEOUT_S", "300"))
+# Prefilled assistant turn for both LLM extractors (#770): with thinking OFF,
+# end the request with an assistant message holding an already-closed empty
+# think block ("<think>\n\n</think>\n\n"), because LM Studio / MLX ignores
+# enable_thinking=false and /no_think for Qwen3.x on pages with content and
+# the model never closes </think>. Default OFF until the dry-run A/B confirms
+# it; never used with thinking ON. Re-OCR and classification are not affected.
+LLM_EXTRACT_PREFILL: bool = os.environ.get("LLM_EXTRACT_PREFILL", "false").strip().lower() == "true"
 # Structured output (json_schema response_format) for the lab shadow
 # extractor (#714). Default OFF: with a json_schema grammar Qwen cannot emit
 # its empty <think></think> first, so LM Studio files the whole answer under
