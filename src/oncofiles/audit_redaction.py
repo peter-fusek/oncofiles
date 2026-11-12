@@ -13,7 +13,7 @@ Safe values:
 - lists of integers under ``*_ids`` keys;
 - ``patient_slug`` / ``target_patient_slug`` when slug-shaped;
 - known enum/option values (``category``, ``kinds``, ``filter``, ``sort``, ...);
-- the LLM extractor override modes (``thinking``, ``sampling``, ``prefill``,
+- the LLM extractor override modes (``thinking``, ``sampling``,
   ``reasoning_marker``) and ``timeout_s`` (#769);
 - fact codes matching ``^[A-Z0-9_]{1,20}$`` (``code``, ``codes``, ``parameters``).
 
@@ -128,7 +128,6 @@ ENUM_VALUES: dict[str, frozenset[str]] = {
     # showed "thinking=<redacted:len=3>" (#769).
     "thinking": frozenset({"on", "off"}),
     "sampling": frozenset({"greedy", "qwen"}),
-    "prefill": frozenset({"on", "off"}),
     "reasoning_marker": frozenset({"on", "off"}),
 }
 

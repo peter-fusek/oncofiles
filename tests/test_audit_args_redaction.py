@@ -331,7 +331,6 @@ def test_llm_override_modes_match_the_extractor():
 
     assert ENUM_VALUES["thinking"] == set(c.THINKING_MODES)
     assert ENUM_VALUES["sampling"] == set(c.SAMPLING_MODES)
-    assert ENUM_VALUES["prefill"] == set(c.PREFILL_MODES)
     assert ENUM_VALUES["reasoning_marker"] == set(c.REASONING_MARKER_MODES)
     assert "timeout_s" in INT_KEYS
 
@@ -348,14 +347,13 @@ def test_the_llm_call_log_line_keeps_thinking_off_and_secrets_stay_masked():
         "dry_run": True,
         "thinking": "off",
         "sampling": "qwen",
-        "prefill": "off",
         "reasoning_marker": "off",
         "timeout_s": 300,
         "note": FAKE_NAME,
     }
     assert summarize_args(args) == (
         f"document_ids=[{FAKE_ID}], patient_slug={FAKE_SLUG}, dry_run=True, thinking=off, "
-        "sampling=qwen, prefill=off, reasoning_marker=off, timeout_s=300, "
+        "sampling=qwen, reasoning_marker=off, timeout_s=300, "
         f"note=<redacted:len={len(FAKE_NAME)}>"
     )
     secrets = sensitive_strings(args)
