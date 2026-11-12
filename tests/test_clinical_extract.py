@@ -33,7 +33,8 @@ DOC_A = 7261
 DOC_B = DOC_A + 1
 DOC_BOB = DOC_B + 1
 PAGES_A = [page for page, _ in lx.EXAMPLES[:2]]  # oncology report, CT report
-PAGES_B = [page for page, _ in lx.EXAMPLES[2:]]  # discharge, postponement, empty page
+# discharge, postponement, empty page (the #773 date example stays out: fixed counts)
+PAGES_B = [page for page, _ in lx.EXAMPLES if page not in PAGES_A and page != lx._EX5]
 _, EX1_ANSWER = next(iter(lx.EXAMPLES))
 EX1_DIAGNOSIS = next(iter(EX1_ANSWER["diagnoses"]))
 ANSWERS = {page: answer for page, answer in lx.EXAMPLES}
@@ -295,6 +296,17 @@ def test_dates_keep_their_printed_precision():
     assert vc.parse_any_date("2028") == ("2028", "year")
     assert vc.parse_any_date("5.3.2027") == ("2027-03-05", "day")
     assert vc.parse_any_date("13/2027") == (None, None)
+    # #773: two-digit years and Slovak / Czech month names (invented dates)
+    assert vc.parse_any_date("5.3.27") == ("2027-03-05", "day")
+    assert vc.parse_any_date("31.2.27") == (None, None)
+    assert vc.parse_any_date("5. marca 2027") == ("2027-03-05", "day")
+    assert vc.parse_any_date("5. března 2027") == ("2027-03-05", "day")
+    assert vc.parse_any_date("21.októbra 2028") == ("2028-10-21", "day")
+    assert vc.parse_any_date("marec 2027") == ("2027-03", "month")
+    assert vc.parse_any_date("v júni 2028") == (None, None)  # never guesses which word
+    assert vc.parse_any_date("júni 2028") == ("2028-06", "month")
+    assert vc.parse_any_date("3/2027") == ("2027-03", "month")
+    assert vc.parse_any_date("5. dávka 2027") == (None, None)  # not a month name
     stage = vc.parse_stage(EX1_DIAGNOSIS["stage_as_printed"])
     assert stage["prefix"] == "p" and stage["stage_group"] == "IV"
     assert stage["t"] == "T3" and stage["n"] == "N1"
@@ -899,7 +911,7 @@ async def test_preview_timeout_is_used_and_echoed(seeded, local_model, monkeypat
                                         "reasoning_marker": None}  # fmt: skip
         await asyncio.wait_for(tool._reocr_jobs[ERIKA_UUID]["task"], 10)
     report = tool._reocr_jobs[ERIKA_UUID]["report"]
-    assert report["extractor"] == "llm-clinical-v6"
+    assert report["extractor"] == lx.EXTRACTOR_VERSION
     assert report["settings"]["timeout_s"] == 600.0 and "prefill" not in report["settings"]
     assert seen and all(s == {"timeout": 600.0, "thinking": False} for s in seen)
     diags = report["documents"][0]["page_diagnostics"].values()
@@ -942,10 +954,38 @@ async def test_reasoning_marker_override_refused_on_write_used_and_echoed(
         assert started["overrides"]["reasoning_marker"] == "on"
         await asyncio.wait_for(tool._reocr_jobs[ERIKA_UUID]["task"], 10)
     report = tool._reocr_jobs[ERIKA_UUID]["report"]
-    assert report["dry_run"] is True and report["extractor"] == "llm-clinical-v6"
+    assert report["dry_run"] is True and report["extractor"] == lx.EXTRACTOR_VERSION
     assert report["settings"]["reasoning_marker"] == "on"
     assert report["settings"]["overrides"]["reasoning_marker"] == "on"
     assert seen and all(s == (True, False) for s in seen)
     diags = report["documents"][0]["page_diagnostics"].values()
     assert diags and all(p["reasoning_marker"] is True for p in diags)
     assert await _snapshot(db) == before
+
+
+async def test_printed_date_forms_must_still_be_inside_the_evidence(db):
+    """#773: new date forms parse, but the date-in-evidence rule is unchanged."""
+    vocab = await _vocab(db)
+    page = "Operácia 5. marca 2027: resekcia pečene.\nKontrola 12.4.28, resekcia bez komplikácií."
+    lines = page.splitlines()
+
+    def check(date_as_printed, evidence):
+        cand = {"kind": "procedures", "type": "surgery", "description_as_printed": "resekcia",
+                "date_as_printed": date_as_printed, "end_date_as_printed": None,
+                "evidence": evidence, "page_number": 1}  # fmt: skip
+        return vc.verify_item(cand, page_text=page, vocab=vocab, report_date=DAY,
+                              birth_dates={DOB})  # fmt: skip
+
+    named = check("5. marca 2027", lines[0])
+    assert named["verification"] == "machine", named["reasons"]
+    assert named["dates"]["date"]["iso"] == "2027-03-05"
+    assert check("12.4.28", lines[1])["verification"] == "machine"
+    assert "date_not_in_evidence" in check("5. marca 2027", lines[1])["reasons"]
+    assert "date_not_in_evidence" in check("12.4.28", lines[0])["reasons"]
+    assert "date_not_printed" in check("15. marca 2027", lines[0])["reasons"]
+    assert "date_not_printed" in check("2.4.28", lines[1])["reasons"]
+
+
+def test_named_dates_are_not_doses():
+    assert not vc._numbers_in("5", "Kapecitabín podaný 5. marca 2027")
+    assert vc._numbers_in("2000", "Kapecitabín 2000 mg")

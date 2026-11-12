@@ -47,8 +47,12 @@ from oncofiles.database._facts import LLM_CLINICAL_FAMILY
 # switch, bounded answer budget and timeout (#767); v4: optional prefilled
 # closed think block, timeout override (#770); v5: optional reasoning-off
 # marker in the system message instead of /no_think (#770); v6: qwen sampling
-# profiles follow the Qwen3.8 model card, prefill removed (#770).
-EXTRACTOR_VERSION = "llm-clinical-v6"
+# profiles follow the Qwen3.8 model card, prefill removed (#770); v7: the
+# evidence must hold the printed date too (date on the line above → the
+# evidence spans those lines; outside the evidence, i.e. more than two lines
+# from the value → date null), dates copied as printed, one worked example
+# for each case (#773).
+EXTRACTOR_VERSION = "llm-clinical-v7"
 EXTRACTOR_FAMILY = LLM_CLINICAL_FAMILY  # prefix of every version: re-extraction scope
 METHOD = "stored_sidecar_text"
 
@@ -183,7 +187,16 @@ _EX4 = "\n".join([
     "Rp.: Dexametazón 8 mg tbl. p.o. 1-0-0, 3 dni po chemoterapii.",
 ])  # fmt: skip
 _EX4_LINES = _EX4.splitlines()
-_EX5 = "Pacientka bez ťažkostí, kontrola o 3 mesiace."
+_EX5 = "\n".join([
+    "Imunohistochémia zo dňa 4.2.2028:",
+    "HER2 negatívny.",
+    "CT 14.3.2028: pľúca bez ložísk.",
+    "Pečeň bez zmeny.",
+    "Slezina bez zmeny.",
+    "Nadoblička vpravo: uzol 12 mm.",
+])  # fmt: skip
+_EX5_LINES = _EX5.splitlines()
+_EX6 = "Pacientka bez ťažkostí, kontrola o 3 mesiace."
 
 EXAMPLES: list[tuple[str, dict]] = [
     (_EX1, _answer(
@@ -298,7 +311,21 @@ EXAMPLES: list[tuple[str, dict]] = [
                   evidence=_EX4_LINES[1]),
         ],
     )),
-    (_EX5, _answer()),
+    (_EX5, _answer(  # date on the line above → both lines; date 3 lines away → null
+        biomarkers=[
+            _item("biomarkers", marker_as_printed="HER2", result_as_printed="negatívny",
+                  date_as_printed="4.2.2028", evidence="\n".join(_EX5_LINES[:2])),
+        ],
+        procedures=[
+            _item("procedures", type="imaging", description_as_printed="CT",
+                  date_as_printed="14.3.2028", evidence=_EX5_LINES[2]),
+        ],
+        lesions=[
+            _item("lesions", lesion_as_printed="Nadoblička vpravo", size_as_printed="12",
+                  unit_as_printed="mm", description_as_printed="uzol", evidence=_EX5_LINES[5]),
+        ],
+    )),
+    (_EX6, _answer()),
 ]  # fmt: skip
 
 _INSTRUCTIONS = """You copy clinical facts from ONE page of a medical document: diagnoses, \
@@ -309,9 +336,10 @@ sometimes English.
 
 Answer with ONLY a JSON object with these eight lists, each possibly empty: "diagnoses", \
 "biomarkers", "treatment_courses", "cycles", "medications", "procedures", "lesions", "planned". \
-Every item has "evidence": the shortest passage of the page that holds all of the item's \
-values (one line, at most three consecutive lines), copied character for character. Every \
-other field is copied exactly as printed, or null when it is not printed.
+Every item has "evidence": the shortest passage of the page that holds ALL of the item's \
+values, its dates included (one line, or at most three consecutive lines when a date is printed \
+on a line above or below the value), copied character for character. Every other field, dates \
+too, is copied exactly as printed (never reformatted), or null when it is not printed.
 
 - diagnoses: "text_as_printed" (the diagnosis words), "code_as_printed" (ICD-10 / MKCH code, \
 only if printed), "date_as_printed" (date of diagnosis, only if printed), "role" ("primary" for \
@@ -342,7 +370,9 @@ and that date is not inside the evidence), "description_as_printed".
 Rules:
 1. Copy, never compute or infer. Never add a code, date, dose, line, stage or result that is \
 not printed; never expand an abbreviation; never convert units.
-2. A date is given only when it is printed inside the item's evidence; otherwise null.
+2. A date is given only when it is inside the item's evidence. A date printed outside the \
+item's evidence (more than two lines from the value) stays null (example 5: the lesion is three \
+lines below 14.3.2028, so its date is null).
 3. Skip laboratory values and blood tumour markers (they are read elsewhere), birth dates, \
 names, identifiers, addresses and phone numbers.
 4. A postponed cycle with its new date goes to "cycles" only, not to "planned".
