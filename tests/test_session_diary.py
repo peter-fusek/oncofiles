@@ -420,6 +420,7 @@ DIARY_ACCESS_ALLOWLIST = {
     "import_transcripts.py": "manual CLI import into one patient's diary",
     "tools/db_query.py": "patient-scoped query_db allowlist (user acting)",
     "server.py": "tool registration",
+    "vocab.py": "maps code columns (entry_type, participant …) to vocab domains; names only (#789)",
 }
 # Extractors, indexers and every module that talks to a model.
 FORBIDDEN = ("curated/", "enhance.py", "doc_analysis.py", "tools/curated.py",
