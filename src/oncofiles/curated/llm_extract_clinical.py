@@ -44,8 +44,9 @@ from oncofiles.curated.llm_extract_call import AnswerError, PageResult
 from oncofiles.database._facts import LLM_CLINICAL_FAMILY
 
 # v2: no response_format, reasoning fallback; v3: shared call path, sampling
-# switch, bounded answer budget and timeout (#767).
-EXTRACTOR_VERSION = "llm-clinical-v3"
+# switch, bounded answer budget and timeout (#767); v4: optional prefilled
+# closed think block, timeout override (#770).
+EXTRACTOR_VERSION = "llm-clinical-v4"
 EXTRACTOR_FAMILY = LLM_CLINICAL_FAMILY  # prefix of every version: re-extraction scope
 METHOD = "stored_sidecar_text"
 

@@ -40,8 +40,9 @@ from oncofiles.curated.llm_extract_call import (  # noqa: F401 (re-exported)
 
 # Bump on ANY change to the prompt, the schema, the item normalisation or the
 # call settings. v3: no response_format by default; v4: shared call path,
-# sampling switch, bounded answer budget and timeout (#767).
-EXTRACTOR_VERSION = "llm-extract-v4"
+# sampling switch, bounded answer budget and timeout (#767); v5: optional
+# prefilled closed think block, timeout override (#770).
+EXTRACTOR_VERSION = "llm-extract-v5"
 
 DATE_ROLES = ("sample", "report", "other")
 _COMPARATORS = ("<=", ">=", "<", ">")

@@ -809,11 +809,14 @@ def test_structured_output_is_off_by_default_and_switchable(monkeypatch):
 async def test_overrides_are_refused_on_the_write_path(seeded, local_model):
     db = seeded
     before = await _snapshot(db)
-    for kw in ({"thinking": "off"}, {"sampling": "qwen"}):
+    for kw in ({"thinking": "off"}, {"sampling": "qwen"}, {"prefill": "on"},
+               {"prefill": "off"}, {"timeout_s": 300}):  # fmt: skip
         with pytest.raises(ValueError, match="dry run"):
             await tool.curated_clinical_extract(_ctx(db), [DOC_A], dry_run=False, **kw)
-    with pytest.raises(ValueError):
-        await tool.curated_clinical_extract_preview(_ctx(db), [DOC_A], thinking="maybe")
+    for kw in ({"thinking": "maybe"}, {"prefill": "maybe"}, {"timeout_s": 10},
+               {"timeout_s": 1000}, {"timeout_s": "300"}):  # fmt: skip
+        with pytest.raises(ValueError):
+            await tool.curated_clinical_extract_preview(_ctx(db), [DOC_A], **kw)
     assert ERIKA_UUID not in tool._reocr_jobs and local_model == []  # no pre-store copy
     assert await _snapshot(db) == before
 
@@ -840,10 +843,12 @@ async def test_preview_overrides_are_used_and_echoed(seeded, local_model, monkey
                 _ctx(db), [DOC_A], thinking="off", sampling="qwen"
             )
         )
-        assert started["overrides"] == {"thinking": "off", "sampling": "qwen"}
+        assert started["overrides"] == {"thinking": "off", "sampling": "qwen", "prefill": None,
+                                        "timeout_s": None}  # fmt: skip
         await asyncio.wait_for(tool._reocr_jobs[ERIKA_UUID]["task"], 10)
     report = tool._reocr_jobs[ERIKA_UUID]["report"]
-    assert report["settings"]["overrides"] == {"thinking": "off", "sampling": "qwen"}
+    assert report["settings"]["overrides"] == {"thinking": "off", "sampling": "qwen",
+                                               "prefill": None, "timeout_s": None}  # fmt: skip
     assert (report["settings"]["thinking"], report["settings"]["sampling"]) == ("off", "qwen")
     assert report["settings"]["max_tokens"] == 4000 and report["warnings"] == []
     expected = {"thinking": False, "temperature": 0.7, "top_p": 0.8, "top_k": 20,
@@ -859,3 +864,46 @@ async def test_preview_overrides_are_used_and_echoed(seeded, local_model, monkey
         await tool.curated_clinical_extract_preview(_ctx(db), [DOC_A])
         await asyncio.wait_for(tool._reocr_jobs[ERIKA_UUID]["task"], 10)
     assert {s["temperature"] for s in seen} == {0.0} and {s["thinking"] for s in seen} == {True}
+
+
+# ── #770: prefilled closed think block + timeout override (dry run only) ──
+
+
+async def test_preview_prefill_and_timeout_are_used_and_echoed(seeded, local_model, monkeypatch):
+    from oncofiles import config
+    from oncofiles.curated import llm_extract_call as xcall
+
+    db = seeded
+    monkeypatch.setattr(config, "LLM_EXTRACT_THINKING", "on")
+    monkeypatch.setattr(config, "LLM_EXTRACT_PREFILL", False)
+    monkeypatch.setattr(config, "LLM_EXTRACT_TIMEOUT_S", 300.0)
+    seen = []
+
+    def chat(system, user, **kw):
+        seen.append({k: kw.get(k) for k in ("prefill_assistant", "timeout", "thinking")})
+        return model_chat(system, user, **kw)
+
+    with patch.object(llm, "chat", chat):
+        started = json.loads(
+            await tool.curated_clinical_extract_preview(
+                _ctx(db), [DOC_A], thinking="off", sampling="greedy", prefill="on", timeout_s=600
+            )
+        )
+        assert started["overrides"] == {"thinking": "off", "sampling": "greedy",
+                                        "prefill": "on", "timeout_s": 600}  # fmt: skip
+        await asyncio.wait_for(tool._reocr_jobs[ERIKA_UUID]["task"], 10)
+    report = tool._reocr_jobs[ERIKA_UUID]["report"]
+    assert report["extractor"] == "llm-clinical-v4"
+    assert (report["settings"]["prefill"], report["settings"]["timeout_s"]) == ("on", 600.0)
+    expected = {"prefill_assistant": xcall.THINK_PREFILL, "timeout": 600.0, "thinking": False}
+    assert seen and all(s == expected for s in seen)
+    diags = report["documents"][0]["page_diagnostics"].values()
+    assert diags and all(p["prefill"] is True for p in diags)
+    # thinking ON never gets the prefill, even when asked for
+    tool._reocr_jobs.clear()
+    seen.clear()
+    with patch.object(llm, "chat", chat):
+        await tool.curated_clinical_extract_preview(_ctx(db), [DOC_A], prefill="on")
+        await asyncio.wait_for(tool._reocr_jobs[ERIKA_UUID]["task"], 10)
+    assert seen and all(s["prefill_assistant"] is None and s["thinking"] for s in seen)
+    assert tool._reocr_jobs[ERIKA_UUID]["report"]["settings"]["prefill"] == "off"

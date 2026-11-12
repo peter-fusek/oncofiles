@@ -39,6 +39,7 @@ def local_llm(monkeypatch):
     monkeypatch.setattr(config, "LLM_EXTRACT_SAMPLING", "greedy")
     monkeypatch.setattr(config, "LLM_EXTRACT_ANSWER_BUDGET", 4000)
     monkeypatch.setattr(config, "LLM_EXTRACT_TIMEOUT_S", 300.0)
+    monkeypatch.setattr(config, "LLM_EXTRACT_PREFILL", False)
 
 
 def _client(seen: list, *, content="", reasoning="", finish="stop", usage=None):
@@ -285,3 +286,126 @@ def test_a_clean_run_has_no_warnings():
         [{"warnings": [{"warning": "truncated", "pages": 1}]},
          {"warnings": [{"warning": "truncated", "pages": 2}]}]
     ) == [{"warning": "truncated", "pages": 3}]  # fmt: skip
+
+
+# ── #770: prefilled closed think block, timeout override ────────────────
+
+
+@pytest.mark.parametrize(
+    "env, override, thinking, expected",
+    [
+        (False, None, "off", False),
+        (True, None, "off", True),
+        (False, "on", "off", True),
+        (True, "off", "off", False),
+        (True, None, "on", False),  # never with thinking on
+        (False, "on", "on", False),
+    ],
+)  # fmt: skip
+def test_prefill_only_with_flag_and_thinking_off(local_llm, monkeypatch, env, override, thinking,
+                                                 expected):  # fmt: skip
+    monkeypatch.setattr(config, "LLM_EXTRACT_PREFILL", env)
+    seen: list = []
+    cfg = xcall.settings(thinking, None, override)
+    assert cfg.prefill is expected and cfg.report()["prefill"] == ("on" if expected else "off")
+    pr = _lab(_chat(seen, content=json.dumps(LAB_ANSWER)), cfg=cfg)
+    messages = seen[0]["body"]["messages"]
+    if expected:
+        assert messages[-1] == {"role": "assistant", "content": xcall.THINK_PREFILL}
+        assert messages[-2]["role"] == "user"
+    else:
+        assert messages[-1]["role"] == "user"
+        assert not [m for m in messages if m["role"] == "assistant"]
+    assert pr.prefill is expected and pr.diagnostics()["prefill"] is expected
+    assert pr.assessed and len(pr.candidates) == 1
+
+
+def test_env_default_is_off():
+    """Merging #770 changes nothing: without the env var the flag is off."""
+    import os
+    import subprocess
+    import sys
+
+    env = {k: v for k, v in os.environ.items() if k != "LLM_EXTRACT_PREFILL"}
+    out = subprocess.run(
+        [sys.executable, "-c", "from oncofiles import config; print(config.LLM_EXTRACT_PREFILL)"],
+        env=env, capture_output=True, text=True, check=True,
+    )  # fmt: skip
+    assert out.stdout.strip() == "False"
+
+
+@pytest.mark.parametrize(
+    "prefix",
+    ["", xcall.THINK_PREFILL, "\n\n</think>\n\n"],
+    ids=["continuation_only", "prefill_plus_continuation", "opening_tag_eaten"],
+)
+def test_both_continuation_shapes_parse(local_llm, prefix):
+    seen: list = []
+    cfg = xcall.settings("off", None, "on")
+    pr = _lab(_chat(seen, content=prefix + json.dumps(LAB_ANSWER)), cfg=cfg)
+    assert pr.assessed and pr.answer_source == "content" and len(pr.candidates) == 1
+    with local_only("test"):
+        res = llm_extract_clinical.extract_page(
+            CLIN_PAGE, page_number=1, chat=_chat(seen, content=prefix + json.dumps(CLIN_ANSWER)),
+            cfg=cfg,
+        )  # fmt: skip
+    assert res.assessed and res.answer_source == "content" and res.prefill is True
+    assert res.candidates
+    assert all(s["body"]["messages"][-1]["role"] == "assistant" for s in seen)
+
+
+def test_chat_prefill_is_the_last_message_after_no_think(local_llm, monkeypatch):
+    monkeypatch.setattr(config, "LLM_NO_THINK_SOFT_SWITCH", True)
+    seen: list = []
+    out = llm.chat("sys", "page", client=_client(seen, content="<think>\n\n</think>\n\nok"),
+                   thinking=False, prefill_assistant=xcall.THINK_PREFILL)  # fmt: skip
+    messages = seen[0]["body"]["messages"]
+    assert [m["role"] for m in messages] == ["system", "user", "assistant"]
+    assert "/no_think" in json.dumps(messages[1]["content"])
+    assert out == "ok"
+
+
+def test_other_callers_never_send_a_prefill(local_llm):
+    """Only the shared extractor path may pass ``prefill_assistant`` (#770):
+    re-OCR, classification and every other caller stay unchanged."""
+    from pathlib import Path
+
+    src = Path(llm.__file__).resolve().parents[1]
+    users = sorted(
+        p.relative_to(src).as_posix()
+        for p in src.rglob("*.py")
+        if "prefill_assistant" in p.read_text(encoding="utf-8")
+    )
+    assert users == ["curated/llm.py", "curated/llm_extract_call.py"]
+    seen: list = []
+    llm.chat("sys", "hi", client=_client(seen, content="ok"), thinking=False)
+    assert [m["role"] for m in seen[0]["body"]["messages"]] == ["system", "user"]
+
+
+@pytest.mark.parametrize("timeout_s", [30, 120, 900])
+def test_timeout_override_reaches_the_request(local_llm, timeout_s):
+    seen: list = []
+    cfg = xcall.settings(timeout_s=timeout_s)
+    assert cfg.timeout_s == float(timeout_s) and cfg.report()["timeout_s"] == float(timeout_s)
+    _lab(_chat(seen, content=json.dumps(LAB_ANSWER)), cfg=cfg)
+    assert seen[0]["timeout"]["read"] == float(timeout_s)
+
+
+@pytest.mark.parametrize("bad", [29, 901, 0, -5, 60.0, "300", True])
+def test_timeout_override_bounds(bad):
+    with pytest.raises(ValueError, match="timeout_s"):
+        xcall.settings(timeout_s=bad)
+    with pytest.raises(ValueError, match="timeout_s"):
+        xcall.refuse_overrides_on_write(write=False, timeout_s=bad)
+
+
+@pytest.mark.parametrize("kw", [{"prefill": "on"}, {"prefill": "off"}, {"timeout_s": 300}])
+def test_prefill_and_timeout_are_refused_on_a_write(kw):
+    with pytest.raises(ValueError, match="dry run"):
+        xcall.refuse_overrides_on_write(write=True, **kw)
+    xcall.refuse_overrides_on_write(write=False, **kw)
+
+
+def test_invalid_prefill_is_refused():
+    with pytest.raises(ValueError, match="prefill"):
+        xcall.settings(prefill="yes")
