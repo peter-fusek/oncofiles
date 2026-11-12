@@ -17,9 +17,11 @@ not on the page or whose key tokens are not inside the evidence.
 * One call per page (text, not image), one call at a time (one LM Studio
   slot); must run inside ``cloud_guard.local_only()`` and only ever talks to
   ``curated.llm`` (LM Studio), never to a cloud client.
-* Strict JSON schema as ``response_format``; the answer is still parsed
-  defensively. The worked examples (invented data, years 2027+) are built
-  from ``EXAMPLES`` and must themselves verify as machine (tested).
+* Strict JSON instructions (no ``response_format`` by default, v2); the
+  answer is parsed defensively. The call itself (settings, fallbacks,
+  diagnostics) is the shared path in ``curated.llm_extract_call`` (#767).
+  The worked examples (invented data, years 2027+) are built from
+  ``EXAMPLES`` and must themselves verify as machine (tested).
 * A truncated, empty or unparseable answer leaves the page NOT assessed —
   never "nothing found"; the write path stores nothing for such a document.
 
@@ -30,20 +32,20 @@ normalisation: it is stored as ``extracted_by`` and in the device row.
 from __future__ import annotations
 
 import json
-import logging
 import re
-import time
 from collections import Counter
 from collections.abc import Callable
 
 from oncofiles import cloud_guard
 from oncofiles.curated import llm
-from oncofiles.curated.llm_extract import AnswerError, PageResult, _text, error_kind
+from oncofiles.curated import llm_extract_call as xcall
+from oncofiles.curated.llm_extract import _text
+from oncofiles.curated.llm_extract_call import AnswerError, PageResult
 from oncofiles.database._facts import LLM_CLINICAL_FAMILY
 
-logger = logging.getLogger(__name__)
-
-EXTRACTOR_VERSION = "llm-clinical-v2"  # v2: no response_format, reasoning fallback
+# v2: no response_format, reasoning fallback; v3: shared call path, sampling
+# switch, bounded answer budget and timeout (#767).
+EXTRACTOR_VERSION = "llm-clinical-v3"
 EXTRACTOR_FAMILY = LLM_CLINICAL_FAMILY  # prefix of every version: re-extraction scope
 METHOD = "stored_sidecar_text"
 
@@ -357,7 +359,6 @@ def _build_prompt() -> str:
 
 
 SYSTEM_PROMPT = _build_prompt()
-EXTRACT_BUDGET = llm.REASONING_BUDGET  # LM Studio counts reasoning into max_tokens (#689)
 
 
 def parse_answer(text: str) -> dict:
@@ -444,65 +445,28 @@ def _structured_output() -> bool:
     return config.LLM_CLINICAL_STRUCTURED_OUTPUT
 
 
-def _thinking() -> bool:
-    from oncofiles import config
-
-    return config.LLM_EXTRACT_THINKING == "on"
-
-
 def extract_page(
-    text: str, *, page_number: int, chat: Callable[..., str] | None = None
+    text: str,
+    *,
+    page_number: int,
+    chat: Callable[..., str] | None = None,
+    cfg: xcall.CallSettings | None = None,
 ) -> PageResult:
-    """Blocking. Candidate items of one page (not yet verified)."""
+    """Blocking. Candidate items of one page (not yet verified).
+    ``cfg`` (from ``llm_extract_call.settings``) defaults to the env settings."""
     if not cloud_guard.local_only_job():
         raise cloud_guard.CloudForbiddenError("llm_extract_clinical must run inside local_only()")
     res = PageResult(page_number=page_number)
     if not (text or "").strip():
         return res
-    call = chat or llm.chat
-    user = f"Page {page_number}:\n{text}"
-    thinking = _thinking()
-    info: dict = {}
-    t0 = time.monotonic()
-    try:
-        try:
-            fmt = {"response_format": RESPONSE_FORMAT} if _structured_output() else {}
-            answer = call(SYSTEM_PROMPT, user, max_tokens=EXTRACT_BUDGET, thinking=thinking,
-                          info=info, **fmt)  # fmt: skip
-        except llm.LocalLLMError as exc:
-            if "HTTP 400" not in str(exc) or "truncated" in str(exc):
-                raise
-            info.clear()  # this server/model rejects structured output
-            answer = call(SYSTEM_PROMPT, user, max_tokens=EXTRACT_BUDGET, thinking=thinking,
-                          info=info)  # fmt: skip
-        res.finish_reason = info.get("finish_reason")
-        if res.finish_reason == "length":
-            raise llm.LocalLLMError("local LLM answer truncated: finish_reason=length")
-        if (
-            not llm.strip_think(answer or "").strip()
-            and (info.get("reasoning_content") or "").strip()
-        ):
-            # LM Studio (reasoning parser + structured output) may leave
-            # ``content`` empty and put the whole answer in reasoning_content
-            # (2026-11-11 prod preview: every page failed without this).
-            lists = parse_reasoning_channel(info["reasoning_content"])
-            res.answer_source = "reasoning"
-        else:
-            lists = parse_answer(answer)
-            res.answer_source = "content"
-    except llm.LocalLLMError as exc:
-        res.finish_reason = res.finish_reason or info.get("finish_reason")
-        res.error = str(exc)[:200]
-        res.error_kind = error_kind(exc)
-        res.error_class = type(exc.__cause__ or exc).__name__
-        res.seconds = time.monotonic() - t0
-        # Kind/class/finish only — never the answer or page text.
-        logger.warning(
-            "clinical extract: page %s not assessed (%s, %s, finish=%s)",
-            page_number, res.error_kind, res.error_class, res.finish_reason,
-        )  # fmt: skip
+    lists = xcall.call_and_parse(
+        res, system=SYSTEM_PROMPT, user=f"Page {page_number}:\n{text}",
+        response_format=RESPONSE_FORMAT if _structured_output() else None,
+        parse_content=parse_answer, parse_reasoning=parse_reasoning_channel,
+        cfg=cfg or xcall.settings(), chat=chat, label="clinical extract",
+    )  # fmt: skip
+    if lists is None:
         return res
-    res.seconds = time.monotonic() - t0
     for kind, raws in lists.items():
         for raw in raws:
             cand, why = normalize_item(kind, raw)
@@ -537,10 +501,15 @@ def extract_document(
     source_reason: str | None = None,
     chat: Callable[..., str] | None = None,
     stop: Callable[[], bool] | None = None,
+    cfg: xcall.CallSettings | None = None,
 ) -> dict:
     """Blocking. Extract + verify every page, one model call at a time.
     Returns verified items and counts; nothing is stored."""
     from oncofiles.curated import verifier_clinical
+
+    cfg = cfg or xcall.settings()
+    results: list[PageResult] = []
+    page_diag: dict[str, dict] = {}
 
     text_of = dict(pages)
     items: list[dict] = []
@@ -555,7 +524,9 @@ def extract_document(
         if stop and stop():
             not_assessed.append(number)
             continue
-        pr = extract_page(text, page_number=number, chat=chat)
+        pr = extract_page(text, page_number=number, chat=chat, cfg=cfg)
+        results.append(pr)
+        page_diag[str(number)] = pr.diagnostics()
         seconds += pr.seconds
         dropped.update(pr.dropped)
         finish[str(number)] = pr.finish_reason
@@ -583,6 +554,7 @@ def extract_document(
         "pages_truncated": truncated, "page_errors": errors, "finish_reasons": finish,
         "error_kinds": dict(sorted(error_kinds.items())),
         "answer_sources": dict(sorted(sources.items())),
+        "page_diagnostics": page_diag, "warnings": xcall.warnings(results),
         "dob_known": dob_known, "birth_date_guard": "active" if dob_known else "inactive_no_dob",
         "counts": counts, "unverified_reasons": reasons, "dropped": dict(sorted(dropped.items())),
         "seconds": round(seconds, 1),

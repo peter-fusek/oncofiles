@@ -7,8 +7,10 @@ no layout knowledge), which accepts it as ``machine`` or keeps it
 ``unverified`` with reason codes.
 
 * One call per page of sidecar text (text, not image: cheap).
-* Strict JSON (a JSON schema is sent as ``response_format``; the answer is
-  still parsed defensively: code fences, reasoning, trailing text).
+* Strict JSON instructions (no ``response_format`` by default, v3; the
+  answer is parsed defensively: code fences, reasoning, trailing text). The
+  call itself (settings, fallbacks, diagnostics) is the shared path in
+  ``curated.llm_extract_call`` (#767).
 * Prompt rules: copy, never compute; unknown labels as printed; never a value
   without its verbatim evidence line. Items without evidence are dropped here.
 * Must run inside ``cloud_guard.local_only()``; it only ever talks to
@@ -22,17 +24,24 @@ from __future__ import annotations
 
 import json
 import re
-import time
 import unicodedata
 from collections import Counter
 from collections.abc import Callable
-from dataclasses import dataclass, field
 
 from oncofiles import cloud_guard
 from oncofiles.curated import llm
+from oncofiles.curated import llm_extract_call as xcall
+from oncofiles.curated.llm_extract_call import (  # noqa: F401 (re-exported)
+    ERROR_KINDS,
+    AnswerError,
+    PageResult,
+    error_kind,
+)
 
-# Bump on ANY change to the prompt, the schema or the item normalisation.
-EXTRACTOR_VERSION = "llm-extract-v3"  # v3: no response_format by default
+# Bump on ANY change to the prompt, the schema, the item normalisation or the
+# call settings. v3: no response_format by default; v4: shared call path,
+# sampling switch, bounded answer budget and timeout (#767).
+EXTRACTOR_VERSION = "llm-extract-v4"
 
 DATE_ROLES = ("sample", "report", "other")
 _COMPARATORS = ("<=", ">=", "<", ">")
@@ -157,47 +166,7 @@ Answer:
 {"facts": []}
 """
 
-# LM Studio counts reasoning tokens into max_tokens, and enable_thinking=false
-# may be ignored by the model (#689): a small budget ends in an empty answer
-# with finish_reason=length. Use the full reasoning budget (as re-OCR does)
-# until thinking-off is proven on the production model.
-EXTRACT_BUDGET = llm.REASONING_BUDGET
 METHOD = "stored_sidecar_text"
-
-
-@dataclass
-class PageResult:
-    page_number: int
-    candidates: list[dict] = field(default_factory=list)
-    dropped: Counter = field(default_factory=Counter)  # reason -> count
-    error: str | None = None
-    seconds: float = 0.0
-    finish_reason: str | None = None
-    error_kind: str | None = None
-    error_class: str | None = None
-    structured_output: str | None = None  # accepted | rejected (HTTP 400) | off
-    answer: dict | None = None  # answer_shape(): masked, in memory only
-    answer_source: str | None = None  # content | reasoning
-
-    def diagnostics(self) -> dict:
-        out = {"finish_reason": self.finish_reason, "structured_output": self.structured_output,
-               "answer_source": self.answer_source,
-               "seconds": round(self.seconds, 1)}  # fmt: skip
-        if self.error:
-            out.update(error_kind=self.error_kind, error_class=self.error_class)
-        if self.answer:
-            out["answer"] = self.answer
-        return out
-
-    @property
-    def truncated(self) -> bool:
-        return self.finish_reason == "length" or "truncated" in (self.error or "")
-
-    @property
-    def assessed(self) -> bool:
-        """False for a truncated, empty or unparseable answer: the page was
-        NOT read, which is never the same as "the model found nothing"."""
-        return self.error is None and not self.truncated
 
 
 def _text(v) -> str | None:
@@ -208,19 +177,6 @@ def _text(v) -> str | None:
     if isinstance(v, str):
         return v.strip() or None
     return None
-
-
-ERROR_KINDS = ("http_status", "json_decode", "schema_shape", "empty", "timeout", "truncated",
-               "reasoning_ambiguous",
-               "other")  # fmt: skip
-
-
-class AnswerError(llm.LocalLLMError):
-    """The model answered, but not with a usable facts JSON."""
-
-    def __init__(self, kind: str, message: str) -> None:
-        super().__init__(message)
-        self.kind = kind
 
 
 def _json_values(text: str):
@@ -315,19 +271,6 @@ def parse_reasoning_channel(text: str) -> list:
     if not valid_against_schema(values[0]):
         raise AnswerError("reasoning_ambiguous", "reasoning channel: JSON fails the schema")
     return values[0]["facts"]
-
-
-def error_kind(exc: BaseException) -> str:
-    if isinstance(exc, AnswerError):
-        return exc.kind
-    msg = str(exc)
-    if "truncated" in msg:
-        return "truncated"
-    if "unreachable" in msg and "Timeout" in msg:
-        return "timeout"
-    if "HTTP" in msg:
-        return "http_status"
-    return "other"
 
 
 _WORD = re.compile(r"[^\W\d_]+")
@@ -425,78 +368,32 @@ def _structured_output() -> bool:
     return config.LLM_EXTRACT_STRUCTURED_OUTPUT
 
 
-def _thinking() -> bool:
-    from oncofiles import config
-
-    return config.LLM_EXTRACT_THINKING == "on"
-
-
 def extract_page(
     text: str,
     *,
     page_number: int,
     chat: Callable[..., str] | None = None,
     known: frozenset[str] | None = None,
+    cfg: xcall.CallSettings | None = None,
 ) -> PageResult:
     """Blocking. Candidate facts of one page (not yet verified), plus
-    diagnostics of the model answer (masked shape, error kind)."""
+    diagnostics of the model answer (masked shape, error kind, token counts).
+    ``cfg`` (from ``llm_extract_call.settings``) defaults to the env settings."""
     if not cloud_guard.local_only_job():
         raise cloud_guard.CloudForbiddenError("llm_extract must run inside local_only()")
     res = PageResult(page_number=page_number)
     if not (text or "").strip():
         return res
-    call = chat or llm.chat
     known = known if known is not None else known_words()
-    user = f"Page {page_number}:\n{text}"
-    thinking = _thinking()
-    budget = EXTRACT_BUDGET
-    info: dict = {}
-    t0 = time.monotonic()
-    try:
-        try:
-            if _structured_output():
-                answer = call(SYSTEM_PROMPT, user, max_tokens=budget, thinking=thinking,
-                              response_format=RESPONSE_FORMAT, info=info)  # fmt: skip
-                res.structured_output = "accepted"
-            else:
-                answer = call(SYSTEM_PROMPT, user, max_tokens=budget, thinking=thinking,
-                              info=info)  # fmt: skip
-                res.structured_output = "off"
-        except llm.LocalLLMError as exc:
-            if "HTTP 400" not in str(exc) or "truncated" in str(exc):
-                raise
-            # this server/model rejects structured output: strict instructions only
-            res.structured_output = "rejected"
-            info.clear()
-            answer = call(SYSTEM_PROMPT, user, max_tokens=budget, thinking=thinking, info=info)
-        res.finish_reason = info.get("finish_reason")
-        raw, field_used = info.get("raw_content", answer or ""), "content"
-        if (
-            not llm.strip_think(answer or "").strip()
-            and (info.get("reasoning_content") or "").strip()
-        ):
-            # LM Studio may put the whole answer in reasoning_content (#714 prod run)
-            raw, field_used = info["reasoning_content"], "reasoning_content"
-        res.answer = answer_shape(raw or "", known, field_used=field_used)
-        if res.finish_reason == "length":
-            raise llm.LocalLLMError("local LLM answer truncated: finish_reason=length")
-        if field_used == "reasoning_content":
-            raw_items = parse_reasoning_channel(raw)
-            res.answer_source = "reasoning"
-        else:
-            raw_items = parse_answer(answer)
-            res.answer_source = "content"
-    except Exception as exc:  # any failure leaves the page "not assessed"
-        res.finish_reason = res.finish_reason or info.get("finish_reason")
-        res.error = str(exc)[:200]
-        res.error_kind = error_kind(exc)
-        res.error_class = type(exc.__cause__ or exc).__name__
-        if res.answer is None and (info.get("raw_content") or info.get("reasoning_content")):
-            res.answer = answer_shape(info.get("raw_content") or info.get("reasoning_content"),
-                                      known, field_used="content")  # fmt: skip
-        res.seconds = time.monotonic() - t0
+    raw_items = xcall.call_and_parse(
+        res, system=SYSTEM_PROMPT, user=f"Page {page_number}:\n{text}",
+        response_format=RESPONSE_FORMAT if _structured_output() else None,
+        parse_content=parse_answer, parse_reasoning=parse_reasoning_channel,
+        cfg=cfg or xcall.settings(), chat=chat,
+        shape=lambda raw, used: answer_shape(raw, known, field_used=used), label="llm extract",
+    )  # fmt: skip
+    if raw_items is None:
         return res
-    res.seconds = time.monotonic() - t0
     for raw_item in raw_items:
         cand, why = normalize_item(raw_item)
         if cand is None:
@@ -505,7 +402,7 @@ def extract_page(
             cand["page_number"] = page_number
             cand["answer_source"] = res.answer_source
             res.candidates.append(cand)
-    if not res.error:
+    if res.answer:
         res.answer = {k: v for k, v in res.answer.items() if k != "masked"}  # shape only
     return res
 
@@ -519,13 +416,16 @@ def extract_document(
     source_reason: str | None = None,
     chat: Callable[..., str] | None = None,
     stop: Callable[[], bool] | None = None,
+    cfg: xcall.CallSettings | None = None,
 ) -> dict:
     """Blocking. Extract + verify every page; one model call at a time (one
     LM Studio slot). Returns verified fact dicts (``facts_rules`` shape) and
     counts; nothing is stored."""
     from oncofiles.curated import verifier
 
+    cfg = cfg or xcall.settings()
     known = known_words(vocab)
+    results: list[PageResult] = []
     text_of = dict(pages)
     facts: list[dict] = []
     dropped: Counter = Counter()
@@ -538,7 +438,8 @@ def extract_document(
         if stop and stop():
             not_assessed.append(number)
             continue
-        pr = extract_page(text, page_number=number, chat=chat, known=known)
+        pr = extract_page(text, page_number=number, chat=chat, known=known, cfg=cfg)
+        results.append(pr)
         page_diag[str(number)] = pr.diagnostics()
         seconds += pr.seconds
         dropped.update(pr.dropped)
@@ -560,7 +461,7 @@ def extract_document(
         "facts": facts, "method": METHOD, "pages": len(pages),
         "pages_used": len(pages) - len(not_assessed), "pages_not_assessed": not_assessed,
         "pages_truncated": truncated, "page_errors": errors, "finish_reasons": finish,
-        "page_diagnostics": page_diag,
+        "page_diagnostics": page_diag, "warnings": xcall.warnings(results),
         "dob_known": dob_known,
         "birth_date_guard": "active" if dob_known else "inactive_no_dob",
         # dated facts whose date could not be checked against a birth date

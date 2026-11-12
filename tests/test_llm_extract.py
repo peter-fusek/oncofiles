@@ -438,21 +438,24 @@ def test_a_valid_empty_answer_is_assessed():
     assert out["pages_not_assessed"] == [] and out["pages_used"] == len([1])
 
 
-@pytest.mark.parametrize("thinking", ["on", "off"])
-def test_the_full_reasoning_budget_is_used(monkeypatch, thinking):
+@pytest.mark.parametrize(("thinking", "budget"), [("on", llm.REASONING_BUDGET), ("off", 4000)])
+def test_thinking_keeps_the_reasoning_budget_and_off_is_bounded(monkeypatch, thinking, budget):
+    """#767: thinking ON needs room to reason; OFF gets the bounded answer
+    budget so a repetition loop ends early. Both carry the extractor timeout."""
     from oncofiles import config
 
     monkeypatch.setattr(config, "LLM_EXTRACT_THINKING", thinking)
-    budgets = []
+    monkeypatch.setattr(config, "LLM_EXTRACT_ANSWER_BUDGET", 4000)
+    monkeypatch.setattr(config, "LLM_EXTRACT_TIMEOUT_S", 300.0)
+    seen = []
 
-    def chat(system, user, max_tokens=None, **kw):
-        budgets.append(max_tokens)
+    def chat(system, user, max_tokens=None, timeout=None, **kw):
+        seen.append((max_tokens, timeout))
         return model_answer()
 
     with local_only("test"):
         llm_extract.extract_page(PAGE, page_number=1, chat=chat)
-    assert budgets == [llm.REASONING_BUDGET]
-    assert llm_extract.EXTRACT_BUDGET == llm.REASONING_BUDGET
+    assert seen == [(budget, 300.0)]
 
 
 def test_dob_unknown_is_flagged_and_counted():
@@ -716,3 +719,46 @@ def test_lab_structured_output_is_off_by_default_and_switchable(monkeypatch):
         on = llm_extract.extract_page("Hemoglobin 140 g/L", page_number=1, chat=chat)
     assert seen == [False, True]
     assert off.structured_output == "off" and on.structured_output == "accepted"
+
+
+# ── #767: per-job A/B overrides (dry run only) ──────────────────────────
+
+
+async def test_preview_overrides_are_echoed_used_and_refused_on_write(db, monkeypatch):
+    from oncofiles import config
+    from oncofiles.tools import curated as tool
+
+    await _seed(db)
+    monkeypatch.setattr(config, "LLM_EXTRACT_SHADOW_DISABLED", False)
+    monkeypatch.setattr(config, "LOCAL_LLM_BASE_URL", "http://local.invalid/v1")
+    monkeypatch.setattr(config, "LOCAL_LLM_MODEL", "mock-model")
+    monkeypatch.setattr(config, "LLM_EXTRACT_THINKING", "off")
+    monkeypatch.setattr(config, "LLM_EXTRACT_SAMPLING", "greedy")
+    seen = []
+
+    def fake_chat(system, user, **kw):
+        seen.append({k: kw.get(k) for k in ("thinking", "temperature", "top_p", "max_tokens")})
+        return model_answer()
+
+    monkeypatch.setattr(llm, "chat", fake_chat)
+    monkeypatch.setattr(tool, "_reocr_jobs", {})
+    for kw in ({"thinking": "on"}, {"sampling": "qwen"}):
+        with pytest.raises(ValueError, match="dry run"):
+            await tool.curated_llm_extract_preview(_ctx(db), [DOC], dry_run=False, **kw)
+    with pytest.raises(ValueError):
+        await tool.curated_llm_extract_preview(_ctx(db), [DOC], sampling="hot")
+    assert ERIKA_UUID not in tool._reocr_jobs
+    started = json.loads(
+        await tool.curated_llm_extract_preview(_ctx(db), [DOC], thinking="on", sampling="qwen")
+    )
+    assert started["overrides"] == {"thinking": "on", "sampling": "qwen"}
+    await asyncio.wait_for(tool._reocr_jobs[ERIKA_UUID]["task"], 10)
+    report = json.loads(await tool.curated_reocr_status(_ctx(db)))["report"]
+    assert report["settings"]["thinking"] == "on" and report["settings"]["sampling"] == "qwen"
+    assert report["settings"]["overrides"] == {"thinking": "on", "sampling": "qwen"}
+    assert report["warnings"] == []
+    assert seen == [{"thinking": True, "temperature": 0.6, "top_p": 0.95,
+                     "max_tokens": llm.REASONING_BUDGET}]  # fmt: skip
+    page = report["documents"][0]["page_diagnostics"]["1"]
+    assert (page["thinking"], page["sampling"]) == ("on", "qwen")
+    assert report["documents"][0]["warnings"] == []

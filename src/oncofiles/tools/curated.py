@@ -1871,15 +1871,19 @@ def _source_reason(meta: dict) -> str | None:
     return None
 
 
-async def _llm_shadow_job(db, pid: str, docs: list[dict]) -> None:
+async def _llm_shadow_job(
+    db, pid: str, docs: list[dict], *, thinking: str | None = None, sampling: str | None = None
+) -> None:
     """LLM extractor + generic verifier on stored page text, compared with the
     stored rule facts (#714 phase 2a). Writes NOTHING: no facts, no Drive, no
-    run row. One model call at a time (one LM Studio slot); local only."""
+    run row. One model call at a time (one LM Studio slot); local only.
+    ``thinking`` / ``sampling`` override the env for this job only (#767)."""
     from oncofiles.cloud_guard import local_only
-    from oncofiles.curated import llm_extract, verifier
+    from oncofiles.curated import llm_extract, llm_extract_call, verifier
     from oncofiles.curated.facts_rules import Vocabulary
 
     job = _reocr_jobs[pid]
+    cfg = llm_extract_call.settings(thinking, sampling)
     report: list[dict] = []
     try:
         try:
@@ -1908,7 +1912,7 @@ async def _llm_shadow_job(db, pid: str, docs: list[dict]) -> None:
                 with local_only("curated LLM extract shadow"):
                     return llm_extract.extract_document(
                         pages, vocab=vocab, report_date=day, birth_dates=births,
-                        source_reason=_source_reason(meta), stop=_stopping.is_set,
+                        source_reason=_source_reason(meta), stop=_stopping.is_set, cfg=cfg,
                     )  # fmt: skip
 
             try:
@@ -1922,7 +1926,8 @@ async def _llm_shadow_job(db, pid: str, docs: list[dict]) -> None:
             verifier.inherit_transcription_reasons(out["facts"], rows)
             cross = verifier.transcription_pages(rows, _source_reason(meta), [n for n, _ in pages])
             meta_keys = ("method", "pages", "pages_used", "pages_not_assessed", "pages_truncated",
-                         "page_errors", "finish_reasons", "page_diagnostics", "dob_known",
+                         "page_errors", "finish_reasons", "page_diagnostics", "warnings",
+                         "dob_known",
                          "birth_date_guard",
                          "dates_unchecked_no_dob", "facts_from_content",
                          "facts_from_reasoning", "dropped", "seconds")  # fmt: skip
@@ -1941,7 +1946,10 @@ async def _llm_shadow_job(db, pid: str, docs: list[dict]) -> None:
         totals["pages_not_assessed"] = sum(len(r["pages_not_assessed"]) for r in done)
         job.update(state="done", report={
             "dry_run": True, "extractor": llm_extract.EXTRACTOR_VERSION,
-            "verifier": verifier.VERIFIER_VERSION, "totals": totals, "documents": report,
+            "verifier": verifier.VERIFIER_VERSION,
+            "settings": {**cfg.report(), "overrides": {"thinking": thinking, "sampling": sampling}},
+            "warnings": llm_extract_call.merge_warnings(done),
+            "totals": totals, "documents": report,
         })  # fmt: skip
     except Exception as exc:
         logger.exception("llm shadow job failed for %s", pid)
@@ -1955,6 +1963,8 @@ async def curated_llm_extract_preview(
     document_ids: list[int],
     patient_slug: str | None = None,
     dry_run: bool = True,
+    thinking: str | None = None,
+    sampling: str | None = None,
 ) -> str:
     """SHADOW mode of LLM-first fact extraction (#714): compare, never store.
 
@@ -1967,10 +1977,20 @@ async def curated_llm_extract_preview(
     Writes nothing: no facts, no Drive. Off-switch: LLM_EXTRACT_SHADOW_DISABLED=true.
     Explicit ``document_ids`` only (max 10). Runs in the background; poll
     curated_reocr_status. Slow: about a minute per page.
+
+    Args:
+        thinking: "on" / "off" overrides LLM_EXTRACT_THINKING for this job
+            only (A/B, #767); null keeps the env setting.
+        sampling: "greedy" / "qwen" overrides LLM_EXTRACT_SAMPLING for this
+            job only; null keeps the env setting. Both are echoed in the
+            report (``settings``) and refused (error) with dry_run=false.
     """
     from oncofiles import config
-    from oncofiles.curated import llm
+    from oncofiles.curated import llm, llm_extract_call
 
+    llm_extract_call.refuse_overrides_on_write(
+        write=not dry_run, thinking=thinking, sampling=sampling
+    )
     if config.LLM_EXTRACT_SHADOW_DISABLED:
         return json.dumps({"error": "disabled by LLM_EXTRACT_SHADOW_DISABLED=true"})
     if not dry_run:
@@ -1994,9 +2014,12 @@ async def curated_llm_extract_preview(
     _reocr_jobs[pid] = {
         "state": "running", "kind": "llm_shadow", "dry_run": True,
         "extractor": EXTRACTOR_VERSION, "started_at": datetime.now(UTC).isoformat(),
+        "overrides": {"thinking": thinking, "sampling": sampling},
         "documents": [{"document_id": d["id"], "category": d.get("category")} for d in docs],
     }  # fmt: skip
-    _reocr_jobs[pid]["task"] = asyncio.create_task(_llm_shadow_job(db, pid, docs))
+    _reocr_jobs[pid]["task"] = asyncio.create_task(
+        _llm_shadow_job(db, pid, docs, thinking=thinking, sampling=sampling)
+    )
     return json.dumps(
         {k: v for k, v in _reocr_jobs[pid].items() if k != "task"}, ensure_ascii=False
     )
@@ -2042,8 +2065,8 @@ async def _all_birth_dates(db, pid: str) -> set[str]:
 
 _CLINICAL_DOC_KEYS = (
     "method", "pages", "pages_used", "pages_not_assessed", "pages_truncated", "page_errors",
-    "error_kinds", "answer_sources", "dob_known", "birth_date_guard", "counts",
-    "unverified_reasons", "dropped", "seconds",
+    "error_kinds", "answer_sources", "page_diagnostics", "warnings", "dob_known",
+    "birth_date_guard", "counts", "unverified_reasons", "dropped", "seconds",
 )  # fmt: skip
 
 
@@ -2073,18 +2096,30 @@ def _clinical_totals(report: list[dict]) -> dict:
     }
 
 
-async def _clinical_job(db, pid: str, docs: list[dict], *, write: bool) -> None:
+async def _clinical_job(
+    db,
+    pid: str,
+    docs: list[dict],
+    *,
+    write: bool,
+    thinking: str | None = None,
+    sampling: str | None = None,
+) -> None:
     """Extract the non-lab kinds of each document with the LOCAL model and
     verify them (#726 item 4). Preview (``write=False``) writes NOTHING; a
     write holds the patient lock, refuses without a known birth date, and
     stores nothing for a document with a page that was not assessed. One
-    model call at a time (one LM Studio slot); local only."""
+    model call at a time (one LM Studio slot); local only. ``thinking`` /
+    ``sampling`` override the env for a PREVIEW only (#767)."""
     from oncofiles import config
     from oncofiles.cloud_guard import local_only
-    from oncofiles.curated import clinical_store, verifier, verifier_clinical
+    from oncofiles.curated import clinical_store, llm_extract_call, verifier, verifier_clinical
     from oncofiles.curated import llm_extract_clinical as lx
     from oncofiles.curated.facts_rules import Vocabulary
 
+    # refused at the tool already; the job itself stays safe too
+    llm_extract_call.refuse_overrides_on_write(write=write, thinking=thinking, sampling=sampling)
+    cfg = llm_extract_call.settings(thinking, sampling)
     job = _reocr_jobs[pid]
     row_id = (
         await db.insert_curated_run(patient_id=pid, dry_run=False, trigger="clinical")
@@ -2117,7 +2152,7 @@ async def _clinical_job(db, pid: str, docs: list[dict], *, write: bool) -> None:
                     with local_only("curated clinical extraction"):
                         return lx.extract_document(
                             pages, vocab=vocab, report_date=day, birth_dates=births,
-                            source_reason=_source_reason(meta), stop=_stopping.is_set,
+                            source_reason=_source_reason(meta), stop=_stopping.is_set, cfg=cfg,
                         )  # fmt: skip
 
                 try:
@@ -2147,6 +2182,8 @@ async def _clinical_job(db, pid: str, docs: list[dict], *, write: bool) -> None:
         job.update(state="done", report={
             "dry_run": not write, "extractor": lx.EXTRACTOR_VERSION,
             "verifier": verifier_clinical.CLINICAL_VERIFIER_VERSION, "dob_known": bool(births),
+            "settings": {**cfg.report(), "overrides": {"thinking": thinking, "sampling": sampling}},
+            "warnings": llm_extract_call.merge_warnings(report),
             "totals": _clinical_totals(report), "documents": report,
         })  # fmt: skip
     except verifier.NoBirthDateError:
@@ -2223,11 +2260,21 @@ async def _audit_clinical_write(db, pid: str, job: dict) -> None:
         logger.exception("could not write the activity_log row for a clinical extraction")
 
 
-async def _start_clinical(ctx: Context, document_ids, patient_slug, *, write: bool) -> str:
+async def _start_clinical(
+    ctx: Context,
+    document_ids,
+    patient_slug,
+    *,
+    write: bool,
+    thinking: str | None = None,
+    sampling: str | None = None,
+) -> str:
     from oncofiles import config
-    from oncofiles.curated import llm
+    from oncofiles.curated import llm, llm_extract_call
     from oncofiles.curated.llm_extract_clinical import EXTRACTOR_VERSION
 
+    # A/B overrides are for a dry run only: a write never takes them (#767).
+    llm_extract_call.refuse_overrides_on_write(write=write, thinking=thinking, sampling=sampling)
     if config.LLM_CLINICAL_EXTRACT_DISABLED:
         return json.dumps({"error": "disabled by LLM_CLINICAL_EXTRACT_DISABLED=true"})
     if not llm.configured():
@@ -2263,6 +2310,7 @@ async def _start_clinical(ctx: Context, document_ids, patient_slug, *, write: bo
         "dry_run": not write, "extractor": EXTRACTOR_VERSION,
         "started_at": datetime.now(UTC).isoformat(), "actor": "mcp",
         "caller_email_hash": caller_email_hash(_caller_email()),
+        "overrides": {"thinking": thinking, "sampling": sampling},
         "documents": [{"document_id": d["id"], "category": d.get("category")} for d in docs],
     }  # fmt: skip
 
@@ -2292,7 +2340,9 @@ async def _start_clinical(ctx: Context, document_ids, patient_slug, *, write: bo
     # The task copies the current context: the WHOLE job (DB writes included,
     # not only the model calls) runs local-only.
     with local_only("curated clinical extraction"):
-        _reocr_jobs[pid]["task"] = asyncio.create_task(_clinical_job(db, pid, docs, write=write))
+        _reocr_jobs[pid]["task"] = asyncio.create_task(
+            _clinical_job(db, pid, docs, write=write, thinking=thinking, sampling=sampling)
+        )
     return json.dumps(
         {k: v for k, v in _reocr_jobs[pid].items() if k != "task"}, ensure_ascii=False
     )
@@ -2302,6 +2352,8 @@ async def curated_clinical_extract_preview(
     ctx: Context,
     document_ids: list[int],
     patient_slug: str | None = None,
+    thinking: str | None = None,
+    sampling: str | None = None,
 ) -> str:
     """DRY RUN: what the LOCAL model would extract from curated documents (#726).
 
@@ -2316,8 +2368,17 @@ async def curated_clinical_extract_preview(
     Reports per document only counts per kind and reason codes — never values.
     Explicit ``document_ids`` (max 10). Runs in the background; poll
     curated_reocr_status. About a minute per page.
+
+    Args:
+        thinking: "on" / "off" overrides LLM_EXTRACT_THINKING for this preview
+            only (A/B, #767); null keeps the env setting.
+        sampling: "greedy" / "qwen" overrides LLM_EXTRACT_SAMPLING for this
+            preview only; null keeps the env setting. Both are echoed in the
+            report (``settings``), with per-page token counts and warnings.
     """
-    return await _start_clinical(ctx, document_ids, patient_slug, write=False)
+    return await _start_clinical(
+        ctx, document_ids, patient_slug, write=False, thinking=thinking, sampling=sampling
+    )
 
 
 async def curated_clinical_extract(
@@ -2325,6 +2386,8 @@ async def curated_clinical_extract(
     document_ids: list[int],
     patient_slug: str | None = None,
     dry_run: bool = True,
+    thinking: str | None = None,
+    sampling: str | None = None,
 ) -> str:
     """Extract diagnoses, biomarkers, treatments, procedures, lesion sizes and
     planned dates from curated documents with the LOCAL model and store them (#726).
@@ -2346,8 +2409,14 @@ async def curated_clinical_extract(
     is known; holds the patient lock; a document with a page the model did not
     assess is not stored. Explicit ``document_ids`` (max 10). Runs in the
     background; poll curated_reocr_status. About a minute per page.
+
+    ``thinking`` / ``sampling`` overrides (see curated_clinical_extract_preview)
+    are accepted with dry_run=true only; with dry_run=false they are refused
+    (error): a write always uses the configured env settings.
     """
-    return await _start_clinical(ctx, document_ids, patient_slug, write=not dry_run)
+    return await _start_clinical(
+        ctx, document_ids, patient_slug, write=not dry_run, thinking=thinking, sampling=sampling
+    )
 
 
 async def curated_reocr_status(ctx: Context, patient_slug: str | None = None) -> str:
