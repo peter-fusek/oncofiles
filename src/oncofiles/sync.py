@@ -15,6 +15,7 @@ import mimetypes
 import time
 from datetime import UTC, datetime
 
+from oncofiles.cloud_guard import CloudForbiddenError
 from oncofiles.database import Database
 from oncofiles.enhance import (
     enhance_document_text,
@@ -28,7 +29,16 @@ from oncofiles.filename_parser import (
     parse_filename,
     rename_to_standard,
 )
-from oncofiles.files_api import FilesClient
+from oncofiles.files_api import (
+    DRIVE_SYNC_SOURCE,
+    FilesClient,
+    drive_only_file_id,
+    files_api_refusal_reason,
+    is_drive_only_file_id,
+)
+from oncofiles.files_api import (
+    name_len as _name_len,
+)
 from oncofiles.gdrive_client import GDriveClient
 from oncofiles.gdrive_folders import (
     ensure_folder_structure,
@@ -101,6 +111,54 @@ async def _get_doc_patient_id(db: Database, doc_id: int) -> str | None:
 # ── GDrive → Oncofiles import ──────────────────────────────────────────────
 
 
+def _doc_ref(doc: Document) -> str:
+    return f"doc {doc.id} {_name_len(doc.filename)}"
+
+
+def _drive_ref(gdrive_id: str, name: str | None) -> str:
+    return f"gdrive_id={gdrive_id} {_name_len(name)}"
+
+
+def _drive_size(gf: dict) -> int:
+    """Size reported by the Drive listing (Google Docs have none → 0)."""
+    try:
+        return int(gf.get("size") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _mark_text_stale(structured_metadata: str | None) -> str:
+    """structured_metadata with ``text_stale: true`` added (#777 infra review).
+
+    Set when a Drive file's content changed but no new text was written: the
+    old page text stays until a local re-OCR replaces it. Only the flag, no
+    values. A row without metadata also gets the drive_sync source marker.
+    Unparseable metadata is returned unchanged (never overwritten).
+    """
+    try:
+        meta = json.loads(structured_metadata) if structured_metadata else {}
+    except ValueError:
+        return structured_metadata
+    if not isinstance(meta, dict):
+        return structured_metadata
+    if not meta:
+        meta["source"] = DRIVE_SYNC_SOURCE
+    meta["text_stale"] = True
+    return json.dumps(meta, ensure_ascii=False)
+
+
+def _register_drive_only(doc_id: int) -> None:
+    """Put a Drive-only row under the same cloud refusal as curated rows (#777).
+
+    At startup every ``gdrive:%`` row is loaded into this registry
+    (``db.curated_document_ids``); registering here keeps a running process
+    consistent with the next restart, so no cloud-AI function ever reads it.
+    """
+    from oncofiles.curated.indexer import register_curated_ids
+
+    register_curated_ids([doc_id])
+
+
 async def sync_from_gdrive(
     db: Database,
     files: FilesClient,
@@ -123,6 +181,18 @@ async def sync_from_gdrive(
     if (blocked := write_block_reason(gdrive)) is not None:
         logger.info("%s: skipped for patient %s — %s", "sync_from_gdrive", patient_id, blocked)
         return _curated_skip(blocked)
+
+    # #777: with cloud AI off the Files API refuses every upload, so documents
+    # are registered Drive-only (file_id "gdrive:<id>", as curated documents)
+    # and nothing is read in the cloud: no upload, no inline AI enhancement.
+    drive_only_reason = files_api_refusal_reason()
+    if drive_only_reason is not None:
+        logger.info(
+            "sync_from_gdrive: Drive-only import for patient %s — %s",
+            patient_id,
+            drive_only_reason,
+        )
+        enhance = False
 
     logger.info("sync_from_gdrive: listing folder %s (dry_run=%s)", folder_id, dry_run)
     gdrive_files, folder_map = await asyncio.to_thread(gdrive.list_folder_with_structure, folder_id)
@@ -164,7 +234,7 @@ async def sync_from_gdrive(
                 "sync_from_gdrive: category changed %s → %s for %s",
                 existing.category.value,
                 detected,
-                filename,
+                _drive_ref(gf["id"], filename),
             )
             await db.update_document_category(existing.id, detected)
 
@@ -216,7 +286,9 @@ async def sync_from_gdrive(
         is_google_doc = mime_type in GOOGLE_DOCS_MIMETYPES
 
         if not is_google_doc and not _should_sync(filename):
-            logger.debug("sync_from_gdrive: skipping %s (unsupported type)", filename)
+            logger.debug(
+                "sync_from_gdrive: skipping %s (unsupported type)", _drive_ref(gf["id"], filename)
+            )
             stats["skipped"] += 1
             continue
 
@@ -263,7 +335,7 @@ async def sync_from_gdrive(
                     # Metadata-only change (rename, move) — just update timestamp
                     logger.info(
                         "sync_from_gdrive: metadata-only change for %s (md5 unchanged)",
-                        filename,
+                        _drive_ref(gf["id"], filename),
                     )
                     await db.update_gdrive_id(existing.id, gdrive_id, modified_time_str)
                     now_str = datetime.now(UTC).isoformat()
@@ -276,11 +348,35 @@ async def sync_from_gdrive(
 
                 # File content changed on GDrive — GDrive wins (re-import)
                 if dry_run:
-                    logger.info("sync_from_gdrive: WOULD UPDATE %s", filename)
+                    logger.info("sync_from_gdrive: WOULD UPDATE %s", _drive_ref(gf["id"], filename))
                     stats["updated"] += 1
                     continue
 
-                logger.info("sync_from_gdrive: updating %s (GDrive wins)", filename)
+                logger.info(
+                    "sync_from_gdrive: updating %s (GDrive wins)", _drive_ref(gf["id"], filename)
+                )
+
+                if drive_only_reason is not None:
+                    # #777: the stale Files API copy (if any) is dropped from the
+                    # row; the document is read from Drive from now on. Its stored
+                    # page text is KEPT (no new text is written here) and the row
+                    # is flagged text_stale until a local re-OCR replaces it.
+                    await db.update_document_file_id(
+                        existing.id, drive_only_file_id(gdrive_id), _drive_size(gf)
+                    )
+                    await db.update_gdrive_id(existing.id, gdrive_id, modified_time_str)
+                    if gdrive_md5:
+                        await db.update_gdrive_md5(existing.id, gdrive_md5)
+                    now_str = datetime.now(UTC).isoformat()
+                    await db.update_sync_state(existing.id, "synced", now_str)
+                    await _sync_category_from_folder(gf, existing, filename)
+                    await db.update_structured_metadata(
+                        existing.id, _mark_text_stale(existing.structured_metadata)
+                    )
+                    _register_drive_only(existing.id)
+                    stats["updated"] += 1
+                    stats["drive_only"] = stats.get("drive_only", 0) + 1
+                    continue
 
                 # Clear old OCR before re-import (will be re-extracted by enhance)
                 await db.delete_ocr_pages(existing.id)
@@ -330,29 +426,41 @@ async def sync_from_gdrive(
                     logger.info(
                         "sync_from_gdrive: FUP limit (%d) — skipping new file %s",
                         MAX_DOCUMENTS_PER_PATIENT,
-                        filename,
+                        _drive_ref(gf["id"], filename),
                     )
                     stats["skipped"] = stats.get("skipped", 0) + 1
                     continue
 
                 if dry_run:
-                    logger.info("sync_from_gdrive: WOULD IMPORT %s", filename)
+                    logger.info("sync_from_gdrive: WOULD IMPORT %s", _drive_ref(gf["id"], filename))
                     stats["new"] += 1
                     continue
 
-                logger.info("sync_from_gdrive: importing %s", filename)
+                logger.info("sync_from_gdrive: importing %s", _drive_ref(gf["id"], filename))
                 if is_google_doc:
-                    content_bytes = await asyncio.to_thread(
-                        gdrive.export_google_doc, gdrive_id, "application/pdf"
-                    )
                     # Google Docs: export as PDF, fix filename and mime
                     import_filename = f"{filename}.pdf" if "." not in filename else filename
                     import_mime = "application/pdf"
                 else:
-                    content_bytes = await asyncio.to_thread(gdrive.download, gdrive_id)
                     import_filename = filename
                     import_mime = mime_type
-                metadata = files.upload(io.BytesIO(content_bytes), import_filename, import_mime)
+
+                if drive_only_reason is not None:
+                    # #777: Drive-only — the bytes are not downloaded here at all;
+                    # every read path fetches them from Drive when needed.
+                    content_bytes = b""
+                    file_id = drive_only_file_id(gdrive_id)
+                    size = _drive_size(gf)
+                else:
+                    if is_google_doc:
+                        content_bytes = await asyncio.to_thread(
+                            gdrive.export_google_doc, gdrive_id, "application/pdf"
+                        )
+                    else:
+                        content_bytes = await asyncio.to_thread(gdrive.download, gdrive_id)
+                    metadata = files.upload(io.BytesIO(content_bytes), import_filename, import_mime)
+                    file_id = metadata.id
+                    size = len(content_bytes)
 
                 parsed = parse_filename(import_filename, patient_id=patient_id)
                 guessed_mime = mimetypes.guess_type(import_filename)[0] or import_mime
@@ -364,12 +472,10 @@ async def sync_from_gdrive(
                     DocumentCategory(detected_category) if detected_category else parsed.category
                 )
 
-                size = len(content_bytes)
                 del content_bytes  # Free large buffer immediately
 
-                now_str = datetime.now(UTC).isoformat()
                 doc = Document(
-                    file_id=metadata.id,
+                    file_id=file_id,
                     filename=import_filename,
                     original_filename=filename,
                     document_date=parsed.document_date,
@@ -385,6 +491,12 @@ async def sync_from_gdrive(
                     last_synced_at=datetime.now(UTC),
                 )
                 doc = await db.insert_document(doc, patient_id=patient_id)
+                if drive_only_reason is not None:
+                    await db.update_structured_metadata(
+                        doc.id, json.dumps({"source": DRIVE_SYNC_SOURCE})
+                    )
+                    _register_drive_only(doc.id)
+                    stats["drive_only"] = stats.get("drive_only", 0) + 1
 
                 # Set appProperties on GDrive for future matching
                 try:
@@ -423,7 +535,7 @@ async def sync_from_gdrive(
             # class + message in the first line without reading stacktraces.
             logger.exception(
                 "sync_from_gdrive: error processing %r (gdrive_id=%s, mime=%s) — %s: %s",
-                filename,
+                _drive_ref(gf["id"], filename),
                 gdrive_id,
                 mime_type,
                 type(exc).__name__,
@@ -462,7 +574,7 @@ async def sync_from_gdrive(
                     logger.info(
                         "sync_from_gdrive: cleared external-location flag on %s "
                         "(file is back in sync root)",
-                        doc.filename,
+                        _doc_ref(doc),
                     )
                 except Exception:
                     logger.exception(
@@ -478,7 +590,7 @@ async def sync_from_gdrive(
             logger.info(
                 "sync_from_gdrive: file %s (gdrive_id=%s) is gone from GDrive — "
                 "marking deleted_remote",
-                doc.filename,
+                _doc_ref(doc),
                 doc.gdrive_id,
             )
             try:
@@ -493,7 +605,7 @@ async def sync_from_gdrive(
             logger.warning(
                 "sync_from_gdrive: file %s (gdrive_id=%s) not in root and metadata "
                 "fetch failed — flagging",
-                doc.filename,
+                _doc_ref(doc),
                 doc.gdrive_id,
                 exc_info=True,
             )
@@ -504,7 +616,7 @@ async def sync_from_gdrive(
             logger.info(
                 "sync_from_gdrive: file %s (gdrive_id=%s) is trashed in GDrive — "
                 "marking deleted_remote",
-                doc.filename,
+                _doc_ref(doc),
                 doc.gdrive_id,
             )
             try:
@@ -521,7 +633,7 @@ async def sync_from_gdrive(
                 logger.info(
                     "sync_from_gdrive: %s (gdrive_id=%s) lives outside sync root %s — "
                     "marked gdrive_parent_outside_root",
-                    doc.filename,
+                    _doc_ref(doc),
                     doc.gdrive_id,
                     folder_id,
                 )
@@ -591,7 +703,7 @@ async def _detect_and_split_multi_docs(
                 "sync: detected %d sub-documents in doc %d (%s)",
                 len(sub_docs),
                 doc.id,
-                doc.filename,
+                _name_len(doc.filename),
             )
             await split_document(
                 db,
@@ -734,13 +846,13 @@ async def sync_to_gdrive(
                         stats,
                     )
                 except Exception:
-                    logger.exception("sync_to_gdrive: error organizing %s", doc.filename)
+                    logger.exception("sync_to_gdrive: error organizing %s", _doc_ref(doc))
                     stats["errors"] += 1
 
     # Phase 2: Export new documents
     for doc in docs_to_export:
         try:
-            logger.info("sync_to_gdrive: exporting %s", doc.filename)
+            logger.info("sync_to_gdrive: exporting %s", _doc_ref(doc))
 
             # Text files can't be downloaded from Anthropic Files API — use OCR cache
             if doc.mime_type and doc.mime_type.startswith("text/"):
@@ -751,10 +863,16 @@ async def sync_to_gdrive(
                 else:
                     logger.warning(
                         "sync_to_gdrive: skipped %s — text file with no OCR cache",
-                        doc.filename,
+                        _doc_ref(doc),
                     )
                     stats["skipped"] += 1
                     continue
+            elif (refused := files_api_refusal_reason()) is not None:
+                # #777: the only copy is in the Files API, which may not be
+                # read now. A configuration state, not a sync failure.
+                logger.info("sync_to_gdrive: skipped %s — %s", _doc_ref(doc), refused)
+                stats["skipped"] += 1
+                continue
             else:
                 content_bytes = files.download(doc.file_id)
 
@@ -788,16 +906,25 @@ async def sync_to_gdrive(
 
             stats["exported"] += 1
 
+        except CloudForbiddenError as e:
+            # #777: the Files API copy cannot be read while cloud AI is off.
+            # A configuration state, not a sync failure.
+            logger.info(
+                "sync_to_gdrive: skipped %s — Files API unavailable (%s)",
+                _doc_ref(doc),
+                str(e)[:120],
+            )
+            stats["skipped"] += 1
         except Exception as e:
             err_str = str(e)
             if "not downloadable" in err_str.lower():
                 logger.warning(
                     "sync_to_gdrive: skipped %s — not downloadable from Files API",
-                    doc.filename,
+                    _doc_ref(doc),
                 )
                 stats["skipped"] += 1
             else:
-                logger.exception("sync_to_gdrive: error exporting %s", doc.filename)
+                logger.exception("sync_to_gdrive: error exporting %s", _doc_ref(doc))
                 stats["errors"] += 1
 
     # Heavy phases: only run when imports changed (full=True)
@@ -839,10 +966,14 @@ async def sync_to_gdrive(
                 except Exception:
                     logger.exception("sync_to_gdrive: post-rename organize failed")
 
-            # Post-rename: re-enhance renamed docs (metadata/FTS reflect new name)
+            # Post-rename: re-enhance renamed docs (metadata/FTS reflect new name).
+            # #777: never with cloud AI off — enhancement is a cloud call.
             from oncofiles.config import ENHANCE_TIMEOUT_S
 
-            for doc_id in rename_stats["renamed_ids"]:
+            reenhance_ids = (
+                rename_stats["renamed_ids"] if files_api_refusal_reason() is None else []
+            )
+            for doc_id in reenhance_ids:
                 try:
                     doc = await db.get_document(doc_id, patient_id=patient_id)
                     await asyncio.wait_for(
@@ -913,7 +1044,7 @@ def _move_to_organized_folder(
     # Get current parents
     parents = gdrive.get_file_parents(doc.gdrive_id)
     if not parents:
-        logger.warning("sync_to_gdrive: cannot get parents for %s — skipping", doc.filename)
+        logger.warning("sync_to_gdrive: cannot get parents for %s — skipping", _doc_ref(doc))
         stats["skipped"] += 1
         return
 
@@ -941,7 +1072,7 @@ def _move_to_organized_folder(
 
     logger.info(
         "sync_to_gdrive: moving %s to %s/%s",
-        doc.filename,
+        _doc_ref(doc),
         cat_name,
         year_month or "",
     )
@@ -953,7 +1084,7 @@ def _move_to_organized_folder(
     else:
         logger.error(
             "sync_to_gdrive: move verification FAILED for %s (expected parent %s, got %s)",
-            doc.filename,
+            _doc_ref(doc),
             target_folder,
             new_parents,
         )
@@ -1121,7 +1252,7 @@ async def _rename_to_standard(db: Database, gdrive: GDriveClient, *, patient_id:
                     "Fixing corrupted filename doc %d: %d chars → '%s'",
                     doc.id,
                     len(doc.filename),
-                    new_name,
+                    _name_len(new_name),
                 )
             else:
                 new_name = rename_to_standard(
@@ -1157,8 +1288,8 @@ async def _rename_to_standard(db: Database, gdrive: GDriveClient, *, patient_id:
                 logger.info(
                     "Renaming unparseable doc %d: '%s' → '%s'",
                     doc.id,
-                    doc.filename[:40],
-                    new_name,
+                    _name_len(doc.filename),
+                    _name_len(new_name),
                 )
 
             if new_name == doc.filename:
@@ -1169,7 +1300,9 @@ async def _rename_to_standard(db: Database, gdrive: GDriveClient, *, patient_id:
             pending_renames.append((doc, new_name))
 
         except Exception:
-            logger.exception("_rename_to_standard: error for doc %d (%s)", doc.id, doc.filename)
+            logger.exception(
+                "_rename_to_standard: error for doc %d (%s)", doc.id, _name_len(doc.filename)
+            )
             stats["errors"] += 1
 
     # Batch-rename all collected files on GDrive
@@ -1203,7 +1336,9 @@ async def _rename_to_standard(db: Database, gdrive: GDriveClient, *, patient_id:
 
             # Update DB filename (keep original_filename for reversibility)
             await db.update_document_filename(doc.id, new_name)
-            logger.info("Renamed '%s' → '%s' (doc %d)", doc.filename, new_name, doc.id)
+            logger.info(
+                "Renamed '%s' → '%s' (doc %d)", _name_len(doc.filename), _name_len(new_name), doc.id
+            )
             stats["renamed"] += 1
             stats["renamed_ids"].append(doc.id)
 
@@ -1585,12 +1720,14 @@ async def enhance_documents(
             logger.warning(
                 "enhance_documents: doc %d (%s) timed out after %.0fs — skipping",
                 doc.id,
-                doc.filename,
+                _name_len(doc.filename),
                 ENHANCE_TIMEOUT_S,
             )
             stats["errors"] += 1
         except Exception:
-            logger.exception("enhance_documents: error on doc %d (%s)", doc.id, doc.filename)
+            logger.exception(
+                "enhance_documents: error on doc %d (%s)", doc.id, _name_len(doc.filename)
+            )
             stats["errors"] += 1
         finally:
             # Per-doc reclaim — addresses #426 memory leak under nightly batch.
@@ -1859,6 +1996,8 @@ async def extract_all_metadata(
                 from oncofiles.tools._helpers import _extract_pdf_text
 
                 try:
+                    if is_drive_only_file_id(doc.file_id):
+                        raise LookupError("Drive-only document (#777)")
                     content_bytes = files.download(doc.file_id)
                 except Exception:
                     if gdrive and doc.gdrive_id:
@@ -1879,7 +2018,7 @@ async def extract_all_metadata(
                 logger.warning(
                     "extract_all_metadata: no text for doc %d (%s) — skipping",
                     doc.id,
-                    doc.filename,
+                    _name_len(doc.filename),
                 )
                 stats["skipped"] += 1
                 continue
@@ -1892,7 +2031,7 @@ async def extract_all_metadata(
             logger.info(
                 "extract_all_metadata: doc %d (%s) — metadata extracted",
                 doc.id,
-                doc.filename,
+                _name_len(doc.filename),
             )
             stats["processed"] += 1
 
@@ -1913,7 +2052,9 @@ async def extract_all_metadata(
             if content_bytes is not None:
                 del content_bytes
         except Exception:
-            logger.exception("extract_all_metadata: error on doc %d (%s)", doc.id, doc.filename)
+            logger.exception(
+                "extract_all_metadata: error on doc %d (%s)", doc.id, _name_len(doc.filename)
+            )
             stats["errors"] += 1
 
     logger.info("extract_all_metadata: done — %s", stats)
@@ -1951,6 +2092,8 @@ async def _enhance_document(
 
         content_bytes = None
         try:
+            if is_drive_only_file_id(doc.file_id):
+                raise LookupError("Drive-only document (#777)")
             content_bytes = files.download(doc.file_id)
         except Exception:
             if gdrive and doc.gdrive_id:
@@ -2054,7 +2197,9 @@ async def _enhance_document(
             del content_bytes
 
     if not text_parts:
-        logger.warning("enhance: no text available for doc %d (%s)", doc.id, doc.filename)
+        logger.warning(
+            "enhance: no text available for doc %d (%s)", doc.id, _name_len(doc.filename)
+        )
         return False
 
     full_text = "\n\n".join(text_parts)
@@ -2068,12 +2213,14 @@ async def _enhance_document(
             full_text, db=db, document_id=doc.id, filename=doc.filename
         )
         await db.update_structured_metadata(doc.id, json.dumps(metadata, ensure_ascii=False))
-        logger.info("enhance: doc %d (%s) — structured metadata extracted", doc.id, doc.filename)
+        logger.info(
+            "enhance: doc %d (%s) — structured metadata extracted", doc.id, _name_len(doc.filename)
+        )
     except Exception:
         logger.warning(
             "enhance: doc %d (%s) — structured metadata extraction failed",
             doc.id,
-            doc.filename,
+            _name_len(doc.filename),
         )
 
     # ── Backfill null top-level fields via AI classification ──────────────
@@ -2181,7 +2328,7 @@ async def _enhance_document(
     logger.info(
         "enhance: doc %d (%s) — summary=%d chars, tags=%s",
         doc.id,
-        doc.filename,
+        _name_len(doc.filename),
         len(summary),
         tags_json,
     )

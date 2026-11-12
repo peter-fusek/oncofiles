@@ -1016,7 +1016,8 @@ async def _index_patient(db, pid: str, *, force_ids: set[int] | None = None) -> 
             stats["errors"] += 1
             logger.exception("curated index: %s failed for %s", rec.filename, pid)
     for gdrive_id, row in state.items():
-        if gdrive_id not in seen and not row["deleted"]:
+        # never a Drive-only row the legacy sync/upload created (#777)
+        if gdrive_id not in seen and not row["deleted"] and not row.get("foreign"):
             await db.delete_document(row["id"], patient_id=pid)  # soft delete
             stats["removed"] += 1
     try:
