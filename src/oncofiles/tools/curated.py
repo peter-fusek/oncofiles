@@ -106,14 +106,15 @@ def request_stop() -> None:
 
 
 # background jobs that write nothing: a deploy may cut them
-_NO_WRITE_KINDS = frozenset({"llm_shadow", "clinical_preview"})
+_NO_WRITE_KINDS = frozenset({"llm_shadow", "clinical_preview", "extraction_scorecard"})
 
 
 def run_active() -> bool:
     """True while any curated run or re-OCR executes (on /health, CI deploys wait).
 
-    An LLM-extract shadow job (#714) or a clinical extraction preview (#726)
-    writes nothing, so a deploy may cut it."""
+    An LLM-extract shadow job (#714), a clinical extraction preview (#726) or
+    an extraction scorecard (#773) writes no facts, so a deploy may cut it
+    (the scorecard's own summary row is then marked interrupted)."""
     return any(r.get("state") == "running" for r in _runs.values()) or any(
         j.get("state") == "running" and j.get("kind") not in _NO_WRITE_KINDS
         for j in _reocr_jobs.values()
@@ -1877,6 +1878,55 @@ def _overrides(thinking, sampling, timeout_s, reasoning_marker) -> dict:
             "reasoning_marker": reasoning_marker}  # fmt: skip
 
 
+_SHADOW_DOC_KEYS = (
+    "method", "pages", "pages_used", "pages_not_assessed", "pages_truncated", "page_errors",
+    "finish_reasons", "page_diagnostics", "warnings", "dob_known", "birth_date_guard",
+    "dates_unchecked_no_dob", "facts_from_content", "facts_from_reasoning", "dropped", "seconds",
+)  # fmt: skip
+
+
+async def _lab_shadow_document(db, pid: str, d: dict, *, vocab, births, stored, cfg) -> dict:
+    """ONE document of the LLM-extract shadow (#714 phase 2a): extractor +
+    generic verifier on the stored page text, compared with the stored rule
+    facts (``stored`` = the patient's ``fact_verification_rows``). Writes
+    nothing; the model call runs local-only. Shared by the shadow preview and
+    the extraction scorecard (#773)."""
+    from oncofiles.cloud_guard import local_only
+    from oncofiles.curated import llm_extract, verifier
+
+    entry = {"document_id": d["id"], "category": d.get("category")}
+    pages = [(int(p["page_number"]), p.get("extracted_text") or "")
+             for p in await db.get_ocr_pages(d["id"], patient_id=pid)]  # fmt: skip
+    if not any(t.strip() for _, t in pages):
+        return {**entry, "result": "skipped", "error": "no page text"}
+    meta = d.get("structured_metadata") or {}
+    day = str(d.get("document_date") or "")[:10] or None
+
+    def _blocking():
+        with local_only("curated LLM extract shadow"):
+            return llm_extract.extract_document(
+                pages, vocab=vocab, report_date=day, birth_dates=births,
+                source_reason=_source_reason(meta), stop=_stopping.is_set, cfg=cfg,
+            )  # fmt: skip
+
+    try:
+        out = await asyncio.to_thread(_blocking)
+    except Exception as exc:
+        logger.exception("llm shadow extraction of doc %s failed", d["id"])
+        return {**entry, "result": "failed", "error": type(exc).__name__}
+    rows = [r for r in stored if r["source_document_id"] == d["id"]]
+    # text-only extraction never upgrades a transcription (#714 rule)
+    verifier.inherit_transcription_reasons(out["facts"], rows)
+    cross = verifier.transcription_pages(rows, _source_reason(meta), [n for n, _ in pages])
+    return {
+        **entry, "result": "compared", **{k: out[k] for k in _SHADOW_DOC_KEYS},
+        **llm_extract.shadow_compare(
+            rows, out["facts"], not_assessed_pages=out["pages_not_assessed"],
+            crosscheck_pages=cross,
+        ),
+    }  # fmt: skip
+
+
 async def _llm_shadow_job(
     db,
     pid: str,
@@ -1892,7 +1942,6 @@ async def _llm_shadow_job(
     run row. One model call at a time (one LM Studio slot); local only.
     ``thinking`` / ``sampling`` (#767) and ``timeout_s`` (#770)
     override the env for this job only."""
-    from oncofiles.cloud_guard import local_only
     from oncofiles.curated import llm_extract, llm_extract_call, verifier
     from oncofiles.curated.facts_rules import Vocabulary
 
@@ -1906,48 +1955,15 @@ async def _llm_shadow_job(
         births = await _all_birth_dates(db, pid)
         stored = await db.fact_verification_rows(patient_id=pid)
         for d in docs:
-            entry = {"document_id": d["id"], "category": d.get("category")}
             if _stopping.is_set():
-                report.append({**entry, "result": "skipped", "error": "stopping"})
+                report.append({"document_id": d["id"], "category": d.get("category"),
+                               "result": "skipped", "error": "stopping"})  # fmt: skip
                 continue
-            pages = [(int(p["page_number"]), p.get("extracted_text") or "")
-                     for p in await db.get_ocr_pages(d["id"], patient_id=pid)]  # fmt: skip
-            if not any(t.strip() for _, t in pages):
-                report.append({**entry, "result": "skipped", "error": "no page text"})
-                continue
-            meta = d.get("structured_metadata") or {}
-            day = str(d.get("document_date") or "")[:10] or None
-
-            def _blocking(pages=pages, meta=meta, day=day):
-                with local_only("curated LLM extract shadow"):
-                    return llm_extract.extract_document(
-                        pages, vocab=vocab, report_date=day, birth_dates=births,
-                        source_reason=_source_reason(meta), stop=_stopping.is_set, cfg=cfg,
-                    )  # fmt: skip
-
-            try:
-                out = await asyncio.to_thread(_blocking)
-            except Exception as exc:
-                logger.exception("llm shadow extraction of doc %s failed", d["id"])
-                report.append({**entry, "result": "failed", "error": type(exc).__name__})
-                continue
-            rows = [r for r in stored if r["source_document_id"] == d["id"]]
-            # text-only extraction never upgrades a transcription (#714 rule)
-            verifier.inherit_transcription_reasons(out["facts"], rows)
-            cross = verifier.transcription_pages(rows, _source_reason(meta), [n for n, _ in pages])
-            meta_keys = ("method", "pages", "pages_used", "pages_not_assessed", "pages_truncated",
-                         "page_errors", "finish_reasons", "page_diagnostics", "warnings",
-                         "dob_known",
-                         "birth_date_guard",
-                         "dates_unchecked_no_dob", "facts_from_content",
-                         "facts_from_reasoning", "dropped", "seconds")  # fmt: skip
-            report.append({
-                **entry, "result": "compared", **{k: out[k] for k in meta_keys},
-                **llm_extract.shadow_compare(
-                    rows, out["facts"], not_assessed_pages=out["pages_not_assessed"],
-                    crosscheck_pages=cross,
-                ),
-            })  # fmt: skip
+            report.append(
+                await _lab_shadow_document(
+                    db, pid, d, vocab=vocab, births=births, stored=stored, cfg=cfg
+                )
+            )
         done = [r for r in report if r.get("result") == "compared"]
         totals = {k: sum(r[k] for r in done) for k in
                   ("rule_facts", "llm_facts", "llm_machine", "agree", "agree_machine",
@@ -2118,6 +2134,41 @@ def _clinical_totals(report: list[dict]) -> dict:
     }
 
 
+async def _clinical_document(
+    db, pid: str, d: dict, *, vocab, births, cfg
+) -> tuple[dict, dict | None]:
+    """ONE document of the clinical extraction (#726): extractor + generic
+    verifier on the stored page text; the model call runs local-only. Returns
+    the report entry and the extractor output (``None`` when the document was
+    skipped or failed). Stores nothing; shared by the preview / write job and
+    the extraction scorecard (#773)."""
+    from oncofiles.cloud_guard import local_only
+    from oncofiles.curated import llm_extract_clinical as lx
+
+    entry = {"document_id": d["id"], "category": d.get("category")}
+    pages = [(int(p["page_number"]), p.get("extracted_text") or "")
+             for p in await db.get_ocr_pages(d["id"], patient_id=pid)]  # fmt: skip
+    if not any(t.strip() for _, t in pages):
+        return {**entry, "result": "skipped", "error": "no page text"}, None
+    meta = d.get("structured_metadata") or {}
+    day = str(d.get("document_date") or "")[:10] or None
+
+    def _blocking():
+        with local_only("curated clinical extraction"):
+            return lx.extract_document(
+                pages, vocab=vocab, report_date=day, birth_dates=births,
+                source_reason=_source_reason(meta), stop=_stopping.is_set, cfg=cfg,
+            )  # fmt: skip
+
+    try:
+        out = await asyncio.to_thread(_blocking)
+    except Exception as exc:
+        logger.exception("clinical extraction of doc %s failed", d["id"])
+        return {**entry, "result": "failed", "error": type(exc).__name__}, None
+    entry.update({k: out[k] for k in _CLINICAL_DOC_KEYS}, result="previewed")
+    return entry, out
+
+
 async def _clinical_job(
     db,
     pid: str,
@@ -2137,7 +2188,6 @@ async def _clinical_job(
     ``sampling`` (#767) and ``timeout_s`` (#770) override the
     env for a PREVIEW only."""
     from oncofiles import config
-    from oncofiles.cloud_guard import local_only
     from oncofiles.curated import clinical_store, llm_extract_call, verifier, verifier_clinical
     from oncofiles.curated import llm_extract_clinical as lx
     from oncofiles.curated.facts_rules import Vocabulary
@@ -2167,32 +2217,17 @@ async def _clinical_job(
             vocab = Vocabulary.from_rows(await db.fact_code_vocabulary())
             model = config.LOCAL_LLM_MODEL or None
             for d in docs:
-                entry = {"document_id": d["id"], "category": d.get("category")}
                 if _stopping.is_set():
-                    report.append({**entry, "result": "skipped", "error": "stopping"})
+                    report.append({"document_id": d["id"], "category": d.get("category"),
+                                   "result": "skipped", "error": "stopping"})  # fmt: skip
                     continue
-                pages = [(int(p["page_number"]), p.get("extracted_text") or "")
-                         for p in await db.get_ocr_pages(d["id"], patient_id=pid)]  # fmt: skip
-                if not any(t.strip() for _, t in pages):
-                    report.append({**entry, "result": "skipped", "error": "no page text"})
+                entry, out = await _clinical_document(
+                    db, pid, d, vocab=vocab, births=births, cfg=cfg
+                )
+                if out is None:
+                    report.append(entry)
                     continue
-                meta = d.get("structured_metadata") or {}
                 day = str(d.get("document_date") or "")[:10] or None
-
-                def _blocking(pages=pages, meta=meta, day=day):
-                    with local_only("curated clinical extraction"):
-                        return lx.extract_document(
-                            pages, vocab=vocab, report_date=day, birth_dates=births,
-                            source_reason=_source_reason(meta), stop=_stopping.is_set, cfg=cfg,
-                        )  # fmt: skip
-
-                try:
-                    out = await asyncio.to_thread(_blocking)
-                except Exception as exc:
-                    logger.exception("clinical extraction of doc %s failed", d["id"])
-                    report.append({**entry, "result": "failed", "error": type(exc).__name__})
-                    continue
-                entry.update({k: out[k] for k in _CLINICAL_DOC_KEYS}, result="previewed")
                 if write and out["pages_not_assessed"]:
                     entry.update(result="skipped", error="a page was not assessed: nothing stored")
                 elif write:
@@ -2482,6 +2517,226 @@ async def curated_clinical_extract(
     )  # fmt: skip
 
 
+# ── extraction scorecard (#773): fixed page set, counts only ──────────────
+
+SCORECARD_MAX_DOCS = 25
+_SCORECARD_LABEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,59}")
+
+
+async def _scorecard_job(
+    db,
+    pid: str,
+    clinical_docs: list[dict],
+    lab_docs: list[dict],
+    *,
+    row_id: int,
+    label: str,
+    compare_to_label: str | None,
+    requested: int,
+    missing: int,
+    thinking: str | None = None,
+    sampling: str | None = None,
+    timeout_s: int | None = None,
+    reasoning_marker: str | None = None,
+) -> None:
+    """Run the existing extractors + verifiers over a fixed document set and
+    score them (#773). DRY RUN: no facts, no Drive; the only write is the
+    job's own ``curated_runs`` row (trigger ``scorecard``) with the
+    aggregated counts. Documents run one after another (one LM Studio slot);
+    the task runs inside ``local_only()``."""
+    from oncofiles.curated import (
+        llm_extract,
+        llm_extract_call,
+        scorecard,
+        verifier,
+        verifier_clinical,
+    )
+    from oncofiles.curated import llm_extract_clinical as lx
+    from oncofiles.curated.facts_rules import Vocabulary
+
+    job = _reocr_jobs[pid]
+    cfg = llm_extract_call.settings(thinking, sampling, timeout_s, reasoning_marker)
+    cards: list[dict] = []
+    stopped = False
+    try:
+        births = await _all_birth_dates(db, pid)
+        vocab = Vocabulary.from_rows(await db.fact_code_vocabulary())
+        stored = await db.fact_verification_rows(patient_id=pid) if lab_docs else []
+        plan = [("clinical", d) for d in clinical_docs] + [("lab", d) for d in lab_docs]
+        for extractor, d in plan:
+            to_card = scorecard.clinical_card if extractor == "clinical" else scorecard.lab_card
+            if _stopping.is_set():
+                stopped = True
+                cards.append(to_card({"document_id": d["id"], "category": d.get("category"),
+                                      "result": "skipped", "error": "stopping"}))  # fmt: skip
+                continue
+            if extractor == "clinical":
+                entry, _ = await _clinical_document(db, pid, d, vocab=vocab, births=births, cfg=cfg)
+            else:
+                entry = await _lab_shadow_document(
+                    db, pid, d, vocab=vocab, births=births, stored=stored, cfg=cfg
+                )
+            cards.append(to_card(entry))
+        stopped = stopped or _stopping.is_set()  # a stop inside a document: pages unread
+        totals = scorecard.totals(cards, requested=requested, missing=missing)
+        prev = await db.get_last_scorecard(
+            patient_id=pid, label_prefix=compare_to_label, before_id=row_id
+        )
+        prev_report = (prev or {}).get("report") or {}
+        job.update(state="done", report={
+            "dry_run": True, "scorecard": scorecard.SCORECARD_VERSION, "label": label,
+            "partial": stopped,
+            "extractors": {"clinical": lx.EXTRACTOR_VERSION,
+                           "clinical_verifier": verifier_clinical.CLINICAL_VERIFIER_VERSION,
+                           "lab": llm_extract.EXTRACTOR_VERSION,
+                           "lab_verifier": verifier.VERIFIER_VERSION},
+            "settings": {**cfg.report(),
+                         "overrides": _overrides(thinking, sampling, timeout_s, reasoning_marker)},
+            "totals": totals,
+            "compared_to": {"row_id": prev["id"], "label": prev_report.get("label"),
+                            "finished_at": prev.get("finished_at")} if prev else None,
+            "delta": scorecard.delta(prev_report.get("totals"), totals),
+            "documents": cards,
+        })  # fmt: skip
+    except Exception as exc:
+        logger.exception("extraction scorecard failed for %s", pid)
+        job.update(state="failed", error=type(exc).__name__,
+                   report={"dry_run": True, "label": label, "documents": cards})  # fmt: skip
+    finally:
+        job["finished_at"] = datetime.now(UTC).isoformat()
+        status = "failed"
+        if job.get("state") == "done":
+            status = "partial" if stopped else "ok"  # only "ok" is a delta baseline
+        try:
+            from oncofiles.curated import scorecard
+
+            await db.finish_curated_run(
+                row_id, patient_id=pid, status=status, message=job.get("error") or "",
+                report=scorecard.persisted(job.get("report") or {}),
+            )  # fmt: skip
+        except Exception:
+            logger.exception("could not persist the extraction scorecard for %s", pid)
+
+
+async def curated_extraction_scorecard(
+    ctx: Context,
+    document_ids: list[int],
+    patient_slug: str | None = None,
+    lab_document_ids: list[int] | None = None,
+    label: str = "scorecard",
+    compare_to_label: str | None = None,
+    thinking: str | None = None,
+    sampling: str | None = None,
+    timeout_s: int | None = None,
+    reasoning_marker: str | None = None,
+) -> str:
+    """DRY RUN extraction scorecard (#773): measure the LOCAL-model extractors
+    on a fixed set of curated documents, as counts and codes only.
+
+    ``document_ids`` run through the clinical extractor (diagnoses, biomarkers,
+    treatments, procedures, lesions, planned dates); ``lab_document_ids``
+    through the lab extractor, compared with the stored rule facts. Both use
+    the same extractor + verifier code as curated_clinical_extract_preview and
+    curated_llm_extract_preview. Writes NO facts and nothing to Drive; only a
+    summary row (trigger ``scorecard``: label, settings, aggregated totals, no
+    values) that never counts as a curated run or preview.
+
+    The report (poll curated_reocr_status, kind ``extraction_scorecard``) has,
+    per document: pages; per page finish / seconds / completion and reasoning
+    tokens; items per kind as machine / unverified / dropped; unverified and
+    drop reason codes; for lab documents agree / value_mismatch / rule_only /
+    llm_only. Totals: stability (% finish=stop, timeouts, truncations, % pages
+    with reasoning_tokens > 50), speed (p50/p95 seconds and completion tokens
+    per page), trust (% machine), lab agreement (% agree of comparable =
+    agree + value_mismatch), the settings used, and ``delta`` metric by metric
+    against the previous ok scorecard of this patient (or the newest one whose
+    label starts with ``compare_to_label``), with a ``regressions`` list.
+    Never values, labels or evidence text.
+
+    Refused while a curated run, re-OCR, re-read, extraction or other preview
+    is active for the patient. Max 25 documents in total, one model call at a
+    time; about a minute per page.
+
+    Args:
+        document_ids: clinical documents (explicit ids).
+        lab_document_ids: lab documents (explicit ids), optional.
+        label: short name of this scorecard, e.g. "v1-baseline"
+            (letters, digits, ``. _ : -``; max 60).
+        compare_to_label: compare with the newest scorecard whose label starts
+            with this; null = the previous scorecard.
+        thinking / sampling / timeout_s / reasoning_marker: per-job overrides,
+            as in curated_clinical_extract_preview; echoed in ``settings``.
+    """
+    from oncofiles import config
+    from oncofiles.curated import llm, llm_extract_call
+
+    llm_extract_call.validate_overrides(thinking, sampling, timeout_s, reasoning_marker)
+    for name, value in (("label", label), ("compare_to_label", compare_to_label)):
+        if value is not None and not _SCORECARD_LABEL.fullmatch(str(value)):
+            return json.dumps({"error": f"{name} must be 1-60 letters, digits or . _ : - "
+                               "(starting with a letter or digit)"})  # fmt: skip
+    clinical_ids = list(dict.fromkeys(int(i) for i in (document_ids or [])))
+    lab_ids = list(dict.fromkeys(int(i) for i in (lab_document_ids or [])))
+    requested = len(clinical_ids) + len(lab_ids)
+    if not requested:
+        return json.dumps({"error": "document_ids (or lab_document_ids) is required"})
+    if requested > SCORECARD_MAX_DOCS:
+        return json.dumps({"error": f"too many documents: at most {SCORECARD_MAX_DOCS} in total, "
+                           f"got {requested}"})  # fmt: skip
+    if clinical_ids and config.LLM_CLINICAL_EXTRACT_DISABLED:
+        return json.dumps({"error": "disabled by LLM_CLINICAL_EXTRACT_DISABLED=true"})
+    if lab_ids and config.LLM_EXTRACT_SHADOW_DISABLED:
+        return json.dumps({"error": "disabled by LLM_EXTRACT_SHADOW_DISABLED=true"})
+    if not llm.configured():
+        return json.dumps({"error": "local model not configured (LOCAL_LLM_BASE_URL/MODEL)"})
+    pid = await _resolve_patient_id(patient_slug, ctx)
+    db = _get_db(ctx)
+    known = {r["id"]: r for r in await db.curated_reocr_candidates(patient_id=pid)}
+    clinical_docs = [known[i] for i in clinical_ids if i in known]
+    lab_docs = [known[i] for i in lab_ids if i in known]
+    missing = sorted({i for i in clinical_ids + lab_ids if i not in known})
+    if not clinical_docs and not lab_docs:
+        return json.dumps({"status": "nothing to do", "missing_document_ids": missing})
+    if _busy(pid):
+        return json.dumps({"error": "busy: a curated run, re-OCR, re-read, extraction or "
+                           "preview is in progress for this patient"})  # fmt: skip
+    # Reserve the patient's job slot before any further await (one job per patient).
+    previous = _reocr_jobs.get(pid)
+    _reocr_jobs[pid] = job = {
+        "state": "running", "kind": "extraction_scorecard", "dry_run": True, "label": label,
+        "compare_to_label": compare_to_label, "started_at": datetime.now(UTC).isoformat(),
+        "overrides": _overrides(thinking, sampling, timeout_s, reasoning_marker),
+        "documents": [{"document_id": d["id"], "category": d.get("category"),
+                       "extractor": "clinical"} for d in clinical_docs]
+        + [{"document_id": d["id"], "category": d.get("category"), "extractor": "lab"}
+           for d in lab_docs],
+        "missing_document_ids": missing,
+    }  # fmt: skip
+    try:
+        row_id = await db.insert_curated_run(patient_id=pid, dry_run=True, trigger="scorecard")
+    except Exception as exc:
+        if previous is not None:
+            _reocr_jobs[pid] = previous
+        else:
+            _reocr_jobs.pop(pid, None)
+        logger.exception("could not start the extraction scorecard for %s", pid)
+        return json.dumps({"error": f"could not record the scorecard ({type(exc).__name__})"})
+    job["run_row_id"] = row_id
+    from oncofiles.cloud_guard import local_only
+
+    # The task copies the current context: the WHOLE job runs local-only.
+    with local_only("curated extraction scorecard"):
+        job["task"] = asyncio.create_task(
+            _scorecard_job(
+                db, pid, clinical_docs, lab_docs, row_id=row_id, label=label,
+                compare_to_label=compare_to_label, requested=requested, missing=len(missing),
+                thinking=thinking, sampling=sampling, timeout_s=timeout_s,
+                reasoning_marker=reasoning_marker,
+            )
+        )  # fmt: skip
+    return json.dumps(_public_job(pid), ensure_ascii=False)
+
+
 async def curated_reocr_status(ctx: Context, patient_slug: str | None = None) -> str:
     """State and report of the last re-OCR job for this patient (#660). Read-only."""
     pid = await _resolve_patient_id(patient_slug, ctx)
@@ -2527,3 +2782,4 @@ def register(mcp):
     mcp.tool()(curated_llm_extract_preview)
     mcp.tool()(curated_clinical_extract_preview)
     mcp.tool()(curated_clinical_extract)
+    mcp.tool()(curated_extraction_scorecard)
