@@ -372,6 +372,7 @@ async def test_the_preview_writes_nothing_and_runs_local_only(db, monkeypatch):
 
     monkeypatch.setattr(llm, "chat", fake_chat)
     monkeypatch.setattr(tool, "_reocr_jobs", {})
+    monkeypatch.setattr(tool, "_readme_births", {ERIKA_UUID: set()})  # no README DOB
     before = await _snapshot(db)
     started = json.loads(await tool.curated_llm_extract_preview(_ctx(db), document_ids=[DOC]))
     assert started["state"] == "running" and started["kind"] == "llm_shadow"
@@ -391,6 +392,49 @@ async def test_the_preview_writes_nothing_and_runs_local_only(db, monkeypatch):
     assert await _snapshot(db) == before  # nothing written anywhere
     dumped = json.dumps(_without_timing(job))
     assert "0.45" not in dumped and "0,45" not in dumped and "S-ALT" not in dumped
+
+
+async def test_the_lab_shadow_reads_the_readme_dob_like_the_clinical_path(db, monkeypatch):
+    """#778: the DOB only in the README contract (none in patient context)
+    activates the lab shadow's birth-date guard, through the same resolver
+    (``_all_birth_dates``) as the clinical extractor."""
+    from unittest.mock import AsyncMock, patch
+
+    from oncofiles import config
+    from oncofiles.tools import curated as tool
+    from tests.test_curated_runner import FakeDrive
+
+    await _seed(db)
+    monkeypatch.setattr(config, "LLM_EXTRACT_SHADOW_DISABLED", False)
+    monkeypatch.setattr(config, "LOCAL_LLM_BASE_URL", "http://local.invalid/v1")
+    monkeypatch.setattr(config, "LOCAL_LLM_MODEL", "mock-model")
+    monkeypatch.setattr(llm, "chat", lambda system, user, **kw: model_answer())
+    monkeypatch.setattr(tool, "_reocr_jobs", {})
+    monkeypatch.setattr(tool, "_readme_births", {})  # not cached: read from the README
+    assert tool._birth_dates(ERIKA_UUID) == set()  # nothing in patient context
+    drive = FakeDrive()  # its synthetic README contract carries a birth date
+    resolved = []
+    real = tool._all_birth_dates
+
+    async def spy(db_, pid):
+        resolved.append(pid)
+        return await real(db_, pid)
+
+    monkeypatch.setattr(tool, "_all_birth_dates", spy)
+    with (
+        patch("oncofiles.server._create_patient_clients",
+              AsyncMock(return_value=(MagicMock(), None, None, drive.root))),
+        patch("oncofiles.curated.drive_ops.DriveOps", lambda _own: drive),
+    ):  # fmt: skip
+        await tool.curated_llm_extract_preview(_ctx(db), document_ids=[DOC])
+        await asyncio.wait_for(tool._reocr_jobs[ERIKA_UUID]["task"], 10)
+    job = json.loads(await tool.curated_reocr_status(_ctx(db)))
+    assert job["state"] == "done", job
+    doc = job["report"]["documents"][0]
+    assert doc["dob_known"] is True and doc["birth_date_guard"] == "active"
+    assert doc["dates_unchecked_no_dob"] == 0
+    assert resolved == [ERIKA_UUID]  # the shared resolver, not a copy
+    assert tool._readme_births[ERIKA_UUID]  # cached for the next job
 
 
 # ── infra review: truncation, budget, DOB guard ─────────────────────────

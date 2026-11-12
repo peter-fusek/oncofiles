@@ -1902,14 +1902,9 @@ async def _llm_shadow_job(
     overrides = _overrides(thinking, sampling, prefill, timeout_s, reasoning_marker)
     report: list[dict] = []
     try:
-        try:
-            from oncofiles import patient_context
-
-            await patient_context.load_from_db(db.db, pid)
-        except Exception:
-            logger.warning("llm shadow: patient context not loaded for %s", pid)
         vocab = Vocabulary.from_rows(await db.fact_code_vocabulary())
-        births = _birth_dates(pid)
+        # same DOB resolution as the clinical path: context + README (#778)
+        births = await _all_birth_dates(db, pid)
         stored = await db.fact_verification_rows(patient_id=pid)
         for d in docs:
             entry = {"document_id": d["id"], "category": d.get("category")}
@@ -2064,13 +2059,14 @@ CLINICAL_MAX_DOCS = 10
 async def _all_birth_dates(db, pid: str) -> set[str]:
     """Every birth date known for the patient (ISO): patient context plus the
     README contract (cached by the last index; read from Drive, read-only,
-    when not cached yet). Never used as a fact date."""
+    when not cached yet). Never used as a fact date. The one DOB resolution
+    of every LLM extractor: lab shadow and clinical alike (#778)."""
     try:
         from oncofiles import patient_context
 
         await patient_context.load_from_db(db.db, pid)
     except Exception:
-        logger.warning("clinical extract: patient context not loaded for %s", pid)
+        logger.warning("llm extract: patient context not loaded for %s", pid)
     if pid not in _readme_births:
         try:
             from oncofiles.curated import indexer
@@ -2090,7 +2086,7 @@ async def _all_birth_dates(db, pid: str) -> set[str]:
 
                 _readme_births[pid] = set(await asyncio.to_thread(_blocking))
         except Exception:
-            logger.warning("clinical extract: README birth dates not read for %s", pid)
+            logger.warning("llm extract: README birth dates not read for %s", pid)
     return set(_birth_dates(pid)) | _readme_births.get(pid, set())
 
 
