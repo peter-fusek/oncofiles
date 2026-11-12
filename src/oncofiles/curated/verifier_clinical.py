@@ -26,12 +26,16 @@ report states it), marked ``date_source = document`` — as the lab verifier doe
 from __future__ import annotations
 
 import re
+import unicodedata
+from datetime import date
 
 from oncofiles.curated import verifier as _lab_verifier
 from oncofiles.curated.reread_verify import date_printed
 from oncofiles.curated.verifier import _birth_isos, _value_pattern, parse_printed_date, ws
 
-CLINICAL_VERIFIER_VERSION = 2  # 2: reasoning-channel items never machine
+# 2: reasoning-channel items never machine; 3: printed date forms "5.3.27"
+# and month names ("5. marca 2027", "marec 2027", Slovak and Czech) parse
+CLINICAL_VERIFIER_VERSION = 3
 
 # answer key -> fields whose (non-empty) value must occur inside the evidence
 TOKEN_FIELDS: dict[str, tuple[str, ...]] = {
@@ -81,10 +85,33 @@ LESION_MM_MAX = 1000.0  # a lesion size above 1 m is a misread, never a measurem
 _NUMERIC = re.compile(r"\d+(?:[.,]\d+)?")
 _MONTH_YEAR = re.compile(r"^\s*(\d{1,2})\s*[./]\s*((?:19|20)\d{2})\s*$")
 _YEAR = re.compile(r"^\s*((?:19|20)\d{2})\s*$")
+_DMY2 = re.compile(r"^\s*(\d{1,2})\.\s?(\d{1,2})\.\s?(\d{2})\s*$")  # "5.3.27"
+_NAMED = re.compile(r"^\s*(?:(\d{1,2})\.\s*)?([^\W\d_]+)\s+((?:19|20)\d{2})\s*$")
+# Slovak and Czech month names (nominative, genitive, locative), without
+# diacritics: a printed form, so data, not layout.
+_MONTHS = {
+    w: n
+    for n, words in enumerate((
+        "januar januara januari leden ledna lednu",
+        "februar februara februari unor unora unoru",
+        "marec marca marci brezen brezna breznu",
+        "april aprila aprili duben dubna dubnu",
+        "maj maja maji kveten kvetna kvetnu",
+        "jun juna juni cerven cervna cervnu",
+        "jul jula juli cervenec cervence cervenci",
+        "august augusta auguste srpen srpna srpnu",
+        "september septembra septembri zari",
+        "oktober oktobra oktobri rijen rijna rijnu",
+        "november novembra novembri listopad listopadu",
+        "december decembra decembri prosinec prosince prosinci",
+    ), 1)
+    for w in words.split()
+}  # fmt: skip
 _DATE_LIKE = re.compile(
     r"\d{1,2}\.\s?\d{1,2}\.\s?\d{2,4}|\d{4}-\d{2}-\d{2}|\d{1,2}\s?[./]\s?(?:19|20)\d{2}"
     r"|\b\d{1,2}:\d{2}\b"
 )
+_NAMED_LIKE = re.compile(r"(?<!\w)(?:\d{1,2}\.\s*)?([^\W\d_]+)\s+(?:19|20)\d{2}(?!\d)")
 _ICD = re.compile(r"^[A-Z]\d{2}(?:\.\d{1,2})?[A-Z]?$")
 _CANCER = re.compile(
     r"karcin|carcin|zhubn|malígn|malign|nádor|tumor|sarkóm|sarcom|lymfóm|lymphom|leukém"
@@ -112,14 +139,34 @@ def _short(field: str) -> str:
     return field.removesuffix("_as_printed")
 
 
+def _month_number(word: str) -> int | None:
+    plain = unicodedata.normalize("NFD", word.lower())
+    return _MONTHS.get("".join(c for c in plain if not unicodedata.combining(c)))
+
+
 def parse_any_date(printed: str | None) -> tuple[str | None, str | None]:
-    """(iso, precision): '5.3.2027' → ('2027-03-05', 'day'), '03/2027' →
-    ('2027-03', 'month'), '2027' → ('2027', 'year'). Never guesses a day."""
+    """(iso, precision): '5.3.2027' / '5.3.27' / '5. marca 2027' →
+    ('2027-03-05', 'day'), '03/2027' / 'marec 2027' → ('2027-03', 'month'),
+    '2027' → ('2027', 'year'). Never guesses a day or a year."""
     if not printed:
         return None, None
     full = parse_printed_date(printed)
     if full:
         return full, "datetime" if "T" in full else "day"
+    if m := _DMY2.match(printed):  # two-digit year: 00-68 → 20xx (strptime's %y)
+        d, mo, yy = (int(g) for g in m.groups())
+        try:
+            return date(2000 + yy if yy <= 68 else 1900 + yy, mo, d).isoformat(), "day"
+        except ValueError:
+            return None, None
+    if (m := _NAMED.match(printed)) and (month := _month_number(m.group(2))):
+        year = int(m.group(3))
+        if m.group(1) is None:
+            return f"{year:04d}-{month:02d}", "month"
+        try:
+            return date(year, month, int(m.group(1))).isoformat(), "day"
+        except ValueError:
+            return None, None
     if m := _MONTH_YEAR.match(printed):
         month, year = int(m.group(1)), int(m.group(2))
         if 1 <= month <= 12:
@@ -145,6 +192,9 @@ def _numbers_in(numbers: str, evidence: str, *, blank=()) -> bool:
     for b in blank:
         rest = _blank_all(rest, b)
     rest = _DATE_LIKE.sub(lambda m: " " * len(m.group(0)), rest)
+    rest = _NAMED_LIKE.sub(  # "5. marca 2027", only when the word is a month name
+        lambda m: " " * len(m.group(0)) if _month_number(m.group(1)) else m.group(0), rest
+    )
     found = _NUMERIC.findall(numbers or "")
     return bool(found) and all(_value_pattern(n).search(rest) for n in found)
 
@@ -160,11 +210,11 @@ def _check_date(printed: str, *, evidence: str, page: str, births: set[str], rea
     if iso is None:
         reasons.append("date_unparsed")
         return None
-    if precision in ("day", "datetime"):
+    if precision in ("day", "datetime") and not re.search(r"[^\W\d_]", printed):
         on_page, in_evidence = date_printed(iso[:10], page), date_printed(iso[:10], evidence)
-    else:
-        needle = ws(printed).lower()
-        on_page, in_evidence = needle in page.lower(), needle in evidence.lower()
+    else:  # month / year, or a day with a month name: the printed form itself
+        needle = re.compile(rf"(?<!\w){re.escape(ws(printed))}(?!\w)", re.I)
+        on_page, in_evidence = bool(needle.search(page)), bool(needle.search(evidence))
     if not on_page:
         reasons.append("date_not_printed")
     elif not in_evidence:
