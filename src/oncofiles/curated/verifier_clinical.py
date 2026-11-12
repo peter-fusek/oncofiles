@@ -16,8 +16,8 @@ when all of these hold:
   birth date (README contract / patient context);
 * a biomarker label maps to a ``fact_codes`` genetic_variant / biomarker code
   (vocabulary is data); a lesion size has a printed, convertible unit
-  (mm, cm; cm → mm is an exact ×10). A unit taken from the size string itself
-  ("23 x 18 mm") must follow the numbers inside the evidence.
+  (mm, cm; cm → mm is an exact ×10) printed right after the size's numbers
+  inside the evidence ("23 x 18 mm"), never just somewhere in it.
 
 Anything else stays ``unverified`` with reason codes. Nothing is ever filled
 in: a field the model left empty stays empty, and only a lesion size or a
@@ -80,8 +80,8 @@ REASONS = (
     "label_not_biomarker",  # the label maps to a lab / tumour-marker code
     "unit_unconvertible",  # lesion size unit other than mm / cm, or mixed / conflicting units
     "unit_missing",  # lesion size without any printed unit (never guessed)
-    "unit_not_in_evidence",  # unit field not in the evidence, or a unit read from the
-    # size string ("23 x 18 mm") not printed right after those numbers
+    "unit_not_in_evidence",  # the lesion unit is not printed right after the size's numbers
+    # ("uzol 23 x 18, pečeň 15 cm" never makes 23 x 18 a size in cm)
     "implausible",
     "ocr_uncertain",  # "[?]" in the evidence
     "handwritten",  # source reasons, carried from the document
@@ -422,9 +422,7 @@ def verify_item(  # noqa: PLR0912, PLR0915
         dims, unit, why = lesion_size(size, fields.get("unit_as_printed"))
         if why:
             reasons.append(why)
-        elif not ws(fields.get("unit_as_printed")) and not _size_with_unit_printed(
-            size, unit, evidence
-        ):
+        elif not _size_with_unit_printed(size, unit, evidence):  # the unit of THESE numbers
             reasons.append("unit_not_in_evidence")
         if unit and dims:
             derived["unit"] = unit

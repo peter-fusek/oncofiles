@@ -303,6 +303,9 @@ SIZE_PAGE = "\n".join([
     "MR 6.6.2028: ložisko L4 23 x 18 (pozri tabuľku v mm).",
     "MR 6.6.2028: ložisko L4 2 cm x 15 mm.",
     "MR 6.6.2028: ložisko L4 objem 47 cm3.",
+    "MR 6.6.2028: uzol L4 23 x 18, pečeň 15 cm.",
+    "MR 6.6.2028: uzol L4 2,4 x 1,9 cm.",
+    "MR 6.6.2028: uzol L4 2,4 cm x 1,9 cm.",
 ])  # fmt: skip
 SIZE_LINES = SIZE_PAGE.splitlines()
 
@@ -326,6 +329,9 @@ def _size(line: int, size: str, unit: str | None) -> dict:
         (_size(3, "23 x 18", "mm"), [23, 18]),
         (_size(4, "1,5", "cm"), [15]),
         (_size(4, "1,5 cm", "cm."), [15]),
+        (_size(10, "2,4 x 1,9", "cm"), [24, 19]),  # unit field filled, printed after the size
+        (_size(11, "2,4 x 1,9", "cm"), [24, 19]),  # the unit after each number
+        (_size(11, "2,4 cm x 1,9 cm", "cm"), [24, 19]),
     ],
 )
 async def test_printed_lesion_size_forms_convert_to_mm(db, cand, dims_mm):
@@ -340,6 +346,8 @@ async def test_printed_lesion_size_forms_convert_to_mm(db, cand, dims_mm):
     ("cand", "reason"),
     [
         (_size(5, "37 x 29", None), "unit_missing"),  # no unit printed: never guessed
+        (_size(9, "23 x 18", "cm"), "unit_not_in_evidence"),  # "cm" belongs to another size
+        (_size(9, "23 x 18 cm", None), "unit_not_in_evidence"),
         (_size(0, "23 x 18", None), "unit_missing"),  # printed, but not returned: not added
         (_size(6, "23 x 18 mm", None), "unit_not_in_evidence"),  # unit not after the numbers
         (_size(0, "2,3 x 1,8 cm", "mm"), "unit_unconvertible"),  # conflicting units
