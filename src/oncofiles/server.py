@@ -425,7 +425,6 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict]:
         continuous_settings,
         curated_nightly_loop,
         nightly_settings,
-        request_stop,
     )
 
     try:
@@ -465,13 +464,7 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict]:
         }
     finally:
         # #784: shared singletons stop only when their last holder exits.
-        last_loop_holder = curated_nightly_task is None or (
-            scheduler_singleton.release_curated_loop(curated_nightly_task)
-        )
-        if last_loop_holder:
-            request_stop()  # a running curated run finishes its document and logs cleanly
-            if curated_nightly_task is not None:
-                curated_nightly_task.cancel()
+        _release_curated_loop(curated_nightly_task)
         if scheduler and scheduler_singleton.release_scheduler(scheduler):
             scheduler.shutdown(wait=False)
             logger.info("Sync scheduler stopped")
@@ -809,6 +802,24 @@ async def _create_patient_clients(
     )
 
     return (p_gdrive, p_gmail, p_calendar, token.gdrive_folder_id)
+
+
+def _release_curated_loop(task) -> bool:
+    """Lifespan exit for the curated loop (#784). True when it stopped curated work.
+
+    ``request_stop()`` is global (it also stops a run of a newer loop), so it
+    fires only when ``scheduler_singleton.release_curated_loop`` says this
+    holder owns the current loop (or no loop runs at all); a stale holder whose
+    loop already ended is a no-op.
+    """
+    from oncofiles.tools.curated import request_stop
+
+    if not scheduler_singleton.release_curated_loop(task):
+        return False
+    request_stop()  # a running curated run finishes its document and logs cleanly
+    if task is not None:
+        task.cancel()
+    return True
 
 
 def _start_sync_scheduler(

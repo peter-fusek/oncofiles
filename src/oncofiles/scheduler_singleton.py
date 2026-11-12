@@ -132,11 +132,20 @@ def ensure_curated_loop(factory: Callable[[], Any]) -> tuple[Any, bool]:
 
 
 def release_curated_loop(task: Any) -> bool:
-    """Drop one holder. True when the caller was the last and should cancel it."""
+    """Drop one holder. True only when the caller should stop curated work.
+
+    That is the case when ``task`` IS the registered loop and the caller was
+    its last holder, or when the caller never held a loop (``None``) and no
+    other loop is running. A stale holder (its loop ended, e.g. crashed, and a
+    later lifespan registered a new one) gets False: its release must never
+    trigger the global ``request_stop()`` and stop a run of the NEW loop.
+    """
     global _curated_task, _curated_refs, _curated_started_at
     with _lock:
+        if task is None:
+            return not (_curated_task is not None and not _curated_task.done())
         if task is not _curated_task:
-            return True
+            return False  # stale holder: its loop already ended, nothing to stop
         _curated_refs = max(0, _curated_refs - 1)
         if _curated_refs:
             return False

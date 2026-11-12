@@ -115,6 +115,56 @@ async def test_curated_loop_starts_once(caplog):
     await asyncio.gather(task_c, return_exceptions=True)
 
 
+async def test_stale_holder_release_never_stops_the_new_loop(monkeypatch):
+    """Infra review of #785: the old loop crashed, a later lifespan started a new
+    one; the old holder's exit must not call the global request_stop()."""
+    import oncofiles.server as server
+    import oncofiles.tools.curated as curated
+
+    stop_calls: list[int] = []
+    monkeypatch.setattr(curated, "request_stop", lambda: stop_calls.append(1))
+
+    async def crash():
+        raise RuntimeError("synthetic loop crash")
+
+    old, _ = scheduler_singleton.ensure_curated_loop(lambda: asyncio.create_task(crash()))
+    await asyncio.gather(old, return_exceptions=True)
+    assert old.done() and not scheduler_singleton.curated_loop_running()
+
+    new, started = scheduler_singleton.ensure_curated_loop(
+        lambda: asyncio.create_task(asyncio.sleep(3600))
+    )
+    assert started and new is not old
+    try:
+        assert server._release_curated_loop(old) is False
+        assert stop_calls == [], "a stale holder must not stop the new loop's run"
+        assert not new.cancelled() and not new.done()
+        assert scheduler_singleton.curated_loop_running()
+        # A holder without a loop must not stop a running one either.
+        assert server._release_curated_loop(None) is False
+        assert stop_calls == []
+
+        # The real (last) holder of the new loop does stop it.
+        assert server._release_curated_loop(new) is True
+        assert stop_calls == [1]
+        await asyncio.gather(new, return_exceptions=True)
+        assert new.cancelled()
+    finally:
+        new.cancel()
+        await asyncio.gather(new, return_exceptions=True)
+
+
+async def test_release_without_any_loop_still_requests_stop(monkeypatch):
+    """Loop disabled: shutdown keeps calling request_stop() for manual runs."""
+    import oncofiles.server as server
+    import oncofiles.tools.curated as curated
+
+    stop_calls: list[int] = []
+    monkeypatch.setattr(curated, "request_stop", lambda: stop_calls.append(1))
+    assert server._release_curated_loop(None) is True
+    assert stop_calls == [1]
+
+
 def test_scheduler_and_curated_loop_have_one_construction_site():
     """Nothing else in src/ may build an APScheduler or spawn the curated loop."""
     sched_sites, loop_sites = [], []
