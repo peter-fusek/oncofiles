@@ -465,7 +465,9 @@ async def nightly_for_patient(
 # deploy overlap, and never run extra replicas or workers (RUNBOOK, Oncofiles
 # section; #581, #612). The grace gates runs only: a probe is a read-only Drive
 # listing and starts PROBE_STARTUP_DELAY_S after boot, so on a day with many
-# deploys new work is at least seen (and counted) right away.
+# deploys new work is at least seen (and counted) right away. The APScheduler
+# uses the same grace: no job's first slot falls inside it (#784,
+# server._defer_jobs_past_startup_grace).
 STARTUP_GRACE_S = 300
 PROBE_STARTUP_DELAY_S = 15
 
@@ -1015,7 +1017,8 @@ async def _index_patient(db, pid: str, *, force_ids: set[int] | None = None) -> 
             stats["errors"] += 1
             logger.exception("curated index: %s failed for %s", rec.filename, pid)
     for gdrive_id, row in state.items():
-        if gdrive_id not in seen and not row["deleted"]:
+        # never a Drive-only row the legacy sync/upload created (#777)
+        if gdrive_id not in seen and not row["deleted"] and not row.get("foreign"):
             await db.delete_document(row["id"], patient_id=pid)  # soft delete
             stats["removed"] += 1
     try:

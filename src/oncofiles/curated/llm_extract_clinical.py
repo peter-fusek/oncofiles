@@ -51,9 +51,11 @@ from oncofiles.database._facts import LLM_CLINICAL_FAMILY
 # evidence must hold the printed date too (date on the line above → the
 # evidence spans those lines; outside the evidence, i.e. more than two lines
 # from the value → date null), dates copied as printed, one worked example
-# for each case (#773); v8: a truncated page is retried once as 2
-# line-boundary chunks (#773).
-EXTRACTOR_VERSION = "llm-clinical-v8"
+# for each case (#773); v8: lesion label copied as printed (never translated),
+# unit null when none is printed, one worked example with a
+# "2,4 x 1,9 cm" size on an imaging line (#773); v9: a truncated page is
+# retried once as 2 line-boundary chunks (#773).
+EXTRACTOR_VERSION = "llm-clinical-v9"
 EXTRACTOR_FAMILY = LLM_CLINICAL_FAMILY  # prefix of every version: re-extraction scope
 METHOD = "stored_sidecar_text"
 
@@ -198,6 +200,7 @@ _EX5 = "\n".join([
 ])  # fmt: skip
 _EX5_LINES = _EX5.splitlines()
 _EX6 = "Pacientka bez ťažkostí, kontrola o 3 mesiace."
+_EX7 = "USG 9.5.2028: v S6 pečene uzol 2,4 x 1,9 cm."
 
 EXAMPLES: list[tuple[str, dict]] = [
     (_EX1, _answer(
@@ -327,6 +330,17 @@ EXAMPLES: list[tuple[str, dict]] = [
         ],
     )),
     (_EX6, _answer()),
+    (_EX7, _answer(  # label as printed ("S6 pečene", not "liver S6"), unit once, cm
+        procedures=[
+            _item("procedures", type="imaging", description_as_printed="USG",
+                  date_as_printed="9.5.2028", evidence=_EX7),
+        ],
+        lesions=[
+            _item("lesions", lesion_as_printed="S6 pečene", size_as_printed="2,4 x 1,9",
+                  unit_as_printed="cm", date_as_printed="9.5.2028",
+                  description_as_printed="uzol", evidence=_EX7),
+        ],
+    )),
 ]  # fmt: skip
 
 _INSTRUCTIONS = """You copy clinical facts from ONE page of a medical document: diagnoses, \
@@ -361,8 +375,9 @@ wild-type, negatívny, MSS, pMMR, ...), "method_as_printed" (PCR, NGS, IHC, ...)
 "cycle_as_printed".
 - procedures: "type" ("surgery", "biopsy", "imaging", "radiotherapy", "endoscopy" or \
 "other"), "description_as_printed", "date_as_printed", "end_date_as_printed".
-- lesions: "lesion_as_printed" (lesion label or site), "size_as_printed" (the number, or \
-"23 x 18", exactly as printed), "unit_as_printed" ("mm" or "cm"), "date_as_printed" (date of the \
+- lesions: "lesion_as_printed" (label or site as printed, never translated), \
+"size_as_printed" (the number, or "23 x 18", exactly as printed), "unit_as_printed" ("mm" or \
+"cm"; null if not printed), "date_as_printed" (date of the \
 examination the size belongs to; null when it belongs to the examination this page reports \
 and that date is not inside the evidence), "description_as_printed".
 - planned: "what" ("cycle", "imaging", "visit" or "other"), "description_as_printed", \
