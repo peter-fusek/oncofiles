@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from oncofiles.database._converters import _row_to_calendar_entry
+from oncofiles.database._tenant import require_patient_id
 from oncofiles.models import CalendarEntry, CalendarQuery
 
 
@@ -11,6 +12,7 @@ class CalendarMixin:
 
     async def upsert_calendar_entry(self, entry: CalendarEntry) -> CalendarEntry:
         """Insert or update a calendar entry (idempotent by google_event_id)."""
+        require_patient_id(entry.patient_id)
         async with self.db.execute(
             """
             INSERT INTO calendar_entries

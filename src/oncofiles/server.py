@@ -1906,6 +1906,7 @@ def _start_sync_scheduler(
                     "docs_imported": pipeline_stats.documents_imported,
                 },
             }
+            from oncofiles.constants import SYSTEM_NO_PATIENT
             from oncofiles.models import AgentState
 
             await db.set_agent_state(
@@ -1913,6 +1914,8 @@ def _start_sync_scheduler(
                     agent_id="oncofiles",
                     key="analytics_weekly_summary",
                     value=json.dumps(summary),
+                    # system aggregate, not a patient's row (#791)
+                    patient_id=SYSTEM_NO_PATIENT,
                 )
             )
             logger.info("Weekly analytics: %s", json.dumps(summary, indent=None)[:200])

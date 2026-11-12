@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from oncofiles.database._converters import _row_to_prompt_log
+from oncofiles.database._tenant import require_patient_id
 from oncofiles.models import PromptLogEntry, PromptLogQuery
 
 
@@ -11,6 +12,7 @@ class PromptLogMixin:
 
     async def insert_prompt_log(self, entry: PromptLogEntry) -> PromptLogEntry:
         """Insert a prompt log entry and return it with the generated ID."""
+        require_patient_id(entry.patient_id, allow_system=True)
         cursor = await self.db.execute(
             """
             INSERT INTO prompt_log

@@ -25,6 +25,7 @@ import time
 
 from fastmcp import Context
 
+from oncofiles.constants import SYSTEM_NO_PATIENT
 from oncofiles.models import ActivityLogEntry
 from oncofiles.secrets_keys import caller_email_hash
 from oncofiles.tools._helpers import (
@@ -78,7 +79,7 @@ def _session_id(ctx: Context) -> str:
 async def _log(ctx, db, *, pid, tool, inputs, outputs, status, started) -> None:
     """One activity_log row per call; ids and statuses only."""
     entry = ActivityLogEntry(
-        patient_id=pid or "",
+        patient_id=pid or SYSTEM_NO_PATIENT,
         session_id=_session_id(ctx),
         agent_id="mcp",
         tool_name=tool,

@@ -177,8 +177,11 @@ async def load_from_db(db: Any, patient_id: str) -> dict[str, Any]:
 
 async def save_to_db(db: Any, context: dict[str, Any] | None = None, *, patient_id: str) -> None:
     """Save one patient's context to the database (a non-empty patient_id is required)."""
+    from oncofiles.database._tenant import require_patient_id
+
     if not patient_id:
         raise ValueError(_NO_PATIENT_MSG)
+    require_patient_id(patient_id)
     data = context or get_context(patient_id)
     json_data = json.dumps(data, ensure_ascii=False)
     await db.execute(

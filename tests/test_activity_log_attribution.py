@@ -16,7 +16,7 @@ import pytest
 
 from oncofiles import audit_middleware
 from oncofiles.audit_middleware import AuditMiddleware, attributed_patient
-from oncofiles.constants import NO_PATIENT_ACCESS_SENTINEL
+from oncofiles.constants import NO_PATIENT_ACCESS_SENTINEL, SYSTEM_NO_PATIENT
 from oncofiles.database import Database
 from oncofiles.persistent_oauth import _verified_caller_is_admin
 from oncofiles.tools._helpers import _get_patient_id, _resolve_patient_id
@@ -92,7 +92,7 @@ async def test_call_without_a_patient_logs_none(two):
     async def body():
         return "ok"
 
-    assert (await _call(two, "t_none", {}, body))["patient_id"] == ""
+    assert (await _call(two, "t_none", {}, body))["patient_id"] == SYSTEM_NO_PATIENT
 
 
 async def test_denied_call_is_not_attributed_to_anyone(two):
@@ -100,12 +100,14 @@ async def test_denied_call_is_not_attributed_to_anyone(two):
         two, "t_denied", {"patient_slug": BOB_SLUG},
         lambda: _resolve_patient_id(BOB_SLUG, _Ctx(two)),
     )  # fmt: skip
-    assert row["patient_id"] == ""
+    assert row["patient_id"] == SYSTEM_NO_PATIENT
 
 
 def test_several_or_sentinel_patients_are_not_attributed():
-    assert attributed_patient({ERIKA_UUID, BOB_UUID}) == ""
-    assert attributed_patient({NO_PATIENT_ACCESS_SENTINEL}) == ""
+    # #791: "no patient" is the explicit system marker, never '' (a legacy default)
+    assert attributed_patient({ERIKA_UUID, BOB_UUID}) == SYSTEM_NO_PATIENT
+    assert attributed_patient({NO_PATIENT_ACCESS_SENTINEL}) == SYSTEM_NO_PATIENT
+    assert attributed_patient(set()) == SYSTEM_NO_PATIENT
     assert attributed_patient({BOB_UUID, ""}) == BOB_UUID
 
 

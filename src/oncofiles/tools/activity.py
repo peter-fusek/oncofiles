@@ -16,6 +16,7 @@ import json
 
 from fastmcp import Context
 
+from oncofiles.constants import SYSTEM_NO_PATIENT
 from oncofiles.models import ActivityLogEntry, ActivityLogQuery
 from oncofiles.tools._helpers import (
     _clamp_limit,
@@ -186,7 +187,7 @@ async def get_activity_stats(
     return json.dumps({"stats": stats, "total_calls": total_calls})
 
 
-_NO_PATIENT = "__system_no_patient__"
+_NO_PATIENT = SYSTEM_NO_PATIENT
 # Migration 029's column default. No patient has this id, and since #663 no
 # write path stores it (every insert sets patient_id explicitly), so it marks
 # exactly the rows written before the fix. Callers cannot forge it:
@@ -340,7 +341,7 @@ async def redact_activity_log_inputs(
                 input_summary=f"dry_run=False, batch_size={batch_size}",
                 output_summary=json.dumps(result),
                 tags='["maintenance","redaction"]',
-                patient_id="",
+                patient_id=SYSTEM_NO_PATIENT,
             )
         )
     return json.dumps(result)

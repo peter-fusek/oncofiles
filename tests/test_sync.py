@@ -1099,11 +1099,11 @@ async def test_sync_history_records_failure(db: Database):
 async def test_sync_stats_summary(db: Database):
     """Sync stats summary aggregates correctly."""
     # Insert two completed syncs
-    sid1 = await db.insert_sync_history(trigger="scheduled")
+    sid1 = await db.insert_sync_history(trigger="scheduled", patient_id=ERIKA_UUID)
     await db.complete_sync_history(
         sid1, status="completed", duration_s=10.5, from_new=3, from_errors=1
     )
-    sid2 = await db.insert_sync_history(trigger="manual")
+    sid2 = await db.insert_sync_history(trigger="manual", patient_id=ERIKA_UUID)
     await db.complete_sync_history(sid2, status="completed", duration_s=5.0, from_new=1)
 
     stats = await db.get_sync_stats_summary()

@@ -322,6 +322,7 @@ async def test_qa_analysis_with_errors(db: Database):
                 session_id="test-session",
                 agent_id="auto",
                 tool_name="broken_tool",
+                patient_id=ERIKA_UUID,
                 status="error",
                 error_message="Connection failed",
             )

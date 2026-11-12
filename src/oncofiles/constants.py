@@ -21,3 +21,14 @@ History:
   - Michal Gašparík report (2026-04-24): MCP OAuth caller path
     (`_resolve_oauth_patient`) — same leak class, same fix.
 """
+
+SYSTEM_NO_PATIENT = "__system_no_patient__"
+"""Explicit "no patient" value for system rows in operational logs.
+
+Used by prompt_log (AI calls outside a request), activity_log (tool calls
+that resolved no single patient, maintenance rows) and agent_state (system
+aggregates). Truthy and non-UUID, so a patient-scoped ``WHERE patient_id = ?``
+never matches it. The tenant write guard (#791) rejects ``''`` and the legacy
+column defaults; this marker is the only way to write a row without a patient,
+and only to those three tables.
+"""

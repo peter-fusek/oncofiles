@@ -151,6 +151,8 @@ async def backfill_orphan_prompt_logs(
         - remaining: orphan rows still to process after this batch
         - dry_run: whether changes were applied
     """
+    from oncofiles.constants import SYSTEM_NO_PATIENT
+    from oncofiles.database._tenant import require_patient_id
     from oncofiles.tools._helpers import _require_admin_or_raise
 
     try:
@@ -195,11 +197,17 @@ async def backfill_orphan_prompt_logs(
     recovered: list[int] = []
     sentinel: list[int] = []
     missing_doc: list[int] = []
-    SENTINEL = "__system_no_patient__"  # noqa: N806
+    SENTINEL = SYSTEM_NO_PATIENT  # noqa: N806
 
     for r in rows:
         pl_id = r["pl_id"]
         doc_pid = r.get("doc_patient_id")
+        try:
+            # A document still carrying a legacy column default ('erika', '')
+            # names no patient: never copy that onto the log row (#791).
+            doc_pid = require_patient_id(doc_pid)
+        except ValueError:
+            doc_pid = None
         if doc_pid:
             recovered.append((pl_id, doc_pid))
         elif r.get("document_id") is not None:

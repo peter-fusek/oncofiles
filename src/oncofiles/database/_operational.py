@@ -13,6 +13,7 @@ from oncofiles.models import (
 )
 
 from ._converters import _row_to_activity_log, _row_to_agent_state, _row_to_oauth_token
+from ._tenant import require_patient_id
 
 logger = logging.getLogger(__name__)
 
@@ -29,8 +30,12 @@ class OperationalMixin:
     # ── Agent state (#32) ────────────────────────────────────────────────
 
     async def set_agent_state(self, state: AgentState) -> AgentState:
-        """Upsert an agent state key-value pair. Returns the saved state."""
-        pid = getattr(state, "patient_id", "") or ""
+        """Upsert an agent state key-value pair. Returns the saved state.
+
+        ``state.patient_id`` is required (#791); system aggregates use
+        ``SYSTEM_NO_PATIENT``.
+        """
+        pid = require_patient_id(state.patient_id, allow_system=True)
 
         async def _do_upsert():
             await self.db.execute(
@@ -84,7 +89,10 @@ class OperationalMixin:
         Persists `patient_id` (#484 sweep follow-up) so read-side scoping in
         search_activity_log / get_activity_stats actually sees per-patient
         rows instead of all rows carrying the migration 029 DEFAULT.
+        A call that acted on no single patient passes ``SYSTEM_NO_PATIENT``;
+        ``''`` and the legacy defaults are rejected (#791).
         """
+        require_patient_id(entry.patient_id, allow_system=True)
         _last_rowid: list[int] = []
 
         async def _do_insert():
@@ -242,6 +250,7 @@ class OperationalMixin:
 
     async def upsert_oauth_token(self, token: OAuthToken) -> OAuthToken:
         """Insert or update OAuth tokens for a user/provider pair."""
+        require_patient_id(token.patient_id)
         await self.db.execute(
             """
             INSERT INTO oauth_tokens
@@ -356,8 +365,9 @@ class OperationalMixin:
         await self.db.commit()
         return cursor.rowcount
 
-    async def insert_sync_history(self, trigger: str = "scheduled", *, patient_id: str = "") -> int:
+    async def insert_sync_history(self, trigger: str = "scheduled", *, patient_id: str) -> int:
         """Start a sync history record. Returns the row ID."""
+        patient_id = require_patient_id(patient_id)
         # Clean up any stale 'running' records first (isolated — don't block insert)
         import logging
 
