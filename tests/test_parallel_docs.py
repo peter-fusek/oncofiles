@@ -27,7 +27,7 @@ from oncofiles import cloud_guard, config, pre_store
 from oncofiles.curated import llm, llm_extract_call
 from oncofiles.tools import curated as tool
 from tests.helpers import ERIKA_UUID
-from tests.test_extraction_scorecard import DAY, DOB, PAGES_A
+from tests.test_extraction_scorecard import DAY, DOB, PAGES_A, PAGES_B
 from tests.test_extraction_scorecard import chat as model_chat
 from tests.test_llm_extract import PAGE as LAB_PAGE
 
@@ -255,7 +255,96 @@ async def test_a_write_with_parallel_env_stores_in_order_without_db_overlap(
     docs = status["report"]["documents"]
     assert [d["document_id"] for d in docs] == DOCS
     assert {d["result"] for d in docs} == {"stored"}
-    assert guarded.overlaps == [] and guarded.during_model == []
+    # a write streams its stores: a store may run while another document's
+    # model call is in flight, but two DB awaits never overlap
+    assert guarded.overlaps == []
+
+
+# ── a write streams its stores (review of #793) ─────────────────────────
+
+DOC_X, DOC_Y = 7791, 7792  # X: two pages, Y: the other worked examples
+
+
+async def _provenance(db, doc_id):
+    async with db.db.execute(
+        "SELECT COUNT(*) FROM provenance WHERE source_document_id = ?", (doc_id,)
+    ) as cur:
+        return (await cur.fetchone())[0]
+
+
+def _spy_store(monkeypatch, on_store):
+    from oncofiles.curated import clinical_store
+
+    store = clinical_store.store_document
+
+    async def spy(db, **kw):
+        res = await store(db, **kw)
+        on_store(kw["document_id"])
+        return res
+
+    monkeypatch.setattr(clinical_store, "store_document", spy)
+
+
+@pytest.mark.parametrize("ending", ["model_fails", "job_killed"])
+async def test_a_write_stores_document_zero_while_document_one_still_extracts(
+    seeded, model, monkeypatch, ending
+):
+    db = seeded
+    await _doc(db, DOC_X, PAGES_A, "report")
+    await _doc(db, DOC_Y, PAGES_B, "discharge")
+    await db.db.commit()
+    monkeypatch.setattr(config, "LLM_EXTRACT_PARALLEL_DOCS", 2)
+    x_stored, release = threading.Event(), threading.Event()
+    waited: list[bool] = []
+    _spy_store(monkeypatch, lambda doc_id: doc_id == DOC_X and x_stored.set())
+
+    def chat(system, user, info=None, **kw):
+        if user.split("\n", 1)[1] in PAGES_B:  # document Y: wait until X is stored
+            waited.append(x_stored.wait(timeout=10))
+            if ending == "model_fails":
+                raise RuntimeError("model gone")
+            release.wait(timeout=10)
+        return model_chat(system, user, info=info, **kw)
+
+    monkeypatch.setattr(llm, "chat", chat)
+    await tool.curated_clinical_extract(_ctx(db), [DOC_X, DOC_Y], dry_run=False)
+    task = tool._reocr_jobs[ERIKA_UUID]["task"]
+    if ending == "job_killed":
+        for _ in range(200):  # until X is stored, then kill the job mid-Y
+            if x_stored.is_set():
+                break
+            await asyncio.sleep(0.05)
+        task.cancel()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    else:
+        await asyncio.wait_for(task, 30)
+        docs = {d["document_id"]: d for d in tool._reocr_jobs[ERIKA_UUID]["report"]["documents"]}
+        assert docs[DOC_X]["result"] == "stored" and docs[DOC_Y]["result"] != "stored"
+    assert waited and waited[0] is True  # X was stored before Y's model work ended
+    assert await _provenance(db, DOC_X) > 0
+    assert await _provenance(db, DOC_Y) == 0
+
+
+async def test_a_write_with_one_slot_keeps_extract_store_next_order(seeded, model, monkeypatch):
+    db = seeded
+    events: list[str] = []
+    _spy_store(monkeypatch, lambda doc_id: events.append(f"store:{doc_id}"))
+
+    def chat(system, user, info=None, **kw):
+        events.append("chat")
+        return model_chat(system, user, info=info, **kw)
+
+    monkeypatch.setattr(llm, "chat", chat)
+    started = json.loads(await tool.curated_clinical_extract(_ctx(db), DOCS, dry_run=False))
+    assert started["parallel_docs"] == 1
+    status = await _wait(db)
+    assert status["state"] == "done", status
+    expected = []
+    for doc_id in DOCS:
+        expected += ["chat"] * len(PAGES_A) + [f"store:{doc_id}"]
+    assert events == expected
 
 
 # ── overrides: dry run only, validated ──────────────────────────────────

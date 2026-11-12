@@ -1896,10 +1896,12 @@ _SHADOW_DOC_KEYS = (
 # other, everything the model calls need is fetched (birth dates, vocabulary,
 # stored facts, then each document's page text); (2) up to ``parallel_docs``
 # documents run their model calls in worker threads, each document's pages
-# one after another, with NO DB call and no Drive client; (3) back on the
-# event loop, results are assembled (and, for a write, stored) in input
-# order. The app holds ONE aiosqlite connection: never move a DB call into
-# phase 2.
+# one after another, with NO DB call and no Drive client; (3) on the event
+# loop, results are assembled in input order. A real write STREAMS phase 3:
+# document i is stored as soon as its model work is done and 0..i-1 are
+# stored, while later documents may still be extracting, so a kill midway
+# keeps every document already stored. The app holds ONE aiosqlite
+# connection: never move a DB call into a worker thread.
 
 
 @dataclass
@@ -1916,6 +1918,8 @@ class _DocWork:
     out: dict | None = None
     error: str | None = None
     stopped: bool = False
+    done: asyncio.Event = field(default_factory=asyncio.Event)  # model work ended
+    consumed: asyncio.Event = field(default_factory=asyncio.Event)  # caller handled it
 
 
 def _stopping_entry(d: dict) -> dict:
@@ -1942,28 +1946,53 @@ async def _doc_work(db, pid: str, d: dict, make_blocking) -> _DocWork:
     return w
 
 
-async def _extract_documents(works: list[_DocWork], *, parallel: int) -> None:
-    """Phase 2: the model work of up to ``parallel`` documents at once, started
-    in input order (the semaphore is FIFO). NO DB access in here: the tasks
-    below only wait on worker threads. ``local_only`` follows into every
+def _start_extractions(
+    works: list[_DocWork], *, parallel: int, hold_until_consumed: bool = False
+) -> list[asyncio.Task]:
+    """Phase 2: start the model work of up to ``parallel`` documents at once,
+    in input order (the semaphore is FIFO). Each work's ``done`` event is set
+    when its model work ended (or was never started). NO DB access in here:
+    the tasks only wait on worker threads. ``local_only`` follows into every
     worker (``asyncio.to_thread`` copies the context, and the work re-enters
     it). A shutdown (``request_stop``) lets in-flight documents finish their
     current page (the extractors check ``stop`` before each page) and starts
-    no further document."""
+    no further document.
+
+    ``hold_until_consumed`` (a real write): a document keeps its slot until
+    the caller has handled it (``consumed``), so with one slot the order is
+    exactly extract → store → next document, and the store of document i
+    runs (on the event loop) while later documents may still be extracting."""
     gate = asyncio.Semaphore(max(1, int(parallel)))
 
     async def one(w: _DocWork) -> None:
         async with gate:
-            if _stopping.is_set():
-                w.stopped = True
-                return
             try:
-                w.out = await asyncio.to_thread(w.blocking)
-            except Exception as exc:
-                logger.exception("LLM extraction of doc %s failed", w.d["id"])
-                w.error = type(exc).__name__
+                if _stopping.is_set():
+                    w.stopped = True
+                    return
+                try:
+                    w.out = await asyncio.to_thread(w.blocking)
+                except Exception as exc:
+                    logger.exception("LLM extraction of doc %s failed", w.d["id"])
+                    w.error = type(exc).__name__
+            finally:
+                w.done.set()
+            if hold_until_consumed:
+                await w.consumed.wait()
 
-    tasks = [asyncio.create_task(one(w)) for w in works if w.blocking is not None]
+    return [asyncio.create_task(one(w)) for w in works if w.blocking is not None]
+
+
+async def _wait_done(w: _DocWork) -> None:
+    """Until document ``w``'s model work has ended (no-op without model work)."""
+    if w.blocking is not None:
+        await w.done.wait()
+
+
+async def _extract_documents(works: list[_DocWork], *, parallel: int) -> None:
+    """Phase 2 for a dry run: all model work, then return (see
+    ``_start_extractions``)."""
+    tasks = _start_extractions(works, parallel=parallel)
     try:
         for t in tasks:
             await t
@@ -2295,8 +2324,9 @@ async def _clinical_job(
     stores nothing for a document with a page that was not assessed. One
     model call at a time per document, up to ``parallel_docs`` documents at
     once (#773; default ``LLM_EXTRACT_PARALLEL_DOCS`` = 1, one LM Studio
-    slot); all DB reads before and all stores after the model phase, in input
-    order; local only. ``thinking`` / ``sampling`` (#767), ``timeout_s``
+    slot); all DB reads before the model phase, every store on the event loop
+    in input order as soon as that document is done (never in a worker
+    thread); local only. ``thinking`` / ``sampling`` (#767), ``timeout_s``
     (#770) and ``parallel_docs`` override the env for a PREVIEW only."""
     from oncofiles import config
     from oncofiles.curated import clinical_store, llm_extract_call, verifier, verifier_clinical
@@ -2332,31 +2362,45 @@ async def _clinical_job(
             model = config.LOCAL_LLM_MODEL or None
             works = [await _clinical_work(db, pid, d, vocab=vocab, births=births, cfg=cfg)
                      for d in docs]  # fmt: skip
-            await _extract_documents(works, parallel=parallel)
-            for w in works:  # back on the event loop: stores one by one, in order
-                d = w.d
-                entry, out = _clinical_entry(w)
-                if out is None:
-                    report.append(entry)
-                    continue
-                day = str(d.get("document_date") or "")[:10] or None
-                if write and out["pages_not_assessed"]:
-                    entry.update(result="skipped", error="a page was not assessed: nothing stored")
-                elif write:
-                    verifier.require_dob_for_write(births)
-                    try:
-                        res = await clinical_store.store_document(
-                            db, patient_id=pid, document_id=d["id"], items=out["items"],
-                            document_date=day, birth_dates=births, model=model,
-                        )  # fmt: skip
-                    except Exception as exc:  # re-running the document replaces it again
-                        logger.exception("storing clinical items of doc %s failed", d["id"])
-                        entry.update(result="failed", error=type(exc).__name__)
-                    else:
+            # a write streams: document i is stored (event loop, in input order)
+            # as soon as its model work is done, while later documents may still
+            # be extracting in worker threads; with one slot: extract → store → next
+            tasks = _start_extractions(works, parallel=parallel, hold_until_consumed=write)
+            try:
+                for w in works:
+                    await _wait_done(w)
+                    d = w.d
+                    entry, out = _clinical_entry(w)
+                    if out is None:
+                        report.append(entry)
+                        w.consumed.set()
+                        continue
+                    day = str(d.get("document_date") or "")[:10] or None
+                    if write and out["pages_not_assessed"]:
                         entry.update(
-                            result="stored", stored=res["stored"], store_dropped=res["dropped"]
+                            result="skipped", error="a page was not assessed: nothing stored"
                         )
-                report.append(entry)
+                    elif write:
+                        verifier.require_dob_for_write(births)
+                        try:
+                            res = await clinical_store.store_document(
+                                db, patient_id=pid, document_id=d["id"], items=out["items"],
+                                document_date=day, birth_dates=births, model=model,
+                            )  # fmt: skip
+                        except Exception as exc:  # re-running the document replaces it again
+                            logger.exception("storing clinical items of doc %s failed", d["id"])
+                            entry.update(result="failed", error=type(exc).__name__)
+                        else:
+                            entry.update(
+                                result="stored", stored=res["stored"], store_dropped=res["dropped"]
+                            )
+                    report.append(entry)
+                    w.consumed.set()
+            finally:
+                for w in works:
+                    w.consumed.set()
+                for t in tasks:  # a no-op unless the job failed or was cancelled
+                    t.cancel()
         job.update(state="done", report={
             "dry_run": not write, "extractor": lx.EXTRACTOR_VERSION,
             "verifier": verifier_clinical.CLINICAL_VERIFIER_VERSION, "dob_known": bool(births),
