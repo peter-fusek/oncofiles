@@ -500,7 +500,7 @@
     // Cache /status, /api/documents, /api/prompt-log responses in
     // sessionStorage (10 min TTL, per-patient keys). On refresh() start we
     // hydrate from cache so the UI stays populated during fetch — instead of
-    // tearing down to skeletons every tick. On a breaker trip the cached
+    // tearing down to skeletons every tick. On a 503 the cached
     // data keeps rendering while the countdown banner handles recovery.
 
     var _SWR_MAX_AGE_MS = 10 * 60 * 1000; // 10 minutes — "stale" ceiling
@@ -575,35 +575,8 @@
         if (resp.onboarding_ends_at) tip += ' · ends ' + resp.onboarding_ends_at.slice(0, 10);
         pill.title = tip;
       } catch (e) {
-        // Silent — pill stays at last known state; breaker banner handles UX
+        // Silent — pill stays at last known state; the 503 banner handles UX
       }
-    }
-
-    // Admin-only breaker widget (#469 Phase 7) — fetches /readiness (no auth)
-    // and reflects state + lifetime trip count in the header. Hidden unless
-    // isAdminMode. Polls piggyback on the refresh() cycle; no separate timer.
-    async function updateBreakerWidget() {
-      if (!isAdminMode) return;
-      var widget = document.getElementById('breaker-widget');
-      if (!widget) return;
-      try {
-        var resp = await fetch('/readiness', { cache: 'no-store' });
-        if (!resp.ok) return;
-        var payload = await resp.json();
-        var cb = payload && payload.circuit_breaker;
-        if (!cb) return;
-        widget.classList.add('admin-visible');
-        widget.classList.remove('state-closed', 'state-open', 'state-half_open');
-        widget.classList.add('state-' + String(cb.state));
-        widget.classList.toggle('has-trips', (cb.trip_count_total || 0) > 0);
-        var tripsEl = document.getElementById('bw-trips');
-        if (tripsEl) tripsEl.textContent = String(cb.trip_count_total || 0);
-        // Tooltip with full detail (state, cause, last trip timestamp)
-        var tip = 'state=' + cb.state + ' · cooldown_remaining=' + (cb.cooldown_remaining_s || 0) + 's';
-        if (cb.last_trip_at) tip += ' · last_trip=' + cb.last_trip_at;
-        if (cb.last_trip_cause) tip += ' · cause=' + cb.last_trip_cause;
-        widget.title = tip;
-      } catch (e) { /* no-op — widget stays at last known state */ }
     }
 
     function _hydrateFromSwrCache() {
@@ -630,7 +603,10 @@
       _clearBreakerCountdown();
     }
 
-    // ── Breaker-aware retry + friendly countdown banner (#469) ───────────
+    // ── 503 + Retry-After countdown banner (#469) ───────────────────────
+    // The "breaker" names are historical: the DB circuit breaker is gone
+    // (#617, #751), but real 503s with Retry-After still happen (e.g. rate
+    // limiting, #591), so the banner and trackBreaker() stay.
 
     var _breakerCountdownTimer = null;
     var _breakerSecondsRemaining = 0;
@@ -687,7 +663,7 @@
     // ── API ──────────────────────────────────────────────────────────────
 
     /**
-     * Fetch with circuit-breaker awareness.
+     * Fetch with 503 + Retry-After awareness.
      *
      * - 401 → logout, throw 'Unauthorized'.
      * - 503 → throw immediately with {status: 503, retryAfterMs} so the caller
@@ -725,7 +701,7 @@
             throw new Error('Unauthorized');
           }
 
-          // Breaker-open — surface to caller immediately. The caller renders a
+          // 503 — surface to caller immediately. The caller renders a
           // countdown banner that auto-retries at Retry-After. No inner retry:
           // retrying inside the cooldown is guaranteed to fail.
           if (resp.status === 503) {
@@ -1159,7 +1135,7 @@
       }
       try {
         var resp = await doCreate();
-        // Auto-retry once on transient DB errors (circuit breaker, Turso stream expiry).
+        // Auto-retry once on transient server errors (503/500).
         if (resp.status === 503 || resp.status === 500) {
           btn.textContent = dashLang === 'sk' ? 'Pripájam databázu… skúšam znova' : 'Reconnecting database… retrying';
           await new Promise(function (r) { setTimeout(r, 3500); });
@@ -2070,13 +2046,11 @@
         if (sched) renderSchedules(sched);
         anyOk = true;
       } catch (e) { if (!trackBreaker(e)) console.warn('Schedules fetch failed:', e); }
-      // Admin-only breaker widget (#469 Phase 7) — fire-and-forget, no-op when non-admin.
-      updateBreakerWidget();
       // Budget pill (#442) — fire-and-forget, hides itself when tier is admin/paid_*.
       updateBudgetPill();
       hideSkeletons();
 
-      // Breaker open — show friendly SK/EN countdown + auto-retry instead of a
+      // 503 — show friendly SK/EN countdown + auto-retry instead of a
       // red cascade. Any data we DID render during the partial load stays visible.
       if (breakerError) {
         setConnectionState('loading');

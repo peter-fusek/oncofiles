@@ -61,7 +61,6 @@ async def test_curated_skip_carries_hint(fn):
     gdrive = MagicMock()
     gdrive.write_block_reason = "folder synthetic-root is curated (README.md contract, #562)"
     db = MagicMock()
-    db.reconnect_if_stale = AsyncMock()
     result = await getattr(sync_mod, fn)(db, MagicMock(), gdrive, "root1", patient_id="p1")
     assert result["skipped"] is True and result["curated"] is True
     assert "curated_index" in result["hint"]
