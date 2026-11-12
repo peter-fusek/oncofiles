@@ -49,8 +49,9 @@ from oncofiles.database._facts import LLM_CLINICAL_FAMILY
 # marker in the system message instead of /no_think (#770); v6: qwen sampling
 # profiles follow the Qwen3.8 model card, prefill removed (#770); v7: the
 # evidence must hold the printed date too (date on the line above → the
-# evidence spans both lines; too far away → date null), dates copied as
-# printed, one worked example for each case (#773).
+# evidence spans those lines; outside the evidence, i.e. more than two lines
+# from the value → date null), dates copied as printed, one worked example
+# for each case (#773).
 EXTRACTOR_VERSION = "llm-clinical-v7"
 EXTRACTOR_FAMILY = LLM_CLINICAL_FAMILY  # prefix of every version: re-extraction scope
 METHOD = "stored_sidecar_text"
@@ -310,7 +311,7 @@ EXAMPLES: list[tuple[str, dict]] = [
                   evidence=_EX4_LINES[1]),
         ],
     )),
-    (_EX5, _answer(  # date on the line above → both lines; date too far away → null
+    (_EX5, _answer(  # date on the line above → both lines; date 3 lines away → null
         biomarkers=[
             _item("biomarkers", marker_as_printed="HER2", result_as_printed="negatívny",
                   date_as_printed="4.2.2028", evidence="\n".join(_EX5_LINES[:2])),
@@ -369,8 +370,9 @@ and that date is not inside the evidence), "description_as_printed".
 Rules:
 1. Copy, never compute or infer. Never add a code, date, dose, line, stage or result that is \
 not printed; never expand an abbreviation; never convert units.
-2. A date is given only when it is inside the item's evidence. A date printed more than three \
-lines away from the value stays null (example 5: the lesion is not dated 14.3.2028).
+2. A date is given only when it is inside the item's evidence. A date printed outside the \
+item's evidence (more than two lines from the value) stays null (example 5: the lesion is three \
+lines below 14.3.2028, so its date is null).
 3. Skip laboratory values and blood tumour markers (they are read elsewhere), birth dates, \
 names, identifiers, addresses and phone numbers.
 4. A postponed cycle with its new date goes to "cycles" only, not to "planned".
