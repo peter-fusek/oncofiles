@@ -44,8 +44,9 @@ from oncofiles.curated.llm_extract_call import (  # noqa: F401 (re-exported)
 # prefilled closed think block, timeout override (#770); v6: optional
 # reasoning-off marker in the system message instead of /no_think (#770);
 # v7: qwen sampling profiles follow the Qwen3.8 model card, prefill removed
-# (the chat template renders a trailing assistant turn as finished, #770).
-EXTRACTOR_VERSION = "llm-extract-v7"
+# (the chat template renders a trailing assistant turn as finished, #770);
+# v8: a truncated page is retried once as 2 line-boundary chunks (#773).
+EXTRACTOR_VERSION = "llm-extract-v8"
 
 DATE_ROLES = ("sample", "report", "other")
 _COMPARATORS = ("<=", ">=", "<", ">")
@@ -389,23 +390,25 @@ def extract_page(
     if not (text or "").strip():
         return res
     known = known if known is not None else known_words()
-    raw_items = xcall.call_and_parse(
-        res, system=SYSTEM_PROMPT, user=f"Page {page_number}:\n{text}",
+    parts = xcall.call_page(
+        res, text=text, system=SYSTEM_PROMPT,
         response_format=RESPONSE_FORMAT if _structured_output() else None,
         parse_content=parse_answer, parse_reasoning=parse_reasoning_channel,
         cfg=cfg or xcall.settings(), chat=chat,
         shape=lambda raw, used: answer_shape(raw, known, field_used=used), label="llm extract",
     )  # fmt: skip
-    if raw_items is None:
+    if parts is None:
         return res
-    for raw_item in raw_items:
-        cand, why = normalize_item(raw_item)
-        if cand is None:
-            res.dropped[why] += 1
-        else:
-            cand["page_number"] = page_number
-            cand["answer_source"] = res.answer_source
-            res.candidates.append(cand)
+    for part in parts:  # 1 part, or 2 after a split (#773)
+        for raw_item in part.parsed:
+            cand, why = normalize_item(raw_item)
+            if cand is None:
+                res.dropped[why] += 1
+            else:
+                cand["page_number"] = page_number
+                cand["answer_source"] = part.answer_source
+                res.candidates.append(cand)
+    xcall.dedupe_split(res)
     if res.answer:
         res.answer = {k: v for k, v in res.answer.items() if k != "masked"}  # shape only
     return res

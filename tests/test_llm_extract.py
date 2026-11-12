@@ -852,7 +852,7 @@ async def test_preview_timeout_override_and_no_prefill(db, monkeypatch):
                                     "reasoning_marker": None}  # fmt: skip
     await asyncio.wait_for(tool._reocr_jobs[ERIKA_UUID]["task"], 10)
     report = json.loads(await tool.curated_reocr_status(_ctx(db)))["report"]
-    assert report["extractor"] == "llm-extract-v7"
+    assert report["extractor"] == "llm-extract-v8"
     assert report["settings"]["timeout_s"] == 120.0 and "prefill" not in report["settings"]
     assert "prefill" not in report["settings"]["overrides"]
     assert seen == [{"timeout": 120.0, "thinking": False}]
