@@ -1871,10 +1871,10 @@ def _source_reason(meta: dict) -> str | None:
     return None
 
 
-def _overrides(thinking, sampling, prefill, timeout_s) -> dict:
+def _overrides(thinking, sampling, prefill, timeout_s, reasoning_marker) -> dict:
     """The per-job A/B overrides as echoed in job and report (#767, #770)."""
     return {"thinking": thinking, "sampling": sampling, "prefill": prefill,
-            "timeout_s": timeout_s}  # fmt: skip
+            "timeout_s": timeout_s, "reasoning_marker": reasoning_marker}  # fmt: skip
 
 
 async def _llm_shadow_job(
@@ -1886,6 +1886,7 @@ async def _llm_shadow_job(
     sampling: str | None = None,
     prefill: str | None = None,
     timeout_s: int | None = None,
+    reasoning_marker: str | None = None,
 ) -> None:
     """LLM extractor + generic verifier on stored page text, compared with the
     stored rule facts (#714 phase 2a). Writes NOTHING: no facts, no Drive, no
@@ -1897,8 +1898,8 @@ async def _llm_shadow_job(
     from oncofiles.curated.facts_rules import Vocabulary
 
     job = _reocr_jobs[pid]
-    cfg = llm_extract_call.settings(thinking, sampling, prefill, timeout_s)
-    overrides = _overrides(thinking, sampling, prefill, timeout_s)
+    cfg = llm_extract_call.settings(thinking, sampling, prefill, timeout_s, reasoning_marker)
+    overrides = _overrides(thinking, sampling, prefill, timeout_s, reasoning_marker)
     report: list[dict] = []
     try:
         try:
@@ -1982,6 +1983,7 @@ async def curated_llm_extract_preview(
     sampling: str | None = None,
     prefill: str | None = None,
     timeout_s: int | None = None,
+    reasoning_marker: str | None = None,
 ) -> str:
     """SHADOW mode of LLM-first fact extraction (#714): compare, never store.
 
@@ -2005,7 +2007,11 @@ async def curated_llm_extract_preview(
             holding an already-closed empty think block; never with thinking on.
         timeout_s: per-call timeout in seconds (int, 30-900) for this job only;
             null keeps LLM_EXTRACT_TIMEOUT_S.
-        All four are echoed in the report (``settings``) and refused (error)
+        reasoning_marker: "on" / "off" overrides LLM_REASONING_MARKER for this
+            job only (#770): with thinking off, the system message ends with
+            the reasoning-off marker (for the LM Studio Prompt Template rule)
+            and no /no_think is sent; with thinking on, no marker.
+        All five are echoed in the report (``settings``) and refused (error)
         with dry_run=false.
     """
     from oncofiles import config
@@ -2013,7 +2019,7 @@ async def curated_llm_extract_preview(
 
     llm_extract_call.refuse_overrides_on_write(
         write=not dry_run, thinking=thinking, sampling=sampling, prefill=prefill,
-        timeout_s=timeout_s,
+        timeout_s=timeout_s, reasoning_marker=reasoning_marker,
     )  # fmt: skip
     if config.LLM_EXTRACT_SHADOW_DISABLED:
         return json.dumps({"error": "disabled by LLM_EXTRACT_SHADOW_DISABLED=true"})
@@ -2038,12 +2044,12 @@ async def curated_llm_extract_preview(
     _reocr_jobs[pid] = {
         "state": "running", "kind": "llm_shadow", "dry_run": True,
         "extractor": EXTRACTOR_VERSION, "started_at": datetime.now(UTC).isoformat(),
-        "overrides": _overrides(thinking, sampling, prefill, timeout_s),
+        "overrides": _overrides(thinking, sampling, prefill, timeout_s, reasoning_marker),
         "documents": [{"document_id": d["id"], "category": d.get("category")} for d in docs],
     }  # fmt: skip
     _reocr_jobs[pid]["task"] = asyncio.create_task(
         _llm_shadow_job(db, pid, docs, thinking=thinking, sampling=sampling, prefill=prefill,
-                        timeout_s=timeout_s)
+                        timeout_s=timeout_s, reasoning_marker=reasoning_marker)
     )  # fmt: skip
     return json.dumps(
         {k: v for k, v in _reocr_jobs[pid].items() if k != "task"}, ensure_ascii=False
@@ -2131,6 +2137,7 @@ async def _clinical_job(
     sampling: str | None = None,
     prefill: str | None = None,
     timeout_s: int | None = None,
+    reasoning_marker: str | None = None,
 ) -> None:
     """Extract the non-lab kinds of each document with the LOCAL model and
     verify them (#726 item 4). Preview (``write=False``) writes NOTHING; a
@@ -2147,9 +2154,14 @@ async def _clinical_job(
 
     # refused at the tool already; the job itself stays safe too
     llm_extract_call.refuse_overrides_on_write(
-        write=write, thinking=thinking, sampling=sampling, prefill=prefill, timeout_s=timeout_s
+        write=write,
+        thinking=thinking,
+        sampling=sampling,
+        prefill=prefill,
+        timeout_s=timeout_s,
+        reasoning_marker=reasoning_marker,
     )
-    cfg = llm_extract_call.settings(thinking, sampling, prefill, timeout_s)
+    cfg = llm_extract_call.settings(thinking, sampling, prefill, timeout_s, reasoning_marker)
     job = _reocr_jobs[pid]
     row_id = (
         await db.insert_curated_run(patient_id=pid, dry_run=False, trigger="clinical")
@@ -2213,7 +2225,8 @@ async def _clinical_job(
             "dry_run": not write, "extractor": lx.EXTRACTOR_VERSION,
             "verifier": verifier_clinical.CLINICAL_VERIFIER_VERSION, "dob_known": bool(births),
             "settings": {**cfg.report(),
-                         "overrides": _overrides(thinking, sampling, prefill, timeout_s)},
+                         "overrides": _overrides(thinking, sampling, prefill, timeout_s,
+                                                 reasoning_marker)},
             "warnings": llm_extract_call.merge_warnings(report),
             "totals": _clinical_totals(report), "documents": report,
         })  # fmt: skip
@@ -2301,6 +2314,7 @@ async def _start_clinical(
     sampling: str | None = None,
     prefill: str | None = None,
     timeout_s: int | None = None,
+    reasoning_marker: str | None = None,
 ) -> str:
     from oncofiles import config
     from oncofiles.curated import llm, llm_extract_call
@@ -2308,7 +2322,12 @@ async def _start_clinical(
 
     # A/B overrides are for a dry run only: a write never takes them (#767, #770).
     llm_extract_call.refuse_overrides_on_write(
-        write=write, thinking=thinking, sampling=sampling, prefill=prefill, timeout_s=timeout_s
+        write=write,
+        thinking=thinking,
+        sampling=sampling,
+        prefill=prefill,
+        timeout_s=timeout_s,
+        reasoning_marker=reasoning_marker,
     )
     if config.LLM_CLINICAL_EXTRACT_DISABLED:
         return json.dumps({"error": "disabled by LLM_CLINICAL_EXTRACT_DISABLED=true"})
@@ -2345,7 +2364,7 @@ async def _start_clinical(
         "dry_run": not write, "extractor": EXTRACTOR_VERSION,
         "started_at": datetime.now(UTC).isoformat(), "actor": "mcp",
         "caller_email_hash": caller_email_hash(_caller_email()),
-        "overrides": _overrides(thinking, sampling, prefill, timeout_s),
+        "overrides": _overrides(thinking, sampling, prefill, timeout_s, reasoning_marker),
         "documents": [{"document_id": d["id"], "category": d.get("category")} for d in docs],
     }  # fmt: skip
 
@@ -2385,6 +2404,7 @@ async def _start_clinical(
                 sampling=sampling,
                 prefill=prefill,
                 timeout_s=timeout_s,
+                reasoning_marker=reasoning_marker,
             )
         )
     return json.dumps(
@@ -2400,6 +2420,7 @@ async def curated_clinical_extract_preview(
     sampling: str | None = None,
     prefill: str | None = None,
     timeout_s: int | None = None,
+    reasoning_marker: str | None = None,
 ) -> str:
     """DRY RUN: what the LOCAL model would extract from curated documents (#726).
 
@@ -2426,12 +2447,16 @@ async def curated_clinical_extract_preview(
             thinking on.
         timeout_s: per-call timeout in seconds (int, 30-900) for this preview
             only; null keeps LLM_EXTRACT_TIMEOUT_S.
-        All four are echoed in the report (``settings``), with per-page token
+        reasoning_marker: "on" / "off" overrides LLM_REASONING_MARKER for this
+            preview only (#770): with thinking off, the system message ends
+            with the reasoning-off marker (for the LM Studio Prompt Template rule)
+            and no /no_think is sent; with thinking on, no marker.
+        All five are echoed in the report (``settings``), with per-page token
         counts and warnings.
     """
     return await _start_clinical(
         ctx, document_ids, patient_slug, write=False, thinking=thinking, sampling=sampling,
-        prefill=prefill, timeout_s=timeout_s,
+        prefill=prefill, timeout_s=timeout_s, reasoning_marker=reasoning_marker,
     )  # fmt: skip
 
 
@@ -2444,6 +2469,7 @@ async def curated_clinical_extract(
     sampling: str | None = None,
     prefill: str | None = None,
     timeout_s: int | None = None,
+    reasoning_marker: str | None = None,
 ) -> str:
     """Extract diagnoses, biomarkers, treatments, procedures, lesion sizes and
     planned dates from curated documents with the LOCAL model and store them (#726).
@@ -2466,14 +2492,14 @@ async def curated_clinical_extract(
     assess is not stored. Explicit ``document_ids`` (max 10). Runs in the
     background; poll curated_reocr_status. About a minute per page.
 
-    ``thinking`` / ``sampling`` / ``prefill`` / ``timeout_s`` overrides (see
+    ``thinking`` / ``sampling`` / ``prefill`` / ``timeout_s`` / ``reasoning_marker`` overrides (see
     curated_clinical_extract_preview) are accepted with dry_run=true only; with
     dry_run=false they are refused (error): a write always uses the configured
     env settings.
     """
     return await _start_clinical(
         ctx, document_ids, patient_slug, write=not dry_run, thinking=thinking, sampling=sampling,
-        prefill=prefill, timeout_s=timeout_s,
+        prefill=prefill, timeout_s=timeout_s, reasoning_marker=reasoning_marker,
     )  # fmt: skip
 
 

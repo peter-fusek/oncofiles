@@ -8,6 +8,8 @@ document content never leaves it. Plain ``httpx`` against
 The model "thinks" by default; ``/no_think`` is sent in the system prompt
 (and, with ``thinking=False``, in the last user message, #689) and any
 ``<think>`` block or echoed ``/no_think`` is stripped from the answer.
+With ``LLM_REASONING_MARKER`` (#770) no ``/no_think`` is sent; thinking-off
+calls end the system message with ``REASONING_OFF_MARKER`` instead.
 """
 
 from __future__ import annotations
@@ -28,6 +30,12 @@ _THINK_RE = re.compile(r"<think>.*?</think>", re.S)
 NO_THINK = "/no_think"
 # A "/no_think" the model echoes back must never reach a transcript or sidecar.
 _NO_THINK_ECHO_RE = re.compile(r"[ \t]*/no_think\b")
+# #770: the Qwen3.8 MLX chat template has no /no_think soft switch. This marker
+# at the end of the system message is mapped to enable_thinking=false by a
+# Prompt Template rule in LM Studio (private RUNBOOK, AI zone, #770); without
+# that rule it does nothing. Sent only behind LLM_REASONING_MARKER (or the
+# extractors' explicit per-call dry-run override) and only with thinking=False.
+REASONING_OFF_MARKER = "[[reasoning:off]]"
 
 # Room for the model's reasoning *plus* the answer. Measured 2026-11-07 on
 # qwen3.8-27b-mlx: ~2400 reasoning tokens for one classification.
@@ -110,6 +118,16 @@ def _with_no_think(user_content: list[dict] | str) -> list[dict] | str:
     return [*user_content, {"type": "text", "text": " " + NO_THINK}]
 
 
+def _system_content(system: str, thinking: bool | None, marker: bool) -> str:
+    """System message text. Marker off (default): ``/no_think`` appended, as
+    before #770. Marker on: the marker only with ``thinking=False``, else bare."""
+    if not marker:
+        return system + "\n" + NO_THINK
+    if thinking is False:
+        return system + "\n" + REASONING_OFF_MARKER
+    return system
+
+
 def chat(
     system: str,
     user_content: list[dict] | str,
@@ -126,6 +144,7 @@ def chat(
     top_k: int | None = None,
     presence_penalty: float | None = None,
     prefill_assistant: str | None = None,
+    reasoning_marker: bool | None = None,
 ) -> str:
     """One blocking chat completion; returns the answer text.
 
@@ -151,7 +170,12 @@ def chat(
     that content, so the model continues it (#770: an already-closed empty
     think block for a model that ignores thinking-off). LM Studio may return
     only the continuation or the prefill plus continuation; ``strip_think``
-    handles both. Only the extractors pass it, behind ``LLM_EXTRACT_PREFILL``."""
+    handles both. Only the extractors pass it, behind ``LLM_EXTRACT_PREFILL``.
+    ``reasoning_marker`` (``None`` = env ``LLM_REASONING_MARKER``; #770): when
+    on, no ``/no_think`` is sent anywhere; with ``thinking=False`` the system
+    message ends with ``REASONING_OFF_MARKER``, otherwise it is sent bare.
+    Only the extractor call path passes it, explicitly per call (never global
+    state); every other caller follows the env. Off = byte-identical request."""
     if not configured():
         raise LocalLLMError("LOCAL_LLM_BASE_URL / LOCAL_LLM_MODEL not set")
     est = estimate_prompt_tokens(system, user_content)
@@ -163,6 +187,7 @@ def chat(
             f"local LLM answer truncated: prompt ~{est} tokens leaves no room "
             f"in the {config.LOCAL_LLM_CONTEXT_WINDOW}-token context"
         )
+    marker = config.LLM_REASONING_MARKER if reasoning_marker is None else bool(reasoning_marker)
     payload = {
         "model": config.LOCAL_LLM_MODEL,
         "temperature": temperature,
@@ -172,7 +197,7 @@ def chat(
         # pass a large budget. thinking=False also puts it in the user turn (#689).
         "reasoning_effort": reasoning_effort,
         "messages": [
-            {"role": "system", "content": system + "\n" + NO_THINK},
+            {"role": "system", "content": _system_content(system, thinking, marker)},
             {"role": "user", "content": user_content},
         ],
     }
@@ -182,8 +207,9 @@ def chat(
         payload["response_format"] = response_format
     if thinking is not None:
         payload["chat_template_kwargs"] = {"enable_thinking": bool(thinking)}
-    if thinking is False and config.LLM_NO_THINK_SOFT_SWITCH:
+    if thinking is False and config.LLM_NO_THINK_SOFT_SWITCH and not marker:
         # The kwarg alone is ignored by LM Studio for Qwen3.x MLX (#689).
+        # With the #770 marker the template rule switches thinking off instead.
         payload["messages"][-1]["content"] = _with_no_think(user_content)
     if prefill_assistant is not None:
         # Must stay the LAST message: the model continues this turn (#770).

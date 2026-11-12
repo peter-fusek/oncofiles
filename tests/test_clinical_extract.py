@@ -844,11 +844,12 @@ async def test_preview_overrides_are_used_and_echoed(seeded, local_model, monkey
             )
         )
         assert started["overrides"] == {"thinking": "off", "sampling": "qwen", "prefill": None,
-                                        "timeout_s": None}  # fmt: skip
+                                        "timeout_s": None, "reasoning_marker": None}  # fmt: skip
         await asyncio.wait_for(tool._reocr_jobs[ERIKA_UUID]["task"], 10)
     report = tool._reocr_jobs[ERIKA_UUID]["report"]
     assert report["settings"]["overrides"] == {"thinking": "off", "sampling": "qwen",
-                                               "prefill": None, "timeout_s": None}  # fmt: skip
+                                               "prefill": None, "timeout_s": None,
+                                               "reasoning_marker": None}  # fmt: skip
     assert (report["settings"]["thinking"], report["settings"]["sampling"]) == ("off", "qwen")
     assert report["settings"]["max_tokens"] == 4000 and report["warnings"] == []
     expected = {"thinking": False, "temperature": 0.7, "top_p": 0.8, "top_k": 20,
@@ -890,10 +891,11 @@ async def test_preview_prefill_and_timeout_are_used_and_echoed(seeded, local_mod
             )
         )
         assert started["overrides"] == {"thinking": "off", "sampling": "greedy",
-                                        "prefill": "on", "timeout_s": 600}  # fmt: skip
+                                        "prefill": "on", "timeout_s": 600,
+                                        "reasoning_marker": None}  # fmt: skip
         await asyncio.wait_for(tool._reocr_jobs[ERIKA_UUID]["task"], 10)
     report = tool._reocr_jobs[ERIKA_UUID]["report"]
-    assert report["extractor"] == "llm-clinical-v4"
+    assert report["extractor"] == "llm-clinical-v5"
     assert (report["settings"]["prefill"], report["settings"]["timeout_s"]) == ("on", 600.0)
     expected = {"prefill_assistant": xcall.THINK_PREFILL, "timeout": 600.0, "thinking": False}
     assert seen and all(s == expected for s in seen)
@@ -907,3 +909,48 @@ async def test_preview_prefill_and_timeout_are_used_and_echoed(seeded, local_mod
         await asyncio.wait_for(tool._reocr_jobs[ERIKA_UUID]["task"], 10)
     assert seen and all(s["prefill_assistant"] is None and s["thinking"] for s in seen)
     assert tool._reocr_jobs[ERIKA_UUID]["report"]["settings"]["prefill"] == "off"
+
+
+# ── #770: reasoning-off marker override (dry run only) ───────────────
+
+
+async def test_reasoning_marker_override_refused_on_write_used_and_echoed(
+    seeded, local_model, monkeypatch
+):
+    from oncofiles import config
+
+    db = seeded
+    before = await _snapshot(db)
+    for value in ("on", "off"):
+        with pytest.raises(ValueError, match="dry run"):
+            await tool.curated_clinical_extract(
+                _ctx(db), [DOC_A], dry_run=False, reasoning_marker=value
+            )
+    with pytest.raises(ValueError):
+        await tool.curated_clinical_extract_preview(_ctx(db), [DOC_A], reasoning_marker="yes")
+    assert ERIKA_UUID not in tool._reocr_jobs and local_model == []  # no pre-store copy
+    assert await _snapshot(db) == before
+
+    monkeypatch.setattr(config, "LLM_REASONING_MARKER", False)
+    seen = []
+
+    def chat(system, user, **kw):
+        seen.append((kw.get("reasoning_marker"), kw.get("thinking")))
+        return model_chat(system, user, **kw)
+
+    with patch.object(llm, "chat", chat):
+        started = json.loads(
+            await tool.curated_clinical_extract(
+                _ctx(db), [DOC_A], dry_run=True, thinking="off", reasoning_marker="on"
+            )
+        )
+        assert started["overrides"]["reasoning_marker"] == "on"
+        await asyncio.wait_for(tool._reocr_jobs[ERIKA_UUID]["task"], 10)
+    report = tool._reocr_jobs[ERIKA_UUID]["report"]
+    assert report["dry_run"] is True and report["extractor"] == "llm-clinical-v5"
+    assert report["settings"]["reasoning_marker"] == "on"
+    assert report["settings"]["overrides"]["reasoning_marker"] == "on"
+    assert seen and all(s == (True, False) for s in seen)
+    diags = report["documents"][0]["page_diagnostics"].values()
+    assert diags and all(p["reasoning_marker"] is True for p in diags)
+    assert await _snapshot(db) == before
