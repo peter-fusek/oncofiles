@@ -20,7 +20,7 @@ from fastmcp import FastMCP
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, Response
 
-from oncofiles import session_revocation
+from oncofiles import scheduler_singleton, session_revocation
 from oncofiles.config import (
     AI_NIGHT_WINDOW_START_UTC,
     AI_NIGHTLY_ONLY,
@@ -438,13 +438,17 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict]:
 
     curated_nightly_task = None
     if nightly_settings()[0] and GOOGLE_INTEGRATION_ENABLED:
-        curated_nightly_task = asyncio.create_task(curated_nightly_loop(db))
-        cont, poll_s, settle_s, chunk = continuous_settings()
-        logger.info(
-            "Curated loop started (nightly sweep hour %s Europe/Bratislava; continuous %s)",
-            nightly_settings()[1] if nightly_settings()[1] is not None else "every",
-            f"on: probe {poll_s}s, settle {settle_s}s, {chunk} docs/run" if cont else "off",
+        # #784: one curated loop per process; a second lifespan gets the same task.
+        curated_nightly_task, loop_started = scheduler_singleton.ensure_curated_loop(
+            lambda: asyncio.create_task(curated_nightly_loop(db))
         )
+        if loop_started:
+            cont, poll_s, settle_s, chunk = continuous_settings()
+            logger.info(
+                "Curated loop started (nightly sweep hour %s Europe/Bratislava; continuous %s)",
+                nightly_settings()[1] if nightly_settings()[1] is not None else "every",
+                f"on: probe {poll_s}s, settle {settle_s}s, {chunk} docs/run" if cont else "off",
+            )
 
     try:
         yield {
@@ -460,10 +464,15 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict]:
             "transport": MCP_TRANSPORT,
         }
     finally:
-        request_stop()  # a running curated run finishes its document and logs cleanly
-        if curated_nightly_task is not None:
-            curated_nightly_task.cancel()
-        if scheduler:
+        # #784: shared singletons stop only when their last holder exits.
+        last_loop_holder = curated_nightly_task is None or (
+            scheduler_singleton.release_curated_loop(curated_nightly_task)
+        )
+        if last_loop_holder:
+            request_stop()  # a running curated run finishes its document and logs cleanly
+            if curated_nightly_task is not None:
+                curated_nightly_task.cancel()
+        if scheduler and scheduler_singleton.release_scheduler(scheduler):
             scheduler.shutdown(wait=False)
             logger.info("Sync scheduler stopped")
         # Close AI client to release httpx connection pool
@@ -812,7 +821,15 @@ def _start_sync_scheduler(
     *,
     primary_uuid: str = "",
 ):
-    """Start APScheduler for periodic GDrive sync, Gmail sync, and Calendar sync."""
+    """Start APScheduler for periodic GDrive sync, Gmail sync, and Calendar sync.
+
+    Idempotent within a process (#784): when a scheduler is already running,
+    it is returned (logged once) instead of starting a second one that would
+    fire every job twice.
+    """
+    if (existing := scheduler_singleton.existing_scheduler()) is not None:
+        return existing
+
     from apscheduler.schedulers.asyncio import AsyncIOScheduler
     from apscheduler.triggers.interval import IntervalTrigger
 
@@ -2286,8 +2303,49 @@ def _start_sync_scheduler(
     )
 
     scheduler.start()
-    logger.info("Sync scheduler started — every %d min", SYNC_INTERVAL_MINUTES)
+    _defer_jobs_past_startup_grace(scheduler)
+    scheduler_singleton.register_scheduler(scheduler, job_tracker)
+    logger.info(
+        "Sync scheduler started — every %d min, %d jobs, instance %s",
+        SYNC_INTERVAL_MINUTES,
+        len(scheduler.get_jobs()),
+        scheduler_singleton.INSTANCE_ID,
+    )
     return scheduler, job_tracker
+
+
+def _defer_jobs_past_startup_grace(scheduler, grace_s: int | None = None) -> list[str]:
+    """Move every job's first run to at least ``grace_s`` after start (#784).
+
+    A rolling deploy runs the old and new container side by side for a few
+    seconds. The curated loop waits ``STARTUP_GRACE_S`` before its first run;
+    the scheduler's first slots must too, or a job that touches Drive or a
+    model (``startup_catchup`` at +90 s, the legacy Gmail/Calendar startup
+    syncs, ``AI_RUN_ON_STARTUP``, or a cron slot that happens to fall right
+    after the deploy) could run while the old container is still alive.
+
+    A slot inside the grace is DEFERRED to the end of the grace, not skipped:
+    a deploy at 22:58 still runs the 23:00 nightly pipeline, at 23:03. Later
+    slots follow the job's trigger as usual. Returns the deferred job ids.
+    """
+    if grace_s is None:
+        from oncofiles.tools.curated import STARTUP_GRACE_S
+
+        grace_s = STARTUP_GRACE_S
+    grace_end = datetime.now(scheduler.timezone) + timedelta(seconds=grace_s)
+    deferred: list[str] = []
+    for job in scheduler.get_jobs():
+        nrt = job.next_run_time
+        if nrt is not None and nrt < grace_end:
+            job.modify(next_run_time=grace_end)
+            deferred.append(job.id)
+    if deferred:
+        logger.info(
+            "Scheduler: first run of %s deferred to the startup grace end (%ds)",
+            ", ".join(sorted(deferred)),
+            grace_s,
+        )
+    return deferred
 
 
 def _get_sync_folder_id_from(oauth_folder_id: str) -> str:
@@ -3738,6 +3796,9 @@ async def readiness(request: Request) -> JSONResponse:
         from oncofiles.tools.curated import probe_stats
 
         result["curated_probes"] = probe_stats()
+        # #784: one scheduler per process, verifiable after a rolling deploy:
+        # every answer must carry the same instance_id. In-memory, no DB.
+        result["scheduler"] = scheduler_singleton.status()
         # Scheduler job status (lightweight summary)
         tracker = lifespan_ctx.get("job_tracker", {})
         if tracker:
