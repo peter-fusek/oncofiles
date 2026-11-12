@@ -41,6 +41,9 @@ PREFILL_MODES = ("on", "off")
 # #770: an already-closed empty think block as the final assistant turn, so a
 # model that ignores thinking-off continues AFTER the reasoning.
 THINK_PREFILL = "<think>\n\n</think>\n\n"
+# #770: reasoning-off marker in the system message (llm.REASONING_OFF_MARKER),
+# for the LM Studio Prompt Template rule; env LLM_REASONING_MARKER.
+REASONING_MARKER_MODES = ("on", "off")
 TIMEOUT_MIN_S, TIMEOUT_MAX_S = 30, 900
 
 ERROR_KINDS = ("http_status", "json_decode", "schema_shape", "empty", "timeout", "truncated",
@@ -82,9 +85,15 @@ def validate_overrides(
     sampling: str | None = None,
     prefill: str | None = None,
     timeout_s: int | None = None,
+    reasoning_marker: str | None = None,
 ) -> None:
     """Per-job overrides must be one of the known modes, and ``timeout_s`` an
     int of seconds in [30, 900] (ValueError otherwise)."""
+    if reasoning_marker is not None and reasoning_marker not in REASONING_MARKER_MODES:
+        raise ValueError(
+            f"reasoning_marker must be one of {REASONING_MARKER_MODES} or null, "
+            f"got {reasoning_marker!r}"
+        )
     if thinking is not None and thinking not in THINKING_MODES:
         raise ValueError(f"thinking must be one of {THINKING_MODES} or null, got {thinking!r}")
     if sampling is not None and sampling not in SAMPLING_MODES:
@@ -109,14 +118,18 @@ def refuse_overrides_on_write(
     sampling: str | None = None,
     prefill: str | None = None,
     timeout_s: int | None = None,
+    reasoning_marker: str | None = None,
 ) -> None:
     """Overrides are for the dry-run A/B only: a write path never takes them."""
-    validate_overrides(thinking, sampling, prefill, timeout_s)
-    if write and any(v is not None for v in (thinking, sampling, prefill, timeout_s)):
+    validate_overrides(thinking, sampling, prefill, timeout_s, reasoning_marker)
+    if write and any(
+        v is not None for v in (thinking, sampling, prefill, timeout_s, reasoning_marker)
+    ):
         raise ValueError(
-            "thinking/sampling/prefill/timeout_s overrides are allowed only on a dry run; "
-            "a write always uses the configured LLM_EXTRACT_THINKING / LLM_EXTRACT_SAMPLING "
-            "/ LLM_EXTRACT_PREFILL / LLM_EXTRACT_TIMEOUT_S"
+            "thinking/sampling/prefill/timeout_s/reasoning_marker overrides are allowed only "
+            "on a dry run; a write always uses the configured LLM_EXTRACT_THINKING / "
+            "LLM_EXTRACT_SAMPLING / LLM_EXTRACT_PREFILL / LLM_EXTRACT_TIMEOUT_S / "
+            "LLM_REASONING_MARKER"
         )
 
 
@@ -127,6 +140,9 @@ class CallSettings:
     max_tokens: int
     timeout_s: float
     prefill: bool = False  # effective: never with thinking on (#770)
+    # Passed explicitly to every llm.chat call of this job (#770): never env
+    # or module state, so concurrent classify / re-OCR calls are unaffected.
+    reasoning_marker: bool = False
 
     @property
     def params(self) -> dict:
@@ -136,7 +152,9 @@ class CallSettings:
         """Effective settings for a job report (numbers and modes only)."""
         return {"thinking": "on" if self.thinking else "off", "sampling": self.sampling,
                 "max_tokens": self.max_tokens, "timeout_s": self.timeout_s,
-                "prefill": "on" if self.prefill else "off", **self.params}  # fmt: skip
+                "prefill": "on" if self.prefill else "off",
+                "reasoning_marker": "on" if self.reasoning_marker else "off",
+                **self.params}  # fmt: skip
 
 
 def settings(
@@ -144,6 +162,7 @@ def settings(
     sampling: str | None = None,
     prefill: str | None = None,
     timeout_s: int | None = None,
+    reasoning_marker: str | None = None,
 ) -> CallSettings:
     """Effective call settings: per-job overrides over the env defaults.
 
@@ -152,10 +171,11 @@ def settings(
     budget ``LLM_EXTRACT_ANSWER_BUDGET`` so a repetition loop ends early.
     The prefilled closed think block (#770) is used only with thinking OFF and
     ``LLM_EXTRACT_PREFILL`` (or the ``prefill="on"`` override); ``timeout_s``
-    overrides ``LLM_EXTRACT_TIMEOUT_S``."""
+    overrides ``LLM_EXTRACT_TIMEOUT_S``; ``reasoning_marker`` overrides
+    ``LLM_REASONING_MARKER`` (#770; it only takes effect with thinking OFF)."""
     from oncofiles import config
 
-    validate_overrides(thinking, sampling, prefill, timeout_s)
+    validate_overrides(thinking, sampling, prefill, timeout_s, reasoning_marker)
     on = (thinking or config.LLM_EXTRACT_THINKING) == "on"
     mode = sampling or config.LLM_EXTRACT_SAMPLING
     if mode not in SAMPLING_MODES:
@@ -163,7 +183,15 @@ def settings(
     budget = llm.REASONING_BUDGET if on else config.LLM_EXTRACT_ANSWER_BUDGET
     want_prefill = prefill == "on" if prefill is not None else bool(config.LLM_EXTRACT_PREFILL)
     timeout = timeout_s if timeout_s is not None else config.LLM_EXTRACT_TIMEOUT_S
-    return CallSettings(on, mode, int(budget), float(timeout), prefill=want_prefill and not on)
+    marker = (
+        reasoning_marker == "on"
+        if reasoning_marker is not None
+        else bool(config.LLM_REASONING_MARKER)
+    )
+    return CallSettings(
+        on, mode, int(budget), float(timeout), prefill=want_prefill and not on,
+        reasoning_marker=marker,
+    )  # fmt: skip
 
 
 @dataclass
@@ -185,6 +213,7 @@ class PageResult:
     thinking: str | None = None  # on | off (effective)
     sampling: str | None = None  # greedy | qwen (effective)
     prefill: bool | None = None  # closed think block prefilled (#770, effective)
+    reasoning_marker: bool | None = None  # marker setting of the call (#770)
 
     def diagnostics(self) -> dict:
         """Counts and codes only — never page or answer text."""
@@ -192,7 +221,8 @@ class PageResult:
                "answer_source": self.answer_source, "seconds": round(self.seconds, 1),
                "prompt_tokens": self.prompt_tokens, "completion_tokens": self.completion_tokens,
                "reasoning_tokens": self.reasoning_tokens, "thinking": self.thinking,
-               "sampling": self.sampling, "prefill": self.prefill}  # fmt: skip
+               "sampling": self.sampling, "prefill": self.prefill,
+               "reasoning_marker": self.reasoning_marker}  # fmt: skip
         if self.error:
             out.update(error_kind=self.error_kind, error_class=self.error_class)
         if self.answer:
@@ -235,8 +265,12 @@ def call_and_parse(
     res.thinking = "on" if cfg.thinking else "off"
     res.sampling = cfg.sampling
     res.prefill = cfg.prefill
+    res.reasoning_marker = cfg.reasoning_marker
+    # reasoning_marker is always explicit here (#770): this job's setting, never
+    # read from shared state by the concurrent classify / re-OCR calls.
     kwargs = {"max_tokens": cfg.max_tokens, "thinking": cfg.thinking,
-              "timeout": cfg.timeout_s, **cfg.params}  # fmt: skip
+              "timeout": cfg.timeout_s, "reasoning_marker": cfg.reasoning_marker,
+              **cfg.params}  # fmt: skip
     if cfg.prefill:  # only then: other chat signatures stay untouched (#770)
         kwargs["prefill_assistant"] = THINK_PREFILL
     info: dict = {}

@@ -142,6 +142,15 @@ LLM_EXTRACT_TIMEOUT_S: float = float(os.environ.get("LLM_EXTRACT_TIMEOUT_S", "30
 # the model never closes </think>. Default OFF until the dry-run A/B confirms
 # it; never used with thinking ON. Re-OCR and classification are not affected.
 LLM_EXTRACT_PREFILL: bool = os.environ.get("LLM_EXTRACT_PREFILL", "false").strip().lower() == "true"
+# Reasoning-off marker (#770): with thinking OFF, llm.chat ends the system
+# message with llm.REASONING_OFF_MARKER (and sends no /no_think anywhere); with
+# thinking ON / default the system message is sent bare. Works ONLY together
+# with the LM Studio Prompt Template rule that maps the marker to
+# enable_thinking=false (private RUNBOOK, AI zone). Default OFF: every request
+# stays byte-identical to before until that template rule is in place.
+LLM_REASONING_MARKER: bool = (
+    os.environ.get("LLM_REASONING_MARKER", "false").strip().lower() == "true"
+)
 # Structured output (json_schema response_format) for the lab shadow
 # extractor (#714). Default OFF: with a json_schema grammar Qwen cannot emit
 # its empty <think></think> first, so LM Studio files the whole answer under

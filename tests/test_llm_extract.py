@@ -752,12 +752,13 @@ async def test_preview_overrides_are_echoed_used_and_refused_on_write(db, monkey
         await tool.curated_llm_extract_preview(_ctx(db), [DOC], thinking="on", sampling="qwen")
     )
     assert started["overrides"] == {"thinking": "on", "sampling": "qwen", "prefill": None,
-                                    "timeout_s": None}  # fmt: skip
+                                    "timeout_s": None, "reasoning_marker": None}  # fmt: skip
     await asyncio.wait_for(tool._reocr_jobs[ERIKA_UUID]["task"], 10)
     report = json.loads(await tool.curated_reocr_status(_ctx(db)))["report"]
     assert report["settings"]["thinking"] == "on" and report["settings"]["sampling"] == "qwen"
     assert report["settings"]["overrides"] == {"thinking": "on", "sampling": "qwen",
-                                               "prefill": None, "timeout_s": None}  # fmt: skip
+                                               "prefill": None, "timeout_s": None,
+                                               "reasoning_marker": None}  # fmt: skip
     assert report["warnings"] == []
     assert seen == [{"thinking": True, "temperature": 0.6, "top_p": 0.95,
                      "max_tokens": llm.REASONING_BUDGET}]  # fmt: skip
@@ -804,12 +805,59 @@ async def test_preview_prefill_and_timeout_overrides(db, monkeypatch):
         )
     )
     assert started["overrides"] == {"thinking": "off", "sampling": "qwen", "prefill": "on",
-                                    "timeout_s": 120}  # fmt: skip
+                                    "timeout_s": 120, "reasoning_marker": None}  # fmt: skip
     await asyncio.wait_for(tool._reocr_jobs[ERIKA_UUID]["task"], 10)
     report = json.loads(await tool.curated_reocr_status(_ctx(db)))["report"]
-    assert report["extractor"] == "llm-extract-v5"
+    assert report["extractor"] == "llm-extract-v6"
     assert report["settings"]["prefill"] == "on" and report["settings"]["timeout_s"] == 120.0
     assert report["settings"]["overrides"]["prefill"] == "on"
     assert seen == [{"prefill_assistant": xcall.THINK_PREFILL, "timeout": 120.0,
                      "thinking": False}]  # fmt: skip
     assert report["documents"][0]["page_diagnostics"]["1"]["prefill"] is True
+
+
+# ── #770: reasoning-off marker override (dry run only) ───────────────
+
+
+async def test_preview_reasoning_marker_override(db, monkeypatch):
+    from oncofiles import config
+    from oncofiles.tools import curated as tool
+
+    await _seed(db)
+    monkeypatch.setattr(config, "LLM_EXTRACT_SHADOW_DISABLED", False)
+    monkeypatch.setattr(config, "LOCAL_LLM_BASE_URL", "http://local.invalid/v1")
+    monkeypatch.setattr(config, "LOCAL_LLM_MODEL", "mock-model")
+    monkeypatch.setattr(config, "LLM_EXTRACT_THINKING", "off")
+    monkeypatch.setattr(config, "LLM_REASONING_MARKER", False)
+    seen = []
+
+    def fake_chat(system, user, **kw):
+        seen.append(kw.get("reasoning_marker"))
+        return model_answer()
+
+    monkeypatch.setattr(llm, "chat", fake_chat)
+    monkeypatch.setattr(tool, "_reocr_jobs", {})
+    for value in ("on", "off"):
+        with pytest.raises(ValueError, match="dry run"):
+            await tool.curated_llm_extract_preview(
+                _ctx(db), [DOC], dry_run=False, reasoning_marker=value
+            )
+    with pytest.raises(ValueError):
+        await tool.curated_llm_extract_preview(_ctx(db), [DOC], reasoning_marker="maybe")
+    assert ERIKA_UUID not in tool._reocr_jobs and seen == []
+    started = json.loads(
+        await tool.curated_llm_extract_preview(_ctx(db), [DOC], reasoning_marker="on")
+    )
+    assert started["overrides"]["reasoning_marker"] == "on"
+    await asyncio.wait_for(tool._reocr_jobs[ERIKA_UUID]["task"], 10)
+    report = json.loads(await tool.curated_reocr_status(_ctx(db)))["report"]
+    assert report["settings"]["reasoning_marker"] == "on"
+    assert report["settings"]["overrides"]["reasoning_marker"] == "on"
+    assert seen == [True]
+    assert report["documents"][0]["page_diagnostics"]["1"]["reasoning_marker"] is True
+    # without the override the job follows the env (off): passed explicitly as False
+    tool._reocr_jobs.clear()
+    seen.clear()
+    await tool.curated_llm_extract_preview(_ctx(db), [DOC])
+    await asyncio.wait_for(tool._reocr_jobs[ERIKA_UUID]["task"], 10)
+    assert seen == [False]
