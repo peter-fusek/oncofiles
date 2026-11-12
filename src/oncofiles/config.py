@@ -135,6 +135,14 @@ LLM_EXTRACT_ANSWER_BUDGET: int = int(os.environ.get("LLM_EXTRACT_ANSWER_BUDGET",
 # Per-request timeout of an extractor call (#767), so a runaway generation
 # costs minutes, not the 900 s OCR timeout (LOCAL_LLM_TIMEOUT_S, unchanged).
 LLM_EXTRACT_TIMEOUT_S: float = float(os.environ.get("LLM_EXTRACT_TIMEOUT_S", "300"))
+# Documents extracted at once by the LLM extraction jobs (clinical preview /
+# write, lab shadow, scorecard; #773). Each document's pages stay sequential,
+# so N documents hold up to N LM Studio slots at once. Default 1 (one slot,
+# the previous behaviour); clamped to 1..3. Raising it needs an infra review
+# of the LM Studio slot budget first.
+LLM_EXTRACT_PARALLEL_DOCS: int = max(
+    1, min(3, int(os.environ.get("LLM_EXTRACT_PARALLEL_DOCS", "1") or "1"))
+)
 # Reasoning-off marker (#770): with thinking OFF, llm.chat ends the system
 # message with llm.REASONING_OFF_MARKER (and sends no /no_think anywhere); with
 # thinking ON / default the system message is sent bare. Works ONLY together

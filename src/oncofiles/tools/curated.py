@@ -1872,10 +1872,15 @@ def _source_reason(meta: dict) -> str | None:
     return None
 
 
-def _overrides(thinking, sampling, timeout_s, reasoning_marker) -> dict:
-    """The per-job A/B overrides as echoed in job and report (#767, #770)."""
-    return {"thinking": thinking, "sampling": sampling, "timeout_s": timeout_s,
-            "reasoning_marker": reasoning_marker}  # fmt: skip
+def _overrides(thinking, sampling, timeout_s, reasoning_marker, parallel_docs=None) -> dict:
+    """The per-job A/B overrides as echoed in job and report (#767, #770);
+    ``parallel_docs`` (#773) only when it was given (the effective value is
+    always in ``settings.parallel_docs``)."""
+    out = {"thinking": thinking, "sampling": sampling, "timeout_s": timeout_s,
+           "reasoning_marker": reasoning_marker}  # fmt: skip
+    if parallel_docs is not None:
+        out["parallel_docs"] = parallel_docs
+    return out
 
 
 _SHADOW_DOC_KEYS = (
@@ -1885,41 +1890,137 @@ _SHADOW_DOC_KEYS = (
 )  # fmt: skip
 
 
-async def _lab_shadow_document(db, pid: str, d: dict, *, vocab, births, stored, cfg) -> dict:
-    """ONE document of the LLM-extract shadow (#714 phase 2a): extractor +
-    generic verifier on the stored page text, compared with the stored rule
-    facts (``stored`` = the patient's ``fact_verification_rows``). Writes
-    nothing; the model call runs local-only. Shared by the shadow preview and
-    the extraction scorecard (#773)."""
-    from oncofiles.cloud_guard import local_only
-    from oncofiles.curated import llm_extract, verifier
+# ── bounded document-level parallelism of the LLM extractors (#773) ──────
+#
+# A job runs in three phases: (1) on the event loop, one DB call after the
+# other, everything the model calls need is fetched (birth dates, vocabulary,
+# stored facts, then each document's page text); (2) up to ``parallel_docs``
+# documents run their model calls in worker threads, each document's pages
+# one after another, with NO DB call and no Drive client; (3) back on the
+# event loop, results are assembled (and, for a write, stored) in input
+# order. The app holds ONE aiosqlite connection: never move a DB call into
+# phase 2.
 
-    entry = {"document_id": d["id"], "category": d.get("category")}
-    pages = [(int(p["page_number"]), p.get("extracted_text") or "")
-             for p in await db.get_ocr_pages(d["id"], patient_id=pid)]  # fmt: skip
-    if not any(t.strip() for _, t in pages):
-        return {**entry, "result": "skipped", "error": "no page text"}
+
+@dataclass
+class _DocWork:
+    """One document of an LLM extraction job. ``blocking`` is the model work
+    for a worker thread (``None`` when ``final`` decided the entry without a
+    model call); ``out`` / ``error`` / ``stopped`` are what phase 2 left."""
+
+    d: dict
+    entry: dict
+    pages: list = field(default_factory=list)
+    blocking: object = None
+    final: dict | None = None
+    out: dict | None = None
+    error: str | None = None
+    stopped: bool = False
+
+
+def _stopping_entry(d: dict) -> dict:
+    return {"document_id": d["id"], "category": d.get("category"),
+            "result": "skipped", "error": "stopping"}  # fmt: skip
+
+
+async def _doc_work(db, pid: str, d: dict, make_blocking) -> _DocWork:
+    """Phase 1 for one document (event loop, DB): its stored page text.
+    ``make_blocking(pages, meta, day)`` returns the model work, which must
+    not touch the DB."""
+    w = _DocWork(d=d, entry={"document_id": d["id"], "category": d.get("category")})
+    if _stopping.is_set():
+        w.final = _stopping_entry(d)
+        return w
+    w.pages = [(int(p["page_number"]), p.get("extracted_text") or "")
+               for p in await db.get_ocr_pages(d["id"], patient_id=pid)]  # fmt: skip
+    if not any(t.strip() for _, t in w.pages):
+        w.final = {**w.entry, "result": "skipped", "error": "no page text"}
+        return w
     meta = d.get("structured_metadata") or {}
     day = str(d.get("document_date") or "")[:10] or None
+    w.blocking = make_blocking(w.pages, meta, day)
+    return w
 
-    def _blocking():
-        with local_only("curated LLM extract shadow"):
-            return llm_extract.extract_document(
-                pages, vocab=vocab, report_date=day, birth_dates=births,
-                source_reason=_source_reason(meta), stop=_stopping.is_set, cfg=cfg,
-            )  # fmt: skip
 
+async def _extract_documents(works: list[_DocWork], *, parallel: int) -> None:
+    """Phase 2: the model work of up to ``parallel`` documents at once, started
+    in input order (the semaphore is FIFO). NO DB access in here: the tasks
+    below only wait on worker threads. ``local_only`` follows into every
+    worker (``asyncio.to_thread`` copies the context, and the work re-enters
+    it). A shutdown (``request_stop``) lets in-flight documents finish their
+    current page (the extractors check ``stop`` before each page) and starts
+    no further document."""
+    gate = asyncio.Semaphore(max(1, int(parallel)))
+
+    async def one(w: _DocWork) -> None:
+        async with gate:
+            if _stopping.is_set():
+                w.stopped = True
+                return
+            try:
+                w.out = await asyncio.to_thread(w.blocking)
+            except Exception as exc:
+                logger.exception("LLM extraction of doc %s failed", w.d["id"])
+                w.error = type(exc).__name__
+
+    tasks = [asyncio.create_task(one(w)) for w in works if w.blocking is not None]
     try:
-        out = await asyncio.to_thread(_blocking)
-    except Exception as exc:
-        logger.exception("llm shadow extraction of doc %s failed", d["id"])
-        return {**entry, "result": "failed", "error": type(exc).__name__}
+        for t in tasks:
+            await t
+    finally:
+        for t in tasks:  # a no-op unless this job itself was cancelled
+            t.cancel()
+
+
+def _timing(started: float, entries: list[dict], parallel: int) -> dict:
+    """Wall-clock seconds of the whole job next to the summed model seconds of
+    its documents (= the sum of per-page seconds); their ratio is the speed-up."""
+    wall = round(time.monotonic() - started, 1)
+    pages = round(sum(float(e.get("seconds") or 0) for e in entries), 1)
+    return {"parallel_docs": parallel, "wall_seconds": wall, "page_seconds_total": pages,
+            "speedup": round(pages / wall, 2) if wall > 0 else None}  # fmt: skip
+
+
+async def _lab_shadow_work(db, pid: str, d: dict, *, vocab, births, cfg) -> _DocWork:
+    """Phase 1 of ONE document of the LLM-extract shadow (#714 phase 2a)."""
+
+    def make(pages, meta, day):
+        def _blocking():
+            from oncofiles.cloud_guard import local_only
+            from oncofiles.curated import llm_extract
+
+            with local_only("curated LLM extract shadow"):
+                return llm_extract.extract_document(
+                    pages, vocab=vocab, report_date=day, birth_dates=births,
+                    source_reason=_source_reason(meta), stop=_stopping.is_set, cfg=cfg,
+                )  # fmt: skip
+
+        return _blocking
+
+    return await _doc_work(db, pid, d, make)
+
+
+def _lab_shadow_entry(w: _DocWork, stored) -> dict:
+    """Phase 3 of ONE lab shadow document: extractor + generic verifier output
+    compared with the stored rule facts (``stored`` = the patient's
+    ``fact_verification_rows``, fetched before dispatch). Pure, no DB. Shared
+    by the shadow preview and the extraction scorecard (#773)."""
+    from oncofiles.curated import llm_extract, verifier
+
+    if w.final is not None:
+        return w.final
+    if w.stopped:
+        return _stopping_entry(w.d)
+    if w.error is not None or w.out is None:
+        return {**w.entry, "result": "failed", "error": w.error or "no_result"}
+    out, d = w.out, w.d
+    meta = d.get("structured_metadata") or {}
     rows = [r for r in stored if r["source_document_id"] == d["id"]]
     # text-only extraction never upgrades a transcription (#714 rule)
     verifier.inherit_transcription_reasons(out["facts"], rows)
-    cross = verifier.transcription_pages(rows, _source_reason(meta), [n for n, _ in pages])
+    cross = verifier.transcription_pages(rows, _source_reason(meta), [n for n, _ in w.pages])
     return {
-        **entry, "result": "compared", **{k: out[k] for k in _SHADOW_DOC_KEYS},
+        **w.entry, "result": "compared", **{k: out[k] for k in _SHADOW_DOC_KEYS},
         **llm_extract.shadow_compare(
             rows, out["facts"], not_assessed_pages=out["pages_not_assessed"],
             crosscheck_pages=cross,
@@ -1936,34 +2037,32 @@ async def _llm_shadow_job(
     sampling: str | None = None,
     timeout_s: int | None = None,
     reasoning_marker: str | None = None,
+    parallel_docs: int | None = None,
 ) -> None:
     """LLM extractor + generic verifier on stored page text, compared with the
     stored rule facts (#714 phase 2a). Writes NOTHING: no facts, no Drive, no
-    run row. One model call at a time (one LM Studio slot); local only.
-    ``thinking`` / ``sampling`` (#767) and ``timeout_s`` (#770)
-    override the env for this job only."""
+    run row. One model call at a time per document, up to ``parallel_docs``
+    documents at once (#773; default ``LLM_EXTRACT_PARALLEL_DOCS`` = 1, i.e.
+    one LM Studio slot); local only. ``thinking`` / ``sampling`` (#767),
+    ``timeout_s`` (#770) and ``parallel_docs`` override the env for this job only."""
     from oncofiles.curated import llm_extract, llm_extract_call, verifier
     from oncofiles.curated.facts_rules import Vocabulary
 
+    started = time.monotonic()
     job = _reocr_jobs[pid]
     cfg = llm_extract_call.settings(thinking, sampling, timeout_s, reasoning_marker)
-    overrides = _overrides(thinking, sampling, timeout_s, reasoning_marker)
+    parallel = llm_extract_call.parallel_docs(parallel_docs)
+    overrides = _overrides(thinking, sampling, timeout_s, reasoning_marker, parallel_docs)
     report: list[dict] = []
     try:
         vocab = Vocabulary.from_rows(await db.fact_code_vocabulary())
         # same DOB resolution as the clinical path: context + README (#778)
         births = await _all_birth_dates(db, pid)
         stored = await db.fact_verification_rows(patient_id=pid)
-        for d in docs:
-            if _stopping.is_set():
-                report.append({"document_id": d["id"], "category": d.get("category"),
-                               "result": "skipped", "error": "stopping"})  # fmt: skip
-                continue
-            report.append(
-                await _lab_shadow_document(
-                    db, pid, d, vocab=vocab, births=births, stored=stored, cfg=cfg
-                )
-            )
+        works = [await _lab_shadow_work(db, pid, d, vocab=vocab, births=births, cfg=cfg)
+                 for d in docs]  # fmt: skip
+        await _extract_documents(works, parallel=parallel)
+        report = [_lab_shadow_entry(w, stored) for w in works]
         done = [r for r in report if r.get("result") == "compared"]
         totals = {k: sum(r[k] for r in done) for k in
                   ("rule_facts", "llm_facts", "llm_machine", "agree", "agree_machine",
@@ -1973,7 +2072,8 @@ async def _llm_shadow_job(
         job.update(state="done", report={
             "dry_run": True, "extractor": llm_extract.EXTRACTOR_VERSION,
             "verifier": verifier.VERIFIER_VERSION,
-            "settings": {**cfg.report(), "overrides": overrides},
+            "settings": {**cfg.report(), "parallel_docs": parallel, "overrides": overrides},
+            "timing": _timing(started, report, parallel),
             "warnings": llm_extract_call.merge_warnings(done),
             "totals": totals, "documents": report,
         })  # fmt: skip
@@ -1993,6 +2093,7 @@ async def curated_llm_extract_preview(
     sampling: str | None = None,
     timeout_s: int | None = None,
     reasoning_marker: str | None = None,
+    parallel_docs: int | None = None,
 ) -> str:
     """SHADOW mode of LLM-first fact extraction (#714): compare, never store.
 
@@ -2017,15 +2118,19 @@ async def curated_llm_extract_preview(
             job only (#770): with thinking off, the system message ends with
             the reasoning-off marker (for the LM Studio Prompt Template rule)
             and no /no_think is sent; with thinking on, no marker.
-        All four are echoed in the report (``settings``) and refused (error)
-        with dry_run=false.
+        parallel_docs: documents extracted at once (int, 1-3) for this job
+            only (#773); null keeps LLM_EXTRACT_PARALLEL_DOCS (default 1).
+            Each running document holds one LM Studio slot.
+        All five are echoed in the report (``settings``) and refused (error)
+        with dry_run=false. The report's ``timing`` has the job's wall-clock
+        seconds next to the summed per-page seconds.
     """
     from oncofiles import config
     from oncofiles.curated import llm, llm_extract_call
 
     llm_extract_call.refuse_overrides_on_write(
         write=not dry_run, thinking=thinking, sampling=sampling, timeout_s=timeout_s,
-        reasoning_marker=reasoning_marker,
+        reasoning_marker=reasoning_marker, parallel_docs=parallel_docs,
     )  # fmt: skip
     if config.LLM_EXTRACT_SHADOW_DISABLED:
         return json.dumps({"error": "disabled by LLM_EXTRACT_SHADOW_DISABLED=true"})
@@ -2050,12 +2155,14 @@ async def curated_llm_extract_preview(
     _reocr_jobs[pid] = {
         "state": "running", "kind": "llm_shadow", "dry_run": True,
         "extractor": EXTRACTOR_VERSION, "started_at": datetime.now(UTC).isoformat(),
-        "overrides": _overrides(thinking, sampling, timeout_s, reasoning_marker),
+        "overrides": _overrides(thinking, sampling, timeout_s, reasoning_marker, parallel_docs),
+        "parallel_docs": llm_extract_call.parallel_docs(parallel_docs),
         "documents": [{"document_id": d["id"], "category": d.get("category")} for d in docs],
     }  # fmt: skip
     _reocr_jobs[pid]["task"] = asyncio.create_task(
         _llm_shadow_job(db, pid, docs, thinking=thinking, sampling=sampling,
-                        timeout_s=timeout_s, reasoning_marker=reasoning_marker)
+                        timeout_s=timeout_s, reasoning_marker=reasoning_marker,
+                        parallel_docs=parallel_docs)
     )  # fmt: skip
     return json.dumps(
         {k: v for k, v in _reocr_jobs[pid].items() if k != "task"}, ensure_ascii=False
@@ -2134,39 +2241,40 @@ def _clinical_totals(report: list[dict]) -> dict:
     }
 
 
-async def _clinical_document(
-    db, pid: str, d: dict, *, vocab, births, cfg
-) -> tuple[dict, dict | None]:
-    """ONE document of the clinical extraction (#726): extractor + generic
-    verifier on the stored page text; the model call runs local-only. Returns
-    the report entry and the extractor output (``None`` when the document was
-    skipped or failed). Stores nothing; shared by the preview / write job and
-    the extraction scorecard (#773)."""
-    from oncofiles.cloud_guard import local_only
-    from oncofiles.curated import llm_extract_clinical as lx
+async def _clinical_work(db, pid: str, d: dict, *, vocab, births, cfg) -> _DocWork:
+    """Phase 1 of ONE document of the clinical extraction (#726): its page
+    text (DB, event loop) and the model work for a worker thread (local-only,
+    no DB)."""
 
-    entry = {"document_id": d["id"], "category": d.get("category")}
-    pages = [(int(p["page_number"]), p.get("extracted_text") or "")
-             for p in await db.get_ocr_pages(d["id"], patient_id=pid)]  # fmt: skip
-    if not any(t.strip() for _, t in pages):
-        return {**entry, "result": "skipped", "error": "no page text"}, None
-    meta = d.get("structured_metadata") or {}
-    day = str(d.get("document_date") or "")[:10] or None
+    def make(pages, meta, day):
+        def _blocking():
+            from oncofiles.cloud_guard import local_only
+            from oncofiles.curated import llm_extract_clinical as lx
 
-    def _blocking():
-        with local_only("curated clinical extraction"):
-            return lx.extract_document(
-                pages, vocab=vocab, report_date=day, birth_dates=births,
-                source_reason=_source_reason(meta), stop=_stopping.is_set, cfg=cfg,
-            )  # fmt: skip
+            with local_only("curated clinical extraction"):
+                return lx.extract_document(
+                    pages, vocab=vocab, report_date=day, birth_dates=births,
+                    source_reason=_source_reason(meta), stop=_stopping.is_set, cfg=cfg,
+                )  # fmt: skip
 
-    try:
-        out = await asyncio.to_thread(_blocking)
-    except Exception as exc:
-        logger.exception("clinical extraction of doc %s failed", d["id"])
-        return {**entry, "result": "failed", "error": type(exc).__name__}, None
-    entry.update({k: out[k] for k in _CLINICAL_DOC_KEYS}, result="previewed")
-    return entry, out
+        return _blocking
+
+    return await _doc_work(db, pid, d, make)
+
+
+def _clinical_entry(w: _DocWork) -> tuple[dict, dict | None]:
+    """Phase 3 of ONE clinical document: the report entry and the extractor
+    output (``None`` when the document was skipped, stopped or failed). Pure,
+    stores nothing; shared by the preview / write job and the extraction
+    scorecard (#773)."""
+    if w.final is not None:
+        return w.final, None
+    if w.stopped:
+        return _stopping_entry(w.d), None
+    if w.error is not None or w.out is None:
+        return {**w.entry, "result": "failed", "error": w.error or "no_result"}, None
+    entry = {**w.entry, **{k: w.out[k] for k in _CLINICAL_DOC_KEYS}, "result": "previewed"}
+    return entry, w.out
 
 
 async def _clinical_job(
@@ -2179,14 +2287,17 @@ async def _clinical_job(
     sampling: str | None = None,
     timeout_s: int | None = None,
     reasoning_marker: str | None = None,
+    parallel_docs: int | None = None,
 ) -> None:
     """Extract the non-lab kinds of each document with the LOCAL model and
     verify them (#726 item 4). Preview (``write=False``) writes NOTHING; a
     write holds the patient lock, refuses without a known birth date, and
     stores nothing for a document with a page that was not assessed. One
-    model call at a time (one LM Studio slot); local only. ``thinking`` /
-    ``sampling`` (#767) and ``timeout_s`` (#770) override the
-    env for a PREVIEW only."""
+    model call at a time per document, up to ``parallel_docs`` documents at
+    once (#773; default ``LLM_EXTRACT_PARALLEL_DOCS`` = 1, one LM Studio
+    slot); all DB reads before and all stores after the model phase, in input
+    order; local only. ``thinking`` / ``sampling`` (#767), ``timeout_s``
+    (#770) and ``parallel_docs`` override the env for a PREVIEW only."""
     from oncofiles import config
     from oncofiles.curated import clinical_store, llm_extract_call, verifier, verifier_clinical
     from oncofiles.curated import llm_extract_clinical as lx
@@ -2199,8 +2310,11 @@ async def _clinical_job(
         sampling=sampling,
         timeout_s=timeout_s,
         reasoning_marker=reasoning_marker,
+        parallel_docs=parallel_docs,
     )
+    started = time.monotonic()
     cfg = llm_extract_call.settings(thinking, sampling, timeout_s, reasoning_marker)
+    parallel = llm_extract_call.parallel_docs(parallel_docs)
     job = _reocr_jobs[pid]
     row_id = (
         await db.insert_curated_run(patient_id=pid, dry_run=False, trigger="clinical")
@@ -2216,14 +2330,12 @@ async def _clinical_job(
                 verifier.require_dob_for_write(births)
             vocab = Vocabulary.from_rows(await db.fact_code_vocabulary())
             model = config.LOCAL_LLM_MODEL or None
-            for d in docs:
-                if _stopping.is_set():
-                    report.append({"document_id": d["id"], "category": d.get("category"),
-                                   "result": "skipped", "error": "stopping"})  # fmt: skip
-                    continue
-                entry, out = await _clinical_document(
-                    db, pid, d, vocab=vocab, births=births, cfg=cfg
-                )
+            works = [await _clinical_work(db, pid, d, vocab=vocab, births=births, cfg=cfg)
+                     for d in docs]  # fmt: skip
+            await _extract_documents(works, parallel=parallel)
+            for w in works:  # back on the event loop: stores one by one, in order
+                d = w.d
+                entry, out = _clinical_entry(w)
                 if out is None:
                     report.append(entry)
                     continue
@@ -2248,8 +2360,10 @@ async def _clinical_job(
         job.update(state="done", report={
             "dry_run": not write, "extractor": lx.EXTRACTOR_VERSION,
             "verifier": verifier_clinical.CLINICAL_VERIFIER_VERSION, "dob_known": bool(births),
-            "settings": {**cfg.report(),
-                         "overrides": _overrides(thinking, sampling, timeout_s, reasoning_marker)},
+            "settings": {**cfg.report(), "parallel_docs": parallel,
+                         "overrides": _overrides(thinking, sampling, timeout_s, reasoning_marker,
+                                                 parallel_docs)},
+            "timing": _timing(started, report, parallel),
             "warnings": llm_extract_call.merge_warnings(report),
             "totals": _clinical_totals(report), "documents": report,
         })  # fmt: skip
@@ -2337,18 +2451,20 @@ async def _start_clinical(
     sampling: str | None = None,
     timeout_s: int | None = None,
     reasoning_marker: str | None = None,
+    parallel_docs: int | None = None,
 ) -> str:
     from oncofiles import config
     from oncofiles.curated import llm, llm_extract_call
     from oncofiles.curated.llm_extract_clinical import EXTRACTOR_VERSION
 
-    # A/B overrides are for a dry run only: a write never takes them (#767, #770).
+    # A/B overrides are for a dry run only: a write never takes them (#767, #770, #773).
     llm_extract_call.refuse_overrides_on_write(
         write=write,
         thinking=thinking,
         sampling=sampling,
         timeout_s=timeout_s,
         reasoning_marker=reasoning_marker,
+        parallel_docs=parallel_docs,
     )
     if config.LLM_CLINICAL_EXTRACT_DISABLED:
         return json.dumps({"error": "disabled by LLM_CLINICAL_EXTRACT_DISABLED=true"})
@@ -2385,7 +2501,8 @@ async def _start_clinical(
         "dry_run": not write, "extractor": EXTRACTOR_VERSION,
         "started_at": datetime.now(UTC).isoformat(), "actor": "mcp",
         "caller_email_hash": caller_email_hash(_caller_email()),
-        "overrides": _overrides(thinking, sampling, timeout_s, reasoning_marker),
+        "overrides": _overrides(thinking, sampling, timeout_s, reasoning_marker, parallel_docs),
+        "parallel_docs": llm_extract_call.parallel_docs(parallel_docs),
         "documents": [{"document_id": d["id"], "category": d.get("category")} for d in docs],
     }  # fmt: skip
 
@@ -2425,6 +2542,7 @@ async def _start_clinical(
                 sampling=sampling,
                 timeout_s=timeout_s,
                 reasoning_marker=reasoning_marker,
+                parallel_docs=parallel_docs,
             )
         )
     return json.dumps(
@@ -2440,6 +2558,7 @@ async def curated_clinical_extract_preview(
     sampling: str | None = None,
     timeout_s: int | None = None,
     reasoning_marker: str | None = None,
+    parallel_docs: int | None = None,
 ) -> str:
     """DRY RUN: what the LOCAL model would extract from curated documents (#726).
 
@@ -2466,12 +2585,16 @@ async def curated_clinical_extract_preview(
             preview only (#770): with thinking off, the system message ends
             with the reasoning-off marker (for the LM Studio Prompt Template rule)
             and no /no_think is sent; with thinking on, no marker.
-        All four are echoed in the report (``settings``), with per-page token
-        counts and warnings.
+        parallel_docs: documents extracted at once (int, 1-3) for this preview
+            only (#773); null keeps LLM_EXTRACT_PARALLEL_DOCS (default 1).
+            Each running document holds one LM Studio slot.
+        All five are echoed in the report (``settings``), with per-page token
+        counts, warnings and ``timing`` (wall-clock seconds of the job next to
+        the summed per-page seconds).
     """
     return await _start_clinical(
         ctx, document_ids, patient_slug, write=False, thinking=thinking, sampling=sampling,
-        timeout_s=timeout_s, reasoning_marker=reasoning_marker,
+        timeout_s=timeout_s, reasoning_marker=reasoning_marker, parallel_docs=parallel_docs,
     )  # fmt: skip
 
 
@@ -2484,6 +2607,7 @@ async def curated_clinical_extract(
     sampling: str | None = None,
     timeout_s: int | None = None,
     reasoning_marker: str | None = None,
+    parallel_docs: int | None = None,
 ) -> str:
     """Extract diagnoses, biomarkers, treatments, procedures, lesion sizes and
     planned dates from curated documents with the LOCAL model and store them (#726).
@@ -2506,14 +2630,14 @@ async def curated_clinical_extract(
     assess is not stored. Explicit ``document_ids`` (max 10). Runs in the
     background; poll curated_reocr_status. About a minute per page.
 
-    ``thinking`` / ``sampling`` / ``timeout_s`` / ``reasoning_marker`` overrides (see
-    curated_clinical_extract_preview) are accepted with dry_run=true only; with
-    dry_run=false they are refused (error): a write always uses the configured
-    env settings.
+    ``thinking`` / ``sampling`` / ``timeout_s`` / ``reasoning_marker`` /
+    ``parallel_docs`` overrides (see curated_clinical_extract_preview) are
+    accepted with dry_run=true only; with dry_run=false they are refused
+    (error): a write always uses the configured env settings.
     """
     return await _start_clinical(
         ctx, document_ids, patient_slug, write=not dry_run, thinking=thinking, sampling=sampling,
-        timeout_s=timeout_s, reasoning_marker=reasoning_marker,
+        timeout_s=timeout_s, reasoning_marker=reasoning_marker, parallel_docs=parallel_docs,
     )  # fmt: skip
 
 
@@ -2538,12 +2662,16 @@ async def _scorecard_job(
     sampling: str | None = None,
     timeout_s: int | None = None,
     reasoning_marker: str | None = None,
+    parallel_docs: int | None = None,
 ) -> None:
     """Run the existing extractors + verifiers over a fixed document set and
     score them (#773). DRY RUN: no facts, no Drive; the only write is the
     job's own ``curated_runs`` row (trigger ``scorecard``) with the
-    aggregated counts. Documents run one after another (one LM Studio slot);
-    the task runs inside ``local_only()``."""
+    aggregated counts. Up to ``parallel_docs`` documents at once (default
+    ``LLM_EXTRACT_PARALLEL_DOCS`` = 1, one LM Studio slot), each document's
+    pages one after another; every DB read happens before the model phase;
+    the task runs inside ``local_only()``. ``totals.speed.wall_seconds`` sits
+    next to ``seconds_total`` (summed per-page seconds)."""
     from oncofiles.curated import (
         llm_extract,
         llm_extract_call,
@@ -2554,8 +2682,10 @@ async def _scorecard_job(
     from oncofiles.curated import llm_extract_clinical as lx
     from oncofiles.curated.facts_rules import Vocabulary
 
+    started = time.monotonic()
     job = _reocr_jobs[pid]
     cfg = llm_extract_call.settings(thinking, sampling, timeout_s, reasoning_marker)
+    parallel = llm_extract_call.parallel_docs(parallel_docs)
     cards: list[dict] = []
     stopped = False
     try:
@@ -2563,22 +2693,23 @@ async def _scorecard_job(
         vocab = Vocabulary.from_rows(await db.fact_code_vocabulary())
         stored = await db.fact_verification_rows(patient_id=pid) if lab_docs else []
         plan = [("clinical", d) for d in clinical_docs] + [("lab", d) for d in lab_docs]
+        # phase 1 (event loop, DB one call at a time): every document's page text
+        works = []
         for extractor, d in plan:
-            to_card = scorecard.clinical_card if extractor == "clinical" else scorecard.lab_card
-            if _stopping.is_set():
-                stopped = True
-                cards.append(to_card({"document_id": d["id"], "category": d.get("category"),
-                                      "result": "skipped", "error": "stopping"}))  # fmt: skip
-                continue
+            prepare = _clinical_work if extractor == "clinical" else _lab_shadow_work
+            works.append(await prepare(db, pid, d, vocab=vocab, births=births, cfg=cfg))
+        # phase 2: model calls only, up to ``parallel`` documents at once
+        await _extract_documents(works, parallel=parallel)
+        # phase 3: cards in input order
+        for (extractor, _d), w in zip(plan, works, strict=True):
             if extractor == "clinical":
-                entry, _ = await _clinical_document(db, pid, d, vocab=vocab, births=births, cfg=cfg)
+                cards.append(scorecard.clinical_card(_clinical_entry(w)[0]))
             else:
-                entry = await _lab_shadow_document(
-                    db, pid, d, vocab=vocab, births=births, stored=stored, cfg=cfg
-                )
-            cards.append(to_card(entry))
+                cards.append(scorecard.lab_card(_lab_shadow_entry(w, stored)))
+        stopped = any(w.stopped or (w.final or {}).get("error") == "stopping" for w in works)
         stopped = stopped or _stopping.is_set()  # a stop inside a document: pages unread
         totals = scorecard.totals(cards, requested=requested, missing=missing)
+        totals["speed"]["wall_seconds"] = round(time.monotonic() - started, 1)
         prev = await db.get_last_scorecard(
             patient_id=pid, label_prefix=compare_to_label, before_id=row_id
         )
@@ -2590,8 +2721,9 @@ async def _scorecard_job(
                            "clinical_verifier": verifier_clinical.CLINICAL_VERIFIER_VERSION,
                            "lab": llm_extract.EXTRACTOR_VERSION,
                            "lab_verifier": verifier.VERIFIER_VERSION},
-            "settings": {**cfg.report(),
-                         "overrides": _overrides(thinking, sampling, timeout_s, reasoning_marker)},
+            "settings": {**cfg.report(), "parallel_docs": parallel,
+                         "overrides": _overrides(thinking, sampling, timeout_s, reasoning_marker,
+                                                 parallel_docs)},
             "totals": totals,
             "compared_to": {"row_id": prev["id"], "label": prev_report.get("label"),
                             "finished_at": prev.get("finished_at")} if prev else None,
@@ -2629,6 +2761,7 @@ async def curated_extraction_scorecard(
     sampling: str | None = None,
     timeout_s: int | None = None,
     reasoning_marker: str | None = None,
+    parallel_docs: int | None = None,
 ) -> str:
     """DRY RUN extraction scorecard (#773): measure the LOCAL-model extractors
     on a fixed set of curated documents, as counts and codes only.
@@ -2654,8 +2787,10 @@ async def curated_extraction_scorecard(
     Never values, labels or evidence text.
 
     Refused while a curated run, re-OCR, re-read, extraction or other preview
-    is active for the patient. Max 25 documents in total, one model call at a
-    time; about a minute per page.
+    is active for the patient. Max 25 documents in total; one model call at a
+    time per document, ``parallel_docs`` documents at once; about a minute per
+    page. ``totals.speed.wall_seconds`` (the whole job) sits next to
+    ``seconds_total`` (summed per-page seconds).
 
     Args:
         document_ids: clinical documents (explicit ids).
@@ -2666,11 +2801,16 @@ async def curated_extraction_scorecard(
             with this; null = the previous scorecard.
         thinking / sampling / timeout_s / reasoning_marker: per-job overrides,
             as in curated_clinical_extract_preview; echoed in ``settings``.
+        parallel_docs: documents scored at once (int, 1-3, #773); null keeps
+            LLM_EXTRACT_PARALLEL_DOCS (default 1). Each running document holds
+            one LM Studio slot; echoed in ``settings.parallel_docs``.
     """
     from oncofiles import config
     from oncofiles.curated import llm, llm_extract_call
 
-    llm_extract_call.validate_overrides(thinking, sampling, timeout_s, reasoning_marker)
+    llm_extract_call.validate_overrides(
+        thinking, sampling, timeout_s, reasoning_marker, parallel_docs
+    )
     for name, value in (("label", label), ("compare_to_label", compare_to_label)):
         if value is not None and not _SCORECARD_LABEL.fullmatch(str(value)):
             return json.dumps({"error": f"{name} must be 1-60 letters, digits or . _ : - "
@@ -2705,7 +2845,8 @@ async def curated_extraction_scorecard(
     _reocr_jobs[pid] = job = {
         "state": "running", "kind": "extraction_scorecard", "dry_run": True, "label": label,
         "compare_to_label": compare_to_label, "started_at": datetime.now(UTC).isoformat(),
-        "overrides": _overrides(thinking, sampling, timeout_s, reasoning_marker),
+        "overrides": _overrides(thinking, sampling, timeout_s, reasoning_marker, parallel_docs),
+        "parallel_docs": llm_extract_call.parallel_docs(parallel_docs),
         "documents": [{"document_id": d["id"], "category": d.get("category"),
                        "extractor": "clinical"} for d in clinical_docs]
         + [{"document_id": d["id"], "category": d.get("category"), "extractor": "lab"}
@@ -2731,7 +2872,7 @@ async def curated_extraction_scorecard(
                 db, pid, clinical_docs, lab_docs, row_id=row_id, label=label,
                 compare_to_label=compare_to_label, requested=requested, missing=len(missing),
                 thinking=thinking, sampling=sampling, timeout_s=timeout_s,
-                reasoning_marker=reasoning_marker,
+                reasoning_marker=reasoning_marker, parallel_docs=parallel_docs,
             )
         )  # fmt: skip
     return json.dumps(_public_job(pid), ensure_ascii=False)
