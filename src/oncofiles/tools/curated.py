@@ -2148,7 +2148,7 @@ async def curated_llm_extract_preview(
             job only; null keeps the env setting.
         timeout_s: per-call timeout in seconds (int, 30-900) for this job only;
             null keeps LLM_EXTRACT_TIMEOUT_S.
-        reasoning_marker: "on" / "off" overrides LLM_REASONING_MARKER for this
+        reasoning_marker: "on" / "off" overrides LLM_EXTRACT_REASONING_MARKER for this
             job only (#770): with thinking off, the system message ends with
             the reasoning-off marker (for the LM Studio Prompt Template rule)
             and no /no_think is sent; with thinking on, no marker.
@@ -2631,7 +2631,7 @@ async def curated_clinical_extract_preview(
             preview only; null keeps the env setting.
         timeout_s: per-call timeout in seconds (int, 30-900) for this preview
             only; null keeps LLM_EXTRACT_TIMEOUT_S.
-        reasoning_marker: "on" / "off" overrides LLM_REASONING_MARKER for this
+        reasoning_marker: "on" / "off" overrides LLM_EXTRACT_REASONING_MARKER for this
             preview only (#770): with thinking off, the system message ends
             with the reasoning-off marker (for the LM Studio Prompt Template rule)
             and no /no_think is sent; with thinking on, no marker.

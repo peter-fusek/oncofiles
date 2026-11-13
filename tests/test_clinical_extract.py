@@ -1020,7 +1020,7 @@ async def test_reasoning_marker_override_refused_on_write_used_and_echoed(
     assert ERIKA_UUID not in tool._reocr_jobs and local_model == []  # no pre-store copy
     assert await _snapshot(db) == before
 
-    monkeypatch.setattr(config, "LLM_REASONING_MARKER", False)
+    monkeypatch.setattr(config, "LLM_EXTRACT_REASONING_MARKER", False)
     seen = []
 
     def chat(system, user, **kw):

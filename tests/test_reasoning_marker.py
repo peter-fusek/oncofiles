@@ -184,7 +184,7 @@ def test_flag_on_reocr_follows_reocr_thinking(local_llm, bodies, monkeypatch):
 
 @pytest.mark.parametrize("module", [llm_extract, lxc], ids=["lab", "clinical"])
 def test_flag_on_extractors(local_llm, bodies, monkeypatch, module):
-    monkeypatch.setattr(config, "LLM_REASONING_MARKER", True)
+    monkeypatch.setattr(config, "LLM_EXTRACT_REASONING_MARKER", True)
     kw = {"known": frozenset()} if module is llm_extract else {}
     with local_only("test"):
         module.extract_page(PAGE, page_number=1, cfg=llm_extract_call.settings("on"), **kw)
@@ -197,7 +197,7 @@ def test_flag_on_extractors(local_llm, bodies, monkeypatch, module):
 
 @pytest.mark.parametrize("module", [llm_extract, lxc], ids=["lab", "clinical"])
 def test_extractor_override_off_wins_over_env_on(local_llm, bodies, monkeypatch, module):
-    monkeypatch.setattr(config, "LLM_REASONING_MARKER", True)
+    monkeypatch.setattr(config, "LLM_EXTRACT_REASONING_MARKER", True)
     cfg = llm_extract_call.settings("off", reasoning_marker="off")
     kw = {"known": frozenset()} if module is llm_extract else {}
     with local_only("test"):
@@ -206,14 +206,65 @@ def test_extractor_override_off_wins_over_env_on(local_llm, bodies, monkeypatch,
     assert _messages(bodies[0])[0]["content"].endswith("\n/no_think")
 
 
+def test_unset_env_defaults_are_the_scorecard_configuration(monkeypatch):
+    """#773: production leaves these env vars unset, and a write takes no
+    overrides, so the code defaults ARE the write configuration. They must be
+    the one the scorecards measured: thinking off, qwen sampling, extractor
+    marker on, 300 s; the global marker stays off for every other caller."""
+    import importlib
+
+    names = ("LLM_EXTRACT_THINKING", "LLM_EXTRACT_SAMPLING", "LLM_EXTRACT_TIMEOUT_S",
+             "LLM_EXTRACT_REASONING_MARKER", "LLM_REASONING_MARKER")  # fmt: skip
+    for name in names:
+        monkeypatch.delenv(name, raising=False)
+    try:
+        importlib.reload(config)
+        assert config.LLM_EXTRACT_THINKING == "off"
+        assert config.LLM_EXTRACT_SAMPLING == "qwen"
+        assert config.LLM_EXTRACT_TIMEOUT_S == 300.0
+        assert config.LLM_EXTRACT_REASONING_MARKER is True
+        assert config.LLM_REASONING_MARKER is False
+        cfg = llm_extract_call.settings()
+        assert (cfg.thinking, cfg.sampling, cfg.reasoning_marker) == (False, "qwen", True)
+        assert cfg.params == llm_extract_call.QWEN_NON_THINKING
+    finally:
+        monkeypatch.undo()
+        importlib.reload(config)
+
+
+@pytest.mark.parametrize("module", [llm_extract, lxc], ids=["lab", "clinical"])
+def test_default_extractor_request_has_marker_while_other_callers_stay_legacy(
+    local_llm, bodies, monkeypatch, module
+):
+    """Extractor defaults on, global flag off (the production state): the
+    extractor request carries the marker and the qwen profile, and a
+    classification call in the same process is still the pre-#770 request."""
+    monkeypatch.setattr(config, "LLM_EXTRACT_THINKING", "off")
+    monkeypatch.setattr(config, "LLM_EXTRACT_SAMPLING", "qwen")
+    monkeypatch.setattr(config, "LLM_EXTRACT_REASONING_MARKER", True)
+    kw = {"known": frozenset()} if module is llm_extract else {}
+    with local_only("test"):
+        module.extract_page(PAGE, page_number=1, cfg=llm_extract_call.settings(), **kw)
+    assert _marker_only_at_system_end(bodies[0], module.SYSTEM_PROMPT)
+    body = json.loads(bodies[0])
+    assert "/no_think" not in bodies[0].decode()
+    assert body["temperature"] == 0.7 and body["top_p"] == 0.8 and body["top_k"] == 20
+    classify.propose(CONTRACT, TEXT)
+    assert len(bodies) == 2 and MARKER not in bodies[1].decode()
+    assert _messages(bodies[1])[0]["content"].endswith("\n/no_think")
+
+
 # ── per-call override: settings, validation, write refusal ───────────
 
 
 def test_settings_resolve_override_over_env(monkeypatch):
-    monkeypatch.setattr(config, "LLM_REASONING_MARKER", False)
+    # #773: the extractors read LLM_EXTRACT_REASONING_MARKER, never the global flag
+    monkeypatch.setattr(config, "LLM_REASONING_MARKER", True)
+    monkeypatch.setattr(config, "LLM_EXTRACT_REASONING_MARKER", False)
     assert llm_extract_call.settings().reasoning_marker is False
     assert llm_extract_call.settings(reasoning_marker="on").reasoning_marker is True
-    monkeypatch.setattr(config, "LLM_REASONING_MARKER", True)
+    monkeypatch.setattr(config, "LLM_REASONING_MARKER", False)
+    monkeypatch.setattr(config, "LLM_EXTRACT_REASONING_MARKER", True)
     assert llm_extract_call.settings().reasoning_marker is True
     assert llm_extract_call.settings(reasoning_marker="off").reasoning_marker is False
     assert llm_extract_call.settings(reasoning_marker="on").report()["reasoning_marker"] == "on"

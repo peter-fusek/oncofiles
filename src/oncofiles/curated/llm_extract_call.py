@@ -43,7 +43,8 @@ QWEN_NON_THINKING = {"temperature": 0.7, "top_p": 0.8, "top_k": 20, "presence_pe
 QWEN_THINKING = {"temperature": 1.0, "top_p": 0.95, "top_k": 20}
 GREEDY = {"temperature": 0.0}
 # #770: reasoning-off marker in the system message (llm.REASONING_OFF_MARKER),
-# for the LM Studio Prompt Template rule; env LLM_REASONING_MARKER.
+# for the LM Studio Prompt Template rule; env LLM_EXTRACT_REASONING_MARKER
+# (extractor default on, #773; the global LLM_REASONING_MARKER is not read here).
 REASONING_MARKER_MODES = ("on", "off")
 TIMEOUT_MIN_S, TIMEOUT_MAX_S = 30, 900
 PARALLEL_DOCS_MIN, PARALLEL_DOCS_MAX = 1, 3  # documents at once (#773)
@@ -139,7 +140,7 @@ def refuse_overrides_on_write(
             "thinking/sampling/timeout_s/reasoning_marker/parallel_docs overrides are allowed "
             "only on a dry run; a write always uses the configured LLM_EXTRACT_THINKING / "
             "LLM_EXTRACT_SAMPLING / LLM_EXTRACT_TIMEOUT_S / "
-            "LLM_REASONING_MARKER / LLM_EXTRACT_PARALLEL_DOCS"
+            "LLM_EXTRACT_REASONING_MARKER / LLM_EXTRACT_PARALLEL_DOCS"
         )
 
 
@@ -193,20 +194,24 @@ def settings(
     budget ``LLM_EXTRACT_ANSWER_BUDGET`` so a repetition loop ends early.
     ``timeout_s``
     overrides ``LLM_EXTRACT_TIMEOUT_S``; ``reasoning_marker`` overrides
-    ``LLM_REASONING_MARKER`` (#770; it only takes effect with thinking OFF)."""
+    ``LLM_EXTRACT_REASONING_MARKER`` (#770/#773; default on, it only takes
+    effect with thinking OFF). The global ``LLM_REASONING_MARKER`` is never
+    read here: it stays the default of every other ``llm.chat`` caller.
+    Defaults (no env, no override) = the configuration of scorecard rows
+    132/133: thinking off, qwen sampling, marker on, 300 s timeout."""
     from oncofiles import config
 
     validate_overrides(thinking, sampling, timeout_s, reasoning_marker)
     on = (thinking or config.LLM_EXTRACT_THINKING) == "on"
     mode = sampling or config.LLM_EXTRACT_SAMPLING
     if mode not in SAMPLING_MODES:
-        mode = "greedy"  # an unknown env value never changes behaviour
+        mode = "qwen"  # an unknown env value falls back to the default
     budget = llm.REASONING_BUDGET if on else config.LLM_EXTRACT_ANSWER_BUDGET
     timeout = timeout_s if timeout_s is not None else config.LLM_EXTRACT_TIMEOUT_S
     marker = (
         reasoning_marker == "on"
         if reasoning_marker is not None
-        else bool(config.LLM_REASONING_MARKER)
+        else bool(config.LLM_EXTRACT_REASONING_MARKER)
     )
     return CallSettings(on, mode, int(budget), float(timeout), reasoning_marker=marker)
 
