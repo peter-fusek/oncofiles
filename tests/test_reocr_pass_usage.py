@@ -169,6 +169,46 @@ def test_parallel_passes_keep_every_record(monkeypatch):
     assert all(r["prompt_tokens"] in (11, 22) for r in usage)
 
 
+def _boom(*a, **k):
+    raise RuntimeError("synthetic recording failure")
+
+
+def test_a_recording_failure_never_changes_the_pass_result(monkeypatch, caplog):
+    monkeypatch.setattr(llm, "chat", _usage_chat([{}]))
+    pdf, dpis = _scan_pdf(2), [100, 120]
+    expected = reocr._vision_passes(pdf, "pdf", dpis, client=object(), usage=[])
+    monkeypatch.setattr(reocr, "_pass_record", _boom)
+    usage: list[dict] = []
+    with caplog.at_level(logging.WARNING, logger="oncofiles.curated.reocr"):
+        got = reocr._vision_passes(pdf, "pdf", dpis, client=object(), usage=usage)
+    assert got == expected and usage == []
+    warned = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert warned and all(m.endswith("RuntimeError") for m in warned)
+    assert all("synthetic" not in m for m in warned)  # class name only
+
+
+def test_a_pass_index_outside_the_dpis_records_no_dpi(monkeypatch):
+    monkeypatch.setattr(llm, "chat", _usage_chat([{}]))
+    rec = reocr._pass_record(1, 5, None, {"finish_reason": "stop"}, 0.4)
+    assert rec["dpi"] is None and rec["pass"] == 6
+
+
+async def test_a_reporting_failure_leaves_the_document_outcome(vocab, monkeypatch):
+    drive, doc, _ = _setup()
+    monkeypatch.setattr(llm, "chat", _usage_chat([{"finish": "length"}]))
+    doc = {**doc, "gdrive_id": drive.add("scan.pdf", drive.root, _scan_pdf(1))}
+    base = reocr.run_reocr(drive, drive.root, [doc], vocab, dry_run=True, now=NOW,
+                           reader=reocr.reread).documents[0]  # fmt: skip
+    monkeypatch.setattr(reocr, "_pass_record", _boom)
+    monkeypatch.setattr(reocr, "usage_summary", _boom)
+    rep = reocr.run_reocr(drive, drive.root, [doc], vocab, dry_run=True, now=NOW,
+                          reader=reocr.reread)  # fmt: skip
+    d = rep.documents[0]
+    assert (d.result, d.method, d.pages, d.error) == (base.result, base.method, base.pages,
+                                                      base.error)  # fmt: skip
+    assert d.llm_passes == [] and rep.warnings == []
+
+
 def test_adaptive_deferred_second_pass_is_recorded(monkeypatch):
     """A page whose second pass is deferred and then taken keeps pass 2."""
     monkeypatch.setattr(llm, "chat", _usage_chat([{}]))

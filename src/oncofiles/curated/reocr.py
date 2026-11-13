@@ -118,7 +118,9 @@ def born_digital(page, *, image_cover: float = 0.8) -> bool:
     return True
 
 
-def _pass_record(page: int, k: int, dpi: int, info: dict, seconds: float, error=None) -> dict:
+def _pass_record(
+    page: int, k: int, dpi: int | None, info: dict, seconds: float, error=None
+) -> dict:
     """Usage of one vision pass (#800): counts only. ``info`` also holds the raw
     answer channels; they are never copied here."""
 
@@ -128,7 +130,7 @@ def _pass_record(page: int, k: int, dpi: int, info: dict, seconds: float, error=
 
     finish = info.get("finish_reason")
     rec = {
-        "page": page, "pass": k + 1, "dpi": int(dpi),
+        "page": page, "pass": k + 1, "dpi": dpi if isinstance(dpi, int) else None,
         "finish": finish if isinstance(finish, str) else None,
         "prompt_tokens": count("prompt_tokens"),
         "completion_tokens": count("completion_tokens"),
@@ -141,7 +143,7 @@ def _pass_record(page: int, k: int, dpi: int, info: dict, seconds: float, error=
 
 
 def _by_page_and_pass(records: list[dict]) -> list[dict]:
-    return sorted(records, key=lambda r: (r["page"], r["pass"]))
+    return sorted(records, key=lambda r: (r.get("page") or 0, r.get("pass") or 0))
 
 
 def is_truncated(rec: dict) -> bool:
@@ -185,6 +187,19 @@ def log_passes(doc_ref, records: list[dict]) -> None:
             r.get("prompt_tokens"), r.get("completion_tokens"), r.get("reasoning_tokens"),
             REOCR_BUDGET, r.get("seconds"), r.get("error"),
         )  # fmt: skip
+
+
+def report_usage(doc_ref, records: list[dict]) -> tuple[dict, list[dict]]:
+    """Log the passes and build the per-document usage fields and warnings.
+    Never raises: reporting must never change a re-OCR outcome. On a failure
+    it logs the exception class only and returns empty usage."""
+    try:
+        log_passes(doc_ref, records)
+        summary = usage_summary(records)
+        return summary, truncation_warnings(doc_ref, summary["truncated_passes"])
+    except Exception as exc:
+        logger.warning("re-OCR usage report failed for doc %s: %s", doc_ref, type(exc).__name__)
+        return {}, []
 
 
 def _vision_passes(
@@ -248,9 +263,15 @@ def _vision_passes(
             raise
         finally:
             if usage is not None:
-                rec = _pass_record(i + 1, k, dpis[k], info, time.monotonic() - t0, error)
-                with lock:
-                    usage.append(rec)
+                # Reporting must never break the read: a recording failure is
+                # logged (class name only) and the pass result stands.
+                try:
+                    dpi = dpis[k] if k < len(dpis) else None
+                    rec = _pass_record(i + 1, k, dpi, info, time.monotonic() - t0, error)
+                    with lock:
+                        usage.append(rec)
+                except Exception as rec_exc:
+                    logger.warning("re-OCR pass usage not recorded: %s", type(rec_exc).__name__)
             info.clear()  # the raw answer channels never outlive the call
 
     def render(page, dpi: int) -> dict:
@@ -655,10 +676,10 @@ def run_reocr(
                         passes=passes, doc_ref=d["document_id"])  # fmt: skip
             # #800: usage is reported also for a failed read; report only, the
             # rewrite/review decision below is unchanged
-            log_passes(d["document_id"], rr.llm_passes)
-            for key, value in usage_summary(rr.llm_passes).items():
+            summary, warns = report_usage(d["document_id"], getattr(rr, "llm_passes", None) or [])
+            for key, value in summary.items():
                 setattr(res, key, value)
-            report.warnings += truncation_warnings(d["document_id"], res.truncated_passes)
+            report.warnings += warns
             if rr.error or not any(p.strip() for p in rr.pages):
                 res.result, res.error = "failed", rr.error or "no text"
                 continue
