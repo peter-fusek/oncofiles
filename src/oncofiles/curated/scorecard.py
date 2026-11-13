@@ -3,8 +3,9 @@
 Every extraction change (prompt, ``fact_codes`` data, sampling, split,
 parallelism) is measured on the same documents before it ships. The job in
 ``tools/curated.py`` runs the existing extractors and verifiers
-(``_clinical_document`` / ``_lab_shadow_document``); this module only turns
-their per-document reports into a scorecard and compares two scorecards.
+(``_clinical_work`` + ``_clinical_entry`` / ``_lab_shadow_work`` +
+``_lab_shadow_entry``); this module only turns their per-document reports
+into a scorecard and compares two scorecards.
 
 Everything here is pure and keeps **numbers and codes only**: a card is built
 from an allow-list of keys, every string is a short code (``[a-z0-9_:.-]``),

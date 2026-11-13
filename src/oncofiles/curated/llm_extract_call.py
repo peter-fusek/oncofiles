@@ -46,6 +46,7 @@ GREEDY = {"temperature": 0.0}
 # for the LM Studio Prompt Template rule; env LLM_REASONING_MARKER.
 REASONING_MARKER_MODES = ("on", "off")
 TIMEOUT_MIN_S, TIMEOUT_MAX_S = 30, 900
+PARALLEL_DOCS_MIN, PARALLEL_DOCS_MAX = 1, 3  # documents at once (#773)
 
 ERROR_KINDS = ("http_status", "json_decode", "schema_shape", "empty", "timeout", "truncated",
                "reasoning_ambiguous", "no_json",
@@ -86,9 +87,20 @@ def validate_overrides(
     sampling: str | None = None,
     timeout_s: int | None = None,
     reasoning_marker: str | None = None,
+    parallel_docs: int | None = None,
 ) -> None:
-    """Per-job overrides must be one of the known modes, and ``timeout_s`` an
-    int of seconds in [30, 900] (ValueError otherwise)."""
+    """Per-job overrides must be one of the known modes, ``timeout_s`` an
+    int of seconds in [30, 900] and ``parallel_docs`` an int in [1, 3]
+    (ValueError otherwise)."""
+    if parallel_docs is not None and (
+        isinstance(parallel_docs, bool)
+        or not isinstance(parallel_docs, int)
+        or not PARALLEL_DOCS_MIN <= parallel_docs <= PARALLEL_DOCS_MAX
+    ):
+        raise ValueError(
+            f"parallel_docs must be an int, {PARALLEL_DOCS_MIN} <= parallel_docs <= "
+            f"{PARALLEL_DOCS_MAX}, or null, got {parallel_docs!r}"
+        )
     if reasoning_marker is not None and reasoning_marker not in REASONING_MARKER_MODES:
         raise ValueError(
             f"reasoning_marker must be one of {REASONING_MARKER_MODES} or null, "
@@ -116,16 +128,34 @@ def refuse_overrides_on_write(
     sampling: str | None = None,
     timeout_s: int | None = None,
     reasoning_marker: str | None = None,
+    parallel_docs: int | None = None,
 ) -> None:
     """Overrides are for the dry-run A/B only: a write path never takes them."""
-    validate_overrides(thinking, sampling, timeout_s, reasoning_marker)
-    if write and any(v is not None for v in (thinking, sampling, timeout_s, reasoning_marker)):
+    validate_overrides(thinking, sampling, timeout_s, reasoning_marker, parallel_docs)
+    if write and any(
+        v is not None for v in (thinking, sampling, timeout_s, reasoning_marker, parallel_docs)
+    ):
         raise ValueError(
-            "thinking/sampling/timeout_s/reasoning_marker overrides are allowed only "
-            "on a dry run; a write always uses the configured LLM_EXTRACT_THINKING / "
+            "thinking/sampling/timeout_s/reasoning_marker/parallel_docs overrides are allowed "
+            "only on a dry run; a write always uses the configured LLM_EXTRACT_THINKING / "
             "LLM_EXTRACT_SAMPLING / LLM_EXTRACT_TIMEOUT_S / "
-            "LLM_REASONING_MARKER"
+            "LLM_REASONING_MARKER / LLM_EXTRACT_PARALLEL_DOCS"
         )
+
+
+def parallel_docs(override: int | None = None) -> int:
+    """Documents extracted at once (#773): the per-job override (dry run only)
+    over ``LLM_EXTRACT_PARALLEL_DOCS``, always within [1, 3]. Each document
+    holds one LM Studio slot while it runs."""
+    from oncofiles import config
+
+    validate_overrides(parallel_docs=override)
+    n = override if override is not None else config.LLM_EXTRACT_PARALLEL_DOCS
+    try:
+        n = int(n)
+    except (TypeError, ValueError):
+        n = 1
+    return max(PARALLEL_DOCS_MIN, min(PARALLEL_DOCS_MAX, n))
 
 
 @dataclass(frozen=True)
