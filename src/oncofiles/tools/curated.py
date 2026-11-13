@@ -2691,6 +2691,201 @@ async def curated_clinical_extract(
     )  # fmt: skip
 
 
+# ── rollback of the clinical extractor's rows (#773 / #726) ───────────────
+
+RETRACT_MAX_DOCS = 50
+RETRACT_REASON_MAX = 200
+_RETRACT_ANNOTATIONS = {"readOnlyHint": False, "destructiveHint": True, "openWorldHint": False}
+
+
+def _sum_stored(report: list[dict]) -> dict[str, dict[str, int]]:
+    totals: dict[str, dict[str, int]] = {}
+    for d in report:
+        for target, c in (d.get("stored") or {}).items():
+            tot = totals.setdefault(target, {})
+            for k, n in c.items():
+                tot[k] = tot.get(k, 0) + n
+    return totals
+
+
+async def _audit_clinical_retract(db, pid: str, job: dict, report: list[dict]) -> None:
+    """One activity_log row per REAL retract: caller (keyed hash), ids, the
+    pre-store copy and counts per target. Never a value, an email or the
+    free-text reason (only its length)."""
+    from oncofiles.models import ActivityLogEntry
+
+    try:
+        await db.insert_activity_log(
+            ActivityLogEntry(
+                patient_id=pid,
+                session_id="curated-clinical",
+                agent_id="mcp",
+                tool_name="curated_clinical_retract",
+                input_summary=json.dumps(
+                    {
+                        "by": "mcp",
+                        # keyed hash, never the email itself (#590/#604, migration 085)
+                        "caller_email_hash": job.get("caller_email_hash"),
+                        "dry_run": False,
+                        "pre_store": job.get("pre_store"),
+                        "document_ids": job.get("document_ids"),
+                        "reason_chars": job.get("reason_chars"),
+                        "started_at": job.get("started_at"),
+                    }
+                ),
+                output_summary=json.dumps(
+                    {
+                        "results": {
+                            r: sum(1 for d in report if d.get("result") == r)
+                            for r in {str(d.get("result")) for d in report}
+                        },
+                        "stored": _sum_stored(report),
+                    }
+                ),
+                status="ok" if all(d.get("result") == "retracted" for d in report) else "error",
+                tags=json.dumps(["curated", "clinical", "retract", "real", "pre-store"]),
+            )
+        )
+    except Exception:
+        logger.exception("could not write the activity_log row for a clinical retract")
+
+
+async def curated_clinical_retract(
+    ctx: Context,
+    document_ids: list[int],
+    patient_slug: str | None = None,
+    dry_run: bool = True,
+    reason: str = "",
+) -> str:
+    """Roll back what curated_clinical_extract stored for documents (#773 / #726).
+
+    Soft-deletes exactly the rows a re-extraction of each document would
+    remove: every condition, stage, treatment course, cycle, medication
+    event, procedure, biomarker / lesion fact and planned encounter written
+    by the clinical LLM extractor (``llm-clinical*``) for that document.
+    Verified and corrected rows stay, and so does every row they point to
+    (a verified cycle keeps its course). Lab rule facts and anything another
+    extractor or a person wrote are never touched. Nothing is hard-deleted;
+    running curated_clinical_extract again stores the document anew.
+
+    dry_run=true (default) writes nothing and returns, per document and per
+    target, how many rows would be ``removed`` and how many are ``kept``.
+    dry_run=false needs a short ``reason`` (max 200 characters), holds the
+    patient lock, is refused while a curated run, re-OCR, re-read or
+    extraction is active for the patient, makes a verified safety copy of the
+    database first (no copy, no change) and leaves one activity_log row
+    (ids and counts only). Returns counts only, never values. Works also
+    while LLM_CLINICAL_EXTRACT_DISABLED is set and without the local model.
+
+    Args:
+        document_ids: 1-50 document ids of this patient. An id that is not
+            this patient's is reported as not_found and nothing is changed.
+        patient_slug: required for admin callers.
+        dry_run: false to actually retract.
+        reason: why (required with dry_run=false); kept in the rows' deletion
+            audit, never logged.
+    """
+    from oncofiles.curated import clinical_store
+    from oncofiles.tools._helpers import _is_admin_caller
+
+    if _is_admin_caller() and not patient_slug:
+        return json.dumps({"error": "Admin callers must pass patient_slug=<slug>; there is "
+                           "no implicit admin patient scope."})  # fmt: skip
+    pid = await _resolve_patient_id(patient_slug, ctx)
+    db = _get_db(ctx)
+    try:
+        ids = list(dict.fromkeys(int(i) for i in (document_ids or [])))
+    except (TypeError, ValueError):
+        return json.dumps({"error": "document_ids must be integers"})
+    if not ids:
+        return json.dumps({"error": "document_ids is required"})
+    if len(ids) > RETRACT_MAX_DOCS:
+        return json.dumps({"error": f"too many documents: at most {RETRACT_MAX_DOCS} explicit "
+                           f"document_ids per call, got {len(ids)}"})  # fmt: skip
+    reason = (reason or "").strip()
+    if not dry_run:
+        if not reason:
+            return json.dumps({"error": "reason is required with dry_run=false"})
+        if len(reason) > RETRACT_REASON_MAX:
+            return json.dumps({"error": f"reason is too long: at most {RETRACT_REASON_MAX} "
+                               "characters"})  # fmt: skip
+    owned = await db.get_documents_by_ids(set(ids), patient_id=pid)
+    missing = [i for i in ids if i not in owned]
+    if missing:  # another patient's id looks exactly like an unknown one
+        return json.dumps({"error": "not_found", "document_ids": missing,
+                           "message": "nothing was changed"})  # fmt: skip
+
+    if dry_run:
+        report = []
+        for i in ids:
+            res = await clinical_store.retract_document(
+                db, patient_id=pid, document_id=i, reason="", dry_run=True
+            )
+            report.append({"document_id": i, "result": "would_retract", **res})
+        return json.dumps(
+            {"dry_run": True, "totals": _sum_stored(report), "documents": report},
+            ensure_ascii=False,
+        )
+
+    if (
+        _reocr_jobs.get(pid, {}).get("state") == "running"
+        or (pid in _runs and _runs[pid].get("state") == "running")
+        or patient_lock(pid).locked()
+    ):
+        return json.dumps({"error": "busy: a curated run, index, re-OCR, re-read or "
+                           "extraction is in progress for this patient"})  # fmt: skip
+    # Reserve the patient's job slot before any await (CI deploys wait on it,
+    # other jobs see busy); the previous job's record is restored afterwards.
+    previous = _reocr_jobs.get(pid)
+    job = _reocr_jobs[pid] = {
+        "state": "running", "kind": "clinical_retract", "dry_run": False,
+        "started_at": datetime.now(UTC).isoformat(), "actor": "mcp",
+        "caller_email_hash": caller_email_hash(_caller_email()),
+        "document_ids": ids, "reason_chars": len(reason),
+    }  # fmt: skip
+    try:
+        async with patient_lock(pid):
+            from oncofiles.pre_store import PreStoreError, make_copy
+
+            try:
+                job["pre_store"] = await asyncio.to_thread(make_copy, db, "clinical")
+            except Exception as exc:
+                why = str(exc) if isinstance(exc, PreStoreError) else type(exc).__name__
+                logger.error("pre-store copy failed for %s (%s): retract refused", pid[:8], why)
+                return json.dumps(
+                    {"error": f"refused: pre-store copy failed ({why}); nothing was written"}
+                )
+            who = (job["caller_email_hash"] or "mcp")[:12]
+            audit_reason = f"retract by {who}: {reason}"
+            report = []
+            for i in ids:
+                try:
+                    res = await clinical_store.retract_document(
+                        db, patient_id=pid, document_id=i, reason=audit_reason, dry_run=False
+                    )
+                except Exception as exc:  # idempotent: calling again retracts the rest
+                    logger.exception("clinical retract of doc %s failed", i)
+                    report.append({"document_id": i, "result": "failed",
+                                   "error": type(exc).__name__})  # fmt: skip
+                else:
+                    report.append({"document_id": i, "result": "retracted", **res})
+            logger.info(
+                "clinical retract for %s: %d documents (reason %d chars)",
+                pid[:8], len(ids), len(reason),
+            )  # fmt: skip
+            await _audit_clinical_retract(db, pid, job, report)
+            return json.dumps(
+                {"dry_run": False, "pre_store": job["pre_store"],
+                 "totals": _sum_stored(report), "documents": report},
+                ensure_ascii=False,
+            )  # fmt: skip
+    finally:
+        if previous is not None:
+            _reocr_jobs[pid] = previous
+        else:
+            _reocr_jobs.pop(pid, None)
+
+
 # ── extraction scorecard (#773): fixed page set, counts only ──────────────
 
 SCORECARD_MAX_DOCS = 25
@@ -2973,4 +3168,6 @@ def register(mcp):
     mcp.tool()(curated_llm_extract_preview)
     mcp.tool()(curated_clinical_extract_preview)
     mcp.tool()(curated_clinical_extract)
+    # user-invoked rollback (soft delete only, #734); never scheduled
+    mcp.tool(annotations=_RETRACT_ANNOTATIONS)(curated_clinical_retract)
     mcp.tool()(curated_extraction_scorecard)
