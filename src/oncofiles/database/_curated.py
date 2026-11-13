@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 
 from ._base import DatabaseBase
+from ._tenant import require_patient_id
 
 # background jobs persisted in curated_runs that are not curated-folder runs
 # (re-OCR, verify-only re-read, clinical extraction #726, extraction scorecard
@@ -115,6 +116,7 @@ class CuratedMixin(DatabaseBase):
         return bool(row["nightly_enabled"] if isinstance(row, dict) else row[0])
 
     async def set_curated_nightly(self, *, patient_id: str, enabled: bool, updated_by: str) -> None:
+        patient_id = require_patient_id(patient_id)
         await self.db.execute(
             """INSERT INTO curated_settings (patient_id, nightly_enabled, updated_by)
                VALUES (?, ?, ?)

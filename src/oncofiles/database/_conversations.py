@@ -8,6 +8,7 @@ from datetime import date
 from oncofiles.models import ConversationEntry, ConversationQuery
 
 from ._converters import _row_to_conversation_entry
+from ._tenant import require_patient_id
 
 
 class ConversationMixin:
@@ -17,6 +18,7 @@ class ConversationMixin:
         self, entry: ConversationEntry, *, patient_id: str
     ) -> ConversationEntry:
         """Insert a conversation entry and return it with the generated ID."""
+        patient_id = require_patient_id(patient_id)
         cursor = await self.db.execute(
             """
             INSERT INTO conversation_entries

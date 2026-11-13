@@ -319,7 +319,7 @@ async def test_redact_tool_rewrites_only_input_summary(db: Database):
     maint = [r for r in after[len(before) :] if r["tool_name"] == "redact_activity_log_inputs"]
     assert len(maint) == 3
     assert json.loads(maint[0]["output_summary"])["changed"] == 2
-    assert maint[0]["patient_id"] == ""
+    assert maint[0]["patient_id"] == "__system_no_patient__"  # #791, never ''
 
 
 # ── #769: LLM extractor A/B overrides are diagnostics, not secrets ─────────

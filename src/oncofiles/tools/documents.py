@@ -811,7 +811,13 @@ async def reassign_document(ctx: Context, doc_id: int, target_patient_slug: str)
     if not doc:
         return json.dumps({"error": f"Document not found: {doc_id}"})
 
-    # Reassign
+    # Reassign (#791: the target must name a real tenant, never a legacy default)
+    from oncofiles.database._tenant import require_patient_id
+
+    try:
+        require_patient_id(target_pid)
+    except ValueError as exc:
+        return json.dumps({"error": str(exc)})
     await db.db.execute(
         "UPDATE documents SET patient_id = ? WHERE id = ?",
         (target_pid, doc_id),

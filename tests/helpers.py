@@ -39,6 +39,7 @@ def make_agent_state(**overrides) -> AgentState:
         "agent_id": "oncoteam",
         "key": "test_key",
         "value": '{"hello": "world"}',
+        "patient_id": ERIKA_UUID,
     }
     defaults.update(overrides)
     return AgentState(**defaults)
@@ -94,6 +95,7 @@ def make_activity_log(**overrides) -> ActivityLogEntry:
         "duration_ms": 1200,
         "status": "ok",
         "tags": "[]",
+        "patient_id": ERIKA_UUID,
     }
     defaults.update(overrides)
     return ActivityLogEntry(**defaults)

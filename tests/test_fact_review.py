@@ -543,7 +543,8 @@ async def test_foreign_patient_slug_is_denied_and_logged(db, caller):
     with pytest.raises(ValueError, match="access denied"):
         await fr.verify_fact(_Ctx(db), bob_ids["HGB"], patient_slug=BOB_SLUG)
     [log] = await _all(db, "SELECT * FROM activity_log WHERE tool_name = 'verify_fact'")
-    assert log["status"] == "denied" and log["patient_id"] == ""
+    # #791: a denied call is logged under the explicit system marker, never ''
+    assert log["status"] == "denied" and log["patient_id"] == "__system_no_patient__"
 
 
 async def test_every_call_logs_ids_only(db, caller):

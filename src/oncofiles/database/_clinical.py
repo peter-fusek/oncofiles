@@ -12,6 +12,7 @@ from oncofiles.models import (
 )
 
 from ._converters import _row_to_lab_value, _row_to_research_entry, _row_to_treatment_event
+from ._tenant import require_patient_id
 
 
 class ClinicalMixin:
@@ -23,6 +24,7 @@ class ClinicalMixin:
         self, event: TreatmentEvent, *, patient_id: str
     ) -> TreatmentEvent:
         """Insert a treatment event and return it with the generated ID."""
+        patient_id = require_patient_id(patient_id)
         cursor = await self.db.execute(
             """
             INSERT INTO treatment_events
@@ -255,6 +257,7 @@ class ClinicalMixin:
         self, entry: ResearchEntry, *, patient_id: str
     ) -> ResearchEntry:
         """Insert a research entry. Ignores duplicates (source+external_id)."""
+        patient_id = require_patient_id(patient_id)
         cursor = await self.db.execute(
             """
             INSERT OR IGNORE INTO research_entries

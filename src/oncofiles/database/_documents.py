@@ -7,6 +7,7 @@ import logging
 from oncofiles.models import Document, SearchQuery
 
 from ._converters import _row_to_document
+from ._tenant import require_patient_id
 
 logger = logging.getLogger(__name__)
 
@@ -29,9 +30,12 @@ class DocumentMixin:
     async def insert_document(self, doc: Document, *, patient_id: str) -> Document:
         """Insert a document and return it with the generated ID.
 
-        Raises ValueError if the patient has reached the document limit.
+        Raises ValueError if the patient has reached the document limit, or
+        when ``patient_id`` is missing or a legacy default (#791).
         """
         from oncofiles.config import MAX_DOCUMENTS_PER_PATIENT
+
+        patient_id = require_patient_id(patient_id)
 
         if MAX_DOCUMENTS_PER_PATIENT > 0:
             count = await self.count_documents(patient_id=patient_id)

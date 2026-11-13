@@ -170,12 +170,12 @@ async def _auto_create_treatment_event(
                 }
             ),
         )
-        saved = await db.insert_treatment_event(event)
+        saved = await db.insert_treatment_event(event, patient_id=entry.patient_id)
 
         # Link back to calendar entry
         await db.db.execute(
-            "UPDATE calendar_entries SET treatment_event_id = ? WHERE id = ?",
-            (saved.id, entry.id),
+            "UPDATE calendar_entries SET treatment_event_id = ? WHERE id = ? AND patient_id = ?",
+            (saved.id, entry.id, entry.patient_id),
         )
         await db.db.commit()
 

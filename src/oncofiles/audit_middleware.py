@@ -49,17 +49,17 @@ def note_resolved_patient(patient_id: str) -> None:
 
 
 def attributed_patient(resolved: set[str]) -> str:
-    """The patient a tool call is logged under: the one it resolved, else ''.
+    """The patient a tool call is logged under: the one it resolved, else none.
 
     Never the default or the bound patient by itself: a call that resolved no
-    patient, or several different ones, is logged without a patient ('' is the
-    "no patient" value add_activity_log already uses). The no-access sentinel
-    never counts as a patient.
+    patient, or several different ones, is logged without a patient, as
+    ``SYSTEM_NO_PATIENT`` (#791: ``''`` is a legacy column default and the
+    write guard rejects it). The no-access sentinel never counts as a patient.
     """
-    from oncofiles.constants import NO_PATIENT_ACCESS_SENTINEL
+    from oncofiles.constants import NO_PATIENT_ACCESS_SENTINEL, SYSTEM_NO_PATIENT
 
-    real = {p for p in resolved if p and p != NO_PATIENT_ACCESS_SENTINEL}
-    return next(iter(real)) if len(real) == 1 else ""
+    real = {p for p in resolved if p and p not in (NO_PATIENT_ACCESS_SENTINEL, SYSTEM_NO_PATIENT)}
+    return next(iter(real)) if len(real) == 1 else SYSTEM_NO_PATIENT
 
 
 async def _write_audit_log(
@@ -70,11 +70,20 @@ async def _write_audit_log(
     duration_ms,
     status,
     error_message,
-    patient_id="",
+    patient_id,
     auth_method="",
     caller_email_hash=None,
 ):
     """Write audit log entry in background — never blocks tool response."""
+    from oncofiles.database._tenant import require_patient_id
+
+    try:
+        require_patient_id(patient_id, allow_system=True)
+    except ValueError:
+        # A bug in attribution, not a DB hiccup: never silently store the row
+        # under a legacy default, and say so loudly (#791).
+        logger.error("Audit log write refused for %s: missing patient_id", tool_name)
+        return
     try:
         await db.db.execute(
             """

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from oncofiles.database._converters import _row_to_email_entry
+from oncofiles.database._tenant import require_patient_id
 from oncofiles.models import EmailEntry, EmailQuery
 
 
@@ -11,6 +12,7 @@ class GmailMixin:
 
     async def upsert_email_entry(self, entry: EmailEntry) -> EmailEntry:
         """Insert or update an email entry (idempotent by gmail_message_id)."""
+        require_patient_id(entry.patient_id)
         async with self.db.execute(
             """
             INSERT INTO email_entries
