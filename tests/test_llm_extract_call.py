@@ -256,7 +256,11 @@ def test_document_report_has_page_diagnostics_and_warnings_without_text(local_ll
         assert {"completion_tokens", "reasoning_tokens", "prompt_tokens", "seconds",
                 "thinking", "sampling"} <= set(d)  # fmt: skip
     warnings = {w["warning"]: w["pages"] for w in out["warnings"]}
-    assert warnings == {"answer_from_reasoning_channel": 1, "truncated": 1}
+    # page 3 was split once (#773); its first chunk was truncated too
+    assert warnings["split_pages"] == warnings["truncated"] == 1
+    assert warnings["answer_from_reasoning_channel"] == 1 and len(warnings) == 3
+    split_page = diag["3"]
+    assert split_page["split"] is True and split_page["chunks_called"] == 1
     dumped = json.dumps({k: out[k] for k in ("page_diagnostics", "warnings")})
     assert not [s for s in SECRETS if s in dumped]
 
