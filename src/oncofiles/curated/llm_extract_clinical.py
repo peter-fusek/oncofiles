@@ -53,8 +53,9 @@ from oncofiles.database._facts import LLM_CLINICAL_FAMILY
 # from the value → date null), dates copied as printed, one worked example
 # for each case (#773); v8: lesion label copied as printed (never translated),
 # unit null when none is printed, one worked example with a
-# "2,4 x 1,9 cm" size on an imaging line (#773).
-EXTRACTOR_VERSION = "llm-clinical-v8"
+# "2,4 x 1,9 cm" size on an imaging line (#773); v9: a truncated page is
+# retried once as 2 line-boundary chunks (#773).
+EXTRACTOR_VERSION = "llm-clinical-v9"
 EXTRACTOR_FAMILY = LLM_CLINICAL_FAMILY  # prefix of every version: re-extraction scope
 METHOD = "stored_sidecar_text"
 
@@ -507,23 +508,25 @@ def extract_page(
     res = PageResult(page_number=page_number)
     if not (text or "").strip():
         return res
-    lists = xcall.call_and_parse(
-        res, system=SYSTEM_PROMPT, user=f"Page {page_number}:\n{text}",
+    parts = xcall.call_page(
+        res, text=text, system=SYSTEM_PROMPT,
         response_format=RESPONSE_FORMAT if _structured_output() else None,
         parse_content=parse_answer, parse_reasoning=parse_reasoning_channel,
         cfg=cfg or xcall.settings(), chat=chat, label="clinical extract",
     )  # fmt: skip
-    if lists is None:
+    if parts is None:
         return res
-    for kind, raws in lists.items():
-        for raw in raws:
-            cand, why = normalize_item(kind, raw)
-            if cand is None:
-                res.dropped[f"{kind}:{why}"] += 1
-            else:
-                cand["page_number"] = page_number
-                cand["answer_source"] = res.answer_source
-                res.candidates.append(cand)
+    for part in parts:  # 1 part, or 2 after a split (#773)
+        for kind, raws in part.parsed.items():
+            for raw in raws:
+                cand, why = normalize_item(kind, raw)
+                if cand is None:
+                    res.dropped[f"{kind}:{why}"] += 1
+                else:
+                    cand["page_number"] = page_number
+                    cand["answer_source"] = part.answer_source
+                    res.candidates.append(cand)
+    xcall.finish_candidates(res)
     return res
 
 
@@ -603,6 +606,7 @@ def extract_document(
         "error_kinds": dict(sorted(error_kinds.items())),
         "answer_sources": dict(sorted(sources.items())),
         "page_diagnostics": page_diag, "warnings": xcall.warnings(results),
+        **xcall.date_null_totals(results),
         "dob_known": dob_known, "birth_date_guard": "active" if dob_known else "inactive_no_dob",
         "counts": counts, "unverified_reasons": reasons, "dropped": dict(sorted(dropped.items())),
         "seconds": round(seconds, 1),

@@ -36,6 +36,7 @@ from datetime import UTC, datetime, timedelta
 
 from fastmcp import Context
 
+from oncofiles.curated.llm_extract_call import DATE_NULL_KEYS
 from oncofiles.secrets_keys import caller_email_hash
 from oncofiles.tools._helpers import _caller_email, _get_db, _resolve_patient_id
 
@@ -1885,6 +1886,7 @@ _SHADOW_DOC_KEYS = (
     "method", "pages", "pages_used", "pages_not_assessed", "pages_truncated", "page_errors",
     "finish_reasons", "page_diagnostics", "warnings", "dob_known", "birth_date_guard",
     "dates_unchecked_no_dob", "facts_from_content", "facts_from_reasoning", "dropped", "seconds",
+    *DATE_NULL_KEYS,
 )  # fmt: skip
 
 
@@ -2108,6 +2110,7 @@ _CLINICAL_DOC_KEYS = (
     "method", "pages", "pages_used", "pages_not_assessed", "pages_truncated", "page_errors",
     "error_kinds", "answer_sources", "page_diagnostics", "warnings", "dob_known",
     "birth_date_guard", "counts", "unverified_reasons", "dropped", "seconds",
+    *DATE_NULL_KEYS,
 )  # fmt: skip
 
 
