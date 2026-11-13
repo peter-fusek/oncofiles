@@ -14,7 +14,12 @@ again from the **source file**, on the **local** model only:
 
 Guard: the old and the new text are both parsed; when the new one loses a
 code with its value, or dates it differently, the sidecar is NOT rewritten
-(result ``review``, the lost values listed).
+(result ``review``, the lost values listed). A second, generic guard
+(``token_loss`` / ``near_empty_pages``) compares every printed number and date,
+not only lab-vocabulary values: a lost date, more than
+``REVIEW_MISSING_NUMBERS`` lost numbers, or a near-empty page together with
+any lost number or a body shrunk below ``NEAR_EMPTY_CHARS_RATIO`` also means
+``review`` (reason codes in ``review_reasons``; counts only, never tokens).
 
 Writing (never in a dry run): the old sidecar is first copied to the logs
 folder (``_reocr-backup-<date>-<time>-<sidecar>``), then the sidecar is updated in
@@ -41,6 +46,15 @@ LOCAL_ENGINE_KEYS = ("qwen", "local", "google-export", "utf-8", "pymupdf")
 REOCR_BUDGET = 16_000
 _NUM = re.compile(r"\d+(?:[.,]\d+)?")
 _FRONT = re.compile(r"^---\n(.*?)\n---\n?", re.S)
+
+# Generic loss guard (#660 follow-up): thresholds of the review decision
+REVIEW_MISSING_NUMBERS = 2  # more than this many lost numbers → review
+REVIEW_MISSING_DATES = 0  # more than this many lost dates → review
+NEAR_EMPTY_CHARS = 50  # a page with fewer stripped characters is near-empty
+NEAR_EMPTY_CHARS_RATIO = 0.8  # near-empty page + body below this share of the old → review
+_DATE_TOKEN = re.compile(r"\b\d{1,2}\.\s?\d{1,2}\.\s?(?:\d{4}|\d{2})\b|\b\d{4}-\d{2}-\d{2}\b")
+_NUM_TOKEN = re.compile(r"(?<![\w.,])\d+(?:[.,]\d+)?(?![\w])")
+_PAGE_MARKER = re.compile(r"<!--\s*page\s+\d+\s*-->")
 
 REOCR_SYSTEM_PROMPT = extract_mod.OCR_SYSTEM_PROMPT + (
     "\n\nThis is a careful second reading. Take your time on every digit, decimal "
@@ -534,6 +548,73 @@ def rewrite_sidecar(old_text: str, rr: Reread, *, previous_engine: str, now: dat
     return "---\n" + "\n".join(out) + "\n---\n\n" + body.strip() + "\n"
 
 
+def _body(text: str) -> str:
+    """Sidecar text without its front matter and page markers."""
+    return _PAGE_MARKER.sub(" ", _FRONT.sub("", text or "", count=1))
+
+
+def _date_key(token: str) -> str:
+    """One key per printed date: ``5.3.2027``, ``05. 03. 2027`` and
+    ``2027-03-05`` are the same day; a 2-digit year stays as printed."""
+    t = re.sub(r"\s", "", token)
+    if "-" in t:
+        y, m, d = t.split("-")
+    else:
+        d, m, y = t.split(".")
+    return f"{int(d)}.{int(m)}.{y}"
+
+
+def _tokens(text: str) -> tuple[set[str], set[str]]:
+    body = _body(text)
+    dates = {_date_key(m.group(0)) for m in _DATE_TOKEN.finditer(body)}
+    rest = _DATE_TOKEN.sub(" ", body)  # a date never also counts as numbers
+    nums = {m.group(0).replace(",", ".") for m in _NUM_TOKEN.finditer(rest)}
+    return nums, dates
+
+
+def _chars(text: str) -> int:
+    """Non-whitespace characters of the body (page joins do not count)."""
+    return len(re.sub(r"\s", "", _body(text)))
+
+
+def token_loss(old_text: str, new_text: str) -> dict:
+    """Generic loss check: how many printed numbers and dates of the old text
+    the new one no longer has (sets, front matter and page markers ignored).
+    Counts only, never the tokens themselves."""
+    old_nums, old_dates = _tokens(old_text)
+    new_nums, new_dates = _tokens(new_text)
+    return {
+        "missing_numbers": len(old_nums - new_nums),
+        "missing_dates": len(old_dates - new_dates),
+        "old_chars": _chars(old_text),
+        "new_chars": _chars(new_text),
+    }
+
+
+def near_empty_pages(pages: list[str]) -> list[int]:
+    """1-based numbers of pages whose stripped text is shorter than
+    ``NEAR_EMPTY_CHARS``."""
+    return [i for i, p in enumerate(pages, start=1) if len((p or "").strip()) < NEAR_EMPTY_CHARS]
+
+
+def review_reasons(lost: list[str], loss: dict, empty_pages: list[int]) -> list[str]:
+    """Reason codes that stop a rewrite (empty list: it may be written).
+    A near-empty page alone is not a stop."""
+    reasons = []
+    if lost:
+        reasons.append("lost_values")
+    if loss["missing_dates"] > REVIEW_MISSING_DATES:
+        reasons.append("missing_dates")
+    if loss["missing_numbers"] > REVIEW_MISSING_NUMBERS:
+        reasons.append("missing_numbers")
+    if empty_pages and (
+        loss["missing_numbers"] > 0
+        or loss["new_chars"] < NEAR_EMPTY_CHARS_RATIO * loss["old_chars"]
+    ):
+        reasons.append("near_empty_with_loss")
+    return reasons
+
+
 @dataclass
 class DocResult:
     document_id: int
@@ -559,6 +640,14 @@ class DocResult:
     completion_tokens_max: int | None = None
     budget: int = REOCR_BUDGET
     truncated_passes: list[dict] = field(default_factory=list)  # {"page", "pass"}
+    # generic loss guard: counts and page numbers only, never tokens
+    missing_numbers: int = 0
+    missing_dates: int = 0
+    near_empty_pages: list[int] = field(default_factory=list)
+    old_chars: int = 0
+    new_chars: int = 0
+    review_reasons: list[str] = field(default_factory=list)
+    decision: str | None = None  # rewrite | review (also on a dry run)
 
 
 @dataclass
@@ -689,6 +778,19 @@ def run_reocr(
             new = rewrite_sidecar(old, rr, previous_engine=d.get("engine") or "", now=now)
             res.uncertain_after = new.count("[?]")
             res.lost = lost_values(old, new, vocab)
+            loss = token_loss(old, new)
+            res.missing_numbers, res.missing_dates = loss["missing_numbers"], loss["missing_dates"]
+            res.old_chars, res.new_chars = loss["old_chars"], loss["new_chars"]
+            res.near_empty_pages = near_empty_pages(rr.pages)
+            res.review_reasons = review_reasons(res.lost, loss, res.near_empty_pages)
+            res.decision = "review" if res.review_reasons else "rewrite"
+            logger.info(
+                "re-OCR loss check doc=%s missing_numbers=%d missing_dates=%d "
+                "near_empty_pages=%s old_chars=%d new_chars=%d decision=%s reasons=%s",
+                d["document_id"], res.missing_numbers, res.missing_dates,
+                res.near_empty_pages, res.old_chars, res.new_chars, res.decision,
+                ",".join(res.review_reasons) or "-",
+            )  # fmt: skip
             facts, _ = extract_lab_facts(rr.pages, vocab, unreliable=rr.handwritten, inline=True)
             coded = [f for f in facts if f.get("code")]
             res.facts_machine = sum(1 for f in coded if f["verification"] == "machine")
@@ -696,7 +798,7 @@ def run_reocr(
             if dry_run:
                 res.result = "previewed"
                 continue
-            if res.lost:  # never shrink the record silently: a person decides
+            if res.review_reasons:  # never shrink the record silently: a person decides
                 res.result = "review"
                 continue
             # time to the second (#674): a same-day retry gets its own backup;
