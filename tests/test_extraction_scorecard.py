@@ -149,7 +149,10 @@ def _assert_counts_only(report):
             assert _CODE.fullmatch(value), f"{path}.{key}={value!r}"
     dumped = json.dumps(report, ensure_ascii=False)
     for token in PRINTED:
-        assert token not in dumped, token
+        # a whole token, not a prefix of a computed number: a rate such as
+        # 0.457 is a count ratio, not the printed value 0.45
+        hit = re.search(rf"(?<![\w.,]){re.escape(token)}(?![\w]|[.,]\d)", dumped)
+        assert hit is None, token
 
 
 # ── the job: report shape, no values, overrides ─────────────────────────

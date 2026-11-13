@@ -294,7 +294,10 @@ async def test_upload_document_refuses_when_flag_off_and_stores_nothing(
         await upload_document(_ctx(db, files), content=content, filename="20270101_Synth.pdf")
     )
 
-    assert result == {"error": CLOUD_AI_FLAG_OFF_MESSAGE, "kind": "CloudAIDisabledError"}
+    # #777: no Drive connected for the patient → still refused, nothing stored
+    assert result["error"] == CLOUD_AI_FLAG_OFF_MESSAGE
+    assert result["kind"] == "CloudAIDisabledError"
+    assert "Google Drive" in result["detail"]
     assert await db.count_documents(patient_id=ERIKA_UUID) == before
     files.upload.assert_not_called()
 

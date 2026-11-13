@@ -36,6 +36,7 @@ from datetime import UTC, datetime, timedelta
 
 from fastmcp import Context
 
+from oncofiles.curated.llm_extract_call import DATE_NULL_KEYS
 from oncofiles.secrets_keys import caller_email_hash
 from oncofiles.tools._helpers import _caller_email, _get_db, _resolve_patient_id
 
@@ -464,7 +465,9 @@ async def nightly_for_patient(
 # deploy overlap, and never run extra replicas or workers (RUNBOOK, Oncofiles
 # section; #581, #612). The grace gates runs only: a probe is a read-only Drive
 # listing and starts PROBE_STARTUP_DELAY_S after boot, so on a day with many
-# deploys new work is at least seen (and counted) right away.
+# deploys new work is at least seen (and counted) right away. The APScheduler
+# uses the same grace: no job's first slot falls inside it (#784,
+# server._defer_jobs_past_startup_grace).
 STARTUP_GRACE_S = 300
 PROBE_STARTUP_DELAY_S = 15
 
@@ -1014,7 +1017,8 @@ async def _index_patient(db, pid: str, *, force_ids: set[int] | None = None) -> 
             stats["errors"] += 1
             logger.exception("curated index: %s failed for %s", rec.filename, pid)
     for gdrive_id, row in state.items():
-        if gdrive_id not in seen and not row["deleted"]:
+        # never a Drive-only row the legacy sync/upload created (#777)
+        if gdrive_id not in seen and not row["deleted"] and not row.get("foreign"):
             await db.delete_document(row["id"], patient_id=pid)  # soft delete
             stats["removed"] += 1
     try:
@@ -1887,6 +1891,7 @@ _SHADOW_DOC_KEYS = (
     "method", "pages", "pages_used", "pages_not_assessed", "pages_truncated", "page_errors",
     "finish_reasons", "page_diagnostics", "warnings", "dob_known", "birth_date_guard",
     "dates_unchecked_no_dob", "facts_from_content", "facts_from_reasoning", "dropped", "seconds",
+    *DATE_NULL_KEYS,
 )  # fmt: skip
 
 
@@ -2241,6 +2246,7 @@ _CLINICAL_DOC_KEYS = (
     "method", "pages", "pages_used", "pages_not_assessed", "pages_truncated", "page_errors",
     "error_kinds", "answer_sources", "page_diagnostics", "warnings", "dob_known",
     "birth_date_guard", "counts", "unverified_reasons", "dropped", "seconds",
+    *DATE_NULL_KEYS,
 )  # fmt: skip
 
 

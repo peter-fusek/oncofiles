@@ -143,6 +143,11 @@ LLM_EXTRACT_TIMEOUT_S: float = float(os.environ.get("LLM_EXTRACT_TIMEOUT_S", "30
 LLM_EXTRACT_PARALLEL_DOCS: int = max(
     1, min(3, int(os.environ.get("LLM_EXTRACT_PARALLEL_DOCS", "1") or "1"))
 )
+# Proactive page split of both LLM extractors (#773): a page with MORE than
+# this many lines is sent as 2 line-boundary chunks before the first call.
+# 0 (default) = off: a page is split only after its answer came back
+# truncated (finish=length). Worst case per page stays 3 calls either way.
+LLM_EXTRACT_SPLIT_LINES: int = int(os.environ.get("LLM_EXTRACT_SPLIT_LINES", "0"))
 # Reasoning-off marker (#770): with thinking OFF, llm.chat ends the system
 # message with llm.REASONING_OFF_MARKER (and sends no /no_think anywhere); with
 # thinking ON / default the system message is sent bare. Works ONLY together

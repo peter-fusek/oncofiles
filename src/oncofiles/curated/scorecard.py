@@ -23,7 +23,9 @@ Metrics (per page, per document and in total):
 * lab agreement against the stored rule facts: agree / value_mismatch /
   rule_only / llm_only (+ ``parser_crosscheck`` on transcription pages).
   ``comparable`` = agree + value_mismatch (same code and day on both sides);
-  ``pct_agree`` = agree / comparable.
+  ``pct_agree`` = agree / comparable;
+* dates (context-loss check of the page split, #773): items without a
+  printed date / items, on split vs unsplit pages (``date_null_rate_*``).
 """
 
 from __future__ import annotations
@@ -36,7 +38,8 @@ REASONING_TOKENS_MAX = 50
 LAB_KIND = "lab"
 
 _CODE = re.compile(r"[A-Za-z0-9_:.\-]{1,64}")
-_PAGE_NUMBERS = ("seconds", "prompt_tokens", "completion_tokens", "reasoning_tokens")
+_PAGE_NUMBERS = ("seconds", "prompt_tokens", "completion_tokens", "reasoning_tokens", "items",
+                 "date_null_items")  # fmt: skip
 _PAGE_CODES = ("finish_reason", "error_kind", "answer_source")
 _LAB_COUNTS = (
     "rule_facts", "llm_facts", "agree", "agree_machine", "value_mismatch", "rule_only",
@@ -84,6 +87,7 @@ def page_card(diag: dict) -> dict:
     diag = diag if isinstance(diag, dict) else {}
     out = {k: _num(diag.get(k)) for k in _PAGE_NUMBERS}
     out.update({k: _code(diag.get(k)) for k in _PAGE_CODES})
+    out["split"] = diag.get("split") is True
     return out
 
 
@@ -150,6 +154,24 @@ def percentile(values: list[float], q: float) -> float | None:
 
 def _pct(part: int, whole: int) -> float | None:
     return round(100.0 * part / whole, 1) if whole else None
+
+
+def _rate(part: int, whole: int) -> float | None:
+    return round(part / whole, 3) if whole else None
+
+
+def _dates(pages: list[dict]) -> dict:
+    """Items without a date / items, split vs unsplit pages (#773). Pages not
+    assessed carry no items, so they never dilute either rate."""
+    out: dict = {}
+    for name, flag in (("split", True), ("unsplit", False)):
+        sel = [p for p in pages if bool(p.get("split")) is flag]
+        items = sum(p.get("items") or 0 for p in sel)
+        null = sum(p.get("date_null_items") or 0 for p in sel)
+        out.update({f"pages_{name}": len(sel), f"items_{name}": items,
+                    f"date_null_items_{name}": null,
+                    f"date_null_rate_{name}": _rate(null, items)})  # fmt: skip
+    return out
 
 
 def totals(cards: list[dict], *, requested: int = 0, missing: int = 0) -> dict:
@@ -225,6 +247,7 @@ def totals(cards: list[dict], *, requested: int = 0, missing: int = 0) -> dict:
             "dropped_reasons": dict(sorted(drops.items())),
         },
         "lab": lab,
+        "dates": _dates(pages),
     }
 
 

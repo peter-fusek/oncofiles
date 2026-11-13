@@ -680,6 +680,11 @@ class DocumentMixin:
                 "sidecar_modified": cur.get("sidecar_modified", "") if current else "",
                 "source_md5": cur.get("source_md5", ""),
                 "deleted": r["deleted_at"] is not None,
+                # #777: a Drive-only row of the legacy sync/upload path (or a
+                # legacy row it converted) shares the "gdrive:" prefix but is
+                # not a curated mirror row. An interrupted curated insert has
+                # no metadata yet, so it still counts as the indexer's own.
+                "foreign": bool(meta) and "curated" not in meta and meta.get("source") != "curated",
             }
         return out
 
