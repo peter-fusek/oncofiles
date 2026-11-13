@@ -19,6 +19,7 @@ from oncofiles.database import Database
 from oncofiles.persistent_oauth import (
     PersistentOAuthProvider,
     _verified_caller_email,
+    delete_expired_oauth_tokens,
     stash_email_for_challenge,
     token_digest,
 )
@@ -289,3 +290,113 @@ async def test_logs_never_contain_tokens(db, provider, caplog):
     ):
         assert secret not in text
         assert secret[:12] not in text
+
+
+# ── Refresh-token lifetime ──────────────────────────────────────────────
+
+
+async def test_converted_refresh_row_gets_finite_expiry(db):
+    access = "synthetic-earlier-access-0003"
+    refresh = "synthetic-earlier-refresh-0003"
+    await _insert_earlier_format_pair(db, access, refresh)
+    # A second earlier-format refresh row that already expires sooner keeps it.
+    soon = int(time.time()) + 3 * 86400
+    await db.db.execute(
+        "INSERT INTO mcp_oauth_tokens "
+        "(token, token_type, client_id, scopes_json, expires_at, linked_token) "
+        "VALUES (?, 'refresh', ?, '[]', ?, NULL)",
+        ("synthetic-earlier-refresh-0004", CLIENT_ID, soon),
+    )
+    await db.db.commit()
+
+    restarted = PersistentOAuthProvider(db=db)
+    await restarted.restore_from_db()
+    rows = await _rows(db)
+    converted = rows[token_digest(refresh)]["expires_at"]
+    assert converted is not None
+    assert converted <= int(time.time()) + 14 * 86400
+    assert converted >= int(time.time()) + 14 * 86400 - 60
+    assert rows[token_digest("synthetic-earlier-refresh-0004")]["expires_at"] == soon
+    assert restarted.refresh_tokens[token_digest(refresh)].expires_at == converted
+
+
+async def test_new_refresh_token_expires_in_about_60_days(db, provider):
+    tok = await _mint(provider, challenge="chal-ttl")
+    expected = int(time.time()) + 60 * 86400
+    row = (await _rows(db))[token_digest(tok.refresh_token)]
+    assert abs(row["expires_at"] - expected) <= 60
+    new = await _refresh(provider, tok.refresh_token)
+    row = (await _rows(db))[token_digest(new.refresh_token)]
+    assert abs(row["expires_at"] - expected) <= 60
+
+
+async def test_refresh_ttl_follows_config(db, provider, monkeypatch):
+    import oncofiles.config as config
+
+    monkeypatch.setattr(config, "MCP_REFRESH_TOKEN_TTL_DAYS", 7)
+    tok = await _mint(provider, challenge="chal-ttl-config")
+    row = (await _rows(db))[token_digest(tok.refresh_token)]
+    assert abs(row["expires_at"] - (int(time.time()) + 7 * 86400)) <= 60
+
+
+async def test_expired_refresh_token_is_refused(db, provider):
+    tok = await _mint(provider, challenge="chal-refresh-expired")
+    provider.refresh_tokens[token_digest(tok.refresh_token)].expires_at = int(time.time()) - 5
+    client = await provider.get_client(CLIENT_ID)
+    assert await provider.load_refresh_token(client, tok.refresh_token) is None
+    assert token_digest(tok.refresh_token) not in provider.refresh_tokens
+    assert await _rows(db) == {}
+
+
+async def test_conversion_runs_secure_delete_and_checkpoint(db, monkeypatch):
+    await _insert_earlier_format_pair(
+        db, "synthetic-earlier-access-0005", "synthetic-earlier-refresh-0005"
+    )
+    statements: list[str] = []
+    original = db.db.execute
+
+    def spy(sql, *args, **kwargs):
+        statements.append(sql)
+        return original(sql, *args, **kwargs)
+
+    monkeypatch.setattr(db.db, "execute", spy)
+    restarted = PersistentOAuthProvider(db=db)
+    stats = await restarted.restore_from_db()
+    assert stats["converted_rows"] == 2
+
+    pragmas = [s for s in statements if s.startswith("PRAGMA")]
+    assert pragmas == ["PRAGMA secure_delete = ON", "PRAGMA wal_checkpoint(TRUNCATE)"]
+    first_update = next(i for i, s in enumerate(statements) if s.startswith("UPDATE"))
+    assert statements.index("PRAGMA secure_delete = ON") < first_update
+    async with original("PRAGMA secure_delete") as cursor:
+        assert (await cursor.fetchone())[0] == 1
+
+    # Nothing to convert → no PRAGMA at all.
+    statements.clear()
+    await PersistentOAuthProvider(db=db).restore_from_db()
+    assert not [s for s in statements if s.startswith("PRAGMA")]
+
+
+# ── Cleanup job SQL ─────────────────────────────────────────────────────
+
+
+async def test_cleanup_removes_only_long_expired_rows(db):
+    now = int(time.time())
+    rows = [
+        ("sha256:" + "a" * 64, "access", now + 3600),  # valid access
+        ("sha256:" + "b" * 64, "access", now - 31 * 86400),  # long expired
+        ("sha256:" + "c" * 64, "refresh", now + 20 * 86400),  # expires within 30 days
+        ("sha256:" + "d" * 64, "access", now - 5 * 86400),  # expired, inside grace
+        ("sha256:" + "e" * 64, "refresh", None),  # no expiry
+    ]
+    for token, kind, expires in rows:
+        await db.db.execute(
+            "INSERT INTO mcp_oauth_tokens (token, token_type, client_id, scopes_json, expires_at) "
+            "VALUES (?, ?, ?, '[]', ?)",
+            (token, kind, CLIENT_ID, expires),
+        )
+    await db.db.commit()
+
+    assert await delete_expired_oauth_tokens(db) == 1
+    remaining = set(await _rows(db))
+    assert remaining == {r[0] for r in rows} - {"sha256:" + "b" * 64}

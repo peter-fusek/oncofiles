@@ -24,7 +24,6 @@ from typing import TYPE_CHECKING
 from fastmcp.server.auth.auth import ClientRegistrationOptions, RevocationOptions
 from fastmcp.server.auth.providers.in_memory import (
     DEFAULT_ACCESS_TOKEN_EXPIRY_SECONDS,
-    DEFAULT_REFRESH_TOKEN_EXPIRY_SECONDS,
     InMemoryOAuthProvider,
 )
 from mcp.server.auth.provider import AccessToken, AuthorizationCode, RefreshToken, TokenError
@@ -65,6 +64,38 @@ def _is_digest(value: str | None) -> bool:
 
 def _new_token() -> str:
     return secrets.token_urlsafe(32)
+
+
+# Rows converted from the earlier format get at most this much remaining
+# refresh lifetime; active clients rotate well within it.
+CONVERTED_REFRESH_MAX_TTL_S = 14 * 86400
+
+# Expired MCP OAuth rows are kept this long before the cleanup job removes them.
+EXPIRED_TOKEN_GRACE_S = 30 * 86400
+
+
+def refresh_token_ttl_seconds() -> int:
+    """Refresh-token lifetime (``MCP_REFRESH_TOKEN_TTL_DAYS``, default 60 days)."""
+    from oncofiles.config import MCP_REFRESH_TOKEN_TTL_DAYS
+
+    return MCP_REFRESH_TOKEN_TTL_DAYS * 86400
+
+
+async def delete_expired_oauth_tokens(db: Database) -> int:
+    """Delete MCP OAuth token rows that expired more than 30 days ago.
+
+    ``expires_at`` is INTEGER epoch seconds, so it is compared with an
+    integer cutoff. Rows without an expiry are kept. Used by the
+    ``oauth_token_cleanup`` job; returns the number of rows removed.
+    """
+    async with db.db.execute(
+        "DELETE FROM mcp_oauth_tokens WHERE expires_at IS NOT NULL "
+        "AND expires_at < CAST(strftime('%s', 'now') AS INTEGER) - ?",
+        (EXPIRED_TOKEN_GRACE_S,),
+    ) as cursor:
+        deleted = cursor.rowcount
+    await db.db.commit()
+    return deleted
 
 
 # Set during verify_token so middleware can read the resolved patient_id
@@ -433,41 +464,64 @@ class PersistentOAuthProvider(InMemoryOAuthProvider):
         One transaction; every UPDATE must touch exactly one row, otherwise
         the whole conversion is rolled back (the rows are still loaded under
         their digest in memory and the conversion is retried next start).
-        Idempotent: rows already in digest form are left alone. Logs counts
-        only.
+        Idempotent: rows already in digest form are left alone. A converted
+        refresh row gets ``expires_at = min(existing, now + 14 days)``, so a
+        client that is still active rotates into a new pair with the regular
+        lifetime. ``secure_delete`` is on for the UPDATEs and the WAL is
+        checkpointed afterwards. Logs counts only.
         """
         async with self._db.db.execute(
-            "SELECT token, linked_token FROM mcp_oauth_tokens"
+            "SELECT token, token_type, expires_at, linked_token FROM mcp_oauth_tokens"
         ) as cursor:
             rows = await cursor.fetchall()
 
-        updates: list[tuple[str, str | None, str]] = []
+        refresh_cap = int(time.time()) + CONVERTED_REFRESH_MAX_TTL_S
+        updates: list[tuple[str, str | None, int | None, str]] = []
         for row in rows:
             stored, linked = row["token"], row["linked_token"]
+            expires_at = row["expires_at"]
             new_key = _as_digest(stored)
             new_linked = _as_digest(linked) if linked else linked
-            if new_key != stored or new_linked != linked:
-                updates.append((new_key, new_linked, stored))
+            if new_key == stored and new_linked == linked:
+                continue
+            if row["token_type"] == "refresh":
+                expires_at = refresh_cap if expires_at is None else min(expires_at, refresh_cap)
+            updates.append((new_key, new_linked, expires_at, stored))
         if not updates:
             return 0
 
+        db = self._db.db
         try:
-            for new_key, new_linked, stored in updates:
-                async with self._db.db.execute(
-                    "UPDATE mcp_oauth_tokens SET token = ?, linked_token = ? WHERE token = ?",
-                    (new_key, new_linked, stored),
+            # Overwrite freed page content on this connection (stays on for
+            # later token row deletes too).
+            async with db.execute("PRAGMA secure_delete = ON"):
+                pass
+            for new_key, new_linked, expires_at, stored in updates:
+                async with db.execute(
+                    "UPDATE mcp_oauth_tokens SET token = ?, linked_token = ?, expires_at = ? "
+                    "WHERE token = ?",
+                    (new_key, new_linked, expires_at, stored),
                 ) as cursor:
                     if cursor.rowcount != 1:
                         raise RuntimeError(f"expected 1 row, updated {cursor.rowcount}")
-            await self._db.db.commit()
+            await db.commit()
         except Exception as exc:
-            await self._db.db.rollback()
+            await db.rollback()
             logger.warning(
                 "MCP OAuth token row conversion rolled back (%d rows, %s)",
                 len(updates),
                 type(exc).__name__,
             )
             return 0
+        try:
+            # Fold the WAL into the main file so earlier page versions are
+            # not left behind (a no-op for databases without a WAL).
+            async with db.execute("PRAGMA wal_checkpoint(TRUNCATE)"):
+                pass
+        except Exception as exc:
+            logger.warning(
+                "WAL checkpoint after token row conversion failed (%s)", type(exc).__name__
+            )
         logger.info("MCP OAuth token rows converted to digest form: %d", len(updates))
         return len(updates)
 
@@ -527,9 +581,7 @@ class PersistentOAuthProvider(InMemoryOAuthProvider):
         access_key = token_digest(access_value)
         refresh_key = token_digest(refresh_value)
 
-        refresh_expires_at = None
-        if DEFAULT_REFRESH_TOKEN_EXPIRY_SECONDS is not None:
-            refresh_expires_at = int(time.time() + DEFAULT_REFRESH_TOKEN_EXPIRY_SECONDS)
+        refresh_expires_at = int(time.time()) + refresh_token_ttl_seconds()
 
         self.access_tokens[access_key] = AccessToken(
             token=access_key,
