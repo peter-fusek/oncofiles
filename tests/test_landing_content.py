@@ -823,7 +823,7 @@ def test_story_sections_are_bilingual(section_id):
 
 def test_vision_sits_above_the_roadmap_and_labels_connections_as_roadmap():
     assert (
-        LANDING.index('id="vision"') < LANDING.index('id="photos"') < LANDING.index('id="roadmap"')
+        LANDING.index('id="photos"') < LANDING.index('id="vision"') < LANDING.index('id="roadmap"')
     )
     block = _section("vision")
     for piece in ("pz-chat", "pz-docs", "pz-core", "pz-std", "pz-hosp"):
