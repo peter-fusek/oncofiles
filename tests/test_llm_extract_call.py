@@ -174,11 +174,15 @@ def test_sampling_profiles_in_the_payload(local_llm, thinking, sampling, expecte
     assert (pr.thinking, pr.sampling) == (thinking, sampling)
 
 
-def test_env_selects_the_profile_and_an_unknown_value_stays_greedy(local_llm, monkeypatch):
+def test_env_selects_the_profile_and_an_unknown_value_is_the_qwen_default(local_llm, monkeypatch):
     monkeypatch.setattr(config, "LLM_EXTRACT_SAMPLING", "qwen")
     assert xcall.settings().params == xcall.QWEN_NON_THINKING
-    monkeypatch.setattr(config, "LLM_EXTRACT_SAMPLING", "creative")
+    monkeypatch.setattr(config, "LLM_EXTRACT_SAMPLING", "greedy")
     assert xcall.settings().params == {"temperature": 0.0}
+    # #773: an unknown value falls back to the default profile (qwen), never greedy
+    monkeypatch.setattr(config, "LLM_EXTRACT_SAMPLING", "creative")
+    assert xcall.settings().params == xcall.QWEN_NON_THINKING
+    assert xcall.settings().sampling == "qwen"
     monkeypatch.setattr(config, "LLM_EXTRACT_THINKING", "on")
     assert xcall.settings("off", "qwen").max_tokens == 4000  # override wins over env
 

@@ -45,8 +45,11 @@ from oncofiles.curated.llm_extract_call import (  # noqa: F401 (re-exported)
 # reasoning-off marker in the system message instead of /no_think (#770);
 # v7: qwen sampling profiles follow the Qwen3.8 model card, prefill removed
 # (the chat template renders a trailing assistant turn as finished, #770);
-# v8: a truncated page is retried once as 2 line-boundary chunks (#773).
-EXTRACTOR_VERSION = "llm-extract-v8"
+# v8: a truncated page is retried once as 2 line-boundary chunks (#773);
+# v9: default request is the scorecard-validated one (qwen sampling +
+# reasoning-off marker, env LLM_EXTRACT_SAMPLING /
+# LLM_EXTRACT_REASONING_MARKER), also for writes (#773).
+EXTRACTOR_VERSION = "llm-extract-v9"
 
 DATE_ROLES = ("sample", "report", "other")
 _COMPARATORS = ("<=", ">=", "<", ">")

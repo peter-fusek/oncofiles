@@ -54,8 +54,10 @@ from oncofiles.database._facts import LLM_CLINICAL_FAMILY
 # for each case (#773); v8: lesion label copied as printed (never translated),
 # unit null when none is printed, one worked example with a
 # "2,4 x 1,9 cm" size on an imaging line (#773); v9: a truncated page is
-# retried once as 2 line-boundary chunks (#773).
-EXTRACTOR_VERSION = "llm-clinical-v9"
+# retried once as 2 line-boundary chunks (#773); v10: default request is the
+# scorecard-validated one (qwen sampling + reasoning-off marker, env
+# LLM_EXTRACT_SAMPLING / LLM_EXTRACT_REASONING_MARKER), also for writes (#773).
+EXTRACTOR_VERSION = "llm-clinical-v10"
 EXTRACTOR_FAMILY = LLM_CLINICAL_FAMILY  # prefix of every version: re-extraction scope
 METHOD = "stored_sidecar_text"
 

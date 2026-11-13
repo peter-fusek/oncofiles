@@ -122,11 +122,12 @@ LLM_EXTRACT_SHADOW_DISABLED: bool = (
 # Model reasoning for the text extractor: "off" (default; the page text is
 # short and the answer is a copy job) or "on".
 LLM_EXTRACT_THINKING: str = os.environ.get("LLM_EXTRACT_THINKING", "off").strip().lower()
-# Sampling of both LLM extractors (#767): "greedy" (default, temperature 0,
-# the previous behaviour) or "qwen" (the Qwen3 model-card profiles; greedy
-# decoding makes Qwen3 models loop, especially with thinking off). Any other
-# value is treated as "greedy". Re-OCR and classification are not affected.
-LLM_EXTRACT_SAMPLING: str = os.environ.get("LLM_EXTRACT_SAMPLING", "greedy").strip().lower()
+# Sampling of both LLM extractors (#767): "qwen" (default since #773, the
+# Qwen3 model-card profiles measured in scorecard rows 132/133) or "greedy"
+# (temperature 0, the pre-#773 extractor request; greedy decoding makes Qwen3
+# models loop, especially with thinking off). Any other value is treated as
+# "qwen". Re-OCR and classification are not affected.
+LLM_EXTRACT_SAMPLING: str = os.environ.get("LLM_EXTRACT_SAMPLING", "qwen").strip().lower()
 # Answer budget (max_tokens) per page with thinking OFF (#767). A long lab
 # page (~40 items) needs well under 4000 tokens. Re-derive it from measured
 # data: p95 completion_tokens of the preview reports x 1.5. With thinking ON
@@ -156,6 +157,16 @@ LLM_EXTRACT_SPLIT_LINES: int = int(os.environ.get("LLM_EXTRACT_SPLIT_LINES", "0"
 # stays byte-identical to before until that template rule is in place.
 LLM_REASONING_MARKER: bool = (
     os.environ.get("LLM_REASONING_MARKER", "false").strip().lower() == "true"
+)
+# Extractor-path default for the #770 marker (#773). Read ONLY by
+# curated/llm_extract_call.py (both LLM extractors, previews AND writes), which
+# passes it explicitly to every llm.chat call. Default ON: LM Studio ignores
+# /no_think for Qwen3.8, so without the marker thinking runs away. Every other
+# llm.chat caller (classification, re-OCR, ...) keeps following the global
+# LLM_REASONING_MARKER above (default off, byte-identical requests).
+# "false" restores the pre-#773 extractor request (/no_think, no marker).
+LLM_EXTRACT_REASONING_MARKER: bool = (
+    os.environ.get("LLM_EXTRACT_REASONING_MARKER", "true").strip().lower() == "true"
 )
 # Structured output (json_schema response_format) for the lab shadow
 # extractor (#714). Default OFF: with a json_schema grammar Qwen cannot emit
