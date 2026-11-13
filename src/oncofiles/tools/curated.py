@@ -1545,6 +1545,7 @@ def _reread_one(drive, d: dict, old: list[dict], vocab, *, fingerprint: bool = F
     with ``fingerprint`` also the masked shape of the re-read text (#712)."""
     import hashlib
 
+    from oncofiles.curated import reocr
     from oncofiles.curated import reread_verify as rv
     from oncofiles.curated.facts_rules import extract_lab_facts
     from oncofiles.curated.reocr import reread_isolated
@@ -1573,6 +1574,9 @@ def _reread_one(drive, d: dict, old: list[dict], vocab, *, fingerprint: bool = F
     rr = reread_isolated(d["filename"], source, d.get("mime_type") or "", passes=2,
                          doc_ref=d["id"], parallel=_reread_parallel(),
                          second_pass_pages=wanted, purpose="reread")  # fmt: skip
+    # #800: per-pass LLM usage (counts only), also for a failed read
+    summary, _ = reocr.report_usage(d["id"], getattr(rr, "llm_passes", None) or [])
+    res.update(summary)  # never raises; job-level warnings come from truncated_passes
     if rr.error or not any(p.strip() for p in rr.pages):
         return {**res, "result": "failed", "error": rr.error or "no text"}
     new, _ = extract_lab_facts(rr.pages, vocab, report_date=str(d.get("document_date") or "")[:10]
@@ -1656,7 +1660,21 @@ async def _reread_job(
                 report.append(res)
             if not dry_run and any(r.get("result") == "stored" for r in report):
                 job["verification"] = await _corroborate_and_measure(db, pid)
-        job.update(state="done", report={"dry_run": dry_run, "documents": report})
+        from oncofiles.curated.reocr import truncation_warnings
+
+        # #800: a pass cut off at its budget is a warning, never a silent pass
+        try:
+            warnings = [
+                w
+                for r in report
+                for w in truncation_warnings(r["document_id"], r.get("truncated_passes") or [])
+            ]
+        except Exception as exc:  # reporting never fails the job
+            logger.warning("re-read usage warnings failed: %s", type(exc).__name__)
+            warnings = []
+        job.update(
+            state="done", report={"dry_run": dry_run, "documents": report, "warnings": warnings}
+        )
     except Exception as exc:
         logger.exception("verify-only re-read failed for %s", pid)
         job.update(state="failed", error=type(exc).__name__)
