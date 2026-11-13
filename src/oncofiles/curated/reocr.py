@@ -118,9 +118,79 @@ def born_digital(page, *, image_cover: float = 0.8) -> bool:
     return True
 
 
+def _pass_record(page: int, k: int, dpi: int, info: dict, seconds: float, error=None) -> dict:
+    """Usage of one vision pass (#800): counts only. ``info`` also holds the raw
+    answer channels; they are never copied here."""
+
+    def count(key):
+        value = info.get(key)
+        return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+    finish = info.get("finish_reason")
+    rec = {
+        "page": page, "pass": k + 1, "dpi": int(dpi),
+        "finish": finish if isinstance(finish, str) else None,
+        "prompt_tokens": count("prompt_tokens"),
+        "completion_tokens": count("completion_tokens"),
+        "reasoning_tokens": count("reasoning_tokens"),
+        "seconds": round(seconds, 1),
+    }  # fmt: skip
+    if error is not None:
+        rec["error"] = type(error).__name__  # the class only, never the message
+    return rec
+
+
+def _by_page_and_pass(records: list[dict]) -> list[dict]:
+    return sorted(records, key=lambda r: (r["page"], r["pass"]))
+
+
+def is_truncated(rec: dict) -> bool:
+    """A pass the model cut off at its token budget (``finish_reason=length``;
+    ``llm.chat`` raises on the same finish when the answer is empty)."""
+    return rec.get("finish") == "length"
+
+
+def usage_summary(records: list[dict]) -> dict:
+    """Per-document LLM usage of a re-read (#800): the per-pass records, the
+    maxima, the budget and the truncated passes. Counts only."""
+
+    def peak(key):
+        values = [r[key] for r in records if isinstance(r.get(key), int)]
+        return max(values) if values else None
+
+    return {
+        "llm_passes": [dict(r) for r in records],
+        "reasoning_tokens_max": peak("reasoning_tokens"),
+        "completion_tokens_max": peak("completion_tokens"),
+        "budget": REOCR_BUDGET,
+        "truncated_passes": [{"page": r["page"], "pass": r["pass"]}
+                             for r in records if is_truncated(r)],
+    }  # fmt: skip
+
+
+def truncation_warnings(document_id, truncated: list[dict]) -> list[dict]:
+    """One report warning per truncated pass: never a silent pass (#800)."""
+    return [{"warning": "reocr_pass_truncated", "document_id": document_id,
+             "page": t["page"], "pass": t["pass"]} for t in truncated]  # fmt: skip
+
+
+def log_passes(doc_ref, records: list[dict]) -> None:
+    """One INFO line per vision pass, metadata only (ids, counts, finish).
+    Called in the server process: the re-OCR child's logging goes nowhere."""
+    for r in records:
+        logger.info(
+            "re-OCR llm pass: doc=%s page=%s pass=%s dpi=%s finish=%s prompt_tokens=%s "
+            "completion_tokens=%s reasoning_tokens=%s budget=%s seconds=%s error=%s",
+            doc_ref, r.get("page"), r.get("pass"), r.get("dpi"), r.get("finish"),
+            r.get("prompt_tokens"), r.get("completion_tokens"), r.get("reasoning_tokens"),
+            REOCR_BUDGET, r.get("seconds"), r.get("error"),
+        )  # fmt: skip
+
+
 def _vision_passes(
     content: bytes, ext: str, dpis: list[int], client, *, parallel: int = 1,
     second_pass_pages: Collection[int] | None = None, adaptive: bool = False,
+    usage: list[dict] | None = None,
 ) -> list[list[str | None]]:  # fmt: skip
     """One answer list per DPI. Memory-bounded (#667): one page is rendered,
     sent and freed at a time. With ``parallel`` ≥ 2 (#593) the passes of that
@@ -147,20 +217,41 @@ def _vision_passes(
       an earlier page), so its second pass is only *deferred*: when the page
       shares any number with a page that was read twice, it gets its second
       pass after all. See ``_shares_numbers``.
+
+    ``usage`` (optional list) receives one ``_pass_record`` per model call
+    (#800), also for a call that raised. Passes may run in the thread pool, so
+    records are appended under a lock and sorted by page and pass at the end.
     """
+    import threading
     from concurrent.futures import ThreadPoolExecutor
 
     import pymupdf
 
-    def ask(part: dict, i: int, total: int) -> str:
-        return llm.chat(
-            REOCR_SYSTEM_PROMPT,
-            [{"type": "text", "text": f"Page {i + 1} of {total}."}, part],
-            max_tokens=REOCR_BUDGET,
-            reasoning_effort="high",
-            thinking=False if config.REOCR_THINKING == "off" else None,
-            client=client,
-        )
+    lock = threading.Lock()
+
+    def ask(part: dict, i: int, total: int, k: int = 0) -> str:
+        info: dict = {}
+        t0 = time.monotonic()
+        error = None
+        try:
+            return llm.chat(
+                REOCR_SYSTEM_PROMPT,
+                [{"type": "text", "text": f"Page {i + 1} of {total}."}, part],
+                max_tokens=REOCR_BUDGET,
+                reasoning_effort="high",
+                thinking=False if config.REOCR_THINKING == "off" else None,
+                client=client,
+                info=info,
+            )
+        except Exception as exc:
+            error = exc
+            raise
+        finally:
+            if usage is not None:
+                rec = _pass_record(i + 1, k, dpis[k], info, time.monotonic() - t0, error)
+                with lock:
+                    usage.append(rec)
+            info.clear()  # the raw answer channels never outlive the call
 
     def render(page, dpi: int) -> dict:
         png = extract_mod._pixmap_png(page, dpi)
@@ -185,13 +276,15 @@ def _vision_passes(
             elif adaptive and workers == 1 and len(dpis) > 1:
                 answers = [ask(render(page, dpis[0]), i, total)]
                 if _NUM.search(answers[0]):  # digits: the second pass decides them
-                    answers += [ask(render(page, dpi), i, total) for dpi in dpis[1:]]
+                    answers += [ask(render(page, dpi), i, total, k)
+                                for k, dpi in enumerate(dpis[1:], start=1)]  # fmt: skip
             else:
                 parts = [render(page, dpi) for dpi in dpis]
                 if workers > 1:
-                    answers = list(pool.map(ask, parts, [i] * len(parts), [total] * len(parts)))
+                    n = len(parts)
+                    answers = list(pool.map(ask, parts, [i] * n, [total] * n, range(n)))
                 else:
-                    answers = [ask(part, i, total) for part in parts]
+                    answers = [ask(part, i, total, k) for k, part in enumerate(parts)]
                 del parts
             for k, out in enumerate(passes):
                 out.append(answers[k] if k < len(answers) else None)
@@ -201,8 +294,10 @@ def _vision_passes(
             if _shares_numbers(passes[0][i] or "", twice):
                 page = doc[i]
                 for k, dpi in enumerate(dpis[1:], start=1):
-                    passes[k][i] = ask(render(page, dpi), i, total)
+                    passes[k][i] = ask(render(page, dpi), i, total, k)
                 del page
+    if usage is not None:
+        usage[:] = _by_page_and_pass(usage)
     return passes
 
 
@@ -256,6 +351,9 @@ class Reread:
     dpi: list[int] = field(default_factory=list)
     passes_per_page: list[int] = field(default_factory=list)
     skipped_second_pass_pages: list[int] = field(default_factory=list)
+    # #800: one record per vision pass (page, pass, dpi, finish, token counts,
+    # seconds); counts only, never the answer
+    llm_passes: list[dict] = field(default_factory=list)
 
 
 def reocr_dpis(passes: int, purpose: str = "reocr") -> list[int]:
@@ -283,6 +381,7 @@ def reread(
     ``purpose``: "reocr" (default, text written back) or "reread" (verify-only);
     it picks the dpi settings (``reocr_dpis``)."""
     ext = extract_mod._ext(name)
+    usage: list[dict] = []  # per-pass LLM usage (#800), kept also when a pass fails
     try:
         if ext in extract_mod.TEXT_EXTS:
             return Reread([content.decode("utf-8", errors="replace")], "plain", "utf-8")
@@ -309,7 +408,7 @@ def reread(
         with httpx.Client(timeout=config.LOCAL_LLM_TIMEOUT_S) as client:  # one per document
             answers = _vision_passes(
                 content, ext, dpis, client, parallel=parallel, adaptive=adaptive,
-                second_pass_pages=second_pass_pages if adaptive else None,
+                second_pass_pages=second_pass_pages if adaptive else None, usage=usage,
             )  # fmt: skip
         seconds = round(time.monotonic() - t0, 1)
         first, hand = _strip_handwritten(answers[0])
@@ -322,12 +421,14 @@ def reread(
             skipped = [i for i, s in enumerate(second, start=1) if s is None]
         return Reread(first, "vision2" if passes >= 2 else "vision", llm.model_id(), hand, flagged,
                       seconds=seconds, parallel=parallel, dpi=dpis, passes_per_page=per_page,
-                      skipped_second_pass_pages=skipped)  # fmt: skip
+                      skipped_second_pass_pages=skipped, llm_passes=usage)  # fmt: skip
     except llm.LocalLLMError as exc:
-        return Reread([], "none", llm.model_id(), error=str(exc))
+        return Reread([], "none", llm.model_id(), error=str(exc),
+                      llm_passes=_by_page_and_pass(usage))  # fmt: skip
     except Exception as exc:  # corrupt file, codec, …
         logger.warning("re-OCR failed for doc %s", doc_ref, exc_info=True)
-        return Reread([], "none", "-", error=type(exc).__name__)
+        return Reread([], "none", "-", error=type(exc).__name__,
+                      llm_passes=_by_page_and_pass(usage))  # fmt: skip
 
 
 def reread_isolated(
@@ -431,15 +532,23 @@ class DocResult:
     dpi: list[int] = field(default_factory=list)  # #593 A/B
     passes_per_page: list[int] = field(default_factory=list)
     skipped_second_pass_pages: list[int] = field(default_factory=list)
+    # #800: per-pass LLM usage (``usage_summary``); counts only
+    llm_passes: list[dict] = field(default_factory=list)
+    reasoning_tokens_max: int | None = None
+    completion_tokens_max: int | None = None
+    budget: int = REOCR_BUDGET
+    truncated_passes: list[dict] = field(default_factory=list)  # {"page", "pass"}
 
 
 @dataclass
 class ReocrReport:
     dry_run: bool
     documents: list[DocResult] = field(default_factory=list)
+    warnings: list[dict] = field(default_factory=list)  # #800: reocr_pass_truncated
 
     def to_dict(self) -> dict:
-        return {"dry_run": self.dry_run, "documents": [asdict(d) for d in self.documents]}
+        return {"dry_run": self.dry_run, "documents": [asdict(d) for d in self.documents],
+                "warnings": [dict(w) for w in self.warnings]}  # fmt: skip
 
 
 from oncofiles.curated.facts_rules import INLINE_CATEGORIES as _INLINE_CATEGORIES  # noqa: E402
@@ -544,6 +653,12 @@ def run_reocr(
             res.uncertain_before = old.count("[?]")
             rr = reader(d["filename"], drive.download(d["gdrive_id"]), d.get("mime") or "",
                         passes=passes, doc_ref=d["document_id"])  # fmt: skip
+            # #800: usage is reported also for a failed read; report only, the
+            # rewrite/review decision below is unchanged
+            log_passes(d["document_id"], rr.llm_passes)
+            for key, value in usage_summary(rr.llm_passes).items():
+                setattr(res, key, value)
+            report.warnings += truncation_warnings(d["document_id"], res.truncated_passes)
             if rr.error or not any(p.strip() for p in rr.pages):
                 res.result, res.error = "failed", rr.error or "no text"
                 continue
