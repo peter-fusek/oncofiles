@@ -2,20 +2,32 @@
 
 Stores MCP OAuth clients and tokens in the database so they survive deploys.
 Auth codes are ephemeral (5 min) and not persisted.
+
+Token storage: only a SHA-256 digest of each issued access / refresh token is
+kept (``token_digest``), in memory and in ``mcp_oauth_tokens``, the same way
+patient ``onco_*`` tokens are stored as ``token_hash``. The token itself is
+returned to the client once and afterwards only arrives with requests, where
+it is digested before any lookup.
 """
 
 from __future__ import annotations
 
 import contextvars
+import hashlib
 import hmac
 import json
 import logging
+import secrets
 import time
 from typing import TYPE_CHECKING
 
 from fastmcp.server.auth.auth import ClientRegistrationOptions, RevocationOptions
-from fastmcp.server.auth.providers.in_memory import InMemoryOAuthProvider
-from mcp.server.auth.provider import AccessToken, AuthorizationCode, RefreshToken
+from fastmcp.server.auth.providers.in_memory import (
+    DEFAULT_ACCESS_TOKEN_EXPIRY_SECONDS,
+    DEFAULT_REFRESH_TOKEN_EXPIRY_SECONDS,
+    InMemoryOAuthProvider,
+)
+from mcp.server.auth.provider import AccessToken, AuthorizationCode, RefreshToken, TokenError
 from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
 from pydantic import AnyHttpUrl
 
@@ -25,6 +37,35 @@ if TYPE_CHECKING:
     from oncofiles.database import Database
 
 logger = logging.getLogger(__name__)
+
+_DIGEST_PREFIX = "sha256:"
+_DIGEST_LEN = len(_DIGEST_PREFIX) + 64
+
+
+def token_digest(token: str) -> str:
+    """Storage key for an MCP OAuth token: ``"sha256:" + hex digest``.
+
+    Plain SHA-256 is enough because issued tokens are 256-bit random values.
+    It is deliberately not keyed by ``MCP_BEARER_TOKEN``: rotating that secret
+    must not invalidate every connected client.
+    """
+    return _DIGEST_PREFIX + hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def _is_digest(value: str | None) -> bool:
+    """True when ``value`` already has the ``token_digest`` shape."""
+    if not value or len(value) != _DIGEST_LEN or not value.startswith(_DIGEST_PREFIX):
+        return False
+    try:
+        int(value[len(_DIGEST_PREFIX) :], 16)
+    except ValueError:
+        return False
+    return True
+
+
+def _new_token() -> str:
+    return secrets.token_urlsafe(32)
+
 
 # Set during verify_token so middleware can read the resolved patient_id
 # without re-resolving from session attributes that may not exist (#290).
@@ -123,6 +164,12 @@ class PersistentOAuthProvider(InMemoryOAuthProvider):
     - On startup: ``restore_from_db()`` loads saved state into memory.
     - On mutation: super() runs first, then state is persisted to DB.
     - Auth codes are NOT persisted (short-lived, single-use).
+    - Access / refresh tokens are keyed by ``token_digest`` everywhere the
+      provider keeps them: ``access_tokens``, ``refresh_tokens``, both link
+      maps and the ``token`` / ``linked_token`` columns. Methods that take or
+      return a token translate at the boundary; the ``AccessToken`` /
+      ``RefreshToken`` objects handed back to FastMCP carry the caller's own
+      token for the duration of the request only.
     """
 
     def __init__(
@@ -177,7 +224,7 @@ class PersistentOAuthProvider(InMemoryOAuthProvider):
                     _verified_patient_id.set(pid)
             return AccessToken(token=token, client_id="static-bearer", scopes=[])
         # 2. MCP OAuth tokens (in-memory, restored from DB on startup — Claude.ai, ChatGPT)
-        result = await super().verify_token(token)
+        result = await self.load_access_token(token)
         if result:
             _verified_auth_method.set("oauth")
             # #478: resolve patient via the Google email bound to this token
@@ -287,7 +334,12 @@ class PersistentOAuthProvider(InMemoryOAuthProvider):
     # ── Restore from DB on startup ──────────────────────────────────────
 
     async def restore_from_db(self) -> dict:
-        """Load persisted clients and tokens into memory. Returns stats."""
+        """Load persisted clients and tokens into memory. Returns stats.
+
+        Rows written before digest storage are rewritten to ``token_digest``
+        form first (``_convert_legacy_token_rows``), so already connected
+        clients keep working.
+        """
         if not self._db:
             return {"clients": 0, "access_tokens": 0, "refresh_tokens": 0}
 
@@ -310,63 +362,197 @@ class PersistentOAuthProvider(InMemoryOAuthProvider):
                         "Failed to restore MCP client %s", row["client_id"], exc_info=True
                     )
 
-        # Restore tokens + build association maps
-        access_links: dict[str, str] = {}  # access_token -> linked_token (refresh)
-        refresh_links: dict[str, str] = {}  # refresh_token -> linked_token (access)
+        converted = await self._convert_legacy_token_rows()
+
+        # Restore tokens + build association maps (all keyed by digest)
+        access_links: dict[str, str] = {}  # access digest -> refresh digest
+        refresh_links: dict[str, str] = {}  # refresh digest -> access digest
 
         async with self._db.db.execute(
             "SELECT token, token_type, client_id, scopes_json, expires_at, linked_token "
             "FROM mcp_oauth_tokens"
         ) as cursor:
             for row in await cursor.fetchall():
+                token_type = row["token_type"]
                 try:
-                    token_str = row["token"]
-                    token_type = row["token_type"]
+                    # Normally already digests; a row the conversion could
+                    # not rewrite is still keyed by digest in memory.
+                    key = _as_digest(row["token"])
+                    linked = _as_digest(row["linked_token"]) if row["linked_token"] else None
                     client_id = row["client_id"]
                     scopes = json.loads(row["scopes_json"])
                     expires_at = row["expires_at"]
-                    linked = row["linked_token"]
 
                     if token_type == "access":
-                        self.access_tokens[token_str] = AccessToken(
-                            token=token_str,
+                        self.access_tokens[key] = AccessToken(
+                            token=key,
                             client_id=client_id,
                             scopes=scopes,
                             expires_at=expires_at,
                         )
                         if linked:
-                            access_links[token_str] = linked
+                            access_links[key] = linked
                         access_loaded += 1
                     elif token_type == "refresh":
-                        self.refresh_tokens[token_str] = RefreshToken(
-                            token=token_str,
+                        self.refresh_tokens[key] = RefreshToken(
+                            token=key,
                             client_id=client_id,
                             scopes=scopes,
                             expires_at=expires_at,
                         )
                         if linked:
-                            refresh_links[token_str] = linked
+                            refresh_links[key] = linked
                         refresh_loaded += 1
-                except Exception:
+                except Exception as exc:
                     logger.warning(
-                        "Failed to restore MCP token %s", row["token"][:20], exc_info=True
+                        "Failed to restore an MCP OAuth %s token row (%s)",
+                        token_type,
+                        type(exc).__name__,
                     )
 
         # Rebuild association maps
-        for access_tok, refresh_tok in access_links.items():
-            self._access_to_refresh_map[access_tok] = refresh_tok
-        for refresh_tok, access_tok in refresh_links.items():
-            self._refresh_to_access_map[refresh_tok] = access_tok
+        for access_key, refresh_key in access_links.items():
+            self._access_to_refresh_map[access_key] = refresh_key
+        for refresh_key, access_key in refresh_links.items():
+            self._refresh_to_access_map[refresh_key] = access_key
 
         stats = {
             "clients": clients_loaded,
             "access_tokens": access_loaded,
             "refresh_tokens": refresh_loaded,
+            "converted_rows": converted,
         }
         self._last_restore_stats = stats
         if clients_loaded or access_loaded or refresh_loaded:
             logger.info("Restored MCP OAuth state: %s", stats)
         return stats
+
+    async def _convert_legacy_token_rows(self) -> int:
+        """Rewrite ``token`` / ``linked_token`` values not yet in digest form.
+
+        One transaction; every UPDATE must touch exactly one row, otherwise
+        the whole conversion is rolled back (the rows are still loaded under
+        their digest in memory and the conversion is retried next start).
+        Idempotent: rows already in digest form are left alone. Logs counts
+        only.
+        """
+        async with self._db.db.execute(
+            "SELECT token, linked_token FROM mcp_oauth_tokens"
+        ) as cursor:
+            rows = await cursor.fetchall()
+
+        updates: list[tuple[str, str | None, str]] = []
+        for row in rows:
+            stored, linked = row["token"], row["linked_token"]
+            new_key = _as_digest(stored)
+            new_linked = _as_digest(linked) if linked else linked
+            if new_key != stored or new_linked != linked:
+                updates.append((new_key, new_linked, stored))
+        if not updates:
+            return 0
+
+        try:
+            for new_key, new_linked, stored in updates:
+                async with self._db.db.execute(
+                    "UPDATE mcp_oauth_tokens SET token = ?, linked_token = ? WHERE token = ?",
+                    (new_key, new_linked, stored),
+                ) as cursor:
+                    if cursor.rowcount != 1:
+                        raise RuntimeError(f"expected 1 row, updated {cursor.rowcount}")
+            await self._db.db.commit()
+        except Exception as exc:
+            await self._db.db.rollback()
+            logger.warning(
+                "MCP OAuth token row conversion rolled back (%d rows, %s)",
+                len(updates),
+                type(exc).__name__,
+            )
+            return 0
+        logger.info("MCP OAuth token rows converted to digest form: %d", len(updates))
+        return len(updates)
+
+    # ── Token lookup (raw token in, digest-keyed state) ─────────────────
+
+    @staticmethod
+    def _key_for(obj: AccessToken | RefreshToken, store: dict) -> str:
+        """Storage key for a token object.
+
+        Objects handed out by ``load_*`` carry the caller's token, which is
+        digested. The provider's own stored objects (``token`` already the
+        digest, same instance as in ``store``) map to themselves. A
+        digest-shaped string supplied by a caller is digested again and
+        therefore never matches: a digest is not a credential.
+        """
+        if store.get(obj.token) is obj:
+            return obj.token
+        return token_digest(obj.token)
+
+    def _drop_access_only(self, access_key: str) -> None:
+        """Forget one access token and its map links; its refresh token stays."""
+        self.access_tokens.pop(access_key, None)
+        refresh_key = self._access_to_refresh_map.pop(access_key, None)
+        if refresh_key and self._refresh_to_access_map.get(refresh_key) == access_key:
+            self._refresh_to_access_map.pop(refresh_key, None)
+
+    async def load_access_token(self, token: str) -> AccessToken | None:  # type: ignore[override]
+        key = token_digest(token)
+        token_obj = self.access_tokens.get(key)
+        if token_obj is None:
+            return None
+        if token_obj.expires_at is not None and token_obj.expires_at < time.time():
+            # An expired access token is simply not valid. Its refresh token
+            # stays usable until its own expiry (the client refreshes next).
+            self._drop_access_only(key)
+            return None
+        return token_obj.model_copy(update={"token": token})
+
+    async def load_refresh_token(
+        self, client: OAuthClientInformationFull, refresh_token: str
+    ) -> RefreshToken | None:
+        key = token_digest(refresh_token)
+        token_obj = self.refresh_tokens.get(key)
+        if token_obj is None or token_obj.client_id != client.client_id:
+            return None
+        if token_obj.expires_at is not None and token_obj.expires_at < time.time():
+            access_key = self._refresh_to_access_map.get(key)
+            self._revoke_internal(refresh_token_str=key)
+            await self._delete_tokens(access_key, key)
+            return None
+        return token_obj.model_copy(update={"token": refresh_token})
+
+    def _issue_token_pair(self, client_id: str, scopes: list[str]) -> OAuthToken:
+        """Mint a new access/refresh pair, keep only digests, return the tokens."""
+        access_value = _new_token()
+        refresh_value = _new_token()
+        access_key = token_digest(access_value)
+        refresh_key = token_digest(refresh_value)
+
+        refresh_expires_at = None
+        if DEFAULT_REFRESH_TOKEN_EXPIRY_SECONDS is not None:
+            refresh_expires_at = int(time.time() + DEFAULT_REFRESH_TOKEN_EXPIRY_SECONDS)
+
+        self.access_tokens[access_key] = AccessToken(
+            token=access_key,
+            client_id=client_id,
+            scopes=scopes,
+            expires_at=int(time.time() + DEFAULT_ACCESS_TOKEN_EXPIRY_SECONDS),
+        )
+        self.refresh_tokens[refresh_key] = RefreshToken(
+            token=refresh_key,
+            client_id=client_id,
+            scopes=scopes,
+            expires_at=refresh_expires_at,
+        )
+        self._access_to_refresh_map[access_key] = refresh_key
+        self._refresh_to_access_map[refresh_key] = access_key
+
+        return OAuthToken(
+            access_token=access_value,
+            token_type="Bearer",
+            expires_in=DEFAULT_ACCESS_TOKEN_EXPIRY_SECONDS,
+            refresh_token=refresh_value,
+            scope=" ".join(scopes),
+        )
 
     # ── Write-through: persist after mutations ──────────────────────────
 
@@ -377,13 +563,23 @@ class PersistentOAuthProvider(InMemoryOAuthProvider):
     async def exchange_authorization_code(
         self, client: OAuthClientInformationFull, authorization_code: AuthorizationCode
     ) -> OAuthToken:
-        result = await super().exchange_authorization_code(client, authorization_code)
+        # Same contract as InMemoryOAuthProvider, re-implemented so the
+        # issued tokens are only ever kept as digests.
+        if authorization_code.code not in self.auth_codes:
+            raise TokenError("invalid_grant", "Authorization code not found or already used.")
+        del self.auth_codes[authorization_code.code]
+        if client.client_id is None:
+            raise TokenError("invalid_client", "Client ID is required")
+
+        result = self._issue_token_pair(client.client_id, authorization_code.scopes)
         # #478: pop the email bound at /authorize time (if any) and persist
         # it alongside the new token rows. None → unsigned-in OAuth caller,
         # sentinel behavior preserved.
         user_email = pop_email_for_challenge(authorization_code.code_challenge)
         await self._persist_token_pair(
-            result.access_token, result.refresh_token, user_email=user_email
+            token_digest(result.access_token),
+            token_digest(result.refresh_token) if result.refresh_token else None,
+            user_email=user_email,
         )
         return result
 
@@ -393,34 +589,45 @@ class PersistentOAuthProvider(InMemoryOAuthProvider):
         refresh_token: RefreshToken,
         scopes: list[str],
     ) -> OAuthToken:
-        # The old tokens are revoked inside super() via _revoke_internal
-        old_access = self._refresh_to_access_map.get(refresh_token.token)
-        old_refresh = refresh_token.token
+        if not set(scopes).issubset(set(refresh_token.scopes)):
+            raise TokenError(
+                "invalid_scope",
+                "Requested scopes exceed those authorized by the refresh token.",
+            )
+        if client.client_id is None:
+            raise TokenError("invalid_client", "Client ID is required")
+
+        old_refresh = self._key_for(refresh_token, self.refresh_tokens)
+        old_access = self._refresh_to_access_map.get(old_refresh)
 
         # #478: preserve the user_email across refresh — read it off the old
         # refresh token row BEFORE we delete it.
-        old_email = await self._read_user_email(old_refresh)
+        old_email = await self._read_user_email_by_digest(old_refresh)
 
-        result = await super().exchange_refresh_token(client, refresh_token, scopes)
+        # Rotation: the old pair is revoked when the new pair is issued.
+        self._revoke_internal(refresh_token_str=old_refresh)
+        result = self._issue_token_pair(client.client_id, scopes)
 
-        # Delete old tokens from DB
         await self._delete_tokens(old_access, old_refresh)
-        # Persist new tokens carrying the original user_email
         await self._persist_token_pair(
-            result.access_token, result.refresh_token, user_email=old_email
+            token_digest(result.access_token),
+            token_digest(result.refresh_token) if result.refresh_token else None,
+            user_email=old_email,
         )
         return result
 
     async def revoke_token(self, token: AccessToken | RefreshToken) -> None:
-        # Capture linked tokens before super() removes them
+        """Revoke a token and its counterpart, in memory and in the DB."""
         if isinstance(token, AccessToken):
-            linked_refresh = self._access_to_refresh_map.get(token.token)
-            await super().revoke_token(token)
-            await self._delete_tokens(token.token, linked_refresh)
+            access_key = self._key_for(token, self.access_tokens)
+            linked_refresh = self._access_to_refresh_map.get(access_key)
+            self._revoke_internal(access_token_str=access_key)
+            await self._delete_tokens(access_key, linked_refresh)
         elif isinstance(token, RefreshToken):
-            linked_access = self._refresh_to_access_map.get(token.token)
-            await super().revoke_token(token)
-            await self._delete_tokens(linked_access, token.token)
+            refresh_key = self._key_for(token, self.refresh_tokens)
+            linked_access = self._refresh_to_access_map.get(refresh_key)
+            self._revoke_internal(refresh_token_str=refresh_key)
+            await self._delete_tokens(linked_access, refresh_key)
 
     # ── DB persistence helpers ──────────────────────────────────────────
 
@@ -442,15 +649,16 @@ class PersistentOAuthProvider(InMemoryOAuthProvider):
 
     async def _persist_token_pair(
         self,
-        access_token_str: str,
-        refresh_token_str: str | None,
+        access_key: str,
+        refresh_key: str | None,
         *,
         user_email: str | None = None,
     ) -> None:
+        """Write the pair's rows; both keys are ``token_digest`` values."""
         if not self._db:
             return
         try:
-            access_obj = self.access_tokens.get(access_token_str)
+            access_obj = self.access_tokens.get(access_key)
             if access_obj:
                 await self._db.db.execute(
                     """
@@ -460,17 +668,17 @@ class PersistentOAuthProvider(InMemoryOAuthProvider):
                     VALUES (?, 'access', ?, ?, ?, ?, ?)
                     """,
                     (
-                        access_obj.token,
+                        access_key,
                         access_obj.client_id,
                         json.dumps(access_obj.scopes),
                         access_obj.expires_at,
-                        refresh_token_str,
+                        refresh_key,
                         user_email,
                     ),
                 )
 
-            if refresh_token_str:
-                refresh_obj = self.refresh_tokens.get(refresh_token_str)
+            if refresh_key:
+                refresh_obj = self.refresh_tokens.get(refresh_key)
                 if refresh_obj:
                     await self._db.db.execute(
                         """
@@ -480,11 +688,11 @@ class PersistentOAuthProvider(InMemoryOAuthProvider):
                         VALUES (?, 'refresh', ?, ?, ?, ?, ?)
                         """,
                         (
-                            refresh_obj.token,
+                            refresh_key,
                             refresh_obj.client_id,
                             json.dumps(refresh_obj.scopes),
                             refresh_obj.expires_at,
-                            access_token_str,
+                            access_key,
                             user_email,
                         ),
                     )
@@ -494,13 +702,19 @@ class PersistentOAuthProvider(InMemoryOAuthProvider):
             logger.warning("Failed to persist MCP tokens", exc_info=True)
 
     async def _read_user_email(self, token_str: str | None) -> str | None:
+        """Bound Google account email for a token presented by a caller."""
+        if not token_str:
+            return None
+        return await self._read_user_email_by_digest(token_digest(token_str))
+
+    async def _read_user_email_by_digest(self, key: str | None) -> str | None:
         """Look up the bound Google account email on a persisted MCP token row."""
-        if not self._db or not token_str:
+        if not self._db or not key:
             return None
         try:
             async with self._db.db.execute(
                 "SELECT user_email FROM mcp_oauth_tokens WHERE token = ?",
-                (token_str,),
+                (key,),
             ) as cursor:
                 row = await cursor.fetchone()
                 if not row:
@@ -510,17 +724,30 @@ class PersistentOAuthProvider(InMemoryOAuthProvider):
             logger.debug("user_email lookup failed for token", exc_info=True)
             return None
 
-    async def _delete_tokens(
-        self, access_token_str: str | None, refresh_token_str: str | None
-    ) -> None:
+    async def _delete_tokens(self, access_key: str | None, refresh_key: str | None) -> None:
+        """Delete the pair's rows (digest keys).
+
+        Also removes an access row still linked to ``refresh_key`` whose
+        in-memory entry was already dropped on expiry.
+        """
         if not self._db:
             return
         try:
-            for tok in [access_token_str, refresh_token_str]:
-                if tok:
+            for key in [access_key, refresh_key]:
+                if key:
                     await self._db.db.execute(
-                        "DELETE FROM mcp_oauth_tokens WHERE token = ?", (tok,)
+                        "DELETE FROM mcp_oauth_tokens WHERE token = ?", (key,)
                     )
+            if refresh_key:
+                await self._db.db.execute(
+                    "DELETE FROM mcp_oauth_tokens WHERE token_type = 'access' AND linked_token = ?",
+                    (refresh_key,),
+                )
             await self._db.db.commit()
         except Exception:
             logger.warning("Failed to delete MCP tokens from DB", exc_info=True)
+
+
+def _as_digest(value: str) -> str:
+    """``value`` if already a digest, else its ``token_digest``."""
+    return value if _is_digest(value) else token_digest(value)

@@ -5,7 +5,7 @@ import time
 import pytest
 
 from oncofiles.database import Database
-from oncofiles.persistent_oauth import PersistentOAuthProvider
+from oncofiles.persistent_oauth import PersistentOAuthProvider, token_digest
 
 
 @pytest.fixture
@@ -182,7 +182,7 @@ async def test_revoke_removes_from_db(db, provider):
     token = await provider.exchange_authorization_code(client, auth_code)
 
     # Revoke the access token (should also revoke refresh)
-    access_obj = provider.access_tokens[token.access_token]
+    access_obj = provider.access_tokens[token_digest(token.access_token)]
     await provider.revoke_token(access_obj)
 
     # DB should be empty
@@ -246,7 +246,7 @@ async def test_expired_tokens_cleaned_on_verify(db, provider):
     token = await provider.exchange_authorization_code(client, auth_code)
 
     # Manually expire the access token
-    provider.access_tokens[token.access_token].expires_at = int(time.time()) - 10
+    provider.access_tokens[token_digest(token.access_token)].expires_at = int(time.time()) - 10
 
     # Verify should return None for expired token
     assert await provider.verify_token(token.access_token) is None
@@ -630,7 +630,7 @@ async def test_oauth_refresh_preserves_bound_email(db, provider):
     assert token.refresh_token is not None
 
     # Simulate claude.ai refreshing the token
-    refresh_obj = provider.refresh_tokens[token.refresh_token]
+    refresh_obj = provider.refresh_tokens[token_digest(token.refresh_token)]
     client = await provider.get_client("test-client")
     new_token = await provider.exchange_refresh_token(client, refresh_obj, scopes=[])
     verified = await provider.verify_token(new_token.access_token)
