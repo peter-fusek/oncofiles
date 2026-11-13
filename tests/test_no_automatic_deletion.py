@@ -46,8 +46,10 @@ DELETE_RE = re.compile(r"(?i:DELETE\s+FROM)\s+([a-z_][a-z0-9_]*)\b")
 
 # (file relative to src/oncofiles, table) -> reason. May only shrink.
 SQL_DELETE_ALLOWLIST: dict[tuple[str, str], str] = {
-    ("server.py", "mcp_oauth_tokens"): "oauth_token_cleanup job: expired OAuth tokens (credential)",
-    ("persistent_oauth.py", "mcp_oauth_tokens"): "revoked / rotated OAuth token (credential)",
+    ("persistent_oauth.py", "mcp_oauth_tokens"): (
+        "revoked / rotated OAuth token, and the oauth_token_cleanup job's "
+        "delete_expired_oauth_tokens (credential)"
+    ),
     ("session_revocation.py", "session_revocations"): "expired logout denylist rows (auth state)",
     ("server.py", "prompt_log"): "prompt_log_cleanup: 90-day AI telemetry retention (#734 open)",
     (

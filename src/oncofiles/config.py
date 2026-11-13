@@ -230,6 +230,10 @@ MAX_DOCUMENTS_PER_PATIENT: int = int(os.environ.get("MAX_DOCUMENTS_PER_PATIENT",
 # error when a whole-corpus read fills its ceiling (see database/_documents.py).
 DOC_QUERY_LIMIT: int = max(MAX_DOCUMENTS_PER_PATIENT, 10_000)
 
+# Lifetime of an MCP OAuth refresh token in days. Each refresh rotates the
+# pair and starts a new window, so an active client never hits it.
+MCP_REFRESH_TOKEN_TTL_DAYS: int = int(os.environ.get("MCP_REFRESH_TOKEN_TTL_DAYS", "60"))
+
 # Sync scheduler (v1.0)
 SYNC_INTERVAL_MINUTES: int = int(os.environ.get("SYNC_INTERVAL_MINUTES", "5"))
 SYNC_ENABLED: bool = os.environ.get("SYNC_ENABLED", "true").lower() in ("true", "1", "yes")

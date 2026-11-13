@@ -1173,14 +1173,11 @@ def _start_sync_scheduler(
             reclaim_memory("document_groups_backfill")
 
     async def _run_oauth_token_cleanup():
-        """Remove expired MCP OAuth tokens older than 30 days."""
+        """Remove MCP OAuth tokens that expired more than 30 days ago."""
+        from oncofiles.persistent_oauth import delete_expired_oauth_tokens
+
         try:
-            async with db.db.execute(
-                "DELETE FROM mcp_oauth_tokens WHERE expires_at IS NOT NULL "
-                "AND expires_at < datetime('now', '-30 days')"
-            ) as cursor:
-                deleted = cursor.rowcount
-            await db.db.commit()
+            deleted = await delete_expired_oauth_tokens(db)
             if deleted:
                 logger.info("OAuth cleanup: removed %d expired tokens", deleted)
         except TimeoutError:
