@@ -165,6 +165,9 @@ LLM_REASONING_MARKER: bool = (
 # llm.chat caller (classification, re-OCR, ...) keeps following the global
 # LLM_REASONING_MARKER above (default off, byte-identical requests).
 # "false" restores the pre-#773 extractor request (/no_think, no marker).
+# It works ONLY while the LM Studio Prompt Template of the model holds the
+# [[reasoning:off]] rule (private RUNBOOK): a re-downloaded or updated model
+# loses it and the extractors fall back to runaway thinking.
 LLM_EXTRACT_REASONING_MARKER: bool = (
     os.environ.get("LLM_EXTRACT_REASONING_MARKER", "true").strip().lower() == "true"
 )
