@@ -16,6 +16,7 @@ from datetime import UTC, date, datetime
 from fastmcp import Context
 
 from oncofiles.curated.facts_rules import _unit_key
+from oncofiles.database._facts import LLM_LAB_FAMILY
 from oncofiles.fact_labels import LLM_NOTE, group_llm, is_llm, label_row, norm
 from oncofiles.tools._helpers import _gdrive_url, _get_db, _is_admin_caller, _resolve_patient_id
 
@@ -149,15 +150,21 @@ def _feed_fact(r: dict, fact_id: str, at: str, conversions: dict) -> dict:
     if r["flag"]:
         row["flag"] = r["flag"]
     row["verification"] = r["verification"]
-    if is_llm(r.get("extracted_by")):  # read by the model (#729): say so, as everywhere
-        labelled = label_row({"verification": r["verification"],
-                              "extracted_by": r["extracted_by"]})  # fmt: skip
-        row["method"] = labelled["method"]
-        row["verification_label"] = labelled["verification_label"]
+    row.update(_llm_marks(r))  # read by the model (#729, #714): say so, as everywhere
     row["document_id"] = r["source_document_id"]
     if r["page_number"] is not None:
         row["page"] = r["page_number"]
     return row
+
+
+def _llm_marks(r: dict) -> dict:
+    """``method`` and ``verification_label`` for a row an LLM writer family
+    wrote (``llm-clinical``, ``llm-lab``); empty for rule / manual rows."""
+    if not is_llm(r.get("extracted_by")):
+        return {}
+    labelled = label_row({"verification": r.get("verification"),
+                          "extracted_by": r.get("extracted_by")})  # fmt: skip
+    return {"method": labelled["method"], "verification_label": labelled["verification_label"]}
 
 
 def _feed_document(d: dict) -> dict:
@@ -221,7 +228,15 @@ def _dedupe(rows: list[dict]) -> tuple[list[dict], list[dict]]:
       window. A different value is never hidden. A value with an exact day is
       always preferred: a range value is hidden against another range value
       only when that one was kept, so two documents quoting the same range
-      never hide each other, and on a shared day the exact value sorts first.
+      never hide each other, and on a shared day the exact value sorts first;
+    * ``rule_preferred``: a lab value the LLM lab writer stored (#714,
+      ``llm-lab*``) is hidden when its own document holds a value of the same
+      code and day from a rule parser (or a person): never two values for one
+      printed result. The LLM writer never stores such a value; this covers a
+      rule parser that learned the layout after the LLM value was stored.
+
+    On equal verification a rule / manual value sorts before an LLM one, so an
+    ``exact`` duplicate keeps the rule value.
     """
     from datetime import date as _date
 
@@ -285,13 +300,32 @@ def _dedupe(rows: list[dict]) -> tuple[list[dict], list[dict]]:
         rows,
         key=lambda r: (
             r["code"] or "", r["effective_at"] or "", ranged(r), rank.get(r["verification"], 3),
+            is_llm(r.get("extracted_by")),
         ),
     )  # fmt: skip
     kept: list[dict] = []
     kept_ids: set[int] = set()
     first: dict = {}
     removed: list[dict] = []
+    # (document, code, day) → a value no LLM writer wrote
+    rule_at = {
+        (r["source_document_id"], r["code"], day_of(r)): r
+        for r in rows
+        if not is_llm(r.get("extracted_by"))
+    }
     for r in rows:
+        if str(r.get("extracted_by") or "").startswith(LLM_LAB_FAMILY):
+            other = rule_at.get((r["source_document_id"], r["code"], day_of(r)))
+            if other is not None:
+                removed.append({
+                    "code": r["code"], "at": r["effective_at"], "value": r["value_canonical"],
+                    "reason": "rule_preferred",
+                    "removed": {"fact_id": r.get("id"), "document_id": r["source_document_id"]},
+                    "kept": {"fact_id": other.get("id"),
+                             "document_id": other["source_document_id"],
+                             "at": other["effective_at"]},
+                })  # fmt: skip
+                continue
         key = (r["code"], day_of(r), r["value_canonical"], r["value_text"])
         # a range value checks its window first, so the reason never depends on
         # whether the matching draw happens to fall on the range end (#726)
@@ -538,6 +572,7 @@ async def fact_series(
             "flag": r["flag"],
             "flag_source": _meta(r).get("flag_source") or ("lab" if r["flag"] else None),
             "verification": r["verification"],
+            **_llm_marks(r),
             "evidence": r["evidence"],
             "source": _source(r),
         }
@@ -559,6 +594,8 @@ async def fact_series(
                     "value",
                     "flag",
                     "verification",
+                    "method",
+                    "verification_label",
                     "source",
                 )
                 if k in newest
@@ -606,6 +643,7 @@ async def document_detail(ctx: Context, document_id: int, patient_slug: str | No
                     **_date_fields(f),
                     "page": f["page_number"],
                     "verification": f["verification"],
+                    **_llm_marks(f),
                     "evidence": f["evidence"],
                 }
                 for f in facts
@@ -670,9 +708,10 @@ async def dashboard_feed(
       sizes, code LESION_SIZE in mm), condition, treatment, medication,
       procedure (the last four still empty here: use timeline); anything else
       is listed in ``unknown_kinds`` and returns nothing.
-    * A fact read by the local model carries ``method: "llm-clinical"`` and a
-      ``verification_label`` ({en, sk}): only its text was checked against the
-      page; the interpretation is the model's and is not verified.
+    * A fact read by the local model carries ``method`` ("llm-clinical", or
+      "llm-lab" for lab values read where no rule parser knows the layout) and
+      a ``verification_label`` ({en, sk}): only its text was checked against
+      the page; the interpretation is the model's and is not verified.
     * Pages of at most ``limit`` facts (default 1000, max 2000) and about 140 kB,
       ordered by (at, id). Pass ``next_cursor`` back as ``cursor`` until it is null.
 

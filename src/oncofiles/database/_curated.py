@@ -8,9 +8,9 @@ from ._base import DatabaseBase
 from ._tenant import require_patient_id
 
 # background jobs persisted in curated_runs that are not curated-folder runs
-# (re-OCR, verify-only re-read, clinical extraction #726, extraction scorecard
+# (re-OCR, verify-only re-read, clinical extraction #726, LLM lab write #714, scorecard
 # #773): never listed as runs and never satisfy the preview gate
-_NOT_RUNS = "trigger NOT IN ('reocr', 'reread', 'clinical', 'scorecard')"
+_NOT_RUNS = "trigger NOT IN ('reocr', 'reread', 'clinical', 'scorecard', 'lab')"
 
 
 class CuratedMixin(DatabaseBase):
