@@ -21,6 +21,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from oncofiles import pre_store
 from oncofiles.curated import drive_ops, llm, reocr
 from oncofiles.curated.drive_ops import WriteVerificationError
 from oncofiles.curated.facts_rules import Vocabulary
@@ -162,6 +163,56 @@ def test_reasoning_channel_is_never_a_transcript(monkeypatch, model):
     assert "reasoning_content" not in inspect.getsource(reocr)
 
 
+def _per_call_chat(answers: dict[tuple[int, bool], str]):
+    """Answers by (pass, retry) in call order of one page: near-empty first
+    answers with heavy reasoning, then the given retry answers."""
+    seen: list[bool] = []
+    lock = threading.Lock()
+
+    def chat(system, content, **kw):
+        retry = kw.get("reasoning_marker") is True
+        with lock:
+            normals = sum(1 for r in seen if not r)
+            k = normals if retry else normals + 1  # a retry follows its own pass
+            seen.append(retry)
+        kw["info"].update(completion_tokens=1000, reasoning_tokens=0 if retry else 990)
+        return answers[(k, retry)]
+
+    return chat
+
+
+def _by_pass(*answers: str) -> dict[tuple[int, bool], str]:
+    """(pass, retry) -> answer, in call order: pass one, its retry, pass two, its retry."""
+    passes = [k + 1 for k in range(len(answers) // len((False, True)))]
+    keys = [(k, retry) for k in passes for retry in (False, True)]
+    return dict(zip(keys, answers, strict=True))
+
+
+def test_retry_texts_go_through_the_two_pass_reconcile(monkeypatch, model):
+    first_retry = "Riadok alfa 731,4 G/l\nRiadok beta 8862 jednotiek spolu"
+    second_retry = "Riadok alfa 731,9 G/l\nRiadok beta 8862 jednotiek spolu"
+    monkeypatch.setattr(llm, "chat", _per_call_chat(_by_pass("x", first_retry, "y", second_retry)))
+    rr = reocr.reread("scan.pdf", _pdf("ink"))
+    assert rr.retried_pages == [1]
+    lines = rr.pages[0].splitlines()
+    assert lines[0].endswith("[?]") and not lines[1].endswith("[?]")  # digits disagree
+    assert rr.flagged_lines == 1
+
+
+async def test_a_retry_text_that_loses_numbers_goes_to_review(vocab, monkeypatch, model):
+    drive = FakeDrive()
+    doc = _doc_with(drive, OLD_BODY)
+    drive.items[doc["gdrive_id"]]["content"] = _pdf("ink")
+    kept = _drop("8862", "4413", "286")  # long enough, three numbers lost
+    monkeypatch.setattr(llm, "chat", _per_call_chat(_by_pass("x", kept, "y", kept)))
+    rep = reocr.run_reocr(drive, drive.root, [doc], vocab, dry_run=False, now=NOW)
+    d = rep.documents[0]
+    assert d.retried_pages == [1] and d.method == "vision2"
+    assert d.missing_numbers == 3 and "missing_numbers" in d.review_reasons
+    assert d.result == "review" and drive.writes == []
+    assert [p.get("retry", False) for p in d.llm_passes] == [False, True, False, True]
+
+
 def test_the_verify_only_reread_is_never_retried(monkeypatch, model):
     monkeypatch.setattr(llm, "chat", _fake_chat("x", LONG))
     rr = reocr.reread("scan.pdf", _pdf("ink"), passes=1, purpose="reread")
@@ -199,10 +250,33 @@ def _doc_with(drive, old_body):
             "engine": "tesseract eng-only", "reasons": ["cowork_ocr"]}  # fmt: skip
 
 
-@pytest.mark.parametrize("ink,blank", [(0.0, True), (0.2, False)])
-async def test_blank_page_causes_no_review_but_an_inked_one_does(vocab, ink, blank):
+PAGED_BLANK_BACK = "<!-- page 1 -->\n" + OLD_BODY + "\n<!-- page 2 -->\n\n"
+# the old page 2 carried a few hundred characters of text
+FULL_BACK = "\n".join([FILLER] * (reocr.NEAR_EMPTY_CHARS // 8))
+PAGED_FULL_BACK = "<!-- page 1 -->\n" + OLD_BODY + "\n<!-- page 2 -->\n" + FULL_BACK + "\n"
+
+
+def test_old_page_chars_needs_page_markers():
+    assert reocr.old_page_chars("---\na: b\n---\n\n" + OLD_BODY) is None
+    chars = reocr.old_page_chars(PAGED_BLANK_BACK)
+    front, back = sorted(chars)
+    assert chars[back] == 0 and chars[front] > reocr.NEAR_EMPTY_CHARS
+    assert reocr.old_page_chars(PAGED_FULL_BACK)[back] == len(FULL_BACK.strip())
+    assert len(FULL_BACK) > reocr.NEAR_EMPTY_CHARS * len("abcdef")
+
+
+@pytest.mark.parametrize(
+    "old_body,ink,blank",
+    [
+        (PAGED_BLANK_BACK, 0.0, True),  # low ink and the old page was near-empty too
+        (PAGED_BLANK_BACK, 0.2, False),  # ink on the page: a miss
+        (OLD_BODY, 0.0, False),  # Cowork-era sidecar without markers: never blank
+        (PAGED_FULL_BACK, 0.0, False),  # faint scan whose old page had text: a miss
+    ],
+)
+async def test_a_blank_page_never_loosens_the_guard(vocab, old_body, ink, blank):
     drive = FakeDrive()
-    doc = _doc_with(drive, OLD_BODY)
+    doc = _doc_with(drive, old_body)
     pages = [_drop("286"), ""]  # one lost number and a near-empty second page
 
     def reader(*a, **k):
@@ -211,12 +285,12 @@ async def test_blank_page_causes_no_review_but_an_inked_one_does(vocab, ink, bla
 
     rep = reocr.run_reocr(drive, drive.root, [doc], vocab, dry_run=False, now=NOW, reader=reader)
     d = rep.documents[0]
-    assert d.near_empty_pages == [2] and d.missing_numbers == 1
+    assert d.near_empty_pages == [2] and d.missing_numbers >= 1
     assert d.page_ink == [0.31, ink]
     if blank:
         assert d.blank_pages == [2] and d.review_reasons == [] and d.result == "rewritten"
     else:
-        assert d.blank_pages == [] and d.review_reasons == ["near_empty_with_loss"]
+        assert d.blank_pages == [] and "near_empty_with_loss" in d.review_reasons
         assert d.result == "review" and drive.writes == []
 
 
@@ -344,6 +418,7 @@ def test_restore_refuses_any_other_file(where, name, code):
 # --- 4. restore: the MCP tool --------------------------------------------------------
 
 REASON = "Synthetic reason: re-OCR kept too little text"
+COPY = "oncofiles-20270501T101500000000Z-restore.db"
 
 
 @pytest.fixture(autouse=True)
@@ -397,7 +472,10 @@ def _wired(drive):
         patch("oncofiles.server._create_patient_clients", clients),
         patch.object(drive_ops, "DriveOps", lambda _own: drive),
         patch.object(tool, "_index_patient_lock_held", index),
+        # the test DB is in memory (no file): the copy itself is tested in test_pre_store
+        patch("oncofiles.pre_store.make_copy", return_value=COPY) as copy,
     ):
+        index.copy = copy
         yield index, entered
 
 
@@ -426,7 +504,8 @@ async def test_tool_dry_run_counts_only_and_no_activity_row(db):
 
 
 @pytest.mark.usefixtures("admin_scope")
-async def test_tool_real_restore_backs_up_reindexes_and_audits(db, monkeypatch):
+async def test_tool_real_restore_backs_up_reindexes_and_audits(db, monkeypatch, caplog):
+    caplog.set_level("INFO", logger="oncofiles.tools.curated")
     monkeypatch.setattr("oncofiles.config.MCP_BEARER_TOKEN", "synthetic-static-token")
     monkeypatch.delenv("AUDIT_EMAIL_HASH_SECRET", raising=False)
     drive, _, side, backup = _restore_setup()
@@ -437,6 +516,12 @@ async def test_tool_real_restore_backs_up_reindexes_and_audits(db, monkeypatch):
     ):
         out = await _call(db, backup_id=backup, dry_run=False)
     assert out["result"] == "restored" and entered == [True]
+    index.copy.assert_called_once_with(db, "restore")  # before any Drive write
+    assert out["pre_store"] == COPY and tool._restoring[ERIKA_UUID]["pre_store"] == COPY
+    assert tool._restoring[ERIKA_UUID]["state"] == "done"
+    lines = [r.getMessage() for r in caplog.records if "curated restore:" in r.getMessage()]
+    assert lines == [f"curated restore: document_id=801 backup_id={backup} dry_run=False "
+                     "verify=ok result=restored"]  # fmt: skip
     assert [w[0] for w in drive.writes] == ["create", "update"]
     assert drive.items[side]["content"] == BACKUP.encode()
     index.assert_awaited_once()
@@ -446,6 +531,7 @@ async def test_tool_real_restore_backs_up_reindexes_and_audits(db, monkeypatch):
     assert row["patient_id"] == ERIKA_UUID and row["status"] == "ok"
     inp, outp = json.loads(row["input_summary"]), json.loads(row["output_summary"])
     assert inp["document_id"] == 801 and inp["backup_id"] == backup
+    assert inp["pre_store"] == COPY
     assert inp["caller_email_hash"] == caller_email_hash("admin@example.com")
     assert "admin@example.com" not in json.dumps(row)
     assert outp["result"] == "restored" and outp["restore_backup_id"]
@@ -488,9 +574,11 @@ async def test_tool_refuses_while_busy(db):
         tool._runs.clear()
         async with tool.patient_lock(ERIKA_UUID):
             assert (await _call(db, backup_id=backup, dry_run=False))["error"].startswith("busy")
-        tool._restoring.add(ERIKA_UUID)
+        tool._restoring[ERIKA_UUID] = {"kind": "restore", "state": "running"}
         assert (await _call(db, backup_id=backup))["error"].startswith("busy")
         assert tool.run_active()  # CI deploys wait for a restore
+        tool._restoring[ERIKA_UUID]["state"] = "done"
+        assert not tool.run_active()
         tool._restoring.clear()
     assert drive.writes == []
 
@@ -521,6 +609,38 @@ async def test_a_failed_real_restore_is_audited_and_not_reindexed(db):
     with _wired(drive) as (index, _):
         out = await _call(db, backup_id=backup, dry_run=False)
     assert out["result"] == "failed" and out["error"] == "WriteVerificationError"
-    assert index.await_count == 0 and not tool._restoring
+    assert index.await_count == 0 and tool._restoring[ERIKA_UUID]["state"] == "failed"
     [row] = await _activity(db)
     assert row["status"] == "error"
+
+
+@pytest.mark.usefixtures("admin_scope")
+async def test_a_failed_pre_store_copy_refuses_and_writes_nothing(db, caplog):
+    drive, _, side, backup = _restore_setup()
+    await _seed_doc(db, 801, ERIKA_UUID, side)
+    with _wired(drive) as (index, entered):
+        index.copy.side_effect = pre_store.PreStoreError("quick_check failed on the copy")
+        out = await _call(db, backup_id=backup, dry_run=False)
+    assert out["error"].startswith("refused: pre-store copy failed")
+    assert "nothing was written" in out["error"] and "pre_store" not in out
+    assert drive.writes == [] and entered == [] and index.await_count == 0
+    assert drive.items[side]["content"] == CURRENT.encode()
+    assert await _activity(db) == []
+    # the slot is released: the next call is not "busy"
+    assert tool._restoring[ERIKA_UUID]["state"] == "failed" and not tool.run_active()
+    assert not tool.patient_lock(ERIKA_UUID).locked()
+
+
+@pytest.mark.usefixtures("admin_scope")
+async def test_a_dry_run_makes_no_pre_store_copy(db):
+    drive, _, side, backup = _restore_setup()
+    await _seed_doc(db, 801, ERIKA_UUID, side)
+    with _wired(drive) as (index, _):
+        out = await _call(db, backup_id=backup, dry_run=True)
+    assert out["result"] == "previewed" and "pre_store" not in out
+    index.copy.assert_not_called()
+
+
+def test_restore_is_a_pre_store_kind():
+    assert "restore" in pre_store.JOBS
+    assert pre_store.NAME_RE.fullmatch(COPY)

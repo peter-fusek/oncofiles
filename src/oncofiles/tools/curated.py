@@ -44,8 +44,9 @@ logger = logging.getLogger(__name__)
 
 # patient_id -> {"state": "running", "started": ts, "dry_run": bool, "trigger": str}
 _runs: dict[str, dict] = {}
-# patient ids with a sidecar restore in progress (#806)
-_restoring: set[str] = set()
+# patient_id -> the patient's latest sidecar restore (#806): kind, state, ids,
+# pre_store; only a "running" one blocks or counts in run_active()
+_restoring: dict[str, dict] = {}
 # patient_id -> birth dates (ISO) from the README contract, refreshed by every index
 _readme_births: dict[str, set[str]] = {}
 _lock = asyncio.Lock()
@@ -124,7 +125,8 @@ def run_active() -> bool:
             j.get("state") == "running" and j.get("kind") not in _NO_WRITE_KINDS
             for j in _reocr_jobs.values()
         )
-        or bool(_restoring)  # a sidecar restore (#806) writes Drive and re-indexes
+        # a sidecar restore (#806) writes Drive and re-indexes
+        or any(j.get("state") == "running" for j in _restoring.values())
     )
 
 
@@ -3193,6 +3195,7 @@ async def _audit_restore(db, pid: str, out: dict, *, caller_hash: str | None) ->
                         "document_id": out.get("document_id"),
                         "backup_id": out.get("backup_id"),
                         "dry_run": False,
+                        "pre_store": out.get("pre_store"),
                     }
                 ),
                 output_summary=json.dumps(
@@ -3205,7 +3208,7 @@ async def _audit_restore(db, pid: str, out: dict, *, caller_hash: str | None) ->
                 ),
                 status="ok" if out.get("result") == "restored" else "error",
                 error_message=out.get("error"),
-                tags=json.dumps(["curated", "restore", "real"]),
+                tags=json.dumps(["curated", "restore", "real", "pre-store"]),
             )
         )
     except Exception:
@@ -3240,17 +3243,41 @@ async def restore_sidecar_for(
     sidecar_id = ((row or {}).get("structured_metadata") or {}).get("curated", {}).get("sidecar_id")
     if row is None or not sidecar_id:
         return {"error": "not_found"}
-    if _busy(pid) or patient_lock(pid).locked() or pid in _restoring:
+    if (
+        _busy(pid)
+        or patient_lock(pid).locked()
+        or (_restoring.get(pid) or {}).get("state") == "running"
+    ):
         return {"error": "busy: a curated run, index, re-OCR, re-read, extraction or restore "
                 "is in progress for this patient"}  # fmt: skip
-    _restoring.add(pid)  # before any await: two calls can never both start
+    # the slot is reserved before any await: two calls can never both start
+    _restoring[pid] = job = {
+        "kind": "restore", "state": "running", "dry_run": dry_run,
+        "document_id": document_id, "backup_id": backup_id,
+        "started_at": datetime.now(UTC).isoformat(),
+    }  # fmt: skip
     doc = {"document_id": document_id, "filename": row["filename"], "sidecar_id": sidecar_id}
     out: dict = {"document_id": document_id, "backup_id": backup_id, "dry_run": dry_run}
     try:
+        if not dry_run:
+            # Same safety bar as every other write job (#573): a verified copy of
+            # the DB before any Drive write or re-index, or nothing at all.
+            from oncofiles.pre_store import PreStoreError, make_copy
+
+            try:
+                job["pre_store"] = out["pre_store"] = await asyncio.to_thread(
+                    make_copy, db, "restore"
+                )
+            except Exception as exc:
+                reason = str(exc) if isinstance(exc, PreStoreError) else type(exc).__name__
+                logger.error("pre-store copy failed for %s (%s): restore refused", pid[:8], reason)
+                out["error"] = f"refused: pre-store copy failed ({reason}); nothing was written"
+                return out
         async with patient_lock(pid):
             clients = await _create_patient_clients(db, pid)
             if not clients or clients[0] is None:
-                return {**out, "error": "Drive not connected"}
+                out["error"] = "Drive not connected"
+                return out
             gdrive, folder_id = clients[0], clients[3]
 
             def _blocking():
@@ -3272,14 +3299,23 @@ async def restore_sidecar_for(
             try:
                 out.update(await asyncio.to_thread(_blocking))
             except RestoreRefusedError as exc:
-                return {**out, "error": f"refused: {exc}"}  # nothing was written
+                out["error"] = f"refused: {exc}"  # nothing was written
+                return out
             except Exception as exc:
                 logger.exception("curated sidecar restore failed for doc %s", document_id)
                 out.update(result="failed", error=type(exc).__name__)
+            # one INFO line per attempt: ids and the read-back result, never content
+            logger.info(
+                "curated restore: document_id=%s backup_id=%s dry_run=%s verify=%s result=%s",
+                document_id, backup_id, dry_run,
+                "skipped" if dry_run else ("ok" if out.get("result") == "restored" else "failed"),
+                out.get("result"),
+            )  # fmt: skip
             if out.get("result") == "restored":
                 out["index"] = await _index_patient_lock_held(db, pid, force_ids={document_id})
     finally:
-        _restoring.discard(pid)
+        job.update(state="failed" if out.get("error") else "done", result=out.get("result"),
+                   finished_at=datetime.now(UTC).isoformat())  # fmt: skip
         if not dry_run and out.get("result") in ("restored", "failed"):
             await _audit_restore(db, pid, out, caller_hash=caller_hash)
     return out

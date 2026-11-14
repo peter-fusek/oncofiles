@@ -33,8 +33,11 @@ kept only when longer, both attempts are in ``llm_passes`` and the page in
 transcription (infra decision on #806). Every rendered page gets a cheap ink
 density (``page_ink``: share of non-near-white pixels at ``INK_DPI``) and,
 for a PDF, whether it has a text layer. A near-empty page with ink below
-``BLANK_INK_MAX`` and no text layer is a blank back side: not retried, and
-not counted by ``near_empty_with_loss``.
+``BLANK_INK_MAX`` and no text layer is not retried; it is a blank back side,
+not counted by ``near_empty_with_loss``, only when the OLD sidecar has page
+markers and its text of that same page was near-empty too (a blank never
+loosens the guard). A retried pass's kept text goes through the same
+reconcile and loss guard as any first pass.
 
 Writing (never in a dry run): the old sidecar is first copied to the logs
 folder (``_reocr-backup-<date>-<time>-<sidecar>``), then the sidecar is updated in
@@ -734,13 +737,41 @@ def near_empty_pages(pages: list[str]) -> list[int]:
     return [i for i, p in enumerate(pages, start=1) if len((p or "").strip()) < NEAR_EMPTY_CHARS]
 
 
-def blank_pages(empty_pages: list[int], ink: list, text_layer: list) -> list[int]:
-    """The near-empty pages (1-based) that look like blank back sides (#806)."""
+_PAGE_SPLIT = re.compile(r"<!--\s*page\s+(\d+)\s*-->")
+
+
+def old_page_chars(old_text: str) -> dict[int, int] | None:
+    """Stripped character count per page of the OLD sidecar, by its page
+    markers; ``None`` when it has none (Cowork-era sidecars): the old text
+    of a single page is then unknown."""
+    body = _FRONT.sub("", old_text or "", count=1)
+    parts = _PAGE_SPLIT.split(body)
+    if len(parts) < 3:
+        return None
+    out: dict[int, int] = {}
+    for num, text in zip(parts[1::2], parts[2::2], strict=True):
+        out[int(num)] = out.get(int(num), 0) + len(text.strip())
+    return out
+
+
+def blank_pages(
+    empty_pages: list[int], ink: list, text_layer: list, old_chars: dict[int, int] | None
+) -> list[int]:
+    """The near-empty pages (1-based) that are blank back sides (#806): low
+    ink, no text layer AND the old sidecar's text of that same page was
+    near-empty too. Without old page markers (``old_chars`` None) or without
+    that page in them, no page is blank: a blank never loosens the guard."""
+    if old_chars is None:
+        return []
 
     def at(values: list, page: int):
         return values[page - 1] if 0 < page <= len(values) else None
 
-    return [p for p in empty_pages if is_blank(at(ink, p), at(text_layer, p))]
+    return [
+        p for p in empty_pages
+        if p in old_chars and old_chars[p] < NEAR_EMPTY_CHARS
+        and is_blank(at(ink, p), at(text_layer, p))
+    ]  # fmt: skip
 
 
 def review_reasons(
@@ -981,7 +1012,8 @@ def run_reocr(
             res.page_text_layer = list(getattr(rr, "page_text_layer", None) or [])
             res.retried_pages = list(getattr(rr, "retried_pages", None) or [])
             res.near_empty_pages = near_empty_pages(rr.pages)
-            res.blank_pages = blank_pages(res.near_empty_pages, res.page_ink, res.page_text_layer)
+            res.blank_pages = blank_pages(res.near_empty_pages, res.page_ink,
+                                          res.page_text_layer, old_page_chars(old))  # fmt: skip
             res.review_reasons = review_reasons(lost, loss, res.near_empty_pages, res.blank_pages)
             res.decision = "review" if res.review_reasons else "rewrite"
             logger.info(
