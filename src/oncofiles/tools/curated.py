@@ -1293,12 +1293,25 @@ _NOT_OCR = ("application/vnd.google-apps.", "application/vnd.openxmlformats")
 
 
 async def _reocr_targets(
-    db, pid: str, document_ids: list[int] | None, *, only_with_facts: bool = True
+    db,
+    pid: str,
+    document_ids: list[int] | None,
+    *,
+    only_with_facts: bool = True,
+    excluded: list[dict] | None = None,
 ) -> list[dict]:
     """Documents worth reading again: lab sheets first, then most unverified
     facts first (#674). By default only those with unverified facts (the
     benchmark, #658). Listed ``document_ids`` are marked explicit: only they
-    may be read again after an earlier re-OCR or a deliberate restore."""
+    may be read again after an earlier re-OCR or a deliberate restore.
+
+    Raw genotype data is never a candidate (``llm_input.reocr_exclusion``,
+    #815): it is never downloaded nor sent to a vision pass; its skipped
+    entry (reason ``raw_genotype_excluded``) goes to ``excluded``. Any other
+    text source (``extract.TEXT_EXTS``: md / txt / csv / json) is its own text,
+    not a scan, and is never a candidate either."""
+    from oncofiles.curated import extract as extract_mod
+    from oncofiles.curated import llm_input
     from oncofiles.curated.reocr import needs_reocr
 
     out = []
@@ -1313,8 +1326,14 @@ async def _reocr_targets(
             continue
         if not document_ids and only_with_facts and not r.get("unverified_facts"):
             continue
+        if reason := await llm_input.reocr_exclusion(db, pid, r):
+            if excluded is not None:
+                excluded.append(llm_input.skipped_entry(r, reason))
+            continue  # raw genotype data: never re-OCR'd, never to a vision pass
         if (r.get("mime_type") or "").startswith(_NOT_OCR):
             continue  # exported or spreadsheet text, not a scan
+        if extract_mod._ext(r.get("filename") or "") in extract_mod.TEXT_EXTS:
+            continue  # a text source is its own text, not a scan
         reasons = needs_reocr(meta, ["[?]"] if r["uncertain"] else [])
         if not reasons or not cur.get("sidecar_id") or not r.get("gdrive_id"):
             continue
@@ -1328,7 +1347,10 @@ async def _reocr_targets(
     return out
 
 
-async def _reocr_job(db, pid: str, docs: list[dict], *, dry_run: bool, passes: int) -> None:
+async def _reocr_job(
+    db, pid: str, docs: list[dict], *, dry_run: bool, passes: int,
+    excluded: list[dict] | None = None,
+) -> None:  # fmt: skip
     from oncofiles.cloud_guard import local_only
     from oncofiles.curated.facts_rules import Vocabulary
     from oncofiles.curated.reocr import run_reocr
@@ -1364,6 +1386,8 @@ async def _reocr_job(db, pid: str, docs: list[dict], *, dry_run: bool, passes: i
                     own.close()
 
             report = (await asyncio.to_thread(_blocking)).to_dict()
+        # raw genotype data (#815): never read, listed as skipped in the report
+        report["documents"] = [*(excluded or []), *report["documents"]]
         job.update(state="done", report=report)
         if not dry_run and any(d["result"] == "rewritten" for d in report["documents"]):
             job["index"] = await index_patient(db, pid)  # new sidecars → new facts
@@ -1503,14 +1527,20 @@ async def start_reocr(
     busy = "busy: a run or re-OCR is in progress for this patient"
     if _busy(pid):
         return {"error": busy}
-    targets = await _reocr_targets(db, pid, document_ids, only_with_facts=only_with_facts)
+    excluded: list[dict] = []
+    targets = await _reocr_targets(
+        db, pid, document_ids, only_with_facts=only_with_facts, excluded=excluded
+    )
     docs = targets[: max(0, min(limit, 25))]
     if not docs:
-        return {"status": "nothing to do", "candidates": len(targets)}
+        out: dict = {"status": "nothing to do", "candidates": len(targets)}
+        if excluded:
+            out["skipped"] = excluded
+        return out
     job = {
         "state": "running", "kind": "reocr", "dry_run": dry_run, "passes": passes,
         "started_at": datetime.now(UTC).isoformat(), "candidates": len(targets),
-        "actor": actor,
+        "actor": actor, "skipped": excluded,
         "documents": [
             {k: d[k] for k in ("document_id", "filename", "category", "reasons",
                                "unverified_facts")}
@@ -1518,7 +1548,9 @@ async def start_reocr(
         ],
     }  # fmt: skip
     return await _launch(
-        db, pid, job, lambda: _reocr_job(db, pid, docs, dry_run=dry_run, passes=passes),
+        db, pid, job,
+        lambda: _reocr_job(db, pid, docs, dry_run=dry_run, passes=passes,
+                           **({"excluded": excluded} if excluded else {})),
         dry_run=dry_run, busy=busy,
     )  # fmt: skip
 
@@ -1622,8 +1654,9 @@ def _reread_one(drive, d: dict, old: list[dict], vocab, *, fingerprint: bool = F
 
 
 async def _reread_job(
-    db, pid: str, docs: list[dict], *, dry_run: bool, fingerprint: bool = False
-) -> None:
+    db, pid: str, docs: list[dict], *, dry_run: bool, fingerprint: bool = False,
+    excluded: list[dict] | None = None,
+) -> None:  # fmt: skip
     from oncofiles import config
     from oncofiles.cloud_guard import local_only
     from oncofiles.curated.drive_ops import DriveOps
@@ -1634,7 +1667,7 @@ async def _reread_job(
 
     job = _reocr_jobs[pid]
     row_id = await db.insert_curated_run(patient_id=pid, dry_run=dry_run, trigger="reread")
-    report: list[dict] = []
+    report: list[dict] = list(excluded or [])  # raw genotype data (#815): skipped, never read
     try:
         async with patient_lock(pid):
             clients = await _create_patient_clients(db, pid)
@@ -1737,18 +1770,28 @@ async def start_reread(
     busy = "busy: a run, re-OCR or re-read is in progress"
     if _busy(pid):
         return {"error": busy}
-    docs = [r for r in await db.curated_reocr_candidates(patient_id=pid) if r["id"] in ids]
+    from oncofiles.curated import llm_input
+
+    docs, excluded = [], []
+    for r in await db.curated_reocr_candidates(patient_id=pid):
+        if r["id"] not in ids:
+            continue
+        if reason := await llm_input.reocr_exclusion(db, pid, r):  # #815: never re-read
+            excluded.append(llm_input.skipped_entry(r, reason))
+        else:
+            docs.append(r)
     if not docs:
-        return {"status": "nothing to do"}
+        return {"status": "nothing to do", **({"skipped": excluded} if excluded else {})}
     job = {
         "state": "running", "kind": "reread", "dry_run": dry_run,
-        "started_at": datetime.now(UTC).isoformat(), "actor": actor,
+        "started_at": datetime.now(UTC).isoformat(), "actor": actor, "skipped": excluded,
         "documents": [{"document_id": d["id"], "filename": d["filename"],
                        "category": d.get("category")} for d in docs],
     }  # fmt: skip
     return await _launch(
         db, pid, job,
-        lambda: _reread_job(db, pid, docs, dry_run=dry_run, fingerprint=fingerprint and dry_run),
+        lambda: _reread_job(db, pid, docs, dry_run=dry_run, fingerprint=fingerprint and dry_run,
+                            **({"excluded": excluded} if excluded else {})),
         dry_run=dry_run, busy=busy,
     )  # fmt: skip
 
@@ -1978,15 +2021,23 @@ def _stopping_entry(d: dict) -> dict:
 
 
 async def _doc_work(db, pid: str, d: dict, make_blocking) -> _DocWork:
-    """Phase 1 for one document (event loop, DB): its stored page text.
+    """Phase 1 for one document (event loop, DB): its stored page text,
+    loaded ONLY through ``llm_input.load_for_llm`` — the one chokepoint that
+    keeps raw genotype data away from the model (#815): an excluded document
+    gets no model work and the entry ``skipped`` / ``raw_genotype_excluded``.
     ``make_blocking(pages, meta, day)`` returns the model work, which must
     not touch the DB."""
+    from oncofiles.curated import llm_input
+
     w = _DocWork(d=d, entry={"document_id": d["id"], "category": d.get("category")})
     if _stopping.is_set():
         w.final = _stopping_entry(d)
         return w
-    w.pages = [(int(p["page_number"]), p.get("extracted_text") or "")
-               for p in await db.get_ocr_pages(d["id"], patient_id=pid)]  # fmt: skip
+    loaded = await llm_input.load_for_llm(db, pid, d)
+    if isinstance(loaded, llm_input.Excluded):
+        w.final = llm_input.skipped_entry(d, loaded.reason)
+        return w
+    w.pages = loaded
     if not any(t.strip() for _, t in w.pages):
         w.final = {**w.entry, "result": "skipped", "error": "no page text"}
         return w
@@ -2343,21 +2394,10 @@ async def _clinical_work(db, pid: str, d: dict, *, vocab, births, cfg) -> _DocWo
     """Phase 1 of ONE document of the clinical extraction (#726): its page
     text (DB, event loop) and the model work for a worker thread (local-only,
     no DB). The request profile (#815) follows the patient type and the
-    document category (``llm_extract_clinical.profile_for``).
-
-    Raw genotype data (``llm_extract_clinical.extraction_exclusion``) never
-    gets model work: checked on the document row before its pages are read
-    and again on its page text, the entry is ``skipped`` with reason
-    ``raw_genotype_excluded`` — no model call, nothing stored (#815 P0)."""
+    document category (``llm_extract_clinical.profile_for``). Raw genotype
+    data is excluded in ``_doc_work`` (``llm_input.load_for_llm``)."""
     from oncofiles.curated import llm_extract_clinical as lx
 
-    def excluded(reason: str) -> _DocWork:
-        w = _DocWork(d=d, entry={"document_id": d["id"], "category": d.get("category")})
-        w.final = {**w.entry, "result": "skipped", "reason": reason, "error": reason}
-        return w
-
-    if reason := lx.extraction_exclusion(d):
-        return excluded(reason)
     profile = lx.profile_for(await _patient_type(db, pid), d.get("category"))
 
     def make(pages, meta, day):
@@ -2374,9 +2414,8 @@ async def _clinical_work(db, pid: str, d: dict, *, vocab, births, cfg) -> _DocWo
         return _blocking
 
     w = await _doc_work(db, pid, d, make)
-    if w.final is None and (reason := lx.extraction_exclusion(d, w.pages)):
-        return excluded(reason)  # the model work built above is dropped, never run
-    w.entry["profile"] = profile
+    if w.final is None:
+        w.entry["profile"] = profile
     return w
 
 

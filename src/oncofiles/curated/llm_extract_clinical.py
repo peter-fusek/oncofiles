@@ -48,6 +48,10 @@ from oncofiles.curated import llm
 from oncofiles.curated import llm_extract_call as xcall
 from oncofiles.curated.llm_extract import _text
 from oncofiles.curated.llm_extract_call import AnswerError, PageResult
+from oncofiles.curated.llm_input import (  # noqa: F401 (re-exported, #815)
+    EXCLUDED_RAW_GENOTYPE,
+    extraction_exclusion,
+)
 from oncofiles.database._facts import LLM_CLINICAL_FAMILY
 
 # v2: no response_format, reasoning fallback; v3: shared call path, sampling
@@ -129,66 +133,8 @@ GENERAL_CATEGORIES = frozenset({"vaccination", "preventive", "dental"})
 
 
 # ── raw genotype data: never sent to the model (#815 infra review, P0) ──
-# A raw export (CSV / TSV / plain text / VCF) of genetics data holds thousands
-# of genotype calls; it is excluded in code BEFORE any model call, for every
-# clinical job (preview, write, scorecard), both profiles. Conservative: when
-# unsure, exclude. An explicit opt-out for any document is the flag
-# ``exclude_extract: true`` in ``structured_metadata`` or in its curated part
-# (``structured_metadata.curated``, mirrored from the sidecar front matter).
-EXCLUDED_RAW_GENOTYPE = "raw_genotype_excluded"
-RAW_MIME_TYPES = frozenset({
-    "text/csv", "text/tab-separated-values", "text/plain", "text/x-vcf", "text/vcf",
-    "application/csv",
-})  # fmt: skip
-RAW_EXTENSIONS = (".csv", ".tsv", ".txt", ".vcf", ".vcf.gz")
-_ALWAYS_RAW = (".vcf", ".vcf.gz")  # variant call files: raw genotype data by definition
-_GENOTYPE_MARKERS = re.compile(
-    r"\brs\d{3,}\b|genotyp|genom|23andme|ancestry|myheritage|\bvcf\b|raw[ _-]?data|\bsnps?\b"
-    r"|\bdna\b|chromosome|chromozóm",
-    re.I,
-)
-_RSID = re.compile(r"\brs\d{3,}\b", re.I)
-GENETICS_CATEGORIES = frozenset({"genetics"})
-
-
-def _truthy(v) -> bool:
-    return v is True or (isinstance(v, str) and v.strip().lower() in ("true", "yes", "1"))
-
-
-def extraction_exclusion(doc: dict, pages=()) -> str | None:
-    """``raw_genotype_excluded`` when a document must never reach the model,
-    else None. ``doc`` is a candidate row (filename, mime_type, category,
-    structured_metadata); ``pages`` optionally its (number, text) pages.
-
-    Excluded when (a) it is a raw data export (mime type or extension of a
-    CSV / TSV / plain text / VCF file) that is a VCF, in a genetics category,
-    or carries genotype markers in its filename, metadata / front matter or
-    page text (rsIDs); or (b) it carries ``exclude_extract: true``. Metadata
-    that is not a mapping counts as unsure → excluded for a raw export."""
-    meta = doc.get("structured_metadata")
-    cur = (meta.get("curated") if isinstance(meta, dict) else None) or {}
-    if isinstance(meta, dict) and (
-        _truthy(meta.get("exclude_extract")) or (isinstance(cur, dict)
-                                                 and _truthy(cur.get("exclude_extract")))
-    ):  # fmt: skip
-        return EXCLUDED_RAW_GENOTYPE
-    name = str(doc.get("filename") or "").lower()
-    mime = str(doc.get("mime_type") or "").lower().split(";")[0].strip()
-    if not (mime in RAW_MIME_TYPES or name.endswith(RAW_EXTENSIONS)):
-        return None
-    if name.endswith(_ALWAYS_RAW) or "vcf" in mime:
-        return EXCLUDED_RAW_GENOTYPE
-    if str(doc.get("category") or "").lower() in GENETICS_CATEGORIES:
-        return EXCLUDED_RAW_GENOTYPE
-    if meta is not None and not isinstance(meta, dict):
-        return EXCLUDED_RAW_GENOTYPE  # unreadable metadata: unsure
-    blob = json.dumps(meta or {}, ensure_ascii=False, default=str)
-    if _GENOTYPE_MARKERS.search(name) or _GENOTYPE_MARKERS.search(blob):
-        return EXCLUDED_RAW_GENOTYPE
-    text = "\n".join(t for _, t in pages or () if t)
-    if len(_RSID.findall(text)) >= 3:
-        return EXCLUDED_RAW_GENOTYPE
-    return None
+# The rule lives in ``curated.llm_input`` (the one chokepoint every LLM path
+# loads document text through); re-exported here for existing callers.
 
 
 def profile_for(patient_type: str | None, category: str | None) -> str:
