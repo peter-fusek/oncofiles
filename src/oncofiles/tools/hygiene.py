@@ -9,6 +9,7 @@ import logging
 from fastmcp import Context
 
 from oncofiles.config import DOC_QUERY_LIMIT
+from oncofiles.gdrive_client import DriveWriteRefusedError
 from oncofiles.gdrive_folders import CATEGORY_MERGES, bilingual_name, en_key_from_folder_name
 from oncofiles.models import DocumentCategory
 from oncofiles.sync import EXTRACTABLE_MIME_TYPES
@@ -184,10 +185,14 @@ async def reconcile_gdrive(
                 moved = await asyncio.to_thread(
                     _move_folder_contents, gdrive, lf["id"], target_folder
                 )
-                await asyncio.to_thread(gdrive.trash_file, lf["id"])
+                try:  # trash_file refuses a folder that is not empty (originals invariant)
+                    await asyncio.to_thread(gdrive.trash_file, lf["id"])
+                    kept = "trashed legacy folder"
+                except DriveWriteRefusedError:
+                    kept = "kept legacy folder (not empty)"
                 report["actions_taken"].append(
                     f"Merged {moved} files from legacy '{lf['name']}' "
-                    f"to '{bilingual_name(target_cat)}', trashed legacy folder"
+                    f"to '{bilingual_name(target_cat)}', {kept}"
                 )
 
         # Move root-level files to 'other' category folder
@@ -204,8 +209,11 @@ async def reconcile_gdrive(
 
         # Soft-delete backup folders
         for bf in report["backup_folders"]:
-            await asyncio.to_thread(gdrive.trash_file, bf["id"])
-            report["actions_taken"].append(f"Trashed backup folder '{bf['name']}'")
+            try:  # trash_file refuses a folder that is not empty (originals invariant)
+                await asyncio.to_thread(gdrive.trash_file, bf["id"])
+                report["actions_taken"].append(f"Trashed backup folder '{bf['name']}'")
+            except DriveWriteRefusedError:
+                report["actions_taken"].append(f"Kept backup folder '{bf['name']}' (not empty)")
 
     report["summary"] = {
         "unknown_folders": len(report["unknown_folders"]),
