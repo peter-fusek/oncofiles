@@ -65,7 +65,23 @@ CASES = {
         "Riadok sigma 6618\nRiadok tau 947,2\n" + FILLER + "\n",
         ["Riadok sigma 6618\n" + FILLER, " "],
     ),
+    # #806: a shrunk body with other words (text_shrunk, low_word_overlap)
+    "SynthKontrolaDelta.pdf": (
+        "Kontrola zo dna 21.09.2027\nRiadok omega 5521\n" + FILLER + "\n" + FILLER + "\n",
+        ["Vysledok 21.09.2027 omega 5521"],
+    ),
 }
+
+# #806 fields of every read: ink per page, text layer, a retried page and its
+# thinking-off retry pass (counts only)
+INK = [0.1234, 0.0567]  # both above BLANK_INK_MAX: a near-empty page is a miss
+RETRY_PASSES = [
+    {"page": 1, "pass": 1, "dpi": 150, "finish": "stop", "prompt_tokens": 901,
+     "completion_tokens": 1000, "reasoning_tokens": 990, "seconds": 1.5},
+    {"page": 1, "pass": 1, "dpi": 150, "finish": "stop", "prompt_tokens": 902,
+     "completion_tokens": 300, "reasoning_tokens": 0, "seconds": 1.2, "retry": True,
+     "thinking": "off"},
+]  # fmt: skip
 
 # keys whose numbers are counts, ids, page numbers, dpi, token counts or seconds
 COUNT_KEYS = {
@@ -75,6 +91,8 @@ COUNT_KEYS = {
     "reasoning_tokens_max", "completion_tokens_max", "budget", "seconds", "page", "pass",
     "prompt_tokens", "completion_tokens", "reasoning_tokens", "candidates",
     "unverified_facts", "backup", "lost_codes", "lost_count",
+    # #806: rounded floats and page numbers
+    "word_overlap", "page_ink", "blank_pages", "retried_pages",
 }  # fmt: skip
 
 _DMY = r"\b(?P<d>\d\d?)\.\s?(?P<m>\d\d?)\.\s?(?P<y>\d{4})\b"
@@ -121,8 +139,9 @@ def _leaks(haystack: str, sensitive: set[str]) -> list[str]:
 
 _LOG_COUNTS = re.compile(
     r"\b(?:doc|missing_numbers|missing_dates|old_chars|new_chars|decision|reasons|page|pass|"
-    r"dpi|finish|prompt_tokens|completion_tokens|reasoning_tokens|budget|seconds|error)=\S+"
-    r"|near_empty_pages=\[[^\]]*\]"
+    r"dpi|finish|prompt_tokens|completion_tokens|reasoning_tokens|budget|seconds|error|"
+    r"word_overlap|thinking)=\S+"
+    r"|(?:near_empty|blank|retried)_pages=\[[^\]]*\]"
 )
 
 
@@ -138,7 +157,10 @@ def _drive_and_docs():
         pages_of[name] = new_pages
 
     def reader(name, *a, **k):
-        return reocr.Reread(list(pages_of[name]), "vision2", "qwen-local")
+        pages = list(pages_of[name])
+        return reocr.Reread(pages, "vision2", "qwen-local", page_ink=INK[: len(pages)],
+                            page_text_layer=[False] * len(pages), retried_pages=[1],
+                            llm_passes=[dict(p) for p in RETRY_PASSES])  # fmt: skip
 
     return drive, docs, reader
 
@@ -165,6 +187,10 @@ async def test_report_job_and_log_carry_no_values(db, vocab, caplog, dry_run):
         by_name["SynthKontrolaBeta.pdf"].review_reasons
     )
     assert "near_empty_with_loss" in by_name["SynthKontrolaGama.pdf"].review_reasons
+    delta = by_name["SynthKontrolaDelta.pdf"]
+    assert {"text_shrunk", "low_word_overlap"} <= set(delta.review_reasons)
+    assert delta.word_overlap is not None and delta.page_ink == INK[:1]
+    assert all(d.retried_pages == [1] for d in rep.documents)
     assert all(d.decision == "review" for d in rep.documents)
     assert drive.writes == []
     if not dry_run:
@@ -195,7 +221,11 @@ async def test_report_job_and_log_carry_no_values(db, vocab, caplog, dry_run):
     assert [r["lost_count"] for r in view["results"]][0] == 2
 
     logged = "\n".join(r.getMessage() for r in caplog.records)
-    assert "re-OCR loss check" in logged
+    assert "re-OCR loss check" in logged and "re-OCR llm pass retried" in logged
+    for d in report["documents"]:
+        assert {"word_overlap", "page_ink", "page_text_layer", "blank_pages",
+                "retried_pages"} <= set(d)  # fmt: skip
+        assert any(p.get("retry") and p.get("thinking") == "off" for p in d["llm_passes"])
     assert _leaks(_LOG_COUNTS.sub(" ", logged), sensitive) == []
 
 

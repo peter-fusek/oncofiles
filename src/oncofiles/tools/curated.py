@@ -44,6 +44,8 @@ logger = logging.getLogger(__name__)
 
 # patient_id -> {"state": "running", "started": ts, "dry_run": bool, "trigger": str}
 _runs: dict[str, dict] = {}
+# patient ids with a sidecar restore in progress (#806)
+_restoring: set[str] = set()
 # patient_id -> birth dates (ISO) from the README contract, refreshed by every index
 _readme_births: dict[str, set[str]] = {}
 _lock = asyncio.Lock()
@@ -116,9 +118,13 @@ def run_active() -> bool:
     An LLM-extract shadow job (#714), a clinical extraction preview (#726) or
     an extraction scorecard (#773) writes no facts, so a deploy may cut it
     (the scorecard's own summary row is then marked interrupted)."""
-    return any(r.get("state") == "running" for r in _runs.values()) or any(
-        j.get("state") == "running" and j.get("kind") not in _NO_WRITE_KINDS
-        for j in _reocr_jobs.values()
+    return (
+        any(r.get("state") == "running" for r in _runs.values())
+        or any(
+            j.get("state") == "running" and j.get("kind") not in _NO_WRITE_KINDS
+            for j in _reocr_jobs.values()
+        )
+        or bool(_restoring)  # a sidecar restore (#806) writes Drive and re-indexes
     )
 
 
@@ -890,6 +896,21 @@ async def index_patient(db, pid: str, *, force_ids: set[int] | None = None) -> d
     async with patient_lock(pid):  # never alongside a run or backfill (#612)
         with local_only("curated index + fact extraction"):
             return await _index_patient(db, pid, force_ids=force_ids)
+
+
+async def _index_patient_lock_held(db, pid: str, *, force_ids: set[int] | None = None) -> dict:
+    """``index_patient`` for a caller that already holds ``patient_lock(pid)``
+    (the sidecar restore, #806): the same context load and local-only zone."""
+    from oncofiles.cloud_guard import local_only
+
+    try:
+        from oncofiles import patient_context
+
+        await patient_context.load_from_db(db.db, pid)
+    except Exception:
+        logger.warning("curated index: patient context not loaded for %s", pid)
+    with local_only("curated index + fact extraction"):
+        return await _index_patient(db, pid, force_ids=force_ids)
 
 
 async def _index_patient(db, pid: str, *, force_ids: set[int] | None = None) -> dict:
@@ -3150,6 +3171,164 @@ async def curated_reocr_status(ctx: Context, patient_slug: str | None = None) ->
     return json.dumps(out, ensure_ascii=False, default=str)
 
 
+RESTORE_REASON_MAX = 200
+
+
+async def _audit_restore(db, pid: str, out: dict, *, caller_hash: str | None) -> None:
+    """One activity_log row per REAL restore (#806): ids and counts only,
+    the caller as a keyed hash; never the reason, a value or the text."""
+    from oncofiles.models import ActivityLogEntry
+
+    counts = {k: v for k, v in out.items() if isinstance(v, int) and not isinstance(v, bool)}
+    try:
+        await db.insert_activity_log(
+            ActivityLogEntry(
+                patient_id=pid,
+                session_id="curated-restore",
+                agent_id="mcp",
+                tool_name="curated_restore_sidecar",
+                input_summary=json.dumps(
+                    {
+                        "caller_email_hash": caller_hash,
+                        "document_id": out.get("document_id"),
+                        "backup_id": out.get("backup_id"),
+                        "dry_run": False,
+                    }
+                ),
+                output_summary=json.dumps(
+                    {
+                        "result": out.get("result"),
+                        "restore_backup_id": out.get("restore_backup_id"),
+                        "index": (out.get("index") or {}).get("status"),
+                        **counts,
+                    }
+                ),
+                status="ok" if out.get("result") == "restored" else "error",
+                error_message=out.get("error"),
+                tags=json.dumps(["curated", "restore", "real"]),
+            )
+        )
+    except Exception:
+        logger.exception("could not write the activity_log row for a sidecar restore")
+
+
+async def restore_sidecar_for(
+    db,
+    pid: str,
+    document_id: int,
+    backup_id: str,
+    *,
+    dry_run: bool = True,
+    caller_hash: str | None = None,
+) -> dict:
+    """Restore one document's sidecar from its re-OCR backup (#806). The
+    caller has resolved ``pid`` and checked admin scope and the reason.
+
+    Holds ``patient_lock(pid)`` for the whole operation and refuses while a
+    run, re-OCR/re-read/extraction job, index or another restore is active
+    for the patient. A real restore writes only inside ``contract_writes()``
+    through ``drive_ops`` (backup of the current sidecar first, then the
+    verified update), then re-indexes the patient. Never deletes anything."""
+    from oncofiles.cloud_guard import local_only
+    from oncofiles.curated.reocr import RestoreRefusedError, restore_sidecar
+    from oncofiles.server import _create_patient_clients
+
+    row = next(
+        (r for r in await db.curated_reocr_candidates(patient_id=pid) if r["id"] == document_id),
+        None,
+    )  # SQL-scoped to the patient: a foreign id is simply not found
+    sidecar_id = ((row or {}).get("structured_metadata") or {}).get("curated", {}).get("sidecar_id")
+    if row is None or not sidecar_id:
+        return {"error": "not_found"}
+    if _busy(pid) or patient_lock(pid).locked() or pid in _restoring:
+        return {"error": "busy: a curated run, index, re-OCR, re-read, extraction or restore "
+                "is in progress for this patient"}  # fmt: skip
+    _restoring.add(pid)  # before any await: two calls can never both start
+    doc = {"document_id": document_id, "filename": row["filename"], "sidecar_id": sidecar_id}
+    out: dict = {"document_id": document_id, "backup_id": backup_id, "dry_run": dry_run}
+    try:
+        async with patient_lock(pid):
+            clients = await _create_patient_clients(db, pid)
+            if not clients or clients[0] is None:
+                return {**out, "error": "Drive not connected"}
+            gdrive, folder_id = clients[0], clients[3]
+
+            def _blocking():
+                own = gdrive.dedicated_copy()
+                try:
+                    with local_only("curated sidecar restore"):
+                        from oncofiles.curated.drive_ops import DriveOps
+
+                        kwargs = dict(dry_run=dry_run, now=datetime.now(UTC))
+                        if dry_run:
+                            return restore_sidecar(DriveOps(own), folder_id, doc, backup_id,
+                                                   **kwargs)  # fmt: skip
+                        with own.contract_writes():
+                            return restore_sidecar(DriveOps(own), folder_id, doc, backup_id,
+                                                   **kwargs)  # fmt: skip
+                finally:
+                    own.close()
+
+            try:
+                out.update(await asyncio.to_thread(_blocking))
+            except RestoreRefusedError as exc:
+                return {**out, "error": f"refused: {exc}"}  # nothing was written
+            except Exception as exc:
+                logger.exception("curated sidecar restore failed for doc %s", document_id)
+                out.update(result="failed", error=type(exc).__name__)
+            if out.get("result") == "restored":
+                out["index"] = await _index_patient_lock_held(db, pid, force_ids={document_id})
+    finally:
+        _restoring.discard(pid)
+        if not dry_run and out.get("result") in ("restored", "failed"):
+            await _audit_restore(db, pid, out, caller_hash=caller_hash)
+    return out
+
+
+async def curated_restore_sidecar(
+    ctx: Context,
+    document_id: int,
+    backup_id: str,
+    patient_slug: str | None = None,
+    dry_run: bool = True,
+    reason: str = "",
+) -> str:
+    """ADMIN: put a re-OCR backup back as a curated document's sidecar (#806).
+
+    For a document a re-OCR rewrote with less text. ``backup_id`` must be the
+    Drive id of a ``_reocr-backup-*-<that document's filename>.md`` file in the
+    patient's curated logs folder; anything else is refused. Dry run (default)
+    reports only counts (characters, numbers, dates of the current and the
+    backup text). A real run (dry_run=false) first copies the current sidecar
+    to the logs folder (``_restore-backup-<ts>-…``), then writes the backup's
+    text into the sidecar with read-back verification, then re-indexes the
+    patient. Nothing is deleted. ``reason`` (required, at most 200 characters)
+    is asked for accountability and never stored or logged. Refused while a
+    run or job is active for the patient.
+    """
+    from oncofiles.tools._helpers import _require_admin_or_raise
+
+    try:
+        _require_admin_or_raise("curated_restore_sidecar")
+    except ValueError as exc:
+        return json.dumps({"error": str(exc)})
+    reason = (reason or "").strip()
+    if not reason:
+        return json.dumps({"error": "reason is required"})
+    if len(reason) > RESTORE_REASON_MAX:
+        return json.dumps({"error": f"reason is longer than {RESTORE_REASON_MAX} characters"})
+    pid = await _resolve_patient_id(patient_slug, ctx)
+    try:
+        doc_id = int(document_id)
+    except (TypeError, ValueError):
+        return json.dumps({"error": "not_found"})
+    out = await restore_sidecar_for(
+        _get_db(ctx), pid, doc_id, str(backup_id or ""), dry_run=bool(dry_run),
+        caller_hash=caller_email_hash(_caller_email()),
+    )  # fmt: skip
+    return json.dumps(out, ensure_ascii=False, default=str)
+
+
 async def curated_index(
     ctx: Context, patient_slug: str | None = None, document_ids: list[int] | None = None
 ) -> str:
@@ -3191,3 +3370,6 @@ def register(mcp):
     # user-invoked rollback (soft delete only, #734); never scheduled
     mcp.tool(annotations=_RETRACT_ANNOTATIONS)(curated_clinical_retract)
     mcp.tool()(curated_extraction_scorecard)
+    # admin, user-invoked (#806): replaces a sidecar's text, its current text
+    # is backed up first; never scheduled
+    mcp.tool(annotations=_RETRACT_ANNOTATIONS)(curated_restore_sidecar)
