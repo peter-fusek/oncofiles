@@ -27,6 +27,24 @@ _INITIAL_BACKOFF = 1.0  # seconds
 _CONNECTION_ERRORS = (ssl.SSLError, ConnectionError, OSError, BrokenPipeError, TimeoutError)
 
 
+FOLDER_MIME = "application/vnd.google-apps.folder"
+
+# Originals invariant (2026-11-14): the legacy client may overwrite the content
+# of a text export only (manifest, timelines, OCR .txt), never a PDF, an image
+# or a Google-native file; and it may trash only an EMPTY folder (trashing a
+# folder cascades to everything in it).
+TEXT_EXPORT_EXTS = (".md", ".txt", ".json", ".jsonl")
+
+
+class DriveWriteRefusedError(RuntimeError):
+    """A legacy write that would overwrite or trash an original. Never retried."""
+
+
+def _is_text_export_mime(mime: str) -> bool:
+    mime = (mime or "").split(";", 1)[0].strip().lower()
+    return mime.startswith("text/") or mime == "application/json"
+
+
 def _is_connection_error(exc: Exception) -> bool:
     """Check if an exception is a retryable SSL/connection error."""
     from oncofiles.curated_folder import DriveWriteBlockedError
@@ -328,9 +346,31 @@ class GDriveClient:
 
     @_retry_on_transient
     def update(self, gdrive_id: str, content_bytes: bytes, mime_type: str) -> dict:
-        """Update an existing file's content on Google Drive."""
+        """Update an existing text export's content on Google Drive.
+
+        Refuses (``DriveWriteRefusedError``, nothing written) unless the target
+        is named ``*.md``/``.txt``/``.json``/``.jsonl`` and Drive reports a text
+        or JSON mime type — never a Google-native file. The caller
+        (``sync._upload_or_update_text``) matches by filename only.
+        """
         self._guard_write("update")
         from googleapiclient.http import MediaInMemoryUpload
+
+        meta = (
+            self._service.files()
+            .get(fileId=gdrive_id, fields="id,name,mimeType", supportsAllDrives=True)
+            .execute()
+        )
+        name, mime = meta.get("name") or "", meta.get("mimeType") or ""
+        if (
+            not name.lower().endswith(TEXT_EXPORT_EXTS)
+            or mime.startswith("application/vnd.google-apps.")
+            or not _is_text_export_mime(mime)
+            or not _is_text_export_mime(mime_type)
+        ):
+            raise DriveWriteRefusedError(
+                f"update {gdrive_id} refused: {name!r} ({mime}) is not a text export"
+            )
 
         media = MediaInMemoryUpload(content_bytes, mimetype=mime_type)
         result = (
@@ -652,8 +692,33 @@ class GDriveClient:
 
     @_retry_on_transient
     def trash_file(self, file_id: str) -> None:
-        """Move a file to trash on Google Drive (soft delete)."""
+        """Move an EMPTY folder to trash on Google Drive (soft delete).
+
+        Refuses (``DriveWriteRefusedError``, nothing trashed) a file that is not
+        a folder, and a folder that still lists any child — trashing a folder
+        cascades to its children. Callers move the children out first.
+        """
         self._guard_write("trash_file")
+        meta = (
+            self._service.files()
+            .get(fileId=file_id, fields="id,name,mimeType", supportsAllDrives=True)
+            .execute()
+        )
+        if meta.get("mimeType") != FOLDER_MIME:
+            raise DriveWriteRefusedError(f"trash {file_id} refused: not a folder")
+        children = (
+            self._service.files()
+            .list(
+                q=f"'{file_id}' in parents and trashed = false",
+                fields="files(id)",
+                pageSize=1,
+                supportsAllDrives=True,
+                includeItemsFromAllDrives=True,
+            )
+            .execute()
+        )
+        if children.get("files"):
+            raise DriveWriteRefusedError(f"trash {file_id} refused: folder is not empty")
         self._service.files().update(
             fileId=file_id,
             body={"trashed": True},

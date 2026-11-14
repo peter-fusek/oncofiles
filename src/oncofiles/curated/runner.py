@@ -39,12 +39,12 @@ from oncofiles.curated.contract import (
     nfc,
     parse_contract,
 )
-from oncofiles.curated.drive_ops import Item, WriteVerificationError
+from oncofiles.curated.drive_ops import CANARY_NAME, Item, WriteVerificationError
 from oncofiles.curated.naming import build_filename, with_collision_suffix
 
 logger = logging.getLogger(__name__)
 
-CANARY = "_healthcheck.tmp"
+CANARY = CANARY_NAME  # "_healthcheck.tmp"; drive_ops.trash_canary trashes nothing else
 # The canary doubles as the run's write-ahead journal (#581): line 1 is
 # "<run_id> journal-v1", then one JSON line per action, written (and verified)
 # BEFORE the action. A canary left by a killed run therefore says exactly
@@ -129,6 +129,16 @@ class Tree:
 
     def names_in(self, folder: str) -> set[str]:
         return {nfc(i.name) for i in self.files.get(folder, [])}
+
+    def folder_ids(self) -> frozenset[str]:
+        """Every folder id of the curated tree (root, top level, one level below).
+
+        Passed to ``move_rename(allowed_parents=…)``: a move never leaves the tree.
+        """
+        ids = {self.root_id, *(f.id for f in self.folders.values())}
+        for subs in self.subfolders.values():
+            ids.update(f.id for f in subs)
+        return frozenset(ids)
 
 
 def walk(drive, root_id: str) -> Tree:
@@ -597,7 +607,9 @@ class Runner:
                     "sha256": item.sha256,
                     "undo": {"op": "move", "from": f"{dup}/{m.name}", "to": f"{folder}/{m.name}"},
                 },
-                lambda m=m: self.drive.move_rename(m.id, m.name, src_id, dst_id),
+                lambda m=m: self.drive.move_rename(
+                    m.id, m.name, src_id, dst_id, allowed_parents=tree.folder_ids()
+                ),
                 pair_half=len(moving) > 1,
             )
             tree.files.setdefault(dup, []).append(m)
@@ -794,7 +806,9 @@ class Runner:
                     "to": f"{from_folder}/{item.name}",
                 },
             },
-            lambda: self.drive.move_rename(item.id, new_name, src_id, dst_id),
+            lambda: self.drive.move_rename(
+                item.id, new_name, src_id, dst_id, allowed_parents=tree.folder_ids()
+            ),
         )
         tree.files.setdefault(to_folder, []).append(
             Item(id=item.id, name=new_name, mime=item.mime, parent=dst_id)
@@ -902,14 +916,18 @@ class Runner:
                     "to": [f"{from_folder}/{item.name}", f"{from_folder}/{old_side}"],
                 },
             },
-            lambda: self.drive.move_rename(item.id, new_name, src_id, dst_id),
+            lambda: self.drive.move_rename(
+                item.id, new_name, src_id, dst_id, allowed_parents=tree.folder_ids()
+            ),
             pair_half=True,
             confirm=False,
         )
         self.actions_used += 1  # the sidecar move is a second file action
         if not self.opts.dry_run:
             try:
-                self.drive.move_rename(side_id, new_side, src_id, dst_id)
+                self.drive.move_rename(
+                    side_id, new_side, src_id, dst_id, allowed_parents=tree.folder_ids()
+                )
             except WriteVerificationError as exc:
                 msg = f"sidecar move not verified — pair split, undo logged: {exc}"
                 raise RunAbortError(msg) from exc

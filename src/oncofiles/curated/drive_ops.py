@@ -11,6 +11,20 @@ Contract rules enforced here, at the lowest layer:
   and retried writes forked the tree in Aug 2026);
 * nothing is ever deleted; the only trash call is for the run's own canary;
 * same-name collisions are checked against a fresh listing before each write.
+
+**Originals invariant** (maintainer rule, 2026-11-14): an original source file
+(PDF, image, any non-text file) in a curated folder is never deleted, trashed
+or overwritten. It may only be moved or renamed within the curated tree, and
+every such move carries an undo record in the run journal. The helpers below
+enforce this themselves instead of relying on where they are called from:
+
+* ``update_text`` reads the target first and only overwrites a text state
+  file (``TEXT_STATE_EXTS`` + ``TEXT_STATE_MIMES``);
+* ``trash_canary`` trashes only a file named ``CANARY_NAME``;
+* ``move_rename`` keeps the file's extension and, given ``allowed_parents``
+  (the runner always passes the curated tree), never leaves that tree.
+
+Lock test: ``tests/test_curated_originals_invariant.py``.
 """
 
 from __future__ import annotations
@@ -27,8 +41,55 @@ FOLDER_MIME = "application/vnd.google-apps.folder"
 _FIELDS = "id,name,mimeType,parents,size,md5Checksum,sha256Checksum,modifiedTime,webViewLink"
 
 
+# The run's own canary / write-ahead journal (``runner.CANARY`` is this name).
+CANARY_NAME = "_healthcheck.tmp"
+
+# ``update_text`` may only overwrite files with one of these extensions…
+# sidecars and README/CHANGELOG (.md), ``_index.json``, ``_actions.jsonl``,
+# plain-text notes (.txt) and the canary (.tmp).
+TEXT_STATE_EXTS = (".md", ".json", ".jsonl", ".txt", ".tmp")
+# …and only while Drive reports one of these mime types. Drive stores what the
+# upload declared (``text/markdown``, ``text/plain``, ``application/json``,
+# ``application/x-ndjson``); files that arrived through the Drive for Desktop
+# mount can show as ``application/octet-stream``.
+TEXT_STATE_MIMES = ("application/json", "application/x-ndjson", "application/octet-stream")
+_GOOGLE_NATIVE_PREFIX = "application/vnd.google-apps."
+
+
 class WriteVerificationError(RuntimeError):
-    """A write could not be confirmed by reading it back — abort the run."""
+    """A write could not be confirmed by reading it back — abort the run.
+
+    Also raised, before anything is written, when a write would break the
+    originals invariant (see the module docstring)."""
+
+
+def is_text_state_mime(mime: str) -> bool:
+    mime = (mime or "").split(";", 1)[0].strip().lower()
+    return mime.startswith("text/") or mime in TEXT_STATE_MIMES
+
+
+def _ext(name: str) -> str:
+    """The extension the runner keeps when it renames (``naming.build_filename``)."""
+    return name.rsplit(".", 1)[1].lower() if "." in name else ""
+
+
+def check_extension_kept(current_name: str, new_name: str, mime: str) -> None:
+    """Raise unless a rename keeps the file's extension.
+
+    An original keeps its extension (``X.pdf`` → ``Y.pdf``; case may change, the
+    runner lowercases it); a sidecar keeps ``.md`` (``X.pdf.md`` → ``Y.pdf.md``).
+    Exceptions that mirror the runner: an extensionless file is filed as
+    ``….bin``, and a Google-native file (no content bytes, the title carries no
+    real extension) is not checked.
+    """
+    if (mime or "").startswith(_GOOGLE_NATIVE_PREFIX):
+        return
+    old, new = _ext(current_name), _ext(new_name)
+    if old == new or (old == "" and new == "bin"):
+        return
+    raise WriteVerificationError(
+        f"refusing to rename {current_name!r} → {new_name!r}: extension change ({old!r} → {new!r})"
+    )
 
 
 @dataclass(frozen=True)
@@ -196,10 +257,27 @@ def create_text(gdrive, folder_id: str, name: str, text: str, mime: str = "text/
 
 
 def update_text(gdrive, file_id: str, text: str, mime: str = "text/markdown") -> None:
-    """Replace a text file's content and verify the bytes."""
+    """Replace a text state file's content and verify the bytes.
+
+    Refuses (nothing written) unless the target's current name ends with one of
+    ``TEXT_STATE_EXTS`` and its current mime type is text — an original is
+    never overwritten.
+    """
     from googleapiclient.http import MediaIoBaseUpload
 
     gdrive._guard_write("curated.update_text")
+    meta = get(gdrive, file_id)
+    name = meta.get("name") or ""
+    if not name.lower().endswith(TEXT_STATE_EXTS):
+        raise WriteVerificationError(
+            f"refusing to update {file_id}: {name!r} is not a text state file"
+        )
+    if not is_text_state_mime(meta.get("mimeType", "")):
+        raise WriteVerificationError(
+            f"refusing to update {file_id}: mime {meta.get('mimeType')!r} is not text"
+        )
+    if not is_text_state_mime(mime):
+        raise WriteVerificationError(f"refusing to update {file_id}: upload mime {mime!r}")
     data = text.encode("utf-8")
     media = MediaIoBaseUpload(io.BytesIO(data), mimetype=mime, resumable=False)
     gdrive._service.files().update(
@@ -209,10 +287,25 @@ def update_text(gdrive, file_id: str, text: str, mime: str = "text/markdown") ->
         raise WriteVerificationError(f"update {file_id}: content read-back mismatch")
 
 
-def move_rename(gdrive, file_id: str, new_name: str, from_parent: str, to_parent: str) -> None:
-    """Rename and/or move in one atomic update, then verify name + parents."""
+def move_rename(
+    gdrive,
+    file_id: str,
+    new_name: str,
+    from_parent: str,
+    to_parent: str,
+    *,
+    allowed_parents: set[str] | frozenset[str] | None = None,
+) -> None:
+    """Rename and/or move in one atomic update, then verify name + parents.
+
+    ``allowed_parents``: the curated tree's folder ids; when given, both ends
+    of the move must be inside it. The extension is always kept
+    (``check_extension_kept``). A refusal writes nothing.
+    """
     gdrive._guard_write("curated.move_rename")
+    check_parents(file_id, from_parent, to_parent, allowed_parents)
     current = get(gdrive, file_id)
+    check_extension_kept(current.get("name") or "", new_name, current.get("mimeType", ""))
     renaming = current.get("name") != new_name
     if (renaming or from_parent != to_parent) and _nfc(new_name) in {
         _nfc(n) for n in _names_in(gdrive, to_parent)
@@ -238,9 +331,25 @@ def move_rename(gdrive, file_id: str, new_name: str, from_parent: str, to_parent
         raise WriteVerificationError(f"move {file_id} → {new_name!r}: read-back mismatch")
 
 
+def check_parents(file_id: str, from_parent: str, to_parent: str, allowed_parents) -> None:
+    if allowed_parents is None:
+        return
+    for end, parent in (("target", to_parent), ("source", from_parent)):
+        if parent not in allowed_parents:
+            raise WriteVerificationError(
+                f"refusing to move {file_id}: {end} folder {parent} is outside the curated tree"
+            )
+
+
 def trash_canary(gdrive, file_id: str) -> None:
-    """Trash the run's own canary file (soft delete, 30 days) and verify."""
+    """Trash the run's own canary file (soft delete, 30 days) and verify.
+
+    Refuses (nothing trashed) unless the file is named ``CANARY_NAME``.
+    """
     gdrive._guard_write("curated.trash_canary")
+    name = get(gdrive, file_id).get("name")
+    if name != CANARY_NAME:
+        raise WriteVerificationError(f"refusing to trash {file_id}: {name!r} is not the canary")
     gdrive._service.files().update(
         fileId=file_id, body={"trashed": True}, fields="id", supportsAllDrives=True
     ).execute()
@@ -287,12 +396,26 @@ class DriveOps:
         return create_text(self.gdrive, folder_id, name, text, mime)
 
     def update_text(self, file_id: str, text: str, mime: str = "text/markdown") -> None:
+        if not is_text_state_mime(mime):  # name + current mime are checked by update_text
+            raise WriteVerificationError(f"refusing to update {file_id}: upload mime {mime!r}")
         self._fresh()
         update_text(self.gdrive, file_id, text, mime)
 
-    def move_rename(self, file_id: str, new_name: str, from_parent: str, to_parent: str) -> None:
+    def move_rename(
+        self,
+        file_id: str,
+        new_name: str,
+        from_parent: str,
+        to_parent: str,
+        *,
+        allowed_parents: set[str] | frozenset[str] | None = None,
+    ) -> None:
+        # Same checks as the function (it re-checks after the fresh-connection step).
+        check_parents(file_id, from_parent, to_parent, allowed_parents)
         self._fresh()
-        move_rename(self.gdrive, file_id, new_name, from_parent, to_parent)
+        move_rename(
+            self.gdrive, file_id, new_name, from_parent, to_parent, allowed_parents=allowed_parents
+        )
 
     def trash_canary(self, file_id: str) -> None:
         self._fresh()
