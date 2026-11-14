@@ -15,6 +15,11 @@ The day is the one the extractor gives the value, so later rules never move it:
 * a report-quoted value that corroboration re-dated to its draw keeps the day it
   was quoted on (``metadata.quoted_on``), which is the day the extractor gave it.
 
+A writer FAMILY other than the rule parsers (the LLM lab writer, #714) salts the
+key with its family name (``family``), so its ids never collide with a rule
+fact's id for the same printed value: the active ``fhir_id`` index is unique
+(migration 082). ``family=None`` (the rule parsers) gives the ids unchanged.
+
 ``replace_document_facts`` writes the id into ``clinical_records.fhir_id`` when a
 fact is inserted. Rows written before that (``fhir_id`` NULL) get the same value
 computed at read time by :func:`ids_for_rows`, which mirrors the insert path, so
@@ -60,13 +65,16 @@ def natural_key(
     occurred_at: str | None,
     page: int | None,
     meta: dict,
+    family: str | None = None,
 ) -> str:
     what = f"code:{code}" if code else f"param:{(label or '').strip()}"
     where = "" if document_id is None else str(document_id)
-    return json.dumps(
+    key = json.dumps(
         [patient_id, where, what, key_day(occurred_at, meta), "" if page is None else str(page)],
         ensure_ascii=False,
     )
+    # a non-rule writer family never shares an id with a rule fact (#714)
+    return f"{family}|{key}" if family else key
 
 
 def fact_uuid(key: str, ordinal: int) -> str:
@@ -92,7 +100,9 @@ def _assign(keys: list[str], evidence: list[str], taken: set[str]) -> list[str]:
     return out
 
 
-def fact_key(patient_id: str, document_id: int | None, f: dict) -> str:
+def fact_key(
+    patient_id: str, document_id: int | None, f: dict, *, family: str | None = None
+) -> str:
     """Natural key (no ordinal) of an extractor fact."""
     return natural_key(
         patient_id,
@@ -102,23 +112,31 @@ def fact_key(patient_id: str, document_id: int | None, f: dict) -> str:
         occurred_at=f.get("occurred_at"),
         page=f.get("page_number"),
         meta=_meta(f.get("metadata")),
+        family=family,
     )
 
 
-def row_key(patient_id: str, document_id: int | None, r: dict) -> str:
+def row_key(patient_id: str, document_id: int | None, r: dict, *, family: str | None = None) -> str:
     """Natural key (no ordinal) of a stored ``clinical_records`` row."""
-    return _row_keys(patient_id, document_id, [r])[0]
+    return _row_keys(patient_id, document_id, [r], family=family)[0]
 
 
 def ids_for_new_facts(
-    patient_id: str, document_id: int | None, facts: list[dict], taken: set[str]
+    patient_id: str,
+    document_id: int | None,
+    facts: list[dict],
+    taken: set[str],
+    *,
+    family: str | None = None,
 ) -> list[str]:
     """Ids for extractor facts about to be inserted (in list order)."""
-    keys = [fact_key(patient_id, document_id, f) for f in facts]
+    keys = [fact_key(patient_id, document_id, f, family=family) for f in facts]
     return _assign(keys, [f.get("evidence") or "" for f in facts], taken)
 
 
-def _row_keys(patient_id: str, document_id: int | None, rows: list[dict]) -> list[str]:
+def _row_keys(
+    patient_id: str, document_id: int | None, rows: list[dict], *, family: str | None = None
+) -> list[str]:
     return [
         natural_key(
             patient_id,
@@ -128,12 +146,19 @@ def _row_keys(patient_id: str, document_id: int | None, rows: list[dict]) -> lis
             occurred_at=r.get("occurred_at"),
             page=r.get("page_number"),
             meta=_meta(r.get("metadata_json")),
+            family=family,
         )
         for r in rows
     ]
 
 
-def ids_for_rows(patient_id: str, document_id: int | None, rows: Iterable[dict]) -> dict[int, str]:
+def ids_for_rows(
+    patient_id: str,
+    document_id: int | None,
+    rows: Iterable[dict],
+    *,
+    family: str | None = None,
+) -> dict[int, str]:
     """Row id → fact id for the ACTIVE rows of one document, ordered by row id.
 
     A stored ``fhir_id`` wins. The others are computed the way
@@ -149,7 +174,7 @@ def ids_for_rows(patient_id: str, document_id: int | None, rows: Iterable[dict])
         [r for r in pending if r.get("verification") not in PROTECTED],
     ):
         ids = _assign(
-            _row_keys(patient_id, document_id, group),
+            _row_keys(patient_id, document_id, group, family=family),
             [r.get("evidence") or "" for r in group],
             taken,
         )
