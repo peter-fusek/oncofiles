@@ -106,7 +106,7 @@ async def test_cycle_links_by_a_drug_printed_in_its_evidence(seeded):
 async def test_two_matching_courses_derive_a_course_and_never_pick_one(seeded):
     db = seeded
     res = await _store(db, [
-        _course("Zentrolux"), _course("mZentrolux-2"),
+        _course("Zentrolux"), _course("Zentrolux + Kelmora"),
         _cycle(CYCLE_LINE, regimen="Zentrolux"),
     ])  # fmt: skip
     courses = await _courses(db)
@@ -116,6 +116,49 @@ async def test_two_matching_courses_derive_a_course_and_never_pick_one(seeded):
     assert derived[0]["regimen_printed"] == "Zentrolux"
     assert [c["course_id"] for c in await _cycles(db)] == [derived[0]["id"]]
     assert res["stored"]["treatment_courses"]["derived"] == 1
+
+
+def test_regimen_names_match_as_whole_words_only():
+    same = clinical_store._same_regimen
+    assert not same("FOLFOX", "FOLFOXIRI")  # different regimens
+    assert not same("FOLFOXIRI", "FOLFOX")
+    assert not same("Zentrolux", "mZentrolux-2")
+    assert same("mFOLFOX6 cyklus", "mFOLFOX6")
+    assert same("mfolfox6", "mFOLFOX6 + Ortavix")
+    assert same("Vertaplatin", "VERTAPLATÍN")  # case and diacritics ignored
+    assert not same("", "FOLFOX")
+
+
+async def test_a_longer_regimen_name_is_not_the_cycles_course(seeded):
+    db = seeded
+    # the cycle says FOLFOX; the only other printed course is FOLFOXIRI, which is a
+    # different regimen: no link, a derived FOLFOX course instead
+    res = await _store(db, [
+        _course("FOLFOXIRI"), _course("Ortavix"),
+        _cycle("14.03.2027 podaný 3. cyklus FOLFOX", regimen="FOLFOX"),
+    ])  # fmt: skip
+    iri = next(c for c in await _courses(db) if c["regimen_printed"] == "FOLFOXIRI")
+    [cycle] = await _cycles(db)
+    assert cycle["course_id"] != iri["id"]
+    assert res["stored"]["treatment_courses"]["derived"] == 1
+
+
+async def test_a_regimen_with_a_suffix_word_still_finds_its_course(seeded):
+    db = seeded
+    res = await _store(db, [
+        _course("mZentrolux6"), _course("Ortavix"),
+        _cycle("19.05.2027 podaný mZentrolux6 cyklus", regimen="mZentrolux6 cyklus"),
+    ])  # fmt: skip
+    mf = next(c for c in await _courses(db) if c["regimen_printed"] == "mZentrolux6")
+    assert [c["course_id"] for c in await _cycles(db)] == [mf["id"]]
+    assert "derived" not in res["stored"]["treatment_courses"]
+
+
+async def test_a_name_inside_a_longer_word_of_the_evidence_is_not_printed(seeded):
+    db = seeded
+    # "FOLFOX" occurs only inside the word "FOLFOXIRI" of the evidence → dropped
+    res = await _store(db, [_cycle("14.03.2027 podaný 3. cyklus FOLFOXIRI", regimen="FOLFOX")])
+    assert res["dropped"] == {"cycle_without_course": 1} and await _courses(db) == []
 
 
 # ── derived courses ─────────────────────────────────────────────────────

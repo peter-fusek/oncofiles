@@ -81,6 +81,25 @@ def _fold(s) -> str:
     return _k("".join(ch for ch in nfkd if not unicodedata.combining(ch)))
 
 
+def _words(s) -> tuple[str, ...]:
+    """The folded alphanumeric words of a name ("mFOLFOX6 cyklus" →
+    ("mfolfox6", "cyklus"))."""
+    return tuple(re.findall(r"[a-z0-9]+", _fold(s)))
+
+
+def _within(needle: tuple, hay: tuple) -> bool:
+    """``needle`` is a contiguous whole-word run of ``hay`` (never a
+    substring of a word: "FOLFOX" is not inside "FOLFOXIRI")."""
+    n = len(needle)
+    return n > 0 and any(hay[i : i + n] == needle for i in range(len(hay) - n + 1))
+
+
+def _same_regimen(a, b) -> bool:
+    """Whole-word match in either direction on the folded words."""
+    wa, wb = _words(a), _words(b)
+    return _within(wa, wb) or _within(wb, wa)
+
+
 def _is_derived(r: dict) -> bool:
     """A course ``store_document`` derived from a cycle's evidence (#799)."""
     try:
@@ -411,13 +430,13 @@ async def store_document(  # noqa: PLR0912, PLR0915
             await put("cancer_stage", stage, it)
 
     # ── treatment courses (a derived course of a kept cycle stays derived, #799)
-    courses: list[tuple[int, str]] = []  # printed courses: (id, folded regimen)
-    derived: dict[str, int] = {}  # folded token → derived course id (this document only)
+    courses: list[tuple[int, str]] = []  # printed courses: (id, regimen as printed)
+    derived: dict[tuple, int] = {}  # folded words → derived course id (this document only)
     for r in kept["treatment_course"].values():
         if _is_derived(r):
-            derived.setdefault(_fold(r["regimen_printed"]), r["id"])
+            derived.setdefault(_words(r["regimen_printed"]), r["id"])
         else:
-            courses.append((r["id"], _fold(r["regimen_printed"])))
+            courses.append((r["id"], r["regimen_printed"]))
     for it in by_kind.get("treatment_courses", []):
         f, d = it["fields"], it["derived"]
         course = TreatmentCourse(
@@ -428,11 +447,12 @@ async def store_document(  # noqa: PLR0912, PLR0915
         )  # fmt: skip
         cid, _ = await put("treatment_course", course, it)
         if all(c != cid for c, _ in courses):
-            courses.append((cid, _fold(f["regimen_as_printed"])))
+            courses.append((cid, f["regimen_as_printed"]))
 
     def matching(tokens) -> set[int]:
-        """Printed courses of this document whose regimen matches any token."""
-        return {c for c, rk in courses for t in tokens if rk and (_fold(t) in rk or rk in _fold(t))}
+        """Printed courses of this document whose regimen matches any token
+        as whole words (case / diacritics ignored; never inside a word)."""
+        return {c for c, reg in courses for t in tokens if _same_regimen(t, reg)}
 
     def course_for(regimen: str | None) -> int | None:
         """The course a printed regimen names, or the document's only course
@@ -448,17 +468,19 @@ async def store_document(  # noqa: PLR0912, PLR0915
     def cycle_tokens(it: dict) -> tuple[str | None, list[str]]:
         """Regimen / drug names printed INSIDE the cycle's own evidence:
         (the cycle's printed regimen or None, the document's drug names)."""
-        ev = _fold(it["evidence"])
+        ev = _words(it["evidence"])
+
+        def printed(name) -> bool:
+            return bool(name) and len("".join(_words(name))) >= 3 and _within(_words(name), ev)
+
         reg = it["fields"].get("regimen_as_printed")
-        reg = reg if reg and len(_fold(reg)) >= 3 and _fold(reg) in ev else None
-        found = [x for x in drugs if len(_fold(x)) >= 3 and _fold(x) in ev]
-        return reg, found
+        return (reg if printed(reg) else None), [x for x in drugs if printed(x)]
 
     async def derived_course(token: str, it: dict) -> int:
         """A minimal course named by a token printed in the cycle's evidence:
         always unverified, own provenance (activity derive), deduplicated only
         within this document, never merged with a printed course."""
-        key = _fold(token)
+        key = _words(token)
         if key in derived:
             return derived[key]
         meta = {
