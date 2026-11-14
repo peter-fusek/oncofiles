@@ -1810,7 +1810,7 @@ def _counts(d) -> dict:
 def admin_job_view(status: dict) -> dict:
     """``reocr_status`` reduced for the admin dashboard (#573): states, counts,
     filenames and reason names. Never a fact value, date or evidence text —
-    ``lost`` (re-OCR "CODE value date" strings) becomes ``lost_count``."""
+    ``lost_codes`` (re-OCR, #805; legacy ``lost`` strings) becomes ``lost_count``."""
     job = status.get("job") if isinstance(status.get("job"), dict) else status
     if job is not status:  # a persisted row (#667) after a restart
         job = {"state": status.get("state"), "kind": job.get("trigger"),
@@ -1835,7 +1835,9 @@ def admin_job_view(status: dict) -> dict:
         r = {k: d[k] for k in _VIEW_RESULT if k in d}
         if d.get("error"):
             r["error"] = str(d["error"])[:200]
-        if "lost" in d:
+        if isinstance(d.get("lost_codes"), dict):  # #805: codes only
+            r["lost_count"] = sum(int(n) for n in d["lost_codes"].values())
+        elif "lost" in d:  # an in-memory legacy shape; never shown, only counted
             r["lost_count"] = len(d.get("lost") or [])
         results.append(r)
     out["results"] = results

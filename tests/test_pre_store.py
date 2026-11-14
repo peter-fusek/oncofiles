@@ -279,7 +279,7 @@ async def test_console_reocr_keeps_the_guards_review_outcome(file_db):
             "20270511_Synth_501.pdf",
             ["cowork_ocr"],
             result="review",
-            lost=["WBC 6.12 missing"],
+            lost_codes={"WBC": 1},
         )  # fmt: skip
     )
     body = {"patient_slug": ERIKA_UUID, "document_ids": [501], "dry_run": False,

@@ -83,7 +83,12 @@ class CuratedMixin(DatabaseBase):
         if row is None:
             return None
         out = dict(row)
-        out["report"] = json.loads(out.pop("report_json") or "null")
+        report = json.loads(out.pop("report_json") or "null")
+        # #805: re-OCR rows written before the fix hold "CODE value" strings in
+        # documents[*].lost; every reader (MCP tools, admin routes) gets codes only
+        from oncofiles.curated.reocr import redact_report
+
+        out["report"] = redact_report(report)
         return out
 
     async def get_last_curated_run(

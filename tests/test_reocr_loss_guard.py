@@ -129,13 +129,13 @@ async def test_nothing_lost_is_rewritten(vocab):
 
 async def test_two_missing_numbers_are_still_rewritten(vocab):
     _, d, drive, _, _ = _go(vocab, [_drop("8862", "4413")])
-    assert d.lost == [] and d.missing_numbers == 2
+    assert d.lost_codes == {} and d.missing_numbers == 2
     assert d.result == "rewritten" and d.review_reasons == []
 
 
 async def test_three_missing_numbers_go_to_review(vocab):
     _, d, drive, side, old = _go(vocab, [_drop("8862", "4413", "286")])
-    assert d.lost == [] and d.missing_numbers == 3
+    assert d.lost_codes == {} and d.missing_numbers == 3
     assert d.result == "review" and d.review_reasons == ["missing_numbers"]
     assert d.backup is None
     _unchanged(drive, side, old)
@@ -198,7 +198,7 @@ async def test_report_and_log_carry_counts_only(vocab, caplog):
         dates, nums = ["17.04.2027"], ["8862", "4413", "286"]
         pages = [_drop(*dates, *nums), ""]
         rep, d, _, _, _ = _go(vocab, pages)
-    assert d.result == "review" and d.lost == []
+    assert d.result == "review" and d.lost_codes == {}
     out = rep.to_dict()["documents"][0]
     for key in ("missing_numbers", "missing_dates", "near_empty_pages", "review_reasons",
                 "old_chars", "new_chars"):  # fmt: skip
