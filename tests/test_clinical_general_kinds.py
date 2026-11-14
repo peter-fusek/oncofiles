@@ -91,13 +91,14 @@ async def _store(db, doc_id, pages, *, profile=lx.GENERAL):
     return out, res
 
 
-async def _doc(db, doc_id, pages, category):
-    meta = {"ocr_engine": "qwen-local", "curated": {"sidecar_id": f"s{doc_id}"}}
+async def _doc(db, doc_id, pages, category, *, mime="application/pdf", ext="pdf", extra=None):
+    meta = {"ocr_engine": "qwen-local", "curated": {"sidecar_id": f"s{doc_id}"}, **(extra or {})}
+    name = f"d{doc_id}.{ext}"
     await db.db.execute(
         "INSERT INTO documents (id, file_id, filename, original_filename, category, mime_type, "
         "size_bytes, patient_id, gdrive_id, structured_metadata, document_date) "
-        "VALUES (?, ?, ?, ?, ?, 'application/pdf', 1, ?, ?, ?, ?)",
-        (doc_id, f"gdrive:g{doc_id}", f"d{doc_id}.pdf", f"d{doc_id}.pdf", category, ERIKA_UUID,
+        "VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)",
+        (doc_id, f"gdrive:g{doc_id}", name, name, category, mime, ERIKA_UUID,
          f"g{doc_id}", json.dumps(meta), DAY),
     )  # fmt: skip
     for n, text in enumerate(pages, 1):
@@ -483,3 +484,101 @@ def test_no_background_path_reaches_the_clinical_extractor():
         if path.exists():
             names = refs(ast.parse(path.read_text()))
             assert not names & (_CLINICAL_ENTRY | {"_clinical_job", "_scorecard_job"}), rel
+
+
+# ── P0: raw genotype data never reaches the model ───────────────────────
+
+DOC_RAW = DOC_G + 10  # raw CSV export in the genetics category
+DOC_FLAG = DOC_G + 11  # a PDF carrying the explicit opt-out flag
+DOC_GEN_PDF = DOC_G + 12  # a normal genetics PDF summary
+# invented raw export lines (made-up rsIDs, no real data)
+RAW_PAGE = "\n".join(["# rsid\tchromosome\tposition\tgenotype",
+                      "rs900001\t1\t1000\tAG", "rs900002\t2\t2000\tCC",
+                      "rs900003\t3\t3000\tTT"])  # fmt: skip
+
+
+@pytest.mark.parametrize(
+    ("doc", "pages", "excluded"),
+    [
+        ({"filename": "x.csv", "mime_type": "text/csv", "category": "genetics"}, (), True),
+        ({"filename": "x.tsv", "mime_type": None, "category": "other"}, (), False),
+        ({"filename": "export.txt", "mime_type": "text/plain", "category": "other",
+          "structured_metadata": {"curated": {"description": "Genotype raw data"}}}, (), True),
+        ({"filename": "x.txt", "mime_type": "text/plain", "category": "other"},
+         [(1, RAW_PAGE)], True),
+        ({"filename": "x.vcf", "mime_type": None, "category": "report"}, (), True),
+        ({"filename": "x.txt", "mime_type": "text/plain", "category": "report",
+          "structured_metadata": "not json"}, (), True),
+        ({"filename": "x.pdf", "mime_type": "application/pdf", "category": "report",
+          "structured_metadata": {"exclude_extract": True}}, (), True),
+        ({"filename": "x.pdf", "mime_type": "application/pdf", "category": "report",
+          "structured_metadata": {"curated": {"exclude_extract": "true"}}}, (), True),
+        ({"filename": "x.pdf", "mime_type": "application/pdf", "category": "genetics"},
+         [(1, RAW_PAGE)], False),  # a scanned genetics report is a document, not raw data
+        ({"filename": "x.txt", "mime_type": "text/plain", "category": "report"},
+         [(1, "Kontrola o 3 mesiace.")], False),
+    ],
+)  # fmt: skip
+def test_raw_genotype_exclusion_rule(doc, pages, excluded):
+    reason = lx.extraction_exclusion({"structured_metadata": {}, **doc}, pages)
+    assert reason == (lx.EXCLUDED_RAW_GENOTYPE if excluded else None)
+
+
+@pytest.fixture
+async def raw_seeded(seeded):
+    db = seeded
+    await _doc(db, DOC_RAW, [RAW_PAGE], "genetics", mime="text/csv", ext="csv")
+    await _doc(db, DOC_FLAG, [lx._GEX3], "genetics", extra={"exclude_extract": True})
+    await _doc(db, DOC_GEN_PDF, [lx._GEX3], "genetics")
+    return db
+
+
+def _counting_chat(calls: list):
+    def chat(system, user, info=None, **kw):
+        calls.append(user.split("\n", 1)[1])
+        return model_chat(system, user, info=info, **kw)
+
+    return chat
+
+
+async def test_raw_genotype_preview_makes_no_model_call(
+    raw_seeded, local_model, general_patient, monkeypatch
+):
+    db = raw_seeded
+    calls: list = []
+    monkeypatch.setattr(llm, "chat", _counting_chat(calls))
+    before = await _snapshot(db)
+    await tool.curated_clinical_extract_preview(_ctx(db), [DOC_RAW, DOC_FLAG, DOC_GEN_PDF])
+    await asyncio.wait_for(tool._reocr_jobs[ERIKA_UUID]["task"], 10)
+    job = json.loads(await tool.curated_reocr_status(_ctx(db)))
+    assert job["state"] == "done", job
+    docs = {d["document_id"]: d for d in job["report"]["documents"]}
+    for doc_id in (DOC_RAW, DOC_FLAG):
+        assert docs[doc_id]["result"] == "skipped"
+        assert docs[doc_id]["reason"] == "raw_genotype_excluded"
+    assert RAW_PAGE not in calls  # the raw export never reached the model
+    assert calls == [lx._GEX3]  # only the normal genetics PDF did, once
+    assert docs[DOC_GEN_PDF]["result"] == "previewed"
+    assert docs[DOC_GEN_PDF]["counts"]["biomarkers"]["machine"] == 3
+    assert await _snapshot(db) == before
+
+
+async def test_raw_genotype_real_run_writes_nothing(raw_seeded, local_model, monkeypatch):
+    db = raw_seeded
+    calls: list = []
+    monkeypatch.setattr(llm, "chat", _counting_chat(calls))
+    facts = ("conditions", "procedures", "medication_events", "clinical_records", "encounters",
+             "provenance", "codings")  # fmt: skip
+    before = {t: v for t, v in (await _snapshot(db)).items() if t in facts}
+    started = json.loads(
+        await tool.curated_clinical_extract(_ctx(db), [DOC_RAW, DOC_FLAG], dry_run=False)
+    )
+    assert started["kind"] == "clinical_extract"
+    await asyncio.wait_for(tool._reocr_jobs[ERIKA_UUID]["task"], 10)
+    job = tool._reocr_jobs[ERIKA_UUID]
+    assert job["state"] == "done", job
+    assert calls == []
+    assert {(d["result"], d["reason"]) for d in job["report"]["documents"]} == {
+        ("skipped", "raw_genotype_excluded")
+    }
+    assert {t: v for t, v in (await _snapshot(db)).items() if t in facts} == before

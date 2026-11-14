@@ -2338,9 +2338,21 @@ async def _clinical_work(db, pid: str, d: dict, *, vocab, births, cfg) -> _DocWo
     """Phase 1 of ONE document of the clinical extraction (#726): its page
     text (DB, event loop) and the model work for a worker thread (local-only,
     no DB). The request profile (#815) follows the patient type and the
-    document category (``llm_extract_clinical.profile_for``)."""
+    document category (``llm_extract_clinical.profile_for``).
+
+    Raw genotype data (``llm_extract_clinical.extraction_exclusion``) never
+    gets model work: checked on the document row before its pages are read
+    and again on its page text, the entry is ``skipped`` with reason
+    ``raw_genotype_excluded`` — no model call, nothing stored (#815 P0)."""
     from oncofiles.curated import llm_extract_clinical as lx
 
+    def excluded(reason: str) -> _DocWork:
+        w = _DocWork(d=d, entry={"document_id": d["id"], "category": d.get("category")})
+        w.final = {**w.entry, "result": "skipped", "reason": reason, "error": reason}
+        return w
+
+    if reason := lx.extraction_exclusion(d):
+        return excluded(reason)
     profile = lx.profile_for(await _patient_type(db, pid), d.get("category"))
 
     def make(pages, meta, day):
@@ -2357,6 +2369,8 @@ async def _clinical_work(db, pid: str, d: dict, *, vocab, births, cfg) -> _DocWo
         return _blocking
 
     w = await _doc_work(db, pid, d, make)
+    if w.final is None and (reason := lx.extraction_exclusion(d, w.pages)):
+        return excluded(reason)  # the model work built above is dropped, never run
     w.entry["profile"] = profile
     return w
 
