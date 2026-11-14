@@ -165,12 +165,16 @@ class HardExtractMixin:
         await self.db.commit()
         return cur.lastrowid
 
-    async def soft_delete_planned_encounter(self, *, patient_id: str, encounter_id: int) -> bool:
+    async def soft_delete_planned_encounter(
+        self, *, patient_id: str, encounter_id: int, deleted_by: str | None = None
+    ) -> bool:
+        """Soft-delete one planned, unprotected encounter; ``deleted_by`` is the
+        reason (migration 088, #795), the same string the other soft deletes use."""
         cur = await self.db.execute(
-            f"UPDATE encounters SET deleted_at = {_NOW}, updated_at = {_NOW} "
+            f"UPDATE encounters SET deleted_at = {_NOW}, updated_at = {_NOW}, deleted_by = ? "
             "WHERE id = ? AND patient_id = ? AND status = 'planned' AND deleted_at IS NULL "
             f"AND COALESCE(verification, '') NOT IN {_PROTECTED_SQL}",
-            (encounter_id, patient_id),
+            (deleted_by, encounter_id, patient_id),
         )
         await self.db.commit()
         return bool(cur.rowcount)
