@@ -128,16 +128,20 @@ def test_upload():
 
 
 def test_update():
-    """Test updating an existing file on GDrive."""
+    """Test updating an existing text export on GDrive (only text exports may be updated)."""
     client, service = _make_client()
 
+    service.files.return_value.get.return_value.execute.return_value = {
+        "id": "existing_id",
+        "name": "_manifest.json",
+        "mimeType": "application/json",
+    }
     service.files.return_value.update.return_value.execute.return_value = {
         "id": "existing_id",
-        "name": "test.pdf",
-        "modifiedTime": "2026-03-01T00:00:00Z",
+        "name": "_manifest.json",
     }
 
-    result = client.update("existing_id", b"new-content", "application/pdf")
+    result = client.update("existing_id", b"{}", "application/json")
     assert result["id"] == "existing_id"
     service.files.return_value.update.assert_called_once()
 
