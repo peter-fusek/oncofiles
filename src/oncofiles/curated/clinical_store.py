@@ -172,16 +172,15 @@ def _metadata(r: dict) -> dict:
 # #819 union keys: one key per stored row and per new item, coarser than KEYS
 # (no value), so the same fact with a new value replaces the old row and a
 # fact the new run did not return at all keeps it. A stage follows its
-# condition and a derived course its cycles (None = no own key).
+# condition and a derived course its cycles (None = no own key). A cycle's key
+# also holds the folded regimen of its course (``_cycle_key``): known for an
+# old row from its linked course, for a new item only once it is linked, so
+# the plan before the inserts matches cycles by ``_cycle_hint`` instead.
 UNION_KEYS = {
     "condition": lambda r: _cond_key(_metadata(r).get("code_printed"), r["printed_text"]),
     "cancer_stage": lambda r: None,
     "treatment_course": lambda r: (
         None if _is_derived(r) else ("course", _fold(r["regimen_printed"]))
-    ),
-    "treatment_cycle": lambda r: (
-        "cycle", _digits(r.get("cycle_number_printed")),
-        _day(r.get("actual_at") or r.get("planned_at")),
     ),
     "medication_event": lambda r: (
         "medication", _fold(r["ingredient_printed"]), _day(r.get("effective_start")),
@@ -194,15 +193,31 @@ UNION_KEYS = {
 }  # fmt: skip
 
 
+def _cycle_key(regimen, number, day) -> tuple:
+    """(folded regimen of the cycle's course, cycle number, day)."""
+    return ("cycle", _fold(regimen), _digits(number), _day(day))
+
+
+def _cycle_hint(it: dict) -> tuple | None:
+    """(printed regimen or None = any, number, day) of a cycle / planned-cycle
+    item, for the plan before the inserts (its course is not linked yet)."""
+    f = it["fields"]
+    if it["kind"] == "cycles":
+        return (f.get("regimen_as_printed") or None, _digits(f.get("cycle_as_printed")),
+                _day(_iso(it)))  # fmt: skip
+    if it["kind"] == "planned" and f.get("what") == "cycle" and _iso(it):
+        return (None, "", _day(_iso(it)))
+    return None
+
+
 def _item_keys(it: dict) -> list[tuple]:
-    """The union keys a new item covers (none for an item that is never stored)."""
+    """The union keys a new item covers, cycles aside (``_cycle_hint`` before
+    the inserts, ``_cycle_key`` of the linked course after)."""
     f, d, kind = it["fields"], it.get("derived") or {}, it["kind"]
     if kind == "diagnoses":
         return [_cond_key(f.get("code_as_printed"), f.get("text_as_printed"))]
     if kind == "treatment_courses":
         return [("course", _fold(f.get("regimen_as_printed")))]
-    if kind == "cycles":
-        return [("cycle", _digits(f.get("cycle_as_printed")), _day(_iso(it)))]
     if kind == "medications":
         return [("medication", _fold(f.get("drug_as_printed")), _day(_iso(it, "start_date")))]
     if kind == "procedures":
@@ -216,9 +231,7 @@ def _item_keys(it: dict) -> list[tuple]:
         day = _iso(it)
         if not day:
             return []
-        what = f.get("what")
-        keys = [("encounter", _PLANNED_KIND.get(what or "", "other"), _day(day))]
-        return keys + [("cycle", "", _day(day))] if what == "cycle" else keys
+        return [("encounter", _PLANNED_KIND.get(f.get("what") or "", "other"), _day(day))]
     return []
 
 
@@ -278,7 +291,12 @@ def _protected(r: dict) -> bool:
 
 
 async def _plan_removal(
-    db, *, patient_id: str, document_id: int, new_keys: set | None = None
+    db,
+    *,
+    patient_id: str,
+    document_id: int,
+    new_keys: set | None = None,
+    cycle_hints: list | None = None,
 ) -> dict:
     """The active rows of one document and what of it stays: protected
     (verified / corrected) rows, with ``new_keys`` (a re-extraction, #819)
@@ -299,24 +317,48 @@ async def _plan_removal(
             patient_id=pid, document_id=document_id, family=EXTRACTOR_FAMILY
         ),
     }
-    return _plan_from(rows, new_keys)
+    return _plan_from(rows, new_keys, cycle_hints=cycle_hints)
 
 
-def _plan_from(rows: dict, new_keys: set | None) -> dict:
+def _plan_from(
+    rows: dict,
+    new_keys: set | None,
+    *,
+    cycle_hints: list | None = None,
+    carry_also: dict | None = None,
+) -> dict:
     """``_plan_removal`` on rows already read. A re-extraction plans twice on
     the same pre-insert snapshot: before inserting with the keys of every new
-    item, after it with the keys of the items actually stored (a dropped item
-    never replaces anything)."""
+    item (cycles by ``cycle_hints``), after it with the keys of the items
+    actually stored (a cycle by the regimen of the course it was linked to; a
+    dropped item never replaces anything) plus every row the first plan kept
+    (``carry_also``), so a kept row a new row links to never goes."""
     existing, records, encounters = rows["existing"], rows["records"], rows["encounters"]
+    also = carry_also or {}
+    regimen_of = {c["id"]: c["regimen_printed"] for c in existing["treatment_course"]}
 
     def missing(key) -> bool:
         return new_keys is not None and key is not None and key not in new_keys
+
+    def cycle_missing(r: dict) -> bool:
+        reg = regimen_of.get(r.get("course_id")) or ""
+        num = _digits(r.get("cycle_number_printed"))
+        day = _day(r.get("actual_at") or r.get("planned_at"))
+        if not missing(_cycle_key(reg, num, day)):
+            return False
+        return not any(
+            n == num and d == day and (hint is None or _same_regimen(hint, reg))
+            for hint, n, d in cycle_hints or ()
+        )
 
     keep = {e: {r["id"] for r in rows_ if _protected(r)} for e, rows_ in existing.items()}
     carried: dict[str, set] = {e: set() for e in ENTITIES}
     for e, rows_ in existing.items():
         for r in rows_:
-            if _mine(r) and r["id"] not in keep[e] and missing(UNION_KEYS[e](r)):
+            if not _mine(r) or r["id"] in keep[e]:
+                continue
+            gone = cycle_missing(r) if e == "treatment_cycle" else missing(UNION_KEYS[e](r))
+            if gone or r["id"] in also.get(e, ()):
                 carried[e].add(r["id"])
     for r in existing["cancer_stage"]:  # a stage stays with its kept condition
         if (
@@ -326,11 +368,13 @@ def _plan_from(rows: dict, new_keys: set | None) -> dict:
         ):
             carried["cancer_stage"].add(r["id"])
     carried_records = {
-        r["id"] for r in records if not _protected(r) and missing(UNION_KEYS["record"](r))
-    }
+        r["id"] for r in records if not _protected(r)
+        and (missing(UNION_KEYS["record"](r)) or r["id"] in also.get("record", ()))
+    }  # fmt: skip
     carried_encounters = {
-        r["id"] for r in encounters if not _protected(r) and missing(UNION_KEYS["encounter"](r))
-    }
+        r["id"] for r in encounters if not _protected(r)
+        and (missing(UNION_KEYS["encounter"](r)) or r["id"] in also.get("encounter", ()))
+    }  # fmt: skip
     for e in ENTITIES:
         keep[e] |= carried[e]
     for r in records:
@@ -359,7 +403,7 @@ def _plan_from(rows: dict, new_keys: set | None) -> dict:
         "keep": keep,
         "carried": carried,
         "carried_records": [r for r in records if r["id"] in carried_records],
-        "carried_encounters": len(carried_encounters),
+        "carried_encounters": carried_encounters,
         "remove_hard": hard,
         "remove_records": [
             r for r in records if not _protected(r) and r["id"] not in carried_records
@@ -368,6 +412,22 @@ def _plan_from(rows: dict, new_keys: set | None) -> dict:
             r for r in encounters if not _protected(r) and r["id"] not in carried_encounters
         ],
     }
+
+
+_RERUN_FIELDS = (
+    ("inserted", "added"), ("removed", "removed"), ("kept_missing", "kept_missing_in_rerun"),
+)  # fmt: skip
+
+
+def rerun_summary(stored: dict) -> dict:
+    """Per kind: rows inserted / removed / kept as missing in the re-run
+    (#819 report; counts only, every field present, kinds with any count)."""
+    out = {}
+    for kind, c in stored.items():
+        row = {name: int(c.get(src, 0)) for name, src in _RERUN_FIELDS}
+        if any(row.values()):
+            out[kind] = row
+    return out
 
 
 def _missing_counts(plan: dict) -> tuple[dict[str, int], int]:
@@ -385,7 +445,7 @@ def _missing_counts(plan: dict) -> tuple[dict[str, int], int]:
     for r in plan["carried_records"]:
         counts[_record_stat(r)] += 1
         coded += bool(r.get("code"))
-    counts["planned_encounters"] += plan["carried_encounters"]
+    counts["planned_encounters"] += len(plan["carried_encounters"])
     return {k: n for k, n in counts.items() if n}, coded
 
 
@@ -489,8 +549,11 @@ async def store_document(  # noqa: PLR0912, PLR0915
     plan = await _plan_removal(
         db, patient_id=pid, document_id=document_id,
         new_keys={k for it in items for k in _item_keys(it)},
+        cycle_hints=[h for it in items if (h := _cycle_hint(it))],
     )  # fmt: skip
     dropped_items: list[dict] = []
+    cycle_keys: set[tuple] = set()  # _cycle_key of every cycle stored / reused
+    regimen_by_id = {c["id"]: c["regimen_printed"] for c in plan["existing"]["treatment_course"]}
     existing, records, encounters, keep = (
         plan["existing"], plan["records"], plan["encounters"], plan["keep"],
     )  # fmt: skip
@@ -604,6 +667,7 @@ async def store_document(  # noqa: PLR0912, PLR0915
                      intent_printed=f.get("intent_as_printed")),
         )  # fmt: skip
         cid, _ = await put("treatment_course", course, it)
+        regimen_by_id.setdefault(cid, f["regimen_as_printed"])
         if all(c != cid for c, _ in courses):
             courses.append((cid, f["regimen_as_printed"]))
 
@@ -664,6 +728,7 @@ async def store_document(  # noqa: PLR0912, PLR0915
         stats["treatment_courses"]["added"] += 1
         stats["treatment_courses"]["derived"] += 1
         derived[key] = saved.id
+        regimen_by_id[saved.id] = token
         return saved.id
 
     # ── cycles (administered / postponed)
@@ -695,6 +760,7 @@ async def store_document(  # noqa: PLR0912, PLR0915
         )  # fmt: skip
         cyc_id, _ = await put("treatment_cycle", cycle, it)
         cycles.append((cyc_id, course_id, str(d.get("cycle_number") or "")))
+        cycle_keys.add(_cycle_key(regimen_by_id.get(course_id), f.get("cycle_as_printed"), day))
 
     # ── medication doses
     for it in by_kind.get("medications", []):
@@ -798,6 +864,7 @@ async def store_document(  # noqa: PLR0912, PLR0915
                 **common(it, description=f.get("description_as_printed")),
             )  # fmt: skip
             await put("treatment_cycle", cycle, it)
+            cycle_keys.add(_cycle_key(regimen_by_id.get(course_id), "", day))
             continue
         kind = _PLANNED_KIND.get(f.get("what") or "", "other")
         hit = kept["encounter"].get((kind, day))
@@ -814,10 +881,14 @@ async def store_document(  # noqa: PLR0912, PLR0915
         stats["planned_encounters"]["added"] += 1
 
     # ── replace only what a stored item covers; report what the re-run did not return
-    stored_keys = {
+    stored_keys = cycle_keys | {
         k for it in items if not any(it is x for x in dropped_items) for k in _item_keys(it)
     }
-    final = _plan_from(plan, stored_keys)
+    final = _plan_from(plan, stored_keys, carry_also={
+        **plan["carried"],
+        "record": {r["id"] for r in plan["carried_records"]},
+        "encounter": plan["carried_encounters"],
+    })  # fmt: skip
     await _soft_delete_planned(
         db, final, patient_id=pid, reason=f"re-extraction by {extracted_by}", stats=stats
     )
@@ -829,8 +900,10 @@ async def store_document(  # noqa: PLR0912, PLR0915
         warnings.append(
             {"warning": "rerun_lost_many", "document_id": document_id, "coded_rows": coded_missing}
         )
+    stored = {k: dict(c) for k, c in stats.items() if c}
     return {
-        "stored": {k: dict(c) for k, c in stats.items() if c},
+        "stored": stored,
+        "rerun": rerun_summary(stored),
         "dropped": dict(sorted(dropped.items())),
         "extracted_by": extracted_by,
         "warnings": warnings,

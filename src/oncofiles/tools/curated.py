@@ -2298,7 +2298,12 @@ def _clinical_totals(report: list[dict]) -> dict:
     counts: dict[str, dict[str, int]] = {}
     reasons: dict[str, int] = {}
     stored: dict[str, dict[str, int]] = {}
+    rerun: dict[str, dict[str, int]] = {}
     for r in report:
+        for target, c in (r.get("rerun") or {}).items():
+            tot = rerun.setdefault(target, {"inserted": 0, "removed": 0, "kept_missing": 0})
+            for k, n in c.items():
+                tot[k] = tot.get(k, 0) + n
         for kind, c in (r.get("counts") or {}).items():
             tot = counts.setdefault(kind, {"machine": 0, "unverified": 0})
             for k, n in c.items():
@@ -2316,6 +2321,7 @@ def _clinical_totals(report: list[dict]) -> dict:
         "counts": counts,
         "unverified_reasons": dict(sorted(reasons.items())),
         "stored": stored,
+        "rerun": rerun,
     }
 
 
@@ -2441,7 +2447,10 @@ async def _clinical_job(
                             entry.update(result="failed", error=type(exc).__name__)
                         else:
                             entry.update(
-                                result="stored", stored=res["stored"], store_dropped=res["dropped"]
+                                result="stored",
+                                stored=res["stored"],
+                                store_dropped=res["dropped"],
+                                rerun=res["rerun"],  # #819 inserted/removed/kept_missing
                             )
                             if res.get("warnings"):  # #819 rerun_lost_many (counts + doc id)
                                 entry["warnings"] = [*(entry.get("warnings") or []),

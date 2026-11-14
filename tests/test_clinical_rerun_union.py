@@ -11,9 +11,11 @@ documents are the worked examples of the extractor prompt and invented lines
 
 from __future__ import annotations
 
+import asyncio
 import copy
 
 from oncofiles.curated import clinical_store
+from oncofiles.tools import curated as tool
 from tests.helpers import ERIKA_UUID
 from tests.test_clinical_cycle_course import (
     CYCLE_LINE,
@@ -25,10 +27,13 @@ from tests.test_clinical_cycle_course import (
 from tests.test_clinical_cycle_course import _store as _store_items
 from tests.test_clinical_extract import (  # noqa: F401  (fixtures)
     DOC_A,
+    DOC_B,
     PAGES_A,
     _active,
+    _ctx,
     _extract,
     _rows,
+    local_model,
     seeded,
 )
 
@@ -235,3 +240,56 @@ async def test_a_derived_course_stays_with_its_kept_cycle(seeded):
     assert [c["id"] for c in await _courses(db)] == [course["id"]]
     assert [c["id"] for c in await _cycles(db)] == [cycle["id"]]
     assert res["stored"] == {"treatment_cycles": {"kept_missing_in_rerun": 1}}
+
+
+# ── review: the cycle key holds the regimen; the job report shows counts ─
+
+TWIN_A = "14.03.2027 podaný 3. cyklus Zentrolux"
+TWIN_B = "14.03.2027 podaný 3. cyklus Arvemix"
+
+
+async def test_same_cycle_number_and_day_of_another_regimen_is_kept(seeded):
+    db = seeded
+    courses = [_course("Zentrolux"), _course("Arvemix")]
+    await _store_items(db, [*courses, _cycle(TWIN_A, regimen="Zentrolux"),
+                            _cycle(TWIN_B, regimen="Arvemix")])  # fmt: skip
+    old = {c["evidence"]: c for c in await _cycles(db)}
+    assert set(old) == {TWIN_A, TWIN_B}
+
+    res = await _store_items(db, [*courses, _cycle(TWIN_A, regimen="Zentrolux")])
+    now = {c["evidence"]: c for c in await _cycles(db)}
+    assert now[TWIN_B]["id"] == old[TWIN_B]["id"]  # the other regimen's cycle stays
+    assert now[TWIN_A]["id"] != old[TWIN_A]["id"]  # the returned one is replaced
+    cycles = res["stored"]["treatment_cycles"]
+    assert cycles["kept_missing_in_rerun"] == 1
+    assert cycles["removed"] == cycles["added"] == 1
+    summary = res["rerun"]["treatment_cycles"]
+    assert set(summary.values()) == {cycles["added"]}  # inserted, removed, kept_missing
+    assert set(summary) == {"inserted", "removed", "kept_missing"}
+    # the kept cycle still points to an active course
+    assert now[TWIN_B]["course_id"] in {c["id"] for c in await _courses(db)}
+
+
+async def test_job_report_shows_rerun_counts_per_document_and_in_totals(seeded, local_model):
+    db = seeded
+
+    async def run():
+        await tool.curated_clinical_extract(_ctx(db), [DOC_A, DOC_B], dry_run=False)
+        await asyncio.wait_for(tool._reocr_jobs[ERIKA_UUID]["task"], 10)
+        report = tool._reocr_jobs[ERIKA_UUID]["report"]
+        tool._reocr_jobs.clear()
+        return report
+
+    first = await run()
+    doc_a = next(d for d in first["documents"] if d["document_id"] == DOC_A)
+    first_conditions = doc_a["rerun"]["conditions"]
+    assert first_conditions["inserted"] == len(["primary", "metastasis"])
+    assert not first_conditions["removed"] and not first_conditions["kept_missing"]
+    second = await run()
+    for d in second["documents"]:
+        assert d["result"] == "stored"
+        for counts in d["rerun"].values():
+            assert set(counts) == {"inserted", "removed", "kept_missing"}
+            assert all(isinstance(n, int) for n in counts.values())  # counts only
+    per_doc = sum(d["rerun"]["conditions"]["removed"] for d in second["documents"])
+    assert second["totals"]["rerun"]["conditions"]["removed"] == per_doc > 0
