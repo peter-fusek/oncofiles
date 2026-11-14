@@ -543,6 +543,43 @@ def test_fact_labels_know_the_llm_lab_family():
     assert fact_labels.method_of("rule:x") == "rule" and fact_labels.method_of(None) is None
 
 
+async def test_a_flagged_llm_lab_value_stays_on_the_timeline_behind_a_rule_twin(seeded):
+    """#817 rule with #714 rows: ``rule_preferred`` keeps the (unflagged,
+    normal) rule value in fact_series, but the timeline never hides the
+    flagged llm-lab value of the same document, code and day behind it."""
+    db = seeded
+    rule = {"code": "GLU", "label": "GLU", "value_num": 5.2, "value_canonical": 5.2,
+            "unit_canonical": "mmol/L", "ref_low": 3.9, "ref_high": 5.6, "flag": None,
+            "occurred_at": DAY, "page_number": 1, "evidence": "GLU rule line",
+            "metadata": {}}  # fmt: skip
+    await db.replace_document_facts(
+        patient_id=ERIKA_UUID, document_id=DOC_NEW, facts=[rule], extracted_by="rule:test"
+    )
+    lab = {**rule, "value_num": 8.4, "value_canonical": 8.4, "flag": "H",
+           "evidence": "GLU model line", "verification": "machine"}  # fmt: skip
+    await db.replace_document_facts(
+        patient_id=ERIKA_UUID, document_id=DOC_NEW, facts=[lab],
+        extracted_by=lab_store.extracted_by_for("mock-model"), family=LLM_LAB_FAMILY,
+    )  # fmt: skip
+    lab_id = (await _lab_rows(db, DOC_NEW))[0]["id"]
+
+    rows = await db.fact_series_rows(patient_id=ERIKA_UUID, codes=["GLU"])
+    kept, removed = cf._dedupe(rows)
+    assert [r["extracted_by"] for r in kept] == ["rule:test"]
+    assert [(d["reason"], d["removed"]["fact_id"]) for d in removed] == [("rule_preferred", lab_id)]
+
+    series = json.loads(await cf.fact_series(_ctx(db), ["GLU"]))["series"]["GLU"]
+    assert [(p["flag"], "method" in p) for p in series["values"]] == [(None, False)]
+
+    timeline = json.loads(await cf.timeline(_ctx(db)))
+    shown = [
+        r for r in timeline["rows"] if r.get("entity") == "fact" and r.get("entity_id") == lab_id
+    ]
+    assert len(shown) == 1 and shown[0]["flag"] == "H"
+    assert shown[0]["method"] == "llm-lab"
+    assert lab_id not in {d["removed"]["fact_id"] for d in timeline["duplicates"]}
+
+
 async def test_dedupe_prefers_the_rule_value_of_the_same_document_and_day(seeded, local_model):
     db = seeded
     await _write(db, [DOC_NEW])
