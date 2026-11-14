@@ -627,3 +627,48 @@ def test_the_llm_lab_insert_path_is_reached_only_with_the_llm_lab_family():
     assert lab_store.WRITER_VERSION.startswith(LLM_LAB_FAMILY + "-v")
     assert lab_store.extracted_by_for("m").startswith(LLM_LAB_FAMILY + "-v")
     assert lab_store.WRITER_VERSION.endswith(llm_extract.EXTRACTOR_VERSION.rsplit("-v", 1)[1])
+
+
+# ── golden ids: the rule ids are exactly what origin/main computed ──────
+
+# UUIDs computed ONCE with fact_identity.py of origin/main (fdb657f, before the
+# ``family`` parameter), on these synthetic inputs. They must never change.
+GOLDEN_CASES = {
+    "coded": (DOC_NEW, {"code": "ALT", "label": "S-ALT", "occurred_at": "2027-06-14",
+                        "page_number": 1, "metadata": {}}),
+    "uncoded": (DOC_NEW, {"code": None, "label": "W-Index Q", "occurred_at": "2027-06-14",
+                          "page_number": 2, "metadata": {}}),
+    "range": (DOC_NEW, {"code": "CRP", "label": "CRP", "occurred_at": "2027-09-09",
+                        "page_number": 1, "metadata": {"date_range_start": "2027-09-01",
+                                                       "date_range_end": "2027-09-09"}}),
+    "no_doc": (None, {"code": "GLU", "label": "GLU", "occurred_at": "2027-03-05T07:40",
+                      "page_number": None, "metadata": {}}),
+}  # fmt: skip
+GOLDEN_IDS = {  # (ordinal 0, ordinal 1)
+    "coded": ("ec59eb89-0e22-5cef-ab21-00ba3db2c788", "f3475c82-158e-5511-b1dd-627fbe4fdab1"),
+    "uncoded": ("fc67b488-4dc2-5016-87dd-44ae007efeae", "1a4f3448-82f0-53bb-a741-d8dc93573d06"),
+    "range": ("ddf5a185-2e43-57a1-b02d-37d5cb765550", "8a5794cc-3b4e-54f1-a5d7-57571ba62fcd"),
+    "no_doc": ("e3934979-ea8c-56b5-b9ad-47e85cfe0ef6", "41ff2395-855b-58e6-9361-c5666547a349"),
+}
+
+
+@pytest.mark.parametrize("case", sorted(GOLDEN_CASES))
+def test_rule_fact_ids_equal_the_golden_ids_of_main(case):
+    doc, fact = GOLDEN_CASES[case]
+    want = GOLDEN_IDS[case]
+    # the insert path: two facts with the same natural key get ordinals 0 and 1
+    twins = [{**fact, "evidence": "a"}, {**fact, "evidence": "b"}]
+    assert tuple(fact_identity.ids_for_new_facts(ERIKA_UUID, doc, twins, set())) == want
+    key = fact_identity.fact_key(ERIKA_UUID, doc, fact)
+    assert fact_identity.fact_uuid(key, 0) == want[0]
+    # the read path for stored rows without fhir_id (dashboard_feed)
+    row = {"id": 1, "code": fact["code"], "param": fact["label"],
+           "occurred_at": fact["occurred_at"], "page_number": fact["page_number"],
+           "metadata_json": json.dumps(fact["metadata"]), "evidence": "a",
+           "verification": "machine", "fhir_id": None}  # fmt: skip
+    assert fact_identity.ids_for_rows(ERIKA_UUID, doc, [row]) == {1: want[0]}
+    # the llm-lab family never yields a rule id
+    lab = fact_identity.ids_for_new_facts(ERIKA_UUID, doc, twins, set(), family=LLM_LAB_FAMILY)
+    assert not set(lab) & set(want)
+    lab_row = fact_identity.ids_for_rows(ERIKA_UUID, doc, [row], family=LLM_LAB_FAMILY)
+    assert lab_row[1] != want[0]
