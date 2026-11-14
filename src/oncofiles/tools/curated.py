@@ -2443,6 +2443,9 @@ async def _clinical_job(
                             entry.update(
                                 result="stored", stored=res["stored"], store_dropped=res["dropped"]
                             )
+                            if res.get("warnings"):  # #819 rerun_lost_many (counts + doc id)
+                                entry["warnings"] = [*(entry.get("warnings") or []),
+                                                     *res["warnings"]]  # fmt: skip
                     report.append(entry)
                     w.consumed.set()
             finally:
@@ -2457,7 +2460,10 @@ async def _clinical_job(
                          "overrides": _overrides(thinking, sampling, timeout_s, reasoning_marker,
                                                  parallel_docs)},
             "timing": _timing(started, report, parallel),
-            "warnings": llm_extract_call.merge_warnings(report),
+            "warnings": llm_extract_call.merge_warnings(report) + [
+                w for r in report for w in r.get("warnings") or []
+                if w.get("warning") == "rerun_lost_many"
+            ],
             "totals": _clinical_totals(report), "documents": report,
         })  # fmt: skip
     except verifier.NoBirthDateError:

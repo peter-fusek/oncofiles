@@ -27,9 +27,14 @@ regimen / drug name printed in its own evidence (#799: unverified, reason
 within the document, never merged with a printed course); without such a
 name the cycle is dropped (``cycle_without_course``).
 
-Re-extraction of a document soft-deletes only what this extractor family
-wrote for that document and never a ``verified`` / ``corrected`` row (nor a
-row such a row points to); a new item equal to a kept row reuses it.
+Re-extraction of a document is a union keyed per document (#819): an old
+row of this extractor family is replaced only when the new run stored an item
+with the same ``UNION_KEYS`` key; an old row whose key the new run did not
+return stays (``kept_missing_in_rerun``), because the local model samples
+non-deterministically and a shorter answer is not evidence that a fact is
+gone. A ``verified`` / ``corrected`` row (and every row such a row, or a kept
+row, points to) is never touched; a new item equal to a kept row reuses it.
+The user-invoked retract still removes every unprotected row.
 """
 
 from __future__ import annotations
@@ -73,6 +78,9 @@ _PLANNED_KIND = {"cycle": "chemo_cycle", "imaging": "imaging", "visit": "visit"}
 _HGVS = re.compile(r"\b[cgmnpr]\.[A-Za-z0-9_*+>:-]+")
 _MED_KIND = {"administered": "administration", "prescribed": "request"}
 DERIVED_REASON = "derived_from_cycle"  # #799: a course derived from a cycle's evidence
+# #819: a re-run that keeps more coded rows than this because its answer no
+# longer had them is reported as ``rerun_lost_many`` (document id) for review
+RERUN_LOST_MANY = 3
 
 
 def _fold(s) -> str:
@@ -137,6 +145,83 @@ KEYS = {
 }  # fmt: skip
 
 
+def _digits(s) -> str:
+    m = re.search(r"\d+", str(s or ""))
+    return m.group(0) if m else ""
+
+
+def _cond_key(code, text) -> tuple:
+    """A printed ICD-10-shaped code (spacing / case ignored), else the folded text."""
+    c = re.sub(r"[^A-Z0-9.]", "", str(code or "").upper())
+    return ("condition", c or _fold(text))
+
+
+def _record_key(code, param, day) -> tuple:
+    """(code, day); a lesion also by its site, an uncoded marker by its label."""
+    site = _fold(param) if not code or code == LESION_CODE else ""
+    return ("record", code or "", site, _day(day))
+
+
+def _metadata(r: dict) -> dict:
+    try:
+        return json.loads(r.get("metadata_json") or "{}")
+    except ValueError:
+        return {}
+
+
+# #819 union keys: one key per stored row and per new item, coarser than KEYS
+# (no value), so the same fact with a new value replaces the old row and a
+# fact the new run did not return at all keeps it. A stage follows its
+# condition and a derived course its cycles (None = no own key).
+UNION_KEYS = {
+    "condition": lambda r: _cond_key(_metadata(r).get("code_printed"), r["printed_text"]),
+    "cancer_stage": lambda r: None,
+    "treatment_course": lambda r: (
+        None if _is_derived(r) else ("course", _fold(r["regimen_printed"]))
+    ),
+    "treatment_cycle": lambda r: (
+        "cycle", _digits(r.get("cycle_number_printed")),
+        _day(r.get("actual_at") or r.get("planned_at")),
+    ),
+    "medication_event": lambda r: (
+        "medication", _fold(r["ingredient_printed"]), _day(r.get("effective_start")),
+    ),
+    "procedure": lambda r: (
+        "procedure", r["kind"], _day(r.get("performed_at")), _fold(r["printed_text"]),
+    ),
+    "record": lambda r: _record_key(r.get("code"), r.get("param"), r.get("occurred_at")),
+    "encounter": lambda r: ("encounter", r["kind"], _day(r.get("start_at"))),
+}  # fmt: skip
+
+
+def _item_keys(it: dict) -> list[tuple]:
+    """The union keys a new item covers (none for an item that is never stored)."""
+    f, d, kind = it["fields"], it.get("derived") or {}, it["kind"]
+    if kind == "diagnoses":
+        return [_cond_key(f.get("code_as_printed"), f.get("text_as_printed"))]
+    if kind == "treatment_courses":
+        return [("course", _fold(f.get("regimen_as_printed")))]
+    if kind == "cycles":
+        return [("cycle", _digits(f.get("cycle_as_printed")), _day(_iso(it)))]
+    if kind == "medications":
+        return [("medication", _fold(f.get("drug_as_printed")), _day(_iso(it, "start_date")))]
+    if kind == "procedures":
+        return [("procedure", f.get("type") or "other", _day(_iso(it)),
+                 _fold(f.get("description_as_printed")))]  # fmt: skip
+    if kind == "lesions":
+        return [_record_key(LESION_CODE, f.get("lesion_as_printed"), _iso(it))]
+    if kind == "biomarkers":
+        return [_record_key(d.get("code"), f.get("marker_as_printed"), _iso(it))]
+    if kind == "planned":
+        day = _iso(it)
+        if not day:
+            return []
+        what = f.get("what")
+        keys = [("encounter", _PLANNED_KIND.get(what or "", "other"), _day(day))]
+        return keys + [("cycle", "", _day(day))] if what == "cycle" else keys
+    return []
+
+
 def extracted_by_for(model: str | None) -> str:
     return f"{EXTRACTOR_VERSION}/{model}" if model else EXTRACTOR_VERSION
 
@@ -192,26 +277,65 @@ def _protected(r: dict) -> bool:
     return r.get("verification") in PROTECTED_VERIFICATION
 
 
-async def _plan_removal(db, *, patient_id: str, document_id: int) -> dict:
+async def _plan_removal(
+    db, *, patient_id: str, document_id: int, new_keys: set | None = None
+) -> dict:
     """The active rows of one document and what of it stays: protected
-    (verified / corrected) rows and every row a protected row points to.
-    Shared by re-extraction (``store_document``) and the user-invoked
-    retract (``retract_document``) so both remove exactly the same rows."""
+    (verified / corrected) rows, with ``new_keys`` (a re-extraction, #819)
+    also every unprotected row whose union key is not among them, and every
+    row a staying row points to. Shared by re-extraction (``store_document``)
+    and the user-invoked retract (``retract_document``, ``new_keys=None``:
+    every unprotected row goes) so both use the same keep / parent logic."""
     pid = patient_id
-    existing = {
-        e: await db.hard_rows_of_document(e, patient_id=pid, document_id=document_id)
-        for e in ENTITIES
+    rows = {
+        "existing": {
+            e: await db.hard_rows_of_document(e, patient_id=pid, document_id=document_id)
+            for e in ENTITIES
+        },
+        "records": await db.extracted_records_of_document(
+            patient_id=pid, document_id=document_id, family=EXTRACTOR_FAMILY
+        ),
+        "encounters": await db.planned_encounters_of_document(
+            patient_id=pid, document_id=document_id, family=EXTRACTOR_FAMILY
+        ),
     }
-    records = await db.extracted_records_of_document(
-        patient_id=pid, document_id=document_id, family=EXTRACTOR_FAMILY
-    )
-    encounters = await db.planned_encounters_of_document(
-        patient_id=pid, document_id=document_id, family=EXTRACTOR_FAMILY
-    )
-    keep = {e: {r["id"] for r in rows if _protected(r)} for e, rows in existing.items()}
+    return _plan_from(rows, new_keys)
+
+
+def _plan_from(rows: dict, new_keys: set | None) -> dict:
+    """``_plan_removal`` on rows already read. A re-extraction plans twice on
+    the same pre-insert snapshot: before inserting with the keys of every new
+    item, after it with the keys of the items actually stored (a dropped item
+    never replaces anything)."""
+    existing, records, encounters = rows["existing"], rows["records"], rows["encounters"]
+
+    def missing(key) -> bool:
+        return new_keys is not None and key is not None and key not in new_keys
+
+    keep = {e: {r["id"] for r in rows_ if _protected(r)} for e, rows_ in existing.items()}
+    carried: dict[str, set] = {e: set() for e in ENTITIES}
+    for e, rows_ in existing.items():
+        for r in rows_:
+            if _mine(r) and r["id"] not in keep[e] and missing(UNION_KEYS[e](r)):
+                carried[e].add(r["id"])
+    for r in existing["cancer_stage"]:  # a stage stays with its kept condition
+        if (
+            _mine(r)
+            and r["id"] not in keep["cancer_stage"]
+            and r.get("condition_id") in carried["condition"]
+        ):
+            carried["cancer_stage"].add(r["id"])
+    carried_records = {
+        r["id"] for r in records if not _protected(r) and missing(UNION_KEYS["record"](r))
+    }
+    carried_encounters = {
+        r["id"] for r in encounters if not _protected(r) and missing(UNION_KEYS["encounter"](r))
+    }
+    for e in ENTITIES:
+        keep[e] |= carried[e]
     for r in records:
-        if _protected(r):
-            proc = json.loads(r.get("metadata_json") or "{}").get("imaging_procedure_id")
+        if _protected(r) or r["id"] in carried_records:
+            proc = _metadata(r).get("imaging_procedure_id")
             if proc:
                 keep["procedure"].add(proc)
     parents = (
@@ -227,17 +351,42 @@ async def _plan_removal(db, *, patient_id: str, document_id: int) -> dict:
                 if r["id"] in keep[child] and r.get(col):
                     keep[parent].add(r[col])
     hard = [
-        (e, r) for e, rows in existing.items() for r in rows if _mine(r) and r["id"] not in keep[e]
-    ]
+        (e, r) for e, rows_ in existing.items() for r in rows_
+        if _mine(r) and r["id"] not in keep[e]
+    ]  # fmt: skip
     return {
-        "existing": existing,
-        "records": records,
-        "encounters": encounters,
+        **rows,
         "keep": keep,
+        "carried": carried,
+        "carried_records": [r for r in records if r["id"] in carried_records],
+        "carried_encounters": len(carried_encounters),
         "remove_hard": hard,
-        "remove_records": [r for r in records if not _protected(r)],
-        "remove_encounters": [r for r in encounters if not _protected(r)],
+        "remove_records": [
+            r for r in records if not _protected(r) and r["id"] not in carried_records
+        ],
+        "remove_encounters": [
+            r for r in encounters if not _protected(r) and r["id"] not in carried_encounters
+        ],
     }
+
+
+def _missing_counts(plan: dict) -> tuple[dict[str, int], int]:
+    """(``kept_missing_in_rerun`` per target, how many of them are coded: a
+    coded biomarker / variant / lesion, a diagnosis with a printed code, a
+    procedure)."""
+    counts: Counter = Counter()
+    coded = 0
+    for e, ids in plan["carried"].items():
+        counts[STAT_OF[e]] += len(ids)
+    for r in plan["existing"]["condition"]:
+        if r["id"] in plan["carried"]["condition"] and _metadata(r).get("code_printed"):
+            coded += 1
+    coded += len(plan["carried"]["procedure"])
+    for r in plan["carried_records"]:
+        counts[_record_stat(r)] += 1
+        coded += bool(r.get("code"))
+    counts["planned_encounters"] += plan["carried_encounters"]
+    return {k: n for k, n in counts.items() if n}, coded
 
 
 def _record_stat(r: dict) -> str:
@@ -314,9 +463,12 @@ async def store_document(  # noqa: PLR0912, PLR0915
     birth_dates,
     model: str | None = None,
 ) -> dict:
-    """Replace this extractor's rows of one document with ``items`` (verified
-    items from ``llm_extract_clinical.extract_document``). Returns counts per
-    target (added / removed / kept_protected) and dropped items — no values.
+    """Merge ``items`` (verified items from ``llm_extract_clinical.
+    extract_document``) into this extractor's rows of one document: a row
+    whose union key a stored item covers is replaced, a row the run did not
+    return stays (#819). Returns counts per target (added / removed /
+    kept_protected / kept_missing_in_rerun), dropped items and warnings
+    (``rerun_lost_many`` above ``RERUN_LOST_MANY`` coded rows) — no values.
 
     ``birth_dates`` are the ones the items were verified against: without
     any, the birth-date guard was inactive and nothing is written
@@ -328,11 +480,15 @@ async def store_document(  # noqa: PLR0912, PLR0915
     stats: dict[str, Counter] = {s: Counter() for s in STAT_OF.values()}
     dropped: Counter = Counter()
 
-    # ── soft-delete what this extractor wrote for the document (keeps protected rows)
-    plan = await _plan_removal(db, patient_id=pid, document_id=document_id)
-    await _soft_delete_planned(
-        db, plan, patient_id=pid, reason=f"re-extraction by {extracted_by}", stats=stats
-    )
+    # ── plan the union (#819): only rows whose key a new item covers are replaced,
+    # protected rows and rows the new run did not return stay. Nothing is
+    # soft-deleted before the items are stored: the final plan uses the keys
+    # of the items actually stored, so a dropped item never replaces a row.
+    plan = await _plan_removal(
+        db, patient_id=pid, document_id=document_id,
+        new_keys={k for it in items for k in _item_keys(it)},
+    )  # fmt: skip
+    dropped_items: list[dict] = []
     existing, records, encounters, keep = (
         plan["existing"], plan["records"], plan["encounters"], plan["keep"],
     )  # fmt: skip
@@ -524,6 +680,7 @@ async def store_document(  # noqa: PLR0912, PLR0915
                 course_id = await derived_course(reg or found[0], it)
         if course_id is None:
             dropped["cycle_without_course"] += 1
+            dropped_items.append(it)
             continue
         status = f.get("status")
         day = _iso(it)
@@ -654,8 +811,25 @@ async def store_document(  # noqa: PLR0912, PLR0915
         await provenance("encounter", enc_id, it)
         stats["planned_encounters"]["added"] += 1
 
+    # ── replace only what a stored item covers; report what the re-run did not return
+    stored_keys = {
+        k for it in items if not any(it is x for x in dropped_items) for k in _item_keys(it)
+    }
+    final = _plan_from(plan, stored_keys)
+    await _soft_delete_planned(
+        db, final, patient_id=pid, reason=f"re-extraction by {extracted_by}", stats=stats
+    )
+    missing, coded_missing = _missing_counts(final)
+    for stat, n in missing.items():
+        stats[stat]["kept_missing_in_rerun"] += n
+    warnings = []
+    if coded_missing > RERUN_LOST_MANY:
+        warnings.append(
+            {"warning": "rerun_lost_many", "document_id": document_id, "coded_rows": coded_missing}
+        )
     return {
         "stored": {k: dict(c) for k, c in stats.items() if c},
         "dropped": dict(sorted(dropped.items())),
         "extracted_by": extracted_by,
+        "warnings": warnings,
     }
