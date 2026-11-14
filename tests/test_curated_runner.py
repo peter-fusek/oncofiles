@@ -114,8 +114,10 @@ class FakeDrive:
         self.writes.append(("update", self.items[fid]["name"]))
         self.items[fid]["content"] = text.encode()
 
-    def move_rename(self, fid, new_name, from_parent, to_parent):
+    def move_rename(self, fid, new_name, from_parent, to_parent, *, allowed_parents=None):
         self._check("move_rename")
+        # The runner always passes the curated tree (originals invariant).
+        assert allowed_parents is not None and to_parent in allowed_parents
         d = self.items[fid]
         assert d["parent"] == from_parent
         assert new_name == d["name"] or new_name not in self.names(to_parent)
@@ -436,8 +438,8 @@ def test_recheck_reports_drive_changes_during_run():
     d = _drive_with_inbox()
     orig = d.move_rename
 
-    def move_and_fork(fid, new_name, from_parent, to_parent):
-        orig(fid, new_name, from_parent, to_parent)
+    def move_and_fork(fid, new_name, from_parent, to_parent, **kw):
+        orig(fid, new_name, from_parent, to_parent, **kw)
         if not d.find(d.root, "labs — laboratórne výsledky (1)"):
             d.add("labs — laboratórne výsledky (1)", d.root, folder=True)  # Drive forked a folder
 
@@ -517,11 +519,11 @@ def test_truncated_classification_is_per_document_not_a_run_abort():
 class JournalCheckingDrive(FakeDrive):
     """Asserts every move is journaled in the canary BEFORE it happens."""
 
-    def move_rename(self, fid, new_name, from_parent, to_parent):
+    def move_rename(self, fid, new_name, from_parent, to_parent, **kw):
         canary = self.find(self.root, CANARY)
         journal = self.download(canary).decode()
         assert new_name in journal, f"move to {new_name} not journaled first"
-        super().move_rename(fid, new_name, from_parent, to_parent)
+        super().move_rename(fid, new_name, from_parent, to_parent, **kw)
 
 
 def _journaled_drive():
@@ -675,11 +677,11 @@ class KillOnSidecarMoveDrive(FakeDrive):
     """Dies at the first sidecar move; keeps the journal as the kill left it
     (a real kill never reaches the run's ``finally``)."""
 
-    def move_rename(self, fid, new_name, from_parent, to_parent):
+    def move_rename(self, fid, new_name, from_parent, to_parent, **kw):
         if new_name.endswith(".md"):
             self.journal_at_kill = self.download(self.find(self.root, CANARY)).decode()
             raise _Killed
-        super().move_rename(fid, new_name, from_parent, to_parent)
+        super().move_rename(fid, new_name, from_parent, to_parent, **kw)
 
 
 def test_pair_is_confirmed_only_after_both_moves():
