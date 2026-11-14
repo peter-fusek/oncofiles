@@ -295,6 +295,17 @@ def test_move_rename_refuses_a_parent_outside_the_tree(g):
     assert svc.updates == [] and svc.items[fid]["parent"] == inbox
 
 
+def test_drive_ops_move_rename_refuses_without_allowed_parents(g):
+    """#811: the wrapper requires the curated tree; ``None`` writes nothing."""
+    svc, root, inbox, labs, dups, _ = _tree(g)
+    fid = svc.add("scan_001.pdf", inbox, b"%PDF")
+    with pytest.raises(WriteVerificationError, match="allowed_parents is required"):
+        DriveOps(g).move_rename(fid, "scan_001.pdf", inbox, labs, allowed_parents=None)
+    with pytest.raises(TypeError):
+        DriveOps(g).move_rename(fid, "scan_001.pdf", inbox, labs)  # keyword is mandatory
+    assert svc.updates == [] and svc.items[fid]["parent"] == inbox
+
+
 @pytest.mark.parametrize(
     "old,new",
     [
@@ -325,8 +336,10 @@ def test_move_rename_pair_and_quarantine_happy_paths(g):
     new = "20271005-JanaNovakova-NOU-Labs-Kovacova-OKB.pdf"  # case of the extension may change
     ops.move_rename(src, new, inbox, labs, allowed_parents=allowed)
     ops.move_rename(side, new + ".md", inbox, labs, allowed_parents=allowed)
-    ops.move_rename(bare, "20271005-JanaNovakova-NOU-Labs-Kovacova-OKB-02.bin", inbox, labs)
-    ops.move_rename(native, "20271005-JanaNovakova-NOU-Labs-Kovacova-OKB-03", inbox, labs)
+    bare_new = "20271005-JanaNovakova-NOU-Labs-Kovacova-OKB-02.bin"
+    ops.move_rename(bare, bare_new, inbox, labs, allowed_parents=allowed)
+    native_new = "20271005-JanaNovakova-NOU-Labs-Kovacova-OKB-03"
+    ops.move_rename(native, native_new, inbox, labs, allowed_parents=allowed)
     ops.move_rename(dup, "scan_dup.pdf", inbox, dups, allowed_parents=allowed)
     assert {new, new + ".md"} <= svc.names(labs)
     assert svc.names(dups) == {"scan_dup.pdf"}
@@ -575,6 +588,46 @@ def test_no_drive_delete_trash_body_or_media_update_outside_the_helpers():
             ):
                 offenders.append(f"{where}: media update(")
     assert not offenders, "\n".join(offenders)
+
+
+def _move_rename_calls_without_allowed_parents(path: Path) -> list[str]:
+    out = []
+    for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", None)
+        if name != "move_rename":
+            continue
+        kw = next((k for k in node.keywords if k.arg == "allowed_parents"), None)
+        if kw is None or (isinstance(kw.value, ast.Constant) and kw.value.value is None):
+            out.append(f"{path.name}:{node.lineno}: move_rename( without allowed_parents=")
+    return out
+
+
+def test_every_curated_move_rename_passes_allowed_parents():
+    """#811: no curated call site may skip the tree check."""
+    offenders = []
+    for path in CURATED_SCOPE:
+        offenders += _move_rename_calls_without_allowed_parents(path)
+    assert not offenders, "\n".join(offenders)
+
+
+def test_the_move_rename_lock_catches_a_planted_call(tmp_path):
+    bad = tmp_path / "bad.py"
+    bad.write_text(
+        "def f(d, ops):\n"
+        "    d.move_rename('x', 'y.pdf', 'a', 'b')\n"
+        "    ops.move_rename('x', 'y.pdf', 'a', 'b', allowed_parents=None)\n"
+        "    move_rename(g, 'x', 'y.pdf', 'a', 'b')\n"
+        "    d.move_rename('x', 'y.pdf', 'a', 'b', allowed_parents=tree.folder_ids())\n"
+    )
+    flagged = {int(o.split(":")[1]) for o in _move_rename_calls_without_allowed_parents(bad)}
+    lines = bad.read_text().splitlines()
+    expected = {
+        n for n, line in enumerate(lines, 1) if "move_rename(" in line and "tree" not in line
+    }
+    assert flagged == expected and len(expected) == len(lines) - 2
 
 
 def test_the_lock_scan_catches_a_planted_write(tmp_path):
