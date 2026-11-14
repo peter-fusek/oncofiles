@@ -20,6 +20,24 @@ compares every printed number and date, not only lab-vocabulary values: a
 lost date, more than ``REVIEW_MISSING_NUMBERS`` lost numbers, or a near-empty page together with
 any lost number or a body shrunk below ``NEAR_EMPTY_CHARS_RATIO`` also means
 ``review`` (reason codes in ``review_reasons``; counts only, never tokens).
+#806 adds, stricter only: a body below ``TEXT_SHRUNK_RATIO`` of the old one
+(``text_shrunk``) and a share of the old distinct words found in the new text
+below ``MIN_WORD_OVERLAP`` (``low_word_overlap``, reported as ``word_overlap``).
+
+Near-empty pages (#806): a vision pass that returns less than
+``NEAR_EMPTY_CHARS`` while more than ``RETRY_REASONING_RATIO`` of its
+completion tokens were reasoning is retried ONCE for that page with thinking
+off (the per-call reasoning marker, same dpi and prompt); the retry's text is
+kept only when longer, both attempts are in ``llm_passes`` and the page in
+``retried_pages``. The model's reasoning channel is never read as a
+transcription (infra decision on #806). Every rendered page gets a cheap ink
+density (``page_ink``: share of non-near-white pixels at ``INK_DPI``) and,
+for a PDF, whether it has a text layer. A near-empty page with ink below
+``BLANK_INK_MAX`` and no text layer is not retried; it is a blank back side,
+not counted by ``near_empty_with_loss``, only when the OLD sidecar has page
+markers and its text of that same page was near-empty too (a blank never
+loosens the guard). A retried pass's kept text goes through the same
+reconcile and loss guard as any first pass.
 
 Writing (never in a dry run): the old sidecar is first copied to the logs
 folder (``_reocr-backup-<date>-<time>-<sidecar>``), then the sidecar is updated in
@@ -52,6 +70,15 @@ REVIEW_MISSING_NUMBERS = 2  # more than this many lost numbers → review
 REVIEW_MISSING_DATES = 0  # more than this many lost dates → review
 NEAR_EMPTY_CHARS = 50  # a page with fewer stripped characters is near-empty
 NEAR_EMPTY_CHARS_RATIO = 0.8  # near-empty page + body below this share of the old → review
+# #806 (thresholds may only become stricter)
+TEXT_SHRUNK_RATIO = 0.6  # new body below this share of the old body → review (text_shrunk)
+MIN_WORD_OVERLAP = 0.40  # share of old distinct words found in the new text below this → review
+WORD_MIN_LEN = 3  # words for the overlap: lower-case, letters only, diacritics kept, ≥ this
+RETRY_REASONING_RATIO = 0.8  # near-empty pass with reasoning/completion above this → 1 retry
+INK_DPI = 36  # render dpi of the ink-density measure (cheap, never sent to the model)
+INK_NEAR_WHITE = 230  # grey level (0-255) at or above which a pixel counts as paper
+BLANK_INK_MAX = 0.005  # a page with less ink (share of pixels) and no text layer is blank
+_WORD = re.compile(r"[^\W\d_]+")
 _DATE_TOKEN = re.compile(r"\b\d{1,2}\.\s?\d{1,2}\.\s?(?:\d{4}|\d{2})\b|\b\d{4}-\d{2}-\d{2}\b")
 _NUM_TOKEN = re.compile(r"(?<![\w.,])\d+(?:[.,]\d+)?(?![\w])")
 _PAGE_MARKER = re.compile(r"<!--\s*page\s+\d+\s*-->")
@@ -157,7 +184,41 @@ def _pass_record(
 
 
 def _by_page_and_pass(records: list[dict]) -> list[dict]:
-    return sorted(records, key=lambda r: (r.get("page") or 0, r.get("pass") or 0))
+    return sorted(
+        records, key=lambda r: (r.get("page") or 0, r.get("pass") or 0, bool(r.get("retry")))
+    )
+
+
+def page_ink(page, *, dpi: int = INK_DPI) -> float:
+    """Share of non-near-white pixels of a page rendered in grey at ``dpi``
+    (#806). A number only: nothing of the page leaves this function."""
+    import pymupdf
+
+    pix = page.get_pixmap(dpi=dpi, colorspace=pymupdf.csGRAY, alpha=False)
+    samples = pix.samples
+    total = pix.width * pix.height
+    del pix
+    if not total:
+        return 0.0
+    paper = bytes(range(INK_NEAR_WHITE, 256))
+    return len(samples.translate(None, paper)) / total
+
+
+def is_blank(ink: float | None, text_layer: bool | None) -> bool:
+    """A likely blank back side: measured ink below ``BLANK_INK_MAX`` and no
+    text layer. Unknown ink (not measured) is never blank."""
+    return isinstance(ink, int | float) and ink < BLANK_INK_MAX and not text_layer
+
+
+def needs_retry(text: str | None, reasoning_tokens, completion_tokens) -> bool:
+    """A near-empty answer from a pass that spent nearly all its tokens on
+    reasoning (#806). Unknown counts never trigger a retry."""
+    if len((text or "").strip()) >= NEAR_EMPTY_CHARS:
+        return False
+    if not all(isinstance(v, int) and not isinstance(v, bool)
+               for v in (reasoning_tokens, completion_tokens)):  # fmt: skip
+        return False
+    return completion_tokens > 0 and reasoning_tokens / completion_tokens > RETRY_REASONING_RATIO
 
 
 def is_truncated(rec: dict) -> bool:
@@ -201,6 +262,9 @@ def log_passes(doc_ref, records: list[dict]) -> None:
             r.get("prompt_tokens"), r.get("completion_tokens"), r.get("reasoning_tokens"),
             REOCR_BUDGET, r.get("seconds"), r.get("error"),
         )  # fmt: skip
+        if r.get("retry"):
+            logger.info("re-OCR llm pass retried: doc=%s page=%s pass=%s thinking=%s",
+                        doc_ref, r.get("page"), r.get("pass"), r.get("thinking"))  # fmt: skip
 
 
 def report_usage(doc_ref, records: list[dict]) -> tuple[dict, list[dict]]:
@@ -219,7 +283,7 @@ def report_usage(doc_ref, records: list[dict]) -> tuple[dict, list[dict]]:
 def _vision_passes(
     content: bytes, ext: str, dpis: list[int], client, *, parallel: int = 1,
     second_pass_pages: Collection[int] | None = None, adaptive: bool = False,
-    usage: list[dict] | None = None,
+    usage: list[dict] | None = None, retry_thin: bool = False, diag: dict | None = None,
 ) -> list[list[str | None]]:  # fmt: skip
     """One answer list per DPI. Memory-bounded (#667): one page is rendered,
     sent and freed at a time. With ``parallel`` ≥ 2 (#593) the passes of that
@@ -250,6 +314,16 @@ def _vision_passes(
     ``usage`` (optional list) receives one ``_pass_record`` per model call
     (#800), also for a call that raised. Passes may run in the thread pool, so
     records are appended under a lock and sorted by page and pass at the end.
+
+    #806: every page's ink density (and, for a PDF, whether it has a text
+    layer) is measured before its passes and put in ``diag`` (``page_ink``,
+    ``page_text_layer``; ``retried_pages``). With ``retry_thin`` (the re-OCR
+    rewrite path) a pass whose answer is near-empty although nearly all of
+    its completion was reasoning (``needs_retry``) is asked once more for that
+    page with thinking off (``reasoning_marker=True``), same image and
+    prompt; the longer answer stands. A blank page (``is_blank``) is never
+    retried. Only ``llm.chat``'s return value (the ``content`` channel) is
+    ever used as text; ``info`` is read for token counts only.
     """
     import threading
     from concurrent.futures import ThreadPoolExecutor
@@ -257,21 +331,29 @@ def _vision_passes(
     import pymupdf
 
     lock = threading.Lock()
+    blank: dict[int, bool] = {}  # 0-based page -> likely blank back side (#806)
+    retried: set[int] = set()  # 1-based pages with a thinking-off retry
 
-    def ask(part: dict, i: int, total: int, k: int = 0) -> str:
+    def call(part: dict, i: int, total: int, k: int = 0, retry: bool = False):
+        """One model call: (answer text, (reasoning_tokens, completion_tokens))."""
         info: dict = {}
         t0 = time.monotonic()
         error = None
+        if retry:  # #806: thinking off through the per-call marker, nothing global
+            mode = {"thinking": False, "reasoning_marker": True}
+        else:
+            mode = {"thinking": False if config.REOCR_THINKING == "off" else None}
         try:
-            return llm.chat(
+            text = llm.chat(
                 REOCR_SYSTEM_PROMPT,
                 [{"type": "text", "text": f"Page {i + 1} of {total}."}, part],
                 max_tokens=REOCR_BUDGET,
                 reasoning_effort="high",
-                thinking=False if config.REOCR_THINKING == "off" else None,
                 client=client,
                 info=info,
+                **mode,
             )
+            return text, (info.get("reasoning_tokens"), info.get("completion_tokens"))
         except Exception as exc:
             error = exc
             raise
@@ -282,11 +364,27 @@ def _vision_passes(
                 try:
                     dpi = dpis[k] if k < len(dpis) else None
                     rec = _pass_record(i + 1, k, dpi, info, time.monotonic() - t0, error)
+                    if retry:
+                        rec.update(retry=True, thinking="off")
                     with lock:
                         usage.append(rec)
                 except Exception as rec_exc:
                     logger.warning("re-OCR pass usage not recorded: %s", type(rec_exc).__name__)
             info.clear()  # the raw answer channels never outlive the call
+
+    def ask(part: dict, i: int, total: int, k: int = 0) -> str:
+        text, tokens = call(part, i, total, k)
+        if not retry_thin or blank.get(i) or not needs_retry(text, *tokens):
+            return text
+        with lock:
+            retried.add(i + 1)
+        try:
+            again, _ = call(part, i, total, k, retry=True)
+        except Exception as exc:  # the retry is a bonus: its failure keeps the first answer
+            logger.warning("re-OCR retry failed: page=%s pass=%s %s", i + 1, k + 1,
+                           type(exc).__name__)  # fmt: skip
+            return text
+        return again if len((again or "").strip()) > len((text or "").strip()) else text
 
     def render(page, dpi: int) -> dict:
         png = extract_mod._pixmap_png(page, dpi)
@@ -297,6 +395,8 @@ def _vision_passes(
     workers = max(1, min(int(parallel), len(dpis)))
     passes: list[list[str | None]] = [[] for _ in dpis]
     deferred: list[int] = []
+    inks: list[float | None] = []
+    layers: list[bool | None] = []
     with (
         pymupdf.open(stream=content, filetype=ext) as doc,
         ThreadPoolExecutor(max_workers=workers) as pool,
@@ -304,6 +404,15 @@ def _vision_passes(
         total = doc.page_count if ext == "pdf" else 1
         for i in range(total):
             page = doc[i]
+            try:  # a measurement only: a failure leaves the page "unknown", never blank
+                ink: float | None = round(page_ink(page), 4)
+            except Exception as exc:
+                logger.warning("re-OCR ink measure failed: page=%s %s", i + 1, type(exc).__name__)
+                ink = None
+            layer = bool(page.get_text().strip()) if ext == "pdf" else None
+            inks.append(ink)
+            layers.append(layer)
+            blank[i] = is_blank(ink, layer)
             wanted = second_pass_pages is None or (i + 1) in second_pass_pages
             if len(dpis) > 1 and not wanted:
                 answers = [ask(render(page, dpis[0]), i, total)]
@@ -333,6 +442,8 @@ def _vision_passes(
                 del page
     if usage is not None:
         usage[:] = _by_page_and_pass(usage)
+    if diag is not None:
+        diag.update(page_ink=inks, page_text_layer=layers, retried_pages=sorted(retried))
     return passes
 
 
@@ -389,6 +500,10 @@ class Reread:
     # #800: one record per vision pass (page, pass, dpi, finish, token counts,
     # seconds); counts only, never the answer
     llm_passes: list[dict] = field(default_factory=list)
+    # #806: per rendered page; empty when no page was rendered (text layer, plain)
+    page_ink: list[float | None] = field(default_factory=list)
+    page_text_layer: list[bool | None] = field(default_factory=list)
+    retried_pages: list[int] = field(default_factory=list)  # 1-based, thinking-off retry
 
 
 def reocr_dpis(passes: int, purpose: str = "reocr") -> list[int]:
@@ -440,10 +555,12 @@ def reread(
         dpis = reocr_dpis(passes, purpose)
         adaptive = config.REOCR_PASSES_MODE == "adaptive"
         t0 = time.monotonic()
+        diag: dict = {}
         with httpx.Client(timeout=config.LOCAL_LLM_TIMEOUT_S) as client:  # one per document
             answers = _vision_passes(
                 content, ext, dpis, client, parallel=parallel, adaptive=adaptive,
                 second_pass_pages=second_pass_pages if adaptive else None, usage=usage,
+                retry_thin=purpose == "reocr", diag=diag,
             )  # fmt: skip
         seconds = round(time.monotonic() - t0, 1)
         first, hand = _strip_handwritten(answers[0])
@@ -456,7 +573,10 @@ def reread(
             skipped = [i for i, s in enumerate(second, start=1) if s is None]
         return Reread(first, "vision2" if passes >= 2 else "vision", llm.model_id(), hand, flagged,
                       seconds=seconds, parallel=parallel, dpi=dpis, passes_per_page=per_page,
-                      skipped_second_pass_pages=skipped, llm_passes=usage)  # fmt: skip
+                      skipped_second_pass_pages=skipped, llm_passes=usage,
+                      page_ink=diag.get("page_ink", []),
+                      page_text_layer=diag.get("page_text_layer", []),
+                      retried_pages=diag.get("retried_pages", []))  # fmt: skip
     except llm.LocalLLMError as exc:
         return Reread([], "none", llm.model_id(), error=str(exc),
                       llm_passes=_by_page_and_pass(usage))  # fmt: skip
@@ -577,9 +697,28 @@ def _chars(text: str) -> int:
     return len(re.sub(r"\s", "", _body(text)))
 
 
+def _words(text: str) -> set[str]:
+    """Distinct words of the body: NFC, lower-case, letters only (diacritics
+    kept), at least ``WORD_MIN_LEN`` long."""
+    import unicodedata
+
+    body = unicodedata.normalize("NFC", _body(text)).lower()
+    return {w for w in _WORD.findall(body) if len(w) >= WORD_MIN_LEN}
+
+
+def word_overlap(old_text: str, new_text: str) -> float | None:
+    """Share of the old text's distinct words that the new text still has
+    (#806), rounded; ``None`` when the old text has no such word."""
+    old = _words(old_text)
+    if not old:
+        return None
+    return round(len(old & _words(new_text)) / len(old), 3)
+
+
 def token_loss(old_text: str, new_text: str) -> dict:
     """Generic loss check: how many printed numbers and dates of the old text
-    the new one no longer has (sets, front matter and page markers ignored).
+    the new one no longer has (sets, front matter and page markers ignored),
+    the character counts and the word overlap (#806).
     Counts only, never the tokens themselves."""
     old_nums, old_dates = _tokens(old_text)
     new_nums, new_dates = _tokens(new_text)
@@ -588,6 +727,7 @@ def token_loss(old_text: str, new_text: str) -> dict:
         "missing_dates": len(old_dates - new_dates),
         "old_chars": _chars(old_text),
         "new_chars": _chars(new_text),
+        "word_overlap": word_overlap(old_text, new_text),
     }
 
 
@@ -597,9 +737,49 @@ def near_empty_pages(pages: list[str]) -> list[int]:
     return [i for i, p in enumerate(pages, start=1) if len((p or "").strip()) < NEAR_EMPTY_CHARS]
 
 
-def review_reasons(lost: list[str], loss: dict, empty_pages: list[int]) -> list[str]:
+_PAGE_SPLIT = re.compile(r"<!--\s*page\s+(\d+)\s*-->")
+
+
+def old_page_chars(old_text: str) -> dict[int, int] | None:
+    """Stripped character count per page of the OLD sidecar, by its page
+    markers; ``None`` when it has none (Cowork-era sidecars): the old text
+    of a single page is then unknown."""
+    body = _FRONT.sub("", old_text or "", count=1)
+    parts = _PAGE_SPLIT.split(body)
+    if len(parts) < 3:
+        return None
+    out: dict[int, int] = {}
+    for num, text in zip(parts[1::2], parts[2::2], strict=True):
+        out[int(num)] = out.get(int(num), 0) + len(text.strip())
+    return out
+
+
+def blank_pages(
+    empty_pages: list[int], ink: list, text_layer: list, old_chars: dict[int, int] | None
+) -> list[int]:
+    """The near-empty pages (1-based) that are blank back sides (#806): low
+    ink, no text layer AND the old sidecar's text of that same page was
+    near-empty too. Without old page markers (``old_chars`` None) or without
+    that page in them, no page is blank: a blank never loosens the guard."""
+    if old_chars is None:
+        return []
+
+    def at(values: list, page: int):
+        return values[page - 1] if 0 < page <= len(values) else None
+
+    return [
+        p for p in empty_pages
+        if p in old_chars and old_chars[p] < NEAR_EMPTY_CHARS
+        and is_blank(at(ink, p), at(text_layer, p))
+    ]  # fmt: skip
+
+
+def review_reasons(
+    lost: list[str], loss: dict, empty_pages: list[int], blank: Collection[int] = ()
+) -> list[str]:
     """Reason codes that stop a rewrite (empty list: it may be written).
-    A near-empty page alone is not a stop."""
+    A near-empty page alone is not a stop; a blank page (``blank``, #806)
+    never counts toward ``near_empty_with_loss``."""
     reasons = []
     if lost:
         reasons.append("lost_values")
@@ -607,11 +787,17 @@ def review_reasons(lost: list[str], loss: dict, empty_pages: list[int]) -> list[
         reasons.append("missing_dates")
     if loss["missing_numbers"] > REVIEW_MISSING_NUMBERS:
         reasons.append("missing_numbers")
-    if empty_pages and (
+    missed = [p for p in empty_pages if p not in set(blank)]
+    if missed and (
         loss["missing_numbers"] > 0
         or loss["new_chars"] < NEAR_EMPTY_CHARS_RATIO * loss["old_chars"]
     ):
         reasons.append("near_empty_with_loss")
+    if loss["new_chars"] < TEXT_SHRUNK_RATIO * loss["old_chars"]:
+        reasons.append("text_shrunk")
+    overlap = loss.get("word_overlap")
+    if overlap is not None and overlap < MIN_WORD_OVERLAP:
+        reasons.append("low_word_overlap")
     return reasons
 
 
@@ -650,6 +836,12 @@ class DocResult:
     new_chars: int = 0
     review_reasons: list[str] = field(default_factory=list)
     decision: str | None = None  # rewrite | review (also on a dry run)
+    # #806: rounded floats, page numbers and booleans only, never content
+    word_overlap: float | None = None
+    page_ink: list[float | None] = field(default_factory=list)
+    page_text_layer: list[bool | None] = field(default_factory=list)
+    blank_pages: list[int] = field(default_factory=list)
+    retried_pages: list[int] = field(default_factory=list)
 
 
 @dataclass
@@ -815,14 +1007,22 @@ def run_reocr(
             loss = token_loss(old, new)
             res.missing_numbers, res.missing_dates = loss["missing_numbers"], loss["missing_dates"]
             res.old_chars, res.new_chars = loss["old_chars"], loss["new_chars"]
+            res.word_overlap = loss["word_overlap"]
+            res.page_ink = list(getattr(rr, "page_ink", None) or [])
+            res.page_text_layer = list(getattr(rr, "page_text_layer", None) or [])
+            res.retried_pages = list(getattr(rr, "retried_pages", None) or [])
             res.near_empty_pages = near_empty_pages(rr.pages)
-            res.review_reasons = review_reasons(lost, loss, res.near_empty_pages)
+            res.blank_pages = blank_pages(res.near_empty_pages, res.page_ink,
+                                          res.page_text_layer, old_page_chars(old))  # fmt: skip
+            res.review_reasons = review_reasons(lost, loss, res.near_empty_pages, res.blank_pages)
             res.decision = "review" if res.review_reasons else "rewrite"
             logger.info(
                 "re-OCR loss check doc=%s missing_numbers=%d missing_dates=%d "
-                "near_empty_pages=%s old_chars=%d new_chars=%d decision=%s reasons=%s",
+                "near_empty_pages=%s blank_pages=%s retried_pages=%s old_chars=%d "
+                "new_chars=%d word_overlap=%s decision=%s reasons=%s",
                 d["document_id"], res.missing_numbers, res.missing_dates,
-                res.near_empty_pages, res.old_chars, res.new_chars, res.decision,
+                res.near_empty_pages, res.blank_pages, res.retried_pages, res.old_chars,
+                res.new_chars, res.word_overlap, res.decision,
                 ",".join(res.review_reasons) or "-",
             )  # fmt: skip
             facts, _ = extract_lab_facts(rr.pages, vocab, unreliable=rr.handwritten, inline=True)
@@ -847,3 +1047,89 @@ def run_reocr(
         finally:
             gc.collect()
     return report
+
+
+# ── restore a re-OCR backup (#806) ──────────────────────────────────────
+
+
+class RestoreRefusedError(ValueError):
+    """The restore request is not allowed; the message is a reason code."""
+
+
+def _logs_folder_id(drive, root_id: str) -> str:
+    from oncofiles.curated.contract import parse_contract
+    from oncofiles.curated.runner import nfc, walk
+
+    tree = walk(drive, root_id)
+    readme = next((i for i in tree.root_files if nfc(i.name) == "README.md"), None)
+    if readme is None:
+        raise RuntimeError("not a curated folder (no README.md)")
+    contract = parse_contract(drive.download(readme.id).decode("utf-8"))
+    logs = tree.folders.get(contract.logs)
+    if logs is None:
+        raise RuntimeError("the contract's logs folder is missing")
+    return logs.id
+
+
+def is_reocr_backup_of(name: str, filename: str) -> bool:
+    """Is ``name`` a re-OCR backup of this document's sidecar
+    (``_reocr-backup-<date>[-<time>]-<filename>.md``)?"""
+    from oncofiles.curated.runner import nfc
+
+    exact = re.compile(rf"_reocr-backup-\d{{8}}(?:-\d{{6}})?-{re.escape(nfc(filename))}\.md")
+    return bool(exact.fullmatch(nfc(name or "")))
+
+
+def restore_counts(current: str, restored: str) -> dict:
+    """What a restore would change: counts only, never a token (#806).
+    ``old_*`` = the current sidecar, ``new_*`` = the backup's text;
+    ``missing_*`` = tokens of the current text the backup does not have."""
+    cur_nums, cur_dates = _tokens(current)
+    new_nums, new_dates = _tokens(restored)
+    return {
+        "old_chars": _chars(current), "new_chars": _chars(restored),
+        "old_numbers": len(cur_nums), "new_numbers": len(new_nums),
+        "old_dates": len(cur_dates), "new_dates": len(new_dates),
+        "missing_numbers": len(cur_nums - new_nums),
+        "missing_dates": len(cur_dates - new_dates),
+        "regained_numbers": len(new_nums - cur_nums),
+        "regained_dates": len(new_dates - cur_dates),
+    }  # fmt: skip
+
+
+def restore_sidecar(
+    drive, root_id: str, doc: dict, backup_id: str, *, dry_run: bool = True, now: datetime
+) -> dict:
+    """Put a re-OCR backup back as the document's sidecar (#806). Blocking.
+
+    ``doc``: document_id, filename, sidecar_id. ``backup_id`` must be a file
+    in the contract's logs folder named ``_reocr-backup-*-<filename>.md``;
+    anything else raises ``RestoreRefusedError``. A dry run only reports counts.
+    A real run (caller holds ``contract_writes()``) first copies the CURRENT
+    sidecar to logs (``_restore-backup-<ts>-<filename>.md``; ``create_text``
+    refuses an existing name), then updates the sidecar in place with the
+    backup's text (read-back verified by ``drive_ops``). Nothing is deleted."""
+    logs_id = _logs_folder_id(drive, root_id)
+    backup = next((i for i in drive.list_children(logs_id) if i.id == backup_id), None)
+    if backup is None:
+        raise RestoreRefusedError("backup_not_in_logs")
+    if not is_reocr_backup_of(backup.name, doc["filename"]):
+        raise RestoreRefusedError("backup_not_of_this_document")
+    try:
+        current = drive.download(doc["sidecar_id"]).decode("utf-8")
+        restored = drive.download(backup_id).decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise RestoreRefusedError("not_utf8") from exc
+    out = {"document_id": doc["document_id"], "dry_run": dry_run,
+           **restore_counts(current, restored)}  # fmt: skip
+    if current == restored:
+        out["result"] = "unchanged"
+        return out
+    if dry_run:
+        out["result"] = "previewed"
+        return out
+    name = f"_restore-backup-{now:%Y%m%d-%H%M%S}-{doc['filename']}.md"
+    out["restore_backup_id"] = drive.create_text(logs_id, name, current)  # before any change
+    drive.update_text(doc["sidecar_id"], restored)
+    out["result"] = "restored"
+    return out
