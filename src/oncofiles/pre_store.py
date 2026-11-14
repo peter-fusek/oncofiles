@@ -1,7 +1,7 @@
 """Pre-store safety copy of the database (#573, infra review of #701).
 
-Before any REAL re-read, re-OCR or clinical-extraction (#726) job writes, the
-server takes a consistent copy of the local DB file with SQLite's online
+Before any REAL re-read, re-OCR, clinical-extraction (#726) or sidecar-restore
+(#806) job writes, the server takes a consistent copy of the local DB file with SQLite's online
 backup API and checks it with ``PRAGMA quick_check``. No copy, no job: the
 caller refuses (409 on the API) and writes nothing. Retention is in TOTAL
 across job kinds.
@@ -29,8 +29,8 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 KEEP = 5
-JOBS = ("reread", "reocr", "clinical")  # clinical: #726 extraction writes
-NAME_RE = re.compile(r"oncofiles-\d{8}T\d{12}Z-(?:reread|reocr|clinical)\.db")
+JOBS = ("reread", "reocr", "clinical", "restore")  # clinical: #726; restore: #806 sidecar restore
+NAME_RE = re.compile(r"oncofiles-\d{8}T\d{12}Z-(?:reread|reocr|clinical|restore)\.db")
 
 
 class PreStoreError(RuntimeError):

@@ -163,10 +163,12 @@ async def test_near_empty_page_and_one_missing_number_go_to_review(vocab):
 
 
 async def test_near_empty_page_and_a_shrunk_body_go_to_review(vocab):
-    old_body = OLD_BODY + "\n".join([FILLER] * 4) + "\n"
+    # shrunk below NEAR_EMPTY_CHARS_RATIO but not below TEXT_SHRUNK_RATIO (#806)
+    old_body = OLD_BODY + FILLER + "\n"
     _, d, drive, side, old = _go(vocab, [_drop(), "Strana"], old_body=old_body)
     assert d.missing_numbers == 0 and d.missing_dates == 0
     assert d.new_chars < reocr.NEAR_EMPTY_CHARS_RATIO * d.old_chars
+    assert d.new_chars >= reocr.TEXT_SHRUNK_RATIO * d.old_chars
     assert d.result == "review" and d.review_reasons == ["near_empty_with_loss"]
     _unchanged(drive, side, old)
 
