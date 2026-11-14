@@ -21,8 +21,9 @@ enforce this themselves instead of relying on where they are called from:
 * ``update_text`` reads the target first and only overwrites a text state
   file (``TEXT_STATE_EXTS`` + ``TEXT_STATE_MIMES``);
 * ``trash_canary`` trashes only a file named ``CANARY_NAME``;
-* ``move_rename`` keeps the file's extension and, given ``allowed_parents``
-  (the runner always passes the curated tree), never leaves that tree.
+* ``move_rename`` keeps the file's extension and never leaves the curated
+  tree: ``DriveOps.move_rename`` requires ``allowed_parents`` and refuses
+  ``None`` (#811); an AST lock checks that every curated call passes it.
 
 Lock test: ``tests/test_curated_originals_invariant.py``.
 """
@@ -299,7 +300,9 @@ def move_rename(
     """Rename and/or move in one atomic update, then verify name + parents.
 
     ``allowed_parents``: the curated tree's folder ids; when given, both ends
-    of the move must be inside it. The extension is always kept
+    of the move must be inside it. This lower-level helper accepts ``None``;
+    curated code calls it only through ``DriveOps.move_rename``, which
+    requires the set (#811). The extension is always kept
     (``check_extension_kept``). A refusal writes nothing.
     """
     gdrive._guard_write("curated.move_rename")
@@ -408,8 +411,14 @@ class DriveOps:
         from_parent: str,
         to_parent: str,
         *,
-        allowed_parents: set[str] | frozenset[str] | None = None,
+        allowed_parents: set[str] | frozenset[str] | None,
     ) -> None:
+        # #811: the curated tree is mandatory here — a forgotten set must not
+        # silently skip the parent check. Refused before anything is written.
+        if allowed_parents is None:
+            raise WriteVerificationError(
+                f"refusing to move {file_id}: allowed_parents is required (curated tree ids)"
+            )
         # Same checks as the function (it re-checks after the fresh-connection step).
         check_parents(file_id, from_parent, to_parent, allowed_parents)
         self._fresh()

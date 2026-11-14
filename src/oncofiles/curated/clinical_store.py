@@ -425,7 +425,9 @@ async def _soft_delete_planned(
             await db.soft_delete_codings_of("fact", r["id"], patient_id=pid, deleted_by=reason)
             stats[_record_stat(r)]["removed"] += 1
     for r in plan["remove_encounters"]:
-        if await db.soft_delete_planned_encounter(patient_id=pid, encounter_id=r["id"]):
+        if await db.soft_delete_planned_encounter(
+            patient_id=pid, encounter_id=r["id"], deleted_by=reason
+        ):
             stats["planned_encounters"]["removed"] += 1
 
 
