@@ -322,11 +322,18 @@ def _size_with_unit_printed(size: str, unit: str, evidence: str) -> bool:
 
 
 def _vocab_row(vocab, label: str):
-    row = vocab.match(label)
-    if row is not None:
-        return row, False
-    row = vocab.match_fuzzy(label)
-    return row, row is not None
+    """Biomarker side first (gene symbols, markers); then the lab side, only so
+    a lab label printed as a marker ("CEA") is reported ``label_not_biomarker``
+    rather than unmapped. Exact matches on either side beat a fuzzy one."""
+    for lookup, fuzzy in (
+        (vocab.match_biomarker, False),
+        (vocab.match, False),
+        (vocab.match_biomarker_fuzzy, True),
+        (vocab.match_fuzzy, True),
+    ):
+        if (row := lookup(label)) is not None:
+            return row, fuzzy
+    return None, False
 
 
 def verify_item(  # noqa: PLR0912, PLR0915

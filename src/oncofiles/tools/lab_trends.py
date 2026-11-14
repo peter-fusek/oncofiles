@@ -6,6 +6,7 @@ import json
 
 from fastmcp import Context
 
+from oncofiles.curated.facts_rules import BIOMARKER_CATEGORIES
 from oncofiles.models import LabTrendQuery, LabValue
 from oncofiles.tools._helpers import (
     _clamp_limit,
@@ -42,6 +43,8 @@ class _FactLabs:
         self.codes = {r["code"] for r in vocab}
         self.alias = {}
         for r in vocab:
+            if r.get("category") in BIOMARKER_CATEGORIES:
+                continue  # gene / marker symbols are never lab parameters
             for a in r["aliases"]:
                 self.alias.setdefault(str(a).strip().upper(), r["code"])
         self.conversions = _conversions(vocab)
