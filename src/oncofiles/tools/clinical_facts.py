@@ -419,6 +419,7 @@ async def patient_overview(ctx: Context, patient_slug: str | None = None) -> str
                 "name": r["printed_text"],
                 "value": r["stage"],
                 "primary_cancer": bool(r["is_primary_cancer"]),
+                "condition_kind": r["condition_kind"],  # "allergy" (#815), else None
                 "site": r["body_site"],
                 "at": r["asserted_at"] or r["recorded_at"],
                 "date_source": "printed" if r["asserted_at"] else "document",

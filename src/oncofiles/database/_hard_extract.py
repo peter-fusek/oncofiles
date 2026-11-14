@@ -187,6 +187,7 @@ class HardExtractMixin:
             "SELECT c.id, c.printed_text, c.asserted_at, c.recorded_at, c.body_site, "
             "c.is_primary_cancer, c.primary_condition_id, c.clinical_certainty, c.verification, "
             "c.source_document_id, c.page_number, c.evidence, c.extracted_by, "
+            "json_extract(c.metadata_json, '$.condition_kind') AS condition_kind, "
             "(SELECT st.printed FROM cancer_stages st WHERE st.condition_id = c.id "
             " AND st.patient_id = c.patient_id AND st.deleted_at IS NULL "
             " ORDER BY st.id DESC LIMIT 1) AS stage, "

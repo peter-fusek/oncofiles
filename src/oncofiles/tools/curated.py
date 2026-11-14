@@ -2286,8 +2286,8 @@ async def _all_birth_dates(db, pid: str) -> set[str]:
 
 
 _CLINICAL_DOC_KEYS = (
-    "method", "pages", "pages_used", "pages_not_assessed", "pages_truncated", "page_errors",
-    "error_kinds", "answer_sources", "page_diagnostics", "warnings", "dob_known",
+    "method", "profile", "pages", "pages_used", "pages_not_assessed", "pages_truncated",
+    "page_errors", "error_kinds", "answer_sources", "page_diagnostics", "warnings", "dob_known",
     "birth_date_guard", "counts", "unverified_reasons", "dropped", "seconds",
     *DATE_NULL_KEYS,
 )  # fmt: skip
@@ -2319,25 +2319,46 @@ def _clinical_totals(report: list[dict]) -> dict:
     }
 
 
+async def _patient_type(db, pid: str) -> str:
+    """``oncology`` or ``general`` from the patient context (hydrated from the
+    DB when not cached); ``oncology`` when unknown."""
+    from oncofiles import patient_context
+
+    try:
+        await patient_context.ensure_loaded(db.db, pid)
+    except Exception:
+        logger.warning("clinical extraction: patient context not loaded for %s", pid)
+    try:
+        return str((patient_context.get_context(pid) or {}).get("patient_type") or "oncology")
+    except Exception:
+        return "oncology"
+
+
 async def _clinical_work(db, pid: str, d: dict, *, vocab, births, cfg) -> _DocWork:
     """Phase 1 of ONE document of the clinical extraction (#726): its page
     text (DB, event loop) and the model work for a worker thread (local-only,
-    no DB)."""
+    no DB). The request profile (#815) follows the patient type and the
+    document category (``llm_extract_clinical.profile_for``)."""
+    from oncofiles.curated import llm_extract_clinical as lx
+
+    profile = lx.profile_for(await _patient_type(db, pid), d.get("category"))
 
     def make(pages, meta, day):
         def _blocking():
             from oncofiles.cloud_guard import local_only
-            from oncofiles.curated import llm_extract_clinical as lx
 
             with local_only("curated clinical extraction"):
                 return lx.extract_document(
                     pages, vocab=vocab, report_date=day, birth_dates=births,
                     source_reason=_source_reason(meta), stop=_stopping.is_set, cfg=cfg,
+                    profile=profile,
                 )  # fmt: skip
 
         return _blocking
 
-    return await _doc_work(db, pid, d, make)
+    w = await _doc_work(db, pid, d, make)
+    w.entry["profile"] = profile
+    return w
 
 
 def _clinical_entry(w: _DocWork) -> tuple[dict, dict | None]:

@@ -8,7 +8,9 @@ when all of these hold:
 * its evidence passage occurs verbatim on the page (whitespace normalised);
 * every key token the model returned occurs inside that evidence: diagnosis
   text, code, site and stage; marker, variant, result and method; regimen,
-  line and intent; drug, unit and route; lesion label, unit and description.
+  line and intent; drug, unit and route; lesion label, unit and description;
+  vaccine and dose; allergy text, substance and reaction; screening test and
+  result (#815).
   Numbers (dose, lesion size) must occur as whole numbers OUTSIDE the label,
   the unit and any date of the evidence, so "S7" never yields a 7 mm lesion
   and "12.3.2027" never yields a dose of 12;
@@ -39,8 +41,10 @@ from oncofiles.curated.verifier import _birth_isos, _value_pattern, parse_printe
 # and month names ("5. marca 2027", "marec 2027", Slovak and Czech) parse;
 # 4: lesion sizes — "x" / "×" separated dimensions, decimal comma, the unit
 # printed after the numbers ("2,3 x 1,8 cm") or once per dimension; a size
-# with no printed unit is ``unit_missing`` (never guessed) (#773)
-CLINICAL_VERIFIER_VERSION = 4
+# with no printed unit is ``unit_missing`` (never guessed) (#773); 5: the
+# general-health kinds vaccinations, allergies and screenings, same generic
+# rules (every returned token and date inside the evidence) (#815)
+CLINICAL_VERIFIER_VERSION = 5
 
 # answer key -> fields whose (non-empty) value must occur inside the evidence
 TOKEN_FIELDS: dict[str, tuple[str, ...]] = {
@@ -54,6 +58,9 @@ TOKEN_FIELDS: dict[str, tuple[str, ...]] = {
     "procedures": ("description_as_printed",),
     "lesions": ("lesion_as_printed", "unit_as_printed", "description_as_printed"),
     "planned": ("description_as_printed",),
+    "vaccinations": ("vaccine_as_printed", "dose_as_printed"),
+    "allergies": ("text_as_printed", "substance_as_printed", "reaction_as_printed"),
+    "screenings": ("test_as_printed", "result_as_printed"),
 }  # fmt: skip
 DATE_FIELDS: dict[str, tuple[str, ...]] = {
     "diagnoses": ("date_as_printed",),
@@ -64,6 +71,9 @@ DATE_FIELDS: dict[str, tuple[str, ...]] = {
     "procedures": ("date_as_printed", "end_date_as_printed"),
     "lesions": ("date_as_printed",),
     "planned": ("date_as_printed",),
+    "vaccinations": ("date_as_printed",),
+    "allergies": ("date_as_printed",),
+    "screenings": ("date_as_printed",),
 }
 REASONS = (
     "evidence_not_found",
@@ -414,6 +424,9 @@ def verify_item(  # noqa: PLR0912, PLR0915
     elif kind == "cycles":
         m = re.search(r"\d+", fields.get("cycle_as_printed") or "")
         derived["cycle_number"] = int(m.group(0)) if m else None
+    elif kind == "vaccinations":  # "2. dávka" -> 2; only a number printed in the dose
+        m = re.search(r"\d+", fields.get("dose_as_printed") or "")
+        derived["dose_number"] = int(m.group(0)) if m else None
     elif kind == "medications":
         dose = ws(fields.get("dose_as_printed"))
         blank = (fields.get("drug_as_printed"), fields.get("unit_as_printed"),

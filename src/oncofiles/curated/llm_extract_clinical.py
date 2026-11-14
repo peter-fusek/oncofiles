@@ -9,6 +9,12 @@ trust: every candidate goes through ``curated.verifier_clinical`` (generic,
 no layout knowledge), which accepts it as ``machine`` or keeps it
 ``unverified`` with reason codes.
 
+Two request profiles (#815): ``oncology`` (the kinds above, the v10 request
+byte for byte) and ``general`` for general-health patients and vaccination /
+preventive / dental documents (diagnoses incl. chronic ones, allergies,
+genetic results incl. carrier / pharmacogenomic / risk variants, medications,
+procedures, vaccinations, screenings, planned dates). ``profile_for`` picks it.
+
 Nothing is invented: what a page does not print stays empty. The prompt says
 "copy, never compute", items without evidence or without their one required
 value are dropped here, and the verifier rejects anything whose evidence is
@@ -35,6 +41,7 @@ import json
 import re
 from collections import Counter
 from collections.abc import Callable
+from functools import partial
 
 from oncofiles import cloud_guard
 from oncofiles.curated import llm
@@ -56,8 +63,12 @@ from oncofiles.database._facts import LLM_CLINICAL_FAMILY
 # "2,4 x 1,9 cm" size on an imaging line (#773); v9: a truncated page is
 # retried once as 2 line-boundary chunks (#773); v10: default request is the
 # scorecard-validated one (qwen sampling + reasoning-off marker, env
-# LLM_EXTRACT_SAMPLING / LLM_EXTRACT_REASONING_MARKER), also for writes (#773).
-EXTRACTOR_VERSION = "llm-clinical-v10"
+# LLM_EXTRACT_SAMPLING / LLM_EXTRACT_REASONING_MARKER), also for writes (#773);
+# v11: a second request profile "general" (general-health patients and
+# vaccination / preventive / dental documents) adds vaccinations, allergies and
+# screenings plus general genetics (carrier, pharmacogenomic, risk variant) with
+# its own worked examples; the oncology request is byte-identical to v10 (#815).
+EXTRACTOR_VERSION = "llm-clinical-v11"
 EXTRACTOR_FAMILY = LLM_CLINICAL_FAMILY  # prefix of every version: re-extraction scope
 METHOD = "stored_sidecar_text"
 
@@ -89,7 +100,42 @@ KINDS: dict[str, tuple[str, ...]] = {
         "description_as_printed",
     ),
     "planned": ("what", "description_as_printed", "date_as_printed"),
+    # general-health kinds (#815), asked only in the "general" profile
+    "vaccinations": ("vaccine_as_printed", "dose_as_printed", "date_as_printed"),
+    "allergies": (
+        "text_as_printed", "substance_as_printed", "reaction_as_printed", "date_as_printed",
+    ),
+    "screenings": ("test_as_printed", "result_as_printed", "date_as_printed"),
 }  # fmt: skip
+
+# Request profiles (#815). The oncology request is the v10 one, byte for byte
+# (locked by a test), so oncology prompt tokens and speed do not change. The
+# general profile drops the chemotherapy-only kinds and asks for the
+# general-health ones instead.
+ONCOLOGY = "oncology"
+GENERAL = "general"
+PROFILE_KINDS: dict[str, tuple[str, ...]] = {
+    ONCOLOGY: (
+        "diagnoses", "biomarkers", "treatment_courses", "cycles", "medications", "procedures",
+        "lesions", "planned",
+    ),
+    GENERAL: (
+        "diagnoses", "allergies", "biomarkers", "medications", "procedures", "vaccinations",
+        "screenings", "planned",
+    ),
+}  # fmt: skip
+# document categories that use the general profile also for an oncology patient
+GENERAL_CATEGORIES = frozenset({"vaccination", "preventive", "dental"})
+
+
+def profile_for(patient_type: str | None, category: str | None) -> str:
+    """The request profile of one document: ``general`` for a general-health
+    patient or a vaccination / preventive / dental document, else oncology."""
+    if (patient_type or ONCOLOGY) == GENERAL or (category or "") in GENERAL_CATEGORIES:
+        return GENERAL
+    return ONCOLOGY
+
+
 ENUMS: dict[tuple[str, str], tuple[str, ...]] = {
     ("diagnoses", "role"): ("primary", "metastasis", "other"),
     ("cycles", "status"): ("administered", "postponed"),
@@ -114,6 +160,9 @@ def _required(kind: str, item: dict) -> bool:
         "procedures": bool(g("description_as_printed")),
         "lesions": bool(g("lesion_as_printed")) and bool(g("size_as_printed")),
         "planned": bool(g("description_as_printed")) and bool(g("date_as_printed")),
+        "vaccinations": bool(g("vaccine_as_printed")),
+        "allergies": bool(g("substance_as_printed")),
+        "screenings": bool(g("test_as_printed")),
     }[kind]
 
 
@@ -124,30 +173,39 @@ def _field_schema(kind: str, field: str) -> dict:
     return {"type": ["string", "null"]}
 
 
-SCHEMA = {
-    "type": "object",
-    "additionalProperties": False,
-    "required": list(KINDS),
-    "properties": {
-        kind: {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "additionalProperties": False,
-                "required": [*fields, "evidence"],
-                "properties": {
-                    **{f: _field_schema(kind, f) for f in fields},
-                    "evidence": {"type": "string"},
+def _schema(kinds: tuple[str, ...]) -> dict:
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "required": list(kinds),
+        "properties": {
+            kind: {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": [*KINDS[kind], "evidence"],
+                    "properties": {
+                        **{f: _field_schema(kind, f) for f in KINDS[kind]},
+                        "evidence": {"type": "string"},
+                    },
                 },
-            },
-        }
-        for kind, fields in KINDS.items()
-    },
-}
-RESPONSE_FORMAT = {
-    "type": "json_schema",
-    "json_schema": {"name": "page_clinical_facts", "strict": True, "schema": SCHEMA},
-}
+            }
+            for kind in kinds
+        },
+    }
+
+
+def _response_format(kinds: tuple[str, ...]) -> dict:
+    return {
+        "type": "json_schema",
+        "json_schema": {"name": "page_clinical_facts", "strict": True, "schema": _schema(kinds)},
+    }
+
+
+SCHEMA = _schema(PROFILE_KINDS[ONCOLOGY])
+RESPONSE_FORMAT = _response_format(PROFILE_KINDS[ONCOLOGY])
+RESPONSE_FORMATS = {p: _response_format(kinds) for p, kinds in PROFILE_KINDS.items()}
 
 
 def _item(kind: str, **values) -> dict:
@@ -155,7 +213,12 @@ def _item(kind: str, **values) -> dict:
 
 
 def _answer(**lists) -> dict:
-    return {kind: lists.get(kind, []) for kind in KINDS}
+    """An oncology-profile answer (the v10 keys, in their order)."""
+    return {kind: lists.get(kind, []) for kind in PROFILE_KINDS[ONCOLOGY]}
+
+
+def _general_answer(**lists) -> dict:
+    return {kind: lists.get(kind, []) for kind in PROFILE_KINDS[GENERAL]}
 
 
 # Worked examples. Invented data only (public repo rule): no real patient,
@@ -345,6 +408,144 @@ EXAMPLES: list[tuple[str, dict]] = [
     )),
 ]  # fmt: skip
 
+# Worked examples of the general profile (#815). Invented data only, years
+# 2027 and later; every item must verify as machine (tested).
+_GEX1 = "\n".join([
+    "Preventívna prehliadka 14.3.2028",
+    "Dg.: I10 Esenciálna (primárna) hypertenzia, E78.0 Čistá hypercholesterolémia",
+    "Alergia: penicilín (urtikária)",
+    "Lieky: Amlodipín 5 mg p.o. 1-0-0",
+    "Kolonoskopia 20.2.2028: bez patologického nálezu.",
+    "Očkovanie proti tetanu (Boostrix) 14.3.2028.",
+    "Ďalšia preventívna prehliadka 15.3.2030.",
+])  # fmt: skip
+_GEX1_LINES = _GEX1.splitlines()
+_GEX2 = "\n".join([
+    "Záznam o očkovaní",
+    "Hexacima, 1. dávka, 12.4.2027",
+    "Hexacima, 2. dávka, 14.6.2027",
+    "Očkovanie proti chrípke (Vaxigrip Tetra) 5.10.2027",
+    "Nasledujúce očkovanie (3. dávka) 10.12.2027.",
+])  # fmt: skip
+_GEX2_LINES = _GEX2.splitlines()
+_GEX3 = "\n".join([
+    "Výsledky genetického vyšetrenia (genotypizácia)",
+    "CYP2C19 *1/*2 - intermediárny metabolizátor",
+    "HFE c.845G>A (p.C282Y) heterozygot - prenášač",
+    "Faktor V Leiden: negatívny",
+])  # fmt: skip
+_GEX3_LINES = _GEX3.splitlines()
+_GEX4 = "\n".join([
+    "Interné vyšetrenie",
+    "Dg.: E11.9 Diabetes mellitus 2. typu bez komplikácií",
+    "Alergia na peľ (rinitída) od 03/2028.",
+    "USG štítnej žľazy 9.6.2028: bez ložiskových zmien.",
+    "Rp.: Metformín 1000 mg p.o. 1-0-1",
+    "Genetika: APOE e3/e4.",
+])  # fmt: skip
+_GEX4_LINES = _GEX4.splitlines()
+_GEX5 = "\n".join([
+    "Stomatologická preventívna prehliadka 2.2.2029: zubný kaz 36.",
+    "Extrakcia zuba 47 dňa 16.2.2029.",
+])  # fmt: skip
+_GEX5_LINES = _GEX5.splitlines()
+
+GENERAL_EXAMPLES: list[tuple[str, dict]] = [
+    (_GEX1, _general_answer(
+        diagnoses=[
+            _item("diagnoses", text_as_printed="Esenciálna (primárna) hypertenzia",
+                  code_as_printed="I10", role="other", evidence=_GEX1_LINES[1]),
+            _item("diagnoses", text_as_printed="Čistá hypercholesterolémia",
+                  code_as_printed="E78.0", role="other", evidence=_GEX1_LINES[1]),
+        ],
+        allergies=[
+            _item("allergies", text_as_printed="Alergia: penicilín",
+                  substance_as_printed="penicilín", reaction_as_printed="urtikária",
+                  evidence=_GEX1_LINES[2]),
+        ],
+        medications=[
+            _item("medications", drug_as_printed="Amlodipín", dose_as_printed="5",
+                  unit_as_printed="mg", route_as_printed="p.o.", status="mentioned",
+                  evidence=_GEX1_LINES[3]),
+        ],
+        vaccinations=[
+            _item("vaccinations", vaccine_as_printed="Boostrix", date_as_printed="14.3.2028",
+                  evidence=_GEX1_LINES[5]),
+        ],
+        screenings=[
+            _item("screenings", test_as_printed="Preventívna prehliadka",
+                  date_as_printed="14.3.2028", evidence=_GEX1_LINES[0]),
+            _item("screenings", test_as_printed="Kolonoskopia",
+                  result_as_printed="bez patologického nálezu", date_as_printed="20.2.2028",
+                  evidence=_GEX1_LINES[4]),
+        ],
+        planned=[
+            _item("planned", what="visit", description_as_printed="Ďalšia preventívna prehliadka",
+                  date_as_printed="15.3.2030", evidence=_GEX1_LINES[6]),
+        ],
+    )),
+    (_GEX2, _general_answer(
+        vaccinations=[
+            _item("vaccinations", vaccine_as_printed="Hexacima", dose_as_printed="1. dávka",
+                  date_as_printed="12.4.2027", evidence=_GEX2_LINES[1]),
+            _item("vaccinations", vaccine_as_printed="Hexacima", dose_as_printed="2. dávka",
+                  date_as_printed="14.6.2027", evidence=_GEX2_LINES[2]),
+            _item("vaccinations", vaccine_as_printed="Vaxigrip Tetra",
+                  date_as_printed="5.10.2027", evidence=_GEX2_LINES[3]),
+        ],
+        planned=[
+            _item("planned", what="other", description_as_printed="Nasledujúce očkovanie",
+                  date_as_printed="10.12.2027", evidence=_GEX2_LINES[4]),
+        ],
+    )),
+    (_GEX3, _general_answer(  # no date on the page: the document date is used
+        biomarkers=[
+            _item("biomarkers", marker_as_printed="CYP2C19", variant_as_printed="*1/*2",
+                  result_as_printed="intermediárny metabolizátor", evidence=_GEX3_LINES[1]),
+            _item("biomarkers", marker_as_printed="HFE", variant_as_printed="c.845G>A (p.C282Y)",
+                  result_as_printed="heterozygot - prenášač", evidence=_GEX3_LINES[2]),
+            _item("biomarkers", marker_as_printed="Faktor V Leiden",
+                  result_as_printed="negatívny", evidence=_GEX3_LINES[3]),
+        ],
+    )),
+    (_GEX4, _general_answer(
+        diagnoses=[
+            _item("diagnoses", text_as_printed="Diabetes mellitus 2. typu bez komplikácií",
+                  code_as_printed="E11.9", role="other", evidence=_GEX4_LINES[1]),
+        ],
+        allergies=[
+            _item("allergies", text_as_printed="Alergia na peľ", substance_as_printed="peľ",
+                  reaction_as_printed="rinitída", date_as_printed="03/2028",
+                  evidence=_GEX4_LINES[2]),
+        ],
+        biomarkers=[
+            _item("biomarkers", marker_as_printed="APOE", result_as_printed="e3/e4",
+                  evidence=_GEX4_LINES[5]),
+        ],
+        medications=[
+            _item("medications", drug_as_printed="Metformín", dose_as_printed="1000",
+                  unit_as_printed="mg", route_as_printed="p.o.", status="prescribed",
+                  evidence=_GEX4_LINES[4]),
+        ],
+        procedures=[
+            _item("procedures", type="imaging", description_as_printed="USG štítnej žľazy",
+                  date_as_printed="9.6.2028", evidence=_GEX4_LINES[3]),
+        ],
+    )),
+    (_GEX5, _general_answer(
+        procedures=[
+            _item("procedures", type="surgery", description_as_printed="Extrakcia zuba 47",
+                  date_as_printed="16.2.2029", evidence=_GEX5_LINES[1]),
+        ],
+        screenings=[
+            _item("screenings", test_as_printed="Stomatologická preventívna prehliadka",
+                  result_as_printed="zubný kaz 36", date_as_printed="2.2.2029",
+                  evidence=_GEX5_LINES[0]),
+        ],
+    )),
+    (_EX6, _general_answer()),
+]  # fmt: skip
+
 _INSTRUCTIONS = """You copy clinical facts from ONE page of a medical document: diagnoses, \
 biomarker and genetic test results, treatment courses (regimens), chemotherapy cycles, \
 medication doses, procedures (surgery, biopsy, imaging, radiotherapy, endoscopy), lesion sizes \
@@ -400,21 +601,73 @@ its cycles is mentioned.
 """
 
 
-def _build_prompt() -> str:
-    parts = [_INSTRUCTIONS]
-    for n, (page, answer) in enumerate(EXAMPLES, 1):
+_GENERAL_INSTRUCTIONS = """You copy clinical facts from ONE page of a medical document of a \
+general-health patient: diagnoses (also chronic ones), allergies, genetic test results, \
+medication doses, procedures, vaccinations, screening and preventive examinations, and planned \
+dates. The page is OCR text, mostly Slovak or Czech, sometimes English.
+
+Answer with ONLY a JSON object with these eight lists, each possibly empty: "diagnoses", \
+"allergies", "biomarkers", "medications", "procedures", "vaccinations", "screenings", "planned". \
+Every item has "evidence": the shortest passage of the page that holds ALL of the item's \
+values, its dates included (one line, or at most three consecutive lines when a date is printed \
+on a line above or below the value), copied character for character. Every other field, dates \
+too, is copied exactly as printed (never reformatted), or null when it is not printed.
+
+- diagnoses: "text_as_printed" (the diagnosis words), "code_as_printed" (ICD-10 / MKCH code, \
+only if printed), "date_as_printed" (date of diagnosis, only if printed), "role" ("other"; \
+"primary" or "metastasis" only for a tumour), "site_as_printed", "stage_as_printed" (only for a \
+tumour).
+- allergies: "text_as_printed" (the allergy words), "substance_as_printed" (what the patient is \
+allergic to), "reaction_as_printed", "date_as_printed".
+- biomarkers (any genetic or marker test: carrier status, pharmacogenomic genotype, risk \
+variant, tumour marker): "marker_as_printed" (gene or marker such as CYP2C19, HFE, CFTR, APOE, \
+Faktor V Leiden), "variant_as_printed" (e.g. HGVS or star alleles), "result_as_printed" \
+(heterozygot, negatívny, intermediárny metabolizátor, ...), "method_as_printed", \
+"date_as_printed".
+- medications: "drug_as_printed", "dose_as_printed" (the number only), "unit_as_printed" \
+(mg, mg/kg, ...), "route_as_printed" (i.v., p.o., ...), "start_date_as_printed", \
+"end_date_as_printed", "status" ("administered", "prescribed" or "mentioned"), \
+"cycle_as_printed".
+- procedures: "type" ("surgery", "biopsy", "imaging", "radiotherapy", "endoscopy" or \
+"other"), "description_as_printed", "date_as_printed", "end_date_as_printed".
+- vaccinations: "vaccine_as_printed" (the vaccine name), "dose_as_printed" (e.g. "2. dávka"), \
+"date_as_printed" (the day it was given).
+- screenings (preventive check-ups and screening examinations): "test_as_printed", \
+"result_as_printed", "date_as_printed".
+- planned: "what" ("cycle", "imaging", "visit" or "other"), "description_as_printed", \
+"date_as_printed" (the planned date; an item without a printed date is left out).
+
+Rules:
+1. Copy, never compute or infer. Never add a code, date, dose, result or genotype that is not \
+printed; never expand an abbreviation; never convert units.
+2. A date is given only when it is inside the item's evidence. A date printed outside the \
+item's evidence (more than two lines from the value) stays null.
+3. Skip laboratory values, birth dates, names, identifiers, addresses and phone numbers.
+4. A vaccination goes to "vaccinations" only and a screening or preventive examination to \
+"screenings" only, never also to "procedures". A future date goes to "planned" only.
+5. A page without such facts gives eight empty lists.
+"""
+
+
+def _build_prompt(instructions: str = _INSTRUCTIONS, examples=None) -> str:
+    parts = [instructions]
+    for n, (page, answer) in enumerate(EXAMPLES if examples is None else examples, 1):
         parts.append(
             f"\nExample {n}. Page:\n{page}\nAnswer:\n{json.dumps(answer, ensure_ascii=False)}\n"
         )
     return "".join(parts)
 
 
-SYSTEM_PROMPT = _build_prompt()
+SYSTEM_PROMPT = _build_prompt()  # oncology: the v10 bytes (locked by a test)
+GENERAL_SYSTEM_PROMPT = _build_prompt(_GENERAL_INSTRUCTIONS, GENERAL_EXAMPLES)
+SYSTEM_PROMPTS = {ONCOLOGY: SYSTEM_PROMPT, GENERAL: GENERAL_SYSTEM_PROMPT}
+EXAMPLES_BY_PROFILE = {ONCOLOGY: EXAMPLES, GENERAL: GENERAL_EXAMPLES}
 
 
-def parse_answer(text: str) -> dict:
-    """The kind lists of a model answer. Tolerates reasoning blocks, ```json
-    fences and text around the JSON. Raises ``LocalLLMError`` when none."""
+def parse_answer(text: str, kinds: tuple[str, ...] = PROFILE_KINDS[ONCOLOGY]) -> dict:
+    """The kind lists of a model answer (``kinds``: the request profile's).
+    Tolerates reasoning blocks, ```json fences and text around the JSON.
+    Raises ``LocalLLMError`` when none."""
     text = llm.strip_think(text or "")
     blobs = [m.group(1) for m in re.finditer(r"```(?:json)?\s*(.*?)```", text, re.S)]
     blobs.append(text)
@@ -427,20 +680,20 @@ def parse_answer(text: str) -> dict:
                 obj, _ = decoder.raw_decode(blob[i:])
             except ValueError:
                 continue
-            if isinstance(obj, dict) and any(isinstance(obj.get(k), list) for k in KINDS):
-                return {k: obj.get(k) if isinstance(obj.get(k), list) else [] for k in KINDS}
+            if isinstance(obj, dict) and any(isinstance(obj.get(k), list) for k in kinds):
+                return {k: obj.get(k) if isinstance(obj.get(k), list) else [] for k in kinds}
     raise AnswerError("no_json", "local LLM answer has no clinical facts JSON")
 
 
-def _valid_answer(obj) -> bool:
+def _valid_answer(obj, kinds: tuple[str, ...]) -> bool:
     return (
         isinstance(obj, dict)
-        and set(obj) == set(KINDS)
-        and all(isinstance(obj[k], list) for k in KINDS)
+        and set(obj) == set(kinds)
+        and all(isinstance(obj[k], list) for k in kinds)
     )
 
 
-def parse_reasoning_channel(text: str) -> dict:
+def parse_reasoning_channel(text: str, kinds: tuple[str, ...] = PROFILE_KINDS[ONCOLOGY]) -> dict:
     """The kind lists from ``reasoning_content`` — accepted ONLY when the
     channel holds exactly one complete top-level JSON value carrying exactly
     the schema's kind lists. A draft plus a final answer, a partial object or
@@ -461,9 +714,9 @@ def parse_reasoning_channel(text: str) -> dict:
     if len(values) != 1:
         msg = f"reasoning channel: {len(values)} JSON values, need exactly one"
         raise AnswerError("reasoning_ambiguous", msg)
-    if not _valid_answer(values[0]):
+    if not _valid_answer(values[0], kinds):
         raise AnswerError("reasoning_ambiguous", "reasoning channel: JSON fails the schema")
-    return {k: values[0][k] for k in KINDS}
+    return {k: values[0][k] for k in kinds}
 
 
 def normalize_item(kind: str, raw) -> tuple[dict | None, str | None]:
@@ -502,18 +755,22 @@ def extract_page(
     page_number: int,
     chat: Callable[..., str] | None = None,
     cfg: xcall.CallSettings | None = None,
+    profile: str = ONCOLOGY,
 ) -> PageResult:
     """Blocking. Candidate items of one page (not yet verified).
-    ``cfg`` (from ``llm_extract_call.settings``) defaults to the env settings."""
+    ``cfg`` (from ``llm_extract_call.settings``) defaults to the env settings;
+    ``profile`` picks the request (oncology: the v10 request, unchanged)."""
     if not cloud_guard.local_only_job():
         raise cloud_guard.CloudForbiddenError("llm_extract_clinical must run inside local_only()")
     res = PageResult(page_number=page_number)
     if not (text or "").strip():
         return res
+    kinds = PROFILE_KINDS[profile]
     parts = xcall.call_page(
-        res, text=text, system=SYSTEM_PROMPT,
-        response_format=RESPONSE_FORMAT if _structured_output() else None,
-        parse_content=parse_answer, parse_reasoning=parse_reasoning_channel,
+        res, text=text, system=SYSTEM_PROMPTS[profile],
+        response_format=RESPONSE_FORMATS[profile] if _structured_output() else None,
+        parse_content=partial(parse_answer, kinds=kinds),
+        parse_reasoning=partial(parse_reasoning_channel, kinds=kinds),
         cfg=cfg or xcall.settings(), chat=chat, label="clinical extract",
     )  # fmt: skip
     if parts is None:
@@ -532,9 +789,11 @@ def extract_page(
     return res
 
 
-def summarize(items: list[dict]) -> tuple[dict, dict]:
+def summarize(
+    items: list[dict], kinds: tuple[str, ...] = PROFILE_KINDS[ONCOLOGY]
+) -> tuple[dict, dict]:
     """Counts per kind (machine / unverified) and unverified reasons — no values."""
-    counts: dict[str, Counter] = {k: Counter() for k in KINDS}
+    counts: dict[str, Counter] = {k: Counter() for k in kinds}
     reasons: Counter = Counter()
     for it in items:
         counts[it["kind"]][it["verification"]] += 1
@@ -555,11 +814,15 @@ def extract_document(
     chat: Callable[..., str] | None = None,
     stop: Callable[[], bool] | None = None,
     cfg: xcall.CallSettings | None = None,
+    profile: str = ONCOLOGY,
 ) -> dict:
     """Blocking. Extract + verify every page, one model call at a time.
-    Returns verified items and counts; nothing is stored."""
+    Returns verified items and counts; nothing is stored. ``profile`` is
+    ``oncology`` (default) or ``general`` (#815, chosen by ``profile_for``)."""
     from oncofiles.curated import verifier_clinical
 
+    if profile not in PROFILE_KINDS:
+        raise ValueError(f"unknown clinical extraction profile: {profile!r}")
     cfg = cfg or xcall.settings()
     results: list[PageResult] = []
     page_diag: dict[str, dict] = {}
@@ -577,7 +840,7 @@ def extract_document(
         if stop and stop():
             not_assessed.append(number)
             continue
-        pr = extract_page(text, page_number=number, chat=chat, cfg=cfg)
+        pr = extract_page(text, page_number=number, chat=chat, cfg=cfg, profile=profile)
         results.append(pr)
         page_diag[str(number)] = pr.diagnostics()
         seconds += pr.seconds
@@ -599,10 +862,10 @@ def extract_document(
                     birth_dates=birth_dates, source_reason=source_reason,
                 )
             )  # fmt: skip
-    counts, reasons = summarize(items)
+    counts, reasons = summarize(items, PROFILE_KINDS[profile])
     dob_known = bool(birth_dates)
     return {
-        "items": items, "method": METHOD, "pages": len(pages),
+        "items": items, "method": METHOD, "profile": profile, "pages": len(pages),
         "pages_used": len(pages) - len(not_assessed), "pages_not_assessed": not_assessed,
         "pages_truncated": truncated, "page_errors": errors, "finish_reasons": finish,
         "error_kinds": dict(sorted(error_kinds.items())),
