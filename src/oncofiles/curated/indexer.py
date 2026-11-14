@@ -33,7 +33,9 @@ CURATED_FILE_PREFIX = "gdrive:"
 INDEX_ENGINE = "curated-sidecar"
 # Bump when the index derives new data from the same sidecars (entities, facts,
 # titles…): rows indexed by an older version are re-processed once (#603).
-INDEX_VERSION = 17  # v17: re-extraction never re-adds a date-corrected fact at its old date (#741)
+# v17: re-extraction never re-adds a date-corrected fact at its old date (#741)
+# v18: lab rule parsers no longer see genetic_variant/biomarker aliases (gene vocabulary)
+INDEX_VERSION = 18
 TEXT_SOURCE_EXTS = {"md", "txt", "csv", "json"}
 MAX_TEXT_SOURCE_BYTES = 512 * 1024
 _PAGE_RE = re.compile(r"^<!-- page (\d+) -->\s*$", re.M)

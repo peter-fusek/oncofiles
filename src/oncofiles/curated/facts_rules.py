@@ -94,19 +94,42 @@ def _unit_key(u: str | None) -> str:
     return (u or "").lower().replace("µ", "u").replace("μ", "u").replace(" ", "")
 
 
+# fact_codes categories that are never lab values: gene symbols and molecular /
+# IHC markers. Short symbols (MET, KIT, RET, ALK, ER, PR …) collide with plain
+# words and lab abbreviations ("EGFR" is also eGFR), so the lab side of the
+# Vocabulary (``by_alias`` / ``by_code``, read by every lab rule parser, the lab
+# verifier and the masking word lists) never sees them. Only the clinical
+# biomarker verifier reads them, through ``match_biomarker``.
+BIOMARKER_CATEGORIES = frozenset({"genetic_variant", "biomarker"})
+
+
 @dataclass
 class Vocabulary:
     by_alias: dict[str, dict] = field(default_factory=dict)
     by_code: dict[str, dict] = field(default_factory=dict)
+    biomarker_by_alias: dict[str, dict] = field(default_factory=dict)
+    biomarker_by_code: dict[str, dict] = field(default_factory=dict)
 
     @classmethod
     def from_rows(cls, rows: list[dict]) -> Vocabulary:
         v = cls()
         for r in rows:
-            v.by_code[r["code"]] = r
+            if r.get("category") in BIOMARKER_CATEGORIES:
+                codes, aliases = v.biomarker_by_code, v.biomarker_by_alias
+            else:
+                codes, aliases = v.by_code, v.by_alias
+            codes[r["code"]] = r
             for alias in [r["code"], *r.get("aliases", [])]:
-                v.by_alias.setdefault(norm_label(alias), r)
+                aliases.setdefault(norm_label(alias), r)
         return v
+
+    def match_biomarker(self, label: str) -> dict | None:
+        """A gene / marker label → its ``genetic_variant`` / ``biomarker`` row."""
+        return self.biomarker_by_alias.get(norm_label(label)) if label else None
+
+    def match_biomarker_fuzzy(self, label: str) -> dict | None:
+        """``match_fuzzy`` over the biomarker side (same #660 guardrails)."""
+        return _fuzzy(self.biomarker_by_alias, self.biomarker_by_code, label)
 
     def match(self, label: str, abbr: str | None = None) -> dict | None:
         for key in (abbr, label):
@@ -126,15 +149,19 @@ class Vocabulary:
         edit distance 1, label of at least 8 characters, and every alias within
         that distance must belong to ONE code. Callers keep such facts
         unverified (reason ``label_fuzzy``)."""
-        key = norm_label(label)
-        if len(key) < 8:
-            return None
-        codes = {
-            r["code"]
-            for alias, r in self.by_alias.items()
-            if len(alias) >= 8 and abs(len(alias) - len(key)) <= 1 and _within_one(alias, key)
-        }
-        return self.by_code.get(codes.pop()) if len(codes) == 1 else None
+        return _fuzzy(self.by_alias, self.by_code, label)
+
+
+def _fuzzy(by_alias: dict[str, dict], by_code: dict[str, dict], label: str) -> dict | None:
+    key = norm_label(label)
+    if len(key) < 8:
+        return None
+    codes = {
+        r["code"]
+        for alias, r in by_alias.items()
+        if len(alias) >= 8 and abs(len(alias) - len(key)) <= 1 and _within_one(alias, key)
+    }
+    return by_code.get(codes.pop()) if len(codes) == 1 else None
 
 
 def _within_one(a: str, b: str) -> bool:
