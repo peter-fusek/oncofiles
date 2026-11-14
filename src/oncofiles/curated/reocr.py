@@ -14,10 +14,10 @@ again from the **source file**, on the **local** model only:
 
 Guard: the old and the new text are both parsed; when the new one loses a
 code with its value, or dates it differently, the sidecar is NOT rewritten
-(result ``review``, the lost values listed). A second, generic guard
-(``token_loss`` / ``near_empty_pages``) compares every printed number and date,
-not only lab-vocabulary values: a lost date, more than
-``REVIEW_MISSING_NUMBERS`` lost numbers, or a near-empty page together with
+(result ``review``, the codes of the lost values listed, never the values,
+#805). A second, generic guard (``token_loss`` / ``near_empty_pages``)
+compares every printed number and date, not only lab-vocabulary values: a
+lost date, more than ``REVIEW_MISSING_NUMBERS`` lost numbers, or a near-empty page together with
 any lost number or a body shrunk below ``NEAR_EMPTY_CHARS_RATIO`` also means
 ``review`` (reason codes in ``review_reasons``; counts only, never tokens).
 
@@ -629,7 +629,9 @@ class DocResult:
     facts_machine: int = 0
     facts_unverified: int = 0
     backup: str | None = None
-    lost: list[str] = field(default_factory=list)  # "CODE value date" the old text had
+    # #805: codes of values the old text had and the new one drops or re-dates,
+    # with how often; never the value or its date (job reports carry codes only)
+    lost_codes: dict[str, int] = field(default_factory=dict)
     error: str | None = None
     dpi: list[int] = field(default_factory=list)  # #593 A/B
     passes_per_page: list[int] = field(default_factory=list)
@@ -694,6 +696,37 @@ def lost_values(old_text: str, new_text: str, vocab) -> list[str]:
         elif new_cv[(c, v)] != d:
             out.append(f"{c} {v} re-dated {d}->{new_cv[(c, v)]}")
     return out
+
+
+_CODE = re.compile(r"[A-Za-z][A-Za-z0-9_.\-]{0,31}")
+
+
+def lost_codes(lost: list[str]) -> dict[str, int]:
+    """``lost_values`` output reduced to {code: count} for reports (#805).
+    Only the leading code token survives; the value and dates never do. A
+    token that does not look like a code is counted as ``unknown``."""
+    out: dict[str, int] = {}
+    for item in lost or []:
+        head = str(item).split(" ", 1)[0]
+        code = head if _CODE.fullmatch(head) else "unknown"
+        out[code] = out.get(code, 0) + 1
+    return dict(sorted(out.items()))
+
+
+def redact_report(report):
+    """Read-side redaction of a persisted job report (#805): rows written
+    before the fix carry ``lost`` strings ("CODE value missing"); each becomes
+    ``lost_codes``. Nothing is migrated or deleted in the DB."""
+    if not isinstance(report, dict) or not isinstance(report.get("documents"), list):
+        return report
+    docs = []
+    for d in report["documents"]:
+        if isinstance(d, dict) and "lost" in d:
+            raw = d.get("lost")
+            d = {k: v for k, v in d.items() if k != "lost"}
+            d["lost_codes"] = lost_codes(raw if isinstance(raw, list) else [])
+        docs.append(d)
+    return {**report, "documents": docs}
 
 
 def handled_before(log_names: list[str], filename: str) -> bool:
@@ -777,12 +810,13 @@ def run_reocr(
             res.skipped_second_pass_pages = rr.skipped_second_pass_pages
             new = rewrite_sidecar(old, rr, previous_engine=d.get("engine") or "", now=now)
             res.uncertain_after = new.count("[?]")
-            res.lost = lost_values(old, new, vocab)
+            lost = lost_values(old, new, vocab)  # internal only: carries values (#805)
+            res.lost_codes = lost_codes(lost)
             loss = token_loss(old, new)
             res.missing_numbers, res.missing_dates = loss["missing_numbers"], loss["missing_dates"]
             res.old_chars, res.new_chars = loss["old_chars"], loss["new_chars"]
             res.near_empty_pages = near_empty_pages(rr.pages)
-            res.review_reasons = review_reasons(res.lost, loss, res.near_empty_pages)
+            res.review_reasons = review_reasons(lost, loss, res.near_empty_pages)
             res.decision = "review" if res.review_reasons else "rewrite"
             logger.info(
                 "re-OCR loss check doc=%s missing_numbers=%d missing_dates=%d "

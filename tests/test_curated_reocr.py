@@ -217,7 +217,7 @@ async def test_guard_never_rewrites_when_values_would_be_lost(vocab, monkeypatch
     rep = reocr.run_reocr(drive, drive.root, [doc], vocab, dry_run=False, now=NOW)
     d = rep.documents[0]
     assert d.result == "review" and drive.writes == []
-    assert d.lost == ["PLT 240.0 missing"]
+    assert d.lost_codes == {"PLT": 1}
 
 
 # ── #667: bounded memory ──
