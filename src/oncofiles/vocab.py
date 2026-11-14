@@ -640,6 +640,7 @@ _LABELS: dict[str, dict[str, tuple[str, str]]] = {
         "correct": ("Oprava", "Correction"),
         "import": ("Import", "Import"),
         "manual": ("Ručné zadanie", "Manual entry"),
+        "derive": ("Odvodené z inej položky", "Derived from another item"),
     },
     "provenance_agent_role": {
         "assembler": ("Zostavovateľ", "Assembler"),

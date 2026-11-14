@@ -21,6 +21,11 @@ extracted_by = extractor version + model, verification, and gets one
 device). Links between rows of a document are made only when unambiguous
 (a cycle's printed regimen, the only course of the document, a medication's
 printed cycle number, the only primary tumour); otherwise they stay empty.
+A cycle without exactly one matching course gets a course derived from a
+regimen / drug name printed in its own evidence (#799: unverified, reason
+``derived_from_cycle``, provenance activity ``derive``, deduplicated only
+within the document, never merged with a printed course); without such a
+name the cycle is dropped (``cycle_without_course``).
 
 Re-extraction of a document soft-deletes only what this extractor family
 wrote for that document and never a ``verified`` / ``corrected`` row (nor a
@@ -31,6 +36,7 @@ from __future__ import annotations
 
 import json
 import re
+import unicodedata
 from collections import Counter
 
 from oncofiles.curated import verifier
@@ -66,6 +72,40 @@ STAT_OF = {
 _PLANNED_KIND = {"cycle": "chemo_cycle", "imaging": "imaging", "visit": "visit"}
 _HGVS = re.compile(r"\b[cgmnpr]\.[A-Za-z0-9_*+>:-]+")
 _MED_KIND = {"administered": "administration", "prescribed": "request"}
+DERIVED_REASON = "derived_from_cycle"  # #799: a course derived from a cycle's evidence
+
+
+def _fold(s) -> str:
+    """Case-, diacritic- and whitespace-insensitive form for matching names."""
+    nfkd = unicodedata.normalize("NFKD", str(s or ""))
+    return _k("".join(ch for ch in nfkd if not unicodedata.combining(ch)))
+
+
+def _words(s) -> tuple[str, ...]:
+    """The folded alphanumeric words of a name ("mFOLFOX6 cyklus" →
+    ("mfolfox6", "cyklus"))."""
+    return tuple(re.findall(r"[a-z0-9]+", _fold(s)))
+
+
+def _within(needle: tuple, hay: tuple) -> bool:
+    """``needle`` is a contiguous whole-word run of ``hay`` (never a
+    substring of a word: "FOLFOX" is not inside "FOLFOXIRI")."""
+    n = len(needle)
+    return n > 0 and any(hay[i : i + n] == needle for i in range(len(hay) - n + 1))
+
+
+def _same_regimen(a, b) -> bool:
+    """Whole-word match in either direction on the folded words."""
+    wa, wb = _words(a), _words(b)
+    return _within(wa, wb) or _within(wb, wa)
+
+
+def _is_derived(r: dict) -> bool:
+    """A course ``store_document`` derived from a cycle's evidence (#799)."""
+    try:
+        return json.loads(r.get("metadata_json") or "{}").get("derived_from") == "cycle"
+    except ValueError:
+        return False
 
 
 def _k(s) -> str:
@@ -389,10 +429,14 @@ async def store_document(  # noqa: PLR0912, PLR0915
             )  # fmt: skip
             await put("cancer_stage", stage, it)
 
-    # ── treatment courses
-    courses: list[tuple[int, str]] = [
-        (r["id"], _k(r["regimen_printed"])) for r in kept["treatment_course"].values()
-    ]
+    # ── treatment courses (a derived course of a kept cycle stays derived, #799)
+    courses: list[tuple[int, str]] = []  # printed courses: (id, regimen as printed)
+    derived: dict[tuple, int] = {}  # folded words → derived course id (this document only)
+    for r in kept["treatment_course"].values():
+        if _is_derived(r):
+            derived.setdefault(_words(r["regimen_printed"]), r["id"])
+        else:
+            courses.append((r["id"], r["regimen_printed"]))
     for it in by_kind.get("treatment_courses", []):
         f, d = it["fields"], it["derived"]
         course = TreatmentCourse(
@@ -403,21 +447,81 @@ async def store_document(  # noqa: PLR0912, PLR0915
         )  # fmt: skip
         cid, _ = await put("treatment_course", course, it)
         if all(c != cid for c, _ in courses):
-            courses.append((cid, _k(f["regimen_as_printed"])))
+            courses.append((cid, f["regimen_as_printed"]))
+
+    def matching(tokens) -> set[int]:
+        """Printed courses of this document whose regimen matches any token
+        as whole words (case / diacritics ignored; never inside a word)."""
+        return {c for c, reg in courses for t in tokens if _same_regimen(t, reg)}
 
     def course_for(regimen: str | None) -> int | None:
-        """The course a printed regimen names, or the document's only course."""
-        ids = {c for c, _ in courses}
-        if regimen:
-            r = _k(regimen)
-            ids = {c for c, rk in courses if rk and (r in rk or rk in r)}
+        """The course a printed regimen names, or the document's only course
+        (printed courses only; exactly one candidate, never a pick)."""
+        ids = matching([regimen]) if regimen else {c for c, _ in courses}
         return next(iter(ids)) if len(ids) == 1 else None
+
+    drugs = list(dict.fromkeys(
+        m["fields"]["drug_as_printed"] for m in by_kind.get("medications", [])
+        if m["fields"].get("drug_as_printed")
+    ))  # fmt: skip
+
+    def cycle_tokens(it: dict) -> tuple[str | None, list[str]]:
+        """Regimen / drug names printed INSIDE the cycle's own evidence:
+        (the cycle's printed regimen or None, the document's drug names)."""
+        ev = _words(it["evidence"])
+
+        def printed(name) -> bool:
+            return bool(name) and len("".join(_words(name))) >= 3 and _within(_words(name), ev)
+
+        reg = it["fields"].get("regimen_as_printed")
+        return (reg if printed(reg) else None), [x for x in drugs if printed(x)]
+
+    async def derived_course(token: str, it: dict) -> int:
+        """A minimal course named by a token printed in the cycle's evidence:
+        always unverified, own provenance (activity derive), deduplicated only
+        within this document, never merged with a printed course."""
+        key = _words(token)
+        if key in derived:
+            return derived[key]
+        meta = {
+            "extractor": EXTRACTOR_VERSION, "verifier": CLINICAL_VERIFIER_VERSION,
+            "derived_from": "cycle", "unverified_reasons": [DERIVED_REASON],
+        }  # fmt: skip
+        course = TreatmentCourse(
+            regimen_printed=token, source_document_id=document_id,
+            page_number=it.get("page_number"), evidence=it["evidence"],
+            extracted_by=extracted_by, verification="unverified",
+            metadata_json=json.dumps(meta, ensure_ascii=False),
+        )  # fmt: skip
+        saved = await db.insert_treatment_course(course, patient_id=pid)
+        await db.add_provenance(
+            ProvenanceRecord(
+                target_type="treatment_course", target_id=saved.id, target_version=1,
+                activity="derive", agent_role="assembler", agent_device_id=device_id,
+                source_document_id=document_id, page_number=it.get("page_number"),
+                quote=it["evidence"], reason=DERIVED_REASON,
+            ),
+            patient_id=pid,
+        )  # fmt: skip
+        stats["treatment_courses"]["added"] += 1
+        stats["treatment_courses"]["derived"] += 1
+        derived[key] = saved.id
+        return saved.id
 
     # ── cycles (administered / postponed)
     cycles: list[tuple[int, int, str]] = []  # (cycle id, course id, cycle number)
     for it in by_kind.get("cycles", []):
         f, d = it["fields"], it["derived"]
         course_id = course_for(f.get("regimen_as_printed"))
+        if course_id is None:
+            # #799: no single printed course → link by the regimen / drug printed in
+            # the cycle's evidence when exactly one course matches, else derive one
+            reg, found = cycle_tokens(it)
+            hits = matching([reg] if reg else found)
+            if len(hits) == 1:
+                course_id = next(iter(hits))
+            elif reg or len(found) == 1:
+                course_id = await derived_course(reg or found[0], it)
         if course_id is None:
             dropped["cycle_without_course"] += 1
             continue
