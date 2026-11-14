@@ -113,7 +113,10 @@ def check_identifier_allowed(owner_type: str, system: str, value: str) -> None:
 
 
 PROVENANCE_TARGET_TYPES = frozenset(FACT_ENTITIES) | {"fact", "encounter"}
-PROVENANCE_ACTIVITIES = frozenset({"extract", "reread", "verify", "correct", "import", "manual"})
+# derive: a row assembled from another row's printed evidence (#799: a course from a cycle)
+PROVENANCE_ACTIVITIES = frozenset(
+    {"extract", "reread", "verify", "correct", "import", "manual", "derive"}
+)
 PROVENANCE_AGENT_ROLES = frozenset({"assembler", "verifier", "author", "enterer"})
 
 # column → table for references that must belong to the same patient
