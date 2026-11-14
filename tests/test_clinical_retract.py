@@ -340,6 +340,74 @@ async def test_re_extraction_after_a_retract_stores_the_document_anew(seeded, lo
             assert deleted[r["id"]].get("fhir_id") == r.get("fhir_id")
 
 
+# ── #795: planned-encounter soft deletes record their reason ────────────
+
+
+async def _deleted_encounters(db, doc_id):
+    return [
+        r
+        for r in await _rows(db, "encounters", where="deleted_at IS NOT NULL")
+        if r.get("source_document_id") == doc_id
+    ]
+
+
+async def test_re_extraction_records_the_reason_on_planned_encounters(seeded, local_model):
+    db = seeded
+    await _store(db, DOC_A, PAGES_A)
+    old = await _llm_active(db, "encounters", DOC_A)
+    assert old, "the worked examples carry a planned encounter"
+    await _store(db, DOC_A, PAGES_A)
+    gone = {r["id"]: r for r in await _deleted_encounters(db, DOC_A)}
+    assert set(gone) == {r["id"] for r in old}
+    reasons = {r["deleted_by"] for r in gone.values()}
+    assert len(reasons) == 1 and reasons.pop().startswith("re-extraction by llm-clinical")
+    # the same string the other hard tables got in the same pass
+    procs = await _rows(db, "procedures", where="deleted_at IS NOT NULL")
+    assert {p["deleted_by"] for p in procs} == {r["deleted_by"] for r in gone.values()}
+
+
+async def test_retract_records_the_reason_on_planned_encounters(seeded, local_model):
+    db = seeded
+    await _store(db, DOC_A, PAGES_A)
+    old = await _llm_active(db, "encounters", DOC_A)
+    assert old
+    await _retract(db, [DOC_A], dry_run=False, reason="wrong document")
+    gone = await _deleted_encounters(db, DOC_A)
+    assert {r["id"] for r in gone} == {r["id"] for r in old}
+    reasons = {r["deleted_by"] for r in gone}
+    assert len(reasons) == 1
+    reason = reasons.pop()
+    assert reason and reason.endswith(": wrong document") and reason.startswith("retract by")
+    procs = await _rows(db, "procedures", where="deleted_at IS NOT NULL")
+    assert {p["deleted_by"] for p in procs} == {reason}
+
+
+async def test_soft_delete_planned_encounter_without_a_reason_keeps_null(seeded, local_model):
+    db = seeded
+    await _store(db, DOC_A, PAGES_A)
+    enc = (await _llm_active(db, "encounters", DOC_A))[0]
+    assert await db.soft_delete_planned_encounter(patient_id=ERIKA_UUID, encounter_id=enc["id"])
+    row = next(r for r in await _deleted_encounters(db, DOC_A) if r["id"] == enc["id"])
+    assert row["deleted_by"] is None
+
+
+async def test_migration_088_runs_twice_without_error(db):
+    """Re-applying the ALTER on a DB that already has the column must not fail
+    (``Database.migrate`` falls back to best-effort statements)."""
+    version = "088_encounters_deleted_by"
+    await db.db.execute("DELETE FROM schema_migrations WHERE version = ?", (version,))
+    await db.db.commit()
+    await db.migrate()  # second application: duplicate column, tolerated
+    await db.migrate()  # and a no-op once tracked again
+    async with db.db.execute("PRAGMA table_info(encounters)") as cur:
+        cols = [r["name"] for r in await cur.fetchall()]
+    assert cols.count("deleted_by") == 1
+    async with db.db.execute(
+        "SELECT COUNT(*) FROM schema_migrations WHERE version = ?", (version,)
+    ) as cur:
+        assert (await cur.fetchone())[0] == 1
+
+
 # ── registration ────────────────────────────────────────────────────────
 
 

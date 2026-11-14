@@ -167,6 +167,22 @@ def _llm_marks(r: dict) -> dict:
     return {"method": labelled["method"], "verification_label": labelled["verification_label"]}
 
 
+def _feed_duplicate(twin: tuple[dict, dict, dict], fact_id: str, at: str, ids: dict) -> dict:
+    """A fact hidden by the read-time dedupe (#802), with both provenances.
+    ``kept.id`` is the stable id of the fact the feed returns instead."""
+    d, gone, keep = twin
+    kept_at, kept_id = ids[keep["id"]]
+    row: dict = {"id": fact_id, "code": gone["code"], "at": at, "reason": d["reason"],
+                 "document_id": gone["source_document_id"]}  # fmt: skip
+    if gone["page_number"] is not None:
+        row["page"] = gone["page_number"]
+    kept: dict = {"id": kept_id, "at": kept_at, "document_id": keep["source_document_id"]}
+    if keep["page_number"] is not None:
+        kept["page"] = keep["page_number"]
+    row["kept"] = kept
+    return row
+
+
 def _feed_document(d: dict) -> dict:
     return {
         "id": d["id"],
@@ -249,6 +265,21 @@ def _dedupe(rows: list[dict]) -> tuple[list[dict], list[dict]]:
         except ValueError:
             return None
 
+    def ranged(r: dict) -> bool:
+        m = _meta(r)
+        return bool(m.get("date_range_start") and m.get("date_range_end"))
+
+    rank = {"verified": 0, "corrected": 0, "machine": 1, "unverified": 2}
+    # deterministic in any input order (#802): ties end on the row id, so every
+    # reader (fact_series, timeline, dashboard_feed) keeps the same row
+    rows = sorted(
+        rows,
+        key=lambda r: (
+            r["code"] or "", r["effective_at"] or "", ranged(r), rank.get(r["verification"], 3),
+            is_llm(r.get("extracted_by")), r.get("id") or 0,
+        ),
+    )  # fmt: skip
+
     # every draw (source document, day) → {code: (value, unit, row)}
     draws: dict[tuple, dict] = {}
     for r in rows:
@@ -277,10 +308,6 @@ def _dedupe(rows: list[dict]) -> tuple[list[dict], list[dict]]:
                 return hit
         return None
 
-    def ranged(r: dict) -> bool:
-        m = _meta(r)
-        return bool(m.get("date_range_start") and m.get("date_range_end"))
-
     def in_range(r: dict) -> dict | None:
         m = _meta(r)
         lo, hi = as_date(m.get("date_range_start")), as_date(m.get("date_range_end"))
@@ -295,14 +322,6 @@ def _dedupe(rows: list[dict]) -> tuple[list[dict], list[dict]]:
                 return hit
         return None
 
-    rank = {"verified": 0, "corrected": 0, "machine": 1, "unverified": 2}
-    rows = sorted(
-        rows,
-        key=lambda r: (
-            r["code"] or "", r["effective_at"] or "", ranged(r), rank.get(r["verification"], 3),
-            is_llm(r.get("extracted_by")),
-        ),
-    )  # fmt: skip
     kept: list[dict] = []
     kept_ids: set[int] = set()
     first: dict = {}
@@ -347,6 +366,41 @@ def _dedupe(rows: list[dict]) -> tuple[list[dict], list[dict]]:
         kept.append(r)
         kept_ids.add(id(r))
     return kept, removed
+
+
+# read-time dedupe in timeline and dashboard_feed (#802): the categories
+# fact_series dedupes in practice (lab panels, tumour markers)
+DEDUPE_CATEGORIES = ("lab", "tumor_marker")
+
+
+def _hidden_twins(rows: list[dict]) -> dict[int, tuple[dict, dict, dict]]:
+    """``_dedupe`` over the coded lab and tumour-marker rows among ``rows``.
+
+    Returns hidden row id → (the ``_dedupe`` entry, hidden row, kept row).
+    Other kinds and uncoded rows are never touched. Pass every row of the
+    patient, not a date window: the quote and range rules look at other days,
+    so a window would change which row is kept.
+    """
+    eligible = [
+        r for r in rows
+        if r.get("category") in DEDUPE_CATEGORIES and r.get("code") and r.get("effective_at")
+    ]  # fmt: skip
+    _, removed = _dedupe(eligible)
+    by_id = {r["id"]: r for r in eligible}
+    return {
+        d["removed"]["fact_id"]: (d, by_id[d["removed"]["fact_id"]], by_id[d["kept"]["fact_id"]])
+        for d in removed
+    }
+
+
+def _twin_entry(twin: tuple[dict, dict, dict]) -> dict:
+    """The ``_dedupe`` entry with the page of both rows (provenance)."""
+    d, gone, keep = twin
+    return {
+        **d,
+        "removed": {**d["removed"], "page": gone.get("page_number")},
+        "kept": {**d["kept"], "page": keep.get("page_number")},
+    }
 
 
 def _stats(points: list[dict]) -> dict | None:
@@ -501,14 +555,49 @@ async def timeline(
     text was checked against the page, while the interpretation (which line is
     the diagnosis, a current vs a historical regimen) is the model's and is not
     verified. Identical model-read rows from several documents are one row with
-    ``sources`` (document, page). Read-only.
+    ``sources`` (document, page). A lab or tumour-marker value printed in two
+    documents (same code, day and value, a report quote, or the same value
+    inside a printed date range) is shown once, as in fact_series; every
+    hidden row is listed in ``duplicates`` with both documents and pages.
+    Read-only.
     """
     pid = await _resolve_patient_id(patient_slug, ctx)
-    rows = await _get_db(ctx).timeline_rows(
-        patient_id=pid, date_from=date_from, date_to=date_to, kinds=kinds, limit=min(limit, 1000)
+    db = _get_db(ctx)
+    lim = min(limit, 1000)
+    hidden: dict[int, tuple[dict, dict, dict]] = {}
+    if not kinds or any(k in DEDUPE_CATEGORIES for k in kinds):
+        twins = _hidden_twins(
+            await db.dedupe_fact_rows(patient_id=pid, categories=list(DEDUPE_CATEGORIES))
+        )
+        # the kept row must be on the timeline itself (an abnormal value): an
+        # abnormal value is never hidden behind a twin printed without a flag
+        hidden = {rid: t for rid, t in twins.items() if t[2]["flag"] is not None}
+    fetched = await db.timeline_rows(
+        patient_id=pid, date_from=date_from, date_to=date_to, kinds=kinds, limit=lim + len(hidden)
     )
+    rows: list[dict] = []
+    duplicates: list[dict] = []
+    for r in fetched:
+        full = len(rows) >= lim
+        if full and r["at"] != rows[-1]["at"]:
+            break
+        twin = (
+            hidden.get(r["entity_id"])
+            if r["entity"] == "fact" and r["kind"] in DEDUPE_CATEGORIES
+            else None
+        )
+        if twin:  # hidden rows are listed up to the last shown day
+            duplicates.append(_twin_entry(twin))
+        elif not full:
+            rows.append(r)
     rows = group_llm(rows, _timeline_key, page_key="page_number", id_key="entity_id")
-    return _dump({"rows": rows, "note": UNVERIFIED_NOTE, "llm_note": LLM_NOTE})
+    return _dump({
+        "rows": rows,
+        "duplicates_removed": len(duplicates),
+        "duplicates": duplicates,  # what was hidden, why, and which row was kept
+        "note": UNVERIFIED_NOTE,
+        "llm_note": LLM_NOTE,
+    })  # fmt: skip
 
 
 async def fact_catalog(ctx: Context, patient_slug: str | None = None) -> str:
@@ -691,7 +780,7 @@ async def dashboard_feed(
     Facts only, never interpretation: no evidence text, no statistics. Returns
     {facts: [{id, code, at, value, value_text, unit, ref_low, ref_high, flag,
     verification, document_id, page}], documents: [{id, title, date, category,
-    institution, url}], generated_at, next_cursor}.
+    institution, url}], duplicates: [...], generated_at, next_cursor}.
 
     * ``id`` is a stable fact id (UUID): the same fact keeps it across re-indexing.
     * ``at`` is ISO (date, or date and time as printed). A value dated from a
@@ -712,6 +801,12 @@ async def dashboard_feed(
       "llm-lab" for lab values read where no rule parser knows the layout) and
       a ``verification_label`` ({en, sk}): only its text was checked against
       the page; the interpretation is the model's and is not verified.
+    * A lab or tumour-marker value printed in two documents (same code, day and
+      value, a report quote, or the same value inside a printed date range) is
+      returned once, as in fact_series; the kept fact keeps its id. Each hidden
+      one is listed in ``duplicates`` as {id, code, at, reason, document_id,
+      page, kept: {id, at, document_id, page}} on the page where its own
+      (at, id) falls. Stored rows are never merged or deleted.
     * Pages of at most ``limit`` facts (default 1000, max 2000) and about 140 kB,
       ordered by (at, id). Pass ``next_cursor`` back as ``cursor`` until it is null.
 
@@ -732,31 +827,59 @@ async def dashboard_feed(
     db = _get_db(ctx)
 
     categories = sorted({c for k in known for c in FEED_CATEGORIES.get(k, ())})
-    lower = max(since_at[:10] if since_at else "", after[0][:10] if after else "") or None
+    dedupe = any(c in DEDUPE_CATEGORIES for c in categories)
+    # The dedupe (#802) runs over every row of the patient, never over the
+    # since/cursor window: its quote and range rules look at other days, so a
+    # window would change which row is hidden and pages would disagree.
+    lower = None
+    if not dedupe:
+        lower = max(since_at[:10] if since_at else "", after[0][:10] if after else "") or None
     rows = await db.feed_fact_rows(patient_id=pid, categories=categories, since_day=lower)
     unstored = [r["source_document_id"] for r in rows if not r["fhir_id"]]
     computed = (
         await db.effective_fact_ids(patient_id=pid, document_ids=unstored) if unstored else {}
     )
-    candidates = []
+    dated = []
     for r in rows:
         at = _iso_at(r["effective_at"])
-        if at is None or (since_at and at < since_at):
-            continue
-        fact_id = r["fhir_id"] or computed[r["id"]]
-        if after and (at, fact_id) <= after:
-            continue
-        candidates.append((at, fact_id, r))
-    candidates.sort(key=lambda c: (c[0], c[1]))
-    window = candidates[:limit]
+        if at is not None:
+            dated.append((at, r["fhir_id"] or computed[r["id"]], r))
+    fact_ids = {r["id"]: (at, fact_id) for at, fact_id, r in dated}
+    twins = _hidden_twins([r for _, _, r in dated]) if dedupe else {}
 
-    doc_ids = sorted({r["source_document_id"] for _, _, r in window if r["source_document_id"]})
+    # One stream ordered by (at, id): kept facts and hidden duplicates alike.
+    # The hidden set does not depend on the cursor, so every position is
+    # stable: each item lands on exactly one page, before or after the cursor.
+    stream = []
+    for at, fact_id, r in dated:
+        if (since_at and at < since_at) or (after and (at, fact_id) <= after):
+            continue
+        twin = twins.get(r["id"])
+        stream.append((at, fact_id, r, twin))
+    stream.sort(key=lambda c: (c[0], c[1]))
+    window, n_facts = [], 0
+    for item in stream:
+        if item[3] is None:
+            if n_facts == limit:
+                break
+            n_facts += 1
+        window.append(item)
+
+    def cited(item) -> list[int]:
+        r, twin = item[2], item[3]
+        docs_ = [r["source_document_id"]]
+        if twin:
+            docs_.append(twin[2]["source_document_id"])
+        return [d for d in docs_ if d]
+
+    doc_ids = sorted({d for item in window for d in cited(item)})
     docs = {d["id"]: _feed_document(d)
             for d in await db.feed_documents(patient_id=pid, document_ids=doc_ids)}  # fmt: skip
     conversions = _conversions(await db.fact_code_vocabulary())
 
     out: dict = {
         "facts": [],
+        "duplicates": [],
         "documents": [],
         "generated_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "next_cursor": None,
@@ -766,22 +889,29 @@ async def dashboard_feed(
     size = len(_compact(out).encode()) + _FEED_CURSOR_RESERVE
     listed: set[int] = set()
     last = None
-    for at, fact_id, r in window:
-        fact = _feed_fact(r, fact_id, at, conversions)
-        cost = len(_compact(fact).encode()) + 1
-        doc_id = r["source_document_id"]
-        new_doc = docs.get(doc_id) if doc_id not in listed else None
-        if new_doc:
-            cost += len(_compact(new_doc).encode()) + 1
-        if out["facts"] and size + cost > FEED_MAX_BYTES:
+    consumed = 0
+    for item in window:
+        at, fact_id, r, twin = item
+        if twin is None:
+            entry, target = _feed_fact(r, fact_id, at, conversions), out["facts"]
+        else:
+            entry, target = _feed_duplicate(twin, fact_id, at, fact_ids), out["duplicates"]
+        cost = len(_compact(entry).encode()) + 1
+        new_docs = []
+        for doc_id in dict.fromkeys(cited(item)):
+            if doc_id not in listed and docs.get(doc_id):
+                new_docs.append(docs[doc_id])
+                cost += len(_compact(docs[doc_id]).encode()) + 1
+        if (out["facts"] or out["duplicates"]) and size + cost > FEED_MAX_BYTES:
             break
         size += cost
-        out["facts"].append(fact)
-        if new_doc:
-            out["documents"].append(new_doc)
-            listed.add(doc_id)
+        target.append(entry)
+        for d in new_docs:
+            out["documents"].append(d)
+            listed.add(d["id"])
         last = (at, fact_id)
-    if last and len(out["facts"]) < len(candidates):
+        consumed += 1
+    if last and consumed < len(stream):
         out["next_cursor"] = _encode_cursor(*last)
     return _compact(out)
 

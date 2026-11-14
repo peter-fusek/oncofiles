@@ -681,6 +681,19 @@ class FactsMixin:
         async with self.db.execute(sql, tuple(params)) as cur:
             return _rows(await cur.fetchall())
 
+    async def dedupe_fact_rows(self, *, patient_id: str, categories: list[str]) -> list[dict]:
+        """Every active coded fact of these categories, as ``fact_series`` reads
+        them, for the read-time dedupe of ``timeline`` (#802)."""
+        if not categories:
+            return []
+        async with self.db.execute(
+            "SELECT s.* FROM fact_series_v s WHERE s.patient_id = ? AND s.code IS NOT NULL "
+            f"AND s.category IN ({','.join('?' * len(categories))}) "
+            "ORDER BY s.code, s.effective_at, s.id",
+            (patient_id, *categories),
+        ) as cur:
+            return _rows(await cur.fetchall())
+
     async def latest_fact_rows(self, *, patient_id: str) -> list[dict]:
         async with self.db.execute(
             "SELECT * FROM latest_fact_v WHERE patient_id = ? ORDER BY category, code",
