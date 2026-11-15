@@ -40,13 +40,25 @@ _DAY = "public, max-age=86400"
 _MONTH = "public, max-age=2592000"
 _JS = "application/javascript; charset=utf-8"
 
+_YEAR = "public, max-age=31536000, immutable"
+_GLB = "model/gltf-binary"
+
 # Fixed allowlist: only these names are served, so no path reaches the
-# filesystem. three.min.js is the vendored r149 build and never changes; the
-# media names are not versioned, so they get a month and revalidate by ETag.
+# filesystem. The three.js r149 modules are vendored and never change
+# (`scripts/atlas_meshes/vendor_three.py`). The meshes (#841) are rebuilt by
+# `scripts/atlas_meshes/build_meshes.py` under the same names, so they and the
+# media get a month and revalidate by ETag.
 ASSETS: dict[str, tuple[str, str]] = {
     "atlas.css": ("text/css; charset=utf-8", _DAY),
     "app.js": (_JS, _DAY),
-    "three.min.js": (_JS, "public, max-age=31536000, immutable"),
+    "three.module.js": (_JS, _YEAR),
+    "GLTFLoader.js": (_JS, _YEAR),
+    "BufferGeometryUtils.js": (_JS, _YEAR),
+    "mesh-figure.glb": (_GLB, _MONTH),
+    "mesh-spine.glb": (_GLB, _MONTH),
+    "mesh-knee.glb": (_GLB, _MONTH),
+    "mesh-shoulder.glb": (_GLB, _MONTH),
+    "ATTRIBUTION.md": ("text/markdown; charset=utf-8", _DAY),
     "poster-sk.jpg": ("image/jpeg", _MONTH),
     "poster-en.jpg": ("image/jpeg", _MONTH),
     "video-sk.mp4": ("video/mp4", _MONTH),
@@ -54,7 +66,11 @@ ASSETS: dict[str, tuple[str, str]] = {
 }
 
 # The atlas page gets its own CSP (per-route, #534): scripts and styles only
-# from this origin, no inline script and no inline handler. `style-src-attr`
+# from this origin, no inline script and no inline handler. three.js and its
+# GLTFLoader are same-origin ES modules (no import map, which would be an
+# inline script) and the meshes are plain GLB fetched from this origin
+# (`connect-src 'self'`), uncompressed, so no WASM decoder and no
+# 'wasm-unsafe-eval' is needed (#841). `style-src-attr`
 # stays open because app.js writes legend swatches as `style="background:…"`
 # and the labels are positioned through the CSSOM.
 ATLAS_CSP = (
@@ -240,6 +256,10 @@ _COPY: dict[str, dict] = {
         "limits": (
             "<p>Model je schematický a zostavený z textu lekárskych správ. Nezobrazuje skutočné "
             "snímky.</p>"
+            "<p>Kosti, svaly a postava v atlase sú ilustračná všeobecná anatómia z modelu "
+            "BodyParts3D (© The Database Center for Life Science, licencia CC BY 4.0, upravené), "
+            "nie snímky autora. Nález je do nej zakreslený podľa textu správ. "
+            '<a href="/movement-atlas/ATTRIBUTION.md">Zdroj a licencia</a>.</p>'
             "<p>Cviky sú bežné príklady na posúdenie fyzioterapeutom. Nie sú predpisom ani "
             "lekárskou radou. Ortopéd predpísal rehabilitáciu všeobecne, nie tieto konkrétne "
             "cviky.</p>"
@@ -355,6 +375,11 @@ _COPY: dict[str, dict] = {
         "limits": (
             "<p>The model is schematic and built from the text of the medical reports. It does "
             "not show real scans.</p>"
+            "<p>The bones, muscles and figure in the atlas are general, illustrative anatomy "
+            "from the BodyParts3D model (© The Database Center for Life Science, CC BY 4.0 "
+            "licence, modified), not the author's own images. The findings are drawn onto it "
+            "from the text of the reports. "
+            '<a href="/movement-atlas/ATTRIBUTION.md">Source and licence</a>.</p>'
             "<p>The exercises are common examples for a physiotherapist to review. They are not a "
             "prescription and not medical advice. The orthopaedist prescribed rehabilitation in "
             "general, not these specific exercises.</p>"

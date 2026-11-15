@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import re
+import struct
 from datetime import date
 from html.parser import HTMLParser
 from pathlib import Path
@@ -105,7 +106,14 @@ class _LooseText(HTMLParser):
     [
         ("atlas.css", "text/css; charset=utf-8"),
         ("app.js", "application/javascript; charset=utf-8"),
-        ("three.min.js", "application/javascript; charset=utf-8"),
+        ("three.module.js", "application/javascript; charset=utf-8"),
+        ("GLTFLoader.js", "application/javascript; charset=utf-8"),
+        ("BufferGeometryUtils.js", "application/javascript; charset=utf-8"),
+        ("mesh-figure.glb", "model/gltf-binary"),
+        ("mesh-spine.glb", "model/gltf-binary"),
+        ("mesh-knee.glb", "model/gltf-binary"),
+        ("mesh-shoulder.glb", "model/gltf-binary"),
+        ("ATTRIBUTION.md", "text/markdown; charset=utf-8"),
         ("poster-sk.jpg", "image/jpeg"),
         ("poster-en.jpg", "image/jpeg"),
         ("video-sk.mp4", "video/mp4"),
@@ -141,7 +149,10 @@ async def test_video_answers_a_range_request_with_206(lang):
     assert headers["content-type"] == "video/mp4"
 
 
-@pytest.mark.parametrize("name", ["index.html", "../server.py", "video.mp4", "", "three.js"])
+@pytest.mark.parametrize(
+    "name",
+    ["index.html", "../server.py", "video.mp4", "", "three.js", "three.min.js", "mesh-hip.glb"],
+)
 async def test_only_allowlisted_files_are_served(name):
     response = await movement_atlas_asset(_req(f"/movement-atlas/{name}", name=name))
     assert response.status_code == 404
@@ -159,7 +170,8 @@ def test_only_the_small_videos_are_shipped():
         assert len(video) < 4_000_000
         # moov before mdat, so playback starts without downloading the file
         assert 0 < video.find(b"moov") < video.find(b"mdat")
-    assert sum(p.stat().st_size for p in ATLAS_DIR.iterdir()) < 9_000_000
+    # videos ~7.1 MB + meshes ~1.9 MB + three.js modules ~1.3 MB (#841)
+    assert sum(p.stat().st_size for p in ATLAS_DIR.iterdir()) < 11_500_000
 
 
 # ── The hosted atlas page and its CSP ────────────────────────────────────
@@ -173,13 +185,15 @@ async def test_atlas_page_is_served_without_inline_code():
     assert not re.search(r"\son[a-z]+\s*=", html), "no inline event handlers"
     assert "<style" not in html and "style=" not in html
     scripts = re.findall(r"<script\b([^>]*)>(.*?)</script>", html, re.S)
-    assert [attrs.strip() for attrs, _ in scripts] == [
-        'src="/movement-atlas/three.min.js"',
-        'src="/movement-atlas/app.js"',
-    ]
+    # one ES module; it imports three.js and the loader from this origin (no import map)
+    assert [attrs.strip() for attrs, _ in scripts] == ['type="module" src="/movement-atlas/app.js"']
     assert all(not body.strip() for _, body in scripts)
-    # every reference stays on this origin (no CDN, no font host)
-    assert not re.search(r"""(?:src|href)=["'](?:https?:)?//(?!oncofiles\.com/)""", html)
+    # nothing is loaded from another host (no CDN, no font host) ...
+    assert not re.search(r"""src=["'](?:https?:)?//(?!oncofiles\.com/)""", html)
+    assert not re.search(r"""<link[^>]+href=["'](?:https?:)?//(?!oncofiles\.com/)""", html)
+    # ... and the only links that leave the site are the mesh credit (#841)
+    external = re.findall(r"""href=["']((?:https?:)?//(?!oncofiles\.com/)[^"']+)""", html)
+    assert sorted(external) == sorted(MESH_CREDIT_LINKS)
     assert '<link rel="stylesheet" href="/fonts/fonts.css">' in html
     # indexable, with its own Slovak title, description and canonical
     assert "noindex" not in html
@@ -240,7 +254,139 @@ def test_atlas_scripts_need_nothing_the_csp_forbids():
         r"\beval\s*\(|new Function\s*\(|\bfetch\s*\(|XMLHttpRequest|import\s*\(", app_js
     )
     assert not re.search(r"https?://(?!www\.w3\.org/)", app_js)
-    assert "@license" in (ATLAS_DIR / "three.min.js").read_text(encoding="utf-8")[:200]
+    assert "WebAssembly" not in app_js and ".wasm" not in app_js
+    # three.js r149 as same-origin ES modules: relative imports only, licence header kept
+    assert re.findall(r"^import .*? from '([^']+)';$", app_js, re.M) == [
+        "./three.module.js",
+        "./GLTFLoader.js",
+    ]
+    three = (ATLAS_DIR / "three.module.js").read_text(encoding="utf-8")
+    assert "@license" in three[:200] and "const REVISION = '149';" in three[:400]
+    for name in ("GLTFLoader.js", "BufferGeometryUtils.js"):
+        text = (ATLAS_DIR / name).read_text(encoding="utf-8")
+        assert "three.js r149 (MIT" in text[:200]
+        imports = re.findall(r"from '([^']+)';", text)
+        assert imports and all(i.startswith("./") and "/" not in i[2:] for i in imports), imports
+        assert not re.search(r"\beval\s*\(|new Function\s*\(", text)
+    # every file the page asks for is on the allowlist
+    for name in ["three.module.js", "GLTFLoader.js", *MESHES]:
+        assert name in atlas_showcase.ASSETS
+    assert "'/movement-atlas/mesh-' + k + '.glb'" in app_js
+
+
+def test_atlas_csp_is_unchanged_by_the_meshes():
+    """#841 added ES modules and GLB files; both fit the #830 policy as it was.
+    No inline import map, no WASM decoder, no other host."""
+    assert atlas_showcase.ATLAS_CSP == (
+        "default-src 'self'; script-src 'self'; script-src-attr 'none'; style-src 'self'; "
+        "style-src-attr 'unsafe-inline'; font-src 'self'; img-src 'self' data: blob:; "
+        "connect-src 'self'; object-src 'none'; frame-ancestors 'self'; base-uri 'self'; "
+        "form-action 'none'; upgrade-insecure-requests"
+    )
+    assert "wasm" not in atlas_showcase.ATLAS_CSP
+    assert not [p.name for p in ATLAS_DIR.iterdir() if p.suffix in (".wasm", ".bin")]
+    assert "importmap" not in (ATLAS_DIR / "index.html").read_text(encoding="utf-8")
+
+
+# ── Meshes (#841): budget, file metadata, attribution ────────────────────
+
+MESHES = ("mesh-figure.glb", "mesh-spine.glb", "mesh-knee.glb", "mesh-shoulder.glb")
+MESH_CREDIT_LINKS = (
+    "https://dbarchive.biosciencedbc.jp/en/bodyparts3d/download.html",
+    "https://creativecommons.org/licenses/by/4.0/",
+    "https://creativecommons.org/licenses/by-sa/4.0/",
+)
+_MESH_PARTS = {
+    "mesh-figure.glb": {"body"},
+    "mesh-knee.glb": {"femur", "tibia", "fibula", "patella", "rectus_femoris", "popliteus"},
+    "mesh-spine.glb": {"sacrum", "L5", "iliocostalis_r", "longissimus_l", "psoas_l"},
+    "mesh-shoulder.glb": {"scapula", "clavicle", "humerus", "humerus_head", "supraspinatus"},
+}
+
+
+def _glb(name: str) -> tuple[dict, bytes]:
+    data = (ATLAS_DIR / name).read_bytes()
+    magic, version, total = struct.unpack("<III", data[:12])
+    assert (magic, version, total) == (0x46546C67, 2, len(data))
+    length, kind = struct.unpack("<II", data[12:20])
+    assert kind and data[16:20] == b"JSON"
+    return json.loads(data[20 : 20 + length]), data[20 : 20 + length]
+
+
+@pytest.mark.parametrize("name", MESHES)
+def test_mesh_files_are_plain_gltf_with_credit_and_clean_metadata(name):
+    doc, raw = _glb(name)
+    assert doc["asset"]["version"] == "2.0"
+    assert "BodyParts3D" in doc["asset"]["copyright"] and "modified" in doc["asset"]["copyright"]
+    # uncompressed and self-contained: no decoder, no external buffer or image
+    assert "extensionsRequired" not in doc and "extensionsUsed" not in doc
+    assert all("uri" not in b for b in doc["buffers"]) and "images" not in doc
+    assert _MESH_PARTS[name] <= {n["name"] for n in doc["nodes"]}
+    assert doc["scenes"][0]["extras"], "landmarks the page reads"
+    # file metadata: no path, user, e-mail or tool banner beyond the fixed generator string
+    assert doc["asset"]["generator"] == "oncofiles atlas_meshes"
+    assert not re.search(rb"[\w.+-]+@[\w-]+\.[a-z]+", raw)
+    for marker in (b"/Users/", b"/home/", b"/tmp/", b"\\Users"):
+        assert marker not in raw, marker
+
+
+def test_mesh_budget():
+    """Issue #841: at most ~3 MB per area and ~8 MB in total, loaded per area."""
+    sizes = {name: (ATLAS_DIR / name).stat().st_size for name in MESHES}
+    assert all(size < 3_000_000 for size in sizes.values()), sizes
+    assert sum(sizes.values()) < 8_000_000, sizes
+
+
+def test_mesh_credit_and_limits_are_on_the_page():
+    html = (ATLAS_DIR / "index.html").read_text(encoding="utf-8")
+    credit = html[html.index('<footer class="credit">') : html.index("</footer>")]
+    for text in (
+        "3D anatómia:",
+        "BodyParts3D",
+        "© The Database Center for Life Science",
+        "CC BY 4.0",
+        "upravené",
+        "CC BY-SA 4.0",
+        "Ilustračná všeobecná anatómia, nie Petrove snímky.",
+        'href="/movement-atlas/ATTRIBUTION.md"',
+    ):
+        assert text in credit, text
+    for link in MESH_CREDIT_LINKS:
+        assert f'href="{link}"' in credit
+    assert "Anatómia je zo všeobecného modelu tela" in html
+    app_js = (ATLAS_DIR / "app.js").read_text(encoding="utf-8")
+    assert "ilustračná všeobecná anatómia z verejného modelu ľudského tela" in app_js
+    assert "nie Petrove vlastné snímky" in app_js
+    assert "Načítavam 3D model…" in app_js and 'id="loading" role="status"' in html
+    # the use-case pages carry the credit where the atlas is described
+    for lang, text in (
+        ("sk", "licencia CC BY 4.0, upravené"),
+        ("en", "CC BY 4.0 licence, modified"),
+    ):
+        page = atlas_showcase.use_case_page_html(lang)
+        assert "BodyParts3D" in page and "© The Database Center for Life Science" in page
+        assert text in page
+        assert 'href="/movement-atlas/ATTRIBUTION.md"' in page
+
+
+def test_attribution_file_names_source_licences_and_every_part():
+    text = (ATLAS_DIR / "ATTRIBUTION.md").read_text(encoding="utf-8")
+    for needle in (
+        "BodyParts3D, © The Database Center for Life Science",
+        "isa_BP3D_4.0_obj_99.zip",
+        "Creative Commons Attribution\n4.0 International",
+        "CC Attribution-Share Alike 2.1 Japan",
+        "Creative Commons Attribution-ShareAlike 4.0 International",
+        "https://creativecommons.org/licenses/by-sa/4.0/legalcode",
+        "It is not the\nanatomy of the person whose findings the atlas shows",
+    ):
+        assert needle in text, needle
+    # every source file the build script reads is listed
+    script = Path(__file__).parent.parent / "scripts" / "atlas_meshes" / "build_meshes.py"
+    sources = re.search(r"SOURCES = \{(.*?)\n\}", script.read_text(encoding="utf-8"), re.S).group(1)
+    ids = re.findall(r'"(FJ\d+M?)":', sources)
+    assert len(ids) > 30
+    assert not [fid for fid in ids if not re.search(rf"\b{fid}\b", text)]
 
 
 # ── Use-case pages ───────────────────────────────────────────────────────
@@ -463,7 +609,7 @@ async def test_llms_txt_mentions_the_use_case_in_both_languages():
 def _published_texts() -> dict[str, str]:
     texts = {
         name: (ATLAS_DIR / name).read_text(encoding="utf-8")
-        for name in ("index.html", "atlas.css", "app.js")
+        for name in ("index.html", "atlas.css", "app.js", "ATTRIBUTION.md")
     }
     texts["use-case sk"] = atlas_showcase.use_case_page_html("sk")
     texts["use-case en"] = atlas_showcase.use_case_page_html("en")
@@ -513,7 +659,14 @@ def test_no_external_host_in_the_published_files():
         for url in re.findall(r"https?://[^\s\"'<>)]+", text):
             assert url.startswith(
                 ("https://oncofiles.com", "https://schema.org", "http://www.w3.org/2000/svg")
-            ) or url.startswith("https://github.com/peter-fusek/oncofiles"), (name, url)
+            ) or url.startswith(
+                (
+                    "https://github.com/peter-fusek/oncofiles",
+                    # the mesh credit (#841): source and licences, links only
+                    "https://dbarchive.biosciencedbc.jp/",
+                    "https://creativecommons.org/licenses/",
+                )
+            ), (name, url)
 
 
 @pytest.mark.parametrize("name", ["poster-sk.jpg", "poster-en.jpg", "video-sk.mp4", "video-en.mp4"])
