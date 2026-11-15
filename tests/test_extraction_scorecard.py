@@ -267,7 +267,9 @@ async def test_scorecard_row_holds_aggregates_only_and_never_passes_the_preview_
     assert row["status"] == "ok" and row["dry_run"] == 1 and row["finished_at"]
     assert row["id"] == status["run_row_id"]
     stored = json.loads(row["report_json"])
-    assert set(stored) == {"scorecard", "label", "settings", "extractors", "totals", "dry_run"}
+    assert set(stored) == {"scorecard", "label", "settings", "extractors", "versions", "totals",
+                           "dry_run"}  # fmt: skip
+    assert stored["versions"] == status["report"]["versions"]
     assert stored["totals"] == status["report"]["totals"]
     _assert_counts_only(stored)
     # never a curated run or preview
@@ -408,6 +410,164 @@ def test_delta_is_metric_by_metric_and_flags_regressions():
     assert m["lab.pct_agree"]["change"] is None
     assert out["regressions"] == ["stability.pct_stop", "stability.timeouts"]
     assert sc.delta(None, cur) is None
+
+
+# ── versions: stored with every scorecard, never compared across (#826) ──
+
+VERSIONS = {"scorecard_version": sc.SCORECARD_VERSION, "extractor_version": "llm-extract-v10",
+            "verifier_version": 2, "clinical_extractor_version": "llm-clinical-v8",
+            "clinical_verifier_version": 3}  # fmt: skip
+WORSE = {"stability": {"pct_stop": 100.0, "timeouts": 0}, "trust": {"pct_machine": 90.0},
+         "lab": {"pct_agree": 100.0}}  # fmt: skip
+NOW = {"stability": {"pct_stop": 50.0, "timeouts": 4}, "trust": {"pct_machine": 10.0},
+       "lab": {"pct_agree": 20.0}}  # fmt: skip
+
+
+async def test_scorecard_carries_and_stores_its_versions(seeded, local_model):
+    from oncofiles.curated import verifier, verifier_clinical
+
+    db = seeded
+    status = await _run(db, label="v1-baseline")
+    report = status["report"]
+    assert report["versions"] == {
+        "scorecard_version": sc.SCORECARD_VERSION,
+        "extractor_version": llm_extract.EXTRACTOR_VERSION,
+        "verifier_version": verifier.VERIFIER_VERSION,
+        "clinical_extractor_version": lx.EXTRACTOR_VERSION,
+        "clinical_verifier_version": verifier_clinical.CLINICAL_VERIFIER_VERSION,
+    }
+    assert set(report["versions"]) == set(sc.VERSION_FIELDS)
+    assert all(v is not None for v in report["versions"].values())
+    # the first scorecard: nothing to compare with
+    assert report["baseline_comparable"] is None and report["definition_changed"] == {}
+    stored = json.loads((await _scorecard_rows(db))[0]["report_json"])
+    assert sc.versions_of(stored) == report["versions"]
+
+
+async def test_no_delta_and_no_regression_flag_across_a_verifier_version(
+    seeded, local_model, monkeypatch
+):
+    from oncofiles.curated import verifier
+
+    db = seeded
+    first = await _run(db, label="v1-baseline")
+    same = await _run(db, label="v1-again")
+    assert same["report"]["baseline_comparable"] is True
+    assert same["report"]["definition_changed"] == {} and same["report"]["delta"]["metrics"]
+    old = verifier.VERIFIER_VERSION
+    monkeypatch.setattr(verifier, "VERIFIER_VERSION", old + 1)
+    third = await _run(db, label="v2-verifier", compare_to_label="v1-baseline")
+    report = third["report"]
+    # the baseline is named, but its numbers are under another definition
+    assert report["compared_to"]["row_id"] == first["run_row_id"]
+    assert report["baseline_comparable"] is False
+    assert report["definition_changed"] == {"verifier_version": [old, old + 1]}
+    assert report["delta"] is None
+    assert not [k for _, k, _ in _walk(report) if k == "regressions"]
+    assert report["versions"]["verifier_version"] == old + 1
+    _assert_counts_only(report)
+    # the new scorecard is the baseline of the next one under the same versions
+    fourth = await _run(db, label="v2-verifier-b")
+    assert fourth["report"]["compared_to"]["row_id"] == third["run_row_id"]
+    assert fourth["report"]["baseline_comparable"] is True
+    assert fourth["report"]["delta"]["regressions"] == []
+
+
+@pytest.mark.parametrize(
+    ("drop", "changed"),
+    [
+        # a row written before #826: scorecard-v1, the old ``extractors`` block
+        (("versions",), {"scorecard_version", "verifier_version"}),
+        # a baseline that recorded no version at all
+        (("versions", "extractors", "scorecard"), set(sc.VERSION_FIELDS)),
+    ],
+)
+async def test_a_baseline_without_versions_is_never_compared(seeded, local_model, drop, changed):
+    db = seeded
+    first = await _run(db, label="v1-baseline")
+    stored = json.loads((await _scorecard_rows(db))[0]["report_json"])
+    current = dict(stored["versions"])
+    for key in drop:
+        stored.pop(key)
+    if "extractors" in stored:  # what verifier 1 / scorecard-v1 wrote
+        stored["scorecard"] = "scorecard-v1"
+        stored["extractors"]["lab_verifier"] = 1
+    await db.db.execute(
+        "UPDATE curated_runs SET report_json = ? WHERE id = ?",
+        (json.dumps(stored), first["run_row_id"]),
+    )
+    await db.db.commit()
+    second = await _run(db, label="v2")
+    report = second["report"]
+    assert report["compared_to"]["row_id"] == first["run_row_id"]
+    assert report["baseline_comparable"] is False and report["delta"] is None
+    assert set(report["definition_changed"]) == changed
+    for field, (old, new) in report["definition_changed"].items():
+        assert new == current[field] and old != new
+    if "extractors" in stored:
+        assert report["definition_changed"]["verifier_version"] == [1, current["verifier_version"]]
+        assert report["definition_changed"]["scorecard_version"][0] == "scorecard-v1"
+    else:
+        assert {old for old, _ in report["definition_changed"].values()} == {None}
+
+
+def test_compare_gives_regressions_only_under_equal_versions():
+    base = {"versions": dict(VERSIONS), "totals": WORSE}
+    same = sc.compare(base, dict(VERSIONS), NOW)
+    assert same["baseline_comparable"] is True and same["definition_changed"] == {}
+    assert same["delta"]["regressions"] == [
+        "stability.pct_stop", "trust.pct_machine", "lab.pct_agree", "stability.timeouts",
+    ]  # fmt: skip
+    # the very same numbers under another definition: no delta, no flag
+    for field, other in (("verifier_version", 1), ("extractor_version", "llm-extract-v9"),
+                         ("clinical_verifier_version", 2), ("scorecard_version", "scorecard-v1"),
+                         ("clinical_extractor_version", None)):  # fmt: skip
+        out = sc.compare({"versions": {**VERSIONS, field: other}, "totals": WORSE},
+                         dict(VERSIONS), NOW)  # fmt: skip
+        assert out == {"baseline_comparable": False, "delta": None,
+                       "definition_changed": {field: [other, VERSIONS[field]]}}  # fmt: skip
+    # a current side without a version is not comparable either
+    out = sc.compare(base, {**VERSIONS, "verifier_version": None}, NOW)
+    assert out["baseline_comparable"] is False and out["delta"] is None
+    assert sc.compare(None, dict(VERSIONS), NOW) == {
+        "baseline_comparable": None, "definition_changed": {}, "delta": None,
+    }  # fmt: skip
+    # a version is a code or a whole number: nothing else is stored or compared
+    assert sc.versions_of({"versions": {"verifier_version": "free text", "extractor_version":
+                                        True}})["verifier_version"] is None  # fmt: skip
+
+
+def test_lab_totals_sum_every_bucket_of_bucket_facts():
+    """The scorecard sums exactly the buckets ``bucket_facts`` decides (#826),
+    so the invariants of one document hold for the totals."""
+
+    def fact(code, day, value, **kw):
+        return {"code": code, "occurred_at": day, "value_canonical": value, "page_number": 1,
+                "verification": "machine", **kw}  # fmt: skip
+
+    stored = [fact("ALT", "2027-08-02", 0.5), fact("GLU", "2027-08-02", 5.0),
+              fact("UREA", "2027-08-02", 4.0), fact("CRP", "2027-08-02", 3.0)]  # fmt: skip
+    llm_facts = [fact("ALT", "2027-08-02", 0.5), fact("GLU", "2027-08-02", 6.0),
+                 fact("UREA", None, 4.0), fact("K", "2027-08-02", 4.5),
+                 fact("NA", "2027-08-02", None), fact(None, "2027-08-02", 1.0)]  # fmt: skip
+    rule_side, llm_side = llm_extract.bucket_facts(stored, llm_facts)
+    buckets = {b for b, _ in rule_side} | {b for b, _ in llm_side}
+    assert buckets == {"agree", "value_mismatch", "date_mismatch", "rule_only", "llm_only",
+                       "llm_no_value", "llm_uncoded"}  # fmt: skip
+    assert buckets | {"parser_crosscheck"} <= set(sc._LAB_COUNTS)
+    entry = {"document_id": 1, "result": "compared", "pages": 1,
+             **llm_extract.shadow_compare(stored, llm_facts)}  # fmt: skip
+    lab = sc.totals([sc.lab_card(entry), sc.lab_card(entry)])["lab"]
+    assert lab["date_mismatch"] == lab["llm_no_value"] == lab["llm_uncoded"] == 2
+    paired = lab["agree"] + lab["parser_crosscheck"] + lab["value_mismatch"] + lab["date_mismatch"]
+    assert lab["rule_facts"] == paired + lab["rule_only"] == 2 * len(stored)
+    assert (
+        lab["llm_facts"]
+        == (paired + lab["llm_only"] + lab["llm_no_value"] + lab["llm_uncoded"])
+        == 2 * len(llm_facts)
+    )
+    # what ``agree`` and the agreement rate mean is unchanged
+    assert lab["comparable"] == lab["agree"] + lab["value_mismatch"] and lab["pct_agree"] == 50.0
 
 
 # ── pure helpers ────────────────────────────────────────────────────────
