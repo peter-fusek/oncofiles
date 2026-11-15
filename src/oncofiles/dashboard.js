@@ -834,7 +834,8 @@
       var archiveBtn = document.getElementById('archive-patient-btn');
       if (archiveBtn) archiveBtn.style.display = isAdminMode ? 'none' : '';
       var addPatientBtn = document.querySelector('.add-patient-btn');
-      if (addPatientBtn && isAdminMode) addPatientBtn.style.display = 'none';
+      // Restore it when admin mode ends (#824), same as the archive button.
+      if (addPatientBtn) addPatientBtn.style.display = isAdminMode ? 'none' : '';
     }
 
     function switchPatient(patientId) {
@@ -984,8 +985,66 @@
     // ── Onboarding wizard ───────────────────────────────────────────────
 
     var wizardPatientId = '';
+    var wizardPatientUuid = '';  // UUID from POST /api/patients; token rows key on it
     var wizardBearerToken = '';
     var wizardCurrentStep = 1;
+
+    // Step-2 bearer-token block. A token is opt-in (#824): nothing is minted
+    // until the user clicks "Generate token".
+    function resetWizardTokenSection(visible) {
+      var section = document.getElementById('wiz-token-section');
+      if (section) section.style.display = visible ? '' : 'none';
+      var box = document.getElementById('wiz-token-display');
+      if (box) { box.textContent = ''; box.style.display = 'none'; }
+      ['wiz-token-warning', 'wiz-token-error'].forEach(function(id) {
+        var el = document.getElementById(id);
+        if (el) el.style.display = 'none';
+      });
+      var btn = document.getElementById('wiz-token-gen');
+      if (btn) { btn.style.display = ''; btn.disabled = false; }
+    }
+
+    // Shown in step 2 when POST /api/patients reports context_saved: false:
+    // the patient exists, but type / birth date were not stored (#824).
+    // The text is static markup (data-sk / data-en); only visibility changes.
+    function setWizardContextWarning(visible) {
+      var el = document.getElementById('wiz-context-warning');
+      if (!el) return;
+      el.textContent = el.getAttribute(dashLang === 'sk' ? 'data-sk' : 'data-en');
+      el.style.display = visible ? 'block' : 'none';
+    }
+
+    async function wizardGenerateToken() {
+      var btn = document.getElementById('wiz-token-gen');
+      var errEl = document.getElementById('wiz-token-error');
+      if (!wizardPatientUuid || wizardBearerToken) return;
+      errEl.style.display = 'none';
+      btn.disabled = true;
+      try {
+        var resp = await fetch('/api/patient-tokens', {
+          method: 'POST',
+          headers: { 'Authorization': authHeader(), 'Content-Type': 'application/json' },
+          body: JSON.stringify({ patient_id: wizardPatientUuid, label: 'wizard' })
+        });
+        var data = await resp.json();
+        if (!resp.ok || !data.bearer_token) {
+          errEl.textContent = (dashLang === 'sk' ? 'Token sa nepodarilo vytvoriť: ' : 'Could not create the token: ') + (data.error || resp.status);
+          errEl.style.display = 'block';
+          btn.disabled = false;
+          return;
+        }
+        wizardBearerToken = data.bearer_token;
+        var box = document.getElementById('wiz-token-display');
+        box.textContent = wizardBearerToken;
+        box.style.display = '';
+        document.getElementById('wiz-token-warning').style.display = '';
+        btn.style.display = 'none';
+      } catch (e) {
+        errEl.textContent = (dashLang === 'sk' ? 'Sieťová chyba: ' : 'Network error: ') + e.message;
+        errEl.style.display = 'block';
+        btn.disabled = false;
+      }
+    }
 
     function switchDemoChat(tab, btn) {
       document.querySelectorAll('.demo-chat-panel').forEach(function(el) { el.style.display = 'none'; });
@@ -1014,6 +1073,7 @@
       var pid = document.getElementById('patient-select').value;
       if (!pid) return;
       wizardPatientId = pid;
+      wizardPatientUuid = '';
       wizardBearerToken = '';
       wizardCurrentStep = 2;
       for (var i = 1; i <= 4; i++) {
@@ -1036,21 +1096,24 @@
         if (statusEl) statusEl.style.display = 'none';
       }
       // Hide the token display (not relevant for existing patient)
-      var tokenBox = document.querySelector('.wizard-token-box');
-      if (tokenBox) tokenBox.style.display = 'none';
-      var tokenWarning = tokenBox ? tokenBox.nextElementSibling : null;
-      if (tokenWarning && tokenWarning.style) tokenWarning.style.display = 'none';
+      resetWizardTokenSection(false);
+      setWizardContextWarning(false);
       updateWizardDots();
       document.getElementById('wizard-overlay').classList.add('active');
     }
 
     function showOnboarding() {
       wizardPatientId = '';
+      wizardPatientUuid = '';
       wizardBearerToken = '';
       wizardCurrentStep = 1;
+      resetWizardTokenSection(true);
+      setWizardContextWarning(false);
       // Reset form fields
       document.getElementById('wiz-name').value = '';
       document.getElementById('wiz-id').value = '';
+      document.getElementById('wiz-type').value = 'oncology';
+      document.getElementById('wiz-dob').value = '';
       document.getElementById('wiz-diagnosis').value = '';
       document.getElementById('wiz-email').value = '';
       document.getElementById('wiz-lang').value = 'sk';
@@ -1122,6 +1185,8 @@
       var body = JSON.stringify({
         patient_id: pid,
         display_name: name,
+        patient_type: document.getElementById('wiz-type').value || 'oncology',
+        date_of_birth: document.getElementById('wiz-dob').value || null,
         diagnosis_summary: document.getElementById('wiz-diagnosis').value.trim() || null,
         caregiver_email: document.getElementById('wiz-email').value.trim() || null,
         preferred_lang: document.getElementById('wiz-lang').value
@@ -1151,6 +1216,14 @@
           btn.textContent = 'Create Patient';
           return;
         }
+        if (resp.status === 400) {
+          // Validation error (slug, patient type, birth date): show it as is.
+          errEl.textContent = data.error || 'Invalid input';
+          errEl.style.display = 'block';
+          btn.disabled = false;
+          btn.textContent = 'Create Patient';
+          return;
+        }
         if (!resp.ok) {
           errEl.textContent = dashLang === 'sk'
             ? 'Databáza je krátko nedostupná, prosím skúste znova o ~30s. (' + (data.error || resp.status) + ')'
@@ -1161,9 +1234,12 @@
           return;
         }
         wizardPatientId = pid;
-        wizardBearerToken = data.bearer_token || '';
-        // Show token in step 2
-        document.getElementById('wiz-token-display').textContent = wizardBearerToken;
+        // No token comes back from patient creation (#824); step 2 offers a
+        // "Generate token" button instead.
+        wizardPatientUuid = (data.patient && data.patient.patient_id) || '';
+        wizardBearerToken = '';
+        resetWizardTokenSection(true);
+        setWizardContextWarning(data.context_saved === false);
         wizardGoToStep(2);
       } catch (e) {
         errEl.textContent = (dashLang === 'sk' ? 'Sieťová chyba: ' : 'Network error: ') + e.message;

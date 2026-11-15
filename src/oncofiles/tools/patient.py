@@ -308,9 +308,107 @@ async def whoami(ctx: Context) -> str:
 READ_ONLY = {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True}
 
 
+async def list_patient_tokens(ctx: Context, patient_slug: str) -> str:
+    """List one patient's bearer tokens without any secret (admin only, #824).
+
+    Returns id, label, created_at and is_active for every token of the
+    patient (active and revoked). Never the token, never its hash: the
+    plaintext is shown once at creation and is not stored.
+
+    Args:
+        patient_slug: Required. The patient's slug (e.g. 'q1b').
+    """
+    from oncofiles.tools._helpers import _require_admin_or_raise
+
+    try:
+        _require_admin_or_raise("list_patient_tokens")
+    except ValueError as exc:
+        return json.dumps({"error": str(exc)})
+    if not (patient_slug or "").strip():
+        return json.dumps({"error": "patient_slug is required"})
+    pid = await _resolve_patient_id(patient_slug.strip(), ctx)
+    tokens = await _get_db(ctx).list_patient_tokens(patient_id=pid)
+    return json.dumps(
+        {
+            "patient_slug": patient_slug.strip(),
+            "tokens": tokens,
+            "active": sum(1 for t in tokens if t["is_active"]),
+            "total": len(tokens),
+        },
+        ensure_ascii=False,
+        default=str,
+    )
+
+
+async def revoke_patient_tokens(
+    ctx: Context,
+    patient_slug: str,
+    label: str | None = None,
+    dry_run: bool = True,
+) -> str:
+    """Revoke one patient's bearer tokens without knowing them (admin only, #824).
+
+    Soft revoke: matching active tokens are marked inactive and stop
+    authenticating at once; nothing is deleted. A dry run (the default) only
+    reports which tokens would be revoked. A real run (dry_run=false) leaves
+    one activity_log row (patient, label, count; no token material).
+
+    Args:
+        patient_slug: Required. The patient's slug (e.g. 'q1b').
+        label: Optional. Revoke only tokens with exactly this label
+            (see list_patient_tokens). Omitted = all active tokens.
+        dry_run: True (default) reports only; False revokes.
+    """
+    from oncofiles.models import ActivityLogEntry
+    from oncofiles.secrets_keys import caller_email_hash
+    from oncofiles.tools._helpers import _caller_email, _require_admin_or_raise
+
+    try:
+        _require_admin_or_raise("revoke_patient_tokens")
+    except ValueError as exc:
+        return json.dumps({"error": str(exc)})
+    if not (patient_slug or "").strip():
+        return json.dumps({"error": "patient_slug is required"})
+    slug = patient_slug.strip()
+    pid = await _resolve_patient_id(slug, ctx)
+    db = _get_db(ctx)
+    matching = await db.list_patient_tokens(patient_id=pid, label=label, active_only=True)
+    out: dict = {"patient_slug": slug, "label": label, "dry_run": bool(dry_run)}
+    if dry_run:
+        out.update({"would_revoke": len(matching), "tokens": matching})
+        return json.dumps(out, ensure_ascii=False, default=str)
+
+    revoked = await db.revoke_patient_tokens(patient_id=pid, label=label)
+    out["revoked"] = revoked
+    # One audit row per REAL run: ids and counts only, the caller as a keyed
+    # hash (never the e-mail), never any token material.
+    await db.insert_activity_log(
+        ActivityLogEntry(
+            patient_id=pid,
+            session_id="token-revoke",
+            agent_id="mcp",
+            tool_name="revoke_patient_tokens",
+            input_summary=json.dumps(
+                {
+                    "caller_email_hash": caller_email_hash(_caller_email()),
+                    "patient_slug": slug,
+                    "label": label,
+                    "dry_run": False,
+                }
+            ),
+            output_summary=json.dumps(
+                {"revoked": revoked, "token_ids": [t["id"] for t in matching]}
+            ),
+        )
+    )
+    return json.dumps(out, ensure_ascii=False, default=str)
+
+
 def register(mcp):
     mcp.tool()(get_patient_context)
     mcp.tool()(update_patient_context)
     mcp.tool()(list_patients)
     mcp.tool()(select_patient)
     mcp.tool(annotations=READ_ONLY)(whoami)
+    mcp.tool(annotations=READ_ONLY)(list_patient_tokens)
+    mcp.tool()(revoke_patient_tokens)

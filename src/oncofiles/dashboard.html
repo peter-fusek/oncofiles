@@ -528,6 +528,17 @@
  <input type="text" id="wiz-id" placeholder="napr. meno-priezvisko" pattern="[a-z0-9_-]+">
  </div>
  <div class="wizard-field">
+ <label for="wiz-type" data-sk="Typ pacienta" data-en="Patient type">Typ pacienta</label>
+ <select id="wiz-type">
+ <option value="oncology" selected data-sk="Onkologický" data-en="Oncology">Onkologický</option>
+ <option value="general" data-sk="Všeobecné zdravie" data-en="General health">Všeobecné zdravie</option>
+ </select>
+ </div>
+ <div class="wizard-field">
+ <label for="wiz-dob" data-sk="Dátum narodenia (voliteľné)" data-en="Date of birth (optional)">Dátum narodenia (voliteľné)</label>
+ <input type="date" id="wiz-dob" min="1900-01-01">
+ </div>
+ <div class="wizard-field">
  <label for="wiz-diagnosis" data-sk="Diagnóza / typ rakoviny" data-en="Diagnosis / cancer type">Diagnóza / typ rakoviny</label>
  <textarea id="wiz-diagnosis" placeholder="napr. CRC, štádium IV"></textarea>
  </div>
@@ -552,8 +563,15 @@
  <!-- Step 2: Connect Google Drive -->
  <div id="wiz-step-2" style="display:none">
  <h2 data-sk="Pripojiť Google Drive" data-en="Connect Google Drive">Pripojiť Google Drive</h2>
- <div class="wizard-token-box" id="wiz-token-display"></div>
- <p style="color:var(--amber);font-size:0.75rem;margin-bottom:1rem" data-sk="Uložte si tento bearer token — znova sa nezobrazí." data-en="Save this bearer token now — it will not be shown again.">Uložte si tento bearer token — znova sa nezobrazí.</p>
+ <p id="wiz-context-warning" role="alert" style="color:var(--amber);font-size:0.8125rem;margin-bottom:1rem;display:none" data-sk="Pacient bol vytvorený, ale typ pacienta a dátum narodenia sa nepodarilo uložiť. Nastavte ich prosím neskôr znova." data-en="The patient was created, but the patient type and date of birth could not be saved. Please set them again later.">Pacient bol vytvorený, ale typ pacienta a dátum narodenia sa nepodarilo uložiť. Nastavte ich prosím neskôr znova.</p>
+ <!-- Bearer token is opt-in (#824): nothing is minted until the button is clicked -->
+ <div id="wiz-token-section" style="margin-bottom:1rem">
+ <p style="color:var(--text-muted);font-size:0.75rem;margin-bottom:0.5rem" data-sk="Bearer token (voliteľné): potrebný iba pre Claude Desktop, Cursor alebo vlastné skripty. Claude.ai a ChatGPT sa pripájajú cez OAuth bez tokenu." data-en="Bearer token (optional): only needed for Claude Desktop, Cursor or custom scripts. Claude.ai and ChatGPT connect via OAuth without a token.">Bearer token (voliteľné): potrebný iba pre Claude Desktop, Cursor alebo vlastné skripty. Claude.ai a ChatGPT sa pripájajú cez OAuth bez tokenu.</p>
+ <button class="wizard-btn-secondary" id="wiz-token-gen" data-action="wizardGenerateToken" data-sk="Vygenerovať token" data-en="Generate token">Vygenerovať token</button>
+ <div class="wizard-token-box" id="wiz-token-display" style="display:none"></div>
+ <p id="wiz-token-warning" style="color:var(--amber);font-size:0.75rem;display:none" data-sk="Uložte si tento bearer token — znova sa nezobrazí." data-en="Save this bearer token now — it will not be shown again.">Uložte si tento bearer token — znova sa nezobrazí.</p>
+ <p id="wiz-token-error" style="color:var(--red);font-size:0.75rem;display:none"></p>
+ </div>
 
  <!-- Phase A: Authorize -->
  <div id="wiz-step2-auth">
