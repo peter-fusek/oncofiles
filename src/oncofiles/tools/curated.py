@@ -1569,8 +1569,12 @@ async def curated_reocr(
     two resolutions (a PDF text layer is used as-is); digits are accepted only
     where both passes agree. Dry run (default) writes nothing and previews how
     many values would become machine-verified. A real run backs the old sidecar
-    up to the logs folder, then updates it in place, then re-indexes. Runs in
-    the background; poll curated_reocr_status. Slow: minutes per page.
+    up to the logs folder, then updates it in place, then re-indexes. When the
+    new text would lose something (result ``review``) the sidecar is left as it
+    is and the new text is kept next to it in the logs folder
+    (``_reocr-candidate-…``, its Drive id in ``candidate``); an admin can
+    promote it with curated_restore_sidecar. Runs in the background; poll
+    curated_reocr_status. Slow: minutes per page.
     By default only documents with unverified facts are chosen, most first
     (only_with_facts=false: every Cowork-era or uncertain document).
     """
@@ -3852,14 +3856,20 @@ async def curated_restore_sidecar(
     dry_run: bool = True,
     reason: str = "",
 ) -> str:
-    """ADMIN: put a re-OCR backup back as a curated document's sidecar (#806).
+    """ADMIN: put a re-OCR backup back as a curated document's sidecar (#806),
+    or promote a kept re-OCR candidate to it.
 
-    For a document a re-OCR rewrote with less text. ``backup_id`` must be the
-    Drive id of a ``_reocr-backup-*-<that document's filename>.md`` file in the
-    patient's curated logs folder; anything else is refused. Dry run (default)
-    reports only counts (characters, numbers, dates of the current and the
-    backup text). A real run (dry_run=false) first copies the current sidecar
-    to the logs folder (``_restore-backup-<ts>-…``), then writes the backup's
+    For a document a re-OCR rewrote with less text, or one whose re-OCR ended
+    in ``review`` and whose new transcription a person checked and prefers.
+    ``backup_id`` must be the Drive id of a file in the patient's curated logs
+    folder named ``_reocr-backup-*-<that document's filename>.md`` or
+    ``_reocr-candidate-*-<that document's filename>.md`` (the ``candidate`` id
+    of a ``review`` entry in a re-OCR report); anything else is refused. The
+    result's ``backup_kind`` is ``reocr_backup`` or ``reocr_candidate``. Dry
+    run (default) reports only counts (characters, numbers, dates of the
+    current and the backup or candidate text). A real run (dry_run=false)
+    first copies the current sidecar to the logs folder
+    (``_restore-backup-<ts>-…``), then writes the backup's or candidate's
     text into the sidecar with read-back verification, then re-indexes the
     patient. Nothing is deleted. ``reason`` (required, at most 200 characters)
     is asked for accountability and never stored or logged. Refused while a

@@ -216,8 +216,10 @@ async def test_guard_never_rewrites_when_values_would_be_lost(vocab, monkeypatch
     )  # PLT dropped
     rep = reocr.run_reocr(drive, drive.root, [doc], vocab, dry_run=False, now=NOW)
     d = rep.documents[0]
-    assert d.result == "review" and drive.writes == []
-    assert d.lost_codes == {"PLT": 1}
+    assert d.result == "review" and d.lost_codes == {"PLT": 1}
+    # the sidecar stays; the new text is kept as one candidate in logs
+    assert [w[0] for w in drive.writes] == ["create"] and d.candidate
+    assert drive.items[side]["content"] == report.encode()
 
 
 # ── #667: bounded memory ──
