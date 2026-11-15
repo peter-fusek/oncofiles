@@ -1273,7 +1273,7 @@
     var wizardFolderStack = [];
     var wizardFolderInfo = null;     // "current" from /api/gdrive-folders
     var wizardFolderNewMode = false;
-    var wizardFolderPending = null;  // request body waiting for "Connect anyway"
+    var wizardFolderPending = null;  // request body shown in the confirmation box
     var wizardFolderLoading = false;
 
     // Bilingual text on a dynamic element: keeps data-sk / data-en so that
@@ -1425,28 +1425,35 @@
       wizShow('wiz-folder-curated-note', !!info.curated && !link);
     }
 
-    // In-wizard confirmation (not a browser dialog): shown before a folder that
-    // looks like a parent of patient folders is connected. `info` is either
-    // "current" from /api/gdrive-folders or the server's 409 container_folder body.
+    // In-wizard box (not a browser dialog). `info` is either "current" from
+    // /api/gdrive-folders or the server's 409 container_folder body. Variants:
+    //  - hard: a subfolder is another patient's README folder -> "Back" only;
+    //  - tooMany: too many subfolders to check them all -> "Back" only;
+    //  - retry: the check could not run -> "Back" + "Try again";
+    //  - otherwise a UX hint for an ordinary folder with subfolders ("did you
+    //    mean one of them?") -> "Back" + "Connect anyway".
+    // The first three are refusals the server enforces; nothing the wizard
+    // sends can lift them. "Connect anyway" exists only for the hint.
     function wizardFolderAskConfirm(body, info) {
       wizardFolderPending = body;
       var n = info.subfolder_count || 0;
-      var m = info.curated_children || 0;
       var text = document.getElementById('wiz-folder-confirm-text');
-      // Three variants. The server enforces the first two even with confirm_container:
-      //  - hard: a parent of other patients' README folders -> "Back" only;
-      //  - retry: the check could not run -> "Back" + "Try again", never a pass;
-      //  - otherwise a plain question -> "Back" + "Connect anyway".
       var reason = info.reason || info.container_reason;
-      var hard = reason === 'curated_children' || m > 0;
+      var hard = reason === 'curated_children' || (info.curated_children || 0) > 0;
+      var tooMany = !hard && reason === 'too_many_to_check';
       var retry = !hard && reason === 'check_failed';
-      wizShow('wiz-folder-confirm-go', !hard && !retry);
+      var blocked = hard || tooMany || retry || !!reason;
+      wizShow('wiz-folder-confirm-go', !blocked);
       wizShow('wiz-folder-confirm-retry', retry);
       if (hard) {
         wizSetBi(text,
-          'Tento priečinok sa nedá pripojiť, pretože obsahuje priečinky iných pacientov (podpriečinky s vlastným kontraktom README: ' + m + ' z ' + n + '). Vráťte sa a otvorte priečinok konkrétneho pacienta.',
-          'This folder cannot be connected because it contains other patients\' folders (' + m + ' of its ' + n + (n === 1 ? ' subfolder has' : ' subfolders have') + ' their own README contract). Go back and open the folder of the patient you mean.');
-      } else if (retry) {
+          'Tento priečinok sa nedá pripojiť, pretože obsahuje priečinky iných pacientov (podpriečinky s vlastným kontraktom README). Vráťte sa a otvorte priečinok konkrétneho pacienta.',
+          'This folder cannot be connected because it contains other patients\' folders (subfolders with their own README contract). Go back and open the folder of the patient you mean.');
+      } else if (tooMany) {
+        wizSetBi(text,
+          'Tento priečinok má príliš veľa podpriečinkov na bezpečnú kontrolu. Otvorte priečinok konkrétneho pacienta alebo vložte odkaz naň.',
+          'This folder has too many subfolders to check safely. Open the folder of the patient you mean, or paste its link.');
+      } else if (blocked) {
         wizSetBi(text,
           'Tento priečinok sa teraz nepodarilo skontrolovať. Skúste to o chvíľu znova.',
           'Could not check this folder right now. Try again in a moment.');
@@ -1456,8 +1463,8 @@
           'This folder contains ' + n + (n === 1 ? ' subfolder' : ' subfolders') + '. Oncofiles will create its category folders inside it. If you meant one of the subfolders, open it first.');
       }
       wizSetBi(document.getElementById('wiz-folder-confirm-path-label'),
-        hard || retry ? 'Priečinok:' : 'Pripojil by sa priečinok:',
-        hard || retry ? 'Folder:' : 'Folder that would be connected:');
+        blocked ? 'Priečinok:' : 'Pripojil by sa priečinok:',
+        blocked ? 'Folder:' : 'Folder that would be connected:');
       var pathEl = document.getElementById('wiz-folder-confirm-path');
       if (body.folder_id && body.folder_id !== wizardFolderParent) {
         wizSetBi(pathEl, 'priečinok z vloženého odkazu', 'the folder from the pasted link');
@@ -1484,7 +1491,6 @@
     async function wizardFolderConfirmRetry() {
       var body = wizardFolderPending;
       if (!body) return;
-      delete body.confirm_container;
       if (body.folder_id && body.folder_id !== wizardFolderParent) {
         wizardFolderSend(body);
         return;
@@ -1499,9 +1505,9 @@
 
     function wizardFolderConfirmGo() {
       if (!wizardFolderPending) return;
-      var body = wizardFolderPending;
-      body.confirm_container = true;  // sent only from this confirmation step
-      wizardFolderSend(body);
+      // The user answered the "did you mean a subfolder?" hint. No flag is
+      // sent: the server decides on its own whether the folder may be connected.
+      wizardFolderSend(wizardFolderPending);
     }
 
     function wizardStep2SetFolder() {
@@ -1545,9 +1551,8 @@
           body: JSON.stringify(body)
         });
         var data = await resp.json();
-        if (resp.status === 409 && data.code === 'container_folder' &&
-            (!body.confirm_container || data.confirmable === false)) {
-          // Server-side guard (e.g. a pasted link the browser knows nothing about).
+        if (resp.status === 409 && data.code === 'container_folder') {
+          // Server-side refusal (e.g. a pasted link the browser knows nothing about).
           wizardFolderAskConfirm(body, data);
           unlock();
           return;

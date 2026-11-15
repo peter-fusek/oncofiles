@@ -68,7 +68,7 @@ class FakeFiles:
         self.created: list[dict] = []
         self.fail_list_matching: str | None = None
 
-    def list(self, q: str = "", **_kw):
+    def list(self, q: str = "", pageSize: int = 1000, pageToken=None, **_kw):  # noqa: N803
         self.list_queries.append(q)
         if self.fail_list_matching and self.fail_list_matching in q:
             raise RuntimeError("drive listing failed (test)")
@@ -85,7 +85,11 @@ class FakeFiles:
                 continue
             out.append({"id": fid, "name": node["name"], "parents": [node["parent"]]})
         out.sort(key=lambda f: f["name"])
-        return MagicMock(execute=MagicMock(return_value={"files": out}))
+        offset = int(pageToken or 0)
+        page = {"files": out[offset : offset + pageSize]}
+        if offset + pageSize < len(out):
+            page["nextPageToken"] = str(offset + pageSize)
+        return MagicMock(execute=MagicMock(return_value=page))
 
     def get(self, fileId: str = "", **_kw):  # noqa: N803 - Drive API keyword
         node = self.tree[fileId]
@@ -233,22 +237,64 @@ def _child_marker_queries(files: FakeFiles) -> list[str]:
     return [q for q in files.list_queries if "name = '_index.json'" in q and " or '" in q]
 
 
-def test_overview_checks_only_first_50_children_in_five_queries():
-    client, files = _client(_wide_tree(60, curated_at=55))  # curated one is past the bound
-    out = curated_folder.folder_overview(client, "idSiroky000000001")
+def _folder_list_queries(files: FakeFiles) -> list[str]:
+    return [q for q in files.list_queries if "mimeType" in q]
+
+
+WIDE = "idSiroky000000001"
+CHUNK = curated_folder._CONTAINER_QUERY_CHUNK
+
+
+def test_overview_checks_every_child_not_only_the_first_fifty():
+    client, files = _client(_wide_tree(60, curated_at=55))
+    out = curated_folder.folder_overview(client, WIDE)
     assert out["subfolder_count"] == 60
-    assert out["curated_children"] == 0
-    assert out["container_reason"] == "too_many_subfolders"
-    queries = _child_marker_queries(files)
-    assert [q.count(" in parents") for q in queries] == [curated_folder._CONTAINER_QUERY_CHUNK] * 5
+    assert out["curated_children"] == 1
+    assert out["container_reason"] == "curated_children"
+
+
+def test_overview_passes_many_ordinary_children_after_a_complete_check():
+    client, files = _client(_wide_tree(60))
+    out = curated_folder.folder_overview(client, WIDE)
+    assert out["container_reason"] is None and out["curated_children"] == 0
+    assert [q.count(" in parents") for q in _child_marker_queries(files)] == [CHUNK] * 6
+
+
+def test_overview_stops_querying_after_the_first_hit():
+    client, files = _client(_wide_tree(60, curated_at=13))
+    out = curated_folder.folder_overview(client, WIDE)
+    assert out["container_reason"] == "curated_children"
+    assert len(_child_marker_queries(files)) == 2  # the hit is in the second chunk
+
+
+def test_overview_refuses_more_children_than_the_limit_without_marker_queries():
+    over = curated_folder.CONTAINER_CHECK_LIMIT + 1
+    client, files = _client(_wide_tree(over, curated_at=3))
+    out = curated_folder.folder_overview(client, WIDE)
+    assert out["container_reason"] == "too_many_to_check"
+    assert out["subfolder_count"] == over
+    assert _child_marker_queries(files) == []
+    # At exactly the limit everything is checked: one query per chunk.
+    client, files = _client(_wide_tree(curated_folder.CONTAINER_CHECK_LIMIT))
+    out = curated_folder.folder_overview(client, WIDE)
+    assert out["container_reason"] is None
+    assert len(_child_marker_queries(files)) == curated_folder.CONTAINER_CHECK_LIMIT // CHUNK
+
+
+def test_overview_paginates_the_child_listing():
+    client, files = _client(_wide_tree(150, curated_at=140))  # the hit is on the second page
+    out = curated_folder.folder_overview(client, WIDE)
+    assert len(_folder_list_queries(files)) == 2  # pages of one hundred
+    assert out["subfolder_count"] == 150
+    assert out["container_reason"] == "curated_children"
 
 
 def test_overview_chunks_child_marker_query_by_ten():
-    client, files = _client(_wide_tree(23, curated_at=21))
-    out = curated_folder.folder_overview(client, "idSiroky000000001")
-    assert out["curated_children"] == 1 and out["container_reason"] == "curated_children"
+    client, files = _client(_wide_tree(23))
+    out = curated_folder.folder_overview(client, WIDE)
+    assert out["container_reason"] is None
     queries = _child_marker_queries(files)
-    assert [q.count(" in parents") for q in queries] == [10, 10, 3]
+    assert [q.count(" in parents") for q in queries] == [CHUNK, CHUNK, 3]
     shape = re.compile(
         r"^\('[A-Za-z0-9_-]+' in parents(?: or '[A-Za-z0-9_-]+' in parents)*\) "
         r"and \(name = 'README\.md' or name = '_index\.json'\) and trashed = false$"
@@ -270,13 +316,6 @@ def test_overview_validates_the_folder_id_itself():
     assert files.list_queries == []  # nothing was interpolated
 
 
-def test_overview_finds_curated_child_in_second_chunk():
-    client, _ = _client(_wide_tree(40, curated_at=30))
-    out = curated_folder.folder_overview(client, "idSiroky000000001")
-    assert out["curated_children"] == 1
-    assert out["container_reason"] == "curated_children"
-
-
 def test_overview_refuses_ids_outside_the_drive_alphabet():
     client, _ = _client()
     out = curated_folder.folder_overview(
@@ -295,57 +334,76 @@ async def test_set_folder_refuses_parent_of_curated_folders():
     assert data["code"] == "container_folder"
     assert data["reason"] == "curated_children"
     assert data["curated_children"] == 1 and data["subfolder_count"] == 3
-    assert data["confirmable"] is False and data["confirm_field"] is None
+    assert data["confirmable"] is False and "confirm_field" not in data
     db.update_oauth_folder.assert_not_called()
     db.update_oauth_owner_email.assert_not_called()
     client.create_folder.assert_not_called()
     assert len(files.list_queries) == 3  # own markers, child folders, children's markers
 
 
-@pytest.mark.parametrize("flag", ["true", 1, "yes", False, None])
-async def test_set_folder_confirmation_must_be_json_true(flag):
-    client, _ = _client(_wide_tree(60))
-    status, data, db = await _set_folder(
-        {"folder_id": "idSiroky000000001", "confirm_container": flag}, client
-    )
-    assert status == 409 and data["code"] == "container_folder"
-    db.update_oauth_folder.assert_not_called()
-
-
-async def test_set_folder_refuses_parent_of_curated_folders_even_when_confirmed():
-    """Isolation, not UX: the flag cannot connect a parent of other patients' folders."""
-    client, files = _client()
-    status, data, db = await _set_folder({"folder_id": RODINA, "confirm_container": True}, client)
-    assert status == 409
-    assert data["code"] == "container_folder" and data["reason"] == "curated_children"
-    assert data["confirmable"] is False and data["confirm_field"] is None
+def _assert_nothing_persisted(db, client, files):
     db.update_oauth_folder.assert_not_called()
     db.update_oauth_owner_email.assert_not_called()
     client.create_folder.assert_not_called()
     assert files.created == []
 
 
-async def test_set_folder_refuses_failed_check_even_when_confirmed():
+@pytest.mark.parametrize("extra", [{}, {"confirm_container": True}])
+async def test_set_folder_refuses_curated_child_past_the_first_fifty(extra):
+    """The hole infra found: a curated folder at position 55 of 60 must still block."""
+    client, files = _client(_wide_tree(60, curated_at=55))
+    status, data, db = await _set_folder({"folder_id": WIDE, **extra}, client)
+    assert status == 409
+    assert data["code"] == "container_folder" and data["reason"] == "curated_children"
+    assert data["confirmable"] is False
+    _assert_nothing_persisted(db, client, files)
+
+
+@pytest.mark.parametrize("extra", [{}, {"confirm_container": True}])
+async def test_set_folder_refuses_more_subfolders_than_can_be_checked(extra):
+    client, files = _client(_wide_tree(curated_folder.CONTAINER_CHECK_LIMIT + 1))
+    status, data, db = await _set_folder({"folder_id": WIDE, **extra}, client)
+    assert status == 409
+    assert data["code"] == "container_folder" and data["reason"] == "too_many_to_check"
+    assert data["confirmable"] is False
+    _assert_nothing_persisted(db, client, files)
+
+
+@pytest.mark.parametrize("extra", [{}, {"confirm_container": True}])
+async def test_set_folder_refuses_failed_check(extra):
     """Fail closed: a Drive error means "try again", never a pass."""
     client, files = _client()
     files.fail_list_matching = "README.md"
-    status, data, db = await _set_folder({"folder_id": VOLNY, "confirm_container": True}, client)
+    status, data, db = await _set_folder({"folder_id": VOLNY, **extra}, client)
     assert status == 409
     assert data["code"] == "container_folder" and data["reason"] == "check_failed"
-    assert data["confirmable"] is False and data["confirm_field"] is None
-    db.update_oauth_folder.assert_not_called()
-    db.update_oauth_owner_email.assert_not_called()
-    client.create_folder.assert_not_called()
-    assert files.created == []
+    assert data["confirmable"] is False
+    _assert_nothing_persisted(db, client, files)
 
 
-async def test_set_folder_confirmation_lifts_unchecked_many_subfolders():
+@pytest.mark.parametrize("extra", [{}, {"confirm_container": True}])
+async def test_set_folder_refuses_parent_of_curated_folders_whatever_the_body(extra):
+    client, files = _client()
+    status, data, db = await _set_folder({"folder_id": RODINA, **extra}, client)
+    assert status == 409 and data["reason"] == "curated_children"
+    _assert_nothing_persisted(db, client, files)
+
+
+async def test_set_folder_accepts_sixty_ordinary_subfolders():
+    """A complete check with no curated child leaves nothing for the server to ask."""
     client, _ = _client(_wide_tree(60))
-    status, data, db = await _set_folder(
-        {"folder_id": "idSiroky000000001", "confirm_container": True}, client
-    )
+    status, data, db = await _set_folder({"folder_id": WIDE}, client)
     assert status == 200
     db.update_oauth_folder.assert_awaited_once()
+
+
+def test_server_has_no_confirmation_flag():
+    import inspect
+
+    assert "confirm_container" not in inspect.getsource(server.api_gdrive_set_folder).replace(
+        "there is no ``confirm_container`` field any more", ""
+    )
+    assert "too_many_subfolders" not in inspect.getsource(curated_folder)
 
 
 async def test_set_folder_accepts_curated_folder_directly():
@@ -366,23 +424,6 @@ async def test_set_folder_accepts_plain_folder_with_ordinary_subfolders():
     assert "curated" not in data
     assert data["subfolders_created"] > 0
     db.update_oauth_folder.assert_awaited_once()
-
-
-async def test_set_folder_refuses_when_check_fails():
-    client, files = _client()
-    files.fail_list_matching = "README.md"
-    status, data, db = await _set_folder({"folder_id": VOLNY}, client)
-    assert status == 409
-    assert data["code"] == "container_folder" and data["reason"] == "check_failed"
-    db.update_oauth_folder.assert_not_called()
-
-
-async def test_set_folder_requires_confirmation_for_unchecked_many_subfolders():
-    client, _ = _client(_wide_tree(60))
-    status, data, db = await _set_folder({"folder_id": "idSiroky000000001"}, client)
-    assert status == 409 and data["reason"] == "too_many_subfolders"
-    assert data["confirmable"] is True and data["confirm_field"] == "confirm_container"
-    db.update_oauth_folder.assert_not_called()
 
 
 async def test_set_folder_still_rejects_a_file_id():
@@ -476,6 +517,12 @@ def test_wizard_states_which_folder_gets_connected():
     assert "My Drive itself cannot be connected" in section
 
 
+def _ask_confirm_js() -> str:
+    return _between(
+        _folder_js(), "function wizardFolderAskConfirm", "function wizardFolderConfirmBack"
+    )
+
+
 def test_container_confirmation_is_an_in_wizard_step():
     html, section = _html(), _folder_js()
     assert 'id="wiz-folder-confirm"' in html
@@ -483,32 +530,37 @@ def test_container_confirmation_is_an_in_wizard_step():
     assert 'data-action="wizardFolderConfirmGo"' in html
     assert 'data-en="Connect anyway"' in html and 'data-en="Back"' in html
     assert not re.search(r"(?<![A-Za-z_.])confirm\(", section)  # no JS confirm() dialog
-    # The flag is set in exactly one place: the "Connect anyway" handler.
-    assert section.count("confirm_container = true") == 1
-    go = section[section.index("function wizardFolderConfirmGo") :]
-    assert "confirm_container = true" in go[: go.index("\n    }\n")]
-    assert "data.code === 'container_folder'" in section  # server 409 opens the same step
+    assert "data.code === 'container_folder'" in section  # a server 409 opens the same box
     assert "Oncofiles will create its category folders inside it" in section
 
 
-def _ask_confirm_js() -> str:
-    return _between(
-        _folder_js(), "function wizardFolderAskConfirm", "function wizardFolderConfirmBack"
-    )
+def test_connect_anyway_is_not_wired_to_any_server_flag():
+    """ "Connect anyway" answers a UX hint; no body field can lift a server refusal."""
+    html, js = _html(), _js()
+    assert "confirm_container" not in js and "confirm_container" not in html
+    assert "confirmable" not in js
+    go = _between(_folder_js(), "function wizardFolderConfirmGo", "function wizardStep2SetFolder")
+    assert "wizardFolderSend(wizardFolderPending);" in go
+    assert not re.search(r"\bbody\.\w+\s*=", go)  # adds nothing to the request
+    assert html.count("wizardFolderConfirmGo") == 1
 
 
-def test_parent_of_patient_folders_has_no_connect_anyway():
-    section, ask = _folder_js(), _ask_confirm_js()
-    assert "var hard = reason === 'curated_children' || m > 0;" in ask
-    assert "wizShow('wiz-folder-confirm-go', !hard && !retry);" in ask
-    hard_branch = _between(ask, "if (hard) {", "} else if (retry) {")
+def test_refusals_have_no_connect_anyway():
+    ask = _ask_confirm_js()
+    assert "var hard = reason === 'curated_children' || (info.curated_children || 0) > 0;" in ask
+    assert "var tooMany = !hard && reason === 'too_many_to_check';" in ask
+    # Any server reason at all hides the only "Connect anyway" control.
+    assert "var blocked = hard || tooMany || retry || !!reason;" in ask
+    assert "wizShow('wiz-folder-confirm-go', !blocked);" in ask
+    hard_branch = _between(ask, "if (hard) {", "} else if (tooMany) {")
     assert "cannot be connected because it contains other patients" in hard_branch
     assert "nedá pripojiť, pretože obsahuje priečinky iných pacientov" in hard_branch
-    assert "anyway" not in hard_branch.lower()
-    # The markup has exactly one such control, so hiding it leaves "Back" only.
-    assert _html().count("wizardFolderConfirmGo") == 1
-    # A non-confirmable 409 opens the same step even if the flag was sent.
-    assert "data.confirmable === false" in section
+    many_branch = _between(ask, "} else if (tooMany) {", "} else if (blocked) {")
+    assert "too many subfolders to check safely" in many_branch
+    assert "or paste its link" in many_branch
+    assert "príliš veľa podpriečinkov na bezpečnú kontrolu" in many_branch
+    for branch in (hard_branch, many_branch):
+        assert "anyway" not in branch.lower()
 
 
 def test_try_again_exists_only_in_the_check_failed_variant():
@@ -522,15 +574,9 @@ def test_try_again_exists_only_in_the_check_failed_variant():
     # Shown by exactly one statement, driven by that flag alone.
     assert section.count("'wiz-folder-confirm-retry', ") == 1
     assert "wizShow('wiz-folder-confirm-retry', retry);" in ask
-    retry_branch = _between(ask, "} else if (retry) {", "} else {")
+    retry_branch = _between(ask, "} else if (blocked) {", "} else {")
     assert "Could not check this folder right now. Try again in a moment." in retry_branch
     assert "Tento priečinok sa teraz nepodarilo skontrolovať" in retry_branch
-    # "Try again" never sends the confirmation flag.
-    handler = _between(
-        section, "function wizardFolderConfirmRetry", "function wizardFolderConfirmGo"
-    )
-    assert "delete body.confirm_container;" in handler
-    assert "confirm_container = true" not in handler
 
 
 def test_step3_has_a_curated_variant_without_first_sync():
