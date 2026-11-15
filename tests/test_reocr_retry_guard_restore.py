@@ -531,6 +531,7 @@ async def test_tool_real_restore_backs_up_reindexes_and_audits(db, monkeypatch, 
     assert row["patient_id"] == ERIKA_UUID and row["status"] == "ok"
     inp, outp = json.loads(row["input_summary"]), json.loads(row["output_summary"])
     assert inp["document_id"] == 801 and inp["backup_id"] == backup
+    assert inp["backup_kind"] == "reocr_backup"
     assert inp["pre_store"] == COPY
     assert inp["caller_email_hash"] == caller_email_hash("admin@example.com")
     assert "admin@example.com" not in json.dumps(row)

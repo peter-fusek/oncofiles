@@ -133,10 +133,35 @@ async def test_a_failed_candidate_write_stays_review_and_is_not_retried(vocab, c
     assert not [t for t in TOKENS if t in logged]
 
 
-def test_a_candidate_does_not_mark_the_document_as_handled():
-    """Only a backup (a rewrite) or a kept re-OCR text hides a document from
-    the automatic selection; a candidate is an open review."""
-    assert not reocr.handled_before([CANDIDATE], NAME)
+async def test_a_candidate_hides_the_document_from_automatic_selection_only(vocab):
+    """A batch run does not read a reviewed document again (no pile of
+    candidates); an explicitly listed one is read and gets a new candidate."""
+    from datetime import timedelta
+
+    assert reocr.handled_before([CANDIDATE], NAME)
+    assert not reocr.handled_before([CANDIDATE], "x" + NAME)
+    drive, side, old, doc, reader = _run(LOSSY)
+    reads: list = []
+
+    def counting(*a, **k):
+        reads.append(a)
+        return reader(*a, **k)
+
+    def go(d, now):
+        rep = reocr.run_reocr(drive, drive.root, [d], vocab, dry_run=False, now=now,
+                              reader=counting)  # fmt: skip
+        return rep.documents[-1]
+
+    assert go(doc, NOW).result == "review" and _candidates(drive) == [CANDIDATE]
+    later = NOW + timedelta(minutes=5)
+    auto = go(doc, later)  # automatic selection: skipped before any read
+    assert auto.result == "skipped" and auto.candidate is None
+    assert len(reads) == 1 and _candidates(drive) == [CANDIDATE]
+    listed = go({**doc, "explicit": True}, later)
+    assert listed.result == "review" and listed.candidate and len(reads) == 2
+    new_name = f"{reocr.CANDIDATE_PREFIX}{later:%Y%m%d-%H%M%S}-{NAME}.md"
+    assert sorted(_candidates(drive)) == sorted([CANDIDATE, new_name])
+    assert drive.items[side]["content"] == old.encode()
 
 
 # --- the job: no re-index after a review ---------------------------------------------
@@ -282,6 +307,12 @@ async def test_tool_promotes_a_candidate_of_the_right_document(db, vocab):
     index.assert_awaited_once()
     assert index.await_args.kwargs["force_ids"] == {801}
     assert not [t for t in TOKENS if t in json.dumps(out)]
+    async with db.db.execute(
+        "SELECT input_summary FROM activity_log WHERE tool_name = 'curated_restore_sidecar'"
+    ) as cur:
+        [row] = await cur.fetchall()
+    inp = json.loads(row["input_summary"])
+    assert inp["backup_id"] == cand and inp["backup_kind"] == "reocr_candidate"
 
 
 @pytest.mark.usefixtures("admin_scope")

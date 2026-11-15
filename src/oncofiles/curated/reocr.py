@@ -968,12 +968,14 @@ def candidate_sidecar_text(text: str) -> str | None:
 
 
 def handled_before(log_names: list[str], filename: str) -> bool:
-    """Does the logs folder show this document was re-OCR'd before (a backup)
-    or deliberately restored (the kept re-OCR text)? (#674)"""
+    """Does the logs folder show this document was re-OCR'd before (a backup),
+    deliberately restored (the kept re-OCR text) or sent to review with its
+    new text kept (a candidate)? (#674) Automatic selection skips it; an
+    explicitly listed document is read again."""
     from oncofiles.curated.runner import nfc
 
     name = re.escape(nfc(filename))
-    exact = re.compile(rf"_reocr-(?:backup|text)-\d{{8}}(?:-\d{{6}})?-{name}\.md")
+    exact = re.compile(rf"_reocr-(?:backup|text|candidate)-\d{{8}}(?:-\d{{6}})?-{name}\.md")
     return any(exact.fullmatch(nfc(n)) for n in log_names)
 
 
@@ -1023,7 +1025,8 @@ def run_reocr(
             res.result, res.error = "skipped", "stopping"
             continue
         if not d.get("explicit") and handled_before(log_names, d["filename"]):
-            # #674: re-OCR'd before, or its old sidecar was restored on purpose
+            # #674: re-OCR'd before, its old sidecar was restored on purpose, or a
+            # review already left a candidate in logs
             res.result, res.error = "skipped", "re-OCR'd or restored before; list it explicitly"
             continue
         if rss_limit_mb and (now_rss := rss_mb()) > rss_limit_mb:

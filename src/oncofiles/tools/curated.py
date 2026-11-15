@@ -3721,6 +3721,7 @@ async def _audit_restore(db, pid: str, out: dict, *, caller_hash: str | None) ->
                         "caller_email_hash": caller_hash,
                         "document_id": out.get("document_id"),
                         "backup_id": out.get("backup_id"),
+                        "backup_kind": out.get("backup_kind"),
                         "dry_run": False,
                         "pre_store": out.get("pre_store"),
                     }
