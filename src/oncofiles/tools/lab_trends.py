@@ -83,7 +83,7 @@ class _FactLabs:
 
     def point(self, r: dict) -> dict:
         """value/unit/range in one unit, as the legacy tools name them."""
-        from oncofiles.tools.clinical_facts import _observation
+        from oncofiles.tools.clinical_facts import _llm_marks, _observation
 
         obs = _observation(r, self.conversions)
         return {
@@ -91,6 +91,8 @@ class _FactLabs:
             "unit": obs["unit"],
             "reference_low": obs["ref_low"],
             "reference_high": obs["ref_high"],
+            # a value the local model read (#714 llm-lab): method + its own label
+            **_llm_marks(r),
         }
 
     async def doc_urls(self, doc_ids: set[int]) -> dict[int, str | None]:

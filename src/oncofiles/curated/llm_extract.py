@@ -578,3 +578,44 @@ def shadow_compare(
         "llm_only_codes": sorted({c for c, _ in mine_cd} - {c for c, _ in rule_cd}),
         "unverified_reasons": dict(sorted(reasons.items())),
     }
+
+
+def agreement_by_code(
+    stored: list[dict], llm_facts: list[dict], *, not_assessed_pages=(), crosscheck_pages=()
+) -> dict[str, dict[str, int]]:
+    """The ``shadow_compare`` agreement per code (#714 lab write gate):
+    ``{code: {agree, value_mismatch, rule_only, llm_only, parser_crosscheck}}``
+    by (code, day, value hash) on the pages the model assessed. Counts and
+    codes only, never values. Agreement on transcription pages is
+    ``parser_crosscheck``, never ``agree`` (same rule as ``shadow_compare``)."""
+    skip = {int(p) for p in not_assessed_pages}
+    cross = {int(p) for p in crosscheck_pages}
+
+    def keyed(rows):
+        return [
+            (int(r.get("page_number") or 1), _key(r["code"], r.get("occurred_at"),
+                                                  r["value_canonical"]))
+            for r in rows
+            if r.get("code")
+            and r.get("value_canonical") is not None
+            and int(r.get("page_number") or 1) not in skip
+        ]  # fmt: skip
+
+    rule_rows, mine_rows = keyed(stored), keyed(llm_facts)
+    out: dict[str, dict[str, int]] = {}
+    for code in sorted({k[0] for _, k in rule_rows} | {k[0] for _, k in mine_rows}):
+        rule = Counter(k for _, k in rule_rows if k[0] == code)
+        mine = Counter(k for _, k in mine_rows if k[0] == code)
+        on_cross = Counter(k for p, k in rule_rows if k[0] == code and p in cross) & Counter(
+            k for p, k in mine_rows if k[0] == code and p in cross
+        )
+        mine_days = {(c, d) for c, d, _ in mine}
+        row = {
+            "agree": sum(((rule & mine) - on_cross).values()),
+            "value_mismatch": len({(c, d) for c, d, _ in (rule - mine)} & mine_days),
+            "rule_only": sum((rule - mine).values()),
+            "llm_only": sum((mine - rule).values()),
+            "parser_crosscheck": sum(on_cross.values()),
+        }
+        out[code] = {k: v for k, v in row.items() if v}
+    return out

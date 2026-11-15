@@ -279,7 +279,8 @@ async def test_feed_shape_documents_and_unverified(db, curated_env):
     await tool.index_patient(db, ERIKA_UUID)
     raw = await cf.dashboard_feed(_Ctx(db))
     out = json.loads(raw)
-    assert set(out) == {"facts", "documents", "generated_at", "next_cursor"}
+    assert set(out) == {"facts", "duplicates", "documents", "generated_at", "next_cursor"}
+    assert out["duplicates"] == []
     assert out["next_cursor"] is None and out["generated_at"].endswith("Z")
     assert "evidence" not in raw and "stats" not in raw
     allowed = {"id", "code", "label", "at", "at_from", "at_to", "value", "value_text", "unit",

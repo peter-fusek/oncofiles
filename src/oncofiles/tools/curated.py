@@ -110,7 +110,9 @@ def request_stop() -> None:
 
 
 # background jobs that write nothing: a deploy may cut them
-_NO_WRITE_KINDS = frozenset({"llm_shadow", "clinical_preview", "extraction_scorecard"})
+_NO_WRITE_KINDS = frozenset(
+    {"llm_shadow", "clinical_preview", "extraction_scorecard", "lab_preview"}
+)
 
 
 def run_active() -> bool:
@@ -2058,15 +2060,18 @@ def _timing(started: float, entries: list[dict], parallel: int) -> dict:
             "speedup": round(pages / wall, 2) if wall > 0 else None}  # fmt: skip
 
 
-async def _lab_shadow_work(db, pid: str, d: dict, *, vocab, births, cfg) -> _DocWork:
-    """Phase 1 of ONE document of the LLM-extract shadow (#714 phase 2a)."""
+async def _lab_shadow_work(
+    db, pid: str, d: dict, *, vocab, births, cfg, job_name: str = "curated LLM extract shadow"
+) -> _DocWork:
+    """Phase 1 of ONE document of the LLM-extract shadow (#714 phase 2a) and of
+    the LLM lab write (``curated_lab_extract``, same model work)."""
 
     def make(pages, meta, day):
         def _blocking():
             from oncofiles.cloud_guard import local_only
             from oncofiles.curated import llm_extract
 
-            with local_only("curated LLM extract shadow"):
+            with local_only(job_name):
                 return llm_extract.extract_document(
                     pages, vocab=vocab, report_date=day, birth_dates=births,
                     source_reason=_source_reason(meta), stop=_stopping.is_set, cfg=cfg,
@@ -2766,7 +2771,7 @@ def _sum_stored(report: list[dict]) -> dict[str, dict[str, int]]:
     return totals
 
 
-async def _audit_clinical_retract(db, pid: str, job: dict, report: list[dict]) -> None:
+async def _audit_retract(db, pid: str, job: dict, report: list[dict], *, family: str) -> None:
     """One activity_log row per REAL retract: caller (keyed hash), ids, the
     pre-store copy and counts per target. Never a value, an email or the
     free-text reason (only its length)."""
@@ -2776,9 +2781,9 @@ async def _audit_clinical_retract(db, pid: str, job: dict, report: list[dict]) -
         await db.insert_activity_log(
             ActivityLogEntry(
                 patient_id=pid,
-                session_id="curated-clinical",
+                session_id=f"curated-{family}",
                 agent_id="mcp",
-                tool_name="curated_clinical_retract",
+                tool_name=f"curated_{family}_retract",
                 input_summary=json.dumps(
                     {
                         "by": "mcp",
@@ -2801,11 +2806,122 @@ async def _audit_clinical_retract(db, pid: str, job: dict, report: list[dict]) -
                     }
                 ),
                 status="ok" if all(d.get("result") == "retracted" for d in report) else "error",
-                tags=json.dumps(["curated", "clinical", "retract", "real", "pre-store"]),
+                tags=json.dumps(["curated", family, "retract", "real", "pre-store"]),
             )
         )
     except Exception:
-        logger.exception("could not write the activity_log row for a clinical retract")
+        logger.exception("could not write the activity_log row for a %s retract", family)
+
+
+async def _retract(
+    ctx: Context,
+    document_ids,
+    patient_slug: str | None,
+    dry_run: bool,
+    reason: str,
+    *,
+    family: str,
+    retract,
+) -> str:
+    """Shared body of the user-invoked rollbacks (``curated_clinical_retract``,
+    ``curated_lab_retract``): ``retract`` is the store's ``retract_document``,
+    ``family`` names the job kind, the pre-store copy and the audit row."""
+    from oncofiles.tools._helpers import _is_admin_caller
+
+    if _is_admin_caller() and not patient_slug:
+        return json.dumps({"error": "Admin callers must pass patient_slug=<slug>; there is "
+                           "no implicit admin patient scope."})  # fmt: skip
+    pid = await _resolve_patient_id(patient_slug, ctx)
+    db = _get_db(ctx)
+    try:
+        ids = list(dict.fromkeys(int(i) for i in (document_ids or [])))
+    except (TypeError, ValueError):
+        return json.dumps({"error": "document_ids must be integers"})
+    if not ids:
+        return json.dumps({"error": "document_ids is required"})
+    if len(ids) > RETRACT_MAX_DOCS:
+        return json.dumps({"error": f"too many documents: at most {RETRACT_MAX_DOCS} explicit "
+                           f"document_ids per call, got {len(ids)}"})  # fmt: skip
+    reason = (reason or "").strip()
+    if not dry_run:
+        if not reason:
+            return json.dumps({"error": "reason is required with dry_run=false"})
+        if len(reason) > RETRACT_REASON_MAX:
+            return json.dumps({"error": f"reason is too long: at most {RETRACT_REASON_MAX} "
+                               "characters"})  # fmt: skip
+    owned = await db.get_documents_by_ids(set(ids), patient_id=pid)
+    missing = [i for i in ids if i not in owned]
+    if missing:  # another patient's id looks exactly like an unknown one
+        return json.dumps({"error": "not_found", "document_ids": missing,
+                           "message": "nothing was changed"})  # fmt: skip
+
+    if dry_run:
+        report = []
+        for i in ids:
+            res = await retract(db, patient_id=pid, document_id=i, reason="", dry_run=True)
+            report.append({"document_id": i, "result": "would_retract", **res})
+        return json.dumps(
+            {"dry_run": True, "totals": _sum_stored(report), "documents": report},
+            ensure_ascii=False,
+        )
+
+    if (
+        _reocr_jobs.get(pid, {}).get("state") == "running"
+        or (pid in _runs and _runs[pid].get("state") == "running")
+        or patient_lock(pid).locked()
+    ):
+        return json.dumps({"error": "busy: a curated run, index, re-OCR, re-read or "
+                           "extraction is in progress for this patient"})  # fmt: skip
+    # Reserve the patient's job slot before any await (CI deploys wait on it,
+    # other jobs see busy); the previous job's record is restored afterwards.
+    previous = _reocr_jobs.get(pid)
+    job = _reocr_jobs[pid] = {
+        "state": "running", "kind": f"{family}_retract", "dry_run": False,
+        "started_at": datetime.now(UTC).isoformat(), "actor": "mcp",
+        "caller_email_hash": caller_email_hash(_caller_email()),
+        "document_ids": ids, "reason_chars": len(reason),
+    }  # fmt: skip
+    try:
+        async with patient_lock(pid):
+            from oncofiles.pre_store import PreStoreError, make_copy
+
+            try:
+                job["pre_store"] = await asyncio.to_thread(make_copy, db, family)
+            except Exception as exc:
+                why = str(exc) if isinstance(exc, PreStoreError) else type(exc).__name__
+                logger.error("pre-store copy failed for %s (%s): retract refused", pid[:8], why)
+                return json.dumps(
+                    {"error": f"refused: pre-store copy failed ({why}); nothing was written"}
+                )
+            who = (job["caller_email_hash"] or "mcp")[:12]
+            audit_reason = f"retract by {who}: {reason}"
+            report = []
+            for i in ids:
+                try:
+                    res = await retract(
+                        db, patient_id=pid, document_id=i, reason=audit_reason, dry_run=False
+                    )
+                except Exception as exc:  # idempotent: calling again retracts the rest
+                    logger.exception("%s retract of doc %s failed", family, i)
+                    report.append({"document_id": i, "result": "failed",
+                                   "error": type(exc).__name__})  # fmt: skip
+                else:
+                    report.append({"document_id": i, "result": "retracted", **res})
+            logger.info(
+                "%s retract for %s: %d documents (reason %d chars)",
+                family, pid[:8], len(ids), len(reason),
+            )  # fmt: skip
+            await _audit_retract(db, pid, job, report, family=family)
+            return json.dumps(
+                {"dry_run": False, "pre_store": job["pre_store"],
+                 "totals": _sum_stored(report), "documents": report},
+                ensure_ascii=False,
+            )  # fmt: skip
+    finally:
+        if previous is not None:
+            _reocr_jobs[pid] = previous
+        else:
+            _reocr_jobs.pop(pid, None)
 
 
 async def curated_clinical_retract(
@@ -2844,11 +2960,312 @@ async def curated_clinical_retract(
             audit, never logged.
     """
     from oncofiles.curated import clinical_store
-    from oncofiles.tools._helpers import _is_admin_caller
 
-    if _is_admin_caller() and not patient_slug:
-        return json.dumps({"error": "Admin callers must pass patient_slug=<slug>; there is "
-                           "no implicit admin patient scope."})  # fmt: skip
+    return await _retract(
+        ctx, document_ids, patient_slug, dry_run, reason, family="clinical",
+        retract=clinical_store.retract_document,
+    )  # fmt: skip
+
+
+# ── WRITE path for LLM lab facts (#714 phase 2b for labs), OFF by default ──
+#
+# ``curated_lab_extract`` runs the same model work as the lab shadow
+# (``_lab_shadow_work``) and, on a real run, stores the verified facts through
+# ``curated.lab_store`` — the ONLY caller of ``lab_store.store_document``
+# (lock test in tests/test_llm_lab_write.py). A real run is refused unless
+# ``LLM_LAB_WRITE_ENABLED=true``; enabling it is a maintainer decision after
+# the dry-run agreement scorecard (``gate``) is good on the rule-parser formats.
+
+LAB_MAX_DOCS = 10
+_LAB_GATE_KEYS = ("agree", "value_mismatch", "rule_only", "llm_only", "parser_crosscheck")
+_LAB_SUM_KEYS = (
+    "rule_facts", "llm_facts", "llm_machine", "llm_unverified", "agree_machine",
+    "pages_used", "pages_truncated", "dates_unchecked_no_dob", *_LAB_GATE_KEYS,
+)  # fmt: skip
+
+
+def _add_counts(into: dict, counts: dict | None) -> None:
+    for k, n in (counts or {}).items():
+        into[k] = into.get(k, 0) + int(n or 0)
+
+
+def _lab_totals(report: list[dict]) -> dict:
+    """Sums over the documents: agreement with the rule facts (the write gate),
+    stored / would-store / skipped counts per document. Counts and codes only."""
+    compared = [r for r in report if "agree" in r]
+    totals: dict = {k: sum(int(r.get(k) or 0) for r in compared) for k in _LAB_SUM_KEYS}
+    totals["pages_not_assessed"] = sum(len(r.get("pages_not_assessed") or []) for r in compared)
+    # the gate: only documents that hold rule facts can show agreement
+    gated = [r for r in compared if r.get("rule_facts")]
+    gate: dict = {k: sum(int(r.get(k) or 0) for r in gated) for k in _LAB_GATE_KEYS}
+    rule_facts = sum(int(r.get("rule_facts") or 0) for r in gated)
+    by_code: dict[str, dict] = {}
+    for r in gated:
+        for code, c in (r.get("agreement_by_code") or {}).items():
+            _add_counts(by_code.setdefault(code, {}), c)
+    gate.update(
+        documents_with_rule_facts=len(gated), rule_facts=rule_facts,
+        agreement_rate=round(gate["agree"] / rule_facts, 3) if rule_facts else None,
+        value_mismatch_rate=round(gate["value_mismatch"] / rule_facts, 3) if rule_facts else None,
+        by_code=dict(sorted(by_code.items())),
+    )  # fmt: skip
+    stored: dict = {}
+    would: dict = {}
+    skipped: dict = {}
+    for r in report:
+        _add_counts(stored, r.get("stored"))
+        _add_counts(would, r.get("would_store"))
+        _add_counts(skipped, r.get("skipped"))
+    return {
+        "documents": len(report),
+        "stored_documents": sum(1 for r in report if r.get("result") == "stored"),
+        **totals, "gate": gate, "would_store": would, "skipped": skipped, "stored": stored,
+    }  # fmt: skip
+
+
+async def _lab_job(
+    db,
+    pid: str,
+    docs: list[dict],
+    *,
+    write: bool,
+    thinking: str | None = None,
+    sampling: str | None = None,
+    timeout_s: int | None = None,
+    reasoning_marker: str | None = None,
+    parallel_docs: int | None = None,
+) -> None:
+    """LLM lab extraction of each document + the generic verifier, compared with
+    the stored rule facts (the shadow metrics), and on a write stored through
+    ``lab_store``. A dry run writes NOTHING. A write holds the patient lock,
+    refuses without a known birth date or with ``LLM_LAB_WRITE_ENABLED`` off,
+    and stores nothing for a document with a page that was not assessed. All
+    DB reads before the model phase; every store on the event loop in input
+    order (never in a worker thread); local only."""
+    from oncofiles import config
+    from oncofiles.curated import lab_store, llm_extract, llm_extract_call, verifier
+    from oncofiles.curated.facts_rules import Vocabulary
+
+    llm_extract_call.refuse_overrides_on_write(
+        write=write, thinking=thinking, sampling=sampling, timeout_s=timeout_s,
+        reasoning_marker=reasoning_marker, parallel_docs=parallel_docs,
+    )  # fmt: skip
+    started = time.monotonic()
+    cfg = llm_extract_call.settings(thinking, sampling, timeout_s, reasoning_marker)
+    parallel = llm_extract_call.parallel_docs(parallel_docs)
+    job = _reocr_jobs[pid]
+    if write and not config.LLM_LAB_WRITE_ENABLED:  # refused at the tool already
+        job.update(state="failed", error="write_disabled",
+                   finished_at=datetime.now(UTC).isoformat())  # fmt: skip
+        return
+    row_id = (
+        await db.insert_curated_run(patient_id=pid, dry_run=False, trigger="lab") if write else None
+    )
+    report: list[dict] = []
+    births: set[str] = set()
+    try:
+        async with patient_lock(pid) if write else contextlib.nullcontext():
+            births = await _all_birth_dates(db, pid)
+            if write:
+                verifier.require_dob_for_write(births)
+            vocab = Vocabulary.from_rows(await db.fact_code_vocabulary())
+            model = config.LOCAL_LLM_MODEL or None
+            # rule facts only: the LLM lab rows are not part of the comparison
+            stored = await db.fact_verification_rows(patient_id=pid)
+            name = "curated LLM lab write" if write else "curated LLM lab preview"
+            works = [await _lab_shadow_work(db, pid, d, vocab=vocab, births=births, cfg=cfg,
+                                            job_name=name) for d in docs]  # fmt: skip
+            tasks = _start_extractions(works, parallel=parallel, hold_until_consumed=write)
+            try:
+                for w in works:
+                    await _wait_done(w)
+                    d = w.d
+                    entry = _lab_shadow_entry(w, stored)  # adds transcription reasons in place
+                    if entry.get("result") != "compared":
+                        report.append(entry)
+                        w.consumed.set()
+                        continue
+                    rows = [r for r in stored if r["source_document_id"] == d["id"]]
+                    cross = verifier.transcription_pages(
+                        rows, _source_reason(d.get("structured_metadata") or {}),
+                        [n for n, _ in w.pages],
+                    )  # fmt: skip
+                    entry["agreement_by_code"] = llm_extract.agreement_by_code(
+                        rows, w.out["facts"], not_assessed_pages=w.out["pages_not_assessed"],
+                        crosscheck_pages=cross,
+                    )  # fmt: skip
+                    plan = await lab_store.plan_document(
+                        db, patient_id=pid, document_id=d["id"], facts=w.out["facts"]
+                    )
+                    entry.update(result="previewed", would_store=plan["would_store"],
+                                 skipped=plan["skipped"])  # fmt: skip
+                    if write and w.out["pages_not_assessed"]:
+                        entry.update(
+                            result="skipped", error="a page was not assessed: nothing stored"
+                        )
+                    elif write:
+                        verifier.require_dob_for_write(births)
+                        try:
+                            res = await lab_store.store_document(
+                                db, patient_id=pid, document_id=d["id"], facts=w.out["facts"],
+                                birth_dates=births, model=model,
+                            )  # fmt: skip
+                        except Exception as exc:  # re-running the document replaces it again
+                            logger.exception("storing LLM lab facts of doc %s failed", d["id"])
+                            entry.update(result="failed", error=type(exc).__name__)
+                        else:
+                            entry.update(result="stored", stored=res["stored"],
+                                         skipped=res["skipped"])  # fmt: skip
+                    report.append(entry)
+                    w.consumed.set()
+            finally:
+                for w in works:
+                    w.consumed.set()
+                for t in tasks:  # a no-op unless the job failed or was cancelled
+                    t.cancel()
+        job.update(state="done", report={
+            "dry_run": not write, "extractor": llm_extract.EXTRACTOR_VERSION,
+            "writer": lab_store.WRITER_VERSION, "verifier": verifier.VERIFIER_VERSION,
+            "dob_known": bool(births), "write_enabled": config.LLM_LAB_WRITE_ENABLED,
+            "settings": {**cfg.report(), "parallel_docs": parallel,
+                         "overrides": _overrides(thinking, sampling, timeout_s, reasoning_marker,
+                                                 parallel_docs)},
+            "timing": _timing(started, report, parallel),
+            "warnings": llm_extract_call.merge_warnings(
+                [r for r in report if r.get("result") != "failed"]
+            ),
+            "totals": _lab_totals(report), "documents": report,
+        })  # fmt: skip
+    except verifier.NoBirthDateError:
+        job.update(state="failed", error="no_birth_date", report={
+            "dry_run": not write, "documents": report,
+            "message": "no birth date known (README contract or patient context): nothing stored",
+        })  # fmt: skip
+    except Exception as exc:
+        logger.exception("LLM lab job failed for %s", pid)
+        job.update(state="failed", error=type(exc).__name__, report={"documents": report})
+    finally:
+        job["finished_at"] = datetime.now(UTC).isoformat()
+        if job.get("pre_store"):  # the safety copy is part of the record
+            job["report"] = {**(job.get("report") or {}), "pre_store": job["pre_store"]}
+        if row_id is not None:
+            try:
+                await db.finish_curated_run(
+                    row_id, patient_id=pid,
+                    status="ok" if job.get("state") == "done" else "failed",
+                    message=job.get("error") or "", report=job.get("report") or {},
+                )  # fmt: skip
+            except Exception:
+                logger.exception("could not persist the LLM lab job for %s", pid)
+        if write:
+            await _audit_lab_write(db, pid, job)
+
+
+async def _audit_lab_write(db, pid: str, job: dict) -> None:
+    """One activity_log row per REAL lab write: caller (keyed hash), document
+    ids, the pre-store copy, results and stored / skipped counts. Counts only —
+    never a value, a label or evidence text."""
+    from oncofiles.models import ActivityLogEntry
+
+    report = job.get("report") or {}
+    totals = report.get("totals") or {}
+    docs = [d for d in report.get("documents") or [] if isinstance(d, dict)]
+    actor = str(job.get("actor") or "unknown")[:120]
+    try:
+        await db.insert_activity_log(
+            ActivityLogEntry(
+                patient_id=pid,
+                session_id="curated-lab",
+                agent_id=actor,
+                tool_name="curated_lab_extract",
+                input_summary=json.dumps(
+                    {
+                        "by": actor,
+                        "caller_email_hash": job.get("caller_email_hash"),
+                        "dry_run": False,
+                        "pre_store": job.get("pre_store"),
+                        "document_ids": [d.get("document_id") for d in job.get("documents") or []],
+                        "started_at": job.get("started_at"),
+                        "extractor": job.get("extractor"),
+                        "writer": job.get("writer"),
+                    }
+                ),  # fmt: skip
+                output_summary=json.dumps(
+                    {
+                        "state": job.get("state"),
+                        "results": {
+                            r: sum(1 for d in docs if d.get("result") == r)
+                            for r in {str(d.get("result")) for d in docs}
+                        },
+                        "stored": totals.get("stored") or {},
+                        "skipped": totals.get("skipped") or {},
+                    }
+                ),  # fmt: skip
+                status="ok" if job.get("state") == "done" else "error",
+                error_message=job.get("error"),
+                tags=json.dumps(["curated", "lab", "real", "pre-store"]),
+            )
+        )
+    except Exception:
+        logger.exception("could not write the activity_log row for an LLM lab write")
+
+
+async def curated_lab_extract(
+    ctx: Context,
+    document_ids: list[int],
+    patient_slug: str | None = None,
+    dry_run: bool = True,
+    thinking: str | None = None,
+    sampling: str | None = None,
+    timeout_s: int | None = None,
+    reasoning_marker: str | None = None,
+    parallel_docs: int | None = None,
+) -> str:
+    """LLM lab facts for curated documents whose lab layout has no rule parser (#714).
+
+    The LOCAL model reads each document's stored page text and lists the printed
+    results; the generic verifier marks each machine or unverified with reasons.
+
+    dry_run=true (default) writes NOTHING and reports, per document, the agreement
+    with the rule facts already stored (agree / value_mismatch / rule_only /
+    llm_only by code, day and value hash, also per code), what a write would store
+    and what it would skip. ``totals.gate`` sums the documents that hold rule
+    facts: that is the scorecard a maintainer reads before enabling writes.
+
+    dry_run=false is OFF unless the server has LLM_LAB_WRITE_ENABLED=true (a
+    maintainer decision). It stores the verified facts in the facts model with
+    ``method = llm-lab`` (machine or unverified, never verified), page, evidence
+    and a provenance row; a fact whose code and day the document already holds
+    from a rule parser is never stored (``skipped_rule_exists``), nor an uncoded
+    or non-lab one. Re-running a document replaces only this writer's rows and
+    never verified or corrected ones; rule re-extraction never touches them.
+    Before writing, a verified safety copy of the database is made (no copy, no
+    write); every real run leaves an activity_log row with counts only. Refused
+    while another curated run, re-OCR or extraction is active, or when no birth
+    date is known; holds the patient lock; a document with a page the model did
+    not assess is not stored. Explicit ``document_ids`` (max 10). Runs in the
+    background; poll curated_reocr_status. Reports counts and codes only, never
+    values. Roll back with curated_lab_retract.
+
+    ``thinking`` / ``sampling`` / ``timeout_s`` / ``reasoning_marker`` /
+    ``parallel_docs`` (see curated_llm_extract_preview) are accepted with
+    dry_run=true only; with dry_run=false they are refused (error).
+    """
+    from oncofiles import config
+    from oncofiles.curated import lab_store, llm, llm_extract_call
+    from oncofiles.curated.llm_extract import EXTRACTOR_VERSION
+
+    write = not dry_run
+    llm_extract_call.refuse_overrides_on_write(
+        write=write, thinking=thinking, sampling=sampling, timeout_s=timeout_s,
+        reasoning_marker=reasoning_marker, parallel_docs=parallel_docs,
+    )  # fmt: skip
+    if write and not config.LLM_LAB_WRITE_ENABLED:
+        return json.dumps({"error": "writes are disabled: LLM_LAB_WRITE_ENABLED is not true "
+                           "(a maintainer decision after the dry-run agreement gate); "
+                           "nothing was written"})  # fmt: skip
+    if not llm.configured():
+        return json.dumps({"error": "local model not configured (LOCAL_LLM_BASE_URL/MODEL)"})
     pid = await _resolve_patient_id(patient_slug, ctx)
     db = _get_db(ctx)
     try:
@@ -2857,91 +3274,108 @@ async def curated_clinical_retract(
         return json.dumps({"error": "document_ids must be integers"})
     if not ids:
         return json.dumps({"error": "document_ids is required"})
-    if len(ids) > RETRACT_MAX_DOCS:
-        return json.dumps({"error": f"too many documents: at most {RETRACT_MAX_DOCS} explicit "
+    if len(ids) > LAB_MAX_DOCS:
+        return json.dumps({"error": f"too many documents: at most {LAB_MAX_DOCS} explicit "
                            f"document_ids per call, got {len(ids)}"})  # fmt: skip
-    reason = (reason or "").strip()
-    if not dry_run:
-        if not reason:
-            return json.dumps({"error": "reason is required with dry_run=false"})
-        if len(reason) > RETRACT_REASON_MAX:
-            return json.dumps({"error": f"reason is too long: at most {RETRACT_REASON_MAX} "
-                               "characters"})  # fmt: skip
     owned = await db.get_documents_by_ids(set(ids), patient_id=pid)
     missing = [i for i in ids if i not in owned]
     if missing:  # another patient's id looks exactly like an unknown one
         return json.dumps({"error": "not_found", "document_ids": missing,
                            "message": "nothing was changed"})  # fmt: skip
-
-    if dry_run:
-        report = []
-        for i in ids:
-            res = await clinical_store.retract_document(
-                db, patient_id=pid, document_id=i, reason="", dry_run=True
-            )
-            report.append({"document_id": i, "result": "would_retract", **res})
-        return json.dumps(
-            {"dry_run": True, "totals": _sum_stored(report), "documents": report},
-            ensure_ascii=False,
-        )
-
+    docs = [r for r in await db.curated_reocr_candidates(patient_id=pid) if r["id"] in ids]
+    if not docs:
+        return json.dumps({"status": "nothing to do"})
     if (
         _reocr_jobs.get(pid, {}).get("state") == "running"
         or (pid in _runs and _runs[pid].get("state") == "running")
-        or patient_lock(pid).locked()
+        or (write and patient_lock(pid).locked())
     ):
         return json.dumps({"error": "busy: a curated run, index, re-OCR, re-read or "
                            "extraction is in progress for this patient"})  # fmt: skip
-    # Reserve the patient's job slot before any await (CI deploys wait on it,
-    # other jobs see busy); the previous job's record is restored afterwards.
+    # Reserve the patient's job slot before any further await; released on refusal.
     previous = _reocr_jobs.get(pid)
-    job = _reocr_jobs[pid] = {
-        "state": "running", "kind": "clinical_retract", "dry_run": False,
-        "started_at": datetime.now(UTC).isoformat(), "actor": "mcp",
-        "caller_email_hash": caller_email_hash(_caller_email()),
-        "document_ids": ids, "reason_chars": len(reason),
+    _reocr_jobs[pid] = job = {
+        "state": "running", "kind": "lab_extract" if write else "lab_preview",
+        "dry_run": not write, "extractor": EXTRACTOR_VERSION,
+        "writer": lab_store.WRITER_VERSION, "started_at": datetime.now(UTC).isoformat(),
+        "actor": "mcp", "caller_email_hash": caller_email_hash(_caller_email()),
+        "overrides": _overrides(thinking, sampling, timeout_s, reasoning_marker, parallel_docs),
+        "parallel_docs": llm_extract_call.parallel_docs(parallel_docs),
+        "documents": [{"document_id": d["id"], "category": d.get("category")} for d in docs],
     }  # fmt: skip
-    try:
-        async with patient_lock(pid):
-            from oncofiles.pre_store import PreStoreError, make_copy
 
-            try:
-                job["pre_store"] = await asyncio.to_thread(make_copy, db, "clinical")
-            except Exception as exc:
-                why = str(exc) if isinstance(exc, PreStoreError) else type(exc).__name__
-                logger.error("pre-store copy failed for %s (%s): retract refused", pid[:8], why)
-                return json.dumps(
-                    {"error": f"refused: pre-store copy failed ({why}); nothing was written"}
-                )
-            who = (job["caller_email_hash"] or "mcp")[:12]
-            audit_reason = f"retract by {who}: {reason}"
-            report = []
-            for i in ids:
-                try:
-                    res = await clinical_store.retract_document(
-                        db, patient_id=pid, document_id=i, reason=audit_reason, dry_run=False
-                    )
-                except Exception as exc:  # idempotent: calling again retracts the rest
-                    logger.exception("clinical retract of doc %s failed", i)
-                    report.append({"document_id": i, "result": "failed",
-                                   "error": type(exc).__name__})  # fmt: skip
-                else:
-                    report.append({"document_id": i, "result": "retracted", **res})
-            logger.info(
-                "clinical retract for %s: %d documents (reason %d chars)",
-                pid[:8], len(ids), len(reason),
-            )  # fmt: skip
-            await _audit_clinical_retract(db, pid, job, report)
-            return json.dumps(
-                {"dry_run": False, "pre_store": job["pre_store"],
-                 "totals": _sum_stored(report), "documents": report},
-                ensure_ascii=False,
-            )  # fmt: skip
-    finally:
+    def release(error: str) -> str:
         if previous is not None:
             _reocr_jobs[pid] = previous
         else:
             _reocr_jobs.pop(pid, None)
+        return json.dumps({"error": error})
+
+    if write:
+        if not await _all_birth_dates(db, pid):
+            return release("no birth date known for this patient (README contract or patient "
+                           "context): refusing to store facts")  # fmt: skip
+        from oncofiles.pre_store import PreStoreError, make_copy
+
+        try:
+            job["pre_store"] = await asyncio.to_thread(make_copy, db, "lab")
+        except Exception as exc:
+            reason = str(exc) if isinstance(exc, PreStoreError) else type(exc).__name__
+            logger.error("pre-store copy failed for %s (%s): lab write refused", pid[:8], reason)
+            return release(f"refused: pre-store copy failed ({reason}); nothing was written")
+    from oncofiles.cloud_guard import local_only
+
+    # the WHOLE job (DB writes included, not only the model calls) runs local-only
+    with local_only("curated LLM lab write" if write else "curated LLM lab preview"):
+        job["task"] = asyncio.create_task(
+            _lab_job(
+                db, pid, docs, write=write, thinking=thinking, sampling=sampling,
+                timeout_s=timeout_s, reasoning_marker=reasoning_marker,
+                parallel_docs=parallel_docs,
+            )
+        )  # fmt: skip
+    return json.dumps({k: v for k, v in job.items() if k != "task"}, ensure_ascii=False)
+
+
+async def curated_lab_retract(
+    ctx: Context,
+    document_ids: list[int],
+    patient_slug: str | None = None,
+    dry_run: bool = True,
+    reason: str = "",
+) -> str:
+    """Roll back what curated_lab_extract stored for documents (#714).
+
+    Soft-deletes exactly the rows a re-extraction of each document would remove:
+    every lab fact written by the LLM lab writer (``llm-lab*``) for that
+    document that is not verified or corrected. Rule-parser lab facts, the
+    clinical extractor's rows and anything a person wrote are never touched.
+    Nothing is hard-deleted; running curated_lab_extract again stores the
+    document anew.
+
+    dry_run=true (default) writes nothing and returns, per document, how many
+    rows would be ``removed`` and how many are ``kept``. dry_run=false needs a
+    short ``reason`` (max 200 characters), holds the patient lock, is refused
+    while a curated run, re-OCR, re-read or extraction is active for the
+    patient, makes a verified safety copy of the database first (no copy, no
+    change) and leaves one activity_log row (ids and counts only). Returns
+    counts only, never values. Works also while LLM_LAB_WRITE_ENABLED is off
+    and without the local model.
+
+    Args:
+        document_ids: 1-50 document ids of this patient. An id that is not
+            this patient's is reported as not_found and nothing is changed.
+        patient_slug: required for admin callers.
+        dry_run: false to actually retract.
+        reason: why (required with dry_run=false); kept in the rows' deletion
+            audit, never logged.
+    """
+    from oncofiles.curated import lab_store
+
+    return await _retract(
+        ctx, document_ids, patient_slug, dry_run, reason, family="lab",
+        retract=lab_store.retract_document,
+    )  # fmt: skip
 
 
 # ── extraction scorecard (#773): fixed page set, counts only ──────────────
@@ -3420,6 +3854,9 @@ def register(mcp):
     mcp.tool()(curated_clinical_extract)
     # user-invoked rollback (soft delete only, #734); never scheduled
     mcp.tool(annotations=_RETRACT_ANNOTATIONS)(curated_clinical_retract)
+    # LLM lab facts (#714): writes OFF unless LLM_LAB_WRITE_ENABLED=true
+    mcp.tool()(curated_lab_extract)
+    mcp.tool(annotations=_RETRACT_ANNOTATIONS)(curated_lab_retract)
     mcp.tool()(curated_extraction_scorecard)
     # admin, user-invoked (#806): replaces a sidecar's text, its current text
     # is backed up first; never scheduled

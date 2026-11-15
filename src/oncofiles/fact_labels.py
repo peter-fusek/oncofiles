@@ -10,6 +10,11 @@ regimen) is the model's and is not verified.
 
 Until cross-document dedupe exists (#730), identical LLM rows from several
 documents are grouped at read time into one item with ``sources``.
+
+Lab facts written by the LLM lab writer (#714, ``extracted_by`` starting with
+``llm-lab``) are labelled the same way, with ``method = "llm-lab"``: the
+verifier checked that label, value, unit and date are printed in the evidence
+line on the page; the model chose which line belongs to which test.
 """
 
 from __future__ import annotations
@@ -17,15 +22,18 @@ from __future__ import annotations
 import re
 from collections.abc import Callable, Hashable
 
-from oncofiles.database._facts import LLM_CLINICAL_FAMILY
+from oncofiles.database._facts import LLM_CLINICAL_FAMILY, LLM_FAMILIES, LLM_LAB_FAMILY
 
 LLM_METHOD = LLM_CLINICAL_FAMILY
+LLM_LAB_METHOD = LLM_LAB_FAMILY
 DEDUPE_ISSUE = "#730"
 LLM_NOTE = (
     "Rows with method 'llm-clinical' were read by the local model: the verifier only "
     "checked that the text is printed on the page. The interpretation (which line is the "
     "diagnosis, a current vs a historical regimen) is the model's and is not verified. "
-    "Identical rows from several documents are one item with 'sources'."
+    "Identical rows from several documents are one item with 'sources'. Rows with method "
+    "'llm-lab' are lab values read by the local model where no rule parser knows the "
+    "layout: label, value, unit and date were checked against the printed line."
 )
 
 _LABELS = {
@@ -42,14 +50,19 @@ _RANK = {"verified": 0, "corrected": 0, "machine": 1, "unverified": 2}
 
 
 def is_llm(extracted_by: str | None) -> bool:
-    return str(extracted_by or "").startswith(LLM_CLINICAL_FAMILY)
+    """Written by an LLM writer family (``llm-clinical``, ``llm-lab``)."""
+    return str(extracted_by or "").startswith(LLM_FAMILIES)
 
 
 def method_of(extracted_by: str | None) -> str | None:
-    """``llm-clinical`` | ``rule`` (rule parsers, re-reads) | None (manual / legacy)."""
-    if is_llm(extracted_by):
+    """``llm-clinical`` | ``llm-lab`` | ``rule`` (rule parsers, re-reads) | None
+    (manual / legacy)."""
+    eb = str(extracted_by or "")
+    if eb.startswith(LLM_LAB_FAMILY):
+        return LLM_LAB_METHOD
+    if eb.startswith(LLM_CLINICAL_FAMILY):
         return LLM_METHOD
-    return "rule" if str(extracted_by or "").startswith("rule") else None
+    return "rule" if eb.startswith("rule") else None
 
 
 def verification_label(verification: str | None, extracted_by: str | None) -> dict | None:
