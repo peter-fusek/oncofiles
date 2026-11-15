@@ -452,8 +452,8 @@ async def test_llms_txt_mentions_the_use_case_in_both_languages():
     assert f"https://oncofiles.com{EN_PATH}" in en and "not medical advice" in en
     for text in (en, sk):
         assert "https://oncofiles.com/movement-atlas\n" in text
-    assert "three\northopaedic reports and one MRI description" in en
-    assert "z troch\nortopedických správ a jedného popisu MR" in sk
+    assert "four\northopaedic documents and one MRI description" in en
+    assert "štyroch ortopedických dokumentov a jedného popisu MR" in sk
     assert f"https://oncofiles.com{SK_PATH}" in sk and "nie je to lekárska rada" in sk
 
 
@@ -530,18 +530,52 @@ def test_media_metadata_carries_no_personal_data(name):
 # ── Maintainer wording and titles (PR #836 review) ───────────────────────
 
 
-def test_prose_says_three_reports_and_one_mri_description():
-    """The maintainer's wording for the lead. The source list on the use-case
-    page stays one entry per document."""
+_FOUR = len("four")
+_COUNT_WORDS = {
+    "sk": {"štyri": _FOUR, "jeden": True},
+    "en": {"four": _FOUR, "one": True},
+}
+_LEAD = {
+    "sk": r"(\w+) ortopedické dokumenty a (\w+) popis MR",
+    "en": r"(\w+) orthopaedic documents and (\w+) MRI description",
+}
+_LIST_KINDS = {"sk": ("Ortopedick", "Popis MR"), "en": ("Orthopaedic", "MRI description")}
+
+
+def test_prose_says_four_documents_and_one_mri_description():
+    """The maintainer's wording (PR #836): the lead names what the list shows."""
     block = _section("atlas")
-    assert "Tri ortopedické správy a jeden popis MR." in block
-    assert "Three orthopaedic reports and one MRI description." in block
+    assert "Štyri ortopedické dokumenty a jeden popis MR." in block
+    assert "Four orthopaedic documents and one MRI description." in block
     sk = atlas_showcase.use_case_page_html("sk")
     en = atlas_showcase.use_case_page_html("en")
-    assert sk.count("tri ortopedické správy a jeden popis MR") >= 3
-    assert en.count("three orthopaedic reports and one MRI description") >= 3
+    assert sk.count("štyri ortopedické dokumenty a jeden popis MR") >= 4
+    assert en.count("four orthopaedic documents and one MRI description") >= 4
     for text in (block, sk, en):
-        assert not re.search(r"Štyri|štyri|\bFour\b|\bfour\b|\bpäť\b|\bfive\b", text)
+        assert not re.search(r"\b(Tri|tri|Three|three) orth?op", text)
+        assert not re.search(r"\bpäť\b|\bfive\b", text)
+
+
+@pytest.mark.parametrize("lang", ["sk", "en"])
+def test_lead_count_equals_the_entries_in_the_source_list(lang):
+    """The count in the prose is derived from nothing: this ties it to the
+    list, so adding or removing a source document fails until both agree."""
+    html = atlas_showcase.use_case_page_html(lang)
+    start = html.index('<ul class="docs">')
+    entries = re.findall(r"<li>(.*?)<span>", html[start : html.index("</ul>", start)])
+    ortho_kind, mri_kind = _LIST_KINDS[lang]
+    ortho = sum(e.startswith(ortho_kind) for e in entries)
+    mri = sum(e.startswith(mri_kind) for e in entries)
+    assert ortho + mri == len(entries), entries
+
+    words = _COUNT_WORDS[lang]
+    block = _section("atlas")
+    landing_lead = re.search(rf'data-{lang}="(\w+) orth?op[^"]*"', block).group(0)
+    leads = re.findall(_LEAD[lang], html, re.I) + re.findall(_LEAD[lang], landing_lead, re.I)
+    assert len(leads) >= 5  # meta, og, two body paragraphs, landing lead
+    for ortho_word, mri_word in leads:
+        assert words[ortho_word.lower()] == ortho, (ortho_word, ortho)
+        assert words[mri_word.lower()] == mri, (mri_word, mri)
 
 
 def test_landing_titles_put_cancer_patients_first_and_add_healthy_people():

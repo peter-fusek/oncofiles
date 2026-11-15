@@ -169,7 +169,7 @@ _COPY: dict[str, dict] = {
         "title": "Pohybový atlas: z lekárskych správ interaktívne 3D vysvetlenie | Oncofiles",
         "description": (
             "Oncofiles nie je len pre onkologických pacientov. Skutočný prípad: Claude si cez "
-            "Oncofiles prečítal tri ortopedické správy a jeden popis MR a postavil z nich 3D "
+            "Oncofiles prečítal štyri ortopedické dokumenty a jeden popis MR a postavil z nich 3D "
             "atlas chrbta, kolena a ramena s návrhmi cvikov pre fyzioterapeuta."
         ),
         "video_name": "Pohybový atlas: z lekárskych správ interaktívne 3D vysvetlenie",
@@ -194,15 +194,16 @@ _COPY: dict[str, dict] = {
             (
                 "Problém",
                 "<p>Tri bežné ťažkosti: spodná časť chrbta (prechod L5/S1), preskakovanie v pravom "
-                "kolene a bolesť ľavého ramena pri zdvihnutí ruky. K nim tri ortopedické správy a "
-                "jeden popis MR, písané lekárskym jazykom. Z textu si človek ťažko predstaví, čo "
+                "kolene a bolesť ľavého ramena pri zdvihnutí ruky. K nim štyri ortopedické "
+                "dokumenty a jeden popis MR, písané lekárskym jazykom. Z textu si človek ťažko "
+                "predstaví, čo "
                 "nález znamená pri pohybe a na čo sa opýtať fyzioterapeuta.</p>",
             ),
             (
                 "Čo dodal Oncofiles",
                 "<p>Profil v Oncofiles je typu „všeobecný“ (nie onkologický) a obsahuje 232 "
-                "dokumentov. Claude si cez konektor Oncofiles (MCP) prečítal tri ortopedické "
-                "správy a jeden popis MR a vybral z nich fakty: diagnózy, nálezy a odporúčania, "
+                "dokumentov. Claude si cez konektor Oncofiles (MCP) prečítal štyri ortopedické "
+                "dokumenty a jeden popis MR a vybral z nich fakty: diagnózy, nálezy a odporúčania, "
                 "každý s odkazom na dokument, "
                 "z ktorého pochádza.</p>"
                 '<ul class="docs">'
@@ -278,8 +279,8 @@ _COPY: dict[str, dict] = {
         "title": "Movement atlas: from medical reports to an interactive 3D explanation | "
         "Oncofiles",
         "description": (
-            "Oncofiles is not only for oncology patients. A real case: Claude read three "
-            "orthopaedic reports and one MRI description through Oncofiles and built an "
+            "Oncofiles is not only for oncology patients. A real case: Claude read four "
+            "orthopaedic documents and one MRI description through Oncofiles and built an "
             "interactive 3D atlas of the "
             "lower back, knee and shoulder, with exercise suggestions for a physiotherapist."
         ),
@@ -307,7 +308,7 @@ _COPY: dict[str, dict] = {
                 "The problem",
                 "<p>Three everyday complaints: the lower back (the L5/S1 segment), a clicking "
                 "right knee and a left shoulder that hurts when the arm is raised. With them, "
-                "three orthopaedic reports and one MRI description, written in medical "
+                "four orthopaedic documents and one MRI description, written in medical "
                 "language. From the text alone "
                 "it is hard to picture what a finding means in motion, or what to ask a "
                 "physiotherapist.</p>",
@@ -315,8 +316,8 @@ _COPY: dict[str, dict] = {
             (
                 "What Oncofiles supplied",
                 "<p>The Oncofiles profile is of the “general” type (not oncology) and holds 232 "
-                "documents. Through the Oncofiles connector (MCP) Claude read three orthopaedic "
-                "reports and one MRI description and took the facts from them: "
+                "documents. Through the Oncofiles connector (MCP) Claude read four orthopaedic "
+                "documents and one MRI description and took the facts from them: "
                 "diagnoses, findings and recommendations, each linked to the "
                 "document it comes from.</p>"
                 '<ul class="docs">'
