@@ -6634,6 +6634,11 @@ async def api_gdrive_folders(request: Request) -> JSONResponse:
             parent_name = meta.get("name") or parent_id
             parents = meta.get("parents") or []
             grandparent_id = parents[0] if parents else "root"
+        # #835: tell the picker what the folder being browsed is, so it can ask
+        # before a parent of patient folders is connected. Read-only.
+        from oncofiles.curated_folder import folder_overview
+
+        overview = await asyncio.to_thread(folder_overview, gdrive, parent_id, folders)
         return JSONResponse(
             {
                 "folders": folders,
@@ -6641,6 +6646,7 @@ async def api_gdrive_folders(request: Request) -> JSONResponse:
                 "parent_name": parent_name,
                 "grandparent_id": grandparent_id,
                 "current_folder_id": token.gdrive_folder_id,
+                "current": overview,
             }
         )
     except Exception:
@@ -6654,6 +6660,10 @@ async def api_gdrive_set_folder(request: Request) -> JSONResponse:
 
     Body: {patient_id, folder_id?} or {patient_id, folder_name?}
     If folder_name given without folder_id, creates a new folder in root.
+
+    #835: an existing folder that directly contains curated patient folders
+    (or whose subfolders could not be checked) is refused with 409
+    ``code: container_folder`` unless the body carries ``confirm_container: true``.
     """
     err = _check_dashboard_auth(request)
     if err:
@@ -6721,6 +6731,7 @@ async def api_gdrive_set_folder(request: Request) -> JSONResponse:
 
         # Create new folder if needed — inside the browsed parent (#563), never
         # inside a curated folder (#562: its README fixes the folder set).
+        created_new = False
         if not folder_id and folder_name:
             from oncofiles.curated_folder import is_curated_folder, parse_drive_folder_ref
 
@@ -6736,6 +6747,7 @@ async def api_gdrive_set_folder(request: Request) -> JSONResponse:
                         status_code=400,
                     )
             folder_id = await asyncio.to_thread(gdrive.create_folder, folder_name, create_parent)
+            created_new = True
 
         # Validate folder exists before persisting
         try:
@@ -6760,6 +6772,26 @@ async def api_gdrive_set_folder(request: Request) -> JSONResponse:
                 )
             return JSONResponse({"error": f"Cannot access folder: {exc}"}, status_code=400)
 
+        # #835: a parent of curated patient folders is never connected by one
+        # click. Nothing is persisted or created before this check passes.
+        if not created_new and body.get("confirm_container") is not True:
+            from oncofiles.curated_folder import folder_overview
+
+            overview = await asyncio.to_thread(folder_overview, gdrive, folder_id)
+            if overview["container_reason"]:
+                return JSONResponse(
+                    {
+                        "error": "This folder looks like a parent of patient folders. "
+                        "Open the patient's own folder, or confirm to connect it anyway.",
+                        "code": "container_folder",
+                        "reason": overview["container_reason"],
+                        "subfolder_count": overview["subfolder_count"],
+                        "curated_children": overview["curated_children"],
+                        "confirm_field": "confirm_container",
+                    },
+                    status_code=409,
+                )
+
         # Persist folder choice (including display name from metadata)
         cached_folder_name = meta.get("name") if meta else None
         await db_inst.update_oauth_folder(
@@ -6777,16 +6809,20 @@ async def api_gdrive_set_folder(request: Request) -> JSONResponse:
             gdrive.owner_email = owner_email
 
         # Curated folder (#562): its README fixes the folder set — create nothing.
-        from oncofiles.curated_folder import clear_cache, mark_if_curated
+        from oncofiles.curated_folder import clear_cache, curated_reason, mark_if_curated
 
         clear_cache(folder_id)
         if await asyncio.to_thread(mark_if_curated, gdrive, folder_id):
+            # curated_root: the folder itself has the contract (the pipeline
+            # processes it), as opposed to lying inside / above a curated one.
+            reason = await asyncio.to_thread(curated_reason, gdrive, folder_id)
             return JSONResponse(
                 {
                     "status": "ok",
                     "folder_id": folder_id,
                     "owner_email": owner_email,
                     "curated": True,
+                    "curated_root": reason == "is a curated folder",
                     "subfolders_created": 0,
                     "subfolders_skipped": 0,
                     "message": "Curated folder detected (README.md + _index.json): "

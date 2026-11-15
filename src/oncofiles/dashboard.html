@@ -600,27 +600,37 @@
  <p style="color:var(--text-muted);font-size:0.875rem;margin-bottom:0.5rem" data-sk="Vyberte priečinok pre zdravotné dokumenty." data-en="Choose a folder for medical documents.">Vyberte priečinok pre zdravotné dokumenty.</p>
  <p style="color:var(--text-muted);font-size:0.75rem;margin-bottom:1rem;opacity:0.7" data-sk="Vyberte existujúci priečinok alebo vytvorte nový. Oncofiles vytvorí podpriečinky pre každú kategóriu dokumentov (Laboratóriá, Zobrazovanie, Patológia atď.). Priečinok s vlastným kontraktom README.md sa nikdy neprestavuje." data-en="Pick an existing folder or create a new one. Oncofiles will create subfolders for each document category (Labs, Imaging, Pathology, etc.) inside it. A folder with its own README.md contract is never restructured.">Vyberte existujúci priečinok alebo vytvorte nový. Oncofiles vytvorí podpriečinky pre každú kategóriu dokumentov (Laboratóriá, Zobrazovanie, Patológia atď.).</p>
  <p class="wizard-folder-path"><span data-sk="Priečinok:" data-en="Folder:">Priečinok:</span> <strong id="wiz-folder-path">My Drive</strong></p>
- <div class="wizard-field">
- <label for="wiz-folder-select" data-sk="Vybrať priečinok" data-en="Select folder">Vybrať priečinok</label>
- <select id="wiz-folder-select" data-change="wizardFolderChanged">
- <option value="">Načítavam priečinky...</option>
- </select>
- </div>
  <div class="wizard-folder-nav">
  <button class="wizard-btn-secondary" id="wiz-folder-up" hidden data-action="wizardFolderUp" data-sk="▴ O úroveň vyššie" data-en="▴ Up one level">▴ O úroveň vyššie</button>
- <button class="wizard-btn-secondary" id="wiz-folder-open" data-action="wizardFolderOpen" data-sk="Otvoriť podpriečinok ▸" data-en="Open subfolder ▸">Otvoriť podpriečinok ▸</button>
+ </div>
+ <p class="wizard-folder-hint" id="wiz-folder-list-label" data-sk="Podpriečinky (kliknutím priečinok otvoríte):" data-en="Subfolders (click a folder to open it):">Podpriečinky (kliknutím priečinok otvoríte):</p>
+ <ul id="wiz-folder-list" class="wizard-folder-list" aria-labelledby="wiz-folder-list-label"></ul>
+ <p class="wizard-folder-hint" id="wiz-folder-empty" style="display:none" data-sk="Tento priečinok nemá žiadne podpriečinky." data-en="This folder has no subfolders.">Tento priečinok nemá žiadne podpriečinky.</p>
+ <button type="button" class="wizard-btn-link" id="wiz-folder-new-toggle" data-action="wizardFolderNewToggle" data-sk="+ Vytvoriť tu nový priečinok" data-en="+ Create a new folder here">+ Vytvoriť tu nový priečinok</button>
+ <div id="wiz-folder-new" class="wizard-field" style="display:none">
+ <label for="wiz-folder-name" data-sk="Názov nového priečinka" data-en="New folder name">Názov nového priečinka</label>
+ <input type="text" id="wiz-folder-name" placeholder="Oncofiles - Meno pacienta" data-input="wizardFolderTargetUpdate">
  </div>
  <div class="wizard-field">
  <label for="wiz-folder-link" data-sk="Alebo vložte odkaz na priečinok v Google Drive" data-en="Or paste a Google Drive folder link">Alebo vložte odkaz na priečinok v Google Drive</label>
- <input type="text" id="wiz-folder-link" placeholder="https://drive.google.com/drive/folders/…">
+ <input type="text" id="wiz-folder-link" placeholder="https://drive.google.com/drive/folders/…" data-input="wizardFolderTargetUpdate">
+ <p class="wizard-folder-hint" data-sk="Ak je odkaz vyplnený, pripojí sa priečinok z odkazu, nie ten vybraný vyššie." data-en="If a link is filled in, the folder from the link is connected, not the one chosen above.">Ak je odkaz vyplnený, pripojí sa priečinok z odkazu, nie ten vybraný vyššie.</p>
  </div>
- <div id="wiz-folder-new" class="wizard-field" style="display:none">
- <label for="wiz-folder-name" data-sk="Názov nového priečinka" data-en="New folder name">Názov nového priečinka</label>
- <input type="text" id="wiz-folder-name" placeholder="Oncofiles - Meno pacienta">
- </div>
+ <div id="wiz-folder-main">
+ <p id="wiz-folder-curated-note" class="wizard-folder-note" style="display:none" data-sk="Tento priečinok má vlastný kontrakt README; pripojením sa v ňom nič nevytvorí ani nepresunie." data-en="This folder has its own README contract; nothing will be created or moved by connecting it.">Tento priečinok má vlastný kontrakt README; pripojením sa v ňom nič nevytvorí ani nepresunie.</p>
+ <p class="wizard-folder-target"><span id="wiz-folder-target-label" data-sk="Pripojí sa tento priečinok:" data-en="Connect this folder:">Pripojí sa tento priečinok:</span> <strong id="wiz-folder-target-path"></strong></p>
  <div class="wizard-actions">
  <button class="wizard-btn-secondary" data-action="wizardSkipToEnd" data-sk="Preskočiť" data-en="Skip">Preskočiť</button>
- <button class="wizard-btn-primary" id="wiz-folder-btn" data-action="wizardStep2SetFolder" data-sk="Nastaviť priečinok a pokračovať" data-en="Set folder &amp; continue">Nastaviť priečinok a pokračovať</button>
+ <button class="wizard-btn-primary" id="wiz-folder-btn" data-action="wizardStep2SetFolder" data-sk="Pripojiť priečinok a pokračovať" data-en="Connect folder &amp; continue">Pripojiť priečinok a pokračovať</button>
+ </div>
+ </div>
+ <div id="wiz-folder-confirm" class="wizard-folder-confirm" role="alert" style="display:none">
+ <p id="wiz-folder-confirm-text"></p>
+ <p class="wizard-folder-target"><span data-sk="Pripojil by sa priečinok:" data-en="Folder that would be connected:">Pripojil by sa priečinok:</span> <strong id="wiz-folder-confirm-path"></strong></p>
+ <div class="wizard-actions">
+ <button class="wizard-btn-primary" data-action="wizardFolderConfirmBack" data-sk="Späť" data-en="Back">Späť</button>
+ <button class="wizard-btn-secondary" id="wiz-folder-confirm-go" data-action="wizardFolderConfirmGo" data-sk="Pripojiť aj tak" data-en="Connect anyway">Pripojiť aj tak</button>
+ </div>
  </div>
  <p id="wiz-step2-folder-status" style="color:var(--text-muted);font-size:0.8125rem;margin-top:0.75rem;display:none"></p>
  </div>
@@ -628,6 +638,7 @@
 
  <!-- Step 3: First sync -->
  <div id="wiz-step-3" style="display:none">
+ <div id="wiz-step3-legacy">
  <h2 data-sk="Prvá synchronizácia" data-en="First Sync">Prvá synchronizácia</h2>
  <p style="color:var(--text-muted);font-size:0.875rem;margin-bottom:0.5rem" data-sk="Importujte dokumenty z vášho Google Drive priečinka." data-en="Import documents from your Google Drive folder.">Importujte dokumenty z vášho Google Drive priečinka.</p>
  <p style="color:var(--text-muted);font-size:0.75rem;margin-bottom:1rem;opacity:0.7" data-sk="Prečíta vaše súbory, spustí OCR na skeny, vygeneruje AI súhrny a zorganizuje všetko podľa dátumu a kategórie. Potom sa synchy spúšťajú automaticky každých 5 minút." data-en="This reads your files, runs OCR on scans, generates AI summaries, and organizes everything by date and category. After this, syncs run automatically every 5 minutes.">Prečíta vaše súbory, spustí OCR na skeny, vygeneruje AI súhrny a zorganizuje všetko podľa dátumu a kategórie. Potom sa synchy spúšťajú automaticky každých 5 minút.</p>
@@ -636,6 +647,16 @@
  <button class="wizard-btn-primary" id="wiz-sync-btn" data-action="wizardStep3Sync" data-sk="Spustiť prvú synchronizáciu" data-en="Start First Sync">Spustiť prvú synchronizáciu</button>
  </div>
  <p id="wiz-step3-status" style="color:var(--text-muted);font-size:0.8125rem;margin-top:0.75rem;display:none"></p>
+ </div>
+ <!-- Curated folder (#835): the legacy first sync skips it, so do not offer it -->
+ <div id="wiz-step3-curated" style="display:none">
+ <h2 data-sk="Priečinok pripojený" data-en="Folder connected">Priečinok pripojený</h2>
+ <p id="wiz-step3-curated-root" style="color:var(--text-muted);font-size:0.875rem;margin-bottom:0.5rem" data-sk="Tento priečinok spracúva kurátorovaná pipeline (lokálne OCR). Nové súbory v jeho priečinku inbox sa spracujú automaticky v priebehu niekoľkých minút." data-en="This folder is processed by the curated pipeline (local OCR). New files in its inbox are picked up automatically within a few minutes.">Tento priečinok spracúva kurátorovaná pipeline (lokálne OCR). Nové súbory v jeho priečinku inbox sa spracujú automaticky v priebehu niekoľkých minút.</p>
+ <p id="wiz-step3-curated-overlap" style="color:var(--amber);font-size:0.875rem;margin-bottom:0.5rem;display:none" data-sk="Tento priečinok sa prekrýva s priečinkom, ktorý má vlastný kontrakt README, preto je preň synchronizácia vypnutá a nič sa z neho automaticky nespracuje. Ak ste chceli priečinok pacienta, pripojte priamo ten." data-en="This folder overlaps a folder with its own README contract, so sync is switched off for it and nothing in it is processed automatically. If you meant the patient's folder, connect that one directly.">Tento priečinok sa prekrýva s priečinkom, ktorý má vlastný kontrakt README, preto je preň synchronizácia vypnutá a nič sa z neho automaticky nespracuje. Ak ste chceli priečinok pacienta, pripojte priamo ten.</p>
+ <div class="wizard-actions">
+ <button class="wizard-btn-primary" id="wiz-curated-continue" data-action="wizardSkipToEnd" data-sk="Pokračovať" data-en="Continue">Pokračovať</button>
+ </div>
+ </div>
  </div>
 
  <!-- Step 4: Success + AI Setup -->

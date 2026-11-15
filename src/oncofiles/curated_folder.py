@@ -215,6 +215,110 @@ def parse_drive_folder_ref(value: str) -> str | None:
     return None
 
 
+# ── Folder picker (#835): what is the folder the user is about to connect? ──
+
+# Only the first N child folders are checked for curated markers; a folder with
+# more is reported as a container without looking further.
+CONTAINER_CHECK_LIMIT = 50
+_CONTAINER_QUERY_CHUNK = 25
+
+
+def is_curated_root(gdrive, folder_id: str) -> bool:
+    """True when ``folder_id`` itself holds README.md + _index.json. Raises on a Drive error.
+
+    Narrower than ``is_curated_folder`` (which also covers folders inside or
+    above a curated one): the picker needs to know whether THIS folder has the
+    contract. One Drive listing.
+    """
+    if not folder_id or folder_id == "root":
+        return False
+    found = _marker_names(gdrive, folder_id)
+    return all(m in found for m in CURATED_MARKERS)
+
+
+def _curated_child_ids(gdrive, child_ids: list[str]) -> set[str]:
+    """Which of ``child_ids`` directly hold both curated markers. One query per 25 ids."""
+    names = " or ".join(f"name = '{m}'" for m in CURATED_MARKERS)
+    seen: dict[str, set[str]] = {}
+    for start in range(0, len(child_ids), _CONTAINER_QUERY_CHUNK):
+        chunk = child_ids[start : start + _CONTAINER_QUERY_CHUNK]
+        for cid in chunk:
+            if not _DRIVE_ID_RE.match(cid):  # ids end up inside the query string
+                raise ValueError("unexpected Drive folder id")
+        in_parents = " or ".join(f"'{cid}' in parents" for cid in chunk)
+        page_token = None
+        while True:
+            resp = (
+                gdrive._service.files()
+                .list(
+                    q=f"({in_parents}) and ({names}) and trashed = false",
+                    fields="nextPageToken, files(name, parents)",
+                    pageSize=200,
+                    pageToken=page_token,
+                    supportsAllDrives=True,
+                    includeItemsFromAllDrives=True,
+                )
+                .execute()
+            )
+            for f in resp.get("files", []):
+                for parent in f.get("parents") or []:
+                    seen.setdefault(parent, set()).add(f.get("name", ""))
+            page_token = resp.get("nextPageToken")
+            if not page_token:
+                break
+    wanted = set(child_ids)
+    return {
+        p for p, found in seen.items() if p in wanted and all(m in found for m in CURATED_MARKERS)
+    }
+
+
+def folder_overview(gdrive, folder_id: str, child_folders: list[dict] | None = None) -> dict:
+    """Describe ``folder_id`` for the folder picker. Read-only, never raises.
+
+    Returns ``curated`` (the folder itself has the README contract),
+    ``subfolder_count``, ``curated_children`` (how many of the first
+    ``CONTAINER_CHECK_LIMIT`` subfolders are curated patient folders) and
+    ``container_reason``: None, ``curated_children``, ``too_many_subfolders``
+    (more subfolders than were checked) or ``check_failed``. Any non-None
+    reason means "this looks like a parent of patient folders: ask before
+    connecting it". A failed lookup is reported as ``check_failed`` — the
+    caller must then ask, never assume the folder is free.
+
+    Blocking: one marker listing, the child-folder listing unless
+    ``child_folders`` is passed in, and one query per 25 checked subfolders
+    (at most two). A curated folder skips the subfolder query.
+    """
+    out = {
+        "curated": False,
+        "subfolder_count": len(child_folders) if child_folders is not None else 0,
+        "curated_children": 0,
+        "container_reason": None,
+    }
+    try:
+        if is_curated_root(gdrive, folder_id):
+            out["curated"] = True
+            return out
+        if child_folders is None:
+            child_folders = gdrive.list_child_folders(folder_id)
+            out["subfolder_count"] = len(child_folders)
+        ids = [f["id"] for f in child_folders[:CONTAINER_CHECK_LIMIT]]
+        if ids:
+            out["curated_children"] = len(_curated_child_ids(gdrive, ids))
+        if out["curated_children"]:
+            out["container_reason"] = "curated_children"
+        elif len(child_folders) > CONTAINER_CHECK_LIMIT:
+            out["container_reason"] = "too_many_subfolders"
+    except Exception:
+        logger.warning(
+            "folder overview failed for %s — treating it as a container (ask first)",
+            folder_id,
+            exc_info=True,
+        )
+        out["curated"] = False
+        out["container_reason"] = "check_failed"
+    return out
+
+
 def clear_cache(folder_id: str | None = None) -> None:
     if folder_id is None:
         _cache.clear()
