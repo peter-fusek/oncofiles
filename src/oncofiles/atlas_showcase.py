@@ -3,7 +3,7 @@
 Three public things live here, all static (no DB, no model, no Drive):
 
 * the hosted interactive atlas (``/movement-atlas`` + its assets in
-  ``src/oncofiles/atlas/``): a three.js page a Claude session built from five
+  ``src/oncofiles/atlas/``): a three.js page a Claude session built from the
   orthopaedic documents of the Oncofiles author, read through the MCP connector;
 * the use-case page in Slovak (``/pouzitie/pohybovy-atlas``) and English
   (``/use-cases/movement-atlas``), path-based like ``/onkologia`` + ``/oncology``;
@@ -169,7 +169,7 @@ _COPY: dict[str, dict] = {
         "title": "Pohybový atlas: z lekárskych správ interaktívne 3D vysvetlenie | Oncofiles",
         "description": (
             "Oncofiles nie je len pre onkologických pacientov. Skutočný prípad: Claude si cez "
-            "Oncofiles prečítal päť ortopedických dokumentov a postavil z nich interaktívny 3D "
+            "Oncofiles prečítal tri ortopedické správy a jeden popis MR a postavil z nich 3D "
             "atlas chrbta, kolena a ramena s návrhmi cvikov pre fyzioterapeuta."
         ),
         "video_name": "Pohybový atlas: z lekárskych správ interaktívne 3D vysvetlenie",
@@ -194,15 +194,16 @@ _COPY: dict[str, dict] = {
             (
                 "Problém",
                 "<p>Tri bežné ťažkosti: spodná časť chrbta (prechod L5/S1), preskakovanie v pravom "
-                "kolene a bolesť ľavého ramena pri zdvihnutí ruky. K nim päť krátkych dokumentov "
-                "z dvoch rokov, písaných lekárskym jazykom. Z textu si človek ťažko predstaví, čo "
+                "kolene a bolesť ľavého ramena pri zdvihnutí ruky. K nim tri ortopedické správy a "
+                "jeden popis MR, písané lekárskym jazykom. Z textu si človek ťažko predstaví, čo "
                 "nález znamená pri pohybe a na čo sa opýtať fyzioterapeuta.</p>",
             ),
             (
                 "Čo dodal Oncofiles",
                 "<p>Profil v Oncofiles je typu „všeobecný“ (nie onkologický) a obsahuje 232 "
-                "dokumentov. Claude si cez konektor Oncofiles (MCP) prečítal týchto päť a vybral z "
-                "nich fakty: diagnózy, nálezy a odporúčania, každý s odkazom na dokument, "
+                "dokumentov. Claude si cez konektor Oncofiles (MCP) prečítal tri ortopedické "
+                "správy a jeden popis MR a vybral z nich fakty: diagnózy, nálezy a odporúčania, "
+                "každý s odkazom na dokument, "
                 "z ktorého pochádza.</p>"
                 '<ul class="docs">'
                 "<li>Ortopedická správa <span>8. 10. 2026</span></li>"
@@ -277,8 +278,9 @@ _COPY: dict[str, dict] = {
         "title": "Movement atlas: from medical reports to an interactive 3D explanation | "
         "Oncofiles",
         "description": (
-            "Oncofiles is not only for oncology patients. A real case: Claude read five "
-            "orthopaedic documents through Oncofiles and built an interactive 3D atlas of the "
+            "Oncofiles is not only for oncology patients. A real case: Claude read three "
+            "orthopaedic reports and one MRI description through Oncofiles and built an "
+            "interactive 3D atlas of the "
             "lower back, knee and shoulder, with exercise suggestions for a physiotherapist."
         ),
         "video_name": "Movement atlas: from medical reports to an interactive 3D explanation",
@@ -304,16 +306,18 @@ _COPY: dict[str, dict] = {
             (
                 "The problem",
                 "<p>Three everyday complaints: the lower back (the L5/S1 segment), a clicking "
-                "right knee and a left shoulder that hurts when the arm is raised. With them, five "
-                "short documents from two years, written in medical language. From the text alone "
+                "right knee and a left shoulder that hurts when the arm is raised. With them, "
+                "three orthopaedic reports and one MRI description, written in medical "
+                "language. From the text alone "
                 "it is hard to picture what a finding means in motion, or what to ask a "
                 "physiotherapist.</p>",
             ),
             (
                 "What Oncofiles supplied",
                 "<p>The Oncofiles profile is of the “general” type (not oncology) and holds 232 "
-                "documents. Through the Oncofiles connector (MCP) Claude read these five and took "
-                "the facts from them: diagnoses, findings and recommendations, each linked to the "
+                "documents. Through the Oncofiles connector (MCP) Claude read three orthopaedic "
+                "reports and one MRI description and took the facts from them: "
+                "diagnoses, findings and recommendations, each linked to the "
                 "document it comes from.</p>"
                 '<ul class="docs">'
                 "<li>Orthopaedic report <span>8 Oct 2026</span></li>"

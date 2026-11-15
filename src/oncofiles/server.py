@@ -2912,6 +2912,8 @@ async def sitemap_xml(request: Request) -> HTMLResponse:
         '<xhtml:link rel="alternate" hreflang="en"'
         ' href="https://oncofiles.com/use-cases/movement-atlas"/>'
         "</url>\n"
+        f"  <url><loc>https://oncofiles.com/movement-atlas</loc><lastmod>{today}</lastmod>"
+        "<priority>0.6</priority><changefreq>monthly</changefreq></url>\n"
         "</urlset>\n",
         media_type="application/xml",
     )
@@ -2942,12 +2944,14 @@ async def llms_txt(request: Request) -> HTMLResponse:
         f"- Treatment event and research entry management\n"
         f"\n"
         f"## Not only oncology\n"
-        f"Oncofiles also has a general (non-oncology) patient profile. Use case: from five\n"
-        f"orthopaedic documents read through the Oncofiles connector, Claude built an\n"
+        f"Oncofiles also has a general (non-oncology) patient profile. Use case: from three\n"
+        f"orthopaedic reports and one MRI description read through the Oncofiles connector,\n"
+        f"Claude built an\n"
         f"interactive 3D movement atlas (lower back, knee, shoulder) with exercise\n"
         f"suggestions for a physiotherapist to review. The model is schematic, built from\n"
         f"report text, not from scans; it is not medical advice.\n"
         f"- Use case: https://oncofiles.com/use-cases/movement-atlas\n"
+        f"- Interactive atlas (Slovak interface): https://oncofiles.com/movement-atlas\n"
         f"\n"
         f"## Technical Details\n"
         f"- Version: {VERSION}\n"
@@ -2993,12 +2997,14 @@ async def llms_sk_txt(request: Request) -> HTMLResponse:
         f"- Pacienti hľadajúci druhý názor cez AI (Claude, ChatGPT)\n"
         f"\n"
         f"## Nielen onkológia\n"
-        f"Oncofiles má aj všeobecný (neonkologický) profil pacienta. Príklad použitia: z piatich\n"
-        f"ortopedických dokumentov, prečítaných cez konektor Oncofiles, postavil Claude\n"
+        f"Oncofiles má aj všeobecný (neonkologický) profil pacienta. Príklad použitia: z troch\n"
+        f"ortopedických správ a jedného popisu MR, prečítaných cez konektor Oncofiles,\n"
+        f"postavil Claude\n"
         f"interaktívny 3D pohybový atlas (chrbát, koleno, rameno) s návrhmi cvikov na\n"
         f"posúdenie fyzioterapeutom. Model je schematický, zostavený z textu správ, nie zo\n"
         f"snímok; nie je to lekárska rada.\n"
         f"- Príklad použitia: https://oncofiles.com/pouzitie/pohybovy-atlas\n"
+        f"- Interaktívny atlas: https://oncofiles.com/movement-atlas\n"
         f"\n"
         f"## Kľúčové funkcie\n"
         f"- 18 kategórií zdravotných dokumentov (laboratóriá, zobrazovacie vyšetrenia,\n"

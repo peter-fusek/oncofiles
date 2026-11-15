@@ -179,9 +179,14 @@ async def test_atlas_page_is_served_without_inline_code():
     ]
     assert all(not body.strip() for _, body in scripts)
     # every reference stays on this origin (no CDN, no font host)
-    assert not re.search(r"""(?:src|href)=["'](?:https?:)?//""", html)
+    assert not re.search(r"""(?:src|href)=["'](?:https?:)?//(?!oncofiles\.com/)""", html)
     assert '<link rel="stylesheet" href="/fonts/fonts.css">' in html
-    assert '<meta name="robots" content="noindex">' in html
+    # indexable, with its own Slovak title, description and canonical
+    assert "noindex" not in html
+    assert "<title>Petrov pohybový atlas: chrbát, koleno a rameno v 3D | Oncofiles</title>" in html
+    assert '<link rel="canonical" href="https://oncofiles.com/movement-atlas">' in html
+    description = re.search(r'<meta name="description" content="([^"]+)">', html).group(1)
+    assert "schematický" in description and "Nie je to lekárska rada." in description
     # real data, said on the page, with the way back to the explanation
     assert "Skutočný nález autora Oncofiles" in html
     assert f'href="{SK_PATH}"' in html and f'href="{EN_PATH}"' in html
@@ -438,13 +443,17 @@ async def test_sitemap_lists_both_use_case_pages_with_hreflang():
         entry = xml[start : xml.index("</url>", start)]
         assert f'hreflang="sk" href="https://oncofiles.com{SK_PATH}"' in entry
         assert f'hreflang="en" href="https://oncofiles.com{EN_PATH}"' in entry
-    assert "/movement-atlas</loc>" not in xml.replace(EN_PATH, "")  # the app page is noindex
+    assert "<loc>https://oncofiles.com/movement-atlas</loc>" in xml  # the atlas is indexable
 
 
 async def test_llms_txt_mentions_the_use_case_in_both_languages():
     en = (await llms_txt(_req("/llms.txt"))).body.decode()
     sk = (await llms_sk_txt(_req("/llms-sk.txt"))).body.decode()
     assert f"https://oncofiles.com{EN_PATH}" in en and "not medical advice" in en
+    for text in (en, sk):
+        assert "https://oncofiles.com/movement-atlas\n" in text
+    assert "three\northopaedic reports and one MRI description" in en
+    assert "z troch\nortopedických správ a jedného popisu MR" in sk
     assert f"https://oncofiles.com{SK_PATH}" in sk and "nie je to lekárska rada" in sk
 
 
@@ -516,3 +525,50 @@ def test_media_metadata_carries_no_personal_data(name):
     tags = [b"\xa9" + suffix for suffix in (b"xyz", b"mak", b"mod")]  # location, device
     for marker in (b"/Users/", b"/home/", b"Exif", b"GPS", *tags):
         assert marker not in head, marker
+
+
+# ── Maintainer wording and titles (PR #836 review) ───────────────────────
+
+
+def test_prose_says_three_reports_and_one_mri_description():
+    """The maintainer's wording for the lead. The source list on the use-case
+    page stays one entry per document."""
+    block = _section("atlas")
+    assert "Tri ortopedické správy a jeden popis MR." in block
+    assert "Three orthopaedic reports and one MRI description." in block
+    sk = atlas_showcase.use_case_page_html("sk")
+    en = atlas_showcase.use_case_page_html("en")
+    assert sk.count("tri ortopedické správy a jeden popis MR") >= 3
+    assert en.count("three orthopaedic reports and one MRI description") >= 3
+    for text in (block, sk, en):
+        assert not re.search(r"Štyri|štyri|\bFour\b|\bfour\b|\bpäť\b|\bfive\b", text)
+
+
+def test_landing_titles_put_cancer_patients_first_and_add_healthy_people():
+    title = re.search(r"<title[^>]*>([^<]+)</title>", LANDING).group(1)
+    assert title == "Oncofiles – zdravotné záznamy pre onkologických pacientov aj zdravých"
+    en = "Oncofiles – medical records for cancer patients and healthy people"
+    assert f'data-en="{en}"' in LANDING
+    assert f'<meta property="og:title" content="{en}">' in LANDING
+    assert f'<meta name="twitter:title" content="{en}">' in LANDING
+    assert len(en) <= 70 and len(title) <= 70  # 66 and 68 characters
+    assert en.index("cancer patients") < en.index("healthy people")
+    assert title.index("onkologických pacientov") < title.index("zdravých")
+
+
+def test_atlas_heading_font_is_self_hosted_and_atlas_only():
+    css = (ATLAS_DIR / "atlas.css").read_text(encoding="utf-8")
+    faces = re.findall(r"@font-face\s*\{(.*?)\}", css, re.S)
+    assert len(faces) == 2
+    for face in faces:
+        assert "font-family: 'Bricolage Grotesque';" in face
+        assert "font-weight: 700;" in face and "font-display: swap;" in face
+        assert "unicode-range:" in face
+        url = re.search(r"url\(([^)]+)\)", face).group(1)
+        assert url.startswith("/fonts/bricolage-grotesque-")
+        assert (SRC / "fonts" / url.removeprefix("/fonts/")).read_bytes()[:4] == b"wOF2"
+    # every heading weight the atlas uses with this family is the shipped one
+    for rule in re.findall(r"font-family:var\(--f-display\);([^}]*)", css):
+        assert "font-weight:700" in rule, rule
+    assert "Bricolage" not in (SRC / "fonts" / "fonts.css").read_text(encoding="utf-8")
+    assert "Bricolage" not in LANDING
