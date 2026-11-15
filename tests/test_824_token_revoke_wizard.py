@@ -428,3 +428,70 @@ def test_wizard_token_is_opt_in():
     # button and the share modal's regenerate button.
     assert js.count("'/api/patient-tokens'") == 2
     assert "wizardGenerateToken()" not in js.replace("function wizardGenerateToken()", "")
+
+
+def test_wizard_warns_when_context_was_not_saved():
+    step2 = _wizard_step(_html(), 2)
+    tag = re.search(r'<p id="wiz-context-warning"[^>]*>', step2).group(0)
+    assert "display:none" in tag and 'data-sk="' in tag and 'data-en="' in tag
+    assert "could not be saved" in tag and "nepodarilo uložiť" in tag
+    assert not re.search(r"\son\w+=", tag)  # no inline handler
+
+    setter = _js_function("setWizardContextWarning")
+    assert "innerHTML" not in setter and "el.textContent = el.getAttribute(" in setter
+    assert "el.style.display = visible ? 'block' : 'none'" in setter
+    assert "setWizardContextWarning(data.context_saved === false)" in _js_function(
+        "wizardStep1Submit"
+    )
+    # A new wizard run and the Drive-setup entry both start with it hidden.
+    assert "setWizardContextWarning(false)" in _js_function("showOnboarding")
+    assert "setWizardContextWarning(false)" in _js_function("showGdriveSetup")
+
+
+@pytest.mark.usefixtures("open_api")
+async def test_create_patient_reports_context_not_saved(db: Database, monkeypatch):
+    async def _boom(*_args, **_kwargs):
+        raise RuntimeError("synthetic context failure")
+
+    monkeypatch.setattr(patient_context, "save_to_db", _boom)
+    status, data = await _create(db, patient_type="general", date_of_birth=FAKE_DOB)
+    assert status == 201 and data["context_saved"] is False
+    assert await db.get_patient_by_slug("wizard-824") is not None
+
+
+@pytest.mark.usefixtures("open_api")
+@pytest.mark.parametrize("endpoint", ["api_create_share_link", "api_create_patient_token"])
+async def test_slug_in_body_yields_token_bound_to_uuid(db: Database, monkeypatch, endpoint):
+    _, data = await _create(db)
+    pid = data["patient"]["patient_id"]
+    seen: list[str] = []
+
+    async def _allow(request, db_inst, patient_id):
+        seen.append(patient_id)
+        return None
+
+    monkeypatch.setattr(server, "_require_body_patient_access", _allow)
+    resp = await getattr(server, endpoint)(_request(db, {"patient_id": "wizard-824"}))
+    out = json.loads(resp.body)
+    if endpoint == "api_create_share_link":
+        assert resp.status_code == 200
+        token = server._share_codes[out["code"]]["bearer_token"]
+        server._share_codes.clear()
+    else:
+        assert resp.status_code == 201 and out["patient_id"] == pid
+        token = out["bearer_token"]
+    assert seen == [pid]  # the ACL gate sees the UUID, not the slug
+    assert [r["patient_id"] for r in await _token_rows(db)] == [pid]
+    assert await db.resolve_patient_from_token(token) == pid
+
+
+@pytest.mark.usefixtures("open_api")
+@pytest.mark.parametrize("endpoint", ["api_create_share_link", "api_create_patient_token"])
+async def test_unknown_patient_in_body_mints_nothing(db: Database, monkeypatch, endpoint):
+    async def _allow(request, db_inst, patient_id):
+        return None
+
+    monkeypatch.setattr(server, "_require_body_patient_access", _allow)
+    resp = await getattr(server, endpoint)(_request(db, {"patient_id": "no-such-patient"}))
+    assert resp.status_code == 404
+    assert await _token_rows(db) == []

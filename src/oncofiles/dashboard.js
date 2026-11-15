@@ -1004,6 +1004,16 @@
       if (btn) { btn.style.display = ''; btn.disabled = false; }
     }
 
+    // Shown in step 2 when POST /api/patients reports context_saved: false:
+    // the patient exists, but type / birth date were not stored (#824).
+    // The text is static markup (data-sk / data-en); only visibility changes.
+    function setWizardContextWarning(visible) {
+      var el = document.getElementById('wiz-context-warning');
+      if (!el) return;
+      el.textContent = el.getAttribute(dashLang === 'sk' ? 'data-sk' : 'data-en');
+      el.style.display = visible ? 'block' : 'none';
+    }
+
     async function wizardGenerateToken() {
       var btn = document.getElementById('wiz-token-gen');
       var errEl = document.getElementById('wiz-token-error');
@@ -1087,6 +1097,7 @@
       }
       // Hide the token display (not relevant for existing patient)
       resetWizardTokenSection(false);
+      setWizardContextWarning(false);
       updateWizardDots();
       document.getElementById('wizard-overlay').classList.add('active');
     }
@@ -1097,6 +1108,7 @@
       wizardBearerToken = '';
       wizardCurrentStep = 1;
       resetWizardTokenSection(true);
+      setWizardContextWarning(false);
       // Reset form fields
       document.getElementById('wiz-name').value = '';
       document.getElementById('wiz-id').value = '';
@@ -1227,6 +1239,7 @@
         wizardPatientUuid = (data.patient && data.patient.patient_id) || '';
         wizardBearerToken = '';
         resetWizardTokenSection(true);
+        setWizardContextWarning(data.context_saved === false);
         wizardGoToStep(2);
       } catch (e) {
         errEl.textContent = (dashLang === 'sk' ? 'Sieťová chyba: ' : 'Network error: ') + e.message;

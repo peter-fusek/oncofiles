@@ -6431,9 +6431,12 @@ async def api_create_patient_token(request: Request) -> JSONResponse:
     try:
         db_inst: Database = request.app.state.fastmcp_server._lifespan_result["db"]
         body = await request.json()
-        patient_id = body.get("patient_id", "").strip()
-        if not patient_id:
+        raw_patient_id = body.get("patient_id", "").strip()
+        if not raw_patient_id:
             return JSONResponse({"error": "patient_id required"}, status_code=400)
+        # Token rows key on the patient UUID: resolve a slug first (#824), so a
+        # slug can never reach create_patient_token (an unknown value → 404).
+        patient_id = await db_inst.resolve_patient_id(raw_patient_id) or raw_patient_id
         # #489 Part B: ACL gate — body-supplied patient_id must belong to caller.
         # Without this, any session-authenticated user could mint bearer tokens
         # for any patient (cross-patient privilege escalation; mirror of Felix's
@@ -7197,11 +7200,14 @@ async def api_create_share_link(request: Request) -> JSONResponse:
 
     try:
         body = await request.json()
-        patient_id = body.get("patient_id", "").strip().lower()
-        if not patient_id:
+        raw_patient_id = body.get("patient_id", "").strip().lower()
+        if not raw_patient_id:
             return JSONResponse({"error": "patient_id required"}, status_code=400)
 
         db_inst: Database = request.app.state.fastmcp_server._lifespan_result["db"]
+        # Token rows key on the patient UUID: resolve a slug first (#824), so a
+        # slug can never reach create_patient_token (an unknown value → 404).
+        patient_id = await db_inst.resolve_patient_id(raw_patient_id) or raw_patient_id
 
         # #489 Part B: ACL gate — share-link creation mints cross-session access.
         # Body-supplied patient_id must belong to caller (or caller is admin).
