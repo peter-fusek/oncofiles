@@ -103,6 +103,7 @@ def _base(entry: dict, kind: str) -> dict:
         "category": _code(entry.get("category")),
         "result": _code(entry.get("result")),
         "error": _error_code(entry.get("error")),
+        "reason": _code(entry.get("reason")),  # e.g. raw_genotype_excluded (#815)
         "pages": _num(entry.get("pages")) or 0,
         "pages_not_assessed": len(entry.get("pages_not_assessed") or []),
         "page": _pages(entry),

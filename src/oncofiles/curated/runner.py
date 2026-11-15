@@ -29,7 +29,7 @@ from datetime import UTC, datetime
 
 from oncofiles.curated import classify as classify_mod
 from oncofiles.curated import extract as extract_mod
-from oncofiles.curated import llm
+from oncofiles.curated import llm, llm_input
 from oncofiles.curated.contract import (
     DUPLICATES_PREFIX,
     ROOT_STATE_FILES,
@@ -640,6 +640,9 @@ class Runner:
                 raise RunAbortError(f"local model unavailable — {ex.error}")
         elif not ex.text.strip():
             note = "no text to classify"
+        elif reason := llm_input.inbox_exclusion(item.name, item.mime, ex.text):
+            # raw genotype data (#815): never sent to the model; stays for review
+            note = f"{reason}: not sent to the model"
         else:
             try:
                 raw = self.propose_fn(contract, ex.text)
@@ -846,7 +849,12 @@ class Runner:
                 if not ex.ok and _llm_down(ex.error):
                     raise RunAbortError(f"local model unavailable — {ex.error}")
                 cls = None
-                if ex.ok and ex.text.strip():
+                if (
+                    ex.ok
+                    and ex.text.strip()
+                    # raw genotype data (#815): never sent to the model
+                    and not llm_input.inbox_exclusion(item.name, item.mime, ex.text)
+                ):
                     try:
                         raw = self.propose_fn(contract, ex.text)
                     except llm.LocalLLMError as exc:
