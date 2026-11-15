@@ -46,7 +46,7 @@ from oncofiles.curated.llm_extract import EXTRACTOR_VERSION
 from oncofiles.database._facts import LLM_LAB_FAMILY, PROTECTED_VERIFICATION
 from oncofiles.models import Device, ProvenanceRecord
 
-# llm-extract-v9 → llm-lab-v9: a prompt/schema change of the extractor is a new writer version
+# llm-extract-v10 → llm-lab-v10: a prompt/schema change of the extractor is a new writer version
 WRITER_VERSION = f"{LLM_LAB_FAMILY}-v{EXTRACTOR_VERSION.rsplit('-v', 1)[1]}"
 WRITE_LABELS = ("machine", "unverified")  # never verified / corrected
 # lab kinds only: biomarker / gene codes belong to the clinical extractor (#726)
