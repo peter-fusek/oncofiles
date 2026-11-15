@@ -108,6 +108,8 @@ class _LooseText(HTMLParser):
         ("three.min.js", "application/javascript; charset=utf-8"),
         ("poster-sk.jpg", "image/jpeg"),
         ("poster-en.jpg", "image/jpeg"),
+        ("poster-sk-start.jpg", "image/jpeg"),
+        ("poster-en-start.jpg", "image/jpeg"),
         ("video-sk.mp4", "video/mp4"),
         ("video-en.mp4", "video/mp4"),
     ],
@@ -274,11 +276,20 @@ async def test_use_case_page_head_and_video(lang):
     video = re.search(r"<video\b[^>]*>", html, re.S).group(0)
     for attr in ("controls", "muted", "playsinline", 'preload="metadata"'):
         assert attr in video, attr
+    # people come here to read: nothing starts by itself, in markup or script
     assert "autoplay" not in html and "loop" not in video
+    assert ".play(" not in html and "IntersectionObserver" not in html
     assert 'width="1080"' in video and 'height="1080"' in video
-    assert f'poster="/movement-atlas/poster-{lang}.jpg"' in video
+    # the poster is the frame the first play starts at; the intro card is og:image
+    assert 'data-start="12"' in video
+    assert f'poster="/movement-atlas/poster-{lang}-start.jpg"' in video
+    og_image = f"https://oncofiles.com/movement-atlas/poster-{lang}.jpg"
+    assert f'<meta property="og:image" content="{og_image}">' in html
     assert f'src="/movement-atlas/video-{lang}.mp4"' in video
     assert 'aria-describedby="video-alt"' in video and 'id="video-alt"' in html
+    start_script = html[html.rindex("<script>") : html.rindex("</script>")]
+    assert "video[data-start]" in start_script and "v.currentTime = start" in start_script
+    assert "addEventListener('play', applyStart)" in start_script
 
     block = re.search(r'<script type="application/ld\+json">(.*?)</script>', html, re.S).group(1)
     data = json.loads(block)
@@ -385,13 +396,18 @@ def test_landing_video_markup_and_language_switch():
     video = re.search(r"<video\b[^>]*>", block).group(0)
     for attr in ("controls", "muted", "playsinline", 'preload="metadata"'):
         assert attr in video, attr
-    assert "autoplay" not in block and "loop" not in video
+    # Playback is script-driven (so reduced motion can be honoured): the
+    # markup carries no autoplay and no loop ATTRIBUTE, only the start point.
+    assert not re.search(r"\s(autoplay|loop)\b", video)
+    assert 'data-start="12"' in video
     assert 'width="1080"' in video and 'height="1080"' in video
-    assert 'poster="/movement-atlas/poster-sk.jpg"' in video
+    # the posters are the frame at data-start, so the start is not a visual jump
+    assert 'poster="/movement-atlas/poster-sk-start.jpg"' in video
     assert 'src="/movement-atlas/video-sk.mp4"' in video
+    assert "#t=" not in video  # the language swap compares src verbatim
     for lang in ("sk", "en"):
         assert f'data-{lang}-src="/movement-atlas/video-{lang}.mp4"' in video
-        assert f'data-{lang}-poster="/movement-atlas/poster-{lang}.jpg"' in video
+        assert f'data-{lang}-poster="/movement-atlas/poster-{lang}-start.jpg"' in video
         assert f"data-{lang}-label=" in video
     assert 'aria-describedby="atlas-video-alt"' in video and 'id="atlas-video-alt"' in block
     # the video element itself must not be a data-sk element: applyLang would
@@ -402,6 +418,65 @@ def test_landing_video_markup_and_language_switch():
     assert "video[data-' + l + '-src]" in apply_lang and "v.load()" in apply_lang
     assert "[data-' + l + '-href]" in apply_lang
     assert "<style>" in LANDING and "aspect-ratio: 1 / 1" in LANDING  # no layout shift
+
+
+def _landing_video_script() -> str:
+    script = LANDING[LANDING.rindex("<script>") :]
+    start = script.index("/* Showcase video (#830)")
+    return script[start : script.index("var urlLang", start)]
+
+
+def test_landing_video_plays_by_script_when_visible_from_the_start_point():
+    """The contract of the script-driven playback (maintainer request, #830)."""
+    js = _landing_video_script()
+    assert "getElementById('atlas-video')" in js
+    assert "getAttribute('data-start')" in js
+    # visible = at least half of the video in the viewport; leaving pauses it
+    assert "new IntersectionObserver(" in js and "intersectionRatio >= 0.5" in js
+    assert "threshold: [0, 0.5]" in js
+    assert "scriptPause = true; v.pause();" in js
+    # not allowed with reduced motion or save-data: no observer, no play()
+    assert "var auto = !reduceMotion && !saveData" in js
+    assert "conn.saveData" in js
+    assert js.index("if (!auto) return;\n      new IntersectionObserver") > 0
+    try_play = js[js.index("function tryPlay") : js.index("v.addEventListener")]
+    assert "if (!auto || !visible || userPaused || !v.paused) return;" in try_play
+    # a manual pause is respected: only a `pause` we did not cause sets the flag
+    pause = js[js.index("addEventListener('pause'") : js.index("addEventListener('seeking'")]
+    assert "if (scriptPause) { scriptPause = false; return; }" in pause
+    assert "if (!v.ended) userPaused = true;" in pause
+    # the start point is set from script once metadata is there, not by #t=
+    assert "addEventListener('loadedmetadata'" in js and "v.readyState < 1" in js
+    assert "v.currentTime = start > 0 && start < v.duration ? start : 0" in js
+    # the end restarts from the start point; the loop attribute would show the intro
+    ended = js[js.index("addEventListener('ended'") : js.index("addEventListener('emptied'")]
+    assert "seekToStart();" in ended and "v.play()" in ended
+    assert "v.loop" not in js and "setAttribute('loop'" not in js
+    # a language swap (load() -> emptied) re-arms the same rules
+    emptied = js[js.index("addEventListener('emptied'") : js.rindex("if (!auto) return;")]
+    assert "pendingStart = true;" in emptied and "tryPlay();" in emptied
+    # every play() promise is caught: a blocked start or a swap is not an error
+    assert js.count("v.play()") == js.count("p.catch(function ()") == 2
+    # the reduced-motion flag is the page's one, defined before this block
+    whole = LANDING[LANDING.rindex("<script>") :]
+    assert whole.index("var reduceMotion = ") < whole.index("/* Showcase video (#830)")
+    assert "prefers-reduced-motion: reduce" in whole
+    # set up before the initial applyLang('en'), so the first swap is covered
+    assert whole.index("/* Showcase video (#830)") < whole.index("if (initial === 'en')")
+
+
+def test_start_posters_are_square_jpegs_and_the_intro_posters_are_still_used():
+    for lang in ("sk", "en"):
+        data = (ATLAS_DIR / f"poster-{lang}-start.jpg").read_bytes()
+        assert data[:3] == b"\xff\xd8\xff" and len(data) < 150_000
+        sof = re.search(rb"\xff\xc0..\x08(..)(..)", data, re.S)  # baseline SOF0: height, width
+        assert [int.from_bytes(g, "big") for g in sof.groups()] == [1080, 1080]
+        # the intro-card poster stays for link previews (og:image, JSON-LD)
+        page = atlas_showcase.use_case_page_html(lang)
+        assert f"https://oncofiles.com/movement-atlas/poster-{lang}.jpg" in page
+        assert f"/movement-atlas/poster-{lang}.jpg" not in LANDING
+    assert "/movement-atlas/poster-sk.jpg" in (ATLAS_DIR / "index.html").read_text(encoding="utf-8")
+    assert atlas_showcase.VIDEO_START_SECONDS == 12
 
 
 def test_landing_faq_and_json_ld_answer_the_oncology_only_question():
@@ -516,7 +591,17 @@ def test_no_external_host_in_the_published_files():
             ) or url.startswith("https://github.com/peter-fusek/oncofiles"), (name, url)
 
 
-@pytest.mark.parametrize("name", ["poster-sk.jpg", "poster-en.jpg", "video-sk.mp4", "video-en.mp4"])
+@pytest.mark.parametrize(
+    "name",
+    [
+        "poster-sk.jpg",
+        "poster-en.jpg",
+        "poster-sk-start.jpg",
+        "poster-en-start.jpg",
+        "video-sk.mp4",
+        "video-en.mp4",
+    ],
+)
 def test_media_metadata_carries_no_personal_data(name):
     """File metadata (not the pixels): no e-mail, home path, GPS or device tag."""
     data = (ATLAS_DIR / name).read_bytes()
