@@ -21,8 +21,11 @@ Rules (infra conditions on #714):
 * Dedupe: never stored when the same document already holds a coded fact of
   the same code and day that this family did not write (rule facts first of
   all, but also manual or other extractors' rows) — ``skipped_rule_exists``.
-  A rule fact dated under a printed range blocks every day of its window; an
-  undated LLM fact is blocked by any fact of its code in the document.
+  Days are compared as spans (#726, #826): a value under a printed range
+  stands for every day of its window, on EITHER side, so a rule range blocks
+  an LLM day or range that overlaps it and an LLM range is blocked by a rule
+  day or range inside it; only disjoint spans are two results. An undated
+  LLM fact is blocked by any fact of its code in the document.
   Uncoded facts (label not in ``fact_codes``) are not stored
   (``skipped_uncoded``): there is no code to dedupe or chart them by; nor are
   codes outside the lab categories (``skipped_not_lab``: biomarker / gene
@@ -91,23 +94,34 @@ def _label(fact: dict) -> dict:
     return f
 
 
+def _meta(value) -> dict:
+    if isinstance(value, dict):
+        return value
+    try:
+        out = json.loads(value or "{}")
+    except (TypeError, ValueError):
+        return {}
+    return out if isinstance(out, dict) else {}
+
+
+def _span(occurred_at, meta: dict) -> tuple[str, str] | None:
+    """(first, last) day a fact stands for: the printed range when it was
+    dated under one (#726), else its own day; None when undated."""
+    day = (occurred_at or "")[:10]
+    return range_window(meta) or ((day, day) if day else None)
+
+
 def _blocked(fact: dict, others: list[dict]) -> bool:
-    """Another writer already holds this code and day in the document."""
+    """Another writer already holds this code on a day of this fact's span."""
     code = fact.get("code")
-    day = (fact.get("occurred_at") or "")[:10]
+    mine = _span(fact.get("occurred_at"), _meta(fact.get("metadata")))
     for o in others:
         if o.get("code") != code:
             continue
-        if not day:
+        if mine is None:
             return True  # undated: any value of this code in the document wins
-        if (o.get("occurred_at") or "")[:10] == day:
-            return True
-        try:
-            meta = json.loads(o.get("metadata_json") or "{}")
-        except ValueError:
-            meta = {}
-        window = range_window(meta if isinstance(meta, dict) else {})
-        if window and window[0] <= day <= window[1]:
+        theirs = _span(o.get("occurred_at"), _meta(o.get("metadata_json")))
+        if theirs and mine[0] <= theirs[1] and theirs[0] <= mine[1]:
             return True
     return False
 

@@ -20,12 +20,20 @@ Metrics (per page, per document and in total):
 * speed: p50 / p95 seconds and completion tokens per page (nearest rank);
 * trust: items machine / unverified / dropped per kind, unverified and drop
   reason codes, % machine;
-* lab agreement against the stored rule facts: agree / value_mismatch /
-  rule_only / llm_only (+ ``parser_crosscheck`` on transcription pages).
+* lab agreement against the stored rule facts, one bucket per fact as
+  ``llm_extract.bucket_facts`` decides (#826): agree / value_mismatch /
+  date_mismatch / rule_only / llm_only / llm_no_value / llm_uncoded
+  (+ ``parser_crosscheck`` on transcription pages).
   ``comparable`` = agree + value_mismatch (same code and day on both sides);
   ``pct_agree`` = agree / comparable;
 * dates (context-loss check of the page split, #773): items without a
   printed date / items, on split vs unsplit pages (``date_null_rate_*``).
+
+Versions (#826): the numbers depend on the extractor prompts and on what the
+verifiers and the comparison buckets mean, so every scorecard carries
+``versions`` (``VERSION_FIELDS``) and is compared only with a baseline of the
+very same versions. Otherwise ``compare`` returns no delta and no regression
+flag, only ``baseline_comparable: false`` and ``definition_changed``.
 """
 
 from __future__ import annotations
@@ -33,7 +41,19 @@ from __future__ import annotations
 import math
 import re
 
-SCORECARD_VERSION = "scorecard-v1"
+# v2 (#826): the lab totals sum every exclusive bucket of ``bucket_facts``
+# (date_mismatch, llm_no_value, llm_uncoded added); ``versions`` stored.
+SCORECARD_VERSION = "scorecard-v2"
+# what must be equal on both sides before two scorecards are compared
+VERSION_FIELDS = (
+    "scorecard_version", "extractor_version", "verifier_version",
+    "clinical_extractor_version", "clinical_verifier_version",
+)  # fmt: skip
+# where a row written before ``versions`` existed kept the same facts
+_LEGACY_EXTRACTORS = {
+    "extractor_version": "lab", "verifier_version": "lab_verifier",
+    "clinical_extractor_version": "clinical", "clinical_verifier_version": "clinical_verifier",
+}  # fmt: skip
 REASONING_TOKENS_MAX = 50
 LAB_KIND = "lab"
 
@@ -42,8 +62,8 @@ _PAGE_NUMBERS = ("seconds", "prompt_tokens", "completion_tokens", "reasoning_tok
                  "date_null_items")  # fmt: skip
 _PAGE_CODES = ("finish_reason", "error_kind", "answer_source")
 _LAB_COUNTS = (
-    "rule_facts", "llm_facts", "agree", "agree_machine", "value_mismatch", "rule_only",
-    "llm_only", "parser_crosscheck",
+    "rule_facts", "llm_facts", "agree", "agree_machine", "value_mismatch", "date_mismatch",
+    "rule_only", "llm_only", "llm_no_value", "llm_uncoded", "parser_crosscheck",
 )  # fmt: skip
 # higher is better / lower is better: a move the wrong way is a regression
 _HIGHER_IS_BETTER = ("stability.pct_stop", "trust.pct_machine", "lab.pct_agree")
@@ -288,8 +308,77 @@ def delta(previous: dict | None, current: dict) -> dict | None:
     return {"metrics": metrics, "regressions": regressions}
 
 
+def _version(value) -> str | int | None:
+    """A version as stored: a short code or a whole number, else None."""
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value
+    return _code(value)
+
+
+def versions(
+    *, extractor, verifier, clinical_extractor, clinical_verifier
+) -> dict[str, str | int | None]:
+    """The versions a scorecard's numbers were produced under: this module's,
+    the lab extractor + generic verifier (``extractor_version``,
+    ``verifier_version``) and the clinical pair."""
+    return {
+        "scorecard_version": SCORECARD_VERSION,
+        "extractor_version": _version(extractor),
+        "verifier_version": _version(verifier),
+        "clinical_extractor_version": _version(clinical_extractor),
+        "clinical_verifier_version": _version(clinical_verifier),
+    }
+
+
+def versions_of(report: dict | None) -> dict[str, str | int | None]:
+    """The versions of a stored scorecard report. A row written before
+    ``versions`` existed is read from its ``scorecard`` / ``extractors``
+    keys; what it never recorded is None (and so never equal to a version)."""
+    report = report if isinstance(report, dict) else {}
+    stored = report.get("versions")
+    if isinstance(stored, dict):
+        return {k: _version(stored.get(k)) for k in VERSION_FIELDS}
+    legacy = report.get("extractors")
+    legacy = legacy if isinstance(legacy, dict) else {}
+    out = {k: _version(legacy.get(src)) for k, src in _LEGACY_EXTRACTORS.items()}
+    return {"scorecard_version": _version(report.get("scorecard")), **out}
+
+
+def definition_changed(baseline: dict, current: dict) -> dict[str, list]:
+    """``{field: [baseline, current]}`` for every version that differs. A
+    version missing on either side differs: an unknown definition is never
+    assumed to be the current one."""
+    out = {}
+    for k in VERSION_FIELDS:
+        old, new = baseline.get(k), current.get(k)
+        if old is None or new is None or old != new:
+            out[k] = [old, new]
+    return out
+
+
+def compare(baseline_report: dict | None, current_versions: dict, current_totals: dict) -> dict:
+    """The comparison block of a scorecard report.
+
+    No baseline: ``baseline_comparable`` and ``delta`` are None. A baseline
+    of other (or unrecorded) versions: ``baseline_comparable`` False,
+    ``definition_changed`` names them, and there is NO delta and NO
+    regression list — numbers under two definitions are not a trend (#826:
+    verifier 1 vs 2, the exclusive buckets). Only equal versions give the
+    metric-by-metric ``delta`` with its ``regressions``."""
+    if not baseline_report:
+        return {"baseline_comparable": None, "definition_changed": {}, "delta": None}
+    changed = definition_changed(versions_of(baseline_report), current_versions)
+    if changed:
+        return {"baseline_comparable": False, "definition_changed": changed, "delta": None}
+    return {
+        "baseline_comparable": True,
+        "definition_changed": {},
+        "delta": delta(baseline_report.get("totals"), current_totals),
+    }
+
+
 def persisted(report: dict) -> dict:
     """What goes into ``curated_runs.report_json``: label, settings, versions
     and the aggregated totals. No per-document card, no value, no text."""
-    keys = ("scorecard", "label", "settings", "extractors", "totals", "dry_run")
+    keys = ("scorecard", "label", "settings", "extractors", "versions", "totals", "dry_run")
     return {k: report[k] for k in keys if k in report}

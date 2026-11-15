@@ -3532,9 +3532,14 @@ async def _scorecard_job(
             patient_id=pid, label_prefix=compare_to_label, before_id=row_id
         )
         prev_report = (prev or {}).get("report") or {}
+        versions = scorecard.versions(
+            extractor=llm_extract.EXTRACTOR_VERSION, verifier=verifier.VERIFIER_VERSION,
+            clinical_extractor=lx.EXTRACTOR_VERSION,
+            clinical_verifier=verifier_clinical.CLINICAL_VERIFIER_VERSION,
+        )  # fmt: skip
         job.update(state="done", report={
             "dry_run": True, "scorecard": scorecard.SCORECARD_VERSION, "label": label,
-            "partial": stopped,
+            "partial": stopped, "versions": versions,
             "extractors": {"clinical": lx.EXTRACTOR_VERSION,
                            "clinical_verifier": verifier_clinical.CLINICAL_VERIFIER_VERSION,
                            "lab": llm_extract.EXTRACTOR_VERSION,
@@ -3545,7 +3550,8 @@ async def _scorecard_job(
             "totals": totals,
             "compared_to": {"row_id": prev["id"], "label": prev_report.get("label"),
                             "finished_at": prev.get("finished_at")} if prev else None,
-            "delta": scorecard.delta(prev_report.get("totals"), totals),
+            # never a delta or a regression flag across versions (#826)
+            **scorecard.compare(prev_report if prev else None, versions, totals),
             "documents": cards,
         })  # fmt: skip
     except Exception as exc:
@@ -3595,13 +3601,20 @@ async def curated_extraction_scorecard(
     The report (poll curated_reocr_status, kind ``extraction_scorecard``) has,
     per document: pages; per page finish / seconds / completion and reasoning
     tokens; items per kind as machine / unverified / dropped; unverified and
-    drop reason codes; for lab documents agree / value_mismatch / rule_only /
-    llm_only. Totals: stability (% finish=stop, timeouts, truncations, % pages
-    with reasoning_tokens > 50), speed (p50/p95 seconds and completion tokens
-    per page), trust (% machine), lab agreement (% agree of comparable =
+    drop reason codes; for lab documents agree / value_mismatch /
+    date_mismatch / rule_only / llm_only / llm_no_value / llm_uncoded.
+    Totals: stability (% finish=stop, timeouts, truncations, % pages with
+    reasoning_tokens > 50), speed (p50/p95 seconds and completion tokens per page),
+    trust (% machine), lab agreement (% agree of comparable =
     agree + value_mismatch), the settings used, and ``delta`` metric by metric
     against the previous ok scorecard of this patient (or the newest one whose
     label starts with ``compare_to_label``), with a ``regressions`` list.
+    ``versions`` holds the scorecard, extractor and verifier versions (lab:
+    ``extractor_version`` / ``verifier_version``, plus the clinical pair). A
+    baseline of other or unrecorded versions is not compared:
+    ``baseline_comparable`` is false, ``definition_changed`` lists
+    ``{field: [baseline, current]}`` and there is no ``delta`` and no
+    regression flag.
     Never values, labels or evidence text.
 
     Refused while a curated run, re-OCR, re-read, extraction or other preview
