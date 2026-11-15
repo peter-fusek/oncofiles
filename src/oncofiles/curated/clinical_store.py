@@ -231,6 +231,14 @@ def _item_keys(it: dict) -> list[tuple]:
     if kind == "procedures":
         return [("procedure", f.get("type") or "other", _day(_iso(it)),
                  _fold(f.get("description_as_printed")))]  # fmt: skip
+    # general-health kinds (#815) use the keys of the rows they are stored as,
+    # so a re-run replaces them instead of keeping them as missing (#819)
+    if kind == "allergies":
+        return [_cond_key(None, f.get("text_as_printed") or f.get("substance_as_printed"))]
+    if kind == "vaccinations":
+        return [("procedure", "vaccination", _day(_iso(it)), _fold(f.get("vaccine_as_printed")))]
+    if kind == "screenings":
+        return [("procedure", "screening", _day(_iso(it)), _fold(f.get("test_as_printed")))]
     if kind == "lesions":
         return [_record_key(LESION_CODE, f.get("lesion_as_printed"), _iso(it))]
     if kind == "biomarkers":
