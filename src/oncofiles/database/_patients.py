@@ -132,6 +132,9 @@ class PatientsMixin:
         elif not slug:
             slug = pid  # fallback: use UUID as slug (not ideal but safe)
 
+        # `patients.profile` (migration 039) is deliberately not written: it is a
+        # legacy, unused column (#824). The patient type lives only in
+        # `patient_context.patient_type`.
         async with self.db.execute(
             """INSERT INTO patients
                (patient_id, slug, display_name, caregiver_email, diagnosis_summary,
@@ -236,21 +239,57 @@ class PatientsMixin:
             await self.db.commit()
             return cursor.rowcount > 0
 
-    async def list_patient_tokens(self, patient_id: str) -> list[dict]:
-        """List active tokens for a patient (hashes only, never plaintext)."""
-        async with self.db.execute(
-            """SELECT id, token_hash, label, created_at
-               FROM patient_tokens
-               WHERE patient_id = ? AND is_active = 1
-               ORDER BY created_at""",
-            (patient_id,),
-        ) as cursor:
+    async def revoke_patient_tokens(self, *, patient_id: str, label: str | None = None) -> int:
+        """Soft-revoke the active tokens of ONE patient (#824); no plaintext needed.
+
+        ``label`` narrows to tokens with exactly that label (``None`` = every
+        active token of the patient). Sets ``is_active = 0``; rows are never
+        deleted. Returns the number of tokens revoked.
+        """
+        if not patient_id:
+            raise ValueError("revoke_patient_tokens requires a patient_id")
+        sql = "UPDATE patient_tokens SET is_active = 0 WHERE patient_id = ? AND is_active = 1"
+        params: list = [patient_id]
+        if label is not None:
+            sql += " AND label = ?"
+            params.append(label)
+        async with self.db.execute(sql, params) as cursor:
+            await self.db.commit()
+            count = cursor.rowcount
+        logger.info(
+            "Revoked %d token(s) for patient %s (label filter: %s)",
+            count,
+            patient_id,
+            "yes" if label is not None else "no",
+        )
+        return count
+
+    async def list_patient_tokens(
+        self, *, patient_id: str, label: str | None = None, active_only: bool = False
+    ) -> list[dict]:
+        """List one patient's tokens WITHOUT any secret (#824).
+
+        Returns id, label, created_at and is_active only: never the hash (not
+        even a prefix) and never plaintext (which is not stored at all). The
+        table has no last-used column.
+        """
+        if not patient_id:
+            raise ValueError("list_patient_tokens requires a patient_id")
+        sql = "SELECT id, label, created_at, is_active FROM patient_tokens WHERE patient_id = ?"
+        params: list = [patient_id]
+        if label is not None:
+            sql += " AND label = ?"
+            params.append(label)
+        if active_only:
+            sql += " AND is_active = 1"
+        sql += " ORDER BY created_at, id"
+        async with self.db.execute(sql, params) as cursor:
             return [
                 {
                     "id": r["id"],
-                    "token_hash_prefix": r["token_hash"][:12] + "...",
                     "label": r["label"],
                     "created_at": r["created_at"],
+                    "is_active": bool(r["is_active"]),
                 }
                 for r in await cursor.fetchall()
             ]

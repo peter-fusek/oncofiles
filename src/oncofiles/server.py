@@ -6214,12 +6214,51 @@ async def api_patient_budget(request: Request) -> JSONResponse:
         return JSONResponse({"error": "internal error"}, status_code=500)
 
 
+NEW_PATIENT_TYPES = ("oncology", "general")
+
+
+def _parse_new_patient_context_fields(body: dict) -> tuple[dict, str | None]:
+    """Validate ``patient_type`` / ``date_of_birth`` of a new-patient request (#824).
+
+    Returns (context updates, None) or ({}, error message). The type defaults
+    to oncology; the birth date is optional, must be a real ISO calendar date
+    (YYYY-MM-DD) and must not be in the future.
+    """
+    import re
+    from datetime import date
+
+    raw_type = body.get("patient_type")
+    patient_type = "oncology" if raw_type in (None, "") else raw_type
+    if patient_type not in NEW_PATIENT_TYPES:
+        return {}, "patient_type must be one of: " + ", ".join(NEW_PATIENT_TYPES)
+    fields: dict = {"patient_type": patient_type}
+
+    raw_dob = body.get("date_of_birth")
+    if raw_dob not in (None, ""):
+        dob_error = "date_of_birth must be a valid date (YYYY-MM-DD), not in the future"
+        if not isinstance(raw_dob, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", raw_dob.strip()):
+            return {}, dob_error
+        try:
+            dob = date.fromisoformat(raw_dob.strip())
+        except ValueError:
+            return {}, dob_error
+        if dob > date.today() or dob.year < 1900:
+            return {}, dob_error
+        fields["date_of_birth"] = dob.isoformat()
+    return fields, None
+
+
 @mcp.custom_route("/api/patients", methods=["POST"])
 async def api_create_patient(request: Request) -> JSONResponse:
     """Create a new patient. Requires bearer or dashboard session auth.
 
-    Body: {patient_id, display_name, caregiver_email?, diagnosis_summary?, preferred_lang?}
-    Returns the created patient + a generated bearer token (shown once).
+    Body: {patient_id, display_name, caregiver_email?, diagnosis_summary?,
+    preferred_lang?, patient_type?, date_of_birth?}
+
+    ``patient_type`` (oncology | general, default oncology) and the optional
+    ``date_of_birth`` (ISO date, not in the future) are validated and stored
+    in the patient context at creation (#824). No bearer token is minted
+    here: a token is created only on request via ``/api/patient-tokens``.
     """
     from oncofiles.models import Patient
 
@@ -6243,6 +6282,10 @@ async def api_create_patient(request: Request) -> JSONResponse:
                 {"error": "patient_id must be lowercase alphanumeric with - or _ (2-50 chars)"},
                 status_code=400,
             )
+        # Validate the context fields before anything is written (#824).
+        context_fields, field_error = _parse_new_patient_context_fields(body)
+        if field_error:
+            return JSONResponse({"error": field_error}, status_code=400)
         existing = await db_inst.get_patient_by_slug(patient_id)
         if existing:
             return JSONResponse(
@@ -6260,11 +6303,24 @@ async def api_create_patient(request: Request) -> JSONResponse:
             preferred_lang=body.get("preferred_lang", "sk"),
         )
         created = await db_inst.insert_patient(patient)
-        # Generate initial bearer token. NB: `created.patient_id` is the UUID;
-        # the request-body `patient_id` is the slug. Token rows FK to the UUID,
-        # so passing the slug here would silently break token resolution
-        # (JOIN patient_tokens.patient_id = patients.patient_id would never match).
-        token = await db_inst.create_patient_token(created.patient_id, label="initial")
+        # No bearer token is minted here (#824): tokens are opt-in via
+        # /api/patient-tokens. NB: `created.patient_id` is the UUID; the
+        # request-body `patient_id` is the slug.
+        #
+        # Patient type and birth date go into the patient context, the single
+        # source for both (`patients.profile` is a legacy, unused column).
+        # Same path as the `update_patient_context` tool. Best-effort: the
+        # patient row already exists, so a failure is reported, not raised.
+        context_saved = True
+        try:
+            from oncofiles import patient_context
+
+            await patient_context.ensure_loaded(db_inst.db, created.patient_id)
+            new_ctx = patient_context.update_context(context_fields, patient_id=created.patient_id)
+            await patient_context.save_to_db(db_inst.db, new_ctx, patient_id=created.patient_id)
+        except Exception:
+            context_saved = False
+            logger.exception("Patient context save failed for new patient %s", created.patient_id)
         logger.info("New patient created: %s", patient_id)
 
         # Onboarding signal T0 (#468): record event row + fire-and-forget admin email.
@@ -6300,9 +6356,10 @@ async def api_create_patient(request: Request) -> JSONResponse:
                     "caregiver_email": created.caregiver_email,
                     "diagnosis_summary": created.diagnosis_summary,
                     "preferred_lang": created.preferred_lang,
+                    "patient_type": context_fields["patient_type"],
+                    "date_of_birth": context_fields.get("date_of_birth", ""),
                 },
-                "bearer_token": token,
-                "warning": "Save this token — it will not be shown again.",
+                "context_saved": context_saved,
             },
             status_code=201,
         )
@@ -7159,14 +7216,8 @@ async def api_create_share_link(request: Request) -> JSONResponse:
                 status_code=404,
             )
 
-        # Get the latest active token for this patient
-        tokens = await db_inst.list_patient_tokens(patient_id)
-        if not tokens:
-            return JSONResponse(
-                {"error": "No tokens for this patient. Create one first."},
-                status_code=400,
-            )
-
+        # No pre-existing token is required (#824: patient creation no longer
+        # mints one). Asking for a share code is the explicit user action.
         # Generate a fresh token so we can share the plaintext
         bearer_token = await db_inst.create_patient_token(patient_id, label="share-link")
 

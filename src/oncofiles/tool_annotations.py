@@ -105,6 +105,7 @@ READ_ONLY_TOOLS: frozenset[str] = frozenset(
         "get_preventive_care_status",
         # patient
         "get_patient_context",
+        "list_patient_tokens",  # #824: admin; id/label/created_at/is_active only
         "list_patients",
         "whoami",  # #604: identity + accessible patients, no writes
         # prompt_log
@@ -129,6 +130,8 @@ DESTRUCTIVE_TOOLS: frozenset[str] = frozenset(
         "redact_activity_log_inputs",
         # #755: moves a diary entry to trash (30-day restore)
         "delete_conversation",
+        # #824: admin; deactivates a patient's bearer tokens (soft, no un-revoke tool)
+        "revoke_patient_tokens",
     }
 )
 

@@ -457,6 +457,7 @@ COLUMN_DOMAINS: dict[tuple[str, str], str] = {
     ("prompt_log", "status"): "prompt_status",
     ("clinical_record_audit", "action"): "audit_action",
     ("patients", "tier"): "patient_tier",
+    # Legacy, unused column (#824): the type lives in patient_context.patient_type.
     ("patients", "profile"): "patient_type",
     ("patients", "preferred_lang"): "language",
     ("newsletter_subscribers", "status"): "newsletter_status",
