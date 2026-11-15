@@ -14,7 +14,7 @@ from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, unquote
 
 from fastmcp import FastMCP
 from starlette.requests import Request
@@ -4203,6 +4203,15 @@ def _make_session_token(email: str) -> str:
     return f"{payload}|{sig}"
 
 
+def _session_cookie(request: Request) -> str:
+    """Session token from the ``oncofiles_session`` cookie, percent-decoded.
+
+    The cookie is written percent-encoded (#495) and Starlette's
+    ``request.cookies`` does not decode it, so a raw read never verifies.
+    """
+    return unquote(request.cookies.get("oncofiles_session", ""))
+
+
 def _verify_session_token(token: str, *, log: bool = True) -> str | None:
     """Verify a session token. Returns email if valid, None otherwise.
 
@@ -4951,11 +4960,7 @@ async def api_logout(request: Request) -> JSONResponse:
     if auth_header.startswith("Bearer session:"):
         token = auth_header.removeprefix("Bearer session:").strip()
     if not token:
-        # Starlette's request.cookies is a parsed dict[str,str] and already
-        # URL-decodes values — no need to redo the SimpleCookie quote dance
-        # that the raw-ASGI middleware at MCPAuthorizeEmailCaptureMiddleware
-        # has to do (no Request object available there).
-        token = request.cookies.get("oncofiles_session", "")
+        token = _session_cookie(request)
 
     # #591: only a token that still verifies goes on the denylist. A forged or
     # expired one authenticates nothing, and revoking it would let a caller with
@@ -7286,7 +7291,7 @@ async def oauth_authorize(request: Request) -> JSONResponse:
         session_token = (
             auth_header.removeprefix("Bearer session:").strip()
             if auth_header.startswith("Bearer session:")
-            else request.cookies.get("oncofiles_session", "")
+            else _session_cookie(request)
         )
         email = _verify_session_token(session_token) if session_token else None
         parsed_session = _parse_session_token(session_token) if email else None
@@ -7378,7 +7383,7 @@ async def oauth_callback(request: Request) -> JSONResponse:
     if kind == "o":
         privileged = True
     elif kind == "s":
-        session_token = request.cookies.get("oncofiles_session", "")
+        session_token = _session_cookie(request)
         session_email = _verify_session_token(session_token) if session_token else None
         parsed_session = _parse_session_token(session_token) if session_email else None
         if parsed_session is None or parsed_session[2] != principal.get("tid"):

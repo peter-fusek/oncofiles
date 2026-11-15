@@ -507,3 +507,38 @@ async def test_mcp_auth_callback_tool_uses_the_guard(http_mode, db, monkeypatch)
     assert "error" in out
     assert (await db.get_oauth_token(patient_id=ERIKA_UUID)).access_token == "synthetic-access-old"
     assert (await _link_rows(db, ERIKA_UUID))[-1]["agent_id"] == "gdrive_auth_callback"
+
+
+async def test_drive_link_works_with_the_cookie_as_the_browser_sends_it(http_mode, db, monkeypatch):
+    """The session cookie is written percent-encoded (#495) and Starlette does
+    not decode it, so authorize and callback must decode it themselves. Before
+    this, the dashboard's "connect Drive" link answered 401 for every user."""
+    from urllib.parse import parse_qs, quote, urlparse
+
+    from starlette.requests import cookie_parser
+
+    server = http_mode
+    await _set_caregiver(db, ERIKA_UUID, CARER)
+    calls = _exchange(monkeypatch, _tokens(CARER))
+    token = server._make_session_token(CARER)
+    cookies = cookie_parser("oncofiles_session=" + quote(token, safe=""))
+    assert cookies["oncofiles_session"] != token  # still encoded, as in production
+
+    req = SimpleNamespace(
+        headers={},
+        cookies=cookies,
+        query_params={"patient_id": ERIKA_UUID},
+        path_params={"service": "drive"},
+        client=SimpleNamespace(host="203.0.113.7"),
+        app=SimpleNamespace(
+            state=SimpleNamespace(fastmcp_server=SimpleNamespace(_lifespan_result={"db": db}))
+        ),
+    )
+    resp = await server.oauth_authorize(req)
+    assert resp.status_code in (302, 307)
+    state = parse_qs(urlparse(resp.headers["location"]).query)["state"][0]
+
+    resp = await server.oauth_callback(_request(db, state=state, cookies=cookies))
+    assert resp.status_code != 403
+    assert len(calls) == 1
+    assert await db.get_oauth_token(patient_id=ERIKA_UUID) is not None
