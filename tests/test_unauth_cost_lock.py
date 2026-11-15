@@ -703,6 +703,22 @@ async def test_logout_revokes_a_valid_token(http_mode, db):
     assert server._verify_session_token(token) is None
 
 
+async def test_logout_revokes_through_the_cookie_as_the_browser_sends_it(http_mode, db):
+    """The cookie is percent-encoded (#495) and Starlette does not decode it.
+    Before the decode, a cookie-only logout verified nothing and revoked nothing."""
+    from urllib.parse import quote
+
+    from starlette.requests import cookie_parser
+
+    server = http_mode
+    token = server._make_session_token("carer@example.test")
+    cookies = cookie_parser("oncofiles_session=" + quote(token, safe=""))
+    assert cookies["oncofiles_session"] != token
+    resp = await server.api_logout(_FakeRequest(cookies=cookies, db=db))
+    assert resp.status_code == 200
+    assert server._verify_session_token(token) is None
+
+
 async def test_api_stats_is_cached(monkeypatch):
     from oncofiles import server
 
