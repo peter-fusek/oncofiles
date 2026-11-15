@@ -1433,27 +1433,31 @@
       var n = info.subfolder_count || 0;
       var m = info.curated_children || 0;
       var text = document.getElementById('wiz-folder-confirm-text');
-      // Hard refusal: a parent of other patients' README folders is never
-      // connected (the server refuses it even with confirm_container), so this
-      // variant has "Back" only.
-      var hard = (info.reason || info.container_reason) === 'curated_children' || m > 0;
-      wizShow('wiz-folder-confirm-go', !hard);
+      // Three variants. The server enforces the first two even with confirm_container:
+      //  - hard: a parent of other patients' README folders -> "Back" only;
+      //  - retry: the check could not run -> "Back" + "Try again", never a pass;
+      //  - otherwise a plain question -> "Back" + "Connect anyway".
+      var reason = info.reason || info.container_reason;
+      var hard = reason === 'curated_children' || m > 0;
+      var retry = !hard && reason === 'check_failed';
+      wizShow('wiz-folder-confirm-go', !hard && !retry);
+      wizShow('wiz-folder-confirm-retry', retry);
       if (hard) {
         wizSetBi(text,
           'Tento priečinok sa nedá pripojiť, pretože obsahuje priečinky iných pacientov (podpriečinky s vlastným kontraktom README: ' + m + ' z ' + n + '). Vráťte sa a otvorte priečinok konkrétneho pacienta.',
           'This folder cannot be connected because it contains other patients\' folders (' + m + ' of its ' + n + (n === 1 ? ' subfolder has' : ' subfolders have') + ' their own README contract). Go back and open the folder of the patient you mean.');
-      } else if (n > 0) {
+      } else if (retry) {
+        wizSetBi(text,
+          'Tento priečinok sa teraz nepodarilo skontrolovať. Skúste to o chvíľu znova.',
+          'Could not check this folder right now. Try again in a moment.');
+      } else {
         wizSetBi(text,
           'Podpriečinky v tomto priečinku: ' + n + '. Oncofiles v ňom vytvorí svoje priečinky kategórií. Ak ste chceli niektorý z podpriečinkov, najprv ho otvorte.',
           'This folder contains ' + n + (n === 1 ? ' subfolder' : ' subfolders') + '. Oncofiles will create its category folders inside it. If you meant one of the subfolders, open it first.');
-      } else {
-        wizSetBi(text,
-          'Nepodarilo sa overiť, či tento priečinok neobsahuje priečinky iných pacientov. Pripojte ho len vtedy, ak ste si istí, že patrí jednému pacientovi.',
-          'Oncofiles could not check whether this folder holds other patients\' folders. Connect it only if you are sure it belongs to one patient.');
       }
       wizSetBi(document.getElementById('wiz-folder-confirm-path-label'),
-        hard ? 'Priečinok:' : 'Pripojil by sa priečinok:',
-        hard ? 'Folder:' : 'Folder that would be connected:');
+        hard || retry ? 'Priečinok:' : 'Pripojil by sa priečinok:',
+        hard || retry ? 'Folder:' : 'Folder that would be connected:');
       var pathEl = document.getElementById('wiz-folder-confirm-path');
       if (body.folder_id && body.folder_id !== wizardFolderParent) {
         wizSetBi(pathEl, 'priečinok z vloženého odkazu', 'the folder from the pasted link');
@@ -1472,6 +1476,25 @@
       wizShow('wiz-folder-confirm', false);
       wizShow('wiz-folder-main', true);
       wizardFolderTargetUpdate();
+    }
+
+    // "Try again" of the check_failed variant: run the check once more. A
+    // pasted link is re-sent (the server checks it); a browsed folder is
+    // re-loaded, and the box comes back if its check fails again.
+    async function wizardFolderConfirmRetry() {
+      var body = wizardFolderPending;
+      if (!body) return;
+      delete body.confirm_container;
+      if (body.folder_id && body.folder_id !== wizardFolderParent) {
+        wizardFolderSend(body);
+        return;
+      }
+      var parent = wizardFolderParent;
+      await wizardStep2LoadFolders(parent === 'root' ? undefined : parent);
+      var info = wizardFolderInfo || {};
+      if (wizardFolderParent === parent && info.container_reason === 'check_failed') {
+        wizardFolderAskConfirm(body, info);
+      }
     }
 
     function wizardFolderConfirmGo() {
@@ -1504,11 +1527,14 @@
     async function wizardFolderSend(body) {
       var btn = document.getElementById('wiz-folder-btn');
       var goBtn = document.getElementById('wiz-folder-confirm-go');
+      var retryBtn = document.getElementById('wiz-folder-confirm-retry');
       btn.disabled = true;
       goBtn.disabled = true;
+      retryBtn.disabled = true;
       wizardFolderStatus('Pripájam priečinok…', 'Connecting the folder…');
       function unlock() {
         goBtn.disabled = false;
+        retryBtn.disabled = false;
         wizardFolderTargetUpdate();  // re-derives the primary button's state
       }
 
@@ -1520,7 +1546,7 @@
         });
         var data = await resp.json();
         if (resp.status === 409 && data.code === 'container_folder' &&
-            (!body.confirm_container || data.reason === 'curated_children')) {
+            (!body.confirm_container || data.confirmable === false)) {
           // Server-side guard (e.g. a pasted link the browser knows nothing about).
           wizardFolderAskConfirm(body, data);
           unlock();

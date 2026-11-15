@@ -229,15 +229,45 @@ def _wide_tree(n: int, curated_at: int | None = None) -> dict[str, dict]:
     return tree
 
 
-def test_overview_checks_only_first_50_children_in_two_queries():
+def _child_marker_queries(files: FakeFiles) -> list[str]:
+    return [q for q in files.list_queries if "name = '_index.json'" in q and " or '" in q]
+
+
+def test_overview_checks_only_first_50_children_in_five_queries():
     client, files = _client(_wide_tree(60, curated_at=55))  # curated one is past the bound
     out = curated_folder.folder_overview(client, "idSiroky000000001")
     assert out["subfolder_count"] == 60
     assert out["curated_children"] == 0
     assert out["container_reason"] == "too_many_subfolders"
-    child_marker_queries = [q for q in files.list_queries if q.count(" in parents") > 1]
-    assert len(child_marker_queries) == 2
-    assert sum(q.count(" in parents") for q in child_marker_queries) == 50
+    queries = _child_marker_queries(files)
+    assert [q.count(" in parents") for q in queries] == [curated_folder._CONTAINER_QUERY_CHUNK] * 5
+
+
+def test_overview_chunks_child_marker_query_by_ten():
+    client, files = _client(_wide_tree(23, curated_at=21))
+    out = curated_folder.folder_overview(client, "idSiroky000000001")
+    assert out["curated_children"] == 1 and out["container_reason"] == "curated_children"
+    queries = _child_marker_queries(files)
+    assert [q.count(" in parents") for q in queries] == [10, 10, 3]
+    shape = re.compile(
+        r"^\('[A-Za-z0-9_-]+' in parents(?: or '[A-Za-z0-9_-]+' in parents)*\) "
+        r"and \(name = 'README\.md' or name = '_index\.json'\) and trashed = false$"
+    )
+    assert all(shape.match(q) for q in queries), queries
+
+
+def test_overview_does_not_use_the_retrying_client_listing():
+    client, _ = _client()
+    client.list_child_folders = MagicMock(side_effect=AssertionError("retry wrapper used"))
+    out = curated_folder.folder_overview(client, VOLNY)
+    assert out["subfolder_count"] == 1 and out["container_reason"] is None
+
+
+def test_overview_validates_the_folder_id_itself():
+    client, files = _client()
+    out = curated_folder.folder_overview(client, "x' or name = 'y")
+    assert out["container_reason"] == "check_failed"
+    assert files.list_queries == []  # nothing was interpolated
 
 
 def test_overview_finds_curated_child_in_second_chunk():
@@ -295,15 +325,18 @@ async def test_set_folder_refuses_parent_of_curated_folders_even_when_confirmed(
     assert files.created == []
 
 
-async def test_set_folder_confirmation_lifts_failed_check():
+async def test_set_folder_refuses_failed_check_even_when_confirmed():
+    """Fail closed: a Drive error means "try again", never a pass."""
     client, files = _client()
     files.fail_list_matching = "README.md"
     status, data, db = await _set_folder({"folder_id": VOLNY, "confirm_container": True}, client)
-    assert status == 200
-    db.update_oauth_folder.assert_awaited_once()
-    # Curated detection fails closed too: connected, but nothing is created in it.
-    assert data["curated"] is True and data["curated_root"] is False
+    assert status == 409
+    assert data["code"] == "container_folder" and data["reason"] == "check_failed"
+    assert data["confirmable"] is False and data["confirm_field"] is None
+    db.update_oauth_folder.assert_not_called()
+    db.update_oauth_owner_email.assert_not_called()
     client.create_folder.assert_not_called()
+    assert files.created == []
 
 
 async def test_set_folder_confirmation_lifts_unchecked_many_subfolders():
@@ -335,7 +368,7 @@ async def test_set_folder_accepts_plain_folder_with_ordinary_subfolders():
     db.update_oauth_folder.assert_awaited_once()
 
 
-async def test_set_folder_requires_confirmation_when_check_fails():
+async def test_set_folder_refuses_when_check_fails():
     client, files = _client()
     files.fail_list_matching = "README.md"
     status, data, db = await _set_folder({"folder_id": VOLNY}, client)
@@ -458,20 +491,46 @@ def test_container_confirmation_is_an_in_wizard_step():
     assert "Oncofiles will create its category folders inside it" in section
 
 
+def _ask_confirm_js() -> str:
+    return _between(
+        _folder_js(), "function wizardFolderAskConfirm", "function wizardFolderConfirmBack"
+    )
+
+
 def test_parent_of_patient_folders_has_no_connect_anyway():
-    section = _folder_js()
-    ask = _between(section, "function wizardFolderAskConfirm", "function wizardFolderConfirmBack")
-    # One flag decides the variant, and it hides the only "Connect anyway" control.
-    assert "=== 'curated_children' || m > 0;" in ask
-    assert "wizShow('wiz-folder-confirm-go', !hard);" in ask
-    hard_branch = _between(ask, "if (hard) {", "} else if (n > 0) {")
+    section, ask = _folder_js(), _ask_confirm_js()
+    assert "var hard = reason === 'curated_children' || m > 0;" in ask
+    assert "wizShow('wiz-folder-confirm-go', !hard && !retry);" in ask
+    hard_branch = _between(ask, "if (hard) {", "} else if (retry) {")
     assert "cannot be connected because it contains other patients" in hard_branch
     assert "nedá pripojiť, pretože obsahuje priečinky iných pacientov" in hard_branch
     assert "anyway" not in hard_branch.lower()
     # The markup has exactly one such control, so hiding it leaves "Back" only.
     assert _html().count("wizardFolderConfirmGo") == 1
-    # A 409 for this reason opens the same step even if the flag was sent.
-    assert "data.reason === 'curated_children'" in section
+    # A non-confirmable 409 opens the same step even if the flag was sent.
+    assert "data.confirmable === false" in section
+
+
+def test_try_again_exists_only_in_the_check_failed_variant():
+    html, section, ask = _html(), _folder_js(), _ask_confirm_js()
+    tag = _element(html, "wiz-folder-confirm-retry")
+    assert "display:none" in tag  # hidden until the check_failed variant shows it
+    assert 'data-action="wizardFolderConfirmRetry"' in tag
+    assert 'data-en="Try again"' in tag and re.search(r'data-sk="[^"]+"', tag)
+    assert html.count("wizardFolderConfirmRetry") == 1
+    assert "var retry = !hard && reason === 'check_failed';" in ask
+    # Shown by exactly one statement, driven by that flag alone.
+    assert section.count("'wiz-folder-confirm-retry', ") == 1
+    assert "wizShow('wiz-folder-confirm-retry', retry);" in ask
+    retry_branch = _between(ask, "} else if (retry) {", "} else {")
+    assert "Could not check this folder right now. Try again in a moment." in retry_branch
+    assert "Tento priečinok sa teraz nepodarilo skontrolovať" in retry_branch
+    # "Try again" never sends the confirmation flag.
+    handler = _between(
+        section, "function wizardFolderConfirmRetry", "function wizardFolderConfirmGo"
+    )
+    assert "delete body.confirm_container;" in handler
+    assert "confirm_container = true" not in handler
 
 
 def test_step3_has_a_curated_variant_without_first_sync():

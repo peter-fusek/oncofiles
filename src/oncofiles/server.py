@@ -6661,11 +6661,11 @@ async def api_gdrive_set_folder(request: Request) -> JSONResponse:
     Body: {patient_id, folder_id?} or {patient_id, folder_name?}
     If folder_name given without folder_id, creates a new folder in root.
 
-    #835: an existing folder that directly contains curated patient folders is
-    always refused with 409 ``code: container_folder`` (``reason:
-    curated_children``, not confirmable). A folder whose subfolders could not
-    be checked (``check_failed``, ``too_many_subfolders``) gets the same 409
-    unless the body carries ``confirm_container: true``.
+    #835: an existing folder is refused with 409 ``code: container_folder`` when
+    it directly contains curated patient folders (``reason: curated_children``)
+    or when that could not be checked (``check_failed``); neither is
+    confirmable. ``too_many_subfolders`` (more than 50, not all checked) gets
+    the same 409 unless the body carries ``confirm_container: true``.
     """
     err = _check_dashboard_auth(request)
     if err:
@@ -6774,24 +6774,30 @@ async def api_gdrive_set_folder(request: Request) -> JSONResponse:
                 )
             return JSONResponse({"error": f"Cannot access folder: {exc}"}, status_code=400)
 
-        # #835: a parent of other patients' curated folders is never connected —
-        # that is an isolation breach, so `confirm_container` cannot lift it.
-        # The flag only answers the two "could not tell" cases. Nothing is
-        # persisted or created before this check passes.
+        # #835: isolation guard, fails closed. A parent of other patients'
+        # curated folders is never connected, and neither is a folder whose
+        # check could not run (a Drive hiccup means "try again", not a pass);
+        # `confirm_container` lifts neither. The flag only answers
+        # `too_many_subfolders`. Nothing is persisted or created before this.
         if not created_new:
             from oncofiles.curated_folder import folder_overview
 
             overview = await asyncio.to_thread(folder_overview, gdrive, folder_id)
             reason = overview["container_reason"]
-            hard = reason == "curated_children"
+            hard = reason in ("curated_children", "check_failed")
             if hard or (reason and body.get("confirm_container") is not True):
+                messages = {
+                    "curated_children": "This folder contains other patients' folders and "
+                    "cannot be connected. Open the patient's own folder.",
+                    "check_failed": "Could not check this folder right now. Try again in a moment.",
+                }
                 return JSONResponse(
                     {
-                        "error": "This folder contains other patients' folders and cannot "
-                        "be connected. Open the patient's own folder."
-                        if hard
-                        else "This folder looks like a parent of patient folders. "
-                        "Open the patient's own folder, or confirm to connect it anyway.",
+                        "error": messages.get(
+                            reason,
+                            "This folder has too many subfolders to check. Open the "
+                            "patient's own folder, or confirm to connect it anyway.",
+                        ),
                         "code": "container_folder",
                         "reason": reason,
                         "confirmable": not hard,
