@@ -1433,10 +1433,15 @@
       var n = info.subfolder_count || 0;
       var m = info.curated_children || 0;
       var text = document.getElementById('wiz-folder-confirm-text');
-      if (m > 0) {
+      // Hard refusal: a parent of other patients' README folders is never
+      // connected (the server refuses it even with confirm_container), so this
+      // variant has "Back" only.
+      var hard = (info.reason || info.container_reason) === 'curated_children' || m > 0;
+      wizShow('wiz-folder-confirm-go', !hard);
+      if (hard) {
         wizSetBi(text,
-          'Podpriečinky v tomto priečinku: ' + n + '. Z nich ' + m + ' sú priečinky pacientov s vlastným kontraktom README, takže toto vyzerá ako nadradený priečinok viacerých pacientov. Ak ste chceli jeden z nich, vráťte sa a najprv ho otvorte.',
-          'This folder contains ' + n + (n === 1 ? ' subfolder' : ' subfolders') + ', and ' + m + ' of them ' + (m === 1 ? 'is a patient folder' : 'are patient folders') + ' with their own README contract, so it looks like a parent of several patients\' folders. If you meant one of them, go back and open it first.');
+          'Tento priečinok sa nedá pripojiť, pretože obsahuje priečinky iných pacientov (podpriečinky s vlastným kontraktom README: ' + m + ' z ' + n + '). Vráťte sa a otvorte priečinok konkrétneho pacienta.',
+          'This folder cannot be connected because it contains other patients\' folders (' + m + ' of its ' + n + (n === 1 ? ' subfolder has' : ' subfolders have') + ' their own README contract). Go back and open the folder of the patient you mean.');
       } else if (n > 0) {
         wizSetBi(text,
           'Podpriečinky v tomto priečinku: ' + n + '. Oncofiles v ňom vytvorí svoje priečinky kategórií. Ak ste chceli niektorý z podpriečinkov, najprv ho otvorte.',
@@ -1446,6 +1451,9 @@
           'Nepodarilo sa overiť, či tento priečinok neobsahuje priečinky iných pacientov. Pripojte ho len vtedy, ak ste si istí, že patrí jednému pacientovi.',
           'Oncofiles could not check whether this folder holds other patients\' folders. Connect it only if you are sure it belongs to one patient.');
       }
+      wizSetBi(document.getElementById('wiz-folder-confirm-path-label'),
+        hard ? 'Priečinok:' : 'Pripojil by sa priečinok:',
+        hard ? 'Folder:' : 'Folder that would be connected:');
       var pathEl = document.getElementById('wiz-folder-confirm-path');
       if (body.folder_id && body.folder_id !== wizardFolderParent) {
         wizSetBi(pathEl, 'priečinok z vloženého odkazu', 'the folder from the pasted link');
@@ -1511,7 +1519,8 @@
           body: JSON.stringify(body)
         });
         var data = await resp.json();
-        if (resp.status === 409 && data.code === 'container_folder' && !body.confirm_container) {
+        if (resp.status === 409 && data.code === 'container_folder' &&
+            (!body.confirm_container || data.reason === 'curated_children')) {
           // Server-side guard (e.g. a pasted link the browser knows nothing about).
           wizardFolderAskConfirm(body, data);
           unlock();

@@ -265,7 +265,7 @@ async def test_set_folder_refuses_parent_of_curated_folders():
     assert data["code"] == "container_folder"
     assert data["reason"] == "curated_children"
     assert data["curated_children"] == 1 and data["subfolder_count"] == 3
-    assert data["confirm_field"] == "confirm_container"
+    assert data["confirmable"] is False and data["confirm_field"] is None
     db.update_oauth_folder.assert_not_called()
     db.update_oauth_owner_email.assert_not_called()
     client.create_folder.assert_not_called()
@@ -274,20 +274,45 @@ async def test_set_folder_refuses_parent_of_curated_folders():
 
 @pytest.mark.parametrize("flag", ["true", 1, "yes", False, None])
 async def test_set_folder_confirmation_must_be_json_true(flag):
-    client, _ = _client()
-    status, data, db = await _set_folder({"folder_id": RODINA, "confirm_container": flag}, client)
+    client, _ = _client(_wide_tree(60))
+    status, data, db = await _set_folder(
+        {"folder_id": "idSiroky000000001", "confirm_container": flag}, client
+    )
     assert status == 409 and data["code"] == "container_folder"
     db.update_oauth_folder.assert_not_called()
 
 
-async def test_set_folder_accepts_container_after_confirmation():
-    client, _ = _client()
+async def test_set_folder_refuses_parent_of_curated_folders_even_when_confirmed():
+    """Isolation, not UX: the flag cannot connect a parent of other patients' folders."""
+    client, files = _client()
     status, data, db = await _set_folder({"folder_id": RODINA, "confirm_container": True}, client)
+    assert status == 409
+    assert data["code"] == "container_folder" and data["reason"] == "curated_children"
+    assert data["confirmable"] is False and data["confirm_field"] is None
+    db.update_oauth_folder.assert_not_called()
+    db.update_oauth_owner_email.assert_not_called()
+    client.create_folder.assert_not_called()
+    assert files.created == []
+
+
+async def test_set_folder_confirmation_lifts_failed_check():
+    client, files = _client()
+    files.fail_list_matching = "README.md"
+    status, data, db = await _set_folder({"folder_id": VOLNY, "confirm_container": True}, client)
     assert status == 200
     db.update_oauth_folder.assert_awaited_once()
-    # It overlaps a curated folder: nothing is created, and it is not a pipeline root.
+    # Curated detection fails closed too: connected, but nothing is created in it.
     assert data["curated"] is True and data["curated_root"] is False
     client.create_folder.assert_not_called()
+
+
+async def test_set_folder_confirmation_lifts_unchecked_many_subfolders():
+    client, _ = _client(_wide_tree(60))
+    status, data, db = await _set_folder(
+        {"folder_id": "idSiroky000000001", "confirm_container": True}, client
+    )
+    assert status == 200
+    db.update_oauth_folder.assert_awaited_once()
 
 
 async def test_set_folder_accepts_curated_folder_directly():
@@ -323,6 +348,7 @@ async def test_set_folder_requires_confirmation_for_unchecked_many_subfolders():
     client, _ = _client(_wide_tree(60))
     status, data, db = await _set_folder({"folder_id": "idSiroky000000001"}, client)
     assert status == 409 and data["reason"] == "too_many_subfolders"
+    assert data["confirmable"] is True and data["confirm_field"] == "confirm_container"
     db.update_oauth_folder.assert_not_called()
 
 
@@ -430,6 +456,22 @@ def test_container_confirmation_is_an_in_wizard_step():
     assert "confirm_container = true" in go[: go.index("\n    }\n")]
     assert "data.code === 'container_folder'" in section  # server 409 opens the same step
     assert "Oncofiles will create its category folders inside it" in section
+
+
+def test_parent_of_patient_folders_has_no_connect_anyway():
+    section = _folder_js()
+    ask = _between(section, "function wizardFolderAskConfirm", "function wizardFolderConfirmBack")
+    # One flag decides the variant, and it hides the only "Connect anyway" control.
+    assert "=== 'curated_children' || m > 0;" in ask
+    assert "wizShow('wiz-folder-confirm-go', !hard);" in ask
+    hard_branch = _between(ask, "if (hard) {", "} else if (n > 0) {")
+    assert "cannot be connected because it contains other patients" in hard_branch
+    assert "nedá pripojiť, pretože obsahuje priečinky iných pacientov" in hard_branch
+    assert "anyway" not in hard_branch.lower()
+    # The markup has exactly one such control, so hiding it leaves "Back" only.
+    assert _html().count("wizardFolderConfirmGo") == 1
+    # A 409 for this reason opens the same step even if the flag was sent.
+    assert "data.reason === 'curated_children'" in section
 
 
 def test_step3_has_a_curated_variant_without_first_sync():

@@ -6661,9 +6661,11 @@ async def api_gdrive_set_folder(request: Request) -> JSONResponse:
     Body: {patient_id, folder_id?} or {patient_id, folder_name?}
     If folder_name given without folder_id, creates a new folder in root.
 
-    #835: an existing folder that directly contains curated patient folders
-    (or whose subfolders could not be checked) is refused with 409
-    ``code: container_folder`` unless the body carries ``confirm_container: true``.
+    #835: an existing folder that directly contains curated patient folders is
+    always refused with 409 ``code: container_folder`` (``reason:
+    curated_children``, not confirmable). A folder whose subfolders could not
+    be checked (``check_failed``, ``too_many_subfolders``) gets the same 409
+    unless the body carries ``confirm_container: true``.
     """
     err = _check_dashboard_auth(request)
     if err:
@@ -6772,22 +6774,30 @@ async def api_gdrive_set_folder(request: Request) -> JSONResponse:
                 )
             return JSONResponse({"error": f"Cannot access folder: {exc}"}, status_code=400)
 
-        # #835: a parent of curated patient folders is never connected by one
-        # click. Nothing is persisted or created before this check passes.
-        if not created_new and body.get("confirm_container") is not True:
+        # #835: a parent of other patients' curated folders is never connected —
+        # that is an isolation breach, so `confirm_container` cannot lift it.
+        # The flag only answers the two "could not tell" cases. Nothing is
+        # persisted or created before this check passes.
+        if not created_new:
             from oncofiles.curated_folder import folder_overview
 
             overview = await asyncio.to_thread(folder_overview, gdrive, folder_id)
-            if overview["container_reason"]:
+            reason = overview["container_reason"]
+            hard = reason == "curated_children"
+            if hard or (reason and body.get("confirm_container") is not True):
                 return JSONResponse(
                     {
-                        "error": "This folder looks like a parent of patient folders. "
+                        "error": "This folder contains other patients' folders and cannot "
+                        "be connected. Open the patient's own folder."
+                        if hard
+                        else "This folder looks like a parent of patient folders. "
                         "Open the patient's own folder, or confirm to connect it anyway.",
                         "code": "container_folder",
-                        "reason": overview["container_reason"],
+                        "reason": reason,
+                        "confirmable": not hard,
                         "subfolder_count": overview["subfolder_count"],
                         "curated_children": overview["curated_children"],
-                        "confirm_field": "confirm_container",
+                        "confirm_field": None if hard else "confirm_container",
                     },
                     status_code=409,
                 )
