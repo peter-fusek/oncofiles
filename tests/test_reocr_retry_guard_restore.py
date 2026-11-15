@@ -30,7 +30,7 @@ from oncofiles.tools import curated as tool
 from tests.helpers import ERIKA_UUID, TEST_PATIENT_UUID
 from tests.test_curated_reocr import NOW
 from tests.test_curated_runner import LABS, LOGS, FakeDrive
-from tests.test_reocr_loss_guard import FILLER, OLD_BODY, _drop, _go
+from tests.test_reocr_loss_guard import FILLER, OLD_BODY, _drop, _go, only_candidate
 
 LONG = "Leukocyty 7,93 G/l 4,0 - 11\nOdber 14.03.2027 07:40\nHemoglobin 128 g/l"
 SENTINEL = "SYNTHETIC REASONING TRANSCRIPT Leukocyty 9,99 G/l " * 4
@@ -209,7 +209,7 @@ async def test_a_retry_text_that_loses_numbers_goes_to_review(vocab, monkeypatch
     d = rep.documents[0]
     assert d.retried_pages == [1] and d.method == "vision2"
     assert d.missing_numbers == 3 and "missing_numbers" in d.review_reasons
-    assert d.result == "review" and drive.writes == []
+    assert d.result == "review" and only_candidate(drive)
     assert [p.get("retry", False) for p in d.llm_passes] == [False, True, False, True]
 
 
@@ -291,7 +291,7 @@ async def test_a_blank_page_never_loosens_the_guard(vocab, old_body, ink, blank)
         assert d.blank_pages == [2] and d.review_reasons == [] and d.result == "rewritten"
     else:
         assert d.blank_pages == [] and "near_empty_with_loss" in d.review_reasons
-        assert d.result == "review" and drive.writes == []
+        assert d.result == "review" and only_candidate(drive)
 
 
 # --- 3. stricter guard rules ---------------------------------------------------------
@@ -303,7 +303,7 @@ async def test_text_shrunk_goes_to_review_without_a_near_empty_page(vocab):
     assert d.near_empty_pages == [] and d.missing_numbers == 0
     assert d.new_chars < reocr.TEXT_SHRUNK_RATIO * d.old_chars
     assert d.review_reasons == ["text_shrunk"] and d.result == "review"
-    assert drive.writes == []
+    assert only_candidate(drive)
 
 
 async def test_low_word_overlap_goes_to_review(vocab):
@@ -317,7 +317,7 @@ async def test_low_word_overlap_goes_to_review(vocab):
     assert d.missing_numbers == 0 and d.missing_dates == 0
     assert d.word_overlap is not None and d.word_overlap < reocr.MIN_WORD_OVERLAP
     assert "low_word_overlap" in d.review_reasons and d.result == "review"
-    assert drive.writes == []
+    assert only_candidate(drive)
 
 
 def test_word_overlap_normalisation():
@@ -531,6 +531,7 @@ async def test_tool_real_restore_backs_up_reindexes_and_audits(db, monkeypatch, 
     assert row["patient_id"] == ERIKA_UUID and row["status"] == "ok"
     inp, outp = json.loads(row["input_summary"]), json.loads(row["output_summary"])
     assert inp["document_id"] == 801 and inp["backup_id"] == backup
+    assert inp["backup_kind"] == "reocr_backup"
     assert inp["pre_store"] == COPY
     assert inp["caller_email_hash"] == caller_email_hash("admin@example.com")
     assert "admin@example.com" not in json.dumps(row)

@@ -43,6 +43,13 @@ Writing (never in a dry run): the old sidecar is first copied to the logs
 folder (``_reocr-backup-<date>-<time>-<sidecar>``), then the sidecar is updated in
 place (same file id, read-back verified by ``drive_ops``). Nothing is deleted;
 the front matter is kept, only the extraction keys change.
+
+``review`` in a real run (maintainer decision 2026-11-15): the sidecar stays
+as it is and the new transcription is kept NEXT TO it, as
+``_reocr-candidate-<date>-<time>-<source filename>.md`` in the logs folder
+(``candidate_text``: a header block saying what it is, then the sidecar text
+a rewrite would have written). No guard is loosened, nothing is re-indexed;
+an admin promotes a candidate with ``restore_sidecar``.
 """
 
 from __future__ import annotations
@@ -815,6 +822,10 @@ class DocResult:
     facts_machine: int = 0
     facts_unverified: int = 0
     backup: str | None = None
+    # review in a real run: Drive id of the kept new transcription in logs
+    # (``_reocr-candidate-…``), or the exception class name when writing it failed
+    candidate: str | None = None
+    candidate_error: str | None = None
     # #805: codes of values the old text had and the new one drops or re-dates,
     # with how often; never the value or its date (job reports carry codes only)
     lost_codes: dict[str, int] = field(default_factory=dict)
@@ -921,13 +932,50 @@ def redact_report(report):
     return {**report, "documents": docs}
 
 
+CANDIDATE_PREFIX = "_reocr-candidate-"
+CANDIDATE_KIND = "reocr_candidate"
+_CANDIDATE_HEAD = re.compile(r"\A---\n(.*?)\n---\n", re.S)
+
+
+def candidate_text(new_sidecar: str, doc: dict, res: DocResult, *, passes: int, now) -> str:
+    """A re-OCR candidate file: a header block that says what the file is
+    (names, engine, dpi, reason CODES; never a value), then the complete
+    sidecar text a rewrite would have written, verbatim."""
+    import json
+
+    head = [
+        f"kind: {CANDIDATE_KIND}",
+        f"source_file: {json.dumps(doc['filename'], ensure_ascii=False)}",
+        f"document_id: {doc['document_id']}",
+        f"method: {res.method or 'unknown'}",
+        f"engine: {res.engine or 'unknown'}",
+        f"dpi: [{', '.join(str(x) for x in res.dpi)}]",
+        f"passes: {passes}",
+        f"review_reasons: [{', '.join(res.review_reasons)}]",
+        f"created: {now.isoformat()}",
+    ]
+    return "---\n" + "\n".join(head) + "\n---\n" + new_sidecar
+
+
+def candidate_sidecar_text(text: str) -> str | None:
+    """The sidecar text inside a candidate file (its header block removed);
+    None when the file does not start with a ``kind: reocr_candidate`` header."""
+    m = _CANDIDATE_HEAD.match(text or "")
+    if not m or f"kind: {CANDIDATE_KIND}" not in m.group(1).splitlines():
+        return None
+    rest = text[m.end() :]
+    return rest if rest.strip() else None
+
+
 def handled_before(log_names: list[str], filename: str) -> bool:
-    """Does the logs folder show this document was re-OCR'd before (a backup)
-    or deliberately restored (the kept re-OCR text)? (#674)"""
+    """Does the logs folder show this document was re-OCR'd before (a backup),
+    deliberately restored (the kept re-OCR text) or sent to review with its
+    new text kept (a candidate)? (#674) Automatic selection skips it; an
+    explicitly listed document is read again."""
     from oncofiles.curated.runner import nfc
 
     name = re.escape(nfc(filename))
-    exact = re.compile(rf"_reocr-(?:backup|text)-\d{{8}}(?:-\d{{6}})?-{name}\.md")
+    exact = re.compile(rf"_reocr-(?:backup|text|candidate)-\d{{8}}(?:-\d{{6}})?-{name}\.md")
     return any(exact.fullmatch(nfc(n)) for n in log_names)
 
 
@@ -977,7 +1025,8 @@ def run_reocr(
             res.result, res.error = "skipped", "stopping"
             continue
         if not d.get("explicit") and handled_before(log_names, d["filename"]):
-            # #674: re-OCR'd before, or its old sidecar was restored on purpose
+            # #674: re-OCR'd before, its old sidecar was restored on purpose, or a
+            # review already left a candidate in logs
             res.result, res.error = "skipped", "re-OCR'd or restored before; list it explicitly"
             continue
         if rss_limit_mb and (now_rss := rss_mb()) > rss_limit_mb:
@@ -1034,6 +1083,18 @@ def run_reocr(
                 continue
             if res.review_reasons:  # never shrink the record silently: a person decides
                 res.result = "review"
+                # the sidecar stays; the new text is kept next to it in logs.
+                # One attempt, never retried; a failure does not stop the run.
+                try:
+                    res.candidate = drive.create_text(
+                        logs_id,
+                        f"{CANDIDATE_PREFIX}{now:%Y%m%d-%H%M%S}-{d['filename']}.md",
+                        candidate_text(new, d, res, passes=passes, now=now),
+                    )
+                except Exception as exc:
+                    res.candidate_error = type(exc).__name__
+                    logger.warning("re-OCR candidate of doc %s not written: %s",
+                                   d["document_id"], res.candidate_error)  # fmt: skip
                 continue
             # time to the second (#674): a same-day retry gets its own backup;
             # create_text still refuses an existing name, it never overwrites
@@ -1080,6 +1141,17 @@ def is_reocr_backup_of(name: str, filename: str) -> bool:
     return bool(exact.fullmatch(nfc(name or "")))
 
 
+def is_reocr_candidate_of(name: str, filename: str) -> bool:
+    """Is ``name`` a kept re-OCR candidate of this document
+    (``_reocr-candidate-<date>-<time>-<filename>.md``)?"""
+    from oncofiles.curated.runner import nfc
+
+    exact = re.compile(
+        rf"{re.escape(CANDIDATE_PREFIX)}\d{{8}}-\d{{6}}-{re.escape(nfc(filename))}\.md"
+    )
+    return bool(exact.fullmatch(nfc(name or "")))
+
+
 def restore_counts(current: str, restored: str) -> dict:
     """What a restore would change: counts only, never a token (#806).
     ``old_*`` = the current sidecar, ``new_*`` = the backup's text;
@@ -1100,11 +1172,15 @@ def restore_counts(current: str, restored: str) -> dict:
 def restore_sidecar(
     drive, root_id: str, doc: dict, backup_id: str, *, dry_run: bool = True, now: datetime
 ) -> dict:
-    """Put a re-OCR backup back as the document's sidecar (#806). Blocking.
+    """Put a re-OCR backup back as the document's sidecar (#806), or promote
+    a kept re-OCR candidate to it. Blocking.
 
     ``doc``: document_id, filename, sidecar_id. ``backup_id`` must be a file
-    in the contract's logs folder named ``_reocr-backup-*-<filename>.md``;
-    anything else raises ``RestoreRefusedError``. A dry run only reports counts.
+    in the contract's logs folder named ``_reocr-backup-*-<filename>.md`` or
+    ``_reocr-candidate-*-<filename>.md`` (then its header block is removed and
+    the rest is the new sidecar text; a file without that header is refused,
+    ``candidate_malformed``); anything else raises ``RestoreRefusedError``.
+    ``backup_kind`` in the result says which. A dry run only reports counts.
     A real run (caller holds ``contract_writes()``) first copies the CURRENT
     sidecar to logs (``_restore-backup-<ts>-<filename>.md``; ``create_text``
     refuses an existing name), then updates the sidecar in place with the
@@ -1113,14 +1189,22 @@ def restore_sidecar(
     backup = next((i for i in drive.list_children(logs_id) if i.id == backup_id), None)
     if backup is None:
         raise RestoreRefusedError("backup_not_in_logs")
-    if not is_reocr_backup_of(backup.name, doc["filename"]):
+    if is_reocr_backup_of(backup.name, doc["filename"]):
+        kind = "reocr_backup"
+    elif is_reocr_candidate_of(backup.name, doc["filename"]):
+        kind = CANDIDATE_KIND
+    else:
         raise RestoreRefusedError("backup_not_of_this_document")
     try:
         current = drive.download(doc["sidecar_id"]).decode("utf-8")
         restored = drive.download(backup_id).decode("utf-8")
     except UnicodeDecodeError as exc:
         raise RestoreRefusedError("not_utf8") from exc
-    out = {"document_id": doc["document_id"], "dry_run": dry_run,
+    if kind == CANDIDATE_KIND:
+        restored = candidate_sidecar_text(restored)
+        if restored is None:
+            raise RestoreRefusedError("candidate_malformed")
+    out = {"document_id": doc["document_id"], "dry_run": dry_run, "backup_kind": kind,
            **restore_counts(current, restored)}  # fmt: skip
     if current == restored:
         out["result"] = "unchanged"

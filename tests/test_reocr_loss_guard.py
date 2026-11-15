@@ -70,8 +70,16 @@ def _go(vocab, pages, *, dry_run=False, old_body=OLD_BODY):
     return rep, rep.documents[0], drive, side, old
 
 
-def _unchanged(drive, side, old):
-    assert drive.writes == []  # no backup, no update
+def only_candidate(drive) -> bool:
+    """A review in a real run writes exactly one file: the kept candidate."""
+    ops = [op for op, *_ in drive.writes]
+    names = [name for _, name, *_ in drive.writes]
+    return ops == ["create"] and names[-1].startswith(reocr.CANDIDATE_PREFIX)
+
+
+def _unchanged(drive, side, old, *, dry_run=False):
+    # no backup, no update; a real review keeps the new text as one candidate
+    assert drive.writes == [] if dry_run else only_candidate(drive)
     assert drive.items[side]["content"] == old.encode()
 
 
@@ -177,10 +185,10 @@ async def test_a_dry_run_reports_the_decision_and_writes_nothing(vocab):
     _, d, drive, side, old = _go(vocab, [_drop("8862", "4413", "286"), ""], dry_run=True)
     assert d.result == "previewed" and d.decision == "review"
     assert d.review_reasons == ["missing_numbers", "near_empty_with_loss"]
-    _unchanged(drive, side, old)
+    _unchanged(drive, side, old, dry_run=True)
     _, ok, drive, side, old = _go(vocab, [_drop()], dry_run=True)
     assert ok.result == "previewed" and ok.decision == "rewrite"
-    _unchanged(drive, side, old)
+    _unchanged(drive, side, old, dry_run=True)
 
 
 @pytest.mark.parametrize("value", [2, 3])

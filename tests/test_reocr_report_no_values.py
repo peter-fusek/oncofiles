@@ -192,9 +192,13 @@ async def test_report_job_and_log_carry_no_values(db, vocab, caplog, dry_run):
     assert delta.word_overlap is not None and delta.page_ink == INK[:1]
     assert all(d.retried_pages == [1] for d in rep.documents)
     assert all(d.decision == "review" for d in rep.documents)
-    assert drive.writes == []
-    if not dry_run:
+    if dry_run:
+        assert drive.writes == []
+    else:  # a real review keeps the new text as a candidate in logs, nothing else
         assert {d.result for d in rep.documents} == {"review"}
+        assert [w[0] for w in drive.writes] == ["create"] * len(docs)
+        assert all(w[1].startswith(reocr.CANDIDATE_PREFIX) for w in drive.writes)
+        assert all(d.candidate and d.candidate_error is None for d in rep.documents)
 
     report = rep.to_dict()
     for d in report["documents"]:
