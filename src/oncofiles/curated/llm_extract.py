@@ -416,6 +416,21 @@ def normalize_item(raw) -> tuple[dict | None, str | None]:
     }, None
 
 
+# Date reasons whose returned ``date_as_printed`` is reported as a masked
+# shape (#826): the report must tell WHY a date failed without showing it.
+DATE_SHAPE_REASONS = frozenset({"date_unparsed", "date_not_printed"})
+DATE_SHAPE_CHARS = 40
+DATE_SHAPE_TOP = 5
+
+
+def date_shape(printed: str | None) -> str:
+    """The masked shape of a returned date: every digit → ``9``, every letter
+    → ``a``, other characters kept, whitespace runs → one space, at most
+    ``DATE_SHAPE_CHARS`` characters. Never the date itself."""
+    text = re.sub(r"\s+", " ", printed or "").strip()[:DATE_SHAPE_CHARS]
+    return "".join("9" if c.isdigit() else "a" if c.isalpha() else c for c in text)
+
+
 def _structured_output() -> bool:
     from oncofiles import config
 
@@ -489,6 +504,7 @@ def extract_document(
     errors = truncated = 0
     seconds = 0.0
     not_assessed: list[int] = []
+    date_shapes: Counter = Counter()
     finish: dict[str, str | None] = {}
     page_diag: dict[str, dict] = {}
     for number, text in pages:
@@ -507,12 +523,13 @@ def extract_document(
             not_assessed.append(number)
             continue
         for cand in pr.candidates:
-            facts.append(
-                verifier.verify(
-                    cand, page_text=text_of[number], vocab=vocab, report_date=report_date,
-                    birth_dates=birth_dates, source_reason=source_reason,
-                )
+            fact = verifier.verify(
+                cand, page_text=text_of[number], vocab=vocab, report_date=report_date,
+                birth_dates=birth_dates, source_reason=source_reason,
             )  # fmt: skip
+            facts.append(fact)
+            if DATE_SHAPE_REASONS.intersection(fact["metadata"].get("unverified_reasons") or ()):
+                date_shapes[date_shape(cand.get("date_as_printed"))] += 1
     dob_known = bool(birth_dates)
     return {
         "facts": facts, "method": METHOD, "pages": len(pages),
@@ -528,6 +545,9 @@ def extract_document(
         "facts_from_reasoning": sum(
             1 for f in facts if f["metadata"]["answer_source"] == "reasoning"
         ),
+        # masked shapes (9 / a) of the dates the verifier could not parse or
+        # find on the page: top shapes with counts, never a date (#826)
+        "date_shapes_unverified": dict(date_shapes.most_common(DATE_SHAPE_TOP)),
         "dropped": dict(dropped), "seconds": round(seconds, 1),
     }  # fmt: skip
 
@@ -536,6 +556,120 @@ def _key(code, day, value) -> tuple:
     from oncofiles.curated.reread_verify import value_hash
 
     return (code, (day or "")[:10], value_hash(float(value)))
+
+
+# Comparison buckets (#826). Every LLM fact and every compared rule fact of a
+# document lands in EXACTLY ONE bucket; a pair of facts counts once on each
+# side, so the paired buckets hold the same number on both sides.
+PAIRED_BUCKETS = ("agree", "parser_crosscheck", "value_mismatch", "date_mismatch")
+RULE_BUCKETS = (*PAIRED_BUCKETS, "rule_only")
+LLM_BUCKETS = (*PAIRED_BUCKETS, "llm_only", "llm_no_value", "llm_uncoded")
+
+
+def _page(row: dict) -> int:
+    return int(row.get("page_number") or 1)
+
+
+def _comparable(row: dict) -> bool:
+    return bool(row.get("code")) and row.get("value_canonical") is not None
+
+
+def _row_key(row: dict) -> tuple:
+    return _key(row["code"], row.get("occurred_at"), row["value_canonical"])
+
+
+def _pair(
+    rule: list[tuple],
+    mine: list[tuple],
+    part: Callable[[tuple], tuple],
+    bucket: str,
+    out_rule: list[tuple],
+    out_mine: list[tuple],
+) -> tuple[list[tuple], list[tuple]]:
+    """Pair the facts of both sides that share ``part(key)``, one to one;
+    paired facts go to ``bucket``, the rest of each side is returned."""
+    take = Counter(part(k) for k, _ in rule) & Counter(part(k) for k, _ in mine)
+    rest: list[list[tuple]] = []
+    for side, out in ((rule, out_rule), (mine, out_mine)):
+        budget, kept = Counter(take), []
+        for k, row in side:
+            if budget[part(k)] > 0:
+                budget[part(k)] -= 1
+                out.append((bucket, row))
+            else:
+                kept.append((k, row))
+        rest.append(kept)
+    return rest[0], rest[1]
+
+
+def bucket_facts(
+    stored: list[dict], llm_facts: list[dict], *, not_assessed_pages=(), crosscheck_pages=()
+) -> tuple[list[tuple[str, dict]], list[tuple[str, dict]]]:
+    """(rule side, LLM side) as ``(bucket, fact)`` lists: the ONE partition
+    behind ``shadow_compare`` and ``agreement_by_code``.
+
+    Compared are the facts on pages the model assessed: on the rule side the
+    stored facts with a code and a canonical value (``rule_facts``), on the
+    LLM side every fact (``llm_facts``). A key is (code, day, value hash).
+    Buckets, decided in this order:
+
+    * ``parser_crosscheck`` — the same key on both sides, on a transcription
+      page (the same text read twice, not a verification);
+    * ``agree`` — the same key on both sides, elsewhere;
+    * ``value_mismatch`` — same code and day, another value;
+    * ``date_mismatch`` — same code and value hash, another day or no day on
+      one side (e.g. the model's date could not be parsed);
+    * ``rule_only`` / ``llm_only`` — a comparable fact with no counterpart;
+    * ``llm_no_value`` — an LLM fact with a code but no canonical value (text
+      result, unit not convertible): it has no value hash to compare;
+    * ``llm_uncoded`` — an LLM fact whose label maps to no code.
+
+    The first four are pairs (one rule fact with one LLM fact), so each holds
+    the same count on both sides. Stored facts without a code or a value are
+    not compared (``rule_facts_no_value`` reports them)."""
+    skip = {int(p) for p in not_assessed_pages}
+    cross = {int(p) for p in crosscheck_pages}
+    out_rule: list[tuple[str, dict]] = []
+    out_mine: list[tuple[str, dict]] = []
+    rule = [(_row_key(r), r) for r in stored if _comparable(r) and _page(r) not in skip]
+    mine = []
+    for f in llm_facts:
+        if _page(f) in skip:
+            continue
+        if not f.get("code"):
+            out_mine.append(("llm_uncoded", f))
+        elif f.get("value_canonical") is None:
+            out_mine.append(("llm_no_value", f))
+        else:
+            mine.append((_row_key(f), f))
+    # the same key on both sides: crosscheck pairs first (both on such a page)
+    n_cross = Counter(k for k, r in rule if _page(r) in cross) & Counter(
+        k for k, f in mine if _page(f) in cross
+    )
+    n_same = Counter(k for k, _ in rule) & Counter(k for k, _ in mine)
+    rest: list[list[tuple]] = []
+    for side, out in ((rule, out_rule), (mine, out_mine)):
+        x, same, kept = Counter(n_cross), n_same - n_cross, []
+        for k, row in sorted(side, key=lambda kr: _page(kr[1]) not in cross):  # stable
+            if x[k] > 0 and _page(row) in cross:
+                x[k] -= 1
+                out.append(("parser_crosscheck", row))
+            elif same[k] > 0:
+                same[k] -= 1
+                out.append(("agree", row))
+            else:
+                kept.append((k, row))
+        rest.append(kept)
+    rule, mine = rest
+    rule, mine = _pair(rule, mine, lambda k: k[:2], "value_mismatch", out_rule, out_mine)
+    rule, mine = _pair(rule, mine, lambda k: (k[0], k[2]), "date_mismatch", out_rule, out_mine)
+    out_rule += [("rule_only", r) for _, r in rule]
+    out_mine += [("llm_only", f) for _, f in mine]
+    return out_rule, out_mine
+
+
+def _codes(side: list[tuple[str, dict]], bucket: str) -> list[str]:
+    return sorted({row["code"] for b, row in side if b == bucket and row.get("code")})
 
 
 def shadow_compare(
@@ -550,8 +684,20 @@ def shadow_compare(
     On ``crosscheck_pages`` (transcription text: Cowork-era, uncertain or
     handwritten, see ``verifier.transcription_pages``) the LLM read the same
     text the rule parser read, so agreement there is reported only as
-    ``parser_crosscheck``, never as ``agree`` (verification)."""
+    ``parser_crosscheck``, never as ``agree`` (verification).
+
+    Accounting (#826, buckets defined in ``bucket_facts``): every compared
+    fact is in exactly one bucket, so
+
+        rule_facts == agree + parser_crosscheck + value_mismatch
+                      + date_mismatch + rule_only
+        llm_facts  == agree + parser_crosscheck + value_mismatch
+                      + date_mismatch + llm_only + llm_no_value + llm_uncoded
+
+    and each ``*_codes`` list names the codes of the facts in that bucket
+    (non-empty whenever the count is)."""
     skip = {int(p) for p in not_assessed_pages}
+    cross = {int(p) for p in crosscheck_pages}
     all_stored = [r for r in stored if r.get("code")]
     stored_info = {
         # every stored fact of the document, whatever its verification (#714
@@ -561,48 +707,27 @@ def shadow_compare(
             sorted(Counter(r.get("verification") or "unknown" for r in all_stored).items())
         ),
         "rule_facts_no_value": sum(1 for r in all_stored if r.get("value_canonical") is None),
-        "rule_facts_on_unassessed_pages": sum(
-            1 for r in all_stored if int(r.get("page_number") or 1) in skip
-        ),
+        "rule_facts_on_unassessed_pages": sum(1 for r in all_stored if _page(r) in skip),
     }
-    stored = [r for r in stored if int(r.get("page_number") or 1) not in skip]
-    llm_facts = [f for f in llm_facts if int(f.get("page_number") or 1) not in skip]
-    rule = Counter(
-        _key(r["code"], r.get("occurred_at"), r["value_canonical"])
-        for r in stored
-        if r.get("code") and r.get("value_canonical") is not None
+    rule_side, llm_side = bucket_facts(
+        stored, llm_facts, not_assessed_pages=skip, crosscheck_pages=cross
     )
-    keyed = [f for f in llm_facts if f.get("code") and f.get("value_canonical") is not None]
-    mine = Counter(_key(f["code"], f["occurred_at"], f["value_canonical"]) for f in keyed)
-    machine = Counter(
-        _key(f["code"], f["occurred_at"], f["value_canonical"])
-        for f in keyed
-        if f["verification"] == "machine"
-    )
-    cross = {int(p) for p in crosscheck_pages}
-
-    def on_cross(rows, key=lambda r: int(r.get("page_number") or 1)):
-        return Counter(
-            _key(r["code"], r.get("occurred_at"), r["value_canonical"])
-            for r in rows
-            if r.get("code") and r.get("value_canonical") is not None and key(r) in cross
-        )
-
-    rule_x, mine_x = on_cross(stored), on_cross(keyed)
-    crosscheck = rule_x & mine_x
-    both = (rule & mine) - crosscheck  # verification-grade agreement only
-    rule_cd = {(c, d) for c, d, _ in rule}
-    mine_cd = {(c, d) for c, d, _ in mine}
+    stored = [r for r in stored if _page(r) not in skip]
+    llm_facts = [f for f in llm_facts if _page(f) not in skip]
+    rule = Counter(_row_key(r) for r in stored if _comparable(r))
+    keyed = [f for f in llm_facts if _comparable(f)]
+    mine = Counter(_row_key(f) for f in keyed)
+    machine = Counter(_row_key(f) for f in keyed if f["verification"] == "machine")
+    crosscheck = Counter(_row_key(r) for r in stored if _comparable(r) and _page(r) in cross)
+    crosscheck &= Counter(_row_key(f) for f in keyed if _page(f) in cross)
     reasons: Counter = Counter()
     for f in llm_facts:
         reasons.update((f.get("metadata") or {}).get("unverified_reasons") or [])
     unverified_rule = Counter(
-        _key(r["code"], r.get("occurred_at"), r["value_canonical"])
-        for r in stored
-        if r.get("code")
-        and r.get("value_canonical") is not None
-        and r.get("verification") == "unverified"
+        _row_key(r) for r in stored if _comparable(r) and r.get("verification") == "unverified"
     )
+    n_rule = Counter(b for b, _ in rule_side)
+    n_llm = Counter(b for b, _ in llm_side)
     return {
         **stored_info,
         # compared = stored facts with a code and a value on assessed pages
@@ -612,17 +737,23 @@ def shadow_compare(
         "llm_facts": len(llm_facts),
         "llm_machine": sum(1 for f in llm_facts if f["verification"] == "machine"),
         "llm_unverified": sum(1 for f in llm_facts if f["verification"] != "machine"),
-        "agree": sum(both.values()),
+        "agree": n_rule["agree"],
         "agree_machine": sum(((rule & machine) - crosscheck).values()),
         # agreement on transcription pages: the same text read twice, not a verification
-        "parser_crosscheck": sum(crosscheck.values()),
+        "parser_crosscheck": n_rule["parser_crosscheck"],
         "crosscheck_pages": sorted(cross - skip),
-        "rule_only": sum((rule - mine).values()),
-        "llm_only": sum((mine - rule).values()),
-        # same code and day in both, but a different value
-        "value_mismatch": len({(c, d) for c, d, _ in (rule - mine)} & mine_cd),
-        "rule_only_codes": sorted({c for c, _ in rule_cd} - {c for c, _ in mine_cd}),
-        "llm_only_codes": sorted({c for c, _ in mine_cd} - {c for c, _ in rule_cd}),
+        # pairs: one rule fact with one LLM fact (the same count on both sides)
+        "value_mismatch": n_rule["value_mismatch"],  # same code and day, another value
+        "date_mismatch": n_rule["date_mismatch"],  # same code and value, another / no day
+        "rule_only": n_rule["rule_only"],
+        "llm_only": n_llm["llm_only"],
+        "llm_no_value": n_llm["llm_no_value"],  # coded, nothing to hash: not comparable
+        "llm_uncoded": n_llm["llm_uncoded"],  # no code mapped: not comparable
+        "value_mismatch_codes": _codes(rule_side, "value_mismatch"),
+        "date_mismatch_codes": _codes(rule_side, "date_mismatch"),
+        "rule_only_codes": _codes(rule_side, "rule_only"),
+        "llm_only_codes": _codes(llm_side, "llm_only"),
+        "llm_no_value_codes": _codes(llm_side, "llm_no_value"),
         "unverified_reasons": dict(sorted(reasons.items())),
     }
 
@@ -630,39 +761,21 @@ def shadow_compare(
 def agreement_by_code(
     stored: list[dict], llm_facts: list[dict], *, not_assessed_pages=(), crosscheck_pages=()
 ) -> dict[str, dict[str, int]]:
-    """The ``shadow_compare`` agreement per code (#714 lab write gate):
-    ``{code: {agree, value_mismatch, rule_only, llm_only, parser_crosscheck}}``
-    by (code, day, value hash) on the pages the model assessed. Counts and
-    codes only, never values. Agreement on transcription pages is
-    ``parser_crosscheck``, never ``agree`` (same rule as ``shadow_compare``)."""
-    skip = {int(p) for p in not_assessed_pages}
-    cross = {int(p) for p in crosscheck_pages}
-
-    def keyed(rows):
-        return [
-            (int(r.get("page_number") or 1), _key(r["code"], r.get("occurred_at"),
-                                                  r["value_canonical"]))
-            for r in rows
-            if r.get("code")
-            and r.get("value_canonical") is not None
-            and int(r.get("page_number") or 1) not in skip
-        ]  # fmt: skip
-
-    rule_rows, mine_rows = keyed(stored), keyed(llm_facts)
-    out: dict[str, dict[str, int]] = {}
-    for code in sorted({k[0] for _, k in rule_rows} | {k[0] for _, k in mine_rows}):
-        rule = Counter(k for _, k in rule_rows if k[0] == code)
-        mine = Counter(k for _, k in mine_rows if k[0] == code)
-        on_cross = Counter(k for p, k in rule_rows if k[0] == code and p in cross) & Counter(
-            k for p, k in mine_rows if k[0] == code and p in cross
-        )
-        mine_days = {(c, d) for c, d, _ in mine}
-        row = {
-            "agree": sum(((rule & mine) - on_cross).values()),
-            "value_mismatch": len({(c, d) for c, d, _ in (rule - mine)} & mine_days),
-            "rule_only": sum((rule - mine).values()),
-            "llm_only": sum((mine - rule).values()),
-            "parser_crosscheck": sum(on_cross.values()),
-        }
-        out[code] = {k: v for k, v in row.items() if v}
-    return out
+    """The ``shadow_compare`` buckets per code (#714 lab write gate):
+    ``{code: {agree, parser_crosscheck, value_mismatch, date_mismatch,
+    rule_only, llm_only}}`` on the pages the model assessed — the same
+    partition (``bucket_facts``), so the per-code counts add up to the
+    document's. Counts and codes only, never values. Agreement on
+    transcription pages is ``parser_crosscheck``, never ``agree``. LLM facts
+    without a canonical value or a code are not listed here."""
+    rule_side, llm_side = bucket_facts(
+        stored, llm_facts, not_assessed_pages=not_assessed_pages, crosscheck_pages=crosscheck_pages
+    )
+    out: dict[str, Counter] = {}
+    for bucket, row in rule_side:
+        out.setdefault(row["code"], Counter())[bucket] += 1
+    for bucket, row in llm_side:
+        if bucket == "llm_only":  # the paired buckets are counted on the rule side
+            out.setdefault(row["code"], Counter())[bucket] += 1
+    order = (*PAIRED_BUCKETS, "rule_only", "llm_only")
+    return {c: {b: out[c][b] for b in order if out[c][b]} for c in sorted(out)}

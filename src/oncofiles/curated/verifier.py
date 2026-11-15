@@ -10,7 +10,12 @@ formats. A candidate becomes ``machine`` only when all of these hold:
   "CA 19-9" never yields 19 and a range bound never passes as the value);
 * its date is printed on the page (``reread_verify.date_printed``) and is not
   a birth date (README contract / patient context); without a model date the
-  document date is used, as the rule parsers do;
+  document date is used, as the rule parsers do. A printed date RANGE
+  ("3.5.2027 - 9.5.2027:") dates the fact at the range END
+  (``date_source=printed_range``, both ends kept, #726) only when that very
+  range is printed on the page; harmless decoration of the model's answer
+  (surrounding spaces, a trailing ``:`` ``.`` ``,``, any dash) is tolerated,
+  its meaning never (#826);
 * the label maps to a code through the DB vocabulary (``fact_codes`` aliases
   via ``facts_rules.Vocabulary``: data, not layout rules);
 * the unit converts to the code's canonical unit (``fact_codes`` data) and the
@@ -39,9 +44,12 @@ from oncofiles.curated.facts_rules import (
     _upper_from_text,
     norm_label,
 )
+from oncofiles.curated.reocr import _DATE_TOKEN, _date_key
 from oncofiles.curated.reread_verify import date_printed
 
-VERIFIER_VERSION = 1
+# v2 (#826): a printed date range is parsed (dated at its end, both ends must
+# be printed on the page as that range); trailing ":" "." "," on a date.
+VERIFIER_VERSION = 2
 
 
 # Facts parsed from LM Studio's ``reasoning_content`` channel (content empty)
@@ -168,6 +176,66 @@ def ws(s: str | None) -> str:
     return re.sub(r"\s+", " ", unicodedata.normalize("NFC", s or "")).strip()
 
 
+# Decoration of a model's date answer that carries no meaning (#826): the
+# colon of a header line ("3.5.2027 - 9.5.2027:"), a sentence dot or comma.
+_DATE_TRAIL = re.compile(r"[\s:.,]+$")
+_DASH = "[-\u2013\u2014]"  # hyphen, en dash, em dash
+_DM = r"(\d{1,2})\.\s?(\d{1,2})\."
+_RANGE_BODY = rf"{_DM}(?:\s?(\d{{4}}))?\s*{_DASH}\s*{_DM}\s?(\d{{4}})"
+_DATE_RANGE = re.compile(rf"^{_RANGE_BODY}$")
+_DATE_RANGE_ON_PAGE = re.compile(rf"(?<![\d.]){_RANGE_BODY}(?!\d)")
+
+
+def undecorate_date(s: str | None) -> str:
+    """``s`` without surrounding whitespace and without a trailing ``:``,
+    ``.`` or ``,`` — the shape of the answer only, never its digits."""
+    return _DATE_TRAIL.sub("", (s or "").strip())
+
+
+def _range_key(m: re.Match) -> tuple[str, str]:
+    """(start, end) of a range match as ``reocr._date_key`` keys — the date
+    normalisation of the re-OCR loss guard (#804). A start printed without a
+    year keeps that partial form ("3.5."), so only the same form matches."""
+    d0, m0, y0, d1, m1, y1 = m.groups()
+    return _date_key(f"{d0}.{m0}.{y0 or ''}"), _date_key(f"{d1}.{m1}.{y1}")
+
+
+def parse_printed_range(s: str | None) -> tuple[str, str, tuple[str, str]] | None:
+    """'3.5.2027 - 9.5.2027', '3.5.–9.5.2027' → (start ISO, end ISO, key).
+
+    Both ends are full day.month dates; only the START may lack its year,
+    which is then the year of the end printed in the same range. No 2-digit
+    years, no day-only start, no swapped or reversed ends: anything else is
+    not a range (``None``). ``key`` is what ``range_printed`` looks for."""
+    m = _DATE_RANGE.match(undecorate_date(s))
+    if not m:
+        return None
+    d0, m0, y0, d1, m1, y1 = m.groups()
+    try:
+        start = date(int(y0 or y1), int(m0), int(d0))
+        end = date(int(y1), int(m1), int(d1))
+    except ValueError:
+        return None
+    if start > end:
+        return None
+    return start.isoformat(), end.isoformat(), _range_key(m)
+
+
+def range_printed(key: tuple[str, str], page_text: str) -> bool:
+    """Is this very range printed on the page: both ends, in this order,
+    joined by a dash, the start with or without its year exactly as in
+    ``key``? Two dates that merely both occur on the page are not a range."""
+    return any(_range_key(m) == key for m in _DATE_RANGE_ON_PAGE.finditer(page_text or ""))
+
+
+def date_exactly_printed(day: str, page_text: str) -> bool:
+    """Is ``day`` (ISO) printed on the page with its full year? Compared by
+    ``reocr._date_key`` (#804): no 2-digit year, no bare day.month."""
+    y, mo, d = day[:10].split("-")
+    key = f"{int(d)}.{int(mo)}.{y}"
+    return any(_date_key(t.group(0)) == key for t in _DATE_TOKEN.finditer(page_text or ""))
+
+
 def parse_printed_date(s: str | None) -> str | None:
     """'5.3.2027', '05.03.2027 07:40', '2027-03-05' → ISO date[Thh:mm]."""
     if not s:
@@ -282,13 +350,30 @@ def verify(  # noqa: PLR0912, PLR0915
 
     # date
     printed = cand.get("date_as_printed")
+    range_meta: dict = {}
     if printed:
-        when = parse_printed_date(printed)
-        if when is None:
-            reasons.append("date_unparsed")
-        elif not date_printed(when[:10], page_text):
-            reasons.append("date_not_printed")
         date_source = "printed"
+        when = parse_printed_date(printed)
+        if when is not None:
+            if not date_printed(when[:10], page_text):
+                reasons.append("date_not_printed")
+        elif rng := parse_printed_range(printed):
+            # a printed range dates the fact at its END (#726); the range
+            # itself, both ends, must be printed on this page
+            start, when, key = rng
+            date_source = "printed_range"
+            range_meta = {"date_precision": "range", "date_range_start": start,
+                          "date_range_end": when}  # fmt: skip
+            if not range_printed(key, page_text):
+                reasons.append("date_not_printed")
+            if start in _birth_isos(birth_dates):
+                reasons.append("birth_date")
+        elif when := parse_printed_date(undecorate_date(printed)):
+            # a decorated single date ("9.5.2027:") must be on the page as is
+            if not (date_exactly_printed(when, page_text) and date_printed(when[:10], page_text)):
+                reasons.append("date_not_printed")
+        else:
+            reasons.append("date_unparsed")
     else:
         when = report_date
         date_source = "document"
@@ -338,6 +423,7 @@ def verify(  # noqa: PLR0912, PLR0915
 
     meta: dict = {"verifier": VERIFIER_VERSION, "date_source": date_source,
                   "answer_source": cand.get("answer_source") or "content"}  # fmt: skip
+    meta.update(range_meta)
     if cand.get("date_role"):
         meta["date_role"] = cand["date_role"]
     if comparator:

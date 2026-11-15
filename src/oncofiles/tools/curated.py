@@ -1983,7 +1983,7 @@ _SHADOW_DOC_KEYS = (
     "method", "pages", "pages_used", "pages_not_assessed", "pages_truncated", "page_errors",
     "finish_reasons", "page_diagnostics", "warnings", "dob_known", "birth_date_guard",
     "dates_unchecked_no_dob", "facts_from_content", "facts_from_reasoning", "dropped", "seconds",
-    *DATE_NULL_KEYS,
+    "date_shapes_unverified", *DATE_NULL_KEYS,
 )  # fmt: skip
 
 
@@ -2203,7 +2203,8 @@ async def _llm_shadow_job(
         done = [r for r in report if r.get("result") == "compared"]
         totals = {k: sum(r[k] for r in done) for k in
                   ("rule_facts", "llm_facts", "llm_machine", "agree", "agree_machine",
-                   "rule_only", "llm_only", "value_mismatch", "pages_used", "pages_truncated",
+                   "parser_crosscheck", "value_mismatch", "date_mismatch", "rule_only",
+                   "llm_only", "llm_no_value", "llm_uncoded", "pages_used", "pages_truncated",
                    "dates_unchecked_no_dob")}  # fmt: skip
         totals["pages_not_assessed"] = sum(len(r["pages_not_assessed"]) for r in done)
         job.update(state="done", report={
@@ -3055,7 +3056,9 @@ async def curated_clinical_retract(
 # the dry-run agreement scorecard (``gate``) is good on the rule-parser formats.
 
 LAB_MAX_DOCS = 10
-_LAB_GATE_KEYS = ("agree", "value_mismatch", "rule_only", "llm_only", "parser_crosscheck")
+# one bucket per fact (``llm_extract.bucket_facts``, #826)
+_LAB_GATE_KEYS = ("agree", "value_mismatch", "date_mismatch", "rule_only", "llm_only",
+                  "parser_crosscheck")  # fmt: skip
 _LAB_SUM_KEYS = (
     "rule_facts", "llm_facts", "llm_machine", "llm_unverified", "agree_machine",
     "pages_used", "pages_truncated", "dates_unchecked_no_dob", *_LAB_GATE_KEYS,

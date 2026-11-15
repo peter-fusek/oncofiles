@@ -282,9 +282,11 @@ def test_shadow_compare_reports_keys_and_counts_only():
     ]
     out = llm_extract.shadow_compare(stored, facts)
     assert out["agree"] == 1 and out["agree_machine"] == 1
-    assert out["rule_only"] == len(["GLU", "CA19_9"])
-    assert out["llm_only"] == out["value_mismatch"] == len(["GLU"])
-    assert out["rule_only_codes"] == ["CA19_9"] and out["llm_only_codes"] == []
+    # one bucket per fact (#826): GLU is a value mismatch, not also rule/llm only
+    assert out["value_mismatch"] == len(["GLU"]) and out["value_mismatch_codes"] == ["GLU"]
+    assert out["rule_only"] == len(["CA19_9"]) and out["rule_only_codes"] == ["CA19_9"]
+    assert out["llm_only"] == 0 and out["llm_only_codes"] == []
+    assert out["llm_uncoded"] == len(["S-XYZ"])
     assert out["unverified_reasons"] == {"label_unmapped": 1}
     dumped = json.dumps(_without_timing(out))
     assert "0.45" not in dumped and "5.6" not in dumped and "S-XYZ" not in dumped
