@@ -303,7 +303,9 @@ async def test_a_value_mismatch_shows_in_the_gate(seeded, local_model):
     gate = job["report"]["totals"]["gate"]
     assert gate["value_mismatch"] == 1 and gate["agree"] == 0 and gate["agreement_rate"] == 0.0
     one = len(["ALT"])
-    assert gate["by_code"]["ALT"] == dict.fromkeys(("value_mismatch", "rule_only", "llm_only"), one)
+    # one bucket per fact (#826): a mismatch pair is not also rule_only / llm_only
+    assert gate["by_code"]["ALT"] == {"value_mismatch": one}
+    assert gate["rule_only"] == 0
 
 
 # ── the write ───────────────────────────────────────────────────────────
