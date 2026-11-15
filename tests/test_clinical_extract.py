@@ -151,21 +151,26 @@ def local_model(monkeypatch):
 
 def test_prompt_is_versioned_with_two_or_more_worked_examples_per_kind():
     assert lx.EXTRACTOR_VERSION.startswith(lx.EXTRACTOR_FAMILY)
-    for kind in lx.KINDS:
-        n = sum(1 for _, answer in lx.EXAMPLES if answer[kind])
-        assert 2 <= n <= 5, kind
-    assert any(not any(a.values()) for _, a in lx.EXAMPLES)  # an empty page too
-    for page, answer in lx.EXAMPLES:
-        assert page in lx.SYSTEM_PROMPT
-        assert json.dumps(answer, ensure_ascii=False) in lx.SYSTEM_PROMPT
-    schema = lx.RESPONSE_FORMAT["json_schema"]
-    assert schema["strict"] is True and set(schema["schema"]["required"]) == set(lx.KINDS)
+    assert set().union(*lx.PROFILE_KINDS.values()) == set(lx.KINDS)
+    for profile, kinds in lx.PROFILE_KINDS.items():
+        examples, prompt = lx.EXAMPLES_BY_PROFILE[profile], lx.SYSTEM_PROMPTS[profile]
+        for kind in kinds:
+            n = sum(1 for _, answer in examples if answer[kind])
+            assert 2 <= n <= 5, (profile, kind)
+        assert any(not any(a.values()) for _, a in examples)  # an empty page too
+        for page, answer in examples:
+            assert list(answer) == list(kinds)
+            assert page in prompt
+            assert json.dumps(answer, ensure_ascii=False) in prompt
+        schema = lx.RESPONSE_FORMATS[profile]["json_schema"]
+        assert schema["strict"] is True and set(schema["schema"]["required"]) == set(kinds)
+    assert lx.RESPONSE_FORMATS[lx.ONCOLOGY] == lx.RESPONSE_FORMAT
 
 
 async def test_every_worked_example_verifies_as_machine(db):
-    """The examples teach the model exactly what the verifier accepts."""
+    """The examples teach the model exactly what the verifier accepts (both profiles)."""
     vocab = await _vocab(db)
-    for page, answer in lx.EXAMPLES:
+    for page, answer in lx.EXAMPLES + lx.GENERAL_EXAMPLES:
         for kind, raws in answer.items():
             for raw in raws:
                 cand, why = lx.normalize_item(kind, raw)

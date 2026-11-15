@@ -13,7 +13,15 @@ Mapping (design ``docs/architecture/hard_data_model.md`` §3):
   ``LESION_SIZE`` (mm), ``param`` = lesion label, linked to the imaging
   procedure of the same document in ``metadata.imaging_procedure_id``;
 * planned dates → a ``treatment_cycles`` row with ``status = planned`` when
-  the document names exactly one course, else a planned ``encounters`` row.
+  the document names exactly one course, else a planned ``encounters`` row;
+* general-health kinds (#815, profile ``general``): allergies → ``conditions``
+  (category ``problem-list-item``, ``metadata.condition_kind = allergy``,
+  substance and reaction as printed); vaccinations → ``procedures`` kind
+  ``vaccination`` (vaccine name as ``printed_text``, the printed dose and its
+  number in metadata); screenings / preventive examinations → ``procedures``
+  kind ``screening`` (printed result in ``outcome``). Chronic diagnoses use
+  the diagnoses mapping; general genetic results (carrier, pharmacogenomic,
+  risk variant) use the biomarker mapping.
 
 Every row carries patient_id, source_document_id, page, evidence,
 extracted_by = extractor version + model, verification, and gets one
@@ -223,6 +231,14 @@ def _item_keys(it: dict) -> list[tuple]:
     if kind == "procedures":
         return [("procedure", f.get("type") or "other", _day(_iso(it)),
                  _fold(f.get("description_as_printed")))]  # fmt: skip
+    # general-health kinds (#815) use the keys of the rows they are stored as,
+    # so a re-run replaces them instead of keeping them as missing (#819)
+    if kind == "allergies":
+        return [_cond_key(None, f.get("text_as_printed") or f.get("substance_as_printed"))]
+    if kind == "vaccinations":
+        return [("procedure", "vaccination", _day(_iso(it)), _fold(f.get("vaccine_as_printed")))]
+    if kind == "screenings":
+        return [("procedure", "screening", _day(_iso(it)), _fold(f.get("test_as_printed")))]
     if kind == "lesions":
         return [_record_key(LESION_CODE, f.get("lesion_as_printed"), _iso(it))]
     if kind == "biomarkers":
@@ -650,6 +666,17 @@ async def store_document(  # noqa: PLR0912, PLR0915
             )  # fmt: skip
             await put("cancer_stage", stage, it)
 
+    # ── allergies → conditions (problem-list item, kind allergy in metadata, #815)
+    for it in by_kind.get("allergies", []):
+        f = it["fields"]
+        cond = Condition(
+            printed_text=f.get("text_as_printed") or f["substance_as_printed"],
+            category="problem-list-item", asserted_at=_iso(it), recorded_at=document_date,
+            **common(it, condition_kind="allergy", substance=f.get("substance_as_printed"),
+                     reaction=f.get("reaction_as_printed")),
+        )  # fmt: skip
+        await put("condition", cond, it)
+
     # ── treatment courses (a derived course of a kept cycle stays derived, #799)
     courses: list[tuple[int, str]] = []  # printed courses: (id, regimen as printed)
     derived: dict[tuple, int] = {}  # folded words → derived course id (this document only)
@@ -799,6 +826,23 @@ async def store_document(  # noqa: PLR0912, PLR0915
         proc_id, _ = await put("procedure", proc, it)
         if proc.kind == "imaging" and all(p != proc_id for p, _ in imaging):
             imaging.append((proc_id, _day(proc.performed_at)))
+
+    # ── vaccinations / screenings → procedures (kind vaccination / screening, #815)
+    for it in by_kind.get("vaccinations", []):
+        f, d = it["fields"], it["derived"]
+        proc = Procedure(
+            kind="vaccination", printed_text=f["vaccine_as_printed"], performed_at=_iso(it),
+            **common(it, dose_printed=f.get("dose_as_printed"),
+                     dose_number=d.get("dose_number")),
+        )  # fmt: skip
+        await put("procedure", proc, it)
+    for it in by_kind.get("screenings", []):
+        f = it["fields"]
+        proc = Procedure(
+            kind="screening", printed_text=f["test_as_printed"], performed_at=_iso(it),
+            outcome=f.get("result_as_printed"), **common(it),
+        )  # fmt: skip
+        await put("procedure", proc, it)
 
     # ── CT lesion sizes → clinical_records LESION_SIZE (mm)
     for it in by_kind.get("lesions", []):
