@@ -131,6 +131,13 @@ PUBLIC_ROUTES: dict[tuple[str, str], str] = {
     ("/demo.js", "demo_js"): "static asset",
     ("/consent.js", "consent_js"): "static asset",
     ("/assets/pile/{slot}.jpg", "pile_photo"): "static asset from a fixed name map",
+    ("/movement-atlas", "movement_atlas_page"): "static HTML (#830)",
+    (
+        "/movement-atlas/{name}",
+        "movement_atlas_asset",
+    ): "static asset from a fixed file allowlist (#830)",
+    ("/pouzitie/pohybovy-atlas", "movement_atlas_use_case_sk"): "static HTML (#830)",
+    ("/use-cases/movement-atlas", "movement_atlas_use_case_en"): "static HTML (#830)",
     ("/robots.txt", "robots_txt"): "static text",
     ("/sitemap.xml", "sitemap_xml"): "static XML",
     ("/llms.txt", "llms_txt"): "static text + in-memory tool count",

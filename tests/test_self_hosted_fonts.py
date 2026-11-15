@@ -18,6 +18,7 @@ from starlette.requests import Request
 SRC = Path(__file__).parent.parent / "src" / "oncofiles"
 FONTS_DIR = SRC / "fonts"
 FONTS_CSS = FONTS_DIR / "fonts.css"
+ATLAS_CSS = SRC / "atlas" / "atlas.css"
 
 GOOGLE_FONT_HOSTS = ("fonts.googleapis.com", "fonts.gstatic.com")
 LATIN_EXT_START = "U+0100-02BA"  # first range of Google's latin-ext subset
@@ -139,12 +140,24 @@ def test_every_referenced_font_file_exists_and_is_woff2():
         path = FONTS_DIR / url.removeprefix("/fonts/")
         assert path.is_file(), url
         assert path.read_bytes()[:4] == b"wOF2", url
+    # Bricolage Grotesque is declared in the atlas page's own sheet (#830), so
+    # no other page loads it.
+    atlas_urls = re.findall(r"url\((/fonts/[^)]+)\)", ATLAS_CSS.read_text())
+    assert len(atlas_urls) == 2
+    for url in atlas_urls:
+        assert (FONTS_DIR / url.removeprefix("/fonts/")).read_bytes()[:4] == b"wOF2", url
     on_disk = {p.name for p in FONTS_DIR.glob("*.woff2")}
-    assert on_disk == {u.removeprefix("/fonts/") for u in urls}, "unreferenced woff2 file"
+    referenced = {u.removeprefix("/fonts/") for u in [*urls, *atlas_urls]}
+    assert on_disk == referenced, "unreferenced woff2 file"
 
 
 def test_ofl_licences_ship_with_the_fonts():
-    for name in ("OFL-DMSans.txt", "OFL-DMSerifDisplay.txt", "OFL-IBMPlexSans.txt"):
+    for name in (
+        "OFL-DMSans.txt",
+        "OFL-DMSerifDisplay.txt",
+        "OFL-IBMPlexSans.txt",
+        "OFL-BricolageGrotesque.txt",
+    ):
         text = (FONTS_DIR / name).read_text()
         assert "SIL Open Font License, Version 1.1" in text
 
@@ -160,9 +173,17 @@ def test_font_route_is_registered():
 
 
 async def test_font_route_serves_woff2_immutable():
+    await _assert_woff2_immutable("dm-sans-v17-latin.woff2")
+
+
+@pytest.mark.parametrize("subset", ["latin", "latin-ext"])
+async def test_font_route_serves_the_atlas_heading_font(subset):
+    await _assert_woff2_immutable(f"bricolage-grotesque-v9-{subset}-700.woff2")
+
+
+async def _assert_woff2_immutable(name: str) -> None:
     from oncofiles.server import font_asset
 
-    name = "dm-sans-v17-latin.woff2"
     resp = await font_asset(_req(f"/fonts/{name}", name=name))
     assert resp.status_code == 200
     assert resp.media_type == "font/woff2"
