@@ -196,6 +196,13 @@ LLM_CLINICAL_STRUCTURED_OUTPUT: bool = (
 LLM_CLINICAL_EXTRACT_DISABLED: bool = (
     os.environ.get("LLM_CLINICAL_EXTRACT_DISABLED", "false").strip().lower() == "true"
 )
+# WRITE path for LLM lab facts (#714 phase 2b for labs, curated_lab_extract with
+# dry_run=false). OFF by default: a real run is refused unless this is "true".
+# Enabling it is a production configuration change decided by the maintainer,
+# after the dry-run agreement scorecard against the rule-parser formats.
+LLM_LAB_WRITE_ENABLED: bool = (
+    os.environ.get("LLM_LAB_WRITE_ENABLED", "false").strip().lower() == "true"
+)
 
 GOOGLE_OAUTH_CLIENT_ID: str = os.environ.get("GOOGLE_OAUTH_CLIENT_ID", "")
 GOOGLE_OAUTH_CLIENT_SECRET: str = os.environ.get("GOOGLE_OAUTH_CLIENT_SECRET", "")
