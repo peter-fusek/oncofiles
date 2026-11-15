@@ -6,13 +6,15 @@ decides trust. Every candidate goes through ``curated.verifier`` (generic,
 no layout knowledge), which accepts it as ``machine`` or keeps it
 ``unverified`` with reason codes.
 
-* One call per page of sidecar text (text, not image: cheap).
+* One call per page of sidecar text (text, not image: cheap); a dense page
+  (many results on a few long lines, #826) is sent as a few short chunks.
 * Strict JSON instructions (no ``response_format`` by default, v3; the
   answer is parsed defensively: code fences, reasoning, trailing text). The
   call itself (settings, fallbacks, diagnostics) is the shared path in
   ``curated.llm_extract_call`` (#767).
 * Prompt rules: copy, never compute; unknown labels as printed; never a value
-  without its verbatim evidence line. Items without evidence are dropped here.
+  without its verbatim evidence (the result's own printed segment). Items
+  without evidence are dropped here.
 * Must run inside ``cloud_guard.local_only()``; it only ever talks to
   ``curated.llm`` (LM Studio), never to a cloud client.
 
@@ -48,8 +50,14 @@ from oncofiles.curated.llm_extract_call import (  # noqa: F401 (re-exported)
 # v8: a truncated page is retried once as 2 line-boundary chunks (#773);
 # v9: default request is the scorecard-validated one (qwen sampling +
 # reasoning-off marker, env LLM_EXTRACT_SAMPLING /
-# LLM_EXTRACT_REASONING_MARKER), also for writes (#773).
-EXTRACTOR_VERSION = "llm-extract-v9"
+# LLM_EXTRACT_REASONING_MARKER), also for writes (#773);
+# v10: dense pages (#826): ``evidence`` is the result's own segment, not the
+# whole line, and a page with many result-like segments is sent as density
+# chunks with date / heading context (``llm_extract_call.split_by_density``).
+EXTRACTOR_VERSION = "llm-extract-v10"
+
+# Density split of the lab extractor (#826); the constants live with the splitter.
+DENSITY = xcall.DensitySplit()
 
 DATE_ROLES = ("sample", "report", "other")
 _COMPARATORS = ("<=", ">=", "<", ">")
@@ -96,7 +104,7 @@ RESPONSE_FORMAT = {
 }
 
 # Worked examples use invented values and dates (public repo rule: no real data).
-SYSTEM_PROMPT = """You copy measured results (laboratory values, tumour markers, other \
+_RULES = """You copy measured results (laboratory values, tumour markers, other \
 measurements) from ONE page of a medical document. The page is OCR text, mostly Slovak \
 or Czech, sometimes English.
 
@@ -112,67 +120,105 @@ Answer with ONLY a JSON object {"facts": [...]}. One item per result:
 sample / collection date, else the report date), or null when no date on the page applies.
 - "date_role": "sample" (odber, odobrané, collected), "report" (vydané, report, \
 visit or exam date) or "other".
-- "evidence": the ONE line of the page that holds this result, copied character for character.
+- "evidence": this result's own printed piece of the page, copied character for \
+character: from the test name to the end of its value, unit, range and mark. On a line \
+with one result that is the line. On a line with several results (separated by ";" or \
+",") it is ONLY this result's piece, up to the separator: never the whole line, never a \
+neighbouring result, never the date or heading in front of it.
 
 Rules:
 1. Copy, never compute. Every value, unit, range and date must be on the page exactly as \
 you give it. Never convert units, round, add, average or derive anything.
 2. Unknown or unusual test names are returned exactly as printed. Never rename, \
 translate or "correct" a label.
-3. Never return a value without its verbatim evidence line. If you cannot copy the \
-line, leave the result out.
-4. A line with several results gives several items, each with the same evidence line.
+3. Never return a value without its verbatim evidence. If you cannot copy it, leave \
+the result out.
+4. A line with several results gives several items, each with its own short evidence.
 5. Skip identifiers, birth dates, phone numbers, addresses, medicine doses, page \
 numbers and dates that stand alone.
 6. A page without results gives {"facts": []}.
-
-Example 1. Page:
-Odber: 05.03.2027 07:40
-S-Glukóza   5,83   mmol/l   3,9 - 5,6   H
-Answer:
-{"facts": [{"label_as_printed": "S-Glukóza", "value": "5,83", "comparator": null, \
-"unit_as_printed": "mmol/l", "ref_range_as_printed": "3,9 - 5,6", "flag_as_printed": "H", \
-"date_as_printed": "05.03.2027 07:40", "date_role": "sample", \
-"evidence": "S-Glukóza   5,83   mmol/l   3,9 - 5,6   H"}]}
-
-Example 2. Page:
-Kontrola 12.4.2028. Lab.: CRP 17,3 mg/l, Leukocyty 9,1.
-Answer:
-{"facts": [{"label_as_printed": "CRP", "value": "17,3", "comparator": null, \
-"unit_as_printed": "mg/l", "ref_range_as_printed": null, "flag_as_printed": null, \
-"date_as_printed": "12.4.2028", "date_role": "report", \
-"evidence": "Kontrola 12.4.2028. Lab.: CRP 17,3 mg/l, Leukocyty 9,1."}, \
-{"label_as_printed": "Leukocyty", "value": "9,1", "comparator": null, \
-"unit_as_printed": null, "ref_range_as_printed": null, "flag_as_printed": null, \
-"date_as_printed": "12.4.2028", "date_role": "report", \
-"evidence": "Kontrola 12.4.2028. Lab.: CRP 17,3 mg/l, Leukocyty 9,1."}]}
-
-Example 3. Page:
-Vydané: 2.2.2029
-CEA        <0,5 ng/ml
-HBsAg      negat.
-Answer:
-{"facts": [{"label_as_printed": "CEA", "value": "0,5", "comparator": "<", \
-"unit_as_printed": "ng/ml", "ref_range_as_printed": null, "flag_as_printed": null, \
-"date_as_printed": "2.2.2029", "date_role": "report", "evidence": "CEA        <0,5 ng/ml"}, \
-{"label_as_printed": "HBsAg", "value": "negat.", "comparator": null, \
-"unit_as_printed": null, "ref_range_as_printed": null, "flag_as_printed": null, \
-"date_as_printed": "2.2.2029", "date_role": "report", "evidence": "HBsAg      negat."}]}
-
-Example 4. Page (an unknown test stays as printed):
-Odobraté 30.9.2027
-Q-Faktor X7   2,22   arb.j.
-Answer:
-{"facts": [{"label_as_printed": "Q-Faktor X7", "value": "2,22", "comparator": null, \
-"unit_as_printed": "arb.j.", "ref_range_as_printed": null, "flag_as_printed": null, \
-"date_as_printed": "30.9.2027", "date_role": "sample", \
-"evidence": "Q-Faktor X7   2,22   arb.j."}]}
-
-Example 5. Page:
-Pacientka prichádza na kontrolu, bez ťažkostí. Pokračovať v liečbe.
-Answer:
-{"facts": []}
+7. A long page arrives in parts. A part may begin with "Context:" lines: date and \
+heading lines repeated from earlier on the same page. Use them only to find the date of \
+the results under "Text:"; never return a result from a Context line and never copy \
+one into the evidence.
 """
+
+
+def _example(label, value, evidence, *, date, role, unit=None, ref=None, flag=None,
+             comparator=None) -> dict:  # fmt: skip
+    return {"label_as_printed": label, "value": value, "comparator": comparator,
+            "unit_as_printed": unit, "ref_range_as_printed": ref, "flag_as_printed": flag,
+            "date_as_printed": date, "date_role": role, "evidence": evidence}  # fmt: skip
+
+
+# (title, page text, facts). Every item must verify as ``machine`` against its
+# page once its label is in the vocabulary (lock test), and every evidence is
+# the result's own segment, never a whole multi-result line (#826).
+EXAMPLES: tuple[tuple[str, str, list[dict]], ...] = (
+    (
+        "Page:",
+        "Odber: 05.03.2027 07:40\nS-Glukóza   5,83   mmol/l   3,9 - 5,6   H",
+        [_example("S-Glukóza", "5,83", "S-Glukóza   5,83   mmol/l   3,9 - 5,6   H",
+                  unit="mmol/l", ref="3,9 - 5,6", flag="H",
+                  date="05.03.2027 07:40", role="sample")],
+    ),
+    (
+        "Page (two results on one line: each item quotes only its own piece):",
+        "Kontrola 12.4.2028. Lab.: CRP 17,3 mg/l, Leukocyty 9,1.",
+        [_example("CRP", "17,3", "CRP 17,3 mg/l", unit="mg/l", date="12.4.2028", role="report"),
+         _example("Leukocyty", "9,1", "Leukocyty 9,1", date="12.4.2028", role="report")],
+    ),
+    (
+        "Page:",
+        "Vydané: 2.2.2029\nCEA        <0,5 ng/ml\nHBsAg      negat.",
+        [_example("CEA", "0,5", "CEA        <0,5 ng/ml", comparator="<", unit="ng/ml",
+                  date="2.2.2029", role="report"),
+         _example("HBsAg", "negat.", "HBsAg      negat.", date="2.2.2029", role="report")],
+    ),
+    (
+        "Page (an unknown test stays as printed):",
+        "Odobraté 30.9.2027\nQ-Faktor X7   2,22   arb.j.",
+        [_example("Q-Faktor X7", "2,22", "Q-Faktor X7   2,22   arb.j.", unit="arb.j.",
+                  date="30.9.2027", role="sample")],
+    ),
+    (
+        "Page:",
+        "Pacientka prichádza na kontrolu, bez ťažkostí. Pokračovať v liečbe.",
+        [],
+    ),
+    (
+        'Page (a long line of results separated by ";"):',
+        "Odber: 18.11.2027 06:55\n"
+        "Biochémia: Faktor M 4,71 mmol/l (2,10 - 4,20) H; Faktor N 0,83 g/l (0,50 - 1,90); "
+        "Faktor P <3 U/l",
+        [_example("Faktor M", "4,71", "Faktor M 4,71 mmol/l (2,10 - 4,20) H", unit="mmol/l",
+                  ref="2,10 - 4,20", flag="H", date="18.11.2027 06:55", role="sample"),
+         _example("Faktor N", "0,83", "Faktor N 0,83 g/l (0,50 - 1,90)", unit="g/l",
+                  ref="0,50 - 1,90", date="18.11.2027 06:55", role="sample"),
+         _example("Faktor P", "3", "Faktor P <3 U/l", comparator="<", unit="U/l",
+                  date="18.11.2027 06:55", role="sample")],
+    ),
+    (
+        "Part of a page (the date comes from a Context line):",
+        "Context:\nOdobrané: 9.1.2028 07:10\nKrvný obraz:\nText:\n"
+        "Faktor R 1,15 µkat/l (0,20 - 1,40); Faktor S 88 % (30 - 120) L",
+        [_example("Faktor R", "1,15", "Faktor R 1,15 µkat/l (0,20 - 1,40)", unit="µkat/l",
+                  ref="0,20 - 1,40", date="9.1.2028 07:10", role="sample"),
+         _example("Faktor S", "88", "Faktor S 88 % (30 - 120) L", unit="%", ref="30 - 120",
+                  flag="L", date="9.1.2028 07:10", role="sample")],
+    ),
+)  # fmt: skip
+
+
+def _render_examples() -> str:
+    out = []
+    for n, (title, page, facts) in enumerate(EXAMPLES, 1):
+        answer = json.dumps({"facts": facts}, ensure_ascii=False)
+        out.append(f"Example {n}. {title}\n{page}\nAnswer:\n{answer}\n")
+    return "\n".join(out)
+
+
+SYSTEM_PROMPT = _RULES + "\n" + _render_examples()
 
 METHOD = "stored_sidecar_text"
 
@@ -399,10 +445,11 @@ def extract_page(
         parse_content=parse_answer, parse_reasoning=parse_reasoning_channel,
         cfg=cfg or xcall.settings(), chat=chat,
         shape=lambda raw, used: answer_shape(raw, known, field_used=used), label="llm extract",
+        density=DENSITY,
     )  # fmt: skip
     if parts is None:
         return res
-    for part in parts:  # 1 part, or 2 after a split (#773)
+    for part in parts:  # 1 part, or one per chunk after a split (#773, #826)
         for raw_item in part.parsed:
             cand, why = normalize_item(raw_item)
             if cand is None:

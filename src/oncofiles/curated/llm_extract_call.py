@@ -16,7 +16,11 @@ is called and how its answer channels are read lives here, once:
 * the one-level page split (#773): a page whose answer came back truncated
   is retried ONCE as 2 line-boundary chunks (optionally split before the
   first call, ``LLM_EXTRACT_SPLIT_LINES``). Worst case per page: 3 calls,
-  each bounded by the answer budget and the timeout.
+  each bounded by the answer budget and the timeout;
+* the opt-in density split (#826, lab extractor only): a page with many
+  result-like segments is cut at its separators into chunks of at most
+  ``DENSE_SEGMENTS_PER_CHUNK`` segments, each with the page's date / heading
+  lines as context. Still one level, at most ``DENSE_MAX_CHUNKS`` chunks.
 
 Each extractor keeps its own prompt, schema and kind-specific parsing.
 """
@@ -25,6 +29,8 @@ from __future__ import annotations
 
 import json
 import logging
+import math
+import re
 import time
 from collections import Counter
 from collections.abc import Callable
@@ -238,6 +244,8 @@ class PageResult:
     # page split (#773): counts only
     split: bool = False
     split_trigger: str | None = None  # truncated | proactive
+    split_mode: str | None = None  # lines (#773) | density (#826)
+    split_chunk_count: int = 0  # chunks the page was cut into (called or not)
     split_first_call: dict | None = None  # the truncated whole-page call
     split_chunks: list[dict] = field(default_factory=list)  # one per chunk CALLED
     split_duplicates_removed: int = 0
@@ -260,7 +268,8 @@ class PageResult:
         out["split"] = self.split
         out.update(items=self.items, date_null_items=self.date_null_items)
         if self.split:
-            out.update(split_trigger=self.split_trigger, chunk_count=SPLIT_CHUNKS,
+            out.update(split_trigger=self.split_trigger, split_mode=self.split_mode,
+                       chunk_count=self.split_chunk_count,
                        chunks_called=len(self.split_chunks), first_call=self.split_first_call,
                        chunks=list(self.split_chunks),
                        duplicates_removed=self.split_duplicates_removed)  # fmt: skip
@@ -411,6 +420,185 @@ def split_page_text(text: str) -> tuple[str, str] | None:
     return "\n".join(lines[:best]), "\n".join(lines[best:])
 
 
+# ── density split (#826) ─────────────────────────────────────────────────
+# A dense lab page prints 40+ results on a few long ";"-separated lines: its
+# answer never fits the answer budget, and half of such a page does not
+# either. The density split cuts by RESULT COUNT instead: a long line is cut
+# at its separators (never inside a segment, never inside brackets), and a
+# chunk holds at most DENSE_SEGMENTS_PER_CHUNK result-like segments. Generic
+# text shapes only (separators, brackets, digits, dates): no lab layout.
+
+DENSE_SEGMENTS_PER_CHUNK = 12  # result-like segments per chunk (~1.5k answer tokens)
+DENSE_PROACTIVE_SEGMENTS = 24  # more on a page: split before the first call
+DENSE_MAX_CHUNKS = 8  # bounded cost; a denser page gets larger chunks
+MAX_CALLS_PER_PAGE_DENSE = 1 + DENSE_MAX_CHUNKS  # truncated whole page + chunks
+_CONTEXT_MAX_LINES = 8  # the first 3 and the last 5 when a page has more
+_CONTEXT_MAX_CHARS = 200  # a longer line is no header line
+_PREFIX_MAX_CHARS = 80
+
+_OPENERS, _CLOSERS = "([{", ")]}"
+_PRINTED_DATE = re.compile(
+    r"(?<![\d.])\d{1,2}\.\s?\d{1,2}\.(?:\s?\d{4})?(?![\d,])|\d{4}-\d{2}-\d{2}"
+)
+_PRINTED_TIME = re.compile(r"(?<!\d)\d{1,2}:\d{2}(?!\d)")
+_LETTER = re.compile(r"[^\W\d_]")
+_LABEL_COLON = re.compile(r"(?<!\d):|:(?!\d)")  # not the colon of a time ("07:40")
+_COMMA_BEFORE_LABEL = re.compile(r",\s+(?=[^\W\d_])")
+
+
+@dataclass(frozen=True)
+class DensitySplit:
+    """Opt-in settings of the density split for one extractor."""
+
+    per_chunk: int = DENSE_SEGMENTS_PER_CHUNK
+    proactive_over: int = DENSE_PROACTIVE_SEGMENTS
+    max_chunks: int = DENSE_MAX_CHUNKS
+
+
+@dataclass(frozen=True)
+class DenseChunk:
+    text: str  # verbatim pieces of the page, cut only at separators
+    context: tuple[str, ...]  # earlier date / heading lines and label prefixes
+    lines: int
+    segments: int  # result-like segments in ``text``
+
+
+def result_like(segment: str) -> bool:
+    """A segment that may hold a result: a letter and a digit once printed
+    dates and times are left out (so "Odber: 5.3.2027 07:40" is not one)."""
+    s = _PRINTED_TIME.sub(" ", _PRINTED_DATE.sub(" ", segment))
+    return bool(_LETTER.search(s)) and any(c.isdigit() for c in s)
+
+
+def _depths(line: str) -> list[int]:
+    """Bracket depth at every character; all zero when the line's brackets
+    do not balance (OCR), so an unclosed bracket never hides every separator."""
+    depth, out = 0, []
+    for ch in line:
+        if ch in _CLOSERS:
+            depth -= 1
+        if depth < 0:
+            return [0] * len(line)
+        out.append(depth)
+        if ch in _OPENERS:
+            depth += 1
+    return out if depth == 0 else [0] * len(line)
+
+
+def segment_spans(line: str, *, commas: bool = True) -> list[tuple[int, int]]:
+    """``(start, end)`` of the separator-delimited segments of one line; a
+    segment keeps its trailing separator, so the spans tile the line. Cuts
+    after ";" outside brackets; with ``commas`` a line without one is cut
+    after ", " in front of a letter (a decimal comma has no space after it)."""
+    depths = _depths(line)
+    cuts = [i + 1 for i, ch in enumerate(line) if ch == ";" and depths[i] == 0]
+    if not cuts and commas:
+        cuts = [m.end() for m in _COMMA_BEFORE_LABEL.finditer(line) if depths[m.start()] == 0]
+    bounds = [0, *[c for c in cuts if 0 < c < len(line)], len(line)]
+    return [(a, b) for a, b in zip(bounds, bounds[1:], strict=False) if a < b] or [(0, 0)]
+
+
+def count_result_segments(text: str, *, commas: bool = True) -> int:
+    """Result-like segments of a text. ``commas=False`` counts a line without
+    ";" as one segment: the conservative count of the proactive trigger, so
+    prose with many commas and numbers is not taken for a dense page."""
+    return sum(
+        result_like(line[a:b])
+        for line in (text or "").split("\n")
+        for a, b in segment_spans(line, commas=commas)
+    )
+
+
+def _label_prefix(line: str, first_end: int) -> str | None:
+    """The leading label of a line: its text before the first colon of the
+    first segment ("Biochémia", "labor. 9.9.2027"), when short and not itself
+    a result."""
+    m = _LABEL_COLON.search(line[: min(first_end, _PREFIX_MAX_CHARS + 1)])
+    prefix = line[: m.start()].strip() if m else ""
+    return prefix if prefix and not result_like(prefix) else None
+
+
+def split_by_density(
+    text: str, per_chunk: int = DENSE_SEGMENTS_PER_CHUNK, max_chunks: int = DENSE_MAX_CHUNKS
+) -> list[DenseChunk] | None:
+    """Cut a page into chunks of at most ``per_chunk`` result-like segments,
+    only at line boundaries and at separators inside a line. ``None`` when the
+    page holds no more than ``per_chunk`` such segments (nothing to gain).
+    A page needing more than ``max_chunks`` chunks gets ``max_chunks`` larger
+    ones (bounded cost; such a chunk may truncate → page not assessed).
+
+    Text between two results (headings, date lines) goes with the results
+    after it. Every chunk carries ``context``: the earlier lines of the page
+    that hold a date or are a heading and no result, the label prefix of an
+    earlier result line when that prefix prints a date, and, for a chunk that
+    starts inside a line, that line's own label prefix."""
+    lines = (text or "").split("\n")
+    spans = [segment_spans(line) for line in lines]
+    units = [(li, a, b, result_like(lines[li][a:b])) for li, ss in enumerate(spans) for a, b in ss]
+    total = sum(u[3] for u in units)
+    if per_chunk < 1 or total <= per_chunk:
+        return None
+    if math.ceil(total / per_chunk) > max_chunks:
+        per_chunk = math.ceil(total / max(1, max_chunks))
+    groups: list[list[tuple]] = []
+    cur: list[tuple] = []
+    count, last_result = 0, -1
+    for unit in units:
+        if unit[3] and count == per_chunk:
+            groups.append(cur[: last_result + 1])
+            cur, count = cur[last_result + 1 :], 0
+        cur.append(unit)
+        if unit[3]:
+            count, last_result = count + 1, len(cur) - 1
+    groups.append(cur)
+
+    has_result = [False] * len(lines)
+    for li, _a, _b, is_result in units:
+        has_result[li] = has_result[li] or is_result
+    prefixes = [_label_prefix(line, ss[0][1]) for line, ss in zip(lines, spans, strict=True)]
+    out: list[DenseChunk] = []
+    for group in groups:
+        by_line: dict[int, list[tuple]] = {}
+        for unit in group:
+            by_line.setdefault(unit[0], []).append(unit)
+        pieces = [lines[li][us[0][1] : us[-1][2]].strip() for li, us in by_line.items()]
+        first_line, first_start = group[0][0], group[0][1]
+        context = []
+        for j in range(first_line):
+            line = lines[j].strip()
+            if not line:
+                continue
+            if not has_result[j]:
+                if len(line) <= _CONTEXT_MAX_CHARS and (
+                    _PRINTED_DATE.search(line) or _is_heading(line)
+                ):
+                    context.append(line)
+            elif prefixes[j] and _PRINTED_DATE.search(prefixes[j]):
+                context.append(prefixes[j] + ":")
+        if first_start > 0 and prefixes[first_line]:
+            context.append(prefixes[first_line] + ":")
+        if len(context) > _CONTEXT_MAX_LINES:
+            context = context[:3] + context[-(_CONTEXT_MAX_LINES - 3) :]
+        out.append(
+            DenseChunk(
+                text="\n".join(pieces).strip("\n"),
+                context=tuple(context),
+                lines=len(by_line),
+                segments=sum(u[3] for u in group),
+            )
+        )
+    return out
+
+
+def dense_chunk_user(page_number: int, index: int, count: int, chunk: DenseChunk) -> str:
+    """The user message of one density chunk. Context lines are marked as
+    such: they only date the results under "Text:"."""
+    head = f"Page {page_number}, part {index} of {count}:\n"
+    if not chunk.context:
+        return head + chunk.text
+    return head + "Context:\n" + "\n".join(chunk.context) + "\nText:\n" + chunk.text
+
+
 @dataclass
 class AnswerPart:
     """The parsed answer of one call, with the channel it came from (an item
@@ -420,12 +608,14 @@ class AnswerPart:
     answer_source: str | None
 
 
-def _call_diag(r: PageResult, lines: int | None = None) -> dict:
+def _call_diag(r: PageResult, lines: int | None = None, segments: int | None = None) -> dict:
     out = {"finish_reason": r.finish_reason, "prompt_tokens": r.prompt_tokens,
            "completion_tokens": r.completion_tokens, "reasoning_tokens": r.reasoning_tokens,
            "seconds": round(r.seconds, 1)}  # fmt: skip
     if lines is not None:
         out.update(lines=lines, answer_source=r.answer_source)
+    if segments is not None:
+        out["segments"] = segments  # result-like segments in the chunk (#826)
     if r.error:
         out["error_kind"] = r.error_kind
     return out
@@ -449,9 +639,11 @@ def call_page(
     shape: Callable[[str, str], dict] | None = None,
     label: str = "llm extract",
     split_lines: int | None = None,
+    density: DensitySplit | None = None,
 ) -> list[AnswerPart] | None:
-    """Blocking. The page's answer as a list of parts (1, or 2 after a split),
-    or ``None`` when the page is NOT assessed (``res.error`` set).
+    """Blocking. The page's answer as a list of parts (1, or one per chunk
+    after a split), or ``None`` when the page is NOT assessed (``res.error``
+    set).
 
     One call for the whole page. Only when that answer is truncated
     (``finish=length``) is the page text split ONCE into 2 line-boundary
@@ -461,8 +653,19 @@ def call_page(
     level, so a page costs at most ``MAX_CALLS_PER_PAGE`` calls of at most
     ``cfg.timeout_s`` each. With ``split_lines`` (default
     ``LLM_EXTRACT_SPLIT_LINES``, 0 = off) > 0, a page of more lines is split
-    before the first call (2 calls). The caller verifies every item against
-    the FULL page text and calls ``dedupe_split`` on its candidates."""
+    before the first call (2 calls).
+
+    With ``density`` (#826, opt-in per extractor; ``None`` = exactly the
+    behaviour above) a page holding more than ``density.proactive_over``
+    result-like segments (";" lists and lines only, not comma lists) is sent
+    as density chunks right away (no whole-page call), and a truncated page
+    that ``split_by_density`` can cut is retried as density chunks instead of
+    the 2 line chunks. Still one split level: a chunk that is not assessed
+    leaves the page not assessed, so a page costs at most
+    ``1 + density.max_chunks`` calls.
+
+    The caller verifies every item against the FULL page text and calls
+    ``dedupe_split`` on its candidates."""
     from oncofiles import config
 
     limit = config.LLM_EXTRACT_SPLIT_LINES if split_lines is None else split_lines
@@ -470,27 +673,59 @@ def call_page(
               "parse_content": parse_content, "parse_reasoning": parse_reasoning,
               "cfg": cfg, "chat": chat, "shape": shape}  # fmt: skip
     user = f"Page {res.page_number}:\n"
-    if limit > 0 and len(text.split("\n")) > limit:
+
+    def dense_requests() -> list[_ChunkRequest] | None:
+        chunks = split_by_density(text, density.per_chunk, density.max_chunks)
+        if chunks is None:
+            return None
+        return [
+            _ChunkRequest(dense_chunk_user(res.page_number, i, len(chunks), c), c.lines, c.segments)
+            for i, c in enumerate(chunks, 1)
+        ]
+
+    def line_requests() -> list[_ChunkRequest] | None:
         chunks = split_page_text(text)
-        if chunks is not None:
-            return _call_chunks(res, chunks, "proactive", None, user, label, common)
+        if chunks is None:
+            return None
+        return [_ChunkRequest(user + c, len(c.split("\n"))) for c in chunks]
+
+    if density is not None and count_result_segments(text, commas=False) > density.proactive_over:
+        requests = dense_requests()
+        if requests is not None:
+            return _call_chunks(res, requests, "proactive", "density", None, label, common)
+    if limit > 0 and len(text.split("\n")) > limit:
+        requests = line_requests()
+        if requests is not None:
+            return _call_chunks(res, requests, "proactive", "lines", None, label, common)
     parsed = call_and_parse(res, user=user + text, label=label, **common)
     if parsed is not None:
         return [AnswerPart(parsed, res.answer_source)]
     if not res.truncated:
         return None  # timeout, HTTP, unparseable: a split would not help
-    chunks = split_page_text(text)
-    if chunks is None:
+    first = _call_diag(res)
+    if density is not None:
+        requests = dense_requests()
+        if requests is not None:
+            return _call_chunks(res, requests, "truncated", "density", first, label, common)
+    requests = line_requests()
+    if requests is None:
         return None  # a single line cannot be split: stays not assessed
-    return _call_chunks(res, chunks, "truncated", _call_diag(res), user, label, common)
+    return _call_chunks(res, requests, "truncated", "lines", first, label, common)
+
+
+@dataclass(frozen=True)
+class _ChunkRequest:
+    user: str  # the whole user message of the chunk call
+    lines: int
+    segments: int | None = None  # density chunks only
 
 
 def _call_chunks(
     res: PageResult,
-    chunks: tuple[str, str],
+    chunks: list[_ChunkRequest],
     trigger: str,
+    mode: str,
     first: dict | None,
-    user: str,
     label: str,
     common: dict,
 ) -> list[AnswerPart] | None:
@@ -501,15 +736,16 @@ def _call_chunks(
     for i, chunk in enumerate(chunks, 1):
         cr = PageResult(page_number=res.page_number)
         parsed = call_and_parse(
-            cr, user=user + chunk, label=f"{label} (chunk {i}/{len(chunks)})", **common
+            cr, user=chunk.user, label=f"{label} (chunk {i}/{len(chunks)})", **common
         )
         called.append(cr)
-        res.split_chunks.append(_call_diag(cr, lines=len(chunk.split("\n"))))
+        res.split_chunks.append(_call_diag(cr, lines=chunk.lines, segments=chunk.segments))
         if parsed is None:
             failed = cr  # the page stays not assessed: the next chunk is not called
             break
         parts.append(AnswerPart(parsed, cr.answer_source))
     res.split, res.split_trigger, res.split_first_call = True, trigger, first
+    res.split_mode, res.split_chunk_count = mode, len(chunks)
     res.thinking = "on" if cfg.thinking else "off"
     res.sampling, res.reasoning_marker = cfg.sampling, cfg.reasoning_marker
     calls = ([res] if first is not None else []) + called
@@ -524,8 +760,8 @@ def _call_chunks(
         res.error_kind, res.error_class = failed.error_kind, failed.error_class
         res.answer, res.answer_source = failed.answer, None
         logger.warning(
-            "%s: page %s split (%s), chunk %s/%s not assessed (%s, finish=%s)",
-            label, res.page_number, trigger, len(called), len(chunks), failed.error_kind,
+            "%s: page %s split (%s, %s), chunk %s/%s not assessed (%s, finish=%s)",
+            label, res.page_number, trigger, mode, len(called), len(chunks), failed.error_kind,
             failed.finish_reason,
         )  # fmt: skip
         return None
@@ -535,8 +771,8 @@ def _call_chunks(
     sources = {p.answer_source for p in parts}
     res.answer_source = "reasoning" if "reasoning" in sources else "content"
     logger.info(
-        "%s: page %s assessed after split (%s, %s chunks)",
-        label, res.page_number, trigger, len(chunks),
+        "%s: page %s assessed after split (%s, %s, %s chunks)",
+        label, res.page_number, trigger, mode, len(chunks),
     )  # fmt: skip
     return parts
 
@@ -617,7 +853,7 @@ def warnings(page_results: list[PageResult]) -> list[dict]:
         "answer_from_reasoning_channel": sum(p.answer_source == "reasoning" for p in page_results),
         "truncated": sum(p.truncated for p in page_results),
         "page_errors": sum(p.error is not None and not p.truncated for p in page_results),
-        # pages sent as 2 chunks (#773); each chunk call is in page_diagnostics
+        # pages sent as chunks (#773, #826); each chunk call is in page_diagnostics
         "split_pages": sum(p.split for p in page_results),
     }
     return [{"warning": k, "pages": n} for k, n in counts.items() if n]
