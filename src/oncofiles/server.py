@@ -2790,6 +2790,39 @@ async def pile_photo(request: Request) -> Response:
     )
 
 
+# ── Movement-atlas showcase (#830): static pages + media, see atlas_showcase.py ──
+
+
+@mcp.custom_route("/movement-atlas", methods=["GET"])
+async def movement_atlas_page(request: Request) -> HTMLResponse:
+    """The hosted interactive atlas (three.js). Own CSP: see _csp_for_path."""
+    from oncofiles import atlas_showcase
+
+    return HTMLResponse(atlas_showcase.atlas_page_html())
+
+
+@mcp.custom_route("/movement-atlas/{name}", methods=["GET"])
+async def movement_atlas_asset(request: Request) -> Response:
+    """Atlas scripts, posters and the two small videos (fixed allowlist, Range → 206)."""
+    from oncofiles import atlas_showcase
+
+    return atlas_showcase.asset_response(request.path_params.get("name", ""))
+
+
+@mcp.custom_route("/pouzitie/pohybovy-atlas", methods=["GET"])
+async def movement_atlas_use_case_sk(request: Request) -> HTMLResponse:
+    from oncofiles import atlas_showcase
+
+    return HTMLResponse(atlas_showcase.use_case_page_html("sk"))
+
+
+@mcp.custom_route("/use-cases/movement-atlas", methods=["GET"])
+async def movement_atlas_use_case_en(request: Request) -> HTMLResponse:
+    from oncofiles import atlas_showcase
+
+    return HTMLResponse(atlas_showcase.use_case_page_html("en"))
+
+
 @mcp.custom_route("/robots.txt", methods=["GET"])
 async def robots_txt(request: Request) -> HTMLResponse:
     return HTMLResponse(
@@ -2865,6 +2898,20 @@ async def sitemap_xml(request: Request) -> HTMLResponse:
         '<xhtml:link rel="alternate" hreflang="en" href="https://oncofiles.com/eu"/>'
         '<xhtml:link rel="alternate" hreflang="sk" href="https://oncofiles.com/sk"/>'
         "</url>\n"
+        f"  <url><loc>https://oncofiles.com/pouzitie/pohybovy-atlas</loc><lastmod>{today}</lastmod>"
+        "<priority>0.7</priority><changefreq>monthly</changefreq>"
+        '<xhtml:link rel="alternate" hreflang="sk"'
+        ' href="https://oncofiles.com/pouzitie/pohybovy-atlas"/>'
+        '<xhtml:link rel="alternate" hreflang="en"'
+        ' href="https://oncofiles.com/use-cases/movement-atlas"/>'
+        "</url>\n"
+        f"  <url><loc>https://oncofiles.com/use-cases/movement-atlas</loc><lastmod>{today}</lastmod>"
+        "<priority>0.7</priority><changefreq>monthly</changefreq>"
+        '<xhtml:link rel="alternate" hreflang="sk"'
+        ' href="https://oncofiles.com/pouzitie/pohybovy-atlas"/>'
+        '<xhtml:link rel="alternate" hreflang="en"'
+        ' href="https://oncofiles.com/use-cases/movement-atlas"/>'
+        "</url>\n"
         "</urlset>\n",
         media_type="application/xml",
     )
@@ -2893,6 +2940,14 @@ async def llms_txt(request: Request) -> HTMLResponse:
         f"- Pipeline dashboard with Google Sign-In authentication\n"
         f"- PubMed and ClinicalTrials.gov search integration\n"
         f"- Treatment event and research entry management\n"
+        f"\n"
+        f"## Not only oncology\n"
+        f"Oncofiles also has a general (non-oncology) patient profile. Use case: from five\n"
+        f"orthopaedic documents read through the Oncofiles connector, Claude built an\n"
+        f"interactive 3D movement atlas (lower back, knee, shoulder) with exercise\n"
+        f"suggestions for a physiotherapist to review. The model is schematic, built from\n"
+        f"report text, not from scans; it is not medical advice.\n"
+        f"- Use case: https://oncofiles.com/use-cases/movement-atlas\n"
         f"\n"
         f"## Technical Details\n"
         f"- Version: {VERSION}\n"
@@ -2936,6 +2991,14 @@ async def llms_sk_txt(request: Request) -> HTMLResponse:
         f"- Opatrovatelia, ktorí vedú dokumentáciu za blízkeho\n"
         f"- Lekári, ktorí dostanú od pacienta zrozumiteľný sumár histórie\n"
         f"- Pacienti hľadajúci druhý názor cez AI (Claude, ChatGPT)\n"
+        f"\n"
+        f"## Nielen onkológia\n"
+        f"Oncofiles má aj všeobecný (neonkologický) profil pacienta. Príklad použitia: z piatich\n"
+        f"ortopedických dokumentov, prečítaných cez konektor Oncofiles, postavil Claude\n"
+        f"interaktívny 3D pohybový atlas (chrbát, koleno, rameno) s návrhmi cvikov na\n"
+        f"posúdenie fyzioterapeutom. Model je schematický, zostavený z textu správ, nie zo\n"
+        f"snímok; nie je to lekárska rada.\n"
+        f"- Príklad použitia: https://oncofiles.com/pouzitie/pohybovy-atlas\n"
         f"\n"
         f"## Kľúčové funkcie\n"
         f"- 18 kategórií zdravotných dokumentov (laboratóriá, zobrazovacie vyšetrenia,\n"
@@ -7752,6 +7815,11 @@ def _csp_for_path(path: str) -> str:
     permissive CSP for every other HTML route. See #534 for context."""
     if path.startswith("/dashboard"):
         return _STRICT_DASHBOARD_CSP
+    if path == "/movement-atlas" or path.startswith("/movement-atlas/"):
+        # #830: the hosted three.js atlas loads only same-origin files
+        from oncofiles.atlas_showcase import ATLAS_CSP
+
+        return ATLAS_CSP
     return _PUBLIC_HTML_CSP
 
 

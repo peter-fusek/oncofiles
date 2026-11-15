@@ -14,7 +14,7 @@
   <!-- Analytics only after opt-in consent (#700); see /consent.js -->
   <script src="/consent.js" defer></script>
   <title data-sk="Oncofiles – zdravotné záznamy pre onkologických pacientov s overenými laboratórnymi hodnotami" data-en="Oncofiles – medical records for cancer patients with verified lab values">Oncofiles – zdravotné záznamy pre onkologických pacientov s overenými laboratórnymi hodnotami</title>
-  <meta name="description" data-sk="Váš priečinok s lekárskymi správami na Google Drive, usporiadaný a čitateľný aj bez nás. Každá laboratórna hodnota má dátum odberu, zdroj, stranu a riadok. OCR beží na lokálnom modeli na našom serveri v EÚ (Slovensko). Pýtajte sa v Claude alebo ChatGPT." data-en="Your Google Drive folder of medical reports, organized and readable even without us. Every lab value has its sample date, source document, page and line. OCR runs on a local model on our own server, hosted in the EU (Slovakia). Ask in Claude or ChatGPT." content="Váš priečinok s lekárskymi správami na Google Drive, usporiadaný a čitateľný aj bez nás. Každá laboratórna hodnota má dátum odberu, zdroj, stranu a riadok. OCR beží na lokálnom modeli na našom serveri v EÚ (Slovensko). Pýtajte sa v Claude alebo ChatGPT.">
+  <meta name="description" data-sk="Váš priečinok s lekárskymi správami na Google Drive, usporiadaný a čitateľný aj bez nás. Každá laboratórna hodnota má dátum odberu, zdroj, stranu a riadok. OCR beží na lokálnom modeli na našom serveri v EÚ (Slovensko). Pýtajte sa v Claude alebo ChatGPT. Pre onkologických pacientov aj pre bežné nálezy." data-en="Your Google Drive folder of medical reports, organized and readable even without us. Every lab value has its sample date, source document, page and line. OCR runs on a local model on our own server, hosted in the EU (Slovakia). Ask in Claude or ChatGPT. For cancer patients and for everyday findings too." content="Váš priečinok s lekárskymi správami na Google Drive, usporiadaný a čitateľný aj bez nás. Každá laboratórna hodnota má dátum odberu, zdroj, stranu a riadok. OCR beží na lokálnom modeli na našom serveri v EÚ (Slovensko). Pýtajte sa v Claude alebo ChatGPT. Pre onkologických pacientov aj pre bežné nálezy.">
   <meta property="og:title" content="Oncofiles – medical records for cancer patients with verified lab values">
   <meta property="og:description" content="Every lab value traced to its sample date, source document, page and line. Local OCR model on our own server, hosted in the EU (Slovakia). Works with Claude and ChatGPT via MCP.">
   <meta property="og:type" content="website">
@@ -148,6 +148,11 @@
           "@type": "Question",
           "name": "How much does Oncofiles cost?",
           "acceptedAnswer": { "@type": "Answer", "text": "Oncofiles is free for up to 500 documents per patient. It is open source under the MIT license and can be self-hosted." }
+        },
+        {
+          "@type": "Question",
+          "name": "Is Oncofiles only for oncology patients?",
+          "acceptedAnswer": { "@type": "Answer", "text": "No. Oncofiles also has a general profile for a person who wants to keep everyday findings in order. The author of Oncofiles had Claude build an interactive 3D atlas of his lower back, knee and shoulder from his own orthopaedic reports, with exercise suggestions for a physiotherapist. The model is schematic and does not replace a doctor or a physiotherapist. See https://oncofiles.com/use-cases/movement-atlas" }
         },
         {
           "@type": "Question",
@@ -507,6 +512,18 @@
     .art-src .lnk { color: #0f6b63; text-decoration: underline; text-underline-offset: 2px; }
     .ok-m { color: #2f6b3a; } .ok-h { color: #2d4f8a; } .ok-u { color: #9a5507; }
     @media (max-width: 520px) { .art-cards { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); } .art-cards .art-card:last-child { grid-column: 1 / -1; } }
+    /* "Not only oncology": the movement-atlas showcase (#830). A real case of
+       the author, so it never shares a frame with the invented demo patient. */
+    .atlas-points { list-style: none; margin-top: 18px; }
+    .atlas-points li { padding: 10px 0; border-top: 1px solid var(--rule); color: var(--ink-2); font-size: 0.97rem; }
+    .atlas-points li:last-child { border-bottom: 1px solid var(--rule); }
+    .atlas-cta { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 18px; margin-top: 20px; }
+    .atlas-cta small { color: var(--ink-3); font-size: 0.85rem; }
+    .atlas-cta small:empty { display: none; }
+    .side .atlas-fine { color: var(--ink-3); font-size: 0.88rem; }
+    .atlas-video { margin: 0; }
+    .atlas-video video { display: block; width: 100%; max-width: 600px; height: auto; aspect-ratio: 1 / 1; border-radius: 14px; background: #0c1a1d; box-shadow: var(--lift); }
+    .atlas-video figcaption { margin-top: 10px; font-size: 0.88rem; color: var(--ink-3); max-width: 600px; }
     .roadmap-intro { max-width: 62ch; color: var(--ink-2); }
     .roadmap { list-style: none; margin: 36px 0 0; padding: 0; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 32px; position: relative; }
     .roadmap::before { content: ''; position: absolute; top: 8px; left: 8px; right: 8px; height: 2px; background: var(--rule-2); }
@@ -776,6 +793,7 @@
       <nav class="top" aria-label="Main">
         <a class="wide" href="#provenance" data-sk="Pôvod hodnôt" data-en="Provenance">Pôvod hodnôt</a>
         <a class="wide" href="#folder" data-sk="Priečinok" data-en="Folder">Priečinok</a>
+        <a class="wide" href="#atlas" data-sk="Nielen onkológia" data-en="Not only oncology">Nielen onkológia</a>
         <a class="wide" href="#privacy" data-sk="Súkromie" data-en="Privacy">Súkromie</a>
         <a class="wide" href="#roadmap" data-sk="Plán" data-en="Roadmap">Plán</a>
         <a class="wide" href="#faq" data-sk="Otázky" data-en="FAQ">Otázky</a>
@@ -1189,6 +1207,34 @@ Nič sa nemaže, len presúva do koša.
       </div>
     </section>
 
+    <!-- 4d. Not only oncology: the movement atlas (#830). The author's own
+         findings, published by his decision; kept apart from the invented demo
+         patient above. Media + pages: src/oncofiles/atlas_showcase.py. No autoplay. -->
+    <section class="block" id="atlas">
+      <div class="wrap grid">
+        <div class="side">
+          <h2 data-sk="Nielen onkológia: rozumieť vlastnému nálezu" data-en="Not only oncology: understand your own findings">Nielen onkológia: rozumieť vlastnému nálezu</h2>
+          <p data-sk="Štyri ortopedické správy a jeden popis MR. Claude si ich prečítal cez Oncofiles a postavil z nich interaktívny 3D atlas: nález oproti zdravému stavu a návrhy cvikov pre fyzioterapeuta." data-en="Four orthopaedic reports and one MRI description. Claude read them through Oncofiles and built an interactive 3D atlas: the finding next to the healthy state, plus exercise suggestions for a physiotherapist.">Štyri ortopedické správy a jeden popis MR. Claude si ich prečítal cez Oncofiles a postavil z nich interaktívny 3D atlas: nález oproti zdravému stavu a návrhy cvikov pre fyzioterapeuta.</p>
+          <ul class="atlas-points">
+            <li data-sk="Fakty z vašich dokumentov: diagnózy, nálezy a odporúčania s odkazom na zdroj." data-en="Facts from your documents: diagnoses, findings and recommendations, each linked to its source.">Fakty z vašich dokumentov: diagnózy, nálezy a odporúčania s odkazom na zdroj.</li>
+            <li data-sk="Vysvetlenie, ktoré sa hýbe: od postavy cez kĺb až po svaly a šľachy." data-en="An explanation that moves: from the whole body to the joint, then to muscles and tendons.">Vysvetlenie, ktoré sa hýbe: od postavy cez kĺb až po svaly a šľachy.</li>
+            <li data-sk="Príprava na fyzioterapiu: animované cviky s postupom krok za krokom." data-en="Ready for physiotherapy: animated exercises with step-by-step instructions.">Príprava na fyzioterapiu: animované cviky s postupom krok za krokom.</li>
+          </ul>
+          <div class="atlas-cta">
+            <a class="btn" href="/pouzitie/pohybovy-atlas" data-sk-href="/pouzitie/pohybovy-atlas" data-en-href="/use-cases/movement-atlas" data-sk="Pozrieť, ako to vzniklo" data-en="See how it was made">Pozrieť, ako to vzniklo</a>
+            <a href="/movement-atlas" data-sk="Vyskúšať interaktívny atlas" data-en="Try the interactive atlas">Vyskúšať interaktívny atlas</a>
+            <small data-sk="" data-en="(the atlas interface is in Slovak only)"></small>
+          </div>
+          <p class="atlas-fine" data-sk="Skutočný prípad autora Oncofiles, zverejnený z jeho vlastného rozhodnutia. Nie je to vymyslená pacientka z ukážky." data-en="A real case from the author of Oncofiles, published by his own choice. This is not the invented patient from the demo.">Skutočný prípad autora Oncofiles, zverejnený z jeho vlastného rozhodnutia. Nie je to vymyslená pacientka z ukážky.</p>
+          <p class="atlas-fine" data-sk="Model je schematický, zostavený z textu správ, nie zo snímok. Cviky sú bežné príklady na posúdenie fyzioterapeutom, nie predpis ani lekárska rada. Atlas nenahrádza lekára ani fyzioterapeuta." data-en="The model is schematic, built from the text of the reports, not from scans. The exercises are common examples for a physiotherapist to review, not a prescription or medical advice. The atlas does not replace a doctor or a physiotherapist.">Model je schematický, zostavený z textu správ, nie zo snímok. Cviky sú bežné príklady na posúdenie fyzioterapeutom, nie predpis ani lekárska rada. Atlas nenahrádza lekára ani fyzioterapeuta.</p>
+        </div>
+        <figure class="atlas-video">
+          <video id="atlas-video" controls muted playsinline preload="metadata" width="1080" height="1080" poster="/movement-atlas/poster-sk.jpg" src="/movement-atlas/video-sk.mp4" data-sk-src="/movement-atlas/video-sk.mp4" data-en-src="/movement-atlas/video-en.mp4" data-sk-poster="/movement-atlas/poster-sk.jpg" data-en-poster="/movement-atlas/poster-en.jpg" aria-describedby="atlas-video-alt" aria-label="Video: ukážka pohybového atlasu" data-sk-label="Video: ukážka pohybového atlasu" data-en-label="Video: the movement atlas in use"></video>
+          <figcaption id="atlas-video-alt" data-sk="Video (82 sekúnd, bez zvuku) prejde tri oblasti: driekovú chrbticu, pravé koleno a ľavé rameno. Pri každej strieda Petrov nález so zdravým stavom, najprv na úrovni kĺbu a kostí, potom svalov a šliach, a ukáže dva animované cviky." data-en="The video (82 seconds, no sound) goes through three areas: the lower back, the right knee and the left shoulder. For each one it alternates Peter&#x27;s finding with the healthy state, first at the level of the joint and bones, then muscles and tendons, and shows two animated exercises.">Video (82 sekúnd, bez zvuku) prejde tri oblasti: driekovú chrbticu, pravé koleno a ľavé rameno. Pri každej strieda Petrov nález so zdravým stavom, najprv na úrovni kĺbu a kostí, potom svalov a šliach, a ukáže dva animované cviky.</figcaption>
+        </figure>
+      </div>
+    </section>
+
     <!-- 5. Privacy -->
     <section class="block" id="privacy">
       <div class="wrap grid">
@@ -1383,6 +1429,10 @@ Nič sa nemaže, len presúva do koša.
           <details>
             <summary><h3 data-sk="Môžem si Oncofiles prevádzkovať sám?" data-en="Can I self-host Oncofiles?">Môžem si Oncofiles prevádzkovať sám?</h3></summary>
             <div class="a"><p><span data-sk="Áno. Kód je otvorený pod licenciou MIT. Potrebujete Python 3.12+, vlastné prístupové údaje ku Google API a lokálny model s OpenAI-kompatibilným rozhraním (napríklad LM Studio)." data-en="Yes. The code is open under the MIT license. You need Python 3.12+, your own Google API credentials and a local model with an OpenAI-compatible endpoint (for example LM Studio).">Áno. Kód je otvorený pod licenciou MIT. Potrebujete Python 3.12+, vlastné prístupové údaje ku Google API a lokálny model s OpenAI-kompatibilným rozhraním (napríklad LM Studio).</span> <a href="https://github.com/peter-fusek/oncofiles" rel="noreferrer noopener" data-sk="Zdrojový kód na GitHube" data-en="Source code on GitHub">Zdrojový kód na GitHube</a></p></div>
+          </details>
+          <details>
+            <summary><h3 data-sk="Je Oncofiles len pre onkologických pacientov?" data-en="Is Oncofiles only for oncology patients?">Je Oncofiles len pre onkologických pacientov?</h3></summary>
+            <div class="a"><p><span data-sk="Nie. Oncofiles má aj všeobecný profil pre človeka, ktorý si chce držať poriadok v bežných nálezoch. Autor Oncofiles si z vlastných ortopedických správ nechal v Claude postaviť interaktívny 3D atlas chrbta, kolena a ramena s návrhmi cvikov pre fyzioterapeuta. Model je schematický a nenahrádza lekára ani fyzioterapeuta." data-en="No. Oncofiles also has a general profile for a person who wants to keep everyday findings in order. The author of Oncofiles had Claude build an interactive 3D atlas of his lower back, knee and shoulder from his own orthopaedic reports, with exercise suggestions for a physiotherapist. The model is schematic and does not replace a doctor or a physiotherapist.">Nie. Oncofiles má aj všeobecný profil pre človeka, ktorý si chce držať poriadok v bežných nálezoch. Autor Oncofiles si z vlastných ortopedických správ nechal v Claude postaviť interaktívny 3D atlas chrbta, kolena a ramena s návrhmi cvikov pre fyzioterapeuta. Model je schematický a nenahrádza lekára ani fyzioterapeuta.</span> <a href="/pouzitie/pohybovy-atlas" data-sk-href="/pouzitie/pohybovy-atlas" data-en-href="/use-cases/movement-atlas" data-sk="Pozrieť, ako to vzniklo" data-en="See how it was made">Pozrieť, ako to vzniklo</a></p></div>
           </details>
           <details>
             <summary><h3 data-sk="Poskytuje Oncofiles lekárske rady?" data-en="Does Oncofiles give medical advice?">Poskytuje Oncofiles lekárske rady?</h3></summary>
@@ -1617,6 +1667,16 @@ Nič sa nemaže, len presúva do koša.
       document.querySelectorAll('[data-' + l + '-alt]').forEach(function (el) { el.setAttribute('alt', el.getAttribute('data-' + l + '-alt')); });
       document.querySelectorAll('[data-' + l + '-label]').forEach(function (el) { el.setAttribute('aria-label', el.getAttribute('data-' + l + '-label')); });
       document.querySelectorAll('[data-' + l + '-title]').forEach(function (el) { el.setAttribute('title', el.getAttribute('data-' + l + '-title')); });
+      document.querySelectorAll('[data-' + l + '-href]').forEach(function (el) { el.setAttribute('href', el.getAttribute('data-' + l + '-href')); });
+      // The showcase video exists once per language; swap only when it differs
+      // (a reload would stop a playing video).
+      document.querySelectorAll('video[data-' + l + '-src]').forEach(function (v) {
+        var src = v.getAttribute('data-' + l + '-src');
+        if (v.getAttribute('src') === src) return;
+        v.setAttribute('poster', v.getAttribute('data-' + l + '-poster'));
+        v.setAttribute('src', src);
+        v.load();
+      });
       // The hero files fly to rows measured in the current language; names
       // change length when the language flips, so measure again.
       restartStage();
