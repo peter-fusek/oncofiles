@@ -36,7 +36,27 @@ EXTRACT_SOURCE = "curated-extract"
 # rule re-extraction of labs never deletes them, and lab corroboration,
 # date-conflict checks and the unverified metric never see them.
 LLM_CLINICAL_FAMILY = "llm-clinical"
-_NOT_LLM_CLINICAL = f"COALESCE(extracted_by, '') NOT LIKE '{LLM_CLINICAL_FAMILY}%'"
+# extracted_by prefix of the LLM lab writer (#714 phase 2b for labs,
+# ``curated/lab_store.py``). Its rows are lab facts, but they belong to that
+# writer alone: the rule re-extraction never deletes them (and the lab writer
+# never deletes a rule fact), and corroboration, date-conflict checks, re-reads,
+# the unverified metric and the shadow comparison never see them.
+LLM_LAB_FAMILY = "llm-lab"
+LLM_FAMILIES = (LLM_CLINICAL_FAMILY, LLM_LAB_FAMILY)
+
+
+def not_llm_sql(column: str = "extracted_by") -> str:
+    """SQL condition: a row of the rule parsers (or manual / legacy), not of an
+    LLM writer family."""
+    return " AND ".join(f"COALESCE({column}, '') NOT LIKE '{f}%'" for f in LLM_FAMILIES)
+
+
+_NOT_LLM = not_llm_sql()
+LLM_LAB_SOURCE = "curated-llm-lab"
+
+
+def is_llm_family(extracted_by: str | None) -> bool:
+    return str(extracted_by or "").startswith(LLM_FAMILIES)
 
 
 _MAX_CORRECTION_CHAIN = 50  # corrections of one fact followed back (#741); a guard, not a limit
@@ -240,7 +260,13 @@ class FactsMixin:
         return out
 
     async def replace_document_facts(
-        self, *, patient_id: str, document_id: int, facts: list[dict], extracted_by: str
+        self,
+        *,
+        patient_id: str,
+        document_id: int,
+        facts: list[dict],
+        extracted_by: str,
+        family: str | None = None,
     ) -> dict:
         """Re-extraction of one document: soft-delete its machine facts, insert new ones.
 
@@ -263,18 +289,36 @@ class FactsMixin:
         the same fact extracted again gets the same id and the next
         ``version_id``; the soft-deleted row keeps the id as its older version.
         A kept verified row without an id gets the one readers already saw.
+
+        ``family`` selects whose rows are replaced. ``None`` (the rule parsers)
+        replaces every row of the document that no LLM writer family wrote;
+        ``LLM_LAB_FAMILY`` (only ``curated/lab_store.py``, #714) replaces only
+        that family's rows, salts the fact ids with the family name and returns
+        the inserted row ids under ``inserted`` (for provenance). Each side
+        never touches the other's rows, and ``extracted_by`` must belong to
+        the family (checked here, not trusted).
         """
         from oncofiles.curated.facts_rules import range_window
 
+        if family is None:
+            if is_llm_family(extracted_by):
+                raise ValueError("an LLM writer family must pass its family")
+            mine = _NOT_LLM
+        elif family == LLM_LAB_FAMILY:
+            if not str(extracted_by or "").startswith(LLM_LAB_FAMILY + "-v"):
+                raise ValueError("extracted_by is not in the llm-lab family")
+            mine = f"extracted_by LIKE '{LLM_LAB_FAMILY}%'"
+        else:
+            raise ValueError(f"unknown writer family {family!r}")
         async with self.db.execute(
             "SELECT id, code, param, occurred_at, page_number, evidence, metadata_json, "
             "verification, fhir_id, version_id, value_num, value_text FROM clinical_records "
             "WHERE patient_id = ? AND source_document_id = ? AND deleted_at IS NULL "
-            f"AND {_NOT_LLM_CLINICAL} ORDER BY id",
+            f"AND {mine} ORDER BY id",
             (patient_id, document_id),
         ) as cur:
             existing = _rows(await cur.fetchall())
-        current_ids = fact_identity.ids_for_rows(patient_id, document_id, existing)
+        current_ids = fact_identity.ids_for_rows(patient_id, document_id, existing, family=family)
         kept = [r for r in existing if r["verification"] in PROTECTED_VERIFICATION]
         protected = {(r["code"], r["occurred_at"]) for r in kept}
         older = await self._older_versions(
@@ -297,8 +341,8 @@ class FactsMixin:
                     )
                 continue
             prev_version[fid] = max(prev_version.get(fid, 0), r["version_id"] or 1)
-            same = (fact_identity.row_key(patient_id, document_id, r), r["value_num"],
-                    r["value_text"])  # fmt: skip
+            same = (fact_identity.row_key(patient_id, document_id, r, family=family),
+                    r["value_num"], r["value_text"])  # fmt: skip
             before.setdefault(same, set()).add(fid)
             await self.db.execute(
                 f"UPDATE clinical_records SET deleted_at = {_NOW}, deleted_by = ?, "
@@ -322,7 +366,9 @@ class FactsMixin:
 
         # #741: the id each new fact would get if no row were kept (the insert
         # path's helper, nothing taken), and the ids the kept rows stand for.
-        natural_ids = fact_identity.ids_for_new_facts(patient_id, document_id, facts, set())
+        natural_ids = fact_identity.ids_for_new_facts(
+            patient_id, document_id, facts, set(), family=family
+        )
         incoming = set(natural_ids)
         kept_ids = {current_ids[r["id"]] for r in kept}
         original_days: dict[tuple, set[str]] = {}
@@ -352,11 +398,15 @@ class FactsMixin:
                 by_identity += 1
                 continue
             to_insert.append(f)
-        new_ids = fact_identity.ids_for_new_facts(patient_id, document_id, to_insert, taken)
+        new_ids = fact_identity.ids_for_new_facts(
+            patient_id, document_id, to_insert, taken, family=family
+        )
+        source = EXTRACT_SOURCE if family is None else LLM_LAB_SOURCE
+        inserted: list[tuple[int, dict]] = []
         added = churn = 0
         for f, fid in zip(to_insert, new_ids, strict=True):
-            same = (fact_identity.fact_key(patient_id, document_id, f), f.get("value_num"),
-                    f.get("value_text"))  # fmt: skip
+            same = (fact_identity.fact_key(patient_id, document_id, f, family=family),
+                    f.get("value_num"), f.get("value_text"))  # fmt: skip
             if same in before and fid not in before[same]:
                 churn += 1  # the same fact moved to another ordinal: its id changed
             cur = await self.db.execute(
@@ -374,11 +424,12 @@ class FactsMixin:
                     f.get("unit_canonical"), f.get("flag"), f.get("encounter_id"),
                     f.get("practitioner_id"), f.get("organization_id"), f.get("department_id"),
                     f.get("verification", "machine"), extracted_by, f.get("confidence"),
-                    EXTRACT_SOURCE, json.dumps(f.get("metadata") or {}, ensure_ascii=False),
+                    source, json.dumps(f.get("metadata") or {}, ensure_ascii=False),
                     fid, prev_version.get(fid, 0) + 1,
                 ),
             )  # fmt: skip
             await self._audit(cur.lastrowid, "create", f, f"extracted by {extracted_by}")
+            inserted.append((cur.lastrowid, f))
             added += 1
         await self.db.commit()
         if churn:
@@ -395,8 +446,11 @@ class FactsMixin:
                 document_id,
                 by_identity,
             )
-        return {"added": added, "removed": removed, "kept_verified": len(protected),
-                "id_churn": churn, "skipped_by_identity": by_identity}  # fmt: skip
+        out = {"added": added, "removed": removed, "kept_verified": len(protected),
+               "id_churn": churn, "skipped_by_identity": by_identity}  # fmt: skip
+        if family is not None:
+            out["inserted"] = inserted
+        return out
 
     async def fact_verification_rows(self, *, patient_id: str) -> list[dict]:
         """Active facts with what corroboration and the unverified metric need."""
@@ -404,8 +458,22 @@ class FactsMixin:
             "SELECT id, source_document_id, code, occurred_at, value_canonical, "
             "unit_canonical, verification, metadata_json, page_number FROM clinical_records "
             "WHERE patient_id = ? AND deleted_at IS NULL AND code IS NOT NULL "
-            f"AND {_NOT_LLM_CLINICAL}",
+            f"AND {_NOT_LLM}",
             (patient_id,),
+        ) as cur:
+            return _rows(await cur.fetchall())
+
+    async def coded_facts_outside_family(
+        self, *, patient_id: str, document_id: int, family: str
+    ) -> list[dict]:
+        """Active coded facts of one document that ``family`` did not write
+        (rule facts, other extractors, manual rows): the LLM lab writer never
+        stores a value next to one of them (#714). Codes and days only."""
+        async with self.db.execute(
+            "SELECT code, occurred_at, metadata_json, verification FROM clinical_records "
+            "WHERE patient_id = ? AND source_document_id = ? AND deleted_at IS NULL "
+            "AND code IS NOT NULL AND COALESCE(extracted_by, '') NOT LIKE ? ORDER BY id",
+            (patient_id, document_id, family + "%"),
         ) as cur:
             return _rows(await cur.fetchall())
 
