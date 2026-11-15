@@ -935,7 +935,24 @@
 
     /* #563 folder browser */
     .wizard-folder-path { color: var(--text-muted); font-size: 0.8125rem; margin-bottom: 0.5rem; overflow-wrap: anywhere; }
-    .wizard-folder-nav { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 1rem; }
+    .wizard-folder-nav { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 0.5rem; }
+    /* #835 folder list: rows navigate into a subfolder; the breadcrumb is what gets connected */
+    .wizard-folder-hint { color: var(--text-muted); font-size: 0.75rem; margin: 0.25rem 0 0.375rem; }
+    .wizard-folder-list { list-style: none; margin: 0 0 0.5rem; padding: 0; border: 1px solid var(--border); border-radius: 0.375rem; max-height: 13rem; overflow-y: auto; }
+    .wizard-folder-list:empty { display: none; }
+    .wizard-folder-list[aria-busy="true"] { opacity: 0.6; }
+    .wizard-folder-list li + li { border-top: 1px solid var(--border); }
+    .wizard-folder-row { display: flex; width: 100%; justify-content: space-between; align-items: center; gap: 0.75rem; background: var(--surface); border: none; padding: 0.5rem 0.75rem; font: inherit; font-size: 0.875rem; color: var(--text); text-align: left; cursor: pointer; }
+    .wizard-folder-row:hover, .wizard-folder-row:focus-visible { background: var(--surface-hover); }
+    .wizard-folder-row-name { overflow-wrap: anywhere; min-width: 0; }
+    .wizard-folder-row-open { color: var(--accent); font-size: 0.8125rem; white-space: nowrap; flex-shrink: 0; }
+    .wizard-btn-link { background: none; border: none; color: var(--accent); font: inherit; font-size: 0.8125rem; cursor: pointer; padding: 0.25rem 0; margin-bottom: 0.75rem; text-align: left; }
+    .wizard-btn-link:hover, .wizard-btn-link:focus-visible { text-decoration: underline; }
+    .wizard-folder-target { font-size: 0.875rem; margin-top: 1rem; overflow-wrap: anywhere; }
+    .wizard-folder-target + .wizard-actions { margin-top: 0.75rem; }
+    .wizard-folder-note { color: var(--text-muted); font-size: 0.8125rem; border-left: 3px solid var(--accent); padding-left: 0.625rem; margin-top: 1rem; }
+    .wizard-folder-confirm { border: 1px solid var(--amber); border-radius: 0.5rem; background: rgba(245, 158, 11, 0.08); padding: 0.875rem 1rem; margin-top: 1rem; font-size: 0.875rem; line-height: 1.5; }
+    .wizard-folder-confirm .wizard-actions { flex-wrap: wrap; }
 
     /* #573 curated operations panel */
     .curated-ops-note { color: var(--text-muted); font-size: 0.8125rem; margin: 0 0 0.75rem; }

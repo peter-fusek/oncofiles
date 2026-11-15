@@ -1076,6 +1076,7 @@
       wizardPatientUuid = '';
       wizardBearerToken = '';
       wizardCurrentStep = 2;
+      document.getElementById('wiz-folder-link').value = '';  // a pasted link wins, so never keep a stale one
       for (var i = 1; i <= 4; i++) {
         document.getElementById('wiz-step-' + i).style.display = i === 2 ? 'block' : 'none';
       }
@@ -1117,6 +1118,7 @@
       document.getElementById('wiz-diagnosis').value = '';
       document.getElementById('wiz-email').value = '';
       document.getElementById('wiz-lang').value = 'sk';
+      document.getElementById('wiz-folder-link').value = '';  // a pasted link wins, so never keep a stale one
       document.getElementById('wiz-step1-error').style.display = 'none';
       // Show step 1, hide others
       for (var i = 1; i <= 4; i++) {
@@ -1165,12 +1167,17 @@
       }
     });
 
+    // The button carries data-sk / data-en; put its own label back in the active language.
+    function wizardResetCreateBtn(btn) {
+      btn.textContent = btn.getAttribute(dashLang === 'sk' ? 'data-sk' : 'data-en');
+    }
+
     async function wizardStep1Submit() {
       var btn = document.getElementById('wiz-create-btn');
       var errEl = document.getElementById('wiz-step1-error');
       errEl.style.display = 'none';
       btn.disabled = true;
-      btn.textContent = 'Creating...';
+      btn.textContent = dashLang === 'sk' ? 'Vytváram…' : 'Creating…';
 
       var name = document.getElementById('wiz-name').value.trim();
       var pid = document.getElementById('wiz-id').value.trim().toLowerCase();
@@ -1178,7 +1185,7 @@
         errEl.textContent = 'Patient name and ID are required.';
         errEl.style.display = 'block';
         btn.disabled = false;
-        btn.textContent = 'Create Patient';
+        wizardResetCreateBtn(btn);
         return;
       }
 
@@ -1213,7 +1220,7 @@
             : 'This patient already exists — pick a different ID.';
           errEl.style.display = 'block';
           btn.disabled = false;
-          btn.textContent = 'Create Patient';
+          wizardResetCreateBtn(btn);
           return;
         }
         if (resp.status === 400) {
@@ -1221,7 +1228,7 @@
           errEl.textContent = data.error || 'Invalid input';
           errEl.style.display = 'block';
           btn.disabled = false;
-          btn.textContent = 'Create Patient';
+          wizardResetCreateBtn(btn);
           return;
         }
         if (!resp.ok) {
@@ -1230,7 +1237,7 @@
             : 'Database briefly unavailable, please try again in ~30s. (' + (data.error || resp.status) + ')';
           errEl.style.display = 'block';
           btn.disabled = false;
-          btn.textContent = 'Create Patient';
+          wizardResetCreateBtn(btn);
           return;
         }
         wizardPatientId = pid;
@@ -1246,7 +1253,7 @@
         errEl.style.display = 'block';
       }
       btn.disabled = false;
-      btn.textContent = 'Create Patient';
+      wizardResetCreateBtn(btn);
     }
 
     function wizardStep2Auth() {
@@ -1258,15 +1265,54 @@
       document.getElementById('wiz-step2-auth-done').style.display = 'flex';
     }
 
-    // #563: navigable folder browser — parent stack for "up" navigation.
+    // #563 / #835: folder browser. The folder that gets connected is always the
+    // one being browsed (shown in the breadcrumb); subfolders are a list of rows
+    // that navigate into them, built with createElement + textContent only.
     var wizardFolderParent = 'root';
+    var wizardFolderName = 'My Drive';
     var wizardFolderStack = [];
+    var wizardFolderInfo = null;     // "current" from /api/gdrive-folders
+    var wizardFolderNewMode = false;
+    var wizardFolderPending = null;  // request body shown in the confirmation box
+    var wizardFolderLoading = false;
+
+    // Bilingual text on a dynamic element: keeps data-sk / data-en so that
+    // applyDashLang() can switch it later.
+    function wizSetBi(el, sk, en) {
+      el.setAttribute('data-sk', sk);
+      el.setAttribute('data-en', en);
+      el.textContent = dashLang === 'sk' ? sk : en;
+    }
+
+    // Plain (not translated) text, e.g. a folder path or a server error.
+    function wizSetPlain(el, text) {
+      el.removeAttribute('data-sk');
+      el.removeAttribute('data-en');
+      el.textContent = text;
+    }
+
+    function wizShow(id, on) {
+      var el = document.getElementById(id);
+      if (el) el.style.display = on ? '' : 'none';
+    }
+
+    function wizardFolderStatus(sk, en, color) {
+      var el = document.getElementById('wiz-step2-folder-status');
+      el.style.color = color || 'var(--text-muted)';
+      if (en === undefined) wizSetPlain(el, sk); else wizSetBi(el, sk, en);
+      el.style.display = 'block';
+    }
 
     async function wizardStep2LoadFolders(parentId, pushEntry) {
+      if (wizardFolderLoading) return;
       document.getElementById('wiz-step2-auth').style.display = 'none';
       document.getElementById('wiz-step2-folder').style.display = 'block';
       var parent = parentId || 'root';
       var statusEl = document.getElementById('wiz-step2-folder-status');
+      var list = document.getElementById('wiz-folder-list');
+      wizardFolderLoading = true;
+      list.setAttribute('aria-busy', 'true');
+      wizardFolderStatus('Načítavam priečinky…', 'Loading folders…');
 
       try {
         var resp = await fetch(
@@ -1276,91 +1322,226 @@
         );
         if (!resp.ok) {
           var err = await resp.json();
-          statusEl.textContent = err.error || 'Failed to load folders';
-          statusEl.style.display = 'block';
+          if (err.error) wizardFolderStatus(err.error);
+          else wizardFolderStatus('Priečinky sa nepodarilo načítať.', 'Failed to load folders.');
           return;
         }
         var data = await resp.json();
         if (!parentId) wizardFolderStack = [];  // fresh entry: reset breadcrumb
         if (pushEntry) wizardFolderStack.push(pushEntry);  // only after a successful load
         wizardFolderParent = data.parent_id || parent;
+        wizardFolderName = data.parent_name || 'My Drive';
+        wizardFolderInfo = data.current || null;
         document.getElementById('wiz-folder-path').textContent =
-          wizardFolderStack.map(function(f) { return f.name; }).concat([data.parent_name || 'My Drive']).join(' / ');
+          wizardFolderStack.map(function(f) { return f.name; }).concat([wizardFolderName]).join(' / ');
         document.getElementById('wiz-folder-up').hidden = wizardFolderParent === 'root';
 
-        var select = document.getElementById('wiz-folder-select');
-        clearEl(select);
-
-        // "Create new" option first (created inside the folder being browsed)
-        var newOpt = document.createElement('option');
-        newOpt.value = '__new__';
-        newOpt.textContent = '+ Create new folder';
-        select.appendChild(newOpt);
-
-        // The folder being browsed itself (not selectable at My Drive root)
-        if (wizardFolderParent !== 'root') {
-          var hereOpt = document.createElement('option');
-          hereOpt.value = wizardFolderParent;
-          hereOpt.textContent = '\u2713 ' + (data.parent_name || wizardFolderParent);
-          select.appendChild(hereOpt);
-        }
-
-        (data.folders || []).forEach(function(f) {
-          var opt = document.createElement('option');
-          opt.value = f.id;
-          opt.textContent = f.name;
-          opt.dataset.name = f.name;
-          select.appendChild(opt);
+        // Subfolders only: the browsed folder itself is the breadcrumb, never a row.
+        clearEl(list);
+        var folders = data.folders || [];
+        folders.forEach(function(f) {
+          var li = document.createElement('li');
+          var row = document.createElement('button');
+          row.type = 'button';
+          row.className = 'wizard-folder-row';
+          row.dataset.action = 'wizardFolderOpen|@this';
+          row.dataset.folderId = f.id;
+          row.dataset.folderName = f.name;
+          var name = document.createElement('span');
+          name.className = 'wizard-folder-row-name';
+          name.textContent = f.name;
+          var open = document.createElement('span');
+          open.className = 'wizard-folder-row-open';
+          wizSetBi(open, 'Otvoriť ▸', 'Open ▸');
+          row.appendChild(name);
+          row.appendChild(open);
+          li.appendChild(row);
+          list.appendChild(li);
         });
-        if (wizardFolderParent !== 'root') select.value = wizardFolderParent;
+        wizShow('wiz-folder-list-label', folders.length > 0);
+        wizShow('wiz-folder-empty', folders.length === 0);
 
         var patientName = document.getElementById('wiz-name').value.trim();
         document.getElementById('wiz-folder-name').value = 'Oncofiles - ' + patientName;
         statusEl.style.display = 'none';
-        wizardFolderChanged();
+        wizardFolderNewMode = false;
+        wizardFolderConfirmBack();
       } catch (e) {
-        statusEl.textContent = 'Error: ' + e.message;
-        statusEl.style.display = 'block';
+        wizardFolderStatus((dashLang === 'sk' ? 'Chyba: ' : 'Error: ') + e.message);
+      } finally {
+        wizardFolderLoading = false;
+        list.removeAttribute('aria-busy');
       }
     }
 
-    function wizardFolderOpen() {
-      var select = document.getElementById('wiz-folder-select');
-      var opt = select.options[select.selectedIndex];
-      if (!opt || opt.value === '__new__' || opt.value === wizardFolderParent) return;
-      var here = { id: wizardFolderParent, name: document.getElementById('wiz-folder-path').textContent.split(' / ').pop() };
-      wizardStep2LoadFolders(opt.value, here);
+    function wizardFolderOpen(row) {
+      if (!row || !row.dataset.folderId) return;
+      wizardStep2LoadFolders(row.dataset.folderId, { id: wizardFolderParent, name: wizardFolderName });
     }
 
     function wizardFolderUp() {
+      if (wizardFolderLoading) return;
       var prev = wizardFolderStack.pop();
       // Going up to My Drive root passes no id, which also resets the stack.
       wizardStep2LoadFolders(prev && prev.id !== 'root' ? prev.id : undefined);
     }
 
-    function wizardFolderChanged() {
-      var val = document.getElementById('wiz-folder-select').value;
-      document.getElementById('wiz-folder-new').style.display = val === '__new__' ? 'block' : 'none';
-      document.getElementById('wiz-folder-open').disabled = val === '__new__' || val === wizardFolderParent;
+    function wizardFolderNewToggle() {
+      wizardFolderNewMode = !wizardFolderNewMode;
+      wizardFolderTargetUpdate();
+      if (wizardFolderNewMode) document.getElementById('wiz-folder-name').focus();
     }
 
-    async function wizardStep2SetFolder() {
-      var btn = document.getElementById('wiz-folder-btn');
-      var statusEl = document.getElementById('wiz-step2-folder-status');
-      btn.disabled = true;
-      statusEl.textContent = 'Setting up folder structure...';
-      statusEl.style.display = 'block';
+    // Says in plain words what the primary button will connect.
+    function wizardFolderTargetUpdate() {
+      var info = wizardFolderInfo || {};
+      var link = document.getElementById('wiz-folder-link').value.trim();
+      var atRoot = wizardFolderParent === 'root';
+      var path = document.getElementById('wiz-folder-path').textContent;
+      var label = document.getElementById('wiz-folder-target-label');
+      var target = document.getElementById('wiz-folder-target-path');
+      var canConnect = true;
+      if (info.curated) wizardFolderNewMode = false;  // nothing is created inside a README folder
+      if (link) {
+        wizSetBi(label, 'Pripojí sa priečinok z vloženého odkazu.', 'The folder from the pasted link will be connected.');
+        target.textContent = '';
+      } else if (wizardFolderNewMode) {
+        wizSetBi(label, 'Vytvorí a pripojí sa nový priečinok:', 'A new folder will be created and connected:');
+        target.textContent = path + ' / ' + (document.getElementById('wiz-folder-name').value.trim() || 'Oncofiles');
+      } else if (atRoot) {
+        wizSetBi(label, 'Najprv otvorte priečinok. Samotný My Drive sa pripojiť nedá.', 'Open a folder first. My Drive itself cannot be connected.');
+        target.textContent = '';
+        canConnect = false;
+      } else {
+        wizSetBi(label, 'Pripojí sa tento priečinok:', 'Connect this folder:');
+        target.textContent = path;
+      }
+      document.getElementById('wiz-folder-btn').disabled = !canConnect;
+      wizShow('wiz-folder-new', wizardFolderNewMode);
+      wizShow('wiz-folder-new-toggle', !info.curated);
+      var toggle = document.getElementById('wiz-folder-new-toggle');
+      if (wizardFolderNewMode) wizSetBi(toggle, '× Nevytvárať nový priečinok', '× Do not create a new folder');
+      else wizSetBi(toggle, '+ Vytvoriť tu nový priečinok', '+ Create a new folder here');
+      wizShow('wiz-folder-curated-note', !!info.curated && !link);
+    }
 
-      var selectVal = document.getElementById('wiz-folder-select').value;
+    // In-wizard box (not a browser dialog). `info` is either "current" from
+    // /api/gdrive-folders or the server's 409 container_folder body. Variants:
+    //  - hard: a subfolder is another patient's README folder -> "Back" only;
+    //  - tooMany: too many subfolders to check them all -> "Back" only;
+    //  - retry: the check could not run -> "Back" + "Try again";
+    //  - otherwise a UX hint for an ordinary folder with subfolders ("did you
+    //    mean one of them?") -> "Back" + "Connect anyway".
+    // The first three are refusals the server enforces; nothing the wizard
+    // sends can lift them. "Connect anyway" exists only for the hint.
+    function wizardFolderAskConfirm(body, info) {
+      wizardFolderPending = body;
+      var n = info.subfolder_count || 0;
+      var text = document.getElementById('wiz-folder-confirm-text');
+      var reason = info.reason || info.container_reason;
+      var hard = reason === 'curated_children' || (info.curated_children || 0) > 0;
+      var tooMany = !hard && reason === 'too_many_to_check';
+      var retry = !hard && reason === 'check_failed';
+      var blocked = hard || tooMany || retry || !!reason;
+      wizShow('wiz-folder-confirm-go', !blocked);
+      wizShow('wiz-folder-confirm-retry', retry);
+      if (hard) {
+        wizSetBi(text,
+          'Tento priečinok sa nedá pripojiť, pretože obsahuje priečinky iných pacientov (podpriečinky s vlastným kontraktom README). Vráťte sa a otvorte priečinok konkrétneho pacienta.',
+          'This folder cannot be connected because it contains other patients\' folders (subfolders with their own README contract). Go back and open the folder of the patient you mean.');
+      } else if (tooMany) {
+        wizSetBi(text,
+          'Tento priečinok má príliš veľa podpriečinkov na bezpečnú kontrolu. Otvorte priečinok konkrétneho pacienta alebo vložte odkaz naň.',
+          'This folder has too many subfolders to check safely. Open the folder of the patient you mean, or paste its link.');
+      } else if (blocked) {
+        wizSetBi(text,
+          'Tento priečinok sa teraz nepodarilo skontrolovať. Skúste to o chvíľu znova.',
+          'Could not check this folder right now. Try again in a moment.');
+      } else {
+        wizSetBi(text,
+          'Podpriečinky v tomto priečinku: ' + n + '. Oncofiles v ňom vytvorí svoje priečinky kategórií. Ak ste chceli niektorý z podpriečinkov, najprv ho otvorte.',
+          'This folder contains ' + n + (n === 1 ? ' subfolder' : ' subfolders') + '. Oncofiles will create its category folders inside it. If you meant one of the subfolders, open it first.');
+      }
+      wizSetBi(document.getElementById('wiz-folder-confirm-path-label'),
+        blocked ? 'Priečinok:' : 'Pripojil by sa priečinok:',
+        blocked ? 'Folder:' : 'Folder that would be connected:');
+      var pathEl = document.getElementById('wiz-folder-confirm-path');
+      if (body.folder_id && body.folder_id !== wizardFolderParent) {
+        wizSetBi(pathEl, 'priečinok z vloženého odkazu', 'the folder from the pasted link');
+      } else {
+        wizSetPlain(pathEl, document.getElementById('wiz-folder-path').textContent);
+      }
+      document.getElementById('wiz-folder-confirm-go').disabled = false;
+      document.getElementById('wiz-step2-folder-status').style.display = 'none';
+      wizShow('wiz-folder-main', false);
+      wizShow('wiz-folder-confirm', true);
+      document.getElementById('wiz-folder-confirm').scrollIntoView({ block: 'nearest' });
+    }
+
+    function wizardFolderConfirmBack() {
+      wizardFolderPending = null;
+      wizShow('wiz-folder-confirm', false);
+      wizShow('wiz-folder-main', true);
+      wizardFolderTargetUpdate();
+    }
+
+    // "Try again" of the check_failed variant: run the check once more. A
+    // pasted link is re-sent (the server checks it); a browsed folder is
+    // re-loaded, and the box comes back if its check fails again.
+    async function wizardFolderConfirmRetry() {
+      var body = wizardFolderPending;
+      if (!body) return;
+      if (body.folder_id && body.folder_id !== wizardFolderParent) {
+        wizardFolderSend(body);
+        return;
+      }
+      var parent = wizardFolderParent;
+      await wizardStep2LoadFolders(parent === 'root' ? undefined : parent);
+      var info = wizardFolderInfo || {};
+      if (wizardFolderParent === parent && info.container_reason === 'check_failed') {
+        wizardFolderAskConfirm(body, info);
+      }
+    }
+
+    function wizardFolderConfirmGo() {
+      if (!wizardFolderPending) return;
+      // The user answered the "did you mean a subfolder?" hint. No flag is
+      // sent: the server decides on its own whether the folder may be connected.
+      wizardFolderSend(wizardFolderPending);
+    }
+
+    function wizardStep2SetFolder() {
       var linkVal = document.getElementById('wiz-folder-link').value.trim();
       var body = { patient_id: wizardPatientId };
       if (linkVal) {
         body.folder_id = linkVal;  // server parses links and bare ids (#563)
-      } else if (selectVal === '__new__') {
+      } else if (wizardFolderNewMode) {
         body.folder_name = document.getElementById('wiz-folder-name').value.trim() || 'Oncofiles';
         body.parent_id = wizardFolderParent;
       } else {
-        body.folder_id = selectVal;
+        if (wizardFolderParent === 'root') return;
+        body.folder_id = wizardFolderParent;
+        var info = wizardFolderInfo || {};
+        if (!info.curated && (info.subfolder_count > 0 || info.container_reason)) {
+          wizardFolderAskConfirm(body, info);
+          return;
+        }
+      }
+      wizardFolderSend(body);
+    }
+
+    async function wizardFolderSend(body) {
+      var btn = document.getElementById('wiz-folder-btn');
+      var goBtn = document.getElementById('wiz-folder-confirm-go');
+      var retryBtn = document.getElementById('wiz-folder-confirm-retry');
+      btn.disabled = true;
+      goBtn.disabled = true;
+      retryBtn.disabled = true;
+      wizardFolderStatus('Pripájam priečinok…', 'Connecting the folder…');
+      function unlock() {
+        goBtn.disabled = false;
+        retryBtn.disabled = false;
+        wizardFolderTargetUpdate();  // re-derives the primary button's state
       }
 
       try {
@@ -1370,20 +1551,48 @@
           body: JSON.stringify(body)
         });
         var data = await resp.json();
-        if (!resp.ok) {
-          statusEl.textContent = data.error || 'Failed to set folder';
-          btn.disabled = false;
+        if (resp.status === 409 && data.code === 'container_folder') {
+          // Server-side refusal (e.g. a pasted link the browser knows nothing about).
+          wizardFolderAskConfirm(body, data);
+          unlock();
           return;
         }
-        statusEl.textContent = data.curated
-          ? 'Folder connected. It has its own README.md contract, so no folders were created.'
-          : 'Folder ready! ' + data.subfolders_created + ' category folders created.';
-        statusEl.style.color = 'var(--green)';
+        if (!resp.ok) {
+          if (data.error) wizardFolderStatus(data.error, undefined, 'var(--red)');
+          else wizardFolderStatus('Priečinok sa nepodarilo pripojiť.', 'Failed to connect the folder.', 'var(--red)');
+          unlock();
+          return;
+        }
+        if (data.curated) {
+          wizardFolderStatus(
+            'Priečinok pripojený. Má vlastný kontrakt README.md, preto sa nevytvorili žiadne priečinky.',
+            'Folder connected. It has its own README.md contract, so no folders were created.',
+            'var(--green)');
+        } else {
+          wizardFolderStatus(
+            'Priečinok je pripravený. Vytvorené priečinky kategórií: ' + data.subfolders_created + '.',
+            'Folder ready! ' + data.subfolders_created + ' category folders created.',
+            'var(--green)');
+        }
+        wizardSetStep3Variant(data);
         setTimeout(function() { wizardGoToStep(3); }, 1000);
       } catch (e) {
-        statusEl.textContent = 'Error: ' + e.message;
-        btn.disabled = false;
+        wizardFolderStatus((dashLang === 'sk' ? 'Chyba: ' : 'Error: ') + e.message, undefined, 'var(--red)');
+        unlock();
       }
+    }
+
+    // Step 3 (#835): a curated folder is skipped by the legacy first sync, so it
+    // gets its own text and a single "Continue" instead of "Start First Sync".
+    function wizardSetStep3Variant(data) {
+      var curated = !!(data && data.curated);
+      wizShow('wiz-step3-legacy', !curated);
+      wizShow('wiz-step3-curated', curated);
+      // curated_root === false: the folder only overlaps a README folder
+      // (lies inside one, or was connected as a parent after confirmation).
+      var isRoot = !data || data.curated_root !== false;
+      wizShow('wiz-step3-curated-root', isRoot);
+      wizShow('wiz-step3-curated-overlap', !isRoot);
     }
 
     async function wizardStep3Sync() {
@@ -1864,9 +2073,9 @@
       // Populate token for copy in step 4 (step-2 box uses same variable but different element)
       var tokenEl = document.getElementById('wiz-token-display-4');
       if (tokenEl && wizardBearerToken) {
-        tokenEl.textContent = wizardBearerToken;
+        wizSetPlain(tokenEl, wizardBearerToken);  // no data-sk/en: applyDashLang must not overwrite it
       } else if (tokenEl) {
-        tokenEl.textContent = '(generate via Share button)';
+        wizSetBi(tokenEl, '(vygenerujte cez tlačidlo Zdieľať)', '(generate via Share button)');
       }
     }
 
