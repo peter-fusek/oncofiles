@@ -1149,7 +1149,9 @@
       var url = '/oauth/authorize/drive?patient_id=' + encodeURIComponent(wizardPatientId);
       window.open(url, '_blank');
       var statusEl = document.getElementById('wiz-step2-status');
-      statusEl.textContent = 'Complete the authorization in the new tab, then click below.';
+      wizSetBi(statusEl,
+        'Dokončite autorizáciu v novej karte a potom kliknite nižšie.',
+        'Complete the authorization in the new tab, then click below.');
       statusEl.style.display = 'block';
       document.getElementById('wiz-step2-auth-done').style.display = 'flex';
     }
@@ -2063,11 +2065,14 @@
 
     function showWizardSummary(stats) {
       var el = document.getElementById('wiz-success-summary');
-      var parts = ['Patient "' + esc(wizardPatientId) + '" created.'];
+      // #835: bilingual; textContent only (wizSetBi), so no esc() needed.
+      var sk = 'Pacient „' + wizardPatientId + '“ je vytvorený.';
+      var en = 'Patient "' + wizardPatientId + '" created.';
       if (stats && stats.new > 0) {
-        parts.push(stats.new + ' documents imported.');
+        sk += ' Importované dokumenty: ' + stats.new + '.';
+        en += ' ' + stats.new + ' documents imported.';
       }
-      el.textContent = parts.join(' ');
+      wizSetBi(el, sk, en);
       // Populate token for copy in step 4 (step-2 box uses same variable but different element)
       var tokenEl = document.getElementById('wiz-token-display-4');
       if (tokenEl && wizardBearerToken) {
@@ -2083,8 +2088,11 @@
         navigator.clipboard.writeText(el.textContent).then(function() {
           var btn = el.nextElementSibling;
           if (btn) {
-            btn.textContent = 'Copied!';
-            setTimeout(function() { btn.textContent = 'Copy'; }, 2000);
+            // #835: bilingual; the button's own data-sk / data-en label comes back.
+            btn.textContent = dashLang === 'sk' ? 'Skopírované!' : 'Copied!';
+            setTimeout(function() {
+              btn.textContent = btn.getAttribute(dashLang === 'sk' ? 'data-sk' : 'data-en') || 'Copy';
+            }, 2000);
           }
         });
       }
