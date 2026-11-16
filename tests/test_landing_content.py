@@ -63,7 +63,16 @@ def test_landing_has_no_inline_event_handlers():
 def test_landing_has_one_h1_and_waitlist_cta():
     assert len(re.findall(r"<h1[\s>]", LANDING)) == 1
     assert "spúšťame v novembri 2026" in LANDING
-    assert 'data-nl-source="waitlist"' in LANDING
+    # #849: the hero's call to action leads to the one waitlist form, which
+    # sits in the closing band. #waitlist stays an anchor (the demo, the
+    # dashboard and the use-case pages link to /#waitlist).
+    hero = LANDING[LANDING.index('id="top"') : LANDING.index('id="photos"')]
+    assert '<a class="btn" href="#join"' in hero and "<form" not in hero
+    join = LANDING[LANDING.index('<section class="block" id="join">') :]
+    join = join[: join.index("</section>")]
+    assert LANDING.count("<form ") == 1 and 'data-nl-source="waitlist-bottom"' in join
+    assert 'data-nl-msg="waitlist-bottom"' in join
+    assert LANDING.count('id="waitlist"') == 1 and 'id="waitlist"' in join
 
 
 def test_landing_json_ld_is_valid_and_says_500():

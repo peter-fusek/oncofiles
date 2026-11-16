@@ -503,9 +503,12 @@ def test_landing_meta_description_is_not_oncology_only():
     assert tag.count("aj pre bežné nálezy") == 2  # data-sk and the default content
 
 
-def test_nav_links_to_the_section_on_wide_screens_only():
+def test_nav_links_to_the_chapter_that_holds_the_section():
+    """#849: the bar links the five chapters; the atlas is the third use case."""
     nav = LANDING[LANDING.index('<nav class="top"') : LANDING.index("</nav>")]
-    assert '<a class="wide" href="#atlas"' in nav
+    assert '<a class="wide" href="#use-cases"' in nav
+    chapter = LANDING[LANDING.index('id="use-cases"') : LANDING.index('id="how-it-works"')]
+    assert '<section class="block" id="atlas">' in chapter
 
 
 # ── Sitemap and llms.txt ─────────────────────────────────────────────────
