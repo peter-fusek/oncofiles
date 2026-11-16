@@ -129,6 +129,12 @@ async def gmail_auth_enable(ctx: Context, patient_slug: str | None = None) -> st
         if SCOPE_GMAIL in granted:
             return json.dumps({"status": "already_enabled", "service": "gmail"})
 
+    # #852: a first Google link needs a caller the onboarding gate admits.
+    from oncofiles.onboarding_gate import mcp_google_connect_refusal
+
+    refused = await mcp_google_connect_refusal(db, pid)
+    if refused:
+        return refused
     auth_url = get_auth_url_for_scopes(GMAIL_SCOPES, patient_id=pid)
     return json.dumps(
         {
@@ -175,6 +181,12 @@ async def calendar_auth_enable(ctx: Context, patient_slug: str | None = None) ->
         if SCOPE_CALENDAR in granted:
             return json.dumps({"status": "already_enabled", "service": "calendar"})
 
+    # #852: a first Google link needs a caller the onboarding gate admits.
+    from oncofiles.onboarding_gate import mcp_google_connect_refusal
+
+    refused = await mcp_google_connect_refusal(db, pid)
+    if refused:
+        return refused
     auth_url = get_auth_url_for_scopes(CALENDAR_SCOPES, patient_id=pid)
     return json.dumps(
         {
