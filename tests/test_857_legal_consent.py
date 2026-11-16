@@ -294,7 +294,8 @@ async def test_privacy_matches_the_pipeline():
     assert "keyed hash of your\ne-mail address" in html or "keyed hash of your e-mail" in html
     assert "GDPR Art. 9(2)(a)" in html
     assert "within 30 days" in html
-    assert "only by invitation" in html
+    assert "cannot connect their own Google Drive yet" in html  # ONBOARDING_MODE=closed
+    assert "by invitation first" in html
     assert "general health records" in html
     assert "verification state" in html
     # backups without retention numbers the repo does not document
@@ -317,5 +318,6 @@ async def test_terms_record_consent_and_manual_rights():
     assert "Consent version 2026-11-17" in html
     assert "legal guardian" in html
     assert "within 30 days" in html
-    assert "only by invitation" in html
+    assert "cannot connect their own Google Drive yet" in html  # ONBOARDING_MODE=closed
+    assert "by invitation first" in html
     assert "500 documents per patient" in html

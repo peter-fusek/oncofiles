@@ -2508,7 +2508,8 @@ You can revoke access at any time via
 
 <h2 id="consent">2. Who Can Use Oncofiles, and Consent</h2>
 <ul>
-<li>New users can connect their own Google Drive only by invitation at the moment.</li>
+<li>New users cannot connect their own Google Drive yet. When this opens, it will open
+by invitation first.</li>
 <li>A patient can be someone with cancer or someone who keeps general health records.</li>
 <li>You can create a patient for yourself, or, as a caregiver, for another person. When you
 create a patient you confirm that you are this person, or that you have their consent or
@@ -2565,10 +2566,10 @@ involved:</p>
 <li><strong>Google</strong> — stores your files in your own Google Drive account.</li>
 <li><strong>Your AI assistant</strong> (for example Anthropic's Claude or OpenAI's ChatGPT) —
 only what it requests when you ask (section 3).</li>
-<li><strong>Resend</strong> (e-mail delivery) — if you join the waitlist, your e-mail address is
-used to notify us and to write to you about access. When a patient is created, we receive a
-notification with the patient's display name and the caregiver's e-mail address. No medical
-documents or values are sent.</li>
+<li><strong>Our e-mail provider</strong> (e-mail delivery) — if you join the waitlist, your
+e-mail address is used to notify us and to write to you about access. When a patient is
+created, we receive a notification with the patient's display name and the caregiver's
+e-mail address. No medical documents or values are sent.</li>
 <li><strong>Google Analytics</strong> — only on our public web pages (home page and demo), and
 only after you accept analytics cookies in the cookie banner. It measures visits (pages viewed,
 approximate location, device, where you came from). The logged-in app does not load Google
@@ -2660,7 +2661,8 @@ data in Oncofiles. Do not create a patient for someone without that consent or r
 <h2 id="account">4. Account and Access</h2>
 <ul>
 <li>You must have a Google account to use Oncofiles</li>
-<li>New users can connect their own Google Drive only by invitation at the moment</li>
+<li>New users cannot connect their own Google Drive yet. When this opens, it will open
+by invitation first</li>
 <li>Oncofiles has not completed Google's app verification yet, so Google shows an "unverified
 app" warning and allows at most 100 users</li>
 <li>You are responsible for maintaining the security of your bearer tokens and credentials</li>
