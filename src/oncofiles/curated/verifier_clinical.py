@@ -35,13 +35,7 @@ from datetime import date
 
 from oncofiles.curated import verifier as _lab_verifier
 from oncofiles.curated.reread_verify import date_printed
-from oncofiles.curated.verifier import (
-    _birth_isos,
-    _value_pattern,
-    blank_dot_leaders,
-    parse_printed_date,
-    ws,
-)
+from oncofiles.curated.verifier import _birth_isos, _value_pattern, parse_printed_date, ws
 
 # 2: reasoning-channel items never machine; 3: printed date forms "5.3.27"
 # and month names ("5. marca 2027", "marec 2027", Slovak and Czech) parse;
@@ -49,10 +43,8 @@ from oncofiles.curated.verifier import (
 # printed after the numbers ("2,3 x 1,8 cm") or once per dimension; a size
 # with no printed unit is ``unit_missing`` (never guessed) (#773); 5: the
 # general-health kinds vaccinations, allergies and screenings, same generic
-# rules (every returned token and date inside the evidence) (#815); 6: filler
-# dots before a number ("dávka .....85 mg") count as whitespace unless they
-# follow a digit, the lab verifier's rule (``blank_dot_leaders``, #833)
-CLINICAL_VERIFIER_VERSION = 6
+# rules (every returned token and date inside the evidence) (#815)
+CLINICAL_VERIFIER_VERSION = 5
 
 # answer key -> fields whose (non-empty) value must occur inside the evidence
 TOKEN_FIELDS: dict[str, tuple[str, ...]] = {
@@ -224,7 +216,6 @@ def _numbers_in(numbers: str, evidence: str, *, blank=()) -> bool:
     rest = _NAMED_LIKE.sub(  # "5. marca 2027", only when the word is a month name
         lambda m: " " * len(m.group(0)) if _month_number(m.group(1)) else m.group(0), rest
     )
-    rest = blank_dot_leaders(rest, evidence)  # filler dots are whitespace (#833)
     found = _NUMERIC.findall(numbers or "")
     return bool(found) and all(_value_pattern(n).search(rest) for n in found)
 
@@ -337,7 +328,7 @@ def _size_with_unit_printed(size: str, unit: str, evidence: str) -> bool:
     u = re.escape(unit)
     joint = rf"\s*(?:{u}\.?\s*)?{_SIZE_SEP}\s*"
     pattern = rf"(?<![\d.,]){joint.join(nums)}\s*{u}(?![\w²³])"
-    return bool(re.search(pattern, blank_dot_leaders(evidence), re.I))
+    return bool(re.search(pattern, evidence, re.I))
 
 
 def _vocab_row(vocab, label: str):

@@ -51,7 +51,9 @@ from oncofiles.curated.reread_verify import date_printed
 # be printed on the page as that range); trailing ":" "." "," on a date.
 # v3 (#833): filler dots between a label and its value ("Glukóza .....5.2")
 # count as whitespace when the value is looked up in the evidence, unless
-# the run of dots directly follows a digit.
+# the run of dots directly follows a digit; a "…" after a digit now blocks
+# the value like a "." does. Lab values only: the clinical verifier is not
+# changed.
 VERIFIER_VERSION = 3
 
 
@@ -259,12 +261,17 @@ def parse_printed_date(s: str | None) -> str | None:
     return out
 
 
-def _value_pattern(value: str) -> re.Pattern:
+def _value_pattern(value: str, *, ellipsis_blocks: bool = False) -> re.Pattern:
+    """``ellipsis_blocks`` (lab verifier, #833): a "…" right before the number
+    blocks like a "."; after ``blank_dot_leaders`` the only "…" left is one
+    that follows a digit ("3…4.71"). Off by default: the clinical verifier
+    shares this pattern and is unchanged."""
     v = value.strip()
     if _NUMERIC.fullmatch(v):
         whole, _, frac = v.replace(",", ".").partition(".")
         body = re.escape(whole) + (rf"[.,]{frac}0*" if frac else r"(?![.,]\d)")
-        return re.compile(rf"(?<![\d.,]){body}(?!\d)")
+        before = r"[\d.,…]" if ellipsis_blocks else r"[\d.,]"
+        return re.compile(rf"(?<!{before}){body}(?!\d)")
     return re.compile(rf"(?<!\w){re.escape(ws(v))}(?!\w)", re.I)
 
 
@@ -357,7 +364,7 @@ def verify(  # noqa: PLR0912, PLR0915
     if ref and ref.lower() in rest.lower():
         rest = _blank(rest, ref)
     rest = blank_dot_leaders(rest, evidence)  # filler dots are whitespace (#833)
-    m = _value_pattern(value).search(rest) if value else None
+    m = _value_pattern(value, ellipsis_blocks=True).search(rest) if value else None
     if not m:
         reasons.append("value_not_in_evidence")
     elif comparator and not rest[: m.start()].rstrip().endswith(comparator):

@@ -86,10 +86,10 @@ ROWS = [
     ("Hodnota 3.....4.71", "4.71", {"label": "Hodnota"}, NO_VALUE),
     # ... also when that digit is the end of the label (strict on purpose)
     ("Faktor 12.....4.71", "4.71", {"label": "Faktor 12"}, NO_VALUE),
-    # unchanged from verifier 2: the "…" character alone never blocked a value
-    ("Hodnota 3…4.71", "4.71", {"label": "Hodnota"}, OK),
-    # ... but a run that contains dots after a digit still does
+    # a lone "…" after a digit blocks like "3...4.71" (verifier 2 accepted it)
+    ("Hodnota 3…4.71", "4.71", {"label": "Hodnota"}, NO_VALUE),
     ("Hodnota 3…..4.71", "4.71", {"label": "Hodnota"}, NO_VALUE),
+    ("Hodnota 3 …4.71", "4.71", {"label": "Hodnota"}, OK),  # not after a digit
     # comparators: found between the leader and the value, never invented
     ("CRP .....< 0.5 mg/l", "0.5", {**CRP, "comparator": "<"}, OK),
     ("CRP .....<0.5 mg/l", "0.5", {**CRP, "comparator": "<"}, OK),
@@ -198,33 +198,41 @@ def test_version_is_three():
     assert verifier.VERIFIER_VERSION == 3
 
 
-# ── clinical verifier: it shares the numeric pattern, so the same rule ──
+# ── clinical verifier: same lookbehind, NOT changed (separate decision) ──
+
+
+def test_a_lone_ellipsis_after_a_digit_blocked_nothing_in_verifier_two():
+    # the tightening is the lab verifier's keyword; the shared default pattern
+    # (which the clinical verifier uses) is the one of main
+    assert verifier._value_pattern("4.71").search("Hodnota 3…4.71")
+    assert not verifier._value_pattern("4.71", ellipsis_blocks=True).search("Hodnota 3…4.71")
+    assert verifier._value_pattern("71", ellipsis_blocks=True).search("Kreatinín  71")
 
 
 @pytest.mark.parametrize(
     ("numbers", "evidence", "expected"),
     [
-        ("85", "Liek A dávka .....85 mg i.v.", True),
-        ("85", "Liek A dávka …85 mg i.v.", True),
+        ("85", "Liek A dávka .....85 mg i.v.", False),  # the lock: no leader rule here
+        ("85", "Liek A dávka ..85 mg i.v.", False),
         ("85", "Liek A dávka 85 mg i.v.", True),
-        ("85", "Liek A dávka 3...85 mg i.v.", False),
-        ("85", "Liek A dávka .85 mg i.v.", False),
-        ("85", "Liek A dávka 185 mg i.v.", False),
-        ("5", "Liek A od 1.5.2027 dávka 85 mg", False),
+        ("85", "Liek A dávka …85 mg i.v.", True),  # as on main
     ],
 )
-def test_clinical_numbers_follow_the_same_leader_rule(numbers, evidence, expected):
+def test_clinical_numbers_do_not_take_the_leader_rule(numbers, evidence, expected):
     assert verifier_clinical._numbers_in(numbers, evidence) is expected
 
 
 @pytest.mark.parametrize(
     ("evidence", "expected"),
     [
-        ("ložisko S6 .....23 x 18 mm", True),
+        ("ložisko S6 .....23 x 18 mm", False),  # the lock
         ("ložisko S6 23 x 18 mm", True),
-        ("ložisko S6 9...23 x 18 mm", False),
-        ("ložisko S6 .23 x 18 mm", False),
     ],
 )
-def test_clinical_size_with_unit_follows_the_same_leader_rule(evidence, expected):
+def test_clinical_size_with_unit_does_not_take_the_leader_rule(evidence, expected):
     assert verifier_clinical._size_with_unit_printed("23 x 18", "mm", evidence) is expected
+
+
+def test_clinical_verifier_version_is_unchanged():
+    assert verifier_clinical.CLINICAL_VERIFIER_VERSION == 5
+    assert "blank_dot_leaders" not in vars(verifier_clinical)
