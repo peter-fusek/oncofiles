@@ -125,6 +125,13 @@ aside p{max-width:62ch;margin:0 0 8px}
 .foot{margin-top:28px;padding-top:16px;border-top:1px solid var(--line);font-size:13px;color:var(--muted)}
 .foot p{margin-bottom:6px}
 
+/* stav načítania sietí a riadok s uvedením zdroja 3D anatómie (#841) */
+#loading{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);z-index:3;font-size:14px;font-weight:500;padding:8px 16px;border-radius:999px;background:rgba(8,20,22,.72);border:1px solid rgba(255,255,255,.22);color:#eaf3f1}
+#loading[hidden]{display:none}
+footer.credit{padding:6px 20px;border-top:1px solid var(--line);background:var(--surface);color:var(--muted);font-size:12px;line-height:1.45}
+footer.credit p{margin:0}
+footer.credit a{color:var(--accent)}
+
 @media (max-width:1250px){.hint{display:none}}
 @media (max-width:900px){
   html,body{height:auto}

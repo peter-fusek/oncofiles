@@ -1,11 +1,13 @@
-(function () {
-'use strict';
-const T = THREE;
+import * as T from './three.module.js';
+import { GLTFLoader } from './GLTFLoader.js';
+
 const rad = d => d * Math.PI / 180;
 const V = (x, y, z) => new T.Vector3(x, y, z);
+const A3 = a => new T.Vector3(a[0], a[1], a[2]);
 const lerp = (a, b, t) => a + (b - a) * t;
 const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
 const smooth = t => t * t * (3 - 2 * t);
+const sstep = (a, b, x) => smooth(clamp((x - a) / (b - a), 0, 1));
 const $ = s => document.querySelector(s);
 
 /* ───────────── renderer, svetlá ───────────── */
@@ -14,7 +16,7 @@ const renderer = new T.WebGLRenderer({ canvas, antialias: true, alpha: true, pre
 renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
 renderer.outputEncoding = T.sRGBEncoding;
 renderer.toneMapping = T.ACESFilmicToneMapping;
-renderer.toneMappingExposure = .8;
+renderer.toneMappingExposure = .74;
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = T.PCFSoftShadowMap;
 const scene = new T.Scene();
@@ -33,9 +35,10 @@ const camera = new T.PerspectiveCamera(35, 1, 0.05, 800);
   scene.environment = pm.fromEquirectangular(tex).texture; pm.dispose();
 })();
 const hemi = new T.HemisphereLight(0xe8f2f6, 0x26333a, .16); scene.add(hemi);
-const key = new T.DirectionalLight(0xfff1e0, 1.15); key.castShadow = true;
-key.shadow.mapSize.set(2048, 2048); key.shadow.bias = -0.0004; key.shadow.radius = 5;
+const key = new T.DirectionalLight(0xfff1e0, 1.1); key.castShadow = true;
+key.shadow.mapSize.setScalar(window.innerWidth < 900 ? 1024 : 2048); key.shadow.bias = -0.0005; key.shadow.normalBias = .02; key.shadow.radius = 5;
 scene.add(key, key.target);
+const fill = new T.DirectionalLight(0xcfe2f2, .2); scene.add(fill, fill.target);
 const rim = new T.DirectionalLight(0x8fd4ff, .7); scene.add(rim, rim.target);
 const ground = new T.Mesh(new T.CircleGeometry(1, 64), new T.ShadowMaterial({ opacity: .38 }));
 ground.rotation.x = -Math.PI / 2; ground.receiveShadow = true; scene.add(ground);
@@ -49,32 +52,39 @@ const rnd = (() => { let s = 7; return () => (s = (s * 16807) % 2147483647) / 21
 const boneBump = canvasTex(256, 256, (g, w, h) => {
   g.fillStyle = '#808080'; g.fillRect(0, 0, w, h);
   for (let i = 0; i < 2600; i++) { const v = 90 + rnd() * 80 | 0; g.fillStyle = `rgb(${v},${v},${v})`; g.fillRect(rnd() * w, rnd() * h, 1 + rnd() * 2, 1 + rnd() * 2); }
-}, 3, 3);
-const fiberMap = canvasTex(256, 256, (g, w, h) => {
-  g.fillStyle = '#a23c38'; g.fillRect(0, 0, w, h);
-  for (let i = 0; i < 420; i++) {
+});
+/* vlákna: svetlá textúra, farbu svalu a šľachy nesú farby vrcholov */
+function fibres(g, w, h, light, dark) {
+  for (let i = 0; i < 460; i++) {
     const x = rnd() * w, l = rnd();
-    g.strokeStyle = l > .5 ? `rgba(226,128,112,${.18 + rnd() * .3})` : `rgba(84,22,24,${.2 + rnd() * .35})`;
+    g.strokeStyle = l > .5 ? light(.18 + rnd() * .3) : dark(.2 + rnd() * .35);
     g.lineWidth = .6 + rnd() * 1.8; g.beginPath(); g.moveTo(x, 0); g.bezierCurveTo(x + 6, h * .3, x - 6, h * .7, x + (rnd() - .5) * 8, h); g.stroke();
   }
-}, 2, 1);
+}
+const fiberMap = canvasTex(256, 256, (g, w, h) => {
+  g.fillStyle = '#f3e9e6'; g.fillRect(0, 0, w, h);
+  fibres(g, w, h, a => `rgba(255,255,255,${a})`, a => `rgba(120,54,50,${a})`);
+});
 fiberMap.encoding = T.sRGBEncoding;
+const fiberBump = canvasTex(256, 256, (g, w, h) => {
+  g.fillStyle = '#808080'; g.fillRect(0, 0, w, h);
+  fibres(g, w, h, a => `rgba(230,230,230,${a})`, a => `rgba(40,40,40,${a})`);
+});
 const P = o => new T.MeshPhysicalMaterial(Object.assign({ envMapIntensity: .55 }, o));
 const M = {
-  skin: P({ color: 0xaebbc3, roughness: .5, clearcoat: .25, clearcoatRoughness: .5 }),
-  skinHL: P({ color: 0x18a57c, roughness: .45, clearcoat: .3, emissive: 0x0b4a38, emissiveIntensity: .5 }),
-  bone: P({ color: 0xdccfb2, roughness: .62, bumpMap: boneBump, bumpScale: .035, clearcoat: .12, clearcoatRoughness: .6 }),
-  cart: P({ color: 0xcfe6f2, roughness: .22, clearcoat: .7, clearcoatRoughness: .2 }),
+  skin: P({ color: 0xffffff, vertexColors: true, roughness: .55, clearcoat: .2, clearcoatRoughness: .5 }),
+  bone: P({ color: 0xffffff, vertexColors: true, roughness: .74, bumpMap: boneBump, bumpScale: .03, clearcoat: .05, clearcoatRoughness: .7 }),
+  boneGhost: P({ color: 0xdccfb2, roughness: .7, transparent: true, opacity: .13, depthWrite: false }),
+  cart: P({ color: 0xcfe6f2, roughness: .22, clearcoat: .7, clearcoatRoughness: .2, transparent: true, opacity: .86 }),
   menisc: P({ color: 0xb9d2c8, roughness: .35, clearcoat: .5 }),
-  disc: P({ color: 0x9cc6d9, roughness: .4, clearcoat: .35 }),
+  disc: P({ color: 0x9cc6d9, roughness: .4, clearcoat: .35, transparent: true, opacity: .93 }),
   tendon: P({ color: 0xf1ecde, roughness: .3, clearcoat: .6, clearcoatRoughness: .25 }),
   lig: P({ color: 0xd9d2bd, roughness: .4, clearcoat: .4 }),
-  muscle: P({ color: 0xffffff, map: fiberMap, roughness: .48, clearcoat: .35, clearcoatRoughness: .4 }),
+  muscle: P({ color: 0xffffff, vertexColors: true, map: fiberMap, bumpMap: fiberBump, bumpScale: .03, roughness: .5, clearcoat: .3, clearcoatRoughness: .45 }),
   fluid: P({ color: 0x58b4ff, roughness: .08, transparent: true, opacity: .5, emissive: 0x0b4f8a, emissiveIntensity: .5, depthWrite: false }),
-  ghost: new T.MeshBasicMaterial({ color: 0x9fd0d8, transparent: true, opacity: .07, depthWrite: false }),
   mat: P({ color: 0x0f4347, roughness: .85 }),
 };
-const C = { cart: new T.Color(0xcfe6f2), worn: new T.Color(0xe7a55a), lab: new T.Color(0xb9d2c8), lesion: new T.Color(0xe5352b), disc: new T.Color(0x9cc6d9), discBad: new T.Color(0xc9793f), bone: new T.Color(0xece3cf), spur: new T.Color(0xe39a4c), red: new T.Color(0xff3b24), black: new T.Color(0x000000), act: new T.Color(0xff4a1c) };
+const C = { cart: new T.Color(0xcfe6f2), worn: new T.Color(0xe7a55a), lab: new T.Color(0xb9d2c8), lesion: new T.Color(0xe5352b), disc: new T.Color(0x9cc6d9), discBad: new T.Color(0xc9793f), bone: new T.Color(0xd3c6a9), spur: new T.Color(0xe39a4c), red: new T.Color(0xff3b24), black: new T.Color(0x000000), act: new T.Color(0xff4a1c), muscle: new T.Color(0xa23c38), tendon: new T.Color(0xf1ecde), skin: new T.Color(0x8fa0aa), skinHL: new T.Color(0x18a57c) };
 
 const SPH = new T.SphereGeometry(1, 40, 28);
 function mesh(geo, mat, parent, x, y, z, sx, sy, sz) {
@@ -82,9 +92,68 @@ function mesh(geo, mat, parent, x, y, z, sx, sy, sz) {
   if (sx !== undefined) m.scale.set(sx, sy, sz);
   m.castShadow = true; m.receiveShadow = true; if (parent) parent.add(m); return m;
 }
-const cyl = (rt, rb, h, seg) => new T.CylinderGeometry(rt, rb, h, seg || 28);
 
-/* spojnica medzi dvoma bodmi (šľacha, väz, sval) */
+/* ───────────── siete z GLB: farby, UV, väzba na kosti ───────────── */
+/* preliačiny tmavšie, hrany svetlejšie: lacná náhrada zatienenia dutín */
+function cavity(geo) {
+  const pos = geo.attributes.position, nor = geo.attributes.normal, idx = geo.index.array, n = pos.count;
+  const acc = new Float32Array(n * 3), cnt = new Float32Array(n), len = new Float32Array(n), out = new Float32Array(n);
+  for (let i = 0; i < idx.length; i += 3) for (let k = 0; k < 3; k++) {
+    const a = idx[i + k], b = idx[i + (k + 1) % 3];
+    const dx = pos.getX(b) - pos.getX(a), dy = pos.getY(b) - pos.getY(a), dz = pos.getZ(b) - pos.getZ(a), l = Math.hypot(dx, dy, dz);
+    acc[a * 3] += dx; acc[a * 3 + 1] += dy; acc[a * 3 + 2] += dz; cnt[a]++; len[a] += l;
+    acc[b * 3] -= dx; acc[b * 3 + 1] -= dy; acc[b * 3 + 2] -= dz; cnt[b]++; len[b] += l;
+  }
+  for (let v = 0; v < n; v++) if (cnt[v]) out[v] = (acc[v * 3] * nor.getX(v) + acc[v * 3 + 1] * nor.getY(v) + acc[v * 3 + 2] * nor.getZ(v)) / len[v];
+  return out;
+}
+const _col = new T.Color();
+function paint(geo, fn, k) {
+  const pos = geo.attributes.position, n = pos.count, cav = cavity(geo), col = new Float32Array(n * 3);
+  for (let v = 0; v < n; v++) {
+    fn(pos.getX(v), pos.getY(v), pos.getZ(v), _col);
+    const f = clamp(1 - k * cav[v], .5, 1.12);
+    col[v * 3] = _col.r * f; col[v * 3 + 1] = _col.g * f; col[v * 3 + 2] = _col.b * f;
+  }
+  geo.setAttribute('color', new T.BufferAttribute(col, 3));
+}
+function uv(geo, fibreAxis) {
+  const pos = geo.attributes.position, n = pos.count, a = new Float32Array(n * 2);
+  for (let v = 0; v < n; v++) {
+    const x = pos.getX(v), y = pos.getY(v), z = pos.getZ(v);
+    if (fibreAxis === 'x') { a[v * 2] = (y * .9 + z * .5) * .33; a[v * 2 + 1] = x * .07; }
+    else if (fibreAxis === 'y') { a[v * 2] = (x * .9 + z * .5) * .33; a[v * 2 + 1] = y * .07; }
+    else { a[v * 2] = (x + z * .7) * .22; a[v * 2 + 1] = (y + z * .3) * .22; }
+  }
+  geo.setAttribute('uv', new T.BufferAttribute(a, 2));
+}
+function bone(geo, parent) {
+  uv(geo); paint(geo, (x, y, z, c) => c.copy(C.bone), 2.4);
+  return mesh(geo, M.bone, parent);
+}
+/* sval: farba vrcholu prechádza zo svalu do šľachy podľa tendon(x, y, z) v rozsahu 0–1 */
+function muscleGeo(geo, tendon, axis) {
+  uv(geo, axis || 'y');
+  paint(geo, (x, y, z, c) => c.copy(C.muscle).lerp(C.tendon, tendon ? tendon(x, y, z) : 0), 1.1);
+  return geo;
+}
+/* sieť naviazaná na pohyblivé skupiny (najviac 4), váhy dáva weights(x, y, z) */
+function skin(geo, mat, bones, weights, parent) {
+  const pos = geo.attributes.position, n = pos.count, si = new Uint16Array(n * 4), sw = new Float32Array(n * 4);
+  for (let v = 0; v < n; v++) {
+    const w = weights(pos.getX(v), pos.getY(v), pos.getZ(v));
+    let sum = 0; for (let k = 0; k < w.length; k++) sum += w[k];
+    for (let k = 0; k < 4; k++) { si[v * 4 + k] = k < w.length ? k : 0; sw[v * 4 + k] = k < w.length ? w[k] / sum : 0; }
+  }
+  geo.setAttribute('skinIndex', new T.BufferAttribute(si, 4)); geo.setAttribute('skinWeight', new T.BufferAttribute(sw, 4));
+  const m = new T.SkinnedMesh(geo, mat); m.castShadow = true; m.receiveShadow = true; m.frustumCulled = false;
+  parent.add(m); m.updateWorldMatrix(true, false); bones.forEach(b => b.updateWorldMatrix(true, false));
+  m.bind(new T.Skeleton(bones, bones.map(b => b.matrixWorld.clone().invert())), m.matrixWorld);
+  return m;
+}
+const qx = a => new T.Quaternion().setFromAxisAngle(V(1, 0, 0), a);
+
+/* spojnica medzi dvoma bodmi (väz, schematický sval) */
 const _up = V(0, 1, 0), _d = V(0, 0, 0);
 const CYL1 = new T.CylinderGeometry(1, 1, 1, 14, 1), BELLY = new T.SphereGeometry(1, 20, 14);
 function linkMesh(mat, r, parent, opt) {
@@ -98,133 +167,139 @@ function setLink(m, a, b) {
   m.quaternion.setFromUnitVectors(_up, _d.multiplyScalar(1 / len));
   const u = m.userData; m.scale.set(u.r, u.belly ? len * .56 : len, u.r * u.flat);
 }
-function staticLink(mat, r, parent, a, b, opt) { const m = linkMesh(mat, r, parent, opt); setLink(m, a, b); return m; }
 /* dynamická spojnica: konce sú v lokálnych súradniciach pohyblivých skupín */
 function dyn(list, mat, r, layer, A, B, opt) {
-  opt = opt || {};
-  const o = { a: A, b: B, wrap: opt.wrap, m1: linkMesh(mat, r, layer, opt) };
-  if (opt.wrap) o.m2 = linkMesh(mat, r, layer, opt);
+  const o = { a: A, b: B, m1: linkMesh(mat, r, layer, opt) };
   list.push(o); return o;
 }
-const _a = V(0, 0, 0), _b = V(0, 0, 0), _c = V(0, 0, 0), _m = V(0, 0, 0);
+const _a = V(0, 0, 0), _b = V(0, 0, 0);
 function updateDyn(list) {
   for (const o of list) {
     _a.copy(o.a[1]); o.a[0].localToWorld(_a); _b.copy(o.b[1]); o.b[0].localToWorld(_b);
-    if (o.wrap) {
-      _c.copy(o.wrap[1]); o.wrap[0].localToWorld(_c);
-      _m.addVectors(_a, _b).multiplyScalar(.5).sub(_c);
-      const R = o.wrap[2]; if (_m.length() < R) { if (_m.lengthSq() < 1e-6) _m.set(0, 1, 0); _m.setLength(R); }
-      _m.add(_c); setLink(o.m1, _a, _m); setLink(o.m2, _m, _b);
-    } else setLink(o.m1, _a, _b);
+    setLink(o.m1, _a, _b);
   }
 }
+/* bod zo súradníc oblasti do lokálnych súradníc skupiny (v základnej polohe) */
+const local = (group, p) => { group.updateWorldMatrix(true, false); return group.worldToLocal(p.clone ? p.clone() : A3(p)); };
 
-/* ───────────── FIGURÍNA ───────────── */
+/* ───────────── POSTAVA: koža so spojitým ohybom v kĺboch ───────────── */
 const JN = ['root', 'spine', 'chest', 'neck', 'lSh', 'lEl', 'rSh', 'rEl', 'lHip', 'lKn', 'lAn', 'rHip', 'rKn', 'rAn'];
-function buildFigure() {
-  const G = new T.Group(), root = new T.Group(); G.add(root);
-  const parts = {}, J = { root };
-  const part = (name, parent, geo, x, y, z, sx, sy, sz) => { const m = mesh(geo, M.skin, parent, x, y, z, sx, sy, sz); parts[name] = m; return m; };
-  const joint = (name, parent, x, y, z) => { const g = new T.Group(); g.position.set(x, y, z); parent.add(g); J[name] = g; return g; };
-  part('pelvis', root, SPH, 0, 0, 0, .175, .125, .115);
-  const spine = joint('spine', root, 0, .06, 0);
-  part('abdomen', spine, SPH, 0, .13, 0, .15, .17, .105);
-  const chest = joint('chest', spine, 0, .26, 0);
-  part('chest', chest, SPH, 0, .16, 0, .19, .2, .118);
-  const neck = joint('neck', chest, 0, .36, 0);
-  part('neckc', neck, cyl(.045, .05, .1, 16), 0, .04, 0);
-  part('head', neck, SPH, 0, .17, .01, .098, .118, .108);
-  part('nose', neck, SPH, 0, .16, .115, .014, .02, .016);
-  for (const [s, sx] of [['l', 1], ['r', -1]]) {
-    const sh = joint(s + 'Sh', chest, sx * .215, .3, 0);
-    part(s + 'ShCap', sh, SPH, 0, 0, 0, .062, .062, .062);
-    part(s + 'UpperArm', sh, new T.CapsuleGeometry(.046, .22, 8, 18), 0, -.15, 0);
-    const el = joint(s + 'El', sh, 0, -.3, 0);
-    part(s + 'Forearm', el, new T.CapsuleGeometry(.038, .2, 8, 18), 0, -.13, 0);
-    part(s + 'Hand', el, SPH, 0, -.3, 0, .04, .055, .03);
-    const hip = joint(s + 'Hip', root, sx * .095, -.03, 0);
-    part(s + 'Thigh', hip, new T.CapsuleGeometry(.07, .3, 8, 18), 0, -.21, 0);
-    const kn = joint(s + 'Kn', hip, 0, -.43, 0);
-    part(s + 'KneeCap', kn, SPH, 0, 0, .005, .06, .06, .06);
-    part(s + 'Shin', kn, new T.CapsuleGeometry(.05, .3, 8, 18), 0, -.21, 0);
-    const an = joint(s + 'An', kn, 0, -.42, 0);
-    const fg = new T.CapsuleGeometry(.04, .13, 8, 14); fg.rotateX(Math.PI / 2);
-    part(s + 'Foot', an, fg, 0, -.045, .06);
+const JPARENT = { spine: 'root', chest: 'spine', neck: 'chest', lSh: 'chest', lEl: 'lSh', rSh: 'chest', rEl: 'rSh', lHip: 'root', lKn: 'lHip', lAn: 'lKn', rHip: 'root', rKn: 'rHip', rAn: 'rKn' };
+const PART = { pelvis: 'root', abdomen: 'spine', chest: 'chest', head: 'neck', lShCap: 'lSh', lUpperArm: 'lSh', lForearm: 'lEl', rShCap: 'rSh', rUpperArm: 'rSh', rForearm: 'rEl', lThigh: 'lHip', lShin: 'lKn', lFoot: 'lAn', rThigh: 'rHip', rShin: 'rKn', rFoot: 'rAn' };
+let fig = null;
+function buildFigure(D) {
+  const geo = D.parts.body, X = D.X, G = new T.Group(), J = {}, Cq = {}, CpInv = {};
+  for (const n of JN) {
+    const b = new T.Bone(); b.name = n; J[n] = b;
+    const p = JPARENT[n];
+    if (p) { b.position.fromArray(X.joints[n]).sub(A3(X.joints[p])); J[p].add(b); } else G.add(b);
+    Cq[n] = X.corr[n] ? new T.Quaternion().fromArray(X.corr[n]) : new T.Quaternion();
+  }
+  for (const n of JN) CpInv[n] = JPARENT[n] ? Cq[JPARENT[n]].clone().invert() : new T.Quaternion();
+  const ji = geo.attributes._joints.array, jw = geo.attributes._weights.array, n = geo.attributes.position.count;
+  const sw = new Float32Array(n * 4); for (let i = 0; i < sw.length; i++) sw[i] = jw[i] / 255;
+  geo.setAttribute('skinIndex', new T.BufferAttribute(Uint16Array.from(ji), 4));
+  geo.setAttribute('skinWeight', new T.BufferAttribute(sw, 4));
+  geo.deleteAttribute('_joints'); geo.deleteAttribute('_weights');
+  const cav = cavity(geo), col = new Float32Array(n * 3);
+  geo.setAttribute('color', new T.BufferAttribute(col, 3));
+  const body = new T.SkinnedMesh(geo, M.skin); body.castShadow = true; body.receiveShadow = true; body.frustumCulled = false;
+  G.add(body); G.updateMatrixWorld(true);
+  const skeleton = new T.Skeleton(JN.map(k => J[k])); body.bind(skeleton);
+  function highlight(names) {
+    const on = new Set(names.map(k => JN.indexOf(PART[k])));
+    for (let v = 0; v < n; v++) {
+      let t = 0; for (let k = 0; k < 4; k++) if (on.has(ji[v * 4 + k])) t += sw[v * 4 + k];
+      _col.copy(C.skin).lerp(C.skinHL, smooth(t));
+      const f = clamp(1 - .7 * cav[v], .7, 1.08);
+      col[v * 3] = _col.r * f; col[v * 3 + 1] = _col.g * f; col[v * 3 + 2] = _col.b * f;
+    }
+    geo.attributes.color.needsUpdate = true;
+  }
+  /* najnižší bod kože v aktuálnej póze (vzorka vrcholov), aby postava stála na zemi */
+  const pos = geo.attributes.position, step = 5, bm = JN.map(() => new T.Matrix4());
+  function minY() {
+    G.updateMatrixWorld(true);
+    JN.forEach((k, i) => bm[i].multiplyMatrices(J[k].matrixWorld, skeleton.boneInverses[i]));
+    let lo = Infinity;
+    for (let v = 0; v < n; v += step) {
+      const x = pos.getX(v), y = pos.getY(v), z = pos.getZ(v); let yy = 0;
+      for (let k = 0; k < 4; k++) { const w = sw[v * 4 + k]; if (w) { const e = bm[ji[v * 4 + k]].elements; yy += w * (e[1] * x + e[5] * y + e[9] * z + e[13]); } }
+      if (yy < lo) lo = yy;
+    }
+    return lo;
   }
   const matMesh = mesh(new T.BoxGeometry(.8, .016, 2.15), M.mat, G, 0, .008, 0); matMesh.castShadow = false;
   // značky problémových oblastí
-  const hot = {};
-  const hotDefs = { spine: [J.root, V(0, .07, -.085)], knee: [J.rKn, V(0, 0, .02)], shoulder: [J.lSh, V(0, 0, 0)] };
+  const hot = {}, sp = X.joints.spine;
+  const hotDefs = { spine: [J.root, V(0, sp[1] - .02, sp[2] - .06)], knee: [J.rKn, V(0, 0, .05)], shoulder: [J.lSh, V(.02, 0, .01)] };
   for (const k in hotDefs) {
     const dot = new T.Mesh(new T.SphereGeometry(.028, 20, 14), new T.MeshBasicMaterial({ color: 0xff7d60, depthTest: false, transparent: true }));
     const ring = new T.Mesh(new T.RingGeometry(.05, .058, 48), new T.MeshBasicMaterial({ color: 0xff7d60, depthTest: false, transparent: true, side: T.DoubleSide }));
     dot.renderOrder = ring.renderOrder = 20; G.add(dot, ring); hot[k] = { dot, ring, src: hotDefs[k] };
   }
-  return { G, root, parts, J, matMesh, hot };
+  fig = { G, root: J.root, J, Cq, CpInv, matMesh, hot, highlight, minY, ground: 0, size: 1.5, center: V(0, .9, 0) };
+  highlight([]);
+  return fig;
 }
-const fig = buildFigure();
 const STAND = { lSh: [0, 0, 8], rSh: [0, 0, -8], lEl: -8, rEl: -8 };
 const pv = (p, k) => { const v = p[k]; return v === undefined ? [0, 0, 0] : (Array.isArray(v) ? v : [v, 0, 0]); };
+const _e = new T.Euler(), _q = new T.Quaternion();
+/* uhly póz sú voči vystretej postave; Cq prevádza kosť zo základnej polohy modelu do tejto osi */
 function applyPose(A, B, t) {
-  for (const k of JN) { const a = pv(A, k), b = pv(B, k); fig.J[k].rotation.set(rad(lerp(a[0], b[0], t)), rad(lerp(a[1], b[1], t)), rad(lerp(a[2], b[2], t))); }
+  for (const k of JN) {
+    const a = pv(A, k), b = pv(B, k);
+    _q.setFromEuler(_e.set(rad(lerp(a[0], b[0], t)), rad(lerp(a[1], b[1], t)), rad(lerp(a[2], b[2], t))));
+    fig.J[k].quaternion.copy(fig.CpInv[k]).multiply(_q).multiply(fig.Cq[k]);
+  }
 }
-const _box = new T.Box3(), _w = V(0, 0, 0);
+const _w = V(0, 0, 0);
 function groundFigure(anchor, target) {
-  fig.root.position.set(0, 0, 0); fig.G.updateMatrixWorld(true);
-  _box.makeEmpty(); for (const k in fig.parts) _box.expandByObject(fig.parts[k], true);
-  fig.root.position.y = -_box.min.y;
-  if (anchor) { fig.J[anchor].getWorldPosition(_w); fig.root.position.x = target.x - _w.x; fig.root.position.z = target.z - _w.z; }
+  fig.root.position.set(0, 0, 0);
+  fig.root.position.y = -fig.minY();
+  if (anchor) { fig.G.updateMatrixWorld(true); fig.J[anchor].getWorldPosition(_w); fig.root.position.x = target.x - _w.x; fig.root.position.z = target.z - _w.z; }
   fig.G.updateMatrixWorld(true);
 }
 
 /* ───────────── KOLENO (pravé; +X = vnútorná strana, +Z = dopredu) ───────────── */
-function buildKnee() {
-  const S = new T.Group(), L3 = new T.Group(); S.add(L3);
+function buildKnee(D) {
+  const g = D.parts, X = D.X, S = new T.Group(), L3 = new T.Group(); S.add(L3);
   const fem = new T.Group(), tib = new T.Group(), pat = new T.Group(); S.add(fem, tib, pat);
-  const dl = [];
-  // stehnová kosť
-  mesh(cyl(1.45, 1.75, 13), M.bone, fem, 0, 8, 0);
-  mesh(SPH, M.bone, fem, 0, 2.0, -.1, 3.0, 2.3, 2.2);
-  for (const sx of [1, -1]) mesh(SPH, M.cart, fem, sx * 1.75, 0, -.2, 2.15, 2.15, 2.6);
-  mesh(new T.CapsuleGeometry(5.6, 12, 8, 24), M.ghost, fem, 0, 9, -.3).castShadow = false;
-  // píšťala + ihlica
-  mesh(cyl(3.3, 2.5, 2.3, 40), M.bone, tib, 0, -3.6, -.1, 1, 1, .8);
-  mesh(cyl(1.95, 1.25, 12), M.bone, tib, 0, -10.6, 0);
-  mesh(SPH, M.bone, tib, 0, -5.4, 1.75, .95, 1.4, .75);
-  for (const sx of [1, -1]) {
-    mesh(cyl(1.5, 1.5, .16, 28), M.cart, tib, sx * 1.7, -2.4, -.1, 1, 1, 1.15);
-    const g = new T.TorusGeometry(1.42, .34, 12, 36, Math.PI * 1.5); g.rotateZ(rad(sx > 0 ? -135 : 45)); g.rotateX(Math.PI / 2);
-    mesh(g, M.menisc, tib, sx * 1.7, -2.2, -.1, 1, .62, 1.15);
+  const F = X.femur, Tp = X.tibia, Pt = X.patella, pc = A3(Pt.c), hw = X.width / 2, dl = [];
+  bone(g.femur, fem); mesh(g.cart_femur, M.cart, fem);
+  bone(g.tibia, tib); bone(g.fibula, tib); mesh(g.cart_tibia, M.cart, tib);
+  // menisky: v zdrojovom modeli nie sú, ostávajú schematické
+  for (const [side, sx] of [['med', 1], ['lat', -1]]) {
+    const p = Tp.plateau[side], tg = new T.TorusGeometry(1.5, .34, 12, 36, Math.PI * 1.5);
+    tg.rotateZ(rad(sx > 0 ? -135 : 45)); tg.rotateX(Math.PI / 2);
+    mesh(tg, M.menisc, tib, p[0], p[1] + .14, p[2], 1, .6, 1.2);
   }
-  mesh(SPH, M.bone, tib, -3.05, -4.7, -1.4, .85, .95, .85);
-  mesh(cyl(.5, .45, 11, 14), M.bone, tib, -3.05, -10.4, -1.4);
-  mesh(new T.CapsuleGeometry(4.3, 11, 8, 24), M.ghost, tib, -.4, -10, -.6).castShadow = false;
-  // jabĺčko
-  const patBone = mesh(SPH, M.bone, pat, 0, .9, 3.05, 1.5, 1.65, .7);
+  bone(g.patella, pat);
   const patCartMat = M.cart.clone();
-  mesh(SPH, patCartMat, pat, 0, .9, 2.62, 1.3, 1.45, .42);
+  mesh(g.cart_patella, patCartMat, pat);
   // nález: výpotok, tekutina v hiatus popliteus, miesto preskakovania
-  const eff = [mesh(SPH, M.fluid, fem, 0, 3.6, 2.15, 2.5, 2.2, .95), mesh(SPH, M.fluid, fem, 2.75, 1.3, 1.2, .8, 1.5, 1.0), mesh(SPH, M.fluid, fem, -2.75, 1.3, 1.2, .8, 1.5, 1.0)];
-  const hiat = mesh(SPH, M.fluid, tib, -2.35, -2.5, -2.25, .95, 1.15, .75);
+  const eff = [mesh(SPH, M.fluid, fem, pc.x, Pt.top + 1.7, F.front + .2, 2.4, 2.1, .85), mesh(SPH, M.fluid, fem, hw - .5, 1.2, F.front * .5, .8, 1.5, 1.0), mesh(SPH, M.fluid, fem, .5 - hw, 1.2, F.front * .5, .8, 1.5, 1.0)];
+  const hiat = mesh(SPH, M.fluid, tib, Tp.plateau.lat[0] - .9, Tp.top - .6, Tp.back + .1, .95, 1.15, .75);
   eff.concat([hiat]).forEach(m => { m.castShadow = false; m.userData.s = m.scale.clone(); m.renderOrder = 5; });
   const clickMat = new T.MeshBasicMaterial({ color: 0xffd23c, transparent: true, opacity: 0, depthTest: false });
-  const click = new T.Mesh(new T.SphereGeometry(.55, 20, 14), clickMat); click.position.set(1.95, .5, 2.75); click.renderOrder = 15; pat.add(click);
-  // úroveň 3: svaly, šľachy, väzy
+  const click = new T.Mesh(new T.SphereGeometry(.55, 20, 14), clickMat); click.position.set(Pt.med[0] + .25, pc.y - .35, pc.z + .15); click.renderOrder = 15; pat.add(click);
+  // úroveň 3: svaly a šľachy zo siete, väzy ako spojnice
   const act = M.muscle.clone(); act.emissive = C.act.clone(); act.emissiveIntensity = 0;
-  mesh(SPH, act, L3, 0, 11.2, 2.3, 2.5, 5.2, 1.35);
-  mesh(SPH, act, L3, 2.0, 5.4, 2.0, 1.25, 2.4, .95).rotation.z = rad(-22);
-  mesh(SPH, M.muscle, L3, -2.2, 6.6, 1.9, 1.2, 3.0, .95).rotation.z = rad(14);
-  dyn(dl, M.tendon, .8, L3, [fem, V(0, 6.6, 2.5)], [pat, V(0, 2.2, 3.1)], { flat: .4 });
-  dyn(dl, M.tendon, .42, L3, [fem, V(1.7, 3.6, 2.5)], [pat, V(1.2, 1.3, 3.1)], { flat: .5 });
-  dyn(dl, M.tendon, .78, L3, [pat, V(0, -.5, 3.15)], [tib, V(0, -5.0, 2.45)], { flat: .4 });
-  dyn(dl, M.lig, .5, L3, [fem, V(2.95, .7, -.2)], [tib, V(2.75, -6.2, .2)], { flat: .3 });
-  dyn(dl, M.lig, .3, L3, [fem, V(-2.95, .6, -.5)], [tib, V(-3.05, -4.2, -1.4)]);
-  dyn(dl, M.lig, .3, L3, [fem, V(-.55, .3, -1.1)], [tib, V(.3, -2.45, 1.0)]);
-  dyn(dl, M.lig, .32, L3, [fem, V(.6, -.1, .4)], [tib, V(0, -2.5, -1.7)]);
-  dyn(dl, M.tendon, .3, L3, [fem, V(-2.7, -.2, -.7)], [tib, V(-1.3, -3.3, -2.15)]);
-  dyn(dl, act, .75, L3, [tib, V(-1.3, -3.3, -2.15)], [tib, V(1.4, -7.6, -1.6)], { belly: true, flat: .6 });
-  dyn(dl, act, 1.25, L3, [fem, V(-2.3, 13.5, -2.6)], [tib, V(-3.0, -4.3, -1.5)], { belly: true, flat: .7 });
-  dyn(dl, act, 1.25, L3, [fem, V(2.2, 13.5, -2.6)], [tib, V(2.5, -4.6, -1.3)], { belly: true, flat: .7 });
+  const yT = Pt.top, yA = Pt.apex[1], yTub = Tp.tuberosity[1], B3 = [fem, pat, tib];
+  const quadW = (x, y) => { const f = sstep(yT + .5, yT + 5, y), t = 1 - sstep(yTub + .4, yA - .1, y); return [f, 1 - f - t, t]; };
+  const quadT = (x, y) => 1 - sstep(yT + .8, yT + 4.5, y);
+  const hamW = (x, y) => { const t = 1 - sstep(-2.5, 3, y); return [1 - t, 0, t]; };
+  const hamT = (x, y) => 1 - sstep(-1, 4.5, y);
+  skin(muscleGeo(g.rectus_femoris, quadT), act, B3, quadW, L3);
+  skin(muscleGeo(g.vastus_medialis, quadT), act, B3, quadW, L3);
+  skin(muscleGeo(g.vastus_lateralis, quadT), M.muscle, B3, quadW, L3);
+  skin(muscleGeo(g.biceps_femoris, hamT), act, B3, hamW, L3);
+  skin(muscleGeo(g.semimembranosus, hamT), act, B3, hamW, L3);
+  skin(muscleGeo(g.popliteus, (x, y) => sstep(-.3, 1.2, y)), act, B3, (x, y) => { const t = 1 - sstep(-.6, 1.8, y); return [1 - t, 0, t]; }, L3);
+  dyn(dl, M.lig, .5, L3, [fem, A3(F.med)], [tib, A3(Tp.med)], { flat: .3 });
+  dyn(dl, M.lig, .3, L3, [fem, A3(F.lat)], [tib, A3(X.fibula.head)]);
+  dyn(dl, M.lig, .3, L3, [fem, V(-.55, .3, -1.1)], [tib, V(.3, Tp.top - .5, 1.0)]);
+  dyn(dl, M.lig, .32, L3, [fem, V(.6, -.1, .4)], [tib, V(0, Tp.top - .6, Tp.back + .7)]);
   const st = { flex: 0 };
   function update(tm, m, s) {
     const u = .5 - .5 * Math.cos(tm * Math.PI * 2); st.flex = 4 + 88 * u;
@@ -239,81 +314,84 @@ function buildKnee() {
     S.updateMatrixWorld(true); updateDyn(dl);
   }
   const labels = [
-    { t: 'Výpotok v kĺbe (stredne veľký)', k: 'bad', o: fem, p: V(0, 4.6, 2.9), show: s => s.m > .5 },
-    { t: 'Chrupka jabĺčka mierne nerovná (I.–II. stupeň)', k: 'bad', o: pat, p: V(-1.2, .9, 2.9), show: s => s.m > .5 && s.level === 2 },
-    { t: 'Miesto preskakovania', k: 'bad', o: pat, p: V(1.95, .5, 2.75), show: s => s.m > .5 },
-    { t: 'Tekutina pri šľache m. popliteus', k: 'bad', o: tib, p: V(-2.5, -2.5, -2.6), show: s => s.m > .5 },
-    { t: 'Menisky bez trhliny', k: 'ok', o: tib, p: V(2.9, -2.2, .6), show: s => s.level === 2 },
-    { t: 'Hladká chrupka, kĺb bez výpotku', k: 'ok', o: fem, p: V(0, 3.2, 2.4), show: s => s.m < .5 },
-    { t: 'Štvorhlavý sval stehna', k: 'info', o: fem, p: V(-1.6, 11.5, 3.2), show: s => s.level === 3 },
-    { t: 'Vnútorná hlava (VMO) vedie jabĺčko', k: 'info', o: fem, p: V(2.6, 5.4, 2.6), show: s => s.level === 3 },
-    { t: 'Väzy pevné, bez poškodenia', k: 'ok', o: tib, p: V(2.9, -4.5, .3), show: s => s.level === 3 },
+    { t: 'Výpotok v kĺbe (stredne veľký)', k: 'bad', o: fem, p: V(pc.x, Pt.top + 2.6, F.front + .9), show: s => s.m > .5 },
+    { t: 'Chrupka jabĺčka mierne nerovná (I.–II. stupeň)', k: 'bad', o: pat, p: V(Pt.lat[0] + .3, pc.y, Pt.back), show: s => s.m > .5 && s.level === 2 },
+    { t: 'Miesto preskakovania', k: 'bad', o: pat, p: click.position.clone(), show: s => s.m > .5 },
+    { t: 'Tekutina pri šľache m. popliteus', k: 'bad', o: tib, p: hiat.position.clone(), show: s => s.m > .5 },
+    { t: 'Menisky bez trhliny', k: 'ok', o: tib, p: V(Tp.plateau.med[0] + 1.4, Tp.plateau.med[1] + .1, Tp.plateau.med[2] + .6), show: s => s.level === 2 },
+    { t: 'Hladká chrupka, kĺb bez výpotku', k: 'ok', o: fem, p: V(0, 2.2, F.front), show: s => s.m < .5 },
+    { t: 'Štvorhlavý sval stehna', k: 'info', o: fem, p: V(-1.6, 11, F.front + 2.4), show: s => s.level === 3 },
+    { t: 'Vnútorná hlava (VMO) vedie jabĺčko', k: 'info', o: fem, p: V(hw - .4, yT + 2.5, F.front + .6), show: s => s.level === 3 },
+    { t: 'Väzy pevné, bez poškodenia', k: 'ok', o: tib, p: A3(Tp.med), show: s => s.level === 3 },
   ];
-  return { G: S, L3, update, labels, st, ground: -17.2, size: 20, center: V(0, -1, 0), cam: { az: .95, el: .1, dist: 52, t: V(0, -.6, 0) } };
+  return { G: S, L3, update, labels, st, ground: X.cut.bottom, size: 20, center: V(0, -1, 0), cam: { az: .95, el: .1, dist: 56, t: V(0, -.6, 0) } };
 }
 
 /* ───────────── CHRBTICA L3–S1 (+Z = dopredu) ───────────── */
-function buildSpine() {
-  const S = new T.Group(), L3 = new T.Group(); S.add(L3);
-  const base = new T.Group(); base.rotation.x = rad(34); S.add(base);
-  mesh(cyl(2.55, 1.0, 6.4, 28), M.bone, base, 0, -3.2, -.2, 1, 1, .72);
-  mesh(SPH, M.bone, base, 0, -1.6, -.9, 4.4, 1.9, 1.5);
-  for (const sx of [1, -1]) { mesh(SPH, M.ghost, base, sx * 6.4, -1.5, -1.2, 4.2, 5.4, 1.4).castShadow = false; mesh(SPH, M.cart, base, sx * 1.75, .9, -3.1, .6, .6, .6); }
-  const spurMat = M.bone.clone(); spurMat.color.copy(C.spur);
-  const facetMat = M.cart.clone(); facetMat.emissive = C.red.clone(); facetMat.emissiveIntensity = 0;
-  const facetHot = M.cart.clone(); facetHot.emissive = C.red.clone(); facetHot.emissiveIntensity = 0;
-  const spurs = [];
-  function vertebra(hotFacet) {
-    const g = new T.Group();
-    mesh(cyl(2.3, 2.3, 2.7, 32), M.bone, g, 0, 0, 0, 1, 1, .8);
-    mesh(new T.TorusGeometry(2.28, .14, 8, 36), M.bone, g, 0, 1.3, 0, 1, .8, 1).rotation.x = Math.PI / 2;
-    mesh(new T.TorusGeometry(2.28, .14, 8, 36), M.bone, g, 0, -1.3, 0, 1, .8, 1).rotation.x = Math.PI / 2;
-    for (const sx of [1, -1]) {
-      mesh(new T.BoxGeometry(.75, .95, 1.7), M.bone, g, sx * 1.5, .45, -2.5);
-      const tp = mesh(cyl(.38, .3, 3.1, 12), M.bone, g, sx * 3.3, .4, -2.9); tp.rotation.z = rad(sx * 82);
-      mesh(SPH, M.cart, g, sx * 1.75, 1.55, -3.2, .58, .62, .58);
-      mesh(SPH, hotFacet ? facetHot : facetMat, g, sx * 1.5, -1.75, -3.45, .56, .62, .56);
-      const sp = mesh(SPH, spurMat, g, sx * 2.05, -1.55, -3.75, .34, .34, .34); spurs.push(sp);
-      const sp2 = mesh(SPH, spurMat, g, sx * 2.2, 1.7, -3.4, .3, .3, .3); spurs.push(sp2);
-    }
-    mesh(new T.BoxGeometry(3.7, 1.5, .6), M.bone, g, 0, .1, -3.5);
-    const spn = mesh(new T.BoxGeometry(.55, 1.7, 2.5), M.bone, g, 0, -.35, -4.9); spn.rotation.x = rad(-12);
-    return g;
-  }
-  const angles = [-15, -12, -9], joints = [], discs = [], verts = [];
+function buildSpine(D) {
+  const g = D.parts, X = D.X, LV = X.levels, S = new T.Group(), L3 = new T.Group(); S.add(L3);
+  const base = new T.Group(); S.add(base);
+  bone(g.sacrum, base);
+  mesh(g.hip_l, M.boneGhost, base).castShadow = false; mesh(g.hip_r, M.boneGhost, base).castShadow = false;
+  const spurMat = P({ color: C.spur.getHex(), roughness: .6 });
+  const facetMat = M.cart.clone(); facetMat.emissive = C.red.clone(); facetMat.emissiveIntensity = 0; facetMat.transparent = false;
+  const facetHot = facetMat.clone();
   const discMats = [M.disc.clone(), M.disc, M.disc];
-  let parent = base, y0 = 0;
+  const joints = [], discs = [], spurs = [], NAMES = ['L5', 'L4', 'L3'], DISC = ['disc_L5S1', 'disc_L4L5', 'disc_L3L4'];
+  let parent = base;
   for (let i = 0; i < 3; i++) {
-    const j = new T.Group(); j.position.y = y0; parent.add(j);
-    const d = mesh(cyl(2.36, 2.36, 1, 32), discMats[i], j, 0, .55, 0, 1, 1.1, .8);
-    const v = vertebra(i === 0); j.add(v);
-    joints.push(j); discs.push(d); verts.push(v); parent = j;
+    const fr = LV[i].disc, c = A3(fr.c), ax = A3(fr.axis), q = new T.Quaternion().fromArray(fr.q);
+    // platnička: skupina s osou Y kolmo na platničku, ukotvená na spodnej ploche
+    const dg = new T.Group(); dg.position.copy(c).addScaledVector(ax, -fr.h / 2); dg.quaternion.copy(q); S.add(dg);
+    dg.attach(mesh(g[DISC[i]], discMats[i], S)); parent.attach(dg);
+    const j = new T.Group(); j.position.copy(c); j.quaternion.copy(q); S.add(j); parent.attach(j);
+    j.attach(bone(g[NAMES[i]], S));
+    j.userData = { p0: j.position.clone(), q0: j.quaternion.clone(), drop: V(0, -1, 0).applyQuaternion(j.quaternion), h: fr.h };
+    dg.userData = { q0: dg.quaternion.clone() };
+    joints.push(j); discs.push(dg); parent = j;
+  }
+  // malé kĺby (fazety) ako značky na skutočných miestach styku; výrastky sa ukážu len v náleze
+  for (let i = 0; i < 3; i++) for (const side of ['l', 'r']) {
+    const p = A3(LV[i].facets[side]), sx = side === 'l' ? 1 : -1;
+    const f = mesh(SPH, i === 0 ? facetHot : facetMat, joints[i]); f.position.copy(local(joints[i], p)); f.scale.setScalar(.34);
+    const sp = mesh(SPH, spurMat, joints[i]); sp.position.copy(local(joints[i], p.clone().add(V(sx * .42, -.1, -.28)))); sp.scale.setScalar(.3); spurs.push(sp);
   }
   // predné výrastky na okraji L5/S1
-  const lip = [mesh(SPH, spurMat, verts[0], 0, -1.35, 1.95, .7, .25, .35), mesh(SPH, spurMat, base, 0, -.05, 2.0, .7, .25, .35)];
-  lip.forEach(l => spurs.push(l));
-  spurs.forEach(s => s.userData.s = s.scale.clone());
-  // úroveň 3: svaly
+  const f0 = LV[0].disc, front = A3(f0.front), ax0 = A3(f0.axis);
+  const lipUp = mesh(SPH, spurMat, joints[0]); lipUp.position.copy(local(joints[0], front.clone().addScaledVector(ax0, f0.h * .5))); lipUp.scale.set(.75, .25, .35);
+  const lipLo = mesh(SPH, spurMat, base); lipLo.position.copy(front.clone().addScaledVector(ax0, -f0.h * .5)); lipLo.scale.set(.75, .25, .35);
+  spurs.push(lipUp, lipLo); spurs.forEach(s => s.userData.s = s.scale.clone());
+  // úroveň 3: vzpriamovače a bedrovo-driekový sval zo siete, hlboké svaly schematicky
   const act = M.muscle.clone(); act.emissive = C.act.clone(); act.emissiveIntensity = 0;
-  const dl = [];
-  for (const sx of [1, -1]) {
-    dyn(dl, M.muscle, 1.15, L3, [verts[2], V(sx * 2.9, 2.2, -4.4)], [base, V(sx * 2.7, -3.5, -2.6)], { belly: true, flat: .75 });
-    dyn(dl, act, .5, L3, [verts[2], V(sx * .35, -1.0, -5.6)], [verts[0], V(sx * 1.9, .9, -3.7)], { belly: true });
-    dyn(dl, act, .5, L3, [verts[1], V(sx * .35, -1.0, -5.6)], [base, V(sx * 1.9, .2, -3.3)], { belly: true });
-    dyn(dl, act, .45, L3, [verts[0], V(sx * .35, -1.0, -5.6)], [base, V(sx * 1.6, -2.4, -2.5)], { belly: true });
-    dyn(dl, M.muscle, .95, L3, [verts[2], V(sx * 2.7, .3, .2)], [base, V(sx * 5.2, -7.5, 3.6)], { belly: true, flat: .8 });
+  const B4 = [base, joints[0], joints[1], joints[2]], ys = [f0.c[1] - 2.6, LV[0].body[1], LV[1].body[1], LV[2].body[1]];
+  const chainW = (x, y) => {
+    const w = [0, 0, 0, 0];
+    if (y <= ys[0]) w[0] = 1; else if (y >= ys[3]) w[3] = 1;
+    else for (let i = 0; i < 3; i++) if (y < ys[i + 1]) { const t = (y - ys[i]) / (ys[i + 1] - ys[i]); w[i] = 1 - t; w[i + 1] = t; break; }
+    return w;
+  };
+  const apon = (x, y) => .55 * (1 - sstep(-6.5, -1, y));
+  for (const n of ['iliocostalis_l', 'iliocostalis_r', 'longissimus_l', 'longissimus_r']) skin(muscleGeo(g[n], apon), M.muscle, B4, chainW, L3);
+  for (const n of ['psoas_l', 'psoas_r']) skin(muscleGeo(g[n]), M.muscle, B4, chainW, L3);
+  const dl = [], dorsal = X.sacrum.dorsal;
+  for (const [side, sx] of [['l', 1], ['r', -1]]) {
+    const tip = i => local(joints[i], A3(LV[i].spinous).add(V(sx * .4, .3, .5)));
+    dyn(dl, act, .5, L3, [joints[2], tip(2)], [joints[1], local(joints[1], LV[1].facets[side])], { belly: true });
+    dyn(dl, act, .5, L3, [joints[1], tip(1)], [joints[0], local(joints[0], LV[0].facets[side])], { belly: true });
+    dyn(dl, act, .45, L3, [joints[0], tip(0)], [base, A3(dorsal[side])], { belly: true });
   }
   const st = { s: 0 };
   function update(tm, m) {
     const s = Math.sin(tm * Math.PI * 2); st.s = s;
-    const h = [lerp(1.1, .16, m), 1.1, 1.1];
+    const k = lerp(1, .16 / 1.1, m);
     const amp = [lerp(5, .8, m), lerp(5, 6.6, m), lerp(5, 6.6, m)];
-    let y = 0;
     for (let i = 0; i < 3; i++) {
-      joints[i].position.y = i === 0 ? 0 : y;
-      joints[i].rotation.x = rad(angles[i] + amp[i] * s + (i === 0 ? m * 5 : 0));
-      discs[i].scale.y = h[i]; discs[i].position.y = h[i] / 2; verts[i].position.y = h[i] + 1.35; y = h[i] + 2.7;
+      const j = joints[i], u = j.userData, a = rad(amp[i] * s + (i === 0 ? m * 5 : 0));
+      j.quaternion.copy(u.q0).multiply(qx(a));
+      j.position.copy(u.p0); if (i === 0) j.position.addScaledVector(u.drop, u.h * (1 - k));
+      discs[i].quaternion.copy(discs[i].userData.q0).multiply(qx(a / 2));
     }
+    discs[0].scale.y = k;
     discMats[0].color.copy(C.disc).lerp(C.discBad, m);
     spurs.forEach(sp => sp.scale.copy(sp.userData.s).multiplyScalar(Math.max(m, .001)));
     const ext = Math.max(0, -s);
@@ -321,94 +399,99 @@ function buildSpine() {
     act.emissiveIntensity = (1 - m) * (.12 + .2 * Math.abs(s));
     S.updateMatrixWorld(true); updateDyn(dl);
   }
+  const edge = V(f0.c[0] + f0.rx, f0.c[1], f0.c[2]);
   const labels = [
-    { t: 'L5/S1: zaniknutý medzistavcový priestor', k: 'bad', o: joints[0], p: V(2.5, .1, .3), show: s => s.m > .5 },
-    { t: 'Opotrebované malé kĺby (spondylartróza)', k: 'bad', o: verts[1], p: V(2.1, -1.6, -3.7), show: s => s.m > .5 },
-    { t: 'Platnička normálnej výšky', k: 'ok', o: joints[0], p: V(2.5, .55, .3), show: s => s.m < .5 },
-    { t: 'Bez posunu stavca (bez listézy)', k: 'ok', o: verts[0], p: V(0, 0, 2.0), show: () => true },
-    { t: 'Stavec L5', k: 'info', o: verts[0], p: V(-2.4, 0, .3), show: s => s.level === 2 },
-    { t: 'Krížová kosť', k: 'info', o: base, p: V(-2.3, -3, .5), show: s => s.level === 2 },
-    { t: 'Hlboké svaly chrbta (multifidus)', k: 'info', o: verts[1], p: V(.5, -.4, -5.9), show: s => s.level === 3 },
-    { t: 'Vzpriamovače chrbtice', k: 'info', o: verts[2], p: V(-3.4, 1, -4.6), show: s => s.level === 3 },
+    { t: 'L5/S1: zaniknutý medzistavcový priestor', k: 'bad', o: base, p: edge, show: s => s.m > .5 },
+    { t: 'Opotrebované malé kĺby (spondylartróza)', k: 'bad', o: joints[1], p: local(joints[1], LV[1].facets.l), show: s => s.m > .5 },
+    { t: 'Platnička normálnej výšky', k: 'ok', o: base, p: edge, show: s => s.m < .5 },
+    { t: 'Bez posunu stavca (bez listézy)', k: 'ok', o: joints[0], p: local(joints[0], V(0, LV[0].body[1], LV[0].front)), show: () => true },
+    { t: 'Stavec L5', k: 'info', o: joints[0], p: local(joints[0], V(-LV[0].side, LV[0].body[1], LV[0].body[2])), show: s => s.level === 2 },
+    { t: 'Krížová kosť', k: 'info', o: base, p: V(-2.6, X.sacrum.c[1], X.sacrum.c[2] + 1), show: s => s.level === 2 },
+    { t: 'Hlboké svaly chrbta (multifidus)', k: 'info', o: joints[1], p: local(joints[1], A3(LV[1].spinous).add(V(.9, -.6, .3))), show: s => s.level === 3 },
+    { t: 'Vzpriamovače chrbtice', k: 'info', o: joints[2], p: local(joints[2], V(-4.2, LV[2].body[1], LV[2].spinous[2] + .6)), show: s => s.level === 3 },
   ];
-  return { G: S, L3, update, labels, st, ground: -9, size: 15, center: V(0, 5, -1), cam: { az: 2.02, el: .1, dist: 42, t: V(0, 4.6, -1.2) } };
+  return { G: S, L3, update, labels, st, ground: X.floor, size: 17, center: V(0, -1, -1), cam: { az: 2.02, el: .1, dist: 46, t: V(0, .6, -1) } };
 }
 
-/* ───────────── RAMENO (ľavé; +X = von, +Z = dopredu) ───────────── */
-function buildShoulder() {
-  const S = new T.Group(), L3 = new T.Group(); S.add(L3);
+/* ───────────── RAMENO (ľavé; +X = von, +Z = dopredu; počiatok = stred hlavice) ───────────── */
+function buildShoulder(D) {
+  const g = D.parts, X = D.X, R = X.r, G = X.glenoid, S = new T.Group(), L3 = new T.Group(); S.add(L3);
   const scap = new T.Group(), hum = new T.Group(); S.add(scap, hum);
-  const blade = new T.Group(); blade.rotation.y = rad(-25); blade.position.z = -1.3; scap.add(blade);
-  const sh = new T.Shape(); sh.moveTo(-1.7, 3.3); sh.lineTo(-10.6, 3.2); sh.lineTo(-9.3, -10.6); sh.lineTo(-2.1, -3.7); sh.closePath();
-  mesh(new T.ExtrudeGeometry(sh, { depth: .4, bevelEnabled: true, bevelSize: .35, bevelThickness: .2, bevelSegments: 4 }), M.bone, blade, 0, 0, -.2);
-  staticLink(M.bone, .6, blade, V(-10.2, 2.4, -.6), V(-.6, 3.6, -.9));
-  const gg = cyl(1.8, 1.9, .7, 36); gg.rotateZ(Math.PI / 2); mesh(gg, M.bone, scap, -2.45, 0, 0, 1, 1, .78);
-  mesh(SPH, M.bone, scap, -3.1, 0, -.4, 1.2, 1.5, 1.3);
-  const gc = cyl(1.6, 1.6, .12, 36); gc.rotateZ(Math.PI / 2); mesh(gc, M.cart, scap, -2.05, 0, 0, 1, 1, .78);
-  mesh(SPH, M.bone, scap, .5, 3.95, -.5, 2.5, .42, 1.7);
-  staticLink(M.bone, .48, scap, V(-2.6, 2.1, .2), V(-.9, 2.0, 2.7));
-  staticLink(M.bone, .55, scap, V(-.2, 4.15, .9), V(-8.5, 3.6, 3.4));
-  // labrum: zdravá časť + poškodený úsek (zadný až horný)
-  const lg = new T.Group(); lg.position.x = -1.8; lg.rotation.y = Math.PI / 2; lg.scale.set(.78, 1, 1); scap.add(lg);
+  const gc = A3(G.c), gn = A3(G.n), gup = A3(G.up), gback = A3(G.back);
+  bone(g.scapula, scap); bone(g.clavicle, scap);
+  // labrum: v zdrojovom modeli nie je, ostáva schematický prstenec na okraji skutočnej jamky
+  const lg = new T.Group(); lg.position.copy(gc).addScaledVector(gn, .12); lg.quaternion.fromArray(G.q); lg.scale.set(G.b, G.a, (G.a + G.b) / 2); scap.add(lg);
   const lesMat = M.menisc.clone(); lesMat.emissive = C.red.clone(); lesMat.emissiveIntensity = 0;
-  const lesion = mesh(new T.TorusGeometry(1.82, .38, 12, 28, rad(105)), lesMat, lg); lesion.rotation.z = rad(-5);
-  const okArc = mesh(new T.TorusGeometry(1.82, .3, 12, 48, rad(255)), M.menisc, lg); okArc.rotation.z = rad(100);
-  const cyst = mesh(SPH, M.fluid, scap, -3.0, .75, -2.05, .95, .85, .8); cyst.castShadow = false; cyst.renderOrder = 5; cyst.userData.s = cyst.scale.clone();
+  const lesion = mesh(new T.TorusGeometry(1, .2, 12, 28, rad(105)), lesMat, lg); lesion.rotation.z = rad(-5);
+  const okArc = mesh(new T.TorusGeometry(1, .16, 12, 48, rad(255)), M.menisc, lg); okArc.rotation.z = rad(100);
+  const cystAt = gc.clone().addScaledVector(gback, G.b + .5).addScaledVector(gn, -.7).addScaledVector(gup, .4);
+  const cyst = mesh(SPH, M.fluid, scap, cystAt.x, cystAt.y, cystAt.z, .95, .85, .8); cyst.castShadow = false; cyst.renderOrder = 5; cyst.userData.s = cyst.scale.clone();
   const painMat = new T.MeshBasicMaterial({ color: 0xff3b24, transparent: true, opacity: 0, depthWrite: false });
-  const pain = mesh(SPH, painMat, scap, .3, 2.9, -.3, 2.3, .8, 1.7); pain.castShadow = false; pain.renderOrder = 6;
-  // ramenná kosť
-  const headMat = M.cart.clone(); headMat.transparent = true; headMat.opacity = .42; headMat.depthWrite = false;
-  mesh(SPH, headMat, hum, .5, 0, 0, 2.25, 2.25, 2.25).renderOrder = 7;
-  mesh(SPH, M.bone, hum, 1.75, .35, .1, 1.45, 1.6, 1.5);
-  mesh(SPH, M.bone, hum, 1.0, -.3, 1.55, .85, .95, .8);
-  mesh(SPH, M.bone, hum, 1.35, -2.1, 0, 1.45, 1.8, 1.35);
-  mesh(cyl(1.1, .95, 13.5), M.bone, hum, 1.4, -9.2, 0);
-  mesh(new T.CapsuleGeometry(3.5, 10, 8, 24), M.ghost, hum, 1.4, -9, 0).castShadow = false;
+  const painAt = V(.1, (R + X.acromion.c[1]) / 2 + .1, X.acromion.c[2] * .5);
+  const pain = mesh(SPH, painMat, scap, painAt.x, painAt.y, painAt.z, 2.1, .7, 1.7); pain.castShadow = false; pain.renderOrder = 6;
+  // ramenná kosť; hlavica je spriehľadnená, aby bolo vidno jamku a jej lem
+  bone(g.humerus, hum);
+  const headMat = M.cart.clone(); headMat.opacity = .42; headMat.depthWrite = false; headMat.side = T.DoubleSide;
+  const head = mesh(g.humerus_head, headMat, hum); head.renderOrder = 7; head.castShadow = false;
   // úroveň 3: rotátorová manžeta, biceps, deltový sval
   const act = M.muscle.clone(); act.emissive = C.act.clone(); act.emissiveIntensity = 0;
-  const dl = [], HC = [scap, V(.5, 0, 0), 2.5];
-  const bellies = [
-    [V(-9.4, 2.9, -4.6), V(-2.4, 3.05, -1.3), 1.0, V(2.5, 1.5, .1)],   // supraspinatus
-    [V(-9.0, -3.4, -5.4), V(-2.6, -.3, -2.6), 1.25, V(2.4, .6, -1.5)],  // infraspinatus
-    [V(-8.2, -2.4, -2.0), V(-2.5, -.3, 1.7), 1.15, V(1.1, -.2, 2.3)],   // subscapularis
-  ];
-  const scapL3 = new T.Group(), humL3 = new T.Group(); scap.add(scapL3); hum.add(humL3);
-  for (const b of bellies) {
-    staticLink(act, b[2], scapL3, b[0], b[1], { belly: true, flat: .55 });
-    dyn(dl, M.tendon, .42, L3, [scap, b[1]], [hum, b[3]], { wrap: HC, flat: .5 });
-  }
-  dyn(dl, M.tendon, .24, L3, [scap, V(-1.8, 1.85, .1)], [hum, V(1.7, -3.0, 1.75)], { wrap: [scap, V(.5, 0, 0), 2.6] });
-  staticLink(M.muscle, .95, humL3, V(1.7, -3.0, 1.75), V(1.6, -13.5, 1.9), { belly: true, flat: .8 });
-  const delt = M.muscle.clone(); delt.transparent = true; delt.opacity = .2; delt.depthWrite = false;
-  const dm = mesh(SPH, delt, humL3, 1.6, -2.6, 0, 3.4, 4.9, 3.3); dm.castShadow = false; dm.renderOrder = 4;
+  const B2 = [scap, hum];
+  const lat = (x, y, z) => (x - gc.x) * gn.x + (y - gc.y) * gn.y + (z - gc.z) * gn.z;
+  const cuffW = (x, y, z) => { const t = sstep(.1 * R, R, lat(x, y, z)); return [1 - t, t]; };
+  const cuffT = (x, y, z) => sstep(-.2 * R, .55 * R, lat(x, y, z));
+  for (const n of ['supraspinatus', 'infraspinatus', 'subscapularis']) skin(muscleGeo(g[n], cuffT, 'x'), act, B2, cuffW, L3);
+  skin(muscleGeo(g.biceps_long, (x, y) => sstep(-5, -2.5, y)), M.muscle, B2, (x, y) => { const t = 1 - sstep(.2 * R, .9 * R, y); return [1 - t, t]; }, L3);
+  const delt = M.muscle.clone(); delt.transparent = true; delt.opacity = .24; delt.depthWrite = false;
+  const dm = skin(muscleGeo(g.deltoid), delt, B2, (x, y) => { const t = 1 - sstep(-.6 * R, R, y); return [1 - t, t]; }, L3); dm.castShadow = false; dm.renderOrder = 4;
   const st = { abd: 0 };
   function update(tm, m, s) {
     const u = .5 - .5 * Math.cos(tm * Math.PI * 2); st.abd = 5 + 140 * u;
-    hum.rotation.z = rad(st.abd); scap.rotation.z = rad(Math.max(0, st.abd - 30) / 3);
+    hum.rotation.z = rad(st.abd - X.bind_abduction); scap.rotation.z = rad(Math.max(0, st.abd - 30) / 3);
     lesMat.color.copy(C.lab).lerp(C.lesion, m); lesMat.emissiveIntensity = m * (.35 + .25 * Math.sin(s.time * 5)); lesMat.roughness = lerp(.35, .85, m);
     lesion.scale.setScalar(lerp(1, 1.07, m));
     cyst.scale.copy(cyst.userData.s).multiplyScalar(Math.max(m, .001));
     const over = clamp((st.abd - 85) / 30, 0, 1);
     painMat.opacity = m * over * (.3 + .15 * Math.sin(s.time * 6));
     act.emissiveIntensity = (1 - m) * (.12 + .22 * u);
-    const show3 = L3.visible; scapL3.visible = show3; humL3.visible = show3;
-    S.updateMatrixWorld(true); updateDyn(dl);
+    S.updateMatrixWorld(true);
   }
+  const rimAt = lg.position.clone().addScaledVector(gup, G.a * .75).addScaledVector(gback, G.b * .6);
   const labels = [
-    { t: 'Poškodený horný až zadný lem jamky (labrum)', k: 'bad', o: scap, p: V(-1.8, 1.6, -1.1), show: s => s.m > .5 },
-    { t: 'Cysta za zadným okrajom jamky', k: 'bad', o: scap, p: V(-3.2, .7, -2.6), show: s => s.m > .5 },
-    { t: 'Zóna, kde Peter udával bolesť', k: 'bad', o: scap, p: V(.6, 3.1, .6), show: s => s.m > .5 && st.abd > 90 },
-    { t: 'Neporušený lem jamky', k: 'ok', o: scap, p: V(-1.8, 1.6, -1.1), show: s => s.m < .5 },
-    { t: 'Hlavica ramennej kosti (spriehľadnená)', k: 'info', o: hum, p: V(2.2, -1.2, -1.2), show: s => s.level === 2 },
-    { t: 'Nadpleciok (akromion)', k: 'info', o: scap, p: V(1.4, 4.3, 0), show: s => s.level === 2 && st.abd < 80 },
-    { t: 'Šľachy rotátorovej manžety bez poškodenia', k: 'ok', o: scap, p: V(-1.2, 3.2, -1.0), show: s => s.level === 3 },
-    { t: 'Šľacha dlhej hlavy bicepsu', k: 'info', o: hum, p: V(1.7, -4.5, 1.9), show: s => s.level === 3 },
+    { t: 'Poškodený horný až zadný lem jamky (labrum)', k: 'bad', o: scap, p: rimAt, show: s => s.m > .5 },
+    { t: 'Cysta za zadným okrajom jamky', k: 'bad', o: scap, p: cystAt, show: s => s.m > .5 },
+    { t: 'Zóna, kde Peter udával bolesť', k: 'bad', o: scap, p: painAt, show: s => s.m > .5 && st.abd > 90 },
+    { t: 'Neporušený lem jamky', k: 'ok', o: scap, p: rimAt, show: s => s.m < .5 },
+    { t: 'Hlavica ramennej kosti (spriehľadnená)', k: 'info', o: hum, p: V(R * .6, -R * .5, -R * .5), show: s => s.level === 2 },
+    { t: 'Nadpleciok (akromion)', k: 'info', o: scap, p: V(X.acromion.c[0], X.acromion.top, X.acromion.c[2]), show: s => s.level === 2 && st.abd < 80 },
+    { t: 'Šľachy rotátorovej manžety bez poškodenia', k: 'ok', o: scap, p: gc.clone().addScaledVector(gup, G.a + .7), show: s => s.level === 3 },
+    { t: 'Šľacha dlhej hlavy bicepsu', k: 'info', o: hum, p: V(R * .4, -R * 1.7, R * .85), show: s => s.level === 3 },
   ];
-  return { G: S, L3, update, labels, st, ground: -17.5, size: 20, center: V(-2, -2, 0), cam: { az: 2.05, el: .3, dist: 46, t: V(-1.6, -1.6, -.6) } };
+  return { G: S, L3, update, labels, st, ground: X.cut, size: 20, center: V(-3, -5, 0), cam: { az: 2.05, el: .3, dist: 50, t: V(-2.6, -5, -1) } };
 }
 
-const stages = { figure: { G: fig.G, ground: 0, size: 1.5, center: V(0, .9, 0) }, knee: buildKnee(), spine: buildSpine(), shoulder: buildShoulder() };
-for (const k in stages) { scene.add(stages[k].G); stages[k].G.visible = false; }
+/* ───────────── načítanie sietí podľa potreby ───────────── */
+const BUILD = { figure: buildFigure, knee: buildKnee, spine: buildSpine, shoulder: buildShoulder };
+const stages = {}, pending = {}, loader = new GLTFLoader(), loadingEl = $('#loading');
+let loadFailed = false;
+function need(k) {
+  if (stages[k]) return stages[k];
+  if (!pending[k]) {
+    pending[k] = true;
+    loader.load('/movement-atlas/mesh-' + k + '.glb', gltf => {
+      const parts = {};
+      gltf.scene.traverse(o => { if (o.isMesh) { o.geometry.computeVertexNormals(); parts[o.name] = o.geometry; } });
+      const st = BUILD[k]({ parts, X: gltf.scene.userData });
+      st.G.visible = false; scene.add(st.G); stages[k] = st;
+      if (stageKey() === k) { activate(true); cam.dist = goal.dist; syncUI(); }
+      if (k === 'figure') need(S.region);
+    }, undefined, () => { loadFailed = true; pending[k] = false; showLoading(); });
+  }
+  return null;
+}
+function showLoading() {
+  loadingEl.hidden = !!active && !loadFailed;
+  loadingEl.textContent = loadFailed ? 'Model sa nepodarilo načítať. Skúste obnoviť stránku.' : 'Načítavam 3D model…';
+}
 
 /* ───────────── OBSAH ───────────── */
 const SUP = { root: [-90, 0, 0], neck: [8, 0, 0] };
@@ -521,25 +604,27 @@ function lightFor(st) {
   key.position.set(c.x + s * 1.1, c.y + s * 2.4, c.z + s * 1.7); key.target.position.copy(c);
   const sc = key.shadow.camera; sc.left = -s * 1.4; sc.right = s * 1.4; sc.top = s * 1.6; sc.bottom = -s * 1.6; sc.near = s * .2; sc.far = s * 8; sc.updateProjectionMatrix();
   rim.position.set(c.x - s * 2, c.y + s * 1.2, c.z - s * 2.2); rim.target.position.copy(c);
+  fill.position.set(c.x - s * 1.6, c.y + s * .6, c.z + s * 1.4); fill.target.position.copy(c);
   ground.position.set(c.x, st.ground, c.z); ground.scale.setScalar(s * 3);
 }
 function stageKey() { return (S.ex || S.level === 1) ? 'figure' : S.region; }
 function activate(snap) {
-  const k = stageKey(); active = stages[k];
+  const k = stageKey(); active = need(k);
   for (const n in stages) stages[n].G.visible = n === k;
+  showLoading();
+  if (!active) { rebuildLabels(); return; }
   lightFor(active);
   if (k === 'figure') {
-    for (const n in fig.parts) fig.parts[n].material = M.skin;
+    fig.highlight(S.ex ? S.ex.hl : []);
     for (const n in fig.hot) { fig.hot[n].dot.visible = fig.hot[n].ring.visible = !S.ex; }
     if (S.ex) {
-      S.ex.hl.forEach(n => fig.parts[n] && (fig.parts[n].material = M.skinHL));
       fig.matMesh.visible = !!S.ex.mat; fig.matMesh.rotation.y = S.ex.mat === 'x' ? Math.PI / 2 : 0;
       applyPose(S.ex.A, S.ex.A, 0); groundFigure();
       if (S.ex.anchor) { fig.J[S.ex.anchor].getWorldPosition(_w); S.ex._at = _w.clone(); }
       const c = S.ex.cam; setGoal({ az: c.az, el: c.el, dist: c.dist, t: V(0, c.y, 0) }, snap);
     } else {
       fig.matMesh.visible = false; applyPose(STAND, STAND, 0); groundFigure();
-      const f = FIGCAM[S.region]; setGoal({ az: f.az, el: f.el, dist: 4.9, t: V(0, .98, 0) }, snap);
+      const f = FIGCAM[S.region]; setGoal({ az: f.az, el: f.el, dist: 4.3, t: V(0, .9, 0) }, snap);
     }
   } else {
     active.L3.visible = S.level === 3;
@@ -552,7 +637,7 @@ function transition(fn) {
   clearTimeout(fadeTimer);
   const prev = stageKey();
   const zoomIn = prev === 'figure' && !S.ex;
-  if (zoomIn) { const h = fig.hot[S.region]; _w.copy(h.src[1]); h.src[0].localToWorld(_w); goal.t.copy(_w); goal.dist = 1.6; }
+  if (zoomIn && fig) { const h = fig.hot[S.region]; _w.copy(h.src[1]); h.src[0].localToWorld(_w); goal.t.copy(_w); goal.dist = 1.6; }
   stageEl.classList.add('fading');
   fadeTimer = setTimeout(() => { fn(); activate(true); syncUI(); stageEl.classList.remove('fading'); }, zoomIn ? 330 : 220);
 }
@@ -562,6 +647,7 @@ const labelsEl = $('#labels'), leaders = $('#leaders');
 let labs = [];
 function rebuildLabels() {
   labelsEl.innerHTML = ''; leaders.innerHTML = ''; labs = [];
+  if (!active) return;
   let defs;
   if (stageKey() === 'figure') {
     if (S.ex) defs = [];
@@ -608,6 +694,7 @@ function layoutLabels(W, H) {
 /* ───────────── slučka ───────────── */
 const badge = $('#badge'), caption = $('#caption'), scrub = $('#scrub');
 let last = performance.now(), W = 0, H = 0, scrubbing = false;
+const perf = { n: 0, ms: 0, max: 0 };
 function resize() {
   const r = stageEl.getBoundingClientRect(); W = r.width; H = r.height;
   renderer.setSize(W, H, false); camera.aspect = W / H; camera.fov = W / H < .8 ? 46 : 35; camera.updateProjectionMatrix();
@@ -618,12 +705,14 @@ function exPhase(tm) { // zdvih 35 %, výdrž 15 %, návrat 35 %, pauza 15 %
   if (tm < .35) return smooth(tm / .35); if (tm < .5) return 1; if (tm < .85) return 1 - smooth((tm - .5) / .35); return 0;
 }
 function frame(now) {
-  const dt = Math.min(.05, (now - last) / 1000); last = now; S.time += dt;
+  const raw = now - last, dt = Math.min(.05, raw / 1000); last = now; S.time += dt;
+  if (active) { perf.n++; perf.ms += raw; if (raw > perf.max) perf.max = raw; }
   if (S.playing && !scrubbing) { S.tm = (S.tm + dt * S.speed / (S.ex ? 5.5 : 6)) % 1; scrub.value = Math.round(S.tm * 1000); }
   if (S.mode === 'compare') { S.cmpT += dt; S.mT = (S.cmpT % 6) < 3 ? 1 : 0; } else S.mT = S.mode === 'peter' ? 1 : 0;
   S.m += (S.mT - S.m) * (1 - Math.exp(-dt * 5));
   const k = stageKey();
-  if (k === 'figure') {
+  if (!active) caption.textContent = '';
+  else if (k === 'figure') {
     if (S.ex) {
       const u = exPhase(S.tm); applyPose(S.ex.A, S.ex.B, u); groundFigure(S.ex.anchor, S.ex._at);
       caption.textContent = u < .5 ? S.ex.caps[0] : S.ex.caps[1];
@@ -643,7 +732,7 @@ function frame(now) {
     else if (k === 'spine') { const s = active.st.s; caption.textContent = (s > .15 ? 'Predklon' : s < -.15 ? 'Záklon' : 'Stredná poloha') + (pm ? ' · L5/S1 sa takmer nehýbe' : ' · pohyb rozložený rovnomerne'); }
     else { const a = active.st.abd; caption.textContent = `Upaženie ${Math.round(a)}°` + (pm && a > 90 ? ' · nad horizontálou sa ozývala bolesť' : ''); }
   }
-  const showBadge = k !== 'figure';
+  const showBadge = k !== 'figure' && !!active;
   badge.style.display = showBadge ? '' : 'none';
   if (showBadge) { const pm = S.mT > .5; badge.className = pm ? 'peter' : 'normal'; badge.textContent = pm ? 'Petrov nález' : 'Zdravý stav'; }
   if (S.autoRot) goal.az += dt * .35;
@@ -715,6 +804,7 @@ function renderPanel(r) {
     <div class="foot">
       <p><b>Odporúčanie ortopéda z 11. 11. 2026:</b> rehabilitácia na aktiváciu dynamických stabilizátorov, po jej skončení cvičiť 3× týždenne dlhodobo a bicyklovať 15 minút denne.</p>
       <p>Model je zjednodušená ilustrácia zostavená z textu lekárskych správ (ortopéd 8. 10. a 11. 11. 2026, MR kolena 8. 10. 2026, ortopéd 19. 2. a 22. 4. 2025). Nezobrazuje skutočné snímky. Pohyb v Petrovom stave je znázornený schematicky.</p>
+      <p>Kosti, svaly a postava sú ilustračná všeobecná anatómia z verejného modelu ľudského tela, nie Petrove vlastné snímky. Nález je do nej zakreslený podľa textu správ. Menisky, väzy, lem jamky a hlboké svaly chrbta sú doplnené schematicky.</p>
       <p>Cviky sú bežné príklady, nie predpis. Výber, rozsah a záťaž určuje fyzioterapeut po vyšetrení. Cvičí sa bez bolesti.</p>
     </div>`;
   panel.scrollTop = 0;
@@ -729,7 +819,6 @@ function renderPanel(r) {
 }
 
 /* ───────────── štart ───────────── */
-window.__atlas = { S, set(o) { Object.assign(S, o); if (o.exRef) S.ex = EX[o.exRef[0]][o.exRef[1]]; activate(true); cam.dist = goal.dist; syncUI(); renderPanel(S.region); }, EX };
+window.__atlas = { S, perf, ready: () => !!active, loaded: () => Object.keys(stages), view(az, el, dist, x, y, z) { goal.az = cam.az = az; goal.el = cam.el = el; goal.dist = cam.dist = dist; goal.t.set(x, y, z); cam.t.copy(goal.t); }, set(o) { Object.assign(S, o); if (o.exRef) S.ex = EX[o.exRef[0]][o.exRef[1]]; activate(true); cam.dist = goal.dist; syncUI(); renderPanel(S.region); }, EX };
 resize(); renderPanel(S.region); activate(true); cam.dist = goal.dist; syncUI();
 requestAnimationFrame(frame);
-})();
