@@ -666,8 +666,12 @@ async def test_oauth_authorize_rejects_other_caregiver(http_mode, db):
     assert resp.status_code == 403
 
 
-async def test_oauth_authorize_allows_caregiver_cookie(http_mode, db):
+async def test_oauth_authorize_allows_caregiver_cookie(http_mode, db, monkeypatch):
     from tests.helpers import ERIKA_UUID
+
+    # A first Google link is an onboarding action (#852); this test is about
+    # the caregiver ACL, so the gate is open here.
+    monkeypatch.setattr("oncofiles.config.ONBOARDING_MODE", "open")
 
     server = http_mode
     await db.db.execute(

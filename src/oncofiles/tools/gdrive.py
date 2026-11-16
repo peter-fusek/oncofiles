@@ -8,6 +8,7 @@ import logging
 
 from fastmcp import Context
 
+from oncofiles import onboarding_gate
 from oncofiles.config import GOOGLE_DRIVE_FOLDER_ID, GOOGLE_OAUTH_CLIENT_ID
 from oncofiles.tools._helpers import _get_db, _get_files, _get_gdrive, _get_patient_id
 
@@ -33,7 +34,12 @@ async def gdrive_auth_url(ctx: Context) -> str:
     if not GOOGLE_OAUTH_CLIENT_ID:
         return json.dumps({"error": "GOOGLE_OAUTH_CLIENT_ID not configured"})
 
-    url = get_auth_url(patient_id=_get_patient_id())
+    pid = _get_patient_id()
+    # #852: a first Google link needs a caller the onboarding gate admits.
+    refused = await onboarding_gate.mcp_google_connect_refusal(_get_db(ctx), pid)
+    if refused:
+        return refused
+    url = get_auth_url(patient_id=pid)
     return json.dumps(
         {
             "auth_url": url,
@@ -63,6 +69,10 @@ async def gdrive_auth_callback(ctx: Context, code: str) -> str:
     patient = await db.get_patient(pid)
     if patient is None:
         return json.dumps({"error": "patient not found"})
+    # #852: same onboarding gate as gdrive_auth_url / /oauth/authorize.
+    refused = await onboarding_gate.mcp_google_connect_refusal(db, pid)
+    if refused:
+        return refused
 
     try:
         tokens = exchange_code(code)
@@ -121,6 +131,10 @@ async def gdrive_set_folder(ctx: Context, folder_id: str) -> str:
     Args:
         folder_id: The Google Drive folder ID to use as the sync root.
     """
+    # #852: setting/changing a folder is an onboarding action.
+    refused = onboarding_gate.mcp_onboarding_refusal(onboarding_gate.ACTION_SET_FOLDER)
+    if refused:
+        return refused
     db = _get_db(ctx)
     pid = _get_patient_id()
     token = await db.get_oauth_token(patient_id=pid)
@@ -215,6 +229,11 @@ async def gdrive_sync(
     """
     from oncofiles.sync import get_sync_status
     from oncofiles.sync import sync as _sync
+
+    # #852: legacy Drive trigger, admin-only in every ONBOARDING_MODE until #853.
+    refused = onboarding_gate.mcp_legacy_refusal("gdrive_sync")
+    if refused:
+        return refused
 
     db = _get_db(ctx)
     files = _get_files(ctx)
@@ -317,6 +336,11 @@ async def sync_from_gdrive(
     """
     from oncofiles.sync import sync_from_gdrive as _sync_from_gdrive
 
+    # #852: legacy Drive trigger, admin-only in every ONBOARDING_MODE until #853.
+    refused = onboarding_gate.mcp_legacy_refusal("sync_from_gdrive")
+    if refused:
+        return refused
+
     db = _get_db(ctx)
     files = _get_files(ctx)
     gdrive = await _get_gdrive(ctx)
@@ -359,6 +383,11 @@ async def sync_to_gdrive(
     """
     from oncofiles.sync import sync_to_gdrive as _sync_to_gdrive
 
+    # #852: legacy Drive trigger, admin-only in every ONBOARDING_MODE until #853.
+    refused = onboarding_gate.mcp_legacy_refusal("sync_to_gdrive")
+    if refused:
+        return refused
+
     db = _get_db(ctx)
     files = _get_files(ctx)
     gdrive = await _get_gdrive(ctx)
@@ -394,6 +423,10 @@ async def gdrive_fix_permissions(
     Args:
         email: Email to grant access to. If omitted, detects from folder owner.
     """
+    # #852: legacy Drive trigger, admin-only in every ONBOARDING_MODE until #853.
+    refused = onboarding_gate.mcp_legacy_refusal("gdrive_fix_permissions")
+    if refused:
+        return refused
     db = _get_db(ctx)
     gdrive = await _get_gdrive(ctx)
     if not gdrive:
@@ -443,6 +476,10 @@ async def setup_gdrive(ctx: Context, root_folder_id: str) -> str:
     Args:
         root_folder_id: The Google Drive folder ID to create subfolders in.
     """
+    # #852: legacy Drive trigger, admin-only in every ONBOARDING_MODE until #853.
+    refused = onboarding_gate.mcp_legacy_refusal("setup_gdrive")
+    if refused:
+        return refused
     from oncofiles.gdrive_folders import _folders_for_patient_type, bilingual_name
     from oncofiles.patient_context import get_context
     from oncofiles.tools._helpers import _get_patient_id

@@ -3721,6 +3721,10 @@ async def health(request: Request) -> JSONResponse:
     from oncofiles.cloud_guard import cloud_ai_enabled
 
     result["cloud_ai"] = "enabled" if cloud_ai_enabled() else "disabled"
+    # #852: onboarding gate mode, config only (never the invite list, no DB).
+    from oncofiles.onboarding_gate import onboarding_mode
+
+    result["onboarding"] = onboarding_mode()
     # Build-time commit (Dockerfile ARG GIT_SHA, #610); RAILWAY_* kept as fallback.
     commit = (os.environ.get("ONCOFILES_GIT_SHA") or os.environ.get("RAILWAY_GIT_COMMIT_SHA", ""))[
         :7
@@ -3840,6 +3844,9 @@ async def readiness(request: Request) -> JSONResponse:
             return JSONResponse(result)
 
         result["memory_rss_mb"] = round(get_rss_mb(), 1)
+        from oncofiles.onboarding_gate import onboarding_mode
+
+        result["onboarding"] = onboarding_mode()  # #852, mode only
         # #552: full detail for structural credential failures. Operator-only,
         # so patient IDs are safe here (unlike /health, which gets counts only).
         if _hard_auth_failures:
@@ -4416,6 +4423,56 @@ def _check_dashboard_auth(request: Request) -> JSONResponse | None:
     if _get_dashboard_email(request) is not None:
         return None
     return JSONResponse({"error": "unauthorized"}, status_code=401)
+
+
+def _dashboard_caller(request: Request) -> tuple[str | None, bool]:
+    """(email, is_admin) of a dashboard caller for the onboarding gate (#852).
+
+    The static bearer (and stdio, which ``_check_bearer`` trusts) is the
+    operator, so admin; a session caller is admin when its e-mail is in
+    DASHBOARD_ADMIN_EMAILS.
+    """
+    if _check_bearer(request) is None:
+        return None, True
+    email = _get_dashboard_email(request)
+    return email, _is_admin_email(email)
+
+
+def _onboarding_refusal_response(action: str, email: str | None, code: str) -> JSONResponse:
+    from oncofiles import onboarding_gate
+
+    onboarding_gate.log_refusal(action, email, surface="dashboard", code=code)
+    return JSONResponse(onboarding_gate.refusal_payload(code), status_code=403)
+
+
+def _dashboard_onboarding_refusal(request: Request, action: str) -> JSONResponse | None:
+    """403 ``onboarding_closed`` when this caller may not onboard (#852), else None.
+
+    Call after ``_check_dashboard_auth`` on every route that creates a patient,
+    starts a first Google link or sets a Drive folder.
+    """
+    from oncofiles import onboarding_gate
+
+    email, is_admin = _dashboard_caller(request)
+    if onboarding_gate.onboarding_allowed(email, is_admin=is_admin):
+        return None
+    return _onboarding_refusal_response(action, email, onboarding_gate.ONBOARDING_CLOSED)
+
+
+def _dashboard_legacy_refusal(request: Request, action: str) -> JSONResponse | None:
+    """403 for a legacy Drive sync / enhance trigger from a non-admin (#852).
+
+    Admin-only in every ONBOARDING_MODE until #853 makes every new folder
+    curated: new users must only ever get the curated path.
+    """
+    from oncofiles import onboarding_gate
+
+    email, is_admin = _dashboard_caller(request)
+    if onboarding_gate.legacy_allowed(is_admin=is_admin):
+        return None
+    return _onboarding_refusal_response(
+        f"{onboarding_gate.ACTION_LEGACY_SYNC}:{action}", email, onboarding_gate.LEGACY_ADMIN_ONLY
+    )
 
 
 # Canonical sentinel lives in oncofiles.constants to avoid circular imports
@@ -6094,6 +6151,22 @@ async def api_newsletter_check(request: Request) -> JSONResponse:
     )
 
 
+@mcp.custom_route("/api/onboarding-status", methods=["GET"])
+async def api_onboarding_status(request: Request) -> JSONResponse:
+    """Onboarding gate state for THIS caller (#852): mode + booleans only.
+
+    The dashboard uses it to show a waitlist notice instead of the new-patient
+    wizard / Drive connection. Never returns the invite list; no DB call.
+    """
+    err = _check_dashboard_auth(request)
+    if err:
+        return err
+    from oncofiles import onboarding_gate
+
+    email, is_admin = _dashboard_caller(request)
+    return JSONResponse(onboarding_gate.status_for(email, is_admin=is_admin))
+
+
 @mcp.custom_route("/api/patients", methods=["GET"])
 async def api_list_patients(request: Request) -> JSONResponse:
     """List patients visible to the authenticated user.
@@ -6335,6 +6408,9 @@ async def api_create_patient(request: Request) -> JSONResponse:
     err = _check_dashboard_auth(request)
     if err:
         return err
+    gate_err = _dashboard_onboarding_refusal(request, "create_patient")
+    if gate_err:
+        return gate_err
     rate_err = _check_rate_limit("patients")
     if rate_err:
         return rate_err
@@ -6539,10 +6615,15 @@ async def api_sync_trigger(request: Request) -> JSONResponse:
 
     Body: {"patient_id": "..."}
     Returns sync stats on success.
+
+    Legacy sync: admin-only in every ONBOARDING_MODE until #853 (#852).
     """
     err = _check_dashboard_auth(request)
     if err:
         return err
+    gate_err = _dashboard_legacy_refusal(request, "sync_trigger")
+    if gate_err:
+        return gate_err
 
     try:
         body = await request.json()
@@ -6602,10 +6683,15 @@ async def api_enhance_trigger(request: Request) -> JSONResponse:
 
     Body: {"patient_id": "..."}
     Enhances all unprocessed documents (OCR + AI summary + metadata).
+
+    Legacy pipeline: admin-only in every ONBOARDING_MODE until #853 (#852).
     """
     err = _check_dashboard_auth(request)
     if err:
         return err
+    gate_err = _dashboard_legacy_refusal(request, "enhance_trigger")
+    if gate_err:
+        return gate_err
 
     try:
         body = await request.json()
@@ -6736,10 +6822,16 @@ async def api_gdrive_set_folder(request: Request) -> JSONResponse:
     when it has too many subfolders to check (``too_many_to_check``) or when
     the check could not run (``check_failed``). None of them can be confirmed
     away; there is no ``confirm_container`` field any more.
+
+    #852: refused (403 ``onboarding_closed``) for a caller the onboarding gate
+    does not admit, before any Drive call.
     """
     err = _check_dashboard_auth(request)
     if err:
         return err
+    gate_err = _dashboard_onboarding_refusal(request, "set_folder")
+    if gate_err:
+        return gate_err
 
     try:
         body = await request.json()
@@ -7494,6 +7586,16 @@ async def oauth_authorize(request: Request) -> JSONResponse:
         return JSONResponse(
             {"error": "forbidden: not authorized for this patient"}, status_code=403
         )
+    # #852 onboarding gate: a FIRST Google link for this patient needs a caller
+    # the gate admits. A patient that already has a link may re-consent.
+    from oncofiles import onboarding_gate
+
+    if not onboarding_gate.onboarding_allowed(
+        email, is_admin=bearer_ok or _is_admin_email(email)
+    ) and not await onboarding_gate.has_google_link(db_inst, patient_id):
+        return _onboarding_refusal_response(
+            onboarding_gate.ACTION_GOOGLE_CONNECT, email, onboarding_gate.ONBOARDING_CLOSED
+        )
     scope_map = {
         "drive": SCOPES,
         "gmail": GMAIL_SCOPES,
@@ -7580,6 +7682,26 @@ async def oauth_callback(request: Request) -> JSONResponse:
         privileged = mcp_principal_privileged(principal, patient.caregiver_email)
     else:
         return JSONResponse({"error": "Invalid or expired state parameter."}, status_code=400)
+
+    # #852 onboarding gate, re-checked here so a state minted before the gate
+    # closed (or by a caller it no longer admits) cannot complete a FIRST link.
+    # The operator ("o") is always admitted; an existing link may re-consent.
+    from oncofiles import onboarding_gate
+
+    if kind == "s":
+        gate_ok = onboarding_gate.onboarding_allowed(
+            session_email, is_admin=_is_admin_email(session_email)
+        )
+    elif kind == "m":
+        gate_ok = onboarding_gate.onboarding_allowed_for_hash(
+            principal.get("eh"), is_admin=bool(principal.get("adm"))
+        )
+    else:
+        gate_ok = True
+    if not gate_ok and not await onboarding_gate.has_google_link(db, patient_id):
+        return _onboarding_refusal_response(
+            onboarding_gate.ACTION_GOOGLE_CONNECT, session_email, onboarding_gate.ONBOARDING_CLOSED
+        )
 
     code = request.query_params.get("code")
     if not code:

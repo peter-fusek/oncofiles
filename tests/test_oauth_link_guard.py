@@ -65,6 +65,9 @@ def http_mode(monkeypatch):
     monkeypatch.setattr(server, "GOOGLE_OAUTH_CLIENT_ID", "synthetic-client.example.test")
     monkeypatch.setattr(oauth, "GOOGLE_OAUTH_CLIENT_ID", "synthetic-client.example.test")
     monkeypatch.setattr("oncofiles.config.GOOGLE_OAUTH_CLIENT_ID", "synthetic-client.example.test")
+    # These tests are about the link guard, not the #852 onboarding gate
+    # (tests/test_onboarding_gate.py): let a caregiver start a first link.
+    monkeypatch.setattr("oncofiles.config.ONBOARDING_MODE", "open")
     server._rate_limits.clear()
     oauth._consumed_state_tokens.clear()
     yield server
