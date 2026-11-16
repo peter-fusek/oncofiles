@@ -90,6 +90,11 @@ async def rename_documents_to_standard(
             in stateless HTTP contexts where select_patient() state does not persist
             across tool calls (#429). Stdio + single-patient bearer flows can omit.
     """
+    # #852: legacy trigger, admin-only in every ONBOARDING_MODE until #853.
+    from oncofiles.onboarding_gate import mcp_legacy_refusal
+
+    if (refused := mcp_legacy_refusal("rename_documents_to_standard")) is not None:
+        return refused
     import time
 
     from oncofiles.sync import _SYNC_LOCK_TIMEOUT, _sync_lock, _sync_lock_acquired_at

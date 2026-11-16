@@ -319,6 +319,22 @@ DASHBOARD_ADMIN_EMAILS: list[str] = [
     if e.strip()
 ]
 
+# Self-service onboarding gate (#852). Runtime-only env, read at call time
+# through ``oncofiles.onboarding_gate`` so tests can patch these attributes.
+#   closed (default) — non-admins cannot create a patient, connect Google for a
+#                      patient that has no Google link yet, or set a Drive folder
+#   invite           — only the e-mails in ONBOARDING_INVITE_EMAILS (and admins)
+#   open             — every signed-in user
+# Any other value is treated as ``closed`` (fail closed, warning logged). Legacy
+# Drive sync/rename/reconcile triggers are admin-only in EVERY mode until #853.
+# Rollback = set ONBOARDING_MODE=closed and restart.
+ONBOARDING_MODE: str = os.environ.get("ONBOARDING_MODE", "closed")
+ONBOARDING_INVITE_EMAILS: frozenset[str] = frozenset(
+    e.strip().lower()
+    for e in os.environ.get("ONBOARDING_INVITE_EMAILS", "").split(",")
+    if e.strip()
+)
+
 # Localization
 PREFERRED_LANG: str = os.environ.get("ONCOFILES_PREFERRED_LANG", "sk")
 
