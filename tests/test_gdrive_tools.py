@@ -3,6 +3,8 @@
 import json
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from oncofiles.database import Database
 from oncofiles.tools.gdrive import (
     gdrive_auth_status,
@@ -120,11 +122,28 @@ async def test_gdrive_sync_dry_run(db: Database):
 
 # ── setup_gdrive ──────────────────────────────────────────────────────────
 
+ROOT_ID = "idRootFolder00000839"
+
+
+@pytest.fixture(autouse=True)
+def _plain_root(monkeypatch):
+    """#839: setup_gdrive checks the root with ``folder_overview`` first; the
+    Drive mocks here are bare MagicMocks, so answer "plain folder" for them."""
+    monkeypatch.setattr(
+        "oncofiles.curated_folder.folder_overview",
+        lambda *_a, **_k: {
+            "curated": False,
+            "subfolder_count": 0,
+            "curated_children": 0,
+            "container_reason": None,
+        },
+    )
+
 
 async def test_setup_gdrive_no_client(db: Database):
     """setup_gdrive returns error when GDrive client is not configured."""
     ctx = _mock_ctx(db, gdrive=None)
-    result = json.loads(await setup_gdrive(ctx, root_folder_id="root123"))
+    result = json.loads(await setup_gdrive(ctx, root_folder_id=ROOT_ID))
     assert "error" in result
     assert "not configured" in result["error"]
 
@@ -136,10 +155,10 @@ async def test_setup_gdrive_creates_all_folders(db: Database):
     mock_gdrive.create_folder.return_value = "new_folder_id"
     ctx = _mock_ctx(db, gdrive=mock_gdrive)
 
-    result = json.loads(await setup_gdrive(ctx, root_folder_id="root123"))
+    result = json.loads(await setup_gdrive(ctx, root_folder_id=ROOT_ID))
 
     assert result["status"] == "ok"
-    assert result["root_folder_id"] == "root123"
+    assert result["root_folder_id"] == ROOT_ID
     assert result["total_folders"] == 18  # 15 active categories + 3 metadata
     assert len(result["created"]) == 18
     assert len(result["skipped"]) == 0
@@ -154,7 +173,7 @@ async def test_setup_gdrive_skips_existing(db: Database):
     mock_gdrive.find_folder.return_value = "existing_id"
     ctx = _mock_ctx(db, gdrive=mock_gdrive)
 
-    result = json.loads(await setup_gdrive(ctx, root_folder_id="root123"))
+    result = json.loads(await setup_gdrive(ctx, root_folder_id=ROOT_ID))
 
     assert result["status"] == "ok"
     assert len(result["created"]) == 0
@@ -175,7 +194,7 @@ async def test_setup_gdrive_renames_old_folders(db: Database):
     mock_gdrive.find_folder.side_effect = find_folder_side_effect
     ctx = _mock_ctx(db, gdrive=mock_gdrive)
 
-    result = json.loads(await setup_gdrive(ctx, root_folder_id="root123"))
+    result = json.loads(await setup_gdrive(ctx, root_folder_id=ROOT_ID))
 
     assert result["status"] == "ok"
     assert len(result["renamed"]) == 18
@@ -201,7 +220,7 @@ async def test_setup_gdrive_idempotent_mixed(db: Database):
     mock_gdrive.create_folder.return_value = "new_id"
     ctx = _mock_ctx(db, gdrive=mock_gdrive)
 
-    result = json.loads(await setup_gdrive(ctx, root_folder_id="root123"))
+    result = json.loads(await setup_gdrive(ctx, root_folder_id=ROOT_ID))
 
     assert result["status"] == "ok"
     assert len(result["skipped"]) == 1  # First folder was found

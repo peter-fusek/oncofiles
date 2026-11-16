@@ -7,6 +7,7 @@ import json
 import logging
 
 from fastmcp import Context
+from mcp.types import ToolAnnotations
 
 from oncofiles.config import GOOGLE_DRIVE_FOLDER_ID, GOOGLE_OAUTH_CLIENT_ID
 from oncofiles.tools._helpers import _get_db, _get_files, _get_gdrive, _get_patient_id
@@ -111,80 +112,115 @@ async def gdrive_auth_status(ctx: Context) -> str:
     )
 
 
-async def gdrive_set_folder(ctx: Context, folder_id: str) -> str:
-    """Set the Google Drive folder to sync with.
+async def _gdrive_for_patient(ctx: Context, pid: str):
+    """The Drive client of ``pid`` — never the ContextVar patient's (#839).
 
-    Detects the folder owner's email and stores it for automatic permission
-    sharing. When the service account creates files/folders, it grants writer
-    access to the original folder owner so they can see the files.
+    Falls back to the lifespan client only when ``pid`` is the request's own
+    patient, as ``_get_gdrive`` does.
+    """
+    from oncofiles.server import _create_patient_clients
+
+    clients = await _create_patient_clients(_get_db(ctx), pid)
+    if clients:
+        return clients[0]
+    if pid == _get_patient_id(required=False):
+        return ctx.request_context.lifespan_context.get("gdrive")
+    return None
+
+
+_ADMIN_NEEDS_SLUG = (
+    "Admin callers must pass patient_slug=<slug>; there is no implicit admin patient scope."
+)
+
+
+async def _folder_tool_patient(ctx: Context, patient_slug: str | None) -> tuple[str, str | None]:
+    """Resolve the patient of a folder tool: ``(patient_id, error_json)`` (#839).
+
+    An admin must name the patient (a folder set on "whichever patient is
+    current" is the bug this closes); everyone else goes through the ACL gate.
+    """
+    from oncofiles.tools._helpers import _is_admin_caller, _resolve_patient_id
+
+    if _is_admin_caller() and not patient_slug:
+        return "", json.dumps({"error": _ADMIN_NEEDS_SLUG})
+    try:
+        return await _resolve_patient_id(patient_slug, ctx), None
+    except ValueError as exc:
+        return "", json.dumps({"error": str(exc)})
+
+
+async def gdrive_set_folder(
+    ctx: Context,
+    folder_id: str,
+    patient_slug: str | None = None,
+    dry_run: bool = True,
+) -> str:
+    """Connect a Google Drive folder to ONE patient (operator fallback).
+
+    The normal path is the dashboard wizard (Drive step): it lets the user
+    browse to the patient's own folder. Use this tool only when the wizard
+    cannot be used, and always run it with dry_run=true first.
+
+    Runs the same checks as the wizard, in the same order: the id must be an
+    existing folder; a PARENT of patient folders is refused (error with
+    ``code: "container_folder"`` and ``reason``: ``curated_children`` — a
+    subfolder is another patient's curated folder; ``too_many_to_check`` —
+    more than 200 subfolders; ``check_failed`` — the check could not run, try
+    again). No argument lifts a refusal: pass the patient's own folder. A
+    curated folder (README.md + _index.json) is connected with
+    ``curated: true`` and nothing is created in it. No category folders are
+    created by this tool (setup_gdrive does that for a legacy folder).
 
     Args:
-        folder_id: The Google Drive folder ID to use as the sync root.
+        folder_id: Google Drive folder id or a pasted folder link.
+        patient_slug: The patient whose folder is set (#429). Required for
+            admin callers (refused without it). Non-admin callers default to
+            their own patient and may only name a patient they have access to.
+        dry_run: True (default) validates and returns the folder overview and
+            what would be set, and writes nothing. Pass false to set it.
     """
+    from oncofiles.curated_folder import parse_drive_folder_ref
+    from oncofiles.drive_folder_link import connect_folder
+
+    pid, err = await _folder_tool_patient(ctx, patient_slug)
+    if err:
+        return err
+
+    parsed = parse_drive_folder_ref((folder_id or "").strip())
+    if not parsed:
+        return json.dumps({"error": "folder_id must be a Google Drive folder link or id"})
+
     db = _get_db(ctx)
-    pid = _get_patient_id()
-    token = await db.get_oauth_token(patient_id=pid)
-    if not token:
-        return json.dumps({"error": "No OAuth tokens found. Connect Google Drive first."})
+    try:
+        outcome = await connect_folder(
+            db, pid, folder_id=parsed, create_subfolders=False, dry_run=dry_run
+        )
+    except Exception:
+        logger.exception("gdrive_set_folder failed")
+        return json.dumps({"error": "internal error; check gdrive_auth_status before trying again"})
 
-    # Validate folder exists and is accessible before persisting
-    gdrive = await _get_gdrive(ctx)
-    meta = None
-    if gdrive:
-        try:
-            meta = await asyncio.to_thread(
-                lambda: (
-                    gdrive._service.files()
-                    .get(fileId=folder_id, fields="id,name,mimeType")
-                    .execute()
-                )
+    result = dict(outcome.payload)
+    if outcome.kind == "no_token":
+        result["error"] = "No OAuth tokens found. Connect Google Drive first."
+    if not outcome.ok:
+        return json.dumps(result)
+
+    result["patient_id"] = pid
+    if outcome.kind == "dry_run":
+        result["message"] = (
+            "Dry run: nothing was written. Call again with dry_run=false to set this folder."
+        )
+    elif not result.get("curated"):
+        if result.get("owner_email"):
+            result["message"] = (
+                f"Folder set. Owner '{result['owner_email']}' will get writer access "
+                "on all new files."
             )
-            if meta.get("mimeType") != "application/vnd.google-apps.folder":
-                return json.dumps(
-                    {"error": f"ID '{folder_id}' is not a folder (type: {meta.get('mimeType')})"}
-                )
-        except Exception as exc:
-            status = getattr(getattr(exc, "resp", None), "status", None)
-            if status == 404:
-                return json.dumps(
-                    {
-                        "error": f"Folder '{folder_id}' not found. "
-                        "Check the ID — I vs l typos are common."
-                    }
-                )
-            return json.dumps({"error": f"Cannot access folder: {exc}"})
-
-    # Cache folder display name from metadata (if available)
-    folder_name = meta.get("name") if gdrive and meta else None
-
-    await db.update_oauth_folder(pid, token.provider, folder_id, folder_name=folder_name)
-
-    # Clear folder-invalid flag so sync resumes immediately
-    from oncofiles.server import _folder_404_counts, _patient_clients_cache
-
-    _folder_404_counts.pop(pid, None)
-    _patient_clients_cache.pop(pid, None)
-
-    # Detect folder owner and store for permission sharing
-    owner_email = None
-    if gdrive:
-        owner_email = await asyncio.to_thread(gdrive.get_folder_owner, folder_id)
-        if owner_email:
-            await db.update_oauth_owner_email(pid, token.provider, owner_email)
-            gdrive.owner_email = owner_email
-            logger.info("Detected folder owner: %s", owner_email)
-
-    result = {"status": "ok", "folder_id": folder_id}
-    if owner_email:
-        result["owner_email"] = owner_email
-        result["message"] = (
-            f"Folder set. Owner '{owner_email}' will get writer access on all new files."
-        )
-    else:
-        result["message"] = (
-            "Folder set. Could not detect owner — run gdrive_fix_permissions "
-            "with an explicit email to grant access."
-        )
+        else:
+            result["message"] = (
+                "Folder set. Could not detect owner — run gdrive_fix_permissions "
+                "with an explicit email to grant access."
+            )
     return json.dumps(result)
 
 
@@ -430,7 +466,7 @@ async def gdrive_fix_permissions(
     )
 
 
-async def setup_gdrive(ctx: Context, root_folder_id: str) -> str:
+async def setup_gdrive(ctx: Context, root_folder_id: str, patient_slug: str | None = None) -> str:
     """Create the folder structure in a GDrive root folder (patient-type-aware).
 
     Idempotent: checks for existing folders by name before creating.
@@ -438,21 +474,56 @@ async def setup_gdrive(ctx: Context, root_folder_id: str) -> str:
     Oncology patients skip general-only folders; general patients skip oncology-only.
 
     Legacy (non-curated) folders only: a curated patient folder (README.md +
-    _index.json) keeps its own fixed folder set and is never restructured.
+    _index.json) keeps its own fixed folder set and is never restructured
+    (``{"skipped": true, "curated": true}``). A parent of patient folders is
+    refused like in gdrive_set_folder (``code: "container_folder"``). This
+    tool never changes which folder a patient is connected to.
 
     Args:
-        root_folder_id: The Google Drive folder ID to create subfolders in.
+        root_folder_id: Google Drive folder id (or link) to create subfolders in.
+        patient_slug: The patient whose Drive account and patient type are
+            used (#429). Required for admin callers; non-admin callers default
+            to their own patient.
     """
+    from oncofiles.curated_folder import (
+        folder_overview,
+        parse_drive_folder_ref,
+        write_block_reason,
+    )
+    from oncofiles.drive_folder_link import container_refusal
     from oncofiles.gdrive_folders import _folders_for_patient_type, bilingual_name
     from oncofiles.patient_context import get_context
-    from oncofiles.tools._helpers import _get_patient_id
 
-    gdrive = await _get_gdrive(ctx)
+    pid, err = await _folder_tool_patient(ctx, patient_slug)
+    if err:
+        return err
+
+    gdrive = await _gdrive_for_patient(ctx, pid)
     if not gdrive:
         msg = "GDrive client not configured. Use gdrive_auth_url to connect."
         return json.dumps({"error": msg})
 
-    pid = _get_patient_id()
+    parsed = parse_drive_folder_ref((root_folder_id or "").strip())
+    if not parsed:
+        return json.dumps({"error": "root_folder_id must be a Google Drive folder link or id"})
+    root_folder_id = parsed
+
+    # #839: same isolation guard as connecting a folder, before any write.
+    overview = await asyncio.to_thread(folder_overview, gdrive, root_folder_id)
+    refusal = container_refusal(overview)
+    if refusal:
+        return json.dumps(refusal)
+    if overview["curated"] or write_block_reason(gdrive):
+        return json.dumps(
+            {
+                "skipped": True,
+                "curated": True,
+                "root_folder_id": root_folder_id,
+                "message": "Curated folder (README.md + _index.json): its folder set is "
+                "fixed by the README contract; nothing was created.",
+            }
+        )
+
     patient_type = get_context(pid).get("patient_type", "oncology")
     folders = _folders_for_patient_type(patient_type)
 
@@ -540,7 +611,12 @@ def register(mcp):
     mcp.tool()(gdrive_auth_url)
     mcp.tool()(gdrive_auth_callback)
     mcp.tool()(gdrive_auth_status)
-    mcp.tool()(gdrive_set_folder)
+    # #839: writes a setting (no delete); the same call twice leaves the same state.
+    mcp.tool(
+        annotations=ToolAnnotations(
+            readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=True
+        )
+    )(gdrive_set_folder)
     mcp.tool()(gdrive_sync)
     mcp.tool()(gdrive_sync_status)
     mcp.tool()(sync_from_gdrive)
