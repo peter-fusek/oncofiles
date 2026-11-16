@@ -148,12 +148,14 @@ async def _folders(parent: str | None, client: GDriveClient):
     return resp.status_code, json.loads(resp.body)
 
 
-async def _set_folder(body: dict, client: GDriveClient):
+async def _set_folder(body: dict, client: GDriveClient, *, admin: bool = False):
     db = _db()
     req = MagicMock()
     req.json = AsyncMock(return_value={"patient_id": "pacient-835", **body})
     req.app.state.fastmcp_server._lifespan_result = {"db": db}
+    denied = server.JSONResponse({"error": "admin only"}, status_code=403)
     with (
+        patch.object(server, "_require_admin", return_value=None if admin else denied),
         patch.object(server, "_check_dashboard_auth", return_value=None),
         patch.object(server, "_require_body_patient_access", AsyncMock(return_value=None)),
         patch("oncofiles.oauth.is_token_expired", return_value=False),
@@ -390,9 +392,15 @@ async def test_set_folder_refuses_parent_of_curated_folders_whatever_the_body(ex
 
 
 async def test_set_folder_accepts_sixty_ordinary_subfolders():
-    """A complete check with no curated child leaves nothing for the server to ask."""
+    """A complete check with no curated child leaves nothing for the server to ask.
+
+    #853: only the admin-only legacy layout connects a folder with subfolders;
+    the default (curated) layout refuses it (tests/test_853_curated_bootstrap.py).
+    """
     client, _ = _client(_wide_tree(60))
-    status, data, db = await _set_folder({"folder_id": WIDE}, client)
+    status, data, db = await _set_folder(
+        {"folder_id": WIDE, "layout": "legacy"}, client, admin=True
+    )
     assert status == 200
     db.update_oauth_folder.assert_awaited_once()
 
@@ -417,9 +425,11 @@ async def test_set_folder_accepts_curated_folder_directly():
 
 
 async def test_set_folder_accepts_plain_folder_with_ordinary_subfolders():
-    """The server only blocks parents of curated folders; the wizard asks about the rest."""
+    """Legacy layout (admin-only since #853): only parents of curated folders are blocked."""
     client, _ = _client()
-    status, data, db = await _set_folder({"folder_id": VOLNY}, client)
+    status, data, db = await _set_folder(
+        {"folder_id": VOLNY, "layout": "legacy"}, client, admin=True
+    )
     assert status == 200
     assert "curated" not in data
     assert data["subfolders_created"] > 0
@@ -439,7 +449,9 @@ async def test_set_folder_new_folder_needs_no_confirmation():
     client, _ = _client()
     tree = client._service.files.return_value.tree
     tree["idCreated000000001"] = {"name": "Novy", "parent": PRAZDNY, "mimeType": FOLDER}
-    status, data, db = await _set_folder({"folder_name": "Novy", "parent_id": PRAZDNY}, client)
+    status, data, db = await _set_folder(
+        {"folder_name": "Novy", "parent_id": PRAZDNY, "layout": "legacy"}, client, admin=True
+    )
     assert status == 200
     client.create_folder.assert_any_call("Novy", PRAZDNY)
     db.update_oauth_folder.assert_awaited_once()
@@ -528,10 +540,11 @@ def test_container_confirmation_is_an_in_wizard_step():
     assert 'id="wiz-folder-confirm"' in html
     assert 'data-action="wizardFolderConfirmBack"' in html
     assert 'data-action="wizardFolderConfirmGo"' in html
-    assert 'data-en="Connect anyway"' in html and 'data-en="Back"' in html
+    assert 'data-en="Set up and connect"' in html and 'data-en="Back"' in html
     assert not re.search(r"(?<![A-Za-z_.])confirm\(", section)  # no JS confirm() dialog
     assert "data.code === 'container_folder'" in section  # a server 409 opens the same box
-    assert "Oncofiles will create its category folders inside it" in section
+    assert "Always ask before connecting (#835)" in section
+    assert "Files already in the folder stay where they are" in section
 
 
 def test_connect_anyway_is_not_wired_to_any_server_flag():

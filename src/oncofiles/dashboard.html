@@ -543,8 +543,9 @@
  </select>
  </div>
  <div class="wizard-field">
- <label for="wiz-dob" data-sk="Dátum narodenia (voliteľné)" data-en="Date of birth (optional)">Dátum narodenia (voliteľné)</label>
- <input type="date" id="wiz-dob" min="1900-01-01">
+ <label for="wiz-dob" data-sk="Dátum narodenia *" data-en="Date of birth *">Dátum narodenia *</label>
+ <input type="date" id="wiz-dob" min="1900-01-01" required aria-describedby="wiz-dob-hint">
+ <p id="wiz-dob-hint" class="wizard-folder-hint" data-sk="Potrebný na to, aby sa dátum narodenia nikdy nepoužil ako dátum dokumentu." data-en="Needed so that a birth date is never filed as a document date.">Potrebný na to, aby sa dátum narodenia nikdy nepoužil ako dátum dokumentu.</p>
  </div>
  <div class="wizard-field">
  <label for="wiz-diagnosis" data-sk="Diagnóza / typ rakoviny" data-en="Diagnosis / cancer type">Diagnóza / typ rakoviny</label>
@@ -606,7 +607,7 @@
  <!-- Phase B: Folder picker (shown after OAuth) -->
  <div id="wiz-step2-folder" style="display:none">
  <p style="color:var(--text-muted);font-size:0.875rem;margin-bottom:0.5rem" data-sk="Vyberte priečinok pre zdravotné dokumenty." data-en="Choose a folder for medical documents.">Vyberte priečinok pre zdravotné dokumenty.</p>
- <p style="color:var(--text-muted);font-size:0.75rem;margin-bottom:1rem;opacity:0.7" data-sk="Vyberte existujúci priečinok alebo vytvorte nový. Oncofiles vytvorí podpriečinky pre každú kategóriu dokumentov (Laboratóriá, Zobrazovanie, Patológia atď.). Priečinok s vlastným kontraktom README.md sa nikdy neprestavuje." data-en="Pick an existing folder or create a new one. Oncofiles will create subfolders for each document category (Labs, Imaging, Pathology, etc.) inside it. A folder with its own README.md contract is never restructured.">Vyberte existujúci priečinok alebo vytvorte nový. Oncofiles vytvorí podpriečinky pre každú kategóriu dokumentov (Laboratóriá, Zobrazovanie, Patológia atď.).</p>
+ <p style="color:var(--text-muted);font-size:0.75rem;margin-bottom:1rem;opacity:0.7" data-sk="Najjednoduchšie je vytvoriť nový priečinok. Oncofiles doň zapíše kontrakt README.md a pevnú sadu priečinkov (00-inbox, labs, report, …) podľa typu pacienta. Existujúci priečinok musí byť bez podpriečinkov; súbory v ňom ostanú na mieste. Priečinok s vlastným kontraktom README.md sa nikdy neprestavuje." data-en="Creating a new folder is easiest. Oncofiles writes a README.md contract and a fixed folder set (00-inbox, labs, report, …) for the patient type into it. An existing folder must have no subfolders; files in it stay where they are. A folder with its own README.md contract is never restructured.">Najjednoduchšie je vytvoriť nový priečinok. Oncofiles doň zapíše kontrakt README.md a pevnú sadu priečinkov (00-inbox, labs, report, …) podľa typu pacienta. Existujúci priečinok musí byť bez podpriečinkov; súbory v ňom ostanú na mieste. Priečinok s vlastným kontraktom README.md sa nikdy neprestavuje.</p>
  <p class="wizard-folder-path"><span data-sk="Priečinok:" data-en="Folder:">Priečinok:</span> <strong id="wiz-folder-path">My Drive</strong></p>
  <div class="wizard-folder-nav">
  <button class="wizard-btn-secondary" id="wiz-folder-up" hidden data-action="wizardFolderUp" data-sk="▴ O úroveň vyššie" data-en="▴ Up one level">▴ O úroveň vyššie</button>
@@ -634,11 +635,16 @@
  </div>
  <div id="wiz-folder-confirm" class="wizard-folder-confirm" role="alert" style="display:none">
  <p id="wiz-folder-confirm-text"></p>
+ <div id="wiz-folder-dob" class="wizard-field" style="display:none">
+ <label for="wiz-folder-dob-input" data-sk="Dátum narodenia pacienta *" data-en="Patient's date of birth *">Dátum narodenia pacienta *</label>
+ <input type="date" id="wiz-folder-dob-input" min="1900-01-01">
+ <button class="wizard-btn-primary" id="wiz-folder-dob-go" data-action="wizardFolderDobGo" data-sk="Uložiť dátum a pripojiť" data-en="Save the date and connect">Uložiť dátum a pripojiť</button>
+ </div>
  <p class="wizard-folder-target"><span id="wiz-folder-confirm-path-label" data-sk="Pripojil by sa priečinok:" data-en="Folder that would be connected:">Pripojil by sa priečinok:</span> <strong id="wiz-folder-confirm-path"></strong></p>
  <div class="wizard-actions">
  <button class="wizard-btn-primary" data-action="wizardFolderConfirmBack" data-sk="Späť" data-en="Back">Späť</button>
  <button class="wizard-btn-secondary" id="wiz-folder-confirm-retry" style="display:none" data-action="wizardFolderConfirmRetry" data-sk="Skúsiť znova" data-en="Try again">Skúsiť znova</button>
- <button class="wizard-btn-secondary" id="wiz-folder-confirm-go" data-action="wizardFolderConfirmGo" data-sk="Pripojiť aj tak" data-en="Connect anyway">Pripojiť aj tak</button>
+ <button class="wizard-btn-secondary" id="wiz-folder-confirm-go" data-action="wizardFolderConfirmGo" data-sk="Nastaviť a pripojiť" data-en="Set up and connect">Nastaviť a pripojiť</button>
  </div>
  </div>
  <p id="wiz-step2-folder-status" style="color:var(--text-muted);font-size:0.8125rem;margin-top:0.75rem;display:none"></p>
@@ -661,6 +667,7 @@
  <div id="wiz-step3-curated" style="display:none">
  <h2 data-sk="Priečinok pripojený" data-en="Folder connected">Priečinok pripojený</h2>
  <p id="wiz-step3-curated-root" style="color:var(--text-muted);font-size:0.875rem;margin-bottom:0.5rem" data-sk="Tento priečinok spracúva kurátorovaná pipeline (lokálne OCR). Nové súbory v jeho priečinku inbox sa spracujú automaticky v priebehu niekoľkých minút." data-en="This folder is processed by the curated pipeline (local OCR). New files in its inbox are picked up automatically within a few minutes.">Tento priečinok spracúva kurátorovaná pipeline (lokálne OCR). Nové súbory v jeho priečinku inbox sa spracujú automaticky v priebehu niekoľkých minút.</p>
+ <p id="wiz-step3-pipeline" class="wizard-folder-note" style="display:none"></p>
  <p id="wiz-step3-curated-overlap" style="color:var(--amber);font-size:0.875rem;margin-bottom:0.5rem;display:none" data-sk="Tento priečinok sa prekrýva s priečinkom, ktorý má vlastný kontrakt README, preto je preň synchronizácia vypnutá a nič sa z neho automaticky nespracuje. Ak ste chceli priečinok pacienta, pripojte priamo ten." data-en="This folder overlaps a folder with its own README contract, so sync is switched off for it and nothing in it is processed automatically. If you meant the patient's folder, connect that one directly.">Tento priečinok sa prekrýva s priečinkom, ktorý má vlastný kontrakt README, preto je preň synchronizácia vypnutá a nič sa z neho automaticky nespracuje. Ak ste chceli priečinok pacienta, pripojte priamo ten.</p>
  <div class="wizard-actions">
  <button class="wizard-btn-primary" id="wiz-curated-continue" data-action="wizardSkipToEnd" data-sk="Pokračovať" data-en="Continue">Pokračovať</button>

@@ -6478,6 +6478,9 @@ async def api_create_patient(request: Request) -> JSONResponse:
             from oncofiles import patient_context
 
             await patient_context.ensure_loaded(db_inst.db, created.patient_id)
+            # #835: the context's `name` was left empty; it is what tools and the
+            # curated contract (#853) show as the patient's name.
+            context_fields = {**context_fields, "name": created.display_name or patient_id}
             new_ctx = patient_context.update_context(context_fields, patient_id=created.patient_id)
             await patient_context.save_to_db(db_inst.db, new_ctx, patient_id=created.patient_id)
         except Exception:
@@ -6839,6 +6842,15 @@ async def api_gdrive_set_folder(request: Request) -> JSONResponse:
     the check could not run (``check_failed``). None of them can be confirmed
     away; there is no ``confirm_container`` field any more.
 
+    #853: a folder without a README contract is made curated here
+    (``layout: "curated"``, the default): the contract and the fixed folder
+    set are written from the patient-type template (``curated/bootstrap.py``),
+    the folder is connected and the patient is enrolled in curated
+    processing. Refusals are 409 ``code: bootstrap_refused`` with a
+    ``reason``; nothing is persisted or written before the checks pass. The
+    legacy category folders are created only for ``layout: "legacy"``, which
+    is admin-only.
+
     #852: refused (403 ``onboarding_closed``) for a caller the onboarding gate
     does not admit, before any Drive call.
     """
@@ -6868,6 +6880,13 @@ async def api_gdrive_set_folder(request: Request) -> JSONResponse:
 
         if not raw_patient_id:
             return JSONResponse({"error": "patient_id required"}, status_code=400)
+        layout = str(body.get("layout") or "curated")
+        if layout not in ("curated", "legacy"):
+            return JSONResponse({"error": "layout must be curated or legacy"}, status_code=400)
+        if layout == "legacy" and _require_admin(request) is not None:
+            return JSONResponse(
+                {"error": "The legacy folder layout is admin-only (#853)."}, status_code=403
+            )
         if not folder_id and not folder_name:
             return JSONResponse(
                 {"error": "folder_id or folder_name required"},
@@ -6893,6 +6912,11 @@ async def api_gdrive_set_folder(request: Request) -> JSONResponse:
             folder_id=folder_id,
             folder_name=folder_name,
             create_parent_raw=str(body.get("parent_id", "") or ""),
+            # #853: the default (curated) layout writes the README contract;
+            # only the admin-only legacy layout creates category folders.
+            create_subfolders=layout == "legacy",
+            bootstrap=layout == "curated",
+            date_of_birth=body.get("date_of_birth"),
         )
         return JSONResponse(outcome.payload, status_code=outcome.status)
     except Exception:

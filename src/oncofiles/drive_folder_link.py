@@ -16,6 +16,12 @@ checks cannot drift between them again:
 7. curated detection (``mark_if_curated``): a curated folder gets no folders;
 8. optionally the legacy category subfolders.
 
+With ``bootstrap=True`` (the dashboard wizard's default, #853) a folder
+without a README contract gets one BEFORE step 5 (``curated/bootstrap.py``):
+a new folder is created only after the plan (DOB) and its parent passed, an
+existing one only after every bootstrap check passed; then it is persisted,
+marked curated and the patient is enrolled. Never the legacy folders.
+
 The caller resolves the patient and checks access BEFORE calling (dashboard
 session ACL / ``_resolve_patient_id``); nothing here decides who may act.
 
@@ -86,6 +92,8 @@ async def connect_folder(
     create_parent_raw: str = "",
     create_subfolders: bool = True,
     dry_run: bool = False,
+    bootstrap: bool = False,
+    date_of_birth=None,
 ) -> FolderLinkOutcome:
     """Validate ``folder_id`` (or create ``folder_name``) and connect it to ``patient_id``.
 
@@ -101,6 +109,22 @@ async def connect_folder(
 
     if dry_run and not folder_id:
         raise ValueError("a dry run needs an existing folder_id")
+    if dry_run and bootstrap:
+        raise ValueError("a dry run never bootstraps")
+    from oncofiles.curated import bootstrap as cb
+
+    plan = None
+    others: set[str] = set()
+
+    async def _plan():
+        # The wizard sends the DOB when the context has none: validated and
+        # stored (never overwriting one) before the plan is built (#853).
+        if date_of_birth:
+            await cb.store_dob_if_missing(db, patient_id, date_of_birth)
+        return (
+            await cb.plan_for_patient(db, patient_id),
+            await db.list_other_patient_folder_ids(patient_id=patient_id),
+        )
 
     token = await db.get_oauth_token(patient_id=patient_id)
     if not token:
@@ -145,7 +169,24 @@ async def connect_folder(
                     400,
                     {"error": "Cannot create a folder inside a curated folder (README.md)."},
                 )
-        folder_id = await asyncio.to_thread(gdrive.create_folder, folder_name, create_parent)
+        if bootstrap:
+            # #853: plan and parent are checked before the folder exists; the
+            # create is verified and never retried.
+            try:
+                plan, others = await _plan()
+                folder_id = await asyncio.to_thread(
+                    cb.create_patient_root,
+                    gdrive,
+                    folder_name,
+                    create_parent,
+                    other_patient_folders=others,
+                )
+            except cb.BootstrapRefusedError as exc:
+                return FolderLinkOutcome("bootstrap_refused", 409, cb.refusal_payload(exc))
+            except cb.BootstrapFailedError as exc:
+                return FolderLinkOutcome("bootstrap_failed", 502, cb.failure_payload(exc))
+        else:
+            folder_id = await asyncio.to_thread(gdrive.create_folder, folder_name, create_parent)
         created_new = True
 
     # Validate folder exists before persisting
@@ -207,6 +248,27 @@ async def connect_folder(
             },
         )
 
+    # #853: a folder without a contract gets one before it is connected.
+    # Nothing is persisted when the bootstrap refuses or stops.
+    bootstrapped = None
+    if bootstrap:
+        clear_cache(folder_id)
+        current = await asyncio.to_thread(curated_reason, gdrive, folder_id)
+        if current and "detection failed" in current:
+            exc = cb.BootstrapRefusedError("check_failed")
+            return FolderLinkOutcome("bootstrap_refused", 409, cb.refusal_payload(exc))
+        if current is None:
+            try:
+                if plan is None:
+                    plan, others = await _plan()
+                bootstrapped = await asyncio.to_thread(
+                    cb.bootstrap_folder, gdrive, folder_id, plan, other_patient_folders=others
+                )
+            except cb.BootstrapRefusedError as exc:
+                return FolderLinkOutcome("bootstrap_refused", 409, cb.refusal_payload(exc))
+            except cb.BootstrapFailedError as exc:
+                return FolderLinkOutcome("bootstrap_failed", 502, cb.failure_payload(exc))
+
     # Persist folder choice (including display name from metadata)
     await db.update_oauth_folder(patient_id, "google", folder_id, folder_name=cached_folder_name)
 
@@ -226,21 +288,41 @@ async def connect_folder(
         # curated_root: the folder itself has the contract (the pipeline
         # processes it), as opposed to lying inside / above a curated one.
         reason = await asyncio.to_thread(curated_reason, gdrive, folder_id)
-        return FolderLinkOutcome(
-            "ok",
-            200,
-            {
-                "status": "ok",
-                "folder_id": folder_id,
-                "owner_email": owner_email,
-                "curated": True,
-                "curated_root": reason == "is a curated folder",
-                "subfolders_created": 0,
-                "subfolders_skipped": 0,
-                "message": "Curated folder detected (README.md + _index.json): "
-                "no folders created; legacy sync is disabled for it.",
-            },
-        )
+        payload = {
+            "status": "ok",
+            "folder_id": folder_id,
+            "owner_email": owner_email,
+            "curated": True,
+            "curated_root": reason == "is a curated folder",
+            "subfolders_created": 0,
+            "subfolders_skipped": 0,
+            "message": "Curated folder detected (README.md + _index.json): "
+            "no folders created; legacy sync is disabled for it.",
+        }
+        if bootstrapped is not None:
+            # Self-service enrolment (#853): what /api/admin/curated/nightly
+            # does for an admin. An admin can still pause the patient there.
+            await db.set_curated_nightly(
+                patient_id=patient_id, enabled=True, updated_by="self-service (#853)"
+            )
+            payload.update(
+                {
+                    "bootstrapped": True,
+                    "enrolled": True,
+                    "folders_created": bootstrapped["folders_created"],
+                    "loose_files": bootstrapped["loose_files"],
+                    "patient_type": bootstrapped["patient_type"],
+                    "pipeline": cb.pipeline_summary(),
+                    "message": "README contract and folders created; the curated "
+                    "pipeline will process this folder.",
+                }
+            )
+        return FolderLinkOutcome("ok", 200, payload)
+    if bootstrap:
+        # Unreachable: a curated-layout folder was bootstrapped (or refused)
+        # above. Never fall through to the legacy folder set.
+        logger.error("connect_folder: curated layout reached the legacy path")
+        return FolderLinkOutcome("error", 500, {"error": "internal error"})
 
     payload = {"status": "ok", "folder_id": folder_id, "owner_email": owner_email}
     if create_subfolders:

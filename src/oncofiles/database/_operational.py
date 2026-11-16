@@ -308,6 +308,20 @@ class OperationalMixin:
         )
         await self.db.commit()
 
+    async def list_other_patient_folder_ids(self, *, patient_id: str) -> set[str]:
+        """Drive folder ids connected by every patient except ``patient_id`` (#853).
+
+        System-level read for the curated-folder bootstrap's isolation check:
+        folder ids only, never tokens, names or e-mails.
+        """
+        async with self.db.execute(
+            "SELECT DISTINCT gdrive_folder_id FROM oauth_tokens "
+            "WHERE patient_id != ? AND gdrive_folder_id IS NOT NULL AND gdrive_folder_id != ''",
+            (patient_id,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return {r["gdrive_folder_id"] if isinstance(r, dict) else r[0] for r in rows}
+
     async def update_oauth_access_token(
         self, patient_id: str, provider: str, access_token: str, token_expiry
     ) -> None:

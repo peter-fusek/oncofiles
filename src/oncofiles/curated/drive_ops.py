@@ -257,6 +257,38 @@ def create_text(gdrive, folder_id: str, name: str, text: str, mime: str = "text/
     return fid
 
 
+def create_folder(gdrive, parent_id: str, name: str) -> str:
+    """Create one folder and verify name, parent and type. Returns its id.
+
+    Only the contract bootstrap (``curated/bootstrap.py``, #853) calls this:
+    the pipeline itself never creates folders (README §2 fixes the set). Same
+    rules as every write here: guarded, a same-name sibling refuses before
+    anything is written, read back, never retried.
+    """
+    gdrive._guard_write("curated.create_folder")
+    if _nfc(name) in {_nfc(n) for n in _names_in(gdrive, parent_id)}:
+        raise WriteVerificationError(f"refusing to create folder {name!r}: name already exists")
+    created = (
+        gdrive._service.files()
+        .create(
+            body={"name": name, "mimeType": FOLDER_MIME, "parents": [parent_id]},
+            fields="id",
+            supportsAllDrives=True,
+        )
+        .execute()
+    )
+    fid = created["id"]
+    meta = get(gdrive, fid)
+    if (
+        meta.get("name") != name
+        or parent_id not in (meta.get("parents") or [])
+        or meta.get("mimeType") != FOLDER_MIME
+        or meta.get("trashed")
+    ):
+        raise WriteVerificationError(f"create folder {name!r}: read-back mismatch")
+    return fid
+
+
 def update_text(gdrive, file_id: str, text: str, mime: str = "text/markdown") -> None:
     """Replace a text state file's content and verify the bytes.
 

@@ -55,6 +55,12 @@ SENSITIVE_REFS = {
     "store_google_link",
     "update_oauth_folder",
     "connect_folder",  # #848: folder writes go through drive_folder_link.connect_folder
+    # #853: the curated bootstrap's write entry points (create_folder above
+    # also covers drive_ops.create_folder).
+    "bootstrap_folder",
+    "create_patient_root",
+    "write_contract",
+    "store_dob_if_missing",
     "sync",
     "_sync",
     "sync_from_gdrive",
