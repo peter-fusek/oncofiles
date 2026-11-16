@@ -13,43 +13,39 @@
 <body>
  <div class="container">
  <!-- Auth gate (shown if no session) -->
- <div id="auth-gate" class="auth-gate" style="display:none">
- <div style="display:flex;flex-direction:column;align-items:center;gap:1.25rem;max-width:480px;text-align:center">
- <div class="logo" style="font-size:1.75rem">onco<span>files</span> <span style="color:var(--text-muted);font-weight:400;font-size:1.125rem">dashboard</span></div>
- <p style="color:var(--text-muted);font-size:0.9375rem;line-height:1.5" data-html data-sk="Zdravotné záznamy s overeným pôvodom každej hodnoty.<br>Váš priečinok Google Drive, prístupný z Claude alebo ChatGPT." data-en="Medical records where every value has a verified source.<br>Your Google Drive folder, available in Claude or ChatGPT.">Medical records where every value has a verified source.<br>Your Google Drive folder, available in Claude or ChatGPT.</p>
+ <div id="auth-gate" class="auth-gate tone-navy" style="display:none">
+ <div class="gate-body">
+ <div class="logo">oncofiles<span class="logo-dot">.</span><span class="logo-sub">dashboard</span></div>
+ <p class="gate-tagline" data-sk="Zdravotné záznamy, v ktorých má každé číslo svoj zdroj" data-en="Medical records where every number has a source">Medical records where every number has a source</p>
  <div id="g_id_signin"></div>
- <div id="auth-error" class="auth-error"></div>
+ <div id="auth-error" class="auth-error" role="alert"></div>
 
  <!-- Google API Services Limited Use disclosure (CASA compliance) -->
- <p style="color:var(--text-dim);font-size:0.6875rem;line-height:1.5;max-width:440px;margin:0" data-html data-sk="Oncofiles používa informácie získané z Google API v súlade s <a href='/privacy' style='color:var(--text-muted);text-decoration:underline'>Google API Services User Data Policy</a>, vrátane požiadaviek Limited Use. Prihlásením súhlasíte s <a href='/terms' style='color:var(--text-muted);text-decoration:underline'>podmienkami</a> a <a href='/privacy' style='color:var(--text-muted);text-decoration:underline'>ochranou osobných údajov</a>." data-en="Oncofiles' use of information from Google APIs adheres to the <a href='/privacy' style='color:var(--text-muted);text-decoration:underline'>Google API Services User Data Policy</a>, including the Limited Use requirements. By signing in you accept the <a href='/terms' style='color:var(--text-muted);text-decoration:underline'>Terms</a> and <a href='/privacy' style='color:var(--text-muted);text-decoration:underline'>Privacy Policy</a>.">Oncofiles' use of information from Google APIs adheres to the <a href='/privacy' style='color:var(--text-muted);text-decoration:underline'>Google API Services User Data Policy</a>, including the Limited Use requirements. By signing in you accept the <a href='/terms' style='color:var(--text-muted);text-decoration:underline'>Terms</a> and <a href='/privacy' style='color:var(--text-muted);text-decoration:underline'>Privacy Policy</a>.</p>
+ <p class="gate-legal" data-html data-sk="Oncofiles používa informácie získané z Google API v súlade s <a href='/privacy'>Google API Services User Data Policy</a>, vrátane požiadaviek Limited Use. Prihlásením súhlasíte s <a href='/terms'>podmienkami</a> a <a href='/privacy'>ochranou osobných údajov</a>." data-en="Oncofiles' use of information from Google APIs adheres to the <a href='/privacy'>Google API Services User Data Policy</a>, including the Limited Use requirements. By signing in you accept the <a href='/terms'>Terms</a> and <a href='/privacy'>Privacy Policy</a>.">Oncofiles' use of information from Google APIs adheres to the <a href='/privacy'>Google API Services User Data Policy</a>, including the Limited Use requirements. By signing in you accept the <a href='/terms'>Terms</a> and <a href='/privacy'>Privacy Policy</a>.</p>
 
  <!-- Demo showcase -->
- <div style="display:flex;align-items:center;gap:1rem;width:100%;margin-top:0.25rem">
- <div style="flex:1;height:1px;background:var(--border)"></div>
- <span style="color:var(--text-muted);font-size:0.75rem;font-weight:600;letter-spacing:0.05em" data-sk="ALEBO" data-en="OR">OR</span>
- <div style="flex:1;height:1px;background:var(--border)"></div>
- </div>
- <div style="width:100%;padding-top:1rem">
- <a href="/demo" style="display:inline-flex;align-items:center;gap:0.5rem;padding:0.625rem 1.5rem;background:rgba(20,184,166,0.12);border:1px solid rgba(20,184,166,0.3);border-radius:8px;color:var(--accent);font-weight:600;font-size:0.9375rem;text-decoration:none;transition:background 0.2s" data-sk="&#9654; Vyskúšajte demo s ukážkovými dátami" data-en="&#9654; Try the demo with sample data" class="teal-hover">&#9654; Try the demo with sample data</a>
- <p style="color:var(--text-dim);font-size:0.75rem;margin-top:0.5rem" data-sk="Žiadna registrácia &mdash; vymyslený pacient, vymyslené dokumenty, žiadne skutočné dáta" data-en="No sign-up needed &mdash; an invented patient with invented documents, no real data">No sign-up needed &mdash; an invented patient with invented documents, no real data</p>
+ <div class="gate-or"><span data-sk="alebo" data-en="or">or</span></div>
+ <div>
+ <a href="/demo" class="gate-demo" data-sk="Vyskúšajte demo s ukážkovými dátami" data-en="Try the demo with sample data">Try the demo with sample data</a>
+ <p class="gate-demo-note" data-sk="Žiadna registrácia &mdash; vymyslený pacient, vymyslené dokumenty, žiadne skutočné dáta" data-en="No sign-up needed &mdash; an invented patient with invented documents, no real data">No sign-up needed &mdash; an invented patient with invented documents, no real data</p>
  </div>
 
- <!-- Mini feature preview -->
- <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:0.75rem;width:100%;margin-top:0.25rem">
- <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:0.75rem;text-align:center">
+ <!-- Three trust points -->
+ <div class="gate-points">
+ <div>
  <div class="gate-icon"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5M9 13h6M9 17h4"/></svg></div>
- <div style="font-size:0.75rem;font-weight:600;color:var(--text)" data-sk="Lokálne OCR" data-en="Local OCR">Local OCR</div>
- <div style="font-size:0.625rem;color:var(--text-muted)" data-sk="Model na našom serveri v EÚ" data-en="Model on our own EU server">Model on our own EU server</div>
+ <div class="gate-point-title" data-sk="Lokálne OCR" data-en="Local OCR">Local OCR</div>
+ <div class="gate-point-text" data-sk="Model na našom serveri v EÚ" data-en="Model on our own EU server">Model on our own EU server</div>
  </div>
- <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:0.75rem;text-align:center">
+ <div>
  <div class="gate-icon"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 3v18h18"/><path d="M7 15l4-4 3 3 5-6"/></svg></div>
- <div style="font-size:0.75rem;font-weight:600;color:var(--text)" data-sk="Laby s pôvodom" data-en="Labs with provenance">Labs with provenance</div>
- <div style="font-size:0.625rem;color:var(--text-muted)" data-sk="Dátum odberu, strana, riadok" data-en="Sample date, page, line">Sample date, page, line</div>
+ <div class="gate-point-title" data-sk="Laby s pôvodom" data-en="Labs with provenance">Labs with provenance</div>
+ <div class="gate-point-text" data-sk="Dátum odberu, strana, riadok" data-en="Sample date, page, line">Sample date, page, line</div>
  </div>
- <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:0.75rem;text-align:center">
+ <div>
  <div class="gate-icon"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg></div>
- <div style="font-size:0.75rem;font-weight:600;color:var(--text)" data-sk="Nič sa nemaže" data-en="Nothing is deleted">Nothing is deleted</div>
- <div style="font-size:0.625rem;color:var(--text-muted)" data-sk="Len presun do koša" data-en="Only moved to trash">Only moved to trash</div>
+ <div class="gate-point-title" data-sk="Nič sa nemaže" data-en="Nothing is deleted">Nothing is deleted</div>
+ <div class="gate-point-text" data-sk="Len presun do koša" data-en="Only moved to trash">Only moved to trash</div>
  </div>
  </div>
  </div>
@@ -58,9 +54,9 @@
  <!-- Main dashboard (shown when authenticated) -->
  <div id="dashboard" style="display:none">
  <div id="demo-banner" class="demo-banner" role="note" style="display:none" data-sk="Ukážka: vymyslený pacient a vymyslené dokumenty. Žiadne skutočné dáta." data-en="Demo: an invented patient and invented documents. No real data.">Demo: an invented patient and invented documents. No real data.</div>
- <header>
+ <header class="tone-navy">
  <div class="header-top">
- <div class="logo">onco<span>files</span> <span style="color:var(--text-muted);font-weight:400;font-size:0.9375rem">dashboard</span></div>
+ <div class="logo">oncofiles<span class="logo-dot">.</span><span class="logo-sub">dashboard</span></div>
  <div class="patient-controls">
  <select id="patient-select" data-change="switchPatient|@value">
  <option value="">Loading...</option>
@@ -85,7 +81,7 @@
  <span id="svc-drive" class="svc-badge off" title="Google Drive" data-action="toggleIntegrationPanel">Drive</span>
  <span id="svc-gmail" class="svc-badge off" title="Gmail" data-action="toggleIntegrationPanel">Gmail</span>
  <span id="svc-cal" class="svc-badge off" title="Google Calendar" data-action="toggleIntegrationPanel">Cal</span>
- <div id="integration-popover" class="integration-popover">
+ <div id="integration-popover" class="integration-popover tone-light">
  <div class="ip-row"><span class="ip-label" data-sk="Účet" data-en="Account">Account</span><span class="ip-value" id="ip-email">—</span></div>
  <div class="ip-row"><span class="ip-label">Drive</span><span class="ip-value"><span class="ip-status off" id="ip-drive-dot"></span><span id="ip-drive-text">—</span><span class="ip-sync-time" id="ip-drive-sync"></span></span></div>
  <div class="ip-row"><span class="ip-label" data-sk="Priečinok" data-en="Folder">Folder</span><span class="ip-value" id="ip-folder">—</span></div>
@@ -100,7 +96,7 @@
  <span class="version" id="version-label"></span>
  <span id="last-refreshed" style="font-size:0.6875rem;color:var(--text-muted)"></span>
  <span id="budget-pill" class="budget-pill" style="display:none" title="">
- <span class="bp-icon" id="bp-icon">🎁</span>
+ <span class="bp-icon" id="bp-icon">€</span>
  <span id="bp-spent">€0</span>
  <span style="color:var(--text-dim)">/</span>
  <span id="bp-cap">€0</span>
@@ -109,15 +105,15 @@
  </div>
  </header>
 
- <div id="admin-readonly-banner" style="display:none;background:rgba(255,165,0,0.15);border:1px solid rgba(255,165,0,0.4);border-radius:0.5rem;padding:0.5rem 1rem;margin:0 1rem 0.5rem;text-align:center;color:#ffa500;font-size:0.8125rem">
+ <div id="admin-readonly-banner" class="notice notice-warn" role="status" style="display:none">
  <span data-sk="Admin prístup (len na čítanie) — nemôžete upravovať údaje tohto pacienta" data-en="Admin access (read-only) — you cannot modify this patient's data">Admin prístup (len na čítanie) — nemôžete upravovať údaje tohto pacienta</span>
  </div>
- <div id="germline-banner" style="display:none;background:rgba(220,38,38,0.08);border:1px solid rgba(220,38,38,0.35);border-left:3px solid #dc2626;border-radius:0.5rem;padding:0.65rem 1rem;margin:0 1rem 0.5rem;font-size:0.82rem;color:var(--text);line-height:1.45">
+ <div id="germline-banner" class="notice notice-err" style="display:none">
  <div style="display:flex;align-items:baseline;gap:0.6rem;flex-wrap:wrap">
- <strong style="color:#dc2626" data-sk="Dedičná genetika:" data-en="Hereditary genetics:">Dedičná genetika:</strong>
+ <strong class="notice-title" data-sk="Dedičná genetika:" data-en="Hereditary genetics:">Dedičná genetika:</strong>
  <span id="germline-findings-list" style="flex:1"></span>
  </div>
- <div style="margin-top:0.25rem;font-size:0.72rem;color:var(--text-dim);font-style:italic" data-sk="Informatívne. Potvrďte s onkológom — nie je to automaticky spôsobilosť na terapiu." data-en="Informational. Confirm with your oncologist — this is not automatic therapy eligibility.">Informatívne. Potvrďte s onkológom — nie je to automaticky spôsobilosť na terapiu.</div>
+ <div class="notice-foot" data-sk="Informatívne. Potvrďte s onkológom — nie je to automaticky spôsobilosť na terapiu." data-en="Informational. Confirm with your oncologist — this is not automatic therapy eligibility.">Informatívne. Potvrďte s onkológom — nie je to automaticky spôsobilosť na terapiu.</div>
  </div>
  <div id="error-banner" class="error-banner">
  <span id="error-text"></span>
@@ -125,9 +121,9 @@
  </div>
 
  <!-- GDrive connect banner (shown when patient has no GDrive folder) -->
- <div id="gdrive-connect-bar" style="display:none;background:rgba(20,184,166,0.1);border:1px solid rgba(20,184,166,0.3);border-radius:8px;padding:0.75rem 1rem;align-items:center;gap:0.75rem">
+ <div id="gdrive-connect-bar" class="notice notice-info" style="display:none">
  <span style="font-size:0.875rem;color:var(--text)" data-sk="Google Drive nie je pripojený pre tohto pacienta." data-en="Google Drive is not connected for this patient.">Google Drive nie je pripojený pre tohto pacienta.</span>
- <button data-action="showGdriveSetup" style="padding:0.375rem 0.75rem;background:var(--accent);color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:0.8125rem;font-weight:600;white-space:nowrap" data-sk="Pripojiť GDrive" data-en="Connect GDrive">Pripojiť GDrive</button>
+ <button class="btn-primary" data-action="showGdriveSetup" data-sk="Pripojiť GDrive" data-en="Connect GDrive">Pripojiť GDrive</button>
  </div>
 
  <!-- MCP Connection bar (hidden in demo mode) -->
@@ -177,7 +173,7 @@
  <!-- Document table -->
  <!-- Search -->
  <div style="margin-bottom:0.75rem">
- <input type="text" id="doc-search" placeholder="Search files..." data-sk-placeholder="Hľadať súbory..." data-en-placeholder="Search files..." style="width:100%;padding:0.5rem 0.75rem;border:1px solid var(--border);border-radius:0.5rem;background:var(--surface);color:var(--text);font-size:0.8125rem" data-input="renderTable">
+ <input type="text" id="doc-search" placeholder="Search files..." data-sk-placeholder="Hľadať súbory..." data-en-placeholder="Search files..." data-input="renderTable">
  </div>
  <div class="table-wrap">
  <table id="doc-table">
@@ -241,7 +237,7 @@
  <li data-sk="Do Claude alebo ChatGPT ide len to, na čo sa v nich sami spýtate." data-en="Only what you ask about inside Claude or ChatGPT goes to that assistant.">Do Claude alebo ChatGPT ide len to, na čo sa v nich sami spýtate.</li>
  <li data-sk="Súbory sa nikdy nemažú — nanajvýš sa presunú do koša." data-en="Files are never deleted — at most they are moved to the trash.">Súbory sa nikdy nemažú — nanajvýš sa presunú do koša.</li>
  </ul>
- <p style="margin-top:0.75rem;font-size:0.8125rem"><a href="/#connect" style="color:var(--accent)" data-sk="Ako pripojiť Claude alebo ChatGPT →" data-en="How to connect Claude or ChatGPT →">Ako pripojiť Claude alebo ChatGPT →</a></p>
+ <p style="margin-top:0.75rem;font-size:0.8125rem"><a href="/#connect" data-sk="Ako pripojiť Claude alebo ChatGPT" data-en="How to connect Claude or ChatGPT">Ako pripojiť Claude alebo ChatGPT</a></p>
  </div>
 
  <!-- Conversation Previews (demo only; all content invented) -->
@@ -298,15 +294,15 @@
  </div>
  <div style="display:flex;gap:1rem;flex-wrap:wrap;margin-bottom:1rem">
  <div style="flex:1;min-width:280px">
- <div style="font-size:0.75rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.04em;margin-bottom:0.5rem" data-sk="Top nástroje" data-en="Top Tools">Top nástroje</div>
+ <div class="section-label" data-sk="Top nástroje" data-en="Top Tools">Top nástroje</div>
  <div id="ana-top-tools" style="font-size:0.8125rem"></div>
  </div>
  <div style="flex:1;min-width:280px">
- <div style="font-size:0.75rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.04em;margin-bottom:0.5rem" data-sk="Pipeline" data-en="Pipeline">Pipeline</div>
+ <div class="section-label" data-sk="Pipeline" data-en="Pipeline">Pipeline</div>
  <div id="ana-pipeline" style="font-size:0.8125rem"></div>
  </div>
  <div style="flex:1;min-width:280px">
- <div style="font-size:0.75rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.04em;margin-bottom:0.5rem" data-sk="Latencia (p50 / p95)" data-en="Latency (p50 / p95)">Latencia (p50 / p95)</div>
+ <div class="section-label" data-sk="Latencia (p50 / p95)" data-en="Latency (p50 / p95)">Latencia (p50 / p95)</div>
  <div id="ana-latency" style="font-size:0.8125rem"></div>
  </div>
  </div>
@@ -314,7 +310,7 @@
  <!-- Per-patient cost leaderboard (#411 Part A — admin only) -->
  <div id="cost-leaderboard-section" style="display:none;margin-top:1.25rem;padding-top:1rem;border-top:1px solid var(--border)">
  <div style="display:flex;align-items:center;justify-content:space-between;gap:0.75rem;margin-bottom:0.5rem">
- <div style="font-size:0.75rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.04em">
+ <div class="section-label">
  <span data-sk="Náklady podľa pacienta" data-en="Cost by Patient">Cost by Patient</span>
  </div>
  <div style="font-size:0.7rem;color:var(--text-muted)" data-sk="Klikni na riadok pre detail" data-en="Click a row to drill in">Click a row to drill in</div>
@@ -373,7 +369,7 @@
  <div id="sched-jobs" style="font-size:0.8125rem"></div>
  <!-- Prompt stats by call type -->
  <div style="margin-top:1rem">
- <div style="font-size:0.75rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.04em;margin-bottom:0.5rem" data-sk="AI volania podľa typu" data-en="AI Calls by Type">AI Calls by Type</div>
+ <div class="section-label" data-sk="AI volania podľa typu" data-en="AI Calls by Type">AI Calls by Type</div>
  <div id="sched-prompt-stats" style="font-size:0.8125rem"></div>
  </div>
  </div>
@@ -387,16 +383,16 @@
  <!-- Claude.ai -->
  <div style="background:var(--surface);border:1px solid var(--border);border-radius:0.75rem;padding:1.25rem">
  <div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.75rem">
- <span style="font-size:1.25rem">&#x1F7E0;</span>
+ <span class="client-dot" aria-hidden="true"></span>
  <strong style="color:var(--text);font-size:1rem">Claude.ai</strong>
- <span style="font-size:0.7rem;background:var(--accent);color:white;padding:0.125rem 0.5rem;border-radius:1rem" data-sk="Odporúčané" data-en="Recommended">Recommended</span>
+ <span class="tag-solid" data-sk="Odporúčané" data-en="Recommended">Recommended</span>
  </div>
  <ol style="margin:0 0 0 1.25rem;padding:0;color:var(--text)">
  <li style="margin-bottom:0.5rem">Go to <strong>claude.ai</strong> &rarr; Settings &rarr; Connectors</li>
  <li style="margin-bottom:0.5rem">Click <strong>"Add custom connector"</strong></li>
- <li style="margin-bottom:0.5rem">Enter URL: <code style="background:var(--bg);padding:0.125rem 0.375rem;border-radius:3px;font-size:0.75rem;user-select:all">https://oncofiles.com/mcp</code></li>
+ <li style="margin-bottom:0.5rem">Enter URL: <code style="background:var(--bg-2);padding:0.125rem 0.375rem;border-radius:3px;font-size:0.75rem;user-select:all">https://oncofiles.com/mcp</code></li>
  <li style="margin-bottom:0.5rem"><strong>Leave OAuth fields blank</strong> &rarr; Add &rarr; sign in with Google</li>
- <li style="margin-bottom:0.5rem">Use <code style="background:var(--bg);padding:0.125rem 0.375rem;border-radius:3px;font-size:0.75rem">patient_slug</code> in each prompt (e.g. "use patient_slug=my-patient")</li>
+ <li style="margin-bottom:0.5rem">Use <code style="background:var(--bg-2);padding:0.125rem 0.375rem;border-radius:3px;font-size:0.75rem">patient_slug</code> in each prompt (e.g. "use patient_slug=my-patient")</li>
  </ol>
  <div style="margin-top:0.75rem;font-size:0.75rem;color:var(--text-muted)">
  <strong data-sk="Funkcie" data-en="Features">Features</strong>: 78 tools, OAuth login, auto-patient selection<br>
@@ -406,13 +402,13 @@
  <!-- ChatGPT -->
  <div style="background:var(--surface);border:1px solid var(--border);border-radius:0.75rem;padding:1.25rem">
  <div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.75rem">
- <span style="font-size:1.25rem">&#x1F7E2;</span>
+ <span class="client-dot c2" aria-hidden="true"></span>
  <strong style="color:var(--text);font-size:1rem">ChatGPT</strong>
  </div>
  <ol style="margin:0 0 0 1.25rem;padding:0;color:var(--text)">
  <li style="margin-bottom:0.5rem">Go to <strong>chatgpt.com</strong> &rarr; Settings &rarr; Connected Apps</li>
  <li style="margin-bottom:0.5rem">Click <strong>"Add MCP Server"</strong></li>
- <li style="margin-bottom:0.5rem">Enter URL: <code style="background:var(--bg);padding:0.125rem 0.375rem;border-radius:3px;font-size:0.75rem;user-select:all">https://oncofiles.com/mcp</code></li>
+ <li style="margin-bottom:0.5rem">Enter URL: <code style="background:var(--bg-2);padding:0.125rem 0.375rem;border-radius:3px;font-size:0.75rem;user-select:all">https://oncofiles.com/mcp</code></li>
  <li style="margin-bottom:0.5rem">Authenticate with Google OAuth</li>
  <li style="margin-bottom:0.5rem">Select patient in the chat</li>
  </ol>
@@ -424,14 +420,14 @@
  <!-- Bearer Token -->
  <div style="background:var(--surface);border:1px solid var(--border);border-radius:0.75rem;padding:1.25rem">
  <div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.75rem">
- <span style="font-size:1.25rem">&#x1F535;</span>
+ <span class="client-dot c3" aria-hidden="true"></span>
  <strong style="color:var(--text);font-size:1rem" data-sk="Bearer Token (API)" data-en="Bearer Token (API)">Bearer Token (API)</strong>
  </div>
  <ol style="margin:0 0 0 1.25rem;padding:0;color:var(--text)">
  <li style="margin-bottom:0.5rem" data-sk="Vygenerujte token v dashboarde (hore)" data-en="Generate token in dashboard (above)">Generate token in dashboard (above)</li>
  <li style="margin-bottom:0.5rem" data-sk="Nastavte v MCP klientovi" data-en="Configure in your MCP client">Configure in your MCP client:</li>
  </ol>
- <pre style="background:var(--bg);border:1px solid var(--border);border-radius:0.5rem;padding:0.75rem;font-size:0.7rem;overflow-x:auto;margin-top:0.5rem;color:var(--text)">{
+ <pre style="background:var(--bg-2);border:1px solid var(--border);border-radius:0.5rem;padding:0.75rem;font-size:0.7rem;overflow-x:auto;margin-top:0.5rem;color:var(--text)">{
  "mcpServers": {
  "oncofiles": {
  "url": "https://oncofiles.com/mcp",
@@ -447,7 +443,7 @@
  </div>
  </div>
  </div>
- <div style="margin-top:1rem;padding:0.75rem;background:rgba(20,184,166,0.06);border-radius:0.5rem;font-size:0.75rem;color:var(--text)">
+ <div style="margin-top:1rem;padding:0.75rem;background:var(--info-bg);border-radius:0.5rem;font-size:0.75rem;color:var(--text)">
  <strong data-sk="Izolácia pacientov" data-en="Patient Isolation">Patient Isolation</strong>:
  <span data-sk="Každé pripojenie je obmedzené na jedného pacienta. AI klient A nikdy nevidí dokumenty pacienta B." data-en="Each connection is scoped to one patient. AI Client A never sees Patient B's documents.">Each connection is scoped to one patient. AI Client A never sees Patient B's documents.</span>
  </div>
@@ -472,7 +468,7 @@
  <button class="copy-btn" data-action="loadManifestPreview" data-sk="Zobraziť manifest" data-en="View Manifest">View Manifest</button>
  <button class="copy-btn" data-action="downloadManifest" data-sk="Stiahnuť JSON" data-en="Download JSON">Download JSON</button>
  </div>
- <pre id="manifest-preview" style="display:none;margin-top:0.75rem;max-height:400px;overflow:auto;background:var(--bg);border:1px solid var(--border);border-radius:0.5rem;padding:0.75rem;font-size:0.7rem;white-space:pre-wrap;word-break:break-all"></pre>
+ <pre id="manifest-preview" style="display:none;margin-top:0.75rem;max-height:400px;overflow:auto;background:var(--bg-2);border:1px solid var(--border);border-radius:0.5rem;padding:0.75rem;font-size:0.7rem;white-space:pre-wrap;word-break:break-all"></pre>
  </div>
  </div>
 
@@ -485,18 +481,18 @@
  </div>
 
  <!-- Bug Report FAB + Modal -->
- <button id="bug-fab" title="Report a bug" style="position:fixed;bottom:1.5rem;right:1.5rem;width:48px;height:48px;border-radius:50%;background:var(--red);color:white;border:none;cursor:pointer;font-size:1.25rem;box-shadow:0 4px 12px rgba(0,0,0,0.4);z-index:1000;display:flex;align-items:center;justify-content:center;transition:transform 0.15s">&#128027;</button>
- <div id="bug-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:1001;align-items:center;justify-content:center">
- <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;max-width:560px;width:90%;padding:1.5rem;max-height:90vh;overflow-y:auto">
- <h3 style="margin-bottom:1rem;font-size:1.1rem" data-sk="Nahlásiť chybu" data-en="Report a Bug">Nahlásiť chybu</h3>
+ <button id="bug-fab" title="Report a bug" aria-label="Report a bug"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a8 8 0 0 1-8 8H4l2.2-2.9A8 8 0 1 1 21 12z"/><path d="M12 8v4.5M12 16h.01"/></svg></button>
+ <div id="bug-overlay" style="display:none;position:fixed;inset:0;z-index:1001;align-items:center;justify-content:center">
+ <div class="bug-panel">
+ <h3 data-sk="Nahlásiť chybu" data-en="Report a Bug">Nahlásiť chybu</h3>
  <p style="color:var(--text-muted);font-size:0.8125rem;margin:0 0 1rem" data-sk="Snímky obrazovky a údaje zo stránky sa neposielajú – dashboard zobrazuje údaje pacienta." data-en="Screenshots and page data are not sent: the dashboard shows patient data.">Snímky obrazovky a údaje zo stránky sa neposielajú – dashboard zobrazuje údaje pacienta.</p>
- <div id="bug-paste-zone" hidden style="border:2px dashed var(--border);border-radius:6px;padding:1rem;text-align:center;margin-bottom:1rem;cursor:pointer;color:var(--text-muted);font-size:0.875rem" tabindex="0" data-sk="Vložte snímku (Ctrl+V) alebo nahrajte" data-en="Paste screenshot (Ctrl+V) or upload" data-html="1"><span data-sk="Vložte snímku (Ctrl+V) alebo " data-en="Paste screenshot (Ctrl+V) or ">Vložte snímku (Ctrl+V) alebo </span><label style="color:var(--accent);cursor:pointer;text-decoration:underline" data-sk="nahrajte" data-en="upload">nahrajte<input id="bug-file" type="file" accept="image/*" style="display:none"></label></div>
+ <div id="bug-paste-zone" hidden style="border:2px dashed var(--border-light);border-radius:8px;padding:1rem;text-align:center;margin-bottom:1rem;cursor:pointer;color:var(--text-muted);font-size:0.875rem" tabindex="0" data-sk="Vložte snímku (Ctrl+V) alebo nahrajte" data-en="Paste screenshot (Ctrl+V) or upload" data-html="1"><span data-sk="Vložte snímku (Ctrl+V) alebo " data-en="Paste screenshot (Ctrl+V) or ">Vložte snímku (Ctrl+V) alebo </span><label style="color:var(--accent);cursor:pointer;text-decoration:underline" data-sk="nahrajte" data-en="upload">nahrajte<input id="bug-file" type="file" accept="image/*" style="display:none"></label></div>
  <img id="bug-screenshot" hidden style="width:100%;border-radius:6px;border:1px solid var(--border);margin-bottom:1rem;display:none" alt="screenshot">
- <input id="bug-title" type="text" placeholder="Čo nefunguje? (jeden riadok)" maxlength="120" style="width:100%;padding:0.625rem;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:6px;font-size:0.9375rem;margin-bottom:0.75rem">
- <textarea id="bug-desc" placeholder="Ďalšie podrobnosti (voliteľné)" rows="3" style="width:100%;padding:0.625rem;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:6px;font-size:0.875rem;margin-bottom:1rem;resize:vertical"></textarea>
+ <input id="bug-title" type="text" placeholder="Čo nefunguje? (jeden riadok)" maxlength="120">
+ <textarea id="bug-desc" placeholder="Ďalšie podrobnosti (voliteľné)" rows="3"></textarea>
  <div style="display:flex;gap:0.75rem;justify-content:flex-end">
- <button id="bug-cancel" style="padding:0.5rem 1rem;background:transparent;color:var(--text-muted);border:1px solid var(--border);border-radius:6px;cursor:pointer" data-sk="Zrušiť" data-en="Cancel">Zrušiť</button>
- <button id="bug-submit" disabled style="padding:0.5rem 1.25rem;background:var(--red);color:white;border:none;border-radius:6px;cursor:pointer;font-weight:600" data-sk="Odoslať chybu" data-en="Submit Bug">Odoslať chybu</button>
+ <button id="bug-cancel" data-sk="Zrušiť" data-en="Cancel">Zrušiť</button>
+ <button id="bug-submit" disabled data-sk="Odoslať chybu" data-en="Submit Bug">Odoslať chybu</button>
  </div>
  <p id="bug-status" style="margin-top:0.75rem;font-size:0.8125rem;color:var(--text-muted);display:none"></p>
  </div>
@@ -679,19 +675,19 @@
  <h2 data-sk="Pacient vytvorený" data-en="Patient Created">Pacient vytvorený</h2>
  <p id="wiz-success-summary" style="color:var(--text-muted);font-size:0.875rem;margin-top:0.5rem"></p>
  </div>
- <div style="margin:1.5rem 0;padding:1rem;border:1px solid var(--border);border-radius:8px">
+ <div style="margin:1.5rem 0;padding:1rem;border:1px solid var(--border);border-radius:10px">
  <h3 style="font-size:1rem;margin-bottom:0.5rem" data-sk="Pripojiť AI asistenta (voliteľné)" data-en="Connect an AI assistant (optional)">Pripojiť AI asistenta (voliteľné)</h3>
- <p style="color:var(--amber);font-size:0.8rem;margin-bottom:0.5rem;font-weight:600" data-sk="Pozor: toto NEVKLADAJTE do chatu — patrí do nastavení (Settings) v Claude.ai alebo ChatGPT." data-en="Heads-up: do NOT paste this into the chat — it goes into Settings in Claude.ai or ChatGPT.">Pozor: toto NEVKLADAJTE do chatu — patrí do nastavení (Settings) v Claude.ai alebo ChatGPT.</p>
+ <p role="note" class="wizard-warn-box" style="font-size:0.8125rem;margin-bottom:0.5rem;font-weight:600" data-sk="Pozor: toto NEVKLADAJTE do chatu — patrí do nastavení (Settings) v Claude.ai alebo ChatGPT." data-en="Heads-up: do NOT paste this into the chat — it goes into Settings in Claude.ai or ChatGPT.">Pozor: toto NEVKLADAJTE do chatu — patrí do nastavení (Settings) v Claude.ai alebo ChatGPT.</p>
  <p style="color:var(--text-muted);font-size:0.75rem;margin-bottom:0.75rem" data-sk="Ak neplánujete používať AI chat, stačí kliknúť „Prejsť na Dashboard" – dashboard funguje aj bez pripojenia." data-en="If you don't plan to use an AI chat, just click „Go to Dashboard" below — the dashboard works without this.">Ak neplánujete používať AI chat, stačí kliknúť „Prejsť na Dashboard" – dashboard funguje aj bez pripojenia.</p>
  <div style="display:flex;gap:0.5rem;align-items:center;margin-bottom:0.5rem">
  <span style="font-size:0.75rem;color:var(--text-muted);min-width:70px">Server URL</span>
- <code id="wiz-mcp-url" style="flex:1;font-size:0.8rem;background:var(--bg);padding:4px 8px;border-radius:4px">https://oncofiles.com/mcp</code>
- <button data-action="wizCopy|wiz-mcp-url" style="font-size:0.75rem;padding:4px 10px;background:var(--accent);color:#fff;border:none;border-radius:4px;cursor:pointer">Copy</button>
+ <code id="wiz-mcp-url" style="flex:1;font-size:0.8rem;background:var(--bg-2);padding:4px 8px;border-radius:4px">https://oncofiles.com/mcp</code>
+ <button data-action="wizCopy|wiz-mcp-url" class="btn-primary btn-small">Copy</button>
  </div>
  <div style="display:flex;gap:0.5rem;align-items:center;margin-bottom:0.75rem">
  <span style="font-size:0.75rem;color:var(--text-muted);min-width:70px">Bearer Token</span>
- <code id="wiz-token-display-4" style="flex:1;font-size:0.8rem;background:var(--bg);padding:4px 8px;border-radius:4px"></code>
- <button data-action="wizCopy|wiz-token-display-4" style="font-size:0.75rem;padding:4px 10px;background:var(--accent);color:#fff;border:none;border-radius:4px;cursor:pointer">Copy</button>
+ <code id="wiz-token-display-4" style="flex:1;font-size:0.8rem;background:var(--bg-2);padding:4px 8px;border-radius:4px"></code>
+ <button data-action="wizCopy|wiz-token-display-4" class="btn-primary btn-small">Copy</button>
  </div>
  <details style="margin-top:0.5rem">
  <summary style="cursor:pointer;font-size:0.8125rem;color:var(--accent);font-weight:600" data-sk="Ako pripojiť – krok za krokom ▾" data-en="How to connect — step by step ▾">Ako pripojiť – krok za krokom ▾</summary>
@@ -771,12 +767,12 @@
  4. Bearer token is not used for the ChatGPT connector either.
  </div>
  <div id="share-tab-claude-desktop" class="share-tab-content" style="display:none;font-size:0.8125rem;color:var(--text-muted);line-height:1.7">
- Add to <code style="background:var(--bg);padding:0.125rem 0.375rem;border-radius:0.25rem">claude_desktop_config.json</code>:
- <pre id="share-desktop-config" style="background:var(--bg);border:1px solid var(--border);border-radius:0.375rem;padding:0.75rem;margin-top:0.5rem;font-size:0.6875rem;overflow-x:auto;white-space:pre-wrap"></pre>
+ Add to <code style="background:var(--bg-2);padding:0.125rem 0.375rem;border-radius:0.25rem">claude_desktop_config.json</code>:
+ <pre id="share-desktop-config" style="background:var(--bg-2);border:1px solid var(--border);border-radius:0.375rem;padding:0.75rem;margin-top:0.5rem;font-size:0.6875rem;overflow-x:auto;white-space:pre-wrap"></pre>
  </div>
  <div id="share-tab-claude-code" class="share-tab-content" style="display:none;font-size:0.8125rem;color:var(--text-muted);line-height:1.7">
  Run in terminal:
- <pre id="share-code-cmd" style="background:var(--bg);border:1px solid var(--border);border-radius:0.375rem;padding:0.75rem;margin-top:0.5rem;font-size:0.6875rem;overflow-x:auto"></pre>
+ <pre id="share-code-cmd" style="background:var(--bg-2);border:1px solid var(--border);border-radius:0.375rem;padding:0.75rem;margin-top:0.5rem;font-size:0.6875rem;overflow-x:auto"></pre>
  </div>
  </div>
 

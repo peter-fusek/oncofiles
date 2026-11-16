@@ -565,7 +565,11 @@
         if (ratio >= 1) pill.classList.add('state-over');
         else if (ratio >= 0.8) pill.classList.add('state-warn');
         var iconEl = document.getElementById('bp-icon');
-        if (iconEl) iconEl.textContent = resp.in_onboarding ? '🎁' : '€';
+        // Text, not an emoji: "Starter" while the onboarding credit applies, else €.
+        if (iconEl) {
+          if (resp.in_onboarding) setI18n(iconEl, 'Štart', 'Starter');
+          else { iconEl.removeAttribute('data-sk'); iconEl.removeAttribute('data-en'); iconEl.textContent = '€'; }
+        }
         var spentEl = document.getElementById('bp-spent');
         if (spentEl) spentEl.textContent = '€' + used.toFixed(2);
         var capEl = document.getElementById('bp-cap');
@@ -3122,7 +3126,7 @@
         row.appendChild(label);
 
         var barBg = document.createElement('div');
-        barBg.style.cssText = 'flex:1;height:14px;background:var(--bg);border-radius:7px;overflow:hidden';
+        barBg.style.cssText = 'flex:1;height:14px;background:var(--border);border-radius:7px;overflow:hidden';
         var bar = document.createElement('div');
         bar.style.cssText = 'height:100%;border-radius:7px;background:var(--purple);transition:width 0.3s';
         bar.style.width = ((v.count / maxCalls) * 100) + '%';

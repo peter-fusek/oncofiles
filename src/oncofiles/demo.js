@@ -249,8 +249,8 @@
     });
     if (d.category === 'labs') sheet.appendChild(stamp());
     document.getElementById('page-cap').textContent = lang === 'sk'
-      ? 'Strana 1 z 1. Žltou je zvýraznený riadok, z ktorého bola hodnota prečítaná.'
-      : 'Page 1 of 1. The line a value was read from is highlighted in yellow.';
+      ? 'Strana 1 z 1. Zvýraznený je riadok, z ktorého bola hodnota prečítaná.'
+      : 'Page 1 of 1. The line a value was read from is highlighted.';
 
     var vals = valuesOf(d.id);
     var tb = document.getElementById('value-rows');

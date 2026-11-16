@@ -6,8 +6,8 @@
   <title data-sk="Ukážka – Oncofiles" data-en="Demo – Oncofiles">Ukážka – Oncofiles</title>
   <meta name="description" content="Oncofiles demo with an invented patient: lab trends with source lines, verification states and a document view.">
   <meta name="robots" content="noindex">
-  <meta name="theme-color" content="#f6f4ef" media="(prefers-color-scheme: light)">
-  <meta name="theme-color" content="#151918" media="(prefers-color-scheme: dark)">
+  <meta name="theme-color" content="#000059" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#000059" media="(prefers-color-scheme: dark)">
   <link rel="icon" type="image/svg+xml" href="/favicon.svg">
   <!-- Self-hosted fonts (#695): no request to a third-party font CDN. -->
   <link rel="stylesheet" href="/fonts/fonts.css">
@@ -17,10 +17,12 @@
 </head>
 <body>
   <header class="bar">
-    <a class="logo" href="/" aria-label="Oncofiles">onco<span>files</span></a>
-    <p class="bar-note" data-sk="Ukážka s vymyslenou pacientkou. Žiadne skutočné údaje." data-en="Demo with an invented patient. No real data.">Ukážka s vymyslenou pacientkou. Žiadne skutočné údaje.</p>
+    <a class="logo" href="/" aria-label="Oncofiles">oncofiles<span>.</span></a>
     <button class="lang" type="button" id="lang-toggle" data-action="toggleLang" aria-label="Switch language / Prepnúť jazyk">EN</button>
   </header>
+  <div class="demo-strip" role="note">
+    <p class="bar-note" data-sk="Ukážka: vymyslená pacientka a vymyslené dokumenty. Žiadne skutočné údaje." data-en="Demo: an invented patient with invented documents. No real data.">Ukážka: vymyslená pacientka a vymyslené dokumenty. Žiadne skutočné údaje.</p>
+  </div>
 
   <main id="demo" aria-busy="true">
     <section class="overview" aria-labelledby="patient-name">

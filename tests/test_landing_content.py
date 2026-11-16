@@ -332,8 +332,8 @@ def test_demo_page_is_bilingual():
     parser.feed(body)
     # Brand, language switch label, invented name and version need no translation.
     allowed = {
-        "onco",
-        "files",
+        "oncofiles",
+        ".",
         "EN",
         "Jana Testová",
         "v{{VERSION}}",
