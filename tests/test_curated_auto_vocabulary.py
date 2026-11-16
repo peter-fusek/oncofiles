@@ -295,10 +295,8 @@ def test_real_run_adds_vocabulary_then_files():
     assert 'printed as "Poliklinika Javorová"' in readme and "run run-854" in readme
     # the second document reused the new tokens: ONE README write for the run
     assert [w for w in d.writes if w[:2] == ("update", "README.md")] == [("update", "README.md")]
-    assert [(v["token"], v["status"]) for v in r.vocabulary] == [
-        ("PoliklinikaJavorova", "added"),
-        ("Brezina", "added"),
-    ]
+    assert [v["token"] for v in r.vocabulary["added"]] == ["PoliklinikaJavorova", "Brezina"]
+    assert r.vocabulary["added_count"] == 2 and r.vocabulary["planned"] == []
     actions = [
         json.loads(x) for x in d.download(d.find(d.root, "_actions.jsonl")).decode().splitlines()
     ]
@@ -338,10 +336,10 @@ def test_dry_run_plans_the_vocabulary_and_writes_nothing():
     r = _run(d)
     assert r.status == "ok", r.message
     assert d.writes == [] and json.dumps(d.items, default=str, sort_keys=True) == before
-    assert [(v["token"], v["status"]) for v in r.vocabulary] == [
-        ("PoliklinikaJavorova", "planned"),
-        ("Brezina", "planned"),
-    ]
+    assert [v["token"] for v in r.vocabulary["planned"]] == ["PoliklinikaJavorova", "Brezina"]
+    assert r.vocabulary["auto_vocab_enabled"] is True and r.vocabulary["added"] == []
+    assert r.vocabulary["outcomes"][0]["outcome_without"] == "review_without"
+    assert r.vocabulary["outcomes"][0]["outcome_with"] == "would_file_with_auto_vocab"
     assert r.documents[0]["result"] == "filed"
     assert "PoliklinikaJavorova" in r.documents[0]["to"]
 
@@ -390,14 +388,16 @@ def test_flag_off_keeps_documents_in_review():
     r = _run(d, dry_run=False, auto_vocab=False)
     assert r.status == "ok", r.message
     assert r.documents[0]["result"] == "review_needed"
-    assert _readme(d) == README and r.vocabulary == []
+    assert _readme(d) == README
+    assert r.vocabulary["added"] == [] and r.vocabulary["planned"] == []  # real run: no preview
 
 
 def test_other_ambiguity_still_goes_to_review():
     d = _drive((TEXT + "NO DATE").encode())
     r = _run(d, dry_run=False)
     assert r.documents[0]["result"] == "review_needed"
-    assert _readme(d) == README and r.vocabulary == []
+    assert _readme(d) == README
+    assert r.vocabulary["added"] == [] and r.vocabulary["planned"] == []
 
 
 def test_unsupported_readme_falls_back_to_review():
@@ -438,3 +438,68 @@ def test_text_source_gets_the_vocabulary_before_it_is_filed():
     readme_write = d.writes.index(("update", "README.md"))
     move = next(i for i, w in enumerate(d.writes) if w[0] == "move")
     assert readme_write < move
+
+
+# ── dry-run preview with the feature off (follow-up to #862) ─────────
+
+
+def test_dry_run_with_flag_off_previews_the_vocabulary_and_writes_nothing():
+    second = (TEXT + "LABS 14.02.2027").encode()
+    d = _drive(DOC, second)
+    before = json.dumps(d.items, default=str, sort_keys=True)
+    r = _run(d, auto_vocab=False)
+    assert r.status == "ok", r.message
+    assert d.writes == [] and json.dumps(d.items, default=str, sort_keys=True) == before
+    v = r.vocabulary
+    assert v["auto_vocab_enabled"] is False and v["readme_unsupported"] is None
+    # planned once, though both documents carry the same new names
+    assert [(t["label"], t["token"]) for t in v["planned"]] == [
+        ("Institution", "PoliklinikaJavorova"),
+        ("Doctor", "Brezina"),
+    ]
+    assert v["planned_count"] == 2 and v["added"] == []
+    assert [(o["outcome_without"], o["outcome_with"]) for o in v["outcomes"]] == [
+        ("review_without", "would_file_with_auto_vocab"),
+        ("review_without", "would_file_with_auto_vocab"),
+    ]
+    assert v["would_file_count"] == 2
+    # the document outcome itself is today's: review
+    assert {doc["result"] for doc in r.documents} == {"review_needed"}
+    assert all("Javorová" not in json.dumps(o, ensure_ascii=False) for o in v["outcomes"])
+
+
+def test_flag_off_real_run_is_unchanged_by_the_preview():
+    d = _drive(DOC)
+    r = _run(d, dry_run=False, auto_vocab=False)
+    assert r.documents[0]["result"] == "review_needed"
+    assert ("update", "README.md") not in d.writes and _readme(d) == README
+    assert r.vocabulary["planned"] == [] and r.vocabulary["outcomes"] == []
+
+
+def test_dry_run_with_flag_off_previews_documents_held_for_vocabulary(monkeypatch):
+    monkeypatch.setenv("CURATED_AUTO_VOCAB", "false")
+    d = _drive(DOC)
+    _run(d, dry_run=False, auto_vocab=False)  # held for review under #754
+    assert not probe(d, d.root, now=NOW).pending  # no auto run is triggered for it
+    preview = _run(d, auto_vocab=False)
+    assert preview.vocabulary["would_file_count"] == 1
+    writes = list(d.writes)
+    real = _run(d, dry_run=False, auto_vocab=False)  # still skipped by a real run
+    assert real.documents == [] and real.awaiting_review
+    assert ("update", "README.md") not in d.writes[len(writes) :]
+
+
+def test_dry_run_preview_respects_real_ambiguity():
+    d = _drive((TEXT + "NO DATE").encode())
+    r = _run(d, auto_vocab=False)
+    v = r.vocabulary
+    assert v["planned"] == [] and v["would_file_count"] == 0
+
+
+def test_dry_run_preview_reports_an_unsupported_readme():
+    d = _drive(DOC)
+    no_version = README.replace("- **Standard version:** 1.0 — 2026-11-07 (test)\n", "")
+    d.items[d.find(d.root, "README.md")]["content"] = no_version.encode()
+    r = _run(d, auto_vocab=False)
+    assert "Standard version" in r.vocabulary["readme_unsupported"]
+    assert r.vocabulary["planned"] == [] and r.vocabulary["outcomes"] == []
