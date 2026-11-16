@@ -20,14 +20,23 @@ In-memory counters since process start feed operator ``/readiness``
 (``dashboard_access``); public ``/health`` never sees them and never touches
 the DB. Refusals and admin cross reads also log one line (persistent app log,
 #706), throttled to once per minute per event + caller + patient.
+
+Retention (maintainer decision 2026-11-16, #868): rows older than
+``DASHBOARD_ACCESS_LOG_RETENTION_DAYS`` (default 90, minimum 30) are deleted
+by the daily ``dashboard_access_log_retention`` job through
+``purge_expired_access_log``, in chunks of at most 500 rows. Only this table:
+it holds access telemetry, no patient documents or facts. Allowlisted in
+``tests/test_no_automatic_deletion.py`` (#734).
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import os
 import threading
 import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -37,6 +46,11 @@ REFUSAL_DEDUPE_S = 60.0
 REFUSAL_DAILY_CAP = 200  # rows per caller hash per UTC day
 LOG_THROTTLE_S = 60.0
 _MAX_KEYS = 10_000  # bound on every in-memory map; expired keys pruned first
+
+RETENTION_ENV = "DASHBOARD_ACCESS_LOG_RETENTION_DAYS"
+DEFAULT_RETENTION_DAYS = 90
+MIN_RETENTION_DAYS = 30
+PURGE_CHUNK_ROWS = 500  # rows per DELETE + commit (never one long transaction)
 
 _lock = threading.Lock()
 _started_at = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -203,6 +217,66 @@ def counters() -> dict:
     """In-memory counters since process start, for operator ``/readiness``."""
     with _lock:
         return {"since": _started_at, **_counters}
+
+
+def retention_days() -> int:
+    """Retention in days from ``DASHBOARD_ACCESS_LOG_RETENTION_DAYS``.
+
+    Read at call time. Default 90; a value below 30 is clamped to 30 and an
+    unparseable one falls back to 90, each with a warning.
+    """
+    raw = os.environ.get(RETENTION_ENV, "").strip()
+    if not raw:
+        return DEFAULT_RETENTION_DAYS
+    try:
+        days = int(raw)
+    except ValueError:
+        logger.warning(
+            "%s=%r is not an integer, using %d days", RETENTION_ENV, raw, DEFAULT_RETENTION_DAYS
+        )
+        return DEFAULT_RETENTION_DAYS
+    if days < MIN_RETENTION_DAYS:
+        logger.warning(
+            "%s=%d is below the minimum, clamped to %d days",
+            RETENTION_ENV,
+            days,
+            MIN_RETENTION_DAYS,
+        )
+        return MIN_RETENTION_DAYS
+    return days
+
+
+async def purge_expired_access_log(
+    db: Any, *, days: int | None = None, chunk_size: int = PURGE_CHUNK_ROWS
+) -> int:
+    """Delete ``dashboard_access_log`` rows older than the retention; return the count.
+
+    Touches no other table. Works in chunks of at most ``PURGE_CHUNK_ROWS``
+    rows, each committed on its own, so a large backlog never becomes one long
+    transaction on the single shared connection. ``days`` below the minimum is
+    clamped like the env value. ``created_at`` is ISO-8601 UTC with ``T`` and
+    ``Z`` (migration 090), so the cutoff uses the same format and the string
+    comparison is chronological.
+    """
+    if days is None:
+        days = retention_days()
+    days = max(MIN_RETENTION_DAYS, int(days))
+    chunk = max(1, min(PURGE_CHUNK_ROWS, int(chunk_size)))
+    cutoff = (datetime.now(UTC) - timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    total = 0
+    while True:
+        async with db.db.execute(
+            """DELETE FROM dashboard_access_log WHERE id IN (
+                   SELECT id FROM dashboard_access_log
+                   WHERE created_at < ? ORDER BY id LIMIT ?)""",
+            (cutoff, chunk),
+        ) as cursor:
+            deleted = cursor.rowcount or 0
+        await db.db.commit()
+        total += deleted
+        if deleted < chunk:
+            return total
+        await asyncio.sleep(0)  # let other coroutines use the connection between chunks
 
 
 def _reset_for_tests() -> None:
