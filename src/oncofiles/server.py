@@ -3063,36 +3063,42 @@ async def llms_sk_txt(request: Request) -> HTMLResponse:
 # ── SEO topic pages: /onkologia (SK) + /oncology (EN) ────────────────────────
 
 _TOPIC_PAGE_CSS = """
-  :root { --bg:#faf9f7; --text:#1e293b; --text-muted:#556270; --accent:#0d9488;
-    --border:#d5cfc5; --surface:#ffffff; }
+  :root { color-scheme:light dark; --bg:#ffffff; --text:#000059; --text-muted:#475569;
+    --accent:#000059; --border:#cbd5e1; --surface:#f8fafc; --navy:#000059; --coral:#ff4646;
+    --turq:#33d6d6; --peach:#ffd0a8; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#000040; --text:#ffffff;
+    --text-muted:#c9d1ee; --accent:#ffffff; --border:#2e2e90; --surface:#0c0c66; } }
   * { margin:0; padding:0; box-sizing:border-box; }
   html { overflow-x:hidden; }
   body { font-family:'DM Sans',-apple-system,BlinkMacSystemFont,sans-serif;
     background:var(--bg); color:var(--text); line-height:1.65;
     overflow-x:hidden; position:relative; }
+  :focus-visible { outline:3px solid var(--accent); outline-offset:3px; }
   .container { max-width:760px; margin:0 auto; padding:2.5rem 1.5rem 4rem; }
-  header.top { padding:1rem 0; border-bottom:1px solid var(--border);
-    background:rgba(250,249,247,0.9); backdrop-filter:blur(10px); }
-  header.top .container { padding:0 1.5rem; display:flex; justify-content:space-between;
-    align-items:center; }
-  .logo { font-family:'DM Serif Display',Georgia,serif; font-size:1.25rem; color:var(--text);
-    text-decoration:none; }
-  .logo span { color:var(--accent); }
-  .lang-switch a { color:var(--text-muted); text-decoration:none; font-size:0.875rem;
-    padding:0.375rem 0.75rem; border:1px solid var(--border); border-radius:4px;
-    background:var(--surface); }
-  .lang-switch a:hover { color:var(--text); }
-  h1 { font-family:'DM Serif Display',Georgia,serif; font-size:2.25rem;
-    line-height:1.2; margin-bottom:1rem; letter-spacing:-0.01em; }
-  h2 { font-size:1.35rem; margin:2.25rem 0 0.75rem; color:var(--text); }
+  header.top { background:var(--navy); }
+  header.top .container { padding:0 1.5rem; min-height:64px; display:flex;
+    justify-content:space-between; align-items:center; }
+  header.top :focus-visible { outline-color:var(--turq); }
+  .logo { font-family:'Outfit','DM Sans',sans-serif; font-weight:700; font-size:1.55rem;
+    letter-spacing:-0.035em; color:#ffffff; text-decoration:none; text-transform:lowercase; }
+  .logo span { color:#ffffff; }
+  .logo::after { content:'.'; color:var(--coral); }
+  .lang-switch a { color:#d6dcf0; text-decoration:none; font-size:0.9rem; font-weight:700;
+    display:inline-flex; align-items:center; justify-content:center; min-width:44px;
+    min-height:44px; }
+  .lang-switch a:hover { color:#ffffff; }
+  h1 { font-family:'Outfit','DM Sans',sans-serif; font-weight:700; font-size:2.35rem;
+    line-height:1.1; margin-bottom:1rem; letter-spacing:-0.02em; }
+  h2 { font-family:'Outfit','DM Sans',sans-serif; font-weight:700; font-size:1.45rem;
+    letter-spacing:-0.01em; margin:2.25rem 0 0.75rem; color:var(--text); }
   p { margin-bottom:1rem; color:var(--text-muted); }
   ul { margin:0 0 1.5rem 1.25rem; color:var(--text-muted); }
   ul li { margin-bottom:0.5rem; }
-  a { color:var(--accent); }
-  .cta { display:inline-block; margin-top:1.5rem; padding:0.75rem 1.5rem;
-    background:var(--accent); color:#fff; text-decoration:none; border-radius:6px;
-    font-weight:500; }
-  .cta:hover { opacity:0.92; }
+  a { color:var(--accent); text-underline-offset:3px; }
+  .cta { display:inline-block; margin-top:1.5rem; padding:0.8rem 1.5rem;
+    background:var(--coral); color:#000059; text-decoration:none; border-radius:10px;
+    font-weight:700; }
+  .cta:hover { background:#ff6b6b; }
   footer { margin-top:3rem; padding-top:1.5rem; border-top:1px solid var(--border);
     font-size:0.85rem; color:var(--text-muted); }
   .intro { font-size:1.075rem; color:var(--text); }
@@ -3291,24 +3297,24 @@ no complex onboarding.</p>
 
 _EU_PAGE_EXTRA_CSS = """
   .hero { padding:2.5rem 0 1.5rem; }
-  .eyebrow { display:inline-block; font-size:0.75rem; text-transform:uppercase;
-    letter-spacing:0.08em; color:var(--accent); font-weight:700;
+  .eyebrow { display:inline-block; font-size:0.85rem; color:#000059; font-weight:700;
+    background:var(--turq); border-radius:999px; padding:0.15rem 0.8rem;
     margin-bottom:0.75rem; }
-  h1 .accent { color:var(--accent); }
+  h1 .accent { color:var(--text); }
   .compare { width:100%; border-collapse:collapse; margin:1.5rem 0 2rem;
-    font-size:0.95rem; background:var(--surface); border:1px solid var(--border);
+    font-size:0.95rem; background:var(--bg); border:1px solid var(--border);
     border-radius:6px; overflow:hidden; }
   .compare th, .compare td { padding:0.75rem 0.9rem; text-align:left;
     border-bottom:1px solid var(--border); vertical-align:top; }
-  .compare th { background:#f4f1ec; font-weight:600; color:var(--text);
+  .compare th { background:var(--surface); font-weight:700; color:var(--text);
     font-size:0.85rem; }
   .compare td:first-child { font-weight:500; color:var(--text); white-space:nowrap; }
-  .compare td strong { color:var(--accent); }
-  .callout { background:#ecfdf5; border-left:4px solid var(--accent);
-    padding:1rem 1.25rem; margin:1.5rem 0; border-radius:0 6px 6px 0; }
-  .callout p { margin:0; color:var(--text); }
+  .compare td strong { color:var(--text); }
+  .callout { background:var(--peach); padding:1rem 1.25rem; margin:1.5rem 0;
+    border-radius:14px; }
+  .callout p, .callout a, .callout strong { margin:0; color:#000059; }
   .press-angles { background:var(--surface); border:1px solid var(--border);
-    padding:1.25rem 1.5rem; border-radius:6px; margin:1.5rem 0; }
+    padding:1.25rem 1.5rem; border-radius:14px; margin:1.5rem 0; }
   .press-angles h3 { font-size:1rem; margin-bottom:0.5rem; }
   .press-angles p { font-size:0.9rem; margin-bottom:0.5rem; }
 """
