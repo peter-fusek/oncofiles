@@ -3058,7 +3058,7 @@
         row.appendChild(label);
 
         var barBg = document.createElement('div');
-        barBg.style.cssText = 'flex:1;height:14px;background:var(--bg);border-radius:7px;overflow:hidden';
+        barBg.style.cssText = 'flex:1;height:14px;background:var(--border);border-radius:7px;overflow:hidden';
         var bar = document.createElement('div');
         bar.style.cssText = 'height:100%;border-radius:7px;background:var(--purple);transition:width 0.3s';
         bar.style.width = ((v.count / maxCalls) * 100) + '%';
