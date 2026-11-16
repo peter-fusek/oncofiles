@@ -40,6 +40,11 @@ async def enhance_documents(
         patient_slug: Optional — explicit patient slug (e.g. 'mattias-cesnak'). Required
             in stateless HTTP contexts (#429) where select_patient does not persist.
     """
+    # #852: legacy trigger, admin-only in every ONBOARDING_MODE until #853.
+    from oncofiles.onboarding_gate import mcp_legacy_refusal
+
+    if (refused := mcp_legacy_refusal("enhance_documents")) is not None:
+        return refused
     if (disabled := _cloud_ai_disabled_response()) is not None:  # #618
         return disabled
     from oncofiles.sync import enhance_documents as _enhance_documents
@@ -709,6 +714,11 @@ async def detect_and_clone_vaccinations(
             touching the DB or GDrive.
         patient_slug: Optional — explicit patient slug (#429).
     """
+    # #852: legacy trigger, admin-only in every ONBOARDING_MODE until #853.
+    from oncofiles.onboarding_gate import mcp_legacy_refusal
+
+    if (refused := mcp_legacy_refusal("detect_and_clone_vaccinations")) is not None:
+        return refused
     import json as _json
     import re
     import uuid as _uuid

@@ -451,6 +451,7 @@
         userEl.textContent = name || email;
       }
       loadPatients().then(function() { refresh(); });
+      loadOnboardingStatus();
       if (autoRefreshTimer) clearInterval(autoRefreshTimer);
       autoRefreshTimer = setInterval(refresh, 60000);
     }
@@ -1076,6 +1077,7 @@
       // Open wizard Step 2 directly for the current patient (skip patient creation)
       var pid = document.getElementById('patient-select').value;
       if (!pid) return;
+      if (onboardingBlocked()) { showOnboardingClosed(null); return; }
       wizardPatientId = pid;
       wizardPatientUuid = '';
       wizardBearerToken = '';
@@ -1108,6 +1110,7 @@
     }
 
     function showOnboarding() {
+      if (onboardingBlocked()) { showOnboardingClosed(null); return; }
       wizardPatientId = '';
       wizardPatientUuid = '';
       wizardBearerToken = '';
@@ -1134,6 +1137,54 @@
 
     function hideOnboarding() {
       document.getElementById('wizard-overlay').classList.remove('active');
+    }
+
+    // #852: server-side onboarding gate. /api/onboarding-status tells this
+    // caller the mode and whether it may create a patient / connect Drive /
+    // set a folder; when not, a waitlist notice replaces the wizard. The
+    // server enforces the same rule (403 onboarding_closed), this only spares
+    // the user a failing wizard. Unknown (fetch failed) = let the server decide.
+    var onboardingStatus = null;
+
+    async function loadOnboardingStatus() {
+      if (window.DEMO_MODE) return;
+      try {
+        var resp = await fetch('/api/onboarding-status', { headers: { 'Authorization': authHeader() } });
+        if (resp.ok) onboardingStatus = await resp.json();
+      } catch (e) { /* keep null: the server still enforces the gate */ }
+    }
+
+    function onboardingBlocked() {
+      return !!(onboardingStatus && onboardingStatus.allowed === false);
+    }
+
+    // A refusal body from the server: {error, message_sk, message_en, waitlist_url}.
+    function isGateRefusal(resp, data) {
+      return resp.status === 403 && data &&
+        (data.error === 'onboarding_closed' || data.error === 'legacy_sync_admin_only');
+    }
+
+    function gateRefusalText(data) {
+      if (data && data.message_sk && data.message_en) {
+        return dashLang === 'sk' ? data.message_sk : data.message_en;
+      }
+      return (data && data.error) || 'Error';
+    }
+
+    function showOnboardingClosed(data) {
+      var text = document.getElementById('onboarding-closed-text');
+      if (data && data.message_sk && data.message_en) {
+        setI18n(text, data.message_sk, data.message_en);
+      }
+      var link = document.getElementById('onboarding-closed-waitlist');
+      var url = (data && data.waitlist_url) || (onboardingStatus && onboardingStatus.waitlist_url);
+      if (url && /^\/(?!\/)/.test(url)) link.setAttribute('href', url);  // same-origin path only
+      hideOnboarding();
+      document.getElementById('onboarding-closed-overlay').classList.add('active');
+    }
+
+    function hideOnboardingClosed() {
+      document.getElementById('onboarding-closed-overlay').classList.remove('active');
     }
 
     function updateWizardDots() {
@@ -1218,6 +1269,12 @@
           resp = await doCreate();
         }
         var data = await resp.json();
+        if (isGateRefusal(resp, data)) {
+          btn.disabled = false;
+          wizardResetCreateBtn(btn);
+          showOnboardingClosed(data);
+          return;
+        }
         if (resp.status === 409) {
           errEl.textContent = dashLang === 'sk'
             ? 'Tento pacient už existuje. Zvoľte iné ID.'
@@ -1555,6 +1612,11 @@
           body: JSON.stringify(body)
         });
         var data = await resp.json();
+        if (isGateRefusal(resp, data)) {
+          unlock();
+          showOnboardingClosed(data);
+          return;
+        }
         if (resp.status === 409 && data.code === 'container_folder') {
           // Server-side refusal (e.g. a pasted link the browser knows nothing about).
           wizardFolderAskConfirm(body, data);
@@ -1617,7 +1679,9 @@
         });
         var data = await resp.json();
         if (!resp.ok) {
-          statusEl.textContent = 'Sync issue: ' + (data.error || 'unknown error');
+          statusEl.textContent = isGateRefusal(resp, data)
+            ? gateRefusalText(data)
+            : 'Sync issue: ' + (data.error || 'unknown error');
           statusEl.style.color = 'var(--amber)';
           btn.disabled = false;
           // Still allow proceeding
@@ -2053,7 +2117,7 @@
           setTimeout(function() { btn.textContent = origText; btn.disabled = false; refresh(); }, 1500);
         } else {
           var data = await resp.json();
-          btn.textContent = data.error || 'Error';
+          btn.textContent = isGateRefusal(resp, data) ? gateRefusalText(data) : (data.error || 'Error');
           setTimeout(function() { btn.textContent = origText; btn.disabled = false; }, 3000);
         }
       } catch (e) {
