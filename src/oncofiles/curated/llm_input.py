@@ -20,6 +20,8 @@ import json
 import re
 from dataclasses import dataclass
 
+from oncofiles.curated.ocr_markers import strip_charts_pages
+
 # ── raw genotype data: never sent to the model (#815 infra review, P0) ──
 # A raw export (CSV / TSV / plain text / VCF) of genetics data holds thousands
 # of genotype calls; it is excluded in code BEFORE any model call, for every
@@ -116,13 +118,17 @@ async def load_for_llm(db, pid: str, doc: dict) -> list[tuple[int, str]] | Exclu
     The document row is checked first (flag, raw export by type / name /
     category / metadata), so an excluded row's pages are never even read;
     then the page text (rsIDs in a raw export). The ONLY reader of
-    ``document_pages`` for a model call (locked by test)."""
+    ``document_pages`` for a model call (locked by test).
+
+    ``[chart: …]`` blocks (#609) are replaced by ``[chart]`` here: chart axis
+    ticks are never data, so neither the extractors nor the verifiers (which
+    check evidence against this same page text) ever see them."""
     if reason := extraction_exclusion(doc):
         return Excluded(reason)
     pages = await _pages(db, pid, doc)
     if reason := extraction_exclusion(doc, pages):
         return Excluded(reason)
-    return pages
+    return strip_charts_pages(pages)
 
 
 async def reocr_exclusion(db, pid: str, doc: dict) -> str | None:
