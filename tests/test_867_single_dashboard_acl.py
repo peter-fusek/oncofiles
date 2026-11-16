@@ -87,7 +87,7 @@ def _request(
     request.query_params = {"patient_id": patient_id} if patient_id is not None else {}
     request.path_params = {}
     request.headers = {"authorization": auth}
-    request.app.state.fastmcp_server._lifespan_result = {"db": db}
+    request.app.state.fastmcp_server._lifespan_result = {"db": db, "files": None}
     request.json = AsyncMock(return_value=body or {})
     return request
 
@@ -123,10 +123,11 @@ async def test_caregiver_reads_own_patient_by_slug(acl_db, route):
 
 @pytest.mark.parametrize("route", ["api_patient_context", "api_patient_budget"])
 @pytest.mark.parametrize("requested", [B_UUID, "acl867-b", "no-such-patient"])
-async def test_foreign_or_unknown_patient_is_403_not_own_fallback(acl_db, route, requested):
+async def test_foreign_or_unknown_patient_is_404_not_own_fallback(acl_db, route, requested):
     with _caller(A_EMAIL):
         resp = await getattr(server, route)(_request(acl_db, requested))
-    assert resp.status_code == 403
+    assert resp.status_code == 404
+    assert json.loads(resp.body) == {"error": "not_found"}
     assert A_UUID not in resp.body.decode()
 
 
@@ -156,13 +157,13 @@ async def test_admin_and_bearer_may_read_named_patient(acl_db, route):
 
 @pytest.mark.parametrize("route", ["api_patient_context", "api_patient_budget"])
 async def test_acl_db_error_refuses(acl_db, route):
-    """Fail closed (#531) — today a 403; a typed 503 result is a follow-up."""
+    """Fail closed (#531) — the not-found answer; a typed 503 result is a follow-up."""
     with (
         _caller(A_EMAIL),
         patch.object(acl_db, "list_patients", AsyncMock(side_effect=RuntimeError("db"))),
     ):
         resp = await getattr(server, route)(_request(acl_db, B_UUID))
-    assert resp.status_code == 403
+    assert resp.status_code == 404
 
 
 async def test_named_patient_refusal_variant_never_falls_back(acl_db):
@@ -255,10 +256,10 @@ async def test_body_helper_resolves_slug_and_archived_uuid(acl_db):
     assert pid is None and err.status_code == 404
 
 
-async def test_body_helper_foreign_patient_is_403(acl_db):
+async def test_body_helper_foreign_patient_is_not_found(acl_db):
     with _caller(A_EMAIL):
         pid, err = await server._dashboard_body_patient(_request(acl_db), acl_db, "acl867-b")
-    assert pid is None and err.status_code == 403
+    assert pid is None and err.status_code == 404
 
 
 async def test_patient_tokens_unknown_patient_mints_nothing(acl_db):
@@ -434,3 +435,126 @@ def test_no_unknown_patient_value_is_passed_on():
 def test_body_helper_runs_auth_check_itself():
     for fn in (server._require_body_patient_access, server._dashboard_body_patient):
         assert "_check_dashboard_auth" in _called_names(ast.parse(inspect.getsource(fn)))
+
+
+# ── No existence oracle (#590): unknown and foreign answer byte-identically ──
+
+UNKNOWN_SLUG = "acl867-nobody"
+UNKNOWN_UUID = "00000000-0000-4000-8000-0000000008ff"
+PAIRS = [(UNKNOWN_SLUG, "acl867-b"), (UNKNOWN_UUID, B_UUID)]
+
+
+def _assert_identical(r1, r2):
+    """Same status, same body bytes, same headers (content-type included)."""
+    assert r1.status_code == r2.status_code == 404
+    assert r1.body == r2.body
+    assert r1.headers.get("content-type") == r2.headers.get("content-type")
+    assert sorted(r1.raw_headers) == sorted(r2.raw_headers)
+
+
+@pytest.mark.parametrize("route", ["api_patient_context", "api_patient_budget"])
+@pytest.mark.parametrize(("unknown", "foreign"), PAIRS)
+async def test_oracle_context_and_budget(acl_db, route, unknown, foreign):
+    with _caller(A_EMAIL):
+        r_unknown = await getattr(server, route)(_request(acl_db, unknown))
+        r_foreign = await getattr(server, route)(_request(acl_db, foreign))
+    _assert_identical(r_unknown, r_foreign)
+
+
+@pytest.mark.parametrize(("unknown", "foreign"), PAIRS)
+async def test_oracle_doc_detail_named_patient(acl_db, unknown, foreign):
+    """The caller's OWN document under an unknown vs a foreign ?patient_id=."""
+    own_doc = str(await _doc_id(acl_db, "acl867-a-1"))
+    responses = []
+    for requested in (unknown, foreign):
+        request = _request(acl_db, requested)
+        request.path_params = {"doc_id": own_doc}
+        with _caller(A_EMAIL):
+            responses.append(await server.api_doc_detail(request))
+    _assert_identical(*responses)
+
+
+async def test_oracle_doc_detail_document_id(acl_db):
+    """A foreign document id vs an id that does not exist."""
+    foreign_doc = await _doc_id(acl_db, "acl867-b-1")
+    responses = []
+    for doc_id in (foreign_doc, 999_999):
+        request = _request(acl_db, "acl867-a")
+        request.path_params = {"doc_id": str(doc_id)}
+        with _caller(A_EMAIL):
+            responses.append(await server.api_doc_detail(request))
+    _assert_identical(*responses)
+
+
+async def test_oracle_body_helper(acl_db):
+    with _caller(A_EMAIL):
+        _, r_unknown = await server._dashboard_body_patient(_request(acl_db), acl_db, UNKNOWN_SLUG)
+        _, r_foreign = await server._dashboard_body_patient(_request(acl_db), acl_db, "acl867-b")
+    _assert_identical(r_unknown, r_foreign)
+
+
+@pytest.mark.parametrize(
+    "route",
+    [
+        "api_create_patient_token",
+        "api_create_share_link",
+        "api_sync_trigger",
+        "api_enhance_trigger",
+        "api_gdrive_set_folder",
+    ],
+)
+@pytest.mark.parametrize(("unknown", "foreign"), PAIRS)
+async def test_oracle_body_routes(acl_db, monkeypatch, route, unknown, foreign):
+    # Let the #852 gates through so the patient check itself is compared.
+    monkeypatch.setattr("oncofiles.config.ONBOARDING_MODE", "open")
+    responses = []
+    for requested in (unknown, foreign):
+        body = {"patient_id": requested, "folder_id": "synthetic-folder-867"}
+        with (
+            _caller(A_EMAIL),
+            patch.object(server, "_check_rate_limit", return_value=None),
+            patch.object(server, "_dashboard_legacy_refusal", return_value=None),
+            patch.object(server, "_dashboard_onboarding_refusal", return_value=None),
+        ):
+            responses.append(await getattr(server, route)(_request(acl_db, body=body)))
+    _assert_identical(*responses)
+    assert json.loads(responses[0].body) == {"error": "not_found"}
+
+
+def _oauth_request(db, token: str, requested: str):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        headers={},
+        cookies={"oncofiles_session": token},
+        query_params={"patient_id": requested},
+        path_params={"service": "drive"},
+        client=SimpleNamespace(host="203.0.113.7"),
+        app=SimpleNamespace(
+            state=SimpleNamespace(fastmcp_server=SimpleNamespace(_lifespan_result={"db": db}))
+        ),
+    )
+
+
+@pytest.mark.parametrize(("unknown", "foreign"), PAIRS)
+async def test_oracle_oauth_authorize(acl_db, monkeypatch, unknown, foreign):
+    """A non-admin dashboard session (cookie) starting a Google link."""
+    for mod in ("oncofiles.config", "oncofiles.oauth", "oncofiles.server"):
+        monkeypatch.setattr(f"{mod}.MCP_BEARER_TOKEN", "synthetic-operator-token")
+    monkeypatch.setattr(server, "MCP_TRANSPORT", "streamable-http")
+    monkeypatch.setattr("oncofiles.config.MCP_TRANSPORT", "streamable-http")
+    for mod in ("oncofiles.server", "oncofiles.oauth", "oncofiles.config"):
+        monkeypatch.setattr(f"{mod}.GOOGLE_OAUTH_CLIENT_ID", "synthetic-client.example.test")
+    monkeypatch.setattr("oncofiles.config.ONBOARDING_MODE", "open")
+    token = server._make_session_token(A_EMAIL)
+    responses = []
+    with (
+        patch.object(server, "_check_rate_limit", return_value=None),
+        patch.object(server, "_is_admin_email", return_value=False),
+    ):
+        for requested in (unknown, foreign):
+            responses.append(await server.oauth_authorize(_oauth_request(acl_db, token, requested)))
+        own = await server.oauth_authorize(_oauth_request(acl_db, token, "acl867-a"))
+    _assert_identical(*responses)
+    # Sanity: the caller's own patient still starts the link.
+    assert own.status_code in (302, 307)

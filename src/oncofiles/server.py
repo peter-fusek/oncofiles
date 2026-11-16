@@ -4459,9 +4459,10 @@ async def _dashboard_body_patient(
     """The single ACL path for dashboard routes with ``patient_id`` in the body (#867).
 
     Returns ``(patient_uuid, None)`` when the caller may act for the patient,
-    else ``(None, response)``: 401 unauthenticated, 404 unknown patient, 403
-    not the caregiver. Every refusal logs one line (caller hash, never the
-    e-mail) into the persistent app log.
+    else ``(None, response)``: 401 unauthenticated, otherwise the one
+    ``_patient_not_found()`` answer for an unknown patient AND for a patient
+    the caller may not act for (no existence oracle, #590). Only the log line
+    (caller hash, never the e-mail) says which.
     """
     auth_err = _check_dashboard_auth(request)
     if auth_err is not None:
@@ -4472,11 +4473,24 @@ async def _dashboard_body_patient(
             "patient-id body ACL: unknown patient caller=%s",
             _acl_caller_log_id(_get_dashboard_email(request)),
         )
-        return None, JSONResponse({"error": "Patient not found"}, status_code=404)
+        return None, _patient_not_found()
     acl_err = await _require_body_patient_access(request, db, patient_id)
     if acl_err is not None:
+        if acl_err.status_code in (403, 404):
+            # Logged as a denial inside _require_body_patient_access.
+            return None, _patient_not_found()
         return None, acl_err
     return patient_id, None
+
+
+def _patient_not_found() -> JSONResponse:
+    """The single answer for "unknown patient" and "not your patient" (#867, #590).
+
+    Byte-identical for both cases (status, body, headers), so a non-admin
+    caller cannot probe which patient ids or slugs exist. Logs and the #868
+    audit may tell the cases apart; responses never do.
+    """
+    return JSONResponse({"error": "not_found"}, status_code=404)
 
 
 def _check_dashboard_auth(request: Request) -> JSONResponse | None:
@@ -4668,16 +4682,16 @@ async def _dashboard_patient_or_refusal(request: Request) -> tuple[str, JSONResp
     """``_get_dashboard_patient_id`` for routes that refuse instead of falling back (#867).
 
     Same ACL, without the "own first patient" fallback for a named patient:
-    a sentinel answer becomes 403 when the caller named a patient (foreign,
-    unknown, or the check failed closed) and 400 when they named none and
-    have no patient. A typed result that tells a DB error apart (for a 503,
-    the #469 contract) is a follow-up; today that case is a 403 too.
+    a sentinel answer becomes ``_patient_not_found()`` when the caller named a
+    patient (foreign and unknown alike, #590; also when the check failed
+    closed) and 400 when they named none and have no patient. A typed result
+    that tells a DB error apart (for a 503, the #469 contract) is a follow-up.
     """
     pid = await _get_dashboard_patient_id(request, fallback_to_own=False)
     if pid != NO_PATIENT_ACCESS_SENTINEL:
         return pid, None
     if request.query_params.get("patient_id", "").strip():
-        return pid, JSONResponse({"error": "forbidden"}, status_code=403)
+        return pid, _patient_not_found()
     return pid, JSONResponse({"error": "patient_id required"}, status_code=400)
 
 
@@ -5260,13 +5274,17 @@ async def api_doc_detail(request: Request) -> JSONResponse:
             return JSONResponse({"error": "invalid doc_id"}, status_code=400)
 
         db: Database = request.app.state.fastmcp_server._lifespan_result["db"]
-        patient_id = await _get_dashboard_patient_id(request)
+        # #867: no own-patient fallback for a named patient, so an unknown and
+        # a foreign ?patient_id= give the same answer (#590).
+        patient_id = await _get_dashboard_patient_id(request, fallback_to_own=False)
 
-        # #867: scoped in SQL (the #499 pattern) — a foreign id, a soft-deleted
-        # document and the sentinel all answer the same 404.
+        # Scoped in SQL (the #499 pattern): a foreign id, a soft-deleted
+        # document, an unknown or foreign patient all answer the same 404.
+        if patient_id == NO_PATIENT_ACCESS_SENTINEL:
+            return _patient_not_found()
         doc = await db.get_document(doc_id, patient_id=patient_id)
         if doc is None or doc.deleted_at is not None:
-            return JSONResponse({"error": "document not found"}, status_code=404)
+            return _patient_not_found()
 
         gdrive_id = doc.gdrive_id or ""
         gdrive_url = f"https://drive.google.com/file/d/{gdrive_id}/view" if gdrive_id else ""
@@ -7490,16 +7508,18 @@ async def oauth_authorize(request: Request) -> JSONResponse:
     except Exception:
         logger.error("OAuth connect: patient resolution failed for '%s'", raw_pid, exc_info=True)
         return JSONResponse({"error": "internal error"}, status_code=500)
+    # #867/#590: unknown and not-your-patient give the same answer; only the
+    # log line says which.
     if patient is None:
-        return JSONResponse({"error": "patient not found"}, status_code=404)
+        logger.warning("OAuth connect: unknown patient caller=%s", _acl_caller_log_id(email))
+        return _patient_not_found()
     if not (
         bearer_ok
         or _is_admin_email(email)
         or _email_matches_caregiver(email, patient.caregiver_email)
     ):
-        return JSONResponse(
-            {"error": "forbidden: not authorized for this patient"}, status_code=403
-        )
+        logger.warning("OAuth connect: not caregiver caller=%s", _acl_caller_log_id(email))
+        return _patient_not_found()
     # #852 onboarding gate: a FIRST Google link for this patient needs a caller
     # the gate admits. A patient that already has a link may re-consent.
     from oncofiles import onboarding_gate

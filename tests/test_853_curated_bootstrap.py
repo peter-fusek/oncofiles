@@ -814,7 +814,7 @@ async def test_endpoint_other_caregiver_cannot_bootstrap_someone_elses_patient()
     ep = _Endpoint(email="stranger@example.test")
     ep.real_acl = True
     status, _ = await ep.call({"folder_id": FOLDER_ID})
-    assert status == 403
+    assert status == 404  # #867: same answer as an unknown patient (#590)
     ep.bootstrap.assert_not_called()
     ep.plan.assert_not_called()
     ep.assert_nothing_persisted()
