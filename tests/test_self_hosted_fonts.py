@@ -104,7 +104,7 @@ def _font_faces() -> list[str]:
 
 def test_every_font_face_is_swap_with_a_unicode_range():
     faces = _font_faces()
-    assert len(faces) == 8  # 4 faces x (latin, latin-ext)
+    assert len(faces) == 12  # 6 faces x (latin, latin-ext)
     for face in faces:
         assert "font-display: swap;" in face
         assert "unicode-range:" in face
@@ -114,17 +114,21 @@ def test_every_font_face_is_swap_with_a_unicode_range():
 def test_each_face_ships_latin_and_latin_ext():
     """Slovak letters (č, ľ, ť, ž …) live in latin-ext; without it the
     browser falls back to a system font mid-word."""
-    by_face: dict[tuple[str, str], list[str]] = {}
+    by_face: dict[tuple[str, str, str], list[str]] = {}
     for face in _font_faces():
         family = re.search(r"font-family: '([^']+)'", face).group(1)
         style = re.search(r"font-style: (\w+)", face).group(1)
+        weight = re.search(r"font-weight: ([\d ]+);", face).group(1)
         ranges = re.search(r"unicode-range: ([^;]+);", face).group(1)
-        by_face.setdefault((family, style), []).append(ranges)
+        by_face.setdefault((family, style, weight), []).append(ranges)
     assert set(by_face) == {
-        ("DM Sans", "normal"),
-        ("DM Sans", "italic"),
-        ("DM Serif Display", "normal"),
-        ("IBM Plex Sans", "normal"),
+        ("DM Sans", "normal", "400 800"),
+        ("DM Sans", "italic", "400"),
+        ("DM Serif Display", "normal", "400"),
+        ("IBM Plex Sans", "normal", "400 700"),
+        # #849: display face of the landing and the public pages
+        ("Outfit", "normal", "300"),
+        ("Outfit", "normal", "700"),
     }
     for key, ranges in by_face.items():
         assert len(ranges) == 2, key
@@ -157,6 +161,7 @@ def test_ofl_licences_ship_with_the_fonts():
         "OFL-DMSerifDisplay.txt",
         "OFL-IBMPlexSans.txt",
         "OFL-BricolageGrotesque.txt",
+        "OFL-Outfit.txt",
     ):
         text = (FONTS_DIR / name).read_text()
         assert "SIL Open Font License, Version 1.1" in text

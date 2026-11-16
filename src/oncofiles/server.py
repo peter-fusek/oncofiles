@@ -2925,23 +2925,31 @@ async def llms_txt(request: Request) -> HTMLResponse:
     tools_count = _count_tools()
     return HTMLResponse(
         f"# Oncofiles\n"
-        f"> Patient-side MCP server for oncology document management\n"
+        f"> Medical records where every number has a source\n"
         f"\n"
         f"## About\n"
-        f"Oncofiles is an open-source MCP (Model Context Protocol) server that helps\n"
-        f"cancer patients and caregivers organize, search, and understand their medical\n"
-        f"documents using AI. It provides {tools_count} tools for document "
-        f"management, lab tracking,\n"
-        f"clinical trial search, and treatment event logging.\n"
+        f"Oncofiles is an open-source MCP (Model Context Protocol) server for cancer\n"
+        f"patients, caregivers and people who want their everyday findings in order.\n"
+        f"It reads the documents in the patient's own Google Drive folder, files them\n"
+        f"and remembers where every value came from. It provides {tools_count} tools to an\n"
+        f"AI assistant. It does not replace a doctor, does not diagnose and does not\n"
+        f"propose treatment.\n"
         f"\n"
         f"## Key Features\n"
-        f"- 14 medical document categories (labs, imaging, pathology, genetics, etc.)\n"
-        f"- AI-powered OCR, summaries, tags, and structured metadata extraction\n"
-        f"- Bidirectional Google Drive sync with auto-rename and folder organization\n"
-        f"- Lab value tracking with trends, reference ranges, and pre-cycle safety checks\n"
-        f"- Pipeline dashboard with Google Sign-In authentication\n"
-        f"- PubMed and ClinicalTrials.gov search integration\n"
-        f"- Treatment event and research entry management\n"
+        f"- Documents stay in the patient's own Google Drive: originals under standard\n"
+        f"  names and a .md transcript next to each file. The folder stays readable\n"
+        f"  without Oncofiles (no lock-in). Nothing is deleted, at most moved to the trash.\n"
+        f"- OCR and classification run on a local model on our own server in the EU\n"
+        f"  (Slovakia). Document content is not sent to a cloud model in background\n"
+        f"  processing.\n"
+        f"- Every lab value carries its sample date, source document, page and line, and a\n"
+        f"  verification state: machine-verified, unverified or human-verified.\n"
+        f"- FHIR R4: read, search and export of a patient's record.\n"
+        f"- Several patients per account; a caregiver sees only the patients assigned\n"
+        f"  to them.\n"
+        f"- Free up to 500 documents per patient.\n"
+        f"- Connecting your own Google Drive opens to new users in November 2026\n"
+        f"  (waitlist: https://oncofiles.com/#join).\n"
         f"\n"
         f"## Not only oncology\n"
         f"Oncofiles also has a general (non-oncology) patient profile. Use case: from four\n"
@@ -2957,18 +2965,23 @@ async def llms_txt(request: Request) -> HTMLResponse:
         f"- Version: {VERSION}\n"
         f"- Protocol: MCP (Model Context Protocol) via FastMCP\n"
         f"- Language: Python 3.12+\n"
-        f"- Database: SQLite (libSQL), self-hosted in the EU (Slovakia)\n"
+        f"- Database: SQLite on our own server in the EU (Slovakia)\n"
         f"- License: MIT\n"
         f"- Repository: https://github.com/peter-fusek/oncofiles\n"
         f"\n"
         f"## Integration\n"
-        f"Oncofiles works with Claude and any MCP-compatible AI assistant.\n"
-        f"Connect via streamable-http transport at the /mcp endpoint.\n"
-        f"Authentication requires a bearer token (MCP_BEARER_TOKEN).\n"
+        f"Claude works today through MCP. ChatGPT and Gemini CLI are marked coming soon:\n"
+        f"their connection has not been re-verified on the new server yet.\n"
+        f"Connect via streamable-http transport at https://oncofiles.com/mcp.\n"
+        f"Claude.ai signs in with Google; other MCP clients use an access token.\n"
+        f"Only what the user asks about inside the assistant goes to that assistant.\n"
         f"\n"
         f"## Links\n"
         f"- Homepage: https://oncofiles.com\n"
-        f"- Dashboard: https://oncofiles.com/dashboard\n"
+        f"- Demo with an invented patient: https://oncofiles.com/demo\n"
+        f"- Topic page: https://oncofiles.com/oncology\n"
+        f"- Sign in: https://oncofiles.com/dashboard\n"
+        f"- Slovak version: https://oncofiles.com/llms-sk.txt\n"
         f"- Health: https://oncofiles.com/health\n"
         f"- GitHub: https://github.com/peter-fusek/oncofiles\n",
         media_type="text/plain; charset=utf-8",
@@ -2981,20 +2994,19 @@ async def llms_sk_txt(request: Request) -> HTMLResponse:
     tools_count = _count_tools()
     return HTMLResponse(
         f"# Oncofiles\n"
-        f"> Pacientsky MCP server pre správu onkologickej dokumentácie\n"
+        f"> Zdravotné záznamy, v ktorých má každé číslo svoj zdroj\n"
         f"\n"
         f"## O projekte\n"
-        f"Oncofiles je open-source MCP (Model Context Protocol) server, ktorý pomáha\n"
-        f"onkologickým pacientom a opatrovateľom organizovať, vyhľadávať a rozumieť\n"
-        f"vlastnej zdravotnej dokumentácii pomocou AI. Poskytuje {tools_count} nástrojov\n"
-        f"pre správu dokumentov, sledovanie laboratórnych hodnôt, vyhľadávanie\n"
-        f"klinických štúdií a evidenciu liečebných udalostí.\n"
+        f"Oncofiles je open-source MCP (Model Context Protocol) server pre onkologických\n"
+        f"pacientov, opatrovateľov a ľudí, ktorí chcú mať poriadok v bežných nálezoch.\n"
+        f"Prečíta dokumenty v pacientovom vlastnom priečinku na Google Drive, zaradí ich\n"
+        f"a pri každej hodnote si pamätá, odkiaľ pochádza. AI asistentovi poskytuje\n"
+        f"{tools_count} nástrojov. Nenahrádza lekára, nediagnostikuje a nenavrhuje liečbu.\n"
         f"\n"
         f"## Pre koho\n"
-        f"- Onkologickí pacienti a ich rodiny na Slovensku, v ČR a EÚ\n"
+        f"- Onkologickí pacienti a ich rodiny\n"
         f"- Opatrovatelia, ktorí vedú dokumentáciu za blízkeho\n"
-        f"- Lekári, ktorí dostanú od pacienta zrozumiteľný sumár histórie\n"
-        f"- Pacienti hľadajúci druhý názor cez AI (Claude, ChatGPT)\n"
+        f"- Ľudia, ktorí chcú rozumieť vlastným bežným nálezom\n"
         f"\n"
         f"## Nielen onkológia\n"
         f"Oncofiles má aj všeobecný (neonkologický) profil pacienta. Príklad použitia: zo\n"
@@ -3008,52 +3020,53 @@ async def llms_sk_txt(request: Request) -> HTMLResponse:
         f"- Interaktívny atlas: https://oncofiles.com/movement-atlas\n"
         f"\n"
         f"## Kľúčové funkcie\n"
-        f"- 18 kategórií zdravotných dokumentov (laboratóriá, zobrazovacie vyšetrenia,\n"
-        f"  patológia, genetika zárodočná aj somatická, operácie, prepúšťacie správy,\n"
-        f"  recepty, odporúčania, chemoterapeutické hárky, očkovania, stomatológia,\n"
-        f"  preventívna starostlivosť a ďalšie)\n"
-        f"- AI-riadené OCR, sumáre, tagy a extrakcia štruktúrovaných metadát\n"
-        f"- Obojsmerná synchronizácia s Google Drive, automatické premenovanie súborov\n"
-        f"- Sledovanie laboratórnych trendov, referenčných rozsahov a bezpečnostných\n"
-        f"  kontrol pred chemoterapeutickým cyklom\n"
-        f"- Pipeline dashboard s Google Sign-In prihlásením\n"
-        f"- Vyhľadávanie v PubMed a ClinicalTrials.gov\n"
-        f"- Evidencia liečebných udalostí a výskumných poznámok\n"
+        f"- Dokumenty zostávajú vo vlastnom Google Drive pacienta: originály so\n"
+        f"  štandardnými názvami a vedľa každého súboru prepis .md. Priečinok sa dá čítať\n"
+        f"  aj bez Oncofiles (žiadne viazanie). Nič sa nemaže, nanajvýš sa presunie do koša.\n"
+        f"- OCR a zatriedenie bežia na lokálnom modeli na našom serveri v EÚ (Slovensko).\n"
+        f"  Obsah dokumentov sa pri spracovaní na pozadí neposiela do cloudového modelu.\n"
+        f"- Každá laboratórna hodnota má dátum odberu, zdrojový dokument, stranu a riadok\n"
+        f"  a stav overenia: overené strojom, neoverené alebo overené človekom.\n"
+        f"- FHIR R4: čítanie, vyhľadávanie a export záznamov pacienta.\n"
+        f"- Viac pacientov pod jedným účtom; opatrovateľ vidí len pacientov, ku ktorým\n"
+        f"  má prístup.\n"
+        f"- Zadarmo do 500 dokumentov na pacienta.\n"
+        f"- Pripájanie vlastného Google Drive otvárame pre nových používateľov\n"
+        f"  v novembri 2026 (zoznam záujemcov: https://oncofiles.com/#join).\n"
         f"\n"
         f"## Ako sa líši od štátnych systémov (eZdravie / OnkoAsist / NCZI)\n"
-        f"- Oncofiles je pacientsky nástroj — dokumenty ostávajú vo vašom Google Drive,\n"
-        f"  nie na centrálnom serveri štátu.\n"
-        f"- Funguje s akýmkoľvek AI asistentom cez MCP protokol — Claude, ChatGPT,\n"
-        f"  lokálne LLM.\n"
-        f"- Open-source pod licenciou MIT — kód je verejne auditovateľný.\n"
-        f"- Bez byrokratickej registrácie; stačí Google účet.\n"
+        f"- Oncofiles je pacientsky nástroj: originály dokumentov zostávajú vo vašom\n"
+        f"  Google Drive.\n"
+        f"- Open-source pod licenciou MIT: kód je verejne auditovateľný.\n"
         f"- Dopĺňa, nenahrádza, oficiálnu zdravotnú dokumentáciu.\n"
         f"\n"
         f"## Bezpečnosť a súkromie\n"
-        f"- Súbory ostávajú vo Vašom Google Drive, Oncofiles k nim pristupuje metadátovo.\n"
-        f"- Izolácia pacientov na úrovni databázy (unikátne bearer tokeny).\n"
-        f"- Infraštruktúra: vlastný server na Slovensku (EÚ), Anthropic Claude (SOC 2,\n"
-        f"  ISO 27001), Google Drive (SOC 2, ISO 27001).\n"
-        f"- Šifrovaný prenos, žiadny predaj údajov tretím stranám.\n"
+        f"- Originály a prepisy sú vo vašom Google Drive. Index dokumentov, prečítaný\n"
+        f"  text a hodnoty s ich pôvodom sú v databáze na našom serveri v EÚ (Slovensko),\n"
+        f"  na šifrovanom disku.\n"
+        f"- Pacienti sú v databáze od seba oddelení a každý prístup sa overuje.\n"
+        f"- Do AI asistenta ide len to, na čo sa v ňom používateľ sám spýta.\n"
         f"\n"
         f"## Technické detaily\n"
         f"- Verzia: {VERSION}\n"
         f"- Protokol: MCP (Model Context Protocol) cez FastMCP\n"
         f"- Jazyk: Python 3.12+\n"
-        f"- Databáza: SQLite (libSQL), vlastný server v EÚ (Slovensko)\n"
+        f"- Databáza: SQLite na našom serveri v EÚ (Slovensko)\n"
         f"- Licencia: MIT\n"
         f"- Repozitár: https://github.com/peter-fusek/oncofiles\n"
         f"\n"
         f"## Integrácia\n"
-        f"Oncofiles funguje s Claude a akýmkoľvek MCP-kompatibilným AI asistentom.\n"
-        f"Pripojenie cez streamable-http transport na /mcp endpoint.\n"
-        f"Autentifikácia vyžaduje bearer token (MCP_BEARER_TOKEN).\n"
+        f"Claude funguje už dnes cez MCP. ChatGPT a Gemini CLI označujeme „pripravujeme“:\n"
+        f"ich spojenie sme na novom serveri ešte znova neoverili.\n"
+        f"Pripojenie cez streamable-http transport na https://oncofiles.com/mcp.\n"
+        f"Claude.ai sa prihlasuje cez Google; ostatné MCP klienty používajú prístupový token.\n"
         f"\n"
         f"## Odkazy\n"
         f"- Domovská stránka: https://oncofiles.com\n"
+        f"- Ukážka s vymyslenou pacientkou: https://oncofiles.com/demo\n"
         f"- Téma (SK): https://oncofiles.com/onkologia\n"
         f"- Téma (EN): https://oncofiles.com/oncology\n"
-        f"- Dashboard: https://oncofiles.com/dashboard\n"
+        f"- Prihlásenie: https://oncofiles.com/dashboard\n"
         f"- Anglická verzia: https://oncofiles.com/llms.txt\n"
         f"- GitHub: https://github.com/peter-fusek/oncofiles\n",
         media_type="text/plain; charset=utf-8",
@@ -3063,36 +3076,42 @@ async def llms_sk_txt(request: Request) -> HTMLResponse:
 # ── SEO topic pages: /onkologia (SK) + /oncology (EN) ────────────────────────
 
 _TOPIC_PAGE_CSS = """
-  :root { --bg:#faf9f7; --text:#1e293b; --text-muted:#556270; --accent:#0d9488;
-    --border:#d5cfc5; --surface:#ffffff; }
+  :root { color-scheme:light dark; --bg:#ffffff; --text:#000059; --text-muted:#475569;
+    --accent:#000059; --border:#cbd5e1; --surface:#f8fafc; --navy:#000059; --coral:#ff4646;
+    --turq:#33d6d6; --peach:#ffd0a8; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#000040; --text:#ffffff;
+    --text-muted:#c9d1ee; --accent:#ffffff; --border:#2e2e90; --surface:#0c0c66; } }
   * { margin:0; padding:0; box-sizing:border-box; }
   html { overflow-x:hidden; }
   body { font-family:'DM Sans',-apple-system,BlinkMacSystemFont,sans-serif;
     background:var(--bg); color:var(--text); line-height:1.65;
     overflow-x:hidden; position:relative; }
+  :focus-visible { outline:3px solid var(--accent); outline-offset:3px; }
   .container { max-width:760px; margin:0 auto; padding:2.5rem 1.5rem 4rem; }
-  header.top { padding:1rem 0; border-bottom:1px solid var(--border);
-    background:rgba(250,249,247,0.9); backdrop-filter:blur(10px); }
-  header.top .container { padding:0 1.5rem; display:flex; justify-content:space-between;
-    align-items:center; }
-  .logo { font-family:'DM Serif Display',Georgia,serif; font-size:1.25rem; color:var(--text);
-    text-decoration:none; }
-  .logo span { color:var(--accent); }
-  .lang-switch a { color:var(--text-muted); text-decoration:none; font-size:0.875rem;
-    padding:0.375rem 0.75rem; border:1px solid var(--border); border-radius:4px;
-    background:var(--surface); }
-  .lang-switch a:hover { color:var(--text); }
-  h1 { font-family:'DM Serif Display',Georgia,serif; font-size:2.25rem;
-    line-height:1.2; margin-bottom:1rem; letter-spacing:-0.01em; }
-  h2 { font-size:1.35rem; margin:2.25rem 0 0.75rem; color:var(--text); }
+  header.top { background:var(--navy); }
+  header.top .container { padding:0 1.5rem; min-height:64px; display:flex;
+    justify-content:space-between; align-items:center; }
+  header.top :focus-visible { outline-color:var(--turq); }
+  .logo { font-family:'Outfit','DM Sans',sans-serif; font-weight:700; font-size:1.55rem;
+    letter-spacing:-0.035em; color:#ffffff; text-decoration:none; text-transform:lowercase; }
+  .logo span { color:#ffffff; }
+  .logo::after { content:'.'; color:var(--coral); }
+  .lang-switch a { color:#d6dcf0; text-decoration:none; font-size:0.9rem; font-weight:700;
+    display:inline-flex; align-items:center; justify-content:center; min-width:44px;
+    min-height:44px; }
+  .lang-switch a:hover { color:#ffffff; }
+  h1 { font-family:'Outfit','DM Sans',sans-serif; font-weight:700; font-size:2.35rem;
+    line-height:1.1; margin-bottom:1rem; letter-spacing:-0.02em; }
+  h2 { font-family:'Outfit','DM Sans',sans-serif; font-weight:700; font-size:1.45rem;
+    letter-spacing:-0.01em; margin:2.25rem 0 0.75rem; color:var(--text); }
   p { margin-bottom:1rem; color:var(--text-muted); }
   ul { margin:0 0 1.5rem 1.25rem; color:var(--text-muted); }
   ul li { margin-bottom:0.5rem; }
-  a { color:var(--accent); }
-  .cta { display:inline-block; margin-top:1.5rem; padding:0.75rem 1.5rem;
-    background:var(--accent); color:#fff; text-decoration:none; border-radius:6px;
-    font-weight:500; }
-  .cta:hover { opacity:0.92; }
+  a { color:var(--accent); text-underline-offset:3px; }
+  .cta { display:inline-block; margin-top:1.5rem; padding:0.8rem 1.5rem;
+    background:var(--coral); color:#000059; text-decoration:none; border-radius:10px;
+    font-weight:700; }
+  .cta:hover { background:#ff6b6b; }
   footer { margin-top:3rem; padding-top:1.5rem; border-top:1px solid var(--border);
     font-size:0.85rem; color:var(--text-muted); }
   .intro { font-size:1.075rem; color:var(--text); }
@@ -3153,62 +3172,64 @@ async def onkologia_page(request: Request) -> HTMLResponse:
     """SK topic page — AI pre onkologických pacientov."""
     body = """
 <h1>AI pre onkologických pacientov: správa zdravotných dokumentov</h1>
-<p class="intro">Onkologická dokumentácia sa hromadí rýchlo — laboratórne výsledky,
-CT a MR popisy, histológia, genetické testy, prepúšťacie správy, recepty a
-emaily od troch rôznych kliník. Oncofiles prepája váš Google Drive s AI
-asistentom ako Claude alebo ChatGPT, aby ste sa ku všetkému dostali jednou
-vetou namiesto hľadania v desiatich priečinkoch.</p>
+<p class="intro">Onkologická dokumentácia sa hromadí rýchlo: laboratórne výsledky,
+popisy CT a MR, lekárske správy, prílohy z mailov a fotky z mobilu. Oncofiles ich
+prečíta, pomenuje a zaradí vo vašom Google Drive a pri každej hodnote si pamätá
+stranu a riadok, odkiaľ pochádza. Potom sa pýtate v Claude a každá odpoveď ukáže
+svoj zdroj.</p>
 
 <h2>Čo Oncofiles rieši</h2>
-<p>Typický onkologický pacient nazbiera za rok liečby 80-200 dokumentov z NOU,
-Onkologického ústavu sv. Alžbety, lokálnych nemocníc, súkromných laboratórií a
-zahraničných druhých názorov. Každý súbor má iné pomenovanie, iný formát, iný
-jazyk. Oncofiles ich automaticky klasifikuje do 18 kategórií, pridáva AI
-sumár, extrahuje štruktúrované metadáta (liečivá, dávky, hodnoty, termíny) a
-necháva originály vo Vašom Google Drive.</p>
+<p>Keď v rodine niekto ochorie, stanete sa archivárom. Lekár má desať minút a vy
+neviete nájsť posledný výsledok. Oncofiles drží priečinok usporiadaný podľa jeho
+vlastných pravidiel v súbore README a z laboratórnych výsledkov vytiahne hodnoty,
+ktoré si viete overiť v zdrojovom dokumente.</p>
 
-<h2>Kľúčové výhody pre pacientov a opatrovateľov</h2>
+<h2>Ako to funguje</h2>
 <ul>
-<li><strong>Sledovanie trendov laboratórnych hodnôt</strong> — CEA, CA 19-9,
-hematológia, pečeňové testy; krivky cez viac odberov, referenčné rozsahy,
-varovania pred chemoterapeutickým cyklom.</li>
-<li><strong>Časová os liečby</strong> — všetky cykly chemoterapie, operácie,
-biopsie, CT kontroly na jednom mieste, zoradené chronologicky.</li>
-<li><strong>Porovnanie s klinickými protokolmi</strong> — automatické
-vyhľadávanie v ClinicalTrials.gov a PubMed pre váš diagnostický kód a biomarkery.</li>
-<li><strong>Pripravené na návštevu lekára</strong> — rýchla rekapitulácia
-histórie v jazyku zdravotníka, vrátane odkazov na zdrojové dokumenty.</li>
-<li><strong>Bez straty súkromia</strong> — dáta ostávajú vo vašom Google Drive,
-nie v centrálnej databáze. Open-source pod MIT licenciou.</li>
+<li><strong>Dokumenty zostávajú vo vašom Google Drive.</strong> Originály so
+štandardnými názvami a vedľa každého súboru prepis .md. Priečinok sa dá čítať aj
+bez Oncofiles, takže môžete kedykoľvek odísť.</li>
+<li><strong>Číta ich lokálny model na našom serveri v EÚ (Slovensko).</strong>
+Obsah dokumentov sa pri spracovaní na pozadí neposiela do cloudového modelu.</li>
+<li><strong>Každá hodnota má svoj zdroj.</strong> Dátum odberu, dokument, strana
+a riadok, z ktorého bola prečítaná, a stav overenia: overené strojom, neoverené
+alebo overené človekom.</li>
+<li><strong>Pýtate sa vo vlastnom AI asistentovi.</strong> Claude funguje už dnes
+cez MCP; ChatGPT a Gemini CLI pripravujeme. Každá odpoveď ukáže svoj zdroj.</li>
+<li><strong>Otvorené formáty.</strong> FHIR R4 na čítanie, vyhľadávanie a export
+záznamov; kód je otvorený pod licenciou MIT.</li>
 </ul>
 
 <h2>Ako to dopĺňa eZdravie, OnkoAsist a NCZI</h2>
 <p>Štátne systémy (eZdravie, OnkoAsist, NCZI) slúžia na oficiálnu komunikáciu
-medzi zdravotníckymi zariadeniami. Oncofiles je pacientsky nástroj — neprepisuje
+medzi zdravotníckymi zariadeniami. Oncofiles je pacientsky nástroj: neprepisuje
 oficiálnu zdravotnú kartu, ale pomáha pacientovi rozumieť vlastným dokumentom a
-pripraviť sa na ďalšiu konzultáciu. Tieto dva svety sa dopĺňajú: zdravotník má
-eZdravie, pacient má Oncofiles.</p>
+pripraviť sa na ďalšiu konzultáciu.</p>
 
 <h2>Pre koho je to určené</h2>
 <ul>
 <li>Onkologickí pacienti, ktorí chcú rozumieť vlastným výsledkom.</li>
-<li>Opatrovatelia (manželka, dcéra, syn), ktorí vedú dokumentáciu za blízkeho.</li>
-<li>Pacienti pripravujúci sa na druhý názor v zahraničí.</li>
-<li>Lekári, ktorí chcú od pacienta dostať štruktúrovaný sumár namiesto papierovej kôpky.</li>
+<li>Opatrovatelia, ktorí vedú dokumentáciu za blízkeho: pod jedným účtom môže byť
+viac pacientov a údaje sa medzi nimi nemiešajú.</li>
+<li>Ľudia, ktorí chcú mať poriadok aj v bežných nálezoch.</li>
 </ul>
 
-<p>Oncofiles je zadarmo pre prvých 500 dokumentov na pacienta. Bez kreditky,
-bez registrácie cez eID.</p>
+<p>Oncofiles je zadarmo do 500 dokumentov na pacienta. Pripájanie vlastného
+Google Drive spúšťame v novembri 2026. Oncofiles nenahrádza lekára, nediagnostikuje
+a nenavrhuje liečbu.</p>
 
-<a class="cta" href="/dashboard">Začať zadarmo &rarr;</a>
+<a class="cta" href="/#join">Pridať sa na zoznam &rarr;</a>
+<p style="margin-top:1rem; font-size:0.875rem;"><a href="/demo">Pozrieť ukážku s
+vymyslenou pacientkou</a> &middot; <a href="/pouzitie/pohybovy-atlas">Nielen
+onkológia: pohybový atlas z vlastných správ</a></p>
 """
     html = _topic_page_html(
         lang="sk",
         title="AI pre onkologických pacientov — Oncofiles",
         description=(
             "Správa zdravotných dokumentov pre onkologických pacientov. "
-            "AI sumáre, trendy laboratórnych hodnôt, časová os liečby — všetko "
-            "z vášho Google Drive cez Claude alebo ChatGPT."
+            "Dokumenty zostávajú vo vašom Google Drive, číta ich lokálny model "
+            "na našom serveri v EÚ a každá hodnota má svoj zdroj. Pýtate sa v Claude."
         ),
         canonical="https://oncofiles.com/onkologia",
         alt_hreflang="en",
@@ -3223,61 +3244,64 @@ async def oncology_page(request: Request) -> HTMLResponse:
     """EN topic page — AI for cancer patients and caregivers."""
     body = """
 <h1>AI for cancer patients: oncology document management</h1>
-<p class="intro">Oncology paperwork compounds fast — lab panels, CT and MRI
-reports, histology, genetic tests, discharge summaries, prescriptions, and
-emails from three different clinics. Oncofiles connects your Google Drive to
-an AI assistant like Claude or ChatGPT so you can reach any document with one
-sentence instead of digging through ten folders.</p>
+<p class="intro">Oncology paperwork piles up fast: lab results, CT and MRI
+descriptions, doctors&rsquo; reports, email attachments and phone photos.
+Oncofiles reads them, names them and files them in your own Google Drive, and
+remembers the page and line every value came from. Then you ask in Claude, and
+every answer shows its source.</p>
 
 <h2>What Oncofiles solves</h2>
-<p>A typical cancer patient accumulates 80-200 documents per treatment year
-across hospitals, private labs, and second-opinion clinics — each with a
-different filename convention, format, and language. Oncofiles auto-classifies
-them into 18 categories, adds an AI summary, extracts structured metadata
-(drugs, doses, lab values, appointment dates), and keeps the originals safely
-in your Google Drive.</p>
+<p>When someone in the family is ill, you become the archivist. The doctor has
+ten minutes and you cannot find the last result. Oncofiles keeps the folder in
+order under its own rules in a README file, and takes the values out of lab
+results so that you can check each one against its source document.</p>
 
-<h2>Key benefits for patients and caregivers</h2>
+<h2>How it works</h2>
 <ul>
-<li><strong>Lab trend tracking</strong> — CEA, CA 19-9, CBC, liver panels;
-curves across multiple draws, reference ranges, and pre-cycle safety alerts.</li>
-<li><strong>Treatment timeline</strong> — every chemo cycle, surgery, biopsy,
-and imaging study in one chronological view.</li>
-<li><strong>Clinical protocol matching</strong> — automatic search of
-ClinicalTrials.gov and PubMed for your diagnostic code and biomarkers.</li>
-<li><strong>Physician-ready briefings</strong> — a one-page history recap in
-clinical language, with links to source documents for any claim.</li>
-<li><strong>Privacy by design</strong> — your files stay in your Google Drive;
-Oncofiles never copies them to a central store. Open-source under MIT.</li>
+<li><strong>Your documents stay in your Google Drive.</strong> The originals
+under standard names and a .md transcript next to each file. The folder stays
+readable without Oncofiles, so you can leave at any time.</li>
+<li><strong>A local model reads them on our own server in the EU (Slovakia).</strong>
+Document content is not sent to a cloud model in background processing.</li>
+<li><strong>Every value has its source.</strong> The sample date, the document,
+the page and the line it was read from, and a verification state:
+machine-verified, unverified or human-verified.</li>
+<li><strong>You ask in your own AI assistant.</strong> Claude works today through
+MCP; ChatGPT and Gemini CLI are coming soon. Every answer shows its source.</li>
+<li><strong>Open formats.</strong> FHIR R4 for reading, searching and exporting
+records; the code is open under the MIT license.</li>
 </ul>
 
 <h2>How it complements EHR and patient portals</h2>
-<p>National health records (eHealth / patient portals / NCZI-style systems) are
-built for provider-to-provider handoffs. Oncofiles is a <em>patient-side</em>
-tool — it does not replace official records but helps the patient understand
-their own documents and prepare for the next consultation. The two layers
-complement each other: the clinician has the EHR, the patient has Oncofiles.</p>
+<p>National health records and patient portals are built for provider-to-provider
+handoffs. Oncofiles is a <em>patient-side</em> tool: it does not replace official
+records but helps the patient understand their own documents and prepare for the
+next consultation.</p>
 
 <h2>Who it&rsquo;s for</h2>
 <ul>
 <li>Cancer patients who want to understand their own results.</li>
-<li>Caregivers (spouse, adult child) managing paperwork for a loved one.</li>
-<li>Patients preparing for a second opinion abroad.</li>
-<li>Clinicians who prefer a structured summary over a stack of PDFs.</li>
+<li>Caregivers managing paperwork for someone close: one account can hold several
+patients and their data is never mixed.</li>
+<li>People who want their everyday findings in order too.</li>
 </ul>
 
-<p>Oncofiles is free for the first 500 documents per patient. No credit card,
-no complex onboarding.</p>
+<p>Oncofiles is free up to 500 documents per patient. Connecting your own
+Google Drive opens in November 2026. Oncofiles does not replace your doctor, does
+not diagnose and does not propose treatment.</p>
 
-<a class="cta" href="/dashboard">Start for free &rarr;</a>
+<a class="cta" href="/#join">Join the waitlist &rarr;</a>
+<p style="margin-top:1rem; font-size:0.875rem;"><a href="/demo">See the demo with
+an invented patient</a> &middot; <a href="/use-cases/movement-atlas">Not only
+oncology: a movement atlas from your own reports</a></p>
 """
     html = _topic_page_html(
         lang="en",
         title="AI for Cancer Patients — Oncology Document Management | Oncofiles",
         description=(
             "Oncology document management for cancer patients and caregivers. "
-            "AI summaries, lab trend tracking, treatment timeline — all from "
-            "your Google Drive via Claude or ChatGPT."
+            "Documents stay in your Google Drive, a local model on our own EU server "
+            "reads them, and every value has its source. Ask in Claude."
         ),
         canonical="https://oncofiles.com/oncology",
         alt_hreflang="sk",
@@ -3291,24 +3315,24 @@ no complex onboarding.</p>
 
 _EU_PAGE_EXTRA_CSS = """
   .hero { padding:2.5rem 0 1.5rem; }
-  .eyebrow { display:inline-block; font-size:0.75rem; text-transform:uppercase;
-    letter-spacing:0.08em; color:var(--accent); font-weight:700;
+  .eyebrow { display:inline-block; font-size:0.85rem; color:#000059; font-weight:700;
+    background:var(--turq); border-radius:999px; padding:0.15rem 0.8rem;
     margin-bottom:0.75rem; }
-  h1 .accent { color:var(--accent); }
+  h1 .accent { color:var(--text); }
   .compare { width:100%; border-collapse:collapse; margin:1.5rem 0 2rem;
-    font-size:0.95rem; background:var(--surface); border:1px solid var(--border);
+    font-size:0.95rem; background:var(--bg); border:1px solid var(--border);
     border-radius:6px; overflow:hidden; }
   .compare th, .compare td { padding:0.75rem 0.9rem; text-align:left;
     border-bottom:1px solid var(--border); vertical-align:top; }
-  .compare th { background:#f4f1ec; font-weight:600; color:var(--text);
+  .compare th { background:var(--surface); font-weight:700; color:var(--text);
     font-size:0.85rem; }
   .compare td:first-child { font-weight:500; color:var(--text); white-space:nowrap; }
-  .compare td strong { color:var(--accent); }
-  .callout { background:#ecfdf5; border-left:4px solid var(--accent);
-    padding:1rem 1.25rem; margin:1.5rem 0; border-radius:0 6px 6px 0; }
-  .callout p { margin:0; color:var(--text); }
+  .compare td strong { color:var(--text); }
+  .callout { background:var(--peach); padding:1rem 1.25rem; margin:1.5rem 0;
+    border-radius:14px; }
+  .callout p, .callout a, .callout strong { margin:0; color:#000059; }
   .press-angles { background:var(--surface); border:1px solid var(--border);
-    padding:1.25rem 1.5rem; border-radius:6px; margin:1.5rem 0; }
+    padding:1.25rem 1.5rem; border-radius:14px; margin:1.5rem 0; }
   .press-angles h3 { font-size:1rem; margin-bottom:0.5rem; }
   .press-angles p { font-size:0.9rem; margin-bottom:0.5rem; }
 """
@@ -3325,20 +3349,17 @@ def _eu_comparison_schema_jsonld(canonical: str, name: str, description: str) ->
                     "name": "Oncofiles",
                     "url": "https://oncofiles.com/",
                     "applicationCategory": "HealthApplication",
-                    "operatingSystem": "Web, Claude.ai, ChatGPT",
+                    "operatingSystem": "Web",
                     "offers": {
                         "@type": "Offer",
                         "price": "0",
                         "priceCurrency": "EUR",
-                        "description": (
-                            "Free for the first 500 documents per patient "
-                            "(rolling €10/month steady-state budget, €30 onboarding)"
-                        ),
+                        "description": "Free up to 500 documents per patient",
                     },
                     "availableOnDevice": [
                         "Desktop",
                         "Mobile",
-                        "MCP clients (Claude, ChatGPT)",
+                        "MCP clients (Claude)",
                     ],
                     "areaServed": [
                         {"@type": "AdministrativeArea", "name": "European Union"},
@@ -3397,33 +3418,28 @@ _EU_COMPARISON_TABLE_EN = """
       <td>No (excluded)</td>
       <td>No (US only)</td>
       <td>National-only</td></tr>
-    <tr><td>Your data stays in EU</td>
-      <td><strong>Yes &mdash; your own Google Drive</strong></td>
+    <tr><td>Where documents are read</td>
+      <td><strong>Local model on our own server in the EU (Slovakia)</strong></td>
       <td>N/A</td>
       <td>N/A</td>
       <td>Yes</td></tr>
-    <tr><td>Works with Claude &amp; ChatGPT</td>
-      <td><strong>Yes &mdash; MCP native</strong></td>
+    <tr><td>Works in your AI assistant</td>
+      <td><strong>Claude today (MCP); ChatGPT coming soon</strong></td>
       <td>ChatGPT only</td>
       <td>Via US partnership</td>
       <td>No</td></tr>
-    <tr><td>Multilingual (SK / CZ / EN)</td>
-      <td><strong>Yes</strong></td>
-      <td>English-first</td>
-      <td>English-first</td>
-      <td>National language</td></tr>
-    <tr><td>Covers whole patient journey</td>
-      <td><strong>Yes &mdash; labs, imaging, path, genetics, chemo, surgery</strong></td>
-      <td>Symptom triage</td>
-      <td>Patient intake</td>
-      <td>Provider records</td></tr>
+    <tr><td>Source shown for every value</td>
+      <td><strong>Yes &mdash; document, page, line, verification state</strong></td>
+      <td>N/A</td>
+      <td>N/A</td>
+      <td>N/A</td></tr>
     <tr><td>Open-source (MIT)</td>
       <td><strong>Yes</strong></td>
       <td>No</td>
       <td>No</td>
       <td>N/A</td></tr>
     <tr><td>Price for patients</td>
-      <td><strong>Free tier &mdash; 500 docs, €10/mo budget</strong></td>
+      <td><strong>Free up to 500 documents per patient</strong></td>
       <td>Part of paid ChatGPT</td>
       <td>Enterprise only</td>
       <td>Free (state-funded)</td></tr>
@@ -3448,34 +3464,28 @@ _EU_COMPARISON_TABLE_SK = """
       <td>Nie (vylúčené)</td>
       <td>Nie (iba US)</td>
       <td>Len národné</td></tr>
-    <tr><td>Dáta ostávajú v EÚ</td>
-      <td><strong>Áno &mdash; vo vašom Google Drive</strong></td>
+    <tr><td>Kde sa dokumenty čítajú</td>
+      <td><strong>Lokálny model na našom serveri v EÚ (Slovensko)</strong></td>
       <td>N/A</td>
       <td>N/A</td>
       <td>Áno</td></tr>
-    <tr><td>Funguje v Claude &amp; ChatGPT</td>
-      <td><strong>Áno &mdash; natívne MCP</strong></td>
+    <tr><td>Funguje vo vašom AI asistentovi</td>
+      <td><strong>Claude už dnes (MCP); ChatGPT pripravujeme</strong></td>
       <td>Len ChatGPT</td>
       <td>Cez US partnerstvo</td>
       <td>Nie</td></tr>
-    <tr><td>Slovenčina / čeština / angličtina</td>
-      <td><strong>Áno</strong></td>
-      <td>Angličtina</td>
-      <td>Angličtina</td>
-      <td>Národný jazyk</td></tr>
-    <tr><td>Celá cesta pacienta</td>
-      <td><strong>Áno &mdash; laboratórka, zobrazovanie, histológia, genetika,
-        chemo, chirurgia</strong></td>
-      <td>Triage symptómov</td>
-      <td>Predvstupný formulár</td>
-      <td>Záznamy zdravotníka</td></tr>
+    <tr><td>Zdroj pri každej hodnote</td>
+      <td><strong>Áno &mdash; dokument, strana, riadok, stav overenia</strong></td>
+      <td>N/A</td>
+      <td>N/A</td>
+      <td>N/A</td></tr>
     <tr><td>Open-source (MIT)</td>
       <td><strong>Áno</strong></td>
       <td>Nie</td>
       <td>Nie</td>
       <td>N/A</td></tr>
     <tr><td>Cena pre pacienta</td>
-      <td><strong>Zadarmo &mdash; 500 dok., €10/mes rozpočet</strong></td>
+      <td><strong>Zadarmo do 500 dokumentov na pacienta</strong></td>
       <td>Časť platenej ChatGPT</td>
       <td>Iba podnikové</td>
       <td>Zadarmo (štátne)</td></tr>
@@ -3488,70 +3498,73 @@ _EU_COMPARISON_TABLE_SK = """
 async def eu_page(request: Request) -> HTMLResponse:
     """EN EU-positioning landing page — #447 Phase A."""
     canonical = "https://oncofiles.com/eu"
-    title = "AI for EU Cancer Patients — Data Stays in Europe | Oncofiles"
+    title = "AI for EU Cancer Patients — Read on Our Own Server in the EU | Oncofiles"
     description = (
-        "Oncofiles is the open-source oncology document AI built for European "
-        "patients. Works with Claude and ChatGPT, your data stays in your EU "
-        "Google Drive, available where ChatGPT Health is excluded (EEA, CH, UK)."
+        "Oncofiles is an open-source medical record tool built for European "
+        "cancer patients. Documents stay in your Google Drive, a local model on our "
+        "own server in the EU reads them, and you ask in Claude. Built in the EEA, "
+        "where ChatGPT Health is not offered."
     )
     body = f"""
 <section class="hero">
   <span class="eyebrow">For EU cancer patients &amp; caregivers</span>
   <h1>AI for European cancer patients &mdash;
-    <span class="accent">your data stays in Europe</span></h1>
-  <p class="intro">Oncofiles is the oncology document AI built for patients in
-  the EEA, Switzerland, and the UK &mdash; the regions ChatGPT Health currently
-  excludes. Connect your own Google Drive, keep your files in your own EU
-  storage, and use Claude or ChatGPT to search, summarize, and brief your
-  oncologist.</p>
+    <span class="accent">read on our own server in the EU</span></h1>
+  <p class="intro">Oncofiles is a medical record tool built for patients in the
+  EEA, Switzerland and the UK. Your documents stay in your own Google Drive, a
+  local model on our own server in the EU (Slovakia) reads them, and you ask in
+  Claude, where every answer shows its source.</p>
 </section>
 
 <div class="callout">
-<p><strong>Why this matters now:</strong> ChatGPT Health launched excluding EEA,
-Switzerland, and the UK. HealthEx announced a US-only partnership with
-Anthropic for patient intake. That leaves a 450-million-person gap in
-patient-side oncology AI &mdash; for the next 18-36 months, until those vendors
-clear regulatory hurdles. Oncofiles closes that gap today.</p>
+<p><strong>Why this matters now:</strong> ChatGPT Health launched without the EEA,
+Switzerland and the UK, and HealthEx announced a partnership with Anthropic for
+the US. Oncofiles is built and hosted in the EU.</p>
 </div>
 
 <h2>What makes Oncofiles different</h2>
 <ul>
-<li><strong>EU-first by design.</strong> Your documents stay in your own Google
-Drive. Oncofiles never copies them to a central vendor-owned store.</li>
-<li><strong>Works where you already work.</strong> Native MCP integration with
-Claude.ai and ChatGPT. No separate app to learn.</li>
-<li><strong>Multilingual.</strong> Full Slovak + Czech + English support today.
-German and French next quarter.</li>
-<li><strong>Whole-journey coverage.</strong> Labs, CT / MRI reports, histology,
-germline &amp; somatic genetics, chemo sheets, discharge summaries, even the
-stack of prescriptions from three different clinics.</li>
-<li><strong>Open-source under MIT.</strong> Audit the code,
-self-host if you prefer, extend it for your own use case.</li>
+<li><strong>Your documents stay in your Google Drive.</strong> The originals
+under standard names and a .md transcript next to each file. The folder stays
+readable without Oncofiles, so you can leave at any time.</li>
+<li><strong>A local model reads them on our own server in the EU (Slovakia).</strong>
+Document content is not sent to a cloud model in background processing.</li>
+<li><strong>Every value has its source.</strong> The sample date, the document,
+the page and the line it was read from, and a verification state:
+machine-verified, unverified or human-verified.</li>
+<li><strong>You ask in your own AI assistant.</strong> Claude works today through
+MCP; ChatGPT and Gemini CLI are coming soon. Every answer shows its source.</li>
+<li><strong>Open formats.</strong> FHIR R4 for reading, searching and exporting
+records; the code is open under the MIT license.</li>
 </ul>
 
 <h2>How Oncofiles compares</h2>
 {_EU_COMPARISON_TABLE_EN}
 
 <h2>Built for the European oncology reality</h2>
-<p>Most EU cancer patients route between a public oncology centre, a private
-laboratory chain, a second-opinion clinic abroad, and a GP &mdash; four
-different filename conventions, three different languages, and two different
-EHR systems, none of which talks to the others. Oncofiles is the
-<em>patient-side</em> layer that stitches it together without replacing the
-official records.</p>
+<p>Many EU cancer patients move between a public oncology centre, a private
+laboratory, a second-opinion clinic and a GP, each with its own file names and
+formats. Oncofiles is the <em>patient-side</em> layer that keeps those documents
+in one folder without replacing the official records.</p>
 
 <h2>Data governance</h2>
 <ul>
-<li>Documents stay in <strong>your</strong> Google Drive &mdash; they are never
-copied to a central database.</li>
-<li>Metadata (filenames, categories, AI summaries) is stored in an SQLite database
-on our own server in Slovakia (EU).</li>
+<li>Original files and .md transcripts stay in <strong>your</strong> Google Drive.</li>
+<li>The document index, the extracted text and the values with their provenance
+are stored in a database on our own server in the EU (Slovakia), on an encrypted
+disk.</li>
+<li>Only what you ask about inside your AI assistant goes to that assistant.</li>
 <li>Open-source: inspect what the code does with your data at any time.</li>
-<li>EU AI Act classification memo and medical-device scoping in progress with
-EU counsel (2026).</li>
 </ul>
 
-<a class="cta" href="/dashboard">Start for free &rarr;</a>
+<p>Oncofiles is free up to 500 documents per patient. Connecting your own
+Google Drive opens in November 2026. Oncofiles does not replace your doctor, does
+not diagnose and does not propose treatment.</p>
+
+<a class="cta" href="/#join">Join the waitlist &rarr;</a>
+<p style="margin-top:1rem; font-size:0.875rem;"><a href="/demo">See the demo with
+an invented patient</a> &middot; <a href="/use-cases/movement-atlas">Not only
+oncology: a movement atlas from your own reports</a></p>
 <p style="margin-top:1rem; font-size:0.875rem;">Prefer the Slovak version?
 <a href="/sk">Prejsť na slovenskú verziu &rarr;</a></p>
 """
@@ -3580,83 +3593,86 @@ async def sk_page(request: Request) -> HTMLResponse:
     title = "AI pre onkologických pacientov na Slovensku — Oncofiles"
     description = (
         "Oncofiles je open-source nástroj pre onkologických pacientov na "
-        "Slovensku a v EÚ. Funguje s Claude a ChatGPT, vaše dáta ostávajú "
-        "v EÚ &mdash; dostupné tam, kde ChatGPT Health nefunguje."
+        "Slovensku a v EÚ. Dokumenty zostávajú vo vašom Google Drive, číta ich "
+        "lokálny model na našom serveri v EÚ a pýtate sa v Claude."
     )
     body = f"""
 <section class="hero">
   <span class="eyebrow">Pre slovenských onkologických pacientov a opatrovateľov</span>
   <h1>AI pre onkologických pacientov &mdash;
-    <span class="accent">vaše dáta ostávajú v EÚ</span></h1>
+    <span class="accent">číta sa na našom serveri v EÚ</span></h1>
   <p class="intro">Oncofiles je open-source nástroj na spravovanie zdravotnej
-  dokumentácie pre pacientov na Slovensku, v Česku a ostatných krajinách EÚ.
-  Prepojíte svoj vlastný Google Drive, súbory ostávajú vo vašom úložisku,
-  a Claude alebo ChatGPT vám pomôžu hľadať, sumarizovať a pripraviť sa na
-  návštevu onkológa.</p>
+  dokumentácie pre pacientov na Slovensku a v ostatných krajinách EÚ. Dokumenty
+  zostávajú vo vašom vlastnom Google Drive, číta ich lokálny model na našom
+  serveri v EÚ (Slovensko) a pýtate sa v Claude, kde každá odpoveď ukáže svoj
+  zdroj.</p>
 </section>
 
 <div class="callout">
 <p><strong>Prečo teraz:</strong> ChatGPT Health bol spustený <em>bez</em> EHP,
-Švajčiarska a UK. HealthEx ohlásil partnerstvo s Anthropic iba pre americký trh.
-To znamená, že 450 miliónov Európanov &mdash; vrátane každého slovenského
-onkologického pacienta &mdash; nemá v nasledujúcich 18-36 mesiacoch prístup k
-tomu, čo vidia Američania. Oncofiles túto medzeru zatvára dnes.</p>
+Švajčiarska a UK a HealthEx ohlásil partnerstvo s Anthropic pre americký trh.
+Oncofiles vzniká a beží v EÚ.</p>
 </div>
 
 <h2>Čo robí Oncofiles iným</h2>
 <ul>
-<li><strong>Priorita EÚ.</strong> Dokumenty ostávajú vo <em>vašom</em> Google
-Drive. Oncofiles ich nikdy nekopíruje do centrálnej databázy dodávateľa.</li>
-<li><strong>Funguje tam, kde ste zvyknutí.</strong> Natívna integrácia s
-Claude.ai a ChatGPT cez MCP. Žiadna ďalšia aplikácia na učenie.</li>
-<li><strong>Slovenčina.</strong> Plná podpora slovenčiny, češtiny a angličtiny.
-Nemčina a francúzština v ďalšom štvrťroku.</li>
-<li><strong>Celá cesta pacienta.</strong> Laboratórka, CT a MR popisy,
-histológia, zárodočná a somatická genetika, chemoterapeutické listy,
-prepúšťacie správy &mdash; aj tá kôpka receptov z troch rôznych kliník.</li>
-<li><strong>Open-source pod MIT.</strong> Overte si kód, nasaďte si ho doma,
-rozšírte ho pre vlastné potreby.</li>
+<li><strong>Dokumenty zostávajú vo vašom Google Drive.</strong> Originály so
+štandardnými názvami a vedľa každého súboru prepis .md. Priečinok sa dá čítať aj
+bez Oncofiles, takže môžete kedykoľvek odísť.</li>
+<li><strong>Číta ich lokálny model na našom serveri v EÚ (Slovensko).</strong>
+Obsah dokumentov sa pri spracovaní na pozadí neposiela do cloudového modelu.</li>
+<li><strong>Každá hodnota má svoj zdroj.</strong> Dátum odberu, dokument, strana
+a riadok, z ktorého bola prečítaná, a stav overenia: overené strojom, neoverené
+alebo overené človekom.</li>
+<li><strong>Pýtate sa vo vlastnom AI asistentovi.</strong> Claude funguje už dnes
+cez MCP; ChatGPT a Gemini CLI pripravujeme. Každá odpoveď ukáže svoj zdroj.</li>
+<li><strong>Otvorené formáty.</strong> FHIR R4 na čítanie, vyhľadávanie a export
+záznamov; kód je otvorený pod licenciou MIT.</li>
 </ul>
 
 <h2>Ako sa Oncofiles porovnáva</h2>
 {_EU_COMPARISON_TABLE_SK}
 
 <h2>Postavené pre slovenskú onkologickú realitu</h2>
-<p>Väčšina slovenských onkologických pacientov krúži medzi Národným onkologickým
-ústavom (NOU), Onkologickým ústavom sv. Alžbety (OÚSA), súkromnými laboratóriami
-(Medirex, Alpha, Synlab), druhými názormi v zahraničí a praktickým lekárom
-&mdash; štyri rôzne pomenovacie konvencie, dva jazyky a dva EHR systémy, ktoré
-spolu nekomunikujú. Oncofiles je <em>pacientska vrstva</em>, ktorá to spája
-bez toho, aby nahradila oficiálnu zdravotnú kartu.</p>
+<p>Mnohí slovenskí onkologickí pacienti chodia medzi Národným onkologickým
+ústavom (NOU), Onkologickým ústavom sv. Alžbety (OÚSA), súkromnými laboratóriami,
+druhým názorom a praktickým lekárom, a každé miesto má vlastné názvy súborov a
+formáty. Tlačené slovenské správy čítame spoľahlivo, staré rukou písané záznamy
+zatiaľ slabšie. Oncofiles je <em>pacientska vrstva</em>, ktorá tieto dokumenty
+drží v jednom priečinku bez toho, aby nahradila oficiálnu zdravotnú kartu.</p>
 
 <h2>Dopĺňa eZdravie, OnkoAsist a NCZI</h2>
 <p>Štátne systémy slúžia na komunikáciu medzi zdravotníckymi zariadeniami.
-Oncofiles je pacientsky nástroj &mdash; nekopíruje eZdravie, ale pomáha
-pacientovi rozumieť vlastným dokumentom a prísť k ďalšej konzultácii
-pripravený. Zdravotník má eZdravie, pacient má Oncofiles.</p>
+Oncofiles je pacientsky nástroj: nekopíruje eZdravie, ale pomáha pacientovi
+rozumieť vlastným dokumentom a prísť na ďalšiu konzultáciu pripravený.</p>
 
 <h2>Ochrana dát</h2>
 <ul>
-<li>Dokumenty ostávajú vo <strong>vašom</strong> Google Drive &mdash; nikdy sa
-nekopírujú do centrálnej databázy.</li>
-<li>Metadáta (názvy súborov, kategórie, AI sumáre) sú uložené v SQLite databáze
-na vlastnom serveri na Slovensku (EÚ).</li>
+<li>Originálne súbory a prepisy .md zostávajú vo <strong>vašom</strong> Google
+Drive.</li>
+<li>Index dokumentov, prečítaný text a hodnoty s ich pôvodom sú uložené v databáze
+na našom serveri v EÚ (Slovensko), na šifrovanom disku.</li>
+<li>Do AI asistenta ide len to, na čo sa v ňom sami spýtate.</li>
 <li>Open-source: kedykoľvek si overíte, čo kód s vašimi dátami robí.</li>
-<li>Klasifikačné memo podľa EU AI Act a rozbor klasifikácie zdravotnej pomôcky
-s právnou kanceláriou prebiehajú (2026).</li>
 </ul>
 
 <div class="press-angles">
 <h3>Pre novinárov a redakcie</h3>
-<p><strong>Kľúčové body:</strong> Slovenský open-source projekt. Zatvára
-medzeru po ChatGPT Health (nedostupný v EÚ) a HealthEx (iba US). Prvých päť
-pacientov už používa. Zadarmo pre pacientov (500 dok., €10/mes AI rozpočet).
-Autor: Peter Fusek, peter.fusek@instarea.sk.</p>
-<p><strong>K dispozícii:</strong> Rozhovor s autorom, technická demo, príbeh
-pacienta (anonymizovaný), rozbor konkurenčnej medzery.</p>
+<p><strong>Kľúčové body:</strong> Slovenský open-source projekt. Dokumenty číta
+lokálny model na vlastnom serveri v EÚ a každá hodnota má dohľadateľný zdroj.
+Zadarmo do 500 dokumentov na pacienta. Autor: Peter Fusek,
+peter.fusek@instarea.sk.</p>
+<p><strong>K dispozícii:</strong> rozhovor s autorom a technická ukážka.</p>
 </div>
 
-<a class="cta" href="/dashboard">Začať zadarmo &rarr;</a>
+<p>Oncofiles je zadarmo do 500 dokumentov na pacienta. Pripájanie vlastného
+Google Drive spúšťame v novembri 2026. Oncofiles nenahrádza lekára, nediagnostikuje
+a nenavrhuje liečbu.</p>
+
+<a class="cta" href="/#join">Pridať sa na zoznam &rarr;</a>
+<p style="margin-top:1rem; font-size:0.875rem;"><a href="/demo">Pozrieť ukážku s
+vymyslenou pacientkou</a> &middot; <a href="/pouzitie/pohybovy-atlas">Nielen
+onkológia: pohybový atlas z vlastných správ</a></p>
 <p style="margin-top:1rem; font-size:0.875rem;">Prefer English?
 <a href="/eu">Switch to the English version &rarr;</a></p>
 """
