@@ -91,6 +91,19 @@ class RunOptions:
     # #854: add printed new institutions / doctors to README §3 and file the
     # document (``CURATED_AUTO_VOCAB``, default on); False = #754 review.
     auto_vocab: bool = field(default_factory=vocab_mod.enabled)
+    # #855 capacity rules, checked BEFORE a document is read by the model:
+    # ``doc_cap`` = the patient's document limit (MAX_DOCUMENTS_PER_PATIENT,
+    # 0 = unlimited) against max(``docs_existing``, documents filed in the
+    # tree) + documents this run already sent to OCR. Over the cap the file
+    # stays in the inbox untouched, listed in ``RunReport.held``.
+    doc_cap: int = 0
+    docs_existing: int = 0
+    # Returns a reason ("daily_page_budget") when no more model OCR may start
+    # now; None = go. Same effect as the cap: the file stays, listed in ``held``.
+    ocr_gate: Callable[[], str | None] | None = None
+
+
+HOLD_DOCUMENT_CAP = "document_cap"
 
 
 @dataclass
@@ -114,6 +127,15 @@ class RunReport:
     flags: list[str] = field(default_factory=list)
     awaiting_review: list[str] = field(default_factory=list)
     not_processed: list[str] = field(default_factory=list)
+    # #855: files left in place unread, {"source": label, "reason": code}
+    # (document_cap | daily_page_budget). Never moved, never deleted.
+    held: list[dict] = field(default_factory=list)
+    # #855: pages the local model OCR'd in this run (cache hits excluded); set
+    # by the caller that counts them (tools/curated.py), 0 here.
+    model_pages: int = 0
+    # #855: nothing left that a later run could process (no budget leftovers,
+    # nothing held except by the document cap). Marks a finished first import.
+    inbox_drained: bool = False
     # #854: README vocabulary. Tokens only — the printed spelling goes to the
     # README. A dry run always fills ``planned`` and ``outcomes`` (also with
     # CURATED_AUTO_VOCAB=false, as a preview); ``added`` only by a real run.
@@ -400,6 +422,8 @@ class Runner:
         self._shadow_text = ""
         self._shadow_contract: Contract | None = None
         self._preview_requeue = False
+        self._docs_base: int | None = None  # documents counted against the cap
+        self._new_docs = 0  # documents this run sent to OCR (#855)
 
     # -- writes (no-ops in dry run, always logged) --
 
@@ -524,6 +548,9 @@ class Runner:
             self._backfill_sidecars(tree, contract)
             if not self.opts.dry_run:
                 self._recheck(contract)
+            self.report.inbox_drained = not self.report.not_processed and all(
+                h.get("reason") == HOLD_DOCUMENT_CAP for h in self.report.held
+            )
         except RunAbortError as exc:
             self.report.status = "aborted"
             self.report.message = str(exc)
@@ -733,10 +760,15 @@ class Runner:
             if sidecar is not None and self._awaiting_review(sidecar, item):
                 self.report.awaiting_review.append(label)
                 continue
+            duplicate = bool(item.sha256 and item.sha256 in filed)
+            if not duplicate and (hold := self._hold_reason(tree, contract)):
+                self.report.held.append({"source": label, "reason": hold})
+                continue  # #855: stays in the inbox, unread
             done += 1
-            if item.sha256 and item.sha256 in filed:
+            if duplicate:
                 self._quarantine(tree, contract, folder, item, sidecar, filed[item.sha256])
                 continue
+            self._new_docs += 1
             self._file_document(tree, contract, folder, item, sidecar)
             last = self.report.documents[-1] if self.report.documents else {}
             if item.sha256 and last.get("source") == item.name and last.get("result") == "filed":
@@ -744,6 +776,25 @@ class Runner:
                 # two identical uploads in one batch → second one is a duplicate.
                 to_folder, _, to_name = last["to"].partition("/")
                 filed[item.sha256] = (to_folder, nfc(to_name))
+
+    def _filed_count(self, tree: Tree, contract: Contract) -> int:
+        n = 0
+        for folder, doc_type in contract.folders.items():
+            if doc_type is None:
+                continue
+            items = tree.files.get(folder, [])
+            names = {nfc(i.name) for i in items}
+            n += sum(1 for i in items if not _is_sidecar(nfc(i.name), names))
+        return n
+
+    def _hold_reason(self, tree: Tree, contract: Contract) -> str | None:
+        """Why this document must not be read by the model now (#855), or None."""
+        if self.opts.doc_cap > 0:
+            if self._docs_base is None:
+                self._docs_base = max(self.opts.docs_existing, self._filed_count(tree, contract))
+            if self._docs_base + self._new_docs >= self.opts.doc_cap:
+                return HOLD_DOCUMENT_CAP
+        return self.opts.ocr_gate() if self.opts.ocr_gate else None
 
     def _content(self, item: Item) -> bytes:
         """Bytes to extract from: Drive's text export for Google Docs/Sheets/Slides."""
@@ -1044,6 +1095,9 @@ class Runner:
                 ):
                     self.report.not_processed.append(f"{folder}/{item.name} (missing sidecar)")
                     continue
+                if self.opts.ocr_gate and (hold := self.opts.ocr_gate()):
+                    self.report.held.append({"source": f"{folder}/{item.name}", "reason": hold})
+                    continue
                 content = b"" if item.size > extract_mod.MAX_FILE_BYTES else self._content(item)
                 ex = self.extract_fn(
                     item.name, content, item.mime, min_text_chars=self.opts.min_text_chars
@@ -1294,6 +1348,9 @@ class Runner:
             lines.append(f"- flag: {f}")
         if r.not_processed:
             lines.append(f"- not processed this run (budget): {len(r.not_processed)}")
+        for reason in sorted({h["reason"] for h in r.held}):
+            n = sum(1 for h in r.held if h["reason"] == reason)
+            lines.append(f"- left in place unread ({reason}): {n}")
         lines.append(
             f"- after this entry: report written, `_index.json` regenerated, canary `{CANARY}` "
             "trashed last. **If it is still in the root, this run did not finish.**"
