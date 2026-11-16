@@ -988,6 +988,8 @@
     var wizardPatientUuid = '';  // UUID from POST /api/patients; token rows key on it
     var wizardBearerToken = '';
     var wizardCurrentStep = 1;
+    var wizardPatientType = '';  // oncology | general, '' when unknown (#853 confirmation text)
+    var wizardPatientName = '';  // display name, for the default new folder name
 
     // Step-2 bearer-token block. A token is opt-in (#824): nothing is minted
     // until the user clicks "Generate token".
@@ -1073,9 +1075,14 @@
       var pid = document.getElementById('patient-select').value;
       if (!pid) return;
       wizardPatientId = pid;
-      wizardPatientUuid = '';
+      // #835: the select holds the patient's UUID; keep it so "Go to Dashboard"
+      // re-selects this patient by UUID, never by slug.
+      wizardPatientUuid = pid;
       wizardBearerToken = '';
       wizardCurrentStep = 2;
+      var current = patientsCache.find(function(x) { return x.patient_id === pid; });
+      wizardPatientName = (current && current.display_name) || '';
+      wizardPatientType = (current && current.patient_type) || '';
       document.getElementById('wiz-folder-link').value = '';  // a pasted link wins, so never keep a stale one
       for (var i = 1; i <= 4; i++) {
         document.getElementById('wiz-step-' + i).style.display = i === 2 ? 'block' : 'none';
@@ -1108,6 +1115,8 @@
       wizardPatientUuid = '';
       wizardBearerToken = '';
       wizardCurrentStep = 1;
+      wizardPatientType = '';
+      wizardPatientName = '';
       resetWizardTokenSection(true);
       setWizardContextWarning(false);
       // Reset form fields
@@ -1176,13 +1185,24 @@
       var btn = document.getElementById('wiz-create-btn');
       var errEl = document.getElementById('wiz-step1-error');
       errEl.style.display = 'none';
+      wizSetPlain(errEl, '');  // drop data-sk/en of an earlier bilingual error
       btn.disabled = true;
       btn.textContent = dashLang === 'sk' ? 'Vytváram…' : 'Creating…';
 
       var name = document.getElementById('wiz-name').value.trim();
       var pid = document.getElementById('wiz-id').value.trim().toLowerCase();
       if (!name || !pid) {
-        errEl.textContent = 'Patient name and ID are required.';
+        wizSetBi(errEl, 'Meno a ID pacienta sú povinné.', 'Patient name and ID are required.');
+        errEl.style.display = 'block';
+        btn.disabled = false;
+        wizardResetCreateBtn(btn);
+        return;
+      }
+      // #853: the curated folder contract needs the birth date (birth-date guard).
+      if (!document.getElementById('wiz-dob').value) {
+        wizSetBi(errEl,
+          'Dátum narodenia je povinný: Oncofiles podľa neho rozpozná, že dátum narodenia nie je dátum dokumentu.',
+          'Date of birth is required: Oncofiles uses it so that a birth date is never filed as a document date.');
         errEl.style.display = 'block';
         btn.disabled = false;
         wizardResetCreateBtn(btn);
@@ -1244,6 +1264,8 @@
         // No token comes back from patient creation (#824); step 2 offers a
         // "Generate token" button instead.
         wizardPatientUuid = (data.patient && data.patient.patient_id) || '';
+        wizardPatientType = (data.patient && data.patient.patient_type) || '';
+        wizardPatientName = name;
         wizardBearerToken = '';
         resetWizardTokenSection(true);
         setWizardContextWarning(data.context_saved === false);
@@ -1361,7 +1383,7 @@
         wizShow('wiz-folder-list-label', folders.length > 0);
         wizShow('wiz-folder-empty', folders.length === 0);
 
-        var patientName = document.getElementById('wiz-name').value.trim();
+        var patientName = wizardPatientName || document.getElementById('wiz-name').value.trim();
         document.getElementById('wiz-folder-name').value = 'Oncofiles - ' + patientName;
         statusEl.style.display = 'none';
         wizardFolderNewMode = false;
@@ -1426,14 +1448,17 @@
     }
 
     // In-wizard box (not a browser dialog). `info` is either "current" from
-    // /api/gdrive-folders or the server's 409 container_folder body. Variants:
+    // /api/gdrive-folders, a 409 body from the server (container_folder or
+    // bootstrap_refused, #853) or a refusal built here. Variants:
     //  - hard: a subfolder is another patient's README folder -> "Back" only;
     //  - tooMany: too many subfolders to check them all -> "Back" only;
+    //  - refused: the folder cannot get a README contract (has subfolders, no
+    //    birth date, another patient's folder, ...) -> "Back" only;
     //  - retry: the check could not run -> "Back" + "Try again";
-    //  - otherwise a UX hint for an ordinary folder with subfolders ("did you
-    //    mean one of them?") -> "Back" + "Connect anyway".
-    // The first three are refusals the server enforces; nothing the wizard
-    // sends can lift them. "Connect anyway" exists only for the hint.
+    //  - otherwise the confirmation before connecting (#835): says what will
+    //    be written where -> "Back" + "Set up and connect" / "Connect".
+    // The first four are refusals the server enforces; nothing the wizard
+    // sends can lift them.
     function wizardFolderAskConfirm(body, info) {
       wizardFolderPending = body;
       var n = info.subfolder_count || 0;
@@ -1442,6 +1467,7 @@
       var hard = reason === 'curated_children' || (info.curated_children || 0) > 0;
       var tooMany = !hard && reason === 'too_many_to_check';
       var retry = !hard && reason === 'check_failed';
+      var refused = !hard && !tooMany && !retry && info.code === 'bootstrap_refused';
       var blocked = hard || tooMany || retry || !!reason;
       wizShow('wiz-folder-confirm-go', !blocked);
       wizShow('wiz-folder-confirm-retry', retry);
@@ -1453,21 +1479,23 @@
         wizSetBi(text,
           'Tento priečinok má príliš veľa podpriečinkov na bezpečnú kontrolu. Otvorte priečinok konkrétneho pacienta alebo vložte odkaz naň.',
           'This folder has too many subfolders to check safely. Open the folder of the patient you mean, or paste its link.');
+      } else if (refused) {
+        wizSetBi(text, info.error_sk || info.error || '', info.error || '');
       } else if (blocked) {
         wizSetBi(text,
           'Tento priečinok sa teraz nepodarilo skontrolovať. Skúste to o chvíľu znova.',
           'Could not check this folder right now. Try again in a moment.');
       } else {
-        wizSetBi(text,
-          'Podpriečinky v tomto priečinku: ' + n + '. Oncofiles v ňom vytvorí svoje priečinky kategórií. Ak ste chceli niektorý z podpriečinkov, najprv ho otvorte.',
-          'This folder contains ' + n + (n === 1 ? ' subfolder' : ' subfolders') + '. Oncofiles will create its category folders inside it. If you meant one of the subfolders, open it first.');
+        wizardFolderConfirmText(text, body, info);
       }
       wizSetBi(document.getElementById('wiz-folder-confirm-path-label'),
-        blocked ? 'Priečinok:' : 'Pripojil by sa priečinok:',
-        blocked ? 'Folder:' : 'Folder that would be connected:');
+        blocked ? 'Priečinok:' : 'Pripojí sa priečinok:',
+        blocked ? 'Folder:' : 'Folder that will be connected:');
       var pathEl = document.getElementById('wiz-folder-confirm-path');
       if (body.folder_id && body.folder_id !== wizardFolderParent) {
         wizSetBi(pathEl, 'priečinok z vloženého odkazu', 'the folder from the pasted link');
+      } else if (body.folder_name) {
+        wizSetPlain(pathEl, document.getElementById('wiz-folder-path').textContent + ' / ' + body.folder_name);
       } else {
         wizSetPlain(pathEl, document.getElementById('wiz-folder-path').textContent);
       }
@@ -1476,6 +1504,35 @@
       wizShow('wiz-folder-main', false);
       wizShow('wiz-folder-confirm', true);
       document.getElementById('wiz-folder-confirm').scrollIntoView({ block: 'nearest' });
+    }
+
+    // #853 / #835: what connecting will write, before anything is written.
+    function wizardFolderConfirmText(text, body, info) {
+      var go = document.getElementById('wiz-folder-confirm-go');
+      var t = wizardPatientType;
+      var setSk = 'Oncofiles do neho zapíše kontrakt README.md' +
+        (t === 'general' ? ' (typ všeobecné zdravie)' : t === 'oncology' ? ' (typ onkologický)' : '') + ', súbory _index.json, _changelog.md, _actions.jsonl a pevnú sadu priečinkov (00-inbox, labs, report, …). Nič sa nezmaže ani nepresunie. Potom ho spracúva kurátorovaná pipeline (lokálne OCR).';
+      var setEn = 'Oncofiles writes a README.md contract' +
+        (t === 'general' ? ' (general health type)' : t === 'oncology' ? ' (oncology type)' : '') + ', _index.json, _changelog.md, _actions.jsonl and a fixed set of folders (00-inbox, labs, report, …) into it. Nothing is deleted or moved. The curated pipeline (local OCR) then processes it.';
+      if (info.curated) {
+        wizSetBi(text,
+          'Tento priečinok má vlastný kontrakt README; pripojením sa v ňom nič nevytvorí ani nepresunie.',
+          'This folder has its own README contract; nothing will be created or moved by connecting it.');
+        wizSetBi(go, 'Pripojiť', 'Connect');
+      } else if (body.folder_name) {
+        wizSetBi(text, 'Vytvorí sa nový priečinok. ' + setSk, 'A new folder is created. ' + setEn);
+        wizSetBi(go, 'Vytvoriť a pripojiť', 'Create and connect');
+      } else if (body.folder_id && body.folder_id !== wizardFolderParent) {
+        wizSetBi(text,
+          'Ak priečinok z odkazu ešte nemá kontrakt README: ' + setSk + ' Musí byť bez podpriečinkov; súbory v ňom ostanú na mieste a pipeline ich zatriedi pri prvom spracovaní.',
+          'If the linked folder has no README contract yet: ' + setEn + ' It must have no subfolders; files in it stay where they are and the pipeline files them on its first run.');
+        wizSetBi(go, 'Nastaviť a pripojiť', 'Set up and connect');
+      } else {
+        wizSetBi(text,
+          setSk + ' Súbory, ktoré už v priečinku sú, ostanú na mieste a pipeline ich zatriedi pri prvom spracovaní.',
+          setEn + ' Files already in the folder stay where they are; the pipeline files them on its first run.');
+        wizSetBi(go, 'Nastaviť a pripojiť', 'Set up and connect');
+      }
     }
 
     function wizardFolderConfirmBack() {
@@ -1505,14 +1562,15 @@
 
     function wizardFolderConfirmGo() {
       if (!wizardFolderPending) return;
-      // The user answered the "did you mean a subfolder?" hint. No flag is
-      // sent: the server decides on its own whether the folder may be connected.
+      // The user confirmed what will be written. No flag is sent: the server
+      // decides on its own whether the folder may be connected.
       wizardFolderSend(wizardFolderPending);
     }
 
     function wizardStep2SetFolder() {
       var linkVal = document.getElementById('wiz-folder-link').value.trim();
       var body = { patient_id: wizardPatientId };
+      var info = {};
       if (linkVal) {
         body.folder_id = linkVal;  // server parses links and bare ids (#563)
       } else if (wizardFolderNewMode) {
@@ -1521,13 +1579,21 @@
       } else {
         if (wizardFolderParent === 'root') return;
         body.folder_id = wizardFolderParent;
-        var info = wizardFolderInfo || {};
-        if (!info.curated && (info.subfolder_count > 0 || info.container_reason)) {
-          wizardFolderAskConfirm(body, info);
-          return;
+        info = wizardFolderInfo || {};
+        if (!info.curated && !info.container_reason && info.subfolder_count > 0) {
+          // #853: a README contract is only written into a folder without
+          // subfolders (the server refuses the same way).
+          info = {
+            code: 'bootstrap_refused',
+            reason: 'has_subfolders',
+            subfolder_count: info.subfolder_count,
+            error: 'This folder has subfolders. Oncofiles sets up its folders only in a folder without subfolders: create a new folder here (files can be moved into it later), or open one of the subfolders.',
+            error_sk: 'Tento priečinok má podpriečinky. Oncofiles si svoje priečinky vytvorí iba v priečinku bez podpriečinkov: vytvorte tu nový priečinok (súbory doň môžete presunúť neskôr) alebo otvorte niektorý z podpriečinkov.'
+          };
         }
       }
-      wizardFolderSend(body);
+      // Always ask before connecting (#835): the box says what will be written.
+      wizardFolderAskConfirm(body, info);
     }
 
     async function wizardFolderSend(body) {
@@ -1537,7 +1603,9 @@
       btn.disabled = true;
       goBtn.disabled = true;
       retryBtn.disabled = true;
-      wizardFolderStatus('Pripájam priečinok…', 'Connecting the folder…');
+      wizShow('wiz-folder-confirm', false);
+      wizShow('wiz-folder-main', true);
+      wizardFolderStatus('Pripájam a nastavujem priečinok… (môže to trvať pol minúty)', 'Connecting and setting up the folder… (this can take half a minute)');
       function unlock() {
         goBtn.disabled = false;
         retryBtn.disabled = false;
@@ -1551,19 +1619,24 @@
           body: JSON.stringify(body)
         });
         var data = await resp.json();
-        if (resp.status === 409 && data.code === 'container_folder') {
+        if (resp.status === 409 && (data.code === 'container_folder' || data.code === 'bootstrap_refused')) {
           // Server-side refusal (e.g. a pasted link the browser knows nothing about).
           wizardFolderAskConfirm(body, data);
           unlock();
           return;
         }
         if (!resp.ok) {
-          if (data.error) wizardFolderStatus(data.error, undefined, 'var(--red)');
+          if (data.error) wizardFolderStatus(data.error_sk || data.error, data.error, 'var(--red)');
           else wizardFolderStatus('Priečinok sa nepodarilo pripojiť.', 'Failed to connect the folder.', 'var(--red)');
           unlock();
           return;
         }
-        if (data.curated) {
+        if (data.bootstrapped) {
+          wizardFolderStatus(
+            'Priečinok je nastavený: kontrakt README.md a ' + data.folders_created + ' priečinkov.',
+            'Folder set up: README.md contract and ' + data.folders_created + ' folders.',
+            'var(--green)');
+        } else if (data.curated) {
           wizardFolderStatus(
             'Priečinok pripojený. Má vlastný kontrakt README.md, preto sa nevytvorili žiadne priečinky.',
             'Folder connected. It has its own README.md contract, so no folders were created.',
@@ -1593,6 +1666,32 @@
       var isRoot = !data || data.curated_root !== false;
       wizShow('wiz-step3-curated-root', isRoot);
       wizShow('wiz-step3-curated-overlap', !isRoot);
+      wizardPipelineNote(isRoot && data ? data.pipeline : null, data && data.loose_files);
+    }
+
+    // #835 / #853: which pipeline processes the folder, and when.
+    function wizardPipelineNote(p, looseFiles) {
+      var el = document.getElementById('wiz-step3-pipeline');
+      if (!el) return;
+      if (!p) { el.style.display = 'none'; return; }
+      var poll = Math.max(1, Math.round((p.poll_s || 120) / 60));
+      var settle = Math.max(1, Math.round((p.settle_s || 120) / 60));
+      var sk, en;
+      if (!p.processing_enabled) {
+        sk = 'Spracovanie je teraz na serveri pozastavené. Priečinok je zaradený a spracuje sa, keď ho správca zapne.';
+        en = 'Processing is paused on the server right now. The folder is enrolled and will be processed once the maintainer switches it on.';
+      } else {
+        sk = 'Spracovanie: kurátorovaná pipeline s lokálnym OCR. Server kontroluje priečinok každé ' + poll + ' min; nové súbory spracuje, keď sú ' + settle +
+          ' min bez zmeny. Prvý beh je náhľad (nič nemení), potom najviac ' + (p.docs_per_run || 5) + ' dokumentov na beh. Dokument od lekára alebo z inštitúcie, ktorá ešte nie je v README, počká v 00-inbox na kontrolu.';
+        en = 'Processing: the curated pipeline with local OCR. The server checks the folder every ' + poll + ' min and processes new files once they have been unchanged for ' + settle +
+          ' min. The first run is a preview (changes nothing), then up to ' + (p.docs_per_run || 5) + ' documents per run. A document from a doctor or institution not yet in the README waits in 00-inbox for review.';
+      }
+      if (looseFiles > 0) {
+        sk += ' Súbory, ktoré už boli v priečinku (' + looseFiles + '), sa zatriedia pri prvých behoch.';
+        en += ' Files that were already in the folder (' + looseFiles + ') are filed during the first runs.';
+      }
+      wizSetBi(el, sk, en);
+      el.style.display = '';
     }
 
     async function wizardStep3Sync() {
@@ -2094,8 +2193,9 @@
 
     async function wizardFinish() {
       hideOnboarding();
-      // Switch to new patient and reload
-      currentPatientId = wizardPatientId;
+      // Switch to new patient and reload. #835: by UUID (what /api/patients
+      // lists and the select holds); the slug only when no UUID came back.
+      currentPatientId = wizardPatientUuid || wizardPatientId;
       localStorage.setItem('oncofiles_patient_id', currentPatientId);
       await loadPatients();
       document.getElementById('patient-select').value = currentPatientId;

@@ -6386,6 +6386,9 @@ async def api_create_patient(request: Request) -> JSONResponse:
             from oncofiles import patient_context
 
             await patient_context.ensure_loaded(db_inst.db, created.patient_id)
+            # #835: the context's `name` was left empty; it is what tools and the
+            # curated contract (#853) show as the patient's name.
+            context_fields = {**context_fields, "name": created.display_name or patient_id}
             new_ctx = patient_context.update_context(context_fields, patient_id=created.patient_id)
             await patient_context.save_to_db(db_inst.db, new_ctx, patient_id=created.patient_id)
         except Exception:
@@ -6736,6 +6739,15 @@ async def api_gdrive_set_folder(request: Request) -> JSONResponse:
     when it has too many subfolders to check (``too_many_to_check``) or when
     the check could not run (``check_failed``). None of them can be confirmed
     away; there is no ``confirm_container`` field any more.
+
+    #853: a folder without a README contract is made curated here
+    (``layout: "curated"``, the default): the contract and the fixed folder
+    set are written from the patient-type template (``curated/bootstrap.py``),
+    the folder is connected and the patient is enrolled in curated
+    processing. Refusals are 409 ``code: bootstrap_refused`` with a
+    ``reason``; nothing is persisted or written before the checks pass. The
+    legacy category folders are created only for ``layout: "legacy"``, which
+    is admin-only.
     """
     err = _check_dashboard_auth(request)
     if err:
@@ -6760,6 +6772,13 @@ async def api_gdrive_set_folder(request: Request) -> JSONResponse:
 
         if not raw_patient_id:
             return JSONResponse({"error": "patient_id required"}, status_code=400)
+        layout = str(body.get("layout") or "curated")
+        if layout not in ("curated", "legacy"):
+            return JSONResponse({"error": "layout must be curated or legacy"}, status_code=400)
+        if layout == "legacy" and _require_admin(request) is not None:
+            return JSONResponse(
+                {"error": "The legacy folder layout is admin-only (#853)."}, status_code=403
+            )
         if not folder_id and not folder_name:
             return JSONResponse(
                 {"error": "folder_id or folder_name required"},
@@ -6804,6 +6823,7 @@ async def api_gdrive_set_folder(request: Request) -> JSONResponse:
         # Create new folder if needed — inside the browsed parent (#563), never
         # inside a curated folder (#562: its README fixes the folder set).
         created_new = False
+        plan = None  # #853 bootstrap plan, built before the first write
         if not folder_id and folder_name:
             from oncofiles.curated_folder import is_curated_folder, parse_drive_folder_ref
 
@@ -6818,7 +6838,27 @@ async def api_gdrive_set_folder(request: Request) -> JSONResponse:
                         {"error": "Cannot create a folder inside a curated folder (README.md)."},
                         status_code=400,
                     )
-            folder_id = await asyncio.to_thread(gdrive.create_folder, folder_name, create_parent)
+            if layout == "legacy":
+                folder_id = await asyncio.to_thread(
+                    gdrive.create_folder, folder_name, create_parent
+                )
+            else:
+                # #853: verified, never retried (a retried create forks the tree).
+                from oncofiles.curated import bootstrap as curated_bootstrap
+
+                gate_err = _onboarding_gate(request)
+                if gate_err is not None:
+                    return gate_err
+                try:
+                    # Refuse (e.g. no birth date) before the new folder exists.
+                    plan = await curated_bootstrap.plan_for_patient(db_inst, patient_id)
+                    folder_id = await asyncio.to_thread(
+                        curated_bootstrap.create_patient_root, gdrive, folder_name, create_parent
+                    )
+                except curated_bootstrap.BootstrapRefusedError as exc:
+                    return JSONResponse(curated_bootstrap.refusal_payload(exc), status_code=409)
+                except curated_bootstrap.BootstrapFailedError as exc:
+                    return JSONResponse(curated_bootstrap.failure_payload(exc), status_code=502)
             created_new = True
 
         # Validate folder exists before persisting
@@ -6874,6 +6914,38 @@ async def api_gdrive_set_folder(request: Request) -> JSONResponse:
                     status_code=409,
                 )
 
+        # #853: a folder without a contract gets one before it is connected.
+        # Nothing is persisted when the bootstrap refuses or stops.
+        bootstrapped = None
+        if layout == "curated":
+            from oncofiles.curated import bootstrap as curated_bootstrap
+            from oncofiles.curated_folder import clear_cache, curated_reason
+
+            clear_cache(folder_id)
+            current = await asyncio.to_thread(curated_reason, gdrive, folder_id)
+            if current and "detection failed" in current:
+                exc = curated_bootstrap.BootstrapRefusedError("check_failed")
+                return JSONResponse(curated_bootstrap.refusal_payload(exc), status_code=409)
+            if current is None:
+                gate_err = _onboarding_gate(request)
+                if gate_err is not None:
+                    return gate_err
+                try:
+                    if plan is None:
+                        plan = await curated_bootstrap.plan_for_patient(db_inst, patient_id)
+                    others = await db_inst.list_other_patient_folder_ids(patient_id=patient_id)
+                    bootstrapped = await asyncio.to_thread(
+                        curated_bootstrap.bootstrap_folder,
+                        gdrive,
+                        folder_id,
+                        plan,
+                        other_patient_folders=others,
+                    )
+                except curated_bootstrap.BootstrapRefusedError as exc:
+                    return JSONResponse(curated_bootstrap.refusal_payload(exc), status_code=409)
+                except curated_bootstrap.BootstrapFailedError as exc:
+                    return JSONResponse(curated_bootstrap.failure_payload(exc), status_code=502)
+
         # Persist folder choice (including display name from metadata)
         cached_folder_name = meta.get("name") if meta else None
         await db_inst.update_oauth_folder(
@@ -6898,19 +6970,43 @@ async def api_gdrive_set_folder(request: Request) -> JSONResponse:
             # curated_root: the folder itself has the contract (the pipeline
             # processes it), as opposed to lying inside / above a curated one.
             reason = await asyncio.to_thread(curated_reason, gdrive, folder_id)
-            return JSONResponse(
-                {
-                    "status": "ok",
-                    "folder_id": folder_id,
-                    "owner_email": owner_email,
-                    "curated": True,
-                    "curated_root": reason == "is a curated folder",
-                    "subfolders_created": 0,
-                    "subfolders_skipped": 0,
-                    "message": "Curated folder detected (README.md + _index.json): "
-                    "no folders created; legacy sync is disabled for it.",
-                }
-            )
+            payload = {
+                "status": "ok",
+                "folder_id": folder_id,
+                "owner_email": owner_email,
+                "curated": True,
+                "curated_root": reason == "is a curated folder",
+                "subfolders_created": 0,
+                "subfolders_skipped": 0,
+                "message": "Curated folder detected (README.md + _index.json): "
+                "no folders created; legacy sync is disabled for it.",
+            }
+            if bootstrapped is not None:
+                # Self-service enrolment (#853): what /api/admin/curated/nightly
+                # does for an admin. An admin can still pause the patient there.
+                await db_inst.set_curated_nightly(
+                    patient_id=patient_id, enabled=True, updated_by="self-service (#853)"
+                )
+                from oncofiles.curated.bootstrap import pipeline_summary
+
+                payload.update(
+                    {
+                        "bootstrapped": True,
+                        "enrolled": True,
+                        "folders_created": bootstrapped["folders_created"],
+                        "loose_files": bootstrapped["loose_files"],
+                        "patient_type": bootstrapped["patient_type"],
+                        "pipeline": pipeline_summary(),
+                        "message": "README contract and folders created; the curated "
+                        "pipeline will process this folder.",
+                    }
+                )
+            return JSONResponse(payload)
+        if layout != "legacy":
+            # Unreachable: a curated-layout folder was bootstrapped (or refused)
+            # above. Never fall through to the legacy folder set.
+            logger.error("gdrive-set-folder: curated layout reached the legacy path")
+            return JSONResponse({"error": "internal error"}, status_code=500)
 
         # Create category subfolders
         from oncofiles.gdrive_folders import ALL_FOLDERS, bilingual_name
@@ -6938,6 +7034,23 @@ async def api_gdrive_set_folder(request: Request) -> JSONResponse:
     except Exception:
         logger.exception("API gdrive-set-folder error")
         return JSONResponse({"error": "internal error"}, status_code=500)
+
+
+def _onboarding_gate(request: Request) -> JSONResponse | None:
+    """#853 call site of the #852 onboarding gate (``onboarding_gate.py``)."""
+    from oncofiles.onboarding_gate import onboarding_allowed
+
+    is_admin = _require_admin(request) is None
+    if onboarding_allowed(_get_dashboard_email(request), is_admin=is_admin):
+        return None
+    return JSONResponse(
+        {
+            "error": "Connecting your own Google Drive is not open yet.",
+            "error_sk": "Pripojenie vlastného Google Drive ešte nie je otvorené.",
+            "code": "onboarding_closed",
+        },
+        status_code=403,
+    )
 
 
 def _require_admin(request: Request) -> JSONResponse | None:
