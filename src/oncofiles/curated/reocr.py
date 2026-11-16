@@ -1238,6 +1238,13 @@ def candidate_page_ink(text: str) -> tuple[list | None, list | None]:
     return found["page_ink"], found["page_text_layer"]
 
 
+# Skip reason for a document automatic selection leaves out (#674, #827, #835).
+REOCR_HANDLED_BEFORE_SKIP = (
+    "handled before: re-OCR'd (backup), restored (kept text) or sent to review "
+    "with a candidate in logs; list it explicitly to read it again"
+)
+
+
 def handled_before(log_names: list[str], filename: str) -> bool:
     """Does the logs folder show this document was re-OCR'd before (a backup),
     deliberately restored (the kept re-OCR text) or sent to review with its
@@ -1301,7 +1308,8 @@ def run_reocr(
         if not d.get("explicit") and handled_before(log_names, d["filename"]):
             # #674: re-OCR'd before, its old sidecar was restored on purpose, or a
             # review already left a candidate in logs
-            res.result, res.error = "skipped", "re-OCR'd or restored before; list it explicitly"
+            # #835: the message names all three cases, the candidate included (#827)
+            res.result, res.error = "skipped", REOCR_HANDLED_BEFORE_SKIP
             continue
         if rss_limit_mb and (now_rss := rss_mb()) > rss_limit_mb:
             res.result, res.error = "skipped", f"rss {now_rss:.0f} MB > {rss_limit_mb:.0f} MB"

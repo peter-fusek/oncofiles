@@ -352,6 +352,8 @@ async def revoke_patient_tokens(
     authenticating at once; nothing is deleted. A dry run (the default) only
     reports which tokens would be revoked. A real run (dry_run=false) leaves
     one activity_log row (patient, label, count; no token material).
+    Revocation is final (#835): there is no un-revoke; create a new token
+    (dashboard Share button) instead.
 
     Args:
         patient_slug: Required. The patient's slug (e.g. 'q1b').
