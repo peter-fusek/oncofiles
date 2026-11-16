@@ -1021,6 +1021,22 @@
     .wizard-folder-nav { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 0.5rem; }
     /* #835 folder list: rows navigate into a subfolder; the breadcrumb is what gets connected */
     .wizard-folder-hint { color: var(--text-muted); font-size: 0.8125rem; margin: 0.25rem 0 0.375rem; }
+    /* #857: consent at patient creation, Google warning explainer before OAuth */
+    .wizard-consent {
+      display: flex; gap: 0.625rem; align-items: flex-start;
+      margin: 0.5rem 0 0.25rem; font-size: 0.8125rem; line-height: 1.5; color: var(--ink);
+      cursor: pointer;
+    }
+    .wizard-consent input[type="checkbox"] {
+      width: 1.125rem; height: 1.125rem; min-height: 0; margin: 0.15rem 0 0; flex: none;
+    }
+    .wizard-consent-links { font-size: 0.8125rem; margin: 0 0 0.25rem 1.75rem; }
+    .wizard-explainer {
+      font-size: 0.8125rem; line-height: 1.55; color: var(--ink-2);
+      border-left: 3px solid var(--rule-2); padding: 0.25rem 0 0.25rem 0.75rem; margin: 0 0 1rem;
+    }
+    .wizard-explainer p { margin: 0 0 0.5rem; }
+    .wizard-explainer p:last-child { margin-bottom: 0; }
     .wizard-folder-list { list-style: none; margin: 0 0 0.5rem; padding: 0; border: 1.5px solid var(--rule-2); border-radius: 8px; max-height: 13rem; overflow-y: auto; }
     .wizard-folder-list:empty { display: none; }
     .wizard-folder-list[aria-busy="true"] { opacity: 0.6; }

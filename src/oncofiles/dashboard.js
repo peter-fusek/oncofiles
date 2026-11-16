@@ -1134,6 +1134,7 @@
       document.getElementById('wiz-diagnosis').value = '';
       document.getElementById('wiz-email').value = '';
       document.getElementById('wiz-lang').value = 'sk';
+      document.getElementById('wiz-consent').checked = false;  // #857: consent is per patient
       document.getElementById('wiz-folder-link').value = '';  // a pasted link wins, so never keep a stale one
       document.getElementById('wiz-step1-error').style.display = 'none';
       // Show step 1, hide others
@@ -1236,6 +1237,10 @@
       btn.textContent = btn.getAttribute(dashLang === 'sk' ? 'data-sk' : 'data-en');
     }
 
+    // #857: version of the privacy + terms text the consent checkbox refers to.
+    // Must equal oncofiles.patient_consent.CONSENT_VERSION (a test keeps them equal).
+    var CONSENT_VERSION = '2026-11-17';
+
     async function wizardStep1Submit() {
       var btn = document.getElementById('wiz-create-btn');
       var errEl = document.getElementById('wiz-step1-error');
@@ -1264,7 +1269,20 @@
         return;
       }
 
+      // #857: the server refuses a patient without this consent as well.
+      if (!document.getElementById('wiz-consent').checked) {
+        wizSetBi(errEl,
+          'Potvrďte prosím súhlas so spracovaním zdravotných údajov tejto osoby.',
+          'Please confirm consent to the processing of this person’s health data.');
+        errEl.style.display = 'block';
+        btn.disabled = false;
+        wizardResetCreateBtn(btn);
+        return;
+      }
+
       var body = JSON.stringify({
+        consent: true,
+        consent_version: CONSENT_VERSION,
         patient_id: pid,
         display_name: name,
         patient_type: document.getElementById('wiz-type').value || 'oncology',
@@ -1299,6 +1317,14 @@
           errEl.textContent = dashLang === 'sk'
             ? 'Tento pacient už existuje. Zvoľte iné ID.'
             : 'This patient already exists — pick a different ID.';
+          errEl.style.display = 'block';
+          btn.disabled = false;
+          wizardResetCreateBtn(btn);
+          return;
+        }
+        if (resp.status === 400 && data.error_sk && data.error_en) {
+          // Consent refusal (#857): bilingual message from the server.
+          wizSetBi(errEl, data.error_sk, data.error_en);
           errEl.style.display = 'block';
           btn.disabled = false;
           wizardResetCreateBtn(btn);

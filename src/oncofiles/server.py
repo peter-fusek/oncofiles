@@ -2475,69 +2475,100 @@ async def privacy_policy(request: Request) -> HTMLResponse:
         _PRIVACY_HTML = _legal_page(
             "Privacy Policy",
             """
-<p class="meta">Effective: March 25, 2026 · Last updated: November 2026</p>
+<p class="meta">Effective: March 25, 2026 · Last updated: November 17, 2026 ·
+Consent version 2026-11-17</p>
 
 <p>Oncofiles is operated by <strong>Instarea s.r.o.</strong> ("we", "us").
-This policy describes how we handle your data when you use Oncofiles
-(<a href="https://oncofiles.com">oncofiles.com</a>).</p>
+This policy describes how Oncofiles (<a href="https://oncofiles.com">oncofiles.com</a>)
+handles your data as the service runs today.</p>
 
-<h2>1. What Data We Access</h2>
+<h2 id="access">1. What Data We Access</h2>
 <ul>
-<li><strong>Google Drive</strong> — Google's consent screen asks for access to your Google
-Drive, because Google offers no narrower permission for this kind of folder work. Oncofiles
-reads and changes <strong>only the folder you choose</strong> for your medical documents.
-Inside that folder it may rename files to a standard
-name, move them into subfolders (for example Labs or Reports), and add a text transcript
-(<code>.md</code>) next to each file and a <code>README.md</code> with the folder's rules.
-<strong>Oncofiles never permanently deletes anything.</strong> A file it removes from a
-subfolder goes to your Google Drive trash, where you can restore it.</li>
+<li><strong>Google sign-in</strong> — your Google account e-mail address. We use it to decide
+which patients you may see.</li>
+<li><strong>Google Drive</strong> — Google's consent screen asks for access to your whole Google
+Drive (read and write). A narrower Google permission would only cover files Oncofiles created
+itself, so Oncofiles could not see a file you add to the folder yourself, such as a scan from your
+phone. Oncofiles reads and changes <strong>only the folder you choose</strong> for a patient.
+Inside that folder it may rename files to a standard name, move them into subfolders (for
+example Labs or Reports), add a text transcript (<code>.md</code>) next to each file, and keep a
+<code>README.md</code> with the folder's rules and a few files that record its own work.
+<strong>Oncofiles never permanently deletes anything.</strong> Automatic processing does not
+move your files to the trash; a cleanup that you start yourself moves files to your Google
+Drive trash, where you can restore them.</li>
 <li><strong>Gmail and Google Calendar</strong> — not used at the moment. If we add them later,
 we will ask for your separate consent first.</li>
 </ul>
+<p>Oncofiles has not completed Google's app verification yet. Google therefore shows the
+warning "Google hasn't verified this app" before the consent screen, and allows at most 100
+users. The warning means that Google has not yet reviewed the app.</p>
 <p>We only access data you explicitly authorize through Google's OAuth consent screen.
 You can revoke access at any time via
 <a href="https://myaccount.google.com/permissions">Google Account Permissions</a>.</p>
 
-<h2>2. How We Process Your Data</h2>
+<h2 id="consent">2. Who Can Use Oncofiles, and Consent</h2>
 <ul>
-<li>Text recognition (OCR) and document classification run <strong>on a local AI model on our
-own server in Slovakia (EU)</strong>. Background processing does not send your documents to any
-cloud AI service.</li>
-<li>Lab values are extracted from the recognised text by rules. Each value keeps a link to its
-source document, page and line, and a verification state (machine-verified, unverified, or
-verified by a person).</li>
-<li><strong>When you ask about your records in Claude or ChatGPT</strong>, the results you
-request (document text, values, summaries) are sent to that assistant as part of your
-conversation. This happens only on your request and is governed by your own agreement with
-Anthropic or OpenAI, including their retention and training settings.</li>
+<li>New users can connect their own Google Drive only by invitation at the moment.</li>
+<li>A patient can be someone with cancer or someone who keeps general health records.</li>
+<li>You can create a patient for yourself, or, as a caregiver, for another person. When you
+create a patient you confirm that you are this person, or that you have their consent or
+another right (for example as a parent or legal guardian) to manage their health data, and you
+agree to the processing of this health data as described here. Health data is a special
+category of personal data, and we process it on the basis of this explicit consent
+(GDPR Art. 9(2)(a)).</li>
+<li>We record that confirmation: the version of this text, the time, and a keyed hash of your
+e-mail address. The record does not contain the e-mail address itself.</li>
+</ul>
+
+<h2 id="processing">3. How We Process Your Data</h2>
+<ul>
+<li>Text recognition (OCR), document classification and the extraction of values run
+<strong>on a local AI model on our own server in Slovakia (EU)</strong>. Background processing
+does not send your documents to any cloud AI service. The server's cloud AI option is switched
+off, and the indexing and extraction jobs refuse cloud AI calls in their code even if it were
+switched on.</li>
+<li>Lab values are extracted from the recognised text by rules. Diagnoses, treatments and
+similar facts are read by the local model, and the server checks that their text is printed on
+the page. Each value keeps a link to its source document, page and text, and a
+verification state: machine-verified, read by the model with its text verified on the page,
+unverified, or verified or corrected by a person.</li>
+<li><strong>When you ask about your records in your own AI assistant</strong> (for example
+Claude or ChatGPT, connected to Oncofiles), the assistant receives what it requests from
+Oncofiles for your question (document text, values, summaries) as part of your conversation.
+This happens only when you ask, and it is governed by your own agreement with that
+assistant's provider, including their retention and training settings.</li>
 </ul>
 <p>We do <strong>not</strong> use your data for advertising, profiling, or any purpose
 unrelated to managing your medical documents.</p>
 
-<h2>3. Where Data Is Stored</h2>
+<h2 id="storage">4. Where Data Is Stored</h2>
 <ul>
-<li><strong>On our server in Slovakia (EU), on an encrypted disk</strong> — the document index,
-the recognised text, extracted values with their verification state, and a log of the tool
-calls made on your records.</li>
-<li><strong>Backups</strong> — encrypted, kept in Slovakia (daily, with 7 daily, 4 weekly and
-6 monthly versions). Before each change to the service we also keep a short-lived copy of the
-database (up to 14 days), and before each bulk update of verification data the server keeps
-its last 5 copies.</li>
-<li><strong>Server logs</strong> — our web server keeps technical access logs, including IP
-addresses, for security and troubleshooting.</li>
+<li><strong>On our server in Slovakia (EU), on an encrypted disk</strong> — the patient profile
+(name, date of birth, patient type, an optional diagnosis note and the caregiver's e-mail
+address), the Google access token for Drive, the document index, the recognised text, extracted
+values with their verification state, the consent record (section 2) and the access log
+(section 6).</li>
+<li><strong>Backups</strong> — local and encrypted, kept for a limited time. Before a bulk update
+of extracted values the server also makes a safety copy of the database; only the 5 newest
+safety copies are kept.</li>
+<li><strong>Logs</strong> — the application's technical log masks e-mail addresses and tokens
+and is kept for 7 days. The server sees IP addresses of requests, for security and to limit
+abuse.</li>
 <li><strong>Your Google Drive</strong> — your original files, plus the transcripts and
 <code>README.md</code> described in section 1.</li>
 </ul>
 
-<h2>4. Data Sharing</h2>
+<h2 id="sharing">5. Data Sharing</h2>
 <p>We do <strong>not</strong> sell, share, or transfer your personal data. Other services
 involved:</p>
 <ul>
 <li><strong>Google</strong> — stores your files in your own Google Drive account.</li>
-<li><strong>Anthropic (Claude) / OpenAI (ChatGPT)</strong> — only what you ask for in those
-assistants (section 2).</li>
+<li><strong>Your AI assistant</strong> (for example Anthropic's Claude or OpenAI's ChatGPT) —
+only what it requests when you ask (section 3).</li>
 <li><strong>Resend</strong> (e-mail delivery) — if you join the waitlist, your e-mail address is
-used to notify us and to write to you about access. No medical data is sent.</li>
+used to notify us and to write to you about access. When a patient is created, we receive a
+notification with the patient's display name and the caregiver's e-mail address. No medical
+documents or values are sent.</li>
 <li><strong>Google Analytics</strong> — only on our public web pages (home page and demo), and
 only after you accept analytics cookies in the cookie banner. It measures visits (pages viewed,
 approximate location, device, where you came from). The logged-in app does not load Google
@@ -2546,27 +2577,41 @@ Analytics, and it never receives your medical documents or values.</li>
 <p>Hosting is our own server in Slovakia (EU); no third-party hosting or database provider
 stores or processes your data.</p>
 
-<h2>5. Data Retention</h2>
-<p>Your data is retained as long as your account is active. You can request deletion of all
-stored data, including extracted values and the activity log, by contacting us. Original files
-in your Google Drive are never deleted by Oncofiles.</p>
+<h2 id="audit">6. Access Log</h2>
+<p>Every request an AI assistant makes to Oncofiles is logged: the tool used, the time, the
+patient, how the caller signed in, whether it succeeded, and a keyed hash of the caller's
+e-mail address (never the address itself). Arguments are logged only when they cannot contain
+health data (for example a document number or an option); everything else is stored only as
+its length. We use this log to answer who accessed which records.</p>
+<p>Administrators of the service can open any patient's records, for operation and
+support.</p>
 
-<h2>6. Your Rights (GDPR)</h2>
+<h2 id="retention">7. Data Retention</h2>
+<p>Your data is retained as long as your account is active. Oncofiles does not delete data
+automatically. You can ask us to delete all data stored about a patient, including extracted
+values and the access log; see section 8. Original files in your Google Drive are never deleted
+by Oncofiles.</p>
+
+<h2 id="rights">8. Your Rights (GDPR)</h2>
 <p>If you are in the EU/EEA, you have the right to:</p>
 <ul>
 <li>Access your personal data</li>
 <li>Request correction or deletion</li>
 <li>Data portability (export your data)</li>
 <li>Withdraw consent at any time</li>
-<li>Lodge a complaint with your supervisory authority</li>
+<li>Lodge a complaint with your supervisory authority (in Slovakia: the Office for Personal
+Data Protection of the Slovak Republic)</li>
 </ul>
+<p>To use these rights, write to us by e-mail (section 10). Requests for access, export and
+deletion are handled by hand, within 30 days. You can stop Oncofiles' access to your Google
+Drive at any time in your Google Account (section 1).</p>
 
-<h2>7. Google API Services Disclosure</h2>
+<h2 id="google-api">9. Google API Services Disclosure</h2>
 <p>Oncofiles' use and transfer of information received from Google APIs adheres to the
 <a href="https://developers.google.com/terms/api-services-user-data-policy">Google API
 Services User Data Policy</a>, including the Limited Use requirements.</p>
 
-<h2>8. Contact</h2>
+<h2 id="contact">10. Contact</h2>
 <p>For privacy questions: <a href="mailto:peter.fusek@instarea.sk">peter.fusek@instarea.sk</a></p>
 <p>Instarea s.r.o. · Bratislava, Slovakia</p>
 """,
@@ -2584,36 +2629,45 @@ async def terms_of_service(request: Request) -> HTMLResponse:
         _TERMS_HTML = _legal_page(
             "Terms of Service",
             """
-<p class="meta">Effective: March 25, 2026 · Last updated: November 2026</p>
+<p class="meta">Effective: March 25, 2026 · Last updated: November 17, 2026 ·
+Consent version 2026-11-17</p>
 
 <p>These terms govern your use of Oncofiles (<a href="https://oncofiles.com">oncofiles.com</a>),
 operated by <strong>Instarea s.r.o.</strong> ("we", "us").</p>
 
-<h2>1. Service Description</h2>
-<p>Oncofiles keeps a Google Drive folder of medical documents organized, recognizes their
-text on its own server in Slovakia, extracts lab values with a link to their source, and makes
-the records available to AI assistants such as Claude and ChatGPT. It is designed for cancer
-patients and their caregivers.</p>
+<h2 id="service">1. Service Description</h2>
+<p>Oncofiles keeps a Google Drive folder of medical documents organized. It recognizes their
+text with a local AI model on its own server in Slovakia, extracts values with a link to their
+source, and makes the records available to AI assistants such as Claude and ChatGPT when you
+ask them. It is designed for cancer patients, people who keep general health records, and
+their caregivers.</p>
 
-<h2>2. Not Medical Advice</h2>
+<h2 id="not-medical-advice">2. Not Medical Advice</h2>
 <p><strong>Oncofiles is not a medical device and does not provide medical advice.</strong>
 It organizes and presents your existing medical documents. All medical decisions should be
-made with your healthcare providers. AI-generated summaries and analyses are for
-informational purposes only.</p>
+made with your healthcare providers. Automatically recognized text and extracted values can be
+wrong; check them against the source document, which every value links to. AI-generated
+summaries and analyses are for informational purposes only.</p>
 
-<h2>3. Your Data</h2>
+<h2 id="your-data">3. Your Data</h2>
 <p>You retain full ownership of your medical documents and data. Oncofiles accesses your
 Google services only with your explicit consent, which you can revoke at any time.
 See our <a href="/privacy">Privacy Policy</a> for details.</p>
+<p>When you create a patient, you confirm that you are this person, or that you have their
+consent or another right (for example as a parent or legal guardian) to manage their health
+data in Oncofiles. Do not create a patient for someone without that consent or right.</p>
 
-<h2>4. Account and Access</h2>
+<h2 id="account">4. Account and Access</h2>
 <ul>
 <li>You must have a Google account to use Oncofiles</li>
+<li>New users can connect their own Google Drive only by invitation at the moment</li>
+<li>Oncofiles has not completed Google's app verification yet, so Google shows an "unverified
+app" warning and allows at most 100 users</li>
 <li>You are responsible for maintaining the security of your bearer tokens and credentials</li>
 <li>Free tier: up to 500 documents per patient</li>
 </ul>
 
-<h2>5. Acceptable Use</h2>
+<h2 id="acceptable-use">5. Acceptable Use</h2>
 <p>You agree not to:</p>
 <ul>
 <li>Use Oncofiles for purposes other than personal medical document management</li>
@@ -2622,18 +2676,24 @@ See our <a href="/privacy">Privacy Policy</a> for details.</p>
 <li>Use the service for commercial medical data processing without authorization</li>
 </ul>
 
-<h2>6. Availability</h2>
+<h2 id="availability">6. Availability</h2>
 <p>We aim for high availability but do not guarantee uninterrupted service. Oncofiles
 is provided "as is" without warranties of any kind. We are not liable for data loss
 beyond what is stored in your Google Drive. Oncofiles never permanently deletes files: it
-only renames and moves them inside the folder you chose, and anything it removes goes to
-your Google Drive trash.</p>
+only renames and moves them inside the folder you chose, and a cleanup that you start yourself
+moves files to your Google Drive trash, where you can restore them.</p>
 
-<h2>7. Changes</h2>
-<p>We may update these terms. Continued use after changes constitutes acceptance.
-Material changes will be communicated via the dashboard or email.</p>
+<h2 id="ending">7. Ending Your Use</h2>
+<p>You can stop Oncofiles' access to your Google Drive at any time in your
+<a href="https://myaccount.google.com/permissions">Google Account</a>. To have the data stored
+about a patient exported or deleted, write to us by e-mail; we handle such requests by hand,
+within 30 days. Your files in Google Drive stay where they are.</p>
 
-<h2>8. Contact</h2>
+<h2 id="changes">8. Changes</h2>
+<p>We may update these terms. The date at the top of this page shows the latest version.
+When we change what you agree to when creating a patient, the consent version changes.</p>
+
+<h2 id="contact">9. Contact</h2>
 <p><a href="mailto:peter.fusek@instarea.sk">peter.fusek@instarea.sk</a></p>
 <p>Instarea s.r.o. · Bratislava, Slovakia</p>
 """,
@@ -6407,8 +6467,15 @@ def _parse_new_patient_context_fields(body: dict) -> tuple[dict, str | None]:
 async def api_create_patient(request: Request) -> JSONResponse:
     """Create a new patient. Requires bearer or dashboard session auth.
 
-    Body: {patient_id, display_name, caregiver_email?, diagnosis_summary?,
-    preferred_lang?, patient_type?, date_of_birth?}
+    Body: {patient_id, display_name, consent, consent_version,
+    caregiver_email?, diagnosis_summary?, preferred_lang?, patient_type?,
+    date_of_birth?}
+
+    ``consent`` (JSON ``true``) and ``consent_version`` (equal to
+    ``patient_consent.CONSENT_VERSION``) are required from every caller,
+    the operator and admins included (#857); without them nothing is written
+    (400). The consent row (version, time, keyed caller hash, never the
+    e-mail) is written in the same transaction as the patient.
 
     ``patient_type`` (oncology | general, default oncology) and the optional
     ``date_of_birth`` (ISO date, not in the future) are validated and stored
@@ -6428,7 +6495,16 @@ async def api_create_patient(request: Request) -> JSONResponse:
         return rate_err
     try:
         db_inst: Database = request.app.state.fastmcp_server._lifespan_result["db"]
+        from oncofiles import patient_consent
+        from oncofiles.secrets_keys import caller_email_hash
+
         body = await request.json()
+        if not isinstance(body, dict):
+            return JSONResponse({"error": "JSON object required"}, status_code=400)
+        # #857: no patient without recorded consent, checked before any write.
+        consent_err = patient_consent.consent_error(body)
+        if consent_err:
+            return JSONResponse(patient_consent.refusal_payload(consent_err), status_code=400)
         patient_id = body.get("patient_id", "").strip().lower()
         if not patient_id or len(patient_id) < 2:
             return JSONResponse({"error": "patient_id required (min 2 chars)"}, status_code=400)
@@ -6460,7 +6536,15 @@ async def api_create_patient(request: Request) -> JSONResponse:
             diagnosis_summary=body.get("diagnosis_summary"),
             preferred_lang=body.get("preferred_lang", "sk"),
         )
-        created = await db_inst.insert_patient(patient)
+        # The consent is the signed-in caller's: hash the session e-mail (None
+        # for the operator's static bearer, which has no e-mail).
+        _caller, caller_is_admin = _dashboard_caller(request)
+        created = await db_inst.insert_patient(
+            patient,
+            consent_version=patient_consent.CONSENT_VERSION,
+            consent_caller_hash=caller_email_hash(_get_dashboard_email(request) or ""),
+            consent_by_admin=caller_is_admin,
+        )
         # No bearer token is minted here (#824): tokens are opt-in via
         # /api/patient-tokens. NB: `created.patient_id` is the UUID; the
         # request-body `patient_id` is the slug.

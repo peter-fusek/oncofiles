@@ -109,11 +109,23 @@ class PatientsMixin:
         patients = await self.list_patients(active_only=True)
         return patients[0].patient_id if patients else ""
 
-    async def insert_patient(self, patient: Patient) -> Patient:
+    async def insert_patient(
+        self,
+        patient: Patient,
+        *,
+        consent_version: str | None = None,
+        consent_caller_hash: str | None = None,
+        consent_by_admin: bool = False,
+    ) -> Patient:
         """Create a new patient.
 
         If patient_id is not a UUID, it is treated as a slug and a UUID is generated.
         If slug is empty, the original patient_id value is used as the slug.
+
+        With ``consent_version`` (#857) a ``patient_consents`` row is written in
+        the same transaction, so a patient created through ``POST /api/patients``
+        never exists without its consent record. ``consent_caller_hash`` is the
+        keyed hash from ``secrets_keys.caller_email_hash``, never an e-mail.
         """
         import re as _re
         import uuid as _uuid
@@ -150,8 +162,29 @@ class PatientsMixin:
                 patient.preferred_lang,
             ),
         ):
-            await self.db.commit()
+            pass
+        if consent_version:
+            try:
+                await self.db.execute(
+                    """INSERT INTO patient_consents
+                       (patient_id, consent_version, caller_email_hash, is_admin)
+                       VALUES (?, ?, ?, ?)""",
+                    (pid, consent_version, consent_caller_hash, int(bool(consent_by_admin))),
+                )
+            except Exception:
+                await self.db.rollback()  # no patient without its consent record
+                raise
+        await self.db.commit()
         return (await self.get_patient(pid)) or patient
+
+    async def get_patient_consents(self, *, patient_id: str) -> list[dict[str, Any]]:
+        """Consent rows of one patient, oldest first (#857). Never holds an e-mail."""
+        async with self.db.execute(
+            """SELECT id, patient_id, consent_version, consented_at, caller_email_hash, is_admin
+               FROM patient_consents WHERE patient_id = ? ORDER BY id""",
+            (patient_id,),
+        ) as cursor:
+            return [dict(r) for r in await cursor.fetchall()]
 
     async def update_patient(
         self,

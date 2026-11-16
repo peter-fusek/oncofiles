@@ -35,6 +35,7 @@ from oncofiles.curated_folder import DriveWriteBlockedError, mark_if_curated
 from oncofiles.database import Database
 from oncofiles.gdrive_client import GDriveClient
 from oncofiles.models import OAuthToken, Patient
+from oncofiles.patient_consent import CONSENT_VERSION
 
 SRC = Path(server.__file__).parent
 TODAY = date(2027, 3, 4)
@@ -1036,6 +1037,8 @@ async def test_create_patient_stores_the_display_name_in_the_context(db: Databas
     req.cookies = {}
     req.json = AsyncMock(
         return_value={
+            "consent": True,
+            "consent_version": CONSENT_VERSION,
             "patient_id": "testa-853",
             "display_name": "Testa Vymyslená",
             "date_of_birth": DOB,
