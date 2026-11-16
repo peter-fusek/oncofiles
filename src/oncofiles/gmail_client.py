@@ -10,6 +10,8 @@ import ssl
 import time
 from typing import Any
 
+from oncofiles.google_service import PerThreadServiceMixin, ThreadServices
+
 logger = logging.getLogger(__name__)
 
 _RETRYABLE_STATUS_CODES = {429, 500, 502, 503}
@@ -61,22 +63,16 @@ def _retry_on_transient(func):
     return wrapper
 
 
-class GmailClient:
+class GmailClient(PerThreadServiceMixin):
     """Read-only Gmail API client for scanning medical emails."""
 
+    # One service per thread (#579): see oncofiles.google_service.
+    _API = ("gmail", "v1")
+
     def __init__(self, credentials: Any) -> None:
-        from googleapiclient.discovery import build
-
         self._creds = credentials
-        self._service = build("gmail", "v1", credentials=credentials)
-
-    def _rebuild_service(self) -> None:
-        from googleapiclient.discovery import build
-
-        old = self._service
-        if old and hasattr(old, "_http") and old._http:
-            old._http.close()
-        self._service = build("gmail", "v1", credentials=self._creds)
+        self._services = ThreadServices(*self._API, credentials)
+        self._services.get()
 
     @classmethod
     def from_oauth(
@@ -88,7 +84,6 @@ class GmailClient:
     ) -> GmailClient:
         """Create a GmailClient from OAuth 2.0 user credentials."""
         from google.oauth2.credentials import Credentials
-        from googleapiclient.discovery import build
 
         creds = Credentials(
             token=access_token,
@@ -99,7 +94,8 @@ class GmailClient:
         )
         instance = cls.__new__(cls)
         instance._creds = creds
-        instance._service = build("gmail", "v1", credentials=creds)
+        instance._services = ThreadServices(*cls._API, creds)
+        instance._services.get()
         return instance
 
     @_retry_on_transient
