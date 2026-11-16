@@ -219,9 +219,9 @@
       /* Drive-like chrome (Material-style greys, not Google branding) */
       --gd-bg: #f8fafd; --gd-surface: #ffffff; --gd-ink: #1f1f1f; --gd-ink-2: #444746; --gd-line: #e3e3e3;
       --gd-search: #e9eef6; --gd-sel: #c2e7ff; --gd-folder: #5f6368; --gd-pdf: #ea4335; --gd-img: #d93025; --gd-txt: #4285f4;
-      --display: 'Outfit', 'DM Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-      --sans: 'DM Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-      --num: 'IBM Plex Sans', 'DM Sans', -apple-system, sans-serif;
+      --display: 'Outfit', 'Outfit Fallback', 'DM Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      --sans: 'DM Sans', 'DM Sans Fallback', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      --num: 'IBM Plex Sans', 'DM Sans', 'DM Sans Fallback', -apple-system, sans-serif;
       --ui: 'Google Sans', Roboto, Arial, 'Helvetica Neue', sans-serif;
     }
     @media (prefers-color-scheme: dark) {
@@ -244,6 +244,13 @@
       --gd-bg: #1b1b1b; --gd-surface: #131314; --gd-ink: #e3e3e3; --gd-ink-2: #c4c7c5; --gd-line: #3c4043;
       --gd-search: #282a2c; --gd-sel: #004a77; --gd-folder: #c4c7c5;
     }
+    /* Fallback faces with the web fonts' widths (measured against Arial), so the
+       text keeps its line breaks when Outfit and DM Sans swap in and a deep link
+       does not drift. Local fonts only: nothing is downloaded. */
+    @font-face { font-family: 'Outfit Fallback'; font-weight: 700; src: local('Arial Bold'), local('Arial-BoldMT'), local('Arial'); size-adjust: 94.8%; }
+    @font-face { font-family: 'Outfit Fallback'; font-weight: 300; src: local('Arial'), local('ArialMT'); size-adjust: 98.3%; }
+    @font-face { font-family: 'DM Sans Fallback'; font-weight: 400 500; src: local('Arial'), local('ArialMT'); size-adjust: 103.9%; }
+    @font-face { font-family: 'DM Sans Fallback'; font-weight: 600 800; src: local('Arial Bold'), local('Arial-BoldMT'), local('Arial'); size-adjust: 101.8%; }
     /* Navy band: same tokens, navy surface. Stays navy in dark mode. */
     .tone-navy {
       --bg: #000059; --bg-2: #000040; --card: #000040;
@@ -296,18 +303,40 @@
 
     /* ── Sticky bar ───────────────────────────────────────── */
     header.site { position: sticky; top: 0; z-index: 900; }
-    header.site .wrap { display: flex; align-items: center; gap: 16px; min-height: 64px; }
+    header.site .wrap { display: flex; align-items: center; gap: 12px; min-height: 64px; }
     .logo { font: 700 1.55rem/1 var(--display); letter-spacing: -0.035em; color: #ffffff; text-decoration: none; padding: 10px 0; }
     .logo span { color: var(--coral); }
-    nav.top { display: flex; align-items: center; gap: 2px; margin-left: auto; font-size: 0.95rem; }
-    nav.top a.wide { display: none; color: var(--ink-2); text-decoration: none; padding: 10px 12px; font-weight: 500; }
-    nav.top a.wide:hover, nav.top a.wide[aria-current] { color: #ffffff; text-decoration: underline; text-decoration-color: var(--turq); text-decoration-thickness: 2px; text-underline-offset: 7px; }
-    @media (min-width: 900px) { nav.top a.wide { display: inline-block; } }
+    nav.top { display: flex; align-items: center; gap: 6px; margin-left: auto; font-size: 0.95rem; }
+    /* Narrow screens: chapters, Demo and Sign in sit in a disclosure under the bar */
+    .menu-btn { display: inline-flex; align-items: center; gap: 9px; min-height: 44px; padding: 0 13px; background: none; border: 1.5px solid var(--rule-2); border-radius: 10px; color: #ffffff; font: 600 0.95rem var(--sans); cursor: pointer; }
+    .menu-btn i { width: 16px; height: 2px; background: currentColor; box-shadow: 0 -5px 0 currentColor, 0 5px 0 currentColor; }
+    .menu-btn[aria-expanded="true"] { background: #ffffff; border-color: #ffffff; color: #000059; }
+    @media (max-width: 419px) {
+      header.site .wrap { gap: 8px; }
+      nav.top { gap: 2px; }
+      .menu-btn { padding: 0 13px; }
+      .menu-btn span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+      .btn-nav { padding: 8px 12px; }
+    }
+    .nav-links { display: none; position: absolute; left: 0; right: 0; top: 100%; flex-direction: column; padding: 4px 20px 16px; background: #000040; border-top: 1px solid var(--rule); }
+    .nav-links.open { display: flex; }
+    .nav-links a { display: flex; align-items: center; min-height: 48px; border-bottom: 1px solid var(--rule); color: #ffffff; font-weight: 600; text-decoration: none; }
+    .nav-links a:hover, .nav-links a[aria-current] { text-decoration: underline; text-decoration-color: var(--turq); text-decoration-thickness: 2px; text-underline-offset: 7px; }
+    @media (min-width: 760px) { .nav-links { padding-left: 32px; padding-right: 32px; } }
+    @media (min-width: 1100px) {
+      .menu-btn { display: none; }
+      .nav-links, .nav-links.open { display: flex; position: static; flex-direction: row; align-items: center; gap: 0; padding: 0; background: none; border: 0; }
+      .nav-links a { min-height: 44px; padding: 0 10px; border: 0; color: var(--ink-2); font-weight: 500; }
+      .nav-links a:hover, .nav-links a[aria-current] { color: #ffffff; }
+      .nav-links .nav-demo { margin: 0 4px 0 10px; padding: 0 14px; border: 1.5px solid var(--rule-2); border-radius: 10px; color: #ffffff; font-weight: 600; }
+      .nav-links .nav-demo:hover { border-color: #ffffff; text-decoration: none; }
+      .nav-links .nav-signin { color: #ffffff; font-weight: 600; }
+    }
     .lang { min-width: 44px; min-height: 44px; background: none; border: 0; border-radius: 8px; font: 700 0.9rem var(--sans); color: var(--ink-2); cursor: pointer; }
     .lang:hover { color: #ffffff; }
-    .btn-nav { min-height: 44px; padding: 8px 16px; margin-left: 6px; font-size: 0.95rem; }
+    .btn-nav { min-height: 44px; padding: 8px 16px; font-size: 0.95rem; white-space: nowrap; }
     .cta-long { display: none; }
-    @media (min-width: 1080px) { .cta-long { display: inline; } .cta-short { display: none; } }
+    @media (min-width: 1280px) { .cta-long { display: inline; } .cta-short { display: none; } }
 
     /* ── Chapters ─────────────────────────────────────────── */
     .chapter-head { padding-top: clamp(56px, 8vw, 104px); }
@@ -957,11 +986,16 @@
     <div class="wrap">
       <a class="logo" href="/" aria-label="Oncofiles">oncofiles<span>.</span></a>
       <nav class="top" aria-label="Hlavná navigácia" data-sk-label="Hlavná navigácia" data-en-label="Main navigation">
-        <a class="wide" href="#problem" data-sk="Problém" data-en="Problem">Problém</a>
-        <a class="wide" href="#use-cases" data-sk="Príklady" data-en="Use cases">Príklady</a>
-        <a class="wide" href="#how-it-works" data-sk="Ako to funguje" data-en="How it works">Ako to funguje</a>
-        <a class="wide" href="#setup" data-sk="Nastavenie" data-en="Setup">Nastavenie</a>
-        <a class="wide" href="#trust" data-sk="Dôvera" data-en="Trust">Dôvera</a>
+        <button id="menu-toggle" class="menu-btn" type="button" aria-expanded="false" aria-controls="nav-links" data-action="toggleMenu"><i aria-hidden="true"></i><span data-sk="Menu" data-en="Menu">Menu</span></button>
+        <div class="nav-links" id="nav-links">
+          <a class="wide" href="#problem" data-sk="Problém" data-en="Problem">Problém</a>
+          <a class="wide" href="#use-cases" data-sk="Príklady" data-en="Use cases">Príklady</a>
+          <a class="wide" href="#how-it-works" data-sk="Ako to funguje" data-en="How it works">Ako to funguje</a>
+          <a class="wide" href="#setup" data-sk="Nastavenie" data-en="Setup">Nastavenie</a>
+          <a class="wide" href="#trust" data-sk="Dôvera" data-en="Trust">Dôvera</a>
+          <a class="nav-demo" href="/demo" title="Ukážka bez prihlásenia" data-sk-title="Ukážka bez prihlásenia" data-en-title="Demo, no sign-in needed" data-sk="Demo" data-en="Demo">Demo</a>
+          <a class="nav-signin" href="/dashboard" title="Prihlásenie k vlastným údajom" data-sk-title="Prihlásenie k vlastným údajom" data-en-title="Sign in to your own data" data-sk="Prihlásiť sa" data-en="Sign in">Prihlásiť sa</a>
+        </div>
         <button id="lang-toggle" class="lang" type="button" data-action="toggleLang" aria-label="Switch language / Prepnúť jazyk">EN</button>
         <a class="btn btn-nav" href="#join"><span class="cta-long" data-sk="Pridať sa na zoznam" data-en="Join the waitlist">Pridať sa na zoznam</span><span class="cta-short" data-sk="Pridať sa" data-en="Join">Pridať sa</span></a>
       </nav>
@@ -1539,7 +1573,7 @@ Nič sa nemaže, len presúva do koša.
         <ul class="figures">
           <li><b>500</b><span data-sk="dokumentov na pacienta zadarmo, bez kreditnej karty" data-en="documents per patient free, no credit card">dokumentov na pacienta zadarmo, bez kreditnej karty</span></li>
           <li><b>MIT</b><span data-sk="otvorený kód, ktorý si môžete prevádzkovať sami" data-en="open-source code you can host yourself">otvorený kód, ktorý si môžete prevádzkovať sami</span></li>
-          <li><b>23</b><span data-sk="produktov dodala Instarea od roku 2008" data-en="products shipped by Instarea since 2008">produktov dodala Instarea od roku 2008</span></li>
+          <li><b>28</b><span data-sk="produktov dodala Instarea od roku 2008" data-en="products shipped by Instarea since 2008">produktov dodala Instarea od roku 2008</span></li>
         </ul>
       </div>
 
@@ -1597,7 +1631,7 @@ Nič sa nemaže, len presúva do koša.
             <p><span class="q" data-sk="„Toto by moje pacientky isto ocenili! Budem odporúčať.“" data-en="“My patients would definitely appreciate this! I'll be recommending it.”">„Toto by moje pacientky isto ocenili! Budem odporúčať.“</span><span class="by">Jessica Z., <span data-sk="fyzioterapeutka v onkológii" data-en="oncology physiotherapist">fyzioterapeutka v onkológii</span></span></p>
             <p><span class="q" data-sk="„Ako človek s onko pacientom v rodine som vďačná za každý jeden pokrok a pomoc pri liečbe.“" data-en="“As someone with a cancer patient in the family, I'm grateful for every advancement and help with treatment.”">„Ako človek s onko pacientom v rodine som vďačná za každý jeden pokrok a pomoc pri liečbe.“</span><span class="by">Zuzana L., <span data-sk="rodinná opatrovateľka" data-en="family caregiver">rodinná opatrovateľka</span></span></p>
           </div>
-          <p class="team full"><span data-sk="Oncofiles vyvíjajú" data-en="Oncofiles is built by">Oncofiles vyvíjajú</span> <a href="https://www.linkedin.com/in/peterfusek/" rel="noreferrer noopener">Peter Fusek</a> <span data-sk="a Peter Čapkovič v slovenskej technologickej firme" data-en="and Peter Čapkovič at the Slovak technology company">a Peter Čapkovič v slovenskej technologickej firme</span> <a href="https://www.instarea.com" rel="noreferrer noopener">Instarea</a><span data-sk=", ktorá od roku 2008 dodala 23 produktov." data-en=", which has shipped 23 products since 2008.">, ktorá od roku 2008 dodala 23 produktov.</span></p>
+          <p class="team full"><span data-sk="Oncofiles vyvíjajú" data-en="Oncofiles is built by">Oncofiles vyvíjajú</span> <a href="https://www.linkedin.com/in/peterfusek/" rel="noreferrer noopener">Peter Fusek</a> <span data-sk="a Peter Čapkovič v slovenskej technologickej firme" data-en="and Peter Čapkovič at the Slovak technology company">a Peter Čapkovič v slovenskej technologickej firme</span> <a href="https://www.instarea.com" rel="noreferrer noopener">Instarea</a><span data-sk=", ktorá od roku 2008 dodala 28 produktov." data-en=", which has shipped 28 products since 2008.">, ktorá od roku 2008 dodala 28 produktov.</span></p>
         </div>
         </div>
       </section>
@@ -1744,7 +1778,7 @@ Nič sa nemaže, len presúva do koša.
       <div class="links">
         <a href="/demo" data-sk="Ukážka" data-en="Demo">Ukážka</a>
         <a href="https://github.com/peter-fusek/oncofiles" rel="noreferrer noopener">GitHub</a>
-        <a href="/dashboard">Dashboard</a>
+        <a href="/dashboard" data-sk="Prihlásiť sa" data-en="Sign in">Prihlásiť sa</a>
         <a href="/health" data-sk="Stav" data-en="Status">Stav</a>
         <a href="/privacy" data-sk="Ochrana osobných údajov" data-en="Privacy">Ochrana osobných údajov</a>
         <a href="/terms" data-sk="Podmienky" data-en="Terms">Podmienky</a>
@@ -2001,6 +2035,26 @@ Nič sa nemaže, len presúva do koša.
       }
     }
 
+    /* Menu (narrow screens): a disclosure for the chapter links, Demo and Sign in.
+       On wide screens the same links sit in the bar and the button is hidden. */
+    function setMenu(open) {
+      var btn = document.getElementById('menu-toggle');
+      var panel = document.getElementById('nav-links');
+      if (!btn || !panel) return;
+      btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+      panel.classList.toggle('open', open);
+    }
+    function menuOpen() {
+      var btn = document.getElementById('menu-toggle');
+      return !!btn && btn.getAttribute('aria-expanded') === 'true';
+    }
+    function toggleMenu() { setMenu(!menuOpen()); }
+    function closeMenu(refocus) {
+      if (!menuOpen()) return;
+      setMenu(false);
+      if (refocus) document.getElementById('menu-toggle').focus();
+    }
+
     /* Bug report */
     function updateBugLink() {
       var t = encodeURIComponent(document.getElementById('bug-title').value.trim() || 'Landing page bug report');
@@ -2018,7 +2072,7 @@ Nič sa nemaže, len presúva do koša.
     }
     function closeBug() { document.getElementById('bug-overlay').classList.remove('open'); }
 
-    var ACTIONS = { pickValue: pickValue, toggleLang: toggleLang, openBug: openBug, closeBug: closeBug, showChat: showChat, pickChat: pickChat, showSource: showSource };
+    var ACTIONS = { toggleMenu: toggleMenu, pickValue: pickValue, toggleLang: toggleLang, openBug: openBug, closeBug: closeBug, showChat: showChat, pickChat: pickChat, showSource: showSource };
     function dispatch(spec) {
       if (!spec) return;
       var parts = String(spec).split('|');
@@ -2029,13 +2083,14 @@ Nič sa nemaže, len presúva do koša.
       var el = e.target.closest('[data-action]');
       if (el) dispatch(el.getAttribute('data-action'));
       if (e.target.id === 'bug-overlay') closeBug();
+      if (!e.target.closest('#menu-toggle')) closeMenu(false);
     });
     document.addEventListener('focusin', function (e) {
       var row = e.target.closest('.vrow');
       if (row && row !== current) dispatch(row.getAttribute('data-action'));
     });
     document.addEventListener('keydown', function (e) {
-      if (e.key === 'Escape') closeBug();
+      if (e.key === 'Escape') { closeBug(); closeMenu(true); }
       var tab = e.target.closest && e.target.closest('.chat-tabs [role="tab"]');
       if (!tab || ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].indexOf(e.key) === -1) return;
       var tabs = [].slice.call(document.querySelectorAll('.chat-tabs [role="tab"]'));
@@ -2124,6 +2179,31 @@ Nič sa nemaže, len presúva do koša.
       Object.keys(byId).forEach(function (id) {
         var chapter = document.getElementById(id);
         if (chapter) spy.observe(chapter);
+      });
+    })();
+
+    /* Deep links (#849): the browser scrolls to the #hash before the web fonts
+       and the language are applied; text then reflows and the target drifts
+       away (seen on a cold load). Once fonts and the page have loaded, go to
+       the target again: no animation, the sticky-bar offset comes from
+       scroll-padding-top. Never after the person scrolled, typed or touched. */
+    (function () {
+      var userActed = false;
+      function markActed() { userActed = true; }
+      ['wheel', 'touchstart', 'keydown', 'pointerdown', 'mousedown'].forEach(function (type) {
+        window.addEventListener(type, markActed, { capture: true, passive: true });
+      });
+      function settleHash() {
+        if (userActed || location.hash.length < 2) return;
+        var target = null;
+        try { target = document.getElementById(decodeURIComponent(location.hash.slice(1))); } catch (e) { /* malformed hash */ }
+        if (target) target.scrollIntoView({ behavior: 'instant', block: 'start' });
+      }
+      if (document.fonts && document.fonts.ready) document.fonts.ready.then(settleHash);
+      window.addEventListener('load', function () {
+        settleHash();
+        // late reflow (fonts that finish after load, the first video frame)
+        setTimeout(settleHash, 400);
       });
     })();
 

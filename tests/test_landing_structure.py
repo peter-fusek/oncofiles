@@ -152,6 +152,7 @@ def test_nav_has_the_five_chapters_in_both_languages(href, sk, en):
     assert f'<a class="wide" href="{href}" data-sk="{sk}" data-en="{en}">{sk}</a>' in nav
     assert nav.count('class="wide"') == 5
     assert 'id="lang-toggle"' in nav and 'href="#join"' in nav
+    assert nav.count('class="wide"') == 5
     # each chapter repeats its nav word as its label
     assert f'data-sk="{sk}" data-en="{en}">{sk}</span></p>' in LANDING
 
@@ -187,7 +188,15 @@ def test_fonts_are_self_hosted_families_only():
     assert "--num: 'IBM Plex Sans'," in STYLE
     for host in ("fonts.googleapis.com", "fonts.gstatic.com", "use.typekit", "cdn."):
         assert host not in LANDING, host
-    assert "@import" not in LANDING and "@font-face" not in LANDING
+    assert "@import" not in LANDING
+    # the only faces declared in the page are metric-matched fallbacks built
+    # from local fonts (no download); the web fonts live in /fonts/fonts.css
+    faces = re.findall(r"@font-face \{([^}]*)\}", STYLE)
+    assert len(faces) == 4
+    for face in faces:
+        assert "Fallback';" in face and "size-adjust:" in face
+        assert "src: local(" in face and "url(" not in face
+    assert "'Outfit', 'Outfit Fallback'," in STYLE and "'DM Sans', 'DM Sans Fallback'," in STYLE
     for href in re.findall(r'<link rel="preload" href="([^"]+)"', LANDING):
         assert (SRC / "fonts" / href.removeprefix("/fonts/")).is_file(), href
     # the brand's own typefaces are proprietary: never referenced
@@ -388,6 +397,103 @@ def test_disclaimers_and_truth_labels_are_kept(text):
 
 def test_figures_repeat_claims_made_in_the_text():
     head = LANDING[_at("trust") : _at("privacy")]
-    assert re.findall(r"<li><b>([^<]+)</b>", head) == ["500", "MIT", "23"]
-    assert "which has shipped 23 products since 2008." in LANDING
+    assert re.findall(r"<li><b>([^<]+)</b>", head) == ["500", "MIT", "28"]
+    assert "which has shipped 28 products since 2008." in LANDING
+    assert "dodala 28 produktov" in LANDING and "products shipped by Instarea since 2008" in LANDING
+    assert not re.search(r"\b23 (products|produktov)", LANDING)
     assert "open under the MIT license" in LANDING
+
+
+# ── Bar: Demo and Sign in, and the menu on narrow screens ─────────────────
+
+
+def _nav() -> str:
+    return LANDING[LANDING.index('<nav class="top"') : LANDING.index("</nav>")]
+
+
+def test_nav_has_demo_and_sign_in_in_both_languages():
+    nav = _nav()
+    demo = re.search(r'<a class="nav-demo" href="/demo"[^>]*>([^<]*)</a>', nav)
+    assert demo and demo.group(1) == "Demo"
+    assert 'data-sk="Demo" data-en="Demo"' in demo.group(0)
+    assert 'data-sk-title="Ukážka bez prihlásenia"' in demo.group(0)
+    assert 'data-en-title="Demo, no sign-in needed"' in demo.group(0)
+    sign = re.search(r'<a class="nav-signin" href="/dashboard"[^>]*>([^<]*)</a>', nav)
+    assert sign and sign.group(1) == "Prihlásiť sa"
+    assert 'data-sk="Prihlásiť sa" data-en="Sign in"' in sign.group(0)
+
+
+def test_nav_order_is_chapters_demo_sign_in_language_button():
+    """DOM order is the keyboard order: menu button, five chapters, Demo,
+    Sign in, language, waitlist."""
+    nav = _nav()
+    marks = [
+        'id="menu-toggle"',
+        'href="#problem"',
+        'href="#use-cases"',
+        'href="#how-it-works"',
+        'href="#setup"',
+        'href="#trust"',
+        'href="/demo"',
+        'href="/dashboard"',
+        'id="lang-toggle"',
+        'href="#join"',
+    ]
+    at = [nav.index(m) for m in marks]
+    assert at == sorted(at)
+    assert "tabindex" not in nav
+
+
+def test_menu_is_a_disclosure_without_inline_handlers():
+    nav = _nav()
+    button = re.search(r'<button id="menu-toggle"[^>]*>', nav).group(0)
+    assert 'aria-expanded="false"' in button and 'aria-controls="nav-links"' in button
+    assert 'data-action="toggleMenu"' in button and 'type="button"' in button
+    assert '<div class="nav-links" id="nav-links">' in nav
+    panel = nav[nav.index('id="nav-links"') : nav.index("</div>")]
+    assert panel.count("<a ") == 7  # five chapters, Demo, Sign in
+    script = LANDING[LANDING.rindex("<script>") :]
+    assert "toggleMenu: toggleMenu" in script
+    assert "btn.setAttribute('aria-expanded', open ? 'true' : 'false');" in script
+    assert "if (e.key === 'Escape') { closeBug(); closeMenu(true); }" in script
+    assert "if (!e.target.closest('#menu-toggle')) closeMenu(false);" in script
+    # wide screens show the links in the bar and hide the button
+    wide = STYLE[STYLE.index("@media (min-width: 1100px) {\n      .menu-btn { display: none; }") :]
+    assert ".nav-links, .nav-links.open { display: flex; position: static;" in wide[:400]
+    assert ".nav-links { display: none; position: absolute;" in STYLE
+    assert ".nav-links.open { display: flex; }" in STYLE
+
+
+def test_footer_repeats_demo_and_sign_in():
+    footer = LANDING[LANDING.index("<footer") : LANDING.index("</footer>")]
+    assert '<a href="/demo" data-sk="Ukážka" data-en="Demo">' in footer
+    assert '<a href="/dashboard" data-sk="Prihlásiť sa" data-en="Sign in">' in footer
+
+
+# ── Deep links: the target is restored after fonts and load ───────────────
+
+
+def _hash_guard() -> str:
+    script = LANDING[LANDING.rindex("<script>") :]
+    start = script.index("/* Deep links (#849)")
+    return script[start : script.index("/* Showcase video (#830)")]
+
+
+def test_deep_link_guard_scrolls_again_after_fonts_and_load():
+    js = _hash_guard()
+    assert "document.fonts.ready.then(settleHash)" in js
+    assert "window.addEventListener('load'," in js and "setTimeout(settleHash, 400)" in js
+    assert "document.getElementById(decodeURIComponent(location.hash.slice(1)))" in js
+    # no animation; the sticky-bar offset comes from scroll-padding-top
+    assert "target.scrollIntoView({ behavior: 'instant', block: 'start' });" in js
+    assert "scroll-padding-top: 76px;" in STYLE
+
+
+def test_deep_link_guard_never_runs_after_user_interaction():
+    js = _hash_guard()
+    assert "if (userActed || location.hash.length < 2) return;" in js
+    events = "['wheel', 'touchstart', 'keydown', 'pointerdown', 'mousedown']"
+    assert events in js
+    assert "window.addEventListener(type, markActed, { capture: true, passive: true });" in js
+    assert "function markActed() { userActed = true; }" in js
+    assert js.count("userActed = ") == 2  # initial false, set true once: never reset
