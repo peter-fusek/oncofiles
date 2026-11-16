@@ -1209,7 +1209,9 @@ Nič sa nemaže, len presúva do koša.
 
     <!-- 4d. Not only oncology: the movement atlas (#830). The author's own
          findings, published by his decision; kept apart from the invented demo
-         patient above. Media + pages: src/oncofiles/atlas_showcase.py. No autoplay. -->
+         patient above. Media + pages: src/oncofiles/atlas_showcase.py. The video
+         has no autoplay/loop attribute: the "Showcase video" script below starts it
+         when visible, from data-start, unless reduced motion or save-data is on. -->
     <section class="block" id="atlas">
       <div class="wrap grid">
         <div class="side">
@@ -1229,7 +1231,7 @@ Nič sa nemaže, len presúva do koša.
           <p class="atlas-fine" data-sk="Model je schematický, zostavený z textu správ, nie zo snímok. Cviky sú bežné príklady na posúdenie fyzioterapeutom, nie predpis ani lekárska rada. Atlas nenahrádza lekára ani fyzioterapeuta." data-en="The model is schematic, built from the text of the reports, not from scans. The exercises are common examples for a physiotherapist to review, not a prescription or medical advice. The atlas does not replace a doctor or a physiotherapist.">Model je schematický, zostavený z textu správ, nie zo snímok. Cviky sú bežné príklady na posúdenie fyzioterapeutom, nie predpis ani lekárska rada. Atlas nenahrádza lekára ani fyzioterapeuta.</p>
         </div>
         <figure class="atlas-video">
-          <video id="atlas-video" controls muted playsinline preload="metadata" width="1080" height="1080" poster="/movement-atlas/poster-sk.jpg" src="/movement-atlas/video-sk.mp4" data-sk-src="/movement-atlas/video-sk.mp4" data-en-src="/movement-atlas/video-en.mp4" data-sk-poster="/movement-atlas/poster-sk.jpg" data-en-poster="/movement-atlas/poster-en.jpg" aria-describedby="atlas-video-alt" aria-label="Video: ukážka pohybového atlasu" data-sk-label="Video: ukážka pohybového atlasu" data-en-label="Video: the movement atlas in use"></video>
+          <video id="atlas-video" controls muted playsinline preload="metadata" data-start="12" width="1080" height="1080" poster="/movement-atlas/poster-sk-start.jpg" src="/movement-atlas/video-sk.mp4" data-sk-src="/movement-atlas/video-sk.mp4" data-en-src="/movement-atlas/video-en.mp4" data-sk-poster="/movement-atlas/poster-sk-start.jpg" data-en-poster="/movement-atlas/poster-en-start.jpg" aria-describedby="atlas-video-alt" aria-label="Video: ukážka pohybového atlasu" data-sk-label="Video: ukážka pohybového atlasu" data-en-label="Video: the movement atlas in use"></video>
           <figcaption id="atlas-video-alt" data-sk="Video (82 sekúnd, bez zvuku) prejde tri oblasti: driekovú chrbticu, pravé koleno a ľavé rameno. Pri každej strieda Petrov nález so zdravým stavom, najprv na úrovni kĺbu a kostí, potom svalov a šliach, a ukáže dva animované cviky." data-en="The video (82 seconds, no sound) goes through three areas: the lower back, the right knee and the left shoulder. For each one it alternates Peter&#x27;s finding with the healthy state, first at the level of the joint and bones, then muscles and tendons, and shows two animated exercises.">Video (82 sekúnd, bez zvuku) prejde tri oblasti: driekovú chrbticu, pravé koleno a ľavé rameno. Pri každej strieda Petrov nález so zdravým stavom, najprv na úrovni kĺbu a kostí, potom svalov a šliach, a ukáže dva animované cviky.</figcaption>
         </figure>
       </div>
@@ -1669,7 +1671,8 @@ Nič sa nemaže, len presúva do koša.
       document.querySelectorAll('[data-' + l + '-title]').forEach(function (el) { el.setAttribute('title', el.getAttribute('data-' + l + '-title')); });
       document.querySelectorAll('[data-' + l + '-href]').forEach(function (el) { el.setAttribute('href', el.getAttribute('data-' + l + '-href')); });
       // The showcase video exists once per language; swap only when it differs
-      // (a reload would stop a playing video).
+      // (a reload would stop a playing video). load() fires `emptied`, which the
+      // "Showcase video" block below uses to apply its start/autoplay rules again.
       document.querySelectorAll('video[data-' + l + '-src]').forEach(function (v) {
         var src = v.getAttribute('data-' + l + '-src');
         if (v.getAttribute('src') === src) return;
@@ -1828,6 +1831,78 @@ Nič sa nemaže, len presúva do koša.
       e.preventDefault();
       nlSubmit(form);
     });
+
+    /* Showcase video (#830): starts by itself when at least half of it is in
+       the viewport, from data-start (the rotating model, not the intro card),
+       and pauses when it leaves. No autoplay/loop attribute in the markup, so
+       reduced motion and save-data can be honoured: then nothing starts by
+       itself and the poster and controls work as a plain video. */
+    (function () {
+      var v = document.getElementById('atlas-video');
+      if (!v) return;
+      var start = parseFloat(v.getAttribute('data-start')) || 0;
+      var conn = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
+      var saveData = !!(conn && conn.saveData);
+      var auto = !reduceMotion && !saveData && 'IntersectionObserver' in window;
+      var visible = false;      // at least half of the video is in the viewport
+      var userPaused = false;   // paused by the person: never resume on scroll
+      var scriptPause = false;  // the next `pause` event is ours, not the person's
+      var pendingStart = true;  // this source has not been moved to `start` yet
+
+      function seekToStart() {
+        try { v.currentTime = start > 0 && start < v.duration ? start : 0; } catch (e) { /* not seekable yet */ }
+      }
+      // First start of a source: jump to `start` once the duration is known.
+      // A #t= media fragment is not used (unreliable in Safari).
+      function applyStart() {
+        if (!pendingStart || v.readyState < 1) return;
+        pendingStart = false;
+        if (v.currentTime < start) seekToStart();
+      }
+      function tryPlay() {
+        if (!auto || !visible || userPaused || !v.paused) return;
+        var p = v.play();
+        if (p && typeof p.catch === 'function') p.catch(function () { /* blocked, or superseded by load(): the poster stays */ });
+      }
+
+      v.addEventListener('loadedmetadata', function () { if (!v.paused) applyStart(); });
+      v.addEventListener('play', function () { userPaused = false; applyStart(); });
+      v.addEventListener('pause', function () {
+        if (scriptPause) { scriptPause = false; return; }
+        if (!v.ended) userPaused = true;
+      });
+      // Scrubbing before the first play: the person chose the position.
+      v.addEventListener('seeking', function () { if (v.paused && v.readyState >= 1) pendingStart = false; });
+      // Not the `loop` attribute: that would loop back to the intro card.
+      v.addEventListener('ended', function () {
+        seekToStart();
+        if (!auto) return;
+        var p = v.play();
+        if (p && typeof p.catch === 'function') p.catch(function () { /* noop */ });
+      });
+      // applyLang swapped the source: the new video follows the same rules.
+      v.addEventListener('emptied', function () {
+        pendingStart = true;
+        userPaused = false;
+        scriptPause = false;
+        tryPlay();
+      });
+
+      if (!auto) return;
+      new IntersectionObserver(function (entries) {
+        var e = entries[entries.length - 1];
+        visible = e.isIntersecting && e.intersectionRatio >= 0.5;
+        if (visible) tryPlay();
+        else if (!v.paused) { scriptPause = true; v.pause(); }
+      }, { threshold: [0, 0.5] }).observe(v);
+      // Start buffering only when the section approaches the viewport.
+      var near = new IntersectionObserver(function (entries) {
+        if (!entries.some(function (e) { return e.isIntersecting; })) return;
+        v.preload = 'auto';
+        near.disconnect();
+      }, { rootMargin: '600px 0px' });
+      near.observe(v);
+    })();
 
     var urlLang = null;
     try { var p = new URLSearchParams(location.search).get('lang'); if (p === 'en' || p === 'sk') urlLang = p; } catch (e) { /* noop */ }
