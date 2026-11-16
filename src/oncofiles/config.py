@@ -100,6 +100,11 @@ REOCR_PASSES_MODE: str = os.environ.get("REOCR_PASSES_MODE", "fixed2").strip().l
 # model's own behaviour) or "off" (chat_template_kwargs.enable_thinking=false).
 # Transcription only; classification and extraction are not affected.
 REOCR_THINKING: str = os.environ.get("REOCR_THINKING", "on").strip().lower()
+# Page orientation before vision OCR (#609, curated/orientation.py), ingest and
+# re-OCR: "on" (default) asks the local model how a page is turned and rotates
+# the image locally before reading it; "off" reads every page as it is. The
+# LOCAL_LLM_ prefix lets the re-OCR child inherit it.
+OCR_ORIENTATION: str = os.environ.get("LOCAL_LLM_OCR_ORIENTATION", "on").strip().lower()
 # Guard profile for re-OCR of Tesseract-era sidecars (#831): the old Tesseract
 # text is not a trustworthy baseline, so its lost numbers / lab values / words
 # are reported but do not stop a rewrite (reocr.guard_profile). "false" restores

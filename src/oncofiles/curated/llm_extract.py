@@ -39,6 +39,7 @@ from oncofiles.curated.llm_extract_call import (  # noqa: F401 (re-exported)
     PageResult,
     error_kind,
 )
+from oncofiles.curated.ocr_markers import strip_charts_pages
 
 # Bump on ANY change to the prompt, the schema, the item normalisation or the
 # call settings. v3: no response_format by default; v4: shared call path,
@@ -498,6 +499,7 @@ def extract_document(
     cfg = cfg or xcall.settings()
     known = known_words(vocab)
     results: list[PageResult] = []
+    pages = strip_charts_pages(pages)  # #609: chart blocks are never data
     text_of = dict(pages)
     facts: list[dict] = []
     dropped: Counter = Counter()

@@ -291,6 +291,9 @@ def render_sidecar(
         "extraction": extraction.method if extraction else None,
         "ocr_engine": extraction.engine if extraction else None,
         "handwritten": bool(extraction.handwritten) if extraction else False,
+        # #609: ocr_version, rotation, rotation_source, has_chart, rotated_region
+        # (vision readings only; optional keys, older sidecars lack them)
+        **(_vision_keys(extraction)),
         "sha256": item.sha256 or None,
         "extracted_at": now.date().isoformat(),
         "review_needed": bool(cls.review_needed) if cls else True,
@@ -305,6 +308,16 @@ def render_sidecar(
     front = "\n".join(f"{k}: {_y(v)}" for k, v in meta.items())
     body = extraction.text.strip() if extraction and extraction.text else "(no text extracted)"
     return f"---\n{front}\n---\n\n{body}\n"
+
+
+def _vision_keys(extraction) -> dict:
+    keys = getattr(extraction, "front_matter", None)
+    return keys() if callable(keys) else {}
+
+
+def _vision_review_notes(extraction) -> list[str]:
+    notes = getattr(extraction, "review_notes", None)
+    return notes() if callable(notes) else []
 
 
 def _review_reasons(sidecar_text: str) -> list[str]:
@@ -853,6 +866,11 @@ class Runner:
                 max_age_days=self.opts.max_doc_age_days,
                 auto_vocab=self._auto_vocab,
             )
+        if cls is not None and (why := _vision_review_notes(ex)):
+            # #609: a chart, a rotated region, a page read after local rotation or
+            # an unsure orientation goes to a person before anything is filed
+            cls.review_needed = True
+            cls.reasons = [*cls.reasons, *why]
         planned_vocab = self._plan_vocabulary(cls) if cls is not None else None
         if cls is not None and self.opts.dry_run and self._readme_vocab_ok:
             self._preview_vocabulary(cls, raw, ex.text, item.name)
