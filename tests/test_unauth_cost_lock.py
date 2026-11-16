@@ -195,6 +195,10 @@ DB_ALLOWLIST: dict[tuple[str, str], str] = {
     ): "db.ping(2 s); 24 h prompt_log SUM for the operator only",
     ("/api/stats", "api_stats"): "1 + N(patients) COUNTs, at most once per 5 min (cache)",
     ("/api/logout", "api_logout"): "one revocation row, only for a token that verifies",
+    (
+        "/dashboard/verify",
+        "dashboard_verify",
+    ): "one dashboard_access_log sign_in row (#868), only after Google verified the token",
     ("/api/newsletter/subscribe", "api_newsletter_subscribe"): "INSERT OR IGNORE one row",
     ("/api/newsletter/check", "api_newsletter_check"): "one SELECT by email",
     ("/oauth/authorize/{service}", "oauth_authorize"): "slug + patient lookup after the session",
