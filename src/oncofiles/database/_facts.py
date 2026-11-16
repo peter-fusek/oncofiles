@@ -701,6 +701,29 @@ class FactsMixin:
         ) as cur:
             return _rows(await cur.fetchall())
 
+    async def trusted_fact_codes(
+        self, *, patient_id: str, document_ids: list[int]
+    ) -> dict[int, set[str]]:
+        """Codes of each document's ACTIVE facts a rule parser accepted
+        (``machine``) or a person confirmed (``verified`` / ``corrected``),
+        by document id (#831). Unverified facts do not count. Patient-scoped
+        in SQL: another patient's document simply has no codes."""
+        out: dict[int, set[str]] = {int(i): set() for i in document_ids}
+        ids = sorted(out)
+        for start in range(0, len(ids), 500):
+            chunk = ids[start : start + 500]
+            marks = ",".join("?" * len(chunk))
+            async with self.db.execute(
+                "SELECT source_document_id, code FROM clinical_records "
+                "WHERE patient_id = ? AND deleted_at IS NULL AND code IS NOT NULL "
+                "AND verification IN ('machine', 'verified', 'corrected') "
+                f"AND source_document_id IN ({marks})",
+                (patient_id, *chunk),
+            ) as cur:
+                for row in await cur.fetchall():
+                    out[int(row[0])].add(str(row[1]))
+        return out
+
     async def facts_of_document(self, *, patient_id: str, document_id: int) -> list[dict]:
         async with self.db.execute(
             "SELECT * FROM fact_series_v WHERE patient_id = ? AND source_document_id = ? "

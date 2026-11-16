@@ -100,6 +100,13 @@ REOCR_PASSES_MODE: str = os.environ.get("REOCR_PASSES_MODE", "fixed2").strip().l
 # model's own behaviour) or "off" (chat_template_kwargs.enable_thinking=false).
 # Transcription only; classification and extraction are not affected.
 REOCR_THINKING: str = os.environ.get("REOCR_THINKING", "on").strip().lower()
+# Guard profile for re-OCR of Tesseract-era sidecars (#831): the old Tesseract
+# text is not a trustworthy baseline, so its lost numbers / lab values / words
+# are reported but do not stop a rewrite (reocr.guard_profile). "false" restores
+# the standard guards for every document. Runtime env, read at call time.
+REOCR_TESSERACT_PROFILE: bool = os.environ.get(
+    "REOCR_TESSERACT_PROFILE", "true"
+).strip().lower() not in ("false", "0", "no", "off")
 # Qwen soft switch (#689): LM Studio ignores chat_template_kwargs.enable_thinking
 # for the Qwen3.x MLX model, so with thinking=False llm.chat also puts "/no_think"
 # into the last user message. "false" sends only the kwarg.
@@ -311,6 +318,22 @@ DASHBOARD_ADMIN_EMAILS: list[str] = [
     ).split(",")
     if e.strip()
 ]
+
+# Self-service onboarding gate (#852). Runtime-only env, read at call time
+# through ``oncofiles.onboarding_gate`` so tests can patch these attributes.
+#   closed (default) — non-admins cannot create a patient, connect Google for a
+#                      patient that has no Google link yet, or set a Drive folder
+#   invite           — only the e-mails in ONBOARDING_INVITE_EMAILS (and admins)
+#   open             — every signed-in user
+# Any other value is treated as ``closed`` (fail closed, warning logged). Legacy
+# Drive sync/rename/reconcile triggers are admin-only in EVERY mode until #853.
+# Rollback = set ONBOARDING_MODE=closed and restart.
+ONBOARDING_MODE: str = os.environ.get("ONBOARDING_MODE", "closed")
+ONBOARDING_INVITE_EMAILS: frozenset[str] = frozenset(
+    e.strip().lower()
+    for e in os.environ.get("ONBOARDING_INVITE_EMAILS", "").split(",")
+    if e.strip()
+)
 
 # Localization
 PREFERRED_LANG: str = os.environ.get("ONCOFILES_PREFERRED_LANG", "sk")

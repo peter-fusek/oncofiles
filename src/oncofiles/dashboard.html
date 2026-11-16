@@ -503,6 +503,18 @@
  </div>
  <!-- No third-party DOM capture libraries — screenshot via paste/upload only -->
 
+ <!-- Onboarding not open yet (#852): shown instead of the wizard for a caller the server gate does not admit -->
+ <div id="onboarding-closed-overlay" class="wizard-overlay" role="dialog" aria-modal="true" aria-labelledby="onboarding-closed-title">
+ <div class="wizard-panel">
+ <h2 id="onboarding-closed-title" data-sk="Pripojenie Drive zatiaľ nie je otvorené" data-en="Drive connection is not open yet">Pripojenie Drive zatiaľ nie je otvorené</h2>
+ <p id="onboarding-closed-text" data-sk="Pripojenie vlastného Google Drive zatiaľ nie je otvorené pre nových používateľov. Zapíšte sa do poradovníka a ozveme sa vám." data-en="Connecting your own Google Drive is not open to new users yet. Join the waitlist and we will let you know.">Pripojenie vlastného Google Drive zatiaľ nie je otvorené pre nových používateľov. Zapíšte sa do poradovníka a ozveme sa vám.</p>
+ <div class="wizard-actions">
+ <a class="wizard-btn-primary onboarding-closed-link" id="onboarding-closed-waitlist" href="/#join" data-sk="Zapísať sa do poradovníka" data-en="Join the waitlist">Zapísať sa do poradovníka</a>
+ <button class="wizard-btn-secondary" data-action="hideOnboardingClosed" data-sk="Zavrieť" data-en="Close">Zavrieť</button>
+ </div>
+ </div>
+ </div>
+
  <!-- Onboarding Wizard Modal -->
  <div id="wizard-overlay" class="wizard-overlay">
  <div class="wizard-panel">

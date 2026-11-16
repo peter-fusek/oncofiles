@@ -18,7 +18,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from oncofiles import curated_folder, patient_context, server
+from oncofiles import config, curated_folder, patient_context, server
 from oncofiles.curated import bootstrap
 from oncofiles.curated.bootstrap import (
     BootstrapFailedError,
@@ -606,7 +606,8 @@ class _Endpoint:
         self.plan = AsyncMock(return_value=_plan())
         self.create_root = MagicMock(return_value=FOLDER_ID)
         self.store_dob = AsyncMock(return_value=True)
-        self.allowed = True
+        self.mode = "open"  # ONBOARDING_MODE (#852); the real gate decides
+        self.invites: frozenset[str] = frozenset()
         self.real_acl = False
         self.admin = False
 
@@ -621,6 +622,9 @@ class _Endpoint:
         denied = server.JSONResponse({"error": "admin only"}, status_code=403)
         patches = [
             patch.object(server, "_check_dashboard_auth", return_value=None),
+            patch.object(server, "_check_bearer", return_value=denied),  # a session caller
+            patch.object(config, "ONBOARDING_MODE", self.mode),
+            patch.object(config, "ONBOARDING_INVITE_EMAILS", self.invites),
             patch.object(server, "_get_dashboard_email", return_value=self.email),
             patch.object(server, "_is_admin_email", return_value=self.admin),
             patch.object(server, "_require_admin", return_value=None if self.admin else denied),
@@ -641,10 +645,6 @@ class _Endpoint:
             patch.object(bootstrap, "plan_for_patient", self.plan),
             patch.object(bootstrap, "create_patient_root", self.create_root),
             patch.object(bootstrap, "store_dob_if_missing", self.store_dob),
-            patch(
-                "oncofiles.onboarding_gate.onboarding_allowed",
-                return_value=self.allowed,
-            ),
         ]
         if not self.real_acl:
             patches.append(
@@ -759,13 +759,46 @@ async def test_endpoint_detection_failure_is_refused():
     ep.assert_nothing_persisted()
 
 
-async def test_endpoint_onboarding_gate_closed():
+@pytest.mark.parametrize("body", [{"folder_id": FOLDER_ID}, {"folder_name": "Novy"}])
+async def test_endpoint_closed_mode_refuses_a_non_admin_before_any_drive_call(body):
     ep = _Endpoint()
-    ep.allowed = False
-    status, data = await ep.call({"folder_id": FOLDER_ID})
-    assert status == 403 and data["code"] == "onboarding_closed"
+    ep.mode = "closed"
+    with patch.object(server.GDriveClient, "from_oauth") as from_oauth:
+        ep.client = from_oauth.return_value
+        status, data = await ep.call(body)
+    assert status == 403 and data["error"] == "onboarding_closed"
+    from_oauth.assert_not_called()  # no Drive client, so no Drive call
+    ep.db.get_oauth_token.assert_not_called()
+    ep.plan.assert_not_called()
+    ep.store_dob.assert_not_called()
+    ep.create_root.assert_not_called()
     ep.bootstrap.assert_not_called()
     ep.assert_nothing_persisted()
+
+
+async def test_endpoint_invite_mode_lets_an_invited_caller_bootstrap():
+    ep = _Endpoint(email="invited@example.test")
+    ep.mode = "invite"
+    ep.invites = frozenset({"invited@example.test"})
+    status, data = await ep.call({"folder_id": FOLDER_ID})
+    assert status == 200 and data["bootstrapped"] is True
+    ep.bootstrap.assert_called_once()
+
+    stranger = _Endpoint(email="stranger@example.test")
+    stranger.mode = "invite"
+    stranger.invites = frozenset({"invited@example.test"})
+    status, data = await stranger.call({"folder_id": FOLDER_ID})
+    assert status == 403 and data["error"] == "onboarding_closed"
+    stranger.bootstrap.assert_not_called()
+    stranger.assert_nothing_persisted()
+
+
+async def test_endpoint_closed_mode_admin_still_bootstraps():
+    ep = _Endpoint()
+    ep.mode = "closed"
+    ep.admin = True
+    status, data = await ep.call({"folder_id": FOLDER_ID})
+    assert status == 200 and data["bootstrapped"] is True
 
 
 async def test_endpoint_legacy_layout_is_admin_only():
@@ -857,11 +890,24 @@ def test_no_code_path_outside_the_bootstrap_writes_readme_md():
 def test_set_folder_legacy_folder_set_needs_the_legacy_layout():
     import inspect
 
+    from oncofiles import drive_folder_link
+
     src = inspect.getsource(server.api_gdrive_set_folder)
-    assert src.index('if layout != "legacy":') < src.index("for en_key in ALL_FOLDERS:")
     assert "_require_admin(request) is not None" in src
-    assert "_onboarding_gate(request)" in src
+    assert 'create_subfolders=layout == "legacy"' in src
+    assert 'bootstrap=layout == "curated"' in src
     assert "_require_body_patient_access" in src
+    # #852's gate runs first, before the body is even read.
+    assert src.index('_dashboard_onboarding_refusal(request, "set_folder")') < src.index(
+        "await request.json()"
+    )
+    link = inspect.getsource(drive_folder_link.connect_folder)
+    # A bootstrapped folder never falls through to the legacy folder set.
+    assert link.index("if bootstrap:\n        # Unreachable") < link.index(
+        "for en_key in ALL_FOLDERS:"
+    )
+    # Bootstrap (and its persisting) happens before the folder is persisted.
+    assert link.index("cb.bootstrap_folder") < link.index("await db.update_oauth_folder")
 
 
 # ── dashboard (static) ───────────────────────────────────────────────────
@@ -1118,3 +1164,28 @@ def test_wizard_asks_for_the_dob_when_the_server_misses_it():
     assert "wizShow('wiz-folder-dob', refused && reason === 'missing_dob');" in js
     fn = js[js.index("function wizardFolderDobGo") : js.index("function wizardFolderConfirmBack")]
     assert "date_of_birth: dob" in fn and "wizardFolderSend(" in fn
+
+
+@pytest.mark.parametrize("ptype", ["oncology", "general"])
+def test_template_supports_the_automatic_vocabulary(ptype):
+    """#854/#862: a bootstrapped README must accept auto-added institutions/doctors."""
+    from oncofiles.curated import vocabulary
+
+    plan = _plan(ptype)
+    assert vocabulary.unsupported_reason(plan.readme, plan.contract) is None
+    additions = [
+        vocabulary.VocabAddition("Institution", "SampleClinic", "Sample Clinic"),
+        vocabulary.VocabAddition("Doctor", "Kovacova", "MUDr. Testa Kovacova"),
+    ]
+    text, contract = vocabulary.add_to_readme(
+        plan.readme, plan.contract, additions, run_id="run-test", day="2027-03-04"
+    )
+    assert contract.known_tokens == frozenset({"SampleClinic", "Kovacova"})
+    assert contract.folders == plan.contract.folders
+
+
+def test_onboarding_gate_sensitive_refs_cover_the_bootstrap():
+    import importlib
+
+    gate_tests = importlib.import_module("tests.test_onboarding_gate")
+    assert {"bootstrap_folder", "create_patient_root", "create_folder"} <= gate_tests.SENSITIVE_REFS

@@ -1007,3 +1007,5 @@
     .rr-confirm { border: 1px solid var(--red, #dc2626); border-radius: 8px; padding: 0.5rem 0.75rem; margin: 0.5rem 0; }
     .rr-confirm .rr-input { width: 10rem; margin-bottom: 0.5rem; }
     .rr-num { text-align: right; white-space: nowrap; }
+    /* #852: waitlist notice shown instead of the wizard while onboarding is closed */
+    .onboarding-closed-link { display: inline-flex; align-items: center; text-decoration: none; }

@@ -49,24 +49,27 @@ def camel(value: str | None) -> str:
     return token or UNKNOWN
 
 
-def surname_token(value: str | None) -> str:
-    """Doctor field: surname only, no titles. ``MUDr. Jana Kováčová`` → ``Kovacova``.
+def surname_text(value: str | None) -> str:
+    """The surname as printed (diacritics kept, no titles); '' when there is none.
 
     Accepts ``Surname, Given (titles)`` (the sidecar form) or ``Titles Given Surname``.
     """
     if not value or not value.strip():
-        return UNKNOWN
+        return ""
     text = re.sub(r"\(.*?\)", " ", value)
     if "," in text:
-        surname = text.split(",", 1)[0]
-    else:
-        parts = [
-            p
-            for p in re.split(r"\s+", text.strip())
-            if p and not p.endswith(".") and p.lower() not in _TITLES
-        ]
-        surname = parts[-1] if parts else ""
-    return camel(surname)
+        return text.split(",", 1)[0].strip()
+    parts = [
+        p
+        for p in re.split(r"\s+", text.strip())
+        if p and not p.endswith(".") and p.lower() not in _TITLES
+    ]
+    return parts[-1] if parts else ""
+
+
+def surname_token(value: str | None) -> str:
+    """Doctor field: surname only, no titles. ``MUDr. Jana Kováčová`` → ``Kovacova``."""
+    return camel(surname_text(value))
 
 
 _TITLES = {"mudr", "mgr", "phd", "ing", "doc", "prof", "csc", "mph", "mba", "bc", "rndr"}

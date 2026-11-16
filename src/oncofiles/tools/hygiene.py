@@ -74,6 +74,11 @@ async def reconcile_gdrive(
         dry_run: If True (default), report issues without making changes.
                  If False, move files, rename folders, and clean up backups.
     """
+    # #852: legacy trigger, admin-only in every ONBOARDING_MODE until #853.
+    from oncofiles.onboarding_gate import mcp_legacy_refusal
+
+    if (refused := mcp_legacy_refusal("reconcile_gdrive")) is not None:
+        return refused
     gdrive = await _get_gdrive(ctx)
     if not gdrive:
         return json.dumps({"error": "GDrive client not configured"})
@@ -1763,6 +1768,11 @@ async def repair_gdrive_folder_hygiene(
 
     Returns JSON with plan (dry_run=True) or results (dry_run=False).
     """
+    # #852: legacy trigger, admin-only in every ONBOARDING_MODE until #853.
+    from oncofiles.onboarding_gate import mcp_legacy_refusal
+
+    if (refused := mcp_legacy_refusal("repair_gdrive_folder_hygiene")) is not None:
+        return refused
     import re
 
     from oncofiles.gdrive_folders import ALL_FOLDERS, bilingual_name
@@ -2082,6 +2092,11 @@ async def consolidate_external_gdrive_files(
             - failed: [{id, filename, gdrive_id, error}]
             - remaining: files still flagged after this batch (poll until 0)
     """
+    # #852: legacy trigger, admin-only in every ONBOARDING_MODE until #853.
+    from oncofiles.onboarding_gate import mcp_legacy_refusal
+
+    if (refused := mcp_legacy_refusal("consolidate_external_gdrive_files")) is not None:
+        return refused
     from oncofiles.server import _create_patient_clients
 
     db = _get_db(ctx)
