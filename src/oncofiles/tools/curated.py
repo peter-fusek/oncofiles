@@ -1582,9 +1582,10 @@ async def curated_reocr(
     When the OLD sidecar was written by Tesseract (``ocr_engine: tesseract…``)
     the entry has ``profile: tesseract_baseline``: numbers, lab values and words
     only the old text had are listed as ``baseline_untrusted`` and do not stop
-    the rewrite; lost dates, a shrunk text, a near-empty page with a loss or too
-    many uncertain numbers still do. curated_promote_candidates applies the
-    same rules to candidates kept earlier.
+    the rewrite; lost dates, a shrunk text, a near-empty page that has ink on
+    the scan (a blank back side is fine) or too many uncertain numbers still
+    do. curated_promote_candidates applies the same rules to candidates kept
+    earlier.
     By default only documents with unverified facts are chosen, most first
     (only_with_facts=false: every Cowork-era or uncertain document).
     """
@@ -4118,9 +4119,13 @@ async def curated_promote_candidates(
     current sidecar under the ``tesseract_baseline`` rules, without reading
     the scan or calling the model: numbers, lab values and words only the old
     Tesseract text had are listed as ``baseline_untrusted`` and do not block;
-    a lost date, a shrunk text, a near-empty page with a loss or too many
-    uncertain numbers keep the candidate a candidate (``result: review`` with
-    ``review_reasons``). Dry run (default) writes nothing and reports the
+    a lost date, a shrunk text, a near-empty page that has ink on the scan or
+    too many uncertain numbers keep the candidate a candidate (``result:
+    review`` with ``review_reasons``). A candidate written before the page ink
+    was recorded in its header cannot show that a near-empty page is a blank
+    back side: it stays a candidate with ``near_empty_unknown_ink``; read such
+    a document again with curated_reocr and explicit ``document_ids``.
+    Dry run (default) writes nothing and reports the
     decision per document. A real run (dry_run=false) promotes each passing
     candidate exactly like curated_restore_sidecar: the current sidecar is
     copied to the logs folder first, the new text is written with read-back

@@ -56,10 +56,14 @@ OLD sidecar's front matter says ``ocr_engine: tesseract…`` its text is not a
 trustworthy baseline (it drops decimal commas and garbles labels), so
 ``lost_values``, ``missing_numbers`` and ``low_word_overlap`` are still
 computed but only reported (``baseline_untrusted``), not blocking.
-``text_shrunk``, ``near_empty_with_loss``, ``missing_dates`` and the new
-``uncertain_share_high`` (numbers on ``[?]`` lines above
-``UNCERTAIN_SHARE_MAX``) still mean ``review``. Any other engine keeps the
-rules above unchanged. Off-switch: ``REOCR_TESSERACT_PROFILE=false``.
+``text_shrunk``, ``missing_dates`` and the new ``uncertain_share_high``
+(numbers on ``[?]`` lines above ``UNCERTAIN_SHARE_MAX``) still mean
+``review``. A near-empty page is judged by its own ink there, not by numbers
+the old text had: ink below ``BLANK_INK_MAX`` and no text layer = a blank
+back side (no page markers in the old sidecar needed); otherwise
+``near_empty_page_with_ink`` (or ``near_empty_unknown_ink`` when the ink was
+not measured) means ``review``; ``near_empty_with_loss`` is only reported.
+Any other engine keeps the rules above unchanged. Off-switch: ``REOCR_TESSERACT_PROFILE=false``.
 ``promote_candidates`` re-evaluates kept candidates of Tesseract-era sidecars
 under the profile without reading the scan again.
 """
@@ -100,7 +104,11 @@ BLANK_INK_MAX = 0.005  # a page with less ink (share of pixels) and no text laye
 # #831: guard profile for a Tesseract-era OLD sidecar (its text is not a baseline)
 TESSERACT_PROFILE = "tesseract_baseline"
 # computed and reported under the profile, but they do not stop a rewrite
-BASELINE_UNTRUSTED_REASONS = ("lost_values", "missing_numbers", "low_word_overlap")
+BASELINE_UNTRUSTED_REASONS = (
+    "lost_values", "missing_numbers", "low_word_overlap",
+    # leans on the old text's numbers; the profile judges a near-empty page by its ink
+    "near_empty_with_loss",
+)  # fmt: skip
 # profile only: share of the new text's numeric tokens that sit on a ``[?]`` line
 # above this → review (uncertain_share_high)
 UNCERTAIN_SHARE_MAX = 0.15
@@ -857,18 +865,50 @@ def uncertain_share(text: str) -> float:
     return round(marked / total, 3) if total else 0.0
 
 
+def near_empty_by_ink(
+    empty_pages: list[int], ink: Collection | None, text_layer: Collection | None
+) -> tuple[list[int], list[str]]:
+    """Near-empty pages judged by the page's own ink (#831, Tesseract profile):
+    (blank pages, reason codes). A page with measured ink below
+    ``BLANK_INK_MAX`` and no text layer is a blank back side (``is_blank``); a
+    page with more ink, or with a text layer, visibly has content the model
+    did not return (``near_empty_page_with_ink``); a page whose ink is unknown
+    (not measured, or a candidate kept without it) is never blank
+    (``near_empty_unknown_ink``)."""
+    ink, text_layer = list(ink or []), list(text_layer or [])
+
+    def at(values: list, page: int):
+        return values[page - 1] if 0 < page <= len(values) else None
+
+    blank, with_ink, unknown = [], False, False
+    for page in empty_pages:
+        value = at(ink, page)
+        if not isinstance(value, int | float) or isinstance(value, bool):
+            unknown = True
+        elif is_blank(value, at(text_layer, page)):
+            blank.append(page)
+        else:
+            with_ink = True
+    reasons = ["near_empty_page_with_ink"] * with_ink + ["near_empty_unknown_ink"] * unknown
+    return blank, reasons
+
+
 def profile_reasons(
-    profile: str | None, reasons: list[str], new_text: str
-) -> tuple[list[str], list[str], float | None]:
+    profile: str | None, reasons: list[str], new_text: str, *,
+    empty_pages: list[int] | None = None, ink: Collection | None = None,
+    text_layer: Collection | None = None,
+) -> tuple[list[str], list[str], float | None]:  # fmt: skip
     """(blocking reasons, baseline_untrusted, uncertain_share) of a decision.
     Without a profile the reasons are returned as they are. Under
     ``tesseract_baseline`` the ``BASELINE_UNTRUSTED_REASONS`` move to the
-    second list (reported, not blocking) and ``uncertain_share_high`` is added
+    second list (reported, not blocking), the near-empty pages are judged by
+    their ink (``near_empty_by_ink``) and ``uncertain_share_high`` is added
     when too many of the new text's numbers are uncertain."""
     if profile != TESSERACT_PROFILE:
         return list(reasons), [], None
     untrusted = [r for r in reasons if r in BASELINE_UNTRUSTED_REASONS]
     blocking = [r for r in reasons if r not in BASELINE_UNTRUSTED_REASONS]
+    blocking += near_empty_by_ink(empty_pages or [], ink, text_layer)[1]
     share = uncertain_share(new_text)
     if share > UNCERTAIN_SHARE_MAX:
         blocking.append("uncertain_share_high")
@@ -1053,7 +1093,10 @@ def candidate_text(new_sidecar: str, doc: dict, res: DocResult, *, passes: int, 
         f"review_reasons: [{', '.join(res.review_reasons)}]",
         f"created: {now.isoformat()}",
     ]
-    if res.profile:  # #831: only under a profile, other candidates are unchanged
+    if res.page_ink:  # #831: lets a later promotion judge a near-empty page by its ink
+        head[-1:-1] = [f"page_ink: {json.dumps(res.page_ink)}",
+                       f"page_text_layer: {json.dumps(res.page_text_layer)}"]  # fmt: skip
+    if res.profile:  # #831: only under a profile
         head[-1:-1] = [f"profile: {res.profile}",
                        f"baseline_untrusted: [{', '.join(res.baseline_untrusted)}]"]  # fmt: skip
     return "---\n" + "\n".join(head) + "\n---\n" + new_sidecar
@@ -1067,6 +1110,27 @@ def candidate_sidecar_text(text: str) -> str | None:
         return None
     rest = text[m.end() :]
     return rest if rest.strip() else None
+
+
+def candidate_page_ink(text: str) -> tuple[list | None, list | None]:
+    """(page_ink, page_text_layer) recorded in a candidate's header block;
+    (None, None) for a candidate written before the ink was recorded (#831)
+    or with an unreadable value."""
+    import json
+
+    m = _CANDIDATE_HEAD.match(text or "")
+    found: dict[str, list | None] = {"page_ink": None, "page_text_layer": None}
+    for line in m.group(1).splitlines() if m else []:
+        key, _, value = line.partition(":")
+        if key in found:
+            try:
+                parsed = json.loads(value.strip())
+            except ValueError:
+                parsed = None
+            found[key] = parsed if isinstance(parsed, list) else None
+    if found["page_ink"] is None:
+        return None, None
+    return found["page_ink"], found["page_text_layer"]
 
 
 def handled_before(log_names: list[str], filename: str) -> bool:
@@ -1172,8 +1236,12 @@ def run_reocr(
             res.review_reasons, res.baseline_untrusted, res.uncertain_share = profile_reasons(
                 res.profile,
                 review_reasons(lost, loss, res.near_empty_pages, res.blank_pages),
-                new,
-            )
+                new, empty_pages=res.near_empty_pages, ink=res.page_ink,
+                text_layer=res.page_text_layer,
+            )  # fmt: skip
+            if res.profile:  # #831: blank by the page's own ink, no old page markers needed
+                res.blank_pages = near_empty_by_ink(res.near_empty_pages, res.page_ink,
+                                                    res.page_text_layer)[0]  # fmt: skip
             res.decision = "review" if res.review_reasons else "rewrite"
             logger.info(
                 "re-OCR loss check doc=%s missing_numbers=%d missing_dates=%d "
@@ -1360,11 +1428,15 @@ def restore_sidecar(
 # ── promote kept candidates of Tesseract-era sidecars (#831) ────────────
 
 
-def evaluate_candidate(old_text: str, new_text: str, vocab) -> dict:
+def evaluate_candidate(
+    old_text: str, new_text: str, vocab, *, ink: list | None = None,
+    text_layer: list | None = None,
+) -> dict:  # fmt: skip
     """The rewrite guards for a kept candidate (``new_text``: the sidecar text
     inside it) against the current sidecar, without any model call. Codes and
-    counts only. No ink was kept with a candidate, so no page counts as a
-    blank back side here (stricter than the run that wrote it)."""
+    counts only. ``ink`` / ``text_layer``: what the candidate's header
+    recorded (``candidate_page_ink``); a candidate without it cannot show a
+    near-empty page to be blank (``near_empty_unknown_ink``)."""
     from oncofiles.curated.indexer import parse_sidecar
 
     profile = guard_profile(old_text)
@@ -1372,9 +1444,11 @@ def evaluate_candidate(old_text: str, new_text: str, vocab) -> dict:
     loss = token_loss(old_text, new_text)
     empty = near_empty_pages(parse_sidecar(new_text)[1])
     blocking, untrusted, share = profile_reasons(
-        profile, review_reasons(lost, loss, empty), new_text
-    )
+        profile, review_reasons(lost, loss, empty), new_text,
+        empty_pages=empty, ink=ink, text_layer=text_layer,
+    )  # fmt: skip
     return {
+        "blank_pages": near_empty_by_ink(empty, ink, text_layer)[0] if profile else [],
         "profile": profile, "decision": "review" if blocking else "rewrite",
         "review_reasons": blocking, "baseline_untrusted": untrusted,
         "uncertain_share": share, "lost_codes": lost_codes(lost),
@@ -1436,12 +1510,14 @@ def promote_candidates(
                     continue
                 if guard_profile(old) is None:
                     raise RestoreRefusedError("tesseract_profile_disabled")
-                new = candidate_sidecar_text(drive.download(cands[-1].id).decode("utf-8"))
+                raw = drive.download(cands[-1].id).decode("utf-8")
+                new = candidate_sidecar_text(raw)
             except UnicodeDecodeError as exc:
                 raise RestoreRefusedError("not_utf8") from exc
             if new is None:
                 raise RestoreRefusedError("candidate_malformed")
-            entry.update(evaluate_candidate(old, new, vocab))
+            ink, layer = candidate_page_ink(raw)
+            entry.update(evaluate_candidate(old, new, vocab, ink=ink, text_layer=layer))
             logger.info(
                 "re-OCR candidate check doc=%s decision=%s reasons=%s profile=%s "
                 "baseline_untrusted=%s uncertain_share=%s dry_run=%s",

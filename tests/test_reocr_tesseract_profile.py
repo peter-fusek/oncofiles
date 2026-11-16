@@ -6,8 +6,12 @@ and garbles labels), so when the OLD sidecar says ``ocr_engine: tesseract…``:
 
 * ``lost_values``, ``missing_numbers`` and ``low_word_overlap`` are computed
   and reported as ``baseline_untrusted`` but do not stop the rewrite;
-* ``text_shrunk``, ``near_empty_with_loss``, ``missing_dates`` and the new
-  ``uncertain_share_high`` still mean ``review`` + a kept candidate;
+* ``text_shrunk``, ``missing_dates`` and the new ``uncertain_share_high``
+  still mean ``review`` + a kept candidate;
+* a near-empty page is judged by its own ink: below ``BLANK_INK_MAX`` and no
+  text layer = a blank back side; otherwise ``near_empty_page_with_ink`` (or
+  ``near_empty_unknown_ink``) means ``review``; ``near_empty_with_loss`` is
+  only reported;
 * any other engine, and ``REOCR_TESSERACT_PROFILE=false``, keep the standard
   rules;
 * ``curated_promote_candidates`` re-evaluates kept candidates under the
@@ -99,7 +103,7 @@ TOKENS = ["14.06.2027", "14.6.2027", "2027-06-14", "637", "6,37", "6.37", "133",
           "4413", "44,13", "44.13"]  # fmt: skip
 
 
-def _setup(pages, *, engine: str | None = TESSERACT, old_body: str = OLD_BODY):
+def _setup(pages, *, engine: str | None = TESSERACT, old_body: str = OLD_BODY, ink=None):
     drive = FakeDrive()
     src = drive.add(NAME, drive.folder[LABS], SOURCE)
     old = _front(engine) + old_body
@@ -108,7 +112,8 @@ def _setup(pages, *, engine: str | None = TESSERACT, old_body: str = OLD_BODY):
            "engine": engine or "", "reasons": ["cowork_ocr"], "explicit": True}  # fmt: skip
 
     def reader(*a, **k):
-        return reocr.Reread(list(pages), "vision2", "qwen-local")
+        return reocr.Reread(list(pages), "vision2", "qwen-local", page_ink=list(ink or []),
+                            page_text_layer=[False] * len(ink or []))  # fmt: skip
 
     return drive, src, side, old, doc, reader
 
@@ -170,7 +175,8 @@ def test_no_front_matter_or_another_key_is_not_the_profile():
 
 
 def test_the_constants_of_the_profile():
-    assert tuple(UNTRUSTED) == reocr.BASELINE_UNTRUSTED_REASONS
+    assert list(reocr.BASELINE_UNTRUSTED_REASONS) == [*UNTRUSTED, "near_empty_with_loss"]
+    assert reocr.BLANK_INK_MAX == 0.005 and reocr.NEAR_EMPTY_CHARS == 50
     assert reocr.UNCERTAIN_SHARE_MAX == 0.15 and reocr.PROMOTE_MAX_DOCS == 20
     assert config.REOCR_TESSERACT_PROFILE is True  # on by default
 
@@ -246,7 +252,7 @@ OLD_WITH_TIME = OLD_BODY + "Odber: 21.06.2027 07:40\n"  # a sampling timestamp
     "pages,old_body,reason",
     [
         ([SHORT], OLD_BODY, "text_shrunk"),
-        ([NEW_PAGE, "  Strana  "], OLD_BODY, "near_empty_with_loss"),
+        ([NEW_PAGE, "  Strana  "], OLD_BODY, "near_empty_unknown_ink"),  # ink not measured
         ([NEW_PAGE], OLD_WITH_TIME, "missing_dates"),
         ([MARKED], OLD_BODY, "uncertain_share_high"),
     ],
@@ -255,8 +261,9 @@ async def test_these_still_review_and_keep_a_candidate(vocab, pages, old_body, r
     _, d, drive, side, old = _go(vocab, pages, old_body=old_body)
     assert d.result == "review" and d.decision == "review" and d.profile == "tesseract_baseline"
     assert reason in d.review_reasons
-    assert not set(d.review_reasons) & set(UNTRUSTED)  # muted ones never block
-    assert set(d.baseline_untrusted) <= set(UNTRUSTED) and d.baseline_untrusted
+    assert not set(d.review_reasons) & set(reocr.BASELINE_UNTRUSTED_REASONS)  # never block
+    assert set(d.baseline_untrusted) <= set(reocr.BASELINE_UNTRUSTED_REASONS)
+    assert d.baseline_untrusted
     assert d.backup is None and drive.items[side]["content"] == old.encode()
     [name] = _candidates(drive)  # the new text is kept as a candidate, as today
     assert drive.writes == [("create", name)]
@@ -303,6 +310,105 @@ def test_missing_dates_counts_a_sampling_timestamp_by_its_date():
     assert reocr.token_loss("Odber: 2I.06.2O27 07:40\nRiadok 55", "Riadok 55")["missing_dates"] == 0
 
 
+# --- 3b. near-empty pages are judged by their own ink ------------------------------------
+
+BACK = "  Strana  "  # a near-empty second page
+TWO = [NEW_PAGE, BACK]
+LOW, HIGH = [0.2113, 0.0041], [0.2113, 0.0068]  # page 2 below / above BLANK_INK_MAX
+UNTRUSTED_NEAR = ["lost_values", "missing_numbers", "near_empty_with_loss", "low_word_overlap"]
+
+
+def test_near_empty_by_ink_rules():
+    f = reocr.near_empty_by_ink
+    assert f([], LOW, [False, False]) == ([], [])
+    assert f([2], LOW, [False, False]) == ([2], [])  # blank back side
+    assert f([2], LOW, None) == ([2], [])  # an image has no text layer at all
+    assert f([2], HIGH, [False, False]) == ([], ["near_empty_page_with_ink"])
+    assert f([2], [0.2113, reocr.BLANK_INK_MAX], [False, False])[1] == ["near_empty_page_with_ink"]
+    assert f([2], LOW, [False, True]) == ([], ["near_empty_page_with_ink"])  # a text layer
+    for unknown in (None, [], [0.2113], [0.2113, None], [0.2113, "x"], [0.2113, True]):
+        assert f([2], unknown, None) == ([], ["near_empty_unknown_ink"])
+    mixed = HIGH[-1:] + LOW[-1:]  # first page with ink, second blank, third unknown
+    three = [n + len(mixed) - len(TWO) + 1 for n in range(len(mixed) + 1)]
+    assert f(three, mixed, None) == (
+        [three[1]], ["near_empty_page_with_ink", "near_empty_unknown_ink"]
+    )  # fmt: skip
+
+
+async def test_a_blank_back_side_is_rewritten_under_the_profile_only(vocab):
+    _, d, drive, side, old = _go(vocab, TWO, ink=LOW)
+    assert d.result == "rewritten" and d.decision == "rewrite" and d.review_reasons == []
+    assert d.near_empty_pages == [2] and d.blank_pages == [2]  # no old page markers needed
+    assert d.baseline_untrusted == UNTRUSTED_NEAR  # what it would have been, still visible
+    assert [w[0] for w in drive.writes] == ["create", "update"] and d.backup
+    assert parse_sidecar(drive.items[side]["content"].decode())[1] == [NEW_PAGE, BACK.strip()]
+    # the same read against another engine: the standard rules, as today
+    _, other, drive_b, side_b, old_b = _go(vocab, TWO, ink=LOW, engine="pdftotext")
+    assert other.result == "review" and other.review_reasons == UNTRUSTED_NEAR
+    assert other.blank_pages == [] and other.profile is None
+    assert drive_b.items[side_b]["content"] == old_b.encode()
+
+
+async def test_a_near_empty_page_with_ink_is_a_stop_on_its_own(vocab):
+    _, d, drive, side, old = _go(vocab, TWO, ink=HIGH)
+    assert d.result == "review" and d.review_reasons == ["near_empty_page_with_ink"]
+    assert d.blank_pages == [] and d.baseline_untrusted == UNTRUSTED_NEAR
+    assert drive.items[side]["content"] == old.encode()
+    # regardless of missing numbers: an old text that loses nothing still stops
+    drive_x, _, side_x, old_x, doc_x, reader_x = _setup(TWO, ink=HIGH, old_body=NEW_PAGE + "\n")
+    [dx] = reocr.run_reocr(drive_x, drive_x.root, [doc_x], vocab, dry_run=True, now=NOW,
+                           reader=reader_x).documents  # fmt: skip
+    assert dx.missing_numbers == 0 and dx.baseline_untrusted == []
+    assert dx.review_reasons == ["near_empty_page_with_ink"]
+    # the candidate header records the ink of every page
+    text = drive.items[d.candidate]["content"].decode()
+    assert f"page_ink: {json.dumps(HIGH)}" in text and "page_text_layer: [false, false]" in text
+    assert reocr.candidate_page_ink(text) == (HIGH, [False, False])
+    assert parse_sidecar(reocr.candidate_sidecar_text(text))[1] == [NEW_PAGE, BACK.strip()]
+
+
+async def test_a_single_page_document_is_unaffected_by_the_ink_rule(vocab):
+    _, d, *_ = _go(vocab, [NEW_PAGE], ink=[0.2113])
+    assert d.result == "rewritten" and d.near_empty_pages == [] and d.blank_pages == []
+    assert d.baseline_untrusted == UNTRUSTED
+
+
+def test_candidate_page_ink_of_other_headers():
+    old_style = "---\nkind: reocr_candidate\ncreated: 2027-05-03\n---\n---\nx: 1\n---\n\nText\n"
+    assert reocr.candidate_page_ink(old_style) == (None, None)
+    assert reocr.candidate_page_ink("no header") == (None, None)
+    broken = old_style.replace("created:", "page_ink: [0.1,\ncreated:")
+    assert reocr.candidate_page_ink(broken) == (None, None)
+    # a ``page_ink`` line in the sidecar text below the header is not the header
+    below = old_style.replace("x: 1", "page_ink: [0.001]")
+    assert reocr.candidate_page_ink(below) == (None, None)
+
+
+@pytest.mark.parametrize(
+    "ink,result,reasons,blank",
+    [
+        (LOW, "promoted", [], [2]),
+        (HIGH, "review", ["near_empty_page_with_ink"], []),
+        (None, "review", ["near_empty_unknown_ink"], []),  # a candidate kept without ink
+    ],
+)
+async def test_promotion_applies_the_same_ink_rule(vocab, ink, result, reasons, blank):
+    drive, src, side, old, doc, d = _reviewed_before_the_profile(vocab, TWO, ink=ink)
+    raw = drive.items[d.candidate]["content"].decode()
+    assert ("page_ink:" in raw) is (ink is not None)
+    out = _promote(drive, [doc], vocab, dry_run=False)
+    [e] = out["documents"]
+    assert e["result"] == result and e["review_reasons"] == reasons
+    assert e["blank_pages"] == blank and e["near_empty_pages"] == [2]
+    assert e["baseline_untrusted"] == UNTRUSTED_NEAR
+    if result == "promoted":
+        assert [w[0] for w in drive.writes] == ["create", "update"]
+        assert parse_sidecar(drive.items[side]["content"].decode())[1] == [NEW_PAGE, BACK.strip()]
+    else:
+        assert drive.writes == [] and drive.items[side]["content"] == old.encode()
+    _originals_untouched(drive, src)
+
+
 # --- 4. the env switch -------------------------------------------------------------------
 
 
@@ -334,9 +440,13 @@ def test_env_switch_is_read_from_the_environment(monkeypatch):
 # --- 5. promotion of candidates kept before the profile (core) ---------------------------
 
 
-def _reviewed_before_the_profile(vocab, pages=(NEW_PAGE,), *, engine=TESSERACT, old_body=OLD_BODY):
+def _reviewed_before_the_profile(
+    vocab, pages=(NEW_PAGE,), *, engine=TESSERACT, old_body=OLD_BODY, ink=None
+):
     """A candidate written by a run that still used the standard rules."""
-    drive, src, side, old, doc, reader = _setup(list(pages), engine=engine, old_body=old_body)
+    drive, src, side, old, doc, reader = _setup(
+        list(pages), engine=engine, old_body=old_body, ink=ink
+    )
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(config, "REOCR_TESSERACT_PROFILE", False)
         rep = reocr.run_reocr(drive, drive.root, [doc], vocab, dry_run=False, now=NOW,
