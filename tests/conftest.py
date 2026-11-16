@@ -4,8 +4,43 @@ import pytest
 
 from oncofiles.database import Database
 from oncofiles.patient_middleware import _current_patient_id
+from tests import network_guard
+
+# Installed at import, before collection, so module-level code is covered too.
+network_guard.install()
 
 ERIKA_UUID = "00000000-0000-4000-8000-000000000001"
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _no_network_session():
+    """Tests cannot open non-loopback connections (see ``tests/network_guard.py``).
+
+    Process-wide patch of the socket entry points, so it also holds in
+    ``asyncio.to_thread`` workers and every other thread. No opt-out marker.
+    """
+    network_guard.install()
+    yield
+    network_guard.uninstall()
+
+
+@pytest.fixture(autouse=True)
+def _no_network():
+    """Fail the test that tried to reach the network, even when the code under
+    test swallowed the guard's exception (a broad ``except Exception`` around
+    I/O is common here). The message names the call and host/port only.
+
+    A test may replace the socket functions itself through monkeypatch, which
+    restores the guard; ``install()`` at the start of every test puts it back
+    if anything else left it off.
+    """
+    network_guard.install()
+    # No drain here: a refusal recorded during collection, or by a thread that
+    # outlived the previous test, must fail a test instead of vanishing.
+    yield
+    message = network_guard.failure_message()
+    if message:
+        pytest.fail(message, pytrace=False)
 
 
 @pytest.fixture(autouse=True)
