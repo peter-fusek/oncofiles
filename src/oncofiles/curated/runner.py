@@ -114,9 +114,10 @@ class RunReport:
     flags: list[str] = field(default_factory=list)
     awaiting_review: list[str] = field(default_factory=list)
     not_processed: list[str] = field(default_factory=list)
-    # #854: README vocabulary added (or, in a dry run, planned): label, token,
-    # document, status. Tokens only — the printed spelling goes to the README.
-    vocabulary: list[dict] = field(default_factory=list)
+    # #854: README vocabulary. Tokens only — the printed spelling goes to the
+    # README. A dry run always fills ``planned`` and ``outcomes`` (also with
+    # CURATED_AUTO_VOCAB=false, as a preview); ``added`` only by a real run.
+    vocabulary: dict = field(default_factory=lambda: _vocab_report())
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -324,6 +325,19 @@ def _is_technical(reason: str) -> bool:
     )
 
 
+def _vocab_report() -> dict:
+    return {
+        "auto_vocab_enabled": False,  # CURATED_AUTO_VOCAB for this run
+        "readme_unsupported": None,  # why this README cannot be auto-edited, if so
+        "planned": [],  # {label, token, document}: what a run with the feature on adds
+        "planned_count": 0,
+        "added": [],  # real runs with the feature on
+        "added_count": 0,
+        "outcomes": [],  # dry runs: per document, without vs with the feature
+        "would_file_count": 0,
+    }
+
+
 _VOCAB_REVIEW_RE = re.compile(r"^new (institution|doctor) '.*' not in README vocabulary$")
 
 
@@ -381,6 +395,11 @@ class Runner:
         self._readme: Item | None = None
         self._readme_text = ""
         self._auto_vocab = False  # set per run once the README is known
+        self._readme_vocab_ok = False  # README layout can be auto-edited
+        # dry run with the feature off: README §3 as the feature WOULD grow it
+        self._shadow_text = ""
+        self._shadow_contract: Contract | None = None
+        self._preview_requeue = False
 
     # -- writes (no-ops in dry run, always logged) --
 
@@ -459,6 +478,10 @@ class Runner:
         self._contract = contract
         self._readme, self._readme_text = readme, readme_text
         self._set_auto_vocab(readme_text, contract)
+        self._shadow_text, self._shadow_contract = readme_text, contract
+        # A dry run previews documents held only for vocabulary even with the
+        # feature off (nothing is written; a real run with it off skips them).
+        self._preview_requeue = self.opts.dry_run and self._readme_vocab_ok
         self.report.contract_version = contract.version
 
         if not self.opts.dry_run:
@@ -515,14 +538,87 @@ class Runner:
     # -- vocabulary (#854) --
 
     def _set_auto_vocab(self, readme_text: str, contract: Contract) -> None:
-        self._auto_vocab = False
-        if not self.opts.auto_vocab:
-            return
         reason = vocab_mod.unsupported_reason(readme_text, contract)
-        if reason:  # fail closed: a new institution / doctor goes to review as before
+        self._readme_vocab_ok = reason is None
+        self.report.vocabulary["auto_vocab_enabled"] = bool(self.opts.auto_vocab)
+        self.report.vocabulary["readme_unsupported"] = reason
+        self._auto_vocab = bool(self.opts.auto_vocab) and reason is None
+        if self.opts.auto_vocab and reason:  # fail closed: new values go to review as before
             self.report.flags.append(f"automatic vocabulary off for this README: {reason}")
+
+    def _record_vocabulary(self, tokens: list[dict], source: str, kind: str) -> None:
+        """Report tokens as ``planned`` or ``added``; server logs see counts + hashes."""
+        if not tokens:
             return
-        self._auto_vocab = True
+        v = self.report.vocabulary
+        v[kind].extend({**t, "document": source} for t in tokens)
+        v[f"{kind}_count"] = len(v[kind])
+        logger.info(
+            "curated %s: README vocabulary %s %d token(s) [%s]",
+            self.run_id,
+            kind,
+            len(tokens),
+            ", ".join(vocab_mod.token_digest(t["token"]) for t in tokens),
+        )
+
+    def _preview_vocabulary(self, cls, raw: dict, text: str, source: str) -> None:
+        """Dry run only: the document's outcome without and with the feature.
+
+        With CURATED_AUTO_VOCAB=false the "with" side is a pure second
+        validation against a shadow README that grows like the real one would;
+        its additions are reported as ``planned``. Nothing is written.
+        """
+        kw = {"today": self.now.date(), "max_age_days": self.opts.max_doc_age_days}
+        if self._auto_vocab:
+            with_cls = cls  # planned tokens were recorded by _write_vocabulary
+            without_cls = classify_mod.validate(self._contract, raw, text, auto_vocab=False, **kw)
+        else:
+            without_cls = cls
+            with_cls = classify_mod.validate(
+                self._shadow_contract, raw, text, auto_vocab=True, **kw
+            )
+            if with_cls.additions and not with_cls.review_needed:
+                try:
+                    new_text, after = vocab_mod.add_to_readme(
+                        self._shadow_text,
+                        self._shadow_contract,
+                        with_cls.additions,
+                        run_id=self.run_id,
+                        day=f"{self.now:%Y-%m-%d}",
+                    )
+                except vocab_mod.AutoVocabUnsupportedError:
+                    with_cls.review_needed = True
+                    with_cls.additions = []
+                else:
+                    known = self._shadow_contract.known_tokens
+                    tokens = [
+                        {"label": a.label, "token": a.token}
+                        for a in with_cls.additions
+                        if a.token not in known
+                    ]
+                    self._shadow_text, self._shadow_contract = new_text, after
+                    self._record_vocabulary(tokens, source, "planned")
+        files_without = not without_cls.review_needed
+        files_with = not with_cls.review_needed
+        if files_without == files_with and not with_cls.additions:
+            return  # the feature changes nothing for this document
+        v = self.report.vocabulary
+        v["outcomes"].append(
+            {
+                "document": source,
+                "outcome_without": "filed_without" if files_without else "review_without",
+                "outcome_with": (
+                    "would_file_with_auto_vocab" if files_with else "would_review_with_auto_vocab"
+                ),
+                "tokens": [{"label": a.label, "token": a.token} for a in with_cls.additions],
+            }
+        )
+        v["would_file_count"] = sum(
+            1
+            for o in v["outcomes"]
+            if o["outcome_with"] == "would_file_with_auto_vocab"
+            and o["outcome_without"] == "review_without"
+        )
 
     def _plan_vocabulary(self, cls: classify_mod.Classification) -> tuple[str, Contract] | None:
         """The README text with this document's new tokens, or None (nothing new).
@@ -580,16 +676,7 @@ class Runner:
             None if self.opts.dry_run else _write,
         )
         self._readme_text, self._contract = text, after
-        status = "planned" if self.opts.dry_run else "added"
-        for t in tokens:
-            self.report.vocabulary.append({**t, "document": source, "status": status})
-        logger.info(
-            "curated %s: README vocabulary %s %d token(s) [%s]",
-            self.run_id,
-            status,
-            len(tokens),
-            ", ".join(vocab_mod.token_digest(t["token"]) for t in tokens),
-        )
+        self._record_vocabulary(tokens, source, "planned" if self.opts.dry_run else "added")
 
     # -- documents --
 
@@ -679,7 +766,8 @@ class Runner:
         ):
             return False  # written before Google Docs were exported as text: read it now
         reasons = _review_reasons(text)
-        if reasons and self._auto_vocab and all(_is_vocabulary_only(r) for r in reasons):
+        requeue = self._auto_vocab or self._preview_requeue
+        if reasons and requeue and all(_is_vocabulary_only(r) for r in reasons):
             return False  # #854: only a new institution / doctor kept it here — file it now
         if reasons and all(_is_technical(r) for r in reasons):
             m = re.search(r"^technical_attempts:\s*(\d+)", text, re.M)
@@ -766,6 +854,8 @@ class Runner:
                 auto_vocab=self._auto_vocab,
             )
         planned_vocab = self._plan_vocabulary(cls) if cls is not None else None
+        if cls is not None and self.opts.dry_run and self._readme_vocab_ok:
+            self._preview_vocabulary(cls, raw, ex.text, item.name)
         self.report.flags.extend(f"{item.name}: {f}" for f in (cls.flags if cls else []))
 
         target_folder = contract.folder_for(cls.doc_type) if cls and not cls.review_needed else None
@@ -1196,10 +1286,9 @@ class Runner:
                     f"- `{d['source']}` — **review_needed** ({'; '.join(d.get('reasons', []))}), "
                     f"stays in `{d.get('stays_in', '?')}`"
                 )
-        for v in r.vocabulary:
+        for v in r.vocabulary["added"]:
             lines.append(
-                f"- README vocabulary {v['status']}: {v['label']} `{v['token']}` "
-                f"(for `{v['document']}`)"
+                f"- README vocabulary added: {v['label']} `{v['token']}` (for `{v['document']}`)"
             )
         for f in r.flags:
             lines.append(f"- flag: {f}")
