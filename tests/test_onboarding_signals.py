@@ -1,6 +1,6 @@
 """Tests for onboarding signals (#468) — T0 created hook + admin notifier.
 
-v5.19 Session 2 ships only the T0 hook + real-time Resend admin email.
+v5.19 Session 2 ships only the T0 hook + real-time admin email (SMTP since #834).
 Later events (oauth_ok / folder_set / first_sync / first_ai / stuck_24h /
 oauth_failure / doc_limit_hit) and the daily digest dispatcher arrive in
 v5.20.
@@ -85,12 +85,11 @@ async def test_insert_onboarding_event_repeatable_types_not_deduped(db):
 
 @pytest.mark.asyncio
 async def test_notifier_silent_noop_when_env_missing(monkeypatch, caplog):
-    """Notifier returns without raising and without HTTP when Resend env is unset."""
+    """Notifier returns without raising and without SMTP when mail env is unset."""
     from oncofiles.server import _notify_admin_onboarding_event
+    from tests import fake_smtp
 
-    monkeypatch.delenv("RESEND_API_KEY", raising=False)
-    monkeypatch.delenv("NOTIFY_FROM_EMAIL", raising=False)
-    monkeypatch.delenv("NOTIFY_TO_EMAIL", raising=False)
+    instances = fake_smtp.install(monkeypatch, env=False)
 
     caplog.set_level("WARNING")
     await _notify_admin_onboarding_event(
@@ -99,109 +98,68 @@ async def test_notifier_silent_noop_when_env_missing(monkeypatch, caplog):
         caregiver_email="t@example.com",
         event_type="created",
     )
-    # No raise; warning logged so missing-config is visible in Railway logs.
+    # No raise, no connection; a warning so missing config is visible in logs.
+    assert instances == []
     assert any("SKIPPED" in record.message for record in caplog.records)
+    assert not any("t@example.com" in r.getMessage() for r in caplog.records)
 
 
-# ── Notifier happy path (mocked Resend) ──────────────────────────────────
+# ── Notifier happy path (fake SMTP, #834) ────────────────────────────────
 
 
 @pytest.mark.asyncio
-async def test_notifier_calls_resend_with_correct_shape(monkeypatch):
-    """Notifier POSTs to Resend with the expected headers + body when env is set."""
-    import httpx
-
+async def test_notifier_sends_over_smtp_with_correct_shape(monkeypatch):
+    """Notifier sends one SMTP message to NOTIFY_TO_EMAIL; no patient name (#834)."""
     from oncofiles.server import _notify_admin_onboarding_event
+    from tests import fake_smtp
 
-    monkeypatch.setenv("RESEND_API_KEY", "re_test_key_123")
-    monkeypatch.setenv("NOTIFY_FROM_EMAIL", "Onco Notifier <hello@oncofiles.com>")
-    monkeypatch.setenv("NOTIFY_TO_EMAIL", "admin@oncofiles.com")
-
-    captured: dict = {}
-
-    class _FakeResponse:
-        status_code = 200
-        text = "ok"
-
-    class _FakeClient:
-        def __init__(self, *args, **kwargs):
-            pass
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *args):
-            return None
-
-        async def post(self, url, *, headers=None, json=None):
-            captured["url"] = url
-            captured["headers"] = headers
-            captured["json"] = json
-            return _FakeResponse()
-
-    monkeypatch.setattr(httpx, "AsyncClient", _FakeClient)
+    instances = fake_smtp.install(monkeypatch)
 
     await _notify_admin_onboarding_event(
         patient_slug="q1b",
         display_name="Jana Testova",
-        caregiver_email="peter.fusek@instarea.sk",
+        caregiver_email="caregiver@example.com",
         event_type="created",
     )
 
-    assert captured["url"] == "https://api.resend.com/emails"
-    assert captured["headers"]["Authorization"] == "Bearer re_test_key_123"
-    assert captured["json"]["from"] == "Onco Notifier <hello@oncofiles.com>"
-    assert captured["json"]["to"] == ["admin@oncofiles.com"]
-    assert "Nový pacient: Jana Testova" in captured["json"]["subject"]
-    body = captured["json"]["text"]
+    assert len(instances) == 1
+    (msg, rcpt) = instances[0].sent[0]
+    assert rcpt == ["admin@oncofiles.com"]
+    assert msg["From"] == "Oncofiles <noreply@oncofiles.com>"
+    assert msg["Subject"] == "[Oncofiles] Nový pacient: q1b"
+    body = msg.get_content()
     assert "patient_slug:    q1b" in body
-    assert "caregiver_email: peter.fusek@instarea.sk" in body
+    assert "caregiver_email: caregiver@example.com" in body
     assert "https://oncofiles.com/dashboard?patient=q1b" in body
-    # Tags carry the kind + event_type for Resend filtering
-    tag_kinds = {t["name"]: t["value"] for t in captured["json"]["tags"]}
-    assert tag_kinds["kind"] == "onboarding"
-    assert tag_kinds["event_type"] == "created"
+    # No patient data in e-mails: the display name is not sent.
+    assert "Jana Testova" not in msg.as_string()
+    assert msg["X-Mailin-Tag"] == "onboarding, created"
 
 
 @pytest.mark.asyncio
-async def test_notifier_swallows_resend_4xx(monkeypatch, caplog):
-    """A 4xx from Resend logs a warning and does NOT raise."""
-    import httpx
+async def test_notifier_swallows_smtp_errors(monkeypatch, caplog):
+    """An SMTP rejection logs a warning (code only) and does NOT raise."""
+    import smtplib
 
     from oncofiles.server import _notify_admin_onboarding_event
+    from tests import fake_smtp
 
-    monkeypatch.setenv("RESEND_API_KEY", "re_test_key_123")
-    monkeypatch.setenv("NOTIFY_FROM_EMAIL", "from@oncofiles.com")
-    monkeypatch.setenv("NOTIFY_TO_EMAIL", "to@oncofiles.com")
-
-    class _FakeResponse:
-        status_code = 422
-        text = "validation error"
-
-    class _FakeClient:
-        def __init__(self, *args, **kwargs):
-            pass
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *args):
-            return None
-
-        async def post(self, url, *, headers=None, json=None):
-            return _FakeResponse()
-
-    monkeypatch.setattr(httpx, "AsyncClient", _FakeClient)
+    fake_smtp.install(
+        monkeypatch,
+        fail_with=smtplib.SMTPRecipientsRefused({"admin@oncofiles.com": (550, b"no such user")}),
+    )
 
     caplog.set_level("WARNING")
     # Must not raise — caller's request must succeed even when notifier fails.
     await _notify_admin_onboarding_event(
         patient_slug="x",
         display_name="X",
-        caregiver_email="x@y.com",
+        caregiver_email="x@example.com",
         event_type="created",
     )
-    assert any("Resend onboarding notification failed" in r.message for r in caplog.records)
+    failed = [r.getMessage() for r in caplog.records if "Mail not sent" in r.getMessage()]
+    assert failed and "SMTPRecipientsRefused" in failed[0]
+    assert not any("@" in r.getMessage() for r in caplog.records)
 
 
 # ── End-to-end: api_create_patient triggers the hook ─────────────────────

@@ -26,7 +26,10 @@ async def test_privacy_matches_the_service():
     assert "never permanently deletes" in html
     assert "only the folder you choose" in html and "access to your Google" in html
     assert "Gmail and Google Calendar</strong> — not used" in html
-    assert "Google Analytics" in html and "Resend" in html
+    assert "Google Analytics" in html and "Brevo" in html
+    assert "Resend" not in html  # #834: mail moved to SMTP (Brevo)
+    # #834: the relay's free plan may add a pixel / rewrite links; say so
+    assert "tracking pixel" in html and "rewrite their links" in html
     # #700: GA only on public pages, only after consent; never in the logged-in app
     assert "after you accept analytics cookies" in html
     assert "logged-in app does not load Google" in html

@@ -7,6 +7,14 @@ from unittest.mock import MagicMock
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _no_mail_env(monkeypatch):
+    """No test here inherits a developer's SMTP env (#834); smtplib is faked."""
+    from tests import fake_smtp
+
+    fake_smtp.install(monkeypatch, env=False)
+
+
 @pytest.fixture
 def _clear_rate_limits():
     """Clear newsletter rate limits before each test."""
@@ -122,15 +130,15 @@ async def test_newsletter_cors_header(db):
 
 @pytest.mark.usefixtures("_clear_rate_limits")
 async def test_newsletter_notification_noop_when_no_env(db, monkeypatch):
-    """Notification helper is a silent no-op when RESEND_API_KEY is unset."""
+    """Notification helper is a no-op (no SMTP connection) when mail env is unset."""
     from oncofiles.server import _notify_new_subscriber
+    from tests import fake_smtp
 
-    monkeypatch.delenv("RESEND_API_KEY", raising=False)
-    monkeypatch.delenv("NOTIFY_FROM_EMAIL", raising=False)
-    monkeypatch.delenv("NOTIFY_TO_EMAIL", raising=False)
+    instances = fake_smtp.install(monkeypatch, env=False)
 
-    # Should return without raising and without making any HTTP call.
+    # Should return without raising and without opening a connection.
     await _notify_new_subscriber("x@y.com", "test")
+    assert instances == []
 
 
 @pytest.mark.usefixtures("_clear_rate_limits")

@@ -2137,7 +2137,12 @@ Nič sa nemaže, len presúva do koša.
         .then(function (res) {
           if (res === null) return;
           if (res.ok && res.data.ok) {
-            msgEl.textContent = lang === 'en' ? 'Thank you, check your email.' : 'Ďakujeme, skontrolujte si email.';
+            /* #834: "check your e-mail" only when the server can send one */
+            if (res.data.email_queued === true) {
+              msgEl.textContent = lang === 'en' ? 'Thank you, check your e-mail.' : 'Ďakujeme, skontrolujte si e-mail.';
+            } else {
+              msgEl.textContent = lang === 'en' ? "Thank you, you're on the list." : 'Ďakujeme, ste na zozname.';
+            }
             msgEl.className = 'nl-msg success';
             input.value = '';
             if (typeof gtag === 'function') gtag('event', 'newsletter_signup', { source: source });
