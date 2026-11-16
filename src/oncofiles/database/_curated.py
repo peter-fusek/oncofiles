@@ -141,6 +141,44 @@ class CuratedMixin(DatabaseBase):
             rows = await cursor.fetchall()
         return [r["patient_id"] if isinstance(r, dict) else r[0] for r in rows]
 
+    async def curated_import_state(self, *, patient_id: str) -> dict:
+        """First-import state for the fair scheduler (#855). Ids/flags only.
+
+        ``started``: any real run exists. ``done``: a real run ended ok with
+        nothing left for a later run (``inbox_drained``; rows written before
+        #855 lack it and count when their ``not_processed`` list is empty).
+        ``enrolled_at``: ``curated_settings.updated_at``, the FIFO key.
+        """
+        runs = "patient_id = ? AND dry_run = 0 AND " + _NOT_RUNS
+        async with self.db.execute(
+            f"""SELECT
+                 EXISTS(SELECT 1 FROM curated_runs WHERE {runs}) AS started,
+                 EXISTS(SELECT 1 FROM curated_runs WHERE {runs}
+                        AND status = 'ok' AND finished_at IS NOT NULL
+                        AND COALESCE(json_extract(report_json, '$.inbox_drained'),
+                                     json_array_length(report_json, '$.not_processed') = 0)
+                            = 1) AS done,
+                 (SELECT updated_at FROM curated_settings WHERE patient_id = ?) AS enrolled_at""",
+            (patient_id, patient_id, patient_id),
+        ) as cursor:
+            row = dict(await cursor.fetchone())
+        return {
+            "started": bool(row["started"]),
+            "done": bool(row["done"]),
+            "enrolled_at": row["enrolled_at"],
+        }
+
+    async def curated_model_pages_since(self, *, patient_id: str, since: str) -> int:
+        """Pages the local model OCR'd in this patient's runs (dry and real)
+        started at or after ``since`` (UTC, ``%Y-%m-%dT%H:%M:%SZ``) — #855."""
+        async with self.db.execute(
+            "SELECT COALESCE(SUM(json_extract(report_json, '$.model_pages')), 0) "
+            "FROM curated_runs WHERE patient_id = ? AND started_at >= ? AND " + _NOT_RUNS,
+            (patient_id, since),
+        ) as cursor:
+            row = await cursor.fetchone()
+        return int(row[0] or 0)
+
     async def get_last_scorecard(
         self, *, patient_id: str, label_prefix: str | None = None, before_id: int | None = None
     ) -> dict | None:
