@@ -4498,6 +4498,17 @@ def _dashboard_legacy_refusal(request: Request, action: str) -> JSONResponse | N
 from oncofiles.constants import NO_PATIENT_ACCESS_SENTINEL  # noqa: E402
 
 
+def _acl_caller_log_id(email: str | None) -> str:
+    """Short keyed hash of a dashboard caller for ACL logs (#531), never the e-mail."""
+    try:
+        from oncofiles.secrets_keys import caller_email_hash
+
+        digest = caller_email_hash(email or "")
+    except Exception:
+        digest = None
+    return digest[:12] if digest else "-"
+
+
 async def _get_dashboard_patient_id(request: Request) -> str:
     """Extract patient_id from query params and resolve slug → UUID.
 
@@ -4505,109 +4516,94 @@ async def _get_dashboard_patient_id(request: Request) -> str:
     the UUID patient_id suitable for DB queries, OR a non-empty sentinel
     that matches no real patient when the caller has no access.
 
-    Authorization: ALL session users (including admins) may only access
-    patients where their email appears in ``caregiver_email`` (comma-separated).
-    Bearer token requests (MCP/system) bypass patient scoping.
-    Unauthorized requests get the sentinel — NEVER empty string — so
-    downstream `if patient_id:` truthy checks still apply the DB filter.
+    Authorization: a session user gets a patient when their email appears in
+    its ``caregiver_email`` (comma-separated) or they are an admin
+    (``DASHBOARD_ADMIN_EMAILS``, audit-logged). A non-caregiver falls back to
+    their own first patient. Bearer token requests (MCP/system) bypass
+    patient scoping. Unauthorized requests get the sentinel — NEVER empty
+    string — so downstream `if patient_id:` truthy checks still apply the DB
+    filter.
+
+    Fail closed (#531): every error or miss on the way (no caller identity,
+    slug resolution, patient listing, caregiver match) returns the sentinel,
+    never the requested value and never a default patient.
     """
     email = _get_dashboard_email(request)
     is_bearer = _check_bearer(request) is None
+    caller = _acl_caller_log_id(email)
+
+    if not is_bearer and not email:
+        logger.warning("dashboard patient ACL: no bearer and no session identity — sentinel")
+        return NO_PATIENT_ACCESS_SENTINEL
 
     raw = request.query_params.get("patient_id", "").strip().lower()
+    db: Database = request.app.state.fastmcp_server._lifespan_result["db"]
     if not raw:
         # Fall back to first active patient the caller is allowed to see
         try:
-            db_fb: Database = request.app.state.fastmcp_server._lifespan_result["db"]
-            patients = await db_fb.list_patients(active_only=True)
-            if not is_bearer and email:
+            patients = await db.list_patients(active_only=True)
+            if not is_bearer:
                 patients = [
                     p for p in patients if _email_matches_caregiver(email, p.caregiver_email)
                 ]
             if patients:
                 return patients[0].patient_id
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning(
+                "dashboard patient ACL: default-patient lookup raised %s caller=%s — sentinel",
+                type(exc).__name__,
+                caller,
+            )
+            return NO_PATIENT_ACCESS_SENTINEL
         logger.warning(
-            "_get_dashboard_patient_id: no accessible patient for email=%r is_bearer=%s — "
-            "returning sentinel",
-            email,
+            "dashboard patient ACL: no accessible patient caller=%s is_bearer=%s — sentinel",
+            caller,
             is_bearer,
         )
         return NO_PATIENT_ACCESS_SENTINEL
-    db: Database = request.app.state.fastmcp_server._lifespan_result["db"]
 
-    # Narrow try/except per DB call so the error log points at the exact
-    # failing operation (#443 diagnosis aid — previously a single broad catch
-    # swallowed three separate failure modes into one generic message).
     try:
         resolved = await db.resolve_patient_id(raw)
+        if not resolved:
+            # The dashboard lists archived patients too; they resolve here and
+            # still go through the ACL below (before #531 they skipped it).
+            resolved = await db.resolve_patient_id(raw, active_only=False)
     except Exception as exc:
-        logger.error(
-            "_get_dashboard_patient_id: resolve_patient_id('%s') raised %s: %s",
-            raw,
+        logger.warning(
+            "dashboard patient ACL: resolve_patient_id raised %s caller=%s — sentinel",
             type(exc).__name__,
-            exc,
-            exc_info=True,
+            caller,
         )
-        return raw
+        return NO_PATIENT_ACCESS_SENTINEL
     if not resolved:
-        logger.warning("_get_dashboard_patient_id: no patient found for '%s'", raw)
-        return raw
+        logger.warning("dashboard patient ACL: unknown patient caller=%s — sentinel", caller)
+        return NO_PATIENT_ACCESS_SENTINEL
 
-    # --- Authorization gate ---
-    if not is_bearer and email:
-        try:
-            patients = await db.list_patients(active_only=False)
-        except Exception as exc:
-            logger.error(
-                "_get_dashboard_patient_id: list_patients raised %s while "
-                "authorizing '%s' for '%s': %s",
-                type(exc).__name__,
-                email,
-                raw,
-                exc,
-                exc_info=True,
-            )
-            # Fail safe: return the resolved pid so read-only queries can
-            # still proceed — the endpoint can 500 on its own DB calls if
-            # the outage is persistent.
+    if is_bearer:
+        return resolved
+
+    # --- Authorization gate (session callers) ---
+    try:
+        patients = await db.list_patients(active_only=False)
+        target = next((p for p in patients if p.patient_id == resolved), None)
+        if target is not None and _email_matches_caregiver(email, target.caregiver_email):
             return resolved
-
-        try:
-            target = next((p for p in patients if p.patient_id == resolved), None)
-            is_caregiver = target and _email_matches_caregiver(email, target.caregiver_email)
-        except Exception as exc:
-            logger.error(
-                "_get_dashboard_patient_id: caregiver match raised %s for patient '%s' "
-                "email '%s': %s",
-                type(exc).__name__,
-                resolved,
-                email,
-                exc,
-                exc_info=True,
-            )
+        if target is not None and _is_admin_email(email):
+            # Admin read-only access — allowed but audit-logged
+            logger.info("AUDIT: admin caller=%s accessed patient '%s' (read-only)", caller, raw)
             return resolved
+        own = [p for p in patients if _email_matches_caregiver(email, p.caregiver_email)]
+    except Exception as exc:
+        logger.warning(
+            "dashboard patient ACL: authorization check raised %s caller=%s — sentinel",
+            type(exc).__name__,
+            caller,
+        )
+        return NO_PATIENT_ACCESS_SENTINEL
 
-        if not is_caregiver:
-            if _is_admin_email(email):
-                # Admin read-only access — allowed but audit-logged
-                logger.info(
-                    "AUDIT: admin %s accessed patient '%s' (read-only)",
-                    email,
-                    target.display_name if target else raw,
-                )
-            else:
-                # Non-admin, non-caregiver — fall back to own patient
-                logger.warning(
-                    "_get_dashboard_patient_id: %s tried to access patient '%s' — denied",
-                    email,
-                    raw,
-                )
-                own = [p for p in patients if _email_matches_caregiver(email, p.caregiver_email)]
-                return own[0].patient_id if own else NO_PATIENT_ACCESS_SENTINEL
-
-    return resolved
+    # Non-admin, non-caregiver — fall back to own patient
+    logger.warning("dashboard patient ACL: caller=%s denied requested patient", caller)
+    return own[0].patient_id if own else NO_PATIENT_ACCESS_SENTINEL
 
 
 @mcp.custom_route("/dashboard", methods=["GET"])

@@ -391,6 +391,29 @@ def test_reocr_unsure_probes_are_recorded_not_used(monkeypatch):
     assert sum(1 for r in usage if r.get("orientation_probe")) == 2
 
 
+@pytest.mark.parametrize(
+    "report",
+    [_confident(180), json.dumps({"orientation": "upright", "confident": False})],
+)
+def test_orientation_calls_do_not_count_against_the_page_budget(monkeypatch, report):
+    """#855 budget counts pages read, never model calls: the orientation
+    question and the two probe reads of an unsure page still count as one page."""
+    from oncofiles.tools import curated as curated_tools
+
+    up = _page_png()
+    scan = orientation.rotate_png(up, 180)
+    monkeypatch.setattr(extract, "_pixmap_png", lambda page, dpi=None: scan)
+    fake = FakeVision(up, report)
+    monkeypatch.setattr(llm, "chat", fake)
+    counted: list[int] = []
+    pdf = _one_page_pdf() + report.encode()  # distinct bytes: no extraction-cache hit
+    ex = curated_tools.cached_extract("scan.pdf", pdf, "application/pdf",
+                                      on_model_pages=counted.append)  # fmt: skip
+    assert ex.method == "vision"
+    assert fake.orientation_calls == 1 and len(fake.read_turns) >= 1
+    assert counted == [1]
+
+
 def _reread(**kw) -> reocr.Reread:
     base = {"pages": ["Leukocyty 6,37 G/l"], "method": "vision2", "engine": "qwen-test"}
     return reocr.Reread(**{**base, **kw})

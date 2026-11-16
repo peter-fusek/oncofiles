@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
 import hashlib
 import json
 import logging
@@ -73,7 +74,9 @@ def _remember(cache: OrderedDict, key: str, value) -> None:
         cache.popitem(last=False)
 
 
-def cached_extract(name, content, mime_type="", *, min_text_chars=100):
+def cached_extract(name, content, mime_type="", *, min_text_chars=100, on_model_pages=None):
+    """``on_model_pages(n)`` is called after a fresh (not cached) vision
+    extraction with the number of pages the local model read (#855 budget)."""
     from oncofiles.curated import extract as extract_mod
 
     ext = name.rsplit(".", 1)[-1]
@@ -81,6 +84,8 @@ def cached_extract(name, content, mime_type="", *, min_text_chars=100):
     if content and key in _extract_cache:
         return _extract_cache[key]
     ex = extract_mod.extract(name, content, mime_type, min_text_chars=min_text_chars)
+    if on_model_pages is not None and ex.method == "vision" and ex.pages:
+        on_model_pages(ex.pages)
     if content and ex.ok:  # never cache failures (the model may be back next time)
         _remember(_extract_cache, key, ex)
     return ex
@@ -202,6 +207,55 @@ async def preview_gate(db, pid: str, *, now: datetime | None = None) -> str | No
     return None
 
 
+# ── capacity (#855): daily model-page budget per patient ──────────────
+
+# patient_id -> pages the model OCR'd in the run executing now (not yet in the
+# DB). Written from the run's worker thread, so behind a lock.
+_inflight_pages: dict[str, int] = {}
+_pages_lock = threading.Lock()
+HOLD_PAGE_BUDGET = "daily_page_budget"
+
+
+def scheduling_settings() -> tuple[int, int]:
+    """(daily page budget per patient, onboarding threshold) from runtime env.
+
+    ``CURATED_DAILY_PAGE_BUDGET`` (default 300, 0 = off): pages the local model
+    may OCR for one patient per UTC day, previews included, cache hits not.
+    ``CURATED_ONBOARDING_MIN_PENDING`` (default 10): a patient whose first
+    import is unfinished counts as onboarding once this many items are pending.
+    """
+    budget = max(0, int(os.environ.get("CURATED_DAILY_PAGE_BUDGET", "300")))
+    min_pending = max(1, int(os.environ.get("CURATED_ONBOARDING_MIN_PENDING", "10")))
+    return budget, min_pending
+
+
+def _utc_day_start(now: datetime | None = None) -> str:
+    return (now or datetime.now(UTC)).strftime("%Y-%m-%dT00:00:00Z")
+
+
+async def pages_used_today(db, pid: str, *, now: datetime | None = None) -> int:
+    """Model pages of this patient's runs started this UTC day (persisted rows)
+    plus the run executing now. Survives restarts: the rows carry the count."""
+    done = await db.curated_model_pages_since(patient_id=pid, since=_utc_day_start(now))
+    with _pages_lock:
+        return done + _inflight_pages.get(pid, 0)
+
+
+def _budget_gate(pid: str, pages_base: int):
+    """Per-document check inside a run: stop starting new OCR once the day's
+    budget is used (the document in progress finishes; the rest stays)."""
+    budget, _ = scheduling_settings()
+    if budget <= 0:
+        return None
+
+    def gate() -> str | None:
+        with _pages_lock:
+            used = pages_base + _inflight_pages.get(pid, 0)
+        return HOLD_PAGE_BUDGET if used >= budget else None
+
+    return gate
+
+
 # ── core ──────────────────────────────────────────────────────────────
 
 
@@ -231,6 +285,11 @@ async def _prepare(db, pid: str, *, dry_run: bool, max_docs: int | None, max_act
 
     patient_type = (get_context(pid) or {}).get("patient_type", "oncology")
     default_docs, min_chars, max_age = DEFAULTS.get(patient_type, DEFAULTS["oncology"])
+    from oncofiles import config
+
+    # #855: the cap and the page budget are checked before every OCR, for every
+    # trigger (loop, nightly, MCP, admin). count_documents is a COUNT (no LIMIT).
+    pages_base = await pages_used_today(db, pid)
     opts = RunOptions(
         dry_run=dry_run,
         max_docs=max_docs or default_docs,
@@ -239,6 +298,9 @@ async def _prepare(db, pid: str, *, dry_run: bool, max_docs: int | None, max_act
         max_doc_age_days=max_age,
         should_stop=_stopping.is_set,
         reviewed_text=await reviewed_text_sources(db, pid),
+        doc_cap=max(0, config.MAX_DOCUMENTS_PER_PATIENT),
+        docs_existing=await db.count_documents(patient_id=pid),
+        ocr_gate=_budget_gate(pid, pages_base),
     )
     return None, (gdrive, folder_id, opts)
 
@@ -269,8 +331,13 @@ async def _execute_locked(db, pid: str, gdrive, folder_id: str, opts, *, trigger
     from oncofiles.curated.drive_ops import DriveOps
     from oncofiles.curated.runner import run_curated
 
+    def _count(n: int) -> None:
+        with _pages_lock:
+            _inflight_pages[pid] = _inflight_pages.get(pid, 0) + n
+
     def _blocking():
-        kwargs = {"extract_fn": cached_extract, "propose_fn": cached_propose}
+        extract = functools.partial(cached_extract, on_model_pages=_count)
+        kwargs = {"extract_fn": extract, "propose_fn": cached_propose}
         # Own HTTP connection: the shared patient client is used concurrently by
         # dashboard/API threads, and httplib2 is not thread-safe (2026-11-08 abort).
         own = gdrive.dedicated_copy()
@@ -285,11 +352,15 @@ async def _execute_locked(db, pid: str, gdrive, folder_id: str, opts, *, trigger
     row_id = await db.insert_curated_run(patient_id=pid, dry_run=opts.dry_run, trigger=trigger)
     sync_id = None if opts.dry_run else await db.insert_sync_history("curated", patient_id=pid)
     t0 = time.monotonic()
+    with _pages_lock:
+        _inflight_pages[pid] = 0
     try:
         report = (await asyncio.to_thread(_blocking)).to_dict()
     except Exception as exc:  # runner catches everything; this is belt and braces
         logger.exception("curated run crashed for %s", pid)
         report = {"status": "aborted", "message": f"crashed ({type(exc).__name__})"}
+    with _pages_lock:
+        report["model_pages"] = _inflight_pages.get(pid, 0)
     if not opts.dry_run:
         _remember_text_reviews(pid, report)
         _note_run_outcome(pid, report)
@@ -297,6 +368,8 @@ async def _execute_locked(db, pid: str, gdrive, folder_id: str, opts, *, trigger
     await db.finish_curated_run(
         row_id, patient_id=pid, status=status, message=message, report=report
     )
+    with _pages_lock:  # now counted by the persisted row (pages_used_today)
+        _inflight_pages[pid] = 0
     if sync_id is not None:
         filed = sum(1 for d in report.get("documents", []) if d.get("result") == "filed")
         await db.complete_sync_history(
@@ -562,6 +635,7 @@ def heartbeat_detail() -> dict:
         "loop_alert_runs": LOOP_ALERT_RUNS,
         "pending": {pid: len(w.stuck) for pid, w in _watch.items()},
         "probes": probe_stats(),
+        "scheduling": scheduling_detail(),  # #855
     }
 
 
@@ -582,6 +656,13 @@ class _ProbeStats:
     auto_runs_total: int = 0
     pending_inbox_count: int | None = None  # what the next run would process
     parked_count: int = 0  # pending items a sequence could not move
+    # #855 fair scheduling: "active" | "queued" | "done" | None (ordinary)
+    onboarding: str | None = None
+    onboarding_queue_position: int | None = None  # 0 = active, 1.. = waiting
+    pages_today: int | None = None  # model pages this UTC day (when a budget is set)
+    page_budget: int | None = None
+    last_held: dict[str, int] = field(default_factory=dict)  # reason -> files, last turn
+    held_total: dict[str, int] = field(default_factory=dict)  # reason -> files, all turns
 
 
 _probe_stats: dict[str, _ProbeStats] = {}
@@ -655,16 +736,125 @@ def _log_blocked(pid: str, reason: str, n_work: int) -> None:
     )
 
 
-async def continuous_tick(
-    db, pid: str, *, settle_s: int, chunk: int, max_runs: int, grace_until: float = 0.0
-) -> list[dict] | None:
-    """Probe; run a short sequence when there is new, settled work. Never raises
-    for an ordinary outcome; returns the reports when a sequence ran.
+# ── fair scheduling (#855): one local model, many patients ────────────
+#
+# A ROUND probes every enabled patient (read-only), then gives each patient
+# with settled work at most ONE bounded turn: a preview when needed plus one
+# real run of CURATED_CHUNK_DOCS documents. Patients already past their first
+# import go first (rotating start), the one active onboarding patient last, so
+# an existing patient's new file waits at most one round plus one chunk.
+#
+# ONBOARDING = the first import is unfinished: no real run of this patient has
+# ever ended ok with nothing left for a later run (``inbox_drained``; older
+# rows: an empty ``not_processed``), AND at least
+# CURATED_ONBOARDING_MIN_PENDING items are runnable. A smaller first import is
+# an ordinary patient. At most one onboarding patient gets turns; the others
+# wait in a FIFO queue — a patient that already started its import first,
+# then by enrolment time (curated_settings.updated_at), then id. The active
+# one keeps its slot until its import finishes or it has nothing runnable.
 
-    The probe always happens (it only reads Drive). What may wait is the RUN:
-    startup grace, failure backoff, or this patient's own write-capable work
-    (``run_block_reason``). A blocked run is logged once and retried next poll.
-    """
+_import_done: set[str] = set()  # first import finished (sticky for the process)
+_onboarding: dict[str, tuple] = {}  # pid -> FIFO key, active one included
+_onboarding_active: str | None = None
+_round_no = 0
+ROUND_PAUSE_S = 5  # between rounds while work is flowing (a turn takes minutes)
+
+
+def onboarding_queue() -> list[str]:
+    """Waiting onboarding patients, FIFO order (the active one excluded)."""
+    return sorted((p for p in _onboarding if p != _onboarding_active), key=_onboarding.get)
+
+
+def _release_onboarding(pid: str) -> None:
+    global _onboarding_active
+    _onboarding.pop(pid, None)
+    if _onboarding_active == pid:
+        _onboarding_active = None
+
+
+def _pick_onboarding() -> str | None:
+    global _onboarding_active
+    if _onboarding_active not in _onboarding:
+        _onboarding_active = min(_onboarding, key=_onboarding.get) if _onboarding else None
+    _refresh_onboarding_stats()
+    return _onboarding_active
+
+
+def _refresh_onboarding_stats() -> None:
+    queue = onboarding_queue()
+    for pid, st in _probe_stats.items():
+        if pid == _onboarding_active:
+            st.onboarding, st.onboarding_queue_position = "active", 0
+        elif pid in _onboarding:
+            st.onboarding, st.onboarding_queue_position = "queued", queue.index(pid) + 1
+        else:
+            st.onboarding = "done" if pid in _import_done else None
+            st.onboarding_queue_position = None
+
+
+async def _note_onboarding(db, pid: str, n_work: int, *, canary: bool = False) -> None:
+    """Classify a probed patient (see the block comment above)."""
+    if pid in _import_done:
+        return
+    if n_work == 0 and not canary:
+        _release_onboarding(pid)  # nothing runnable: never hold the slot idle
+        return
+    if pid in _onboarding:
+        return
+    _, min_pending = scheduling_settings()
+    if n_work < min_pending:
+        return  # a small first import is an ordinary patient
+    state = await db.curated_import_state(patient_id=pid)
+    if state["done"]:
+        _import_done.add(pid)
+        return
+    _onboarding[pid] = (0 if state["started"] else 1, state["enrolled_at"] or "", pid)
+
+
+def _note_import_progress(pid: str, reports: list[dict]) -> None:
+    if any(
+        not r.get("dry_run") and r.get("status") == "ok" and r.get("inbox_drained") for r in reports
+    ):
+        _import_done.add(pid)
+        _release_onboarding(pid)
+
+
+async def _scheduling_reason(db, pid: str) -> str | None:
+    """Why the fair scheduler gives this patient no run now, or None."""
+    st = _stats(pid)
+    if pid in _onboarding and _pick_onboarding() != pid:
+        return "onboarding_queue"
+    budget, _ = scheduling_settings()
+    st.page_budget = budget
+    if budget > 0:
+        st.pages_today = await pages_used_today(db, pid)
+        if st.pages_today >= budget:
+            return HOLD_PAGE_BUDGET  # until the next UTC day
+    return None
+
+
+def _note_held(pid: str, reports: list[dict]) -> None:
+    st = _stats(pid)
+    last: dict[str, int] = {}
+    for r in reports:
+        for h in r.get("held") or []:
+            _bump(last, h.get("reason") or "unknown")
+    for reason, n in last.items():
+        st.held_total[reason] = st.held_total.get(reason, 0) + n
+    st.last_held = last
+
+
+@dataclass
+class _Found:
+    """A probe with settled work, waiting for its turn this round."""
+
+    probe: object
+    work: set
+
+
+async def _probe_for_work(db, pid: str, *, settle_s: int) -> tuple[object | None, set]:
+    """Probe and update counters. Returns (probe, runnable work); the probe is
+    None when there is nothing to run now (idle, unreachable or unsettled)."""
     w = _watch.setdefault(pid, _Watch())
     st = _stats(pid)
     try:
@@ -674,7 +864,7 @@ async def continuous_tick(
         raise
     if pr is None:
         _bump(st.probes_skipped, "drive_unavailable")
-        return None
+        return None, set()
     st.probes_total += 1
     st.last_probe_at = _now_iso()
     if w.idle_signature is None or pr.signature != w.idle_signature:
@@ -682,16 +872,26 @@ async def continuous_tick(
     work = set(pr.pending) - w.stuck
     if not work and not pr.canary:
         w.idle_signature = pr.signature
-        return None
+        return None, work
     if pr.newest_age_s is not None and pr.newest_age_s < settle_s:
-        return None  # uploads still arriving — wait for the batch to settle
+        return None, work  # uploads still arriving — wait for the batch to settle
+    return pr, work
+
+
+async def _run_turn(
+    db, pid: str, pr, work: set, *, chunk: int, max_runs: int, grace_until: float
+) -> list[dict] | None:
+    """One bounded turn for a patient with settled work: the gates, then a short
+    sequence. A blocked turn is logged once and retried next round."""
+    w = _watch.setdefault(pid, _Watch())
+    st = _stats(pid)
     now = time.monotonic()
     if now < grace_until:
         reason = "startup_grace"
     elif now < w.not_before:
         reason = "failure_backoff"
     else:
-        reason = run_block_reason(pid)
+        reason = run_block_reason(pid) or await _scheduling_reason(db, pid)
     if reason:
         _log_blocked(pid, reason, len(work))
         return None
@@ -715,6 +915,10 @@ async def continuous_tick(
     blocked = next((r["blocked"] for r in reports if r.get("blocked")), None)
     if blocked:
         _log_blocked(pid, blocked, len(work))  # lost a race with a manual job
+    _note_held(pid, reports)
+    _note_import_progress(pid, reports)
+    if st.page_budget:
+        st.pages_today = await pages_used_today(db, pid)
     failed, progressed = _sequence_outcome(reports)
     if failed:
         w.failures += 1
@@ -732,6 +936,88 @@ async def continuous_tick(
         f" — retry in {int(delay // 60)} min" if failed else "",
     )
     return reports
+
+
+async def continuous_tick(
+    db, pid: str, *, settle_s: int, chunk: int, max_runs: int, grace_until: float = 0.0
+) -> list[dict] | None:
+    """One patient on its own: probe, then a turn when there is new, settled
+    work. Never raises for an ordinary outcome; returns the reports when a
+    sequence ran. The loop uses ``continuous_round`` (all patients, fair).
+
+    The probe always happens (it only reads Drive). What may wait is the RUN:
+    startup grace, failure backoff, this patient's own write-capable work
+    (``run_block_reason``), the onboarding queue or the daily page budget.
+    """
+    pr, work = await _probe_for_work(db, pid, settle_s=settle_s)
+    await _note_onboarding(db, pid, len(work), canary=bool(pr and pr.canary))
+    if pr is None:
+        return None
+    return await _run_turn(
+        db, pid, pr, work, chunk=chunk, max_runs=max_runs, grace_until=grace_until
+    )
+
+
+async def continuous_round(
+    db, pids: list[str], *, settle_s: int, chunk: int, grace_until: float = 0.0
+) -> bool:
+    """Probe every patient, then one bounded turn (one real run of ``chunk``
+    documents) per patient with settled work. True when a turn moved
+    something, so the loop starts the next round right away."""
+    global _round_no
+    found: dict[str, _Found] = {}
+    for pid in pids:  # phase 1: read-only probes, never blocked
+        if _stopping.is_set():
+            return False
+        try:
+            pr, work = await _probe_for_work(db, pid, settle_s=settle_s)
+            await _note_onboarding(db, pid, len(work), canary=bool(pr and pr.canary))
+        except Exception:
+            logger.exception("curated auto %s: probe failed", pid)
+            continue
+        if pr is not None:
+            found[pid] = _Found(pr, work)
+    for pid in [p for p in _onboarding if p not in pids]:  # no longer enabled
+        _release_onboarding(pid)
+    active = _pick_onboarding()
+    steady = [p for p in pids if p in found and p not in _onboarding]
+    if steady:
+        k = _round_no % len(steady)
+        steady = steady[k:] + steady[:k]
+    _round_no += 1
+    order = steady + [p for p in pids if p in found and p in _onboarding]
+    progressed_any = False
+    for pid in order:  # phase 2: turns (queued onboarding patients log "onboarding_queue")
+        if _stopping.is_set():
+            break
+        f = found[pid]
+        try:
+            reports = await _run_turn(
+                db, pid, f.probe, f.work, chunk=chunk, max_runs=1, grace_until=grace_until
+            )
+        except Exception:
+            logger.exception("curated auto %s: turn failed", pid)
+            continue
+        if reports and _sequence_outcome(reports)[1]:
+            progressed_any = True
+    _refresh_onboarding_stats()
+    if active != _onboarding_active:
+        logger.info("curated onboarding: active patient changed to %s", _onboarding_active)
+    return progressed_any
+
+
+def scheduling_detail() -> dict:
+    """Operator/admin view of the fair scheduler (ids and counts only)."""
+    budget, min_pending = scheduling_settings()
+    from oncofiles import config
+
+    return {
+        "onboarding_active": _onboarding_active,
+        "onboarding_queue": onboarding_queue(),
+        "onboarding_min_pending": min_pending,
+        "daily_page_budget": budget,
+        "document_cap": config.MAX_DOCUMENTS_PER_PATIENT,
+    }
 
 
 async def _startup_index(db, pending: set[str]) -> None:
@@ -782,7 +1068,7 @@ async def curated_nightly_loop(
     await asyncio.sleep(min(probe_delay_s, startup_grace_s))
     to_index: set[str] | None = None  # filled once the grace is over
     while not _stopping.is_set():
-        cont, cont_poll, settle, chunk = False, 300, 0, 5
+        cont, cont_poll, settle, chunk, flowing = False, 300, 0, 5, False
         try:
             enabled, hour, max_runs = nightly_settings()
             cont, cont_poll, settle, chunk = continuous_settings()
@@ -800,7 +1086,7 @@ async def curated_nightly_loop(
                 for pid in await db.list_curated_nightly_patients():
                     if _stopping.is_set():
                         break
-                    if reason := run_block_reason(pid):
+                    if reason := run_block_reason(pid) or await _scheduling_reason(db, pid):
                         logger.info("curated nightly %s: skipped (%s)", pid, reason)
                         continue
                     reports = await nightly_for_patient(
@@ -810,6 +1096,8 @@ async def curated_nightly_loop(
                         reuse_preview=hour is None,
                         skip_if_busy=True,
                     )
+                    _note_held(pid, reports)
+                    _note_import_progress(pid, reports)
                     if not any(r.get("blocked") for r in reports):
                         _watch.pop(pid, None)  # the sweep retried everything
                     logger.info(
@@ -818,25 +1106,21 @@ async def curated_nightly_loop(
                         [(r.get("dry_run"), r.get("status") or r.get("error")) for r in reports],
                     )
             elif enabled and cont:
-                for pid in await db.list_curated_nightly_patients():
-                    if _stopping.is_set():
-                        break
-                    try:
-                        await continuous_tick(
-                            db,
-                            pid,
-                            settle_s=settle,
-                            chunk=chunk,
-                            max_runs=max_runs,
-                            grace_until=grace_until,
-                        )
-                    except Exception:
-                        logger.exception("curated auto %s: tick failed", pid)
+                # #855: one fair round; while turns move work, the next round
+                # starts after a short pause instead of a full poll interval.
+                flowing = await continuous_round(
+                    db,
+                    await db.list_curated_nightly_patients(),
+                    settle_s=settle,
+                    chunk=chunk,
+                    grace_until=grace_until,
+                )
         except asyncio.CancelledError:
             raise
         except Exception:
             logger.exception("curated loop iteration failed")
-        await asyncio.sleep(poll_s or (cont_poll if cont else 300))
+        pause = poll_s or (cont_poll if cont else 300)
+        await asyncio.sleep(min(pause, ROUND_PAUSE_S) if flowing else pause)
 
 
 # ── MCP tools ─────────────────────────────────────────────────────────
