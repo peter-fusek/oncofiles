@@ -18,7 +18,7 @@
 <header>
   <div>
     <h1>Petrov pohybový atlas</h1>
-    <p>Chrbát, pravé koleno a ľavé rameno podľa ortopedických správ. Schematický 3D model, nie snímky.</p>
+    <p>Chrbát, pravé koleno a ľavé rameno podľa ortopedických správ. Schematický 3D model, nie snímky. Anatómia je zo všeobecného modelu tela, nález je do nej zakreslený podľa textu správ.</p>
     <p class="origin">Skutočný nález autora Oncofiles, zverejnený z jeho vlastného rozhodnutia. <a href="/pouzitie/pohybovy-atlas">Ako atlas vznikol</a> · <a href="/use-cases/movement-atlas">English</a> · <a href="/">oncofiles.com</a></p>
   </div>
   <div class="tabs" role="tablist" aria-label="Oblasť tela">
@@ -32,6 +32,7 @@
     <canvas id="gl"></canvas>
     <svg id="leaders" aria-hidden="true"></svg>
     <div id="labels"></div>
+    <div id="loading" role="status">Načítavam 3D model…</div>
 
     <div class="ctl tl">
       <div class="seg level" role="group" aria-label="Úroveň priblíženia">
@@ -69,7 +70,9 @@
   </section>
   <aside id="panel"></aside>
 </main>
-<script src="/movement-atlas/three.min.js"></script>
-<script src="/movement-atlas/app.js"></script>
+<footer class="credit">
+  <p>3D anatómia: <a href="https://dbarchive.biosciencedbc.jp/en/bodyparts3d/download.html" rel="noopener">BodyParts3D</a>, © The Database Center for Life Science, licencia <a href="https://creativecommons.org/licenses/by/4.0/" rel="noopener license">CC BY 4.0</a>, upravené. Upravené modely zdieľame pod <a href="https://creativecommons.org/licenses/by-sa/4.0/" rel="noopener license">CC BY-SA 4.0</a>. Ilustračná všeobecná anatómia, nie Petrove snímky. <a href="/movement-atlas/ATTRIBUTION.md">Zdroj, úpravy a licencia</a></p>
+</footer>
+<script type="module" src="/movement-atlas/app.js"></script>
 </body>
 </html>

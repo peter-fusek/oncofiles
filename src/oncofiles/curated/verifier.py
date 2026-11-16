@@ -49,7 +49,12 @@ from oncofiles.curated.reread_verify import date_printed
 
 # v2 (#826): a printed date range is parsed (dated at its end, both ends must
 # be printed on the page as that range); trailing ":" "." "," on a date.
-VERIFIER_VERSION = 2
+# v3 (#833): filler dots between a label and its value ("Glukóza .....5.2")
+# count as whitespace when the value is looked up in the evidence, unless
+# the run of dots directly follows a digit; a "…" after a digit now blocks
+# the value like a "." does. Lab values only: the clinical verifier is not
+# changed.
+VERIFIER_VERSION = 3
 
 
 # Facts parsed from LM Studio's ``reasoning_content`` channel (content empty)
@@ -256,13 +261,38 @@ def parse_printed_date(s: str | None) -> str | None:
     return out
 
 
-def _value_pattern(value: str) -> re.Pattern:
+def _value_pattern(value: str, *, ellipsis_blocks: bool = False) -> re.Pattern:
+    """``ellipsis_blocks`` (lab verifier, #833): a "…" right before the number
+    blocks like a "."; after ``blank_dot_leaders`` the only "…" left is one
+    that follows a digit ("3…4.71"). Off by default: the clinical verifier
+    shares this pattern and is unchanged."""
     v = value.strip()
     if _NUMERIC.fullmatch(v):
         whole, _, frac = v.replace(",", ".").partition(".")
         body = re.escape(whole) + (rf"[.,]{frac}0*" if frac else r"(?![.,]\d)")
-        return re.compile(rf"(?<![\d.,]){body}(?!\d)")
+        before = r"[\d.,…]" if ellipsis_blocks else r"[\d.,]"
+        return re.compile(rf"(?<!{before}){body}(?!\d)")
     return re.compile(rf"(?<!\w){re.escape(ws(v))}(?!\w)", re.I)
+
+
+# A dot leader (#833): two or more "." / "…" (a single "…" counts as one
+# leader), optionally one space apart (". . . ."). The whole run must not
+# follow a digit: "3...4.71" could be a truncated "3.", so it stays as it is.
+# A single "." is never a leader (decimal or date context).
+_DOT_LEADER = re.compile(r"(?<![\d.…])(?<![.…] )(?:…|\.(?= ?[.…]))(?: ?[.…])*")
+
+
+def blank_dot_leaders(text: str, printed: str | None = None) -> str:
+    """``text`` with every dot leader replaced by spaces of the same length,
+    so the value patterns (which refuse a "." right before a number) see
+    "Glukóza          5.2". The leaders are located in ``printed`` — the
+    same text before anything was blanked out of it, same length — so a
+    digit that was blanked (a label ending in one) still blocks the leader.
+    Nothing is added or moved: only "." and "…" become spaces."""
+    source = printed if printed is not None and len(printed) == len(text) else text
+    for m in _DOT_LEADER.finditer(source):
+        text = text[: m.start()] + " " * (m.end() - m.start()) + text[m.end() :]
+    return text
 
 
 def _blank(text: str, needle: str | None) -> str:
@@ -333,7 +363,8 @@ def verify(  # noqa: PLR0912, PLR0915
     rest = _blank(evidence, label)
     if ref and ref.lower() in rest.lower():
         rest = _blank(rest, ref)
-    m = _value_pattern(value).search(rest) if value else None
+    rest = blank_dot_leaders(rest, evidence)  # filler dots are whitespace (#833)
+    m = _value_pattern(value, ellipsis_blocks=True).search(rest) if value else None
     if not m:
         reasons.append("value_not_in_evidence")
     elif comparator and not rest[: m.start()].rstrip().endswith(comparator):

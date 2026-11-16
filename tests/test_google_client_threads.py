@@ -468,6 +468,27 @@ async def _gdrive_set_folder(client: GDriveClient):
     return await server.api_gdrive_set_folder(req)
 
 
+async def _mcp_set_folder(dry_run: bool):
+    """#839: the MCP tool reaches Drive through the same helper as the endpoint."""
+    from oncofiles.tools import gdrive as gdrive_tools
+
+    ctx = MagicMock()
+    ctx.request_context.lifespan_context = {"db": _db()}
+    out = await gdrive_tools.gdrive_set_folder(ctx, folder_id=ROOT_ID, dry_run=dry_run)
+    assert '"status": "dry_run"' in out if dry_run else '"status": "ok"' in out
+    return out
+
+
+async def _mcp_setup_gdrive(client: GDriveClient):
+    from oncofiles.tools import gdrive as gdrive_tools
+
+    ctx = MagicMock()
+    ctx.request_context.lifespan_context = {"db": _db(), "gdrive": client}
+    out = await gdrive_tools.setup_gdrive(ctx, root_folder_id=ROOT_ID)
+    assert '"status": "ok"' in out
+    return out
+
+
 async def test_entry_points_never_pass_a_service_across_threads(rec, monkeypatch, dashboard):
     """The lock test of the incident: ONE cached patient client, reached at the
     same time by the folder picker endpoints (#838), the curated check that
@@ -491,6 +512,9 @@ async def test_entry_points_never_pass_a_service_across_threads(rec, monkeypatch
         server, "_create_patient_clients", AsyncMock(return_value=(client, None, None, ROOT_ID))
     )
     monkeypatch.setattr(tool, "_text_reviews", {})
+    monkeypatch.setattr(
+        "oncofiles.tools.gdrive._folder_tool_patient", AsyncMock(return_value=("pid-579", None))
+    )
 
     def index_scan():
         own = client.dedicated_copy()
@@ -545,6 +569,9 @@ async def test_entry_points_never_pass_a_service_across_threads(rec, monkeypatch
             _gdrive_folders(client),
             _gdrive_folders(client, ROOT_ID),
             _gdrive_set_folder(client),
+            _mcp_set_folder(True),
+            _mcp_set_folder(False),
+            _mcp_setup_gdrive(client),
             server._mark_patient_curated("pid-579", client, ROOT_ID),
             tool.probe_patient(_db(), "pid-579", None),
             asyncio.to_thread(index_scan),

@@ -100,6 +100,13 @@ REOCR_PASSES_MODE: str = os.environ.get("REOCR_PASSES_MODE", "fixed2").strip().l
 # model's own behaviour) or "off" (chat_template_kwargs.enable_thinking=false).
 # Transcription only; classification and extraction are not affected.
 REOCR_THINKING: str = os.environ.get("REOCR_THINKING", "on").strip().lower()
+# Guard profile for re-OCR of Tesseract-era sidecars (#831): the old Tesseract
+# text is not a trustworthy baseline, so its lost numbers / lab values / words
+# are reported but do not stop a rewrite (reocr.guard_profile). "false" restores
+# the standard guards for every document. Runtime env, read at call time.
+REOCR_TESSERACT_PROFILE: bool = os.environ.get(
+    "REOCR_TESSERACT_PROFILE", "true"
+).strip().lower() not in ("false", "0", "no", "off")
 # Qwen soft switch (#689): LM Studio ignores chat_template_kwargs.enable_thinking
 # for the Qwen3.x MLX model, so with thinking=False llm.chat also puts "/no_think"
 # into the last user message. "false" sends only the kwarg.
