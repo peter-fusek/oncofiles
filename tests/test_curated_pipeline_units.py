@@ -259,6 +259,9 @@ def test_vocabulary_snap(doctor, expected, snapped):
 
 
 # ── #754: snap only genuine misspellings, never a different entity ──
+# These call validate() with auto_vocab off (CURATED_AUTO_VOCAB=false): a new
+# institution / doctor goes to review. The #854 default is in
+# tests/test_curated_auto_vocabulary.py.
 
 # Synthetic vocabulary: two departments sharing a long suffix, one GP practice.
 CONTRACT_754 = parse_contract(
