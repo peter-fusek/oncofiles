@@ -896,7 +896,7 @@ def test_set_folder_legacy_folder_set_needs_the_legacy_layout():
     assert "_require_admin(request) is not None" in src
     assert 'create_subfolders=layout == "legacy"' in src
     assert 'bootstrap=layout == "curated"' in src
-    assert "_require_body_patient_access" in src
+    assert "_dashboard_body_patient(" in src  # resolve + body ACL (#489, #867)
     # #852's gate runs first, before the body is even read.
     assert src.index('_dashboard_onboarding_refusal(request, "set_folder")') < src.index(
         "await request.json()"

@@ -164,7 +164,9 @@ def test_all_5_body_patient_id_endpoints_call_helper():
         api_create_share_link,
     ):
         source = inspect.getsource(fn)
-        assert "_require_body_patient_access" in source, (
-            f"{fn.__name__} must call _require_body_patient_access — "
-            f"cross-patient ACL gap (#489 Part B)"
+        # #867: routes call `_dashboard_body_patient`, which resolves the
+        # value (unknown → 404) and then runs `_require_body_patient_access`.
+        assert "_dashboard_body_patient(" in source, (
+            f"{fn.__name__} must call _dashboard_body_patient — "
+            f"cross-patient ACL gap (#489 Part B, #867)"
         )
