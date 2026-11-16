@@ -13,6 +13,7 @@ import threading
 import time
 
 from oncofiles.config import GOOGLE_APPLICATION_CREDENTIALS, GOOGLE_CREDENTIALS_BASE64
+from oncofiles.google_service import PerThreadServiceMixin, ThreadServices
 
 logger = logging.getLogger(__name__)
 
@@ -105,8 +106,18 @@ def _retry_on_transient(func):
     return wrapper
 
 
-class GDriveClient:
-    """Download/upload files from Google Drive using service account or OAuth."""
+class GDriveClient(PerThreadServiceMixin):
+    """Download/upload files from Google Drive using service account or OAuth.
+
+    Thread safety (#579): ``self._service`` is the CALLING THREAD's service
+    (``google_service.PerThreadServiceMixin``), built on first use in that
+    thread, so no ``httplib2.Http`` is ever shared between threads, however
+    the client is passed around (client cache, ``asyncio.to_thread``,
+    scheduler jobs). The write guard is per client and applies on every
+    thread; ``contract_writes()`` lifts it for the calling thread only.
+    """
+
+    _API = ("drive", "v3")
 
     # Set by oncofiles.curated_folder.mark_if_curated — when a str, every write
     # method raises DriveWriteBlockedError (#562). Class attribute so from_oauth()
@@ -147,7 +158,6 @@ class GDriveClient:
         owner_email: str | None = None,
     ) -> None:
         from google.oauth2 import service_account
-        from googleapiclient.discovery import build
 
         if credentials_base64:
             info = json.loads(base64.b64decode(credentials_base64))
@@ -160,48 +170,33 @@ class GDriveClient:
             raise ValueError("Either credentials_base64 or credentials_path must be provided")
 
         self._creds = creds
-        self._service = build("drive", "v3", credentials=creds)
+        self._services = ThreadServices(*self._API, creds)
+        self._services.get()  # fail at construction, as before, if the service cannot be built
         self.owner_email = owner_email
 
     def dedicated_copy(self) -> GDriveClient:
-        """Same credentials and write guard, but its own HTTP connection.
+        """Same credentials and write guard, but its own HTTP connections.
 
-        httplib2 connections are not thread-safe and patient clients are shared
-        (client cache, ``asyncio.to_thread`` callers). 2026-11-08: a dashboard
-        ``/api/reconciliation`` listing ran on the shared client while a curated
-        run was moving a file; both requests died with ``SSLError: record layer
-        failure`` and the run aborted mid-pair. Long-running jobs that write
-        (the curated pipeline) must use a copy. Call ``close()`` when done.
+        Since #579 every client already gives each thread its own connection,
+        so a copy is no longer needed for thread safety. It still isolates a
+        long job from the shared patient client: its own connection (not one
+        an earlier request of this thread left idle), its own
+        ``contract_writes()`` scope, and a ``close()`` that ends with the job.
+        Its service is built lazily in the thread that first uses the copy,
+        so a copy made in one thread and used in another is safe too. Call
+        ``close()`` when done, from the thread that used it.
+
+        History: 2026-11-08 a dashboard ``/api/reconciliation`` listing ran on
+        the shared client while a curated run was moving a file; both requests
+        died with ``SSLError: record layer failure`` and the run aborted
+        mid-pair (#577).
         """
         import copy
 
-        from googleapiclient.discovery import build
-
         clone = copy.copy(self)
         clone.__dict__.pop("_contract_local", None)  # own write-bypass scope
-        clone._service = build("drive", "v3", credentials=self._creds)
+        clone.__dict__["_services"] = ThreadServices(*self._API, self.__dict__.get("_creds"))
         return clone
-
-    def close(self) -> None:
-        """Close this client's HTTP connection pool (best effort)."""
-        http = getattr(self._service, "_http", None)
-        if http is not None and hasattr(http, "close"):
-            with contextlib.suppress(Exception):
-                http.close()
-
-    def _rebuild_service(self) -> None:
-        """Rebuild the Drive service with a fresh HTTP connection pool.
-
-        Called automatically by the retry decorator after SSL/connection errors
-        to recover from stale httplib2 connections.
-        """
-        from googleapiclient.discovery import build
-
-        # Close old httplib2 pool before creating a new one to prevent leak
-        old = self._service
-        if old and hasattr(old, "_http") and old._http:
-            old._http.close()
-        self._service = build("drive", "v3", credentials=self._creds)
 
     @classmethod
     def from_oauth(
@@ -215,7 +210,6 @@ class GDriveClient:
     ) -> GDriveClient:
         """Create a GDriveClient from OAuth 2.0 user credentials."""
         from google.oauth2.credentials import Credentials
-        from googleapiclient.discovery import build
 
         creds = Credentials(
             token=access_token,
@@ -227,7 +221,8 @@ class GDriveClient:
         )
         instance = cls.__new__(cls)
         instance._creds = creds
-        instance._service = build("drive", "v3", credentials=creds)
+        instance._services = ThreadServices(*cls._API, creds)
+        instance._services.get()
         instance.owner_email = owner_email
         return instance
 

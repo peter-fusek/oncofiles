@@ -373,8 +373,11 @@ def test_dedicated_copy_has_own_connection_and_keeps_the_guard():
     fresh = MagicMock()
     with patch("googleapiclient.discovery.build", return_value=fresh) as build:
         own = c.dedicated_copy()
-    build.assert_called_once_with("drive", "v3", credentials=c._creds)
-    assert own._service is fresh and own._service is not c._service
+        build.assert_not_called()  # built in the thread that first uses the copy (#579)
+        assert own._service is fresh and own._service is not c._service
+    build.assert_called_once_with(
+        "drive", "v3", credentials=c._creds, cache_discovery=False, static_discovery=True
+    )
     assert own.write_block_reason == c.write_block_reason
     with pytest.raises(DriveWriteBlockedError):
         own.rename_file("f", "x.pdf")  # still guarded
