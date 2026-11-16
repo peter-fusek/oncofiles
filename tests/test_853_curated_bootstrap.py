@@ -605,6 +605,7 @@ class _Endpoint:
         )
         self.plan = AsyncMock(return_value=_plan())
         self.create_root = MagicMock(return_value=FOLDER_ID)
+        self.store_dob = AsyncMock(return_value=True)
         self.allowed = True
         self.real_acl = False
         self.admin = False
@@ -639,6 +640,7 @@ class _Endpoint:
             patch.object(bootstrap, "bootstrap_folder", self.bootstrap),
             patch.object(bootstrap, "plan_for_patient", self.plan),
             patch.object(bootstrap, "create_patient_root", self.create_root),
+            patch.object(bootstrap, "store_dob_if_missing", self.store_dob),
             patch(
                 "oncofiles.onboarding_gate.onboarding_allowed",
                 return_value=self.allowed,
@@ -724,7 +726,9 @@ async def test_endpoint_new_folder_is_created_verified_then_bootstrapped():
     ep = _Endpoint()
     status, data = await ep.call({"folder_name": "Oncofiles - Testa", "parent_id": "root"})
     assert status == 200 and data["bootstrapped"] is True
-    ep.create_root.assert_called_once_with(ep.client, "Oncofiles - Testa", "root")
+    ep.create_root.assert_called_once_with(
+        ep.client, "Oncofiles - Testa", "root", other_patient_folders={"idOtherFolder00001"}
+    )
     ep.plan.assert_awaited_once()  # built once, before the folder was created
     ep.client.create_folder.assert_not_called()  # not the retrying legacy create
 
@@ -998,3 +1002,119 @@ async def test_create_patient_stores_the_display_name_in_the_context(db: Databas
     assert patient_context.get_context(pid)["name"] == "Testa Vymyslená"
     plan = await plan_for_patient(db, pid)  # the wizard's patient is ready for the bootstrap
     assert plan.token == "TestaVymyslena" and plan.patient_type == "oncology"
+
+
+# ── follow-ups: DOB from the wizard, parent refused before a folder exists ──
+
+
+def _parent_refused(drive, parent, others=frozenset()) -> str:
+    before = set(drive.items)
+    with pytest.raises(BootstrapRefusedError) as exc:
+        bootstrap.create_patient_root(
+            drive, "Oncofiles - Testa", parent, ops=drive, other_patient_folders=set(others)
+        )
+    assert set(drive.items) == before and drive.log == [], "no folder may be left behind"
+    return exc.value.reason
+
+
+def test_new_folder_parent_inside_or_equal_to_another_patients_folder_is_refused_first():
+    drive = FakeDrive()
+    other = _patient_folder(drive)
+    inner = drive.add("sub", other, folder=True)
+    assert _parent_refused(drive, other, {other}) == "other_patient_folder"
+    assert _parent_refused(drive, inner, {other}) == "other_patient_folder"
+
+
+def test_new_folder_parent_curated_or_inside_curated_is_refused_first():
+    drive = FakeDrive()
+    curated = _patient_folder(drive)
+    drive.add("README.md", curated, b"x")
+    drive.add("_index.json", curated, b"[]")
+    inner = drive.add("labs", curated, folder=True)
+    assert _parent_refused(drive, curated) == "curated_overlap"
+    assert _parent_refused(drive, inner) == "curated_overlap"
+
+
+def test_new_folder_parent_failures_are_refused_first():
+    drive = FakeDrive()
+    afile = drive.add("scan.pdf", MY_DRIVE, b"x")
+    assert _parent_refused(drive, afile) == "not_a_folder"
+    ro = _patient_folder(drive)
+    drive.not_writable.add(ro)
+    assert _parent_refused(drive, ro) == "not_writable"
+    drive.get_meta = MagicMock(side_effect=OSError("drive down (test)"))
+    assert _parent_refused(drive, "root") == "check_failed"
+
+
+def test_new_folder_next_to_curated_folders_and_in_my_drive_is_allowed():
+    drive = FakeDrive()
+    curated = _patient_folder(drive)
+    drive.add("README.md", curated, b"x")
+    drive.add("_index.json", curated, b"[]")
+    health = drive.items[curated]["parent"]  # contains a curated folder: a sibling is fine
+    with drive.contract_writes():
+        fid = bootstrap.create_patient_root(
+            drive, "Oncofiles - Testa", health, ops=drive, other_patient_folders={curated}
+        )
+        assert drive.items[fid]["parent"] == health
+        root_fid = bootstrap.create_patient_root(
+            drive, "Oncofiles - Testa 2", "root", ops=drive, other_patient_folders={curated}
+        )
+    assert drive.items[root_fid]["parent"] == MY_DRIVE
+
+
+@pytest.mark.parametrize("raw", ["", None, "2099-01-01", "1899-12-31", "1990-02-30", "3.2.1990", 7])
+def test_parse_new_dob_refuses_bad_values(raw):
+    with pytest.raises(BootstrapRefusedError) as exc:
+        bootstrap.parse_new_dob(raw, today=TODAY)
+    assert exc.value.reason == "invalid_dob"
+
+
+async def test_store_dob_if_missing_stores_once_and_never_overwrites(db: Database):
+    await db.insert_patient(Patient(patient_id=OTHER_UUID, slug="dob-853", display_name="Testa"))
+    with pytest.raises(BootstrapRefusedError):
+        await bootstrap.store_dob_if_missing(db, OTHER_UUID, "2099-01-01")
+    assert not patient_context.get_context(OTHER_UUID).get("date_of_birth")
+    assert await bootstrap.store_dob_if_missing(db, OTHER_UUID, DOB) is True
+    assert await bootstrap.store_dob_if_missing(db, OTHER_UUID, "1902-03-04") is False
+    assert patient_context.get_context(OTHER_UUID)["date_of_birth"] == DOB
+    plan = await plan_for_patient(db, OTHER_UUID)  # now the bootstrap can run
+    assert plan.contract.birth_dates == frozenset({"19010203"})
+
+
+async def test_endpoint_stores_the_wizard_dob_before_the_plan():
+    ep = _Endpoint()
+    order = []
+    ep.store_dob.side_effect = lambda *a, **k: order.append(("store", a[2])) or True
+    ep.plan.side_effect = lambda *a, **k: order.append(("plan",)) or _plan()
+    status, _ = await ep.call({"folder_id": FOLDER_ID, "date_of_birth": DOB})
+    assert status == 200
+    assert order == [("store", DOB), ("plan",)]
+
+
+async def test_endpoint_without_a_dob_in_the_body_does_not_touch_the_context():
+    ep = _Endpoint()
+    status, _ = await ep.call({"folder_id": FOLDER_ID})
+    assert status == 200
+    ep.store_dob.assert_not_called()
+
+
+@pytest.mark.parametrize("body_extra", [{"folder_id": FOLDER_ID}, {"folder_name": "Novy"}])
+async def test_endpoint_invalid_wizard_dob_refuses_before_anything(body_extra):
+    ep = _Endpoint()
+    ep.store_dob.side_effect = BootstrapRefusedError("invalid_dob")
+    status, data = await ep.call({**body_extra, "date_of_birth": "2099-01-01"})
+    assert status == 409 and data["reason"] == "invalid_dob" and data["error_sk"]
+    ep.create_root.assert_not_called()
+    ep.bootstrap.assert_not_called()
+    ep.assert_nothing_persisted()
+
+
+def test_wizard_asks_for_the_dob_when_the_server_misses_it():
+    html, js = _html(), _js()
+    assert 'id="wiz-folder-dob-input"' in html and 'data-action="wizardFolderDobGo"' in html
+    tag = re.search(r'<button[^>]*id="wiz-folder-dob-go"[^>]*>', html).group(0)
+    assert 'data-sk="' in tag and 'data-en="' in tag
+    assert "wizShow('wiz-folder-dob', refused && reason === 'missing_dob');" in js
+    fn = js[js.index("function wizardFolderDobGo") : js.index("function wizardFolderConfirmBack")]
+    assert "date_of_birth: dob" in fn and "wizardFolderSend(" in fn

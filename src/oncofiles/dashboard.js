@@ -1471,6 +1471,9 @@
       var blocked = hard || tooMany || retry || !!reason;
       wizShow('wiz-folder-confirm-go', !blocked);
       wizShow('wiz-folder-confirm-retry', retry);
+      // #853: no birth date in the patient context -> ask for it here; the
+      // server validates and stores it, then sets the folder up.
+      wizShow('wiz-folder-dob', refused && reason === 'missing_dob');
       if (hard) {
         wizSetBi(text,
           'Tento priečinok sa nedá pripojiť, pretože obsahuje priečinky iných pacientov (podpriečinky s vlastným kontraktom README). Vráťte sa a otvorte priečinok konkrétneho pacienta.',
@@ -1535,8 +1538,22 @@
       }
     }
 
+    // #853: send the same request again with the birth date typed in the box.
+    // The date is data, not a flag: the server still runs every check.
+    function wizardFolderDobGo() {
+      if (!wizardFolderPending) return;
+      var dob = document.getElementById('wiz-folder-dob-input').value;
+      if (!dob) {
+        wizSetBi(document.getElementById('wiz-folder-confirm-text'),
+          'Zadajte dátum narodenia pacienta.', 'Enter the patient\'s date of birth.');
+        return;
+      }
+      wizardFolderSend(Object.assign({}, wizardFolderPending, { date_of_birth: dob }));
+    }
+
     function wizardFolderConfirmBack() {
       wizardFolderPending = null;
+      wizShow('wiz-folder-dob', false);
       wizShow('wiz-folder-confirm', false);
       wizShow('wiz-folder-main', true);
       wizardFolderTargetUpdate();

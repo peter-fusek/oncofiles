@@ -627,6 +627,11 @@
  </div>
  <div id="wiz-folder-confirm" class="wizard-folder-confirm" role="alert" style="display:none">
  <p id="wiz-folder-confirm-text"></p>
+ <div id="wiz-folder-dob" class="wizard-field" style="display:none">
+ <label for="wiz-folder-dob-input" data-sk="Dátum narodenia pacienta *" data-en="Patient's date of birth *">Dátum narodenia pacienta *</label>
+ <input type="date" id="wiz-folder-dob-input" min="1900-01-01">
+ <button class="wizard-btn-primary" id="wiz-folder-dob-go" data-action="wizardFolderDobGo" data-sk="Uložiť dátum a pripojiť" data-en="Save the date and connect">Uložiť dátum a pripojiť</button>
+ </div>
  <p class="wizard-folder-target"><span id="wiz-folder-confirm-path-label" data-sk="Pripojil by sa priečinok:" data-en="Folder that would be connected:">Pripojil by sa priečinok:</span> <strong id="wiz-folder-confirm-path"></strong></p>
  <div class="wizard-actions">
  <button class="wizard-btn-primary" data-action="wizardFolderConfirmBack" data-sk="Späť" data-en="Back">Späť</button>

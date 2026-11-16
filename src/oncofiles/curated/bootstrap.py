@@ -147,6 +147,12 @@ REFUSAL_MESSAGES: dict[str, tuple[str, str]] = {
         f"Priečinok obsahuje viac ako {MAX_LOOSE_FILES} súborov. Začnite s novým priečinkom "
         "a dokumenty pridávajte do inboxu postupne.",
     ),
+    "invalid_dob": (
+        "The date of birth must be a real date (YYYY-MM-DD), not in the future and not "
+        "before 1900.",
+        "Dátum narodenia musí byť skutočný dátum (RRRR-MM-DD), nie v budúcnosti a nie pred "
+        "rokom 1900.",
+    ),
     "invalid_folder_name": (
         "The new folder needs a name.",
         "Nový priečinok potrebuje názov.",
@@ -509,20 +515,59 @@ def clean_folder_name(raw: str | None) -> str:
     return text[:MAX_FOLDER_NAME_CHARS].strip()
 
 
-def create_patient_root(gdrive, name: str, parent_id: str, ops=None) -> str:
+def check_new_folder_parent(ops, parent_id: str, *, other_patient_folders: set[str]) -> str:
+    """Refuse a parent the new patient folder must not be created in. Returns its real id.
+
+    Runs BEFORE the new folder exists, so a refusal leaves nothing behind: the
+    parent must not be (or lie inside) another patient's folder, and must not
+    be or lie inside a curated folder. My Drive itself is a valid parent (the
+    new folder is not My Drive). Read-only, fails closed.
+    """
+    try:
+        root_id = ops.my_drive_root_id()
+        parent = root_id if parent_id in ("", "root") else parent_id
+        meta = ops.get_meta(parent)
+        ancestors = [] if parent == root_id else ops.ancestors(parent)
+    except Exception as exc:
+        logger.warning("bootstrap: parent check failed (%s)", type(exc).__name__)
+        raise BootstrapRefusedError("check_failed") from exc
+    if meta.get("trashed") or meta.get("mimeType") != FOLDER_MIME:
+        raise BootstrapRefusedError("not_a_folder")
+    if (meta.get("capabilities") or {}).get("canAddChildren") is False:
+        raise BootstrapRefusedError("not_writable")
+    others = {root_id if f == "root" else f for f in other_patient_folders if f}
+    if parent in others or others & set(ancestors):
+        raise BootstrapRefusedError("other_patient_folder")
+    if parent != root_id:
+        reason = ops.curated_reason(parent)
+        if reason and "detection failed" in reason:
+            raise BootstrapRefusedError("check_failed")
+        if reason == "is a curated folder" or (reason or "").startswith("lies inside"):
+            raise BootstrapRefusedError("curated_overlap")
+    return parent
+
+
+def create_patient_root(
+    gdrive,
+    name: str,
+    parent_id: str,
+    ops=None,
+    *,
+    other_patient_folders: set[str] | None = None,
+) -> str:
     """Create the new, empty patient folder inside ``parent_id`` (verified, no retry).
 
-    The caller has already refused a parent that is curated or inside one. A
-    failure leaves at most this one empty folder behind (nothing is deleted).
+    The parent is checked first (``check_new_folder_parent``), so a refused
+    parent leaves no empty folder behind. A failed create leaves at most this
+    one empty folder (nothing is deleted).
     """
     folder_name = clean_folder_name(name)
     if not folder_name:
         raise BootstrapRefusedError("invalid_folder_name")
     ops = ops if ops is not None else BootstrapOps(gdrive)
-    try:
-        parent = ops.my_drive_root_id() if parent_id in ("", "root") else parent_id
-    except Exception as exc:
-        raise BootstrapRefusedError("check_failed") from exc
+    parent = check_new_folder_parent(
+        ops, parent_id, other_patient_folders=set(other_patient_folders or ())
+    )
     try:
         return ops.create_folder(parent, folder_name)
     except Exception as exc:
@@ -531,6 +576,36 @@ def create_patient_root(gdrive, name: str, parent_id: str, ops=None) -> str:
 
 
 # ── async glue for the dashboard endpoint ────────────────────────────────
+
+
+def parse_new_dob(raw, *, today: date | None = None) -> date:
+    """A DOB typed in the wizard: real ISO date, not in the future, not before 1900."""
+    today = today or datetime.now(UTC).date()
+    raw_s = raw.strip() if isinstance(raw, str) else ""
+    dob = _parse_dob(raw_s) if re.fullmatch(r"\d{4}-\d{2}-\d{2}", raw_s) else None
+    if dob is None or dob > today or dob.year < 1900:
+        raise BootstrapRefusedError("invalid_dob")
+    return dob
+
+
+async def store_dob_if_missing(db, patient_id: str, raw) -> bool:
+    """Store the wizard's DOB in the patient context, only when it has none.
+
+    Validated first (``invalid_dob`` refuses, nothing stored). An existing DOB
+    is never overwritten here; returns True when one was stored.
+    """
+    from oncofiles import patient_context
+
+    dob = parse_new_dob(raw)
+    await patient_context.ensure_loaded(db.db, patient_id)
+    ctx = patient_context.get_context(patient_id) or {}
+    if ctx.get("date_of_birth"):
+        return False
+    new_ctx = patient_context.update_context(
+        {"date_of_birth": dob.isoformat()}, patient_id=patient_id
+    )
+    await patient_context.save_to_db(db.db, new_ctx, patient_id=patient_id)
+    return True
 
 
 async def plan_for_patient(db, patient_id: str) -> Plan:

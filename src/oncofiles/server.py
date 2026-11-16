@@ -6850,10 +6850,19 @@ async def api_gdrive_set_folder(request: Request) -> JSONResponse:
                 if gate_err is not None:
                     return gate_err
                 try:
-                    # Refuse (e.g. no birth date) before the new folder exists.
+                    # Refuse (no birth date, bad parent) before the new folder exists.
+                    if body.get("date_of_birth"):
+                        await curated_bootstrap.store_dob_if_missing(
+                            db_inst, patient_id, body.get("date_of_birth")
+                        )
                     plan = await curated_bootstrap.plan_for_patient(db_inst, patient_id)
+                    others = await db_inst.list_other_patient_folder_ids(patient_id=patient_id)
                     folder_id = await asyncio.to_thread(
-                        curated_bootstrap.create_patient_root, gdrive, folder_name, create_parent
+                        curated_bootstrap.create_patient_root,
+                        gdrive,
+                        folder_name,
+                        create_parent,
+                        other_patient_folders=others,
                     )
                 except curated_bootstrap.BootstrapRefusedError as exc:
                     return JSONResponse(curated_bootstrap.refusal_payload(exc), status_code=409)
@@ -6932,6 +6941,12 @@ async def api_gdrive_set_folder(request: Request) -> JSONResponse:
                     return gate_err
                 try:
                     if plan is None:
+                        # The wizard sends the DOB when the context has none;
+                        # it is validated and stored before the plan is built.
+                        if body.get("date_of_birth"):
+                            await curated_bootstrap.store_dob_if_missing(
+                                db_inst, patient_id, body.get("date_of_birth")
+                            )
                         plan = await curated_bootstrap.plan_for_patient(db_inst, patient_id)
                     others = await db_inst.list_other_patient_folder_ids(patient_id=patient_id)
                     bootstrapped = await asyncio.to_thread(
