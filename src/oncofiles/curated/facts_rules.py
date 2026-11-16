@@ -25,6 +25,8 @@ import re
 import unicodedata
 from dataclasses import dataclass, field
 
+from oncofiles.curated.ocr_markers import strip_charts_pages
+
 _DT_RE = re.compile(r"(\d{1,2})\.(\d{1,2})\.(\d{4})(?:\s+(\d{1,2}):(\d{2}))?")
 _BORY_ODBER = re.compile(r"Odber:\s*(\d{1,2}\.\d{1,2}\.\d{4}(?:\s+\d{1,2}:\d{2})?)")
 _OKB_ODOBRANE = re.compile(r"Odobran[ée]:\s*(\d{1,2}\.\d{1,2}\.\d{4}(?:\s+\d{1,2}:\d{2})?)")
@@ -914,7 +916,9 @@ def extract_lab_facts(
     inline: bool = False,
     sex: str | None = None,
 ):
-    """(facts, extractor id) — the first format that yields anything wins."""
+    """(facts, extractor id) — the first format that yields anything wins.
+    ``[chart: …]`` blocks are never data (#609): removed before any parser runs."""
+    pages = strip_charts_pages(pages)
     for name, fn in (
         ("rule:bory-v1", parse_bory),
         ("rule:okb-v1", parse_okb),

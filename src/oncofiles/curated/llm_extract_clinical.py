@@ -52,6 +52,7 @@ from oncofiles.curated.llm_input import (  # noqa: F401 (re-exported, #815)
     EXCLUDED_RAW_GENOTYPE,
     extraction_exclusion,
 )
+from oncofiles.curated.ocr_markers import strip_charts_pages
 from oncofiles.database._facts import LLM_CLINICAL_FAMILY
 
 # v2: no response_format, reasoning fallback; v3: shared call path, sampling
@@ -836,6 +837,7 @@ def extract_document(
     results: list[PageResult] = []
     page_diag: dict[str, dict] = {}
 
+    pages = strip_charts_pages(pages)  # #609: chart blocks are never data
     text_of = dict(pages)
     items: list[dict] = []
     dropped: Counter = Counter()

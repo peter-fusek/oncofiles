@@ -83,7 +83,7 @@ from datetime import datetime
 
 from oncofiles import config
 from oncofiles.curated import extract as extract_mod
-from oncofiles.curated import llm
+from oncofiles.curated import llm, ocr_markers, orientation
 
 logger = logging.getLogger(__name__)
 
@@ -374,8 +374,10 @@ def _vision_passes(
     blank: dict[int, bool] = {}  # 0-based page -> likely blank back side (#806)
     retried: set[int] = set()  # 1-based pages with a thinking-off retry
 
-    def call(part: dict, i: int, total: int, k: int = 0, retry: bool = False):
-        """One model call: (answer text, (reasoning_tokens, completion_tokens))."""
+    def call(part: dict, i: int, total: int, k: int = 0, retry: bool = False,
+             probe: bool = False):  # fmt: skip
+        """One model call: (answer text, (reasoning_tokens, completion_tokens)).
+        ``probe``: a reading that only decides an unsure orientation (#609)."""
         info: dict = {}
         t0 = time.monotonic()
         error = None
@@ -406,6 +408,8 @@ def _vision_passes(
                     rec = _pass_record(i + 1, k, dpi, info, time.monotonic() - t0, error)
                     if retry:
                         rec.update(retry=True, thinking="off")
+                    if probe:
+                        rec["orientation_probe"] = True
                     with lock:
                         usage.append(rec)
                 except Exception as rec_exc:
@@ -426,8 +430,28 @@ def _vision_passes(
             return text
         return again if len((again or "").strip()) > len((text or "").strip()) else text
 
+    def orient(page, i: int, total: int) -> tuple[int, str]:
+        """#609: the page's rotation, decided once before its passes (the model
+        only reports the direction; the image is turned locally). An unsure
+        direction is settled by reading both ways at the first dpi; those
+        probe readings are recorded in ``usage`` but never used as text."""
+        if not orientation.enabled():
+            return 0, orientation.SOURCE_OFF
+        if blank.get(i):  # a blank back side has no direction to ask about
+            return 0, orientation.SOURCE_BLANK
+        png = extract_mod._pixmap_png(page, dpis[0])
+
+        def read(image: bytes) -> str:
+            return call(llm.image_part(image), i, total, 0, probe=True)[0]
+
+        o = orientation.orient(png, read, client=client)
+        del png
+        return o.rotation, o.source
+
     def render(page, dpi: int) -> dict:
         png = extract_mod._pixmap_png(page, dpi)
+        if rot.get(page.number):
+            png = orientation.rotate_png(png, rot[page.number])
         part = llm.image_part(png)
         del png
         return part
@@ -437,6 +461,8 @@ def _vision_passes(
     deferred: list[int] = []
     inks: list[float | None] = []
     layers: list[bool | None] = []
+    rot: dict[int, int] = {}  # 0-based page -> clockwise rotation (#609)
+    sources: list[str] = []
     with (
         pymupdf.open(stream=content, filetype=ext) as doc,
         ThreadPoolExecutor(max_workers=workers) as pool,
@@ -453,6 +479,8 @@ def _vision_passes(
             inks.append(ink)
             layers.append(layer)
             blank[i] = is_blank(ink, layer)
+            rot[i], source = orient(page, i, total)
+            sources.append(source)
             wanted = second_pass_pages is None or (i + 1) in second_pass_pages
             if len(dpis) > 1 and not wanted:
                 answers = [ask(render(page, dpis[0]), i, total)]
@@ -483,7 +511,9 @@ def _vision_passes(
     if usage is not None:
         usage[:] = _by_page_and_pass(usage)
     if diag is not None:
-        diag.update(page_ink=inks, page_text_layer=layers, retried_pages=sorted(retried))
+        diag.update(page_ink=inks, page_text_layer=layers, retried_pages=sorted(retried),
+                    rotation=[rot.get(i, 0) for i in range(len(sources))],
+                    rotation_source=sources)  # fmt: skip
     return passes
 
 
@@ -544,6 +574,30 @@ class Reread:
     page_ink: list[float | None] = field(default_factory=list)
     page_text_layer: list[bool | None] = field(default_factory=list)
     retried_pages: list[int] = field(default_factory=list)  # 1-based, thinking-off retry
+    # #609, vision only: per page the clockwise rotation applied before reading
+    # and how it was decided; 1-based pages with a chart block / rotated region
+    rotation: list[int] = field(default_factory=list)
+    rotation_source: list[str] = field(default_factory=list)
+    chart_pages: list[int] = field(default_factory=list)
+    rotated_region_pages: list[int] = field(default_factory=list)
+    ocr_version: str | None = None
+
+
+VISION_FRONT_KEYS = ("ocr_version", "rotation", "rotation_source", "has_chart", "rotated_region")
+
+
+def vision_review_codes(rr) -> list[str]:
+    """#609 reason codes that send a re-read to review: a chart, a rotated
+    region, an unsure orientation. A confidently rotated page read upright is
+    not one (it is reported in ``rotation`` / ``rotation_source`` only)."""
+    codes = []
+    if getattr(rr, "chart_pages", None):
+        codes.append("chart_page")
+    if getattr(rr, "rotated_region_pages", None):
+        codes.append("rotated_region")
+    if any(s in orientation.UNSURE_SOURCES for s in getattr(rr, "rotation_source", None) or []):
+        codes.append("orientation_unsure")
+    return codes
 
 
 def reocr_dpis(passes: int, purpose: str = "reocr") -> list[int]:
@@ -604,6 +658,8 @@ def reread(
             )  # fmt: skip
         seconds = round(time.monotonic() - t0, 1)
         first, hand = _strip_handwritten(answers[0])
+        charts = [i for i, p in enumerate(first, start=1) if ocr_markers.has_chart(p)]
+        regions = [i for i, p in enumerate(first, start=1) if ocr_markers.has_rotated_region(p)]
         flagged, per_page, skipped = 0, [1] * len(first), []
         if passes >= 2:
             stripped, _ = _strip_handwritten([a or "" for a in answers[1]])
@@ -616,7 +672,11 @@ def reread(
                       skipped_second_pass_pages=skipped, llm_passes=usage,
                       page_ink=diag.get("page_ink", []),
                       page_text_layer=diag.get("page_text_layer", []),
-                      retried_pages=diag.get("retried_pages", []))  # fmt: skip
+                      retried_pages=diag.get("retried_pages", []),
+                      rotation=diag.get("rotation", []),
+                      rotation_source=diag.get("rotation_source", []),
+                      chart_pages=charts, rotated_region_pages=regions,
+                      ocr_version=extract_mod.OCR_VERSION)  # fmt: skip
     except llm.LocalLLMError as exc:
         return Reread([], "none", llm.model_id(), error=str(exc),
                       llm_passes=_by_page_and_pass(usage))  # fmt: skip
@@ -702,9 +762,24 @@ def rewrite_sidecar(
     }
     if replaced_engine:
         updates["replaced_engine"] = short_engine(replaced_engine)
+    drop: set[str] = set()
+    if rr.method.startswith("vision"):  # #609: optional keys, readers tolerate their absence
+        import json as _json
+
+        updates.update({
+            "ocr_version": rr.ocr_version or extract_mod.OCR_VERSION,
+            "rotation": _json.dumps(list(rr.rotation)),
+            "rotation_source": _json.dumps(list(rr.rotation_source)),
+            "has_chart": "true" if rr.chart_pages else "false",
+            "rotated_region": "true" if rr.rotated_region_pages else "false",
+        })  # fmt: skip
+    else:  # a text-layer re-read: no stale vision keys of an earlier reading
+        drop = set(VISION_FRONT_KEYS)
     out, seen = [], set()
     for line in lines:
         key = line.split(":", 1)[0].strip() if ":" in line and not line.startswith(" ") else None
+        if key in drop:
+            continue
         if key in updates:
             out.append(f"{key}: {updates[key]}")
             seen.add(key)
@@ -1018,6 +1093,10 @@ class DocResult:
     uncertain_share: float | None = None
     # #831: lost codes that have an active machine/verified/corrected stored fact
     lost_trusted_codes: dict[str, int] = field(default_factory=dict)
+    # #609: per page rotation (degrees) and how it was decided; page numbers only
+    rotation: list[int] = field(default_factory=list)
+    rotation_source: list[str] = field(default_factory=list)
+    chart_pages: list[int] = field(default_factory=list)
 
 
 @dataclass
@@ -1271,6 +1350,14 @@ def run_reocr(
                 new, empty_pages=res.near_empty_pages, ink=res.page_ink,
                 text_layer=res.page_text_layer, trusted_reason=trusted_reason,
             )  # fmt: skip
+            # #609: a chart, rotated region or unsure orientation is always a
+            # person's decision (never loosened by a profile); a confident
+            # rotation is reported in res.rotation / rotation_source only
+            res.rotation = list(getattr(rr, "rotation", None) or [])
+            res.rotation_source = list(getattr(rr, "rotation_source", None) or [])
+            res.chart_pages = list(getattr(rr, "chart_pages", None) or [])
+            res.review_reasons += [c for c in vision_review_codes(rr)
+                                   if c not in res.review_reasons]  # fmt: skip
             if res.profile:  # #831: blank by the page's own ink, no old page markers needed
                 res.blank_pages = near_empty_by_ink(res.near_empty_pages, res.page_ink,
                                                     res.page_text_layer)[0]  # fmt: skip

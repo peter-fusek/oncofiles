@@ -35,7 +35,8 @@ INDEX_ENGINE = "curated-sidecar"
 # titles…): rows indexed by an older version are re-processed once (#603).
 # v17: re-extraction never re-adds a date-corrected fact at its old date (#741)
 # v18: lab rule parsers no longer see genetic_variant/biomarker aliases (gene vocabulary)
-INDEX_VERSION = 18
+# v19: [chart: …] blocks never reach the lab rule parsers; #609 OCR keys in metadata
+INDEX_VERSION = 19
 TEXT_SOURCE_EXTS = {"md", "txt", "csv", "json"}
 MAX_TEXT_SOURCE_BYTES = 512 * 1024
 _PAGE_RE = re.compile(r"^<!-- page (\d+) -->\s*$", re.M)
@@ -280,6 +281,8 @@ def _apply_sidecar(rec: IndexRecord, front: dict, pages: list[str]) -> None:
         "doctor", "hospital_unit", "diagnoses", "language", "pages", "handwritten",
         "extraction", "ocr_engine", "review_needed", "doc_date_source", "reviewed_by",
         "flags", "near_duplicate_of",
+        # #609 (optional; absent on sidecars read before it)
+        "ocr_version", "rotation", "rotation_source", "has_chart", "rotated_region",
     )  # fmt: skip
     rec.metadata = {k: front[k] for k in keep if k in front and front[k] not in (None, "")}
 

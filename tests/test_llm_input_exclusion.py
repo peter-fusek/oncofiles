@@ -342,6 +342,9 @@ MODEL_CALLERS = {
     ("curated/extract.py", "_vision_pages"):
         "inbox OCR of a scan or image (pdf / image types only; text files are decoded, "
         "never sent)",
+    ("curated/orientation.py", "ask_rotation"):
+        "page direction only (#609), on a page image rendered by extract._vision_pages or "
+        "reocr._vision_passes, which hold the same guarantees; asks for no transcription",
     ("curated/classify.py", "propose"):
         "inbox classification; every propose_fn call in runner.py is guarded by "
         "llm_input.inbox_exclusion",

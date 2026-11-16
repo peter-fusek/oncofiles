@@ -150,3 +150,12 @@ def _reset_curated_cloud_guard():
     yield
     indexer._curated_ids.clear()
     indexer.mark_guard_ready()
+
+
+@pytest.fixture(autouse=True)
+def _ocr_orientation_off(monkeypatch):
+    """Page orientation (#609) adds a model call per vision page. Tests of the
+    other OCR behaviour count model calls and renders, so it is off here;
+    ``tests/test_ocr_orientation_charts.py`` switches it on (the production
+    default) and covers it."""
+    monkeypatch.setattr("oncofiles.config.OCR_ORIENTATION", "off")
