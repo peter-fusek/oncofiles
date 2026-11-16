@@ -276,7 +276,7 @@ async def test_the_only_blocking_reason_can_be_the_uncertain_share(vocab):
 
 def test_uncertain_share_counts_numbers_on_marked_lines():
     assert reocr.uncertain_share("") == 0.0 and reocr.uncertain_share("bez cisel [?]") == 0.0
-    text = "---\ndoc_date: 2027-06-14\n---\n\n<!-- page 1 -->\na 9173 b 48621\nc 73058 [?]\nd 6094,5\n"
+    text = "---\ndoc_date: 2027-06-14\n---\n\n<!-- page 1 -->\na 917 b 4862\nc 7305 [?]\nd 609,5\n"
     assert reocr.uncertain_share(text) == 0.25  # front matter and page markers ignored
     # a date is one token, wherever the marker stands on its line
     assert reocr.uncertain_share("Odber 21.06.2027 [?] 07:40\nx 55") == 0.75
