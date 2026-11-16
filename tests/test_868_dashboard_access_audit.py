@@ -87,7 +87,7 @@ def _caller(email: str | None, *, bearer: bool = False, admin: bool = False):
 
 
 async def _rows(db: Database) -> list[dict]:
-    return await db.list_dashboard_access(limit=100)
+    return await db.list_dashboard_access(limit=10_000)
 
 
 # ── schema ───────────────────────────────────────────────────────────────
@@ -322,7 +322,75 @@ async def test_refusal_log_line_is_throttled(audit_db, caplog):
             await server._get_dashboard_patient_id(_request(audit_db, "audit-b"))
     lines = [r for r in caplog.records if "event=acl_refused" in r.getMessage()]
     assert len(lines) == 1
-    assert len(await _rows(audit_db)) == 5  # every refusal still has its row
+    assert len(await _rows(audit_db)) == 1  # deduped: one row per caller+patient+route/min
+    assert dashboard_audit.counters()["acl_refusals"] == 5
+    assert dashboard_audit.counters()["acl_refusals_suppressed"] == 4
+
+
+# ── a signed-in stranger cannot grow the table without bound ─────────────
+
+
+async def test_refusal_burst_same_minute_writes_one_row(audit_db):
+    with _caller(NOBODY_EMAIL):
+        for _ in range(1000):
+            got = await server._get_dashboard_patient_id(_request(audit_db, "audit-b"))
+            assert got == NO_PATIENT_ACCESS_SENTINEL
+    assert len(await _rows(audit_db)) == 1
+    c = dashboard_audit.counters()
+    assert c["acl_refusals"] == 1000
+    assert c["acl_refusals_suppressed"] == 999
+
+
+async def test_refusal_burst_is_capped_per_caller_per_day(audit_db):
+    clock = [0.0]
+
+    def tick():  # every call is a minute later, so only the daily cap holds
+        clock[0] += 61.0
+        return clock[0]
+
+    with (
+        _caller(NOBODY_EMAIL),
+        patch.object(dashboard_audit.time, "monotonic", side_effect=tick),
+        patch.object(dashboard_audit, "_utc_day", return_value="2027-01-01"),
+    ):
+        for _ in range(1000):
+            got = await server._get_dashboard_patient_id(_request(audit_db, "audit-b"))
+            assert got == NO_PATIENT_ACCESS_SENTINEL
+    assert len(await _rows(audit_db)) == dashboard_audit.REFUSAL_DAILY_CAP
+    c = dashboard_audit.counters()
+    assert c["acl_refusals"] == 1000
+    assert c["acl_refusals_suppressed"] == 1000 - dashboard_audit.REFUSAL_DAILY_CAP
+    assert c["write_failures"] == 0
+
+    # a new UTC day opens a new budget; another caller has its own budget
+    with (
+        _caller(NOBODY_EMAIL),
+        patch.object(dashboard_audit.time, "monotonic", side_effect=tick),
+        patch.object(dashboard_audit, "_utc_day", return_value="2027-01-02"),
+    ):
+        await server._get_dashboard_patient_id(_request(audit_db, "audit-b"))
+    with _caller(A_EMAIL), patch.object(dashboard_audit, "_utc_day", return_value="2027-01-01"):
+        assert await server._get_dashboard_patient_id(_request(audit_db, "audit-b")) == A_UUID
+    assert len(await _rows(audit_db)) == dashboard_audit.REFUSAL_DAILY_CAP + 2
+
+
+def test_refusal_dedupe_memory_is_bounded():
+    with patch.object(dashboard_audit, "_MAX_KEYS", 10):
+        for i in range(50):
+            dashboard_audit._refusal_write_allowed(f"caller{i}", B_UUID, "r")
+            dashboard_audit._refusal_write_allowed("one-caller", f"patient{i}", "r")
+        assert len(dashboard_audit._refusal_seen) <= 10
+        assert len(dashboard_audit._refusal_daily) <= 10
+
+
+def test_full_daily_map_suppresses_new_callers_instead_of_growing():
+    with (
+        patch.object(dashboard_audit, "_MAX_KEYS", 3),
+        patch.object(dashboard_audit, "_utc_day", return_value="2027-01-01"),
+    ):
+        assert all(dashboard_audit._refusal_write_allowed(f"c{i}", None, "r") for i in range(3))
+        assert not dashboard_audit._refusal_write_allowed("c-new", None, "r")
+        assert len(dashboard_audit._refusal_daily) == 3
 
 
 def test_in_memory_maps_are_bounded():

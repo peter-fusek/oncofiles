@@ -4,7 +4,11 @@ Three events, each written to ``dashboard_access_log`` (migration 090):
 
 - ``sign_in``: a dashboard session was issued;
 - ``acl_refused``: the dashboard patient ACL refused an authenticated caller
-  (unknown patient, or a patient the caller is not caregiver of);
+  (unknown patient, or a patient the caller is not caregiver of). Sign-in is
+  open to any Google account, so a stranger could loop foreign ids: at most
+  one row per caller + target patient + route per minute, and at most
+  ``REFUSAL_DAILY_CAP`` rows per caller per UTC day. Beyond that only the
+  counters move (``acl_refusals_suppressed``);
 - ``patient_read``: an admin read a patient they are not caregiver of, at most
   once per session + patient per hour (in-memory dedupe, keeps rows few).
 
@@ -29,8 +33,10 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 READ_DEDUPE_S = 3600.0
+REFUSAL_DEDUPE_S = 60.0
+REFUSAL_DAILY_CAP = 200  # rows per caller hash per UTC day
 LOG_THROTTLE_S = 60.0
-_MAX_KEYS = 10_000  # bound on both in-memory maps; expired keys pruned first
+_MAX_KEYS = 10_000  # bound on every in-memory map; expired keys pruned first
 
 _lock = threading.Lock()
 _started_at = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -38,11 +44,14 @@ _counters: dict[str, int] = {
     "sign_ins": 0,
     "acl_refusals": 0,
     "acl_refusals_anonymous": 0,
+    "acl_refusals_suppressed": 0,
     "admin_cross_reads": 0,
     "write_failures": 0,
 }
 _read_seen: dict[tuple[str, str], float] = {}
 _log_seen: dict[tuple[str, str, str], float] = {}
+_refusal_seen: dict[tuple[str, str, str], float] = {}
+_refusal_daily: dict[str, tuple[str, int]] = {}  # caller -> (UTC day, rows written)
 
 _COUNTER_FOR_EVENT = {
     "sign_in": "sign_ins",
@@ -92,6 +101,31 @@ def should_record_read(session_key: str, patient_id: str) -> bool:
     return _first_within(_read_seen, (session_key, patient_id), READ_DEDUPE_S)
 
 
+def _utc_day() -> str:
+    return datetime.now(UTC).strftime("%Y-%m-%d")
+
+
+def _refusal_write_allowed(digest: str | None, patient_id: str | None, route: str) -> bool:
+    """Dedupe + daily cap for ``acl_refused`` rows (counts toward the cap when True)."""
+    caller = digest or "-"
+    if not _first_within(_refusal_seen, (caller, patient_id or "-", route), REFUSAL_DEDUPE_S):
+        return False
+    today = _utc_day()
+    with _lock:
+        day, written = _refusal_daily.get(caller, (today, 0))
+        if day != today:
+            written = 0
+        if written >= REFUSAL_DAILY_CAP:
+            return False
+        if caller not in _refusal_daily and len(_refusal_daily) >= _MAX_KEYS:
+            for key in [k for k, (d, _) in _refusal_daily.items() if d != today]:
+                del _refusal_daily[key]
+            if len(_refusal_daily) >= _MAX_KEYS:
+                return False  # still full today: suppress rather than grow
+        _refusal_daily[caller] = (today, written + 1)
+        return True
+
+
 def _bump(name: str) -> None:
     with _lock:
         _counters[name] = _counters.get(name, 0) + 1
@@ -130,6 +164,9 @@ async def record(
                 patient_id or "-",
                 route,
             )
+        if event == "acl_refused" and not _refusal_write_allowed(digest, patient_id, route):
+            _bump("acl_refusals_suppressed")
+            return
         await db.insert_dashboard_access(
             event=event,
             caller_hash=digest,
@@ -174,3 +211,5 @@ def _reset_for_tests() -> None:
             _counters[k] = 0
         _read_seen.clear()
         _log_seen.clear()
+        _refusal_seen.clear()
+        _refusal_daily.clear()
