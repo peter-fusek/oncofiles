@@ -588,14 +588,13 @@ VISION_FRONT_KEYS = ("ocr_version", "rotation", "rotation_source", "has_chart", 
 
 def vision_review_codes(rr) -> list[str]:
     """#609 reason codes that send a re-read to review: a chart, a rotated
-    region, a page read after local rotation, an unsure orientation."""
+    region, an unsure orientation. A confidently rotated page read upright is
+    not one (it is reported in ``rotation`` / ``rotation_source`` only)."""
     codes = []
     if getattr(rr, "chart_pages", None):
         codes.append("chart_page")
     if getattr(rr, "rotated_region_pages", None):
         codes.append("rotated_region")
-    if any(getattr(rr, "rotation", None) or []):
-        codes.append("rotated_page")
     if any(s in orientation.UNSURE_SOURCES for s in getattr(rr, "rotation_source", None) or []):
         codes.append("orientation_unsure")
     return codes
@@ -1351,8 +1350,9 @@ def run_reocr(
                 new, empty_pages=res.near_empty_pages, ink=res.page_ink,
                 text_layer=res.page_text_layer, trusted_reason=trusted_reason,
             )  # fmt: skip
-            # #609: a chart, rotated region, rotated page or unsure orientation is
-            # always a person's decision (never loosened by a profile)
+            # #609: a chart, rotated region or unsure orientation is always a
+            # person's decision (never loosened by a profile); a confident
+            # rotation is reported in res.rotation / rotation_source only
             res.rotation = list(getattr(rr, "rotation", None) or [])
             res.rotation_source = list(getattr(rr, "rotation_source", None) or [])
             res.chart_pages = list(getattr(rr, "chart_pages", None) or [])

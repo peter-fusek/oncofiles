@@ -867,8 +867,8 @@ class Runner:
                 auto_vocab=self._auto_vocab,
             )
         if cls is not None and (why := _vision_review_notes(ex)):
-            # #609: a chart, a rotated region, a page read after local rotation or
-            # an unsure orientation goes to a person before anything is filed
+            # #609: a chart, a rotated region or an unsure orientation goes to a
+            # person before anything is filed (a confident rotation does not)
             cls.review_needed = True
             cls.reasons = [*cls.reasons, *why]
         planned_vocab = self._plan_vocabulary(cls) if cls is not None else None

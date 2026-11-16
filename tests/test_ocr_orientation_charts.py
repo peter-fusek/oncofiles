@@ -141,8 +141,7 @@ def test_ingest_rotates_before_reading(monkeypatch, scan_turn):
     fm = ex.front_matter()
     assert fm["rotation"] == [correction] and fm["rotation_source"] == ["model"]
     assert fm["has_chart"] is False and fm["ocr_version"] == extract.OCR_VERSION
-    notes = ex.review_notes()
-    assert bool(notes) is (correction != 0)  # a rotated page goes to review
+    assert ex.review_notes() == []  # a confident rotation alone is not a review reason
 
 
 @pytest.mark.parametrize(
@@ -404,7 +403,7 @@ def test_reocr_review_codes_and_sidecar_keys():
     rr = _reread(rotation=[180], rotation_source=["model+score"], chart_pages=[1],
                  rotated_region_pages=[1], ocr_version=extract.OCR_VERSION)  # fmt: skip
     assert reocr.vision_review_codes(rr) == [
-        "chart_page", "rotated_region", "rotated_page", "orientation_unsure",
+        "chart_page", "rotated_region", "orientation_unsure",
     ]  # fmt: skip
     now = datetime(2027, 3, 14, tzinfo=UTC)
     new = reocr.rewrite_sidecar(OLD_SIDECAR, rr, previous_engine="qwen-test", now=now)
@@ -448,8 +447,8 @@ def _run_with(vision_extract, *, dry_run: bool):
     ("vision", "note"),
     [
         ({"chart_pages": [1]}, "chart on page 1"),
-        ({"rotation": [180], "rotation_source": ["model"]}, "page 1 read after local rotation"),
         ({"rotation": [0], "rotation_source": ["score"]}, "orientation unsure on page 1"),
+        ({"rotation": [180], "rotation_source": ["model+score"]}, "orientation unsure on page 1"),
         ({"rotated_region_pages": [1]}, "rotated region on page 1"),
     ],
 )
@@ -477,3 +476,26 @@ def test_run_files_an_upright_vision_page_without_flags():
 
     _, doc, _ = _run_with(vision_extract, dry_run=True)
     assert doc["result"] == "filed"
+
+
+def test_confident_rotation_is_filed_and_recorded():
+    def vision_extract(name, content, mime="", *, min_text_chars=100):
+        return extract.Extraction(
+            content.decode(), "vision", 1, "qwen-test", rotation=[180],
+            rotation_source=["model"], ocr_version=extract.OCR_VERSION,
+        )  # fmt: skip
+
+    d, doc, _ = _run_with(vision_extract, dry_run=False)
+    assert doc["result"] == "filed"
+    sidecar = next(v["content"].decode() for v in d.items.values()
+                   if v["name"].endswith(".pdf.md"))  # fmt: skip
+    front, _ = parse_sidecar(sidecar)
+    assert front["rotation"] == [180] and front["rotation_source"] == ["model"]
+    assert front["review_needed"] is False
+
+
+def test_reocr_confident_rotation_does_not_block():
+    assert reocr.vision_review_codes(_reread(rotation=[90], rotation_source=["model"])) == []
+    assert reocr.vision_review_codes(_reread(rotation=[180], rotation_source=["model+score"])) == [
+        "orientation_unsure"
+    ]

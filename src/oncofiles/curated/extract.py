@@ -5,8 +5,9 @@
    model (no tesseract, no cloud OCR). Handwriting and photos always land here.
    Each page's orientation is decided first and the image rotated locally
    (``orientation``, #609); charts are fenced as ``[chart: …]`` and never read
-   as data (``ocr_markers``). A chart, a rotated region, a rotated page or an
-   unsure orientation sends the document to review (``review_notes``).
+   as data (``ocr_markers``). A chart, a rotated region or an unsure
+   orientation sends the document to review (``review_notes``); a confident
+   rotation alone does not.
 
 Plain-text sources (``.md``, ``.txt``, ``.csv``, ``.json``) are decoded as-is.
 Google Docs and Slides are exported by Drive as plain text, Sheets as CSV
@@ -97,15 +98,15 @@ class Extraction:
 
     def review_notes(self) -> list[str]:
         """Why a vision reading must go to review (#609): a chart, a rotated
-        region, a page read after rotation, or an unsure orientation."""
+        region, or an unsure orientation. A page the model confidently reported
+        as turned and that was read upright after local rotation is NOT a
+        review reason (maintainer: review only real ambiguity); it is recorded
+        in ``rotation`` / ``rotation_source`` only."""
         notes = []
         if self.chart_pages:
             notes.append(f"chart on page {_pages(self.chart_pages)}: values never read as data")
         if self.rotated_region_pages:
             notes.append(f"rotated region on page {_pages(self.rotated_region_pages)}: not read")
-        turned = [i for i, r in enumerate(self.rotation, start=1) if r]
-        if turned:
-            notes.append(f"page {_pages(turned)} read after local rotation")
         unsure = [i for i, s in enumerate(self.rotation_source, start=1)
                   if s in orientation.UNSURE_SOURCES]  # fmt: skip
         if unsure:
