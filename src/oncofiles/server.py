@@ -3876,6 +3876,9 @@ async def readiness(request: Request) -> JSONResponse:
         from oncofiles.tools.curated import probe_stats
 
         result["curated_probes"] = probe_stats()
+        # #868: dashboard sign-ins / ACL refusals / admin cross reads since
+        # process start (in-memory, no DB; the rows are in dashboard_access_log).
+        result["dashboard_access"] = dashboard_audit.counters()
         # #784: one scheduler per process, verifiable after a rolling deploy:
         # every answer must carry the same instance_id. In-memory, no DB.
         result["scheduler"] = scheduler_singleton.status()
@@ -4495,6 +4498,7 @@ def _dashboard_legacy_refusal(request: Request, action: str) -> JSONResponse | N
 # with persistent_oauth (which also needs it). Re-export here so existing
 # `from oncofiles.server import NO_PATIENT_ACCESS_SENTINEL` call-sites keep
 # working.
+from oncofiles import dashboard_audit  # noqa: E402
 from oncofiles.constants import NO_PATIENT_ACCESS_SENTINEL  # noqa: E402
 
 
@@ -4507,6 +4511,19 @@ def _acl_caller_log_id(email: str | None) -> str:
     except Exception:
         digest = None
     return digest[:12] if digest else "-"
+
+
+def _dashboard_session_key(request: Request, email: str | None) -> str:
+    """Dedupe key for one dashboard session (#868): the token's tid, else the caller hash."""
+    try:
+        header = request.headers.get("authorization", "")
+        if isinstance(header, str) and header.startswith("Bearer session:"):
+            parsed = _parse_session_token(header.removeprefix("Bearer session:").strip())
+            if parsed is not None and parsed[2]:
+                return f"tid:{parsed[2]}"
+    except Exception:
+        pass
+    return f"caller:{dashboard_audit.caller_hash(email) or '-'}"
 
 
 async def _get_dashboard_patient_id(request: Request) -> str:
@@ -4527,13 +4544,18 @@ async def _get_dashboard_patient_id(request: Request) -> str:
     Fail closed (#531): every error or miss on the way (no caller identity,
     slug resolution, patient listing, caregiver match) returns the sentinel,
     never the requested value and never a default patient.
+
+    Audit (#868): access denials (no identity, unknown patient, not caregiver)
+    and admin reads of a foreign patient go to ``dashboard_audit``, which
+    never raises, so the audit write can never change the result. Errors and
+    "no patient selected" are not denials and are not recorded.
     """
     email = _get_dashboard_email(request)
     is_bearer = _check_bearer(request) is None
     caller = _acl_caller_log_id(email)
 
     if not is_bearer and not email:
-        logger.warning("dashboard patient ACL: no bearer and no session identity — sentinel")
+        dashboard_audit.count_anonymous_refusal()
         return NO_PATIENT_ACCESS_SENTINEL
 
     raw = request.query_params.get("patient_id", "").strip().lower()
@@ -4576,7 +4598,15 @@ async def _get_dashboard_patient_id(request: Request) -> str:
         )
         return NO_PATIENT_ACCESS_SENTINEL
     if not resolved:
-        logger.warning("dashboard patient ACL: unknown patient caller=%s — sentinel", caller)
+        if not is_bearer:
+            await dashboard_audit.record(
+                db,
+                "acl_refused",
+                email=email,
+                is_admin=_is_admin_email(email),
+                patient_id=None,
+                route=dashboard_audit.route_name(request),
+            )
         return NO_PATIENT_ACCESS_SENTINEL
 
     if is_bearer:
@@ -4588,10 +4618,7 @@ async def _get_dashboard_patient_id(request: Request) -> str:
         target = next((p for p in patients if p.patient_id == resolved), None)
         if target is not None and _email_matches_caregiver(email, target.caregiver_email):
             return resolved
-        if target is not None and _is_admin_email(email):
-            # Admin read-only access — allowed but audit-logged
-            logger.info("AUDIT: admin caller=%s accessed patient '%s' (read-only)", caller, raw)
-            return resolved
+        admin_read = target is not None and _is_admin_email(email)
         own = [p for p in patients if _email_matches_caregiver(email, p.caregiver_email)]
     except Exception as exc:
         logger.warning(
@@ -4601,8 +4628,26 @@ async def _get_dashboard_patient_id(request: Request) -> str:
         )
         return NO_PATIENT_ACCESS_SENTINEL
 
-    # Non-admin, non-caregiver — fall back to own patient
-    logger.warning("dashboard patient ACL: caller=%s denied requested patient", caller)
+    route = dashboard_audit.route_name(request)
+    if admin_read:
+        # Admin read-only access — allowed but audited (#868: once per
+        # session + patient per hour in the DB, throttled in the app log).
+        if dashboard_audit.should_record_read(_dashboard_session_key(request, email), resolved):
+            await dashboard_audit.record(
+                db, "patient_read", email=email, is_admin=True, patient_id=resolved, route=route
+            )
+        return resolved
+
+    # Non-admin, non-caregiver — refused; fall back to own patient (or the
+    # sentinel). A requested patient missing from the listing has no target id.
+    await dashboard_audit.record(
+        db,
+        "acl_refused",
+        email=email,
+        is_admin=_is_admin_email(email),
+        patient_id=resolved if target is not None else None,
+        route=route,
+    )
     return own[0].patient_id if own else NO_PATIENT_ACCESS_SENTINEL
 
 
@@ -5034,7 +5079,20 @@ async def dashboard_verify(request: Request) -> JSONResponse:
 
     # Issue session token (open signup — any verified Google email can sign in)
     session_token = _make_session_token(email)
-    logger.info("Dashboard session issued for: %s", email)
+    logger.info("Dashboard session issued caller=%s", _acl_caller_log_id(email))
+    try:
+        audit_db = request.app.state.fastmcp_server._lifespan_result["db"]
+    except Exception:  # no lifespan DB: telemetry only, never block a sign-in
+        audit_db = None
+    if audit_db is not None:
+        await dashboard_audit.record(
+            audit_db,
+            "sign_in",
+            email=email,
+            is_admin=_is_admin_email(email),
+            patient_id=None,
+            route=dashboard_audit.route_name(request),
+        )
     resp = JSONResponse(
         {
             "session_token": session_token,
