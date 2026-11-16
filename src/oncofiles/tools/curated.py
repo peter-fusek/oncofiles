@@ -1483,6 +1483,10 @@ async def _audit_real_job(db, pid: str, job: dict) -> None:
     for key in ("confirmed", "date_unconfirmed", "unconfirmed", "candidates"):
         if any(key in d for d in docs):
             counts[key] = sum(int(d.get(key) or 0) for d in docs)
+    untrusted = Counter(r for d in docs for r in d.get("baseline_untrusted") or [])
+    if untrusted:  # #831: reason codes muted by the Tesseract baseline profile
+        counts["baseline_untrusted"] = dict(sorted(untrusted.items()))
+        counts["profile_documents"] = sum(1 for d in docs if d.get("profile"))
     actor = str(job.get("actor") or "unknown")[:120]
     try:
         await db.insert_activity_log(
@@ -1575,6 +1579,12 @@ async def curated_reocr(
     (``_reocr-candidate-…``, its Drive id in ``candidate``); an admin can
     promote it with curated_restore_sidecar. Runs in the background; poll
     curated_reocr_status. Slow: minutes per page.
+    When the OLD sidecar was written by Tesseract (``ocr_engine: tesseract…``)
+    the entry has ``profile: tesseract_baseline``: numbers, lab values and words
+    only the old text had are listed as ``baseline_untrusted`` and do not stop
+    the rewrite; lost dates, a shrunk text, a near-empty page with a loss or too
+    many uncertain numbers still do. curated_promote_candidates applies the
+    same rules to candidates kept earlier.
     By default only documents with unverified facts are chosen, most first
     (only_with_facts=false: every Cowork-era or uncertain document).
     """
@@ -3915,6 +3925,235 @@ async def curated_restore_sidecar(
     return json.dumps(out, ensure_ascii=False, default=str)
 
 
+# ── promote kept candidates of Tesseract-era sidecars (#831) ────────────
+
+
+async def _audit_promote(db, pid: str, out: dict, *, caller_hash: str | None) -> None:
+    """One activity_log row per REAL promotion call (#831): ids, result counts
+    and reason-code counts, the caller as a keyed hash; never a value."""
+    from collections import Counter
+
+    from oncofiles.models import ActivityLogEntry
+
+    docs = out.get("documents") or []
+    try:
+        await db.insert_activity_log(
+            ActivityLogEntry(
+                patient_id=pid,
+                session_id="curated-promote",
+                agent_id="mcp",
+                tool_name="curated_promote_candidates",
+                input_summary=json.dumps(
+                    {
+                        "caller_email_hash": caller_hash,
+                        "document_ids": [d.get("document_id") for d in docs],
+                        "dry_run": False,
+                        "profile": out.get("profile"),
+                        "pre_store": out.get("pre_store"),
+                    }
+                ),
+                output_summary=json.dumps(
+                    {
+                        "results": out.get("results"),
+                        "promoted": [
+                            d.get("document_id") for d in docs if d.get("result") == "promoted"
+                        ],
+                        "baseline_untrusted": dict(
+                            sorted(
+                                Counter(
+                                    r for d in docs for r in d.get("baseline_untrusted") or []
+                                ).items()
+                            )
+                        ),
+                        "review_reasons": dict(
+                            sorted(
+                                Counter(
+                                    r for d in docs for r in d.get("review_reasons") or []
+                                ).items()
+                            )
+                        ),
+                        "index": (out.get("index") or {}).get("status"),
+                    }
+                ),  # fmt: skip
+                status="error" if out.get("error") else "ok",
+                error_message=out.get("error"),
+                tags=json.dumps(["curated", "promote", "real", "pre-store"]),
+            )
+        )
+    except Exception:
+        logger.exception("could not write the activity_log row for a candidate promotion")
+
+
+async def promote_candidates_for(
+    db,
+    pid: str,
+    document_ids: list[int] | None = None,
+    *,
+    dry_run: bool = True,
+    caller_hash: str | None = None,
+) -> dict:
+    """Promote kept re-OCR candidates of Tesseract-era sidecars (#831). The
+    caller has resolved ``pid`` and checked admin scope.
+
+    Same safety bar as ``restore_sidecar_for``: refuses while a run, job,
+    index or restore is active for the patient, holds ``patient_lock(pid)``
+    for the whole call, counts in ``run_active()`` (the ``_restoring`` slot),
+    a real call first makes the verified pre-store copy, writes only inside
+    ``contract_writes()`` through ``drive_ops`` and re-indexes the promoted
+    documents. The model is never called; originals are never read."""
+    from collections import Counter
+
+    from oncofiles import config
+    from oncofiles.cloud_guard import local_only
+    from oncofiles.curated import reocr
+    from oncofiles.curated.facts_rules import Vocabulary
+    from oncofiles.server import _create_patient_clients
+
+    if not config.REOCR_TESSERACT_PROFILE:
+        return {"error": "refused: tesseract_profile_disabled"}
+    ids = list(dict.fromkeys(document_ids or []))
+    if len(ids) > reocr.PROMOTE_MAX_DOCS:
+        return {"error": f"refused: at most {reocr.PROMOTE_MAX_DOCS} documents per call"}
+    if (
+        _busy(pid)
+        or patient_lock(pid).locked()
+        or (_restoring.get(pid) or {}).get("state") == "running"
+    ):
+        return {"error": "busy: a curated run, index, re-OCR, re-read, extraction or restore "
+                "is in progress for this patient"}  # fmt: skip
+    # the slot is reserved before any await: two calls can never both start
+    _restoring[pid] = job = {
+        "kind": "promote", "state": "running", "dry_run": dry_run,
+        "started_at": datetime.now(UTC).isoformat(),
+    }  # fmt: skip
+    out: dict = {"dry_run": dry_run, "profile": reocr.TESSERACT_PROFILE}
+    try:
+        rows = {
+            r["id"]: r for r in await db.curated_reocr_candidates(patient_id=pid)
+        }  # SQL-scoped to the patient: a foreign id is simply not found
+        docs, missing = [], []
+        for doc_id in ids or rows:
+            row = rows.get(doc_id)
+            sidecar_id = (
+                ((row or {}).get("structured_metadata") or {}).get("curated", {}).get("sidecar_id")
+            )
+            if row is None or not sidecar_id:
+                if ids:
+                    missing.append({"document_id": doc_id, "result": "refused",
+                                    "error": "not_found"})  # fmt: skip
+                continue
+            docs.append({"document_id": doc_id, "filename": row["filename"],
+                         "sidecar_id": sidecar_id})  # fmt: skip
+        if not dry_run:
+            from oncofiles.pre_store import PreStoreError, make_copy
+
+            try:
+                job["pre_store"] = out["pre_store"] = await asyncio.to_thread(
+                    make_copy, db, "restore"
+                )
+            except Exception as exc:
+                reason = str(exc) if isinstance(exc, PreStoreError) else type(exc).__name__
+                logger.error("pre-store copy failed for %s (%s): promotion refused",
+                             pid[:8], reason)  # fmt: skip
+                out["error"] = f"refused: pre-store copy failed ({reason}); nothing was written"
+                return out
+        async with patient_lock(pid):
+            clients = await _create_patient_clients(db, pid)
+            if not clients or clients[0] is None:
+                out["error"] = "Drive not connected"
+                return out
+            gdrive, folder_id = clients[0], clients[3]
+            vocab = Vocabulary.from_rows(await db.fact_code_vocabulary())
+
+            def _blocking():
+                own = gdrive.dedicated_copy()
+                try:
+                    with local_only("curated candidate promotion"):
+                        from oncofiles.curated.drive_ops import DriveOps
+
+                        kwargs = dict(dry_run=dry_run, now=datetime.now(UTC),
+                                      explicit=bool(ids), stop=_stopping.is_set)  # fmt: skip
+                        if dry_run:
+                            return reocr.promote_candidates(DriveOps(own), folder_id, docs,
+                                                            vocab, **kwargs)  # fmt: skip
+                        with own.contract_writes():
+                            return reocr.promote_candidates(DriveOps(own), folder_id, docs,
+                                                            vocab, **kwargs)  # fmt: skip
+                finally:
+                    own.close()
+
+            try:
+                out.update(await asyncio.to_thread(_blocking))
+            except Exception as exc:
+                logger.exception("curated candidate promotion failed for %s", pid[:8])
+                out["error"] = type(exc).__name__
+            out["documents"] = [*missing, *(out.get("documents") or [])]
+            out["results"] = dict(Counter(str(d.get("result")) for d in out["documents"]))
+            promoted = {d["document_id"] for d in out["documents"] if d.get("result") == "promoted"}
+            logger.info(
+                "curated promote: patient=%s dry_run=%s documents=%d results=%s",
+                pid[:8], dry_run, len(out["documents"]), out["results"],
+            )  # fmt: skip
+            if promoted:
+                out["index"] = await _index_patient_lock_held(db, pid, force_ids=promoted)
+    finally:
+        job.update(state="failed" if out.get("error") else "done", results=out.get("results"),
+                   finished_at=datetime.now(UTC).isoformat())  # fmt: skip
+        if not dry_run and out.get("documents"):
+            await _audit_promote(db, pid, out, caller_hash=caller_hash)
+    return out
+
+
+async def curated_promote_candidates(
+    ctx: Context,
+    patient_slug: str | None = None,
+    document_ids: list[int] | None = None,
+    dry_run: bool = True,
+) -> str:
+    """ADMIN: promote kept re-OCR candidates of documents whose current
+    sidecar was written by Tesseract (#831).
+
+    For each such document that has a ``_reocr-candidate-…`` file in the
+    curated logs folder, the NEWEST candidate is checked again against the
+    current sidecar under the ``tesseract_baseline`` rules, without reading
+    the scan or calling the model: numbers, lab values and words only the old
+    Tesseract text had are listed as ``baseline_untrusted`` and do not block;
+    a lost date, a shrunk text, a near-empty page with a loss or too many
+    uncertain numbers keep the candidate a candidate (``result: review`` with
+    ``review_reasons``). Dry run (default) writes nothing and reports the
+    decision per document. A real run (dry_run=false) promotes each passing
+    candidate exactly like curated_restore_sidecar: the current sidecar is
+    copied to the logs folder first, the new text is written with read-back
+    verification, then the patient is re-indexed. Candidate files stay in the
+    logs folder; nothing is deleted and no original is touched.
+
+    Args:
+        document_ids: At most 20 documents; each gets an entry (``refused``
+            with a reason code when it has no candidate or its sidecar is not
+            Tesseract-era). Omitted: up to 20 documents with a candidate;
+            ``remaining`` says how many more there are.
+
+    The report carries ids, counts and reason codes only. Refused while a run
+    or job is active for the patient.
+    """
+    from oncofiles.tools._helpers import _require_admin_or_raise
+
+    try:
+        _require_admin_or_raise("curated_promote_candidates")
+    except ValueError as exc:
+        return json.dumps({"error": str(exc)})
+    pid = await _resolve_patient_id(patient_slug, ctx)
+    try:
+        ids = [int(i) for i in document_ids] if document_ids else None
+    except (TypeError, ValueError):
+        return json.dumps({"error": "document_ids must be integers"})
+    out = await promote_candidates_for(
+        _get_db(ctx), pid, ids, dry_run=bool(dry_run),
+        caller_hash=caller_email_hash(_caller_email()),
+    )  # fmt: skip
+    return json.dumps(out, ensure_ascii=False, default=str)
+
+
 async def curated_index(
     ctx: Context, patient_slug: str | None = None, document_ids: list[int] | None = None
 ) -> str:
@@ -3962,3 +4201,6 @@ def register(mcp):
     # admin, user-invoked (#806): replaces a sidecar's text, its current text
     # is backed up first; never scheduled
     mcp.tool(annotations=_RETRACT_ANNOTATIONS)(curated_restore_sidecar)
+    # admin, user-invoked (#831): promotes kept candidates of Tesseract-era
+    # sidecars through the restore path; dry run by default, never scheduled
+    mcp.tool(annotations=_RETRACT_ANNOTATIONS)(curated_promote_candidates)
