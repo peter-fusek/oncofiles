@@ -3876,6 +3876,9 @@ async def readiness(request: Request) -> JSONResponse:
         from oncofiles.tools.curated import probe_stats
 
         result["curated_probes"] = probe_stats()
+        # #868: dashboard sign-ins / ACL refusals / admin cross reads since
+        # process start (in-memory, no DB; the rows are in dashboard_access_log).
+        result["dashboard_access"] = dashboard_audit.counters()
         # #784: one scheduler per process, verifiable after a rolling deploy:
         # every answer must carry the same instance_id. In-memory, no DB.
         result["scheduler"] = scheduler_singleton.status()
@@ -4467,20 +4470,40 @@ async def _dashboard_body_patient(
     auth_err = _check_dashboard_auth(request)
     if auth_err is not None:
         return None, auth_err
+    email, is_admin = _dashboard_caller(request)
     patient_id = await _resolve_body_patient_id(db, raw)
     if patient_id is None:
-        logger.warning(
-            "patient-id body ACL: unknown patient caller=%s",
-            _acl_caller_log_id(_get_dashboard_email(request)),
-        )
+        logger.warning("patient-id body ACL: unknown patient caller=%s", _acl_caller_log_id(email))
+        await _audit_body_refusal(request, db, email, is_admin, None)
         return None, _patient_not_found()
     acl_err = await _require_body_patient_access(request, db, patient_id)
     if acl_err is not None:
         if acl_err.status_code in (403, 404):
             # Logged as a denial inside _require_body_patient_access.
+            await _audit_body_refusal(request, db, email, is_admin, patient_id)
             return None, _patient_not_found()
         return None, acl_err
     return patient_id, None
+
+
+async def _audit_body_refusal(
+    request: Request, db: Database, email: str | None, is_admin: bool, patient_id: str | None
+) -> None:
+    """#868 ``acl_refused`` for a body-route refusal by a session caller (never raises).
+
+    The operator bearer is not a dashboard session and is not recorded, as in
+    ``_get_dashboard_patient_id``.
+    """
+    if _check_bearer(request) is None:
+        return
+    await dashboard_audit.record(
+        db,
+        "acl_refused",
+        email=email,
+        is_admin=is_admin,
+        patient_id=patient_id,
+        route=dashboard_audit.route_name(request),
+    )
 
 
 def _patient_not_found() -> JSONResponse:
@@ -4558,6 +4581,7 @@ def _dashboard_legacy_refusal(request: Request, action: str) -> JSONResponse | N
 # with persistent_oauth (which also needs it). Re-export here so existing
 # `from oncofiles.server import NO_PATIENT_ACCESS_SENTINEL` call-sites keep
 # working.
+from oncofiles import dashboard_audit  # noqa: E402
 from oncofiles.constants import NO_PATIENT_ACCESS_SENTINEL  # noqa: E402
 
 
@@ -4572,6 +4596,19 @@ def _acl_caller_log_id(email: str | None) -> str:
     return digest[:12] if digest else "-"
 
 
+def _dashboard_session_key(request: Request, email: str | None) -> str:
+    """Dedupe key for one dashboard session (#868): the token's tid, else the caller hash."""
+    try:
+        header = request.headers.get("authorization", "")
+        if isinstance(header, str) and header.startswith("Bearer session:"):
+            parsed = _parse_session_token(header.removeprefix("Bearer session:").strip())
+            if parsed is not None and parsed[2]:
+                return f"tid:{parsed[2]}"
+    except Exception:
+        pass
+    return f"caller:{dashboard_audit.caller_hash(email) or '-'}"
+
+
 async def _get_dashboard_patient_id(request: Request, *, fallback_to_own: bool = True) -> str:
     """Extract patient_id from query params and resolve slug → UUID.
 
@@ -4581,7 +4618,10 @@ async def _get_dashboard_patient_id(request: Request, *, fallback_to_own: bool =
 
     ``fallback_to_own=False``: a session caller who names a patient they may
     not see gets the sentinel instead of their own first patient, so a route
-    can answer 403 (``/api/patient-context``, ``/api/patient-budget``).
+    can refuse (``/api/patient-context``, ``/api/patient-budget``,
+    ``/api/doc-detail``). With the default, a non-admin naming an UNKNOWN
+    patient gets exactly what a FOREIGN one gets (own first patient, else the
+    sentinel), both recorded as ``acl_refused`` (#867, #590).
 
     Accepts either a UUID or a slug (e.g. 'q1b').  Always returns
     the UUID patient_id suitable for DB queries, OR a non-empty sentinel
@@ -4598,13 +4638,18 @@ async def _get_dashboard_patient_id(request: Request, *, fallback_to_own: bool =
     Fail closed (#531): every error or miss on the way (no caller identity,
     slug resolution, patient listing, caregiver match) returns the sentinel,
     never the requested value and never a default patient.
+
+    Audit (#868): access denials (no identity, unknown patient, not caregiver)
+    and admin reads of a foreign patient go to ``dashboard_audit``, which
+    never raises, so the audit write can never change the result. Errors and
+    "no patient selected" are not denials and are not recorded.
     """
     email = _get_dashboard_email(request)
     is_bearer = _check_bearer(request) is None
     caller = _acl_caller_log_id(email)
 
     if not is_bearer and not email:
-        logger.warning("dashboard patient ACL: no bearer and no session identity — sentinel")
+        dashboard_audit.count_anonymous_refusal()
         return NO_PATIENT_ACCESS_SENTINEL
 
     raw = request.query_params.get("patient_id", "").strip().lower()
@@ -4647,8 +4692,33 @@ async def _get_dashboard_patient_id(request: Request, *, fallback_to_own: bool =
         )
         return NO_PATIENT_ACCESS_SENTINEL
     if not resolved:
-        logger.warning("dashboard patient ACL: unknown patient caller=%s — sentinel", caller)
-        return NO_PATIENT_ACCESS_SENTINEL
+        if is_bearer:
+            return NO_PATIENT_ACCESS_SENTINEL
+        is_admin = _is_admin_email(email)
+        await dashboard_audit.record(
+            db,
+            "acl_refused",
+            email=email,
+            is_admin=is_admin,
+            patient_id=None,
+            route=dashboard_audit.route_name(request),
+        )
+        if is_admin or not fallback_to_own:
+            return NO_PATIENT_ACCESS_SENTINEL
+        # #867/#590: for a non-admin an unknown patient answers exactly like a
+        # foreign one (their own first patient, else the sentinel), so a list
+        # route cannot tell whether a slug or UUID exists.
+        try:
+            patients = await db.list_patients(active_only=False)
+            own = [p for p in patients if _email_matches_caregiver(email, p.caregiver_email)]
+        except Exception as exc:
+            logger.warning(
+                "dashboard patient ACL: own-patient lookup raised %s caller=%s — sentinel",
+                type(exc).__name__,
+                caller,
+            )
+            return NO_PATIENT_ACCESS_SENTINEL
+        return own[0].patient_id if own else NO_PATIENT_ACCESS_SENTINEL
 
     if is_bearer:
         return resolved
@@ -4659,10 +4729,7 @@ async def _get_dashboard_patient_id(request: Request, *, fallback_to_own: bool =
         target = next((p for p in patients if p.patient_id == resolved), None)
         if target is not None and _email_matches_caregiver(email, target.caregiver_email):
             return resolved
-        if target is not None and _is_admin_email(email):
-            # Admin read-only access — allowed but audit-logged
-            logger.info("AUDIT: admin caller=%s accessed patient '%s' (read-only)", caller, raw)
-            return resolved
+        admin_read = target is not None and _is_admin_email(email)
         own = [p for p in patients if _email_matches_caregiver(email, p.caregiver_email)]
     except Exception as exc:
         logger.warning(
@@ -4672,9 +4739,27 @@ async def _get_dashboard_patient_id(request: Request, *, fallback_to_own: bool =
         )
         return NO_PATIENT_ACCESS_SENTINEL
 
-    # Non-admin, non-caregiver — fall back to own patient (unless the route
-    # refuses instead, #867)
-    logger.warning("dashboard patient ACL: caller=%s denied requested patient", caller)
+    route = dashboard_audit.route_name(request)
+    if admin_read:
+        # Admin read-only access — allowed but audited (#868: once per
+        # session + patient per hour in the DB, throttled in the app log).
+        if dashboard_audit.should_record_read(_dashboard_session_key(request, email), resolved):
+            await dashboard_audit.record(
+                db, "patient_read", email=email, is_admin=True, patient_id=resolved, route=route
+            )
+        return resolved
+
+    # Non-admin, non-caregiver — refused; fall back to own patient (or the
+    # sentinel; or, for a route that refuses instead, always the sentinel,
+    # #867). A requested patient missing from the listing has no target id.
+    await dashboard_audit.record(
+        db,
+        "acl_refused",
+        email=email,
+        is_admin=_is_admin_email(email),
+        patient_id=resolved if target is not None else None,
+        route=route,
+    )
     return own[0].patient_id if own and fallback_to_own else NO_PATIENT_ACCESS_SENTINEL
 
 
@@ -5123,7 +5208,20 @@ async def dashboard_verify(request: Request) -> JSONResponse:
 
     # Issue session token (open signup — any verified Google email can sign in)
     session_token = _make_session_token(email)
-    logger.info("Dashboard session issued for: %s", email)
+    logger.info("Dashboard session issued caller=%s", _acl_caller_log_id(email))
+    try:
+        audit_db = request.app.state.fastmcp_server._lifespan_result["db"]
+    except Exception:  # no lifespan DB: telemetry only, never block a sign-in
+        audit_db = None
+    if audit_db is not None:
+        await dashboard_audit.record(
+            audit_db,
+            "sign_in",
+            email=email,
+            is_admin=_is_admin_email(email),
+            patient_id=None,
+            route=dashboard_audit.route_name(request),
+        )
     resp = JSONResponse(
         {
             "session_token": session_token,
@@ -7512,6 +7610,15 @@ async def oauth_authorize(request: Request) -> JSONResponse:
     # log line says which.
     if patient is None:
         logger.warning("OAuth connect: unknown patient caller=%s", _acl_caller_log_id(email))
+        if not bearer_ok:
+            await dashboard_audit.record(
+                db_inst,
+                "acl_refused",
+                email=email,
+                is_admin=_is_admin_email(email),
+                patient_id=None,
+                route=dashboard_audit.route_name(request),
+            )
         return _patient_not_found()
     if not (
         bearer_ok
@@ -7519,6 +7626,14 @@ async def oauth_authorize(request: Request) -> JSONResponse:
         or _email_matches_caregiver(email, patient.caregiver_email)
     ):
         logger.warning("OAuth connect: not caregiver caller=%s", _acl_caller_log_id(email))
+        await dashboard_audit.record(
+            db_inst,
+            "acl_refused",
+            email=email,
+            is_admin=False,
+            patient_id=patient.patient_id,
+            route=dashboard_audit.route_name(request),
+        )
         return _patient_not_found()
     # #852 onboarding gate: a FIRST Google link for this patient needs a caller
     # the gate admits. A patient that already has a link may re-consent.

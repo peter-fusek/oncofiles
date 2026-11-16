@@ -558,3 +558,74 @@ async def test_oracle_oauth_authorize(acl_db, monkeypatch, unknown, foreign):
     _assert_identical(*responses)
     # Sanity: the caller's own patient still starts the link.
     assert own.status_code in (302, 307)
+
+
+# ── List routes (default fallback): unknown behaves exactly like foreign ──
+
+
+@pytest.fixture
+def _fresh_audit():
+    from oncofiles import dashboard_audit
+
+    dashboard_audit._reset_for_tests()
+    yield
+    dashboard_audit._reset_for_tests()
+
+
+@pytest.mark.parametrize(("unknown", "foreign"), PAIRS)
+async def test_list_helper_unknown_falls_back_like_foreign(acl_db, _fresh_audit, unknown, foreign):
+    with _caller(A_EMAIL):
+        assert await server._get_dashboard_patient_id(_request(acl_db, unknown)) == A_UUID
+        assert await server._get_dashboard_patient_id(_request(acl_db, foreign)) == A_UUID
+    with _caller(NOBODY_EMAIL):  # no own patient: both the sentinel
+        assert (
+            await server._get_dashboard_patient_id(_request(acl_db, unknown))
+            == await server._get_dashboard_patient_id(_request(acl_db, foreign))
+            == NO_PATIENT_ACCESS_SENTINEL
+        )
+
+
+@pytest.mark.parametrize("route", ["api_documents", "api_manifest"])
+@pytest.mark.parametrize(("unknown", "foreign"), PAIRS)
+@pytest.mark.parametrize("email", [A_EMAIL, NOBODY_EMAIL])
+async def test_oracle_list_routes(acl_db, _fresh_audit, route, unknown, foreign, email):
+    """Byte-identical list answers for an unknown vs a foreign ?patient_id=."""
+    responses = []
+    for requested in (unknown, foreign):
+        with _caller(email):
+            responses.append(await getattr(server, route)(_request(acl_db, requested)))
+    r1, r2 = responses
+    if route == "api_manifest":
+        # The manifest carries its own `exported_at` clock; everything else
+        # must match. Pin it so the full bytes can be compared.
+        first, second = json.loads(r1.body), json.loads(r2.body)
+        assert first.keys() == second.keys()
+        second["exported_at"] = first.get("exported_at")
+        assert first == second
+    else:
+        assert r1.body == r2.body
+        assert sorted(r1.raw_headers) == sorted(r2.raw_headers)
+    assert r1.status_code == r2.status_code
+    assert r1.headers.get("content-type") == r2.headers.get("content-type")
+    assert "AclDetailB" not in r1.body.decode()
+    if email == A_EMAIL:  # authorized UX unchanged: the caller's own patient
+        assert "AclDetailA" in r1.body.decode()
+
+
+async def test_unknown_and_foreign_both_recorded_as_acl_refused(acl_db, _fresh_audit):
+    from oncofiles import dashboard_audit
+
+    with _caller(A_EMAIL):
+        await server._get_dashboard_patient_id(_request(acl_db, UNKNOWN_SLUG))
+        await server._get_dashboard_patient_id(_request(acl_db, "acl867-b"))
+        # #868 dedupes a refusal per caller + patient + route; the test requests
+        # carry no route, so start a fresh window for the body path.
+        dashboard_audit._reset_for_tests()
+        await server._dashboard_body_patient(_request(acl_db), acl_db, "acl867-nobody2")
+        await server._dashboard_body_patient(_request(acl_db), acl_db, B_UUID)
+    rows = await acl_db.list_dashboard_access(limit=100)
+    refused = [r for r in rows if r["event"] == "acl_refused"]
+    assert sorted((r["target_patient_id"] or "-") for r in refused) == sorted(
+        ["-", B_UUID, "-", B_UUID]
+    )
+    assert all(A_EMAIL not in json.dumps(r, default=str) for r in rows)
