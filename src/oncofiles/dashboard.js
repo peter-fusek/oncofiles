@@ -564,7 +564,11 @@
         if (ratio >= 1) pill.classList.add('state-over');
         else if (ratio >= 0.8) pill.classList.add('state-warn');
         var iconEl = document.getElementById('bp-icon');
-        if (iconEl) iconEl.textContent = resp.in_onboarding ? '🎁' : '€';
+        // Text, not an emoji: "Starter" while the onboarding credit applies, else €.
+        if (iconEl) {
+          if (resp.in_onboarding) setI18n(iconEl, 'Štart', 'Starter');
+          else { iconEl.removeAttribute('data-sk'); iconEl.removeAttribute('data-en'); iconEl.textContent = '€'; }
+        }
         var spentEl = document.getElementById('bp-spent');
         if (spentEl) spentEl.textContent = '€' + used.toFixed(2);
         var capEl = document.getElementById('bp-cap');

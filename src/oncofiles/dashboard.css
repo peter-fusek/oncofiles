@@ -957,7 +957,7 @@
     .connection-dot.loading { background: var(--warn); border-radius: 2px; animation: pulse 1s infinite; }
     @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
     .budget-pill { display: inline-flex; align-items: center; gap: 0.25rem; font: 0.75rem var(--num); color: var(--text-muted); font-variant-numeric: tabular-nums; padding: 0.1875rem 0.5rem; border: 1.5px solid var(--rule-2); border-radius: 999px; }
-    .budget-pill .bp-icon { font-size: 0.8125rem; line-height: 1; }
+    .budget-pill .bp-icon { font: 600 0.75rem/1 var(--sans); }
     .budget-pill.state-warn { color: var(--warn); border-color: var(--warn); border-style: dashed; }
     .budget-pill.state-over { color: var(--err); border-color: var(--err); border-width: 2px; font-weight: 700; }
     .svc-badges { display: inline-flex; gap: 0.3125rem; vertical-align: middle; }
