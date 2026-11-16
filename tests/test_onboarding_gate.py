@@ -54,6 +54,7 @@ SENSITIVE_REFS = {
     "_make_state_token",
     "store_google_link",
     "update_oauth_folder",
+    "connect_folder",  # #848: folder writes go through drive_folder_link.connect_folder
     "sync",
     "_sync",
     "sync_from_gdrive",

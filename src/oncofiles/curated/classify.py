@@ -16,6 +16,12 @@ can never rename a real medical record into a wrong place:
   printed in the text, or the model's token is not;
 * a new Institution / Doctor (not in README §3) → ``review_needed``; a new
   HospitalName / Subject is accepted and *flagged* for the run report.
+* with ``auto_vocab`` (#854, ``CURATED_AUTO_VOCAB``, on in the runner) a new
+  Institution / Doctor is instead proposed for the README vocabulary when its
+  spelling is printed in the text (``Classification.additions``; the runner
+  writes it) and an unknown one is only flagged. Real ambiguity — another
+  person, no or a birth date, unknown type, split, low confidence, a near
+  neighbour of a README token that is a different entity — still → review.
 """
 
 from __future__ import annotations
@@ -29,7 +35,8 @@ from datetime import date
 from oncofiles import config
 from oncofiles.curated import llm
 from oncofiles.curated.contract import Contract
-from oncofiles.curated.naming import UNKNOWN, NameFields, camel, surname_token
+from oncofiles.curated.naming import UNKNOWN, NameFields, camel, surname_text, surname_token
+from oncofiles.curated.vocabulary import VocabAddition
 
 MIN_CONFIDENCE = 0.60
 SNAP_CUTOFF = 0.8  # OCR typo tolerance when matching README vocabulary tokens
@@ -51,6 +58,7 @@ single JSON object and nothing else:
   "date_evidence": "the exact text snippet the date was read from",
   "doc_type": "one of: {doc_types}",
   "institution": "Institution token from the contract, or a new CamelCase token, or Unknown",
+  "institution_printed": "the issuing institution's name copied verbatim from the TEXT, or null",
   "doctor": "signing doctor as printed, e.g. 'MUDr. Jana Kovacova', or null",
   "hospital": "HospitalName token from the contract vocabulary, or Unknown",
   "hospital_unit": "department as printed (free text) or null",
@@ -72,6 +80,8 @@ class Classification:
     review_needed: bool
     reasons: list[str] = field(default_factory=list)
     flags: list[str] = field(default_factory=list)
+    # #854: vocabulary the runner adds to README §3 before filing (auto_vocab only)
+    additions: list[VocabAddition] = field(default_factory=list)
 
 
 _DATE_PATTERNS = (
@@ -235,6 +245,64 @@ def _same_entity(token: str, known: str) -> bool:
     return _leading_word(token) == _leading_word(known)
 
 
+# ── #854: automatic vocabulary ──────────────────────────────────────
+
+MAX_NEW_TOKEN_LEN = 40  # a longer CamelCase name is no usable filename field
+BIRTH_WINDOW = 60  # characters around a printed name that must not speak of birth
+_BIRTH_CONTEXT_RE = re.compile(
+    r"narod|\bdob\b|date of birth|\bborn\b|geburt|rodne\s*cislo|\br\.\s*c\.(?!\w)"
+)
+_NEW_TOKEN_RE = re.compile(r"[A-Z][A-Za-z0-9]+")
+
+
+def _norm(value: str) -> str:
+    """Folded (no diacritics, lower case) with whitespace runs collapsed."""
+    return re.sub(r"\s+", " ", _fold(value or "")).strip()
+
+
+def _birth_variants(birth_dates) -> set[str]:
+    out: set[str] = set()
+    for b in birth_dates:
+        y, m, d = b[:4], b[4:6], b[6:]
+        out |= {
+            p.format(d=d, m=m, y=y, di=str(int(d)), mi=str(int(m)), yy=y[2:])
+            for p in _DATE_PATTERNS
+        }
+    return out
+
+
+def printed_in_text(value: str, text: str, birth_dates=frozenset()) -> bool:
+    """``value`` is printed in ``text``: the same spelling ignoring diacritics, case
+    and whitespace runs, on word boundaries, at least once outside a birth context
+    (a birth place next to "narodená" or the DOB is not an institution)."""
+    needle = _norm(value)
+    if len(re.sub(r"[^a-z0-9]", "", needle)) < 2:
+        return False
+    hay = _norm(text)
+    births = _birth_variants(birth_dates)
+    for m in re.finditer(r"(?<![a-z0-9])" + re.escape(needle) + r"(?![a-z0-9])", hay):
+        window = hay[max(0, m.start() - BIRTH_WINDOW) : m.end() + BIRTH_WINDOW]
+        if _BIRTH_CONTEXT_RE.search(window) or any(b in window for b in births):
+            continue
+        return True
+    return False
+
+
+def names_patient(value: str, contract: Contract) -> bool:
+    """A word of ``value`` is the patient's given name, filename token, or built on
+    the surname (``Novak`` for ``Jana Novakova``) — never a vocabulary entry."""
+    parts = [_fold(p) for p in contract.patient_display.split()]
+    if not parts:
+        return False
+    given, surname = parts[0], parts[-1]
+    stem = surname[:-3] if surname.endswith("ova") else surname
+    token = _fold(contract.patient_token)
+    words = re.findall(r"[a-z0-9]+", _fold(value))
+    if token and token == "".join(words):
+        return True
+    return any(w in (given, token) or (len(stem) >= 3 and w.startswith(stem)) for w in words)
+
+
 def _in_text(token: str, folded_text: str) -> bool:
     """``token`` printed in the text, ignoring diacritics, case, spaces and punctuation."""
     return bool(token) and re.sub(r"[^a-z0-9]", "", token.lower()) in folded_text
@@ -247,10 +315,13 @@ def validate(
     *,
     today: date | None = None,
     max_age_days: int | None = None,
+    auto_vocab: bool = False,
 ) -> Classification:
+    """Apply the hard rules. ``auto_vocab`` (#854): see the module docstring."""
     today = today or date.today()
     reasons: list[str] = []
     flags: list[str] = []
+    additions: list[VocabAddition] = []
 
     folded_text = re.sub(r"[^a-z0-9]", "", _fold(text or ""))
 
@@ -274,6 +345,50 @@ def validate(
             flags.append(f"snapped {token!r} → {match!r} (README vocabulary)")
             return match
         return token
+
+    def resolve_new(label: str, token: str, printed: list, sources: list) -> str:
+        """#854: a token not in README §3 → README token, new printed token, or Unknown.
+
+        Appends to ``additions`` only for a spelling printed in the text; a near
+        neighbour of a README token that #754 says is another entity → review.
+        """
+        if token == UNKNOWN or token in contract.known_tokens:
+            return token
+        if any(isinstance(v, str) and "?" in v for v in sources):
+            flags.append(f"{label} reading uncertain ('?') — filed as Unknown")
+            return UNKNOWN
+        lower = {k.lower(): k for k in contract.known_tokens}
+        for value in (v.strip() for v in printed if isinstance(v, str) and v.strip()):
+            if not printed_in_text(value, text or "", contract.birth_dates):
+                continue
+            if names_patient(value, contract):  # first: never matched, never added
+                flags.append(f"{label} value names the patient — filed as Unknown")
+                return UNKNOWN
+            cand = camel(value)
+            if cand.lower() in lower:
+                return lower[cand.lower()]
+            snapped = snap(cand, label)
+            if snapped in contract.known_tokens:
+                return snapped
+            near = sorted(
+                k for k in contract.known_tokens if _edit_distance(cand, k) <= SNAP_MAX_EDITS
+            )
+            if near:
+                reasons.append(
+                    f"new {label} {cand!r} is close to README token {near[0]!r} — same entity?"
+                )
+                return cand
+            if (
+                cand == UNKNOWN
+                or not _NEW_TOKEN_RE.fullmatch(cand)
+                or len(cand) > MAX_NEW_TOKEN_LEN
+            ):
+                flags.append(f"{label} value is not a usable token — filed as Unknown")
+                return UNKNOWN
+            additions.append(VocabAddition(label.capitalize(), cand, value))
+            return cand
+        flags.append(f"new {label} {token!r} is not printed in the text — filed as Unknown")
+        return UNKNOWN
 
     doc_type = raw.get("doc_type") if isinstance(raw.get("doc_type"), str) else None
     if doc_type not in contract.doc_types:
@@ -310,13 +425,27 @@ def validate(
     doctor = snap(surname_token(raw.get("doctor")), "doctor")
     subject = raw.get("subject") if isinstance(raw.get("subject"), str) else None
     subject = snap(subject.strip(), "subject") if subject and subject.strip() else None
-    if institution == UNKNOWN:
-        reasons.append("institution unknown")
-    # #754: a new institution or doctor is an entity the README does not know
-    # yet — a human confirms it (and adds it to §3) before anything is filed.
-    for label, token in (("institution", institution), ("doctor", doctor)):
-        if token != UNKNOWN and token not in contract.known_tokens:
-            reasons.append(f"new {label} {token!r} not in README vocabulary")
+    if auto_vocab:
+        # #854: a new institution / doctor printed in the text joins README §3;
+        # an unknown one alone is no reason to keep the document in the inbox.
+        institution = resolve_new(
+            "institution",
+            institution,
+            [raw.get("institution"), raw.get("institution_printed")],
+            [raw.get("institution"), raw.get("institution_printed")],
+        )
+        raw_doctor = raw.get("doctor") if isinstance(raw.get("doctor"), str) else None
+        doctor = resolve_new("doctor", doctor, [surname_text(raw_doctor)], [raw_doctor])
+        if institution == UNKNOWN:
+            flags.append("institution unknown — filed as Unknown")
+    else:
+        if institution == UNKNOWN:
+            reasons.append("institution unknown")
+        # #754: a new institution or doctor is an entity the README does not know
+        # yet — a human confirms it (and adds it to §3) before anything is filed.
+        for label, token in (("institution", institution), ("doctor", doctor)):
+            if token != UNKNOWN and token not in contract.known_tokens:
+                reasons.append(f"new {label} {token!r} not in README vocabulary")
     # A new department / subject is plausible on its own: file it, but say so.
     for label, token in (("HospitalName", hospital), ("Subject", subject)):
         if token and token != UNKNOWN and token not in contract.known_tokens:
@@ -342,6 +471,11 @@ def validate(
     if other:
         reasons.append(f"document names another person ({other}), not {contract.patient_display}")
 
+    if reasons:
+        additions.clear()  # a document that waits for a human adds nothing to the README
+    for a in additions:
+        flags.append(f"new {a.label} {a.token!r} added to README vocabulary (printed in the text)")
+
     fields = None
     if iso is not None:
         fields = NameFields(
@@ -360,4 +494,5 @@ def validate(
         review_needed=bool(reasons),
         reasons=reasons,
         flags=flags,
+        additions=additions,
     )

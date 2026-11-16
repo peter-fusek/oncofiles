@@ -6866,167 +6866,19 @@ async def api_gdrive_set_folder(request: Request) -> JSONResponse:
         if acl_err is not None:
             return acl_err
 
-        token = await db_inst.get_oauth_token(patient_id=patient_id)
-        if not token:
-            return JSONResponse(
-                {"error": "No OAuth token. Connect Google Drive first."},
-                status_code=400,
-            )
+        # #839: one decision path shared with the MCP tool `gdrive_set_folder`
+        # (token, optional new folder, "is it a folder", the #835 container
+        # guard, persist, owner, curated detection, category subfolders).
+        from oncofiles.drive_folder_link import connect_folder
 
-        from oncofiles.oauth import is_token_expired, refresh_access_token
-
-        access_token = token.access_token
-        if is_token_expired(token.token_expiry.isoformat() if token.token_expiry else None):
-            refreshed = refresh_access_token(token.refresh_token)
-            access_token = refreshed["access_token"]
-            new_expiry = datetime.now(UTC) + timedelta(seconds=refreshed.get("expires_in", 3600))
-            token.access_token = access_token
-            token.token_expiry = new_expiry
-            await db_inst.update_oauth_access_token(
-                token.patient_id, token.provider, access_token, new_expiry
-            )
-
-        gdrive = GDriveClient.from_oauth(
-            access_token=access_token,
-            refresh_token=token.refresh_token,
-            client_id=GOOGLE_OAUTH_CLIENT_ID,
-            client_secret=GOOGLE_OAUTH_CLIENT_SECRET,
+        outcome = await connect_folder(
+            db_inst,
+            patient_id,
+            folder_id=folder_id,
+            folder_name=folder_name,
+            create_parent_raw=str(body.get("parent_id", "") or ""),
         )
-
-        # Create new folder if needed — inside the browsed parent (#563), never
-        # inside a curated folder (#562: its README fixes the folder set).
-        created_new = False
-        if not folder_id and folder_name:
-            from oncofiles.curated_folder import is_curated_folder, parse_drive_folder_ref
-
-            raw_parent = str(body.get("parent_id", "") or "").strip()
-            create_parent = "root"
-            if raw_parent and raw_parent != "root":
-                create_parent = parse_drive_folder_ref(raw_parent)
-                if not create_parent:
-                    return JSONResponse({"error": "invalid parent_id"}, status_code=400)
-                if await asyncio.to_thread(is_curated_folder, gdrive, create_parent):
-                    return JSONResponse(
-                        {"error": "Cannot create a folder inside a curated folder (README.md)."},
-                        status_code=400,
-                    )
-            folder_id = await asyncio.to_thread(gdrive.create_folder, folder_name, create_parent)
-            created_new = True
-
-        # Validate folder exists before persisting
-        try:
-            meta = await asyncio.to_thread(
-                lambda: (
-                    gdrive._service.files()
-                    .get(fileId=folder_id, fields="id,name,mimeType")
-                    .execute()
-                )
-            )
-            if meta.get("mimeType") != "application/vnd.google-apps.folder":
-                return JSONResponse(
-                    {"error": f"ID is not a folder (type: {meta.get('mimeType')})"},
-                    status_code=400,
-                )
-        except Exception as exc:
-            status = getattr(getattr(exc, "resp", None), "status", None)
-            if status == 404:
-                return JSONResponse(
-                    {"error": f"Folder '{folder_id}' not found. Check the ID."},
-                    status_code=404,
-                )
-            return JSONResponse({"error": f"Cannot access folder: {exc}"}, status_code=400)
-
-        # #835: isolation guard, fails closed. A folder is not connected when a
-        # subfolder is another patient's curated folder, when it has too many
-        # subfolders to check them all, or when the check could not run (a
-        # Drive hiccup means "try again", not a pass). No body field lifts
-        # this. Nothing is persisted or created before it passes.
-        if not created_new:
-            from oncofiles.curated_folder import folder_overview
-
-            overview = await asyncio.to_thread(folder_overview, gdrive, folder_id)
-            reason = overview["container_reason"]
-            if reason:
-                messages = {
-                    "curated_children": "This folder contains other patients' folders and "
-                    "cannot be connected. Open the patient's own folder.",
-                    "too_many_to_check": "This folder has too many subfolders to check "
-                    "safely. Open the folder of the patient you mean, or paste its link.",
-                    "check_failed": "Could not check this folder right now. Try again in a moment.",
-                }
-                return JSONResponse(
-                    {
-                        "error": messages[reason],
-                        "code": "container_folder",
-                        "reason": reason,
-                        "confirmable": False,
-                        "subfolder_count": overview["subfolder_count"],
-                        "curated_children": overview["curated_children"],
-                    },
-                    status_code=409,
-                )
-
-        # Persist folder choice (including display name from metadata)
-        cached_folder_name = meta.get("name") if meta else None
-        await db_inst.update_oauth_folder(
-            patient_id, "google", folder_id, folder_name=cached_folder_name
-        )
-
-        # Clear folder-invalid flag so sync resumes immediately
-        _folder_404_counts.pop(patient_id, None)
-        _patient_clients_cache.pop(patient_id, None)
-
-        # Detect owner email
-        owner_email = await asyncio.to_thread(gdrive.get_folder_owner, folder_id)
-        if owner_email:
-            await db_inst.update_oauth_owner_email(patient_id, "google", owner_email)
-            gdrive.owner_email = owner_email
-
-        # Curated folder (#562): its README fixes the folder set — create nothing.
-        from oncofiles.curated_folder import clear_cache, curated_reason, mark_if_curated
-
-        clear_cache(folder_id)
-        if await asyncio.to_thread(mark_if_curated, gdrive, folder_id):
-            # curated_root: the folder itself has the contract (the pipeline
-            # processes it), as opposed to lying inside / above a curated one.
-            reason = await asyncio.to_thread(curated_reason, gdrive, folder_id)
-            return JSONResponse(
-                {
-                    "status": "ok",
-                    "folder_id": folder_id,
-                    "owner_email": owner_email,
-                    "curated": True,
-                    "curated_root": reason == "is a curated folder",
-                    "subfolders_created": 0,
-                    "subfolders_skipped": 0,
-                    "message": "Curated folder detected (README.md + _index.json): "
-                    "no folders created; legacy sync is disabled for it.",
-                }
-            )
-
-        # Create category subfolders
-        from oncofiles.gdrive_folders import ALL_FOLDERS, bilingual_name
-
-        created = []
-        skipped = []
-        for en_key in ALL_FOLDERS:
-            display = bilingual_name(en_key)
-            existing = await asyncio.to_thread(gdrive.find_folder, display, folder_id)
-            if existing:
-                skipped.append(display)
-                continue
-            await asyncio.to_thread(gdrive.create_folder, display, folder_id)
-            created.append(display)
-
-        return JSONResponse(
-            {
-                "status": "ok",
-                "folder_id": folder_id,
-                "owner_email": owner_email,
-                "subfolders_created": len(created),
-                "subfolders_skipped": len(skipped),
-            }
-        )
+        return JSONResponse(outcome.payload, status_code=outcome.status)
     except Exception:
         logger.exception("API gdrive-set-folder error")
         return JSONResponse({"error": "internal error"}, status_code=500)
