@@ -63,6 +63,10 @@ the old text had: ink below ``BLANK_INK_MAX`` and no text layer = a blank
 back side (no page markers in the old sidecar needed); otherwise
 ``near_empty_page_with_ink`` (or ``near_empty_unknown_ink`` when the ink was
 not measured) means ``review``; ``near_empty_with_loss`` is only reported.
+A lost code still stops the rewrite there when the document has an active
+stored fact with that code that is ``machine``, ``verified`` or ``corrected``
+(``lost_trusted_values``; ``lost_trusted_values_unknown`` when the caller
+could not look the stored facts up): such a value is trusted evidence.
 Any other engine keeps the rules above unchanged. Off-switch: ``REOCR_TESSERACT_PROFILE=false``.
 ``promote_candidates`` re-evaluates kept candidates of Tesseract-era sidecars
 under the profile without reading the scan again.
@@ -893,10 +897,29 @@ def near_empty_by_ink(
     return blank, reasons
 
 
+def trusted_loss(
+    profile: str | None, lost_code_counts: dict[str, int], trusted_codes: Collection | None
+) -> tuple[dict[str, int], str | None]:
+    """(lost_trusted_codes, blocking reason or None) under the Tesseract
+    profile (#831, infra condition): a code the new text loses or re-dates
+    (``lost_codes``) still blocks when the document has an active stored fact
+    with that code that is machine-verified, verified or corrected
+    (``trusted_codes``, loaded by the caller). ``None`` = the stored facts
+    could not be looked up: with any lost code the decision fails closed
+    (``lost_trusted_values_unknown``). Codes and counts only."""
+    if profile != TESSERACT_PROFILE or not lost_code_counts:
+        return {}, None
+    if trusted_codes is None:
+        return {}, "lost_trusted_values_unknown"
+    trusted = {str(c) for c in trusted_codes}
+    hit = {code: n for code, n in lost_code_counts.items() if code in trusted}
+    return hit, ("lost_trusted_values" if hit else None)
+
+
 def profile_reasons(
     profile: str | None, reasons: list[str], new_text: str, *,
     empty_pages: list[int] | None = None, ink: Collection | None = None,
-    text_layer: Collection | None = None,
+    text_layer: Collection | None = None, trusted_reason: str | None = None,
 ) -> tuple[list[str], list[str], float | None]:  # fmt: skip
     """(blocking reasons, baseline_untrusted, uncertain_share) of a decision.
     Without a profile the reasons are returned as they are. Under
@@ -907,7 +930,8 @@ def profile_reasons(
     if profile != TESSERACT_PROFILE:
         return list(reasons), [], None
     untrusted = [r for r in reasons if r in BASELINE_UNTRUSTED_REASONS]
-    blocking = [r for r in reasons if r not in BASELINE_UNTRUSTED_REASONS]
+    blocking = [trusted_reason] if trusted_reason else []  # from ``trusted_loss``
+    blocking += [r for r in reasons if r not in BASELINE_UNTRUSTED_REASONS]
     blocking += near_empty_by_ink(empty_pages or [], ink, text_layer)[1]
     share = uncertain_share(new_text)
     if share > UNCERTAIN_SHARE_MAX:
@@ -992,6 +1016,8 @@ class DocResult:
     profile: str | None = None
     baseline_untrusted: list[str] = field(default_factory=list)
     uncertain_share: float | None = None
+    # #831: lost codes that have an active machine/verified/corrected stored fact
+    lost_trusted_codes: dict[str, int] = field(default_factory=dict)
 
 
 @dataclass
@@ -1160,7 +1186,10 @@ def run_reocr(
     rss_mb=None,
 ) -> ReocrReport:
     """Blocking. ``docs``: document_id, filename, gdrive_id, sidecar_id, mime,
-    engine, reasons. Writes only when ``dry_run`` is False (caller holds
+    engine, reasons, and ``trusted_codes`` (codes of the document's active
+    machine/verified/corrected stored facts; missing or None = unknown, which
+    fails closed under the Tesseract profile, #831).
+    Writes only when ``dry_run`` is False (caller holds
     ``contract_writes()``); one document at a time, backup before update.
     ``reader`` reads a source (``reread_isolated`` in production, #667). With
     ``rss_limit_mb``, no document is started while RSS is above it."""
@@ -1233,11 +1262,14 @@ def run_reocr(
             res.near_empty_pages = near_empty_pages(rr.pages)
             res.blank_pages = blank_pages(res.near_empty_pages, res.page_ink,
                                           res.page_text_layer, old_page_chars(old))  # fmt: skip
+            res.lost_trusted_codes, trusted_reason = trusted_loss(
+                res.profile, res.lost_codes, d.get("trusted_codes")
+            )
             res.review_reasons, res.baseline_untrusted, res.uncertain_share = profile_reasons(
                 res.profile,
                 review_reasons(lost, loss, res.near_empty_pages, res.blank_pages),
                 new, empty_pages=res.near_empty_pages, ink=res.page_ink,
-                text_layer=res.page_text_layer,
+                text_layer=res.page_text_layer, trusted_reason=trusted_reason,
             )  # fmt: skip
             if res.profile:  # #831: blank by the page's own ink, no old page markers needed
                 res.blank_pages = near_empty_by_ink(res.near_empty_pages, res.page_ink,
@@ -1430,7 +1462,7 @@ def restore_sidecar(
 
 def evaluate_candidate(
     old_text: str, new_text: str, vocab, *, ink: list | None = None,
-    text_layer: list | None = None,
+    text_layer: list | None = None, trusted_codes: Collection | None = None,
 ) -> dict:  # fmt: skip
     """The rewrite guards for a kept candidate (``new_text``: the sidecar text
     inside it) against the current sidecar, without any model call. Codes and
@@ -1443,15 +1475,18 @@ def evaluate_candidate(
     lost = lost_values(old_text, new_text, vocab)  # internal: carries values (#805)
     loss = token_loss(old_text, new_text)
     empty = near_empty_pages(parse_sidecar(new_text)[1])
+    codes = lost_codes(lost)
+    lost_trusted, trusted_reason = trusted_loss(profile, codes, trusted_codes)
     blocking, untrusted, share = profile_reasons(
         profile, review_reasons(lost, loss, empty), new_text,
-        empty_pages=empty, ink=ink, text_layer=text_layer,
+        empty_pages=empty, ink=ink, text_layer=text_layer, trusted_reason=trusted_reason,
     )  # fmt: skip
     return {
+        "lost_trusted_codes": lost_trusted,
         "blank_pages": near_empty_by_ink(empty, ink, text_layer)[0] if profile else [],
         "profile": profile, "decision": "review" if blocking else "rewrite",
         "review_reasons": blocking, "baseline_untrusted": untrusted,
-        "uncertain_share": share, "lost_codes": lost_codes(lost),
+        "uncertain_share": share, "lost_codes": codes,
         "missing_numbers": loss["missing_numbers"], "missing_dates": loss["missing_dates"],
         "old_chars": loss["old_chars"], "new_chars": loss["new_chars"],
         "word_overlap": loss["word_overlap"], "near_empty_pages": empty,
@@ -1466,7 +1501,8 @@ def promote_candidates(
     that passes the ``tesseract_baseline`` guards (#831). Blocking; the model
     is never called and the source file is never read.
 
-    ``docs``: document_id, filename, sidecar_id. With ``explicit`` every
+    ``docs``: document_id, filename, sidecar_id, trusted_codes (as in
+    ``run_reocr``; missing = unknown, fails closed). With ``explicit`` every
     listed document gets an entry (``refused`` with a reason code when it has
     no candidate or its sidecar is not Tesseract-era); otherwise documents
     without a candidate or with another engine are only counted and at most
@@ -1517,7 +1553,8 @@ def promote_candidates(
             if new is None:
                 raise RestoreRefusedError("candidate_malformed")
             ink, layer = candidate_page_ink(raw)
-            entry.update(evaluate_candidate(old, new, vocab, ink=ink, text_layer=layer))
+            entry.update(evaluate_candidate(old, new, vocab, ink=ink, text_layer=layer,
+                                            trusted_codes=d.get("trusted_codes")))  # fmt: skip
             logger.info(
                 "re-OCR candidate check doc=%s decision=%s reasons=%s profile=%s "
                 "baseline_untrusted=%s uncertain_share=%s dry_run=%s",

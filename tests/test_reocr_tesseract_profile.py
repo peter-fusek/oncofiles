@@ -12,6 +12,8 @@ and garbles labels), so when the OLD sidecar says ``ocr_engine: tesseract…``:
   text layer = a blank back side; otherwise ``near_empty_page_with_ink`` (or
   ``near_empty_unknown_ink``) means ``review``; ``near_empty_with_loss`` is
   only reported;
+* a lost code that has an active machine / verified / corrected stored fact
+  still blocks (``lost_trusted_values``; a failed lookup fails closed);
 * any other engine, and ``REOCR_TESSERACT_PROFILE=false``, keep the standard
   rules;
 * ``curated_promote_candidates`` re-evaluates kept candidates under the
@@ -103,13 +105,17 @@ TOKENS = ["14.06.2027", "14.6.2027", "2027-06-14", "637", "6,37", "6.37", "133",
           "4413", "44,13", "44.13"]  # fmt: skip
 
 
-def _setup(pages, *, engine: str | None = TESSERACT, old_body: str = OLD_BODY, ink=None):
+def _setup(
+    pages, *, engine: str | None = TESSERACT, old_body: str = OLD_BODY, ink=None, trusted=()
+):
+    """``trusted``: codes of the document's trusted stored facts (None = unknown)."""
     drive = FakeDrive()
     src = drive.add(NAME, drive.folder[LABS], SOURCE)
     old = _front(engine) + old_body
     side = drive.add(NAME + ".md", drive.folder[LABS], old.encode())
     doc = {"document_id": 7, "filename": NAME, "gdrive_id": src, "sidecar_id": side,
-           "engine": engine or "", "reasons": ["cowork_ocr"], "explicit": True}  # fmt: skip
+           "engine": engine or "", "reasons": ["cowork_ocr"], "explicit": True,
+           "trusted_codes": None if trusted is None else list(trusted)}  # fmt: skip
 
     def reader(*a, **k):
         return reocr.Reread(list(pages), "vision2", "qwen-local", page_ink=list(ink or []),
@@ -454,7 +460,8 @@ def _reviewed_before_the_profile(
     [d] = rep.documents
     assert d.result == "review" and d.candidate
     drive.writes.clear()
-    return drive, src, side, old, {k: doc[k] for k in ("document_id", "filename", "sidecar_id")}, d
+    keep = ("document_id", "filename", "sidecar_id", "trusted_codes")
+    return drive, src, side, old, {k: doc[k] for k in keep}, d
 
 
 def _promote(drive, docs, vocab, **kw):
@@ -518,7 +525,7 @@ async def test_a_non_tesseract_sidecar_is_refused(vocab):
 
 async def test_documents_without_a_candidate(vocab):
     drive, src, side, old, doc, reader = _setup([NEW_PAGE])
-    doc = {k: doc[k] for k in ("document_id", "filename", "sidecar_id")}
+    doc = {k: doc[k] for k in ("document_id", "filename", "sidecar_id", "trusted_codes")}
     out = _promote(drive, [doc], vocab, dry_run=False, explicit=True)
     assert out["documents"] == [
         {"document_id": 7, "candidates": 0, "result": "refused", "error": "no_candidate"}
@@ -769,3 +776,141 @@ async def test_a_profile_report_and_log_carry_no_values(db, vocab, caplog, dry_r
     assert "baseline_untrusted=lost_values,missing_numbers,low_word_overlap" in logged
     cleaned = re.sub(_PROFILE_LOG, " ", _LOG_COUNTS.sub(" ", logged))
     assert _leaks(cleaned, sensitive) == []
+
+
+# --- 8. a lost code with a trusted stored fact still blocks (infra condition) ---------------
+
+
+def test_trusted_loss_rules():
+    f = reocr.trusted_loss
+    profile = reocr.TESSERACT_PROFILE
+    assert f(profile, {"HGB": 1}, ["HGB", "PLT"]) == ({"HGB": 1}, "lost_trusted_values")
+    several = dict.fromkeys(["PLT", "unknown"], 4)  # a code that is not a code never matches
+    assert f(profile, several, {"PLT"}) == ({"PLT": 4}, "lost_trusted_values")
+    assert f(profile, {"HGB": 1}, ["PLT"]) == ({}, None)  # another code is trusted
+    assert f(profile, {"HGB": 1}, []) == ({}, None)  # no trusted stored fact
+    assert f(profile, {"HGB": 1}, None) == ({}, "lost_trusted_values_unknown")  # fails closed
+    assert f(profile, {}, None) == ({}, None)  # nothing lost: nothing to protect
+    assert f(None, {"HGB": 1}, ["HGB"]) == ({}, None)  # the standard rules have lost_values
+
+
+async def test_a_lost_trusted_code_still_reviews_and_keeps_a_candidate(vocab):
+    _, d, drive, side, old = _go(vocab, [NEW_PAGE], trusted=["HGB"])
+    assert d.result == "review" and d.review_reasons == ["lost_trusted_values"]
+    assert d.lost_trusted_codes == {"HGB": 1} and d.baseline_untrusted == UNTRUSTED
+    assert drive.items[side]["content"] == old.encode() and d.backup is None
+    [name] = _candidates(drive)
+    head, _ = parse_sidecar(drive.items[d.candidate]["content"].decode())
+    assert "lost_trusted_values" in str(head["review_reasons"])
+    # a trusted fact of a code that is not lost does not block
+    _, other, *_ = _go(vocab, [NEW_PAGE], trusted=["PLT"])
+    assert other.result == "rewritten" and other.lost_trusted_codes == {}
+    # unknown stored facts fail closed
+    _, unknown, drive_u, side_u, old_u = _go(vocab, [NEW_PAGE], trusted=None)
+    assert unknown.result == "review"
+    assert unknown.review_reasons == ["lost_trusted_values_unknown"]
+    assert drive_u.items[side_u]["content"] == old_u.encode()
+
+
+async def test_the_standard_rules_ignore_trusted_codes(vocab):
+    for trusted in (["HGB"], [], None):
+        _, d, *_ = _go(vocab, [NEW_PAGE], engine="pdftotext", trusted=trusted)
+        assert d.review_reasons == UNTRUSTED and d.lost_trusted_codes == {}
+
+
+async def _fact(db, doc_id: int, code: str, verification: str, *, deleted: bool = False):
+    await db.db.execute(
+        "INSERT INTO clinical_records (patient_id, record_type, source_document_id, param, "
+        "code, verification, source, deleted_at) VALUES (?, 'lab', ?, ?, ?, ?, 't', ?)",
+        (ERIKA_UUID, doc_id, code, code, verification, "2027-05-01" if deleted else None),
+    )
+    await db.db.commit()
+
+
+async def test_trusted_fact_codes_is_scoped_and_skips_unverified_and_deleted(db):
+    from tests.helpers import TEST_PATIENT_UUID
+
+    await _seed_doc(db, 801, ERIKA_UUID, "s801", filename=NAME)
+    await _fact(db, 801, "HGB", "machine")
+    await _fact(db, 801, "PLT", "verified")
+    await _fact(db, 801, "CEA", "corrected")
+    await _fact(db, 801, "WBC", "unverified")
+    await _fact(db, 801, "CRP", "machine", deleted=True)
+    got = await db.trusted_fact_codes(patient_id=ERIKA_UUID, document_ids=[801, 802])
+    assert got == {801: {"HGB", "PLT", "CEA"}, 802: set()}
+    other = await db.trusted_fact_codes(patient_id=TEST_PATIENT_UUID, document_ids=[801])
+    assert other == {801: set()}
+
+
+@pytest.mark.usefixtures("admin_scope")
+@pytest.mark.parametrize(
+    "verification,blocked",
+    [("machine", True), ("verified", True), ("corrected", True), ("unverified", False),
+     (None, False)],
+)  # fmt: skip
+async def test_reocr_job_and_promotion_respect_stored_trusted_facts(
+    db, vocab, verification, blocked
+):
+    # the re-OCR job
+    drive, src, side, old, doc, reader = _setup([NEW_PAGE])
+    await _seed_doc(db, 801, ERIKA_UUID, side, filename=NAME)
+    if verification:
+        await _fact(db, 801, "HGB", verification)
+    doc = {k: v for k, v in doc.items() if k != "trusted_codes"} | {"document_id": 801}
+    tool._reocr_jobs[ERIKA_UUID] = job = {"kind": "reocr", "state": "running",
+                                          "dry_run": False, "documents": [doc]}  # fmt: skip
+    with _wired(drive, lambda *a, **k: reader()) as (index, _):
+        await tool._reocr_job(db, ERIKA_UUID, [doc], dry_run=False, passes=2)
+    [d] = job["report"]["documents"]
+    if blocked:
+        assert d["result"] == "review" and d["review_reasons"] == ["lost_trusted_values"]
+        assert d["lost_trusted_codes"] == {"HGB": 1} and d["candidate"]
+        assert drive.items[side]["content"] == old.encode() and index.await_count == 0
+    else:
+        assert d["result"] == "rewritten" and d["lost_trusted_codes"] == {}
+
+    # the promotion tool, on a candidate kept before the profile
+    tool._reocr_jobs.clear()
+    drive, src, side, old, _, _ = _reviewed_before_the_profile(vocab)
+    await db.db.execute(
+        "UPDATE documents SET structured_metadata = ? WHERE id = 801",
+        (json.dumps({"curated": {"sidecar_id": side}}),),
+    )
+    await db.db.commit()
+    with _wired(drive) as (index, _):
+        out = await _call(db, document_ids=[801], dry_run=False)
+    [e] = out["documents"]
+    if blocked:
+        assert e["result"] == "review" and e["review_reasons"] == ["lost_trusted_values"]
+        assert e["lost_trusted_codes"] == {"HGB": 1}
+        assert drive.writes == [] and index.await_count == 0
+        assert drive.items[side]["content"] == old.encode()
+    else:
+        assert e["result"] == "promoted" and e["lost_trusted_codes"] == {}
+    blob = json.dumps([d, out])
+    assert not [t for t in TOKENS if t in blob]
+
+
+@pytest.mark.usefixtures("admin_scope")
+async def test_a_failed_fact_lookup_fails_closed_in_the_job_and_the_tool(db, vocab, monkeypatch):
+    async def boom(**kw):
+        raise RuntimeError("synthetic lookup failure")
+
+    monkeypatch.setattr(db, "trusted_fact_codes", boom)
+    drive, src, side, old, doc, reader = _setup([NEW_PAGE])
+    await _seed_doc(db, 801, ERIKA_UUID, side, filename=NAME)
+    doc = {k: v for k, v in doc.items() if k != "trusted_codes"} | {"document_id": 801}
+    tool._reocr_jobs[ERIKA_UUID] = job = {"kind": "reocr", "state": "running",
+                                          "dry_run": False, "documents": [doc]}  # fmt: skip
+    with _wired(drive, lambda *a, **k: reader()) as (index, _):
+        await tool._reocr_job(db, ERIKA_UUID, [doc], dry_run=False, passes=2)
+        [d] = job["report"]["documents"]
+        assert d["result"] == "review"
+        assert d["review_reasons"] == ["lost_trusted_values_unknown"]
+        assert drive.items[side]["content"] == old.encode()
+        tool._reocr_jobs.clear()
+        drive.writes.clear()
+        out = await _call(db, document_ids=[801], dry_run=False)
+    [e] = out["documents"]
+    assert e["result"] == "review" and e["review_reasons"] == ["lost_trusted_values_unknown"]
+    assert drive.writes == [] and index.await_count == 0

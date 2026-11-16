@@ -1347,6 +1347,21 @@ async def _reocr_targets(
     return out
 
 
+async def _with_trusted_codes(db, pid: str, docs: list[dict]) -> list[dict]:
+    """Each document with ``trusted_codes``: the codes of its active stored
+    facts that are machine-verified, verified or corrected (#831). Under the
+    Tesseract profile losing such a code still stops a rewrite. A failed
+    lookup leaves ``None`` (unknown), which fails closed in ``reocr``."""
+    try:
+        found = await db.trusted_fact_codes(
+            patient_id=pid, document_ids=[d["document_id"] for d in docs]
+        )
+    except Exception as exc:
+        logger.warning("trusted fact lookup failed for %s: %s", pid[:8], type(exc).__name__)
+        return [{**d, "trusted_codes": None} for d in docs]
+    return [{**d, "trusted_codes": sorted(found.get(d["document_id"]) or ())} for d in docs]
+
+
 async def _reocr_job(
     db, pid: str, docs: list[dict], *, dry_run: bool, passes: int,
     excluded: list[dict] | None = None,
@@ -1367,6 +1382,7 @@ async def _reocr_job(
                 raise RuntimeError("Drive not connected")
             gdrive, folder_id = clients[0], clients[3]
             vocab = Vocabulary.from_rows(await db.fact_code_vocabulary())
+            docs = await _with_trusted_codes(db, pid, docs)  # under the lock: no index now
             from oncofiles import config
             from oncofiles.curated.drive_ops import DriveOps
             from oncofiles.curated.reocr import reread_isolated
@@ -1582,7 +1598,8 @@ async def curated_reocr(
     When the OLD sidecar was written by Tesseract (``ocr_engine: tesseract…``)
     the entry has ``profile: tesseract_baseline``: numbers, lab values and words
     only the old text had are listed as ``baseline_untrusted`` and do not stop
-    the rewrite; lost dates, a shrunk text, a near-empty page that has ink on
+    the rewrite; a lost lab value that has a machine-verified, verified or
+    corrected stored fact, lost dates, a shrunk text, a near-empty page that has ink on
     the scan (a blank back side is fine) or too many uncertain numbers still
     do. curated_promote_candidates applies the same rules to candidates kept
     earlier.
@@ -4065,6 +4082,7 @@ async def promote_candidates_for(
                 return out
             gdrive, folder_id = clients[0], clients[3]
             vocab = Vocabulary.from_rows(await db.fact_code_vocabulary())
+            docs = await _with_trusted_codes(db, pid, docs)  # under the lock: no index now
 
             def _blocking():
                 own = gdrive.dedicated_copy()
@@ -4119,7 +4137,8 @@ async def curated_promote_candidates(
     current sidecar under the ``tesseract_baseline`` rules, without reading
     the scan or calling the model: numbers, lab values and words only the old
     Tesseract text had are listed as ``baseline_untrusted`` and do not block;
-    a lost date, a shrunk text, a near-empty page that has ink on the scan or
+    a lost lab value that has a machine-verified, verified or corrected stored
+    fact, a lost date, a shrunk text, a near-empty page that has ink on the scan or
     too many uncertain numbers keep the candidate a candidate (``result:
     review`` with ``review_reasons``). A candidate written before the page ink
     was recorded in its header cannot show that a near-empty page is a blank
