@@ -7,7 +7,11 @@ Three public things live here, all static (no DB, no model, no Drive):
   orthopaedic documents of the Oncofiles author, read through the MCP connector;
 * the use-case page in Slovak (``/pouzitie/pohybovy-atlas``) and English
   (``/use-cases/movement-atlas``), path-based like ``/onkologia`` + ``/oncology``;
-* the two small videos and posters the landing section ``#atlas`` plays.
+* the two small videos and posters the landing section ``#atlas`` plays
+  (script-driven there: starts when visible, from ``VIDEO_START_SECONDS``;
+  the script lives in ``landing.html``). The use-case pages never start the
+  video by themselves; ``_START_SCRIPT`` only moves the first play to the
+  same start point.
 
 Privacy: this is the author's own health data, published by his decision
 (2026-11-15), and every page says so. It is kept apart from the invented demo
@@ -34,6 +38,11 @@ USE_CASE_PATHS = {"sk": "/pouzitie/pohybovy-atlas", "en": "/use-cases/movement-a
 SITE = "https://oncofiles.com"
 VIDEO_SECONDS = 82
 VIDEO_SIDE_PX = 1080
+# Where the video starts on its first play: the rotating model with muscles,
+# not the 3-second intro card. The `poster-{lang}-start.jpg` files are this
+# frame, so the <video> does not jump when it starts. The intro-card posters
+# (`poster-{lang}.jpg`) stay as og:image / JSON-LD thumbnails.
+VIDEO_START_SECONDS = 12
 PUBLISHED = "2026-11-15"
 
 _DAY = "public, max-age=86400"
@@ -61,6 +70,8 @@ ASSETS: dict[str, tuple[str, str]] = {
     "ATTRIBUTION.md": ("text/markdown; charset=utf-8", _DAY),
     "poster-sk.jpg": ("image/jpeg", _MONTH),
     "poster-en.jpg": ("image/jpeg", _MONTH),
+    "poster-sk-start.jpg": ("image/jpeg", _MONTH),
+    "poster-en-start.jpg": ("image/jpeg", _MONTH),
     "video-sk.mp4": ("video/mp4", _MONTH),
     "video-en.mp4": ("video/mp4", _MONTH),
 }
@@ -436,13 +447,37 @@ def _video_json_ld(lang: str) -> str:
     return json.dumps(data, ensure_ascii=False, indent=2).replace("</", "<\\/")
 
 
+# The first play starts at data-start (the landing does the same, plus
+# visibility-driven playback, in its own script). Nothing starts by itself
+# here: people come to this page to read. Inline like the landing's script;
+# the public-page CSP allows it (#534).
+_START_SCRIPT = """<script>
+(function () {
+  var v = document.querySelector('video[data-start]');
+  if (!v) return;
+  var start = parseFloat(v.getAttribute('data-start')) || 0;
+  var pending = true;
+  function applyStart() {
+    if (!pending || v.readyState < 1) return;
+    pending = false;
+    if (v.currentTime < start && start < v.duration) v.currentTime = start;
+  }
+  v.addEventListener('play', applyStart);
+  v.addEventListener('loadedmetadata', function () { if (!v.paused) applyStart(); });
+  // Scrubbing before the first play: the person chose the position.
+  v.addEventListener('seeking', function () { if (v.paused) pending = false; });
+})();
+</script>"""
+
+
 def use_case_page_html(lang: str) -> str:
     c = _COPY[lang]
     canonical = f"{SITE}{USE_CASE_PATHS[lang]}"
     alt_href = USE_CASE_PATHS[c["alt"]]
     home = "/" if lang == "sk" else "/?lang=en"
     video = f"{ATLAS_PATH}/video-{lang}.mp4"
-    poster = f"{ATLAS_PATH}/poster-{lang}.jpg"
+    poster = f"{ATLAS_PATH}/poster-{lang}.jpg"  # intro card: og:image
+    start_poster = f"{ATLAS_PATH}/poster-{lang}-start.jpg"  # the frame the video starts at
     sections = "\n".join(f"<h2>{h}</h2>\n{body}" for h, body in c["sections"])
     try_note = f"<small>{c['try_note']}</small>" if c["try_note"] else ""
     return f"""<!DOCTYPE html>
@@ -491,8 +526,8 @@ def use_case_page_html(lang: str) -> str:
 <p class="lede">{c["lede"]}</p>
 <div class="real">{c["real"]}</div>
 <figure>
-  <video controls muted playsinline preload="metadata" width="{VIDEO_SIDE_PX}"
-    height="{VIDEO_SIDE_PX}" poster="{poster}" src="{video}"
+  <video controls muted playsinline preload="metadata" data-start="{VIDEO_START_SECONDS}"
+    width="{VIDEO_SIDE_PX}" height="{VIDEO_SIDE_PX}" poster="{start_poster}" src="{video}"
     aria-label="{c["video_label"]}" aria-describedby="video-alt"></video>
   <figcaption id="video-alt">{c["video_alt"]}</figcaption>
 </figure>
@@ -509,5 +544,6 @@ def use_case_page_html(lang: str) -> str:
 <p><a href="{home}">&larr; {c["back"]}</a> &middot;
 <a href="https://github.com/peter-fusek/oncofiles" rel="noreferrer noopener">GitHub</a></p>
 </div></footer>
+{_START_SCRIPT}
 </body>
 </html>"""
