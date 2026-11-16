@@ -1765,9 +1765,17 @@
         en = 'Processing is paused on the server right now. The folder is enrolled and will be processed once the maintainer switches it on.';
       } else {
         sk = 'Spracovanie: kurátorovaná pipeline s lokálnym OCR. Server kontroluje priečinok každé ' + poll + ' min; nové súbory spracuje, keď sú ' + settle +
-          ' min bez zmeny. Prvý beh je náhľad (nič nemení), potom najviac ' + (p.docs_per_run || 5) + ' dokumentov na beh. Nového lekára alebo inštitúciu vytlačenú v dokumente pipeline sama doplní do README; nejasné prípady počkajú v 00-inbox na kontrolu.';
+          ' min bez zmeny. Prvý beh je náhľad (nič nemení), potom najviac ' + (p.docs_per_run || 5) + ' dokumentov na beh. ';
         en = 'Processing: the curated pipeline with local OCR. The server checks the folder every ' + poll + ' min and processes new files once they have been unchanged for ' + settle +
-          ' min. The first run is a preview (changes nothing), then up to ' + (p.docs_per_run || 5) + ' documents per run. A new doctor or institution printed in a document is added to the README automatically; unclear cases wait in 00-inbox for review.';
+          ' min. The first run is a preview (changes nothing), then up to ' + (p.docs_per_run || 5) + ' documents per run. ';
+        // #865: what happens to a new institution/doctor follows CURATED_AUTO_VOCAB.
+        if (p.auto_vocab) {
+          sk += 'Nového lekára alebo inštitúciu vytlačenú v dokumente pipeline sama doplní do README; nejasné prípady počkajú v 00-inbox na kontrolu.';
+          en += 'A new doctor or institution printed in a document is added to the README automatically; unclear cases wait in 00-inbox for review.';
+        } else {
+          sk += 'Dokument s novým lekárom alebo inštitúciou, ktoré ešte nie sú v README, počká v 00-inbox na kontrolu; po doplnení do README ho zatriedi ďalší beh.';
+          en += 'A document with a new doctor or institution that is not in the README yet waits in 00-inbox for review; once it is added to the README, the next run files it.';
+        }
       }
       if (looseFiles > 0) {
         sk += ' Súbory, ktoré už boli v priečinku (' + looseFiles + '), sa zatriedia pri prvých behoch.';

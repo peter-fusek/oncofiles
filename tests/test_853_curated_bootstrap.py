@@ -1184,6 +1184,43 @@ def test_template_supports_the_automatic_vocabulary(ptype):
     assert contract.folders == plan.contract.folders
 
 
+@pytest.mark.parametrize("ptype", ["oncology", "general"])
+def test_template_vocabulary_wording_holds_with_auto_vocab_on_and_off(ptype):
+    """#865: section 3 must not promise automatic additions (CURATED_AUTO_VOCAB may be off)."""
+    from oncofiles.curated import vocabulary
+
+    plan = _plan(ptype)
+    start, end = vocabulary._section3_span(plan.readme)
+    section3 = " ".join(plan.readme[start:end].split())
+    for kind in ("institution", "doctor"):
+        assert (
+            f"A new {kind} printed in a document is either added below automatically or the "
+            "document waits in the inbox for review, depending on the server setting" in section3
+        )
+    assert "is added below automatically;" not in section3
+
+
+@pytest.mark.parametrize(("env", "expected"), [("true", True), ("false", False)])
+def test_pipeline_summary_reports_the_auto_vocab_flag(monkeypatch, env, expected):
+    """#865: the wizard reads the real CURATED_AUTO_VOCAB from the set-folder payload."""
+    monkeypatch.setenv("CURATED_AUTO_VOCAB", env)
+    assert bootstrap.pipeline_summary()["auto_vocab"] is expected
+
+
+def test_wizard_vocabulary_note_follows_the_flag_in_both_languages():
+    js = _js()
+    fn = js[js.index("function wizardPipelineNote") :]
+    fn = fn[: fn.index("\n    }\n")]
+    on, off = fn.split("if (p.auto_vocab) {")[1].split("} else {")
+    off = off.split("}")[0]
+    assert "added to the README automatically" in on and "doplní do README" in on
+    assert "waits in 00-inbox for review" in off and "počká v 00-inbox na kontrolu" in off
+    assert "automatically" not in off and "doplní" not in off
+    # The unconditional part of the note makes no promise about the vocabulary.
+    head = fn.split("if (p.auto_vocab) {")[0]
+    assert "README" not in head
+
+
 def test_onboarding_gate_sensitive_refs_cover_the_bootstrap():
     import importlib
 

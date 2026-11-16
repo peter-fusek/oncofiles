@@ -626,6 +626,7 @@ async def plan_for_patient(db, patient_id: str) -> Plan:
 
 def pipeline_summary() -> dict:
     """Which pipeline processes a bootstrapped folder, and when (for the wizard)."""
+    from oncofiles.curated import vocabulary
     from oncofiles.tools.curated import continuous_settings, nightly_settings
 
     cont, poll_s, settle_s, chunk = continuous_settings()
@@ -639,6 +640,9 @@ def pipeline_summary() -> dict:
         "docs_per_run": chunk,
         "nightly_hour": hour,
         "first_run": "preview",
+        # #865: CURATED_AUTO_VOCAB, so the wizard says truthfully whether a new
+        # institution or doctor is added to the README or the document waits.
+        "auto_vocab": vocabulary.enabled(),
     }
 
 
