@@ -54,10 +54,12 @@ DocumentType folders are flat (no subfolders).
 ## 3. Controlled vocabularies
 
 - empty at setup; the vocabularies grow with the documents.
-- **Institution**: none yet. A new institution printed in a document is added below
-  automatically; an unclear one waits in the inbox for review.
-- **Known doctors**: none yet. A new doctor printed in a document is added below
-  automatically; an unclear one waits in the inbox for review.
+- **Institution**: none yet. A new institution printed in a document is either added below
+  automatically or the document waits in the inbox for review, depending on the server
+  setting; an unclear one always waits for review.
+- **Known doctors**: none yet. A new doctor printed in a document is either added below
+  automatically or the document waits in the inbox for review, depending on the server
+  setting; an unclear one always waits for review.
 - **HospitalName / Subject**: free; a new value is accepted and reported.
 
 ## 4. Rules
