@@ -106,9 +106,6 @@ async def test_demo_route_serves_the_standalone_demo():
     assert "/dashboard.js" not in html
     assert "{{VERSION}}" not in html
     assert not re.search(r"\son[a-z]+\s*=", html), "no inline event handlers"
-    # dashboard.js still honours the flag if anyone serves it with data-demo.
-    js = (SRC / "dashboard.js").read_text(encoding="utf-8")
-    assert "getAttribute('data-demo') === '1'" in js
 
 
 async def test_demo_data_is_synthetic():
@@ -127,51 +124,9 @@ def test_dashboard_demo_copy_is_honest():
     assert "158" not in html
 
 
-# ── Demo mode never reaches an authenticated endpoint ─────────────────
+# ── Dashboard sources ──────────────────────────────────────────────────
 
 DASHBOARD_JS = (SRC / "dashboard.js").read_text(encoding="utf-8")
-
-
-def test_demo_mode_fetch_chokepoint():
-    """In demo mode dashboard.js replaces window.fetch with a wrapper that
-    refuses every same-origin request except /api/demo-data. It must be
-    installed before any code that can call fetch (init, timers, listeners)."""
-    assert "var DEMO_ALLOWED_PATHS = ['/api/demo-data'];" in DASHBOARD_JS
-    chokepoint = DASHBOARD_JS.index("window.fetch = function (input, init)")
-    first_call = min(
-        DASHBOARD_JS.index(m)
-        for m in ("fetch('/", "apiFetch('/", "coFetch('/")
-        if m in DASHBOARD_JS
-    )
-    assert chokepoint < first_call
-    assert chokepoint < DASHBOARD_JS.index("(function init()")
-
-
-def test_only_demo_data_is_reachable_in_demo_mode():
-    """Inventory of literal endpoints fetched by dashboard.js: the allowlist
-    of the demo chokepoint may contain exactly /api/demo-data."""
-    endpoints = set(re.findall(r"(?:fetch|apiFetch|coFetch)\(\s*'(/[a-z\-/]+)", DASHBOARD_JS))
-    assert "/api/demo-data" in endpoints
-    start = DASHBOARD_JS.index("DEMO_ALLOWED_PATHS = [")
-    allowed = DASHBOARD_JS[start : DASHBOARD_JS.index("];", start)]
-    assert {e for e in endpoints if f"'{e}'" in allowed} == {"/api/demo-data"}
-    assert len(endpoints) > 10, "inventory regex stopped matching fetch calls"
-
-
-@pytest.mark.parametrize(
-    "guard",
-    [
-        "if (window.DEMO_MODE) return loadDemoData();",
-        "async function loadPatients() {\n      if (window.DEMO_MODE) return;",
-        "if (!section || window.DEMO_MODE) return;",
-        "var detailPromise = window.DEMO_MODE",
-    ],
-)
-def test_demo_guards_on_entry_points(guard):
-    # Belt and braces next to the chokepoint: what a demo visitor can trigger
-    # (filter pills and Refresh -> refresh(), patient load, curated poll, doc
-    # detail) short-circuits to demo data instead of producing requests.
-    assert guard in DASHBOARD_JS
 
 
 async def test_demo_data_needs_no_auth_but_api_documents_does():
@@ -217,30 +172,6 @@ async def test_demo_payload_has_no_cloud_pipeline_telemetry():
     assert "estimated_cost_usd" not in body
 
 
-def test_demo_hides_operator_panels_and_shows_processing_note():
-    for panel in (
-        "sync-history-section",
-        "prompt-log-section",
-        "analytics-section",
-        "schedules-section",
-        "manifest-section",
-    ):
-        assert f'id="{panel}"' in DASHBOARD_HTML, panel
-        assert f"'{panel}'" in DASHBOARD_JS, f"{panel} not in the demo hide list"
-    assert 'id="demo-processing-note"' in DASHBOARD_HTML
-    assert "lokálny model" in DASHBOARD_HTML
-    assert "renderPromptLog(data.prompt_log)" not in DASHBOARD_JS
-
-
-def test_demo_doc_detail_has_id_and_date():
-    # The detail renderer reads data.id and data.document_date; the demo
-    # objects used to carry neither ("ID #undefined", "Dátum -").
-    assert "detail.id = doc.id;" in DASHBOARD_JS
-    assert "detail.document_date = detail.date || doc.date;" in DASHBOARD_JS
-    assert "id: doc.id, document_date: doc.date," in DASHBOARD_JS
-    assert "All data stays in your Google Drive" not in DASHBOARD_JS
-
-
 class _TextWithoutI18n(HTMLParser):
     """Collect visible text nodes whose nearest element chain has no data-sk."""
 
@@ -256,8 +187,7 @@ class _TextWithoutI18n(HTMLParser):
             return
         a = dict(attrs)
         covered = "data-sk" in a or (self.stack and self.stack[-1][1])
-        skip = "demo-chat-tool" in (a.get("class") or "")  # tool calls are code
-        self.stack.append((tag, bool(covered or skip)))
+        self.stack.append((tag, bool(covered)))
 
     def handle_endtag(self, tag):
         if tag in self.VOID:
@@ -269,23 +199,6 @@ class _TextWithoutI18n(HTMLParser):
     def handle_data(self, data):
         if data.strip() and not (self.stack and self.stack[-1][1]):
             self.offenders.append(data.strip()[:60])
-
-
-@pytest.mark.parametrize(
-    "block_id,terminator",
-    [
-        ("demo-processing-note", "<!--"),
-        ("demo-conversations", "<!--"),
-        ("demo-banner", "</div>"),
-    ],
-)
-def test_demo_blocks_are_bilingual(block_id, terminator):
-    start = DASHBOARD_HTML.index(f'id="{block_id}"')
-    start = DASHBOARD_HTML.rindex("<", 0, start)
-    end = DASHBOARD_HTML.index(terminator, start)
-    parser = _TextWithoutI18n()
-    parser.feed(DASHBOARD_HTML[start:end])
-    assert not parser.offenders, parser.offenders
 
 
 def test_dynamic_dashboard_labels_are_bilingual():
