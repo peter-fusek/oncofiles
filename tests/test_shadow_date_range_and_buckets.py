@@ -96,7 +96,7 @@ def test_the_context_header_as_the_model_returns_it_is_a_verified_range():
     meta = f["metadata"]
     assert meta["date_source"] == "printed_range" and meta["date_precision"] == "range"
     assert (meta["date_range_start"], meta["date_range_end"]) == (START, END)
-    assert meta["verifier"] == verifier.VERIFIER_VERSION == len("v2")
+    assert meta["verifier"] == verifier.VERIFIER_VERSION == len("v-3")
 
 
 # ── what the parser tolerates: the shape of the answer only ─────────────
