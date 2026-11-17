@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import dataclasses
 import functools
 import hashlib
 import json
@@ -82,7 +83,10 @@ def cached_extract(name, content, mime_type="", *, min_text_chars=100, on_model_
     ext = name.rsplit(".", 1)[-1]
     key = f"{hashlib.sha256(content).hexdigest()}:{mime_type}:{min_text_chars}:{ext}"
     if content and key in _extract_cache:
-        return _extract_cache[key]
+        hit = _extract_cache[key]
+        if getattr(hit, "orientation", None):  # #882: a cache hit asked the model nothing
+            hit = dataclasses.replace(hit, orientation={**hit.orientation, "model_calls": 0})
+        return hit
     ex = extract_mod.extract(name, content, mime_type, min_text_chars=min_text_chars)
     if on_model_pages is not None and ex.method == "vision" and ex.pages:
         on_model_pages(ex.pages)
@@ -116,7 +120,7 @@ def request_stop() -> None:
 
 # background jobs that write nothing: a deploy may cut them
 _NO_WRITE_KINDS = frozenset(
-    {"llm_shadow", "clinical_preview", "extraction_scorecard", "lab_preview"}
+    {"llm_shadow", "clinical_preview", "extraction_scorecard", "lab_preview", "reocr_compare"}
 )
 
 
@@ -149,7 +153,8 @@ def run_block_reason(pid: str) -> str | None:
     if (_runs.get(pid) or {}).get("state") == "running":
         return "run_in_progress"
     job = _reocr_jobs.get(pid) or {}
-    if job.get("state") == "running" and job.get("kind") != "llm_shadow":
+    # neither does a re-OCR compare (#883): it writes nothing, never takes the lock
+    if job.get("state") == "running" and job.get("kind") not in ("llm_shadow", "reocr_compare"):
         return f"{job.get('kind') or 'reocr'}_in_progress"
     if patient_lock(pid).locked():
         return "patient_lock_held"
@@ -1020,17 +1025,53 @@ def scheduling_detail() -> dict:
     }
 
 
+# #880: startup index telemetry for operator /readiness (counts only).
+_startup_index_stats: dict = {}
+
+
+def startup_index_stats() -> dict:
+    """Counts of the startup index (#880): who was due and how many were done."""
+    return dict(_startup_index_stats)
+
+
+async def _startup_index_targets(db) -> set[str]:
+    """Patients to index once per start: every enrolled patient, plus every
+    patient whose curated mirror rows were indexed by an older INDEX_VERSION,
+    enrolled or not (#880). The read model must not depend on enrolment."""
+    from oncofiles.curated.indexer import INDEX_VERSION
+
+    enrolled = set(await db.list_curated_nightly_patients())
+    stale = set(await db.list_stale_curated_index_patients(INDEX_VERSION))
+    _startup_index_stats.clear()
+    _startup_index_stats.update(
+        {
+            "index_version": INDEX_VERSION,
+            "enrolled": len(enrolled),
+            "stale_index": len(stale),
+            "stale_not_enrolled": len(stale - enrolled),
+            "due": len(enrolled | stale),
+            "indexed": 0,
+            "failed": 0,
+            "pending": len(enrolled | stale),
+        }
+    )
+    return enrolled | stale
+
+
 async def _startup_index(db, pending: set[str]) -> None:
     """Read model once per start (#603), after the grace. A patient whose lock
     is held (a job started meanwhile) is retried next iteration instead of
     stalling the loop behind it."""
     for pid in sorted(pending):
         if _stopping.is_set():
-            return
+            break
         if patient_lock(pid).locked():
             continue
-        await _index_quietly(db, pid)
+        ok = await _index_quietly(db, pid)
         pending.discard(pid)
+        key = "indexed" if ok else "failed"
+        _startup_index_stats[key] = _startup_index_stats.get(key, 0) + 1
+    _startup_index_stats["pending"] = len(pending)
 
 
 async def curated_nightly_loop(
@@ -1075,7 +1116,7 @@ async def curated_nightly_loop(
             in_grace = time.monotonic() < grace_until
             if not in_grace:
                 if to_index is None:
-                    to_index = set(await db.list_curated_nightly_patients())
+                    to_index = await _startup_index_targets(db)
                 if to_index:
                     await _startup_index(db, to_index)
             now = datetime.now(tz)
@@ -1563,11 +1604,14 @@ async def _apply_rereads(db, pid: str) -> int:
     return applied
 
 
-async def _index_quietly(db, pid: str) -> None:
+async def _index_quietly(db, pid: str) -> bool:
+    """Index a patient; False (logged) when it raised. Never propagates."""
     try:
         await index_patient(db, pid)
     except Exception:
         logger.exception("curated index failed for %s", pid)
+        return False
+    return True
 
 
 _reocr_jobs: dict[str, dict] = {}
@@ -2155,6 +2199,181 @@ async def curated_reread_verify(
     return json.dumps(out, ensure_ascii=False)
 
 
+# ── dry re-OCR compare (#883) ───────────────────────────────────────────
+
+COMPARE_KIND = "reocr_compare"
+
+
+async def _compare_targets(db, pid: str, ids: list[int]) -> tuple[list[dict], list[dict]]:
+    """The listed curated documents of this patient that have a
+    vision-readable source and a sidecar, and a skipped entry for each other
+    id (ids and reason codes only). No target filter otherwise: unlike
+    ``_reocr_targets`` a document need not be Cowork-era nor hold ``[?]``.
+    An id of another patient is ``not_found``, like an id that does not exist."""
+    from oncofiles.curated import extract as extract_mod
+    from oncofiles.curated import llm_input
+
+    rows = {r["id"]: r for r in await db.curated_reocr_candidates(patient_id=pid)}
+    docs, skipped = [], []
+    for i in ids:
+        r = rows.get(i)
+        if r is None:
+            skipped.append({"document_id": i, "result": "skipped", "error": "not_found"})
+            continue
+        cur = (r.get("structured_metadata") or {}).get("curated") or {}
+        if reason := await llm_input.reocr_exclusion(db, pid, r):  # #815: never read
+            skipped.append(llm_input.skipped_entry(r, reason))
+        elif (r.get("mime_type") or "").startswith(_NOT_OCR) or (
+            extract_mod._ext(r.get("filename") or "") in extract_mod.TEXT_EXTS
+        ):
+            skipped.append(llm_input.skipped_entry(r, "not_a_scan"))
+        elif not cur.get("sidecar_id") or not r.get("gdrive_id"):
+            skipped.append(llm_input.skipped_entry(r, "no_sidecar"))
+        else:
+            docs.append(r)
+    return docs, skipped
+
+
+async def _reocr_compare_job(
+    db, pid: str, docs: list[dict], counts: dict[int, dict[str, int]], skipped: list[dict]
+) -> None:
+    """Background part of ``curated_reocr_compare``. Writes NOTHING: no Drive
+    (two downloads per document), no DB row (not even a run row), no index.
+    One document and one vision call at a time: one LM Studio slot."""
+    from oncofiles import config
+    from oncofiles.cloud_guard import local_only
+    from oncofiles.curated import reocr_compare
+    from oncofiles.curated.drive_ops import DriveOps
+    from oncofiles.curated.facts_rules import Vocabulary
+    from oncofiles.memory import get_rss_mb
+    from oncofiles.server import _create_patient_clients
+
+    job = _reocr_jobs[pid]
+    report: list[dict] = []
+    warnings: list[dict] = []
+    try:
+        clients = await _create_patient_clients(db, pid)
+        if not clients or clients[0] is None:
+            raise RuntimeError("Drive not connected")
+        gdrive = clients[0]
+        vocab = Vocabulary.from_rows(await db.fact_code_vocabulary())
+        for d in docs:
+            stored = counts.get(d["id"]) or {}
+            base = {"document_id": d["id"], "category": d.get("category"),
+                    "machine_facts": stored.get("machine", 0),
+                    "unverified_facts": stored.get("unverified", 0)}  # fmt: skip
+            if _stopping.is_set():
+                report.append({**base, "result": "skipped", "error": "stopping"})
+                continue
+            if (rss := get_rss_mb()) > config.REOCR_RSS_LIMIT_MB:
+                report.append({**base, "result": "skipped", "error": f"rss {rss:.0f} MB"})
+                continue
+
+            def _blocking(d=d):
+                own = gdrive.dedicated_copy()
+                try:
+                    with local_only("curated re-OCR compare"):
+                        return reocr_compare.compare_one(DriveOps(own), d, vocab, parallel=1)
+                finally:
+                    own.close()
+
+            t0 = time.monotonic()
+            try:
+                res = await asyncio.to_thread(_blocking)
+            except Exception as exc:
+                logger.exception("re-OCR compare of doc %s failed", d["id"])
+                res = {"document_id": d["id"], "result": "failed", "error": type(exc).__name__}
+            warnings += res.pop("warnings", None) or []
+            report.append({**base, **res, "job_seconds": round(time.monotonic() - t0, 1)})
+        done = [r for r in report if r.get("result") == "compared"]
+        totals = {k: sum(r["totals"][k] for r in done) for k in reocr_compare.PAGE_KEYS}
+        for k in ("agree", "value_differs", "missing_in_new", "missing_in_today"):
+            totals[f"facts_{k}"] = sum(r["facts"][k] for r in done)
+        job.update(state="done", report={
+            "dry_run": True, "compared": len(done), "totals": totals, "warnings": warnings,
+            "documents": [*report, *skipped],
+        })  # fmt: skip
+    except Exception as exc:
+        logger.exception("re-OCR compare failed for %s", pid)
+        job.update(state="failed", error=type(exc).__name__,
+                   report={"dry_run": True, "documents": [*report, *skipped]})  # fmt: skip
+    finally:
+        job["finished_at"] = datetime.now(UTC).isoformat()
+
+
+async def start_reocr_compare(db, pid: str, document_ids: list[int], *, actor: str = "mcp") -> dict:
+    """Start a dry re-OCR compare (#883) in the background; ``pid`` is resolved.
+    Explicit ids only, at most ``COMPARE_MAX_DOCS``; more is refused, not cut."""
+    from oncofiles.curated import llm
+    from oncofiles.curated.reocr_compare import COMPARE_MAX_DOCS
+
+    ids = list(dict.fromkeys(int(i) for i in (document_ids or [])))
+    if not ids:
+        return {"error": "document_ids is required"}
+    if len(ids) > COMPARE_MAX_DOCS:
+        return {"error": f"too many documents: at most {COMPARE_MAX_DOCS} per job"}
+    if not llm.configured():
+        return {"error": "local model not configured (LOCAL_LLM_BASE_URL/MODEL)"}
+    busy = "busy: a run, re-OCR, re-read or other job is in progress for this patient"
+    if _busy(pid) or run_block_reason(pid):
+        return {"error": busy}
+    docs, skipped = await _compare_targets(db, pid, ids)
+    if not docs:
+        return {"status": "nothing to do", **({"skipped": skipped} if skipped else {})}
+    counts = await db.active_fact_counts(patient_id=pid, document_ids=[d["id"] for d in docs])
+    # most machine facts first: the order of the audit (#883)
+    docs.sort(key=lambda d: (-(counts.get(d["id"]) or {}).get("machine", 0), d["id"]))
+    job = {
+        "state": "running", "kind": COMPARE_KIND, "dry_run": True, "passes": 2,
+        "started_at": datetime.now(UTC).isoformat(), "actor": actor, "skipped": skipped,
+        "documents": [{"document_id": d["id"], "category": d.get("category"),
+                       "machine_facts": (counts.get(d["id"]) or {}).get("machine", 0)}
+                      for d in docs],
+    }  # fmt: skip
+    return await _launch(
+        db, pid, job, lambda: _reocr_compare_job(db, pid, docs, counts, skipped),
+        dry_run=True, busy=busy,
+    )  # fmt: skip
+
+
+async def curated_reocr_compare(
+    ctx: Context,
+    document_ids: list[int],
+    patient_slug: str | None = None,
+) -> str:
+    """Dry audit of re-OCR'd sidecars (#883): read again, compare, write nothing.
+
+    For each listed curated document (any with a vision-readable source and a
+    sidecar; it need not be Cowork-era nor hold [?]) the LOCAL model reads the
+    original source again exactly like a re-OCR (pass 1 on the whole page,
+    pass 2 as two independent halves, reconciled), and the result is compared
+    with TODAY's sidecar page by page: numbers of today's sidecar confirmed
+    by the new reading / not found / found only on a [?] line, numbers only in
+    the new reading, dates the same, and lab facts per code and day (agree,
+    value differs, missing on either side; codes and counts, never values).
+    Each document also carries its per-pass usage records and its active
+    machine/unverified fact counts; documents run in that order (most machine
+    facts first). Writes nothing: no Drive, no DB, no backup, no candidate,
+    no index. Explicit ``document_ids`` only (max 10, more is refused).
+    Refused while another run or job is active for the patient. Runs in the
+    background (one LM Studio slot); poll curated_reocr_status. Slow:
+    minutes per page.
+    Admin-only (it spends the shared local model on an audit), and
+    ``patient_slug`` is required: there is no implicit patient.
+    """
+    from oncofiles.tools._helpers import _require_admin_or_raise
+
+    try:
+        _require_admin_or_raise("curated_reocr_compare")
+    except ValueError as exc:
+        return json.dumps({"error": str(exc)})
+    if not (patient_slug or "").strip():
+        return json.dumps({"error": "patient_slug is required"})
+    pid = await _resolve_patient_id(patient_slug, ctx)
+    out = await start_reocr_compare(_get_db(ctx), pid, document_ids)
+    return json.dumps(out, ensure_ascii=False)
+
+
 async def reocr_status(db, pid: str) -> dict:
     """State and report of the last re-OCR / re-read job (#660, #667)."""
     job = _reocr_jobs.get(pid)
@@ -2477,6 +2696,19 @@ def _lab_shadow_entry(w: _DocWork, stored) -> dict:
     }  # fmt: skip
 
 
+def _add_label_review(entry: dict, w: _DocWork) -> None:
+    """Attach the label review list (#814) to a compared lab entry, in place.
+    Only the in-memory reports of the shadow preview and the scorecard call
+    this; the lab write job, whose report is persisted, never does."""
+    from oncofiles.curated import llm_extract
+
+    if entry.get("result") != "compared" or w.out is None:
+        return
+    labels, omitted = llm_extract.unmapped_labels(w.out["facts"])
+    entry["unmapped_labels"] = labels
+    entry["unmapped_labels_omitted"] = omitted
+
+
 async def _llm_shadow_job(
     db,
     pid: str,
@@ -2512,6 +2744,8 @@ async def _llm_shadow_job(
                  for d in docs]  # fmt: skip
         await _extract_documents(works, parallel=parallel)
         report = [_lab_shadow_entry(w, stored) for w in works]
+        for w, entry in zip(works, report, strict=True):
+            _add_label_review(entry, w)
         done = [r for r in report if r.get("result") == "compared"]
         totals = {k: sum(r[k] for r in done) for k in
                   ("rule_facts", "llm_facts", "llm_machine", "agree", "agree_machine",
@@ -2553,6 +2787,10 @@ async def curated_llm_extract_preview(
     compared with the facts currently stored for that document and reported
     as keys and counts only (agreement on code + date + value hash, codes
     found by only one side, unverified reasons, seconds) — never values.
+    Each document also lists ``unmapped_labels`` (#814): the labels that map
+    to no ``fact_codes`` alias (or only fuzzily, with ``near_code``), digits
+    masked as 9, at most 60 characters, with counts — the review list for new
+    aliases; in this report only, never stored or logged.
     Writes nothing: no facts, no Drive. Off-switch: LLM_EXTRACT_SHADOW_DISABLED=true.
     Explicit ``document_ids`` only (max 10). Runs in the background; poll
     curated_reocr_status. Slow: about a minute per page.
@@ -3835,7 +4073,9 @@ async def _scorecard_job(
             if extractor == "clinical":
                 cards.append(scorecard.clinical_card(_clinical_entry(w)[0]))
             else:
-                cards.append(scorecard.lab_card(_lab_shadow_entry(w, stored)))
+                entry = _lab_shadow_entry(w, stored)
+                _add_label_review(entry, w)  # in-memory card only; never persisted
+                cards.append(scorecard.lab_card(entry))
         stopped = any(w.stopped or (w.final or {}).get("error") == "stopping" for w in works)
         stopped = stopped or _stopping.is_set()  # a stop inside a document: pages unread
         totals = scorecard.totals(cards, requested=requested, missing=missing)
@@ -4497,6 +4737,8 @@ def register(mcp):
     mcp.tool()(curated_reocr)
     mcp.tool()(curated_reocr_status)
     mcp.tool()(curated_reread_verify)
+    # writes nothing (#883): read-only for the client; admin-only in the tool
+    mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": False})(curated_reocr_compare)
     mcp.tool()(curated_llm_extract_preview)
     mcp.tool()(curated_clinical_extract_preview)
     mcp.tool()(curated_clinical_extract)

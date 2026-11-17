@@ -162,99 +162,7 @@
 
     // ── Init ─────────────────────────────────────────────────────────────
 
-    // #605: /demo marks <html data-demo="1"> server-side (no inline script —
-    // dashboard.html has none since #525 and CSP would block one anyway).
-    if (document.documentElement.getAttribute('data-demo') === '1') window.DEMO_MODE = true;
-
-    // Demo mode must never reach an authenticated endpoint. Single chokepoint:
-    // every same-origin fetch() except /api/demo-data is refused before it
-    // leaves the browser, so a filter click, the Refresh button, a timer or
-    // any future code path cannot hit /api/*, /status or /dashboard/*.
-    // Cross-origin requests (analytics) are untouched. Locked by
-    // tests/test_landing_content.py::test_demo_mode_fetch_chokepoint.
-    var DEMO_ALLOWED_PATHS = ['/api/demo-data'];
-    if (window.DEMO_MODE) {
-      var _demoRealFetch = window.fetch.bind(window);
-      window.fetch = function (input, init) {
-        var raw = typeof input === 'string' ? input : (input && input.url) || '';
-        var u = null;
-        try { u = new URL(raw, window.location.origin); } catch (e) { u = null; }
-        if (!u || (u.origin === window.location.origin && DEMO_ALLOWED_PATHS.indexOf(u.pathname) === -1)) {
-          console.info('Demo mode: request not sent:', u ? u.pathname : raw);
-          return Promise.reject(new Error('Not available in the demo'));
-        }
-        return _demoRealFetch(input, init);
-      };
-    }
-
     (function init() {
-      // Demo mode: skip auth, load sample data
-      if (window.DEMO_MODE) {
-        document.getElementById('auth-gate').style.display = 'none';
-        document.getElementById('dashboard').style.display = 'block';
-        // Hide patient controls and auth-related UI in demo
-        var patientControls = document.querySelector('.patient-controls');
-        if (patientControls) patientControls.style.display = 'none';
-        var userInfo = document.getElementById('user-info');
-        if (userInfo) setI18n(userInfo, 'Ukážka', 'Demo');
-        // Panels that describe the operator's sync/AI-cost pipeline are not
-        // part of the demo story (#605): hide them, show the honest note.
-        ['sync-history-section', 'prompt-log-section', 'analytics-section', 'schedules-section', 'recon-panel',
-         'manifest-section', 'mcp-setup-section']
-          .forEach(function (id) { var el = document.getElementById(id); if (el) el.style.display = 'none'; });
-        var demoNote = document.getElementById('demo-processing-note');
-        if (demoNote) demoNote.style.display = 'block';
-        var demoBanner = document.getElementById('demo-banner');
-        if (demoBanner) demoBanner.style.display = 'block';
-        // Replace logout with navigation links (#233)
-        var logoutBtn = document.querySelector('.logout-btn');
-        if (logoutBtn) {
-          logoutBtn.textContent = '\u2190 oncofiles.com';
-          logoutBtn.onclick = function(){ window.location.href = '/'; };
-          logoutBtn.removeAttribute('data-sk');
-          logoutBtn.removeAttribute('data-en');
-        }
-        // Disable service badges in demo — explain what each does (#233)
-        var badgeExplanations = {
-          'gdrive': 'Google Drive \u2014 syncs your medical documents. Sign in to connect.',
-          'gmail': 'Gmail \u2014 imports appointment confirmations. Sign in to connect.',
-          'gcal': 'Google Calendar \u2014 tracks appointments. Sign in to connect.'
-        };
-        var badges = document.querySelectorAll('.svc-badge');
-        badges.forEach(function(b) {
-          var svcName = (b.dataset.svc || b.textContent || '').toLowerCase().trim();
-          b.title = badgeExplanations[svcName] || (b.title + ' \u2014 sign in to connect');
-          b.onclick = null;
-          b.style.cursor = 'help';
-          b.style.opacity = '0.5';
-        });
-        // Hide GDrive connect bar in demo
-        var gdriveBar = document.getElementById('gdrive-connect-bar');
-        if (gdriveBar) gdriveBar.style.display = 'none';
-        // Add signup CTA banner at bottom (#268)
-        var ctaBanner = document.createElement('div');
-        ctaBanner.id = 'demo-cta-banner';
-        ctaBanner.style.cssText = 'position:fixed;bottom:0;left:0;right:0;z-index:1000;background:var(--surface);border-top:1px solid var(--border);padding:0.75rem 1.5rem;display:flex;align-items:center;justify-content:center;gap:1rem;box-shadow:0 -2px 12px rgba(0,0,0,0.08)';
-        var ctaText = document.createElement('span');
-        ctaText.style.cssText = 'font-size:0.875rem;color:var(--text-dim)';
-        ctaText.setAttribute('data-sk', 'Toto je ukážka s vymyslenými dátami. Pripájanie vlastného Drive spúšťame v novembri 2026.');
-        ctaText.setAttribute('data-en', 'This is a demo with invented data. Connecting your own Drive opens in November 2026.');
-        ctaText.textContent = 'This is a demo with invented data. Connecting your own Drive opens in November 2026.';
-        var ctaBtn = document.createElement('a');
-        ctaBtn.href = '/#waitlist';
-        ctaBtn.style.cssText = 'padding:0.5rem 1.25rem;background:var(--accent);color:#fff;border-radius:6px;text-decoration:none;font-size:0.8125rem;font-weight:600;white-space:nowrap';
-        ctaBtn.setAttribute('data-sk', 'Pridať sa na zoznam');
-        ctaBtn.setAttribute('data-en', 'Join the waitlist');
-        ctaBtn.textContent = 'Join the waitlist';
-        ctaBanner.appendChild(ctaText);
-        ctaBanner.appendChild(ctaBtn);
-        document.body.appendChild(ctaBanner);
-        // Re-apply language after inserting CTA
-        if (typeof applyDashLang === 'function') applyDashLang();
-        loadDemoData();
-        return;
-      }
-
       // #500: bearer tokens MUST NOT be accepted from URL query params.
       // Even with replaceState() cleanup, the token has already been logged
       // by reverse proxies, browser history, and any analytics middleware.
@@ -276,95 +184,6 @@
         initGoogleSignIn();
       }
     })();
-
-    async function loadDemoData() {
-      setConnectionState('loading');
-      showSkeletons();
-      try {
-        var resp = await fetch('/api/demo-data');
-        if (!resp.ok) throw new Error('HTTP ' + resp.status);
-        var data = await resp.json();
-        renderStatus(data.status);
-        renderDocs(data.documents);
-        // Show conversation previews in demo
-        var demoConv = document.getElementById('demo-conversations');
-        if (demoConv) demoConv.style.display = 'block';
-        setConnectionState('ok');
-        hideSkeletons();
-        document.getElementById('version-label').textContent = 'v' + data.status.version + ' demo';
-        // Auto-expand the Labs doc to showcase rich OCR + metadata (first load only;
-        // filter clicks / Refresh re-run loadDemoData via refresh()).
-        if (window._demoExpanded) return;
-        window._demoExpanded = true;
-        setTimeout(function() {
-          var rows = document.querySelectorAll('#doc-table tbody tr');
-          var target = null;
-          rows.forEach(function(r) {
-            if (r.textContent.indexOf('BloodCount') !== -1 || r.textContent.indexOf('Labs_Blood') !== -1) target = r;
-          });
-          if (!target) {
-            // Fallback: find any Labs row
-            rows.forEach(function(r) { if (!target && r.textContent.indexOf('Labs') !== -1) target = r; });
-          }
-          if (!target && rows.length) target = rows[0];
-          if (target) {
-            target.click();
-            setTimeout(function() { target.scrollIntoView({behavior:'smooth', block:'center'}); }, 100);
-          }
-        }, 1500);
-      } catch (e) {
-        console.error('Demo data load failed:', e);
-        setConnectionState('error');
-        showError('Failed to load demo data');
-      }
-    }
-
-    /** Sample doc detail for demo mode — shows OCR and metadata without API call. */
-    function getDemoDocDetail(doc) {
-      // All demo content is invented (patient, hospital, values, dates 2027+).
-      var demoDetails = {
-        1: {
-          filename: '20270315_Patient_NOU_Labs_BloodCount.pdf',
-          category: 'labs', date: '2027-03-15', institution: 'Example Hospital',
-          gdrive_url: null, preview_url: null,
-          ai_summary: 'Sample blood count before cycle 3 (invented data). WBC 5.6, HGB 118 g/L (slightly low), PLT 231, ANC 3.1. Liver enzymes within range. CEA 4.2, below the upper limit.',
-          ai_tags: ['CBC', 'pre-cycle', 'sample data'],
-          metadata: { diagnosis: 'C18 — colorectal (sample)', treatment: 'cycle 3 (sample)', provider: 'Example Hospital (invented)' },
-          pages: [
-            { page_number: 1, char_count: 1024, text: 'NEMOCNICA PRÍKLADOV (vymyslená)\nOddelenie klinickej biochémie\n\nLABORATÓRNY NÁLEZ — UKÁŽKA\nOdber: 15.03.2027 07:05\nPacient: Ema Vzorová (vymyslená)\n\nKRVNÝ OBRAZ:\nWBC: 5.6 x10^9/L (ref: 4.0-10.0)\nRBC: 4.05 x10^12/L (ref: 3.80-5.20)\nHGB: 118 g/L (ref: 120-160) ↓\nHCT: 0.36 L/L (ref: 0.35-0.47)\nPLT: 231 x10^9/L (ref: 150-400)\nANC: 3.1 x10^9/L\n\nBIOCHÉMIA:\nALT: 0.38 µkat/L (ref: 0.10-0.83)\nAST: 0.41 µkat/L (ref: 0.10-0.72)\nKreatinín: 71 µmol/L (ref: 53-115)\n\nNÁDOROVÉ MARKERY:\nCEA: 4.2 ng/mL (ref: <5.0)\n\nVšetky údaje sú vymyslené pre demo.' }
-          ]
-        },
-        3: {
-          filename: '20270301_Patient_NOU_Pathology_ColonBiopsy.pdf',
-          category: 'pathology', date: '2027-03-01', institution: 'Example Hospital',
-          gdrive_url: null, preview_url: null,
-          ai_summary: 'Sample pathology report (invented data): adenocarcinoma G2, colon. RAS and BRAF wild-type, MSS/pMMR.',
-          ai_tags: ['adenocarcinoma', 'G2', 'RAS WT', 'MSS', 'sample data'],
-          metadata: { diagnosis: 'C18 — adenocarcinoma (sample)', biomarkers: 'RAS WT, BRAF WT, MSS', provider: 'Example Hospital (invented)' },
-          pages: [
-            { page_number: 1, char_count: 812, text: 'NEMOCNICA PRÍKLADOV (vymyslená)\nOddelenie patológie\n\nHISTOPATOLOGICKÝ NÁLEZ — UKÁŽKA\nDátum: 01.03.2027\n\nMateriál: Biopsia hrubého čreva\nDiagnóza: Adenokarcinóm, grade 2 (G2)\n\nMolekulárna genetika:\nKRAS: wild-type\nNRAS: wild-type\nBRAF V600E: wild-type\nMMR/MSI: pMMR / MSS\n\nVšetky údaje sú vymyslené pre demo.' }
-          ]
-        }
-      };
-      var detail = demoDetails[doc.id];
-      if (detail) {
-        // The detail renderer reads `id` and `document_date` (#605: was "#undefined" / "-").
-        detail.id = doc.id;
-        detail.document_date = detail.date || doc.date;
-        return detail;
-      }
-      // Generic fallback for other demo docs
-      return {
-        id: doc.id, document_date: doc.date,
-        filename: doc.filename, category: doc.category || 'other',
-        date: doc.date, institution: doc.institution || 'Example Hospital (invented)',
-        gdrive_url: null, preview_url: null,
-        ai_summary: 'Sample summary of an invented document. Category, date and institution are recognised from the text read by the local model.',
-        ai_tags: [doc.category || 'document', 'auto-processed', 'OCR'],
-        metadata: {},
-        pages: [{ page_number: 1, char_count: 450, text: 'Ukážkový text dokumentu ' + (doc.filename || '') + ' (vymyslený).\n\nOncofiles prečíta text, rozpozná kategóriu, dátum a inštitúciu a vedľa súboru uloží prepis .md. Originál zostáva vo vašom Google Drive; index a prečítaný text sú aj v databáze na našom serveri v EÚ.' }]
-      };
-    }
 
     function initGoogleSignIn() {
       document.getElementById('auth-gate').style.display = 'flex';
@@ -439,10 +258,8 @@
     function showDashboard() {
       document.getElementById('auth-gate').style.display = 'none';
       document.getElementById('dashboard').style.display = 'block';
-      // Show MCP connection bar (not in demo mode)
-      if (!window.DEMO_MODE) {
-        document.getElementById('mcp-connection-bar').style.display = 'flex';
-      }
+      // Show MCP connection bar
+      document.getElementById('mcp-connection-bar').style.display = 'flex';
       // Show user info
       var email = sessionStorage.getItem('oncofiles_email') || '';
       var name = sessionStorage.getItem('oncofiles_name') || '';
@@ -762,7 +579,6 @@
     var isGlobalAdmin = false;
 
     async function loadPatients() {
-      if (window.DEMO_MODE) return;
       try {
         var resp = await fetch('/api/patients', {
           headers: { 'Authorization': authHeader() }
@@ -1053,16 +869,7 @@
       }
     }
 
-    function switchDemoChat(tab, btn) {
-      document.querySelectorAll('.demo-chat-panel').forEach(function(el) { el.style.display = 'none'; });
-      var panel = document.getElementById('demo-chat-' + tab);
-      if (panel) panel.style.display = 'flex';
-      document.querySelectorAll('.demo-chat-tab').forEach(function(b) { b.classList.remove('active'); });
-      if (btn) btn.classList.add('active');
-    }
-
     function toggleIntegrationPanel() {
-      if (window.DEMO_MODE) return;
       var p = document.getElementById('integration-popover');
       if (!p) return;
       p.style.display = p.style.display === 'block' ? 'none' : 'block';
@@ -1156,7 +963,6 @@
     var onboardingStatus = null;
 
     async function loadOnboardingStatus() {
-      if (window.DEMO_MODE) return;
       try {
         var resp = await fetch('/api/onboarding-status', { headers: { 'Authorization': authHeader() } });
         if (resp.ok) onboardingStatus = await resp.json();
@@ -1343,7 +1149,9 @@
       var url = '/oauth/authorize/drive?patient_id=' + encodeURIComponent(wizardPatientId);
       window.open(url, '_blank');
       var statusEl = document.getElementById('wiz-step2-status');
-      statusEl.textContent = 'Complete the authorization in the new tab, then click below.';
+      wizSetBi(statusEl,
+        'Dokončite autorizáciu v novej karte a potom kliknite nižšie.',
+        'Complete the authorization in the new tab, then click below.');
       statusEl.style.display = 'block';
       document.getElementById('wiz-step2-auth-done').style.display = 'flex';
     }
@@ -1765,9 +1573,17 @@
         en = 'Processing is paused on the server right now. The folder is enrolled and will be processed once the maintainer switches it on.';
       } else {
         sk = 'Spracovanie: kurátorovaná pipeline s lokálnym OCR. Server kontroluje priečinok každé ' + poll + ' min; nové súbory spracuje, keď sú ' + settle +
-          ' min bez zmeny. Prvý beh je náhľad (nič nemení), potom najviac ' + (p.docs_per_run || 5) + ' dokumentov na beh. Nového lekára alebo inštitúciu vytlačenú v dokumente pipeline sama doplní do README; nejasné prípady počkajú v 00-inbox na kontrolu.';
+          ' min bez zmeny. Prvý beh je náhľad (nič nemení), potom najviac ' + (p.docs_per_run || 5) + ' dokumentov na beh. ';
         en = 'Processing: the curated pipeline with local OCR. The server checks the folder every ' + poll + ' min and processes new files once they have been unchanged for ' + settle +
-          ' min. The first run is a preview (changes nothing), then up to ' + (p.docs_per_run || 5) + ' documents per run. A new doctor or institution printed in a document is added to the README automatically; unclear cases wait in 00-inbox for review.';
+          ' min. The first run is a preview (changes nothing), then up to ' + (p.docs_per_run || 5) + ' documents per run. ';
+        // #865: what happens to a new institution/doctor follows CURATED_AUTO_VOCAB.
+        if (p.auto_vocab) {
+          sk += 'Nového lekára alebo inštitúciu vytlačenú v dokumente pipeline sama doplní do README; nejasné prípady počkajú v 00-inbox na kontrolu.';
+          en += 'A new doctor or institution printed in a document is added to the README automatically; unclear cases wait in 00-inbox for review.';
+        } else {
+          sk += 'Dokument s novým lekárom alebo inštitúciou, ktoré ešte nie sú v README, počká v 00-inbox na kontrolu; po doplnení do README ho zatriedi ďalší beh.';
+          en += 'A document with a new doctor or institution that is not in the README yet waits in 00-inbox for review; once it is added to the README, the next run files it.';
+        }
       }
       if (looseFiles > 0) {
         sk += ' Súbory, ktoré už boli v priečinku (' + looseFiles + '), sa zatriedia pri prvých behoch.';
@@ -1852,7 +1668,7 @@
 
     async function loadCuratedOps() {
       var section = document.getElementById('curated-ops-section');
-      if (!section || window.DEMO_MODE) return;
+      if (!section) return;
       var res = await coFetch('/api/admin/curated/overview');
       if (!res.ok || !res.data) { section.style.display = 'none'; return; }
       section.style.display = 'block';
@@ -2249,11 +2065,14 @@
 
     function showWizardSummary(stats) {
       var el = document.getElementById('wiz-success-summary');
-      var parts = ['Patient "' + esc(wizardPatientId) + '" created.'];
+      // #835: bilingual; textContent only (wizSetBi), so no esc() needed.
+      var sk = 'Pacient „' + wizardPatientId + '“ je vytvorený.';
+      var en = 'Patient "' + wizardPatientId + '" created.';
       if (stats && stats.new > 0) {
-        parts.push(stats.new + ' documents imported.');
+        sk += ' Importované dokumenty: ' + stats.new + '.';
+        en += ' ' + stats.new + ' documents imported.';
       }
-      el.textContent = parts.join(' ');
+      wizSetBi(el, sk, en);
       // Populate token for copy in step 4 (step-2 box uses same variable but different element)
       var tokenEl = document.getElementById('wiz-token-display-4');
       if (tokenEl && wizardBearerToken) {
@@ -2269,8 +2088,11 @@
         navigator.clipboard.writeText(el.textContent).then(function() {
           var btn = el.nextElementSibling;
           if (btn) {
-            btn.textContent = 'Copied!';
-            setTimeout(function() { btn.textContent = 'Copy'; }, 2000);
+            // #835: bilingual; the button's own data-sk / data-en label comes back.
+            btn.textContent = dashLang === 'sk' ? 'Skopírované!' : 'Copied!';
+            setTimeout(function() {
+              btn.textContent = btn.getAttribute(dashLang === 'sk' ? 'data-sk' : 'data-en') || 'Copy';
+            }, 2000);
           }
         });
       }
@@ -2431,8 +2253,6 @@
     }
 
     async function refresh() {
-      // Demo: re-render the static sample payload instead of authenticated reads.
-      if (window.DEMO_MODE) return loadDemoData();
       hideError();
       setConnectionState('loading');
 
@@ -2600,7 +2420,7 @@
       }
       // Show GDrive connect banner if no folder set for this patient
       var gdriveBar = document.getElementById('gdrive-connect-bar');
-      if (gdriveBar) gdriveBar.style.display = (!gs.drive || !gs.folder_id) && !window.DEMO_MODE ? 'flex' : 'none';
+      if (gdriveBar) gdriveBar.style.display = (!gs.drive || !gs.folder_id) ? 'flex' : 'none';
 
       const h = s.document_health || {};
       document.getElementById('card-total').textContent = h.total || 0;
@@ -2834,7 +2654,7 @@
         // Filename
         var tdFn = document.createElement('td');
         tdFn.className = 'filename';
-        if (d.gdrive_id && d.gdrive_id !== 'demo') {
+        if (d.gdrive_id) {
           var a = document.createElement('a');
           a.href = 'https://drive.google.com/file/d/' + encodeURIComponent(d.gdrive_id) + '/view';
           a.target = '_blank';
@@ -2901,10 +2721,8 @@
           clickedTr.parentNode.insertBefore(detailRow, clickedTr.nextSibling);
           applyDashLang();
 
-          // Fetch detail from API (or use demo data)
-          var detailPromise = window.DEMO_MODE
-            ? Promise.resolve(getDemoDocDetail(doc))
-            : apiFetch('/api/doc-detail/' + doc.id);
+          // Fetch detail from API
+          var detailPromise = apiFetch('/api/doc-detail/' + doc.id);
           detailPromise.then(function(data) {
             if (data.error) {
               loadingDiv.textContent = data.error;

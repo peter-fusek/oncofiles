@@ -703,6 +703,7 @@ def test_curated_jobs_make_their_copy_inside_the_worker_function():
         ("clinical_preview", True, False),
         ("lab_preview", True, False),
         ("extraction_scorecard", True, False),
+        ("reocr_compare", True, False),
     ],
 )
 def test_run_active_counts_reocr_and_reread_jobs(monkeypatch, kind, dry_run, expected):

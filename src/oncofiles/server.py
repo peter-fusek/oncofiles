@@ -2416,19 +2416,33 @@ surgery, surgical_report, prescription, referral, discharge, discharge_summary, 
 reference, advocate, other, vaccination, dental, preventive.
 
 CURATED PATIENT FOLDERS — a Drive folder holding README.md + _index.json is curated:
-- It is processed only by the curated pipeline (continuous mode on the server, or \
-`curated_folder_run`) and mirrored into search/labs/timeline by `curated_index`. \
-Check its state with `curated_folder_status`.
-- Legacy Drive tools (`gdrive_sync`, `sync_from_gdrive`, `sync_to_gdrive`, `setup_gdrive`, \
-`reconcile_gdrive`, `rename_documents_to_standard`) skip curated folders. Do not suggest \
-them to import or rename curated documents; if no documents show up, suggest `curated_index`.
+- It is processed automatically by the curated pipeline on the server and mirrored into \
+search/labs/timeline. Check its state with `curated_folder_status`.
+- Re-runs, re-indexing (`curated_folder_run`, `curated_index`), re-OCR, backfills, audits \
+and the legacy Drive sync tools are operator tools: they are not available in this \
+connector. If documents are missing or a run looks stuck, suggest contacting the maintainer.
 
 OPERATIONS — Oncofiles is self-hosted on its own server, not on a cloud PaaS. \
 Users have no access to server or hosting logs, so never tell them to check logs; for a \
-server-side problem use `system_health` and suggest contacting the maintainer.\
+server-side problem suggest contacting the maintainer.\
 """
 
-mcp = FastMCP(
+
+class _OncofilesMCP(FastMCP):
+    """FastMCP whose streamable-http app also serves the operator surface on
+    ``/ops/mcp`` (#887), behind the static operator bearer, in this process."""
+
+    def http_app(self, path=None, *args, **kwargs):
+        import fastmcp as _fastmcp
+
+        from oncofiles.tool_surface import install_ops_route
+
+        app = super().http_app(path, *args, **kwargs)
+        install_ops_route(app, path if path is not None else _fastmcp.settings.streamable_http_path)
+        return app
+
+
+mcp = _OncofilesMCP(
     "Oncofiles",
     instructions=_MCP_INSTRUCTIONS,
     lifespan=lifespan,
@@ -3908,9 +3922,12 @@ async def readiness(request: Request) -> JSONResponse:
         # #552: per-patient sync staleness, from the watchdog cache.
         result["sync_staleness"] = _sync_staleness
         # #665: per-patient continuous-mode counters (in-memory, no DB call).
-        from oncofiles.tools.curated import probe_stats
+        from oncofiles.tools.curated import probe_stats, startup_index_stats
 
         result["curated_probes"] = probe_stats()
+        # #880: patients (re-)indexed at startup, incl. non-enrolled ones with a
+        # stale INDEX_VERSION (in-memory counts, no DB call).
+        result["curated_startup_index"] = startup_index_stats()
         # #868: dashboard sign-ins / ACL refusals / admin cross reads since
         # process start (in-memory, no DB; the rows are in dashboard_access_log).
         result["dashboard_access"] = dashboard_audit.counters()
@@ -4439,22 +4456,28 @@ async def _require_body_patient_access(
     caller as authorized for any patient_id they typed. That's the same
     class as Felix Vítek's oncoteam#438 Bug 3 (#489 Part B).
 
-    This helper MUST be called after `_check_dashboard_auth` on any endpoint
-    that looks up or mutates patient-specific data based on a caller-supplied
-    patient_id. Bearer-token (admin) callers bypass; session callers must
-    either be in DASHBOARD_ADMIN_EMAILS or match the target patient's
-    caregiver_email.
+    Routes call it through ``_dashboard_body_patient`` (#867), which first
+    resolves the body value and refuses an unknown one. The static bearer
+    (verified here, #867: no longer trusted on the header shape alone) is the
+    operator; session callers must either be in DASHBOARD_ADMIN_EMAILS or
+    match the target patient's caregiver_email.
 
-    Returns None on success, JSONResponse(403) on denial. 404 is returned if
-    the patient doesn't exist — returned before the caregiver check so the
-    response shape stays identical to the pre-fix code for that case.
+    The helper runs ``_check_dashboard_auth`` itself (#867), so its answer
+    never depends on a route having called that first.
+
+    Returns None on success, JSONResponse(401) for an unauthenticated caller,
+    JSONResponse(403) on denial. 404 is returned if the patient doesn't
+    exist — before the caregiver check, as before.
     """
+    auth_err = _check_dashboard_auth(request)
+    if auth_err is not None:
+        return auth_err
     auth_header = request.headers.get("authorization", "")
     # Static bearer token callers are admin-scoped (they had to know the secret).
     if auth_header.startswith("Bearer ") and not auth_header.startswith("Bearer session:"):
-        # Admin bearer → allow. Non-matching bearer would have been rejected by
-        # _check_dashboard_auth already.
-        return None
+        if _check_bearer(request) is None:
+            return None
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
     email = _get_dashboard_email(request)
     if _is_admin_email(email):
         return None
@@ -4464,11 +4487,88 @@ async def _require_body_patient_access(
     if email and _email_matches_caregiver(email, patient.caregiver_email):
         return None
     logger.warning(
-        "patient-id body ACL denied: email=%r tried patient=%r",
-        (email or "")[:40],
+        "patient-id body ACL denied: caller=%s tried patient=%r",
+        _acl_caller_log_id(email),
         patient_id[:8],
     )
     return JSONResponse({"error": "forbidden: not authorized for this patient"}, status_code=403)
+
+
+async def _resolve_body_patient_id(db: Database, raw: str) -> str | None:
+    """Resolve a caller-supplied patient value (slug or UUID) to a UUID, or None.
+
+    Replaces ``resolve_patient_id(raw) or raw`` (#867): an unknown value is a
+    refusal at this point, never passed on. An archived patient still resolves
+    by its exact UUID, as before (its slug did not, and still does not).
+    """
+    raw = (raw or "").strip()
+    if not raw:
+        return None
+    resolved = await db.resolve_patient_id(raw)
+    if resolved:
+        return resolved
+    patient = await db.get_patient(raw)
+    return patient.patient_id if patient else None
+
+
+async def _dashboard_body_patient(
+    request: Request, db: Database, raw: str
+) -> tuple[str | None, JSONResponse | None]:
+    """The single ACL path for dashboard routes with ``patient_id`` in the body (#867).
+
+    Returns ``(patient_uuid, None)`` when the caller may act for the patient,
+    else ``(None, response)``: 401 unauthenticated, otherwise the one
+    ``_patient_not_found()`` answer for an unknown patient AND for a patient
+    the caller may not act for (no existence oracle, #590). Only the log line
+    (caller hash, never the e-mail) says which.
+    """
+    auth_err = _check_dashboard_auth(request)
+    if auth_err is not None:
+        return None, auth_err
+    email, is_admin = _dashboard_caller(request)
+    patient_id = await _resolve_body_patient_id(db, raw)
+    if patient_id is None:
+        logger.warning("patient-id body ACL: unknown patient caller=%s", _acl_caller_log_id(email))
+        await _audit_body_refusal(request, db, email, is_admin, None)
+        return None, _patient_not_found()
+    acl_err = await _require_body_patient_access(request, db, patient_id)
+    if acl_err is not None:
+        if acl_err.status_code in (403, 404):
+            # Logged as a denial inside _require_body_patient_access.
+            await _audit_body_refusal(request, db, email, is_admin, patient_id)
+            return None, _patient_not_found()
+        return None, acl_err
+    return patient_id, None
+
+
+async def _audit_body_refusal(
+    request: Request, db: Database, email: str | None, is_admin: bool, patient_id: str | None
+) -> None:
+    """#868 ``acl_refused`` for a body-route refusal by a session caller (never raises).
+
+    The operator bearer is not a dashboard session and is not recorded, as in
+    ``_get_dashboard_patient_id``.
+    """
+    if _check_bearer(request) is None:
+        return
+    await dashboard_audit.record(
+        db,
+        "acl_refused",
+        email=email,
+        is_admin=is_admin,
+        patient_id=patient_id,
+        route=dashboard_audit.route_name(request),
+    )
+
+
+def _patient_not_found() -> JSONResponse:
+    """The single answer for "unknown patient" and "not your patient" (#867, #590).
+
+    Byte-identical for both cases (status, body, headers), so a non-admin
+    caller cannot probe which patient ids or slugs exist. Logs and the #868
+    audit may tell the cases apart; responses never do.
+    """
+    return JSONResponse({"error": "not_found"}, status_code=404)
 
 
 def _check_dashboard_auth(request: Request) -> JSONResponse | None:
@@ -4564,8 +4664,19 @@ def _dashboard_session_key(request: Request, email: str | None) -> str:
     return f"caller:{dashboard_audit.caller_hash(email) or '-'}"
 
 
-async def _get_dashboard_patient_id(request: Request) -> str:
+async def _get_dashboard_patient_id(request: Request, *, fallback_to_own: bool = True) -> str:
     """Extract patient_id from query params and resolve slug → UUID.
+
+    The single ACL path for every dashboard GET route that reads a patient
+    (#867, lock test ``tests/test_867_single_dashboard_acl.py``). Body-param
+    POST routes use ``_dashboard_body_patient`` instead.
+
+    ``fallback_to_own=False``: a session caller who names a patient they may
+    not see gets the sentinel instead of their own first patient, so a route
+    can refuse (``/api/patient-context``, ``/api/patient-budget``,
+    ``/api/doc-detail``). With the default, a non-admin naming an UNKNOWN
+    patient gets exactly what a FOREIGN one gets (own first patient, else the
+    sentinel), both recorded as ``acl_refused`` (#867, #590).
 
     Accepts either a UUID or a slug (e.g. 'q1b').  Always returns
     the UUID patient_id suitable for DB queries, OR a non-empty sentinel
@@ -4636,16 +4747,33 @@ async def _get_dashboard_patient_id(request: Request) -> str:
         )
         return NO_PATIENT_ACCESS_SENTINEL
     if not resolved:
-        if not is_bearer:
-            await dashboard_audit.record(
-                db,
-                "acl_refused",
-                email=email,
-                is_admin=_is_admin_email(email),
-                patient_id=None,
-                route=dashboard_audit.route_name(request),
+        if is_bearer:
+            return NO_PATIENT_ACCESS_SENTINEL
+        is_admin = _is_admin_email(email)
+        await dashboard_audit.record(
+            db,
+            "acl_refused",
+            email=email,
+            is_admin=is_admin,
+            patient_id=None,
+            route=dashboard_audit.route_name(request),
+        )
+        if is_admin or not fallback_to_own:
+            return NO_PATIENT_ACCESS_SENTINEL
+        # #867/#590: for a non-admin an unknown patient answers exactly like a
+        # foreign one (their own first patient, else the sentinel), so a list
+        # route cannot tell whether a slug or UUID exists.
+        try:
+            patients = await db.list_patients(active_only=False)
+            own = [p for p in patients if _email_matches_caregiver(email, p.caregiver_email)]
+        except Exception as exc:
+            logger.warning(
+                "dashboard patient ACL: own-patient lookup raised %s caller=%s — sentinel",
+                type(exc).__name__,
+                caller,
             )
-        return NO_PATIENT_ACCESS_SENTINEL
+            return NO_PATIENT_ACCESS_SENTINEL
+        return own[0].patient_id if own else NO_PATIENT_ACCESS_SENTINEL
 
     if is_bearer:
         return resolved
@@ -4677,7 +4805,8 @@ async def _get_dashboard_patient_id(request: Request) -> str:
         return resolved
 
     # Non-admin, non-caregiver — refused; fall back to own patient (or the
-    # sentinel). A requested patient missing from the listing has no target id.
+    # sentinel; or, for a route that refuses instead, always the sentinel,
+    # #867). A requested patient missing from the listing has no target id.
     await dashboard_audit.record(
         db,
         "acl_refused",
@@ -4686,7 +4815,24 @@ async def _get_dashboard_patient_id(request: Request) -> str:
         patient_id=resolved if target is not None else None,
         route=route,
     )
-    return own[0].patient_id if own else NO_PATIENT_ACCESS_SENTINEL
+    return own[0].patient_id if own and fallback_to_own else NO_PATIENT_ACCESS_SENTINEL
+
+
+async def _dashboard_patient_or_refusal(request: Request) -> tuple[str, JSONResponse | None]:
+    """``_get_dashboard_patient_id`` for routes that refuse instead of falling back (#867).
+
+    Same ACL, without the "own first patient" fallback for a named patient:
+    a sentinel answer becomes ``_patient_not_found()`` when the caller named a
+    patient (foreign and unknown alike, #590; also when the check failed
+    closed) and 400 when they named none and have no patient. A typed result
+    that tells a DB error apart (for a 503, the #469 contract) is a follow-up.
+    """
+    pid = await _get_dashboard_patient_id(request, fallback_to_own=False)
+    if pid != NO_PATIENT_ACCESS_SENTINEL:
+        return pid, None
+    if request.query_params.get("patient_id", "").strip():
+        return pid, _patient_not_found()
+    return pid, JSONResponse({"error": "patient_id required"}, status_code=400)
 
 
 @mcp.custom_route("/dashboard", methods=["GET"])
@@ -5281,41 +5427,35 @@ async def api_doc_detail(request: Request) -> JSONResponse:
             return JSONResponse({"error": "invalid doc_id"}, status_code=400)
 
         db: Database = request.app.state.fastmcp_server._lifespan_result["db"]
-        patient_id = await _get_dashboard_patient_id(request)
+        # #867: no own-patient fallback for a named patient, so an unknown and
+        # a foreign ?patient_id= give the same answer (#590).
+        patient_id = await _get_dashboard_patient_id(request, fallback_to_own=False)
 
-        # Fetch document row
-        async with db.db.execute(
-            "SELECT id, filename, gdrive_id, category, document_date, institution, "
-            "ai_summary, ai_tags, structured_metadata, patient_id "
-            "FROM documents WHERE id = ? AND deleted_at IS NULL",
-            (doc_id,),
-        ) as cursor:
-            rows = await cursor.fetchall()
-        if not rows:
-            return JSONResponse({"error": "document not found"}, status_code=404)
-        doc = rows[0]
+        # Scoped in SQL (the #499 pattern): a foreign id, a soft-deleted
+        # document, an unknown or foreign patient all answer the same 404.
+        if patient_id == NO_PATIENT_ACCESS_SENTINEL:
+            return _patient_not_found()
+        doc = await db.get_document(doc_id, patient_id=patient_id)
+        if doc is None or doc.deleted_at is not None:
+            return _patient_not_found()
 
-        # Verify patient isolation
-        if patient_id and doc["patient_id"] != patient_id:
-            return JSONResponse({"error": "document not found"}, status_code=404)
-
-        gdrive_id = doc["gdrive_id"] or ""
+        gdrive_id = doc.gdrive_id or ""
         gdrive_url = f"https://drive.google.com/file/d/{gdrive_id}/view" if gdrive_id else ""
         preview_url = f"https://drive.google.com/file/d/{gdrive_id}/preview" if gdrive_id else ""
 
         # Parse ai_tags (JSON string)
         ai_tags: list[str] = []
-        if doc["ai_tags"]:
+        if doc.ai_tags:
             try:
-                ai_tags = json.loads(doc["ai_tags"])
+                ai_tags = json.loads(doc.ai_tags)
             except Exception:
                 ai_tags = []
 
         # Parse structured_metadata (JSON string)
         structured_metadata: dict = {}
-        if doc["structured_metadata"]:
+        if doc.structured_metadata:
             try:
-                structured_metadata = json.loads(doc["structured_metadata"])
+                structured_metadata = json.loads(doc.structured_metadata)
             except Exception:
                 structured_metadata = {}
 
@@ -5337,15 +5477,15 @@ async def api_doc_detail(request: Request) -> JSONResponse:
 
         return JSONResponse(
             {
-                "id": doc["id"],
-                "filename": doc["filename"],
+                "id": doc.id,
+                "filename": doc.filename,
                 "gdrive_id": gdrive_id,
                 "gdrive_url": gdrive_url,
                 "preview_url": preview_url,
-                "category": doc["category"] or "other",
-                "document_date": doc["document_date"] or "",
-                "institution": doc["institution"] or "",
-                "ai_summary": doc["ai_summary"] or "",
+                "category": doc.category.value if doc.category else "other",
+                "document_date": doc.document_date.isoformat() if doc.document_date else "",
+                "institution": doc.institution or "",
+                "ai_summary": doc.ai_summary or "",
                 "ai_tags": ai_tags,
                 "structured_metadata": structured_metadata,
                 "pages": pages,
@@ -6197,75 +6337,6 @@ async def api_newsletter_subscribe(request: Request) -> JSONResponse:
     )
 
 
-# Per-IP rate limiter for check endpoint: {ip: [timestamp, ...]}
-_newsletter_check_rate: dict[str, list[float]] = {}
-_NEWSLETTER_CHECK_RATE_LIMIT = 20  # max checks per IP per hour
-_NEWSLETTER_CHECK_RATE_WINDOW = 3600
-
-
-@mcp.custom_route("/api/newsletter/check", methods=["GET"])
-async def api_newsletter_check(request: Request) -> JSONResponse:
-    """Check whether an email is already subscribed.
-
-    Returns {subscribed: bool, status, created_at} for the given email only.
-    Rate-limited per IP to prevent enumeration; no list endpoint exposed.
-    """
-    import re
-
-    client_ip = request.client.host if request.client else "unknown"
-    now = time.time()
-    hits = _newsletter_check_rate.get(client_ip, [])
-    hits = [t for t in hits if now - t < _NEWSLETTER_CHECK_RATE_WINDOW]
-    if len(hits) >= _NEWSLETTER_CHECK_RATE_LIMIT:
-        return JSONResponse(
-            {"error": "Too many checks. Try again later."},
-            status_code=429,
-            headers={"Access-Control-Allow-Origin": "*"},
-        )
-
-    email = (request.query_params.get("email") or "").strip().lower()
-    if not email or not re.match(r"^[^\s@]+@[^\s@]+\.[^\s@]+$", email) or len(email) > 254:
-        return JSONResponse(
-            {"error": "Invalid email"},
-            status_code=400,
-            headers={"Access-Control-Allow-Origin": "*"},
-        )
-
-    try:
-        db_inst: Database = request.app.state.fastmcp_server._lifespan_result["db"]
-        cursor = await db_inst.db.execute(
-            "SELECT status, created_at, verified_at FROM newsletter_subscribers WHERE email = ?",
-            (email,),
-        )
-        rows = await cursor.fetchall()
-    except Exception:
-        logger.exception("Newsletter check DB error")
-        return JSONResponse(
-            {"error": "internal error"},
-            status_code=500,
-            headers={"Access-Control-Allow-Origin": "*"},
-        )
-
-    hits.append(now)
-    _newsletter_check_rate[client_ip] = hits
-
-    if not rows:
-        return JSONResponse(
-            {"subscribed": False},
-            headers={"Access-Control-Allow-Origin": "*"},
-        )
-    row = rows[0]
-    return JSONResponse(
-        {
-            "subscribed": True,
-            "status": row["status"],
-            "created_at": row["created_at"],
-            "verified_at": row["verified_at"],
-        },
-        headers={"Access-Control-Allow-Origin": "*"},
-    )
-
-
 @mcp.custom_route("/api/onboarding-status", methods=["GET"])
 async def api_onboarding_status(request: Request) -> JSONResponse:
     """Onboarding gate state for THIS caller (#852): mode + booleans only.
@@ -6354,28 +6425,10 @@ async def api_patient_context(request: Request) -> JSONResponse:
     try:
         db_inst: Database = request.app.state.fastmcp_server._lifespan_result["db"]
 
-        target_pid = request.query_params.get("patient_id")
-        if not target_pid:
-            # Fall back to the caller's first own patient.
-            email = _get_dashboard_email(request)
-            is_bearer = _check_bearer(request) is None
-            patients = await db_inst.list_patients(active_only=True)
-            if is_bearer and patients:
-                target_pid = patients[0].patient_id
-            elif email:
-                own = [p for p in patients if _email_matches_caregiver(email, p.caregiver_email)]
-                if own:
-                    target_pid = own[0].patient_id
-        if not target_pid:
-            return JSONResponse({"error": "patient_id required"}, status_code=400)
-
-        # Authorisation: caller must be admin OR caregiver of this patient OR bearer token.
-        email = _get_dashboard_email(request)
-        is_bearer = _check_bearer(request) is None
-        if not is_bearer and not _is_admin_email(email):
-            target = await db_inst.get_patient(target_pid)
-            if not target or not _email_matches_caregiver(email or "", target.caregiver_email):
-                return JSONResponse({"error": "forbidden"}, status_code=403)
+        # #867: the single dashboard ACL path (slug or UUID; foreign → 403).
+        target_pid, refusal = await _dashboard_patient_or_refusal(request)
+        if refusal is not None:
+            return refusal
 
         from oncofiles import patient_context as _pctx
 
@@ -6427,27 +6480,10 @@ async def api_patient_budget(request: Request) -> JSONResponse:
     try:
         db_inst: Database = request.app.state.fastmcp_server._lifespan_result["db"]
 
-        target_pid = request.query_params.get("patient_id")
-        if not target_pid:
-            email = _get_dashboard_email(request)
-            is_bearer = _check_bearer(request) is None
-            patients = await db_inst.list_patients(active_only=True)
-            if is_bearer and patients:
-                target_pid = patients[0].patient_id
-            elif email:
-                own = [p for p in patients if _email_matches_caregiver(email, p.caregiver_email)]
-                if own:
-                    target_pid = own[0].patient_id
-        if not target_pid:
-            return JSONResponse({"error": "patient_id required"}, status_code=400)
-
-        # Authorization: admin OR caregiver of this patient OR bearer token
-        email = _get_dashboard_email(request)
-        is_bearer = _check_bearer(request) is None
-        if not is_bearer and not _is_admin_email(email):
-            target = await db_inst.get_patient(target_pid)
-            if not target or not _email_matches_caregiver(email or "", target.caregiver_email):
-                return JSONResponse({"error": "forbidden"}, status_code=403)
+        # #867: the single dashboard ACL path (slug or UUID; foreign → 403).
+        target_pid, refusal = await _dashboard_patient_or_refusal(request)
+        if refusal is not None:
+            return refusal
 
         from oncofiles.budget import check_patient_budget
 
@@ -6700,12 +6736,11 @@ async def api_create_patient_token(request: Request) -> JSONResponse:
             return JSONResponse({"error": "patient_id required"}, status_code=400)
         # Token rows key on the patient UUID: resolve a slug first (#824), so a
         # slug can never reach create_patient_token (an unknown value → 404).
-        patient_id = await db_inst.resolve_patient_id(raw_patient_id) or raw_patient_id
+        patient_id, acl_err = await _dashboard_body_patient(request, db_inst, raw_patient_id)
         # #489 Part B: ACL gate — body-supplied patient_id must belong to caller.
         # Without this, any session-authenticated user could mint bearer tokens
         # for any patient (cross-patient privilege escalation; mirror of Felix's
         # oncoteam#438 Bug 3).
-        acl_err = await _require_body_patient_access(request, db_inst, patient_id)
         if acl_err is not None:
             return acl_err
         patient = await db_inst.get_patient(patient_id)
@@ -6754,10 +6789,9 @@ async def api_sync_trigger(request: Request) -> JSONResponse:
         files = lifespan_ctx["files"]
 
         # Resolve slug → UUID before DB queries
-        patient_id = await db_inst.resolve_patient_id(raw_patient_id) or raw_patient_id
+        patient_id, acl_err = await _dashboard_body_patient(request, db_inst, raw_patient_id)
 
         # #489 Part B: ACL gate (body-supplied patient_id → caregiver_email match).
-        acl_err = await _require_body_patient_access(request, db_inst, patient_id)
         if acl_err is not None:
             return acl_err
 
@@ -6821,10 +6855,9 @@ async def api_enhance_trigger(request: Request) -> JSONResponse:
         db_inst: Database = lifespan_ctx["db"]
         files = lifespan_ctx["files"]
 
-        patient_id = await db_inst.resolve_patient_id(raw_patient_id) or raw_patient_id
+        patient_id, acl_err = await _dashboard_body_patient(request, db_inst, raw_patient_id)
 
         # #489 Part B: ACL gate (body-supplied patient_id → caregiver_email match).
-        acl_err = await _require_body_patient_access(request, db_inst, patient_id)
         if acl_err is not None:
             return acl_err
 
@@ -6993,10 +7026,9 @@ async def api_gdrive_set_folder(request: Request) -> JSONResponse:
             )
 
         db_inst: Database = request.app.state.fastmcp_server._lifespan_result["db"]
-        patient_id = await db_inst.resolve_patient_id(raw_patient_id) or raw_patient_id
+        patient_id, acl_err = await _dashboard_body_patient(request, db_inst, raw_patient_id)
 
         # #489 Part B: ACL gate (body-supplied patient_id → caregiver_email match).
-        acl_err = await _require_body_patient_access(request, db_inst, patient_id)
         if acl_err is not None:
             return acl_err
 
@@ -7408,11 +7440,10 @@ async def api_create_share_link(request: Request) -> JSONResponse:
         db_inst: Database = request.app.state.fastmcp_server._lifespan_result["db"]
         # Token rows key on the patient UUID: resolve a slug first (#824), so a
         # slug can never reach create_patient_token (an unknown value → 404).
-        patient_id = await db_inst.resolve_patient_id(raw_patient_id) or raw_patient_id
+        patient_id, acl_err = await _dashboard_body_patient(request, db_inst, raw_patient_id)
 
         # #489 Part B: ACL gate — share-link creation mints cross-session access.
         # Body-supplied patient_id must belong to caller (or caller is admin).
-        acl_err = await _require_body_patient_access(request, db_inst, patient_id)
         if acl_err is not None:
             return acl_err
 
@@ -7559,24 +7590,44 @@ async def oauth_authorize(request: Request) -> JSONResponse:
         principal = {"k": "s", "tid": parsed_session[2]}
     if service not in {"drive", "gmail", "calendar", "all"}:
         return JSONResponse({"error": "unknown service"}, status_code=400)
-    # Resolve slug → UUID (e.g. "q1b" → UUID); pass through if already UUID
+    # Resolve slug → UUID (e.g. "q1b" → UUID); an unknown value is refused
+    # here (#867), never passed on.
     try:
         db_inst: Database = request.app.state.fastmcp_server._lifespan_result["db"]
-        patient_id = await db_inst.resolve_patient_id(raw_pid) or raw_pid
-        patient = await db_inst.get_patient(patient_id)
+        patient_id = await _resolve_body_patient_id(db_inst, raw_pid)
+        patient = await db_inst.get_patient(patient_id) if patient_id else None
     except Exception:
         logger.error("OAuth connect: patient resolution failed for '%s'", raw_pid, exc_info=True)
         return JSONResponse({"error": "internal error"}, status_code=500)
+    # #867/#590: unknown and not-your-patient give the same answer; only the
+    # log line says which.
     if patient is None:
-        return JSONResponse({"error": "patient not found"}, status_code=404)
+        logger.warning("OAuth connect: unknown patient caller=%s", _acl_caller_log_id(email))
+        if not bearer_ok:
+            await dashboard_audit.record(
+                db_inst,
+                "acl_refused",
+                email=email,
+                is_admin=_is_admin_email(email),
+                patient_id=None,
+                route=dashboard_audit.route_name(request),
+            )
+        return _patient_not_found()
     if not (
         bearer_ok
         or _is_admin_email(email)
         or _email_matches_caregiver(email, patient.caregiver_email)
     ):
-        return JSONResponse(
-            {"error": "forbidden: not authorized for this patient"}, status_code=403
+        logger.warning("OAuth connect: not caregiver caller=%s", _acl_caller_log_id(email))
+        await dashboard_audit.record(
+            db_inst,
+            "acl_refused",
+            email=email,
+            is_admin=False,
+            patient_id=patient.patient_id,
+            route=dashboard_audit.route_name(request),
         )
+        return _patient_not_found()
     # #852 onboarding gate: a FIRST Google link for this patient needs a caller
     # the gate admits. A patient that already has a link may re-consent.
     from oncofiles import onboarding_gate
@@ -7817,6 +7868,11 @@ integrations.register(mcp)
 from oncofiles.tool_annotations import ToolAnnotationTransform  # noqa: E402
 
 mcp.add_transform(ToolAnnotationTransform())
+
+# #887: /mcp serves only user tools; operator tools only on /ops/mcp.
+from oncofiles.tool_surface import ToolSurfaceTransform  # noqa: E402
+
+mcp.add_transform(ToolSurfaceTransform())
 
 # ── Backward-compatible re-exports for tests ─────────────────────────────────
 from oncofiles.tools._helpers import (  # noqa: E402, F401

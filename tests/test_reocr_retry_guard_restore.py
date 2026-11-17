@@ -31,6 +31,7 @@ from tests.helpers import ERIKA_UUID, TEST_PATIENT_UUID
 from tests.test_curated_reocr import NOW
 from tests.test_curated_runner import LABS, LOGS, FakeDrive
 from tests.test_reocr_loss_guard import FILLER, OLD_BODY, _drop, _go, only_candidate
+from tests.test_reocr_pass_independence import CALLS
 
 LONG = "Leukocyty 7,93 G/l 4,0 - 11\nOdber 14.03.2027 07:40\nHemoglobin 128 g/l"
 SENTINEL = "SYNTHETIC REASONING TRANSCRIPT Leukocyty 9,99 G/l " * 4
@@ -93,7 +94,8 @@ def test_near_empty_reasoning_heavy_pass_is_retried_with_thinking_off(monkeypatc
     assert "Leukocyty 7,93" in rr.pages[0]
     normal = [c for c in calls if "reasoning_marker" not in c]
     retries = [c for c in calls if c.get("reasoning_marker") is True]
-    assert len(normal) == len(retries) == 2  # both passes, each retried once
+    # pass 1 and both halves of pass 2 (#883), each retried once
+    assert len(normal) == len(retries) == 3
     for r in retries:
         assert r["thinking"] is False  # through the per-call marker, nothing global
     for n, r in zip(normal, retries, strict=True):
@@ -101,12 +103,13 @@ def test_near_empty_reasoning_heavy_pass_is_retried_with_thinking_off(monkeypatc
         assert r["content"] == n["content"]  # same page image, same dpi, same prompt
         assert r["max_tokens"] == n["max_tokens"]
     recs = rr.llm_passes
-    expected = [(k, retry) for k in (1, 2) for retry in (False, True)]
-    assert [(p["pass"], p.get("retry", False)) for p in recs] == expected
+    calls_ = CALLS  # (pass, half)
+    expected = [(k, t, retry) for k, t in calls_ for retry in (False, True)]
+    assert [(p["pass"], p.get("tile"), p.get("retry", False)) for p in recs] == expected
     assert all(p["thinking"] == "off" for p in recs if p.get("retry"))
     assert all("thinking" not in p for p in recs if not p.get("retry"))
     dpis = reocr.reocr_dpis(2)
-    assert [p["dpi"] for p in recs] == [d for d in dpis for _ in ("normal", "retry")]
+    assert [p["dpi"] for p in recs] == [dpis[k - 1] for k, _ in calls_ for _ in ("n", "r")]
 
 
 @pytest.mark.parametrize(
@@ -182,7 +185,8 @@ def _per_call_chat(answers: dict[tuple[int, bool], str]):
 
 
 def _by_pass(*answers: str) -> dict[tuple[int, bool], str]:
-    """(pass, retry) -> answer, in call order: pass one, its retry, pass two, its retry."""
+    """(call, retry) -> answer, in call order: pass one, its retry, then the top
+    and the bottom half of pass two (#883), each followed by its retry."""
     passes = [k + 1 for k in range(len(answers) // len((False, True)))]
     keys = [(k, retry) for k in passes for retry in (False, True)]
     return dict(zip(keys, answers, strict=True))
@@ -191,7 +195,9 @@ def _by_pass(*answers: str) -> dict[tuple[int, bool], str]:
 def test_retry_texts_go_through_the_two_pass_reconcile(monkeypatch, model):
     first_retry = "Riadok alfa 731,4 G/l\nRiadok beta 8862 jednotiek spolu"
     second_retry = "Riadok alfa 731,9 G/l\nRiadok beta 8862 jednotiek spolu"
-    monkeypatch.setattr(llm, "chat", _per_call_chat(_by_pass("x", first_retry, "y", second_retry)))
+    monkeypatch.setattr(
+        llm, "chat", _per_call_chat(_by_pass("x", first_retry, "y", second_retry, "z", ""))
+    )
     rr = reocr.reread("scan.pdf", _pdf("ink"))
     assert rr.retried_pages == [1]
     lines = rr.pages[0].splitlines()
@@ -204,13 +210,13 @@ async def test_a_retry_text_that_loses_numbers_goes_to_review(vocab, monkeypatch
     doc = _doc_with(drive, OLD_BODY)
     drive.items[doc["gdrive_id"]]["content"] = _pdf("ink")
     kept = _drop("8862", "4413", "286")  # long enough, three numbers lost
-    monkeypatch.setattr(llm, "chat", _per_call_chat(_by_pass("x", kept, "y", kept)))
+    monkeypatch.setattr(llm, "chat", _per_call_chat(_by_pass("x", kept, "y", kept, "z", "")))
     rep = reocr.run_reocr(drive, drive.root, [doc], vocab, dry_run=False, now=NOW)
     d = rep.documents[0]
     assert d.retried_pages == [1] and d.method == "vision2"
     assert d.missing_numbers == 3 and "missing_numbers" in d.review_reasons
     assert d.result == "review" and only_candidate(drive)
-    assert [p.get("retry", False) for p in d.llm_passes] == [False, True, False, True]
+    assert [p.get("retry", False) for p in d.llm_passes] == [False, True] * 3
 
 
 def test_the_verify_only_reread_is_never_retried(monkeypatch, model):

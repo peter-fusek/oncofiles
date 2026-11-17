@@ -33,6 +33,7 @@ from datetime import UTC, datetime
 from oncofiles.curated import classify as classify_mod
 from oncofiles.curated import extract as extract_mod
 from oncofiles.curated import llm, llm_input
+from oncofiles.curated import orientation as orientation_mod
 from oncofiles.curated import vocabulary as vocab_mod
 from oncofiles.curated.contract import (
     DUPLICATES_PREFIX,
@@ -140,9 +141,16 @@ class RunReport:
     # README. A dry run always fills ``planned`` and ``outcomes`` (also with
     # CURATED_AUTO_VOCAB=false, as a preview); ``added`` only by a real run.
     vocabulary: dict = field(default_factory=lambda: _vocab_report())
+    # #882: ``orientation.tally`` summed over this run's vision extractions:
+    # direction questions asked vs pages decided without the model (counts
+    # only; a cached extraction asked nothing in this run).
+    orientation: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return asdict(self)
+
+    def count_orientation(self, extraction) -> None:
+        orientation_mod.add_tally(self.orientation, getattr(extraction, "orientation", None))
 
 
 class RunAbortError(Exception):
@@ -889,6 +897,7 @@ class Runner:
             ex = self.extract_fn(
                 item.name, content, item.mime, min_text_chars=self.opts.min_text_chars
             )
+            self.report.count_orientation(ex)
         cls = None
         raw = None
         note = ""
@@ -1120,6 +1129,7 @@ class Runner:
                 ex = self.extract_fn(
                     item.name, content, item.mime, min_text_chars=self.opts.min_text_chars
                 )
+                self.report.count_orientation(ex)
                 if not ex.ok and _llm_down(ex.error):
                     raise RunAbortError(f"local model unavailable — {ex.error}")
                 cls = None

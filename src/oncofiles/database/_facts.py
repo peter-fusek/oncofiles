@@ -724,6 +724,28 @@ class FactsMixin:
                     out[int(row[0])].add(str(row[1]))
         return out
 
+    async def active_fact_counts(
+        self, *, patient_id: str, document_ids: list[int]
+    ) -> dict[int, dict[str, int]]:
+        """Per document the number of ACTIVE facts by verification (#883
+        re-OCR compare: the order of the audit). Counts only, any extractor.
+        Patient-scoped in SQL: another patient's document has no counts."""
+        out: dict[int, dict[str, int]] = {int(i): {} for i in document_ids}
+        ids = sorted(out)
+        for start in range(0, len(ids), 500):
+            chunk = ids[start : start + 500]
+            marks = ",".join("?" * len(chunk))
+            async with self.db.execute(
+                "SELECT source_document_id, verification, COUNT(*) FROM clinical_records "
+                "WHERE patient_id = ? AND deleted_at IS NULL "
+                f"AND source_document_id IN ({marks}) "
+                "GROUP BY source_document_id, verification",
+                (patient_id, *chunk),
+            ) as cur:
+                for row in await cur.fetchall():
+                    out[int(row[0])][str(row[1] or "unknown")] = int(row[2])
+        return out
+
     async def facts_of_document(self, *, patient_id: str, document_id: int) -> list[dict]:
         async with self.db.execute(
             "SELECT * FROM fact_series_v WHERE patient_id = ? AND source_document_id = ? "
