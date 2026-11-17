@@ -41,6 +41,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 import unicodedata
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -170,15 +171,24 @@ def parse_orientation(answer: str | None) -> Guess:
     return Guess(angle, obj["confident"])
 
 
-def ask_rotation(png: bytes, *, client=None) -> Guess:
+def ask_rotation(png: bytes, *, client=None, record: dict | None = None) -> Guess:
     """The model's report of how the page is turned (never a transcription).
     A per-call failure is "no answer", which makes the caller read both ways;
-    an unreachable model fails again on the transcription call itself."""
+    an unreachable model fails again on the transcription call itself.
+
+    ``record`` (optional dict, #882) receives the call's usage, counts only:
+    ``seconds``, ``prompt_tokens``, ``completion_tokens``, ``reasoning_tokens``,
+    ``finish``, ``valid`` (a parseable answer), ``confident``, the sent image's
+    ``width`` / ``height``, and ``error`` (exception class) on a failure.
+    Never the answer text."""
     try:
         small = _render(png, 0, ORIENT_MAX_SIDE)
     except Exception as exc:  # not a decodable image: nothing to ask about
         logger.warning("orientation: page image not decodable (%s)", type(exc).__name__)
         return Guess(None, False)
+    info: dict | None = {} if record is not None else None
+    t0 = time.monotonic()
+    guess, error = Guess(None, False), None
     try:
         answer = llm.chat(
             ORIENTATION_PROMPT,
@@ -186,11 +196,45 @@ def ask_rotation(png: bytes, *, client=None) -> Guess:
             max_tokens=ORIENT_BUDGET,
             thinking=False,
             client=client,
+            **({"info": info} if info is not None else {}),
         )
+        guess = parse_orientation(answer)
     except llm.LocalLLMError as exc:
         logger.info("orientation: no answer (%s)", type(exc).__name__)
-        return Guess(None, False)
-    return parse_orientation(answer)
+        error = exc
+    finally:
+        if record is not None:
+            _record_usage(record, info or {}, small, time.monotonic() - t0, guess, error)
+    return guess
+
+
+def _record_usage(record: dict, info: dict, image: bytes, seconds: float, guess, error) -> None:
+    """Counts of one orientation call (#882); never raises, never the answer."""
+    try:
+
+        def count(key):
+            value = info.get(key)
+            return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+        finish = info.get("finish_reason")
+        ok = len(image) >= 24 and image[:8] == b"\x89PNG\r\n\x1a\n"
+        record.update(
+            seconds=round(seconds, 1),
+            prompt_tokens=count("prompt_tokens"),
+            completion_tokens=count("completion_tokens"),
+            reasoning_tokens=count("reasoning_tokens"),
+            finish=finish if isinstance(finish, str) else None,
+            valid=guess.rotation is not None,
+            confident=bool(guess.rotation is not None and guess.confident),
+            width=int.from_bytes(image[16:20], "big") if ok else None,
+            height=int.from_bytes(image[20:24], "big") if ok else None,
+        )
+        if error is not None:
+            record["error"] = type(error).__name__
+    except Exception as exc:
+        logger.warning("orientation usage not recorded: %s", type(exc).__name__)
+    finally:
+        info.clear()  # the raw answer channels never outlive the call
 
 
 def score_reading(text: str | None) -> int:

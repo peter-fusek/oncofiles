@@ -23,6 +23,7 @@ from tests.helpers import ERIKA_UUID
 from tests.test_admin_reread_console import _seed
 from tests.test_curated_reocr import NOW, _scan_pdf, _setup
 from tests.test_pre_store import _clients, _reset_jobs, file_db  # noqa: F401 (fixtures)
+from tests.test_reocr_pass_independence import CALLS
 
 ANSWER = "Leukocyty 6,37 G/l 4,0 - 11"
 REASONING = "SYNTHETIC-REASONING-SENTINEL 8,41"
@@ -59,21 +60,29 @@ def test_reread_records_every_pass_with_the_info_values(monkeypatch):
     monkeypatch.setattr(llm, "chat", _usage_chat([
         {"prompt": 1001, "completion": 501, "reasoning": 201},
         {"prompt": 1002, "completion": 502, "reasoning": 202},
+        {"prompt": 1003, "completion": 503, "reasoning": 203},
     ]))  # fmt: skip
     rr = reocr.reread("scan.pdf", _scan_pdf(1))
     assert rr.method == "vision2" and rr.error is None
-    first, second = rr.llm_passes
-    assert first["page"] == second["page"] == 1
-    assert (first["pass"], second["pass"]) == (1, 2)
-    assert [p["dpi"] for p in rr.llm_passes] == reocr.reocr_dpis(2)
+    first, top, bottom = rr.llm_passes  # pass 2 reads two halves (#883)
+    assert first["page"] == top["page"] == bottom["page"] == 1
+    assert [r["pass"] for r in (first, top, bottom)] == [c[0] for c in CALLS]
+    assert (top["tile"], bottom["tile"]) == (1, 2)
+    assert top["tiles"] == bottom["tiles"] == len(CALLS) - 1
+    first_dpi, second_dpi = reocr.reocr_dpis(2)
+    assert [p["dpi"] for p in rr.llm_passes] == [first_dpi, second_dpi, second_dpi]
     assert (first["finish"], first["prompt_tokens"], first["completion_tokens"],
             first["reasoning_tokens"]) == ("stop", 1001, 501, 201)  # fmt: skip
-    assert (second["prompt_tokens"], second["completion_tokens"],
-            second["reasoning_tokens"]) == (1002, 502, 202)  # fmt: skip
+    assert (top["prompt_tokens"], top["completion_tokens"],
+            top["reasoning_tokens"]) == (1002, 502, 202)  # fmt: skip
+    assert (bottom["prompt_tokens"], bottom["completion_tokens"],
+            bottom["reasoning_tokens"]) == (1003, 503, 203)  # fmt: skip
     assert all(isinstance(p["seconds"], float) for p in rr.llm_passes)
     keys = {"page", "pass", "dpi", "finish", "prompt_tokens", "completion_tokens",
-            "reasoning_tokens", "seconds"}  # fmt: skip
-    assert all(set(p) == keys for p in rr.llm_passes)  # never a raw channel
+            "reasoning_tokens", "seconds", "width", "height", "image_sha"}  # fmt: skip
+    assert set(first) == keys  # never a raw channel
+    assert set(top) == set(bottom) == keys | {"tile", "tiles"}
+    assert len({p["image_sha"] for p in rr.llm_passes}) == 3  # three different images
 
 
 async def test_report_carries_usage_maxima_and_budget(vocab, monkeypatch):
@@ -86,7 +95,7 @@ async def test_report_carries_usage_maxima_and_budget(vocab, monkeypatch):
                           reader=reocr.reread)  # fmt: skip
     out = rep.to_dict()
     d = out["documents"][0]
-    assert d["result"] == "previewed" and len(d["llm_passes"]) == 2
+    assert d["result"] == "previewed" and len(d["llm_passes"]) == 3  # pass 2: two halves
     assert d["reasoning_tokens_max"] == 480 and d["completion_tokens_max"] == 700
     assert d["budget"] == reocr.REOCR_BUDGET == 16_000
     assert d["truncated_passes"] == [] and out["warnings"] == []
@@ -96,7 +105,8 @@ async def test_a_truncated_pass_is_a_warning_and_marked(vocab, monkeypatch):
     drive, doc, _ = _setup()
     monkeypatch.setattr(llm, "chat", _usage_chat([
         {"finish": "stop"}, {"finish": "length", "completion": 16_000, "reasoning": 15_990},
-    ]))  # fmt: skip
+        {"finish": "stop"},
+    ]))  # fmt: skip  # per page: pass 1, then the two halves of pass 2 (#883)
     doc = {**doc, "gdrive_id": drive.add("scan.pdf", drive.root, _scan_pdf(2))}
     rep = reocr.run_reocr(drive, drive.root, [doc], vocab, dry_run=True, now=NOW,
                           reader=reocr.reread)  # fmt: skip
@@ -104,11 +114,11 @@ async def test_a_truncated_pass_is_a_warning_and_marked(vocab, monkeypatch):
     d = out["documents"][0]
     assert d["result"] == "previewed"  # report only: the decision is unchanged
     pages = [1, 2]
-    second = 2  # the cut-off pass of every page
-    assert d["truncated_passes"] == [{"page": p, "pass": second} for p in pages]
+    second = 2  # the cut-off pass of every page: its top half
+    assert d["truncated_passes"] == [{"page": p, "pass": second, "tile": 1} for p in pages]
     assert out["warnings"] == [
         {"warning": "reocr_pass_truncated", "document_id": doc["document_id"], "page": p,
-         "pass": second}
+         "pass": second, "tile": 1}
         for p in pages
     ]  # fmt: skip
 
@@ -140,7 +150,7 @@ async def test_no_text_reaches_the_report_or_the_log(vocab, monkeypatch, caplog)
         rep = reocr.run_reocr(drive, drive.root, [doc], vocab, dry_run=True, now=NOW,
                               reader=reocr.reread)  # fmt: skip
     lines = [r.getMessage() for r in caplog.records if "re-OCR llm pass" in r.getMessage()]
-    assert len(lines) == 2
+    assert len(lines) == len(CALLS)  # pass one, then both halves of pass two
     first = lines[0]
     assert f"doc={doc['document_id']} page=1 pass=1" in first
     assert "finish=length" in first
@@ -162,9 +172,9 @@ def test_parallel_passes_keep_every_record(monkeypatch):
     passes = reocr._vision_passes(_scan_pdf(pages), "pdf", dpis, client=object(), parallel=2,
                                   usage=usage)  # fmt: skip
     assert len(passes) == 2 and len(passes[0]) == pages
-    assert [(r["page"], r["pass"]) for r in usage] == [
-        (p + 1, k + 1) for p in range(pages) for k in range(len(dpis))
-    ]
+    assert [(r["page"], r["pass"], r.get("tile")) for r in usage] == [
+        (p + 1, k, t) for p in range(pages) for k, t in CALLS
+    ]  # pass 2 reads two halves (#883)
     assert all(r["dpi"] == dpis[r["pass"] - 1] for r in usage)
     assert all(r["prompt_tokens"] in (11, 22) for r in usage)
 
@@ -217,7 +227,9 @@ def test_adaptive_deferred_second_pass_is_recorded(monkeypatch):
                          second_pass_pages={1}, adaptive=True, usage=usage)  # fmt: skip
     # page 2 shares the value with page 1 (read twice), so it is read twice too
     both = [1, 2]
-    assert [(r["page"], r["pass"]) for r in usage] == [(p, k) for p in both for k in both]
+    assert [(r["page"], r["pass"], r.get("tile")) for r in usage] == [
+        (p, k, t) for p in both for k, t in CALLS
+    ]  # pass 2 reads two halves (#883)
 
 
 # ── the verify-only re-read carries the same fields ─────────────────
@@ -239,16 +251,18 @@ def test_verify_only_reread_reports_the_same_usage(monkeypatch, vocab, caplog):
          "mime_type": "application/pdf", "category": "labs", "document_date": "2027-04-12",
          "structured_metadata": {"curated": {"sidecar_id": "side_a",
                                              "sidecar_sha": sha}}}  # fmt: skip
-    monkeypatch.setattr(llm, "chat", _usage_chat([{"reasoning": 77}, {"finish": "length"}]))
+    monkeypatch.setattr(llm, "chat", _usage_chat([{"reasoning": 77}, {"finish": "length"},
+                                                   {"reasoning": 77}]))  # fmt: skip
     monkeypatch.setattr(
         reocr, "reread_isolated", lambda *a, **kw: reocr.reread(*a, **kw)
     )  # in-process: the test has no LM Studio child
     with caplog.at_level(logging.INFO, logger="oncofiles.curated.reocr"):
         res = tool._reread_one(drive, d, [], vocab)
-    assert res["result"] == "previewed" and len(res["llm_passes"]) == 2
+    assert res["result"] == "previewed" and len(res["llm_passes"]) == 3  # pass 2: halves
     assert res["budget"] == reocr.REOCR_BUDGET and res["reasoning_tokens_max"] == 120
-    assert res["truncated_passes"] == [{"page": 1, "pass": 2}]
-    assert sum("re-OCR llm pass: doc=41" in r.getMessage() for r in caplog.records) == 2
+    top_half = {"tile": 1}
+    assert res["truncated_passes"] == [{"page": 1, "pass": 2, **top_half}]
+    assert sum("re-OCR llm pass: doc=41" in r.getMessage() for r in caplog.records) == 3
 
 
 async def test_verify_only_job_report_lists_truncation_warnings(file_db):  # noqa: F811
