@@ -127,6 +127,7 @@ Regulation (MDR 2017/745) interaction. EHDS not yet in force (2026).
 | `add_treatment_event`, `list_treatment_events`, etc. | treatment | Treatment log | M | User-authored data |
 | `qa_analysis`, `query_db` | db_query | Admin queries | M | |
 | `select_patient`, `list_patients` | patient | Patient switching | M | |
+| `list_patient_tokens`, `revoke_patient_tokens` | patient | Admin: list and revoke a patient's connector (bearer) tokens | M | No AI, no document content. Lists labels and dates only, never token values. Revocation is final; a new token is the way back. |
 | `list_tool_definitions` | — | MCP introspection | M | |
 | `setup_gdrive`, `gdrive_fix_permissions`, `gdrive_auth_callback`, `gdrive_auth_enable` | gdrive | Auth bootstrap | M | |
 | `rename_documents_to_standard`, `reassign_document`, `update_document_category` | naming/documents | Rename ops | M | Deterministic rules + AI-assist hybrid |
@@ -220,4 +221,5 @@ leave buffer before the August deadline.
 ## Change log
 
 - 2026-04-21 v5.11 initial draft (Peter's engineering best-guess across 87 tools)
+- 2026-11-16 added `list_patient_tokens` / `revoke_patient_tokens` (#824, #835); the rest of the tool list is still the v5.11 snapshot
 - NEXT: counsel review, then incorporate their classification

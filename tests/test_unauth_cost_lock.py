@@ -69,6 +69,7 @@ FORBIDDEN_MODULES = {
     "oncofiles.curated.drive_ops",
     "oncofiles.curated.reocr",
     "oncofiles.curated.reocr_child",
+    "oncofiles.curated.reocr_compare",
     "oncofiles.curated.reread_verify",
 }
 
@@ -92,6 +93,8 @@ FORBIDDEN_NAMES = {
     "curated_folder_run",
     "curated_reocr",
     "curated_reread_verify",
+    "curated_reocr_compare",
+    "start_reocr_compare",
     "curated_llm_extract_preview",
     "index_patient",
     "nightly_for_patient",
@@ -157,7 +160,6 @@ PUBLIC_ROUTES: dict[tuple[str, str], str] = {
     ("/dashboard/verify", "dashboard_verify"): "auth flow: Google tokeninfo, rate limited",
     ("/api/logout", "api_logout"): "auth flow: revokes only a token that verifies (#591)",
     ("/api/newsletter/subscribe", "api_newsletter_subscribe"): "signup, rate limited per IP",
-    ("/api/newsletter/check", "api_newsletter_check"): "one lookup by email, rate limited",
     ("/api/share-link/{code}", "api_redeem_share_link"): "one-time code, in memory, rate limited",
     (
         "/oauth/authorize/{service}",
@@ -199,8 +201,11 @@ DB_ALLOWLIST: dict[tuple[str, str], str] = {
     ): "db.ping(2 s); 24 h prompt_log SUM for the operator only",
     ("/api/stats", "api_stats"): "1 + N(patients) COUNTs, at most once per 5 min (cache)",
     ("/api/logout", "api_logout"): "one revocation row, only for a token that verifies",
+    (
+        "/dashboard/verify",
+        "dashboard_verify",
+    ): "one dashboard_access_log sign_in row (#868), only after Google verified the token",
     ("/api/newsletter/subscribe", "api_newsletter_subscribe"): "INSERT OR IGNORE one row",
-    ("/api/newsletter/check", "api_newsletter_check"): "one SELECT by email",
     ("/oauth/authorize/{service}", "oauth_authorize"): "slug + patient lookup after the session",
     (
         "/oauth/callback",
@@ -440,6 +445,18 @@ def test_mcp_endpoint_requires_auth(prod_routes):
         assert isinstance(r.endpoint, RequireAuthMiddleware), type(r.endpoint)
 
 
+def test_ops_endpoint_is_gated(prod_routes):
+    """#887: /ops/mcp is OpsGate around the same auth-wrapped MCP handler."""
+    from fastmcp.server.auth.middleware import RequireAuthMiddleware
+
+    from oncofiles.tool_surface import OpsGate
+
+    ops = [r for r in prod_routes if getattr(r, "path", None) == "/ops/mcp"]
+    assert len(ops) == 1
+    assert isinstance(ops[0].endpoint, OpsGate)
+    assert isinstance(ops[0].endpoint.app, RequireAuthMiddleware)
+
+
 def test_every_route_is_classified(prod_routes):
     """Each served route is authenticated (gated handler), public (listed) or OAuth."""
     from oncofiles import server
@@ -452,6 +469,10 @@ def test_every_route_is_classified(prod_routes):
         path = getattr(r, "path", None)
         endpoint = getattr(r, "endpoint", None)
         if path == "/mcp":
+            continue
+        if path == "/ops/mcp":
+            # #887: operator surface, gated by OpsGate (static bearer only);
+            # see test_ops_endpoint_is_gated and tests/test_tool_surface.py
             continue
         if getattr(endpoint, "__module__", None) == server.__name__:
             key = (path, endpoint.__name__)
@@ -667,7 +688,7 @@ async def test_oauth_authorize_rejects_other_caregiver(http_mode, db):
         db=db,
     )
     resp = await server.oauth_authorize(req)
-    assert resp.status_code == 403
+    assert resp.status_code == 404  # #867: identical to an unknown patient (#590)
 
 
 async def test_oauth_authorize_allows_caregiver_cookie(http_mode, db, monkeypatch):

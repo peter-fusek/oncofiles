@@ -156,6 +156,9 @@ async def test_a_candidate_hides_the_document_from_automatic_selection_only(voca
     later = NOW + timedelta(minutes=5)
     auto = go(doc, later)  # automatic selection: skipped before any read
     assert auto.result == "skipped" and auto.candidate is None
+    # #835: the skip message names the candidate case and how to read it again.
+    assert auto.error == reocr.REOCR_HANDLED_BEFORE_SKIP
+    assert "candidate" in auto.error and "explicitly" in auto.error
     assert len(reads) == 1 and _candidates(drive) == [CANDIDATE]
     listed = go({**doc, "explicit": True}, later)
     assert listed.result == "review" and listed.candidate and len(reads) == 2

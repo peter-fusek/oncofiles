@@ -126,6 +126,7 @@ def _bearer(token: str) -> dict[str, str]:
         ("/dashboard/verify", AUTH),
         ("/api/documents", API),
         ("/dashboard/config", API),
+        ("/ops/mcp", API),  # #887 operator MCP endpoint
         ("/", PUBLIC),
         ("/dashboard", PUBLIC),
         ("/readiness", PUBLIC),

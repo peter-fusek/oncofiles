@@ -11,7 +11,8 @@ Every HTTP request is put into one *route class*:
 ``mcp``     ``/mcp`` (MCP streamable-http — tool calls, uploads)
 ``auth``    OAuth / login endpoints (``/authorize``, ``/token``, ``/register``,
             ``/revoke``, ``/oauth/*``, ``/dashboard/verify``) — stricter, IP-keyed
-``api``     dashboard JSON API (``/api/*``, ``/dashboard/config``)
+``api``     dashboard JSON API (``/api/*``, ``/dashboard/config``) and the operator
+            MCP endpoint ``/ops/mcp`` (#887)
 ``public``  everything else (landing pages, static assets, ``/readiness``)
 ``exempt``  ``/health`` — never limited, never size-checked (Coolify's
             healthcheck and CI's smoke test poll it)
@@ -97,7 +98,7 @@ _EXEMPT_PATHS = frozenset({"/health"})
 _AUTH_PATHS = frozenset({"/authorize", "/token", "/register", "/revoke", "/dashboard/verify"})
 _AUTH_PREFIXES = ("/oauth/",)
 _API_PATHS = frozenset({"/dashboard/config"})
-_API_PREFIXES = ("/api/",)
+_API_PREFIXES = ("/api/", "/ops/")
 _JSON_CLASSES = frozenset({MCP, API, AUTH})
 
 
