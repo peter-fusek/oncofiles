@@ -392,6 +392,10 @@ def normalize_item(raw) -> tuple[dict | None, str | None]:
         return None, "no_evidence"
     if not label or not value:
         return None, "no_label_or_value"
+    from oncofiles.curated.verifier import is_section_header
+
+    if is_section_header(label):  # "* (U-SED)", "Moč | Záver": not a test (#814)
+        return None, "section_header"
     comparator = _text(raw.get("comparator"))
     if comparator not in _COMPARATORS:
         comparator = None
