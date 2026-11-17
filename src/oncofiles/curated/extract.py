@@ -4,7 +4,8 @@
 2. **Vision** — every page rendered to PNG and read by the *local* vision
    model (no tesseract, no cloud OCR). Handwriting and photos always land here.
    Each page's orientation is decided first and the image rotated locally
-   (``orientation``, #609); charts are fenced as ``[chart: …]`` and never read
+   (``orientation``, #609; an explicit EXIF / PDF rotation or a portrait page
+   needs no model call, #882); charts are fenced as ``[chart: …]`` and never read
    as data (``ocr_markers``). A chart, a rotated region or an unsure
    orientation sends the document to review (``review_notes``); a confident
    rotation alone does not.
@@ -39,8 +40,9 @@ RENDER_DPI = 150
 
 # Bump on ANY change to OCR_SYSTEM_PROMPT or to how a page is prepared for the
 # model (orientation, #609). Written to the sidecar as ``ocr_version``; a
-# sidecar without it was read before #609 (``ocr-v1``).
-OCR_VERSION = "ocr-v2"
+# sidecar without it was read before #609 (``ocr-v1``). ocr-v3: the #882
+# orientation pre-filter (EXIF / PDF rotation, portrait = upright).
+OCR_VERSION = "ocr-v3"
 
 OCR_SYSTEM_PROMPT = (
     "You are an OCR engine for Slovak and Czech medical documents. Transcribe ALL text "
@@ -91,6 +93,9 @@ class Extraction:
     chart_pages: list[int] = field(default_factory=list)
     rotated_region_pages: list[int] = field(default_factory=list)
     ocr_version: str | None = None
+    # #882: ``orientation.tally`` of this extraction (model direction questions
+    # vs pages decided without one); counts only, never written to a sidecar.
+    orientation: dict = field(default_factory=dict)
 
     @property
     def ok(self) -> bool:
@@ -142,12 +147,24 @@ class VisionRead:
     rotation_source: list[str]
     chart_pages: list[int]
     rotated_region_pages: list[int]
+    orientation_calls: int = 0
 
 
-def _vision_pages(png_pages: list[bytes]) -> VisionRead:
-    """Each page: orientation decided first (``orientation.orient``: the model
-    only reports the direction, the image is rotated locally), then the
-    upright image is transcribed."""
+def _vision_pages(png_pages: list[bytes], hints: list | None = None) -> VisionRead:
+    """Each page: orientation decided first (``orientation.decide``: an
+    explicit EXIF / PDF rotation or a portrait page needs no model call,
+    #882; otherwise the model only reports the direction and the image is
+    rotated locally), then the upright image is transcribed. A doubtful first
+    reading of a page decided without the model gets one direction question
+    (``orientation.settle``) and is read again when the model reports a turn.
+    ``hints``: per page an ``orientation.Hint`` or None."""
+    calls = 0
+
+    def ask(image: bytes, *, client=None):
+        nonlocal calls
+        calls += 1
+        return orientation.ask_rotation(image, client=client)
+
     texts: list[str] = []
     handwritten = False
     rotation: list[int] = []
@@ -163,8 +180,12 @@ def _vision_pages(png_pages: list[bytes]) -> VisionRead:
                  llm.image_part(image)],
             )  # fmt: skip
 
-        page = orientation.orient(png, read)
+        hint = hints[i - 1] if hints and i - 1 < len(hints) else None
+        page = orientation.decide(png, read, hint=hint, ask=ask)
         answer = page.text if page.text is not None else read(page.png)
+        if (again := orientation.settle(page, answer, read, ask=ask)) is not None:
+            page = again
+            answer = again.text if again.text is not None else read(again.png)
         rotation.append(page.rotation)
         sources.append(page.source)
         if answer.lower().startswith("[handwritten]"):
@@ -175,15 +196,17 @@ def _vision_pages(png_pages: list[bytes]) -> VisionRead:
         if ocr_markers.has_rotated_region(answer):
             regions.append(i)
         texts.append(f"<!-- page {i} -->\n{answer.strip()}")
-    return VisionRead("\n\n".join(texts), handwritten, rotation, sources, charts, regions)
+    return VisionRead("\n\n".join(texts), handwritten, rotation, sources, charts, regions,
+                      orientation_calls=calls)  # fmt: skip
 
 
-def _vision_extraction(png_pages: list[bytes], pages: int) -> Extraction:
-    v = _vision_pages(png_pages)
+def _vision_extraction(png_pages: list[bytes], pages: int, hints: list | None = None) -> Extraction:
+    v = _vision_pages(png_pages, hints)
     return Extraction(
         v.text, "vision", pages, llm.model_id(), handwritten=v.handwritten,
         rotation=v.rotation, rotation_source=v.rotation_source, chart_pages=v.chart_pages,
         rotated_region_pages=v.rotated_region_pages, ocr_version=OCR_VERSION,
+        orientation=orientation.tally(v.rotation_source, v.orientation_calls),
     )  # fmt: skip
 
 
@@ -222,6 +245,19 @@ def _render_pdf_pages(content: bytes) -> list[bytes]:
         if doc.page_count > MAX_VISION_PAGES:
             return []
         return [_pixmap_png(page) for page in doc]
+
+
+def _pdf_hints(content: bytes) -> list:
+    """Per page the PDF's own ``/Rotate`` (``orientation.pdf_hint``, #882)."""
+    import pymupdf
+
+    with pymupdf.open(stream=content, filetype="pdf") as doc:
+        return [orientation.pdf_hint(page) for page in doc]
+
+
+def _image_hint(content: bytes, ext: str, png: bytes):
+    """A JPEG's EXIF rotation (``orientation.image_hint``, #882)."""
+    return orientation.image_hint(content, png) if ext in ("jpg", "jpeg") else None
 
 
 def _render_pdf(content: bytes) -> tuple[str, list[bytes], int]:
@@ -265,9 +301,10 @@ def extract(
                     "pymupdf",
                     error=f"{n} pages exceed vision limit {MAX_VISION_PAGES}",
                 )
-            return _vision_extraction(pages, n)
+            return _vision_extraction(pages, n, _pdf_hints(content))
         if ext in IMAGE_EXTS:
-            return _vision_extraction([_render_image(content, ext)], 1)
+            png = _render_image(content, ext)
+            return _vision_extraction([png], 1, [_image_hint(content, ext, png)])
     except llm.LocalLLMError as exc:
         return Extraction("", "none", 0, llm.model_id(), error=str(exc))
     except Exception as exc:  # corrupt file, unsupported image codec, …

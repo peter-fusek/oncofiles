@@ -42,7 +42,9 @@ REPORT_FOR_CORRECTION = {
 
 @pytest.fixture(autouse=True)
 def _orientation_on(monkeypatch):
-    monkeypatch.setattr(config, "OCR_ORIENTATION", "on")  # the production default
+    # every page asked (the #609 behaviour); the #882 pre-filter, now the
+    # production default, is tested in tests/test_orientation_prefilter.py
+    monkeypatch.setattr(config, "OCR_ORIENTATION", "always")
 
 
 def _page_png(lines=LAB_LINES, chart: bool = False) -> bytes:

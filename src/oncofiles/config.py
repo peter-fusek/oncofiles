@@ -108,10 +108,13 @@ REOCR_PASSES_MODE: str = os.environ.get("REOCR_PASSES_MODE", "fixed2").strip().l
 # Transcription only; classification and extraction are not affected.
 REOCR_THINKING: str = os.environ.get("REOCR_THINKING", "on").strip().lower()
 # Page orientation before vision OCR (#609, curated/orientation.py), ingest and
-# re-OCR: "on" (default) asks the local model how a page is turned and rotates
-# the image locally before reading it; "off" reads every page as it is. The
-# LOCAL_LLM_ prefix lets the re-OCR child inherit it.
-OCR_ORIENTATION: str = os.environ.get("LOCAL_LLM_OCR_ORIENTATION", "on").strip().lower()
+# re-OCR (#882): "prefilter" (default) honours an explicit EXIF / PDF rotation
+# and takes a portrait page without one as upright, asking the local model only
+# for landscape / near-square pages and for a prefilter page whose first reading
+# looks doubtful; "always" asks the model for every page (the #609 behaviour);
+# "off" reads every page as it is. Unknown values → "prefilter" with a warning
+# (orientation.mode). The LOCAL_LLM_ prefix lets the re-OCR child inherit it.
+OCR_ORIENTATION: str = os.environ.get("LOCAL_LLM_OCR_ORIENTATION", "prefilter").strip().lower()
 # Guard profile for re-OCR of Tesseract-era sidecars (#831): the old Tesseract
 # text is not a trustworthy baseline, so its lost numbers / lab values / words
 # are reported but do not stop a rewrite (reocr.guard_profile). "false" restores

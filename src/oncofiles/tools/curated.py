@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import dataclasses
 import functools
 import hashlib
 import json
@@ -82,7 +83,10 @@ def cached_extract(name, content, mime_type="", *, min_text_chars=100, on_model_
     ext = name.rsplit(".", 1)[-1]
     key = f"{hashlib.sha256(content).hexdigest()}:{mime_type}:{min_text_chars}:{ext}"
     if content and key in _extract_cache:
-        return _extract_cache[key]
+        hit = _extract_cache[key]
+        if getattr(hit, "orientation", None):  # #882: a cache hit asked the model nothing
+            hit = dataclasses.replace(hit, orientation={**hit.orientation, "model_calls": 0})
+        return hit
     ex = extract_mod.extract(name, content, mime_type, min_text_chars=min_text_chars)
     if on_model_pages is not None and ex.method == "vision" and ex.pages:
         on_model_pages(ex.pages)

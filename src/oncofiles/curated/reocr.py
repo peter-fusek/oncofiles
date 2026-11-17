@@ -30,7 +30,13 @@ again from the **source file**, on the **local** model only:
   ``REOCR_SECOND_PASS_TILES=1`` restores the whole page (rollback only). Every
   vision call records the image it sent (``width``, ``height``, ``image_sha``:
   12 hex of a SHA-256 of the PNG bytes, never the image), and the orientation
-  question gets its own record (``kind: orientation``, #882).
+  question gets its own record (``kind: orientation``, #882; ``recheck: true``
+  when the pre-filter's safety net asked it after a doubtful pass 1). A page
+  decided without the model (``orientation.decide``: EXIF / PDF rotation or a
+  portrait page) reads pass 1 first and the later passes only after that
+  check, so a page the model then reports as turned is read again in full,
+  never with a pass 2 of the wrong direction. Per document and per run the
+  report carries ``orientation`` (``orientation.tally``: counts only).
 
 Guard: the old and the new text are both parsed; when the new one loses a
 code with its value, or dates it differently, the sidecar is NOT rewritten
@@ -562,33 +568,74 @@ def _vision_passes(
             for t, (part, meta) in enumerate(images, start=1)
         )
 
-    def orient(page, i: int, total: int) -> tuple[int, str]:
-        """#609: the page's rotation, decided once before its passes (the model
-        only reports the direction; the image is turned locally). An unsure
-        direction is settled by reading both ways at the first dpi; those
-        probe readings are recorded in ``usage`` but never used as text."""
-        if not orientation.enabled():
-            return 0, orientation.SOURCE_OFF
-        if blank.get(i):  # a blank back side has no direction to ask about
-            return 0, orientation.SOURCE_BLANK
-        png = extract_mod._pixmap_png(page, dpis[0])
-
+    def probe_reader(i: int, total: int):
         def probe_read(image: bytes) -> str:
             return call(llm.image_part(image), i, total, 0, probe=True, meta=image_meta(image))[0]
 
-        record: dict = {}
+        return probe_read
 
+    def asker(i: int, recheck: bool = False):
         def ask_rotation(image: bytes, *, client=None):
-            return orientation.ask_rotation(image, client=client, record=record)
+            asked[0] += 1
+            record: dict = {}
+            try:
+                return orientation.ask_rotation(image, client=client, record=record)
+            finally:
+                if usage is not None and record:  # #882: the question itself, counts only
+                    rec = {"page": i + 1, "pass": 0, "kind": "orientation", **record}
+                    if recheck:
+                        rec["recheck"] = True
+                    with lock:
+                        usage.append(rec)
 
-        try:
-            o = orientation.orient(png, probe_read, client=client, ask=ask_rotation)
-        finally:
-            if usage is not None and record:  # #882: the question itself, counts only
-                with lock:
-                    usage.append({"page": i + 1, "pass": 0, "kind": "orientation", **record})
+        return ask_rotation
+
+    def hint_of(page, png: bytes):
+        """#882: an explicit rotation in the file (PDF /Rotate, JPEG EXIF)."""
+        if ext == "pdf":
+            return orientation.pdf_hint(page)
+        if ext in ("jpg", "jpeg"):
+            return orientation.image_hint(content, png)
+        return None
+
+    def orient(page, i: int, total: int) -> orientation.Oriented:
+        """#609: the page's rotation, decided once before its passes (the model
+        only reports the direction; the image is turned locally). An unsure
+        direction is settled by reading both ways at the first dpi; those
+        probe readings are recorded in ``usage`` but never used as text.
+        #882: ``orientation.decide`` first honours an explicit rotation or
+        takes a portrait page as upright, without a model call."""
+        if not orientation.enabled():
+            return orientation.Oriented(0, orientation.SOURCE_OFF, b"")
+        if blank.get(i):  # a blank back side has no direction to ask about
+            return orientation.Oriented(0, orientation.SOURCE_BLANK, b"")
+        png = extract_mod._pixmap_png(page, dpis[0])
+        o = orientation.decide(png, probe_reader(i, total), hint=hint_of(page, png),
+                               client=client, ask=asker(i))  # fmt: skip
         del png
-        return o.rotation, o.source
+        o.png, o.text = b"", None  # never kept: the passes render their own images
+        return o
+
+    def prefiltered(o: orientation.Oriented) -> bool:
+        return (
+            orientation.mode() == orientation.MODE_PREFILTER
+            and o.source in orientation.PREFILTER_SOURCES
+        )
+
+    def recheck(page, i: int, total: int, first: orientation.Oriented, text: str | None):
+        """#882 safety net on pass 1's reading of a page decided without the
+        model; the probe readings are recorded, never used as text."""
+        if not prefiltered(first) or not orientation.doubtful(text):
+            return None
+        png = extract_mod._pixmap_png(page, dpis[0])
+        if first.local_rotation:
+            png = orientation.rotate_png(png, first.local_rotation)
+        first.png = png
+        try:
+            return orientation.settle(first, text, probe_reader(i, total), client=client,
+                                      ask=asker(i, recheck=True))  # fmt: skip
+        finally:
+            first.png = b""
 
     def render(page, k: int) -> list[tuple[dict, dict]]:
         """The image(s) of pass ``k`` of a page: (image part, ``image_meta``).
@@ -607,8 +654,36 @@ def _vision_passes(
     deferred: list[int] = []
     inks: list[float | None] = []
     layers: list[bool | None] = []
-    rot: dict[int, int] = {}  # 0-based page -> clockwise rotation (#609)
+    rot: dict[int, int] = {}  # 0-based page -> clockwise turn WE apply (#609)
+    recorded: list[int] = []  # per page, the rotation reported (#882: incl. EXIF / PDF)
     sources: list[str] = []
+    asked = [0]  # direction questions asked (#882 telemetry)
+
+    def read_page(page, i: int, total: int, first: str | None = None):
+        """All passes of one page: (answers, True when its second pass is
+        deferred). ``first``: pass 1's answer when it was already read (#882
+        safety net), so only the later passes are asked."""
+        wanted = second_pass_pages is None or (i + 1) in second_pass_pages
+
+        def pass1() -> str:
+            return first if first is not None else read(render(page, 0), i, total)
+
+        if len(dpis) > 1 and not wanted:
+            return [pass1()], True
+        if first is not None or (adaptive and workers == 1 and len(dpis) > 1):
+            answers = [pass1()]
+            if not adaptive or _NUM.search(answers[0]):  # digits: pass 2 decides them
+                answers += [read(render(page, k), i, total, k) for k in range(1, len(dpis))]
+            return answers, False
+        parts = [render(page, k) for k in range(len(dpis))]
+        if workers > 1:
+            n = len(parts)
+            answers = list(pool.map(read, parts, [i] * n, [total] * n, range(n)))
+        else:
+            answers = [read(images, i, total, k) for k, images in enumerate(parts)]
+        del parts
+        return answers, False
+
     with (
         pymupdf.open(stream=content, filetype=ext) as doc,
         ThreadPoolExecutor(max_workers=workers) as pool,
@@ -625,25 +700,20 @@ def _vision_passes(
             inks.append(ink)
             layers.append(layer)
             blank[i] = is_blank(ink, layer)
-            rot[i], source = orient(page, i, total)
-            sources.append(source)
-            wanted = second_pass_pages is None or (i + 1) in second_pass_pages
-            if len(dpis) > 1 and not wanted:
-                answers = [read(render(page, 0), i, total)]
+            o = orient(page, i, total)
+            rot[i] = o.local_rotation
+            first = None
+            if prefiltered(o):  # #882: pass 1 first, its reading may ask the model once
+                first = read(render(page, 0), i, total)
+                if (again := recheck(page, i, total, o, first)) is not None:
+                    if again.local_rotation != rot[i]:  # the model reports a turn
+                        rot[i], first = again.local_rotation, None  # read it again
+                    o = again
+            answers, defer = read_page(page, i, total, first)
+            recorded.append(o.rotation)
+            sources.append(o.source)
+            if defer:
                 deferred.append(i)
-            elif adaptive and workers == 1 and len(dpis) > 1:
-                answers = [read(render(page, 0), i, total)]
-                if _NUM.search(answers[0]):  # digits: the second pass decides them
-                    answers += [read(render(page, k), i, total, k)
-                                for k in range(1, len(dpis))]  # fmt: skip
-            else:
-                parts = [render(page, k) for k in range(len(dpis))]
-                if workers > 1:
-                    n = len(parts)
-                    answers = list(pool.map(read, parts, [i] * n, [total] * n, range(n)))
-                else:
-                    answers = [read(images, i, total, k) for k, images in enumerate(parts)]
-                del parts
             for k, out in enumerate(passes):
                 out.append(answers[k] if k < len(answers) else None)
             del page
@@ -658,8 +728,8 @@ def _vision_passes(
         usage[:] = _by_page_and_pass(usage)
     if diag is not None:
         diag.update(page_ink=inks, page_text_layer=layers, retried_pages=sorted(retried),
-                    rotation=[rot.get(i, 0) for i in range(len(sources))],
-                    rotation_source=sources)  # fmt: skip
+                    rotation=recorded, rotation_source=sources,
+                    orientation=orientation.tally(sources, asked[0]))  # fmt: skip
     return passes
 
 
@@ -727,6 +797,9 @@ class Reread:
     chart_pages: list[int] = field(default_factory=list)
     rotated_region_pages: list[int] = field(default_factory=list)
     ocr_version: str | None = None
+    # #882: ``orientation.tally`` (direction questions vs pages decided
+    # without one); counts only
+    orientation: dict = field(default_factory=dict)
 
 
 VISION_FRONT_KEYS = ("ocr_version", "rotation", "rotation_source", "has_chart", "rotated_region")
@@ -821,6 +894,7 @@ def reread(
                       retried_pages=diag.get("retried_pages", []),
                       rotation=diag.get("rotation", []),
                       rotation_source=diag.get("rotation_source", []),
+                      orientation=diag.get("orientation", {}),
                       chart_pages=charts, rotated_region_pages=regions,
                       ocr_version=extract_mod.OCR_VERSION)  # fmt: skip
     except llm.LocalLLMError as exc:
@@ -1243,6 +1317,8 @@ class DocResult:
     rotation: list[int] = field(default_factory=list)
     rotation_source: list[str] = field(default_factory=list)
     chart_pages: list[int] = field(default_factory=list)
+    # #882: ``orientation.tally`` of this document's read, counts only
+    orientation: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -1251,9 +1327,17 @@ class ReocrReport:
     documents: list[DocResult] = field(default_factory=list)
     warnings: list[dict] = field(default_factory=list)  # #800: reocr_pass_truncated
 
+    def orientation_totals(self) -> dict:
+        """#882: the run's direction questions vs pages decided without one."""
+        total: dict = {}
+        for d in self.documents:
+            orientation.add_tally(total, d.orientation)
+        return total
+
     def to_dict(self) -> dict:
         return {"dry_run": self.dry_run, "documents": [asdict(d) for d in self.documents],
-                "warnings": [dict(w) for w in self.warnings]}  # fmt: skip
+                "warnings": [dict(w) for w in self.warnings],
+                "orientation": self.orientation_totals()}  # fmt: skip
 
 
 from oncofiles.curated.facts_rules import INLINE_CATEGORIES as _INLINE_CATEGORIES  # noqa: E402
@@ -1509,6 +1593,7 @@ def run_reocr(
             # rotation is reported in res.rotation / rotation_source only
             res.rotation = list(getattr(rr, "rotation", None) or [])
             res.rotation_source = list(getattr(rr, "rotation_source", None) or [])
+            res.orientation = dict(getattr(rr, "orientation", None) or {})
             res.chart_pages = list(getattr(rr, "chart_pages", None) or [])
             res.review_reasons += [c for c in vision_review_codes(rr)
                                    if c not in res.review_reasons]  # fmt: skip
