@@ -69,6 +69,7 @@ FORBIDDEN_MODULES = {
     "oncofiles.curated.drive_ops",
     "oncofiles.curated.reocr",
     "oncofiles.curated.reocr_child",
+    "oncofiles.curated.reocr_compare",
     "oncofiles.curated.reread_verify",
 }
 
@@ -92,6 +93,8 @@ FORBIDDEN_NAMES = {
     "curated_folder_run",
     "curated_reocr",
     "curated_reread_verify",
+    "curated_reocr_compare",
+    "start_reocr_compare",
     "curated_llm_extract_preview",
     "index_patient",
     "nightly_for_patient",

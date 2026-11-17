@@ -481,14 +481,21 @@ def test_no_llm_module_reads_page_text_except_llm_input():
 
 
 def test_reocr_vision_is_reached_only_through_filtered_candidates():
-    # the re-read entry points are used only by the two job bodies
+    # the re-read entry points are used only by the three job bodies (#883:
+    # the dry compare reads through reocr_compare.compare_one)
     for attr in ("run_reocr", "reread_isolated"):
         callers = _refs(attr, skip_module="curated/reocr.py")
-        assert {m for m, _ in callers} <= {"tools/curated.py"}, (attr, callers)
+        assert {m for m, _ in callers} <= {"tools/curated.py", "curated/reocr_compare.py"}, (
+            attr, callers)  # fmt: skip
     assert _refs("run_reocr", skip_module="curated/reocr.py") == {("tools/curated.py",
                                                                     "_reocr_job")}  # fmt: skip
     assert _refs("reread_isolated", skip_module="curated/reocr.py") == {
-        ("tools/curated.py", "_reocr_job"), ("tools/curated.py", "_reread_one")}  # fmt: skip
+        ("tools/curated.py", "_reocr_job"), ("tools/curated.py", "_reread_one"),
+        ("curated/reocr_compare.py", "compare_one")}  # fmt: skip
+    assert _refs("compare_one") == {("tools/curated.py", "_reocr_compare_job")}
+    assert _refs("_reocr_compare_job") == {("tools/curated.py", "start_reocr_compare")}
+    assert _calls(_fn("tools/curated.py", "start_reocr_compare"), "_compare_targets")
+    assert _calls(_fn("tools/curated.py", "_compare_targets"), "reocr_exclusion")
     # each job body is launched only by its filtered starter
     assert _refs("_reocr_job") == {("tools/curated.py", "start_reocr")}
     assert _refs("_reread_one") == {("tools/curated.py", "_reread_job")}
