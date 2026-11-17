@@ -3,8 +3,10 @@
 Operator log, not a patient-scoped table: one short INSERT per sign-in, ACL
 refusal or admin cross-patient read. The caller is a keyed hash, never the
 e-mail. Writers go through ``oncofiles.dashboard_audit.record``, which never
-raises. There is no delete helper: retention needs a maintainer decision and
-an allowlist entry in ``tests/test_no_automatic_deletion.py`` (#734).
+raises. Retention (maintainer decision 2026-11-16): rows older than 90 days
+are deleted by the daily ``dashboard_access_log_retention`` job via
+``dashboard_audit.purge_expired_access_log``, the only DELETE on this table
+(allowlisted in ``tests/test_no_automatic_deletion.py``, #734).
 """
 
 from __future__ import annotations
