@@ -120,7 +120,7 @@ def request_stop() -> None:
 
 # background jobs that write nothing: a deploy may cut them
 _NO_WRITE_KINDS = frozenset(
-    {"llm_shadow", "clinical_preview", "extraction_scorecard", "lab_preview"}
+    {"llm_shadow", "clinical_preview", "extraction_scorecard", "lab_preview", "reocr_compare"}
 )
 
 
@@ -153,7 +153,8 @@ def run_block_reason(pid: str) -> str | None:
     if (_runs.get(pid) or {}).get("state") == "running":
         return "run_in_progress"
     job = _reocr_jobs.get(pid) or {}
-    if job.get("state") == "running" and job.get("kind") != "llm_shadow":
+    # neither does a re-OCR compare (#883): it writes nothing, never takes the lock
+    if job.get("state") == "running" and job.get("kind") not in ("llm_shadow", "reocr_compare"):
         return f"{job.get('kind') or 'reocr'}_in_progress"
     if patient_lock(pid).locked():
         return "patient_lock_held"
@@ -2195,6 +2196,181 @@ async def curated_reread_verify(
     out = await start_reread(
         _get_db(ctx), pid, document_ids, dry_run=dry_run, fingerprint=fingerprint
     )
+    return json.dumps(out, ensure_ascii=False)
+
+
+# ── dry re-OCR compare (#883) ───────────────────────────────────────────
+
+COMPARE_KIND = "reocr_compare"
+
+
+async def _compare_targets(db, pid: str, ids: list[int]) -> tuple[list[dict], list[dict]]:
+    """The listed curated documents of this patient that have a
+    vision-readable source and a sidecar, and a skipped entry for each other
+    id (ids and reason codes only). No target filter otherwise: unlike
+    ``_reocr_targets`` a document need not be Cowork-era nor hold ``[?]``.
+    An id of another patient is ``not_found``, like an id that does not exist."""
+    from oncofiles.curated import extract as extract_mod
+    from oncofiles.curated import llm_input
+
+    rows = {r["id"]: r for r in await db.curated_reocr_candidates(patient_id=pid)}
+    docs, skipped = [], []
+    for i in ids:
+        r = rows.get(i)
+        if r is None:
+            skipped.append({"document_id": i, "result": "skipped", "error": "not_found"})
+            continue
+        cur = (r.get("structured_metadata") or {}).get("curated") or {}
+        if reason := await llm_input.reocr_exclusion(db, pid, r):  # #815: never read
+            skipped.append(llm_input.skipped_entry(r, reason))
+        elif (r.get("mime_type") or "").startswith(_NOT_OCR) or (
+            extract_mod._ext(r.get("filename") or "") in extract_mod.TEXT_EXTS
+        ):
+            skipped.append(llm_input.skipped_entry(r, "not_a_scan"))
+        elif not cur.get("sidecar_id") or not r.get("gdrive_id"):
+            skipped.append(llm_input.skipped_entry(r, "no_sidecar"))
+        else:
+            docs.append(r)
+    return docs, skipped
+
+
+async def _reocr_compare_job(
+    db, pid: str, docs: list[dict], counts: dict[int, dict[str, int]], skipped: list[dict]
+) -> None:
+    """Background part of ``curated_reocr_compare``. Writes NOTHING: no Drive
+    (two downloads per document), no DB row (not even a run row), no index.
+    One document and one vision call at a time: one LM Studio slot."""
+    from oncofiles import config
+    from oncofiles.cloud_guard import local_only
+    from oncofiles.curated import reocr_compare
+    from oncofiles.curated.drive_ops import DriveOps
+    from oncofiles.curated.facts_rules import Vocabulary
+    from oncofiles.memory import get_rss_mb
+    from oncofiles.server import _create_patient_clients
+
+    job = _reocr_jobs[pid]
+    report: list[dict] = []
+    warnings: list[dict] = []
+    try:
+        clients = await _create_patient_clients(db, pid)
+        if not clients or clients[0] is None:
+            raise RuntimeError("Drive not connected")
+        gdrive = clients[0]
+        vocab = Vocabulary.from_rows(await db.fact_code_vocabulary())
+        for d in docs:
+            stored = counts.get(d["id"]) or {}
+            base = {"document_id": d["id"], "category": d.get("category"),
+                    "machine_facts": stored.get("machine", 0),
+                    "unverified_facts": stored.get("unverified", 0)}  # fmt: skip
+            if _stopping.is_set():
+                report.append({**base, "result": "skipped", "error": "stopping"})
+                continue
+            if (rss := get_rss_mb()) > config.REOCR_RSS_LIMIT_MB:
+                report.append({**base, "result": "skipped", "error": f"rss {rss:.0f} MB"})
+                continue
+
+            def _blocking(d=d):
+                own = gdrive.dedicated_copy()
+                try:
+                    with local_only("curated re-OCR compare"):
+                        return reocr_compare.compare_one(DriveOps(own), d, vocab, parallel=1)
+                finally:
+                    own.close()
+
+            t0 = time.monotonic()
+            try:
+                res = await asyncio.to_thread(_blocking)
+            except Exception as exc:
+                logger.exception("re-OCR compare of doc %s failed", d["id"])
+                res = {"document_id": d["id"], "result": "failed", "error": type(exc).__name__}
+            warnings += res.pop("warnings", None) or []
+            report.append({**base, **res, "job_seconds": round(time.monotonic() - t0, 1)})
+        done = [r for r in report if r.get("result") == "compared"]
+        totals = {k: sum(r["totals"][k] for r in done) for k in reocr_compare.PAGE_KEYS}
+        for k in ("agree", "value_differs", "missing_in_new", "missing_in_today"):
+            totals[f"facts_{k}"] = sum(r["facts"][k] for r in done)
+        job.update(state="done", report={
+            "dry_run": True, "compared": len(done), "totals": totals, "warnings": warnings,
+            "documents": [*report, *skipped],
+        })  # fmt: skip
+    except Exception as exc:
+        logger.exception("re-OCR compare failed for %s", pid)
+        job.update(state="failed", error=type(exc).__name__,
+                   report={"dry_run": True, "documents": [*report, *skipped]})  # fmt: skip
+    finally:
+        job["finished_at"] = datetime.now(UTC).isoformat()
+
+
+async def start_reocr_compare(db, pid: str, document_ids: list[int], *, actor: str = "mcp") -> dict:
+    """Start a dry re-OCR compare (#883) in the background; ``pid`` is resolved.
+    Explicit ids only, at most ``COMPARE_MAX_DOCS``; more is refused, not cut."""
+    from oncofiles.curated import llm
+    from oncofiles.curated.reocr_compare import COMPARE_MAX_DOCS
+
+    ids = list(dict.fromkeys(int(i) for i in (document_ids or [])))
+    if not ids:
+        return {"error": "document_ids is required"}
+    if len(ids) > COMPARE_MAX_DOCS:
+        return {"error": f"too many documents: at most {COMPARE_MAX_DOCS} per job"}
+    if not llm.configured():
+        return {"error": "local model not configured (LOCAL_LLM_BASE_URL/MODEL)"}
+    busy = "busy: a run, re-OCR, re-read or other job is in progress for this patient"
+    if _busy(pid) or run_block_reason(pid):
+        return {"error": busy}
+    docs, skipped = await _compare_targets(db, pid, ids)
+    if not docs:
+        return {"status": "nothing to do", **({"skipped": skipped} if skipped else {})}
+    counts = await db.active_fact_counts(patient_id=pid, document_ids=[d["id"] for d in docs])
+    # most machine facts first: the order of the audit (#883)
+    docs.sort(key=lambda d: (-(counts.get(d["id"]) or {}).get("machine", 0), d["id"]))
+    job = {
+        "state": "running", "kind": COMPARE_KIND, "dry_run": True, "passes": 2,
+        "started_at": datetime.now(UTC).isoformat(), "actor": actor, "skipped": skipped,
+        "documents": [{"document_id": d["id"], "category": d.get("category"),
+                       "machine_facts": (counts.get(d["id"]) or {}).get("machine", 0)}
+                      for d in docs],
+    }  # fmt: skip
+    return await _launch(
+        db, pid, job, lambda: _reocr_compare_job(db, pid, docs, counts, skipped),
+        dry_run=True, busy=busy,
+    )  # fmt: skip
+
+
+async def curated_reocr_compare(
+    ctx: Context,
+    document_ids: list[int],
+    patient_slug: str | None = None,
+) -> str:
+    """Dry audit of re-OCR'd sidecars (#883): read again, compare, write nothing.
+
+    For each listed curated document (any with a vision-readable source and a
+    sidecar; it need not be Cowork-era nor hold [?]) the LOCAL model reads the
+    original source again exactly like a re-OCR (pass 1 on the whole page,
+    pass 2 as two independent halves, reconciled), and the result is compared
+    with TODAY's sidecar page by page: numbers of today's sidecar confirmed
+    by the new reading / not found / found only on a [?] line, numbers only in
+    the new reading, dates the same, and lab facts per code and day (agree,
+    value differs, missing on either side; codes and counts, never values).
+    Each document also carries its per-pass usage records and its active
+    machine/unverified fact counts; documents run in that order (most machine
+    facts first). Writes nothing: no Drive, no DB, no backup, no candidate,
+    no index. Explicit ``document_ids`` only (max 10, more is refused).
+    Refused while another run or job is active for the patient. Runs in the
+    background (one LM Studio slot); poll curated_reocr_status. Slow:
+    minutes per page.
+    Admin-only (it spends the shared local model on an audit), and
+    ``patient_slug`` is required: there is no implicit patient.
+    """
+    from oncofiles.tools._helpers import _require_admin_or_raise
+
+    try:
+        _require_admin_or_raise("curated_reocr_compare")
+    except ValueError as exc:
+        return json.dumps({"error": str(exc)})
+    if not (patient_slug or "").strip():
+        return json.dumps({"error": "patient_slug is required"})
+    pid = await _resolve_patient_id(patient_slug, ctx)
+    out = await start_reocr_compare(_get_db(ctx), pid, document_ids)
     return json.dumps(out, ensure_ascii=False)
 
 
@@ -4540,6 +4716,8 @@ def register(mcp):
     mcp.tool()(curated_reocr)
     mcp.tool()(curated_reocr_status)
     mcp.tool()(curated_reread_verify)
+    # writes nothing (#883): read-only for the client; admin-only in the tool
+    mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": False})(curated_reocr_compare)
     mcp.tool()(curated_llm_extract_preview)
     mcp.tool()(curated_clinical_extract_preview)
     mcp.tool()(curated_clinical_extract)
