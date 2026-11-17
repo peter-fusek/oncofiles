@@ -143,7 +143,7 @@ async def test_acl_refused_written_for_stranger_sentinel(audit_db):
 async def test_acl_refused_for_unknown_patient_stores_no_slug(audit_db):
     with _caller(A_EMAIL):
         result = await server._get_dashboard_patient_id(_request(audit_db, "no-such-patient"))
-    assert result == NO_PATIENT_ACCESS_SENTINEL
+    assert result == A_UUID  # #867/#590: falls back to own, like a foreign patient
     (row,) = await _rows(audit_db)
     assert row["event"] == "acl_refused"
     assert row["target_patient_id"] is None
@@ -260,7 +260,7 @@ async def test_sign_in_written(audit_db):
     [
         (A_EMAIL, False, "audit-b", A_UUID),  # refused, falls back to own
         (NOBODY_EMAIL, False, "audit-b", NO_PATIENT_ACCESS_SENTINEL),  # refused, sentinel
-        (A_EMAIL, False, "no-such-patient", NO_PATIENT_ACCESS_SENTINEL),  # unknown
+        (A_EMAIL, False, "no-such-patient", A_UUID),  # unknown = foreign (#867, #590)
         (ADMIN_EMAIL, True, "audit-b", B_UUID),  # admin cross read
     ],
 )

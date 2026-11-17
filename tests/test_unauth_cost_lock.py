@@ -667,7 +667,7 @@ async def test_oauth_authorize_rejects_other_caregiver(http_mode, db):
         db=db,
     )
     resp = await server.oauth_authorize(req)
-    assert resp.status_code == 403
+    assert resp.status_code == 404  # #867: identical to an unknown patient (#590)
 
 
 async def test_oauth_authorize_allows_caregiver_cookie(http_mode, db, monkeypatch):

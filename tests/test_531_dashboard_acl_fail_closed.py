@@ -124,7 +124,10 @@ async def test_bearer_bypasses_scoping(acl_db):
 
 async def test_unknown_patient_is_sentinel_not_raw(acl_db):
     unknown = "00000000-0000-4000-8000-0000000005ff"
+    # #867/#590: unknown behaves like foreign — own patient, never the raw value.
     with _caller(A_EMAIL):
+        assert await server._get_dashboard_patient_id(_request(acl_db, unknown)) == A_UUID
+    with _caller(NOBODY_EMAIL):
         assert (
             await server._get_dashboard_patient_id(_request(acl_db, unknown))
             == NO_PATIENT_ACCESS_SENTINEL
