@@ -276,6 +276,78 @@ def test_orientation_call_is_recorded_counts_only(monkeypatch, tiles, answer, ra
     assert summary["completion_tokens_max"] == 40  # transcription passes only
 
 
+# ── (d) only pass 1 is ever written; the halves only confirm digits ──
+
+OVERLAP_LINE = "Lab 4.10.2027: WBC 5,10; HGB 128"  # a lab line inside both halves (inline format)
+PASS_ONE_TEXT = f"Leukocyty 6,37 G/l 4,0 - 11\n{OVERLAP_LINE}\nTrombocyty 257 G/l 150 - 400"
+HALF_MARK = "SYNTHETIC-HALF-ONLY"  # text that only the pass-2 halves ever answer
+
+
+def _halves_chat(bottom_platelets: str):
+    """Pass 1 reads the whole page; both halves read the overlap line (it lies
+    inside the shared strip), each half adds a marker line of its own."""
+
+    def chat(system, content, **kw):
+        text = content[0]["text"]
+        info = kw.get("info")
+        if info is not None:
+            info.update(finish_reason="stop", prompt_tokens=900, completion_tokens=60)
+        if "top half" in text:
+            return f"Leukocyty 6,37 G/l 4,0 - 11\n{OVERLAP_LINE}\n{HALF_MARK}"
+        if "bottom half" in text:
+            return (f"{OVERLAP_LINE}\n"
+                    f"Trombocyty {bottom_platelets} G/l 150 - 400\n{HALF_MARK}")  # fmt: skip
+        return PASS_ONE_TEXT
+
+    return chat
+
+
+@pytest.fixture
+async def lab_vocab(db):
+    from oncofiles.curated.facts_rules import Vocabulary
+
+    return Vocabulary.from_rows(await db.fact_code_vocabulary())
+
+
+@pytest.mark.parametrize("bottom_platelets", ["257", "251"])  # halves agree / disagree
+@pytest.mark.parametrize("review", [False, True])  # rewrite body / review candidate
+async def test_written_text_is_pass_one_never_the_joined_halves(
+    lab_vocab, monkeypatch, tiles, bottom_platelets, review
+):
+    """Rewrite body and review candidate both hold the reconciled pass-1 text;
+    a lab line inside the halves' overlap is written and parsed exactly once."""
+    from oncofiles.curated.facts_rules import extract_lab_facts
+    from oncofiles.curated.indexer import parse_sidecar
+    from tests.test_curated_reocr import NOW, _setup
+    from tests.test_curated_runner import LOGS
+
+    drive, doc, side = _setup()
+    doc = {**doc, "gdrive_id": drive.add("scan.pdf", drive.root, _scan())}
+    monkeypatch.setattr(llm, "chat", _halves_chat(bottom_platelets))
+    if review:  # a blocking reason: the new text is kept as a candidate instead
+        monkeypatch.setattr(reocr, "review_reasons", lambda *a, **k: ["text_shrunk"])
+    rep = reocr.run_reocr(drive, drive.root, [doc], lab_vocab, dry_run=False, now=NOW,
+                          reader=reocr.reread)  # fmt: skip
+    d = rep.documents[0]
+    agree = bottom_platelets == "257"
+    expected = PASS_ONE_TEXT if agree else PASS_ONE_TEXT + " [?]"
+    if not review:
+        assert d.result == "rewritten"
+        written = drive.items[side]["content"].decode()
+    else:
+        assert d.result == "review"
+        names = [n for n in (drive.items[i].get("name", "") for i in drive.items)
+                 if n.startswith(reocr.CANDIDATE_PREFIX)]  # fmt: skip
+        [name] = names
+        written = drive.items[drive.find(drive.folder[LOGS], name)]["content"].decode()
+    _, pages = parse_sidecar(reocr.candidate_sidecar_text(written) or written)
+    assert pages == [expected]
+    assert HALF_MARK not in written
+    assert written.count(OVERLAP_LINE) == 1
+    facts, _ = extract_lab_facts(pages, lab_vocab, report_date="2027-10-08", inline=True)
+    assert [f["code"] for f in facts].count("HGB") == 1  # the overlap line: one fact
+
+
 def test_ingest_orientation_request_is_unchanged(monkeypatch):
     """Without ``record`` (ingest) no ``info`` is passed: same request as before."""
     seen: list[dict] = []

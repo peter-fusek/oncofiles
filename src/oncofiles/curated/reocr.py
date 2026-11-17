@@ -23,7 +23,10 @@ again from the **source file**, on the **local** model only:
   (``split_png``; neighbours share ``TILE_OVERLAP`` of the height), one call
   each with its own text before the image (``tile_prompt``): a different
   image and token sequence, and about twice the pixels per line after the
-  server's downscale. Its answer is the halves joined top to bottom.
+  server's downscale. Its answer is the halves joined top to bottom; it is
+  only ever the number pool of ``reconcile``. The text returned, written to a
+  sidecar or candidate and parsed for facts is always pass 1's (plus ``[?]``),
+  so a line inside the halves' overlap can never be written twice.
   ``REOCR_SECOND_PASS_TILES=1`` restores the whole page (rollback only). Every
   vision call records the image it sent (``width``, ``height``, ``image_sha``:
   12 hex of a SHA-256 of the PNG bytes, never the image), and the orientation
