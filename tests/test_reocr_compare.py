@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from contextlib import contextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -276,33 +277,65 @@ class _Ctx:
         self.request_context = self._Req(db)
 
 
-async def test_the_tool_denies_a_foreign_patient_slug(db, env):
+@contextmanager
+def _as_caller(*, admin: bool, pid: str = ERIKA_UUID):
+    """The verified caller (admin flag, bound patient) inside the test's context."""
     from oncofiles.persistent_oauth import (
         _verified_caller_email,
         _verified_caller_is_admin,
         _verified_patient_id,
     )
 
-    await db.db.execute(
-        "INSERT INTO patients (patient_id, slug, display_name, caregiver_email) "
-        "VALUES (?, ?, ?, ?)",
-        (TEST_PATIENT_UUID, "synth-other", "Synthetic Other", "other@example.com"),
-    )
-    await db.db.commit()
-    tokens = (_verified_caller_is_admin.set(False), _verified_caller_email.set(""),
-              _verified_patient_id.set(ERIKA_UUID))  # fmt: skip
+    tokens = [(_verified_caller_is_admin, _verified_caller_is_admin.set(admin)),
+              (_verified_caller_email, _verified_caller_email.set("")),
+              (_verified_patient_id, _verified_patient_id.set(pid))]  # fmt: skip
     try:
-        with pytest.raises(ValueError, match="access denied"):
-            await tool.curated_reocr_compare(_Ctx(db), [601], patient_slug="synth-other")
+        yield
     finally:
-        _verified_caller_is_admin.reset(tokens[0])
-        _verified_caller_email.reset(tokens[1])
-        _verified_patient_id.reset(tokens[2])
+        for var, tok in reversed(tokens):
+            var.reset(tok)
+
+
+async def _erika_slug(db) -> str:
+    async with db.db.execute(
+        "SELECT slug FROM patients WHERE patient_id = ?", (ERIKA_UUID,)
+    ) as cur:
+        return (await cur.fetchone())[0]
+
+
+async def test_a_non_admin_is_refused_even_for_the_own_patient(db, env):
+    await _seed(db)
+    slug = await _erika_slug(db)
+    with _as_caller(admin=False):
+        for kw in ({}, {"patient_slug": slug}, {"patient_slug": "synth-other"}):
+            out = json.loads(await tool.curated_reocr_compare(_Ctx(db), [501], **kw))
+            assert "requires admin scope" in out["error"]
     assert tool._reocr_jobs == {}
 
 
-async def test_the_tool_starts_a_job_for_the_own_patient(db, env):
+async def test_an_admin_without_a_patient_slug_is_refused(db, env):
     await _seed(db)
-    out = json.loads(await tool.curated_reocr_compare(_Ctx(db), [501]))
+    with _as_caller(admin=True):
+        for slug in (None, "", "  "):
+            out = json.loads(await tool.curated_reocr_compare(_Ctx(db), [501], patient_slug=slug))
+            assert out == {"error": "patient_slug is required"}
+    assert tool._reocr_jobs == {}
+
+
+async def test_an_admin_with_a_patient_slug_starts_a_job(db, env):
+    await _seed(db)
+    slug = await _erika_slug(db)
+    with _as_caller(admin=True, pid=""):
+        out = json.loads(await tool.curated_reocr_compare(_Ctx(db), [501], patient_slug=slug))
     assert out["kind"] == "reocr_compare" and out["dry_run"] is True
     await asyncio.wait_for(tool._reocr_jobs[ERIKA_UUID]["task"], 10)
+    assert tool._reocr_jobs[ERIKA_UUID]["state"] == "done"
+
+
+def test_the_tool_is_registered_read_only():
+    from fastmcp import FastMCP
+
+    mcp = FastMCP("t")
+    tool.register(mcp)
+    found = asyncio.run(mcp.get_tool("curated_reocr_compare"))
+    assert found.annotations.readOnlyHint is True

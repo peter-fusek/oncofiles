@@ -2354,7 +2354,17 @@ async def curated_reocr_compare(
     Refused while another run or job is active for the patient. Runs in the
     background (one LM Studio slot); poll curated_reocr_status. Slow:
     minutes per page.
+    Admin-only (it spends the shared local model on an audit), and
+    ``patient_slug`` is required: there is no implicit patient.
     """
+    from oncofiles.tools._helpers import _require_admin_or_raise
+
+    try:
+        _require_admin_or_raise("curated_reocr_compare")
+    except ValueError as exc:
+        return json.dumps({"error": str(exc)})
+    if not (patient_slug or "").strip():
+        return json.dumps({"error": "patient_slug is required"})
     pid = await _resolve_patient_id(patient_slug, ctx)
     out = await start_reocr_compare(_get_db(ctx), pid, document_ids)
     return json.dumps(out, ensure_ascii=False)
@@ -4702,7 +4712,8 @@ def register(mcp):
     mcp.tool()(curated_reocr)
     mcp.tool()(curated_reocr_status)
     mcp.tool()(curated_reread_verify)
-    mcp.tool()(curated_reocr_compare)
+    # writes nothing (#883): read-only for the client; admin-only in the tool
+    mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": False})(curated_reocr_compare)
     mcp.tool()(curated_llm_extract_preview)
     mcp.tool()(curated_clinical_extract_preview)
     mcp.tool()(curated_clinical_extract)
