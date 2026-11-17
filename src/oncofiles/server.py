@@ -3873,9 +3873,12 @@ async def readiness(request: Request) -> JSONResponse:
         # #552: per-patient sync staleness, from the watchdog cache.
         result["sync_staleness"] = _sync_staleness
         # #665: per-patient continuous-mode counters (in-memory, no DB call).
-        from oncofiles.tools.curated import probe_stats
+        from oncofiles.tools.curated import probe_stats, startup_index_stats
 
         result["curated_probes"] = probe_stats()
+        # #880: patients (re-)indexed at startup, incl. non-enrolled ones with a
+        # stale INDEX_VERSION (in-memory counts, no DB call).
+        result["curated_startup_index"] = startup_index_stats()
         # #868: dashboard sign-ins / ACL refusals / admin cross reads since
         # process start (in-memory, no DB; the rows are in dashboard_access_log).
         result["dashboard_access"] = dashboard_audit.counters()

@@ -700,6 +700,29 @@ class DocumentMixin:
             rows = await cursor.fetchall()
         return {(r["id"] if isinstance(r, dict) else r[0]) for r in rows}
 
+    async def list_stale_curated_index_patients(self, index_version: int) -> list[str]:
+        """System-level (scheduler) read: ids of patients whose curated mirror rows
+        (#603) were indexed by an older ``INDEX_VERSION``. Ids only, no patient data.
+
+        A row counts when it is an active ``gdrive:`` row that belongs to the
+        indexer (``structured_metadata.curated`` or ``source = curated``) and its
+        stored ``curated.index_version`` is missing or lower. Legacy Drive-only
+        rows (#777) never count. Indexing must not depend on loop enrolment.
+        """
+        async with self.db.execute(
+            "SELECT DISTINCT patient_id FROM documents "
+            "WHERE file_id LIKE 'gdrive:%' AND deleted_at IS NULL "
+            "AND json_valid(structured_metadata) "
+            "AND (json_extract(structured_metadata, '$.curated') IS NOT NULL "
+            "     OR json_extract(structured_metadata, '$.source') = 'curated') "
+            "AND COALESCE(CAST(json_extract(structured_metadata, "
+            "'$.curated.index_version') AS INTEGER), -1) < ? "
+            "ORDER BY patient_id",
+            (int(index_version),),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return [r["patient_id"] if isinstance(r, dict) else r[0] for r in rows]
+
     async def update_curated_document(
         self,
         doc_id: int,

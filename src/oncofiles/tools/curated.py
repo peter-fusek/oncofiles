@@ -1020,17 +1020,53 @@ def scheduling_detail() -> dict:
     }
 
 
+# #880: startup index telemetry for operator /readiness (counts only).
+_startup_index_stats: dict = {}
+
+
+def startup_index_stats() -> dict:
+    """Counts of the startup index (#880): who was due and how many were done."""
+    return dict(_startup_index_stats)
+
+
+async def _startup_index_targets(db) -> set[str]:
+    """Patients to index once per start: every enrolled patient, plus every
+    patient whose curated mirror rows were indexed by an older INDEX_VERSION,
+    enrolled or not (#880). The read model must not depend on enrolment."""
+    from oncofiles.curated.indexer import INDEX_VERSION
+
+    enrolled = set(await db.list_curated_nightly_patients())
+    stale = set(await db.list_stale_curated_index_patients(INDEX_VERSION))
+    _startup_index_stats.clear()
+    _startup_index_stats.update(
+        {
+            "index_version": INDEX_VERSION,
+            "enrolled": len(enrolled),
+            "stale_index": len(stale),
+            "stale_not_enrolled": len(stale - enrolled),
+            "due": len(enrolled | stale),
+            "indexed": 0,
+            "failed": 0,
+            "pending": len(enrolled | stale),
+        }
+    )
+    return enrolled | stale
+
+
 async def _startup_index(db, pending: set[str]) -> None:
     """Read model once per start (#603), after the grace. A patient whose lock
     is held (a job started meanwhile) is retried next iteration instead of
     stalling the loop behind it."""
     for pid in sorted(pending):
         if _stopping.is_set():
-            return
+            break
         if patient_lock(pid).locked():
             continue
-        await _index_quietly(db, pid)
+        ok = await _index_quietly(db, pid)
         pending.discard(pid)
+        key = "indexed" if ok else "failed"
+        _startup_index_stats[key] = _startup_index_stats.get(key, 0) + 1
+    _startup_index_stats["pending"] = len(pending)
 
 
 async def curated_nightly_loop(
@@ -1075,7 +1111,7 @@ async def curated_nightly_loop(
             in_grace = time.monotonic() < grace_until
             if not in_grace:
                 if to_index is None:
-                    to_index = set(await db.list_curated_nightly_patients())
+                    to_index = await _startup_index_targets(db)
                 if to_index:
                     await _startup_index(db, to_index)
             now = datetime.now(tz)
@@ -1563,11 +1599,14 @@ async def _apply_rereads(db, pid: str) -> int:
     return applied
 
 
-async def _index_quietly(db, pid: str) -> None:
+async def _index_quietly(db, pid: str) -> bool:
+    """Index a patient; False (logged) when it raised. Never propagates."""
     try:
         await index_patient(db, pid)
     except Exception:
         logger.exception("curated index failed for %s", pid)
+        return False
+    return True
 
 
 _reocr_jobs: dict[str, dict] = {}
