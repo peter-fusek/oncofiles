@@ -1908,12 +1908,16 @@ async def _reocr_log_names(db, pid: str) -> list[str] | None:
         return None
 
 
+REOCR_DEFAULT_LIMIT = 3  # documents picked when no document_ids are given
+REOCR_MAX_DOCS = 10  # explicit document_ids per call, as the other explicit-id tools
+
+
 async def start_reocr(
     db,
     pid: str,
     *,
     dry_run: bool = True,
-    limit: int = 3,
+    limit: int | None = None,
     document_ids: list[int] | None = None,
     passes: int = 2,
     only_with_facts: bool = True,
@@ -1921,7 +1925,23 @@ async def start_reocr(
 ) -> dict:
     """Start a re-OCR job in the background (#660). Shared by the MCP tool and
     the admin dashboard API (#573); the caller has already resolved ``pid``.
-    A real run first makes a verified safety copy of the DB (``pre_store``)."""
+    A real run first makes a verified safety copy of the DB (``pre_store``).
+
+    ``limit`` defaults to ``REOCR_DEFAULT_LIMIT`` without ids and to
+    ``len(document_ids)`` with them; explicit ids are never truncated
+    silently: more than ``REOCR_MAX_DOCS`` ids, or a ``limit`` below their
+    count, is refused with an error."""
+    if document_ids:
+        if len(document_ids) > REOCR_MAX_DOCS:
+            return {"error": f"at most {REOCR_MAX_DOCS} document_ids per call, "
+                             f"got {len(document_ids)}"}  # fmt: skip
+        if limit is None:
+            limit = len(document_ids)
+        elif limit < len(document_ids):
+            return {"error": f"limit {limit} is smaller than the {len(document_ids)} "
+                             "document_ids given; pass fewer ids or omit limit"}  # fmt: skip
+    elif limit is None:
+        limit = REOCR_DEFAULT_LIMIT
     busy = "busy: a run or re-OCR is in progress for this patient"
     if _busy(pid):
         return {"error": busy}
@@ -1966,7 +1986,7 @@ async def curated_reocr(
     ctx: Context,
     patient_slug: str | None = None,
     dry_run: bool = True,
-    limit: int = 3,
+    limit: int | None = None,
     document_ids: list[int] | None = None,
     passes: int = 2,
     only_with_facts: bool = True,
@@ -1992,6 +2012,10 @@ async def curated_reocr(
     earlier.
     By default only documents with unverified facts are chosen, most first
     (only_with_facts=false: every Cowork-era or uncertain document).
+    ``limit``: without ``document_ids`` the number of documents picked
+    (default 3). With ``document_ids`` every id is processed (``limit``
+    defaults to their count); at most 10 ids per call, and a ``limit``
+    smaller than the number of ids is refused, never silently truncated.
     """
     pid = await _resolve_patient_id(patient_slug, ctx)
     out = await start_reocr(
