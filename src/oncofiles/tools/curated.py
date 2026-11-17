@@ -1627,6 +1627,8 @@ async def _reocr_targets(
     *,
     only_with_facts: bool = True,
     excluded: list[dict] | None = None,
+    log_names: list[str] | None = None,
+    excluded_counts: dict[str, int] | None = None,
 ) -> list[dict]:
     """Documents worth reading again: lab sheets first, then most unverified
     facts first (#674). By default only those with unverified facts (the
@@ -1637,10 +1639,20 @@ async def _reocr_targets(
     #815): it is never downloaded nor sent to a vision pass; its skipped
     entry (reason ``raw_genotype_excluded``) goes to ``excluded``. Any other
     text source (``extract.TEXT_EXTS``: md / txt / csv / json) is its own text,
-    not a scan, and is never a candidate either."""
+    not a scan, and is never a candidate either.
+
+    ``log_names`` (the logs folder listing, #894): a document the runner
+    would skip as handled before (``reocr.auto_selection_skip``, the runner's
+    own rule) is left out here, so the caller's ``limit`` is filled with
+    documents that will be read. Every document left out for one of these
+    reasons is counted by reason in ``excluded_counts`` (counts only)."""
     from oncofiles.curated import extract as extract_mod
     from oncofiles.curated import llm_input
-    from oncofiles.curated.reocr import needs_reocr
+    from oncofiles.curated.reocr import auto_selection_skip, needs_reocr
+
+    def drop(reason: str) -> None:
+        if excluded_counts is not None:
+            excluded_counts[reason] = excluded_counts.get(reason, 0) + 1
 
     out = []
     rows = sorted(
@@ -1657,14 +1669,24 @@ async def _reocr_targets(
         if reason := await llm_input.reocr_exclusion(db, pid, r):
             if excluded is not None:
                 excluded.append(llm_input.skipped_entry(r, reason))
+            drop(reason)
             continue  # raw genotype data: never re-OCR'd, never to a vision pass
         if (r.get("mime_type") or "").startswith(_NOT_OCR):
+            drop("not_a_scan")
             continue  # exported or spreadsheet text, not a scan
         if extract_mod._ext(r.get("filename") or "") in extract_mod.TEXT_EXTS:
+            drop("text_source")
             continue  # a text source is its own text, not a scan
         reasons = needs_reocr(meta, ["[?]"] if r["uncertain"] else [])
         if not reasons or not cur.get("sidecar_id") or not r.get("gdrive_id"):
             continue
+        if log_names is not None and (
+            skip := auto_selection_skip(
+                {"filename": r["filename"], "explicit": bool(document_ids)}, log_names
+            )
+        ):
+            drop(skip)
+            continue  # #894: the runner would skip it; it must not use up the limit
         out.append({
             "document_id": r["id"], "filename": r["filename"], "gdrive_id": r["gdrive_id"],
             "sidecar_id": cur["sidecar_id"], "mime": r.get("mime_type") or "",
@@ -1858,6 +1880,34 @@ async def _audit_real_job(db, pid: str, job: dict) -> None:
         logger.exception("could not write the activity_log row for a real %s job", kind)
 
 
+async def _reocr_log_names(db, pid: str) -> list[str] | None:
+    """The names in the patient's curated logs folder, listed once for a
+    re-OCR plan (#894; a constant number of Drive reads, never per document).
+    ``None`` when Drive is not connected or the listing fails (logged; the
+    plan then falls back to the runner's own skip)."""
+    from oncofiles.curated.drive_ops import DriveOps
+    from oncofiles.curated.reocr import logs_listing
+    from oncofiles.server import _create_patient_clients
+
+    try:
+        clients = await _create_patient_clients(db, pid)
+        if not clients or clients[0] is None:
+            return None
+        gdrive, folder_id = clients[0], clients[3]
+
+        def _blocking():
+            own = gdrive.dedicated_copy()
+            try:
+                return logs_listing(DriveOps(own), folder_id)[1]
+            finally:
+                own.close()
+
+        return await asyncio.to_thread(_blocking)
+    except Exception as exc:
+        logger.warning("re-OCR plan: logs listing failed for %s: %s", pid[:8], type(exc).__name__)
+        return None
+
+
 async def start_reocr(
     db,
     pid: str,
@@ -1876,19 +1926,28 @@ async def start_reocr(
     if _busy(pid):
         return {"error": busy}
     excluded: list[dict] = []
+    counts: dict[str, int] = {}
+    # #894: the default selection drops what the runner would skip BEFORE the
+    # limit; that needs the logs folder, listed once here (explicit ids: the
+    # runner reads them again anyway, so no listing and no change)
+    log_names = None if document_ids else await _reocr_log_names(db, pid)
     targets = await _reocr_targets(
-        db, pid, document_ids, only_with_facts=only_with_facts, excluded=excluded
-    )
+        db, pid, document_ids, only_with_facts=only_with_facts, excluded=excluded,
+        log_names=log_names, excluded_counts=counts,
+    )  # fmt: skip
+    plan: dict = {"excluded_before_limit": dict(sorted(counts.items()))}
+    if not document_ids and log_names is None:
+        plan["logs_listing"] = "unavailable"  # the runner still skips handled documents
     docs = targets[: max(0, min(limit, 25))]
     if not docs:
-        out: dict = {"status": "nothing to do", "candidates": len(targets)}
+        out: dict = {"status": "nothing to do", "candidates": len(targets), **plan}
         if excluded:
             out["skipped"] = excluded
         return out
     job = {
         "state": "running", "kind": "reocr", "dry_run": dry_run, "passes": passes,
         "started_at": datetime.now(UTC).isoformat(), "candidates": len(targets),
-        "actor": actor, "skipped": excluded,
+        "actor": actor, "skipped": excluded, **plan,
         "documents": [
             {k: d[k] for k in ("document_id", "filename", "category", "reasons",
                                "unverified_facts")}
