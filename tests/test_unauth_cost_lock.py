@@ -443,6 +443,18 @@ def test_mcp_endpoint_requires_auth(prod_routes):
         assert isinstance(r.endpoint, RequireAuthMiddleware), type(r.endpoint)
 
 
+def test_ops_endpoint_is_gated(prod_routes):
+    """#887: /ops/mcp is OpsGate around the same auth-wrapped MCP handler."""
+    from fastmcp.server.auth.middleware import RequireAuthMiddleware
+
+    from oncofiles.tool_surface import OpsGate
+
+    ops = [r for r in prod_routes if getattr(r, "path", None) == "/ops/mcp"]
+    assert len(ops) == 1
+    assert isinstance(ops[0].endpoint, OpsGate)
+    assert isinstance(ops[0].endpoint.app, RequireAuthMiddleware)
+
+
 def test_every_route_is_classified(prod_routes):
     """Each served route is authenticated (gated handler), public (listed) or OAuth."""
     from oncofiles import server
@@ -455,6 +467,10 @@ def test_every_route_is_classified(prod_routes):
         path = getattr(r, "path", None)
         endpoint = getattr(r, "endpoint", None)
         if path == "/mcp":
+            continue
+        if path == "/ops/mcp":
+            # #887: operator surface, gated by OpsGate (static bearer only);
+            # see test_ops_endpoint_is_gated and tests/test_tool_surface.py
             continue
         if getattr(endpoint, "__module__", None) == server.__name__:
             key = (path, endpoint.__name__)

@@ -2381,19 +2381,33 @@ surgery, surgical_report, prescription, referral, discharge, discharge_summary, 
 reference, advocate, other, vaccination, dental, preventive.
 
 CURATED PATIENT FOLDERS — a Drive folder holding README.md + _index.json is curated:
-- It is processed only by the curated pipeline (continuous mode on the server, or \
-`curated_folder_run`) and mirrored into search/labs/timeline by `curated_index`. \
-Check its state with `curated_folder_status`.
-- Legacy Drive tools (`gdrive_sync`, `sync_from_gdrive`, `sync_to_gdrive`, `setup_gdrive`, \
-`reconcile_gdrive`, `rename_documents_to_standard`) skip curated folders. Do not suggest \
-them to import or rename curated documents; if no documents show up, suggest `curated_index`.
+- It is processed automatically by the curated pipeline on the server and mirrored into \
+search/labs/timeline. Check its state with `curated_folder_status`.
+- Re-runs, re-indexing (`curated_folder_run`, `curated_index`), re-OCR, backfills, audits \
+and the legacy Drive sync tools are operator tools: they are not available in this \
+connector. If documents are missing or a run looks stuck, suggest contacting the maintainer.
 
 OPERATIONS — Oncofiles is self-hosted on its own server, not on a cloud PaaS. \
 Users have no access to server or hosting logs, so never tell them to check logs; for a \
-server-side problem use `system_health` and suggest contacting the maintainer.\
+server-side problem suggest contacting the maintainer.\
 """
 
-mcp = FastMCP(
+
+class _OncofilesMCP(FastMCP):
+    """FastMCP whose streamable-http app also serves the operator surface on
+    ``/ops/mcp`` (#887), behind the static operator bearer, in this process."""
+
+    def http_app(self, path=None, *args, **kwargs):
+        import fastmcp as _fastmcp
+
+        from oncofiles.tool_surface import install_ops_route
+
+        app = super().http_app(path, *args, **kwargs)
+        install_ops_route(app, path if path is not None else _fastmcp.settings.streamable_http_path)
+        return app
+
+
+mcp = _OncofilesMCP(
     "Oncofiles",
     instructions=_MCP_INSTRUCTIONS,
     lifespan=lifespan,
@@ -7878,6 +7892,11 @@ integrations.register(mcp)
 from oncofiles.tool_annotations import ToolAnnotationTransform  # noqa: E402
 
 mcp.add_transform(ToolAnnotationTransform())
+
+# #887: /mcp serves only user tools; operator tools only on /ops/mcp.
+from oncofiles.tool_surface import ToolSurfaceTransform  # noqa: E402
+
+mcp.add_transform(ToolSurfaceTransform())
 
 # ── Backward-compatible re-exports for tests ─────────────────────────────────
 from oncofiles.tools._helpers import (  # noqa: E402, F401
