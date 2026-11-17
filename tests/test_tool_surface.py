@@ -182,6 +182,85 @@ async def test_ops_endpoint_lists_everything_with_operator_bearer(live_server):
     assert names == set(USER_TOOLS | OPERATOR_TOOLS)
 
 
+# ── loopback only ────────────────────────────────────────────────────────────
+
+
+@pytest.fixture
+def prod_app(monkeypatch):
+    """The production app (no lifespan needed: the gate answers first)."""
+    from fastmcp.server.auth.auth import ClientRegistrationOptions
+
+    from oncofiles import server
+    from oncofiles.persistent_oauth import PersistentOAuthProvider
+
+    monkeypatch.setattr("oncofiles.config.MCP_BEARER_TOKEN", OPERATOR_TOKEN)
+    provider = PersistentOAuthProvider(
+        bearer_token=OPERATOR_TOKEN,
+        base_url="http://127.0.0.1",
+        client_registration_options=ClientRegistrationOptions(enabled=True),
+    )
+    monkeypatch.setattr(server.mcp, "auth", provider)
+    return server.mcp.http_app(transport="streamable-http", stateless_http=True)
+
+
+_LIST_BODY = {"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}}
+_ACCEPT = {"Accept": "application/json, text/event-stream"}
+
+
+async def _post_as(app, client_ip, path, headers):
+    transport = httpx.ASGITransport(app=app, client=(client_ip, 40123))
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as http:
+        return await http.post(path, json=_LIST_BODY, headers={**_ACCEPT, **headers})
+
+
+@pytest.mark.parametrize("client_ip", ["172.17.0.1", "10.0.0.5", "203.0.113.7", "::ffff:127.0.0.1"])
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {},
+        {"X-Forwarded-For": "127.0.0.1"},
+        {"Forwarded": "for=127.0.0.1"},
+        {"X-Real-IP": "127.0.0.1"},
+        dict.fromkeys(("X-Forwarded-For", "X-Real-IP", "Forwarded"), "localhost"),
+    ],
+    ids=["plain", "xff", "forwarded", "x-real-ip", "all-three-localhost"],
+)
+async def test_ops_endpoint_is_404_for_non_loopback_even_with_valid_token(
+    prod_app, client_ip, extra
+):
+    """Valid operator token from a non-loopback peer → the same 404 as an
+    unknown path; forwarding headers never make a peer loopback."""
+    auth = {"Authorization": f"Bearer {OPERATOR_TOKEN}"}
+    r = await _post_as(prod_app, client_ip, OPS_MCP_PATH, {**auth, **extra})
+    unknown = await _post_as(prod_app, client_ip, "/no-such-path-887", auth)
+    assert r.status_code == 404
+    assert (r.status_code, r.text, r.headers.get("content-type")) == (
+        unknown.status_code,
+        unknown.text,
+        unknown.headers.get("content-type"),
+    )
+    assert "www-authenticate" not in r.headers
+
+
+async def test_ops_endpoint_without_client_is_404(prod_app):
+    from oncofiles.tool_surface import OpsGate
+
+    gate = next(r.endpoint for r in prod_app.routes if getattr(r, "path", None) == OPS_MCP_PATH)
+    assert isinstance(gate, OpsGate)
+    from starlette.exceptions import HTTPException
+
+    scope = {"type": "http", "method": "POST", "path": OPS_MCP_PATH, "headers": []}
+    with pytest.raises(HTTPException) as exc:
+        await gate(scope, None, None)
+    assert exc.value.status_code == 404
+
+
+@pytest.mark.parametrize("client_ip", ["127.0.0.1", "::1"])
+async def test_ops_endpoint_loopback_bad_token_is_401(prod_app, client_ip):
+    r = await _post_as(prod_app, client_ip, OPS_MCP_PATH, {"Authorization": "Bearer wrong"})
+    assert r.status_code == 401
+
+
 # ── CLI ──────────────────────────────────────────────────────────────────────
 
 

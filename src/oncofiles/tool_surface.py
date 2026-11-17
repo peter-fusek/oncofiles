@@ -19,8 +19,10 @@ How it is enforced (native FastMCP ``Transform``, the same mechanism as
 ``tools/call`` answers "unknown tool") unless the current HTTP request came
 through ``OpsGate``. ``OpsGate`` wraps the same streamable-http handler as
 ``/mcp`` (same process, same lifespan, same in-memory job registries and
-locks), accepts only the static operator bearer (constant-time compare),
-and marks the ASGI scope. The marker lives in the server-side scope, so a
+locks), answers the app's plain 404 to any peer that is not loopback
+(direct TCP peer only; forwarding headers are never consulted, so Traefik
+traffic is always refused), accepts only the static operator bearer
+(constant-time compare), and marks the ASGI scope. The marker lives in the server-side scope, so a
 client cannot set it. Unclassified tools are hidden on ``/mcp`` (fail
 closed); ``tests/test_tool_surface.py`` fails when a tool is unclassified.
 
@@ -38,9 +40,11 @@ import hmac
 from collections.abc import Callable, Sequence
 
 from fastmcp.server.transforms import Transform
+from starlette.exceptions import HTTPException
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 from starlette.types import ASGIApp, Receive, Scope, Send
+from starlette.websockets import WebSocketClose
 
 OPS_MCP_PATH = "/ops/mcp"
 # Set by OpsGate on the server-side ASGI scope; never derived from client input.
@@ -276,12 +280,31 @@ def _operator_token() -> str:
     return config.MCP_BEARER_TOKEN or ""
 
 
-class OpsGate:
-    """ASGI wrapper for ``/ops/mcp``: static operator bearer only.
+LOOPBACK_CLIENTS: frozenset[str] = frozenset({"127.0.0.1", "::1"})
 
-    Anything else (no header, a patient ``onco_*`` token, an OAuth token, a
-    wrong value, or no operator token configured) → 401 before the MCP
-    handler runs. The token is never logged.
+
+def _is_loopback_client(scope: Scope) -> bool:
+    """The direct TCP peer only (``scope["client"]``). X-Forwarded-For,
+    Forwarded and X-Real-IP are never consulted."""
+    client = scope.get("client")
+    if not client:
+        return False
+    return str(client[0]) in LOOPBACK_CLIENTS
+
+
+class OpsGate:
+    """ASGI wrapper for ``/ops/mcp``: loopback peer AND static operator bearer.
+
+    1. A peer that is not 127.0.0.1 / ::1 (or no peer at all) gets the app's
+       ordinary 404, before any auth check, so the endpoint's existence is
+       not revealed. Traefik traffic arrives from the container network and
+       is always refused; ``docker exec … python -m oncofiles.ops`` is
+       loopback.
+    2. On loopback, anything but the static operator bearer (no header, a
+       patient ``onco_*`` token, an OAuth token, a wrong value, or no operator
+       token configured) → 401 before the MCP handler runs.
+
+    The token is never logged.
     """
 
     def __init__(self, app: ASGIApp, token_getter: Callable[[], str] = _operator_token):
@@ -289,9 +312,12 @@ class OpsGate:
         self._token_getter = token_getter
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope["type"] != "http":
-            await self.app(scope, receive, send)
-            return
+        if scope["type"] != "http" or not _is_loopback_client(scope):
+            if scope["type"] == "websocket":
+                await WebSocketClose()(scope, receive, send)
+                return
+            # The same response as any unknown path (the app's 404 handling).
+            raise HTTPException(status_code=404)
         expected = self._token_getter() or ""
         presented = _bearer_from_scope(scope)
         if not (
