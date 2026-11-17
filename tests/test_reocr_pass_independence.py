@@ -259,7 +259,8 @@ def _orientation_chat(answer: str | None, *, raise_=False):
 )
 def test_orientation_call_is_recorded_counts_only(monkeypatch, tiles, answer, raise_, valid,
                                                   confident, error):  # fmt: skip
-    monkeypatch.setattr(config, "OCR_ORIENTATION", "on")
+    # a portrait A4 page: only "always" asks the model (#882 pre-filter)
+    monkeypatch.setattr(config, "OCR_ORIENTATION", "always")
     monkeypatch.setattr(llm, "chat", _orientation_chat(answer, raise_=raise_))
     rr = reocr.reread("scan.pdf", _scan())
     [rec] = [r for r in rr.llm_passes if r.get("kind") == "orientation"]
