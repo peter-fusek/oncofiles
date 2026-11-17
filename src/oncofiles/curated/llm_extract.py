@@ -432,6 +432,68 @@ def date_shape(printed: str | None) -> str:
     return "".join("9" if c.isdigit() else "a" if c.isalpha() else c for c in text)
 
 
+# Label review list (#814): the labels the model returned that no
+# ``fact_codes`` alias maps (``label_unmapped``) or that map only with a typo
+# (``label_fuzzy``), so a maintainer can add the missing aliases (data)
+# without reading a sidecar. IN-MEMORY job report only: never stored (the
+# shadow preview writes nothing, a scorecard persists only its totals, the
+# lab write job does not carry the list), never logged.
+LABEL_REVIEW_REASONS = ("label_unmapped", "label_fuzzy")
+LABEL_REVIEW_CHARS = 60
+LABEL_REVIEW_UNIT_CHARS = 20
+LABEL_REVIEW_TOP = 50
+_DIGIT = re.compile(r"\d")
+
+
+def _digits_masked(text: str) -> tuple[str, bool]:
+    """``text`` with every digit → ``9``, and whether anything was masked."""
+    masked = _DIGIT.sub("9", text)
+    return masked, masked != text
+
+
+def unmapped_labels(facts: list[dict]) -> tuple[list[dict], int]:
+    """(review list, omitted count) of ONE document's LLM facts.
+
+    One entry per distinct (reason, label, near code, unit), with its count:
+    ``{"reason", "label", "label_masked", "count"}`` plus ``near_code`` for
+    ``label_fuzzy`` (the code the label was fuzzily matched to) and ``unit``
+    when the model returned one in its own field (lab units are vocabulary).
+    The label is whitespace-normalised; a label with a digit is replaced by
+    its masked shape (digits → ``9``, ``label_masked: true``), so no value can ride
+    along (units are masked the same way). A label longer than
+    ``LABEL_REVIEW_CHARS`` is left out and counted as omitted, as is anything
+    past the ``LABEL_REVIEW_TOP`` most frequent entries; a unit longer than
+    ``LABEL_REVIEW_UNIT_CHARS`` is dropped. Never a value, a date or evidence
+    text."""
+    seen: Counter = Counter()
+    omitted = 0
+    for f in facts:
+        reasons = (f.get("metadata") or {}).get("unverified_reasons") or ()
+        reason = next((r for r in LABEL_REVIEW_REASONS if r in reasons), None)
+        if reason is None:
+            continue
+        label = re.sub(r"\s+", " ", str(f.get("label") or "")).strip()
+        if not label or len(label) > LABEL_REVIEW_CHARS:
+            omitted += 1
+            continue
+        label, masked = _digits_masked(label)
+        unit = re.sub(r"\s+", " ", str(f.get("unit") or "")).strip()
+        unit = _digits_masked(unit)[0] if len(unit) <= LABEL_REVIEW_UNIT_CHARS else ""
+        near = (f.get("code") or "") if reason == "label_fuzzy" else ""
+        seen[(reason, label, masked, near, unit)] += 1
+    ranked = sorted(seen.items(), key=lambda kv: (-kv[1], kv[0]))
+    omitted += sum(n for _, n in ranked[LABEL_REVIEW_TOP:])
+    out = []
+    for (reason, label, masked, near, unit), n in ranked[:LABEL_REVIEW_TOP]:
+        item: dict = {"reason": reason, "label": label, "label_masked": masked, "count": n}
+        if near:
+            item["near_code"] = near
+        if unit:
+            item["unit"] = unit
+        out.append(item)
+    return out, omitted
+
+
 def _structured_output() -> bool:
     from oncofiles import config
 

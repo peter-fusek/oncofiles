@@ -2696,6 +2696,19 @@ def _lab_shadow_entry(w: _DocWork, stored) -> dict:
     }  # fmt: skip
 
 
+def _add_label_review(entry: dict, w: _DocWork) -> None:
+    """Attach the label review list (#814) to a compared lab entry, in place.
+    Only the in-memory reports of the shadow preview and the scorecard call
+    this; the lab write job, whose report is persisted, never does."""
+    from oncofiles.curated import llm_extract
+
+    if entry.get("result") != "compared" or w.out is None:
+        return
+    labels, omitted = llm_extract.unmapped_labels(w.out["facts"])
+    entry["unmapped_labels"] = labels
+    entry["unmapped_labels_omitted"] = omitted
+
+
 async def _llm_shadow_job(
     db,
     pid: str,
@@ -2731,6 +2744,8 @@ async def _llm_shadow_job(
                  for d in docs]  # fmt: skip
         await _extract_documents(works, parallel=parallel)
         report = [_lab_shadow_entry(w, stored) for w in works]
+        for w, entry in zip(works, report, strict=True):
+            _add_label_review(entry, w)
         done = [r for r in report if r.get("result") == "compared"]
         totals = {k: sum(r[k] for r in done) for k in
                   ("rule_facts", "llm_facts", "llm_machine", "agree", "agree_machine",
@@ -2772,6 +2787,10 @@ async def curated_llm_extract_preview(
     compared with the facts currently stored for that document and reported
     as keys and counts only (agreement on code + date + value hash, codes
     found by only one side, unverified reasons, seconds) — never values.
+    Each document also lists ``unmapped_labels`` (#814): the labels that map
+    to no ``fact_codes`` alias (or only fuzzily, with ``near_code``), digits
+    masked as 9, at most 60 characters, with counts — the review list for new
+    aliases; in this report only, never stored or logged.
     Writes nothing: no facts, no Drive. Off-switch: LLM_EXTRACT_SHADOW_DISABLED=true.
     Explicit ``document_ids`` only (max 10). Runs in the background; poll
     curated_reocr_status. Slow: about a minute per page.
@@ -4054,7 +4073,9 @@ async def _scorecard_job(
             if extractor == "clinical":
                 cards.append(scorecard.clinical_card(_clinical_entry(w)[0]))
             else:
-                cards.append(scorecard.lab_card(_lab_shadow_entry(w, stored)))
+                entry = _lab_shadow_entry(w, stored)
+                _add_label_review(entry, w)  # in-memory card only; never persisted
+                cards.append(scorecard.lab_card(entry))
         stopped = any(w.stopped or (w.final or {}).get("error") == "stopping" for w in works)
         stopped = stopped or _stopping.is_set()  # a stop inside a document: pages unread
         totals = scorecard.totals(cards, requested=requested, missing=missing)

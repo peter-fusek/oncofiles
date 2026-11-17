@@ -10,7 +10,11 @@ into a scorecard and compares two scorecards.
 Everything here is pure and keeps **numbers and codes only**: a card is built
 from an allow-list of keys, every string is a short code (``[a-z0-9_:.-]``),
 and nothing from a page, an answer or an evidence passage is ever copied —
-not even the masked answer shape of the page diagnostics.
+not even the masked answer shape of the page diagnostics. The one exception
+is a lab card's ``unmapped_labels`` (#814), the label review list of
+``llm_extract.unmapped_labels`` (digit-masked, at most 60 characters, never a
+value), re-checked by ``review_labels`` and kept on the in-memory card only:
+``persisted`` stores no card.
 
 Metrics (per page, per document and in total):
 
@@ -162,7 +166,45 @@ def lab_card(entry: dict) -> dict:
     card["unverified_reasons"] = _code_counts(entry.get("unverified_reasons"))
     card["dropped_reasons"] = drops
     card["lab"] = {k: int(_num(entry.get(k)) or 0) for k in _LAB_COUNTS}
+    if "unmapped_labels" in entry:  # in memory only: ``persisted`` drops the cards
+        card["unmapped_labels"] = review_labels(entry.get("unmapped_labels"))
+        card["unmapped_labels_omitted"] = int(_num(entry.get("unmapped_labels_omitted")) or 0)
     return card
+
+
+_REVIEW_REASONS = ("label_unmapped", "label_fuzzy")
+_UNMASKED_DIGIT = re.compile(r"[0-8]")
+
+
+def _review_text(value, limit: int, *, masked: bool) -> bool:
+    """A non-empty string of at most ``limit`` characters whose only digits
+    are masking nines (and those only when ``masked``)."""
+    if not isinstance(value, str) or not value or len(value) > limit:
+        return False
+    if _UNMASKED_DIGIT.search(value):
+        return False
+    return masked or "9" not in value
+
+
+def review_labels(items) -> list[dict]:
+    """The label review list (#814) re-checked: a reason code, a label of at
+    most 60 characters whose digits are all masked, a count, the fuzzy code
+    and a short masked unit. Anything else is dropped."""
+    out: list[dict] = []
+    for it in items if isinstance(items, list) else ():
+        if not isinstance(it, dict) or it.get("reason") not in _REVIEW_REASONS:
+            continue
+        masked = it.get("label_masked") is True
+        if not _review_text(it.get("label"), 60, masked=masked):
+            continue
+        item = {"reason": it["reason"], "label": it["label"], "label_masked": masked,
+                "count": int(_num(it.get("count")) or 0)}  # fmt: skip
+        if _code(it.get("near_code")):
+            item["near_code"] = it["near_code"]
+        if _review_text(it.get("unit"), 20, masked=True):
+            item["unit"] = it["unit"]
+        out.append(item)
+    return out
 
 
 def percentile(values: list[float], q: float) -> float | None:
