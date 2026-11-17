@@ -160,7 +160,6 @@ PUBLIC_ROUTES: dict[tuple[str, str], str] = {
     ("/dashboard/verify", "dashboard_verify"): "auth flow: Google tokeninfo, rate limited",
     ("/api/logout", "api_logout"): "auth flow: revokes only a token that verifies (#591)",
     ("/api/newsletter/subscribe", "api_newsletter_subscribe"): "signup, rate limited per IP",
-    ("/api/newsletter/check", "api_newsletter_check"): "one lookup by email, rate limited",
     ("/api/share-link/{code}", "api_redeem_share_link"): "one-time code, in memory, rate limited",
     (
         "/oauth/authorize/{service}",
@@ -203,7 +202,6 @@ DB_ALLOWLIST: dict[tuple[str, str], str] = {
         "dashboard_verify",
     ): "one dashboard_access_log sign_in row (#868), only after Google verified the token",
     ("/api/newsletter/subscribe", "api_newsletter_subscribe"): "INSERT OR IGNORE one row",
-    ("/api/newsletter/check", "api_newsletter_check"): "one SELECT by email",
     ("/oauth/authorize/{service}", "oauth_authorize"): "slug + patient lookup after the session",
     (
         "/oauth/callback",

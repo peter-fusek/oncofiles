@@ -2104,7 +2104,7 @@ Nič sa nemaže, len presúva do koša.
       if (e.target.id === 'bug-title' || e.target.id === 'bug-desc') updateBugLink();
     });
 
-    /* Waitlist: existing newsletter backend (/api/newsletter/*) */
+    /* Waitlist: POST /api/newsletter/subscribe only (no membership check, #879) */
     function nlSubmit(form) {
       var source = form.getAttribute('data-nl-source');
       var input = form.querySelector('input[type="email"]');
@@ -2119,23 +2119,15 @@ Nič sa nemaže, len presúva do koša.
       btn.appendChild(spinner);
       msgEl.textContent = '';
       msgEl.className = 'nl-msg';
-      fetch('/api/newsletter/check?email=' + encodeURIComponent(email))
+      /* #879: no membership pre-check; the e-mail travels only in the POST
+         body, and the answer is the same for a new and an existing address. */
+      fetch('/api/newsletter/subscribe', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: email, source: source })
+      })
         .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, data: d }; }); })
-        .then(function (check) {
-          if (check.ok && check.data.subscribed) {
-            msgEl.textContent = lang === 'en' ? 'You are already on the list.' : 'Už ste na zozname.';
-            msgEl.className = 'nl-msg success';
-            input.value = '';
-            return null;
-          }
-          return fetch('/api/newsletter/subscribe', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ email: email, source: source })
-          }).then(function (r) { return r.json().then(function (d) { return { ok: r.ok, data: d }; }); });
-        })
         .then(function (res) {
-          if (res === null) return;
           if (res.ok && res.data.ok) {
             msgEl.textContent = lang === 'en' ? 'Thank you, check your email.' : 'Ďakujeme, skontrolujte si email.';
             msgEl.className = 'nl-msg success';
