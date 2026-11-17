@@ -96,7 +96,7 @@ def test_the_context_header_as_the_model_returns_it_is_a_verified_range():
     meta = f["metadata"]
     assert meta["date_source"] == "printed_range" and meta["date_precision"] == "range"
     assert (meta["date_range_start"], meta["date_range_end"]) == (START, END)
-    assert meta["verifier"] == verifier.VERIFIER_VERSION == len("v-3")
+    assert meta["verifier"] == verifier.VERIFIER_VERSION >= 3  # v3 #833, v4 #814
 
 
 # ── what the parser tolerates: the shape of the answer only ─────────────
@@ -190,7 +190,10 @@ def test_a_decorated_single_date_must_be_printed_exactly():
     # the decorated form never leans on a 2-digit year or a bare day.month
     assert reasons("30.5.2028:", PAGE.replace("30.5.2028", "30.5.28")) == ["date_not_printed"]
     assert reasons("30.5.2028:", PAGE.replace("30.5.2028", "30.5.")) == ["date_not_printed"]
-    assert reasons("30.5.28:") == ["date_unparsed"]
+    # a short year only with an anchor that prints the full year (here on the
+    # page, maintainer decision of November 2026); without one: unparsed
+    assert check("30.5.28:")["metadata"]["year_anchored"] == "page"
+    assert reasons("30.5.28:", PAGE.replace("30.5.2028", "30.5.28")) == ["date_unparsed"]
 
 
 def test_plain_dates_verify_exactly_as_before():
