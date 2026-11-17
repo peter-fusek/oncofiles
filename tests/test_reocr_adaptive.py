@@ -44,6 +44,10 @@ def model(monkeypatch):
         state["calls"].append((page, dpi))
         return state["script"][(page, dpi)]
 
+    # The fake "image" is the dpi, not a PNG, so pass 2 reads the whole page here:
+    # this module tests which page gets which pass. Pass 2 as two halves (#883)
+    # under adaptive mode: test_reocr_pass_usage / test_reocr_pass_independence.
+    monkeypatch.setattr(config, "REOCR_SECOND_PASS_TILES", 1)
     monkeypatch.setattr(extract_mod, "_pixmap_png", lambda page, dpi=None: f"{dpi}".encode())
     monkeypatch.setattr(llm, "image_part", lambda png: {"type": "image", "dpi": int(png)})
     monkeypatch.setattr(llm, "chat", fake_chat)

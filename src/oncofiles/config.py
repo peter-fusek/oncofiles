@@ -92,6 +92,13 @@ REOCR_SECOND_PASS_DPI: int = int(os.environ.get("REOCR_SECOND_PASS_DPI", "220"))
 # The A/B knob for #593 T3.
 REREAD_DPI: int = int(os.environ.get("REREAD_DPI", "150"))
 REREAD_SECOND_PASS_DPI: int = int(os.environ.get("REREAD_SECOND_PASS_DPI", "220"))
+# How the second vision pass sees the page (#883), both paths: 2 (default) = two
+# overlapping halves (top, bottom), one call each, so the model server cannot hand
+# both passes the same downscaled image; 1 = the whole page (pre-#883, rollback
+# knob only: in production that made pass 2 a copy of pass 1). Other values → 2.
+REOCR_SECOND_PASS_TILES: int = (
+    1 if os.environ.get("REOCR_SECOND_PASS_TILES", "2").strip() == "1" else 2
+)
 # Second-pass policy (#593): "fixed2" (default) reads every page twice; "adaptive"
 # skips the second pass only where it provably cannot change what is confirmed
 # (see reocr._vision_passes); verification semantics never loosen.

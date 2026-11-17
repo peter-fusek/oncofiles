@@ -69,10 +69,12 @@ def _samples(png: bytes) -> tuple:
 
 
 def _turned_by(received: bytes, upright: bytes) -> int | None:
-    """How far (clockwise) the received image is turned from the upright page."""
+    """How far (clockwise) the received image is turned from the upright page
+    (the whole page, or one half of it as pass 2 of a re-OCR reads it, #883)."""
     got = _samples(received)
     for k in orientation.ROTATIONS:
-        if _samples(orientation.rotate_png(upright, k)) == got:
+        turned = orientation.rotate_png(upright, k)
+        if any(_samples(image) == got for image in (turned, *reocr.split_png(turned, 2))):
             return k
     return None
 
@@ -369,10 +371,16 @@ def test_reocr_passes_read_the_rotated_page(monkeypatch):
     passes = reocr._vision_passes(_one_page_pdf(), "pdf", [100, 120], client=object(),
                                   usage=usage, diag=diag)  # fmt: skip
     assert fake.orientation_calls == 1
-    assert fake.read_turns == [0, 0]  # both passes saw the upright page
-    assert [p[0] for p in passes] == [UPRIGHT_TEXT, UPRIGHT_TEXT]
+    # both passes saw the upright page (pass 2 as its two halves, #883)
+    assert fake.read_turns == [0] * 3
+    assert [p[0] for p in passes] == [UPRIGHT_TEXT, UPRIGHT_TEXT + "\n" + UPRIGHT_TEXT]
     assert diag["rotation"] == [270] and diag["rotation_source"] == ["model"]
     assert not any(r.get("orientation_probe") for r in usage)
+    # #882: the orientation question has its own record, counts only
+    [ask] = [r for r in usage if r.get("kind") == "orientation"]
+    assert (ask["page"], ask["pass"], ask["valid"], ask["confident"]) == (1, 0, True, True)
+    assert isinstance(ask["seconds"], float) and ask["width"] and ask["height"]
+    assert reocr.usage_summary(usage)["truncated_passes"] == []
 
 
 def test_reocr_unsure_probes_are_recorded_not_used(monkeypatch):
