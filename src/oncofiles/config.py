@@ -11,7 +11,9 @@ from dotenv import load_dotenv
 load_dotenv()
 
 BASE_DIR = Path(__file__).parent.parent.parent.resolve()
-DATA_DIR = BASE_DIR / "data"
+# ONCOFILES_DATA_DIR: optional override (offline tools on a read-only checkout,
+# e.g. ``python -m oncofiles.index_diff``); unset = <source root>/data as before
+DATA_DIR = Path(os.environ.get("ONCOFILES_DATA_DIR") or BASE_DIR / "data")
 DATA_DIR.mkdir(exist_ok=True)
 
 ANTHROPIC_API_KEY: str = os.environ.get("ANTHROPIC_API_KEY", "")

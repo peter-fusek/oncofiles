@@ -37,6 +37,7 @@ GENERAL_PAGE = """Odber: 14.04.2027 07:40,
 Lipidy: S-Cholesterol ...4.81  [mmol/l] {2.90 - 5.00 } ; \
 S-Triacylglyceroly ...1.21  [mmol/l] {0.45 - 1.70 }
 Krvný obraz: Leukocyty [WBC] ...6.12  [10^9/l] {3.80 - 10.70 } ; \
+Hematokrit [HCT] ...0.401  [pomer] {0.350 - 0.470 } ; \
 Sedimentácia ...11
 """
 ONCO_PAGE = """Odber: 03.05.2027 08:15,
@@ -44,7 +45,8 @@ Krvný obraz: Leukocyty [WBC] ...5.42  [10^9/l] {3.80 - 10.70 } ; \
 Hemoglobín [HGB] ...131.0  [g/l] {120.0 - 155.0 }
 Sérum: S-Kreatinín ...61.00  [µmol/l] {42.00 - 79.00 }
 """
-SECRET_TEXT = ("4.81", "1.21", "6.12", "5.42", "131", "61.0", "2027", "Cholesterol",
+SECRET_TEXT = ("4.81", "1.21", "6.12", "0.401", "Hematokrit", "5.42", "131", "61.0", "2027",
+               "Cholesterol",
                "Triacylglyceroly", "Leukocyty", "Sedimentácia", "Hemoglobín", "Kreatinín",
                "Stred", "Odber")  # fmt: skip
 
@@ -130,6 +132,11 @@ async def test_report_counts_the_intended_change_only(tmp_path, monkeypatch):
     assert general["rule"]["recoded"] == {"NULL>CHOL": 1, "NULL>TRIG": 1}
     assert general["rule"]["new_facts"] == {"ESR": 1}  # unitless, uncoded before → dropped
     assert "lost" not in general["rule"] and "verdict" not in general["rule"]
+    # HCT printed as "pomer" was unconvertible (canonical NULL), now set; the
+    # value of an already convertible unit never changes
+    assert general["rule"]["canonical_set"] == {"HCT": 1}
+    assert "canonical_changed" not in general["rule"]
+    assert "canonical_cleared" not in general["rule"]
     assert general["baseline_mismatch_documents"] == 0
     assert general["llm_lab_if_rewritten"]["recoded"] == {"NULL>MCV": 1}
     assert general["llm_lab_if_rewritten"]["verdict"] == {"unverified>machine": {"MCV": 1}}
@@ -346,6 +353,75 @@ async def test_existing_fixtures_verify_identically_with_label_normalisation(tmp
 
 
 def test_scrubbed_env_has_no_secret_dependency():
-    # the module reads no environment variable itself
+    # the module reads no environment variable; it only sets its own data dir
     src = inspect.getsource(index_diff)
-    assert "os.environ" not in src and "getenv" not in src
+    assert "os.environ.get" not in src and "getenv" not in src
+    assert re.findall(r"os\.environ\[[^\]]+\]", src) == ['os.environ["ONCOFILES_DATA_DIR"]']
+
+
+def test_cli_runs_from_a_read_only_checkout(tmp_path):
+    """config.DATA_DIR is created at import; the CLI points it at a temp dir
+    first, so a read-only source tree (no ``data/``) works."""
+    import stat
+
+    tree = tmp_path / "checkout"
+    shutil.copytree(ROOT / "src" / "oncofiles", tree / "src" / "oncofiles",
+                    ignore=shutil.ignore_patterns("__pycache__"))  # fmt: skip
+    shutil.copytree(ROOT / "migrations", tree / "migrations")
+    db = tmp_path / "x.db"
+    sqlite3.connect(db).executescript(
+        "CREATE TABLE schema_migrations (version TEXT PRIMARY KEY);"
+        "CREATE TABLE fact_codes (code TEXT PRIMARY KEY, category TEXT NOT NULL,"
+        " name_sk TEXT NOT NULL, name_en TEXT NOT NULL, loinc TEXT, unit_canonical TEXT,"
+        " aliases TEXT NOT NULL DEFAULT '[]', unit_conversions TEXT NOT NULL DEFAULT '{}');"
+        "CREATE TABLE documents (id INTEGER, patient_id TEXT, category TEXT, document_date TEXT,"
+        " structured_metadata TEXT, file_id TEXT, deleted_at TEXT);"
+        "CREATE TABLE document_pages (document_id INTEGER, page_number INTEGER,"
+        " extracted_text TEXT, model TEXT);"
+        "CREATE TABLE clinical_records (id INTEGER, patient_id TEXT, source_document_id INTEGER,"
+        " page_number INTEGER, evidence TEXT, param TEXT, code TEXT, unit TEXT, value_num REAL,"
+        " verification TEXT, metadata_json TEXT, extracted_by TEXT, deleted_at TEXT);"
+    )
+    paths = [p for p in tree.rglob("*")] + [tree]
+    for p in paths:
+        p.chmod(p.stat().st_mode & ~(stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH))
+    try:
+        res = subprocess.run(
+            [sys.executable, "-c",
+             "import sys, oncofiles, oncofiles.index_diff as d\n"
+             "assert oncofiles.__file__.startswith(sys.argv[1]), oncofiles.__file__\n"
+             "sys.exit(d.main(['--db', sys.argv[2]]))",
+             str(tree), str(db)],
+            cwd=tmp_path, env={"PYTHONPATH": str(tree / "src"), "PYTHONDONTWRITEBYTECODE": "1"},
+            capture_output=True, text=True, timeout=120,
+        )  # fmt: skip
+    finally:
+        for p in paths:
+            p.chmod(p.stat().st_mode | stat.S_IWUSR)
+    assert res.returncode == 0, res.stderr
+    assert json.loads(res.stdout)["pending_migrations"]
+    assert not (tree / "data").exists()
+
+
+async def test_existing_unit_conversions_are_unchanged(tmp_path, monkeypatch):
+    """Every unit that converted before this PR converts to the same value;
+    the canonical unit of every existing code is unchanged. Only units that
+    did NOT convert before (HCT "pomer") may become convertible."""
+    old_v, new_v = await _vocabs(tmp_path, monkeypatch)
+    checked = 0
+    for code, old in old_v.by_code.items():
+        new = new_v.by_code[code]
+        assert new["unit_canonical"] == old["unit_canonical"], code
+        for unit, factor in (old.get("unit_conversions") or {}).items():
+            assert new["unit_conversions"].get(unit) == factor, (code, unit)
+        units = [*(old.get("unit_conversions") or {}), old["unit_canonical"] or ""]
+        label = code  # every code is its own alias
+        for unit in units:
+            a = verifier.vocab_check(old_v, label, unit or None, 1.0, normalise=False)
+            b = verifier.vocab_check(new_v, label, unit or None, 1.0)
+            assert (a[0] or {}).get("code") == (b[0] or {}).get("code"), (code, unit)
+            assert a[1] == b[1], (code, unit)
+            checked += 1
+        added = set(new["unit_conversions"]) - set(old.get("unit_conversions") or {})
+        assert added <= ({"pomer"} if code == "HCT" else set()), (code, added)
+    assert checked > 50

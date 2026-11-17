@@ -10,8 +10,10 @@ result with what the deployed re-index then does. Command::
     uv run python -m oncofiles.index_diff --db /tmp/x/oncofiles.db \\
         --stop-if-changed <patient uuid>
 
-It runs from a plain checkout (``uv sync`` + ``uv run``); no environment and
-no secret is needed (it works under ``env -i``). Guarantees:
+It runs from a plain checkout (``uv sync`` + ``uv run``), also a read-only
+one: ``config.DATA_DIR`` is pointed at a fresh temp dir before any import
+(``ONCOFILES_DATA_DIR``). No environment and no secret is needed (it works
+under ``env -i``). Guarantees:
 
 * **Read-only.** The DB is opened through a ``file:…?mode=ro`` URI plus
   ``PRAGMA query_only``; the new vocabulary is built in a private in-memory
@@ -34,9 +36,12 @@ What it computes, per patient:
   after the pending migrations (new). Facts are paired by page, evidence and
   label: ``new`` / ``lost`` per code, ``recoded`` (``OLD>NEW``, ``NULL`` for
   uncoded), ``verdict`` changes (``machine>unverified`` / ``unverified>machine``
-  per code) and ``canonical_changed`` (canonical value set, cleared or
-  changed, per code). This is what the re-index (``INDEX_VERSION`` bump)
-  does to the rule facts; date corroboration afterwards is not modelled.
+  per code) and the canonical value per code: ``canonical_set`` (none → a
+  value, a printed unit became convertible), ``canonical_cleared`` and
+  ``canonical_changed`` (a different value: a conversion factor changed),
+  counted only for facts that keep their code.
+  This is what the re-index (``INDEX_VERSION`` bump) does to the rule facts;
+  date corroboration afterwards is not modelled.
 * ``baseline_mismatch_documents``: documents whose stored rule facts differ
   from the old recomputation (page, evidence, label, code). Non-zero means the
   baseline is not exactly production and the diff is approximate there.
@@ -257,10 +262,16 @@ def _code(f: dict) -> str:
     return f.get("code") or UNCODED
 
 
-def _canon_changed(a, b) -> bool:
-    if a is None or b is None:
-        return (a is None) != (b is None)
-    return abs(float(a) - float(b)) > 1e-9
+def _canon_change(a, b) -> str | None:
+    """``canonical_set`` (none → a value: a unit became convertible),
+    ``canonical_cleared`` or ``canonical_changed`` (a different value)."""
+    if a is None and b is None:
+        return None
+    if a is None:
+        return "canonical_set"
+    if b is None:
+        return "canonical_cleared"
+    return "canonical_changed" if abs(float(a) - float(b)) > 1e-9 else None
 
 
 def _empty_patient() -> dict:
@@ -269,6 +280,7 @@ def _empty_patient() -> dict:
         "baseline_mismatch_documents": 0,
         "rule": {"old": 0, "new": 0, "new_facts": Counter(), "lost": Counter(),
                  "recoded": Counter(), "verdict": defaultdict(Counter),
+                 "canonical_set": Counter(), "canonical_cleared": Counter(),
                  "canonical_changed": Counter()},
         "llm_lab_if_rewritten": {"facts": 0, "recoded": Counter(),
                                  "verdict": defaultdict(Counter)},
@@ -289,8 +301,10 @@ def _rule_diff(acc: dict, old: list[dict], new: list[dict]) -> None:
             rule["recoded"][f"{_code(a)}>{_code(b)}"] += 1
         if a["verification"] != b["verification"]:
             rule["verdict"][f"{a['verification']}>{b['verification']}"][_code(b)] += 1
-        if _canon_changed(a.get("value_canonical"), b.get("value_canonical")):
-            rule["canonical_changed"][_code(b)] += 1
+        same_code = _code(a) == _code(b)  # a re-coded fact is counted under ``recoded``
+        if same_code and (kind := _canon_change(a.get("value_canonical"),
+                                                b.get("value_canonical"))):  # fmt: skip
+            rule[kind][_code(b)] += 1
 
 
 def _baseline_matches(stored: list[dict], old: list[dict]) -> bool:
@@ -342,8 +356,8 @@ def _plain(obj):
 def changed(patient: dict) -> bool:
     """Whether a patient's rule facts or verdicts would change at all."""
     rule = patient.get("rule") or {}
-    return any(rule.get(k) for k in ("new_facts", "lost", "recoded", "verdict",
-                                     "canonical_changed"))  # fmt: skip
+    return any(rule.get(k) for k in ("new_facts", "lost", "recoded", "verdict", "canonical_set",
+                                     "canonical_cleared", "canonical_changed"))  # fmt: skip
 
 
 def run(db_path: str | Path, migrations_dir: Path = MIGRATIONS_DIR) -> dict:
@@ -401,8 +415,21 @@ def run(db_path: str | Path, migrations_dir: Path = MIGRATIONS_DIR) -> dict:
     return report
 
 
+def private_data_dir() -> str:
+    """Point ``config.DATA_DIR`` (created at import) at a fresh temp dir, so
+    the tool runs from a read-only checkout and never touches its data dir.
+    Must run before any ``oncofiles`` module is imported."""
+    import os
+    import tempfile
+
+    path = tempfile.mkdtemp(prefix="index_diff_")
+    os.environ["ONCOFILES_DATA_DIR"] = path
+    return path
+
+
 def main(argv: list[str] | None = None) -> int:
     block_network()  # before anything below imports an oncofiles module
+    private_data_dir()
     ap = argparse.ArgumentParser(
         prog="python -m oncofiles.index_diff", description=__doc__.split("\n")[0]
     )
