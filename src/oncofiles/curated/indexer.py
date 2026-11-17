@@ -38,7 +38,8 @@ INDEX_ENGINE = "curated-sidecar"
 # v19: [chart: …] blocks never reach the lab rule parsers; #609 OCR keys in metadata
 # v20: general-health lab vocabulary (migration 091, #814): new codes ESR, CHOL,
 #      TRIG, BILI_DIRECT, LUC, PDW_PCT, USED_SMALL_EPI and aliases for existing ones
-INDEX_VERSION = 20
+# v21: HCT printed as a ratio ("pomer") converts to the canonical L/L (migration 092)
+INDEX_VERSION = 21
 TEXT_SOURCE_EXTS = {"md", "txt", "csv", "json"}
 MAX_TEXT_SOURCE_BYTES = 512 * 1024
 _PAGE_RE = re.compile(r"^<!-- page (\d+) -->\s*$", re.M)
