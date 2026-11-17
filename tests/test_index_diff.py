@@ -132,9 +132,8 @@ async def test_report_counts_the_intended_change_only(tmp_path, monkeypatch):
     assert general["rule"]["recoded"] == {"NULL>CHOL": 1, "NULL>TRIG": 1}
     assert general["rule"]["new_facts"] == {"ESR": 1}  # unitless, uncoded before → dropped
     assert "lost" not in general["rule"] and "verdict" not in general["rule"]
-    # HCT printed as "pomer" was unconvertible (canonical NULL), now set; the
-    # value of an already convertible unit never changes
-    assert general["rule"]["canonical_set"] == {"HCT": 1}
+    # HCT printed as "pomer" stays unconvertible here (no unit change in 091)
+    assert "canonical_set" not in general["rule"]
     assert "canonical_changed" not in general["rule"]
     assert "canonical_cleared" not in general["rule"]
     assert general["baseline_mismatch_documents"] == 0
@@ -404,16 +403,14 @@ def test_cli_runs_from_a_read_only_checkout(tmp_path):
 
 
 async def test_existing_unit_conversions_are_unchanged(tmp_path, monkeypatch):
-    """Every unit that converted before this PR converts to the same value;
-    the canonical unit of every existing code is unchanged. Only units that
-    did NOT convert before (HCT "pomer") may become convertible."""
+    """No existing code gains or changes a unit: same canonical unit, same
+    conversion map, and every unit converts to the same value as before."""
     old_v, new_v = await _vocabs(tmp_path, monkeypatch)
     checked = 0
     for code, old in old_v.by_code.items():
         new = new_v.by_code[code]
         assert new["unit_canonical"] == old["unit_canonical"], code
-        for unit, factor in (old.get("unit_conversions") or {}).items():
-            assert new["unit_conversions"].get(unit) == factor, (code, unit)
+        assert new["unit_conversions"] == (old.get("unit_conversions") or {}), code
         units = [*(old.get("unit_conversions") or {}), old["unit_canonical"] or ""]
         label = code  # every code is its own alias
         for unit in units:
@@ -422,6 +419,4 @@ async def test_existing_unit_conversions_are_unchanged(tmp_path, monkeypatch):
             assert (a[0] or {}).get("code") == (b[0] or {}).get("code"), (code, unit)
             assert a[1] == b[1], (code, unit)
             checked += 1
-        added = set(new["unit_conversions"]) - set(old.get("unit_conversions") or {})
-        assert added <= ({"pomer"} if code == "HCT" else set()), (code, added)
     assert checked > 50

@@ -49,6 +49,6 @@ UPDATE fact_codes SET aliases = (
 WHERE code IN (SELECT code FROM _m091_aliases);
 DROP TABLE IF EXISTS _m091_aliases;
 
--- HCT printed as a ratio ("pomer") is already in the canonical L/L
-UPDATE fact_codes SET unit_conversions = json_set(unit_conversions, '$.pomer', 1)
-WHERE code = 'HCT' AND json_extract(unit_conversions, '$.pomer') IS NULL;
+-- No unit conversion of an existing code changes here (a separate change
+-- decides the HCT ratio unit, because it would set canonical values of
+-- existing facts).

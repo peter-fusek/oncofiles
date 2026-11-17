@@ -71,7 +71,7 @@ LABELS = [
     ("Stred.obj.RBC [MCV]", "88.1", "fL", "MCV"),
     ("Šírka distr. RBC [RDW]", "13.1", "%", "RDW"),
     ("Erytrocyty [RBC]", "4.61", "10^12/l", "RBC"),
-    ("Hematokrit [HCT]", "0.412", "pomer", "HCT"),
+    ("Hematokrit [HCT]", "0.412", "l/l", "HCT"),
     ("Hemoglobín [HGB]", "141", "g/l", "HGB"),
     ("Leukocyty [WBC]", "6.12", "10^9/l", "WBC"),
     ("Trombocyty [PLT]", "251", "10^9/l", "PLT"),
@@ -106,11 +106,11 @@ async def test_each_listed_label_maps_through_the_verifier(db, label, value, uni
 
 @pytest.mark.parametrize(
     ("unit", "value", "canonical"),
-    [("10^9/l", "6.12", 6.12), ("10^12/l", "4.61", 4.61), ("pomer", "0.412", 0.412)],
+    [("10^9/l", "6.12", 6.12), ("10^12/l", "4.61", 4.61), ("l/l", "0.412", 0.412)],
 )
 async def test_count_and_ratio_units_convert(db, unit, value, canonical):
     label = {"10^9/l": "Leukocyty [WBC]", "10^12/l": "Erytrocyty [RBC]",
-             "pomer": "Hematokrit [HCT]"}[unit]  # fmt: skip
+             "l/l": "Hematokrit [HCT]"}[unit]  # fmt: skip
     f = _verify(await _vocab(db), _cand(label, value, unit))
     assert f["value_canonical"] == canonical
     assert "unit_unconvertible" not in f["metadata"].get("unverified_reasons", [])
@@ -201,7 +201,7 @@ async def test_migration_is_idempotent(db):
 async def test_migration_only_appends_aliases(db):
     rows = {r["code"]: r for r in await db.fact_code_vocabulary()}
     assert rows["U_ERY"]["aliases"][:3] == ["U- Krv", "U-Krv", "USED - Erytrocyty"]
-    assert rows["HCT"]["unit_conversions"] == {"%": 0.01, "pomer": 1}
+    assert rows["HCT"]["unit_conversions"] == {"%": 0.01}  # 091 changes no unit
     for code in ("ESR", "CHOL", "TRIG", "BILI_DIRECT", "LUC", "PDW_PCT", "USED_SMALL_EPI"):
         assert rows[code]["category"] == "lab"
 
