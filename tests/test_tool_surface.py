@@ -314,7 +314,7 @@ async def test_cli_shares_the_server_job_registry(live_server, monkeypatch):
 
     release = asyncio.Event()
 
-    async def fake_targets(db, pid, document_ids, *, only_with_facts=True, excluded=None):
+    async def fake_targets(db, pid, document_ids, **kwargs):
         return [
             {
                 "document_id": 1,

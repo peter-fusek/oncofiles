@@ -1200,6 +1200,31 @@ def _start_sync_scheduler(
         except Exception:
             logger.exception("Prompt log cleanup failed")
 
+    async def _run_dashboard_access_log_retention():
+        """Delete dashboard_access_log rows older than the retention (#868).
+
+        Maintainer decision 2026-11-16: access telemetry is kept 90 days
+        (``DASHBOARD_ACCESS_LOG_RETENTION_DAYS``, min 30). Only that table,
+        in chunks of <= 500 rows, under ``_sync_semaphore``. Logs the count only.
+        """
+        from oncofiles.dashboard_audit import purge_expired_access_log, retention_days
+
+        try:
+            days = retention_days()
+            async with _sync_semaphore:
+                deleted = await purge_expired_access_log(db, days=days)
+            entry = job_tracker.get("dashboard_access_log_retention", {})
+            entry["last_deleted"] = deleted
+            job_tracker["dashboard_access_log_retention"] = entry
+            logger.info(
+                "Dashboard access log retention: removed %d rows older than %d days",
+                deleted,
+                days,
+            )
+        except Exception:
+            logger.exception("Dashboard access log retention failed")
+            raise
+
     # _log_rss removed — restart logic consolidated into periodic_memory_check().
     # The old _log_rss reclaimed before checking, masking the threshold crossing,
     # and sys.exit(0) was caught by APScheduler as a job error (#213).
@@ -1714,6 +1739,16 @@ def _start_sync_scheduler(
         CronTrigger(hour=4, minute=15),
         id="prompt_log_cleanup",
         max_instances=1,
+    )
+    # #868: 04:25 UTC = 05:25 / 06:25 Europe/Bratislava, outside the 00:30-02:30
+    # local night window (curated nightly runs, AI pipeline).
+    scheduler.add_job(
+        _run_dashboard_access_log_retention,
+        CronTrigger(hour=4, minute=25, timezone="UTC"),
+        id="dashboard_access_log_retention",
+        max_instances=1,
+        misfire_grace_time=1800,
+        coalesce=True,
     )
 
     # Pipeline integrity check: opt-in only (AI-touching; gated by ENABLE_INTEGRITY_CHECK)
@@ -3914,6 +3949,9 @@ async def readiness(request: Request) -> JSONResponse:
                 # #441 Layer 6: per-run AI cost (set by _run_*_pipeline tail).
                 if info.get("last_cost_usd") is not None:
                     entry["last_cost_usd"] = info["last_cost_usd"]
+                # #868: rows removed by the last dashboard_access_log_retention run.
+                if info.get("last_deleted") is not None:
+                    entry["last_deleted"] = info["last_deleted"]
                 if entry:
                     jobs[job_id] = entry
             if jobs:
@@ -5639,6 +5677,13 @@ _SCHEDULE_DEFS = [
         "desc": "Delete prompt log entries (AI call telemetry) older than 90 days",
     },
     {
+        "id": "dashboard_access_log_retention",
+        "name": "Access Log Retention",
+        "schedule": "daily 4:25 AM UTC",
+        "group": "infra",
+        "desc": "Delete dashboard access log rows (sign-ins, ACL refusals) older than 90 days",
+    },
+    {
         "id": "pipeline_integrity",
         "name": "Pipeline Integrity",
         "schedule": "every 6 hours at :30",
@@ -6288,75 +6333,6 @@ async def api_newsletter_subscribe(request: Request) -> JSONResponse:
 
     return JSONResponse(
         {"ok": True},
-        headers={"Access-Control-Allow-Origin": "*"},
-    )
-
-
-# Per-IP rate limiter for check endpoint: {ip: [timestamp, ...]}
-_newsletter_check_rate: dict[str, list[float]] = {}
-_NEWSLETTER_CHECK_RATE_LIMIT = 20  # max checks per IP per hour
-_NEWSLETTER_CHECK_RATE_WINDOW = 3600
-
-
-@mcp.custom_route("/api/newsletter/check", methods=["GET"])
-async def api_newsletter_check(request: Request) -> JSONResponse:
-    """Check whether an email is already subscribed.
-
-    Returns {subscribed: bool, status, created_at} for the given email only.
-    Rate-limited per IP to prevent enumeration; no list endpoint exposed.
-    """
-    import re
-
-    client_ip = request.client.host if request.client else "unknown"
-    now = time.time()
-    hits = _newsletter_check_rate.get(client_ip, [])
-    hits = [t for t in hits if now - t < _NEWSLETTER_CHECK_RATE_WINDOW]
-    if len(hits) >= _NEWSLETTER_CHECK_RATE_LIMIT:
-        return JSONResponse(
-            {"error": "Too many checks. Try again later."},
-            status_code=429,
-            headers={"Access-Control-Allow-Origin": "*"},
-        )
-
-    email = (request.query_params.get("email") or "").strip().lower()
-    if not email or not re.match(r"^[^\s@]+@[^\s@]+\.[^\s@]+$", email) or len(email) > 254:
-        return JSONResponse(
-            {"error": "Invalid email"},
-            status_code=400,
-            headers={"Access-Control-Allow-Origin": "*"},
-        )
-
-    try:
-        db_inst: Database = request.app.state.fastmcp_server._lifespan_result["db"]
-        cursor = await db_inst.db.execute(
-            "SELECT status, created_at, verified_at FROM newsletter_subscribers WHERE email = ?",
-            (email,),
-        )
-        rows = await cursor.fetchall()
-    except Exception:
-        logger.exception("Newsletter check DB error")
-        return JSONResponse(
-            {"error": "internal error"},
-            status_code=500,
-            headers={"Access-Control-Allow-Origin": "*"},
-        )
-
-    hits.append(now)
-    _newsletter_check_rate[client_ip] = hits
-
-    if not rows:
-        return JSONResponse(
-            {"subscribed": False},
-            headers={"Access-Control-Allow-Origin": "*"},
-        )
-    row = rows[0]
-    return JSONResponse(
-        {
-            "subscribed": True,
-            "status": row["status"],
-            "created_at": row["created_at"],
-            "verified_at": row["verified_at"],
-        },
         headers={"Access-Control-Allow-Origin": "*"},
     )
 

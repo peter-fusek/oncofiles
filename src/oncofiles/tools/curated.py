@@ -1627,6 +1627,9 @@ async def _reocr_targets(
     *,
     only_with_facts: bool = True,
     excluded: list[dict] | None = None,
+    log_names: list[str] | None = None,
+    excluded_counts: dict[str, int] | None = None,
+    exclude_ids: set[int] | frozenset[int] = frozenset(),
 ) -> list[dict]:
     """Documents worth reading again: lab sheets first, then most unverified
     facts first (#674). By default only those with unverified facts (the
@@ -1637,10 +1640,25 @@ async def _reocr_targets(
     #815): it is never downloaded nor sent to a vision pass; its skipped
     entry (reason ``raw_genotype_excluded``) goes to ``excluded``. Any other
     text source (``extract.TEXT_EXTS``: md / txt / csv / json) is its own text,
-    not a scan, and is never a candidate either."""
+    not a scan, and is never a candidate either.
+
+    ``log_names`` (the logs folder listing, #894): a document the runner
+    would skip as handled before (``reocr.auto_selection_skip``, the runner's
+    own rule) is left out here, so the caller's ``limit`` is filled with
+    documents that will be read. Every document left out for one of these
+    reasons is counted by reason in ``excluded_counts`` (counts only).
+
+    ``exclude_ids`` (default selection only): the caller's own list of
+    documents to leave out, dropped before the limit and counted as
+    ``excluded_by_caller``. Only this patient's candidates are compared, so
+    an id of another patient simply never matches (no existence oracle)."""
     from oncofiles.curated import extract as extract_mod
     from oncofiles.curated import llm_input
-    from oncofiles.curated.reocr import needs_reocr
+    from oncofiles.curated.reocr import auto_selection_skip, needs_reocr
+
+    def drop(reason: str) -> None:
+        if excluded_counts is not None:
+            excluded_counts[reason] = excluded_counts.get(reason, 0) + 1
 
     out = []
     rows = sorted(
@@ -1654,17 +1672,30 @@ async def _reocr_targets(
             continue
         if not document_ids and only_with_facts and not r.get("unverified_facts"):
             continue
+        if not document_ids and r["id"] in exclude_ids:
+            drop("excluded_by_caller")
+            continue  # the caller asked to leave it out of the default selection
         if reason := await llm_input.reocr_exclusion(db, pid, r):
             if excluded is not None:
                 excluded.append(llm_input.skipped_entry(r, reason))
+            drop(reason)
             continue  # raw genotype data: never re-OCR'd, never to a vision pass
         if (r.get("mime_type") or "").startswith(_NOT_OCR):
+            drop("not_a_scan")
             continue  # exported or spreadsheet text, not a scan
         if extract_mod._ext(r.get("filename") or "") in extract_mod.TEXT_EXTS:
+            drop("text_source")
             continue  # a text source is its own text, not a scan
         reasons = needs_reocr(meta, ["[?]"] if r["uncertain"] else [])
         if not reasons or not cur.get("sidecar_id") or not r.get("gdrive_id"):
             continue
+        if log_names is not None and (
+            skip := auto_selection_skip(
+                {"filename": r["filename"], "explicit": bool(document_ids)}, log_names
+            )
+        ):
+            drop(skip)
+            continue  # #894: the runner would skip it; it must not use up the limit
         out.append({
             "document_id": r["id"], "filename": r["filename"], "gdrive_id": r["gdrive_id"],
             "sidecar_id": cur["sidecar_id"], "mime": r.get("mime_type") or "",
@@ -1858,37 +1889,108 @@ async def _audit_real_job(db, pid: str, job: dict) -> None:
         logger.exception("could not write the activity_log row for a real %s job", kind)
 
 
+async def _reocr_log_names(db, pid: str) -> list[str] | None:
+    """The names in the patient's curated logs folder, listed once for a
+    re-OCR plan (#894; a constant number of Drive reads, never per document).
+    ``None`` when Drive is not connected or the listing fails (logged; the
+    plan then falls back to the runner's own skip)."""
+    from oncofiles.curated.drive_ops import DriveOps
+    from oncofiles.curated.reocr import logs_listing
+    from oncofiles.server import _create_patient_clients
+
+    try:
+        clients = await _create_patient_clients(db, pid)
+        if not clients or clients[0] is None:
+            return None
+        gdrive, folder_id = clients[0], clients[3]
+
+        def _blocking():
+            own = gdrive.dedicated_copy()
+            try:
+                return logs_listing(DriveOps(own), folder_id)[1]
+            finally:
+                own.close()
+
+        return await asyncio.to_thread(_blocking)
+    except Exception as exc:
+        logger.warning("re-OCR plan: logs listing failed for %s: %s", pid[:8], type(exc).__name__)
+        return None
+
+
+REOCR_DEFAULT_LIMIT = 3  # documents picked when no document_ids are given
+REOCR_MAX_DOCS = 10  # explicit document_ids per call, as the other explicit-id tools
+REOCR_MAX_EXCLUDE = 50  # exclude_ids per call (default selection only)
+
+
 async def start_reocr(
     db,
     pid: str,
     *,
     dry_run: bool = True,
-    limit: int = 3,
+    limit: int | None = None,
     document_ids: list[int] | None = None,
     passes: int = 2,
     only_with_facts: bool = True,
     actor: str = "mcp",
+    exclude_ids: list[int] | None = None,
 ) -> dict:
     """Start a re-OCR job in the background (#660). Shared by the MCP tool and
     the admin dashboard API (#573); the caller has already resolved ``pid``.
-    A real run first makes a verified safety copy of the DB (``pre_store``)."""
+    A real run first makes a verified safety copy of the DB (``pre_store``).
+
+    ``limit`` defaults to ``REOCR_DEFAULT_LIMIT`` without ids and to
+    ``len(document_ids)`` with them; explicit ids are never truncated
+    silently: more than ``REOCR_MAX_DOCS`` ids, or a ``limit`` below their
+    count, is refused with an error.
+
+    ``exclude_ids`` (at most ``REOCR_MAX_EXCLUDE``) applies only to the
+    default selection: those documents are dropped before the limit and
+    counted as ``excluded_by_caller``; combined with ``document_ids`` it is
+    refused. Ids that are not this patient's candidates are ignored."""
+    if exclude_ids:
+        if document_ids:
+            return {"error": "exclude_ids only applies to the default selection; "
+                             "pass either document_ids or exclude_ids, not both"}  # fmt: skip
+        if len(exclude_ids) > REOCR_MAX_EXCLUDE:
+            return {"error": f"at most {REOCR_MAX_EXCLUDE} exclude_ids per call, "
+                             f"got {len(exclude_ids)}"}  # fmt: skip
+    if document_ids:
+        if len(document_ids) > REOCR_MAX_DOCS:
+            return {"error": f"at most {REOCR_MAX_DOCS} document_ids per call, "
+                             f"got {len(document_ids)}"}  # fmt: skip
+        if limit is None:
+            limit = len(document_ids)
+        elif limit < len(document_ids):
+            return {"error": f"limit {limit} is smaller than the {len(document_ids)} "
+                             "document_ids given; pass fewer ids or omit limit"}  # fmt: skip
+    elif limit is None:
+        limit = REOCR_DEFAULT_LIMIT
     busy = "busy: a run or re-OCR is in progress for this patient"
     if _busy(pid):
         return {"error": busy}
     excluded: list[dict] = []
+    counts: dict[str, int] = {}
+    # #894: the default selection drops what the runner would skip BEFORE the
+    # limit; that needs the logs folder, listed once here (explicit ids: the
+    # runner reads them again anyway, so no listing and no change)
+    log_names = None if document_ids else await _reocr_log_names(db, pid)
     targets = await _reocr_targets(
-        db, pid, document_ids, only_with_facts=only_with_facts, excluded=excluded
-    )
+        db, pid, document_ids, only_with_facts=only_with_facts, excluded=excluded,
+        log_names=log_names, excluded_counts=counts, exclude_ids=set(exclude_ids or ()),
+    )  # fmt: skip
+    plan: dict = {"excluded_before_limit": dict(sorted(counts.items()))}
+    if not document_ids and log_names is None:
+        plan["logs_listing"] = "unavailable"  # the runner still skips handled documents
     docs = targets[: max(0, min(limit, 25))]
     if not docs:
-        out: dict = {"status": "nothing to do", "candidates": len(targets)}
+        out: dict = {"status": "nothing to do", "candidates": len(targets), **plan}
         if excluded:
             out["skipped"] = excluded
         return out
     job = {
         "state": "running", "kind": "reocr", "dry_run": dry_run, "passes": passes,
         "started_at": datetime.now(UTC).isoformat(), "candidates": len(targets),
-        "actor": actor, "skipped": excluded,
+        "actor": actor, "skipped": excluded, **plan,
         "documents": [
             {k: d[k] for k in ("document_id", "filename", "category", "reasons",
                                "unverified_facts")}
@@ -1907,10 +2009,11 @@ async def curated_reocr(
     ctx: Context,
     patient_slug: str | None = None,
     dry_run: bool = True,
-    limit: int = 3,
+    limit: int | None = None,
     document_ids: list[int] | None = None,
     passes: int = 2,
     only_with_facts: bool = True,
+    exclude_ids: list[int] | None = None,
 ) -> str:
     """Read uncertain documents again with the LOCAL model (#660): Cowork-era
     transcriptions and pages with [?]. Two vision passes with high reasoning at
@@ -1933,11 +2036,20 @@ async def curated_reocr(
     earlier.
     By default only documents with unverified facts are chosen, most first
     (only_with_facts=false: every Cowork-era or uncertain document).
+    ``limit``: without ``document_ids`` the number of documents picked
+    (default 3). With ``document_ids`` every id is processed (``limit``
+    defaults to their count); at most 10 ids per call, and a ``limit``
+    smaller than the number of ids is refused, never silently truncated.
+    ``exclude_ids`` (at most 50): only without ``document_ids`` (both together
+    are refused). Those documents are left out of the default selection
+    before ``limit`` is applied, so the limit is filled with other documents;
+    the plan counts them in ``excluded_before_limit.excluded_by_caller``.
+    Ids that are not this patient's candidates are ignored.
     """
     pid = await _resolve_patient_id(patient_slug, ctx)
     out = await start_reocr(
         _get_db(ctx), pid, dry_run=dry_run, limit=limit, document_ids=document_ids,
-        passes=passes, only_with_facts=only_with_facts,
+        passes=passes, only_with_facts=only_with_facts, exclude_ids=exclude_ids,
     )  # fmt: skip
     return json.dumps(out, ensure_ascii=False)
 
