@@ -76,7 +76,7 @@ Značka **NEOVERENÉ** znamená, že sa to v tomto behu nedalo priamo overiť. P
 | Google Drive / Gmail / Calendar (OAuth klient + service account) | **mŕtve**: GCP projekty zmazané 2026-07-06, nedajú sa obnoviť. Kill switch `GOOGLE_INTEGRATION_ENABLED=false` | redirect `GOOGLE_OAUTH_REDIRECT_URI` (default `https://oncofiles.com/oauth/callback`). Pri prípadnej obnove v novom GCP projekte: zaregistrovať redirect na `oncofiles.com` a všetci opatrovatelia sa musia znovu prihlásiť |
 | Google Drive cez lokálny mount (#539, návrh) | Drive for Desktop na Macu má zdieľané priečinky pripojené a zapisovateľné. Pre Mac mini to je **zaujímavá alternatíva** k Drive API (premenovanie = `os.rename`). Nič nie je postavené | nie |
 | Anthropic API | `ANTHROPIC_API_KEY`, volania priamo na api.anthropic.com, nočný pipeline 23:00 UTC | nie |
-| E-mail (Resend) | `RESEND_API_KEY`, `NOTIFY_FROM_EMAIL`, `NOTIFY_TO_EMAIL`. Upozornenia od `sync_watchdog`. Doména odosielateľa na Resend **NEOVERENÉ** | nie (odchádzajúce) |
+| E-mail (SMTP, Brevo; od #834, predtým Resend) | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, `MAIL_FROM`, `MAIL_REPLY_TO`, `NOTIFY_TO_EMAIL`. Waitlist (uvítací e-mail + `[Lead]`), onboarding a upozornenia od `sync_watchdog`. Doména odosielateľa v Brevo (DKIM, DMARC) nastavuje maintainer | nie (odchádzajúce) |
 | GitHub (bug reporty z dashboardu) | `GITHUB_TOKEN`, `GITHUB_REPO`. Token je podľa poznámok **expirovaný** a čaká na rotáciu (#550) | nie |
 | Oncoteam webhook | `ONCOTEAM_WEBHOOK_URL`/`_TOKEN` (odchádzajúci; odstránený v #721) | áno, ak sa zmení URL oncoteamu |
 | Prichádzajúce webhooky | žiadne. GitHub repo hooks: 0. Coolify deploy webhook nie je registrovaný (#549) | |
@@ -105,7 +105,7 @@ Mimo procesu: bývalý Railway cron `oncofiles-backup` (02:00 UTC, GCS) je **zan
 **Dve inštancie naraz (počas prechodu):** nebezpečné. Nie je zámok medzi inštanciami a každá má **vlastnú kópiu** DB súboru. Hrozí:
 - **split-brain**: zápisy (nové OAuth tokeny konektorov, dokumenty, poznámky) skončia v DB, ktorú potom zahodíme;
 - **dvojité AI volania a náklady**: obe spustia `nightly_ai_pipeline`;
-- **dvojité e-maily**: `sync_watchdog` cez Resend;
+- **dvojité e-maily**: `sync_watchdog` cez SMTP;
 - po obnove Google: **dvojité premenovania a presuny** v Drive a `_cleanup_orphan_ocr` môže presúvať do koša.
 
 → Pravidlo: **v každom okamihu beží scheduler len na jednom stroji.** Na novom stroji štartovať najprv so `SYNC_ENABLED=false` (read-only smoke test proti kópii DB), alebo zdroj úplne zastaviť pred skopírovaním DB.
@@ -117,7 +117,7 @@ Mimo procesu: bývalý Railway cron `oncofiles-backup` (02:00 UTC, GCS) je **zan
 | GitHub Actions | `ci.yml`: ruff lint + format + pytest na push/PR do `main`. **Nedeployuje** |
 | Deploy | **ručne**, tlačidlom Redeploy v Coolify. Push do `main` nedeployuje (#549), webhook neexistuje |
 | Logy | v Coolify UI (stdout kontajnera). Centralizované logy ani retenčná politika **NEOVERENÉ** / neexistujú |
-| Monitoring | `/health` (liveness + `stale_sync_count`, `google_integration`), `/readiness`, `sync_watchdog` → e-mail cez Resend. Externý uptime monitor **NEOVERENÉ** (pravdepodobne žiadny) |
+| Monitoring | `/health` (liveness + `stale_sync_count`, `google_integration`), `/readiness`, `sync_watchdog` → e-mail cez SMTP (Brevo, #834). Externý uptime monitor **NEOVERENÉ** (pravdepodobne žiadny) |
 | Pamäťový failsafe | `memory_check` každých 5 min, reštart pri 420 MB (`MEMORY_RESTART_THRESHOLD_MB`) cez SIGTERM. **Spolieha sa na to, že supervisor proces znova spustí** (Coolify `restart: always`, na Macu `launchd KeepAlive`) |
 
 ### 8. Čo dáva platforma (Railway/Coolify) a doma chýba
@@ -162,8 +162,9 @@ Zdroj „Coolify env“ znamená, že hodnota je dnes nastavená v Coolify UI (r
 | `MAX_DOCUMENTS_PER_PATIENT` | FUP limit (500) | nie | default |
 | `MEMORY_RESTART_THRESHOLD_MB`, `HARD_RSS_CEILING_MB`, `MEMORY_TRACEMALLOC_ENABLED` | pamäťové poistky | nie | default |
 | `DB_QUERY_SLOTS`, `DB_EXPRESS_SLOTS`, `DB_BACKGROUND_SLOTS` | semafory DB | nie | default (5/5/2 podľa `/health`) |
-| `RESEND_API_KEY` | odosielanie e-mailov | **áno** | Coolify env |
-| `NOTIFY_FROM_EMAIL` / `NOTIFY_TO_EMAIL` | odosielateľ a príjemca upozornení | nie | Coolify env |
+| `SMTP_PASSWORD` | prihlásenie na SMTP relay (Brevo SMTP key) | **áno** | Coolify env, iba runtime |
+| `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_SSL` | SMTP relay (587 STARTTLS; 465 alebo `SMTP_SSL=true` = implicitné TLS) | nie | Coolify env, iba runtime |
+| `MAIL_FROM` / `MAIL_REPLY_TO` / `NOTIFY_TO_EMAIL` | odosielateľ, Reply-To (odhlásenie odpoveďou, musí byť čítaná schránka) a príjemca admin upozornení | nie | Coolify env, iba runtime |
 | `GITHUB_TOKEN` | bug reporty → GitHub issues (**expirovaný**, #550) | **áno** | Coolify env, iba runtime |
 | `GITHUB_REPO` | cieľové repo bug reportov | nie | default |
 | `ONCOTEAM_WEBHOOK_URL` / `ONCOTEAM_WEBHOOK_TOKEN` | notifikácia oncoteamu (odstránené v #721, Oncoteam ukončený) | URL nie / token **áno** | Coolify env (ak je) |

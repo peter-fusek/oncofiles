@@ -237,6 +237,7 @@ def test_every_pattern_is_fast_on_its_own_worst_case():
     "line",
     [
         "RESEND_API_KEY=SyntheticSecretValue",
+        "SMTP_PASSWORD=SyntheticSecretValue",
         "auth_token=SyntheticSecretValue",
         "oauth_token=SyntheticSecretValue",
         "client_secret: SyntheticSecretValue",

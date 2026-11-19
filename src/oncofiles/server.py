@@ -20,7 +20,7 @@ from fastmcp import FastMCP
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, Response
 
-from oncofiles import scheduler_singleton, session_revocation
+from oncofiles import mailer, scheduler_singleton, session_revocation
 from oncofiles.config import (
     AI_NIGHT_WINDOW_START_UTC,
     AI_NIGHTLY_ONLY,
@@ -2614,10 +2614,13 @@ involved:</p>
 <li><strong>Google</strong> — stores your files in your own Google Drive account.</li>
 <li><strong>Your AI assistant</strong> (for example Anthropic's Claude or OpenAI's ChatGPT) —
 only what it requests when you ask (section 3).</li>
-<li><strong>Our e-mail provider</strong> (e-mail delivery) — if you join the waitlist, your
+<li><strong>Our e-mail provider</strong> (e-mail delivery, EU) — if you join the waitlist, your
 e-mail address is used to notify us and to write to you about access. When a patient is
-created, we receive a notification with the patient's display name and the caregiver's
-e-mail address. No medical documents or values are sent.</li>
+created, we receive a notification with the patient's short identifier and the caregiver's
+e-mail address, never the patient's name. No medical documents or values are sent. The provider
+may add a tracking pixel to our e-mails and rewrite their links through its own servers to count
+opens and clicks; we do not add tracking of our own. To leave the list, reply to any of our
+e-mails.</li>
 <li><strong>Google Analytics</strong> — only on our public web pages (home page and demo), and
 only after you accept analytics cookies in the cookie banner. It measures visits (pages viewed,
 approximate location, device, where you came from). The logged-in app does not load Google
@@ -6048,141 +6051,86 @@ _NEWSLETTER_RATE_WINDOW = 3600  # 1 hour
 
 
 async def _notify_new_subscriber(email: str, source: str) -> None:
-    """Send '[Lead]' notification email via Resend when someone subscribes.
+    """Send the '[Lead]' note to the admin when someone joins the waitlist.
 
-    Fire-and-forget: failures are logged but never propagate — the subscribe
-    response must not depend on notification delivery.
-
-    Requires env vars RESEND_API_KEY, NOTIFY_FROM_EMAIL, NOTIFY_TO_EMAIL.
-    If any are missing the helper logs a WARNING (#461) so missing-config is
-    visible in Railway logs instead of silently dropping leads.
+    Fire-and-forget over SMTP (`mailer.send_mail`, #834): failures are logged
+    by the mailer without addresses and never propagate, so the subscribe
+    response does not depend on delivery. The subscriber's address goes only
+    into the body for the admin, never into a log line or the subject.
     """
-    import httpx
-
-    api_key = os.environ.get("RESEND_API_KEY")
-    from_email = os.environ.get("NOTIFY_FROM_EMAIL")
-    to_email = os.environ.get("NOTIFY_TO_EMAIL")
-    if not (api_key and from_email and to_email):
-        logger.warning(
-            "Newsletter admin notification SKIPPED for %s — env missing "
-            "(RESEND_API_KEY=%s, NOTIFY_FROM_EMAIL=%s, NOTIFY_TO_EMAIL=%s). "
-            "Subscriber is stored in DB but the [Lead] email won't arrive.",
-            email,
-            "set" if api_key else "missing",
-            "set" if from_email else "missing",
-            "set" if to_email else "missing",
-        )
+    to = mailer.admin_recipients()
+    if not to:
+        logger.warning("Newsletter [Lead] note not sent: NOTIFY_TO_EMAIL is not set")
         return
-
-    subject = f"[Lead] {email} — newsletter ({source})"
+    subject = f"[Lead] Oncofiles waitlist ({source})"
     text = (
-        f"New newsletter subscriber:\n\n"
+        f"New waitlist subscriber:\n\n"
         f"  email:  {email}\n"
         f"  source: {source}\n"
         f"  time:   {time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime())}\n\n"
-        f"Stored in oncofiles newsletter_subscribers table.\n"
+        f"Stored in the oncofiles newsletter_subscribers table.\n"
     )
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.post(
-                "https://api.resend.com/emails",
-                headers={
-                    "Authorization": f"Bearer {api_key}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "from": from_email,
-                    "to": [to_email],
-                    "subject": subject,
-                    "text": text,
-                },
-            )
-            if resp.status_code >= 400:
-                logger.warning(
-                    "Resend newsletter notification failed: %s %s",
-                    resp.status_code,
-                    resp.text[:500],
-                )
-    except Exception:
-        logger.exception("Resend newsletter notification exception")
+    await mailer.send_mail(to, subject, text, tags=["lead", "newsletter"])
 
 
-async def _send_subscriber_welcome(email: str, source: str) -> None:
-    """Send a welcome/confirmation email TO the subscriber after they sign up.
+_WELCOME_SUBJECT = "Oncofiles — ste na zozname / you're on the list"
 
-    Fire-and-forget. Reuses the same Resend + NOTIFY_FROM_EMAIL env config as
-    `_notify_new_subscriber`. If env is missing, logs a warning (#461) so a
-    silent "I signed up but got nothing" experience is easy to diagnose in
-    Railway logs.
+_WELCOME_TEXT = (
+    "Ďakujeme, že ste sa prihlásili na zoznam čakateľov Oncofiles.\n"
+    "Napíšeme Vám, keď bude pre Vás pripravený prístup, a inak len vtedy, keď "
+    "máme niečo podstatné.\n\n"
+    "Odhlásiť sa môžete kedykoľvek: odpovedzte na tento e-mail a Vašu adresu "
+    "odstránime.\n\n"
+    "Peter Fusek, Oncofiles\n"
+    "https://oncofiles.com\n\n"
+    "— English —\n\n"
+    "Thank you for joining the Oncofiles waitlist.\n"
+    "We will write when access is ready for you, and otherwise only when we "
+    "have something substantial to share.\n\n"
+    "You can unsubscribe at any time: reply to this e-mail and we will remove "
+    "your address.\n\n"
+    "Peter Fusek, Oncofiles\n"
+    "https://oncofiles.com\n"
+)
 
-    The email is bilingual SK/EN because the landing page is SK-first.
+_WELCOME_HTML = """<!doctype html>
+<html><body style="font-family:Arial,sans-serif;font-size:15px;line-height:1.5;color:#1f2933">
+<p>Ďakujeme, že ste sa prihlásili na zoznam čakateľov Oncofiles.
+Napíšeme Vám, keď bude pre Vás pripravený prístup, a inak len vtedy, keď máme niečo
+podstatné.</p>
+<p>Odhlásiť sa môžete kedykoľvek: odpovedzte na tento e-mail a Vašu adresu odstránime.</p>
+<p>Peter Fusek, Oncofiles<br>oncofiles.com</p>
+<hr style="border:0;border-top:1px solid #d9e2ec">
+<p lang="en">Thank you for joining the Oncofiles waitlist.
+We will write when access is ready for you, and otherwise only when we have something
+substantial to share.</p>
+<p lang="en">You can unsubscribe at any time: reply to this e-mail and we will remove your
+address.</p>
+<p lang="en">Peter Fusek, Oncofiles<br>oncofiles.com</p>
+</body></html>
+"""
+
+
+async def _send_subscriber_welcome(email: str, source: str) -> bool:
+    """Send the bilingual SK/EN welcome TO the subscriber (fire-and-forget).
+
+    Plain text + simple HTML, no patient data, no signed links and no
+    tracking parameters of ours; unsubscribe is a reply (Reply-To comes from
+    `MAIL_REPLY_TO`). Returns whether the relay accepted it.
     """
-    import httpx
-
-    api_key = os.environ.get("RESEND_API_KEY")
-    from_email = os.environ.get("NOTIFY_FROM_EMAIL")
-    if not (api_key and from_email):
-        logger.warning(
-            "Subscriber welcome email SKIPPED for %s — env missing "
-            "(RESEND_API_KEY=%s, NOTIFY_FROM_EMAIL=%s). "
-            "Subscriber stored in DB but no confirmation arrived.",
-            email,
-            "set" if api_key else "missing",
-            "set" if from_email else "missing",
-        )
-        return
-
-    subject = "Oncofiles — ďakujeme za prihlásenie / thanks for subscribing"
-    text = (
-        "Ďakujeme, že ste sa prihlásili k odberu noviniek z Oncofiles.\n"
-        "Posielame len vtedy, keď máme niečo podstatné: nové funkcie, "
-        "upozornenia pre pacientov a opatrovateľov, kľúčové zmeny v platforme.\n\n"
-        "Odhlásiť sa môžete kedykoľvek — odpovedzte na tento email a odstránime Vás.\n\n"
-        "— Peter Fusek, Oncofiles\n"
-        "oncofiles.com\n\n"
-        "— English —\n\n"
-        "Thanks for subscribing to Oncofiles updates.\n"
-        "We only send when there's something substantive: new features, "
-        "alerts for patients and caregivers, significant platform changes.\n\n"
-        "You can unsubscribe any time — just reply to this email and we'll remove you.\n\n"
-        "— Peter Fusek, Oncofiles\n"
-        "oncofiles.com\n"
+    return await mailer.send_mail(
+        [email],
+        _WELCOME_SUBJECT,
+        _WELCOME_TEXT,
+        html=_WELCOME_HTML,
+        tags=["subscriber_welcome", f"source-{source}"[:40]],
     )
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.post(
-                "https://api.resend.com/emails",
-                headers={
-                    "Authorization": f"Bearer {api_key}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "from": from_email,
-                    "to": [email],
-                    "subject": subject,
-                    "text": text,
-                    "tags": [
-                        {"name": "kind", "value": "subscriber_welcome"},
-                        {"name": "source", "value": source[:50]},
-                    ],
-                },
-            )
-            if resp.status_code >= 400:
-                logger.warning(
-                    "Resend subscriber welcome failed for %s: %s %s",
-                    email,
-                    resp.status_code,
-                    resp.text[:500],
-                )
-    except Exception:
-        logger.exception("Resend subscriber welcome exception for %s", email)
 
 
 async def _notify_admin_pipeline_alert(*, condition: str, subject: str, body: str) -> None:
     """Email the admin when the processing pipeline is broken (#552).
 
-    Same fire-and-forget shape and the same Resend env as
-    `_notify_admin_onboarding_event` — no new credentials.
+    Same fire-and-forget SMTP path as the other admin notes (`mailer`, #834).
 
     This exists because logs demonstrably did not work: the GCP-project
     deletion sat in the container log for a month while `/health` reported
@@ -6193,58 +6141,26 @@ async def _notify_admin_pipeline_alert(*, condition: str, subject: str, body: st
     Deduplicated to at most one send per `condition` per UTC day so a
     persistent outage does not become an hourly mail flood.
     """
-    import httpx
-
     today = datetime.now(UTC).date().isoformat()
     if _pipeline_alert_sent.get(condition) == today:
         return
 
-    api_key = os.environ.get("RESEND_API_KEY")
-    from_email = os.environ.get("NOTIFY_FROM_EMAIL")
-    to_email = os.environ.get("NOTIFY_TO_EMAIL")
-    if not (api_key and from_email and to_email):
+    to = mailer.admin_recipients()
+    configured = mailer.is_configured()
+    if not to or not configured:
         logger.warning(
-            "Pipeline alert SKIPPED (%s) — Resend env missing "
-            "(RESEND_API_KEY=%s, NOTIFY_FROM_EMAIL=%s, NOTIFY_TO_EMAIL=%s)",
+            "Pipeline alert SKIPPED (%s) — outgoing mail not configured "
+            "(SMTP_HOST/MAIL_FROM=%s, NOTIFY_TO_EMAIL=%s)",
             condition,
-            "set" if api_key else "missing",
-            "set" if from_email else "missing",
-            "set" if to_email else "missing",
+            "set" if configured else "missing",
+            "set" if to else "missing",
         )
         return
 
-    # Mark before sending: a Resend outage must not turn into a retry storm.
+    # Mark before sending: a relay outage must not turn into a retry storm.
     _pipeline_alert_sent[condition] = today
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.post(
-                "https://api.resend.com/emails",
-                headers={
-                    "Authorization": f"Bearer {api_key}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "from": from_email,
-                    "to": [to_email],
-                    "subject": subject,
-                    "text": body,
-                    "tags": [
-                        {"name": "kind", "value": "pipeline_alert"},
-                        {"name": "condition", "value": condition},
-                    ],
-                },
-            )
-            if resp.status_code >= 400:
-                logger.warning(
-                    "Resend pipeline alert failed (%s): %s %s",
-                    condition,
-                    resp.status_code,
-                    resp.text[:200],
-                )
-            else:
-                logger.info("Pipeline alert sent to admin (%s)", condition)
-    except Exception:
-        logger.warning("Pipeline alert send failed (%s)", condition, exc_info=True)
+    if await mailer.send_mail(to, subject, body, tags=["pipeline_alert", condition]):
+        logger.info("Pipeline alert sent to admin (%s)", condition)
 
 
 async def _notify_admin_onboarding_event(
@@ -6254,31 +6170,22 @@ async def _notify_admin_onboarding_event(
     caregiver_email: str,
     event_type: str,
 ) -> None:
-    """Send admin-facing onboarding notification via Resend (#468).
+    """Send an admin-facing onboarding note over SMTP (#468, #834).
 
-    Fire-and-forget: same shape as `_notify_new_subscriber`. Reuses the
-    existing newsletter Resend env config (RESEND_API_KEY, NOTIFY_FROM_EMAIL,
-    NOTIFY_TO_EMAIL) so no new credentials are required. If env is missing,
-    logs a warning and returns — the caller's request must not fail because
-    the notifier couldn't send.
-
-    `patient_slug` is the human-readable slug (e.g. "q1b") used for both the
-    dashboard URL and operator-readable identifiers.
+    Fire-and-forget: same shape as `_notify_new_subscriber`; the caller's
+    request never fails because the note could not be sent. The patient's
+    display name is deliberately left out (no patient data in e-mails, #834);
+    the slug and the dashboard link identify the patient for the admin.
+    `display_name` stays in the signature for the callers.
     """
-    import httpx
-
-    api_key = os.environ.get("RESEND_API_KEY")
-    from_email = os.environ.get("NOTIFY_FROM_EMAIL")
-    to_email = os.environ.get("NOTIFY_TO_EMAIL")
-    if not (api_key and from_email and to_email):
+    del display_name  # not sent: no patient data in e-mails (#834)
+    to = mailer.admin_recipients()
+    if not to:
         logger.warning(
-            "Onboarding admin notification SKIPPED for patient=%s event=%s — env missing "
-            "(RESEND_API_KEY=%s, NOTIFY_FROM_EMAIL=%s, NOTIFY_TO_EMAIL=%s).",
+            "Onboarding admin notification SKIPPED for patient=%s event=%s — "
+            "NOTIFY_TO_EMAIL is not set",
             patient_slug,
             event_type,
-            "set" if api_key else "missing",
-            "set" if from_email else "missing",
-            "set" if to_email else "missing",
         )
         return
 
@@ -6289,48 +6196,16 @@ async def _notify_admin_onboarding_event(
         "first_sync": "Prvá synchronizácia",
         "first_ai": "Prvý AI dokument",
     }.get(event_type, event_type)
-    subject = f"[Oncofiles] {label_sk}: {display_name}"
+    subject = f"[Oncofiles] {label_sk}: {patient_slug}"
     text = (
-        f"{label_sk}: {display_name}\n\n"
+        f"{label_sk}: {patient_slug}\n\n"
         f"  patient_slug:    {patient_slug}\n"
         f"  caregiver_email: {caregiver_email or '(unset)'}\n"
         f"  event_type:      {event_type}\n"
         f"  time:            {time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime())}\n"
         f"  dashboard:       https://oncofiles.com/dashboard?patient={patient_slug}\n"
     )
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.post(
-                "https://api.resend.com/emails",
-                headers={
-                    "Authorization": f"Bearer {api_key}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "from": from_email,
-                    "to": [to_email],
-                    "subject": subject,
-                    "text": text,
-                    "tags": [
-                        {"name": "kind", "value": "onboarding"},
-                        {"name": "event_type", "value": event_type},
-                    ],
-                },
-            )
-            if resp.status_code >= 400:
-                logger.warning(
-                    "Resend onboarding notification failed for patient=%s event=%s: %s %s",
-                    patient_slug,
-                    event_type,
-                    resp.status_code,
-                    resp.text[:500],
-                )
-    except Exception:
-        logger.exception(
-            "Resend onboarding notification exception for patient=%s event=%s",
-            patient_slug,
-            event_type,
-        )
+    await mailer.send_mail(to, subject, text, tags=["onboarding", event_type])
 
 
 @mcp.custom_route("/api/newsletter/subscribe", methods=["POST"])
@@ -6400,8 +6275,12 @@ async def api_newsletter_subscribe(request: Request) -> JSONResponse:
         asyncio.create_task(_notify_new_subscriber(email, source))
         asyncio.create_task(_send_subscriber_welcome(email, source))
 
+    # `email_queued` (#834) tells the landing whether to say "check your
+    # e-mail": true when outgoing mail is configured. The welcome is queued
+    # once per address; an address already on the list gets the same answer,
+    # so this response is not a membership oracle.
     return JSONResponse(
-        {"ok": True},
+        {"ok": True, "email_queued": mailer.is_configured()},
         headers={"Access-Control-Allow-Origin": "*"},
     )
 

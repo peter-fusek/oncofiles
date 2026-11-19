@@ -249,13 +249,13 @@ async def test_get_last_successful_sync_requires_patient_id_keyword(db: Database
 # ── C4: alerting ──────────────────────────────────────────────────────────
 
 
-def test_pipeline_alert_is_deduped_and_reuses_existing_resend_env():
-    """No new credentials, and a persistent outage must not mail hourly."""
+def test_pipeline_alert_is_deduped_and_uses_the_shared_mailer():
+    """One SMTP path (#834), and a persistent outage must not mail hourly."""
     from oncofiles.server import _notify_admin_pipeline_alert
 
     source = inspect.getsource(_notify_admin_pipeline_alert)
-    assert "RESEND_API_KEY" in source
-    assert "NOTIFY_TO_EMAIL" in source
+    assert "mailer.send_mail" in source
+    assert "mailer.admin_recipients" in source
     assert "_pipeline_alert_sent" in source
 
 

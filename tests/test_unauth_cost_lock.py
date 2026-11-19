@@ -186,7 +186,11 @@ REACHABLE_ALLOWLIST: dict[tuple[str, str], str] = {
     (
         "/api/newsletter/subscribe",
         "create_task",
-    ): "two Resend emails per NEW subscriber (admin lead + welcome), rate limited per IP",
+    ): "two SMTP emails per NEW subscriber (admin lead + welcome), rate limited per IP",
+    (
+        "/api/newsletter/subscribe",
+        "to_thread",
+    ): "mailer.send_mail runs the blocking SMTP exchange in a worker (#834), same two mails",
 }
 
 # Public handlers that touch the DB: (path, handler) -> what they do.
