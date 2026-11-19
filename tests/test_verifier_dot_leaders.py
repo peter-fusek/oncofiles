@@ -194,8 +194,9 @@ def test_the_same_page_failed_under_the_old_value_lookup():
     assert not old.search("Glukóza ..........5.2 mmol/l")
 
 
-def test_version_is_three():
-    assert verifier.VERIFIER_VERSION == 3
+def test_version_is_at_least_three():
+    # v3 (#833) introduced the leader rule, v4 (#814) the label normalisation
+    assert verifier.VERIFIER_VERSION >= 3
 
 
 # ── clinical verifier: same lookbehind, NOT changed (separate decision) ──

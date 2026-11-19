@@ -1475,16 +1475,42 @@ REOCR_HANDLED_BEFORE_SKIP = (
 )
 
 
+# Reason code of that skip in a plan's ``excluded_before_limit`` counts (#894).
+HANDLED_BEFORE = "handled_before"
+
+
 def handled_before(log_names: list[str], filename: str) -> bool:
     """Does the logs folder show this document was re-OCR'd before (a backup),
-    deliberately restored (the kept re-OCR text) or sent to review with its
-    new text kept (a candidate)? (#674) Automatic selection skips it; an
-    explicitly listed document is read again."""
+    deliberately restored (the kept re-OCR text, or the copy a restore or a
+    candidate promotion keeps of the replaced sidecar) or sent to review with
+    its new text kept (a candidate)? (#674, #894) Automatic selection skips
+    it; an explicitly listed document is read again."""
     from oncofiles.curated.runner import nfc
 
     name = re.escape(nfc(filename))
-    exact = re.compile(rf"_reocr-(?:backup|text|candidate)-\d{{8}}(?:-\d{{6}})?-{name}\.md")
+    exact = re.compile(
+        rf"_(?:reocr-(?:backup|text|candidate)|restore-backup)-\d{{8}}(?:-\d{{6}})?-{name}\.md"
+    )
     return any(exact.fullmatch(nfc(n)) for n in log_names)
+
+
+def auto_selection_skip(doc: dict, log_names: list[str]) -> str | None:
+    """The ONE rule for leaving a document out of an automatic re-OCR (#894):
+    ``HANDLED_BEFORE`` when it was not listed explicitly and the logs folder
+    shows it was handled before, else ``None``. Planning (``start_reocr``,
+    before ``limit``) and ``run_reocr`` both ask this."""
+    if doc.get("explicit"):
+        return None
+    return HANDLED_BEFORE if handled_before(log_names, doc["filename"]) else None
+
+
+def logs_listing(drive, root_id: str) -> tuple[str, list[str]]:
+    """The contract's logs folder id and the NFC names in it: one walk, one
+    README read and one listing, whatever the number of documents."""
+    from oncofiles.curated.runner import nfc
+
+    logs_id = _logs_folder_id(drive, root_id)
+    return logs_id, [nfc(i.name) for i in drive.list_children(logs_id)]
 
 
 def run_reocr(
@@ -1514,31 +1540,22 @@ def run_reocr(
     reader = reader or reread  # looked up at call time (tests patch reread)
     if rss_mb is None:
         from oncofiles.memory import get_rss_mb as rss_mb
-    from oncofiles.curated.contract import parse_contract
     from oncofiles.curated.facts_rules import extract_lab_facts
-    from oncofiles.curated.runner import nfc, walk
 
     report = ReocrReport(dry_run=dry_run)
-    tree = walk(drive, root_id)
-    readme = next((i for i in tree.root_files if nfc(i.name) == "README.md"), None)
-    if readme is None:
-        raise RuntimeError("not a curated folder (no README.md)")
-    contract = parse_contract(drive.download(readme.id).decode("utf-8"))
-    logs = tree.folders.get(contract.logs)
-    if logs is None:
-        raise RuntimeError("the contract's logs folder is missing")
-    logs_id = logs.id
-    log_names = [nfc(i.name) for i in drive.list_children(logs_id)]
+    logs_id, log_names = logs_listing(drive, root_id)
     for d in docs:
         res = DocResult(d["document_id"], d["filename"], list(d.get("reasons") or []))
         report.documents.append(res)
         if stop():
             res.result, res.error = "skipped", "stopping"
             continue
-        if not d.get("explicit") and handled_before(log_names, d["filename"]):
+        if auto_selection_skip(d, log_names):
             # #674: re-OCR'd before, its old sidecar was restored on purpose, or a
             # review already left a candidate in logs
             # #835: the message names all three cases, the candidate included (#827)
+            # #894: start_reocr applies the same rule before ``limit``; this stays
+            # as the last check (logs may change between plan and run)
             res.result, res.error = "skipped", REOCR_HANDLED_BEFORE_SKIP
             continue
         if rss_limit_mb and (now_rss := rss_mb()) > rss_limit_mb:

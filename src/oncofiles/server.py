@@ -1200,6 +1200,31 @@ def _start_sync_scheduler(
         except Exception:
             logger.exception("Prompt log cleanup failed")
 
+    async def _run_dashboard_access_log_retention():
+        """Delete dashboard_access_log rows older than the retention (#868).
+
+        Maintainer decision 2026-11-16: access telemetry is kept 90 days
+        (``DASHBOARD_ACCESS_LOG_RETENTION_DAYS``, min 30). Only that table,
+        in chunks of <= 500 rows, under ``_sync_semaphore``. Logs the count only.
+        """
+        from oncofiles.dashboard_audit import purge_expired_access_log, retention_days
+
+        try:
+            days = retention_days()
+            async with _sync_semaphore:
+                deleted = await purge_expired_access_log(db, days=days)
+            entry = job_tracker.get("dashboard_access_log_retention", {})
+            entry["last_deleted"] = deleted
+            job_tracker["dashboard_access_log_retention"] = entry
+            logger.info(
+                "Dashboard access log retention: removed %d rows older than %d days",
+                deleted,
+                days,
+            )
+        except Exception:
+            logger.exception("Dashboard access log retention failed")
+            raise
+
     # _log_rss removed — restart logic consolidated into periodic_memory_check().
     # The old _log_rss reclaimed before checking, masking the threshold crossing,
     # and sys.exit(0) was caught by APScheduler as a job error (#213).
@@ -1714,6 +1739,16 @@ def _start_sync_scheduler(
         CronTrigger(hour=4, minute=15),
         id="prompt_log_cleanup",
         max_instances=1,
+    )
+    # #868: 04:25 UTC = 05:25 / 06:25 Europe/Bratislava, outside the 00:30-02:30
+    # local night window (curated nightly runs, AI pipeline).
+    scheduler.add_job(
+        _run_dashboard_access_log_retention,
+        CronTrigger(hour=4, minute=25, timezone="UTC"),
+        id="dashboard_access_log_retention",
+        max_instances=1,
+        misfire_grace_time=1800,
+        coalesce=True,
     )
 
     # Pipeline integrity check: opt-in only (AI-touching; gated by ENABLE_INTEGRITY_CHECK)
@@ -2887,10 +2922,13 @@ async def sitemap_xml(request: Request) -> HTMLResponse:
         ' xmlns:xhtml="http://www.w3.org/1999/xhtml">\n'
         f"  <url><loc>https://oncofiles.com/</loc><lastmod>{today}</lastmod>"
         "<priority>1.0</priority><changefreq>weekly</changefreq></url>\n"
-        f"  <url><loc>https://oncofiles.com/dashboard</loc><lastmod>{today}</lastmod>"
-        "<priority>0.8</priority><changefreq>daily</changefreq></url>\n"
-        f"  <url><loc>https://oncofiles.com/health</loc><lastmod>{today}</lastmod>"
-        "<priority>0.3</priority><changefreq>always</changefreq></url>\n"
+        # /dashboard (sign-in) and /health (liveness probe) are not content
+        # pages and stay out of the sitemap; /demo is public and indexable.
+        f"  <url><loc>https://oncofiles.com/demo</loc><lastmod>{today}</lastmod>"
+        "<priority>0.8</priority><changefreq>monthly</changefreq>"
+        '<xhtml:link rel="alternate" hreflang="sk" href="https://oncofiles.com/demo"/>'
+        '<xhtml:link rel="alternate" hreflang="en" href="https://oncofiles.com/demo?lang=en"/>'
+        "</url>\n"
         f"  <url><loc>https://oncofiles.com/privacy</loc><lastmod>{today}</lastmod>"
         "<priority>0.5</priority><changefreq>monthly</changefreq></url>\n"
         f"  <url><loc>https://oncofiles.com/terms</loc><lastmod>{today}</lastmod>"
@@ -3917,6 +3955,9 @@ async def readiness(request: Request) -> JSONResponse:
                 # #441 Layer 6: per-run AI cost (set by _run_*_pipeline tail).
                 if info.get("last_cost_usd") is not None:
                     entry["last_cost_usd"] = info["last_cost_usd"]
+                # #868: rows removed by the last dashboard_access_log_retention run.
+                if info.get("last_deleted") is not None:
+                    entry["last_deleted"] = info["last_deleted"]
                 if entry:
                     jobs[job_id] = entry
             if jobs:
@@ -5640,6 +5681,13 @@ _SCHEDULE_DEFS = [
         "schedule": "daily 4:15 AM",
         "group": "infra",
         "desc": "Delete prompt log entries (AI call telemetry) older than 90 days",
+    },
+    {
+        "id": "dashboard_access_log_retention",
+        "name": "Access Log Retention",
+        "schedule": "daily 4:25 AM UTC",
+        "group": "infra",
+        "desc": "Delete dashboard access log rows (sign-ins, ACL refusals) older than 90 days",
     },
     {
         "id": "pipeline_integrity",

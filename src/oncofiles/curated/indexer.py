@@ -36,7 +36,12 @@ INDEX_ENGINE = "curated-sidecar"
 # v17: re-extraction never re-adds a date-corrected fact at its old date (#741)
 # v18: lab rule parsers no longer see genetic_variant/biomarker aliases (gene vocabulary)
 # v19: [chart: …] blocks never reach the lab rule parsers; #609 OCR keys in metadata
-INDEX_VERSION = 19
+# v20: general-health lab vocabulary (migration 091, #814): new codes ESR, CHOL,
+#      TRIG, BILI_DIRECT, LUC, PDW_PCT, USED_SMALL_EPI and aliases for existing ones
+# v21: HCT printed as a ratio ("pomer") converts to the canonical L/L (migration 092)
+# v22: the Bory layout reads "^" / arrows as the out-of-range mark, so a flagged
+#      value keeps its unit and printed reference range (#899)
+INDEX_VERSION = 22
 TEXT_SOURCE_EXTS = {"md", "txt", "csv", "json"}
 MAX_TEXT_SOURCE_BYTES = 512 * 1024
 _PAGE_RE = re.compile(r"^<!-- page (\d+) -->\s*$", re.M)

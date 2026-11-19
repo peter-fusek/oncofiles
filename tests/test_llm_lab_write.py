@@ -14,6 +14,7 @@ from __future__ import annotations
 import ast
 import asyncio
 import json
+import re
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -38,18 +39,18 @@ PAGE = "\n".join(
     [
         "Laboratórny nález",
         "Dátum odberu: 14.6.2027",
-        "S-ALT 0,45 0,10-0,60 µkat/l",
-        "S-GLU 5,61 mmol/l",
+        "S-ALT 0,4537 0,10-0,60 µkat/l",
+        "S-GLU 5,6194 mmol/l",
         "S-XYZ 1,5 mg/l",
     ]
 )
 ROWS = [
-    ("S-ALT", "0,45", "µkat/l", "0,10-0,60", "S-ALT 0,45 0,10-0,60 µkat/l"),
-    ("S-GLU", "5,61", "mmol/l", None, "S-GLU 5,61 mmol/l"),
+    ("S-ALT", "0,4537", "µkat/l", "0,10-0,60", "S-ALT 0,4537 0,10-0,60 µkat/l"),
+    ("S-GLU", "5,6194", "mmol/l", None, "S-GLU 5,6194 mmol/l"),
     ("S-XYZ", "1,5", "mg/l", None, "S-XYZ 1,5 mg/l"),
 ]
 # printed things that must never reach a report or an activity_log row
-PRINTED = ["0,45", "0.45", "5,61", "5.61", "S-ALT", "S-GLU", "S-XYZ", "µkat", "odberu"]
+PRINTED = ["0,4537", "0.4537", "5,6194", "5.6194", "S-ALT", "S-GLU", "S-XYZ", "µkat", "odberu"]
 TABLES = ("clinical_records", "clinical_record_audit", "provenance", "activity_log",
           "curated_runs", "devices")  # fmt: skip
 
@@ -90,7 +91,7 @@ async def _doc(db, doc_id, pid):
     await db.db.commit()
 
 
-async def _rule_fact(db, doc_id, *, code="ALT", value=0.45, day=DAY, meta=None):
+async def _rule_fact(db, doc_id, *, code="ALT", value=0.4537, day=DAY, meta=None):
     return await db.replace_document_facts(
         patient_id=ERIKA_UUID, document_id=doc_id, extracted_by="rule:test",
         facts=[{"code": code, "label": code, "value_num": value, "value_canonical": value,
@@ -169,9 +170,20 @@ async def _write(db, ids):
     return job
 
 
+_NUMBER = re.compile(r"\d+(?:[.,]\d+)+")
+
+
 def _no_values(obj) -> None:
+    """No printed value, label or unit in a report, a row or the log.
+
+    Numbers are compared as WHOLE tokens (#893, #823): a substring search
+    also matched a job timing or a timestamp that happened to hold the same
+    digits ("speedup": 0.45, "…:10.45…Z"), which failed about one full run in
+    a hundred. The fixture values have four decimals; no timing has."""
     dumped = json.dumps(obj, ensure_ascii=False, default=str)
-    assert not [p for p in PRINTED if p in dumped], dumped
+    numbers = set(_NUMBER.findall(dumped))
+    found = [p for p in PRINTED if (p in numbers if _NUMBER.fullmatch(p) else p in dumped)]
+    assert not found, (found, dumped)
 
 
 # ── off by default, refusals write nothing ──────────────────────────────
@@ -711,3 +723,12 @@ def test_rule_fact_ids_equal_the_golden_ids_of_main(case):
     assert not set(lab) & set(want)
     lab_row = fact_identity.ids_for_rows(ERIKA_UUID, doc, [row], family=LLM_LAB_FAMILY)
     assert lab_row[1] != want[0]
+
+
+def test_no_values_ignores_timings_and_timestamps_but_catches_a_value():
+    """#893 / #823: the check must not depend on what a clock happens to print."""
+    value = next(p for p in PRINTED if "." in p)
+    _no_values({"timing": {"speedup": 0.45, "wall_seconds": 5.6}, "at": f"2027-03-09T10:1{value}Z"})
+    for leaked in ({"value": float(value)}, {"note": f"ALT {value} ok"}, {"unit": "µkat/l"}):
+        with pytest.raises(AssertionError):
+            _no_values(leaked)

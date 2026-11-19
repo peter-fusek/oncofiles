@@ -33,9 +33,15 @@ _OKB_ODOBRANE = re.compile(r"Odobran[ée]:\s*(\d{1,2}\.\d{1,2}\.\d{4}(?:\s+\d{1,
 _BORY_ITEM = re.compile(
     r"^\s*(?P<label>[^\W\d_][^\[\]{}]{0,60}?)\s*(?:\[(?P<abbr>[^\]]{1,12})\])?\s*"
     r"(?<!\.)\.\.\.(?!\.)\s*"
-    r"(?P<val>\d\++(?=\s|$|\[)|[<>]?\s*-?\d+(?:[.,]\d+)?|[A-Za-z0-9+/-]+)\s*(?P<arrow>[▲▼])?\s*"
+    r"(?P<val>\d\++(?=\s|$|\[)|[<>]?\s*-?\d+(?:[.,]\d+)?|[A-Za-z0-9+/-]+)\s*(?P<arrow>[▲▼↑↓^+~])?\s*"
     r"(?:\[(?P<unit>[^\]]+)\])?\s*(?:\{\s*(?P<lo>-?[\d.,]+)\s*-\s*(?P<hi>-?[\d.,]+)\s*\})?"
 )
+# The out-of-range mark between a value and its unit, as transcribers write it:
+# the printed triangle, an arrow, or "^" (the local OCR's rendering of the "up"
+# triangle, #899: without it the unit and the printed range were dropped).
+# "+" and "~" are also seen there; their direction is not known, so they are
+# only stepped over and the flag comes from the printed range alone.
+_BORY_ARROW = {"▲": "▲", "↑": "▲", "^": "▲", "▼": "▼", "↓": "▼"}
 _NUM = r"[<>]?\s*-?\d+(?:[.,]\d+)?"
 _OKB_ROW = re.compile(
     # "(?:.*?\S)??" is lazy: a one-letter label ("K") must not swallow the value (#660)
@@ -406,7 +412,7 @@ def parse_bory(pages: list[str], vocab: Vocabulary, *, unreliable: bool = False)
                     lo=_num(m.group("lo")),
                     hi=_num(m.group("hi")),
                     ref_text=None,
-                    arrow=m.group("arrow"),
+                    arrow=_BORY_ARROW.get(m.group("arrow") or ""),
                     when=when,
                     page=page_no,
                     evidence=chunk,

@@ -49,30 +49,129 @@ def camel(value: str | None) -> str:
     return token or UNKNOWN
 
 
+# Academic and professional titles (#900), folded lower case without dots.
+# Slovak / Czech degrees and the usual international ones; a title is never a
+# surname, so it is dropped wherever it stands (before or after the name).
+TITLES = frozenset(
+    {
+        "mudr", "mddr", "mvdr", "pharmdr", "rndr", "phdr", "judr", "paeddr", "thdr",
+        "thlic", "rsdr", "artd", "mgr", "mga", "bc", "bca", "ing", "arch", "phd", "csc",
+        "drsc", "dsc", "dr", "mph", "mba", "mha", "msc", "bsc", "llm", "prim", "doc",
+        "prof", "mudrmgr",
+    }
+)  # fmt: skip
+# Titles that may be glued to the following name without a dot ("MUDrJana"):
+# only their mixed-case spelling is recognised, so an all-caps surname such as
+# "DRAHOS" is never cut. Longest first.
+_GLUED_PREFIX = sorted(
+    ("MUDr", "MDDr", "MVDr", "PharmDr", "RNDr", "PhDr", "JUDr", "PaedDr", "ThDr", "Mgr",
+     "Ing", "Bc", "Doc", "Prof", "Prim", "Dr", "PhD"),
+    key=len,
+    reverse=True,
+)  # fmt: skip
+# Titles glued after a name ("KovacovaPhD"), in their usual spelling.
+_GLUED_SUFFIX_RE = re.compile(r"(?<=[^\W\d_])(?:PhD|CSc|DrSc|MPH|MBA|MHA|MSc)$")
+_PHD_SPACED_RE = re.compile(r"\bPh\.\s*D\.?", re.I)
+
+
+def _strip_glued(word: str) -> str:
+    """``MUDrMgrJana`` → ``Jana``; ``KovacovaPhD`` → ``Kovacova``; others unchanged."""
+    changed = True
+    while changed and word:
+        changed = False
+        for t in _GLUED_PREFIX:
+            if len(word) > len(t) and word.startswith(t) and word[len(t)].isupper():
+                word, changed = word[len(t) :], True
+                break
+        m = _GLUED_SUFFIX_RE.search(word)
+        if m and m.start() > 0:
+            word, changed = word[: m.start()], True
+    return word
+
+
+def _is_title(word: str) -> bool:
+    return ascii_fold(word).lower().replace(".", "") in TITLES
+
+
+def _name_words(segment: str) -> list[str]:
+    """The words of ``segment`` that are not titles, initials or numbers.
+
+    Dots and whitespace separate words (``MUDr.Mgr.Jana`` → three words); a
+    hyphen does not, so a double-barrelled surname stays one word."""
+    out = []
+    for raw in re.split(r"[\s.]+", segment):
+        word = re.sub(r"[^\w-]", "", raw).strip("-_")
+        if not word or any(c.isdigit() for c in word) or _is_title(word):
+            continue
+        stripped = _strip_glued(word)
+        # A title glued on means the whole name may be glued ("MUDrJanaNova"):
+        # then every lower→upper case change is a word break too.
+        parts = _split_camel(stripped) if stripped != word else [stripped]
+        for part in parts:
+            if len(part) >= 2 and not _is_title(part):  # a lone initial is no surname
+                out.append(part)
+    return out
+
+
+def _split_camel(word: str) -> list[str]:
+    parts, cur = [], ""
+    for i, c in enumerate(word):
+        if cur and c.isupper() and word[i - 1].islower():
+            parts.append(cur)
+            cur = ""
+        cur += c
+    return [*parts, cur] if cur else parts
+
+
+def doctor_surname(value: str | None) -> str:
+    """The surname as printed (diacritics kept) without any title (#900); '' if none.
+
+    One function for the filename doctor field and the README vocabulary
+    (#854): ``MUDr. Mgr. Jana Kováčová, PhD.`` → ``Kováčová``,
+    ``MUDr.Mgr.Jana Nová-Kováčová`` → ``Nová-Kováčová``,
+    ``Kováčová, Jana (MUDr. Mgr., PhD.)`` → ``Kováčová``. Titles are matched
+    without regard to case or dots, spaced or glued, before or after the name.
+    The surname is the last remaining word, except in the ``Surname, Given``
+    form (a single word before the first comma, more name words after it).
+    """
+    if not value or not isinstance(value, str) or not value.strip():
+        return ""
+    text = re.sub(r"\(.*?\)|\[.*?\]", " ", value)
+    text = _PHD_SPACED_RE.sub(" PhD ", text)
+    segments = [w for w in (_name_words(s) for s in text.split(",")) if w]
+    if not segments:
+        return ""
+    first = segments[0]
+    if len(first) == 1 and len(segments) > 1:
+        return first[0]  # "Surname, Given"
+    return first[-1]
+
+
 def surname_text(value: str | None) -> str:
     """The surname as printed (diacritics kept, no titles); '' when there is none.
 
-    Accepts ``Surname, Given (titles)`` (the sidecar form) or ``Titles Given Surname``.
+    Accepts ``Surname, Given (titles)`` (the sidecar form) or ``Titles Given Surname``;
+    see ``doctor_surname`` (#900).
     """
-    if not value or not value.strip():
-        return ""
-    text = re.sub(r"\(.*?\)", " ", value)
-    if "," in text:
-        return text.split(",", 1)[0].strip()
-    parts = [
-        p
-        for p in re.split(r"\s+", text.strip())
-        if p and not p.endswith(".") and p.lower() not in _TITLES
-    ]
-    return parts[-1] if parts else ""
+    return doctor_surname(value)
 
 
 def surname_token(value: str | None) -> str:
-    """Doctor field: surname only, no titles. ``MUDr. Jana Kováčová`` → ``Kovacova``."""
-    return camel(surname_text(value))
+    """Doctor field: surname only, no titles. ``MUDr. Jana Kováčová`` → ``Kovacova``.
+
+    An all-caps printed surname gets the README spelling (``KOVÁČOVÁ`` → ``Kovacova``).
+    """
+    surname = doctor_surname(value)
+    if surname.isupper():
+        surname = "-".join(p.capitalize() for p in surname.split("-"))
+    return camel(surname)
 
 
-_TITLES = {"mudr", "mgr", "phd", "ing", "doc", "prof", "csc", "mph", "mba", "bc", "rndr"}
+def has_title(token: str | None) -> bool:
+    """A filename / vocabulary token that still carries a title (#900): never file it."""
+    if not token:
+        return False
+    return _is_title(token) or _strip_glued(token) != token
 
 
 @dataclass(frozen=True)

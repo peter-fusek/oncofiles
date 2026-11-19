@@ -54,7 +54,18 @@ from oncofiles.curated.reread_verify import date_printed
 # the run of dots directly follows a digit; a "…" after a digit now blocks
 # the value like a "." does. Lab values only: the clinical verifier is not
 # changed.
-VERIFIER_VERSION = 3
+# v4 (#814): generic label normalisation before the vocabulary lookup
+# (``label_keys``): a leading accreditation marker "* " is dropped, a
+# bracketed abbreviation ("Hemoglobín [HGB]") is tried as its own key and the
+# label without it as another, and the dash after a specimen prefix (U-SED,
+# S-, P-, B-) is normalised ("U-SED-X" == "U-SED - X" == "USED - X"). Labels
+# that are section headers (``is_section_header``) are not tests. The exact
+# label is always tried first, so a label that mapped before maps the same.
+# Also v4 (maintainer decision 2026-11-17): a date "dd.mm.yy" is read with a
+# 4-digit year only when that day and month is printed on the page, or is the
+# document date, with a year ending in "yy" (``anchor_two_digit_year``,
+# metadata ``year_anchored``); otherwise it stays ``date_unparsed``.
+VERIFIER_VERSION = 4
 
 
 # Facts parsed from LM Studio's ``reasoning_content`` channel (content empty)
@@ -261,6 +272,50 @@ def parse_printed_date(s: str | None) -> str | None:
     return out
 
 
+_DMY2 = re.compile(r"^\s*(\d{1,2})\.\s?(\d{1,2})\.\s?(\d{2})(?:[\s,]+(\d{1,2}):(\d{2}))?\s*$")
+_DMY4_ON_PAGE = re.compile(r"(?<![\d.])(\d{1,2})\.\s?(\d{1,2})\.\s?(\d{4})(?!\d)")
+_YMD_ON_PAGE = re.compile(r"(?<!\d)(\d{4})-(\d{2})-(\d{2})(?!\d)")
+
+
+def anchor_two_digit_year(
+    s: str | None, page_text: str, document_date: str | None
+) -> tuple[str, str] | None:
+    """(ISO date[Thh:mm], anchor) for a 2-digit-year date ``dd.mm.yy[ hh:mm]``,
+    or None. The century is never guessed: the same day and month must be
+    printed on the page with a 4-digit year ending in ``yy`` (anchor
+    ``page``), or be the document's date with such a year (``document``).
+    Two anchors with different years (2027 and 2127) → None, so the caller
+    keeps ``date_unparsed``. A page anchor wins over the document date only
+    when both name the same year."""
+    m = _DMY2.match(s or "")
+    if not m:
+        return None
+    d, mo, yy, h, mi = (int(g) if g is not None else None for g in m.groups())
+    page_years = {
+        int(y) for dd, mm, y in _DMY4_ON_PAGE.findall(page_text or "")
+        if int(dd) == d and int(mm) == mo and int(y) % 100 == yy
+    } | {
+        int(y) for y, mm, dd in _YMD_ON_PAGE.findall(page_text or "")
+        if int(dd) == d and int(mm) == mo and int(y) % 100 == yy
+    }  # fmt: skip
+    doc_years = set()
+    if dm := _YMD_ON_PAGE.match((document_date or "")[:10]):
+        y, mm, dd = (int(g) for g in dm.groups())
+        if dd == d and mm == mo and y % 100 == yy:
+            doc_years.add(y)
+    years = page_years | doc_years
+    if len(years) != 1:
+        return None
+    year = years.pop()
+    try:
+        out = date(year, mo, d).isoformat()
+    except ValueError:
+        return None
+    if h is not None and h < 24 and mi < 60:
+        out = f"{out}T{h:02d}:{mi:02d}"
+    return out, "page" if year in page_years else "document"
+
+
 def _value_pattern(value: str, *, ellipsis_blocks: bool = False) -> re.Pattern:
     """``ellipsis_blocks`` (lab verifier, #833): a "…" right before the number
     blocks like a "."; after ``blank_dot_leaders`` the only "…" left is one
@@ -315,13 +370,71 @@ def _birth_isos(birth_dates) -> set[str]:
     return out
 
 
-def _code_for(vocab: Vocabulary, label: str, unit: str | None) -> tuple[dict | None, bool]:
+# Label normalisation (#814). Generic shapes of a printed lab label, never a
+# layout rule: which characters decorate a label, not where a lab prints it.
+_ACCREDITATION_MARK = re.compile(r"^\*+\s*")  # "* S-Cholesterol": accredited method
+_BRACKET_ABBR = re.compile(r"\[\s*([^\[\]]{1,12}?)\s*\]")  # "Hemoglobín [HGB]"
+_SPECIMEN_PREFIX = re.compile(r"^(U-?SED|[SPB])\s*-\s*", re.I)  # "U-SED - X", "P- PT- INR"
+_HYPHEN_SPACING = re.compile(r"\s*-\s*")
+_PARENTHESISED = re.compile(r"^\([^()]*\)$")  # "(U-SED)": a section marker alone
+
+
+def strip_marker(label: str | None) -> str:
+    """``label`` (whitespace-normalised) without a leading ``*`` marker."""
+    return _ACCREDITATION_MARK.sub("", ws(label))
+
+
+def is_section_header(label: str | None) -> bool:
+    """A label that names a section, not a test (#814): empty after the
+    ``*`` marker, wholly in parentheses ("(U-SED)") or holding a column
+    separator ``|`` ("Moč | Záver"). Such a candidate is not a fact."""
+    s = strip_marker(label)
+    return not s or "|" in s or bool(_PARENTHESISED.match(s))
+
+
+def label_keys(label: str | None) -> list[str]:
+    """The keys ``label`` is looked up under, in order (#814). First the
+    label itself (minus a leading ``*`` marker), then the abbreviation in
+    square brackets and the label without it, then each of those with the
+    dash after a specimen prefix normalised: ``U-SED-X`` / ``U-SED - X`` →
+    ``USED - X`` (the vocabulary's form, never the bare ``X``), ``P- PT- INR``
+    → ``PT-INR``.
+    ``norm_label`` still applies to every key (accents, case, S-/P-/B-)."""
+    base = strip_marker(label)
+    keys = [base]
+    if m := _BRACKET_ABBR.search(base):
+        keys += [m.group(1), ws(_BRACKET_ABBR.sub(" ", base))]
+    for key in list(keys):
+        if pm := _SPECIMEN_PREFIX.match(key):
+            rest = key[pm.end() :]
+            if pm.group(1).upper().replace("-", "") == "USED":
+                # never the bare rest: "U-SED - Erytrocyty" is no blood count
+                keys.append(f"USED - {rest}")
+            else:
+                keys.append(_HYPHEN_SPACING.sub("-", rest))
+    return [k for k in dict.fromkeys(keys) if k]
+
+
+def lookup(vocab: Vocabulary, label: str, *, normalise: bool = True) -> tuple[dict | None, bool]:
+    """(fact_codes row, fuzzy?): an exact match on any key of ``label_keys``
+    first, then a one-typo match. ``normalise=False`` is the v3 lookup (the
+    label as is), kept for ``index_diff``."""
+    keys = label_keys(label) if normalise else [label]
+    for key in keys:
+        if row := vocab.match(key):
+            return row, False
+    for key in keys:
+        if row := vocab.match_fuzzy(key):
+            return row, True
+    return None, False
+
+
+def _code_for(
+    vocab: Vocabulary, label: str, unit: str | None, *, normalise: bool = True
+) -> tuple[dict | None, bool]:
     """(fact_codes row, fuzzy?) — vocabulary lookup plus the %/count split,
     which follows the unit printed next to the value (data, not layout)."""
-    row = vocab.match(label)
-    fuzzy = False
-    if row is None and (row := vocab.match_fuzzy(label)) is not None:
-        fuzzy = True
+    row, fuzzy = lookup(vocab, label, normalise=normalise)
     if row is None:
         return None, False
     u = (unit or "").strip()
@@ -334,6 +447,44 @@ def _code_for(vocab: Vocabulary, label: str, unit: str | None) -> tuple[dict | N
     return row, fuzzy
 
 
+# the reasons ``vocab_check`` decides; every other reason is independent of the vocabulary
+VOCAB_REASONS = ("label_unmapped", "label_fuzzy", "unit_unconvertible", "implausible")
+
+
+def vocab_check(
+    vocab: Vocabulary,
+    label: str,
+    unit: str | None,
+    value_num: float | None,
+    *,
+    normalise: bool = True,
+) -> tuple[dict | None, float | None, list[str]]:
+    """(fact_codes row, canonical value, reasons) of one printed label, unit
+    and numeric value: the vocabulary part of ``verify`` (reasons from
+    ``VOCAB_REASONS`` only). ``value_num=None`` is a text value."""
+    reasons: list[str] = []
+    row, fuzzy = _code_for(vocab, label, unit, normalise=normalise)
+    if row is None:
+        reasons.append("label_unmapped")
+    elif fuzzy:
+        reasons.append("label_fuzzy")
+    value_canonical = None
+    if row and value_num is not None:
+        uk, ck = _unit_key(unit), _unit_key(row.get("unit_canonical"))
+        conv = {_unit_key(k): f for k, f in (row.get("unit_conversions") or {}).items()}
+        if not uk or uk == ck:
+            value_canonical = value_num
+        elif uk in conv:
+            value_canonical = round(value_num * float(conv[uk]), 6)
+        else:
+            reasons.append("unit_unconvertible")
+        if value_canonical is not None and row["code"] in PLAUSIBLE:
+            lo_p, hi_p = PLAUSIBLE[row["code"]]
+            if not lo_p <= value_canonical <= hi_p:
+                reasons.append("implausible")
+    return row, value_canonical, reasons
+
+
 def verify(  # noqa: PLR0912, PLR0915
     cand: dict,
     *,
@@ -342,9 +493,11 @@ def verify(  # noqa: PLR0912, PLR0915
     report_date: str | None = None,
     birth_dates=(),
     source_reason: str | None = None,
+    normalise_label: bool = True,
 ) -> dict:
     """One candidate → one fact dict (``facts_rules`` shape), ``machine`` or
-    ``unverified`` with ``metadata.unverified_reasons``."""
+    ``unverified`` with ``metadata.unverified_reasons``. ``normalise_label=False``
+    reproduces the v3 vocabulary lookup (``index_diff`` compares the two)."""
     reasons: list[str] = []
     evidence = ws(cand.get("evidence"))
     label = ws(cand.get("label_as_printed"))
@@ -381,7 +534,7 @@ def verify(  # noqa: PLR0912, PLR0915
 
     # date
     printed = cand.get("date_as_printed")
-    range_meta: dict = {}
+    date_meta: dict = {}
     if printed:
         date_source = "printed"
         when = parse_printed_date(printed)
@@ -393,7 +546,7 @@ def verify(  # noqa: PLR0912, PLR0915
             # itself, both ends, must be printed on this page
             start, when, key = rng
             date_source = "printed_range"
-            range_meta = {"date_precision": "range", "date_range_start": start,
+            date_meta = {"date_precision": "range", "date_range_start": start,
                           "date_range_end": when}  # fmt: skip
             if not range_printed(key, page_text):
                 reasons.append("date_not_printed")
@@ -402,6 +555,13 @@ def verify(  # noqa: PLR0912, PLR0915
         elif when := parse_printed_date(undecorate_date(printed)):
             # a decorated single date ("9.5.2027:") must be on the page as is
             if not (date_exactly_printed(when, page_text) and date_printed(when[:10], page_text)):
+                reasons.append("date_not_printed")
+        elif anchored := anchor_two_digit_year(undecorate_date(printed), page_text, report_date):
+            # "5.3.27" read as 2027 only because 5.3.2027 is printed on the
+            # page or is the document date (#814 follow-up): never a guess
+            when, meta_anchor = anchored
+            date_meta = {"year_anchored": meta_anchor}
+            if not date_printed(when[:10], page_text):
                 reasons.append("date_not_printed")
         else:
             reasons.append("date_unparsed")
@@ -414,26 +574,11 @@ def verify(  # noqa: PLR0912, PLR0915
         reasons.append("birth_date")
 
     # vocabulary, units, plausibility (fact_codes data)
-    row, fuzzy = _code_for(vocab, label, unit)
-    if row is None:
-        reasons.append("label_unmapped")
-    elif fuzzy:
-        reasons.append("label_fuzzy")
+    row, value_canonical, vocab_reasons = vocab_check(
+        vocab, label, unit, value_num if numeric else None, normalise=normalise_label
+    )
+    reasons += vocab_reasons
     unit_canonical = row.get("unit_canonical") if row else None
-    value_canonical = None
-    if row and numeric:
-        uk, ck = _unit_key(unit), _unit_key(unit_canonical)
-        conv = {_unit_key(k): f for k, f in (row.get("unit_conversions") or {}).items()}
-        if not uk or uk == ck:
-            value_canonical = value_num
-        elif uk in conv:
-            value_canonical = round(value_num * float(conv[uk]), 6)
-        else:
-            reasons.append("unit_unconvertible")
-        if value_canonical is not None and row["code"] in PLAUSIBLE:
-            lo_p, hi_p = PLAUSIBLE[row["code"]]
-            if not lo_p <= value_canonical <= hi_p:
-                reasons.append("implausible")
 
     lo = hi = None
     ref_text = None
@@ -454,7 +599,7 @@ def verify(  # noqa: PLR0912, PLR0915
 
     meta: dict = {"verifier": VERIFIER_VERSION, "date_source": date_source,
                   "answer_source": cand.get("answer_source") or "content"}  # fmt: skip
-    meta.update(range_meta)
+    meta.update(date_meta)
     if cand.get("date_role"):
         meta["date_role"] = cand["date_role"]
     if comparator:

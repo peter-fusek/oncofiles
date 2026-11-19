@@ -14,6 +14,10 @@ Rules from the folder README that this module enforces:
 * a new institution / doctor printed in the document is added to README §3 before
   the document is filed (#854, ``CURATED_AUTO_VOCAB``): one journaled, verified
   README update per document that brings new tokens;
+* a maintainer override in an inbox sidecar (``review_override: "<reason>"``,
+  #900) keeps that sidecar's text as it is (no re-OCR, no sidecar rewrite) and
+  ignores only the vision soft reasons (rotated region, unsure orientation,
+  chart page); every hard check still runs on the kept text;
 * a per-run action budget; a run that stops and explains itself is a success.
 
 ``dry_run=True`` (the default) performs every read, extraction and
@@ -365,6 +369,114 @@ def _is_technical(reason: str) -> bool:
     """A failure of the machinery, not a property of the document."""
     return reason.startswith("classification failed:") or (
         reason.startswith("extraction failed:") and "local LLM" in reason
+    )
+
+
+# ── #900: maintainer override of a vision soft review ────────────────
+
+OVERRIDE_KEY = "review_override"
+OVERRIDE_STATUS_KEY = "review_override_status"
+OVERRIDE_FAILED = "hard_checks_failed"
+OVERRIDE_REASON_MAX = 300  # characters of the reason kept in the run journal
+# Review reasons that come from the vision reading (#609, ``Extraction.review_notes``),
+# never from the document's content: the only ones an override may set aside.
+VISION_SOFT_REASONS = {
+    "chart_page": re.compile(r"^chart on page "),
+    "rotated_region": re.compile(r"^rotated region on page "),
+    "orientation_unsure": re.compile(r"^orientation unsure on page "),
+}
+
+
+def _split_sidecar(text: str) -> tuple[str, str] | None:
+    """(front matter, rest) of a sidecar, or None without a front-matter block.
+
+    ``rest`` starts right after the closing ``---`` (newlines included), so
+    ``f"---\\n{front}\\n---{rest}"`` is the sidecar byte for byte."""
+    m = re.match(r"\A---\n(.*?)\n---(?=\n|\Z)", text, re.S)
+    return (m.group(1), text[m.end() :]) if m else None
+
+
+def _front_value(front: str, key: str) -> str | None:
+    """A front-matter value as text: JSON (as the runner writes it) or plain."""
+    m = re.search(rf"^{re.escape(key)}:[ \t]*(.*?)[ \t]*$", front, re.M)
+    if not m:
+        return None
+    raw = m.group(1)
+    try:
+        value = json.loads(raw)
+    except ValueError:
+        value = raw.strip("'\"")
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if value is None:
+        return None
+    return str(value).strip()
+
+
+def review_override(sidecar_text: str) -> str | None:
+    """The maintainer's override reason in an inbox sidecar, or None (#900).
+
+    The rule: a non-empty ``review_override: "<reason>"`` in the front matter.
+    For sidecars edited before the key existed, ``review_needed: false``
+    together with a non-empty ``review_note`` counts the same. An override the
+    runner already found blocked by a hard check (``review_override_status:
+    hard_checks_failed``) is not active until a person removes that line.
+    """
+    parts = _split_sidecar(sidecar_text)
+    if parts is None:
+        return None
+    front = parts[0]
+    if _front_value(front, OVERRIDE_STATUS_KEY):
+        return None
+    reason = _front_value(front, OVERRIDE_KEY)
+    if reason and reason.lower() not in ("false", "null", "none", "no"):
+        return reason
+    note = _front_value(front, "review_note")
+    if _front_value(front, "review_needed") == "false" and note and note.lower() != "null":
+        return note
+    return None
+
+
+def _vision_soft_codes(reasons: list[str]) -> list[str]:
+    return [code for code, rx in VISION_SOFT_REASONS.items() if any(rx.match(r) for r in reasons)]
+
+
+def _set_front(front: str, key: str, value) -> str:
+    line = f"{key}: {_y(value)}"
+    pattern = re.compile(rf"^{re.escape(key)}:.*$", re.M)
+    if pattern.search(front):
+        return pattern.sub(lambda _m: line, front, count=1)
+    return f"{front}\n{line}"
+
+
+def _override_blocked_sidecar(sidecar_text: str, reasons: list[str]) -> str:
+    """The sidecar with only its review keys changed: the body stays byte for byte."""
+    front, body = _split_sidecar(sidecar_text)
+    front = _set_front(front, "review_needed", True)
+    front = _set_front(front, "review_reasons", reasons)
+    front = _set_front(front, OVERRIDE_STATUS_KEY, OVERRIDE_FAILED)
+    return f"---\n{front}\n---{body}"
+
+
+@dataclass
+class _Override:
+    reason: str
+    sidecar_text: str
+    dropped: list[str]  # vision soft reason codes set aside (from the old sidecar)
+
+
+def _override_extraction(sidecar_text: str) -> extract_mod.Extraction:
+    """The kept sidecar text as an extraction: no file is read, no model OCR runs."""
+    front, body = _split_sidecar(sidecar_text)
+    text = body.strip()
+    if text == "(no text extracted)":
+        text = ""
+    pages = _front_value(front, "pages")
+    return extract_mod.Extraction(
+        text,
+        _front_value(front, "extraction") or "sidecar",
+        int(pages) if pages and pages.isdigit() else 0,
+        _front_value(front, "ocr_engine") or "-",
     )
 
 
@@ -778,11 +890,16 @@ class Runner:
                 self.report.awaiting_review.append(label)
                 continue
             sidecar = self._existing_sidecar(tree, folder, item)
-            if sidecar is not None and self._awaiting_review(sidecar, item):
-                self.report.awaiting_review.append(label)
-                continue
+            override = None
+            if sidecar is not None:
+                side_text = self._sidecar_text(sidecar)
+                if self._awaiting_review(sidecar, item, side_text):
+                    self.report.awaiting_review.append(label)
+                    continue
+                override = self._override_for(side_text, item)
             duplicate = bool(item.sha256 and item.sha256 in filed)
-            if not duplicate and (hold := self._hold_reason(tree, contract)):
+            # an override reads no file and runs no OCR: only the document cap applies
+            if not duplicate and (hold := self._hold_reason(tree, contract, ocr=not override)):
                 self.report.held.append({"source": label, "reason": hold})
                 continue  # #855: stays in the inbox, unread
             done += 1
@@ -790,7 +907,7 @@ class Runner:
                 self._quarantine(tree, contract, folder, item, sidecar, filed[item.sha256])
                 continue
             self._new_docs += 1
-            self._file_document(tree, contract, folder, item, sidecar)
+            self._file_document(tree, contract, folder, item, sidecar, override)
             last = self.report.documents[-1] if self.report.documents else {}
             if item.sha256 and last.get("source") == item.name and last.get("result") == "filed":
                 # Later candidates in this same run must see it as already filed:
@@ -808,14 +925,17 @@ class Runner:
             n += sum(1 for i in items if not _is_sidecar(nfc(i.name), names))
         return n
 
-    def _hold_reason(self, tree: Tree, contract: Contract) -> str | None:
-        """Why this document must not be read by the model now (#855), or None."""
+    def _hold_reason(self, tree: Tree, contract: Contract, *, ocr: bool = True) -> str | None:
+        """Why this document must not be read by the model now (#855), or None.
+
+        ``ocr=False``: the document is not OCR'd (#900 override), so only the
+        document cap applies, not the page budget."""
         if self.opts.doc_cap > 0:
             if self._docs_base is None:
                 self._docs_base = max(self.opts.docs_existing, self._filed_count(tree, contract))
             if self._docs_base + self._new_docs >= self.opts.doc_cap:
                 return HOLD_DOCUMENT_CAP
-        return self.opts.ocr_gate() if self.opts.ocr_gate else None
+        return self.opts.ocr_gate() if ocr and self.opts.ocr_gate else None
 
     def _content(self, item: Item) -> bytes:
         """Bytes to extract from: Drive's text export for Google Docs/Sheets/Slides."""
@@ -826,8 +946,28 @@ class Runner:
             return b""  # Forms, Drawings…: nothing to read
         return self.drive.download(item.id)
 
-    def _awaiting_review(self, sidecar: Item, item: Item) -> bool:
-        text = self.drive.download(sidecar.id).decode("utf-8", errors="replace")[:4000]
+    def _sidecar_text(self, sidecar: Item) -> str:
+        return self.drive.download(sidecar.id).decode("utf-8", errors="replace")
+
+    def _override_for(self, sidecar_text: str, item: Item) -> _Override | None:
+        """An active maintainer override (#900) for an unchanged source, or None."""
+        if _split_sidecar(sidecar_text) is None:
+            return None
+        reason = review_override(sidecar_text)
+        if reason is None:
+            return None
+        sha = re.search(r'^sha256:\s*"?([0-9a-f]{64})', sidecar_text[:4000], re.M)
+        if sha and item.sha256 and sha.group(1) != item.sha256:
+            return None  # the file changed since the override: read it again
+        dropped = _vision_soft_codes(_review_reasons(sidecar_text[:4000]))
+        return _Override(reason[:OVERRIDE_REASON_MAX], sidecar_text, dropped)
+
+    def _awaiting_review(self, sidecar: Item, item: Item, text: str | None = None) -> bool:
+        if text is None:
+            text = self._sidecar_text(sidecar)
+        if self._override_for(text, item) is not None:
+            return False  # #900: the maintainer decided; the run files it (hard checks)
+        text = text[:4000]
         review = re.search(r"^review_needed:\s*(true|\"true\")", text, re.M | re.I)
         sha = re.search(r"^sha256:\s*\"?([0-9a-f]{64})", text, re.M)
         unchanged = sha is None or not item.sha256 or sha.group(1) == item.sha256
@@ -887,9 +1027,14 @@ class Runner:
             }
         )
 
-    def _file_document(self, tree, contract, folder, item, sidecar) -> None:
+    def _file_document(self, tree, contract, folder, item, sidecar, override=None) -> None:
         native = item.mime.startswith(extract_mod.GOOGLE_NATIVE_PREFIX)
-        if item.size > extract_mod.MAX_FILE_BYTES:  # never download it
+        if override is not None:
+            # #900: the maintainer's sidecar text is the reading; never re-OCR it.
+            # Chart blocks stay fenced in it, so the parsers still skip them.
+            ex = _override_extraction(override.sidecar_text)
+            logger.info("curated %s: review override used for one document", self.run_id)
+        elif item.size > extract_mod.MAX_FILE_BYTES:  # never download it
             limit = extract_mod.MAX_FILE_BYTES >> 20
             ex = extract_mod.Extraction("", "none", 0, "-", error=f"file larger than {limit} MB")
         else:
@@ -926,7 +1071,7 @@ class Runner:
                 max_age_days=self.opts.max_doc_age_days,
                 auto_vocab=self._auto_vocab,
             )
-        if cls is not None and (why := _vision_review_notes(ex)):
+        if cls is not None and override is None and (why := _vision_review_notes(ex)):
             # #609: a chart, a rotated region or an unsure orientation goes to a
             # person before anything is filed (a confident rotation does not)
             cls.review_needed = True
@@ -996,7 +1141,10 @@ class Runner:
 
         # 1) sidecar next to the source, under the source's current name
         side_name = f"{item.name}.md"
-        if sidecar is None:
+        if override is not None:
+            self._keep_override_sidecar(folder, side_name, sidecar, override, review, cls, note)
+            side_id = sidecar.id
+        elif sidecar is None:
             box = {}
             self._act(
                 {
@@ -1020,6 +1168,7 @@ class Runner:
             )
             side_id = sidecar.id
 
+        marks = {"review_override": True, "override_dropped": override.dropped} if override else {}
         if review:
             if not folder:  # loose root file → inbox, pair together
                 self._move_pair(tree, "", inbox, item, side_id, item.name)
@@ -1029,6 +1178,7 @@ class Runner:
                     "result": "review_needed",
                     "stays_in": stay_folder,
                     "reasons": (cls.reasons if cls else []) + ([note] if note else []),
+                    **marks,
                 }
             )
             return
@@ -1041,8 +1191,39 @@ class Runner:
                 "to": f"{target_folder}/{new_name}",
                 "extraction": ex.method,
                 "flags": cls.flags,
+                **marks,
             }
         )
+
+    def _keep_override_sidecar(self, folder, side_name, sidecar, override, review, cls, note):
+        """#900: journal the override; the sidecar text is never re-rendered.
+
+        Filed: no sidecar write at all (the maintainer's front matter, incl. the
+        override and its reason, moves with the source). Still review (a hard
+        check failed on the kept text): only the review keys of the front
+        matter change, the body stays byte for byte, and
+        ``review_override_status: hard_checks_failed`` parks it until a person
+        looks again (removing that line re-activates the override).
+        """
+        path = f"{folder}/{side_name}"
+        self._act(
+            {
+                "action": "review_override",
+                "path": path,
+                "reason": override.reason,  # Drive journal only, never server logs
+                "dropped": override.dropped,
+                "outcome": "review" if review else "file",
+                "undo": {"op": "none"},
+            },
+            lambda: None,
+        )
+        if review:
+            reasons = (cls.reasons if cls else []) + ([note] if note else [])
+            text = _override_blocked_sidecar(override.sidecar_text, reasons)
+            self._act(
+                {"action": "update_sidecar_review_keys", "path": path, "undo": {"op": "none"}},
+                lambda: self.drive.update_text(sidecar.id, text),
+            )
 
     def _file_text_source(self, tree, folder, item, review, target_folder, new_name, cls, note):
         """Move a text source on its own (it has no sidecar)."""
