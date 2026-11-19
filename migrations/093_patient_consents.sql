@@ -9,8 +9,8 @@
 --                    for the operator (static bearer), who has no e-mail.
 -- is_admin:          1 when an admin or the operator created the patient.
 --
--- Numbered 091 because the open PR for #868 takes 090; the runner applies
--- migrations by name, so the gap is harmless in either merge order.
+-- Renumbered 091 -> 093 at the merge with main (091 and 092 were taken); the
+-- runner tracks migrations by file name.
 CREATE TABLE IF NOT EXISTS patient_consents (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     patient_id TEXT NOT NULL REFERENCES patients(patient_id),

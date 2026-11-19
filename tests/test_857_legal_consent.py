@@ -214,7 +214,7 @@ async def test_consent_rows_are_patient_scoped(db: Database):
 
 
 def test_migration_is_additive_without_backfill():
-    sql = (ROOT / "migrations" / "091_patient_consents.sql").read_text()
+    sql = (ROOT / "migrations" / "093_patient_consents.sql").read_text()
     code = "\n".join(line for line in sql.splitlines() if not line.strip().startswith("--"))
     assert "CREATE TABLE IF NOT EXISTS patient_consents" in code
     assert "patient_id TEXT NOT NULL REFERENCES patients(patient_id)" in code
@@ -305,12 +305,17 @@ async def test_privacy_matches_the_pipeline():
 
 
 async def test_privacy_numbers_match_the_code():
-    from oncofiles import app_log, pre_store
+    from oncofiles import app_log, dashboard_audit, pre_store
 
     html = await _text(server.privacy_policy)
     assert pre_store.KEEP == 5 and "only the 5 newest" in html
     assert "kept for 7 days" in html
     assert app_log.DEFAULT_RETENTION_DAYS == 7
+    # #868 (merged after this text was drafted): the dashboard access log expires
+    assert dashboard_audit.DEFAULT_RETENTION_DAYS == 90
+    assert "deleted automatically after 90 days" in html
+    assert "dashboard access log after 90 days" in html
+    assert "does not delete data\nautomatically" not in html
 
 
 async def test_terms_record_consent_and_manual_rights():

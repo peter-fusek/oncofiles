@@ -2635,12 +2635,18 @@ health data (for example a document number or an option); everything else is sto
 its length. We use this log to answer who accessed which records.</p>
 <p>Administrators of the service can open any patient's records, for operation and
 support.</p>
+<p>The web dashboard keeps its own access log: each sign-in, each refused attempt to open a
+patient, and each time an administrator opens a patient they are not the caregiver of. A row
+holds the time, the event and a keyed hash of the caller's e-mail address (never the address
+itself). These rows are deleted automatically after 90 days.</p>
 
 <h2 id="retention">7. Data Retention</h2>
-<p>Your data is retained as long as your account is active. Oncofiles does not delete data
-automatically. You can ask us to delete all data stored about a patient, including extracted
-values and the access log; see section 8. Original files in your Google Drive are never deleted
-by Oncofiles.</p>
+<p>Your data is retained as long as your account is active. Oncofiles does not delete your
+documents, their text, extracted values or patient records automatically. Only technical
+records expire on a schedule, for example the application log after 7 days (section 4) and the
+dashboard access log after 90 days (section 6). You can ask us to delete all data stored about a
+patient, including extracted values and the access log; see section 8.
+Original files in your Google Drive are never deleted by Oncofiles.</p>
 
 <h2 id="rights">8. Your Rights (GDPR)</h2>
 <p>If you are in the EU/EEA, you have the right to:</p>
