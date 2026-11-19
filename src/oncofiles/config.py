@@ -11,7 +11,9 @@ from dotenv import load_dotenv
 load_dotenv()
 
 BASE_DIR = Path(__file__).parent.parent.parent.resolve()
-DATA_DIR = BASE_DIR / "data"
+# ONCOFILES_DATA_DIR: optional override (offline tools on a read-only checkout,
+# e.g. ``python -m oncofiles.index_diff``); unset = <source root>/data as before
+DATA_DIR = Path(os.environ.get("ONCOFILES_DATA_DIR") or BASE_DIR / "data")
 DATA_DIR.mkdir(exist_ok=True)
 
 ANTHROPIC_API_KEY: str = os.environ.get("ANTHROPIC_API_KEY", "")
@@ -92,6 +94,13 @@ REOCR_SECOND_PASS_DPI: int = int(os.environ.get("REOCR_SECOND_PASS_DPI", "220"))
 # The A/B knob for #593 T3.
 REREAD_DPI: int = int(os.environ.get("REREAD_DPI", "150"))
 REREAD_SECOND_PASS_DPI: int = int(os.environ.get("REREAD_SECOND_PASS_DPI", "220"))
+# How the second vision pass sees the page (#883), both paths: 2 (default) = two
+# overlapping halves (top, bottom), one call each, so the model server cannot hand
+# both passes the same downscaled image; 1 = the whole page (pre-#883, rollback
+# knob only: in production that made pass 2 a copy of pass 1). Other values → 2.
+REOCR_SECOND_PASS_TILES: int = (
+    1 if os.environ.get("REOCR_SECOND_PASS_TILES", "2").strip() == "1" else 2
+)
 # Second-pass policy (#593): "fixed2" (default) reads every page twice; "adaptive"
 # skips the second pass only where it provably cannot change what is confirmed
 # (see reocr._vision_passes); verification semantics never loosen.
@@ -101,10 +110,13 @@ REOCR_PASSES_MODE: str = os.environ.get("REOCR_PASSES_MODE", "fixed2").strip().l
 # Transcription only; classification and extraction are not affected.
 REOCR_THINKING: str = os.environ.get("REOCR_THINKING", "on").strip().lower()
 # Page orientation before vision OCR (#609, curated/orientation.py), ingest and
-# re-OCR: "on" (default) asks the local model how a page is turned and rotates
-# the image locally before reading it; "off" reads every page as it is. The
-# LOCAL_LLM_ prefix lets the re-OCR child inherit it.
-OCR_ORIENTATION: str = os.environ.get("LOCAL_LLM_OCR_ORIENTATION", "on").strip().lower()
+# re-OCR (#882): "prefilter" (default) honours an explicit EXIF / PDF rotation
+# and takes a portrait page without one as upright, asking the local model only
+# for landscape / near-square pages and for a prefilter page whose first reading
+# looks doubtful; "always" asks the model for every page (the #609 behaviour);
+# "off" reads every page as it is. Unknown values → "prefilter" with a warning
+# (orientation.mode). The LOCAL_LLM_ prefix lets the re-OCR child inherit it.
+OCR_ORIENTATION: str = os.environ.get("LOCAL_LLM_OCR_ORIENTATION", "prefilter").strip().lower()
 # Guard profile for re-OCR of Tesseract-era sidecars (#831): the old Tesseract
 # text is not a trustworthy baseline, so its lost numbers / lab values / words
 # are reported but do not stop a rewrite (reocr.guard_profile). "false" restores

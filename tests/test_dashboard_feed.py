@@ -284,8 +284,10 @@ async def test_feed_shape_documents_and_unverified(db, curated_env):
     assert out["next_cursor"] is None and out["generated_at"].endswith("Z")
     assert "evidence" not in raw and "stats" not in raw
     allowed = {"id", "code", "label", "at", "at_from", "at_to", "value", "value_text", "unit",
-               "ref_low", "ref_high", "flag", "verification", "document_id", "page"}  # fmt: skip
+               "ref_low", "ref_high", "flag", "verification", "document_id", "page",
+               "ref_source", "ref_document_id"}  # the two optional keys of #899  # fmt: skip
     for f in out["facts"]:
+        assert ("ref_source" in f) == ("ref_low" in f or "ref_high" in f)
         assert {"id", "code", "at", "verification", "document_id"} <= set(f) <= allowed
         date.fromisoformat(f["at"][:10])
     plt = next(f for f in out["facts"] if f["code"] == "PLT")

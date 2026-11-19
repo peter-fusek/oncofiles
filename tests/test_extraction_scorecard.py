@@ -142,7 +142,16 @@ def _walk(obj, path=""):
 
 
 def _assert_counts_only(report):
-    """No text-bearing key anywhere; every string leaf is a short code."""
+    """No text-bearing key anywhere; every string leaf is a short code. The
+    in-memory lab card's label review list (#814) is the one exception: it is
+    re-checked by ``sc.review_labels`` and never persisted, so it is checked
+    for that and then left out of the walk."""
+    report = json.loads(json.dumps(report))
+    for card in report.get("documents") or []:
+        if isinstance(card, dict) and "unmapped_labels" in card:
+            labels = card.pop("unmapped_labels")
+            assert sc.review_labels(labels) == labels
+            card.pop("unmapped_labels_omitted", None)
     for path, key, value in _walk(report):
         assert key not in FORBIDDEN_KEYS, f"{path}.{key}"
         if isinstance(value, str) and key not in _TIMING_KEYS:
@@ -208,6 +217,11 @@ async def test_scorecard_report_shape_counts_only_and_writes_no_facts(seeded, lo
     assert lab["lab"]["agree"] == 1 and lab["lab"]["llm_only"] == 1
     assert lab["lab"]["rule_only"] == 0 and lab["lab"]["value_mismatch"] == 0
     assert lab["unverified_reasons"] == {"label_unmapped": 1}
+    # the label review list (#814): label and unit only, in memory only
+    review = {"reason": "label_unmapped", "label": "S-XYZ", "label_masked": False, "count": 1,
+              "unit": "mg/l"}  # fmt: skip
+    assert lab["unmapped_labels"] == [review]
+    assert lab["unmapped_labels_omitted"] == 0
     # totals
     t = report["totals"]
     assert t["stability"]["pages"] == N_PAGES and t["stability"]["pct_stop"] == 100.0

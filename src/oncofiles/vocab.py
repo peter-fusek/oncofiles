@@ -394,6 +394,7 @@ _SPECS: dict[str, _Spec] = {
         standard="Google Calendar API Event.status",
     ),
     "device_kind": _here(("llm-extractor",), "curated.clinical_store.device_id_for"),
+    "dashboard_access_event": _from("oncofiles.database._access_log", "DASHBOARD_ACCESS_EVENTS"),
 }
 
 # (table, column) → domain. Every enum-like column is here, in
@@ -466,6 +467,7 @@ COLUMN_DOMAINS: dict[tuple[str, str], str] = {
     ("onboarding_events", "event_type"): "onboarding_event_type",
     ("calendar_entries", "status"): "calendar_event_status",
     ("devices", "kind"): "device_kind",
+    ("dashboard_access_log", "event"): "dashboard_access_event",
 }
 
 # Codes used as keys into a reference table or an external code system that this
@@ -510,6 +512,8 @@ FREE_TEXT_BY_DESIGN: dict[tuple[str, str], str] = {
     ("practitioners", "role"): "no writer yet; printed role of the doctor",
     ("organizations", "kind"): "no writer yet",
     ("links", "relation"): "no production writer yet (#603); register a domain with the first one",
+    ("dashboard_access_log", "route"): "name of the dashboard endpoint that made the ACL "
+    "decision (open set, grows with the routes)",
 }
 
 
@@ -893,6 +897,11 @@ _LABELS: dict[str, dict[str, tuple[str, str]]] = {
         "cancelled": ("Zrušená", "Cancelled"),
     },
     "device_kind": {"llm-extractor": ("Extraktor s jazykovým modelom", "LLM extractor")},
+    "dashboard_access_event": {
+        "sign_in": ("Prihlásenie", "Sign-in"),
+        "patient_read": ("Čítanie cudzieho pacienta (admin)", "Admin read of another patient"),
+        "acl_refused": ("Prístup odmietnutý", "Access refused"),
+    },
 }
 
 

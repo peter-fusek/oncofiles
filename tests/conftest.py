@@ -53,6 +53,48 @@ def _reset_anthropic_client():
     oncofiles.enhance._shared_client = None
 
 
+# Module-level state of ``oncofiles.tools.curated`` that one test can leave
+# behind for the next (#893, #823): the shutdown flag (set by every lifespan
+# shutdown and by tests of the stop path), the job registries a "another job
+# is active" check reads, per-patient scheduling state and the in-process
+# caches. A new module-level registry there belongs in one of these lists;
+# ``tests/test_curated_state_reset.py`` fails when one is missing.
+CURATED_CLEARED = (
+    "_runs", "_restoring", "_readme_births", "_extract_cache", "_propose_cache",
+    "_text_reviews", "_inflight_pages", "_patient_locks", "_watch", "_empty_streak",
+    "_probe_stats", "_import_done", "_onboarding", "_startup_index_stats", "_reocr_jobs",
+)  # fmt: skip
+CURATED_SCALARS = {"_last_probe_at": None, "_onboarding_active": None, "_round_no": 0}
+CURATED_COUNTERS = ("_dry_runs",)  # dict of counters: every value back to zero
+
+
+def reset_curated_state() -> None:
+    import sys
+
+    tool = sys.modules.get("oncofiles.tools.curated")
+    if tool is None:  # not imported yet: nothing to reset, and no import cost
+        return
+    tool._stopping.clear()
+    for name in CURATED_CLEARED:
+        getattr(tool, name).clear()
+    for name, value in CURATED_SCALARS.items():
+        setattr(tool, name, value)
+    for name in CURATED_COUNTERS:
+        counters = getattr(tool, name)
+        for key in counters:
+            counters[key] = 0
+
+
+@pytest.fixture(autouse=True)
+def _reset_curated_state():
+    """Every test starts and ends with clean curated job state (#893, #823):
+    a flag or registry entry left by one test made another fail depending on
+    the order of the run."""
+    reset_curated_state()
+    yield
+    reset_curated_state()
+
+
 @pytest.fixture(autouse=True)
 def _cloud_ai_configured(monkeypatch):
     """Tests run as a server with cloud AI switched on AND a key (#618 guard passes).

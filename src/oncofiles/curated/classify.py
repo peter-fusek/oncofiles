@@ -35,7 +35,14 @@ from datetime import date
 from oncofiles import config
 from oncofiles.curated import llm
 from oncofiles.curated.contract import Contract
-from oncofiles.curated.naming import UNKNOWN, NameFields, camel, surname_text, surname_token
+from oncofiles.curated.naming import (
+    UNKNOWN,
+    NameFields,
+    camel,
+    has_title,
+    surname_text,
+    surname_token,
+)
 from oncofiles.curated.vocabulary import VocabAddition
 
 MIN_CONFIDENCE = 0.60
@@ -333,6 +340,9 @@ def validate(
         """
         if token == UNKNOWN or token in contract.known_tokens:
             return token
+        same = [k for k in contract.known_tokens if k.lower() == token.lower()]
+        if len(same) == 1:  # #900: the README spelling of the same (folded) token
+            return same[0]
         for match in difflib.get_close_matches(
             token, contract.known_tokens, n=3, cutoff=SNAP_CUTOFF
         ):
@@ -346,7 +356,7 @@ def validate(
             return match
         return token
 
-    def resolve_new(label: str, token: str, printed: list, sources: list) -> str:
+    def resolve_new(label: str, token: str, printed: list, sources: list, to_token=camel) -> str:
         """#854: a token not in README §3 → README token, new printed token, or Unknown.
 
         Appends to ``additions`` only for a spelling printed in the text; a near
@@ -364,7 +374,7 @@ def validate(
             if names_patient(value, contract):  # first: never matched, never added
                 flags.append(f"{label} value names the patient — filed as Unknown")
                 return UNKNOWN
-            cand = camel(value)
+            cand = to_token(value)
             if cand.lower() in lower:
                 return lower[cand.lower()]
             snapped = snap(cand, label)
@@ -435,7 +445,9 @@ def validate(
             [raw.get("institution"), raw.get("institution_printed")],
         )
         raw_doctor = raw.get("doctor") if isinstance(raw.get("doctor"), str) else None
-        doctor = resolve_new("doctor", doctor, [surname_text(raw_doctor)], [raw_doctor])
+        doctor = resolve_new(
+            "doctor", doctor, [surname_text(raw_doctor)], [raw_doctor], to_token=surname_token
+        )
         if institution == UNKNOWN:
             flags.append("institution unknown — filed as Unknown")
     else:
@@ -446,6 +458,10 @@ def validate(
         for label, token in (("institution", institution), ("doctor", doctor)):
             if token != UNKNOWN and token not in contract.known_tokens:
                 reasons.append(f"new {label} {token!r} not in README vocabulary")
+    if has_title(doctor):  # #900: a title is never a doctor token, new or filed
+        flags.append("doctor token still carries a title — filed as Unknown")
+        additions[:] = [a for a in additions if a.label != "Doctor"]
+        doctor = UNKNOWN
     # A new department / subject is plausible on its own: file it, but say so.
     for label, token in (("HospitalName", hospital), ("Subject", subject)):
         if token and token != UNKNOWN and token not in contract.known_tokens:

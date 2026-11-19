@@ -9,8 +9,34 @@ again from the **source file**, on the **local** model only:
   (default 150 / 220 dpi; REOCR_DPI / REOCR_SECOND_PASS_DPI for this rewrite
   path, REREAD_DPI / REREAD_SECOND_PASS_DPI for the verify-only re-read).
   A line of the first pass whose numbers are not all found on the same page of
-  the second pass is marked ``[?]``. Digits are accepted only where both
-  passes agree; the parser keeps ``[?]`` lines unverified.
+  the second pass is marked ``[?]``; the parser keeps ``[?]`` lines
+  unverified. The comparison is per page and per number token (is each of
+  the line's numbers anywhere in pass 2's reading of that page?), not per
+  line or per digit position.
+
+  Pass independence (#883): the model server (LM Studio / MLX) fits every
+  image into its own input size, so a whole page at 150 dpi and at 220 dpi
+  can reach the model as the same image; production showed identical prompt,
+  completion and reasoning tokens for both passes on every page, i.e. pass 2
+  repeated pass 1 and the agreement confirmed nothing. Pass 2 therefore reads
+  the 220 dpi page as ``REOCR_SECOND_PASS_TILES`` = 2 overlapping halves
+  (``split_png``; neighbours share ``TILE_OVERLAP`` of the height), one call
+  each with its own text before the image (``tile_prompt``): a different
+  image and token sequence, and about twice the pixels per line after the
+  server's downscale. Its answer is the halves joined top to bottom; it is
+  only ever the number pool of ``reconcile``. The text returned, written to a
+  sidecar or candidate and parsed for facts is always pass 1's (plus ``[?]``),
+  so a line inside the halves' overlap can never be written twice.
+  ``REOCR_SECOND_PASS_TILES=1`` restores the whole page (rollback only). Every
+  vision call records the image it sent (``width``, ``height``, ``image_sha``:
+  12 hex of a SHA-256 of the PNG bytes, never the image), and the orientation
+  question gets its own record (``kind: orientation``, #882; ``recheck: true``
+  when the pre-filter's safety net asked it after a doubtful pass 1). A page
+  decided without the model (``orientation.decide``: EXIF / PDF rotation or a
+  portrait page) reads pass 1 first and the later passes only after that
+  check, so a page the model then reports as turned is read again in full,
+  never with a pass 2 of the wrong direction. Per document and per run the
+  report carries ``orientation`` (``orientation.tally``: counts only).
 
 Guard: the old and the new text are both parsed; when the new one loses a
 code with its value, or dates it differently, the sidecar is NOT rewritten
@@ -102,6 +128,10 @@ TEXT_SHRUNK_RATIO = 0.6  # new body below this share of the old body → review 
 MIN_WORD_OVERLAP = 0.40  # share of old distinct words found in the new text below this → review
 WORD_MIN_LEN = 3  # words for the overlap: lower-case, letters only, diacritics kept, ≥ this
 RETRY_REASONING_RATIO = 0.8  # near-empty pass with reasoning/completion above this → 1 retry
+# #883: the two halves of pass 2 share this share of the page height, so a line
+# cut at one half's edge is whole in the other (A4 at 220 dpi: ~200 px, 6+ lines)
+TILE_OVERLAP = 0.08
+TILE_NAMES = {2: ("top half", "bottom half")}
 INK_DPI = 36  # render dpi of the ink-density measure (cheap, never sent to the model)
 INK_NEAR_WHITE = 230  # grey level (0-255) at or above which a pixel counts as paper
 BLANK_INK_MAX = 0.005  # a page with less ink (share of pixels) and no text layer is blank
@@ -199,6 +229,61 @@ def born_digital(page, *, image_cover: float = 0.8) -> bool:
     return True
 
 
+def second_pass_tiles() -> int:
+    """Parts pass 2 reads a page in (#883): 2 halves, or 1 (whole page, rollback)."""
+    return 1 if getattr(config, "REOCR_SECOND_PASS_TILES", 2) == 1 else 2
+
+
+def split_png(png: bytes, n: int, overlap: float = TILE_OVERLAP) -> list[bytes]:
+    """``png`` cut into ``n`` horizontal strips, top to bottom, at full
+    resolution; neighbours share ``overlap`` of the image height (#883)."""
+    if n <= 1:
+        return [png]
+    import pymupdf
+
+    pix = pymupdf.Pixmap(png)
+    w, h = pix.width, pix.height
+    pad = int(h * overlap / 2) + 1
+    out = []
+    for t in range(n):
+        y0, y1 = max(0, int(t * h / n) - pad), min(h, int((t + 1) * h / n) + pad)
+        rect = pymupdf.IRect(0, y0, w, y1)
+        sub = pymupdf.Pixmap(pix.colorspace, rect, pix.alpha)
+        sub.copy(pix, rect)
+        out.append(sub.tobytes("png"))
+        del sub
+    del pix
+    return out
+
+
+def image_meta(png: bytes) -> dict:
+    """What a vision call sent, counts only (#883): the pixel size from the PNG
+    header and 12 hex characters of a SHA-256 of the bytes (tells two images
+    apart; reveals nothing of the page)."""
+    import hashlib
+
+    ok = len(png) >= 24 and png[:8] == b"\x89PNG\r\n\x1a\n"
+    return {
+        "width": int.from_bytes(png[16:20], "big") if ok else None,
+        "height": int.from_bytes(png[20:24], "big") if ok else None,
+        "image_sha": hashlib.sha256(png).hexdigest()[:12],
+    }
+
+
+def tile_prompt(i: int, total: int, tile: tuple[int, int] | None) -> str:
+    """The text before the image: the page and, for a pass-2 part, which one
+    (#883; it also makes the token sequence differ from pass 1's)."""
+    if tile is None:
+        return f"Page {i + 1} of {total}."
+    t, n = tile
+    name = TILE_NAMES.get(n, ("part",) * n)[t - 1]
+    return (
+        f"Page {i + 1} of {total}: the {name} of the page only (part {t} of {n}; the "
+        "parts overlap). Transcribe what is visible in this part; skip a line cut off "
+        "at its top or bottom edge."
+    )
+
+
 def _pass_record(
     page: int, k: int, dpi: int | None, info: dict, seconds: float, error=None
 ) -> dict:
@@ -225,8 +310,19 @@ def _pass_record(
 
 def _by_page_and_pass(records: list[dict]) -> list[dict]:
     return sorted(
-        records, key=lambda r: (r.get("page") or 0, r.get("pass") or 0, bool(r.get("retry")))
+        records,
+        key=lambda r: (
+            r.get("page") or 0,
+            r.get("pass") or 0,
+            r.get("tile") or 0,
+            bool(r.get("retry")),
+        ),
     )
+
+
+def is_orientation(rec: dict) -> bool:
+    """The page's orientation question (#882), not a transcription pass."""
+    return rec.get("kind") == "orientation"
 
 
 def page_ink(page, *, dpi: int = INK_DPI) -> float:
@@ -271,8 +367,10 @@ def usage_summary(records: list[dict]) -> dict:
     """Per-document LLM usage of a re-read (#800): the per-pass records, the
     maxima, the budget and the truncated passes. Counts only."""
 
+    passes = [r for r in records if not is_orientation(r)]
+
     def peak(key):
-        values = [r[key] for r in records if isinstance(r.get(key), int)]
+        values = [r[key] for r in passes if isinstance(r.get(key), int)]
         return max(values) if values else None
 
     return {
@@ -280,25 +378,40 @@ def usage_summary(records: list[dict]) -> dict:
         "reasoning_tokens_max": peak("reasoning_tokens"),
         "completion_tokens_max": peak("completion_tokens"),
         "budget": REOCR_BUDGET,
+        # a pass-2 half also names its ``tile`` (#883)
         "truncated_passes": [{"page": r["page"], "pass": r["pass"]}
-                             for r in records if is_truncated(r)],
+                             | ({"tile": r["tile"]} if r.get("tile") else {})
+                             for r in passes if is_truncated(r)],
     }  # fmt: skip
 
 
 def truncation_warnings(document_id, truncated: list[dict]) -> list[dict]:
     """One report warning per truncated pass: never a silent pass (#800)."""
     return [{"warning": "reocr_pass_truncated", "document_id": document_id,
-             "page": t["page"], "pass": t["pass"]} for t in truncated]  # fmt: skip
+             "page": t["page"], "pass": t["pass"]}
+            | ({"tile": t["tile"]} if t.get("tile") else {})
+            for t in truncated]  # fmt: skip
 
 
 def log_passes(doc_ref, records: list[dict]) -> None:
     """One INFO line per vision pass, metadata only (ids, counts, finish).
     Called in the server process: the re-OCR child's logging goes nowhere."""
     for r in records:
+        if is_orientation(r):
+            logger.info(
+                "re-OCR orientation call: doc=%s page=%s valid=%s confident=%s "
+                "prompt_tokens=%s completion_tokens=%s seconds=%s error=%s",
+                doc_ref, r.get("page"), r.get("valid"), r.get("confident"),
+                r.get("prompt_tokens"), r.get("completion_tokens"), r.get("seconds"),
+                r.get("error"),
+            )  # fmt: skip
+            continue
         logger.info(
-            "re-OCR llm pass: doc=%s page=%s pass=%s dpi=%s finish=%s prompt_tokens=%s "
-            "completion_tokens=%s reasoning_tokens=%s budget=%s seconds=%s error=%s",
-            doc_ref, r.get("page"), r.get("pass"), r.get("dpi"), r.get("finish"),
+            "re-OCR llm pass: doc=%s page=%s pass=%s tile=%s dpi=%s image=%sx%s sha=%s "
+            "finish=%s prompt_tokens=%s completion_tokens=%s reasoning_tokens=%s budget=%s "
+            "seconds=%s error=%s",
+            doc_ref, r.get("page"), r.get("pass"), r.get("tile"), r.get("dpi"),
+            r.get("width"), r.get("height"), r.get("image_sha"), r.get("finish"),
             r.get("prompt_tokens"), r.get("completion_tokens"), r.get("reasoning_tokens"),
             REOCR_BUDGET, r.get("seconds"), r.get("error"),
         )  # fmt: skip
@@ -332,6 +445,11 @@ def _vision_passes(
     PNGs are alive at once. The caller caps ``parallel`` (REOCR_PARALLEL_PASSES
     and the number of running re-read jobs) so re-reads never hold more than
     3 LM Studio slots together.
+
+    Pass 2 and later read the page as ``second_pass_tiles()`` overlapping
+    halves (#883, see the module docstring): one call per half, in order,
+    inside that pass's worker, so a pass still holds one slot at a time; the
+    pass's answer is the halves joined. Pass 1 always reads the whole page.
 
     Skipping the second pass (#593 adaptive; ``None`` in that page's slot of
     every later pass) happens only where it provably cannot change a
@@ -374,10 +492,15 @@ def _vision_passes(
     blank: dict[int, bool] = {}  # 0-based page -> likely blank back side (#806)
     retried: set[int] = set()  # 1-based pages with a thinking-off retry
 
+    tiles = second_pass_tiles()
+
     def call(part: dict, i: int, total: int, k: int = 0, retry: bool = False,
-             probe: bool = False):  # fmt: skip
+             probe: bool = False, tile: tuple[int, int] | None = None,
+             meta: dict | None = None):  # fmt: skip
         """One model call: (answer text, (reasoning_tokens, completion_tokens)).
-        ``probe``: a reading that only decides an unsure orientation (#609)."""
+        ``probe``: a reading that only decides an unsure orientation (#609).
+        ``tile``: (part, parts) of a pass-2 page split (#883); ``meta``: the
+        sent image's ``image_meta``, copied into the usage record."""
         info: dict = {}
         t0 = time.monotonic()
         error = None
@@ -388,7 +511,7 @@ def _vision_passes(
         try:
             text = llm.chat(
                 REOCR_SYSTEM_PROMPT,
-                [{"type": "text", "text": f"Page {i + 1} of {total}."}, part],
+                [{"type": "text", "text": tile_prompt(i, total, tile)}, part],
                 max_tokens=REOCR_BUDGET,
                 reasoning_effort="high",
                 client=client,
@@ -410,59 +533,157 @@ def _vision_passes(
                         rec.update(retry=True, thinking="off")
                     if probe:
                         rec["orientation_probe"] = True
+                    if tile is not None:
+                        rec.update(tile=tile[0], tiles=tile[1])
+                    if meta:
+                        rec.update(meta)
                     with lock:
                         usage.append(rec)
                 except Exception as rec_exc:
                     logger.warning("re-OCR pass usage not recorded: %s", type(rec_exc).__name__)
             info.clear()  # the raw answer channels never outlive the call
 
-    def ask(part: dict, i: int, total: int, k: int = 0) -> str:
-        text, tokens = call(part, i, total, k)
+    def ask(part: dict, i: int, total: int, k: int = 0, tile=None, meta=None) -> str:
+        text, tokens = call(part, i, total, k, tile=tile, meta=meta)
         if not retry_thin or blank.get(i) or not needs_retry(text, *tokens):
             return text
         with lock:
             retried.add(i + 1)
         try:
-            again, _ = call(part, i, total, k, retry=True)
+            again, _ = call(part, i, total, k, retry=True, tile=tile, meta=meta)
         except Exception as exc:  # the retry is a bonus: its failure keeps the first answer
             logger.warning("re-OCR retry failed: page=%s pass=%s %s", i + 1, k + 1,
                            type(exc).__name__)  # fmt: skip
             return text
         return again if len((again or "").strip()) > len((text or "").strip()) else text
 
-    def orient(page, i: int, total: int) -> tuple[int, str]:
+    def read(images: list[tuple[dict, dict]], i: int, total: int, k: int = 0) -> str:
+        """One pass over one page: one call per image (a whole page, or the
+        halves of a pass-2 split, #883), answers joined top to bottom."""
+        n = len(images)
+        if n == 1:
+            return ask(images[0][0], i, total, k, meta=images[0][1])
+        return "\n".join(
+            ask(part, i, total, k, tile=(t, n), meta=meta)
+            for t, (part, meta) in enumerate(images, start=1)
+        )
+
+    def probe_reader(i: int, total: int):
+        def probe_read(image: bytes) -> str:
+            return call(llm.image_part(image), i, total, 0, probe=True, meta=image_meta(image))[0]
+
+        return probe_read
+
+    def asker(i: int, recheck: bool = False):
+        def ask_rotation(image: bytes, *, client=None):
+            asked[0] += 1
+            record: dict = {}
+            try:
+                return orientation.ask_rotation(image, client=client, record=record)
+            finally:
+                if usage is not None and record:  # #882: the question itself, counts only
+                    rec = {"page": i + 1, "pass": 0, "kind": "orientation", **record}
+                    if recheck:
+                        rec["recheck"] = True
+                    with lock:
+                        usage.append(rec)
+
+        return ask_rotation
+
+    def hint_of(page, png: bytes):
+        """#882: an explicit rotation in the file (PDF /Rotate, JPEG EXIF)."""
+        if ext == "pdf":
+            return orientation.pdf_hint(page)
+        if ext in ("jpg", "jpeg"):
+            return orientation.image_hint(content, png)
+        return None
+
+    def orient(page, i: int, total: int) -> orientation.Oriented:
         """#609: the page's rotation, decided once before its passes (the model
         only reports the direction; the image is turned locally). An unsure
         direction is settled by reading both ways at the first dpi; those
-        probe readings are recorded in ``usage`` but never used as text."""
+        probe readings are recorded in ``usage`` but never used as text.
+        #882: ``orientation.decide`` first honours an explicit rotation or
+        takes a portrait page as upright, without a model call."""
         if not orientation.enabled():
-            return 0, orientation.SOURCE_OFF
+            return orientation.Oriented(0, orientation.SOURCE_OFF, b"")
         if blank.get(i):  # a blank back side has no direction to ask about
-            return 0, orientation.SOURCE_BLANK
+            return orientation.Oriented(0, orientation.SOURCE_BLANK, b"")
         png = extract_mod._pixmap_png(page, dpis[0])
-
-        def read(image: bytes) -> str:
-            return call(llm.image_part(image), i, total, 0, probe=True)[0]
-
-        o = orientation.orient(png, read, client=client)
+        o = orientation.decide(png, probe_reader(i, total), hint=hint_of(page, png),
+                               client=client, ask=asker(i))  # fmt: skip
         del png
-        return o.rotation, o.source
+        o.png, o.text = b"", None  # never kept: the passes render their own images
+        return o
 
-    def render(page, dpi: int) -> dict:
-        png = extract_mod._pixmap_png(page, dpi)
+    def prefiltered(o: orientation.Oriented) -> bool:
+        return (
+            orientation.mode() == orientation.MODE_PREFILTER
+            and o.source in orientation.PREFILTER_SOURCES
+        )
+
+    def recheck(page, i: int, total: int, first: orientation.Oriented, text: str | None):
+        """#882 safety net on pass 1's reading of a page decided without the
+        model; the probe readings are recorded, never used as text."""
+        if not prefiltered(first) or not orientation.doubtful(text):
+            return None
+        png = extract_mod._pixmap_png(page, dpis[0])
+        if first.local_rotation:
+            png = orientation.rotate_png(png, first.local_rotation)
+        first.png = png
+        try:
+            return orientation.settle(first, text, probe_reader(i, total), client=client,
+                                      ask=asker(i, recheck=True))  # fmt: skip
+        finally:
+            first.png = b""
+
+    def render(page, k: int) -> list[tuple[dict, dict]]:
+        """The image(s) of pass ``k`` of a page: (image part, ``image_meta``).
+        Rendered in this thread (a PyMuPDF page is not shared with the pool)."""
+        png = extract_mod._pixmap_png(page, dpis[k])
         if rot.get(page.number):
             png = orientation.rotate_png(png, rot[page.number])
-        part = llm.image_part(png)
+        pngs = split_png(png, tiles) if k >= 1 else [png]
         del png
-        return part
+        out = [(llm.image_part(p), image_meta(p)) for p in pngs]
+        del pngs
+        return out
 
     workers = max(1, min(int(parallel), len(dpis)))
     passes: list[list[str | None]] = [[] for _ in dpis]
     deferred: list[int] = []
     inks: list[float | None] = []
     layers: list[bool | None] = []
-    rot: dict[int, int] = {}  # 0-based page -> clockwise rotation (#609)
+    rot: dict[int, int] = {}  # 0-based page -> clockwise turn WE apply (#609)
+    recorded: list[int] = []  # per page, the rotation reported (#882: incl. EXIF / PDF)
     sources: list[str] = []
+    asked = [0]  # direction questions asked (#882 telemetry)
+
+    def read_page(page, i: int, total: int, first: str | None = None):
+        """All passes of one page: (answers, True when its second pass is
+        deferred). ``first``: pass 1's answer when it was already read (#882
+        safety net), so only the later passes are asked."""
+        wanted = second_pass_pages is None or (i + 1) in second_pass_pages
+
+        def pass1() -> str:
+            return first if first is not None else read(render(page, 0), i, total)
+
+        if len(dpis) > 1 and not wanted:
+            return [pass1()], True
+        if first is not None or (adaptive and workers == 1 and len(dpis) > 1):
+            answers = [pass1()]
+            if not adaptive or _NUM.search(answers[0]):  # digits: pass 2 decides them
+                answers += [read(render(page, k), i, total, k) for k in range(1, len(dpis))]
+            return answers, False
+        parts = [render(page, k) for k in range(len(dpis))]
+        if workers > 1:
+            n = len(parts)
+            answers = list(pool.map(read, parts, [i] * n, [total] * n, range(n)))
+        else:
+            answers = [read(images, i, total, k) for k, images in enumerate(parts)]
+        del parts
+        return answers, False
+
     with (
         pymupdf.open(stream=content, filetype=ext) as doc,
         ThreadPoolExecutor(max_workers=workers) as pool,
@@ -479,25 +700,20 @@ def _vision_passes(
             inks.append(ink)
             layers.append(layer)
             blank[i] = is_blank(ink, layer)
-            rot[i], source = orient(page, i, total)
-            sources.append(source)
-            wanted = second_pass_pages is None or (i + 1) in second_pass_pages
-            if len(dpis) > 1 and not wanted:
-                answers = [ask(render(page, dpis[0]), i, total)]
+            o = orient(page, i, total)
+            rot[i] = o.local_rotation
+            first = None
+            if prefiltered(o):  # #882: pass 1 first, its reading may ask the model once
+                first = read(render(page, 0), i, total)
+                if (again := recheck(page, i, total, o, first)) is not None:
+                    if again.local_rotation != rot[i]:  # the model reports a turn
+                        rot[i], first = again.local_rotation, None  # read it again
+                    o = again
+            answers, defer = read_page(page, i, total, first)
+            recorded.append(o.rotation)
+            sources.append(o.source)
+            if defer:
                 deferred.append(i)
-            elif adaptive and workers == 1 and len(dpis) > 1:
-                answers = [ask(render(page, dpis[0]), i, total)]
-                if _NUM.search(answers[0]):  # digits: the second pass decides them
-                    answers += [ask(render(page, dpi), i, total, k)
-                                for k, dpi in enumerate(dpis[1:], start=1)]  # fmt: skip
-            else:
-                parts = [render(page, dpi) for dpi in dpis]
-                if workers > 1:
-                    n = len(parts)
-                    answers = list(pool.map(ask, parts, [i] * n, [total] * n, range(n)))
-                else:
-                    answers = [ask(part, i, total, k) for k, part in enumerate(parts)]
-                del parts
             for k, out in enumerate(passes):
                 out.append(answers[k] if k < len(answers) else None)
             del page
@@ -505,15 +721,15 @@ def _vision_passes(
         for i in deferred:
             if _shares_numbers(passes[0][i] or "", twice):
                 page = doc[i]
-                for k, dpi in enumerate(dpis[1:], start=1):
-                    passes[k][i] = ask(render(page, dpi), i, total, k)
+                for k in range(1, len(dpis)):
+                    passes[k][i] = read(render(page, k), i, total, k)
                 del page
     if usage is not None:
         usage[:] = _by_page_and_pass(usage)
     if diag is not None:
         diag.update(page_ink=inks, page_text_layer=layers, retried_pages=sorted(retried),
-                    rotation=[rot.get(i, 0) for i in range(len(sources))],
-                    rotation_source=sources)  # fmt: skip
+                    rotation=recorded, rotation_source=sources,
+                    orientation=orientation.tally(sources, asked[0]))  # fmt: skip
     return passes
 
 
@@ -581,6 +797,9 @@ class Reread:
     chart_pages: list[int] = field(default_factory=list)
     rotated_region_pages: list[int] = field(default_factory=list)
     ocr_version: str | None = None
+    # #882: ``orientation.tally`` (direction questions vs pages decided
+    # without one); counts only
+    orientation: dict = field(default_factory=dict)
 
 
 VISION_FRONT_KEYS = ("ocr_version", "rotation", "rotation_source", "has_chart", "rotated_region")
@@ -675,6 +894,7 @@ def reread(
                       retried_pages=diag.get("retried_pages", []),
                       rotation=diag.get("rotation", []),
                       rotation_source=diag.get("rotation_source", []),
+                      orientation=diag.get("orientation", {}),
                       chart_pages=charts, rotated_region_pages=regions,
                       ocr_version=extract_mod.OCR_VERSION)  # fmt: skip
     except llm.LocalLLMError as exc:
@@ -1097,6 +1317,8 @@ class DocResult:
     rotation: list[int] = field(default_factory=list)
     rotation_source: list[str] = field(default_factory=list)
     chart_pages: list[int] = field(default_factory=list)
+    # #882: ``orientation.tally`` of this document's read, counts only
+    orientation: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -1105,9 +1327,17 @@ class ReocrReport:
     documents: list[DocResult] = field(default_factory=list)
     warnings: list[dict] = field(default_factory=list)  # #800: reocr_pass_truncated
 
+    def orientation_totals(self) -> dict:
+        """#882: the run's direction questions vs pages decided without one."""
+        total: dict = {}
+        for d in self.documents:
+            orientation.add_tally(total, d.orientation)
+        return total
+
     def to_dict(self) -> dict:
         return {"dry_run": self.dry_run, "documents": [asdict(d) for d in self.documents],
-                "warnings": [dict(w) for w in self.warnings]}  # fmt: skip
+                "warnings": [dict(w) for w in self.warnings],
+                "orientation": self.orientation_totals()}  # fmt: skip
 
 
 from oncofiles.curated.facts_rules import INLINE_CATEGORIES as _INLINE_CATEGORIES  # noqa: E402
@@ -1238,16 +1468,49 @@ def candidate_page_ink(text: str) -> tuple[list | None, list | None]:
     return found["page_ink"], found["page_text_layer"]
 
 
+# Skip reason for a document automatic selection leaves out (#674, #827, #835).
+REOCR_HANDLED_BEFORE_SKIP = (
+    "handled before: re-OCR'd (backup), restored (kept text) or sent to review "
+    "with a candidate in logs; list it explicitly to read it again"
+)
+
+
+# Reason code of that skip in a plan's ``excluded_before_limit`` counts (#894).
+HANDLED_BEFORE = "handled_before"
+
+
 def handled_before(log_names: list[str], filename: str) -> bool:
     """Does the logs folder show this document was re-OCR'd before (a backup),
-    deliberately restored (the kept re-OCR text) or sent to review with its
-    new text kept (a candidate)? (#674) Automatic selection skips it; an
-    explicitly listed document is read again."""
+    deliberately restored (the kept re-OCR text, or the copy a restore or a
+    candidate promotion keeps of the replaced sidecar) or sent to review with
+    its new text kept (a candidate)? (#674, #894) Automatic selection skips
+    it; an explicitly listed document is read again."""
     from oncofiles.curated.runner import nfc
 
     name = re.escape(nfc(filename))
-    exact = re.compile(rf"_reocr-(?:backup|text|candidate)-\d{{8}}(?:-\d{{6}})?-{name}\.md")
+    exact = re.compile(
+        rf"_(?:reocr-(?:backup|text|candidate)|restore-backup)-\d{{8}}(?:-\d{{6}})?-{name}\.md"
+    )
     return any(exact.fullmatch(nfc(n)) for n in log_names)
+
+
+def auto_selection_skip(doc: dict, log_names: list[str]) -> str | None:
+    """The ONE rule for leaving a document out of an automatic re-OCR (#894):
+    ``HANDLED_BEFORE`` when it was not listed explicitly and the logs folder
+    shows it was handled before, else ``None``. Planning (``start_reocr``,
+    before ``limit``) and ``run_reocr`` both ask this."""
+    if doc.get("explicit"):
+        return None
+    return HANDLED_BEFORE if handled_before(log_names, doc["filename"]) else None
+
+
+def logs_listing(drive, root_id: str) -> tuple[str, list[str]]:
+    """The contract's logs folder id and the NFC names in it: one walk, one
+    README read and one listing, whatever the number of documents."""
+    from oncofiles.curated.runner import nfc
+
+    logs_id = _logs_folder_id(drive, root_id)
+    return logs_id, [nfc(i.name) for i in drive.list_children(logs_id)]
 
 
 def run_reocr(
@@ -1277,31 +1540,23 @@ def run_reocr(
     reader = reader or reread  # looked up at call time (tests patch reread)
     if rss_mb is None:
         from oncofiles.memory import get_rss_mb as rss_mb
-    from oncofiles.curated.contract import parse_contract
     from oncofiles.curated.facts_rules import extract_lab_facts
-    from oncofiles.curated.runner import nfc, walk
 
     report = ReocrReport(dry_run=dry_run)
-    tree = walk(drive, root_id)
-    readme = next((i for i in tree.root_files if nfc(i.name) == "README.md"), None)
-    if readme is None:
-        raise RuntimeError("not a curated folder (no README.md)")
-    contract = parse_contract(drive.download(readme.id).decode("utf-8"))
-    logs = tree.folders.get(contract.logs)
-    if logs is None:
-        raise RuntimeError("the contract's logs folder is missing")
-    logs_id = logs.id
-    log_names = [nfc(i.name) for i in drive.list_children(logs_id)]
+    logs_id, log_names = logs_listing(drive, root_id)
     for d in docs:
         res = DocResult(d["document_id"], d["filename"], list(d.get("reasons") or []))
         report.documents.append(res)
         if stop():
             res.result, res.error = "skipped", "stopping"
             continue
-        if not d.get("explicit") and handled_before(log_names, d["filename"]):
+        if auto_selection_skip(d, log_names):
             # #674: re-OCR'd before, its old sidecar was restored on purpose, or a
             # review already left a candidate in logs
-            res.result, res.error = "skipped", "re-OCR'd or restored before; list it explicitly"
+            # #835: the message names all three cases, the candidate included (#827)
+            # #894: start_reocr applies the same rule before ``limit``; this stays
+            # as the last check (logs may change between plan and run)
+            res.result, res.error = "skipped", REOCR_HANDLED_BEFORE_SKIP
             continue
         if rss_limit_mb and (now_rss := rss_mb()) > rss_limit_mb:
             res.result, res.error = "skipped", f"rss {now_rss:.0f} MB > {rss_limit_mb:.0f} MB"
@@ -1355,6 +1610,7 @@ def run_reocr(
             # rotation is reported in res.rotation / rotation_source only
             res.rotation = list(getattr(rr, "rotation", None) or [])
             res.rotation_source = list(getattr(rr, "rotation_source", None) or [])
+            res.orientation = dict(getattr(rr, "orientation", None) or {})
             res.chart_pages = list(getattr(rr, "chart_pages", None) or [])
             res.review_reasons += [c for c in vision_review_codes(rr)
                                    if c not in res.review_reasons]  # fmt: skip

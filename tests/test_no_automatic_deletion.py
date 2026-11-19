@@ -52,6 +52,10 @@ SQL_DELETE_ALLOWLIST: dict[tuple[str, str], str] = {
     ),
     ("session_revocation.py", "session_revocations"): "expired logout denylist rows (auth state)",
     ("server.py", "prompt_log"): "prompt_log_cleanup: 90-day AI telemetry retention (#734 open)",
+    ("dashboard_audit.py", "dashboard_access_log"): (
+        "dashboard_access_log_retention: maintainer decision 2026-11-16 (#868): access log "
+        "telemetry, 90-day retention; no patient documents or facts"
+    ),
     (
         "database/_documents.py",
         "document_pages",
@@ -243,7 +247,14 @@ def test_document_trash_allowlist_no_stale_entries():
 # call sites globally.
 
 # Tables a scheduled job may hard-delete from: credentials and telemetry only.
-JOB_SQL_ALLOWLIST = {"mcp_oauth_tokens", "prompt_log", "session_revocations"}
+JOB_SQL_ALLOWLIST = {
+    "mcp_oauth_tokens",
+    "prompt_log",
+    "session_revocations",
+    # dashboard_access_log_retention: maintainer decision 2026-11-16 (#868): access log
+    # telemetry, 90-day retention; no patient documents or facts
+    "dashboard_access_log",
+}
 
 FORBIDDEN_IN_JOBS = (
     _DRIVE_TRASH_ATTRS

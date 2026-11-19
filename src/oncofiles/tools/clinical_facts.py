@@ -134,8 +134,8 @@ def _feed_kinds(kinds: list[str] | None) -> tuple[list[str], list[str]]:
     return known, unknown
 
 
-def _feed_fact(r: dict, fact_id: str, at: str, conversions: dict) -> dict:
-    obs = _observation(r, conversions)
+def _feed_fact(r: dict, fact_id: str, at: str, conversions: dict, ref: dict | None = None) -> dict:
+    obs = {**_observation(r, conversions), **(ref or {})}
     row: dict = {"id": fact_id, "code": r["code"], "at": at}
     if r["code"] is None:
         row["label"] = r["label_original"]  # uncoded: the printed label
@@ -147,6 +147,11 @@ def _feed_fact(r: dict, fact_id: str, at: str, conversions: dict) -> dict:
     for key in ("value", "value_text", "unit", "ref_low", "ref_high"):
         if obs[key] is not None:
             row[key] = obs[key]
+    if obs["ref_low"] is not None or obs["ref_high"] is not None:
+        # where the range was printed (#899): never a generic or computed one
+        row["ref_source"] = obs.get("ref_source", REF_PRINTED)
+        if obs.get("ref_document_id") is not None:
+            row["ref_document_id"] = obs["ref_document_id"]
     if r["flag"]:
         row["flag"] = r["flag"]
     row["verification"] = r["verification"]
@@ -401,6 +406,91 @@ def _twin_entry(twin: tuple[dict, dict, dict]) -> dict:
         "removed": {**d["removed"], "page": gone.get("page_number")},
         "kept": {**d["kept"], "page": keep.get("page_number")},
     }
+
+
+# ── where a reference range comes from (#899) ──
+# A range is only ever one a lab PRINTED. ``printed``: in the fact's own
+# document, next to the value. ``same_result_other_doc``: the very same
+# measurement (the duplicate the feed hides) is printed with its range in
+# another document. ``same_lab_other_doc``: the same lab printed this range for
+# the same code and unit in another document, the nearest in time; an offer the
+# reader must mark, never the fact's own range. The stored row is not changed,
+# and the flag is never recomputed from a range that is not the fact's own.
+REF_PRINTED = "printed"
+REF_SAME_RESULT = "same_result_other_doc"
+REF_SAME_LAB = "same_lab_other_doc"
+_REF_DONOR_VERIFICATION = ("machine", "verified", "corrected")
+
+
+def _ref_sources(
+    rows: list[dict], twins: dict[int, tuple[dict, dict, dict]], conversions: dict
+) -> dict[int, dict]:
+    """Row id → ``{ref_low, ref_high, ref_source, ref_document_id}`` for every
+    numeric fact printed WITHOUT a range that can take one from another
+    document. Pass every row of the patient, as for ``_hidden_twins``.
+
+    A donor is a fact whose own range was printed and whose reading is trusted
+    (not ``unverified``: a misread range must not spread). Both ranges are
+    compared in the unit the feed returns, so a donor printed in another unit
+    that does not convert is never used. The same-lab offer needs the same
+    institution on both documents (none → no offer), the same code and unit,
+    and another document; the nearest day wins, then the earlier day, then the
+    lower row id, so every page of the feed gives the same answer.
+    """
+    obs = {r["id"]: _observation(r, conversions) for r in rows}
+
+    def has(r: dict) -> bool:
+        o = obs[r["id"]]
+        return o["ref_low"] is not None or o["ref_high"] is not None
+
+    def unit(r: dict) -> str:
+        return _unit_key(obs[r["id"]]["unit"])
+
+    def donor(r: dict) -> bool:
+        return has(r) and r["verification"] in _REF_DONOR_VERIFICATION
+
+    def given(src: dict, source: str) -> dict:
+        o = obs[src["id"]]
+        return {"ref_low": o["ref_low"], "ref_high": o["ref_high"], "ref_source": source,
+                "ref_document_id": src["source_document_id"]}  # fmt: skip
+
+    def day(r: dict) -> date | None:
+        try:
+            return date.fromisoformat((r["effective_at"] or "")[:10])
+        except ValueError:
+            return None
+
+    out: dict[int, dict] = {}
+    # 1. the same measurement, printed with its range in the hidden duplicate
+    for _, (entry, gone, keep) in sorted(twins.items()):
+        if entry["reason"] == "rule_preferred" or keep["id"] in out or keep["id"] not in obs:
+            continue  # rule_preferred pairs two readings of one line, not two prints
+        if gone["id"] not in obs or has(keep) or obs[keep["id"]]["value"] is None:
+            continue
+        if donor(gone) and unit(gone) == unit(keep):
+            out[keep["id"]] = given(gone, REF_SAME_RESULT)
+    # 2. the same lab's printed range for this code and unit, nearest in time
+    donors: dict[tuple, list[tuple]] = {}
+    for r in rows:
+        if r.get("code") and r.get("institution") and donor(r) and (d := day(r)):
+            donors.setdefault((r["institution"], r["code"], unit(r)), []).append((d, r["id"], r))
+    for r in rows:
+        if r["id"] in out or has(r) or obs[r["id"]]["value"] is None:
+            continue
+        d0 = day(r)
+        pool = donors.get((r.get("institution"), r.get("code"), unit(r))) if d0 else None
+        best = min(
+            (
+                (abs((d - d0).days), d, rid, src)
+                for d, rid, src in pool or ()
+                if src["source_document_id"] != r["source_document_id"]
+            ),
+            key=lambda c: c[:3],
+            default=None,
+        )
+        if best:
+            out[r["id"]] = given(best[3], REF_SAME_LAB)
+    return out
 
 
 def _stats(points: list[dict]) -> dict | None:
@@ -779,9 +869,9 @@ async def dashboard_feed(
     """Compact facts for a patient's dashboard: one row per fact, plus its source documents.
 
     Facts only, never interpretation: no evidence text, no statistics. Returns
-    {facts: [{id, code, at, value, value_text, unit, ref_low, ref_high, flag,
-    verification, document_id, page}], documents: [{id, title, date, category,
-    institution, url}], duplicates: [...], generated_at, next_cursor}.
+    {facts: [{id, code, at, value, value_text, unit, ref_low, ref_high, ref_source,
+    ref_document_id, flag, verification, document_id, page}], documents: [{id, title, date,
+    category, institution, url}], duplicates: [...], generated_at, next_cursor}.
 
     * ``id`` is a stable fact id (UUID): the same fact keeps it across re-indexing.
     * ``at`` is ISO (date, or date and time as printed). A value dated from a
@@ -791,8 +881,18 @@ async def dashboard_feed(
       with the reference range in the same unit. An uncoded fact has
       ``code: null`` and its printed ``label``. Optional keys without a value are
       omitted. ``verification='unverified'`` values are included and labelled.
-    * ``documents`` lists only the documents the returned facts cite; ``url``
-      opens the original in Drive.
+    * A reference range is always one a lab printed, never a generic or
+      computed one. ``ref_source`` says where: ``printed`` = next to this value
+      in its own document; ``same_result_other_doc`` = this very measurement is
+      printed with its range in the document ``ref_document_id`` (the
+      duplicate the feed hides); ``same_lab_other_doc`` = this value was
+      printed without a range, and the same lab printed this range for the
+      same code and unit in ``ref_document_id``, the nearest in time: an offer
+      to be marked as such, not this value's own range. ``flag`` is only ever
+      the one printed or derived from the value's own range. No range and no
+      ``ref_source`` means none of the three exists.
+    * ``documents`` lists only the documents the returned facts cite (also as
+      ``ref_document_id``); ``url`` opens the original in Drive.
     * ``kinds`` defaults to ["lab"] (lab values, tumour markers, vital signs).
       Also accepted: biomarker, genetic_variant, imaging / lesion (CT lesion
       sizes, code LESION_SIZE in mm), condition, treatment, medication,
@@ -847,6 +947,9 @@ async def dashboard_feed(
             dated.append((at, r["fhir_id"] or computed[r["id"]], r))
     fact_ids = {r["id"]: (at, fact_id) for at, fact_id, r in dated}
     twins = _hidden_twins([r for _, _, r in dated]) if dedupe else {}
+    conversions = _conversions(await db.fact_code_vocabulary())
+    # like the dedupe, over every row of the patient: a donor may be on any day
+    refs = _ref_sources([r for _, _, r in dated], twins, conversions) if dedupe else {}
 
     # One stream ordered by (at, id): kept facts and hidden duplicates alike.
     # The hidden set does not depend on the cursor, so every position is
@@ -871,12 +974,13 @@ async def dashboard_feed(
         docs_ = [r["source_document_id"]]
         if twin:
             docs_.append(twin[2]["source_document_id"])
+        elif r["id"] in refs:
+            docs_.append(refs[r["id"]]["ref_document_id"])
         return [d for d in docs_ if d]
 
     doc_ids = sorted({d for item in window for d in cited(item)})
     docs = {d["id"]: _feed_document(d)
             for d in await db.feed_documents(patient_id=pid, document_ids=doc_ids)}  # fmt: skip
-    conversions = _conversions(await db.fact_code_vocabulary())
 
     out: dict = {
         "facts": [],
@@ -894,7 +998,8 @@ async def dashboard_feed(
     for item in window:
         at, fact_id, r, twin = item
         if twin is None:
-            entry, target = _feed_fact(r, fact_id, at, conversions), out["facts"]
+            entry = _feed_fact(r, fact_id, at, conversions, refs.get(r["id"]))
+            target = out["facts"]
         else:
             entry, target = _feed_duplicate(twin, fact_id, at, fact_ids), out["duplicates"]
         cost = len(_compact(entry).encode()) + 1

@@ -82,7 +82,7 @@
 
     /* Controls shared by the bar, panels and modals */
     .refresh-btn, .share-btn, .archive-patient-btn, .logout-btn, .copy-btn, .wizard-btn-secondary,
-    .curated-ops-actions button, .integration-popover .ip-actions button, .demo-chat-tab, #bug-cancel {
+    .curated-ops-actions button, .integration-popover .ip-actions button, #bug-cancel {
       background: transparent;
       border: 1.5px solid var(--rule-2);
       color: var(--ink);
@@ -1076,22 +1076,8 @@
     .curated-ops-status-ok { color: var(--ok); }
     .curated-ops-status-bad { color: var(--err); font-weight: 700; }
 
-    /* Demo strip (dashboard served with data-demo): navy and peach, plain words */
-    .demo-banner { margin: 0.75rem 0 0; padding: 0.5625rem 0.875rem; border-radius: 8px; background: var(--peach); color: #000059; font-size: 0.875rem; font-weight: 600; text-align: center; }
     table, td, th, .stat-value, .lab-value { font-variant-numeric: tabular-nums; }
     td { font-family: var(--num); }
-
-    /* Demo panels (#605): synthetic chats + honest processing note. */
-    .demo-chat-tab { font-weight: 600; }
-    .demo-chat-tab.active { background: #000059; border-color: #000059 !important; color: #fff; }
-    .demo-chat-panel { background: var(--bg-2); border: 1px solid var(--border); border-radius: 10px; padding: 0.75rem; font-size: 0.875rem; flex-direction: column; gap: 0.5rem; }
-    .demo-chat-q { align-self: flex-end; max-width: 92%; background: var(--info-bg); padding: 0.5rem 0.75rem; border-radius: 10px; color: var(--ink); }
-    .demo-chat-tool { color: var(--human); font-size: 0.75rem; font-family: var(--num); overflow-wrap: anywhere; }
-    .demo-chat-a { padding: 0.5rem 0.75rem; border-radius: 0.375rem; color: var(--text); line-height: 1.5; display: grid; gap: 0.15rem; font-variant-numeric: tabular-nums; }
-    .demo-chat-src { color: var(--text-dim); font-size: 0.75rem; margin-top: 0.25rem; overflow-wrap: anywhere; }
-    .demo-note-list { list-style: none; display: grid; gap: 0.5rem; font-size: 0.875rem; color: var(--text-muted); }
-    .demo-note-list li { padding-left: 1rem; position: relative; }
-    .demo-note-list li::before { content: ''; position: absolute; left: 0; top: 0.55em; width: 6px; height: 6px; border-radius: 50%; background: var(--turq-dark); }
 
     /* MCP client cards: a flat disc where an emoji used to be */
     .client-dot { width: 0.75rem; height: 0.75rem; border-radius: 50%; flex: none; background: var(--ink); }
@@ -1148,7 +1134,7 @@
       .user-info { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 9rem; }
       /* Touch: every control is at least 44px tall */
       header button, .refresh-btn, .share-btn, .add-patient-btn, .archive-patient-btn, .logout-btn, .copy-btn,
-      .pill, .share-tab, .lang-switcher button, #patient-select, .btn-primary, .demo-chat-tab,
+      .pill, .share-tab, .lang-switcher button, #patient-select, .btn-primary,
       .curated-ops-actions button, .integration-popover .ip-actions button, .rr-select, .rr-input,
       .wizard-btn-link, .wizard-folder-row, .wizard-panel button, #doc-search, th { min-height: 2.75rem; }
       th { height: 2.75rem; }

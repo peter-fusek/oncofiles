@@ -5,6 +5,7 @@ Usage unchanged: ``from oncofiles.database import Database``
 
 from __future__ import annotations
 
+from ._access_log import DashboardAccessLogMixin
 from ._analytics import AnalyticsMixin
 from ._base import DatabaseBase
 from ._calendar import CalendarMixin
@@ -41,6 +42,7 @@ class Database(
     PatientsMixin,
     PromptLogMixin,
     AnalyticsMixin,
+    DashboardAccessLogMixin,
     DatabaseBase,
 ):
     """Async database for document metadata: a local SQLite file via aiosqlite (#617)."""

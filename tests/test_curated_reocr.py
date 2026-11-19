@@ -85,7 +85,8 @@ def test_reread_uses_a_real_text_layer_without_the_model(monkeypatch):
 
 def test_reread_two_vision_passes_with_high_effort(monkeypatch):
     calls = []
-    answers = iter(["Leukocyty 6,37 G/l", "Leukocyty 6,87 G/l"])
+    # pass 1 (whole page), then pass 2 as two halves (#883)
+    answers = iter(["Leukocyty 6,37 G/l", "Leukocyty 6,87 G/l", ""])
 
     def fake_chat(system, content, **kw):
         calls.append(kw)
@@ -95,7 +96,7 @@ def test_reread_two_vision_passes_with_high_effort(monkeypatch):
     monkeypatch.setattr(llm, "model_id", lambda: "qwen-local")
     rr = reocr.reread("scan.pdf", _pdf(None))
     assert rr.method == "vision2" and rr.engine == "qwen-local"
-    assert len(calls) == 2 and all(c["reasoning_effort"] == "high" for c in calls)
+    assert len(calls) == 3 and all(c["reasoning_effort"] == "high" for c in calls)
     assert rr.flagged_lines == 1 and rr.pages[0].endswith("[?]")
 
 
@@ -247,8 +248,14 @@ def test_vision_reads_page_by_page_with_one_shared_client(monkeypatch):
     n = 3
     rr = reocr.reread("scan.pdf", _scan_pdf(n))
     assert rr.method == "vision2" and len(rr.pages) == n
-    # both passes of a page before the next page: only one page is ever rendered
-    expected = [f"Page {i} of {n}." for i in range(1, n + 1) for _ in ("first", "second")]
+    # both passes of a page (pass 2 as two halves, #883) before the next page:
+    # only one page is ever rendered
+    expected = [
+        prompt
+        for i in range(n)
+        for prompt in (reocr.tile_prompt(i, n, None), reocr.tile_prompt(i, n, (1, 2)),
+                       reocr.tile_prompt(i, n, (2, 2)))
+    ]  # fmt: skip
     assert [c[0] for c in calls] == expected
     shared = calls[0][-1]
     assert shared is not None and all(c[-1] is shared for c in calls)
