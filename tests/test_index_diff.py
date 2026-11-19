@@ -379,6 +379,7 @@ def test_cli_runs_from_a_read_only_checkout(tmp_path):
         " extracted_text TEXT, model TEXT);"
         "CREATE TABLE clinical_records (id INTEGER, patient_id TEXT, source_document_id INTEGER,"
         " page_number INTEGER, evidence TEXT, param TEXT, code TEXT, unit TEXT, value_num REAL,"
+        " value_canonical REAL, ref_range_low REAL, ref_range_high REAL, flag TEXT,"
         " verification TEXT, metadata_json TEXT, extracted_by TEXT, deleted_at TEXT);"
     )
     paths = [p for p in tree.rglob("*")] + [tree]
@@ -420,3 +421,89 @@ async def test_existing_unit_conversions_are_unchanged(tmp_path, monkeypatch):
             assert a[1] == b[1], (code, unit)
             checked += 1
     assert checked > 50
+
+
+# ── reindex: stored facts vs the new recomputation (#899) ──
+
+
+async def _complete_stored(path: Path, doc_id: int, page: str) -> None:
+    """Give the stored rule rows of one document every field the parser sets
+    (the fixture inserts only the columns the vocabulary diff reads)."""
+    conn = sqlite3.connect(path)
+    conn.row_factory = sqlite3.Row
+    rows = [dict(r) for r in conn.execute(
+        "SELECT code, category, name_sk, name_en, unit_canonical, aliases, unit_conversions "
+        "FROM fact_codes"
+    )]  # fmt: skip
+    for r in rows:
+        r["aliases"] = json.loads(r["aliases"] or "[]")
+        r["unit_conversions"] = json.loads(r["unit_conversions"] or "{}")
+    facts, _ = extract_lab_facts([page], Vocabulary.from_rows(rows), report_date="2027-04-14")
+    for f in facts:
+        conn.execute(
+            "UPDATE clinical_records SET unit = ?, ref_range_low = ?, ref_range_high = ?, "
+            "flag = ?, value_canonical = ? WHERE source_document_id = ? AND evidence = ?",
+            (f["unit"], f["ref_low"], f["ref_high"], f["flag"], f["value_canonical"], doc_id,
+             f["evidence"]),
+        )  # fmt: skip
+    conn.commit()
+    conn.close()
+
+
+async def test_reindex_section_shows_a_parser_change_the_rule_section_cannot(tmp_path, monkeypatch):
+    path = await _build_db(tmp_path, monkeypatch)
+    await _complete_stored(path, 2, ONCO_PAGE)
+    assert not index_diff.reindex_changed(index_diff.run(path)["patients"][ONCO])
+
+    # what an older parser stored: one value without its unit and printed range,
+    # and one row a person verified (the re-index keeps it as it is)
+    conn = sqlite3.connect(path)
+    conn.execute(
+        "UPDATE clinical_records SET unit = NULL, ref_range_low = NULL, ref_range_high = NULL "
+        "WHERE source_document_id = 2 AND code = 'WBC'"
+    )
+    conn.execute(
+        "UPDATE clinical_records SET verification = 'verified', ref_range_high = NULL "
+        "WHERE source_document_id = 2 AND code = 'HGB'"
+    )
+    conn.commit()
+    conn.close()
+    before = _digest(path)
+    report = index_diff.run(path)
+    assert _digest(path) == before
+    onco = report["patients"][ONCO]
+    section = dict(onco["reindex"])
+    assert section.pop("protected") == 1  # the verified row
+    assert section.pop("stored") == section.pop("new") - 1
+    assert section == {"unit_set": {"WBC": 1}, "range_set": {"WBC": 1}}
+    assert not index_diff.changed(onco)  # same parser code on both sides: nothing to see
+    assert ONCO in report["patients_reindex_changed"]
+    assert report["tool_version"] == index_diff.TOOL_VERSION == 2
+    stop = _run_cli(["--db", str(path), "--stop-if-reindex-changed", ONCO], cwd=tmp_path)
+    assert stop.returncode == 2
+    assert _run_cli(["--db", str(path), "--stop-if-changed", ONCO], cwd=tmp_path).returncode == 0
+
+
+@pytest.mark.parametrize(
+    "stored, new, expected",
+    [
+        ({"flag": None}, {"flag": "H"}, {"flag_set": {"WBC": 1}}),
+        ({"flag": "H"}, {"flag": "L"}, {"flag_changed": {"WBC": 1}}),
+        ({"ref_range_low": None}, {}, {"range_changed": {"WBC": 1}}),  # one bound gained
+        ({}, {"ref_low": None, "ref_high": None}, {"range_cleared": {"WBC": 1}}),
+        ({"value_canonical": None}, {}, {"canonical_set": {"WBC": 1}}),
+        ({"code": None}, {}, {"recoded": {"NULL>WBC": 1}}),
+        ({}, {"label": "Other"}, {"lost": {"WBC": 1}, "new_facts": {"WBC": 1}}),
+        ({}, {}, {}),
+    ],
+)
+def test_reindex_diff_counts_each_field_once_per_fact(stored, new, expected):
+    high = 9.0 if "ref_range_low" in stored else 10.0  # the other bound differs too
+    shared = {"page_number": 1, "evidence": "syn line", "code": "WBC", "unit": "G/l",
+              "flag": "H", "value_canonical": 12.0, "verification": "machine"}  # fmt: skip
+    base_stored = {**shared, "param": "Leu", "ref_range_low": 4.0, "ref_range_high": 10.0}
+    base_new = {**shared, "label": "Leu", "ref_low": 4.0, "ref_high": high}
+    acc = index_diff._empty_patient()
+    index_diff._reindex_diff(acc, [{**base_stored, **stored}], [{**base_new, **new}])
+    got = {k: dict(v) for k, v in acc["reindex"].items() if isinstance(v, dict) and v}
+    assert got == expected

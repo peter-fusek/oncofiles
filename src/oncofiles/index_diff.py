@@ -45,6 +45,16 @@ What it computes, per patient:
 * ``baseline_mismatch_documents``: documents whose stored rule facts differ
   from the old recomputation (page, evidence, label, code). Non-zero means the
   baseline is not exactly production and the diff is approximate there.
+* ``reindex``: the STORED rule facts against the new recomputation (the
+  parsers of this checkout with the vocabulary after the pending migrations).
+  ``rule`` runs the same parser code on both sides, so a change of the parser
+  itself is invisible there; this section is where it shows. Paired like
+  ``rule``; per code: ``new_facts`` / ``lost``, ``recoded``, and for facts that
+  keep their code ``unit_*``, ``range_*`` (the printed reference range),
+  ``flag_*`` and ``canonical_*``, each as ``_set`` (none → a value),
+  ``_cleared`` or ``_changed``. Facts a person verified or corrected are left
+  out (the re-index never touches them). ``--stop-if-reindex-changed`` exits 2
+  when the named patient has any such difference.
 * ``llm_lab_if_rewritten``: stored LLM lab facts looked up again with the new
   verifier (label normalisation) and vocabulary — what the NEXT lab write job
   would decide. The re-index does not touch these rows.
@@ -61,8 +71,16 @@ from pathlib import Path
 from urllib.parse import quote
 
 MIGRATIONS_DIR = Path(__file__).resolve().parent.parent.parent / "migrations"
-TOOL_VERSION = 1
+TOOL_VERSION = 2  # 2: the ``reindex`` section (stored facts vs the new recomputation, #899)
 UNCODED = "NULL"
+PROTECTED = ("verified", "corrected")  # a person's decision: the re-index keeps these rows
+REINDEX_KEYS = (
+    "new_facts", "lost", "recoded",
+    "unit_set", "unit_cleared", "unit_changed",
+    "range_set", "range_cleared", "range_changed",
+    "flag_set", "flag_cleared", "flag_changed",
+    "canonical_set", "canonical_cleared", "canonical_changed",
+)  # fmt: skip
 # tools.curated._LOCAL_ENGINES (not imported: that module pulls in the server).
 # A test keeps the two equal.
 LOCAL_ENGINES = ("qwen", "local", "google-export", "utf-8", "pymupdf")
@@ -226,7 +244,8 @@ def _stored(conn: sqlite3.Connection, like: str) -> dict[int, list[dict]]:
     out: dict[int, list[dict]] = defaultdict(list)
     for r in conn.execute(
         "SELECT id, patient_id, source_document_id, page_number, evidence, param, code, unit, "
-        "value_num, verification, metadata_json FROM clinical_records "
+        "value_num, value_canonical, ref_range_low, ref_range_high, flag, verification, "
+        "metadata_json FROM clinical_records "
         "WHERE extracted_by LIKE ? AND deleted_at IS NULL",
         (like,),
     ):
@@ -282,9 +301,64 @@ def _empty_patient() -> dict:
                  "recoded": Counter(), "verdict": defaultdict(Counter),
                  "canonical_set": Counter(), "canonical_cleared": Counter(),
                  "canonical_changed": Counter()},
+        "reindex": {"stored": 0, "new": 0, "protected": 0, **{k: Counter() for k in REINDEX_KEYS}},
         "llm_lab_if_rewritten": {"facts": 0, "recoded": Counter(),
                                  "verdict": defaultdict(Counter)},
     }  # fmt: skip
+
+
+def _field_change(name: str, a, b) -> str | None:
+    """``<name>_set`` / ``_cleared`` / ``_changed`` for one stored value ``a``
+    against the recomputed ``b``; numbers compare with a tolerance."""
+    a = None if a in ("", None) else a
+    b = None if b in ("", None) else b
+    if a is None and b is None:
+        return None
+    if a is None:
+        return f"{name}_set"
+    if b is None:
+        return f"{name}_cleared"
+    if isinstance(a, int | float) and isinstance(b, int | float):
+        return f"{name}_changed" if abs(float(a) - float(b)) > 1e-9 else None
+    return f"{name}_changed" if str(a).strip() != str(b).strip() else None
+
+
+def _reindex_diff(acc: dict, stored: list[dict], new: list[dict]) -> None:
+    """What the re-index does to the STORED rule facts of one document."""
+    out = acc["reindex"]
+    protected = [r for r in stored if r["verification"] in PROTECTED]
+    out["protected"] += len(protected)
+    rows = [{**r, "label": r["param"]} for r in stored if r["verification"] not in PROTECTED]
+    out["stored"] += len(rows)
+    out["new"] += len(new)
+    pairs, lost, added = _pair(rows, new)
+    # a recomputed fact that only repeats a protected row is not a new fact
+    held = Counter(_key(r["page_number"], r["evidence"], r["param"]) for r in protected)
+    for f in lost:
+        out["lost"][_code(f)] += 1
+    for f in added:
+        key = _key(f["page_number"], f["evidence"], f["label"])
+        if held[key]:
+            held[key] -= 1
+            continue
+        out["new_facts"][_code(f)] += 1
+    for a, b in pairs:
+        if _code(a) != _code(b):
+            out["recoded"][f"{_code(a)}>{_code(b)}"] += 1
+            continue
+        code = _code(b)
+        if kind := _field_change("unit", a.get("unit"), b.get("unit")):
+            out[kind][code] += 1
+        lows = _field_change("range", a.get("ref_range_low"), b.get("ref_low"))
+        highs = _field_change("range", a.get("ref_range_high"), b.get("ref_high"))
+        if kinds := {k for k in (lows, highs) if k}:
+            # one count per fact: a range that gains one bound and changes the other "changed"
+            out[kinds.pop() if len(kinds) == 1 else "range_changed"][code] += 1
+        if kind := _field_change("flag", a.get("flag"), b.get("flag")):
+            out[kind][code] += 1
+        stored_canon = a.get("value_canonical")
+        if kind := _field_change("canonical", stored_canon, b.get("value_canonical")):
+            out[kind][code] += 1
 
 
 def _rule_diff(acc: dict, old: list[dict], new: list[dict]) -> None:
@@ -360,6 +434,13 @@ def changed(patient: dict) -> bool:
                                      "canonical_cleared", "canonical_changed"))  # fmt: skip
 
 
+def reindex_changed(patient: dict) -> bool:
+    """Whether the re-index would change a stored rule fact of this patient
+    (also through a change of the parser code itself)."""
+    section = patient.get("reindex") or {}
+    return any(section.get(k) for k in REINDEX_KEYS)
+
+
 def run(db_path: str | Path, migrations_dir: Path = MIGRATIONS_DIR) -> dict:
     """The whole diff as a JSON-ready dict (counts and codes only)."""
     from oncofiles.curated import verifier
@@ -396,6 +477,7 @@ def run(db_path: str | Path, migrations_dir: Path = MIGRATIONS_DIR) -> dict:
             if old_x != new_x:
                 acc["extractor_changed_documents"] += 1
             _rule_diff(acc, old, new)
+            _reindex_diff(acc, stored_rule.get(doc["id"], []), new)
             if not _baseline_matches(stored_rule.get(doc["id"], []), old):
                 acc["baseline_mismatch_documents"] += 1
             _llm_diff(acc, stored_llm.get(doc["id"], []), old_vocab, new_vocab)
@@ -412,6 +494,9 @@ def run(db_path: str | Path, migrations_dir: Path = MIGRATIONS_DIR) -> dict:
         "patients": {pid: _plain(acc) for pid, acc in sorted(patients.items())},
     }
     report["patients_changed"] = sorted(p for p, a in report["patients"].items() if changed(a))
+    report["patients_reindex_changed"] = sorted(
+        p for p, a in report["patients"].items() if reindex_changed(a)
+    )
     return report
 
 
@@ -442,11 +527,18 @@ def main(argv: list[str] | None = None) -> int:
         "--stop-if-changed", action="append", default=[], metavar="PATIENT_ID",
         help="exit 2 if this patient's rule facts would change at all",
     )  # fmt: skip
+    ap.add_argument(
+        "--stop-if-reindex-changed", action="append", default=[], metavar="PATIENT_ID",
+        help="exit 2 if the re-index would change any stored rule fact of this patient "
+        "(section 'reindex': also catches a parser code change)",
+    )  # fmt: skip
     args = ap.parse_args(argv)
     report = run(args.db)
     json.dump(report, sys.stdout, indent=2, sort_keys=True)
     sys.stdout.write("\n")
     if set(args.stop_if_changed) & set(report["patients_changed"]):
+        return 2
+    if set(args.stop_if_reindex_changed) & set(report["patients_reindex_changed"]):
         return 2
     return 0
 

@@ -39,7 +39,9 @@ INDEX_ENGINE = "curated-sidecar"
 # v20: general-health lab vocabulary (migration 091, #814): new codes ESR, CHOL,
 #      TRIG, BILI_DIRECT, LUC, PDW_PCT, USED_SMALL_EPI and aliases for existing ones
 # v21: HCT printed as a ratio ("pomer") converts to the canonical L/L (migration 092)
-INDEX_VERSION = 21
+# v22: the Bory layout reads "^" / arrows as the out-of-range mark, so a flagged
+#      value keeps its unit and printed reference range (#899)
+INDEX_VERSION = 22
 TEXT_SOURCE_EXTS = {"md", "txt", "csv", "json"}
 MAX_TEXT_SOURCE_BYTES = 512 * 1024
 _PAGE_RE = re.compile(r"^<!-- page (\d+) -->\s*$", re.M)
