@@ -136,12 +136,12 @@ jobs:
           set -euo pipefail
           # Re-check right before deploying (#610 review): a newer commit can land on
           # main during the up-to-20-min wait above, and Coolify builds HEAD.
-          head=$(git ls-remote "https://github.com/${GITHUB_REPOSITORY}.git" refs/heads/main | cut -f1)
+          main_head() { git ls-remote "https://github.com/${GITHUB_REPOSITORY}.git" refs/heads/main | cut -f1; }
+          head=$(main_head)
           if [ "$head" != "$GITHUB_SHA" ]; then
             echo "superseded by ${head:0:7} during the wait — the newer run deploys"
             echo "deployed=false" >> "$GITHUB_OUTPUT"; exit 0
           fi
-          echo "deployed=true" >> "$GITHUB_OUTPUT"
           auth=(-H "Authorization: Bearer ${COOLIFY_API_TOKEN}" -H "Accept: application/json")
           # Coolify >= 4.6: /deploy je POST (GET vracia 405)
           resp=$(curl -fsS -m 30 -X POST "${auth[@]}" "${COOLIFY_URL}/api/v1/deploy?uuid=${COOLIFY_APP_UUID}&force=false")
@@ -152,8 +152,18 @@ jobs:
             status=$(curl -fsS -m 15 "${auth[@]}" "${COOLIFY_URL}/api/v1/deployments/${dep}" | jq -r '.status')
             echo "[$i] status=${status}"
             case "$status" in
-              finished) exit 0 ;;
-              failed|cancelled*|error) echo "Deploy ${status}. Logs: Coolify UI → oncofiles → Deployments"; exit 1 ;;
+              finished) echo "deployed=true" >> "$GITHUB_OUTPUT"; exit 0 ;;
+              failed|cancelled*|error)
+                # A merge can land between the re-check above and Coolify reading
+                # main HEAD (2026-11-19): Coolify then tries the newer commit, whose
+                # image is not in the registry yet, and fails within seconds. That
+                # commit's own run deploys it; the old container keeps running.
+                head=$(main_head)
+                if [ "$head" != "$GITHUB_SHA" ]; then
+                  echo "Deploy ${status}, but main moved to ${head:0:7} after this deploy was queued — the newer run deploys"
+                  echo "deployed=false" >> "$GITHUB_OUTPUT"; exit 0
+                fi
+                echo "Deploy ${status}. Logs: Coolify UI → oncofiles → Deployments"; exit 1 ;;
             esac
             sleep 10
           done
