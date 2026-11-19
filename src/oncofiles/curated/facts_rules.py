@@ -45,8 +45,9 @@ _BORY_ARROW = {"▲": "▲", "↑": "▲", "^": "▲", "▼": "▼", "↓": "▼
 _NUM = r"[<>]?\s*-?\d+(?:[.,]\d+)?"
 _OKB_ROW = re.compile(
     # "(?:.*?\S)??" is lazy: a one-letter label ("K") must not swallow the value (#660)
+    # the range may follow the value directly: a ratio row prints no unit (#907)
     rf"^(?P<label>\S(?:.*?\S)??)\s{{2,}}(?P<val>{_NUM})\s+(?P<unit>[^\s\d][^\s]*)?"
-    rf"(?:\s+(?P<lo>-?[\d.,]+)\s*-\s*(?P<hi>-?[\d.,]+)|\s+(?P<cmp>[<>]\s*[\d.,]+))?(?P<rest>.*)$"
+    rf"(?:\s*(?P<lo>-?[\d.,]+)\s*-\s*(?P<hi>-?[\d.,]+)|\s*(?P<cmp>[<>]\s*[\d.,]+))?(?P<rest>.*)$"
 )
 # OCR'd sheets sometimes keep one space before the value: accepted only with a
 # unit AND a printed range, so prose never matches (#660).
@@ -388,11 +389,41 @@ def _fact(  # noqa: PLR0913
     return fact if _plausible(fact, code_row) else None
 
 
+# A result item wrapped onto the next line (#907): the line ends inside a
+# "[unit" or "{low - high" bracket, or the next line opens with the item's
+# "[unit]" / "{range}". Fences such as "[chart]", "[rotated region]" and "[?]"
+# are not units.
+_BORY_OPEN_END = re.compile(r"(?:\[[^\]]*|\{[^}]*)$")
+_BORY_CONTINUES = re.compile(
+    r"^\s*(?:\[(?!chart\b|rotated\b|\?)[^\]\s:]{1,14}\]|\{\s*-?[\d.,]+\s*-)", re.I
+)
+
+
+def _bory_lines(text: str) -> list[str]:
+    """The page's lines with a wrapped result item joined back into one line.
+    Only a line that holds a result ("...") is ever continued."""
+    out: list[str] = []
+    for line in text.splitlines():
+        prev = out[-1] if out else ""
+        if (
+            "..." in prev
+            and line.strip()
+            and not _BORY_ODBER.search(line)
+            and (_BORY_OPEN_END.search(prev.rstrip()) or _BORY_CONTINUES.match(line))
+        ):
+            # inside "[unit" the break is in the middle of the unit: no space
+            glue = "" if re.search(r"\[[^\]]*$", prev.rstrip()) else " "
+            out[-1] = f"{prev.rstrip()}{glue}{line.strip()}"
+        else:
+            out.append(line)
+    return out
+
+
 def parse_bory(pages: list[str], vocab: Vocabulary, *, unreliable: bool = False) -> list[dict]:
     out: list[dict] = []
     when = None
     for page_no, text in enumerate(pages, start=1):
-        for line in text.splitlines():
+        for line in _bory_lines(text):
             if m := _BORY_ODBER.search(line):
                 when = _iso(m.group(1))
                 continue
