@@ -41,7 +41,9 @@ INDEX_ENGINE = "curated-sidecar"
 # v21: HCT printed as a ratio ("pomer") converts to the canonical L/L (migration 092)
 # v22: the Bory layout reads "^" / arrows as the out-of-range mark, so a flagged
 #      value keeps its unit and printed reference range (#899)
-INDEX_VERSION = 22
+# v23: a lab-table row without a unit keeps the range printed right after the
+#      value; a Bory result item wrapped onto the next line is read whole (#907)
+INDEX_VERSION = 23
 TEXT_SOURCE_EXTS = {"md", "txt", "csv", "json"}
 MAX_TEXT_SOURCE_BYTES = 512 * 1024
 _PAGE_RE = re.compile(r"^<!-- page (\d+) -->\s*$", re.M)

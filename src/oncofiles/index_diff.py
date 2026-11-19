@@ -52,7 +52,9 @@ What it computes, per patient:
   ``rule``; per code: ``new_facts`` / ``lost``, ``recoded``, and for facts that
   keep their code ``unit_*``, ``range_*`` (the printed reference range),
   ``flag_*`` and ``canonical_*``, each as ``_set`` (none → a value),
-  ``_cleared`` or ``_changed``. Facts a person verified or corrected are left
+  ``_cleared`` or ``_changed``. ``evidence_extended`` counts facts whose stored
+  evidence is the start of the new one (a wrapped line now read whole); they
+  are compared as the same fact, not as lost + new. Facts a person verified or corrected are left
   out (the re-index never touches them). ``--stop-if-reindex-changed`` exits 2
   when the named patient has any such difference.
 * ``llm_lab_if_rewritten``: stored LLM lab facts looked up again with the new
@@ -75,7 +77,7 @@ TOOL_VERSION = 2  # 2: the ``reindex`` section (stored facts vs the new recomput
 UNCODED = "NULL"
 PROTECTED = ("verified", "corrected")  # a person's decision: the re-index keeps these rows
 REINDEX_KEYS = (
-    "new_facts", "lost", "recoded",
+    "new_facts", "lost", "recoded", "evidence_extended",
     "unit_set", "unit_cleared", "unit_changed",
     "range_set", "range_cleared", "range_changed",
     "flag_set", "flag_cleared", "flag_changed",
@@ -332,6 +334,25 @@ def _reindex_diff(acc: dict, stored: list[dict], new: list[dict]) -> None:
     out["stored"] += len(rows)
     out["new"] += len(new)
     pairs, lost, added = _pair(rows, new)
+    # A parser that now reads a wrapped item whole stores a longer evidence
+    # (#907): the stored text is the start of the new one. Same page and label.
+    for old_fact in list(lost):
+        head = " ".join((old_fact["evidence"] or "").split())
+        twin = next(
+            (
+                f for f in added
+                if head
+                and int(f["page_number"] or 1) == int(old_fact["page_number"] or 1)
+                and (f["label"] or "").strip() == (old_fact["label"] or "").strip()
+                and "".join((f["evidence"] or "").split()).startswith("".join(head.split()))
+            ),
+            None,
+        )  # fmt: skip
+        if twin is not None:
+            lost.remove(old_fact)
+            added.remove(twin)
+            pairs.append((old_fact, twin))
+            out["evidence_extended"][_code(twin)] += 1
     # a recomputed fact that only repeats a protected row is not a new fact
     held = Counter(_key(r["page_number"], r["evidence"], r["param"]) for r in protected)
     for f in lost:
