@@ -507,3 +507,23 @@ def test_reindex_diff_counts_each_field_once_per_fact(stored, new, expected):
     index_diff._reindex_diff(acc, [{**base_stored, **stored}], [{**base_new, **new}])
     got = {k: dict(v) for k, v in acc["reindex"].items() if isinstance(v, dict) and v}
     assert got == expected
+
+
+def test_reindex_pairs_a_fact_whose_evidence_became_longer():
+    """#907: a wrapped item read whole is the same fact, with more read."""
+    stored = {"page_number": 1, "evidence": "Lymfo abs. ...syn [x^", "param": "Lymfo abs.",
+              "code": "LYMPH", "unit": None, "ref_range_low": None, "ref_range_high": None,
+              "flag": None, "value_canonical": 1.5, "verification": "machine"}  # fmt: skip
+    new = {"page_number": 1, "evidence": "Lymfo abs. ...syn [x^y/l] {a - b }",
+           "label": "Lymfo abs.", "code": "LYMPH", "unit": "x^y/l", "flag": None,
+           "ref_low": 1.0, "ref_high": 4.0,
+           "value_canonical": 1.5, "verification": "machine"}  # fmt: skip
+    acc = index_diff._empty_patient()
+    index_diff._reindex_diff(acc, [stored], [new])
+    got = {k: dict(v) for k, v in acc["reindex"].items() if isinstance(v, dict) and v}
+    assert got == {"evidence_extended": {"LYMPH": 1}, "unit_set": {"LYMPH": 1},
+                   "range_set": {"LYMPH": 1}}  # fmt: skip
+    # another label on the same page is never paired this way
+    acc = index_diff._empty_patient()
+    index_diff._reindex_diff(acc, [stored], [{**new, "label": "Mono abs."}])
+    assert dict(acc["reindex"]["lost"]) == {"LYMPH": 1}
