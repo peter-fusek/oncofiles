@@ -26,7 +26,8 @@ async def test_privacy_matches_the_service():
     assert "never permanently deletes" in html
     assert "only the folder you choose" in html and "access to your Google" in html
     assert "Gmail and Google Calendar</strong> — not used" in html
-    assert "Google Analytics" in html and "Resend" in html
+    assert "Google Analytics" in html and "Our e-mail provider" in html
+    assert "Resend" not in html  # provider not named while #834 (Brevo) is open
     # #700: GA only on public pages, only after consent; never in the logged-in app
     assert "after you accept analytics cookies" in html
     assert "logged-in app does not load Google" in html

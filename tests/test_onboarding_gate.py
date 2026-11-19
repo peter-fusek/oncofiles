@@ -33,6 +33,7 @@ import pytest
 
 from oncofiles import onboarding_gate
 from oncofiles.models import OAuthToken
+from oncofiles.patient_consent import CONSENT_VERSION
 from tests.helpers import ERIKA_UUID
 
 SRC = Path(__file__).resolve().parent.parent / "src" / "oncofiles"
@@ -449,7 +450,12 @@ async def _link_google(db, pid: str = ERIKA_UUID) -> None:
 async def test_create_patient(http, gate, db, mode, caller, expected, monkeypatch):
     gate(mode)
     slug = "synthetic-" + re.sub(r"[^a-z0-9]+", "-", f"{mode}-{caller}".lower())[:40]
-    body = {"patient_id": slug, "display_name": "Synthetic Person"}
+    body = {
+        "consent": True,
+        "consent_version": CONSENT_VERSION,
+        "patient_id": slug,
+        "display_name": "Synthetic Person",
+    }
     if caller == "bearer":
         req = _Req(bearer="synthetic-operator-token", body=body, db=db)
     else:
