@@ -140,7 +140,12 @@ async def upload_document(
             metadata = files.upload(io.BytesIO(file_bytes), filename, mime_type)
         except Exception:
             logger.exception("Files API upload failed for %s", name_len(filename))
-            return json.dumps({"error": "Files API upload failed. Check server logs."})
+            return json.dumps(
+                {
+                    "error": "Files API upload failed. Try again later; "
+                    "if it keeps failing, contact the maintainer."
+                }
+            )
         file_id = metadata.id
         stored_mime, stored_size = metadata.mime_type, metadata.size_bytes
 

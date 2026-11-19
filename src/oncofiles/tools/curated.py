@@ -476,14 +476,51 @@ async def start_run(
 
 
 async def run_status(db, pid: str) -> dict:
-    """Running state, else the last finished run (with its full report)."""
+    """Running state, else the last finished run (with its full report).
+
+    #606: the report's numbers are a snapshot of that run, so a finished run
+    carries ``as_of`` (when it ended), and ``live`` holds what the continuous
+    probe last saw for THIS patient (see ``live_probe``).
+    """
+    live = live_probe(pid)
+    extra = {"live": live} if live else {}
     running = _runs.get(pid)
     if running:
-        return {"state": "running", **{k: v for k, v in running.items() if k != "state"}}
+        return {
+            "state": "running",
+            **{k: v for k, v in running.items() if k != "state"},
+            **extra,
+        }
     last = await db.get_last_curated_run(patient_id=pid)
     if last is None:
-        return {"state": "none"}
-    return {"state": "done", "run": last}
+        return {"state": "none", **extra}
+    return {
+        "state": "done",
+        "as_of": last.get("finished_at") or last.get("started_at"),
+        "as_of_note": AS_OF_NOTE,
+        "run": last,
+        **extra,
+    }
+
+
+AS_OF_NOTE = (
+    "The numbers in `run` describe the folder at `as_of` (the end of that run), "
+    "not now. Current state: `live`, when present."
+)
+
+
+def live_probe(pid: str) -> dict | None:
+    """What the continuous probe last saw for ONE patient (#606), or None when
+    this process has not probed the patient yet. In-memory only: no Drive call,
+    no DB call, and never another patient's counters."""
+    st = _probe_stats.get(pid)
+    if st is None or st.last_probe_at is None or st.pending_inbox_count is None:
+        return None
+    return {
+        "as_of": st.last_probe_at,
+        "pending_inbox_count": st.pending_inbox_count,
+        "note": "Inbox files the next automatic run would process, as seen by the last probe.",
+    }
 
 
 # ── nightly loop (replaces the Cowork jobs) ───────────────────────────
@@ -4837,7 +4874,15 @@ async def curated_index(
 
 
 async def curated_folder_status(ctx: Context, patient_slug: str | None = None) -> str:
-    """Status and report of the latest curated-folder run for a patient (#562)."""
+    """Status and report of the latest curated-folder run for a patient (#562).
+
+    The numbers inside ``run`` (files waiting, filed, held for review) are a
+    snapshot taken when that run ended: ``as_of`` is that time (UTC), so say
+    "as of ..." when quoting them. ``live``, when present, is newer: the number
+    of inbox files the next automatic run would process (``pending_inbox_count``)
+    as seen by the server's last folder probe at ``live.as_of`` (UTC). It is
+    absent until the server has probed the folder since its last restart.
+    """
     pid = await _resolve_patient_id(patient_slug, ctx)
     return json.dumps(await run_status(_get_db(ctx), pid), ensure_ascii=False, default=str)
 
