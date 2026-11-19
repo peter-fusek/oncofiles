@@ -2919,10 +2919,13 @@ async def sitemap_xml(request: Request) -> HTMLResponse:
         ' xmlns:xhtml="http://www.w3.org/1999/xhtml">\n'
         f"  <url><loc>https://oncofiles.com/</loc><lastmod>{today}</lastmod>"
         "<priority>1.0</priority><changefreq>weekly</changefreq></url>\n"
-        f"  <url><loc>https://oncofiles.com/dashboard</loc><lastmod>{today}</lastmod>"
-        "<priority>0.8</priority><changefreq>daily</changefreq></url>\n"
-        f"  <url><loc>https://oncofiles.com/health</loc><lastmod>{today}</lastmod>"
-        "<priority>0.3</priority><changefreq>always</changefreq></url>\n"
+        # /dashboard (sign-in) and /health (liveness probe) are not content
+        # pages and stay out of the sitemap; /demo is public and indexable.
+        f"  <url><loc>https://oncofiles.com/demo</loc><lastmod>{today}</lastmod>"
+        "<priority>0.8</priority><changefreq>monthly</changefreq>"
+        '<xhtml:link rel="alternate" hreflang="sk" href="https://oncofiles.com/demo"/>'
+        '<xhtml:link rel="alternate" hreflang="en" href="https://oncofiles.com/demo?lang=en"/>'
+        "</url>\n"
         f"  <url><loc>https://oncofiles.com/privacy</loc><lastmod>{today}</lastmod>"
         "<priority>0.5</priority><changefreq>monthly</changefreq></url>\n"
         f"  <url><loc>https://oncofiles.com/terms</loc><lastmod>{today}</lastmod>"
