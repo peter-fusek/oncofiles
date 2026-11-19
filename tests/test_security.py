@@ -201,7 +201,9 @@ def test_upload_error_no_leak():
     from oncofiles.tools.documents import upload_document
 
     source = inspect.getsource(upload_document)
-    assert "Check server logs" in source
+    # #606: users have no access to server logs, so the text never sends them there
+    assert "contact the maintainer" in source
+    assert "logs" not in source.lower().replace("logger", "")
     assert 'f"Files API upload failed: {e}"' not in source
 
 

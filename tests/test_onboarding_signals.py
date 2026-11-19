@@ -14,6 +14,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from oncofiles.patient_consent import CONSENT_VERSION
+
 
 def _make_request(body: dict, dashboard_email: str = "peterfusek1980@gmail.com") -> MagicMock:
     """Build a minimal mock request that the api_create_patient handler will accept."""
@@ -192,6 +194,8 @@ async def test_api_create_patient_inserts_t0_event_and_fires_notifier(db, monkey
 
     request = _make_request(
         {
+            "consent": True,
+            "consent_version": CONSENT_VERSION,
             "patient_id": "new-onboarding-test",
             "display_name": "Onboarding Test",
             "caregiver_email": "caregiver@example.com",

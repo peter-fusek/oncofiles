@@ -18,6 +18,7 @@ import pytest
 from oncofiles import patient_context, server
 from oncofiles.database import Database
 from oncofiles.models import Patient
+from oncofiles.patient_consent import CONSENT_VERSION
 from oncofiles.persistent_oauth import (
     PersistentOAuthProvider,
     _verified_caller_email,
@@ -261,7 +262,13 @@ def open_api(monkeypatch):
 
 
 async def _create(db: Database, **extra) -> tuple[int, dict]:
-    body = {"patient_id": "wizard-824", "display_name": "Wizard Person", **extra}
+    body = {
+        "consent": True,
+        "consent_version": CONSENT_VERSION,
+        "patient_id": "wizard-824",
+        "display_name": "Wizard Person",
+        **extra,
+    }
     resp = await server.api_create_patient(_request(db, body))
     return resp.status_code, json.loads(resp.body)
 
