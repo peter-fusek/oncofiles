@@ -173,3 +173,34 @@ async def test_every_page_gives_the_same_range_as_one_page(db):
     assert [f["document_id"] for f in late["facts"]] == [report] * 4
     assert {f["ref_document_id"] for f in late["facts"]} == {sheet}
     assert sheet in {d["id"] for d in late["documents"]}
+
+
+async def test_a_range_never_crosses_from_another_patient(db):
+    """The same lab and code at another patient is not a donor: neither the
+    same-lab offer nor the duplicate carry-over, and the other patient's
+    document is never named."""
+    from tests.test_clinical_facts import BOB_UUID
+    from tests.test_dashboard_feed import _add_bob
+
+    await _add_bob(db)
+    day = _day(3, 9)
+    theirs = make_doc(
+        file_id="ref899_bob", filename="Doc899_bob.pdf", original_filename="Doc899_bob.pdf",
+        document_date=date(YEAR, 1, 1), gdrive_id="gd899bob", institution=LAB_A, category="labs",
+    )  # fmt: skip
+    their_sheet = (await db.insert_document(theirs, patient_id=BOB_UUID)).id
+    # the other patient: the same lab, code, unit, day and even the same value, with a range
+    await _put(db, BOB_UUID, their_sheet, [_fact("WBC", day, 2.9, PER_NL, **NEW_REF)])
+    report = await _doc(db, 1, LAB_A, category="report")
+    await _put(db, ERIKA_UUID, report, [_bare("WBC", day, 2.9)])
+    out = await _feed(db)
+    [fact] = out["facts"]
+    assert fact["document_id"] == report
+    assert not {"ref_low", "ref_high", "ref_source", "ref_document_id"} & set(fact)
+    assert out["duplicates"] == [] and [d["id"] for d in out["documents"]] == [report]
+    assert their_sheet not in {fact["document_id"], fact.get("ref_document_id")}
+    # with a sheet of her own she gets her own lab's range, still never the other patient's
+    own = await _doc(db, 2, LAB_A)
+    await _put(db, ERIKA_UUID, own, [_fact("WBC", _day(2, 1), 5.1, PER_NL, **OLD_REF)])
+    fact = _one(await _feed(db), report)
+    assert fact["ref_document_id"] == own and fact["ref_high"] == OLD_REF["ref_high"]
