@@ -2543,8 +2543,7 @@ Inside that folder it may rename files to a standard name, move them into subfol
 example Labs or Reports), add a text transcript (<code>.md</code>) next to each file, and keep a
 <code>README.md</code> with the folder's rules and a few files that record its own work.
 <strong>Oncofiles never permanently deletes anything.</strong> Automatic processing does not
-move your files to the trash; a cleanup that you start yourself moves files to your Google
-Drive trash, where you can restore them.</li>
+move your files to the trash.</li>
 <li><strong>Gmail and Google Calendar</strong> — not used at the moment. If we add them later,
 we will ask for your separate consent first.</li>
 </ul>
@@ -2737,8 +2736,7 @@ app" warning and allows at most 100 users</li>
 <p>We aim for high availability but do not guarantee uninterrupted service. Oncofiles
 is provided "as is" without warranties of any kind. We are not liable for data loss
 beyond what is stored in your Google Drive. Oncofiles never permanently deletes files: it
-only renames and moves them inside the folder you chose, and a cleanup that you start yourself
-moves files to your Google Drive trash, where you can restore them.</p>
+only renames and moves them inside the folder you chose.</p>
 
 <h2 id="ending">7. Ending Your Use</h2>
 <p>You can stop Oncofiles' access to your Google Drive at any time in your
