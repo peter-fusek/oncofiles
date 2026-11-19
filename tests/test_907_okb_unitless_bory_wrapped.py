@@ -74,3 +74,19 @@ def test_only_a_result_line_is_continued():
     assert broken.count("\n") == len(["in the unit", "in the range"])
     sampled = "Odber: 09.03.2027 07:40,"
     assert _bory_lines(f"{broken}\n{sampled}") == [whole, sampled]
+
+
+def test_text_after_the_range_of_a_wrapped_item_is_not_its_evidence(vocab):  # noqa: F811
+    page = (
+        "Odber: 09.03.2027 07:40,\n"
+        "Sérum: S-Kreatinín ...61.00\n"
+        "[µmol/l] {42.00 - 79.00 } Hodnotenie doplní ošetrujúci lekár.\n"
+        "Moč: U- pH ...5.5 {5.5 - 6.5 } poznámka na tom istom riadku\n"
+    )
+    by = {f["code"] or f["label"]: f for f in parse_bory([page], vocab)}
+    crea = by["CREA"]
+    assert (crea["unit"], crea["ref_low"], crea["ref_high"]) == ("µmol/l", 42.0, 79.0)
+    assert crea["evidence"].rstrip().endswith("}") and "Hodnotenie" not in crea["evidence"]
+    # an item printed on one line keeps its evidence exactly as before
+    [ph] = [f for f in by.values() if f["evidence"].startswith("U- pH")]
+    assert ph["evidence"].endswith("riadku")

@@ -423,6 +423,7 @@ def parse_bory(pages: list[str], vocab: Vocabulary, *, unreliable: bool = False)
     out: list[dict] = []
     when = None
     for page_no, text in enumerate(pages, start=1):
+        physical = text.splitlines()
         for line in _bory_lines(text):
             if m := _BORY_ODBER.search(line):
                 when = _iso(m.group(1))
@@ -434,6 +435,11 @@ def parse_bory(pages: list[str], vocab: Vocabulary, *, unreliable: bool = False)
                 m = _BORY_ITEM.match(chunk)
                 if not m or not m.group("label").strip():
                     continue
+                evidence = chunk
+                if m.group("hi") is not None and not any(chunk.strip() in p for p in physical):
+                    # an item put together from two lines ends at its range: text
+                    # that follows "}" on the continuation line is not its evidence
+                    evidence = chunk[: m.end()]
                 f = _fact(
                     vocab,
                     label=_SECTION_PREFIX.sub("", m.group("label")),
@@ -446,7 +452,7 @@ def parse_bory(pages: list[str], vocab: Vocabulary, *, unreliable: bool = False)
                     arrow=_BORY_ARROW.get(m.group("arrow") or ""),
                     when=when,
                     page=page_no,
-                    evidence=chunk,
+                    evidence=evidence,
                     unreliable=unreliable,
                 )
                 if f:
