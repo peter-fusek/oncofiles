@@ -30,7 +30,7 @@ from oncofiles.curated import llm, llm_input
 from oncofiles.curated import llm_extract_clinical as lx
 from oncofiles.curated.reocr import ReocrReport
 from oncofiles.tools import curated as tool
-from tests.helpers import ERIKA_UUID
+from tests.helpers import PRIMARY_TEST_UUID
 
 SRC = Path(__file__).resolve().parents[1] / "src" / "oncofiles"
 DOB = "2027-01-02"  # invented
@@ -79,7 +79,7 @@ async def _doc(db, doc_id, page, *, name, mime, category, extra=None):
         "INSERT INTO documents (id, file_id, filename, original_filename, category, mime_type, "
         "size_bytes, patient_id, gdrive_id, structured_metadata, document_date) "
         "VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)",
-        (doc_id, f"gdrive:g{doc_id}", name, name, category, mime, ERIKA_UUID, f"g{doc_id}",
+        (doc_id, f"gdrive:g{doc_id}", name, name, category, mime, PRIMARY_TEST_UUID, f"g{doc_id}",
          json.dumps(meta), DAY),
     )  # fmt: skip
     await db.save_ocr_page(doc_id, 1, page, "curated-sidecar")
@@ -106,7 +106,7 @@ def calls(monkeypatch) -> list:
     monkeypatch.setattr(config, "LLM_CLINICAL_EXTRACT_DISABLED", False)
     monkeypatch.setattr(llm, "chat", _chat(out))
     monkeypatch.setattr(tool, "_reocr_jobs", {})
-    monkeypatch.setattr(tool, "_readme_births", {ERIKA_UUID: {DOB}})
+    monkeypatch.setattr(tool, "_readme_births", {PRIMARY_TEST_UUID: {DOB}})
     monkeypatch.setattr(pre_store, "make_copy", lambda db, job: f"oncofiles-copy-{job}.db")
     return out
 
@@ -128,8 +128,8 @@ async def _rows(db) -> dict:
 
 
 async def _job(db) -> dict:
-    await asyncio.wait_for(tool._reocr_jobs[ERIKA_UUID]["task"], 10)
-    job = tool._reocr_jobs[ERIKA_UUID]
+    await asyncio.wait_for(tool._reocr_jobs[PRIMARY_TEST_UUID]["task"], 10)
+    job = tool._reocr_jobs[PRIMARY_TEST_UUID]
     assert job["state"] == "done", job
     return job
 
@@ -152,23 +152,25 @@ def _assert_never_sent(calls: list) -> None:
 
 async def test_load_for_llm_checks_row_then_text(seeded):
     db = seeded
-    rows = {r["id"]: r for r in await db.curated_reocr_candidates(patient_id=ERIKA_UUID)}
-    assert await llm_input.load_for_llm(db, ERIKA_UUID, rows[DOC_CSV]) == llm_input.Excluded(REASON)
-    assert await llm_input.load_for_llm(db, ERIKA_UUID, rows[DOC_FLAG]) == llm_input.Excluded(
+    rows = {r["id"]: r for r in await db.curated_reocr_candidates(patient_id=PRIMARY_TEST_UUID)}
+    assert await llm_input.load_for_llm(db, PRIMARY_TEST_UUID, rows[DOC_CSV]) == llm_input.Excluded(
         REASON
     )
-    assert await llm_input.load_for_llm(db, ERIKA_UUID, rows[DOC_PDF]) == [(1, PAGE)]
-    assert await llm_input.load_for_llm(db, ERIKA_UUID, rows[DOC_PLAIN_CSV]) == [
+    assert await llm_input.load_for_llm(
+        db, PRIMARY_TEST_UUID, rows[DOC_FLAG]
+    ) == llm_input.Excluded(REASON)
+    assert await llm_input.load_for_llm(db, PRIMARY_TEST_UUID, rows[DOC_PDF]) == [(1, PAGE)]
+    assert await llm_input.load_for_llm(db, PRIMARY_TEST_UUID, rows[DOC_PLAIN_CSV]) == [
         (1, PLAIN_CSV_PAGE)
     ]
 
 
 async def test_flagged_row_pages_are_never_read(seeded):
     db = seeded
-    rows = {r["id"]: r for r in await db.curated_reocr_candidates(patient_id=ERIKA_UUID)}
+    rows = {r["id"]: r for r in await db.curated_reocr_candidates(patient_id=PRIMARY_TEST_UUID)}
     with patch.object(db, "get_ocr_pages", AsyncMock(side_effect=AssertionError("read"))):
         assert isinstance(
-            await llm_input.load_for_llm(db, ERIKA_UUID, rows[DOC_FLAG]), llm_input.Excluded
+            await llm_input.load_for_llm(db, PRIMARY_TEST_UUID, rows[DOC_FLAG]), llm_input.Excluded
         )
 
 
@@ -251,13 +253,13 @@ async def test_reocr_never_selects_a_raw_export_or_a_text_source(seeded):
     db = seeded
     ids = [DOC_CSV, DOC_FLAG, DOC_PDF, DOC_PLAIN_CSV]
     excluded: list[dict] = []
-    targets = await tool._reocr_targets(db, ERIKA_UUID, ids, excluded=excluded)
+    targets = await tool._reocr_targets(db, PRIMARY_TEST_UUID, ids, excluded=excluded)
     assert [t["document_id"] for t in targets] == [DOC_PDF]
     assert {(e["document_id"], e["result"], e["reason"]) for e in excluded} == {
         (DOC_CSV, "skipped", REASON),
         (DOC_FLAG, "skipped", REASON),
     }  # the plain CSV is no candidate either (its own text), but not genotype data
-    auto = await tool._reocr_targets(db, ERIKA_UUID, None, only_with_facts=False)
+    auto = await tool._reocr_targets(db, PRIMARY_TEST_UUID, None, only_with_facts=False)
     assert DOC_CSV not in {t["document_id"] for t in auto}
 
 
@@ -277,7 +279,7 @@ async def test_reocr_job_skips_excluded_documents(seeded, calls, dry_run):
         patch("oncofiles.curated.reocr.run_reocr", fake_run),
     ):  # fmt: skip
         started = await tool.start_reocr(
-            db, ERIKA_UUID, dry_run=dry_run, document_ids=[DOC_CSV, DOC_FLAG, DOC_PDF],
+            db, PRIMARY_TEST_UUID, dry_run=dry_run, document_ids=[DOC_CSV, DOC_FLAG, DOC_PDF],
             only_with_facts=False,
         )  # fmt: skip
         assert started.get("kind") == "reocr", started
@@ -289,16 +291,17 @@ async def test_reocr_job_skips_excluded_documents(seeded, calls, dry_run):
 
 async def test_reocr_with_only_raw_exports_has_nothing_to_do(seeded, calls):
     db = seeded
-    out = await tool.start_reocr(db, ERIKA_UUID, dry_run=False, document_ids=[DOC_CSV, DOC_FLAG],
+    out = await tool.start_reocr(db, PRIMARY_TEST_UUID, dry_run=False,
+                                 document_ids=[DOC_CSV, DOC_FLAG],
                                  only_with_facts=False)  # fmt: skip
     assert out["status"] == "nothing to do"
     _assert_excluded(out["skipped"])
-    assert ERIKA_UUID not in tool._reocr_jobs and calls == []
+    assert PRIMARY_TEST_UUID not in tool._reocr_jobs and calls == []
 
 
 async def test_reread_verify_skips_excluded_documents(seeded, calls):
     db = seeded
-    out = await tool.start_reread(db, ERIKA_UUID, [DOC_CSV, DOC_FLAG], dry_run=True)
+    out = await tool.start_reread(db, PRIMARY_TEST_UUID, [DOC_CSV, DOC_FLAG], dry_run=True)
     assert out["status"] == "nothing to do"
     _assert_excluded(out["skipped"])
     assert calls == []

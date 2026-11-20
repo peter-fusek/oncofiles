@@ -17,7 +17,7 @@ from oncofiles.database import Database
 from oncofiles.models import ConversationEntry, TreatmentEvent
 from oncofiles.tools import conversations as conv_tools
 from oncofiles.tools import treatment as tx_tools
-from tests.conftest import ERIKA_UUID
+from tests.conftest import PRIMARY_TEST_UUID
 
 # These tests verify slug-routing across patients — admin scope per #497/#498.
 pytestmark = pytest.mark.usefixtures("admin_scope")
@@ -37,7 +37,7 @@ async def _seed_two_patients(db: Database) -> tuple[int, int, int, int]:
 
     jana_event = await db.insert_treatment_event(
         TreatmentEvent(event_date=date(2031, 6, 14), event_type="chemo", title="Jana C1"),
-        patient_id=ERIKA_UUID,
+        patient_id=PRIMARY_TEST_UUID,
     )
     bob_event = await db.insert_treatment_event(
         TreatmentEvent(event_date=date(2031, 6, 15), event_type="chemo", title="Bob C1"),
@@ -52,7 +52,7 @@ async def _seed_two_patients(db: Database) -> tuple[int, int, int, int]:
             content="Jana private content",
             participant="claude.ai",
         ),
-        patient_id=ERIKA_UUID,
+        patient_id=PRIMARY_TEST_UUID,
     )
     bob_conv = await db.insert_conversation_entry(
         ConversationEntry(
@@ -84,12 +84,12 @@ async def test_treatment_event_ownership_helper(db: Database):
     # Pull out Jana's event id
     jana_events = await db.list_treatment_events(
         type("Q", (), {"event_type": None, "date_from": None, "date_to": None, "limit": 10})(),
-        patient_id=ERIKA_UUID,
+        patient_id=PRIMARY_TEST_UUID,
     )
     eid = jana_events[0].id
-    assert await db.check_treatment_event_ownership(eid, ERIKA_UUID) is True
+    assert await db.check_treatment_event_ownership(eid, PRIMARY_TEST_UUID) is True
     assert await db.check_treatment_event_ownership(eid, SECOND_UUID) is False
-    assert await db.check_treatment_event_ownership(999_999, ERIKA_UUID) is False
+    assert await db.check_treatment_event_ownership(999_999, PRIMARY_TEST_UUID) is False
 
 
 async def test_get_treatment_event_blocks_cross_patient(db: Database):
@@ -121,8 +121,8 @@ async def test_delete_treatment_event_blocks_cross_patient(db: Database):
     result = json.loads(await tx_tools.delete_treatment_event(ctx, e_id))
     assert result.get("deleted") is True
     # Soft delete (#723): the row is kept (still owned) but hidden from reads.
-    assert await db.get_treatment_event(e_id, patient_id=ERIKA_UUID) is None
-    assert await db.check_treatment_event_ownership(e_id, ERIKA_UUID) is True
+    assert await db.get_treatment_event(e_id, patient_id=PRIMARY_TEST_UUID) is None
+    assert await db.check_treatment_event_ownership(e_id, PRIMARY_TEST_UUID) is True
 
 
 async def test_update_treatment_event_blocks_cross_patient(db: Database):
@@ -167,9 +167,9 @@ async def test_add_treatment_event_respects_slug(db: Database):
 
 async def test_conversation_entry_ownership_helper(db: Database):
     _, _, e_conv, b_conv = await _seed_two_patients(db)
-    assert await db.check_conversation_entry_ownership(e_conv, ERIKA_UUID) is True
+    assert await db.check_conversation_entry_ownership(e_conv, PRIMARY_TEST_UUID) is True
     assert await db.check_conversation_entry_ownership(e_conv, SECOND_UUID) is False
-    assert await db.check_conversation_entry_ownership(999_999, ERIKA_UUID) is False
+    assert await db.check_conversation_entry_ownership(999_999, PRIMARY_TEST_UUID) is False
 
 
 async def test_get_conversation_blocks_cross_patient(db: Database):
@@ -208,6 +208,6 @@ async def test_log_conversation_respects_slug(db: Database):
 
     # Verify DB row lives under Bob, not Jana
     ok = await db.check_conversation_entry_ownership(result["id"], SECOND_UUID)
-    leak = await db.check_conversation_entry_ownership(result["id"], ERIKA_UUID)
+    leak = await db.check_conversation_entry_ownership(result["id"], PRIMARY_TEST_UUID)
     assert ok is True
     assert leak is False

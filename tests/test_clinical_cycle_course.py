@@ -13,7 +13,7 @@ from __future__ import annotations
 import json
 
 from oncofiles.curated import clinical_store
-from tests.helpers import ERIKA_UUID
+from tests.helpers import PRIMARY_TEST_UUID
 from tests.test_clinical_extract import (  # noqa: F401  (fixtures)
     DAY,
     DOB,
@@ -60,7 +60,7 @@ def _med(drug, evidence):
 
 async def _store(db, items, doc_id=DOC_A):
     return await clinical_store.store_document(
-        db, patient_id=ERIKA_UUID, document_id=doc_id, items=items, document_date=DAY,
+        db, patient_id=PRIMARY_TEST_UUID, document_id=doc_id, items=items, document_date=DAY,
         birth_dates={DOB}, model="mock-model",
     )  # fmt: skip
 
@@ -256,12 +256,12 @@ async def test_retract_counts_and_removes_derived_courses_with_their_cycles(seed
                printed="04.04.2027"),
     ])  # fmt: skip
     dry = await clinical_store.retract_document(
-        db, patient_id=ERIKA_UUID, document_id=DOC_A, reason="test", dry_run=True
+        db, patient_id=PRIMARY_TEST_UUID, document_id=DOC_A, reason="test", dry_run=True
     )
     assert dry["stored"]["treatment_courses"] == {"removed": 1}
     assert dry["stored"]["treatment_cycles"] == {"removed": 2}
     done = await clinical_store.retract_document(
-        db, patient_id=ERIKA_UUID, document_id=DOC_A, reason="test", dry_run=False
+        db, patient_id=PRIMARY_TEST_UUID, document_id=DOC_A, reason="test", dry_run=False
     )
     assert done["stored"] == dry["stored"]
     assert await _courses(db) == [] and await _cycles(db) == []
@@ -295,7 +295,7 @@ async def test_a_verified_cycle_keeps_its_derived_course(seeded):
     await db.db.commit()
 
     dry = await clinical_store.retract_document(
-        db, patient_id=ERIKA_UUID, document_id=DOC_A, reason="test", dry_run=True
+        db, patient_id=PRIMARY_TEST_UUID, document_id=DOC_A, reason="test", dry_run=True
     )
     assert dry["stored"]["treatment_courses"] == {"kept": 1}
     assert dry["stored"]["treatment_cycles"] == {"kept": 1}

@@ -27,7 +27,7 @@ import httpx
 import pytest
 
 from oncofiles.tool_surface import OPERATOR_TOOLS, OPS_MCP_PATH, USER_TOOLS
-from tests.conftest import ERIKA_UUID
+from tests.conftest import PRIMARY_TEST_UUID
 
 OPERATOR_TOKEN = "synthetic-operator-token-887"
 
@@ -338,7 +338,7 @@ async def test_cli_shares_the_server_job_registry(live_server, monkeypatch):
         )
         assert code == 0, err
         assert json.loads(out)["state"] == "running"
-        assert curated._reocr_jobs[ERIKA_UUID]["state"] == "running"
+        assert curated._reocr_jobs[PRIMARY_TEST_UUID]["state"] == "running"
 
         code, out, err = await _cli(
             ["curated_reocr", "--patient", "q1b", "--json", '{"dry_run": true}'],
@@ -353,7 +353,7 @@ async def test_cli_shares_the_server_job_registry(live_server, monkeypatch):
         assert code == 0 and json.loads(out)["state"] == "running"
     finally:
         release.set()
-        job = curated._reocr_jobs.pop(ERIKA_UUID, None) or {}
+        job = curated._reocr_jobs.pop(PRIMARY_TEST_UUID, None) or {}
         task = job.get("task")
         if task is not None:
             await asyncio.wait_for(task, 5)

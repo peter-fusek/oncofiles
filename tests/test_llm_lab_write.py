@@ -25,7 +25,7 @@ from oncofiles.curated import lab_store, llm, llm_extract, verifier
 from oncofiles.database._facts import LLM_LAB_FAMILY
 from oncofiles.tools import clinical_facts as cf
 from oncofiles.tools import curated as tool
-from tests.helpers import ERIKA_UUID
+from tests.helpers import PRIMARY_TEST_UUID
 
 BOB_UUID = "00000000-0000-4000-8000-000000000002"
 DOB = "2027-01-02"  # invented
@@ -93,7 +93,7 @@ async def _doc(db, doc_id, pid):
 
 async def _rule_fact(db, doc_id, *, code="ALT", value=0.4537, day=DAY, meta=None):
     return await db.replace_document_facts(
-        patient_id=ERIKA_UUID, document_id=doc_id, extracted_by="rule:test",
+        patient_id=PRIMARY_TEST_UUID, document_id=doc_id, extracted_by="rule:test",
         facts=[{"code": code, "label": code, "value_num": value, "value_canonical": value,
                 "occurred_at": day, "page_number": 1, "evidence": f"{code} line",
                 "metadata": meta or {}}],
@@ -106,8 +106,8 @@ async def seeded(db):
         "INSERT OR IGNORE INTO patients (patient_id, slug, display_name) VALUES (?, ?, ?)",
         (BOB_UUID, "bob-test", "Bob Test"),
     )
-    await _doc(db, DOC_NEW, ERIKA_UUID)
-    await _doc(db, DOC_RULE, ERIKA_UUID)
+    await _doc(db, DOC_NEW, PRIMARY_TEST_UUID)
+    await _doc(db, DOC_RULE, PRIMARY_TEST_UUID)
     await _doc(db, DOC_BOB, BOB_UUID)
     await _rule_fact(db, DOC_RULE)
     return db
@@ -120,7 +120,7 @@ def local_model(monkeypatch):
     monkeypatch.setattr(config, "LLM_LAB_WRITE_ENABLED", True)
     monkeypatch.setattr(llm, "chat", model_chat)
     monkeypatch.setattr(tool, "_reocr_jobs", {})
-    monkeypatch.setattr(tool, "_readme_births", {ERIKA_UUID: {DOB}, BOB_UUID: {DOB}})
+    monkeypatch.setattr(tool, "_readme_births", {PRIMARY_TEST_UUID: {DOB}, BOB_UUID: {DOB}})
     copies: list[str] = []
 
     def fake_copy(db, job):
@@ -159,8 +159,8 @@ async def _run(db, ids, **kw):
     started = json.loads(await tool.curated_lab_extract(_ctx(db), ids, **kw))
     if "error" in started or "status" in started:
         return started
-    await asyncio.wait_for(tool._reocr_jobs[ERIKA_UUID]["task"], 10)
-    return tool._reocr_jobs[ERIKA_UUID]
+    await asyncio.wait_for(tool._reocr_jobs[PRIMARY_TEST_UUID]["task"], 10)
+    return tool._reocr_jobs[PRIMARY_TEST_UUID]
 
 
 async def _write(db, ids):
@@ -205,12 +205,12 @@ async def test_env_off_a_real_run_writes_nothing_anywhere(seeded, local_model, m
     before = await _snapshot(db)
     out = json.loads(await tool.curated_lab_extract(_ctx(db), [DOC_NEW], dry_run=False))
     assert "LLM_LAB_WRITE_ENABLED" in out["error"]
-    assert ERIKA_UUID not in tool._reocr_jobs and local_model == []  # no slot, no copy
+    assert PRIMARY_TEST_UUID not in tool._reocr_jobs and local_model == []  # no slot, no copy
     # the job refuses on its own too (env switched off between call and job)
-    tool._reocr_jobs[ERIKA_UUID] = {"state": "running", "kind": "lab_extract"}
-    docs = await db.curated_reocr_candidates(patient_id=ERIKA_UUID)
-    await tool._lab_job(db, ERIKA_UUID, docs, write=True)
-    assert tool._reocr_jobs[ERIKA_UUID]["error"] == "write_disabled"
+    tool._reocr_jobs[PRIMARY_TEST_UUID] = {"state": "running", "kind": "lab_extract"}
+    docs = await db.curated_reocr_candidates(patient_id=PRIMARY_TEST_UUID)
+    await tool._lab_job(db, PRIMARY_TEST_UUID, docs, write=True)
+    assert tool._reocr_jobs[PRIMARY_TEST_UUID]["error"] == "write_disabled"
     assert await _snapshot(db) == before  # no fact, provenance, audit, run row
     assert local_model == []  # no pre-store copy
 
@@ -231,11 +231,11 @@ async def test_a_write_is_refused_without_a_birth_date(seeded, local_model, monk
     before = await _snapshot(db)
     with patch("oncofiles.server._create_patient_clients", AsyncMock(return_value=None)):
         out = json.loads(await tool.curated_lab_extract(_ctx(db), [DOC_NEW], dry_run=False))
-        assert "no birth date" in out["error"] and ERIKA_UUID not in tool._reocr_jobs
-        tool._reocr_jobs[ERIKA_UUID] = {"state": "running", "kind": "lab_extract"}
-        docs = await db.curated_reocr_candidates(patient_id=ERIKA_UUID)
-        await tool._lab_job(db, ERIKA_UUID, docs, write=True)
-    job = tool._reocr_jobs[ERIKA_UUID]
+        assert "no birth date" in out["error"] and PRIMARY_TEST_UUID not in tool._reocr_jobs
+        tool._reocr_jobs[PRIMARY_TEST_UUID] = {"state": "running", "kind": "lab_extract"}
+        docs = await db.curated_reocr_candidates(patient_id=PRIMARY_TEST_UUID)
+        await tool._lab_job(db, PRIMARY_TEST_UUID, docs, write=True)
+    job = tool._reocr_jobs[PRIMARY_TEST_UUID]
     assert job["state"] == "failed" and job["error"] == "no_birth_date"
     after = await _snapshot(db)
     assert {t: v for t, v in after.items() if t not in ("curated_runs", "activity_log")} == {
@@ -243,7 +243,7 @@ async def test_a_write_is_refused_without_a_birth_date(seeded, local_model, monk
     }
     with pytest.raises(verifier.NoBirthDateError):  # the store refuses on its own as well
         await lab_store.store_document(
-            db, patient_id=ERIKA_UUID, document_id=DOC_NEW, facts=[], birth_dates=set()
+            db, patient_id=PRIMARY_TEST_UUID, document_id=DOC_NEW, facts=[], birth_dates=set()
         )
 
 
@@ -257,7 +257,7 @@ async def test_a_pre_store_failure_writes_nothing(seeded, local_model, monkeypat
     before = await _snapshot(db)
     out = json.loads(await tool.curated_lab_extract(_ctx(db), [DOC_NEW], dry_run=False))
     assert out["error"].startswith("refused: pre-store copy failed")
-    assert ERIKA_UUID not in tool._reocr_jobs  # the slot is released
+    assert PRIMARY_TEST_UUID not in tool._reocr_jobs  # the slot is released
     assert await _snapshot(db) == before
 
 
@@ -272,10 +272,10 @@ async def test_guards_and_a_foreign_document(seeded, local_model, monkeypatch):
         assert "wrong_patient" not in json.dumps(out)
     with pytest.raises(ValueError, match="only on a dry run"):
         await tool.curated_lab_extract(_ctx(db), [DOC_NEW], dry_run=False, sampling="qwen")
-    monkeypatch.setitem(tool._runs, ERIKA_UUID, {"state": "running"})
+    monkeypatch.setitem(tool._runs, PRIMARY_TEST_UUID, {"state": "running"})
     out = json.loads(await tool.curated_lab_extract(_ctx(db), [DOC_NEW], dry_run=False))
     assert out["error"].startswith("busy")
-    tool._runs.pop(ERIKA_UUID)
+    tool._runs.pop(PRIMARY_TEST_UUID)
     tool._reocr_jobs.update({"x": {"state": "running", "kind": "lab_preview"}})
     assert not tool.run_active()
     tool._reocr_jobs.update({"y": {"state": "running", "kind": "lab_extract"}})
@@ -346,7 +346,7 @@ async def test_write_stores_machine_facts_with_provenance_and_stable_ids(seeded,
     # not a curated run
     runs = await _all(db, "curated_runs")
     assert [(r["trigger"], r["status"]) for r in runs] == [("lab", "ok")]
-    assert await db.list_curated_runs(patient_id=ERIKA_UUID) == []
+    assert await db.list_curated_runs(patient_id=PRIMARY_TEST_UUID) == []
     # the same facts extracted again keep their ids, as the next version
     ids = {r["code"]: r["fhir_id"] for r in rows}
     await _write(db, [DOC_NEW])
@@ -358,11 +358,11 @@ async def test_write_stores_machine_facts_with_provenance_and_stable_ids(seeded,
 
 async def test_llm_ids_never_equal_rule_ids():
     key = dict(code="ALT", label="ALT", occurred_at=DAY, page=1, meta={})
-    rule = fact_identity.natural_key(ERIKA_UUID, DOC_NEW, **key)
-    lab = fact_identity.natural_key(ERIKA_UUID, DOC_NEW, family=LLM_LAB_FAMILY, **key)
+    rule = fact_identity.natural_key(PRIMARY_TEST_UUID, DOC_NEW, **key)
+    lab = fact_identity.natural_key(PRIMARY_TEST_UUID, DOC_NEW, family=LLM_LAB_FAMILY, **key)
     assert rule != lab and fact_identity.fact_uuid(rule, 0) != fact_identity.fact_uuid(lab, 0)
     # the rule ids themselves are unchanged by the new parameter
-    assert fact_identity.natural_key(ERIKA_UUID, DOC_NEW, family=None, **key) == rule
+    assert fact_identity.natural_key(PRIMARY_TEST_UUID, DOC_NEW, family=None, **key) == rule
 
 
 async def test_skipped_rule_exists_never_two_values_for_one_printed_result(seeded, local_model):
@@ -438,15 +438,15 @@ async def test_rule_re_extraction_never_touches_llm_lab_rows(seeded, local_model
     assert res["removed"] == 0
     assert await _lab_rows(db, DOC_NEW) == lab_before
     # the rule side never sees them in corroboration / re-reads / the shadow either
-    assert {r["code"] for r in await db.fact_verification_rows(patient_id=ERIKA_UUID)} == {
+    assert {r["code"] for r in await db.fact_verification_rows(patient_id=PRIMARY_TEST_UUID)} == {
         "ALT", "CEA",
     }  # fmt: skip
     # each family is checked, not trusted
     with pytest.raises(ValueError, match="family"):
-        await db.replace_document_facts(patient_id=ERIKA_UUID, document_id=DOC_NEW, facts=[],
+        await db.replace_document_facts(patient_id=PRIMARY_TEST_UUID, document_id=DOC_NEW, facts=[],
                                         extracted_by="llm-lab-v9/x")  # fmt: skip
     with pytest.raises(ValueError, match="llm-lab"):
-        await db.replace_document_facts(patient_id=ERIKA_UUID, document_id=DOC_NEW, facts=[],
+        await db.replace_document_facts(patient_id=PRIMARY_TEST_UUID, document_id=DOC_NEW, facts=[],
                                         extracted_by="rule:x", family=LLM_LAB_FAMILY)  # fmt: skip
     assert await _lab_rows(db, DOC_NEW) == lab_before
 
@@ -567,17 +567,17 @@ async def test_a_flagged_llm_lab_value_stays_on_the_timeline_behind_a_rule_twin(
             "occurred_at": DAY, "page_number": 1, "evidence": "GLU rule line",
             "metadata": {}}  # fmt: skip
     await db.replace_document_facts(
-        patient_id=ERIKA_UUID, document_id=DOC_NEW, facts=[rule], extracted_by="rule:test"
+        patient_id=PRIMARY_TEST_UUID, document_id=DOC_NEW, facts=[rule], extracted_by="rule:test"
     )
     lab = {**rule, "value_num": 8.4, "value_canonical": 8.4, "flag": "H",
            "evidence": "GLU model line", "verification": "machine"}  # fmt: skip
     await db.replace_document_facts(
-        patient_id=ERIKA_UUID, document_id=DOC_NEW, facts=[lab],
+        patient_id=PRIMARY_TEST_UUID, document_id=DOC_NEW, facts=[lab],
         extracted_by=lab_store.extracted_by_for("mock-model"), family=LLM_LAB_FAMILY,
     )  # fmt: skip
     lab_id = (await _lab_rows(db, DOC_NEW))[0]["id"]
 
-    rows = await db.fact_series_rows(patient_id=ERIKA_UUID, codes=["GLU"])
+    rows = await db.fact_series_rows(patient_id=PRIMARY_TEST_UUID, codes=["GLU"])
     kept, removed = cf._dedupe(rows)
     assert [r["extracted_by"] for r in kept] == ["rule:test"]
     assert [(d["reason"], d["removed"]["fact_id"]) for d in removed] == [("rule_preferred", lab_id)]
@@ -709,19 +709,21 @@ def test_rule_fact_ids_equal_the_golden_ids_of_main(case):
     want = GOLDEN_IDS[case]
     # the insert path: two facts with the same natural key get ordinals 0 and 1
     twins = [{**fact, "evidence": "a"}, {**fact, "evidence": "b"}]
-    assert tuple(fact_identity.ids_for_new_facts(ERIKA_UUID, doc, twins, set())) == want
-    key = fact_identity.fact_key(ERIKA_UUID, doc, fact)
+    assert tuple(fact_identity.ids_for_new_facts(PRIMARY_TEST_UUID, doc, twins, set())) == want
+    key = fact_identity.fact_key(PRIMARY_TEST_UUID, doc, fact)
     assert fact_identity.fact_uuid(key, 0) == want[0]
     # the read path for stored rows without fhir_id (dashboard_feed)
     row = {"id": 1, "code": fact["code"], "param": fact["label"],
            "occurred_at": fact["occurred_at"], "page_number": fact["page_number"],
            "metadata_json": json.dumps(fact["metadata"]), "evidence": "a",
            "verification": "machine", "fhir_id": None}  # fmt: skip
-    assert fact_identity.ids_for_rows(ERIKA_UUID, doc, [row]) == {1: want[0]}
+    assert fact_identity.ids_for_rows(PRIMARY_TEST_UUID, doc, [row]) == {1: want[0]}
     # the llm-lab family never yields a rule id
-    lab = fact_identity.ids_for_new_facts(ERIKA_UUID, doc, twins, set(), family=LLM_LAB_FAMILY)
+    lab = fact_identity.ids_for_new_facts(
+        PRIMARY_TEST_UUID, doc, twins, set(), family=LLM_LAB_FAMILY
+    )
     assert not set(lab) & set(want)
-    lab_row = fact_identity.ids_for_rows(ERIKA_UUID, doc, [row], family=LLM_LAB_FAMILY)
+    lab_row = fact_identity.ids_for_rows(PRIMARY_TEST_UUID, doc, [row], family=LLM_LAB_FAMILY)
     assert lab_row[1] != want[0]
 
 

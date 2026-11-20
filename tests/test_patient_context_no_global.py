@@ -26,11 +26,11 @@ import pytest
 from oncofiles import patient_context
 from oncofiles.database import Database
 from oncofiles.patient_middleware import _current_patient_id
-from tests.conftest import ERIKA_UUID
+from tests.conftest import PRIMARY_TEST_UUID
 
 SRC = Path(__file__).resolve().parent.parent / "src" / "oncofiles"
 
-PID_A = ERIKA_UUID  # the request patient bound by the `db` fixture
+PID_A = PRIMARY_TEST_UUID  # the request patient bound by the `db` fixture
 PID_B = "00000000-0000-4000-8000-0000000007b2"
 SLUG_B = "testa-zorvan"
 NAME_A = "Testa Quilla"

@@ -680,13 +680,13 @@ async def test_oauth_authorize_rejects_anonymous_caller(http_mode, db):
 
 
 async def test_oauth_authorize_rejects_other_caregiver(http_mode, db):
-    from tests.helpers import ERIKA_UUID
+    from tests.helpers import PRIMARY_TEST_UUID
 
     server = http_mode
     token = server._make_session_token("stranger@example.test")
     req = _FakeRequest(
         cookies={"oncofiles_session": token},
-        query={"patient_id": ERIKA_UUID},
+        query={"patient_id": PRIMARY_TEST_UUID},
         path={"service": "drive"},
         db=db,
     )
@@ -695,7 +695,7 @@ async def test_oauth_authorize_rejects_other_caregiver(http_mode, db):
 
 
 async def test_oauth_authorize_allows_caregiver_cookie(http_mode, db, monkeypatch):
-    from tests.helpers import ERIKA_UUID
+    from tests.helpers import PRIMARY_TEST_UUID
 
     # A first Google link is an onboarding action (#852); this test is about
     # the caregiver ACL, so the gate is open here.
@@ -704,13 +704,13 @@ async def test_oauth_authorize_allows_caregiver_cookie(http_mode, db, monkeypatc
     server = http_mode
     await db.db.execute(
         "UPDATE patients SET caregiver_email = ? WHERE patient_id = ?",
-        ("carer@example.test", ERIKA_UUID),
+        ("carer@example.test", PRIMARY_TEST_UUID),
     )
     await db.db.commit()
     token = server._make_session_token("carer@example.test")
     req = _FakeRequest(
         cookies={"oncofiles_session": token},
-        query={"patient_id": ERIKA_UUID},
+        query={"patient_id": PRIMARY_TEST_UUID},
         path={"service": "drive"},
         db=db,
     )

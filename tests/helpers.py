@@ -14,7 +14,7 @@ from oncofiles.models import (
 
 # Deterministic UUIDs assigned by migration 035 — use in all tests
 PATIENT_A_UUID = "00000000-0000-4000-8000-000000000001"
-ERIKA_UUID = PATIENT_A_UUID  # backward compat alias
+PRIMARY_TEST_UUID = PATIENT_A_UUID  # the default test patient (same UUID)
 TEST_PATIENT_UUID = "00000000-0000-4000-8000-000000000002"
 
 
@@ -39,7 +39,7 @@ def make_agent_state(**overrides) -> AgentState:
         "agent_id": "oncoteam",
         "key": "test_key",
         "value": '{"hello": "world"}',
-        "patient_id": ERIKA_UUID,
+        "patient_id": PRIMARY_TEST_UUID,
     }
     defaults.update(overrides)
     return AgentState(**defaults)
@@ -95,7 +95,7 @@ def make_activity_log(**overrides) -> ActivityLogEntry:
         "duration_ms": 1200,
         "status": "ok",
         "tags": "[]",
-        "patient_id": ERIKA_UUID,
+        "patient_id": PRIMARY_TEST_UUID,
     }
     defaults.update(overrides)
     return ActivityLogEntry(**defaults)

@@ -9,14 +9,14 @@ from oncofiles.budget import (
 )
 from oncofiles.database import Database
 from oncofiles.models import PromptCallType, PromptLogEntry
-from tests.helpers import ERIKA_UUID
+from tests.helpers import PRIMARY_TEST_UUID
 
 
 async def _log_ai_call(db: Database, *, input_tokens: int, output_tokens: int) -> None:
     await db.insert_prompt_log(
         PromptLogEntry(
             call_type=PromptCallType.SUMMARY_TAGS,
-            patient_id=ERIKA_UUID,
+            patient_id=PRIMARY_TEST_UUID,
             model="claude-haiku-4-5",
             input_tokens=input_tokens,
             output_tokens=output_tokens,
@@ -29,7 +29,7 @@ async def _log_ai_call(db: Database, *, input_tokens: int, output_tokens: int) -
 async def _set_tier(db: Database, tier: str) -> None:
     await db.db.execute(
         "UPDATE patients SET tier = ? WHERE patient_id = ?",
-        (tier, ERIKA_UUID),
+        (tier, PRIMARY_TEST_UUID),
     )
     await db.db.commit()
 
@@ -52,7 +52,7 @@ def test_tier_caps_shape():
 async def test_budget_empty_usage_within(db: Database):
     """Fresh patient (zero prompt_log rows) is within budget."""
     await _set_tier(db, "free")
-    status = await check_patient_budget(db, ERIKA_UUID)
+    status = await check_patient_budget(db, PRIMARY_TEST_UUID)
     assert status.tier == "free"
     assert status.used_eur == 0.0
     assert status.cap_eur == 10.0
@@ -67,7 +67,7 @@ async def test_budget_admin_never_capped(db: Database):
     # Simulate 50M input + 50M output tokens → way past any cap
     await _log_ai_call(db, input_tokens=50_000_000, output_tokens=50_000_000)
 
-    status = await check_patient_budget(db, ERIKA_UUID)
+    status = await check_patient_budget(db, PRIMARY_TEST_UUID)
     assert status.tier == "admin"
     assert status.cap_eur is None
     assert status.within_budget is True
@@ -80,7 +80,7 @@ async def test_budget_under_cap(db: Database):
     # 100k input + 50k output tokens = $0.08 + $0.20 = $0.28 → ~€0.26
     await _log_ai_call(db, input_tokens=100_000, output_tokens=50_000)
 
-    status = await check_patient_budget(db, ERIKA_UUID)
+    status = await check_patient_budget(db, PRIMARY_TEST_UUID)
     assert status.within_budget is True
     assert status.used_eur < 10.0
     assert status.used_eur > 0.0
@@ -92,7 +92,7 @@ async def test_budget_over_cap_blocks(db: Database):
     # 20M input + 1M output = $16 + $4 = $20 USD → ~€18.40 — past €10 cap
     await _log_ai_call(db, input_tokens=20_000_000, output_tokens=1_000_000)
 
-    status = await check_patient_budget(db, ERIKA_UUID)
+    status = await check_patient_budget(db, PRIMARY_TEST_UUID)
     assert status.within_budget is False
     assert status.used_eur > 10.0
     assert status.cap_eur == 10.0
@@ -101,7 +101,7 @@ async def test_budget_over_cap_blocks(db: Database):
 async def test_budget_onboarding_flag(db: Database):
     """tier='free_onboarding' sets in_onboarding=True + €30 cap."""
     await _set_tier(db, "free_onboarding")
-    status = await check_patient_budget(db, ERIKA_UUID)
+    status = await check_patient_budget(db, PRIMARY_TEST_UUID)
     assert status.in_onboarding is True
     assert status.cap_eur == 30.0
     assert status.within_budget is True
@@ -114,7 +114,7 @@ async def test_budget_excludes_error_calls(db: Database):
     await db.insert_prompt_log(
         PromptLogEntry(
             call_type=PromptCallType.SUMMARY_TAGS,
-            patient_id=ERIKA_UUID,
+            patient_id=PRIMARY_TEST_UUID,
             model="claude-haiku-4-5",
             input_tokens=50_000_000,
             output_tokens=5_000_000,
@@ -123,7 +123,7 @@ async def test_budget_excludes_error_calls(db: Database):
             error_message="timeout",
         )
     )
-    status = await check_patient_budget(db, ERIKA_UUID)
+    status = await check_patient_budget(db, PRIMARY_TEST_UUID)
     assert status.used_eur == 0.0
     assert status.within_budget is True
 
@@ -143,7 +143,7 @@ async def test_budget_excludes_other_patients(db: Database):
             result_summary="other patient's spend",
         )
     )
-    status = await check_patient_budget(db, ERIKA_UUID)
+    status = await check_patient_budget(db, PRIMARY_TEST_UUID)
     assert status.used_eur == 0.0
     assert status.within_budget is True
 
@@ -154,6 +154,6 @@ async def test_budget_usd_to_eur_applied(db: Database):
     # 1M input + 1M output = $0.80 + $4.00 = $4.80 USD
     await _log_ai_call(db, input_tokens=1_000_000, output_tokens=1_000_000)
 
-    status = await check_patient_budget(db, ERIKA_UUID)
+    status = await check_patient_budget(db, PRIMARY_TEST_UUID)
     expected_eur = 4.80 * USD_TO_EUR
     assert abs(status.used_eur - expected_eur) < 0.01

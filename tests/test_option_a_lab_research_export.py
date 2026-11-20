@@ -20,7 +20,7 @@ from oncofiles.tools import export as export_tools
 from oncofiles.tools import hygiene as hygiene_tools
 from oncofiles.tools import lab_trends as lab_tools
 from oncofiles.tools import research as research_tools
-from tests.conftest import ERIKA_UUID
+from tests.conftest import PRIMARY_TEST_UUID
 from tests.helpers import make_doc
 
 # These tests verify slug-routing across patients — admin scope per #497/#498.
@@ -46,7 +46,7 @@ async def _seed_two_patients(db: Database) -> tuple[int, int]:
             category=DocumentCategory.LABS,
             document_date=date(2030, 1, 1),
         ),
-        patient_id=ERIKA_UUID,
+        patient_id=PRIMARY_TEST_UUID,
     )
     bob_doc = await db.insert_document(
         make_doc(
@@ -191,7 +191,7 @@ async def test_list_research_respects_slug(db: Database):
     )
     await db.insert_research_entry(
         ResearchEntry(source="pubmed", external_id="67890", title="Jana's PubMed article"),
-        patient_id=ERIKA_UUID,
+        patient_id=PRIMARY_TEST_UUID,
     )
 
     # The deprecated write tool refuses and stores nothing.
@@ -226,7 +226,7 @@ async def test_search_research_scopes_to_slug(db: Database):
             title="Jana-only trial",
             summary="sensitive content",
         ),
-        patient_id=ERIKA_UUID,
+        patient_id=PRIMARY_TEST_UUID,
     )
     await db.insert_research_entry(
         ResearchEntry(
@@ -283,7 +283,9 @@ async def test_fetch_clinical_trials_stores_under_slug_target(db: Database, monk
 
     # Trial now lives under Bob, not Jana (the ContextVar default)
     bob_trials = await db.list_research_entries(source="clinicaltrials", patient_id=SECOND_UUID)
-    jana_trials = await db.list_research_entries(source="clinicaltrials", patient_id=ERIKA_UUID)
+    jana_trials = await db.list_research_entries(
+        source="clinicaltrials", patient_id=PRIMARY_TEST_UUID
+    )
     assert any(t.external_id == "NCT99999" for t in bob_trials)
     assert all(t.external_id != "NCT99999" for t in jana_trials)
 

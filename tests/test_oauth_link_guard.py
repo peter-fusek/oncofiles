@@ -24,7 +24,7 @@ from types import SimpleNamespace
 import pytest
 
 from oncofiles.models import OAuthToken
-from tests.helpers import ERIKA_UUID, TEST_PATIENT_UUID
+from tests.helpers import PRIMARY_TEST_UUID, TEST_PATIENT_UUID
 
 SRC = Path(__file__).resolve().parent.parent / "src" / "oncofiles"
 
@@ -96,7 +96,7 @@ async def _set_caregiver(db, pid: str, email: str) -> None:
     await db.db.commit()
 
 
-async def _existing_token(db, pid: str = ERIKA_UUID, owner: str = OWNER) -> None:
+async def _existing_token(db, pid: str = PRIMARY_TEST_UUID, owner: str = OWNER) -> None:
     await db.upsert_oauth_token(
         OAuthToken(
             patient_id=pid,
@@ -136,13 +136,15 @@ async def test_refresh_updates_updated_at_but_never_owner_email(db):
     await _existing_token(db)
     await db.db.execute(
         "UPDATE oauth_tokens SET updated_at = '2031-03-17T04:05:06Z' WHERE patient_id = ?",
-        (ERIKA_UUID,),
+        (PRIMARY_TEST_UUID,),
     )
     await db.db.commit()
     expiry = datetime(2027, 6, 1, tzinfo=UTC)
-    await db.update_oauth_access_token(ERIKA_UUID, "google", "synthetic-access-refreshed", expiry)
+    await db.update_oauth_access_token(
+        PRIMARY_TEST_UUID, "google", "synthetic-access-refreshed", expiry
+    )
 
-    tok = await db.get_oauth_token(patient_id=ERIKA_UUID)
+    tok = await db.get_oauth_token(patient_id=PRIMARY_TEST_UUID)
     assert tok.access_token == "synthetic-access-refreshed"
     assert tok.token_expiry == expiry
     assert tok.owner_email == OWNER
@@ -150,7 +152,7 @@ async def test_refresh_updates_updated_at_but_never_owner_email(db):
     assert tok.gdrive_folder_id == "synthetic-folder-id"
     assert json.loads(tok.granted_scopes) == [DRIVE]
     async with db.db.execute(
-        "SELECT updated_at FROM oauth_tokens WHERE patient_id = ?", (ERIKA_UUID,)
+        "SELECT updated_at FROM oauth_tokens WHERE patient_id = ?", (PRIMARY_TEST_UUID,)
     ) as cur:
         assert (await cur.fetchone())["updated_at"] != "2031-03-17T04:05:06Z"
 
@@ -181,11 +183,13 @@ def test_refresh_paths_use_the_narrow_update():
 def test_forged_and_v1_states_are_refused(http_mode):
     from oncofiles import oauth
 
-    good = oauth._make_state_token(ERIKA_UUID, service="drive", principal={"k": "o"})
+    good = oauth._make_state_token(PRIMARY_TEST_UUID, service="drive", principal={"k": "o"})
     signed, _, _ = good.rpartition(".")
     assert oauth.verify_link_state(f"{signed}.{'0' * 64}") is None  # tampered signature
     assert oauth.verify_link_state("") is None
-    assert oauth.verify_link_state(f"{ERIKA_UUID}:{int(time.time())}.{'a' * 32}") is None  # v1
+    assert (
+        oauth.verify_link_state(f"{PRIMARY_TEST_UUID}:{int(time.time())}.{'a' * 32}") is None
+    )  # v1
     assert oauth.verify_link_state(good) is not None
     assert oauth.verify_link_state(good) is None  # single use
 
@@ -193,7 +197,7 @@ def test_forged_and_v1_states_are_refused(http_mode):
 def test_expired_state_is_refused(http_mode, monkeypatch):
     from oncofiles import oauth
 
-    state = oauth._make_state_token(ERIKA_UUID, service="drive", principal={"k": "o"})
+    state = oauth._make_state_token(PRIMARY_TEST_UUID, service="drive", principal={"k": "o"})
     now = time.time()
     monkeypatch.setattr(oauth.time, "time", lambda: now + oauth._STATE_MAX_AGE + 5)
     assert oauth.verify_link_state(state) is None
@@ -202,7 +206,7 @@ def test_expired_state_is_refused(http_mode, monkeypatch):
 def test_state_for_patient_a_cannot_be_rewritten_to_b(http_mode):
     from oncofiles import oauth
 
-    state = oauth._make_state_token(ERIKA_UUID, service="drive", principal={"k": "o"})
+    state = oauth._make_state_token(PRIMARY_TEST_UUID, service="drive", principal={"k": "o"})
     signed, _, sig = state.rpartition(".")
     body = signed.removeprefix("v2.")
     payload = json.loads(base64.urlsafe_b64decode(body + "=" * (-len(body) % 4)))
@@ -216,8 +220,8 @@ async def test_callback_refuses_forged_state_without_write(http_mode, db, monkey
     resp = await http_mode.oauth_callback(_request(db, state="v2.e30." + "0" * 64))
     assert resp.status_code == 400
     assert calls == []  # no code exchange
-    assert await db.get_oauth_token(patient_id=ERIKA_UUID) is None
-    assert await _link_rows(db, ERIKA_UUID) == []
+    assert await db.get_oauth_token(patient_id=PRIMARY_TEST_UUID) is None
+    assert await _link_rows(db, PRIMARY_TEST_UUID) == []
 
 
 async def test_callback_links_only_the_patient_in_the_state(http_mode, db, monkeypatch):
@@ -228,14 +232,14 @@ async def test_callback_links_only_the_patient_in_the_state(http_mode, db, monke
         Patient(patient_id=TEST_PATIENT_UUID, slug="bob-test", display_name="Bob Test")
     )
     assert await db.get_patient(TEST_PATIENT_UUID) is not None
-    await _set_caregiver(db, ERIKA_UUID, OWNER)
+    await _set_caregiver(db, PRIMARY_TEST_UUID, OWNER)
     _exchange(monkeypatch, _tokens(OWNER))
-    state = oauth._make_state_token(ERIKA_UUID, service="drive", principal={"k": "o"})
+    state = oauth._make_state_token(PRIMARY_TEST_UUID, service="drive", principal={"k": "o"})
     resp = await http_mode.oauth_callback(
         _request(db, state=state, query={"patient_id": TEST_PATIENT_UUID})
     )
     assert resp.status_code == 200
-    assert await db.get_oauth_token(patient_id=ERIKA_UUID) is not None
+    assert await db.get_oauth_token(patient_id=PRIMARY_TEST_UUID) is not None
     assert await db.get_oauth_token(patient_id=TEST_PATIENT_UUID) is None
 
 
@@ -243,7 +247,7 @@ async def test_session_state_needs_the_same_session(http_mode, db, monkeypatch):
     from oncofiles import oauth
 
     server = http_mode
-    await _set_caregiver(db, ERIKA_UUID, CARER)
+    await _set_caregiver(db, PRIMARY_TEST_UUID, CARER)
     calls = _exchange(monkeypatch, _tokens(CARER))
     mine = server._make_session_token(CARER)
     other = server._make_session_token(CARER)  # same user, different session
@@ -251,22 +255,24 @@ async def test_session_state_needs_the_same_session(http_mode, db, monkeypatch):
 
     def state():
         return oauth._make_state_token(
-            ERIKA_UUID, service="drive", principal={"k": "s", "tid": tid}
+            PRIMARY_TEST_UUID, service="drive", principal={"k": "s", "tid": tid}
         )
 
     for cookies in ({}, {"oncofiles_session": other}):
         resp = await server.oauth_callback(_request(db, state=state(), cookies=cookies))
         assert resp.status_code == 403
     assert calls == []
-    assert await db.get_oauth_token(patient_id=ERIKA_UUID) is None
-    rows = await _link_rows(db, ERIKA_UUID)
+    assert await db.get_oauth_token(patient_id=PRIMARY_TEST_UUID) is None
+    rows = await _link_rows(db, PRIMARY_TEST_UUID)
     assert [r["status"] for r in rows] == ["error", "error"]  # each refusal audited
 
     resp = await server.oauth_callback(
         _request(db, state=state(), cookies={"oncofiles_session": mine})
     )
     assert resp.status_code == 200
-    assert (await db.get_oauth_token(patient_id=ERIKA_UUID)).access_token == "synthetic-access-new"
+    assert (
+        await db.get_oauth_token(patient_id=PRIMARY_TEST_UUID)
+    ).access_token == "synthetic-access-new"
 
 
 async def test_authorize_state_binds_session_patient_and_service(http_mode, db, gmail_calendar_on):
@@ -277,12 +283,12 @@ async def test_authorize_state_binds_session_patient_and_service(http_mode, db, 
     from oncofiles import oauth
 
     server = http_mode
-    await _set_caregiver(db, ERIKA_UUID, CARER)
+    await _set_caregiver(db, PRIMARY_TEST_UUID, CARER)
     token = server._make_session_token(CARER)
     req = SimpleNamespace(
         headers={},
         cookies={"oncofiles_session": token},
-        query_params={"patient_id": ERIKA_UUID},
+        query_params={"patient_id": PRIMARY_TEST_UUID},
         path_params={"service": "gmail"},
         client=SimpleNamespace(host="203.0.113.7"),
         app=SimpleNamespace(
@@ -292,7 +298,7 @@ async def test_authorize_state_binds_session_patient_and_service(http_mode, db, 
     resp = await server.oauth_authorize(req)
     state = parse_qs(urlparse(resp.headers["location"]).query)["state"][0]
     payload = oauth.verify_link_state(state)
-    assert payload["pid"] == ERIKA_UUID
+    assert payload["pid"] == PRIMARY_TEST_UUID
     assert payload["svc"] == "gmail"
     assert payload["pr"] == {"k": "s", "tid": server._parse_session_token(token)[2]}
     assert CARER not in state  # no plaintext email in the URL
@@ -301,13 +307,13 @@ async def test_authorize_state_binds_session_patient_and_service(http_mode, db, 
 async def test_callback_refuses_when_service_scope_not_granted(http_mode, db, monkeypatch):
     from oncofiles import oauth
 
-    await _set_caregiver(db, ERIKA_UUID, OWNER)
+    await _set_caregiver(db, PRIMARY_TEST_UUID, OWNER)
     _exchange(monkeypatch, _tokens(OWNER, scope=DRIVE))  # gmail unticked
-    state = oauth._make_state_token(ERIKA_UUID, service="gmail", principal={"k": "o"})
+    state = oauth._make_state_token(PRIMARY_TEST_UUID, service="gmail", principal={"k": "o"})
     resp = await http_mode.oauth_callback(_request(db, state=state))
     assert resp.status_code == 403
-    assert await db.get_oauth_token(patient_id=ERIKA_UUID) is None
-    row = (await _link_rows(db, ERIKA_UUID))[-1]
+    assert await db.get_oauth_token(patient_id=PRIMARY_TEST_UUID) is None
+    row = (await _link_rows(db, PRIMARY_TEST_UUID))[-1]
     assert row["status"] == "error" and "scope" in row["error_message"]
 
 
@@ -319,14 +325,14 @@ async def test_mcp_state_completed_by_another_account_is_refused(http_mode, db, 
     from oncofiles import oauth
     from oncofiles.google_link import email_hash
 
-    await _set_caregiver(db, ERIKA_UUID, CARER)
+    await _set_caregiver(db, PRIMARY_TEST_UUID, CARER)
     _exchange(monkeypatch, _tokens(NEW_ACCOUNT))  # the victim's Google account
     principal = {"k": "m", "adm": True, "eh": email_hash(STRANGER)}  # even an admin caller
-    state = oauth._make_state_token(ERIKA_UUID, service="drive", principal=principal)
+    state = oauth._make_state_token(PRIMARY_TEST_UUID, service="drive", principal=principal)
     resp = await http_mode.oauth_callback(_request(db, state=state))
     assert resp.status_code == 403
-    assert await db.get_oauth_token(patient_id=ERIKA_UUID) is None
-    row = (await _link_rows(db, ERIKA_UUID))[-1]
+    assert await db.get_oauth_token(patient_id=PRIMARY_TEST_UUID) is None
+    row = (await _link_rows(db, PRIMARY_TEST_UUID))[-1]
     assert row["status"] == "error"
     detail = json.loads(row["input_summary"])
     assert detail["account_bound"] is False
@@ -337,10 +343,10 @@ async def test_mcp_state_completed_by_the_initiator_links(http_mode, db, monkeyp
     from oncofiles import oauth
     from oncofiles.google_link import email_hash
 
-    await _set_caregiver(db, ERIKA_UUID, CARER)
+    await _set_caregiver(db, PRIMARY_TEST_UUID, CARER)
     _exchange(monkeypatch, _tokens(STRANGER))
     principal = {"k": "m", "adm": False, "eh": email_hash(STRANGER)}
-    state = oauth._make_state_token(ERIKA_UUID, service="drive", principal=principal)
+    state = oauth._make_state_token(PRIMARY_TEST_UUID, service="drive", principal=principal)
     resp = await http_mode.oauth_callback(_request(db, state=state))
     assert resp.status_code == 200  # first link, own account
 
@@ -348,41 +354,45 @@ async def test_mcp_state_completed_by_the_initiator_links(http_mode, db, monkeyp
 async def test_operator_state_completed_by_non_caregiver_is_refused(http_mode, db, monkeypatch):
     from oncofiles import oauth
 
-    await _set_caregiver(db, ERIKA_UUID, CARER)
+    await _set_caregiver(db, PRIMARY_TEST_UUID, CARER)
     _exchange(monkeypatch, _tokens(STRANGER))
-    state = oauth._make_state_token(ERIKA_UUID, service="drive", principal={"k": "o"})
+    state = oauth._make_state_token(PRIMARY_TEST_UUID, service="drive", principal={"k": "o"})
     resp = await http_mode.oauth_callback(_request(db, state=state))
     assert resp.status_code == 403
-    assert await db.get_oauth_token(patient_id=ERIKA_UUID) is None
-    assert (await _link_rows(db, ERIKA_UUID))[-1]["status"] == "error"
+    assert await db.get_oauth_token(patient_id=PRIMARY_TEST_UUID) is None
+    assert (await _link_rows(db, PRIMARY_TEST_UUID))[-1]["status"] == "error"
 
 
 async def test_operator_state_completed_by_caregiver_links(http_mode, db, monkeypatch):
     from oncofiles import oauth
 
-    await _set_caregiver(db, ERIKA_UUID, CARER)
+    await _set_caregiver(db, PRIMARY_TEST_UUID, CARER)
     await _existing_token(db)
     _exchange(monkeypatch, _tokens(CARER))
-    state = oauth._make_state_token(ERIKA_UUID, service="drive", principal={"k": "o"})
+    state = oauth._make_state_token(PRIMARY_TEST_UUID, service="drive", principal={"k": "o"})
     resp = await http_mode.oauth_callback(_request(db, state=state))
     assert resp.status_code == 200
-    assert (await db.get_oauth_token(patient_id=ERIKA_UUID)).access_token == "synthetic-access-new"
+    assert (
+        await db.get_oauth_token(patient_id=PRIMARY_TEST_UUID)
+    ).access_token == "synthetic-access-new"
 
 
 async def test_session_state_completed_by_a_third_account_is_refused(http_mode, db, monkeypatch):
     from oncofiles import oauth
 
     server = http_mode
-    await _set_caregiver(db, ERIKA_UUID, CARER)
+    await _set_caregiver(db, PRIMARY_TEST_UUID, CARER)
     _exchange(monkeypatch, _tokens(STRANGER))
     session = server._make_session_token(CARER)
     tid = server._parse_session_token(session)[2]
-    state = oauth._make_state_token(ERIKA_UUID, service="drive", principal={"k": "s", "tid": tid})
+    state = oauth._make_state_token(
+        PRIMARY_TEST_UUID, service="drive", principal={"k": "s", "tid": tid}
+    )
     resp = await server.oauth_callback(
         _request(db, state=state, cookies={"oncofiles_session": session})
     )
     assert resp.status_code == 403
-    assert await db.get_oauth_token(patient_id=ERIKA_UUID) is None
+    assert await db.get_oauth_token(patient_id=PRIMARY_TEST_UUID) is None
 
 
 # ── 4. overwrite guard + audit ──────────────────────────────────────────
@@ -393,18 +403,18 @@ async def test_relink_with_other_account_by_non_caregiver_is_refused(http_mode, 
     from oncofiles import oauth
     from oncofiles.google_link import email_hash
 
-    await _set_caregiver(db, ERIKA_UUID, CARER)
+    await _set_caregiver(db, PRIMARY_TEST_UUID, CARER)
     await _existing_token(db)
     _exchange(monkeypatch, _tokens(STRANGER))
     principal = {"k": "m", "adm": False, "eh": email_hash(STRANGER)}
-    state = oauth._make_state_token(ERIKA_UUID, service="drive", principal=principal)
+    state = oauth._make_state_token(PRIMARY_TEST_UUID, service="drive", principal=principal)
     resp = await http_mode.oauth_callback(_request(db, state=state))
     assert resp.status_code == 403
 
-    tok = await db.get_oauth_token(patient_id=ERIKA_UUID)
+    tok = await db.get_oauth_token(patient_id=PRIMARY_TEST_UUID)
     assert tok.access_token == "synthetic-access-old"
     assert tok.refresh_token == "synthetic-refresh-old"
-    rows = await _link_rows(db, ERIKA_UUID)
+    rows = await _link_rows(db, PRIMARY_TEST_UUID)
     assert len(rows) == 1 and rows[0]["status"] == "error"
     detail = json.loads(rows[0]["input_summary"])
     assert detail["event"] == "relink" and detail["privileged"] is False
@@ -417,22 +427,24 @@ async def test_caregiver_can_relink_another_account(http_mode, db, monkeypatch):
     from oncofiles import oauth
 
     server = http_mode
-    await _set_caregiver(db, ERIKA_UUID, CARER)
+    await _set_caregiver(db, PRIMARY_TEST_UUID, CARER)
     await _existing_token(db)  # linked to OWNER
     _exchange(monkeypatch, _tokens(CARER))
     session = server._make_session_token(CARER)
     tid = server._parse_session_token(session)[2]
-    state = oauth._make_state_token(ERIKA_UUID, service="drive", principal={"k": "s", "tid": tid})
+    state = oauth._make_state_token(
+        PRIMARY_TEST_UUID, service="drive", principal={"k": "s", "tid": tid}
+    )
     resp = await server.oauth_callback(
         _request(db, state=state, cookies={"oncofiles_session": session})
     )
     assert resp.status_code == 200
 
-    tok = await db.get_oauth_token(patient_id=ERIKA_UUID)
+    tok = await db.get_oauth_token(patient_id=PRIMARY_TEST_UUID)
     assert tok.access_token == "synthetic-access-new"
     assert tok.gdrive_folder_id == "synthetic-folder-id"
     assert tok.owner_email == OWNER  # the folder owner is not changed by a link
-    rows = await _link_rows(db, ERIKA_UUID)
+    rows = await _link_rows(db, PRIMARY_TEST_UUID)
     assert rows[-1]["status"] == "ok"
     assert json.loads(rows[-1]["input_summary"])["privileged"] is True
 
@@ -441,11 +453,11 @@ async def test_mcp_caregiver_hash_is_privileged(http_mode, db, monkeypatch):
     from oncofiles import oauth
     from oncofiles.google_link import email_hash
 
-    await _set_caregiver(db, ERIKA_UUID, f"someone@example.test, {CARER}")
+    await _set_caregiver(db, PRIMARY_TEST_UUID, f"someone@example.test, {CARER}")
     await _existing_token(db)
     _exchange(monkeypatch, _tokens(CARER))
     principal = {"k": "m", "adm": False, "eh": email_hash(CARER.upper())}
-    state = oauth._make_state_token(ERIKA_UUID, service="drive", principal=principal)
+    state = oauth._make_state_token(PRIMARY_TEST_UUID, service="drive", principal=principal)
     resp = await http_mode.oauth_callback(_request(db, state=state))
     assert resp.status_code == 200
 
@@ -457,34 +469,36 @@ async def test_same_account_relink_needs_no_privilege(http_mode, db, monkeypatch
     await _existing_token(db)
     _exchange(monkeypatch, _tokens(OWNER))
     principal = {"k": "m", "adm": False, "eh": email_hash(OWNER)}
-    state = oauth._make_state_token(ERIKA_UUID, service="drive", principal=principal)
+    state = oauth._make_state_token(PRIMARY_TEST_UUID, service="drive", principal=principal)
     resp = await http_mode.oauth_callback(_request(db, state=state))
     assert resp.status_code == 200
-    detail = json.loads((await _link_rows(db, ERIKA_UUID))[-1]["input_summary"])
+    detail = json.loads((await _link_rows(db, PRIMARY_TEST_UUID))[-1]["input_summary"])
     assert detail["same_account"] is True
 
 
 async def test_unknown_new_account_is_refused(http_mode, db, monkeypatch):
     from oncofiles import oauth
 
-    await _set_caregiver(db, ERIKA_UUID, CARER)
+    await _set_caregiver(db, PRIMARY_TEST_UUID, CARER)
     await _existing_token(db)
     _exchange(monkeypatch, _tokens(None))  # no ID token
-    state = oauth._make_state_token(ERIKA_UUID, service="drive", principal={"k": "o"})
+    state = oauth._make_state_token(PRIMARY_TEST_UUID, service="drive", principal={"k": "o"})
     resp = await http_mode.oauth_callback(_request(db, state=state))
     assert resp.status_code == 403
-    assert (await db.get_oauth_token(patient_id=ERIKA_UUID)).access_token == "synthetic-access-old"
+    assert (
+        await db.get_oauth_token(patient_id=PRIMARY_TEST_UUID)
+    ).access_token == "synthetic-access-old"
 
 
 async def test_first_link_writes_activity_row_without_plaintext_email(http_mode, db, monkeypatch):
     from oncofiles import oauth
 
-    await _set_caregiver(db, ERIKA_UUID, NEW_ACCOUNT)
+    await _set_caregiver(db, PRIMARY_TEST_UUID, NEW_ACCOUNT)
     _exchange(monkeypatch, _tokens(NEW_ACCOUNT))
-    state = oauth._make_state_token(ERIKA_UUID, service="drive", principal={"k": "o"})
+    state = oauth._make_state_token(PRIMARY_TEST_UUID, service="drive", principal={"k": "o"})
     resp = await http_mode.oauth_callback(_request(db, state=state))
     assert resp.status_code == 200
-    rows = await _link_rows(db, ERIKA_UUID)
+    rows = await _link_rows(db, PRIMARY_TEST_UUID)
     assert len(rows) == 1 and rows[0]["status"] == "ok"
     assert json.loads(rows[0]["input_summary"])["event"] == "link"
     blob = json.dumps(rows[0])
@@ -497,7 +511,7 @@ async def test_mcp_auth_callback_tool_uses_the_guard(http_mode, db, monkeypatch)
 
     monkeypatch.setattr(gdrive, "GOOGLE_OAUTH_CLIENT_ID", "synthetic-client.example.test")
     monkeypatch.setattr(gdrive, "_get_db", lambda ctx: db)
-    await _set_caregiver(db, ERIKA_UUID, CARER)
+    await _set_caregiver(db, PRIMARY_TEST_UUID, CARER)
     await _existing_token(db)
     _exchange(monkeypatch, _tokens(NEW_ACCOUNT))
     t1 = _verified_caller_is_admin.set(False)
@@ -508,8 +522,10 @@ async def test_mcp_auth_callback_tool_uses_the_guard(http_mode, db, monkeypatch)
         _verified_caller_is_admin.reset(t1)
         _verified_caller_email.reset(t2)
     assert "error" in out
-    assert (await db.get_oauth_token(patient_id=ERIKA_UUID)).access_token == "synthetic-access-old"
-    assert (await _link_rows(db, ERIKA_UUID))[-1]["agent_id"] == "gdrive_auth_callback"
+    assert (
+        await db.get_oauth_token(patient_id=PRIMARY_TEST_UUID)
+    ).access_token == "synthetic-access-old"
+    assert (await _link_rows(db, PRIMARY_TEST_UUID))[-1]["agent_id"] == "gdrive_auth_callback"
 
 
 async def test_drive_link_works_with_the_cookie_as_the_browser_sends_it(http_mode, db, monkeypatch):
@@ -521,7 +537,7 @@ async def test_drive_link_works_with_the_cookie_as_the_browser_sends_it(http_mod
     from starlette.requests import cookie_parser
 
     server = http_mode
-    await _set_caregiver(db, ERIKA_UUID, CARER)
+    await _set_caregiver(db, PRIMARY_TEST_UUID, CARER)
     calls = _exchange(monkeypatch, _tokens(CARER))
     token = server._make_session_token(CARER)
     cookies = cookie_parser("oncofiles_session=" + quote(token, safe=""))
@@ -530,7 +546,7 @@ async def test_drive_link_works_with_the_cookie_as_the_browser_sends_it(http_mod
     req = SimpleNamespace(
         headers={},
         cookies=cookies,
-        query_params={"patient_id": ERIKA_UUID},
+        query_params={"patient_id": PRIMARY_TEST_UUID},
         path_params={"service": "drive"},
         client=SimpleNamespace(host="203.0.113.7"),
         app=SimpleNamespace(
@@ -544,4 +560,4 @@ async def test_drive_link_works_with_the_cookie_as_the_browser_sends_it(http_mod
     resp = await server.oauth_callback(_request(db, state=state, cookies=cookies))
     assert resp.status_code != 403
     assert len(calls) == 1
-    assert await db.get_oauth_token(patient_id=ERIKA_UUID) is not None
+    assert await db.get_oauth_token(patient_id=PRIMARY_TEST_UUID) is not None

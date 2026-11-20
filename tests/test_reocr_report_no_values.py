@@ -24,7 +24,7 @@ from oncofiles.tools.db_query import (
     ALLOWED_TABLES_ADMIN_ONLY,
     ALLOWED_TABLES_PATIENT_SCOPED,
 )
-from tests.helpers import ERIKA_UUID
+from tests.helpers import PRIMARY_TEST_UUID
 from tests.test_curated_reocr import NOW
 from tests.test_curated_runner import LABS, FakeDrive
 
@@ -205,17 +205,17 @@ async def test_report_job_and_log_carry_no_values(db, vocab, caplog, dry_run):
         assert "lost" not in d
 
     # the job dict curated_reocr_status returns while the job is in memory
-    tool._reocr_jobs[ERIKA_UUID] = {
+    tool._reocr_jobs[PRIMARY_TEST_UUID] = {
         "state": "done", "kind": "reocr", "dry_run": dry_run, "passes": 2,
         "started_at": "2027-01-02T03:04:05+00:00", "candidates": len(docs), "task": object(),
         "documents": [{k: d[k] for k in ("document_id", "filename", "reasons")} for d in docs],
         "report": report,
     }  # fmt: skip
     try:
-        status = await tool.reocr_status(db, ERIKA_UUID)
+        status = await tool.reocr_status(db, PRIMARY_TEST_UUID)
         view = tool.admin_job_view(status)
     finally:
-        tool._reocr_jobs.pop(ERIKA_UUID, None)
+        tool._reocr_jobs.pop(PRIMARY_TEST_UUID, None)
 
     sensitive = _sensitive(_all_texts())
     assert {"287", "133", "19.08.2027", "731,4"} <= sensitive  # the guard sees them
@@ -238,8 +238,8 @@ async def test_report_job_and_log_carry_no_values(db, vocab, caplog, dry_run):
 async def test_persisted_report_carries_codes_only(db, vocab):
     drive, docs, reader = _drive_and_docs()
     rep = reocr.run_reocr(drive, drive.root, docs, vocab, dry_run=True, now=NOW, reader=reader)
-    row = await db.insert_curated_run(patient_id=ERIKA_UUID, dry_run=True, trigger="reocr")
-    await db.finish_curated_run(row, patient_id=ERIKA_UUID, status="ok", message="",
+    row = await db.insert_curated_run(patient_id=PRIMARY_TEST_UUID, dry_run=True, trigger="reocr")
+    await db.finish_curated_run(row, patient_id=PRIMARY_TEST_UUID, status="ok", message="",
                                 report=rep.to_dict())  # fmt: skip
     async with db.db.execute("SELECT report_json FROM curated_runs WHERE id = ?", (row,)) as cursor:
         raw = (await cursor.fetchone())[0]
@@ -267,13 +267,13 @@ LEGACY_CODES = dict(
 
 
 async def _legacy_row(db) -> int:
-    row = await db.insert_curated_run(patient_id=ERIKA_UUID, dry_run=False, trigger="reocr")
+    row = await db.insert_curated_run(patient_id=PRIMARY_TEST_UUID, dry_run=False, trigger="reocr")
     report = {"dry_run": False, "warnings": [], "documents": [
         {"document_id": 11, "filename": "SynthLabsAlfa.pdf", "result": "review",
          "lost": LEGACY_LOST, "facts_machine": 2, "facts_unverified": 1},
         {"document_id": 12, "filename": "SynthKontrolaBeta.pdf", "result": "rewritten"},
     ]}  # fmt: skip
-    await db.finish_curated_run(row, patient_id=ERIKA_UUID, status="ok", message="",
+    await db.finish_curated_run(row, patient_id=PRIMARY_TEST_UUID, status="ok", message="",
                                 report=report)  # fmt: skip
     return row
 
@@ -288,10 +288,10 @@ async def test_legacy_rows_are_redacted_on_read(db):
     sensitive = _sensitive(LEGACY_LOST)
     assert {"287.0", "6.37", "2027-06-15"} <= sensitive
 
-    run = await db.get_curated_run(row, patient_id=ERIKA_UUID)
-    last = await db.get_last_reocr_job(patient_id=ERIKA_UUID)
-    tool._reocr_jobs.pop(ERIKA_UUID, None)
-    status = await tool.reocr_status(db, ERIKA_UUID)  # the MCP status after a restart
+    run = await db.get_curated_run(row, patient_id=PRIMARY_TEST_UUID)
+    last = await db.get_last_reocr_job(patient_id=PRIMARY_TEST_UUID)
+    tool._reocr_jobs.pop(PRIMARY_TEST_UUID, None)
+    status = await tool.reocr_status(db, PRIMARY_TEST_UUID)  # the MCP status after a restart
     view = tool.admin_job_view(status)
     for obj in (run, last, status, view):
         text = json.dumps(obj, default=str)

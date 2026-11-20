@@ -5,7 +5,7 @@ patient_id on the floor (no kwarg plumbed to the DB layer), so every caller
 converged on ``patient_id=''`` and agents running for different patients
 silently overwrote each other's state.
 
-These tests ride the ``db`` fixture (ERIKA_UUID scoped via middleware
+These tests ride the ``db`` fixture (PRIMARY_TEST_UUID scoped via middleware
 ContextVar) but then call the tool with an explicit ``patient_slug`` —
 proving that the resolved pid is driven by the slug, not the ContextVar.
 That's the stateless-HTTP guarantee needed for Claude.ai / ChatGPT
@@ -25,7 +25,7 @@ import pytest
 from oncofiles.database import Database
 from oncofiles.models import AgentState
 from oncofiles.tools import agent_state as ast
-from tests.conftest import ERIKA_UUID
+from tests.conftest import PRIMARY_TEST_UUID
 
 # These tests verify slug-routing across patients — admin scope per #497/#498.
 pytestmark = pytest.mark.usefixtures("admin_scope")
@@ -35,7 +35,7 @@ SECOND_SLUG = "bob-test"
 
 
 async def _seed_second_patient(db: Database) -> None:
-    """Insert a second patient (fixture already seeds ERIKA_UUID/q1b)."""
+    """Insert a second patient (fixture already seeds PRIMARY_TEST_UUID/q1b)."""
     await db.db.execute(
         "INSERT INTO patients (patient_id, slug, display_name, caregiver_email) "
         "VALUES (?, ?, ?, ?)",
@@ -65,7 +65,7 @@ async def test_get_respects_patient_slug(db: Database):
     await _seed_second_patient(db)
     ctx = _StubCtx(db)
 
-    await _seed_state(db, ERIKA_UUID, "last_briefing_date", '"2027-04-20"')
+    await _seed_state(db, PRIMARY_TEST_UUID, "last_briefing_date", '"2027-04-20"')
     await _seed_state(db, SECOND_UUID, "last_briefing_date", '"2027-04-24"')
 
     ra = json.loads(await ast.get_agent_state(ctx, key="last_briefing_date", patient_slug="q1b"))
@@ -74,7 +74,7 @@ async def test_get_respects_patient_slug(db: Database):
     )
     assert ra["value"] == '"2027-04-20"'
     assert rb["value"] == '"2027-04-24"'
-    assert ra["patient_id"] == ERIKA_UUID
+    assert ra["patient_id"] == PRIMARY_TEST_UUID
     assert rb["patient_id"] == SECOND_UUID
 
 
@@ -83,7 +83,7 @@ async def test_get_missing_key_is_isolated(db: Database):
     await _seed_second_patient(db)
     ctx = _StubCtx(db)
 
-    await _seed_state(db, ERIKA_UUID, "only_for_jana", '"secret"')
+    await _seed_state(db, PRIMARY_TEST_UUID, "only_for_jana", '"secret"')
 
     fetched = json.loads(
         await ast.get_agent_state(ctx, key="only_for_jana", patient_slug=SECOND_SLUG)
@@ -97,8 +97,8 @@ async def test_list_agent_states_scoped_to_slug(db: Database):
     await _seed_second_patient(db)
     ctx = _StubCtx(db)
 
-    await _seed_state(db, ERIKA_UUID, "jana_key_a", '"1"')
-    await _seed_state(db, ERIKA_UUID, "jana_key_b", '"2"')
+    await _seed_state(db, PRIMARY_TEST_UUID, "jana_key_a", '"1"')
+    await _seed_state(db, PRIMARY_TEST_UUID, "jana_key_b", '"2"')
     await _seed_state(db, SECOND_UUID, "bob_key_1", '"x"')
 
     jana_states = json.loads(await ast.list_agent_states(ctx, patient_slug="q1b"))
@@ -110,7 +110,7 @@ async def test_list_agent_states_scoped_to_slug(db: Database):
     assert jana_keys == {"jana_key_a", "jana_key_b"}
     assert bob_keys == {"bob_key_1"}
     # Every returned row must carry the correct patient_id
-    assert all(s["patient_id"] == ERIKA_UUID for s in jana_states)
+    assert all(s["patient_id"] == PRIMARY_TEST_UUID for s in jana_states)
     assert all(s["patient_id"] == SECOND_UUID for s in bob_states)
 
 
@@ -119,7 +119,7 @@ async def test_same_key_under_two_patients_reads_back_distinct(db: Database):
     await _seed_second_patient(db)
     ctx = _StubCtx(db)
 
-    await _seed_state(db, ERIKA_UUID, "counter", "1")
+    await _seed_state(db, PRIMARY_TEST_UUID, "counter", "1")
     await _seed_state(db, SECOND_UUID, "counter", "2")
 
     jana = json.loads(await ast.get_agent_state(ctx, key="counter", patient_slug="q1b"))
@@ -142,12 +142,12 @@ async def test_unknown_slug_raises(db: Database):
 
 async def test_no_slug_uses_middleware_context(db: Database):
     """Backward-compat: if patient_slug is omitted, fall back to the
-    middleware-resolved ContextVar (ERIKA_UUID in this fixture)."""
+    middleware-resolved ContextVar (PRIMARY_TEST_UUID in this fixture)."""
     ctx = _StubCtx(db)
-    await _seed_state(db, ERIKA_UUID, "implicit", '"ok"')
+    await _seed_state(db, PRIMARY_TEST_UUID, "implicit", '"ok"')
 
     fetched = json.loads(await ast.get_agent_state(ctx, key="implicit"))
-    assert fetched["patient_id"] == ERIKA_UUID
+    assert fetched["patient_id"] == PRIMARY_TEST_UUID
     assert fetched["value"] == '"ok"'
 
 
@@ -157,4 +157,4 @@ async def test_set_agent_state_refuses_and_stores_nothing(db: Database):
     out = json.loads(await ast.set_agent_state(ctx, key="new", value='"x"', patient_slug="q1b"))
     assert out["error"] == "deprecated"
     assert out["stored"] is False
-    assert await db.list_agent_states("oncoteam", patient_id=ERIKA_UUID) == []
+    assert await db.list_agent_states("oncoteam", patient_id=PRIMARY_TEST_UUID) == []

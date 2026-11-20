@@ -25,7 +25,7 @@ from oncofiles.constants import SYSTEM_NO_PATIENT
 from oncofiles.database import Database
 from oncofiles.database._analytics import PipelineStats, PromptStats, ToolUsageStats
 from oncofiles.models import ActivityLogEntry
-from tests.helpers import ERIKA_UUID, make_doc
+from tests.helpers import PRIMARY_TEST_UUID, make_doc
 
 SRC = Path(__file__).resolve().parents[1] / "src" / "oncofiles"
 
@@ -38,7 +38,7 @@ MODIFIED = "2029-11-23T17:41:00Z"
 async def _seed_two_patients(db: Database) -> None:
     """Two patients; two documents for the first, one for the second."""
     await db.db.execute(
-        "UPDATE patients SET slug = ? WHERE patient_id = ?", (FIRST_SLUG, ERIKA_UUID)
+        "UPDATE patients SET slug = ? WHERE patient_id = ?", (FIRST_SLUG, PRIMARY_TEST_UUID)
     )
     await db.db.execute(
         "INSERT INTO patients (patient_id, slug, display_name) VALUES (?, ?, ?)",
@@ -46,8 +46,8 @@ async def _seed_two_patients(db: Database) -> None:
     )
     await db.db.commit()
     for file_id, name, pid in (
-        ("first_a", "20270301_JanaTest_Clinic_Labs_BloodCount.pdf", ERIKA_UUID),
-        ("first_b", "20270302_JanaTest_Clinic_Report_Visit.pdf", ERIKA_UUID),
+        ("first_a", "20270301_JanaTest_Clinic_Labs_BloodCount.pdf", PRIMARY_TEST_UUID),
+        ("first_b", "20270302_JanaTest_Clinic_Report_Visit.pdf", PRIMARY_TEST_UUID),
         ("second_a", "20270303_BobTest_Clinic_Labs_BloodCount.pdf", SECOND_UUID),
     ):
         await db.insert_document(
@@ -112,7 +112,9 @@ async def test_backfill_gdrive_ids_dry_run_writes_nothing(db, monkeypatch):
     await _seed_two_patients(db)
     monkeypatch.setattr(script, "create_gdrive_client", lambda: _FakeDrive())
 
-    stats = await script.backfill(patient=ERIKA_UUID, dry_run=True, folder_id="folder-x", db=db)
+    stats = await script.backfill(
+        patient=PRIMARY_TEST_UUID, dry_run=True, folder_id="folder-x", db=db
+    )
 
     assert (stats["matched"], stats["not_found"]) == (1, 1)
     assert set((await _gdrive_ids(db)).values()) == {None}
@@ -247,13 +249,13 @@ async def test_weekly_analytics_runs_on_a_real_db_and_persists(db):
         for i in range(n):
             await db.insert_activity_log(
                 ActivityLogEntry(
-                    patient_id=ERIKA_UUID,
+                    patient_id=PRIMARY_TEST_UUID,
                     session_id=f"s-{tool}-{i}",
                     agent_id="test",
                     tool_name=tool,
                 )
             )
-    sync_id = await db.insert_sync_history(patient_id=ERIKA_UUID)
+    sync_id = await db.insert_sync_history(patient_id=PRIMARY_TEST_UUID)
     await db.db.execute(
         "UPDATE sync_history SET status = 'completed', from_gdrive_new = 4 WHERE id = ?",
         (sync_id,),
@@ -277,7 +279,7 @@ async def test_weekly_analytics_runs_on_a_real_db_and_persists(db):
     assert stored is not None
     assert json.loads(stored.value) == summary
     # A system aggregate is never stored under a patient.
-    assert await db.get_agent_state(STATE_KEY, AGENT_ID, patient_id=ERIKA_UUID) is None
+    assert await db.get_agent_state(STATE_KEY, AGENT_ID, patient_id=PRIMARY_TEST_UUID) is None
 
 
 async def test_weekly_analytics_on_an_empty_db(db):

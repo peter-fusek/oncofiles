@@ -63,7 +63,7 @@ class PatientsMixin:
             return [_row_to_patient(r) for r in await cursor.fetchall()]
 
     async def get_patient_by_slug(self, slug: str, *, active_only: bool = True) -> Patient | None:
-        """Get a patient by human-readable slug (e.g. 'q1b').
+        """Get a patient by human-readable slug (e.g. 'jana-testova').
 
         Defaults to active patients only (#509). Archived/deactivated patients
         used to be reachable through every MCP `patient_slug` flow because the

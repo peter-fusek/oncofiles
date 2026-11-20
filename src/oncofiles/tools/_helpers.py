@@ -192,7 +192,7 @@ async def _resolve_patient_id(
     in the dev session OR use the static `MCP_BEARER_TOKEN` (which is admin).
 
     Args:
-        patient_slug: Explicit slug from the caller (e.g. 'q1b'). Preferred.
+        patient_slug: Explicit slug from the caller (e.g. 'jana-testova'). Preferred.
         ctx: FastMCP request context.
         required: If True (default), raises ValueError when neither slug nor
             middleware-resolved patient is available.

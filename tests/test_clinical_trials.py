@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from oncofiles.clinical_trials import parse_trial, search_trials, trial_to_research_entry
-from tests.helpers import ERIKA_UUID
+from tests.helpers import PRIMARY_TEST_UUID
 
 # Sample API v2 response structure
 SAMPLE_STUDY = {
@@ -152,7 +152,7 @@ class TestClinicalTrialsDB:
         trial = parse_trial(SAMPLE_STUDY)
         entry_data = trial_to_research_entry(trial)
         entry = ResearchEntry(**entry_data)
-        saved = await db.insert_research_entry(entry, patient_id=ERIKA_UUID)
+        saved = await db.insert_research_entry(entry, patient_id=PRIMARY_TEST_UUID)
 
         assert saved.id is not None
         assert saved.source == "clinicaltrials"
@@ -166,10 +166,10 @@ class TestClinicalTrialsDB:
         entry_data = trial_to_research_entry(trial)
 
         entry1 = ResearchEntry(**entry_data)
-        saved1 = await db.insert_research_entry(entry1, patient_id=ERIKA_UUID)
+        saved1 = await db.insert_research_entry(entry1, patient_id=PRIMARY_TEST_UUID)
 
         entry2 = ResearchEntry(**entry_data)
-        saved2 = await db.insert_research_entry(entry2, patient_id=ERIKA_UUID)
+        saved2 = await db.insert_research_entry(entry2, patient_id=PRIMARY_TEST_UUID)
 
         # Should return same entry (deduplicated)
         assert saved1.id == saved2.id

@@ -4761,7 +4761,7 @@ async def _get_dashboard_patient_id(request: Request, *, fallback_to_own: bool =
     patient gets exactly what a FOREIGN one gets (own first patient, else the
     sentinel), both recorded as ``acl_refused`` (#867, #590).
 
-    Accepts either a UUID or a slug (e.g. 'q1b').  Always returns
+    Accepts either a UUID or a slug (e.g. 'jana-testova').  Always returns
     the UUID patient_id suitable for DB queries, OR a non-empty sentinel
     that matches no real patient when the caller has no access.
 
@@ -7653,7 +7653,7 @@ async def oauth_authorize(request: Request) -> JSONResponse:
         principal = {"k": "s", "tid": parsed_session[2]}
     if service not in {"drive", "gmail", "calendar", "all"}:
         return JSONResponse({"error": "unknown service"}, status_code=400)
-    # Resolve slug → UUID (e.g. "q1b" → UUID); an unknown value is refused
+    # Resolve slug → UUID (e.g. "jana-testova" → UUID); an unknown value is refused
     # here (#867), never passed on.
     try:
         db_inst: Database = request.app.state.fastmcp_server._lifespan_result["db"]

@@ -16,7 +16,7 @@ import pytest
 
 from oncofiles.models import Document, DocumentCategory
 
-ERIKA_UUID = "00000000-0000-4000-8000-000000000001"
+PRIMARY_TEST_UUID = "00000000-0000-4000-8000-000000000001"
 
 
 async def _insert_grouped(db, *, institution, doc_date, group_id, part, total, filename):
@@ -34,7 +34,7 @@ async def _insert_grouped(db, *, institution, doc_date, group_id, part, total, f
         part_number=part,
         total_parts=total,
     )
-    return await db.insert_document(doc, patient_id=ERIKA_UUID)
+    return await db.insert_document(doc, patient_id=PRIMARY_TEST_UUID)
 
 
 async def _invoke_repair(db, dry_run):
@@ -56,7 +56,7 @@ async def _invoke_repair(db, dry_run):
     original_resolve = helpers._resolve_patient_id
 
     async def fake_resolve(_slug, _ctx):
-        return ERIKA_UUID
+        return PRIMARY_TEST_UUID
 
     helpers._get_db = lambda _ctx: db
     helpers._resolve_patient_id = fake_resolve
@@ -139,8 +139,8 @@ async def test_repair_resets_cross_date_group_and_strips_part_suffix(db):
     assert result["broken_groups"][0]["reason"] == "date_span_too_large"
     assert sorted(result["reset_document_ids"]) == sorted([d1.id, d2.id])
 
-    r1 = await db.get_document(d1.id, patient_id=ERIKA_UUID)
-    r2 = await db.get_document(d2.id, patient_id=ERIKA_UUID)
+    r1 = await db.get_document(d1.id, patient_id=PRIMARY_TEST_UUID)
+    r2 = await db.get_document(d2.id, patient_id=PRIMARY_TEST_UUID)
     assert r1.group_id is None and r2.group_id is None
     assert r1.part_number is None and r2.part_number is None
     assert r1.total_parts is None and r2.total_parts is None
@@ -174,8 +174,8 @@ async def test_repair_leaves_valid_groups_alone(db):
     result = await _invoke_repair(db, dry_run=False)
 
     assert result["broken_groups"] == []
-    r1 = await db.get_document(d1.id, patient_id=ERIKA_UUID)
-    r2 = await db.get_document(d2.id, patient_id=ERIKA_UUID)
+    r1 = await db.get_document(d1.id, patient_id=PRIMARY_TEST_UUID)
+    r2 = await db.get_document(d2.id, patient_id=PRIMARY_TEST_UUID)
     assert r1.group_id == group_id
     assert r2.group_id == group_id
 
@@ -199,6 +199,6 @@ async def test_repair_flags_single_member_orphans(db):
 
     assert len(result["broken_groups"]) == 1
     assert result["broken_groups"][0]["reason"] == "single_member"
-    refreshed = await db.get_document(d1.id, patient_id=ERIKA_UUID)
+    refreshed = await db.get_document(d1.id, patient_id=PRIMARY_TEST_UUID)
     assert refreshed.group_id is None
     assert refreshed.filename == "only.pdf"

@@ -16,7 +16,7 @@ from starlette.requests import Request
 
 from oncofiles import server
 from oncofiles.server import api_demo_data, demo_dashboard
-from tests.helpers import ERIKA_UUID, make_doc
+from tests.helpers import PRIMARY_TEST_UUID, make_doc
 
 SRC = Path(__file__).resolve().parents[1] / "src" / "oncofiles"
 HTML = (SRC / "dashboard.html").read_text(encoding="utf-8")
@@ -271,8 +271,8 @@ async def test_demo_shows_every_state():
 async def test_demo_rows_have_the_keys_of_real_rows(db):
     from oncofiles.tools.hygiene import _build_document_matrix
 
-    await db.insert_document(make_doc(), patient_id=ERIKA_UUID)
-    real = await _build_document_matrix(db, patient_id=ERIKA_UUID, truncate_names=False)
+    await db.insert_document(make_doc(), patient_id=PRIMARY_TEST_UUID)
+    real = await _build_document_matrix(db, patient_id=PRIMARY_TEST_UUID, truncate_names=False)
     data = await _demo_dashboard_data()
     demo = data["documents"]
 

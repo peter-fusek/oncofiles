@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 from oncofiles.database import Database
 from oncofiles.models import OAuthToken
 from oncofiles.tools.hygiene import repair_gdrive_folder_hygiene
-from tests.helpers import ERIKA_UUID
+from tests.helpers import PRIMARY_TEST_UUID
 
 
 def _make_gdrive_with_tree(folders: dict[str, dict], children: dict[str, list[dict]]):
@@ -66,7 +66,7 @@ def _mock_ctx(db: Database, gdrive) -> MagicMock:
 async def _seed_oauth(db: Database, folder_id: str = "root"):
     await db.upsert_oauth_token(
         OAuthToken(
-            patient_id=ERIKA_UUID,
+            patient_id=PRIMARY_TEST_UUID,
             provider="google",
             access_token="a",
             refresh_token="r",
@@ -187,7 +187,7 @@ async def test_repair_errors_when_no_gdrive_folder(db: Database):
     # Seed oauth but with no folder_id
     await db.upsert_oauth_token(
         OAuthToken(
-            patient_id=ERIKA_UUID,
+            patient_id=PRIMARY_TEST_UUID,
             provider="google",
             access_token="a",
             refresh_token="r",

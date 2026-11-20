@@ -46,7 +46,7 @@ PROVIDER_TO_INSTITUTION: list[tuple[list[str], str]] = [
     (["pro sanus", "prosanus"], "ProSanus"),
     (["unz mesta", "uzemna poliklinika"], "UNZBratislava"),
     (["aseseta"], "Aseseta"),
-    # v5.3.2 — backfill gaps from q1b + e5g audit
+    # v5.3.2 — backfill gaps from a two-patient audit
     (["mediros"], "Mediros"),
     (["europacolon"], "Europacolon"),
 ]

@@ -16,7 +16,7 @@ from datetime import date, timedelta
 import pytest
 
 from oncofiles.tools import clinical_facts as cf
-from tests.helpers import ERIKA_UUID
+from tests.helpers import PRIMARY_TEST_UUID
 from tests.test_clinical_facts import _Ctx
 from tests.test_dashboard_feed import PER_NL, _doc, _fact, _feed, _put
 
@@ -49,10 +49,10 @@ def _panel(day: date, **over) -> list[dict]:
 async def _twin_panels(db, day: date = DAY, first: int = 1) -> tuple[int, int]:
     """Two documents carrying the same flagged panel (a discharge summary
     quoting the lab sheet on the same day)."""
-    a = await _doc(db, ERIKA_UUID, first, day)
-    b = await _doc(db, ERIKA_UUID, first + 1, day)
-    await _put(db, ERIKA_UUID, a.id, _panel(day))
-    await _put(db, ERIKA_UUID, b.id, _panel(day, page_number=3))
+    a = await _doc(db, PRIMARY_TEST_UUID, first, day)
+    b = await _doc(db, PRIMARY_TEST_UUID, first + 1, day)
+    await _put(db, PRIMARY_TEST_UUID, a.id, _panel(day))
+    await _put(db, PRIMARY_TEST_UUID, b.id, _panel(day, page_number=3))
     return a.id, b.id
 
 
@@ -103,10 +103,10 @@ async def test_feed_keeps_the_same_row_and_id_as_fact_series(db):
 
 
 async def test_feed_prefers_the_machine_row_over_an_unverified_twin(db):
-    a = await _doc(db, ERIKA_UUID, 1, DAY)
-    b = await _doc(db, ERIKA_UUID, 2, DAY)
-    await _put(db, ERIKA_UUID, a.id, _panel(DAY, verification="unverified"))
-    await _put(db, ERIKA_UUID, b.id, _panel(DAY))
+    a = await _doc(db, PRIMARY_TEST_UUID, 1, DAY)
+    b = await _doc(db, PRIMARY_TEST_UUID, 2, DAY)
+    await _put(db, PRIMARY_TEST_UUID, a.id, _panel(DAY, verification="unverified"))
+    await _put(db, PRIMARY_TEST_UUID, b.id, _panel(DAY))
     out = await _feed(db)
     assert {f["document_id"] for f in out["facts"]} == {b.id}
     assert {f["verification"] for f in out["facts"]} == {"machine"}
@@ -116,23 +116,23 @@ async def test_feed_prefers_the_machine_row_over_an_unverified_twin(db):
 
 
 async def test_feed_without_duplicates_is_unchanged(db):
-    a = await _doc(db, ERIKA_UUID, 1, DAY)
-    b = await _doc(db, ERIKA_UUID, 2, DAY)
-    await _put(db, ERIKA_UUID, a.id, _panel(DAY))
+    a = await _doc(db, PRIMARY_TEST_UUID, 1, DAY)
+    b = await _doc(db, PRIMARY_TEST_UUID, 2, DAY)
+    await _put(db, PRIMARY_TEST_UUID, a.id, _panel(DAY))
     # same codes and day, different values: two measurements, nothing hidden
     other = [_fact(c, DAY.isoformat(), v + 1, PER_NL) for c, v in PANEL]
-    await _put(db, ERIKA_UUID, b.id, other)
+    await _put(db, PRIMARY_TEST_UUID, b.id, other)
     out = await _feed(db)
     assert len(out["facts"]) == 2 * len(PANEL) and out["duplicates"] == []
 
 
 async def test_non_lab_kinds_are_never_deduped(db):
-    a = await _doc(db, ERIKA_UUID, 1, DAY)
-    b = await _doc(db, ERIKA_UUID, 2, DAY)
+    a = await _doc(db, PRIMARY_TEST_UUID, 1, DAY)
+    b = await _doc(db, PRIMARY_TEST_UUID, 2, DAY)
     for doc in (a, b):
         variant = _fact("KRAS", DAY.isoformat(), None, None, category="genetic_variant",
                         value_text="G12V")  # fmt: skip
-        await _put(db, ERIKA_UUID, doc.id, [variant])
+        await _put(db, PRIMARY_TEST_UUID, doc.id, [variant])
     out = await _feed(db, kinds=["genetic_variant"])
     assert len(out["facts"]) == 2 and out["duplicates"] == []
     tl = json.loads(await cf.timeline(_Ctx(db), kinds=["genetic_variant"]))
@@ -142,8 +142,8 @@ async def test_non_lab_kinds_are_never_deduped(db):
 
 async def test_feed_range_and_quote_twins_follow_dedupe(db):
     draw = date(YEAR, 9, 4)
-    lab = await _doc(db, ERIKA_UUID, 1, draw)
-    await _put(db, ERIKA_UUID, lab.id, [
+    lab = await _doc(db, PRIMARY_TEST_UUID, 1, draw)
+    await _put(db, PRIMARY_TEST_UUID, lab.id, [
         _fact("WBC", draw.isoformat(), 7.7, PER_NL),
         _fact("PLT", draw.isoformat(), 288.0, PER_NL),
         _fact("CRP", draw.isoformat(), 12.0, PER_NL),
@@ -153,14 +153,14 @@ async def test_feed_range_and_quote_twins_follow_dedupe(db):
     window = {"date_range_start": (draw - timedelta(days=2)).isoformat(),
               "date_range_end": end.isoformat(), "date_source": "printed_range",
               "date_precision": "range"}  # fmt: skip
-    ranged = await _doc(db, ERIKA_UUID, 2, end)
-    await _put(db, ERIKA_UUID, ranged.id,
+    ranged = await _doc(db, PRIMARY_TEST_UUID, 2, end)
+    await _put(db, PRIMARY_TEST_UUID, ranged.id,
                [_fact("CRP", end.isoformat(), 12.0, PER_NL, metadata=window)])  # fmt: skip
     # a later report quoting two values of the draw on its own date
     report_day = draw + timedelta(days=20)
-    report = await _doc(db, ERIKA_UUID, 3, report_day)
+    report = await _doc(db, PRIMARY_TEST_UUID, 3, report_day)
     quote = {"date_source": "report"}
-    await _put(db, ERIKA_UUID, report.id, [
+    await _put(db, PRIMARY_TEST_UUID, report.id, [
         _fact("WBC", report_day.isoformat(), 7.7, PER_NL, metadata=quote),
         _fact("PLT", report_day.isoformat(), 288.0, PER_NL, metadata=quote),
     ])  # fmt: skip
@@ -190,8 +190,8 @@ async def _many_twins(db) -> None:
     for i in range(TWIN_DAYS):
         day = DAY + timedelta(days=7 * i)
         await _twin_panels(db, day, first=10 * i + 1)
-        single = await _doc(db, ERIKA_UUID, 10 * i + 5, day + timedelta(days=1))
-        await _put(db, ERIKA_UUID, single.id,
+        single = await _doc(db, PRIMARY_TEST_UUID, 10 * i + 5, day + timedelta(days=1))
+        await _put(db, PRIMARY_TEST_UUID, single.id,
                    [_fact("CEA", (day + timedelta(days=1)).isoformat(), 2.0 + i, "ug/L",
                           category="tumor_marker")])  # fmt: skip
 
@@ -270,19 +270,19 @@ async def test_timeline_limit_counts_shown_rows_only(db):
 
 
 async def test_timeline_never_hides_a_flagged_value_behind_an_unflagged_twin(db):
-    a = await _doc(db, ERIKA_UUID, 1, DAY)
-    b = await _doc(db, ERIKA_UUID, 2, DAY)
-    await _put(db, ERIKA_UUID, a.id, _panel(DAY, flag=None))  # kept by dedupe, no flag
-    await _put(db, ERIKA_UUID, b.id, _panel(DAY))
+    a = await _doc(db, PRIMARY_TEST_UUID, 1, DAY)
+    b = await _doc(db, PRIMARY_TEST_UUID, 2, DAY)
+    await _put(db, PRIMARY_TEST_UUID, a.id, _panel(DAY, flag=None))  # kept by dedupe, no flag
+    await _put(db, PRIMARY_TEST_UUID, b.id, _panel(DAY))
     out = json.loads(await cf.timeline(_Ctx(db), kinds=["lab"]))
     assert {r["source_document_id"] for r in out["rows"]} == {b.id}
     assert out["duplicates"] == []
 
 
 async def test_timeline_without_duplicates_is_unchanged(db):
-    a = await _doc(db, ERIKA_UUID, 1, DAY)
-    b = await _doc(db, ERIKA_UUID, 2, DAY + timedelta(days=1))
-    await _put(db, ERIKA_UUID, a.id, _panel(DAY))
-    await _put(db, ERIKA_UUID, b.id, _panel(DAY + timedelta(days=1)))
+    a = await _doc(db, PRIMARY_TEST_UUID, 1, DAY)
+    b = await _doc(db, PRIMARY_TEST_UUID, 2, DAY + timedelta(days=1))
+    await _put(db, PRIMARY_TEST_UUID, a.id, _panel(DAY))
+    await _put(db, PRIMARY_TEST_UUID, b.id, _panel(DAY + timedelta(days=1)))
     out = json.loads(await cf.timeline(_Ctx(db), kinds=["lab"]))
     assert len(out["rows"]) == 2 * len(PANEL) and out["duplicates"] == []

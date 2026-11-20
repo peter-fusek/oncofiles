@@ -217,7 +217,7 @@ def ensure_year_month_folder(gdrive, category_folder_id: str, date_str: str) -> 
     # Preventive: if the caller passed a YYYY-MM folder as the "category" parent,
     # do NOT create another YYYY-MM under it. Return the parent unchanged and log
     # an error so the upstream bug is visible. Caught every nested-YYYY-MM dup on
-    # q1b in #457. The check is best-effort (cached GDrive lookup) and never
+    # one patient's folder in #457. The check is best-effort (cached GDrive lookup) and never
     # breaks the sync path if GDrive is unreachable.
     if _looks_like_year_month_folder(gdrive, category_folder_id):
         logger.error(

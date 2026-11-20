@@ -7,7 +7,7 @@ import json
 import pytest
 
 from oncofiles.curated import reread_verify as rv
-from tests.helpers import ERIKA_UUID
+from tests.helpers import PRIMARY_TEST_UUID
 
 COWORK = {"unverified_reasons": ["cowork_ocr"]}
 DOC = 4242
@@ -118,7 +118,7 @@ async def _seed(db, sha="sha-a", md5="md-a"):
             f"d{DOC}.pdf",
             f"d{DOC}.pdf",
             len(meta),
-            ERIKA_UUID,
+            PRIMARY_TEST_UUID,
             f"g{DOC}",
             json.dumps(meta),
         ),
@@ -128,7 +128,7 @@ async def _seed(db, sha="sha-a", md5="md-a"):
             "INSERT INTO clinical_records (patient_id, record_type, source_document_id, param, "
             "code, occurred_at, value_canonical, verification, metadata_json, page_number, "
             "source) VALUES (?, 'lab', ?, ?, ?, '2027-05-11', ?, 'unverified', ?, ?, 't')",
-            (ERIKA_UUID, DOC, code, code, value, json.dumps(COWORK), len(code) // len(code)),
+            (PRIMARY_TEST_UUID, DOC, code, code, value, json.dumps(COWORK), len(code) // len(code)),
         )
     await db.db.commit()
 
@@ -153,16 +153,16 @@ async def test_a_midpoint_reread_key_still_confirms_after_the_v16_reindex(db):
     lo, mid, hi = "2027-05-03", "2027-05-11", "2027-05-19"
     midpoint_key = list(rv.fact_key("NA", 140.6, mid, 1))  # written by the pre-#726 index
     stored = {"assess_version": 2, "confirmed": [midpoint_key], "date_unconfirmed": []}
-    await db.insert_fact_reread(patient_id=ERIKA_UUID, document_id=DOC, sidecar_sha="sha-a",
+    await db.insert_fact_reread(patient_id=PRIMARY_TEST_UUID, document_id=DOC, sidecar_sha="sha-a",
                                 source_md5="md-a", engine="qwen-local", result=stored)  # fmt: skip
     meta = {**COWORK, "date_source": "printed_range", "date_precision": "range",
             "date_range_start": lo, "date_range_end": hi}  # fmt: skip
     v16 = {"code": "NA", "category": "lab", "occurred_at": hi, "label": "NA", "page_number": 1,
            "value_canonical": 140.6, "verification": "unverified", "metadata": meta}  # fmt: skip
-    await db.replace_document_facts(patient_id=ERIKA_UUID, document_id=DOC, facts=[v16],
+    await db.replace_document_facts(patient_id=PRIMARY_TEST_UUID, document_id=DOC, facts=[v16],
                                     extracted_by="rule:inline-v1")  # fmt: skip
     for _ in range(2):  # every index re-applies it
-        await tool._corroborate_and_measure(db, ERIKA_UUID)
+        await tool._corroborate_and_measure(db, PRIMARY_TEST_UUID)
         verification, got = (await _verification(db))["NA"]
         assert verification == "machine" and got["verified_by_reread"] is True
         assert "cowork_ocr" not in got.get("unverified_reasons", [])
@@ -175,9 +175,9 @@ async def test_stored_result_is_applied_on_every_index_and_void_when_the_text_ch
     await _seed(db)
     result = {"confirmed": [list(rv.fact_key("WBC", 6.12, "2027-05-11", 1))],
               "date_unconfirmed": [list(rv.fact_key("PLT", 233.0, "2027-05-11", 1))]}  # fmt: skip
-    await db.insert_fact_reread(patient_id=ERIKA_UUID, document_id=DOC, sidecar_sha="sha-a",
+    await db.insert_fact_reread(patient_id=PRIMARY_TEST_UUID, document_id=DOC, sidecar_sha="sha-a",
                                 source_md5="md-a", engine="qwen-local", result=result)  # fmt: skip
-    out = await tool._corroborate_and_measure(db, ERIKA_UUID)
+    out = await tool._corroborate_and_measure(db, PRIMARY_TEST_UUID)
     assert out["reread_applied"] == 2
     got = await _verification(db)
     assert got["WBC"][0] == "machine" and got["WBC"][1]["verified_by_reread"] is True
@@ -189,7 +189,7 @@ async def test_stored_result_is_applied_on_every_index_and_void_when_the_text_ch
         (json.dumps({"curated": {"sidecar_sha": "sha-b", "source_md5": "md-a"}}), DOC),
     )
     await db.db.commit()
-    assert await db.valid_fact_rereads(patient_id=ERIKA_UUID) == {}
+    assert await db.valid_fact_rereads(patient_id=PRIMARY_TEST_UUID) == {}
     assert await db.valid_fact_rereads(patient_id="someone-else") == {}
 
 
@@ -206,9 +206,11 @@ async def test_the_tool_requires_explicit_document_ids(db):
 
 @pytest.mark.parametrize("kind", ["reocr", "reread"])
 async def test_jobs_are_not_curated_runs(db, kind):
-    run = await db.insert_curated_run(patient_id=ERIKA_UUID, dry_run=True, trigger=kind)
-    await db.finish_curated_run(run, patient_id=ERIKA_UUID, status="ok", message="", report={})
-    assert await db.get_last_curated_run(patient_id=ERIKA_UUID) is None
+    run = await db.insert_curated_run(patient_id=PRIMARY_TEST_UUID, dry_run=True, trigger=kind)
+    await db.finish_curated_run(
+        run, patient_id=PRIMARY_TEST_UUID, status="ok", message="", report={}
+    )
+    assert await db.get_last_curated_run(patient_id=PRIMARY_TEST_UUID) is None
 
 
 def test_a_bare_day_month_never_confirms_when_another_year_is_on_the_page():

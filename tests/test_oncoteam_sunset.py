@@ -37,7 +37,7 @@ from oncofiles.tools._sunset import (
     ONCOTEAM_SUNSET_TOOLS,
     ONCOTEAM_SUNSET_WRITE_TOOLS,
 )
-from tests.helpers import ERIKA_UUID
+from tests.helpers import PRIMARY_TEST_UUID
 
 SRC = Path(__file__).resolve().parent.parent / "src" / "oncofiles"
 
@@ -138,7 +138,7 @@ async def test_write_tools_refuse_and_store_nothing(db: Database, call):
 async def test_read_tools_still_serve_the_archive(db: Database):
     """Rows written before the sunset stay readable (seeded via the DB layer)."""
     await db.set_agent_state(
-        AgentState(agent_id="oncoteam", key="memo", value='"x"', patient_id=ERIKA_UUID)
+        AgentState(agent_id="oncoteam", key="memo", value='"x"', patient_id=PRIMARY_TEST_UUID)
     )
     await db.insert_conversation_entry(
         ConversationEntry(
@@ -147,15 +147,18 @@ async def test_read_tools_still_serve_the_archive(db: Database):
             content="Synthetic body.",
             source="live",
         ),
-        patient_id=ERIKA_UUID,
+        patient_id=PRIMARY_TEST_UUID,
     )
     await db.insert_research_entry(
         ResearchEntry(source="pubmed", external_id="900001", title="Synthetic article"),
-        patient_id=ERIKA_UUID,
+        patient_id=PRIMARY_TEST_UUID,
     )
     await db.insert_activity_log(
         ActivityLogEntry(
-            session_id="s-archive", agent_id="oncoteam", tool_name="search", patient_id=ERIKA_UUID
+            session_id="s-archive",
+            agent_id="oncoteam",
+            tool_name="search",
+            patient_id=PRIMARY_TEST_UUID,
         )
     )
     ctx = _ctx(db)

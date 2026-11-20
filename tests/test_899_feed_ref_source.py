@@ -15,7 +15,7 @@ from datetime import date
 import pytest
 
 from oncofiles.tools import clinical_facts as cf
-from tests.helpers import ERIKA_UUID, make_doc
+from tests.helpers import PRIMARY_TEST_UUID, make_doc
 from tests.test_clinical_facts import _Ctx
 from tests.test_dashboard_feed import _caller, _fact, _put
 
@@ -47,7 +47,7 @@ async def _doc(db, n: int, institution: str | None, category: str = "labs") -> i
         institution=institution,
         category=category,
     )
-    return (await db.insert_document(doc, patient_id=ERIKA_UUID)).id
+    return (await db.insert_document(doc, patient_id=PRIMARY_TEST_UUID)).id
 
 
 def _bare(code: str, day: str, value: float, **over) -> dict:
@@ -66,7 +66,7 @@ def _one(out: dict, document_id: int, code: str = "WBC") -> dict:
 
 async def test_own_range_is_printed_and_names_no_other_document(db):
     sheet = await _doc(db, 1, LAB_A)
-    await _put(db, ERIKA_UUID, sheet, [_fact("WBC", _day(3, 1), 5.1, PER_NL, **NEW_REF)])
+    await _put(db, PRIMARY_TEST_UUID, sheet, [_fact("WBC", _day(3, 1), 5.1, PER_NL, **NEW_REF)])
     fact = _one(await _feed(db), sheet)
     assert fact["ref_source"] == "printed" and "ref_document_id" not in fact
     assert (fact["ref_low"], fact["ref_high"]) == (NEW_REF["ref_low"], NEW_REF["ref_high"])
@@ -75,9 +75,13 @@ async def test_own_range_is_printed_and_names_no_other_document(db):
 async def test_report_value_takes_the_nearest_range_of_the_same_lab(db):
     old_sheet, new_sheet = await _doc(db, 1, LAB_A), await _doc(db, 2, LAB_A)
     report = await _doc(db, 3, LAB_A, category="report")
-    await _put(db, ERIKA_UUID, old_sheet, [_fact("WBC", _day(1, 10), 5.1, PER_NL, **OLD_REF)])
-    await _put(db, ERIKA_UUID, new_sheet, [_fact("WBC", _day(6, 10), 6.2, PER_NL, **NEW_REF)])
-    await _put(db, ERIKA_UUID, report, [_bare("WBC", _day(5, 20), 2.9)])
+    await _put(
+        db, PRIMARY_TEST_UUID, old_sheet, [_fact("WBC", _day(1, 10), 5.1, PER_NL, **OLD_REF)]
+    )
+    await _put(
+        db, PRIMARY_TEST_UUID, new_sheet, [_fact("WBC", _day(6, 10), 6.2, PER_NL, **NEW_REF)]
+    )
+    await _put(db, PRIMARY_TEST_UUID, report, [_bare("WBC", _day(5, 20), 2.9)])
     out = await _feed(db)
     fact = _one(out, report)
     assert fact["ref_source"] == "same_lab_other_doc" and fact["ref_document_id"] == new_sheet
@@ -106,9 +110,12 @@ async def test_no_offer_from_another_lab_unknown_lab_or_unverified_donor(
     sheet = await _doc(db, 1, donor_inst)
     report = await _doc(db, 2, taker_inst, category="report")
     await _put(
-        db, ERIKA_UUID, sheet, [_fact("WBC", _day(3, 1), 5.1, PER_NL, **NEW_REF, **donor_over)]
+        db,
+        PRIMARY_TEST_UUID,
+        sheet,
+        [_fact("WBC", _day(3, 1), 5.1, PER_NL, **NEW_REF, **donor_over)],
     )
-    await _put(db, ERIKA_UUID, report, [_bare("WBC", _day(3, 9), 2.9)])
+    await _put(db, PRIMARY_TEST_UUID, report, [_bare("WBC", _day(3, 9), 2.9)])
     fact = _one(await _feed(db), report)
     assert not {"ref_low", "ref_high", "ref_source", "ref_document_id"} & set(fact)
 
@@ -116,12 +123,12 @@ async def test_no_offer_from_another_lab_unknown_lab_or_unverified_donor(
 async def test_no_offer_across_units_codes_or_inside_one_document(db):
     sheet = await _doc(db, 1, LAB_A)
     report = await _doc(db, 2, LAB_A, category="report")
-    await _put(db, ERIKA_UUID, sheet, [
+    await _put(db, PRIMARY_TEST_UUID, sheet, [
         # a range printed in a unit that does not convert to the feed's unit
         _fact("WBC", _day(3, 1), 5.1, OTHER_UNIT, value_canonical=None, **NEW_REF),
         _fact("PLT", _day(3, 1), 250.0, PER_NL, **NEW_REF),
     ])  # fmt: skip
-    await _put(db, ERIKA_UUID, report, [
+    await _put(db, PRIMARY_TEST_UUID, report, [
         _bare("WBC", _day(3, 9), 2.9),
         _fact("NEUT", _day(3, 9), 1.9, PER_NL, **OLD_REF),
         _bare("NEUT", _day(3, 2), 2.4),  # the same document's range is not "another document"
@@ -139,8 +146,8 @@ async def test_hidden_duplicate_gives_its_printed_range_to_the_kept_fact(db):
     report = await _doc(db, 1, LAB_A, category="report")
     sheet = await _doc(db, 2, LAB_B)  # the lab does not matter: it is the same measurement
     day = _day(4, 2)
-    await _put(db, ERIKA_UUID, report, [_fact("WBC", day, 5.1, PER_NL)])
-    await _put(db, ERIKA_UUID, sheet, [_fact("WBC", day, 5.1, PER_NL, **NEW_REF)])
+    await _put(db, PRIMARY_TEST_UUID, report, [_fact("WBC", day, 5.1, PER_NL)])
+    await _put(db, PRIMARY_TEST_UUID, sheet, [_fact("WBC", day, 5.1, PER_NL, **NEW_REF)])
     out = await _feed(db)
     [fact] = out["facts"]
     [hidden] = out["duplicates"]
@@ -152,9 +159,9 @@ async def test_hidden_duplicate_gives_its_printed_range_to_the_kept_fact(db):
 async def test_every_page_gives_the_same_range_as_one_page(db):
     sheet = await _doc(db, 1, LAB_A)
     report = await _doc(db, 2, LAB_A, category="report")
-    await _put(db, ERIKA_UUID, sheet, [_fact("WBC", _day(1, 2), 5.1, PER_NL, **NEW_REF)])
+    await _put(db, PRIMARY_TEST_UUID, sheet, [_fact("WBC", _day(1, 2), 5.1, PER_NL, **NEW_REF)])
     await _put(
-        db, ERIKA_UUID, report, [_bare("WBC", _day(m, 5), 3.0 + m / 10) for m in range(2, 8)]
+        db, PRIMARY_TEST_UUID, report, [_bare("WBC", _day(m, 5), 3.0 + m / 10) for m in range(2, 8)]
     )
     whole = (await _feed(db))["facts"]
     paged, cursor = [], None
@@ -192,7 +199,7 @@ async def test_a_range_never_crosses_from_another_patient(db):
     # the other patient: the same lab, code, unit, day and even the same value, with a range
     await _put(db, BOB_UUID, their_sheet, [_fact("WBC", day, 2.9, PER_NL, **NEW_REF)])
     report = await _doc(db, 1, LAB_A, category="report")
-    await _put(db, ERIKA_UUID, report, [_bare("WBC", day, 2.9)])
+    await _put(db, PRIMARY_TEST_UUID, report, [_bare("WBC", day, 2.9)])
     out = await _feed(db)
     [fact] = out["facts"]
     assert fact["document_id"] == report
@@ -201,6 +208,6 @@ async def test_a_range_never_crosses_from_another_patient(db):
     assert their_sheet not in {fact["document_id"], fact.get("ref_document_id")}
     # with a sheet of her own she gets her own lab's range, still never the other patient's
     own = await _doc(db, 2, LAB_A)
-    await _put(db, ERIKA_UUID, own, [_fact("WBC", _day(2, 1), 5.1, PER_NL, **OLD_REF)])
+    await _put(db, PRIMARY_TEST_UUID, own, [_fact("WBC", _day(2, 1), 5.1, PER_NL, **OLD_REF)])
     fact = _one(await _feed(db), report)
     assert fact["ref_document_id"] == own and fact["ref_high"] == OLD_REF["ref_high"]

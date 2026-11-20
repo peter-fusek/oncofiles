@@ -41,7 +41,7 @@ from oncofiles.models import (
 )
 
 from .helpers import (
-    ERIKA_UUID,
+    PRIMARY_TEST_UUID,
     make_activity_log,
     make_agent_state,
     make_doc,
@@ -81,7 +81,7 @@ SCHEMA_EXEMPT = {
 SYSTEM_ROW_TABLES = {"activity_log", "agent_state", "prompt_log"}
 
 BAD_PIDS = [None, "", "   ", " \t", *sorted(LEGACY_DEFAULT_PATIENT_IDS - {""}),
-            NO_PATIENT_ACCESS_SENTINEL, f" {ERIKA_UUID}"]  # fmt: skip
+            NO_PATIENT_ACCESS_SENTINEL, f" {PRIMARY_TEST_UUID}"]  # fmt: skip
 
 
 # ── the guard ──────────────────────────────────────────────────────────────
@@ -130,8 +130,8 @@ async def test_guard_rejects_the_migrated_named_default(db: Database):
 
 
 def test_guard_accepts_a_patient():
-    assert require_patient_id(ERIKA_UUID) == ERIKA_UUID
-    assert require_patient_id(ERIKA_UUID, allow_system=True) == ERIKA_UUID
+    assert require_patient_id(PRIMARY_TEST_UUID) == PRIMARY_TEST_UUID
+    assert require_patient_id(PRIMARY_TEST_UUID, allow_system=True) == PRIMARY_TEST_UUID
 
 
 # ── the schema ─────────────────────────────────────────────────────────────
@@ -228,7 +228,7 @@ async def test_system_marker_only_for_operational_logs(db: Database, table, writ
 @pytest.mark.parametrize("table,writer", _writers(), ids=[t for t, _ in _writers()])
 async def test_write_helper_accepts_a_patient(db: Database, table, writer):
     before = await _count(db, table)
-    await writer(db, ERIKA_UUID)
+    await writer(db, PRIMARY_TEST_UUID)
     assert await _count(db, table) == before + 1
 
 

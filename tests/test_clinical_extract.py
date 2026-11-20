@@ -24,7 +24,7 @@ from oncofiles.curated.facts_rules import Vocabulary
 from oncofiles.tools import clinical_facts as cf
 from oncofiles.tools import curated as tool
 from oncofiles.tools import treatment as tt
-from tests.helpers import ERIKA_UUID
+from tests.helpers import PRIMARY_TEST_UUID
 
 BOB_UUID = "00000000-0000-4000-8000-000000000002"
 DOB = "2027-01-02"  # invented
@@ -86,13 +86,13 @@ async def seeded(db):
         "INSERT OR IGNORE INTO patients (patient_id, slug, display_name) VALUES (?, ?, ?)",
         (BOB_UUID, "bob-test", "Bob Test"),
     )
-    await _doc(db, DOC_A, ERIKA_UUID, PAGES_A)
-    await _doc(db, DOC_B, ERIKA_UUID, PAGES_B, category="discharge")
+    await _doc(db, DOC_A, PRIMARY_TEST_UUID, PAGES_A)
+    await _doc(db, DOC_B, PRIMARY_TEST_UUID, PAGES_B, category="discharge")
     await _doc(db, DOC_BOB, BOB_UUID, PAGES_B, category="discharge")
     return db
 
 
-async def _store(db, doc_id, pages, pid=ERIKA_UUID):
+async def _store(db, doc_id, pages, pid=PRIMARY_TEST_UUID):
     out = await _extract(db, pages)
     return await clinical_store.store_document(
         db, patient_id=pid, document_id=doc_id, items=out["items"], document_date=DAY,
@@ -100,7 +100,7 @@ async def _store(db, doc_id, pages, pid=ERIKA_UUID):
     )  # fmt: skip
 
 
-async def _rows(db, table, pid=ERIKA_UUID, where="1=1"):
+async def _rows(db, table, pid=PRIMARY_TEST_UUID, where="1=1"):
     async with db.db.execute(
         f"SELECT * FROM {table} WHERE patient_id = ? AND {where} ORDER BY id",  # noqa: S608
         (pid,),
@@ -108,7 +108,7 @@ async def _rows(db, table, pid=ERIKA_UUID, where="1=1"):
         return [dict(r) for r in await cur.fetchall()]
 
 
-async def _active(db, table, pid=ERIKA_UUID):
+async def _active(db, table, pid=PRIMARY_TEST_UUID):
     return await _rows(db, table, pid, "deleted_at IS NULL")
 
 
@@ -135,7 +135,7 @@ def local_model(monkeypatch):
     monkeypatch.setattr(config, "LLM_CLINICAL_EXTRACT_DISABLED", False)
     monkeypatch.setattr(llm, "chat", model_chat)
     monkeypatch.setattr(tool, "_reocr_jobs", {})
-    monkeypatch.setattr(tool, "_readme_births", {ERIKA_UUID: {DOB}, BOB_UUID: {DOB}})
+    monkeypatch.setattr(tool, "_readme_births", {PRIMARY_TEST_UUID: {DOB}, BOB_UUID: {DOB}})
     copies: list[str] = []
 
     def fake_copy(db, job):  # the in-memory test DB has no file; see test_pre_store_*
@@ -506,11 +506,11 @@ async def test_unverified_items_are_stored_with_their_reasons(seeded):
     )
     assert lesion["verification"] == "unverified" and "birth_date" in lesion["reasons"]
     with pytest.raises(verifier.NoBirthDateError):  # the store refuses without any DOB
-        await clinical_store.store_document(db, patient_id=ERIKA_UUID, document_id=DOC_A,
+        await clinical_store.store_document(db, patient_id=PRIMARY_TEST_UUID, document_id=DOC_A,
                                             items=out["items"], document_date=DAY,
                                             birth_dates=set())  # fmt: skip
     assert await _active(db, "conditions") == []
-    await clinical_store.store_document(db, patient_id=ERIKA_UUID, document_id=DOC_A,
+    await clinical_store.store_document(db, patient_id=PRIMARY_TEST_UUID, document_id=DOC_A,
                                         items=out["items"], document_date=DAY,
                                         birth_dates={DAY})  # fmt: skip
     rows = [r for r in await _active(db, "clinical_records") if r["verification"] == "unverified"]
@@ -527,7 +527,7 @@ async def test_re_extraction_never_touches_verified_or_foreign_rows(seeded):
     db = seeded
     await _store(db, DOC_A, PAGES_A)
     await db.replace_document_facts(
-        patient_id=ERIKA_UUID, document_id=DOC_A, extracted_by="rule:test",
+        patient_id=PRIMARY_TEST_UUID, document_id=DOC_A, extracted_by="rule:test",
         facts=[{"code": "GLU", "label": "Glukóza", "value_num": 5.5, "occurred_at": DAY}],
     )  # fmt: skip
     conds = {c["printed_text"]: c for c in await _active(db, "conditions")}
@@ -565,12 +565,12 @@ async def test_re_extraction_never_touches_verified_or_foreign_rows(seeded):
 
     # the lab rule re-extraction of the same document never deletes LLM rows
     await db.replace_document_facts(
-        patient_id=ERIKA_UUID, document_id=DOC_A, facts=[], extracted_by="rule:none"
+        patient_id=PRIMARY_TEST_UUID, document_id=DOC_A, facts=[], extracted_by="rule:none"
     )
     left = [r for r in await _active(db, "clinical_records") if r["extracted_by"].startswith("llm")]
     assert {r["code"] for r in left} >= {"KRAS", "LESION_SIZE"}
     assert all(not str(r["code"]).startswith("LESION") for r in
-               await db.fact_verification_rows(patient_id=ERIKA_UUID))  # fmt: skip
+               await db.fact_verification_rows(patient_id=PRIMARY_TEST_UUID))  # fmt: skip
 
 
 # ── isolation ───────────────────────────────────────────────────────────
@@ -582,7 +582,7 @@ async def test_two_patients_never_see_each_other(seeded, local_model):
     await _store(db, DOC_BOB, PAGES_B, pid=BOB_UUID)
     with pytest.raises(ValueError):  # Erika's document under Bob's id
         await _store(db, DOC_A, PAGES_A, pid=BOB_UUID)
-    erika = {r["source_document_id"] for r in await db.timeline_rows(patient_id=ERIKA_UUID)}
+    erika = {r["source_document_id"] for r in await db.timeline_rows(patient_id=PRIMARY_TEST_UUID)}
     bob = {r["source_document_id"] for r in await db.timeline_rows(patient_id=BOB_UUID)}
     assert DOC_BOB not in erika and DOC_A not in bob and DOC_BOB in bob
     assert {c["source_document_id"] for c in await db.condition_rows(patient_id=BOB_UUID)} == {
@@ -629,7 +629,7 @@ async def test_timeline_overview_and_treatment_list_return_the_new_kinds(seeded)
     assert {d["code"] for d in dm if d["kind"] != "condition"} >= {"KRAS", "NRAS", "MSI", "HER2"}
     assert all(d["source_document_id"] and d["verification"] for d in dm)
     assert isinstance(overview["upcoming"], list)
-    planned = await db.planned_rows(patient_id=ERIKA_UUID, from_day="2027-01-01")
+    planned = await db.planned_rows(patient_id=PRIMARY_TEST_UUID, from_day="2027-01-01")
     assert {r["at"] for r in planned} >= {"2027-06-28", "2027-07-20"}
 
     listed = json.loads(await tt.list_treatment_events(ctx))
@@ -659,7 +659,7 @@ async def test_preview_writes_nothing_and_reports_counts_only(seeded, local_mode
         started = json.loads(await tool.curated_clinical_extract_preview(_ctx(db), [DOC_A, DOC_B]))
         assert started["kind"] == "clinical_preview" and started["dry_run"] is True
         assert not tool.run_active()  # a preview never blocks a deploy
-        await asyncio.wait_for(tool._reocr_jobs[ERIKA_UUID]["task"], 10)
+        await asyncio.wait_for(tool._reocr_jobs[PRIMARY_TEST_UUID]["task"], 10)
     job = json.loads(await tool.curated_reocr_status(_ctx(db)))
     assert job["state"] == "done", job
     assert await _snapshot(db) == before
@@ -683,7 +683,7 @@ async def test_preview_writes_nothing_and_reports_counts_only(seeded, local_mode
     tool._reocr_jobs.clear()
     same = json.loads(await tool.curated_clinical_extract(_ctx(db), [DOC_A]))
     assert same["kind"] == "clinical_preview"
-    await asyncio.wait_for(tool._reocr_jobs[ERIKA_UUID]["task"], 10)
+    await asyncio.wait_for(tool._reocr_jobs[PRIMARY_TEST_UUID]["task"], 10)
     assert await _snapshot(db) == before
 
 
@@ -692,7 +692,7 @@ async def test_write_stores_holds_the_lock_and_is_not_a_curated_run(seeded, loca
     lock_held = []
 
     def chat(system, user, **kw):
-        lock_held.append(tool.patient_lock(ERIKA_UUID).locked())
+        lock_held.append(tool.patient_lock(PRIMARY_TEST_UUID).locked())
         return model_chat(system, user, **kw)
 
     store = clinical_store.store_document
@@ -710,8 +710,8 @@ async def test_write_stores_holds_the_lock_and_is_not_a_curated_run(seeded, loca
             await tool.curated_clinical_extract(_ctx(db), [DOC_A, DOC_B], dry_run=False)
         )
         assert started["kind"] == "clinical_extract" and tool.run_active()
-        await asyncio.wait_for(tool._reocr_jobs[ERIKA_UUID]["task"], 10)
-    job = tool._reocr_jobs[ERIKA_UUID]
+        await asyncio.wait_for(tool._reocr_jobs[PRIMARY_TEST_UUID]["task"], 10)
+    job = tool._reocr_jobs[PRIMARY_TEST_UUID]
     assert job["state"] == "done", job
     assert lock_held and all(lock_held)
     assert store_jobs == ["curated clinical extraction"] * len([DOC_A, DOC_B])
@@ -721,8 +721,8 @@ async def test_write_stores_holds_the_lock_and_is_not_a_curated_run(seeded, loca
     assert len(await _active(db, "conditions")) == len(["a", "b", "c"])
     runs = await _rows(db, "curated_runs")
     assert [(r["trigger"], r["status"]) for r in runs] == [("clinical", "ok")]
-    assert await db.list_curated_runs(patient_id=ERIKA_UUID) == []
-    assert await db.get_last_curated_run(patient_id=ERIKA_UUID) is None
+    assert await db.list_curated_runs(patient_id=PRIMARY_TEST_UUID) == []
+    assert await db.get_last_curated_run(patient_id=PRIMARY_TEST_UUID) is None
 
 
 async def test_write_refuses_without_a_birth_date(seeded, local_model, monkeypatch):
@@ -731,12 +731,12 @@ async def test_write_refuses_without_a_birth_date(seeded, local_model, monkeypat
     before = await _snapshot(db)
     with patch("oncofiles.server._create_patient_clients", AsyncMock(return_value=None)):
         out = json.loads(await tool.curated_clinical_extract(_ctx(db), [DOC_A], dry_run=False))
-        assert "no birth date" in out["error"] and ERIKA_UUID not in tool._reocr_jobs
+        assert "no birth date" in out["error"] and PRIMARY_TEST_UUID not in tool._reocr_jobs
         # the job itself refuses too (a DOB removed between the call and the job)
-        tool._reocr_jobs[ERIKA_UUID] = {"state": "running", "kind": "clinical_extract"}
-        docs = await db.curated_reocr_candidates(patient_id=ERIKA_UUID)
-        await tool._clinical_job(db, ERIKA_UUID, docs, write=True)
-    job = tool._reocr_jobs[ERIKA_UUID]
+        tool._reocr_jobs[PRIMARY_TEST_UUID] = {"state": "running", "kind": "clinical_extract"}
+        docs = await db.curated_reocr_candidates(patient_id=PRIMARY_TEST_UUID)
+        await tool._clinical_job(db, PRIMARY_TEST_UUID, docs, write=True)
+    job = tool._reocr_jobs[PRIMARY_TEST_UUID]
     assert job["state"] == "failed" and job["error"] == "no_birth_date"
     after = await _snapshot(db)
     assert {t: v for t, v in after.items() if t != "curated_runs"} == {
@@ -746,8 +746,8 @@ async def test_write_refuses_without_a_birth_date(seeded, local_model, monkeypat
     tool._reocr_jobs.clear()
     with patch("oncofiles.server._create_patient_clients", AsyncMock(return_value=None)):
         await tool.curated_clinical_extract_preview(_ctx(db), [DOC_A])
-        await asyncio.wait_for(tool._reocr_jobs[ERIKA_UUID]["task"], 10)
-    doc = tool._reocr_jobs[ERIKA_UUID]["report"]["documents"][0]
+        await asyncio.wait_for(tool._reocr_jobs[PRIMARY_TEST_UUID]["task"], 10)
+    doc = tool._reocr_jobs[PRIMARY_TEST_UUID]["report"]["documents"][0]
     assert doc["birth_date_guard"] == "inactive_no_dob"
 
 
@@ -762,8 +762,8 @@ async def test_a_page_not_assessed_stores_nothing_for_that_document(seeded, loca
 
     with patch.object(llm, "chat", chat):
         await tool.curated_clinical_extract(_ctx(db), [DOC_A], dry_run=False)
-        await asyncio.wait_for(tool._reocr_jobs[ERIKA_UUID]["task"], 10)
-    doc = tool._reocr_jobs[ERIKA_UUID]["report"]["documents"][0]
+        await asyncio.wait_for(tool._reocr_jobs[PRIMARY_TEST_UUID]["task"], 10)
+    doc = tool._reocr_jobs[PRIMARY_TEST_UUID]["report"]["documents"][0]
     assert doc["result"] == "skipped" and doc["pages_not_assessed"] == [2]
     assert await _active(db, "conditions") == []
 
@@ -775,10 +775,10 @@ async def test_tool_guards(seeded, local_model, monkeypatch):
     out = json.loads(await tool.curated_clinical_extract_preview(_ctx(db), list(range(11))))
     assert "at most 10" in out["error"]
     assert "required" in json.loads(await tool.curated_clinical_extract(_ctx(db), []))["error"]
-    monkeypatch.setitem(tool._runs, ERIKA_UUID, {"state": "running"})
+    monkeypatch.setitem(tool._runs, PRIMARY_TEST_UUID, {"state": "running"})
     out = json.loads(await tool.curated_clinical_extract(_ctx(db), [DOC_A], dry_run=False))
     assert out["error"].startswith("busy")
-    tool._runs.pop(ERIKA_UUID)
+    tool._runs.pop(PRIMARY_TEST_UUID)
     monkeypatch.setattr(config, "LLM_CLINICAL_EXTRACT_DISABLED", True)
     out = json.loads(await tool.curated_clinical_extract_preview(_ctx(db), [DOC_A]))
     assert "LLM_CLINICAL_EXTRACT_DISABLED" in out["error"]
@@ -804,10 +804,10 @@ async def test_birth_dates_come_from_the_readme_and_the_patient_context(db, monk
               AsyncMock(return_value=(MagicMock(), None, None, drive.root))),
         patch("oncofiles.curated.drive_ops.DriveOps", lambda _own: drive),
     ):  # fmt: skip
-        assert await tool._all_birth_dates(db, ERIKA_UUID) == {"1970-02-03"}
-    await patient_context.save_to_db(db.db, {"date_of_birth": DOB}, patient_id=ERIKA_UUID)
+        assert await tool._all_birth_dates(db, PRIMARY_TEST_UUID) == {"1970-02-03"}
+    await patient_context.save_to_db(db.db, {"date_of_birth": DOB}, patient_id=PRIMARY_TEST_UUID)
     await db.db.commit()
-    assert await tool._all_birth_dates(db, ERIKA_UUID) == {"1970-02-03", DOB}
+    assert await tool._all_birth_dates(db, PRIMARY_TEST_UUID) == {"1970-02-03", DOB}
 
 
 # ── migration 086 ───────────────────────────────────────────────────────
@@ -921,7 +921,7 @@ async def test_overrides_are_refused_on_the_write_path(seeded, local_model):
         await tool.curated_clinical_extract_preview(_ctx(db), [DOC_A], prefill="on")
     with pytest.raises(TypeError, match="prefill"):
         await tool.curated_clinical_extract(_ctx(db), [DOC_A], dry_run=False, prefill="off")
-    assert ERIKA_UUID not in tool._reocr_jobs and local_model == []  # no pre-store copy
+    assert PRIMARY_TEST_UUID not in tool._reocr_jobs and local_model == []  # no pre-store copy
     assert await _snapshot(db) == before
 
 
@@ -949,8 +949,8 @@ async def test_preview_overrides_are_used_and_echoed(seeded, local_model, monkey
         )
         assert started["overrides"] == {"thinking": "off", "sampling": "qwen", "timeout_s": None,
                                         "reasoning_marker": None}  # fmt: skip
-        await asyncio.wait_for(tool._reocr_jobs[ERIKA_UUID]["task"], 10)
-    report = tool._reocr_jobs[ERIKA_UUID]["report"]
+        await asyncio.wait_for(tool._reocr_jobs[PRIMARY_TEST_UUID]["task"], 10)
+    report = tool._reocr_jobs[PRIMARY_TEST_UUID]["report"]
     assert report["settings"]["overrides"] == {"thinking": "off", "sampling": "qwen",
                                                "timeout_s": None,
                                                "reasoning_marker": None}  # fmt: skip
@@ -967,7 +967,7 @@ async def test_preview_overrides_are_used_and_echoed(seeded, local_model, monkey
     seen.clear()
     with patch.object(llm, "chat", chat):
         await tool.curated_clinical_extract_preview(_ctx(db), [DOC_A])
-        await asyncio.wait_for(tool._reocr_jobs[ERIKA_UUID]["task"], 10)
+        await asyncio.wait_for(tool._reocr_jobs[PRIMARY_TEST_UUID]["task"], 10)
     assert {s["temperature"] for s in seen} == {0.0} and {s["thinking"] for s in seen} == {True}
 
 
@@ -996,8 +996,8 @@ async def test_preview_timeout_is_used_and_echoed(seeded, local_model, monkeypat
         assert started["overrides"] == {"thinking": "off", "sampling": "greedy",
                                         "timeout_s": 600,
                                         "reasoning_marker": None}  # fmt: skip
-        await asyncio.wait_for(tool._reocr_jobs[ERIKA_UUID]["task"], 10)
-    report = tool._reocr_jobs[ERIKA_UUID]["report"]
+        await asyncio.wait_for(tool._reocr_jobs[PRIMARY_TEST_UUID]["task"], 10)
+    report = tool._reocr_jobs[PRIMARY_TEST_UUID]["report"]
     assert report["extractor"] == lx.EXTRACTOR_VERSION
     assert report["settings"]["timeout_s"] == 600.0 and "prefill" not in report["settings"]
     assert seen and all(s == {"timeout": 600.0, "thinking": False} for s in seen)
@@ -1022,7 +1022,7 @@ async def test_reasoning_marker_override_refused_on_write_used_and_echoed(
             )
     with pytest.raises(ValueError):
         await tool.curated_clinical_extract_preview(_ctx(db), [DOC_A], reasoning_marker="yes")
-    assert ERIKA_UUID not in tool._reocr_jobs and local_model == []  # no pre-store copy
+    assert PRIMARY_TEST_UUID not in tool._reocr_jobs and local_model == []  # no pre-store copy
     assert await _snapshot(db) == before
 
     monkeypatch.setattr(config, "LLM_EXTRACT_REASONING_MARKER", False)
@@ -1039,8 +1039,8 @@ async def test_reasoning_marker_override_refused_on_write_used_and_echoed(
             )
         )
         assert started["overrides"]["reasoning_marker"] == "on"
-        await asyncio.wait_for(tool._reocr_jobs[ERIKA_UUID]["task"], 10)
-    report = tool._reocr_jobs[ERIKA_UUID]["report"]
+        await asyncio.wait_for(tool._reocr_jobs[PRIMARY_TEST_UUID]["task"], 10)
+    report = tool._reocr_jobs[PRIMARY_TEST_UUID]["report"]
     assert report["dry_run"] is True and report["extractor"] == lx.EXTRACTOR_VERSION
     assert report["settings"]["reasoning_marker"] == "on"
     assert report["settings"]["overrides"]["reasoning_marker"] == "on"

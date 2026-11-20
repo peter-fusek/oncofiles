@@ -37,7 +37,7 @@ async def enhance_documents(
         document_ids: Comma-separated document IDs to enhance. If omitted, enhances all unprocessed.
         limit: Max documents to process (default 0 = no limit). Use smaller values
                (e.g. 10) to avoid MCP proxy timeouts on large patient records.
-        patient_slug: Optional — explicit patient slug (e.g. 'mattias-cesnak'). Required
+        patient_slug: Optional — explicit patient slug (e.g. 'jana-testova'). Required
             in stateless HTTP contexts (#429) where select_patient does not persist.
     """
     # #852: legacy trigger, admin-only in every ONBOARDING_MODE until #853.

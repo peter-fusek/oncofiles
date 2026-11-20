@@ -8,7 +8,7 @@ import pytest
 
 from oncofiles.database import Database
 from oncofiles.models import ClinicalRecord, ClinicalRecordNote, ClinicalRecordQuery
-from tests.conftest import ERIKA_UUID
+from tests.conftest import PRIMARY_TEST_UUID
 
 SECOND_UUID = "00000000-0000-4000-8000-000000000002"
 
@@ -24,7 +24,7 @@ async def _seed_second_patient(db: Database) -> None:
 
 
 def _make_record(
-    patient_id: str = ERIKA_UUID,
+    patient_id: str = PRIMARY_TEST_UUID,
     *,
     record_type: str = "lab",
     param: str = "CEA",
@@ -51,7 +51,7 @@ def _make_record(
 async def test_insert_returns_stored_record_with_id(db: Database):
     stored = await db.insert_clinical_record(_make_record())
     assert stored.id is not None
-    assert stored.patient_id == ERIKA_UUID
+    assert stored.patient_id == PRIMARY_TEST_UUID
     assert stored.param == "CEA"
     assert stored.value_num == 5.2
     assert stored.created_at is not None
@@ -59,12 +59,12 @@ async def test_insert_returns_stored_record_with_id(db: Database):
 
 
 async def test_get_returns_none_for_unknown_id(db: Database):
-    assert await db.get_clinical_record(999_999, patient_id=ERIKA_UUID) is None
+    assert await db.get_clinical_record(999_999, patient_id=PRIMARY_TEST_UUID) is None
 
 
 async def test_list_returns_inserted_record(db: Database):
     await db.insert_clinical_record(_make_record())
-    results = await db.list_clinical_records(ClinicalRecordQuery(), patient_id=ERIKA_UUID)
+    results = await db.list_clinical_records(ClinicalRecordQuery(), patient_id=PRIMARY_TEST_UUID)
     assert len(results) == 1
     assert results[0].param == "CEA"
 
@@ -75,10 +75,10 @@ async def test_list_filters_by_record_type(db: Database):
         _make_record(record_type="biomarker", param="KRAS", value_num=None, value_text="G12S")
     )
     labs = await db.list_clinical_records(
-        ClinicalRecordQuery(record_type="lab"), patient_id=ERIKA_UUID
+        ClinicalRecordQuery(record_type="lab"), patient_id=PRIMARY_TEST_UUID
     )
     biomarkers = await db.list_clinical_records(
-        ClinicalRecordQuery(record_type="biomarker"), patient_id=ERIKA_UUID
+        ClinicalRecordQuery(record_type="biomarker"), patient_id=PRIMARY_TEST_UUID
     )
     assert len(labs) == 1 and labs[0].param == "CEA"
     assert len(biomarkers) == 1 and biomarkers[0].param == "KRAS"
@@ -90,7 +90,7 @@ async def test_list_filters_by_date_range(db: Database):
     await db.insert_clinical_record(_make_record(occurred_at="2026-06-01"))
     mid = await db.list_clinical_records(
         ClinicalRecordQuery(since="2026-02-01", until="2026-05-01"),
-        patient_id=ERIKA_UUID,
+        patient_id=PRIMARY_TEST_UUID,
     )
     assert len(mid) == 1
     assert mid[0].occurred_at == "2026-03-01"
@@ -100,7 +100,7 @@ async def test_list_orders_newest_first(db: Database):
     await db.insert_clinical_record(_make_record(occurred_at="2026-01-01"))
     await db.insert_clinical_record(_make_record(occurred_at="2026-06-01"))
     await db.insert_clinical_record(_make_record(occurred_at="2026-03-01"))
-    results = await db.list_clinical_records(ClinicalRecordQuery(), patient_id=ERIKA_UUID)
+    results = await db.list_clinical_records(ClinicalRecordQuery(), patient_id=PRIMARY_TEST_UUID)
     assert [r.occurred_at for r in results] == ["2026-06-01", "2026-03-01", "2026-01-01"]
 
 
@@ -111,7 +111,7 @@ async def test_update_applies_changes(db: Database):
         {"value_num": 6.8, "status": "abnormal"},
         changed_by="caregiver@example.com",
         source="manual",
-        patient_id=ERIKA_UUID,
+        patient_id=PRIMARY_TEST_UUID,
     )
     assert updated is not None
     assert updated.value_num == 6.8
@@ -127,9 +127,9 @@ async def test_update_ignores_unknown_fields(db: Database):
         {"patient_id": SECOND_UUID, "value_num": 9.9},
         changed_by="caregiver@example.com",
         source="manual",
-        patient_id=ERIKA_UUID,
+        patient_id=PRIMARY_TEST_UUID,
     )
-    assert updated.patient_id == ERIKA_UUID  # patient_id was rejected
+    assert updated.patient_id == PRIMARY_TEST_UUID  # patient_id was rejected
     assert updated.value_num == 9.9
 
 
@@ -142,7 +142,7 @@ async def test_update_noop_when_no_effective_changes(db: Database):
         {"value_num": 5.2},
         changed_by="caregiver@example.com",
         source="manual",
-        patient_id=ERIKA_UUID,
+        patient_id=PRIMARY_TEST_UUID,
     )
     after_audit = await db.list_clinical_record_audit(rec.id)
     assert result.value_num == 5.2
@@ -155,7 +155,7 @@ async def test_update_on_unknown_id_returns_none(db: Database):
         {"value_num": 1.0},
         changed_by="x@y.com",
         source="manual",
-        patient_id=ERIKA_UUID,
+        patient_id=PRIMARY_TEST_UUID,
     )
     assert result is None
 
@@ -169,10 +169,10 @@ async def test_delete_hides_record_from_default_get(db: Database):
         rec.id,
         deleted_by="caregiver@example.com",
         source="manual",
-        patient_id=ERIKA_UUID,
+        patient_id=PRIMARY_TEST_UUID,
     )
-    assert await db.get_clinical_record(rec.id, patient_id=ERIKA_UUID) is None
-    still = await db.get_clinical_record(rec.id, patient_id=ERIKA_UUID, include_deleted=True)
+    assert await db.get_clinical_record(rec.id, patient_id=PRIMARY_TEST_UUID) is None
+    still = await db.get_clinical_record(rec.id, patient_id=PRIMARY_TEST_UUID, include_deleted=True)
     assert still is not None
     assert still.deleted_at is not None
 
@@ -180,11 +180,11 @@ async def test_delete_hides_record_from_default_get(db: Database):
 async def test_delete_is_idempotent(db: Database):
     rec = await db.insert_clinical_record(_make_record())
     assert await db.delete_clinical_record(
-        rec.id, deleted_by="x@y.com", source="manual", patient_id=ERIKA_UUID
+        rec.id, deleted_by="x@y.com", source="manual", patient_id=PRIMARY_TEST_UUID
     )
     assert (
         await db.delete_clinical_record(
-            rec.id, deleted_by="x@y.com", source="manual", patient_id=ERIKA_UUID
+            rec.id, deleted_by="x@y.com", source="manual", patient_id=PRIMARY_TEST_UUID
         )
         is False
     )
@@ -193,14 +193,14 @@ async def test_delete_is_idempotent(db: Database):
 async def test_restore_clears_deleted_markers(db: Database):
     rec = await db.insert_clinical_record(_make_record())
     await db.delete_clinical_record(
-        rec.id, deleted_by="x@y.com", source="manual", patient_id=ERIKA_UUID
+        rec.id, deleted_by="x@y.com", source="manual", patient_id=PRIMARY_TEST_UUID
     )
     restored = await db.restore_clinical_record(
         rec.id,
         restored_by="x@y.com",
         source="manual",
         reason="oops",
-        patient_id=ERIKA_UUID,
+        patient_id=PRIMARY_TEST_UUID,
     )
     assert restored is not None
     assert restored.deleted_at is None
@@ -210,7 +210,7 @@ async def test_restore_clears_deleted_markers(db: Database):
 async def test_restore_on_non_deleted_returns_none(db: Database):
     rec = await db.insert_clinical_record(_make_record())
     result = await db.restore_clinical_record(
-        rec.id, restored_by="x@y.com", source="manual", patient_id=ERIKA_UUID
+        rec.id, restored_by="x@y.com", source="manual", patient_id=PRIMARY_TEST_UUID
     )
     assert result is None
 
@@ -219,11 +219,11 @@ async def test_list_include_deleted_returns_all(db: Database):
     rec1 = await db.insert_clinical_record(_make_record(param="CEA"))
     await db.insert_clinical_record(_make_record(param="CA19-9"))
     await db.delete_clinical_record(
-        rec1.id, deleted_by="x@y.com", source="manual", patient_id=ERIKA_UUID
+        rec1.id, deleted_by="x@y.com", source="manual", patient_id=PRIMARY_TEST_UUID
     )
-    active = await db.list_clinical_records(ClinicalRecordQuery(), patient_id=ERIKA_UUID)
+    active = await db.list_clinical_records(ClinicalRecordQuery(), patient_id=PRIMARY_TEST_UUID)
     all_rows = await db.list_clinical_records(
-        ClinicalRecordQuery(include_deleted=True), patient_id=ERIKA_UUID
+        ClinicalRecordQuery(include_deleted=True), patient_id=PRIMARY_TEST_UUID
     )
     assert len(active) == 1
     assert len(all_rows) == 2
@@ -250,7 +250,7 @@ async def test_update_emits_update_audit_with_changed_fields(db: Database):
         changed_by="alice@example.com",
         source="oncoteam",
         reason="Oncoteam trend review",
-        patient_id=ERIKA_UUID,
+        patient_id=PRIMARY_TEST_UUID,
     )
     trail = await db.list_clinical_record_audit(rec.id)
     # Newest first
@@ -272,13 +272,13 @@ async def test_full_lifecycle_produces_four_audit_rows(db: Database):
         {"value_num": 6.0},
         changed_by="x@y.com",
         source="manual",
-        patient_id=ERIKA_UUID,
+        patient_id=PRIMARY_TEST_UUID,
     )
     await db.delete_clinical_record(
-        rec.id, deleted_by="x@y.com", source="manual", patient_id=ERIKA_UUID
+        rec.id, deleted_by="x@y.com", source="manual", patient_id=PRIMARY_TEST_UUID
     )
     await db.restore_clinical_record(
-        rec.id, restored_by="x@y.com", source="manual", patient_id=ERIKA_UUID
+        rec.id, restored_by="x@y.com", source="manual", patient_id=PRIMARY_TEST_UUID
     )
     trail = await db.list_clinical_record_audit(rec.id)
     # Newest first: restore, delete, update, create
@@ -303,10 +303,10 @@ async def test_audit_preserves_session_id_and_caller(db: Database):
 
 async def test_list_scopes_to_single_patient(db: Database):
     await _seed_second_patient(db)
-    await db.insert_clinical_record(_make_record(patient_id=ERIKA_UUID, param="CEA"))
+    await db.insert_clinical_record(_make_record(patient_id=PRIMARY_TEST_UUID, param="CEA"))
     await db.insert_clinical_record(_make_record(patient_id=SECOND_UUID, param="CA19-9"))
 
-    jana = await db.list_clinical_records(ClinicalRecordQuery(), patient_id=ERIKA_UUID)
+    jana = await db.list_clinical_records(ClinicalRecordQuery(), patient_id=PRIMARY_TEST_UUID)
     bob = await db.list_clinical_records(ClinicalRecordQuery(), patient_id=SECOND_UUID)
 
     assert {r.param for r in jana} == {"CEA"}
@@ -315,7 +315,7 @@ async def test_list_scopes_to_single_patient(db: Database):
 
 async def test_notes_patient_scope_via_join(db: Database):
     await _seed_second_patient(db)
-    jana_rec = await db.insert_clinical_record(_make_record(patient_id=ERIKA_UUID))
+    jana_rec = await db.insert_clinical_record(_make_record(patient_id=PRIMARY_TEST_UUID))
     bob_rec = await db.insert_clinical_record(_make_record(patient_id=SECOND_UUID))
 
     await db.insert_clinical_record_note(
@@ -333,7 +333,7 @@ async def test_notes_patient_scope_via_join(db: Database):
         )
     )
 
-    jana_notes = await db.list_clinical_record_notes(patient_id=ERIKA_UUID)
+    jana_notes = await db.list_clinical_record_notes(patient_id=PRIMARY_TEST_UUID)
     bob_notes = await db.list_clinical_record_notes(patient_id=SECOND_UUID)
 
     assert len(jana_notes) == 1
@@ -435,7 +435,7 @@ async def test_biomarker_stores_text_value(db: Database):
             value_text="G12S pathogenic",
         )
     )
-    stored = await db.get_clinical_record(rec.id, patient_id=ERIKA_UUID)
+    stored = await db.get_clinical_record(rec.id, patient_id=PRIMARY_TEST_UUID)
     assert stored.record_type == "biomarker"
     assert stored.value_num is None
     assert stored.value_text == "G12S pathogenic"
@@ -445,7 +445,7 @@ async def test_lab_with_ref_range(db: Database):
     rec = await db.insert_clinical_record(
         _make_record(ref_range_low=0.0, ref_range_high=3.8, status="high")
     )
-    stored = await db.get_clinical_record(rec.id, patient_id=ERIKA_UUID)
+    stored = await db.get_clinical_record(rec.id, patient_id=PRIMARY_TEST_UUID)
     assert stored.ref_range_low == 0.0
     assert stored.ref_range_high == 3.8
     assert stored.status == "high"

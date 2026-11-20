@@ -13,7 +13,7 @@ from oncofiles.persistent_oauth import (
 )
 from oncofiles.secrets_keys import caller_email_hash
 from oncofiles.tools import fact_review as fr
-from tests.helpers import ERIKA_UUID
+from tests.helpers import PRIMARY_TEST_UUID
 
 BOB_UUID = "00000000-0000-4000-8000-000000000002"
 BOB_SLUG = "bob-test"
@@ -51,7 +51,7 @@ def caller():
     tokens = (
         _verified_caller_is_admin.set(False),
         _verified_caller_email.set(CARER),
-        _verified_patient_id.set(ERIKA_UUID),
+        _verified_patient_id.set(PRIMARY_TEST_UUID),
     )
     yield
     _verified_caller_is_admin.reset(tokens[0])
@@ -74,7 +74,7 @@ def _lab(code: str, value: float, unit: str = "g/l", day: str = DAY) -> dict:
     }
 
 
-async def _seed(db, *, pid=ERIKA_UUID, doc=DOC, facts=None) -> dict[str, int]:
+async def _seed(db, *, pid=PRIMARY_TEST_UUID, doc=DOC, facts=None) -> dict[str, int]:
     await db.db.execute(
         "INSERT INTO documents (id, file_id, filename, original_filename, category, "
         "mime_type, size_bytes, patient_id) VALUES (?, ?, ?, ?, 'labs', 'application/pdf', 1, ?)",
@@ -125,7 +125,7 @@ async def test_verify_round_trip_writes_audit_and_provenance(db, caller):
     row = await _row(db, ids["HGB"])
     assert row["verification"] == "verified" and row["updated_by"] == _agent()
 
-    [prov] = await db.list_provenance("fact", ids["HGB"], patient_id=ERIKA_UUID)
+    [prov] = await db.list_provenance("fact", ids["HGB"], patient_id=PRIMARY_TEST_UUID)
     assert (prov.activity, prov.agent_role, prov.agent_user) == ("verify", "verifier", _agent())
     assert prov.source_document_id == DOC and prov.page_number == 1
     assert prov.quote == "HGB synthetic line" and prov.reason == "checked p1"
@@ -138,7 +138,7 @@ async def test_verify_round_trip_writes_audit_and_provenance(db, caller):
 
     again = json.loads(await fr.verify_fact(_Ctx(db), ids["HGB"]))
     assert again["status"] == "already_verified"
-    assert len(await db.list_provenance("fact", ids["HGB"], patient_id=ERIKA_UUID)) == 1
+    assert len(await db.list_provenance("fact", ids["HGB"], patient_id=PRIMARY_TEST_UUID)) == 1
 
     out = json.loads(await fr.unverify_fact(_Ctx(db), ids["HGB"]))
     assert out["status"] == "unverified" and out["fact"]["verification"] == "machine"
@@ -198,7 +198,7 @@ async def test_correct_never_edits_in_place(db, caller):
     }  # fmt: skip
     assert new["source"] == "fact-review" and new["created_by"] == _agent()
 
-    [prov] = await db.list_provenance("fact", new_id, patient_id=ERIKA_UUID)
+    [prov] = await db.list_provenance("fact", new_id, patient_id=PRIMARY_TEST_UUID)
     assert (prov.activity, prov.agent_role, prov.target_version) == ("correct", "verifier", 2)
     assert prov.reason.startswith(f"entity=revision fact/{ids['HGB']}/_history/1;")
     assert prov.source_document_id == DOC
@@ -213,7 +213,7 @@ async def test_correct_never_edits_in_place(db, caller):
     active = await _all(
         db,
         "SELECT id FROM fact_series_v WHERE patient_id = ? AND code = 'HGB'",
-        (ERIKA_UUID,),
+        (PRIMARY_TEST_UUID,),
     )
     assert active == [{"id": new_id}]
 
@@ -304,7 +304,7 @@ async def test_reextraction_keeps_verified_and_corrected_facts(db, caller):
     corrected_id = out["fact"]["id"]
 
     res = await db.replace_document_facts(
-        patient_id=ERIKA_UUID, document_id=DOC, facts=facts, extracted_by="rule:test2"
+        patient_id=PRIMARY_TEST_UUID, document_id=DOC, facts=facts, extracted_by="rule:test2"
     )
     assert res["kept_verified"] == 2  # the verified HGB and the corrected PLT
     assert res["added"] == res["removed"] == len(["WBC"])  # only the machine fact is redone
@@ -336,14 +336,14 @@ async def _active(db, code: str | None = None) -> list[dict]:
         "SELECT id, code, occurred_at, page_number, verification, value_num, fhir_id, "
         "version_id FROM clinical_records WHERE patient_id = ? AND source_document_id = ? "
         "AND deleted_at IS NULL ORDER BY code, occurred_at, page_number",
-        (ERIKA_UUID, DOC),
+        (PRIMARY_TEST_UUID, DOC),
     )
     return [r for r in rows if code is None or r["code"] == code]
 
 
 async def _reextract(db, facts: list[dict]) -> dict:
     return await db.replace_document_facts(
-        patient_id=ERIKA_UUID, document_id=DOC, facts=facts, extracted_by="rule:again"
+        patient_id=PRIMARY_TEST_UUID, document_id=DOC, facts=facts, extracted_by="rule:again"
     )
 
 
@@ -384,7 +384,7 @@ async def test_date_correction_is_not_re_added_at_the_old_date(db, caller):
         [hgb] = await _active(db, "HGB")
         assert (hgb["fhir_id"], hgb["version_id"]) == (original["fhir_id"], 2)
         assert (await _reextract(db, facts))["id_churn"] == 0
-    feed_ids = await db.effective_fact_ids(patient_id=ERIKA_UUID, document_ids=[DOC])
+    feed_ids = await db.effective_fact_ids(patient_id=PRIMARY_TEST_UUID, document_ids=[DOC])
     assert feed_ids[corrected["id"]] == original["fhir_id"]
 
 
@@ -430,7 +430,7 @@ async def test_correcting_a_row_without_a_stored_id_keeps_the_id_readers_saw(db,
     facts = [_lab("HGB", 121.0), _lab("PLT", 233.0, COUNT_UNIT)]
     ids = await _seed(db, facts=facts)
     await _drop_stored_ids(db)
-    seen = await db.effective_fact_ids(patient_id=ERIKA_UUID, document_ids=[DOC])
+    seen = await db.effective_fact_ids(patient_id=PRIMARY_TEST_UUID, document_ids=[DOC])
 
     corrected = await _correct(db, ids["HGB"], occurred_at=DAY2)
     assert corrected["fhir_id"] == seen[ids["HGB"]]  # not one computed from DAY2
@@ -558,7 +558,7 @@ async def test_every_call_logs_ids_only(db, caller):
         "verify_fact", "correct_fact", "unverify_fact", "verify_fact",
     ]  # fmt: skip
     assert [x["status"] for x in logs] == ["ok", "ok", "ok", "not_found"]
-    assert all(x["patient_id"] == ERIKA_UUID for x in logs)
+    assert all(x["patient_id"] == PRIMARY_TEST_UUID for x in logs)
     blob = json.dumps(logs)
     for secret in ("private", "239.5", "121", CARER):
         assert secret not in blob
@@ -579,7 +579,7 @@ async def test_agent_user_without_email_is_the_credential_kind(db):
     tokens = (
         _verified_caller_is_admin.set(False),
         _verified_caller_email.set(""),
-        _verified_patient_id.set(ERIKA_UUID),
+        _verified_patient_id.set(PRIMARY_TEST_UUID),
     )
     try:
         ids = await _seed(db)
@@ -588,7 +588,7 @@ async def test_agent_user_without_email_is_the_credential_kind(db):
         _verified_caller_is_admin.reset(tokens[0])
         _verified_caller_email.reset(tokens[1])
         _verified_patient_id.reset(tokens[2])
-    [prov] = await db.list_provenance("fact", ids["HGB"], patient_id=ERIKA_UUID)
+    [prov] = await db.list_provenance("fact", ids["HGB"], patient_id=PRIMARY_TEST_UUID)
     assert prov.agent_user == "mcp-bearer:patient"
 
 

@@ -10,7 +10,7 @@ from oncofiles.database import Database
 from oncofiles.models import PromptCallType, PromptLogEntry
 from oncofiles.patient_middleware import _current_patient_id
 from oncofiles.tools.hygiene import audit_document_pipeline
-from tests.helpers import ERIKA_UUID, TEST_PATIENT_UUID, make_doc
+from tests.helpers import PRIMARY_TEST_UUID, TEST_PATIENT_UUID, make_doc
 
 
 def _ctx(db: Database) -> MagicMock:
@@ -27,7 +27,7 @@ def _ctx(db: Database) -> MagicMock:
 _insert_counter = {"n": 0}
 
 
-async def _insert_doc(db: Database, *, patient_id: str = ERIKA_UUID, **fields):
+async def _insert_doc(db: Database, *, patient_id: str = PRIMARY_TEST_UUID, **fields):
     # insert_document only persists the base columns — AI/metadata fields
     # must be set via dedicated update methods.
     _insert_counter["n"] += 1
@@ -46,7 +46,7 @@ async def _insert_doc(db: Database, *, patient_id: str = ERIKA_UUID, **fields):
 
 async def test_audit_empty_patient(db: Database):
     result = json.loads(await audit_document_pipeline(_ctx(db)))
-    assert result["patient_id"] == ERIKA_UUID
+    assert result["patient_id"] == PRIMARY_TEST_UUID
     assert result["totals"] == {"total_documents": 0, "pdfs": 0, "images": 0}
     assert all(v == 0 for v in result["pipeline_gaps"].values())
     assert result["group_stats"]["grouped_documents"] == 0
@@ -211,7 +211,7 @@ async def test_audit_ai_composition_call_counts(db: Database):
             await db.insert_prompt_log(
                 PromptLogEntry(
                     call_type=ct,
-                    patient_id=ERIKA_UUID,
+                    patient_id=PRIMARY_TEST_UUID,
                     model="claude-haiku",
                     result_summary=f"ok {i}",
                 )
@@ -245,7 +245,7 @@ async def test_audit_suggested_actions_structure(db: Database):
 async def test_audit_deleted_docs_excluded(db: Database):
     d1 = await _insert_doc(db, filename="kept.pdf")
     d2 = await _insert_doc(db, filename="deleted.pdf")
-    await db.delete_document(d2.id, patient_id=ERIKA_UUID)
+    await db.delete_document(d2.id, patient_id=PRIMARY_TEST_UUID)
 
     result = json.loads(await audit_document_pipeline(_ctx(db)))
     assert result["totals"]["total_documents"] == 1
@@ -259,7 +259,7 @@ async def test_audit_summary_markdown_present(db: Database):
     await _insert_doc(db, filename="doc.pdf")
     result = json.loads(await audit_document_pipeline(_ctx(db)))
     assert "summary_markdown" in result
-    assert ERIKA_UUID in result["summary_markdown"]
+    assert PRIMARY_TEST_UUID in result["summary_markdown"]
 
 
 # ── #475: false-positive suppression for non-extractable + legacy-OCR docs ──

@@ -18,7 +18,7 @@ import pytest
 
 from oncofiles.curated.reocr import ReocrReport
 from oncofiles.tools import curated as tool
-from tests.helpers import ERIKA_UUID
+from tests.helpers import PRIMARY_TEST_UUID
 from tests.test_curated_runner import FakeDrive
 
 OTHER_UUID = "00000000-0000-4000-8000-00000000b0b0"
@@ -30,7 +30,7 @@ def _name(doc_id: int) -> str:
     return f"20270101_Test_Lab_Labs_Panel{doc_id}.pdf"
 
 
-async def _insert(db, doc_id: int, facts: int, pid: str = ERIKA_UUID) -> None:
+async def _insert(db, doc_id: int, facts: int, pid: str = PRIMARY_TEST_UUID) -> None:
     meta = {"curated": {"sidecar_id": f"s{doc_id}"}, "ocr_engine": "claude-vision"}
     await db.db.execute(
         "INSERT INTO documents (id, file_id, filename, original_filename, category, "
@@ -81,9 +81,9 @@ async def _start(db, sent: list, **kw) -> dict:
         patch("oncofiles.curated.drive_ops.DriveOps", lambda _own: drive),
         patch("oncofiles.curated.reocr.run_reocr", fake_run),
     ):
-        out = await tool.start_reocr(db, ERIKA_UUID, dry_run=True, **kw)
-        if ERIKA_UUID in tool._reocr_jobs:
-            await asyncio.wait_for(tool._reocr_jobs[ERIKA_UUID]["task"], 10)
+        out = await tool.start_reocr(db, PRIMARY_TEST_UUID, dry_run=True, **kw)
+        if PRIMARY_TEST_UUID in tool._reocr_jobs:
+            await asyncio.wait_for(tool._reocr_jobs[PRIMARY_TEST_UUID]["task"], 10)
     return out
 
 
@@ -114,13 +114,13 @@ async def test_exclude_ids_with_document_ids_is_refused(seeded, jobs):
     sent: list = []
     out = await _start(seeded, sent, document_ids=[DOCS[0]], exclude_ids=[DOCS[1]])
     assert "error" in out and "exclude_ids" in out["error"] and "document_ids" in out["error"]
-    assert sent == [] and ERIKA_UUID not in tool._reocr_jobs
+    assert sent == [] and PRIMARY_TEST_UUID not in tool._reocr_jobs
 
 
 async def test_more_than_50_exclude_ids_is_refused(seeded, jobs):
     out = await _start(seeded, [], exclude_ids=list(range(1, 52)))
     assert out == {"error": "at most 50 exclude_ids per call, got 51"}
-    assert ERIKA_UUID not in tool._reocr_jobs
+    assert PRIMARY_TEST_UUID not in tool._reocr_jobs
 
 
 async def test_everything_excluded_reports_nothing_to_do(seeded, jobs):

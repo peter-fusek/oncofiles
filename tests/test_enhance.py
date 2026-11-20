@@ -11,7 +11,7 @@ from oncofiles.enhance import (
     infer_institution_from_providers,
 )
 from oncofiles.sync import enhance_documents
-from tests.helpers import ERIKA_UUID, make_doc
+from tests.helpers import PRIMARY_TEST_UUID, make_doc
 
 # ── CLASSIFY_SYSTEM_PROMPT disambiguation anchors (#465) ────────────────────
 
@@ -107,7 +107,7 @@ def test_enhance_missing_keys():
 async def test_enhance_documents_all_unprocessed(db: Database):
     """Enhances all documents without AI metadata."""
     doc = make_doc()
-    doc = await db.insert_document(doc, patient_id=ERIKA_UUID)
+    doc = await db.insert_document(doc, patient_id=PRIMARY_TEST_UUID)
 
     # Seed OCR text so enhancement has something to work with
     await db.save_ocr_page(doc.id, 1, "CEA: 15.2 ng/mL", "pymupdf-native")
@@ -117,13 +117,13 @@ async def test_enhance_documents_all_unprocessed(db: Database):
         "oncofiles.sync.enhance_document_text",
         return_value=("AI summary", '["labs"]'),
     ):
-        stats = await enhance_documents(db, files, None, patient_id=ERIKA_UUID)
+        stats = await enhance_documents(db, files, None, patient_id=PRIMARY_TEST_UUID)
 
     assert stats["processed"] == 1
     assert stats["errors"] == 0
 
     # Verify metadata was saved
-    updated = await db.get_document(doc.id, patient_id=ERIKA_UUID)
+    updated = await db.get_document(doc.id, patient_id=PRIMARY_TEST_UUID)
     assert updated.ai_summary == "AI summary"
     assert updated.ai_tags == '["labs"]'
     assert updated.ai_processed_at is not None
@@ -131,10 +131,10 @@ async def test_enhance_documents_all_unprocessed(db: Database):
 
 async def test_enhance_documents_specific_ids(db: Database):
     """Enhances only specified document IDs."""
-    doc1 = await db.insert_document(make_doc(file_id="f1"), patient_id=ERIKA_UUID)
+    doc1 = await db.insert_document(make_doc(file_id="f1"), patient_id=PRIMARY_TEST_UUID)
     doc2 = await db.insert_document(
         make_doc(file_id="f2", filename="other.pdf", original_filename="other.pdf"),
-        patient_id=ERIKA_UUID,
+        patient_id=PRIMARY_TEST_UUID,
     )
 
     # Seed OCR text for both
@@ -147,14 +147,14 @@ async def test_enhance_documents_specific_ids(db: Database):
         return_value=("summary", '["tag"]'),
     ):
         stats = await enhance_documents(
-            db, files, None, document_ids=[doc1.id], patient_id=ERIKA_UUID
+            db, files, None, document_ids=[doc1.id], patient_id=PRIMARY_TEST_UUID
         )
 
     assert stats["processed"] == 1
 
     # Only doc1 should be enhanced
-    d1 = await db.get_document(doc1.id, patient_id=ERIKA_UUID)
-    d2 = await db.get_document(doc2.id, patient_id=ERIKA_UUID)
+    d1 = await db.get_document(doc1.id, patient_id=PRIMARY_TEST_UUID)
+    d2 = await db.get_document(doc2.id, patient_id=PRIMARY_TEST_UUID)
     assert d1.ai_summary == "summary"
     assert d2.ai_summary is None
 
@@ -162,12 +162,14 @@ async def test_enhance_documents_specific_ids(db: Database):
 async def test_enhance_skips_no_text(db: Database):
     """Documents with no OCR text are skipped (not errors)."""
     doc = make_doc()
-    doc = await db.insert_document(doc, patient_id=ERIKA_UUID)
+    doc = await db.insert_document(doc, patient_id=PRIMARY_TEST_UUID)
 
     files = MagicMock()
     files.download.side_effect = Exception("not downloadable")
 
-    stats = await enhance_documents(db, files, None, document_ids=[doc.id], patient_id=ERIKA_UUID)
+    stats = await enhance_documents(
+        db, files, None, document_ids=[doc.id], patient_id=PRIMARY_TEST_UUID
+    )
 
     # Should skip gracefully (no text available)
     assert stats["processed"] == 0
@@ -181,11 +183,11 @@ async def test_enhance_skips_no_text(db: Database):
 async def test_update_document_ai_metadata(db: Database):
     """AI metadata is stored and retrievable."""
     doc = make_doc()
-    doc = await db.insert_document(doc, patient_id=ERIKA_UUID)
+    doc = await db.insert_document(doc, patient_id=PRIMARY_TEST_UUID)
 
     await db.update_document_ai_metadata(doc.id, "Test summary", '["test"]')
 
-    updated = await db.get_document(doc.id, patient_id=ERIKA_UUID)
+    updated = await db.get_document(doc.id, patient_id=PRIMARY_TEST_UUID)
     assert updated.ai_summary == "Test summary"
     assert updated.ai_tags == '["test"]'
     assert updated.ai_processed_at is not None
@@ -193,16 +195,16 @@ async def test_update_document_ai_metadata(db: Database):
 
 async def test_get_documents_without_ai(db: Database):
     """Only returns documents without AI processing."""
-    doc1 = await db.insert_document(make_doc(file_id="f1"), patient_id=ERIKA_UUID)
+    doc1 = await db.insert_document(make_doc(file_id="f1"), patient_id=PRIMARY_TEST_UUID)
     doc2 = await db.insert_document(
         make_doc(file_id="f2", filename="other.pdf", original_filename="other.pdf"),
-        patient_id=ERIKA_UUID,
+        patient_id=PRIMARY_TEST_UUID,
     )
 
     # Process doc1 only
     await db.update_document_ai_metadata(doc1.id, "summary", "[]")
 
-    unprocessed = await db.get_documents_without_ai(patient_id=ERIKA_UUID)
+    unprocessed = await db.get_documents_without_ai(patient_id=PRIMARY_TEST_UUID)
     assert len(unprocessed) == 1
     assert unprocessed[0].id == doc2.id
 
@@ -211,16 +213,20 @@ async def test_search_documents_includes_ai_fields(db: Database):
     """Search finds documents by AI summary and tags content."""
     from oncofiles.models import SearchQuery
 
-    doc = await db.insert_document(make_doc(), patient_id=ERIKA_UUID)
+    doc = await db.insert_document(make_doc(), patient_id=PRIMARY_TEST_UUID)
     await db.update_document_ai_metadata(doc.id, "Elevated CEA tumor marker", '["tumor-marker"]')
 
     # Search by AI summary content
-    results = await db.search_documents(SearchQuery(text="tumor marker"), patient_id=ERIKA_UUID)
+    results = await db.search_documents(
+        SearchQuery(text="tumor marker"), patient_id=PRIMARY_TEST_UUID
+    )
     assert len(results) == 1
     assert results[0].id == doc.id
 
     # Search by AI tag content
-    results = await db.search_documents(SearchQuery(text="tumor-marker"), patient_id=ERIKA_UUID)
+    results = await db.search_documents(
+        SearchQuery(text="tumor-marker"), patient_id=PRIMARY_TEST_UUID
+    )
     assert len(results) == 1
 
 
@@ -235,7 +241,7 @@ async def test_enhance_text_document(db: Database):
         original_filename="chapter_40_full.md",
         mime_type="text/markdown",
     )
-    doc = await db.insert_document(doc, patient_id=ERIKA_UUID)
+    doc = await db.insert_document(doc, patient_id=PRIMARY_TEST_UUID)
 
     files = MagicMock()
     files.download.return_value = b"# Chapter 40\n\nColon cancer treatment overview."
@@ -245,12 +251,12 @@ async def test_enhance_text_document(db: Database):
         return_value=("DeVita Ch 40 summary", '["mCRC", "DeVita"]'),
     ):
         stats = await enhance_documents(
-            db, files, None, document_ids=[doc.id], patient_id=ERIKA_UUID
+            db, files, None, document_ids=[doc.id], patient_id=PRIMARY_TEST_UUID
         )
 
     assert stats["processed"] == 1
 
-    updated = await db.get_document(doc.id, patient_id=ERIKA_UUID)
+    updated = await db.get_document(doc.id, patient_id=PRIMARY_TEST_UUID)
     assert updated.ai_summary == "DeVita Ch 40 summary"
 
     # Verify OCR cache was populated
@@ -324,7 +330,7 @@ async def test_enhance_backfills_null_date_and_institution(db: Database):
         institution=None,
         description="Dodatok histológia p. Testová",
     )
-    doc = await db.insert_document(doc, patient_id=ERIKA_UUID)
+    doc = await db.insert_document(doc, patient_id=PRIMARY_TEST_UUID)
 
     # Seed OCR text
     await db.save_ocr_page(doc.id, 1, "Pathology report from Nemocnica Bory", "pymupdf-native")
@@ -357,12 +363,12 @@ async def test_enhance_backfills_null_date_and_institution(db: Database):
         patch("oncofiles.sync.generate_filename_description", return_value="GeneticsKrasResults"),
     ):
         stats = await enhance_documents(
-            db, files, None, document_ids=[doc.id], patient_id=ERIKA_UUID
+            db, files, None, document_ids=[doc.id], patient_id=PRIMARY_TEST_UUID
         )
 
     assert stats["processed"] == 1
 
-    updated = await db.get_document(doc.id, patient_id=ERIKA_UUID)
+    updated = await db.get_document(doc.id, patient_id=PRIMARY_TEST_UUID)
     assert updated.document_date is not None
     assert str(updated.document_date) == "2030-02-23"
     assert updated.institution == "BoryNemocnica"
@@ -381,7 +387,7 @@ async def test_enhance_does_not_overwrite_existing_fields(db: Database):
         institution="NOU",
         description="BloodResults",
     )
-    doc = await db.insert_document(doc, patient_id=ERIKA_UUID)
+    doc = await db.insert_document(doc, patient_id=PRIMARY_TEST_UUID)
 
     await db.save_ocr_page(doc.id, 1, "Lab results from NOU", "pymupdf-native")
 
@@ -401,9 +407,11 @@ async def test_enhance_does_not_overwrite_existing_fields(db: Database):
         patch("oncofiles.sync.enhance_document_text", return_value=("summary", '["labs"]')),
         patch("oncofiles.sync.extract_structured_metadata", return_value=metadata),
     ):
-        await enhance_documents(db, files, None, document_ids=[doc.id], patient_id=ERIKA_UUID)
+        await enhance_documents(
+            db, files, None, document_ids=[doc.id], patient_id=PRIMARY_TEST_UUID
+        )
 
-    updated = await db.get_document(doc.id, patient_id=ERIKA_UUID)
+    updated = await db.get_document(doc.id, patient_id=PRIMARY_TEST_UUID)
     # Original values preserved — NOT overwritten by metadata
     assert str(updated.document_date) == "2030-02-27"
     assert updated.institution == "NOU"
@@ -423,7 +431,7 @@ async def test_backfill_document_fields_coalesce(db: Database):
         institution="NOU",  # Already set
         description=None,
     )
-    doc = await db.insert_document(doc, patient_id=ERIKA_UUID)
+    doc = await db.insert_document(doc, patient_id=PRIMARY_TEST_UUID)
 
     await db.backfill_document_fields(
         doc.id,
@@ -432,7 +440,7 @@ async def test_backfill_document_fields_coalesce(db: Database):
         description="TestDescription",
     )
 
-    updated = await db.get_document(doc.id, patient_id=ERIKA_UUID)
+    updated = await db.get_document(doc.id, patient_id=PRIMARY_TEST_UUID)
     assert str(updated.document_date) == "2030-03-01"
     assert updated.institution == "NOU"  # Preserved, not overwritten
     assert updated.description == "TestDescription"

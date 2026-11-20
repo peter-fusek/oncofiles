@@ -25,9 +25,9 @@ from starlette.responses import JSONResponse
 from oncofiles import dashboard_activity, document_stage, server
 from oncofiles.database import Database
 from oncofiles.tools.hygiene import _build_document_matrix, _is_extractable
-from tests.helpers import ERIKA_UUID, make_doc
+from tests.helpers import PRIMARY_TEST_UUID, make_doc
 
-A_UUID = ERIKA_UUID
+A_UUID = PRIMARY_TEST_UUID
 B_UUID = "00000000-0000-4000-8000-0000000009b1"
 A_EMAIL = "stage-carer-a@example.test"
 B_EMAIL = "stage-carer-b@example.test"

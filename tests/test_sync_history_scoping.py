@@ -7,7 +7,7 @@ from unittest.mock import MagicMock
 
 from oncofiles.database import Database
 from oncofiles.tools import hygiene as hygiene_tools
-from tests.helpers import ERIKA_UUID
+from tests.helpers import PRIMARY_TEST_UUID
 
 OTHER_PID = "00000000-0000-4000-8000-0000000000b0"
 LEAK_MARKER = "OTHER-PATIENT-SECRET-folder-xyz"
@@ -20,7 +20,7 @@ def _ctx(db: Database) -> MagicMock:
 
 
 async def _seed(db: Database) -> None:
-    mine = await db.insert_sync_history("scheduled", patient_id=ERIKA_UUID)
+    mine = await db.insert_sync_history("scheduled", patient_id=PRIMARY_TEST_UUID)
     await db.complete_sync_history(mine, status="completed", duration_s=1.0, from_new=1)
     for _ in range(3):
         theirs = await db.insert_sync_history("scheduled", patient_id=OTHER_PID)
@@ -45,7 +45,7 @@ async def test_get_pipeline_status_scopes_sync_history(db: Database):
 
 async def test_pipeline_stats_scopes_sync_history(db: Database):
     await _seed(db)
-    mine = await db.get_pipeline_stats(patient_id=ERIKA_UUID)
+    mine = await db.get_pipeline_stats(patient_id=PRIMARY_TEST_UUID)
     assert mine.total_syncs == 1
     assert mine.failed_syncs == 0
     assert mine.total_docs_imported == 1
