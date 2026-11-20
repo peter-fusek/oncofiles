@@ -191,6 +191,34 @@ def _clean(value: str | None) -> str:
     return token
 
 
+# An ID-like digit run (accession / record / barcode numbers) in a subject (#919).
+_ID_RUN_RE = re.compile(r"\d{6,}")
+
+
+def subject_token(value: str | None) -> str | None:
+    """The optional Subject field (#919), or None when nothing usable is left.
+
+    One rule shared by the builder and the checker (``_NAME_RE`` wants a
+    subject that starts with a letter, and reads two bare digits as ``nn``):
+
+    * free text → one CamelCase ASCII token (``camel``);
+    * an ID-like digit run (six or more digits) is dropped wherever it stands;
+    * a leading digit run is dropped (``2. cyklus`` → ``Cyklus``), so an
+      all-digit subject (``12``, ``2027``) leaves nothing and is omitted;
+    * at most ``SUBJECT_MAX`` characters; ``Unknown`` or empty → None.
+    """
+    if not value or not isinstance(value, str):
+        return None
+    token = camel(value)
+    if token == UNKNOWN:
+        return None
+    token = _ID_RUN_RE.sub("", token)
+    token = re.sub(r"^\d+", "", token)[:SUBJECT_MAX]
+    if not token or token == UNKNOWN:
+        return None
+    return token
+
+
 def build_filename(fields: NameFields, ext: str, *, max_len: int = MAX_LEN) -> str:
     """Build a standard filename. Raises ValueError on an invalid date.
 
@@ -211,9 +239,7 @@ def build_filename(fields: NameFields, ext: str, *, max_len: int = MAX_LEN) -> s
         _clean(fields.doctor),
     ]
     hospital = _clean(fields.hospital)
-    subject = camel(fields.subject)[:SUBJECT_MAX] if fields.subject else None
-    if subject == UNKNOWN:
-        subject = None
+    subject = subject_token(fields.subject)
     suffix = f"-{fields.nn:02d}" if fields.nn else ""
     tail = f"{suffix}.{ext}"
 
@@ -251,8 +277,27 @@ def parse_filename(name: str) -> NameFields | None:
     )
 
 
-def is_standard(name: str, *, patient_token: str | None = None) -> bool:
+GOOGLE_NATIVE_PREFIX = "application/vnd.google-apps."
+# Extension the runner builds a Google-native name with and then strips (#919):
+# a Google Doc's title has no extension through the Drive API.
+NATIVE_EXT = "gdoc"
+
+
+def is_google_native(mime: str | None) -> bool:
+    return bool(mime) and mime.startswith(GOOGLE_NATIVE_PREFIX)
+
+
+def is_standard(name: str, *, patient_token: str | None = None, mime: str | None = None) -> bool:
+    """Does ``name`` follow the README standard?
+
+    ``mime`` (#919): a Google-native file (``application/vnd.google-apps.*``)
+    has no extension through the Drive API, so its title is standard when the
+    fields are valid without one. Without ``mime`` the extension is required,
+    as before.
+    """
     fields = parse_filename(name)
+    if fields is None and is_google_native(mime) and name and not name.endswith("."):
+        fields = parse_filename(f"{name}.{NATIVE_EXT}")
     if fields is None:
         return False
     return patient_token is None or fields.patient == patient_token

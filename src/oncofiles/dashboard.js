@@ -2540,6 +2540,43 @@
       outside_folder: ['Súbor existuje, ale nie je v priečinku tohto pacienta. Presuňte ho späť do priečinka pacienta.', 'The file exists but is not in this patient\'s folder. Move it back into the patient folder.'],
       missing_date: ['Text je prečítaný, ale nie je v ňom vytlačený dátum dokumentu, preto ho nevieme zaradiť na časovú os.', 'The text has been read, but no document date is printed in it, so it cannot be placed on the timeline.']
     };
+    // #919: concrete help per review reason code (`review_reasons` on a row,
+    // codes only); an unknown code falls back to ATTENTION_HELP.review_needed.
+    var REVIEW_REASON_HELP = {
+      name_not_standard: ['Z prečítaných údajov sa nedal zostaviť štandardný názov súboru. Skontrolujte dátum, typ a inštitúciu.', 'A standard file name could not be built from the data read. Check the date, type and institution.'],
+      no_date: ['V texte sa nenašiel dátum vyšetrenia alebo správy. Doplňte ho, ak je na origináli vytlačený.', 'No exam or report date was found in the text. Add it if it is printed on the original.'],
+      birth_date: ['Jediný nájdený dátum je dátum narodenia, nie dátum dokumentu.', 'The only date found is the date of birth, not the document date.'],
+      future_date: ['Prečítaný dátum je v budúcnosti. Porovnajte ho s originálom.', 'The date read is in the future. Compare it with the original.'],
+      implausible_date: ['Prečítaný dátum nie je možný. Porovnajte ho s originálom.', 'The date read is not plausible. Compare it with the original.'],
+      date_not_printed: ['Navrhnutý dátum nie je v texte dokumentu vytlačený. Porovnajte ho s originálom.', 'The proposed date is not printed in the document text. Compare it with the original.'],
+      date_too_old: ['Dátum je veľmi starý; mohol byť prečítaný z inej časti strany. Overte ho.', 'The date is very old; it may have been read from another part of the page. Check it.'],
+      unknown_type: ['Typ dokumentu sa nepodarilo určiť. Zvoľte správny typ.', 'The document type could not be determined. Choose the right type.'],
+      institution_unknown: ['Inštitúcia sa v texte nenašla.', 'The institution was not found in the text.'],
+      new_vocabulary: ['Dokument uvádza novú inštitúciu alebo lekára. Potvrďte, či je zápis správny.', 'The document names a new institution or doctor. Confirm that the spelling is correct.'],
+      near_vocabulary: ['Nová inštitúcia alebo lekár sa podobá na už známy záznam. Potvrďte, či ide o ten istý.', 'A new institution or doctor looks like a known entry. Confirm whether it is the same.'],
+      split_needed: ['Súbor zrejme obsahuje viac dokumentov. Treba ho rozdeliť.', 'The file seems to hold several documents. It needs to be split.'],
+      low_confidence: ['Model si pri zaradení nebol istý. Porovnajte údaje s originálom.', 'The model was not sure about the filing. Compare the data with the original.'],
+      other_person: ['Dokument zrejme patrí inej osobe s rovnakým priezviskom. Overte, komu patrí.', 'The document seems to belong to another person with the same surname. Check whose it is.'],
+      chart_page: ['Na strane je graf; jeho hodnoty sa ako údaje nečítajú. Overte text s originálom.', 'A page holds a chart; its values are never read as data. Check the text against the original.'],
+      rotated_region: ['Časť strany je otočená a neprečítala sa. Overte text s originálom.', 'Part of a page is rotated and was not read. Check the text against the original.'],
+      orientation_unsure: ['Nebolo isté, ako je strana otočená. Overte text s originálom.', 'It was not certain how the page is turned. Check the text against the original.'],
+      extraction_failed: ['Text sa nepodarilo prečítať. Systém to skúsi znova.', 'The text could not be read. The system will try again.'],
+      classification_failed: ['Zaradenie zlyhalo technicky. Systém to skúsi znova.', 'Filing failed for a technical reason. The system will try again.'],
+      no_text: ['V súbore sa nenašiel žiadny text.', 'No text was found in the file.'],
+      raw_genotype_excluded: ['Surové genetické dáta sa modelu neposielajú; súbor zaraďte ručne.', 'Raw genetic data is never sent to the model; file it by hand.'],
+      target_folder_missing: ['Cieľový priečinok pre tento typ chýba.', 'The target folder for this type is missing.']
+    };
+    function attentionHelp(doc) {
+      if (doc.attention_reason === 'review_needed' && Array.isArray(doc.review_reasons)) {
+        var sk = [], en = [];
+        doc.review_reasons.forEach(function (code) {
+          var t = REVIEW_REASON_HELP[code];
+          if (t && sk.indexOf(t[0]) === -1) { sk.push(t[0]); en.push(t[1]); }
+        });
+        if (sk.length) return [sk.join(' '), en.join(' ')];
+      }
+      return ATTENTION_HELP[doc.attention_reason] || null;
+    }
     var STEP_TEXT = {
       extracted: ['Vyťažený', 'Extracted'],
       named: ['Premenovaný', 'Renamed'],
@@ -2904,8 +2941,9 @@
         steps.filed ? ['– je v priečinku pacienta na Google Drive.', '– it sits in the patient folder on Google Drive.']
                     : ['– ešte nie je zaradený v priečinku na Google Drive.', '– it is not filed in the Google Drive folder yet.']);
       if (doc.stage === 'attention') {
+        var help = attentionHelp(doc);
         add(false, ATTENTION_TEXT[doc.attention_reason] || STAGE_TEXT.attention,
-          ATTENTION_HELP[doc.attention_reason] ? ['– ' + ATTENTION_HELP[doc.attention_reason][0], '– ' + ATTENTION_HELP[doc.attention_reason][1]] : ['', ''], 'final attention');
+          help ? ['– ' + help[0], '– ' + help[1]] : ['', ''], 'final attention');
       } else {
         add(doc.stage === 'ready', STAGE_TEXT.ready,
           doc.stage === 'ready' ? ['– dokument je spracovaný, pre vás aj pre AI asistenta.', '– the document is processed, for you and for the AI assistant.']

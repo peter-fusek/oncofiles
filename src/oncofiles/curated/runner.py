@@ -49,7 +49,12 @@ from oncofiles.curated.contract import (
     parse_contract,
 )
 from oncofiles.curated.drive_ops import CANARY_NAME, Item, WriteVerificationError
-from oncofiles.curated.naming import build_filename, with_collision_suffix
+from oncofiles.curated.naming import (
+    NATIVE_EXT,
+    build_filename,
+    is_standard,
+    with_collision_suffix,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -364,6 +369,11 @@ def _review_reasons(sidecar_text: str) -> list[str]:
     except ValueError:
         return []
     return [str(r) for r in value] if isinstance(value, list) else []
+
+
+# #919: the built name failed the checker; the document waits for a person
+# instead of being filed under a name the dashboard would never call "named".
+NAME_NOT_STANDARD_NOTE = "name_not_standard: the built filename does not follow the README standard"
 
 
 def _is_technical(reason: str) -> bool:
@@ -1086,6 +1096,16 @@ class Runner:
         if target_folder and target_folder not in tree.folders:
             note = f"target folder {target_folder!r} does not exist (never created)"
             target_folder = None
+        # Final name first, so the sidecar's source_file names the file it ends up
+        # next to — and a name the checker would reject is never filed (#919).
+        new_name = item.name
+        if target_folder is not None:
+            built = self._standard_name(tree, target_folder, item, cls, native)
+            if built is None:
+                note = NAME_NOT_STANDARD_NOTE
+                target_folder = None
+            else:
+                new_name = built
         review = target_folder is None
 
         inbox = contract.inbox
@@ -1103,18 +1123,6 @@ class Runner:
                 return
         stay_folder = folder if folder else inbox  # loose root files go to the inbox for review
         src_folder_id = self._folder_id(tree, folder)
-        # Final name first, so the sidecar's source_file names the file it ends up next to.
-        new_name = item.name
-        if not review:
-            taken = tree.names_in(target_folder)
-            if native:  # a Google Doc's title has no extension (the mount shows .gdoc)
-                taken = taken | {f"{n}.gdoc" for n in taken}
-                ext = "gdoc"
-            else:
-                ext = item.name.rsplit(".", 1)[-1] if "." in item.name else "bin"
-            new_name = with_collision_suffix(build_filename(cls.fields, ext), taken)
-            if native:
-                new_name = new_name.removesuffix(".gdoc")
         extra = None
         if note and _is_technical(note):
             extra = {"technical_attempts": self._technical_attempts.get(item.id, 0) + 1}
@@ -1195,6 +1203,25 @@ class Runner:
                 **marks,
             }
         )
+
+    def _standard_name(self, tree, target_folder, item, cls, native) -> str | None:
+        """The filed name for ``item``, or None when the builder cannot produce one
+        that the checker (``naming.is_standard``) accepts (#919)."""
+        taken = tree.names_in(target_folder)
+        if native:  # a Google Doc's title has no extension (the mount shows .gdoc)
+            taken = taken | {f"{n}.{NATIVE_EXT}" for n in taken}
+            ext = NATIVE_EXT
+        else:
+            ext = item.name.rsplit(".", 1)[-1] if "." in item.name else "bin"
+        try:
+            name = with_collision_suffix(build_filename(cls.fields, ext), taken)
+        except ValueError:
+            return None
+        if native:
+            name = name.removesuffix(f".{NATIVE_EXT}")
+        if not is_standard(name, mime=item.mime):  # the same check as document_stage
+            return None
+        return name
 
     def _keep_override_sidecar(self, folder, side_name, sidecar, override, review, cls, note):
         """#900: journal the override; the sidecar text is never re-rendered.
