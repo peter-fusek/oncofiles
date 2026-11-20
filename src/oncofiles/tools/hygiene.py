@@ -1056,8 +1056,17 @@ async def get_pipeline_status(ctx: Context, patient_slug: str | None = None) -> 
     import sys
 
     from oncofiles.config import SYNC_INTERVAL_MINUTES, VERSION
-    from oncofiles.filename_parser import is_standard_format
+    from oncofiles.document_stage import is_named
     from oncofiles.sync import get_sync_status
+
+    def _named(d) -> bool:
+        # curated rows follow the README contract, legacy rows the underscore standard
+        return is_named(
+            d.filename,
+            file_id=d.file_id,
+            structured_metadata=d.structured_metadata,
+            patient_id=pid,
+        )
 
     db = _get_db(ctx)
 
@@ -1068,7 +1077,7 @@ async def get_pipeline_status(ctx: Context, patient_slug: str | None = None) -> 
     with_ai = sum(1 for d in docs if d.ai_summary)
     with_metadata = sum(1 for d in docs if d.structured_metadata and d.structured_metadata != "")
     synced = sum(1 for d in docs if d.gdrive_id)
-    standard = sum(1 for d in docs if is_standard_format(d.filename, patient_id=pid))
+    standard = sum(1 for d in docs if _named(d))
     with_date = sum(1 for d in docs if d.document_date)
     with_institution = sum(1 for d in docs if d.institution)
 
@@ -1103,7 +1112,7 @@ async def get_pipeline_status(ctx: Context, patient_slug: str | None = None) -> 
                 and d.gdrive_id
                 and d.document_date
                 and d.institution
-                and is_standard_format(d.filename, patient_id=pid)
+                and _named(d)
             ),
         },
         "scheduled_jobs": [
@@ -1181,7 +1190,7 @@ async def audit_document_pipeline(ctx: Context, patient_slug: str | None = None)
     Args:
         patient_slug: Optional — explicit patient slug (#429).
     """
-    from oncofiles.filename_parser import is_standard_format
+    from oncofiles.document_stage import is_named
 
     db = _get_db(ctx)
     pid = await _resolve_patient_id(patient_slug, ctx)
@@ -1249,7 +1258,12 @@ async def audit_document_pipeline(ctx: Context, patient_slug: str | None = None)
         has_date = doc.document_date is not None
         has_institution = doc.institution is not None
         is_synced = doc.gdrive_id is not None
-        is_standard = is_standard_format(doc.filename, patient_id=pid)
+        is_standard = is_named(
+            doc.filename,
+            file_id=doc.file_id,
+            structured_metadata=doc.structured_metadata,
+            patient_id=pid,
+        )
 
         # Extraction gaps only apply when the pipeline can actually extract.
         if is_extractable:

@@ -872,6 +872,8 @@
     @media (max-width: 1023px) {
       #doc-table th:nth-child(4), #doc-table .doc-row td:nth-child(4),
       #doc-table th:nth-child(5), #doc-table .doc-row td:nth-child(5) { display: none; }
+      .cell-stage { white-space: normal; }
+      .stage-box { flex-wrap: wrap; gap: 0.25rem 0.75rem; }
     }
     @media (max-width: 768px) {
       .cards { grid-template-columns: repeat(2, 1fr); }
