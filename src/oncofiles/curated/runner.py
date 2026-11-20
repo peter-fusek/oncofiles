@@ -220,7 +220,24 @@ def _llm_down(error: str | None) -> bool:
     """True when the local model is unavailable (abort the run); False for a
     per-document problem such as an answer truncated by the reasoning budget."""
     msg = error or ""
-    return "local LLM" in msg and "truncated" not in msg
+    if "local LLM" not in msg:
+        return False
+    # The model answered, just not usefully for this document: a truncated
+    # answer or one that is not a JSON object is a per-document failure.
+    return not any(marker in msg for marker in _PER_DOCUMENT_LLM_ERRORS)
+
+
+# Substrings of ``llm.LocalLLMError`` messages that prove the model is up.
+_PER_DOCUMENT_LLM_ERRORS = ("truncated", "not valid JSON", "not a JSON object")
+
+
+def _model_failure_code(error: str) -> str:
+    """Reason code (never the message) for a per-document model failure."""
+    if "truncated" in error:
+        return "model_answer_truncated"
+    if "JSON" in error:
+        return "model_answer_not_json"
+    return "model_failed"
 
 
 def sidecar_sources(name: str) -> list[str]:
@@ -1319,6 +1336,7 @@ class Runner:
             items = list(tree.files.get(folder, []))
             names = {nfc(i.name) for i in items}
             for item in items:
+                current = self._contract  # README §3 may have grown in this run (#854)
                 n = nfc(item.name)
                 if _is_sidecar(n, names) or n + ".md" in names or n + ".gdoc.md" in names:
                     continue
@@ -1349,16 +1367,33 @@ class Runner:
                     and not llm_input.inbox_exclusion(item.name, item.mime, ex.text)
                 ):
                     try:
-                        raw = self.propose_fn(contract, ex.text)
+                        raw = self.propose_fn(current, ex.text)
                     except llm.LocalLLMError as exc:
-                        raise RunAbortError(f"local model unavailable — {exc}") from exc
-                    cls = classify_mod.validate(contract, raw, ex.text, today=self.now.date())
+                        if _llm_down(str(exc)):
+                            raise RunAbortError(f"local model unavailable — {exc}") from exc
+                        # One bad answer (truncated, not JSON) is this document's
+                        # problem: no sidecar is written, the file stays as it is
+                        # and a later run tries it again; the backfill goes on.
+                        code = _model_failure_code(str(exc))
+                        logger.info(
+                            "curated %s: backfill skipped a document (%s)", self.run_id, code
+                        )
+                        self.report.documents.append(
+                            {
+                                "source": f"{folder}/{item.name}",
+                                "result": "skipped",
+                                "reasons": [code],
+                                "stage": "backfill",
+                            }
+                        )
+                        continue
+                    cls = classify_mod.validate(current, raw, ex.text, today=self.now.date())
                 extra = {}
                 if cls and cls.doc_type != doc_type:
                     extra["proposed_reclassification"] = cls.doc_type
                 text = render_sidecar(
                     source_name=item.name,
-                    contract=contract,
+                    contract=current,
                     item=item,
                     extraction=ex,
                     cls=cls,

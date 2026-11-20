@@ -97,12 +97,24 @@ def cached_extract(name, content, mime_type="", *, min_text_chars=100, on_model_
     return ex
 
 
+def propose_cache_key(contract, text) -> str:
+    """The proposal depends on the whole README the model reads (vocabulary, folder
+    table, rules), not only on its version: a README edit or a vocabulary block the
+    run itself added (#854, the runner then classifies with the re-parsed contract)
+    must miss, and so must a change of the classify prompt."""
+    from oncofiles.curated import classify
+
+    readme_sha = hashlib.sha256(contract.readme_text.encode("utf-8")).hexdigest()
+    return hashlib.sha256(
+        f"{classify.PROMPT_VERSION}\n{contract.version}\n{contract.patient_token}\n"
+        f"{readme_sha}\n{text}".encode()
+    ).hexdigest()
+
+
 def cached_propose(contract, text):
     from oncofiles.curated import classify
 
-    key = hashlib.sha256(
-        f"{contract.version}\n{contract.patient_token}\n{text}".encode()
-    ).hexdigest()
+    key = propose_cache_key(contract, text)
     if key in _propose_cache:
         return dict(_propose_cache[key])
     raw = classify.propose(contract, text)
