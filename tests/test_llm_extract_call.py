@@ -23,7 +23,7 @@ LAB_ANSWER = {
     "facts": [
         {"label_as_printed": "S-Faktor Q", "value": "4,20", "comparator": None,
          "unit_as_printed": None, "ref_range_as_printed": "1,0-5,0", "flag_as_printed": None,
-         "date_as_printed": "3.5.2027", "date_role": "sample",
+         "date_as_printed": "3.5.2027", "date_role": "sample", "date_evidence": "Odber: 3.5.2027",
          "evidence": "S-Faktor Q 4,20 1,0-5,0"}
     ]
 }  # fmt: skip

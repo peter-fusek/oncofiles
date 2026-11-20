@@ -160,7 +160,8 @@ def _candidates():
     return [
         {"label_as_printed": label, "value": value, "comparator": comparator,
          "unit_as_printed": unit, "ref_range_as_printed": ref, "flag_as_printed": None,
-         "date_as_printed": DAY, "date_role": "sample", "evidence": line, "page_number": 1}
+         "date_as_printed": DAY, "date_role": "sample", "date_evidence": DAY, "evidence": line,
+         "page_number": 1}
         for label, value, comparator, unit, ref, line in LINES
     ]  # fmt: skip
 

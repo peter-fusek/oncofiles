@@ -94,7 +94,8 @@ def _items(user: str) -> list[dict]:
         {"label_as_printed": m.group(1), "value": m.group(2), "comparator": None,
          "unit_as_printed": m.group(3), "ref_range_as_printed": m.group(4),
          "flag_as_printed": None, "date_as_printed": date.group(1) if date else None,
-         "date_role": "sample" if date else None, "evidence": m.group(0)}
+         "date_role": "sample" if date else None,
+         "date_evidence": date.group(0) if date else None, "evidence": m.group(0)}
         for m in _ITEM.finditer(body)
     ]  # fmt: skip
 
@@ -372,7 +373,7 @@ def test_worked_examples_quote_segments_and_every_one_verifies_as_machine():
 
 def test_the_prompt_asks_for_the_segment_and_explains_context_lines():
     prompt = llm_extract.SYSTEM_PROMPT
-    assert llm_extract.EXTRACTOR_VERSION == "llm-extract-v10"
+    assert llm_extract.EXTRACTOR_VERSION == "llm-extract-v11"
     assert "never the whole line" in prompt and "evidence line" not in prompt
     assert '"Context:"' in prompt and "never return a result from a Context line" in prompt
     assert prompt.count("Example ") == len(llm_extract.EXAMPLES) == 7

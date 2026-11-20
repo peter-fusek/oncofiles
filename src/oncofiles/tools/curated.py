@@ -2895,6 +2895,7 @@ async def _lab_shadow_work(
                 return llm_extract.extract_document(
                     pages, vocab=vocab, report_date=day, birth_dates=births,
                     source_reason=_source_reason(meta), stop=_stopping.is_set, cfg=cfg,
+                    document_category=d.get("category"),
                 )  # fmt: skip
 
         return _blocking
@@ -3846,6 +3847,8 @@ _LAB_GATE_KEYS = ("agree", "value_mismatch", "date_mismatch", "rule_only", "llm_
 _LAB_SUM_KEYS = (
     "rule_facts", "llm_facts", "llm_machine", "llm_unverified", "agree_machine",
     "pages_used", "pages_truncated", "dates_unchecked_no_dob", *_LAB_GATE_KEYS,
+    # the LLM-only buckets: not comparable, but every bucket is summed (#933)
+    "llm_no_value", "llm_uncoded",
 )  # fmt: skip
 
 
