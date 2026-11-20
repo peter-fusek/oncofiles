@@ -2368,11 +2368,12 @@ RECOMMENDED WORKFLOW for chat clients:
 - In export packages, all entries include `gdrive_url` for offline verification.
 
 PATIENT TYPES — the system supports two patient profiles:
-- `oncology`: cancer patients with chemo protocols, biomarker tracking, pre-cycle checklists. \
+- `oncology`: cancer patients with chemo protocols, biomarker tracking. \
 Categories include pathology, genetics, chemo_sheet.
 - `general`: healthy patients with preventive care screening, general health lab ranges. \
-Categories include vaccination, dental, preventive. Use `get_preventive_care_status` to check \
-which EU-recommended screenings are due/overdue.
+Categories include vaccination, dental, preventive. `get_preventive_care_status` lists the \
+screenings and vaccinations found in the records (with source documents) next to EU guideline \
+intervals; the intervals are a general reference, not advice for the patient.
 
 Available categories: labs, report, imaging, pathology, genetics, \
 surgery, surgical_report, prescription, referral, discharge, discharge_summary, chemo_sheet, \

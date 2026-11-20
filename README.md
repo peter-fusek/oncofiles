@@ -39,10 +39,10 @@ Oncofiles supports multiple patients on a single instance. Each patient gets:
 
 - **76 MCP tools** across 14 modules for comprehensive medical data management
 - **14 document categories** — labs, pathology, imaging, genetics, surgery, consultation, prescriptions, and more
-- **Lab value tracking** — store values, track trends, pre-cycle safety checks for chemo protocols
+- **Lab value tracking** — values with sample date and source document, trends over time
 - **Google Drive sync** — bidirectional sync with automatic OCR companion files
 - **Gmail & Calendar scanning** — medical emails and appointments are auto-detected and classified
-- **Clinical research** — search PubMed and ClinicalTrials.gov, log research decisions
+- **Clinical research** — PubMed / ClinicalTrials.gov search and research log (operator tools, not in the Claude.ai connector)
 - **Treatment timeline** — track chemo cycles, surgeries, and other treatment events
 - **Document versioning** — track document revisions with full history
 - **AI-powered metadata** — automatic summaries, tags, and structured data extraction
