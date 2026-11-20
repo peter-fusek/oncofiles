@@ -23,15 +23,22 @@ can never rename a real medical record into a wrong place:
   person, no or a birth date, unknown type, split, low confidence, a near
   neighbour of a README token that is a different entity — still → review.
 
-#926: ``verify_metadata`` is the generic check of what the classifier
-writes besides the filename fields: ICD codes, doctor surname, department and
-the date evidence must be printed in the text, otherwise the field is dropped
-and ``unverified_<field>`` is listed (never a review reason).
+#926: ``propose`` asks with reasoning explicitly on (``thinking=True``: no
+``/no_think``, no off-marker) and the Qwen3.8 model-card thinking sampling
+(``CURATED_CLASSIFY_SAMPLING`` = ``thinking`` | ``greedy`` rollback); the
+prompt carries invented worked examples (``EXAMPLES``). ``verify_metadata``
+is the generic check of what the classifier writes into the sidecar besides
+the filename fields: ICD codes, doctor surname, department and the date
+evidence must be printed in the text, otherwise the field is dropped and
+``unverified_<field>`` is listed (never a review reason).
 """
 
 from __future__ import annotations
 
 import difflib
+import hashlib
+import json
+import logging
 import re
 import unicodedata
 from dataclasses import dataclass, field
@@ -50,6 +57,8 @@ from oncofiles.curated.naming import (
     surname_token,
 )
 from oncofiles.curated.vocabulary import VocabAddition
+
+logger = logging.getLogger(__name__)
 
 MIN_CONFIDENCE = 0.60
 SNAP_CUTOFF = 0.8  # OCR typo tolerance when matching README vocabulary tokens
@@ -83,6 +92,156 @@ single JSON object and nothing else:
   "summary": "one sentence in the document's language"
 }}
 """
+
+# Worked examples (#926; project rule: every extraction prompt carries 2-5).
+# Everything is INVENTED — people, institutions, doctors and dates (2027+) —
+# and the examples assume a contract whose vocabulary holds Institution
+# ``Lucnica``, doctor ``Lipova`` and HospitalName ``OnkologickaAmbulancia``
+# (``EXAMPLE_VOCABULARY``). ``tests/test_926_classification.py`` runs every
+# example through ``validate`` and ``verify_metadata`` and checks the
+# outcome stated here. (text, expected answer, what it shows)
+EXAMPLE_VOCABULARY = {"Institution": ("Lucnica",), "Doctor": ("Lipova",),
+                      "HospitalName": ("OnkologickaAmbulancia",)}  # fmt: skip
+EXAMPLES: tuple[tuple[str, dict, str], ...] = (
+    (
+        "Vzorová nemocnica Lúčnica\nOnkologická ambulancia\nAMBULANTNÁ SPRÁVA\n"
+        "Vyšetrená dňa: 14.03.2027\nDg.: C50.4\n"
+        "Kontrola po 3. cykle liečby, stav stabilizovaný.\nMUDr. Eva Lipová",
+        {
+            "doc_date": "2027-03-14",
+            "date_evidence": "Vyšetrená dňa: 14.03.2027",
+            "doc_type": "Report",
+            "institution": "Lucnica",
+            "institution_printed": "Vzorová nemocnica Lúčnica",
+            "doctor": "MUDr. Eva Lipová",
+            "hospital": "OnkologickaAmbulancia",
+            "hospital_unit": "Onkologická ambulancia",
+            "subject": None,
+            "diagnoses": ["C50.4"],
+            "language": "sk",
+            "multiple_documents": False,
+            "confidence": 0.9,
+            "summary": "Kontrola po 3. cykle liečby, stav stabilizovaný.",
+        },
+        "filed: institution, doctor and department are contract tokens; the ICD code, the "
+        "doctor and the date evidence are copied from the text",
+    ),
+    (
+        "Laboratórium Brezina s.r.o.\nVÝSLEDKY VYŠETRENIA\nDátum odberu: 02.06.2027\n"
+        "Krvný obraz bez odchýlok od referenčných hodnôt.\nVyšetril: MUDr. Tomáš Javor",
+        {
+            "doc_date": "2027-06-02",
+            "date_evidence": "Dátum odberu: 02.06.2027",
+            "doc_type": "Labs",
+            "institution": "LaboratoriumBrezina",
+            "institution_printed": "Laboratórium Brezina",
+            "doctor": "MUDr. Tomáš Javor",
+            "hospital": "Unknown",
+            "hospital_unit": None,
+            "subject": None,
+            "diagnoses": [],
+            "language": "sk",
+            "multiple_documents": False,
+            "confidence": 0.85,
+            "summary": "Krvný obraz bez odchýlok.",
+        },
+        "a NEW institution and doctor: a new CamelCase token plus the name copied verbatim "
+        "into institution_printed; no ICD code is printed, so diagnoses is empty",
+    ),
+    (
+        "Vzorová nemocnica Lúčnica\nKONTROLNÉ VYŠETRENIE\n"
+        "Pacientka sledovaná od jari 2027, ďalšia kontrola podľa dohody.\nMUDr. Eva Lipová",
+        {
+            "doc_date": None,
+            "date_evidence": None,
+            "doc_type": "Report",
+            "institution": "Lucnica",
+            "institution_printed": "Vzorová nemocnica Lúčnica",
+            "doctor": "MUDr. Eva Lipová",
+            "hospital": "Unknown",
+            "hospital_unit": None,
+            "subject": None,
+            "diagnoses": [],
+            "language": "sk",
+            "multiple_documents": False,
+            "confidence": 0.7,
+            "summary": "Kontrolné vyšetrenie bez uvedeného dátumu.",
+        },
+        "review: no full clinical date is printed, so doc_date and date_evidence are null "
+        "(never guess a day)",
+    ),
+    (
+        "Vzorová nemocnica Lúčnica\nAMBULANTNÁ SPRÁVA\nDátum: 05.09.2027\nMUDr. Eva Lipová\n"
+        "\nRÁDIOLÓGIA CENTRUM JAVORINA\nUSG brucha\nDátum vyšetrenia: 19.09.2027",
+        {
+            "doc_date": "2027-09-05",
+            "date_evidence": "Dátum: 05.09.2027",
+            "doc_type": "Report",
+            "institution": "Lucnica",
+            "institution_printed": "Vzorová nemocnica Lúčnica",
+            "doctor": "MUDr. Eva Lipová",
+            "hospital": "Unknown",
+            "hospital_unit": None,
+            "subject": None,
+            "diagnoses": [],
+            "language": "sk",
+            "multiple_documents": True,
+            "confidence": 0.6,
+            "summary": "Dve rôzne správy v jednom súbore.",
+        },
+        "review: a second letterhead with its own date — multiple_documents is true",
+    ),
+)
+
+
+def _examples_block() -> str:
+    lines = [
+        "",
+        "===== WORKED EXAMPLES (invented; NOT this patient, NOT this contract) =====",
+        "The tokens Lucnica (Institution), Lipova (doctor) and OnkologickaAmbulancia "
+        "(HospitalName) stand for tokens of the contract above; never copy them, use the "
+        "contract's own vocabulary.",
+    ]
+    for n, (text, answer, note) in enumerate(EXAMPLES, 1):
+        lines += [f"--- Example {n} ({note}) ---", f"TEXT:\n{text}",
+                  "ANSWER:", json.dumps(answer, ensure_ascii=False)]  # fmt: skip
+    lines.append("===== END EXAMPLES =====")
+    return "\n".join(lines) + "\n"
+
+
+EXAMPLES_BLOCK = _examples_block()
+
+# Identifies the request ``propose`` builds around the README and the text; any
+# edit to the prompt, the examples or the text cut rotates it.
+PROMPT_VERSION = hashlib.sha256(
+    f"{SYSTEM_TEMPLATE}\n{EXAMPLES_BLOCK}\n{MAX_TEXT_CHARS}".encode()
+).hexdigest()[:16]
+
+# CURATED_CLASSIFY_SAMPLING → llm.SAMPLING_PROFILES (#926)
+SAMPLING_MODES: dict[str, str] = {"thinking": "qwen_thinking", "greedy": "greedy"}
+_warned_modes: set[str] = set()
+
+
+def sampling_mode(override: str | None = None) -> str:
+    """The effective classification sampling mode: ``override`` (a scorecard
+    job, validated by the caller) or ``CURATED_CLASSIFY_SAMPLING``; an unknown
+    env value is ``thinking`` with one warning per value."""
+    mode = (override or config.CURATED_CLASSIFY_SAMPLING or "thinking").strip().lower()
+    if mode in SAMPLING_MODES:
+        return mode
+    if mode not in _warned_modes:
+        _warned_modes.add(mode)
+        logger.warning("CURATED_CLASSIFY_SAMPLING=%r unknown: using 'thinking'", mode[:20])
+    return "thinking"
+
+
+def system_prompt(contract: Contract) -> str:
+    return (
+        SYSTEM_TEMPLATE.format(
+            readme=contract.readme_text, doc_types=", ".join(sorted(contract.doc_types))
+        )
+        + EXAMPLES_BLOCK
+    )
 
 
 @dataclass
@@ -127,14 +286,26 @@ def _parse_iso(value) -> str | None:
         return None
 
 
-def propose(contract: Contract, text: str) -> dict:
-    """Ask the local model for the fields (blocking)."""
-    system = SYSTEM_TEMPLATE.format(
-        readme=contract.readme_text, doc_types=", ".join(sorted(contract.doc_types))
-    )
+_STAT_KEYS = ("finish_reason", "prompt_tokens", "completion_tokens", "reasoning_tokens")
+
+
+def propose(
+    contract: Contract, text: str, *, sampling: str | None = None, stats: dict | None = None
+) -> dict:
+    """Ask the local model for the fields (blocking).
+
+    Reasoning is explicitly on (#926) with the sampling profile of
+    ``sampling_mode(sampling)``. ``stats`` (optional) receives counts only:
+    ``finish_reason``, token counts of the last call, ``retried``, ``sampling``."""
+    system = system_prompt(contract)
     user = f"TEXT:\n{text[:MAX_TEXT_CHARS]}"
+    mode = sampling_mode(sampling)
+    kwargs = {"thinking": True, **llm.sampling_profile(SAMPLING_MODES[mode])}
+    info: dict = {}
+    if stats is not None:
+        stats.update(sampling=mode, retried=False)
     try:
-        answer = llm.chat(system, user)
+        answer = llm.chat(system, user, info=info, **kwargs)
     except llm.LocalLLMError as exc:
         if "truncated" not in str(exc) or "overflow" in str(exc):
             raise  # an overflowing prompt does not fit any better with a bigger budget
@@ -146,12 +317,20 @@ def propose(contract: Contract, text: str) -> dict:
             llm.REASONING_BUDGET, est
         ):
             raise
+        if stats is not None:
+            stats["retried"] = True
+        info = {}
         answer = llm.chat(
             system,
             user,
             max_tokens=2 * llm.REASONING_BUDGET,
             timeout=2 * config.LOCAL_LLM_TIMEOUT_S,
+            info=info,
+            **kwargs,
         )
+    finally:
+        if stats is not None:  # counts only: never the answer channels
+            stats.update({k: info.get(k) for k in _STAT_KEYS if k in info})
     return llm.parse_json_object(answer)
 
 

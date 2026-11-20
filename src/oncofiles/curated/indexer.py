@@ -296,6 +296,8 @@ def _apply_sidecar(rec: IndexRecord, front: dict, pages: list[str]) -> None:
         "flags", "near_duplicate_of",
         # #609 (optional; absent on sidecars read before it)
         "ocr_version", "rotation", "rotation_source", "has_chart", "rotated_region",
+        # #926 (optional): verified date evidence, dropped classifier fields, summary origin
+        "date_evidence", "metadata_unverified", "summary_source",
     )  # fmt: skip
     rec.metadata = {k: front[k] for k in keep if k in front and front[k] not in (None, "")}
 

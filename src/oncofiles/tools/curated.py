@@ -4457,6 +4457,7 @@ async def _classify_scorecard_job(
     requested: int,
     missing: int,
     repeat: int,
+    sampling: str | None = None,
 ) -> None:
     """Re-run ``classify.propose`` + ``validate`` on each document's stored
     sidecar text (#926). DRY RUN: no Drive write, no filing, no sidecar, no
@@ -4470,7 +4471,7 @@ async def _classify_scorecard_job(
 
     started = time.monotonic()
     job = _reocr_jobs[pid]
-    request = csc.request_settings()
+    request = csc.request_settings(sampling)
     auto_vocab = vocab_mod.enabled()
     cards: list[dict] = []
     stopped = False
@@ -4497,7 +4498,7 @@ async def _classify_scorecard_job(
             for _ in range(repeat):
                 runs.append(await asyncio.to_thread(
                     csc.run_once, contract, text, d.get("filename") or "",
-                    auto_vocab=auto_vocab,
+                    sampling=request["sampling"], auto_vocab=auto_vocab,
                 ))  # fmt: skip
             cards.append(csc.card(d["id"], d.get("category"), runs))
         totals = csc.totals(cards, requested=requested, missing=missing)
@@ -4511,7 +4512,8 @@ async def _classify_scorecard_job(
             "kind": csc.KIND, "dry_run": True, "scorecard": csc.SCORECARD_VERSION,
             "label": label, "partial": stopped, "versions": versions,
             "settings": {**request, "repeat": repeat, "auto_vocab": auto_vocab,
-                         "max_age_days": None},
+                         "max_age_days": None,
+                         "overrides": {"sampling": sampling} if sampling else {}},
             "totals": totals,
             "compared_to": {"row_id": prev["id"], "label": prev_report.get("label"),
                             "finished_at": prev.get("finished_at")} if prev else None,
@@ -4544,6 +4546,7 @@ async def curated_classify_scorecard(
     label: str = "classify",
     compare_to_label: str | None = None,
     repeat: int = 1,
+    sampling: str | None = None,
 ) -> str:
     """DRY RUN classification scorecard (#926): re-run the curated
     classification (LOCAL model, ``classify.propose`` + ``validate``) on the
@@ -4575,14 +4578,19 @@ async def curated_classify_scorecard(
         compare_to_label: compare with the newest classification scorecard
             whose label starts with this; null = the previous one.
         repeat: runs per document (1-3); 2 measures stability.
+        sampling: "thinking" | "greedy" for this job (#926 step 2); null =
+            CURATED_CLASSIFY_SAMPLING. Echoed in ``settings``.
     """
+    from oncofiles.curated import classify, llm
     from oncofiles.curated import classify_scorecard as csc
-    from oncofiles.curated import llm
 
     for name, value in (("label", label), ("compare_to_label", compare_to_label)):
         if value is not None and not _SCORECARD_LABEL.fullmatch(str(value)):
             return json.dumps({"error": f"{name} must be 1-60 letters, digits or . _ : - "
                                "(starting with a letter or digit)"})  # fmt: skip
+    if sampling is not None and sampling not in classify.SAMPLING_MODES:
+        return json.dumps({"error": f"sampling must be one of {sorted(classify.SAMPLING_MODES)} "
+                           "or null"})  # fmt: skip
     if (
         isinstance(repeat, bool)
         or not isinstance(repeat, int)
@@ -4611,7 +4619,7 @@ async def curated_classify_scorecard(
     _reocr_jobs[pid] = job = {
         "state": "running", "kind": "classify_scorecard", "dry_run": True, "label": label,
         "compare_to_label": compare_to_label, "started_at": datetime.now(UTC).isoformat(),
-        "repeat": repeat, **csc.request_settings(),
+        "repeat": repeat, **csc.request_settings(sampling),
         "documents": [{"document_id": d["id"], "category": d.get("category")} for d in docs],
         "missing_document_ids": missing,
     }  # fmt: skip
@@ -4631,7 +4639,7 @@ async def curated_classify_scorecard(
         job["task"] = asyncio.create_task(
             _classify_scorecard_job(
                 db, pid, docs, row_id=row_id, label=label, compare_to_label=compare_to_label,
-                requested=len(ids), missing=len(missing), repeat=repeat,
+                requested=len(ids), missing=len(missing), repeat=repeat, sampling=sampling,
             )
         )  # fmt: skip
     return json.dumps(_public_job(pid), ensure_ascii=False)
