@@ -201,6 +201,42 @@ async def reviewed_text_sources(db, pid: str) -> frozenset:
     return frozenset(_text_reviews[pid])
 
 
+# ── filed documents whose sidecar backfill got bad model answers ──────
+
+# patient_id -> {drive file id: {"attempts": n, "code": reason}}. A filed
+# document without a sidecar has no place on Drive for a counter, so the run
+# reports carry it (``RunReport.documents``, stage backfill) and this map is
+# their merge, seeded from the DB once per process like ``_text_reviews``.
+_backfill_failures: dict[str, dict[str, dict]] = {}
+
+
+def _remember_backfill_failures(pid: str, report: dict | None) -> None:
+    from oncofiles.curated.runner import backfill_attempts_from
+
+    seen = _backfill_failures.setdefault(pid, {})
+    for file_id, entry in backfill_attempts_from(report).items():
+        if entry["attempts"] >= seen.get(file_id, {}).get("attempts", 0):
+            seen[file_id] = entry
+
+
+async def backfill_failures(db, pid: str) -> dict[str, dict]:
+    """Backfill model answer failures of earlier real runs (attempt counters)."""
+    if pid not in _backfill_failures:
+        _backfill_failures[pid] = {}
+        for row in await db.list_curated_runs(patient_id=pid, limit=TEXT_REVIEW_SEED_RUNS):
+            if row.get("dry_run"):
+                continue
+            full = await db.get_curated_run(row["id"], patient_id=pid)
+            _remember_backfill_failures(pid, (full or {}).get("report"))
+    return {k: dict(v) for k, v in _backfill_failures[pid].items()}
+
+
+def _backfill_given_up(failures: dict[str, dict]) -> frozenset:
+    from oncofiles.curated.runner import MAX_TECHNICAL_ATTEMPTS
+
+    return frozenset(k for k, v in failures.items() if v["attempts"] >= MAX_TECHNICAL_ATTEMPTS)
+
+
 # ── gates ─────────────────────────────────────────────────────────────
 
 
@@ -317,6 +353,7 @@ async def _prepare(db, pid: str, *, dry_run: bool, max_docs: int | None, max_act
         max_doc_age_days=max_age,
         should_stop=_stopping.is_set,
         reviewed_text=await reviewed_text_sources(db, pid),
+        backfill_attempts=await backfill_failures(db, pid),
         doc_cap=max(0, config.MAX_DOCUMENTS_PER_PATIENT),
         docs_existing=await db.count_documents(patient_id=pid),
         ocr_gate=_budget_gate(pid, pages_base),
@@ -382,6 +419,7 @@ async def _execute_locked(db, pid: str, gdrive, folder_id: str, opts, *, trigger
         report["model_pages"] = _inflight_pages.get(pid, 0)
     if not opts.dry_run:
         _remember_text_reviews(pid, report)
+        _remember_backfill_failures(pid, report)
         _note_run_outcome(pid, report)
     status, message = report.get("status", "aborted"), report.get("message", "")
     await db.finish_curated_run(
@@ -752,12 +790,17 @@ async def probe_patient(db, pid: str, idle_signature: str | None):
         return None
     gdrive, folder_id = clients[0], clients[3]
     reviewed = await reviewed_text_sources(db, pid)
+    given_up = _backfill_given_up(await backfill_failures(db, pid))
 
     def _blocking():
         own = gdrive.dedicated_copy()
         try:
             return probe(
-                DriveOps(own), folder_id, idle_signature=idle_signature, reviewed_text=reviewed
+                DriveOps(own),
+                folder_id,
+                idle_signature=idle_signature,
+                reviewed_text=reviewed,
+                backfill_given_up=given_up,
             )
         finally:
             own.close()

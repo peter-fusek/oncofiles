@@ -61,8 +61,9 @@ def _reset_anthropic_client():
 # ``tests/test_curated_state_reset.py`` fails when one is missing.
 CURATED_CLEARED = (
     "_runs", "_restoring", "_readme_births", "_extract_cache", "_propose_cache",
-    "_text_reviews", "_inflight_pages", "_patient_locks", "_watch", "_empty_streak",
-    "_probe_stats", "_import_done", "_onboarding", "_startup_index_stats", "_reocr_jobs",
+    "_text_reviews", "_backfill_failures", "_inflight_pages", "_patient_locks", "_watch",
+    "_empty_streak", "_probe_stats", "_import_done", "_onboarding", "_startup_index_stats",
+    "_reocr_jobs",
 )  # fmt: skip
 CURATED_SCALARS = {"_last_probe_at": None, "_onboarding_active": None, "_round_no": 0}
 CURATED_COUNTERS = ("_dry_runs",)  # dict of counters: every value back to zero

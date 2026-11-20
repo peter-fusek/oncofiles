@@ -502,7 +502,9 @@ def test_truncated_classification_is_per_document_not_a_run_abort():
 
     def flaky(contract, text):
         if "VYSLEDKY" in text:
-            raise llm.LocalLLMError("local LLM answer truncated: reasoning used the whole budget")
+            raise llm.LocalLLMAnswerError(
+                "local LLM answer truncated: reasoning used the whole budget"
+            )
         return fake_propose(contract, text)
 
     r = run_curated(d, d.root, RunOptions(now=NOW), extract_fn=fake_extract, propose_fn=flaky)
@@ -618,7 +620,7 @@ def test_technical_failure_again_counts_attempts():
     d.add("scan_7.pdf.md", d.folder[INBOX], _review_sidecar([TRUNC]))
 
     def failing(contract, text):
-        raise llm.LocalLLMError("local LLM answer truncated: reasoning used the whole budget")
+        raise llm.LocalLLMAnswerError("local LLM answer truncated: reasoning used the whole budget")
 
     o = RunOptions(now=NOW, run_id="test-run", dry_run=False)
     r = run_curated(d, d.root, o, extract_fn=fake_extract, propose_fn=failing)

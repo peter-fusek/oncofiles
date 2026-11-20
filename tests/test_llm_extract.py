@@ -560,7 +560,7 @@ def _answer(text, finish="stop", reasoning=""):
         (_answer("I found nothing useful here."), "json_decode", "AnswerError"),
         (_answer('{"results": []}'), "schema_shape", "AnswerError"),
         (_answer(""), "empty", "AnswerError"),
-        (_answer('{"facts": [', finish="length"), "truncated", "LocalLLMError"),
+        (_answer('{"facts": [', finish="length"), "truncated", "LocalLLMAnswerError"),
         (_raise(ValueError("boom")), "other", "ValueError"),
     ],
 )
