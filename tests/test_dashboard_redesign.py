@@ -280,14 +280,17 @@ def test_demo_blocks_the_actions_that_write():
 async def test_demo_shows_every_state():
     data = await _demo_dashboard_data()
     rows = data["documents"]["documents"]
-    assert {r["stage"] for r in rows} >= {"ready", "waiting_text", "waiting_name", "attention"}
+    assert {r["stage"] for r in rows} >= {"ready", "in_inbox", "waiting_name", "attention"}
     summary = data["documents"]["summary"]
     assert summary["ready"] + summary["in_progress"] + summary["attention"] == summary["total"]
     assert summary["total"] == len(rows)
+    assert summary["inbox"] == sum(1 for r in rows if r.get("inbox")) >= 1
     assert all(r["gdrive_id"] is None for r in rows), "no Drive link in the demo"
-    assert set(data["details"]) == {str(r["id"]) for r in rows}
-    # #948: a synthetic preview for every document, answered by the demo twin
-    assert set(data["thumbnails"]) == {str(r["id"]) for r in rows}
+    # inbox rows have no document behind them, so no detail (#921 follow-up)
+    assert set(data["details"]) == {str(r["id"]) for r in rows if not r.get("inbox")}
+    assert all(r["id"].startswith("inbox:") for r in rows if r.get("inbox"))
+    # #948: a synthetic preview for every document (not for inbox rows), answered by the demo twin
+    assert set(data["thumbnails"]) == {str(r["id"]) for r in rows if not r.get("inbox")}
     assert "if (path === '/api/doc-thumbnails') {" in _function("demoRoute")
     assert [p["patient_id"] for p in data["patients"]["own"]] == ["demo-patient"]
     assert data["patients"]["is_admin"] is False
@@ -304,7 +307,8 @@ async def test_demo_rows_have_the_keys_of_real_rows(db):
     def plain(keys) -> set[str]:
         return {k for k in keys if not k.endswith("_en")}
 
-    assert plain(demo["documents"][0]) == set(real["documents"][0])
+    first_doc = next(r for r in demo["documents"] if not r.get("inbox"))
+    assert plain(first_doc) == set(real["documents"][0])
     assert set(demo["summary"]) == set(real["summary"])
     assert set(demo) == set(real)
 
