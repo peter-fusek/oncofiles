@@ -322,3 +322,126 @@ async def test_helpers_require_patient_id_keyword(db: Database):
         await db.get_documents_by_ids({ids["jana_doc"]})  # type: ignore[call-arg]
     with pytest.raises(TypeError):
         await db.get_cross_references(ids["jana_doc"])  # type: ignore[call-arg]
+
+
+# ── #533: email_entries / calendar_entries ────────────────────────────────
+
+
+async def _seed_mail_and_calendar(db: Database) -> dict:
+    """One email and one calendar entry per patient (invented values)."""
+    from datetime import datetime
+
+    from oncofiles.models import CalendarEntry, EmailEntry
+
+    await _seed_two_patients(db)
+    ids: dict = {}
+    for who, pid, day in (("jana", ERIKA_UUID, 5), ("bob", SECOND_UUID, 6)):
+        email = await db.upsert_email_entry(
+            EmailEntry(
+                patient_id=pid,
+                gmail_message_id=f"{who}-msg-533",
+                thread_id=f"{who}-th-533",
+                subject=f"{who} invented subject",
+                sender="sender@example.com",
+                date=datetime(2031, 7, day, hour=11, minute=20),
+                body_snippet=f"{who} snippet",
+                body_text=f"{who} body",
+            )
+        )
+        event = await db.upsert_calendar_entry(
+            CalendarEntry(
+                patient_id=pid,
+                google_event_id=f"{who}-evt-533",
+                summary=f"{who} invented visit",
+                start_time=datetime(2031, 7, day, hour=16, minute=40),
+            )
+        )
+        ids[f"{who}_email"] = email.id
+        ids[f"{who}_event"] = event.id
+    return ids
+
+
+async def test_get_email_entry_filters_by_patient_id(db: Database):
+    ids = await _seed_mail_and_calendar(db)
+
+    own = await db.get_email_entry(ids["bob_email"], patient_id=SECOND_UUID)
+    assert own is not None and own.patient_id == SECOND_UUID
+    assert await db.get_email_entry(ids["bob_email"], patient_id=ERIKA_UUID) is None
+    assert await db.get_email_entry(ids["jana_email"], patient_id=SECOND_UUID) is None
+
+
+async def test_get_calendar_entry_filters_by_patient_id(db: Database):
+    ids = await _seed_mail_and_calendar(db)
+
+    own = await db.get_calendar_entry(ids["bob_event"], patient_id=SECOND_UUID)
+    assert own is not None and own.patient_id == SECOND_UUID
+    assert await db.get_calendar_entry(ids["bob_event"], patient_id=ERIKA_UUID) is None
+    assert await db.get_calendar_entry(ids["jana_event"], patient_id=SECOND_UUID) is None
+
+
+async def test_upsert_returns_the_row_of_its_own_patient(db: Database):
+    """The upsert re-reads through the scoped helper: the same external id
+    under two patients stays two rows, each returned to its own patient."""
+    from datetime import datetime
+
+    from oncofiles.models import CalendarEntry, EmailEntry
+
+    await _seed_two_patients(db)
+    saved = {}
+    for pid in (ERIKA_UUID, SECOND_UUID):
+        email = await db.upsert_email_entry(
+            EmailEntry(
+                patient_id=pid,
+                gmail_message_id="shared-msg-533",
+                thread_id="shared-th-533",
+                subject="invented",
+                sender="sender@example.com",
+                date=datetime(2031, 8, 21, hour=11, minute=20),
+            )
+        )
+        event = await db.upsert_calendar_entry(
+            CalendarEntry(
+                patient_id=pid,
+                google_event_id="shared-evt-533",
+                summary="invented",
+                start_time=datetime(2031, 8, 21, hour=16, minute=40),
+            )
+        )
+        assert email.patient_id == pid and event.patient_id == pid
+        saved[pid] = (email.id, event.id)
+    assert saved[ERIKA_UUID][0] != saved[SECOND_UUID][0]
+    assert saved[ERIKA_UUID][1] != saved[SECOND_UUID][1]
+
+
+async def test_mail_and_calendar_helpers_require_patient_id_keyword(db: Database):
+    """No unscoped form: a missing or positional patient is a TypeError."""
+    ids = await _seed_mail_and_calendar(db)
+
+    with pytest.raises(TypeError):
+        await db.get_email_entry(ids["jana_email"])  # type: ignore[call-arg]
+    with pytest.raises(TypeError):
+        await db.get_email_entry(ids["jana_email"], ERIKA_UUID)  # type: ignore[misc]
+    with pytest.raises(TypeError):
+        await db.get_calendar_entry(ids["jana_event"])  # type: ignore[call-arg]
+    with pytest.raises(TypeError):
+        await db.get_calendar_entry(ids["jana_event"], ERIKA_UUID)  # type: ignore[misc]
+
+
+def test_no_unscoped_id_statement_on_mail_or_calendar_tables():
+    """Every statement in src/ that addresses an ``email_entries`` or
+    ``calendar_entries`` row by its internal id also filters by patient."""
+    import re
+    from pathlib import Path
+
+    src = Path(__file__).resolve().parents[1] / "src" / "oncofiles"
+    by_id = re.compile(
+        r"(?:FROM|UPDATE)\s+(?:email_entries|calendar_entries)\b[^;]*?\bWHERE\s+id\s*=\s*\?"
+        r"(?P<rest>[^\"]*)",
+        re.IGNORECASE | re.DOTALL,
+    )
+    offenders = []
+    for path in sorted(src.rglob("*.py")):
+        for match in by_id.finditer(path.read_text(encoding="utf-8")):
+            if "patient_id = ?" not in match.group("rest"):
+                offenders.append(f"{path.relative_to(src)}: {match.group(0)[:80]!r}")
+    assert offenders == []

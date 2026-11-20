@@ -64,16 +64,21 @@ class GmailMixin:
         await self.db.commit()
         # Re-fetch to get defaults
         if last_id:
-            result = await self.get_email_entry(last_id)
+            result = await self.get_email_entry(last_id, patient_id=entry.patient_id)
             if result:
                 return result
         # Fallback: fetch by gmail_message_id
         return await self.get_email_entry_by_gmail_id(entry.gmail_message_id, entry.patient_id)
 
-    async def get_email_entry(self, entry_id: int) -> EmailEntry | None:
-        """Get an email entry by internal ID."""
+    async def get_email_entry(self, entry_id: int, *, patient_id: str) -> EmailEntry | None:
+        """Get an email entry by internal ID, scoped to ``patient_id`` (#533).
+
+        The patient filter is part of the SQL, so another patient's id reads
+        as "not found" (no existence oracle), the same shape as #499.
+        """
         async with self.db.execute(
-            "SELECT * FROM email_entries WHERE id = ?", (entry_id,)
+            "SELECT * FROM email_entries WHERE id = ? AND patient_id = ?",
+            (entry_id, patient_id),
         ) as cursor:
             row = await cursor.fetchone()
             return _row_to_email_entry(row) if row else None

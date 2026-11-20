@@ -10,7 +10,7 @@ Locks down:
 from __future__ import annotations
 
 import json
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -206,117 +206,120 @@ async def test_list_patients_non_admin_no_email_restricted_to_bound_pid(db: Data
 # ── get_email / get_calendar_event ownership ────────────────────────
 
 
-async def test_get_email_denies_other_patient(db: Database, gmail_calendar_on):
-    """Integer-id brute force across patients must be blocked (#487 C1)."""
-    from oncofiles.tools.integrations import get_email
+OTHER_UUID = "00000000-0000-4000-8000-000000000033"
+OTHER_SLUG = "other-test"
 
-    # Insert a fake email entry via direct query — we only need a row with
-    # patient_id != caller.
-    entry = MagicMock()
-    entry.id = 42
-    entry.patient_id = "owner-of-this-email"
-    entry.gmail_message_id = "x"
-    entry.thread_id = "t"
-    entry.subject = "secret"
-    entry.sender = "sender@example.com"
-    entry.recipients = "[]"
-    entry.date = MagicMock()
-    entry.date.isoformat = lambda: "2026-01-01T00:00:00"
-    entry.body_snippet = "snippet"
-    entry.body_text = "body"
-    entry.labels = "[]"
-    entry.has_attachments = False
-    entry.is_medical = True
-    entry.ai_summary = None
-    entry.ai_relevance_score = None
-    entry.structured_metadata = None
-    entry.linked_document_ids = "[]"
-    entry.created_at = None
 
-    _verified_caller_is_admin.set(False)
-    _verified_patient_id.set("caller-pid-not-owner")
-    _verified_caller_email.set("")
+async def _seed_other_patient_entries(db: Database) -> tuple[int, int]:
+    """A second patient with one email and one calendar entry (invented)."""
+    from datetime import datetime
+
+    from oncofiles.models import CalendarEntry, EmailEntry
+
+    await db.db.execute(
+        "INSERT INTO patients (patient_id, slug, display_name, caregiver_email) "
+        "VALUES (?, ?, ?, ?)",
+        (OTHER_UUID, OTHER_SLUG, "Other Test", "other@example.com"),
+    )
+    await db.db.commit()
+    email = await db.upsert_email_entry(
+        EmailEntry(
+            patient_id=OTHER_UUID,
+            gmail_message_id="other-msg-1",
+            thread_id="other-th",
+            subject="invented private subject",
+            sender="sender@example.com",
+            date=datetime(2031, 4, 22, hour=11, minute=20),
+            body_snippet="snippet",
+            body_text="body",
+            is_medical=True,
+        )
+    )
+    event = await db.upsert_calendar_entry(
+        CalendarEntry(
+            patient_id=OTHER_UUID,
+            google_event_id="other-evt-1",
+            summary="invented private appointment",
+            description="d",
+            start_time=datetime(2031, 4, 3, 10, 0, 0),
+        )
+    )
+    return email.id, event.id
+
+
+def _ctx(db: Database) -> MagicMock:
     ctx = MagicMock()
     ctx.request_context.lifespan_context = {"db": db, "files": MagicMock()}
-
-    with patch.object(db, "get_email_entry", new=AsyncMock(return_value=entry)):
-        result = json.loads(await get_email(ctx, email_entry_id=42))
-    assert "error" in result
-    assert "access denied" in result["error"]
-    # Sensitive fields must not appear in the denial response.
-    assert "secret" not in result.get("error", "")
-    assert "sender@example.com" not in result.get("error", "")
+    return ctx
 
 
-async def test_get_email_admin_sees_other_patient(db: Database, gmail_calendar_on):
+async def test_get_email_other_patient_is_not_found(db: Database, gmail_calendar_on):
+    """Integer-id brute force across patients (#487 C1, #533): the SQL filter
+    drops the row, so a foreign id answers exactly like a missing id."""
     from oncofiles.tools.integrations import get_email
 
-    entry = MagicMock()
-    entry.id = 42
-    entry.patient_id = "owner-of-this-email"
-    entry.gmail_message_id = "x"
-    entry.thread_id = "t"
-    entry.subject = "subject"
-    entry.sender = "s@example.com"
-    entry.recipients = "[]"
-    entry.date = MagicMock()
-    entry.date.isoformat = lambda: "2026-01-01T00:00:00"
-    entry.body_snippet = "snippet"
-    entry.body_text = "body"
-    entry.labels = "[]"
-    entry.has_attachments = False
-    entry.is_medical = True
-    entry.ai_summary = None
-    entry.ai_relevance_score = None
-    entry.structured_metadata = None
-    entry.linked_document_ids = "[]"
-    entry.created_at = None
+    email_id, _ = await _seed_other_patient_entries(db)
+    _verified_caller_is_admin.set(False)
+    _verified_caller_email.set("")
 
+    foreign = json.loads(await get_email(_ctx(db), email_entry_id=email_id))
+    missing = json.loads(await get_email(_ctx(db), email_entry_id=email_id + 1000))
+    assert foreign == {"error": f"Email entry not found: {email_id}"}
+    assert missing == {"error": f"Email entry not found: {email_id + 1000}"}
+    assert "invented private subject" not in json.dumps(foreign)
+
+
+async def test_get_email_admin_needs_the_slug_for_another_patient(db: Database, gmail_calendar_on):
+    """An admin reads another patient's entry only by naming the patient."""
+    from oncofiles.tools.integrations import get_email
+
+    email_id, _ = await _seed_other_patient_entries(db)
     _verified_caller_is_admin.set(True)
-    _verified_patient_id.set("")
     _verified_caller_email.set("")
-    ctx = MagicMock()
-    ctx.request_context.lifespan_context = {"db": db, "files": MagicMock()}
+    try:
+        without_slug = json.loads(await get_email(_ctx(db), email_entry_id=email_id))
+        assert without_slug == {"error": f"Email entry not found: {email_id}"}
+        with_slug = json.loads(
+            await get_email(_ctx(db), email_entry_id=email_id, patient_slug=OTHER_SLUG)
+        )
+        assert "error" not in with_slug, with_slug
+        assert with_slug["id"] == email_id
+    finally:
+        _verified_caller_is_admin.set(False)
 
-    with patch.object(db, "get_email_entry", new=AsyncMock(return_value=entry)):
-        result = json.loads(await get_email(ctx, email_entry_id=42))
-    assert "error" not in result, result
-    assert result["id"] == 42
-    _verified_caller_is_admin.set(False)
 
-
-async def test_get_calendar_event_denies_other_patient(db: Database, gmail_calendar_on):
+async def test_get_calendar_event_other_patient_is_not_found(db: Database, gmail_calendar_on):
     from oncofiles.tools.integrations import get_calendar_event
 
-    entry = MagicMock()
-    entry.id = 7
-    entry.patient_id = "owner-of-this-event"
-    entry.google_event_id = "g"
-    entry.summary = "private appt"
-    entry.description = "d"
-    entry.start_time = MagicMock()
-    entry.start_time.isoformat = lambda: "2026-01-01T00:00:00"
-    entry.end_time = None
-    entry.location = "x"
-    entry.attendees = "[]"
-    entry.recurrence = None
-    entry.status = "confirmed"
-    entry.is_medical = True
-    entry.ai_summary = None
-    entry.treatment_event_id = None
-    entry.created_at = None
-
+    _, event_id = await _seed_other_patient_entries(db)
     _verified_caller_is_admin.set(False)
-    _verified_patient_id.set("caller-pid-not-owner")
     _verified_caller_email.set("")
-    ctx = MagicMock()
-    ctx.request_context.lifespan_context = {"db": db, "files": MagicMock()}
 
-    with patch.object(db, "get_calendar_entry", new=AsyncMock(return_value=entry)):
-        result = json.loads(await get_calendar_event(ctx, calendar_entry_id=7))
-    assert "error" in result
-    assert "access denied" in result["error"]
-    assert "private appt" not in result.get("error", "")
+    foreign = json.loads(await get_calendar_event(_ctx(db), calendar_entry_id=event_id))
+    missing = json.loads(await get_calendar_event(_ctx(db), calendar_entry_id=event_id + 1000))
+    assert foreign == {"error": f"Calendar entry not found: {event_id}"}
+    assert missing == {"error": f"Calendar entry not found: {event_id + 1000}"}
+    assert "invented private appointment" not in json.dumps(foreign)
+
+
+async def test_get_calendar_event_admin_needs_the_slug_for_another_patient(
+    db: Database, gmail_calendar_on
+):
+    from oncofiles.tools.integrations import get_calendar_event
+
+    _, event_id = await _seed_other_patient_entries(db)
+    _verified_caller_is_admin.set(True)
+    _verified_caller_email.set("")
+    try:
+        without_slug = json.loads(await get_calendar_event(_ctx(db), calendar_entry_id=event_id))
+        assert without_slug == {"error": f"Calendar entry not found: {event_id}"}
+        with_slug = json.loads(
+            await get_calendar_event(_ctx(db), calendar_entry_id=event_id, patient_slug=OTHER_SLUG)
+        )
+        assert "error" not in with_slug, with_slug
+        assert with_slug["id"] == event_id
+    finally:
+        _verified_caller_is_admin.set(False)
 
 
 # ── get_patient_context ownership (#493) ─────────────────────────────

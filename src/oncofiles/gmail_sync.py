@@ -294,8 +294,8 @@ async def _process_attachment(
         linked = json.loads(email_entry.linked_document_ids)
         linked.append(doc.id)
         await db.db.execute(
-            "UPDATE email_entries SET linked_document_ids = ? WHERE id = ?",
-            (json.dumps(linked), email_entry.id),
+            "UPDATE email_entries SET linked_document_ids = ? WHERE id = ? AND patient_id = ?",
+            (json.dumps(linked), email_entry.id, patient_id),
         )
         await db.db.commit()
 

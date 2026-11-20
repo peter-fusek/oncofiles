@@ -55,15 +55,20 @@ class CalendarMixin:
             last_id = cursor.lastrowid
         await self.db.commit()
         if last_id:
-            result = await self.get_calendar_entry(last_id)
+            result = await self.get_calendar_entry(last_id, patient_id=entry.patient_id)
             if result:
                 return result
         return await self.get_calendar_entry_by_google_id(entry.google_event_id, entry.patient_id)
 
-    async def get_calendar_entry(self, entry_id: int) -> CalendarEntry | None:
-        """Get a calendar entry by internal ID."""
+    async def get_calendar_entry(self, entry_id: int, *, patient_id: str) -> CalendarEntry | None:
+        """Get a calendar entry by internal ID, scoped to ``patient_id`` (#533).
+
+        The patient filter is part of the SQL, so another patient's id reads
+        as "not found" (no existence oracle), the same shape as #499.
+        """
         async with self.db.execute(
-            "SELECT * FROM calendar_entries WHERE id = ?", (entry_id,)
+            "SELECT * FROM calendar_entries WHERE id = ? AND patient_id = ?",
+            (entry_id, patient_id),
         ) as cursor:
             row = await cursor.fetchone()
             return _row_to_calendar_entry(row) if row else None
