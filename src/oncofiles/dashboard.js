@@ -661,6 +661,8 @@
       not_attempted: ['Neodoslané, predchádzajúci súbor zlyhal.', 'Not sent, the previous file failed.'],
       failed: ['Nahrávanie zlyhalo. Skúste to znova neskôr.', 'The upload failed. Try again later.']
     };
+    var UPLOAD_SLOW_TEXT = ['Spojenie bolo na tento súbor príliš pomalé alebo sa prerušilo. Skúste Wi-Fi alebo menší súbor.',
+      'The connection was too slow for this file or was interrupted. Try Wi-Fi or a smaller file.'];
     var uploadQueue = Promise.resolve();
     var demoUploads = [];
     var demoUploadSeq = 0;
@@ -794,14 +796,20 @@
         xhr.upload.onprogress = function (e) {
           if (e.lengthComputable) row.progress(Math.min(99, Math.round(e.loaded * 100 / e.total)));
         };
-        xhr.onerror = function () {
-          row.done('attention', 'Spojenie zlyhalo. Skúste to znova.', 'The connection failed. Try again.');
+        // A request longer than the proxy's read timeout (60 s) is cut: on a weak
+        // uplink a large file ends as a reset, a timeout or a 502/504. Say so
+        // plainly; never retry by itself (the person decides).
+        var tooSlow = function () {
+          row.done('attention', UPLOAD_SLOW_TEXT[0], UPLOAD_SLOW_TEXT[1]);
           resolve();
         };
+        xhr.onerror = tooSlow;
+        xhr.ontimeout = tooSlow;
         xhr.onload = function () {
           var data = {};
           try { data = JSON.parse(xhr.responseText || '{}'); } catch (e) { data = {}; }
           if (xhr.status === 401) { logout(); resolve(); return; }
+          if (xhr.status === 502 || xhr.status === 504 || xhr.status === 0) { tooSlow(); return; }
           if (xhr.status === 413) {
             row.done('attention', UPLOAD_CODE_TEXT.file_too_large[0], UPLOAD_CODE_TEXT.file_too_large[1]);
           } else if (xhr.status !== 200) {

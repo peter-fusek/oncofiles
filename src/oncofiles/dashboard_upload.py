@@ -12,7 +12,7 @@ the rest:
   #815 rule ``curated.llm_input.extraction_exclusion`` would exclude);
   ≤ ``MAX_FILE_BYTES`` (the rate limiter already refused a larger body with
   413 before reading it); name via ``files_api.sanitize_filename``;
-* **checks per request** — ≤ ``MAX_FILES`` files; the per-patient document
+* **checks per request** — ``MAX_FILES`` (one) file; the per-patient document
   cap (``MAX_DOCUMENTS_PER_PATIENT``) counted before anything is written;
   Google Drive connected (else ``no_drive``);
 * **curated patient** (the connected folder is a curated root): every file
@@ -25,8 +25,10 @@ the rest:
 * a folder that only overlaps a curated tree, or whose check failed, is
   refused (``folder_not_writable``): fail closed.
 
-Files are handled one after another (one DB connection, one Drive writer);
-the first failed write stops the request. Logs carry counts, sizes, mime
+Files are handled one after another and released before the next is read
+(one DB connection, one Drive writer, one file's bytes in memory); the first
+failed write stops the request. An upload never registers as a curated run or
+job: it does not touch ``run_active()`` / the deploy gate. Logs carry counts, sizes, mime
 types and name lengths only, never a file name. The response names a file
 only by the name it was stored under, which the document table shows anyway.
 """
@@ -43,7 +45,11 @@ from oncofiles.files_api import name_len, sanitize_filename
 
 logger = logging.getLogger(__name__)
 
-MAX_FILES = 20
+# One file per request (infra review of #921): the dashboard already sends one
+# file per request, one after another (progress per file, and Traefik's 60 s
+# read timeout applies per file); a server limit of one keeps a request's
+# memory at one file and turns a client that batches into a visible refusal.
+MAX_FILES = 1
 MAX_FILE_BYTES = drive_ops.UPLOAD_MAX_BYTES  # 25 MiB
 
 # extension -> canonical mime type (the browser's own type is not trusted)
@@ -67,8 +73,8 @@ GENOTYPE_REFUSED = "raw_genotype_excluded"
 MESSAGES: dict[str, tuple[str, str]] = {
     "no_files": ("Nevybrali ste žiadny súbor.", "No file was selected."),
     "too_many_files": (
-        f"Naraz najviac {MAX_FILES} súborov.",
-        f"At most {MAX_FILES} files at a time.",
+        "Jedna požiadavka nesie jeden súbor.",
+        "One request carries one file.",
     ),
     "document_cap": (
         "Pacient dosiahol limit počtu dokumentov.",
@@ -98,14 +104,6 @@ class Outcome:
 def refusal(code: str, status: int, **extra) -> Outcome:
     sk, en = MESSAGES[code]
     return Outcome(status, {"error": code, "message_sk": sk, "message_en": en, **extra})
-
-
-@dataclass(frozen=True)
-class Accepted:
-    index: int
-    name: str
-    data: bytes
-    mime: str
 
 
 def _ext(name: str) -> str:
@@ -183,111 +181,141 @@ async def _free_document_name(db, patient_id: str, name: str) -> str:
     raise ValueError("no free document name")
 
 
-async def _store_drive_only(db, patient_id: str, files: list[Accepted]) -> list[dict]:
+@dataclass(frozen=True)
+class _Target:
+    """Where this request's files go; resolved once, on the first acceptable file."""
+
+    path: str  # curated_inbox | drive_only
+    gdrive: object
+    folder_id: str
+
+
+async def _resolve_target(db, patient_id: str) -> _Target | Outcome:
+    from oncofiles.curated_folder import curated_reason
+    from oncofiles.server import _create_patient_clients
+
+    clients = await _create_patient_clients(db, patient_id)
+    if not clients or clients[0] is None or not clients[3]:
+        return refusal("no_drive", 409)
+    gdrive, folder_id = clients[0], clients[3]
+    reason = await asyncio.to_thread(curated_reason, gdrive, folder_id, use_cache=False)
+    if reason == "is a curated folder":
+        return _Target("curated_inbox", gdrive, folder_id)
+    if reason is None:
+        return _Target("drive_only", gdrive, folder_id)
+    logger.warning("dashboard upload: patient %s folder overlaps a curated tree", patient_id)
+    return refusal("folder_not_writable", 409)
+
+
+async def _store_one(db, patient_id: str, target: _Target, name: str, data: bytes, mime: str):
+    """Store ONE file. Returns a result dict, or raises ``InboxUnavailableError``."""
+    if target.path == "curated_inbox":
+        from oncofiles.curated import inbox_upload
+
+        files = [inbox_upload.InboxFile(name, data, mime)]
+        results = await asyncio.to_thread(
+            inbox_upload.upload_to_inbox, target.gdrive, target.folder_id, files
+        )
+        return results[0]
     from oncofiles.tools.documents import store_drive_only_upload
 
-    results: list[dict] = []
-    stopped = False
-    for f in files:
-        if stopped:
-            results.append({"status": "not_attempted"})
-            continue
-        try:
-            name = await _free_document_name(db, patient_id, f.name)
-            res = await store_drive_only_upload(db, f.data, name, f.mime, patient_id=patient_id)
-        except Exception as exc:
-            logger.warning("dashboard upload: Drive-only store failed (%s)", type(exc).__name__)
-            res = {"status": "failed", "code": type(exc).__name__}
-        if res.get("status") != "uploaded":
-            stopped = True
-        results.append(res)
-    return results
+    try:
+        free = await _free_document_name(db, patient_id, name)
+        return await store_drive_only_upload(db, data, free, mime, patient_id=patient_id)
+    except Exception as exc:
+        logger.warning("dashboard upload: Drive-only store failed (%s)", type(exc).__name__)
+        return {"status": "failed", "code": type(exc).__name__}
 
 
 async def handle_upload(db, patient_id: str, uploads: list) -> Outcome:
     """Check and store ``uploads`` (Starlette ``UploadFile``s) for one patient.
 
-    The caller has already passed the ACL and read-only checks.
+    The caller has already passed the ACL and read-only checks. Memory (infra
+    review of #921): the files are handled strictly one at a time — read
+    (Starlette has spooled a large part to disk), checked, stored, then
+    released and closed before the next one is read, so a request never holds
+    more than one file's bytes. ``MAX_FILES`` is 1 anyway.
     """
     from oncofiles import config
+    from oncofiles.curated.inbox_upload import InboxUnavailableError
 
     if not uploads:
         return refusal("no_files", 400)
     if len(uploads) > MAX_FILES:
         return refusal("too_many_files", 400, limit=MAX_FILES)
 
+    cap = max(0, config.MAX_DOCUMENTS_PER_PATIENT)
     entries: list[dict] = []
-    accepted: list[Accepted] = []
+    target: _Target | None = None
+    stopped = False
+    stored = 0
+    total_bytes = 0
+    mimes: Counter = Counter()
+    name_lens: list[str] = []
     for i, up in enumerate(uploads):
-        data = await _read(up)
-        checked = check_file(getattr(up, "filename", "") or "", data)
-        size = min(len(data), MAX_FILE_BYTES + 1)
-        if isinstance(checked, str):
-            entries.append({"index": i, "status": "refused", "code": checked, "size": size})
-            continue
-        name, mime = checked
-        accepted.append(Accepted(i, name, data, mime))
-        entries.append({"index": i, "status": "pending", "size": size})
-
-    path = None
-    if accepted:
-        cap = max(0, config.MAX_DOCUMENTS_PER_PATIENT)
-        if cap:
-            count = await db.count_documents(patient_id=patient_id)
-            if count + len(accepted) > cap:
-                return refusal("document_cap", 409, limit=cap)
-
-        from oncofiles.curated_folder import curated_reason
-        from oncofiles.server import _create_patient_clients
-
-        clients = await _create_patient_clients(db, patient_id)
-        if not clients or clients[0] is None or not clients[3]:
-            return refusal("no_drive", 409)
-        gdrive, folder_id = clients[0], clients[3]
-        reason = await asyncio.to_thread(curated_reason, gdrive, folder_id, use_cache=False)
-        if reason == "is a curated folder":
-            from oncofiles.curated import inbox_upload
-
-            path = "curated_inbox"
-            files = [inbox_upload.InboxFile(a.name, a.data, a.mime) for a in accepted]
+        data = b""
+        try:
+            if stopped:
+                entries.append({"index": i, "status": "not_attempted"})
+                continue
+            data = await _read(up)
+            entry = {"index": i, "status": "refused", "size": min(len(data), MAX_FILE_BYTES + 1)}
+            entries.append(entry)
+            checked = check_file(getattr(up, "filename", "") or "", data)
+            if isinstance(checked, str):
+                entry["code"] = checked
+                continue
+            name, mime = checked
+            if cap and await db.count_documents(patient_id=patient_id) + stored + 1 > cap:
+                if not stored:
+                    return refusal("document_cap", 409, limit=cap)
+                entry["code"], stopped = "document_cap", True
+                continue
+            if target is None:
+                resolved = await _resolve_target(db, patient_id)
+                if isinstance(resolved, Outcome):
+                    return resolved
+                target = resolved
             try:
-                results = await asyncio.to_thread(
-                    inbox_upload.upload_to_inbox, gdrive, folder_id, files
-                )
-            except inbox_upload.InboxUnavailableError as exc:
+                res = await _store_one(db, patient_id, target, name, data, mime)
+            except InboxUnavailableError as exc:
                 logger.warning(
                     "dashboard upload: patient %s inbox unavailable (%s)", patient_id, exc.code
                 )
-                return refusal("inbox_unavailable", 409, reason=exc.code)
-        elif reason is None:
-            path = "drive_only"
-            results = await _store_drive_only(db, patient_id, accepted)
-        else:
-            logger.warning(
-                "dashboard upload: patient %s folder overlaps a curated tree", patient_id
-            )
-            return refusal("folder_not_writable", 409)
-
-        for a, res in zip(accepted, results, strict=True):
-            entry = entries[a.index]
+                if not stored:
+                    return refusal("inbox_unavailable", 409, reason=exc.code)
+                res = {"status": "failed", "code": "inbox_unavailable"}
             entry["status"] = res.get("status", "failed")
-            if res.get("name"):
-                entry["name"] = res["name"]
-            if res.get("code"):
-                entry["code"] = res["code"]
+            for key in ("name", "code"):
+                if res.get(key):
+                    entry[key] = res[key]
+            total_bytes += len(data)
+            mimes[mime] += 1
+            name_lens.append(name_len(name))
+            if entry["status"] == "uploaded":
+                stored += 1
+            else:
+                stopped = True
+        finally:
+            data = b""  # release this file's bytes before the next one is read
+            await up.close()
 
     statuses = Counter(e["status"] for e in entries)
     logger.info(
         "dashboard upload: patient %s path=%s files=%d statuses=%s bytes=%d mimes=%s names=%s",
         patient_id,
-        path or "-",
+        target.path if target else "-",
         len(entries),
         dict(statuses),
-        sum(len(a.data) for a in accepted),
-        dict(Counter(a.mime for a in accepted)),
-        ",".join(name_len(a.name) for a in accepted),
+        total_bytes,
+        dict(mimes),
+        ",".join(name_lens),
     )
     return Outcome(
         200,
-        {"path": path, "uploaded": statuses.get("uploaded", 0), "files": entries},
+        {
+            "path": target.path if target else None,
+            "uploaded": statuses.get("uploaded", 0),
+            "files": entries,
+        },
     )

@@ -125,7 +125,7 @@ def upload_to_inbox(gdrive, root_id: str, files: list[InboxFile]) -> list[dict]:
                     continue
                 try:
                     name = unique_name(f.name, taken)
-                    drive_ops.upload_original(own, inbox_id, name, f.data, f.mime)
+                    drive_ops.upload_original(own, root_id, inbox_id, name, f.data, f.mime)
                 except Exception as exc:
                     logger.warning(
                         "inbox upload: write failed (%s), %d byte(s), stopping",

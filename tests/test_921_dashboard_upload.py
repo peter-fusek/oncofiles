@@ -106,9 +106,9 @@ def _curated_tree(svc: FakeService, *, readme: str = README, index: bool = True)
 def test_upload_original_creates_and_verifies():
     g = ContractGDrive()
     svc = g._service
-    _, inbox = _curated_tree(svc)
+    root, inbox = _curated_tree(svc)
     with g.contract_writes():
-        fid = drive_ops.upload_original(g, inbox, "scan_2027_03.pdf", PDF, "application/pdf")
+        fid = drive_ops.upload_original(g, root, inbox, "scan_2027_03.pdf", PDF, "application/pdf")
     item = svc.items[fid]
     assert item["parent"] == inbox and item["name"] == "scan_2027_03.pdf"
     assert item["content"] == PDF and item["mime"] == "application/pdf"
@@ -117,9 +117,9 @@ def test_upload_original_creates_and_verifies():
 
 def test_upload_original_respects_the_write_guard():
     g = ContractGDrive()
-    _, inbox = _curated_tree(g._service)
+    root, inbox = _curated_tree(g._service)
     with pytest.raises(PermissionError, match="outside contract_writes"):
-        drive_ops.upload_original(g, inbox, "scan.pdf", PDF, "application/pdf")
+        drive_ops.upload_original(g, root, inbox, "scan.pdf", PDF, "application/pdf")
     assert g._service.names(inbox) == set()
 
 
@@ -130,7 +130,9 @@ def test_upload_original_respects_the_real_client_guard():
     c = object.__new__(GDriveClient)
     c.write_block_reason = "folder x is a curated folder (synthetic)"
     with pytest.raises(DriveWriteBlockedError):
-        drive_ops.upload_original(c, "inboxId0000001", "scan.pdf", PDF, "application/pdf")
+        drive_ops.upload_original(
+            c, "rootId0000001", "inboxId0000001", "scan.pdf", PDF, "application/pdf"
+        )
 
 
 @pytest.mark.parametrize(
@@ -145,11 +147,11 @@ def test_upload_original_respects_the_real_client_guard():
 def test_upload_original_refuses_clashes(existing, name):
     g = ContractGDrive()
     svc = g._service
-    _, inbox = _curated_tree(svc)
+    root, inbox = _curated_tree(svc)
     svc.add(existing, inbox, b"OLD")
     before = dict(svc.items)
     with g.contract_writes(), pytest.raises(WriteVerificationError):
-        drive_ops.upload_original(g, inbox, name, PDF, "application/pdf")
+        drive_ops.upload_original(g, root, inbox, name, PDF, "application/pdf")
     assert svc.items.keys() == before.keys()
     assert svc.items[svc.find(inbox, existing)]["content"] == b"OLD"
 
@@ -172,9 +174,9 @@ def test_upload_original_refuses_clashes(existing, name):
 def test_upload_original_refuses_bad_input(name, data, mime):
     g = ContractGDrive()
     svc = g._service
-    _, inbox = _curated_tree(svc)
+    root, inbox = _curated_tree(svc)
     with g.contract_writes(), pytest.raises(WriteVerificationError):
-        drive_ops.upload_original(g, inbox, name, data, mime)
+        drive_ops.upload_original(g, root, inbox, name, data, mime)
     assert svc.names(inbox) == set()
 
 
@@ -185,16 +187,16 @@ def test_upload_original_refuses_any_folder_but_the_inbox():
     labs = svc.find(root, "labs — laboratórne výsledky")
     for target in (root, labs):
         with g.contract_writes(), pytest.raises(WriteVerificationError, match="not the inbox"):
-            drive_ops.upload_original(g, target, "scan.pdf", PDF, "application/pdf")
+            drive_ops.upload_original(g, root, target, "scan.pdf", PDF, "application/pdf")
     pdf = svc.add("00-inbox.pdf", root, PDF)  # an inbox-looking FILE is no folder
     with g.contract_writes(), pytest.raises(WriteVerificationError, match="not the inbox"):
-        drive_ops.upload_original(g, pdf, "scan.pdf", PDF, "application/pdf")
+        drive_ops.upload_original(g, root, pdf, "scan.pdf", PDF, "application/pdf")
 
 
 def test_upload_original_read_back_mismatch_raises_and_deletes_nothing(monkeypatch):
     g = ContractGDrive()
     svc = g._service
-    _, inbox = _curated_tree(svc)
+    root, inbox = _curated_tree(svc)
     real_get = drive_ops.get
 
     def lying_get(gd, fid):
@@ -205,9 +207,27 @@ def test_upload_original_read_back_mismatch_raises_and_deletes_nothing(monkeypat
 
     monkeypatch.setattr(drive_ops, "get", lying_get)
     with g.contract_writes(), pytest.raises(WriteVerificationError, match="read-back"):
-        drive_ops.upload_original(g, inbox, "scan.pdf", PDF, "application/pdf")
+        drive_ops.upload_original(g, root, inbox, "scan.pdf", PDF, "application/pdf")
     assert svc.names(inbox) == {"scan.pdf"}  # left in place, never deleted
     assert all(not (u["body"] or {}).get("trashed") for u in svc.updates)
+
+
+def test_upload_original_refuses_an_inbox_of_another_tree():
+    """Infra review: the inbox must be a child of THIS patient's curated root."""
+    g = ContractGDrive()
+    svc = g._service
+    root, inbox = _curated_tree(svc)
+    other_root, other_inbox = _curated_tree(svc)  # another patient's tree
+    stray = svc.folder(INBOX, "top")  # an inbox-named folder outside any tree
+    for target in (other_inbox, stray):
+        with g.contract_writes(), pytest.raises(WriteVerificationError, match="not the inbox"):
+            drive_ops.upload_original(g, root, target, "scan.pdf", PDF, "application/pdf")
+        assert svc.names(target) == set()
+    with g.contract_writes(), pytest.raises(WriteVerificationError, match="not the inbox"):
+        drive_ops.upload_original(g, "", inbox, "scan.pdf", PDF, "application/pdf")
+    with g.contract_writes():  # the right pair works
+        drive_ops.upload_original(g, other_root, other_inbox, "scan.pdf", PDF, "application/pdf")
+    assert svc.names(other_inbox) == {"scan.pdf"} and svc.names(inbox) == set()
 
 
 # ── curated.inbox_upload ─────────────────────────────────────────────────
@@ -275,7 +295,7 @@ def test_first_failed_write_stops_the_rest(monkeypatch):
     root, _ = _curated_tree(g._service)
     calls = []
 
-    def boom(gd, inbox_id, name, data, mime):
+    def boom(gd, root_id, inbox_id, name, data, mime):
         calls.append(name)
         raise WriteVerificationError("synthetic")
 
@@ -421,7 +441,8 @@ async def test_no_files_and_too_many_files(db: Database, no_drive_calls):
     assert out.payload["message_sk"] and out.payload["message_en"]
 
 
-async def test_refused_files_never_reach_drive(db: Database, no_drive_calls):
+async def test_refused_files_never_reach_drive(db: Database, no_drive_calls, monkeypatch):
+    monkeypatch.setattr(dashboard_upload, "MAX_FILES", 2)
     out = await dashboard_upload.handle_upload(
         db, ERIKA_UUID, [_upload("x.vcf", b"##"), _upload("y.exe", b"MZ")]
     )
@@ -437,10 +458,8 @@ async def test_document_cap_is_counted_before_writing(db: Database, no_drive_cal
     from oncofiles import config
 
     monkeypatch.setattr(config, "MAX_DOCUMENTS_PER_PATIENT", 2)
-    monkeypatch.setattr(db, "count_documents", AsyncMock(return_value=1))
-    out = await dashboard_upload.handle_upload(
-        db, ERIKA_UUID, [_upload("a.pdf", PDF), _upload("b.pdf", PDF)]
-    )
+    monkeypatch.setattr(db, "count_documents", AsyncMock(return_value=2))
+    out = await dashboard_upload.handle_upload(db, ERIKA_UUID, [_upload("a.pdf", PDF)])
     assert (out.status, out.payload["error"], out.payload["limit"]) == (409, "document_cap", 2)
 
 
@@ -463,6 +482,7 @@ def _clients(monkeypatch, reason):
 
 async def test_curated_patient_goes_to_the_inbox(db: Database, monkeypatch, caplog):
     gdrive = _clients(monkeypatch, "is a curated folder")
+    monkeypatch.setattr(dashboard_upload, "MAX_FILES", 2)
     seen = {}
 
     def fake_upload(g, root_id, files):
@@ -533,6 +553,7 @@ async def test_non_curated_patient_uses_the_drive_only_path(db: Database, monkey
 
 
 async def test_non_curated_drive_failure_stores_nothing(db: Database, monkeypatch):
+    monkeypatch.setattr(dashboard_upload, "MAX_FILES", 2)
     gdrive = _clients(monkeypatch, None)
     gdrive.upload.side_effect = RuntimeError("synthetic")
     monkeypatch.setattr("oncofiles.tools.documents.ensure_folder_structure", lambda g, f: {})
@@ -544,6 +565,129 @@ async def test_non_curated_drive_failure_stores_nothing(db: Database, monkeypatc
     )
     assert [f["status"] for f in out.payload["files"]] == ["failed", "not_attempted"]
     assert await db.list_documents(patient_id=ERIKA_UUID) == []
+
+
+# ── memory: one file's bytes at a time (infra review) ────────────────────
+
+
+class TrackedUpload(UploadFile):
+    def __init__(self, name: str, data: bytes, events: list):
+        import io
+
+        super().__init__(io.BytesIO(data), filename=name, size=len(data))
+        self.events = events
+
+    async def read(self, size: int = -1) -> bytes:
+        self.events.append(("read", self.filename))
+        return await super().read(size)
+
+    async def close(self) -> None:
+        self.events.append(("close", self.filename))
+        await super().close()
+
+
+def test_server_takes_one_file_per_request():
+    assert dashboard_upload.MAX_FILES == 1
+    src = inspect.getsource(server.api_upload)
+    assert "max_files=dashboard_upload.MAX_FILES + 1" in src
+
+
+async def test_too_many_files_reads_no_file(db: Database, no_drive_calls):
+    events: list = []
+    ups = [TrackedUpload(f"s{i}.pdf", PDF, events) for i in range(2)]
+    out = await dashboard_upload.handle_upload(db, ERIKA_UUID, ups)
+    assert out.payload["error"] == "too_many_files"
+    assert not [e for e in events if e[0] == "read"]
+
+
+async def test_each_file_is_read_stored_and_closed_before_the_next(db: Database, monkeypatch):
+    """Even with a raised limit, never two files' bytes at once."""
+    monkeypatch.setattr(dashboard_upload, "MAX_FILES", 3)
+    _clients(monkeypatch, "is a curated folder")
+    events: list = []
+
+    def fake_upload(g, root_id, files):
+        assert len(files) == 1  # one file per Drive call
+        events.append(("store", files[0].name))
+        return [{"status": "uploaded", "name": files[0].name}]
+
+    monkeypatch.setattr(inbox_upload, "upload_to_inbox", fake_upload)
+    ups = [TrackedUpload(n, PDF, events) for n in ("a.pdf", "b.exe", "c.pdf")]
+    out = await dashboard_upload.handle_upload(db, ERIKA_UUID, ups)
+    assert [f["status"] for f in out.payload["files"]] == ["uploaded", "refused", "uploaded"]
+    assert events == [
+        ("read", "a.pdf"),
+        ("store", "a.pdf"),
+        ("close", "a.pdf"),
+        ("read", "b.exe"),
+        ("close", "b.exe"),
+        ("read", "c.pdf"),
+        ("store", "c.pdf"),
+        ("close", "c.pdf"),
+    ]
+
+
+def test_upload_code_never_collects_the_payloads():
+    """No list/comprehension of file bytes in the route or the handler (AST)."""
+    for fn in (server.api_upload, dashboard_upload.handle_upload):
+        tree = ast.parse(_dedent(inspect.getsource(fn)))
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.ListComp, ast.GeneratorExp, ast.SetComp, ast.DictComp)):
+                names = (
+                    {getattr(n, "attr", getattr(n, "id", None)) for n in ast.walk(node.elt)}
+                    if hasattr(node, "elt")
+                    else set()
+                )
+                assert not names & {"read", "data", "_read"}, fn.__name__
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr in ("append", "extend")
+            ):
+                args = {getattr(n, "id", None) for a in node.args for n in ast.walk(a)}
+                assert "data" not in args, fn.__name__
+    assert ".read(" not in inspect.getsource(server.api_upload)
+
+
+def _dedent(src: str) -> str:
+    import textwrap
+
+    return textwrap.dedent(src)
+
+
+# ── the deploy gate: an upload is not a run or a job ─────────────────────
+
+
+async def test_upload_never_registers_as_a_run_or_job(db: Database, monkeypatch):
+    from oncofiles.tools import curated as curated_tools
+
+    _clients(monkeypatch, "is a curated folder")
+    before = (
+        dict(curated_tools._runs),
+        dict(curated_tools._reocr_jobs),
+        dict(curated_tools._restoring),
+    )
+    seen = {}
+
+    def fake_upload(g, root_id, files):
+        seen["run_active"] = curated_tools.run_active()
+        seen["blocked"] = curated_tools.run_block_reason(ERIKA_UUID)
+        seen["registries"] = (
+            dict(curated_tools._runs),
+            dict(curated_tools._reocr_jobs),
+            dict(curated_tools._restoring),
+        )
+        return [{"status": "uploaded", "name": files[0].name}]
+
+    monkeypatch.setattr(inbox_upload, "upload_to_inbox", fake_upload)
+    out = await dashboard_upload.handle_upload(db, ERIKA_UUID, [_upload("a.pdf", PDF)])
+    assert out.payload["uploaded"] == 1
+    assert seen == {"run_active": False, "blocked": None, "registries": before}
+    assert not curated_tools.run_active()
+    for mod in (dashboard_upload, inbox_upload):
+        src = inspect.getsource(mod)
+        for name in ("_runs", "_reocr_jobs", "_restoring", "patient_lock", "insert_curated_run"):
+            assert name not in src, (mod.__name__, name)
 
 
 # ── the route: ACL before the body, read-only admin view ─────────────────
@@ -807,3 +951,12 @@ def test_fixture_hash_helper_is_md5():  # the fake service reports Drive's md5Ch
     fid = svc.add("x.pdf", "p", PDF)
     meta = svc.files()._meta(fid)
     assert meta["md5Checksum"] == hashlib.md5(PDF, usedforsecurity=False).hexdigest()
+
+
+def test_slow_connection_is_explained_and_never_retried():
+    one = _fn("uploadOne")
+    assert "xhr.onerror = tooSlow;" in one and "xhr.ontimeout = tooSlow;" in one
+    assert "xhr.status === 502 || xhr.status === 504 || xhr.status === 0" in one
+    assert "Try Wi-Fi or a smaller file." in JS and "Skúste Wi-Fi alebo menší súbor." in JS
+    body = one.split("{", 1)[1]
+    assert one.count("new XMLHttpRequest()") == 1 and "uploadOne(" not in body  # no retry

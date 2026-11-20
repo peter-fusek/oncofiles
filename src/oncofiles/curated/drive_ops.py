@@ -269,14 +269,16 @@ def _refuse_upload(reason: str) -> None:
     raise WriteVerificationError(f"refusing to upload into the inbox: {reason}")
 
 
-def upload_original(gdrive, inbox_id: str, name: str, data: bytes, mime: str) -> str:
+def upload_original(gdrive, root_id: str, inbox_id: str, name: str, data: bytes, mime: str) -> str:
     """Create ONE new original file in the curated inbox and verify it. Returns its id.
 
     Only ``curated/inbox_upload.py`` (the dashboard upload, #921) calls this,
     inside ``gdrive.contract_writes()``. Create-only, and it enforces itself:
 
     * the target must be a live folder whose name starts with the inbox prefix
-      (``00-inbox``) — nothing outside the inbox is ever written;
+      (``00-inbox``) AND whose parent is ``root_id``, the patient's curated root
+      (a metadata read; infra review of #921) — nothing outside that one inbox
+      is ever written, not even an inbox-named folder of another tree;
     * the name must be new in the inbox (a fresh listing, NFC-compared): an
       existing file is never overwritten (the caller picks a ``-2`` suffix);
     * the name can neither become a sidecar of an existing file (``X.md`` next
@@ -310,6 +312,8 @@ def upload_original(gdrive, inbox_id: str, name: str, data: bytes, mime: str) ->
         folder.get("mimeType") != FOLDER_MIME
         or folder.get("trashed")
         or not _nfc(folder.get("name") or "").startswith(INBOX_PREFIX)
+        or not root_id
+        or root_id not in (folder.get("parents") or [])
     ):
         _refuse_upload(f"target {inbox_id} is not the inbox folder")
     names = {_nfc(x) for x in _names_in(gdrive, inbox_id)}
