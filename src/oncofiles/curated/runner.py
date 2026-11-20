@@ -121,7 +121,7 @@ class RunOptions:
     ocr_gate: Callable[[], str | None] | None = None
     # #919: filed documents whose name fails the standard are renamed in place
     # (pair together, journaled) from their sidecar front matter.
-    # ``CURATED_NORMALISE_FILED`` (default true) gates real renames; a dry run
+    # ``CURATED_NORMALISE_FILED`` (default false) gates real renames; a dry run
     # always shows the plan. At most ``CURATED_NORMALISE_MAX`` renames per run.
     normalise_filed: bool = field(default_factory=normalise_mod.enabled)
     normalise_max: int = field(default_factory=normalise_mod.max_per_run)
@@ -1518,16 +1518,29 @@ class Runner:
         old = [f"{folder}/{item.name}"]
         new = [f"{folder}/{new_name}"]
         new_side = f"{new_name}.md"
+        ids = [item.id]
         if sidecar is not None:
             old.append(f"{folder}/{sidecar.name}")
             new.append(f"{folder}/{new_side}")
+            ids.append(sidecar.id)
         seq = self._act(
             {
                 "action": "normalise_rename",
                 "from": old,
                 "to": new,
+                # Infra review of #946: the journal line (which never carries
+                # ``undo``) is enough to undo on its own: file ids in the same
+                # order as from/to, and the one parent both stay in.
+                "ids": ids,
+                "parent": fid,
                 "sha256": item.sha256,
-                "undo": {"op": "rename_pair" if sidecar else "rename", "from": new, "to": old},
+                "undo": {
+                    "op": "rename_pair" if sidecar else "rename",
+                    "from": new,
+                    "to": old,
+                    "ids": ids,
+                    "parent": fid,
+                },
             },
             lambda: self.drive.move_rename(item.id, new_name, fid, fid, allowed_parents=allowed),
             pair_half=sidecar is not None,
@@ -1537,9 +1550,7 @@ class Runner:
             self.actions_used += 1  # the sidecar rename is a second file action
             if not self.opts.dry_run:
                 try:
-                    self.drive.move_rename(
-                        sidecar.id, new_side, fid, fid, allowed_parents=tree.folder_ids()
-                    )
+                    self.drive.move_rename(sidecar.id, new_side, fid, fid, allowed_parents=allowed)
                 except WriteVerificationError as exc:
                     msg = f"sidecar rename not verified — pair split, undo logged: {exc}"
                     raise RunAbortError(msg) from exc

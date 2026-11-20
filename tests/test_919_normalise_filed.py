@@ -11,7 +11,8 @@ from datetime import date, datetime
 
 import pytest
 
-from oncofiles.curated import normalise
+from oncofiles.curated import drive_ops, normalise
+from oncofiles.curated import runner as runner_mod
 from oncofiles.curated.contract import parse_contract
 from oncofiles.curated.naming import is_standard
 from oncofiles.curated.runner import CANARY, RunOptions, run_curated
@@ -47,6 +48,9 @@ def sidecar(doc_date=None, institution=None, doctor=None, body="(no text extract
 
 
 def run(d, **opts):
+    # The env default is OFF (infra review of #946); these tests turn the phase
+    # on explicitly unless they test the switch itself.
+    opts.setdefault("normalise_filed", True)
     o = RunOptions(now=NOW, run_id="norm-run", **opts)
     return run_curated(d, d.root, o, extract_fn=fake_extract, propose_fn=fake_propose)
 
@@ -228,6 +232,85 @@ def test_pair_rename_is_journaled_before_and_confirmed_after():
     assert CANARY not in d.names(d.root)
 
 
+class ParentCheckingDrive(FakeDrive):
+    """Records every move and applies the real ``drive_ops.check_parents``."""
+
+    def move_rename(self, fid, new_name, from_parent, to_parent, *, allowed_parents=None):
+        self.calls = getattr(self, "calls", [])
+        self.calls.append((fid, new_name, from_parent, to_parent, frozenset(allowed_parents)))
+        drive_ops.check_parents(fid, from_parent, to_parent, allowed_parents)
+        super().move_rename(fid, new_name, from_parent, to_parent, allowed_parents=allowed_parents)
+
+
+def test_rename_never_changes_the_parent():
+    d, _ = _drive_with_919_shapes()
+    d.__class__ = ParentCheckingDrive
+    parents_before = {fid: x["parent"] for fid, x in d.items.items()}
+    r = run(d, dry_run=False)
+    assert r.status == "ok", r.message
+    renames = [c for c in d.calls if c[1] in EXPECTED.values() or c[1].endswith(".md")]
+    assert len(renames) == 6  # three pairs
+    for fid, _name, src, dst, allowed in renames:
+        assert src == dst == parents_before[fid]  # same folder, in and out
+        assert src in allowed  # the walked curated tree
+    # no file that existed before the run changed folder
+    assert {fid: d.items[fid]["parent"] for fid in parents_before} == parents_before
+
+
+def test_a_parent_outside_the_curated_tree_is_refused(monkeypatch):
+    """The phase passes ``allowed_parents``; a folder outside it is never written."""
+    d = FakeDrive()
+    d.add(DIGIT, d.folder[LABS], b"PDF")
+    d.add(DIGIT + ".md", d.folder[LABS], sidecar("2027-03-12", "NOU", None, "12.03.2027"))
+    d.__class__ = ParentCheckingDrive
+    real_ids = runner_mod.Tree.folder_ids
+    labs = d.folder[LABS]
+    monkeypatch.setattr(
+        runner_mod.Tree, "folder_ids", lambda self: real_ids(self) - {labs}
+    )  # simulate the labs folder being outside the walked tree
+    r = run(d, dry_run=False)
+    assert r.status == "aborted" and "normalise_rename" in r.message
+    assert DIGIT in d.names(labs) and DIGIT + ".md" in d.names(labs)  # nothing renamed
+    assert not [w for w in d.writes if w[0] == "move"]
+
+
+def test_each_journal_entry_alone_is_enough_to_undo_the_pair():
+    d, _ = _drive_with_919_shapes()
+    original = {fid: (x["name"], x["parent"]) for fid, x in d.items.items()}
+    seen = []
+    orig = d.trash_canary
+
+    def keep(fid):
+        seen.append(d.download(fid).decode())
+        orig(fid)
+
+    d.trash_canary = keep
+    r = run(d, dry_run=False)
+    assert r.status == "ok", r.message
+    entries = [json.loads(x) for x in seen[0].splitlines()[1:]]
+    renames = [e for e in entries if e.get("action") == "normalise_rename"]
+    assert len(renames) == 3
+    for e in renames:
+        # old and new names of source AND sidecar, the file ids, the one parent
+        assert len(e["from"]) == len(e["to"]) == len(e["ids"]) == 2
+        assert all(d.items[i]["parent"] == e["parent"] for i in e["ids"])
+        old_names = [original[i][0] for i in e["ids"]]
+        assert old_names == [p.split("/")[-1] for p in e["from"]]
+        assert [d.items[i]["name"] for i in e["ids"]] == [p.split("/")[-1] for p in e["to"]]
+    # the persisted action log carries the same in its undo record
+    log = d.items[d.find(d.root, "_actions.jsonl")]["content"].decode().splitlines()
+    undo = [json.loads(x)["undo"] for x in log if '"normalise_rename"' in x]
+    assert len(undo) == 3 and all(u["op"] == "rename_pair" and len(u["ids"]) == 2 for u in undo)
+    # undo from the journal alone (no tree, no report): every file is back
+    for e in renames:
+        for fid, old in zip(e["ids"], e["from"], strict=True):
+            d.move_rename(
+                fid, old.rsplit("/", 1)[1], e["parent"], e["parent"], allowed_parents={e["parent"]}
+            )
+    for fid, (name, parent) in original.items():
+        assert (d.items[fid]["name"], d.items[fid]["parent"]) == (name, parent)
+
+
 def test_a_kill_between_the_two_renames_leaves_the_pair_unconfirmed():
     d = FakeDrive()
     d.add(DIGIT, d.folder[LABS], b"PDF")
@@ -298,9 +381,38 @@ def test_env_cap_and_off_switch(monkeypatch):
     o = RunOptions()
     assert o.normalise_max == 1 and o.normalise_filed is False
     monkeypatch.setenv("CURATED_NORMALISE_MAX", "nonsense")
-    monkeypatch.delenv("CURATED_NORMALISE_FILED")
+    monkeypatch.setenv("CURATED_NORMALISE_FILED", "true")
     o = RunOptions()
     assert o.normalise_max == normalise.DEFAULT_MAX and o.normalise_filed is True
+
+
+@pytest.mark.parametrize("value", [None, "", "maybe", "0", "off", "False"])
+def test_renaming_is_off_unless_the_env_says_true(monkeypatch, value):
+    """Infra review of #946: a missing or unclear env never means renaming is on."""
+    if value is None:
+        monkeypatch.delenv("CURATED_NORMALISE_FILED", raising=False)
+    else:
+        monkeypatch.setenv("CURATED_NORMALISE_FILED", value)
+    assert RunOptions().normalise_filed is False
+
+
+def test_default_options_rename_nothing_but_preview_the_full_plan(monkeypatch):
+    monkeypatch.delenv("CURATED_NORMALISE_FILED", raising=False)
+    d, _ = _drive_with_919_shapes()
+
+    def default_run(dry_run):  # RunOptions straight from the env, no override
+        o = RunOptions(now=NOW, run_id="norm-run", dry_run=dry_run)
+        return run_curated(d, d.root, o, extract_fn=fake_extract, propose_fn=fake_propose)
+
+    real = default_run(False)
+    assert real.status == "ok", real.message
+    assert not [a for a in real.actions if a["action"] == "normalise_rename"]
+    assert not [w for w in d.writes if w[0] == "move"]
+    assert set(EXPECTED) <= d.names(d.folder[LABS]) | d.names(d.folder[REPORT])
+    assert real.normalise["enabled"] is False
+    preview = default_run(True)
+    assert preview.normalise["enabled"] is False
+    assert {p["from"]: p["to"] for p in preview.normalise["planned"]} == EXPECTED
 
 
 def test_off_switch_stops_real_renames_but_the_preview_still_plans():

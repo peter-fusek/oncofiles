@@ -24,7 +24,8 @@ Rules:
 * a Google-native file keeps no extension (#922 rule).
 
 Pure functions, no I/O. Env (runtime, read at call time):
-``CURATED_NORMALISE_FILED`` (default true; a dry run always shows the plan)
+``CURATED_NORMALISE_FILED`` (default **false**: a missing env never renames;
+a dry run always shows the plan)
 and ``CURATED_NORMALISE_MAX`` (renames per real run, default 10).
 """
 
@@ -71,8 +72,9 @@ _TOKEN_RE = re.compile(r"^[A-Za-z0-9]+$")
 
 
 def enabled() -> bool:
-    """``CURATED_NORMALISE_FILED`` (default true): may a real run rename?"""
-    value = os.environ.get("CURATED_NORMALISE_FILED", "true").strip().lower()
+    """``CURATED_NORMALISE_FILED`` (default false, infra review of #946): may a
+    real run rename? Only an explicit true value turns renaming on."""
+    value = os.environ.get("CURATED_NORMALISE_FILED", "false").strip().lower()
     return value in ("1", "true", "yes", "on")
 
 
