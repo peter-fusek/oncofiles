@@ -33,7 +33,7 @@ async def test_upsert_and_get(db: Database):
     assert saved.subject == "Lab results - CBC"
     assert saved.is_medical is True
 
-    fetched = await db.get_email_entry(saved.id)
+    fetched = await db.get_email_entry(saved.id, patient_id=ERIKA_UUID)
     assert fetched is not None
     assert fetched.gmail_message_id == "msg_001"
 
@@ -91,5 +91,5 @@ async def test_count(db: Database):
 
 
 async def test_get_nonexistent(db: Database):
-    assert await db.get_email_entry(999) is None
+    assert await db.get_email_entry(999, patient_id=ERIKA_UUID) is None
     assert await db.get_email_entry_by_gmail_id("nonexistent", patient_id=ERIKA_UUID) is None

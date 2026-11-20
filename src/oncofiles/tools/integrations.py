@@ -260,9 +260,9 @@ async def search_emails(
 async def get_email(ctx: Context, email_entry_id: int, patient_slug: str | None = None) -> str:
     """Get full details of a stored email entry by ID.
 
-    Access scoping (#487): callers must own the entry (patient_id match)
-    or have admin scope. Prevents cross-patient Gmail content enumeration
-    via sequential-ID brute force.
+    Access scoping (#487, #533): the entry is read with the resolved
+    patient in the SQL filter, so an id of another patient answers "not
+    found". Admins name the patient with ``patient_slug``.
 
     Args:
         email_entry_id: The email entry ID.
@@ -272,18 +272,13 @@ async def get_email(ctx: Context, email_entry_id: int, patient_slug: str | None 
     if disabled is not None:
         return disabled
 
-    from oncofiles.tools._helpers import _check_ownership_or_admin
-
     db = _get_db(ctx)
     pid = await _resolve_patient_id(patient_slug, ctx)
-    entry = await db.get_email_entry(email_entry_id)
+    # The patient filter is in the SQL (#533): another patient's id is
+    # "not found", exactly like an id that does not exist.
+    entry = await db.get_email_entry(email_entry_id, patient_id=pid)
     if not entry:
         return json.dumps({"error": f"Email entry not found: {email_entry_id}"})
-
-    owner_pid = getattr(entry, "patient_id", None)
-    err = _check_ownership_or_admin("email_entry", email_entry_id, owner_pid, pid)
-    if err is not None:
-        return json.dumps({"error": err})
 
     return json.dumps(
         {
@@ -368,8 +363,9 @@ async def get_calendar_event(
 ) -> str:
     """Get full details of a stored calendar entry by ID.
 
-    Access scoping (#487): callers must own the entry (patient_id match)
-    or have admin scope. Prevents cross-patient calendar enumeration.
+    Access scoping (#487, #533): the entry is read with the resolved
+    patient in the SQL filter, so an id of another patient answers "not
+    found". Admins name the patient with ``patient_slug``.
 
     Args:
         calendar_entry_id: The calendar entry ID.
@@ -379,18 +375,13 @@ async def get_calendar_event(
     if disabled is not None:
         return disabled
 
-    from oncofiles.tools._helpers import _check_ownership_or_admin
-
     db = _get_db(ctx)
     pid = await _resolve_patient_id(patient_slug, ctx)
-    entry = await db.get_calendar_entry(calendar_entry_id)
+    # The patient filter is in the SQL (#533): another patient's id is
+    # "not found", exactly like an id that does not exist.
+    entry = await db.get_calendar_entry(calendar_entry_id, patient_id=pid)
     if not entry:
         return json.dumps({"error": f"Calendar entry not found: {calendar_entry_id}"})
-
-    owner_pid = getattr(entry, "patient_id", None)
-    err = _check_ownership_or_admin("calendar_entry", calendar_entry_id, owner_pid, pid)
-    if err is not None:
-        return json.dumps({"error": err})
 
     return json.dumps(
         {
