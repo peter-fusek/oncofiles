@@ -196,13 +196,21 @@ def test_pre_663_default_is_not_a_literal_in_the_source():
 
 
 def test_pre_663_default_fails_loudly_without_the_migration(tmp_path, monkeypatch):
-    from oncofiles.tools import activity
+    from oncofiles.database import _legacy_default as legacy
 
-    monkeypatch.setattr(activity, "MIGRATIONS_DIR", tmp_path)
+    monkeypatch.setattr(legacy, "MIGRATIONS_DIR", tmp_path)
     with pytest.raises(RuntimeError, match="cannot read migration"):
-        activity._migration_029_activity_log_default()
-    (tmp_path / activity._MIGRATION_029).write_text(
-        "ALTER TABLE documents ADD COLUMN patient_id TEXT NOT NULL DEFAULT 'someone';\n"
-    )
+        legacy.migration_029_patient_id_default()
+    migration = tmp_path / legacy.MIGRATION_029
+    add = "ALTER TABLE {} ADD COLUMN patient_id TEXT NOT NULL DEFAULT '{}';\n"
+    migration.write_text("CREATE TABLE nothing (id INTEGER);\n")
     with pytest.raises(RuntimeError, match="expected exactly one"):
-        activity._migration_029_activity_log_default()
+        legacy.migration_029_patient_id_default()
+    migration.write_text(add.format("documents", "someone") + add.format("activity_log", "other"))
+    with pytest.raises(RuntimeError, match="expected exactly one"):
+        legacy.migration_029_patient_id_default()
+    migration.write_text(add.format("documents", "someone"))
+    with pytest.raises(RuntimeError, match="activity_log"):
+        legacy.migration_029_patient_id_default()
+    migration.write_text(add.format("documents", "someone") + add.format("activity_log", "someone"))
+    assert legacy.migration_029_patient_id_default() == "someone"

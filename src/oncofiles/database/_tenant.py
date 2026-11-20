@@ -1,7 +1,7 @@
 """Write-side tenant guard for tables whose ``patient_id`` has a DEFAULT (#791).
 
-Twelve tables declare ``patient_id`` with a column DEFAULT (``'erika'``,
-``'default'`` or ``''``), and ``curated_settings.patient_id`` is a nullable
+Twelve tables declare ``patient_id`` with a column DEFAULT (a real given
+name from migration 029, ``'default'`` or ``''``), and ``curated_settings.patient_id`` is a nullable
 ``TEXT PRIMARY KEY``. A writer that forgets the patient would silently store
 the row under a real-looking or empty tenant instead of failing: the same bug
 class as the empty-string leak (#476).
@@ -16,20 +16,24 @@ from __future__ import annotations
 
 from oncofiles.constants import NO_PATIENT_ACCESS_SENTINEL, SYSTEM_NO_PATIENT
 
+from ._legacy_default import LEGACY_NAMED_DEFAULT
+
 # The table list lives in tests/test_patient_id_guard.py (GUARDED_TABLES),
 # checked against the migrated schema there, so this module never names a
 # table (the session-diary lock test scans src/ for its table name).
 
 # Values the schema defaults ever produced: a row carrying one of them was
-# written without a patient. Never accepted from a writer.
-LEGACY_DEFAULT_PATIENT_IDS: frozenset[str] = frozenset({"", "erika", "default"})
+# written without a patient. Never accepted from a writer. The named default
+# of migration 029 is read from that migration, not spelled here (#704).
+LEGACY_DEFAULT_PATIENT_IDS: frozenset[str] = frozenset({"", LEGACY_NAMED_DEFAULT, "default"})
 
 
 def require_patient_id(patient_id: object, *, allow_system: bool = False) -> str:
     """Return ``patient_id`` if it names a tenant, else raise ``ValueError``.
 
     Rejected: ``None``, a non-string, an empty or whitespace-only string, any
-    legacy column default (``''``, ``'erika'``, ``'default'``) and
+    legacy column default (``''``, migration 029's named default,
+    ``'default'``) and
     ``NO_PATIENT_ACCESS_SENTINEL``. ``SYSTEM_NO_PATIENT`` (the explicit
     "no patient" value of system rows) is accepted only with
     ``allow_system=True``, which only the operational logs use

@@ -111,7 +111,7 @@ This is the literal answer to "trivially transferable to another user with their
 Being honest about the trade — this is a **narrower** tool than the current product, not a strict superset:
 
 - No lab-trend analysis, biomarker safety gates, clinical-trial search, or cross-reference graph — those are "Oncoteam"-layer intelligence, not "Oncofiles"-layer storage/retrieval, and are out of scope for this rebuild unless deliberately added back later as a thin layer reading the same Register sheet.
-- No bilingual dashboard, no multi-patient hosted product, no admin/caregiver access-control layer — this is single-user-per-copy by construction, not a SaaS. If oncofiles-the-product (serving q1b/e5g/nora/Mattias/Michal/Tibor as a hosted service) is meant to continue, that's a separate decision from whether the patient personally moves to this model — see the open questions below.
+- No bilingual dashboard, no multi-patient hosted product, no admin/caregiver access-control layer — this is single-user-per-copy by construction, not a SaaS. If oncofiles-the-product (serving patients A–F as a hosted service) is meant to continue, that's a separate decision from whether the patient personally moves to this model — see the open questions below.
 - No formal audit log or per-call cost telemetry out of the box — cheap to add (a second Sheet tab, appended to on every Apps Script call) if wanted, but not built by default.
 
 ---
@@ -131,7 +131,7 @@ Prototype this for real before committing further: build the template Sheet + Ap
 
 ## Open questions for Peter
 
-- Does this replace oncofiles-the-hosted-product for the other five patients too, or is the patient moving to a personal instance of a new, separate tool while oncofiles.com keeps serving q1b(old)/e5g/nora/Mattias/Michal/Tibor as-is?
+- Does this replace oncofiles-the-hosted-product for the other five patients too, or is the patient moving to a personal instance of a new, separate tool while oncofiles.com keeps serving patient A (old, `q1b`) and patients B–F as-is?
   (Note: if the patient fully migrates off the hosted product, q1b's production row/history in the current system becomes historical-only — worth deciding what happens to it, e.g. leave it in place read-only vs. explicitly retire it.)
 - Do you want any of the Oncoteam-style intelligence (lab trends, biomarker gates) rebuilt on top of the Register sheet, or is this rebuild scoped to storage/organize/retrieve only for now?
 - Should I proceed to build the template (Sheet + Apps Script) against a test folder, so it's ready for the patient to adopt once you've reviewed this?

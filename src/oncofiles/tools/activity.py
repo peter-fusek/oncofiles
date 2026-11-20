@@ -13,12 +13,11 @@ authenticated caller could read every patient's tool-call history.
 from __future__ import annotations
 
 import json
-import re
 
 from fastmcp import Context
 
 from oncofiles.constants import SYSTEM_NO_PATIENT
-from oncofiles.database._base import MIGRATIONS_DIR
+from oncofiles.database._legacy_default import LEGACY_NAMED_DEFAULT
 from oncofiles.models import ActivityLogEntry, ActivityLogQuery
 from oncofiles.tools._helpers import (
     _clamp_limit,
@@ -190,40 +189,12 @@ async def get_activity_stats(
 
 
 _NO_PATIENT = SYSTEM_NO_PATIENT
-_MIGRATION_029 = "029_patient_id_columns.sql"
-_ACTIVITY_LOG_DEFAULT_RE = re.compile(
-    r"ALTER\s+TABLE\s+activity_log\s+ADD\s+COLUMN\s+patient_id\b[^;]*?\bDEFAULT\s+'([^']+)'",
-    re.IGNORECASE,
-)
-
-
-def _migration_029_activity_log_default() -> str:
-    """The ``activity_log.patient_id`` column default, read from migration 029.
-
-    The value has to equal what the DB rows hold, so it is taken from the
-    applied migration instead of being repeated here as a literal (#704).
-    Raises when the migration or the default cannot be found: a silent
-    fallback would make the backfill match nothing.
-    """
-    path = MIGRATIONS_DIR / _MIGRATION_029
-    try:
-        sql = path.read_text(encoding="utf-8")
-    except OSError as exc:
-        raise RuntimeError(f"cannot read migration {_MIGRATION_029}: {exc}") from exc
-    found = set(_ACTIVITY_LOG_DEFAULT_RE.findall(sql))
-    if len(found) != 1:
-        raise RuntimeError(
-            f"expected exactly one activity_log.patient_id DEFAULT in {_MIGRATION_029}, "
-            f"found {len(found)}"
-        )
-    return found.pop()
-
-
-# Migration 029's column default, parsed once at import. No patient has this
+# Migration 029's column default (read from the migration by
+# database._legacy_default, never a literal here: #704). No patient has this
 # id, and since #663 no write path stores it (every insert sets patient_id
 # explicitly), so it marks exactly the rows written before the fix. Callers
 # cannot forge it: add_activity_log stores the resolver's pid.
-_PRE_663_DEFAULT = _migration_029_activity_log_default()
+_PRE_663_DEFAULT = LEGACY_NAMED_DEFAULT
 
 
 async def backfill_activity_log_attribution(
