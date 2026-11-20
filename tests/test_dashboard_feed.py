@@ -33,7 +33,7 @@ NOU = "urn:oncofiles:local:nou"
 PAGE_LIMIT_BYTES = 150_000
 MIGRATIONS = Path(__file__).parent.parent / "migrations"
 DOC = 7  # a document id for the pure-function tests
-ERIKA_SLUG = "q1b"  # the seeded test patient (PRIMARY_TEST_UUID)
+PRIMARY_SLUG = "q1b"  # the seeded test patient (PRIMARY_TEST_UUID)
 WBC_REF = {"ref_low": 4.0, "ref_high": 10.0}
 
 
@@ -439,7 +439,7 @@ async def test_a_caregiver_sees_only_their_patient(db, caregiver_of_jana):
     own = await _feed(db)
     assert [d["id"] for d in own["documents"]] == [a.id]
     assert [f["document_id"] for f in own["facts"]] == [a.id]
-    assert await _feed(db, patient_slug=ERIKA_SLUG) == {**own, "generated_at": ANY}
+    assert await _feed(db, patient_slug=PRIMARY_SLUG) == {**own, "generated_at": ANY}
     with pytest.raises(ValueError, match="access denied"):
         await _feed(db, patient_slug=BOB_SLUG)  # a foreign slug is denied
 
@@ -451,7 +451,7 @@ async def test_an_admin_must_name_the_patient_and_gets_only_that_one(db, admin_c
     bob = await _feed(db, patient_slug=BOB_SLUG)
     assert [d["id"] for d in bob["documents"]] == [b.id]
     assert {f["document_id"] for f in bob["facts"]} == {b.id} and len(bob["facts"]) == 2
-    jana = await _feed(db, patient_slug=ERIKA_SLUG)
+    jana = await _feed(db, patient_slug=PRIMARY_SLUG)
     assert [d["id"] for d in jana["documents"]] == [a.id]
     assert not {f["id"] for f in bob["facts"]} & {f["id"] for f in jana["facts"]}
 

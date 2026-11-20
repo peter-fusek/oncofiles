@@ -252,7 +252,7 @@ async def test_expired_tokens_cleaned_on_verify(db, provider):
     assert await provider.verify_token(token.access_token) is None
 
 
-# ── Cross-patient isolation (Michal Gašparík report, 2026-04-24) ──────
+# ── Cross-patient isolation (external user report, 2026-04-24) ───────
 
 
 async def _make_oauth_token(provider, client_id="test-client"):
@@ -304,29 +304,29 @@ async def _delete_all_patients(db):
 async def test_oauth_multi_patient_returns_sentinel(db, provider):
     """MULTI-patient deployment + OAuth token → sentinel, not cross-patient leak.
 
-    This locks down the bug Michal Gašparík reported: he OAuth'd via claude.ai,
+    This locks down the bug an external user reported: they OAuth'd via claude.ai,
     had no stored selection, and the old _resolve_oauth_patient fell back to
-    resolve_default_patient() → returned the first active patient (Peter's
-    test patient e5g) instead of nothing. New contract: multi-patient =
+    resolve_default_patient() → returned the first active patient (the admin's
+    test patient) instead of nothing. New contract: multi-patient =
     sentinel, and the caller MUST pass patient_slug per call.
     """
     from oncofiles.constants import NO_PATIENT_ACCESS_SENTINEL
     from oncofiles.persistent_oauth import _verified_patient_id
 
     # Add a second patient (seed SEED_PID is already there) — matches the shape
-    # of Michal's report: seed = Peter's test patient, insert = Michal.
+    # of that report: seed = the admin's test patient, insert = the reporter.
     await _insert_patient(
         db,
         patient_id="22222222-2222-4222-8222-222222222222",
-        slug="michal",
-        display_name="Michal G.",
-        caregiver_email="michal@example.com",
+        slug="viktor",
+        display_name="Viktor V.",
+        caregiver_email="viktor@example.com",
     )
 
     token = await _make_oauth_token(provider)
     verified = await provider.verify_token(token.access_token)
     assert verified is not None
-    # The ContextVar must hold the sentinel — NOT the seed pid, NOT Michal's pid.
+    # The ContextVar must hold the sentinel — NOT the seed pid, NOT Viktor's pid.
     assert _verified_patient_id.get() == NO_PATIENT_ACCESS_SENTINEL
 
 
@@ -341,22 +341,22 @@ async def test_oauth_ignores_stranger_selection(db, provider):
     from oncofiles.constants import NO_PATIENT_ACCESS_SENTINEL
     from oncofiles.persistent_oauth import _verified_patient_id
 
-    michal_pid = "22222222-2222-4222-8222-222222222222"
+    viktor_pid = "22222222-2222-4222-8222-222222222222"
     await _insert_patient(
         db,
-        patient_id=michal_pid,
-        slug="michal",
-        display_name="Michal G.",
-        caregiver_email="michal@example.com",
+        patient_id=viktor_pid,
+        slug="viktor",
+        display_name="Viktor V.",
+        caregiver_email="viktor@example.com",
     )
-    # Peter previously called select_patient(seed) as admin
-    await db.set_patient_selection("peter@example.com", SEED_PID)
+    # The admin previously called select_patient(seed) as admin
+    await db.set_patient_selection("admin@example.com", SEED_PID)
 
-    # Michal (different caller) OAuths freshly
-    token = await _make_oauth_token(provider, client_id="claude-ai-michal")
+    # Viktor (different caller) OAuths freshly
+    token = await _make_oauth_token(provider, client_id="claude-ai-viktor")
     verified = await provider.verify_token(token.access_token)
     assert verified is not None
-    # Must NOT inherit Peter's selection — the MCP token has no owner identity,
+    # Must NOT inherit the admin's selection — the MCP token has no owner identity,
     # so the only safe answer is sentinel.
     assert _verified_patient_id.get() == NO_PATIENT_ACCESS_SENTINEL
     assert _verified_patient_id.get() != SEED_PID
@@ -404,8 +404,8 @@ async def test_static_bearer_multi_patient_returns_sentinel(db):
     await _insert_patient(
         db,
         patient_id="22222222-2222-4222-8222-222222222222",
-        slug="michal",
-        display_name="Michal G.",
+        slug="viktor",
+        display_name="Viktor V.",
     )
 
     provider = PersistentOAuthProvider(db=db, bearer_token="op-static-token")
@@ -436,21 +436,21 @@ async def test_patient_bearer_token_unaffected_by_fix(db):
     from oncofiles.persistent_oauth import _verified_patient_id
 
     # Multi-patient deployment (seed + new)
-    michal_pid = "22222222-2222-4222-8222-222222222222"
+    viktor_pid = "22222222-2222-4222-8222-222222222222"
     await _insert_patient(
         db,
-        patient_id=michal_pid,
-        slug="michal",
-        display_name="Michal G.",
+        patient_id=viktor_pid,
+        slug="viktor",
+        display_name="Viktor V.",
     )
-    # Mint a patient token specifically for Michal
-    michal_token = await db.create_patient_token(michal_pid, label="claude-desktop")
+    # Mint a patient token specifically for Viktor
+    viktor_token = await db.create_patient_token(viktor_pid, label="claude-desktop")
 
     provider = PersistentOAuthProvider(db=db)
-    verified = await provider.verify_token(michal_token)
+    verified = await provider.verify_token(viktor_token)
     assert verified is not None
-    assert verified.client_id == f"patient:{michal_pid}"
-    assert _verified_patient_id.get() == michal_pid
+    assert verified.client_id == f"patient:{viktor_pid}"
+    assert _verified_patient_id.get() == viktor_pid
 
 
 # ── #478 proper fix: email-bound OAuth resolution ───────────────────────
@@ -488,27 +488,27 @@ async def _mint_oauth_token_with_email(provider, email, client_id="test-client",
 async def test_oauth_bound_email_resolves_to_matching_patient(db, provider):
     """Email bound at /authorize time resolves to the caregiver's patient.
 
-    This is the #478 proper-fix happy path: Michal signs in on the dashboard
+    This is the #478 proper-fix happy path: Viktor signs in on the dashboard
     (cookie captured), adds claude.ai connector, token is bound to his email,
     verify_token resolves to his own patient — no sentinel, full UX restored.
     """
     from oncofiles.persistent_oauth import _verified_patient_id
 
-    michal_pid = "22222222-2222-4222-8222-222222222222"
+    viktor_pid = "22222222-2222-4222-8222-222222222222"
     await _insert_patient(
         db,
-        patient_id=michal_pid,
-        slug="michal",
-        display_name="Michal G.",
-        caregiver_email="michal@example.com",
+        patient_id=viktor_pid,
+        slug="viktor",
+        display_name="Viktor V.",
+        caregiver_email="viktor@example.com",
     )
 
     token = await _mint_oauth_token_with_email(
-        provider, email="michal@example.com", challenge="chal_michal"
+        provider, email="viktor@example.com", challenge="chal_viktor"
     )
     verified = await provider.verify_token(token.access_token)
     assert verified is not None
-    assert _verified_patient_id.get() == michal_pid
+    assert _verified_patient_id.get() == viktor_pid
 
 
 async def test_oauth_bound_email_case_insensitive(db, provider):

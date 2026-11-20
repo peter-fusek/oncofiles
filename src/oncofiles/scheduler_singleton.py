@@ -193,6 +193,39 @@ def status() -> dict:
     }
 
 
+def job_snapshot() -> list[dict] | None:
+    """The jobs the running scheduler really has, or None when none runs here.
+
+    Read-only: unlike ``existing_scheduler()`` it takes no reference. One entry
+    per job (id, trigger, next run) plus the job tracker's last outcome
+    timestamps; no error texts, no DB call, no patient data.
+    """
+    sched = _scheduler
+    if not _scheduler_alive(sched):
+        return None
+    tracker = _tracker or {}
+    try:
+        jobs = sched.get_jobs()
+    except Exception:  # telemetry must never break the caller
+        logger.warning("scheduler job snapshot failed", exc_info=True)
+        return None
+    out = []
+    for job in sorted(jobs, key=lambda j: j.id):
+        nxt = getattr(job, "next_run_time", None)
+        live = tracker.get(job.id, {})
+        out.append(
+            {
+                "id": job.id,
+                "trigger": str(job.trigger),
+                "next_run_at": nxt.isoformat(timespec="seconds") if nxt else None,
+                "running": bool(live.get("running", False)),
+                "last_ok": live.get("last_ok"),
+                "last_error": live.get("last_error"),
+            }
+        )
+    return out
+
+
 def _reset_for_tests() -> None:
     global _scheduler, _tracker, _scheduler_refs, _scheduler_started_at
     global _curated_task, _curated_refs, _curated_started_at
