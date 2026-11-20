@@ -2,8 +2,11 @@
 
 Uses user OAuth tokens from prod DB (not service account, which lacks upload quota).
 
+The patient token of the filenames is configuration: pass ``--patient-name``
+or set ``ADVOCATE_PATIENT_NAME`` (same value as for the import script).
+
 Usage:
-    uv run python scripts/sync_advocate_to_gdrive.py [--dry-run]
+    uv run python scripts/sync_advocate_to_gdrive.py --patient-name <Token> [--dry-run]
 """
 
 from __future__ import annotations
@@ -32,15 +35,21 @@ ADVOCATE_DOC_IDS = list(range(46, 62))  # IDs 46-61
 ARCHIVE_DIR = Path.home() / "Downloads" / "Archive"
 PDF_PATH = Path.home() / "Downloads" / "2026-02-12 sumar ochorenia.pdf"
 
-# Import the FILE_MAP from the import script to resolve local paths
+# The filename mapping lives in the import script; the patient token is configuration
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from import_advocate_notes import FILE_MAP  # noqa: E402
+from import_advocate_notes import (  # noqa: E402
+    PATIENT_NAME_ENV,
+    build_file_map,
+    pdf_target_name,
+    resolve_patient_name,
+)
 
-# Build reverse lookup: target filename → local path
-_LOCAL_FILES: dict[str, Path] = {}
-for src_name, target_name in FILE_MAP:
-    _LOCAL_FILES[target_name] = ARCHIVE_DIR / src_name
-_LOCAL_FILES["20260212 ErikaFusekova-PacientAdvokat-Other-SumarOchorenia.pdf"] = PDF_PATH
+
+def local_files(patient_name: str) -> dict[str, Path]:
+    """Reverse lookup: target filename → local path."""
+    files = {target: ARCHIVE_DIR / src for src, target in build_file_map(patient_name)}
+    files[pdf_target_name(patient_name)] = PDF_PATH
+    return files
 
 
 async def _get_oauth_gdrive(db: Database) -> GDriveClient | None:
@@ -92,7 +101,8 @@ async def _get_oauth_gdrive(db: Database) -> GDriveClient | None:
     )
 
 
-async def sync_to_gdrive(dry_run: bool = False) -> None:
+async def sync_to_gdrive(patient_name: str, dry_run: bool = False) -> None:
+    files = local_files(patient_name)
     db = Database(":memory:", turso_url=TURSO_DATABASE_URL, turso_token=TURSO_AUTH_TOKEN)
     await db.connect()
 
@@ -135,7 +145,7 @@ async def sync_to_gdrive(dry_run: bool = False) -> None:
             )
             continue
 
-        local_path = _LOCAL_FILES.get(doc.filename)
+        local_path = files.get(doc.filename)
         if not local_path or not local_path.exists():
             logger.error("Doc %d: local file not found for %s", doc.id, doc.filename)
             continue
@@ -165,8 +175,12 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(levelname)-8s %(message)s")
     parser = argparse.ArgumentParser()
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument(
+        "--patient-name",
+        help=f"Patient token used in the filenames (or env {PATIENT_NAME_ENV}); required",
+    )
     args = parser.parse_args()
-    asyncio.run(sync_to_gdrive(dry_run=args.dry_run))
+    asyncio.run(sync_to_gdrive(resolve_patient_name(args.patient_name), dry_run=args.dry_run))
 
 
 if __name__ == "__main__":

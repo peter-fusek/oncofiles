@@ -172,3 +172,37 @@ async def test_backfill_marks_only_pre_fix_rows_and_never_guesses(two):
         assert g["tags"] == '["attribution_unknown"]'
     assert got[pre_fix]["patient_id"] == ERIKA_UUID  # not a pre-fix row
     assert got[pre_fix + 1]["agent_id"] == "oncoteam" and got[pre_fix + 1]["tags"] == "[]"
+
+
+# ── #704: the pre-fix marker is derived from migration 029, not a literal ──
+
+
+async def test_pre_663_default_equals_the_migrated_column_default(db: Database):
+    async with db.db.execute("PRAGMA table_info(activity_log)") as cur:
+        cols = {r["name"]: r["dflt_value"] for r in await cur.fetchall()}
+    assert cols["patient_id"] == f"'{_PRE_663_DEFAULT}'"
+    assert _PRE_663_DEFAULT.strip()
+
+
+def test_pre_663_default_is_not_a_literal_in_the_source():
+    import ast
+    import inspect
+
+    from oncofiles.tools import activity
+
+    tree = ast.parse(inspect.getsource(activity))
+    strings = {n.value for n in ast.walk(tree) if isinstance(n, ast.Constant)}
+    assert _PRE_663_DEFAULT not in strings
+
+
+def test_pre_663_default_fails_loudly_without_the_migration(tmp_path, monkeypatch):
+    from oncofiles.tools import activity
+
+    monkeypatch.setattr(activity, "MIGRATIONS_DIR", tmp_path)
+    with pytest.raises(RuntimeError, match="cannot read migration"):
+        activity._migration_029_activity_log_default()
+    (tmp_path / activity._MIGRATION_029).write_text(
+        "ALTER TABLE documents ADD COLUMN patient_id TEXT NOT NULL DEFAULT 'someone';\n"
+    )
+    with pytest.raises(RuntimeError, match="expected exactly one"):
+        activity._migration_029_activity_log_default()

@@ -4,8 +4,12 @@ Reads 15 MD files from ~/Downloads/Archive/ and 1 PDF, uploads to
 Anthropic Files API, inserts DB records, caches text as OCR pages,
 and runs AI enhancement + structured metadata extraction.
 
+The patient token of the target filenames is configuration, never a literal
+in this public repo: pass ``--patient-name`` or set ``ADVOCATE_PATIENT_NAME``
+(letters only, CamelCase, as in the standard filename convention).
+
 Usage:
-    uv run python scripts/import_advocate_notes.py [--dry-run] [--skip-ai]
+    uv run python scripts/import_advocate_notes.py --patient-name <Token> [--dry-run] [--skip-ai]
 """
 
 from __future__ import annotations
@@ -14,6 +18,8 @@ import argparse
 import asyncio
 import json
 import logging
+import os
+import re
 import sys
 from pathlib import Path
 
@@ -32,67 +38,71 @@ logger = logging.getLogger(__name__)
 ARCHIVE_DIR = Path.home() / "Downloads" / "Archive"
 PDF_PATH = Path.home() / "Downloads" / "2026-02-12 sumar ochorenia.pdf"
 
-# Mapping: source filename → target oncofiles filename
-FILE_MAP: list[tuple[str, str]] = [
+PATIENT_NAME_ENV = "ADVOCATE_PATIENT_NAME"
+PDF_TARGET_TEMPLATE = "20260212 {patient}-PacientAdvokat-Other-SumarOchorenia.pdf"
+
+# Mapping: source filename → target oncofiles filename template
+# (``{patient}`` is filled by ``build_file_map``)
+FILE_MAP_TEMPLATE: list[tuple[str, str]] = [
     (
         "2025-01-22 Bory Nemocnica Prepustacia sprava nemocnica.md",
-        "20250122 ErikaFusekova-PacientAdvokat-Other-BoryNemocnicaPrepustaciaSprava.md",
+        "20250122 {patient}-PacientAdvokat-Other-BoryNemocnicaPrepustaciaSprava.md",
     ),
     (
         "2025-01-27 Sumar prepustacej spravy po operacii v Bory.md",
-        "20250127 ErikaFusekova-PacientAdvokat-Other-SumarPrepustacejSpravyPoOperacii.md",
+        "20250127 {patient}-PacientAdvokat-Other-SumarPrepustacejSpravyPoOperacii.md",
     ),
     (
         "2025-01-28 NOU Mudr. Porsok.md",
-        "20250128 ErikaFusekova-PacientAdvokat-Other-NOU[PHYSICIAN_REDACTED]Otazky.md",
+        "20250128 {patient}-PacientAdvokat-Other-NOU[PHYSICIAN_REDACTED]Otazky.md",
     ),
     (
         "2025-01-28, 2025-02-08 Bory otazky.md",
-        "20250128 ErikaFusekova-PacientAdvokat-Other-BoryOtazky.md",
+        "20250128 {patient}-PacientAdvokat-Other-BoryOtazky.md",
     ),
     (
         "2025-02-06 Mudr. Porsok NOU.md",
-        "20250206 ErikaFusekova-PacientAdvokat-Other-[PHYSICIAN_REDACTED]NOUAnalyza.md",
+        "20250206 {patient}-PacientAdvokat-Other-[PHYSICIAN_REDACTED]NOUAnalyza.md",
     ),
     (
         "2026-02-03 Mudr porsok.md",
-        "20260203 ErikaFusekova-PacientAdvokat-Other-[PHYSICIAN_REDACTED]LiecebnyPlan.md",
+        "20260203 {patient}-PacientAdvokat-Other-[PHYSICIAN_REDACTED]LiecebnyPlan.md",
     ),
     (
         "2026-02-06 príjem 3. Chemo a možno zaciatok bio.md",
-        "20260206 ErikaFusekova-PacientAdvokat-Other-PrijemChemoABioliecba.md",
+        "20260206 {patient}-PacientAdvokat-Other-PrijemChemoABioliecba.md",
     ),
     (
         "2026-02-12 sumar ochorenia.md",
-        "20260212 ErikaFusekova-PacientAdvokat-Other-SumarOchorenia.md",
+        "20260212 {patient}-PacientAdvokat-Other-SumarOchorenia.md",
     ),
     (
         "2026-02-13 Mudr porsok klinické štúdie.md",
-        "20260213 ErikaFusekova-PacientAdvokat-Other-KlinickeStudie.md",
+        "20260213 {patient}-PacientAdvokat-Other-KlinickeStudie.md",
     ),
     (
         "2026-02-20 Ľubomír Maslík.md",
-        "20260220 ErikaFusekova-PacientAdvokat-Other-PsychoterapeutMaslik.md",
+        "20260220 {patient}-PacientAdvokat-Other-PsychoterapeutMaslik.md",
     ),
     (
         "2026-02-20 Mudr Porsok.md",
-        "20260220 ErikaFusekova-PacientAdvokat-Other-[PHYSICIAN_REDACTED]HER2.md",
+        "20260220 {patient}-PacientAdvokat-Other-[PHYSICIAN_REDACTED]HER2.md",
     ),
     (
         "2026-02-22 bioliecba pre MSSpMMR.md",
-        "20260222 ErikaFusekova-PacientAdvokat-Other-BioliecbaPreMSSpMMR.md",
+        "20260222 {patient}-PacientAdvokat-Other-BioliecbaPreMSSpMMR.md",
     ),
     (
         "2026-02-27 príjem chemo.md",
-        "20260227 ErikaFusekova-PacientAdvokat-Other-PrijemChemo.md",
+        "20260227 {patient}-PacientAdvokat-Other-PrijemChemo.md",
     ),
     (
         "2026-03-02 po 2. Chemo prepustenie\u2028\u2028Nižšie je jedna komplexná tabuľka\u2026.md",
-        "20260302 ErikaFusekova-PacientAdvokat-Other-Po2ChemoPrepustenie.md",
+        "20260302 {patient}-PacientAdvokat-Other-Po2ChemoPrepustenie.md",
     ),
     (
         "2026-03-13 pred 3.chemo.md",
-        "20260313 ErikaFusekova-PacientAdvokat-Other-Pred3Chemo.md",
+        "20260313 {patient}-PacientAdvokat-Other-Pred3Chemo.md",
     ),
 ]
 
@@ -100,8 +110,34 @@ FILE_MAP: list[tuple[str, str]] = [
 MIN_TEXT_FOR_AI = 100
 
 
-async def import_notes(dry_run: bool = False, skip_ai: bool = False, prod: bool = False) -> None:
+def resolve_patient_name(cli_value: str | None = None) -> str:
+    """The patient token for the target filenames: CLI value, else the env var.
+
+    Required, with no default. Exits with a message when missing or not a
+    letters-only token.
+    """
+    name = (cli_value or os.environ.get(PATIENT_NAME_ENV, "")).strip()
+    if not name:
+        sys.exit(f"Patient name required: pass --patient-name or set {PATIENT_NAME_ENV}.")
+    if not re.fullmatch(r"[^\W\d_]+", name):
+        sys.exit("Patient name must be letters only (CamelCase token, no spaces).")
+    return name
+
+
+def build_file_map(patient: str) -> list[tuple[str, str]]:
+    """Source filename → target oncofiles filename for this patient token."""
+    return [(src, target.format(patient=patient)) for src, target in FILE_MAP_TEMPLATE]
+
+
+def pdf_target_name(patient: str) -> str:
+    return PDF_TARGET_TEMPLATE.format(patient=patient)
+
+
+async def import_notes(
+    patient_name: str, dry_run: bool = False, skip_ai: bool = False, prod: bool = False
+) -> None:
     """Import advocate notes into oncofiles."""
+    file_map = build_file_map(patient_name)
     if prod:
         if not TURSO_DATABASE_URL:
             logger.error("TURSO_DATABASE_URL not set — cannot connect to prod")
@@ -117,10 +153,10 @@ async def import_notes(dry_run: bool = False, skip_ai: bool = False, prod: bool 
     stats = {"imported": 0, "skipped": 0, "errors": 0, "ai_processed": 0}
 
     # ── Import MD files ──────────────────────────────────────────────────
-    for i, (src_name, target_name) in enumerate(FILE_MAP, 1):
+    for i, (src_name, target_name) in enumerate(file_map, 1):
         src_path = ARCHIVE_DIR / src_name
         if not src_path.exists():
-            logger.error("[%d/%d] NOT FOUND: %s", i, len(FILE_MAP), src_name)
+            logger.error("[%d/%d] NOT FOUND: %s", i, len(file_map), src_name)
             stats["errors"] += 1
             continue
 
@@ -128,7 +164,7 @@ async def import_notes(dry_run: bool = False, skip_ai: bool = False, prod: bool 
         existing = await db.get_document_by_original_filename(target_name)
         if existing:
             logger.info(
-                "[%d/%d] SKIP (exists id=%d): %s", i, len(FILE_MAP), existing.id, target_name
+                "[%d/%d] SKIP (exists id=%d): %s", i, len(file_map), existing.id, target_name
             )
             stats["skipped"] += 1
             continue
@@ -142,7 +178,7 @@ async def import_notes(dry_run: bool = False, skip_ai: bool = False, prod: bool 
             logger.info(
                 "[%d/%d] DRY RUN: %s → %s (date=%s, inst=%s, cat=%s, %d bytes text)",
                 i,
-                len(FILE_MAP),
+                len(file_map),
                 src_name,
                 target_name,
                 parsed.document_date,
@@ -157,7 +193,7 @@ async def import_notes(dry_run: bool = False, skip_ai: bool = False, prod: bool 
             import io
 
             metadata = client.upload(io.BytesIO(file_bytes), target_name, "text/markdown")
-            logger.info("[%d/%d] Uploaded %s → %s", i, len(FILE_MAP), target_name, metadata.id)
+            logger.info("[%d/%d] Uploaded %s → %s", i, len(file_map), target_name, metadata.id)
 
             # Parse filename for metadata — force "other" for advocate notes
             parsed = parse_filename(target_name)
@@ -206,11 +242,11 @@ async def import_notes(dry_run: bool = False, skip_ai: bool = False, prod: bool 
             stats["imported"] += 1
 
         except Exception as e:
-            logger.error("[%d/%d] ERROR importing %s: %s", i, len(FILE_MAP), src_name, e)
+            logger.error("[%d/%d] ERROR importing %s: %s", i, len(file_map), src_name, e)
             stats["errors"] += 1
 
     # ── Import PDF ───────────────────────────────────────────────────────
-    pdf_target = "20260212 ErikaFusekova-PacientAdvokat-Other-SumarOchorenia.pdf"
+    pdf_target = pdf_target_name(patient_name)
     if PDF_PATH.exists():
         existing = await db.get_document_by_original_filename(pdf_target)
         if existing:
@@ -270,8 +306,15 @@ def main() -> None:
     parser.add_argument("--dry-run", action="store_true", help="Preview without uploading")
     parser.add_argument("--skip-ai", action="store_true", help="Skip AI enhancement")
     parser.add_argument("--prod", action="store_true", help="Import to prod Turso DB")
+    parser.add_argument(
+        "--patient-name",
+        help=f"Patient token used in the target filenames (or env {PATIENT_NAME_ENV}); required",
+    )
     args = parser.parse_args()
-    asyncio.run(import_notes(dry_run=args.dry_run, skip_ai=args.skip_ai, prod=args.prod))
+    patient_name = resolve_patient_name(args.patient_name)
+    asyncio.run(
+        import_notes(patient_name, dry_run=args.dry_run, skip_ai=args.skip_ai, prod=args.prod)
+    )
 
 
 if __name__ == "__main__":

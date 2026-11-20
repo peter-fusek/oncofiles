@@ -2,7 +2,7 @@
 
 **Status:** Design proposal, analysis only — no code written, nothing deployed. Supersedes the hedged framing in `native_first_rethink_memo.md` (which only compared "keep the Python backend" vs. "use Claude's native connector as-is"). This document proposes a third option that wasn't on the table there, and recommends it outright.
 **Date:** 2026-08-05
-**Premise, per direction:** clean slate — no migration constraints, Erika (re-)sets herself up fresh in the new system. This is a from-scratch design for the best available answer today, not a compromise anchored to the existing oncofiles backend.
+**Premise, per direction:** clean slate — no migration constraints, the patient (re-)sets herself up fresh in the new system. This is a from-scratch design for the best available answer today, not a compromise anchored to the existing oncofiles backend.
 
 ---
 
@@ -32,7 +32,7 @@ This is not a smaller version of the same idea — it's a materially different (
 ## Architecture
 
 ```
-Erika's Google Drive folder (the only place data ever lives)
+The patient's Google Drive folder (the only place data ever lives)
 ├── Register.gsheet  ← the manifest/index; also hosts the bound Apps Script
 ├── Labs/
 ├── Reports/
@@ -42,7 +42,7 @@ Erika's Google Drive folder (the only place data ever lives)
         │
         │  Drive push notification (file added/changed)
         ▼
-Apps Script (bound to Register.gsheet, runs under Erika's own Google identity)
+Apps Script (bound to Register.gsheet, runs under the patient's own Google identity)
 ├── doPost(e)              — webhook receiver for Drive watch events
 ├── reprocessTrigger()     — time-driven backstop (catches missed pushes, re-subscribes watch channel before expiry)
 ├── processFile(fileId)    — the actual pipeline:
@@ -51,7 +51,7 @@ Apps Script (bound to Register.gsheet, runs under Erika's own Google identity)
 │     3. get back { category, institution, date, summary, tags, suggested_filename }
 │     4. DriveApp: rename in place, move to category folder
 │     5. write/update one row in the Register sheet
-└── Script Properties: ANTHROPIC_API_KEY (Erika's own key, encrypted at rest by Google)
+└── Script Properties: ANTHROPIC_API_KEY (the patient's own key, encrypted at rest by Google)
         │
         ▼
 Claude.ai / Claude Code (native Google Drive connector, read-only against this same folder)
@@ -60,7 +60,7 @@ Claude.ai / Claude Code (native Google Drive connector, read-only against this s
     all writes happen inside the Apps Script.
 ```
 
-Nothing above requires a server you operate, a database you run, or an OAuth app registered under your own identity. The entire system lives inside Erika's own Google account.
+Nothing above requires a server you operate, a database you run, or an OAuth app registered under your own identity. The entire system lives inside the patient's own Google account.
 
 ---
 
@@ -70,7 +70,7 @@ One row per document:
 
 | filename | drive_file_id | date | category | institution | summary | tags | status | last_processed |
 |---|---|---|---|---|---|---|---|---|
-| `20260315_Erika_NOU_Labs_CBC.pdf` | `1AbC...` | 2026-03-15 | Labs | NOU | "CBC panel, ANC 1.8, within range" | chemo-cycle-4 | processed | 2026-03-15T09:14:00Z |
+| `20270315_PatientA_NOU_Labs_CBC.pdf` | `1AbC...` | 2027-03-15 | Labs | NOU | "CBC panel, ANC 1.8, within range" | chemo-cycle-4 | processed | 2027-03-15T09:14:00Z |
 
 - **Filename convention**: reuse the existing one verbatim (`YYYYMMDD_Patient_Institution_Category_DescriptionEN.ext`) — it's a good convention, independent of what runs underneath it.
 - **Category taxonomy**: reuse the existing list (Labs, Report, Pathology, CT, USG, Genetics, Surgery, ChemoSheet, etc.) — same reasoning.
@@ -82,20 +82,20 @@ One row per document:
 
 **Vs. the current Python/Turso/Railway backend:**
 - No server to host, no database to operate, no Railway bill, no migration files, no APScheduler edge cases, no Turso single-connection concurrency constraint, no circuit breakers, no session/auth layer to secure — because there's no shared service exposed to the internet at all. Every one of those exists in the current system to make a *hosted multi-tenant* service safe; a system where each user runs their own private copy inside their own Google account doesn't have that problem class to begin with.
-- Cost model changes from "you operate infrastructure and absorb API cost, tiered against a monthly budget" to "Erika's own Anthropic API key, her own bill, her own dashboard." Rough estimate: Haiku-class vision+extraction on a typical scanned medical document runs low-single-digit cents; a few hundred documents' one-time backfill is plausibly single-digit dollars total, and ongoing incremental cost (a handful of new documents a month) is near-zero.
-- **Genuine privacy upside worth naming**: the data never leaves Erika's own Google account except for the per-call Anthropic API request. There is no third-party database holding her medical records at all. That's a stronger trust story than "upload your files to our hosted service" — worth stating carefully rather than overclaiming (check Anthropic's current API data-retention terms for the relevant tier before using this in any external-facing pitch).
+- Cost model changes from "you operate infrastructure and absorb API cost, tiered against a monthly budget" to "the patient's own Anthropic API key, her own bill, her own dashboard." Rough estimate: Haiku-class vision+extraction on a typical scanned medical document runs low-single-digit cents; a few hundred documents' one-time backfill is plausibly single-digit dollars total, and ongoing incremental cost (a handful of new documents a month) is near-zero.
+- **Genuine privacy upside worth naming**: the data never leaves the patient's own Google account except for the per-call Anthropic API request. There is no third-party database holding her medical records at all. That's a stronger trust story than "upload your files to our hosted service" — worth stating carefully rather than overclaiming (check Anthropic's current API data-retention terms for the relevant tier before using this in any external-facing pitch).
 
 **Vs. Claude's native connector alone:**
 - Solves the rename/move/trash gap outright — Apps Script's `DriveApp` has full authority the connector doesn't expose.
-- Solves the scheduling-reliability question outright — Apps Script triggers don't involve Claude's connector auth at all, so the "re-prompts every fire" risk found in the earlier research simply doesn't apply here. The only auth Apps Script needs is the one-time Google authorization Erika grants when she first runs the script under her own identity — standard, mature, not experimental.
+- Solves the scheduling-reliability question outright — Apps Script triggers don't involve Claude's connector auth at all, so the "re-prompts every fire" risk found in the earlier research simply doesn't apply here. The only auth Apps Script needs is the one-time Google authorization the patient grants when she first runs the script under her own identity — standard, mature, not experimental.
 - Claude's native connector is still used, but only for its strongest capability (reading/searching/synthesizing across files during a chat), not its weakest (unattended file mutation).
 
 ---
 
-## Setup flow — what "Erika sets herself up" actually looks like
+## Setup flow — what "the patient sets herself up" actually looks like
 
 1. Peter builds one template: a Google Sheet with the bound Apps Script pipeline code, plus a small setup script that creates the category subfolders.
-2. Erika (or Peter, once, on her behalf) makes a copy of the template Sheet into her own Drive — Google's "Make a copy" duplicates the bound script along with it.
+2. The patient (or Peter, once, on her behalf) makes a copy of the template Sheet into her own Drive — Google's "Make a copy" duplicates the bound script along with it.
 3. On first run, Google prompts her to authorize the script's requested scopes (Drive, external URL fetch) under her own account — a standard one-time consent screen, not a custom OAuth app.
 4. She pastes her own Anthropic API key into a setup cell / Script Properties dialog.
 5. She points the script at her existing Drive folder (or lets the setup script create a fresh one).
@@ -111,7 +111,7 @@ This is the literal answer to "trivially transferable to another user with their
 Being honest about the trade — this is a **narrower** tool than the current product, not a strict superset:
 
 - No lab-trend analysis, biomarker safety gates, clinical-trial search, or cross-reference graph — those are "Oncoteam"-layer intelligence, not "Oncofiles"-layer storage/retrieval, and are out of scope for this rebuild unless deliberately added back later as a thin layer reading the same Register sheet.
-- No bilingual dashboard, no multi-patient hosted product, no admin/caregiver access-control layer — this is single-user-per-copy by construction, not a SaaS. If oncofiles-the-product (serving q1b/e5g/nora/Mattias/Michal/Tibor as a hosted service) is meant to continue, that's a separate decision from whether Erika personally moves to this model — see the open questions below.
+- No bilingual dashboard, no multi-patient hosted product, no admin/caregiver access-control layer — this is single-user-per-copy by construction, not a SaaS. If oncofiles-the-product (serving q1b/e5g/nora/Mattias/Michal/Tibor as a hosted service) is meant to continue, that's a separate decision from whether the patient personally moves to this model — see the open questions below.
 - No formal audit log or per-call cost telemetry out of the box — cheap to add (a second Sheet tab, appended to on every Apps Script call) if wanted, but not built by default.
 
 ---
@@ -127,10 +127,11 @@ Being honest about the trade — this is a **narrower** tool than the current pr
 
 ## Recommended next step
 
-Prototype this for real before committing further: build the template Sheet + Apps Script against a fresh test folder (not Erika's live one), run it through a real upload → rename → register-update → Claude-chat-query cycle, and confirm the Drive watch + re-subscribe mechanics behave as documented over a few days of actual unattended operation. That validates the one part of this design that's genuinely novel (event-driven Apps Script automation of this specific shape) before Erika migrates her real folder onto it.
+Prototype this for real before committing further: build the template Sheet + Apps Script against a fresh test folder (not the patient's live one), run it through a real upload → rename → register-update → Claude-chat-query cycle, and confirm the Drive watch + re-subscribe mechanics behave as documented over a few days of actual unattended operation. That validates the one part of this design that's genuinely novel (event-driven Apps Script automation of this specific shape) before the patient migrates her real folder onto it.
 
 ## Open questions for Peter
 
-- Does this replace oncofiles-the-hosted-product for the other five patients too, or is Erika moving to a personal instance of a new, separate tool while oncofiles.com keeps serving q1b(old)/e5g/nora/Mattias/Michal/Tibor as-is? (Note: if Erika fully migrates off the hosted product, q1b's production row/history in the current system becomes historical-only — worth deciding what happens to it, e.g. leave it in place read-only vs. explicitly retire it.)
+- Does this replace oncofiles-the-hosted-product for the other five patients too, or is the patient moving to a personal instance of a new, separate tool while oncofiles.com keeps serving q1b(old)/e5g/nora/Mattias/Michal/Tibor as-is?
+  (Note: if the patient fully migrates off the hosted product, q1b's production row/history in the current system becomes historical-only — worth deciding what happens to it, e.g. leave it in place read-only vs. explicitly retire it.)
 - Do you want any of the Oncoteam-style intelligence (lab trends, biomarker gates) rebuilt on top of the Register sheet, or is this rebuild scoped to storage/organize/retrieve only for now?
-- Should I proceed to build the template (Sheet + Apps Script) against a test folder, so it's ready for Erika to adopt once you've reviewed this?
+- Should I proceed to build the template (Sheet + Apps Script) against a test folder, so it's ready for the patient to adopt once you've reviewed this?
