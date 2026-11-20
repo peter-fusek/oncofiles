@@ -23,12 +23,12 @@ This is the fork every other recommendation hangs on, so it's first.
 
 Oncofiles today is **not** a personal single-patient tool, and — per the grounding above — was never meant to be one past Phase 1.
 Per current state it already serves 5 real patients in production
-(q1b/**patient A**, e5g, nora-antalova, mattias-cesnak, Michal Gašparík, Tibor Illovský) plus a sandbox,
+(q1b/**patient A** and patients B, C, D, E and F) plus a sandbox,
 behind multi-patient isolation, session auth, and a public dashboard — 1308 tests exist largely *because* it's multi-tenant.
 A "rip out the backend" rethink and "build patient A a lean personal tool" are two different projects with two different answers, and the second one would mean either forking her data out of the shared system or running any experiment against a snapshot/copy of her Drive folder without touching her live production rows:
 
 - **(a) Wholesale replacement** of oncofiles' backend for all existing patients — high blast radius, breaks real users' current setup, throws away ~18 months of hardening (auth, isolation, cost control, dedup, CSP, etc.) for capabilities the research below shows aren't fully there yet natively.
-- **(b) A separate, parallel personal tool** for patient A (or for your own family use), independent of the oncofiles product, explicitly not trying to serve Michal/Tibor/q1b's families.
+- **(b) A separate, parallel personal tool** for patient A (or for your own family use), independent of the oncofiles product, explicitly not trying to serve the families of patients A, E or F.
 - **(c) A north-star simplification** — let the *architecture philosophy* below inform where oncofiles sheds complexity over time, without a big-bang cutover, and without breaking existing patients.
 
 The rest of this memo assumes you want an honest comparison either way, but the recommendation section is written for **(c)** as the pragmatic default, with **(b)** called out as a cheap way to test the idea for real before deciding on (a) or (c). Flag if you actually meant (a) or (b) specifically — the trade-offs below shift materially.
@@ -77,7 +77,7 @@ That's not a coincidence: Anthropic's connectors are built for "one person, thei
 1. **Resolve Decision Point 0 first**
    (product-wide vs. personal vs. north-star) — it's a 2-minute conversation that changes everything else, and the grounding above tips it:
    q1b (patient A) is production data, and #444's own competitive analysis already scored "Chartfold-shaped" (single-patient, no OCR, no bilingual, no backend) as the weakest peer in the landscape, not something to converge toward.
-2. **Don't cut over the existing backend for q1b/e5g/nora/Mattias/Michal/Tibor.** The rename and scheduling gaps are real and unverified-fixed; a cutover today would trade a working (if heavy) system for one with two known holes in exactly the operations that matter most (data integrity on rename, unattended reliability) — and would also abandon the exact moat #444 identified against HealthEx/ChatGPT Health/Chartfold.
+2. **Don't cut over the existing backend for patients A–F.** The rename and scheduling gaps are real and unverified-fixed; a cutover today would trade a working (if heavy) system for one with two known holes in exactly the operations that matter most (data integrity on rename, unattended reliability) — and would also abandon the exact moat #444 identified against HealthEx/ChatGPT Health/Chartfold.
 3. **Do prototype the lean model for real, cheaply, out-of-band**, against a copy of patient A's Drive folder (not her live production one), before deciding anything structural:
    - Duplicate a Claude Project pointed at patient A's Drive folder.
    - Write the project instructions to define the register file format and the filename convention (can literally reuse the existing convention from this repo's CLAUDE.md).

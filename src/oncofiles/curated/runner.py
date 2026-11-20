@@ -83,8 +83,9 @@ class RunOptions:
     min_text_chars: int = 100
     run_id: str = ""
     now: datetime | None = None
-    # Oncology contract (Cowork erika-daily-cleanup): a date > 2 years old on a
-    # new scan is suspect → review. None = no age rule (general patients).
+    # Oncology contract (the first patient's Cowork daily clean-up job): a date
+    # more than two years old on a new scan is suspect → review. None = no age
+    # rule (general patients).
     max_doc_age_days: int | None = None
     # Already-filed documents without a sidecar get one (sidecar only) per run.
     max_missing_sidecars: int = 20

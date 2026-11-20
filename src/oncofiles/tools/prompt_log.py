@@ -203,7 +203,7 @@ async def backfill_orphan_prompt_logs(
         pl_id = r["pl_id"]
         doc_pid = r.get("doc_patient_id")
         try:
-            # A document still carrying a legacy column default ('erika', '')
+            # A document still carrying a legacy column default (migration 029's named one, '')
             # names no patient: never copy that onto the log row (#791).
             doc_pid = require_patient_id(doc_pid)
         except ValueError:
