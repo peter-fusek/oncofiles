@@ -518,14 +518,19 @@ OTHER_UUID = "44444444-4444-4444-8444-444444444853"
 
 
 async def test_list_other_patient_folder_ids_excludes_own_and_empty(db: Database):
-    from tests.helpers import ERIKA_UUID
+    from tests.helpers import PRIMARY_TEST_UUID
 
     await db.insert_patient(Patient(patient_id=OTHER_UUID, slug="other-853", display_name="O"))
-    for pid, folder in ((ERIKA_UUID, "idOwnFolder0000001"), (OTHER_UUID, "idOtherFolder00001")):
+    for pid, folder in (
+        (PRIMARY_TEST_UUID, "idOwnFolder0000001"),
+        (OTHER_UUID, "idOtherFolder00001"),
+    ):
         await db.upsert_oauth_token(
             OAuthToken(patient_id=pid, access_token="a", refresh_token="r", gdrive_folder_id=folder)
         )
-    assert await db.list_other_patient_folder_ids(patient_id=ERIKA_UUID) == {"idOtherFolder00001"}
+    assert await db.list_other_patient_folder_ids(patient_id=PRIMARY_TEST_UUID) == {
+        "idOtherFolder00001"
+    }
     assert await db.list_other_patient_folder_ids(patient_id=OTHER_UUID) == {"idOwnFolder0000001"}
 
 

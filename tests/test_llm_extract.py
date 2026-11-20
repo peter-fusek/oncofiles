@@ -13,7 +13,7 @@ from oncofiles import cloud_guard
 from oncofiles.cloud_guard import CloudForbiddenError, local_only
 from oncofiles.curated import llm, llm_extract, verifier
 from oncofiles.curated.facts_rules import Vocabulary
-from tests.helpers import ERIKA_UUID
+from tests.helpers import PRIMARY_TEST_UUID
 
 VOCAB = Vocabulary.from_rows(
     [
@@ -303,7 +303,7 @@ async def _seed(db):
         "INSERT INTO documents (id, file_id, filename, original_filename, category, mime_type, "
         "size_bytes, patient_id, gdrive_id, structured_metadata, document_date) "
         "VALUES (?, ?, ?, ?, 'labs', 'application/pdf', ?, ?, ?, ?, '2027-06-14')",
-        (DOC, f"gdrive:g{DOC}", f"d{DOC}.pdf", f"d{DOC}.pdf", len(meta), ERIKA_UUID,
+        (DOC, f"gdrive:g{DOC}", f"d{DOC}.pdf", f"d{DOC}.pdf", len(meta), PRIMARY_TEST_UUID,
          f"g{DOC}", json.dumps(meta)),
     )  # fmt: skip
     await db.save_ocr_page(DOC, 1, PAGE, "curated-sidecar")
@@ -311,7 +311,7 @@ async def _seed(db):
         "INSERT INTO clinical_records (patient_id, record_type, source_document_id, param, "
         "code, occurred_at, value_canonical, verification, metadata_json, page_number, "
         "source) VALUES (?, 'lab', ?, 'ALT', 'ALT', '2027-06-14', ?, 'machine', '{}', 1, 't')",
-        (ERIKA_UUID, DOC, 0.45),
+        (PRIMARY_TEST_UUID, DOC, 0.45),
     )
     await db.db.commit()
 
@@ -374,12 +374,12 @@ async def test_the_preview_writes_nothing_and_runs_local_only(db, monkeypatch):
 
     monkeypatch.setattr(llm, "chat", fake_chat)
     monkeypatch.setattr(tool, "_reocr_jobs", {})
-    monkeypatch.setattr(tool, "_readme_births", {ERIKA_UUID: set()})  # no README DOB
+    monkeypatch.setattr(tool, "_readme_births", {PRIMARY_TEST_UUID: set()})  # no README DOB
     before = await _snapshot(db)
     started = json.loads(await tool.curated_llm_extract_preview(_ctx(db), document_ids=[DOC]))
     assert started["state"] == "running" and started["kind"] == "llm_shadow"
     assert not tool.run_active()  # a shadow job never blocks a deploy
-    await asyncio.wait_for(tool._reocr_jobs[ERIKA_UUID]["task"], 10)
+    await asyncio.wait_for(tool._reocr_jobs[PRIMARY_TEST_UUID]["task"], 10)
     job = json.loads(await tool.curated_reocr_status(_ctx(db)))
     assert job["state"] == "done", job
     doc = job["report"]["documents"][0]
@@ -413,7 +413,7 @@ async def test_the_lab_shadow_reads_the_readme_dob_like_the_clinical_path(db, mo
     monkeypatch.setattr(llm, "chat", lambda system, user, **kw: model_answer())
     monkeypatch.setattr(tool, "_reocr_jobs", {})
     monkeypatch.setattr(tool, "_readme_births", {})  # not cached: read from the README
-    assert tool._birth_dates(ERIKA_UUID) == set()  # nothing in patient context
+    assert tool._birth_dates(PRIMARY_TEST_UUID) == set()  # nothing in patient context
     drive = FakeDrive()  # its synthetic README contract carries a birth date
     resolved = []
     real = tool._all_birth_dates
@@ -429,14 +429,14 @@ async def test_the_lab_shadow_reads_the_readme_dob_like_the_clinical_path(db, mo
         patch("oncofiles.curated.drive_ops.DriveOps", lambda _own: drive),
     ):  # fmt: skip
         await tool.curated_llm_extract_preview(_ctx(db), document_ids=[DOC])
-        await asyncio.wait_for(tool._reocr_jobs[ERIKA_UUID]["task"], 10)
+        await asyncio.wait_for(tool._reocr_jobs[PRIMARY_TEST_UUID]["task"], 10)
     job = json.loads(await tool.curated_reocr_status(_ctx(db)))
     assert job["state"] == "done", job
     doc = job["report"]["documents"][0]
     assert doc["dob_known"] is True and doc["birth_date_guard"] == "active"
     assert doc["dates_unchecked_no_dob"] == 0
-    assert resolved == [ERIKA_UUID]  # the shared resolver, not a copy
-    assert tool._readme_births[ERIKA_UUID]  # cached for the next job
+    assert resolved == [PRIMARY_TEST_UUID]  # the shared resolver, not a copy
+    assert tool._readme_births[PRIMARY_TEST_UUID]  # cached for the next job
 
 
 # ── infra review: truncation, budget, DOB guard ─────────────────────────
@@ -793,13 +793,13 @@ async def test_preview_overrides_are_echoed_used_and_refused_on_write(db, monkey
             await tool.curated_llm_extract_preview(_ctx(db), [DOC], dry_run=False, **kw)
     with pytest.raises(ValueError):
         await tool.curated_llm_extract_preview(_ctx(db), [DOC], sampling="hot")
-    assert ERIKA_UUID not in tool._reocr_jobs
+    assert PRIMARY_TEST_UUID not in tool._reocr_jobs
     started = json.loads(
         await tool.curated_llm_extract_preview(_ctx(db), [DOC], thinking="on", sampling="qwen")
     )
     assert started["overrides"] == {"thinking": "on", "sampling": "qwen", "timeout_s": None,
                                     "reasoning_marker": None}  # fmt: skip
-    await asyncio.wait_for(tool._reocr_jobs[ERIKA_UUID]["task"], 10)
+    await asyncio.wait_for(tool._reocr_jobs[PRIMARY_TEST_UUID]["task"], 10)
     report = json.loads(await tool.curated_reocr_status(_ctx(db)))["report"]
     assert report["settings"]["thinking"] == "on" and report["settings"]["sampling"] == "qwen"
     assert report["settings"]["overrides"] == {"thinking": "on", "sampling": "qwen",
@@ -844,7 +844,7 @@ async def test_preview_timeout_override_and_no_prefill(db, monkeypatch):
                {"timeout_s": True}):  # fmt: skip
         with pytest.raises(ValueError):
             await tool.curated_llm_extract_preview(_ctx(db), [DOC], **kw)
-    assert ERIKA_UUID not in tool._reocr_jobs and seen == []
+    assert PRIMARY_TEST_UUID not in tool._reocr_jobs and seen == []
     started = json.loads(
         await tool.curated_llm_extract_preview(
             _ctx(db), [DOC], thinking="off", sampling="qwen", timeout_s=120
@@ -852,7 +852,7 @@ async def test_preview_timeout_override_and_no_prefill(db, monkeypatch):
     )
     assert started["overrides"] == {"thinking": "off", "sampling": "qwen", "timeout_s": 120,
                                     "reasoning_marker": None}  # fmt: skip
-    await asyncio.wait_for(tool._reocr_jobs[ERIKA_UUID]["task"], 10)
+    await asyncio.wait_for(tool._reocr_jobs[PRIMARY_TEST_UUID]["task"], 10)
     report = json.loads(await tool.curated_reocr_status(_ctx(db)))["report"]
     assert report["extractor"] == "llm-extract-v10"
     assert report["settings"]["timeout_s"] == 120.0 and "prefill" not in report["settings"]
@@ -889,12 +889,12 @@ async def test_preview_reasoning_marker_override(db, monkeypatch):
             )
     with pytest.raises(ValueError):
         await tool.curated_llm_extract_preview(_ctx(db), [DOC], reasoning_marker="maybe")
-    assert ERIKA_UUID not in tool._reocr_jobs and seen == []
+    assert PRIMARY_TEST_UUID not in tool._reocr_jobs and seen == []
     started = json.loads(
         await tool.curated_llm_extract_preview(_ctx(db), [DOC], reasoning_marker="on")
     )
     assert started["overrides"]["reasoning_marker"] == "on"
-    await asyncio.wait_for(tool._reocr_jobs[ERIKA_UUID]["task"], 10)
+    await asyncio.wait_for(tool._reocr_jobs[PRIMARY_TEST_UUID]["task"], 10)
     report = json.loads(await tool.curated_reocr_status(_ctx(db)))["report"]
     assert report["settings"]["reasoning_marker"] == "on"
     assert report["settings"]["overrides"]["reasoning_marker"] == "on"
@@ -904,5 +904,5 @@ async def test_preview_reasoning_marker_override(db, monkeypatch):
     tool._reocr_jobs.clear()
     seen.clear()
     await tool.curated_llm_extract_preview(_ctx(db), [DOC])
-    await asyncio.wait_for(tool._reocr_jobs[ERIKA_UUID]["task"], 10)
+    await asyncio.wait_for(tool._reocr_jobs[PRIMARY_TEST_UUID]["task"], 10)
     assert seen == [False]

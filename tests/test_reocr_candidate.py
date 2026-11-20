@@ -25,7 +25,7 @@ from oncofiles.curated import drive_ops, reocr
 from oncofiles.curated.facts_rules import Vocabulary
 from oncofiles.curated.indexer import parse_sidecar
 from oncofiles.tools import curated as tool
-from tests.helpers import ERIKA_UUID
+from tests.helpers import PRIMARY_TEST_UUID
 from tests.test_curated_reocr import NOW
 from tests.test_curated_runner import LABS, LOGS
 from tests.test_reocr_loss_guard import FRONT, OLD_BODY, TOKENS, _drop, _go, _run
@@ -200,10 +200,10 @@ def _wired(drive, reader=None):
 @pytest.mark.parametrize("dry_run", [False, True])
 async def test_job_review_writes_inside_contract_writes_and_never_reindexes(db, dry_run):
     drive, side, old, doc, reader = _run(LOSSY)
-    tool._reocr_jobs[ERIKA_UUID] = job = {"kind": "reocr", "state": "running",
+    tool._reocr_jobs[PRIMARY_TEST_UUID] = job = {"kind": "reocr", "state": "running",
                                           "dry_run": dry_run, "documents": [doc]}  # fmt: skip
     with _wired(drive, reader) as (index, entered):
-        await tool._reocr_job(db, ERIKA_UUID, [doc], dry_run=dry_run, passes=2)
+        await tool._reocr_job(db, PRIMARY_TEST_UUID, [doc], dry_run=dry_run, passes=2)
     assert job["state"] == "done" and index.await_count == 0 and "index" not in job
     [d] = job["report"]["documents"]
     assert drive.items[side]["content"] == old.encode()
@@ -296,7 +296,7 @@ async def test_promote_refuses_any_other_file(vocab, where, name, body, code):
 @pytest.mark.usefixtures("admin_scope")
 async def test_tool_promotes_a_candidate_of_the_right_document(db, vocab):
     drive, _, side, old, cand = await _reviewed(vocab)
-    await _seed_doc(db, 801, ERIKA_UUID, side, filename=NAME)
+    await _seed_doc(db, 801, PRIMARY_TEST_UUID, side, filename=NAME)
     with _wired(drive) as (index, entered):
         preview = await _call(db, backup_id=cand)
         assert preview["result"] == "previewed" and preview["backup_kind"] == "reocr_candidate"
@@ -323,8 +323,8 @@ async def test_tool_refuses_a_candidate_of_another_document(db, vocab):
     drive, _, side, _, cand = await _reviewed(vocab)
     other_name = "20270413-JanaTestova-LabX-Labs-Druha.pdf"
     other_side = drive.add(other_name + ".md", drive.folder[LABS], (FRONT + OLD_BODY).encode())
-    await _seed_doc(db, 801, ERIKA_UUID, side, filename=NAME)
-    await _seed_doc(db, 802, ERIKA_UUID, other_side, filename=other_name)
+    await _seed_doc(db, 801, PRIMARY_TEST_UUID, side, filename=NAME)
+    await _seed_doc(db, 802, PRIMARY_TEST_UUID, other_side, filename=other_name)
     with _wired(drive) as (index, _):
         out = await _call(db, document_id=802, backup_id=cand, dry_run=False)
     assert out["error"] == "refused: backup_not_of_this_document"

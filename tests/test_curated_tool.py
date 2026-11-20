@@ -10,7 +10,7 @@ import pytest
 from oncofiles import config
 from oncofiles.curated.runner import RunReport
 from oncofiles.tools import curated as tool
-from tests.helpers import ERIKA_UUID
+from tests.helpers import PRIMARY_TEST_UUID
 
 
 @pytest.fixture(autouse=True)
@@ -68,7 +68,7 @@ def _env(report_or_fn, reason="is a curated folder"):
 
 async def _wait_done(db):
     for _ in range(100):
-        status = await tool.run_status(db, ERIKA_UUID)
+        status = await tool.run_status(db, PRIMARY_TEST_UUID)
         if status["state"] != "running":
             return status
         await asyncio.sleep(0.01)
@@ -99,7 +99,7 @@ async def test_refuses_non_root_folders(db, llm_on, reason):
 
 
 async def test_one_run_at_a_time(db, llm_on):
-    tool._runs[ERIKA_UUID] = {"state": "running"}
+    tool._runs[PRIMARY_TEST_UUID] = {"state": "running"}
     out = json.loads(await tool.curated_folder_run(_ctx(db)))
     assert "already in progress" in out["error"]
 
@@ -133,19 +133,21 @@ async def test_real_run_refused_without_preview(db, llm_on):
 
 
 async def test_real_run_refused_after_failed_preview(db, llm_on):
-    rid = await db.insert_curated_run(patient_id=ERIKA_UUID, dry_run=True, trigger="t")
+    rid = await db.insert_curated_run(patient_id=PRIMARY_TEST_UUID, dry_run=True, trigger="t")
     await db.finish_curated_run(
-        rid, patient_id=ERIKA_UUID, status="aborted", message="x", report={}
+        rid, patient_id=PRIMARY_TEST_UUID, status="aborted", message="x", report={}
     )
-    reason = await tool.preview_gate(db, ERIKA_UUID)
+    reason = await tool.preview_gate(db, PRIMARY_TEST_UUID)
     assert reason and "aborted" in reason
 
 
 async def test_real_run_refused_after_stale_preview(db, llm_on):
-    rid = await db.insert_curated_run(patient_id=ERIKA_UUID, dry_run=True, trigger="t")
-    await db.finish_curated_run(rid, patient_id=ERIKA_UUID, status="ok", message="", report={})
+    rid = await db.insert_curated_run(patient_id=PRIMARY_TEST_UUID, dry_run=True, trigger="t")
+    await db.finish_curated_run(
+        rid, patient_id=PRIMARY_TEST_UUID, status="ok", message="", report={}
+    )
     later = datetime.now(UTC) + timedelta(hours=25)
-    assert "older than 24 h" in await tool.preview_gate(db, ERIKA_UUID, now=later)
+    assert "older than 24 h" in await tool.preview_gate(db, PRIMARY_TEST_UUID, now=later)
 
 
 async def test_real_run_allowed_after_clean_preview(db, llm_on):
@@ -166,7 +168,7 @@ async def test_real_run_allowed_after_clean_preview(db, llm_on):
 async def test_nightly_stops_when_preview_is_not_clean(db, llm_on):
     _, patches = _env(_report(status="aborted"))
     with patches[0], patches[1], patches[2] as run:
-        reports = await tool.nightly_for_patient(db, ERIKA_UUID, max_real_runs=5)
+        reports = await tool.nightly_for_patient(db, PRIMARY_TEST_UUID, max_real_runs=5)
     assert len(reports) == 1 and run.call_count == 1
 
 
@@ -179,7 +181,7 @@ async def test_nightly_repeats_real_runs_until_inbox_done(db, llm_on):
     ]
     _, patches = _env(lambda *a, **k: seq.pop(0))
     with patches[0], patches[1], patches[2] as run:
-        reports = await tool.nightly_for_patient(db, ERIKA_UUID, max_real_runs=5)
+        reports = await tool.nightly_for_patient(db, PRIMARY_TEST_UUID, max_real_runs=5)
     assert len(reports) == 4 and run.call_count == 4
     assert [r["dry_run"] for r in reports] == [True, False, False, False]
 
@@ -187,16 +189,16 @@ async def test_nightly_repeats_real_runs_until_inbox_done(db, llm_on):
 async def test_nightly_respects_max_real_runs(db, llm_on):
     _, patches = _env(lambda *a, **k: _report(not_processed=["more"]))
     with patches[0], patches[1], patches[2] as run:
-        await tool.nightly_for_patient(db, ERIKA_UUID, max_real_runs=2)
+        await tool.nightly_for_patient(db, PRIMARY_TEST_UUID, max_real_runs=2)
     assert run.call_count == 3  # 1 preview + 2 real
 
 
 async def test_nightly_switch_is_persisted(db):
     assert await db.list_curated_nightly_patients() == []
-    await db.set_curated_nightly(patient_id=ERIKA_UUID, enabled=True, updated_by="t")
-    assert await db.list_curated_nightly_patients() == [ERIKA_UUID]
-    await db.set_curated_nightly(patient_id=ERIKA_UUID, enabled=False, updated_by="t")
-    assert await db.get_curated_nightly(patient_id=ERIKA_UUID) is False
+    await db.set_curated_nightly(patient_id=PRIMARY_TEST_UUID, enabled=True, updated_by="t")
+    assert await db.list_curated_nightly_patients() == [PRIMARY_TEST_UUID]
+    await db.set_curated_nightly(patient_id=PRIMARY_TEST_UUID, enabled=False, updated_by="t")
+    assert await db.get_curated_nightly(patient_id=PRIMARY_TEST_UUID) is False
 
 
 # ── cache ────────────────────────────────────────────────────────────
@@ -268,14 +270,14 @@ async def test_admin_overview_and_nightly_toggle(db):
     from oncofiles import server
 
     req, email = _admin_request(
-        db, email="admin@example.com", body={"patient_id": ERIKA_UUID, "enabled": True}
+        db, email="admin@example.com", body={"patient_id": PRIMARY_TEST_UUID, "enabled": True}
     )
     resp = await _call(server.api_admin_curated_nightly, req, email, admin=True)
     assert resp.status_code == 200
     req, email = _admin_request(db, email="admin@example.com")
     resp = await _call(server.api_admin_curated_overview, req, email, admin=True)
     data = json.loads(resp.body)
-    card = next(c for c in data["patients"] if c["patient_id"] == ERIKA_UUID)
+    card = next(c for c in data["patients"] if c["patient_id"] == PRIMARY_TEST_UUID)
     assert card["nightly_enabled"] is True
     assert "no preview" in card["real_run_blocked"]
 
@@ -284,7 +286,7 @@ async def test_admin_real_run_without_preview_is_409(db, llm_on):
     from oncofiles import server
 
     req, email = _admin_request(
-        db, email="admin@example.com", body={"patient_id": ERIKA_UUID, "dry_run": False}
+        db, email="admin@example.com", body={"patient_id": PRIMARY_TEST_UUID, "dry_run": False}
     )
     resp = await _call(server.api_admin_curated_run, req, email, admin=True)
     assert resp.status_code == 409 and "real run refused" in json.loads(resp.body)["error"]
@@ -302,12 +304,14 @@ def test_nightly_hour_setting(monkeypatch, raw, expected):
 
 
 async def test_hourly_mode_reuses_a_fresh_clean_preview(db, llm_on):
-    rid = await db.insert_curated_run(patient_id=ERIKA_UUID, dry_run=True, trigger="t")
-    await db.finish_curated_run(rid, patient_id=ERIKA_UUID, status="ok", message="", report={})
+    rid = await db.insert_curated_run(patient_id=PRIMARY_TEST_UUID, dry_run=True, trigger="t")
+    await db.finish_curated_run(
+        rid, patient_id=PRIMARY_TEST_UUID, status="ok", message="", report={}
+    )
     _, patches = _env(lambda *a, **k: _report(dry_run=False, not_processed=[]))
     with patches[0], patches[1], patches[2] as run:
         reports = await tool.nightly_for_patient(
-            db, ERIKA_UUID, max_real_runs=5, reuse_preview=True
+            db, PRIMARY_TEST_UUID, max_real_runs=5, reuse_preview=True
         )
     assert run.call_count == 1 and [r["dry_run"] for r in reports] == [False]
     assert run.call_args.args[2].dry_run is False
@@ -318,25 +322,29 @@ async def test_hourly_mode_previews_when_no_fresh_preview(db, llm_on):
     _, patches = _env(lambda *a, **k: seq.pop(0))
     with patches[0], patches[1], patches[2] as run:
         reports = await tool.nightly_for_patient(
-            db, ERIKA_UUID, max_real_runs=5, reuse_preview=True
+            db, PRIMARY_TEST_UUID, max_real_runs=5, reuse_preview=True
         )
     assert run.call_count == 2 and [r["dry_run"] for r in reports] == [True, False]
 
 
 async def test_startup_marks_runs_left_running_as_interrupted(db):
-    rid = await db.insert_curated_run(patient_id=ERIKA_UUID, dry_run=False, trigger="nightly")
-    done = await db.insert_curated_run(patient_id=ERIKA_UUID, dry_run=True, trigger="t")
-    await db.finish_curated_run(done, patient_id=ERIKA_UUID, status="ok", message="", report={})
+    rid = await db.insert_curated_run(
+        patient_id=PRIMARY_TEST_UUID, dry_run=False, trigger="nightly"
+    )
+    done = await db.insert_curated_run(patient_id=PRIMARY_TEST_UUID, dry_run=True, trigger="t")
+    await db.finish_curated_run(
+        done, patient_id=PRIMARY_TEST_UUID, status="ok", message="", report={}
+    )
     assert await db.mark_interrupted_curated_runs() == 1
-    row = await db.get_curated_run(rid, patient_id=ERIKA_UUID)
+    row = await db.get_curated_run(rid, patient_id=PRIMARY_TEST_UUID)
     assert row["status"] == "interrupted"
-    assert (await db.get_curated_run(done, patient_id=ERIKA_UUID))["status"] == "ok"
+    assert (await db.get_curated_run(done, patient_id=PRIMARY_TEST_UUID))["status"] == "ok"
 
 
 async def test_nightly_loop_marks_interrupted_then_waits_before_first_run(db, monkeypatch):
     monkeypatch.setenv("CURATED_NIGHTLY_ENABLED", "true")
     monkeypatch.setenv("CURATED_NIGHTLY_HOUR", "every")
-    await db.insert_curated_run(patient_id=ERIKA_UUID, dry_run=False, trigger="nightly")
+    await db.insert_curated_run(patient_id=PRIMARY_TEST_UUID, dry_run=False, trigger="nightly")
     calls = []
 
     async def fake_nightly(*a, **k):
@@ -350,7 +358,7 @@ async def test_nightly_loop_marks_interrupted_then_waits_before_first_run(db, mo
     with pytest.raises(asyncio.CancelledError):
         await task
     assert calls == []  # still in the startup grace period
-    rows = await db.list_curated_runs(patient_id=ERIKA_UUID)
+    rows = await db.list_curated_runs(patient_id=PRIMARY_TEST_UUID)
     assert rows[0]["status"] == "interrupted"
 
 
@@ -392,7 +400,7 @@ def _ok(result="filed"):
 
 
 async def _tick(db):
-    return await tool.continuous_tick(db, ERIKA_UUID, settle_s=120, chunk=5, max_runs=5)
+    return await tool.continuous_tick(db, PRIMARY_TEST_UUID, settle_s=120, chunk=5, max_runs=5)
 
 
 async def test_continuous_idle_remembers_the_signature(db, cont):
@@ -430,11 +438,11 @@ async def test_continuous_backs_off_after_a_failed_sequence(db, cont):
     probes.append(_probe({"f1": "inbox/a.pdf"}))
     reports.append([{"dry_run": False, "status": "aborted", "documents": []}])
     await _tick(db)
-    assert tool._watch[ERIKA_UUID].failures == 1
+    assert tool._watch[PRIMARY_TEST_UUID].failures == 1
     probes.append(_probe({"f1": "inbox/a.pdf"}))
     assert await _tick(db) is None  # inside the backoff: probed, but no run
     assert [c[0] for c in calls] == ["probe", "run", "probe"]
-    assert tool._probe_stats[ERIKA_UUID].runs_blocked == {"failure_backoff": 1}
+    assert tool._probe_stats[PRIMARY_TEST_UUID].runs_blocked == {"failure_backoff": 1}
 
 
 async def test_continuous_runs_to_recover_a_leftover_canary(db, cont):
@@ -460,7 +468,7 @@ async def test_other_patients_job_blocks_neither_probe_nor_run(db, cont):
 
 async def test_shadow_job_of_the_same_patient_does_not_block(db, cont):
     probes, calls, reports = cont
-    tool._reocr_jobs[ERIKA_UUID] = {"state": "running", "kind": "llm_shadow"}
+    tool._reocr_jobs[PRIMARY_TEST_UUID] = {"state": "running", "kind": "llm_shadow"}
     probes.append(_probe({"f1": "inbox/a.pdf"}))
     reports.append([_ok()])
     assert await _tick(db) is not None
@@ -474,7 +482,7 @@ async def test_shadow_job_of_the_same_patient_does_not_block(db, cont):
 )  # fmt: skip
 async def test_same_patient_job_blocks_the_run_not_the_probe(db, cont, caplog, job, reason):
     probes, calls, reports = cont
-    tool._reocr_jobs[ERIKA_UUID] = job
+    tool._reocr_jobs[PRIMARY_TEST_UUID] = job
     probes += [_probe({"f1": "inbox/a.pdf"}), _probe({"f1": "inbox/a.pdf"})]
     reports.append([_ok()])
     with caplog.at_level("INFO", logger=tool.logger.name):
@@ -482,9 +490,9 @@ async def test_same_patient_job_blocks_the_run_not_the_probe(db, cont, caplog, j
     assert [c[0] for c in calls] == ["probe"]
     [line] = [r for r in caplog.records if "run blocked" in r.getMessage()]  # once per poll
     assert line.levelname == "INFO" and reason in line.getMessage()
-    st = tool._probe_stats[ERIKA_UUID]
+    st = tool._probe_stats[PRIMARY_TEST_UUID]
     assert st.probes_total == 1 and st.runs_blocked == {reason: 1}
-    assert tool._watch[ERIKA_UUID].failures == 0  # blocked is not a failure
+    assert tool._watch[PRIMARY_TEST_UUID].failures == 0  # blocked is not a failure
     job["state"] = "done"  # the job ends → the next poll runs
     assert await _tick(db) == [_ok()]
 
@@ -492,13 +500,13 @@ async def test_same_patient_job_blocks_the_run_not_the_probe(db, cont, caplog, j
 async def test_same_patient_run_or_held_lock_blocks_the_run(db, cont):
     probes, calls, _ = cont
     probes += [_probe({"f1": "inbox/a.pdf"}), _probe({"f1": "inbox/a.pdf"})]
-    tool._runs[ERIKA_UUID] = {"state": "running"}
+    tool._runs[PRIMARY_TEST_UUID] = {"state": "running"}
     assert await _tick(db) is None
     tool._runs.clear()
-    async with tool.patient_lock(ERIKA_UUID):
+    async with tool.patient_lock(PRIMARY_TEST_UUID):
         assert await _tick(db) is None
     assert [c[0] for c in calls] == ["probe", "probe"]
-    assert tool._probe_stats[ERIKA_UUID].runs_blocked == {
+    assert tool._probe_stats[PRIMARY_TEST_UUID].runs_blocked == {
         "run_in_progress": 1,
         "patient_lock_held": 1,
     }
@@ -510,12 +518,12 @@ async def test_startup_grace_gates_the_run_but_not_the_probe(db, cont):
     reports.append([_ok()])
     later = tool.time.monotonic() + 300
     assert await tool.continuous_tick(
-        db, ERIKA_UUID, settle_s=120, chunk=5, max_runs=5, grace_until=later
+        db, PRIMARY_TEST_UUID, settle_s=120, chunk=5, max_runs=5, grace_until=later
     ) is None  # fmt: skip
     assert [c[0] for c in calls] == ["probe"]
-    assert tool._probe_stats[ERIKA_UUID].runs_blocked == {"startup_grace": 1}
+    assert tool._probe_stats[PRIMARY_TEST_UUID].runs_blocked == {"startup_grace": 1}
     assert await tool.continuous_tick(
-        db, ERIKA_UUID, settle_s=120, chunk=5, max_runs=5, grace_until=0.0
+        db, PRIMARY_TEST_UUID, settle_s=120, chunk=5, max_runs=5, grace_until=0.0
     ) == [_ok()]  # fmt: skip
 
 
@@ -524,9 +532,9 @@ async def test_a_run_blocked_mid_sequence_is_not_a_failure(db, cont):
     probes.append(_probe({"f1": "inbox/a.pdf"}))
     reports.append([{"error": "busy: reread_in_progress", "blocked": "reread_in_progress"}])
     await _tick(db)
-    w = tool._watch[ERIKA_UUID]
+    w = tool._watch[PRIMARY_TEST_UUID]
     assert w.failures == 0 and w.not_before == 0.0 and w.stuck == frozenset()
-    assert tool._probe_stats[ERIKA_UUID].runs_blocked == {"reread_in_progress": 1}
+    assert tool._probe_stats[PRIMARY_TEST_UUID].runs_blocked == {"reread_in_progress": 1}
 
 
 async def test_probe_counters(db, cont, monkeypatch):
@@ -534,7 +542,7 @@ async def test_probe_counters(db, cont, monkeypatch):
     probes += [_probe({"f1": "inbox/a.pdf", "f2": "inbox/b.pdf"}), _probe(sig="idle")]
     reports.append([_ok()])
     await _tick(db)
-    st = tool._probe_stats[ERIKA_UUID]
+    st = tool._probe_stats[PRIMARY_TEST_UUID]
     assert st.probes_total == 1 and st.pending_inbox_count == 2
     assert st.last_probe_at and st.last_auto_run_at and st.auto_runs_total == 1
     await _tick(db)
@@ -546,7 +554,7 @@ async def test_probe_counters(db, cont, monkeypatch):
     monkeypatch.setattr(tool, "probe_patient", unreachable)
     await _tick(db)
     assert st.probes_skipped == {"drive_unavailable": 1} and st.probes_total == 2
-    detail = tool.heartbeat_detail()["probes"][ERIKA_UUID]
+    detail = tool.heartbeat_detail()["probes"][PRIMARY_TEST_UUID]
     assert detail["probes_total"] == 2 and detail["probes_skipped"] == {"drive_unavailable": 1}
     # the public heartbeat stays an age and a boolean (no patient ids)
     assert set(tool.heartbeat()) == {"curated_last_probe_age_s", "curated_loop_suspected"}
@@ -554,15 +562,15 @@ async def test_probe_counters(db, cont, monkeypatch):
 
 async def test_execute_run_skip_if_busy_never_waits_on_the_lock(db, llm_on):
     tool._reocr_jobs.clear()
-    async with tool.patient_lock(ERIKA_UUID):
+    async with tool.patient_lock(PRIMARY_TEST_UUID):
         out = await asyncio.wait_for(
             tool.execute_run(
-                db, ERIKA_UUID, dry_run=True, trigger="auto-preview", skip_if_busy=True
+                db, PRIMARY_TEST_UUID, dry_run=True, trigger="auto-preview", skip_if_busy=True
             ),
             timeout=2,
         )
     assert out["blocked"] == "patient_lock_held"
-    assert ERIKA_UUID not in tool._runs
+    assert PRIMARY_TEST_UUID not in tool._runs
 
 
 async def test_loop_probes_during_the_grace_and_does_not_stall_on_a_busy_patient(
@@ -574,7 +582,7 @@ async def test_loop_probes_during_the_grace_and_does_not_stall_on_a_busy_patient
     monkeypatch.setenv("CURATED_NIGHTLY_ENABLED", "true")
     monkeypatch.setenv("CURATED_NIGHTLY_HOUR", "every")
     monkeypatch.setattr(
-        db, "list_curated_nightly_patients", AsyncMock(return_value=[OTHER_PID, ERIKA_UUID])
+        db, "list_curated_nightly_patients", AsyncMock(return_value=[OTHER_PID, PRIMARY_TEST_UUID])
     )
     seen = []
 
@@ -595,9 +603,9 @@ async def test_loop_probes_during_the_grace_and_does_not_stall_on_a_busy_patient
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
-    assert seen == [OTHER_PID, ERIKA_UUID]  # both probed, none waited
+    assert seen == [OTHER_PID, PRIMARY_TEST_UUID]  # both probed, none waited
     assert [c for c in calls if c[0] == "run"] == []  # grace: no run, no nightly
-    assert tool._probe_stats[ERIKA_UUID].runs_blocked == {"startup_grace": 1}
+    assert tool._probe_stats[PRIMARY_TEST_UUID].runs_blocked == {"startup_grace": 1}
 
 
 async def test_loop_after_grace_runs_the_free_patient_while_the_other_is_busy(
@@ -610,7 +618,7 @@ async def test_loop_after_grace_runs_the_free_patient_while_the_other_is_busy(
     not_now = (datetime.now(ZoneInfo("Europe/Bratislava")).hour + 12) % 24
     monkeypatch.setenv("CURATED_NIGHTLY_HOUR", str(not_now))  # not due: continuous branch
     monkeypatch.setattr(
-        db, "list_curated_nightly_patients", AsyncMock(return_value=[OTHER_PID, ERIKA_UUID])
+        db, "list_curated_nightly_patients", AsyncMock(return_value=[OTHER_PID, PRIMARY_TEST_UUID])
     )
     ran = []
 
@@ -635,7 +643,7 @@ async def test_loop_after_grace_runs_the_free_patient_while_the_other_is_busy(
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
-    assert ran == [ERIKA_UUID]
+    assert ran == [PRIMARY_TEST_UUID]
     assert tool._probe_stats[OTHER_PID].runs_blocked == {"reocr_in_progress": 1}
 
 
@@ -669,10 +677,12 @@ async def test_text_review_memory_is_seeded_from_earlier_real_runs(db):
             {"source": "x.pdf", "result": "filed"},
         ]
     }
-    rid = await db.insert_curated_run(patient_id=ERIKA_UUID, dry_run=False, trigger="auto")
-    await db.finish_curated_run(rid, patient_id=ERIKA_UUID, status="ok", message="", report=report)
+    rid = await db.insert_curated_run(patient_id=PRIMARY_TEST_UUID, dry_run=False, trigger="auto")
+    await db.finish_curated_run(
+        rid, patient_id=PRIMARY_TEST_UUID, status="ok", message="", report=report
+    )
     try:
-        assert await tool.reviewed_text_sources(db, ERIKA_UUID) == frozenset({("f9", "m")})
+        assert await tool.reviewed_text_sources(db, PRIMARY_TEST_UUID) == frozenset({("f9", "m")})
     finally:
         tool._text_reviews.clear()
 
@@ -721,20 +731,20 @@ async def test_index_runs_after_a_real_run_once_it_is_no_longer_active(db, llm_o
 
     gdrive, patches = _env(_report(dry_run=False))
     await db.finish_curated_run(
-        await db.insert_curated_run(patient_id=ERIKA_UUID, dry_run=True, trigger="mcp"),
-        patient_id=ERIKA_UUID,
+        await db.insert_curated_run(patient_id=PRIMARY_TEST_UUID, dry_run=True, trigger="mcp"),
+        patient_id=PRIMARY_TEST_UUID,
         status="ok",
         message="",
         report={"status": "ok"},
     )
     with patches[0], patches[1], patches[2], patch.object(tool, "_index_quietly", spy):
-        await tool.execute_run(db, ERIKA_UUID, dry_run=False, trigger="mcp")
+        await tool.execute_run(db, PRIMARY_TEST_UUID, dry_run=False, trigger="mcp")
     assert seen == [False]  # indexed exactly once, and not counted as an active run
 
 
 async def test_index_waits_while_a_run_holds_the_patient_lock(db):
     order = []
-    lock = tool.patient_lock(ERIKA_UUID)
+    lock = tool.patient_lock(PRIMARY_TEST_UUID)
 
     async def fake_index(_db, _pid, **_kw):
         order.append("index")
@@ -742,7 +752,7 @@ async def test_index_waits_while_a_run_holds_the_patient_lock(db):
 
     with patch.object(tool, "_index_patient", fake_index):
         async with lock:  # a run in progress
-            task = asyncio.create_task(tool.index_patient(db, ERIKA_UUID))
+            task = asyncio.create_task(tool.index_patient(db, PRIMARY_TEST_UUID))
             await asyncio.sleep(0.05)
             order.append("run done")
         await task

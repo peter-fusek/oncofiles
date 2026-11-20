@@ -18,7 +18,7 @@ from oncofiles.persistent_oauth import (
 )
 from oncofiles.tools import clinical_facts as cf
 from oncofiles.tools import curated as tool
-from tests.helpers import ERIKA_UUID
+from tests.helpers import PRIMARY_TEST_UUID
 from tests.test_curated_runner import LABS, FakeDrive
 
 BOB_UUID = "00000000-0000-4000-8000-000000000002"
@@ -135,10 +135,10 @@ class _Ctx:
 
 async def test_index_builds_entities_facts_and_timeline(db, lab_env):
     _, src, _ = lab_env
-    stats = await tool.index_patient(db, ERIKA_UUID)
+    stats = await tool.index_patient(db, PRIMARY_TEST_UUID)
     assert stats["facts"] >= 7 and stats["errors"] == 0
-    doc = await db.get_document_by_gdrive_id(src, patient_id=ERIKA_UUID)
-    row = await db.document_row(patient_id=ERIKA_UUID, document_id=doc.id)
+    doc = await db.get_document_by_gdrive_id(src, patient_id=PRIMARY_TEST_UUID)
+    row = await db.document_row(patient_id=PRIMARY_TEST_UUID, document_id=doc.id)
     assert row["organization"] == "BoryNemocnica" and row["department"] == "BoryRDG"
     assert row["practitioner"] == "MUDr. Jana Testova"
     assert row["source_url"].endswith(f"/d/{src}/view")
@@ -170,8 +170,8 @@ async def test_index_builds_entities_facts_and_timeline(db, lab_env):
 
 async def test_reextraction_soft_deletes_with_audit_and_keeps_verified(db, lab_env):
     d, src, side = lab_env
-    await tool.index_patient(db, ERIKA_UUID)
-    doc = await db.get_document_by_gdrive_id(src, patient_id=ERIKA_UUID)
+    await tool.index_patient(db, PRIMARY_TEST_UUID)
+    doc = await db.get_document_by_gdrive_id(src, patient_id=PRIMARY_TEST_UUID)
     await db.db.execute(
         "UPDATE clinical_records SET verification = 'verified' WHERE code = 'HGB' "
         "AND source_document_id = ?",
@@ -180,7 +180,7 @@ async def test_reextraction_soft_deletes_with_audit_and_keeps_verified(db, lab_e
     await db.db.commit()
     d.items[side]["content"] = BORY_SIDECAR.replace("11.42", "11.55").encode()
     d.items[side]["modified"] = "2026-11-03T00:00:00Z"
-    await tool.index_patient(db, ERIKA_UUID)
+    await tool.index_patient(db, PRIMARY_TEST_UUID)
     async with db.db.execute(
         "SELECT code, value_num, verification, deleted_at FROM clinical_records "
         "WHERE source_document_id = ? AND code IN ('WBC', 'HGB')",
@@ -204,8 +204,8 @@ async def test_links_never_cross_patients(db, lab_env):
         (BOB_UUID, BOB_SLUG, "Bob Test"),
     )
     await db.db.commit()
-    await tool.index_patient(db, ERIKA_UUID)
-    doc = await db.get_document_by_gdrive_id(lab_env[1], patient_id=ERIKA_UUID)
+    await tool.index_patient(db, PRIMARY_TEST_UUID)
+    doc = await db.get_document_by_gdrive_id(lab_env[1], patient_id=PRIMARY_TEST_UUID)
     with pytest.raises(ValueError, match="same patient"):
         await db.add_link(
             patient_id=BOB_UUID, from_type="document", from_id=doc.id,
@@ -221,7 +221,7 @@ def non_admin_bound_to_jana():
     tokens = (
         _verified_caller_is_admin.set(False),
         _verified_caller_email.set(""),
-        _verified_patient_id.set(ERIKA_UUID),
+        _verified_patient_id.set(PRIMARY_TEST_UUID),
     )
     yield
     _verified_caller_is_admin.reset(tokens[0])
@@ -254,8 +254,8 @@ async def test_every_fact_tool_denies_a_foreign_patient(db, non_admin_bound_to_j
 
 
 async def test_document_of_another_patient_is_not_found(db, lab_env):
-    await tool.index_patient(db, ERIKA_UUID)
-    doc = await db.get_document_by_gdrive_id(lab_env[1], patient_id=ERIKA_UUID)
+    await tool.index_patient(db, PRIMARY_TEST_UUID)
+    doc = await db.get_document_by_gdrive_id(lab_env[1], patient_id=PRIMARY_TEST_UUID)
     assert await db.document_row(patient_id=BOB_UUID, document_id=doc.id) is None
     assert await db.facts_of_document(patient_id=BOB_UUID, document_id=doc.id) == []
 
@@ -292,7 +292,7 @@ async def test_index_job_cannot_reach_the_anthropic_api(db, lab_env):
         return 0
 
     with patch.object(tool, "_extract_facts", extract_and_try_cloud):
-        stats = await tool.index_patient(db, ERIKA_UUID)
+        stats = await tool.index_patient(db, PRIMARY_TEST_UUID)
     assert stats["created"] == 1, stats
     assert seen == ["refused", "refused", "refused-thread"]
 
@@ -312,10 +312,10 @@ async def test_rows_from_an_older_index_version_are_reprocessed_once(db, lab_env
         patch.object(indexer, "INDEX_VERSION", 1),
         patch.object(tool, "_extract_facts", AsyncMock(return_value=0)),
     ):
-        await tool.index_patient(db, ERIKA_UUID)  # old code: no facts
-    upgraded = await tool.index_patient(db, ERIKA_UUID)  # new version: re-processed
+        await tool.index_patient(db, PRIMARY_TEST_UUID)  # old code: no facts
+    upgraded = await tool.index_patient(db, PRIMARY_TEST_UUID)  # new version: re-processed
     assert upgraded["unchanged"] == 0 and upgraded["facts"] >= 7
-    again = await tool.index_patient(db, ERIKA_UUID)
+    again = await tool.index_patient(db, PRIMARY_TEST_UUID)
     assert again["unchanged"] == 1 and again["facts"] == 0
 
 
@@ -379,8 +379,8 @@ async def test_document_whose_new_extraction_is_empty_loses_old_junk(db, lab_env
     """#633 leftover: old unverified/machine rows of a document that now yields
     no facts must be soft-deleted too (both are machine output)."""
     d, src, side = lab_env
-    await tool.index_patient(db, ERIKA_UUID)
-    doc = await db.get_document_by_gdrive_id(src, patient_id=ERIKA_UUID)
+    await tool.index_patient(db, PRIMARY_TEST_UUID)
+    doc = await db.get_document_by_gdrive_id(src, patient_id=PRIMARY_TEST_UUID)
     await db.db.execute(
         "UPDATE clinical_records SET verification = 'unverified', param = 'NOTE (agent): x' "
         "WHERE source_document_id = ? AND code = 'WBC'",
@@ -389,7 +389,7 @@ async def test_document_whose_new_extraction_is_empty_loses_old_junk(db, lab_env
     await db.db.commit()
     d.items[side]["content"] = b"---\ndoc_date: 2027-04-14\n---\n\nno lab values here\n"
     d.items[side]["modified"] = "2026-11-04T00:00:00Z"
-    await tool.index_patient(db, ERIKA_UUID)
+    await tool.index_patient(db, PRIMARY_TEST_UUID)
     async with db.db.execute(
         "SELECT COUNT(*) FROM clinical_records WHERE source_document_id = ? AND deleted_at IS NULL",
         (doc.id,),
@@ -606,8 +606,8 @@ def test_series_dedupe_two_documents_quoting_one_range_keep_one():
 async def test_migration_075_codes_and_encounter_sources(db, lab_env):
     codes = {r["code"] for r in await db.fact_code_vocabulary()}
     assert {"FE", "TRF", "TSAT", "TIBC", "FERR", "VITD"} <= codes
-    await tool.index_patient(db, ERIKA_UUID)
-    rows = await db.timeline_rows(patient_id=ERIKA_UUID, kinds=["encounter"])
+    await tool.index_patient(db, PRIMARY_TEST_UUID)
+    rows = await db.timeline_rows(patient_id=PRIMARY_TEST_UUID, kinds=["encounter"])
     assert rows and all(r["source_document_id"] is not None for r in rows)
 
 
@@ -620,7 +620,7 @@ async def test_alias_normalisation_serum_suffix_and_page(db):
 
 async def test_shared_organizations_never_take_text_from_a_patient_readme(db, lab_env):
     """organizations are shared across patients: no README-derived names (#637 review)."""
-    await tool.index_patient(db, ERIKA_UUID)
+    await tool.index_patient(db, PRIMARY_TEST_UUID)
     async with db.db.execute("SELECT code, name FROM organizations") as cur:
         rows = [dict(r) for r in await cur.fetchall()]
     assert rows and all(r["name"] is None for r in rows)
@@ -1225,14 +1225,14 @@ async def test_nou_report_short_labels_are_mapped(vocab):
 async def test_a_conflicted_block_never_dates_another_quote(db):
     """#672 review: after a block is flagged date_conflict it is no longer a draw."""
     from oncofiles.tools import curated as tool
-    from tests.helpers import ERIKA_UUID
+    from tests.helpers import PRIMARY_TEST_UUID
 
     async def fact(doc, day, code, value, verification, meta):
         await db.db.execute(
             "INSERT INTO clinical_records (patient_id, record_type, source_document_id, param, "
             "code, occurred_at, value_canonical, verification, metadata_json, source) "
             "VALUES (?, 'lab', ?, ?, ?, ?, ?, ?, ?, 't')",
-            (ERIKA_UUID, doc, code, code, day, value, verification, json.dumps(meta)),
+            (PRIMARY_TEST_UUID, doc, code, code, day, value, verification, json.dumps(meta)),
         )  # fmt: skip
 
     for doc in (10, 20, 30):
@@ -1240,7 +1240,7 @@ async def test_a_conflicted_block_never_dates_another_quote(db):
             "INSERT INTO documents (id, file_id, filename, original_filename, category, "
             "mime_type, size_bytes, patient_id) VALUES (?, ?, ?, ?, 'labs', 'application/pdf', "
             "1, ?)",
-            (doc, f"t:{doc}", f"d{doc}.pdf", f"d{doc}.pdf", ERIKA_UUID),
+            (doc, f"t:{doc}", f"d{doc}.pdf", f"d{doc}.pdf", PRIMARY_TEST_UUID),
         )
     hdr = {"date_from": "block_header"}
     quote = {"unverified_reasons": ["date_unknown"]}
@@ -1249,7 +1249,7 @@ async def test_a_conflicted_block_never_dates_another_quote(db):
         await fact(20, "2027-04-20", code, v, "machine", hdr)  # header-dated copy
         await fact(30, "2027-04-28", code, v, "unverified", quote)  # a later report quote
     await db.db.commit()
-    out = await tool._corroborate_and_measure(db, ERIKA_UUID)
+    out = await tool._corroborate_and_measure(db, PRIMARY_TEST_UUID)
     assert out["date_conflicts"] == 3
     async with db.db.execute(
         "SELECT source_document_id AS d, occurred_at AS day, verification AS v, "
@@ -1276,7 +1276,7 @@ async def _insert_docs(db, *docs):
             "INSERT INTO documents (id, file_id, filename, original_filename, category, "
             "mime_type, size_bytes, patient_id) VALUES (?, ?, ?, ?, 'report', "
             "'application/pdf', 1, ?)",
-            (doc, f"t:{doc}", f"d{doc}.pdf", f"d{doc}.pdf", ERIKA_UUID),
+            (doc, f"t:{doc}", f"d{doc}.pdf", f"d{doc}.pdf", PRIMARY_TEST_UUID),
         )
 
 
@@ -1285,7 +1285,7 @@ async def _insert_fact(db, doc, day, code, value, verification, meta):
         "INSERT INTO clinical_records (patient_id, record_type, source_document_id, param, "
         "code, occurred_at, value_canonical, verification, metadata_json, source) "
         "VALUES (?, 'lab', ?, ?, ?, ?, ?, ?, ?, 't')",
-        (ERIKA_UUID, doc, code, code, day, value, verification, json.dumps(meta)),
+        (PRIMARY_TEST_UUID, doc, code, code, day, value, verification, json.dumps(meta)),
     )  # fmt: skip
 
 
@@ -1304,7 +1304,7 @@ async def test_a_corroborated_quote_takes_the_precision_of_its_draw(db, draw_is_
         await _insert_fact(db, _RANGED, draw_day, code, value, "machine", draw_meta)
         await _insert_fact(db, _QUOTE, quoted_on, code, value, "unverified", quote)
     await db.db.commit()
-    out = await tool._corroborate_and_measure(db, ERIKA_UUID)
+    out = await tool._corroborate_and_measure(db, PRIMARY_TEST_UUID)
     assert out["corroborated"] == 2
     async with db.db.execute(
         "SELECT occurred_at AS day, verification AS v, metadata_json AS m "
@@ -1337,7 +1337,7 @@ async def test_reextraction_never_duplicates_a_verified_fact_inside_the_range(db
                 "metadata": dict(_RANGE_META)}  # fmt: skip
 
     res = await db.replace_document_facts(
-        patient_id=ERIKA_UUID, document_id=_RANGED, extracted_by="rule:test",
+        patient_id=PRIMARY_TEST_UUID, document_id=_RANGED, extracted_by="rule:test",
         facts=[new("HGB", 127.0), new("PLT", 201.0)],
     )  # fmt: skip
     assert res["added"] == 1 and res["kept_verified"] == 1
@@ -1373,11 +1373,11 @@ async def test_range_protection_and_stable_ids_together(db):
 
     facts = [new("HGB", 127.0), new("PLT", 201.0)]
     first = await db.replace_document_facts(
-        patient_id=ERIKA_UUID, document_id=_RANGED, extracted_by="rule:test", facts=facts
+        patient_id=PRIMARY_TEST_UUID, document_id=_RANGED, extracted_by="rule:test", facts=facts
     )
     before = await active()
     second = await db.replace_document_facts(
-        patient_id=ERIKA_UUID, document_id=_RANGED, extracted_by="rule:test", facts=facts
+        patient_id=PRIMARY_TEST_UUID, document_id=_RANGED, extracted_by="rule:test", facts=facts
     )
     after = await active()
     assert first["added"] == second["added"] == len(facts) - first["kept_verified"]
@@ -1386,7 +1386,7 @@ async def test_range_protection_and_stable_ids_together(db):
     assert after["HGB"]["fhir_id"] == before["HGB"]["fhir_id"]
     assert after["PLT"]["fhir_id"] == before["PLT"]["fhir_id"]  # same id on re-extraction
     assert after["PLT"]["version_id"] > before["PLT"]["version_id"]  # next version
-    key = fact_identity.fact_key(ERIKA_UUID, _RANGED, new("PLT", 201.0))
+    key = fact_identity.fact_key(PRIMARY_TEST_UUID, _RANGED, new("PLT", 201.0))
     assert f"{_R_LO}/{_R_HI}" in key  # the range keys the id, not its end day
 
 

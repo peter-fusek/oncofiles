@@ -20,7 +20,7 @@ from oncofiles.models import OAuthToken
 from oncofiles.persistent_oauth import _verified_caller_email, _verified_caller_is_admin
 from oncofiles.tools import gdrive as gdrive_tools
 from oncofiles.tools.gdrive import gdrive_set_folder, setup_gdrive
-from tests.conftest import ERIKA_UUID
+from tests.conftest import PRIMARY_TEST_UUID
 from tests.test_835_wizard_folder_picker import (
     ALFA,
     PRAZDNY,
@@ -68,7 +68,7 @@ async def two(db: Database) -> Database:
     """Two patients, each with a Drive token and an already connected folder."""
     await db.db.execute(
         "UPDATE patients SET slug = ?, caregiver_email = ? WHERE patient_id = ?",
-        (JANA_SLUG, "jana.caregiver@example.com", ERIKA_UUID),
+        (JANA_SLUG, "jana.caregiver@example.com", PRIMARY_TEST_UUID),
     )
     await db.db.execute(
         "INSERT INTO patients (patient_id, slug, display_name, caregiver_email) "
@@ -76,7 +76,7 @@ async def two(db: Database) -> Database:
         (BOB_UUID, BOB_SLUG, "Bob Test", BOB_EMAIL),
     )
     await db.db.commit()
-    for pid, folder in ((ERIKA_UUID, JANA_OLD_FOLDER), (BOB_UUID, BOB_OLD_FOLDER)):
+    for pid, folder in ((PRIMARY_TEST_UUID, JANA_OLD_FOLDER), (BOB_UUID, BOB_OLD_FOLDER)):
         await db.upsert_oauth_token(
             OAuthToken(
                 patient_id=pid,
@@ -117,7 +117,7 @@ async def test_admin_must_name_the_patient(two, monkeypatch):
         out = await _call(two, folder_id=VOLNY, dry_run=dry_run)
         assert "must pass patient_slug" in out["error"]
     assert files.list_queries == []  # refused before any Drive call
-    assert await _folder(two, ERIKA_UUID) == JANA_OLD_FOLDER
+    assert await _folder(two, PRIMARY_TEST_UUID) == JANA_OLD_FOLDER
     assert await _folder(two, BOB_UUID) == BOB_OLD_FOLDER
 
 
@@ -134,15 +134,17 @@ async def test_explicit_slug_drives_the_patient_not_the_context(two, monkeypatch
     """Option A (#429): the request is bound to Jana, the slug says Bob."""
     client, _ = _use(monkeypatch)
     _verified_caller_is_admin.set(True)
-    server._folder_404_counts.update({BOB_UUID: 3, ERIKA_UUID: 3})
+    server._folder_404_counts.update({BOB_UUID: 3, PRIMARY_TEST_UUID: 3})
     out = await _call(two, folder_id=VOLNY, patient_slug=BOB_SLUG, dry_run=False)
     assert out["status"] == "ok" and out["patient_id"] == BOB_UUID
     assert await _folder(two, BOB_UUID) == VOLNY
-    assert await _folder(two, ERIKA_UUID) == JANA_OLD_FOLDER  # the bound patient is untouched
-    assert server._folder_404_counts == {ERIKA_UUID: 3}
+    assert (
+        await _folder(two, PRIMARY_TEST_UUID) == JANA_OLD_FOLDER
+    )  # the bound patient is untouched
+    assert server._folder_404_counts == {PRIMARY_TEST_UUID: 3}
     bob = await two.get_oauth_token(patient_id=BOB_UUID)
     assert bob.gdrive_folder_name == "Volny" and bob.owner_email == "owner@example.com"
-    assert (await two.get_oauth_token(patient_id=ERIKA_UUID)).owner_email is None
+    assert (await two.get_oauth_token(patient_id=PRIMARY_TEST_UUID)).owner_email is None
 
 
 async def test_caregiver_may_name_their_own_patient(two, monkeypatch):
@@ -151,14 +153,14 @@ async def test_caregiver_may_name_their_own_patient(two, monkeypatch):
     out = await _call(two, folder_id=VOLNY, patient_slug=BOB_SLUG, dry_run=False)
     assert out["status"] == "ok"
     assert await _folder(two, BOB_UUID) == VOLNY
-    assert await _folder(two, ERIKA_UUID) == JANA_OLD_FOLDER
+    assert await _folder(two, PRIMARY_TEST_UUID) == JANA_OLD_FOLDER
 
 
 async def test_non_admin_without_slug_still_acts_on_own_patient(two, monkeypatch):
     _use(monkeypatch)
     out = await _call(two, folder_id=VOLNY, dry_run=False)
-    assert out["status"] == "ok" and out["patient_id"] == ERIKA_UUID
-    assert await _folder(two, ERIKA_UUID) == VOLNY
+    assert out["status"] == "ok" and out["patient_id"] == PRIMARY_TEST_UUID
+    assert await _folder(two, PRIMARY_TEST_UUID) == VOLNY
     assert await _folder(two, BOB_UUID) == BOB_OLD_FOLDER
 
 
@@ -167,9 +169,9 @@ async def test_non_admin_without_slug_still_acts_on_own_patient(two, monkeypatch
 
 async def test_dry_run_is_the_default_and_writes_nothing(two, monkeypatch):
     client, files = _use(monkeypatch)
-    server._folder_404_counts[ERIKA_UUID] = 3
-    server._patient_clients_cache[ERIKA_UUID] = ("cached",)
-    before = await two.get_oauth_token(patient_id=ERIKA_UUID)
+    server._folder_404_counts[PRIMARY_TEST_UUID] = 3
+    server._patient_clients_cache[PRIMARY_TEST_UUID] = ("cached",)
+    before = await two.get_oauth_token(patient_id=PRIMARY_TEST_UUID)
     out = await _call(two, folder_id=VOLNY, patient_slug=JANA_SLUG)
     assert out["status"] == "dry_run" and out["dry_run"] is True
     assert out["folder_id"] == VOLNY and out["folder_name"] == "Volny"
@@ -181,10 +183,10 @@ async def test_dry_run_is_the_default_and_writes_nothing(two, monkeypatch):
         "curated_children": 0,
         "container_reason": None,
     }
-    after = await two.get_oauth_token(patient_id=ERIKA_UUID)
+    after = await two.get_oauth_token(patient_id=PRIMARY_TEST_UUID)
     assert after == before
-    assert server._folder_404_counts == {ERIKA_UUID: 3}
-    assert server._patient_clients_cache == {ERIKA_UUID: ("cached",)}
+    assert server._folder_404_counts == {PRIMARY_TEST_UUID: 3}
+    assert server._patient_clients_cache == {PRIMARY_TEST_UUID: ("cached",)}
     client.get_folder_owner.assert_not_called()
     _no_drive_writes(client, files)
 
@@ -196,7 +198,7 @@ async def test_dry_run_reports_a_curated_folder_and_refusals(two, monkeypatch):
     assert out["curated"] is True and out["curated_root"] is True
     refused = await _call(two, folder_id=RODINA, patient_slug=JANA_SLUG)
     assert refused["reason"] == "curated_children" and "status" not in refused
-    assert await _folder(two, ERIKA_UUID) == JANA_OLD_FOLDER
+    assert await _folder(two, PRIMARY_TEST_UUID) == JANA_OLD_FOLDER
     _no_drive_writes(client, files)
 
 
@@ -208,9 +210,13 @@ async def test_dry_run_does_not_store_a_refreshed_token(two, monkeypatch):
         lambda _r: {"access_token": "access-new-invented", "expires_in": 3600},
     )
     await _call(two, folder_id=VOLNY, patient_slug=JANA_SLUG)
-    assert (await two.get_oauth_token(patient_id=ERIKA_UUID)).access_token == "access-invented"
+    assert (
+        await two.get_oauth_token(patient_id=PRIMARY_TEST_UUID)
+    ).access_token == "access-invented"
     await _call(two, folder_id=VOLNY, patient_slug=JANA_SLUG, dry_run=False)
-    assert (await two.get_oauth_token(patient_id=ERIKA_UUID)).access_token == "access-new-invented"
+    assert (
+        await two.get_oauth_token(patient_id=PRIMARY_TEST_UUID)
+    ).access_token == "access-new-invented"
 
 
 # ── the guard, with the REST reason codes ────────────────────────────
@@ -221,8 +227,8 @@ async def _refused(two, monkeypatch, folder_id, tree=None, fail=None) -> dict:
     if fail:
         files.fail_list_matching = fail
     out = await _call(two, folder_id=folder_id, patient_slug=JANA_SLUG, dry_run=False)
-    assert await _folder(two, ERIKA_UUID) == JANA_OLD_FOLDER
-    assert (await two.get_oauth_token(patient_id=ERIKA_UUID)).owner_email is None
+    assert await _folder(two, PRIMARY_TEST_UUID) == JANA_OLD_FOLDER
+    assert (await two.get_oauth_token(patient_id=PRIMARY_TEST_UUID)).owner_email is None
     client.get_folder_owner.assert_not_called()
     _no_drive_writes(client, files)
     return out
@@ -256,7 +262,7 @@ async def test_garbage_and_missing_token(two, monkeypatch, db):
     client, files = _use(monkeypatch)
     out = await _call(two, folder_id="not a link", patient_slug=JANA_SLUG, dry_run=False)
     assert "folder link or id" in out["error"] and files.list_queries == []
-    await db.db.execute("DELETE FROM oauth_tokens WHERE patient_id = ?", (ERIKA_UUID,))
+    await db.db.execute("DELETE FROM oauth_tokens WHERE patient_id = ?", (PRIMARY_TEST_UUID,))
     await db.db.commit()
     out = await _call(two, folder_id=VOLNY, patient_slug=JANA_SLUG, dry_run=False)
     assert "No OAuth tokens" in out["error"]
@@ -288,7 +294,7 @@ async def test_curated_folder_is_set_and_nothing_is_created(two, monkeypatch):
     assert out["status"] == "ok"
     assert out["curated"] is True and out["curated_root"] is True
     assert out["subfolders_created"] == 0
-    assert await _folder(two, ERIKA_UUID) == ALFA
+    assert await _folder(two, PRIMARY_TEST_UUID) == ALFA
     _no_drive_writes(client, files)
 
 
@@ -299,7 +305,7 @@ async def test_plain_folder_is_set_without_category_folders(two, monkeypatch):
     out = await _call(two, folder_id=link, patient_slug=JANA_SLUG, dry_run=False)
     assert out["status"] == "ok" and out["folder_id"] == PRAZDNY
     assert "curated" not in out and "subfolders_created" not in out
-    assert await _folder(two, ERIKA_UUID) == PRAZDNY
+    assert await _folder(two, PRIMARY_TEST_UUID) == PRAZDNY
     _no_drive_writes(client, files)
 
 
@@ -308,7 +314,7 @@ async def test_same_real_call_twice_is_idempotent(two, monkeypatch):
     kw = {"folder_id": VOLNY, "patient_slug": JANA_SLUG, "dry_run": False}
     first, second = await _call(two, **kw), await _call(two, **kw)
     assert first == second
-    assert await _folder(two, ERIKA_UUID) == VOLNY
+    assert await _folder(two, PRIMARY_TEST_UUID) == VOLNY
 
 
 # ── setup_gdrive ─────────────────────────────────────────────────────
@@ -388,7 +394,7 @@ async def test_setup_gdrive_creates_in_a_plain_folder_and_sets_no_folder(two):
     out = await _setup(two, client, root_folder_id=VOLNY)
     assert out["status"] == "ok" and out["root_folder_id"] == VOLNY
     assert client.create_folder.call_count == out["total_folders"] > 0
-    assert await _folder(two, ERIKA_UUID) == JANA_OLD_FOLDER
+    assert await _folder(two, PRIMARY_TEST_UUID) == JANA_OLD_FOLDER
 
 
 # ── source locks ─────────────────────────────────────────────────────

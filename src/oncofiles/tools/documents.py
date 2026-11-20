@@ -321,7 +321,7 @@ async def list_documents(
     Args:
         limit: Maximum results to return.
         offset: Skip this many results (for pagination).
-        patient_slug: Optional — explicit patient slug (e.g. 'q1b'). Required
+        patient_slug: Optional — explicit patient slug (e.g. 'jana-testova'). Required
             in stateless HTTP contexts (Claude.ai connector, ChatGPT) where
             select_patient() state does not persist across tool calls (#429).
     """
@@ -781,7 +781,7 @@ async def reassign_document(ctx: Context, doc_id: int, target_patient_slug: str)
 
     Args:
         doc_id: The integer database ID of the document to reassign.
-        target_patient_slug: Target patient slug or UUID (e.g. 'nora-antalova').
+        target_patient_slug: Target patient slug or UUID (e.g. 'jana-testova').
     """
     from oncofiles.tools._helpers import _require_admin_or_raise
 

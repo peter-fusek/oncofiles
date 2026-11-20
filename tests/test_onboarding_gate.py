@@ -34,7 +34,7 @@ import pytest
 from oncofiles import onboarding_gate
 from oncofiles.models import OAuthToken
 from oncofiles.patient_consent import CONSENT_VERSION
-from tests.helpers import ERIKA_UUID
+from tests.helpers import PRIMARY_TEST_UUID
 
 SRC = Path(__file__).resolve().parent.parent / "src" / "oncofiles"
 
@@ -414,14 +414,14 @@ def _assert_onboarding_closed(resp):
     assert body["waitlist_url"] == "/#join"
 
 
-async def _set_caregiver(db, email: str, pid: str = ERIKA_UUID) -> None:
+async def _set_caregiver(db, email: str, pid: str = PRIMARY_TEST_UUID) -> None:
     await db.db.execute(
         "UPDATE patients SET caregiver_email = ? WHERE patient_id = ?", (email, pid)
     )
     await db.db.commit()
 
 
-async def _link_google(db, pid: str = ERIKA_UUID) -> None:
+async def _link_google(db, pid: str = PRIMARY_TEST_UUID) -> None:
     await db.upsert_oauth_token(
         OAuthToken(
             patient_id=pid,
@@ -474,7 +474,9 @@ async def test_set_folder_refused_before_any_drive_call(http, gate, db, mode):
     await _set_caregiver(db, STRANGER)
     await _link_google(db)
     req = _Req(
-        email=STRANGER, body={"patient_id": ERIKA_UUID, "folder_id": "synthetic-folder-2027"}, db=db
+        email=STRANGER,
+        body={"patient_id": PRIMARY_TEST_UUID, "folder_id": "synthetic-folder-2027"},
+        db=db,
     )
     _assert_onboarding_closed(await http.api_gdrive_set_folder(req))
 
@@ -483,7 +485,9 @@ async def test_set_folder_invited_passes_the_gate(http, gate, db):
     gate("invite")
     await _set_caregiver(db, INVITED.lower())
     req = _Req(
-        email=INVITED, body={"patient_id": ERIKA_UUID, "folder_id": "synthetic-folder-2027"}, db=db
+        email=INVITED,
+        body={"patient_id": PRIMARY_TEST_UUID, "folder_id": "synthetic-folder-2027"},
+        db=db,
     )
     resp = await http.api_gdrive_set_folder(req)
     # Past the gate: no Google link yet, so the handler's own 400.
@@ -496,7 +500,7 @@ async def test_set_folder_invited_passes_the_gate(http, gate, db):
 async def test_legacy_triggers_refuse_non_admin_in_every_mode(http, gate, db, mode, route):
     gate(mode)
     await _set_caregiver(db, INVITED.lower())
-    req = _Req(email=INVITED, body={"patient_id": ERIKA_UUID}, db=db)
+    req = _Req(email=INVITED, body={"patient_id": PRIMARY_TEST_UUID}, db=db)
     resp = await getattr(http, route)(req)
     assert resp.status_code == 403
     body = _body(resp)
@@ -506,7 +510,7 @@ async def test_legacy_triggers_refuse_non_admin_in_every_mode(http, gate, db, mo
 
 async def test_sync_trigger_admin_passes_the_gate(http, gate, db):
     gate("closed")
-    req = _Req(email=ADMIN, body={"patient_id": ERIKA_UUID}, db=db)
+    req = _Req(email=ADMIN, body={"patient_id": PRIMARY_TEST_UUID}, db=db)
     resp = await http.api_sync_trigger(req)
     # Past the gate: no Google link, so the handler's own 400.
     assert resp.status_code == 400
@@ -517,7 +521,11 @@ async def test_oauth_authorize_first_link_is_gated(http, gate, db):
     gate("closed")
     await _set_caregiver(db, CARER)
     req = _Req(
-        email=CARER, cookie=True, query={"patient_id": ERIKA_UUID}, path={"service": "drive"}, db=db
+        email=CARER,
+        cookie=True,
+        query={"patient_id": PRIMARY_TEST_UUID},
+        path={"service": "drive"},
+        db=db,
     )
     _assert_onboarding_closed(await http.oauth_authorize(req))
 
@@ -528,7 +536,11 @@ async def test_oauth_authorize_existing_link_may_reconsent(http, gate, db):
     await _set_caregiver(db, CARER)
     await _link_google(db)
     req = _Req(
-        email=CARER, cookie=True, query={"patient_id": ERIKA_UUID}, path={"service": "drive"}, db=db
+        email=CARER,
+        cookie=True,
+        query={"patient_id": PRIMARY_TEST_UUID},
+        path={"service": "drive"},
+        db=db,
     )
     resp = await http.oauth_authorize(req)
     assert resp.status_code in (302, 307), resp.body
@@ -540,7 +552,11 @@ async def test_oauth_authorize_admitted_callers(http, gate, db, mode, email):
     gate(mode)
     await _set_caregiver(db, email.lower())
     req = _Req(
-        email=email, cookie=True, query={"patient_id": ERIKA_UUID}, path={"service": "drive"}, db=db
+        email=email,
+        cookie=True,
+        query={"patient_id": PRIMARY_TEST_UUID},
+        path={"service": "drive"},
+        db=db,
     )
     resp = await http.oauth_authorize(req)
     assert resp.status_code in (302, 307), resp.body
@@ -552,7 +568,7 @@ async def test_existing_caregiver_reads_still_work_when_closed(http, gate, db):
     req = _Req(email=CARER, db=db)
     resp = await http.api_list_patients(req)
     assert resp.status_code == 200
-    assert ERIKA_UUID in resp.body.decode()
+    assert PRIMARY_TEST_UUID in resp.body.decode()
 
 
 @pytest.mark.parametrize(
@@ -737,7 +753,9 @@ def _session_state(server, email: str) -> tuple[str, str]:
 
     token = server._make_session_token(email)
     tid = server._parse_session_token(token)[2]
-    state = oauth._make_state_token(ERIKA_UUID, service="drive", principal={"k": "s", "tid": tid})
+    state = oauth._make_state_token(
+        PRIMARY_TEST_UUID, service="drive", principal={"k": "s", "tid": tid}
+    )
     return token, state
 
 
@@ -792,7 +810,7 @@ async def test_callback_mcp_state_checks_invites_by_hash(
     monkeypatch.setattr(oauth, "exchange_code", _no_exchange)
     gate("invite")
     principal = {"k": "m", "adm": False, "eh": email_hash(email)}
-    state = oauth._make_state_token(ERIKA_UUID, service="drive", principal=principal)
+    state = oauth._make_state_token(PRIMARY_TEST_UUID, service="drive", principal=principal)
     req = _Req(query={"state": state, "code": "synthetic-code"}, db=db)
     if admitted:
         _assert_past_gate(await http.oauth_callback(req))

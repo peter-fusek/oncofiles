@@ -165,7 +165,7 @@ async def test_targets_prefer_documents_with_unverified_facts(db):
     import json as _json
 
     from oncofiles.tools import curated as tool
-    from tests.conftest import ERIKA_UUID
+    from tests.conftest import PRIMARY_TEST_UUID
 
     def meta(engine):
         return _json.dumps({"curated": {"sidecar_id": "side"}, "ocr_engine": engine})
@@ -183,18 +183,18 @@ async def test_targets_prefer_documents_with_unverified_facts(db):
             "mime_type, size_bytes, patient_id, gdrive_id, structured_metadata) "
             "VALUES (?, ?, ?, ?, 'labs', ?, 1, ?, ?, ?)",
             (doc_id, f"gdrive:{gid}", f"d{doc_id}.pdf", f"d{doc_id}.pdf", mime,
-             ERIKA_UUID, gid, meta(engine)),
+             PRIMARY_TEST_UUID, gid, meta(engine)),
         )  # fmt: skip
         for _ in range(n):
             await db.db.execute(
                 "INSERT INTO clinical_records (patient_id, record_type, source_document_id, "
                 "param, verification, source) VALUES (?, 'lab', ?, 'X', 'unverified', 't')",
-                (ERIKA_UUID, doc_id),
+                (PRIMARY_TEST_UUID, doc_id),
             )
     await db.db.commit()
-    got = await tool._reocr_targets(db, ERIKA_UUID, None)
+    got = await tool._reocr_targets(db, PRIMARY_TEST_UUID, None)
     assert [t["document_id"] for t in got] == [9105, 9101]  # most unverified first
-    everything = await tool._reocr_targets(db, ERIKA_UUID, None, only_with_facts=False)
+    everything = await tool._reocr_targets(db, PRIMARY_TEST_UUID, None, only_with_facts=False)
     assert {t["document_id"] for t in everything} == {9105, 9101, 9102}  # never 9103 / 9104
 
 
@@ -306,17 +306,19 @@ async def test_no_document_starts_above_the_rss_limit(vocab):
 
 
 async def test_reocr_jobs_are_persisted_apart_from_curated_runs(db):
-    from tests.conftest import ERIKA_UUID
+    from tests.conftest import PRIMARY_TEST_UUID
 
-    run = await db.insert_curated_run(patient_id=ERIKA_UUID, dry_run=True, trigger="mcp")
-    await db.finish_curated_run(run, patient_id=ERIKA_UUID, status="ok", message="", report={})
-    job = await db.insert_curated_run(patient_id=ERIKA_UUID, dry_run=False, trigger="reocr")
+    run = await db.insert_curated_run(patient_id=PRIMARY_TEST_UUID, dry_run=True, trigger="mcp")
+    await db.finish_curated_run(
+        run, patient_id=PRIMARY_TEST_UUID, status="ok", message="", report={}
+    )
+    job = await db.insert_curated_run(patient_id=PRIMARY_TEST_UUID, dry_run=False, trigger="reocr")
     # a re-OCR job is never mistaken for a curated run (preview gate, history)
-    assert (await db.get_last_curated_run(patient_id=ERIKA_UUID))["id"] == run
-    assert [r["id"] for r in await db.list_curated_runs(patient_id=ERIKA_UUID)] == [run]
+    assert (await db.get_last_curated_run(patient_id=PRIMARY_TEST_UUID))["id"] == run
+    assert [r["id"] for r in await db.list_curated_runs(patient_id=PRIMARY_TEST_UUID)] == [run]
     # a restart reports the cut job instead of losing it
     assert await db.mark_interrupted_curated_runs() == 1
-    last = await db.get_last_reocr_job(patient_id=ERIKA_UUID)
+    last = await db.get_last_reocr_job(patient_id=PRIMARY_TEST_UUID)
     assert last["id"] == job and last["status"] == "interrupted"
     assert await db.get_last_reocr_job(patient_id="someone-else") is None
 
@@ -363,7 +365,7 @@ async def test_lab_sheets_are_chosen_before_reports(db):
     import json as _json
 
     from oncofiles.tools import curated as tool
-    from tests.conftest import ERIKA_UUID
+    from tests.conftest import PRIMARY_TEST_UUID
 
     meta = _json.dumps({"curated": {"sidecar_id": "side"}, "ocr_engine": "tesseract eng-only"})
     for doc_id, cat, n in ((9201, "report", 9), (9202, "labs", 2)):
@@ -372,19 +374,19 @@ async def test_lab_sheets_are_chosen_before_reports(db):
             "mime_type, size_bytes, patient_id, gdrive_id, structured_metadata) "
             "VALUES (?, ?, ?, ?, ?, 'application/pdf', 1, ?, ?, ?)",
             (doc_id, f"gdrive:g{doc_id}", f"d{doc_id}.pdf", f"d{doc_id}.pdf", cat,
-             ERIKA_UUID, f"g{doc_id}", meta),
+             PRIMARY_TEST_UUID, f"g{doc_id}", meta),
         )  # fmt: skip
         for _ in range(n):
             await db.db.execute(
                 "INSERT INTO clinical_records (patient_id, record_type, source_document_id, "
                 "param, verification, source) VALUES (?, 'lab', ?, 'X', 'unverified', 't')",
-                (ERIKA_UUID, doc_id),
+                (PRIMARY_TEST_UUID, doc_id),
             )
     await db.db.commit()
-    got = await tool._reocr_targets(db, ERIKA_UUID, None)
+    got = await tool._reocr_targets(db, PRIMARY_TEST_UUID, None)
     assert [t["document_id"] for t in got] == [9202, 9201]
     assert not any(t["explicit"] for t in got)
-    listed = await tool._reocr_targets(db, ERIKA_UUID, [9201])
+    listed = await tool._reocr_targets(db, PRIMARY_TEST_UUID, [9201])
     assert [t["document_id"] for t in listed] == [9201] and listed[0]["explicit"]
 
 

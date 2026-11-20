@@ -1,6 +1,6 @@
 """Tests for Option A (#429) `patient_slug` rollout on documents.py tools.
 
-These tests ride the ``db`` fixture (ERIKA_UUID scoped via middleware ContextVar)
+These tests ride the ``db`` fixture (PRIMARY_TEST_UUID scoped via middleware ContextVar)
 but then call the tool with an explicit ``patient_slug`` — proving that the
 resolved pid is driven by the slug, not by the ContextVar. That's the
 stateless-HTTP guarantee needed for Claude.ai / ChatGPT connectors.
@@ -15,7 +15,7 @@ import pytest
 from oncofiles.database import Database
 from oncofiles.models import DocumentCategory
 from oncofiles.tools import documents as doc_tools
-from tests.conftest import ERIKA_UUID
+from tests.conftest import PRIMARY_TEST_UUID
 from tests.helpers import make_doc
 
 # These tests verify slug-routing across patients — admin scope per #497/#498.
@@ -42,7 +42,7 @@ async def _seed_two_patients(db: Database) -> None:
             filename="20300101_Jana-NOU-Labs.pdf",
             category=DocumentCategory.LABS,
         ),
-        patient_id=ERIKA_UUID,
+        patient_id=PRIMARY_TEST_UUID,
     )
     await db.insert_document(
         make_doc(
@@ -69,7 +69,7 @@ async def test_list_documents_respects_explicit_patient_slug(db: Database):
     await _seed_two_patients(db)
     ctx = _StubCtx(db)
 
-    # Default (no slug) → ContextVar = ERIKA_UUID → Jana's doc only
+    # Default (no slug) → ContextVar = PRIMARY_TEST_UUID → Jana's doc only
     default = json.loads(await doc_tools.list_documents(ctx))
     assert len(default["documents"]) == 1
     assert default["documents"][0]["file_id"] == "jana_doc1"
@@ -85,7 +85,7 @@ async def test_get_document_by_id_blocks_cross_patient_via_slug(db: Database):
     ctx = _StubCtx(db)
 
     # Find each doc's integer id
-    all_docs = await db.list_documents(limit=10, patient_id=ERIKA_UUID)
+    all_docs = await db.list_documents(limit=10, patient_id=PRIMARY_TEST_UUID)
     jana_doc_id = all_docs[0].id
     all_bob = await db.list_documents(limit=10, patient_id=SECOND_UUID)
     bob_doc_id = all_bob[0].id

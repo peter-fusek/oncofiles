@@ -57,7 +57,8 @@ DEFAULTS = {  # patient_type -> (max_docs, min_text_chars, max_doc_age_days)
     # Oncology (the first patient's Cowork clean-up job): a date more than two
     # years old on a new scan is suspect.
     "oncology": (20, 100, 730),
-    # General (peter-daily-cleanup): historical records back to birth are normal.
+    # General (the second patient's Cowork clean-up job): historical records
+    # back to birth are normal.
     "general": (8, 200, None),
 }
 PREVIEW_MAX_AGE = timedelta(hours=24)

@@ -18,7 +18,7 @@ from oncofiles.consolidate import (
 )
 from oncofiles.models import Document, DocumentCategory
 
-ERIKA_UUID = "00000000-0000-4000-8000-000000000001"
+PRIMARY_TEST_UUID = "00000000-0000-4000-8000-000000000001"
 
 
 # ── pure helpers ────────────────────────────────────────────────────────────
@@ -91,7 +91,7 @@ async def _insert_doc(db, *, institution, doc_date, file_id):
         mime_type="application/pdf",
         size_bytes=100,
     )
-    return await db.insert_document(doc, patient_id=ERIKA_UUID)
+    return await db.insert_document(doc, patient_id=PRIMARY_TEST_UUID)
 
 
 @pytest.mark.asyncio
@@ -107,13 +107,13 @@ async def test_consolidate_rejects_low_confidence(db):
             "confidence": CONSOLIDATE_MIN_CONFIDENCE - 0.1,
             "reasoning": "speculative",
         },
-        patient_id=ERIKA_UUID,
+        patient_id=PRIMARY_TEST_UUID,
     )
 
     assert result is None
     refreshed = [
-        await db.get_document(d1.id, patient_id=ERIKA_UUID),
-        await db.get_document(d2.id, patient_id=ERIKA_UUID),
+        await db.get_document(d1.id, patient_id=PRIMARY_TEST_UUID),
+        await db.get_document(d2.id, patient_id=PRIMARY_TEST_UUID),
     ]
     assert all(d.group_id is None for d in refreshed)
 
@@ -132,11 +132,11 @@ async def test_consolidate_rejects_date_span_too_large(db):
         db,
         None,
         {"document_ids": [d1.id, d2.id], "confidence": 0.95, "reasoning": "x"},
-        patient_id=ERIKA_UUID,
+        patient_id=PRIMARY_TEST_UUID,
     )
 
     assert result is None
-    assert (await db.get_document(d1.id, patient_id=ERIKA_UUID)).group_id is None
+    assert (await db.get_document(d1.id, patient_id=PRIMARY_TEST_UUID)).group_id is None
 
 
 @pytest.mark.asyncio
@@ -150,11 +150,11 @@ async def test_consolidate_rejects_cross_institution(db):
         db,
         None,
         {"document_ids": [d1.id, d2.id], "confidence": 0.95, "reasoning": "x"},
-        patient_id=ERIKA_UUID,
+        patient_id=PRIMARY_TEST_UUID,
     )
 
     assert result is None
-    assert (await db.get_document(d1.id, patient_id=ERIKA_UUID)).group_id is None
+    assert (await db.get_document(d1.id, patient_id=PRIMARY_TEST_UUID)).group_id is None
 
 
 @pytest.mark.asyncio
@@ -166,12 +166,12 @@ async def test_consolidate_accepts_valid_group(db):
         db,
         None,
         {"document_ids": [d1.id, d2.id], "confidence": 0.9, "reasoning": "split scan"},
-        patient_id=ERIKA_UUID,
+        patient_id=PRIMARY_TEST_UUID,
     )
 
     assert result is not None
-    r1 = await db.get_document(d1.id, patient_id=ERIKA_UUID)
-    r2 = await db.get_document(d2.id, patient_id=ERIKA_UUID)
+    r1 = await db.get_document(d1.id, patient_id=PRIMARY_TEST_UUID)
+    r2 = await db.get_document(d2.id, patient_id=PRIMARY_TEST_UUID)
     assert r1.group_id == result
     assert r2.group_id == result
     assert {r1.part_number, r2.part_number} == {1, 2}

@@ -23,7 +23,7 @@ from oncofiles.tools.clinical_records import (
     search_notes,
     update_clinical_record,
 )
-from tests.helpers import ERIKA_UUID, TEST_PATIENT_UUID
+from tests.helpers import PRIMARY_TEST_UUID, TEST_PATIENT_UUID
 
 
 def _ctx(db: Database) -> MagicMock:
@@ -41,7 +41,7 @@ async def _seed_second_patient(db: Database) -> None:
     await db.db.commit()
 
 
-def _make_record(patient_id: str = ERIKA_UUID, **overrides) -> ClinicalRecord:
+def _make_record(patient_id: str = PRIMARY_TEST_UUID, **overrides) -> ClinicalRecord:
     defaults = {
         "patient_id": patient_id,
         "record_type": "lab",
@@ -74,7 +74,7 @@ async def test_update_changes_field_and_emits_audit(db: Database):
     assert result["status"] == "updated"
     assert result["changed_fields"] == ["value_num"]
 
-    after = await db.get_clinical_record(stored.id, patient_id=ERIKA_UUID)
+    after = await db.get_clinical_record(stored.id, patient_id=PRIMARY_TEST_UUID)
     assert after.value_num == 8.1
 
     audit = await db.list_clinical_record_audit(stored.id)
@@ -113,7 +113,8 @@ async def test_update_blocks_wrong_patient(db: Database):
     await _seed_second_patient(db)
     other = await db.insert_clinical_record(_make_record(patient_id=TEST_PATIENT_UUID))
 
-    # Context is ERIKA_UUID (conftest fixture default) — try to hit TEST_PATIENT_UUID's record
+    # Context is PRIMARY_TEST_UUID (conftest fixture default) — try to hit
+    # TEST_PATIENT_UUID's record
     result = json.loads(
         await update_clinical_record(
             _ctx(db),
@@ -144,7 +145,9 @@ async def test_delete_soft_deletes_and_idempotent(db: Database):
         )
     )
     assert result["status"] == "deleted"
-    after = await db.get_clinical_record(stored.id, patient_id=ERIKA_UUID, include_deleted=True)
+    after = await db.get_clinical_record(
+        stored.id, patient_id=PRIMARY_TEST_UUID, include_deleted=True
+    )
     assert after.deleted_at is not None
 
     # Second delete is a no-op
@@ -174,7 +177,7 @@ async def test_delete_blocks_wrong_patient(db: Database):
 async def test_restore_clears_deleted_fields(db: Database):
     stored = await db.insert_clinical_record(_make_record())
     await db.delete_clinical_record(
-        stored.id, source="manual", deleted_by="x@example.com", patient_id=ERIKA_UUID
+        stored.id, source="manual", deleted_by="x@example.com", patient_id=PRIMARY_TEST_UUID
     )
 
     result = json.loads(
@@ -187,7 +190,7 @@ async def test_restore_clears_deleted_fields(db: Database):
         )
     )
     assert result["status"] == "restored"
-    after = await db.get_clinical_record(stored.id, patient_id=ERIKA_UUID)
+    after = await db.get_clinical_record(stored.id, patient_id=PRIMARY_TEST_UUID)
     assert after is not None and after.deleted_at is None
     assert after.updated_by == "y@example.com"
 
@@ -229,17 +232,17 @@ async def test_list_records_filters_by_type_and_param(db: Database):
 async def test_list_records_respects_patient_isolation(db: Database):
     """A list call from patient A never surfaces patient B's records."""
     await _seed_second_patient(db)
-    await db.insert_clinical_record(_make_record(patient_id=ERIKA_UUID, param="CEA"))
+    await db.insert_clinical_record(_make_record(patient_id=PRIMARY_TEST_UUID, param="CEA"))
     await db.insert_clinical_record(_make_record(patient_id=TEST_PATIENT_UUID, param="CEA"))
 
     result = json.loads(await list_clinical_records(_ctx(db)))
     assert result["count"] == 1
-    assert all(r["patient_id"] == ERIKA_UUID for r in result["records"])
+    assert all(r["patient_id"] == PRIMARY_TEST_UUID for r in result["records"])
 
 
 async def test_list_records_include_deleted_toggles(db: Database):
     stored = await db.insert_clinical_record(_make_record())
-    await db.delete_clinical_record(stored.id, source="manual", patient_id=ERIKA_UUID)
+    await db.delete_clinical_record(stored.id, source="manual", patient_id=PRIMARY_TEST_UUID)
 
     default = json.loads(await list_clinical_records(_ctx(db)))
     assert default["count"] == 0
@@ -258,9 +261,9 @@ async def test_get_record_audit_returns_full_history(db: Database):
         {"value_num": 7.7},
         changed_by="x@example.com",
         source="manual",
-        patient_id=ERIKA_UUID,
+        patient_id=PRIMARY_TEST_UUID,
     )
-    await db.delete_clinical_record(stored.id, source="manual", patient_id=ERIKA_UUID)
+    await db.delete_clinical_record(stored.id, source="manual", patient_id=PRIMARY_TEST_UUID)
 
     result = json.loads(await get_record_audit(_ctx(db), record_id=stored.id))
     assert result["count"] == 3
@@ -296,7 +299,7 @@ async def test_add_analysis_stores_row(db: Database):
 
     fetched = await db.get_clinical_analysis(result["id"])
     assert fetched is not None
-    assert fetched.patient_id == ERIKA_UUID
+    assert fetched.patient_id == PRIMARY_TEST_UUID
     assert fetched.result_summary == "SII declined 33% after C1 — favorable"
 
 
@@ -371,7 +374,7 @@ async def test_list_clinical_analyses_scopes_by_patient(db: Database):
     finally:
         _current_patient_id.reset(token)
 
-    jana_rows = await db.list_clinical_analyses(patient_id=ERIKA_UUID)
+    jana_rows = await db.list_clinical_analyses(patient_id=PRIMARY_TEST_UUID)
     test_rows = await db.list_clinical_analyses(patient_id=TEST_PATIENT_UUID)
     assert len(jana_rows) == 1
     assert len(test_rows) == 1
@@ -415,7 +418,7 @@ async def test_search_notes_scopes_by_patient(db: Database):
     """A note on another patient's record must NOT appear in my search."""
     await _seed_second_patient(db)
 
-    my_rec = await db.insert_clinical_record(_make_record(patient_id=ERIKA_UUID))
+    my_rec = await db.insert_clinical_record(_make_record(patient_id=PRIMARY_TEST_UUID))
     await _insert_note(db, "CEA is trending down — my note", my_rec.id)
 
     their_rec = await db.insert_clinical_record(_make_record(patient_id=TEST_PATIENT_UUID))

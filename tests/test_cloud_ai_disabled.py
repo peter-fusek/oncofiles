@@ -22,7 +22,7 @@ from oncofiles.cloud_guard import (
 )
 from oncofiles.database import Database
 from oncofiles.files_api import FilesClient
-from tests.helpers import ERIKA_UUID
+from tests.helpers import PRIMARY_TEST_UUID
 
 FAKE_KEY = "sk-ant-test-not-a-real-key"
 
@@ -116,7 +116,7 @@ async def test_upload_document_refuses_and_stores_nothing(db: Database, no_key):
     from oncofiles.tools.documents import upload_document
 
     files = MagicMock()
-    before = await db.count_documents(patient_id=ERIKA_UUID)
+    before = await db.count_documents(patient_id=PRIMARY_TEST_UUID)
 
     content = base64.b64encode(b"synthetic pdf bytes").decode()
     result = json.loads(
@@ -124,7 +124,7 @@ async def test_upload_document_refuses_and_stores_nothing(db: Database, no_key):
     )
 
     assert result["error"] == CLOUD_AI_DISABLED_MESSAGE
-    assert await db.count_documents(patient_id=ERIKA_UUID) == before
+    assert await db.count_documents(patient_id=PRIMARY_TEST_UUID) == before
     files.upload.assert_not_called()
 
 
@@ -135,7 +135,7 @@ async def test_upload_document_unchanged_when_key_set(db: Database, with_key):
     files.upload.return_value = MagicMock(
         id="file_synth_1", mime_type="application/pdf", size_bytes=19
     )
-    before = await db.count_documents(patient_id=ERIKA_UUID)
+    before = await db.count_documents(patient_id=PRIMARY_TEST_UUID)
 
     content = base64.b64encode(b"synthetic pdf bytes").decode()
     result = json.loads(
@@ -144,7 +144,7 @@ async def test_upload_document_unchanged_when_key_set(db: Database, with_key):
 
     assert "error" not in result
     files.upload.assert_called_once()
-    assert await db.count_documents(patient_id=ERIKA_UUID) == before + 1
+    assert await db.count_documents(patient_id=PRIMARY_TEST_UUID) == before + 1
 
 
 # ── user-facing AI tools ─────────────────────────────────────────────────────
@@ -287,7 +287,7 @@ async def test_upload_document_refuses_when_flag_off_and_stores_nothing(
     from oncofiles.tools.documents import upload_document
 
     files = MagicMock()
-    before = await db.count_documents(patient_id=ERIKA_UUID)
+    before = await db.count_documents(patient_id=PRIMARY_TEST_UUID)
 
     content = base64.b64encode(b"synthetic pdf bytes").decode()
     result = json.loads(
@@ -298,7 +298,7 @@ async def test_upload_document_refuses_when_flag_off_and_stores_nothing(
     assert result["error"] == CLOUD_AI_FLAG_OFF_MESSAGE
     assert result["kind"] == "CloudAIDisabledError"
     assert "Google Drive" in result["detail"]
-    assert await db.count_documents(patient_id=ERIKA_UUID) == before
+    assert await db.count_documents(patient_id=PRIMARY_TEST_UUID) == before
     files.upload.assert_not_called()
 
 
@@ -309,7 +309,7 @@ async def test_upload_document_works_when_flag_on(db: Database, flag_on_with_key
     files.upload.return_value = MagicMock(
         id="file_synth_2", mime_type="application/pdf", size_bytes=19
     )
-    before = await db.count_documents(patient_id=ERIKA_UUID)
+    before = await db.count_documents(patient_id=PRIMARY_TEST_UUID)
 
     content = base64.b64encode(b"synthetic pdf bytes").decode()
     result = json.loads(
@@ -318,7 +318,7 @@ async def test_upload_document_works_when_flag_on(db: Database, flag_on_with_key
 
     assert "error" not in result
     files.upload.assert_called_once()
-    assert await db.count_documents(patient_id=ERIKA_UUID) == before + 1
+    assert await db.count_documents(patient_id=PRIMARY_TEST_UUID) == before + 1
 
 
 async def test_gmail_and_calendar_classifiers_skip_cloud_when_flag_off(flag_off_with_key):
@@ -331,7 +331,7 @@ async def test_gmail_and_calendar_classifiers_skip_cloud_when_flag_off(flag_off_
             0.0,
         )
         is_medical, _, _ = await _classify_event_medical(
-            "Synthetic event", "", "", patient_id=ERIKA_UUID
+            "Synthetic event", "", "", patient_id=PRIMARY_TEST_UUID
         )
         assert is_medical is False
     get_client.assert_not_called()

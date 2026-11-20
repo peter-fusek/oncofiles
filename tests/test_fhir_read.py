@@ -34,7 +34,7 @@ from oncofiles.persistent_oauth import (
     _verified_patient_id,
 )
 from oncofiles.tools import fhir as tool
-from tests.helpers import ERIKA_UUID, make_doc
+from tests.helpers import PRIMARY_TEST_UUID, make_doc
 
 BOB_UUID = "00000000-0000-4000-8000-000000000002"
 ERIKA_SLUG = "jana-test"
@@ -70,7 +70,9 @@ async def _fact(db, pid: str, **cols) -> int:
 @pytest.fixture
 async def world(db):
     """Two patients. Jana: labs, conditions, a regimen, meds, a procedure. Bob: one lab."""
-    await _exec(db, "UPDATE patients SET slug = ? WHERE patient_id = ?", (ERIKA_SLUG, ERIKA_UUID))
+    await _exec(
+        db, "UPDATE patients SET slug = ? WHERE patient_id = ?", (ERIKA_SLUG, PRIMARY_TEST_UUID)
+    )
     await _exec(
         db,
         "INSERT INTO patients (patient_id, slug, display_name, caregiver_email) "
@@ -80,7 +82,7 @@ async def world(db):
     await _exec(
         db,
         "INSERT INTO patient_context (patient_id, context_json) VALUES (?, ?)",
-        (ERIKA_UUID, json.dumps({"name": "Jana Synteticka", "sex": "female",
+        (PRIMARY_TEST_UUID, json.dumps({"name": "Jana Synteticka", "sex": "female",
                                  "date_of_birth": "2027-01-02"})),
     )  # fmt: skip
     org = await _exec(
@@ -93,17 +95,17 @@ async def world(db):
         db,
         "INSERT INTO practitioners (patient_id, surname_token, display_name, organization_id) "
         "VALUES (?, ?, ?, ?)",
-        (ERIKA_UUID, "Testovac", "MUDr. Ivan Testovac", org),
+        (PRIMARY_TEST_UUID, "Testovac", "MUDr. Ivan Testovac", org),
     )
     lab_doc = await db.insert_document(
         make_doc(file_id="fhir_a", document_date=date(2027, 3, 10), gdrive_id="synthDriveA"),
-        patient_id=ERIKA_UUID,
+        patient_id=PRIMARY_TEST_UUID,
     )
     await _exec(db, "UPDATE documents SET organization_id = ? WHERE id = ?", (org, lab_doc.id))
     report_doc = await db.insert_document(
         make_doc(file_id="gdrive:synthDriveB", category="report",
                  document_date=date(2027, 4, 1)),
-        patient_id=ERIKA_UUID,
+        patient_id=PRIMARY_TEST_UUID,
     )  # fmt: skip
     bob_doc = await db.insert_document(
         make_doc(file_id="fhir_b", gdrive_id="synthDriveC"), patient_id=BOB_UUID
@@ -115,7 +117,7 @@ async def world(db):
     ids = {"lab_doc": lab_doc.id, "report_doc": report_doc.id, "bob_doc": bob_doc.id,
            "org": org, "doctor": doctor}  # fmt: skip
     ids["hgb"] = await _fact(
-        db, ERIKA_UUID,
+        db, PRIMARY_TEST_UUID,
         code="HGB", param="Hemoglobín", unit="g/dl", unit_canonical="g/L",
         value_num=9.8,
         value_canonical=98.0,
@@ -126,7 +128,7 @@ async def world(db):
         evidence="Hemoglobín low", organization_id=org,
     )  # fmt: skip
     ids["plt"] = await _fact(
-        db, ERIKA_UUID,
+        db, PRIMARY_TEST_UUID,
         code="PLT", param="Trombocyty", unit="10^9/l", unit_canonical="10^9/L",
         value_num=210.0,
         value_canonical=210.0,
@@ -134,7 +136,7 @@ async def world(db):
         extracted_by="rules-synth-v1", source_document_id=lab_doc.id,
     )  # fmt: skip
     ids["cea"] = await _fact(
-        db, ERIKA_UUID,
+        db, PRIMARY_TEST_UUID,
         record_type="tumor_marker", code="CEA", param="CEA v sére", unit="ug/L",
         value_num=4.2,
         value_canonical=4.2,
@@ -144,7 +146,7 @@ async def world(db):
                                   "date_range_end": "2027-03-30"}),
     )  # fmt: skip
     ids["fhir_fact"] = await _fact(
-        db, ERIKA_UUID,
+        db, PRIMARY_TEST_UUID,
         code="CRP", param="CRP", value_text="negat", occurred_at="2027-04-02",
         verification="machine", fhir_id=STORED_ID,
     )  # fmt: skip
@@ -163,28 +165,28 @@ async def world(db):
                   verification="verified", extracted_by="llm-synth",
                   source_document_id=report_doc.id, page_number=2,
                   evidence="dg. adenocarcinoma coli"),
-        patient_id=ERIKA_UUID,
+        patient_id=PRIMARY_TEST_UUID,
     )  # fmt: skip
     for system, code in ((term.ICD10_WHO, "X99.9"), ("icd-10-cm", "X99.9"), ("mkch-10", "X99.9")):
         await db.add_coding(
             Coding(owner_type="condition", owner_id=str(cond.id), system=system, code=code),
-            patient_id=ERIKA_UUID,
+            patient_id=PRIMARY_TEST_UUID,
         )
     unverified_cond = await db.insert_condition(
         Condition(printed_text="Hypertensio (synthetic)", verification="unverified",
                   extracted_by="llm-synth", onset_at="2027-01-15"),
-        patient_id=ERIKA_UUID,
+        patient_id=PRIMARY_TEST_UUID,
     )  # fmt: skip
     course = await db.insert_treatment_course(
         TreatmentCourse(regimen_printed="SYNTHFOX", line_of_therapy=1, intent="palliative",
                         start_at="2027-02-10", status="active", condition_id=cond.id,
                         verification="machine", extracted_by="llm-synth"),
-        patient_id=ERIKA_UUID,
+        patient_id=PRIMARY_TEST_UUID,
     )  # fmt: skip
     cycle = await db.insert_treatment_cycle(
         TreatmentCycle(course_id=course.id, cycle_number_printed="C2", actual_at="2027-02-24",
                        verification="machine", extracted_by="llm-synth"),
-        patient_id=ERIKA_UUID,
+        patient_id=PRIMARY_TEST_UUID,
     )  # fmt: skip
     req = await db.insert_medication_event(
         MedicationEvent(kind="request", ingredient_printed="Synthoplatin", course_id=course.id,
@@ -192,24 +194,24 @@ async def world(db):
                         dose_unit_ucum="mg/m2", authored_at="2027-02-09",
                         prescriber_practitioner_id=doctor, status="active",
                         verification="verified", extracted_by="llm-synth"),
-        patient_id=ERIKA_UUID,
+        patient_id=PRIMARY_TEST_UUID,
     )  # fmt: skip
     for system, code in ((term.ATC, "L01XX99"), ("rxnorm", "999999")):
         await db.add_coding(
             Coding(owner_type="medication_event", owner_id=str(req.id), system=system, code=code),
-            patient_id=ERIKA_UUID,
+            patient_id=PRIMARY_TEST_UUID,
         )
     admin_ev = await db.insert_medication_event(
         MedicationEvent(kind="administration", ingredient_printed="Synthoplatin",
                         course_id=course.id, cycle_id=cycle.id, request_id=req.id,
                         verification="machine", extracted_by="llm-synth"),
-        patient_id=ERIKA_UUID,
+        patient_id=PRIMARY_TEST_UUID,
     )  # fmt: skip
     proc = await db.insert_procedure(
         Procedure(kind="surgery", printed_text="Hemicolectomia dx (synthetic)",
                   performed_at="2027-01-20", condition_id=cond.id, verification="machine",
                   extracted_by="llm-synth"),
-        patient_id=ERIKA_UUID,
+        patient_id=PRIMARY_TEST_UUID,
     )  # fmt: skip
     device = await db.upsert_device(Device(kind="llm-extractor", name="synth-extractor",
                                            version="v1"))  # fmt: skip
@@ -218,20 +220,20 @@ async def world(db):
                          agent_role="assembler", agent_device_id=device.id,
                          source_document_id=lab_doc.id, page_number=1,
                          quote="Hemoglobín low", recorded_at="2027-03-11T10:00:00Z"),
-        patient_id=ERIKA_UUID,
+        patient_id=PRIMARY_TEST_UUID,
     )  # fmt: skip
     await db.add_provenance(
         ProvenanceRecord(target_type="fact", target_id=ids["hgb"], activity="verify",
                          agent_role="verifier", agent_user="someone@example.com",
                          recorded_at="2027-03-12T10:00:00Z"),
-        patient_id=ERIKA_UUID,
+        patient_id=PRIMARY_TEST_UUID,
     )  # fmt: skip
     ids.update(cond=cond, unverified_cond=unverified_cond, course=course, cycle=cycle,
                req=req, admin_ev=admin_ev, proc=proc, device=device)  # fmt: skip
     return db, ids
 
 
-async def _index(db, pid=ERIKA_UUID) -> PatientIndex:
+async def _index(db, pid=PRIMARY_TEST_UUID) -> PatientIndex:
     return PatientIndex(await load_patient(db, pid))
 
 
@@ -399,7 +401,9 @@ async def test_patient_is_minimal(world):
     patient = (await _index(db)).patient
     assert patient["gender"] == "female" and patient["birthDate"] == "2027-01-02"
     assert "name" not in patient and "Synteticka" not in json.dumps(patient)
-    assert patient["id"] == str(uuid.uuid5(ONCOFILES_FHIR_NAMESPACE, f"patients:{ERIKA_UUID}"))
+    assert patient["id"] == str(
+        uuid.uuid5(ONCOFILES_FHIR_NAMESPACE, f"patients:{PRIMARY_TEST_UUID}")
+    )
 
 
 async def test_document_reference(world):
@@ -482,7 +486,7 @@ def non_admin_bound_to_jana():
     tokens = (
         _verified_caller_is_admin.set(False),
         _verified_caller_email.set(""),
-        _verified_patient_id.set(ERIKA_UUID),
+        _verified_patient_id.set(PRIMARY_TEST_UUID),
     )
     yield
     _verified_caller_is_admin.reset(tokens[0])
@@ -627,7 +631,7 @@ async def test_paging_with_count_and_token(world):
 async def test_paging_respects_the_byte_budget(world, monkeypatch):
     db, _ = world
     for i in range(30):
-        await _fact(db, ERIKA_UUID, code="GLU", param=f"Glukoza {'x' * 2000}",
+        await _fact(db, PRIMARY_TEST_UUID, code="GLU", param=f"Glukoza {'x' * 2000}",
                     occurred_at="2027-06-01", value_text=f"t{i}")  # fmt: skip
     index = await _index(db)
     monkeypatch.setattr(fs, "PAGE_BYTE_BUDGET", 10_000)

@@ -6,7 +6,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from oncofiles.server import _check_bearer
-from tests.helpers import ERIKA_UUID, make_doc
+from tests.helpers import PRIMARY_TEST_UUID, make_doc
 
 
 def _dashboard_combined() -> str:
@@ -142,7 +142,7 @@ async def test_build_document_matrix_empty_db(db):
     """Matrix returns empty results for empty database."""
     from oncofiles.tools.hygiene import _build_document_matrix
 
-    result = await _build_document_matrix(db, patient_id=ERIKA_UUID)
+    result = await _build_document_matrix(db, patient_id=PRIMARY_TEST_UUID)
     assert result["filter"] == "all"
     assert result["matched"] == 0
     assert result["summary"]["total"] == 0
@@ -155,12 +155,12 @@ async def test_build_document_matrix_with_docs(db):
     from oncofiles.tools.hygiene import _build_document_matrix
 
     doc = make_doc(filename="20260101_Test_Labs.pdf")
-    inserted = await db.insert_document(doc, patient_id=ERIKA_UUID)
+    inserted = await db.insert_document(doc, patient_id=PRIMARY_TEST_UUID)
 
     # Update with some fields to make it partially complete
     await db.update_document_ai_metadata(inserted.id, "Test summary", "tag1,tag2")
 
-    result = await _build_document_matrix(db, patient_id=ERIKA_UUID)
+    result = await _build_document_matrix(db, patient_id=PRIMARY_TEST_UUID)
     assert result["summary"]["total"] == 1
     assert result["summary"]["with_ai"] == 1
     assert result["matched"] == 1
@@ -178,13 +178,15 @@ async def test_build_document_matrix_filter_incomplete(db):
     from oncofiles.tools.hygiene import _build_document_matrix
 
     doc = make_doc(filename="test.pdf", gdrive_id=None)
-    await db.insert_document(doc, patient_id=ERIKA_UUID)
+    await db.insert_document(doc, patient_id=PRIMARY_TEST_UUID)
 
-    result = await _build_document_matrix(db, filter_param="incomplete", patient_id=ERIKA_UUID)
+    result = await _build_document_matrix(
+        db, filter_param="incomplete", patient_id=PRIMARY_TEST_UUID
+    )
     # Doc is incomplete (no AI, no sync, etc.) so it should be returned
     assert result["matched"] == 1
 
-    result_all = await _build_document_matrix(db, filter_param="all", patient_id=ERIKA_UUID)
+    result_all = await _build_document_matrix(db, filter_param="all", patient_id=PRIMARY_TEST_UUID)
     assert result_all["matched"] == 1
 
 
@@ -193,15 +195,19 @@ async def test_build_document_matrix_filter_missing_ai(db):
     from oncofiles.tools.hygiene import _build_document_matrix
 
     doc = make_doc(filename="test.pdf")
-    inserted = await db.insert_document(doc, patient_id=ERIKA_UUID)
+    inserted = await db.insert_document(doc, patient_id=PRIMARY_TEST_UUID)
 
     # No AI summary → should be returned
-    result = await _build_document_matrix(db, filter_param="missing_ai", patient_id=ERIKA_UUID)
+    result = await _build_document_matrix(
+        db, filter_param="missing_ai", patient_id=PRIMARY_TEST_UUID
+    )
     assert result["matched"] == 1
 
     # Add AI summary → should be excluded
     await db.update_document_ai_metadata(inserted.id, "Summary", "tags")
-    result = await _build_document_matrix(db, filter_param="missing_ai", patient_id=ERIKA_UUID)
+    result = await _build_document_matrix(
+        db, filter_param="missing_ai", patient_id=PRIMARY_TEST_UUID
+    )
     assert result["matched"] == 0
 
 
@@ -209,7 +215,7 @@ async def test_build_document_matrix_summary_has_fully_complete(db):
     """Summary includes fully_complete count."""
     from oncofiles.tools.hygiene import _build_document_matrix
 
-    result = await _build_document_matrix(db, patient_id=ERIKA_UUID)
+    result = await _build_document_matrix(db, patient_id=PRIMARY_TEST_UUID)
     assert "fully_complete" in result["summary"]
     assert isinstance(result["summary"]["fully_complete"], int)
 
@@ -221,10 +227,10 @@ async def test_build_document_matrix_limit(db):
 
     for i in range(5):
         await db.insert_document(
-            make_doc(filename=f"doc_{i}.pdf", file_id=f"file_{i}"), patient_id=ERIKA_UUID
+            make_doc(filename=f"doc_{i}.pdf", file_id=f"file_{i}"), patient_id=PRIMARY_TEST_UUID
         )
 
-    result = await _build_document_matrix(db, limit=3, patient_id=ERIKA_UUID)
+    result = await _build_document_matrix(db, limit=3, patient_id=PRIMARY_TEST_UUID)
     assert result["matched"] == 5  # total filter hits (all 5 match filter='all')
     assert result["returned"] == 3  # page size
     assert result["limit"] == 3
@@ -240,25 +246,25 @@ async def test_build_document_matrix_pagination(db):
     for i in range(10):
         await db.insert_document(
             make_doc(filename=f"doc_{i:02d}.pdf", file_id=f"file_{i}"),
-            patient_id=ERIKA_UUID,
+            patient_id=PRIMARY_TEST_UUID,
         )
 
-    page1 = await _build_document_matrix(db, limit=4, offset=0, patient_id=ERIKA_UUID)
-    page2 = await _build_document_matrix(db, limit=4, offset=4, patient_id=ERIKA_UUID)
-    page3 = await _build_document_matrix(db, limit=4, offset=8, patient_id=ERIKA_UUID)
+    first = await _build_document_matrix(db, limit=4, offset=0, patient_id=PRIMARY_TEST_UUID)
+    second = await _build_document_matrix(db, limit=4, offset=4, patient_id=PRIMARY_TEST_UUID)
+    third = await _build_document_matrix(db, limit=4, offset=8, patient_id=PRIMARY_TEST_UUID)
 
     # All three pages report the same 'matched' total
-    assert page1["matched"] == page2["matched"] == page3["matched"] == 10
+    assert first["matched"] == second["matched"] == third["matched"] == 10
 
     # Page sizes: 4, 4, 2 (10 docs)
-    assert page1["returned"] == 4
-    assert page2["returned"] == 4
-    assert page3["returned"] == 2
+    assert first["returned"] == 4
+    assert second["returned"] == 4
+    assert third["returned"] == 2
 
     # Pages don't overlap
-    ids_p1 = {d["id"] for d in page1["documents"]}
-    ids_p2 = {d["id"] for d in page2["documents"]}
-    ids_p3 = {d["id"] for d in page3["documents"]}
+    ids_p1 = {d["id"] for d in first["documents"]}
+    ids_p2 = {d["id"] for d in second["documents"]}
+    ids_p3 = {d["id"] for d in third["documents"]}
     assert not (ids_p1 & ids_p2)
     assert not (ids_p2 & ids_p3)
     assert len(ids_p1 | ids_p2 | ids_p3) == 10  # all unique
@@ -277,20 +283,20 @@ async def test_build_document_matrix_cap_and_clamp(db):
     for i in range(5):
         await db.insert_document(
             make_doc(filename=f"doc_{i}.pdf", file_id=f"file_{i}"),
-            patient_id=ERIKA_UUID,
+            patient_id=PRIMARY_TEST_UUID,
         )
 
     # Limits above ceiling are clamped to 2000
-    clamped = await _build_document_matrix(db, limit=99_999, patient_id=ERIKA_UUID)
+    clamped = await _build_document_matrix(db, limit=99_999, patient_id=PRIMARY_TEST_UUID)
     assert clamped["limit"] == 2000
 
     # Negative / zero limits are clamped UP to 1 (min(max(1, limit), 2000))
-    raised = await _build_document_matrix(db, limit=0, patient_id=ERIKA_UUID)
+    raised = await _build_document_matrix(db, limit=0, patient_id=PRIMARY_TEST_UUID)
     assert raised["limit"] == 1
     assert raised["returned"] == 1  # we seeded 5 but asked for 1
 
     # Negative offset is clamped up to 0
-    result = await _build_document_matrix(db, limit=10, offset=-5, patient_id=ERIKA_UUID)
+    result = await _build_document_matrix(db, limit=10, offset=-5, patient_id=PRIMARY_TEST_UUID)
     assert result["offset"] == 0
 
 

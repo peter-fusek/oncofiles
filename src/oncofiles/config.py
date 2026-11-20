@@ -246,7 +246,7 @@ MAX_DOCUMENTS_PER_PATIENT: int = int(os.environ.get("MAX_DOCUMENTS_PER_PATIENT",
 # Query ceiling for "every document for this patient" reads (#548).
 #
 # Deliberately NOT equal to the FUP cap. The cap governs *future inserts*; it
-# does not bound rows that already exist — q1b sits at ~296 documents under a
+# does not bound rows that already exist — one patient sits at ~296 documents under a
 # cap of 200 today. So if a read limit tracked the cap exactly, LOWERING the cap
 # would silently truncate reads over existing data. In `_cleanup_orphan_ocr`
 # (removed in #734) that meant trashing OCR sidecars for the documents that fell

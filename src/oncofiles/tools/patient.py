@@ -32,7 +32,7 @@ async def get_patient_context(ctx: Context, patient_slug: str | None = None) -> 
     looks like "no patients" rather than an ugly error.
 
     Args:
-        patient_slug: Optional — explicit patient slug (e.g. 'q1b'). Required
+        patient_slug: Optional — explicit patient slug (e.g. 'jana-testova'). Required
             in stateless HTTP contexts (Claude.ai connector, ChatGPT) where
             select_patient() state does not persist across tool calls (#429).
             Stdio + single-patient bearer flows can omit.
@@ -85,7 +85,7 @@ async def update_patient_context(
     Args:
         updates_json: JSON object with fields to update. Example:
             '{"treatment": {"current_cycle": 3}}'
-        patient_slug: Optional — explicit patient slug (e.g. 'q1b'). Required
+        patient_slug: Optional — explicit patient slug (e.g. 'jana-testova'). Required
             in stateless HTTP contexts (Claude.ai connector, ChatGPT) where
             select_patient() state does not persist across tool calls (#429).
     """
@@ -178,7 +178,7 @@ async def select_patient(
     you may not access return the same error.
 
     Args:
-        patient_slug: Patient slug or UUID (e.g. 'q1b', 'e5g').
+        patient_slug: Patient slug or UUID (e.g. 'jana-testova', 'test-patient').
     """
     from oncofiles.persistent_oauth import _email_matches_caregiver, _verified_patient_id
     from oncofiles.tools._helpers import _caller_email, _patient_not_accessible_message
@@ -316,7 +316,7 @@ async def list_patient_tokens(ctx: Context, patient_slug: str) -> str:
     plaintext is shown once at creation and is not stored.
 
     Args:
-        patient_slug: Required. The patient's slug (e.g. 'q1b').
+        patient_slug: Required. The patient's slug (e.g. 'jana-testova').
     """
     from oncofiles.tools._helpers import _require_admin_or_raise
 
@@ -356,7 +356,7 @@ async def revoke_patient_tokens(
     (dashboard Share button) instead.
 
     Args:
-        patient_slug: Required. The patient's slug (e.g. 'q1b').
+        patient_slug: Required. The patient's slug (e.g. 'jana-testova').
         label: Optional. Revoke only tokens with exactly this label
             (see list_patient_tokens). Omitted = all active tokens.
         dry_run: True (default) reports only; False revokes.

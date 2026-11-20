@@ -28,7 +28,7 @@ from oncofiles.curated import verifier_clinical as vc
 from oncofiles.curated.facts_rules import Vocabulary
 from oncofiles.tools import clinical_facts as cf
 from oncofiles.tools import curated as tool
-from tests.helpers import ERIKA_UUID
+from tests.helpers import PRIMARY_TEST_UUID
 
 DOB = "2027-01-02"  # invented
 DAY = "2028-06-20"  # document date of the seeded documents
@@ -85,7 +85,7 @@ async def _extract(db, pages, *, profile=lx.GENERAL, chat=model_chat):
 async def _store(db, doc_id, pages, *, profile=lx.GENERAL):
     out = await _extract(db, pages, profile=profile)
     res = await clinical_store.store_document(
-        db, patient_id=ERIKA_UUID, document_id=doc_id, items=out["items"], document_date=DAY,
+        db, patient_id=PRIMARY_TEST_UUID, document_id=doc_id, items=out["items"], document_date=DAY,
         birth_dates={DOB}, model="mock-model",
     )  # fmt: skip
     return out, res
@@ -98,7 +98,7 @@ async def _doc(db, doc_id, pages, category, *, mime="application/pdf", ext="pdf"
         "INSERT INTO documents (id, file_id, filename, original_filename, category, mime_type, "
         "size_bytes, patient_id, gdrive_id, structured_metadata, document_date) "
         "VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)",
-        (doc_id, f"gdrive:g{doc_id}", name, name, category, mime, ERIKA_UUID,
+        (doc_id, f"gdrive:g{doc_id}", name, name, category, mime, PRIMARY_TEST_UUID,
          f"g{doc_id}", json.dumps(meta), DAY),
     )  # fmt: skip
     for n, text in enumerate(pages, 1):
@@ -117,7 +117,7 @@ async def _active(db, table, where="1=1"):
     async with db.db.execute(
         f"SELECT * FROM {table} WHERE patient_id = ? AND deleted_at IS NULL AND {where} "  # noqa: S608
         "ORDER BY id",
-        (ERIKA_UUID,),
+        (PRIMARY_TEST_UUID,),
     ) as cur:
         return [dict(r) for r in await cur.fetchall()]
 
@@ -131,7 +131,7 @@ def _ctx(db):
 @pytest.fixture
 def general_patient(monkeypatch):
     ctx = {**patient_context._default_context(), "patient_type": "general"}
-    monkeypatch.setitem(patient_context._contexts, ERIKA_UUID, ctx)
+    monkeypatch.setitem(patient_context._contexts, PRIMARY_TEST_UUID, ctx)
 
 
 @pytest.fixture
@@ -143,7 +143,7 @@ def local_model(monkeypatch):
     monkeypatch.setattr(config, "LLM_CLINICAL_EXTRACT_DISABLED", False)
     monkeypatch.setattr(llm, "chat", model_chat)
     monkeypatch.setattr(tool, "_reocr_jobs", {})
-    monkeypatch.setattr(tool, "_readme_births", {ERIKA_UUID: {DOB}})
+    monkeypatch.setattr(tool, "_readme_births", {PRIMARY_TEST_UUID: {DOB}})
     monkeypatch.setattr(pre_store, "make_copy", lambda db, job: f"oncofiles-copy-{job}.db")
 
 
@@ -255,7 +255,7 @@ async def test_general_kinds_are_stored_with_provenance(seeded):
     async with db.db.execute(
         "SELECT target_type, COUNT(*) FROM provenance WHERE patient_id = ? "
         "AND source_document_id = ? GROUP BY target_type",
-        (ERIKA_UUID, DOC_G),
+        (PRIMARY_TEST_UUID, DOC_G),
     ) as cur:
         prov = {r[0]: r[1] for r in await cur.fetchall()}
     assert prov["procedure"] == len(vacc) + len(screen) + 2  # + USG, extraction
@@ -320,7 +320,7 @@ async def test_re_extraction_keeps_a_verified_vaccination_and_retract_removes_th
     assert boostrix["id"] in ids and len(ids) == 4
 
     out = await clinical_store.retract_document(
-        db, patient_id=ERIKA_UUID, document_id=DOC_G, reason="test", dry_run=False
+        db, patient_id=PRIMARY_TEST_UUID, document_id=DOC_G, reason="test", dry_run=False
     )
     assert out["stored"]["procedures"]["kept"] == 1
     left = await _active(db, "procedures")
@@ -375,7 +375,7 @@ async def test_general_patient_preview_is_dry_run_and_writes_nothing(
     before = await _snapshot(db)
     started = json.loads(await tool.curated_clinical_extract_preview(_ctx(db), [DOC_G]))
     assert started["kind"] == "clinical_preview" and started["dry_run"] is True
-    await asyncio.wait_for(tool._reocr_jobs[ERIKA_UUID]["task"], 10)
+    await asyncio.wait_for(tool._reocr_jobs[PRIMARY_TEST_UUID]["task"], 10)
     job = json.loads(await tool.curated_reocr_status(_ctx(db)))
     assert job["state"] == "done", job
     assert await _snapshot(db) == before
@@ -391,7 +391,7 @@ async def test_general_patient_preview_is_dry_run_and_writes_nothing(
 async def test_an_oncology_patient_keeps_the_oncology_request(seeded, local_model):
     db = seeded
     json.loads(await tool.curated_clinical_extract_preview(_ctx(db), [DOC_O]))
-    await asyncio.wait_for(tool._reocr_jobs[ERIKA_UUID]["task"], 10)
+    await asyncio.wait_for(tool._reocr_jobs[PRIMARY_TEST_UUID]["task"], 10)
     job = json.loads(await tool.curated_reocr_status(_ctx(db)))
     (doc,) = job["report"]["documents"]
     assert doc["profile"] == "oncology" and set(doc["counts"]) == set(lx.PROFILE_KINDS["oncology"])
@@ -549,7 +549,7 @@ async def test_raw_genotype_preview_makes_no_model_call(
     monkeypatch.setattr(llm, "chat", _counting_chat(calls))
     before = await _snapshot(db)
     await tool.curated_clinical_extract_preview(_ctx(db), [DOC_RAW, DOC_FLAG, DOC_GEN_PDF])
-    await asyncio.wait_for(tool._reocr_jobs[ERIKA_UUID]["task"], 10)
+    await asyncio.wait_for(tool._reocr_jobs[PRIMARY_TEST_UUID]["task"], 10)
     job = json.loads(await tool.curated_reocr_status(_ctx(db)))
     assert job["state"] == "done", job
     docs = {d["document_id"]: d for d in job["report"]["documents"]}
@@ -574,8 +574,8 @@ async def test_raw_genotype_real_run_writes_nothing(raw_seeded, local_model, mon
         await tool.curated_clinical_extract(_ctx(db), [DOC_RAW, DOC_FLAG], dry_run=False)
     )
     assert started["kind"] == "clinical_extract"
-    await asyncio.wait_for(tool._reocr_jobs[ERIKA_UUID]["task"], 10)
-    job = tool._reocr_jobs[ERIKA_UUID]
+    await asyncio.wait_for(tool._reocr_jobs[PRIMARY_TEST_UUID]["task"], 10)
+    job = tool._reocr_jobs[PRIMARY_TEST_UUID]
     assert job["state"] == "done", job
     assert calls == []
     assert {(d["result"], d["reason"]) for d in job["report"]["documents"]} == {

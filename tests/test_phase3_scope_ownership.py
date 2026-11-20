@@ -27,7 +27,7 @@ from oncofiles.tools._helpers import (
     _is_admin_caller,
     _require_admin_or_raise,
 )
-from tests.helpers import ERIKA_UUID
+from tests.helpers import PRIMARY_TEST_UUID
 
 
 def _make_patient(slug: str, name: str, caregiver_email: str) -> Patient:
@@ -78,13 +78,13 @@ def test_require_admin_passes_for_admin():
 
 def test_ownership_allows_own_patient():
     _verified_caller_is_admin.set(False)
-    err = _check_ownership_or_admin("email_entry", 5, ERIKA_UUID, ERIKA_UUID)
+    err = _check_ownership_or_admin("email_entry", 5, PRIMARY_TEST_UUID, PRIMARY_TEST_UUID)
     assert err is None
 
 
 def test_ownership_denies_other_patient():
     _verified_caller_is_admin.set(False)
-    err = _check_ownership_or_admin("email_entry", 5, "other-uuid", ERIKA_UUID)
+    err = _check_ownership_or_admin("email_entry", 5, "other-uuid", PRIMARY_TEST_UUID)
     assert err is not None
     assert "access denied" in err
     # Must NOT leak the real owner's UUID in the error.
@@ -93,7 +93,7 @@ def test_ownership_denies_other_patient():
 
 def test_ownership_admin_bypasses_pid_check():
     _verified_caller_is_admin.set(True)
-    err = _check_ownership_or_admin("email_entry", 5, "other-uuid", ERIKA_UUID)
+    err = _check_ownership_or_admin("email_entry", 5, "other-uuid", PRIMARY_TEST_UUID)
     assert err is None
     _verified_caller_is_admin.set(False)
 
@@ -108,7 +108,7 @@ def test_ownership_rejects_no_caller_pid():
 def test_ownership_rejects_entry_with_null_owner():
     """Defensive: a legacy entry with patient_id='' should not be accessible."""
     _verified_caller_is_admin.set(False)
-    err = _check_ownership_or_admin("email_entry", 5, "", ERIKA_UUID)
+    err = _check_ownership_or_admin("email_entry", 5, "", PRIMARY_TEST_UUID)
     assert err is not None
 
 
@@ -190,7 +190,7 @@ async def test_list_patients_non_admin_no_email_restricted_to_bound_pid(db: Data
     _verified_caller_is_admin.set(False)
     _verified_caller_email.set("")
     # Caller is a patient bearer bound to Jana (the seeded test default).
-    _verified_patient_id.set(ERIKA_UUID)
+    _verified_patient_id.set(PRIMARY_TEST_UUID)
     ctx = MagicMock()
     ctx.request_context.lifespan_context = {"db": db, "files": MagicMock()}
     result = json.loads(await list_patients(ctx))

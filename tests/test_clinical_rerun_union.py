@@ -16,7 +16,7 @@ import copy
 
 from oncofiles.curated import clinical_store
 from oncofiles.tools import curated as tool
-from tests.helpers import ERIKA_UUID
+from tests.helpers import PRIMARY_TEST_UUID
 from tests.test_clinical_cycle_course import (
     CYCLE_LINE,
     _course,
@@ -159,7 +159,7 @@ async def test_retract_still_removes_every_unprotected_row_after_a_partial_rerun
     await _put(db, items)
     await _put(db, _kind(items, "diagnoses"))  # most rows are kept as missing
     done = await clinical_store.retract_document(
-        db, patient_id=ERIKA_UUID, document_id=DOC_A, reason="test", dry_run=False
+        db, patient_id=PRIMARY_TEST_UUID, document_id=DOC_A, reason="test", dry_run=False
     )
     assert sum(c.get("removed", 0) for c in done["stored"].values()) > 0
     for table in LLM_TABLES:
@@ -186,7 +186,7 @@ async def test_verified_rows_are_never_replaced(seeded):
     assert kept["verification"] == "verified" and kept["value_text"] == old["value_text"]
 
     await clinical_store.retract_document(
-        db, patient_id=ERIKA_UUID, document_id=DOC_A, reason="test", dry_run=False
+        db, patient_id=PRIMARY_TEST_UUID, document_id=DOC_A, reason="test", dry_run=False
     )
     assert [r["id"] for r in await _llm(db, "clinical_records")] == [old["id"]]
 
@@ -275,8 +275,8 @@ async def test_job_report_shows_rerun_counts_per_document_and_in_totals(seeded, 
 
     async def run():
         await tool.curated_clinical_extract(_ctx(db), [DOC_A, DOC_B], dry_run=False)
-        await asyncio.wait_for(tool._reocr_jobs[ERIKA_UUID]["task"], 10)
-        report = tool._reocr_jobs[ERIKA_UUID]["report"]
+        await asyncio.wait_for(tool._reocr_jobs[PRIMARY_TEST_UUID]["task"], 10)
+        report = tool._reocr_jobs[PRIMARY_TEST_UUID]["report"]
         tool._reocr_jobs.clear()
         return report
 

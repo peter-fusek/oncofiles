@@ -26,7 +26,7 @@ import pytest
 from oncofiles import cloud_guard, config, pre_store
 from oncofiles.curated import llm, llm_extract_call
 from oncofiles.tools import curated as tool
-from tests.helpers import ERIKA_UUID
+from tests.helpers import PRIMARY_TEST_UUID
 from tests.test_extraction_scorecard import DAY, DOB, PAGES_A, PAGES_B
 from tests.test_extraction_scorecard import chat as model_chat
 from tests.test_llm_extract import PAGE as LAB_PAGE
@@ -101,8 +101,8 @@ async def _doc(db, doc_id, pages, category):
         "INSERT INTO documents (id, file_id, filename, original_filename, category, mime_type, "
         "size_bytes, patient_id, gdrive_id, structured_metadata, document_date) "
         "VALUES (?, ?, ?, ?, ?, 'application/pdf', 1, ?, ?, ?, ?)",
-        (doc_id, f"gdrive:g{doc_id}", f"d{doc_id}.pdf", f"d{doc_id}.pdf", category, ERIKA_UUID,
-         f"g{doc_id}", json.dumps(meta), DAY),
+        (doc_id, f"gdrive:g{doc_id}", f"d{doc_id}.pdf", f"d{doc_id}.pdf", category,
+         PRIMARY_TEST_UUID, f"g{doc_id}", json.dumps(meta), DAY),
     )  # fmt: skip
     for n, text in enumerate(pages, 1):
         await db.save_ocr_page(doc_id, n, text, "curated-sidecar")
@@ -128,7 +128,7 @@ def model(monkeypatch):
     monkeypatch.setattr(llm, "chat", slow)
     monkeypatch.setattr(tool, "_reocr_jobs", {})
     monkeypatch.setattr(tool, "_runs", {})
-    monkeypatch.setattr(tool, "_readme_births", {ERIKA_UUID: {DOB}})
+    monkeypatch.setattr(tool, "_readme_births", {PRIMARY_TEST_UUID: {DOB}})
     monkeypatch.setattr(tool, "_stopping", threading.Event())
     monkeypatch.setattr(pre_store, "make_copy", lambda db, job: f"oncofiles-copy-{job}.db")
     return slow
@@ -141,7 +141,7 @@ def _ctx(db):
 
 
 async def _wait(db):
-    await asyncio.wait_for(tool._reocr_jobs[ERIKA_UUID]["task"], 30)
+    await asyncio.wait_for(tool._reocr_jobs[PRIMARY_TEST_UUID]["task"], 30)
     return json.loads(await tool.curated_reocr_status(_ctx(db)))
 
 
@@ -308,7 +308,7 @@ async def test_a_write_stores_document_zero_while_document_one_still_extracts(
 
     monkeypatch.setattr(llm, "chat", chat)
     await tool.curated_clinical_extract(_ctx(db), [DOC_X, DOC_Y], dry_run=False)
-    task = tool._reocr_jobs[ERIKA_UUID]["task"]
+    task = tool._reocr_jobs[PRIMARY_TEST_UUID]["task"]
     if ending == "job_killed":
         for _ in range(200):  # until X is stored, then kill the job mid-Y
             if x_stored.is_set():
@@ -320,7 +320,9 @@ async def test_a_write_stores_document_zero_while_document_one_still_extracts(
             await task
     else:
         await asyncio.wait_for(task, 30)
-        docs = {d["document_id"]: d for d in tool._reocr_jobs[ERIKA_UUID]["report"]["documents"]}
+        docs = {
+            d["document_id"]: d for d in tool._reocr_jobs[PRIMARY_TEST_UUID]["report"]["documents"]
+        }
         assert docs[DOC_X]["result"] == "stored" and docs[DOC_Y]["result"] != "stored"
     assert waited and waited[0] is True  # X was stored before Y's model work ended
     assert await _provenance(db, DOC_X) > 0
@@ -358,8 +360,8 @@ async def test_parallel_docs_override_is_refused_on_write_paths(seeded, model):
         await tool.curated_llm_extract_preview(_ctx(db), [DOC_LAB], dry_run=False,
                                                parallel_docs=2)  # fmt: skip
     with pytest.raises(ValueError, match="dry run"):
-        await tool._clinical_job(db, ERIKA_UUID, [], write=True, parallel_docs=2)
-    assert ERIKA_UUID not in tool._reocr_jobs
+        await tool._clinical_job(db, PRIMARY_TEST_UUID, [], write=True, parallel_docs=2)
+    assert PRIMARY_TEST_UUID not in tool._reocr_jobs
     with pytest.raises(ValueError, match="dry run"):
         llm_extract_call.refuse_overrides_on_write(write=True, parallel_docs=1)
     llm_extract_call.refuse_overrides_on_write(write=False, parallel_docs=3)
@@ -440,11 +442,11 @@ async def test_the_db_guard_itself_catches_an_overlap(seeded):
     """The guard is not vacuous: two DB awaits in flight together are caught."""
     model = SlowModel()
     guarded = GuardedDb(seeded, model)
-    one = asyncio.create_task(guarded.get_ocr_pages(DOCS[0], patient_id=ERIKA_UUID))
-    two = asyncio.create_task(guarded.get_ocr_pages(DOCS[1], patient_id=ERIKA_UUID))
+    one = asyncio.create_task(guarded.get_ocr_pages(DOCS[0], patient_id=PRIMARY_TEST_UUID))
+    two = asyncio.create_task(guarded.get_ocr_pages(DOCS[1], patient_id=PRIMARY_TEST_UUID))
     await one
     await two
     assert guarded.overlaps == ["get_ocr_pages"]
     model.in_flight = 1
-    await guarded.get_ocr_pages(DOCS[0], patient_id=ERIKA_UUID)
+    await guarded.get_ocr_pages(DOCS[0], patient_id=PRIMARY_TEST_UUID)
     assert guarded.during_model == ["get_ocr_pages"]

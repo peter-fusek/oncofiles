@@ -19,7 +19,7 @@ import pytest
 
 from oncofiles.curated import llm, reocr
 from oncofiles.tools import curated as tool
-from tests.helpers import ERIKA_UUID
+from tests.helpers import PRIMARY_TEST_UUID
 from tests.test_admin_reread_console import _seed
 from tests.test_curated_reocr import NOW, _scan_pdf, _setup
 from tests.test_pre_store import _clients, _reset_jobs, file_db  # noqa: F401 (fixtures)
@@ -273,9 +273,9 @@ async def test_verify_only_job_report_lists_truncation_warnings(file_db):  # noq
         patch("oncofiles.server._create_patient_clients", _clients()),
         patch.object(tool, "_reread_one", return_value=result),
     ):
-        await tool.start_reread(file_db, ERIKA_UUID, [501], dry_run=True)
-        await tool._reocr_jobs[ERIKA_UUID]["task"]
-    report = tool._reocr_jobs[ERIKA_UUID]["report"]
+        await tool.start_reread(file_db, PRIMARY_TEST_UUID, [501], dry_run=True)
+        await tool._reocr_jobs[PRIMARY_TEST_UUID]["task"]
+    report = tool._reocr_jobs[PRIMARY_TEST_UUID]["report"]
     assert report["warnings"] == [{"warning": "reocr_pass_truncated", "document_id": 501,
                                    "page": 3, "pass": 1}]  # fmt: skip
 

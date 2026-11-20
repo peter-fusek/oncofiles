@@ -10,7 +10,7 @@ import pytest
 from oncofiles.models import ConversationEntry
 from oncofiles.tools.conversations import get_conversation_stats
 
-ERIKA_UUID = "00000000-0000-4000-8000-000000000001"
+PRIMARY_TEST_UUID = "00000000-0000-4000-8000-000000000001"
 
 
 class _StubCtx:
@@ -27,7 +27,7 @@ async def _insert(db, *, entry_date, entry_type, title, tags=None, participant="
         tags=tags,
         source="live",
     )
-    return await db.insert_conversation_entry(entry, patient_id=ERIKA_UUID)
+    return await db.insert_conversation_entry(entry, patient_id=PRIMARY_TEST_UUID)
 
 
 async def _call(db, **kwargs):
@@ -39,7 +39,7 @@ async def _call(db, **kwargs):
     orig_resolve = conv_mod._resolve_patient_id
 
     async def fake_resolve(_slug, _ctx):
-        return ERIKA_UUID
+        return PRIMARY_TEST_UUID
 
     conv_mod._get_db = lambda _ctx: db
     conv_mod._resolve_patient_id = fake_resolve

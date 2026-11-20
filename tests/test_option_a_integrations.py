@@ -26,7 +26,7 @@ from oncofiles.persistent_oauth import (
     _verified_patient_id,
 )
 from oncofiles.tools import integrations
-from tests.conftest import ERIKA_UUID
+from tests.conftest import PRIMARY_TEST_UUID
 
 # Slug routing across patients runs through the #497/#498 ACL — admin scope
 # for the whole module so each test can pick its target.
@@ -61,7 +61,7 @@ async def _seed_bob(db: Database) -> None:
 async def _seed_emails(db: Database) -> None:
     await db.upsert_email_entry(
         EmailEntry(
-            patient_id=ERIKA_UUID,
+            patient_id=PRIMARY_TEST_UUID,
             gmail_message_id="jana-msg-1",
             thread_id="jana-th",
             subject="Jana lab results",
@@ -90,7 +90,7 @@ async def _seed_emails(db: Database) -> None:
 async def _seed_calendar(db: Database) -> None:
     await db.upsert_calendar_entry(
         CalendarEntry(
-            patient_id=ERIKA_UUID,
+            patient_id=PRIMARY_TEST_UUID,
             google_event_id="jana-evt-1",
             summary="Jana oncologist visit",
             description="d1",
@@ -225,7 +225,7 @@ async def test_get_email_slug_targets_owner_when_caller_is_admin(db: Database):
     assert bob_email is not None
 
     # Bind the caller to Jana to prove the slug overrides bound pid.
-    _verified_patient_id.set(ERIKA_UUID)
+    _verified_patient_id.set(PRIMARY_TEST_UUID)
     _verified_caller_email.set("admin@oncofiles.com")
     ctx = _StubCtx(db)
 
@@ -250,7 +250,7 @@ async def test_get_calendar_event_slug_targets_owner_when_caller_is_admin(db: Da
     assert rows and rows[0].summary == "Bob oncologist visit"
     bob_event_id = rows[0].id
 
-    _verified_patient_id.set(ERIKA_UUID)
+    _verified_patient_id.set(PRIMARY_TEST_UUID)
     _verified_caller_email.set("admin@oncofiles.com")
     ctx = _StubCtx(db)
 
@@ -276,7 +276,7 @@ async def test_search_emails_non_admin_foreign_slug_denied(db: Database):
 
     # Drop admin scope for this single test (overrides the module-level fixture).
     tok_admin = _verified_caller_is_admin.set(False)
-    tok_pid = _verified_patient_id.set(ERIKA_UUID)
+    tok_pid = _verified_patient_id.set(PRIMARY_TEST_UUID)
     tok_email = _verified_caller_email.set("jana-caregiver@example.com")
     ctx = _StubCtx(db)
     try:
@@ -301,7 +301,7 @@ async def test_get_email_non_admin_foreign_slug_denied(db: Database):
     assert bob_email is not None
 
     tok_admin = _verified_caller_is_admin.set(False)
-    tok_pid = _verified_patient_id.set(ERIKA_UUID)
+    tok_pid = _verified_patient_id.set(PRIMARY_TEST_UUID)
     tok_email = _verified_caller_email.set("jana-caregiver@example.com")
     ctx = _StubCtx(db)
     try:

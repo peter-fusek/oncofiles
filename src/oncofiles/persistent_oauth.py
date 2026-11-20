@@ -248,8 +248,8 @@ class PersistentOAuthProvider(InMemoryOAuthProvider):
                     # deployments the static token is operator-level and
                     # MUST pass patient_slug per call, so we return the
                     # sentinel to force explicit scoping and close the
-                    # cross-patient leak class reported by Michal Gašparík
-                    # 2026-04-24 (same class as #476).
+                    # cross-patient leak class reported by an external user
+                    # on 2026-04-24 (same class as #476).
                     pid = await self._safe_single_patient_pid()
                 if pid:
                     _verified_patient_id.set(pid)

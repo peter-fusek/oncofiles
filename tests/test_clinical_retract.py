@@ -20,7 +20,7 @@ from oncofiles.curated import clinical_store
 from oncofiles.persistent_oauth import _verified_caller_email, _verified_caller_is_admin
 from oncofiles.secrets_keys import caller_email_hash
 from oncofiles.tools import curated as tool
-from tests.helpers import ERIKA_UUID
+from tests.helpers import PRIMARY_TEST_UUID
 from tests.test_clinical_extract import (  # noqa: F401  (fixtures)
     BOB_UUID,
     DAY,
@@ -44,7 +44,7 @@ LLM_TABLES = (
 )  # fmt: skip
 
 
-async def _llm_active(db, table, doc_id=None, pid=ERIKA_UUID):
+async def _llm_active(db, table, doc_id=None, pid=PRIMARY_TEST_UUID):
     rows = await _active(db, table, pid)
     return [
         r
@@ -171,7 +171,7 @@ async def test_lab_rule_facts_and_other_documents_survive(seeded, local_model):
     await _store(db, DOC_A, PAGES_A)
     await _store(db, DOC_B, PAGES_B)
     await db.replace_document_facts(
-        patient_id=ERIKA_UUID, document_id=DOC_A, extracted_by="rule:test",
+        patient_id=PRIMARY_TEST_UUID, document_id=DOC_A, extracted_by="rule:test",
         facts=[{"code": "GLU", "label": "Glukóza", "value_num": 5.5, "occurred_at": DAY}],
     )  # fmt: skip
     rule = [r for r in await _active(db, "clinical_records") if r["extracted_by"] == "rule:test"]
@@ -200,7 +200,7 @@ async def test_a_foreign_document_is_not_found_and_nothing_changes(seeded, local
         assert unknown["error"] == "not_found"  # same answer as for an unknown id
     assert await _snapshot(db) == before
     assert await _activity(db) == [] and local_model == []
-    assert ERIKA_UUID not in tool._reocr_jobs
+    assert PRIMARY_TEST_UUID not in tool._reocr_jobs
 
 
 @pytest.mark.parametrize("busy", ["run", "job", "lock"])
@@ -208,11 +208,11 @@ async def test_refused_while_a_run_or_job_is_active(seeded, local_model, monkeyp
     db = seeded
     await _store(db, DOC_A, PAGES_A)
     before = await _snapshot(db)
-    lock = tool.patient_lock(ERIKA_UUID)
+    lock = tool.patient_lock(PRIMARY_TEST_UUID)
     if busy == "run":
-        monkeypatch.setitem(tool._runs, ERIKA_UUID, {"state": "running"})
+        monkeypatch.setitem(tool._runs, PRIMARY_TEST_UUID, {"state": "running"})
     elif busy == "job":
-        tool._reocr_jobs[ERIKA_UUID] = {"state": "running", "kind": "reread"}
+        tool._reocr_jobs[PRIMARY_TEST_UUID] = {"state": "running", "kind": "reread"}
     else:
         await lock.acquire()
     try:
@@ -241,8 +241,8 @@ async def test_no_pre_store_copy_no_change(seeded, local_model, monkeypatch):
     assert "nothing was written" in out["error"]
     assert await _snapshot(db) == before
     assert await _activity(db) == []
-    assert ERIKA_UUID not in tool._reocr_jobs  # the reserved slot was released
-    assert not tool.patient_lock(ERIKA_UUID).locked()
+    assert PRIMARY_TEST_UUID not in tool._reocr_jobs  # the reserved slot was released
+    assert not tool.patient_lock(PRIMARY_TEST_UUID).locked()
 
 
 async def test_the_in_memory_db_has_no_file_to_copy(seeded, monkeypatch):
@@ -293,7 +293,7 @@ async def test_activity_log_row_has_ids_and_counts_only(seeded, local_model):
     finally:
         _verified_caller_email.reset(token)
     (row,) = await _activity(db)
-    assert row["patient_id"] == ERIKA_UUID and row["agent_id"] == "mcp"
+    assert row["patient_id"] == PRIMARY_TEST_UUID and row["agent_id"] == "mcp"
     assert row["status"] == "ok"
     given = json.loads(row["input_summary"])
     assert given["caller_email_hash"] == caller_email_hash("caregiver@example.com")
@@ -386,7 +386,9 @@ async def test_soft_delete_planned_encounter_without_a_reason_keeps_null(seeded,
     db = seeded
     await _store(db, DOC_A, PAGES_A)
     enc = (await _llm_active(db, "encounters", DOC_A))[0]
-    assert await db.soft_delete_planned_encounter(patient_id=ERIKA_UUID, encounter_id=enc["id"])
+    assert await db.soft_delete_planned_encounter(
+        patient_id=PRIMARY_TEST_UUID, encounter_id=enc["id"]
+    )
     row = next(r for r in await _deleted_encounters(db, DOC_A) if r["id"] == enc["id"])
     assert row["deleted_by"] is None
 

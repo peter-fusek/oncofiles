@@ -17,7 +17,7 @@ import pytest
 from oncofiles import config, pre_store, server
 from oncofiles.database import Database
 from oncofiles.tools import curated as tool
-from tests.helpers import ERIKA_UUID
+from tests.helpers import PRIMARY_TEST_UUID
 from tests.test_admin_reread_console import _call, _request, _seed
 
 EMAIL = "admin@example.com"
@@ -144,15 +144,15 @@ async def test_the_copy_exists_and_verifies_before_the_first_write(file_db):
         seen["runs"] = await _runs(db)
 
     with patch.object(tool, "_reread_job", fake_job):
-        out = await tool.start_reread(file_db, ERIKA_UUID, [501], dry_run=False, actor=EMAIL)
-        await tool._reocr_jobs[ERIKA_UUID]["task"]
+        out = await tool.start_reread(file_db, PRIMARY_TEST_UUID, [501], dry_run=False, actor=EMAIL)
+        await tool._reocr_jobs[PRIMARY_TEST_UUID]["task"]
     assert seen == {"copies": [out["pre_store"]], "check": [("ok",)], "runs": 0}
 
 
 @pytest.mark.parametrize("name", ["api_admin_reread", "api_admin_reocr"])
 async def test_backup_failure_is_409_and_writes_nothing(file_db, name):
     await _seed(file_db)
-    body = {"patient_slug": ERIKA_UUID, "document_ids": [501], "dry_run": False}
+    body = {"patient_slug": PRIMARY_TEST_UUID, "document_ids": [501], "dry_run": False}
     with (
         patch.object(tool, "_reread_job", AsyncMock()) as rr,
         patch.object(tool, "_reocr_job", AsyncMock()) as ro,
@@ -171,7 +171,7 @@ async def test_backup_failure_is_409_and_writes_nothing(file_db, name):
 
 async def test_in_memory_db_refuses_a_real_store(db):
     await _seed(db)
-    body = {"patient_slug": ERIKA_UUID, "document_ids": [501], "dry_run": False}
+    body = {"patient_slug": PRIMARY_TEST_UUID, "document_ids": [501], "dry_run": False}
     with patch.object(tool, "_reread_job", AsyncMock()) as rr:
         resp, _ = await _call(server.api_admin_reread, _request(db, body=body), admin=True)
     assert resp.status_code == 409 and not rr.called
@@ -179,11 +179,15 @@ async def test_in_memory_db_refuses_a_real_store(db):
 
 async def test_a_failed_copy_keeps_the_previous_job_status(file_db):
     await _seed(file_db)
-    tool._reocr_jobs[ERIKA_UUID] = {"state": "done", "kind": "reocr", "dry_run": True}
+    tool._reocr_jobs[PRIMARY_TEST_UUID] = {"state": "done", "kind": "reocr", "dry_run": True}
     with patch("oncofiles.pre_store.make_copy", side_effect=pre_store.PreStoreError("x")):
-        out = await tool.start_reread(file_db, ERIKA_UUID, [501], dry_run=False)
+        out = await tool.start_reread(file_db, PRIMARY_TEST_UUID, [501], dry_run=False)
     assert "nothing was written" in out["error"]
-    assert tool._reocr_jobs[ERIKA_UUID] == {"state": "done", "kind": "reocr", "dry_run": True}
+    assert tool._reocr_jobs[PRIMARY_TEST_UUID] == {
+        "state": "done",
+        "kind": "reocr",
+        "dry_run": True,
+    }
 
 
 async def test_the_slot_is_reserved_while_the_copy_is_made(file_db):
@@ -200,12 +204,16 @@ async def test_the_slot_is_reserved_while_the_copy_is_made(file_db):
         patch.object(tool, "_reread_job", AsyncMock()),
         patch.object(tool, "_reocr_job", AsyncMock()),
     ):
-        first = asyncio.create_task(tool.start_reread(file_db, ERIKA_UUID, [501], dry_run=False))
+        first = asyncio.create_task(
+            tool.start_reread(file_db, PRIMARY_TEST_UUID, [501], dry_run=False)
+        )
         await asyncio.sleep(0.05)
-        second = await tool.start_reocr(file_db, ERIKA_UUID, dry_run=True, document_ids=[501])
+        second = await tool.start_reocr(
+            file_db, PRIMARY_TEST_UUID, dry_run=True, document_ids=[501]
+        )
         gate.set()
         out = await first
-        await tool._reocr_jobs[ERIKA_UUID]["task"]
+        await tool._reocr_jobs[PRIMARY_TEST_UUID]["task"]
     assert "busy" in second["error"] and out["pre_store"] == "copy.db"
 
 
@@ -234,10 +242,10 @@ async def test_a_real_reread_writes_one_attributed_activity_row(file_db):
         patch.object(tool, "_reread_one", return_value=result),
         patch.object(tool, "_corroborate_and_measure", AsyncMock(return_value={"coded": 2})),
     ):
-        out = await tool.start_reread(file_db, ERIKA_UUID, [501], dry_run=False, actor=EMAIL)
-        await tool._reocr_jobs[ERIKA_UUID]["task"]
+        out = await tool.start_reread(file_db, PRIMARY_TEST_UUID, [501], dry_run=False, actor=EMAIL)
+        await tool._reocr_jobs[PRIMARY_TEST_UUID]["task"]
     [row] = await _activity(file_db)
-    assert row["patient_id"] == ERIKA_UUID and row["agent_id"] == EMAIL
+    assert row["patient_id"] == PRIMARY_TEST_UUID and row["agent_id"] == EMAIL
     assert row["tool_name"] == "curated_reread_verify" and row["status"] == "ok"
     inp, outp = json.loads(row["input_summary"]), json.loads(row["output_summary"])
     assert inp["document_ids"] == [501] and inp["pre_store"] == out["pre_store"]
@@ -247,7 +255,7 @@ async def test_a_real_reread_writes_one_attributed_activity_row(file_db):
     assert outp["date_unconfirmed"] == outp["unconfirmed"] == 0
     assert set(outp) == {"state", "results", "confirmed", "date_unconfirmed", "unconfirmed",
                          "candidates"}  # fmt: skip
-    last = await file_db.get_last_reocr_job(patient_id=ERIKA_UUID)
+    last = await file_db.get_last_reocr_job(patient_id=PRIMARY_TEST_UUID)
     assert last["report"]["pre_store"] == out["pre_store"]
 
 
@@ -258,8 +266,8 @@ async def test_a_dry_run_only_counts(file_db):
         patch("oncofiles.server._create_patient_clients", _clients()),
         patch.object(tool, "_reread_one", return_value={"document_id": 501, "result": "previewed"}),
     ):
-        out = await tool.start_reread(file_db, ERIKA_UUID, [501], dry_run=True, actor=EMAIL)
-        await tool._reocr_jobs[ERIKA_UUID]["task"]
+        out = await tool.start_reread(file_db, PRIMARY_TEST_UUID, [501], dry_run=True, actor=EMAIL)
+        await tool._reocr_jobs[PRIMARY_TEST_UUID]["task"]
     assert "pre_store" not in out and await _activity(file_db) == []
     assert tool._dry_runs["reread"] == before["reread"] + 1
     assert _copies(config.DATABASE_PATH.parent / "pre-store") == []
@@ -282,7 +290,7 @@ async def test_console_reocr_keeps_the_guards_review_outcome(file_db):
             lost_codes={"WBC": 1},
         )  # fmt: skip
     )
-    body = {"patient_slug": ERIKA_UUID, "document_ids": [501], "dry_run": False,
+    body = {"patient_slug": PRIMARY_TEST_UUID, "document_ids": [501], "dry_run": False,
             "force": True, "override": True}  # fmt: skip
     with (
         patch("oncofiles.server._create_patient_clients", _clients()),
@@ -292,19 +300,19 @@ async def test_console_reocr_keeps_the_guards_review_outcome(file_db):
         resp, _ = await _call(
             server.api_admin_reocr, _request(file_db, body=body), admin=True, email=EMAIL
         )
-        await tool._reocr_jobs[ERIKA_UUID]["task"]
+        await tool._reocr_jobs[PRIMARY_TEST_UUID]["task"]
     assert resp.status_code == 202
     # same call as the MCP tool: no override knob reaches the guard
     assert set(run.call_args.kwargs) == {"dry_run", "passes", "now", "stop", "reader",
                                          "rss_limit_mb"}  # fmt: skip
     assert run.call_args.kwargs["dry_run"] is False
-    job = tool._reocr_jobs[ERIKA_UUID]
+    job = tool._reocr_jobs[PRIMARY_TEST_UUID]
     assert [d["result"] for d in job["report"]["documents"]] == ["review"]
     assert not index.called  # nothing rewritten, so nothing re-indexed
     [row] = await _activity(file_db)
     assert json.loads(row["output_summary"])["results"] == {"review": 1}
     assert "6.12" not in row["output_summary"] + row["input_summary"]
-    view = tool.admin_job_view(await tool.reocr_status(file_db, ERIKA_UUID))
+    view = tool.admin_job_view(await tool.reocr_status(file_db, PRIMARY_TEST_UUID))
     [shown] = view["results"]
     assert shown["result"] == "review"
     assert shown["lost_count"] == 1

@@ -267,15 +267,15 @@ _DATE_RE = re.compile(r"^(\d{4})(\d{2})(\d{2})")
 _DATE_XX_RE = re.compile(r"^(\d{4})(\d{2})(xx)", re.IGNORECASE)
 # Dashed ISO date: YYYY-M-D, YYYY-MM-DD, YYYY-MM-D, etc. Consumed inclusive of
 # trailing separator so callers can consistently take `stem[match.end():]`.
-# Mattias's hospital chart uses this: "2025-09-19_kontrola Gonsorcikova.pdf".
+# Some hospital charts use this: "2027-03-14_kontrola Testovska.pdf".
 _DATE_DASH_RE = re.compile(r"^(\d{4})-(\d{1,2})-(\d{1,2})(?=[_\- ]|$)")
 
 
 def _match_any_date(stem: str) -> tuple[date, int] | None:
     """Try all three date patterns. Returns (parsed_date, chars_consumed) or None.
 
-    Used by all three parse_* paths so dashed-date filenames like Mattias's
-    2025-09-19_kontrola*.pdf work wherever the 8-digit YYYYMMDD path works.
+    Used by all three parse_* paths so dashed-date filenames like
+    2027-03-14_kontrola*.pdf work wherever the 8-digit YYYYMMDD path works.
     """
     m = _DATE_RE.match(stem)
     if m:
@@ -494,7 +494,7 @@ def parse_filename(filename: str, patient_id: str = "") -> ParsedFilename:
         stem = stem[consumed:].lstrip("_- ")
 
     # Split remaining parts on underscores, hyphens, AND whitespace. Whitespace
-    # matters because Mattias's hospital files look like "kontrola Gonsorcikova"
+    # matters because some hospital files look like "kontrola Testovska"
     # — token-level category alias lookup would miss "kontrola" otherwise (#439).
     parts = [p for p in re.split(r"[_\-\s]+", stem) if p]
 

@@ -24,9 +24,9 @@ from oncofiles import dashboard_audit, server
 from oncofiles.constants import NO_PATIENT_ACCESS_SENTINEL
 from oncofiles.database import Database
 from oncofiles.secrets_keys import caller_email_hash
-from tests.helpers import ERIKA_UUID
+from tests.helpers import PRIMARY_TEST_UUID
 
-A_UUID = ERIKA_UUID
+A_UUID = PRIMARY_TEST_UUID
 B_UUID = "00000000-0000-4000-8000-0000000008b1"
 A_EMAIL = "carer-a@example.test"
 B_EMAIL = "carer-b@example.test"

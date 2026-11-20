@@ -10,7 +10,7 @@ import pytest
 
 from oncofiles.database import Database
 from oncofiles.tools.db_query import query_db
-from tests.helpers import ERIKA_UUID, make_doc
+from tests.helpers import PRIMARY_TEST_UUID, make_doc
 
 
 def _mock_ctx(db: Database) -> MagicMock:
@@ -21,20 +21,20 @@ def _mock_ctx(db: Database) -> MagicMock:
 
 @pytest.fixture
 def resolve_to_jana():
-    """Resolve every query_db call in this file to ERIKA_UUID by default."""
+    """Resolve every query_db call in this file to PRIMARY_TEST_UUID by default."""
     with patch(
         "oncofiles.tools.db_query._resolve_patient_id",
-        new=AsyncMock(return_value=ERIKA_UUID),
+        new=AsyncMock(return_value=PRIMARY_TEST_UUID),
     ) as mocked:
         yield mocked
 
 
 async def test_select_query(db: Database, resolve_to_jana):
-    await db.insert_document(make_doc(file_id="f1"), patient_id=ERIKA_UUID)
+    await db.insert_document(make_doc(file_id="f1"), patient_id=PRIMARY_TEST_UUID)
     ctx = _mock_ctx(db)
     result = json.loads(
         await query_db(
-            ctx, f"SELECT COUNT(*) as cnt FROM documents WHERE patient_id = '{ERIKA_UUID}'"
+            ctx, f"SELECT COUNT(*) as cnt FROM documents WHERE patient_id = '{PRIMARY_TEST_UUID}'"
         )
     )
     assert "error" not in result, result
@@ -67,10 +67,12 @@ async def test_blocks_update(db: Database, resolve_to_jana):
 
 async def test_limit_enforced(db: Database, resolve_to_jana):
     for i in range(5):
-        await db.insert_document(make_doc(file_id=f"f{i}"), patient_id=ERIKA_UUID)
+        await db.insert_document(make_doc(file_id=f"f{i}"), patient_id=PRIMARY_TEST_UUID)
     ctx = _mock_ctx(db)
     result = json.loads(
-        await query_db(ctx, f"SELECT * FROM documents WHERE patient_id = '{ERIKA_UUID}'", limit=3)
+        await query_db(
+            ctx, f"SELECT * FROM documents WHERE patient_id = '{PRIMARY_TEST_UUID}'", limit=3
+        )
     )
     assert result["row_count"] == 3
 
@@ -90,7 +92,7 @@ async def test_cte_rejected_post_486(db: Database, resolve_to_jana):
         await query_db(
             ctx,
             "WITH d AS (SELECT * FROM documents"
-            f" WHERE patient_id = '{ERIKA_UUID}')"
+            f" WHERE patient_id = '{PRIMARY_TEST_UUID}')"
             " SELECT COUNT(*) as c FROM d",
         )
     )
@@ -141,7 +143,7 @@ async def test_execution_error_uses_safe_error_shape(db: Database, resolve_to_ja
         new=AsyncMock(side_effect=boom),
     ):
         result = json.loads(
-            await query_db(ctx, f"SELECT 1 FROM documents WHERE patient_id = '{ERIKA_UUID}'")
+            await query_db(ctx, f"SELECT 1 FROM documents WHERE patient_id = '{PRIMARY_TEST_UUID}'")
         )
     assert result["error"] == "query_db_execution_failed"
     assert result["kind"] == "RuntimeError"

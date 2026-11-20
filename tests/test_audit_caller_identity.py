@@ -24,7 +24,7 @@ from oncofiles.persistent_oauth import (
     _verified_patient_id,
 )
 from oncofiles.secrets_keys import caller_email_hash
-from tests.conftest import ERIKA_UUID
+from tests.conftest import PRIMARY_TEST_UUID
 from tests.test_persistent_oauth import _mint_oauth_token_with_email
 
 OWN_EMAIL = "alpha.caregiver@example.com"
@@ -51,7 +51,7 @@ def _scope(monkeypatch):
 async def pdb(db):
     await db.db.execute(
         "UPDATE patients SET slug = 'alpha-test', caregiver_email = ? WHERE patient_id = ?",
-        (OWN_EMAIL, ERIKA_UUID),
+        (OWN_EMAIL, PRIMARY_TEST_UUID),
     )
     await db.db.commit()
     return db
@@ -102,7 +102,7 @@ async def test_oauth_call_logs_method_and_email_hash(pdb):
 
 
 async def test_patient_bearer_call_logs_method(pdb):
-    token = await pdb.create_patient_token(ERIKA_UUID, label="test")
+    token = await pdb.create_patient_token(PRIMARY_TEST_UUID, label="test")
     provider = PersistentOAuthProvider(db=pdb, bearer_token=STATIC_TOKEN)
     assert await provider.verify_token(token) is not None
 

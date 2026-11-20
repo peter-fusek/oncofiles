@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from oncofiles.database import Database
 from oncofiles.models import Patient
-from tests.conftest import ERIKA_UUID
+from tests.conftest import PRIMARY_TEST_UUID
 from tests.helpers import make_doc
 
 BOB_UUID = "00000000-0000-4000-8000-000000000002"
@@ -34,7 +34,7 @@ async def _seed_two_patients_with_ocr(db: Database) -> tuple[int, int]:
 
     jana_doc = await db.insert_document(
         make_doc(file_id="jana_ocr", filename="20300101_Jana-NOU-Labs.pdf"),
-        patient_id=ERIKA_UUID,
+        patient_id=PRIMARY_TEST_UUID,
     )
     bob_doc = await db.insert_document(
         make_doc(file_id="bob_ocr", filename="20300101_Bob-NOU-Report.pdf"),
@@ -47,13 +47,13 @@ async def _seed_two_patients_with_ocr(db: Database) -> tuple[int, int]:
 
 async def test_scoped_returns_only_caller_patient(db: Database):
     jana_id, bob_id = await _seed_two_patients_with_ocr(db)
-    assert await db.get_ocr_document_ids(patient_id=ERIKA_UUID) == {jana_id}
+    assert await db.get_ocr_document_ids(patient_id=PRIMARY_TEST_UUID) == {jana_id}
     assert await db.get_ocr_document_ids(patient_id=BOB_UUID) == {bob_id}
 
 
 async def test_scoped_does_not_leak_other_patient(db: Database):
     jana_id, bob_id = await _seed_two_patients_with_ocr(db)
-    jana_set = await db.get_ocr_document_ids(patient_id=ERIKA_UUID)
+    jana_set = await db.get_ocr_document_ids(patient_id=PRIMARY_TEST_UUID)
     assert bob_id not in jana_set
 
 

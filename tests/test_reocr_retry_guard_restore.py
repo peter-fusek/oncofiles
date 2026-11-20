@@ -27,7 +27,7 @@ from oncofiles.curated.drive_ops import WriteVerificationError
 from oncofiles.curated.facts_rules import Vocabulary
 from oncofiles.secrets_keys import caller_email_hash
 from oncofiles.tools import curated as tool
-from tests.helpers import ERIKA_UUID, TEST_PATIENT_UUID
+from tests.helpers import PRIMARY_TEST_UUID, TEST_PATIENT_UUID
 from tests.test_curated_reocr import NOW
 from tests.test_curated_runner import LABS, LOGS, FakeDrive
 from tests.test_reocr_loss_guard import FILLER, OLD_BODY, _drop, _go, only_candidate
@@ -501,7 +501,7 @@ async def _call(db, **kw):
 @pytest.mark.usefixtures("admin_scope")
 async def test_tool_dry_run_counts_only_and_no_activity_row(db):
     drive, _, side, backup = _restore_setup()
-    await _seed_doc(db, 801, ERIKA_UUID, side)
+    await _seed_doc(db, 801, PRIMARY_TEST_UUID, side)
     with _wired(drive) as (index, entered):
         out = await _call(db, backup_id=backup)
     assert out["result"] == "previewed" and out["regained_numbers"] == 1
@@ -515,7 +515,7 @@ async def test_tool_real_restore_backs_up_reindexes_and_audits(db, monkeypatch, 
     monkeypatch.setattr("oncofiles.config.MCP_BEARER_TOKEN", "synthetic-static-token")
     monkeypatch.delenv("AUDIT_EMAIL_HASH_SECRET", raising=False)
     drive, _, side, backup = _restore_setup()
-    await _seed_doc(db, 801, ERIKA_UUID, side)
+    await _seed_doc(db, 801, PRIMARY_TEST_UUID, side)
     with (
         _wired(drive) as (index, entered),
         patch.object(tool, "_caller_email", return_value="admin@example.com"),
@@ -523,8 +523,8 @@ async def test_tool_real_restore_backs_up_reindexes_and_audits(db, monkeypatch, 
         out = await _call(db, backup_id=backup, dry_run=False)
     assert out["result"] == "restored" and entered == [True]
     index.copy.assert_called_once_with(db, "restore")  # before any Drive write
-    assert out["pre_store"] == COPY and tool._restoring[ERIKA_UUID]["pre_store"] == COPY
-    assert tool._restoring[ERIKA_UUID]["state"] == "done"
+    assert out["pre_store"] == COPY and tool._restoring[PRIMARY_TEST_UUID]["pre_store"] == COPY
+    assert tool._restoring[PRIMARY_TEST_UUID]["state"] == "done"
     lines = [r.getMessage() for r in caplog.records if "curated restore:" in r.getMessage()]
     assert lines == [f"curated restore: document_id=801 backup_id={backup} dry_run=False "
                      "verify=ok result=restored"]  # fmt: skip
@@ -532,9 +532,9 @@ async def test_tool_real_restore_backs_up_reindexes_and_audits(db, monkeypatch, 
     assert drive.items[side]["content"] == BACKUP.encode()
     index.assert_awaited_once()
     assert index.await_args.kwargs["force_ids"] == {801}
-    assert not tool.run_active() and not tool.patient_lock(ERIKA_UUID).locked()
+    assert not tool.run_active() and not tool.patient_lock(PRIMARY_TEST_UUID).locked()
     [row] = await _activity(db)
-    assert row["patient_id"] == ERIKA_UUID and row["status"] == "ok"
+    assert row["patient_id"] == PRIMARY_TEST_UUID and row["status"] == "ok"
     inp, outp = json.loads(row["input_summary"]), json.loads(row["output_summary"])
     assert inp["document_id"] == 801 and inp["backup_id"] == backup
     assert inp["backup_kind"] == "reocr_backup"
@@ -552,7 +552,7 @@ async def test_tool_real_restore_backs_up_reindexes_and_audits(db, monkeypatch, 
 @pytest.mark.usefixtures("admin_scope")
 async def test_tool_refuses_foreign_and_invalid_backups(db):
     drive, _, side, backup = _restore_setup()
-    await _seed_doc(db, 801, ERIKA_UUID, side)
+    await _seed_doc(db, 801, PRIMARY_TEST_UUID, side)
     await _seed_doc(db, 802, TEST_PATIENT_UUID, side, filename="20270413-Other-Labs-Iny.pdf")
     other = drive.add(f"_reocr-backup-20270501-101500-{DOC_NAME}.md", drive.folder[LABS], b"x")
     with _wired(drive) as (index, _):
@@ -571,20 +571,20 @@ async def test_tool_refuses_foreign_and_invalid_backups(db):
 @pytest.mark.usefixtures("admin_scope")
 async def test_tool_refuses_while_busy(db):
     drive, _, side, backup = _restore_setup()
-    await _seed_doc(db, 801, ERIKA_UUID, side)
+    await _seed_doc(db, 801, PRIMARY_TEST_UUID, side)
     with _wired(drive):
-        tool._reocr_jobs[ERIKA_UUID] = {"state": "running", "kind": "reocr"}
+        tool._reocr_jobs[PRIMARY_TEST_UUID] = {"state": "running", "kind": "reocr"}
         assert (await _call(db, backup_id=backup, dry_run=False))["error"].startswith("busy")
         tool._reocr_jobs.clear()
-        tool._runs[ERIKA_UUID] = {"state": "running"}
+        tool._runs[PRIMARY_TEST_UUID] = {"state": "running"}
         assert (await _call(db, backup_id=backup, dry_run=False))["error"].startswith("busy")
         tool._runs.clear()
-        async with tool.patient_lock(ERIKA_UUID):
+        async with tool.patient_lock(PRIMARY_TEST_UUID):
             assert (await _call(db, backup_id=backup, dry_run=False))["error"].startswith("busy")
-        tool._restoring[ERIKA_UUID] = {"kind": "restore", "state": "running"}
+        tool._restoring[PRIMARY_TEST_UUID] = {"kind": "restore", "state": "running"}
         assert (await _call(db, backup_id=backup))["error"].startswith("busy")
         assert tool.run_active()  # CI deploys wait for a restore
-        tool._restoring[ERIKA_UUID]["state"] = "done"
+        tool._restoring[PRIMARY_TEST_UUID]["state"] = "done"
         assert not tool.run_active()
         tool._restoring.clear()
     assert drive.writes == []
@@ -594,7 +594,7 @@ async def test_tool_refuses_while_busy(db):
 @pytest.mark.parametrize("reason", ["", "   ", "x" * (tool.RESTORE_REASON_MAX + 1)])
 async def test_tool_requires_a_short_reason(db, reason):
     drive, _, side, backup = _restore_setup()
-    await _seed_doc(db, 801, ERIKA_UUID, side)
+    await _seed_doc(db, 801, PRIMARY_TEST_UUID, side)
     with _wired(drive):
         out = await _call(db, backup_id=backup, dry_run=False, reason=reason)
     assert "reason" in out["error"] and drive.writes == []
@@ -602,7 +602,7 @@ async def test_tool_requires_a_short_reason(db, reason):
 
 async def test_tool_is_admin_only(db):
     drive, _, side, backup = _restore_setup()
-    await _seed_doc(db, 801, ERIKA_UUID, side)
+    await _seed_doc(db, 801, PRIMARY_TEST_UUID, side)
     with _wired(drive):
         out = await _call(db, backup_id=backup, dry_run=False)
     assert "requires admin scope" in out["error"] and drive.writes == []
@@ -611,12 +611,12 @@ async def test_tool_is_admin_only(db):
 @pytest.mark.usefixtures("admin_scope")
 async def test_a_failed_real_restore_is_audited_and_not_reindexed(db):
     drive, _, side, backup = _restore_setup()
-    await _seed_doc(db, 801, ERIKA_UUID, side)
+    await _seed_doc(db, 801, PRIMARY_TEST_UUID, side)
     drive.fail_on.add("update_text")
     with _wired(drive) as (index, _):
         out = await _call(db, backup_id=backup, dry_run=False)
     assert out["result"] == "failed" and out["error"] == "WriteVerificationError"
-    assert index.await_count == 0 and tool._restoring[ERIKA_UUID]["state"] == "failed"
+    assert index.await_count == 0 and tool._restoring[PRIMARY_TEST_UUID]["state"] == "failed"
     [row] = await _activity(db)
     assert row["status"] == "error"
 
@@ -624,7 +624,7 @@ async def test_a_failed_real_restore_is_audited_and_not_reindexed(db):
 @pytest.mark.usefixtures("admin_scope")
 async def test_a_failed_pre_store_copy_refuses_and_writes_nothing(db, caplog):
     drive, _, side, backup = _restore_setup()
-    await _seed_doc(db, 801, ERIKA_UUID, side)
+    await _seed_doc(db, 801, PRIMARY_TEST_UUID, side)
     with _wired(drive) as (index, entered):
         index.copy.side_effect = pre_store.PreStoreError("quick_check failed on the copy")
         out = await _call(db, backup_id=backup, dry_run=False)
@@ -634,14 +634,14 @@ async def test_a_failed_pre_store_copy_refuses_and_writes_nothing(db, caplog):
     assert drive.items[side]["content"] == CURRENT.encode()
     assert await _activity(db) == []
     # the slot is released: the next call is not "busy"
-    assert tool._restoring[ERIKA_UUID]["state"] == "failed" and not tool.run_active()
-    assert not tool.patient_lock(ERIKA_UUID).locked()
+    assert tool._restoring[PRIMARY_TEST_UUID]["state"] == "failed" and not tool.run_active()
+    assert not tool.patient_lock(PRIMARY_TEST_UUID).locked()
 
 
 @pytest.mark.usefixtures("admin_scope")
 async def test_a_dry_run_makes_no_pre_store_copy(db):
     drive, _, side, backup = _restore_setup()
-    await _seed_doc(db, 801, ERIKA_UUID, side)
+    await _seed_doc(db, 801, PRIMARY_TEST_UUID, side)
     with _wired(drive) as (index, _):
         out = await _call(db, backup_id=backup, dry_run=True)
     assert out["result"] == "previewed" and "pre_store" not in out

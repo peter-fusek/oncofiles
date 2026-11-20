@@ -36,22 +36,22 @@ def test_safe_date_partial():
 
 async def test_list_documents_survives_bad_date(db):
     """list_documents should skip rows with corrupt data, not crash (#258)."""
-    from tests.helpers import ERIKA_UUID, make_doc
+    from tests.helpers import PRIMARY_TEST_UUID, make_doc
 
     # Insert a valid doc
     doc = make_doc(file_id="file_good", document_date=date(2026, 1, 1))
-    await db.insert_document(doc, patient_id=ERIKA_UUID)
+    await db.insert_document(doc, patient_id=PRIMARY_TEST_UUID)
 
     # Manually corrupt a row's date
     await db.db.execute(
         "INSERT INTO documents (file_id, filename, original_filename, document_date, "
         "category, patient_id) VALUES (?, ?, ?, ?, ?, ?)",
-        ("file_bad", "bad.pdf", "bad.pdf", "2222-14-81", "other", ERIKA_UUID),
+        ("file_bad", "bad.pdf", "bad.pdf", "2222-14-81", "other", PRIMARY_TEST_UUID),
     )
     await db.db.commit()
 
     # list_documents should return both — bad date becomes None, doesn't crash
-    docs = await db.list_documents(limit=50, patient_id=ERIKA_UUID)
+    docs = await db.list_documents(limit=50, patient_id=PRIMARY_TEST_UUID)
     filenames = [d.filename for d in docs]
     assert "20240115_NOUonko_labs_krvnyObraz.pdf" in filenames
     assert "bad.pdf" in filenames

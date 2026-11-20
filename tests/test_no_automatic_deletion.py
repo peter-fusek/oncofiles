@@ -514,15 +514,15 @@ def test_core_tables_never_replaced():
 
 
 async def test_replace_document_facts_soft_deletes_with_audit(db):
-    from tests.helpers import ERIKA_UUID, make_doc
+    from tests.helpers import PRIMARY_TEST_UUID, make_doc
 
-    doc = await db.insert_document(make_doc(file_id="f_facts"), patient_id=ERIKA_UUID)
+    doc = await db.insert_document(make_doc(file_id="f_facts"), patient_id=PRIMARY_TEST_UUID)
     fact = {"category": "lab", "occurred_at": "2027-03-01", "label": "Invented", "value_num": 1.0}
     await db.replace_document_facts(
-        patient_id=ERIKA_UUID, document_id=doc.id, facts=[fact], extracted_by="test-a"
+        patient_id=PRIMARY_TEST_UUID, document_id=doc.id, facts=[fact], extracted_by="test-a"
     )
     res = await db.replace_document_facts(
-        patient_id=ERIKA_UUID, document_id=doc.id, facts=[fact], extracted_by="test-b"
+        patient_id=PRIMARY_TEST_UUID, document_id=doc.id, facts=[fact], extracted_by="test-b"
     )
     assert res["removed"] == 1 and res["added"] == 1
 

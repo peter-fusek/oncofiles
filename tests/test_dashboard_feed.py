@@ -23,7 +23,7 @@ from oncofiles.persistent_oauth import (
 from oncofiles.tools import clinical_facts as cf
 from oncofiles.tools import curated as tool
 from oncofiles.tools import lab_trends
-from tests.helpers import ERIKA_UUID, make_doc
+from tests.helpers import PRIMARY_TEST_UUID, make_doc
 from tests.test_clinical_facts import BOB_SLUG, BOB_UUID, BORY_SIDECAR, FILED, _Ctx
 from tests.test_curated_runner import LABS, FakeDrive
 
@@ -33,7 +33,7 @@ NOU = "urn:oncofiles:local:nou"
 PAGE_LIMIT_BYTES = 150_000
 MIGRATIONS = Path(__file__).parent.parent / "migrations"
 DOC = 7  # a document id for the pure-function tests
-ERIKA_SLUG = "q1b"  # the seeded test patient (ERIKA_UUID)
+ERIKA_SLUG = "q1b"  # the seeded test patient (PRIMARY_TEST_UUID)
 WBC_REF = {"ref_low": 4.0, "ref_high": 10.0}
 
 
@@ -56,7 +56,7 @@ def _caller(admin: bool):
     tokens = (
         _verified_caller_is_admin.set(admin),
         _verified_caller_email.set(""),
-        _verified_patient_id.set(ERIKA_UUID),
+        _verified_patient_id.set(PRIMARY_TEST_UUID),
     )
     yield
     _verified_caller_is_admin.reset(tokens[0])
@@ -156,7 +156,7 @@ def test_ordinal_follows_evidence_not_input_order():
     day = date(YEAR, 3, 9).isoformat()
     a = _fact("WBC", day, 5.1, PER_NL, evidence="WBC first line")
     b = _fact("WBC", day, 5.4, PER_NL, evidence="WBC second line")
-    ab, ba = _ids(ERIKA_UUID, DOC, [a, b]), _ids(ERIKA_UUID, DOC, [b, a])
+    ab, ba = _ids(PRIMARY_TEST_UUID, DOC, [a, b]), _ids(PRIMARY_TEST_UUID, DOC, [b, a])
     assert ab[0] != ab[1]
     assert ab == list(reversed(ba))  # each fact keeps its id
 
@@ -164,13 +164,13 @@ def test_ordinal_follows_evidence_not_input_order():
 def test_key_parts_patient_document_page_and_label():
     day = date(YEAR, 3, 9).isoformat()
     base = _fact("CEA", day, 4.2, "µg/L")
-    [one] = _ids(ERIKA_UUID, DOC, [base])
-    assert _ids(ERIKA_UUID, DOC, [dict(base)]) == [one]
+    [one] = _ids(PRIMARY_TEST_UUID, DOC, [base])
+    assert _ids(PRIMARY_TEST_UUID, DOC, [dict(base)]) == [one]
     assert _ids(BOB_UUID, DOC, [base]) != [one]
-    assert _ids(ERIKA_UUID, DOC + 1, [base]) != [one]
-    assert _ids(ERIKA_UUID, DOC, [{**base, "page_number": 2}]) != [one]
-    assert _ids(ERIKA_UUID, DOC, [{**base, "value_num": 9.9}]) == [one]  # value not in key
-    assert _ids(ERIKA_UUID, DOC, [{**base, "code": None, "label": "Marker"}]) != [one]
+    assert _ids(PRIMARY_TEST_UUID, DOC + 1, [base]) != [one]
+    assert _ids(PRIMARY_TEST_UUID, DOC, [{**base, "page_number": 2}]) != [one]
+    assert _ids(PRIMARY_TEST_UUID, DOC, [{**base, "value_num": 9.9}]) == [one]  # value not in key
+    assert _ids(PRIMARY_TEST_UUID, DOC, [{**base, "code": None, "label": "Marker"}]) != [one]
 
 
 def test_a_range_value_keeps_its_id_wherever_it_is_dated_in_the_range():
@@ -180,16 +180,16 @@ def test_a_range_value_keeps_its_id_wherever_it_is_dated_in_the_range():
     meta = {"date_range_start": start.isoformat(), "date_range_end": end.isoformat()}
     at_mid = _fact("CRP", mid.isoformat(), 12.0, "mg/L", metadata=meta)
     at_end = {**at_mid, "occurred_at": end.isoformat()}
-    assert _ids(ERIKA_UUID, DOC, [at_mid]) == _ids(ERIKA_UUID, DOC, [at_end])
+    assert _ids(PRIMARY_TEST_UUID, DOC, [at_mid]) == _ids(PRIMARY_TEST_UUID, DOC, [at_end])
 
 
 def test_a_taken_id_moves_the_new_fact_to_the_next_ordinal():
     day = date(YEAR, 3, 9).isoformat()
     f = _fact("PLT", day, 210.0, PER_NL)
-    [first] = _ids(ERIKA_UUID, DOC, [f])
-    [bumped] = _ids(ERIKA_UUID, DOC, [f], taken={first})
+    [first] = _ids(PRIMARY_TEST_UUID, DOC, [f])
+    [bumped] = _ids(PRIMARY_TEST_UUID, DOC, [f], taken={first})
     assert bumped != first
-    assert bumped == _ids(ERIKA_UUID, DOC, [f, f])[1]
+    assert bumped == _ids(PRIMARY_TEST_UUID, DOC, [f, f])[1]
 
 
 # ── stable ids: through the index ──
@@ -197,12 +197,12 @@ def test_a_taken_id_moves_the_new_fact_to_the_next_ordinal():
 
 async def test_reindexing_the_same_document_keeps_every_fact_id(db, curated_env):
     _, src, _ = curated_env
-    await tool.index_patient(db, ERIKA_UUID)
-    doc = await db.get_document_by_gdrive_id(src, patient_id=ERIKA_UUID)
+    await tool.index_patient(db, PRIMARY_TEST_UUID)
+    doc = await db.get_document_by_gdrive_id(src, patient_id=PRIMARY_TEST_UUID)
     before = (await _feed(db))["facts"]
     assert len(before) >= 7
 
-    stats = await tool.index_patient(db, ERIKA_UUID, force_ids={doc.id})
+    stats = await tool.index_patient(db, PRIMARY_TEST_UUID, force_ids={doc.id})
     assert stats["facts"] == len(before)  # really re-extracted
     after = (await _feed(db))["facts"]
     assert [f["id"] for f in after] == [f["id"] for f in before]
@@ -217,19 +217,19 @@ async def test_reindexing_the_same_document_keeps_every_fact_id(db, curated_env)
 
 async def test_a_changed_value_keeps_its_id_as_a_new_version(db, curated_env):
     d, _, side = curated_env
-    await tool.index_patient(db, ERIKA_UUID)
+    await tool.index_patient(db, PRIMARY_TEST_UUID)
     wbc = next(f for f in (await _feed(db))["facts"] if f["code"] == "WBC")
     d.items[side]["content"] = BORY_SIDECAR.replace("11.42", "11.55").encode()
     d.items[side]["modified"] = "rev-b"
-    await tool.index_patient(db, ERIKA_UUID)
+    await tool.index_patient(db, PRIMARY_TEST_UUID)
     again = next(f for f in (await _feed(db))["facts"] if f["code"] == "WBC")
     assert again["id"] == wbc["id"] and again["value"] != wbc["value"]
 
 
 async def test_rows_without_a_stored_id_read_the_id_a_reindex_will_write(db, curated_env):
     _, src, _ = curated_env
-    await tool.index_patient(db, ERIKA_UUID)
-    doc = await db.get_document_by_gdrive_id(src, patient_id=ERIKA_UUID)
+    await tool.index_patient(db, PRIMARY_TEST_UUID)
+    doc = await db.get_document_by_gdrive_id(src, patient_id=PRIMARY_TEST_UUID)
     stored = {f["code"] or f["label"]: f["id"] for f in (await _feed(db))["facts"]}
 
     # rows written before #726 have no fhir_id. One is human-verified, one was
@@ -246,7 +246,7 @@ async def test_rows_without_a_stored_id_read_the_id_a_reindex_will_write(db, cur
     computed = {f["code"] or f["label"]: f["id"] for f in (await _feed(db))["facts"]}
     assert computed == stored
 
-    await tool.index_patient(db, ERIKA_UUID, force_ids={doc.id})
+    await tool.index_patient(db, PRIMARY_TEST_UUID, force_ids={doc.id})
     reindexed = {f["code"] or f["label"]: f["id"] for f in (await _feed(db))["facts"]}
     assert reindexed == stored  # WBC re-extracted at its quoted day: same id
     hgb = [r for r in await _rows(db, doc.id) if r["code"] == "HGB"]
@@ -255,10 +255,10 @@ async def test_rows_without_a_stored_id_read_the_id_a_reindex_will_write(db, cur
 
 async def test_fhir_id_is_unique_among_active_rows_only(db):
     day = date(YEAR, 2, 3)
-    doc = await _doc(db, ERIKA_UUID, 1, day)
+    doc = await _doc(db, PRIMARY_TEST_UUID, 1, day)
     fact = _fact("WBC", day.isoformat(), 5.0, PER_NL)
-    await _put(db, ERIKA_UUID, doc.id, [fact])
-    await _put(db, ERIKA_UUID, doc.id, [fact])  # soft-delete + insert, same fact
+    await _put(db, PRIMARY_TEST_UUID, doc.id, [fact])
+    await _put(db, PRIMARY_TEST_UUID, doc.id, [fact])  # soft-delete + insert, same fact
     old, new = await _rows(db, doc.id)
     assert old["deleted_at"] and new["deleted_at"] is None
     assert old["fhir_id"] == new["fhir_id"]
@@ -267,7 +267,7 @@ async def test_fhir_id_is_unique_among_active_rows_only(db):
         await db.db.execute(
             "INSERT INTO clinical_records (patient_id, record_type, source, fhir_id) "
             "VALUES (?, 'lab', 'test', ?)",
-            (ERIKA_UUID, new["fhir_id"]),
+            (PRIMARY_TEST_UUID, new["fhir_id"]),
         )
 
 
@@ -276,7 +276,7 @@ async def test_fhir_id_is_unique_among_active_rows_only(db):
 
 async def test_feed_shape_documents_and_unverified(db, curated_env):
     _, src, _ = curated_env
-    await tool.index_patient(db, ERIKA_UUID)
+    await tool.index_patient(db, PRIMARY_TEST_UUID)
     raw = await cf.dashboard_feed(_Ctx(db))
     out = json.loads(raw)
     assert set(out) == {"facts", "duplicates", "documents", "generated_at", "next_cursor"}
@@ -303,12 +303,12 @@ async def test_feed_shape_documents_and_unverified(db, curated_env):
 async def test_soft_deleted_rows_and_documents_are_left_out(db):
     day = date(YEAR, 6, 1)
     at = day.isoformat()
-    keep = await _doc(db, ERIKA_UUID, 1, day)
-    gone = await _doc(db, ERIKA_UUID, 2, day)
-    await _put(db, ERIKA_UUID, keep.id, [_fact("WBC", at, 5.0, PER_NL)])
-    await _put(db, ERIKA_UUID, keep.id, [_fact("WBC", at, 5.2, PER_NL)])
-    await _put(db, ERIKA_UUID, gone.id, [_fact("PLT", at, 230.0, PER_NL)])
-    await db.delete_document(gone.id, patient_id=ERIKA_UUID)
+    keep = await _doc(db, PRIMARY_TEST_UUID, 1, day)
+    gone = await _doc(db, PRIMARY_TEST_UUID, 2, day)
+    await _put(db, PRIMARY_TEST_UUID, keep.id, [_fact("WBC", at, 5.0, PER_NL)])
+    await _put(db, PRIMARY_TEST_UUID, keep.id, [_fact("WBC", at, 5.2, PER_NL)])
+    await _put(db, PRIMARY_TEST_UUID, gone.id, [_fact("PLT", at, 230.0, PER_NL)])
+    await db.delete_document(gone.id, patient_id=PRIMARY_TEST_UUID)
     out = await _feed(db)
     assert [(f["code"], f["value"]) for f in out["facts"]] == [("WBC", 5.2)]
     assert [d["id"] for d in out["documents"]] == [keep.id]
@@ -317,7 +317,7 @@ async def test_soft_deleted_rows_and_documents_are_left_out(db):
 async def test_units_ranges_and_date_ranges(db):
     day = date(YEAR, 7, 1)
     at = day.isoformat()
-    doc = await _doc(db, ERIKA_UUID, 1, day)
+    doc = await _doc(db, PRIMARY_TEST_UUID, 1, day)
     meta = {"date_range_start": date(YEAR, 6, 26).isoformat(), "date_range_end": at}
     hgb_ref = {"ref_low": 12.0, "ref_high": 15.5}
     crea_ref = {"ref_low": 0.5, "ref_high": 1.1}
@@ -336,7 +336,7 @@ async def test_units_ranges_and_date_ranges(db):
         _fact("CRP", at, 18.0, "mg/L", metadata=meta),
         _fact(None, at, None, None, label="U-Krv", value_text="NEGAT"),
     ]
-    await _put(db, ERIKA_UUID, doc.id, facts)
+    await _put(db, PRIMARY_TEST_UUID, doc.id, facts)
     by = {f["code"] or f["label"]: f for f in (await _feed(db))["facts"]}
     hgb, crea = by["HGB"], by["CREA"]
     assert (hgb["value"], hgb["unit"]) == (101.0, "g/L")  # canonical value …
@@ -352,8 +352,8 @@ async def test_units_ranges_and_date_ranges(db):
 async def test_kinds_since_and_cursor_validation(db):
     early = date(YEAR, 1, 5)
     late = date(YEAR, 2, 5)
-    doc = await _doc(db, ERIKA_UUID, 1, early)
-    await _put(db, ERIKA_UUID, doc.id, [
+    doc = await _doc(db, PRIMARY_TEST_UUID, 1, early)
+    await _put(db, PRIMARY_TEST_UUID, doc.id, [
         _fact("WBC", early.isoformat(), 5.0, PER_NL),
         _fact("CEA", late.isoformat(), 3.0, "µg/L", category="tumor_marker"),
         _fact("KRAS", late.isoformat(), None, None, category="genetic_variant", value_text="G12D"),
@@ -386,7 +386,7 @@ async def _synthetic_patient(db, docs: int, per_doc: int) -> int:
     n = 0
     for i in range(docs):
         day = start + timedelta(days=i * 3)
-        doc = await _doc(db, ERIKA_UUID, i, day)
+        doc = await _doc(db, PRIMARY_TEST_UUID, i, day)
         facts = []
         for j, (code, unit) in enumerate(codes):
             n += 1
@@ -397,7 +397,7 @@ async def _synthetic_patient(db, docs: int, per_doc: int) -> int:
             fact["flag"] = "H" if j % 5 == 0 else None
             fact["verification"] = "unverified" if j % 9 == 0 else "machine"
             facts.append(fact)
-        await _put(db, ERIKA_UUID, doc.id, facts)
+        await _put(db, PRIMARY_TEST_UUID, doc.id, facts)
     return n
 
 
@@ -422,9 +422,9 @@ async def _two_patients(db):
     await _add_bob(db)
     day = date(YEAR, 3, 3)
     at = day.isoformat()
-    a = await _doc(db, ERIKA_UUID, 1, day)
+    a = await _doc(db, PRIMARY_TEST_UUID, 1, day)
     b = await _doc(db, BOB_UUID, 1, day)
-    await _put(db, ERIKA_UUID, a.id, [_fact("WBC", at, 5.0, PER_NL)])
+    await _put(db, PRIMARY_TEST_UUID, a.id, [_fact("WBC", at, 5.0, PER_NL)])
     bob_wbc = _fact("WBC", at, 5.0, PER_NL)
     bob_plt = _fact("PLT", at, 240.0, PER_NL)
     await _put(db, BOB_UUID, b.id, [bob_wbc, bob_plt])
@@ -473,7 +473,7 @@ async def test_migration_081_seeds_shared_local_codes_once(db):
 
 
 async def test_fact_catalog_lists_local_codes(db, curated_env):
-    await tool.index_patient(db, ERIKA_UUID)
+    await tool.index_patient(db, PRIMARY_TEST_UUID)
     codes = {r["code"]: r for r in json.loads(await cf.fact_catalog(_Ctx(db)))["codes"]}
     assert codes["CREA"]["local_codes"] == {NOU: "KREA"}
     assert codes["GLU"]["local_codes"] == {NOU: "GLUK"}
@@ -489,15 +489,15 @@ LATER = "T10:00"  # later on the second day: it would be "the latest" if counted
 async def _curated_labs(db) -> tuple[str, str]:
     first = date(YEAR, 8, 3)
     second = date(YEAR, 8, 24)
-    a = await _doc(db, ERIKA_UUID, 1, first)
-    b = await _doc(db, ERIKA_UUID, 2, second)
+    a = await _doc(db, PRIMARY_TEST_UUID, 1, first)
+    b = await _doc(db, PRIMARY_TEST_UUID, 2, second)
     first_at, second_at = first.isoformat(), second.isoformat()
-    await _put(db, ERIKA_UUID, a.id, [
+    await _put(db, PRIMARY_TEST_UUID, a.id, [
         _fact("WBC", first_at, 6.0, PER_NL, **WBC_REF),
         _fact("NEUT", first_at, 3.5, PER_NL),
         _fact("PLT", first_at, 190.0, PER_NL, verification="unverified"),
     ])  # fmt: skip
-    await _put(db, ERIKA_UUID, b.id, [
+    await _put(db, PRIMARY_TEST_UUID, b.id, [
         _fact("WBC", second_at, 4.5, PER_NL, **WBC_REF),
         _fact("WBC", second_at + LATER, OUTLIER, PER_NL, verification="unverified"),
         _fact("NEUT", second_at, 2.8, PER_NL),
@@ -596,14 +596,14 @@ async def test_compare_lab_panels_never_compares_unverified_values(db):
 async def test_reordered_evidence_is_logged_as_id_churn(db, caplog):
     day = date(YEAR, 9, 6)
     at = day.isoformat()
-    doc = await _doc(db, ERIKA_UUID, 1, day)
+    doc = await _doc(db, PRIMARY_TEST_UUID, 1, day)
     low = _fact("CRP", at, 4.0, "mg/L", evidence="CRP line a")
     high = _fact("CRP", at, 9.0, "mg/L", evidence="CRP line b")
-    assert (await _put(db, ERIKA_UUID, doc.id, [low, high]))["id_churn"] == 0
-    assert (await _put(db, ERIKA_UUID, doc.id, [low, high]))["id_churn"] == 0  # same order
+    assert (await _put(db, PRIMARY_TEST_UUID, doc.id, [low, high]))["id_churn"] == 0
+    assert (await _put(db, PRIMARY_TEST_UUID, doc.id, [low, high]))["id_churn"] == 0  # same order
     caplog.set_level("INFO", logger="oncofiles.database._facts")
     moved = {**low, "evidence": "CRP line c"}  # now sorts after the other: ordinals swap
-    res = await _put(db, ERIKA_UUID, doc.id, [moved, high])
+    res = await _put(db, PRIMARY_TEST_UUID, doc.id, [moved, high])
     assert res["id_churn"] == 2
     [record] = [r for r in caplog.records if "fact id churn" in r.getMessage()]
     assert record.levelname == "INFO"

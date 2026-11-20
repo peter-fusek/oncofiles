@@ -13,7 +13,7 @@ from oncofiles.tools._helpers import (
     _gdrive_url,
     _research_source_url,
 )
-from tests.helpers import ERIKA_UUID
+from tests.helpers import PRIMARY_TEST_UUID
 
 # ── URL helpers ──────────────────────────────────────────────────────────────
 
@@ -130,11 +130,11 @@ async def test_cross_reference_insert_and_query(db):
         original_filename="20240101_test_imaging.pdf",
         category=DocumentCategory.IMAGING,
     )
-    doc1 = await db.insert_document(doc1, patient_id=ERIKA_UUID)
-    doc2 = await db.insert_document(doc2, patient_id=ERIKA_UUID)
+    doc1 = await db.insert_document(doc1, patient_id=PRIMARY_TEST_UUID)
+    doc2 = await db.insert_document(doc2, patient_id=PRIMARY_TEST_UUID)
 
     await db.insert_cross_reference(doc1.id, doc2.id, "same_visit", 1.0)
-    refs = await db.get_cross_references(doc1.id, patient_id=ERIKA_UUID)
+    refs = await db.get_cross_references(doc1.id, patient_id=PRIMARY_TEST_UUID)
     assert len(refs) == 1
     assert refs[0]["source_document_id"] == doc1.id
     assert refs[0]["target_document_id"] == doc2.id
@@ -142,7 +142,7 @@ async def test_cross_reference_insert_and_query(db):
     assert refs[0]["confidence"] == 1.0
 
     # Query from the other direction
-    refs2 = await db.get_cross_references(doc2.id, patient_id=ERIKA_UUID)
+    refs2 = await db.get_cross_references(doc2.id, patient_id=PRIMARY_TEST_UUID)
     assert len(refs2) == 1
 
 
@@ -155,7 +155,7 @@ async def test_cross_reference_idempotent(db):
             original_filename="a.pdf",
             category=DocumentCategory.LABS,
         ),
-        patient_id=ERIKA_UUID,
+        patient_id=PRIMARY_TEST_UUID,
     )
     doc2 = await db.insert_document(
         Document(
@@ -164,12 +164,12 @@ async def test_cross_reference_idempotent(db):
             original_filename="b.pdf",
             category=DocumentCategory.LABS,
         ),
-        patient_id=ERIKA_UUID,
+        patient_id=PRIMARY_TEST_UUID,
     )
 
     await db.insert_cross_reference(doc1.id, doc2.id, "related", 0.8)
     await db.insert_cross_reference(doc1.id, doc2.id, "related", 0.8)
-    refs = await db.get_cross_references(doc1.id, patient_id=ERIKA_UUID)
+    refs = await db.get_cross_references(doc1.id, patient_id=PRIMARY_TEST_UUID)
     assert len(refs) == 1
 
 
@@ -184,7 +184,7 @@ async def test_bulk_insert_cross_references(db):
                 original_filename=f"doc{i}.pdf",
                 category=DocumentCategory.LABS,
             ),
-            patient_id=ERIKA_UUID,
+            patient_id=PRIMARY_TEST_UUID,
         )
         docs.append(d)
 
@@ -197,7 +197,7 @@ async def test_bulk_insert_cross_references(db):
     )
     assert count == 3
 
-    refs = await db.get_cross_references(docs[0].id, patient_id=ERIKA_UUID)
+    refs = await db.get_cross_references(docs[0].id, patient_id=PRIMARY_TEST_UUID)
     assert len(refs) == 2
 
 
@@ -210,7 +210,7 @@ async def test_cross_reference_different_relationships(db):
             original_filename="a.pdf",
             category=DocumentCategory.LABS,
         ),
-        patient_id=ERIKA_UUID,
+        patient_id=PRIMARY_TEST_UUID,
     )
     doc2 = await db.insert_document(
         Document(
@@ -219,12 +219,12 @@ async def test_cross_reference_different_relationships(db):
             original_filename="b.pdf",
             category=DocumentCategory.IMAGING,
         ),
-        patient_id=ERIKA_UUID,
+        patient_id=PRIMARY_TEST_UUID,
     )
 
     await db.insert_cross_reference(doc1.id, doc2.id, "same_visit", 1.0)
     await db.insert_cross_reference(doc1.id, doc2.id, "related", 0.7)
-    refs = await db.get_cross_references(doc1.id, patient_id=ERIKA_UUID)
+    refs = await db.get_cross_references(doc1.id, patient_id=PRIMARY_TEST_UUID)
     assert len(refs) == 2
 
 
