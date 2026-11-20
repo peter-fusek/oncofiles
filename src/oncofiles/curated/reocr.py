@@ -1622,12 +1622,14 @@ def run_reocr(
                 "re-OCR loss check doc=%s missing_numbers=%d missing_dates=%d "
                 "near_empty_pages=%s blank_pages=%s retried_pages=%s old_chars=%d "
                 "new_chars=%d word_overlap=%s decision=%s reasons=%s profile=%s "
-                "baseline_untrusted=%s uncertain_share=%s",
+                "baseline_untrusted=%s uncertain_share=%s uncertain_before=%d "
+                "uncertain_after=%d",
                 d["document_id"], res.missing_numbers, res.missing_dates,
                 res.near_empty_pages, res.blank_pages, res.retried_pages, res.old_chars,
                 res.new_chars, res.word_overlap, res.decision,
                 ",".join(res.review_reasons) or "-", res.profile or "-",
                 ",".join(res.baseline_untrusted) or "-", res.uncertain_share,
+                res.uncertain_before, res.uncertain_after,  # #805: [?] line counts
             )  # fmt: skip
             facts, _ = extract_lab_facts(rr.pages, vocab, unreliable=rr.handwritten, inline=True)
             coded = [f for f in facts if f.get("code")]
