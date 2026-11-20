@@ -155,6 +155,7 @@ PUBLIC_ROUTES: dict[tuple[str, str], str] = {
     ("/api/stats", "api_stats"): "public counts, cached 5 min (#591)",
     ("/dashboard", "dashboard"): "static HTML; the dashboard authenticates client-side",
     ("/demo", "demo_dashboard"): "static HTML",
+    ("/demo/assistant", "demo_assistant"): "static HTML",
     ("/api/demo-data", "api_demo_data"): "constant JSON, no DB",
     ("/dashboard/config", "dashboard_config"): "returns the public OAuth client id",
     ("/dashboard/verify", "dashboard_verify"): "auth flow: Google tokeninfo, rate limited",

@@ -30,7 +30,7 @@ def test_dashboard_css_exists_and_non_empty():
     # Sanity: must contain CSS that we know was inline before extraction.
     assert ":root" in body
     assert "--bg:" in body
-    assert "#next-sync" in body  # last selector in the original block
+    assert ".doc-detail-panel" in body  # a selector of the original block
     assert len(body) > 20_000, f"dashboard.css unexpectedly small: {len(body)} bytes"
 
 
@@ -39,7 +39,7 @@ def test_dashboard_js_exists_and_non_empty():
     assert DASHBOARD_JS.exists(), "dashboard.js missing — extraction step regressed"
     body = DASHBOARD_JS.read_text()
     # Sanity: must contain functions we know were inline before extraction.
-    assert "function toggleSection" in body
+    assert "function toggleAdminPanel" in body
     assert "function logout" in body
     assert "fetch('/api/logout'" in body  # #510 server-side revocation path
     assert len(body) > 100_000, f"dashboard.js unexpectedly small: {len(body)} bytes"
@@ -216,7 +216,7 @@ async def test_dashboard_js_route_serves_extracted_file():
     assert response.media_type.startswith("application/javascript")
     assert response.status_code == 200
     body = response.body.decode()
-    assert "function toggleSection" in body
+    assert "function toggleAdminPanel" in body
 
 
 # ── Per-route CSP regression lock (#534) ──────────────────────────────

@@ -199,15 +199,19 @@ def test_patient_tokens_endpoint_exists():
     assert "bearer_token" in source
 
 
-def test_regenerate_token_in_dashboard():
-    """Dashboard JS has regenerateToken function for token recovery (now in
-    the extracted dashboard.js per #501 — pre-#501 the JS was inline)."""
+def test_token_can_be_generated_in_dashboard():
+    """A token for desktop tools can be minted from the dashboard at any time:
+    the Connect-AI dialog's "Generate a token" button (the separate header
+    button `regenerateToken` went with the MCP bar in the Nov 2026 redesign)."""
     from pathlib import Path
 
     base = Path(__file__).parent.parent / "src" / "oncofiles"
-    combined = (base / "dashboard.html").read_text() + "\n" + (base / "dashboard.js").read_text()
-    assert "regenerateToken" in combined
-    assert "/api/patient-tokens" in combined
+    html = (base / "dashboard.html").read_text()
+    js = (base / "dashboard.js").read_text()
+    assert 'id="share-gen-btn" data-action="generateShareCode"' in html
+    assert "async function generateShareCode()" in js
+    assert "fetch('/api/share-link', fetchOpts)" in js
+    assert "regenerateToken" not in html + js
 
 
 # ── Document limit enforcement (#350) ────────────────────────────────

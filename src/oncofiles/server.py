@@ -8,6 +8,7 @@ import hmac
 import json
 import logging
 import os
+import re
 import sys
 import time
 from collections.abc import AsyncIterator, Mapping
@@ -4337,11 +4338,47 @@ _DASHBOARD_HTML: str | None = None
 _SESSION_MAX_AGE = 86400
 
 
+_DEMO_DASHBOARD_HTML: str | None = None
+# dashboard.html is one file for two pages: the signed-in app (/dashboard) and
+# the public demo (/demo). Blocks wrapped in <!--app-only--> / <!--demo-only-->
+# exist in one of them only; the other variant never ships them.
+_VARIANT_MARKERS = ("<!--app-only-->", "<!--/app-only-->", "<!--demo-only-->", "<!--/demo-only-->")
+
+
+def _dashboard_variant(html: str, *, demo: bool) -> str:
+    drop = "app-only" if demo else "demo-only"
+    html = re.sub(rf"[ \t]*<!--{drop}-->.*?<!--/{drop}-->[ \t]*\n?", "", html, flags=re.DOTALL)
+    for marker in _VARIANT_MARKERS:
+        html = re.sub(rf"[ \t]*{re.escape(marker)}[ \t]*\n?", "", html)
+    return html
+
+
 def _load_dashboard_html() -> str:
+    """The signed-in app: no demo banner, no demo head tags."""
     global _DASHBOARD_HTML  # noqa: PLW0603
     if _DASHBOARD_HTML is None:
-        _DASHBOARD_HTML = (Path(__file__).parent / "dashboard.html").read_text()
+        raw = (Path(__file__).parent / "dashboard.html").read_text()
+        _DASHBOARD_HTML = _dashboard_variant(raw, demo=False).replace("<!--demo-head-->\n", "")
     return _DASHBOARD_HTML
+
+
+def _load_demo_dashboard_html() -> str:
+    """The public demo: the same page in demo mode (``data-demo="1"``).
+
+    No Google sign-in script, no sign-in gate, no admin markup, no bug report.
+    The head gets the demo's own title, description and link tags, and the
+    opt-in analytics loader the public pages use (#700); the app never does.
+    """
+    global _DEMO_DASHBOARD_HTML  # noqa: PLW0603
+    if _DEMO_DASHBOARD_HTML is None:
+        raw = (Path(__file__).parent / "dashboard.html").read_text()
+        html = _dashboard_variant(raw, demo=True)
+        html = html.replace('<html lang="sk">', '<html lang="sk" data-demo="1">', 1)
+        html = html.replace(" <title>Oncofiles Dashboard</title>\n", "", 1)
+        html = html.replace(" <!--demo-head-->\n", _demo_asset("demo_head.html"), 1)
+        html = html.replace("</body>", _demo_asset("demo_cookie_banner.html") + "</body>", 1)
+        _DEMO_DASHBOARD_HTML = html
+    return _DEMO_DASHBOARD_HTML
 
 
 def _parse_session_token(token: str) -> tuple[str, int, str, str, str] | None:
@@ -4886,13 +4923,25 @@ def _demo_asset(name: str) -> str:
 
 @mcp.custom_route("/demo", methods=["GET"])
 async def demo_dashboard(request: Request) -> HTMLResponse:
-    """Public demo: one invented patient, rendered by demo.js from /api/demo-data.
+    """Public demo: the dashboard itself, one to one, with one invented patient.
 
-    The demo is its own small page (Nov 2026 redesign) instead of the operator
-    dashboard in "demo mode": a first-time visitor sees a patient overview and
-    a document view, not sync/pipeline/cost panels. It loads no dashboard.js,
-    so it cannot reach an authenticated endpoint; demo.js only fetches
-    /api/demo-data (#605).
+    Same dashboard.html / dashboard.js / dashboard.css as /dashboard, served in
+    demo mode (``<html data-demo="1">``): no sign-in, no admin markup, and the
+    script answers every API path from /api/demo-data, the only URL it may
+    fetch (a ``window.fetch`` chokepoint in dashboard.js, locked by a test).
+    Actions that would write only explain themselves. The earlier showcase of
+    assistant answers lives on at /demo/assistant.
+    """
+    return HTMLResponse(_load_demo_dashboard_html())
+
+
+@mcp.custom_route("/demo/assistant", methods=["GET"])
+async def demo_assistant(request: Request) -> HTMLResponse:
+    """Public showcase: how an assistant answers from the invented patient's
+    documents (lab values with their source line, chat examples, document view).
+
+    Its own small page (demo.html + demo.js), not the dashboard: it loads no
+    dashboard.js and demo.js only fetches /api/demo-data (#605).
     """
     return HTMLResponse(_demo_asset("demo.html").replace("{{VERSION}}", VERSION))
 
@@ -5216,11 +5265,15 @@ def _demo_payload() -> dict:
         }
         for code, sk, en, unit, ref, lo, hi in _DEMO_SERIES
     ]
+    from oncofiles import demo_dashboard
+
     return {
         "version": VERSION,
         "patient": {"name": _DEMO_PATIENT[0], "name_en": _DEMO_PATIENT[1], "invented": True},
         "series": series,
         "documents": documents,
+        # /demo (the dashboard in demo mode) reads this section; /demo/assistant the rest
+        "dashboard": demo_dashboard.build(documents, VERSION),
     }
 
 
