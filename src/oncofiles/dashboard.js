@@ -103,7 +103,8 @@
       dashLang = lang;
       localStorage.setItem('oncofiles_lang', dashLang);
       applyDashLang();
-      // dates and file names are formatted per language: draw them again
+      // names, dates and file names are formatted per language: draw them again
+      if (typeof relabelPatients === 'function' && patientsCache.length) relabelPatients();
       if (typeof renderTable === 'function' && docsData.length) renderTable();
       if (typeof renderActivity === 'function' && activityData) renderActivity(null);
     }
@@ -638,6 +639,21 @@
     // panel hides itself unless this is true.
     var isGlobalAdmin = false;
 
+    function patientLabel(p) {
+      return loc(p, 'display_name') + (p.is_active ? '' : (dashLang === 'sk' ? ' (archivovaný)' : ' (archived)'));
+    }
+
+    /** After a language switch: the names in the patient selector follow it. */
+    function relabelPatients() {
+      var select = document.getElementById('patient-select');
+      if (!select) return;
+      Array.prototype.forEach.call(select.options, function(opt) {
+        var p = patientsCache.find(function(x) { return x.patient_id === opt.value; });
+        if (p) opt.textContent = patientLabel(p);
+      });
+      updatePatientDiagnosis();
+    }
+
     async function loadPatients() {
       try {
         var data;
@@ -675,7 +691,7 @@
         ownPatients.forEach(function(p) {
           var opt = document.createElement('option');
           opt.value = p.patient_id;
-          opt.textContent = loc(p, 'display_name') + (p.is_active ? '' : (dashLang === 'sk' ? ' (archivovaný)' : ' (archived)'));
+          opt.textContent = patientLabel(p);
           select.appendChild(opt);
         });
 
@@ -688,7 +704,7 @@
           adminPatients.forEach(function(p) {
             var opt = document.createElement('option');
             opt.value = p.patient_id;
-            opt.textContent = p.display_name + (p.is_active ? '' : (dashLang === 'sk' ? ' (archivovaný)' : ' (archived)'));
+            opt.textContent = patientLabel(p);
             select.appendChild(opt);
           });
         }
@@ -2494,7 +2510,7 @@
       missing_date: ['Nenašiel sa dátum dokumentu', 'No document date found']
     };
     var ATTENTION_HELP = {
-      review_needed: ['Pri čítaní si systém nebol istý. Dokument nájdete v priečinku na kontrolu na Google Drive; po vašej kontrole sa zaradí.', 'The system was not sure when reading it. You will find the document in the review folder on Google Drive; it is filed after your check.'],
+      review_needed: ['Pri čítaní si systém nebol istý (napríklad rukopis alebo otočená strana). Porovnajte prečítaný text a údaje s originálom.', 'The system was not sure when reading it (for example handwriting or a rotated page). Compare the text and data read with the original.'],
       missing_in_drive: ['Súbor sa na Google Drive už nenašiel. Ak ste ho presunuli alebo zmazali, obnovte ho z koša Drive.', 'The file is no longer found on Google Drive. If you moved or deleted it, restore it from the Drive trash.'],
       outside_folder: ['Súbor existuje, ale nie je v priečinku tohto pacienta. Presuňte ho späť do priečinka pacienta.', 'The file exists but is not in this patient\'s folder. Move it back into the patient folder.'],
       missing_date: ['Text je prečítaný, ale nie je v ňom vytlačený dátum dokumentu, preto ho nevieme zaradiť na časovú os.', 'The text has been read, but no document date is printed in it, so it cannot be placed on the timeline.']
