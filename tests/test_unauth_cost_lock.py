@@ -521,6 +521,8 @@ def test_known_gated_routes_are_detected():
         ("/api/gdrive-folders", "api_gdrive_folders"),
         ("/metrics", "metrics"),
         ("/status", "status"),
+        ("/api/activity", "api_activity"),
+        ("/api/schedules", "api_schedules"),
     ]:
         assert _is_gated(handlers[key]), key
 
