@@ -45,9 +45,9 @@ THINKING_MODES = ("on", "off")
 SAMPLING_MODES = ("greedy", "qwen")
 # Qwen3.8 model-card recommendations (#770): greedy decoding makes Qwen3-family
 # models repeat endlessly, especially in non-thinking mode (#767).
-QWEN_NON_THINKING = {"temperature": 0.7, "top_p": 0.8, "top_k": 20, "presence_penalty": 1.5}
-QWEN_THINKING = {"temperature": 1.0, "top_p": 0.95, "top_k": 20}
-GREEDY = {"temperature": 0.0}
+QWEN_NON_THINKING = llm.SAMPLING_PROFILES["qwen_non_thinking"]
+QWEN_THINKING = llm.SAMPLING_PROFILES["qwen_thinking"]
+GREEDY = llm.SAMPLING_PROFILES["greedy"]
 # #770: reasoning-off marker in the system message (llm.REASONING_OFF_MARKER),
 # for the LM Studio Prompt Template rule; env LLM_EXTRACT_REASONING_MARKER
 # (extractor default on, #773; the global LLM_REASONING_MARKER is not read here).

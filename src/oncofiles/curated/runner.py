@@ -312,15 +312,21 @@ def render_sidecar(
 ) -> str:
     raw = cls.raw if cls else {}
     fields = cls.fields if cls else None
+    iso = f"{fields.date[:4]}-{fields.date[4:6]}-{fields.date[6:]}" if fields else None
+    # #926: classifier metadata only as far as it is printed in the text
+    checked, unverified = classify_mod.verify_metadata(
+        raw, extraction.text if extraction else "", iso
+    )
     meta = {
         "source_file": source_name,
         "patient": contract.patient_display,
-        "doc_date": (f"{fields.date[:4]}-{fields.date[4:6]}-{fields.date[6:]}" if fields else None),
+        "doc_date": iso,
+        "date_evidence": checked["date_evidence"],
         "institution": fields.institution if fields else raw.get("institution"),
         "doc_type": cls.doc_type if cls else None,
-        "doctor": raw.get("doctor"),
-        "hospital_unit": raw.get("hospital_unit"),
-        "diagnoses": raw.get("diagnoses") or [],
+        "doctor": checked["doctor"],
+        "hospital_unit": checked["hospital_unit"],
+        "diagnoses": checked["diagnoses"],
         "language": raw.get("language"),
         "pages": extraction.pages if extraction else None,
         "extraction": extraction.method if extraction else None,
@@ -334,7 +340,10 @@ def render_sidecar(
         "review_needed": bool(cls.review_needed) if cls else True,
         "review_reasons": (cls.reasons if cls else []) + ([note] if note else []),
         "flags": cls.flags if cls else [],
+        "metadata_unverified": unverified,  # #926: dropped fields, never a review reason
         "summary": raw.get("summary"),
+        # #926: written by the local model, not checked against the text
+        "summary_source": "local_model" if raw.get("summary") else None,
         "processed_by": "oncofiles curated pipeline (#562)",
     }
     meta.update(extra or {})

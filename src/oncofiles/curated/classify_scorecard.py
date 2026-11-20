@@ -91,10 +91,11 @@ def _error_kind(exc: BaseException) -> str:
     return "other"
 
 
-def request_settings() -> dict:
-    """How ``propose`` asks the model today: ``legacy`` = temperature 0, the
-    model's default reasoning, ``/no_think`` in the system prompt."""
-    return {"sampling": "legacy", "thinking": "default"}
+def request_settings(sampling: str | None = None) -> dict:
+    """How ``propose`` asks the model (#926 step 2): reasoning explicitly on,
+    the sampling mode of ``classify.sampling_mode`` (``thinking`` | ``greedy``).
+    The step-1 baseline recorded ``legacy`` / ``default`` here."""
+    return {"sampling": classify.sampling_mode(sampling), "thinking": "on"}
 
 
 def prompt_version() -> str:
@@ -107,16 +108,18 @@ def prompt_version() -> str:
     return hashlib.sha256(seed.encode()).hexdigest()[:16]
 
 
-def run_once(contract, text: str, filed_name: str, *, auto_vocab: bool = False) -> dict:
-    """One production ``propose`` (exactly the request a curated run sends)
-    + ``validate`` on a stored text (blocking; one model slot). Returns
-    counts and codes only. Token counts and the finish reason stay None
-    until ``propose`` reports them."""
+def run_once(
+    contract, text: str, filed_name: str, *, sampling: str | None = None,
+    auto_vocab: bool = False,
+) -> dict:  # fmt: skip
+    """One production ``propose`` (the request a curated run sends; only
+    ``sampling`` may override the env for a scorecard job) + ``validate`` on
+    a stored text (blocking; one model slot). Returns counts and codes only."""
     stats: dict = {}
     t0 = time.monotonic()
     out: dict = {"seconds": None, "error_kind": None, "truncated": False}
     try:
-        raw = classify.propose(contract, text)
+        raw = classify.propose(contract, text, sampling=sampling, stats=stats)
     except llm.LocalLLMError as exc:
         kind = _error_kind(exc)
         out.update(error_kind=kind, truncated=kind == "truncated")

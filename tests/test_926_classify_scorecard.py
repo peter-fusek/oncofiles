@@ -256,11 +256,13 @@ async def test_scorecard_counts_only_and_writes_nothing_but_its_row(seeded, scor
 
 
 async def test_scorecard_sends_todays_production_request(seeded, scorecard_env):
-    """Step 1 changes no classification behaviour: the scorecard's model
-    calls are exactly what a curated run's ``propose`` sends."""
+    """The scorecard's model calls are exactly what a curated run's
+    ``propose`` sends (step 2: reasoning on, the env's sampling profile)."""
     await _run(seeded, label="baseline")
-    assert SEEN_KWARGS and all(kw == {} for kw in SEEN_KWARGS)
-    assert csc.request_settings() == {"sampling": "legacy", "thinking": "default"}
+    mode = classify.sampling_mode()
+    expected = {"thinking": True, **llm.sampling_profile(classify.SAMPLING_MODES[mode])}
+    assert SEEN_KWARGS and all(kw == expected for kw in SEEN_KWARGS)
+    assert csc.request_settings() == {"sampling": mode, "thinking": "on"}
 
 
 async def test_second_scorecard_compares_with_the_first(seeded, scorecard_env):
