@@ -346,7 +346,7 @@
     .circle { position: absolute; border-radius: 50%; pointer-events: none; }
 
     /* ── Chapter 1: hero ──────────────────────────────────── */
-    .hero { position: relative; overflow: hidden; padding: 36px 0 150px; }
+    .hero { position: relative; overflow: hidden; overflow: clip; padding: 36px 0 150px; }
     .hero-grid { position: relative; z-index: 1; display: grid; gap: 48px; }
     @media (min-width: 1000px) {
       .hero { padding: 60px 0 200px; }
@@ -465,7 +465,7 @@
     @media (prefers-reduced-motion: reduce) { .stage .paper, .stage .gd-row, .stage .scan b { animation: none !important; } html { scroll-behavior: auto; } }
 
     /* ── Chapter 1: the real paper pile and the three pains ── */
-    #photos { overflow: hidden; }
+    #photos { overflow: hidden; overflow: clip; }
     .photos { position: relative; z-index: 0; display: grid; gap: 28px; margin-top: 44px; }
     .photos figure { margin: 0; position: relative; }
     .photos img { display: block; width: 100%; height: auto; border-radius: 6px; box-shadow: var(--lift); background: #2a2a2a; }
@@ -913,7 +913,9 @@
     .faq .a p { max-width: 70ch; }
 
     /* Closing band */
-    .join-band { position: relative; overflow: hidden; }
+    /* clip, not hidden (#910): a hidden box is still scrollable by the browser (focus,
+       scroll-into-view), which shifted the whole band sideways after a submit. */
+    .join-band { position: relative; overflow: hidden; overflow: clip; }
     .join-band .wrap { position: relative; z-index: 1; padding-bottom: 210px; }
     .join > * + * { margin-top: 16px; }
     .join h3 { font-size: clamp(2rem, 4.4vw, 3.25rem); line-height: 1.06; max-width: 16ch; }

@@ -921,6 +921,7 @@
       setWizardContextWarning(false);
       updateWizardDots();
       document.getElementById('wizard-overlay').classList.add('active');
+      wizardScrollTop();
     }
 
     function showOnboarding() {
@@ -950,6 +951,13 @@
       }
       updateWizardDots();
       document.getElementById('wizard-overlay').classList.add('active');
+      wizardScrollTop();
+    }
+
+    // #910: a new step starts at its top, so the step indicator is never clipped.
+    function wizardScrollTop() {
+      var panel = document.querySelector('#wizard-overlay .wizard-panel');
+      if (panel) panel.scrollTop = 0;
     }
 
     function hideOnboarding() {
@@ -1018,6 +1026,7 @@
       }
       wizardCurrentStep = step;
       updateWizardDots();
+      wizardScrollTop();
     }
 
     // Auto-generate slug from display name
