@@ -289,7 +289,15 @@ async def test_demo_activity_has_the_keys_of_the_real_log():
     activity = data["activity"]
     assert set(activity) == {"events", "pending"}
     assert set(activity["pending"]) == {"inbox"}
+    from oncofiles import dashboard_activity as da
+
+    counts_by_kind = {
+        da.KIND_CURATED_RUN: da.CURATED_COUNT_KEYS,
+        da.KIND_TEXT_REREAD: da.REREAD_COUNT_KEYS,
+    }
+    kinds = set()
     for event in activity["events"]:
-        assert set(event) == {"at", "kind", "status", "trigger", "duration_s", "counts"}
-        assert event["kind"] == "curated_run"
-        assert set(event["counts"]) == {"documents", "filed", "review", "not_processed"}
+        assert set(event) == da.EVENT_KEYS
+        assert set(event["counts"]) == counts_by_kind[event["kind"]]
+        kinds.add(event["kind"])
+    assert kinds == set(counts_by_kind)  # the demo shows both kinds

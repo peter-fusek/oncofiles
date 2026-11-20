@@ -747,6 +747,10 @@
       updatePatientDiagnosis();
       updateArchiveButton();
       clearAllPatientData();
+      // Tile filter, search and open row belong to the previous patient: a
+      // "needs attention" filter left over showed an empty list for a patient
+      // with none (prod click-through, #917).
+      resetDocView();
       loadGermlineBanner();
       refresh();
     }
@@ -1773,13 +1777,25 @@
       return { ok: resp.ok, status: resp.status, data: data };
     }
 
+    // Both languages at once (the admin panel was Slovak-only and showed UTC).
+    function coWhen(value) {
+      var d = parseTs(value);
+      if (!d) return ['–', '–'];
+      var opts = { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' };
+      return [d.toLocaleString('sk-SK', opts), d.toLocaleString('en-GB', opts)];
+    }
+
     function coRunLine(run) {
-      if (!run) return 'Zatiaľ žiadny beh.';
-      var kind = run.dry_run ? 'náhľad' : 'naostro';
-      var when = (run.finished_at || run.started_at || '').replace('T', ' ').replace('Z', ' UTC');
-      return 'Posledný beh: ' + kind + ' (' + (run.trigger || '') + '), ' + when + ' — ' + run.status +
-        ' · dokumenty ' + run.documents + ' (zaradené ' + run.filed + ', na kontrolu ' + run.review + ', nespracované ' + run.not_processed + ')' +
-        (run.message ? ' · ' + run.message : '');
+      if (!run) return ['Zatiaľ žiadny beh.', 'No run yet.'];
+      var when = coWhen(run.finished_at || run.started_at);
+      var trig = run.trigger ? ' (' + run.trigger + ')' : '';
+      var msg = run.message ? ' · ' + run.message : '';
+      return [
+        'Posledný beh: ' + (run.dry_run ? 'náhľad' : 'naostro') + trig + ', ' + when[0] + ' — ' + run.status +
+          ' · dokumenty ' + run.documents + ' (zaradené ' + run.filed + ', na kontrolu ' + run.review + ', nespracované ' + run.not_processed + ')' + msg,
+        'Last run: ' + (run.dry_run ? 'preview' : 'real') + trig + ', ' + when[1] + ' — ' + run.status +
+          ' · documents ' + run.documents + ' (filed ' + run.filed + ', for review ' + run.review + ', not processed ' + run.not_processed + ')' + msg
+      ];
     }
 
     async function loadCuratedOps() {
@@ -1791,26 +1807,35 @@
       var n = res.data.nightly || {};
       var c = res.data.continuous || {};
       var note = document.getElementById('curated-ops-nightly');
-      note.textContent = n.enabled && c.enabled
-        ? ('Priebežné spracovanie je zapnuté: server kontroluje priečinky každé ' + Math.round(c.poll_s / 60) + ' min a nové súbory spracuje do niekoľkých minút (po ' + c.chunk_docs + ' dokumentov na beh). '
-          + (n.hour === null ? 'Plný beh každú hodinu.' : 'Plný nočný beh o ' + n.hour + ':00 (Bratislava).'))
+      var noteText = n.enabled && c.enabled
+        ? [('Priebežné spracovanie je zapnuté: server kontroluje priečinky každé ' + Math.round(c.poll_s / 60) + ' min a nové súbory spracuje do niekoľkých minút (po ' + c.chunk_docs + ' dokumentov na beh). '
+            + (n.hour === null ? 'Plný beh každú hodinu.' : 'Plný nočný beh o ' + n.hour + ':00 (Bratislava).')),
+           ('Continuous processing is on: the server checks the folders every ' + Math.round(c.poll_s / 60) + ' min and processes new files within minutes (' + c.chunk_docs + ' documents per run). '
+            + (n.hour === null ? 'Full run every hour.' : 'Full nightly run at ' + n.hour + ':00 (Bratislava).'))]
         : n.enabled
         ? (n.hour === null
-          ? ('Beh je zapnutý na serveri: každú hodinu najviac ' + n.max_runs + ' behov naostro (náhľad raz za 24 h) pre pacientov so zapnutým prepínačom.')
-          : ('Nočný beh je zapnutý na serveri: každú noc o ' + n.hour + ':00 (Bratislava) náhľad a potom najviac ' + n.max_runs + ' behov naostro pre pacientov so zapnutým prepínačom.'))
-        : 'Nočný beh je na serveri vypnutý (CURATED_NIGHTLY_ENABLED). Prepínače pacientov sa uložia, ale nespustia sa.';
+          ? ['Beh je zapnutý na serveri: každú hodinu najviac ' + n.max_runs + ' behov naostro (náhľad raz za 24 h) pre pacientov so zapnutým prepínačom.',
+             'Runs are on: every hour at most ' + n.max_runs + ' real runs (a preview once per 24 h) for patients with the switch on.']
+          : ['Nočný beh je zapnutý na serveri: každú noc o ' + n.hour + ':00 (Bratislava) náhľad a potom najviac ' + n.max_runs + ' behov naostro pre pacientov so zapnutým prepínačom.',
+             'The nightly run is on: every night at ' + n.hour + ':00 (Bratislava) a preview, then at most ' + n.max_runs + ' real runs for patients with the switch on.'])
+        : ['Nočný beh je na serveri vypnutý (CURATED_NIGHTLY_ENABLED). Prepínače pacientov sa uložia, ale nespustia sa.',
+           'The nightly run is off on the server (CURATED_NIGHTLY_ENABLED). Patient switches are saved but do not start anything.'];
+      setI18n(note, noteText[0], noteText[1]);
       var body = document.getElementById('curated-ops-body');
       clearEl(body);
       var anyRunning = false;
       (res.data.patients || []).forEach(function (p) {
         var card = coEl('div', null, 'curated-ops-card');
         card.appendChild(coEl('h3', p.name + ' (' + p.slug + ', ' + p.patient_type + ')'));
-        card.appendChild(coEl('div', 'Priečinok: ' + (p.folder_name || '—') + (p.drive_connected ? '' : ' · Drive nepripojený'), 'curated-ops-meta'));
+        card.appendChild(coBilingual('div',
+          'Priečinok: ' + (p.folder_name || '—') + (p.drive_connected ? '' : ' · Drive nepripojený'),
+          'Folder: ' + (p.folder_name || '—') + (p.drive_connected ? '' : ' · Drive not connected'), 'curated-ops-meta'));
         var runLine = p.running
-          ? ('Práve beží: ' + (p.running.dry_run ? 'náhľad' : 'naostro') + ' (' + (p.running.trigger || '') + ')')
+          ? ['Práve beží: ' + (p.running.dry_run ? 'náhľad' : 'naostro') + ' (' + (p.running.trigger || '') + ')',
+             'Running now: ' + (p.running.dry_run ? 'preview' : 'real') + ' (' + (p.running.trigger || '') + ')']
           : coRunLine(p.last_run);
         if (p.running) anyRunning = true;
-        var st = coEl('div', runLine, 'curated-ops-meta');
+        var st = coBilingual('div', runLine[0], runLine[1], 'curated-ops-meta');
         if (p.last_run && !p.running) st.classList.add(p.last_run.status === 'ok' ? 'curated-ops-status-ok' : 'curated-ops-status-bad');
         card.appendChild(st);
         var actions = coEl('div', null, 'curated-ops-actions');
@@ -2584,6 +2609,15 @@
       return d.stage !== 'ready' && d.stage !== 'attention';
     }
 
+    // A new patient starts on the full list: no tile filter, no search, no open row.
+    function resetDocView() {
+      openDoc = { id: null, data: null };
+      docsSignature = '';
+      var search = document.getElementById('doc-search');
+      if (search) search.value = '';
+      setDocFilter('all');
+    }
+
     function setDocFilter(filter) {
       docFilter = filter;
       document.querySelectorAll('#summary-cards .card').forEach(function(card) {
@@ -3135,6 +3169,15 @@
         return c.new
           ? ['Synchronizácia s Google Drive: nové dokumenty ' + c.new + extra[0], 'Google Drive sync: new documents ' + c.new + extra[1]]
           : ['Synchronizácia s Google Drive: nič nové' + extra[0], 'Google Drive sync: nothing new' + extra[1]];
+      }
+      if (ev.kind === 'text_reread') {
+        if (ev.status === 'running') return ['Práve sa znova číta text dokumentov', 'Re-reading document text now'];
+        if (ev.status !== 'ok') return ['Opätovné čítanie textu sa nedokončilo', 'Re-reading document text did not finish'];
+        var parts = [[], []];
+        if (c.rewritten) { parts[0].push('lepší text uložený ' + c.rewritten); parts[1].push('better text saved ' + c.rewritten); }
+        if (c.kept) { parts[0].push('pôvodný text ponechaný ' + c.kept); parts[1].push('original text kept ' + c.kept); }
+        if (!parts[0].length) return ['Opätovné čítanie textu: bez zmeny', 'Text re-read: no change'];
+        return ['Opätovné čítanie textu: ' + parts[0].join(', '), 'Text re-read: ' + parts[1].join(', ')];
       }
       if (ev.status === 'running') return ['Práve prebieha spracovanie priečinka', 'Folder processing is running now'];
       if (ev.status === 'failed') return ['Spracovanie priečinka sa nedokončilo', 'Folder processing did not finish'];
