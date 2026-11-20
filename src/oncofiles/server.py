@@ -8,6 +8,7 @@ import hmac
 import json
 import logging
 import os
+import re
 import sys
 import time
 from collections.abc import AsyncIterator, Mapping
@@ -4079,8 +4080,6 @@ async def status(request: Request) -> JSONResponse:
         from oncofiles.memory import db_slot
 
         async with db_slot("status", priority=True):
-            from oncofiles.filename_parser import is_standard_format
-
             doc_count = await db.count_documents(patient_id=patient_id)
             sync_stats = await db.get_sync_stats_summary(patient_id=patient_id)
             recent_syncs = await db.get_sync_history(limit=5, patient_id=patient_id)
@@ -4103,14 +4102,29 @@ async def status(request: Request) -> JSONResponse:
             ) as cursor:
                 h = await cursor.fetchone()
 
-            # standard_named requires Python logic — fetch only filenames
+            # standard_named requires Python logic. Which naming standard applies
+            # depends on the row (document_stage.is_named: README contract for a
+            # curated row, the legacy standard otherwise), so the metadata is
+            # fetched only for the "gdrive:" rows that need it.
+            from oncofiles import document_stage
+
             async with db.db.execute(
-                "SELECT filename FROM documents WHERE deleted_at IS NULL AND patient_id = ?",
+                "SELECT filename, file_id, "
+                "CASE WHEN file_id LIKE 'gdrive:%' THEN structured_metadata END "
+                "AS structured_metadata "
+                "FROM documents WHERE deleted_at IS NULL AND patient_id = ?",
                 (patient_id,),
             ) as cursor:
                 fn_rows = await cursor.fetchall()
             standard_count = sum(
-                1 for r in fn_rows if is_standard_format(r["filename"], patient_id=patient_id)
+                1
+                for r in fn_rows
+                if document_stage.is_named(
+                    r["filename"],
+                    file_id=r["file_id"],
+                    structured_metadata=r["structured_metadata"],
+                    patient_id=patient_id,
+                )
             )
 
             doc_health = {
@@ -4337,11 +4351,47 @@ _DASHBOARD_HTML: str | None = None
 _SESSION_MAX_AGE = 86400
 
 
+_DEMO_DASHBOARD_HTML: str | None = None
+# dashboard.html is one file for two pages: the signed-in app (/dashboard) and
+# the public demo (/demo). Blocks wrapped in <!--app-only--> / <!--demo-only-->
+# exist in one of them only; the other variant never ships them.
+_VARIANT_MARKERS = ("<!--app-only-->", "<!--/app-only-->", "<!--demo-only-->", "<!--/demo-only-->")
+
+
+def _dashboard_variant(html: str, *, demo: bool) -> str:
+    drop = "app-only" if demo else "demo-only"
+    html = re.sub(rf"[ \t]*<!--{drop}-->.*?<!--/{drop}-->[ \t]*\n?", "", html, flags=re.DOTALL)
+    for marker in _VARIANT_MARKERS:
+        html = re.sub(rf"[ \t]*{re.escape(marker)}[ \t]*\n?", "", html)
+    return html
+
+
 def _load_dashboard_html() -> str:
+    """The signed-in app: no demo banner, no demo head tags."""
     global _DASHBOARD_HTML  # noqa: PLW0603
     if _DASHBOARD_HTML is None:
-        _DASHBOARD_HTML = (Path(__file__).parent / "dashboard.html").read_text()
+        raw = (Path(__file__).parent / "dashboard.html").read_text()
+        _DASHBOARD_HTML = _dashboard_variant(raw, demo=False).replace("<!--demo-head-->\n", "")
     return _DASHBOARD_HTML
+
+
+def _load_demo_dashboard_html() -> str:
+    """The public demo: the same page in demo mode (``data-demo="1"``).
+
+    No Google sign-in script, no sign-in gate, no admin markup, no bug report.
+    The head gets the demo's own title, description and link tags, and the
+    opt-in analytics loader the public pages use (#700); the app never does.
+    """
+    global _DEMO_DASHBOARD_HTML  # noqa: PLW0603
+    if _DEMO_DASHBOARD_HTML is None:
+        raw = (Path(__file__).parent / "dashboard.html").read_text()
+        html = _dashboard_variant(raw, demo=True)
+        html = html.replace('<html lang="sk">', '<html lang="sk" data-demo="1">', 1)
+        html = html.replace(" <title>Oncofiles Dashboard</title>\n", "", 1)
+        html = html.replace(" <!--demo-head-->\n", _demo_asset("demo_head.html"), 1)
+        html = html.replace("</body>", _demo_asset("demo_cookie_banner.html") + "</body>", 1)
+        _DEMO_DASHBOARD_HTML = html
+    return _DEMO_DASHBOARD_HTML
 
 
 def _parse_session_token(token: str) -> tuple[str, int, str, str, str] | None:
@@ -4886,13 +4936,25 @@ def _demo_asset(name: str) -> str:
 
 @mcp.custom_route("/demo", methods=["GET"])
 async def demo_dashboard(request: Request) -> HTMLResponse:
-    """Public demo: one invented patient, rendered by demo.js from /api/demo-data.
+    """Public demo: the dashboard itself, one to one, with one invented patient.
 
-    The demo is its own small page (Nov 2026 redesign) instead of the operator
-    dashboard in "demo mode": a first-time visitor sees a patient overview and
-    a document view, not sync/pipeline/cost panels. It loads no dashboard.js,
-    so it cannot reach an authenticated endpoint; demo.js only fetches
-    /api/demo-data (#605).
+    Same dashboard.html / dashboard.js / dashboard.css as /dashboard, served in
+    demo mode (``<html data-demo="1">``): no sign-in, no admin markup, and the
+    script answers every API path from /api/demo-data, the only URL it may
+    fetch (a ``window.fetch`` chokepoint in dashboard.js, locked by a test).
+    Actions that would write only explain themselves. The earlier showcase of
+    assistant answers lives on at /demo/assistant.
+    """
+    return HTMLResponse(_load_demo_dashboard_html())
+
+
+@mcp.custom_route("/demo/assistant", methods=["GET"])
+async def demo_assistant(request: Request) -> HTMLResponse:
+    """Public showcase: how an assistant answers from the invented patient's
+    documents (lab values with their source line, chat examples, document view).
+
+    Its own small page (demo.html + demo.js), not the dashboard: it loads no
+    dashboard.js and demo.js only fetches /api/demo-data (#605).
     """
     return HTMLResponse(_demo_asset("demo.html").replace("{{VERSION}}", VERSION))
 
@@ -5216,11 +5278,15 @@ def _demo_payload() -> dict:
         }
         for code, sk, en, unit, ref, lo, hi in _DEMO_SERIES
     ]
+    from oncofiles import demo_dashboard
+
     return {
         "version": VERSION,
         "patient": {"name": _DEMO_PATIENT[0], "name_en": _DEMO_PATIENT[1], "invented": True},
         "series": series,
         "documents": documents,
+        # /demo (the dashboard in demo mode) reads this section; /demo/assistant the rest
+        "dashboard": demo_dashboard.build(documents, VERSION),
     }
 
 
@@ -5410,7 +5476,13 @@ async def api_logout(request: Request) -> JSONResponse:
 
 @mcp.custom_route("/api/documents", methods=["GET"])
 async def api_documents(request: Request) -> JSONResponse:
-    """Document status matrix API. Requires bearer or dashboard session auth."""
+    """Document status matrix API. Requires bearer or dashboard session auth.
+
+    Each row carries the user-facing lifecycle from ``document_stage``
+    (``steps``, ``ready``, ``stage``, ``attention_reason``, ``curated``,
+    ``uploaded_at``) and its full filename; ``?filter=`` also takes ``ready``,
+    ``in_progress`` and ``attention``.
+    """
     err = _check_dashboard_auth(request)
     if err:
         return err
@@ -5438,10 +5510,62 @@ async def api_documents(request: Request) -> JSONResponse:
             limit=limit,
             offset=offset,
             patient_id=patient_id,
+            truncate_names=False,  # the dashboard shows whole filenames
         )
         return JSONResponse(result)
     except Exception:
         logger.exception("API documents endpoint error")
+        return JSONResponse({"error": "internal error"}, status_code=500)
+
+
+@mcp.custom_route("/api/activity", methods=["GET"])
+async def api_activity(request: Request) -> JSONResponse:
+    """One counts-only activity log for the dashboard patient.
+
+    ``?limit=`` (default 30, max 100). Same auth and patient resolution as
+    ``/api/documents``: a caller without a patient gets the sentinel, which
+    matches no row, so the list is simply empty.
+
+    ``events``, newest first, merged from the patient's real curated runs (no
+    dry runs or previews, none of the non-run jobs) and the legacy Drive sync
+    history. Each event is ``at``, ``kind``, ``status``, ``trigger``,
+    ``duration_s`` and ``counts`` (``dashboard_activity``): codes and counts
+    only, never a file name, a message, an error text or a document value.
+
+    ``pending.inbox``: inbox files the next automatic run would process, as
+    the last in-memory probe of this process saw them; null when unknown. No
+    Drive call and no model call happens here.
+    """
+    err = _check_dashboard_auth(request)
+    if err:
+        return err
+
+    try:
+        from oncofiles import dashboard_activity
+        from oncofiles.tools.curated import probe_stats
+
+        db: Database = request.app.state.fastmcp_server._lifespan_result["db"]
+        patient_id = await _get_dashboard_patient_id(request)
+        try:
+            limit = int(request.query_params.get("limit", "30"))
+        except (ValueError, TypeError):
+            limit = 30
+        limit = min(max(limit, 1), 100)
+
+        # One DB connection: the two reads run one after the other.
+        runs = await db.list_curated_run_activity(patient_id=patient_id, limit=limit)
+        syncs = await db.get_sync_history(limit=limit, patient_id=patient_id)
+        events = dashboard_activity.merge(runs, syncs, limit=limit)
+
+        pending = (probe_stats().get(patient_id) or {}).get("pending_inbox_count")
+        return JSONResponse(
+            {
+                "events": events,
+                "pending": {"inbox": pending if isinstance(pending, int) else None},
+            }
+        )
+    except Exception:
+        logger.exception("API activity endpoint error")
         return JSONResponse({"error": "internal error"}, status_code=500)
 
 
@@ -5742,8 +5866,14 @@ _SCHEDULE_DEFS = [
 
 @mcp.custom_route("/api/schedules", methods=["GET"])
 async def api_schedules(request: Request) -> JSONResponse:
-    """Processing schedules: all jobs with live status and prompt stats by call type."""
-    err = _check_dashboard_auth(request)
+    """Processing schedules: all jobs with live status and prompt stats by call type.
+
+    Admin only (static bearer or a ``DASHBOARD_ADMIN_EMAILS`` session): the job
+    internals (last error texts) and the prompt statistics are system-wide,
+    not one patient's. Any other signed-in user gets 403; the patient-facing
+    view of what happened is ``/api/activity``.
+    """
+    err = _require_admin(request)
     if err:
         return err
 

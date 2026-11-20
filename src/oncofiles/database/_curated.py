@@ -74,6 +74,34 @@ class CuratedMixin(DatabaseBase):
         ) as cursor:
             return [dict(r) for r in await cursor.fetchall()]
 
+    async def list_curated_run_activity(self, *, patient_id: str, limit: int = 30) -> list[dict]:
+        """Real curated runs of one patient, newest first, as counts only.
+
+        For the dashboard activity log: no dry runs or previews and none of the
+        non-run jobs (``_NOT_RUNS``). The counts are the ones
+        ``server._run_summary`` derives from a report (documents, filed,
+        review, not_processed), computed inside SQLite, so neither the report
+        (file names, reasons) nor the run message ever leaves the database.
+        A row without a readable report (still running, interrupted) counts 0.
+        """
+        report = "CASE WHEN json_valid(report_json) THEN report_json END"
+        # CASE keeps json_extract away from an entry that is not an object.
+        result = "CASE WHEN d.type = 'object' THEN json_extract(d.value, '$.result') END"
+        async with self.db.execute(
+            f"""SELECT id, trigger, status, started_at, finished_at,
+                   COALESCE(json_array_length({report}, '$.documents'), 0) AS documents,
+                   (SELECT COUNT(*) FROM json_each({report}, '$.documents') AS d
+                     WHERE {result} = 'filed') AS filed,
+                   (SELECT COUNT(*) FROM json_each({report}, '$.documents') AS d
+                     WHERE {result} = 'review_needed') AS review,
+                   COALESCE(json_array_length({report}, '$.not_processed'), 0) AS not_processed
+               FROM curated_runs
+               WHERE patient_id = ? AND dry_run = 0 AND {_NOT_RUNS}
+               ORDER BY id DESC LIMIT ?""",
+            (patient_id, max(1, min(limit, 100))),
+        ) as cursor:
+            return [dict(r) for r in await cursor.fetchall()]
+
     async def get_curated_run(self, run_row_id: int, *, patient_id: str) -> dict | None:
         async with self.db.execute(
             "SELECT * FROM curated_runs WHERE id = ? AND patient_id = ?",

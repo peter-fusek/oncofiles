@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 from starlette.requests import Request
 
-from oncofiles.server import _load_landing_html, api_demo_data, demo_dashboard
+from oncofiles.server import _load_landing_html, api_demo_data, demo_assistant, demo_dashboard
 
 SRC = Path(__file__).parent.parent / "src" / "oncofiles"
 LANDING = (SRC / "landing.html").read_text(encoding="utf-8")
@@ -95,16 +95,26 @@ def _req(path: str) -> Request:
     return Request({"type": "http", "method": "GET", "path": path, "headers": []})
 
 
-async def test_demo_route_serves_the_standalone_demo():
-    """#605 + Nov 2026 redesign: /demo is its own page (demo.html + demo.js),
-    not the operator dashboard in demo mode. It must not load dashboard.js,
-    so it cannot reach an authenticated endpoint."""
-    resp = await demo_dashboard(_req("/demo"))
+async def test_assistant_showcase_is_its_own_page():
+    """#605: the showcase of assistant answers (demo.html + demo.js) never
+    loads dashboard.js, so it cannot reach an authenticated endpoint. Since
+    the dashboard redesign it lives at /demo/assistant; /demo is the
+    dashboard itself in demo mode (tests/test_dashboard_redesign.py)."""
+    resp = await demo_assistant(_req("/demo/assistant"))
     html = resp.body.decode()
     assert 'data-demo="1"' in html
     assert '<script src="/demo.js" defer></script>' in html
     assert "/dashboard.js" not in html
     assert "{{VERSION}}" not in html
+    assert '<link rel="canonical" href="https://oncofiles.com/demo/assistant">' in html
+    assert not re.search(r"\son[a-z]+\s*=", html), "no inline event handlers"
+
+
+async def test_demo_route_serves_the_dashboard_in_demo_mode():
+    html = (await demo_dashboard(_req("/demo"))).body.decode()
+    assert '<html lang="sk" data-demo="1">' in html
+    assert '<script src="/dashboard.js" defer></script>' in html
+    assert "/demo.js" not in html
     assert not re.search(r"\son[a-z]+\s*=", html), "no inline event handlers"
 
 
@@ -202,12 +212,15 @@ class _TextWithoutI18n(HTMLParser):
 
 
 def test_dynamic_dashboard_labels_are_bilingual():
-    # Funnel rows and remedy rows are built in JS; they must carry both
-    # languages so applyDashLang() can switch them.
-    assert "setI18n(label, st.sk, st.label);" in DASHBOARD_JS
-    assert "setI18n(lbl, g.sk, g.label);" in DASHBOARD_JS
-    assert "{ label: 'OCR', sk: 'OCR'" in DASHBOARD_JS
-    assert 'data-sk="Spracovanie dokumentov"' in DASHBOARD_HTML
+    # Status chips, category badges and the event log are built in JS; they
+    # must carry both languages so applyDashLang() can switch them.
+    assert "chip.appendChild(setI18n(document.createElement('span'), label[0], label[1]));" in (
+        DASHBOARD_JS
+    )
+    assert "setI18n(badge, cat[0], cat[1]);" in DASHBOARD_JS
+    assert "var main = setI18n(document.createElement('span'), text[0], text[1]);" in DASHBOARD_JS
+    assert "ready: ['Pripravený na použitie', 'Ready to use']" in DASHBOARD_JS
+    assert 'data-sk="Dokumenty pacienta"' in DASHBOARD_HTML
 
 
 def test_dashboard_phone_layout_does_not_widen_the_page():
@@ -218,7 +231,7 @@ def test_dashboard_phone_layout_does_not_widen_the_page():
         ".header-top .header-account { margin-left: 0;",
         ".sync-row { flex-wrap: wrap;",
         "#analytics-cards { grid-template-columns: repeat(2, 1fr) !important; }",
-        ".remedy-row { flex-wrap: wrap;",
+        ".activity-row { grid-template-columns: auto 1fr; }",
     ):
         assert rule in block, rule
 

@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="sk">
 <head>
  <meta charset="utf-8">
  <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -8,10 +8,14 @@
  <link rel="manifest" href="/manifest.json">
  <link rel="stylesheet" href="/fonts/fonts.css">
  <link rel="stylesheet" href="/dashboard.css">
+ <!--app-only-->
  <script src="https://accounts.google.com/gsi/client" async defer></script>
+ <!--/app-only-->
+ <!--demo-head-->
 </head>
 <body>
  <div class="container">
+ <!--app-only-->
  <!-- Auth gate (shown if no session) -->
  <div id="auth-gate" class="auth-gate tone-navy" style="display:none">
  <div class="gate-body">
@@ -51,6 +55,7 @@
  </div>
  </div>
 
+ <!--/app-only-->
  <!-- Main dashboard (shown when authenticated) -->
  <div id="dashboard" style="display:none">
  <header class="tone-navy">
@@ -63,11 +68,18 @@
  <span id="patient-diagnosis" class="patient-diagnosis"></span>
  <button class="share-btn" data-action="showShareModal" data-sk="Pripojiť AI" data-en="Connect AI">Pripojiť AI</button>
  <button class="add-patient-btn" data-action="showOnboarding" data-sk="+ Nový pacient" data-en="+ New Patient">+ Nový pacient</button>
+ <!--app-only-->
  <button id="archive-patient-btn" class="archive-patient-btn" data-action="togglePatientArchive" data-sk="Archivovať" data-en="Archive">Archive</button>
+ <!--/app-only-->
  </div>
  <div class="header-account">
+ <!--app-only-->
  <span class="user-info" id="user-info"></span>
  <button class="logout-btn" data-action="logout" data-sk="Odhlásiť" data-en="Sign out">Sign out</button>
+ <!--/app-only-->
+ <!--demo-only-->
+ <a class="logout-btn demo-signin" href="/dashboard" data-sk="Prihlásiť sa" data-en="Sign in">Prihlásiť sa</a>
+ <!--/demo-only-->
  <div class="lang-switcher" id="lang-switcher">
  <button id="lang-btn-sk" data-action="setDashLang|sk">SK</button>
  <button id="lang-btn-en" data-action="setDashLang|en">EN</button>
@@ -92,7 +104,6 @@
  </div>
  </div>
  </span>
- <span class="version" id="version-label"></span>
  <span id="last-refreshed" style="font-size:0.6875rem;color:var(--text-muted)"></span>
  <span id="budget-pill" class="budget-pill" style="display:none" title="">
  <span class="bp-icon" id="bp-icon">€</span>
@@ -104,6 +115,15 @@
  </div>
  </header>
 
+ <!--demo-only-->
+ <div id="demo-banner" class="notice notice-info demo-banner" role="note">
+ <span data-sk="Ukážka: vymyslená pacientka a vymyslené dokumenty. Žiadne skutočné údaje, nič sa neukladá." data-en="Demo: an invented patient with invented documents. No real data, nothing is saved.">Ukážka: vymyslená pacientka a vymyslené dokumenty. Žiadne skutočné údaje, nič sa neukladá.</span>
+ <span class="demo-banner-links">
+ <a href="/demo/assistant" data-sk="Ako odpovedá AI asistent" data-en="How an AI assistant answers">Ako odpovedá AI asistent</a>
+ <a class="btn-primary btn-small" href="/#join" data-sk="Pridať sa na zoznam" data-en="Join the waitlist">Pridať sa na zoznam</a>
+ </span>
+ </div>
+ <!--/demo-only-->
  <div id="admin-readonly-banner" class="notice notice-warn" role="status" style="display:none">
  <span data-sk="Admin prístup (len na čítanie) — nemôžete upravovať údaje tohto pacienta" data-en="Admin access (read-only) — you cannot modify this patient's data">Admin prístup (len na čítanie) — nemôžete upravovať údaje tohto pacienta</span>
  </div>
@@ -125,111 +145,141 @@
  <button class="btn-primary" data-action="showGdriveSetup" data-sk="Pripojiť GDrive" data-en="Connect GDrive">Pripojiť GDrive</button>
  </div>
 
- <!-- MCP Connection bar -->
- <div id="mcp-connection-bar" class="mcp-bar" style="display:none">
- <div class="mcp-bar-item">
- <span class="mcp-bar-label">MCP URL</span>
- <code id="mcp-url-display">https://oncofiles.com/mcp</code>
- <button class="copy-btn" data-action="copyMcpUrlDisplay" data-sk="Kopírovať" data-en="Copy">Kopírovať</button>
+ <!-- Overview: four tiles that are also the document filter -->
+ <section class="overview" aria-labelledby="overview-title">
+ <h1 id="overview-title" class="page-title" data-sk="Dokumenty pacienta" data-en="Patient documents">Dokumenty pacienta</h1>
+ <p class="page-lead" data-sk="Čo je v Oncofiles nahraté a v akom stave to je. Kliknutím na dlaždicu zoznam vyfiltrujete." data-en="What has been uploaded to Oncofiles and what state it is in. Click a tile to filter the list.">Čo je v Oncofiles nahraté a v akom stave to je. Kliknutím na dlaždicu zoznam vyfiltrujete.</p>
+ <div class="cards" id="summary-cards" role="group" aria-label="Filter">
+ <button type="button" class="card is-active" data-filter="all" data-action="setDocFilter|all" aria-pressed="true"><span class="value" id="card-total">-</span><span class="label"><span data-sk="Všetky dokumenty" data-en="All documents">Všetky dokumenty</span></span></button>
+ <button type="button" class="card" data-filter="ready" data-action="setDocFilter|ready" aria-pressed="false"><span class="value" id="card-ready">-</span><span class="label"><span class="state-mark ready" aria-hidden="true"></span><span data-sk="Pripravené na použitie" data-en="Ready to use">Pripravené na použitie</span></span></button>
+ <button type="button" class="card" data-filter="in_progress" data-action="setDocFilter|in_progress" aria-pressed="false"><span class="value" id="card-progress">-</span><span class="label"><span class="state-mark progress" aria-hidden="true"></span><span data-sk="Spracúvajú sa" data-en="In progress">Spracúvajú sa</span></span></button>
+ <button type="button" class="card" data-filter="attention" data-action="setDocFilter|attention" aria-pressed="false"><span class="value" id="card-attention">-</span><span class="label"><span class="state-mark attention" aria-hidden="true"></span><span data-sk="Vyžadujú pozornosť" data-en="Need attention">Vyžadujú pozornosť</span></span></button>
  </div>
- <div class="mcp-bar-item">
- <span class="mcp-bar-label">Bearer Token</span>
- <code id="mcp-token-display" style="max-width:180px;overflow:hidden;text-overflow:ellipsis">—</code>
- <button class="copy-btn" id="mcp-token-copy" data-action="copyMcpTokenDisplay" style="display:none" data-sk="Kopírovať" data-en="Copy">Kopírovať</button>
- <button class="copy-btn" id="mcp-token-gen" data-action="regenerateToken" data-sk="Vygenerovať" data-en="Generate">Vygenerovať</button>
- </div>
- <button class="copy-btn" data-action="showShareModal" style="margin-left:auto" data-sk="Sprievodca nastavením" data-en="Setup Guide">Sprievodca nastavením</button>
- </div>
+ <p id="pending-note" class="pending-note" hidden></p>
+ </section>
 
- <!-- Summary cards -->
- <div class="cards" id="summary-cards">
- <div class="card"><div class="value" id="card-total">-</div><div class="label" data-sk="Celkom" data-en="Total">Total</div></div>
- <div class="card"><div class="value" id="card-complete">-</div><div class="label" data-sk="Kompletné" data-en="Complete">Complete</div></div>
- <div class="card warning"><div class="value" id="card-gaps">-</div><div class="label" data-sk="S medzerami" data-en="With Gaps">With Gaps</div></div>
- <div class="card"><div class="value" id="card-synced">-</div><div class="label" data-sk="Synchronizované" data-en="Synced">Synced</div></div>
- <div class="card"><div class="value" id="card-uptime">-</div><div class="label" data-sk="Dostupnosť" data-en="Uptime">Dostupnosť</div></div>
+ <!-- Documents -->
+ <section class="docs-section" aria-labelledby="docs-title">
+ <div class="section-head">
+ <h2 id="docs-title" data-sk="Dokumenty" data-en="Documents">Dokumenty</h2>
+ <span id="docs-count" class="section-meta"></span>
  </div>
-
- <!-- Pipeline funnel -->
- <div class="funnel" id="funnel">
- <h2 data-sk="Spracovanie dokumentov" data-en="Document processing">Spracovanie dokumentov</h2>
- <div id="funnel-rows"></div>
+ <div class="docs-toolbar">
+ <input type="search" id="doc-search" placeholder="Hľadať v dokumentoch…" data-sk-placeholder="Hľadať v dokumentoch…" data-en-placeholder="Search documents…" data-input="renderTable" aria-label="Search documents">
+ <button type="button" class="copy-btn" id="export-btn" data-action="downloadManifest" data-sk="Stiahnuť údaje (JSON)" data-en="Download data (JSON)">Stiahnuť údaje (JSON)</button>
  </div>
-
- <!-- Filters -->
- <div class="filters" id="filters">
- <span class="pill active" data-filter="all" data-sk="Všetky" data-en="All">All</span>
- <span class="pill" data-filter="incomplete" data-sk="Nekompletné" data-en="Incomplete">Incomplete</span>
- <span class="pill" data-filter="missing_ocr" data-sk="Chýba OCR" data-en="Missing OCR">Chýba OCR</span>
- <span class="pill" data-filter="missing_ai" data-sk="Chýba AI" data-en="Missing AI">Chýba AI</span>
- <span class="pill" data-filter="missing_metadata" data-sk="Chýba Meta" data-en="Missing Meta">Chýba Meta</span>
- <span class="pill" data-filter="missing_date" data-sk="Chýba dátum" data-en="Missing Date">Missing Date</span>
- <span class="pill" data-filter="missing_institution" data-sk="Chýba inšt." data-en="Missing Inst.">Missing Inst.</span>
- <span class="pill" data-filter="not_synced" data-sk="Nesynchronizované" data-en="Not Synced">Nesynchronizované</span>
- <span class="pill" data-filter="not_renamed" data-sk="Nepremenované" data-en="Not Renamed">Nepremenované</span>
- </div>
-
- <!-- Document table -->
- <!-- Search -->
- <div style="margin-bottom:0.75rem">
- <input type="text" id="doc-search" placeholder="Search files..." data-sk-placeholder="Hľadať súbory..." data-en-placeholder="Search files..." data-input="renderTable">
- </div>
+ <ol class="steps-legend" aria-label="Processing steps">
+ <li><span class="legend-num">1</span><span><strong data-sk="Vyťažený" data-en="Extracted">Vyťažený</strong> <span data-sk="– text a údaje sú prečítané" data-en="– text and data have been read">– text a údaje sú prečítané</span></span></li>
+ <li><span class="legend-num">2</span><span><strong data-sk="Premenovaný" data-en="Renamed">Premenovaný</strong> <span data-sk="– má štandardný názov" data-en="– has the standard name">– má štandardný názov</span></span></li>
+ <li><span class="legend-num">3</span><span><strong data-sk="Zaradený" data-en="Filed">Zaradený</strong> <span data-sk="– je v správnom priečinku na Drive" data-en="– sits in the right Drive folder">– je v správnom priečinku na Drive</span></span></li>
+ <li class="legend-key"><span class="step-mark done" aria-hidden="true"></span><span data-sk="hotové" data-en="done">hotové</span><span class="step-mark" aria-hidden="true"></span><span data-sk="čaká" data-en="waiting">čaká</span></li>
+ </ol>
  <div class="table-wrap">
  <table id="doc-table">
  <thead>
  <tr>
- <th data-sort="filename"><span data-sk="Súbor" data-en="Filename">Súbor</span> <span class="sort-arrow"></span></th>
+ <th class="col-toggle"><span class="sr-only" data-sk="Rozbaliť" data-en="Expand">Rozbaliť</span></th>
+ <th data-sort="filename"><span data-sk="Dokument" data-en="Document">Dokument</span> <span class="sort-arrow"></span></th>
  <th data-sort="category"><span data-sk="Kategória" data-en="Category">Kategória</span> <span class="sort-arrow"></span></th>
- <th data-sort="institution"><span data-sk="Inštitúcia" data-en="Institution">Institution</span> <span class="sort-arrow"></span></th>
- <th data-sort="date"><span data-sk="Dátum" data-en="Date">Dátum</span> <span class="sort-arrow"></span></th>
- <th data-sort="has_ocr">OCR <span class="sort-arrow"></span></th>
- <th data-sort="has_ai">AI <span class="sort-arrow"></span></th>
- <th data-sort="has_metadata">Meta <span class="sort-arrow"></span></th>
- <th data-sort="has_date" data-sk="Dát." data-en="Date">Date <span class="sort-arrow"></span></th>
- <th data-sort="has_institution" data-sk="Inšt." data-en="Inst.">Inst. <span class="sort-arrow"></span></th>
- <th data-sort="is_synced">Sync <span class="sort-arrow"></span></th>
- <th data-sort="is_standard_name" data-sk="Názov" data-en="Name">Name <span class="sort-arrow"></span></th>
+ <th data-sort="institution"><span data-sk="Inštitúcia" data-en="Institution">Inštitúcia</span> <span class="sort-arrow"></span></th>
+ <th data-sort="date"><span data-sk="Dátum dokumentu" data-en="Document date">Dátum dokumentu</span> <span class="sort-arrow"></span></th>
+ <th data-sort="uploaded_at" aria-sort="descending"><span data-sk="Nahraté" data-en="Uploaded">Nahraté</span> <span class="sort-arrow">&#9660;</span></th>
+ <th data-sort="stage_rank"><span data-sk="Stav" data-en="Status">Stav</span> <span class="sort-arrow"></span></th>
  </tr>
  </thead>
  <tbody id="doc-tbody">
- <tr><td colspan="11" class="table-empty">Loading...</td></tr>
+ <tr><td colspan="7" class="table-empty" data-sk="Načítavam…" data-en="Loading…">Načítavam…</td></tr>
  </tbody>
  </table>
  </div>
+ </section>
 
- <!-- Remedies -->
- <div class="remedies" id="remedies-panel" style="display:none">
- <h2 data-sk="Chyby a riešenia" data-en="Errors &amp; Remedies">Chyby a riešenia</h2>
- <div id="remedies-rows"></div>
+ <!-- One event log (replaces Recent Syncs, the reconciliation panel and the manifest status) -->
+ <section class="panel activity" id="activity-section" aria-labelledby="activity-title">
+ <div class="section-head">
+ <h2 id="activity-title" data-sk="Čo sa dialo" data-en="Recent activity">Čo sa dialo</h2>
+ </div>
+ <p class="section-lead" data-sk="Posledné spracovania vašich dokumentov. Nové súbory v priečinku sa spracúvajú automaticky; podľa počtu strán to trvá minúty až hodiny." data-en="The latest processing of your documents. New files in the folder are processed automatically; depending on the number of pages it takes minutes to hours.">Posledné spracovania vašich dokumentov. Nové súbory v priečinku sa spracúvajú automaticky; podľa počtu strán to trvá minúty až hodiny.</p>
+ <div id="activity-rows"><div class="activity-empty" data-sk="Načítavam…" data-en="Loading…">Načítavam…</div></div>
+ <button type="button" class="copy-btn activity-more" id="activity-more" data-action="toggleActivityAll" hidden data-sk="Zobraziť staršie" data-en="Show older">Zobraziť staršie</button>
+ </section>
+
+ <!--app-only-->
+ <!-- Administration: only for DASHBOARD_ADMIN_EMAILS sessions; every panel loads on first open -->
+ <section class="admin-area" id="admin-area" style="display:none" aria-labelledby="admin-title">
+ <div class="section-head">
+ <h2 id="admin-title" data-sk="Správa systému" data-en="System administration">Správa systému</h2>
+ <span class="tag-solid" data-sk="len administrátor" data-en="admin only">len administrátor</span>
+ </div>
+ <p class="section-lead" id="admin-server-line"></p>
+
+ <div class="admin-panel">
+ <button type="button" class="admin-head" data-action="toggleAdminPanel|curated|@this" aria-expanded="false" aria-controls="admin-body-curated"><span class="chevron" aria-hidden="true"></span><span data-sk="Spracovanie priečinkov pacientov" data-en="Patient folder processing">Spracovanie priečinkov pacientov</span></button>
+ <div class="admin-body" id="admin-body-curated" hidden>
+ <div id="curated-ops-section">
+ <p class="curated-ops-note" id="curated-ops-nightly"></p>
+ <div id="curated-ops-body"></div>
+ <div id="curated-ops-report" class="curated-ops-report"></div>
+ </div>
+ </div>
  </div>
 
- <!-- Reconciliation -->
- <div class="panel" id="recon-panel" style="display:none">
- <div class="panel-title" data-sk="DB vs GDrive Reconciliation" data-en="DB vs GDrive Reconciliation">DB vs GDrive Reconciliation</div>
- <div id="recon-summary" style="display:flex;gap:1.5rem;margin-bottom:0.75rem;font-size:0.8125rem;color:var(--text-muted)"></div>
- <div id="recon-issues"></div>
+ <div class="admin-panel">
+ <button type="button" class="admin-head" data-action="toggleAdminPanel|reread|@this" aria-expanded="false" aria-controls="admin-body-reread"><span class="chevron" aria-hidden="true"></span><span data-sk="Overovanie a prepis dokumentov (re-OCR)" data-en="Verification and re-OCR">Overovanie a prepis dokumentov (re-OCR)</span></button>
+ <div class="admin-body" id="admin-body-reread" hidden>
+ <div id="reread-section">
+ <p class="rr-banner" data-sk="Pred skutočným uložením (Uložiť overenie / Prepísať naostro) musí infra najprv urobiť čerstvý snapshot databázy. Server si navyše pred každým uložením urobí vlastnú overenú kópiu DB (bez nej úlohu odmietne). Skúšobný beh nič neukladá." data-en="Before a real store (Save verification / Re-OCR for real), infra must first take a fresh database snapshot. The server also makes its own verified DB copy before every store (and refuses the job without it). A dry run stores nothing.">Pred skutočným uložením (Uložiť overenie / Prepísať naostro) musí infra najprv urobiť čerstvý snapshot databázy. Server si navyše pred každým uložením urobí vlastnú overenú kópiu DB (bez nej úlohu odmietne). Skúšobný beh nič neukladá.</p>
+ <div class="rr-row">
+ <label for="rr-patient" class="curated-ops-meta" data-sk="Pacient" data-en="Patient">Pacient</label>
+ <select id="rr-patient" class="rr-select" data-change="rrSelectPatient|@value"></select>
+ </div>
+ <p class="curated-ops-note" id="rr-note"></p>
+ <div id="rr-candidates" class="curated-ops-report"></div>
+ <div class="curated-ops-actions rr-actions">
+ <button type="button" id="rr-dry-btn" data-action="rrStart|reread|dry" data-sk="Skúšobne overiť" data-en="Verify (dry run)">Skúšobne overiť</button>
+ <button type="button" id="rr-real-btn" data-action="rrStart|reread|real" data-sk="Uložiť overenie" data-en="Save verification">Uložiť overenie</button>
+ <button type="button" id="rr-reocr-dry-btn" data-action="rrStart|reocr|dry" data-sk="Skúšobný prepis (re-OCR)" data-en="Re-OCR (dry run)">Skúšobný prepis (re-OCR)</button>
+ <button type="button" id="rr-reocr-real-btn" data-action="rrStart|reocr|real" data-sk="Prepísať naostro (re-OCR)" data-en="Re-OCR for real">Prepísať naostro (re-OCR)</button>
+ </div>
+ <div id="rr-confirm" class="rr-confirm" style="display:none">
+ <p id="rr-confirm-text" class="curated-ops-meta"></p>
+ <input type="text" id="rr-confirm-input" class="rr-input" inputmode="numeric" autocomplete="off" data-input="rrConfirmCheck|@value" data-sk-placeholder="počet dokumentov" data-en-placeholder="number of documents">
+ <div class="curated-ops-actions">
+ <button type="button" id="rr-confirm-go" disabled data-action="rrConfirmGo" data-sk="Potvrdiť a uložiť" data-en="Confirm and store">Potvrdiť a uložiť</button>
+ <button type="button" data-action="rrConfirmCancel" data-sk="Zrušiť" data-en="Cancel">Zrušiť</button>
+ </div>
+ </div>
+ <div id="rr-status" class="curated-ops-report"></div>
+ </div>
+ </div>
  </div>
 
- <!-- Sync history -->
- <div class="sync-history" id="sync-history-section">
- <div style="display:flex;align-items:center;justify-content:space-between;gap:0.5rem;flex-wrap:wrap">
- <h2 style="margin:0" data-sk="Posledné synchronizácie" data-en="Recent Syncs">Posledné synchronizácie</h2>
- <div id="svc-sync-times" style="display:flex;gap:0.75rem;font-size:0.7rem;color:var(--text-muted)"></div>
+ <div class="admin-panel">
+ <button type="button" class="admin-head" data-action="toggleAdminPanel|schedules|@this" aria-expanded="false" aria-controls="admin-body-schedules"><span class="chevron" aria-hidden="true"></span><span data-sk="Naplánované úlohy servera" data-en="Scheduled server jobs">Naplánované úlohy servera</span></button>
+ <div class="admin-body" id="admin-body-schedules" hidden>
+ <div id="schedules-section">
+ <div id="sched-groups" style="display:flex;gap:0.5rem;margin-bottom:0.75rem;flex-wrap:wrap">
+ <span class="pill active" data-sched-filter="all">All</span>
+ <span class="pill" data-sched-filter="sync">Sync</span>
+ <span class="pill" data-sched-filter="pipeline">Pipeline</span>
+ <span class="pill" data-sched-filter="housekeeping">Housekeeping</span>
+ <span class="pill" data-sched-filter="infra">Infrastructure</span>
  </div>
- <div id="next-sync" style="font-size:0.75rem;color:var(--text-muted);margin-bottom:0.5rem"></div>
- <div id="sync-rows"><div style="padding:0.5rem 0;color:var(--text-muted);font-size:0.8125rem">Loading...</div></div>
+ <div id="sched-jobs" style="font-size:0.8125rem"></div>
+ <!-- Prompt stats by call type -->
+ <div style="margin-top:1rem">
+ <div class="section-label" data-sk="AI volania podľa typu" data-en="AI Calls by Type">AI Calls by Type</div>
+ <div id="sched-prompt-stats" style="font-size:0.8125rem"></div>
+ </div>
+ </div>
+ </div>
  </div>
 
- <!-- Prompt Log -->
- <div class="sync-history" id="prompt-log-section">
- <h2 data-sk="AI Prompt Log" data-en="AI Prompt Log">AI Prompt Log</h2>
- <div id="prompt-stats" style="display:flex;gap:1rem;flex-wrap:wrap;margin-bottom:0.75rem"></div>
- <div id="prompt-log-rows"><div style="padding:0.5rem 0;color:var(--text-muted);font-size:0.8125rem">Loading...</div></div>
- </div>
-
- <!-- Usage Analytics -->
- <div class="sync-history" id="analytics-section">
- <h2 data-sk="Štatistiky" data-en="Usage Analytics">Usage Analytics</h2>
+ <div class="admin-panel">
+ <button type="button" class="admin-head" data-action="toggleAdminPanel|ai|@this" aria-expanded="false" aria-controls="admin-body-ai"><span class="chevron" aria-hidden="true"></span><span data-sk="Cloudové AI volania a náklady" data-en="Cloud AI calls and cost">Cloudové AI volania a náklady</span></button>
+ <div class="admin-body" id="admin-body-ai" hidden>
+ <p class="section-lead" data-sk="Cloudové AI je predvolene vypnuté; dokumenty číta lokálny model na našom serveri. Tieto čísla sa týkajú len volaní, ktoré niekto výslovne spustil." data-en="Cloud AI is off by default; documents are read by the local model on our own server. These numbers cover only calls someone started explicitly.">Cloudové AI je predvolene vypnuté; dokumenty číta lokálny model na našom serveri. Tieto čísla sa týkajú len volaní, ktoré niekto výslovne spustil.</p>
+ <div id="analytics-section">
  <div style="font-size:0.75rem;color:var(--text-muted);margin-bottom:0.5rem" id="ana-timeframe"></div>
  <div class="cards" id="analytics-cards" style="grid-template-columns:repeat(4,1fr);margin-bottom:1rem">
  <div class="card" title="OCR + document enhancement + email/calendar classification (all patients)"><div class="value" id="ana-calls">-</div><div class="label" data-sk="AI volania" data-en="AI Calls">AI Calls</div></div>
@@ -263,168 +313,25 @@
  <div id="cost-leaderboard-body" style="font-size:0.8125rem"></div>
  </div>
  </div>
-
- <!-- Operations: curated-folder runs (#573 — admin only) -->
- <div class="sync-history" id="curated-ops-section" style="display:none">
- <h2><span data-sk="Prevádzka — upratovanie priečinkov" data-en="Operations — folder cleanup">Prevádzka — upratovanie priečinkov</span></h2>
- <p class="curated-ops-note" id="curated-ops-nightly"></p>
- <div id="curated-ops-body"></div>
- <div id="curated-ops-report" class="curated-ops-report"></div>
- </div>
-
- <!-- Verify-only re-read and re-OCR (#573 / #678 — admin only) -->
- <div class="sync-history" id="reread-section" style="display:none">
- <h2><span data-sk="Overovanie a prepis (admin)" data-en="Verification and re-OCR (admin)">Overovanie a prepis (admin)</span></h2>
- <p class="rr-banner" data-sk="Pred skutočným uložením (Uložiť overenie / Prepísať naostro) musí infra najprv urobiť čerstvý snapshot databázy. Server si navyše pred každým uložením urobí vlastnú overenú kópiu DB (bez nej úlohu odmietne). Skúšobný beh nič neukladá." data-en="Before a real store (Save verification / Re-OCR for real), infra must first take a fresh database snapshot. The server also makes its own verified DB copy before every store (and refuses the job without it). A dry run stores nothing.">Pred skutočným uložením (Uložiť overenie / Prepísať naostro) musí infra najprv urobiť čerstvý snapshot databázy. Server si navyše pred každým uložením urobí vlastnú overenú kópiu DB (bez nej úlohu odmietne). Skúšobný beh nič neukladá.</p>
- <div class="rr-row">
- <label for="rr-patient" class="curated-ops-meta" data-sk="Pacient" data-en="Patient">Pacient</label>
- <select id="rr-patient" class="rr-select" data-change="rrSelectPatient|@value"></select>
- </div>
- <p class="curated-ops-note" id="rr-note"></p>
- <div id="rr-candidates" class="curated-ops-report"></div>
- <div class="curated-ops-actions rr-actions">
- <button type="button" id="rr-dry-btn" data-action="rrStart|reread|dry" data-sk="Skúšobne overiť" data-en="Verify (dry run)">Skúšobne overiť</button>
- <button type="button" id="rr-real-btn" data-action="rrStart|reread|real" data-sk="Uložiť overenie" data-en="Save verification">Uložiť overenie</button>
- <button type="button" id="rr-reocr-dry-btn" data-action="rrStart|reocr|dry" data-sk="Skúšobný prepis (re-OCR)" data-en="Re-OCR (dry run)">Skúšobný prepis (re-OCR)</button>
- <button type="button" id="rr-reocr-real-btn" data-action="rrStart|reocr|real" data-sk="Prepísať naostro (re-OCR)" data-en="Re-OCR for real">Prepísať naostro (re-OCR)</button>
- </div>
- <div id="rr-confirm" class="rr-confirm" style="display:none">
- <p id="rr-confirm-text" class="curated-ops-meta"></p>
- <input type="text" id="rr-confirm-input" class="rr-input" inputmode="numeric" autocomplete="off" data-input="rrConfirmCheck|@value" data-sk-placeholder="počet dokumentov" data-en-placeholder="number of documents">
- <div class="curated-ops-actions">
- <button type="button" id="rr-confirm-go" disabled data-action="rrConfirmGo" data-sk="Potvrdiť a uložiť" data-en="Confirm and store">Potvrdiť a uložiť</button>
- <button type="button" data-action="rrConfirmCancel" data-sk="Zrušiť" data-en="Cancel">Zrušiť</button>
- </div>
- </div>
- <div id="rr-status" class="curated-ops-report"></div>
- </div>
-
- <!-- Processing Schedules (#287) -->
- <div class="sync-history" id="schedules-section">
- <h2 style="cursor:pointer" data-action="toggleSection|schedules-body|@this"><span data-sk="Spracovanie" data-en="Processing Schedules">Spracovanie</span> <span class="chevron" style="font-size:0.75rem;transition:transform 0.2s;display:inline-block">&#9654;</span></h2>
- <div id="schedules-body" style="display:none;margin-top:0.75rem">
- <!-- Job groups -->
- <div id="sched-groups" style="display:flex;gap:0.5rem;margin-bottom:0.75rem;flex-wrap:wrap">
- <span class="pill active" data-sched-filter="all">All</span>
- <span class="pill" data-sched-filter="sync">Sync</span>
- <span class="pill" data-sched-filter="pipeline">Pipeline</span>
- <span class="pill" data-sched-filter="housekeeping">Housekeeping</span>
- <span class="pill" data-sched-filter="infra">Infrastructure</span>
- </div>
- <div id="sched-jobs" style="font-size:0.8125rem"></div>
- <!-- Prompt stats by call type -->
- <div style="margin-top:1rem">
- <div class="section-label" data-sk="AI volania podľa typu" data-en="AI Calls by Type">AI Calls by Type</div>
- <div id="sched-prompt-stats" style="font-size:0.8125rem"></div>
+ <div id="prompt-log-section">
+ <div class="section-label" data-sk="Posledné volania (vybraný pacient)" data-en="Latest calls (selected patient)">Posledné volania (vybraný pacient)</div>
+ <div id="prompt-stats" style="display:flex;gap:1rem;flex-wrap:wrap;margin-bottom:0.75rem"></div>
+ <div id="prompt-log-rows"><div style="padding:0.5rem 0;color:var(--text-muted);font-size:0.8125rem">Loading...</div></div>
  </div>
  </div>
  </div>
-
- <!-- MCP Client Setup (#288) -->
- <div class="sync-history" id="mcp-setup-section">
- <h2 style="cursor:pointer" data-action="toggleSection|mcp-setup-body|@this"><span data-sk="Nastavenie MCP" data-en="MCP Client Setup">Nastavenie MCP</span> <span class="chevron" style="font-size:0.75rem;transition:transform 0.2s;display:inline-block">&#9654;</span></h2>
- <div id="mcp-setup-body" style="display:none;font-size:0.8125rem;color:var(--text-muted);line-height:1.7;margin-top:0.5rem">
- <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:1.5rem">
- <!-- Claude.ai -->
- <div style="background:var(--surface);border:1px solid var(--border);border-radius:0.75rem;padding:1.25rem">
- <div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.75rem">
- <span class="client-dot" aria-hidden="true"></span>
- <strong style="color:var(--text);font-size:1rem">Claude.ai</strong>
- <span class="tag-solid" data-sk="Odporúčané" data-en="Recommended">Recommended</span>
- </div>
- <ol style="margin:0 0 0 1.25rem;padding:0;color:var(--text)">
- <li style="margin-bottom:0.5rem">Go to <strong>claude.ai</strong> &rarr; Settings &rarr; Connectors</li>
- <li style="margin-bottom:0.5rem">Click <strong>"Add custom connector"</strong></li>
- <li style="margin-bottom:0.5rem">Enter URL: <code style="background:var(--bg-2);padding:0.125rem 0.375rem;border-radius:3px;font-size:0.75rem;user-select:all">https://oncofiles.com/mcp</code></li>
- <li style="margin-bottom:0.5rem"><strong>Leave OAuth fields blank</strong> &rarr; Add &rarr; sign in with Google</li>
- <li style="margin-bottom:0.5rem">Use <code style="background:var(--bg-2);padding:0.125rem 0.375rem;border-radius:3px;font-size:0.75rem">patient_slug</code> in each prompt (e.g. "use patient_slug=my-patient")</li>
- </ol>
- <div style="margin-top:0.75rem;font-size:0.75rem;color:var(--text-muted)">
- <strong data-sk="Funkcie" data-en="Features">Features</strong>: 78 tools, OAuth login, auto-patient selection<br>
- <strong data-sk="Najlepšie pre" data-en="Best for">Best for</strong>: Full medical document analysis, lab trends, treatment planning
- </div>
- </div>
- <!-- ChatGPT -->
- <div style="background:var(--surface);border:1px solid var(--border);border-radius:0.75rem;padding:1.25rem">
- <div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.75rem">
- <span class="client-dot c2" aria-hidden="true"></span>
- <strong style="color:var(--text);font-size:1rem">ChatGPT</strong>
- </div>
- <ol style="margin:0 0 0 1.25rem;padding:0;color:var(--text)">
- <li style="margin-bottom:0.5rem">Go to <strong>chatgpt.com</strong> &rarr; Settings &rarr; Connected Apps</li>
- <li style="margin-bottom:0.5rem">Click <strong>"Add MCP Server"</strong></li>
- <li style="margin-bottom:0.5rem">Enter URL: <code style="background:var(--bg-2);padding:0.125rem 0.375rem;border-radius:3px;font-size:0.75rem;user-select:all">https://oncofiles.com/mcp</code></li>
- <li style="margin-bottom:0.5rem">Authenticate with Google OAuth</li>
- <li style="margin-bottom:0.5rem">Select patient in the chat</li>
- </ol>
- <div style="margin-top:0.75rem;font-size:0.75rem;color:var(--text-muted)">
- <strong data-sk="Funkcie" data-en="Features">Features</strong>: 78 tools, OAuth login<br>
- <strong data-sk="Najlepšie pre" data-en="Best for">Best for</strong>: Quick document queries, second opinion analysis
- </div>
- </div>
- <!-- Bearer Token -->
- <div style="background:var(--surface);border:1px solid var(--border);border-radius:0.75rem;padding:1.25rem">
- <div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.75rem">
- <span class="client-dot c3" aria-hidden="true"></span>
- <strong style="color:var(--text);font-size:1rem" data-sk="Bearer Token (API)" data-en="Bearer Token (API)">Bearer Token (API)</strong>
- </div>
- <ol style="margin:0 0 0 1.25rem;padding:0;color:var(--text)">
- <li style="margin-bottom:0.5rem" data-sk="Vygenerujte token v dashboarde (hore)" data-en="Generate token in dashboard (above)">Generate token in dashboard (above)</li>
- <li style="margin-bottom:0.5rem" data-sk="Nastavte v MCP klientovi" data-en="Configure in your MCP client">Configure in your MCP client:</li>
- </ol>
- <pre style="background:var(--bg-2);border:1px solid var(--border);border-radius:0.5rem;padding:0.75rem;font-size:0.7rem;overflow-x:auto;margin-top:0.5rem;color:var(--text)">{
- "mcpServers": {
- "oncofiles": {
- "url": "https://oncofiles.com/mcp",
- "headers": {
- "Authorization": "Bearer YOUR_TOKEN"
- }
- }
- }
-}</pre>
- <div style="margin-top:0.75rem;font-size:0.75rem;color:var(--text-muted)">
- <strong data-sk="Funkcie" data-en="Features">Features</strong>: 78 tools, token-scoped to one patient<br>
- <strong data-sk="Najlepšie pre" data-en="Best for">Best for</strong>: Claude Code, Cursor, Windsurf, custom integrations
- </div>
- </div>
- </div>
- <div style="margin-top:1rem;padding:0.75rem;background:var(--info-bg);border-radius:0.5rem;font-size:0.75rem;color:var(--text)">
- <strong data-sk="Izolácia pacientov" data-en="Patient Isolation">Patient Isolation</strong>:
- <span data-sk="Každé pripojenie je obmedzené na jedného pacienta. AI klient A nikdy nevidí dokumenty pacienta B." data-en="Each connection is scoped to one patient. AI Client A never sees Patient B's documents.">Each connection is scoped to one patient. AI Client A never sees Patient B's documents.</span>
- </div>
- </div>
- </div>
-
- <!-- Manifest info -->
- <div class="sync-history" id="manifest-section">
- <h2 style="cursor:pointer" data-action="toggleSection|manifest-body|@this">GDrive Manifest <span id="manifest-status" style="font-size:0.75rem;color:var(--text-muted)"></span> <span class="chevron" style="font-size:0.75rem;transition:transform 0.2s;display:inline-block">&#9654;</span></h2>
- <div id="manifest-body" style="display:none;font-size:0.8125rem;color:var(--text-muted);line-height:1.7;margin-top:0.5rem">
- <div id="manifest-live" style="margin-bottom:0.75rem"></div>
- <p><code style="background:var(--surface);padding:0.125rem 0.375rem;border-radius:3px;font-size:0.75rem">_manifest.json</code> is exported every 5 minutes to your GDrive sync folder root. Contents:</p>
- <ul style="margin:0.5rem 0 0.5rem 1.25rem">
- <li><strong style="color:var(--text)">documents</strong> &mdash; all files with metadata, categories, summaries, tags</li>
- <li><strong style="color:var(--text)">treatment_events</strong> &mdash; chemo cycles, labs, consults, surgeries</li>
- <li><strong style="color:var(--text)">conversation_entries</strong> &mdash; session notes, decisions, observations</li>
- <li><strong style="color:var(--text)">research_entries</strong> &mdash; PubMed articles, clinical trials, protocols</li>
- <li><strong style="color:var(--text)">agent_state</strong> &mdash; internal state (costs, scan timestamps, etc.)</li>
- </ul>
- <p>Use it for disaster recovery, auditing, or feeding data to other tools.</p>
- <div style="display:flex;gap:0.5rem;margin-top:0.75rem">
- <button class="copy-btn" data-action="loadManifestPreview" data-sk="Zobraziť manifest" data-en="View Manifest">View Manifest</button>
- <button class="copy-btn" data-action="downloadManifest" data-sk="Stiahnuť JSON" data-en="Download JSON">Download JSON</button>
- </div>
- <pre id="manifest-preview" style="display:none;margin-top:0.75rem;max-height:400px;overflow:auto;background:var(--bg-2);border:1px solid var(--border);border-radius:0.5rem;padding:0.75rem;font-size:0.7rem;white-space:pre-wrap;word-break:break-all"></pre>
- </div>
- </div>
+ </section>
+ <!--/app-only-->
 
  <footer>
- <p style="font-size:0.78rem;color:var(--text-dim);margin:0 0 0.75rem 0;padding:0.6rem 0.9rem;border:1px solid var(--border);border-radius:6px;background:var(--surface);font-style:italic;text-align:left" data-sk="Všetky údaje sú informatívne. Oncofiles nenahrádza onkológa. Pred akýmkoľvek rozhodnutím o liečbe sa poraďte s ošetrujúcim lekárom." data-en="All information is informational only. Oncofiles does not replace your oncologist. Consult your treating physician before any treatment decision.">Všetky údaje sú informatívne. Oncofiles nenahrádza onkológa. Pred akýmkoľvek rozhodnutím o liečbe sa poraďte s ošetrujúcim lekárom.</p>
- <a href="/">Oncofiles</a> &middot; <a href="/health" data-sk="Stav" data-en="Status">Stav</a> &middot; <a href="/privacy" data-sk="Súkromie" data-en="Privacy">Súkromie</a> &middot; <a href="https://github.com/peter-fusek/oncofiles" rel="noreferrer noopener">GitHub</a>
+ <p class="foot-disclaimer" data-sk="Všetky údaje sú informatívne. Oncofiles nenahrádza onkológa. Pred akýmkoľvek rozhodnutím o liečbe sa poraďte s ošetrujúcim lekárom." data-en="All information is informational only. Oncofiles does not replace your oncologist. Consult your treating physician before any treatment decision.">Všetky údaje sú informatívne. Oncofiles nenahrádza onkológa. Pred akýmkoľvek rozhodnutím o liečbe sa poraďte s ošetrujúcim lekárom.</p>
+ <a href="/">Oncofiles</a> &middot; <a href="/health" data-sk="Stav" data-en="Status">Stav</a> &middot; <a href="/privacy" data-sk="Súkromie" data-en="Privacy">Súkromie</a> &middot; <a href="https://github.com/peter-fusek/oncofiles" rel="noreferrer noopener">GitHub</a> &middot; <span class="version" id="version-label"></span>
  <br><span style="font-size:0.75rem"><span data-sk="Vytvorené v" data-en="Built by">Vytvorené v</span> <a href="https://www.instarea.com" rel="noreferrer noopener">Instarea</a></span>
  </footer>
  </div>
  </div>
 
+ <!--app-only-->
  <!-- Bug Report FAB + Modal -->
  <button id="bug-fab" title="Report a bug" aria-label="Report a bug"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a8 8 0 0 1-8 8H4l2.2-2.9A8 8 0 1 1 21 12z"/><path d="M12 8v4.5M12 16h.01"/></svg></button>
  <div id="bug-overlay" style="display:none;position:fixed;inset:0;z-index:1001;align-items:center;justify-content:center">
@@ -443,6 +350,7 @@
  </div>
  </div>
  <!-- No third-party DOM capture libraries — screenshot via paste/upload only -->
+ <!--/app-only-->
 
  <!-- Onboarding not open yet (#852): shown instead of the wizard for a caller the server gate does not admit -->
  <div id="onboarding-closed-overlay" class="wizard-overlay" role="dialog" aria-modal="true" aria-labelledby="onboarding-closed-title">
@@ -672,63 +580,62 @@
  </div>
  </div>
 
- <!-- Share Access Modal -->
- <div id="share-overlay" class="wizard-overlay">
+ <!-- Connect an AI assistant (share access) -->
+ <div id="share-overlay" class="wizard-overlay" role="dialog" aria-modal="true" aria-labelledby="share-title">
  <div class="wizard-panel" style="max-width:36rem">
- <h2 style="margin-bottom:0.5rem" data-sk="Zdieľať prístup" data-en="Share Access">Zdieľať prístup</h2>
- <p style="color:var(--text-muted);font-size:0.8125rem;margin-bottom:1.5rem" data-sk="Zdieľajte pripojenie pre opatrovateľa, rodinu alebo AI nástroj." data-en="Share connection info so a caregiver, family member, or AI tool can access this patient's records.">Zdieľajte pripojenie pre opatrovateľa, rodinu alebo AI nástroj.</p>
+ <h2 id="share-title" style="margin-bottom:0.5rem" data-sk="Pripojiť AI asistenta" data-en="Connect an AI assistant">Pripojiť AI asistenta</h2>
+ <p class="share-lead" data-sk="Asistent potom odpovedá z dokumentov tohto pacienta. Claude.ai a ChatGPT sa pripájajú prihlásením cez Google, token nepotrebujú." data-en="The assistant then answers from this patient's documents. Claude.ai and ChatGPT connect by signing in with Google; they need no token.">Asistent potom odpovedá z dokumentov tohto pacienta. Claude.ai a ChatGPT sa pripájajú prihlásením cez Google, token nepotrebujú.</p>
 
- <!-- Connection info -->
- <div style="margin-bottom:1.5rem">
- <label style="font-size:0.75rem;color:var(--text-muted)">MCP Server URL</label>
+ <label class="share-label" data-sk="Adresa servera (MCP)" data-en="Server address (MCP)">Adresa servera (MCP)</label>
  <div class="share-field">
  <span id="share-url">https://oncofiles.com/mcp</span>
- <button class="copy-btn" data-action="copyText|share-url">Copy</button>
- </div>
- <label style="font-size:0.75rem;color:var(--text-muted)">Bearer Token</label>
- <div class="share-field">
- <span id="share-token" style="font-size:0.6875rem">Generate a setup code or create a new token</span>
- </div>
- </div>
-
- <!-- Setup code -->
- <div style="margin-bottom:1.5rem">
- <button class="wizard-btn-primary" id="share-gen-btn" data-action="generateShareCode" style="width:100%" data-sk="Vygenerovať jednorazový kód" data-en="Generate One-Time Setup Code">Vygenerovať jednorazový kód</button>
- <div id="share-code-box" style="display:none">
- <div class="share-code-display" id="share-code-value"></div>
- <p style="font-size:0.75rem;color:var(--text-muted);text-align:center">
- <span data-sk="Tento kód vyprší za 10 minút a je na jedno použitie." data-en="This code expires in 10 minutes and can only be used once.">Tento kód vyprší za 10 minút a je na jedno použitie.</span>
- </p>
- </div>
+ <button class="copy-btn" data-action="copyText|share-url" data-sk="Kopírovať" data-en="Copy">Kopírovať</button>
  </div>
 
  <!-- Tabbed instructions -->
- <div style="margin-bottom:1rem">
+ <div style="margin:1rem 0">
  <div class="share-tabs">
  <button class="share-tab active" data-action="switchShareTab|claude-ai|@this">Claude.ai</button>
  <button class="share-tab" data-action="switchShareTab|chatgpt|@this">ChatGPT</button>
- <button class="share-tab" data-action="switchShareTab|claude-desktop|@this">Desktop</button>
- <button class="share-tab" data-action="switchShareTab|claude-code|@this">Code</button>
+ <button class="share-tab" data-action="switchShareTab|claude-desktop|@this">Claude Desktop</button>
+ <button class="share-tab" data-action="switchShareTab|claude-code|@this">Claude Code</button>
  </div>
- <div id="share-tab-claude-ai" class="share-tab-content" style="font-size:0.8125rem;color:var(--text-muted);line-height:1.7">
- 1. Claude.ai &rarr; Settings &rarr; Connectors &rarr; <strong>Add custom connector</strong><br>
- 2. Name: Oncofiles. Paste the Remote MCP server URL above.<br>
- 3. <strong>Leave OAuth Client ID / Secret blank</strong> — the server handles DCR.<br>
- 4. Click Add &rarr; sign in with Google &rarr; done. Bearer token is not used for the web connector.
+ <div id="share-tab-claude-ai" class="share-tab-content">
+ <ol class="share-steps">
+ <li data-sk="V Claude.ai otvorte Settings → Connectors → „Add custom connector“." data-en="In Claude.ai open Settings → Connectors → “Add custom connector”.">V Claude.ai otvorte Settings → Connectors → „Add custom connector“.</li>
+ <li data-sk="Name: Oncofiles. Do poľa Remote MCP server URL vložte adresu vyššie." data-en="Name: Oncofiles. Paste the address above into Remote MCP server URL.">Name: Oncofiles. Do poľa Remote MCP server URL vložte adresu vyššie.</li>
+ <li data-sk="Polia OAuth Client ID a Secret nechajte prázdne." data-en="Leave OAuth Client ID and Secret empty.">Polia OAuth Client ID a Secret nechajte prázdne.</li>
+ <li data-sk="Kliknite Add a prihláste sa tým istým Google účtom ako tu." data-en="Click Add and sign in with the same Google account as here.">Kliknite Add a prihláste sa tým istým Google účtom ako tu.</li>
+ </ol>
  </div>
- <div id="share-tab-chatgpt" class="share-tab-content" style="display:none;font-size:0.8125rem;color:var(--text-muted);line-height:1.7">
- 1. ChatGPT Settings &rarr; Connectors &rarr; Advanced &rarr; enable Developer Mode (MCP)<br>
- 2. Click "Add server". Paste the Remote MCP server URL above.<br>
- 3. Authenticate via Google OAuth when prompted.<br>
- 4. Bearer token is not used for the ChatGPT connector either.
+ <div id="share-tab-chatgpt" class="share-tab-content" style="display:none">
+ <ol class="share-steps">
+ <li data-sk="V ChatGPT otvorte Settings → Connectors → Advanced a zapnite Developer Mode." data-en="In ChatGPT open Settings → Connectors → Advanced and turn on Developer Mode.">V ChatGPT otvorte Settings → Connectors → Advanced a zapnite Developer Mode.</li>
+ <li data-sk="Kliknite „Add server“ a vložte adresu vyššie." data-en="Click “Add server” and paste the address above.">Kliknite „Add server“ a vložte adresu vyššie.</li>
+ <li data-sk="Prihláste sa tým istým Google účtom ako tu." data-en="Sign in with the same Google account as here.">Prihláste sa tým istým Google účtom ako tu.</li>
+ </ol>
  </div>
- <div id="share-tab-claude-desktop" class="share-tab-content" style="display:none;font-size:0.8125rem;color:var(--text-muted);line-height:1.7">
- Add to <code style="background:var(--bg-2);padding:0.125rem 0.375rem;border-radius:0.25rem">claude_desktop_config.json</code>:
- <pre id="share-desktop-config" style="background:var(--bg-2);border:1px solid var(--border);border-radius:0.375rem;padding:0.75rem;margin-top:0.5rem;font-size:0.6875rem;overflow-x:auto;white-space:pre-wrap"></pre>
+ <div id="share-tab-claude-desktop" class="share-tab-content" style="display:none">
+ <p data-sk="Do súboru claude_desktop_config.json pridajte (token vygenerujete nižšie):" data-en="Add this to claude_desktop_config.json (generate the token below):">Do súboru claude_desktop_config.json pridajte (token vygenerujete nižšie):</p>
+ <pre id="share-desktop-config" class="share-pre"></pre>
  </div>
- <div id="share-tab-claude-code" class="share-tab-content" style="display:none;font-size:0.8125rem;color:var(--text-muted);line-height:1.7">
- Run in terminal:
- <pre id="share-code-cmd" style="background:var(--bg-2);border:1px solid var(--border);border-radius:0.375rem;padding:0.75rem;margin-top:0.5rem;font-size:0.6875rem;overflow-x:auto"></pre>
+ <div id="share-tab-claude-code" class="share-tab-content" style="display:none">
+ <p data-sk="V termináli spustite (token vygenerujete nižšie):" data-en="Run in a terminal (generate the token below):">V termináli spustite (token vygenerujete nižšie):</p>
+ <pre id="share-code-cmd" class="share-pre"></pre>
+ </div>
+ </div>
+
+ <!-- Token: only for desktop tools and scripts -->
+ <div class="share-token-box">
+ <label class="share-label" data-sk="Token pre desktopové nástroje (voliteľné)" data-en="Token for desktop tools (optional)">Token pre desktopové nástroje (voliteľné)</label>
+ <p class="share-note" data-sk="Token nikdy nevkladajte do chatu. Platí len pre tohto pacienta." data-en="Never paste the token into a chat. It is valid for this patient only.">Token nikdy nevkladajte do chatu. Platí len pre tohto pacienta.</p>
+ <div class="share-field">
+ <span id="share-token" style="font-size:0.6875rem"></span>
+ </div>
+ <button class="wizard-btn-secondary" id="share-gen-btn" data-action="generateShareCode" data-sk="Vygenerovať token" data-en="Generate a token">Vygenerovať token</button>
+ <div id="share-code-box" style="display:none">
+ <div class="share-code-display" id="share-code-value"></div>
+ <p class="share-note" style="text-align:center" data-sk="Jednorazový kód na prenos tokenu: platí 10 minút a dá sa použiť raz." data-en="One-time code to hand the token over: valid for 10 minutes, usable once.">Jednorazový kód na prenos tokenu: platí 10 minút a dá sa použiť raz.</p>
  </div>
  </div>
 

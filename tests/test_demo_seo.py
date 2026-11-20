@@ -81,9 +81,9 @@ async def test_demo_json_ld_is_a_webpage_of_the_site():
 
 async def test_demo_keeps_the_invented_patient_disclaimer_visible():
     html = await _demo_html()
-    assert 'class="demo-strip"' in html
+    assert 'id="demo-banner"' in html
     assert "vymyslená pacientka" in html
-    assert "No real data." in html
+    assert "No real data" in html
 
 
 async def test_sitemap_lists_demo_but_not_health_or_dashboard():

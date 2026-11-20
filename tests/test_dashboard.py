@@ -685,7 +685,9 @@ def test_dashboard_swr_writes_cache_on_success():
     # All three critical endpoints write to cache after successful render
     assert "_swrSet('status', status)" in html
     assert "_swrSet('documents', docs)" in html
-    assert "_swrSet('prompt-log', prompts)" in html
+    # the event log replaced the prompt log on the patient's page (Nov 2026 redesign)
+    assert "_swrSet('activity', activity)" in html
+    assert "_swrSet('prompt-log'" not in html
 
 
 def test_dashboard_admin_breaker_widget_removed():

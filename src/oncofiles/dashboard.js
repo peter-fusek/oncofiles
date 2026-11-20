@@ -17,12 +17,36 @@
                      "foo|x|@this|y"        → fn('x', targetElement, 'y')
        Multiple actions chain with `;`:  "showGdriveSetup;toggleIntegrationPanel"
     */
+    /* Demo mode (the public /demo page): the same page and script, fed by one
+       invented patient from /api/demo-data. No sign-in, nothing is written. */
+    var DEMO = document.documentElement.getAttribute('data-demo') === '1';
+    var DEMO_ALLOWED_PATHS = ['/api/demo-data'];
+    if (DEMO) {
+      // Chokepoint: in demo mode the page can reach nothing but the demo data.
+      var _nativeFetch = window.fetch.bind(window);
+      window.fetch = function (input, init) {
+        var target;
+        try { target = new URL(typeof input === 'string' ? input : (input && input.url) || '', location.origin); }
+        catch (e) { return Promise.reject(new Error('demo: request blocked')); }
+        if (target.origin !== location.origin || DEMO_ALLOWED_PATHS.indexOf(target.pathname) === -1) {
+          return Promise.reject(new Error('demo: request blocked: ' + target.pathname));
+        }
+        return _nativeFetch(input, init);
+      };
+    }
+    // Actions that write or need an account: in the demo they only explain themselves.
+    var DEMO_BLOCKED_ACTIONS = {
+      showOnboarding: 1, showGdriveSetup: 1, showGdriveSetupAndToggle: 1, triggerManualSync: 1,
+      generateShareCode: 1, togglePatientArchive: 1, logout: 1
+    };
+
     window._dispatch = function (spec, target) {
       if (!spec) return;
       String(spec).split(';').forEach(function (one) {
         one = one.trim();
         if (!one) return;
         var parts = one.split('|');
+        if (DEMO && DEMO_BLOCKED_ACTIONS[parts[0]]) { demoNotice(); return; }
         var fn = window[parts[0]];
         if (typeof fn !== 'function') {
           console.warn('data-action: function not found:', parts[0]);
@@ -51,32 +75,14 @@
 
     /* Named wrappers for the few inline expressions that don't fit the
        fnName(args) shape — keeps `data-action` purely declarative. */
-    window.copyMcpUrlDisplay = function () {
-      var el = document.getElementById('mcp-url-display');
-      if (el) navigator.clipboard.writeText(el.textContent || '');
-    };
-    window.copyMcpTokenDisplay = function () {
-      var el = document.getElementById('mcp-token-display');
-      if (el) navigator.clipboard.writeText(el.textContent || '');
-    };
     window.showGdriveSetupAndToggle = function () {
       if (typeof showGdriveSetup === 'function') showGdriveSetup();
       if (typeof toggleIntegrationPanel === 'function') toggleIntegrationPanel();
     };
 
-    function toggleSection(bodyId, headerEl) {
-      var el = document.getElementById(bodyId);
-      if (!el) return;
-      var expanded = el.style.display !== 'none';
-      el.style.display = expanded ? 'none' : 'block';
-      var chevron = headerEl.querySelector('.chevron');
-      if (chevron) chevron.style.transform = expanded ? '' : 'rotate(90deg)';
-    }
-
     let authMode = '';  // 'bearer' or 'session'
     let TOKEN = '';     // bearer token or session token
-    let currentFilter = 'all';
-    let sortCol = 'date';
+    let sortCol = 'uploaded_at';  // newest upload first on load
     let sortAsc = false;
     let docsData = [];
     let autoRefreshTimer = null;
@@ -97,6 +103,10 @@
       dashLang = lang;
       localStorage.setItem('oncofiles_lang', dashLang);
       applyDashLang();
+      // names, dates and file names are formatted per language: draw them again
+      if (typeof relabelPatients === 'function' && patientsCache.length) relabelPatients();
+      if (typeof renderTable === 'function' && docsData.length) renderTable();
+      if (typeof renderActivity === 'function' && activityData) renderActivity(null);
     }
 
     function toggleDashLang() {
@@ -104,6 +114,7 @@
     }
 
     function applyDashLang() {
+      document.documentElement.lang = dashLang;
       var skBtn = document.getElementById('lang-btn-sk');
       var enBtn = document.getElementById('lang-btn-en');
       if (skBtn && enBtn) {
@@ -129,13 +140,6 @@
 
     // Apply language on load
     applyDashLang();
-
-    /** Create a status dot element. */
-    function makeDot(value) {
-      const span = document.createElement('span');
-      span.className = 'dot ' + (value ? 'green' : 'red');
-      return span;
-    }
 
     /** Give a dynamically built element both languages; applyDashLang() keeps it in sync. */
     function setI18n(el, sk, en) {
@@ -174,6 +178,16 @@
         var cleanQs = params.toString();
         var cleanUrl = window.location.pathname + (cleanQs ? '?' + cleanQs : '');
         window.history.replaceState({}, '', cleanUrl);
+      }
+      // ?lang=sk|en picks the language (the demo's hreflang links use it)
+      var wantLang = params.get('lang');
+      if (wantLang === 'sk' || wantLang === 'en') { dashLang = wantLang; applyDashLang(); }
+      if (DEMO) {
+        ensureDemoData().then(showDashboard).catch(function () {
+          document.getElementById('dashboard').style.display = 'block';
+          showError(dashLang === 'sk' ? 'Ukážku sa nepodarilo načítať.' : 'The demo could not be loaded.');
+        });
+        return;
       }
       TOKEN = sessionStorage.getItem('oncofiles_token') || '';
       authMode = sessionStorage.getItem('oncofiles_auth_mode') || '';
@@ -256,18 +270,16 @@
     }
 
     function showDashboard() {
-      document.getElementById('auth-gate').style.display = 'none';
+      var gate = document.getElementById('auth-gate');
+      if (gate) gate.style.display = 'none';
       document.getElementById('dashboard').style.display = 'block';
-      // Show MCP connection bar
-      document.getElementById('mcp-connection-bar').style.display = 'flex';
       // Show user info
       var email = sessionStorage.getItem('oncofiles_email') || '';
       var name = sessionStorage.getItem('oncofiles_name') || '';
-      if (email) {
-        var userEl = document.getElementById('user-info');
-        userEl.textContent = name || email;
-      }
-      loadPatients().then(function() { refresh(); });
+      var userEl = document.getElementById('user-info');
+      if (email && userEl) userEl.textContent = name || email;
+      loadPatients().then(function() { loadGermlineBanner(); refresh(); });
+      if (DEMO) return;  // static invented data: nothing to poll
       loadOnboardingStatus();
       if (autoRefreshTimer) clearInterval(autoRefreshTimer);
       autoRefreshTimer = setInterval(refresh, 60000);
@@ -402,15 +414,16 @@
     }
 
     function _hydrateFromSwrCache() {
-      // Try to populate the 3 critical sections from cache. Returns true if
+      // Try to populate the critical sections from cache. Returns true if
       // at least one section was hydrated — caller skips skeletons in that case.
+      if (DEMO) return false;
       var hydrated = false;
       var s = _swrGet('status');
       if (s) { try { renderStatus(s.data); hydrated = true; } catch (e) { console.warn('SWR status render failed:', e); } }
       var d = _swrGet('documents');
       if (d) { try { renderDocs(d.data); hydrated = true; } catch (e) { console.warn('SWR documents render failed:', e); } }
-      var p = _swrGet('prompt-log');
-      if (p) { try { renderPromptLog(p.data); hydrated = true; } catch (e) { console.warn('SWR prompt-log render failed:', e); } }
+      var a = _swrGet('activity');
+      if (a) { try { renderActivity(a.data); hydrated = true; } catch (e) { console.warn('SWR activity render failed:', e); } }
       return hydrated;
     }
 
@@ -499,6 +512,12 @@
      */
     async function apiFetch(url, opts) {
       opts = opts || {};
+      if (DEMO) {
+        await ensureDemoData();
+        var demoAnswer = demoRoute(url);
+        if (demoAnswer == null) throw new Error('demo: no data for ' + url);
+        return JSON.parse(JSON.stringify(demoAnswer));
+      }
       var retryBudget = opts.retryBudget !== undefined ? opts.retryBudget : 3;
       var perRequestTimeoutMs = opts.perRequestTimeoutMs || 25000;
 
@@ -568,6 +587,48 @@
       }
     }
 
+    // ── Demo data (public /demo) ────────────────────────────────────────
+    var demoData = null;
+
+    async function ensureDemoData() {
+      if (demoData) return demoData;
+      var resp = await fetch('/api/demo-data');
+      if (!resp.ok) throw new Error('HTTP ' + resp.status);
+      demoData = await resp.json();
+      return demoData;
+    }
+
+    /** The demo twin of an API path: the same JSON shape the real route returns. */
+    function demoRoute(url) {
+      var path = new URL(url, location.origin).pathname;
+      var d = (demoData && demoData.dashboard) || {};
+      if (path === '/status') return d.status;
+      if (path === '/api/documents') return d.documents;
+      if (path === '/api/activity') return d.activity;
+      if (path === '/api/patients') return d.patients;
+      if (path === '/api/patient-budget') return { show_pill: false };
+      if (path === '/api/manifest') return { generated_at: new Date().toISOString(), invented: true, documents: (d.documents || {}).documents || [] };
+      if (path.indexOf('/api/doc-detail/') === 0) return (d.details || {})[path.split('/').pop()] || { error: 'not found' };
+      return null;
+    }
+
+    var demoNoticeTimer = null;
+    function demoNotice() {
+      var el = document.getElementById('demo-toast');
+      if (!el) {
+        el = document.createElement('div');
+        el.id = 'demo-toast';
+        el.className = 'demo-toast';
+        el.setAttribute('role', 'status');
+        document.body.appendChild(el);
+      }
+      setI18n(el, 'V ukážke je táto akcia vypnutá. Po prihlásení funguje nad vašimi dokumentmi.',
+        'This action is switched off in the demo. After sign-in it works on your own documents.');
+      el.classList.add('visible');
+      if (demoNoticeTimer) clearTimeout(demoNoticeTimer);
+      demoNoticeTimer = setTimeout(function () { el.classList.remove('visible'); }, 4500);
+    }
+
     // ── Patient selector ────────────────────────────────────────────────
 
     var adminPatientIds = new Set();
@@ -578,13 +639,33 @@
     // panel hides itself unless this is true.
     var isGlobalAdmin = false;
 
+    function patientLabel(p) {
+      return loc(p, 'display_name') + (p.is_active ? '' : (dashLang === 'sk' ? ' (archivovaný)' : ' (archived)'));
+    }
+
+    /** After a language switch: the names in the patient selector follow it. */
+    function relabelPatients() {
+      var select = document.getElementById('patient-select');
+      if (!select) return;
+      Array.prototype.forEach.call(select.options, function(opt) {
+        var p = patientsCache.find(function(x) { return x.patient_id === opt.value; });
+        if (p) opt.textContent = patientLabel(p);
+      });
+      updatePatientDiagnosis();
+    }
+
     async function loadPatients() {
       try {
-        var resp = await fetch('/api/patients', {
-          headers: { 'Authorization': authHeader() }
-        });
-        if (!resp.ok) return;
-        var data = await resp.json();
+        var data;
+        if (DEMO) {
+          data = await apiFetch('/api/patients');
+        } else {
+          var resp = await fetch('/api/patients', {
+            headers: { 'Authorization': authHeader() }
+          });
+          if (!resp.ok) return;
+          data = await resp.json();
+        }
 
         // Handle both new format {own, admin} and legacy array format
         var ownPatients = data.own || data;
@@ -601,7 +682,7 @@
         if (patientsCache.length === 0) {
           var emptyOpt = document.createElement('option');
           emptyOpt.value = '';
-          emptyOpt.textContent = 'No patients';
+          emptyOpt.textContent = dashLang === 'sk' ? 'Žiadny pacient' : 'No patients';
           select.appendChild(emptyOpt);
           return;
         }
@@ -610,7 +691,7 @@
         ownPatients.forEach(function(p) {
           var opt = document.createElement('option');
           opt.value = p.patient_id;
-          opt.textContent = p.display_name + (p.is_active ? '' : ' (archived)');
+          opt.textContent = patientLabel(p);
           select.appendChild(opt);
         });
 
@@ -623,7 +704,7 @@
           adminPatients.forEach(function(p) {
             var opt = document.createElement('option');
             opt.value = p.patient_id;
-            opt.textContent = '\u{1F512} ' + p.display_name + (p.is_active ? '' : ' (archived)');
+            opt.textContent = patientLabel(p);
             select.appendChild(opt);
           });
         }
@@ -677,10 +758,10 @@
     async function loadGermlineBanner() {
       var banner = document.getElementById('germline-banner');
       var list = document.getElementById('germline-findings-list');
-      if (!banner || !list || !currentPatientId) { if (banner) banner.style.display = 'none'; return; }
+      if (DEMO || !banner || !list || !currentPatientId) { if (banner) banner.style.display = 'none'; return; }
       try {
         var resp = await fetch('/api/patient-context?patient_id=' + encodeURIComponent(currentPatientId), {
-          headers: { 'Authorization': 'Bearer ' + authToken }
+          headers: { 'Authorization': authHeader() }
         });
         if (!resp.ok) { banner.style.display = 'none'; return; }
         var ctx = await resp.json();
@@ -729,68 +810,67 @@
       }
     }
 
+    var archiveArmed = null;
+
     async function togglePatientArchive() {
       if (!currentPatientId) return;
       var p = patientsCache.find(function(x) { return x.patient_id === currentPatientId; });
       if (!p) return;
+      var btn = document.getElementById('archive-patient-btn');
       var newActive = !p.is_active;
-      var msg = newActive
-        ? (dashLang === 'sk' ? 'Obnoviť pacienta?' : 'Restore patient?')
-        : (dashLang === 'sk' ? 'Archivovať pacienta? Zastaví sa synchronizácia.' : 'Archive patient? This will stop syncing.');
-      if (!confirm(msg)) return;
+      // Two-step confirm without a browser dialog: the first click arms the
+      // button for a few seconds, the second one does it.
+      if (archiveArmed !== currentPatientId) {
+        archiveArmed = currentPatientId;
+        if (btn) {
+          btn.classList.add('armed');
+          setI18n(btn, newActive ? 'Naozaj obnoviť? Kliknite znova' : 'Naozaj archivovať? Kliknite znova',
+            newActive ? 'Really restore? Click again' : 'Really archive? Click again');
+        }
+        setTimeout(function() {
+          if (archiveArmed === null) return;
+          archiveArmed = null;
+          if (btn) btn.classList.remove('armed');
+          updateArchiveButton();
+        }, 6000);
+        return;
+      }
+      archiveArmed = null;
+      if (btn) btn.classList.remove('armed');
       try {
         var resp = await fetch('/api/patients/' + currentPatientId, {
           method: 'PATCH',
-          headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + authToken },
+          headers: { 'Content-Type': 'application/json', 'Authorization': authHeader() },
           body: JSON.stringify({ is_active: newActive })
         });
-        if (!resp.ok) throw new Error('Failed');
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
         await loadPatients();
         updateArchiveButton();
       } catch (e) {
         console.error('Archive/restore failed:', e);
-        alert(dashLang === 'sk' ? 'Chyba pri zmene stavu.' : 'Failed to change status.');
+        updateArchiveButton();
+        showError(dashLang === 'sk' ? 'Stav pacienta sa nepodarilo zmeniť.' : 'The patient status could not be changed.');
       }
     }
 
     function clearAllPatientData() {
-      // Clear stat cards immediately to prevent stale data showing
+      // Clear the tiles and the list at once so the previous patient's data never lingers
       showSkeletons();
-      // Clear document table — safe static string, no user input
-      var tbody = document.getElementById('doc-tbody');
-      if (tbody) {
-        while (tbody.firstChild) tbody.removeChild(tbody.firstChild);
-        var tr = document.createElement('tr');
-        var td = document.createElement('td');
-        td.setAttribute('colspan', '11');
-        td.style.textAlign = 'center';
-        td.style.color = '#888';
-        td.textContent = 'Loading...';
-        tr.appendChild(td);
-        tbody.appendChild(tr);
-      }
-      // Clear pipeline funnel
-      document.querySelectorAll('.funnel-bar').forEach(function(el) {
-        el.style.width = '0%';
-      });
-      document.querySelectorAll('.funnel-count').forEach(function(el) {
-        el.textContent = '0';
-      });
-      // Clear reconciliation
-      var reconEl = document.getElementById('reconciliation-content');
-      if (reconEl) { while (reconEl.firstChild) reconEl.removeChild(reconEl.firstChild); }
-      // Clear usage analytics
-      var analyticsEl = document.getElementById('analytics-content');
-      if (analyticsEl) { while (analyticsEl.firstChild) analyticsEl.removeChild(analyticsEl.firstChild); }
-      // Clear cost leaderboard body — keep section visibility decision to renderCostLeaderboard.
-      var leaderboardEl = document.getElementById('cost-leaderboard-body');
-      if (leaderboardEl) { while (leaderboardEl.firstChild) leaderboardEl.removeChild(leaderboardEl.firstChild); }
-      // Clear prompt log
-      var promptEl = document.getElementById('prompt-log-entries');
-      if (promptEl) { while (promptEl.firstChild) promptEl.removeChild(promptEl.firstChild); }
-      // Clear filter badge counts to prevent stale numbers from previous patient
-      document.querySelectorAll('.pill .pill-count').forEach(function(el) {
-        el.textContent = '0';
+      docsData = [];
+      docsSignature = '';
+      openDoc = { id: null, data: null };
+      activityData = null;
+      tableMessage('Načítavam…', 'Loading…');
+      var countEl = document.getElementById('docs-count');
+      if (countEl) countEl.textContent = '';
+      var note = document.getElementById('pending-note');
+      if (note) note.hidden = true;
+      var act = document.getElementById('activity-rows');
+      if (act) clearEl(act);
+      // Admin panels show per-patient numbers too
+      ['cost-leaderboard-body', 'prompt-log-rows', 'prompt-stats'].forEach(function(id) {
+        var el = document.getElementById(id);
+        if (el) clearEl(el);
       });
     }
 
@@ -799,7 +879,7 @@
       var p = patientsCache.find(function(p) {
         return p.patient_id === currentPatientId;
       });
-      el.textContent = p && p.diagnosis_summary ? p.diagnosis_summary : '';
+      el.textContent = p ? loc(p, 'diagnosis_summary') : '';
       el.title = el.textContent;
     }
 
@@ -972,6 +1052,7 @@
     var onboardingStatus = null;
 
     async function loadOnboardingStatus() {
+      if (DEMO) return;
       try {
         var resp = await fetch('/api/onboarding-status', { headers: { 'Authorization': authHeader() } });
         if (resp.ok) onboardingStatus = await resp.json();
@@ -1751,7 +1832,7 @@
         cb.checked = !!p.nightly_enabled;
         cb.setAttribute('data-change', 'curatedNightly|' + p.patient_id + '|@this');
         lbl.appendChild(cb);
-        lbl.appendChild(coEl('span', ' Nočný beh'));
+        lbl.appendChild(coBilingual('span', ' Spracovanie zapnuté (priebežne + nočná kontrola)', ' Processing on (continuous + nightly check)'));
         actions.appendChild(lbl);
         card.appendChild(actions);
         body.appendChild(card);
@@ -2071,7 +2152,7 @@
       if (!btn || btn.disabled) return;
       btn.disabled = true;
       var origText = btn.textContent;
-      btn.textContent = 'Syncing\u2026';
+      btn.textContent = dashLang === 'sk' ? 'Synchronizujem\u2026' : 'Syncing\u2026';
       try {
         var pid = currentPatientId || '';
         var resp = await fetch('/api/sync-trigger', {
@@ -2148,37 +2229,12 @@
 
     var MCP_URL = 'https://oncofiles.com/mcp';
 
-    async function regenerateToken() {
-      var btn = document.getElementById('mcp-token-gen');
-      var orig = btn.textContent;
-      btn.disabled = true;
-      btn.textContent = '...';
-      try {
-        var resp = await fetch('/api/patient-tokens', {
-          method: 'POST',
-          headers: { 'Authorization': authHeader(), 'Content-Type': 'application/json' },
-          body: JSON.stringify({ patient_id: currentPatientId, label: 'dashboard-regen' })
-        });
-        var data = await resp.json();
-        if (!resp.ok) {
-          btn.textContent = data.error || 'Error';
-          btn.disabled = false;
-          return;
-        }
-        document.getElementById('mcp-token-display').textContent = data.bearer_token;
-        document.getElementById('mcp-token-copy').style.display = '';
-        btn.style.display = 'none';
-      } catch (e) {
-        btn.textContent = orig;
-        btn.disabled = false;
-      }
-    }
-
     function showShareModal() {
       document.getElementById('share-code-box').style.display = 'none';
-      document.getElementById('share-gen-btn').disabled = false;
-      document.getElementById('share-gen-btn').textContent = 'Generate One-Time Setup Code';
-      document.getElementById('share-token').textContent = 'Generate a setup code or create a new token';
+      var genBtn = document.getElementById('share-gen-btn');
+      genBtn.disabled = false;
+      setI18n(genBtn, 'Vygenerovať token', 'Generate a token');
+      setI18n(document.getElementById('share-token'), 'zatiaľ nevygenerovaný', 'not generated yet');
       updateShareInstructions('');
       document.getElementById('share-overlay').classList.add('active');
     }
@@ -2192,14 +2248,17 @@
       navigator.clipboard.writeText(text).then(function() {
         // Brief visual feedback
         var btn = document.getElementById(elementId).parentNode.querySelector('.copy-btn');
-        if (btn) { btn.textContent = 'Copied!'; setTimeout(function() { btn.textContent = 'Copy'; }, 1500); }
+        if (btn) {
+          setI18n(btn, 'Skopírované', 'Copied');
+          setTimeout(function() { setI18n(btn, 'Kopírovať', 'Copy'); }, 1500);
+        }
       });
     }
 
     async function generateShareCode() {
       var btn = document.getElementById('share-gen-btn');
       btn.disabled = true;
-      btn.textContent = 'Generating...';
+      setI18n(btn, 'Generujem…', 'Generating…');
 
       try {
         var fetchOpts = {
@@ -2215,7 +2274,7 @@
         }
         var data = await resp.json();
         if (!resp.ok) {
-          btn.textContent = data.error || 'Error';
+          setI18n(btn, 'Nepodarilo sa. Skúsiť znova', 'It did not work. Try again');
           btn.disabled = false;
           return;
         }
@@ -2223,21 +2282,20 @@
         // Show the code
         document.getElementById('share-code-value').textContent = data.code;
         document.getElementById('share-code-box').style.display = 'block';
-        btn.textContent = 'Code generated (10 min)';
+        setI18n(btn, 'Token vygenerovaný', 'Token generated');
 
         // Now redeem it immediately to get the token for display
         var redeemResp = await fetch('/api/share-link/' + data.code);
         if (redeemResp.ok) {
           var info = await redeemResp.json();
-          document.getElementById('share-token').textContent = info.bearer_token;
+          var tokenEl = document.getElementById('share-token');
+          tokenEl.removeAttribute('data-sk');
+          tokenEl.removeAttribute('data-en');
+          tokenEl.textContent = info.bearer_token;
           updateShareInstructions(info.bearer_token);
-          // Also update the MCP connection bar
-          document.getElementById('mcp-token-display').textContent = info.bearer_token;
-          document.getElementById('mcp-token-copy').style.display = '';
-          document.getElementById('mcp-token-gen').style.display = 'none';
         }
       } catch (e) {
-        btn.textContent = 'Error: ' + e.message;
+        setI18n(btn, 'Nepodarilo sa. Skúsiť znova', 'It did not work. Try again');
         btn.disabled = false;
       }
     }
@@ -2273,17 +2331,21 @@
       dot.title = state === 'ok' ? 'Connected' : state === 'loading' ? 'Loading...' : 'Offline';
     }
 
+    var TILE_IDS = ['card-total', 'card-ready', 'card-progress', 'card-attention'];
+
     function showSkeletons() {
-      ['card-total','card-complete','card-gaps','card-synced','card-uptime'].forEach(function(id) {
+      TILE_IDS.forEach(function(id) {
         var el = document.getElementById(id);
+        if (!el) return;
         el.textContent = '';
         el.className = 'value skeleton';
       });
     }
 
     function hideSkeletons() {
-      ['card-total','card-complete','card-gaps','card-synced','card-uptime'].forEach(function(id) {
-        document.getElementById(id).className = 'value';
+      TILE_IDS.forEach(function(id) {
+        var el = document.getElementById(id);
+        if (el) el.className = 'value';
       });
     }
 
@@ -2309,8 +2371,8 @@
         }
         return false;
       }
-      // Sequential fetches — Turso single-connection can't handle parallel queries
-      // Each section is independent: one failure doesn't block the others
+      // Sequential fetches: the server holds one DB connection.
+      // Each section is independent: one failure doesn't block the others.
       try {
         var status = await apiFetch('/status');
         renderStatus(status);
@@ -2321,7 +2383,9 @@
         if (!trackBreaker(e)) errors.push('status: ' + e.message);
       }
       try {
-        var docs = await apiFetch('/api/documents?filter=' + encodeURIComponent(currentFilter) + '&limit=200');
+        // The whole list in one call (the per-patient cap is far below 2000);
+        // tiles, search and sorting then work in the browser without a round trip.
+        var docs = await apiFetch('/api/documents?filter=all&limit=2000');
         renderDocs(docs);
         _swrSet('documents', docs);
         anyOk = true;
@@ -2329,50 +2393,17 @@
         if (!trackBreaker(e)) errors.push('documents: ' + e.message);
       }
       try {
-        var prompts = await apiFetch('/api/prompt-log?limit=50');
-        renderPromptLog(prompts);
-        _swrSet('prompt-log', prompts);
+        var activity = await apiFetch('/api/activity?limit=30');
+        renderActivity(activity);
+        _swrSet('activity', activity);
         anyOk = true;
       } catch (e) {
-        if (!trackBreaker(e)) errors.push('prompt-log: ' + e.message);
+        if (!trackBreaker(e)) { console.warn('Activity fetch failed:', e); renderActivity(null); }
       }
-      try {
-        var recon = await apiFetch('/api/reconciliation');
-        if (recon) renderReconciliation(recon);
-        anyOk = true;
-      } catch (e) { if (!trackBreaker(e)) console.warn('Reconciliation fetch failed:', e); }
-      try {
-        var analytics = await apiFetch('/api/usage-analytics');
-        if (analytics) renderAnalytics(analytics);
-        anyOk = true;
-      } catch (e) { if (!trackBreaker(e)) console.warn('Analytics fetch failed:', e); }
-      // #411: per-patient cost leaderboard — admin-only. Skip the fetch
-      // entirely for non-admin callers (saves a guaranteed 403). renderCostLeaderboard
-      // also hides the section when isGlobalAdmin is false, in case the order
-      // of operations ever changes.
-      if (isGlobalAdmin) {
-        try {
-          var leaderboard = await apiFetch('/api/cost-leaderboard?days=30&limit=50');
-          if (leaderboard) renderCostLeaderboard(leaderboard);
-          anyOk = true;
-        } catch (e) { if (!trackBreaker(e)) console.warn('Cost leaderboard fetch failed:', e); }
-      } else {
-        // Non-admin caller: explicitly hide the widget so a previous admin
-        // session's render doesn't bleed through after a page refresh.
-        var lb = document.getElementById('cost-leaderboard-section');
-        if (lb) lb.style.display = 'none';
-      }
-      // #573 curated-folder operations — admin only, independent fetch.
-      if (isGlobalAdmin) { loadCuratedOps(); } else { var co = document.getElementById('curated-ops-section'); if (co) co.style.display = 'none'; }
-      // #573 verify-only re-read console — admin only, loads once (keeps selections).
-      if (isGlobalAdmin) { loadRereadConsole(); } else { var rr = document.getElementById('reread-section'); if (rr) rr.style.display = 'none'; }
-      try {
-        var sched = await apiFetch('/api/schedules');
-        if (sched) renderSchedules(sched);
-        anyOk = true;
-      } catch (e) { if (!trackBreaker(e)) console.warn('Schedules fetch failed:', e); }
       // Budget pill (#442) — fire-and-forget, hides itself when tier is admin/paid_*.
       updateBudgetPill();
+      // Admin panels load only when an admin has opened them.
+      updateAdminArea();
       hideSkeletons();
 
       // 503 — show friendly SK/EN countdown + auto-retry instead of a
@@ -2384,20 +2415,26 @@
       }
 
       setConnectionState(anyOk ? 'ok' : 'offline');
-      if (anyOk) {
-        updateLastRefreshed();
-        setTimeout(function(){ document.getElementById('next-sync').textContent = 'Next sync: ~' + (5 - Math.floor(((Date.now()/1000) % 300) / 60)) + ' min'; }, 100);
-      }
+      if (anyOk) updateLastRefreshed();
       if (errors.length) {
-        showError('Partial load failure: ' + errors.join('; '));
+        showError((dashLang === 'sk' ? 'Časť údajov sa nepodarilo načítať: ' : 'Some data could not be loaded: ') + errors.join('; '));
       }
     }
 
     // ── Renderers ────────────────────────────────────────────────────────
 
+    function fmtUptime(sec) {
+      if (!sec || sec <= 0) return '-';
+      var days = Math.floor(sec / 86400);
+      var hours = Math.floor((sec % 86400) / 3600);
+      var mins = Math.floor((sec % 3600) / 60);
+      return days > 0 ? days + 'd ' + hours + 'h' : hours > 0 ? hours + 'h ' + mins + 'm' : mins + 'm';
+    }
+
     function renderStatus(s) {
       window._lastStatus = s;
-      document.getElementById('version-label').textContent = 'v' + (s.version || '?');
+      var versionEl = document.getElementById('version-label');
+      if (versionEl) versionEl.textContent = 'v' + (s.version || '?');
 
       // Google service connection badges
       var gs = s.google_services || {};
@@ -2406,276 +2443,230 @@
         var el = document.getElementById(id);
         if (el) el.className = 'svc-badge ' + (gs[svc] ? 'on' : 'off');
       });
-      // Update integration popover data
+      // Integration popover
       var ipEmail = document.getElementById('ip-email');
       if (ipEmail) ipEmail.textContent = gs.owner_email || '—';
-      var statusLabels = {true: {sk:'pripojené', en:'connected'}, false: {sk:'nepripojené', en:'not connected'}};
-      var lang = window._dashLang || 'sk';
-      ['drive','gmail'].forEach(function(svc) {
-        var dot = document.getElementById('ip-' + svc + '-dot');
-        var txt = document.getElementById('ip-' + svc + '-text');
-        if (dot) dot.className = 'ip-status ' + (gs[svc] ? 'on' : 'off');
-        if (txt) txt.textContent = statusLabels[!!gs[svc]][lang];
+      [['drive', 'drive'], ['gmail', 'gmail'], ['cal', 'calendar']].forEach(function(pair) {
+        var dot = document.getElementById('ip-' + pair[0] + '-dot');
+        var txt = document.getElementById('ip-' + pair[0] + '-text');
+        var on = !!gs[pair[1]];
+        if (dot) dot.className = 'ip-status ' + (on ? 'on' : 'off');
+        if (txt) setI18n(txt, on ? 'pripojené' : 'nepripojené', on ? 'connected' : 'not connected');
       });
-      var calDot = document.getElementById('ip-cal-dot');
-      var calTxt = document.getElementById('ip-cal-text');
-      if (calDot) calDot.className = 'ip-status ' + (gs.calendar ? 'on' : 'off');
-      if (calTxt) calTxt.textContent = statusLabels[!!gs.calendar][lang];
       // Per-service last sync times (#276)
       var sst = s.service_sync_times || {};
-      ['drive','gmail','cal'].forEach(function(key) {
-        var svcKey = key === 'cal' ? 'calendar' : key;
+      ['drive', 'gmail', 'cal'].forEach(function(key) {
         var el = document.getElementById('ip-' + key + '-sync');
-        if (el) {
-          var t = sst[svcKey];
-          if (t) {
-            var d = new Date(t);
-            var hm = d.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
-            el.textContent = hm;
-          } else {
-            el.textContent = '';
-          }
-        }
+        if (!el) return;
+        var t = sst[key === 'cal' ? 'calendar' : key];
+        el.textContent = t ? new Date(t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
       });
       var ipFolder = document.getElementById('ip-folder');
       if (ipFolder) {
         ipFolder.textContent = '';
+        var folderName = loc(gs, 'folder_name');
         if (gs.folder_id) {
           var folderLink = document.createElement('a');
           folderLink.href = 'https://drive.google.com/drive/folders/' + encodeURIComponent(gs.folder_id);
           folderLink.target = '_blank';
           folderLink.rel = 'noopener';
-          folderLink.title = gs.folder_name || gs.folder_id;
-          folderLink.style.cssText = 'color:var(--accent);text-decoration:none;display:inline-flex;align-items:center;gap:0.25rem';
-          folderLink.textContent = '\uD83D\uDCC2 ' + (gs.folder_name || (gs.folder_id.substring(0, 12) + '\u2026'));
+          folderLink.title = folderName || gs.folder_id;
+          folderLink.textContent = folderName || (gs.folder_id.substring(0, 12) + '…');
           ipFolder.appendChild(folderLink);
         } else {
-          ipFolder.textContent = '\u2014';
+          ipFolder.textContent = folderName || '—';
         }
       }
       // Show GDrive connect banner if no folder set for this patient
       var gdriveBar = document.getElementById('gdrive-connect-bar');
-      if (gdriveBar) gdriveBar.style.display = (!gs.drive || !gs.folder_id) ? 'flex' : 'none';
+      if (gdriveBar) gdriveBar.style.display = (!gs.drive || (!gs.folder_id && !gs.folder_name)) ? 'flex' : 'none';
 
-      const h = s.document_health || {};
-      document.getElementById('card-total').textContent = h.total || 0;
-      document.getElementById('card-synced').textContent = h.synced || 0;
-      // Format uptime as human-readable (e.g. "2d 5h" or "3h 15m")
-      var uptimeSec = s.uptime_s || 0;
-      var uptimeText = '-';
-      if (uptimeSec > 0) {
-        var days = Math.floor(uptimeSec / 86400);
-        var hours = Math.floor((uptimeSec % 86400) / 3600);
-        var mins = Math.floor((uptimeSec % 3600) / 60);
-        uptimeText = days > 0 ? days + 'd ' + hours + 'h' : hours > 0 ? hours + 'h ' + mins + 'm' : mins + 'm';
-      }
-      document.getElementById('card-uptime').textContent = uptimeText;
-
-      // Per-service sync time badges (#276)
-      var svcTimesEl = document.getElementById('svc-sync-times');
-      if (svcTimesEl) {
-        svcTimesEl.textContent = '';
-        var sst2 = s.service_sync_times || {};
-        [['Drive','gdrive'],['Gmail','gmail'],['Cal','calendar']].forEach(function(pair) {
-          var t = sst2[pair[1]];
-          if (t) {
-            var sp = document.createElement('span');
-            var d = new Date(t);
-            sp.textContent = pair[0] + ' ' + d.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
-            svcTimesEl.appendChild(sp);
-          }
-        });
-      }
-
-      // Sync history
-      const syncEl = document.getElementById('sync-rows');
-      clearEl(syncEl);
-      const syncs = s.recent_syncs || [];
-      if (syncs.length === 0) {
-        const empty = document.createElement('div');
-        empty.style.cssText = 'padding:0.5rem 0;color:var(--text-muted);font-size:0.8125rem';
-        empty.textContent = 'No recent syncs';
-        syncEl.appendChild(empty);
-      } else {
-        syncs.forEach(function(sc) {
-          const row = document.createElement('div');
-          row.className = 'sync-row';
-
-          const time = document.createElement('span');
-          time.className = 'sync-time';
-          var ts = sc.started_at || '';
-          if (ts && !ts.endsWith('Z') && !ts.includes('+')) ts += 'Z';
-          time.textContent = ts ? new Date(ts).toLocaleString() : '-';
-          row.appendChild(time);
-
-          const status = document.createElement('span');
-          status.className = 'sync-status ' + (sc.status === 'completed' ? 'ok' : 'fail');
-          status.textContent = sc.status || '-';
-          row.appendChild(status);
-
-          const trigger = document.createElement('span');
-          trigger.className = 'sync-trigger';
-          trigger.textContent = sc.trigger || '-';
-          row.appendChild(trigger);
-
-          const dur = document.createElement('span');
-          dur.className = 'sync-dur';
-          dur.textContent = sc.duration_s ? sc.duration_s + 's' : '-';
-          row.appendChild(dur);
-
-          if (sc.new > 0) {
-            const newSpan = document.createElement('span');
-            newSpan.className = 'sync-new';
-            newSpan.textContent = sc.new + ' new';
-            row.appendChild(newSpan);
-          }
-
-          if (sc.errors) {
-            const err = document.createElement('span');
-            err.style.cssText = 'color:var(--red);font-size:0.75rem';
-            err.textContent = sc.errors + ' err';
-            row.appendChild(err);
-          }
-
-          syncEl.appendChild(row);
-        });
-      }
-
-      // Manifest status (#182)
-      var ms = document.getElementById('manifest-status');
-      var ml = document.getElementById('manifest-live');
-      if (ms && s.document_health) {
-        var dh = s.document_health;
-        ms.textContent = '(' + (dh.total || 0) + ' docs)';
-      }
-      if (ml && s.last_sync_at) {
-        ml.textContent = 'Last export: ' + new Date(s.last_sync_at)
-          .toLocaleString();
+      var serverLine = document.getElementById('admin-server-line');
+      if (serverLine) {
+        setI18n(serverLine,
+          'Server beží ' + fmtUptime(s.uptime_s) + ' · verzia ' + (s.version || '?') + ' · pamäť ' + (s.memory_rss_mb || '?') + ' MB. Panely nižšie sa načítajú až po rozbalení.',
+          'Server up ' + fmtUptime(s.uptime_s) + ' · version ' + (s.version || '?') + ' · memory ' + (s.memory_rss_mb || '?') + ' MB. The panels below load when opened.');
       }
     }
 
-    function renderDocs(data) {
-      const summary = data.summary || {};
-      const total = summary.total || 0;
-      const fc = summary.fully_complete || 0;
-      const gaps = total - fc;
+    // ── Documents: one status per document ───────────────────────────────
 
-      document.getElementById('card-complete').textContent = fc;
-      document.getElementById('card-gaps').textContent = gaps;
+    var docFilter = 'all';           // all | ready | in_progress | attention (the tiles)
+    var docsSignature = '';          // skip a re-render when a refresh brought nothing new
+    var openDoc = { id: null, data: null };  // the expanded row survives refreshes
 
-      // Pipeline funnel
-      var stages = [
-        { label: 'Total', sk: 'Spolu', count: total },
-        { label: 'OCR', sk: 'OCR', count: summary.with_ocr || 0 },
-        { label: 'AI Summary', sk: 'Zhrnutie', count: summary.with_ai || 0 },
-        { label: 'Metadata', sk: 'Metadáta', count: summary.with_metadata || 0 },
-        { label: 'Date', sk: 'Dátum', count: summary.with_date || 0 },
-        { label: 'Institution', sk: 'Inštitúcia', count: summary.with_institution || 0 },
-        { label: 'Synced', sk: 'V priečinku', count: summary.synced || 0 },
-        { label: 'Named', sk: 'Premenované', count: summary.standard_named || 0 },
-        { label: 'Complete', sk: 'Kompletné', count: fc, complete: true }
-      ];
-      var funnelEl = document.getElementById('funnel-rows');
-      clearEl(funnelEl);
-      stages.forEach(function(st) {
-        var pct = total > 0 ? (st.count / total * 100) : 0;
-        var row = document.createElement('div');
-        row.className = 'funnel-row';
+    var STAGE_RANK = { attention: 0, waiting_text: 1, waiting_name: 2, waiting_filing: 3, ready: 4 };
+    var STAGE_TEXT = {
+      ready: ['Pripravený na použitie', 'Ready to use'],
+      waiting_text: ['Čaká na vyťaženie', 'Waiting for extraction'],
+      waiting_name: ['Čaká na premenovanie', 'Waiting to be renamed'],
+      waiting_filing: ['Čaká na zaradenie', 'Waiting to be filed'],
+      attention: ['Vyžaduje pozornosť', 'Needs attention']
+    };
+    var ATTENTION_TEXT = {
+      review_needed: ['Čaká na vašu kontrolu', 'Needs your review'],
+      missing_in_drive: ['Súbor chýba na Drive', 'File missing in Drive'],
+      outside_folder: ['Súbor je mimo priečinka pacienta', 'File is outside the patient folder'],
+      missing_date: ['Nenašiel sa dátum dokumentu', 'No document date found']
+    };
+    var ATTENTION_HELP = {
+      review_needed: ['Pri čítaní si systém nebol istý (napríklad rukopis alebo otočená strana). Porovnajte prečítaný text a údaje s originálom.', 'The system was not sure when reading it (for example handwriting or a rotated page). Compare the text and data read with the original.'],
+      missing_in_drive: ['Súbor sa na Google Drive už nenašiel. Ak ste ho presunuli alebo zmazali, obnovte ho z koša Drive.', 'The file is no longer found on Google Drive. If you moved or deleted it, restore it from the Drive trash.'],
+      outside_folder: ['Súbor existuje, ale nie je v priečinku tohto pacienta. Presuňte ho späť do priečinka pacienta.', 'The file exists but is not in this patient\'s folder. Move it back into the patient folder.'],
+      missing_date: ['Text je prečítaný, ale nie je v ňom vytlačený dátum dokumentu, preto ho nevieme zaradiť na časovú os.', 'The text has been read, but no document date is printed in it, so it cannot be placed on the timeline.']
+    };
+    var STEP_TEXT = {
+      extracted: ['Vyťažený', 'Extracted'],
+      named: ['Premenovaný', 'Renamed'],
+      filed: ['Zaradený', 'Filed']
+    };
+    var CATEGORY_TEXT = {
+      labs: ['Laboratórne výsledky', 'Lab results'], report: ['Lekárska správa', 'Medical report'],
+      imaging: ['Zobrazovacie vyšetrenie', 'Imaging'], pathology: ['Patológia', 'Pathology'],
+      genetics: ['Genetika', 'Genetics'], surgery: ['Operácia', 'Surgery'],
+      surgical_report: ['Operačný protokol', 'Surgical report'], prescription: ['Recept', 'Prescription'],
+      referral: ['Odporúčanie', 'Referral'], discharge: ['Prepustenie', 'Discharge'],
+      discharge_summary: ['Prepúšťacia správa', 'Discharge summary'], chemo_sheet: ['Chemoterapia', 'Chemotherapy'],
+      reference: ['Referenčný materiál', 'Reference'], advocate: ['Poznámky', 'Notes'],
+      vaccination: ['Očkovanie', 'Vaccination'], dental: ['Zubné', 'Dental'],
+      preventive: ['Prevencia', 'Preventive care'], other: ['Iné', 'Other']
+    };
 
-        var label = document.createElement('span');
-        label.className = 'funnel-label';
-        setI18n(label, st.sk, st.label);
-        row.appendChild(label);
+    /** Demo rows carry an English twin of a few text fields (`*_en`); real rows never do. */
+    function loc(obj, key) {
+      if (!obj) return '';
+      if (dashLang === 'en' && obj[key + '_en']) return obj[key + '_en'];
+      return obj[key] == null ? '' : obj[key];
+    }
 
-        var barBg = document.createElement('div');
-        barBg.className = 'funnel-bar-bg';
-        var bar = document.createElement('div');
-        bar.className = st.complete ? 'funnel-bar complete' : 'funnel-bar';
-        bar.style.width = pct + '%';
-        barBg.appendChild(bar);
-        row.appendChild(barBg);
+    function parseTs(value) {
+      if (!value) return null;
+      var s = String(value);
+      // SQLite timestamps are UTC without a zone marker
+      if (s.length > 10 && s.indexOf('T') === -1) s = s.replace(' ', 'T');
+      if (s.length > 10 && !/[zZ]|[+-]\d\d:?\d\d$/.test(s)) s += 'Z';
+      var d = new Date(s.length === 10 ? s + 'T00:00:00' : s);
+      return isNaN(d.getTime()) ? null : d;
+    }
 
-        var count = document.createElement('span');
-        count.className = 'funnel-count';
-        count.textContent = st.count;
-        row.appendChild(count);
+    function fmtDate(value) {
+      var d = parseTs(value);
+      if (!d) return '–';
+      return d.toLocaleDateString(dashLang === 'sk' ? 'sk-SK' : 'en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
+    }
 
-        row.style.cursor = 'pointer';
-        row.title = dashLang === 'sk' ? 'Kliknite pre detail' : 'Click for details';
-        row.onclick = (function(stage) { return function() {
-          // Honest, bilingual stage descriptions (Nov 2026: local model, curated folder).
-          var info = {
-            'Total': ['Všetky dokumenty pacienta v indexe.', 'All of the patient\'s documents in the index.'],
-            'OCR': ['Text prečítaný zo skenov a PDF. Pri spracovaní na pozadí ho číta lokálny model na našom serveri.', 'Text read from scans and PDFs. In background processing a local model on our own server reads it.'],
-            'AI Summary': ['Krátke zhrnutie a štítky dokumentu.', 'A short summary and tags for the document.'],
-            'Metadata': ['Štruktúrované údaje: typ dokumentu, nálezy, diagnózy, lekári.', 'Structured data: document type, findings, diagnoses, doctors.'],
-            'Date': ['Dátum dokumentu z obsahu alebo z názvu súboru.', 'Document date from its content or file name.'],
-            'Institution': ['Inštitúcia rozpoznaná z obsahu dokumentu.', 'Institution recognised from the document content.'],
-            'Synced': ['Súbor je zaradený vo vašom priečinku Google Drive podľa pravidiel v README.', 'The file is filed in your Google Drive folder under the README rules.'],
-            'Named': ['Štandardný názov: RRRRMMDD_Pacient_Inštitúcia_Kategória_Popis.', 'Standard name: YYYYMMDD_Patient_Institution_Category_Description.'],
-            'Complete': ['Dokument prešiel všetkými krokmi.', 'The document passed every step.']
-          };
-          var existing = document.getElementById('funnel-tooltip');
-          if (existing) { existing.remove(); if (existing.dataset.stage === stage.label) return; }
-          var tip = document.createElement('div');
-          tip.id = 'funnel-tooltip';
-          tip.dataset.stage = stage.label;
-          tip.style.cssText = 'background:var(--surface);border:1px solid var(--border);border-radius:0.5rem;padding:1rem;margin:0.75rem 0;font-size:0.8125rem;color:var(--text-muted);line-height:1.6';
-          var title = document.createElement('strong');
-          title.style.color = 'var(--accent)';
-          title.textContent = dashLang === 'sk' ? stage.sk : stage.label;
-          tip.appendChild(title);
-          tip.appendChild(document.createElement('br'));
-          var desc = info[stage.label] || ['Krok spracovania', 'Processing step'];
-          tip.appendChild(document.createTextNode(dashLang === 'sk' ? desc[0] : desc[1]));
-          funnelEl.appendChild(tip);
-        }; })(st);
+    function fmtDateTime(value) {
+      var d = parseTs(value);
+      if (!d) return '–';
+      return d.toLocaleString(dashLang === 'sk' ? 'sk-SK' : 'en-GB', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+    }
 
-        funnelEl.appendChild(row);
+    function stateMark(kind) {
+      var m = document.createElement('span');
+      m.className = 'state-mark ' + kind;
+      m.setAttribute('aria-hidden', 'true');
+      return m;
+    }
+
+    function stageKind(d) {
+      return d.stage === 'ready' ? 'ready' : d.stage === 'attention' ? 'attention' : 'progress';
+    }
+
+    function stageLabel(d) {
+      if (d.stage === 'attention' && ATTENTION_TEXT[d.attention_reason]) return ATTENTION_TEXT[d.attention_reason];
+      return STAGE_TEXT[d.stage] || STAGE_TEXT.waiting_text;
+    }
+
+    function matchesFilter(d) {
+      if (docFilter === 'all') return true;
+      if (docFilter === 'ready') return d.stage === 'ready';
+      if (docFilter === 'attention') return d.stage === 'attention';
+      return d.stage !== 'ready' && d.stage !== 'attention';
+    }
+
+    function setDocFilter(filter) {
+      docFilter = filter;
+      document.querySelectorAll('#summary-cards .card').forEach(function(card) {
+        var on = card.dataset.filter === filter;
+        card.classList.toggle('is-active', on);
+        card.setAttribute('aria-pressed', on ? 'true' : 'false');
       });
-
-      // Store for sorting
-      docsData = data.documents || [];
       renderTable();
-      renderRemedies(summary);
-      updateFilterCounts(summary);
+    }
+
+    function renderDocs(data) {
+      var summary = data.summary || {};
+      var rows = data.documents || [];
+      var total = summary.total != null ? summary.total : rows.length;
+      var ready = summary.ready != null ? summary.ready : rows.filter(function(d) { return d.stage === 'ready'; }).length;
+      var attention = summary.attention != null ? summary.attention : rows.filter(function(d) { return d.stage === 'attention'; }).length;
+      var progress = summary.in_progress != null ? summary.in_progress : Math.max(0, total - ready - attention);
+      document.getElementById('card-total').textContent = total;
+      document.getElementById('card-ready').textContent = ready;
+      document.getElementById('card-progress').textContent = progress;
+      document.getElementById('card-attention').textContent = attention;
+      var attentionTile = document.querySelector('#summary-cards .card[data-filter="attention"]');
+      if (attentionTile) attentionTile.classList.toggle('has-items', attention > 0);
+
+      var signature = JSON.stringify(rows);
+      if (signature === docsSignature && document.querySelector('#doc-tbody .doc-row')) return;
+      docsSignature = signature;
+      docsData = rows.map(function(d) {
+        d.stage_rank = STAGE_RANK[d.stage] !== undefined ? STAGE_RANK[d.stage] : 1;
+        return d;
+      });
+      renderTable();
+    }
+
+    function tableMessage(sk, en) {
+      var tbody = document.getElementById('doc-tbody');
+      clearEl(tbody);
+      var tr = document.createElement('tr');
+      var td = document.createElement('td');
+      td.setAttribute('colspan', '7');
+      td.className = 'table-empty';
+      setI18n(td, sk, en);
+      tr.appendChild(td);
+      tbody.appendChild(tr);
     }
 
     function renderTable() {
       var tbody = document.getElementById('doc-tbody');
-      clearEl(tbody);
-
-      // Text search filter
+      var countEl = document.getElementById('docs-count');
       var searchEl = document.getElementById('doc-search');
       var query = (searchEl ? searchEl.value : '').toLowerCase().trim();
-      var filtered = docsData;
+
+      var filtered = docsData.filter(matchesFilter);
       if (query) {
-        filtered = docsData.filter(function(d) {
-          return (d.filename || '').toLowerCase().includes(query)
-            || (d.category || '').toLowerCase().includes(query)
-            || (d.institution || '').toLowerCase().includes(query)
-            || (d.date || '').includes(query);
+        filtered = filtered.filter(function(d) {
+          var cat = CATEGORY_TEXT[d.category] || [d.category || '', d.category || ''];
+          return [loc(d, 'filename'), d.category, cat[0], cat[1], loc(d, 'institution'), d.date, fmtDate(d.date)]
+            .join(' ').toLowerCase().indexOf(query) !== -1;
         });
       }
+      if (countEl) {
+        if (docsData.length === 0) { countEl.removeAttribute('data-sk'); countEl.removeAttribute('data-en'); countEl.textContent = ''; }
+        else setI18n(countEl, 'zobrazených ' + filtered.length + ' z ' + docsData.length, 'showing ' + filtered.length + ' of ' + docsData.length);
+      }
 
+      if (docsData.length === 0) {
+        tableMessage('Zatiaľ tu nie sú žiadne dokumenty. Nahrajte súbory do priečinka pacienta na Google Drive a Oncofiles ich spracuje.',
+          'No documents yet. Put files into the patient folder on Google Drive and Oncofiles will process them.');
+        return;
+      }
       if (filtered.length === 0) {
-        var emptyRow = document.createElement('tr');
-        var emptyTd = document.createElement('td');
-        emptyTd.setAttribute('colspan', '11');
-        emptyTd.className = 'table-empty';
-        emptyTd.textContent = query ? 'No documents match "' + query + '"' : 'No documents match this filter';
-        emptyRow.appendChild(emptyTd);
-        tbody.appendChild(emptyRow);
+        tableMessage(query ? 'Hľadaniu nezodpovedá žiadny dokument.' : 'V tomto stave nie je žiadny dokument.',
+          query ? 'No document matches the search.' : 'No document is in this state.');
         return;
       }
 
-      // Sort (booleans: false < true so problems sort first in ascending)
+      // Missing values always sort last, whatever the direction.
       var sorted = filtered.slice().sort(function(a, b) {
-        var va = a[sortCol];
-        var vb = b[sortCol];
-        if (va == null) va = '';
-        if (vb == null) vb = '';
-        if (typeof va === 'boolean') { va = va ? 1 : 0; vb = vb ? 1 : 0; }
+        var va = sortCol === 'filename' ? loc(a, 'filename') : sortCol === 'institution' ? loc(a, 'institution') : a[sortCol];
+        var vb = sortCol === 'filename' ? loc(b, 'filename') : sortCol === 'institution' ? loc(b, 'institution') : b[sortCol];
+        var ea = va == null || va === '';
+        var eb = vb == null || vb === '';
+        if (ea || eb) return ea && eb ? 0 : ea ? 1 : -1;
         if (typeof va === 'string') va = va.toLowerCase();
         if (typeof vb === 'string') vb = vb.toLowerCase();
         if (va < vb) return sortAsc ? -1 : 1;
@@ -2683,326 +2674,601 @@
         return 0;
       });
 
+      clearEl(tbody);
+      var reopen = null;
       sorted.forEach(function(d) {
-        var tr = document.createElement('tr');
-
-        // Filename
-        var tdFn = document.createElement('td');
-        tdFn.className = 'filename';
-        if (d.gdrive_id) {
-          var a = document.createElement('a');
-          a.href = 'https://drive.google.com/file/d/' + encodeURIComponent(d.gdrive_id) + '/view';
-          a.target = '_blank';
-          a.rel = 'noopener';
-          a.textContent = d.filename || '';
-          tdFn.appendChild(a);
-        } else {
-          tdFn.textContent = d.filename || '';
-        }
-        tr.appendChild(tdFn);
-
-        // Category
-        var tdCat = document.createElement('td');
-        var badge = document.createElement('span');
-        badge.className = 'category-badge';
-        badge.textContent = d.category || '';
-        tdCat.appendChild(badge);
-        tr.appendChild(tdCat);
-
-        // Institution
-        var tdInst = document.createElement('td');
-        tdInst.textContent = d.institution || '-';
-        tdInst.style.fontSize = '0.75rem';
-        tr.appendChild(tdInst);
-
-        // Date
-        var tdDate = document.createElement('td');
-        tdDate.textContent = d.date || '-';
-        tr.appendChild(tdDate);
-
-        // Status dots: OCR, AI, Meta, Date, Inst., Sync, Name
-        var fields = ['has_ocr', 'has_ai', 'has_metadata', 'has_date', 'has_institution', 'is_synced', 'is_standard_name'];
-        fields.forEach(function(f) {
-          var td = document.createElement('td');
-          td.appendChild(makeDot(d[f]));
-          tr.appendChild(td);
-        });
-
-        tr.style.cursor = 'pointer';
-        tr.onclick = (function(doc, clickedTr) { return function() {
-          var existingDetail = clickedTr.nextElementSibling;
-          if (existingDetail && existingDetail.className === 'doc-detail-row') {
-            existingDetail.remove();
-            return;
-          }
-          document.querySelectorAll('.doc-detail-row').forEach(function(el) { el.remove(); });
-
-          var detailRow = document.createElement('tr');
-          detailRow.className = 'doc-detail-row';
-          var detailTd = document.createElement('td');
-          detailTd.setAttribute('colspan', '11');
-          detailTd.style.cssText = 'padding:0.5rem;background:rgba(20,184,166,0.04)';
-
-          // Show loading state
-          var loadingDiv = document.createElement('div');
-          loadingDiv.className = 'doc-detail-loading';
-          var loadingSpan = document.createElement('span');
-          loadingSpan.setAttribute('data-sk', 'Na\u010d\u00edtavam detail\u2026');
-          loadingSpan.setAttribute('data-en', 'Loading detail\u2026');
-          loadingSpan.textContent = 'Loading detail\u2026';
-          loadingDiv.appendChild(loadingSpan);
-          detailTd.appendChild(loadingDiv);
-          detailRow.appendChild(detailTd);
-          clickedTr.parentNode.insertBefore(detailRow, clickedTr.nextSibling);
-          applyDashLang();
-
-          // Fetch detail from API
-          var detailPromise = apiFetch('/api/doc-detail/' + doc.id);
-          detailPromise.then(function(data) {
-            if (data.error) {
-              loadingDiv.textContent = data.error;
-              return;
-            }
-            // Clear loading
-            while (detailTd.firstChild) detailTd.removeChild(detailTd.firstChild);
-
-            var panel = document.createElement('div');
-            panel.className = 'doc-detail-panel';
-
-            // Close button
-            var closeBtn = document.createElement('button');
-            closeBtn.className = 'detail-close';
-            closeBtn.textContent = '\u00d7';
-            closeBtn.title = 'Close';
-            closeBtn.onclick = function(e) { e.stopPropagation(); detailRow.remove(); };
-            panel.appendChild(closeBtn);
-
-            // ── Left column: preview (skip if no preview available) ──
-            if (data.preview_url || data.gdrive_url) {
-              var left = document.createElement('div');
-              left.className = 'doc-detail-left';
-
-              if (data.preview_url && data.preview_url.startsWith('https://')) {
-                var iframe = document.createElement('iframe');
-                iframe.src = data.preview_url;
-                iframe.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-popups');
-                iframe.setAttribute('allowfullscreen', '');
-                iframe.setAttribute('loading', 'lazy');
-                left.appendChild(iframe);
-              } else {
-                var noPreview = document.createElement('div');
-                noPreview.className = 'doc-detail-no-preview';
-                var noPreviewSpan = document.createElement('span');
-                noPreviewSpan.setAttribute('data-sk', 'N\u00e1h\u013ead nie je dostupn\u00fd');
-                noPreviewSpan.setAttribute('data-en', 'Preview not available');
-                noPreviewSpan.textContent = 'Preview not available';
-                noPreview.appendChild(noPreviewSpan);
-                left.appendChild(noPreview);
-              }
-
-              if (data.gdrive_url && /^https:\/\//.test(data.gdrive_url)) {
-                var gdriveLink = document.createElement('a');
-                gdriveLink.href = data.gdrive_url;
-                gdriveLink.target = '_blank';
-                gdriveLink.rel = 'noopener';
-                gdriveLink.style.cssText = 'display:inline-block;padding:0.375rem 0.75rem;background:var(--accent);color:#fff;border-radius:0.375rem;font-size:0.75rem;font-weight:600;text-decoration:none;text-align:center';
-                var gdriveLinkSpan = document.createElement('span');
-                gdriveLinkSpan.setAttribute('data-sk', 'Otvori\u0165 v GDrive');
-                gdriveLinkSpan.setAttribute('data-en', 'Open in GDrive');
-                gdriveLinkSpan.textContent = 'Open in GDrive';
-                gdriveLink.appendChild(gdriveLinkSpan);
-                left.appendChild(gdriveLink);
-              }
-
-              panel.appendChild(left);
-            } else {
-              // No preview — make right column full width
-              panel.style.gridTemplateColumns = '1fr';
-            }
-
-            // ── Right column: OCR + metadata ──
-            var right = document.createElement('div');
-            right.className = 'doc-detail-right';
-
-            // OCR pages
-            if (data.pages && data.pages.length > 0) {
-              data.pages.forEach(function(page) {
-                var pageDiv = document.createElement('div');
-                pageDiv.className = 'doc-ocr-page';
-
-                var header = document.createElement('div');
-                header.className = 'doc-ocr-page-header';
-                var pgLabel = dashLang === 'sk' ? 'Strana' : 'Page';
-                var chLabel = dashLang === 'sk' ? 'znakov' : 'chars';
-                header.textContent = pgLabel + ' ' + page.page_number + ' (' + page.char_count + ' ' + chLabel + ')';
-                pageDiv.appendChild(header);
-
-                var textDiv = document.createElement('div');
-                textDiv.className = 'doc-ocr-text';
-                textDiv.textContent = page.text || '';
-                pageDiv.appendChild(textDiv);
-
-                right.appendChild(pageDiv);
-              });
-            } else {
-              var noOcr = document.createElement('div');
-              noOcr.className = 'doc-ocr-page';
-              var noOcrSpan = document.createElement('span');
-              noOcrSpan.style.cssText = 'color:var(--text-muted);font-size:0.8125rem';
-              noOcrSpan.setAttribute('data-sk', 'Nie s\u00fa dostupn\u00e9 OCR d\u00e1ta');
-              noOcrSpan.setAttribute('data-en', 'No OCR data available');
-              noOcrSpan.textContent = 'No OCR data available';
-              noOcr.appendChild(noOcrSpan);
-              right.appendChild(noOcr);
-            }
-
-            // ── Metadata section ──
-            var metaSection = document.createElement('div');
-            metaSection.className = 'doc-meta-section';
-
-            function addMetaRow(labelSk, labelEn, value) {
-              var row = document.createElement('div');
-              row.className = 'doc-meta-row';
-              var lbl = document.createElement('span');
-              lbl.className = 'doc-meta-label';
-              lbl.setAttribute('data-sk', labelSk);
-              lbl.setAttribute('data-en', labelEn);
-              lbl.textContent = dashLang === 'sk' ? labelSk : labelEn;
-              row.appendChild(lbl);
-              var val = document.createElement('span');
-              val.className = 'doc-meta-value';
-              if (typeof value === 'string') {
-                val.textContent = value;
-              } else {
-                val.appendChild(value);
-              }
-              row.appendChild(val);
-              metaSection.appendChild(row);
-            }
-
-            // Category badge
-            var catBadge = document.createElement('span');
-            catBadge.className = 'category-badge';
-            catBadge.textContent = data.category || 'other';
-            addMetaRow('Kateg\u00f3ria', 'Category', catBadge);
-
-            addMetaRow('D\u00e1tum', 'Date', data.document_date || '-');
-            addMetaRow('In\u0161tit\u00facia', 'Institution', data.institution || '-');
-            addMetaRow('ID', 'ID', '#' + data.id);
-
-            // Handwritten badge
-            var sm = data.structured_metadata || {};
-            if (sm.handwritten) {
-              var hwBadge = document.createElement('span');
-              hwBadge.className = 'handwritten-badge';
-              var hwSpan = document.createElement('span');
-              hwSpan.setAttribute('data-sk', 'Ru\u010dne p\u00edsan\u00e9');
-              hwSpan.setAttribute('data-en', 'Handwritten');
-              hwSpan.textContent = 'Handwritten';
-              hwBadge.appendChild(hwSpan);
-              addMetaRow('Form\u00e1t', 'Format', hwBadge);
-            }
-
-            // AI Summary
-            if (data.ai_summary) {
-              addMetaRow('AI Zhrnutie', 'AI Summary', data.ai_summary);
-            }
-
-            // Plain summary
-            if (sm.plain_summary) {
-              var summaryText = dashLang === 'sk' && sm.plain_summary_sk ? sm.plain_summary_sk : sm.plain_summary;
-              addMetaRow('Zhrnutie', 'Summary', summaryText);
-            }
-
-            // Providers
-            if (sm.providers && sm.providers.length > 0) {
-              var provTags = document.createElement('span');
-              provTags.className = 'doc-meta-tags';
-              sm.providers.forEach(function(p) {
-                var tag = document.createElement('span');
-                tag.className = 'doc-meta-tag';
-                tag.textContent = typeof p === 'string' ? p : (p.name || JSON.stringify(p));
-                provTags.appendChild(tag);
-              });
-              addMetaRow('Poskytovatelia', 'Providers', provTags);
-            }
-
-            // Doctors
-            if (sm.doctors && sm.doctors.length > 0) {
-              var docTags = document.createElement('span');
-              docTags.className = 'doc-meta-tags';
-              sm.doctors.forEach(function(dr) {
-                var tag = document.createElement('span');
-                tag.className = 'doc-meta-tag';
-                tag.textContent = typeof dr === 'string' ? dr : (dr.name || JSON.stringify(dr));
-                docTags.appendChild(tag);
-              });
-              addMetaRow('Lek\u00e1ri', 'Doctors', docTags);
-            }
-
-            // Diagnoses
-            if (sm.diagnoses && sm.diagnoses.length > 0) {
-              var diagTags = document.createElement('span');
-              diagTags.className = 'doc-meta-tags';
-              sm.diagnoses.forEach(function(dx) {
-                var tag = document.createElement('span');
-                tag.className = 'doc-meta-tag';
-                tag.textContent = typeof dx === 'string' ? dx : (dx.code ? dx.code + (dx.name ? ': ' + dx.name : '') : JSON.stringify(dx));
-                diagTags.appendChild(tag);
-              });
-              addMetaRow('Diagn\u00f3zy', 'Diagnoses', diagTags);
-            }
-
-            // Medications
-            if (sm.medications && sm.medications.length > 0) {
-              var medTags = document.createElement('span');
-              medTags.className = 'doc-meta-tags';
-              sm.medications.forEach(function(m) {
-                var tag = document.createElement('span');
-                tag.className = 'doc-meta-tag';
-                tag.textContent = typeof m === 'string' ? m : (m.name || JSON.stringify(m));
-                medTags.appendChild(tag);
-              });
-              addMetaRow('Lieky', 'Medications', medTags);
-            }
-
-            // Findings
-            if (sm.findings && sm.findings.length > 0) {
-              addMetaRow('N\u00e1lezy', 'Findings', sm.findings.join(', '));
-            }
-
-            // Tags
-            if (data.ai_tags && data.ai_tags.length > 0) {
-              var tagContainer = document.createElement('span');
-              tagContainer.className = 'doc-meta-tags';
-              data.ai_tags.forEach(function(t) {
-                var tag = document.createElement('span');
-                tag.className = 'doc-meta-tag';
-                tag.textContent = t;
-                tagContainer.appendChild(tag);
-              });
-              addMetaRow('\u0160t\u00edtky', 'Tags', tagContainer);
-            }
-
-            right.appendChild(metaSection);
-            panel.appendChild(right);
-
-            detailTd.appendChild(panel);
-            applyDashLang();
-          }).catch(function(err) {
-            loadingDiv.textContent = 'Error: ' + (err.message || 'unknown');
-          });
-        }; })(d, tr);
-
+        var tr = buildDocRow(d);
         tbody.appendChild(tr);
+        if (openDoc.id !== null && d.id === openDoc.id) reopen = { doc: d, tr: tr };
       });
+      if (reopen) openDocDetail(reopen.doc, reopen.tr, true);
+      else openDoc = { id: null, data: null };
+    }
+
+    function buildDocRow(d) {
+      var tr = document.createElement('tr');
+      tr.className = 'doc-row';
+      tr.tabIndex = 0;
+      tr.setAttribute('role', 'button');
+      tr.setAttribute('aria-expanded', 'false');
+
+      var tdToggle = document.createElement('td');
+      tdToggle.className = 'col-toggle';
+      var chev = document.createElement('span');
+      chev.className = 'row-chevron';
+      chev.setAttribute('aria-hidden', 'true');
+      tdToggle.appendChild(chev);
+      tr.appendChild(tdToggle);
+
+      var name = loc(d, 'filename');
+      var tdFn = document.createElement('td');
+      tdFn.className = 'filename';
+      var nameSpan = document.createElement('span');
+      nameSpan.className = 'filename-text';
+      // standard names have no spaces: let them break after _ and -
+      String(name).split(/(?<=[_-])/).forEach(function(part, i) {
+        if (i) nameSpan.appendChild(document.createElement('wbr'));
+        nameSpan.appendChild(document.createTextNode(part));
+      });
+      tdFn.appendChild(nameSpan);
+      tdFn.title = name;
+      tr.appendChild(tdFn);
+
+      var tdCat = document.createElement('td');
+      var badge = document.createElement('span');
+      badge.className = 'category-badge';
+      var cat = CATEGORY_TEXT[d.category] || [d.category || '', d.category || ''];
+      setI18n(badge, cat[0], cat[1]);
+      tdCat.appendChild(badge);
+      tr.appendChild(tdCat);
+
+      var tdInst = document.createElement('td');
+      tdInst.className = 'cell-inst';
+      tdInst.textContent = loc(d, 'institution') || '–';
+      tr.appendChild(tdInst);
+
+      var tdDate = document.createElement('td');
+      tdDate.className = 'cell-date';
+      tdDate.textContent = fmtDate(d.date);
+      tr.appendChild(tdDate);
+
+      var tdUp = document.createElement('td');
+      tdUp.className = 'cell-date';
+      tdUp.textContent = fmtDate(d.uploaded_at);
+      if (d.uploaded_at) tdUp.title = fmtDateTime(d.uploaded_at);
+      tr.appendChild(tdUp);
+
+      var tdStage = document.createElement('td');
+      tdStage.className = 'cell-stage';
+      var kind = stageKind(d);
+      var chip = document.createElement('span');
+      chip.className = 'stage-chip ' + kind;
+      chip.appendChild(stateMark(kind));
+      var label = stageLabel(d);
+      chip.appendChild(setI18n(document.createElement('span'), label[0], label[1]));
+      var stageBox = document.createElement('div');
+      stageBox.className = 'stage-box';
+      stageBox.appendChild(chip);
+      stageBox.appendChild(buildStepTrack(d));
+      tdStage.appendChild(stageBox);
+      tr.appendChild(tdStage);
+
+      tr.addEventListener('click', function() { toggleDocDetail(d, tr); });
+      tr.addEventListener('keydown', function(e) {
+        if (e.target !== tr) return;
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleDocDetail(d, tr); }
+      });
+      return tr;
+    }
+
+    /** Three small marks, one per step: filled = done, hollow = waiting. */
+    function buildStepTrack(d) {
+      var steps = d.steps || {};
+      var track = document.createElement('span');
+      track.className = 'step-track';
+      var done = 0;
+      ['extracted', 'named', 'filed'].forEach(function(key, i) {
+        var mark = document.createElement('span');
+        mark.className = 'step-mark' + (steps[key] ? ' done' : '');
+        mark.title = (i + 1) + '. ' + STEP_TEXT[key][dashLang === 'sk' ? 0 : 1];
+        if (steps[key]) done += 1;
+        track.appendChild(mark);
+      });
+      track.setAttribute('role', 'img');
+      track.setAttribute('aria-label', (dashLang === 'sk' ? 'Hotové kroky: ' : 'Steps done: ') + done + ' / 3');
+      return track;
+    }
+
+    function closeDocDetail() {
+      document.querySelectorAll('.doc-detail-row').forEach(function(el) { el.remove(); });
+      document.querySelectorAll('#doc-tbody .doc-row.is-open').forEach(function(el) {
+        el.classList.remove('is-open');
+        el.setAttribute('aria-expanded', 'false');
+      });
+      openDoc = { id: null, data: null };
+    }
+
+    function toggleDocDetail(doc, tr) {
+      if (tr.classList.contains('is-open')) { closeDocDetail(); return; }
+      openDocDetail(doc, tr, false);
+    }
+
+    /** Expand a row in place. `fromRefresh` reuses the detail already loaded. */
+    function openDocDetail(doc, tr, fromRefresh) {
+      var cached = fromRefresh && openDoc.id === doc.id ? openDoc.data : null;
+      closeDocDetail();
+      openDoc = { id: doc.id, data: cached };
+      tr.classList.add('is-open');
+      tr.setAttribute('aria-expanded', 'true');
+
+      var detailRow = document.createElement('tr');
+      detailRow.className = 'doc-detail-row';
+      var detailTd = document.createElement('td');
+      detailTd.setAttribute('colspan', '7');
+      detailRow.appendChild(detailTd);
+      tr.parentNode.insertBefore(detailRow, tr.nextSibling);
+
+      if (cached) { renderDocDetail(doc, cached, detailTd); return; }
+
+      var loadingDiv = document.createElement('div');
+      loadingDiv.className = 'doc-detail-loading';
+      loadingDiv.appendChild(setI18n(document.createElement('span'), 'Načítavam detail…', 'Loading detail…'));
+      detailTd.appendChild(loadingDiv);
+
+      apiFetch('/api/doc-detail/' + doc.id).then(function(data) {
+        if (openDoc.id !== doc.id || !detailRow.parentNode) return;  // closed or replaced meanwhile
+        if (data.error) {
+          clearEl(loadingDiv);
+          loadingDiv.appendChild(setI18n(document.createElement('span'), 'Detail sa nepodarilo načítať.', 'The detail could not be loaded.'));
+          return;
+        }
+        openDoc.data = data;
+        renderDocDetail(doc, data, detailTd);
+      }).catch(function() {
+        clearEl(loadingDiv);
+        loadingDiv.appendChild(setI18n(document.createElement('span'), 'Detail sa nepodarilo načítať.', 'The detail could not be loaded.'));
+      });
+    }
+
+    /** The five-step explanation at the top of the detail. */
+    function buildStepList(doc, data) {
+      var steps = doc.steps || {};
+      var pages = (data.pages || []).length;
+      var box = document.createElement('div');
+      box.className = 'detail-steps';
+      box.appendChild(setI18n(document.createElement('h4'), 'Stav spracovania', 'Processing status'));
+      var list = document.createElement('ol');
+      list.className = 'step-list';
+
+      function add(done, title, text, extraClass) {
+        var li = document.createElement('li');
+        li.className = (done ? 'done' : 'todo') + (extraClass ? ' ' + extraClass : '');
+        var mark = document.createElement('span');
+        mark.className = 'step-mark' + (done ? ' done' : '');
+        mark.setAttribute('aria-hidden', 'true');
+        li.appendChild(mark);
+        var body = document.createElement('span');
+        body.appendChild(setI18n(document.createElement('strong'), title[0], title[1]));
+        body.appendChild(document.createTextNode(' '));
+        body.appendChild(setI18n(document.createElement('span'), text[0], text[1]));
+        li.appendChild(body);
+        list.appendChild(li);
+      }
+
+      var up = doc.uploaded_at ? fmtDate(doc.uploaded_at) : '';
+      add(true, ['Nahratý', 'Uploaded'],
+        up ? ['– Oncofiles o dokumente vie od ' + up + '.', '– Oncofiles has known the document since ' + up + '.']
+           : ['– Oncofiles o dokumente vie.', '– Oncofiles knows the document.']);
+      add(!!steps.extracted, STEP_TEXT.extracted,
+        steps.extracted
+          ? (pages ? ['– text je prečítaný (strán: ' + pages + ').', '– the text has been read (pages: ' + pages + ').'] : ['– pri tomto type súboru sa text nečíta.', '– no text is read for this file type.'])
+          : ['– čaká, kým text prečíta model na našom serveri.', '– waiting for the model on our server to read the text.']);
+      add(!!steps.named, STEP_TEXT.named,
+        steps.named ? ['– názov súboru zodpovedá štandardu.', '– the file name follows the standard.']
+                    : ['– súbor ešte nemá štandardný názov.', '– the file does not have the standard name yet.']);
+      add(!!steps.filed, STEP_TEXT.filed,
+        steps.filed ? ['– je v priečinku pacienta na Google Drive.', '– it sits in the patient folder on Google Drive.']
+                    : ['– ešte nie je zaradený v priečinku na Google Drive.', '– it is not filed in the Google Drive folder yet.']);
+      if (doc.stage === 'attention') {
+        add(false, ATTENTION_TEXT[doc.attention_reason] || STAGE_TEXT.attention,
+          ATTENTION_HELP[doc.attention_reason] ? ['– ' + ATTENTION_HELP[doc.attention_reason][0], '– ' + ATTENTION_HELP[doc.attention_reason][1]] : ['', ''], 'final attention');
+      } else {
+        add(doc.stage === 'ready', STAGE_TEXT.ready,
+          doc.stage === 'ready' ? ['– dokument je spracovaný, pre vás aj pre AI asistenta.', '– the document is processed, for you and for the AI assistant.']
+                                : ['– bude po dokončení krokov vyššie.', '– once the steps above are done.'], 'final');
+      }
+      box.appendChild(list);
+      return box;
+    }
+
+    function renderDocDetail(doc, data, detailTd) {
+      clearEl(detailTd);
+
+      var panel = document.createElement('div');
+      panel.className = 'doc-detail-panel';
+
+      // Close button
+      var closeBtn = document.createElement('button');
+      closeBtn.className = 'detail-close';
+      closeBtn.textContent = '\u00d7';
+      closeBtn.title = dashLang === 'sk' ? 'Zavrieť' : 'Close';
+      closeBtn.setAttribute('aria-label', closeBtn.title);
+      closeBtn.onclick = function(e) { e.stopPropagation(); closeDocDetail(); };
+      panel.appendChild(closeBtn);
+      panel.appendChild(buildStepList(doc, data));
+      var cols = document.createElement('div');
+      cols.className = 'doc-detail-cols';
+      panel.appendChild(cols);
+
+      // ── Left column: preview (skip if no preview available) ──
+      if (data.preview_url || data.gdrive_url) {
+        var left = document.createElement('div');
+        left.className = 'doc-detail-left';
+
+        if (data.preview_url && data.preview_url.startsWith('https://')) {
+          var iframe = document.createElement('iframe');
+          iframe.src = data.preview_url;
+          iframe.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-popups');
+          iframe.setAttribute('allowfullscreen', '');
+          iframe.setAttribute('loading', 'lazy');
+          left.appendChild(iframe);
+        } else {
+          var noPreview = document.createElement('div');
+          noPreview.className = 'doc-detail-no-preview';
+          var noPreviewSpan = document.createElement('span');
+          noPreviewSpan.setAttribute('data-sk', 'N\u00e1h\u013ead nie je dostupn\u00fd');
+          noPreviewSpan.setAttribute('data-en', 'Preview not available');
+          noPreviewSpan.textContent = 'Preview not available';
+          noPreview.appendChild(noPreviewSpan);
+          left.appendChild(noPreview);
+        }
+
+        if (data.gdrive_url && /^https:\/\//.test(data.gdrive_url)) {
+          var gdriveLink = document.createElement('a');
+          gdriveLink.href = data.gdrive_url;
+          gdriveLink.target = '_blank';
+          gdriveLink.rel = 'noopener';
+          gdriveLink.className = 'detail-drive-link';
+          var gdriveLinkSpan = document.createElement('span');
+          gdriveLinkSpan.setAttribute('data-sk', 'Otvori\u0165 v Google Drive');
+          gdriveLinkSpan.setAttribute('data-en', 'Open in Google Drive');
+          gdriveLinkSpan.textContent = 'Open in Google Drive';
+          gdriveLink.appendChild(gdriveLinkSpan);
+          left.appendChild(gdriveLink);
+        }
+
+        cols.appendChild(left);
+      } else {
+        // No preview — make right column full width
+        cols.classList.add('single');
+      }
+
+      // ── Right column: OCR + metadata ──
+      var right = document.createElement('div');
+      right.className = 'doc-detail-right';
+
+      // OCR pages
+      if (data.pages && data.pages.length > 0) {
+        data.pages.forEach(function(page) {
+          var pageDiv = document.createElement('div');
+          pageDiv.className = 'doc-ocr-page';
+
+          var header = document.createElement('div');
+          header.className = 'doc-ocr-page-header';
+          var pgLabel = dashLang === 'sk' ? 'Strana' : 'Page';
+          var chLabel = dashLang === 'sk' ? 'znakov' : 'chars';
+          header.textContent = pgLabel + ' ' + page.page_number + ' (' + page.char_count + ' ' + chLabel + ')';
+          pageDiv.appendChild(header);
+
+          var textDiv = document.createElement('div');
+          textDiv.className = 'doc-ocr-text';
+          textDiv.textContent = loc(page, 'text');
+          pageDiv.appendChild(textDiv);
+
+          right.appendChild(pageDiv);
+        });
+      } else {
+        var noOcr = document.createElement('div');
+        noOcr.className = 'doc-ocr-page';
+        var noOcrSpan = document.createElement('span');
+        noOcrSpan.style.cssText = 'color:var(--text-muted);font-size:0.8125rem';
+        noOcrSpan.setAttribute('data-sk', 'Text e\u0161te nie je pre\u010d\u00edtan\u00fd.');
+        noOcrSpan.setAttribute('data-en', 'The text has not been read yet.');
+        noOcrSpan.textContent = 'The text has not been read yet.';
+        noOcr.appendChild(noOcrSpan);
+        right.appendChild(noOcr);
+      }
+
+      // ── Metadata section ──
+      var metaSection = document.createElement('div');
+      metaSection.className = 'doc-meta-section';
+
+      function addMetaRow(labelSk, labelEn, value) {
+        var row = document.createElement('div');
+        row.className = 'doc-meta-row';
+        var lbl = document.createElement('span');
+        lbl.className = 'doc-meta-label';
+        lbl.setAttribute('data-sk', labelSk);
+        lbl.setAttribute('data-en', labelEn);
+        lbl.textContent = dashLang === 'sk' ? labelSk : labelEn;
+        row.appendChild(lbl);
+        var val = document.createElement('span');
+        val.className = 'doc-meta-value';
+        if (typeof value === 'string') {
+          val.textContent = value;
+        } else {
+          val.appendChild(value);
+        }
+        row.appendChild(val);
+        metaSection.appendChild(row);
+      }
+
+      // Category badge
+      var catBadge = document.createElement('span');
+      catBadge.className = 'category-badge';
+      var catText = CATEGORY_TEXT[data.category] || CATEGORY_TEXT.other;
+      setI18n(catBadge, catText[0], catText[1]);
+      addMetaRow('Kateg\u00f3ria', 'Category', catBadge);
+
+      addMetaRow('D\u00e1tum dokumentu', 'Document date', fmtDate(data.document_date));
+      addMetaRow('In\u0161tit\u00facia', 'Institution', loc(data, 'institution') || '\u2013');
+      addMetaRow('S\u00fabor', 'File', loc(data, 'filename') || '\u2013');
+      addMetaRow('ID', 'ID', '#' + data.id);
+
+      // Handwritten badge
+      var sm = data.structured_metadata || {};
+      if (sm.handwritten) {
+        var hwBadge = document.createElement('span');
+        hwBadge.className = 'handwritten-badge';
+        var hwSpan = document.createElement('span');
+        hwSpan.setAttribute('data-sk', 'Ru\u010dne p\u00edsan\u00e9');
+        hwSpan.setAttribute('data-en', 'Handwritten');
+        hwSpan.textContent = 'Handwritten';
+        hwBadge.appendChild(hwSpan);
+        addMetaRow('Form\u00e1t', 'Format', hwBadge);
+      }
+
+      // AI Summary
+      if (data.ai_summary) {
+        addMetaRow('Zhrnutie', 'Summary', loc(data, 'ai_summary'));
+      }
+
+      // Plain summary
+      if (sm.plain_summary) {
+        var summaryText = dashLang === 'sk' && sm.plain_summary_sk ? sm.plain_summary_sk : sm.plain_summary;
+        addMetaRow('Zhrnutie', 'Summary', summaryText);
+      }
+
+      // Providers
+      if (sm.providers && sm.providers.length > 0) {
+        var provTags = document.createElement('span');
+        provTags.className = 'doc-meta-tags';
+        sm.providers.forEach(function(p) {
+          var tag = document.createElement('span');
+          tag.className = 'doc-meta-tag';
+          tag.textContent = typeof p === 'string' ? p : (p.name || JSON.stringify(p));
+          provTags.appendChild(tag);
+        });
+        addMetaRow('Poskytovatelia', 'Providers', provTags);
+      }
+
+      // Doctors
+      if (sm.doctors && sm.doctors.length > 0) {
+        var docTags = document.createElement('span');
+        docTags.className = 'doc-meta-tags';
+        sm.doctors.forEach(function(dr) {
+          var tag = document.createElement('span');
+          tag.className = 'doc-meta-tag';
+          tag.textContent = typeof dr === 'string' ? dr : (dr.name || JSON.stringify(dr));
+          docTags.appendChild(tag);
+        });
+        addMetaRow('Lek\u00e1ri', 'Doctors', docTags);
+      }
+
+      // Diagnoses
+      if (sm.diagnoses && sm.diagnoses.length > 0) {
+        var diagTags = document.createElement('span');
+        diagTags.className = 'doc-meta-tags';
+        sm.diagnoses.forEach(function(dx) {
+          var tag = document.createElement('span');
+          tag.className = 'doc-meta-tag';
+          tag.textContent = typeof dx === 'string' ? dx : (dx.code ? dx.code + (dx.name ? ': ' + dx.name : '') : JSON.stringify(dx));
+          diagTags.appendChild(tag);
+        });
+        addMetaRow('Diagn\u00f3zy', 'Diagnoses', diagTags);
+      }
+
+      // Medications
+      if (sm.medications && sm.medications.length > 0) {
+        var medTags = document.createElement('span');
+        medTags.className = 'doc-meta-tags';
+        sm.medications.forEach(function(m) {
+          var tag = document.createElement('span');
+          tag.className = 'doc-meta-tag';
+          tag.textContent = typeof m === 'string' ? m : (m.name || JSON.stringify(m));
+          medTags.appendChild(tag);
+        });
+        addMetaRow('Lieky', 'Medications', medTags);
+      }
+
+      // Findings
+      if (sm.findings && sm.findings.length > 0) {
+        addMetaRow('N\u00e1lezy', 'Findings', sm.findings.join(', '));
+      }
+
+      // Tags
+      if (data.ai_tags && data.ai_tags.length > 0) {
+        var tagContainer = document.createElement('span');
+        tagContainer.className = 'doc-meta-tags';
+        data.ai_tags.forEach(function(t) {
+          var tag = document.createElement('span');
+          tag.className = 'doc-meta-tag';
+          tag.textContent = t;
+          tagContainer.appendChild(tag);
+        });
+        addMetaRow('\u0160t\u00edtky', 'Tags', tagContainer);
+      }
+
+      right.appendChild(metaSection);
+      cols.appendChild(right);
+
+      detailTd.appendChild(panel);
+      applyDashLang();
+    }
+
+    // ── One event log ────────────────────────────────────────────────────
+
+    var activityData = null;
+    var activityShowAll = false;
+    var ACTIVITY_SHORT = 6;
+    var TRIGGER_TEXT = {
+      auto: ['automaticky', 'automatic'], nightly: ['nočná kontrola', 'nightly check'],
+      manual: ['ručne', 'manual'], admin: ['ručne', 'manual'], scheduled: ['podľa plánu', 'scheduled'],
+      startup: ['po štarte servera', 'after server start']
+    };
+
+    function activityText(ev) {
+      var c = ev.counts || {};
+      if (ev.kind === 'drive_sync') {
+        if (ev.status === 'failed') return ['Synchronizácia s Google Drive zlyhala', 'Google Drive sync failed'];
+        var extra = c.errors ? [', chyby: ' + c.errors, ', errors: ' + c.errors] : ['', ''];
+        return c.new
+          ? ['Synchronizácia s Google Drive: nové dokumenty ' + c.new + extra[0], 'Google Drive sync: new documents ' + c.new + extra[1]]
+          : ['Synchronizácia s Google Drive: nič nové' + extra[0], 'Google Drive sync: nothing new' + extra[1]];
+      }
+      if (ev.status === 'running') return ['Práve prebieha spracovanie priečinka', 'Folder processing is running now'];
+      if (ev.status === 'failed') return ['Spracovanie priečinka sa nedokončilo', 'Folder processing did not finish'];
+      if (ev.status === 'interrupted') return ['Spracovanie bolo prerušené; dokončí sa pri ďalšom behu', 'Processing was interrupted; the next run finishes it'];
+      if (!c.documents) return ['Kontrola priečinka: nič nové', 'Folder check: nothing new'];
+      // only what happened: zero counts are left out
+      var sk = [], en = [];
+      if (c.filed) { sk.push('zaradené ' + c.filed); en.push('filed ' + c.filed); }
+      if (c.review) { sk.push('na vašu kontrolu ' + c.review); en.push('for your review ' + c.review); }
+      if (c.not_processed) { sk.push('nedokončené ' + c.not_processed); en.push('not finished ' + c.not_processed); }
+      return ['Spracované dokumenty: ' + c.documents + (sk.length ? ' (' + sk.join(', ') + ')' : ''),
+        'Documents processed: ' + c.documents + (en.length ? ' (' + en.join(', ') + ')' : '')];
+    }
+
+    function renderActivity(data) {
+      if (data) activityData = data;
+      var box = document.getElementById('activity-rows');
+      var more = document.getElementById('activity-more');
+      var note = document.getElementById('pending-note');
+      if (!box) return;
+      clearEl(box);
+      var events = (activityData && activityData.events) || [];
+
+      var inbox = activityData && activityData.pending ? activityData.pending.inbox : null;
+      if (note) {
+        note.hidden = !(inbox > 0);
+        if (inbox > 0) {
+          clearEl(note);
+          note.appendChild(stateMark('progress'));
+          note.appendChild(setI18n(document.createElement('span'),
+            'Nové súbory v priečinku, ktoré čakajú na spracovanie: ' + inbox + '.',
+            'New files in the folder waiting to be processed: ' + inbox + '.'));
+        }
+      }
+
+      if (events.length === 0) {
+        var empty = document.createElement('div');
+        empty.className = 'activity-empty';
+        setI18n(empty, activityData ? 'Zatiaľ žiadne spracovanie.' : 'Záznam sa nepodarilo načítať.',
+          activityData ? 'No processing yet.' : 'The log could not be loaded.');
+        box.appendChild(empty);
+        if (more) more.hidden = true;
+        return;
+      }
+      var shown = activityShowAll ? events : events.slice(0, ACTIVITY_SHORT);
+      shown.forEach(function(ev) {
+        var row = document.createElement('div');
+        row.className = 'activity-row';
+        var kind = ev.status === 'ok' ? 'ready' : ev.status === 'running' ? 'progress' : 'attention';
+        row.appendChild(stateMark(kind));
+        var time = document.createElement('span');
+        time.className = 'activity-time';
+        time.textContent = fmtDateTime(ev.at);
+        row.appendChild(time);
+        var text = activityText(ev);
+        var main = setI18n(document.createElement('span'), text[0], text[1]);
+        main.className = 'activity-text';
+        row.appendChild(main);
+        var trig = TRIGGER_TEXT[ev.trigger];
+        if (trig) {
+          var t = setI18n(document.createElement('span'), trig[0], trig[1]);
+          t.className = 'activity-meta';
+          row.appendChild(t);
+        }
+        box.appendChild(row);
+      });
+      if (more) {
+        more.hidden = events.length <= ACTIVITY_SHORT;
+        setI18n(more, activityShowAll ? 'Zobraziť menej' : 'Zobraziť staršie (' + (events.length - ACTIVITY_SHORT) + ')',
+          activityShowAll ? 'Show fewer' : 'Show older (' + (events.length - ACTIVITY_SHORT) + ')');
+      }
+    }
+
+    function toggleActivityAll() {
+      activityShowAll = !activityShowAll;
+      renderActivity(null);
+    }
+
+    // ── Administration (admin sessions only; a panel loads when opened) ──
+
+    var adminOpen = {};
+
+    function updateAdminArea() {
+      // The manual Drive sync is an admin-only trigger on the server (#852):
+      // nobody else gets a button that can only refuse.
+      var syncBtn = document.getElementById('ip-sync-btn');
+      if (syncBtn) syncBtn.style.display = isGlobalAdmin ? '' : 'none';
+      var area = document.getElementById('admin-area');
+      if (!area) return;
+      area.style.display = isGlobalAdmin ? 'block' : 'none';
+      if (!isGlobalAdmin) return;
+      Object.keys(adminOpen).forEach(function(key) { if (adminOpen[key]) loadAdminPanel(key); });
+    }
+
+    function toggleAdminPanel(key, headEl) {
+      var body = document.getElementById('admin-body-' + key);
+      if (!body) return;
+      var open = body.hidden;
+      body.hidden = !open;
+      if (headEl) headEl.setAttribute('aria-expanded', open ? 'true' : 'false');
+      adminOpen[key] = open;
+      if (open) loadAdminPanel(key);
+    }
+
+    async function loadAdminPanel(key) {
+      if (!isGlobalAdmin) return;
+      try {
+        if (key === 'curated') { await loadCuratedOps(); return; }
+        if (key === 'reread') { await loadRereadConsole(); return; }
+        if (key === 'schedules') {
+          var sched = await apiFetch('/api/schedules');
+          if (sched) renderSchedules(sched);
+          return;
+        }
+        if (key === 'ai') {
+          // sequential: one DB connection on the server
+          var analytics = await apiFetch('/api/usage-analytics');
+          if (analytics) renderAnalytics(analytics);
+          var leaderboard = await apiFetch('/api/cost-leaderboard?days=30&limit=50');
+          if (leaderboard) renderCostLeaderboard(leaderboard);
+          var prompts = await apiFetch('/api/prompt-log?limit=50');
+          if (prompts) renderPromptLog(prompts);
+        }
+      } catch (e) {
+        console.warn('Admin panel failed to load:', key, e);
+      }
     }
 
     // ── Processing Schedules (#287) ──────────────────────────────────
     var schedFilter = 'all';
     var schedData = null;
 
-    document.getElementById('sched-groups').addEventListener('click', function(e) {
+    var schedGroupsEl = document.getElementById('sched-groups');  // admin markup; absent on the demo page
+    if (schedGroupsEl) schedGroupsEl.addEventListener('click', function(e) {
       if (!e.target.classList.contains('pill')) return;
       e.target.parentElement.querySelectorAll('.pill').forEach(function(p) { p.classList.remove('active'); });
       e.target.classList.add('active');
@@ -3113,25 +3379,6 @@
       });
     }
 
-    async function loadManifestPreview() {
-      var pre = document.getElementById('manifest-preview');
-      pre.style.display = 'block';
-      pre.textContent = 'Loading manifest...';
-      try {
-        var data = await apiFetch('/api/manifest');
-        var summary = {
-          documents: (data.documents || []).length,
-          treatment_events: (data.treatment_events || []).length,
-          conversation_entries: (data.conversation_entries || []).length,
-          research_entries: (data.research_entries || []).length,
-          generated_at: data.generated_at
-        };
-        pre.textContent = JSON.stringify(summary, null, 2) + '\n\n// Full manifest: ' + JSON.stringify(data).length + ' bytes\n// Use "Download JSON" for the complete file';
-      } catch (e) {
-        pre.textContent = 'Error: ' + e.message;
-      }
-    }
-
     async function downloadManifest() {
       try {
         var data = await apiFetch('/api/manifest');
@@ -3139,91 +3386,12 @@
         var url = URL.createObjectURL(blob);
         var a = document.createElement('a');
         a.href = url;
-        a.download = '_manifest.json';
+        a.download = 'oncofiles-export.json';
         a.click();
         URL.revokeObjectURL(url);
       } catch (e) {
-        alert('Failed to download manifest: ' + e.message);
+        showError((dashLang === 'sk' ? 'Export sa nepodaril: ' : 'The export failed: ') + e.message);
       }
-    }
-
-    function renderRemedies(summary) {
-      var panel = document.getElementById('remedies-panel');
-      var rowsEl = document.getElementById('remedies-rows');
-      clearEl(rowsEl);
-
-      var total = summary.total || 0;
-      var gaps = [];
-
-      function check(sk, label, count, tool) {
-        var missing = total - (count || 0);
-        if (missing > 0) gaps.push({ sk: sk, label: label, missing: missing, tool: tool });
-      }
-
-      check('Chýba OCR', 'Missing OCR', summary.with_ocr, 'enhance_documents');
-      check('Chýba zhrnutie', 'Missing AI Summary', summary.with_ai, 'enhance_documents');
-      check('Chýbajú metadáta', 'Missing Metadata', summary.with_metadata, 'extract_all_metadata');
-      check('Nie je v priečinku', 'Not Synced', summary.synced, 'gdrive_sync');
-      check('Neštandardný názov', 'Not Standard Named', summary.standard_named, 'rename_documents_to_standard');
-      check('Chýba dátum', 'Missing Date', summary.with_date, 'extract_document_metadata');
-      check('Chýba inštitúcia', 'Missing Institution', summary.with_institution, 'extract_document_metadata');
-
-      if (gaps.length === 0) {
-        panel.style.display = 'none';
-        return;
-      }
-
-      panel.style.display = 'block';
-      gaps.forEach(function(g) {
-        var row = document.createElement('div');
-        row.className = 'remedy-row';
-
-        var lbl = document.createElement('span');
-        lbl.className = 'remedy-label';
-        setI18n(lbl, g.sk, g.label);
-        row.appendChild(lbl);
-
-        var cnt = document.createElement('span');
-        cnt.className = 'remedy-count';
-        cnt.textContent = g.missing;
-        row.appendChild(cnt);
-
-        var act = document.createElement('span');
-        act.className = 'remedy-action';
-        act.textContent = g.tool;
-        row.appendChild(act);
-
-        rowsEl.appendChild(row);
-      });
-    }
-
-    function updateFilterCounts(summary) {
-      var total = summary.total || 0;
-      var counts = {
-        'all': total,
-        'incomplete': total - (summary.fully_complete || 0),
-        'missing_ocr': total - (summary.with_ocr || 0),
-        'missing_ai': total - (summary.with_ai || 0),
-        'missing_metadata': total - (summary.with_metadata || 0),
-        'missing_date': total - (summary.with_date || 0),
-        'missing_institution': total - (summary.with_institution || 0),
-        'not_synced': total - (summary.synced || 0),
-        'not_renamed': total - (summary.standard_named || 0),
-      };
-      document.querySelectorAll('.pill').forEach(function(pill) {
-        var filter = pill.dataset.filter;
-        var count = counts[filter];
-        // Remove existing count badge
-        var existing = pill.querySelector('.pill-count');
-        if (existing) pill.removeChild(existing);
-        // Add count badge
-        if (count !== undefined) {
-          var badge = document.createElement('span');
-          badge.className = 'pill-count';
-          badge.textContent = count;
-          pill.appendChild(badge);
-        }
-      });
     }
 
     function updateLastRefreshed() {
@@ -3340,72 +3508,6 @@
       });
     }
 
-    // ── Reconciliation ───────────────────────────────────────────────────
-
-    function renderReconciliation(data) {
-      var panel = document.getElementById('recon-panel');
-      var summaryEl = document.getElementById('recon-summary');
-      var issuesEl = document.getElementById('recon-issues');
-      clearEl(summaryEl);
-      clearEl(issuesEl);
-
-      var hasIssues = !data.healthy ||
-        (data.in_db_not_gdrive && data.in_db_not_gdrive.length > 0) ||
-        (data.in_gdrive_not_db && data.in_gdrive_not_db.length > 0) ||
-        (data.filename_mismatch && data.filename_mismatch.length > 0);
-
-      if (!hasIssues) {
-        panel.style.display = 'none';
-        return;
-      }
-
-      panel.style.display = 'block';
-
-      var items = [
-        { label: 'DB docs', value: data.db_count },
-        { label: 'GDrive files', value: data.gdrive_count },
-      ];
-      items.forEach(function(it) {
-        var s = document.createElement('span');
-        var v = document.createElement('strong');
-        v.style.color = 'var(--accent)';
-        v.textContent = it.value;
-        s.appendChild(v);
-        s.appendChild(document.createTextNode(' ' + it.label));
-        summaryEl.appendChild(s);
-      });
-
-      if (data.healthy) {
-        var ok = document.createElement('span');
-        ok.style.color = 'var(--green)';
-        ok.textContent = 'All synced';
-        summaryEl.appendChild(ok);
-      }
-
-      function addIssueSection(title, items, cols) {
-        if (!items || items.length === 0) return;
-        var h = document.createElement('div');
-        h.style.cssText = 'font-size:0.8125rem;font-weight:600;margin:0.75rem 0 0.25rem;color:var(--red)';
-        h.textContent = title + ' (' + items.length + ')';
-        issuesEl.appendChild(h);
-        items.forEach(function(item) {
-          var row = document.createElement('div');
-          row.className = 'sync-row';
-          cols.forEach(function(col) {
-            var sp = document.createElement('span');
-            sp.style.cssText = 'font-size:0.75rem;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
-            sp.textContent = item[col] || '-';
-            row.appendChild(sp);
-          });
-          issuesEl.appendChild(row);
-        });
-      }
-
-      addIssueSection('In DB but missing from GDrive', data.in_db_not_gdrive, ['filename', 'gdrive_id']);
-      addIssueSection('In GDrive but not in DB (orphans)', data.in_gdrive_not_db, ['name', 'gdrive_id']);
-      addIssueSection('Filename mismatch', data.filename_mismatch, ['db_filename', 'gdrive_filename']);
-    }
-
     // ── Analytics renderer ─────────────────────────────────────────────
 
     function renderAnalytics(data) {
@@ -3418,7 +3520,7 @@
       var days = data.days || 30;
       var endDate = new Date();
       var startDate = new Date(endDate - days * 86400000);
-      var lang = window._dashLang || 'sk';
+      var lang = dashLang || 'sk';
       var tfEl = document.getElementById('ana-timeframe');
       if (tfEl) {
         var fmt = function(d) { return d.toLocaleDateString(lang === 'sk' ? 'sk-SK' : 'en-US', {month:'short', day:'numeric'}); };
@@ -3606,7 +3708,7 @@
 
       var rows = (data && data.leaderboard) || [];
       if (rows.length === 0) {
-        body.textContent = (window._dashLang === 'sk' ? 'Žiadne dáta' : 'No data');
+        body.textContent = (dashLang === 'sk' ? 'Žiadne dáta' : 'No data');
         body.style.color = 'var(--text-muted)';
         return;
       }
@@ -3638,7 +3740,7 @@
         var pid = r.patient_id;
         var isSentinel = !pid || String(pid).indexOf('__') === 0;
         if (!isSentinel) {
-          row.title = (window._dashLang === 'sk' ? 'Klikni pre detail' : 'Click to drill in');
+          row.title = (dashLang === 'sk' ? 'Klikni pre detail' : 'Click to drill in');
           row.onclick = (function (clickedPid) { return function () { switchPatient(clickedPid); }; })(pid);
         } else {
           row.style.cursor = 'default';
@@ -3691,7 +3793,7 @@
         'padding:0.5rem 0.5rem 0;margin-top:0.25rem;font-size:0.8125rem;font-weight:600;' +
         'border-top:1px solid var(--border)';
       var totalLabel = document.createElement('span');
-      totalLabel.textContent = (window._dashLang === 'sk' ? 'Spolu' : 'Total') +
+      totalLabel.textContent = (dashLang === 'sk' ? 'Spolu' : 'Total') +
         ' (' + (data.patient_count || rows.length) + ' patients, ' + (data.days || 30) + 'd)';
       footer.appendChild(totalLabel);
       footer.appendChild(document.createElement('span'));
@@ -3706,14 +3808,6 @@
 
     // ── Event Listeners ──────────────────────────────────────────────────
 
-    document.getElementById('filters').addEventListener('click', function(e) {
-      if (!e.target.classList.contains('pill')) return;
-      document.querySelectorAll('.pill').forEach(function(p) { p.classList.remove('active'); });
-      e.target.classList.add('active');
-      currentFilter = e.target.dataset.filter;
-      refresh();
-    });
-
     document.querySelectorAll('th[data-sort]').forEach(function(th) {
       th.addEventListener('click', function() {
         var col = th.dataset.sort;
@@ -3721,17 +3815,36 @@
           sortAsc = !sortAsc;
         } else {
           sortCol = col;
-          sortAsc = true;
+          // dates open newest first, text columns A to Z
+          sortAsc = !(col === 'uploaded_at' || col === 'date');
         }
-        document.querySelectorAll('th .sort-arrow').forEach(function(a) { a.textContent = ''; });
+        document.querySelectorAll('th[data-sort]').forEach(function(other) {
+          other.removeAttribute('aria-sort');
+          other.querySelector('.sort-arrow').textContent = '';
+        });
+        th.setAttribute('aria-sort', sortAsc ? 'ascending' : 'descending');
         th.querySelector('.sort-arrow').textContent = sortAsc ? '\u25B2' : '\u25BC';
         renderTable();
       });
     });
 
+    // Escape or a click on the backdrop closes the Connect-AI dialog (it holds
+    // nothing a person could lose). The patient wizard stays open on purpose.
+    document.addEventListener('keydown', function(e) {
+      if (e.key !== 'Escape') return;
+      var share = document.getElementById('share-overlay');
+      if (share && share.classList.contains('active')) { hideShareModal(); return; }
+      var pop = document.getElementById('integration-popover');
+      if (pop && pop.style.display === 'block') pop.style.display = 'none';
+    });
+    document.getElementById('share-overlay').addEventListener('click', function(e) {
+      if (e.target === this) hideShareModal();
+    });
+
     /* ── Bug Report ──────────────────────────────────────────────────── */
     (function() {
       var fab = document.getElementById('bug-fab');
+      if (!fab) return;  // the demo page has no bug report
       var overlay = document.getElementById('bug-overlay');
       var screenshot = document.getElementById('bug-screenshot');
       var pasteZone = document.getElementById('bug-paste-zone');
@@ -3757,9 +3870,9 @@
       function collectPageState() {
         // Only collect safe numeric/structural metadata — never raw text content
         return JSON.stringify({
-          sync_history_rows: document.querySelectorAll('.sync-history tr').length,
-          document_rows: document.querySelectorAll('#doc-table-body tr').length,
-          current_filter: typeof currentFilter !== 'undefined' ? currentFilter : '',
+          activity_rows: document.querySelectorAll('.activity-row').length,
+          document_rows: document.querySelectorAll('#doc-tbody .doc-row').length,
+          current_filter: typeof docFilter !== 'undefined' ? docFilter : '',
           card_count: document.querySelectorAll('.card').length,
           viewport: window.innerWidth + 'x' + window.innerHeight
         }, null, 2);

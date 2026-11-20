@@ -432,8 +432,9 @@ def test_wizard_token_is_opt_in():
     assert "'/api/patient-tokens'" in gen and "patient_id: wizardPatientUuid" in gen
     assert ".textContent = wizardBearerToken" in gen and "innerHTML" not in gen
     # Only an explicit click reaches the endpoint: the wizard's generate
-    # button and the share modal's regenerate button.
-    assert js.count("'/api/patient-tokens'") == 2
+    # button. (The Connect-AI dialog mints its token through /api/share-link;
+    # the header's "regenerate" button went with the MCP bar in the redesign.)
+    assert js.count("'/api/patient-tokens'") == 1
     assert "wizardGenerateToken()" not in js.replace("function wizardGenerateToken()", "")
 
 

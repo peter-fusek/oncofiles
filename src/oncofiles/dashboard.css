@@ -491,107 +491,94 @@
     }
     .error-banner.visible { display: flex; align-items: center; justify-content: space-between; }
 
-    /* MCP connection bar */
-    .mcp-bar {
-      display: flex;
-      align-items: center;
-      gap: 0.5rem 1.5rem;
-      padding: 0.5rem 1rem;
-      background: var(--card);
-      border: 1px solid var(--border);
-      border-radius: 10px;
-      margin: 0.75rem 0;
-      font-size: 0.8125rem;
-      flex-wrap: wrap;
-    }
-    .mcp-bar-item { display: flex; align-items: center; gap: 0.5rem; min-width: 0; }
-    .mcp-bar-label { color: var(--text-muted); font-weight: 600; font-size: 0.75rem; }
-    .mcp-bar code { background: var(--bg-2); border: 1px solid var(--border); padding: 0.1875rem 0.5rem; border-radius: 6px; font-size: 0.75rem; color: var(--ink); white-space: nowrap; }
-    @media (max-width: 768px) { .mcp-bar { flex-direction: column; align-items: flex-start; gap: 0.5rem; } }
+    /* Page head */
+    .overview { margin-top: 1.5rem; }
+    .page-title { font: 700 1.875rem/1.15 var(--display); letter-spacing: -0.025em; color: var(--ink); }
+    .page-lead { color: var(--ink-2); font-size: 0.9375rem; margin: 0.375rem 0 0; max-width: 46rem; }
+    .section-head { display: flex; align-items: baseline; gap: 0.75rem; flex-wrap: wrap; margin-bottom: 0.5rem; }
+    .section-head h2 { font: 700 1.375rem/1.2 var(--display); letter-spacing: -0.02em; color: var(--ink); }
+    .section-meta { font: 0.8125rem var(--num); color: var(--ink-2); font-variant-numeric: tabular-nums; }
+    .section-lead { color: var(--ink-2); font-size: 0.875rem; margin: 0 0 0.75rem; max-width: 46rem; }
+    .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 
-    /* Stat tiles: a quiet label, a big plain numeral */
+    /* Overview tiles: a big plain numeral over a quiet label. Each tile is
+       also the filter of the document list (a button with aria-pressed). */
     .cards {
       display: grid;
-      grid-template-columns: repeat(5, 1fr);
+      grid-template-columns: repeat(4, 1fr);
       gap: 0.75rem;
-      margin: 1rem 0 1.25rem;
+      margin: 1rem 0 0.75rem;
     }
     .card {
       background: var(--surface);
-      border: 1px solid var(--border);
+      border: 1.5px solid var(--border);
       border-radius: 12px;
       padding: 0.875rem 1rem;
       display: flex;
-      flex-direction: column-reverse;
-      justify-content: flex-end;
-      gap: 0.125rem;
+      flex-direction: column;
+      gap: 0.25rem;
       min-width: 0;
+      text-align: left;
+      color: var(--ink);
     }
+    button.card { cursor: pointer; transition: border-color 0.15s, background-color 0.15s, color 0.15s; }
+    button.card:hover { border-color: var(--ink); }
+    button.card.is-active { background: #000059; border-color: #000059; color: #ffffff; }
     .card .value {
       font: 600 2rem/1.1 var(--num);
       font-variant-numeric: tabular-nums;
       letter-spacing: -0.01em;
-      color: var(--ink);
       overflow-wrap: anywhere;
     }
     .card .label {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4375rem;
       font-size: 0.8125rem;
       font-weight: 500;
       color: var(--text-muted);
     }
+    button.card.is-active .label { color: #d6dcf0; }
+    .card.has-items:not(.is-active) { border-color: var(--warn); }
+    .card.has-items:not(.is-active) .value { color: var(--warn); }
     .card.warning, .card.danger { border-left-width: 4px; }
     .card.warning { border-left-color: var(--warn); }
     .card.warning .value { color: var(--warn); }
     .card.danger { border-left-color: var(--err); }
     .card.danger .value { color: var(--err); }
+    .pending-note { display: flex; align-items: center; gap: 0.5rem; font-size: 0.875rem; color: var(--ink-2); margin: 0 0 0.25rem; }
+    .pending-note[hidden] { display: none; }
+
+    /* State marks: the state is a shape, never colour alone.
+       Ready = filled disc, in progress = hollow ring, needs attention = diamond. */
+    .state-mark { display: inline-block; flex: none; width: 0.625rem; height: 0.625rem; box-sizing: border-box; }
+    .state-mark.ready { border-radius: 50%; background: var(--ok); }
+    .state-mark.progress { border-radius: 50%; border: 2px solid var(--ink-3); background: transparent; }
+    .state-mark.attention { background: var(--warn); transform: rotate(45deg); width: 0.5625rem; height: 0.5625rem; margin: 0 0.0625rem; }
+    button.card.is-active .state-mark.ready { background: var(--turq); }
+    button.card.is-active .state-mark.progress { border-color: #d6dcf0; }
+    button.card.is-active .state-mark.attention { background: var(--peach); }
 
     /* Panels */
-    .funnel, .remedies, .sync-history, .panel {
+    .panel {
       background: var(--surface);
       border: 1px solid var(--border);
       border-radius: 12px;
       padding: 1.125rem 1.25rem;
       margin-bottom: 1.25rem;
     }
-    .sync-history { margin-bottom: 1.25rem; }
-    .funnel h2, .remedies h2, .sync-history h2, .panel-title {
-      font: 700 1.1875rem/1.2 var(--display);
-      letter-spacing: -0.015em;
-      color: var(--ink);
-      margin-bottom: 0.75rem;
-    }
-    .sync-history h2 .chevron { color: var(--ink-3); }
-    .funnel-row {
-      display: flex;
-      align-items: center;
-      margin-bottom: 0.5rem;
-      font-size: 0.875rem;
-    }
-    .funnel-label { width: 110px; color: var(--text-muted); flex-shrink: 0; }
-    .funnel-bar-bg {
-      flex: 1;
-      height: 14px;
-      background: var(--slate-200);
-      border-radius: 7px;
-      overflow: hidden;
-      margin: 0 0.75rem;
-    }
-    .funnel-bar {
-      height: 100%;
-      border-radius: 7px;
-      transition: width 0.4s ease;
-      background: var(--turq);
-    }
-    .funnel-bar.complete { background: #000059; }
-    .funnel-count { width: 40px; text-align: right; font: 600 0.875rem var(--num); font-variant-numeric: tabular-nums; color: var(--ink); }
+    .docs-section { margin: 1.5rem 0 1.25rem; }
+    .docs-toolbar { display: flex; gap: 0.625rem; align-items: center; flex-wrap: wrap; margin-bottom: 0.625rem; }
+    .docs-toolbar #doc-search { flex: 1 1 16rem; width: auto; }
+    .docs-toolbar .copy-btn { padding: 0.3125rem 0.75rem; font-size: 0.8125rem; min-height: 2.5rem; }
+    .steps-legend { list-style: none; display: flex; flex-wrap: wrap; gap: 0.375rem 1.25rem; font-size: 0.8125rem; color: var(--ink-2); margin: 0 0 0.75rem; }
+    .steps-legend li { display: inline-flex; align-items: center; gap: 0.4375rem; }
+    .steps-legend strong { color: var(--ink); font-weight: 600; }
+    /* the landing's chapter mark: a turquoise disc with a navy numeral */
+    .legend-num { display: inline-flex; align-items: center; justify-content: center; width: 1.375rem; height: 1.375rem; border-radius: 50%; background: var(--turq); font: 700 0.75rem/1 var(--num); color: #000059; flex: none; }
+    .legend-key { margin-left: auto; }
 
-    /* Filter pills */
-    .filters {
-      display: flex;
-      gap: 0.5rem;
-      flex-wrap: wrap;
-      margin-bottom: 0.875rem;
-    }
+    /* Pills (the job-group filter in the admin panel) */
     .pill {
       display: inline-flex;
       align-items: center;
@@ -609,19 +596,6 @@
     }
     .pill:hover { border-color: var(--ink); }
     .pill.active { background: #000059; color: #ffffff; border-color: #000059; font-weight: 600; }
-    .pill-count {
-      display: inline-block;
-      background: var(--slate-100);
-      color: var(--ink-2);
-      border-radius: 9999px;
-      padding: 0 0.4375rem;
-      font: 600 0.75rem/1.5 var(--num);
-      margin-left: 0.375rem;
-      min-width: 1.25rem;
-      text-align: center;
-      pointer-events: none;
-    }
-    .pill.active .pill-count { background: #ffffff; color: #000059; }
 
     /* Document table */
     .table-wrap {
@@ -653,6 +627,29 @@
     }
     tr:last-child td { border-bottom: none; }
     tbody tr:hover td { background: var(--bg-2); }
+    /* A document row opens its detail in place: the chevron says so */
+    .doc-row { cursor: pointer; }
+    .doc-row:focus-visible { outline-offset: -3px; }
+    .col-toggle { width: 2.25rem; padding-right: 0; cursor: default; }
+    th.col-toggle { cursor: default; }
+    .row-chevron, .admin-head .chevron {
+      display: inline-block; width: 0.5rem; height: 0.5rem; flex: none;
+      border-right: 2px solid var(--ink); border-bottom: 2px solid var(--ink);
+      transform: rotate(-45deg); transition: transform 0.15s; margin: 0 0.25rem 0.0625rem 0.125rem;
+    }
+    .doc-row.is-open .row-chevron, .admin-head[aria-expanded="true"] .chevron { transform: rotate(45deg); }
+    .doc-row.is-open td { background: var(--slate-100); border-bottom-color: transparent; font-weight: 600; }
+    .doc-row.is-open td:first-child { box-shadow: inset 4px 0 0 var(--coral); }
+    .cell-inst, .cell-date { color: var(--ink-2); font-size: 0.8125rem; }
+    .cell-stage { white-space: nowrap; }
+    .stage-box { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; }
+    .stage-chip { display: inline-flex; align-items: center; gap: 0.4375rem; font: 600 0.8125rem/1.3 var(--sans); color: var(--ink); }
+    .stage-chip.progress { color: var(--ink-2); font-weight: 500; }
+    .stage-chip.attention { color: var(--warn); }
+    /* One short bar per step: filled = done, hollow = waiting */
+    .step-track { display: inline-flex; gap: 0.1875rem; flex: none; }
+    .step-mark { display: inline-block; width: 0.875rem; height: 0.4375rem; border-radius: 0.25rem; border: 1.5px solid var(--rule-2); background: transparent; box-sizing: border-box; flex: none; }
+    .step-mark.done { background: var(--turq); border-color: var(--turq-dark); }
     /* Step done / not done: a filled disc against a hollow ring (shape, not only colour) */
     .dot {
       display: inline-block;
@@ -665,9 +662,9 @@
     .dot.green { background: var(--ok); }
     .dot.red { background: transparent; border: 2px solid var(--err); }
     .dot.amber { background: var(--warn); border-radius: 2px; }
-    .filename { max-width: 300px; overflow: hidden; text-overflow: ellipsis; font-family: var(--num); }
-    .filename a { color: var(--text); text-decoration: none; }
-    .filename a:hover { text-decoration: underline; }
+    .filename { min-width: 13rem; max-width: 24rem; white-space: normal; font-family: var(--sans); font-weight: 500; color: var(--ink); }
+    /* Long standard names wrap onto a second line instead of losing their end */
+    .filename-text { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; overflow-wrap: anywhere; line-height: 1.3; }
     .category-badge, .doc-meta-tag {
       display: inline-block;
       background: var(--slate-100);
@@ -690,9 +687,21 @@
       white-space: normal;
     }
     /* Document detail split-pane */
+    .doc-detail-cols { display: flex; gap: 1rem; }
+    .detail-steps { margin-bottom: 1rem; padding-bottom: 0.875rem; border-bottom: 1px solid var(--border); }
+    .detail-steps h4 { font: 700 1rem/1.2 var(--display); color: var(--ink); margin-bottom: 0.5rem; }
+    .step-list { list-style: none; display: grid; gap: 0.3125rem; font: 0.875rem/1.45 var(--sans); color: var(--ink-2); }
+    .step-list li { display: flex; align-items: baseline; gap: 0.5rem; }
+    .step-list li .step-mark { transform: translateY(-0.0625rem); }
+    .step-list li.done strong { color: var(--ink); }
+    .step-list li.todo strong { color: var(--ink-2); font-weight: 600; }
+    .step-list li.final { margin-top: 0.25rem; padding-top: 0.375rem; border-top: 1px dashed var(--rule-2); }
+    .step-list li.final.done strong { color: var(--ok); }
+    .step-list li.final.attention strong { color: var(--warn); }
+    .step-list li.final.attention .step-mark { border-color: var(--warn); border-radius: 0; transform: rotate(45deg) scale(0.7); width: 0.625rem; height: 0.625rem; background: var(--warn); }
+    .detail-drive-link { display: inline-block; align-self: flex-start; padding: 0.4375rem 0.875rem; background: var(--coral); color: #000059; border-radius: 8px; font: 700 0.8125rem/1.3 var(--sans); text-decoration: none; }
+    .detail-drive-link:hover { background: #ff6b6b; }
     .doc-detail-panel {
-      display: flex;
-      gap: 1rem;
       padding: 1rem 2.75rem 1rem 1rem;
       background: var(--surface);
       border: 1px solid var(--border);
@@ -738,18 +747,9 @@
     .doc-detail-right {
       flex: 1.3 1 0;
       min-width: 0;
-      max-height: 480px;
-      overflow-y: auto;
       display: flex;
       flex-direction: column;
       gap: 0.75rem;
-    }
-    .doc-detail-right::-webkit-scrollbar {
-      width: 6px;
-    }
-    .doc-detail-right::-webkit-scrollbar-thumb {
-      background: var(--rule-2);
-      border-radius: 3px;
     }
     .doc-ocr-page {
       background: var(--bg-deep);
@@ -771,7 +771,7 @@
       word-break: break-word;
       user-select: text;
       color: var(--text);
-      max-height: 200px;
+      max-height: 18rem;
       overflow-y: auto;
     }
     .doc-meta-section {
@@ -835,30 +835,6 @@
       .doc-detail-left iframe {
         height: 280px;
       }
-      .doc-detail-right {
-        max-height: none;
-      }
-    }
-
-    /* Remedies panel */
-    .remedy-row {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      padding: 0.5rem 0;
-      border-bottom: 1px solid var(--border);
-      font-size: 0.875rem;
-    }
-    .remedy-row:last-child { border-bottom: none; }
-    .remedy-label { color: var(--text-muted); flex: 1; }
-    .remedy-count { font: 600 0.875rem var(--num); color: var(--warn); margin: 0 0.5rem; }
-    .remedy-action {
-      font-family: var(--num);
-      font-size: 0.75rem;
-      background: var(--slate-100);
-      padding: 0.125rem 0.5rem;
-      border-radius: 6px;
-      color: var(--ink-2);
     }
 
     /* Sync history */
@@ -891,20 +867,31 @@
     footer > a, footer > span a { display: inline-block; padding: 0.75rem 0.25rem; }
 
     /* Responsive */
+    /* Narrow windows: the status column must stay in view, so institution and
+       document date move into the row detail first */
+    @media (max-width: 1023px) {
+      #doc-table th:nth-child(4), #doc-table .doc-row td:nth-child(4),
+      #doc-table th:nth-child(5), #doc-table .doc-row td:nth-child(5) { display: none; }
+      .cell-stage { white-space: normal; }
+      .stage-box { flex-wrap: wrap; gap: 0.25rem 0.75rem; }
+    }
     @media (max-width: 768px) {
       .cards { grid-template-columns: repeat(2, 1fr); }
-      .funnel-label { width: 84px; font-size: 0.8125rem; }
-      .filename { max-width: 160px; }
+      .filename { min-width: 9rem; max-width: none; }
+      .legend-key { margin-left: 0; }
       td { padding: 0.75rem 0.75rem; }
       .header-right { gap: 0.5rem; flex-wrap: wrap; }
       .header-top { flex-wrap: wrap; }
       .header-account { flex-wrap: wrap; }
       .version { display: none; }
       .patient-controls { flex-wrap: wrap; gap: 0.375rem; }
-      .mcp-bar code { max-width: 180px; overflow: hidden; text-overflow: ellipsis; }
-      /* Table: horizontal scroll for 11 columns */
+      /* Tablets and phones: name, upload date and status stay in view; category,
+         institution and document date are in the row detail */
       .table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
-      #doc-table { min-width: 900px; }
+      #doc-table th:nth-child(3), #doc-table .doc-row td:nth-child(3) { display: none; }
+      #doc-table { min-width: 0; }
+      .cell-stage { white-space: normal; }
+      .doc-detail-cols { flex-direction: column; }
       /* Schedule rows: wrap on mobile */
       #sched-jobs > div { flex-wrap: wrap; gap: 0.375rem !important; }
     }
@@ -914,14 +901,8 @@
       .logo { font-size: 1.375rem; }
       .card .value { font-size: 1.625rem; }
       td { padding: 0.75rem 0.5rem; font-size: 0.8125rem; }
-      .funnel-label { width: 76px; font-size: 0.75rem; }
-      .funnel-bar-bg { margin: 0 0.5rem; }
-      /* Hide less important table columns on small screens */
-      #doc-table th:nth-child(3), #doc-table td:nth-child(3) { display: none; } /* Institution text */
-      #doc-table th:nth-child(7), #doc-table td:nth-child(7) { display: none; } /* Meta dot */
-      #doc-table th:nth-child(8), #doc-table td:nth-child(8) { display: none; } /* Date dot */
-      #doc-table th:nth-child(9), #doc-table td:nth-child(9) { display: none; } /* Inst dot */
-      #doc-table { min-width: 600px; }
+      .filename { min-width: 0; max-width: none; }
+      .step-track { display: none; }
     }
 
     .user-info {
@@ -982,10 +963,9 @@
       border-radius: 6px;
     }
     .card .value.skeleton { height: 2rem; width: 3rem; color: transparent; }
-    .funnel-row.skeleton .funnel-bar { background: var(--surface); }
     @media (prefers-reduced-motion: reduce) {
       .skeleton, .connection-dot.loading, .wizard-spinner { animation: none; }
-      .funnel-bar { transition: none; }
+      .row-chevron, .admin-head .chevron { transition: none; }
     }
     .auth-error {
       color: var(--err);
@@ -1006,10 +986,6 @@
       font-size: 0.8125rem;
       font-weight: 600;
     }
-    #next-sync {
-      font-style: italic;
-    }
-
     /* #525: the hover class that replaced the inline onmouseover/onmouseout pair. */
     .teal-hover {
       transition: background-color 0.18s ease;
@@ -1104,10 +1080,11 @@
       .sync-row { flex-wrap: wrap; gap: 0.25rem 0.75rem; }
       .sync-time { width: auto; }
       #analytics-cards { grid-template-columns: repeat(2, 1fr) !important; }
-      .remedy-row { flex-wrap: wrap; gap: 0.25rem 0.5rem; }
-      .remedy-action { overflow-wrap: anywhere; }
       #patient-select { max-width: 100%; }
-      .funnel, .remedies, .sync-history, .panel { padding: 1rem; }
+      .panel, .admin-body { padding: 1rem; }
+      .page-title { font-size: 1.5rem; }
+      .activity-row { grid-template-columns: auto 1fr; }
+      .activity-row .activity-text, .activity-row .activity-meta { grid-column: 2; }
     }
 
     /* #573 verify-only re-read console (admin only) */
@@ -1148,12 +1125,66 @@
       .lang-switcher button { min-width: 2.75rem; }
       .svc-badge { min-height: 2.75rem; padding: 0 0.75rem; }
       .doc-detail-panel .detail-close { min-width: 2.75rem; min-height: 2.75rem; }
-      /* Filter pills: one scrolling row instead of five wrapped rows */
-      .filters { flex-wrap: nowrap; overflow-x: auto; -webkit-overflow-scrolling: touch; padding-bottom: 0.375rem; }
       .pill { flex: none; }
-      .sync-history h2[data-action] { min-height: 2.75rem; display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0; }
+      .admin-head, .doc-row td { min-height: 2.75rem; }
       .wizard-panel { padding: 1.25rem; }
       .wizard-panel summary { min-height: 2.75rem; display: flex; align-items: center; }
     }
     /* #852: waitlist notice shown instead of the wizard while onboarding is closed */
     .onboarding-closed-link { display: inline-flex; align-items: center; text-decoration: none; }
+
+    /* One event log */
+    .activity-row { display: grid; grid-template-columns: auto 10.5rem 1fr auto; align-items: baseline; gap: 0.25rem 0.75rem; padding: 0.4375rem 0; font-size: 0.875rem; border-bottom: 1px solid var(--border); }
+    .activity-row:last-child { border-bottom: none; }
+    .activity-row .state-mark { align-self: center; }
+    .activity-time { font: 0.8125rem var(--num); font-variant-numeric: tabular-nums; color: var(--ink-2); }
+    .activity-text { color: var(--ink); }
+    .activity-meta { font-size: 0.8125rem; color: var(--ink-3); }
+    .activity-empty { padding: 0.5rem 0; color: var(--ink-2); font-size: 0.875rem; }
+    .activity-more { margin-top: 0.75rem; padding: 0.3125rem 0.75rem; font-size: 0.8125rem; min-height: 2rem; }
+
+    /* Administration: visibly a different zone from the patient's own view */
+    .admin-area { margin: 2rem 0 1.25rem; padding: 1.125rem 1.25rem 0.5rem; border: 1.5px dashed var(--rule-2); border-radius: 12px; background: var(--slate-100); }
+    .admin-panel { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; margin-bottom: 0.75rem; }
+    .admin-head { display: flex; align-items: center; gap: 0.5rem; width: 100%; background: transparent; border: none; text-align: left; padding: 0.75rem 1rem; font: 700 1rem/1.25 var(--display); letter-spacing: -0.01em; color: var(--ink); cursor: pointer; border-radius: 10px; }
+    .admin-head:hover { background: var(--bg-2); }
+    .admin-body { padding: 0.25rem 1rem 1rem; border-top: 1px solid var(--border); }
+    .admin-body[hidden] { display: none; }
+    .admin-body > div + div { margin-top: 1.25rem; }
+    #analytics-cards .card { border-width: 1px; }
+
+    /* Footer line */
+    .foot-disclaimer { font-size: 0.78rem; color: var(--text-dim); margin: 0 0 0.75rem; padding: 0.6rem 0.9rem; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); font-style: italic; text-align: left; }
+    footer .version { display: inline; }
+    .ip-value a { color: var(--link); text-decoration: underline; text-underline-offset: 3px; }
+
+    /* Demo page (/demo): the same dashboard with an invented patient */
+    .demo-banner { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem 1rem; flex-wrap: wrap; }
+    .demo-banner-links { display: inline-flex; align-items: center; gap: 1rem; flex-wrap: wrap; }
+    .demo-banner-links .btn-primary { text-decoration: none; display: inline-flex; align-items: center; }
+    .demo-signin { display: inline-flex; align-items: center; text-decoration: none; }
+    header .demo-signin:hover { background: #ffffff; border-color: #ffffff; color: #000059; }
+    .demo-toast { position: fixed; left: 50%; bottom: 1.5rem; transform: translateX(-50%); z-index: 1200; max-width: min(34rem, calc(100vw - 2rem)); background: #000059; color: #ffffff; border-radius: 10px; padding: 0.75rem 1rem; font-size: 0.875rem; line-height: 1.45; box-shadow: 0 14px 30px -14px rgba(0, 0, 64, 0.6); display: none; }
+    .demo-toast.visible { display: block; }
+    .demo-foot { text-align: center; font-size: 0.8125rem; color: var(--ink-2); padding: 0 1rem 2rem; }
+    /* Opt-in analytics banner: only the demo page has its markup (#700) */
+    .cookie-banner { position: fixed; left: 12px; right: 12px; bottom: 12px; z-index: 1002; max-width: 760px; margin: 0 auto; display: flex; flex-wrap: wrap; align-items: center; gap: 10px 18px; padding: 16px 18px; background: #ffffff; color: #000059; border: 2px solid #000059; border-radius: 14px; font-size: 0.9rem; line-height: 1.5; }
+    .cookie-banner[hidden] { display: none; }
+    .cookie-banner p { flex: 1 1 320px; margin: 0; max-width: none; color: #475569; }
+    .cookie-banner a { color: #000059; }
+    .cookie-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+    .cookie-btn { min-height: 44px; font: 700 0.9rem/1.2 var(--sans); padding: 9px 16px; border-radius: 10px; border: 2px solid #000059; background: #ffffff; color: #000059; cursor: pointer; }
+    .cookie-btn:hover { background: #000059; color: #ffffff; }
+    @media (max-width: 480px) { .cookie-actions { width: 100%; } .cookie-btn { flex: 1 1 0; } }
+
+    /* Connect-AI dialog */
+    .share-lead { color: var(--ink-2); font-size: 0.875rem; margin-bottom: 1.25rem; }
+    .share-label { display: block; font-size: 0.8125rem; font-weight: 600; color: var(--ink); margin-bottom: 0.25rem; }
+    .share-note { font-size: 0.8125rem; color: var(--ink-2); margin: 0 0 0.5rem; }
+    .share-tab-content { font-size: 0.875rem; color: var(--ink-2); line-height: 1.6; }
+    .share-steps { margin: 0 0 0 1.25rem; padding: 0; }
+    .share-steps li { margin-bottom: 0.25rem; }
+    .share-pre { background: var(--bg-2); border: 1px solid var(--border); border-radius: 8px; padding: 0.75rem; margin-top: 0.5rem; font-size: 0.75rem; overflow-x: auto; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--ink); }
+    .share-token-box { border-top: 1px solid var(--border); padding-top: 1rem; margin-bottom: 1rem; }
+    .share-token-box .wizard-btn-secondary { padding: 0.4375rem 0.875rem; font-size: 0.875rem; }
+    header .archive-patient-btn.armed { border-color: var(--peach); color: var(--peach); border-width: 2px; }
