@@ -102,6 +102,29 @@ class CuratedMixin(DatabaseBase):
         ) as cursor:
             return [dict(r) for r in await cursor.fetchall()]
 
+    async def list_reocr_run_activity(self, *, patient_id: str, limit: int = 30) -> list[dict]:
+        """Real re-OCR jobs of one patient, newest first, as counts only.
+
+        For the dashboard activity log next to ``list_curated_run_activity``:
+        a re-OCR rewrites a sidecar with a better reading (``rewritten``) or
+        keeps the old text and stores the new one as a candidate (``review``).
+        Dry runs are left out. Only the counts leave SQLite, never the report.
+        """
+        report = "CASE WHEN json_valid(report_json) THEN report_json END"
+        result = "CASE WHEN d.type = 'object' THEN json_extract(d.value, '$.result') END"
+        async with self.db.execute(
+            f"""SELECT id, trigger, status, started_at, finished_at,
+                   (SELECT COUNT(*) FROM json_each({report}, '$.documents') AS d
+                     WHERE {result} = 'rewritten') AS rewritten,
+                   (SELECT COUNT(*) FROM json_each({report}, '$.documents') AS d
+                     WHERE {result} = 'review') AS kept
+               FROM curated_runs
+               WHERE patient_id = ? AND dry_run = 0 AND trigger = 'reocr'
+               ORDER BY id DESC LIMIT ?""",
+            (patient_id, max(1, min(limit, 100))),
+        ) as cursor:
+            return [dict(r) for r in await cursor.fetchall()]
+
     async def get_curated_run(self, run_row_id: int, *, patient_id: str) -> dict | None:
         async with self.db.execute(
             "SELECT * FROM curated_runs WHERE id = ? AND patient_id = ?",

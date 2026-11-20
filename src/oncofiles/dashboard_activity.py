@@ -1,9 +1,11 @@
 """Counts-only activity log of one patient for the dashboard (``GET /api/activity``).
 
-Two sources, merged newest first:
+Three sources, merged newest first:
 
 * real curated runs (``curated_runs`` via ``Database.list_curated_run_activity``:
   no dry runs or previews, none of the non-run jobs),
+* real re-OCR jobs (``curated_runs`` with trigger ``reocr`` via
+  ``Database.list_reocr_run_activity``: improved vs kept-for-review counts),
 * legacy Drive syncs (``sync_history`` via ``Database.get_sync_history``).
 
 An event is a time, a kind, a normalised status, the trigger code, a duration
@@ -21,6 +23,7 @@ from datetime import UTC, datetime
 
 KIND_CURATED_RUN = "curated_run"
 KIND_DRIVE_SYNC = "drive_sync"
+KIND_TEXT_REREAD = "text_reread"  # a re-OCR job: a better reading of stored documents
 
 STATUS_OK = "ok"
 STATUS_FAILED = "failed"
@@ -50,6 +53,7 @@ CURATED_SYNC_TRIGGER = "curated"
 EVENT_KEYS = frozenset({"at", "kind", "status", "trigger", "duration_s", "counts"})
 CURATED_COUNT_KEYS = frozenset({"documents", "filed", "review", "not_processed"})
 SYNC_COUNT_KEYS = frozenset({"new", "errors"})
+REREAD_COUNT_KEYS = frozenset({"rewritten", "kept"})
 
 
 def normalise_status(raw) -> str:
@@ -144,12 +148,41 @@ def drive_sync_event(row: dict) -> tuple[datetime | None, dict] | None:
     }
 
 
-def merge(curated_runs: list[dict], drive_syncs: list[dict], *, limit: int) -> list[dict]:
-    """Both sources as one list, newest first, at most ``limit`` events.
+def text_reread_event(row: dict) -> tuple[datetime | None, dict]:
+    """One ``list_reocr_run_activity`` row as ``(start time, event)``."""
+    started = _parse_time(row.get("started_at"))
+    finished = _parse_time(row.get("finished_at"))
+    duration = (
+        _seconds((finished - started).total_seconds())
+        if started is not None and finished is not None
+        else None
+    )
+    return started, {
+        "at": iso_utc(started),
+        "kind": KIND_TEXT_REREAD,
+        "status": normalise_status(row.get("status")),
+        "trigger": trigger_code(row.get("trigger")),
+        "duration_s": duration,
+        "counts": {
+            "rewritten": _count(row.get("rewritten")),
+            "kept": _count(row.get("kept")),
+        },
+    }
+
+
+def merge(
+    curated_runs: list[dict],
+    drive_syncs: list[dict],
+    *,
+    limit: int,
+    rereads: list[dict] | None = None,
+) -> list[dict]:
+    """All sources as one list, newest first, at most ``limit`` events.
 
     An event without a readable start time sorts last.
     """
     timed = [curated_run_event(dict(r)) for r in curated_runs]
+    timed += [text_reread_event(dict(r)) for r in rereads or ()]
     timed += [e for r in drive_syncs if (e := drive_sync_event(dict(r))) is not None]
     floor = datetime.min.replace(tzinfo=UTC)
     timed.sort(key=lambda pair: pair[0] or floor, reverse=True)

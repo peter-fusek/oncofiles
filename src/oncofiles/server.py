@@ -5552,10 +5552,11 @@ async def api_activity(request: Request) -> JSONResponse:
             limit = 30
         limit = min(max(limit, 1), 100)
 
-        # One DB connection: the two reads run one after the other.
+        # One DB connection: the reads run one after the other.
         runs = await db.list_curated_run_activity(patient_id=patient_id, limit=limit)
+        rereads = await db.list_reocr_run_activity(patient_id=patient_id, limit=limit)
         syncs = await db.get_sync_history(limit=limit, patient_id=patient_id)
-        events = dashboard_activity.merge(runs, syncs, limit=limit)
+        events = dashboard_activity.merge(runs, syncs, limit=limit, rereads=rereads)
 
         pending = (probe_stats().get(patient_id) or {}).get("pending_inbox_count")
         return JSONResponse(

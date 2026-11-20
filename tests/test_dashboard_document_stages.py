@@ -698,9 +698,11 @@ async def test_activity_excludes_dry_runs_and_non_run_jobs(two_patients):
                        started_at="2027-06-04T01:00:00Z")  # fmt: skip
 
     events = (await _activity(db))["events"]
-    assert [(e["kind"], e["trigger"], e["counts"]["filed"]) for e in events] == [
-        ("curated_run", "manual", 2)
-    ]
+    # The re-OCR job is listed as a text re-read (its own event kind, own
+    # counts); every other non-run job and the dry run stay out.
+    assert [e["kind"] for e in events] == ["text_reread", "curated_run"]
+    runs = [e for e in events if e["kind"] == "curated_run"]
+    assert [(e["trigger"], e["counts"]["filed"]) for e in runs] == [("manual", 2)]
 
 
 async def test_activity_lists_a_real_curated_run_once(two_patients):
@@ -927,11 +929,13 @@ async def test_activity_makes_no_drive_or_model_call_and_awaits_in_sequence(two_
     with (
         patch.object(db, "list_curated_run_activity",
                      _tracked("runs", db.list_curated_run_activity)),
+        patch.object(db, "list_reocr_run_activity",
+                     _tracked("rereads", db.list_reocr_run_activity)),
         patch.object(db, "get_sync_history", _tracked("syncs", db.get_sync_history)),
         patch.object(server, "_create_patient_clients", clients),
     ):  # fmt: skip
         await _activity(db, A_EMAIL)
-    assert order == ["runs", "syncs"]
+    assert order == ["runs", "rereads", "syncs"]
     clients.assert_not_called()
 
 
@@ -970,6 +974,45 @@ async def test_list_curated_run_activity_is_patient_scoped(two_patients):
     assert await db.list_curated_run_activity(patient_id="") == []
     with pytest.raises(TypeError):
         await db.list_curated_run_activity(A_UUID)  # patient_id is keyword-only
+
+
+async def test_reocr_jobs_show_as_text_reread_with_counts_only(two_patients):
+    """Prod click-through (#917): a re-OCR batch that rewrote documents left no
+    trace in "Čo sa dialo". Real re-OCR jobs are now an event of their own."""
+    db = two_patients
+    report = {
+        "documents": [
+            {"document_id": 1, "result": "rewritten", "lost_codes": {"HGB": 1}},
+            {"document_id": 2, "result": "rewritten"},
+            {"document_id": 3, "result": "review", "review_reasons": ["missing_dates"]},
+        ]
+    }
+    await _curated_run(
+        db, A_UUID, trigger="reocr", report=report,
+        started_at="2027-09-14T10:00:00Z", finished_at="2027-09-14T10:40:00Z",
+    )  # fmt: skip
+    await _curated_run(db, A_UUID, trigger="reocr", dry_run=True, report=report,
+                       started_at="2027-09-15T10:00:00Z")  # fmt: skip
+    await _curated_run(db, B_UUID, trigger="reocr", report=report,
+                       started_at="2027-09-16T10:00:00Z")  # fmt: skip
+    rows = await db.list_reocr_run_activity(patient_id=A_UUID)
+    assert [(r["rewritten"], r["kept"]) for r in rows] == [(2, 1)]
+    with pytest.raises(TypeError):
+        await db.list_reocr_run_activity(A_UUID)
+    # a re-OCR is still not a folder run
+    assert await db.list_curated_run_activity(patient_id=A_UUID) == []
+
+    body = await _activity(db, A_EMAIL)
+    rereads = [e for e in body["events"] if e["kind"] == dashboard_activity.KIND_TEXT_REREAD]
+    assert len(rereads) == 1
+    assert set(rereads[0]) == dashboard_activity.EVENT_KEYS
+    assert set(rereads[0]["counts"]) == dashboard_activity.REREAD_COUNT_KEYS
+    counts = rereads[0]["counts"]
+    assert (counts["rewritten"], counts["kept"]) == (rows[0]["rewritten"], rows[0]["kept"])
+    assert rereads[0]["duration_s"] == 2400.0
+    text = json.dumps(body)
+    for leak in ("HGB", "missing_dates", "lost_codes", "review_reasons"):
+        assert leak not in text
 
 
 def test_activity_merge_puts_unreadable_times_last():
