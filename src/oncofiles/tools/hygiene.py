@@ -819,12 +819,28 @@ async def system_health(ctx: Context, patient_slug: str | None = None) -> str:
     return json.dumps(result)
 
 
+def _is_extractable(mime_type: str | None) -> bool:
+    """Can the OCR / metadata pipeline read this file type at all? (#466, #475)
+
+    The one notion of a "non-extractable" document (xlsx/docx/md/csv/…): the
+    pipeline audit skips its OCR/AI/metadata gaps, and the user-facing stage
+    (``document_stage``) treats its "text read" step as done.
+    """
+    return not mime_type or mime_type in EXTRACTABLE_MIME_TYPES
+
+
+# User-facing filters of the status matrix → the per-document flag that must be true.
+_STAGE_FILTERS = {"ready": "ready", "in_progress": "in_progress", "attention": "needs_attention"}
+
+
 async def _build_document_matrix(
     db,
     filter_param: str = "all",
     limit: int = 500,
     offset: int = 0,
     patient_id: str | None = None,
+    *,
+    truncate_names: bool = True,
 ) -> dict:
     """Build document status matrix — shared by MCP tool and HTTP API.
 
@@ -832,8 +848,28 @@ async def _build_document_matrix(
 
     The summary counts cover the entire patient's document set; the
     ``documents`` array is the paginated slice (offset + limit).
+
+    Two views of "done" live side by side:
+
+    * ``steps`` / ``ready`` / ``stage`` / ``attention_reason`` (and the summary's
+      ``ready`` / ``in_progress`` / ``attention`` / ``extracted`` / ``named`` /
+      ``filed``) come from ``document_stage``: the user-facing lifecycle
+      uploaded → extracted → named → filed → ready. **The dashboard uses
+      ``ready``.** Every document is in exactly one of ready / in_progress /
+      attention, so the three counts add up to ``total``.
+    * ``fully_complete`` keeps its legacy definition (OCR + AI summary +
+      metadata + synced + named + date + institution). It needs an AI summary,
+      which only the cloud path writes, so it does not measure readiness.
+
+    ``is_standard_name`` / ``summary.standard_named`` use the naming standard
+    that applies to the row (``document_stage.is_named``): the README contract
+    for a curated row, the legacy underscore standard for any other.
+
+    ``truncate_names``: the MCP tool keeps filenames cut to 60 characters; the
+    dashboard route passes ``False`` and gets them whole.
     """
-    from oncofiles.filename_parser import is_standard_format
+    from oncofiles import document_stage
+    from oncofiles.dashboard_activity import iso_utc
 
     limit = min(max(1, limit), 2000)
     offset = max(0, offset)
@@ -847,16 +883,37 @@ async def _build_document_matrix(
     # Pre-compute per-doc status flags for both rows and summary
     doc_statuses = []
     for doc in docs:
+        has_ocr = doc.id in ocr_ids
+        has_date = doc.document_date is not None
+        stage = document_stage.describe(
+            filename=doc.filename,
+            file_id=doc.file_id,
+            structured_metadata=doc.structured_metadata,
+            patient_id=pid,
+            has_text=has_ocr,
+            extractable=_is_extractable(doc.mime_type),
+            gdrive_id=doc.gdrive_id,
+            sync_state=doc.sync_state,
+            outside_folder=bool(doc.gdrive_parent_outside_root),
+            has_date=has_date,
+        )
         status = {
             "doc": doc,
-            "has_ocr": doc.id in ocr_ids,
+            "has_ocr": has_ocr,
             "has_ai": doc.ai_summary is not None,
             "has_metadata": bool(doc.structured_metadata),
             "is_synced": doc.gdrive_id is not None,
-            "is_standard": is_standard_format(doc.filename, patient_id=pid),
-            "has_date": doc.document_date is not None,
+            "is_standard": stage["steps"]["named"],
+            "has_date": has_date,
             "has_institution": doc.institution is not None,
+            "curated": stage["curated"],
+            "steps": stage["steps"],
+            "ready": stage["ready"],
+            "stage": stage["stage"],
+            "attention_reason": stage["attention_reason"],
+            "needs_attention": stage["attention_reason"] is not None,
         }
+        status["in_progress"] = not status["ready"] and not status["needs_attention"]
         status["fully_complete"] = all(
             [
                 status["has_ocr"],
@@ -874,6 +931,7 @@ async def _build_document_matrix(
     # has to happen after filtering, otherwise pages 2+ would skip filtered-out rows
     # silently (#419 follow-up — the old code only tracked `len(rows) >= limit`
     # and couldn't support offset correctly even if added).
+    stage_flag = _STAGE_FILTERS.get(filter_param)
     all_filtered: list[dict] = []
     for s in doc_statuses:
         doc = s["doc"]
@@ -886,13 +944,14 @@ async def _build_document_matrix(
             or (filter_param == "not_synced" and s["is_synced"])
             or (filter_param == "not_renamed" and s["is_standard"])
             or (filter_param == "incomplete" and s["fully_complete"])
+            or (stage_flag is not None and not s[stage_flag])
         )
         if skip:
             continue
         all_filtered.append(
             {
                 "id": doc.id,
-                "filename": doc.filename[:60],
+                "filename": doc.filename[:60] if truncate_names else doc.filename,
                 "category": doc.category.value,
                 "date": str(doc.document_date) if doc.document_date else None,
                 "institution": doc.institution,
@@ -905,6 +964,13 @@ async def _build_document_matrix(
                 "is_synced": s["is_synced"],
                 "is_standard_name": s["is_standard"],
                 "fully_complete": s["fully_complete"],
+                # the user-facing lifecycle (document_stage)
+                "uploaded_at": iso_utc(doc.created_at),
+                "curated": s["curated"],
+                "steps": dict(s["steps"]),
+                "ready": s["ready"],
+                "stage": s["stage"],
+                "attention_reason": s["attention_reason"],
             }
         )
 
@@ -923,6 +989,13 @@ async def _build_document_matrix(
         "with_date": sum(1 for s in doc_statuses if s["has_date"]),
         "with_institution": sum(1 for s in doc_statuses if s["has_institution"]),
         "fully_complete": sum(1 for s in doc_statuses if s["fully_complete"]),
+        # the user-facing lifecycle: ready + in_progress + attention == total
+        "ready": sum(1 for s in doc_statuses if s["ready"]),
+        "in_progress": sum(1 for s in doc_statuses if s["in_progress"]),
+        "attention": sum(1 for s in doc_statuses if s["needs_attention"]),
+        "extracted": sum(1 for s in doc_statuses if s["steps"]["extracted"]),
+        "named": sum(1 for s in doc_statuses if s["steps"]["named"]),
+        "filed": sum(1 for s in doc_statuses if s["steps"]["filed"]),
     }
 
     return {
@@ -953,7 +1026,9 @@ async def get_document_status_matrix(
     Args:
         filter: Filter documents — 'all', 'missing_ocr', 'missing_ai', 'missing_metadata',
                 'missing_date', 'missing_institution', 'not_synced', 'not_renamed',
-                'incomplete' (any gap).
+                'incomplete' (any gap); by user-facing stage: 'ready', 'in_progress',
+                'attention' (each row has ``steps``, ``ready``, ``stage``,
+                ``attention_reason``).
         limit: Page size (default 500, max 2000). Previous default was 100 —
                caused silent truncation in Oncoteam dashboard (#419).
         offset: Skip this many filter-matching documents (for pagination beyond ``limit``).
@@ -1162,7 +1237,7 @@ async def audit_document_pipeline(ctx: Context, patient_slug: str | None = None)
         # Non-extractable mimes (xlsx/docx/md/csv/etc.) can't be OCR'd or AI-enhanced —
         # #466 filters them from extract_all_metadata. The audit must mirror that: only
         # count OCR/AI/metadata gaps for mimes the pipeline can actually handle. (#475)
-        is_extractable = not doc.mime_type or doc.mime_type in EXTRACTABLE_MIME_TYPES
+        is_extractable = _is_extractable(doc.mime_type)
 
         # has_ocr: either document_pages rows OR legacy ingest (ai_summary+metadata
         # populated before document_pages table existed, so no per-page breakdown).
