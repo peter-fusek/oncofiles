@@ -1932,55 +1932,16 @@ def _start_sync_scheduler(
 
     # ── Weekly analytics aggregation ────────────────────────────────────
     async def _run_weekly_analytics():
-        """Aggregate weekly usage stats and persist to agent_state."""
-        import json
+        """Aggregate weekly usage stats and persist to agent_state.
 
-        try:
-            # Sequential — the single DB connection must not see concurrent queries
-            prompt_stats = await db.get_prompt_stats(days=7)
-            tool_stats = await db.get_tool_usage_stats(days=7)
-            pipeline_stats = await db.get_pipeline_stats()
-            summary = {
-                "week_ending": datetime.now(UTC).strftime("%Y-%m-%d"),
-                "prompts": {
-                    "total_calls": prompt_stats.total_calls,
-                    "total_input_tokens": prompt_stats.total_input_tokens,
-                    "total_output_tokens": prompt_stats.total_output_tokens,
-                    "error_rate": prompt_stats.error_rate,
-                },
-                "tools": {
-                    "unique_tools": tool_stats.unique_tools_used,
-                    "total_calls": tool_stats.total_tool_calls,
-                    "top_3": [
-                        {"name": t.tool_name, "calls": t.call_count}
-                        for t in tool_stats.top_tools[:3]
-                    ],
-                },
-                "pipeline": {
-                    "total_syncs": pipeline_stats.total_syncs,
-                    "success_rate": (
-                        round(pipeline_stats.successful_syncs / pipeline_stats.total_syncs, 2)
-                        if pipeline_stats.total_syncs > 0
-                        else 0
-                    ),
-                    "docs_imported": pipeline_stats.documents_imported,
-                },
-            }
-            from oncofiles.constants import SYSTEM_NO_PATIENT
-            from oncofiles.models import AgentState
+        No try/except here on purpose (#542): a failure must reach the
+        EVENT_JOB_ERROR listener, which records it for /readiness. The old
+        catch-all let four non-existent attribute names fail every run while
+        the job was reported as executed.
+        """
+        from oncofiles.weekly_analytics import run_weekly_analytics
 
-            await db.set_agent_state(
-                AgentState(
-                    agent_id="oncofiles",
-                    key="analytics_weekly_summary",
-                    value=json.dumps(summary),
-                    # system aggregate, not a patient's row (#791)
-                    patient_id=SYSTEM_NO_PATIENT,
-                )
-            )
-            logger.info("Weekly analytics: %s", json.dumps(summary, indent=None)[:200])
-        except Exception:
-            logger.exception("Weekly analytics aggregation failed")
+        await run_weekly_analytics(db)
 
     scheduler.add_job(
         _run_weekly_analytics,

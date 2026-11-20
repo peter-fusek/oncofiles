@@ -226,6 +226,8 @@ async def test_report_job_and_log_carry_no_values(db, vocab, caplog, dry_run):
 
     logged = "\n".join(r.getMessage() for r in caplog.records)
     assert "re-OCR loss check" in logged and "re-OCR llm pass retried" in logged
+    # #805: the loss-check line carries the [?] counts before and after
+    assert "uncertain_before=" in logged and "uncertain_after=" in logged
     for d in report["documents"]:
         assert {"word_overlap", "page_ink", "page_text_layer", "blank_pages",
                 "retried_pages"} <= set(d)  # fmt: skip
