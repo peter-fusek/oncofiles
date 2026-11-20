@@ -31,12 +31,13 @@ import json
 import logging
 import re
 from collections.abc import Callable
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime
 
 from oncofiles.curated import classify as classify_mod
 from oncofiles.curated import extract as extract_mod
 from oncofiles.curated import llm, llm_input
+from oncofiles.curated import normalise as normalise_mod
 from oncofiles.curated import orientation as orientation_mod
 from oncofiles.curated import vocabulary as vocab_mod
 from oncofiles.curated.contract import (
@@ -52,6 +53,7 @@ from oncofiles.curated.drive_ops import CANARY_NAME, Item, WriteVerificationErro
 from oncofiles.curated.naming import (
     NATIVE_EXT,
     build_filename,
+    is_google_native,
     is_standard,
     with_collision_suffix,
 )
@@ -117,6 +119,12 @@ class RunOptions:
     # Returns a reason ("daily_page_budget") when no more model OCR may start
     # now; None = go. Same effect as the cap: the file stays, listed in ``held``.
     ocr_gate: Callable[[], str | None] | None = None
+    # #919: filed documents whose name fails the standard are renamed in place
+    # (pair together, journaled) from their sidecar front matter.
+    # ``CURATED_NORMALISE_FILED`` (default true) gates real renames; a dry run
+    # always shows the plan. At most ``CURATED_NORMALISE_MAX`` renames per run.
+    normalise_filed: bool = field(default_factory=normalise_mod.enabled)
+    normalise_max: int = field(default_factory=normalise_mod.max_per_run)
 
 
 HOLD_DOCUMENT_CAP = "document_cap"
@@ -168,6 +176,10 @@ class RunReport:
     # (not born-digital, vision-read instead). A cached extraction retried
     # nothing in this run (``tools.curated.cached_extract`` clears it).
     ocr: dict = field(default_factory=lambda: {"retried_pages": 0, "text_layer_ignored": 0})
+    # #919: filed documents whose name fails the standard (``_normalise_filed``).
+    # Names are fine here (the patient's own run report); server logs get
+    # counts and name shapes only.
+    normalise: dict = field(default_factory=lambda: _normalise_report())
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -547,6 +559,21 @@ def _override_extraction(sidecar_text: str) -> extract_mod.Extraction:
     )
 
 
+def _normalise_report() -> dict:
+    return {
+        "enabled": False,  # CURATED_NORMALISE_FILED for this run (real renames)
+        "max_per_run": 0,
+        # {folder, from, to, sidecar_from, sidecar_to, date_source}: within this
+        # run's cap (a real run renames exactly these)
+        "planned": [],
+        "renamed": [],  # real runs: the planned entries that were done
+        "deferred": [],  # over the cap / action budget: a later run does them
+        "review": [],  # {source, code: name_not_standard, why}: no rename possible
+        "skipped": [],  # {source, code}: month_only_date | no_sidecar
+        "counts": {},
+    }
+
+
 def _vocab_report() -> dict:
     return {
         "auto_vocab_enabled": False,  # CURATED_AUTO_VOCAB for this run
@@ -745,6 +772,9 @@ class Runner:
                     "root holds files outside the four state files: " + ", ".join(stray_root)
                 )
             self._process(tree, contract)
+            # #919: after the inbox, before the backfill (whose new sidecars do
+            # not exist yet in a dry run) and before the index that follows the run
+            self._normalise_filed(tree, self._contract)
             self._backfill_sidecars(tree, contract)
             if not self.opts.dry_run:
                 self._recheck(contract)
@@ -1362,6 +1392,166 @@ class Runner:
             Item(id=item.id, name=new_name, mime=item.mime, parent=dst_id)
         )
 
+    # -- #919: filed names that fail the standard --
+
+    def _normalise_filed(self, tree: Tree, contract: Contract) -> None:
+        """Rename filed documents whose name fails ``naming.is_standard`` (#919).
+
+        The target name comes from ``normalise.plan_name`` (sidecar front matter,
+        the folder's DocumentType, a validated printed date; the same builder as
+        inbox filing). Same folder, extension kept, source + sidecar renamed as
+        one journaled pair, at most ``normalise_max`` renames per run. A dry run
+        plans and writes nothing; with ``normalise_filed`` off a real run does
+        nothing (the preview still shows the plan). No date printed in the text
+        → no rename, code ``name_not_standard``; a month-only note → skipped.
+        """
+        from oncofiles.curated.indexer import parse_sidecar  # indexer imports this module
+
+        rep = self.report.normalise
+        real = not self.opts.dry_run
+        cap = max(0, int(self.opts.normalise_max))
+        rep["enabled"] = bool(self.opts.normalise_filed)
+        rep["max_per_run"] = cap
+        if real and not self.opts.normalise_filed:
+            return
+        for folder, doc_type in contract.folders.items():
+            if doc_type is None or folder not in tree.folders:
+                continue
+            items = list(tree.files.get(folder, []))
+            names = {nfc(i.name) for i in items}  # snapshot: sidecar detection
+            current = set(names)  # live: collisions after earlier renames
+            for item in items:
+                n = nfc(item.name)
+                if n.startswith(".") or _is_sidecar(n, names) or is_standard(n, mime=item.mime):
+                    continue
+                label = f"{folder}/{item.name}"
+                if normalise_mod.is_month_only(n):
+                    rep["skipped"].append({"source": label, "code": normalise_mod.CODE_MONTH_ONLY})
+                    continue
+                # a text note is its own text (no sidecar); a Google Doc never is
+                text_source = _is_text_source(item) and not is_google_native(item.mime)
+                sidecar = None if text_source else self._existing_sidecar(tree, folder, item)
+                if not text_source and sidecar is None:
+                    rep["skipped"].append({"source": label, "code": normalise_mod.CODE_NO_SIDECAR})
+                    continue
+                cost = 1 if sidecar is None else 2
+                over = (
+                    len(rep["planned"]) >= cap
+                    or self.actions_used + cost > self.opts.max_actions
+                    or bool(self.opts.should_stop and self.opts.should_stop())
+                )
+                if over and real:  # a real run stays short: read nothing more
+                    rep["deferred"].append({"source": label})
+                    continue
+                raw = self._sidecar_text(sidecar or item)
+                front, pages = parse_sidecar(raw)
+                own = {n} | ({nfc(sidecar.name)} if sidecar else set())
+                kw = {
+                    "name": n,
+                    "mime": item.mime,
+                    "doc_type": doc_type,
+                    "front": front,
+                    "contract": contract,
+                    "today": self.now.date(),
+                    "taken": current - own,
+                }
+                body = "\n".join(pages)
+                plan = normalise_mod.plan_name(text=body, **kw)
+                if plan.why == normalise_mod.WHY_NO_PRINTED_DATE and (
+                    item.mime in extract_mod.NATIVE_EXPORT
+                ):
+                    # a pre-runner Google Doc sidecar may hold no text: read the
+                    # document's own text export (a read, never a write)
+                    exported = self._content(item).decode("utf-8", errors="replace")
+                    plan = normalise_mod.plan_name(text=f"{body}\n{exported}", **kw)
+                if plan.target is None:
+                    rep["review"].append({"source": label, "code": plan.code, "why": plan.why})
+                    continue
+                entry = {
+                    "folder": folder,
+                    "from": item.name,
+                    "to": plan.target,
+                    "sidecar_from": sidecar.name if sidecar else None,
+                    "sidecar_to": f"{plan.target}.md" if sidecar else None,
+                    "date_source": plan.date_source,
+                }
+                if over:  # dry run: show what a later run would do
+                    rep["deferred"].append(entry)
+                    continue
+                rep["planned"].append(entry)
+                logger.info(
+                    "curated %s: filed name %s -> %s%s",
+                    self.run_id,
+                    normalise_mod.name_shape(item.name),
+                    normalise_mod.name_shape(plan.target),
+                    " (pair)" if sidecar else "",
+                )
+                self._rename_in_place(tree, folder, item, sidecar, plan.target)
+                current -= own
+                current |= {nfc(plan.target)} | ({nfc(entry["sidecar_to"])} if sidecar else set())
+                if real:
+                    rep["renamed"].append(entry)
+        rep["counts"] = {
+            "planned": len(rep["planned"]),
+            "renamed": len(rep["renamed"]),
+            "deferred": len(rep["deferred"]),
+            "review": len(rep["review"]),
+            "month_only": sum(
+                1 for s in rep["skipped"] if s["code"] == normalise_mod.CODE_MONTH_ONLY
+            ),
+            "no_sidecar": sum(
+                1 for s in rep["skipped"] if s["code"] == normalise_mod.CODE_NO_SIDECAR
+            ),
+        }
+        if any(rep["counts"].values()):
+            logger.info(
+                "curated %s: filed-name normalisation %s",
+                self.run_id,
+                " ".join(f"{k}={v}" for k, v in rep["counts"].items()),
+            )
+
+    def _rename_in_place(self, tree, folder, item, sidecar, new_name) -> None:
+        """Rename source (+ sidecar) inside ``folder``: journaled first, confirmed
+        only after both renames are verified (``drive_ops`` reads back, no retry)."""
+        fid = tree.folders[folder].id
+        allowed = tree.folder_ids()
+        old = [f"{folder}/{item.name}"]
+        new = [f"{folder}/{new_name}"]
+        new_side = f"{new_name}.md"
+        if sidecar is not None:
+            old.append(f"{folder}/{sidecar.name}")
+            new.append(f"{folder}/{new_side}")
+        seq = self._act(
+            {
+                "action": "normalise_rename",
+                "from": old,
+                "to": new,
+                "sha256": item.sha256,
+                "undo": {"op": "rename_pair" if sidecar else "rename", "from": new, "to": old},
+            },
+            lambda: self.drive.move_rename(item.id, new_name, fid, fid, allowed_parents=allowed),
+            pair_half=sidecar is not None,
+            confirm=sidecar is None,
+        )
+        if sidecar is not None:
+            self.actions_used += 1  # the sidecar rename is a second file action
+            if not self.opts.dry_run:
+                try:
+                    self.drive.move_rename(
+                        sidecar.id, new_side, fid, fid, allowed_parents=tree.folder_ids()
+                    )
+                except WriteVerificationError as exc:
+                    msg = f"sidecar rename not verified — pair split, undo logged: {exc}"
+                    raise RunAbortError(msg) from exc
+                except Exception as exc:
+                    msg = f"sidecar rename failed ({type(exc).__name__}) — pair split"
+                    raise RunAbortError(msg) from exc
+                self._confirm(seq)
+        renamed = {item.id: new_name, **({sidecar.id: new_side} if sidecar else {})}
+        tree.files[folder] = [
+            replace(i, name=renamed[i.id]) if i.id in renamed else i for i in tree.files[folder]
+        ]
+
     def _backfill_sidecars(self, tree: Tree, contract: Contract) -> None:
         """Already-filed documents are read-only; only a missing sidecar may be added.
 
@@ -1665,6 +1855,18 @@ class Runner:
                     f"- `{d['source']}` — **review_needed** ({'; '.join(d.get('reasons', []))}), "
                     f"stays in `{d.get('stays_in', '?')}`"
                 )
+        for x in r.normalise["renamed"]:
+            lines.append(
+                f"- filed name normalised (#919): `{x['folder']}/{x['from']}` → `{x['to']}`"
+                + (" (with its sidecar)" if x.get("sidecar_to") else "")
+            )
+        if r.normalise["review"]:  # a count: the same documents recur every run
+            lines.append(
+                f"- filed names not standard, no rename possible: {len(r.normalise['review'])}"
+            )
+        if r.normalise["deferred"]:
+            n = len(r.normalise["deferred"])
+            lines.append(f"- filed names left for a later run (cap): {n}")
         for v in r.vocabulary["added"]:
             lines.append(
                 f"- README vocabulary added: {v['label']} `{v['token']}` (for `{v['document']}`)"
