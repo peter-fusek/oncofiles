@@ -1,7 +1,7 @@
 """#791 step 1: no write may land under a legacy ``patient_id`` default.
 
-Twelve tables declare ``patient_id`` with a column DEFAULT (``'erika'``,
-``'default'``, ``''``) and ``curated_settings.patient_id`` is a nullable
+Twelve tables declare ``patient_id`` with a column DEFAULT (migration 029's
+named default, ``'default'``, ``''``) and ``curated_settings.patient_id`` is a nullable
 primary key. Until the schema rebuild drops them (#791 step 2), every write
 helper for those tables calls ``database._tenant.require_patient_id`` first.
 
@@ -20,6 +20,7 @@ Synthetic ids only.
 from __future__ import annotations
 
 import ast
+import inspect
 import re
 from datetime import UTC, date, datetime
 from pathlib import Path
@@ -95,7 +96,8 @@ def test_guard_rejects(bad):
 
 
 def test_guard_rejects_each_legacy_default():
-    assert {"", "erika", "default"} <= LEGACY_DEFAULT_PATIENT_IDS
+    assert {"", "default"} <= LEGACY_DEFAULT_PATIENT_IDS
+    assert len(LEGACY_DEFAULT_PATIENT_IDS) == 3
     for literal in LEGACY_DEFAULT_PATIENT_IDS:
         with pytest.raises(ValueError, match="legacy"):
             require_patient_id(literal)
@@ -105,6 +107,26 @@ def test_guard_system_marker_only_when_allowed():
     with pytest.raises(ValueError):
         require_patient_id(SYSTEM_NO_PATIENT)
     assert require_patient_id(SYSTEM_NO_PATIENT, allow_system=True) == SYSTEM_NO_PATIENT
+
+
+async def test_guard_rejects_the_migrated_named_default(db: Database):
+    """#704: the named default is read from migration 029, never spelled."""
+    async with db.db.execute("PRAGMA table_info(activity_log)") as cur:
+        cols = {r["name"]: r["dflt_value"] for r in await cur.fetchall()}
+    named = cols["patient_id"].strip("'")
+    assert named.strip() and named != "default"
+    assert named in LEGACY_DEFAULT_PATIENT_IDS
+    with pytest.raises(ValueError, match="legacy"):
+        require_patient_id(named)
+    with pytest.raises(ValueError, match="legacy"):
+        require_patient_id(named, allow_system=True)
+
+    from oncofiles.database import _legacy_default, _tenant
+
+    for module in (_tenant, _legacy_default):
+        tree = ast.parse(inspect.getsource(module))
+        strings = {n.value for n in ast.walk(tree) if isinstance(n, ast.Constant)}
+        assert named not in strings
 
 
 def test_guard_accepts_a_patient():

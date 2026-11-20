@@ -54,7 +54,8 @@ _readme_births: dict[str, set[str]] = {}
 _lock = asyncio.Lock()
 
 DEFAULTS = {  # patient_type -> (max_docs, min_text_chars, max_doc_age_days)
-    # Oncology (Cowork erika-daily-cleanup): a > 2-year-old date on a new scan is suspect.
+    # Oncology (the first patient's Cowork clean-up job): a date more than two
+    # years old on a new scan is suspect.
     "oncology": (20, 100, 730),
     # General (peter-daily-cleanup): historical records back to birth are normal.
     "general": (8, 200, None),

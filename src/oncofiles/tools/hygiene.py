@@ -1749,9 +1749,16 @@ async def repair_gdrive_folder_hygiene(
         YYYY-MM parent, then trash the now-empty inner YYYY-MM.
       - fix_duplicates (default OFF — more dangerous): for every case where
         2+ folders share the same name under the same parent, keep the
-        smallest (fewest-children) folder, move its content into the other,
-        then trash the empty one. Off by default — review the audit output
-        and decide per-case if this is safe for you.
+        LARGEST (most direct children) folder, move the children of every
+        smaller sibling into it, then trash each emptied sibling (a sibling
+        is trashed only when all of its children moved). Largest wins
+        because it means the fewest moves, and moves are the step that can
+        fail (#445 permissions). This differs on purpose from
+        ``gdrive_folders.find_or_create_folder``, which keeps the OLDEST
+        duplicate and moves nothing: it only has to pick one stable folder
+        to write into. Off by default — review the audit output (the dry
+        run names the ``keeper``) and decide per-case if this is safe for
+        you.
       - fix_orphans (default OFF): for every YYYY-MM whose parent is NOT a
         managed category folder, move it under the ``other`` category.
 

@@ -92,10 +92,9 @@ _NUMERIC_LIMIT_RE = re.compile(r"list_documents\(\s*limit\s*=\s*(\d+)")
 # allowlist as each is fixed; do NOT add new entries.
 # resources.py (files://catalog) left the list in #717: the resource was removed.
 # migrate_to_turso.py left the list in #617: the script was removed.
-_KNOWN_BROKEN_UNSCOPED_CALLERS = {
-    "backfill_gdrive_ids.py",
-    "backfill_ocr.py",
-}
+# backfill_gdrive_ids.py and backfill_ocr.py left it in #551: both now take a
+# required patient and read with DOC_QUERY_LIMIT. The list is empty; keep it so.
+_KNOWN_BROKEN_UNSCOPED_CALLERS: set[str] = set()
 
 
 def _offenders() -> dict[str, list[str]]:
