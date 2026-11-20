@@ -2236,6 +2236,7 @@ def _start_sync_scheduler(
         entry.update(
             last_error=datetime.now(UTC).isoformat(),
             last_error_msg=str(event.exception)[:200],
+            last_error_type=type(event.exception).__name__,
             running=False,
         )
         job_tracker[event.job_id] = entry
@@ -5769,108 +5770,60 @@ async def api_manifest(request: Request) -> JSONResponse:
         return JSONResponse({"error": "internal error"}, status_code=500)
 
 
-# Static schedule definitions — APScheduler doesn't expose trigger config
-_SCHEDULE_DEFS = [
-    {
-        "id": "gdrive_sync",
-        "name": "GDrive Sync",
-        "schedule": "every 5 min",
-        "group": "sync",
-        "desc": "Bidirectional sync: import new files, export to category/YYYY-MM folders, rename",
-    },
-    {
-        "id": "gmail_sync",
-        "name": "Gmail Sync",
-        "schedule": "every 5 min (+2 min offset)",
-        "group": "sync",
-        "desc": "Import medical emails, classify relevance, extract metadata",
-    },
-    {
-        "id": "calendar_sync",
-        "name": "Calendar Sync",
-        "schedule": "every 5 min (+3 min offset)",
-        "group": "sync",
-        "desc": "Import calendar events, tag medical appointments",
-    },
-    {
-        "id": "memory_check",
-        "name": "Memory Monitor",
-        "schedule": "every 5 min",
-        "group": "infra",
-        "desc": "Check RSS memory, trigger GC or graceful restart at threshold",
-    },
-    {
-        "id": "enhancement_sweep",
-        "name": "Enhancement Sweep",
-        "schedule": "daily 3:20 AM",
-        "group": "pipeline",
-        "desc": "Retry stuck unprocessed docs — OCR + AI summary + tags (max 5)",
-    },
-    {
-        "id": "metadata_extraction",
-        "name": "Metadata Extraction",
-        "schedule": "daily 3:30 AM",
-        "group": "pipeline",
-        "desc": "Backfill missing structured metadata — diagnoses, medications, providers (max 5)",
-    },
-    {
-        "id": "category_validation",
-        "name": "Category Validation",
-        "schedule": "daily 3:45 AM",
-        "group": "housekeeping",
-        "desc": "Auto-correct document categories based on AI-extracted metadata",
-    },
-    {
-        "id": "oauth_token_cleanup",
-        "name": "OAuth Cleanup",
-        "schedule": "daily 4:00 AM",
-        "group": "infra",
-        "desc": "Remove expired or revoked OAuth tokens",
-    },
-    {
-        "id": "prompt_log_cleanup",
-        "name": "Prompt Log Cleanup",
-        "schedule": "daily 4:15 AM",
-        "group": "infra",
-        "desc": "Delete prompt log entries (AI call telemetry) older than 90 days",
-    },
-    {
-        "id": "dashboard_access_log_retention",
-        "name": "Access Log Retention",
-        "schedule": "daily 4:25 AM UTC",
-        "group": "infra",
-        "desc": "Delete dashboard access log rows (sign-ins, ACL refusals) older than 90 days",
-    },
-    {
-        "id": "pipeline_integrity",
-        "name": "Pipeline Integrity",
-        "schedule": "every 6 hours at :30",
-        "group": "pipeline",
-        "desc": "Detect docs stuck in incomplete pipeline state, trigger re-processing",
-    },
-    {
-        "id": "weekly_analytics",
-        "name": "Weekly Analytics",
-        "schedule": "Sunday 5:00 AM",
-        "group": "infra",
-        "desc": "Aggregate weekly usage statistics",
-    },
-    {
-        "id": "startup_catchup",
-        "name": "Startup Catchup",
-        "schedule": "90s after boot (once)",
-        "group": "sync",
-        "desc": "Run initial sync for all patients after server start",
-    },
-]
+def _schedules_payload(lifespan_tracker: dict | None) -> dict:
+    """Jobs of the RUNNING scheduler + the curated loop (in-memory, no DB).
+
+    Built by ``scheduled_jobs`` from ``scheduler_singleton`` (job id, trigger,
+    next run) and the job tracker; known jobs this server does not run are
+    listed under ``inactive`` with the switch that keeps them off.
+    """
+    from oncofiles import scheduled_jobs
+    from oncofiles.tools.curated import continuous_settings, nightly_settings, probe_stats
+
+    current = scheduler_singleton.current_scheduler()
+    scheduler, tracker = current if current else (None, None)
+    if tracker is None:
+        tracker = lifespan_tracker or {}
+    flags = {
+        "scheduler_running": scheduler is not None,
+        "sync_enabled": SYNC_ENABLED,
+        "ai_nightly_only": AI_NIGHTLY_ONLY,
+        "gmail_calendar_enabled": gmail_calendar_enabled(),
+        "integrity_check": ENABLE_INTEGRITY_CHECK,
+    }
+    built = scheduled_jobs.build_jobs(scheduler, tracker, flags)
+    nightly_enabled, nightly_hour, _ = nightly_settings()
+    curated = scheduled_jobs.curated_loop_entry(
+        running=scheduler_singleton.curated_loop_running(),
+        nightly_enabled=nightly_enabled,
+        nightly_hour=nightly_hour,
+        google_enabled=GOOGLE_INTEGRATION_ENABLED,
+        continuous=continuous_settings(),
+        stats=probe_stats(),
+    )
+    return {
+        "scheduler": {
+            "running": scheduler is not None,
+            "started_at": scheduler_singleton.status().get("started_at"),
+            "job_count": sum(1 for j in built["jobs"] if j["registered"]),
+            "off_reason": None
+            if scheduler is not None
+            else scheduled_jobs.inactive_reason("", flags),
+        },
+        "curated_loop": curated,
+        "jobs": built["jobs"],
+        "inactive": built["inactive"],
+    }
 
 
 @mcp.custom_route("/api/schedules", methods=["GET"])
 async def api_schedules(request: Request) -> JSONResponse:
-    """Processing schedules: all jobs with live status and prompt stats by call type.
+    """Jobs of the running scheduler, the curated loop and prompt stats by call type.
 
+    The job list comes from the live APScheduler (``_schedules_payload``), not
+    a static catalogue; error details are the time and exception class only.
     Admin only (static bearer or a ``DASHBOARD_ADMIN_EMAILS`` session): the job
-    internals (last error texts) and the prompt statistics are system-wide,
+    internals and the prompt statistics are system-wide,
     not one patient's. Any other signed-in user gets 403; the patient-facing
     view of what happened is ``/api/activity``.
     """
@@ -5880,22 +5833,7 @@ async def api_schedules(request: Request) -> JSONResponse:
 
     try:
         lifespan_ctx = request.app.state.fastmcp_server._lifespan_result
-        tracker = lifespan_ctx.get("job_tracker", {})
-
-        jobs = []
-        for defn in _SCHEDULE_DEFS:
-            live = tracker.get(defn["id"], {})
-            jobs.append(
-                {
-                    **defn,
-                    "running": live.get("running", False),
-                    "last_ok": live.get("last_ok"),
-                    "last_error": live.get("last_error"),
-                    "last_error_msg": live.get("last_error_msg"),
-                    "last_duration_s": live.get("last_duration_s"),
-                    "last_missed": live.get("last_missed"),
-                }
-            )
+        payload = _schedules_payload(lifespan_ctx.get("job_tracker"))
 
         # Prompt stats by call type (last 30 days)
         db_inst: Database = lifespan_ctx["db"]
@@ -5904,12 +5842,7 @@ async def api_schedules(request: Request) -> JSONResponse:
 
         prompts = asdict(prompt_stats)
 
-        return JSONResponse(
-            {
-                "jobs": jobs,
-                "prompt_stats": prompts,
-            }
-        )
+        return JSONResponse({**payload, "prompt_stats": prompts})
     except Exception:
         logger.exception("API schedules endpoint error")
         return JSONResponse({"error": "internal error"}, status_code=500)

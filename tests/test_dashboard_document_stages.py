@@ -1050,5 +1050,9 @@ async def test_schedules_serves_admin_and_operator(two_patients, bearer):
         resp = await server.api_schedules(_request(two_patients))
     assert resp.status_code == 200
     body = _body(resp)
-    assert set(body) == {"jobs", "prompt_stats"}
-    assert body["jobs"]
+    assert set(body) == {"scheduler", "curated_loop", "jobs", "inactive", "prompt_stats"}
+    # No scheduler runs in the test process: no invented jobs, every known
+    # job is listed as not active, with a reason.
+    assert body["jobs"] == []
+    assert body["scheduler"]["running"] is False
+    assert body["inactive"] and all(j["reason"] for j in body["inactive"])
