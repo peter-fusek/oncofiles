@@ -202,7 +202,8 @@ class FactsMixin:
 
     async def fact_code_vocabulary(self) -> list[dict]:
         async with self.db.execute(
-            "SELECT code, category, name_sk, name_en, unit_canonical, aliases, unit_conversions "
+            "SELECT code, category, name_sk, name_en, unit_canonical, aliases, unit_conversions, "
+            "plausible_low, plausible_high "
             "FROM fact_codes"
         ) as cur:
             rows = _rows(await cur.fetchall())

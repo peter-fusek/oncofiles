@@ -121,11 +121,17 @@ def open_readonly(path: str | Path) -> sqlite3.Connection:
     return conn
 
 
+_PLAUSIBLE_COLS = ("plausible_low", "plausible_high")
+
+
 def _vocab_rows(conn: sqlite3.Connection) -> list[dict]:
+    have = {r[1] for r in conn.execute("PRAGMA table_info(fact_codes)")}
+    # plausibility ranges (#929, columns since migration 080): NULL on an older copy
+    plausible = ", ".join(c if c in have else f"NULL AS {c}" for c in _PLAUSIBLE_COLS)
     rows = []
     for r in conn.execute(
-        "SELECT code, category, name_sk, name_en, unit_canonical, aliases, unit_conversions "
-        "FROM fact_codes ORDER BY code"
+        "SELECT code, category, name_sk, name_en, unit_canonical, aliases, unit_conversions, "
+        f"{plausible} FROM fact_codes ORDER BY code"
     ):
         d = dict(r)
         d["aliases"] = json.loads(d["aliases"] or "[]")
@@ -193,6 +199,13 @@ def _vocab_summary(old: list[dict], new: list[dict]) -> dict:
         ),
         "codes_with_changed_conversions": sorted(
             c for c in set(o) & set(n) if n[c]["unit_conversions"] != o[c]["unit_conversions"]
+        ),
+        # #929: plausibility ranges are vocabulary data (fact_codes)
+        "codes_with_changed_plausible": sorted(
+            c
+            for c in set(o) & set(n)
+            if (n[c].get("plausible_low"), n[c].get("plausible_high"))
+            != (o[c].get("plausible_low"), o[c].get("plausible_high"))
         ),
     }
 

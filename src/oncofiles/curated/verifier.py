@@ -36,13 +36,13 @@ from oncofiles.curated.facts_rules import (
     _ABSOLUTE_LABEL,
     _DIFFERENTIAL,
     _UNIT_HINT,
-    PLAUSIBLE,
     Vocabulary,
     _flag,
     _num,
     _unit_key,
     _upper_from_text,
     norm_label,
+    plausible_range,
 )
 from oncofiles.curated.reocr import _DATE_TOKEN, _date_key
 from oncofiles.curated.reread_verify import date_printed
@@ -478,8 +478,8 @@ def vocab_check(
             value_canonical = round(value_num * float(conv[uk]), 6)
         else:
             reasons.append("unit_unconvertible")
-        if value_canonical is not None and row["code"] in PLAUSIBLE:
-            lo_p, hi_p = PLAUSIBLE[row["code"]]
+        if value_canonical is not None and (bounds := plausible_range(row)) is not None:
+            lo_p, hi_p = bounds
             if not lo_p <= value_canonical <= hi_p:
                 reasons.append("implausible")
     return row, value_canonical, reasons
