@@ -19,6 +19,8 @@ No database, no Drive, no model: a pure function of constants.
 
 from __future__ import annotations
 
+import re
+
 from oncofiles.document_stage import stage_of
 
 PATIENT_ID = "demo-patient"
@@ -49,6 +51,45 @@ def _page_texts(doc: dict) -> list[tuple[str, str]]:
 
 def _name(date: str, slug: str, en: bool = False) -> str:
     return f"{date.replace('-', '')}_{_FILE_TOKENS[1 if en else 0]}_{slug}.pdf"
+
+
+# #921: a curated folder names its files by the README standard with hyphens
+# (``curated.naming``: date-Patient-Institution-Type-Doctor-Department[-Subject]),
+# so the dashboard demo shows its "named" rows that way. The legacy underscore
+# names stay the source (the landing and /demo/assistant still use them).
+_LEGACY_NAME = re.compile(
+    r"^(?P<date>\d{8})_(?P<patient>[A-Za-z]+)_(?P<inst>[A-Za-z]+)_(?P<cat>[A-Za-z]+)"
+    r"_(?P<desc>[A-Za-z0-9]+)\.(?P<ext>[a-z0-9]+)$"
+)
+_README_TYPE = {"CT": "Imaging", "DischargeSummary": "Discharge"}
+_DOCTOR = "Hruskova"  # invented surname, the same in both languages
+_DEPARTMENT = {  # README DocumentType -> (sk, en) department token
+    "Labs": ("Biochemia", "Biochemistry"),
+    "Imaging": ("Radiologia", "Radiology"),
+    "Pathology": ("Patologia", "Pathology"),
+    "Discharge": ("Chirurgia", "Surgery"),
+}
+
+
+def _standard_name(name: str, en: bool) -> str:
+    """The README-standard form of a demo name; any other name is returned as is."""
+    from oncofiles.curated.naming import NameFields, build_filename
+
+    m = _LEGACY_NAME.match(name or "")
+    if not m:
+        return name
+    doc_type = _README_TYPE.get(m["cat"], m["cat"])
+    dept = _DEPARTMENT.get(doc_type, ("Onkologia", "Oncology"))[1 if en else 0]
+    fields = NameFields(
+        date=m["date"],
+        patient=m["patient"],
+        institution=m["inst"],
+        doc_type=doc_type,
+        doctor=_DOCTOR,
+        hospital=dept,
+        subject=m["desc"],
+    )
+    return build_filename(fields, m["ext"])
 
 
 # Documents that exist only in the dashboard demo, so that every state is on
@@ -216,8 +257,8 @@ def _row(
     stage = stage_of(extracted=has_text, named=named, filed=filed, attention=attention)
     return {
         "id": doc_id,
-        "filename": name,
-        "filename_en": name_en,
+        "filename": _standard_name(name, en=False),
+        "filename_en": _standard_name(name_en, en=True),
         "category": category,
         "date": date,
         "institution": _HOSPITAL[0] if named else None,

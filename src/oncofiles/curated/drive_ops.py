@@ -21,6 +21,8 @@ enforce this themselves instead of relying on where they are called from:
 * ``update_text`` reads the target first and only overwrites a text state
   file (``TEXT_STATE_EXTS`` + ``TEXT_STATE_MIMES``);
 * ``trash_canary`` trashes only a file named ``CANARY_NAME``;
+* ``upload_original`` (#921) only creates a NEW file in the inbox folder and
+  never overwrites, never forms or adopts a sidecar pair;
 * ``move_rename`` keeps the file's extension and never leaves the curated
   tree: ``DriveOps.move_rename`` requires ``allowed_parents`` and refuses
   ``None`` (#811); an AST lock checks that every curated call passes it.
@@ -254,6 +256,90 @@ def create_text(gdrive, folder_id: str, name: str, text: str, mime: str = "text/
         raise WriteVerificationError(f"create {name!r}: metadata read-back mismatch")
     if download(gdrive, fid) != data:
         raise WriteVerificationError(f"create {name!r}: content read-back mismatch")
+    return fid
+
+
+# ``upload_original`` (#921): the dashboard's "Add documents" puts a caregiver's
+# file into the curated inbox, unchanged. Limits mirror the route's own checks.
+UPLOAD_MAX_BYTES = 25 * 1024 * 1024
+_RESUMABLE_OVER = 5 * 1024 * 1024  # Drive's multipart upload is meant for ≤ 5 MB
+
+
+def _refuse_upload(reason: str) -> None:
+    raise WriteVerificationError(f"refusing to upload into the inbox: {reason}")
+
+
+def upload_original(gdrive, inbox_id: str, name: str, data: bytes, mime: str) -> str:
+    """Create ONE new original file in the curated inbox and verify it. Returns its id.
+
+    Only ``curated/inbox_upload.py`` (the dashboard upload, #921) calls this,
+    inside ``gdrive.contract_writes()``. Create-only, and it enforces itself:
+
+    * the target must be a live folder whose name starts with the inbox prefix
+      (``00-inbox``) — nothing outside the inbox is ever written;
+    * the name must be new in the inbox (a fresh listing, NFC-compared): an
+      existing file is never overwritten (the caller picks a ``-2`` suffix);
+    * the name can neither become a sidecar of an existing file (``X.md`` next
+      to ``X``) nor adopt an orphan sidecar (``X`` next to ``X.md``), and never
+      uses a pipeline state name (README/index/changelog/journal/canary) or a
+      leading ``_`` / ``.``;
+    * no Google-native or folder mime type, no empty file, at most
+      ``UPLOAD_MAX_BYTES``;
+    * read back by name, parent, size and md5; never retried (a retried create
+      forks the tree); nothing is deleted on a mismatch, it is reported.
+    """
+    from googleapiclient.http import MediaIoBaseUpload
+
+    from oncofiles.curated.contract import INBOX_PREFIX, ROOT_STATE_FILES
+
+    gdrive._guard_write("curated.upload_original")
+    n = _nfc(name)
+    if not n or n != n.strip() or "/" in n or "\\" in n or n.startswith((".", "_")):
+        _refuse_upload("not a plain file name")
+    if n in ROOT_STATE_FILES or n == CANARY_NAME:
+        _refuse_upload("a pipeline state name")
+    if not data:
+        _refuse_upload("empty file")
+    if len(data) > UPLOAD_MAX_BYTES:
+        _refuse_upload("file too large")
+    clean_mime = (mime or "").split(";", 1)[0].strip().lower()
+    if not clean_mime or clean_mime.startswith(_GOOGLE_NATIVE_PREFIX):
+        _refuse_upload(f"mime {clean_mime!r}")
+    folder = get(gdrive, inbox_id)
+    if (
+        folder.get("mimeType") != FOLDER_MIME
+        or folder.get("trashed")
+        or not _nfc(folder.get("name") or "").startswith(INBOX_PREFIX)
+    ):
+        _refuse_upload(f"target {inbox_id} is not the inbox folder")
+    names = {_nfc(x) for x in _names_in(gdrive, inbox_id)}
+    if n in names:
+        _refuse_upload("name already exists")
+    if f"{n}.md" in names or (n.lower().endswith(".md") and n[:-3] in names):
+        _refuse_upload("name collides with a sidecar pair")
+    media = MediaIoBaseUpload(
+        io.BytesIO(data), mimetype=clean_mime, resumable=len(data) > _RESUMABLE_OVER
+    )
+    created = (
+        gdrive._service.files()
+        .create(
+            body={"name": name, "parents": [inbox_id]},
+            media_body=media,
+            fields="id",
+            supportsAllDrives=True,
+        )
+        .execute()
+    )
+    fid = created["id"]
+    meta = get(gdrive, fid)
+    if (
+        meta.get("name") != name
+        or inbox_id not in (meta.get("parents") or [])
+        or meta.get("trashed")
+        or int(meta.get("size") or -1) != len(data)
+        or (meta.get("md5Checksum") or "") != hashlib.md5(data, usedforsecurity=False).hexdigest()
+    ):
+        raise WriteVerificationError(f"upload {fid}: read-back mismatch (left in place)")
     return fid
 
 

@@ -33,6 +33,16 @@
         }
         return _nativeFetch(input, init);
       };
+      // The upload (#921) uses XMLHttpRequest for its progress bar: the same
+      // chokepoint for XHR, so no request of the demo can leave this page.
+      var _nativeXhrOpen = XMLHttpRequest.prototype.open;
+      XMLHttpRequest.prototype.open = function (method, url) {
+        var target = new URL(String(url || ''), location.origin);
+        if (target.origin !== location.origin || DEMO_ALLOWED_PATHS.indexOf(target.pathname) === -1) {
+          throw new Error('demo: request blocked: ' + target.pathname);
+        }
+        return _nativeXhrOpen.apply(this, arguments);
+      };
     }
     // Actions that write or need an account: in the demo they only explain themselves.
     var DEMO_BLOCKED_ACTIONS = {
@@ -603,12 +613,15 @@
       var path = new URL(url, location.origin).pathname;
       var d = (demoData && demoData.dashboard) || {};
       if (path === '/status') return d.status;
-      if (path === '/api/documents') return d.documents;
+      if (path === '/api/documents') return withDemoUploads(d.documents);
       if (path === '/api/activity') return d.activity;
       if (path === '/api/patients') return d.patients;
       if (path === '/api/patient-budget') return { show_pill: false };
       if (path === '/api/manifest') return { generated_at: new Date().toISOString(), invented: true, documents: (d.documents || {}).documents || [] };
-      if (path.indexOf('/api/doc-detail/') === 0) return (d.details || {})[path.split('/').pop()] || { error: 'not found' };
+      if (path.indexOf('/api/doc-detail/') === 0) {
+        var detailId = path.split('/').pop();
+        return (d.details || {})[detailId] || demoUploadDetail(detailId) || { error: 'not found' };
+      }
       return null;
     }
 
@@ -628,6 +641,282 @@
       if (demoNoticeTimer) clearTimeout(demoNoticeTimer);
       demoNoticeTimer = setTimeout(function () { el.classList.remove('visible'); }, 4500);
     }
+
+    // ── Add documents (#921) ────────────────────────────────────────────
+    // Files go one at a time (one request each: the server holds one DB
+    // connection and one Drive writer) to POST /api/upload, which puts them
+    // unchanged into the patient's inbox on Drive. In the demo nothing is
+    // sent: the files become invented "Waiting for extraction" rows.
+
+    var UPLOAD_MAX_BYTES = 25 * 1024 * 1024;
+    var UPLOAD_MAX_FILES = 20;
+    var UPLOAD_EXTS = ['pdf', 'jpg', 'jpeg', 'png', 'heic', 'heif', 'tif', 'tiff', 'webp', 'md', 'txt'];
+    var UPLOAD_GENOTYPE_EXTS = ['vcf', 'gz', 'csv', 'tsv'];
+    var UPLOAD_CODE_TEXT = {
+      type_not_allowed: ['Tento typ súboru sa nenahráva.', 'This file type is not accepted.'],
+      raw_genotype_excluded: ['Surové genetické dáta sa nenahrávajú.', 'Raw genetic data is not accepted.'],
+      file_too_large: ['Súbor má viac ako 25 MB.', 'The file is larger than 25 MB.'],
+      empty_file: ['Súbor je prázdny.', 'The file is empty.'],
+      content_mismatch: ['Obsah súboru nezodpovedá jeho prípone.', 'The file content does not match its extension.'],
+      not_attempted: ['Neodoslané, predchádzajúci súbor zlyhal.', 'Not sent, the previous file failed.'],
+      failed: ['Nahrávanie zlyhalo. Skúste to znova neskôr.', 'The upload failed. Try again later.']
+    };
+    var uploadQueue = Promise.resolve();
+    var demoUploads = [];
+    var demoUploadSeq = 0;
+
+    function toggleUploadPanel() {
+      var panel = document.getElementById('upload-panel');
+      var btn = document.getElementById('upload-btn');
+      if (!panel || !btn) return;
+      panel.hidden = !panel.hidden;
+      btn.setAttribute('aria-expanded', panel.hidden ? 'false' : 'true');
+    }
+
+    function closeUploadPanel() {
+      var panel = document.getElementById('upload-panel');
+      var btn = document.getElementById('upload-btn');
+      if (panel) panel.hidden = true;
+      if (btn) btn.setAttribute('aria-expanded', 'false');
+    }
+
+    function openUploadPanel() {
+      var panel = document.getElementById('upload-panel');
+      if (panel && panel.hidden) toggleUploadPanel();
+    }
+
+    function uploadFromInput(input) {
+      var files = Array.prototype.slice.call(input.files || []);
+      input.value = '';  // the same file can be chosen again
+      uploadFiles(files);
+    }
+
+    function fmtSize(bytes) {
+      if (bytes < 1024 * 1024) return Math.max(1, Math.round(bytes / 1024)) + ' kB';
+      return (bytes / (1024 * 1024)).toFixed(1).replace('.', dashLang === 'sk' ? ',' : '.') + ' MB';
+    }
+
+    function uploadExt(name) {
+      var i = name.lastIndexOf('.');
+      return i > 0 ? name.slice(i + 1).toLowerCase() : '';
+    }
+
+    /** The browser's own check (the server checks again): a refusal code or ''. */
+    function uploadPrecheck(file) {
+      var ext = uploadExt(file.name || '');
+      if (UPLOAD_GENOTYPE_EXTS.indexOf(ext) !== -1) return 'raw_genotype_excluded';
+      if (UPLOAD_EXTS.indexOf(ext) === -1) return 'type_not_allowed';
+      if (!file.size) return 'empty_file';
+      if (file.size > UPLOAD_MAX_BYTES) return 'file_too_large';
+      return '';
+    }
+
+    function uploadNote(sk, en) {
+      var note = document.getElementById('upload-note');
+      if (!note) return;
+      if (!sk) { note.hidden = true; note.textContent = ''; return; }
+      setI18n(note, sk, en);
+      note.hidden = false;
+    }
+
+    /** One row of the upload list; returns setters for its progress and state. */
+    function uploadItem(file) {
+      var list = document.getElementById('upload-list');
+      var li = document.createElement('li');
+      li.className = 'upload-item';
+      var mark = stateMark('progress');
+      li.appendChild(mark);
+      var main = document.createElement('div');
+      main.className = 'upload-main';
+      var name = document.createElement('span');
+      name.className = 'upload-name';
+      name.textContent = file.name;
+      main.appendChild(name);
+      var meta = document.createElement('span');
+      meta.className = 'upload-meta';
+      meta.textContent = fmtSize(file.size || 0);
+      main.appendChild(meta);
+      var bar = document.createElement('progress');
+      bar.className = 'upload-bar';
+      bar.max = 100;
+      bar.value = 0;
+      bar.setAttribute('aria-label', file.name);
+      main.appendChild(bar);
+      var state = document.createElement('span');
+      state.className = 'upload-state';
+      setI18n(state, 'Čaká na odoslanie', 'Waiting to be sent');
+      main.appendChild(state);
+      li.appendChild(main);
+      if (list) list.insertBefore(li, list.firstChild);
+      return {
+        progress: function (pct) { bar.value = pct; setI18n(state, 'Odosiela sa… ' + pct + ' %', 'Sending… ' + pct + ' %'); },
+        done: function (kind, sk, en) {
+          li.replaceChild(stateMark(kind), li.firstChild);
+          li.classList.add('is-' + kind);
+          bar.value = 100;
+          bar.hidden = true;
+          setI18n(state, sk, en);
+        }
+      };
+    }
+
+    function uploadFiles(files) {
+      files = (files || []).filter(function (f) { return f && f.name && f.name.charAt(0) !== '.'; });
+      if (!files.length) return;
+      openUploadPanel();
+      if (files.length > UPLOAD_MAX_FILES) {
+        uploadNote('Naraz najviac ' + UPLOAD_MAX_FILES + ' súborov; vybrali ste ' + files.length + '. Rozdeľte ich, prosím, na menšie dávky.',
+          'At most ' + UPLOAD_MAX_FILES + ' files at a time; you chose ' + files.length + '. Please split them into smaller batches.');
+        return;
+      }
+      if (DEMO) { simulateDemoUpload(files); return; }  // nothing leaves the browser
+      if (isAdminMode || !currentPatientId) return;
+      uploadNote('', '');
+      var items = files.map(function (f) { return { file: f, row: uploadItem(f) }; });
+      items.forEach(function (it) {
+        uploadQueue = uploadQueue.then(function () { return uploadOne(it.file, it.row); });
+      });
+      uploadQueue = uploadQueue.then(function () { refresh(); });
+    }
+
+    /** Send one file; always resolves (a failure is shown on its row). */
+    function uploadOne(file, row) {
+      var code = uploadPrecheck(file);
+      if (code) {
+        var t = UPLOAD_CODE_TEXT[code];
+        row.done('attention', t[0], t[1]);
+        return Promise.resolve();
+      }
+      return new Promise(function (resolve) {
+        var xhr = new XMLHttpRequest();
+        xhr.open('POST', '/api/upload?patient_id=' + encodeURIComponent(currentPatientId));
+        xhr.setRequestHeader('Authorization', authHeader());
+        xhr.upload.onprogress = function (e) {
+          if (e.lengthComputable) row.progress(Math.min(99, Math.round(e.loaded * 100 / e.total)));
+        };
+        xhr.onerror = function () {
+          row.done('attention', 'Spojenie zlyhalo. Skúste to znova.', 'The connection failed. Try again.');
+          resolve();
+        };
+        xhr.onload = function () {
+          var data = {};
+          try { data = JSON.parse(xhr.responseText || '{}'); } catch (e) { data = {}; }
+          if (xhr.status === 401) { logout(); resolve(); return; }
+          if (xhr.status === 413) {
+            row.done('attention', UPLOAD_CODE_TEXT.file_too_large[0], UPLOAD_CODE_TEXT.file_too_large[1]);
+          } else if (xhr.status !== 200) {
+            row.done('attention', data.message_sk || 'Nahrávanie bolo odmietnuté.', data.message_en || 'The upload was refused.');
+          } else {
+            var f = (data.files || [])[0] || {};
+            if (f.status === 'uploaded') {
+              if (data.path === 'curated_inbox') {
+                row.done('ready', 'V priečinku pre nové súbory; spracovanie začne o niekoľko minút.', 'In the inbox; processing starts in a few minutes.');
+              } else {
+                row.done('ready', 'Uložené na Google Drive; čaká na vyťaženie.', 'Saved to Google Drive; waiting for extraction.');
+              }
+            } else {
+              var text = UPLOAD_CODE_TEXT[f.code] || UPLOAD_CODE_TEXT.failed;
+              row.done('attention', text[0], text[1]);
+            }
+          }
+          resolve();
+        };
+        var form = new FormData();
+        form.append('files', file, file.name);
+        xhr.send(form);
+      });
+    }
+
+    /** Demo: invented rows only, nothing is read or sent. */
+    function simulateDemoUpload(files) {
+      var now = new Date().toISOString().slice(0, 19);
+      files.forEach(function (f) {
+        var row = uploadItem(f);
+        var code = uploadPrecheck(f);
+        if (code) { row.done('attention', UPLOAD_CODE_TEXT[code][0], UPLOAD_CODE_TEXT[code][1]); return; }
+        demoUploadSeq += 1;
+        demoUploads.push({
+          id: 'demo-upload-' + demoUploadSeq, filename: f.name, category: 'other', date: null,
+          institution: null, gdrive_id: null, uploaded_at: now, has_ocr: false, has_ai: false,
+          has_metadata: false, has_date: false, has_institution: false, is_synced: false,
+          is_standard_name: false, fully_complete: false, curated: true, attention_reason: null,
+          stage: 'waiting_text', steps: { extracted: false, named: false, filed: false }
+        });
+        row.done('ready', 'Ukážka: nič sa neodoslalo, riadok je len v tomto prehliadači.', 'Demo: nothing was uploaded, the row exists only in this browser.');
+      });
+      uploadNote('Ukážka: súbory sa neodoslali. V aplikácii by išli do priečinka pacienta na Google Drive a zobrazili sa ako „Čaká na vyťaženie“.',
+        'Demo: nothing was uploaded. In the app the files would go into the patient folder on Google Drive and show up as “Waiting for extraction”.');
+      refresh();
+    }
+
+    function withDemoUploads(docs) {
+      if (!docs || !demoUploads.length) return docs;
+      var copy = JSON.parse(JSON.stringify(docs));
+      copy.documents = (copy.documents || []).concat(JSON.parse(JSON.stringify(demoUploads)));
+      if (copy.summary) {
+        copy.summary.total = (copy.summary.total || 0) + demoUploads.length;
+        copy.summary.in_progress = (copy.summary.in_progress || 0) + demoUploads.length;
+      }
+      return copy;
+    }
+
+    function demoUploadDetail(id) {
+      var row = demoUploads.find(function (r) { return r.id === id; });
+      if (!row) return null;
+      return { id: row.id, filename: row.filename, gdrive_url: '', preview_url: '', category: 'other', pages: [], ai_tags: [], structured_metadata: {} };
+    }
+
+    /** Drop files or folders anywhere on the document section. */
+    function droppedFiles(dt) {
+      var items = dt && dt.items ? Array.prototype.slice.call(dt.items) : [];
+      var entries = items.map(function (it) { return it.webkitGetAsEntry ? it.webkitGetAsEntry() : null; })
+        .filter(function (e) { return e; });
+      if (!entries.length) return Promise.resolve(Array.prototype.slice.call((dt && dt.files) || []));
+      function walk(entry) {
+        if (entry.isFile) return new Promise(function (res) { entry.file(function (f) { res([f]); }, function () { res([]); }); });
+        if (!entry.isDirectory) return Promise.resolve([]);
+        var reader = entry.createReader();
+        return new Promise(function (res) {
+          var all = [];
+          (function more() {
+            reader.readEntries(function (batch) {
+              if (!batch.length) {
+                Promise.all(all.map(walk)).then(function (lists) { res([].concat.apply([], lists)); });
+                return;
+              }
+              all = all.concat(batch);
+              more();
+            }, function () { res([]); });
+          })();
+        });
+      }
+      return Promise.all(entries.map(walk)).then(function (lists) { return [].concat.apply([], lists); });
+    }
+
+    function initUploadDrop() {
+      var zone = document.querySelector('.docs-section');
+      if (!zone) return;
+      function canUpload(e) {
+        var types = e.dataTransfer ? Array.prototype.slice.call(e.dataTransfer.types || []) : [];
+        var btn = document.getElementById('upload-btn');
+        return types.indexOf('Files') !== -1 && btn && !btn.hidden;
+      }
+      zone.addEventListener('dragover', function (e) {
+        if (!canUpload(e)) return;
+        e.preventDefault();
+        zone.classList.add('is-dropping');
+      });
+      zone.addEventListener('dragleave', function (e) {
+        if (!zone.contains(e.relatedTarget)) zone.classList.remove('is-dropping');
+      });
+      zone.addEventListener('drop', function (e) {
+        zone.classList.remove('is-dropping');
+        if (!canUpload(e)) return;
+        e.preventDefault();
+        droppedFiles(e.dataTransfer).then(uploadFiles);
+      });
+    }
+    initUploadDrop();
 
     // ── Patient selector ────────────────────────────────────────────────
 
@@ -738,6 +1027,10 @@
       var addPatientBtn = document.querySelector('.add-patient-btn');
       // Restore it when admin mode ends (#824), same as the archive button.
       if (addPatientBtn) addPatientBtn.style.display = isAdminMode ? 'none' : '';
+      // #921: an admin's read-only view cannot add documents (the server refuses too).
+      var uploadBtn = document.getElementById('upload-btn');
+      if (uploadBtn) uploadBtn.hidden = isAdminMode;
+      if (isAdminMode) closeUploadPanel();
     }
 
     function switchPatient(patientId) {
@@ -2721,8 +3014,8 @@
       }
 
       if (docsData.length === 0) {
-        tableMessage('Zatiaľ tu nie sú žiadne dokumenty. Nahrajte súbory do priečinka pacienta na Google Drive a Oncofiles ich spracuje.',
-          'No documents yet. Put files into the patient folder on Google Drive and Oncofiles will process them.');
+        tableMessage('Zatiaľ tu nie sú žiadne dokumenty. Pridajte ich tlačidlom „Pridať dokumenty“ alebo ich nahrajte do priečinka pacienta na Google Drive a Oncofiles ich spracuje.',
+          'No documents yet. Add them with “Add documents” or put files into the patient folder on Google Drive and Oncofiles will process them.');
         return;
       }
       if (filtered.length === 0) {

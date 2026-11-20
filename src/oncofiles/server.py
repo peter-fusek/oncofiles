@@ -4626,6 +4626,36 @@ async def _dashboard_body_patient(
     return patient_id, None
 
 
+async def _dashboard_write_refusal(
+    request: Request, db: Database, patient_id: str
+) -> JSONResponse | None:
+    """403 ``read_only`` unless the caller is this patient's own caregiver (#921).
+
+    Runs AFTER ``_dashboard_body_patient`` on a route that writes documents for
+    a patient. An admin passes that helper for every patient, but the dashboard
+    shows other people's patients to an admin read-only (the "Admin
+    (read-only)" group), so an admin who is not the caregiver is refused here;
+    so is the operator bearer, which is not a dashboard session. Stricter only,
+    never a second way in.
+    """
+    email = _get_dashboard_email(request)
+    patient = await db.get_patient(patient_id) if email else None
+    if email and patient and _email_matches_caregiver(email, patient.caregiver_email):
+        return None
+    return JSONResponse(
+        {
+            "error": "read_only",
+            "message_sk": (
+                "Tento pacient je pre vás len na čítanie; dokumenty pridáva jeho opatrovateľ."
+            ),
+            "message_en": (
+                "This patient is read-only for you; documents are added by the caregiver."
+            ),
+        },
+        status_code=403,
+    )
+
+
 async def _audit_body_refusal(
     request: Request, db: Database, email: str | None, is_admin: bool, patient_id: str | None
 ) -> None:
@@ -7051,6 +7081,54 @@ async def api_gdrive_set_folder(request: Request) -> JSONResponse:
     except Exception:
         logger.exception("API gdrive-set-folder error")
         return JSONResponse({"error": "internal error"}, status_code=500)
+
+
+@mcp.custom_route("/api/upload", methods=["POST"])
+async def api_upload(request: Request) -> JSONResponse:
+    """Add documents from the dashboard (#921). Multipart field ``files``.
+
+    ``?patient_id=`` (slug or UUID) is checked BEFORE the body is read: the
+    single body ACL (``_dashboard_body_patient``: unknown and foreign are the
+    same 404), then ``_dashboard_write_refusal`` (an admin's read-only view of
+    someone else's patient, and the operator bearer, get 403 ``read_only``).
+    The rate limiter refuses a body over ``RATE_LIMIT_UPLOAD_MAX_BODY_BYTES``
+    with 413 before it is read. Everything else (types, sizes, count, cap,
+    curated inbox vs Drive-only) is ``dashboard_upload.handle_upload``.
+    No #852 gate: adding documents to a patient that already exists and has
+    Drive connected is not onboarding.
+    """
+    err = _check_dashboard_auth(request)
+    if err:
+        return err
+    db_inst: Database = request.app.state.fastmcp_server._lifespan_result["db"]
+    raw_patient_id = str(request.query_params.get("patient_id") or "").strip()
+    if not raw_patient_id:
+        return JSONResponse({"error": "patient_id required"}, status_code=400)
+    patient_id, acl_err = await _dashboard_body_patient(request, db_inst, raw_patient_id)
+    if acl_err is not None:
+        return acl_err
+    ro_err = await _dashboard_write_refusal(request, db_inst, patient_id)
+    if ro_err is not None:
+        return ro_err
+
+    from starlette.datastructures import UploadFile
+
+    from oncofiles import dashboard_upload
+
+    try:
+        form = await request.form(max_files=dashboard_upload.MAX_FILES + 1, max_fields=5)
+    except Exception as exc:
+        logger.warning("API upload: unreadable multipart body (%s)", type(exc).__name__)
+        return JSONResponse({"error": "bad_request"}, status_code=400)
+    try:
+        uploads = [f for f in form.getlist("files") if isinstance(f, UploadFile)]
+        outcome = await dashboard_upload.handle_upload(db_inst, patient_id, uploads)
+        return JSONResponse(outcome.payload, status_code=outcome.status)
+    except Exception:
+        logger.exception("API upload error")
+        return JSONResponse({"error": "internal error"}, status_code=500)
+    finally:
+        await form.close()
 
 
 def _require_admin(request: Request) -> JSONResponse | None:
