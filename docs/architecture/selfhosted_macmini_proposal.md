@@ -71,7 +71,7 @@ Two separate authorizations happen at different times, and they need to resolve 
 accounts
 ├── account_id        (internal id, e.g. "acct_7f3a")
 ├── google_sub         "108234...9911"   ← from the ID token, the real key
-├── email              "erika@gmail.com" (display/lookup only)
+├── email              "patient.a@example.com" (display/lookup only)
 ├── drive_folder_id     "1XyZ..."
 ├── drive_refresh_token (encrypted; key kept OUTSIDE this table — see below)
 └── cache_db_path       "data/acct_7f3a.db"
@@ -89,7 +89,7 @@ Rather than one shared table with a `WHERE account_id = ?` filter on every query
 data/
 ├── accounts.db            ← the small table above: identity + Drive refresh tokens only, no medical data
 └── cache/
-    ├── acct_7f3a.db        ← Erika's documents, and only Erika's
+    ├── acct_7f3a.db        ← patient A's documents, and only patient A's
     ├── acct_91bc.db        ← the next user's, entirely separate file
     └── ...
 ```
