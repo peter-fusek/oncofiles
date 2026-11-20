@@ -281,7 +281,12 @@ def test_readiness_jobs_expose_last_deleted():
 
 
 def test_job_listed_for_the_dashboard():
-    assert f'"id": "{JOB_ID}"' in inspect.getsource(server)
+    # The admin panel lists the running scheduler's jobs; the catalogue only
+    # gives the job its bilingual name and description.
+    from oncofiles import scheduled_jobs
+
+    assert scheduled_jobs.describe(JOB_ID)["known"] is True
+    assert f'id="{JOB_ID}"' in inspect.getsource(server)
 
 
 # ── #734 lock: exactly this one entry ─────────────────────────────────────

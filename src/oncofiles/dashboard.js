@@ -3319,69 +3319,213 @@
       if (schedData) renderSchedules(schedData);
     });
 
+    // Why a job (or the whole scheduler / the curated loop) is not active here.
+    var SCHED_REASONS = {
+      sync_disabled: ['Plánovač je na tomto serveri vypnutý', 'The scheduler is off on this server'],
+      scheduler_not_running: ['Plánovač nebeží', 'The scheduler is not running'],
+      ai_nightly_only: ['AI beží len v noci; úloha patrí do starého režimu', 'AI runs nightly only; this job belongs to the legacy mode'],
+      legacy_mode: ['Starý režim (AI nie je len nočné)', 'Legacy mode (AI is not nightly-only)'],
+      run_on_startup_off: ['Jednorazový beh po štarte je vypnutý', 'The one-off run after start is off'],
+      gmail_calendar_disabled: ['Gmail a kalendár sú vypnuté', 'Gmail and Calendar are off'],
+      integrity_check_off: ['Kontrola integrity je vypnutá', 'The integrity check is off'],
+      not_registered: ['Na tomto serveri nie je zaregistrovaná', 'Not registered on this server'],
+      curated_disabled: ['Kurátorská slučka je vypnutá', 'The curated loop is off'],
+      google_disabled: ['Google integrácia je vypnutá', 'Google integration is off'],
+      not_running: ['Nebeží', 'Not running']
+    };
+
+    /** A server timestamp in the viewer's local time, as [sk, en]. */
+    function schedTimeBoth(value) {
+      var d = parseTs(value);
+      if (!d) return ['–', '–'];
+      var opts = { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' };
+      return [d.toLocaleString('sk-SK', opts), d.toLocaleString('en-GB', opts)];
+    }
+
+    function schedReasonText(code, sw) {
+      var r = SCHED_REASONS[code] || [code || '', code || ''];
+      var suffix = sw ? ' (' + sw + ')' : '';
+      return [r[0] + suffix, r[1] + suffix];
+    }
+
+    /** How often a job runs, as [sk, en]; daily/weekly times from next_run_at in local time. */
+    function schedCadence(j) {
+      var t = j.trigger;
+      if (!t) return ['jednorazovo, už prebehla', 'once, already ran'];
+      if (t.kind === 'interval' && t.seconds) {
+        if (t.seconds % 3600 === 0) {
+          var h = t.seconds / 3600;
+          return h === 1 ? ['každú hodinu', 'every hour'] : ['každých ' + h + ' h', 'every ' + h + ' h'];
+        }
+        var m = Math.round(t.seconds / 60);
+        return ['každých ' + m + ' min', 'every ' + m + ' min'];
+      }
+      if (t.kind === 'date') return ['jednorazovo', 'once'];
+      var next = parseTs(j.next_run_at);
+      if (t.kind === 'cron' && next && (t.cadence === 'daily' || t.cadence === 'weekly')) {
+        var tOpts = { hour: '2-digit', minute: '2-digit' };
+        var skT = next.toLocaleTimeString('sk-SK', tOpts), enT = next.toLocaleTimeString('en-GB', tOpts);
+        if (t.cadence === 'daily') return ['denne o ' + skT, 'daily at ' + enT];
+        return [next.toLocaleDateString('sk-SK', { weekday: 'long' }) + ' o ' + skT,
+                next.toLocaleDateString('en-GB', { weekday: 'long' }) + ' at ' + enT];
+      }
+      return [t.text || '', t.text || ''];
+    }
+
+    function schedLine(parent, sk, en, cls) {
+      var el = document.createElement('div');
+      if (cls) el.className = cls;
+      el.style.cssText = 'font-size:0.7rem;color:var(--text-muted);margin-top:0.125rem';
+      setI18n(el, sk, en);
+      parent.appendChild(el);
+      return el;
+    }
+
+    function renderSchedHeader(container, data) {
+      var s = data.scheduler || {};
+      var head = document.createElement('div');
+      head.style.cssText = 'display:flex;align-items:center;gap:0.5rem;margin-bottom:0.5rem';
+      head.appendChild(stateMark(s.running ? 'ready' : 'attention'));
+      var txt = document.createElement('span');
+      if (s.running) {
+        var since = schedTimeBoth(s.started_at);
+        setI18n(txt, 'Plánovač beží od ' + since[0] + ' · úloh: ' + (s.job_count || 0),
+                'Scheduler running since ' + since[1] + ' · jobs: ' + (s.job_count || 0));
+      } else {
+        var off = s.off_reason || {};
+        var r = schedReasonText(off.reason || 'scheduler_not_running', off.switch);
+        setI18n(txt, r[0], r[1]);
+      }
+      head.appendChild(txt);
+      container.appendChild(head);
+    }
+
+    function renderCuratedLoop(container, c) {
+      if (!c) return;
+      var row = document.createElement('div');
+      row.style.cssText = 'display:flex;align-items:flex-start;gap:0.75rem;padding:0.5rem 0;border-bottom:1px solid var(--border)';
+      var mark = stateMark(c.running ? 'ready' : 'attention');
+      mark.style.marginTop = '0.25rem';
+      row.appendChild(mark);
+      var info = document.createElement('div');
+      info.style.cssText = 'flex:1;min-width:0';
+      var nameEl = document.createElement('div');
+      nameEl.style.cssText = 'font-weight:600;color:var(--text);font-size:0.8125rem';
+      setI18n(nameEl, (c.name || {}).sk || 'Kurátorská slučka', (c.name || {}).en || 'Curated loop');
+      info.appendChild(nameEl);
+      schedLine(info, (c.desc || {}).sk || '', (c.desc || {}).en || '');
+      if (!c.running) {
+        var r = schedReasonText(c.reason, c.switch);
+        schedLine(info, r[0], r[1]);
+      } else {
+        var mode = c.continuous
+          ? ['priebežne: kontrola každých ' + c.poll_s + ' s, ' + c.chunk_docs + ' dok./beh',
+             'continuous: probe every ' + c.poll_s + ' s, ' + c.chunk_docs + ' docs/run']
+          : ['priebežný režim vypnutý', 'continuous mode off'];
+        var sweep = c.nightly_hour == null
+          ? ['súhrnný beh každú hodinu', 'sweep every hour']
+          : ['nočný súhrnný beh o ' + c.nightly_hour + ':00 (Bratislava)', 'nightly sweep at ' + c.nightly_hour + ':00 (Bratislava)'];
+        schedLine(info, mode[0] + ' · ' + sweep[0], mode[1] + ' · ' + sweep[1]);
+        var probe = schedTimeBoth(c.last_probe_at);
+        var auto = schedTimeBoth(c.last_auto_run_at);
+        schedLine(info,
+          'posledná kontrola: ' + probe[0] + ' · kontrol: ' + c.probes_total + ' · pacientov: ' + c.patients_probed,
+          'last probe: ' + probe[1] + ' · probes: ' + c.probes_total + ' · patients: ' + c.patients_probed);
+        schedLine(info,
+          'automatických behov: ' + c.auto_runs_total + ' (posledný ' + auto[0] + ') · čaká v inboxe: ' + c.pending_inbox_total + ' · zablokovaných: ' + c.runs_blocked_total,
+          'auto runs: ' + c.auto_runs_total + ' (last ' + auto[1] + ') · pending in inbox: ' + c.pending_inbox_total + ' · blocked: ' + c.runs_blocked_total);
+      }
+      row.appendChild(info);
+      container.appendChild(row);
+    }
+
+    function renderSchedJob(container, j) {
+      var row = document.createElement('div');
+      row.style.cssText = 'display:flex;align-items:flex-start;gap:0.75rem;padding:0.5rem 0;border-bottom:1px solid var(--border)';
+      var kind = j.running ? 'progress' : ((j.last_error && (!j.last_ok || j.last_error > j.last_ok)) ? 'attention' : (j.last_ok ? 'ready' : 'progress'));
+      var mark = stateMark(kind);
+      mark.style.marginTop = '0.25rem';
+      row.appendChild(mark);
+
+      var info = document.createElement('div');
+      info.style.cssText = 'flex:1;min-width:0';
+      var nameEl = document.createElement('div');
+      nameEl.style.cssText = 'font-weight:600;color:var(--text);font-size:0.8125rem';
+      setI18n(nameEl, (j.name || {}).sk || j.id, (j.name || {}).en || j.id);
+      info.appendChild(nameEl);
+      if (j.desc && (j.desc.sk || j.desc.en)) schedLine(info, j.desc.sk, j.desc.en);
+      var cad = schedCadence(j);
+      schedLine(info, cad[0], cad[1]);
+      row.appendChild(info);
+
+      var status = document.createElement('div');
+      status.style.cssText = 'text-align:right;font-size:0.7rem;color:var(--text-muted);min-width:9rem;flex-shrink:0';
+      var last = document.createElement('div');
+      if (j.running) setI18n(last, 'Beží…', 'Running…');
+      else if (j.last_ok) {
+        var ok = schedTimeBoth(j.last_ok);
+        var dur = j.last_duration_s != null ? ' (' + j.last_duration_s + ' s)' : '';
+        setI18n(last, 'naposledy OK ' + ok[0] + dur, 'last OK ' + ok[1] + dur);
+      } else setI18n(last, 'ešte nebežala', 'not run yet');
+      status.appendChild(last);
+      if (j.next_run_at) {
+        var nx = schedTimeBoth(j.next_run_at);
+        var nextEl = document.createElement('div');
+        setI18n(nextEl, 'ďalší beh ' + nx[0], 'next run ' + nx[1]);
+        status.appendChild(nextEl);
+      }
+      if (j.last_error) {
+        var er = schedTimeBoth(j.last_error);
+        var errLine = document.createElement('div');
+        errLine.style.cssText = 'color:var(--err);margin-top:0.125rem';
+        var type = j.last_error_type ? ': ' + j.last_error_type : '';
+        setI18n(errLine, 'chyba ' + er[0] + type, 'error ' + er[1] + type);
+        status.appendChild(errLine);
+      }
+      row.appendChild(status);
+      container.appendChild(row);
+    }
+
+    function renderSchedInactive(container, inactive) {
+      if (!inactive || !inactive.length) return;
+      var det = document.createElement('details');
+      det.style.cssText = 'margin-top:0.75rem';
+      var sum = document.createElement('summary');
+      sum.style.cssText = 'cursor:pointer;font-size:0.75rem;color:var(--text-muted)';
+      setI18n(sum, 'Na tomto serveri neaktívne (' + inactive.length + ')', 'Not active on this server (' + inactive.length + ')');
+      det.appendChild(sum);
+      inactive.forEach(function(j) {
+        var row = document.createElement('div');
+        row.style.cssText = 'padding:0.375rem 0;border-bottom:1px solid var(--border)';
+        var nameEl = document.createElement('div');
+        nameEl.style.cssText = 'font-size:0.75rem;color:var(--text)';
+        setI18n(nameEl, (j.name || {}).sk || j.id, (j.name || {}).en || j.id);
+        row.appendChild(nameEl);
+        var r = schedReasonText(j.reason, j.switch);
+        schedLine(row, r[0], r[1]);
+        det.appendChild(row);
+      });
+      container.appendChild(det);
+    }
+
     function renderSchedules(data) {
       schedData = data;
       var container = document.getElementById('sched-jobs');
       clearEl(container);
 
+      renderSchedHeader(container, data);
+      if (schedFilter === 'all' || schedFilter === 'curated') renderCuratedLoop(container, data.curated_loop);
+
       var jobs = (data.jobs || []).filter(function(j) {
         return schedFilter === 'all' || j.group === schedFilter;
       });
-
-      var groupColors = { sync: 'var(--accent)', pipeline: 'var(--purple)', housekeeping: '#f59e0b', infra: 'var(--text-muted)' };
-
-      jobs.forEach(function(j) {
-        var row = document.createElement('div');
-        row.style.cssText = 'display:flex;align-items:center;gap:0.75rem;padding:0.5rem 0;border-bottom:1px solid var(--border)';
-
-        // Status indicator
-        var dot = document.createElement('span');
-        dot.style.cssText = 'width:8px;height:8px;border-radius:50%;flex-shrink:0;';
-        if (j.running) { dot.style.background = 'var(--accent)'; dot.style.boxShadow = '0 0 6px var(--accent)'; }
-        else if (j.last_error && !j.last_ok) { dot.style.background = '#ef4444'; }
-        else if (j.last_ok) { dot.style.background = '#22c55e'; }
-        else { dot.style.background = 'var(--text-muted)'; }
-        row.appendChild(dot);
-
-        // Name + schedule
-        var info = document.createElement('div');
-        info.style.cssText = 'flex:1;min-width:0';
-        var nameEl = document.createElement('div');
-        nameEl.style.cssText = 'font-weight:600;color:var(--text);font-size:0.8125rem';
-        nameEl.textContent = j.name;
-        info.appendChild(nameEl);
-        var descEl = document.createElement('div');
-        descEl.style.cssText = 'font-size:0.7rem;color:var(--text-muted);margin-top:0.125rem';
-        descEl.textContent = j.desc;
-        info.appendChild(descEl);
-        row.appendChild(info);
-
-        // Schedule badge
-        var badge = document.createElement('span');
-        badge.style.cssText = 'font-size:0.7rem;padding:0.125rem 0.5rem;border-radius:1rem;background:' + (groupColors[j.group] || 'var(--text-muted)') + ';color:white;white-space:nowrap;flex-shrink:0';
-        badge.textContent = j.schedule;
-        row.appendChild(badge);
-
-        // Last run
-        var status = document.createElement('div');
-        status.style.cssText = 'text-align:right;font-size:0.7rem;color:var(--text-muted);min-width:100px;flex-shrink:0';
-        if (j.running) { status.textContent = 'Running...'; status.style.color = 'var(--accent)'; }
-        else if (j.last_ok) {
-          var ago = Math.round((Date.now() - new Date(j.last_ok + 'Z').getTime()) / 60000);
-          status.textContent = (ago < 1 ? '<1' : ago) + 'm ago';
-          if (j.last_duration_s) status.textContent += ' (' + j.last_duration_s + 's)';
-        }
-        else { status.textContent = 'Not run yet'; }
-        if (j.last_error) {
-          var errLine = document.createElement('div');
-          errLine.style.cssText = 'color:#ef4444;font-size:0.65rem;margin-top:0.125rem';
-          errLine.textContent = 'Error: ' + (j.last_error_msg || 'unknown').substring(0, 60);
-          status.appendChild(errLine);
-        }
-        row.appendChild(status);
-
-        container.appendChild(row);
-      });
+      jobs.forEach(function(j) { renderSchedJob(container, j); });
+      if (!jobs.length && schedFilter !== 'curated') {
+        schedLine(container, 'Žiadne naplánované úlohy v tejto skupine.', 'No scheduled jobs in this group.');
+      }
+      renderSchedInactive(container, (data.inactive || []).filter(function(j) {
+        return schedFilter === 'all' || j.group === schedFilter;
+      }));
 
       // Prompt stats by call type
       var psContainer = document.getElementById('sched-prompt-stats');

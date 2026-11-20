@@ -159,6 +159,18 @@ def curated_loop_running() -> bool:
     return task is not None and not task.done()
 
 
+def current_scheduler() -> tuple[Any, dict] | None:
+    """Read-only peek at the running scheduler and its tracker (admin panel).
+
+    Unlike ``existing_scheduler()`` this takes no reference: the caller only
+    reads ``get_jobs()`` and must never shut it down.
+    """
+    with _lock:
+        if not _scheduler_alive(_scheduler):
+            return None
+        return _scheduler, _tracker if _tracker is not None else {}
+
+
 def status() -> dict:
     """In-memory snapshot for operator /readiness. No DB, no patient data."""
     sched = _scheduler
