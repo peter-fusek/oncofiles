@@ -978,22 +978,6 @@ def _start_sync_scheduler(
 
             reclaim_memory("enhancement_sweep")
 
-    async def _run_institution_backfill():
-        """Re-run institution inference for docs with metadata but null institution."""
-        try:
-            from oncofiles.enhance import backfill_missing_institutions
-
-            stats = await asyncio.wait_for(
-                backfill_missing_institutions(db.db),
-                timeout=60,
-            )
-            if stats["updated"] > 0:
-                logger.info("Institution backfill: %s", stats)
-        except TimeoutError:
-            logger.error("Institution backfill timed out")
-        except Exception:
-            logger.exception("Institution backfill failed")
-
     async def _run_pipeline_integrity_check():
         """Scheduled check: find and fix any docs stuck in incomplete pipeline state."""
         try:
@@ -2357,18 +2341,21 @@ link to the user so they can view, verify, or share the original document.
 Always display these when citing research findings.
 3. When making clinical observations, cite the specific source document(s) by filename \
 and `gdrive_url`. Never state medical facts without a traceable source.
-4. Use `get_related_documents` to discover cross-referenced documents (same visit, \
-shared diagnoses, follow-ups) for comprehensive context.
+4. `get_related_documents` returns cross-referenced documents when links are available. \
+Links are not created automatically today, so an empty result with a `note` is normal; \
+never present documents as linked unless the tool returns them.
 5. For lab trend analysis, reference the source `document_id` for each data point.
 
-CROSS-REFERENCES — documents are automatically linked:
+CROSS-REFERENCES — links appear when available:
 - `same_visit`: same date + institution (e.g., labs and imaging from one appointment)
 - `related`: nearby dates or shared diagnoses/medications
+- When `get_related_documents` returns none, use `timeline` or `encounter_detail` for \
+documents of the same day or visit instead.
 
 RECOMMENDED WORKFLOW for chat clients:
 - Show GDrive links as clickable "View original" buttons alongside document summaries.
 - Show PubMed/ClinicalTrials.gov links alongside research citations.
-- Use `get_related_documents` for drill-down into connected records.
+- Use `get_related_documents` for drill-down into connected records when links exist.
 - In export packages, all entries include `gdrive_url` for offline verification.
 
 PATIENT TYPES — the system supports two patient profiles:

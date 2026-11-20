@@ -282,10 +282,15 @@ async def validate_categories(
                 "suggested_category": target,
                 "reason": "legacy_category_merge",
             }
-            mismatches.append(entry)
-            if not dry_run:
+            # `corrected` is a list of entries (#930: it was `+= 1`, a TypeError
+            # on every real run); same shape as the document_type branch below.
+            if dry_run:
+                entry["action"] = "would_correct"
+                mismatches.append(entry)
+            else:
                 await db.update_document_category(doc.id, target)
-                corrected += 1
+                entry["action"] = "corrected"
+                corrected.append(entry)
             continue
 
         # Advocate keyword sweep (#180): detect advocate files in other categories
@@ -301,10 +306,13 @@ async def validate_categories(
                     "suggested_category": "advocate",
                     "reason": "advocate_keyword_in_filename",
                 }
-                mismatches.append(entry)
-                if not dry_run:
+                if dry_run:
+                    entry["action"] = "would_correct"
+                    mismatches.append(entry)
+                else:
                     await db.update_document_category(doc.id, "advocate")
-                    corrected += 1
+                    entry["action"] = "corrected"
+                    corrected.append(entry)
                 continue
 
         # Filename token rescue for "other" category (#176)
@@ -322,10 +330,13 @@ async def validate_categories(
                     "suggested_category": suggested,
                     "reason": "filename_token_detected",
                 }
-                mismatches.append(entry)
-                if not dry_run:
+                if dry_run:
+                    entry["action"] = "would_correct"
+                    mismatches.append(entry)
+                else:
                     await db.update_document_category(doc.id, suggested)
-                    corrected += 1
+                    entry["action"] = "corrected"
+                    corrected.append(entry)
                 continue
 
         doc_type = meta.get("document_type")
