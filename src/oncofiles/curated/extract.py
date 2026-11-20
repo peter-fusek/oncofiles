@@ -1,6 +1,10 @@
 """Text extraction ladder for curated folders (#562, OCR decision #565).
 
-1. **Text layer** — PDF text via PyMuPDF. ``>= min_text_chars`` → done.
+1. **Text layer** — PDF text via PyMuPDF, only when every page is
+   born-digital (``born_digital``: no invisible text, no page-sized raster
+   image; the same rule as re-OCR, #931) and it holds ``>= min_text_chars``
+   → done. A scanner's own OCR layer over a scan is OCR of unknown quality,
+   so such a PDF is read like any scan.
 2. **Vision** — every page rendered to PNG and read by the *local* vision
    model (no tesseract, no cloud OCR). Handwriting and photos always land here.
    Each page's orientation is decided first and the image rotated locally
@@ -8,7 +12,9 @@
    needs no model call, #882); charts are fenced as ``[chart: …]`` and never read
    as data (``ocr_markers``). A chart, a rotated region or an unsure
    orientation sends the document to review (``review_notes``); a confident
-   rotation alone does not.
+   rotation alone does not. A page answering near-empty although nearly all
+   its completion was reasoning is asked once more with thinking off
+   (``retry_near_empty``, #806 shared with re-OCR, #931).
 
 Plain-text sources (``.md``, ``.txt``, ``.csv``, ``.json``) are decoded as-is.
 Google Docs and Slides are exported by Drive as plain text, Sheets as CSV
@@ -20,6 +26,7 @@ Anything else is reported as unsupported so the file stays in the inbox.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from oncofiles.curated import llm, ocr_markers, orientation
@@ -41,8 +48,17 @@ RENDER_DPI = 150
 # Bump on ANY change to OCR_SYSTEM_PROMPT or to how a page is prepared for the
 # model (orientation, #609). Written to the sidecar as ``ocr_version``; a
 # sidecar without it was read before #609 (``ocr-v1``). ocr-v3: the #882
-# orientation pre-filter (EXIF / PDF rotation, portrait = upright).
-OCR_VERSION = "ocr-v3"
+# orientation pre-filter (EXIF / PDF rotation, portrait = upright). ocr-v4
+# (#931): a PDF whose text layer is not born-digital is vision-read, and a
+# near-empty reasoning-heavy page answer is retried once with thinking off.
+OCR_VERSION = "ocr-v4"
+
+# #806, shared by ingest and re-OCR (#931); thresholds may only become stricter
+NEAR_EMPTY_CHARS = 50  # a page answer with fewer stripped characters is near-empty
+RETRY_REASONING_RATIO = 0.8  # near-empty answer with reasoning/completion above this → 1 retry
+# the retry's per-call mode: thinking off through the reasoning marker, nothing global
+RETRY_MODE = {"thinking": False, "reasoning_marker": True}
+MIN_OWN_TEXT_CHARS = 100  # re-OCR's floor for a born-digital text layer
 
 OCR_SYSTEM_PROMPT = (
     "You are an OCR engine for Slovak and Czech medical documents. Transcribe ALL text "
@@ -99,6 +115,12 @@ class Extraction:
     # Set when ``error`` came from the local model: ``llm.LocalLLMError.failure``
     # (transport | answer | unknown). None = not a model error (corrupt file, …).
     llm_failure: str | None = None
+    # #931 (#806 at ingest): 1-based pages asked once more with thinking off;
+    # counts only, never written to a sidecar.
+    retried_pages: list[int] = field(default_factory=list)
+    # #931: the PDF had a text layer of enough characters that was not
+    # born-digital (a scanner's OCR layer), so it was vision-read instead.
+    text_layer_ignored: bool = False
 
     @property
     def ok(self) -> bool:
@@ -142,6 +164,41 @@ def _ext(name: str) -> str:
     return name.rsplit(".", 1)[-1].lower() if "." in name else ""
 
 
+def needs_retry(text: str | None, reasoning_tokens, completion_tokens) -> bool:
+    """A near-empty answer from a call that spent nearly all its tokens on
+    reasoning (#806). Unknown counts never trigger a retry."""
+    if len((text or "").strip()) >= NEAR_EMPTY_CHARS:
+        return False
+    if not all(isinstance(v, int) and not isinstance(v, bool)
+               for v in (reasoning_tokens, completion_tokens)):  # fmt: skip
+        return False
+    return completion_tokens > 0 and reasoning_tokens / completion_tokens > RETRY_REASONING_RATIO
+
+
+def retry_near_empty(
+    text: str | None, tokens: tuple, again: Callable[[], str | None], *, where: str = ""
+) -> tuple[str | None, bool]:
+    """The #806 retry, shared by ingest and re-OCR (#931).
+
+    When ``needs_retry`` holds (``tokens`` = (reasoning_tokens,
+    completion_tokens) of the first call), ``again()`` makes ONE more call for
+    the same image and prompt with ``RETRY_MODE``; its text stands only when
+    longer. A failed retry keeps the first answer (it is a bonus). Returns
+    (answer, retried); ``retried`` is True whenever the retry was attempted.
+    Only answer texts are compared: the reasoning channel is never a
+    transcript. ``where`` (page / pass numbers, no content) goes to the log."""
+    if not needs_retry(text, *tokens):
+        return text, False
+    try:
+        retry_text = again()
+    except Exception as exc:
+        logger.warning("OCR retry failed: %s %s", where, type(exc).__name__)
+        return text, True
+    if len((retry_text or "").strip()) > len((text or "").strip()):
+        return retry_text, True
+    return text, True
+
+
 @dataclass
 class VisionRead:
     text: str
@@ -151,6 +208,7 @@ class VisionRead:
     chart_pages: list[int]
     rotated_region_pages: list[int]
     orientation_calls: int = 0
+    retried_pages: list[int] = field(default_factory=list)
 
 
 def _vision_pages(png_pages: list[bytes], hints: list | None = None) -> VisionRead:
@@ -160,8 +218,11 @@ def _vision_pages(png_pages: list[bytes], hints: list | None = None) -> VisionRe
     rotated locally), then the upright image is transcribed. A doubtful first
     reading of a page decided without the model gets one direction question
     (``orientation.settle``) and is read again when the model reports a turn.
+    Every transcription call gets the #806 near-empty retry
+    (``retry_near_empty``, #931); the retried pages are reported.
     ``hints``: per page an ``orientation.Hint`` or None."""
     calls = 0
+    retried: set[int] = set()
 
     def ask(image: bytes, *, client=None):
         nonlocal calls
@@ -177,11 +238,24 @@ def _vision_pages(png_pages: list[bytes], hints: list | None = None) -> VisionRe
     for i, png in enumerate(png_pages, start=1):
 
         def read(image: bytes, i=i) -> str:
-            return llm.chat(
-                OCR_SYSTEM_PROMPT,
-                [{"type": "text", "text": f"Page {i} of {len(png_pages)}."},
-                 llm.image_part(image)],
-            )  # fmt: skip
+            content = [{"type": "text", "text": f"Page {i} of {len(png_pages)}."},
+                       llm.image_part(image)]  # fmt: skip
+
+            def once(**mode) -> tuple[str, tuple]:
+                info: dict = {}
+                try:
+                    text = llm.chat(OCR_SYSTEM_PROMPT, content, info=info, **mode)
+                    return text, (info.get("reasoning_tokens"), info.get("completion_tokens"))
+                finally:
+                    info.clear()  # the raw answer channels never outlive the call
+
+            text, tokens = once()
+            answer, again = retry_near_empty(
+                text, tokens, lambda: once(**RETRY_MODE)[0], where=f"page={i}"
+            )
+            if again:
+                retried.add(i)
+            return answer or ""
 
         hint = hints[i - 1] if hints and i - 1 < len(hints) else None
         page = orientation.decide(png, read, hint=hint, ask=ask)
@@ -200,16 +274,19 @@ def _vision_pages(png_pages: list[bytes], hints: list | None = None) -> VisionRe
             regions.append(i)
         texts.append(f"<!-- page {i} -->\n{answer.strip()}")
     return VisionRead("\n\n".join(texts), handwritten, rotation, sources, charts, regions,
-                      orientation_calls=calls)  # fmt: skip
+                      orientation_calls=calls, retried_pages=sorted(retried))  # fmt: skip
 
 
-def _vision_extraction(png_pages: list[bytes], pages: int, hints: list | None = None) -> Extraction:
+def _vision_extraction(
+    png_pages: list[bytes], pages: int, hints: list | None = None, *, layer_ignored: bool = False
+) -> Extraction:
     v = _vision_pages(png_pages, hints)
     return Extraction(
         v.text, "vision", pages, llm.model_id(), handwritten=v.handwritten,
         rotation=v.rotation, rotation_source=v.rotation_source, chart_pages=v.chart_pages,
         rotated_region_pages=v.rotated_region_pages, ocr_version=OCR_VERSION,
         orientation=orientation.tally(v.rotation_source, v.orientation_calls),
+        retried_pages=v.retried_pages, text_layer_ignored=layer_ignored,
     )  # fmt: skip
 
 
@@ -233,11 +310,58 @@ def _pixmap_png(page, dpi: int | None = None) -> bytes:
     return page.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom)).tobytes("png")
 
 
-def _pdf_text(content: bytes) -> tuple[str, int]:
+def born_digital(page, *, image_cover: float = 0.8) -> bool:
+    """Is this PDF page's text its own (born-digital), not OCR laid over a scan?
+    False when any text is invisible (render mode 3 or opacity 0, how OCR layers are added)
+    or a raster image covers most of the page. Shared by ingest and re-OCR (#931)."""
+    try:
+        if any(span.get("type") == 3 or span.get("opacity", 1) == 0
+               for span in page.get_texttrace()):  # fmt: skip
+            return False
+        area = abs(page.rect.width * page.rect.height) or 1.0
+        for info in page.get_image_info():
+            x0, y0, x1, y1 = info.get("bbox") or (0, 0, 0, 0)
+            if abs((x1 - x0) * (y1 - y0)) / area >= image_cover:
+                return False
+    except Exception:  # unreadable structure: do not trust the layer
+        return False
+    return True
+
+
+@dataclass
+class PdfTextLayer:
+    pages: list[str]  # per page, as PyMuPDF returns it
+    born_digital: bool  # every page passes ``born_digital``
+
+    @property
+    def text(self) -> str:
+        return "\n".join(self.pages)
+
+    @property
+    def chars(self) -> int:
+        return len("".join(self.pages).strip())
+
+    def is_own_text(self, min_chars: int = MIN_OWN_TEXT_CHARS) -> bool:
+        """The one decision (#931, ingest and re-OCR): a text layer is the
+        document's own text only when it is born-digital and holds at least
+        ``min_chars`` characters. An OCR'd layer (invisible text over a scan)
+        is OCR of unknown quality, maybe the very text an old transcription
+        copied: the image is read instead."""
+        return self.born_digital and self.chars >= min_chars
+
+
+def pdf_text_layer(content: bytes) -> PdfTextLayer:
     import pymupdf
 
     with pymupdf.open(stream=content, filetype="pdf") as doc:
-        return "\n".join(page.get_text() for page in doc), doc.page_count
+        layer = [page.get_text() for page in doc]
+        digital = all(born_digital(page) for page in doc)
+    return PdfTextLayer(layer, digital)
+
+
+def _pdf_text(content: bytes) -> tuple[str, int]:
+    layer = pdf_text_layer(content)
+    return layer.text, len(layer.pages)
 
 
 def _render_pdf_pages(content: bytes) -> list[bytes]:
@@ -292,9 +416,13 @@ def extract(
         if ext in TEXT_EXTS:
             return Extraction(content.decode("utf-8", errors="replace"), "plain", 1, "utf-8")
         if ext == "pdf":
-            text, n = _pdf_text(content)
-            if len(text.strip()) >= min_text_chars:
+            layer = pdf_text_layer(content)
+            text, n = layer.text, len(layer.pages)
+            if layer.is_own_text(min_text_chars):
                 return Extraction(text, "text_layer", n, "pymupdf")
+            # #931: a scanner's OCR layer is never taken as the text; the scan
+            # is vision-read and the engine recorded is the local model.
+            ignored = not layer.born_digital and layer.chars >= min_text_chars
             pages = _render_pdf_pages(content)
             if not pages:
                 return Extraction(
@@ -304,7 +432,7 @@ def extract(
                     "pymupdf",
                     error=f"{n} pages exceed vision limit {MAX_VISION_PAGES}",
                 )
-            return _vision_extraction(pages, n, _pdf_hints(content))
+            return _vision_extraction(pages, n, _pdf_hints(content), layer_ignored=ignored)
         if ext in IMAGE_EXTS:
             png = _render_image(content, ext)
             return _vision_extraction([png], 1, [_image_hint(content, ext, png)])
