@@ -140,6 +140,7 @@ USER_TOOLS: frozenset[str] = frozenset(
 OPERATOR_TOOLS: frozenset[str] = frozenset(
     {
         # curated pipeline: runs, index, re-OCR, re-read, extraction (#562 ff.)
+        "curated_classify_scorecard",
         "curated_clinical_extract",
         "curated_clinical_extract_preview",
         "curated_clinical_retract",
