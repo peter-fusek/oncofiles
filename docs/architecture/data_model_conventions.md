@@ -55,7 +55,8 @@ Every patient-scoped table has `patient_id TEXT NOT NULL REFERENCES patients(pat
 -- good
 patient_id TEXT NOT NULL REFERENCES patients(patient_id)
 -- bad: no FK, and a missing value silently becomes a patient
-patient_id TEXT NOT NULL DEFAULT 'erika'
+-- (migration 029 used a real given name as the DEFAULT)
+patient_id TEXT NOT NULL DEFAULT '<a given name>'
 ```
 
 Shared reference data (`organizations`, `departments`, `fact_codes`, `devices`) has no
@@ -268,7 +269,7 @@ they need a decision (nullable FK or a system patient) before (b).
 
 ### Rule 2: `patient_id` with a DEFAULT (12) — fix (b)
 
-`DEFAULT 'erika'` (single-patient era): `activity_log`, `conversation_entries`,
+A real given name as DEFAULT (single-patient era, see migration 029): `activity_log`, `conversation_entries`,
 `documents`, `prompt_log`, `research_entries`, `treatment_events`.
 `DEFAULT 'default'`: `calendar_entries`, `email_entries`, `oauth_tokens`.
 `DEFAULT ''`: `agent_state`, `patient_context`, `sync_history`.

@@ -30,7 +30,7 @@ async def test_upsert_and_get(db: Database):
     assert saved.id is not None
     assert saved.summary == "Chemo cycle 3"
 
-    fetched = await db.get_calendar_entry(saved.id)
+    fetched = await db.get_calendar_entry(saved.id, patient_id=ERIKA_UUID)
     assert fetched is not None
     assert fetched.google_event_id == "evt_001"
 
@@ -81,5 +81,5 @@ async def test_count(db: Database):
 
 
 async def test_get_nonexistent(db: Database):
-    assert await db.get_calendar_entry(999) is None
+    assert await db.get_calendar_entry(999, patient_id=ERIKA_UUID) is None
     assert await db.get_calendar_entry_by_google_id("nonexistent", patient_id=ERIKA_UUID) is None
