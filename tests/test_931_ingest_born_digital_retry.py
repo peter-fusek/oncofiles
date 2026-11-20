@@ -257,3 +257,167 @@ def test_ignored_layer_is_counted_in_the_run_report(monkeypatch, model):
 
 def test_ocr_version_bumped():
     assert extract.OCR_VERSION == "ocr-v4"
+
+
+# --- 4. infra review: the OCR_VERSION bump changes nothing over existing sidecars ----
+
+PRIOR_FILED = "20270805-JanaTestova-LabX-Labs-Novak-Kontrola.pdf"
+PRIOR_SIDECAR = """---
+source_file: "20270805-JanaTestova-LabX-Labs-Novak-Kontrola.pdf"
+patient: "Jana Testova"
+doc_date: "2027-08-05"
+institution: "LabX"
+doc_type: "Labs"
+extraction: "vision"
+ocr_engine: "qwen-local"
+ocr_version: "ocr-v3"
+rotation: [0]
+rotation_source: ["prefilter"]
+has_chart: false
+rotated_region: false
+review_needed: false
+---
+
+<!-- page 1 -->
+Hemoglobin 131 g/l
+"""
+
+
+PRIOR_SOURCE_MODIFIED = "2027-08-06" + "T07:15Z"
+PRIOR_SIDECAR_MODIFIED = "2027-08-06" + "T07:16Z"
+
+
+def _prior_drive():
+    from tests.test_curated_runner import LABS, FakeDrive
+
+    d = FakeDrive()
+    src = d.add(PRIOR_FILED, d.folder[LABS], b"%PDF synthetic", modified=PRIOR_SOURCE_MODIFIED)
+    side = PRIOR_SIDECAR.encode()
+    d.add(PRIOR_FILED + ".md", d.folder[LABS], side, modified=PRIOR_SIDECAR_MODIFIED)
+    return d, src
+
+
+def test_ocr_version_is_written_never_compared():
+    """Every reader of ``OCR_VERSION`` / ``ocr_version`` in src only writes or
+    copies it (sidecar front matter, index metadata); none compares it, so a
+    bump cannot re-select, re-index or re-queue anything."""
+    import re
+    from pathlib import Path
+
+    src = Path(__file__).resolve().parents[1] / "src" / "oncofiles"
+    users = set()
+    for path in src.rglob("*.py"):
+        for n, line in enumerate(path.read_text().splitlines(), start=1):
+            if "OCR_VERSION" in line or "ocr_version" in line:
+                users.add(path.relative_to(src).as_posix())
+                code = line.split("#", 1)[0].replace("->", "")
+                assert not re.search(r"==|!=|\bin\b|startswith|<|>", code), (
+                    f"{path.name}:{n} compares the OCR version: {line.strip()}"
+                )
+    assert users == {"curated/extract.py", "curated/reocr.py", "curated/runner.py",
+                     "curated/indexer.py"}  # fmt: skip
+
+
+def test_probe_stays_idle_over_an_ocr_v3_sidecar():
+    from oncofiles.curated.runner import probe
+    from tests.test_curated_runner import NOW
+
+    d, _ = _prior_drive()
+    first = probe(d, d.root, now=NOW)
+    assert first.pending == {} and d.writes == []
+    again = probe(d, d.root, idle_signature=first.signature, now=NOW)
+    assert again.pending == {} and again.signature == first.signature
+
+
+def test_reocr_never_selects_an_ocr_v3_sidecar():
+    from oncofiles.curated import indexer
+
+    front, pages = indexer.parse_sidecar(PRIOR_SIDECAR)
+    assert front["ocr_version"] == "ocr-v3" != extract.OCR_VERSION
+    assert reocr.needs_reocr(front, pages) == []
+
+
+async def test_index_stays_unchanged_over_an_ocr_v3_sidecar(db):
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from tests.helpers import ERIKA_UUID
+
+    d, src = _prior_drive()
+    gdrive = MagicMock()
+    gdrive.dedicated_copy.return_value = MagicMock()
+    with (
+        patch("oncofiles.server._create_patient_clients",
+              AsyncMock(return_value=(gdrive, None, None, d.root))),
+        patch("oncofiles.curated.drive_ops.DriveOps", lambda _own: d),
+    ):  # fmt: skip
+        first = await curated_tools.index_patient(db, ERIKA_UUID)
+        again = await curated_tools.index_patient(db, ERIKA_UUID)
+        assert first["created"] == 1
+        assert not again["created"] and not again.get("updated")
+        assert again["unchanged"] == 1
+        doc = await db.get_document_by_gdrive_id(src, patient_id=ERIKA_UUID)
+        assert "ocr-v3" in str(doc.structured_metadata)  # the old reading is kept as it is
+        targets = await curated_tools._reocr_targets(db, ERIKA_UUID, None, only_with_facts=False)
+        assert targets == []
+    assert d.writes == []
+
+
+# --- 5. infra review: raw genotype data is excluded BEFORE any model call ----------
+
+RSIDS = "rs1000001 AA\nrs1000002 AG\nrs1000003 GG\nrs1000004 CT\n" * 3
+
+
+@pytest.fixture
+def no_model(monkeypatch):
+    def fail(*a, **k):
+        pytest.fail("the local model must not be called")
+
+    monkeypatch.setattr(llm, "chat", fail)
+    monkeypatch.setattr(extract.orientation, "ask_rotation", fail)
+
+
+@pytest.mark.parametrize("make", [_scanner_layer_pdf, _born_digital_pdf])
+def test_genotype_pdf_with_a_text_layer_never_reaches_the_model(no_model, make):
+    ex = extract.extract("export_2027.pdf", make(RSIDS), "application/pdf")
+    assert not ex.ok and ex.error.startswith("raw_genotype_excluded")
+    assert ex.text == "" and ex.method == "none"
+
+
+@pytest.mark.parametrize("name", ["23andMe_export.pdf", "MyHeritage raw data.pdf",
+                                  "sample.vcf.pdf"])  # fmt: skip
+def test_raw_export_pdf_name_is_excluded_before_rendering(no_model, monkeypatch, name):
+    monkeypatch.setattr(extract, "_render_pdf_pages", lambda c: pytest.fail("must not render"))
+    ex = extract.extract(name, _ink_pdf(), "application/pdf")
+    assert ex.error.startswith("raw_genotype_excluded")
+
+
+def test_raw_export_image_name_is_excluded_before_rendering(no_model, monkeypatch):
+    monkeypatch.setattr(extract, "_render_image", lambda c, e: pytest.fail("must not render"))
+    ex = extract.extract("ancestry_raw_data.jpg", b"\xff\xd8 synthetic", "image/jpeg")
+    assert ex.error.startswith("raw_genotype_excluded")
+
+
+def test_a_scanned_clinical_genetics_report_is_still_read(monkeypatch, model):
+    """Only raw exports are excluded: a genetics report scan named with DNA /
+    genotype words and no rsIDs is read as before."""
+    monkeypatch.setattr(llm, "chat", _fake_chat(LONG, LONG, reasoning=10))
+    ex = extract.extract("Genetika_DNA_genotypizacia_KRAS.pdf", _ink_pdf(), "application/pdf")
+    assert ex.ok and ex.method == "vision"
+
+
+def test_runner_excludes_a_genotype_pdf_before_extraction_reaches_the_model(no_model):
+    """Order lock: in a curated run the exclusion runs inside ``extract`` before
+    the vision read, so neither the OCR nor the classification is called."""
+    from oncofiles.curated.runner import RunOptions, run_curated
+    from tests.test_curated_runner import INBOX, NOW, FakeDrive
+
+    def propose(contract, text):
+        pytest.fail("classification must not be called")
+
+    d = FakeDrive()
+    d.add("export_2027.pdf", d.folder[INBOX], _scanner_layer_pdf(RSIDS))
+    r = run_curated(d, d.root, RunOptions(now=NOW, run_id="t"), extract_fn=extract.extract,
+                    propose_fn=propose)  # fmt: skip
+    doc = next(x for x in r.documents if x["source"] == "export_2027.pdf")
+    assert doc["result"] == "review_needed"
+    assert any("raw_genotype_excluded" in r for r in doc["reasons"])

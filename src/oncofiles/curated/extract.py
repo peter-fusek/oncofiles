@@ -29,7 +29,7 @@ import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
-from oncofiles.curated import llm, ocr_markers, orientation
+from oncofiles.curated import llm, llm_input, ocr_markers, orientation
 
 logger = logging.getLogger(__name__)
 
@@ -400,6 +400,12 @@ def _render_image(content: bytes, ext: str) -> bytes:
         return _pixmap_png(doc[0])
 
 
+def _excluded(reason: str, pages: int) -> Extraction:
+    """A file the model must never read (#815 rule, checked before OCR, #931):
+    no text, no model call; the runner leaves it for review."""
+    return Extraction("", "none", pages, "-", error=f"{reason}: not sent to the model")
+
+
 def extract(
     name: str, content: bytes, mime_type: str = "", *, min_text_chars: int = 100
 ) -> Extraction:
@@ -416,8 +422,12 @@ def extract(
         if ext in TEXT_EXTS:
             return Extraction(content.decode("utf-8", errors="replace"), "plain", 1, "utf-8")
         if ext == "pdf":
-            layer = pdf_text_layer(content)
+            layer = pdf_text_layer(content)  # local, no model
             text, n = layer.text, len(layer.pages)
+            # #931 / #815: raw genotype data never reaches the model, neither
+            # as a vision read nor as the classification text of a layer
+            if reason := llm_input.pre_extraction_exclusion(name, mime_type, text):
+                return _excluded(reason, n)
             if layer.is_own_text(min_text_chars):
                 return Extraction(text, "text_layer", n, "pymupdf")
             # #931: a scanner's OCR layer is never taken as the text; the scan
@@ -434,6 +444,8 @@ def extract(
                 )
             return _vision_extraction(pages, n, _pdf_hints(content), layer_ignored=ignored)
         if ext in IMAGE_EXTS:
+            if reason := llm_input.pre_extraction_exclusion(name, mime_type):
+                return _excluded(reason, 1)
             png = _render_image(content, ext)
             return _vision_extraction([png], 1, [_image_hint(content, ext, png)])
     except llm.LocalLLMError as exc:

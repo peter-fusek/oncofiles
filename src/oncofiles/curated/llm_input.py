@@ -143,6 +143,31 @@ async def reocr_exclusion(db, pid: str, doc: dict) -> str | None:
     return extraction_exclusion(doc, await _pages(db, pid, doc))
 
 
+# #931: names that only a raw genotype export carries (vendor exports, VCF,
+# "raw data", rsIDs). Deliberately narrower than ``_GENOTYPE_MARKERS``: words
+# such as "DNA", "genom" or "genotyp" also name a scanned clinical genetics
+# report, which must stay readable.
+_RAW_EXPORT_NAME = re.compile(
+    r"\brs\d{3,}\b|23andme|ancestry|myheritage|\bvcf\b|raw[ _-]?data", re.I
+)
+
+
+def pre_extraction_exclusion(name: str, mime: str, layer_text: str = "") -> str | None:
+    """The rule for a file the ingest OCR is about to read with the local
+    model (#931): runs inside ``extract.extract`` BEFORE any vision call,
+    on the name, the mime type and, for a PDF, its text layer read locally
+    (PyMuPDF, no model). Excluded: anything ``extraction_exclusion`` excludes
+    by name / mime alone, a raw-export name (``_RAW_EXPORT_NAME``), or a text
+    layer holding 3+ rsIDs (a genotype export saved as a PDF)."""
+    if reason := extraction_exclusion({"filename": name, "mime_type": mime}):
+        return reason
+    if _RAW_EXPORT_NAME.search(name or ""):
+        return EXCLUDED_RAW_GENOTYPE
+    if len(_RSID.findall(layer_text or "")) >= 3:
+        return EXCLUDED_RAW_GENOTYPE
+    return None
+
+
 def inbox_exclusion(name: str, mime: str, text: str) -> str | None:
     """The rule for a new inbox file before its classification call (a curated
     run; no document row yet: name, mime type and the extracted text)."""
