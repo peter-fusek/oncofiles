@@ -246,11 +246,17 @@ def _iso_births(contract) -> frozenset[str]:
 def readme_birth_dates(drive, root_id: str) -> frozenset[str]:
     """Read only the README contract of a curated root: the patient's birth
     date(s), ISO. Drive is only read. Raises ContractError without a README."""
+    return _iso_births(read_contract(drive, root_id))
+
+
+def read_contract(drive, root_id: str):
+    """The parsed README contract of a curated root (Drive is only read).
+    Raises ContractError without a README."""
     root = drive.list_children(root_id)
     readme = next((i for i in root if not i.is_folder and nfc(i.name) == "README.md"), None)
     if readme is None:
         raise ContractError("no README.md in the curated root")
-    return _iso_births(parse_contract(drive.download(readme.id).decode("utf-8")))
+    return parse_contract(drive.download(readme.id).decode("utf-8"))
 
 
 def _record(folder: str, category: DocumentCategory, item: Item) -> IndexRecord:
