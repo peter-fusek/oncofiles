@@ -968,30 +968,41 @@ async def sync_to_gdrive(
 
             # Post-rename: re-enhance renamed docs (metadata/FTS reflect new name).
             # #777: never with cloud AI off — enhancement is a cloud call.
+            # #925: a side effect of a sync, not a user's request, so it runs in a
+            # local-only zone (policy 2026-11-09): the cloud check below refuses
+            # it and the renamed documents keep their metadata until a user acts.
+            from oncofiles.cloud_guard import local_only
             from oncofiles.config import ENHANCE_TIMEOUT_S
 
-            reenhance_ids = (
-                rename_stats["renamed_ids"] if files_api_refusal_reason() is None else []
-            )
-            for doc_id in reenhance_ids:
-                try:
-                    doc = await db.get_document(doc_id, patient_id=patient_id)
-                    await asyncio.wait_for(
-                        _enhance_document(db, doc, files, gdrive, patient_id=patient_id),
-                        timeout=ENHANCE_TIMEOUT_S,
+            with local_only("sync post-rename re-enhance"):
+                refused = files_api_refusal_reason()
+                reenhance_ids = rename_stats["renamed_ids"] if refused is None else []
+                if refused is not None and rename_stats["renamed_ids"]:
+                    logger.info(
+                        "sync_to_gdrive: post-rename re-enhance skipped for %d doc(s) — %s",
+                        len(rename_stats["renamed_ids"]),
+                        refused,
                     )
-                    logger.info("sync_to_gdrive: post-rename enhanced doc %d", doc_id)
-                except TimeoutError:
-                    logger.warning(
-                        "sync_to_gdrive: post-rename enhance timed out for doc %d (limit=%.0fs)",
-                        doc_id,
-                        ENHANCE_TIMEOUT_S,
-                    )
-                except Exception:
-                    logger.exception(
-                        "sync_to_gdrive: post-rename enhance failed for doc %d",
-                        doc_id,
-                    )
+                for doc_id in reenhance_ids:
+                    try:
+                        doc = await db.get_document(doc_id, patient_id=patient_id)
+                        await asyncio.wait_for(
+                            _enhance_document(db, doc, files, gdrive, patient_id=patient_id),
+                            timeout=ENHANCE_TIMEOUT_S,
+                        )
+                        logger.info("sync_to_gdrive: post-rename enhanced doc %d", doc_id)
+                    except TimeoutError:
+                        logger.warning(
+                            "sync_to_gdrive: post-rename enhance timed out for doc %d "
+                            "(limit=%.0fs)",
+                            doc_id,
+                            ENHANCE_TIMEOUT_S,
+                        )
+                    except Exception:
+                        logger.exception(
+                            "sync_to_gdrive: post-rename enhance failed for doc %d",
+                            doc_id,
+                        )
 
             # Post-rename: verify full pipeline for each renamed doc
             all_gaps = []

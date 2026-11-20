@@ -76,6 +76,10 @@ LOCAL_LLM_BASE_URL: str = os.environ.get("LOCAL_LLM_BASE_URL", "").rstrip("/")
 LOCAL_LLM_API_KEY: str = os.environ.get("LOCAL_LLM_API_KEY", "")
 LOCAL_LLM_MODEL: str = os.environ.get("LOCAL_LLM_MODEL", "")
 LOCAL_LLM_TIMEOUT_S: float = float(os.environ.get("LOCAL_LLM_TIMEOUT_S", "900"))
+# #925: extra hosts LOCAL_LLM_BASE_URL may point at (comma list, case-insensitive),
+# beyond loopback / RFC1918 / ULA / host.lima.internal / .local .internal .lan.
+# Runtime-only env; checked by curated/llm.base_url_refusal before every request.
+LOCAL_LLM_ALLOWED_HOSTS: str = os.environ.get("LOCAL_LLM_ALLOWED_HOSTS", "")
 # Re-OCR self-limit (#667): no new document is started while RSS is above this,
 # well under HARD_RSS_CEILING_MB, which makes /health exit the process.
 REOCR_RSS_LIMIT_MB: float = float(os.environ.get("REOCR_RSS_LIMIT_MB", "450"))

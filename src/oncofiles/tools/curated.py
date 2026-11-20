@@ -326,6 +326,8 @@ async def _prepare(db, pid: str, *, dry_run: bool, max_docs: int | None, max_act
 
     if not llm.configured():
         return {"error": "local LLM not configured (LOCAL_LLM_BASE_URL / LOCAL_LLM_MODEL)"}, None
+    if host_refused := llm.base_url_refusal():  # #925: say so before a run row exists
+        return {"error": f"local LLM refused: {host_refused}"}, None
     if not dry_run and (reason := await preview_gate(db, pid)):
         return {"error": f"real run refused: {reason}"}, None
     clients = await _create_patient_clients(db, pid)
@@ -385,7 +387,21 @@ async def _execute(db, pid: str, gdrive, folder_id: str, opts, *, trigger: str) 
 
 
 async def _execute_locked(db, pid: str, gdrive, folder_id: str, opts, *, trigger: str) -> dict:
-    """Run to completion and persist. Never raises; returns the report dict."""
+    """Run to completion and persist. Never raises; returns the report dict.
+
+    The whole run is a local-only zone (#925): OCR and classification use the
+    local model, and any cloud path inside (``enhance._get_client``, the Files
+    API) raises ``CloudForbiddenError`` — also in the ``asyncio.to_thread``
+    worker, which inherits the ContextVar. Covers every trigger: the MCP and
+    dashboard runs, continuous mode and the nightly sweep."""
+    from oncofiles.cloud_guard import local_only
+
+    with local_only("curated run"):
+        return await _execute_locked_zone(db, pid, gdrive, folder_id, opts, trigger=trigger)
+
+
+async def _execute_locked_zone(db, pid: str, gdrive, folder_id: str, opts, *, trigger: str) -> dict:
+    """Body of ``_execute_locked``; always called inside ``local_only``."""
     from oncofiles.curated.drive_ops import DriveOps
     from oncofiles.curated.runner import run_curated
 
