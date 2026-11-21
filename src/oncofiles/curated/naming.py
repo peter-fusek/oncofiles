@@ -32,7 +32,7 @@ _NAME_RE = re.compile(
 
 
 def ascii_fold(value: str) -> str:
-    """Strip diacritics: ``Nováková`` → ``Novakova``, ``Pôrsôk`` → ``Porsok``."""
+    """Strip diacritics: ``Nováková`` → ``Novakova``, ``Kôrnôk`` → ``Kornok``."""
     decomposed = unicodedata.normalize("NFKD", value or "")
     return "".join(c for c in decomposed if not unicodedata.combining(c))
 

@@ -2,7 +2,7 @@
 
 Standard format (v3.15+): YYYYMMDD_PatientName_Institution_Category_DescriptionEN.ext
 Examples:
-    20260227_PatientName_NOU_Labs_BloodResultsBeforeCycle2DrPorsok.pdf
+    20260227_PatientName_NOU_Labs_BloodResultsBeforeCycle2DrKornok.pdf
     20260122_PatientName_BoryNemocnica_Discharge_DischargeSummaryAfterSurgery.pdf
 
 Bilingual format (v3.5-3.14): YYYYMMDD PatientName-Institution-Category-SKDescription.ext

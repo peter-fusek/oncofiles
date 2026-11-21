@@ -306,18 +306,6 @@ async def test_gmail_attachment_is_parsed_and_stored_for_its_patient(db: Databas
     assert await db.count_documents(patient_id=PID_A) == 0
 
 
-# ── import_local CLI ────────────────────────────────────────────────────────
-
-
-async def test_import_local_requires_patient(tmp_path):
-    from oncofiles.import_local import import_documents
-
-    with pytest.raises(TypeError):
-        await import_documents(tmp_path, dry_run=True)  # type: ignore[call-arg]
-    with pytest.raises(ValueError):
-        await import_documents(tmp_path, dry_run=True, patient_id="")
-
-
 # ── Source sweep ────────────────────────────────────────────────────────────
 
 # Readers that resolve "the patient" — a call with no arguments relies on the

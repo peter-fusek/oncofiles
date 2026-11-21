@@ -387,12 +387,6 @@ def _image_hint(content: bytes, ext: str, png: bytes):
     return orientation.image_hint(content, png) if ext in ("jpg", "jpeg") else None
 
 
-def _render_pdf(content: bytes) -> tuple[str, list[bytes], int]:
-    """Text plus rendered pages (kept for the OCR benchmark script)."""
-    text, n = _pdf_text(content)
-    return text, _render_pdf_pages(content), n
-
-
 def _render_image(content: bytes, ext: str) -> bytes:
     import pymupdf
 

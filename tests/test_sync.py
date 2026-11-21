@@ -1005,7 +1005,7 @@ async def test_sync_import_nonstandard_filename_backfills_metadata(db: Database)
         "diagnoses": [{"name": "Adenocarcinoma", "icd_code": "C18.7"}],
         "medications": [],
         "dates_mentioned": ["2030-02-23"],
-        "providers": ["MUDr. Rychlý Boris, PhD.", "Nemocnica Bory"],
+        "providers": ["MUDr. Boris Testovic, PhD.", "Nemocnica Bory"],
         "plain_summary": "Pathology report.",
         "plain_summary_sk": "Patologická správa.",
         "institution_code": "BoryNemocnica",

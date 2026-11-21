@@ -364,7 +364,9 @@ _SPECS: dict[str, _Spec] = {
     ),
     "tool_call_status": _here(("ok", "error"), "audit_middleware.py"),
     "prompt_call_type": _from("oncofiles.models", "PromptCallType", _values),
-    "prompt_status": _here(("ok", "error", "dedup_hit"), "prompt_logger, prompt_dedup"),
+    "prompt_status": _here(
+        ("ok", "error", "dedup_hit"), "prompt_logger; dedup_hit only on rows from before #930"
+    ),
     "audit_action": _here(
         ("create", "update", "delete", "restore"), "database._clinical_records, _facts"
     ),

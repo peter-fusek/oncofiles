@@ -109,11 +109,8 @@ def log_ai_call(
 
     result_summary = _extract_result_summary(call_type, raw_response)
 
-    # Compute the dedup hash if the caller didn't supply one. Successful
-    # rows get a hash so future identical calls can hit the dedup cache
-    # via prompt_dedup.maybe_get_cached_response (#441 Layer 5). Failed
-    # calls (status != 'ok') still get a hash recorded — the dedup query
-    # filters by status='ok' so failures naturally fall out of the cache.
+    # Compute the prompt hash if the caller didn't supply one (#441 Layer 5),
+    # for successful and failed calls alike, so identical calls can be counted.
     if prompt_hash is None:
         from oncofiles.prompt_dedup import compute_prompt_hash
 

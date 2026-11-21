@@ -222,7 +222,7 @@ async def test_backfill_provider_path_still_takes_precedence(db):
         # Providers list a NOU doctor — should resolve to NOU, NOT the
         # patient_context's primary_institution value.
         await db.update_structured_metadata(
-            inserted.id, json.dumps({"providers": ["MUDr. Stefan Porsok, PhD., NOU Klenova"]})
+            inserted.id, json.dumps({"providers": ["MUDr. Jana Testova, PhD., NOU Klenova"]})
         )
 
         stats = await backfill_missing_institutions(db.db)

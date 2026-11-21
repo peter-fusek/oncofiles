@@ -148,7 +148,11 @@ async def _classify_event_medical(
             result.get("event_type", "not_medical"),
         )
     except Exception:
-        logger.warning("Calendar event classification failed: %s", summary[:60], exc_info=True)
+        logger.warning(
+            "Calendar event classification failed (summary len=%d)",
+            len(summary or ""),
+            exc_info=True,
+        )
         # Fallback to keyword match (includes dynamic patient name terms)
         text_combined = f"{summary} {description} {location}".lower()
         for kw in _get_medical_keywords(patient_id):
@@ -194,14 +198,12 @@ async def _auto_create_treatment_event(
         )
         await db.db.commit()
 
-        logger.info(
-            "Auto-created treatment event #%d from calendar: %s", saved.id, entry.summary[:60]
-        )
+        logger.info("Auto-created treatment event #%d from calendar entry %s", saved.id, entry.id)
         return saved.id
     except Exception:
         logger.warning(
-            "Failed to create treatment event from calendar: %s",
-            entry.summary[:60],
+            "Failed to create treatment event from calendar entry %s",
+            entry.id,
             exc_info=True,
         )
         return None
