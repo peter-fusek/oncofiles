@@ -20,7 +20,7 @@ from oncofiles.tool_surface import OPERATOR_TOOLS, USER_TOOLS
 from oncofiles.tools import conversations as conv_tools
 from oncofiles.tools import export as export_tools
 from oncofiles.tools import lab_trends
-from tests.helpers import ERIKA_UUID, make_doc
+from tests.helpers import PATIENT_A_UUID, make_doc
 
 REF = date(2031, 3, 15)
 
@@ -35,7 +35,7 @@ class _StubCtx:
 
 
 def _general(dob: str = "1975-08-31", sex: str = "male") -> None:
-    patient_context._contexts[ERIKA_UUID] = {
+    patient_context._contexts[PATIENT_A_UUID] = {
         "name": "Synthetic General",
         "patient_type": "general",
         "date_of_birth": dob,
@@ -55,7 +55,7 @@ async def _proc(db, kind: str, text: str, at: str | None, doc_id: int | None = N
             extracted_by="llm-clinical-v11/synthetic-model",
             **kw,
         ),
-        patient_id=ERIKA_UUID,
+        patient_id=PATIENT_A_UUID,
     )
 
 
@@ -88,7 +88,7 @@ async def test_general_patient_with_dob_and_sex_reads_procedures_and_documents(d
             category=DocumentCategory.PREVENTIVE,
             document_date=date(2029, 6, 10),
         ),
-        patient_id=ERIKA_UUID,
+        patient_id=PATIENT_A_UUID,
     )
     colo = await _proc(db, "screening", "Kolonoskopia, bez nálezu", "2029-06-10", colo_doc.id)
     tet = await _proc(db, "vaccination", "Tetanus-diftéria (synthetic vaccine)", "2027-04-02")
@@ -100,7 +100,7 @@ async def test_general_patient_with_dob_and_sex_reads_procedures_and_documents(d
             category=DocumentCategory.VACCINATION,
             document_date=date(2030, 9, 20),
         ),
-        patient_id=ERIKA_UUID,
+        patient_id=PATIENT_A_UUID,
     )
     await _proc(db, "vaccination", "Očkovanie proti chrípke", None, flu_doc.id)
     dental = await db.insert_document(
@@ -110,7 +110,7 @@ async def test_general_patient_with_dob_and_sex_reads_procedures_and_documents(d
             category=DocumentCategory.DENTAL,
             document_date=date(2030, 8, 1),
         ),
-        patient_id=ERIKA_UUID,
+        patient_id=PATIENT_A_UUID,
     )
     await _proc(db, "screening", "Synthetic unrelated examination", "2030-01-05")
     # a manual entry with an explicit id (add_treatment_event)
@@ -121,10 +121,10 @@ async def test_general_patient_with_dob_and_sex_reads_procedures_and_documents(d
             title="Invented check",
             metadata=json.dumps({"screening_id": "ophthalmology"}),
         ),
-        patient_id=ERIKA_UUID,
+        patient_id=PATIENT_A_UUID,
     )
 
-    out = json.loads(await get_preventive_care_status(db, ERIKA_UUID, reference_date=REF))
+    out = json.loads(await get_preventive_care_status(db, PATIENT_A_UUID, reference_date=REF))
     assert "error" not in out
     by_id = {s["id"]: s for s in out["screenings"]}
     assert out["summary"]["age"] == 55
@@ -180,7 +180,7 @@ async def test_general_patient_with_dob_and_sex_reads_procedures_and_documents(d
 async def test_due_soon_uses_calendar_months(db):
     _general(dob="1980-01-10", sex="female")
     await _proc(db, "screening", "Mamografia obojstranná", "2029-05-20")
-    out = json.loads(await get_preventive_care_status(db, ERIKA_UUID, reference_date=REF))
+    out = json.loads(await get_preventive_care_status(db, PATIENT_A_UUID, reference_date=REF))
     m = {s["id"]: s for s in out["screenings"]}["mammography"]
     assert m["next_by_guideline"] == "2031-05-20"
     assert m["status"] == "due_soon"  # within 3 calendar months of 2031-03-15
@@ -193,19 +193,19 @@ async def test_deleted_procedure_is_not_evidence(db):
         "UPDATE procedures SET deleted_at = '2031-02-17T08:41:00Z' WHERE id = ?", (p.id,)
     )
     await db.db.commit()
-    out = json.loads(await get_preventive_care_status(db, ERIKA_UUID, reference_date=REF))
+    out = json.loads(await get_preventive_care_status(db, PATIENT_A_UUID, reference_date=REF))
     c = {s["id"]: s for s in out["screenings"]}["colonoscopy"]
     assert c["status"] == "no_evidence"
 
 
 async def test_missing_dob_or_sex_and_oncology_patient(db):
-    patient_context._contexts[ERIKA_UUID] = {
+    patient_context._contexts[PATIENT_A_UUID] = {
         "patient_type": "general",
         "date_of_birth": "1975-08-31",
     }
-    assert "error" in json.loads(await get_preventive_care_status(db, ERIKA_UUID))
-    patient_context._contexts[ERIKA_UUID] = {"patient_type": "oncology"}
-    assert "oncology" in json.loads(await get_preventive_care_status(db, ERIKA_UUID))["error"]
+    assert "error" in json.loads(await get_preventive_care_status(db, PATIENT_A_UUID))
+    patient_context._contexts[PATIENT_A_UUID] = {"patient_type": "oncology"}
+    assert "oncology" in json.loads(await get_preventive_care_status(db, PATIENT_A_UUID))["error"]
 
 
 async def test_mcp_tool_wrapper_runs(db):
@@ -249,13 +249,13 @@ def test_instructions_promise_no_moved_tool():
 async def _legacy_event(db):
     return await db.insert_treatment_event(
         TreatmentEvent(event_date=date(2027, 3, 1), event_type="chemo", title="Invented cycle"),
-        patient_id=ERIKA_UUID,
+        patient_id=PATIENT_A_UUID,
     )
 
 
 async def test_journey_timeline_reads_facts_and_drops_legacy(db):
     doc = await db.insert_document(
-        make_doc(file_id="f-op", document_date=date(2027, 6, 1)), patient_id=ERIKA_UUID
+        make_doc(file_id="f-op", document_date=date(2027, 6, 1)), patient_id=PATIENT_A_UUID
     )
     proc = await _proc(db, "surgery", "Synthetic resection", "2027-06-01", doc.id)
     await _legacy_event(db)
@@ -295,7 +295,7 @@ async def test_journey_timeline_legacy_fallback_without_facts(db):
 
 async def test_export_package_timeline_from_facts(db):
     doc = await db.insert_document(
-        make_doc(file_id="f-op2", document_date=date(2027, 6, 1)), patient_id=ERIKA_UUID
+        make_doc(file_id="f-op2", document_date=date(2027, 6, 1)), patient_id=PATIENT_A_UUID
     )
     await _proc(db, "biopsy", "Synthetic biopsy", "2027-05-01", doc.id)
     await _proc(db, "surgery", "Synthetic resection", "2027-06-01", doc.id)
