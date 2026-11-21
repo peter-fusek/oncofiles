@@ -72,37 +72,40 @@ class InboundJobsMixin(DatabaseBase):
         inserted = 0
         keep: list[dict] = []
         dropped = 0
-        try:
-            if caps:
-                added: dict[tuple[bool, str | None], int] = {}
-                for row in rows:
-                    async with self.db.execute(
-                        """SELECT 1 FROM inbound_jobs WHERE token_hash = ?
-                           AND message_id_hash = ? AND sender_hash = ? LIMIT 1""",
-                        (row["token_hash"], row["message_id_hash"], row["sender_hash"]),
-                    ) as cursor:
-                        if await cursor.fetchone() is not None:
-                            keep.append(row)  # a retry: a no-op insert, never capped
-                            continue
-                    trusted = bool(row["trusted"])
-                    per_token, total = caps[trusted]
-                    th = row["token_hash"]
-                    open_token = await self._open_jobs(trusted=trusted, token_hash=th)
-                    open_total = await self._open_jobs(trusted=trusted)
-                    over = (
-                        open_token + added.get((trusted, th), 0) >= per_token
-                        or open_total + added.get((trusted, None), 0) >= total
-                    )
-                    if over:
-                        if trusted:
-                            raise InboundQueueFullError("trusted")
-                        dropped += 1
+        # The cap check only READS, outside the try: a refusal (or a read error)
+        # must never roll back the single shared connection, which could drop
+        # another coroutine's uncommitted writes (infra review of #953).
+        if caps:
+            added: dict[tuple[bool, str | None], int] = {}
+            for row in rows:
+                async with self.db.execute(
+                    """SELECT 1 FROM inbound_jobs WHERE token_hash = ?
+                       AND message_id_hash = ? AND sender_hash = ? LIMIT 1""",
+                    (row["token_hash"], row["message_id_hash"], row["sender_hash"]),
+                ) as cursor:
+                    if await cursor.fetchone() is not None:
+                        keep.append(row)  # a retry: a no-op insert, never capped
                         continue
-                    added[(trusted, th)] = added.get((trusted, th), 0) + 1
-                    added[(trusted, None)] = added.get((trusted, None), 0) + 1
-                    keep.append(row)
-            else:
-                keep = list(rows)
+                trusted = bool(row["trusted"])
+                per_token, total = caps[trusted]
+                th = row["token_hash"]
+                open_token = await self._open_jobs(trusted=trusted, token_hash=th)
+                open_total = await self._open_jobs(trusted=trusted)
+                over = (
+                    open_token + added.get((trusted, th), 0) >= per_token
+                    or open_total + added.get((trusted, None), 0) >= total
+                )
+                if over:
+                    if trusted:
+                        raise InboundQueueFullError("trusted")
+                    dropped += 1
+                    continue
+                added[(trusted, th)] = added.get((trusted, th), 0) + 1
+                added[(trusted, None)] = added.get((trusted, None), 0) + 1
+                keep.append(row)
+        else:
+            keep = list(rows)
+        try:
             for row in keep:
                 pid = require_patient_id(row["patient_id"])
                 cursor = await self.db.execute(

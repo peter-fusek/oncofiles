@@ -1171,3 +1171,16 @@ async def test_trusted_flag_uses_the_cores_sender_rule(idb, brevo, no_kick, monk
     assert flags == [True, False]
     src = inspect.getsource(inbound_queue.enqueue)
     assert "sender_refusal" in src and "_email_matches_caregiver" not in src
+
+
+async def test_queue_full_never_rolls_back_the_shared_connection(monkeypatch):
+    """A cap refusal only reads: it must not roll back the one shared connection."""
+    import inspect
+
+    from oncofiles.database import _inbound_jobs
+
+    src = inspect.getsource(_inbound_jobs)
+    body = src[src.index("async def insert_inbound_jobs") :]
+    body = body[: body.index("\n    async def ", 10)]
+    assert body.index('raise InboundQueueFullError("trusted")') < body.index("\n        try:\n")
+    assert body.count("rollback()") == 1
