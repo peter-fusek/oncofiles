@@ -10,7 +10,12 @@
 -- patient_id:      resolved from the address token at enqueue time.
 -- token_hash:      the keyed routing hash of the address token (the same value
 --                  as inbound_addresses.token_hash), never the token.
--- message_id_hash: keyed HMAC of the Message-ID (NULL when the mail has none).
+-- job_uuid:        random UUID per job (#952 infra review), part of the AES-GCM
+--                  associated data (patient_id|token_hash|job_uuid), so a
+--                  payload copied onto another row never decrypts.
+-- message_id_hash: keyed HMAC of the Message-ID; a mail without one gets a
+--                  keyed HMAC of its payload digest instead (never NULL: NULL
+--                  is distinct in a UNIQUE key and would defeat the dedupe).
 -- sender_hash:     keyed HMAC of the lowercased From address + the auth verdict
 --                  (security review): part of the dedupe key, so a forged or
 --                  unmatched mail sent first with a real mail's Message-ID can
@@ -32,25 +37,35 @@
 -- state:           pending | processing | done | failed (vocab domain
 --                  inbound_job_state).
 -- attempts:        claims so far; at MAX_ATTEMPTS the job ends failed.
+-- next_attempt_at: earliest time a pending job may be claimed (the retry
+--                  backoff after a temporary failure); the worker picks
+--                  WHERE next_attempt_at <= now ORDER BY next_attempt_at.
 -- reason:          last outcome / failure code (filed, unmatched,
---                  download_expired, max_attempts, error:<class> ...).
+--                  download_expired, max_attempts, error:<class>, and the
+--                  temporary codes rate_limited / fetch_failed / store_failed /
+--                  no_api_key: on a pending row a retry is due, on a failed
+--                  row the attempts ran out on it).
 --
 -- Retention: rows are never deleted by the processing path. Removing done
 -- rows older than 30 days needs a RUNBOOK lifecycle schedule and a reviewed
 -- #734 allowlist entry (maintainer decision); not part of #952.
 CREATE TABLE IF NOT EXISTS inbound_jobs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_uuid TEXT NOT NULL UNIQUE,
     patient_id TEXT NOT NULL REFERENCES patients(patient_id),
     token_hash TEXT NOT NULL,
-    message_id_hash TEXT,
+    message_id_hash TEXT NOT NULL,
     sender_hash TEXT NOT NULL,
     payload_enc TEXT NOT NULL,
     state TEXT NOT NULL DEFAULT 'pending',
     attempts INTEGER NOT NULL DEFAULT 0,
     reason TEXT,
+    next_attempt_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
     updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
     UNIQUE (token_hash, message_id_hash, sender_hash)
 );
 
 CREATE INDEX IF NOT EXISTS idx_inbound_jobs_state ON inbound_jobs(state, updated_at);
+CREATE INDEX IF NOT EXISTS idx_inbound_jobs_due ON inbound_jobs(state, next_attempt_at);
+CREATE INDEX IF NOT EXISTS idx_inbound_jobs_token ON inbound_jobs(token_hash, state);

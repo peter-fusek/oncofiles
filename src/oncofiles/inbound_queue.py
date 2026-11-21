@@ -18,13 +18,22 @@ token hash, so a genuine provider retry is not queued twice, while a forged or
 unmatched mail sent first with a real mail's Message-ID cannot block it) and
 ``payload_enc``: AES-GCM (``cryptography``) with
 ``secrets_keys.inbound_jobs_key()`` (purpose ``oncofiles.inbound_jobs.v1``),
-a random 96-bit nonce and the row's patient id + token hash as associated data
-(a payload copied onto another row does not decrypt). The plaintext is the
+a random 96-bit nonce and ``patient_id|token_hash|job_uuid`` as associated
+data (``job_uuid`` is a random uuid per row, so a payload copied onto any other
+row does not decrypt). The plaintext is the
 minimum the core needs: the address token, the From address and the auth
 verdict computed at enqueue, the loop-check header values, the Message-ID,
 the adapter's parse skips, and per attachment the Brevo download token, name,
-content type, declared size and inline flag; plus the progress below. Never a
-subject or a body.
+content type, declared size and inline flag (at most ``MAX_FILES_PER_MAIL``
+references; the rest count as ``too_many_files``); plus the progress below.
+Never a subject or a body. A mail without a Message-ID is deduplicated on a
+keyed hash of its payload digest instead (never NULL, which UNIQUE would treat
+as distinct).
+
+Caps: at most ``MAX_OPEN_JOBS_PER_TOKEN`` open (pending + processing) jobs per
+address and ``MAX_OPEN_JOBS_TOTAL`` in all. A batch that would pass either is
+refused whole (``InboundQueueFullError``): the route answers 503 +
+``Retry-After``, nothing is written, only the ``jobs_queue_full`` counter.
 
 The key material is the MANDATORY runtime env ``INBOUND_JOBS_SECRET``, never
 derived from ``MCP_BEARER_TOKEN`` (infra review). Unset = fail closed: the
@@ -37,12 +46,26 @@ Worker
 ------
 * One job at a time, claim + process + finish all under
   ``inbound_email.PROCESS_LOCK`` (the lock of every inbound mail).
-* Claimable: ``pending``, or ``processing`` not touched for
-  ``STALE_PROCESSING_MIN`` (a crash or kill mid-way). The claim is a
-  conditional UPDATE (state and updated_at unchanged), so two containers of a
-  rolling deploy sharing the volume never take the same job.
+* Claimable: ``pending`` with ``next_attempt_at <= now`` (earliest first), or
+  ``processing`` not touched for ``STALE_PROCESSING_MIN`` (a crash or kill
+  mid-way). The claim is a conditional UPDATE (state and updated_at
+  unchanged), so two containers of a rolling deploy sharing the volume never
+  take the same job.
+* Lease: the ``updated_at`` the claim set. It is refreshed before every
+  attachment download and by every progress save, and every later write
+  (progress, finish) is conditional on ``state='processing' AND
+  updated_at=<lease>``: a worker whose job was taken over as stale changes
+  nothing (``lease_lost``).
 * Each claim counts an attempt. A job that reaches ``MAX_ATTEMPTS`` claims
   without finishing ends ``failed`` / ``max_attempts``.
+* Temporary failures never end ``done``: ``rate_limited``, ``fetch_failed``
+  (Brevo 5xx / 429 / auth / timeout), ``store_failed`` (Drive) and
+  ``no_api_key`` (``BREVO_API_KEY`` unset) put the job back to ``pending``
+  with ``next_attempt_at`` = now + ``RETRY_BASE_MIN * 2**(attempts-1)``
+  minutes; files filed before the failure stay in the progress, no receipt is
+  sent yet. The last attempt reports such a failure in the receipt and ends
+  ``failed`` / ``<code>``. ``done`` = success, or a deliberate permanent drop
+  (unknown sender, failed auth, loop mail, disallowed type, duplicate).
 * A job with attachments older than ``BREVO_ATTACHMENT_RETENTION_S`` ends
   ``failed`` / ``download_expired`` without any download, and no receipt is
   sent (there is no content to report on). It shows in the admin panel
@@ -81,10 +104,14 @@ import hmac
 import json
 import logging
 import os
+import uuid
 from collections import Counter
 from datetime import UTC, datetime, timedelta
 
 from oncofiles import inbound_email
+from oncofiles.database._inbound_jobs import InboundQueueFullError
+
+__all__ = ["InboundQueueFullError", "enqueue", "kick", "run_pending"]
 
 logger = logging.getLogger(__name__)
 
@@ -95,6 +122,11 @@ MAX_JOBS_PER_RUN = 50
 # After a failed attempt: 2, 4, 8, 16 minutes before the next one, so a short
 # Drive or Brevo outage does not use up MAX_ATTEMPTS in one run.
 RETRY_BASE_MIN = 2
+# Enqueue caps (#952 infra review): open jobs (pending + processing) per
+# address token hash and in total. Over a cap the Brevo route answers 503 +
+# Retry-After and writes nothing (Brevo retries later); only a counter moves.
+MAX_OPEN_JOBS_PER_TOKEN = 50
+MAX_OPEN_JOBS_TOTAL = 500
 # How long Brevo keeps an inbound attachment downloadable is NOT documented
 # (checked 2026-11-21): neither the inbound parsing guide
 # https://developers.brevo.com/docs/inbound-parse-webhooks nor the download
@@ -114,6 +146,10 @@ class UndecryptablePayloadError(ValueError):
     """The payload does not decrypt with the current key (key rotated?)."""
 
 
+class LeaseLostError(RuntimeError):
+    """Another worker took the job over (its lease ``updated_at`` changed)."""
+
+
 def _now() -> datetime:
     return datetime.now(UTC)
 
@@ -129,22 +165,27 @@ def _parse_iso(value: str) -> datetime:
 # ── encryption ───────────────────────────────────────────────────────────
 
 
-def _aad(patient_id: str, token_hash: str) -> bytes:
-    return f"oncofiles.inbound_jobs.v1|{patient_id}|{token_hash}".encode()
+def _aad(patient_id: str, token_hash: str, job_uuid: str) -> bytes:
+    """Associated data: the row's patient, address token hash and random job
+    uuid (#952 infra review), so a payload copied onto any other row (even of
+    the same patient and address) does not decrypt."""
+    if not job_uuid:
+        raise ValueError("job_uuid")
+    return f"{patient_id}|{token_hash}|{job_uuid}".encode()
 
 
-def encrypt_payload(payload: dict, *, patient_id: str, token_hash: str) -> str:
+def encrypt_payload(payload: dict, *, patient_id: str, token_hash: str, job_uuid: str) -> str:
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
     from oncofiles.secrets_keys import inbound_jobs_key
 
     nonce = os.urandom(12)
     plain = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode()
-    ct = AESGCM(inbound_jobs_key()).encrypt(nonce, plain, _aad(patient_id, token_hash))
+    ct = AESGCM(inbound_jobs_key()).encrypt(nonce, plain, _aad(patient_id, token_hash, job_uuid))
     return _ENC_PREFIX + base64.b64encode(nonce + ct).decode("ascii")
 
 
-def decrypt_payload(blob: str, *, patient_id: str, token_hash: str) -> dict:
+def decrypt_payload(blob: str, *, patient_id: str, token_hash: str, job_uuid: str) -> dict:
     from cryptography.exceptions import InvalidTag
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
@@ -154,7 +195,8 @@ def decrypt_payload(blob: str, *, patient_id: str, token_hash: str) -> dict:
         if not blob.startswith(_ENC_PREFIX):
             raise ValueError("prefix")
         raw = base64.b64decode(blob[len(_ENC_PREFIX) :], validate=True)
-        plain = AESGCM(inbound_jobs_key()).decrypt(raw[:12], raw[12:], _aad(patient_id, token_hash))
+        aad = _aad(patient_id, token_hash, job_uuid)
+        plain = AESGCM(inbound_jobs_key()).decrypt(raw[:12], raw[12:], aad)
         payload = json.loads(plain)
     except (InvalidTag, ValueError) as exc:
         raise UndecryptablePayloadError(type(exc).__name__) from exc
@@ -163,13 +205,32 @@ def decrypt_payload(blob: str, *, patient_id: str, token_hash: str) -> dict:
     return payload
 
 
-def message_id_hash(message_id: str) -> str | None:
+def payload_digest(payload: dict) -> str:
+    """sha256 of the payload's canonical JSON without its progress."""
+    body = {k: v for k, v in payload.items() if k != "progress"}
+    return hashlib.sha256(
+        json.dumps(body, separators=(",", ":"), sort_keys=True).encode()
+    ).hexdigest()
+
+
+def message_id_hash(message_id: str, payload: dict | None = None) -> str:
+    """Keyed hash of the Message-ID; never None (#952 infra review).
+
+    A mail without a Message-ID gets a keyed hash of its payload digest
+    (``payload_digest``: download tokens, sender, headers, names) under its
+    own domain prefix: NULL is distinct in a UNIQUE key, so a provider retry
+    of such a mail would otherwise be queued twice.
+    """
     from oncofiles.secrets_keys import inbound_message_id_hash_key
 
     mid = (message_id or "").strip()
-    if not mid:
-        return None
-    return hmac.new(inbound_message_id_hash_key(), mid.encode(), hashlib.sha256).hexdigest()
+    if mid:
+        value = b"mid|" + mid.encode()
+    else:
+        if payload is None:
+            raise ValueError("payload")
+        value = b"digest|" + payload_digest(payload).encode()
+    return hmac.new(inbound_message_id_hash_key(), value, hashlib.sha256).hexdigest()
 
 
 def sender_hash(sender: str, auth_pass: bool) -> str:
@@ -204,7 +265,17 @@ def _warn_unconfigured_once() -> None:
 
 
 def to_payload(msg: inbound_email.InboundMessage, token: str) -> dict:
-    """The minimal plaintext of a job (encrypted before it is stored)."""
+    """The minimal plaintext of a job (encrypted before it is stored).
+
+    At most ``MAX_FILES_PER_MAIL`` attachment references are kept (#952 infra
+    review: a bounded payload); the rest are counted as ``too_many_files``, so
+    the receipt still reports them.
+    """
+    refs = [a for a in msg.attachments if a.ref]
+    skips = Counter(msg.parse_skips)
+    if len(refs) > inbound_email.MAX_FILES_PER_MAIL:
+        skips["too_many_files"] += len(refs) - inbound_email.MAX_FILES_PER_MAIL
+        refs = refs[: inbound_email.MAX_FILES_PER_MAIL]
     return {
         "v": PAYLOAD_VERSION,
         "token": token,
@@ -216,7 +287,7 @@ def to_payload(msg: inbound_email.InboundMessage, token: str) -> dict:
         "list_id": msg.list_id,
         "return_path": msg.return_path,
         "is_report": bool(msg.is_report),
-        "parse_skips": dict(msg.parse_skips),
+        "parse_skips": dict(skips),
         "attachments": [
             {
                 "ref": a.ref,
@@ -225,10 +296,9 @@ def to_payload(msg: inbound_email.InboundMessage, token: str) -> dict:
                 "declared_size": a.declared_size,
                 "inline": bool(a.inline),
             }
-            for a in msg.attachments
-            if a.ref
+            for a in refs
         ],
-        "progress": {"filed": [], "receipt_sent": False},
+        "progress": {"filed": [], "receipt_sent": False, "admitted": False},
     }
 
 
@@ -241,16 +311,23 @@ def from_payload(payload: dict) -> inbound_email.InboundMessage:
     attachments = []
     for a in payload.get("attachments") or []:
         ref = str(a.get("ref") or "")
-        if not api_key or not ref:
+        if not ref:
             skips["fetch_failed"] += 1
             continue
+        # BREVO_API_KEY unset: the download raises a temporary failure
+        # (``no_api_key``), so the job waits for the key instead of ending done.
+        fetch = (
+            inbound_email._brevo_fetcher(ref, api_key, MAX_FILE_BYTES + 1)
+            if api_key
+            else inbound_email._missing_key_fetcher()
+        )
         attachments.append(
             inbound_email.InboundAttachment(
                 name=str(a.get("name") or ""),
                 data=b"",
                 content_type=str(a.get("content_type") or "application/octet-stream"),
                 inline=bool(a.get("inline")),
-                fetch=inbound_email._brevo_fetcher(ref, api_key, MAX_FILE_BYTES + 1),
+                fetch=fetch,
                 declared_size=a.get("declared_size"),
                 ref=ref,
             )
@@ -280,7 +357,10 @@ async def enqueue(db, messages: list[inbound_email.InboundMessage]) -> dict:
     """Queue every routable message in ONE transaction; raises on a DB error.
 
     Returns counts: ``queued``, ``duplicate`` (already queued, a provider
-    retry), ``dropped`` (unknown / inactive token, silent as before).
+    retry), ``dropped`` (unknown / inactive token, silent as before). Raises
+    ``InboundQueueFullError`` (nothing written, counter ``jobs_queue_full``)
+    when the batch would pass ``MAX_OPEN_JOBS_PER_TOKEN`` or
+    ``MAX_OPEN_JOBS_TOTAL``.
     """
     rows = []
     dropped = 0
@@ -294,18 +374,35 @@ async def enqueue(db, messages: list[inbound_email.InboundMessage]) -> dict:
             dropped += 1
             continue
         pid = row["patient_id"]
+        job_uuid = str(uuid.uuid4())
+        payload = to_payload(msg, token)
         rows.append(
             {
+                "job_uuid": job_uuid,
                 "patient_id": pid,
                 "token_hash": th,
-                "message_id_hash": message_id_hash(msg.message_id),
+                "message_id_hash": message_id_hash(msg.message_id, payload),
                 "sender_hash": sender_hash(msg.sender, msg.auth_pass),
                 "payload_enc": encrypt_payload(
-                    to_payload(msg, token), patient_id=pid, token_hash=th
+                    payload, patient_id=pid, token_hash=th, job_uuid=job_uuid
                 ),
             }
         )
-    queued, duplicate = await db.insert_inbound_jobs(rows) if rows else (0, 0)
+    try:
+        queued, duplicate = (
+            await db.insert_inbound_jobs(
+                rows,
+                now=_iso(_now()),
+                max_open_per_token=MAX_OPEN_JOBS_PER_TOKEN,
+                max_open_total=MAX_OPEN_JOBS_TOTAL,
+            )
+            if rows
+            else (0, 0)
+        )
+    except InboundQueueFullError as exc:
+        inbound_email._state.counters["jobs_queue_full"] += 1
+        logger.warning("inbound: queue full (%s cap), nothing queued", exc)
+        raise
     inbound_email._state.counters["jobs_queued"] += queued
     inbound_email._state.counters["jobs_duplicate"] += duplicate
     logger.info(
@@ -375,76 +472,134 @@ async def run_pending(db, *, limit: int = MAX_JOBS_PER_RUN) -> Counter:
     return counts
 
 
-def _due(job: dict, now: datetime) -> bool:
-    """A failed attempt waits ``RETRY_BASE_MIN * 2**(attempts-1)`` minutes."""
-    if job["state"] != "pending" or job["attempts"] == 0:
-        return True
-    wait = timedelta(minutes=RETRY_BASE_MIN * 2 ** (job["attempts"] - 1))
-    return now - _parse_iso(job["updated_at"]) >= wait
+def _backoff(attempts: int) -> timedelta:
+    """After the n-th failed attempt: ``RETRY_BASE_MIN * 2**(n-1)`` minutes."""
+    return timedelta(minutes=RETRY_BASE_MIN * 2 ** max(attempts - 1, 0))
 
 
 async def _run_one(db) -> str | None:
-    """Claim and process the next job (caller holds PROCESS_LOCK). None = no job."""
+    """Claim and process the next job (caller holds PROCESS_LOCK). None = no job.
+
+    Every write after the claim is conditional on this worker's lease (the
+    ``updated_at`` it set; refreshed by each progress save and before each
+    download): a worker whose job was taken over as stale changes nothing.
+    """
     now = _now()
-    candidates = await db.claimable_inbound_jobs(
-        stale_before=_iso(now - timedelta(minutes=STALE_PROCESSING_MIN))
+    job = await db.next_inbound_job(
+        now=_iso(now), stale_before=_iso(now - timedelta(minutes=STALE_PROCESSING_MIN))
     )
-    job = next((j for j in candidates if _due(j, now)), None)
     if job is None:
         return None
     pid, jid = job["patient_id"], job["id"]
     pp = pid[:4]
+    lease = {"value": _iso(now)}
+    if not await db.claim_inbound_job(job, now=lease["value"]):
+        return "lost_claim"
+    attempts = job["attempts"] + 1
 
-    async def finish(state: str, reason: str) -> str:
-        await db.finish_inbound_job(
-            jid, patient_id=pid, state=state, reason=reason, now=_iso(_now())
+    def lease_lost() -> str:
+        inbound_email._state.counters["jobs_lease_lost"] += 1
+        logger.warning("inbound: job patient %s lease lost, left to its new owner", pp)
+        return "lease_lost"
+
+    async def finish(state: str, reason: str, *, retry_in: timedelta | None = None) -> str:
+        at = _now()
+        ok = await db.finish_inbound_job(
+            jid,
+            patient_id=pid,
+            state=state,
+            reason=reason,
+            now=_iso(at),
+            lease=lease["value"],
+            next_attempt_at=_iso(at + retry_in) if retry_in is not None else None,
         )
+        if not ok:
+            return lease_lost()
         inbound_email._state.counters[f"jobs_{state}"] += 1
         if state == "failed":
             inbound_email._state.counters[f"job_failed_{reason}"] += 1
         logger.info("inbound: job patient %s state=%s reason=%s", pp, state, reason)
         return f"{state}:{reason}"
 
+    async def retry_or_fail(code: str) -> str:
+        """A temporary failure: back to ``pending`` with the backoff, or
+        ``failed:<code>`` once the attempts are used up."""
+        if attempts >= MAX_ATTEMPTS:
+            return await finish("failed", code)
+        return await finish("pending", code, retry_in=_backoff(attempts))
+
     if job["attempts"] >= MAX_ATTEMPTS:
         return await finish("failed", "max_attempts")
     try:
-        payload = decrypt_payload(job["payload_enc"], patient_id=pid, token_hash=job["token_hash"])
+        payload = decrypt_payload(
+            job["payload_enc"],
+            patient_id=pid,
+            token_hash=job["token_hash"],
+            job_uuid=job["job_uuid"],
+        )
     except UndecryptablePayloadError:
         return await finish("failed", "undecryptable")
     age = (now - _parse_iso(job["created_at"])).total_seconds()
     if payload.get("attachments") and age > BREVO_ATTACHMENT_RETENTION_S:
         return await finish("failed", "download_expired")
-    if not await db.claim_inbound_job(job, now=_iso(now)):
-        return "lost_claim"
 
     prog = payload.get("progress") or {}
     progress = inbound_email.JobProgress(
         filed=set(prog.get("filed") or []),
         receipt_sent=bool(prog.get("receipt_sent")),
+        admitted=bool(prog.get("admitted")),
         # claimed before (pending after an error, or a stale processing job):
         # a file may already be in Drive without its progress entry
         retry=job["attempts"] > 0,
+        final=attempts >= MAX_ATTEMPTS,
     )
 
     async def save() -> None:
         payload["progress"] = {
             "filed": sorted(progress.filed),
             "receipt_sent": progress.receipt_sent,
+            "admitted": progress.admitted,
         }
-        await db.update_inbound_job_payload(
+        new = _iso(_now())
+        ok = await db.update_inbound_job_payload(
             jid,
             patient_id=pid,
-            payload_enc=encrypt_payload(payload, patient_id=pid, token_hash=job["token_hash"]),
-            now=_iso(_now()),
+            payload_enc=encrypt_payload(
+                payload, patient_id=pid, token_hash=job["token_hash"], job_uuid=job["job_uuid"]
+            ),
+            lease=lease["value"],
+            now=new,
         )
+        if not ok:
+            raise LeaseLostError()
+        lease["value"] = new
+
+    async def heartbeat() -> None:
+        new = _iso(_now())
+        if not await db.touch_inbound_job(jid, patient_id=pid, lease=lease["value"], now=new):
+            raise LeaseLostError()
+        lease["value"] = new
 
     progress.save = save
+    progress.heartbeat = heartbeat
     try:
         result = await inbound_email._process_message(db, from_payload(payload), progress)
+    except LeaseLostError:
+        return lease_lost()
     except Exception as exc:  # noqa: BLE001 - one job never stops the queue
-        attempts = job["attempts"] + 1
         if attempts >= MAX_ATTEMPTS:
             return await finish("failed", "max_attempts")
         reason = f"error:{type(exc).__name__}"[:64]
-        return await finish("pending", reason)
+        return await finish("pending", reason, retry_in=_backoff(attempts))
+    if result.temporary:
+        # #952 infra review: rate_limited / fetch_failed / store_failed /
+        # no_api_key never end ``done``. The progress (incl. ``admitted``, so
+        # the retry does not count against the filing quota again) is saved
+        # first, under the lease.
+        if attempts < MAX_ATTEMPTS:
+            try:
+                await save()
+            except LeaseLostError:
+                return lease_lost()
+        return await retry_or_fail(result.temporary)
     return await finish("done", result.outcome)

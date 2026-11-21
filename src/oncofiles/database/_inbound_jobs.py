@@ -18,38 +18,88 @@ from ._base import DatabaseBase
 from ._tenant import require_patient_id
 
 INBOUND_JOB_STATES = ("pending", "processing", "done", "failed")
+# A job still to be processed (the enqueue caps count these).
+_OPEN_STATES = "('pending', 'processing')"
+
+
+class InboundQueueFullError(RuntimeError):
+    """An enqueue would pass a queue cap (#952 infra review): nothing written."""
 
 
 class InboundJobsMixin(DatabaseBase):
-    async def insert_inbound_jobs(self, rows: list[dict]) -> tuple[int, int]:
+    async def insert_inbound_jobs(
+        self,
+        rows: list[dict],
+        *,
+        now: str | None = None,
+        max_open_per_token: int | None = None,
+        max_open_total: int | None = None,
+    ) -> tuple[int, int]:
         """Queue ``rows`` in ONE transaction; returns (inserted, duplicates).
 
-        Each row: ``patient_id``, ``token_hash``, ``message_id_hash`` (or None),
-        ``sender_hash``, ``payload_enc``. A row whose (token_hash,
-        message_id_hash, sender_hash) is already queued is a provider retry of
-        the same mail and is ignored; the sender hash (From + auth verdict)
-        keeps a forged mail with a stolen Message-ID from blocking the real
-        one. Any error rolls everything back and raises (the route then
-        answers 500, so the provider retries).
+        Each row: ``job_uuid``, ``patient_id``, ``token_hash``,
+        ``message_id_hash``, ``sender_hash``, ``payload_enc``. A row whose
+        (token_hash, message_id_hash, sender_hash) is already queued is a
+        provider retry of the same mail and is ignored; the sender hash (From +
+        auth verdict) keeps a forged mail with a stolen Message-ID from
+        blocking the real one. ``now`` is the row's first ``next_attempt_at``.
+
+        Caps (#952 infra review): when the new (not yet queued) rows would
+        bring the open jobs (pending + processing) of one token hash above
+        ``max_open_per_token``, or of all patients above ``max_open_total``,
+        ``InboundQueueFullError`` is raised and NOTHING is written (the route
+        answers 503 + Retry-After). Any other error rolls everything back and
+        raises (the route then answers 500, so the provider retries).
         """
         inserted = 0
         try:
+            if max_open_per_token is not None or max_open_total is not None:
+                new_per_token: dict[str, int] = {}
+                for row in rows:
+                    async with self.db.execute(
+                        """SELECT 1 FROM inbound_jobs WHERE token_hash = ?
+                           AND message_id_hash = ? AND sender_hash = ? LIMIT 1""",
+                        (row["token_hash"], row["message_id_hash"], row["sender_hash"]),
+                    ) as cursor:
+                        if await cursor.fetchone() is None:
+                            th = row["token_hash"]
+                            new_per_token[th] = new_per_token.get(th, 0) + 1
+                if new_per_token and max_open_total is not None:
+                    async with self.db.execute(
+                        f"SELECT COUNT(*) FROM inbound_jobs WHERE state IN {_OPEN_STATES}"
+                    ) as cursor:
+                        open_total = (await cursor.fetchone())[0]
+                    if open_total + sum(new_per_token.values()) > max_open_total:
+                        raise InboundQueueFullError("total")
+                if max_open_per_token is not None:
+                    for th, n in new_per_token.items():
+                        async with self.db.execute(
+                            f"""SELECT COUNT(*) FROM inbound_jobs
+                                WHERE token_hash = ? AND state IN {_OPEN_STATES}""",
+                            (th,),
+                        ) as cursor:
+                            open_token = (await cursor.fetchone())[0]
+                        if open_token + n > max_open_per_token:
+                            raise InboundQueueFullError("token")
             for row in rows:
                 pid = require_patient_id(row["patient_id"])
                 cursor = await self.db.execute(
-                    # ON CONFLICT on the unique key only: OR IGNORE would also
+                    # ON CONFLICT on the dedupe key only: OR IGNORE would also
                     # swallow a NOT NULL failure and lose the mail silently.
                     """INSERT INTO inbound_jobs
-                       (patient_id, token_hash, message_id_hash, sender_hash, payload_enc,
-                        state, attempts)
-                       VALUES (?, ?, ?, ?, ?, 'pending', 0)
+                       (job_uuid, patient_id, token_hash, message_id_hash, sender_hash,
+                        payload_enc, state, attempts, next_attempt_at)
+                       VALUES (?, ?, ?, ?, ?, ?, 'pending', 0,
+                               COALESCE(?, strftime('%Y-%m-%dT%H:%M:%SZ','now')))
                        ON CONFLICT (token_hash, message_id_hash, sender_hash) DO NOTHING""",
                     (
+                        row["job_uuid"],
                         pid,
                         row["token_hash"],
-                        row.get("message_id_hash"),
+                        row["message_id_hash"],
                         row["sender_hash"],
                         row["payload_enc"],
+                        now,
                     ),
                 )
                 inserted += cursor.rowcount or 0
@@ -59,26 +109,29 @@ class InboundJobsMixin(DatabaseBase):
             raise
         return inserted, len(rows) - inserted
 
-    async def claimable_inbound_jobs(self, *, stale_before: str, limit: int = 100) -> list[dict]:
-        """The oldest claimable jobs: ``pending``, or ``processing`` not touched
-        since ``stale_before`` (a crash mid-way). System-wide on purpose: the
-        worker serves every patient; each row carries its own ``patient_id``.
-        The worker applies the retry backoff to this list.
+    async def next_inbound_job(self, *, now: str, stale_before: str) -> dict | None:
+        """The next claimable job, or None: a ``pending`` job whose
+        ``next_attempt_at`` has come, or a ``processing`` job not touched since
+        ``stale_before`` (a crash or kill mid-way), earliest ``next_attempt_at``
+        first. System-wide on purpose: the worker serves every patient; each
+        row carries its own ``patient_id``.
         """
         async with self.db.execute(
-            """SELECT id, patient_id, token_hash, payload_enc, state, attempts,
-                      created_at, updated_at
+            """SELECT id, job_uuid, patient_id, token_hash, payload_enc, state, attempts,
+                      next_attempt_at, created_at, updated_at
                FROM inbound_jobs
-               WHERE state = 'pending' OR (state = 'processing' AND updated_at < ?)
-               ORDER BY id LIMIT ?""",
-            (stale_before, int(limit)),
+               WHERE (state = 'pending' AND next_attempt_at <= ?)
+                  OR (state = 'processing' AND updated_at < ?)
+               ORDER BY next_attempt_at, id LIMIT 1""",
+            (now, stale_before),
         ) as cursor:
-            rows = await cursor.fetchall()
-        return [dict(r) for r in rows]
+            row = await cursor.fetchone()
+        return dict(row) if row is not None else None
 
     async def claim_inbound_job(self, job: dict, *, now: str) -> bool:
         """``job`` → ``processing`` with attempts + 1, only if nobody changed it
-        since it was read (state and updated_at unchanged). True when claimed.
+        since it was read (state and updated_at unchanged). True when claimed;
+        ``now`` is then the claimer's lease (the row's ``updated_at``).
         """
         cursor = await self.db.execute(
             """UPDATE inbound_jobs
@@ -89,31 +142,63 @@ class InboundJobsMixin(DatabaseBase):
         await self.db.commit()
         return (cursor.rowcount or 0) == 1
 
+    async def touch_inbound_job(
+        self, job_id: int, *, patient_id: str, lease: str, now: str
+    ) -> bool:
+        """Refresh the lease (``updated_at`` = ``now``) of a job this worker
+        holds (``processing`` with ``updated_at`` = ``lease``). False = the
+        lease is lost (another worker took the job over).
+        """
+        cursor = await self.db.execute(
+            """UPDATE inbound_jobs SET updated_at = ?
+               WHERE id = ? AND patient_id = ? AND state = 'processing' AND updated_at = ?""",
+            (now, job_id, patient_id, lease),
+        )
+        await self.db.commit()
+        return (cursor.rowcount or 0) == 1
+
     async def finish_inbound_job(
-        self, job_id: int, *, patient_id: str, state: str, reason: str | None, now: str
-    ) -> None:
-        """Set the job's final (or retry) ``state`` and ``reason`` code."""
+        self,
+        job_id: int,
+        *,
+        patient_id: str,
+        state: str,
+        reason: str | None,
+        now: str,
+        lease: str,
+        next_attempt_at: str | None = None,
+    ) -> bool:
+        """Set the job's final (or retry) ``state`` and ``reason`` code, only
+        while this worker still holds it (``processing`` with ``updated_at`` =
+        ``lease``; #952 infra review). ``next_attempt_at`` (a retry) is when it
+        may be claimed again. False = the lease was lost, nothing changed.
+        """
         if state not in INBOUND_JOB_STATES:
             raise ValueError("unknown inbound job state")
-        await self.db.execute(
-            """UPDATE inbound_jobs SET state = ?, reason = ?, updated_at = ?
-               WHERE id = ? AND patient_id = ?""",
-            (state, reason, now, job_id, patient_id),
+        cursor = await self.db.execute(
+            """UPDATE inbound_jobs
+               SET state = ?, reason = ?, updated_at = ?,
+                   next_attempt_at = COALESCE(?, next_attempt_at)
+               WHERE id = ? AND patient_id = ? AND state = 'processing' AND updated_at = ?""",
+            (state, reason, now, next_attempt_at, job_id, patient_id, lease),
         )
         await self.db.commit()
+        return (cursor.rowcount or 0) == 1
 
     async def update_inbound_job_payload(
-        self, job_id: int, *, patient_id: str, payload_enc: str, now: str
-    ) -> None:
-        """Store the re-encrypted payload (progress) and refresh ``updated_at``,
-        which also tells the stale check that the job is alive.
+        self, job_id: int, *, patient_id: str, payload_enc: str, lease: str, now: str
+    ) -> bool:
+        """Store the re-encrypted payload (progress) and refresh the lease
+        (``updated_at`` = ``now``), only while this worker holds it. False =
+        the lease was lost, nothing changed.
         """
-        await self.db.execute(
+        cursor = await self.db.execute(
             """UPDATE inbound_jobs SET payload_enc = ?, updated_at = ?
-               WHERE id = ? AND patient_id = ? AND state = 'processing'""",
-            (payload_enc, now, job_id, patient_id),
+               WHERE id = ? AND patient_id = ? AND state = 'processing' AND updated_at = ?""",
+            (payload_enc, now, job_id, patient_id, lease),
         )
         await self.db.commit()
+        return (cursor.rowcount or 0) == 1
 
     async def inbound_job_counts(self, *, include_done: bool = True) -> dict:
         """Jobs per state, and pending / failed jobs per reason code (codes only).

@@ -355,6 +355,23 @@ class UnparseableMessageError(ValueError):
     """The body is not a readable e-mail."""
 
 
+# Reason codes of a TEMPORARY failure (#952 infra review): a queued job that
+# ends on one of them goes back to ``pending`` (with the retry backoff) instead
+# of ``done``; after the last attempt it ends ``failed`` with that code.
+TEMPORARY_CODES = frozenset({"rate_limited", "fetch_failed", "store_failed", "no_api_key"})
+
+
+class TemporaryFetchError(Exception):
+    """An attachment download that may work later (Brevo 5xx / 429 / auth,
+    a timeout or transport error, or ``BREVO_API_KEY`` unset). ``code`` is a
+    member of ``TEMPORARY_CODES``. A permanent miss (404, oversize) is a
+    ``None`` from the fetcher instead."""
+
+    def __init__(self, code: str = "fetch_failed") -> None:
+        super().__init__(code)
+        self.code = code
+
+
 def _header(msg, name: str) -> str:
     try:
         value = msg.get(name)
@@ -445,11 +462,23 @@ def parse_raw_mime(raw: bytes, *, original_to: str = "", auth: str = "") -> Inbo
     )
 
 
-async def _load_referenced(msg: InboundMessage, skipped: Counter) -> None:
+async def _load_referenced(
+    msg: InboundMessage,
+    skipped: Counter,
+    progress: JobProgress | None = None,
+    temporary: set[str] | None = None,
+) -> None:
     """Download attachments delivered by reference, only for a filed sender.
 
     At most ``MAX_FILES_PER_MAIL`` downloads; a declared size above the #935
     cap or a running total above ``MAX_BYTES_PER_MAIL`` is not downloaded.
+
+    Queue mode (#952, ``progress`` given): the job's lease is refreshed before
+    every download (``progress.heartbeat``), and a temporary download failure
+    is collected in ``temporary`` (the job is retried) instead of being a
+    ``fetch_failed`` skip; only the last attempt (``progress.final``) also
+    reports it as a skip in the receipt. A ``None`` from the fetcher (404,
+    oversize) is permanent in both modes.
     """
     from oncofiles.dashboard_upload import MAX_FILE_BYTES
 
@@ -470,14 +499,24 @@ async def _load_referenced(msg: InboundMessage, skipped: Counter) -> None:
             att.fetch = None
             skipped["mail_too_large"] += 1
             continue
+        if progress is not None and progress.heartbeat is not None:
+            await progress.heartbeat()  # outside the try: a lost lease stops the job
+        temp_code: str | None = None
         try:
             data = await att.fetch()
+        except TemporaryFetchError as exc:
+            logger.info("inbound: attachment fetch failed temporarily (%s)", exc.code)
+            data, temp_code = None, exc.code
         except Exception as exc:
             logger.info("inbound: attachment fetch failed (%s)", type(exc).__name__)
-            data = None
+            data, temp_code = None, "fetch_failed"
         att.fetch = None
         fetched += 1
         if not data:
+            if temp_code and temporary is not None:
+                temporary.add(temp_code)
+                if progress is not None and not progress.final:
+                    continue  # retried later: not a skip of this mail
             skipped["fetch_failed"] += 1
             continue
         att.data = data
@@ -614,25 +653,44 @@ def _mailbox(value) -> str:
     return ""
 
 
+# Brevo answers that may succeed later (#952): server errors, throttling, a
+# request timeout, and an API key Brevo refuses (a configuration fix, not a
+# property of the mail). Any other non-200 (404 "download token not found",
+# 410, other 4xx) is permanent.
+_BREVO_TEMPORARY_STATUS = frozenset({401, 403, 408, 425, 429})
+
+
+def _missing_key_fetcher():
+    async def fetch() -> bytes | None:
+        raise TemporaryFetchError("no_api_key")
+
+    return fetch
+
+
 def _brevo_fetcher(token: str, api_key: str, limit: int):
     async def fetch() -> bytes | None:
         import httpx
 
         url = BREVO_ATTACHMENT_URL.format(token=token)
-        async with (
-            httpx.AsyncClient(timeout=30.0) as client,
-            client.stream("GET", url, headers={"api-key": api_key}) as resp,
-        ):
-            if resp.status_code != 200:
-                logger.info("inbound: brevo attachment fetch status=%d", resp.status_code)
-                return None
-            chunks, size = [], 0
-            async for chunk in resp.aiter_bytes():
-                size += len(chunk)
-                if size > limit:
+        try:
+            async with (
+                httpx.AsyncClient(timeout=30.0) as client,
+                client.stream("GET", url, headers={"api-key": api_key}) as resp,
+            ):
+                if resp.status_code != 200:
+                    logger.info("inbound: brevo attachment fetch status=%d", resp.status_code)
+                    if resp.status_code >= 500 or resp.status_code in _BREVO_TEMPORARY_STATUS:
+                        raise TemporaryFetchError("fetch_failed")
                     return None
-                chunks.append(chunk)
-            return b"".join(chunks)
+                chunks, size = [], 0
+                async for chunk in resp.aiter_bytes():
+                    size += len(chunk)
+                    if size > limit:
+                        return None
+                    chunks.append(chunk)
+                return b"".join(chunks)
+        except httpx.TransportError as exc:  # timeouts, connection errors
+            raise TemporaryFetchError("fetch_failed") from exc
 
     return fetch
 
@@ -659,7 +717,7 @@ def parse_brevo_item(item: dict) -> InboundMessage:
         if not isinstance(att, dict):
             continue
         token = str(att.get("DownloadToken") or "")
-        if not api_key or not _DOWNLOAD_TOKEN_RE.match(token):
+        if not _DOWNLOAD_TOKEN_RE.match(token):
             skips["fetch_failed"] += 1
             continue
         try:
@@ -672,7 +730,14 @@ def parse_brevo_item(item: dict) -> InboundMessage:
                 data=b"",
                 content_type=str(att.get("ContentType") or "application/octet-stream").lower(),
                 inline=bool(att.get("ContentID")) and not att.get("Name"),
-                fetch=_brevo_fetcher(token, api_key, MAX_FILE_BYTES + 1),
+                # Without BREVO_API_KEY the reference is kept (#952): the queue
+                # retries it once the key is set; a direct call reports it as
+                # fetch_failed, as before.
+                fetch=(
+                    _brevo_fetcher(token, api_key, MAX_FILE_BYTES + 1)
+                    if api_key
+                    else _missing_key_fetcher()
+                ),
                 declared_size=size,
                 ref=token,
             )
@@ -1186,11 +1251,24 @@ class JobProgress:
 
     filed: set[str] = field(default_factory=set)
     receipt_sent: bool = False
+    # The mail already passed the filing quota in an earlier attempt: a retry
+    # (after a temporary failure) does not count against it a second time.
+    admitted: bool = False
     save: Callable[[], Awaitable[None]] | None = None
+    # Refreshes the job's lease; called before every attachment download.
+    heartbeat: Callable[[], Awaitable[None]] | None = None
     # A job claimed before: every file is first checked read-only against what
     # is already stored (``_stored_md5s``), so a write whose progress save was
     # lost is never repeated.
     retry: bool = False
+    # The job's last attempt: a temporary failure is then reported like a
+    # permanent one (skip + receipt) and the worker ends the job ``failed``.
+    final: bool = False
+
+    def mark_admitted(self) -> None:
+        # Persisted with the next save (a filed file, the receipt, or the
+        # worker's save before it puts the job back to pending).
+        self.admitted = True
 
     async def mark_filed(self, sha: str, ref: str = "") -> None:
         self.filed.add(sha)
@@ -1227,6 +1305,10 @@ class Result:
     accepted: int = 0
     skipped: Counter = field(default_factory=Counter)
     replied: bool = False
+    # Queue mode only (#952): the first temporary failure code (a member of
+    # ``TEMPORARY_CODES``) when the mail is not finished; the worker retries
+    # it, or ends the job ``failed:<code>`` after its last attempt.
+    temporary: str | None = None
 
 
 def _find_token(msg: InboundMessage) -> str | None:
@@ -1306,12 +1388,23 @@ async def _process_message(db, msg: InboundMessage, progress: JobProgress | None
                 _remember(_state.done_ids, mid_key, RECENT_MAX)
             return Result("unmatched", pp)
 
-        # Filing quota: only authenticated caregiver mail counts against it.
-        if _rate_limited(th, now):
+        queued = progress is not None
+        final = queued and progress.final
+        # Filing quota: only authenticated caregiver mail counts against it,
+        # and a queued mail only once (not again on each retry).
+        if not (queued and progress.admitted) and _rate_limited(th, now):
             _state.counters["rate_limited"] += 1
+            if queued:
+                # #952: a temporary refusal; the queue retries the mail later
+                logger.info("inbound: patient %s deferred reason=rate_limited", pp)
+                return Result("rate_limited", pp, temporary="rate_limited")
             logger.info("inbound: patient %s dropped reason=rate_limited", pp)
             return Result("rate_limited", pp)
+        if queued and not progress.admitted:
+            progress.mark_admitted()
 
+        # temporary failures of this attempt (queue mode only)
+        temporary: set[str] | None = set() if queued else None
         skipped: Counter = Counter(msg.parse_skips)
         prefiled = 0
         if progress is not None and progress.filed:
@@ -1324,7 +1417,7 @@ async def _process_message(db, msg: InboundMessage, progress: JobProgress | None
                 else:
                     keep.append(a)
             msg.attachments = keep
-        await _load_referenced(msg, skipped)
+        await _load_referenced(msg, skipped, progress, temporary)
         recent = _state.recent.setdefault(patient_id, OrderedDict())
         seen: set[str] = set()
         candidates: list[tuple[str, bytes, str, str]] = []
@@ -1375,6 +1468,8 @@ async def _process_message(db, msg: InboundMessage, progress: JobProgress | None
         stop_code: str | None = None
         today = _files_today(th, now)
         for name, data, sha, ref in candidates:
+            if stop_code == "retry_later":
+                continue  # left for the queue's next attempt, not a skip
             if stop_code:
                 skipped[stop_code if stop_code in _STOPPING else "not_attempted"] += 1
                 continue
@@ -1388,13 +1483,26 @@ async def _process_message(db, msg: InboundMessage, progress: JobProgress | None
                 if progress is not None:
                     await progress.mark_filed(sha, ref)
                 continue
+            if code == "store_failed" and temporary is not None:
+                # #952: a Drive failure is temporary; what is left is filed by
+                # the retry (the files filed so far are in the progress).
+                temporary.add(code)
+                if not final:
+                    stop_code = "retry_later"
+                    continue
             skipped[code] += 1
             if code in _STOPPING or code == "store_failed":
                 stop_code = code
         if accepted - prefiled:
             _state.files_day.setdefault(th, []).append((now, accepted - prefiled))
+            _state.counters["files_accepted"] += accepted - prefiled
+        if temporary and not final:
+            # Not finished: no receipt, not remembered as delivered, the skips
+            # are reported once the mail is done (or on its last attempt).
+            code = sorted(temporary)[0]
+            logger.info("inbound: patient %s retry later accepted=%d reason=%s", pp, accepted, code)
+            return Result("retry", pp, accepted, skipped, temporary=code)
         _state.counters["mails_filed"] += 1
-        _state.counters["files_accepted"] += accepted - prefiled
         for code, n in skipped.items():
             _state.counters[f"skipped_{code}"] += n
         if msg.message_id:
@@ -1410,4 +1518,7 @@ async def _process_message(db, msg: InboundMessage, progress: JobProgress | None
             replied = await _send_receipt(th, msg.sender, accepted, skipped, now)
             if progress is not None:
                 await progress.mark_receipt_sent()
-        return Result("filed", pp, accepted, skipped, replied)
+        # On the last attempt a temporary failure was reported in the receipt;
+        # the worker still ends the job ``failed:<code>`` (#952).
+        last_temporary = sorted(temporary)[0] if temporary else None
+        return Result("filed", pp, accepted, skipped, replied, temporary=last_temporary)

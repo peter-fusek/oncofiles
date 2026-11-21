@@ -343,7 +343,8 @@ DB_ALLOWLIST: dict[tuple[str, str], str] = {
     (
         "/inbound/brevo",
         "inbound_brevo_webhook",
-    ): "#950 after a valid token: token-hash lookup and one inbound_jobs INSERT "
+    ): "#950 after a valid token: token-hash lookup, the #952 queue caps (a dedupe-key "
+    "lookup per mail and indexed open-job COUNTs) and one inbound_jobs INSERT "
     "(ON CONFLICT DO NOTHING) per routable mail (#952, one transaction); the queue "
     "worker then does the /inbound/email work",
     (

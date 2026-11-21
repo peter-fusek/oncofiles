@@ -91,7 +91,8 @@ def no_kick(monkeypatch):
 
 async def _jobs(db):
     async with db.db.execute(
-        "SELECT id, patient_id, state, attempts, reason, payload_enc FROM inbound_jobs ORDER BY id"
+        "SELECT id, job_uuid, patient_id, state, attempts, reason, payload_enc,"
+        " next_attempt_at, updated_at FROM inbound_jobs ORDER BY id"
     ) as cur:
         return [dict(r) for r in await cur.fetchall()]
 
@@ -348,13 +349,14 @@ async def test_payload_is_encrypted_without_plaintext(idb, brevo, no_kick):
         assert CARER not in str(value) and SUBJECT not in str(value)
         assert token not in str(value)
 
+    th = inbound_email.token_hash(token)
     payload = inbound_queue.decrypt_payload(
-        blob, patient_id=PID, token_hash=inbound_email.token_hash(token)
+        blob, patient_id=PID, token_hash=th, job_uuid=job["job_uuid"]
     )
     assert payload["sender"] == CARER and "Subject" not in json.dumps(payload)
     assert SUBJECT not in json.dumps(payload) and "never stored" not in json.dumps(payload)
     with pytest.raises(inbound_queue.UndecryptablePayloadError):  # bound to its row
-        inbound_queue.decrypt_payload(blob, patient_id="other", token_hash="x")
+        inbound_queue.decrypt_payload(blob, patient_id="other", token_hash="x", job_uuid="y")
 
 
 async def test_undecryptable_payload_ends_failed(idb, brevo, no_kick, monkeypatch):
@@ -620,3 +622,474 @@ def test_queue_never_deletes():
 def test_mime_route_still_processes_synchronously():
     src = inspect.getsource(server.inbound_email_webhook)
     assert "process_message" in src and "inbound_queue" not in src
+
+
+# ── infra review 2: temporary failures never end done ───────────────────
+
+
+@pytest.fixture
+def flaky_brevo(brevo, monkeypatch):
+    """Like ``brevo``, but ``fail[token] = n`` makes the next n downloads of
+    that token a temporary failure (a Brevo 5xx / timeout)."""
+    store, fetched = brevo
+    fail: dict[str, int] = {}
+
+    def _fetcher(token, api_key, limit):
+        async def fetch():
+            fetched.append(token)
+            if fail.get(token, 0) > 0:
+                fail[token] -= 1
+                raise inbound_email.TemporaryFetchError("fetch_failed")
+            data = store.get(token)
+            return data if data is not None and len(data) <= limit else None
+
+        return fetch
+
+    monkeypatch.setattr(inbound_email, "_brevo_fetcher", _fetcher)
+    return store, fetched, fail
+
+
+async def test_temporary_fetch_failure_goes_back_to_pending(
+    idb, drive, mails, flaky_brevo, no_kick, clock
+):
+    store, fetched, fail = flaky_brevo
+    addr = await address_of(idb)
+    await server.inbound_brevo_webhook(brevo_request(idb, {"items": [_two_file_item(addr, store)]}))
+    fail["tok-b"] = 1
+    assert await inbound_queue.run_pending(idb) == {"pending:fetch_failed": 1}
+    [job] = await _jobs(idb)
+    assert job["state"] == "pending" and job["reason"] == "fetch_failed"
+    assert job["next_attempt_at"] > job["updated_at"]  # the backoff
+    assert [f[0] for f in drive.files] == [FILENAMES[0]] and mails == []  # no receipt yet
+
+    assert await inbound_queue.run_pending(idb) == {}  # not due yet
+    clock(minutes=inbound_queue.RETRY_BASE_MIN + 1)
+    assert await inbound_queue.run_pending(idb) == {"done:filed": 1}
+    assert [f[0] for f in drive.files] == list(FILENAMES[:2])  # each once
+    assert fetched == ["tok-a", "tok-b", "tok-b"]
+    expected = inbound_email.receipt_text(2, Counter())[1]
+    assert len(mails) == 1 and mails[0]["text"] == expected
+
+
+async def test_store_failure_goes_back_to_pending(
+    idb, drive, mails, brevo, no_kick, clock, monkeypatch
+):
+    store, _ = brevo
+    addr = await address_of(idb)
+    await server.inbound_brevo_webhook(brevo_request(idb, {"items": [_two_file_item(addr, store)]}))
+    real_file_one = inbound_email._file_one
+    calls = {"n": 0}
+
+    async def drive_down_once(db, pid, name, data):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            return "store_failed"
+        return await real_file_one(db, pid, name, data)
+
+    monkeypatch.setattr(inbound_email, "_file_one", drive_down_once)
+    assert await inbound_queue.run_pending(idb) == {"pending:store_failed": 1}
+    assert [f[0] for f in drive.files] == [FILENAMES[0]] and mails == []
+    clock(minutes=inbound_queue.RETRY_BASE_MIN + 1)
+    assert await inbound_queue.run_pending(idb) == {"done:filed": 1}
+    assert [f[0] for f in drive.files] == list(FILENAMES[:2])
+    both_filed = inbound_email.receipt_text(len(FILENAMES[:2]), Counter())[1]
+    assert [m["text"] for m in mails] == [both_filed]
+
+
+async def test_rate_limited_goes_back_to_pending_and_counts_once(
+    idb, drive, mails, brevo, no_kick, clock, monkeypatch
+):
+    store, fetched = brevo
+    addr = await address_of(idb)
+    await server.inbound_brevo_webhook(brevo_request(idb, {"items": [_two_file_item(addr, store)]}))
+    monkeypatch.setattr(inbound_email, "_rate_limited", lambda th, now: True)
+    assert await inbound_queue.run_pending(idb) == {"pending:rate_limited": 1}
+    assert fetched == [] and drive.files == [] and mails == []
+    seen = []
+    monkeypatch.setattr(inbound_email, "_rate_limited", lambda th, now: seen.append(1) or False)
+    clock(minutes=inbound_queue.RETRY_BASE_MIN + 1)
+    assert await inbound_queue.run_pending(idb) == {"done:filed": 1}
+    assert len(drive.files) == 2 and len(seen) == 1
+
+
+async def test_admitted_mail_is_not_rate_limited_again_on_retry(
+    idb, drive, mails, flaky_brevo, no_kick, clock, monkeypatch
+):
+    store, _, fail = flaky_brevo
+    addr = await address_of(idb)
+    await server.inbound_brevo_webhook(brevo_request(idb, {"items": [_two_file_item(addr, store)]}))
+    fail["tok-a"] = 1
+    assert await inbound_queue.run_pending(idb) == {"pending:fetch_failed": 1}
+    # the quota is now exhausted: the admitted mail still finishes
+    monkeypatch.setattr(inbound_email, "_rate_limited", lambda th, now: True)
+    clock(minutes=inbound_queue.RETRY_BASE_MIN + 1)
+    assert await inbound_queue.run_pending(idb) == {"done:filed": 1}
+    assert len(drive.files) == 2
+
+
+async def test_missing_brevo_api_key_goes_back_to_pending(
+    idb, drive, mails, brevo, no_kick, clock, monkeypatch
+):
+    store, fetched = brevo
+    addr = await address_of(idb)
+    monkeypatch.delenv(inbound_email.BREVO_API_KEY_ENV)
+    resp = await server.inbound_brevo_webhook(
+        brevo_request(idb, {"items": [_two_file_item(addr, store)]})
+    )
+    assert resp.status_code == 202
+    assert await inbound_queue.run_pending(idb) == {"pending:no_api_key": 1}
+    assert fetched == [] and drive.files == [] and mails == []
+    monkeypatch.setenv(inbound_email.BREVO_API_KEY_ENV, "synthetic-brevo-key-952")
+    clock(minutes=inbound_queue.RETRY_BASE_MIN + 1)
+    assert await inbound_queue.run_pending(idb) == {"done:filed": 1}
+    assert len(drive.files) == 2 and len(mails) == 1
+
+
+async def test_temporary_failure_ends_failed_with_its_code_after_max_attempts(
+    idb, drive, mails, flaky_brevo, no_kick, clock
+):
+    store, _, fail = flaky_brevo
+    addr = await address_of(idb)
+    await server.inbound_brevo_webhook(brevo_request(idb, {"items": [_two_file_item(addr, store)]}))
+    fail["tok-b"] = 99
+    outcomes = []
+    for _ in range(inbound_queue.MAX_ATTEMPTS + 1):
+        outcomes.append(dict(await inbound_queue.run_pending(idb)))
+        clock(minutes=60)
+    assert outcomes.count({"pending:fetch_failed": 1}) == inbound_queue.MAX_ATTEMPTS - 1
+    assert {"failed:fetch_failed": 1} in outcomes
+    [job] = await _jobs(idb)
+    assert job["state"] == "failed" and job["reason"] == "fetch_failed"
+    assert job["attempts"] == inbound_queue.MAX_ATTEMPTS
+    assert [f[0] for f in drive.files] == [FILENAMES[0]]  # filed once
+    # the last attempt tells the caregiver: one accepted, one not downloaded
+    filed_n, missing_n = len(drive.files), len(drive.files)
+    one_missing = inbound_email.receipt_text(filed_n, Counter(fetch_failed=missing_n))[1]
+    assert [m["text"] for m in mails] == [one_missing]
+
+
+async def test_permanent_drops_still_end_done(idb, drive, mails, brevo, no_kick):
+    addr = await address_of(idb)
+    # a download token Brevo does not know (404): permanent, reported
+    item = brevo_item(addr, files=[(FILENAMES[0], "application/pdf", 100, "tok-gone")])
+    await inbound_queue.enqueue(idb, [inbound_email.parse_brevo_item(item)])
+    stranger = brevo_item(addr, sender="stranger952@example.test")
+    stranger["MessageId"] = "<synthetic-stranger-2027@example.test>"
+    await inbound_queue.enqueue(idb, [inbound_email.parse_brevo_item(stranger)])
+    assert await inbound_queue.run_pending(idb) == {"done:filed": 1, "done:unmatched": 1}
+    assert drive.files == []
+
+
+class _FakeResponse:
+    def __init__(self, status, body=b""):
+        self.status_code = status
+        self._body = body
+
+    async def aiter_bytes(self):
+        yield self._body
+
+
+class _FakeClient:
+    """Stands in for httpx.AsyncClient (no network): ``plan`` is a status code
+    or an exception class for the next GET."""
+
+    plan: object = 200
+
+    def __init__(self, *a, **kw):
+        pass
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    def stream(self, method, url, headers=None):
+        plan = _FakeClient.plan
+
+        class _Ctx:
+            async def __aenter__(self):
+                if isinstance(plan, type) and issubclass(plan, BaseException):
+                    raise plan("synthetic")
+                return _FakeResponse(plan, b"%PDF-1.7 synthetic")
+
+            async def __aexit__(self, *exc):
+                return False
+
+        return _Ctx()
+
+
+@pytest.mark.parametrize(
+    ("plan", "expect"),
+    [
+        (200, "bytes"),
+        (404, None),
+        (410, None),
+        (500, "temporary"),
+        (503, "temporary"),
+        (429, "temporary"),
+        (401, "temporary"),
+        ("timeout", "temporary"),
+        ("connect", "temporary"),
+    ],
+)
+async def test_real_fetcher_separates_temporary_from_permanent(monkeypatch, plan, expect):
+    import httpx
+
+    errors = {"timeout": httpx.ReadTimeout, "connect": httpx.ConnectError}
+    _FakeClient.plan = errors.get(plan, plan)
+    monkeypatch.setattr(httpx, "AsyncClient", _FakeClient)
+    fetch = inbound_email._brevo_fetcher("tok-synthetic", "synthetic-key", 10_000)
+    if expect == "temporary":
+        with pytest.raises(inbound_email.TemporaryFetchError) as exc:
+            await fetch()
+        assert exc.value.code == "fetch_failed"
+    elif expect is None:
+        assert await fetch() is None
+    else:
+        assert await fetch() == b"%PDF-1.7 synthetic"
+
+
+def test_temporary_codes_are_the_reviewed_four():
+    assert {
+        "rate_limited",
+        "fetch_failed",
+        "store_failed",
+        "no_api_key",
+    } == inbound_email.TEMPORARY_CODES
+
+
+# ── infra review 3: queue caps at enqueue ───────────────────────────────
+
+
+def _distinct_item(addr, n):
+    item = brevo_item(addr, files=[])
+    item["MessageId"] = f"<synthetic-cap-{n}-2027@example.test>"
+    return item
+
+
+async def test_per_address_cap_answers_503_and_writes_nothing(idb, brevo, no_kick, monkeypatch):
+    addr = await address_of(idb)
+    monkeypatch.setattr(inbound_queue, "MAX_OPEN_JOBS_PER_TOKEN", 2)
+    for n in range(2):
+        resp = await server.inbound_brevo_webhook(
+            brevo_request(idb, {"items": [_distinct_item(addr, n)]})
+        )
+        assert resp.status_code == 202
+    third = brevo_request(idb, {"items": [_distinct_item(addr, 2)]})
+    resp = await server.inbound_brevo_webhook(third)
+    assert resp.status_code == 503 and resp.headers.get("retry-after")
+    assert len(await _jobs(idb)) == 2 and len(no_kick) == 2
+    assert inbound_email._state.counters["jobs_queue_full"] == 1
+    # a genuine Brevo retry of a queued mail is still a no-op 202, not a 503
+    retry = brevo_request(idb, {"items": [_distinct_item(addr, 0)]})
+    resp = await server.inbound_brevo_webhook(retry)
+    assert resp.status_code == 202 and len(await _jobs(idb)) == 2
+
+
+async def test_a_batch_over_the_cap_is_refused_whole(idb, brevo, no_kick, monkeypatch):
+    addr = await address_of(idb)
+    monkeypatch.setattr(inbound_queue, "MAX_OPEN_JOBS_PER_TOKEN", 2)
+    items = [_distinct_item(addr, n) for n in range(3)]
+    resp = await server.inbound_brevo_webhook(brevo_request(idb, {"items": items}))
+    assert resp.status_code == 503 and await _jobs(idb) == []
+
+
+async def test_total_cap_refuses_the_enqueue(idb, brevo, no_kick, monkeypatch):
+    addr = await address_of(idb)
+    monkeypatch.setattr(inbound_queue, "MAX_OPEN_JOBS_TOTAL", 1)
+    await inbound_queue.enqueue(idb, [inbound_email.parse_brevo_item(_distinct_item(addr, 0))])
+    with pytest.raises(inbound_queue.InboundQueueFullError):
+        await inbound_queue.enqueue(idb, [inbound_email.parse_brevo_item(_distinct_item(addr, 1))])
+    assert len(await _jobs(idb)) == 1
+
+
+async def test_finished_jobs_do_not_count_against_the_cap(
+    idb, drive, mails, brevo, no_kick, monkeypatch
+):
+    addr = await address_of(idb)
+    monkeypatch.setattr(inbound_queue, "MAX_OPEN_JOBS_PER_TOKEN", 1)
+    await inbound_queue.enqueue(idb, [inbound_email.parse_brevo_item(_distinct_item(addr, 0))])
+    await inbound_queue.run_pending(idb)
+    await inbound_queue.enqueue(idb, [inbound_email.parse_brevo_item(_distinct_item(addr, 1))])
+    assert [j["state"] for j in await _jobs(idb)] == ["done", "pending"]
+
+
+def test_payload_keeps_at_most_max_files_per_mail():
+    n = inbound_email.MAX_FILES_PER_MAIL + 3
+    msg = inbound_email.InboundMessage(recipients=[], sender=CARER, auth_pass=True)
+    msg.attachments = [
+        inbound_email.InboundAttachment(
+            name=f"S{i}.pdf", data=b"", content_type="application/pdf", ref=f"tok-{i}"
+        )
+        for i in range(n)
+    ]
+    payload = inbound_queue.to_payload(msg, "synthetictoken")
+    assert len(payload["attachments"]) == inbound_email.MAX_FILES_PER_MAIL
+    assert payload["parse_skips"] == {"too_many_files": 3}
+
+
+# ── infra review 4: AAD includes a random job uuid ──────────────────────
+
+
+async def test_payload_copied_to_another_row_of_the_same_address_does_not_decrypt(
+    idb, drive, mails, brevo, no_kick
+):
+    addr = await address_of(idb)
+    for n in range(2):
+        await inbound_queue.enqueue(idb, [inbound_email.parse_brevo_item(_distinct_item(addr, n))])
+    a, b = await _jobs(idb)
+    assert a["job_uuid"] != b["job_uuid"] and len(a["job_uuid"]) == 36
+    await idb.db.execute(
+        "UPDATE inbound_jobs SET payload_enc = ? WHERE id = ?", (a["payload_enc"], b["id"])
+    )
+    await idb.db.commit()
+    counts = await inbound_queue.run_pending(idb)
+    assert counts == {"done:filed": 1, "failed:undecryptable": 1}
+
+
+def test_aad_is_patient_token_hash_and_job_uuid():
+    assert inbound_queue._aad("p", "t", "u") == b"p|t|u"
+    with pytest.raises(ValueError):
+        inbound_queue._aad("p", "t", "")
+
+
+# ── infra review 5: lease ───────────────────────────────────────────────
+
+
+async def test_finish_needs_the_lease(idb, brevo, no_kick):
+    addr = await address_of(idb)
+    await inbound_queue.enqueue(idb, [inbound_email.parse_brevo_item(_distinct_item(addr, 0))])
+    [job] = await _jobs(idb)
+    assert await idb.claim_inbound_job(job, now="2027-03-01T10:00:00Z")
+    wrong = await idb.finish_inbound_job(
+        job["id"],
+        patient_id=PID,
+        state="done",
+        reason="filed",
+        now="2027-03-01T10:00:05Z",
+        lease="2027-03-01T09:59:59Z",
+    )
+    assert wrong is False
+    [after] = await _jobs(idb)
+    assert after["state"] == "processing" and after["reason"] is None
+    right = await idb.finish_inbound_job(
+        job["id"],
+        patient_id=PID,
+        state="done",
+        reason="filed",
+        now="2027-03-01T10:00:05Z",
+        lease="2027-03-01T10:00:00Z",
+    )
+    assert right is True and (await _jobs(idb))[0]["state"] == "done"
+    # a finished job is never finished again, even with its last updated_at
+    again = await idb.finish_inbound_job(
+        job["id"],
+        patient_id=PID,
+        state="failed",
+        reason="synthetic",
+        now="2027-03-01T10:00:09Z",
+        lease="2027-03-01T10:00:05Z",
+    )
+    assert again is False and (await _jobs(idb))[0]["state"] == "done"
+
+
+async def test_lease_is_refreshed_before_each_download(
+    idb, drive, mails, brevo, no_kick, monkeypatch
+):
+    store, _ = brevo
+    addr = await address_of(idb)
+    await server.inbound_brevo_webhook(brevo_request(idb, {"items": [_two_file_item(addr, store)]}))
+    touches = []
+    real_touch = idb.touch_inbound_job
+
+    async def spy(*a, **kw):
+        touches.append(kw["lease"])
+        return await real_touch(*a, **kw)
+
+    monkeypatch.setattr(idb, "touch_inbound_job", spy)
+    assert await inbound_queue.run_pending(idb) == {"done:filed": 1}
+    assert len(touches) == 2  # one per attachment download
+
+
+async def test_a_taken_over_job_is_left_to_its_new_owner(
+    idb, drive, mails, brevo, no_kick, monkeypatch
+):
+    """The job was taken over as stale while this worker downloaded: the next
+    lease check stops it, no file is filed and nothing is finished."""
+    store, fetched = brevo
+    addr = await address_of(idb)
+    await server.inbound_brevo_webhook(brevo_request(idb, {"items": [_two_file_item(addr, store)]}))
+    real_fetcher = inbound_email._brevo_fetcher
+
+    def _fetcher(token, api_key, limit):
+        inner = real_fetcher(token, api_key, limit)
+
+        async def fetch():
+            data = await inner()
+            if token == "tok-a":  # another container claims the job meanwhile
+                await idb.db.execute("UPDATE inbound_jobs SET updated_at = '2098-07-23T11:17:43Z'")
+                await idb.db.commit()
+            return data
+
+        return fetch
+
+    monkeypatch.setattr(inbound_email, "_brevo_fetcher", _fetcher)
+    assert await inbound_queue.run_pending(idb) == {"lease_lost": 1}
+    [job] = await _jobs(idb)
+    assert job["state"] == "processing" and job["updated_at"] == "2098-07-23T11:17:43Z"
+    assert drive.files == [] and mails == [] and fetched == ["tok-a"]
+    assert inbound_email._state.counters["jobs_lease_lost"] == 1
+
+
+# ── infra review 6: no Message-ID, candidate order ──────────────────────
+
+
+async def test_mail_without_message_id_is_deduplicated(idb, brevo, no_kick):
+    store, _ = brevo
+    addr = await address_of(idb)
+    item = _two_file_item(addr, store)
+    item["MessageId"] = None
+    for _ in range(2):  # Brevo delivers the same mail twice
+        resp = await server.inbound_brevo_webhook(brevo_request(idb, {"items": [item]}))
+        assert resp.status_code == 202
+    async with idb.db.execute("SELECT message_id_hash FROM inbound_jobs") as cur:
+        rows = [r[0] for r in await cur.fetchall()]
+    assert len(rows) == 1 and rows[0] and all(c in "0123456789abcdef" for c in rows[0])
+
+    other = brevo_item(addr, files=[(FILENAMES[2], "application/pdf", 10, "tok-c")])
+    other["MessageId"] = None
+    await server.inbound_brevo_webhook(brevo_request(idb, {"items": [other]}))
+    assert len(await _jobs(idb)) == 2  # a different mail is its own job
+
+
+def test_message_id_hash_never_returns_none():
+    payload = {"v": 1, "token": "t", "attachments": [], "progress": {"filed": ["x"]}}
+    h = inbound_queue.message_id_hash("", payload)
+    assert h and h != inbound_queue.message_id_hash("<a@example.test>", payload)
+    # the progress does not change the dedupe key
+    assert h == inbound_queue.message_id_hash("", {**payload, "progress": {}})
+
+
+async def test_due_jobs_come_first_by_next_attempt_at(idb, drive, mails, brevo, no_kick):
+    addr = await address_of(idb)
+    for n in range(3):
+        await inbound_queue.enqueue(idb, [inbound_email.parse_brevo_item(_distinct_item(addr, n))])
+    first, second, third = await _jobs(idb)
+    # the two oldest jobs back off far into the future
+    await idb.db.execute(
+        "UPDATE inbound_jobs SET next_attempt_at = '2098-07-23T11:17:43Z' WHERE id IN (?, ?)",
+        (first["id"], second["id"]),
+    )
+    await idb.db.commit()
+    assert await inbound_queue.run_pending(idb) == {"done:filed": 1}
+    states = {j["id"]: j["state"] for j in await _jobs(idb)}
+    assert states == {first["id"]: "pending", second["id"]: "pending", third["id"]: "done"}
+
+
+def test_candidate_query_orders_by_next_attempt_at():
+    from oncofiles.database import _inbound_jobs
+
+    src = inspect.getsource(_inbound_jobs.InboundJobsMixin.next_inbound_job)
+    assert "next_attempt_at <= ?" in src and "ORDER BY next_attempt_at" in src
+    assert "ORDER BY id LIMIT" not in src

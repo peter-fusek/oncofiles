@@ -7450,7 +7450,9 @@ async def inbound_brevo_webhook(request: Request) -> Response:
     Then every routable mail is written to the durable queue ``inbound_jobs``
     (#952, ``inbound_queue.enqueue``: encrypted minimal payload, one
     transaction) BEFORE the 202; if that write fails the answer is 500, so
-    Brevo retries (an already queued mail is not queued twice). Checks,
+    Brevo retries (an already queued mail is not queued twice); over a queue
+    cap (``MAX_OPEN_JOBS_PER_TOKEN`` / ``MAX_OPEN_JOBS_TOTAL``) it is 503 +
+    Retry-After with nothing written. Checks,
     attachment downloads, filing and the receipt run in the queue worker
     (``inbound_queue.kick`` now, plus the startup and periodic runs),
     serialized under ``PROCESS_LOCK``. Nothing from the request content is
@@ -7495,6 +7497,9 @@ async def inbound_brevo_webhook(request: Request) -> Response:
     if messages:
         try:
             await inbound_queue.enqueue(db_inst, messages)
+        except inbound_queue.InboundQueueFullError:
+            # #952 caps: nothing written, Brevo retries after Retry-After
+            return _inbound_busy()
         except Exception as exc:
             logger.error("inbound: enqueue failed (%s)", type(exc).__name__)
             return JSONResponse({"error": "internal error"}, status_code=500)

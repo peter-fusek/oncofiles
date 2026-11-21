@@ -1084,15 +1084,19 @@
       var jobs = data && data.jobs;
       if (jobs) {
         var fr = jobs.failed_reasons || {};
+        // attempts used up: generic errors plus the temporary codes that never
+        // cleared (rate limit, download, Drive, missing API key)
+        var usedUp = ['max_attempts', 'rate_limited', 'fetch_failed', 'store_failed', 'no_api_key']
+          .reduce(function (n, k) { return n + (fr[k] || 0); }, 0);
         var jobLine = document.createElement('p');
         jobLine.className = 'curated-ops-meta';
         setI18n(jobLine,
           'Fronta: čaká ' + (jobs.pending || 0) + ', spracúva sa ' + (jobs.processing || 0) +
             ', hotové ' + (jobs.done || 0) + ', zlyhalo ' + (jobs.failed || 0) +
-            ' (prílohy expirovali: ' + (fr.download_expired || 0) + ', limit pokusov: ' + (fr.max_attempts || 0) + ').',
+            ' (prílohy expirovali: ' + (fr.download_expired || 0) + ', limit pokusov: ' + usedUp + ').',
           'Queue: pending ' + (jobs.pending || 0) + ', processing ' + (jobs.processing || 0) +
             ', done ' + (jobs.done || 0) + ', failed ' + (jobs.failed || 0) +
-            ' (attachments expired: ' + (fr.download_expired || 0) + ', attempts used up: ' + (fr.max_attempts || 0) + ').');
+            ' (attachments expired: ' + (fr.download_expired || 0) + ', attempts used up: ' + usedUp + ').');
         body.appendChild(jobLine);
       }
       var senders = (data && data.senders) || [];
