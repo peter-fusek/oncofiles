@@ -120,7 +120,7 @@
  <span data-sk="Ukážka: vymyslená pacientka a vymyslené dokumenty. Žiadne skutočné údaje, nič sa neukladá." data-en="Demo: an invented patient with invented documents. No real data, nothing is saved.">Ukážka: vymyslená pacientka a vymyslené dokumenty. Žiadne skutočné údaje, nič sa neukladá.</span>
  <span class="demo-banner-links">
  <a href="/demo/assistant" data-sk="Ako odpovedá AI asistent" data-en="How an AI assistant answers">Ako odpovedá AI asistent</a>
- <a class="btn-primary btn-small" href="/#join" data-sk="Pridať sa na zoznam" data-en="Join the waitlist">Pridať sa na zoznam</a>
+ <a class="btn-primary btn-small" href="/#join" data-sk="Vyskúšať s vlastnými dokumentmi" data-en="Try it with your own documents">Vyskúšať s vlastnými dokumentmi</a>
  </span>
  </div>
  <!--/demo-only-->
@@ -356,6 +356,14 @@
  </div>
 
  <div class="admin-panel">
+ <button type="button" class="admin-head" data-action="toggleAdminPanel|oauth|@this" aria-expanded="false" aria-controls="admin-body-oauth"><span class="chevron" aria-hidden="true"></span><span data-sk="Používatelia Google OAuth (limit neovereného klienta)" data-en="Google OAuth users (unverified client cap)">Používatelia Google OAuth (limit neovereného klienta)</span></button>
+ <div class="admin-body" id="admin-body-oauth" hidden>
+ <p class="section-lead" data-sk="Google pustí neoverený OAuth klient s prístupom k Drive najviac 100 účtom. Počítajú sa rôzne Google účty, ktoré kedy dokončili prepojenie (aj neskôr odpojené), plus staršie prepojenia bez záznamu účtu (každé ako jeden). Prihlásenie do dashboardu sa nepočíta. Len počty, nikdy adresa." data-en="Google allows an unverified OAuth client with Drive access at most 100 accounts. Counted: distinct Google accounts that ever completed a link (also ones unlinked later), plus older links without an account record (one each). Dashboard sign-in does not count. Counts only, never an address.">Google pustí neoverený OAuth klient s prístupom k Drive najviac 100 účtom. Počítajú sa rôzne Google účty, ktoré kedy dokončili prepojenie (aj neskôr odpojené), plus staršie prepojenia bez záznamu účtu (každé ako jeden). Prihlásenie do dashboardu sa nepočíta. Len počty, nikdy adresa.</p>
+ <p class="curated-ops-note" id="oauth-users-line"></p>
+ </div>
+ </div>
+
+ <div class="admin-panel">
  <button type="button" class="admin-head" data-action="toggleAdminPanel|ai|@this" aria-expanded="false" aria-controls="admin-body-ai"><span class="chevron" aria-hidden="true"></span><span data-sk="Cloudové AI volania a náklady" data-en="Cloud AI calls and cost">Cloudové AI volania a náklady</span></button>
  <div class="admin-body" id="admin-body-ai" hidden>
  <p class="section-lead" data-sk="Cloudové AI je predvolene vypnuté; dokumenty číta lokálny model na našom serveri. Tieto čísla sa týkajú len volaní, ktoré niekto výslovne spustil." data-en="Cloud AI is off by default; documents are read by the local model on our own server. These numbers cover only calls someone started explicitly.">Cloudové AI je predvolene vypnuté; dokumenty číta lokálny model na našom serveri. Tieto čísla sa týkajú len volaní, ktoré niekto výslovne spustil.</p>
@@ -459,13 +467,13 @@
  </div>
  </div>
 
- <!-- Onboarding not open yet (#852): shown instead of the wizard for a caller the server gate does not admit -->
+ <!-- Onboarding not open yet (#852, by invitation): shown instead of the wizard for a caller the server gate does not admit -->
  <div id="onboarding-closed-overlay" class="wizard-overlay" role="dialog" aria-modal="true" aria-labelledby="onboarding-closed-title">
  <div class="wizard-panel">
- <h2 id="onboarding-closed-title" data-sk="Pripojenie Drive zatiaľ nie je otvorené" data-en="Drive connection is not open yet">Pripojenie Drive zatiaľ nie je otvorené</h2>
- <p id="onboarding-closed-text" data-sk="Pripojenie vlastného Google Drive zatiaľ nie je otvorené pre nových používateľov. Zapíšte sa do poradovníka a ozveme sa vám." data-en="Connecting your own Google Drive is not open to new users yet. Join the waitlist and we will let you know.">Pripojenie vlastného Google Drive zatiaľ nie je otvorené pre nových používateľov. Zapíšte sa do poradovníka a ozveme sa vám.</p>
+ <h2 id="onboarding-closed-title" data-sk="Pripojenie Drive je zatiaľ na pozvanie" data-en="Drive connection is by invitation for now">Pripojenie Drive je zatiaľ na pozvanie</h2>
+ <p id="onboarding-closed-text" data-sk="Pripojenie vlastného Google Drive je zatiaľ len na pozvanie. Pozrite si ukážku alebo nám napíšte o prístup." data-en="Connecting your own Google Drive is by invitation for now. See the demo, or write to us for access.">Pripojenie vlastného Google Drive je zatiaľ len na pozvanie. Pozrite si ukážku alebo nám napíšte o prístup.</p>
  <div class="wizard-actions">
- <a class="wizard-btn-primary onboarding-closed-link" id="onboarding-closed-waitlist" href="/#join" data-sk="Zapísať sa do poradovníka" data-en="Join the waitlist">Zapísať sa do poradovníka</a>
+ <a class="wizard-btn-primary onboarding-closed-link" id="onboarding-closed-waitlist" href="/#join" data-sk="Ukážka a ako získať prístup" data-en="Demo and how to get access">Ukážka a ako získať prístup</a>
  <button class="wizard-btn-secondary" data-action="hideOnboardingClosed" data-sk="Zavrieť" data-en="Close">Zavrieť</button>
  </div>
  </div>
@@ -487,6 +495,8 @@
  <!-- Step 1: Create patient -->
  <div id="wiz-step-1">
  <h2 data-sk="Vytvoriť pacienta" data-en="Create Patient">Vytvoriť pacienta</h2>
+ <!-- First visit (no patient yet, onboarding open): one sentence on the two ways in -->
+ <p id="wiz-first-visit" class="wizard-folder-hint" style="display:none" data-sk="Vitajte. Dokumenty dostanete do Oncofiles dvoma spôsobmi: hneď teraz vyberiete priečinok na Google Drive, v ktorom už dokumentáciu máte, alebo, keď to spustíme, pošlete e-mail s prílohou z Gmailu; najprv vytvorte pacienta." data-en="Welcome. There are two ways to get documents into Oncofiles: pick the Google Drive folder that already holds them right now, or, once it is live, send an e-mail with an attachment from Gmail; first create the patient.">Vitajte. Dokumenty dostanete do Oncofiles dvoma spôsobmi: hneď teraz vyberiete priečinok na Google Drive, v ktorom už dokumentáciu máte, alebo, keď to spustíme, pošlete e-mail s prílohou z Gmailu; najprv vytvorte pacienta.</p>
  <div class="wizard-field">
  <label for="wiz-name" data-sk="Meno pacienta *" data-en="Patient name *">Meno pacienta *</label>
  <input type="text" id="wiz-name" placeholder="napr. Meno Priezvisko" data-sk-placeholder="napr. Meno Priezvisko" data-en-placeholder="e.g. First Last" required>

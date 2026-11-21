@@ -60,19 +60,20 @@ def test_landing_has_no_inline_event_handlers():
     assert not re.search(r"\son[a-z]+\s*=", LANDING), "use data-action + the page dispatcher"
 
 
-def test_landing_has_one_h1_and_waitlist_cta():
+def test_landing_has_one_h1_and_the_trial_cta():
     assert len(re.findall(r"<h1[\s>]", LANDING)) == 1
-    assert "spúšťame v novembri 2026" in LANDING
-    # #849: the hero's call to action leads to the one waitlist form, which
-    # sits in the closing band. #waitlist stays an anchor (the demo, the
-    # dashboard and the use-case pages link to /#waitlist).
+    # Live operation (2026-11-21): the hero offers trying it (sign in + Drive
+    # folder) and the demo, not a waitlist. #join / #waitlist stay anchors (the
+    # demo, the dashboard, the use-case pages and refusal bodies link to them),
+    # now the "try it" section.
     hero = LANDING[LANDING.index('id="top"') : LANDING.index('id="photos"')]
-    assert '<a class="btn" href="#join"' in hero and "<form" not in hero
+    assert 'href="/dashboard" data-when="open" hidden' in hero
+    assert 'data-en="Sign in with Google and pick your Drive folder"' in hero
+    assert 'href="/demo" data-demo-cta' in hero and "<form" not in hero
     join = LANDING[LANDING.index('<section class="block" id="join">') :]
     join = join[: join.index("</section>")]
-    assert LANDING.count("<form ") == 1 and 'data-nl-source="waitlist-bottom"' in join
-    assert 'data-nl-msg="waitlist-bottom"' in join
     assert LANDING.count('id="waitlist"') == 1 and 'id="waitlist"' in join
+    assert 'data-en="Try it"' in join
 
 
 def test_landing_json_ld_is_valid_and_says_500():

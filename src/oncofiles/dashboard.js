@@ -289,9 +289,11 @@
       var name = sessionStorage.getItem('oncofiles_name') || '';
       var userEl = document.getElementById('user-info');
       if (email && userEl) userEl.textContent = name || email;
-      loadPatients().then(function() { loadGermlineBanner(); refresh(); });
+      var patientsLoaded = loadPatients().then(function() { loadGermlineBanner(); refresh(); });
       if (DEMO) return;  // static invented data: nothing to poll
-      loadOnboardingStatus();
+      var statusLoaded = loadOnboardingStatus();
+      // First visit: no patient yet and onboarding open -> straight into the wizard.
+      patientsLoaded.then(function() { return statusLoaded; }).then(maybeStartFirstVisit);
       if (autoRefreshTimer) clearInterval(autoRefreshTimer);
       autoRefreshTimer = setInterval(refresh, 60000);
     }
@@ -1067,7 +1069,7 @@
       // #950 phase 2: welcome@ mail that did not start a trial
       welcome_auth_failed: ['welcome@: overenie odosielateľa neprešlo', 'welcome@: sender check failed'],
       welcome_not_gmail: ['welcome@: odosielateľ nie je z Gmailu', 'welcome@: sender is not on Gmail'],
-      welcome_existing_caregiver: ['welcome@: odosielateľ už má účet', 'welcome@: sender already has an account']
+      caregiver_multiple_patients: ['welcome@: opatrovateľ viacerých pacientov', 'welcome@: caregiver of several patients']
     };
 
     // ── First steps of a welcome@ trial (#950 phase 2) ──────────────────
@@ -1114,6 +1116,31 @@
       } catch (e) {
         hideTrialCard();
       }
+    }
+
+    // Google caps an unverified OAuth client at 100 users: warn from 80 on,
+    // by shape (diamond vs. disc) and by text, never by colour alone.
+    var OAUTH_USERS_WARN = 80;
+
+    function renderOauthUsers(data) {
+      var line = document.getElementById('oauth-users-line');
+      if (!line || !data) return;
+      clearEl(line);
+      var n = Number(data.google_oauth_users) || 0;
+      var cap = Number(data.cap) || 100;
+      var warn = n >= OAUTH_USERS_WARN;
+      line.className = 'curated-ops-note oauth-users-line' + (warn ? ' is-warn' : '');
+      var mark = document.createElement('span');
+      mark.className = 'state-mark ' + (warn ? 'attention' : 'ready');
+      mark.setAttribute('aria-hidden', 'true');
+      line.appendChild(mark);
+      var text = document.createElement('span');
+      setI18n(text,
+        'Používatelia Google OAuth: ' + n + ' / ' + cap +
+          (warn ? ' (pozor: blíži sa limit Googlu pre neoverenú aplikáciu)' : ''),
+        'Google OAuth users: ' + n + ' / ' + cap +
+          (warn ? ' (warning: approaching Google’s unverified-app cap)' : ''));
+      line.appendChild(text);
     }
 
     function renderInboundUnmatched(data) {
@@ -1579,6 +1606,8 @@
 
     function showOnboarding() {
       if (onboardingBlocked()) { showOnboardingClosed(null); return; }
+      var firstVisit = document.getElementById('wiz-first-visit');
+      if (firstVisit) firstVisit.style.display = 'none';  // only maybeStartFirstVisit shows it
       wizardPatientId = '';
       wizardPatientUuid = '';
       wizardBearerToken = '';
@@ -1619,7 +1648,7 @@
 
     // #852: server-side onboarding gate. /api/onboarding-status tells this
     // caller the mode and whether it may create a patient / connect Drive /
-    // set a folder; when not, a waitlist notice replaces the wizard. The
+    // set a folder; when not, an invitation notice replaces the wizard. The
     // server enforces the same rule (403 onboarding_closed), this only spares
     // the user a failing wizard. Unknown (fetch failed) = let the server decide.
     var onboardingStatus = null;
@@ -1634,6 +1663,23 @@
 
     function onboardingBlocked() {
       return !!(onboardingStatus && onboardingStatus.allowed === false);
+    }
+
+    // A signed-in caller with no patient yet, while onboarding is open, goes
+    // straight into the New Patient wizard (consent step included, #857) with
+    // one sentence on the two ways in. Once per browser session, so "Cancel"
+    // is not undone by the next reload; never in the demo or in invite/closed.
+    var FIRST_VISIT_KEY = 'oncofiles_first_visit_wizard';
+    function maybeStartFirstVisit() {
+      if (DEMO || patientsCache.length !== 0) return;
+      if (!onboardingStatus || onboardingStatus.mode !== 'open' || onboardingStatus.allowed !== true) return;
+      try {
+        if (sessionStorage.getItem(FIRST_VISIT_KEY)) return;
+        sessionStorage.setItem(FIRST_VISIT_KEY, '1');
+      } catch (e) { /* storage blocked: still show it this once */ }
+      showOnboarding();
+      var intro = document.getElementById('wiz-first-visit');
+      if (intro) intro.style.display = 'block';
     }
 
     // A refusal body from the server: {error, message_sk, message_en, waitlist_url}.
@@ -4507,6 +4553,11 @@
         if (key === 'inbound') {
           var unmatched = await apiFetch('/api/inbound-unmatched');
           if (unmatched) renderInboundUnmatched(unmatched);
+          return;
+        }
+        if (key === 'oauth') {
+          var oauthUsers = await apiFetch('/api/admin/oauth-users');
+          if (oauthUsers) renderOauthUsers(oauthUsers);
           return;
         }
         if (key === 'schedules') {

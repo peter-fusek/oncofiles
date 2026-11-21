@@ -309,19 +309,14 @@ async def test_subscribe_without_mail_config_says_not_queued(db, monkeypatch, ca
 # ── Landing text ─────────────────────────────────────────────────────────
 
 
-def test_landing_says_check_email_only_when_queued():
-    m = re.search(
-        r"if \(res\.data\.email_queued === true\) \{(.*?)\} else \{(.*?)\}", LANDING, re.S
-    )
-    assert m, "landing must branch on email_queued"
-    queued, not_queued = m.group(1), m.group(2)
-    assert "Thank you, check your e-mail." in queued
-    assert "Ďakujeme, skontrolujte si e-mail." in queued
-    assert "Thank you, you're on the list." in not_queued
-    assert "Ďakujeme, ste na zozname." in not_queued
-    assert "check your" not in not_queued
-    # The old unconditional message is gone.
-    assert "Thank you, check your email." not in LANDING
+def test_landing_no_longer_has_the_waitlist_form():
+    """Live operation (2026-11-21): the waitlist form left the landing. The
+    route stays (old cached pages, see the subscribe tests above), but the
+    landing never posts to it and never promises a confirmation e-mail."""
+    assert "/api/newsletter/subscribe" not in LANDING
+    assert "<form" not in LANDING
+    assert "check your e-mail" not in LANDING.lower()
+    assert "on the list" not in LANDING.lower()
 
 
 async def test_extra_headers_are_added(monkeypatch):

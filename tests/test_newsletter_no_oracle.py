@@ -136,10 +136,9 @@ def test_no_email_in_any_url_built_by_client_js(path):
         assert "email" not in url_expr.lower(), f"fetch URL built from an e-mail: {url_expr!r}"
 
 
-def test_landing_posts_email_in_body_only():
-    start = LANDING.index("function nlSubmit(form)")
-    body = LANDING[start : LANDING.index("\n    }\n", start)]
-    fetches = re.findall(r"fetch\(\s*'([^']*)'", body)
-    assert fetches == ["/api/newsletter/subscribe"]
-    assert "method: 'POST'" in body
-    assert "JSON.stringify({ email: email" in body
+def test_landing_sends_no_email_address_anywhere():
+    """The waitlist form is gone (2026-11-21): the landing's only fetch is the
+    public config GET, which carries nothing about the visitor."""
+    fetches = re.findall(r"fetch\(\s*'([^']*)'", LANDING)
+    assert fetches == ["/api/public-config"]
+    assert "newsletter" not in LANDING
