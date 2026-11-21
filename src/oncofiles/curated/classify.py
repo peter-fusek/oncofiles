@@ -27,6 +27,7 @@ can never rename a real medical record into a wrong place:
 from __future__ import annotations
 
 import difflib
+import hashlib
 import re
 import unicodedata
 from dataclasses import dataclass, field
@@ -78,6 +79,10 @@ single JSON object and nothing else:
   "summary": "one sentence in the document's language"
 }}
 """
+
+# Identifies the request ``propose`` builds around the README and the text; any
+# edit to the prompt or the text cut rotates it, so cached proposals miss.
+PROMPT_VERSION = hashlib.sha256(f"{SYSTEM_TEMPLATE}\n{MAX_TEXT_CHARS}".encode()).hexdigest()[:16]
 
 
 @dataclass

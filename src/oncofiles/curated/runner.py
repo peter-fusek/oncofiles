@@ -99,6 +99,11 @@ class RunOptions:
     # Text sources have no sidecar, so a review decision leaves no mark on
     # Drive: (file id, modified) pairs already sent to review by earlier runs.
     reviewed_text: frozenset = frozenset()
+    # A filed document without a sidecar has nowhere on Drive to count failed
+    # attempts either: {file id: {"attempts": n, "code": reason}} of earlier
+    # real runs' backfill model answer failures (``backfill_attempts_from``).
+    # At MAX_TECHNICAL_ATTEMPTS the model is no longer asked; it goes to review.
+    backfill_attempts: dict = field(default_factory=dict)
     # #854: add printed new institutions / doctors to README §3 and file the
     # document (``CURATED_AUTO_VOCAB``, default on); False = #754 review.
     auto_vocab: bool = field(default_factory=vocab_mod.enabled)
@@ -144,6 +149,9 @@ class RunReport:
     # #855: pages the local model OCR'd in this run (cache hits excluded); set
     # by the caller that counts them (tools/curated.py), 0 here.
     model_pages: int = 0
+    # filed documents this run left without a sidecar because of a bad model
+    # answer (truncated / not JSON); each is in ``documents`` with its code
+    backfill_skipped: int = 0
     # #855: nothing left that a later run could process (no budget leftovers,
     # nothing held except by the document cap). Marks a finished first import.
     inbox_drained: bool = False
@@ -216,11 +224,47 @@ def _walk_all(drive, folder_id: str, prefix: str = "") -> list[tuple[str, Item]]
     return out
 
 
-def _llm_down(error: str | None) -> bool:
+def _llm_down(failure: str | None) -> bool:
     """True when the local model is unavailable (abort the run); False for a
-    per-document problem such as an answer truncated by the reasoning budget."""
-    msg = error or ""
-    return "local LLM" in msg and "truncated" not in msg
+    per-document problem such as an answer truncated by the reasoning budget.
+
+    ``failure`` is ``llm.LocalLLMError.failure`` (or ``Extraction.llm_failure``;
+    None = the error did not come from the model). Decided by kind only: anything
+    but ``llm.ANSWER``, including a kind this code does not know, means down
+    (fail closed), so a dead LM Studio never costs one failure per document."""
+    return failure is not None and failure != llm.ANSWER
+
+
+def _model_failure_code(exc: llm.LocalLLMError) -> str:
+    """Reason code (never the message) for a per-document model answer failure."""
+    return "model_answer_truncated" if "truncated" in str(exc) else "model_answer_not_json"
+
+
+def _backfill_entry(label: str, file_id: str, code: str | None, attempts: int) -> dict:
+    """Report entry of a filed document whose sidecar backfill got a bad model
+    answer: ``skipped`` (retried next run) until ``MAX_TECHNICAL_ATTEMPTS``, then
+    ``review``. ``file_id`` is the key the caller counts attempts under."""
+    return {
+        "source": label,
+        "result": "review" if attempts >= MAX_TECHNICAL_ATTEMPTS else "skipped",
+        "reasons": [code or "model_answer_not_json"],
+        "attempts": attempts,
+        "stage": "backfill",
+        "file_id": file_id,
+    }
+
+
+def backfill_attempts_from(report: dict | None) -> dict[str, dict]:
+    """``{file_id: {"attempts", "code"}}`` of the backfill model failures in a
+    run report (the caller merges these across runs, keeping the highest)."""
+    out: dict[str, dict] = {}
+    for d in (report or {}).get("documents", []):
+        if d.get("stage") == "backfill" and d.get("file_id") and d.get("attempts"):
+            out[d["file_id"]] = {
+                "attempts": int(d["attempts"]),
+                "code": (d.get("reasons") or [None])[0],
+            }
+    return out
 
 
 def sidecar_sources(name: str) -> list[str]:
@@ -1059,7 +1103,7 @@ class Runner:
         note = ""
         if not ex.ok:
             note = f"extraction failed: {ex.error}"
-            if _llm_down(ex.error):
+            if _llm_down(getattr(ex, "llm_failure", None)):
                 raise RunAbortError(f"local model unavailable — {ex.error}")
         elif not ex.text.strip():
             note = "no text to classify"
@@ -1070,7 +1114,7 @@ class Runner:
             try:
                 raw = self.propose_fn(contract, ex.text)
             except llm.LocalLLMError as exc:
-                if _llm_down(str(exc)):
+                if _llm_down(exc.failure):
                     raise RunAbortError(f"local model unavailable — {exc}") from exc
                 note = f"classification failed: {exc}"  # this document stays for review
         if cls is None and raw is not None:
@@ -1319,10 +1363,21 @@ class Runner:
             items = list(tree.files.get(folder, []))
             names = {nfc(i.name) for i in items}
             for item in items:
+                current = self._contract  # README §3 may have grown in this run (#854)
                 n = nfc(item.name)
                 if _is_sidecar(n, names) or n + ".md" in names or n + ".gdoc.md" in names:
                     continue
                 if n.rsplit(".", 1)[-1].lower() in extract_mod.TEXT_EXTS:
+                    continue
+                label = f"{folder}/{item.name}"
+                prior = self.opts.backfill_attempts.get(item.id) or {}
+                attempts = int(prior.get("attempts") or 0)
+                if attempts >= MAX_TECHNICAL_ATTEMPTS:
+                    # gave up after repeated bad answers: no model call, a person looks
+                    self.report.awaiting_review.append(label)
+                    self.report.documents.append(
+                        _backfill_entry(label, item.id, prior.get("code"), attempts)
+                    )
                     continue
                 if (
                     added >= self.opts.max_missing_sidecars
@@ -1339,7 +1394,7 @@ class Runner:
                     item.name, content, item.mime, min_text_chars=self.opts.min_text_chars
                 )
                 self.report.count_orientation(ex)
-                if not ex.ok and _llm_down(ex.error):
+                if not ex.ok and _llm_down(getattr(ex, "llm_failure", None)):
                     raise RunAbortError(f"local model unavailable — {ex.error}")
                 cls = None
                 if (
@@ -1349,16 +1404,37 @@ class Runner:
                     and not llm_input.inbox_exclusion(item.name, item.mime, ex.text)
                 ):
                     try:
-                        raw = self.propose_fn(contract, ex.text)
+                        raw = self.propose_fn(current, ex.text)
                     except llm.LocalLLMError as exc:
-                        raise RunAbortError(f"local model unavailable — {exc}") from exc
-                    cls = classify_mod.validate(contract, raw, ex.text, today=self.now.date())
+                        if _llm_down(exc.failure):
+                            raise RunAbortError(f"local model unavailable — {exc}") from exc
+                        # One bad answer (truncated, not JSON) is this document's
+                        # problem: no sidecar is written, the file stays as it is
+                        # and a later run tries it again (MAX_TECHNICAL_ATTEMPTS in
+                        # all, counted across real runs by the caller through
+                        # ``backfill_attempts``); the backfill goes on.
+                        code = _model_failure_code(exc)
+                        attempts += 1
+                        self.report.backfill_skipped += 1
+                        logger.info(
+                            "curated %s: backfill skipped a document (%s, attempt %d)",
+                            self.run_id,
+                            code,
+                            attempts,
+                        )
+                        if attempts >= MAX_TECHNICAL_ATTEMPTS:
+                            self.report.awaiting_review.append(label)
+                        self.report.documents.append(
+                            _backfill_entry(label, item.id, code, attempts)
+                        )
+                        continue
+                    cls = classify_mod.validate(current, raw, ex.text, today=self.now.date())
                 extra = {}
                 if cls and cls.doc_type != doc_type:
                     extra["proposed_reclassification"] = cls.doc_type
                 text = render_sidecar(
                     source_name=item.name,
-                    contract=contract,
+                    contract=current,
                     item=item,
                     extraction=ex,
                     cls=cls,
@@ -1635,6 +1711,7 @@ def probe(
     idle_signature: str | None = None,
     now=None,
     reviewed_text: frozenset = frozenset(),
+    backfill_given_up: frozenset = frozenset(),
 ) -> Probe:
     """Cheap check for new work: one tree listing; sidecars are read only when
     the tree changed since the last probe that found nothing (``idle_signature``).
@@ -1679,6 +1756,8 @@ def probe(
             if _is_sidecar(n, names) or n + ".md" in names or n + ".gdoc.md" in names:
                 continue
             if n.rsplit(".", 1)[-1].lower() in extract_mod.TEXT_EXTS:
+                continue
+            if item.id in backfill_given_up:  # bad model answers 3x: waits for a person
                 continue
             result.pending[item.id] = f"{folder}/{item.name} (missing sidecar)"
     return result

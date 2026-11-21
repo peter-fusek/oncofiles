@@ -96,6 +96,9 @@ class Extraction:
     # #882: ``orientation.tally`` of this extraction (model direction questions
     # vs pages decided without one); counts only, never written to a sidecar.
     orientation: dict = field(default_factory=dict)
+    # Set when ``error`` came from the local model: ``llm.LocalLLMError.failure``
+    # (transport | answer | unknown). None = not a model error (corrupt file, …).
+    llm_failure: str | None = None
 
     @property
     def ok(self) -> bool:
@@ -306,7 +309,7 @@ def extract(
             png = _render_image(content, ext)
             return _vision_extraction([png], 1, [_image_hint(content, ext, png)])
     except llm.LocalLLMError as exc:
-        return Extraction("", "none", 0, llm.model_id(), error=str(exc))
+        return Extraction("", "none", 0, llm.model_id(), error=str(exc), llm_failure=exc.failure)
     except Exception as exc:  # corrupt file, unsupported image codec, …
         logger.warning("extract failed for %s", name, exc_info=True)
         return Extraction("", "none", 0, "pymupdf", error=f"{type(exc).__name__}")

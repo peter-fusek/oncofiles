@@ -70,8 +70,33 @@ def clamp_budget(max_tokens: int, prompt_tokens: int) -> int:
     return max(0, min(max_tokens, window - prompt_tokens - CONTEXT_MARGIN))
 
 
+# What kind of failure a ``LocalLLMError`` is, for callers that must tell a
+# down model (stop) from one bad answer (this document only). Decided where
+# the error is raised, never by reading its message.
+TRANSPORT = "transport"  # unreachable, timeout, reset, non-200, no usable payload
+ANSWER = "answer"  # the model answered: truncated, not JSON, wrong shape
+UNKNOWN = "unknown"  # a plain LocalLLMError: callers treat it as transport
+
+
 class LocalLLMError(RuntimeError):
-    """The local model is unreachable, misconfigured, or answered nonsense."""
+    """The local model is unreachable, misconfigured, or answered nonsense.
+
+    ``failure`` is ``TRANSPORT``, ``ANSWER`` or ``UNKNOWN``; raise one of the
+    two subclasses so callers do not have to fail closed."""
+
+    failure: str = UNKNOWN
+
+
+class LocalLLMTransportError(LocalLLMError):
+    """No usable answer came back: the model or the server is down or erroring."""
+
+    failure = TRANSPORT
+
+
+class LocalLLMAnswerError(LocalLLMError):
+    """The model answered, but not usably for this request (a per-document problem)."""
+
+    failure = ANSWER
 
 
 def configured() -> bool:
@@ -171,13 +196,13 @@ def chat(
     Only the extractor call path passes it, explicitly per call (never global
     state); every other caller follows the env. Off = byte-identical request."""
     if not configured():
-        raise LocalLLMError("LOCAL_LLM_BASE_URL / LOCAL_LLM_MODEL not set")
+        raise LocalLLMTransportError("LOCAL_LLM_BASE_URL / LOCAL_LLM_MODEL not set")
     est = estimate_prompt_tokens(system, user_content)
     max_tokens = clamp_budget(max_tokens, est)
     if max_tokens < MIN_ANSWER_TOKENS:
         # A per-document problem (worded "truncated" so the run is not aborted
         # as "model down"): the document goes to review, it never loops.
-        raise LocalLLMError(
+        raise LocalLLMAnswerError(
             f"local LLM answer truncated: prompt ~{est} tokens leaves no room "
             f"in the {config.LOCAL_LLM_CONTEXT_WINDOW}-token context"
         )
@@ -221,21 +246,21 @@ def chat(
             **per_call,
         )
     except httpx.HTTPError as exc:
-        raise LocalLLMError(f"local LLM unreachable: {type(exc).__name__}") from exc
+        raise LocalLLMTransportError(f"local LLM unreachable: {type(exc).__name__}") from exc
     finally:
         if own:
             http.close()
     if resp.status_code == 400 and _is_overflow(resp):
         # Our estimate was low: same per-document path as a truncation
         # (review after limited retries), never a run abort.
-        raise LocalLLMError("local LLM answer truncated: context overflow (HTTP 400)")
+        raise LocalLLMAnswerError("local LLM answer truncated: context overflow (HTTP 400)")
     if resp.status_code != 200:
-        raise LocalLLMError(f"local LLM HTTP {resp.status_code}")
+        raise LocalLLMTransportError(f"local LLM HTTP {resp.status_code}")
     try:
         choice = resp.json()["choices"][0]
         content = choice["message"].get("content")
     except (KeyError, IndexError, ValueError, TypeError, AttributeError) as exc:
-        raise LocalLLMError("local LLM returned an unexpected payload") from exc
+        raise LocalLLMTransportError("local LLM returned an unexpected payload") from exc
     if info is not None:
         # Diagnostics for the caller only (in memory, never logged or stored).
         # LM Studio may leave ``content`` empty and put the text in
@@ -256,13 +281,19 @@ def chat(
         info.update(usage)  # counts only
     if not (content or "").strip() and choice.get("finish_reason") == "length":
         # The whole budget went to reasoning (2026-11-07: 1199/1200 tokens).
-        raise LocalLLMError(
+        raise LocalLLMAnswerError(
             f"local LLM answer truncated: reasoning used the whole budget ({max_tokens} tokens)"
         )
     return strip_think(content if isinstance(content, str) else json.dumps(content))
 
 
 def _is_overflow(resp) -> bool:
+    """A JSON error from the model server saying the prompt does not fit. An HTML
+    or other non-JSON body (a proxy error page) is never one: that is transport."""
+    try:
+        resp.json()
+    except ValueError:
+        return False
     text = (resp.text or "").lower()
     return any(k in text for k in ("context", "n_ctx", "too many tokens", "maximum length"))
 
@@ -314,7 +345,7 @@ def parse_json_object(text: str) -> dict:
     try:
         obj = json.loads(candidate)
     except ValueError as exc:
-        raise LocalLLMError("local LLM answer is not valid JSON") from exc
+        raise LocalLLMAnswerError("local LLM answer is not valid JSON") from exc
     if not isinstance(obj, dict):
-        raise LocalLLMError("local LLM answer is not a JSON object")
+        raise LocalLLMAnswerError("local LLM answer is not a JSON object")
     return obj
