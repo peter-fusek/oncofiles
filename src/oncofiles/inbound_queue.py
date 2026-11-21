@@ -125,13 +125,21 @@ At enqueue the verdict is therefore unknown. A mail goes:
   099), with its own small caps over open rows: ``MAX_CLAIMED_JOBS_PER_TOKEN``
   per address, ``MAX_CLAIMED_WELCOME_JOBS`` for welcome@,
   ``MAX_CLAIMED_JOBS_TOTAL`` in all, ``MAX_CLAIMED_PER_SENDER`` per From and
-  ``MAX_CLAIMED_PER_DOMAIN`` per From organisational domain within a bucket.
-  A mail over a cap is dropped and counted (``jobs_claimed_dropped`` and
-  ``jobs_claimed_dropped_<cap>``); the rest of the Brevo batch is still
-  queued and answered 202 (infra review: one flooded address never fails a
-  whole batch). The dedupe key includes a digest of the delivery's Brevo
-  ``Uuid`` and download tokens, so a forged or refused copy with the same
-  Message-ID and From never suppresses a later real delivery.
+  ``MAX_CLAIMED_PER_DOMAIN`` per From organisational domain within an address
+  bucket (never in the welcome bucket: every welcome@ sender is a Gmail user).
+  A mail over an open cap is stored ``deferred`` (no download, no DNS;
+  counters ``jobs_claimed_deferred_<cap>``) and promoted to ``pending``,
+  oldest first, as soon as a finished row frees a slot (``claimed_deferred_
+  promoted``); a deferred row older than ``BREVO_ATTACHMENT_RETENTION_S``
+  ends ``failed`` / ``download_expired``. Only beyond the deferred bounds
+  (``MAX_DEFERRED_PER_TOKEN``, ``MAX_DEFERRED_PER_SENDER``,
+  ``MAX_DEFERRED_TOTAL``) is a mail dropped and counted
+  (``jobs_claimed_dropped_<cap>``). The Brevo batch is always answered 202
+  (infra review: one flooded address never fails a whole batch), and a real
+  mail that arrives during a forged flood waits instead of being lost. The
+  dedupe key includes a digest of the delivery's Brevo ``Uuid`` and download
+  tokens, so a forged or refused copy with the same Message-ID and From never
+  suppresses a later real delivery.
 
 The worker (:func:`run_pending`) first verifies claimed rows, one at a time,
 under the same lease rules as the jobs (conditional claim, lease refreshed
@@ -185,6 +193,7 @@ from datetime import UTC, datetime, timedelta
 
 from oncofiles import inbound_email, inbound_welcome
 from oncofiles.database._inbound_jobs import InboundQueueFullError
+from oncofiles.email_identity import canonical_email
 
 __all__ = ["InboundQueueFullError", "enqueue", "kick", "run_pending"]
 
@@ -212,13 +221,25 @@ MAX_UNTRUSTED_JOBS_PER_TOKEN = 10
 MAX_UNTRUSTED_JOBS_TOTAL = 100
 # The claimed bucket (#950 DKIM mode): mail that claims the caregiver's From
 # (or a welcome@ mail) waits here for its DKIM verification by the worker.
-# Small on purpose: a forged flood fills only these slots; a mail over a cap is
-# dropped and counted (infra review of #966: never a 503 for the whole batch).
+# Small on purpose: a forged flood fills only these open slots; a mail over
+# them is deferred (below), never a 503 for the whole batch (infra review).
 MAX_CLAIMED_JOBS_PER_TOKEN = 5
 MAX_CLAIMED_WELCOME_JOBS = 20
 MAX_CLAIMED_JOBS_TOTAL = 50
-MAX_CLAIMED_PER_SENDER = 2  # per From address, all buckets
-MAX_CLAIMED_PER_DOMAIN = 2  # per From organisational domain within one bucket
+MAX_CLAIMED_PER_SENDER = 2  # per canonical From address, all buckets
+# Per From organisational domain within one ADDRESS bucket. Not applied to the
+# welcome bucket (maintainer decision on #966): every welcome@ sender is a
+# Gmail user, so it would cap all of gmail.com; there the per-sender cap and
+# MAX_CLAIMED_WELCOME_JOBS apply, and slow DNS stays bounded by the DNS budget
+# and WELCOME_DNS_RETRIES (gmail.com keys resolve fast).
+MAX_CLAIMED_PER_DOMAIN = 2
+# Over an open cap a mail is stored ``deferred`` (security review of #966: no
+# download, no DNS) and promoted to pending when a slot frees up; only beyond
+# these bounds is it dropped and counted. Per address token (address buckets
+# only), per canonical sender, and in total.
+MAX_DEFERRED_PER_TOKEN = 10
+MAX_DEFERRED_PER_SENDER = 10
+MAX_DEFERRED_TOTAL = 50
 # A welcome@ row whose key lookup failed (dns_failed) is retried this often,
 # then ends failed (infra review: a slow DNS server must not hold the bucket).
 WELCOME_DNS_RETRIES = 1
@@ -543,7 +564,9 @@ async def _enqueue_claimed(db, claimed: list[tuple[str, inbound_email.InboundMes
                 "job_uuid": job_uuid,
                 "bucket": bucket,
                 "message_id_hash": message_id_hash(msg.message_id, payload),
-                "sender_hash": sender_hash(msg.sender, False),
+                # canonical sender (Gmail dots / +tag folded): the per-sender cap
+                # counts the variants of one mailbox as one sender
+                "sender_hash": sender_hash(canonical_email(msg.sender), False),
                 "domain_hash": domain_hash(msg.sender),
                 "delivery_hash": delivery_hash(msg),
                 "payload_enc": encrypt_payload(
@@ -551,28 +574,37 @@ async def _enqueue_claimed(db, claimed: list[tuple[str, inbound_email.InboundMes
                 ),
             }
         )
-    inserted, duplicate, dropped = await db.insert_inbound_claimed_jobs(
-        rows,
-        now=_iso(_now()),
-        caps={
-            "address": MAX_CLAIMED_JOBS_PER_TOKEN,
-            "welcome": MAX_CLAIMED_WELCOME_JOBS,
-            "total": MAX_CLAIMED_JOBS_TOTAL,
-            "sender": MAX_CLAIMED_PER_SENDER,
-            "domain": MAX_CLAIMED_PER_DOMAIN,
-        },
-    )
+    result = await db.insert_inbound_claimed_jobs(rows, now=_iso(_now()), caps=_claimed_caps())
     counters = inbound_email._state.counters
-    counters["jobs_claimed"] += inserted
-    counters["jobs_claimed_duplicate"] += duplicate
-    for cap, n in dropped.items():
+    counters["jobs_claimed"] += result["inserted"]
+    counters["jobs_claimed_duplicate"] += result["duplicate"]
+    for cap, n in result["deferred"].items():
+        counters["jobs_claimed_deferred"] += n
+        counters[f"jobs_claimed_deferred_{cap}"] += n
+    for cap, n in result["dropped"].items():
         counters["jobs_claimed_dropped"] += n
         counters[f"jobs_claimed_dropped_{cap}"] += n
-    if dropped:
+    if result["deferred"] or result["dropped"]:
         logger.warning(
-            "inbound: claimed bucket over its caps, dropped %s", dict(sorted(dropped.items()))
+            "inbound: claimed bucket over its caps, deferred %s dropped %s",
+            dict(sorted(result["deferred"].items())),
+            dict(sorted(result["dropped"].items())),
         )
-    return inserted
+    return result["inserted"]
+
+
+def _claimed_caps() -> dict[str, int]:
+    """The open and deferred caps of the claimed bucket (read at call time)."""
+    return {
+        "address": MAX_CLAIMED_JOBS_PER_TOKEN,
+        "welcome": MAX_CLAIMED_WELCOME_JOBS,
+        "total": MAX_CLAIMED_JOBS_TOTAL,
+        "sender": MAX_CLAIMED_PER_SENDER,
+        "domain": MAX_CLAIMED_PER_DOMAIN,
+        "deferred_bucket": MAX_DEFERRED_PER_TOKEN,
+        "deferred_sender": MAX_DEFERRED_PER_SENDER,
+        "deferred_total": MAX_DEFERRED_TOTAL,
+    }
 
 
 async def enqueue(
@@ -802,6 +834,15 @@ async def _verify_one(db) -> str | None:
     # (1) claim, under the lock
     async with inbound_email.PROCESS_LOCK:
         now = _now()
+        # deferred rows take the slots finished rows freed (oldest first);
+        # a deferred row older than the attachment retention ends failed
+        moved = await db.promote_deferred_claimed(
+            caps=_claimed_caps(),
+            now=_iso(now),
+            expired_before=_iso(now - timedelta(seconds=BREVO_ATTACHMENT_RETENTION_S)),
+        )
+        for key, n in moved.items():
+            inbound_email._state.counters[f"claimed_deferred_{key}"] += n
         job = await db.next_inbound_claimed_job(
             now=_iso(now), stale_before=_iso(now - timedelta(minutes=STALE_PROCESSING_MIN))
         )

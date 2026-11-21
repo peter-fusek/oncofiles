@@ -6,6 +6,11 @@ the raw message (``oncofiles.inbound_dkim``); only then is it queued into
 ``inbound_jobs`` with the real verdict. Writers and readers live in
 ``oncofiles.inbound_queue``. Every helper runs on the event loop.
 
+States: ``pending`` / ``processing`` (open: counted by the open caps, worked
+on by the worker), ``deferred`` (over an open cap: stored, no download, no
+DNS, until :meth:`promote_deferred_claimed` moves it to ``pending``), ``done``
+and ``failed``.
+
 No helper deletes a row (#734): a verified job ends ``done`` or ``failed``.
 """
 
@@ -14,34 +19,81 @@ from __future__ import annotations
 from ._base import DatabaseBase
 from ._inbound_jobs import INBOUND_JOB_STATES
 
+# The claimed table's states: the queue's four plus ``deferred`` (security
+# review of #966: an over-cap mail is parked, never lost while there is room).
+CLAIMED_JOB_STATES = ("pending", "processing", "deferred", "done", "failed")
 _OPEN_STATES = "('pending', 'processing')"
 
 
+def _checks(row: dict, *, deferred: bool) -> tuple:
+    """(cap name, in-batch key, SQL filter, params) of every cap of ``row``.
+
+    Open caps (``deferred=False``): per bucket (``address`` / ``welcome``),
+    ``total``, ``sender`` (all buckets) and ``domain`` (address buckets only:
+    maintainer decision, every welcome@ sender is a Gmail user). Deferred
+    caps: ``deferred_bucket`` (address buckets), ``deferred_sender`` and
+    ``deferred_total``.
+    """
+    bucket, sender, domain = row["bucket"], row["sender_hash"], row["domain_hash"]
+    welcome = bucket == "welcome"
+    if deferred:
+        out = (
+            ("deferred_total", ("d_total",), "", ()),
+            ("deferred_sender", ("d_sender", sender), "sender_hash = ?", (sender,)),
+        )
+        if not welcome:
+            out += (("deferred_bucket", ("d_bucket", bucket), "bucket = ?", (bucket,)),)
+        return out
+    out = (
+        ("welcome" if welcome else "address", ("bucket", bucket), "bucket = ?", (bucket,)),
+        ("total", ("total",), "", ()),
+        ("sender", ("sender", sender), "sender_hash = ?", (sender,)),
+    )
+    if not welcome:
+        out += (
+            (
+                "domain",
+                ("domain", bucket, domain),
+                "bucket = ? AND domain_hash = ?",
+                (bucket, domain),
+            ),
+        )
+    return out
+
+
 class InboundClaimedJobsMixin(DatabaseBase):
-    async def _open_claimed(self, where: str = "", params: tuple = ()) -> int:
-        sql = f"SELECT COUNT(*) FROM inbound_claimed_jobs WHERE state IN {_OPEN_STATES}"
+    async def _count_claimed(self, states: str, where: str = "", params: tuple = ()) -> int:
+        sql = f"SELECT COUNT(*) FROM inbound_claimed_jobs WHERE state IN {states}"
         if where:
             sql += " AND " + where
         async with self.db.execute(sql, params) as cursor:
             return int((await cursor.fetchone())[0])
 
+    async def _over(self, row: dict, caps: dict, added: dict, *, deferred: bool) -> str | None:
+        """The first cap ``row`` would pass, or None."""
+        states = "('deferred')" if deferred else _OPEN_STATES
+        for cap, key, where, params in _checks(row, deferred=deferred):
+            if await self._count_claimed(states, where, params) + added.get(key, 0) >= caps[cap]:
+                return cap
+        return None
+
     async def insert_inbound_claimed_jobs(
         self, rows: list[dict], *, now: str | None = None, caps: dict[str, int]
-    ) -> tuple[int, int, dict[str, int]]:
+    ) -> dict:
         """Queue claimed ``rows`` in ONE transaction.
 
-        Returns (inserted, duplicates, dropped per cap). Each row:
-        ``job_uuid``, ``bucket``, ``message_id_hash``, ``sender_hash``,
-        ``domain_hash``, ``delivery_hash``, ``payload_enc``. Caps over open
-        (pending + processing) rows, keys of ``caps``: ``address`` / ``welcome``
-        (per bucket of that kind), ``total``, ``sender`` (per sender hash, all
-        buckets), ``domain`` (per From domain within a bucket). A row already
-        queued (a Brevo retry of the same delivery) is never counted. A row
-        over a cap is DROPPED and counted (infra review of #966): the rest of
-        the batch is still queued and the route still answers 202, so one
-        flooded address never makes the whole Brevo batch fail.
+        Returns ``{"inserted", "duplicate", "deferred": {cap: n}, "dropped":
+        {cap: n}}``. Each row: ``job_uuid``, ``bucket``, ``message_id_hash``,
+        ``sender_hash``, ``domain_hash``, ``delivery_hash``, ``payload_enc``. A
+        row already queued (a Brevo retry of the same delivery) is never
+        counted. A row within the open caps (:func:`_checks`) is ``pending``;
+        over one it is stored ``deferred`` (no download, no DNS) while the
+        deferred caps allow, and only beyond those is it DROPPED and counted.
+        The route answers 202 either way (infra review of #966: one flooded
+        address never makes the whole Brevo batch fail).
         """
-        keep: list[dict] = []
+        keep: list[tuple[dict, str]] = []
+        deferred: dict[str, int] = {}
         dropped: dict[str, int] = {}
         added: dict[tuple, int] = {}
         # Reads only, outside the try (never roll back the shared connection).
@@ -53,44 +105,29 @@ class InboundClaimedJobsMixin(DatabaseBase):
                 (row["bucket"], row["message_id_hash"], row["sender_hash"], row["delivery_hash"]),
             ) as cursor:
                 if await cursor.fetchone() is not None:
-                    keep.append(row)
+                    keep.append((row, "pending"))  # a retry: a no-op insert
                     continue
-            bucket, sender, domain = row["bucket"], row["sender_hash"], row["domain_hash"]
-            checks = (
-                (
-                    "welcome" if bucket == "welcome" else "address",
-                    ("bucket", bucket),
-                    "bucket = ?",
-                    (bucket,),
-                ),
-                ("total", ("total",), "", ()),
-                ("sender", ("sender", sender), "sender_hash = ?", (sender,)),
-                (
-                    "domain",
-                    ("domain", bucket, domain),
-                    "bucket = ? AND domain_hash = ?",
-                    (bucket, domain),
-                ),
-            )
-            over = None
-            for cap, key, where, params in checks:
-                if await self._open_claimed(where, params) + added.get(key, 0) >= caps[cap]:
-                    over = cap
-                    break
-            if over:
-                dropped[over] = dropped.get(over, 0) + 1
-                continue
+            over = await self._over(row, caps, added, deferred=False)
+            if over is None:
+                state, checks = "pending", _checks(row, deferred=False)
+            else:
+                over_deferred = await self._over(row, caps, added, deferred=True)
+                if over_deferred is not None:
+                    dropped[over_deferred] = dropped.get(over_deferred, 0) + 1
+                    continue
+                deferred[over] = deferred.get(over, 0) + 1
+                state, checks = "deferred", _checks(row, deferred=True)
             for _cap, key, _w, _p in checks:
                 added[key] = added.get(key, 0) + 1
-            keep.append(row)
+            keep.append((row, state))
         inserted = 0
         try:
-            for row in keep:
+            for row, state in keep:
                 cursor = await self.db.execute(
                     """INSERT INTO inbound_claimed_jobs
                        (job_uuid, bucket, message_id_hash, sender_hash, domain_hash,
                         delivery_hash, payload_enc, state, attempts, next_attempt_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', 0,
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0,
                                COALESCE(?, strftime('%Y-%m-%dT%H:%M:%SZ','now')))
                        ON CONFLICT (bucket, message_id_hash, sender_hash, delivery_hash)
                        DO NOTHING""",
@@ -102,6 +139,7 @@ class InboundClaimedJobsMixin(DatabaseBase):
                         row["domain_hash"],
                         row["delivery_hash"],
                         row["payload_enc"],
+                        state,
                         now,
                     ),
                 )
@@ -110,7 +148,47 @@ class InboundClaimedJobsMixin(DatabaseBase):
         except Exception:
             await self.db.rollback()
             raise
-        return inserted, len(keep) - inserted, dropped
+        return {
+            "inserted": inserted,
+            "duplicate": len(keep) - inserted,
+            "deferred": deferred,
+            "dropped": dropped,
+        }
+
+    async def promote_deferred_claimed(
+        self, *, caps: dict[str, int], now: str, expired_before: str
+    ) -> dict[str, int]:
+        """Move deferred rows to ``pending`` while the open caps allow, oldest
+        first, so the oldest deferred row of a sender / domain takes the slot a
+        finished row freed. A deferred row created before ``expired_before``
+        (the Brevo attachment retention) ends ``failed`` / ``download_expired``
+        instead. Returns ``{"promoted": n, "expired": n}``.
+        """
+        cursor = await self.db.execute(
+            """UPDATE inbound_claimed_jobs
+               SET state = 'failed', reason = 'download_expired', updated_at = ?
+               WHERE state = 'deferred' AND created_at < ?""",
+            (now, expired_before),
+        )
+        expired = cursor.rowcount or 0
+        async with self.db.execute(
+            """SELECT id, bucket, sender_hash, domain_hash FROM inbound_claimed_jobs
+               WHERE state = 'deferred' ORDER BY created_at, id"""
+        ) as cur:
+            waiting = [dict(r) for r in await cur.fetchall()]
+        promoted = 0
+        for row in waiting:
+            if await self._over(row, caps, {}, deferred=False) is not None:
+                continue
+            cursor = await self.db.execute(
+                """UPDATE inbound_claimed_jobs
+                   SET state = 'pending', next_attempt_at = ?, updated_at = ?
+                   WHERE id = ? AND state = 'deferred'""",
+                (now, now, row["id"]),
+            )
+            promoted += cursor.rowcount or 0
+        await self.db.commit()
+        return {"promoted": promoted, "expired": expired}
 
     async def next_inbound_claimed_job(self, *, now: str, stale_before: str) -> dict | None:
         """The next claimable row (pending and due, or a stale processing one)."""
@@ -172,7 +250,7 @@ class InboundClaimedJobsMixin(DatabaseBase):
 
     async def inbound_claimed_counts(self) -> dict:
         """Rows per state, pending / failed rows per reason code (codes only)."""
-        out: dict = {s: 0 for s in INBOUND_JOB_STATES}
+        out: dict = {s: 0 for s in CLAIMED_JOB_STATES}
         reasons: dict[str, dict[str, int]] = {"pending": {}, "failed": {}, "done": {}}
         async with self.db.execute(
             "SELECT state, reason, COUNT(*) AS n FROM inbound_claimed_jobs GROUP BY state, reason"

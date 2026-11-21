@@ -237,17 +237,28 @@ def test_payload_from_comparison_is_case_insensitive(dns, rsa_key):
     assert verify(sign(raw_mail(), pem), CARER.upper()).ok
 
 
+def test_parent_domain_signature_passes(dns, rsa_key):
+    pem, record = rsa_key
+    sender, d = "carer@mail.synthetic-clinic.test", "synthetic-clinic.test"
+    dns[0][key_name(domain=d)] = record
+    assert verify(sign(raw_mail(sender), pem, domain=d), sender).ok
+
+
 @pytest.mark.parametrize(
     ("sender", "d"),
     [
-        ("carer@mail.synthetic-clinic.test", "synthetic-clinic.test"),  # parent d
-        ("carer@synthetic-clinic.test", "mail.synthetic-clinic.test"),  # child d, same org
+        ("carer@synthetic-clinic.test", "mail.synthetic-clinic.test"),  # child d
+        ("carer@mail.synthetic-clinic.test", "news.synthetic-clinic.test"),  # sibling d
+        ("carer@clinic.example.co.uk", "co.uk"),  # public-suffix d
     ],
+    ids=["child", "sibling", "public-suffix"],
 )
-def test_same_organisational_domain_is_aligned(dns, rsa_key, sender, d):
+def test_child_sibling_and_public_suffix_d_do_not_align(dns, rsa_key, sender, d):
     pem, record = rsa_key
     dns[0][key_name(domain=d)] = record
-    assert verify(sign(raw_mail(sender), pem, domain=d), sender).ok
+    verdict = verify(sign(raw_mail(sender), pem, domain=d), sender)
+    assert not verdict.ok and verdict.reason == "dkim_not_aligned"
+    assert dns[1] == []  # never looked up
 
 
 @pytest.mark.parametrize(
@@ -255,16 +266,17 @@ def test_same_organisational_domain_is_aligned(dns, rsa_key, sender, d):
     [
         ("gmail.com", "gmail.com", True),
         ("Mail.Example.TEST", "example.test", True),
-        ("example.test", "mail.example.test", True),
-        ("notexample.test", "example.test", False),
         ("mail.example.co.uk", "example.co.uk", True),
+        ("example.test", "mail.example.test", False),  # child
+        ("a.example.test", "b.example.test", False),  # sibling
+        ("notexample.test", "example.test", False),
         ("example.co.uk", "co.uk", False),  # a public suffix never aligns
-        ("a.example.co.uk", "b.other.co.uk", False),
+        ("x.github.io", "github.io", False),  # a private-section public suffix
         ("example.test", "test", False),
         ("example.test", "", False),
     ],
 )
-def test_alignment_rule_uses_the_public_suffix_list(from_domain, d, expect):
+def test_alignment_rule(from_domain, d, expect):
     assert inbound_dkim.aligned(from_domain, d) is expect
 
 
@@ -472,16 +484,17 @@ def test_pre_parse_disagreeing_with_dkimpy_is_refused(dns, rsa_key, monkeypatch)
     """If our pre-check ever read another d= than the one dkimpy verified,
     the signature does not count (alignment is decided on dkimpy's domain)."""
     pem, record = rsa_key
-    dns[0][key_name()] = record
+    sender, d = "carer@mail.synthetic-clinic.test", "mail.synthetic-clinic.test"
+    dns[0][key_name(domain=d)] = record
     real = inbound_dkim.signature_tags
 
     def _disagree(value):
         tags = dict(real(value) or {})
-        tags[b"d"] = b"mail." + tags[b"d"]  # still aligned, but not what dkimpy sees
+        tags[b"d"] = b"synthetic-clinic.test"  # still aligned, but not what dkimpy sees
         return tags
 
     monkeypatch.setattr(inbound_dkim, "signature_tags", _disagree)
-    verdict = verify(sign(raw_mail(), pem))
+    verdict = verify(sign(raw_mail(sender), pem, domain=d), sender)
     assert not verdict.ok and verdict.reason == "dkim_malformed"
 
 
@@ -985,8 +998,13 @@ async def test_verification_runs_outside_the_process_lock(idb, drive, dkim_brevo
     assert (await _rows(idb, "inbound_claimed_jobs"))[0]["reason"] == "dkim_invalid"
 
 
-async def test_forged_flood_only_fills_the_claimed_bucket(idb, drive, mails, dkim_brevo, rsa_key):
-    files, emls, _fetched, records = dkim_brevo
+async def test_forged_flood_defers_real_mail_which_is_then_filed(
+    idb, drive, mails, dkim_brevo, rsa_key
+):
+    """Security review: a forged flood fills the open slots, the real caregiver
+    mail waits deferred (no download, no DNS), is promoted once the forged rows
+    are refused, verifies and is filed. Never a 503, never lost."""
+    files, emls, fetched, records = dkim_brevo
     pem, record = rsa_key
     records[key_name()] = record
     addr = await address_of(idb)
@@ -994,40 +1012,117 @@ async def test_forged_flood_only_fills_the_claimed_bucket(idb, drive, mails, dki
     for n in range(inbound_queue.MAX_CLAIMED_PER_SENDER):
         emls[f"forged-{n}"] = forged
         assert (await _post(idb, dkim_item(addr, eml=f"forged-{n}"))).status_code == 202
-    # the sender cap is full: one more is dropped and counted, never a 503
     files["att-real"] = pdf(7)
     emls["eml-real"] = sign(raw_mail(to=addr), pem)
-    late = dkim_item(addr, eml="eml-late")
-    assert (await _post(idb, late)).status_code == 202
-    counters = inbound_email._state.counters
-    assert counters["jobs_claimed_dropped"] == 1 and counters["jobs_claimed_dropped_sender"] == 1
-    # the forged rows leave the bucket after one quick verification each
-    await inbound_queue.run_pending(idb)
-    assert {r["reason"] for r in await _rows(idb, "inbound_claimed_jobs")} == {"dkim_invalid"}
-    # real caregiver mail now enters, verifies and is filed
     real = dkim_item(addr, eml="eml-real", files=[("SynthReal2027.pdf", "att-real")])
     assert (await _post(idb, real)).status_code == 202
+    states = [r["state"] for r in await _rows(idb, "inbound_claimed_jobs")]
+    assert states == ["pending", "pending", "deferred"]
+    counters = inbound_email._state.counters
+    assert counters["jobs_claimed_deferred_sender"] == 1 and counters["jobs_claimed_dropped"] == 0
+    assert fetched == []
     await inbound_queue.run_pending(idb)
+    reasons = [r["reason"] for r in await _rows(idb, "inbound_claimed_jobs")]
+    assert reasons == ["dkim_invalid", "dkim_invalid", "verified"]
+    assert counters["claimed_deferred_promoted"] == 1
     assert [f[1] for f in drive.files] == [pdf(7)]
     trusted = [j for j in await _trusted_jobs(idb) if j["trusted"]]
     assert len(trusted) == 1 and trusted[0]["state"] == "done"
 
 
-async def test_over_a_cap_only_that_item_is_dropped(idb, dkim_brevo, monkeypatch):
+async def test_over_an_open_cap_the_item_is_deferred_not_dropped(idb, dkim_brevo, monkeypatch):
     monkeypatch.setattr(inbound_queue, "MAX_CLAIMED_JOBS_TOTAL", 1)
     addr = await address_of(idb)
     resp = await _post(idb, dkim_item(addr, eml="eml-1"), dkim_item(addr, eml="eml-2"))
     assert resp.status_code == 202
-    assert len(await _rows(idb, "inbound_claimed_jobs")) == 1
-    assert inbound_email._state.counters["jobs_claimed_dropped_total"] == 1
+    assert [r["state"] for r in await _rows(idb, "inbound_claimed_jobs")] == [
+        "pending",
+        "deferred",
+    ]
+    assert inbound_email._state.counters["jobs_claimed_deferred_total"] == 1
 
 
-async def test_domain_cap_in_the_welcome_bucket(idb, dkim_brevo):
+async def test_beyond_the_deferred_bound_the_item_is_dropped(idb, dkim_brevo, monkeypatch):
+    monkeypatch.setattr(inbound_queue, "MAX_DEFERRED_PER_SENDER", 1)
+    addr = await address_of(idb)
+    items = [dkim_item(addr, eml=f"eml-{n}") for n in range(4)]
+    assert (await _post(idb, *items)).status_code == 202
+    states = [r["state"] for r in await _rows(idb, "inbound_claimed_jobs")]
+    assert states == ["pending", "pending", "deferred"]
+    counters = inbound_email._state.counters
+    assert counters["jobs_claimed_dropped"] == 1
+    assert counters["jobs_claimed_dropped_deferred_sender"] == 1
+
+
+async def test_deferred_row_past_the_retention_ends_download_expired(idb, dkim_brevo, monkeypatch):
+    from datetime import timedelta
+
+    addr = await address_of(idb)
+    items = [dkim_item(addr, eml=f"eml-{n}") for n in range(3)]
+    await _post(idb, *items)
+    real_now = inbound_queue._now
+    later = timedelta(seconds=inbound_queue.BREVO_ATTACHMENT_RETENTION_S + 60)
+    monkeypatch.setattr(inbound_queue, "_now", lambda: real_now() + later)
+    await inbound_queue.run_pending(idb)
+    rows = await _rows(idb, "inbound_claimed_jobs")
+    assert all(r["state"] == "failed" and r["reason"] == "download_expired" for r in rows)
+    assert inbound_email._state.counters["claimed_deferred_expired"] == 1
+
+
+async def test_three_gmail_senders_to_welcome_are_all_queued(idb, dkim_brevo):
+    """Maintainer decision: no per-domain cap in the welcome bucket (every
+    welcome@ sender is a Gmail user)."""
     senders = [f"synth.onboard{n}@{DOMAIN}" for n in range(3)]
-    resp = await _post(idb, *(dkim_item(WELCOME, sender=s, eml=f"eml-{s[:13]}") for s in senders))
-    assert resp.status_code == 202
-    assert len(await _rows(idb, "inbound_claimed_jobs")) == inbound_queue.MAX_CLAIMED_PER_DOMAIN
-    assert inbound_email._state.counters["jobs_claimed_dropped_domain"] == 1
+    items = [dkim_item(WELCOME, sender=s, eml=f"eml-{s[:13]}") for s in senders]
+    assert (await _post(idb, *items)).status_code == 202
+    assert [r["state"] for r in await _rows(idb, "inbound_claimed_jobs")] == ["pending"] * 3
+    counters = inbound_email._state.counters
+    assert counters["jobs_claimed_deferred"] == 0 and counters["jobs_claimed_dropped"] == 0
+
+
+async def test_third_open_row_of_one_welcome_sender_is_held_back(idb, dkim_brevo):
+    """The per-sender cap counts the canonical sender: Gmail dots and +tag
+    variants of one mailbox are one sender. The third waits deferred."""
+    variants = ["synth.onboard@gmail.com", "synthonboard@gmail.com", "synth.onboard+x@gmail.com"]
+    items = [dkim_item(WELCOME, sender=s, eml=f"eml-v{n}") for n, s in enumerate(variants)]
+    assert (await _post(idb, *items)).status_code == 202
+    states = [r["state"] for r in await _rows(idb, "inbound_claimed_jobs")]
+    assert states.count("pending") == inbound_queue.MAX_CLAIMED_PER_SENDER
+    assert states.count("deferred") == 1
+    assert inbound_email._state.counters["jobs_claimed_deferred_sender"] == 1
+
+
+async def test_domain_cap_still_applies_to_an_address_bucket(idb):
+    caps = {
+        "address": 50,
+        "welcome": 50,
+        "total": 50,
+        "sender": 50,
+        "domain": 2,
+        "deferred_bucket": 0,
+        "deferred_sender": 0,
+        "deferred_total": 0,
+    }
+
+    def row(n, bucket):
+        return {
+            "job_uuid": f"00000000-0000-4000-8000-{n:012d}",
+            "bucket": bucket,
+            "message_id_hash": f"mid-{n}",
+            "sender_hash": f"sender-{n}",
+            "domain_hash": "same-domain",
+            "delivery_hash": f"delivery-{n}",
+            "payload_enc": "v1:synthetic",
+        }
+
+    result = await idb.insert_inbound_claimed_jobs(
+        [row(n, "token-hash-a") for n in range(3)], caps=caps
+    )
+    assert result["inserted"] == 2 and result["dropped"] == {"deferred_total": 1}
+    result = await idb.insert_inbound_claimed_jobs(
+        [row(n, "welcome") for n in range(10, 13)], caps=caps
+    )
+    assert result["inserted"] == 3 and result["dropped"] == {} and result["deferred"] == {}
 
 
 async def test_brevo_retry_of_a_claimed_mail_is_a_no_op(idb, dkim_brevo):

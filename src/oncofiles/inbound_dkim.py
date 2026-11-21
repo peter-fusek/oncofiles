@@ -16,9 +16,10 @@ A mail passes ONLY when all of this holds:
   (case-insensitive) to the Brevo payload's ``From`` (``from_repeated`` /
   ``from_mismatch``);
 * a ``DKIM-Signature`` that dkimpy verifies, whose ``d=`` (as dkimpy parsed
-  and verified it) is aligned with the From domain under DMARC relaxed
-  alignment: the same organisational domain per the Public Suffix List
-  (``publicsuffixlist``, bundled list, no network fetch);
+  and verified it) is aligned with the From domain: ``d`` equals the From
+  domain or is a parent of it, never a child or a sibling, and never a public
+  suffix (checked against the Public Suffix List bundled in
+  ``publicsuffixlist``, no network fetch);
 * replay guards (security review): that signature's ``h=`` covers ``From``,
   ``To`` and ``Date`` (``dkim_h_incomplete``); the one ``To`` (and the one
   ``Cc``, when signed) names the inbound address the mail was delivered to
@@ -197,9 +198,16 @@ def org_domain(domain: str) -> str | None:
 
 
 def aligned(from_domain: str, d: str) -> bool:
-    """DMARC relaxed alignment: both have the same organisational domain."""
-    org = org_domain(from_domain)
-    return org is not None and org == org_domain(d)
+    """``d`` equals the From domain, or is a parent of it (the From ends with
+    ``"." + d``); never a child or a sibling of it (security review of #966:
+    organisational-domain alignment would let any sibling subdomain sign).
+    ``d`` must never be a public suffix (the bundled Public Suffix List is used
+    only for that)."""
+    from_domain = (from_domain or "").strip().rstrip(".").lower()
+    d = (d or "").strip().rstrip(".").lower()
+    if not from_domain or not d or org_domain(d) is None:
+        return False
+    return from_domain == d or from_domain.endswith("." + d)
 
 
 def signature_tags(value: bytes) -> dict[bytes, bytes] | None:

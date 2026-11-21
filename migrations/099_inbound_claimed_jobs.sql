@@ -10,8 +10,10 @@
 -- (oncofiles.inbound_queue) verifies it and only then queues it into
 -- inbound_jobs with the real verdict (trusted when the DKIM check passed).
 -- A forged flood that claims the caregiver's From can therefore fill only this
--- small bucket (own caps per bucket, per sender, per From domain and in total;
--- a row over a cap is dropped and counted), never the trusted slots.
+-- small bucket (own open caps per bucket, per sender, per From domain within
+-- an address bucket and in total; a row over them waits 'deferred', with no
+-- download and no DNS, until a slot frees up; only beyond the deferred bounds
+-- is a row dropped and counted), never the trusted slots.
 --
 -- bucket:          the address token hash (the same value as
 --                  inbound_jobs.token_hash) or the literal 'welcome' for mail
@@ -34,8 +36,11 @@
 -- payload_enc:     AES-GCM ciphertext of the same minimal payload as
 --                  inbound_jobs plus the Brevo EMLDownloadToken; never a
 --                  subject, a body or the EML itself.
--- state:           pending | processing | done | failed (domain
---                  inbound_job_state, shared with inbound_jobs).
+-- state:           pending | processing | deferred | done | failed (domain
+--                  inbound_claimed_job_state). deferred = over an open cap,
+--                  promoted to pending (oldest first) when a slot frees up;
+--                  past the attachment retention it ends failed /
+--                  download_expired.
 -- reason:          last outcome code: verified, a DKIM refusal code
 --                  (dkim_none, dkim_invalid, dkim_not_aligned, ...), or a
 --                  temporary code (fetch_failed, dns_failed, no_api_key,
