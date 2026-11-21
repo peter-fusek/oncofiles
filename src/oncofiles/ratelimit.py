@@ -66,6 +66,10 @@ plain text on public pages) and ``413`` for bodies over the class limit —
 rejected from ``Content-Length`` before the body is read, or while streaming
 a chunked body as soon as the running total crosses the limit.
 
+The dashboard upload (``/api/upload``, #921) keeps the ``api`` buckets but has
+its own body limit ``RATE_LIMIT_UPLOAD_MAX_BODY_BYTES`` (default 26 MiB: one
+25 MiB file plus the multipart framing); the route checks each file again.
+
 Kill switch: ``RATE_LIMIT_ENABLED=false`` turns the middleware into a
 pass-through.
 """
@@ -100,6 +104,9 @@ _AUTH_PREFIXES = ("/oauth/",)
 _API_PATHS = frozenset({"/dashboard/config"})
 _API_PREFIXES = ("/api/", "/ops/")
 _JSON_CLASSES = frozenset({MCP, API, AUTH})
+# Paths with their own body limit (bytes); the class buckets still apply.
+UPLOAD_PATHS = frozenset({"/api/upload"})
+DEFAULT_UPLOAD_MAX_BODY_BYTES = 26 * 1024 * 1024
 
 
 def classify(path: str) -> str:
@@ -200,6 +207,7 @@ class RateLimitConfig:
     )
     max_principals: int = DEFAULT_MAX_PRINCIPALS
     static_bearer: str = ""
+    upload_max_body_bytes: int = DEFAULT_UPLOAD_MAX_BODY_BYTES
 
     @classmethod
     def from_env(cls, static_bearer: str = "") -> RateLimitConfig:
@@ -238,6 +246,9 @@ class RateLimitConfig:
             max_principals=int(_env_num("RATE_LIMIT_MAX_PRINCIPALS", DEFAULT_MAX_PRINCIPALS))
             or DEFAULT_MAX_PRINCIPALS,
             static_bearer=static_bearer,
+            upload_max_body_bytes=int(
+                _env_num("RATE_LIMIT_UPLOAD_MAX_BODY_BYTES", DEFAULT_UPLOAD_MAX_BODY_BYTES)
+            ),
         )
 
 
@@ -564,6 +575,8 @@ class RateLimitMiddleware:
             return
 
         max_body = self.limits[route_class].max_body_bytes
+        if path in UPLOAD_PATHS:
+            max_body = self.config.upload_max_body_bytes
 
         # 1. Body size from Content-Length — before reading anything.
         if max_body > 0:

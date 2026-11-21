@@ -65,6 +65,7 @@ class FakeFiles:
             "parents": [d["parent"]],
             "size": str(len(d["content"])),
             "sha256Checksum": hashlib.sha256(d["content"]).hexdigest(),
+            "md5Checksum": hashlib.md5(d["content"], usedforsecurity=False).hexdigest(),
             "modifiedTime": d["modified"],
             "trashed": d["trashed"],
         }
