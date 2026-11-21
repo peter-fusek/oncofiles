@@ -21,6 +21,16 @@ dependencies = [
     # #952: AES-GCM of the queued inbound mail payload. Already in the lock
     # through authlib / google-auth; declared because we import it directly.
     "cryptography>=44.0.0",
+    # #950: DKIM verification of inbound mail on the raw message
+    # (inbound_dkim.py). dkimpy (zlib/BSD-style licence), dnspython (ISC) for
+    # the key lookups, pynacl (Apache-2.0) for ed25519-sha256 signatures.
+    "dkimpy~=1.1.8",
+    "dnspython~=2.9.2",
+    "pynacl~=1.6.2",
+    # DKIM alignment never on a public suffix d= (#966): the Public Suffix List is
+    # bundled in the package (MPL-2.0, like the list itself), never fetched at
+    # runtime. Pinned to a release at least two weeks old; bump to refresh.
+    "publicsuffixlist==1.1.2.20261106",
 ]
 
 [project.optional-dependencies]

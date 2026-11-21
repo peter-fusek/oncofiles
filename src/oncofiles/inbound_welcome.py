@@ -7,10 +7,11 @@ address token comes through the same Brevo route and durable queue as phase 1
 decides, in this order:
 
 1. **Loop mail** (``inbound_email.loop_reason``): ignored silently.
-2. **Auth verdict**: the same fail-closed rule as phase 1 (the trusted
-   ``Authentication-Results`` line must say ``dmarc=pass`` aligned with the
-   From domain, ``inbound_email._brevo_auth_pass``). A fail is never answered;
-   it is listed in the admin zone (reason ``welcome_auth_failed``).
+2. **Auth verdict**: the same fail-closed rule as phase 1. On the Brevo route
+   the verdict is DKIM only (#966): the mail first waits in the claimed
+   bucket and :func:`admit` runs only after the queue worker verified its
+   DKIM signature (``inbound_dkim``). A fail is never answered; it is listed
+   in the admin zone (reason ``welcome_auth_failed``).
 3. **Existing caregiver** (maintainer decision): a sender whose canonical
    address is the caregiver of patients that are not trials. Exactly ONE such
    patient: the mail is handed to phase 1 as if it had been sent to that
@@ -115,13 +116,15 @@ def _day_ago() -> str:
     return (datetime.now(UTC) - timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def is_welcome_address(addr: str) -> bool:
+    """True for a welcome address (case-insensitive, ``+tag`` ignored)."""
+    local, at, domain = parseaddr(addr or "")[1].strip().lower().rpartition("@")
+    return bool(at) and f"{local.split('+', 1)[0]}@{domain.rstrip('.')}" in WELCOME_ADDRESSES
+
+
 def is_welcome(msg: inbound_email.InboundMessage) -> bool:
     """True when one recipient is a welcome address (``+tag`` ignored)."""
-    for addr in msg.recipients:
-        local, at, domain = parseaddr(addr or "")[1].strip().lower().rpartition("@")
-        if at and f"{local.split('+', 1)[0]}@{domain.rstrip('.')}" in WELCOME_ADDRESSES:
-            return True
-    return False
+    return any(is_welcome_address(addr) for addr in msg.recipients)
 
 
 def _sender(msg: inbound_email.InboundMessage) -> str:

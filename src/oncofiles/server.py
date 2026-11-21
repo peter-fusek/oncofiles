@@ -7428,6 +7428,12 @@ async def api_inbound_unmatched(request: Request) -> JSONResponse:
     except Exception as exc:
         logger.warning("API inbound-unmatched: job counts failed (%s)", type(exc).__name__)
         out["jobs"] = None
+    try:
+        # #950 DKIM mode: the claimed bucket (mail waiting for its verification)
+        out["claimed_jobs"] = await db_inst.inbound_claimed_counts()
+    except Exception as exc:
+        logger.warning("API inbound-unmatched: claimed counts failed (%s)", type(exc).__name__)
+        out["claimed_jobs"] = None
     # #950 phase 2: why the trial reader last waited (codes and counts only)
     from oncofiles import holding_extract
 
