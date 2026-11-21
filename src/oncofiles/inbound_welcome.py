@@ -1,52 +1,60 @@
 """Onboarding by e-mail via ``welcome@`` (#950 phase 2, Flow B).
 
-A mail to ``welcome@`` (``WELCOME_LOCAL`` at one of ``WELCOME_DOMAINS``) that
-carries no patient address token comes through the same Brevo route and
-durable queue as phase 1 (``/inbound/brevo`` → ``inbound_queue.enqueue``).
-At enqueue, :func:`admit` decides, in this order:
+A mail to the welcome address (``WELCOME_ADDRESSES``: only
+``welcome@docs.oncofiles.com``, maintainer decision) that carries no patient
+address token comes through the same Brevo route and durable queue as phase 1
+(``/inbound/brevo`` → ``inbound_queue.enqueue``). At enqueue, :func:`admit`
+decides, in this order:
 
 1. **Loop mail** (``inbound_email.loop_reason``): ignored silently.
 2. **Auth verdict**: the same fail-closed rule as phase 1 (the trusted
    ``Authentication-Results`` line must say ``dmarc=pass`` aligned with the
    From domain, ``inbound_email._brevo_auth_pass``). A fail is never answered;
    it is listed in the admin zone (reason ``welcome_auth_failed``).
-3. **Gmail only** (maintainer decision 2026-11-21: the person later proves the
-   address with Google sign-in). Any other domain is listed in the admin zone
-   only (``welcome_not_gmail``), nothing else for now.
-4. **No attachments**: nothing to read, dropped (``welcome_no_files``).
-5. **Per-sender caps** (``MAX_MAILS_PER_SENDER_DAY``,
-   ``MAX_FILES_PER_SENDER_DAY``): over them the mail is counted and dropped,
-   no reply.
+3. **Existing caregiver** (maintainer decision): a sender whose canonical
+   address is the caregiver of patients that are not trials. Exactly ONE such
+   patient: the mail is handed to phase 1 as if it had been sent to that
+   patient's personal address (its token; the core's ``sender_refusal`` rule,
+   filing through ``dashboard_upload.handle_upload``, the receipt; no gate,
+   an existing caregiver keeps working). More than one: nothing is filed, no
+   reply, listed in the admin zone as ``caregiver_multiple_patients``.
+4. **Gmail only** (the person later proves the address with Google sign-in).
+   Any other domain is listed in the admin zone only (``welcome_not_gmail``).
+5. **No attachments**: nothing to read, dropped (``welcome_no_files``).
 6. **Onboarding gate** (#852, ``onboarding_gate.onboarding_allowed``; admins
    pass): ``closed``, or ``invite`` for a sender not invited, gets at most one
    reply per sender per ``WAITLIST_REPLY_INTERVAL_S`` (24 h) with the waitlist
    link; the files are not kept. ``open`` continues.
 7. **Trial patient**, under ``_ADMIT_LOCK`` (no two coroutines create one):
    the sender's existing trial (``trial_accounts.sender_hash``, one per
-   sender) or a new one. A sender who already is the caregiver of a patient
-   that is not a trial is listed only (``welcome_existing_caregiver``): no
-   second account. A new trial needs room under the global
-   ``MAX_NEW_TRIALS_PER_DAY`` (counted in the DB, survives restarts). It is
-   created with no name from the mail (``TRIAL_DISPLAY_NAME``), a random
-   slug, ``caregiver_email`` = the sender's canonical form, the default patient
-   type, and in the same transaction a ``patient_consents`` row of kind
-   ``by_sending`` (terms version, time, keyed sender hash) and its
+   canonical sender) or a new one, if the global ``MAX_NEW_TRIALS_PER_DAY``
+   allows (counted in the DB). An ended trial (``trial_ends_at`` passed)
+   takes no new mail: the reply says to sign in and connect Google Drive
+   (one per sender per ``inbound_email.REPLY_INTERVAL_S``). Per-sender caps
+   (``MAX_MAILS_PER_SENDER_DAY``, ``MAX_FILES_PER_SENDER_DAY``) are counted
+   from the DB (the trial's queued mails and holding documents of the last
+   24 h), so they survive a deploy; the core applies the same caps to mail a
+   trial patient sends to its personal address (:func:`trial_mails_over_cap`,
+   :func:`trial_files_today`). Over a cap the mail is counted, no reply.
+   A new trial has no name from the mail (``TRIAL_DISPLAY_NAME``), a random
+   slug, ``caregiver_email`` = the sender's canonical form, the default
+   patient type, and in the same transaction a ``patient_consents`` row of
+   kind ``by_sending`` (terms version, time, keyed sender hash) and its
    ``trial_accounts`` row (``trial_ends_at`` = now + ``TRIAL_DAYS``). The
    holding store key must be set (``holding_store.configured``) or nothing is
    admitted (fail closed).
 
 The admitted mail is then queued for the trial patient's phase 1 address
-token, so the worker runs the ordinary core: the sender rule passes
-(caregiver = the sender, auth passed), attachments are screened, and filing
-goes to the holding store (``holding_store.holding_mode``). The welcome reply
-(:func:`welcome_text`) replaces the receipt: counts, the consent-by-sending
-sentence with the terms link, the sign-in link and the personal document
-address as text; no names, file names, tokens or signed links; one per
-sender per 10 min (``inbound_email.REPLY_INTERVAL_S``) and always
+token, so the worker runs the ordinary core: the sender rule passes, the
+attachments are screened, and filing goes to the holding store
+(``holding_store.holding_mode``; its byte and disk limits stay hard whatever
+the file caps allow). The welcome reply (:func:`welcome_text`) replaces the
+receipt: counts, the consent-by-sending sentence with the terms link, the
+sign-in link and the personal document address as text; no names, file
+names, tokens or signed links; one per sender per 10 min and always
 ``Auto-Submitted: auto-replied``.
 
-Counters live in memory (lost on restart; the trial cap is in the DB). Logs:
-counts, reason codes and ``patient_id[:4]`` only, never an address.
+Logs: counts, reason codes and ``patient_id[:4]`` only, never an address.
 """
 
 from __future__ import annotations
@@ -62,17 +70,17 @@ from oncofiles import inbound_email
 
 logger = logging.getLogger(__name__)
 
-WELCOME_LOCAL = "welcome"
-WELCOME_DOMAINS = frozenset({"oncofiles.com", inbound_email.INBOUND_DOMAIN})
+# ONE constant to narrow or widen: the addresses that start an onboarding.
+WELCOME_ADDRESSES = frozenset({f"welcome@{inbound_email.INBOUND_DOMAIN}"})
 SIGN_IN_URL = "https://oncofiles.com/dashboard"
 WAITLIST_URL = "https://oncofiles.com/#join"
 TRIAL_DAYS = 30
 TRIAL_SOURCE = "welcome_email"
 TRIAL_DISPLAY_NAME = "Moje dokumenty"
 
-MAX_MAILS_PER_SENDER_DAY = 10
-MAX_FILES_PER_SENDER_DAY = 40
-MAX_NEW_TRIALS_PER_DAY = 20
+MAX_MAILS_PER_SENDER_DAY = 20
+MAX_FILES_PER_SENDER_DAY = 100
+MAX_NEW_TRIALS_PER_DAY = 30
 WAITLIST_REPLY_INTERVAL_S = 24 * 3600
 
 _ADMIT_LOCK = asyncio.Lock()
@@ -83,9 +91,8 @@ class _State:
         self.reset()
 
     def reset(self) -> None:
-        self.mails: dict[str, list[float]] = {}  # sender hash -> admitted mail times
-        self.files: dict[str, list[tuple[float, int]]] = {}  # sender hash -> (time, files)
         self.waitlist_reply: dict[str, float] = {}  # sender hash -> last waitlist reply
+        self.ended_reply: dict[str, float] = {}  # sender hash -> last trial-ended reply
 
 
 _state = _State()
@@ -100,16 +107,15 @@ def _count(reason: str) -> None:
     inbound_email._state.counters[reason] += 1
 
 
+def _day_ago() -> str:
+    return (datetime.now(UTC) - timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 def is_welcome(msg: inbound_email.InboundMessage) -> bool:
-    """True when one recipient is ``welcome@`` at one of our domains."""
+    """True when one recipient is a welcome address (``+tag`` ignored)."""
     for addr in msg.recipients:
-        local, at, domain = parseaddr(addr or "")[1].strip().rpartition("@")
-        if not at:
-            continue
-        if (
-            local.split("+", 1)[0].lower() == WELCOME_LOCAL
-            and domain.lower().rstrip(".") in WELCOME_DOMAINS
-        ):
+        local, at, domain = parseaddr(addr or "")[1].strip().lower().rpartition("@")
+        if at and f"{local.split('+', 1)[0]}@{domain.rstrip('.')}" in WELCOME_ADDRESSES:
             return True
     return False
 
@@ -142,44 +148,69 @@ def _is_admin(sender: str) -> bool:
     return sender in {str(e).strip().lower() for e in config.DASHBOARD_ADMIN_EMAILS}
 
 
-def _within_day(times: list, now: float) -> list:
-    return [t for t in times if now - (t[0] if isinstance(t, tuple) else t) < 86400]
+# ── per-sender caps (from the DB; one trial per sender) ─────────────────
 
 
-def _over_sender_caps(key: str, files: int, now: float) -> bool:
-    mails = _within_day(_state.mails.get(key, []), now)
-    sent = _within_day(_state.files.get(key, []), now)
-    _state.mails[key], _state.files[key] = mails, sent
-    if len(mails) >= MAX_MAILS_PER_SENDER_DAY:
-        return True
-    if sum(n for _t, n in sent) + files > MAX_FILES_PER_SENDER_DAY:
-        return True
-    mails.append(now)
-    sent.append((now, files))
-    return False
+async def trial_mails_over_cap(db, patient_id: str, *, including_this: bool) -> bool:
+    """The trial's queued mails of the last 24 h against ``MAX_MAILS_PER_SENDER_DAY``.
+
+    ``including_this``: the mail being checked is already a queued row.
+    """
+    n = await db.count_inbound_jobs_since(patient_id=patient_id, since=_day_ago())
+    return n > MAX_MAILS_PER_SENDER_DAY if including_this else n >= MAX_MAILS_PER_SENDER_DAY
+
+
+async def trial_files_today(db, patient_id: str) -> int:
+    """Holding documents the trial got in the last 24 h (the per-sender file cap)."""
+    return await db.count_holding_documents_since(patient_id=patient_id, since=_day_ago())
 
 
 # ── replies ─────────────────────────────────────────────────────────────
 
 
+def _bilingual(subject: str, sk: list[str], en: list[str]) -> tuple[str, str]:
+    return subject, "\n".join(sk) + "\n\n---\n\n" + "\n".join(en) + "\n\nOncofiles\n"
+
+
 def waitlist_text() -> tuple[str, str]:
     """(subject, body) of the closed-gate reply: no name, no file name."""
-    subject = "Oncofiles: zatiaľ cez poradovník / waitlist first"
-    sk = [
-        "Dobrý deň,",
-        "",
-        "ďakujeme za záujem. Nové účty zatiaľ otvárame postupne, preto sme poslané "
-        "súbory neuložili. Zapíšte sa do poradovníka a ozveme sa vám:",
-        WAITLIST_URL,
-    ]
-    en = [
-        "Hello,",
-        "",
-        "thank you for your interest. We are opening new accounts step by step, so the "
-        "files you sent were not kept. Join the waitlist and we will let you know:",
-        WAITLIST_URL,
-    ]
-    return subject, "\n".join(sk) + "\n\n---\n\n" + "\n".join(en) + "\n\nOncofiles\n"
+    return _bilingual(
+        "Oncofiles: zatiaľ cez poradovník / waitlist first",
+        [
+            "Dobrý deň,",
+            "",
+            "ďakujeme za záujem. Nové účty zatiaľ otvárame postupne, preto sme poslané "
+            "súbory neuložili. Zapíšte sa do poradovníka a ozveme sa vám:",
+            WAITLIST_URL,
+        ],
+        [
+            "Hello,",
+            "",
+            "thank you for your interest. We are opening new accounts step by step, so the "
+            "files you sent were not kept. Join the waitlist and we will let you know:",
+            WAITLIST_URL,
+        ],
+    )
+
+
+def trial_ended_text() -> tuple[str, str]:
+    """(subject, body) for mail to an ended trial: sign in, connect Drive."""
+    return _bilingual(
+        "Oncofiles: skúšobná doba skončila / trial ended",
+        [
+            "Dobrý deň,",
+            "",
+            "skúšobná doba sa skončila, preto sme poslané súbory neuložili. Prihláste sa "
+            "cez Google a pripojte vlastný Google Drive, potom môžete dokumenty posielať "
+            "znova: " + SIGN_IN_URL,
+        ],
+        [
+            "Hello,",
+            "",
+            "the trial has ended, so the files you sent were not kept. Sign in with Google "
+            "and connect your own Google Drive, then you can send documents again: " + SIGN_IN_URL,
+        ],
+    )
 
 
 def welcome_text(accepted: int, skipped, address: str) -> tuple[str, str]:
@@ -188,12 +219,7 @@ def welcome_text(accepted: int, skipped, address: str) -> tuple[str, str]:
     Never a name, a file name, a token or a signed link (#834). ``address`` is
     the patient's personal document address (phase 1), as plain text.
     """
-    subject = "Oncofiles: dokumenty prijaté / documents received"
-    sk = [
-        "Dobrý deň,",
-        "",
-        f"prijali sme {accepted} dokument(ov) a čítame ich.",
-    ]
+    sk = ["Dobrý deň,", "", f"prijali sme {accepted} dokument(ov) a čítame ich."]
     en = ["Hello,", "", f"we received {accepted} document(s) and are reading them."]
     if skipped:
         sk.append(f"Preskočené: {sum(skipped.values())}")
@@ -225,31 +251,28 @@ def welcome_text(accepted: int, skipped, address: str) -> tuple[str, str]:
         f"The documents wait with us for at most {TRIAL_DAYS} days, until you connect "
         "your own Google Drive.",
     ]
-    return subject, "\n".join(sk) + "\n\n---\n\n" + "\n".join(en) + "\n\nOncofiles\n"
+    return _bilingual("Oncofiles: dokumenty prijaté / documents received", sk, en)
 
 
-async def _send_waitlist(to: str) -> None:
+async def _send(to: str, text: tuple[str, str], tag: str) -> None:
     from oncofiles import mailer
 
-    subject, body = waitlist_text()
+    subject, body = text
     sent = await mailer.send_mail(
-        [to],
-        subject,
-        body,
-        tags=["welcome_waitlist"],
-        headers={"Auto-Submitted": "auto-replied"},
+        [to], subject, body, tags=[tag], headers={"Auto-Submitted": "auto-replied"}
     )
-    _count("welcome_waitlist_sent" if sent else "welcome_waitlist_failed")
+    _count(f"{tag}_sent" if sent else f"{tag}_failed")
 
 
-def _waitlist_reply(key: str, sender: str, now: float) -> None:
-    """At most one waitlist reply per sender per 24 h, sent in the background."""
-    last = _state.waitlist_reply.get(key)
-    if last is not None and now - last < WAITLIST_REPLY_INTERVAL_S:
-        _count("welcome_waitlist_throttled")
+def _reply_once(book: dict, key: str, interval: float, to: str, text, tag: str) -> None:
+    """At most one such reply per sender per ``interval``, sent in the background."""
+    now = time.time()
+    last = book.get(key)
+    if last is not None and now - last < interval:
+        _count(f"{tag}_throttled")
         return
-    _state.waitlist_reply[key] = now
-    task = asyncio.create_task(_send_waitlist(sender))
+    book[key] = now
+    task = asyncio.create_task(_send(to, text, tag))
     inbound_email._BACKGROUND.add(task)
     task.add_done_callback(inbound_email._BACKGROUND.discard)
 
@@ -258,22 +281,24 @@ def _waitlist_reply(key: str, sender: str, now: float) -> None:
 
 
 def _listed(sender: str, reason: str, files: int) -> None:
-    """Listed in the admin zone only (keyed hash, counts), never answered."""
+    """Listed in the admin zone only (keyed hash prefix, code, counts), never answered."""
     inbound_email._record_unmatched(sender, "", reason, files)
     _count(reason)
     logger.info("inbound: welcome not admitted reason=%s files=%d", reason, files)
 
 
-async def _existing_caregiver(db, sender: str) -> bool:
+async def _caregiver_patients(db, sender: str) -> list[str]:
+    """Ids of the non-trial patients whose caregiver is ``sender`` (canonical)."""
     from oncofiles.persistent_oauth import _email_matches_caregiver
 
+    out = []
     for patient in await db.list_patients(active_only=False):
         if (
             _email_matches_caregiver(sender, getattr(patient, "caregiver_email", None))
             and await db.get_trial(patient_id=patient.patient_id) is None
         ):
-            return True
-    return False
+            out.append(patient.patient_id)
+    return out
 
 
 async def _create_trial(db, sender: str, key: str) -> str:
@@ -321,10 +346,16 @@ async def _create_trial(db, sender: str, key: str) -> str:
     return pid
 
 
-async def admit(db, msg: inbound_email.InboundMessage) -> tuple[str, str] | None:
-    """(trial patient id, its address token) for an admitted welcome@ mail,
-    else None (dropped, listed or answered with the waitlist; see the module
-    docstring for the order)."""
+async def _token_of(db, pid: str) -> str | None:
+    address = await inbound_email.ensure_address(db, pid)
+    return inbound_email.token_from_address(address["address"])
+
+
+async def admit(db, msg: inbound_email.InboundMessage) -> tuple[str, str, bool] | None:
+    """(patient id, its address token, welcome?) for an admitted welcome@ mail,
+    else None (dropped, listed or answered; see the module docstring for the
+    order). ``welcome`` is False when the mail is handed to an existing
+    caregiver's patient (phase 1 receipt), True for a trial (welcome reply)."""
     from oncofiles import holding_store, onboarding_gate
 
     loop = inbound_email.loop_reason(msg)
@@ -337,6 +368,22 @@ async def admit(db, msg: inbound_email.InboundMessage) -> tuple[str, str] | None
     if not msg.auth_pass:
         _listed(sender, "welcome_auth_failed", files)
         return None
+    # An existing caregiver (maintainer decision): handed to phase 1, unchanged rules.
+    caring = await _caregiver_patients(db, sender)
+    if len(caring) > 1:
+        _listed(sender, "caregiver_multiple_patients", files)
+        return None
+    if len(caring) == 1:
+        pid = caring[0]
+        if await inbound_email.sender_refusal(db, pid, msg) is not None:
+            _listed(sender, "welcome_auth_failed", files)  # cannot pass phase 1 either
+            return None
+        token = await _token_of(db, pid)
+        if token is None:
+            return None
+        _count("welcome_to_existing_patient")
+        logger.info("inbound: welcome handed to patient %s (phase 1)", pid[:4])
+        return pid, token, False
     if not is_gmail(sender):
         _listed(sender, "welcome_not_gmail", files)
         return None
@@ -349,11 +396,6 @@ async def admit(db, msg: inbound_email.InboundMessage) -> tuple[str, str] | None
         _count("welcome_unconfigured")
         logger.warning("inbound: welcome refused (sender hash key or HOLDING_STORE_SECRET unset)")
         return None
-    now = time.time()
-    if _over_sender_caps(key, files, now):
-        _count("welcome_sender_capped")
-        logger.info("inbound: welcome dropped reason=welcome_sender_capped")
-        return None
     as_sent = (msg.sender or "").strip().lower()
     if not any(
         onboarding_gate.onboarding_allowed(a, is_admin=_is_admin(a)) for a in (sender, as_sent)
@@ -361,26 +403,49 @@ async def admit(db, msg: inbound_email.InboundMessage) -> tuple[str, str] | None
         mode = onboarding_gate.onboarding_mode()
         _count(f"welcome_gate_{mode}")
         logger.info("inbound: welcome refused reason=gate mode=%s", mode)
-        _waitlist_reply(key, as_sent, now)  # to the address that wrote
+        _reply_once(
+            _state.waitlist_reply,
+            key,
+            WAITLIST_REPLY_INTERVAL_S,
+            as_sent,
+            waitlist_text(),
+            "welcome_waitlist",
+        )
         return None
     async with _ADMIT_LOCK:
         trial = await db.get_trial_by_sender_hash(key)
         if trial is not None:
             pid = trial["patient_id"]
-        else:
-            if await _existing_caregiver(db, sender):
-                _listed(sender, "welcome_existing_caregiver", files)
+            if not holding_store.trial_active(trial):
+                _count("welcome_trial_ended")
+                logger.info("inbound: welcome refused reason=trial_ended patient %s", pid[:4])
+                _reply_once(
+                    _state.ended_reply,
+                    key,
+                    inbound_email.REPLY_INTERVAL_S,
+                    as_sent,
+                    trial_ended_text(),
+                    "welcome_trial_ended",
+                )
                 return None
-            since = (datetime.now(UTC) - timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
-            if await db.count_trials_since(since) >= MAX_NEW_TRIALS_PER_DAY:
+            if await trial_mails_over_cap(db, pid, including_this=False) or (
+                await trial_files_today(db, pid) + files > MAX_FILES_PER_SENDER_DAY
+            ):
+                _count("welcome_sender_capped")
+                logger.info("inbound: welcome dropped reason=welcome_sender_capped")
+                return None
+        else:
+            if files > MAX_FILES_PER_SENDER_DAY:
+                _count("welcome_sender_capped")
+                return None
+            if await db.count_trials_since(_day_ago()) >= MAX_NEW_TRIALS_PER_DAY:
                 _count("welcome_trial_cap")
                 logger.info("inbound: welcome dropped reason=welcome_trial_cap")
                 return None
             pid = await _create_trial(db, sender, key)
-        address = await inbound_email.ensure_address(db, pid)
-    token = inbound_email.token_from_address(address["address"])
+        token = await _token_of(db, pid)
     if token is None:  # cannot happen: our own address always carries a token
         return None
     _count("welcome_admitted")
     logger.info("inbound: welcome admitted patient %s files=%d", pid[:4], files)
-    return pid, token
+    return pid, token, True

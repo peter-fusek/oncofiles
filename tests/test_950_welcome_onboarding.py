@@ -20,6 +20,7 @@ import json
 import logging
 import os
 import stat
+from collections import Counter
 from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -45,7 +46,7 @@ from tests.test_950_inbound_address import (  # noqa: F401 - fixtures
     brevo,
     brevo_item,
     brevo_request,
-    drain,
+    drive,
     idb,
     jpeg,
     mails,
@@ -57,7 +58,7 @@ from tests.test_950_inbound_address import mail as raw_mail
 NEW = "synthetic.welcome950@gmail.com"
 NEW2 = "second.welcome950@gmail.com"
 NOT_GMAIL = "someone.welcome950@example.test"
-WELCOME = "welcome@oncofiles.com"
+WELCOME = "welcome@docs.oncofiles.com"
 FILE_A = "SynthWelcomeLab2027.pdf"
 FILE_B = "SynthWelcomePhoto2027.jpg"
 FILES = ("w-a", "w-b")
@@ -75,9 +76,11 @@ def welcome_env(monkeypatch, tmp_path):
     monkeypatch.delenv("CURATED_DAILY_PAGE_BUDGET", raising=False)
     inbound_welcome.reset_state()
     holding_extract._drain_task = None
+    inbound_email._BACKGROUND.clear()  # tasks of an earlier test's (closed) loop
     yield tmp_path
     inbound_welcome.reset_state()
     holding_extract._drain_task = None
+    inbound_email._BACKGROUND.clear()  # never left to a later test's loop
 
 
 @pytest.fixture
@@ -118,6 +121,20 @@ def two_files(store):
         (FILE_A, "application/pdf", len(store["w-a"]), "w-a"),
         (FILE_B, "image/jpeg", len(store["w-b"]), "w-b"),
     ]
+
+
+async def drain() -> None:
+    """Wait for this loop's inbound background work (mail queue, holding reader,
+    replies); tasks of an earlier test's loop are ignored."""
+    import asyncio
+
+    loop = asyncio.get_running_loop()
+    for _ in range(200):
+        pending = [t for t in inbound_email._BACKGROUND if t.get_loop() is loop and not t.done()]
+        if not pending:
+            return
+        await asyncio.gather(*pending)
+    raise AssertionError("inbound background work did not settle")
 
 
 async def send(db, *items):
@@ -236,12 +253,62 @@ async def test_non_gmail_and_failed_auth_are_listed_only(
     assert sender not in json.dumps(inbound_email.unmatched_overview())
 
 
-async def test_existing_caregiver_gets_no_second_account(idb, mails, brevo, model):
+async def test_existing_caregiver_with_one_patient_is_filed_like_phase_one(
+    idb, mails, brevo, model, drive
+):
+    """Maintainer decision: welcome@ from the caregiver of exactly one patient
+    goes through the phase 1 core into that patient's inbox, with the receipt."""
+    store, fetched = brevo
+    await send(idb, welcome_item(sender=CARER, files=two_files(store)))
+    assert await trials(idb) == [] and model == []
+    assert fetched == ["w-a", "w-b"]
+    assert [f[0] for f in drive.files] == [FILE_A, FILE_B]  # dashboard_upload.handle_upload
+    [reply] = mails
+    assert reply["to"] == [CARER]
+    assert reply["text"] == inbound_email.receipt_text(len(FILES), Counter())[1]  # phase 1 receipt
+    async with idb.db.execute("SELECT patient_id FROM inbound_jobs") as cur:
+        assert [r[0] for r in await cur.fetchall()] == [PID]
+
+
+async def test_existing_caregiver_without_drive_gets_no_drive(idb, mails, brevo, model):
+    store, fetched = brevo
+    await send(idb, welcome_item(sender=CARER, files=two_files(store)))
+    assert await trials(idb) == []
+    [reply] = mails
+    assert "no_drive" in reply["text"]  # the phase 1 refusal, reported in the receipt
+
+
+async def test_existing_caregiver_of_several_patients_is_listed_only(idb, mails, brevo, model):
+    await idb.db.execute(
+        "INSERT INTO patients (patient_id, slug, display_name, caregiver_email) VALUES (?,?,?,?)",
+        ("00000000-0000-4000-8000-000000000956", "synth956-c", "Cyril Synthetic", CARER),
+    )
+    await idb.db.commit()
     store, fetched = brevo
     await send(idb, welcome_item(sender=CARER, files=two_files(store)))
     assert await trials(idb) == [] and fetched == [] and mails == []
-    [entry] = inbound_email.unmatched_overview()["senders"]
-    assert entry["reasons"] == {"welcome_existing_caregiver": 1}
+    overview = inbound_email.unmatched_overview()
+    [entry] = overview["senders"]
+    assert entry["reasons"] == {"caregiver_multiple_patients": 1}
+    assert entry["patient"] == "" and CARER not in json.dumps(overview)
+
+
+async def test_existing_caregiver_with_failed_auth_is_not_filed(idb, mails, brevo, model, drive):
+    store, fetched = brevo
+    await send(idb, welcome_item(sender=CARER, auth="fail", files=two_files(store)))
+    assert fetched == [] and drive.files == [] and mails == []
+
+
+def test_only_the_docs_subdomain_is_a_welcome_address():
+    assert frozenset({"welcome@docs.oncofiles.com"}) == inbound_welcome.WELCOME_ADDRESSES
+    ok = inbound_email.InboundMessage(
+        recipients=["Welcome+x@Docs.Oncofiles.com"], sender="", auth_pass=True
+    )
+    assert inbound_welcome.is_welcome(ok)
+    for other in ("welcome@oncofiles.com", "welcome@docs.oncofiles.com.example.test"):
+        assert not inbound_welcome.is_welcome(
+            inbound_email.InboundMessage(recipients=[other], sender="", auth_pass=True)
+        )
 
 
 async def test_loop_mail_to_welcome_is_ignored(idb, mails, brevo, model):
@@ -337,35 +404,37 @@ async def test_holding_files_are_encrypted_and_owner_only(idb, mails, brevo, mod
         assert b"%PDF" not in raw and FILE_A.encode() not in raw
     [trial] = await trials(idb)
     docs = await held_docs(idb, trial["patient_id"])
-    assert holding_store.read(docs[0]["file_id"]) == store["w-a"]
+    assert holding_store.read(docs[0]["file_id"], trial["patient_id"]) == store["w-a"]
+    with pytest.raises(holding_store.HoldingStoreError):  # bound to its patient
+        holding_store.read(docs[0]["file_id"], PID)
 
 
 def test_holding_key_is_mandatory(monkeypatch, welcome_env):
     from oncofiles.secrets_keys import HoldingStoreSecretMissingError
 
-    file_id = holding_store.write_encrypted(b"invented bytes 2027")
+    file_id = holding_store.write_encrypted(b"invented bytes 2027", PID)
     monkeypatch.delenv("HOLDING_STORE_SECRET")
     assert holding_store.configured() is False
     with pytest.raises(HoldingStoreSecretMissingError):
-        holding_store.write_encrypted(b"invented bytes 2027")
+        holding_store.write_encrypted(b"invented bytes 2027", PID)
     with pytest.raises(HoldingStoreSecretMissingError):
-        holding_store.read(file_id)
+        holding_store.read(file_id, PID)
     assert len(list((welcome_env / "holding").iterdir())) == 1  # nothing written without it
 
 
 def test_wrong_key_or_moved_file_does_not_decrypt(monkeypatch, welcome_env):
-    a = holding_store.write_encrypted(b"invented A 2027")
-    b = holding_store.write_encrypted(b"invented B 2027")
+    a = holding_store.write_encrypted(b"invented A 2027", PID)
+    b = holding_store.write_encrypted(b"invented B 2027", PID)
     folder = welcome_env / "holding"
     uid_a = a.removeprefix(holding_store.HOLDING_PREFIX)
     uid_b = b.removeprefix(holding_store.HOLDING_PREFIX)
     os.replace(folder / f"{uid_a}.bin", folder / f"{uid_b}.bin")  # a's bytes under b's id
     with pytest.raises(holding_store.HoldingStoreError):
-        holding_store.read(b)
-    c = holding_store.write_encrypted(b"invented C 2027")
+        holding_store.read(b, PID)
+    c = holding_store.write_encrypted(b"invented C 2027", PID)
     monkeypatch.setenv("HOLDING_STORE_SECRET", "another-synthetic-secret")
     with pytest.raises(holding_store.HoldingStoreError):
-        holding_store.read(c)
+        holding_store.read(c, PID)
 
 
 async def test_no_trial_without_the_holding_key(idb, mails, brevo, model, monkeypatch):
@@ -599,13 +668,14 @@ async def test_gmail_variants_share_one_cap_bucket(idb, mails, brevo, model, mon
     assert len(await held_docs(idb, trial["patient_id"])) == len(FILES)
 
 
-async def test_gmail_variant_of_an_existing_caregiver_gets_no_trial(idb, mails, brevo, model):
+async def test_gmail_variant_of_an_existing_caregiver_gets_no_trial(
+    idb, mails, brevo, model, drive
+):
     store, fetched = brevo
     variant = "syntheticcarer950+new@googlemail.com"  # CARER is synthetic.carer950@gmail.com
     await send(idb, welcome_item(sender=variant, files=two_files(store)))
-    assert await trials(idb) == [] and fetched == []
-    [entry] = inbound_email.unmatched_overview()["senders"]
-    assert entry["reasons"] == {"welcome_existing_caregiver": 1}
+    assert await trials(idb) == []
+    assert [f[0] for f in drive.files] == [FILE_A, FILE_B]  # the caregiver's own patient
 
 
 @pytest.mark.parametrize("signed_in", [CANON, *VARIANTS])
@@ -644,7 +714,19 @@ def test_canonical_email():
     assert canonical_email("not-an-address") == ""
 
 
+async def make_trial(db, pid=PID, *, ends=None):
+    """A trial row for an existing synthetic patient (direct, for unit tests)."""
+    ends = ends or _future()
+    await db.db.execute(
+        "INSERT INTO trial_accounts (patient_id, sender_hash, source, trial_ends_at) "
+        "VALUES (?, ?, 'welcome_email', ?)",
+        (pid, f"synthetic-hash-{pid[-4:]}", ends),
+    )
+    await db.db.commit()
+
+
 async def _held_docs_for_thumbs(db, n):
+    await make_trial(db)
     ids = []
     for i in range(n):
         ids.append(
@@ -666,7 +748,7 @@ async def test_held_renders_share_one_batch_deadline(idb, monkeypatch):
     ids = await _held_docs_for_thumbs(idb, 3)
     calls = []
 
-    def slow(file_id, mime, size):
+    def slow(file_id, patient_id, mime, size):
         calls.append(file_id)
         _time.sleep(0.5)  # longer than the whole batch deadline
         return doc_thumbnails.Outcome(b"\xff\xd8\xffsynthetic", "image/jpeg", "ok")
@@ -692,7 +774,7 @@ async def test_held_renders_are_capped_per_request(idb, monkeypatch):
     monkeypatch.setattr(
         doc_thumbnails,
         "_holding_blocking",
-        lambda f, m, s: doc_thumbnails.Outcome(b"\xff\xd8\xffsynthetic", "image/jpeg", "ok"),
+        lambda f, p, m, s: doc_thumbnails.Outcome(b"\xff\xd8\xffsynthetic", "image/jpeg", "ok"),
     )
     with _caller(CARER):
         resp = await server.api_doc_thumbnails(_thumb_request(idb, ids))
@@ -701,3 +783,274 @@ async def test_held_renders_are_capped_per_request(idb, monkeypatch):
     assert shown == ids[: doc_thumbnails.MAX_HOLDING_RENDERS_PER_REQUEST]
     assert len(doc_thumbnails._cache) == doc_thumbnails.MAX_HOLDING_RENDERS_PER_REQUEST
     doc_thumbnails._cache.clear()
+
+
+# ── infra review: disk limits, shared model, trial end, claims ──────────
+
+
+def _bins(folder) -> list:
+    return list((folder / "holding").glob("*.bin")) if (folder / "holding").exists() else []
+
+
+async def test_byte_cap_is_hard_even_when_the_file_caps_allow(idb, monkeypatch, welcome_env):
+    """Guardrail (a): 100 small files fit, one large file over the byte cap is
+    refused before anything is written."""
+    await make_trial(idb)
+    monkeypatch.setattr(holding_store, "TRIAL_MAX_BYTES", 100 * 64 + 100)
+    for i in range(100):
+        await holding_store.store_document(
+            idb, PID, f"SynthSmall{i}.txt", b"x" * 63 + bytes([i]), "text/plain"
+        )
+    assert len(_bins(welcome_env)) == 100
+    with pytest.raises(holding_store.HoldingRefusedError) as refused:
+        await holding_store.store_document(idb, PID, "SynthBig.pdf", b"y" * 500, "application/pdf")
+    assert refused.value.code == "trial_bytes_cap"
+    assert len(_bins(welcome_env)) == 100  # no orphan file
+
+
+@pytest.mark.parametrize(
+    ("limit", "code"),
+    [("HOLDING_MAX_BYTES", "holding_full"), ("MIN_FREE_BYTES", "disk_low")],
+)
+async def test_global_and_disk_limits_refuse_before_writing(
+    idb, monkeypatch, welcome_env, limit, code
+):
+    await make_trial(idb)
+    if limit == "HOLDING_MAX_BYTES":
+        monkeypatch.setattr(holding_store, "HOLDING_MAX_BYTES", 10)
+    else:
+        monkeypatch.setattr(holding_store, "_free_bytes", lambda: holding_store.MIN_FREE_BYTES)
+    with pytest.raises(holding_store.HoldingRefusedError) as refused:
+        await holding_store.store_document(idb, PID, "S.pdf", b"z" * 50, "application/pdf")
+    assert refused.value.code == code and _bins(welcome_env) == []
+
+
+async def test_a_refused_file_is_counted_in_the_reply(idb, mails, brevo, model, monkeypatch):
+    monkeypatch.setattr(holding_store, "TRIAL_MAX_BYTES", len(pdf(950)) + 10)
+    store, _ = brevo
+    await send(idb, welcome_item(files=two_files(store)))
+    [trial] = await trials(idb)
+    assert len(await held_docs(idb, trial["patient_id"])) == 1
+    [reply] = mails
+    assert "prijali sme 1 dokument" in reply["text"] and "(trial_bytes_cap): 1" in reply["text"]
+    assert inbound_email.unmatched_overview()["totals"]["skipped_trial_bytes_cap"] == 1
+
+
+async def test_personal_address_of_a_trial_gets_the_welcome_caps(
+    idb, mails, brevo, model, monkeypatch
+):
+    monkeypatch.setattr(inbound_welcome, "MAX_MAILS_PER_SENDER_DAY", 1)
+    store, _ = brevo
+    await send(idb, welcome_item(files=two_files(store)))
+    [trial] = await trials(idb)
+    address = (await inbound_email.ensure_address(idb, trial["patient_id"]))["address"]
+    store["p-1"] = pdf(970)
+    files = [("SynthPersonal.pdf", "application/pdf", len(store["p-1"]), "p-1")]
+    await send(idb, welcome_item(to=address, files=files, mid="<p-1@example.test>"))
+    assert len(await held_docs(idb, trial["patient_id"])) == 2  # the second mail: capped
+    assert inbound_email.unmatched_overview()["totals"]["trial_capped"] == 1
+    assert len(mails) == 1
+
+
+async def test_caps_survive_a_restart(idb, mails, brevo, model, monkeypatch):
+    monkeypatch.setattr(inbound_welcome, "MAX_MAILS_PER_SENDER_DAY", 1)
+    store, _ = brevo
+    await send(idb, welcome_item(files=two_files(store), mid="<s-1@example.test>"))
+    inbound_email.reset_state()  # a deploy: every in-memory counter is gone
+    inbound_welcome.reset_state()
+    await send(idb, welcome_item(files=two_files(store), mid="<s-2@example.test>"))
+    [trial] = await trials(idb)
+    assert len(await held_docs(idb, trial["patient_id"])) == len(FILES)
+    assert inbound_email.unmatched_overview()["totals"]["welcome_sender_capped"] == 1
+
+
+@pytest.mark.parametrize("busy", ["run_active", "lm_job", "curated_pending"])
+async def test_reader_leaves_the_model_to_real_patients(
+    idb, mails, brevo, model, monkeypatch, busy
+):
+    from oncofiles.tools import curated
+
+    monkeypatch.setattr("oncofiles.curated.llm.configured", lambda: False)
+    store, _ = brevo
+    await send(idb, welcome_item(files=two_files(store)))  # stored, not read yet
+    monkeypatch.setattr("oncofiles.curated.llm.configured", lambda: True)
+    if busy == "run_active":
+        monkeypatch.setattr(curated, "run_active", lambda: True)
+    elif busy == "lm_job":
+        monkeypatch.setitem(curated._reocr_jobs, "synthetic", {"state": "running", "kind": "x"})
+    else:
+        monkeypatch.setitem(
+            curated._probe_stats, "synthetic", curated._ProbeStats(pending_inbox_count=2)
+        )
+    counts = await holding_extract.run_pending(idb)
+    assert model == [] and sum(counts.values()) == 1
+    assert holding_extract.lm_busy() is not None
+
+
+async def test_global_daily_page_cap(idb, mails, brevo, model, monkeypatch):
+    monkeypatch.setattr(holding_extract, "GLOBAL_DAILY_PAGES", 2)
+    store, _ = brevo
+    store["glob-a"], store["glob-b"] = jpeg(31_000), jpeg(32_000)
+    files = [
+        ("SynthG1.jpg", "image/jpeg", len(store["glob-a"]), "glob-a"),
+        ("SynthG2.jpg", "image/jpeg", len(store["glob-b"]), "glob-b"),
+    ]
+    await send(idb, welcome_item(files=files))
+    # the stub reports 2 vision pages: the first reading uses the day's cap
+    assert len(model) == 1
+    store["glob-c"] = jpeg(33_000)
+    files = [("SynthG3.jpg", "image/jpeg", len(store["glob-c"]), "glob-c")]
+    await send(idb, welcome_item(sender=NEW2, files=files))
+    assert len(model) == 1  # another trial: the same global cap
+
+
+async def test_page_count_is_checked_before_reading(idb, mails, brevo, model, monkeypatch):
+    import pymupdf
+
+    monkeypatch.setenv("CURATED_DAILY_PAGE_BUDGET", "2")
+    doc = pymupdf.open()
+    for i in range(3):
+        doc.new_page().insert_text((20, 40), f"Invented page {i} 2027")
+    three = doc.tobytes()
+    doc.close()
+    store, _ = brevo
+    store["t-3"] = three
+    await send(idb, welcome_item(files=[("SynthThree.pdf", "application/pdf", len(three), "t-3")]))
+    assert model == []  # never sent to the model
+    [trial] = await trials(idb)
+    [held] = await held_docs(idb, trial["patient_id"])
+    state = json.loads(held["structured_metadata"])["holding"]
+    assert (state["extract"], state["error"]) == ("failed", "too_many_pages")
+
+
+def _future() -> str:
+    """A moment far ahead (trial machinery timestamp, not health data)."""
+    from datetime import UTC, datetime, timedelta
+
+    return (datetime.now(UTC) + timedelta(days=3650)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _past() -> str:
+    """A moment in the past (a timestamp of the trial machinery, not health data)."""
+    from datetime import UTC, datetime, timedelta
+
+    return (datetime.now(UTC) - timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+async def _end_trial(db, pid):
+    await db.db.execute(
+        "UPDATE trial_accounts SET trial_ends_at = ? WHERE patient_id = ?",
+        (_past(), pid),
+    )
+    await db.db.commit()
+
+
+async def test_ended_trial_takes_no_mail_and_says_sign_in(idb, mails, brevo, model):
+    store, fetched = brevo
+    await send(idb, welcome_item(files=two_files(store), mid="<e-1@example.test>"))
+    [trial] = await trials(idb)
+    pid = trial["patient_id"]
+    await _end_trial(idb, pid)
+    inbound_email.reset_state()  # the reply throttle of the first mail
+    fetched.clear()
+    store["e-2"] = pdf(980)
+    files = [("SynthLate.pdf", "application/pdf", len(store["e-2"]), "e-2")]
+    await send(idb, welcome_item(files=files, mid="<e-2@example.test>"))
+    assert fetched == [] and len(await held_docs(idb, pid)) == 2
+    assert (
+        "trial has ended" in mails[-1]["text"] and inbound_welcome.SIGN_IN_URL in mails[-1]["text"]
+    )
+    assert mails[-1]["headers"] == {"Auto-Submitted": "auto-replied"}
+    # the personal address: the file is refused as trial_ended, the receipt says so
+    address = (await inbound_email.ensure_address(idb, pid))["address"]
+    await send(idb, welcome_item(to=address, files=files, mid="<e-3@example.test>"))
+    assert len(await held_docs(idb, pid)) == 2
+    assert "trial_ended" in mails[-1]["text"] and "connect Google Drive" in mails[-1]["text"]
+
+
+async def test_ended_trial_is_not_read_nor_previewed(idb, mails, brevo, model, monkeypatch):
+    from oncofiles import doc_thumbnails
+
+    monkeypatch.setattr("oncofiles.curated.llm.configured", lambda: False)
+    store, _ = brevo
+    store["e-pdf"] = _tiny_pdf()
+    await send(idb, welcome_item(files=[(FILE_A, "application/pdf", 9999, "e-pdf")]))
+    [trial] = await trials(idb)
+    pid = trial["patient_id"]
+    await _end_trial(idb, pid)
+    monkeypatch.setattr("oncofiles.curated.llm.configured", lambda: True)
+    assert await holding_extract.run_pending(idb) == {}
+    assert model == []
+    doc_thumbnails._cache.clear()
+    monkeypatch.setattr("oncofiles.tools.curated.run_active", lambda: False)
+    [held] = await held_docs(idb, pid)
+    with _caller(canonical_email(NEW)):
+        resp = await server.api_doc_thumbnails(_thumb_request(idb, [held["id"]]))
+    assert json.loads(resp.body)["thumbnails"] == {str(held["id"]): None}
+
+
+async def test_a_claimed_document_is_never_read_twice(idb, monkeypatch, model):
+    await make_trial(idb)
+    doc_id = await holding_store.store_document(idb, PID, "S.jpg", jpeg(40_000), "image/jpeg")
+    now = _future()
+    stale = _past()
+    assert await idb.claim_holding_extraction(
+        doc_id, patient_id=PID, claimed_at=now, stale_before=stale
+    )
+    assert not await idb.claim_holding_extraction(  # another container: lost
+        doc_id, patient_id=PID, claimed_at=now, stale_before=stale
+    )
+    assert await holding_extract.run_pending(idb) == {}  # a fresh claim: not taken over
+    assert model == []
+    # a claim older than STALE_READING_MIN belongs to a dead reader: taken over
+    await idb.db.execute(
+        "UPDATE documents SET structured_metadata = json_set(structured_metadata, "
+        "'$.holding.claimed_at', ?) WHERE id = ?",
+        (_past(), doc_id),
+    )
+    await idb.db.commit()
+    assert await holding_extract.run_pending(idb) == {"done": 1}
+
+
+async def test_excluded_is_stored_as_a_code(idb, monkeypatch):
+    await make_trial(idb)
+    monkeypatch.setattr("oncofiles.curated.llm.configured", lambda: True)
+    monkeypatch.setattr(
+        "oncofiles.curated.extract.extract",
+        lambda name, content, mime="", **kw: Extraction(
+            "", "none", 1, "-", error="raw_genotype_excluded: not sent to the model"
+        ),
+    )
+    doc_id = await holding_store.store_document(idb, PID, "S.jpg", jpeg(40_000), "image/jpeg")
+    assert await holding_extract.run_pending(idb) == {"excluded": 1}
+    [row] = [d for d in await held_docs(idb, PID) if d["id"] == doc_id]
+    state = json.loads(row["structured_metadata"])["holding"]
+    assert (state["extract"], state["error"]) == ("excluded", "raw_genotype_excluded")
+    assert holding_extract.error_code("Some free text: x") == "extract_failed"
+
+
+def test_the_directory_is_fsynced_after_the_rename(monkeypatch, welcome_env):
+    calls = []
+    real = holding_store._fsync_dir
+    monkeypatch.setattr(holding_store, "_fsync_dir", lambda p: (calls.append(p), real(p)))
+    holding_store.write_encrypted(b"invented 2027", PID)
+    assert calls == [welcome_env / "holding"]
+
+
+async def test_old_consent_version_keeps_full_access(idb):
+    """Guardrail (c): the bump is checked only when a patient is created."""
+    from oncofiles.patient_consent import CONSENT_VERSION
+
+    await idb.db.execute(
+        "INSERT INTO patient_consents (patient_id, consent_version, is_admin) VALUES (?, ?, 0)",
+        (PID, "2026-11-17"),
+    )
+    await idb.db.commit()
+    assert CONSENT_VERSION != "2026-11-17"
+    with _caller(CARER):
+        own = json.loads((await server.api_list_patients(_dash_request(idb))).body)["own"]
+        status = await server.api_trial_status(_dash_request(idb))
+    assert [p["patient_id"] for p in own] == [PID]
+    assert status.status_code == 200
+    src = (Path(server.__file__).parent / "server.py").read_text()
+    assert src.count("consent_error(") == 1  # only POST /api/patients checks it

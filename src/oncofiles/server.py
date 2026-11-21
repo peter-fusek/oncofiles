@@ -2528,7 +2528,7 @@ async def privacy_policy(request: Request) -> HTMLResponse:
             "Privacy Policy",
             """
 <p class="meta">Effective: March 25, 2026 · Last updated: November 21, 2026 ·
-Consent version 2026-11-21</p>
+Consent version 2026-11-21b</p>
 
 <p>Oncofiles is operated by <strong>Instarea s.r.o.</strong> ("we", "us").
 This policy describes how Oncofiles (<a href="https://oncofiles.com">oncofiles.com</a>)
@@ -2598,7 +2598,8 @@ the terms. Only attachments sent from the patient's caregiver address (with the 
 confirmed by the mail system) are added to the patient's folder, where they are processed like
 any other document. The text of the e-mail is not stored and is not read by any AI model. Mail
 from other senders is not added; we only count it, with a keyed hash of the sender, never the
-sender's address itself.</p>
+sender's address itself. Documents removed after an unclaimed trial can still be restored from
+encrypted backups for up to 6 months.</p>
 <p lang="sk"><strong>Dokumenty poslané e-mailom.</strong> Každý pacient môže mať súkromnú
 e-mailovú adresu pre dokumenty. Kto pošle dokumenty na túto adresu, súhlasí s
 <a href="/terms">podmienkami používania</a> a so spracovaním týchto dokumentov podľa týchto
@@ -2606,7 +2607,8 @@ zásad; odosielateľ dostane e-mail, ktorý to uvádza, s odkazom na podmienky. 
 pacienta sa pridajú len prílohy poslané z adresy opatrovateľa pacienta (s odosielateľom
 potvrdeným poštovým systémom) a spracujú sa ako každý iný dokument. Text e-mailu sa neukladá a
 nečíta ho žiadny AI model. Pošta od iných odosielateľov sa nepridáva; iba ju započítame, s
-kľúčovaným odtlačkom odosielateľa, nikdy nie so samotnou adresou.</p>
+kľúčovaným odtlačkom odosielateľa, nikdy nie so samotnou adresou. Dokumenty odstránené po
+nevyužitej skúšobnej dobe sa ešte najviac 6 mesiacov dajú obnoviť zo šifrovaných záloh.</p>
 <p>We do <strong>not</strong> use your data for advertising, profiling, or any purpose
 unrelated to managing your medical documents.</p>
 
@@ -2708,7 +2710,7 @@ async def terms_of_service(request: Request) -> HTMLResponse:
             "Terms of Service",
             """
 <p class="meta">Effective: March 25, 2026 · Last updated: November 21, 2026 ·
-Consent version 2026-11-21</p>
+Consent version 2026-11-21b</p>
 
 <p>These terms govern your use of Oncofiles (<a href="https://oncofiles.com">oncofiles.com</a>),
 operated by <strong>Instarea s.r.o.</strong> ("we", "us").</p>
@@ -7397,7 +7399,7 @@ async def api_trial_status(request: Request) -> JSONResponse:
                 "trial_until": trial["trial_ends_at"],
                 "days_left": days_left,
                 "documents": sum(counts.values()),
-                "reading": counts.get("pending", 0),
+                "reading": counts.get("pending", 0) + counts.get("reading", 0),
                 "ready": counts.get("done", 0),
                 "attention": counts.get("failed", 0) + counts.get("excluded", 0),
                 "drive_connected": not await holding_store.holding_mode(db, patient_id),

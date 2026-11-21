@@ -489,11 +489,11 @@ def _holding_semaphore() -> asyncio.Semaphore:
     return held[1]
 
 
-def _holding_blocking(file_id: str, mime: str, size: str) -> Outcome:
+def _holding_blocking(file_id: str, patient_id: str, mime: str, size: str) -> Outcome:
     """Decrypt a held file and render page 1 locally. Worker thread, no DB."""
     from oncofiles import holding_store
 
-    data = holding_store.read(file_id)
+    data = holding_store.read(file_id, patient_id)
     if len(data) > FALLBACK_MAX_DOWNLOAD_BYTES:
         return Outcome(None, None, "too_large")
     image = render_first_page(data, mime, SIZES_PX[size])
@@ -516,9 +516,11 @@ async def _holding_previews(db, patient_id, ids, size, result, reasons) -> list[
     nothing is cached for them. Never while a curated run is active. Returns
     the ids that are not holding documents.
     """
-    from oncofiles.holding_store import is_holding_file_id
+    from oncofiles.holding_store import is_holding_file_id, trial_active
 
     found = await db.get_documents_by_ids(set(ids), patient_id=patient_id)
+    # #950 infra review: after trial_ends_at nothing held is read (null previews)
+    readable = trial_active(await db.get_trial(patient_id=patient_id))
     loop = asyncio.get_running_loop()
     deadline = loop.time() + BATCH_DEADLINE_S
     renders = 0
@@ -530,6 +532,9 @@ async def _holding_previews(db, patient_id, ids, size, result, reasons) -> list[
             continue
         if doc.deleted_at is not None:
             reasons["not_found"] += 1
+            continue
+        if not readable:
+            reasons["trial_ended"] += 1
             continue
         if excluded(doc):
             reasons["excluded"] += 1
@@ -555,7 +560,7 @@ async def _holding_previews(db, patient_id, ids, size, result, reasons) -> list[
             reasons["render_cap"] += 1  # null, not cached
             continue
         renders += 1
-        work = functools.partial(_holding_blocking, doc.file_id, mime, size)
+        work = functools.partial(_holding_blocking, doc.file_id, patient_id, mime, size)
         try:
             out = await _bounded((_holding_semaphore(),), work, deadline)
         except TimeoutError:

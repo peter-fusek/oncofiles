@@ -553,8 +553,12 @@ async def _try_download(
     from oncofiles import holding_store
 
     if holding_store.is_holding_file_id(doc.file_id):
+        # the request's patient: the row was loaded scoped to it, and the
+        # file's associated data binds it to that patient (another one's id
+        # never decrypts)
+        pid = _get_patient_id(required=False)
         try:
-            content_bytes = await asyncio.to_thread(holding_store.read, doc.file_id)
+            content_bytes = await asyncio.to_thread(holding_store.read, doc.file_id, pid)
         except Exception as e:
             return False, [f"[Holding store read failed: {type(e).__name__}]"], None
         return True, _inline_content(doc, content_bytes), content_bytes

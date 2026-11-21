@@ -7,19 +7,33 @@ the files move there (phase 3, not built: see the seam below).
 
 Storage
 -------
-* One file per document under ``<DATA_DIR>/holding/`` (``HOLDING_DIR``), named
-  ``<uuid>.bin`` after a random uuid4. The directory is owner-only (0700),
-  every file owner-only (0600), set with chmod whatever the umask. A file is
-  written to ``<uuid>.tmp`` and renamed into place (atomic on one volume).
+* One file per document under ``<DATA_DIR>/holding/`` (``holding_dir()``),
+  named ``<uuid>.bin`` after a random uuid4. The directory is owner-only
+  (0700), every file owner-only (0600), set with chmod whatever the umask. A
+  file is written to ``<uuid>.tmp``, fsynced, renamed into place (atomic on one
+  volume) and the directory is fsynced after the rename (infra review).
 * Content: ``v1`` magic + 96-bit random nonce + AES-GCM ciphertext
   (``cryptography``) with ``secrets_keys.holding_store_key()`` (purpose
-  ``oncofiles.holding_store.v1``) and ``holding|<uuid>`` as associated data, so
-  a file renamed onto another uuid never decrypts. No plaintext ever touches
-  the disk; the original file name is not stored in the file.
+  ``oncofiles.holding_store.v1``) and ``holding|<patient_id>|<uuid>`` as
+  associated data, so a file renamed onto another uuid or claimed for another
+  patient never decrypts. No plaintext ever touches the disk; the original
+  file name is not stored in the file.
 * The key comes from the MANDATORY runtime env ``HOLDING_STORE_SECRET``
   (fail closed like ``INBOUND_JOBS_SECRET``): unset = ``configured()`` is
   False, the welcome@ admission refuses the mail before a trial is created,
   and every read raises.
+
+Limits (infra review), all checked BEFORE anything is written, so a refusal
+never leaves a file behind (:func:`check_limits`, ``HoldingRefusedError.code``):
+
+* ``trial_ended``: the trial's ``trial_ends_at`` has passed (no new writes);
+* ``document_cap``: ``MAX_DOCUMENTS_PER_PATIENT``;
+* ``trial_bytes_cap``: more than ``TRIAL_MAX_BYTES`` held for the patient;
+* ``holding_full``: more than ``HOLDING_MAX_BYTES`` held in all;
+* ``disk_low``: less than ``MIN_FREE_BYTES`` free on the ``DATA_DIR``
+  filesystem after the write (``shutil.disk_usage``).
+
+The refused file is counted by its code and reported in the reply counts.
 
 Rows
 ----
@@ -32,13 +46,13 @@ signs in; the row is the single source of truth (no second table to keep in
 step), and phase 3 finds every held file with ``file_id LIKE 'holding:%'`` and
 matches it by ``structured_metadata.holding.sha256``. State lives in
 ``structured_metadata``: ``{"source": "holding", "holding": {sha256, md5,
-extract, attempts, pages, model_pages, method, extracted_at, error}}``.
-Each row is registered in the curated cloud refusal at once
-(``curated.indexer.register_curated_ids``) and loaded into it at startup
-(``db.curated_document_ids`` includes ``holding:`` rows), the "without AI"
-queries of the nightly cloud pipeline exclude ``holding:`` rows, and the
-Files API is never called for them: their content goes to the local model
-only.
+extract, claimed_at, attempts, pages, model_pages, method, extracted_at,
+error}}`` (``error`` is always a code). Each row is registered in the curated
+cloud refusal at once (``curated.indexer.register_curated_ids``) and loaded
+into it at startup (``db.curated_document_ids`` includes ``holding:`` rows),
+the "without AI" queries of the nightly cloud pipeline exclude ``holding:``
+rows, and the Files API is never called for them: their content goes to the
+local model only.
 
 Retention (#734): NOTHING here deletes or overwrites a held file or a row.
 TODO(#950): the end of an unclaimed 30-day trial (``trial_accounts.
@@ -60,7 +74,9 @@ import hashlib
 import json
 import logging
 import os
+import shutil
 import uuid
+from datetime import UTC, datetime
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -69,9 +85,23 @@ HOLDING_PREFIX = "holding:"
 _MAGIC = b"v1"
 _UUID_LEN = 36
 
+TRIAL_MAX_BYTES = 500 * 1024 * 1024  # per trial patient
+HOLDING_MAX_BYTES = 20 * 1024 * 1024 * 1024  # all trials together
+MIN_FREE_BYTES = 20 * 1024 * 1024 * 1024  # free space left on DATA_DIR's filesystem
+
+REFUSAL_CODES = ("trial_ended", "document_cap", "trial_bytes_cap", "holding_full", "disk_low")
+
 
 class HoldingStoreError(RuntimeError):
     """A held file is missing, unreadable or does not decrypt."""
+
+
+class HoldingRefusedError(RuntimeError):
+    """A file is not stored: ``code`` is one of ``REFUSAL_CODES``."""
+
+    def __init__(self, code: str) -> None:
+        super().__init__(code)
+        self.code = code
 
 
 def holding_dir() -> Path:
@@ -104,8 +134,10 @@ def _uuid_of(file_id: str) -> str:
     return raw
 
 
-def _aad(uid: str) -> bytes:
-    return f"holding|{uid}".encode()
+def _aad(patient_id: str, uid: str) -> bytes:
+    if not patient_id:
+        raise HoldingStoreError("patient id required")
+    return f"holding|{patient_id}|{uid}".encode()
 
 
 def _ensure_dir() -> Path:
@@ -115,12 +147,20 @@ def _ensure_dir() -> Path:
     return path
 
 
-def write_encrypted(data: bytes) -> str:
+def _fsync_dir(path: Path) -> None:
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def write_encrypted(data: bytes, patient_id: str) -> str:
     """Encrypt ``data`` into a new held file; returns its ``holding:<uuid>`` id.
 
     Blocking (call through ``asyncio.to_thread``). Raises
     ``HoldingStoreSecretMissingError`` without the key, before anything is
-    written.
+    written. Limits are the caller's (:func:`check_limits`, before this).
     """
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
@@ -129,7 +169,7 @@ def write_encrypted(data: bytes) -> str:
     key = holding_store_key()  # fail closed before any write
     uid = str(uuid.uuid4())
     nonce = os.urandom(12)
-    blob = _MAGIC + nonce + AESGCM(key).encrypt(nonce, data, _aad(uid))
+    blob = _MAGIC + nonce + AESGCM(key).encrypt(nonce, data, _aad(patient_id, uid))
     folder = _ensure_dir()
     tmp = folder / f"{uid}.tmp"
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -143,11 +183,13 @@ def write_encrypted(data: bytes) -> str:
     final = folder / f"{uid}.bin"
     os.replace(tmp, final)
     os.chmod(final, 0o600)
+    _fsync_dir(folder)  # the rename itself is durable
     return HOLDING_PREFIX + uid
 
 
-def read(file_id: str) -> bytes:
-    """The plaintext of a held file. Blocking; raises ``HoldingStoreError``."""
+def read(file_id: str, patient_id: str) -> bytes:
+    """The plaintext of a held file of ``patient_id``. Blocking; raises
+    ``HoldingStoreError`` (also for another patient's id)."""
     from cryptography.exceptions import InvalidTag
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
@@ -164,9 +206,18 @@ def read(file_id: str) -> bytes:
         raise HoldingStoreError("malformed")
     nonce = blob[len(_MAGIC) : len(_MAGIC) + 12]
     try:
-        return AESGCM(key).decrypt(nonce, blob[len(_MAGIC) + 12 :], _aad(uid))
+        return AESGCM(key).decrypt(nonce, blob[len(_MAGIC) + 12 :], _aad(patient_id, uid))
     except InvalidTag as exc:
         raise HoldingStoreError("undecryptable") from exc
+
+
+def _now_iso() -> str:
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def trial_active(trial: dict | None) -> bool:
+    """True while a trial row's ``trial_ends_at`` lies in the future."""
+    return bool(trial) and str(trial.get("trial_ends_at") or "") > _now_iso()
 
 
 async def holding_mode(db, patient_id: str) -> bool:
@@ -182,14 +233,40 @@ async def holding_mode(db, patient_id: str) -> bool:
     return not (token is not None and getattr(token, "gdrive_folder_id", None))
 
 
-async def store_document(db, patient_id: str, name: str, data: bytes, mime: str) -> int:
-    """Encrypt ``data`` into the store and register its ``documents`` row.
+def _free_bytes() -> int:
+    folder = holding_dir()
+    probe = folder if folder.exists() else folder.parent
+    return shutil.disk_usage(probe).free
 
-    Returns the document id. The row is registered in the curated cloud
-    refusal before anything else can see it; its reading starts in the
-    background (``holding_extract.kick``). Raises on a missing key, a full
-    document cap (``ValueError`` from ``insert_document``) or an I/O error.
-    A row whose insert fails leaves its encrypted file behind (never deleted,
+
+async def check_limits(db, patient_id: str, size: int) -> None:
+    """Raise ``HoldingRefusedError`` when a file of ``size`` bytes must not be
+    stored for ``patient_id``. Reads only; runs before any write."""
+    from oncofiles.config import MAX_DOCUMENTS_PER_PATIENT
+
+    if not trial_active(await db.get_trial(patient_id=patient_id)):
+        raise HoldingRefusedError("trial_ended")
+    if (
+        MAX_DOCUMENTS_PER_PATIENT > 0
+        and await db.count_documents(patient_id=patient_id) >= MAX_DOCUMENTS_PER_PATIENT
+    ):
+        raise HoldingRefusedError("document_cap")
+    if await db.holding_bytes(patient_id=patient_id) + size > TRIAL_MAX_BYTES:
+        raise HoldingRefusedError("trial_bytes_cap")
+    if await db.holding_bytes() + size > HOLDING_MAX_BYTES:
+        raise HoldingRefusedError("holding_full")
+    if _free_bytes() - size < MIN_FREE_BYTES:
+        raise HoldingRefusedError("disk_low")
+
+
+async def store_document(db, patient_id: str, name: str, data: bytes, mime: str) -> int:
+    """Check the limits, encrypt ``data`` into the store, register its row.
+
+    Returns the document id. ``HoldingRefusedError`` (nothing written) when a
+    limit refuses the file. The row is registered in the curated cloud refusal
+    before anything else can see it; the caller starts its reading
+    (``holding_extract.kick``). Raises on a missing key or an I/O error. A row
+    whose insert still fails leaves its encrypted file behind (never deleted,
     #734; it holds no plaintext and no row points to it).
     """
     import asyncio
@@ -197,9 +274,10 @@ async def store_document(db, patient_id: str, name: str, data: bytes, mime: str)
     from oncofiles.curated.indexer import register_curated_ids
     from oncofiles.models import Document, DocumentCategory
 
+    await check_limits(db, patient_id, len(data))  # before the write: never an orphan
     sha = hashlib.sha256(data).hexdigest()
     md5 = hashlib.md5(data, usedforsecurity=False).hexdigest()
-    file_id = await asyncio.to_thread(write_encrypted, data)
+    file_id = await asyncio.to_thread(write_encrypted, data, patient_id)
     meta = {
         "source": "holding",
         "holding": {"sha256": sha, "md5": md5, "extract": "pending", "attempts": 0},

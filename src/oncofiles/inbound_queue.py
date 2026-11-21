@@ -410,7 +410,7 @@ async def enqueue(db, messages: list[inbound_email.InboundMessage]) -> dict:
                 dropped += 1
                 continue
             token = admitted[1]
-            msg.welcome = True
+            msg.welcome = admitted[2]  # False: handed to an existing caregiver's patient
         th = inbound_email.token_hash(token) if token else None
         row = await db.find_inbound_address(th) if th else None
         if row is None or not row["active"]:

@@ -1151,6 +1151,8 @@ async def _hold_one(db, patient_id: str, name: str, data: bytes) -> str:
 
     try:
         await holding_store.store_document(db, patient_id, name, data, mime)
+    except holding_store.HoldingRefusedError as refused:
+        return refused.code  # a limit refused it before any write (infra review)
     except ValueError:
         return "document_cap"  # insert_document's limit
     except Exception as exc:
@@ -1187,6 +1189,14 @@ REASON_TEXT: dict[str, tuple[str, str]] = {
     "store_failed": ("uloženie zlyhalo", "storing failed"),
     "not_attempted": ("neodoslané po chybe", "not attempted after an error"),
     "fetch_failed": ("prílohu sa nepodarilo stiahnuť", "the attachment could not be downloaded"),
+    # #950 phase 2: holding-store limits of a welcome@ trial (infra review)
+    "trial_ended": (
+        "skúšobná doba skončila: prihláste sa a pripojte Google Drive",
+        "the trial has ended: sign in and connect Google Drive",
+    ),
+    "trial_bytes_cap": ("limit veľkosti skúšobného účtu", "trial storage limit reached"),
+    "holding_full": ("úložisko je dočasne plné", "the storage is full for now"),
+    "disk_low": ("úložisko je dočasne plné", "the storage is full for now"),
 }
 
 TERMS_SENTENCE_SK = (
@@ -1434,7 +1444,7 @@ async def _process_message(db, msg: InboundMessage, progress: JobProgress | None
             if admitted is None:
                 return Result("welcome_refused")
             token = admitted[1]
-            msg.welcome = True
+            msg.welcome = admitted[2]
     row = await db.find_inbound_address(token_hash(token)) if token else None
     if row is None or not row["active"]:
         reason = "unknown_token" if row is None else "inactive_token"
@@ -1486,9 +1496,23 @@ async def _process_message(db, msg: InboundMessage, progress: JobProgress | None
 
         queued = progress is not None
         final = queued and progress.final
+        # #950 phase 2 (infra review): a welcome@ trial patient gets the
+        # per-sender welcome caps (from the DB), not the phase-1 caps, also on
+        # its personal address. Over them: counted, dropped, no reply.
+        from oncofiles import inbound_welcome
+
+        trial = await db.get_trial(patient_id=patient_id)
+        if (
+            trial is not None
+            and not (queued and progress.admitted)
+            and await inbound_welcome.trial_mails_over_cap(db, patient_id, including_this=queued)
+        ):
+            _state.counters["trial_capped"] += 1
+            logger.info("inbound: patient %s dropped reason=trial_capped", pp)
+            return Result("trial_capped", pp)
         # Filing quota: only authenticated caregiver mail counts against it,
         # and a queued mail only once (not again on each retry).
-        if not (queued and progress.admitted) and _rate_limited(th, now):
+        if trial is None and not (queued and progress.admitted) and _rate_limited(th, now):
             _state.counters["rate_limited"] += 1
             if queued:
                 # #952: a temporary refusal; the queue retries the mail later
@@ -1571,13 +1595,17 @@ async def _process_message(db, msg: InboundMessage, progress: JobProgress | None
         accepted = prefiled
         stop_code: str | None = None
         today = _files_today(th, now)
+        file_cap = MAX_FILES_PER_DAY
+        if trial is not None:  # the welcome per-sender file cap, from the DB
+            today = await inbound_welcome.trial_files_today(db, patient_id) - prefiled
+            file_cap = inbound_welcome.MAX_FILES_PER_SENDER_DAY
         for name, data, sha, ref in candidates:
             if stop_code == "retry_later":
                 continue  # left for the queue's next attempt, not a skip
             if stop_code:
                 skipped[stop_code if stop_code in _STOPPING else "not_attempted"] += 1
                 continue
-            if today + accepted >= MAX_FILES_PER_DAY:
+            if today + accepted >= file_cap:
                 skipped["daily_file_cap"] += 1
                 continue
             code = await _file_one(db, patient_id, name, data)
