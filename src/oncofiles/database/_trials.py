@@ -59,11 +59,11 @@ class TrialsMixin(DatabaseBase):
 
     # ── holding-store documents ─────────────────────────────────────────
 
-    async def count_holding_documents_since(self, *, patient_id: str, since: str) -> int:
-        """Holding documents a patient got since ``since`` (the per-sender file cap)."""
+    async def count_documents_since(self, *, patient_id: str, since: str) -> int:
+        """Documents of a patient created since ``since``, every file id and
+        state (the welcome@ per-sender file cap)."""
         async with self.db.execute(
-            "SELECT COUNT(*) FROM documents WHERE patient_id = ? "
-            "AND file_id LIKE 'holding:%' AND created_at >= ?",
+            "SELECT COUNT(*) FROM documents WHERE patient_id = ? AND created_at >= ?",
             (patient_id, since),
         ) as cursor:
             return int((await cursor.fetchone())[0])

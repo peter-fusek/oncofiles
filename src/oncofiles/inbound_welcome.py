@@ -33,9 +33,11 @@ decides, in this order:
    (one per sender per ``inbound_email.REPLY_INTERVAL_S``). Per-sender caps
    (``MAX_MAILS_PER_SENDER_DAY``, ``MAX_FILES_PER_SENDER_DAY``) are counted
    from the DB (the trial's queued mails and holding documents of the last
-   24 h), so they survive a deploy; the core applies the same caps to mail a
-   trial patient sends to its personal address (:func:`trial_mails_over_cap`,
-   :func:`trial_files_today`). Over a cap the mail is counted, no reply.
+   24 h), so they survive a deploy; while the trial is in holding mode the
+   core applies the same caps on top of the phase-1 caps to every mail of the
+   patient, both routes (:func:`trial_mails_over_cap` + an in-memory count,
+   :func:`trial_files_today` = every document of 24 h). Over a cap the mail is
+   counted, no reply.
    A new trial has no name from the mail (``TRIAL_DISPLAY_NAME``), a random
    slug, ``caregiver_email`` = the sender's canonical form, the default
    patient type, and in the same transaction a ``patient_consents`` row of
@@ -161,8 +163,9 @@ async def trial_mails_over_cap(db, patient_id: str, *, including_this: bool) -> 
 
 
 async def trial_files_today(db, patient_id: str) -> int:
-    """Holding documents the trial got in the last 24 h (the per-sender file cap)."""
-    return await db.count_holding_documents_since(patient_id=patient_id, since=_day_ago())
+    """Every document the trial patient got in the last 24 h, on any route and
+    in any store (the per-sender file cap)."""
+    return await db.count_documents_since(patient_id=patient_id, since=_day_ago())
 
 
 # ── replies ─────────────────────────────────────────────────────────────

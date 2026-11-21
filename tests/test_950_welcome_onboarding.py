@@ -1054,3 +1054,56 @@ async def test_old_consent_version_keeps_full_access(idb):
     assert status.status_code == 200
     src = (Path(server.__file__).parent / "server.py").read_text()
     assert src.count("consent_error(") == 1  # only POST /api/patients checks it
+
+
+# ── security review: trial caps on both routes ──────────────────────────
+
+
+async def _trial_address(db, brevo):
+    store, _ = brevo
+    await send(db, welcome_item(files=two_files(store)))
+    [trial] = await trials(db)
+    address = (await inbound_email.ensure_address(db, trial["patient_id"]))["address"]
+    return trial["patient_id"], address
+
+
+async def _raw(db, to, i, n=1):
+    files = [(f"SynthRaw{i}-{k}.pdf", pdf(990 + 10 * i + k), "application/pdf") for k in range(n)]
+    result = await inbound_email.process_message(db, parsed(raw_mail(to, sender=NEW, files=files)))
+    await drain()
+    return result
+
+
+async def test_raw_route_flood_to_a_trial_address_is_capped(idb, mails, brevo, model, monkeypatch):
+    monkeypatch.setattr(inbound_welcome, "MAX_MAILS_PER_SENDER_DAY", 2)
+    pid, address = await _trial_address(idb, brevo)  # mail 1 (Brevo, queued)
+    assert (await _raw(idb, address, 1)).outcome == "filed"  # mail 2 (raw MIME)
+    outcomes = [(await _raw(idb, address, i)).outcome for i in range(2, 6)]
+    assert outcomes == ["trial_capped"] * 4
+    assert len(await held_docs(idb, pid)) == len(FILES) + 1
+
+
+async def test_files_on_both_routes_count_against_one_cap(idb, mails, brevo, model, monkeypatch):
+    monkeypatch.setattr(inbound_welcome, "MAX_FILES_PER_SENDER_DAY", len(FILES) + 1)
+    pid, address = await _trial_address(idb, brevo)  # two files via Brevo
+    result = await _raw(idb, address, 1, n=2)  # two more via raw MIME
+    assert result.accepted == 1 and result.skipped["daily_file_cap"] == 1
+    assert len(await held_docs(idb, pid)) == len(FILES) + 1
+
+
+async def test_after_drive_connects_the_phase_one_caps_apply(
+    idb, mails, brevo, model, drive, monkeypatch
+):
+    pid, address = await _trial_address(idb, brevo)
+    monkeypatch.setattr(inbound_welcome, "MAX_MAILS_PER_SENDER_DAY", 1)
+    monkeypatch.setattr(inbound_welcome, "MAX_FILES_PER_SENDER_DAY", 1)
+
+    async def connected(db, patient_id):
+        return False  # Drive connected: no holding mode
+
+    monkeypatch.setattr(holding_store, "holding_mode", connected)
+    monkeypatch.setattr(inbound_email, "MAX_MAILS_PER_HOUR", 2)
+    first = await _raw(idb, address, 1, n=len(FILES))  # over the welcome caps only
+    assert first.outcome == "filed" and first.accepted == len(FILES)
+    assert [f[0] for f in drive.files] == ["SynthRaw1-0.pdf", "SynthRaw1-1.pdf"]
+    assert (await _raw(idb, address, 2)).outcome == "rate_limited"  # the phase-1 hourly cap

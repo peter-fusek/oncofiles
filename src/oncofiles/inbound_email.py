@@ -925,6 +925,9 @@ class _State:
         self.mails: dict[str, list[float]] = {}  # token hash -> filed-mail times (24 h)
         self.unmatched_mails: dict[str, list[float]] = {}  # token hash -> not-filed times
         self.files_day: dict[str, list[tuple[float, int]]] = {}
+        # #950 phase 2: mails of a trial patient in holding mode, both routes
+        # (token hash -> times), next to the durable count of queued jobs
+        self.trial_mails: dict[str, list[float]] = {}
         self.last_reply: dict[str, float] = {}
         self.done_ids: OrderedDict[str, None] = OrderedDict()
         self.recent: dict[str, OrderedDict[str, None]] = {}  # patient -> sha256 filed
@@ -1496,23 +1499,26 @@ async def _process_message(db, msg: InboundMessage, progress: JobProgress | None
 
         queued = progress is not None
         final = queued and progress.final
-        # #950 phase 2 (infra review): a welcome@ trial patient gets the
-        # per-sender welcome caps (from the DB), not the phase-1 caps, also on
-        # its personal address. Over them: counted, dropped, no reply.
-        from oncofiles import inbound_welcome
+        # #950 phase 2 (infra + security review): while a welcome@ trial is in
+        # holding mode (no Drive yet) its mail ALSO meets the per-sender welcome
+        # caps, on top of the phase-1 caps below: the durable count of its
+        # queued jobs (Brevo) and an in-memory count of its mails on both routes
+        # (raw MIME included); over either: counted, dropped, no reply. Once
+        # Drive is connected only the phase-1 caps apply.
+        from oncofiles import holding_store, inbound_welcome
 
-        trial = await db.get_trial(patient_id=patient_id)
-        if (
-            trial is not None
-            and not (queued and progress.admitted)
-            and await inbound_welcome.trial_mails_over_cap(db, patient_id, including_this=queued)
-        ):
-            _state.counters["trial_capped"] += 1
-            logger.info("inbound: patient %s dropped reason=trial_capped", pp)
-            return Result("trial_capped", pp)
+        holding = await holding_store.holding_mode(db, patient_id)
+        if holding and not (queued and progress.admitted):
+            cap = inbound_welcome.MAX_MAILS_PER_SENDER_DAY
+            if await inbound_welcome.trial_mails_over_cap(
+                db, patient_id, including_this=queued
+            ) or _over_cap(_state.trial_mails, th, now, cap, cap):
+                _state.counters["trial_capped"] += 1
+                logger.info("inbound: patient %s dropped reason=trial_capped", pp)
+                return Result("trial_capped", pp)
         # Filing quota: only authenticated caregiver mail counts against it,
         # and a queued mail only once (not again on each retry).
-        if trial is None and not (queued and progress.admitted) and _rate_limited(th, now):
+        if not (queued and progress.admitted) and _rate_limited(th, now):
             _state.counters["rate_limited"] += 1
             if queued:
                 # #952: a temporary refusal; the queue retries the mail later
@@ -1596,8 +1602,13 @@ async def _process_message(db, msg: InboundMessage, progress: JobProgress | None
         stop_code: str | None = None
         today = _files_today(th, now)
         file_cap = MAX_FILES_PER_DAY
-        if trial is not None:  # the welcome per-sender file cap, from the DB
-            today = await inbound_welcome.trial_files_today(db, patient_id) - prefiled
+        if holding:
+            # the welcome per-sender file cap: every document the patient got in
+            # the last 24 h, whatever its route (DB), or this token's files in
+            # memory, whichever is higher; the files an earlier attempt of this
+            # job filed are already in both and counted through ``accepted``
+            stored = await inbound_welcome.trial_files_today(db, patient_id) - prefiled
+            today = max(today, stored, 0)
             file_cap = inbound_welcome.MAX_FILES_PER_SENDER_DAY
         for name, data, sha, ref in candidates:
             if stop_code == "retry_later":
