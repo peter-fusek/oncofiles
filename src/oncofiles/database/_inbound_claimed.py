@@ -17,7 +17,7 @@ No helper deletes a row (#734): a verified job ends ``done`` or ``failed``.
 from __future__ import annotations
 
 from ._base import DatabaseBase
-from ._inbound_jobs import INBOUND_JOB_STATES, InboundQueueFullError
+from ._inbound_jobs import INBOUND_JOB_STATES
 
 # The claimed table's states: the queue's four plus ``deferred`` (security
 # review of #966: an over-cap mail is parked, never lost while there is room).
@@ -96,22 +96,22 @@ class InboundClaimedJobsMixin(DatabaseBase):
         """Queue claimed ``rows`` in ONE transaction.
 
         Returns ``{"inserted", "duplicate", "deferred": {cap: n}, "dropped":
-        {cap: n}}``. Each row: ``job_uuid``, ``bucket``, ``message_id_hash``,
-        ``sender_hash``, ``domain_hash``, ``delivery_hash``, ``payload_enc``. A
-        row already queued (a Brevo retry of the same delivery) is never
-        counted. A row within the open caps (:func:`_checks`) is ``pending``;
-        over one it is stored ``deferred`` (no download, no DNS) while the
-        deferred caps allow. Beyond those (infra review of #966): a welcome@
-        row is DROPPED and counted (the route still answers 202); an ADDRESS
-        bucket row raises ``InboundQueueFullError("claimed")`` before anything
-        is written, so the route answers 503 + Retry-After and Brevo retries
-        (rows of the batch it already holds are no-ops on the retry: the
-        dedupe key includes the delivery hash). A patient's real mail is never
-        dropped.
+        {cap: n}, "over_bound": [bucket, ...]}``. Each row: ``job_uuid``,
+        ``bucket``, ``message_id_hash``, ``sender_hash``, ``domain_hash``,
+        ``delivery_hash``, ``payload_enc``. A row already queued (a Brevo
+        retry of the same delivery) is never counted. A row within the open
+        caps (:func:`_checks`) is ``pending``; over one it is stored
+        ``deferred`` (no download, no DNS) while the deferred caps allow.
+        Beyond those: a welcome@ row is DROPPED and counted; an ADDRESS bucket
+        row is not written and its bucket is listed in ``over_bound``. Every
+        other row of the batch is written and committed either way; the caller
+        answers 503 for the batch when any address row is over-bound
+        (``inbound_queue``, fail closed: never dropped).
         """
         keep: list[tuple[dict, str]] = []
         deferred: dict[str, int] = {}
         dropped: dict[str, int] = {}
+        over_bound: list[str] = []
         added: dict[tuple, int] = {}
         # Reads only, outside the try (never roll back the shared connection).
         for row in rows:
@@ -131,7 +131,8 @@ class InboundClaimedJobsMixin(DatabaseBase):
                 over_deferred = await self._over(row, caps, added, deferred=True)
                 if over_deferred is not None:
                     if row["bucket"] != "welcome":
-                        raise InboundQueueFullError("claimed")
+                        over_bound.append(row["bucket"])
+                        continue
                     dropped[over_deferred] = dropped.get(over_deferred, 0) + 1
                     continue
                 deferred[over] = deferred.get(over, 0) + 1
@@ -172,6 +173,7 @@ class InboundClaimedJobsMixin(DatabaseBase):
             "duplicate": len(keep) - inserted,
             "deferred": deferred,
             "dropped": dropped,
+            "over_bound": over_bound,
         }
 
     async def promote_deferred_claimed(

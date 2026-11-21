@@ -1232,6 +1232,20 @@
             ' (attachments expired: ' + (fr.download_expired || 0) + ', attempts used up: ' + usedUp + ').');
         body.appendChild(jobLine);
       }
+      // #950: alert codes (counts only). claimed_address_refusals_high = one
+      // patient address kept getting more unverified mail than it can hold, so
+      // Brevo batches were refused (503, retried later; nothing is dropped).
+      // Likely a forgery flood on that address.
+      var alerts = (data && data.alerts) || {};
+      var refusals = alerts.claimed_address_refusals_high || 0;
+      if (refusals) {
+        var alertLine = document.createElement('p');
+        alertLine.className = 'curated-ops-meta inbound-alert';
+        setI18n(alertLine,
+          'Upozornenie: adresa pacienta opakovane dostáva viac neoverenej pošty, než unesie; dávky sa odmietajú a Brevo ich zopakuje, nič sa nezahodí (' + refusals + '×, kód claimed_address_refusals_high).',
+          'Alert: a patient address keeps getting more unverified mail than it can hold; batches are refused and Brevo retries them, nothing is dropped (' + refusals + '×, code claimed_address_refusals_high).');
+        body.appendChild(alertLine);
+      }
       renderTrialFunnel(body, data && data.trial_funnel);
       var senders = (data && data.senders) || [];
       if (!senders.length) {

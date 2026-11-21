@@ -26,7 +26,6 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ed25519, rsa
 
 from oncofiles import inbound_dkim, inbound_email, inbound_queue, inbound_welcome, server
-from oncofiles.database._inbound_jobs import InboundQueueFullError
 from tests.test_950_inbound_address import (  # noqa: F401 - fixtures
     CARER,
     PID,
@@ -1242,8 +1241,8 @@ async def test_domain_cap_still_applies_to_an_address_bucket(idb):
     )
     assert result["inserted"] == 2
     # the third is over the domain cap and, with no deferred room, refused
-    with pytest.raises(InboundQueueFullError):
-        await idb.insert_inbound_claimed_jobs([row(2, "token-hash-a")], caps=caps)
+    result = await idb.insert_inbound_claimed_jobs([row(2, "token-hash-a")], caps=caps)
+    assert result["inserted"] == 0 and result["over_bound"] == ["token-hash-a"]
     result = await idb.insert_inbound_claimed_jobs(
         [row(n, "welcome") for n in range(10, 13)], caps=caps
     )
@@ -1365,3 +1364,84 @@ def test_address_card_says_bcc_does_not_work():
     note = html.partition('inbound-bcc-note"')[2].partition("</p>")[0]
     assert "data-sk=" in note and "data-en=" in note
     assert "Bcc" in note and "To (or Cc)" in note
+
+
+# ── over-bound address rows: the rest of the batch, the 503 budget ──────
+
+
+async def test_over_bound_row_never_holds_back_another_patients_mail(
+    idb, drive, dkim_brevo, monkeypatch
+):
+    """The rest of the batch is committed before the over-bound address row
+    makes it answer 503; Brevo's retry is a no-op for the committed row."""
+    from tests.test_950_inbound_address import OTHER_CARER, OTHER_PID
+
+    monkeypatch.setattr(inbound_queue, "MAX_DEFERRED_PER_SENDER", 0)
+    addr = await address_of(idb)
+    other_addr = await address_of(idb, OTHER_PID)
+    for n in range(inbound_queue.MAX_CLAIMED_PER_SENDER):
+        assert (await _post(idb, dkim_item(addr, eml=f"eml-held-{n}"))).status_code == 202
+    over = dkim_item(addr, eml="eml-over")
+    other = dkim_item(other_addr, sender=OTHER_CARER, eml="eml-other", d="example.test")
+    resp = await _post(idb, over, other)
+    assert resp.status_code == 503
+    async with idb.db.execute("SELECT bucket FROM inbound_claimed_jobs ORDER BY id") as cur:
+        buckets = [r[0] for r in await cur.fetchall()]
+    other_bucket = inbound_email.token_hash(inbound_email.token_from_address(other_addr))
+    assert buckets.count(other_bucket) == 1  # committed despite the 503
+    assert (await _post(idb, over, other)).status_code == 503  # Brevo's retry
+    async with idb.db.execute("SELECT COUNT(*) FROM inbound_claimed_jobs") as cur:
+        assert (await cur.fetchone())[0] == len(buckets)  # the retry was a no-op
+
+
+async def test_over_bound_address_rows_are_never_dropped_and_alerted_after_three(
+    idb, dkim_brevo, monkeypatch
+):
+    """Fail closed: an over-bound address row always gets 503, at any count;
+    more than three refusals of one token within the hour raise the alert."""
+    monkeypatch.setattr(inbound_queue, "MAX_DEFERRED_PER_SENDER", 0)
+    addr = await address_of(idb)
+    for n in range(inbound_queue.MAX_CLAIMED_PER_SENDER):
+        await _post(idb, dkim_item(addr, eml=f"eml-held-{n}"))
+    threshold = inbound_queue.REFUSAL_ALERT_PER_TOKEN
+    statuses = []
+    for n in range(threshold):
+        statuses.append((await _post(idb, dkim_item(addr, eml=f"eml-over-{n}"))).status_code)
+    assert statuses == [503] * threshold
+    assert inbound_email.alerts_overview() == {"claimed_address_refusals_high": 0}
+    for n in range(threshold, threshold + 3):
+        statuses.append((await _post(idb, dkim_item(addr, eml=f"eml-over-{n}"))).status_code)
+    assert set(statuses) == {503}
+    counters = inbound_email._state.counters
+    assert counters["jobs_claimed_dropped"] == 0
+    assert counters["jobs_claimed_full"] == len(statuses)
+    expected = {"claimed_address_refusals_high": 3}
+    assert inbound_email.alerts_overview() == expected
+    assert inbound_email.unmatched_overview()["alerts"] == expected
+    held = len(await _rows(idb, "inbound_claimed_jobs"))
+    assert held == inbound_queue.MAX_CLAIMED_PER_SENDER  # nothing over-bound written
+    assert threshold == 3 and inbound_queue.REFUSAL_ALERT_WINDOW_S == 3600
+
+
+async def test_alerts_are_on_readiness_never_on_health(idb, monkeypatch):
+    import json
+    from unittest.mock import MagicMock
+
+    from tests.test_950_inbound_address import _request
+
+    inbound_email.note_alert("claimed_address_refusals_high")
+    monkeypatch.setattr(server, "_readiness_caller_is_operator", lambda request: True)
+    app = MagicMock()
+    app.state.fastmcp_server._lifespan_result = {"db": idb}
+    req = _request(idb, b"", {})
+    req.scope["app"] = app
+    body = json.loads((await server.readiness(req)).body)
+    assert body["inbound_alerts"] == {"claimed_address_refusals_high": 1}
+    assert "alerts" not in inspect.getsource(server.health)
+
+
+def test_admin_panel_renders_the_alert():
+    from pathlib import Path
+
+    js = (Path(inbound_dkim.__file__).parent / "dashboard.js").read_text()
+    assert "claimed_address_refusals_high" in js and "data.alerts" in js

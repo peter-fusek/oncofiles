@@ -251,6 +251,11 @@ MAX_DEFERRED_PER_TOKEN = 10
 MAX_DEFERRED_PER_SENDER = 10
 MAX_DEFERRED_TOTAL = 50
 MAX_DEFERRED_WELCOME = 30
+# An address mail beyond its deferred bounds always makes the batch answer
+# 503 (fail closed; the rest of the batch is committed first). More than this
+# many such refusals for one token within the window raise an admin alert.
+REFUSAL_ALERT_PER_TOKEN = 3
+REFUSAL_ALERT_WINDOW_S = 3600
 # A welcome@ row whose key lookup failed (dns_failed) is retried this often,
 # then ends failed (infra review: a slow DNS server must not hold the bucket).
 WELCOME_DNS_RETRIES = 1
@@ -563,9 +568,14 @@ async def _claimed_bucket(db, msg: inbound_email.InboundMessage) -> str | None:
     return bucket
 
 
-async def _enqueue_claimed(db, claimed: list[tuple[str, inbound_email.InboundMessage]]) -> int:
-    """Write claimed mail in ONE transaction; a mail over a cap is dropped and
-    counted (``jobs_claimed_dropped``, ``jobs_claimed_dropped_<cap>``)."""
+async def _enqueue_claimed(
+    db, claimed: list[tuple[str, inbound_email.InboundMessage]]
+) -> tuple[int, list[str]]:
+    """Write claimed mail in ONE transaction (committed); returns (inserted,
+    over-bound address buckets). A welcome@ mail beyond its bounds is dropped
+    and counted (``jobs_claimed_dropped``, ``jobs_claimed_dropped_<cap>``);
+    an address mail beyond them is not written, and once the rest of the
+    batch is committed the batch answers 503 (:func:`_refuse_over_bound`)."""
     rows = []
     for bucket, msg in claimed:
         payload = to_payload(msg, inbound_email._find_token(msg) or "")
@@ -601,7 +611,38 @@ async def _enqueue_claimed(db, claimed: list[tuple[str, inbound_email.InboundMes
             dict(sorted(result["deferred"].items())),
             dict(sorted(result["dropped"].items())),
         )
-    return result["inserted"]
+    return result["inserted"], list(result["over_bound"])
+
+
+def _refuse_over_bound(buckets: list[str]) -> None:
+    """Count the batch-503 for over-bound address rows and raise the alert.
+
+    Over-bound address rows ALWAYS make the batch answer 503 + Retry-After
+    (fail closed: a patient's possibly real mail is never discarded). Every
+    other row of the batch is already committed, so other patients are never
+    held back, and Brevo's retry finds those rows as no-ops through the
+    delivery hash. Per address token the refusals within
+    ``REFUSAL_ALERT_WINDOW_S`` are counted in memory; above
+    ``REFUSAL_ALERT_PER_TOKEN`` each further refusal raises the alert code
+    ``claimed_address_refusals_high`` (admin inbound panel and operator
+    ``/readiness``; counts only, never an address).
+    """
+    now = time.time()
+    book = inbound_email._state.claimed_503
+    counters = inbound_email._state.counters
+    counters["jobs_claimed_full"] += 1
+    for th in sorted(set(buckets)):
+        times = [t for t in book.get(th, []) if now - t < REFUSAL_ALERT_WINDOW_S]
+        times.append(now)
+        book[th] = times
+        if len(times) > REFUSAL_ALERT_PER_TOKEN:
+            inbound_email.note_alert("claimed_address_refusals_high")
+            logger.warning(
+                "inbound: claimed address bucket refused %d times within the hour "
+                "alert=claimed_address_refusals_high",
+                len(times),
+            )
+    logger.warning("inbound: claimed address bucket full, batch answers 503 (rest committed)")
 
 
 def _claimed_caps() -> dict[str, int]:
@@ -650,15 +691,9 @@ async def enqueue(
             direct.append(msg)
         else:
             claimed.append((bucket, msg))
-    n_claimed = 0
-    if claimed:
-        try:
-            n_claimed = await _enqueue_claimed(db, claimed)
-        except InboundQueueFullError:
-            # an address bucket beyond its deferred bound: 503, Brevo retries
-            inbound_email._state.counters["jobs_claimed_full"] += 1
-            logger.warning("inbound: claimed address bucket full, batch refused (503)")
-            raise
+    # The claimed rows within bounds are committed first; over-bound address
+    # rows are decided at the end, after the rest of the batch is committed.
+    n_claimed, over_bound = await _enqueue_claimed(db, claimed) if claimed else (0, [])
     for msg in direct:
         token = inbound_email._find_token(msg)
         if token is None and inbound_welcome.is_welcome(msg):
@@ -724,6 +759,9 @@ async def enqueue(
         n_claimed,
         ",".join(sorted({r["patient_id"][:4] for r in rows})) or "-",
     )
+    if over_bound:
+        _refuse_over_bound(over_bound)
+        raise InboundQueueFullError("claimed")
     return {
         "queued": queued,
         "duplicate": duplicate,
