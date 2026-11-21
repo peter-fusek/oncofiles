@@ -200,10 +200,10 @@ def job_snapshot() -> list[dict] | None:
     per job (id, trigger, next run) plus the job tracker's last outcome
     timestamps; no error texts, no DB call, no patient data.
     """
-    sched = _scheduler
-    if not _scheduler_alive(sched):
+    current = current_scheduler()  # the same read-only peek as the admin panel (#923)
+    if current is None:
         return None
-    tracker = _tracker or {}
+    sched, tracker = current
     try:
         jobs = sched.get_jobs()
     except Exception:  # telemetry must never break the caller
