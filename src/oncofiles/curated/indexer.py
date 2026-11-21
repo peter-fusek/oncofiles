@@ -26,7 +26,8 @@ from datetime import date
 
 from oncofiles.curated.contract import ContractError, nfc, parse_contract
 from oncofiles.curated.drive_ops import Item
-from oncofiles.curated.runner import _is_sidecar, walk
+from oncofiles.curated.review_codes import codes_of
+from oncofiles.curated.runner import _is_sidecar, review_override, walk
 from oncofiles.models import DocumentCategory
 
 CURATED_FILE_PREFIX = "gdrive:"
@@ -43,7 +44,10 @@ INDEX_ENGINE = "curated-sidecar"
 #      value keeps its unit and printed reference range (#899)
 # v23: a lab-table row without a unit keeps the range printed right after the
 #      value; a Bory result item wrapped onto the next line is read whole (#907)
-INDEX_VERSION = 23
+# v24: curated.review_reasons (codes only) and curated.review_override (bool) are
+#      kept for the dashboard (#919); no parser change, but every row must be
+#      re-read once to carry them
+INDEX_VERSION = 24
 TEXT_SOURCE_EXTS = {"md", "txt", "csv", "json"}
 MAX_TEXT_SOURCE_BYTES = 512 * 1024
 _PAGE_RE = re.compile(r"^<!-- page (\d+) -->\s*$", re.M)
@@ -224,6 +228,10 @@ class IndexRecord:
     tags: list[str] = field(default_factory=list)
     metadata: dict = field(default_factory=dict)
     pages: list[str] = field(default_factory=list)
+    # #919: review state for the dashboard, codes and a boolean only (never the
+    # reason sentences, which can quote document content, nor the override text)
+    review_reasons: list[str] = field(default_factory=list)
+    review_override: bool = False
 
     @property
     def file_id(self) -> str:
@@ -271,7 +279,7 @@ def _record(folder: str, category: DocumentCategory, item: Item) -> IndexRecord:
     )
 
 
-def _apply_sidecar(rec: IndexRecord, front: dict, pages: list[str]) -> None:
+def _apply_sidecar(rec: IndexRecord, front: dict, pages: list[str], text: str = "") -> None:
     rec.pages = pages
     rec.document_date = _iso_date(front.get("doc_date")) or rec.document_date
     if not rec.institution and front.get("institution") not in (None, "Unknown"):
@@ -292,6 +300,9 @@ def _apply_sidecar(rec: IndexRecord, front: dict, pages: list[str]) -> None:
         "ocr_version", "rotation", "rotation_source", "has_chart", "rotated_region",
     )  # fmt: skip
     rec.metadata = {k: front[k] for k in keep if k in front and front[k] not in (None, "")}
+    rec.review_reasons = codes_of(front.get("review_reasons"))
+    # an ACTIVE #900 override: non-empty and not parked by a failed hard check
+    rec.review_override = bool(text) and review_override(text) is not None
 
 
 def scan(
@@ -345,8 +356,9 @@ def scan(
                 else:
                     raw = drive.download(side.id)
                     rec.sidecar_sha = hashlib.sha256(raw).hexdigest()
-                    front, pages = parse_sidecar(raw.decode("utf-8", errors="replace"))
-                    _apply_sidecar(rec, front, pages)
+                    side_text = raw.decode("utf-8", errors="replace")
+                    front, pages = parse_sidecar(side_text)
+                    _apply_sidecar(rec, front, pages, side_text)
             elif ext in TEXT_SOURCE_EXTS and item.size <= MAX_TEXT_SOURCE_BYTES:
                 # A text source (notes, timelines) is its own text; no sidecar.
                 rec.sidecar_modified = item.modified
@@ -355,7 +367,7 @@ def scan(
                 else:
                     text = drive.download(item.id).decode("utf-8", errors="replace")
                     front, pages = parse_sidecar(text)
-                    _apply_sidecar(rec, front, pages)
+                    _apply_sidecar(rec, front, pages, text)
                     rec.metadata["text_source"] = True
             records.append(rec)
     return IndexScan(records, contract.version, skipped, _iso_births(contract))

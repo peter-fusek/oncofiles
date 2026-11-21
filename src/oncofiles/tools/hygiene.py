@@ -896,6 +896,7 @@ async def _build_document_matrix(
             sync_state=doc.sync_state,
             outside_folder=bool(doc.gdrive_parent_outside_root),
             has_date=has_date,
+            mime_type=doc.mime_type,
         )
         status = {
             "doc": doc,
@@ -911,6 +912,7 @@ async def _build_document_matrix(
             "ready": stage["ready"],
             "stage": stage["stage"],
             "attention_reason": stage["attention_reason"],
+            "review_reasons": stage["review_reasons"],
             "needs_attention": stage["attention_reason"] is not None,
         }
         status["in_progress"] = not status["ready"] and not status["needs_attention"]
@@ -971,6 +973,8 @@ async def _build_document_matrix(
                 "ready": s["ready"],
                 "stage": s["stage"],
                 "attention_reason": s["attention_reason"],
+                # #919: review reason codes (never text) for the per-row help
+                "review_reasons": list(s["review_reasons"]),
             }
         )
 
@@ -1066,6 +1070,7 @@ async def get_pipeline_status(ctx: Context, patient_slug: str | None = None) -> 
             file_id=d.file_id,
             structured_metadata=d.structured_metadata,
             patient_id=pid,
+            mime_type=d.mime_type,
         )
 
     db = _get_db(ctx)
@@ -1263,6 +1268,7 @@ async def audit_document_pipeline(ctx: Context, patient_slug: str | None = None)
             file_id=doc.file_id,
             structured_metadata=doc.structured_metadata,
             patient_id=pid,
+            mime_type=doc.mime_type,
         )
 
         # Extraction gaps only apply when the pipeline can actually extract.

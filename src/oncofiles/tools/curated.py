@@ -1339,6 +1339,9 @@ async def _index_patient(db, pid: str, *, force_ids: set[int] | None = None) -> 
                         "index_version": indexer.INDEX_VERSION,
                         "sidecar_sha": rec.sidecar_sha,
                         "source_md5": rec.source_md5,
+                        # #919: codes and a boolean only (document_stage reads them)
+                        "review_reasons": rec.review_reasons,
+                        "review_override": rec.review_override,
                     },
                     **rec.metadata,
                 },

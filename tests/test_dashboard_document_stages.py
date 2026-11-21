@@ -250,7 +250,9 @@ async def test_row_keeps_every_old_key_and_gains_the_new_ones(db):
         "has_metadata", "has_date", "has_institution", "is_synced", "is_standard_name",
         "fully_complete",
     }  # fmt: skip
-    new = {"uploaded_at", "steps", "ready", "stage", "attention_reason", "curated"}
+    new = {"uploaded_at", "steps", "ready", "stage", "attention_reason", "curated",
+           "review_reasons"}  # fmt: skip
+    assert row["review_reasons"] == []  # codes only, and only for review_needed (#919)
     assert set(row) == old | new
     # uploaded_at is documents.created_at as an explicit UTC ISO string
     parsed = datetime.strptime(row["uploaded_at"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)

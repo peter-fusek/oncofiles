@@ -4110,7 +4110,7 @@ async def status(request: Request) -> JSONResponse:
             from oncofiles import document_stage
 
             async with db.db.execute(
-                "SELECT filename, file_id, "
+                "SELECT filename, file_id, mime_type, "
                 "CASE WHEN file_id LIKE 'gdrive:%' THEN structured_metadata END "
                 "AS structured_metadata "
                 "FROM documents WHERE deleted_at IS NULL AND patient_id = ?",
@@ -4125,6 +4125,7 @@ async def status(request: Request) -> JSONResponse:
                     file_id=r["file_id"],
                     structured_metadata=r["structured_metadata"],
                     patient_id=patient_id,
+                    mime_type=r["mime_type"],
                 )
             )
 

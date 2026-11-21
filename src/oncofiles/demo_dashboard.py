@@ -234,6 +234,7 @@ def _row(
         "fully_complete": False,
         "curated": True,
         "attention_reason": attention,
+        "review_reasons": [],  # #919: codes; the demo shows the generic help text
         **stage,
     }
 

@@ -40,6 +40,7 @@ from oncofiles.curated.naming import (
     NameFields,
     camel,
     has_title,
+    subject_token,
     surname_text,
     surname_token,
 )
@@ -433,8 +434,10 @@ def validate(
     )
     hospital = snap(camel(raw.get("hospital")) if raw.get("hospital") else UNKNOWN, "hospital")
     doctor = snap(surname_token(raw.get("doctor")), "doctor")
-    subject = raw.get("subject") if isinstance(raw.get("subject"), str) else None
-    subject = snap(subject.strip(), "subject") if subject and subject.strip() else None
+    # #919: the builder's own subject rule (no ID-like digit runs, never a
+    # leading digit), so the flagged token is the one the filename will carry
+    subject = subject_token(raw.get("subject"))
+    subject = snap(subject, "subject") if subject else None
     if auto_vocab:
         # #854: a new institution / doctor printed in the text joins README §3;
         # an unknown one alone is no reason to keep the document in the inbox.

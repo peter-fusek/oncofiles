@@ -96,10 +96,13 @@ def is_named(
     file_id: str | None,
     structured_metadata=None,
     patient_id: str,
+    mime_type: str | None = None,
 ) -> bool:
     """Does the filename follow the standard that applies to this row?
 
-    Curated row: the README contract (``curated.naming.is_standard``).
+    Curated row: the README contract (``curated.naming.is_standard``); the
+    row's ``mime_type`` lets a Google-native file (a Google Doc has no
+    extension through the Drive API) count as named (#919).
     Any other row: the legacy underscore standard for this patient.
     """
     if not filename:
@@ -107,7 +110,7 @@ def is_named(
     if is_curated_row(file_id, structured_metadata):
         from oncofiles.curated.naming import is_standard
 
-        return is_standard(filename)
+        return is_standard(filename, mime=mime_type)
     from oncofiles.filename_parser import is_standard_format
 
     return is_standard_format(filename, patient_id=patient_id)
@@ -123,19 +126,45 @@ def is_extracted(*, has_text: bool, extractable: bool) -> bool:
     return bool(has_text) or not extractable
 
 
+def _curated(meta: dict) -> dict:
+    curated = meta.get("curated")
+    return curated if isinstance(curated, dict) else {}
+
+
 def _review_needed(meta: dict) -> bool:
     """The sidecar front-matter key ``review_needed`` as the indexer stores it.
 
     ``tools.curated.index_patient`` spreads the kept front-matter keys into
     the top level of ``structured_metadata``; the ``curated`` object is read
     too, in case a later index version moves them there.
+
+    An active #900 maintainer override (``curated.review_override`` is true:
+    a non-empty ``review_override`` without ``review_override_status:
+    hard_checks_failed``, decided by ``curated.runner.review_override``) means
+    no review (#919): the runner files such a document only after every hard
+    check passed, and it leaves ``review_needed: true`` in the sidecar on
+    purpose (the sidecar moves byte for byte). Only indexed (= filed) rows
+    reach this function; the inbox is never indexed.
     """
-    curated = meta.get("curated")
-    for holder in (meta, curated if isinstance(curated, dict) else {}):
+    curated = _curated(meta)
+    if curated.get("review_override") is True:
+        return False
+    for holder in (meta, curated):
         value = holder.get("review_needed")
         if value is True or (isinstance(value, str) and value.strip().lower() == "true"):
             return True
     return False
+
+
+def review_reason_codes(structured_metadata) -> list[str]:
+    """The review reason codes the curated indexer kept (#919); [] when none.
+
+    Codes only (``curated.review_codes``), re-validated on read, so a stored
+    value can never carry text to the dashboard.
+    """
+    from oncofiles.curated.review_codes import safe_codes
+
+    return safe_codes(_curated(_metadata(structured_metadata)).get("review_reasons"))
 
 
 def attention_reason(
@@ -196,10 +225,12 @@ def describe(
     sync_state: str | None = None,
     outside_folder: bool = False,
     has_date: bool = True,
+    mime_type: str | None = None,
 ) -> dict:
     """Everything a status row needs for one document, from its raw columns.
 
-    ``{"curated", "steps", "ready", "stage", "attention_reason"}``.
+    ``{"curated", "steps", "ready", "stage", "attention_reason", "review_reasons"}``;
+    ``review_reasons`` (codes) is filled only when the reason is ``review_needed``.
     """
     from oncofiles.curated.indexer import is_curated_file_id
 
@@ -221,6 +252,7 @@ def describe(
             file_id=file_id,
             structured_metadata=structured_metadata,
             patient_id=patient_id,
+            mime_type=mime_type,
         ),
         filed=gdrive_id is not None,
         attention=reason,
@@ -229,4 +261,7 @@ def describe(
         "curated": is_curated_row(file_id, structured_metadata),
         **stage,
         "attention_reason": reason,
+        "review_reasons": (
+            review_reason_codes(structured_metadata) if reason == REASON_REVIEW_NEEDED else []
+        ),
     }
