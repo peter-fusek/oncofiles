@@ -156,6 +156,7 @@ PUBLIC_ROUTES: dict[tuple[str, str], str] = {
     ("/demo", "demo_dashboard"): "static HTML",
     ("/demo/assistant", "demo_assistant"): "static HTML",
     ("/api/demo-data", "api_demo_data"): "constant JSON, no DB",
+    ("/api/public-config", "api_public_config"): "landing flags from the runtime env, no DB",
     ("/dashboard/config", "dashboard_config"): "returns the public OAuth client id",
     ("/dashboard/verify", "dashboard_verify"): "auth flow: Google tokeninfo, rate limited",
     ("/api/logout", "api_logout"): "auth flow: revokes only a token that verifies (#591)",

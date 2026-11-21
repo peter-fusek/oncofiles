@@ -289,9 +289,11 @@
       var name = sessionStorage.getItem('oncofiles_name') || '';
       var userEl = document.getElementById('user-info');
       if (email && userEl) userEl.textContent = name || email;
-      loadPatients().then(function() { loadGermlineBanner(); refresh(); });
+      var patientsLoaded = loadPatients().then(function() { loadGermlineBanner(); refresh(); });
       if (DEMO) return;  // static invented data: nothing to poll
-      loadOnboardingStatus();
+      var statusLoaded = loadOnboardingStatus();
+      // First visit: no patient yet and onboarding open -> straight into the wizard.
+      patientsLoaded.then(function() { return statusLoaded; }).then(maybeStartFirstVisit);
       if (autoRefreshTimer) clearInterval(autoRefreshTimer);
       autoRefreshTimer = setInterval(refresh, 60000);
     }
@@ -1526,6 +1528,8 @@
 
     function showOnboarding() {
       if (onboardingBlocked()) { showOnboardingClosed(null); return; }
+      var firstVisit = document.getElementById('wiz-first-visit');
+      if (firstVisit) firstVisit.style.display = 'none';  // only maybeStartFirstVisit shows it
       wizardPatientId = '';
       wizardPatientUuid = '';
       wizardBearerToken = '';
@@ -1566,7 +1570,7 @@
 
     // #852: server-side onboarding gate. /api/onboarding-status tells this
     // caller the mode and whether it may create a patient / connect Drive /
-    // set a folder; when not, a waitlist notice replaces the wizard. The
+    // set a folder; when not, an invitation notice replaces the wizard. The
     // server enforces the same rule (403 onboarding_closed), this only spares
     // the user a failing wizard. Unknown (fetch failed) = let the server decide.
     var onboardingStatus = null;
@@ -1581,6 +1585,23 @@
 
     function onboardingBlocked() {
       return !!(onboardingStatus && onboardingStatus.allowed === false);
+    }
+
+    // A signed-in caller with no patient yet, while onboarding is open, goes
+    // straight into the New Patient wizard (consent step included, #857) with
+    // one sentence on the two ways in. Once per browser session, so "Cancel"
+    // is not undone by the next reload; never in the demo or in invite/closed.
+    var FIRST_VISIT_KEY = 'oncofiles_first_visit_wizard';
+    function maybeStartFirstVisit() {
+      if (DEMO || patientsCache.length !== 0) return;
+      if (!onboardingStatus || onboardingStatus.mode !== 'open' || onboardingStatus.allowed !== true) return;
+      try {
+        if (sessionStorage.getItem(FIRST_VISIT_KEY)) return;
+        sessionStorage.setItem(FIRST_VISIT_KEY, '1');
+      } catch (e) { /* storage blocked: still show it this once */ }
+      showOnboarding();
+      var intro = document.getElementById('wiz-first-visit');
+      if (intro) intro.style.display = 'block';
     }
 
     // A refusal body from the server: {error, message_sk, message_en, waitlist_url}.

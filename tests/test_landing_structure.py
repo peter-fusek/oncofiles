@@ -337,7 +337,8 @@ def test_faq_keeps_every_question_of_both_earlier_lists():
         "Where are my documents and data stored?",
         "What do “machine-verified”, “unverified” and “human-verified” mean?",
         "Will Oncofiles delete anything in my Drive?",
-        "When can I connect my own Google Drive?",
+        # was "When can I connect my own Google Drive?" until live operation
+        "How do I start with my own documents?",
         "Is my data safe if I use ChatGPT Free or Plus?",
         "Does it work with Slovak medical reports?",
         "How much does it cost and who pays for it?",
@@ -425,7 +426,7 @@ def test_nav_has_demo_and_sign_in_in_both_languages():
 
 def test_nav_order_is_chapters_demo_sign_in_language_button():
     """DOM order is the keyboard order: menu button, five chapters, Demo,
-    Sign in, language, waitlist."""
+    Sign in, language, try it."""
     nav = _nav()
     marks = [
         'id="menu-toggle"',
@@ -497,3 +498,68 @@ def test_deep_link_guard_never_runs_after_user_interaction():
     assert "window.addEventListener(type, markActed, { capture: true, passive: true });" in js
     assert "function markActed() { userActed = true; }" in js
     assert js.count("userActed = ") == 2  # initial false, set true once: never reset
+
+
+# ── Trial paths instead of a waitlist (live operation, 2026-11-21) ────────
+
+
+def _script() -> str:
+    return LANDING[LANDING.rindex("<script>") :]
+
+
+def test_no_waitlist_form_and_no_subscribe_call():
+    assert "<form" not in LANDING and 'type="email"' not in LANDING
+    assert "newsletter" not in LANDING
+    assert "Join the waitlist" not in LANDING and "Pridať sa na zoznam" not in LANDING
+
+
+def test_hero_offers_sign_in_and_demo_in_both_languages():
+    hero = LANDING[_at("top") : _at("photos")]
+    sign_in = re.search(r'<a class="btn" href="/dashboard"[^>]*>', hero).group(0)
+    assert 'data-when="open" hidden' in sign_in
+    assert 'data-sk="Prihlásiť sa cez Google a vybrať priečinok na Drive"' in sign_in
+    assert 'data-en="Sign in with Google and pick your Drive folder"' in sign_in
+    demo = re.search(r'<a class="btn" href="/demo" data-demo-cta[^>]*>', hero).group(0)
+    assert 'data-en="See the demo with an invented patient"' in demo
+    # the demo is the primary action until the config says "open"
+    assert "btn-ghost" not in demo
+
+
+def _when(value: str) -> list[str]:
+    return re.findall(rf'<[a-z0-9]+\b[^>]*\sdata-when="{value}"[^>]*>', LANDING)
+
+
+def test_self_service_is_hidden_until_onboarding_is_open():
+    opens = _when("open")
+    assert len(opens) >= 3  # hero button + note, closing steps + button
+    assert all(" hidden" in tag for tag in opens), opens
+    # the closed state (demo + "by invitation, write to us") is the default
+    closed = _when("closed")
+    assert len(closed) == 2 and not any(" hidden" in t for t in closed)
+    hero = LANDING[_at("top") : _at("photos")]
+    assert 'data-en="Using your own documents is by invitation for now."' in hero
+    assert 'href="mailto:' in hero and 'data-en="Write to us"' in hero
+
+
+def test_email_cta_is_gated_and_the_address_is_not_in_the_markup():
+    mails = _when("mail")
+    assert len(mails) == 2 and all(" hidden" in t for t in mails)
+    hero = LANDING[_at("top") : _at("photos")]
+    assert "send your first e-mail with an attachment from Gmail to" in hero
+    body = LANDING[LANDING.index("<body>") : LANDING.rindex("<script>")]
+    assert "welcome@" not in body and "docs.oncofiles.com" not in body
+    assert "<a data-welcome-address></a>" in body
+
+
+def test_trial_script_reads_public_config_and_gates_mail_on_open_and_inbound():
+    script = _script()
+    assert script.count("fetch('/api/public-config'") == 1
+    assert "var open = !!cfg && cfg.onboarding_mode === 'open';" in script
+    gate = "var mail = open && cfg.inbound_welcome_enabled === true && WELCOME_RE.test(addr);"
+    assert gate in script
+    assert "el.hidden = !open;" in script and "el.hidden = open;" in script
+    assert "el.hidden = !mail;" in script
+    # the address goes in as text, never as markup
+    trial = script[script.index("function applyTrialConfig") :]
+    assert "a.textContent = addr;" in trial and "innerHTML" not in trial
+    assert "[data-when][hidden] { display: none !important; }" in STYLE

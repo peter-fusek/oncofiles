@@ -3084,8 +3084,11 @@ async def llms_txt(request: Request) -> HTMLResponse:
         f"- Several patients per account; a caregiver sees only the patients assigned\n"
         f"  to them.\n"
         f"- Free up to 500 documents per patient.\n"
-        f"- Connecting your own Google Drive opens to new users in November 2026\n"
-        f"  (waitlist: https://oncofiles.com/#join).\n"
+        f"- Live since November 2026. To try it, sign in with Google at\n"
+        f"  https://oncofiles.com/dashboard and pick the Google Drive folder that\n"
+        f"  already holds your documents; while access is by invitation, write to us.\n"
+        f"  The demo with an invented patient needs no sign-in:\n"
+        f"  https://oncofiles.com/demo (how to start: https://oncofiles.com/#join).\n"
         f"\n"
         f"## Not only oncology\n"
         f"Oncofiles also has a general (non-oncology) patient profile. Use case: from four\n"
@@ -3167,8 +3170,11 @@ async def llms_sk_txt(request: Request) -> HTMLResponse:
         f"- Viac pacientov pod jedným účtom; opatrovateľ vidí len pacientov, ku ktorým\n"
         f"  má prístup.\n"
         f"- Zadarmo do 500 dokumentov na pacienta.\n"
-        f"- Pripájanie vlastného Google Drive otvárame pre nových používateľov\n"
-        f"  v novembri 2026 (zoznam záujemcov: https://oncofiles.com/#join).\n"
+        f"- V prevádzke od novembra 2026. Na vyskúšanie sa prihláste cez Google na\n"
+        f"  https://oncofiles.com/dashboard a vyberte priečinok na Google Drive, v ktorom\n"
+        f"  už dokumentáciu máte; kým je prístup len na pozvanie, napíšte nám.\n"
+        f"  Ukážka s vymyslenou pacientkou je bez prihlásenia:\n"
+        f"  https://oncofiles.com/demo (ako začať: https://oncofiles.com/#join).\n"
         f"\n"
         f"## Ako sa líši od štátnych systémov (eZdravie / OnkoAsist / NCZI)\n"
         f"- Oncofiles je pacientsky nástroj: originály dokumentov zostávajú vo vašom\n"
@@ -3350,11 +3356,13 @@ viac pacientov a údaje sa medzi nimi nemiešajú.</li>
 <li>Ľudia, ktorí chcú mať poriadok aj v bežných nálezoch.</li>
 </ul>
 
-<p>Oncofiles je zadarmo do 500 dokumentov na pacienta. Pripájanie vlastného
-Google Drive spúšťame v novembri 2026. Oncofiles nenahrádza lekára, nediagnostikuje
-a nenavrhuje liečbu.</p>
+<p>Oncofiles je zadarmo do 500 dokumentov na pacienta. Vyskúšať ho môžete hneď:
+pozrite si ukážku s vymyslenou pacientkou, alebo sa prihláste cez Google a vyberte
+priečinok na Google Drive, v ktorom už dokumentáciu máte (kým je prístup len na
+pozvanie, napíšte nám). Oncofiles nenahrádza lekára, nediagnostikuje a nenavrhuje
+liečbu.</p>
 
-<a class="cta" href="/#join">Pridať sa na zoznam &rarr;</a>
+<a class="cta" href="/#join">Vyskúšať &rarr;</a>
 <p style="margin-top:1rem; font-size:0.875rem;"><a href="/demo">Pozrieť ukážku s
 vymyslenou pacientkou</a> &middot; <a href="/pouzitie/pohybovy-atlas">Nielen
 onkológia: pohybový atlas z vlastných správ</a></p>
@@ -3422,11 +3430,13 @@ patients and their data is never mixed.</li>
 <li>People who want their everyday findings in order too.</li>
 </ul>
 
-<p>Oncofiles is free up to 500 documents per patient. Connecting your own
-Google Drive opens in November 2026. Oncofiles does not replace your doctor, does
-not diagnose and does not propose treatment.</p>
+<p>Oncofiles is free up to 500 documents per patient. You can try it right away:
+see the demo with an invented patient, or sign in with Google and pick the Google
+Drive folder that already holds your documents (while access is by invitation,
+write to us). Oncofiles does not replace your doctor, does not diagnose and does
+not propose treatment.</p>
 
-<a class="cta" href="/#join">Join the waitlist &rarr;</a>
+<a class="cta" href="/#join">Try it &rarr;</a>
 <p style="margin-top:1rem; font-size:0.875rem;"><a href="/demo">See the demo with
 an invented patient</a> &middot; <a href="/use-cases/movement-atlas">Not only
 oncology: a movement atlas from your own reports</a></p>
@@ -3693,11 +3703,13 @@ disk.</li>
 <li>Open-source: inspect what the code does with your data at any time.</li>
 </ul>
 
-<p>Oncofiles is free up to 500 documents per patient. Connecting your own
-Google Drive opens in November 2026. Oncofiles does not replace your doctor, does
-not diagnose and does not propose treatment.</p>
+<p>Oncofiles is free up to 500 documents per patient. You can try it right away:
+see the demo with an invented patient, or sign in with Google and pick the Google
+Drive folder that already holds your documents (while access is by invitation,
+write to us). Oncofiles does not replace your doctor, does not diagnose and does
+not propose treatment.</p>
 
-<a class="cta" href="/#join">Join the waitlist &rarr;</a>
+<a class="cta" href="/#join">Try it &rarr;</a>
 <p style="margin-top:1rem; font-size:0.875rem;"><a href="/demo">See the demo with
 an invented patient</a> &middot; <a href="/use-cases/movement-atlas">Not only
 oncology: a movement atlas from your own reports</a></p>
@@ -3801,11 +3813,13 @@ peter.fusek@instarea.sk.</p>
 <p><strong>K dispozícii:</strong> rozhovor s autorom a technická ukážka.</p>
 </div>
 
-<p>Oncofiles je zadarmo do 500 dokumentov na pacienta. Pripájanie vlastného
-Google Drive spúšťame v novembri 2026. Oncofiles nenahrádza lekára, nediagnostikuje
-a nenavrhuje liečbu.</p>
+<p>Oncofiles je zadarmo do 500 dokumentov na pacienta. Vyskúšať ho môžete hneď:
+pozrite si ukážku s vymyslenou pacientkou, alebo sa prihláste cez Google a vyberte
+priečinok na Google Drive, v ktorom už dokumentáciu máte (kým je prístup len na
+pozvanie, napíšte nám). Oncofiles nenahrádza lekára, nediagnostikuje a nenavrhuje
+liečbu.</p>
 
-<a class="cta" href="/#join">Pridať sa na zoznam &rarr;</a>
+<a class="cta" href="/#join">Vyskúšať &rarr;</a>
 <p style="margin-top:1rem; font-size:0.875rem;"><a href="/demo">Pozrieť ukážku s
 vymyslenou pacientkou</a> &middot; <a href="/pouzitie/pohybovy-atlas">Nielen
 onkológia: pohybový atlas z vlastných správ</a></p>
@@ -6459,7 +6473,7 @@ async def api_newsletter_subscribe(request: Request) -> JSONResponse:
 async def api_onboarding_status(request: Request) -> JSONResponse:
     """Onboarding gate state for THIS caller (#852): mode + booleans only.
 
-    The dashboard uses it to show a waitlist notice instead of the new-patient
+    The dashboard uses it to show an invitation notice instead of the new-patient
     wizard / Drive connection. Never returns the invite list; no DB call.
     """
     err = _check_dashboard_auth(request)
@@ -6469,6 +6483,19 @@ async def api_onboarding_status(request: Request) -> JSONResponse:
 
     email, is_admin = _dashboard_caller(request)
     return JSONResponse(onboarding_gate.status_for(email, is_admin=is_admin))
+
+
+@mcp.custom_route("/api/public-config", methods=["GET"])
+async def api_public_config(request: Request) -> JSONResponse:
+    """Public landing flags: onboarding mode, whether the inbound welcome
+    address is live, the address itself. No auth, no DB, env only (like
+    /health); rate-limit class ``public``; cached briefly."""
+    from oncofiles import public_config
+
+    return JSONResponse(
+        public_config.public_config(),
+        headers={"Cache-Control": f"public, max-age={public_config.CACHE_SECONDS}"},
+    )
 
 
 @mcp.custom_route("/api/patients", methods=["GET"])

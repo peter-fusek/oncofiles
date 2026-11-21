@@ -24,9 +24,9 @@ and the legacy enhance trigger. A new user's folder must only ever be touched
 by the curated pipeline; self-service curated enrolment is #853. Re-opening the
 legacy path for non-admins is a code change after #853/#784, not an env flip.
 
-Not gated: sign-in, ``/demo``, read tools, the curated pipeline, the waitlist /
-newsletter, ``/health``. An existing caregiver of an existing patient keeps
-working; only the actions above are refused.
+Not gated: sign-in, ``/demo``, read tools, the curated pipeline, the old
+waitlist route (no longer on the landing), ``/health``. An existing caregiver
+of an existing patient keeps working; only the actions above are refused.
 
 Refusals are logged at INFO with a keyed hash of the caller (never the e-mail),
 at most once per minute per action.
@@ -46,6 +46,9 @@ MODES = ("closed", "invite", "open")
 
 ONBOARDING_CLOSED = "onboarding_closed"
 LEGACY_ADMIN_ONLY = "legacy_sync_admin_only"
+# The key is still called ``waitlist_url`` in every body (compatibility), but
+# the waitlist is gone: ``/#join`` is the landing's "try it" section now
+# (demo, sign in, how to get an invitation).
 WAITLIST_URL = "/#join"
 
 # Action names (log + tests). Kept short and stable.
@@ -56,10 +59,10 @@ ACTION_LEGACY_SYNC = "legacy_sync"
 
 _MESSAGES = {
     ONBOARDING_CLOSED: (
-        "Pripojenie vlastného Google Drive zatiaľ nie je otvorené pre nových "
-        "používateľov. Zapíšte sa do poradovníka a ozveme sa vám.",
-        "Connecting your own Google Drive is not open to new users yet. "
-        "Join the waitlist and we will let you know.",
+        "Pripojenie vlastného Google Drive je zatiaľ len na pozvanie. "
+        "Pozrite si ukážku alebo nám napíšte o prístup.",
+        "Connecting your own Google Drive is by invitation for now. "
+        "See the demo, or write to us for access.",
     ),
     LEGACY_ADMIN_ONLY: (
         "Staršia synchronizácia Google Drive je vypnutá. Dokumenty spracúva iba "
