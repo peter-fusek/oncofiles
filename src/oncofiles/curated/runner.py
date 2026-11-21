@@ -569,7 +569,9 @@ def _normalise_report() -> dict:
         "renamed": [],  # real runs: the planned entries that were done
         "deferred": [],  # over the cap / action budget: a later run does them
         "review": [],  # {source, code: name_not_standard, why}: no rename possible
-        "skipped": [],  # {source, code}: month_only_date | no_sidecar
+        # {source, code}: month_only_date | no_sidecar | target_not_standard |
+        # extension_changed (the last two: planner guards, #946)
+        "skipped": [],
         "counts": {},
     }
 
@@ -1464,6 +1466,9 @@ class Runner:
                     # document's own text export (a read, never a write)
                     exported = self._content(item).decode("utf-8", errors="replace")
                     plan = normalise_mod.plan_name(text=f"{body}\n{exported}", **kw)
+                if plan.code in normalise_mod.GUARD_CODES:  # #946: never planned
+                    rep["skipped"].append({"source": label, "code": plan.code})
+                    continue
                 if plan.target is None:
                     rep["review"].append({"source": label, "code": plan.code, "why": plan.why})
                     continue
@@ -1502,6 +1507,10 @@ class Runner:
             "no_sidecar": sum(
                 1 for s in rep["skipped"] if s["code"] == normalise_mod.CODE_NO_SIDECAR
             ),
+            **{
+                code: sum(1 for s in rep["skipped"] if s["code"] == code)
+                for code in normalise_mod.GUARD_CODES
+            },
         }
         if any(rep["counts"].values()):
             logger.info(
