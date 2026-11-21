@@ -84,6 +84,30 @@ def build_service(api: str, version: str, creds: Any) -> Any:
     )
 
 
+@contextlib.contextmanager
+def short_lived_http(creds: Any, timeout: float):
+    """A fresh authorized ``Http`` with its own ``timeout``, for ONE task (#948).
+
+    Built, used and closed on the calling thread inside the ``with`` block
+    (the #579 rule: never stored, never handed to another thread). The
+    per-thread service connection keeps googleapiclient's default timeout of
+    60 s, far too long for a dashboard request that must answer quickly; a
+    bounded single-attempt read passes this ``Http`` to ``execute(http=...)``.
+    Credentials stay the client's shared, refresh-serialised object.
+    """
+    import google_auth_httplib2
+    import httplib2
+
+    http = google_auth_httplib2.AuthorizedHttp(
+        serialize_refresh(creds), http=httplib2.Http(timeout=timeout)
+    )
+    try:
+        yield http
+    finally:
+        with contextlib.suppress(Exception):
+            http.close()
+
+
 def _close_http(service: Any) -> None:
     http = getattr(service, "_http", None)
     if http is not None and hasattr(http, "close"):
