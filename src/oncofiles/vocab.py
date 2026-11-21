@@ -474,6 +474,7 @@ COLUMN_DOMAINS: dict[tuple[str, str], str] = {
     ("devices", "kind"): "device_kind",
     ("dashboard_access_log", "event"): "dashboard_access_event",
     ("inbound_jobs", "state"): "inbound_job_state",
+    ("inbound_claimed_jobs", "state"): "inbound_job_state",
     ("patient_consents", "kind"): "consent_kind",
     ("trial_accounts", "source"): "trial_source",
 }

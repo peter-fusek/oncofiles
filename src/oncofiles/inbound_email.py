@@ -352,6 +352,15 @@ class InboundMessage:
     # #950 phase 2: admitted through welcome@ (``inbound_welcome.admit``): the
     # reply is the welcome text instead of the receipt.
     welcome: bool = False
+    # #950 DKIM mode (Brevo): ``auth_mode == "dkim"`` = the verdict is not
+    # known yet (``auth_pass`` stays False) and is decided by the queue worker
+    # on the raw message (``inbound_dkim``); ``eml_ref`` is Brevo's
+    # ``EMLDownloadToken``; ``dkim_header`` = the payload's headers name at
+    # least one ``DKIM-Signature`` (without one the verdict is ``dkim_none``
+    # at once, no download). Never logged.
+    auth_mode: str = ""
+    eml_ref: str = ""
+    dkim_header: bool = False
 
 
 class UnparseableMessageError(ValueError):
@@ -564,11 +573,37 @@ async def _load_referenced(
 #   listed as unmatched. Infra sets it only after reading a live payload.
 # Not verified (needs a live payload): the exact ``Headers`` shape, which
 # Authentication-Results line Brevo's MX writes, the ``auth`` header format.
+#
+# Production finding (2026-11-21): Brevo's payload has NO
+# Authentication-Results header at all. So the default verification mode is
+# ``dkim`` (``VERIFICATION_MODE_DEFAULT``): the queue worker downloads the raw
+# message (item key ``EMLDownloadToken``) and verifies its DKIM signatures
+# itself (``inbound_dkim``; the design is in ``inbound_queue``). The
+# Authentication-Results rule above stays available as mode ``authserv``,
+# used only while ``INBOUND_BREVO_AUTHSERV_ID`` is set.
 
 BREVO_ATTACHMENT_URL = "https://api.brevo.com/v3/inbound/attachments/{token}"
 BREVO_TOKEN_HEADER = "x-inbound-token"
 BREVO_API_KEY_ENV = "BREVO_API_KEY"
 BREVO_AUTHSERV_ENV = "INBOUND_BREVO_AUTHSERV_ID"
+VERIFICATION_MODE_DEFAULT = "dkim"
+VERIFICATION_MODES = ("dkim", "authserv")
+
+
+def verification_mode() -> str:
+    """``authserv`` while ``INBOUND_BREVO_AUTHSERV_ID`` is set, else ``dkim``."""
+    if os.environ.get(BREVO_AUTHSERV_ENV, "").strip():
+        return "authserv"
+    return VERIFICATION_MODE_DEFAULT
+
+
+def verification_ready() -> bool:
+    """The sender verification can decide a verdict: ``dkim`` needs nothing
+    extra (the EML is fetched with the same ``BREVO_API_KEY`` as the
+    attachments), ``authserv`` needs its authserv-id (set, by definition)."""
+    return verification_mode() in VERIFICATION_MODES
+
+
 BREVO_MAX_BODY_BYTES = 8 * 1024 * 1024  # JSON only: bodies and headers, no files
 BREVO_MAX_ITEMS = 20
 _DOWNLOAD_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{1,512}$")  # no dots, no slashes
@@ -626,7 +661,22 @@ AUTH_REFUSAL_REASONS = (
     "dmarc_not_pass",
     "header_from_missing",
     "header_from_mismatch",
+    # mode ``dkim`` (``inbound_dkim.DKIM_REFUSAL_REASONS``, same order)
+    "eml_unavailable",
+    "from_repeated",
+    "from_mismatch",
+    "dkim_none",
+    "dkim_not_aligned",
+    "dkim_l_tag",
+    "dkim_weak_alg",
+    "dkim_weak_key",
+    "dkim_invalid",
 )
+
+
+def note_auth_refusal(reason: str) -> None:
+    """Count one refused verdict by its code (admin overview ``auth_refusals``)."""
+    _state.auth_refusals[reason] += 1
 
 
 def _brevo_auth_refusal(headers: dict[str, list[str]], sender: str) -> str | None:
@@ -1053,10 +1103,19 @@ def parse_brevo_item(item: dict) -> InboundMessage:
         return values[0] if values else ""
 
     ctype = first("content-type").lower()
+    sender = _mailbox(item.get("From"))
+    eml_ref = str(item.get("EMLDownloadToken") or "")
+    if not _DOWNLOAD_TOKEN_RE.match(eml_ref):
+        eml_ref = ""
+    dkim_mode = verification_mode() == "dkim"
     return InboundMessage(
         recipients=recipients,
-        sender=_mailbox(item.get("From")),
-        auth_pass=_brevo_auth_pass(headers, _mailbox(item.get("From"))),
+        sender=sender,
+        # mode dkim: decided later by the queue worker on the raw message
+        auth_pass=False if dkim_mode else _brevo_auth_pass(headers, sender),
+        auth_mode="dkim" if dkim_mode else "",
+        eml_ref=eml_ref,
+        dkim_header=bool(headers.get("dkim-signature")),
         message_id=str(item.get("MessageId") or "").strip(),
         auto_submitted=first("auto-submitted"),
         precedence=first("precedence"),
@@ -1307,6 +1366,7 @@ def unmatched_overview() -> dict:
     ]
     return {
         "enabled": is_enabled(),
+        "verification_mode": verification_mode(),
         "senders": senders,
         "totals": dict(_state.counters),
         "auth_refusals": {r: _state.auth_refusals[r] for r in AUTH_REFUSAL_REASONS},

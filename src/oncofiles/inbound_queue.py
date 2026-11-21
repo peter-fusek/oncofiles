@@ -104,6 +104,60 @@ Worker
   ``local_only_task``). All DB calls are on the event loop; only the Drive
   writes and the SMTP receipt inside the core use worker threads.
 
+Sender verification by DKIM (#950, the "claimed" bucket)
+-------------------------------------------------------
+Production finding: Brevo's payload carries no ``Authentication-Results``
+header, so in the default verification mode ``dkim``
+(``inbound_email.verification_mode``) the verdict is our own: the raw message
+(Brevo ``EMLDownloadToken``) is downloaded and its DKIM signatures verified
+(``inbound_dkim``). That costs a download and DNS lookups, so it runs here in
+the WORKER, never in the webhook request, which still answers at once.
+
+At enqueue the verdict is therefore unknown. A mail goes:
+
+* straight into ``inbound_jobs`` as untrusted (verdict fail), exactly as
+  before, when its From does not match the address's caregiver (it is never
+  filed whatever its DKIM says, so nothing is downloaded for it), when it is
+  loop mail, or when the payload's headers carry no ``DKIM-Signature`` at all
+  (verdict ``dkim_none`` at once; a payload header can only REFUSE a mail,
+  never pass one);
+* otherwise (a From that CLAIMS to be the caregiver, or a welcome@ mail with a
+  ``DKIM-Signature``) into the separate ``claimed`` bucket, table
+  ``inbound_claimed_jobs`` (migration 099), with its own small caps:
+  ``MAX_CLAIMED_JOBS_PER_TOKEN`` per address, ``MAX_CLAIMED_WELCOME_JOBS`` for
+  welcome@ and ``MAX_CLAIMED_JOBS_TOTAL`` in all. Over a cap the batch is
+  refused whole (503 + Retry-After, nothing written): Brevo retries, so a real
+  mail is queued once there is room again, never silently dropped.
+
+The worker (:func:`run_pending`) first verifies claimed rows, one at a time,
+under the same lease rules as the jobs (conditional claim, lease refreshed
+before the download, every write conditional on it). A verified row is
+promoted: it is queued into ``inbound_jobs`` through :func:`enqueue` with the
+real verdict, where the core's own ``sender_refusal`` marks it trusted (the
+trusted caps apply from there on) and, for welcome@, ``inbound_welcome.admit``
+runs only now, so a forged mail never creates a trial patient nor gets a
+reply. A refused verdict (``dkim_*``, ``from_mismatch``, ``from_repeated``,
+``eml_unavailable``) is queued as untrusted (listed in the admin panel,
+counted in ``auth_refusals``); both end the claimed row ``done`` with the
+code. Temporary failures (EML 5xx / 429 / timeout ``fetch_failed``, DNS
+``dns_failed``, ``no_api_key``, a full trusted queue ``queue_full``) go back
+to ``pending`` with the job backoff; after ``MAX_ATTEMPTS`` the row ends
+``failed``. A forged flood claiming the caregiver's From can therefore only
+fill the small claimed bucket: each forged row leaves it after one quick
+verification, real caregiver mail still enters while there is room, verifies
+and moves on to the trusted queue.
+
+Why a separate table and not a third ``trusted`` value in ``inbound_jobs``: a
+welcome@ mail has no patient until ``admit`` creates the trial, and
+``inbound_jobs.patient_id`` is NOT NULL with an FK; creating the trial before
+the verification would let a forged mail create trial patients (and their
+by-sending consent rows) and use up ``MAX_NEW_TRIALS_PER_DAY``. One claimed
+table for both kinds keeps one verification path, and ``inbound_jobs``
+keeps its meaning (every row there has its final verdict).
+
+Mode ``authserv`` (``INBOUND_BREVO_AUTHSERV_ID`` set) keeps the previous
+behaviour: the verdict is decided at parse time and nothing is claimed.
+
 Retention: nothing here deletes a row (#734). TODO: removing ``done`` rows
 older than 30 days needs a RUNBOOK lifecycle schedule and a reviewed
 ``tests/test_no_automatic_deletion.py`` allowlist entry (maintainer decision).
@@ -152,6 +206,14 @@ MAX_OPEN_JOBS_TOTAL = 500
 # address answer 503.
 MAX_UNTRUSTED_JOBS_PER_TOKEN = 10
 MAX_UNTRUSTED_JOBS_TOTAL = 100
+# The claimed bucket (#950 DKIM mode): mail that claims the caregiver's From
+# (or a welcome@ mail) waits here for its DKIM verification by the worker.
+# Small on purpose: a forged flood fills only these slots; over them the batch
+# is refused (503, Brevo retries), real mail is never dropped silently.
+MAX_CLAIMED_JOBS_PER_TOKEN = 5
+MAX_CLAIMED_WELCOME_JOBS = 20
+MAX_CLAIMED_JOBS_TOTAL = 50
+_CLAIMED_SCOPE = "claimed"  # AES-GCM associated data: claimed|bucket|job_uuid
 # How long Brevo keeps an inbound attachment downloadable is NOT documented
 # (checked 2026-11-21): neither the inbound parsing guide
 # https://developers.brevo.com/docs/inbound-parse-webhooks nor the download
@@ -330,6 +392,10 @@ def to_payload(msg: inbound_email.InboundMessage, token: str) -> dict:
         "progress": {"filed": [], "receipt_sent": False, "admitted": False},
         # #950 phase 2: admitted through welcome@ (reply = the welcome text)
         "welcome": bool(msg.welcome),
+        # #950 DKIM mode: only meaningful on a claimed row (verdict still open)
+        "auth_mode": msg.auth_mode,
+        "eml_ref": msg.eml_ref,
+        "dkim_header": bool(msg.dkim_header),
     }
 
 
@@ -364,8 +430,12 @@ def from_payload(payload: dict) -> inbound_email.InboundMessage:
             )
         )
     # A token-only address routes exactly like the full one (the prefix is
-    # never checked), so the Gmail prefix is never stored.
-    recipient = f"{payload['token']}@{inbound_email.INBOUND_DOMAIN}"
+    # never checked), so the Gmail prefix is never stored. A claimed welcome@
+    # row has no token yet (#950 DKIM mode): it routes to the welcome address.
+    if payload.get("token"):
+        recipient = f"{payload['token']}@{inbound_email.INBOUND_DOMAIN}"
+    else:
+        recipient = sorted(inbound_welcome.WELCOME_ADDRESSES)[0]
     return inbound_email.InboundMessage(
         recipients=[recipient],
         sender=str(payload.get("sender") or ""),
@@ -379,13 +449,78 @@ def from_payload(payload: dict) -> inbound_email.InboundMessage:
         attachments=attachments,
         parse_skips=skips,
         welcome=bool(payload.get("welcome")),
+        auth_mode=str(payload.get("auth_mode") or ""),
+        eml_ref=str(payload.get("eml_ref") or ""),
+        dkim_header=bool(payload.get("dkim_header")),
     )
 
 
 # ── enqueue ──────────────────────────────────────────────────────────────
 
 
-async def enqueue(db, messages: list[inbound_email.InboundMessage]) -> dict:
+async def _claimed_bucket(db, msg: inbound_email.InboundMessage) -> str | None:
+    """The claimed bucket of a DKIM-mode mail whose verdict is still open
+    (the address token hash, or ``welcome``), or None: queued straight away as
+    untrusted (#950; see the module docstring)."""
+    from oncofiles.persistent_oauth import _email_matches_caregiver
+
+    if msg.auth_mode != "dkim" or inbound_email.loop_reason(msg):
+        return None
+    token = inbound_email._find_token(msg)
+    if token is None:
+        if not inbound_welcome.is_welcome(msg):
+            return None
+        bucket = "welcome"
+    else:
+        th = inbound_email.token_hash(token)
+        row = await db.find_inbound_address(th)
+        if row is None or not row["active"]:
+            return None  # dropped by the normal path
+        patient = await db.get_patient(row["patient_id"])
+        caregiver = getattr(patient, "caregiver_email", None) if patient else None
+        if patient is None or not _email_matches_caregiver(msg.sender, caregiver):
+            return None  # never filed whatever its DKIM says
+        bucket = th
+    if not msg.dkim_header:
+        # A payload header can only refuse: no DKIM-Signature at all.
+        inbound_email.note_auth_refusal("dkim_none")
+        return None
+    return bucket
+
+
+async def _enqueue_claimed(db, claimed: list[tuple[str, inbound_email.InboundMessage]]) -> int:
+    """Write claimed mail in ONE transaction (raises ``InboundQueueFullError``)."""
+    rows = []
+    for bucket, msg in claimed:
+        payload = to_payload(msg, inbound_email._find_token(msg) or "")
+        job_uuid = str(uuid.uuid4())
+        rows.append(
+            {
+                "job_uuid": job_uuid,
+                "bucket": bucket,
+                "message_id_hash": message_id_hash(msg.message_id, payload),
+                "sender_hash": sender_hash(msg.sender, False),
+                "payload_enc": encrypt_payload(
+                    payload, patient_id=_CLAIMED_SCOPE, token_hash=bucket, job_uuid=job_uuid
+                ),
+            }
+        )
+    inserted, duplicate = await db.insert_inbound_claimed_jobs(
+        rows,
+        now=_iso(_now()),
+        caps={
+            "address": (MAX_CLAIMED_JOBS_PER_TOKEN, MAX_CLAIMED_JOBS_TOTAL),
+            "welcome": (MAX_CLAIMED_WELCOME_JOBS, MAX_CLAIMED_JOBS_TOTAL),
+        },
+    )
+    inbound_email._state.counters["jobs_claimed"] += inserted
+    inbound_email._state.counters["jobs_claimed_duplicate"] += duplicate
+    return inserted
+
+
+async def enqueue(
+    db, messages: list[inbound_email.InboundMessage], *, verified: bool = False
+) -> dict:
     """Queue every routable message in ONE transaction; raises on a DB error.
 
     Returns counts: ``queued``, ``duplicate`` (already queued, a provider
@@ -396,10 +531,33 @@ async def enqueue(db, messages: list[inbound_email.InboundMessage]) -> dict:
     ``InboundQueueFullError`` (nothing written, counter ``jobs_queue_full``)
     when trusted mail would pass ``MAX_OPEN_JOBS_PER_TOKEN`` or
     ``MAX_OPEN_JOBS_TOTAL``; untrusted mail never causes it.
+
+    #950 DKIM mode: a mail whose verdict is still open and that claims the
+    caregiver's From (or goes to welcome@) is written to the claimed bucket
+    instead (``claimed`` count; over its caps ``InboundQueueFullError`` before
+    anything is written); the worker verifies it and calls this again with
+    ``verified=True`` and the real verdict.
     """
     rows = []
     dropped = 0
+    claimed: list[tuple[str, inbound_email.InboundMessage]] = []
+    direct: list[inbound_email.InboundMessage] = []
     for msg in messages:
+        bucket = None if verified else await _claimed_bucket(db, msg)
+        if bucket is None:
+            msg.auth_mode = ""  # the verdict is final: pass or fail
+            direct.append(msg)
+        else:
+            claimed.append((bucket, msg))
+    n_claimed = 0
+    if claimed:
+        try:
+            n_claimed = await _enqueue_claimed(db, claimed)
+        except InboundQueueFullError:
+            inbound_email._state.counters["jobs_claimed_full"] += 1
+            logger.warning("inbound: claimed bucket full, nothing queued")
+            raise
+    for msg in direct:
         token = inbound_email._find_token(msg)
         if token is None and inbound_welcome.is_welcome(msg):
             # #950 phase 2: welcome@ is admitted here (auth, Gmail, caps, the
@@ -456,11 +614,12 @@ async def enqueue(db, messages: list[inbound_email.InboundMessage]) -> dict:
     inbound_email._state.counters["jobs_duplicate"] += duplicate
     inbound_email._state.counters["jobs_untrusted_dropped"] += flood_dropped
     logger.info(
-        "inbound: queued=%d duplicate=%d dropped=%d flood_dropped=%d patients=%s",
+        "inbound: queued=%d duplicate=%d dropped=%d flood_dropped=%d claimed=%d patients=%s",
         queued,
         duplicate,
         dropped,
         flood_dropped,
+        n_claimed,
         ",".join(sorted({r["patient_id"][:4] for r in rows})) or "-",
     )
     return {
@@ -468,6 +627,7 @@ async def enqueue(db, messages: list[inbound_email.InboundMessage]) -> dict:
         "duplicate": duplicate,
         "dropped": dropped,
         "flood_dropped": flood_dropped,
+        "claimed": n_claimed,
     }
 
 
@@ -517,6 +677,14 @@ async def run_pending(db, *, limit: int = MAX_JOBS_PER_RUN) -> Counter:
     if not configured():
         _warn_unconfigured_once()
         return counts
+    # #950 DKIM mode: verify the claimed bucket first, so a verified mail is
+    # processed in this same run.
+    for _ in range(limit):
+        async with inbound_email.PROCESS_LOCK:
+            outcome = await _verify_one(db)
+        if outcome is None:
+            break
+        counts[f"claimed:{outcome}"] += 1
     for _ in range(limit):
         async with inbound_email.PROCESS_LOCK:
             outcome = await _run_one(db)
@@ -534,6 +702,91 @@ async def run_pending(db, *, limit: int = MAX_JOBS_PER_RUN) -> Counter:
         except Exception as exc:  # noqa: BLE001 - mail never stops the queue
             logger.warning("inbound: ready mails failed (%s)", type(exc).__name__)
     return counts
+
+
+async def _verify_one(db) -> str | None:
+    """Claim, DKIM-verify and promote the next claimed row (caller holds
+    PROCESS_LOCK). None = no row. See the module docstring."""
+    from oncofiles import inbound_dkim
+
+    now = _now()
+    job = await db.next_inbound_claimed_job(
+        now=_iso(now), stale_before=_iso(now - timedelta(minutes=STALE_PROCESSING_MIN))
+    )
+    if job is None:
+        return None
+    lease = {"value": _iso(now)}
+    if not await db.claim_inbound_claimed_job(job, now=lease["value"]):
+        return "lost_claim"
+    jid = job["id"]
+    attempts = job["attempts"] + 1
+
+    def lease_lost() -> str:
+        inbound_email._state.counters["jobs_lease_lost"] += 1
+        logger.warning("inbound: claimed job lease lost, left to its new owner")
+        return "lease_lost"
+
+    async def finish(state: str, reason: str, *, retry_in: timedelta | None = None) -> str:
+        at = _now()
+        ok = await db.finish_inbound_claimed_job(
+            jid,
+            state=state,
+            reason=reason,
+            now=_iso(at),
+            lease=lease["value"],
+            next_attempt_at=_iso(at + retry_in) if retry_in is not None else None,
+        )
+        if not ok:
+            return lease_lost()
+        inbound_email._state.counters[f"claimed_{state}"] += 1
+        logger.info("inbound: claimed job state=%s reason=%s", state, reason)
+        return f"{state}:{reason}"
+
+    async def retry_or_fail(code: str) -> str:
+        """A temporary failure: back to ``pending`` with the job backoff, or
+        ``failed:<code>`` once the attempts are used up."""
+        if attempts >= MAX_ATTEMPTS:
+            return await finish("failed", code)
+        return await finish("pending", code, retry_in=_backoff(attempts))
+
+    if job["attempts"] >= MAX_ATTEMPTS:
+        return await finish("failed", "max_attempts")
+    try:
+        payload = decrypt_payload(
+            job["payload_enc"],
+            patient_id=_CLAIMED_SCOPE,
+            token_hash=job["bucket"],
+            job_uuid=job["job_uuid"],
+        )
+    except UndecryptablePayloadError:
+        return await finish("failed", "undecryptable")
+    if (now - _parse_iso(job["created_at"])).total_seconds() > BREVO_ATTACHMENT_RETENTION_S:
+        return await finish("failed", "download_expired")
+    msg = from_payload(payload)
+    # refresh the lease before the download (a lost lease stops here)
+    new = _iso(_now())
+    if not await db.touch_inbound_claimed_job(jid, lease=lease["value"], now=new):
+        return lease_lost()
+    lease["value"] = new
+    api_key = os.environ.get(inbound_email.BREVO_API_KEY_ENV, "")
+    try:
+        verdict = await inbound_dkim.verify_message(msg.eml_ref, msg.sender, api_key)
+    except inbound_dkim.TemporaryVerifyError as exc:
+        return await retry_or_fail(exc.code)
+    except Exception as exc:  # noqa: BLE001 - one job never stops the queue
+        return await retry_or_fail(f"error:{type(exc).__name__}"[:64])
+    msg.auth_mode = ""
+    msg.auth_pass = verdict.ok
+    reason = "verified" if verdict.ok else (verdict.reason or "dkim_invalid")
+    try:
+        await enqueue(db, [msg], verified=True)
+    except InboundQueueFullError:
+        return await retry_or_fail("queue_full")
+    except Exception as exc:  # noqa: BLE001
+        return await retry_or_fail(f"error:{type(exc).__name__}"[:64])
+    if not verdict.ok:
+        inbound_email.note_auth_refusal(reason)
+    return await finish("done", reason)
 
 
 def _backoff(attempts: int) -> timedelta:

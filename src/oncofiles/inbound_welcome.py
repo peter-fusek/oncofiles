@@ -9,7 +9,10 @@ decides, in this order:
 1. **Loop mail** (``inbound_email.loop_reason``): ignored silently.
 2. **Auth verdict**: the same fail-closed rule as phase 1 (the trusted
    ``Authentication-Results`` line must say ``dmarc=pass`` aligned with the
-   From domain, ``inbound_email._brevo_auth_pass``). A fail is never answered;
+   From domain, ``inbound_email._brevo_auth_pass``) in mode ``authserv``; in
+   the default mode ``dkim`` (#950) the mail first waits in the claimed bucket
+   and :func:`admit` runs only after the queue worker verified its DKIM
+   signature (``inbound_dkim``). A fail is never answered;
    it is listed in the admin zone (reason ``welcome_auth_failed``).
 3. **Existing caregiver** (maintainer decision): a sender whose canonical
    address is the caregiver of patients that are not trials. Exactly ONE such

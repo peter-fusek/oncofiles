@@ -1,7 +1,10 @@
 """``GET /api/public-config``: the landing's trial flags (live operation, 2026-11-21).
 
 Public (no auth), no DB call, runtime env only — the same rules as /health.
-``inbound_welcome_enabled`` is true only when every inbound variable is set.
+``inbound_welcome_enabled`` is true only when every inbound variable is set,
+the sender verification is ready and infra has set ``INBOUND_GO_LIVE=true``
+(#950: DKIM mode needs no authserv-id, so the CTA would otherwise turn on as
+soon as this is deployed).
 """
 
 from __future__ import annotations
@@ -32,16 +35,48 @@ async def _body() -> dict:
 def no_inbound_env(monkeypatch):
     for name in ENVS:
         monkeypatch.delenv(name, raising=False)
+    monkeypatch.delenv("INBOUND_BREVO_AUTHSERV_ID", raising=False)
+    monkeypatch.setenv(public_config.GO_LIVE_ENV, "true")
     return monkeypatch
 
 
-def test_the_four_inbound_variables():
+def test_the_three_inbound_variables():
+    # #950: the authserv-id is no longer required (DKIM mode is the default)
     assert set(ENVS) == {
         "INBOUND_BREVO_TOKEN",
         "INBOUND_JOBS_SECRET",
         "HOLDING_STORE_SECRET",
-        "INBOUND_BREVO_AUTHSERV_ID",
     }
+    assert public_config.GO_LIVE_ENV == "INBOUND_GO_LIVE"
+
+
+@pytest.mark.parametrize("value", [None, "", "false", "1", "yes", "TRUE ", "True"])
+async def test_go_live_gates_the_flag(no_inbound_env, value):
+    """Every variable set: the CTA is on only for INBOUND_GO_LIVE=true."""
+    for name in ENVS:
+        no_inbound_env.setenv(name, "x")
+    if value is None:
+        no_inbound_env.delenv(public_config.GO_LIVE_ENV, raising=False)
+    else:
+        no_inbound_env.setenv(public_config.GO_LIVE_ENV, value)
+    expected = value is not None and value.strip().lower() == "true"
+    assert (await _body())["inbound_welcome_enabled"] is expected
+
+
+async def test_go_live_alone_is_not_enough(no_inbound_env):
+    assert (await _body())["inbound_welcome_enabled"] is False
+
+
+async def test_dkim_mode_needs_no_authserv_id(no_inbound_env):
+    from oncofiles import inbound_email
+
+    for name in ENVS:
+        no_inbound_env.setenv(name, "x")
+    assert inbound_email.verification_mode() == "dkim"
+    assert (await _body())["inbound_welcome_enabled"] is True
+    no_inbound_env.setenv("INBOUND_BREVO_AUTHSERV_ID", "mx.synthetic.test")
+    assert inbound_email.verification_mode() == "authserv"
+    assert (await _body())["inbound_welcome_enabled"] is True
 
 
 @pytest.mark.parametrize(

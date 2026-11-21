@@ -14,28 +14,44 @@ from __future__ import annotations
 
 import os
 
-from oncofiles import onboarding_gate
+from oncofiles import inbound_email, onboarding_gate
 from oncofiles.inbound_email import INBOUND_DOMAIN
 
 WELCOME_ADDRESS = f"welcome@{INBOUND_DOMAIN}"
 
 # Every one of these must be set before the landing may show the welcome
-# address: the Brevo route token, the durable queue key (#952), the holding
-# store key and the authserv-id of the trusted Authentication-Results line.
+# address: the Brevo route token, the durable queue key (#952) and the holding
+# store key. The sender verification must also be ready
+# (``inbound_email.verification_ready``: mode ``dkim`` needs nothing extra,
+# mode ``authserv`` is used only while ``INBOUND_BREVO_AUTHSERV_ID`` is set).
 INBOUND_WELCOME_ENVS = (
     "INBOUND_BREVO_TOKEN",
     "INBOUND_JOBS_SECRET",
     "HOLDING_STORE_SECRET",
-    "INBOUND_BREVO_AUTHSERV_ID",
 )
+
+# Non-secret runtime switch (#950): the e-mail CTA turns on only when infra
+# sets ``INBOUND_GO_LIVE=true``, even with every variable above already set
+# (they are, in production), so infra decides the moment. Default off.
+GO_LIVE_ENV = "INBOUND_GO_LIVE"
 
 # Short browser/proxy cache: a mode flip shows up on the landing within a minute.
 CACHE_SECONDS = 60
 
 
+def go_live() -> bool:
+    """True only for ``INBOUND_GO_LIVE=true`` (case-insensitive)."""
+    return os.environ.get(GO_LIVE_ENV, "").strip().lower() == "true"
+
+
 def inbound_welcome_enabled() -> bool:
-    """True only when every variable of ``INBOUND_WELCOME_ENVS`` is set."""
-    return all(os.environ.get(name, "").strip() for name in INBOUND_WELCOME_ENVS)
+    """True only when ``INBOUND_GO_LIVE`` is ``true``, every variable of
+    ``INBOUND_WELCOME_ENVS`` is set and the sender verification is ready."""
+    return (
+        go_live()
+        and all(os.environ.get(name, "").strip() for name in INBOUND_WELCOME_ENVS)
+        and inbound_email.verification_ready()
+    )
 
 
 def public_config() -> dict:

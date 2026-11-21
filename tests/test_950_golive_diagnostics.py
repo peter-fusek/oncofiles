@@ -233,8 +233,15 @@ def test_each_refusal_reason(monkeypatch, env, headers, sender, reason):
         monkeypatch.setenv(inbound_email.BREVO_AUTHSERV_ENV, env)
     parsed = inbound_email._brevo_headers(headers)
     assert inbound_email._brevo_auth_refusal(parsed, sender) == reason
-    assert inbound_email.parse_brevo_item(item(headers, sender)).auth_pass is False
+    msg = inbound_email.parse_brevo_item(item(headers, sender))
+    assert msg.auth_pass is False
     refusals = overview()["auth_refusals"]
+    if env is None:
+        # #950: without the authserv-id the mode is ``dkim``: the verdict is
+        # decided later by the queue worker, nothing is refused at parse time
+        assert msg.auth_mode == "dkim"
+        assert sum(refusals.values()) == 0
+        return
     assert refusals[reason] == 1
     assert sum(refusals.values()) == 1
 
@@ -249,7 +256,11 @@ def test_pass_records_no_refusal(monkeypatch):
 
 def test_auth_refusals_lists_every_code():
     assert list(overview()["auth_refusals"]) == list(inbound_email.AUTH_REFUSAL_REASONS)
-    assert len(inbound_email.AUTH_REFUSAL_REASONS) == 8
+    # 8 Authentication-Results codes (mode authserv) + 9 DKIM codes (#950)
+    assert len(inbound_email.AUTH_REFUSAL_REASONS) == 17
+    from oncofiles import inbound_dkim
+
+    assert set(inbound_dkim.DKIM_REFUSAL_REASONS) <= set(inbound_email.AUTH_REFUSAL_REASONS)
 
 
 def test_bool_contract_unchanged(monkeypatch):

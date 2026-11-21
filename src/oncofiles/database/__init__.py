@@ -19,6 +19,7 @@ from ._gmail import GmailMixin
 from ._hard_extract import HardExtractMixin
 from ._hard_facts import HardFactsMixin
 from ._inbound import InboundAddressMixin
+from ._inbound_claimed import InboundClaimedJobsMixin
 from ._inbound_jobs import InboundJobsMixin
 from ._onboarding import OnboardingEventsMixin
 from ._operational import OperationalMixin
@@ -48,6 +49,7 @@ class Database(
     DashboardAccessLogMixin,
     InboundAddressMixin,
     InboundJobsMixin,
+    InboundClaimedJobsMixin,
     TrialsMixin,
     DatabaseBase,
 ):
