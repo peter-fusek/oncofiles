@@ -929,6 +929,13 @@ def test_address_card_markup():
     assert 'href="/terms"' in card
     assert "data-sk=" in card and "data-en=" in card
     assert not any(f" on{e}=" in card for e in ("click", "change", "input"))
+    # maintainer decision A: the sharing note, SK + EN, static markup (no innerHTML)
+    note = card[card.index("inbound-share-note") :]
+    note = note[: note.index("</p>")]
+    assert 'data-sk="Adresa obsahuje časť vašej Gmail adresy' in note
+    assert "len v rodine a s ošetrujúcim tímom" in note
+    assert 'data-en="The address contains part of your Gmail address' in note
+    assert "only within the family and the care team" in note
     # the card is in both variants; the admin panel is app-only
     app_only = HTML[HTML.index("<!--app-only-->\n <!-- Administration") :]
     assert "toggleAdminPanel|inbound|@this" in app_only[: app_only.index("<!--/app-only-->")]

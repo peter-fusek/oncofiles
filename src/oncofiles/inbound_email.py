@@ -1012,6 +1012,29 @@ def _rate_limited(th: str, now: float) -> bool:
     return _over_cap(_state.mails, th, now, MAX_MAILS_PER_HOUR, MAX_MAILS_PER_DAY)
 
 
+def quota_frees_at(th: str, now: float) -> tuple[float, str]:
+    """When the filing quota of address ``th`` admits a mail again (#952 follow-up).
+
+    Returns ``(epoch seconds, basis)``. ``basis == "window"``: computed from the
+    address's own mail times, the moment the oldest mail that keeps the hourly
+    and/or the daily cap full leaves its window (the later of the two when both
+    are full). ``basis == "next_hour"``: the window end is not knowable from the
+    counters (nothing over a cap is recorded, e.g. the in-memory counters of
+    another process); then the next full hour. Never counts a mail.
+    """
+    times = sorted(t for t in _state.mails.get(th, []) if now - t < 86400)
+    hour = [t for t in times if now - t < 3600]
+    frees: list[float] = []
+    if len(hour) >= MAX_MAILS_PER_HOUR:
+        frees.append(hour[len(hour) - MAX_MAILS_PER_HOUR] + 3600)
+    if len(times) >= MAX_MAILS_PER_DAY:
+        frees.append(times[len(times) - MAX_MAILS_PER_DAY] + 86400)
+    if frees:
+        # one second past the edge: the windows compare with ``now - t < N``
+        return max(frees) + 1, "window"
+    return float((int(now) // 3600 + 1) * 3600), "next_hour"
+
+
 def _unmatched_capped(th: str, now: float) -> bool:
     """Separate cap for mail that is not filed; never touches the filing quota."""
     return _over_cap(_state.unmatched_mails, th, now, MAX_UNMATCHED_PER_HOUR, MAX_UNMATCHED_PER_DAY)
@@ -1309,6 +1332,11 @@ class Result:
     # ``TEMPORARY_CODES``) when the mail is not finished; the worker retries
     # it, or ends the job ``failed:<code>`` after its last attempt.
     temporary: str | None = None
+    # Queue mode, ``rate_limited`` only: when the filing quota frees up again
+    # (epoch seconds, ``time.time`` clock) and how that was found
+    # (``quota_frees_at``: ``window`` | ``next_hour``).
+    retry_at: float | None = None
+    retry_basis: str = ""
 
 
 async def sender_refusal(db, patient_id: str, msg: InboundMessage) -> str | None:
@@ -1405,8 +1433,16 @@ async def _process_message(db, msg: InboundMessage, progress: JobProgress | None
             _state.counters["rate_limited"] += 1
             if queued:
                 # #952: a temporary refusal; the queue retries the mail later
+                # until the quota window frees up (#952 follow-up).
                 logger.info("inbound: patient %s deferred reason=rate_limited", pp)
-                return Result("rate_limited", pp, temporary="rate_limited")
+                retry_at, basis = quota_frees_at(th, now)
+                return Result(
+                    "rate_limited",
+                    pp,
+                    temporary="rate_limited",
+                    retry_at=retry_at,
+                    retry_basis=basis,
+                )
             logger.info("inbound: patient %s dropped reason=rate_limited", pp)
             return Result("rate_limited", pp)
         if queued and not progress.admitted:

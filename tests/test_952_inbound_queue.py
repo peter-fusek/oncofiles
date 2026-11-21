@@ -707,7 +707,8 @@ async def test_rate_limited_goes_back_to_pending_and_counts_once(
     assert fetched == [] and drive.files == [] and mails == []
     seen = []
     monkeypatch.setattr(inbound_email, "_rate_limited", lambda th, now: seen.append(1) or False)
-    clock(minutes=inbound_queue.RETRY_BASE_MIN + 1)
+    # no counters behind the stub: the wait is "until the next full hour"
+    clock(minutes=61)
     assert await inbound_queue.run_pending(idb) == {"done:filed": 1}
     assert len(drive.files) == 2 and len(seen) == 1
 
@@ -1184,3 +1185,156 @@ async def test_queue_full_never_rolls_back_the_shared_connection(monkeypatch):
     body = body[: body.index("\n    async def ", 10)]
     assert body.index('raise InboundQueueFullError("trusted")') < body.index("\n        try:\n")
     assert body.count("rollback()") == 1
+
+
+# ── #952 follow-up: rate_limited waits for the quota window ─────────────
+
+
+@pytest.fixture
+def wallclock(monkeypatch):
+    """One movable clock for both sides: the queue's ``_now`` and the core's
+    ``time.time`` (the filing-quota counters)."""
+    import time as real_time
+    from types import SimpleNamespace
+
+    state = {"offset": 0.0}
+    real_now = inbound_queue._now
+
+    def _time():
+        return real_time.time() + state["offset"]
+
+    fake = SimpleNamespace(time=_time)
+    monkeypatch.setattr(inbound_email, "time", fake)
+    monkeypatch.setattr(inbound_queue, "time", fake)
+    monkeypatch.setattr(
+        inbound_queue, "_now", lambda: real_now() + timedelta(seconds=state["offset"])
+    )
+
+    def advance(**kw):
+        state["offset"] += timedelta(**kw).total_seconds()
+
+    advance.time = _time
+    return advance
+
+
+def _th(addr):
+    return inbound_email.token_hash(inbound_email.token_from_address(addr))
+
+
+def _wait_of(job):
+    return inbound_queue._parse_iso(job["next_attempt_at"]) - inbound_queue._parse_iso(
+        job["updated_at"]
+    )
+
+
+async def test_rate_limited_waits_for_the_window_without_using_attempts(
+    idb, drive, mails, brevo, no_kick, wallclock
+):
+    store, fetched = brevo
+    addr = await address_of(idb)
+    await server.inbound_brevo_webhook(brevo_request(idb, {"items": [_two_file_item(addr, store)]}))
+    # the hourly quota is full with mail sent 30 minutes ago: it frees in 30 min
+    inbound_email._state.mails[_th(addr)] = [
+        wallclock.time() - 1800
+    ] * inbound_email.MAX_MAILS_PER_HOUR
+    assert await inbound_queue.run_pending(idb) == {"pending:rate_limited": 1}
+    [job] = await _jobs(idb)
+    assert job["state"] == "pending" and job["reason"] == "rate_limited"
+    assert job["attempts"] == 0  # a wait, not an attempt
+    assert timedelta(minutes=29) < _wait_of(job) <= timedelta(minutes=31)
+    assert fetched == [] and drive.files == [] and mails == []
+
+    wallclock(minutes=inbound_queue.RETRY_BASE_MIN + 1)  # the normal backoff is not enough
+    assert await inbound_queue.run_pending(idb) == {}
+    wallclock(minutes=28)
+    assert await inbound_queue.run_pending(idb) == {"done:filed": 1}
+    [job] = await _jobs(idb)
+    assert job["attempts"] == 1  # only the claim that filed counted
+    assert [f[0] for f in drive.files] == list(FILENAMES[:2])
+    assert len(mails) == 1  # one receipt
+
+
+async def test_rate_limited_retries_never_reach_max_attempts(
+    idb, drive, mails, brevo, no_kick, wallclock
+):
+    store, _ = brevo
+    addr = await address_of(idb)
+    await server.inbound_brevo_webhook(brevo_request(idb, {"items": [_two_file_item(addr, store)]}))
+    for _ in range(inbound_queue.MAX_ATTEMPTS + 2):
+        # the quota is full again at every wake-up (frees in 10 min each time)
+        inbound_email._state.mails[_th(addr)] = [
+            wallclock.time() - 3000
+        ] * inbound_email.MAX_MAILS_PER_HOUR
+        assert await inbound_queue.run_pending(idb) == {"pending:rate_limited": 1}
+        wallclock(minutes=11)
+    [job] = await _jobs(idb)
+    assert job["state"] == "pending" and job["attempts"] == 0
+
+
+async def test_daily_window_sets_the_wait(idb, brevo, no_kick, wallclock):
+    addr = await address_of(idb)
+    await inbound_queue.enqueue(idb, [inbound_email.parse_brevo_item(_distinct_item(addr, 1))])
+    th = _th(addr)
+    now = wallclock.time()
+    # the daily cap is full, the oldest mail 20 hours ago; the hour is not full
+    inbound_email._state.mails[th] = [now - 20 * 3600] * inbound_email.MAX_MAILS_PER_DAY
+    assert inbound_email.quota_frees_at(th, now) == (now + 4 * 3600 + 1, "window")
+    assert await inbound_queue.run_pending(idb) == {"pending:rate_limited": 1}
+    [job] = await _jobs(idb)
+    assert timedelta(hours=3, minutes=59) < _wait_of(job) <= timedelta(hours=4, minutes=1)
+
+
+def test_unknown_window_falls_back_to_the_next_full_hour():
+    inbound_email.reset_state()
+    now = 1_830_000_000.0 + 1234  # 2027, mid-hour
+    at, basis = inbound_email.quota_frees_at("synthetic-th", now)
+    assert basis == "next_hour" and at % 3600 == 0 and 0 < at - now <= 3600
+
+
+async def test_rate_limited_ends_failed_after_48_hours(
+    idb, drive, mails, brevo, no_kick, wallclock
+):
+    addr = await address_of(idb)
+    # a mail without attachments: only the 48 h bound applies
+    await inbound_queue.enqueue(idb, [inbound_email.parse_brevo_item(_distinct_item(addr, 2))])
+    th = _th(addr)
+    outcomes = []
+    for _ in range(10):
+        # every day the daily quota is full again (frees 24 h later)
+        inbound_email._state.mails[th] = [wallclock.time()] * inbound_email.MAX_MAILS_PER_DAY
+        outcomes.append(dict(await inbound_queue.run_pending(idb)))
+        if outcomes[-1] == {"failed:rate_limited": 1}:
+            break
+        wallclock(hours=24, minutes=1)
+    # day 1 waits; on day 2 the next window would pass the 48 h bound
+    assert outcomes == [{"pending:rate_limited": 1}, {"failed:rate_limited": 1}]
+    [job] = await _jobs(idb)
+    assert job["state"] == "failed" and job["reason"] == "rate_limited"
+    assert job["attempts"] == 1  # only the final claim counted
+    assert drive.files == [] and mails == []
+
+
+async def test_rate_limited_with_attachments_stops_at_the_download_retention(
+    idb, drive, mails, brevo, no_kick, wallclock
+):
+    store, fetched = brevo
+    addr = await address_of(idb)
+    await server.inbound_brevo_webhook(brevo_request(idb, {"items": [_two_file_item(addr, store)]}))
+    wallclock(hours=2)
+    # the daily quota frees only in 24 h: past the attachments' 24 h retention
+    inbound_email._state.mails[_th(addr)] = [wallclock.time()] * inbound_email.MAX_MAILS_PER_DAY
+    assert await inbound_queue.run_pending(idb) == {"failed:rate_limited": 1}
+    assert fetched == [] and drive.files == []
+
+
+async def test_other_temporary_codes_keep_the_normal_backoff(
+    idb, drive, mails, flaky_brevo, no_kick, wallclock
+):
+    store, _, fail = flaky_brevo
+    addr = await address_of(idb)
+    await server.inbound_brevo_webhook(brevo_request(idb, {"items": [_two_file_item(addr, store)]}))
+    fail["tok-b"] = 1
+    assert await inbound_queue.run_pending(idb) == {"pending:fetch_failed": 1}
+    [job] = await _jobs(idb)
+    assert job["attempts"] == 1 and job["reason"] == "fetch_failed"  # counted
+    assert _wait_of(job) == inbound_queue._backoff(1)

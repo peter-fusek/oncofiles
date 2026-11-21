@@ -193,20 +193,33 @@ class InboundJobsMixin(DatabaseBase):
         now: str,
         lease: str,
         next_attempt_at: str | None = None,
+        refund_attempt: bool = False,
     ) -> bool:
         """Set the job's final (or retry) ``state`` and ``reason`` code, only
         while this worker still holds it (``processing`` with ``updated_at`` =
         ``lease``; #952 infra review). ``next_attempt_at`` (a retry) is when it
-        may be claimed again. False = the lease was lost, nothing changed.
+        may be claimed again. ``refund_attempt`` gives back the attempt the
+        claim counted (a wait for the filing quota is not an attempt, #952
+        follow-up). False = the lease was lost, nothing changed.
         """
         if state not in INBOUND_JOB_STATES:
             raise ValueError("unknown inbound job state")
         cursor = await self.db.execute(
             """UPDATE inbound_jobs
                SET state = ?, reason = ?, updated_at = ?,
-                   next_attempt_at = COALESCE(?, next_attempt_at)
+                   next_attempt_at = COALESCE(?, next_attempt_at),
+                   attempts = MAX(attempts - ?, 0)
                WHERE id = ? AND patient_id = ? AND state = 'processing' AND updated_at = ?""",
-            (state, reason, now, next_attempt_at, job_id, patient_id, lease),
+            (
+                state,
+                reason,
+                now,
+                next_attempt_at,
+                1 if refund_attempt else 0,
+                job_id,
+                patient_id,
+                lease,
+            ),
         )
         await self.db.commit()
         return (cursor.rowcount or 0) == 1
