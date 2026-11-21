@@ -475,9 +475,8 @@ class PromptLogEntry(BaseModel):
     result_summary: str = ""
     status: str = "ok"
     error_message: str | None = None
-    # #441 Layer 5: SHA-256 of (system_prompt || user_prompt || model). When
-    # populated, future calls with identical inputs hit prompt_dedup.maybe_get_cached_response
-    # and skip Anthropic entirely. Pre-Layer-5 rows are NULL and won't dedup.
+    # #441 Layer 5: SHA-256 of (system_prompt || user_prompt || model), so
+    # identical calls can be counted. Pre-Layer-5 rows are NULL.
     prompt_hash: str | None = None
     created_at: datetime | None = None
 

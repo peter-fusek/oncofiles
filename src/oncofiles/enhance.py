@@ -18,9 +18,12 @@ logger = logging.getLogger(__name__)
 ENHANCE_MODEL = "claude-haiku-4-5-20251001"
 
 # Provider name fragments → institution code (case-insensitive matching)
+# Keywords are institution names or addresses only, never a person's name
+# (#930): a doctor works at several places and moves, and a surname matches
+# unrelated people, so a name would attribute a document to the wrong clinic.
 PROVIDER_TO_INSTITUTION: list[tuple[list[str], str]] = [
-    (["nou", "narodny onkologicky", "klenova", "porsok", "pazderova"], "NOU"),
-    (["bory", "rychly", "rychlý", "stefanik", "štefánik", "nemocnica bory"], "BoryNemocnica"),
+    (["nou", "narodny onkologicky", "klenova"], "NOU"),
+    (["bory", "nemocnica bory"], "BoryNemocnica"),
     (["ousa", "onkologicky ustav"], "OUSA"),
     (["unb", "univerzitna nemocnica"], "UNB"),
     (["medirex"], "Medirex"),
@@ -953,7 +956,7 @@ FILENAME_DESC_SYSTEM_PROMPT = (
     "generate a short CamelCase English description suitable for a filename.\n\n"
     "Rules:\n"
     "- No spaces, no special characters (only letters and digits)\n"
-    "- CamelCase format (e.g., BloodResultsBeforeCycle2DrPorsok)\n"
+    "- CamelCase format (e.g., BloodResultsBeforeCycle2DrKornok)\n"
     "- Include key content: document type, procedure/test. "
     "ALWAYS append DrLastName if any doctor/physician is identified\n"
     "- Maximum 60 characters\n"
@@ -1040,7 +1043,7 @@ CLASSIFY_SYSTEM_PROMPT = (
     "  Examples of mapping to known codes:\n"
     "    'Národný onkologický ústav' / 'NÁRODNÝ ONKOLOGICKÝ ÚSTAV' / "
     "'Klinika klinickej onkológie, Klenová 1' → NOU\n"
-    "    'Nemocnica Bory' / 'BoryNemocnica' / 'Nemocnica Rychlý' → BoryNemocnica\n"
+    "    'Nemocnica Bory' / 'BoryNemocnica' → BoryNemocnica\n"
     "    'SYNLAB Slovakia s.r.o.' → Synlab\n"
     "    'MEDIREX' / 'Medirex servis' → Medirex\n"
     "    'Poliklinika Kramáre' → Kramarska\n"

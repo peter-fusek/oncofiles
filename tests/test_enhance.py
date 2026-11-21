@@ -267,17 +267,37 @@ async def test_enhance_text_document(db: Database):
 
 
 def test_infer_institution_nou():
-    """NOU matched from provider names."""
-    assert infer_institution_from_providers(["MUDr. Stefan Porsok, PhD."]) == "NOU"
+    """NOU matched from the institution's name or address."""
     assert infer_institution_from_providers(["NOU Klenova"]) == "NOU"
-    assert infer_institution_from_providers(["MUDr. Natalia Pazderova"]) == "NOU"
+    assert infer_institution_from_providers(["Národný onkologický ústav"]) == "NOU"
+    assert infer_institution_from_providers(["MUDr. Jana Testova, NOU"]) == "NOU"
 
 
 def test_infer_institution_bory():
-    """Bory Nemocnica matched from provider names."""
-    assert infer_institution_from_providers(["MUDr. Rychlý Boris, PhD."]) == "BoryNemocnica"
+    """Bory Nemocnica matched from the institution's name."""
     assert infer_institution_from_providers(["Nemocnica Bory"]) == "BoryNemocnica"
-    assert infer_institution_from_providers(["MUDr. Peter Štefánik"]) == "BoryNemocnica"
+    assert (
+        infer_institution_from_providers(["MUDr. Boris Testovic, PhD.", "Nemocnica Bory"])
+        == "BoryNemocnica"
+    )
+
+
+def test_infer_institution_never_from_a_person_name():
+    """A doctor's name alone never maps to an institution (#930)."""
+    for provider in ("MUDr. Jana Testova", "doc. MUDr. Boris Testovic, PhD.", "MUDr. Kornok"):
+        assert infer_institution_from_providers([provider]) is None
+
+
+def test_institution_keywords_hold_no_person_name():
+    """Lock (#930): no keyword is a person's name with a title. Each keyword
+    must be part of an institution name or address; a doctor's surname must
+    never be added. Titles in the keyword would mean a name was copied in."""
+    from oncofiles.enhance import PROVIDER_TO_INSTITUTION
+
+    titles = ("mudr", "doc.", "prof.", "dr.", "phd")
+    for keywords, _code in PROVIDER_TO_INSTITUTION:
+        for kw in keywords:
+            assert not any(t in kw.lower() for t in titles), kw
 
 
 def test_infer_institution_medirex():
@@ -342,7 +362,7 @@ async def test_enhance_backfills_null_date_and_institution(db: Database):
         "diagnoses": [],
         "medications": [],
         "dates_mentioned": ["2030-02-23"],
-        "providers": ["MUDr. Rychlý Boris, PhD.", "Nemocnica Bory"],
+        "providers": ["MUDr. Boris Testovic, PhD.", "Nemocnica Bory"],
         "plain_summary": "Pathology report.",
         "plain_summary_sk": "Patologická správa.",
         "institution_code": "BoryNemocnica",

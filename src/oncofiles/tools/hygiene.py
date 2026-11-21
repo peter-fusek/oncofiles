@@ -9,6 +9,7 @@ import logging
 from fastmcp import Context
 
 from oncofiles.config import DOC_QUERY_LIMIT
+from oncofiles.files_api import name_len
 from oncofiles.gdrive_client import DriveWriteRefusedError
 from oncofiles.gdrive_folders import CATEGORY_MERGES, bilingual_name, en_key_from_folder_name
 from oncofiles.models import DocumentCategory
@@ -210,7 +211,12 @@ async def reconcile_gdrive(
                         f"Moved root file '{rf['name']}' to '{bilingual_name('other')}'"
                     )
                 except Exception:
-                    logger.warning("Failed to move root file '%s'", rf["name"], exc_info=True)
+                    logger.warning(
+                        "Failed to move root file %s (%s)",
+                        rf["id"],
+                        name_len(rf["name"]),
+                        exc_info=True,
+                    )
 
         # Soft-delete backup folders
         for bf in report["backup_folders"]:
@@ -266,7 +272,9 @@ async def validate_categories(
             meta = json.loads(doc.structured_metadata)
         except (json.JSONDecodeError, TypeError):
             logger.info(
-                "validate_categories: unparseable metadata for doc %d (%s)", doc.id, doc.filename
+                "validate_categories: unparseable metadata for doc %d (%s)",
+                doc.id,
+                name_len(doc.filename),
             )
             continue
 
@@ -389,8 +397,9 @@ async def validate_categories(
                             )
                     except Exception:
                         logger.warning(
-                            "Failed to move %s in GDrive after category change",
-                            doc.filename,
+                            "Failed to move doc %d %s in GDrive after category change",
+                            doc.id,
+                            name_len(doc.filename),
                             exc_info=True,
                         )
 
@@ -448,7 +457,12 @@ async def validate_categories(
                                 patient_id=pid,
                             )
                     except Exception:
-                        logger.warning("Failed to move %s in GDrive", doc.filename, exc_info=True)
+                        logger.warning(
+                            "Failed to move doc %d %s in GDrive",
+                            doc.id,
+                            name_len(doc.filename),
+                            exc_info=True,
+                        )
                 entry["action"] = "corrected"
                 corrected.append(entry)
             else:
@@ -484,7 +498,12 @@ async def validate_categories(
                                 patient_id=pid,
                             )
                     except Exception:
-                        logger.warning("Failed to move %s in GDrive", doc.filename, exc_info=True)
+                        logger.warning(
+                            "Failed to move doc %d %s in GDrive",
+                            doc.id,
+                            name_len(doc.filename),
+                            exc_info=True,
+                        )
                 entry["action"] = "corrected"
                 corrected.append(entry)
             else:
@@ -614,8 +633,9 @@ async def _move_doc_to_correct_folder(
 
     await asyncio.to_thread(gdrive.move_file, doc.gdrive_id, target_folder)
     logger.info(
-        "Moved %s from %s to %s/%s",
-        doc.filename,
+        "Moved doc %d %s from %s to %s/%s",
+        doc.id,
+        name_len(doc.filename),
         doc.category.value,
         cat_name,
         year_month or "",

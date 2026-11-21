@@ -47,7 +47,7 @@ class TestNewFormat:
         assert r.description == "LekarskaPrepustaciaSpravaOperacia"
 
     def test_biopsy_jpg(self):
-        r = parse_filename("20300127 JanaTestova-BoryNemocnica-BiopsiaMudrRychly.JPG")
+        r = parse_filename("20300127 JanaTestova-BoryNemocnica-BiopsiaMudrKornok.JPG")
         assert r.document_date == date(2030, 1, 27)
         assert r.institution == "BoryNemocnica"
         assert r.category == DocumentCategory.PATHOLOGY
@@ -293,8 +293,8 @@ class TestBilingualRename:
         )
 
     def test_biopsy(self):
-        result = rename_to_bilingual("20300127 JanaTestova-BoryNemocnica-BiopsiaMudrRychly.JPG")
-        assert result == "20300127 JanaTestova-BoryNemocnica-Pathology-BiopsiaMudrRychly.JPG"
+        result = rename_to_bilingual("20300127 JanaTestova-BoryNemocnica-BiopsiaMudrKornok.JPG")
+        assert result == "20300127 JanaTestova-BoryNemocnica-Pathology-BiopsiaMudrKornok.JPG"
 
     def test_genetics(self):
         result = rename_to_bilingual("20300226 JanaTestova-NOU-GenetikaMudrMalejcikova1z2.JPG")
@@ -362,11 +362,11 @@ class TestStandardFormat:
     """Tests for YYYYMMDD_JanaTestova_Institution_Category_Description format."""
 
     def test_full_standard(self):
-        r = parse_filename("20300227_JanaTestova_NOU_Labs_BloodResultsBeforeCycle2DrPorsok.pdf")
+        r = parse_filename("20300227_JanaTestova_NOU_Labs_BloodResultsBeforeCycle2DrKornok.pdf")
         assert r.document_date == date(2030, 2, 27)
         assert r.institution == "NOU"
         assert r.category == DocumentCategory.LABS
-        assert r.description == "BloodResultsBeforeCycle2DrPorsok"
+        assert r.description == "BloodResultsBeforeCycle2DrKornok"
         assert r.extension == "pdf"
 
     def test_discharge(self):
@@ -378,7 +378,7 @@ class TestStandardFormat:
         assert r.category == DocumentCategory.DISCHARGE
 
     def test_pathology(self):
-        r = parse_filename("20300127_JanaTestova_BoryNemocnica_Pathology_BiopsyDrRychly.JPG")
+        r = parse_filename("20300127_JanaTestova_BoryNemocnica_Pathology_BiopsyDrKornok.JPG")
         assert r.document_date == date(2030, 1, 27)
         assert r.institution == "BoryNemocnica"
         assert r.category == DocumentCategory.PATHOLOGY
@@ -391,7 +391,7 @@ class TestStandardFormat:
         assert r.category == DocumentCategory.GENETICS
 
     def test_imaging_ct(self):
-        r = parse_filename("20300130_JanaTestova_NOU_CT_AbdomenScanDrPorsok.pdf")
+        r = parse_filename("20300130_JanaTestova_NOU_CT_AbdomenScanDrKornok.pdf")
         assert r.document_date == date(2030, 1, 30)
         assert r.institution == "NOU"
         assert r.category == DocumentCategory.IMAGING
@@ -470,9 +470,9 @@ class TestRenameToStandard:
     def test_from_bilingual_with_en_description(self):
         result = rename_to_standard(
             "20300227 JanaTestova-NOU-LabVysledkyPred2chemoDrNovak.pdf",
-            en_description="BloodResultsBeforeCycle2DrPorsok",
+            en_description="BloodResultsBeforeCycle2DrKornok",
         )
-        assert result == "20300227_JanaTestova_NOU_Labs_BloodResultsBeforeCycle2DrPorsok.pdf"
+        assert result == "20300227_JanaTestova_NOU_Labs_BloodResultsBeforeCycle2DrKornok.pdf"
 
     def test_from_bilingual_with_category_override(self):
         result = rename_to_standard(
@@ -485,7 +485,7 @@ class TestRenameToStandard:
         )
 
     def test_already_standard_unchanged(self):
-        fn = "20300227_JanaTestova_NOU_Labs_BloodResultsBeforeCycle2DrPorsok.pdf"
+        fn = "20300227_JanaTestova_NOU_Labs_BloodResultsBeforeCycle2DrKornok.pdf"
         assert rename_to_standard(fn) == fn
 
     def test_from_bilingual_with_prefix(self):
@@ -499,9 +499,9 @@ class TestRenameToStandard:
     def test_ct_category_token(self):
         result = rename_to_standard(
             "20300130 JanaTestova-NOU-CTobjednavkaDrNovakPrimarOnkolog.pdf",
-            en_description="AbdomenScanOrderDrPorsok",
+            en_description="AbdomenScanOrderDrKornok",
         )
-        assert result == "20300130_JanaTestova_NOU_Imaging_AbdomenScanOrderDrPorsok.pdf"
+        assert result == "20300130_JanaTestova_NOU_Imaging_AbdomenScanOrderDrKornok.pdf"
 
     def test_usg_category_token(self):
         result = rename_to_standard(

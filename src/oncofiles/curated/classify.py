@@ -419,7 +419,7 @@ def validate(
     folded_text = re.sub(r"[^a-z0-9]", "", _fold(text or ""))
 
     def snap(token: str, label: str) -> str:
-        """Snap an OCR-misspelled token to the contract vocabulary (Parsok → Porsok).
+        """Snap an OCR-misspelled token to the contract vocabulary (Karnok → Kornok).
 
         Only a genuine misspelling of the same entity is snapped (#754); a
         similar-looking but different README token is never substituted.

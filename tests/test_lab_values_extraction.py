@@ -48,7 +48,7 @@ ALT          32      U/L       10 - 40
 
 Regimen: Oxaliplatina 85 mg/m2 + 5-FU bolus + infuzia 46h.
 Premedikacia: Dexametazon 8 mg, Ondansetron 8 mg.
-Signed: MUDr. Porsok
+Signed: MUDr. Kornok
 """
 
 # Pure narrative consultation note — no numeric table. has_lab_table must
@@ -200,7 +200,7 @@ def test_extract_structured_metadata_fires_second_call_on_lab_table():
         "medications": ["Oxaliplatina", "5-FU"],
         "dates_mentioned": ["2027-04-15"],
         "providers": ["NOU"],
-        "doctors": ["MUDr. Porsok"],
+        "doctors": ["MUDr. Kornok"],
         "handwritten": False,
         "plain_summary": "Chemo sheet for cycle 4 of mFOLFOX6.",
         "plain_summary_sk": "Chemo list pre cyklus 4 mFOLFOX6.",
