@@ -88,6 +88,8 @@ def cached_extract(name, content, mime_type="", *, min_text_chars=100, on_model_
         hit = _extract_cache[key]
         if getattr(hit, "orientation", None):  # #882: a cache hit asked the model nothing
             hit = dataclasses.replace(hit, orientation={**hit.orientation, "model_calls": 0})
+        if getattr(hit, "retried_pages", None):  # #931: nor did it retry a page
+            hit = dataclasses.replace(hit, retried_pages=[])
         return hit
     ex = extract_mod.extract(name, content, mime_type, min_text_chars=min_text_chars)
     if on_model_pages is not None and ex.method == "vision" and ex.pages:

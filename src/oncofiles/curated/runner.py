@@ -163,12 +163,24 @@ class RunReport:
     # direction questions asked vs pages decided without the model (counts
     # only; a cached extraction asked nothing in this run).
     orientation: dict = field(default_factory=dict)
+    # #931: ingest OCR telemetry, counts only: pages asked once more with
+    # thinking off (#806 retry) and PDFs whose scanner OCR layer was ignored
+    # (not born-digital, vision-read instead). A cached extraction retried
+    # nothing in this run (``tools.curated.cached_extract`` clears it).
+    ocr: dict = field(default_factory=lambda: {"retried_pages": 0, "text_layer_ignored": 0})
 
     def to_dict(self) -> dict:
         return asdict(self)
 
     def count_orientation(self, extraction) -> None:
+        """Telemetry of one extraction: the #882 orientation tally and the #931
+        OCR counts."""
         orientation_mod.add_tally(self.orientation, getattr(extraction, "orientation", None))
+        retried = getattr(extraction, "retried_pages", None)
+        if isinstance(retried, list):
+            self.ocr["retried_pages"] += len(retried)
+        if getattr(extraction, "text_layer_ignored", False) is True:
+            self.ocr["text_layer_ignored"] += 1
 
 
 class RunAbortError(Exception):
