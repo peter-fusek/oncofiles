@@ -7409,7 +7409,10 @@ async def api_inbound_unmatched(request: Request) -> JSONResponse:
     the patient id prefix, mails, files, reason codes and times, plus totals,
     and the durable queue's counts per state / failure reason (#952).
     Go-live diagnostics: ``auth_refusals`` (counter per refusal code) and
-    ``authserv_candidates`` (hostname-shaped authserv-ids only, counts, times).
+    ``authserv_candidates`` (hostname-shaped authserv-ids only, counts, times);
+    ``header_names`` / ``item_keys`` / ``payload_keys`` (field NAMES of the
+    Brevo payload as ``{name, items}``, never values), ``auth_evidence``
+    (presence-flag counts) and ``field_names_stats``.
     """
     err = _require_admin(request)
     if err:

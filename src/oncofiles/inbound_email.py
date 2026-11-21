@@ -779,6 +779,175 @@ def _log_authserv_candidates(items: list) -> None:
         logger.info("inbound: authserv-id candidates: %s", listed)
 
 
+# Payload field names (go-live diagnostics, #950): production payloads carry
+# no Authentication-Results header, so infra must learn which authentication
+# evidence Brevo does deliver. For every item of a payload that passed the
+# token check only the NAMES are kept: of the entries in ``Headers`` (both
+# documented shapes), of the item's own keys and of the payload's keys. A
+# name must match ``FIELD_NAME_RE``; anything else is only counted as invalid.
+# Never a header value, an address, a subject or a body.
+FIELD_NAME_RE = re.compile(r"^[A-Za-z0-9-]{1,64}$")
+FIELD_NAMES_PER_ITEM_MAX = 50  # per item and kind; more are counted as truncated
+FIELD_NAMES_MAX = 200  # distinct names kept per kind; the least-seen is evicted
+
+# Authentication evidence as presence flags (booleans, never values). Header
+# flags: exact header names, or a name prefix ("x-brevo-"); item-key flags:
+# exact key or substring, case-insensitive.
+_EVIDENCE_HEADERS = {
+    "arc_authentication_results": "arc-authentication-results",
+    "arc_seal": "arc-seal",
+    "arc_message_signature": "arc-message-signature",
+    "received_spf": "received-spf",
+    "dkim_signature": "dkim-signature",
+    "authentication_results": "authentication-results",
+}
+_EVIDENCE_HEADER_PREFIXES = {
+    "header_x_brevo": "x-brevo-",
+    "header_x_sib": "x-sib-",
+    "header_x_mailin": "x-mailin-",
+}
+_EVIDENCE_KEYS_EXACT = {"key_spam_score": "spamscore"}
+_EVIDENCE_KEYS_SUBSTRING = {
+    "key_spam": "spam",
+    "key_spf": "spf",
+    "key_dkim": "dkim",
+    "key_dmarc": "dmarc",
+}
+AUTH_EVIDENCE_FLAGS = (
+    *_EVIDENCE_HEADERS,
+    *_EVIDENCE_HEADER_PREFIXES,
+    *_EVIDENCE_KEYS_EXACT,
+    *_EVIDENCE_KEYS_SUBSTRING,
+)
+
+
+def _header_names(raw) -> list[str]:
+    """The names of ``Headers`` entries in order, for both documented shapes
+    (an object, or a list of ``{Name, Value}`` / ``{name: value}`` entries).
+    Values are never read."""
+    names: list[str] = []
+    if isinstance(raw, dict):
+        names.extend(k for k in raw if isinstance(k, str))
+    elif isinstance(raw, list):
+        for entry in raw:
+            if not isinstance(entry, dict):
+                continue
+            if "Name" in entry or "name" in entry:
+                name = entry.get("Name", entry.get("name"))
+                if isinstance(name, str):
+                    names.append(name)
+            else:
+                names.extend(k for k in entry if isinstance(k, str))
+    return names
+
+
+def _valid_names(names) -> list[str]:
+    """Distinct valid names (first-seen order), at most
+    ``FIELD_NAMES_PER_ITEM_MAX``; invalid and truncated ones are counted."""
+    out: list[str] = []
+    seen: set[str] = set()
+    for name in names:
+        if not isinstance(name, str) or not FIELD_NAME_RE.match(name):
+            _state.field_stats["invalid_names"] += 1
+            continue
+        if name in seen:
+            continue
+        if len(out) >= FIELD_NAMES_PER_ITEM_MAX:
+            _state.field_stats["truncated_names"] += 1
+            continue
+        seen.add(name)
+        out.append(name)
+    return out
+
+
+def _auth_evidence(header_names: list[str], item_keys: list[str]) -> dict[str, bool]:
+    """Presence flags over ALL names of one item (not only the capped list)."""
+    headers = {n.strip().lower() for n in header_names if isinstance(n, str)}
+    keys = {k.strip().lower() for k in item_keys if isinstance(k, str)}
+    flags = {flag: name in headers for flag, name in _EVIDENCE_HEADERS.items()}
+    for flag, prefix in _EVIDENCE_HEADER_PREFIXES.items():
+        flags[flag] = any(h.startswith(prefix) for h in headers)
+    for flag, name in _EVIDENCE_KEYS_EXACT.items():
+        flags[flag] = name in keys
+    for flag, part in _EVIDENCE_KEYS_SUBSTRING.items():
+        flags[flag] = any(part in k for k in keys)
+    return flags
+
+
+def _note_names(book: dict, names: list[str]) -> None:
+    """Count one item's (or payload's) names; at most ``FIELD_NAMES_MAX``
+    are kept, a new one replaces the one seen on the fewest items (oldest on
+    a tie)."""
+    for name in names:
+        _state.field_seq += 1
+        entry = book.get(name)
+        if entry is None:
+            if len(book) >= FIELD_NAMES_MAX:
+                victim = min(book, key=lambda n: (book[n]["items"], book[n]["seq"]))
+                del book[victim]
+                _state.field_stats["evicted"] += 1
+            entry = book[name] = {"items": 0, "seq": 0}
+        entry["items"] += 1
+        entry["seq"] = _state.field_seq
+
+
+def _ranked(book: dict) -> list[dict]:
+    return [
+        {"name": n, "items": e["items"]}
+        for n, e in sorted(book.items(), key=lambda kv: (-kv[1]["items"], kv[0]))
+    ]
+
+
+def field_names_overview() -> dict:
+    """Admin overview: header names, item keys and payload keys with the
+    number of items (payloads) carrying each, auth evidence flag counts and
+    totals. Names and counts only."""
+    stats = _state.field_stats
+    return {
+        "header_names": _ranked(_state.header_names),
+        "item_keys": _ranked(_state.item_keys),
+        "payload_keys": _ranked(_state.payload_keys),
+        "auth_evidence": {f: _state.auth_evidence[f] for f in AUTH_EVIDENCE_FLAGS},
+        "field_names_stats": {
+            "items_seen": stats["items"],
+            "payloads_seen": stats["payloads"],
+            "invalid_names": stats["invalid_names"],
+            "truncated_names": stats["truncated_names"],
+            "evicted": stats["evicted"],
+        },
+    }
+
+
+def _log_field_names(payload: dict, items: list) -> None:
+    """Collect the names of one payload; one INFO line per item with its
+    header names and item keys, and one with its auth evidence flags (names
+    and booleans only)."""
+    _state.field_stats["payloads"] += 1
+    payload_keys = _valid_names(list(payload))
+    _note_names(_state.payload_keys, payload_keys)
+    logger.info("inbound: payload keys: %s", ", ".join(payload_keys) or "none")
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        _state.field_stats["items"] += 1
+        all_headers = _header_names(item.get("Headers"))
+        all_keys = list(item)
+        header_names = _valid_names(all_headers)
+        item_keys = _valid_names(all_keys)
+        _note_names(_state.header_names, header_names)
+        _note_names(_state.item_keys, item_keys)
+        flags = _auth_evidence(all_headers, all_keys)
+        present = [f for f in AUTH_EVIDENCE_FLAGS if flags[f]]
+        for flag in present:
+            _state.auth_evidence[flag] += 1
+        logger.info(
+            "inbound: header names: %s; item keys: %s",
+            ", ".join(header_names) or "none",
+            ", ".join(item_keys) or "none",
+        )
+        logger.info("inbound: auth evidence: %s", ", ".join(present) or "none")
+
+
 def _mailbox(value) -> str:
     if isinstance(value, dict):
         return str(value.get("Address") or "").strip()
@@ -905,6 +1074,7 @@ def parse_brevo_payload(payload) -> list[InboundMessage]:
         raise UnparseableMessageError("payload")
     items = payload["items"][:BREVO_MAX_ITEMS]
     if items:
+        _log_field_names(payload, items)
         _log_authserv_candidates(items)
     out = []
     for item in items:
@@ -1068,6 +1238,13 @@ class _State:
         self.auth_refusals: Counter = Counter()
         self.authserv_hosts: dict[str, dict] = {}
         self.authserv_stats: Counter = Counter()
+        # header / item / payload field names and auth evidence flags (#950)
+        self.header_names: dict[str, dict] = {}
+        self.item_keys: dict[str, dict] = {}
+        self.payload_keys: dict[str, dict] = {}
+        self.auth_evidence: Counter = Counter()
+        self.field_stats: Counter = Counter()
+        self.field_seq = 0
 
     def lock(self, key: str) -> asyncio.Lock:
         lk = self.locks.get(key)
@@ -1134,6 +1311,7 @@ def unmatched_overview() -> dict:
         "totals": dict(_state.counters),
         "auth_refusals": {r: _state.auth_refusals[r] for r in AUTH_REFUSAL_REASONS},
         "authserv_candidates": authserv_candidates(),
+        **field_names_overview(),
     }
 
 
