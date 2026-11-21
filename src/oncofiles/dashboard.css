@@ -1169,7 +1169,7 @@
       .wizard-panel { padding: 1.25rem; }
       .wizard-panel summary { min-height: 2.75rem; display: flex; align-items: center; }
     }
-    /* #852: waitlist notice shown instead of the wizard while onboarding is closed */
+    /* #852: invitation notice shown instead of the wizard while onboarding is closed */
     .onboarding-closed-link { display: inline-flex; align-items: center; text-decoration: none; }
 
     /* One event log */

@@ -16,7 +16,8 @@ Every HTTP request is put into one *route class*:
 ``inbound`` the inbound mail webhooks ``/inbound/*`` (#950): their own buckets,
             keyed by the client IP, so a flood of them never drains the
             anonymous ``/api/*`` budget and vice versa
-``public``  everything else (landing pages, static assets, ``/readiness``)
+``public``  everything else (landing pages, static assets, ``/readiness``,
+            ``/api/public-config``)
 ``exempt``  ``/health`` — never limited, never size-checked (Coolify's
             healthcheck and CI's smoke test poll it)
 
@@ -110,6 +111,8 @@ _EXEMPT_PATHS = frozenset({"/health"})
 _AUTH_PATHS = frozenset({"/authorize", "/token", "/register", "/revoke", "/dashboard/verify"})
 _AUTH_PREFIXES = ("/oauth/",)
 _API_PATHS = frozenset({"/dashboard/config"})
+# Unauthenticated JSON the landing reads (env only, no DB): class public.
+_PUBLIC_API_PATHS = frozenset({"/api/public-config"})
 _API_PREFIXES = ("/api/", "/ops/")
 _INBOUND_PREFIX = "/inbound/"
 _JSON_CLASSES = frozenset({MCP, API, AUTH, INBOUND})
@@ -130,6 +133,8 @@ def classify(path: str) -> str:
         return MCP
     if path in _AUTH_PATHS or path.startswith(_AUTH_PREFIXES):
         return AUTH
+    if path in _PUBLIC_API_PATHS:
+        return PUBLIC
     if path in _API_PATHS or path.startswith(_API_PREFIXES):
         return API
     if path.startswith(_INBOUND_PREFIX):
