@@ -36,7 +36,7 @@ from oncofiles.tools._sunset import ONCOTEAM_SUNSET_PREFIX, ONCOTEAM_SUNSET_TOOL
 from tests.conftest import PRIMARY_TEST_UUID
 from tests.helpers import make_doc
 
-ERIKA_SLUG = "q1b"
+PRIMARY_SLUG = "q1b"
 NUL, BEL, ESC, DEL, RLO = chr(0), chr(7), chr(27), chr(127), chr(0x202E)
 BOB_UUID = "00000000-0000-4000-8000-000000000002"
 BOB_SLUG = "bob-diary-test"
@@ -177,7 +177,7 @@ async def test_admin_must_pass_slug(two):
     # With a slug the admin reaches exactly that patient.
     bob = _j(await diary.get_conversation(two.ctx, two.bob, patient_slug=BOB_SLUG))
     assert bob["title"] == "Bob invented note"
-    jana_view = _j(await diary.get_conversation(two.ctx, two.bob, patient_slug=ERIKA_SLUG))
+    jana_view = _j(await diary.get_conversation(two.ctx, two.bob, patient_slug=PRIMARY_SLUG))
     assert jana_view["code"] == "not_found"
     added = _j(await diary.diary_add(two.ctx, title="t", content="c", patient_slug=BOB_SLUG))
     assert await two.db.check_conversation_entry_ownership(added["id"], BOB_UUID)
@@ -252,8 +252,8 @@ async def test_daily_cap(db: Database, monkeypatch):
 async def test_daily_cap_is_per_patient(two, monkeypatch, as_admin):
     # The fixture already wrote one live entry per patient today.
     monkeypatch.setattr(diary, "DIARY_MAX_ENTRIES_PER_DAY", 2)
-    assert "id" in await _add(two.ctx, patient_slug=ERIKA_SLUG)
-    assert (await _add(two.ctx, patient_slug=ERIKA_SLUG))["code"] == "rate_limited"
+    assert "id" in await _add(two.ctx, patient_slug=PRIMARY_SLUG)
+    assert (await _add(two.ctx, patient_slug=PRIMARY_SLUG))["code"] == "rate_limited"
     assert "id" in await _add(two.ctx, patient_slug=BOB_SLUG)
 
 

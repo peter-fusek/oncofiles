@@ -171,14 +171,16 @@ def test_scheduler_and_curated_loop_have_one_construction_site():
     for path in SRC.rglob("*.py"):
         text = path.read_text()
         sched_sites += [path.name for _ in re.finditer(r"\w*Scheduler\(\)", text)]
-        loop_sites += [
-            path.name for _ in re.finditer(r"create_task\(\s*curated_nightly_loop\(", text)
-        ]
+        # #925: the loop is spawned inside its local-only zone.
+        loop_re = r"create_task\(\s*(?:local_only_task\([^,]+,\s*)?curated_nightly_loop\b"
+        loop_sites += [path.name for _ in re.finditer(loop_re, text)]
     assert sched_sites == ["server.py"]
     assert loop_sites == ["server.py"]
     server_src = (SRC / "server.py").read_text()
-    assert "ensure_curated_loop(\n            lambda: asyncio.create_task(curated_nightly_loop" in (
-        server_src
+    assert re.search(
+        r"ensure_curated_loop\(\n(?:\s*#[^\n]*\n)?\s*lambda: asyncio\.create_task\("
+        r"local_only_task\(\"curated loop\", curated_nightly_loop\)",
+        server_src,
     )
     assert "scheduler_singleton.existing_scheduler()" in server_src
 

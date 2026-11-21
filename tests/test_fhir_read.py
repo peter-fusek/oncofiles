@@ -37,7 +37,7 @@ from oncofiles.tools import fhir as tool
 from tests.helpers import PRIMARY_TEST_UUID, make_doc
 
 BOB_UUID = "00000000-0000-4000-8000-000000000002"
-ERIKA_SLUG = "jana-test"
+PRIMARY_SLUG = "jana-test"
 BOB_SLUG = "bob-test"
 AIAST = "AIAST"
 STORED_ID = str(uuid.uuid5(uuid.NAMESPACE_URL, "urn:synthetic:stored-fhir-id"))
@@ -71,7 +71,7 @@ async def _fact(db, pid: str, **cols) -> int:
 async def world(db):
     """Two patients. Jana: labs, conditions, a regimen, meds, a procedure. Bob: one lab."""
     await _exec(
-        db, "UPDATE patients SET slug = ? WHERE patient_id = ?", (ERIKA_SLUG, PRIMARY_TEST_UUID)
+        db, "UPDATE patients SET slug = ? WHERE patient_id = ?", (PRIMARY_SLUG, PRIMARY_TEST_UUID)
     )
     await _exec(
         db,

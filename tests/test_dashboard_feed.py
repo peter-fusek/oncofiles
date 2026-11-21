@@ -33,7 +33,7 @@ NOU = "urn:oncofiles:local:nou"
 PAGE_LIMIT_BYTES = 150_000
 MIGRATIONS = Path(__file__).parent.parent / "migrations"
 DOC = 7  # a document id for the pure-function tests
-ERIKA_SLUG = "q1b"  # the seeded test patient (PRIMARY_TEST_UUID)
+PRIMARY_SLUG = "q1b"  # the seeded test patient (PRIMARY_TEST_UUID)
 WBC_REF = {"ref_low": 4.0, "ref_high": 10.0}
 
 
@@ -285,15 +285,18 @@ async def test_feed_shape_documents_and_unverified(db, curated_env):
     assert "evidence" not in raw and "stats" not in raw
     allowed = {"id", "code", "label", "at", "at_from", "at_to", "value", "value_text", "unit",
                "ref_low", "ref_high", "flag", "verification", "document_id", "page",
-               "ref_source", "ref_document_id"}  # the two optional keys of #899  # fmt: skip
+               "ref_source", "ref_document_id",  # the two optional keys of #899
+               "flag_source"}  # with every flag (#929)  # fmt: skip
     for f in out["facts"]:
         assert ("ref_source" in f) == ("ref_low" in f or "ref_high" in f)
+        assert ("flag_source" in f) == ("flag" in f)
         assert {"id", "code", "at", "verification", "document_id"} <= set(f) <= allowed
         date.fromisoformat(f["at"][:10])
     plt = next(f for f in out["facts"] if f["code"] == "PLT")
     assert plt["verification"] == "unverified"  # included, labelled
     hgb = next(f for f in out["facts"] if f["code"] == "HGB")
     assert hgb["flag"] == "L" and hgb["value"] < hgb["ref_low"] < hgb["ref_high"]
+    assert hgb["flag_source"] == "printed"  # the lab's own range (#929)
     [doc] = out["documents"]
     assert doc["url"].endswith(f"/d/{src}/view") and doc["category"] == "labs"
     assert doc["institution"] == "BoryNemocnica" and doc["date"]
@@ -436,7 +439,7 @@ async def test_a_caregiver_sees_only_their_patient(db, caregiver_of_jana):
     own = await _feed(db)
     assert [d["id"] for d in own["documents"]] == [a.id]
     assert [f["document_id"] for f in own["facts"]] == [a.id]
-    assert await _feed(db, patient_slug=ERIKA_SLUG) == {**own, "generated_at": ANY}
+    assert await _feed(db, patient_slug=PRIMARY_SLUG) == {**own, "generated_at": ANY}
     with pytest.raises(ValueError, match="access denied"):
         await _feed(db, patient_slug=BOB_SLUG)  # a foreign slug is denied
 
@@ -448,7 +451,7 @@ async def test_an_admin_must_name_the_patient_and_gets_only_that_one(db, admin_c
     bob = await _feed(db, patient_slug=BOB_SLUG)
     assert [d["id"] for d in bob["documents"]] == [b.id]
     assert {f["document_id"] for f in bob["facts"]} == {b.id} and len(bob["facts"]) == 2
-    jana = await _feed(db, patient_slug=ERIKA_SLUG)
+    jana = await _feed(db, patient_slug=PRIMARY_SLUG)
     assert [d["id"] for d in jana["documents"]] == [a.id]
     assert not {f["id"] for f in bob["facts"]} & {f["id"] for f in jana["facts"]}
 

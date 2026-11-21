@@ -282,10 +282,15 @@ async def validate_categories(
                 "suggested_category": target,
                 "reason": "legacy_category_merge",
             }
-            mismatches.append(entry)
-            if not dry_run:
+            # `corrected` is a list of entries (#930: it was `+= 1`, a TypeError
+            # on every real run); same shape as the document_type branch below.
+            if dry_run:
+                entry["action"] = "would_correct"
+                mismatches.append(entry)
+            else:
                 await db.update_document_category(doc.id, target)
-                corrected += 1
+                entry["action"] = "corrected"
+                corrected.append(entry)
             continue
 
         # Advocate keyword sweep (#180): detect advocate files in other categories
@@ -301,10 +306,13 @@ async def validate_categories(
                     "suggested_category": "advocate",
                     "reason": "advocate_keyword_in_filename",
                 }
-                mismatches.append(entry)
-                if not dry_run:
+                if dry_run:
+                    entry["action"] = "would_correct"
+                    mismatches.append(entry)
+                else:
                     await db.update_document_category(doc.id, "advocate")
-                    corrected += 1
+                    entry["action"] = "corrected"
+                    corrected.append(entry)
                 continue
 
         # Filename token rescue for "other" category (#176)
@@ -322,10 +330,13 @@ async def validate_categories(
                     "suggested_category": suggested,
                     "reason": "filename_token_detected",
                 }
-                mismatches.append(entry)
-                if not dry_run:
+                if dry_run:
+                    entry["action"] = "would_correct"
+                    mismatches.append(entry)
+                else:
                     await db.update_document_category(doc.id, suggested)
-                    corrected += 1
+                    entry["action"] = "corrected"
+                    corrected.append(entry)
                 continue
 
         doc_type = meta.get("document_type")
@@ -1049,8 +1060,9 @@ async def get_document_status_matrix(
 async def get_pipeline_status(ctx: Context, patient_slug: str | None = None) -> str:
     """Get pipeline operations status: scheduled jobs, stage counts, and sync history.
 
-    Shows which automated processes run, their schedule, last results,
-    and how many documents are at each pipeline stage (OCR → AI → metadata → sync → rename).
+    Shows the jobs the running scheduler really has (trigger, next run, last
+    outcome; null when no scheduler runs in this process) and how many
+    documents are at each pipeline stage (OCR → AI → metadata → sync → rename).
 
     Args:
         patient_slug: Optional — explicit patient slug (#429). Stage counts are
@@ -1059,7 +1071,8 @@ async def get_pipeline_status(ctx: Context, patient_slug: str | None = None) -> 
     import resource
     import sys
 
-    from oncofiles.config import SYNC_INTERVAL_MINUTES, VERSION
+    from oncofiles import scheduler_singleton
+    from oncofiles.config import VERSION
     from oncofiles.document_stage import is_named
     from oncofiles.sync import get_sync_status
 
@@ -1120,46 +1133,10 @@ async def get_pipeline_status(ctx: Context, patient_slug: str | None = None) -> 
                 and _named(d)
             ),
         },
-        "scheduled_jobs": [
-            {
-                "name": "startup_catchup",
-                "trigger": "60s after boot",
-                "description": "Import-only sync + category validation",
-            },
-            {
-                "name": "gdrive_sync",
-                "trigger": f"every {SYNC_INTERVAL_MINUTES} min",
-                "description": "Full bidirectional sync (incremental export if no changes)",
-            },
-            {
-                "name": "metadata_extraction",
-                "trigger": "daily 3:30 AM",
-                "description": "Backfill structured metadata (max 5 docs)",
-            },
-            {
-                "name": "category_validation",
-                "trigger": "daily 3:45 AM",
-                "description": "Auto-correct categories from AI document_type",
-            },
-            {
-                "name": "document_groups_backfill",
-                "trigger": "daily 3:55 AM",
-                "description": (
-                    "Sweep backlog for multi-doc PDFs + multi-file logical docs "
-                    "(split + consolidate)"
-                ),
-            },
-            {
-                "name": "oauth_cleanup",
-                "trigger": "daily 4:00 AM",
-                "description": "Remove expired MCP OAuth tokens",
-            },
-            {
-                "name": "rss_monitor",
-                "trigger": "every 6h",
-                "description": "Log RSS memory usage",
-            },
-        ],
+        # The jobs the process's scheduler really has (#704): a hand-written
+        # catalogue here went stale and listed jobs that no longer exist.
+        # None = no scheduler runs in this process (stdio, SYNC_ENABLED=false).
+        "scheduled_jobs": scheduler_singleton.job_snapshot(),
         "sync_current": current_sync,
         "sync_7d": {
             "total": sync_stats.get("total_syncs", 0),

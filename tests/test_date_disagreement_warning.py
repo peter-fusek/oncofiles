@@ -52,10 +52,10 @@ def test_no_warning_when_ai_date_missing(caplog):
 
 
 def test_dashed_date_filename_parses(caplog):
-    """Mattias-style dashed YYYY-MM-DD filenames also feed the cross-check."""
+    """Dashed-date (hospital chart style) YYYY-MM-DD filenames also feed the cross-check."""
     with caplog.at_level(logging.WARNING, logger="oncofiles.enhance"):
         _check_filename_date_agreement(
-            "2029-09-19_kontrola_Gonsorcikova.pdf", "2023-01-01", document_id=6
+            "2029-09-19_kontrola_Testovska.pdf", "2023-01-01", document_id=6
         )
     warnings = [r for r in caplog.records if "date disagree" in r.message]
     assert len(warnings) == 1

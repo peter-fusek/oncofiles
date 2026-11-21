@@ -20,7 +20,8 @@ VOCAB = Vocabulary.from_rows(
         {"code": "ALT", "category": "lab", "unit_canonical": "µkat/L",
          "aliases": ["ALT", "ALAT"], "unit_conversions": {}},
         {"code": "GLU", "category": "lab", "unit_canonical": "mmol/L",
-         "aliases": ["GLU", "Glukóza"], "unit_conversions": {}},
+         "aliases": ["GLU", "Glukóza"], "unit_conversions": {},
+         "plausible_low": 0, "plausible_high": 60},  # fact_codes data since #929
         {"code": "CA19_9", "category": "tumor_marker", "unit_canonical": "kU/L",
          "aliases": ["CA 19-9"], "unit_conversions": {"U/ml": 1}},
     ]

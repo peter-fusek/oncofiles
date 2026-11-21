@@ -580,17 +580,19 @@ async def test_two_patients_never_see_each_other(seeded, local_model):
     db = seeded
     await _store(db, DOC_A, PAGES_A)
     await _store(db, DOC_BOB, PAGES_B, pid=BOB_UUID)
-    with pytest.raises(ValueError):  # Erika's document under Bob's id
+    with pytest.raises(ValueError):  # the primary patient's document under Bob's id
         await _store(db, DOC_A, PAGES_A, pid=BOB_UUID)
-    erika = {r["source_document_id"] for r in await db.timeline_rows(patient_id=PRIMARY_TEST_UUID)}
+    primary = {
+        r["source_document_id"] for r in await db.timeline_rows(patient_id=PRIMARY_TEST_UUID)
+    }
     bob = {r["source_document_id"] for r in await db.timeline_rows(patient_id=BOB_UUID)}
-    assert DOC_BOB not in erika and DOC_A not in bob and DOC_BOB in bob
+    assert DOC_BOB not in primary and DOC_A not in bob and DOC_BOB in bob
     assert {c["source_document_id"] for c in await db.condition_rows(patient_id=BOB_UUID)} == {
         DOC_BOB
     }
     bob_treat = await db.treatment_rows(patient_id=BOB_UUID)
     assert all(r["source_document_id"] == DOC_BOB for rows in bob_treat.values() for r in rows)
-    # Erika's caller cannot run the extractor on Bob's document id
+    # the primary patient's caller cannot run the extractor on Bob's document id
     out = json.loads(await tool.curated_clinical_extract_preview(_ctx(db), [DOC_BOB]))
     assert out == {"status": "nothing to do"}
 

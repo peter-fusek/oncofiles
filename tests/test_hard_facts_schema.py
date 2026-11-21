@@ -87,12 +87,14 @@ async def test_migration_creates_tables_and_columns(db):
     assert await _columns(db, "fact_codes") >= {"plausible_low", "plausible_high"}
 
 
-async def test_fact_code_plausibility_is_not_seeded(db):
+async def test_fact_code_plausibility_is_seeded_only_by_094(db):
+    """080 left the ranges empty, 094 seeds the former in-code constant (#929,
+    the full snapshot is in tests/test_929_flag_source_plausible.py)."""
     async with db.db.execute(
         "SELECT COUNT(*) FROM fact_codes "
         "WHERE plausible_low IS NOT NULL OR plausible_high IS NOT NULL"
     ) as cur:
-        assert (await cur.fetchone())[0] == 0
+        assert (await cur.fetchone())[0] == 28
 
 
 async def test_migration_is_idempotent_with_runner(db):

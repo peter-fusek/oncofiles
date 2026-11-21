@@ -15,10 +15,12 @@ calls end the system message with ``REASONING_OFF_MARKER`` instead.
 from __future__ import annotations
 
 import base64
+import ipaddress
 import json
 import logging
 import re
 import time
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -97,6 +99,86 @@ class LocalLLMAnswerError(LocalLLMError):
     """The model answered, but not usably for this request (a per-document problem)."""
 
     failure = ANSWER
+
+
+class LocalLLMHostRefusedError(LocalLLMError):
+    """LOCAL_LLM_BASE_URL points at a host that is not private (#925); nothing was sent."""
+
+
+# #925: document text and page images go to LOCAL_LLM_BASE_URL, so it must be
+# this server or its private network, never a hosted API. Names that resolve
+# only on a private network (or nowhere: RFC 2606/6761 test names) pass; any
+# other host needs an explicit LOCAL_LLM_ALLOWED_HOSTS entry.
+PRIVATE_HOST_NAMES = frozenset({"localhost", "host.lima.internal", "host.docker.internal"})
+PRIVATE_HOST_SUFFIXES = (
+    ".local",
+    ".internal",
+    ".lan",
+    ".home.arpa",
+    ".localhost",
+    ".test",
+    ".invalid",
+)
+_PRIVATE_NETWORKS = tuple(
+    ipaddress.ip_network(n) for n in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "fc00::/7")
+)
+_refusals_logged: set[str] = set()
+
+
+def _allowed_hosts() -> set[str]:
+    raw = config.LOCAL_LLM_ALLOWED_HOSTS or ""
+    return {h.strip().lower().rstrip(".") for h in raw.split(",") if h.strip()}
+
+
+def base_url_refusal(base_url: str | None = None) -> str | None:
+    """Why ``LOCAL_LLM_BASE_URL`` may not be used, or None when its host is private.
+
+    Allowed: loopback, RFC 1918 / ULA addresses, ``host.lima.internal``,
+    ``host.docker.internal``, ``localhost``, a name under ``.local``,
+    ``.internal``, ``.lan``, ``.home.arpa``, ``.localhost``, ``.test`` or
+    ``.invalid``, and any host listed in ``LOCAL_LLM_ALLOWED_HOSTS``. The
+    reason names the host only (never the path, query or credentials).
+    """
+    url = config.LOCAL_LLM_BASE_URL if base_url is None else base_url
+    try:
+        parts = urlsplit(url)
+        host = (parts.hostname or "").lower().rstrip(".")
+    except ValueError:
+        return "LOCAL_LLM_BASE_URL is not a valid URL"
+    if parts.scheme not in ("http", "https"):
+        return "LOCAL_LLM_BASE_URL must be an http(s) URL"
+    if not host:
+        return "LOCAL_LLM_BASE_URL has no host"
+    if host in _allowed_hosts() or host in PRIVATE_HOST_NAMES:
+        return None
+    if any(host.endswith(sfx) for sfx in PRIVATE_HOST_SUFFIXES):
+        return None
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        ip = None
+    if ip is not None:
+        if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+            ip = ip.ipv4_mapped
+        if ip.is_loopback or any(ip in net for net in _PRIVATE_NETWORKS):
+            return None
+    shown = host[:64]
+    return (
+        f"LOCAL_LLM_BASE_URL host {shown!r} is not loopback, private or allowlisted; "
+        "document content may only go to a model on this server or its private "
+        "network (set LOCAL_LLM_ALLOWED_HOSTS to allow a host)"
+    )
+
+
+def require_private_base_url() -> None:
+    """Raise ``LocalLLMHostRefusedError`` (logged once per process and host) unless private."""
+    reason = base_url_refusal()
+    if reason is None:
+        return
+    if reason not in _refusals_logged:
+        _refusals_logged.add(reason)
+        logger.error("local LLM refused (#925): %s", reason)
+    raise LocalLLMHostRefusedError(reason)
 
 
 def configured() -> bool:
@@ -197,6 +279,7 @@ def chat(
     state); every other caller follows the env. Off = byte-identical request."""
     if not configured():
         raise LocalLLMTransportError("LOCAL_LLM_BASE_URL / LOCAL_LLM_MODEL not set")
+    require_private_base_url()  # #925: before anything is built or sent
     est = estimate_prompt_tokens(system, user_content)
     max_tokens = clamp_budget(max_tokens, est)
     if max_tokens < MIN_ANSWER_TOKENS:

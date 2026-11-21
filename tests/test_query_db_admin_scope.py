@@ -22,7 +22,7 @@ from oncofiles.persistent_oauth import _verified_caller_is_admin
 from oncofiles.tools.db_query import query_db
 from tests.helpers import PRIMARY_TEST_UUID, make_doc
 
-ERIKA_SLUG = "jana-test"
+PRIMARY_SLUG = "jana-test"
 BOB_UUID = "00000000-0000-4000-8000-000000000002"
 BOB_SLUG = "bob-test"
 
@@ -36,7 +36,7 @@ def _ctx(db: Database) -> MagicMock:
 @pytest.fixture
 async def two_patients(db: Database) -> Database:
     await db.db.execute(
-        "UPDATE patients SET slug = ? WHERE patient_id = ?", (ERIKA_SLUG, PRIMARY_TEST_UUID)
+        "UPDATE patients SET slug = ? WHERE patient_id = ?", (PRIMARY_SLUG, PRIMARY_TEST_UUID)
     )
     await db.db.execute(
         "INSERT INTO patients (patient_id, slug, display_name) VALUES (?, ?, ?)",

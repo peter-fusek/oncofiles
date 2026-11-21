@@ -124,16 +124,16 @@ async def test_report_healthy_excludes_classified_classes(db: Database):
 
 
 async def test_zip_in_gdrive_is_expected_orphan_not_unexpected(db: Database):
-    """The exact bug Peter observed on Michal's dashboard: 2 SK-insurance-portal
-    ZIPs (8053156100-PDG...zip) sit in the sync folder forever (sync correctly
+    """The exact bug seen on an external user's dashboard: 2 SK-insurance-portal
+    ZIPs (<number>-PDG...zip) sit in the sync folder forever (sync correctly
     skips them as unsupported) but the reconciler classified them as orphans,
     displaying as scary red "2 orphans" count. Post-fix: they land in
     expected_orphans with reason="unsupported_extension" so the dashboard
     can render info-gray."""
     gdrive = _mock_gdrive_listing(
         [
-            {"id": "gd_zip1", "name": "8053156100-PDG2200001063145.zip"},
-            {"id": "gd_zip2", "name": "8053156100-PDG2400001331201.zip"},
+            {"id": "gd_zip1", "name": "9990000000-PDG2700000000001.zip"},
+            {"id": "gd_zip2", "name": "9990000000-PDG2700000000002.zip"},
         ]
     )
 
@@ -223,8 +223,8 @@ async def test_extensionless_file_is_real_orphan(db: Database):
 async def test_report_does_not_leak_other_patient_db_docs(db: Database):
     """#481 Issue B: when called with patient_id=A, the report's DB side must
     only count docs owned by A. Pre-fix (Mar 2026), the dashboard could show
-    patient B's doc count next to patient A's filter — the symptom Peter
-    observed on Michal's dashboard showing 112 docs while Michal had 0.
+    patient B's doc count next to patient A's filter — the symptom seen
+    on an external user's dashboard: 112 docs shown for a patient who had 0.
 
     The patient_id kwarg propagates straight to db.list_documents — this
     test pins that contract so future refactors can't drop it.

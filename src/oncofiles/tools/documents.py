@@ -690,12 +690,20 @@ async def get_document_versions(ctx: Context, doc_id: int, patient_slug: str | N
     )
 
 
+RELATED_DOCUMENTS_NONE_NOTE = (
+    "No cross-referenced documents are stored for this document. Links are not created "
+    "automatically at the moment; use timeline or encounter_detail to find documents "
+    "of the same day or visit."
+)
+
+
 async def get_related_documents(ctx: Context, doc_id: int, patient_slug: str | None = None) -> str:
     """Get documents cross-referenced with the given document.
 
-    Returns related documents found by shared visit dates, diagnoses,
-    or explicit references. Each result includes the relationship type
-    and a confidence score.
+    Returns related documents from stored cross-references, each with the
+    relationship type and a confidence score. No local path writes
+    cross-references today (#930), so an empty list comes with an explicit
+    `note`; links are never invented.
 
     Args:
         doc_id: The integer database ID of the document.
@@ -740,7 +748,10 @@ async def get_related_documents(ctx: Context, doc_id: int, patient_slug: str | N
                 "confidence": ref["confidence"],
             }
         )
-    return json.dumps({"document_id": doc_id, "related": items, "total": len(items)})
+    result = {"document_id": doc_id, "related": items, "total": len(items)}
+    if not items:
+        result["note"] = RELATED_DOCUMENTS_NONE_NOTE
+    return json.dumps(result)
 
 
 async def get_document_group(ctx: Context, group_id: str, patient_slug: str | None = None) -> str:

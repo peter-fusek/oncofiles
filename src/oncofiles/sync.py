@@ -968,30 +968,41 @@ async def sync_to_gdrive(
 
             # Post-rename: re-enhance renamed docs (metadata/FTS reflect new name).
             # #777: never with cloud AI off — enhancement is a cloud call.
+            # #925: a side effect of a sync, not a user's request, so it runs in a
+            # local-only zone (policy 2026-11-09): the cloud check below refuses
+            # it and the renamed documents keep their metadata until a user acts.
+            from oncofiles.cloud_guard import local_only
             from oncofiles.config import ENHANCE_TIMEOUT_S
 
-            reenhance_ids = (
-                rename_stats["renamed_ids"] if files_api_refusal_reason() is None else []
-            )
-            for doc_id in reenhance_ids:
-                try:
-                    doc = await db.get_document(doc_id, patient_id=patient_id)
-                    await asyncio.wait_for(
-                        _enhance_document(db, doc, files, gdrive, patient_id=patient_id),
-                        timeout=ENHANCE_TIMEOUT_S,
+            with local_only("sync post-rename re-enhance"):
+                refused = files_api_refusal_reason()
+                reenhance_ids = rename_stats["renamed_ids"] if refused is None else []
+                if refused is not None and rename_stats["renamed_ids"]:
+                    logger.info(
+                        "sync_to_gdrive: post-rename re-enhance skipped for %d doc(s) — %s",
+                        len(rename_stats["renamed_ids"]),
+                        refused,
                     )
-                    logger.info("sync_to_gdrive: post-rename enhanced doc %d", doc_id)
-                except TimeoutError:
-                    logger.warning(
-                        "sync_to_gdrive: post-rename enhance timed out for doc %d (limit=%.0fs)",
-                        doc_id,
-                        ENHANCE_TIMEOUT_S,
-                    )
-                except Exception:
-                    logger.exception(
-                        "sync_to_gdrive: post-rename enhance failed for doc %d",
-                        doc_id,
-                    )
+                for doc_id in reenhance_ids:
+                    try:
+                        doc = await db.get_document(doc_id, patient_id=patient_id)
+                        await asyncio.wait_for(
+                            _enhance_document(db, doc, files, gdrive, patient_id=patient_id),
+                            timeout=ENHANCE_TIMEOUT_S,
+                        )
+                        logger.info("sync_to_gdrive: post-rename enhanced doc %d", doc_id)
+                    except TimeoutError:
+                        logger.warning(
+                            "sync_to_gdrive: post-rename enhance timed out for doc %d "
+                            "(limit=%.0fs)",
+                            doc_id,
+                            ENHANCE_TIMEOUT_S,
+                        )
+                    except Exception:
+                        logger.exception(
+                            "sync_to_gdrive: post-rename enhance failed for doc %d",
+                            doc_id,
+                        )
 
             # Post-rename: verify full pipeline for each renamed doc
             all_gaps = []
@@ -1231,15 +1242,19 @@ async def _rename_to_standard(db: Database, gdrive: GDriveClient, *, patient_id:
                 from oncofiles.filename_parser import CATEGORY_FILENAME_TOKENS
                 from oncofiles.patient_context import get_patient_name
 
+                if not doc.document_date:
+                    # Never invent a date (#930, #544): no created_at, no
+                    # literal placeholder. Keep the name until a date is known.
+                    logger.info(
+                        "_rename_to_standard: doc %d has no document date, name kept (%s)",
+                        doc.id,
+                        _name_len(doc.filename),
+                    )
+                    stats["skipped"] += 1
+                    continue
                 patient = get_patient_name(patient_id).replace(" ", "") or "Patient"
                 cat_token = CATEGORY_FILENAME_TOKENS.get(doc.category, "Other")
-                # Use document_date or created_at or fallback
-                if doc.document_date:
-                    date_str = doc.document_date.strftime("%Y%m%d")
-                elif doc.created_at:
-                    date_str = doc.created_at.strftime("%Y%m%d")
-                else:
-                    date_str = "20260201"
+                date_str = doc.document_date.strftime("%Y%m%d")
                 inst = doc.institution or "Unknown"
                 desc = doc.description or "Document"
                 # Clean description for filename
@@ -1263,21 +1278,16 @@ async def _rename_to_standard(db: Database, gdrive: GDriveClient, *, patient_id:
                 )
 
             # If rename_to_standard couldn't parse (returned unchanged),
-            # build from DB metadata like we do for corrupted filenames
-            if new_name == doc.filename:
+            # build from DB metadata like we do for corrupted filenames — but
+            # only with a known document date (#930, #544: never the Drive
+            # modified time, created_at or a literal placeholder date).
+            if new_name == doc.filename and doc.document_date:
                 from oncofiles.filename_parser import CATEGORY_FILENAME_TOKENS
                 from oncofiles.patient_context import get_patient_name
 
                 patient = get_patient_name(patient_id).replace(" ", "") or "Patient"
                 cat_token = CATEGORY_FILENAME_TOKENS.get(doc.category, "Other")
-                if doc.document_date:
-                    date_str = doc.document_date.strftime("%Y%m%d")
-                elif doc.gdrive_modified_time:
-                    date_str = doc.gdrive_modified_time.strftime("%Y%m%d")
-                elif doc.created_at:
-                    date_str = doc.created_at.strftime("%Y%m%d")
-                else:
-                    date_str = "20260101"
+                date_str = doc.document_date.strftime("%Y%m%d")
                 inst = doc.institution or "Unknown"
                 desc = doc.description or "Document"
                 import re
@@ -1329,10 +1339,20 @@ async def _rename_to_standard(db: Database, gdrive: GDriveClient, *, patient_id:
                     for sib in siblings:
                         if sib["name"] == old_ocr_name:
                             await asyncio.to_thread(gdrive.rename_file, sib["id"], new_ocr_name)
-                            logger.info("Renamed OCR '%s' → '%s'", old_ocr_name, new_ocr_name)
+                            logger.info(
+                                "Renamed OCR companion of doc %d (gdrive_id=%s): %s → %s",
+                                doc.id,
+                                sib["id"],
+                                _name_len(old_ocr_name),
+                                _name_len(new_ocr_name),
+                            )
                             break
             except Exception:
-                logger.warning("_rename_to_standard: OCR rename failed for %s", old_ocr_name)
+                logger.warning(
+                    "_rename_to_standard: OCR rename failed for doc %d (%s)",
+                    doc.id,
+                    _name_len(old_ocr_name),
+                )
 
             # Update DB filename (keep original_filename for reversibility)
             await db.update_document_filename(doc.id, new_name)
@@ -2268,9 +2288,9 @@ async def _enhance_document(
                     except ValueError:
                         pass
 
-            # Fallback: GDrive time
-            if not backfill_date and doc.gdrive_modified_time:
-                backfill_date = doc.gdrive_modified_time.strftime("%Y-%m-%d")
+            # No further fallback (#930, #544): the Drive modified time is when
+            # the file was touched, not when the document was written. Without
+            # a printed or named date the date stays NULL.
 
         # Institution from AI classification
         if not doc.institution:

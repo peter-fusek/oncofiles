@@ -32,8 +32,12 @@ def _stats(**counts: int) -> dict:
     }
 
 
-def _nightly(monkeypatch, *, enhance=None, metadata=None):
+def _nightly(monkeypatch, *, enhance=None, metadata=None, unwrapped=False):
     """Build the scheduler and return (nightly job function, job_tracker, mocks).
+
+    ``unwrapped=True`` returns the function inside the ``local_only_task``
+    zone (#925): the registered job always skips the AI phases, so the #708
+    per-document accounting is tested on the bare function.
 
     Phase 1 (Drive sync) succeeds for every patient; the AI phases are mocks
     so a test can see whether they were reached and what they reported.
@@ -69,6 +73,8 @@ def _nightly(monkeypatch, *, enhance=None, metadata=None):
     scheduler, tracker = server._start_sync_scheduler(db, MagicMock(), None, "", primary_uuid="")
     try:
         func = scheduler.get_job("nightly_ai_pipeline").func
+        if unwrapped:
+            func = func.__wrapped__
     finally:
         scheduler.shutdown(wait=False)
     return func, tracker, SimpleNamespace(sync=sync_mock, enhance=enhance_mock, md=metadata_mock)
@@ -133,11 +139,29 @@ async def test_health_reports_cloud_ai_enabled(monkeypatch):
     assert body["cloud_ai"] == "enabled"
 
 
+# ── #925: the registered job is local-only, so cloud AI on changes nothing ──
+
+
+async def test_registered_job_skips_ai_phases_even_with_cloud_on(monkeypatch, caplog):
+    """conftest switches cloud AI on; the job's local-only zone still skips the phases."""
+    func, tracker, m = _nightly(monkeypatch, enhance=_stats(failed=4))
+
+    with caplog.at_level(logging.INFO, logger="oncofiles.server"):
+        await func()
+
+    m.enhance.assert_not_awaited()
+    m.md.assert_not_awaited()
+    assert m.sync.await_count == len(PIDS)
+    skip = [r.getMessage() for r in caplog.records if "AI phases skipped" in r.getMessage()]
+    assert len(skip) == 1 and "local model only" in skip[0]
+    assert _summary(tracker)["enhance_attempted"] == 0
+
+
 # ── cloud AI on: per-document failures count (#552 accounting) ─────────────
 
 
 async def test_every_document_failing_fails_the_job(monkeypatch):
-    func, tracker, m = _nightly(monkeypatch, enhance=_stats(no_text=1, failed=3))
+    func, tracker, m = _nightly(monkeypatch, enhance=_stats(no_text=1, failed=3), unwrapped=True)
 
     with pytest.raises(RuntimeError, match="document enhancement"):
         await func()
@@ -150,7 +174,7 @@ async def test_every_document_failing_fails_the_job(monkeypatch):
 
 
 async def test_ai_phase_raising_for_every_patient_fails_the_job(monkeypatch):
-    func, _tracker, m = _nightly(monkeypatch)
+    func, _tracker, m = _nightly(monkeypatch, unwrapped=True)
     m.enhance.side_effect = TimeoutError()
     m.md.side_effect = RuntimeError("synthetic metadata failure")
 
@@ -163,6 +187,7 @@ async def test_partial_failure_does_not_raise_and_logs_counts(monkeypatch, caplo
         monkeypatch,
         enhance=_stats(ok=2, failed=1),
         metadata=_stats(ok=1),
+        unwrapped=True,
     )
 
     with caplog.at_level(logging.INFO, logger="oncofiles.server"):
@@ -178,7 +203,7 @@ async def test_partial_failure_does_not_raise_and_logs_counts(monkeypatch, caplo
 
 async def test_nothing_pending_stays_a_success(monkeypatch):
     """0 attempted is a quiet night, not a failure."""
-    func, tracker, m = _nightly(monkeypatch)
+    func, tracker, m = _nightly(monkeypatch, unwrapped=True)
 
     await func()
 

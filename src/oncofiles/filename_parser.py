@@ -592,10 +592,12 @@ def rename_to_standard(
         # audit/backfill report. The institution backfill (Option B) is
         # responsible for refilling NULL institutions; once it does, the
         # next rename pass produces a real institution code.
+        from oncofiles.files_api import name_len  # #777: never log a filename
+
         logger.info(
             "rename_to_standard: institution unknown for %s — leaving filename "
             "unchanged (won't loop on Unknown). #404",
-            filename,
+            name_len(filename),
         )
         return filename
 
