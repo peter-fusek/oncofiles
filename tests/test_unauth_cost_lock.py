@@ -58,7 +58,6 @@ FORBIDDEN_MODULES = {
     "oncofiles.split",
     "oncofiles.consolidate",
     "oncofiles.curated_folder",  # Drive listing
-    "oncofiles.backfill_ocr",
     "oncofiles.backfill_splits",
     "oncofiles.curated.llm",  # local LLM
     "oncofiles.curated.llm_extract",

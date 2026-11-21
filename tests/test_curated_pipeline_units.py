@@ -350,7 +350,7 @@ def test_754_institution_ocr_typo_snaps_when_readme_token_is_printed():
 @pytest.mark.parametrize(
     "token,known,same",
     [
-        ("Parsok", "Porsok", True),
+        ("Karnok", "Kornok", True),
         ("XyzAmbulancia", "AbcAmbulancia", False),
         ("KlinikaVnutornrhoLekarstva", "KlinikaVnutornehoLekarstva", True),
         ("NUO", "NOU", True),

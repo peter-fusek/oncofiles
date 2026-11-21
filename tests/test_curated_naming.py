@@ -20,7 +20,7 @@ README_EXAMPLES = [
     "20260805-JanaNovakova-NOU-Imaging-Unknown-RDO.pdf",
     "20260709-JanaNovakova-NOU-Labs-Hruskova-KlinikaOnkohematologie.pdf",
     "20260122-JanaNovakova-SampleHospital-Discharge-Mrkva-Chirurgia.pdf",
-    "20260223-JanaNovakova-SampleHospital-Pathology-Rychly-Patologia.pdf",
+    "20260223-JanaNovakova-SampleHospital-Pathology-Kornok-Patologia.pdf",
     "20260311-JanaNovakova-SamplePublisher-Reference-Unknown-TextbookCh40.pdf",
 ]
 
@@ -36,7 +36,7 @@ def test_readme_examples_round_trip(name):
     "raw,expected",
     [
         ("Nováková", "Novakova"),
-        ("Pôrsôk", "Porsok"),
+        ("Kôrnôk", "Kornok"),
         ("Klinika klinickej onkológie", "KlinikaKlinickejOnkologie"),
         ("SampleHospital", "SampleHospital"),
         ("ORO/RAAKON", "ORORAAKON"),
@@ -55,7 +55,7 @@ def test_camel(raw, expected):
         ("Kováčová, Jana (MUDr. Mgr., PhD.)", "Kovacova"),
         ("MUDr. Jana Kováčová", "Kovacova"),
         ("Ing. Martin Čierny", "Cierny"),
-        ("doc. MUDr. Pavol Pôrsôk PhD", "Porsok"),
+        ("doc. MUDr. Pavol Kôrnôk PhD", "Kornok"),
         ("", UNKNOWN),
         (None, UNKNOWN),
     ],
